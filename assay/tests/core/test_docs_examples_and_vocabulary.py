@@ -657,6 +657,81 @@ def test_a_malformed_lane_is_refused_by_the_loader_itself(tmp_path: Path):
         _check_example(example, tmp_path)
 
 
+def _rust_r2_template() -> TomlExample:
+    """The CONSUMERS "Rust R2 lanes (cargo-mutants)" copy-paste lane (B245 U6),
+    found by its lane name so a rename or a skip marker cannot silently drop it
+    from the live set."""
+    found = [
+        ex
+        for ex in _LIVE_EXAMPLES
+        if ex.doc == CONSUMERS and "[lanes.assay-r2]" in ex.body
+    ]
+    assert len(found) == 1, "CONSUMERS.md must carry exactly one live assay-r2 template"
+    return found[0]
+
+
+def test_the_rust_r2_consumer_template_loads_and_carries_the_documented_flags(
+    tmp_path: Path,
+):
+    example = _rust_r2_template()
+    _check_example(example, tmp_path)  # the shipped loader accepts it
+    lane = load_lane_file(tmp_path / "assay.toml").lane("assay-r2")
+
+    assert lane.judge.mutation.format == "cargo-mutants-outcomes"
+    assert lane.result_report.format == "cargo-mutants-outcomes"
+    assert lane.judge.mode == "changed_lines"
+    argv = list(lane.argv)
+    assert argv[:2] == ["cargo", "mutants"]
+    assert argv[argv.index("--test-tool") + 1] == "nextest"
+    assert "--test-workspace=true" in argv
+    assert "--cargo-arg=--locked" in argv and "--cargo-arg=--offline" in argv
+    assert argv[argv.index("--in-diff") + 1] == "{assay.changed_diff}"
+    assert argv.count("{assay.changed_diff}") == 1
+    # the three spellings of <out> name one directory
+    output = argv[argv.index("--output") + 1]
+    assert output == lane.result_report.path == lane.judge.mutation.artifact
+    # the prose documents the same facts the template relies on
+    text = CONSUMERS.read_text(encoding="utf-8")
+    for required in (
+        "## Rust R2 lanes (cargo-mutants)",
+        "`--test-tool nextest` is REQUIRED",
+        "`.gitignore`",
+        "`mutants.out` as the artifact name",
+        "`judgment.r2.changed_diff`",
+        "`judgment.r2.report_absent`",
+        "`NO_MUTANTS`",
+        "`MUTANTS_SURVIVED`",
+        "`LANE_TIMEOUT`",
+        "`EXEC_FAILED`",
+        "`UNREADABLE_ARTIFACT`",
+        "`mutants.json`",
+    ):
+        assert required in text, f"CONSUMERS.md Rust R2 section omits {required!r}"
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ('"--in-diff", "{assay.changed_diff}"', '"--in-diff={assay.changed_diff}"', "placeholder"),
+        ('  "--in-diff", "{assay.changed_diff}",\n', "", "must carry"),
+        ('"--output", "assay-mutants-out"', '"--output", "elsewhere"', "'--output'"),
+        ('artifact = "assay-mutants-out"', 'artifact = "assay-mutants-out/mutants.out"', "result_report.path"),
+        ('source_roots = ["crates/core/src", "crates/io/src"]', 'source_roots = ["."]', "source_roots"),
+    ],
+)
+def test_a_broken_rust_r2_template_is_refused_by_the_same_check(
+    tmp_path: Path, old: str, new: str, message: str
+):
+    """Must-fail controls for the check above: each mutation of the real
+    template breaks one documented rule and is refused by the shipped loader."""
+    template = _rust_r2_template()
+    broken_body = template.body.replace(old, new, 1)
+    assert broken_body != template.body, "fixture setup bug: nothing was replaced"
+    broken = template._replace(body=broken_body)
+    with pytest.raises(LaneConfigError, match=re.escape(message)):
+        _check_example(broken, tmp_path)
+
+
 def test_a_marked_fragment_is_excluded_from_the_live_set():
     """The skip marker itself is a documented opt-out, not a silent one:
     prove the extractor actually recognizes it (must-succeed) and that an
