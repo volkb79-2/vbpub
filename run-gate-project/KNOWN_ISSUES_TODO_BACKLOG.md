@@ -178,6 +178,8 @@ SPEC §9.
 | RG-285 | a language lane image carries no Assay and no pip, so every such lane had to spell out the judge's `PYTHONPATH` incantation itself — the LANE, not the gate, decided which judge judged it | Enhancement | FIXED 2026-11-16 — lane key `judge = "assay"` (SPEC `R-08f`/`R-57`): read-only dual-mounted judge trees, PREPENDED import roots + `RUN_GATE_JUDGE_PYTHON`, an in-lane `find_spec` identity guard, judge commit/version/dirty recorded in the run record, `external-missing` refusal instead of a silent skip |
 | RG-286 | the `judge = "assay"` evidence never runs REAL Assay under a REAL image, and the fake docker executes the inner script on the host where `:ro` is an argv string, not a kernel mount | Major | OPEN 2026-11-16; required BEFORE the `hostobs` interim lane migrates — real-image smoke of `judge = "assay"` (real Assay source, real `tester-unified-rust`, Docker refusing writes into `assay/` and `libraries/cowtree`) |
 | RG-287 | Run-Gate cannot provide the Assay judge to a checkout that has no `assay/` of its own (a standalone consumer such as `dstdns`), so such a project is refused `external-missing` | Enhancement | OPEN 2026-11-16; the external path today is `kind = "assay"` + `assay_command` + `pins`; a run-gate-owned judge source (pinned wheel or pinned checkout) is unbuilt |
+| RG-288 | `git_hook_info_mount_flags` overlays only `<common>/hooks` and `<common>/info`; `<common>/modules/**/hooks` and `modules/**/info` stay writable by the runner in rw mode, so a runner can plant a submodule hook that host git later runs | Medium | OPEN 2026-11-18 (filed, not fixed); ciu's CIU-215 overlay already covers them (branch `ciu-20261118_055457-ciu215-gitdir-mount-20261118`, not on `origin/main` at filing) |
+| RG-289 | the host-side `git config --file` reads in `git_config_overlay_flags` follow symlinks at names a runner can plant in the writable common dir (`config.worktree`, `<admin>/config.worktree`, `modules/**/config`, the `modules` root, `worktrees/*` directory links), so a host file that parses as git config is copied sanitized into a runner-visible overlay | Medium | OPEN 2026-11-18 (filed, not fixed) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9312,3 +9314,102 @@ source (wheel digest pinned where the estate pins artifacts), a preflight that
 verifies it before admission, and identity fields that record the compared
 digest — reusing `pins`' verification rather than inventing a second one
 (R-35's rule).
+
+## RG-288 — the container mount layout leaves submodule `hooks` and `info` writable by the runner
+
+**Status:** OPEN 2026-11-18 (filed, not fixed). Severity: Medium (a lane
+runner can plant code that host git runs outside the container).
+
+**Found by.** The independent review of ciu's CIU-215 implementation, which
+overlays these paths and recorded the gap in Run-Gate's layout it copies.
+
+**Current behaviour (read from `run-gate-project/run_gate.py`).**
+`container_mount_flags` mounts the judged worktree and the shared git common
+directory read-write (`_dual(plan["common"], repo)`), then layers
+`git_worktrees_mount_flags` (`<common>/worktrees` read-only, the judged admin
+dir read-write on top), `git_config_overlay_flags`, `git_hook_info_mount_flags`
+and `git_worktree_pointer_mount_flags`. `git_hook_info_mount_flags` overlays
+exactly two paths, `<common>/hooks` (an empty read-only private directory) and
+`<common>/info` (read-only, real contents), and refuses the lane when either is
+a symlink or missing. Nothing overlays `<common>/modules/<path>/hooks` or
+`<common>/modules/<path>/info`: a submodule's git dir lives under
+`<common>/modules`, which is inside the read-write common mount, so the runner
+can create `modules/x/hooks/<hook>` (and edit `modules/x/info/exclude` or
+`info/attributes`). `git_config_overlay_flags` already walks `modules` for
+`config` files (`_nested_git_config_files`), so the layout knows these git dirs
+exist; only the hooks and info overlay is missing. A hook planted there is run
+by host git when host git executes the matching hook inside that submodule
+(for example a `post-checkout` hook during `git submodule update` or a
+checkout in the submodule); this was read from the layout and git's hook
+lookup, not demonstrated by a run.
+
+**Where it is already handled.** ciu's CIU-215 `_gitdir_mount_specs`
+(`ciu/src/ciu/engine.py`) overlays an empty read-only `hooks/` and read-only
+`info/` for every git dir found by `scan_modules` under `modules/**`. At filing
+that code is on branch `ciu-20261118_055457-ciu215-gitdir-mount-20261118`
+(merge `bbe6da1e4`), not on `origin/main` (`git grep _gitdir_mount_specs
+origin/main -- ciu` finds nothing). Run-Gate's own layout was not changed.
+
+**Wanted.** The same overlay: for every git dir under `<common>/modules` (the
+directories that hold a `HEAD`), an empty read-only `hooks` mount and a
+read-only `info` mount, dual-mounted like the common ones, with an lstat check
+that refuses the lane when `hooks` or `info` is a symlink or the walk meets a
+non-directory where a directory is required; subject to the existing
+`_MAX_GIT_OVERLAYS` bound.
+
+**Close when.** A test plants `<common>/modules/x/hooks/` and
+`<common>/modules/x/info/` in a linked worktree's common dir and shows, in the
+lane's mount set, that the submodule `hooks` is an empty read-only directory and
+`info` is read-only; and that a symlinked `hooks` or `info` under `modules/**`
+refuses the lane with the path named.
+
+## RG-289 — host-side git config reads follow symlinks a runner can plant
+
+**Status:** OPEN 2026-11-18 (filed, not fixed). Severity: Medium (host file
+content that parses as git config reaches a runner-visible copy; the lane can
+also be refused by a planted name).
+
+**Current behaviour (read from `run-gate-project/run_gate.py`).**
+`git_config_overlay_flags` builds its target list from `<common>/config`,
+`<common>/config.worktree`, the judged `<admin>/config.worktree`,
+`_nested_git_config_files(<common>/modules)` and
+`<common>/worktrees/*/config.worktree`. The `config.worktree` names are tested
+with `Path.is_file()`, which follows symlinks; the sibling names come from
+`Path.glob`, which also matches a symlinked `worktrees/<name>` directory; the
+module names come from `os.walk(modules)`, which lists a symlink to a file in
+`files` (not descended, but read) and, because `modules` itself is the walk top,
+walks through it when the runner replaced the `modules` directory by a symlink.
+Each target is then read by `read_git_config_entries`, which runs host
+`git config --file <path> --list -z`; git follows the link. The sanitized text
+is written to a private per-run copy that is bind-mounted into the container at
+the target's own path. In rw mode the common dir is writable by the runner, so
+every one of these names can be created or replaced by a lane and is read on
+the host at the next lane start (a name that exists at lane start is bind
+mounted and cannot be replaced during that lane; a name that did not exist can
+be planted).
+
+**Reach.** Any host file the run-gate user can read that parses as git config:
+git rejects key names with an underscore, so `~/.aws/credentials` fails with
+"bad config line" and the lane is refused (`fail_infra`); a file with dashed or
+plain keys, such as a `.pypirc` (checked: `git config --file` parses it and
+follows a symlink to it) or another user's `.gitconfig`, is read, passed through
+`sanitize_git_config_entries` and its copy mounted into the lane. The sanitizer
+drops credential-looking keys (`*password`, `*token`, `*secret`, `credential.*`,
+`include.*`, URL userinfo), so the remainder is the non-credential values of
+that file (names, e-mail addresses, URLs, paths, aliases), not its secrets;
+a replaced `modules` root can also make the walk read and refuse on any
+`config` file below the link target. Where Docker places a bind mount whose
+destination is a symlink was not exercised.
+
+**Wanted.** lstat-based checks (`S_ISREG` for each config file, `S_ISDIR` for
+`modules`, `worktrees` and each sibling directory), `os.walk(followlinks=False)`
+with the top itself lstat-checked, no `is_file()`/`glob` on planted names, and a
+refusal that names the path when a candidate is a symlink or another non-regular
+file. This is the same fail-closed lstat discipline ciu's CIU-215 branch applies
+to these candidates.
+
+**Close when.** Planted-symlink tests, one per name (`<common>/config`,
+`<common>/config.worktree`, `<admin>/config.worktree`, `modules/x/config`,
+`modules/x/config.worktree`, the `modules` root, a `worktrees/<name>` directory
+link), each pointing at a readable file that parses as git config, show the lane
+refused with the path named and no read of the link target.
