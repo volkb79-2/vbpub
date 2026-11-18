@@ -129,10 +129,9 @@ MatchArmGuard 10, MatchArm 4, StructField 2); at an assumed 25 s per mutant (`--
 compile-dominated, not measured) that is about 2.4 h, inside the lane budget. Per-mutant
 cost on hostobs is therefore still unmeasured until that run.
 
-The base `0dd7230b1` attempts (2026-11-18, v1001, commit `30762a2a5`, then the U8b-fix head
+The base `0dd7230b1` attempts (2026-11-18, v1001, commit `30762a2a5`, then the branch head
 `2dd8be574`) were cancelled by the shared-host memory rule (abort at slice anon+shmem 5.0 GB, own cap
-3.5 GiB), in the baseline phase (no progress stream survived, so "before a single mutant ran" is inferred
-from cargo-mutants running its unmutated baseline first). Run 1 was cancelled at 15:17:30 about 100 s after
+3.5 GiB) before any mutant verdict existed (no progress stream survived). Run 1 was cancelled at 15:17:30 about 100 s after
 its start with the container at 6.36 GiB and the slice at 6.70 GB (default cargo parallelism; read from the
 monitor output, only the 4.96 GB sample of 15:17:01 is on disk); run 2 (`CARGO_BUILD_JOBS`,
 `RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS` set to 1) at 15:22:56, about 77 s after its start, at
@@ -146,22 +145,27 @@ read by hand with a host `ps --sort=-rss` at 15:26:13-15:26:21 (not saved in the
 (`hostobs/crates/client/tests/client_scripted.rs`), RSS 2.7 GB at 14 s of its life and 4.3 GB at 22 s.
 The same test passes in the hostobs `selftest` and `assay-r1` lanes, and a reproduction by the hostobs
 owner in a dev container did NOT reproduce it (passed in 0.006 s), which pointed away from the unmutated
-test. A fourth run (the U8b-fix head `a3ff0bade`, container capped `--memory 2500m`, a sampler reading
+test. A fourth run (branch head `a3ff0bade`, container capped `--memory 2500m`, a sampler reading
 `/proc` inside the container at the first process above 800 MB RSS) captured it at 1.1 GB: the process is
 a child of `cargo-nextest nextest run --package=hostobs-client` (default profile, one test thread), itself
 a child of `cargo-mutants`, with its working directory in cargo-mutants' temporary copy of the
 workspace; the SHA-256 of `crates/client/tests/client_scripted.rs` and `tests/support/mod.rs` in that copy
-equal the git blobs, while `crates/client/src/client.rs` DIFFERS from git. So the runaway is a MUTANT run, not
-the baseline: a mutation of `client.rs` (in the client's write/retry path) makes the scripted-transport test
-loop on transport calls with no clock progress while the scripted transport pushes one `Duration` per call
-into a `Vec` (about 300 MB/s). cargo-mutants' only guard is the test timeout (`--minimum-test-timeout 120`
-here), at that rate tens of GB, so it outruns the memory of the host long before the timeout. The
-specific mutant was not recorded (the baseline log was not found, `find -xdev` skipped the copy-on-write
-mount holding `assay-mutants-out`). Lesson for every hand-run heavy lane: declare
-`[lanes.<name>.resources] memory` (docker `--memory`) with an equal `memory_swap` so a runaway mutant is
-OOM-killed inside its own container, sample the container every few seconds for the first minutes (a 60 s
-monitor missed the step), and keep page cache in mind when sharing a host (container `memory.current`,
-not only anon, was what tripped a neighbour guest's stop rule). K15 stays open.
+equal the git blobs, while `crates/client/src/client.rs` DIFFERS from git (copy `28cea719bf4fc25c`, git
+`1278c3c6ed04a816`). So that process (proven for this fourth run only; the earlier three are presumed the
+same, same test and same growth, without a capture) is a MUTANT run, not the baseline: some mutation of
+`client.rs` is applied. Measured growth is about 0.2 GB/s (anon 0.77 -> 1.22 -> 1.75 -> 2.19 -> 2.58 GB at
+2 s steps). Inferred, not shown: the mutation makes the scripted-transport test loop without clock
+progress while the scripted transport pushes one `Duration` per call into the `read_waits`/`write_waits`
+`Vec`s of `tests/support/mod.rs`; and cargo-mutants' only guard, the test timeout
+(`--minimum-test-timeout 120` here), would at 0.2 GB/s allow about 24 GB. The specific mutant was not
+recorded (the baseline log was not found: `find -xdev` skipped the copy-on-write mount holding
+`assay-mutants-out`). The memory cap (`--memory 2500m --memory-swap 2500m`) lives on the unmerged U8b-fix
+branch and its OOM-kill behaviour is untested (the sampler cancelled at 2.3 GB, before the cap). Lessons
+for every hand-run heavy lane: declare `[lanes.<name>.resources] memory` (docker `--memory`) with an equal
+`memory_swap`, sample the container every few seconds for the first minutes (a 60 s monitor missed the
+step), and keep page cache in mind when sharing a host (the vbpub-debian-rollback session reported that
+its stop rule on container `memory.current`, not only anon, tripped; no log of that is kept here). K15
+stays open.
 
 Known risks for the first real qualification run (B245 U7,
 `tools/qualify_rust_r2_real.py`; each is diagnosed, not a known defect; its
