@@ -46,10 +46,12 @@ scripts/debian-install/mem_read_bench
 scripts/debian-install/mem_mixed_bench
 
 # debian-install-v2 VM test state (base images, SSH keys, private NoCloud seed
-# ISOs, qcow2 overlays) lives in <project>/artifacts/vm-lab, already covered by
-# the artifacts/ rule; shared downloads live in the root downloads/ rule.
+# ISOs, qcow2 overlays) lives in <project>/vm-lab (the resolved `vm-lab` folder):
+# its committed placeholder .gitignore (`*`) keeps the contents out, there is no
+# root rule on purpose (the top-level vm-lab/ directory is the VM tool's source);
+# shared downloads live in the root downloads/ rule.
 scripts/debian-install-v2/testing/.cache/
-# LEGACY (pre-artifacts/vm-lab location of credential-bearing private seed ISOs):
+# LEGACY (oldest location, before the project vm-lab folder, of credential-bearing private seed ISOs):
 # kept as a safety net against an accidental `git add -A` of leftovers; delete
 # this line once no checkout still has a testing/vm/.vm/ directory.
 scripts/debian-install-v2/testing/vm/.vm/

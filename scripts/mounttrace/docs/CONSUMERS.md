@@ -132,7 +132,7 @@ adds user-namespace, btrfs and Docker scenarios on its isolated QEMU guest.
 
 ```bash
 run-gate suite
-testing/vm/setup-vm-lab.sh   # once per checkout, on a configured CoW host
+../../libraries/cowtree/repo-path vm-lab --project scripts/mounttrace --provision   # once, on a configured CoW host
 testing/vm/run-vm-tests.sh
 ```
 

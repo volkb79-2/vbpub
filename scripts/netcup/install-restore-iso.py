@@ -47,6 +47,16 @@ BOOT_DEVICES = {"HDD", "CDROM", "NETWORK"}
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
+def _golden_source_ssh_flags() -> str:
+    """The golden-source SSH flags of the example commands (run from this directory).
+
+    The golden-source VM is owned by ``scripts/truenas``; where its ``vm-lab`` folder is (plain or CoW) is the repo path
+    resolver's answer, so the examples ask it in the shell and never name a literal folder.
+    """
+    folder = "$(../../libraries/cowtree/repo-path vm-lab --project scripts/truenas)/golden-source-27-20GiB"
+    return f'--ssh-identity-file "{folder}/root_ed25519" --ssh-known-hosts "{folder}/restore-known_hosts"'
+
+
 def _argument(name: str, description: str, *, metavar: str | None = None, **kwargs: Any):
     return ArgumentSpec(name, description, metavar=metavar, parser_kwargs=kwargs)
 
@@ -979,7 +989,7 @@ def build_cli():
         description="Run generic Netcup ISO installs or the TrueNAS golden-disk restore workflow.",
         getting_started=(
             "./install-restore-iso.py start 804027 --iso ../truenas/golden-iso/artifacts/restore.iso",
-            "./install-restore-iso.py finish 804027 --yes --ssh-host v1001.vxxu.de --ssh-identity-file ../truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 --ssh-known-hosts ../truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts",
+            f"./install-restore-iso.py finish 804027 --yes --ssh-host v1001.vxxu.de {_golden_source_ssh_flags()}",
         ),
         logging_logger="netcup.install_restore_iso",
         unexpected_exceptions="report",
@@ -1077,7 +1087,7 @@ def build_cli():
                 _option(("--task-timeout-seconds",), "Maximum wait for each SCP task; omit to wait until it ends.", group="STOP CONDITIONS", metavar="SECONDS", type=_positive_finite, default=None),
             ),
             examples=(
-                "./install-restore-iso.py finish 804027 --restore-complete --ssh-host v1001.vxxu.de --ssh-host-key-alias '[127.0.0.1]:2223' --ssh-identity-file ../truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 --ssh-known-hosts ../truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts --yes",
+                f"./install-restore-iso.py finish 804027 --restore-complete --ssh-host v1001.vxxu.de --ssh-host-key-alias '[127.0.0.1]:2223' {_golden_source_ssh_flags()} --yes",
             ),
             handler=_finish,
         )
@@ -1108,7 +1118,7 @@ def build_cli():
                 _option(("--task-timeout-seconds",), "Maximum wait for each SCP task; omit to wait until it ends.", group="STOP CONDITIONS", metavar="SECONDS", type=_positive_finite, default=None),
             ),
             examples=(
-                "./install-restore-iso.py recover 804027 --try-disk-boot --ssh-host v1001.vxxu.de --ssh-identity-file ../truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 --ssh-known-hosts ../truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts --yes",
+                f"./install-restore-iso.py recover 804027 --try-disk-boot --ssh-host v1001.vxxu.de {_golden_source_ssh_flags()} --yes",
             ),
             handler=_recover,
         )

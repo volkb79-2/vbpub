@@ -48,8 +48,9 @@ sudo mounttrace --json --no-probe explain "$pid:/data"
 - `run-gate suite` runs the namespace-free subset in `tester-unified`. Topology scenarios skip there
   because the container blocks user namespaces; see the
   [gate design](docs/DESIGN-GUIDE.md#test-gates).
-- Full real-kernel checks: run `testing/vm/setup-vm-lab.sh` once, then
-  `testing/vm/run-vm-tests.sh` in the disposable QEMU guest (guide §9.6/§9.7). The lane validates
-  its `tests/test-inputs.txt` copy list before booting and fails if an input is missing.
-- `artifacts/vm-lab` is an ignored symlink into the btrfs CoW area (`$MDT_COW_ROOT`), created by
-  `setup-vm-lab.sh`.
+- Full real-kernel checks: `testing/vm/run-vm-tests.sh` in the disposable QEMU guest (guide
+  §9.6/§9.7). The lane validates its `tests/test-inputs.txt` copy list before booting and fails if
+  an input is missing.
+- The VM state folder is the resolved `vm-lab` folder of this project
+  (`libraries/cowtree/repo-path vm-lab --project scripts/mounttrace`): the committed placeholder
+  `vm-lab/`, or on a CoW host (`$MDT_COW_ROOT`) its btrfs subvolume, created once with `--provision`.

@@ -363,3 +363,17 @@ def test_finish_prints_secrets_checklist_pointer_and_capture_id(tmp_path, monkey
     assert "Secrets baked into a golden ISO / what to change after a restore" in output
     assert "scripts/truenas/golden-iso/README.md" in output
     assert "0a1b2c3d" in output
+
+
+def test_example_commands_ask_the_resolver_for_the_golden_source_folder():
+    """The examples never name a literal vm-lab folder: they ask the repo path resolver, for the truenas project."""
+    flags = install_restore_iso._golden_source_ssh_flags()
+    resolver = "$(../../libraries/cowtree/repo-path vm-lab --project scripts/truenas)/golden-source-27-20GiB"
+    assert flags == (
+        f'--ssh-identity-file "{resolver}/root_ed25519" --ssh-known-hosts "{resolver}/restore-known_hosts"'
+    )
+    assert (NETCUP_DIR / "../../libraries/cowtree/repo-path").resolve().is_file()
+    source = SCRIPT.read_text()
+    assert "artifacts/vm-lab" not in source and "golden-source-27-20GiB/" not in source.replace(resolver, "")
+    # The getting-started line and the finish and recover examples all take the flags from the one helper.
+    assert source.count("{_golden_source_ssh_flags()}") == 3

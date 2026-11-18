@@ -441,7 +441,7 @@ Change `DESIGN.md:21` to: "works on vanilla v27; patch-only features are capabil
 
 *Capability.* Probe for `convert` and `virtual_size` on v27; they are not in `API-METHODS-V27.md`. If they are absent on vanilla, hide the feature there with a clear message.
 
-*Local state.* None for this flow. tnt-owned local test VMs (TNT-59) live under `truenas/tnt/artifacts/vm-lab/<vm>/`, with a committed placeholder.
+*Local state.* None for this flow. tnt-owned local test VMs (TNT-59) live under `truenas/tnt/vm-lab/<vm>/` (the resolver's `vm-lab` folder for `truenas/tnt`; first `artifacts/vm-lab/<vm>/`), with a committed placeholder.
 
 *Tests.*
 - fake handlers for `virtual_size`, `convert` (as a job) and the upload;

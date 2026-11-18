@@ -169,10 +169,13 @@ and verify SSH plus the boot pool:
   --restore-complete \
   --ssh-host <host> \
   --ssh-host-key-alias '[<host-address>]:2223' \
-  --ssh-identity-file ../truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
-  --ssh-known-hosts ../truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts \
+  --ssh-identity-file "$(../../libraries/cowtree/repo-path vm-lab --project scripts/truenas)/golden-source-27-20GiB/root_ed25519" \
+  --ssh-known-hosts "$(../../libraries/cowtree/repo-path vm-lab --project scripts/truenas)/golden-source-27-20GiB/restore-known_hosts" \
   --yes
 ```
+
+(The golden-source VM is owned by `scripts/truenas`; its `vm-lab` folder is the repo path resolver's answer, the plain
+`scripts/truenas/vm-lab/` or a CoW subvolume, so the commands ask the resolver instead of naming a folder.)
 
 `--restore-complete` is a required operator assertion. The tool does not infer
 completion from a reboot, a running server, or guest-side `CDROMEJECT`; that
@@ -201,8 +204,8 @@ uncertified:
   --state-file .state/restore-804027-v5.json \
   --try-disk-boot \
   --ssh-host <host> \
-  --ssh-identity-file <checkout>/scripts/truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
-  --ssh-known-hosts <checkout>/scripts/truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts \
+  --ssh-identity-file "$(<checkout>/libraries/cowtree/repo-path vm-lab --project scripts/truenas)/golden-source-27-20GiB/root_ed25519" \
+  --ssh-known-hosts "$(<checkout>/libraries/cowtree/repo-path vm-lab --project scripts/truenas)/golden-source-27-20GiB/restore-known_hosts" \
   --yes
 ```
 
