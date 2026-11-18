@@ -582,7 +582,7 @@ still running or was killed.
   the tree has any change, before the first lane starts.
 - The environment is passed on untouched, except the names given with
   `--unset-env NAME` (repeatable; for example `--unset-env RUN_GATE_TESTER_UNIFIED_IMAGE`
-  for an old chain that began with `unset RUN_GATE_TESTER_UNIFIED_IMAGE`). The
+  for an old chain that began with `unset RUN_GATE_TESTER_UNIFIED_IMAGE`).
   A name that `controller.local.env` itself assigns is re-exported by `gate-run.sh`
   and `remote-gate.sh` (they load that file again through `lib.sh`), so `--unset-env`
   cannot remove it: remove the assignment from `controller.local.env` instead. The
