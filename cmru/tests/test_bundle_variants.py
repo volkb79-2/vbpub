@@ -228,7 +228,7 @@ def test_cleanup_validation_rejects_unresolvable_output_root(tmp_path, monkeypat
 
     with pytest.raises(ValueError, match="dist_dir cannot be resolved safely"):
         bundle._validate_staging_paths(
-            loop, tmp_path / "bundle", tmp_path / "client",
+            loop, tmp_path / "bundle", tmp_path / "client", project_root=tmp_path,
         )
 
 
@@ -397,7 +397,9 @@ def test_exec_prefix_needs_env_and_path_inside_root(tmp_path, monkeypatch):
     config.write_text(text, encoding="utf-8")
     stale_archive = outside / "demo-v1.2.3-py311.tar.xz"
     stale_archive.write_bytes(b"previous archive")
-    with pytest.raises(ValueError, match="inside project_root"):
+    # KI-175: an outside ``dist_dir`` is refused where the path is parsed, before any runner path
+    # mapping or cleanup happens.
+    with pytest.raises(ValueError, match="dist_dir.*strict descendant of project_root"):
         bundle.run_bundle(config, variant=PY311, runner=Recorder())
     assert stale_archive.read_bytes() == b"previous archive"
 

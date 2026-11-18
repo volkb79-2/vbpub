@@ -1,0 +1,802 @@
+[
+  {
+    "diff": "--- src/lib.rs\n+++ replace add -> i32 with 0\n@@ -1,17 +1,17 @@\n //! Synthetic cargo-mutants subject for assay R-3a spikes (no dependencies).\n \n pub struct Token {\n     pub id: u32,\n }\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n-    a + b\n+    0 /* ~ changed by cargo-mutants ~ */\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n     n % 2 == 0\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "add",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 10
+        },
+        "start": {
+          "column": 1,
+          "line": 7
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:9:5: replace add -> i32 with 0",
+    "package": "r3a",
+    "replacement": "0",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 9
+      },
+      "start": {
+        "column": 5,
+        "line": 9
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace add -> i32 with 1\n@@ -1,17 +1,17 @@\n //! Synthetic cargo-mutants subject for assay R-3a spikes (no dependencies).\n \n pub struct Token {\n     pub id: u32,\n }\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n-    a + b\n+    1 /* ~ changed by cargo-mutants ~ */\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n     n % 2 == 0\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "add",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 10
+        },
+        "start": {
+          "column": 1,
+          "line": 7
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:9:5: replace add -> i32 with 1",
+    "package": "r3a",
+    "replacement": "1",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 9
+      },
+      "start": {
+        "column": 5,
+        "line": 9
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace add -> i32 with -1\n@@ -1,17 +1,17 @@\n //! Synthetic cargo-mutants subject for assay R-3a spikes (no dependencies).\n \n pub struct Token {\n     pub id: u32,\n }\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n-    a + b\n+    -1 /* ~ changed by cargo-mutants ~ */\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n     n % 2 == 0\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "add",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 10
+        },
+        "start": {
+          "column": 1,
+          "line": 7
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:9:5: replace add -> i32 with -1",
+    "package": "r3a",
+    "replacement": "-1",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 9
+      },
+      "start": {
+        "column": 5,
+        "line": 9
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace + with - in add\n@@ -1,17 +1,17 @@\n //! Synthetic cargo-mutants subject for assay R-3a spikes (no dependencies).\n \n pub struct Token {\n     pub id: u32,\n }\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n-    a + b\n+    a - /* ~ changed by cargo-mutants ~ */ b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n     n % 2 == 0\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "add",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 10
+        },
+        "start": {
+          "column": 1,
+          "line": 7
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:9:7: replace + with - in add",
+    "package": "r3a",
+    "replacement": "-",
+    "span": {
+      "end": {
+        "column": 8,
+        "line": 9
+      },
+      "start": {
+        "column": 7,
+        "line": 9
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace + with * in add\n@@ -1,17 +1,17 @@\n //! Synthetic cargo-mutants subject for assay R-3a spikes (no dependencies).\n \n pub struct Token {\n     pub id: u32,\n }\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n-    a + b\n+    a * /* ~ changed by cargo-mutants ~ */ b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n     n % 2 == 0\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "add",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 10
+        },
+        "start": {
+          "column": 1,
+          "line": 7
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:9:7: replace + with * in add",
+    "package": "r3a",
+    "replacement": "*",
+    "span": {
+      "end": {
+        "column": 8,
+        "line": 9
+      },
+      "start": {
+        "column": 7,
+        "line": 9
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace is_even -> bool with true\n@@ -6,17 +6,17 @@\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n     a + b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n-    n % 2 == 0\n+    true /* ~ changed by cargo-mutants ~ */\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "is_even",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 12
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:14:5: replace is_even -> bool with true",
+    "package": "r3a",
+    "replacement": "true",
+    "span": {
+      "end": {
+        "column": 15,
+        "line": 14
+      },
+      "start": {
+        "column": 5,
+        "line": 14
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace is_even -> bool with false\n@@ -6,17 +6,17 @@\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n     a + b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n-    n % 2 == 0\n+    false /* ~ changed by cargo-mutants ~ */\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "is_even",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 12
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:14:5: replace is_even -> bool with false",
+    "package": "r3a",
+    "replacement": "false",
+    "span": {
+      "end": {
+        "column": 15,
+        "line": 14
+      },
+      "start": {
+        "column": 5,
+        "line": 14
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace == with != in is_even\n@@ -6,17 +6,17 @@\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n     a + b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n-    n % 2 == 0\n+    n % 2 != /* ~ changed by cargo-mutants ~ */ 0\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "is_even",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 12
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:14:11: replace == with != in is_even",
+    "package": "r3a",
+    "replacement": "!=",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 14
+      },
+      "start": {
+        "column": 11,
+        "line": 14
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace % with / in is_even\n@@ -6,17 +6,17 @@\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n     a + b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n-    n % 2 == 0\n+    n / /* ~ changed by cargo-mutants ~ */ 2 == 0\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "is_even",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 12
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:14:7: replace % with / in is_even",
+    "package": "r3a",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 8,
+        "line": 14
+      },
+      "start": {
+        "column": 7,
+        "line": 14
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace % with + in is_even\n@@ -6,17 +6,17 @@\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n     a + b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n-    n % 2 == 0\n+    n + /* ~ changed by cargo-mutants ~ */ 2 == 0\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "is_even",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 12
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:14:7: replace % with + in is_even",
+    "package": "r3a",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 8,
+        "line": 14
+      },
+      "start": {
+        "column": 7,
+        "line": 14
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace make -> Token with Default::default()\n@@ -11,17 +11,17 @@\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n     n % 2 == 0\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n-    Token { id }\n+    Default::default() /* ~ changed by cargo-mutants ~ */\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n pub fn spin(n: u32) -> u32 {\n     let mut i = 0;\n     while i < n {\n         i += 1;\n     }\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "make",
+      "return_type": "-> Token",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 20
+        },
+        "start": {
+          "column": 1,
+          "line": 17
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:19:5: replace make -> Token with Default::default()",
+    "package": "r3a",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 17,
+        "line": 19
+      },
+      "start": {
+        "column": 5,
+        "line": 19
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace spin -> u32 with 0\n@@ -16,21 +16,17 @@\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n pub fn spin(n: u32) -> u32 {\n-    let mut i = 0;\n-    while i < n {\n-        i += 1;\n-    }\n-    i\n+    0 /* ~ changed by cargo-mutants ~ */\n }\n \n /// Match arms and a guard.\n pub fn pick(a: Option<u32>) -> u32 {\n     match a {\n         Some(v) if v > 10 => v,\n         Some(_) => 1,\n         None => 0,\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "spin",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 29
+        },
+        "start": {
+          "column": 1,
+          "line": 22
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:24:5: replace spin -> u32 with 0",
+    "package": "r3a",
+    "replacement": "0",
+    "span": {
+      "end": {
+        "column": 6,
+        "line": 28
+      },
+      "start": {
+        "column": 5,
+        "line": 24
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace spin -> u32 with 1\n@@ -16,21 +16,17 @@\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n pub fn spin(n: u32) -> u32 {\n-    let mut i = 0;\n-    while i < n {\n-        i += 1;\n-    }\n-    i\n+    1 /* ~ changed by cargo-mutants ~ */\n }\n \n /// Match arms and a guard.\n pub fn pick(a: Option<u32>) -> u32 {\n     match a {\n         Some(v) if v > 10 => v,\n         Some(_) => 1,\n         None => 0,\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "spin",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 29
+        },
+        "start": {
+          "column": 1,
+          "line": 22
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:24:5: replace spin -> u32 with 1",
+    "package": "r3a",
+    "replacement": "1",
+    "span": {
+      "end": {
+        "column": 6,
+        "line": 28
+      },
+      "start": {
+        "column": 5,
+        "line": 24
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace < with == in spin\n@@ -17,17 +17,17 @@\n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n pub fn spin(n: u32) -> u32 {\n     let mut i = 0;\n-    while i < n {\n+    while i == /* ~ changed by cargo-mutants ~ */ n {\n         i += 1;\n     }\n     i\n }\n \n /// Match arms and a guard.\n pub fn pick(a: Option<u32>) -> u32 {\n     match a {\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "spin",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 29
+        },
+        "start": {
+          "column": 1,
+          "line": 22
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:25:13: replace < with == in spin",
+    "package": "r3a",
+    "replacement": "==",
+    "span": {
+      "end": {
+        "column": 14,
+        "line": 25
+      },
+      "start": {
+        "column": 13,
+        "line": 25
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace < with > in spin\n@@ -17,17 +17,17 @@\n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n pub fn spin(n: u32) -> u32 {\n     let mut i = 0;\n-    while i < n {\n+    while i > /* ~ changed by cargo-mutants ~ */ n {\n         i += 1;\n     }\n     i\n }\n \n /// Match arms and a guard.\n pub fn pick(a: Option<u32>) -> u32 {\n     match a {\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "spin",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 29
+        },
+        "start": {
+          "column": 1,
+          "line": 22
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:25:13: replace < with > in spin",
+    "package": "r3a",
+    "replacement": ">",
+    "span": {
+      "end": {
+        "column": 14,
+        "line": 25
+      },
+      "start": {
+        "column": 13,
+        "line": 25
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace < with <= in spin\n@@ -17,17 +17,17 @@\n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n pub fn spin(n: u32) -> u32 {\n     let mut i = 0;\n-    while i < n {\n+    while i <= /* ~ changed by cargo-mutants ~ */ n {\n         i += 1;\n     }\n     i\n }\n \n /// Match arms and a guard.\n pub fn pick(a: Option<u32>) -> u32 {\n     match a {\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "spin",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 29
+        },
+        "start": {
+          "column": 1,
+          "line": 22
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:25:13: replace < with <= in spin",
+    "package": "r3a",
+    "replacement": "<=",
+    "span": {
+      "end": {
+        "column": 14,
+        "line": 25
+      },
+      "start": {
+        "column": 13,
+        "line": 25
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace += with -= in spin\n@@ -18,17 +18,17 @@\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n pub fn spin(n: u32) -> u32 {\n     let mut i = 0;\n     while i < n {\n-        i += 1;\n+        i -= /* ~ changed by cargo-mutants ~ */ 1;\n     }\n     i\n }\n \n /// Match arms and a guard.\n pub fn pick(a: Option<u32>) -> u32 {\n     match a {\n         Some(v) if v > 10 => v,\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "spin",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 29
+        },
+        "start": {
+          "column": 1,
+          "line": 22
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:26:11: replace += with -= in spin",
+    "package": "r3a",
+    "replacement": "-=",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 26
+      },
+      "start": {
+        "column": 11,
+        "line": 26
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace += with *= in spin\n@@ -18,17 +18,17 @@\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n pub fn spin(n: u32) -> u32 {\n     let mut i = 0;\n     while i < n {\n-        i += 1;\n+        i *= /* ~ changed by cargo-mutants ~ */ 1;\n     }\n     i\n }\n \n /// Match arms and a guard.\n pub fn pick(a: Option<u32>) -> u32 {\n     match a {\n         Some(v) if v > 10 => v,\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "spin",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 29
+        },
+        "start": {
+          "column": 1,
+          "line": 22
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:26:11: replace += with *= in spin",
+    "package": "r3a",
+    "replacement": "*=",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 26
+      },
+      "start": {
+        "column": 11,
+        "line": 26
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace pick -> u32 with 0\n@@ -25,21 +25,17 @@\n     while i < n {\n         i += 1;\n     }\n     i\n }\n \n /// Match arms and a guard.\n pub fn pick(a: Option<u32>) -> u32 {\n-    match a {\n-        Some(v) if v > 10 => v,\n-        Some(_) => 1,\n-        None => 0,\n-    }\n+    0 /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n \n     #[test]\n     fn add_sums() {\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "pick",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 38
+        },
+        "start": {
+          "column": 1,
+          "line": 31
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:33:5: replace pick -> u32 with 0",
+    "package": "r3a",
+    "replacement": "0",
+    "span": {
+      "end": {
+        "column": 6,
+        "line": 37
+      },
+      "start": {
+        "column": 5,
+        "line": 33
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace pick -> u32 with 1\n@@ -25,21 +25,17 @@\n     while i < n {\n         i += 1;\n     }\n     i\n }\n \n /// Match arms and a guard.\n pub fn pick(a: Option<u32>) -> u32 {\n-    match a {\n-        Some(v) if v > 10 => v,\n-        Some(_) => 1,\n-        None => 0,\n-    }\n+    1 /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n \n     #[test]\n     fn add_sums() {\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "pick",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 38
+        },
+        "start": {
+          "column": 1,
+          "line": 31
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:33:5: replace pick -> u32 with 1",
+    "package": "r3a",
+    "replacement": "1",
+    "span": {
+      "end": {
+        "column": 6,
+        "line": 37
+      },
+      "start": {
+        "column": 5,
+        "line": 33
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace match guard v > 10 with true in pick\n@@ -26,17 +26,17 @@\n         i += 1;\n     }\n     i\n }\n \n /// Match arms and a guard.\n pub fn pick(a: Option<u32>) -> u32 {\n     match a {\n-        Some(v) if v > 10 => v,\n+        Some(v) if true /* ~ changed by cargo-mutants ~ */ => v,\n         Some(_) => 1,\n         None => 0,\n     }\n }\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "pick",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 38
+        },
+        "start": {
+          "column": 1,
+          "line": 31
+        }
+      }
+    },
+    "genre": "MatchArmGuard",
+    "name": "src/lib.rs:34:20: replace match guard v > 10 with true in pick",
+    "package": "r3a",
+    "replacement": "true",
+    "span": {
+      "end": {
+        "column": 26,
+        "line": 34
+      },
+      "start": {
+        "column": 20,
+        "line": 34
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace match guard v > 10 with false in pick\n@@ -26,17 +26,17 @@\n         i += 1;\n     }\n     i\n }\n \n /// Match arms and a guard.\n pub fn pick(a: Option<u32>) -> u32 {\n     match a {\n-        Some(v) if v > 10 => v,\n+        Some(v) if false /* ~ changed by cargo-mutants ~ */ => v,\n         Some(_) => 1,\n         None => 0,\n     }\n }\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "pick",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 38
+        },
+        "start": {
+          "column": 1,
+          "line": 31
+        }
+      }
+    },
+    "genre": "MatchArmGuard",
+    "name": "src/lib.rs:34:20: replace match guard v > 10 with false in pick",
+    "package": "r3a",
+    "replacement": "false",
+    "span": {
+      "end": {
+        "column": 26,
+        "line": 34
+      },
+      "start": {
+        "column": 20,
+        "line": 34
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace > with == in pick\n@@ -26,17 +26,17 @@\n         i += 1;\n     }\n     i\n }\n \n /// Match arms and a guard.\n pub fn pick(a: Option<u32>) -> u32 {\n     match a {\n-        Some(v) if v > 10 => v,\n+        Some(v) if v == /* ~ changed by cargo-mutants ~ */ 10 => v,\n         Some(_) => 1,\n         None => 0,\n     }\n }\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "pick",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 38
+        },
+        "start": {
+          "column": 1,
+          "line": 31
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:34:22: replace > with == in pick",
+    "package": "r3a",
+    "replacement": "==",
+    "span": {
+      "end": {
+        "column": 23,
+        "line": 34
+      },
+      "start": {
+        "column": 22,
+        "line": 34
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace > with < in pick\n@@ -26,17 +26,17 @@\n         i += 1;\n     }\n     i\n }\n \n /// Match arms and a guard.\n pub fn pick(a: Option<u32>) -> u32 {\n     match a {\n-        Some(v) if v > 10 => v,\n+        Some(v) if v < /* ~ changed by cargo-mutants ~ */ 10 => v,\n         Some(_) => 1,\n         None => 0,\n     }\n }\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "pick",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 38
+        },
+        "start": {
+          "column": 1,
+          "line": 31
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:34:22: replace > with < in pick",
+    "package": "r3a",
+    "replacement": "<",
+    "span": {
+      "end": {
+        "column": 23,
+        "line": 34
+      },
+      "start": {
+        "column": 22,
+        "line": 34
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace > with >= in pick\n@@ -26,17 +26,17 @@\n         i += 1;\n     }\n     i\n }\n \n /// Match arms and a guard.\n pub fn pick(a: Option<u32>) -> u32 {\n     match a {\n-        Some(v) if v > 10 => v,\n+        Some(v) if v >= /* ~ changed by cargo-mutants ~ */ 10 => v,\n         Some(_) => 1,\n         None => 0,\n     }\n }\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "pick",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 38
+        },
+        "start": {
+          "column": 1,
+          "line": 31
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:34:22: replace > with >= in pick",
+    "package": "r3a",
+    "replacement": ">=",
+    "span": {
+      "end": {
+        "column": 23,
+        "line": 34
+      },
+      "start": {
+        "column": 22,
+        "line": 34
+      }
+    }
+  }
+]

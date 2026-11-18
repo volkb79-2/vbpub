@@ -88,6 +88,7 @@ FROZEN = {
     "cli_extended.skills": ("_Frontmatter", "_Row", "_Action"),
     "cli_extended.surface": ("_ParserActionContext",),
     "cli_extended.review": ("ReviewCase", "ReviewCatalog", "SurfaceReport"),
+    "cli_extended.procio": ("ProcessEntry", "WatchdogReport", "StreamResult"),
 }
 EXPECTED = [(module, name) for module, names in FROZEN.items() for name in names]
 # Deliberately mutable runtime state holders (plain `@dataclass`).

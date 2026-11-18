@@ -2263,6 +2263,23 @@ lockfile, Go `go.mod`/`go.sum`, OCI JSON, and any configured strict Jinja2 outpu
 check` performs a fresh read-only comparison. None of these actions is coupled to build, release,
 gates, or scheduling.
 
+`cmru versions resolve` and `cmru versions init` edit `cmru.toml` as text. They change only the
+values and tables they own inside the `[versions]` region (the `resolved` tables, and the target
+tables `init` creates) and leave every other byte identical: comments above, between and below the
+version tables, blank-line runs, multi-line string values, key order and line endings. A new table
+is inserted after the last existing `[versions...]` block (at the end of the file when the file has
+none). When a target cannot be edited as text (an inline table, a dotted key, a multi-line value, a
+header written twice) the command refuses before writing, names the table and the exact edit to
+make by hand, and never falls back to rewriting the region; the edited text is parsed again and must
+equal the requested document before it replaces the file. `cmru.toml` is the only file these two
+commands write with this rule; cmru does not rewrite `package.json` to get past the manifest
+refusal: when one or more resolved targets contradict the committed manifest (typically
+`constraint = "*"` npm targets whose exact pin is older than the registry's eligible version)
+`resolve`, `resolve --dry-run` and `check` report every such target in one run (target, resolved
+version, manifest requirement and the exact `package.json` edit) and exit non-zero without writing
+a partial record. (Once the compatibility check passes, the npm lockfile step does update the
+`overrides` and the dependency fields of `package.json` for the resolved packages.)
+
 Timestamp evidence is recorded per source. PyPI uses upload time; npm uses registry version
 time; Go uses module proxy `.info` `Time`, which is VCS commit time rather than proxy publication
 time, and MUST emit a warning; OCI uses HTTP `Last-Modified` when present and may fall back to the
@@ -2335,6 +2352,27 @@ choice: every CMRU line that already starts `[INFO]`, `[WARN]`, or `[ERROR]` is 
 `HH:MM:SS [TYPE] …`, including transaction-child output. Interactive terminals colour those
 three severity tokens green/yellow/red; redirected stdout/stderr is deliberately ANSI-free so
 the stable logs and machine consumers retain plain text.
+
+**S3.4a — Step process lifetime (KI-178).** A step ends when its own process exits, not when
+every holder of its output pipe closes it. After the child has exited the runner drains the
+output for at most `OUTPUT_DRAIN_SECONDS` (2 s; a module constant, not a configuration key),
+then stops reading and closes the pipe, keeps the child's own exit code, and logs one `[WARN]`
+(also written to the step log) naming the pids that still hold the pipe, found through
+`/proc/<pid>/fd`; when that scan fails the WARN omits the pids. The holders are named, never
+killed. Each command starts in its own session and process group (`start_new_session`). While a
+command runs, `run_command` turns SIGTERM and SIGHUP delivered to cmru into `SystemExit` (main
+thread only; other threads install nothing; the previous handlers are restored afterwards; a
+signal that was ignored when cmru started, such as a SIGHUP ignored by `nohup`, stays ignored for
+cmru and, because the disposition survives exec, for the step), and
+Ctrl-C raises `KeyboardInterrupt`; each of them sends SIGTERM to the whole group, SIGKILL after
+`GROUP_TERM_GRACE_SECONDS` (5 s) if any member survives, and reaps it. SIGKILL of cmru itself
+cannot be caught and still leaves the step running as an orphan in its own session. The output
+wait uses poll/epoll, so it works for pipe descriptors numbered 1024 and above. Output lines,
+their order, decoding (locale encoding, universal newlines) and exit codes are unchanged for a
+child that closes its pipe. A command in its own session has no controlling terminal: plain
+reads on the inherited standard input still work, but anything that opens `/dev/tty` (sudo, ssh
+or git prompts) fails with `ENXIO`; steps are non-interactive. A no-progress watchdog and a
+helper shared with other tools remain open under KI-178.
 
 **S3.5 — Transaction evidence lifecycle.** Release failure MUST retain its worktree, logs,
 artifacts, and generated gate evidence for inspection/resume. Successful release MUST remove
@@ -3012,7 +3050,7 @@ covered by the existing subtree mount.
 | Key | Type | Requirement and meaning |
 |---|---|---|
 | `project_root` | path | Required. Relative to the directory containing the config. It is the base for copied source paths and for the default wheel project root. |
-| `dist_dir` | path | Optional; defaults to `dist`. Relative to `project_root`. A legacy no-variant build removes this whole tree before assembly. A variant build removes only `bundle_dir`, `client_dir` and that variant's archive, preserving sibling variant archives. |
+| `dist_dir` | path | Optional; defaults to `dist`. Relative to `project_root`. It MUST resolve (after symlinks) to a strict descendant of `project_root` (S9.4). A legacy no-variant build removes this whole tree before assembly. A variant build removes only `bundle_dir`, `client_dir` and that variant's archive, preserving sibling variant archives. |
 | `bundle_dir` | path | Optional; defaults to `bundle`. Relative to `dist_dir`; this is the assembled archive root. It MUST resolve to a strict descendant of `dist_dir` and MUST NOT equal, contain, or be contained by `client_dir`. |
 | `client_dir` | path | Optional; defaults to `client`. Relative to `dist_dir`; enabled wheel builds place client wheels here. It MUST resolve to a strict descendant of `dist_dir` and MUST NOT equal, contain, or be contained by `bundle_dir`. |
 | `[wheel].enabled` | boolean | Optional; defaults to `false`. Enables `python -m pip wheel`. |
@@ -3092,6 +3130,13 @@ configuration boundary (KI-33).
   rules apply to regular files, so a directory named `certs.pem/` is traversed.
 - The name-class exclusions and `.pyc`/`__pycache__` remain non-keepable. A suffix-class file
   left by stage without a keep entry fails closed before the manifest or archive is written.
+- `dist_dir` MUST resolve to a strict descendant of `project_root` (KI-175). A value that equals
+  `project_root`, resolves to its parent or any other outside directory, or reaches outside
+  through a symlink is refused during configuration parsing with an error that names `dist_dir`,
+  the resolved path and `project_root`. The legacy no-variant build removes `dist_dir` whole, so
+  every recursive removal (`dist_dir`, `bundle_dir`, `client_dir`) rechecks this containment, and
+  that the paths are still canonical, on freshly resolved paths immediately before it runs; a path
+  that changed after parsing is refused before anything is deleted.
 - `bundle_dir` and `client_dir` MUST resolve to distinct, non-overlapping strict descendants of
   `dist_dir`. Equal paths, nested staging paths, `dist_dir` itself, its parent, and paths outside it
   are refused during configuration parsing before any output file is changed. Variant pre-build

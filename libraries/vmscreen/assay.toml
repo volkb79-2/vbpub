@@ -1,0 +1,60 @@
+# vmscreen's judged lane, consumed through run-gate.toml (lanes r0-r1 and r2). Modelled on libraries/iobench/assay.toml.
+schema_version = 2
+
+[lanes.vmscreen]
+scope = "S1"
+rigor = ["R0", "R1", "R2"]
+enforcement = "gate"
+# VMSCREEN_SKIP_QEMU_SMOKE=1: the real-QEMU smoke test is opted out (tester-unified is not where QEMU runs, VMS-BL-04).
+argv = [
+  "/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q",
+  "--cov=vmscreen", "--cov-branch", "--cov-report=json:coverage.json",
+]
+env = { PYTHONPATH = "src:../cli-extended/src", PYTHONDONTWRITEBYTECODE = "1", VMSCREEN_SKIP_QEMU_SMOKE = "1" }
+env_passthrough = ["PATH"]
+budget = "120m"
+allow_argv_append = false
+
+[lanes.vmscreen.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.vmscreen.judge]
+language = "python"
+source_roots = ["src/vmscreen"]
+mode = "whole_target"
+# Every executable shipped module. The docstring-only __init__.py has no executable lines for whole-target coverage;
+# __main__.py (a two-line `raise SystemExit(main())` shim) is not judged: no test runs `python -m vmscreen` in-process.
+targets = [
+  "src/vmscreen/capture.py",
+  "src/vmscreen/cli.py",
+  "src/vmscreen/errors.py",
+  "src/vmscreen/keys.py",
+  "src/vmscreen/pixels.py",
+  "src/vmscreen/qmp.py",
+  "src/vmscreen/serialtext.py",
+  "src/vmscreen/sources.py",
+  "src/vmscreen/textmode.py",
+  "src/vmscreen/waiter.py",
+]
+# Measured 2026-11-18 with the lane's own pytest command (165 passed, 1 skipped = the opted-out QEMU smoke test): 97 %
+# line+branch over the targets above. The floor is that value rounded down by two points; closing the remaining
+# capture.py / pixels.py / qmp.py gaps and raising it toward 100 is a coverage task, not part of registering the lane.
+fail_under = 95.0
+allow_excluded = false
+require_branch = true
+
+[lanes.vmscreen.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.vmscreen.judge.mutation]
+jobs_max = 3
+max_mutants = 4000
+operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
+budget_per_candidate = "auto"
+liveness = true

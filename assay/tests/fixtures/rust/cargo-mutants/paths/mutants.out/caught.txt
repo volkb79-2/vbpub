@@ -1,0 +1,9 @@
+src/with space.rs:2:5: replace inc -> i32 with 0
+src/with space.rs:2:5: replace inc -> i32 with 1
+src/with space.rs:2:5: replace inc -> i32 with -1
+src/with space.rs:2:7: replace + with - in inc
+src/with space.rs:2:7: replace + with * in inc
+src/módulo.rs:2:5: replace dbl -> i32 with 0
+src/módulo.rs:2:5: replace dbl -> i32 with 1
+src/módulo.rs:2:5: replace dbl -> i32 with -1
+src/módulo.rs:2:7: replace * with / in dbl

@@ -980,6 +980,16 @@ and [S15.22](SPEC.md#s1522--memory_recursiveprot-check-and-downward-slice-enumer
 for the host-wide `memory_recursiveprot` mount flag every declared floor
 depends on.
 
+### `[<root>.linked_worktree]` — git common-dir mount for a linked worktree [S16.9a, CIU-215]
+
+| Key | Type | Meaning |
+|---|---|---|
+| `git_common_dir` | `"ro"` or `"rw"` (required, no default) | Mount the checkout's git common dir into the selected services of a LINKED worktree. `ro` is the recommended value; `rw` keeps in-runner commits. |
+| `services` | list of strings (optional) | Services that get the mount; default every service of the stack. An unknown name refuses. |
+
+Absent table: nothing is written anywhere. A primary checkout renders
+byte-identically with or without it. See S16.9a for the layout.
+
 ### `[<root>.hooks]` — hook points [S9.1]
 
 ```toml
