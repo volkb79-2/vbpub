@@ -16,22 +16,48 @@ artifacts = ["coverage.json"]
 [lanes.r0-r1.resources]
 memory = "512m"
 
+# R2 (whole-source mutation, 1561 candidates; measured median 10.9 s, mean 15 s
+# per candidate) as a NATIVE Assay lane (CLI-EXT-41). A `kind = "command"` lane
+# that called `assay run` itself made run-gate refuse `--shard`, `--merge-shards`,
+# `--carry-over` and `--only-candidates` (RG-265: they apply only to
+# `kind = "assay"` lanes), so the campaign could only run as one container.
+# Sharded campaign (an ephemeral, unshared lane, so N shards are N containers):
+#   run-gate r2 --shard 0/3 & run-gate r2 --shard 1/3 & run-gate r2 --shard 2/3 & wait
+#   run-gate r2 --merge-shards 3
+# Run-gate writes the verdict to `.assay/verdict-cli-extended.json` (the
+# artifact name is `.assay/verdict-<assay_lane>.json`, shards add `.r2.shardKofN`).
 [lanes.r2]
-kind = "command"
-resource_observer = "cgprofile"
+kind = "assay"
+assay_lane = "cli-extended"         # -> assay.toml [lanes.cli-extended]
 environment = "tester-unified"
-argv = [
-  "bash", "-c",
-  "export PYTHONPATH={worktree}/assay/src:{worktree}/libraries/cowtree/src && cd {worktree}/libraries/cli-extended && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run cli-extended --resume --state-dir .assay/mutation-state-r2 --progress .assay/progress-r2.jsonl --verdict-json .assay/verdict-r2.json",
-]
-clean_tree = false
-budget = "720m"
-artifacts = [".assay/verdict-r2.json", ".assay/progress-r2.jsonl"]
+resource_observer = "cgprofile"
+clean_tree = true
+# Outer bound of the lane container for ONE unsharded run: the assay.toml
+# [lanes.cli-extended] budget (720m, the binding deadline) + 10m for container
+# start and the editable assay install. This is the outer >= inner + 5m rule
+# cmru's gate tests enforce for cmru (cmru/tests/test_gate_budgets.py);
+# cli-extended adopts it and enforces it with tests/test_r2_lane_contract.py.
+# A shard runs a fraction of the candidates inside the same ceiling.
+budget = "730m"
+# B157 (assay) is closed: overlapping candidate windows each attribute a limit
+# event, so concurrent workers are legal. assay.toml jobs_max = 3 is the ceiling.
+# run-gate's `auto` (select_r2_jobs) takes min(jobs_max, CPUs, memory term) where
+# the memory term is 75% (`ram_target`) of the lane memory cap / candidate_ram =
+# 1152m / 300m = 3 here, and it drops to ONE worker unless the capacity probe
+# confirms a cheap-clone (CoW) workspace. So: up to three workers per shard
+# container when the cheap-clone probe passes, otherwise one.
+jobs = "auto"
 
 [lanes.r2.resources]
 pids = 8192
-# B157 keeps one native candidate active so cgroup event windows do not overlap.
+# Per CONTAINER, i.e. per shard (each `--shard K/N` is its own container). The
+# measured candidate RSS of this suite is p50 82 MiB, p99 230 MiB, max 256 MiB
+# (docs/design/RESOURCE-PROFILES.md), so 3 workers at the 300m estimate fit in
+# 1536m with room for the pytest parent; adding shards adds containers, never
+# workers per container.
 memory = "1536m"
+candidate_ram = "300m"
+cpus = "3"
 
 [lanes.r3]
 kind = "command"
@@ -54,4 +80,4 @@ argv = [
   "cd {worktree}/libraries/cli-extended && run-gate --worktree {worktree} r0-r1 && run-gate --worktree {worktree} r2 && run-gate --worktree {worktree} r3",
 ]
 clean_tree = false
-budget = "750m"
+budget = "760m"

@@ -687,4 +687,166 @@ the listing. The scan now skips only the vanished descriptor. Regression test:
 `test_pipe_holder_scan_survives_a_descriptor_closing_mid_scan`. Report:
 `artifacts/release-program-20261027/reports/procio-flake-REPORT.md`.
 
+**Finding (2026-11-18, fixed, tests only; package P11):** the R2 of 0.7.0 ended after 4 minutes
+with `ERROR/EXEC_FAILED`, `leaked-process-tree: ... comm=sleep` (24 entries). All were zombies:
+assay makes the pytest leader a child subreaper, so when a `procio` test killed a shell group,
+the `sleep` the scripted shell had running was orphaned onto pytest and nobody `wait()`ed for it
+(a plain run hides it: with no subreaper the zombies go to init). A subreaper wrapper measured 25
+zombie `sleep` children for `tests/test_procio.py` locally (22 in a capped container) and 0 for
+every other file. No library call
+leaked: `src` is unchanged since `cli-extended-v0.7.0`. Fix: `tests/conftest.py` now has an
+autouse guard that fails any test leaving a new direct child of pytest (zombie or alive; it
+reaps/kills through a pidfd that pins the process identity) and sets the subreaper flag so a
+plain run behaves like assay's; the guard named three to four tests depending on timing (one of
+them is timing-dependent), which now use the `reap_orphans` fixture of `tests/test_procio.py`.
+The same work made the short-window `procio` tests load-independent (a child must outlast its
+own start-up: `START_LIMIT`). Meta-test: `tests/test_no_leftover_children.py`. After: the wrapper
+reports `leaked=0` for the whole suite and for `test_procio.py`.
+
 **Provenance:** `ciu/docs/DESIGN-NOTE-2026-11-CIU-215-CIU-220.md`, Decision 2.
+
+## CLI-EXT-35 — shared line-stream engine with per-line severity rendering
+
+**Status:** OPEN. **Type:** Feature. **Area:** Output and terminal rendering.
+
+**Observed.** `CliOutput` formats diagnostics while CMRU keeps a separate
+`SeverityStream`; neither is the shared line-stream engine specified for
+incremental terminal output.
+
+**Cause/Need.** Severity recognition must happen at each line boundary,
+including every line in a multi-line write, while output remains equivalent
+when the same input arrives in different write chunks.
+
+**Fix.** Add the stdlib line-stream engine proposed in
+[`DESIGN-LINE-STREAM-RENDERER.md`](docs/DESIGN-LINE-STREAM-RENDERER.md), with
+line-oriented severity formatting and streaming `write()`/`flush()` behavior.
+Keep colour decisions outside the engine and pass them in from `CliOutput`.
+
+**Close when.** Exact plain and colour goldens show per-line severity for
+single- and multi-line writes, and a deterministic chunking-equivalence test
+proves that arbitrary write partitions of the same complete input render
+identically.
+
+## CLI-EXT-36 — highlight paths, URLs, hashes, and branch names in line output
+
+**Status:** OPEN. **Type:** Feature. **Area:** Output and terminal rendering.
+
+**Observed.** The shared output API has no inline highlighters for file paths,
+URLs, commit-like hashes, or branch names.
+
+**Cause/Need.** These common references should be easier to distinguish in
+terminal output; URL hyperlinks must use OSC 8 only on a colour-capable TTY.
+
+**Fix.** Add the four highlighters to the line-stream engine from CLI-EXT-35.
+Use the `CliOutput`-resolved colour setting for styling and the destination's
+TTY fact for OSC 8. Keep the exact grammars and styles subject to the open
+questions in the design note.
+
+**Close when.** Golden tests identify positive and negative examples for each
+reference type, cover punctuation and overlapping candidates, show plain
+output when styling is off, and prove untrusted OSC input cannot create a
+hyperlink.
+
+## CLI-EXT-37 — render the agreed inline Markdown subset on a TTY
+
+**Status:** OPEN. **Type:** Feature. **Area:** Output and terminal rendering.
+
+**Observed.** Human text currently has no shared inline rendering for
+`` `code` ``, `**bold**`, or link syntax using a `[text]` label followed by a
+`(url)` destination.
+
+**Cause/Need.** Consumers should be able to use this small subset without
+adding separate Markdown renderers or changing redirected output.
+
+**Fix.** Add only the three inline constructs to the line-stream engine. Render
+them on a colour-enabled TTY; preserve the original Markdown source when the
+stream is redirected, colour is off, or JSON mode is active.
+
+**Close when.** Exact TTY goldens cover all three forms and malformed input;
+redirected, colour-off, and forced-colour JSON goldens retain the original
+Markdown source without generated terminal escapes.
+
+## CLI-EXT-38 — expose the line-stream renderer through `CliOutput`
+
+**Status:** OPEN. **Type:** Feature. **Area:** Output API and terminal policy.
+
+**Observed.** `CliOutput.color_enabled(stream)` is already public, but there is
+no `CliOutput` entry point for the shared line-stream renderer.
+
+**Cause/Need.** Consumers need the same output engine without reimplementing
+colour policy, destination selection, or the rule that JSON remains plain.
+
+**Fix.** Add the factory proposed in
+[`DESIGN-LINE-STREAM-RENDERER.md`](docs/DESIGN-LINE-STREAM-RENDERER.md), passing
+the destination stream, the result of `color_enabled(stream)`, and JSON/plain
+mode to the renderer. Do not duplicate TTY or environment policy inside it.
+
+**Close when.** API tests prove the requested destination determines the
+shared colour result, `NO_COLOR` and explicit colour switches retain their
+existing meaning, Markdown follows its TTY rule, and JSON has no ANSI or OSC
+even when colour is forced.
+
+## CLI-EXT-39 — make CMRU's output layer a thin adapter over the shared engine
+
+**Status:** OPEN. **Type:** Feature. **Area:** CMRU adoption and output.
+
+**Observed.** `cmru/src/cmru/output.py` owns `SeverityStream`, with its own
+line-start parsing, severity styling, and TTY colour selection.
+
+**Cause/Need.** The output layer must share the `cli-extended` implementation
+instead of maintaining a second rendering engine.
+
+**Fix.** After the shared API is available, replace CMRU's local renderer with
+a thin adapter to it. Preserve the CMRU output contract and settle the
+short-timestamp behavior recorded in the design note before removing that
+behavior.
+
+**Close when.** CMRU output tests prove it delegates line rendering to the
+shared engine, preserve plain and terminal behavior, and the CMRU adapter
+contains no independent severity parser or ANSI renderer.
+
+## CLI-EXT-40 — migrate CMRU output call sites incrementally
+
+**Status:** OPEN. **Type:** Migration. **Area:** CMRU adoption and output.
+
+**Observed.** CMRU has many output call sites, so converting them in one
+rewrite would broaden review and regression risk.
+
+**Cause/Need.** The operator selected incremental adoption: new code and call
+sites already being changed should use the renderer while untouched call
+sites remain as they are.
+
+**Fix.** Migrate only call sites in small, scoped packages; use the shared
+renderer for new output and output that a package intentionally changes. Keep
+the thin compatibility adapter until its remaining call sites have moved.
+
+**Close when.** Each migration package demonstrates that changed call sites
+use the shared API and that the untouched call sites are unchanged; the final
+package removes the compatibility adapter only after no caller depends on it.
+
+**Design:** [line-stream renderer proposal](docs/DESIGN-LINE-STREAM-RENDERER.md).
+
+## CLI-EXT-41 — the `r2` run-gate lane could not be sharded
+
+**Status:** FIXED 2026-11-18. Size S.
+**Type:** Tooling
+**Area:** Gate configuration
+
+`run-gate.toml` lane `r2` was a `kind = "command"` lane that called `assay run`
+itself, so run-gate refused `--shard K/N`, `--merge-shards N`, `--carry-over` and
+`--only-candidates` (RG-265 applies them only to `kind = "assay"` lanes) and the
+1,561-candidate campaign (median 10.9 s, mean 15 s per candidate) could only run
+as one container for the whole window. The lane is now `kind = "assay"` with
+`assay_lane = "cli-extended"`, `jobs = "auto"` (ceiling `jobs_max = 3`; B157 is
+closed), `candidate_ram = "300m"` against the measured 256 MiB RSS maximum, and
+`resource_observer = "cgprofile"`. The sharded run is documented in the README
+("Run the R2 mutation campaign sharded"). Guard:
+`tests/test_r2_lane_contract.py`.
+
+**Open (first run):** the owner runs the baseline preflight and the first sharded
+campaign; the worker count `auto` picks and the per-shard wall time are not yet
+measured on the native lane.
+
+**Provenance:** release program package P12 (filed as CLI-EXT-35 on the branch;
+renumbered to CLI-EXT-41 at the merge because the line-stream renderer packages
+took CLI-EXT-35 to CLI-EXT-40 first).
