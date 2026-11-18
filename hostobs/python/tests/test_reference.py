@@ -49,7 +49,7 @@ MEM_CURRENT_FACTS = {
 class WireFixtures(unittest.TestCase):
     def test_every_fixture_round_trips_in_the_reference_codec(self):
         cases = hostobs_wire_ref.load_cases(FIXTURES)
-        self.assertEqual(len(cases), 26, "the fixture case list is part of the contract")
+        self.assertEqual(len(cases), 29, "the fixture case list is part of the contract")
         for spec_path, spec, data in cases:
             with self.subTest(case=spec_path.stem):
                 hostobs_wire_ref.check_case(spec, data)
@@ -178,6 +178,99 @@ class WireFixtures(unittest.TestCase):
             with self.subTest(declared=declared), self.assertRaises(hostobs_wire_ref.WireError) as caught:
                 hostobs_wire_ref.decode_frame(data)
             self.assertEqual(caught.exception.as_dict()["kind"], "truncated")
+
+    def test_the_time_section_is_fifteen_bytes_per_bucket_padded_to_eight(self):
+        # HOB-48 (length half): i64 + u32 + u16 + u8 = 15 bytes a bucket. A factor of 14 gives
+        # the same padded length up to three buckets, so every count from 0 to 9 is pinned by
+        # its exact length, and the five-bucket fixture pins it on committed bytes.
+        wire = hostobs_wire_ref
+        expected = [0, 16, 32, 48, 64, 80, 96, 112, 120, 136]
+        aggs = list(wire.AGGREGATIONS)
+        for n, want in enumerate(expected):
+            buckets = [
+                {
+                    "real_ns": index * 1_000_000_007 - 1,
+                    "covered_ms": index * 100_003,
+                    "samples": index * 7_001,
+                    "agg": aggs[index % len(aggs)],
+                }
+                for index in range(n)
+            ]
+            body = wire.encode_time(buckets)
+            with self.subTest(buckets=n):
+                self.assertEqual(len(body), want)
+                self.assertEqual(wire.time_body_len(n), want)
+                self.assertEqual(wire.decode_time(body, n), buckets)
+        self.assertEqual(wire.TIME_BUCKET_BYTES, 15)
+        # The decoder refuses the length the old factor demanded for four buckets.
+        with self.assertRaises(wire.WireError) as caught:
+            wire.decode_time(wire.encode_time([{"real_ns": 0, "covered_ms": 0, "samples": 0, "agg": "raw"}] * 4)[:56], 4)
+        self.assertEqual(
+            caught.exception.as_dict(),
+            {"kind": "section-length", "section": "time", "declared": 56, "expected": 64},
+        )
+        spec = json.loads((FIXTURES / "history-five-buckets.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(spec["frame"]["time"]), 5)
+        decoded = wire.decode_frame((FIXTURES / "history-five-buckets.bin").read_bytes())
+        self.assertEqual(len(decoded["time"]), 5)
+
+    def test_the_frame_header_bounds_the_declared_length_at_both_ends(self):
+        # HOB-8: the Rust FrameHeader::parse refuses a declared length outside
+        # FRAME_HEADER_LEN..=MAX_FRAME_BYTES, and so does the reference decoder, with the
+        # same refusal, before it compares the length with the buffer.
+        wire = hostobs_wire_ref
+
+        def header(length: int, *, frame_type: int | None = None, reserved: int = 0) -> bytes:
+            return struct.pack(
+                "<IBBHI",
+                length,
+                wire.FRAME_TYPES["block"] if frame_type is None else frame_type,
+                wire.FRAME_SECTIONED,
+                reserved,
+                39,
+            )
+
+        for length in (wire.MAX_FRAME_BYTES + 1, 0xFFFFFFFF):
+            with self.subTest(length=length), self.assertRaises(wire.WireError) as caught:
+                wire.decode_frame(header(length))
+            self.assertEqual(
+                caught.exception.as_dict(),
+                {"kind": "oversized-frame", "len": length, "max": wire.MAX_FRAME_BYTES},
+            )
+        for length in (0, 4, wire.FRAME_HEADER_LEN - 1):
+            with self.subTest(length=length), self.assertRaises(wire.WireError) as caught:
+                wire.decode_frame(header(length))
+            self.assertEqual(
+                caught.exception.as_dict(),
+                {
+                    "kind": "truncated",
+                    "context": "frame length shorter than the header",
+                    "need": wire.FRAME_HEADER_LEN,
+                    "have": length,
+                },
+            )
+        # Exactly the lower bound is not a length refusal: the 12 bytes are a block with
+        # no section directory, which is refused for a different reason.
+        with self.assertRaises(wire.WireError) as caught:
+            wire.decode_frame(header(wire.FRAME_HEADER_LEN))
+        self.assertEqual(
+            caught.exception.as_dict(),
+            {"kind": "truncated", "context": "block directory", "need": wire.FRAME_HEADER_LEN + 4, "have": wire.FRAME_HEADER_LEN},
+        )
+        # Exactly the upper bound passes the length check and only then meets the buffer.
+        with self.assertRaises(wire.WireError) as caught:
+            wire.decode_frame(header(wire.MAX_FRAME_BYTES))
+        self.assertEqual(
+            caught.exception.as_dict(),
+            {"kind": "truncated", "context": "frame", "need": wire.MAX_FRAME_BYTES, "have": wire.FRAME_HEADER_LEN},
+        )
+        # The fixed fields are judged before the length, the order the Rust parse uses.
+        with self.assertRaises(wire.WireError) as caught:
+            wire.decode_frame(header(wire.MAX_FRAME_BYTES + 1, reserved=1))
+        self.assertEqual(caught.exception.as_dict(), {"kind": "non-zero-reserved", "value": 1})
+        with self.assertRaises(wire.WireError) as caught:
+            wire.decode_frame(header(0, frame_type=9))
+        self.assertEqual(caught.exception.as_dict(), {"kind": "unknown-frame-type", "code": 9})
 
     def test_the_encoder_refuses_a_block_shape_under_another_frame_type(self):
         spec = json.loads((FIXTURES / "live-block.json").read_text(encoding="utf-8"))
@@ -396,6 +489,160 @@ class SegmentFixtures(unittest.TestCase):
             if spec["header"]["kind"] == "events"
         )
         self.assertEqual(evt_spec["header"]["payload"], "evt")
+
+
+class SegmentNames(unittest.TestCase):
+    """HOB-42/HOB-43: the file name must be backed by the bytes, and a quarantine name keeps its key.
+
+    No committed fixture is possible for these rules: the file name is not part of the file's
+    bytes, so ``make_segment_fixtures.py`` cannot express them. The bytes are built here, with
+    the reference encoder, and the same cases are pinned on the Rust side in
+    ``crates/store/src/tier.rs`` (the tier tests) and ``format.rs``.
+    """
+
+    @staticmethod
+    def _case(name: str) -> tuple[dict, bytes]:
+        for path, spec, data in hostobs_segment_ref.load_cases(SEGMENTS):
+            if path.stem == name:
+                return spec, data
+        raise AssertionError(f"fixture {name} is missing")
+
+    @staticmethod
+    def _name_of(spec: dict, *, sealed: bool, seq: int | None = None, start_s: int | None = None) -> str:
+        header = spec["header"]
+        seq = header["seq"] if seq is None else seq
+        start_s = header["start_real_ns"] // 1_000_000_000 if start_s is None else start_s
+        return f"hot-{start_s}-{seq}.seg" + ("" if sealed else ".open")
+
+    def test_a_name_parses_from_the_right_and_foreign_names_are_refused(self):
+        ref = hostobs_segment_ref
+        self.assertEqual(
+            ref.parse_segment_name("focus-web-1700000000-12.seg"),
+            {"tier": "focus-web", "start_s": 1700000000, "seq": 12, "open": False},
+        )
+        self.assertEqual(ref.parse_segment_name("hot-0-1.seg.open")["open"], True)
+        for foreign in (
+            "notes.txt",
+            "hot-1.seg",
+            "hot--1-2.seg",
+            "hot-1-2.seg.tmp",
+            "-1-2.seg",
+            "hot-1-x.seg",
+            "hot-1-2.seg.open.open",
+            "hot-1-+2.seg",
+            "hot-18446744073709551616-2.seg",
+        ):
+            with self.subTest(name=foreign), self.assertRaises(ref.SegmentError) as caught:
+                ref.parse_segment_name(foreign)
+            self.assertEqual(caught.exception.as_dict(), {"error": "segment-name", "name": foreign})
+
+    def test_a_quarantine_name_keeps_the_key_of_the_segment_it_was(self):
+        ref = hostobs_segment_ref
+        self.assertEqual(
+            ref.parse_quarantine_name("hot-60-1.seg.corrupt"),
+            {"tier": "hot", "start_s": 60, "seq": 1, "open": False},
+        )
+        self.assertEqual(ref.parse_quarantine_name("hot-60-1.seg.open.corrupt")["open"], True)
+        for foreign in (
+            "hot-60-1.seg",
+            "hot-60-1.seg.open",
+            "hot-x-1.seg.corrupt",
+            "hot-60-1.corrupt",
+            "hot-60-1.seg.corrupt.corrupt",
+            ".corrupt",
+        ):
+            with self.subTest(name=foreign), self.assertRaises(ref.SegmentError) as caught:
+                ref.parse_quarantine_name(foreign)
+            self.assertEqual(caught.exception.refusal, "segment-name")
+
+    def test_a_sealed_and_an_open_segment_agree_with_their_names(self):
+        ref = hostobs_segment_ref
+        for case, sealed in (("sealed-history", True), ("sealed-empty", True), ("open-history", False)):
+            spec, data = self._case(case)
+            with self.subTest(case=case):
+                ref.check_segment_name(self._name_of(spec, sealed=sealed), ref.decode_segment(data))
+
+    def test_a_sealed_name_without_a_verified_footer_is_refused(self):
+        ref = hostobs_segment_ref
+        spec, data = self._case("sealed-history")
+        name = self._name_of(spec, sealed=True)
+        footerless = data[: -ref.FOOTER_LEN]
+        cases = {
+            "the footer cut off": footerless,
+            "a torn sealed file": data[: -ref.FOOTER_LEN - 8],
+            "an open segment's bytes under a sealed name": self._case("open-history")[1],
+        }
+        for label, content in cases.items():
+            decoded = ref.decode_segment(content)
+            # The open-history bytes carry another identity; rename so only the footer rule fails.
+            file_name = name if content is not cases["an open segment's bytes under a sealed name"] else (
+                self._name_of(self._case("open-history")[0], sealed=True)
+            )
+            with self.subTest(case=label), self.assertRaises(ref.SegmentError) as caught:
+                ref.check_segment_name(file_name, decoded)
+            self.assertEqual(caught.exception.refusal, "sealed-without-footer")
+            self.assertEqual(caught.exception.fields, {"name": file_name})
+        # The same footerless bytes under an *open* name are an ordinary open segment.
+        ref.check_segment_name(name + ".open", ref.decode_segment(footerless))
+
+    def test_an_open_name_that_carries_a_footer_is_refused(self):
+        # A closed file under a `.seg.open` name cannot be reopened for appending.
+        ref = hostobs_segment_ref
+        spec, data = self._case("sealed-history")
+        name = self._name_of(spec, sealed=False)
+        with self.assertRaises(ref.SegmentError) as caught:
+            ref.check_segment_name(name, ref.decode_segment(data))
+        self.assertEqual(caught.exception.as_dict(), {"error": "open-with-footer", "name": name})
+        # The same bytes under the sealed name, and the footerless bytes under the open name
+        # (the legitimate stale twin), are both fine.
+        ref.check_segment_name(self._name_of(spec, sealed=True), ref.decode_segment(data))
+        ref.check_segment_name(name, ref.decode_segment(data[: -ref.FOOTER_LEN]))
+
+    def test_a_header_that_disagrees_with_its_name_is_refused_for_both_names(self):
+        ref = hostobs_segment_ref
+        sealed_spec, sealed_data = self._case("sealed-history")
+        open_spec, open_data = self._case("open-history")
+        header = sealed_spec["header"]
+        start_s = header["start_real_ns"] // 1_000_000_000
+        sealed = ref.decode_segment(sealed_data)
+        opened = ref.decode_segment(open_data)
+        with self.assertRaises(ref.SegmentError) as caught:
+            ref.check_segment_name(f"hot-{start_s}-{header['seq'] + 3}.seg", sealed)
+        self.assertEqual(
+            caught.exception.as_dict(),
+            {"error": "segment-identity", "field": "seq", "name": header["seq"] + 3, "header": header["seq"]},
+        )
+        with self.assertRaises(ref.SegmentError) as caught:
+            ref.check_segment_name(f"hot-{start_s + 60}-{header['seq']}.seg", sealed)
+        self.assertEqual(
+            caught.exception.as_dict(),
+            {
+                "error": "segment-identity",
+                "field": "start_real_ns",
+                "name": (start_s + 60) * 1_000_000_000,
+                "header": header["start_real_ns"],
+            },
+        )
+        with self.assertRaises(ref.SegmentError) as caught:
+            ref.check_segment_name(f"hot-{start_s}-{open_spec['header']['seq'] + 6}.seg.open", opened)
+        self.assertEqual(caught.exception.refusal, "segment-identity")
+
+    def test_the_identity_rule_comes_before_the_footer_rule(self):
+        ref = hostobs_segment_ref
+        spec, data = self._case("sealed-history")
+        footerless = ref.decode_segment(data[: -ref.FOOTER_LEN])
+        wrong_seq = self._name_of(spec, sealed=True, seq=spec["header"]["seq"] + 1)
+        with self.assertRaises(ref.SegmentError) as caught:
+            ref.check_segment_name(wrong_seq, footerless)
+        self.assertEqual(caught.exception.refusal, "segment-identity")
+
+    def test_a_start_second_past_the_i64_range_saturates_like_the_rust_name(self):
+        ref = hostobs_segment_ref
+        spec, data = self._case("open-history")
+        decoded = ref.decode_segment(data)
+        decoded["header"] = {**decoded["header"], "start_real_ns": (1 << 63) - 1}
+        name = f"hot-{(1 << 64) - 1}-{decoded['header']['seq']}.seg.open"
+        ref.check_segment_name(name, decoded)
 
 
 if __name__ == "__main__":

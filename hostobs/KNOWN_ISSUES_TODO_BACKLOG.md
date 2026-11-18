@@ -20,7 +20,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-5 | Section version 1 has no history min/max/mean columns; `TIME` carries one value per bucket plus the aggregation code | Minor | OPEN (M2 work) |
 | HOB-6 | `DICT` frame type is defined but consumed nowhere: the dictionary travels inside the block frame | Minor | OPEN (deliberate) |
 | HOB-7 | `IncarnationRegistry` grows without bound and `end_round` is O(all ids ever minted) | Major | OPEN (SP-3 bound) |
-| HOB-8 | `FrameHeader::parse` does not bound its declared length; only `decode_block` does | Major | OPEN (next package's streaming reader) |
+| HOB-8 | `FrameHeader::parse` does not bound its declared length; only `decode_block` does | Major | FIXED (P0 bug fold-in) |
 | HOB-9 | `derive_rate` carries no boot/epoch/incarnation context, so "no rate across a boundary" is a caller contract only | Major | OPEN (store package) |
 | HOB-10 | The metric code tables (`unit`, `scope`, `source`, `aggregation`, kind mask) are duplicated in `model` and `proto` and only the quality table is fixture-bound | Major | OPEN |
 | HOB-11 | SP-4's sampler arm is a reproduction with synthetic delta magnitudes, and the example never runs in a lane, so its numbers can drift unnoticed | Minor | OPEN |
@@ -54,8 +54,8 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-39 | A range answer is the stored payload bytes (a whole `proto` BLOCK) plus the record's time and incarnations, not decoded `model` values with quality codes: the join needs `proto`/`model`, which `HOB-27` forbids | Major | OPEN (needs the lanes on the registry-set-identity image, as `HOB-27`) |
 | HOB-40 | No focus tier is configured by `plan_v4`; the tier machinery accepts one, but the plan does not yet say what a focus tier keeps | Minor | OPEN (plan decision) |
 | HOB-41 | No golden fixture has a non-zero record pad, so the padding rule is pinned by unit tests on each side, not by a cross-language file | Minor | OPEN |
-| HOB-42 | A `.seg` name is trusted as sealed without a footer, and the header's `seq`/`start_real_ns` are never compared with the name | Minor | OPEN |
-| HOB-43 | Quarantined `.corrupt` files (corrupt, oversized) are kept for an operator but are never counted in `bytes`, never evicted and never bounded in number, so repeated damage can fill the directory beyond `cap_bytes` | Major | OPEN |
+| HOB-42 | A `.seg` name is trusted as sealed without a footer, and the header's `seq`/`start_real_ns` are never compared with the name | Minor | FIXED (P0 bug fold-in) |
+| HOB-43 | Quarantined `.corrupt` files (corrupt, oversized) are kept for an operator but are never counted in `bytes`, never evicted and never bounded in number, so repeated damage can fill the directory beyond `cap_bytes` | Major | FIXED (P0 bug fold-in) |
 | HOB-44 | CLOSED — `tester-unified-rust` carries no `pip`/`ensurepip`/`python3-venv`, so the original `kind = "assay"` `assay-r1` lane died at Run-Gate's editable install before judging. Fixed by re-declaring the lane as a `kind = "command"` lane that runs the judge from the worktree's own `assay/src` (`PYTHONPATH`, no install); the image is unchanged. Proven through Run-Gate: PASS with the measured totals in the lane log, and FAIL/UNCOVERED_LINES when one kernel test file is deleted | Major | CLOSED (2026-11-16) |
 | HOB-45 | Rust R2/R3 remain unregistered for hostobs: no `assay-r2` (cargo-mutants ingestion) or `assay-r3` (canary) lane exists, so test quality rests on the hand-mutation campaigns | Major | OPEN (assay R-3b/R-4) |
 
@@ -309,6 +309,15 @@ unchecked. The streaming reader of the next package starts with `parse` and must
 **Fix shape.** Validate `FRAME_HEADER_LEN <= len <= MAX_FRAME_BYTES` inside `parse` (and keep
 `decode_block`'s own check, so a future caller that bypasses `parse` is still bounded), plus
 a test at the bound and one past it. No wire change.
+
+**FIXED (P0 bug fold-in).** `parse` now refuses a declared length above `MAX_FRAME_BYTES`
+(`oversized-frame`) and below `FRAME_HEADER_LEN` (`truncated`, context "frame length shorter
+than the header"), after the fixed-field checks, so Rust and the Python reference name the same
+first refusal. `decode_block` keeps its own check as a second bound; through `parse` that check
+can no longer fire, so its multi-line `return Err(..)` is covered by no test (see `CHANGES.md`). Tests pin the
+bound, one past it, `u32::MAX`, one below the header, zero and the refusal order, in both
+languages, and two refusal fixtures (declared length 4, a header-only block) are decoded by
+both. Stored hand-mutation patches, not yet run: `M1d-1`, `M1d-14`.
 
 ## HOB-9 — `derive_rate` has no boot/epoch/incarnation context
 
@@ -774,6 +783,16 @@ mean "the footer that closes these records is present and agrees", not "the name
 of served, a name/header identity disagreement is a typed refusal, and both have a test and a
 mutant.
 
+**FIXED (P0 bug fold-in).** A non-`.seg.open` name without a verified footer (a lost footer, a
+truncated sealed file) is quarantined whole as `<name>.corrupt` and reported in the tier scan
+(`SealedWithoutFooter`); a header `seq` or `start_real_ns` that disagrees with the name is the
+typed refusal `SegmentIdentity` and quarantines the file, for `.seg` and `.seg.open` alike. The
+seal keeps the open name's start second so a step change cannot trip the new rule. The Python
+segment reference refuses the same files (`check_segment_name`); no golden fixture is possible
+because the name is not in the file's bytes. `docs/SEGMENT-FORMAT.md` states both rules.
+A `.seg.open` name that carries a footer is refused too (`OpenWithFooter`). Stored hand-mutation
+patches, not yet run: `M1d-6` … `M1d-9`, `M1d-17`, `M1d-19`.
+
 ## HOB-43 — Quarantined files sit outside the cap
 
 **Where:** `crates/store/src/tier.rs` (`rescan`: corrupt and oversized branches), `crates/store/src/segment.rs` (`quarantine_name`).
@@ -788,6 +807,17 @@ fix round; the first review round missed it too.
 **Exit criteria.** Either quarantined bytes count against the tier's cap (oldest `.corrupt`
 removed first, reported) or a hard count/bytes bound refuses further quarantine with a typed,
 counted report; a test fills the bound; a mutant removes it.
+
+**FIXED (P0 bug fold-in), by the first alternative.** Quarantined files count in the tier's
+byte total, `keep_s` applies to them by the `(start_s, seq)` their names keep, and under
+`cap_bytes` they are evicted first, oldest first, before any live segment. Every such removal
+is reported (`Evicted::quarantined`) and counted (`StoreStats::evicted_quarantined`). Only a
+`.corrupt` file whose name parses to this tier and whose header is this tier's corpus is
+adopted; any other look-alike is reported as a note, never counted, evicted or removed, so
+those bytes stay outside the cap. A quarantined file deleted by hand, or one that cannot be
+removed, leaves the list and the total without failing the pass, and a quarantined name keeps its
+sequence number. Tests fill the bound; stored hand-mutation patches, not yet run: `M1d-2` … `M1d-5`,
+`M1d-10`, `M1d-12` … `M1d-16`, `M1d-18`.
 
 ## HOB-44 — CLOSED: the lane needed no `pip`, because it needed no install
 

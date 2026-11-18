@@ -232,6 +232,42 @@ def history_frame() -> dict:
     }
 
 
+def history_five_frame() -> dict:
+    """A history block with five buckets (HOB-48, length half).
+
+    The time section carries 15 bytes per bucket, so five buckets are 75 bytes padded to 80. A
+    factor of 14 reproduces the old answer only up to three buckets (42 -> 48), which is why the
+    first history fixture could not catch it.
+    """
+    frame = history_frame()
+    frame["corr"] = 5
+    frame["header"] = header(5, dict_gen=2, epoch=8, seq=2)
+    frame["time"] = [
+        {"real_ns": 1_700_000_000_000_000_000, "covered_ms": 1000, "samples": 5, "agg": "mean"},
+        {"real_ns": 1_700_000_001_000_000_000, "covered_ms": 1000, "samples": 4, "agg": "min"},
+        {"real_ns": 1_700_000_002_000_000_000, "covered_ms": 999, "samples": 65535, "agg": "max"},
+        {"real_ns": -1, "covered_ms": 0, "samples": 0, "agg": "raw"},
+        {"real_ns": 1_700_000_004_000_000_000, "covered_ms": 4_294_967_295, "samples": 1, "agg": "mean"},
+    ]
+    frame["columns"] = [
+        {
+            "metric": 1,
+            "type": "u64",
+            "kind": "gauge",
+            "values": ["2048", "0", str(2**64 - 1), "7", "1"],
+            "quality": ["ok", "stale", "not-sampled", "ok", "ok"],
+        },
+        {
+            "metric": 2,
+            "type": "u64",
+            "kind": "counter",
+            "values": ["9000", "0", "1", "9001", "9002"],
+            "quality": ["ok", "absent", "reset", "ok", "ok"],
+        },
+    ]
+    return frame
+
+
 def unicode_dictionary_frame() -> dict:
     return {
         "type": "block",
@@ -354,6 +390,18 @@ def future_version_frame() -> dict:
 def oversized_frame() -> dict:
     frame = live_frame()
     frame["corr"] = 13
+    return frame
+
+
+def below_header_frame() -> dict:
+    frame = live_frame()
+    frame["corr"] = 21
+    return frame
+
+
+def header_only_frame() -> dict:
+    frame = live_frame()
+    frame["corr"] = 22
     return frame
 
 
@@ -522,6 +570,7 @@ CASES: list[tuple[str, dict, list[tuple[int, bytes]] | None, dict | None]] = [
     ("live-block", live_frame(), None, None),
     ("u64-boundaries", u64_boundary_frame(), None, None),
     ("history-buckets", history_frame(), None, None),
+    ("history-five-buckets", history_five_frame(), None, None),
     ("unicode-dictionary", unicode_dictionary_frame(), None, None),
     ("all-quality-codes", all_qualities_frame(), None, None),
     ("empty-selection", empty_frame(), None, None),
@@ -567,6 +616,18 @@ CASES: list[tuple[str, dict, list[tuple[int, bytes]] | None, dict | None]] = [
         truncation_frame(),
         "truncate",
         {"kind": "truncated", "context": "frame"},
+    ),
+    (
+        "frame-length-below-header",
+        below_header_frame(),
+        "length-below-header",
+        {"kind": "truncated", "context": "frame length shorter than the header"},
+    ),
+    (
+        "block-without-directory",
+        header_only_frame(),
+        "header-only",
+        {"kind": "truncated", "context": "block directory"},
     ),
     (
         "non-zero-reserved",
@@ -693,6 +754,19 @@ def build(name: str, frame: dict, edits: object) -> tuple[bytes, dict | None]:
             "len": wire.MAX_FRAME_BYTES + 1,
             "max": wire.MAX_FRAME_BYTES,
         }
+    if edits == "length-below-header":
+        # A header declaring a total of 4 bytes, less than the 12-byte header itself.
+        return patch(data, 0, struct.pack("<I", 4)), {
+            "kind": "truncated",
+            "context": "frame length shorter than the header",
+        }
+    if edits == "header-only":
+        # Exactly the 12 header bytes of a sectioned block and nothing after them: the length
+        # is legal, the section directory is missing.
+        header_only = struct.pack(
+            "<IBBHI", wire.FRAME_HEADER_LEN, wire.FRAME_TYPES["block"], wire.FRAME_SECTIONED, 0, frame["corr"]
+        )
+        return header_only, {"kind": "truncated", "context": "block directory"}
     if edits == "truncate":
         return data[:-8], {"kind": "truncated", "context": "frame", "need": len(data), "have": len(data) - 8}
     if edits == "reserved":
@@ -790,6 +864,10 @@ DOC = {
         "A history block: `time` replaces `rows`, with a real timestamp, coverage, sample count and "
         "aggregation per bucket, including a negative real_ns and an empty bucket (0 samples)."
     ),
+    "history-five-buckets": (
+        "A history block with five buckets: the time section is 15 bytes per bucket (75, padded to 80), "
+        "so a body length computed with another per-bucket size is wrong from four buckets up."
+    ),
     "unicode-dictionary": (
         "Unicode dictionary text on all four entry kinds, plus a second boot id."
     ),
@@ -814,6 +892,15 @@ DOC = {
     "future-section-version": "A known section kind carrying version 2.",
     "oversized-frame": "A frame header declaring more than the 16 MiB maximum.",
     "truncated-frame": "A valid frame with its last eight body bytes removed.",
+    "frame-length-below-header": (
+        "A frame header declaring a total length of 4 bytes, shorter than the 12-byte header. Only the "
+        "refusal kind and its context are contractual; the need/have numbers are not pinned."
+    ),
+    "block-without-directory": (
+        "Exactly the 12 header bytes of a sectioned block frame (declared length 12) and no section "
+        "directory. Only the refusal kind and its context are contractual: the Rust cursor reports "
+        "need 2 / have 0 and the Python reference need 16 / have 12, and neither is pinned."
+    ),
     "non-zero-reserved": "A frame header whose reserved u16 is not zero.",
     "column-reserved": "A column whose reserved u16 padding field is not zero.",
     "duplicate-dictionary-entry": (

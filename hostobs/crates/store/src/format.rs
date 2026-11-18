@@ -903,6 +903,10 @@ pub fn pad_for(payload_len: usize) -> Result<usize, StoreError> {
         .ok_or(StoreError::LengthOverflow)
 }
 
+/// The suffix a quarantined file carries. No segment-name parse matches it, so a reader
+/// never scans a quarantined file; the tier's own bound still counts and evicts it (HOB-43).
+pub const QUARANTINE_SUFFIX: &str = ".corrupt";
+
 /// A parsed segment file name.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SegmentFileName {
@@ -936,6 +940,38 @@ impl SegmentFileName {
             SegmentFileName::open_name(&self.tier, self.start_s, self.seq)
         } else {
             SegmentFileName::sealed_name(&self.tier, self.start_s, self.seq)
+        }
+    }
+
+    /// The name a damaged file is quarantined under: its own name plus
+    /// [`QUARANTINE_SUFFIX`].
+    #[must_use]
+    pub fn quarantine_file_name(&self) -> String {
+        format!("{}{QUARANTINE_SUFFIX}", self.file_name())
+    }
+
+    /// The `start_real_ns` a header must carry for this name: the aligned start second in
+    /// nanoseconds, exactly the value the tier writes when it creates the segment.
+    #[must_use]
+    pub fn start_real_ns(&self) -> i64 {
+        i64::try_from(self.start_s.saturating_mul(1_000_000_000)).unwrap_or(i64::MAX)
+    }
+
+    /// Parse a quarantine name (`<segment name>.corrupt`) back to the segment name it came
+    /// from, so a quarantined file has the same `(start_s, seq)` key a live one has.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::SegmentName`] for a name that does not end in [`QUARANTINE_SUFFIX`] or
+    /// whose remainder is not a segment name this store writes.
+    pub fn parse_quarantined(name: &str) -> Result<SegmentFileName, StoreError> {
+        match name.strip_suffix(QUARANTINE_SUFFIX) {
+            Some(stem) => SegmentFileName::parse(stem).map_err(|_| StoreError::SegmentName {
+                name: name.to_string(),
+            }),
+            None => Err(StoreError::SegmentName {
+                name: name.to_string(),
+            }),
         }
     }
 
@@ -1792,6 +1828,54 @@ mod tests {
             SegmentFileName::open_name("hot", 1, 2),
             "hot-1-2.seg.open".to_string()
         );
+    }
+
+    #[test]
+    fn a_quarantine_name_parses_back_to_the_segment_key_and_nothing_else_does() {
+        // HOB-43: the quarantined file carries the (start_s, seq) of the segment it was, so
+        // the tier can order and expire it exactly like a live one.
+        let sealed = SegmentFileName::parse("focus-web-1700000000-12.seg").expect("sealed");
+        let open = SegmentFileName::parse("focus-web-1700000000-12.seg.open").expect("open");
+        assert_eq!(
+            sealed.quarantine_file_name(),
+            "focus-web-1700000000-12.seg.corrupt"
+        );
+        assert_eq!(
+            open.quarantine_file_name(),
+            "focus-web-1700000000-12.seg.open.corrupt"
+        );
+        assert_eq!(
+            SegmentFileName::parse_quarantined(&sealed.quarantine_file_name()),
+            Ok(sealed.clone())
+        );
+        assert_eq!(
+            SegmentFileName::parse_quarantined(&open.quarantine_file_name()),
+            Ok(open)
+        );
+        for foreign in [
+            "hot-1-2.seg",
+            "hot-1-2.seg.open",
+            "hot-x-2.seg.corrupt",
+            "hot-1-2.corrupt",
+            "hot-1-2.seg.corrupt.corrupt",
+            "hot-1-2.seg.tmp.corrupt",
+            ".corrupt",
+            "notes.corrupt",
+        ] {
+            assert_eq!(
+                SegmentFileName::parse_quarantined(foreign),
+                Err(StoreError::SegmentName {
+                    name: foreign.to_string()
+                }),
+                "{foreign} is not a quarantine name this store writes"
+            );
+        }
+        assert_eq!(sealed.start_real_ns(), 1_700_000_000_000_000_000);
+        let huge = SegmentFileName {
+            start_s: u64::MAX,
+            ..sealed
+        };
+        assert_eq!(huge.start_real_ns(), i64::MAX, "saturates, never wraps");
     }
 
     #[test]
