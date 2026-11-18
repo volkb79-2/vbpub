@@ -2083,8 +2083,7 @@ def _owned_real_dir(path: Path, create: bool) -> bool:
 def _gitdir_state_dir(stack_dir: Path, create: bool) -> Path | None:
     """The validated ``.ciu/gitdir`` of a stack (or ``None`` when absent)."""
     machine = Path(stack_dir) / MACHINE_DIR
-    if not _owned_real_dir(machine, create):
-        return None
+    _owned_real_dir(machine, create)  # validates (and, if asked, creates) `.ciu`
     state = machine / GITDIR_STATE_SUBDIR
     return state if _owned_real_dir(state, create) else None
 
