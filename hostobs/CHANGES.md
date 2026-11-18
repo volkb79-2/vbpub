@@ -4,6 +4,11 @@
 
 ### Added (P3b: `python/hostobs_client` connection, `require_profiling`, `hostobs-mark`; the P3 part of `HOB-54` closed)
 
+- **Review round**: the envelope text checks are linear on hostile input (parse first, count depth only on parsed
+  text); `Connection.open` validates before it connects (no socket leak, `timeout_s` finite and bounded); `hello`
+  integers are exact and `epoch` is a `u64`; hostile `hello` limits are `hello-mismatch`; the query queue is also
+  bounded in bytes (64 MiB); `hostobs-mark --timeout` rejects `inf`/`nan`; exact-boundary, corr, queue and table
+  tests (`test_client_hardening.py`).
 - **`hostobs_client.conn`**: `Connection.open(path, level, *, client, timeout_s, clock)` (binary handshake at
   minor 1), `.request()`, `.blocks()` (REP at call time, END counts checked), `.subscribe()` (dropped counters,
   newest-8 queue), `.reconnect()` (`session` first/same/changed per §6.4), `.close()`; the §7.3 receive loop on one

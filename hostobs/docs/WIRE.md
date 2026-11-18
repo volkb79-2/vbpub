@@ -1153,6 +1153,24 @@ zipimport}.py` with the scripted fake probe `fake_probe.py`. Decisions and ambig
   the list). Run as `python3 -m hostobs_client.mark begin|end|point NAME [--key K] [--outcome O] [--code C]
   [--attr K=V] [--require] [--timeout S]`; the console script `hostobs-mark = hostobs_client.mark:main` is the
   wheel's (M3) packaging entry.
+- **Linear time.** The text checks never run a quadratic scan on hostile input: the payload is parsed first (the C
+  decoder is linear, refuses an unterminated string and stops a depth bomb at the recursion limit) and the
+  bracket-depth count (strings removed by regex) runs only on text that parsed. The top-level key scan uses an
+  unrolled pattern. Tests assert a wall-time cap on 20,000-repeat payloads and, structurally, that the depth count
+  is never called on text that did not parse.
+- **Queue policy is a client decision beyond this specification.** A subscription keeps its newest 8 undelivered
+  blocks (`client_dropped` counts the overwritten ones) and a query stream up to 1,024 blocks and 64 MiB of frames
+  per connection (`QUERY_BYTES`), then `queue-overflow`. The bounds are count- and frame-byte-bounded, the oldest
+  block of a subscription is the one shed (stale-ordered), and a subscription's bytes are not bounded (8 frames of at
+  most 16 MiB). The receive loop returns as soon as the awaited stream has a block, so `client_dropped` only grows
+  while another call (a request, another stream) is pumping.
+- **Validation.** `Connection.open` validates `level`, `client` and `timeout_s` (a finite number in `(0, 1 year]`;
+  `inf`, `nan`, `bool`, strings are `ValueError`) before creating a socket; a connect failure is the system's
+  `OSError`, unchanged (`require_profiling` maps it to `unreachable` with its errno), everything after the connect is
+  `ConnectionLost`/`OperationTimeout`/`ServerError`/`WireError`. `hello` fields are exact integers (`proto`, `epoch`
+  in `0..2**64-1`, every limit a `u32`), and a hello whose `max_request_bytes` cannot carry the client's own hello or
+  whose `max_frame_bytes` is below 12 is `hello-mismatch`. `hostobs-mark --timeout` outside `(0, 1 year]` is a usage
+  error (exit 2). Args nested deeper than the interpreter's recursion limit are a `ValueError` like any other deep args.
 - **Not covered here:** the Python conformance lane (`HOB-4`) and a run against a live probe (P5b).
 
 **P5a — Rust `client` crate (M).** `Client::connect(path, Level, ClientInfo) -> Result<Client, ClientError>`,

@@ -492,8 +492,10 @@ identity (a workspace-only `Cargo.lock` edit then needs no rebuild), and record 
 **Where:** `run-gate.toml` declares `lint` and `selftest` only.
 
 Plan v4 §B.5 and the Rust methodology both name a `conformance` lane for the Python
-reference decoder. The Python side exists and passes (`python3 -m unittest discover -s
-python/tests`, nine cases, standard library only), and the Rust side asserts the same
+reference decoder. The Python side exists and passes (`python3 -I -m unittest discover -s
+python/tests`, 196 tests as of P3b: the reference decoders, the 70 wire fixtures, the stream and rate
+fixtures, the `hostobs_client` decoder, connection, profiling and mark tests on a fake probe, the §7.8 gated
+bounds and a zipimport smoke test; standard library only), and the Rust side asserts the same
 fixture files in `crates/proto/tests/golden_fixtures.rs`. What is missing is a *registered*
 lane: the Python run has no declared environment, so it is not gate evidence and cannot
 fail a merge by itself. The cross-language claim currently rests on two independent test
@@ -501,8 +503,10 @@ suites that happen to read the same files, not on one executed lane.
 
 **Exit notes from this package.** The lane was not added here because the brief scoped
 this slice to `model` and `proto` and any lane's environment/argv must be reviewed as
-gate change. The work is small: `tester-unified` (not `-rust`) with
-`python3 -m unittest discover -s python/tests`, no network, plus the fixture
+gate change. Current state: no registered lane. The image is `tester-unified-rust`, which carries an apt
+`python3` (no pip; its CPython version is unmeasured, and the §7.8 absolute memory bound is gated on
+3.14.10 only, see the P3a note in `docs/WIRE.md` §12), with
+`python3 -I -m unittest discover -s python/tests`, no network, plus the fixture
 regeneration check (`python3 python/reference/make_fixtures.py <tmpdir>` compared with
 the committed bytes).
 
