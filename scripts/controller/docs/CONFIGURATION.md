@@ -7,7 +7,11 @@ controller scripts derive runtime files from `CONTROLLER_HOME`, defaulting to
 
 ## `controller.local.env`
 
-This is shell syntax, loaded by `scripts/controller/lib.sh`. Set the selected
+This is shell syntax, SOURCED by `scripts/controller/lib.sh` in every controller
+tool (so also by `ctl-doctor.sh`): it must contain plain `NAME=value` assignment
+lines only. `ctl-doctor.sh` flags any other line, but it cannot make a value
+inert: an assignment such as `A=$(cmd)` still runs when the file is sourced.
+Set the selected
 Codex profile directories, shared Codex session database, controller checkout,
 OpenCode command if needed, chosen CMRU engine venv, and provider token-file
 location here. Store secret values in the provider's supported credential

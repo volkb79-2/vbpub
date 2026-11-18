@@ -32,7 +32,9 @@ For the host-table schema and the additional `queue_lanes` field, see
 machine without changing it and exits non-zero on any failure. Each finding is one
 `OK|WARN|FAIL|INFO <check>: <message>` line, with an indented `fix:` line under
 every WARN and FAIL. It checks: `$CONTROLLER_HOME` and `controller.local.env`
-(assignment lines only; a command line there is refused, never executed); every
+(the env file is shell-sourced by `lib.sh` like for every controller tool and must
+hold assignments only: the doctor flags any other line but cannot make a value
+inert, `A=$(cmd)` runs when sourced); every
 host-table alias (`ssh`, `api_check`, `guard`, `queue_lanes`, the SSH key file with
 mode 600, the pinned `known_hosts` file, `StrictHostKeyChecking=yes`, the identity
 command is executable); that `CONTROLLER_REMOTE_GATE_HOSTS` names only aliases of the

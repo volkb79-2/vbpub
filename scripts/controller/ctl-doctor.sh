@@ -7,8 +7,10 @@
 #                 that still holds old chain-*.sh wrappers). $CONTROLLER_HOME is always scanned.
 # Text report: one `OK|WARN|FAIL|INFO <check>: <message>` line per finding, an indented `fix:` line under every WARN and FAIL.
 # Exit: 0 = no FAIL (warnings allowed), 1 = at least one FAIL, 2 = usage.
-# Read-only: nothing is created, changed or run except `docker image inspect` and the read-only git queries. It prints names and
-# paths, never a value from controller.local.env, the host table or a key file.
+# Read-only: it creates and changes nothing and runs only `docker image inspect` and read-only git queries. It prints names and
+# paths, never a value from controller.local.env, the host table or a key file. One caveat: controller.local.env is
+# shell-SOURCED by lib.sh (as by every controller tool) and must hold NAME=value assignments only; the doctor FLAGS other lines
+# but cannot make a value inert (an assignment like A=$(cmd) still runs when sourced).
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=lib.sh
@@ -20,7 +22,7 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --json) json=1; shift ;;
     --scan) [[ $# -ge 2 && -n $2 ]] || { echo 'usage: ctl-doctor.sh [--json] [--scan <dir>]...' >&2; exit 2; }; scan_dirs+=("$2"); shift 2 ;;
-    -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "ctl-doctor.sh: unknown argument '$1'" >&2; echo 'usage: ctl-doctor.sh [--json] [--scan <dir>]...' >&2; exit 2 ;;
   esac
 done
@@ -204,7 +206,11 @@ for alias, row in hosts.items():
                 bad = True
         for pin in pins:
             full = resolve(pin)
-            if pin != "/dev/null" and not os.path.isfile(full):
+            if os.path.normpath(full) == os.devnull:
+                out("WARN", f"{where}:pin", "UserKnownHostsFile=/dev/null is not a pin: no host key is ever pinned",
+                    f"point -o UserKnownHostsFile at a pinned known_hosts file in the ssh argv of {alias} (docs/runbooks/host-access-template.md)")
+                bad = True   # no OK line: the pin is not in place
+            elif not os.path.isfile(full):
                 out("FAIL", f"{where}:pin", f"pinned known_hosts file is missing: {disp(full)}", f"create '{full}' with the host key pinned from the provider console (docs/runbooks/host-access-template.md)")
                 bad = True
         if not pins:

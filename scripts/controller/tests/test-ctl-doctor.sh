@@ -172,6 +172,14 @@ run_doctor --
 expect_rc 1 'a command line in controller.local.env'
 line '^FAIL env-file: controller.local.env has lines that are not NAME=value assignments' 'stray command'
 [[ ! -e $ROOT/PWNED ]] || fail 'the doctor must not execute a non-assignment line of controller.local.env'
+# The documented limit: the env file is SOURCED, so an assignment that carries a command substitution runs (the doctor only
+# flags non-assignment lines). The docs must say so instead of claiming nothing is executed.
+fixture env-substitution; printf 'SUBST=$(echo ran > %s)\n' "$ROOT/SUBST-RAN" >> "$H/controller.local.env"
+run_doctor --
+[[ -e $ROOT/SUBST-RAN ]] || fail 'the documented limit changed: an assignment with a command substitution is no longer executed when sourced'
+! grep -qE 'refused, never executed|runs nothing' "$SCRIPT_DIR/../README.md" "$SCRIPT_DIR/../docs/CONFIGURATION.md" "$DOCTOR" || fail 'the docs claim the env file is never executed'
+grep -qF 'shell-SOURCED by lib.sh' "$DOCTOR" || fail 'the doctor header must say that controller.local.env is sourced'
+grep -qF 'SOURCED by `scripts/controller/lib.sh`' "$SCRIPT_DIR/../docs/CONFIGURATION.md" || fail 'CONFIGURATION must say that controller.local.env is sourced'
 
 # --- host table
 fixture hosts-missing; rm "$H/hosts.local.json"
@@ -220,6 +228,12 @@ line '^WARN hosts:main:alpha:strict:' 'strict host key checking'
 fixture hosts-nopin; edit_host 'row["ssh"] = [a for a in row["ssh"] if not a.startswith("UserKnownHostsFile")]'
 run_doctor --
 line '^WARN hosts:main:alpha:pin: ssh has no UserKnownHostsFile' 'no pin option'
+fixture hosts-devnull-pin; edit_host 'row["ssh"] = [("UserKnownHostsFile=/dev/null" if a.startswith("UserKnownHostsFile") else a) for a in row["ssh"]]'
+run_doctor --
+expect_rc 0 'UserKnownHostsFile=/dev/null is a warning'
+line '^WARN hosts:main:alpha:pin: UserKnownHostsFile=/dev/null is not a pin' '/dev/null is not a pin'
+line '^  fix: point -o UserKnownHostsFile at a pinned known_hosts file' '/dev/null pin fix text'
+! grep -q '^OK hosts:main:alpha:' "$ROOT/out" || fail 'an alias with a /dev/null pin must not be reported OK'
 
 # --- the remote-gate allow-list
 fixture allow-unknown; write_env "$H" 'CONTROLLER_REMOTE_GATE_HOSTS="alpha ghost"'
