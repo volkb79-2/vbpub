@@ -8,10 +8,13 @@ M1C. The package fixes `HOB-8`, `HOB-42`, `HOB-43` and the length half of `HOB-4
 follow-up adds `HOB-55`, `HOB-56`, `HOB-57` (the timeout) and `HOB-58` (patches `M1d-20` to
 `M1d-22`, and `M1d-18` rewritten for the recomputed total).
 
-**Status: the campaign was run on 2026-11-18 on `0dd7230b1`: 50 of the 54 patches were killed
-and 4 survived.** Each survivor is a missing test, none is an equivalent mutant, and each is
-closed by a test that reads the observable the patch changes (the closing tests are in the
-table below and have not yet been re-run against their patches):
+**Status: the campaign ran twice on 2026-11-18. The first run, on `0dd7230b1`, killed 50 of the
+54 patches and 4 survived. The second run, on `6fa50236f` (the head that carries the closing
+tests), killed 54 of 54, with no survivor and no timeout**
+(`artifacts/release-program-20261027/logs/m1d-6fa50236f-20261118.log`; the baselines of `proto`,
+`python` and `store` were green). Each first-run survivor was a missing test, none is an
+equivalent mutant at the unit level, and each is closed by a test that reads the observable the
+patch changes (the closing tests are in the table below):
 
 * `M1d-22`, the write path does not copy the eviction's notes into the store's ring, and
   `M1d-22`, `Store::evict` does not copy them: a tier's own `scan.notes` holds the same report
@@ -106,12 +109,13 @@ name, never a filter or an ancestor; a failed removal is reported on stderr.
 
 | # | verdict | tests that failed |
 |---|---|---|
-| 50 of 54 patches | killed (2026-11-18, `0dd7230b1`) | see the campaign log |
-| `M1d-15` (directory), `M1d-22` (write path, `evict`, `Store::notes`) | survived | none; closed by the tests named in the status paragraph |
+| first run, `0dd7230b1`: 50 of 54 patches | killed | see the first log |
+| first run: `M1d-15` (directory), `M1d-22` (write path, `evict`, `Store::notes`) | survived | none; closed by the tests named in the status paragraph |
+| second run, `6fa50236f`: all 54 patches | killed (0 survived, 0 timed out) | see the second log |
 
-The per-patch rows of the 2026-11-18 run are in the campaign log
-(`artifacts/release-program-20261027/logs/m1d-0dd7230b1-20261118.log`); a re-run on the head
-that carries the closing tests fills in the four survivors' kills.
+The per-patch rows are in the campaign logs
+`artifacts/release-program-20261027/logs/m1d-0dd7230b1-20261118.log` (first run) and
+`artifacts/release-program-20261027/logs/m1d-6fa50236f-20261118.log` (second run).
 
 ## Known limit: an unreachable second bound
 

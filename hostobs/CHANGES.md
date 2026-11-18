@@ -24,11 +24,12 @@
   with `envelope.rs` and `stream_dicts.rs`).
 - **Hand mutants.** `M1d-14`'s Python patch follows the directory guards `hostobs_wire_ref.py`
   has since the P2a1 codec (two patches, one per guard): 54 stored patches, `--dry-run` 0 stale.
-- **Hand-mutant survivors closed** (`M1d-22`, `M1d-15`; the 2026-11-18 run on `0dd7230b1` killed
-  50 of 54): two store tests rescan a tier and read the eviction report from the store's ring
-  after a write-path eviction and after `Store::evict` (also kills the `Store::notes` ring
-  patch), and the quarantine look-alike test asserts the reason of a `.corrupt` directory.
-  None of the four was an equivalent mutant.
+- **Hand-mutant survivors closed** (`M1d-22`, `M1d-15`; the first 2026-11-18 run, on
+  `0dd7230b1`, killed 50 of 54; the re-run on `6fa50236f` killed 54 of 54): two store tests
+  rescan a tier and read the eviction report from the store's ring after a write-path eviction
+  and after `Store::evict` (also kills the `Store::notes` ring patch), and the quarantine
+  look-alike test asserts the reason of a `.corrupt` directory. None of the four was an
+  equivalent mutant at the unit level (through the public API the ring is redundant, `HOB-60`).
 
 ### Added (P3b: `python/hostobs_client` connection, `require_profiling`, `hostobs-mark`; the P3 part of `HOB-54` closed)
 
@@ -159,7 +160,8 @@
   for a Rust suite, 300 s for Python); a timeout is `KILLED-TIMEOUT`, counted apart (and
   inconclusive under host load), and the container is removed by its exact name
   `hostobs-mut-<pid>-<n>` on a timeout or any exception. 53 stored patches (`M1d-20` to `M1d-22`
-  added, `M1d-18` rewritten); the campaign has not been run.
+  added, `M1d-18` rewritten); when this entry was written the campaign had not been run (it ran
+  on 2026-11-18, see the survivors entry above).
 
 ### Fixed (P0 bug fold-in)
 
@@ -227,7 +229,8 @@
   identity, the reference's check precedence, the stream layer machines).
 - **Hand-mutation record for the P0 fold-in** (`docs/HAND-MUTANTS-M1D.md`,
   `docs/hand-mutants/m1d-mutants.py`): thirty-five stored patches in the method of
-  `HAND-MUTANTS-M1C.md`. The campaign has not been run yet; the doc says so.
+  `HAND-MUTANTS-M1C.md`. When this entry was written the campaign had not been run (it ran on
+  2026-11-18; the doc states the result).
 - **Gate invocations in `docs/CONSUMERS.md` and `README.md`** now state the estate wrappers
   (`scripts/controller/gate-run.sh <lane>` from a linked worktree's project directory;
   `scripts/controller/remote-gate.sh v1001 hostobs <lane> <commit-or-branch>` with
