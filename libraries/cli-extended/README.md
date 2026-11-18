@@ -617,6 +617,20 @@ cases at collection; `--cli-case-partial` relaxes it for focused runs. See the
 [consumer guide](docs/CONSUMERS.md#test-helpers-invoke_script) and the
 [design guide](docs/DESIGN-GUIDE.md#keep-consumer-tests-hermetic-and-the-plugin-opt-in).
 
+## Supervise child processes with `procio`
+
+`cli_extended.procio` (stdlib only, Linux) is the one bounded reader for a
+child's output. A loop that reads a pipe until EOF waits for every holder of
+the write end, so a grandchild that inherited the pipe can hang a finished
+child's caller forever. `run_streaming` and `run_capture` stop `drain_seconds`
+after the child exits, keep its exit code, and return the pids still holding
+the pipe plus the WARN text; every child runs in its own process group, which
+SIGINT, SIGTERM and SIGHUP to the caller reap. `run_streaming` also ends a
+child that makes no progress for `no_progress_seconds` (required, positive,
+no default and no "off") and returns the live process tree taken before the
+kill. The contract is [SPEC section 16](SPEC.md#16-child-process-supervision-cli_extendedprocio);
+a call site to paste is in the [consumer guide](docs/CONSUMERS.md#bound-a-child-process-read-with-procio).
+
 ## Test and gate
 
 The package gate covers R0/R1/R2 plus an independent R3 canary. R1 requires

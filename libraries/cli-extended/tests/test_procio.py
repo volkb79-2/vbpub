@@ -955,6 +955,16 @@ def test_capture_pipes_are_closed_exactly_once_on_every_path(tmp_path, monkeypat
             _capture(["sleep", "600"], tmp_path, input="x", timeout=0.5)
         assert counter.calls == {"stdin": 1, "stdout": 1, "stderr": 1}
 
+        counter.calls.clear()  # interrupted while input is still being written: stdin is open
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                procio._StdinWriter, "step",
+                lambda *_a: (_ for _ in ()).throw(KeyboardInterrupt()),
+            )
+            with pytest.raises(KeyboardInterrupt):
+                _capture(["sleep", "600"], tmp_path, input="x" * 1_000_000)
+        assert counter.calls == {"stdin": 1, "stdout": 1, "stderr": 1}
+
         counter.calls.clear()
         monkeypatch.setattr(
             procio, "reap_process_group",

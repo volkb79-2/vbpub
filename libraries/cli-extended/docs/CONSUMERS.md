@@ -1304,6 +1304,47 @@ Mapping the existing doctors:
   registered on its own sub-registry with `--no-probe`. Option flags may not
   reuse `--check` or a library control such as `--json` (`ValueError`).
 
+## Bound a child-process read with `procio`
+
+Replace `for line in proc.stdout:` followed by `proc.wait()`, and
+`subprocess.run(..., capture_output=True)`, with `cli_extended.procio`. The
+contract is [SPEC section 16](../SPEC.md#16-child-process-supervision-cli_extendedprocio).
+Resolve the no-progress period from your own configuration and pass it: the
+library has no default and no "off" value.
+
+```python
+import subprocess
+from pathlib import Path
+
+from cli_extended import procio
+
+result = procio.run_streaming(
+    ["docker", "compose", "build"],
+    cwd=Path("."),
+    env=None,                      # inherit; pass a dict to replace
+    on_line=lambda line: print(line, end="", flush=True),
+    no_progress_seconds=1800,      # your resolved setting, never infinite
+    progress_paths=[Path("build.log")],  # a log the step writes instead of stdout
+)
+if result.warning:                 # the child exited but a helper held its pipe
+    log.warning(result.warning)
+if result.outcome == "watchdog":
+    log.error(result.watchdog.render("no_progress_timeout_seconds"))
+    for line in result.watchdog.tree_lines:
+        log.error(line)
+if result.returncode != 0:
+    raise subprocess.CalledProcessError(result.returncode, "docker")
+
+captured = procio.run_capture(["git", "status", "--porcelain"], cwd=Path("."), env=None, timeout=30)
+print(captured.stdout)             # str; text=False returns bytes
+```
+
+Keep interactive children (a terminal `docker exec -it`) on plain
+`subprocess.run` with inherited stdio: a child under `procio` is in its own
+session and has no controlling terminal. The caller's tests should keep one
+integration test of its own call site: a fake child that spawns `sleep 600`
+with inherited stdout and exits 3 must return 3 after the drain.
+
 ## Consumer responsibilities
 
 | `cli-extended` guarantees | The adopting CLI must decide and implement |
