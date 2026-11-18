@@ -15,6 +15,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 <!-- cmru: generated -->
 <!-- cmru: source-end=532e81db0fc29b84452e8b7f7279ac5da17353d6 -->
 
+**Release verification (recorded after publication, by hand):** the release step ran `run-gate selftest` (pytest with branch coverage and the 100% diff-coverage floor since `run-gate-v25.6.0`); it did not run the R3 canary and did not enforce a full-source coverage floor. Separately, `run-gate gate-full --base run-gate-v25.6.0` (R0, R1 and R3, no R2 mutation) was run by hand on the release's source-end commit `532e81db0` (the tag differs from it only in this changelog) and passed. R2 mutation is owed asynchronously.
+
 ### Added
 - feat(run-gate): Run-Gate provides the Assay judge to a language lane (RG-285) (a93ea300d)
 - feat(run-gate): refuse an ephemeral lane before it starts when one uid does not own checkout, CoW root and lane user (RG-150) (bcc22f401)
