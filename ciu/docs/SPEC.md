@@ -2212,9 +2212,16 @@ v1 contract.
   The static validation pipeline is the `ciu check` verb (`up --check` was
   removed). Per-service `shipped = true`
   (S8.6) routes a stack through its pre-shipped `docker-compose.yml`.
-- **S10.2a** `ciu down --dir PATH [--profile NAME ...] [--root-folder PATH]`
+- **S10.2a** `ciu down --dir PATH [--profile NAME ...] [--phases N,M]
+  [--i-understand-this-is-protected] [--yes] [--root-folder PATH]`
   stops only the running containers of the one selected stack, preserving
-  volumes. CIU resolves `PATH` below the selected CIU root to one exact
+  volumes. The `--dir` form accepts every flag `ciu down --help` lists, with the
+  meaning the project-wide form gives it (CIU-214): `--yes` changes nothing
+  because `down` never prompts; `--phases` narrows the deploy selection, so a
+  stack outside the selected phases is refused before any Docker call (a
+  narrowed teardown never widens); an instance whose `[deploy]` table declares
+  `protected = true` is refused (exit 1, CIU-105) unless
+  `--i-understand-this-is-protected` is given. CIU resolves `PATH` below the selected CIU root to one exact
   `compose_project`, lists containers by the exact
   `com.docker.compose.project` label, then stops the returned containers;
   for a tagged config only those the S7.8 ownership rule (CIU-193) proves are

@@ -447,6 +447,7 @@ def resolve_identities(
     stack: str | None = None,
     service: str | None = None,
     profiles: list[str] | None = None,
+    phases: set[str] | None = None,
     live: bool = False,
     render_environ: dict[str, str] | None = None,
     require_closed_image_map: bool = False,
@@ -457,7 +458,8 @@ def resolve_identities(
     This is CIU-118's v7 counterpart to v8's ``[resolved.identities]``. It
     renders the selected configuration in memory; ``profiles`` select the
     same composition as ``ciu up`` (or the ordinary configured/ambient
-    selection is used). It consults Docker only for ``live=True``. The
+    selection is used) and ``phases`` (``{"phase_1", ...}``, as
+    :func:`_parse_phase_filter` returns) narrow it like ``--phases``. It consults Docker only for ``live=True``. The
     returned document deliberately groups services by
     repo-relative stack path so duplicate service keys in different stacks
     remain unambiguous.
@@ -479,7 +481,7 @@ def resolve_identities(
         )
         profiles_pkg.reject_groups(global_config)
         profile = resolve_profiles(global_config, profiles, environ=render_environ)
-    selection = build_selection(profile)
+    selection = build_selection(profile, phases)
     selected = _resolve_identity_stack_paths(repo_root, selection, stack)
     ciu_context = profiles_pkg.render_ciu_context(profile, selection)
 
@@ -914,8 +916,17 @@ def stop_stack(
     selector: str,
     *,
     profiles: list[str] | None = None,
+    phases: set[str] | None = None,
+    protected_ack: bool = False,
 ) -> int:
     """Stop one selected stack's running containers and preserve its volumes.
+
+    CIU-214: ``phases`` and ``protected_ack`` give ``--phases`` and
+    ``--i-understand-this-is-protected`` the meaning they have on the main
+    ``ciu down`` form: a stack outside the selected phases is refused (a
+    narrowed teardown never widens), and an instance whose ``[deploy]`` table
+    declares ``protected = true`` is refused (returns 1) without the
+    acknowledgement. ``--yes`` needs no parameter: ``down`` never prompts.
 
     CIU-193: for a tagged config the stack's Compose project name is shared by
     every checkout with the same deploy tags, so only containers whose
@@ -933,7 +944,9 @@ def stop_stack(
             f"[S10] --dir {selector!r} must select a stack below CIU root {repo_root}"
         ) from exc
 
-    document = resolve_identities(repo_root, stack=relative_stack, profiles=profiles)
+    document = resolve_identities(
+        repo_root, stack=relative_stack, profiles=profiles, phases=phases,
+    )
     identities = document["resolved"]["identities"]
     rows = identities.get(relative_stack)
     if not isinstance(rows, dict) or not rows:
@@ -945,13 +958,22 @@ def stop_stack(
         )
     project = next(iter(projects))
 
+    stop_profile = resolve_profiles(
+        load_global_config(repo_root, write_rendered=False), profiles,
+    )
+    # CIU-214 / CIU-105: the same protected-instance gate as the main `down`.
+    refusal = _refuse_if_protected(
+        stop_profile.config,
+        argparse.Namespace(i_understand_this_is_protected=protected_ack),
+        "stop",
+    )
+    if refusal is not None:
+        return refusal
+
     # CIU-193: a tagged Compose project is shared by every checkout with the
     # same deploy tags; stop only what this checkout's labels prove it owns.
     owner = None
     if _clean_owner(repo_root) is not None:
-        stop_profile = resolve_profiles(
-            load_global_config(repo_root, write_rendered=False), profiles,
-        )
         owner = _stop_owner(repo_root, stop_profile.config)
     skipped: list[tuple[str, str]] = []
     listing = ["ps", "--filter", f"label=com.docker.compose.project={project}"]

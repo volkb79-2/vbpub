@@ -6951,7 +6951,7 @@ test.
 
 ## CIU-214 — `ciu down --dir PATH` rejects flags that `ciu down --help` lists (`--yes`, `--phases`, `--i-understand-this-is-protected`)
 
-**Status:** OPEN (filed 2026-11-13); severity: minor, automation friction. Found migrating netcup-api-filter onto CIU 7.25 (reproduced on 7.25.1: `ciu down --dir <path> --yes` exits with `ciu down --dir: error: unrecognized arguments: --yes`).
+**Status:** FIXED (2026-11-18; the `--dir` parser accepts `--yes`, `--phases` and `--i-understand-this-is-protected` with the main form's meaning, `stop_stack` takes `phases` and `protected_ack`); severity: minor, automation friction. Found migrating netcup-api-filter onto CIU 7.25 (reproduced on 7.25.1: `ciu down --dir <path> --yes` exits with `ciu down --dir: error: unrecognized arguments: --yes`).
 
 **Cause (read from source).** The `--dir` branch of `ciu down` (`ciu/src/ciu/cli.py`, the `verb == "down"` handler, about lines 2056-2090) builds its own sub-parser that declares only `--dir` and `--profile` and calls `parse_args`. The registry adapter (`cli_registry.py`, about lines 161-162) forwards `--yes` whenever the caller gave it, and `ciu down --help` lists `--yes`, `--phases` and `--i-understand-this-is-protected`, so each of them is rejected on the `--dir` form. `down` never prompts for confirmation (`deploy.py`, `_refuse_if_protected`: `--stop`/`--clean` have never had an `input()` gate), so `--yes` is harmless there; the defect is that the parser and the help disagree, which breaks a non-interactive caller that passes the documented flag.
 

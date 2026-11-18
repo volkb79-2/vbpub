@@ -99,7 +99,7 @@ def test_down_dir_dispatches_exact_stack_and_profiles(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_resolve_repo_root_deploy", lambda _root: tmp_path)
     monkeypatch.setattr(
         deploy, "stop_stack",
-        lambda root, selector, *, profiles: called.append((root, selector, profiles)) or 0,
+        lambda root, selector, *, profiles, **_kw: called.append((root, selector, profiles)) or 0,
     )
     monkeypatch.setattr(
         sys,
@@ -111,6 +111,75 @@ def test_down_dir_dispatches_exact_stack_and_profiles(monkeypatch, tmp_path):
         cli.main()
     assert exc.value.code == 0
     assert called == [(tmp_path, "tools/test-runner", ["test"])]
+
+
+# CIU-214: every flag `ciu down --help` lists is accepted on the `--dir` form.
+# The "no-op" flags mean exactly what the main form gives them: `down` never
+# prompts (`--yes`), `--phases` narrows the selection, and the protected-instance
+# acknowledgement lifts the CIU-105 refusal.
+_DOWN_DIR_FLAG_CASES = [
+    pytest.param([], {"phases": None, "protected_ack": False}, id="bare"),
+    pytest.param(["--yes"], {"phases": None, "protected_ack": False}, id="yes"),
+    pytest.param(["--phases", "1,2"], {"phases": {"phase_1", "phase_2"}, "protected_ack": False},
+                 id="phases"),
+    pytest.param(["--i-understand-this-is-protected"], {"phases": None, "protected_ack": True},
+                 id="protected"),
+    pytest.param(
+        ["--yes", "--phases", "3", "--i-understand-this-is-protected", "--profile", "test"],
+        {"phases": {"phase_3"}, "protected_ack": True},
+        id="all-together",
+    ),
+]
+
+
+@pytest.mark.parametrize(("flags", "expected"), _DOWN_DIR_FLAG_CASES)
+def test_down_dir_accepts_every_flag_the_help_lists(monkeypatch, tmp_path, flags, expected):
+    seen = {}
+    monkeypatch.setattr(cli, "_resolve_repo_root_deploy", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        deploy, "stop_stack",
+        lambda root, selector, **kw: seen.update(selector=selector, **kw) or 0,
+    )
+    monkeypatch.setattr(sys, "argv", ["ciu", "down", "--dir", "tools/api", *flags])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    assert seen["selector"] == "tools/api"
+    assert seen["phases"] == expected["phases"]
+    assert seen["protected_ack"] is expected["protected_ack"]
+
+
+def test_down_help_lists_only_flags_the_dir_form_is_tested_with(monkeypatch, capsys):
+    """If `ciu down --help` gains a flag, the `--dir` parser and the cases above
+    must be extended with it: the help and the parser may not drift apart."""
+    import re
+
+    monkeypatch.setattr(sys, "argv", ["ciu", "down", "--help"])
+    with pytest.raises(SystemExit):
+        cli.main()
+    usage = capsys.readouterr().out.split("usage:", 1)[1].split("\n\n", 1)[0]
+    listed = set(re.findall(r"--[a-z][a-z-]*", usage))
+    library_owned = {
+        "--help", "--version", "--log-level", "--quiet", "--debug", "--debug-raw",
+        "--traceback", "--color", "--no-color", "--log-prefix-time-short", "--ksm", "--no-ksm",
+    }
+    assert listed - library_owned == {
+        "--yes", "--profile", "--phases", "--root-folder",
+        "--i-understand-this-is-protected", "--dir", "--host",
+    }
+
+
+def test_down_dir_rejects_a_malformed_phases_value(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "_resolve_repo_root_deploy", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        deploy, "stop_stack",
+        lambda *_a, **_kw: pytest.fail("a malformed --phases must refuse before stopping"),
+    )
+    monkeypatch.setattr(sys, "argv", ["ciu", "down", "--dir", "tools/api", "--phases", "one"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+    assert "invalid --phases entry 'one'" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
