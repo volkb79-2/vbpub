@@ -674,6 +674,7 @@ entries.
 | CIU-218 | `ciu host enroll` cannot install an opt-in forced-command key for the fleet campaign runner | Major | OPEN 2026-11-13 |
 | CIU-219 | The packaged ciu skills have no grammar or coverage oracle, so a released verb can be absent from the text a consumer's agent reads | Minor | OPEN 2026-11-15 |
 | CIU-221 | `ciu up --dir` applies no profile `topology_overrides` to the per-stack render, unlike profile-mode `ciu up` after CIU-208 | Medium | OPEN 2026-11-18 |
+| CIU-222 | `ciu up` in a standalone, non-git instance directory (the PWMCP instance a cockpit image ships) aborts at the S16.3 git requirement, and a bare `git init` still fails (no `HEAD`) | Minor | OPEN 2026-11-18 |
 
 
 The approved milestone decisions and serial package order are in
@@ -7072,3 +7073,15 @@ turn the test red, the refreshed 7.25.1 text passes unchanged, and
 **Wanted.** The `--dir` path carries the resolved profile's `topology_overrides` into the per-stack render exactly like profile mode: the same accumulated override, deep-merged over the topology of the chain that stack renders, so keys the profile does not override keep that chain's value. Whether `--dir` should also apply `env_overrides` and `compose_profiles` is a separate decision and is not part of this entry; SPEC S3.12 item 1 and S7.4 are updated to state whichever contract results.
 
 **Close when.** A test with the CIU-208 fixture (`ciu/tests/tests/test_ciu_208_profile_topology_overrides.py`) driven through `ciu up --dir` renders the profile-overridden value, and a controlled-wrong implementation that passes no override on the `--dir` path renders the disk-chain value and fails the oracle; a nested-global-chain layer stays effective; and SPEC S3.12 no longer says `--dir` applies no `topology_overrides`.
+
+## CIU-222 — `ciu up` in a standalone, non-git instance directory aborts at the S16.3 git requirement
+
+**Status:** OPEN (filed 2026-11-18, found by the controller's cockpit provisioning check on ciu 7.25.1; report `artifacts/release-program-20261027/reports/v1001-cockpit-provisioning-REPORT.md` section 2c; still to be re-checked against ciu 7.26.0); severity: Minor (a documented path fails; a one-commit workaround exists but was not verified).
+
+**Observed.** The mdt-cockpit image ships a standalone CIU instance at `/srv/pwmcp-instance` (not a mount, not a git repository), and its README says `cd /srv/pwmcp-instance && ciu up` starts the PWMCP browser service. Run there: `ciu env generate` writes `ciu.env` and `ciu.instance.generated.toml` and then ends with `[ERROR] [S16.3] git rev-parse --git-common-dir failed in /srv/pwmcp-instance: not a git repository`; `ciu up --dry-run --yes` passes `ciu check` (render, shape, secrets and compose-render) and then fails at step 3/17 with the same S16.3 error, after writing `ciu.global.toml` and `ciu.toml` into the directory. After a bare `git init -b main` (plus a `safe.directory` setting, because the directory owner differs from the invoking user) the failure moves to `[S16] could not determine whether /srv/pwmcp-instance is a managed checkout ...: git rev-parse HEAD failed (128): ambiguous argument 'HEAD'`, i.e. a repository without a commit is refused as well. Whether one initial commit gets past it was not tried.
+
+**Cause (to confirm).** The S16 family code resolves the checkout through `git rev-parse --git-common-dir` (`ciu/src/ciu/worktree.py`, the S16.3 error near line 10137) and `git rev-parse HEAD` (the managed-checkout determination near line 5578) and treats a failure as fatal. SPEC-V8 S2.6.1 already gives a plain (non-git) checkout a state root, so a non-git root is a supported shape for the render and state verbs; the S16 worktree-family step has no non-git branch.
+
+**Wanted.** Either (a) a non-git CIU root skips the worktree-family steps that need a git common directory (no family lock, no budget slot, no managed-checkout record), with a spec sentence and a test, so `ciu up` in a standalone instance directory works without git, or (b) a clear error that names the cause and the one-commit workaround (`git init`, one commit, `safe.directory`) and the cockpit docs say so; (a) is preferred because the shipped docs promise it. Which of the two is a design decision for the ciu owner; the entry does not pick one.
+
+**Close when.** A test runs the `up` path (dry-run through the S16 steps) in a temporary non-git directory with a minimal stack and succeeds under (a) or fails with the named message under (b), a controlled-wrong implementation that keeps the raw `git rev-parse` failure fails that oracle, the SPEC says which behaviour holds, and the mdt-cockpit README sentence about `/srv/pwmcp-instance` matches it.
