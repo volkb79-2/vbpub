@@ -40,6 +40,7 @@ use crate::dictionary::Retired;
 use crate::error::StoreError;
 use crate::format::{
     check_tier_name, SegmentFileName, SegmentHeader, TierKind, HEADER_LEN, QUARANTINE_SUFFIX,
+    SEQ_NAME_MAX,
 };
 use crate::fsio::{EntryKind, StoreDir};
 use crate::queue::{FlushPolicy, Job};
@@ -881,7 +882,9 @@ impl Tier {
     /// # Errors
     ///
     /// [`StoreError::Config`] when a segment is already open (one open segment per tier is the
-    /// policy that makes the ring's "evict whole segments" possible), and every IO refusal.
+    /// policy that makes the ring's "evict whole segments" possible),
+    /// [`StoreError::LengthOverflow`] when the next sequence would exceed [`SEQ_NAME_MAX`]
+    /// (legitimate exhaustion: 136 years at one segment a second), and every IO refusal.
     pub fn open_segment(
         &mut self,
         start_s: u64,
@@ -895,6 +898,11 @@ impl Tier {
             });
         }
         let seq = self.seq_water;
+        if seq > SEQ_NAME_MAX {
+            // A name above the bound is not a segment name of this store (HOB-55), so the
+            // sequence space is exhausted rather than continued under a name no scan accepts.
+            return Err(StoreError::LengthOverflow);
+        }
         self.seq_water = seq.checked_add(1).ok_or(StoreError::LengthOverflow)?;
         let name = self.name_for(start_s, seq, true);
         let parsed = SegmentFileName {
@@ -1156,7 +1164,12 @@ impl Tier {
     /// record must not fail because of debris. The entry therefore always leaves the list and
     /// its bytes always leave the total: a file that is already gone is dropped quietly and is
     /// **not** counted as evicted (nothing was removed), and a removal that fails for another
-    /// reason is dropped and reported in [`TierScan::notes`].
+    /// reason is dropped and reported, in [`TierScan::notes`] and in [`Evicted::notes`] (the
+    /// caller of `append`/`evict` sees the second, and a later rescan resets the first,
+    /// HOB-58).
+    ///
+    /// Known limit: a file that could not be removed stays on disk, uncounted, until the next
+    /// restart's scan adopts it again.
     fn remove_quarantined(&mut self, evicted: &mut Evicted) {
         if self.scan.quarantined_files.is_empty() {
             return;
@@ -1166,10 +1179,11 @@ impl Tier {
         self.scan.bytes = self.bytes;
         let gone = matches!(self.dir.metadata(&file.name), Ok(None));
         if gone {
-            self.scan.notes.push(TierNote {
+            let note = TierNote {
                 name: file.name,
                 reason: "quarantined file already gone; dropped from the total".to_string(),
-            });
+            };
+            self.report(evicted, note);
             return;
         }
         match self.dir.remove(&file.name) {
@@ -1177,14 +1191,25 @@ impl Tier {
                 evicted.quarantined.push(file.name);
                 evicted.bytes = evicted.bytes.saturating_add(file.len);
             }
-            Err(error) => self.scan.notes.push(TierNote {
-                name: file.name,
-                reason: format!(
-                    "quarantined file could not be removed ({}); dropped from the byte total",
-                    error.kind()
-                ),
-            }),
+            Err(error) => {
+                let note = TierNote {
+                    name: file.name,
+                    reason: format!(
+                        "quarantined file could not be removed ({}); dropped from the byte total",
+                        error.kind()
+                    ),
+                };
+                self.report(evicted, note);
+            }
         }
+    }
+
+    /// Record a note about an entry an eviction dropped without removing: in the scan's own
+    /// notes and in the pass's [`Evicted::notes`], which is what the caller of `append` or
+    /// `evict` receives.
+    fn report(&mut self, evicted: &mut Evicted, note: TierNote) {
+        evicted.notes.push(note.clone());
+        self.scan.notes.push(note);
     }
 
     /// Remove one segment this tier owns, updating the ring and the byte total.
@@ -1221,10 +1246,11 @@ impl Tier {
         self.bytes = self.bytes.saturating_sub(len);
         self.scan.bytes = self.bytes;
         if gone {
-            self.scan.notes.push(TierNote {
+            let note = TierNote {
                 name: name.to_string(),
                 reason: "segment already gone; dropped from the ring".to_string(),
-            });
+            };
+            self.report(evicted, note);
             return Ok(());
         }
         evicted.segments.push(name.to_string());
@@ -1490,6 +1516,11 @@ pub struct Evicted {
     pub quarantined: Vec<String>,
     /// The bytes they held, segments and quarantined files together.
     pub bytes: u64,
+    /// Reports of entries the pass dropped without removing a file: one already gone, or one
+    /// that could not be removed (a quarantined file that fails to unlink stays on disk,
+    /// uncounted, and the next restart's scan adopts it again). They are not evictions, so
+    /// they do not make [`Evicted::is_empty`] false (HOB-58).
+    pub notes: Vec<TierNote>,
 }
 
 impl Evicted {
@@ -1542,7 +1573,7 @@ impl TierRange {
 mod tests {
     use super::{Tier, TierConfig, MAX_CAP_BYTES};
     use crate::error::StoreError;
-    use crate::format::{TierKind, HEADER_LEN};
+    use crate::format::{TierKind, HEADER_LEN, SEQ_NAME_MAX};
     use crate::fsio::testdir::TempDir;
     use crate::fsio::StoreDir;
     use crate::queue::Job;
@@ -2833,6 +2864,9 @@ mod tests {
             .find(|note| note.name == "hot-0-0.seg.corrupt")
             .expect("the vanished file is reported by name");
         assert!(gone_note.reason.contains("already gone"));
+        // HOB-58: the caller of `append` sees the same report, not only `scan.notes`.
+        assert_eq!(outcome.evicted.notes.len(), 1);
+        assert_eq!(outcome.evicted.notes[0], *gone_note);
         // The cap path takes the same way out: a tight cap and a debris file deleted by hand.
         let temp = TempDir::new("q-by-hand-cap");
         three_sealed(&temp);
@@ -2842,6 +2876,8 @@ mod tests {
         temp.remove("hot-0-0.seg.corrupt");
         let evicted = capped.evict(0).expect("the cap loop must make progress");
         assert!(evicted.is_empty(), "not an eviction");
+        assert_eq!(evicted.notes.len(), 1);
+        assert!(evicted.notes[0].reason.contains("already gone"));
         assert!(capped.scan().quarantined_files.is_empty());
         assert_eq!(capped.bytes(), one * 2);
     }
@@ -2855,6 +2891,9 @@ mod tests {
         temp.remove("hot-0-0.seg");
         let evicted = tier.evict(0).expect("a vanished head must not fail");
         assert!(evicted.is_empty(), "nothing was removed");
+        assert_eq!(evicted.notes.len(), 1);
+        assert_eq!(evicted.notes[0].name, "hot-0-0.seg");
+        assert!(evicted.notes[0].reason.contains("already gone"));
         assert_eq!(tier.scan().segments.len(), 2);
         assert_eq!(tier.bytes(), one * 2);
     }
@@ -2922,5 +2961,108 @@ mod tests {
         assert!(temp.exists("hot-0-1.seg.open.corrupt"));
         let last = third.append(&job(0, 16), 1, 1).expect("append works");
         assert_eq!(last.segment, "hot-0-2.seg.open");
+    }
+
+    #[test]
+    fn a_name_above_the_sequence_bound_is_a_look_alike_and_never_poisons_the_water_mark() {
+        // HOB-55: `hot-0-18446744073709551615.seg` used to set the water mark to u64::MAX
+        // before its owner was proved, so every `open_segment` failed until the file was
+        // removed. A sequence above `SEQ_NAME_MAX` is not a name this store writes, in any of
+        // the four spellings, and is treated like every other look-alike.
+        let temp = TempDir::new("seq-lookalike");
+        three_sealed(&temp);
+        let valid = temp.read_file("hot-0-0.seg");
+        let above = SEQ_NAME_MAX + 1;
+        let mut planted: Vec<String> = Vec::new();
+        for seq in [u64::MAX, above] {
+            for suffix in [".seg", ".seg.open", ".seg.corrupt", ".seg.open.corrupt"] {
+                planted.push(format!("hot-0-{seq}{suffix}"));
+            }
+        }
+        for name in &planted {
+            temp.write_file(name, &valid);
+        }
+        let mut tier = tier_with_cap(&temp, 3600, 0);
+        assert_eq!(tier.next_seq(), 3, "only the real segments hold sequences");
+        let mut noted: Vec<&str> = tier
+            .scan()
+            .notes
+            .iter()
+            .map(|note| note.name.as_str())
+            .collect();
+        noted.sort_unstable();
+        let mut expected: Vec<&str> = planted.iter().map(String::as_str).collect();
+        expected.sort_unstable();
+        assert_eq!(noted, expected, "every look-alike is reported, none adopted");
+        assert!(tier.scan().quarantined_files.is_empty());
+        assert_eq!(tier.scan().segments.len(), 3);
+        let held: u64 = tier.scan().segments.iter().map(|s| s.file_len).sum();
+        assert_eq!(tier.bytes(), held, "no look-alike is counted");
+        let outcome = tier
+            .append(&job(300_000_000_000, 16), 1, 1)
+            .expect("appends still work");
+        assert_eq!(outcome.segment, "hot-300-3.seg.open");
+        let evicted = tier.evict(i64::MAX / 2).expect("evict");
+        assert!(!evicted.is_empty(), "the real history is still evicted");
+        for name in &planted {
+            assert!(temp.exists(name), "{name} is never deleted");
+        }
+    }
+
+    #[test]
+    fn a_name_at_the_sequence_bound_is_adopted_and_the_next_segment_is_refused() {
+        // The bound itself is a sequence this store may have minted: it is adopted, and the
+        // sequence after it is legitimate exhaustion, the typed overflow error.
+        let temp = TempDir::new("seq-bound");
+        let dir = StoreDir::open(temp.path(), false).expect("dir");
+        let config = TierConfig::history("hot", 60, 3600, 0, false).expect("config");
+        let header = crate::format::SegmentHeader {
+            seq: SEQ_NAME_MAX,
+            epoch: 7,
+            dict_generation: 3,
+            kind: TierKind::History,
+            payload: crate::format::PAYLOAD_BLOCK,
+            start_real_ns: 0,
+            max_payload: config.max_payload,
+            max_incarnations: config.max_incarnations,
+        };
+        let name = format!("hot-0-{SEQ_NAME_MAX}.seg.open");
+        let mut open = OpenSegment::create(&dir, &name, header).expect("create");
+        open.append(0, &[1], &block(16)).expect("append");
+        drop(open);
+        let mut tier = tier_with_cap(&temp, 3600, 0);
+        assert!(tier.has_open(), "the name at the bound is ours");
+        assert!(tier.scan().notes.is_empty());
+        assert_eq!(tier.next_seq(), SEQ_NAME_MAX + 1);
+        tier.append(&job(10_000_000_000, 16), 1, 1)
+            .expect("the open segment still takes records");
+        let refused = tier.append(&job(65_000_000_000, 16), 1, 1);
+        assert_eq!(refused.map(|_| ()), Err(StoreError::LengthOverflow));
+        assert_eq!(tier.next_seq(), SEQ_NAME_MAX + 1, "the mark does not move");
+        assert_eq!(tier.scan().segments.len(), 1);
+    }
+
+    #[test]
+    fn a_quarantined_file_that_cannot_be_removed_is_reported_to_the_caller() {
+        // HOB-58: the report reaches the caller of `evict`, not only `scan.notes`. A link in
+        // the file's place is refused by `StoreDir::remove`, so the entry is dropped from the
+        // total and reported, and the file stays on disk.
+        let temp = TempDir::new("q-unremovable");
+        three_sealed(&temp);
+        let one = u64::try_from(temp.read_file("hot-0-0.seg").len()).expect("fits");
+        damage(&temp, "hot-0-0.seg");
+        let mut capped = tier_with_cap(&temp, 3600, one * 2);
+        assert_eq!(capped.scan().quarantined_files.len(), 1);
+        temp.remove("hot-0-0.seg.corrupt");
+        temp.symlink_to("hot-0-0.seg.corrupt", temp.path());
+        let evicted = capped.evict(0).expect("the cap loop must make progress");
+        assert!(evicted.is_empty(), "nothing was removed");
+        assert_eq!(evicted.bytes, 0);
+        assert_eq!(evicted.notes.len(), 1);
+        assert_eq!(evicted.notes[0].name, "hot-0-0.seg.corrupt");
+        assert!(evicted.notes[0].reason.contains("could not be removed"));
+        assert_eq!(capped.scan().notes.last(), evicted.notes.first());
+        assert_eq!(capped.bytes(), one * 2, "dropped from the total");
+        assert!(temp.exists("hot-0-0.seg.corrupt"), "the file stays on disk");
     }
 }
