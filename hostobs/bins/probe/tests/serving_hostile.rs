@@ -539,7 +539,11 @@ fn expected(case: &Case) -> (Option<Code>, u32) {
 }
 
 fn payload_of(case: &Case) -> String {
-    let args = if case.verb == "hello" { HELLO_ARGS } else { "{}" };
+    let args = if case.verb == "hello" {
+        HELLO_ARGS
+    } else {
+        "{}"
+    };
     let verb = case.verb;
     if case.mode == Mode::Binary {
         format!("{{\"verb\":\"{verb}\",\"args\":{args}}}")
