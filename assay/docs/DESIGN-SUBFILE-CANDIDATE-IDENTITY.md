@@ -290,7 +290,11 @@ Order: WP0 and WP1 in parallel, then WP2, then WP3 first as a skeleton (the `--c
 
 Every WP that changes `src` needs the B534 host self-qualification before merge. WP0 ends with a short M report that replaces §1's C/E numbers. If WP0 measures the replay cost at 60 s or more, Phase 1 strict loses most of its gain and D2 must be revisited before WP4.
 
-## 7. Open decisions (operator/controller)
+## 7. Decisions (operator, 2026-11-18)
+
+**DECIDED 2026-11-18 (operator, relayed by the main controller): D1-D6 as recommended below, with these exact outcomes.** D1: yes, an isolated kill is acceptable, disclosed as `witness-isolated`. D2: a PASS is refused while any `carried-unverified` kill exists for release claims; allowed for exploratory campaigns. D3: S1, survivors always carried pessimistically; the optional probe R-a comes later (WP8). D4: deferred; decide after WP0, Phase 1 in production and a measured replay share. D5: the line-window key B is adopted for kill LOOKUP only (the WP0 threshold is met: B(k=2..5) re-keys 79-93 candidates per cmru release against 211 for A', 151-169 against 468 for ciu, 79-105 against 517 for run-gate; tables in the sub-controller's WP0 record). D6: split out a `classifier_version`. **KI-141 is resolved by the operator's reasoning:** a previously tested candidate still holds if the code that was tested did not change, so the R2 claim covers the WHOLE source, assembled from carried and re-verified results, not a delta-only claim.
+
+The original options and recommendations follow for reference.
 
 - **D1, isolated kill semantics.** Is "X alone fails on M and passes alone on P" an acceptable kill, disclosed as `witness-isolated`? If not, kills replay by B106 prefix, and the Phase 1 gain is limited to survivors and correctness. Recommended: yes.
 - **D2, legacy `--carry-over` kills.** Options: (a) keep them, marked `carried-unverified`, PASS allowed (as today); (b) PASS refused while any exist; (c) replace them with isolated replay by default. Recommended: (b) for release claims, (a) for exploratory campaigns.
