@@ -10,8 +10,9 @@ about this project's real `run-gate.toml` and `assay.toml`, so they restate no r
 config loader and its validators, `merge_lanes`, `attach_r2_flex`, `refuse_serialized_shard` and the
 `select_r2_jobs` worker selection. Nothing starts docker or a lane.
 
-The module is loaded by file path (no `sys.path` change). When this package is checked out alone,
-without `run-gate-project/`, the run-gate tests skip; the file-only tests below still run.
+The module is loaded by file path (no `sys.path` change). `run-gate-project/` lives in the same
+monorepo and is part of every checkout the gate lanes mount, so a missing `run_gate.py` means a
+broken checkout and FAILS the test (never skips).
 """
 
 from __future__ import annotations
@@ -29,8 +30,9 @@ import pytest
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 RUN_GATE_SOURCE = PACKAGE_ROOT.parents[1] / "run-gate-project" / "run_gate.py"
 SECONDS = {"s": 1, "m": 60, "h": 3600}
-#: Estate rule (cmru/tests/test_gate_budgets.py): the outer container budget exceeds the inner
-#: Assay deadline by at least this much, for container start and the editable assay install.
+#: The outer container budget exceeds the inner Assay deadline by at least this much, for container
+#: start and the editable assay install. cmru's gate tests (cmru/tests/test_gate_budgets.py) enforce
+#: this rule for cmru; cli-extended adopts it and enforces it here.
 OUTER_MARGIN_SECONDS = 5 * 60
 CANDIDATES = 1561
 
@@ -38,7 +40,7 @@ CANDIDATES = 1561
 @cache
 def _run_gate():
     if not RUN_GATE_SOURCE.is_file():
-        pytest.skip("run-gate-project is not part of this checkout")
+        pytest.fail(f"run-gate-project/run_gate.py is missing at {RUN_GATE_SOURCE}: broken checkout")
     spec = importlib.util.spec_from_file_location("_cli_extended_run_gate_under_test", RUN_GATE_SOURCE)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -154,7 +156,7 @@ def test_candidate_ram_covers_the_measured_rss_maximum() -> None:
     assert rg.parse_size_bytes(lane["resources"]["candidate_ram"]) >= 256 * 1024**2
 
 
-def test_r2_outer_budget_exceeds_the_assay_lane_deadline_by_the_estate_margin() -> None:
+def test_r2_outer_budget_exceeds_the_assay_lane_deadline_by_the_margin() -> None:
     lane = tomllib.loads((PACKAGE_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]["r2"]
     inner = _seconds(_assay_lane()["budget"])
     assert _seconds(lane["budget"]) >= inner + OUTER_MARGIN_SECONDS

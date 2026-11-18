@@ -34,9 +34,10 @@ resource_observer = "cgprofile"
 clean_tree = true
 # Outer bound of the lane container for ONE unsharded run: the assay.toml
 # [lanes.cli-extended] budget (720m, the binding deadline) + 10m for container
-# start and the editable assay install (estate rule outer >= inner + 5m, as in
-# cmru/tests/test_gate_budgets.py). A shard runs a fraction of the candidates
-# inside the same ceiling.
+# start and the editable assay install. This is the outer >= inner + 5m rule
+# cmru's gate tests enforce for cmru (cmru/tests/test_gate_budgets.py);
+# cli-extended adopts it and enforces it with tests/test_r2_lane_contract.py.
+# A shard runs a fraction of the candidates inside the same ceiling.
 budget = "730m"
 # B157 (assay) is closed: overlapping candidate windows each attribute a limit
 # event, so concurrent workers are legal. assay.toml jobs_max = 3 is the ceiling.
