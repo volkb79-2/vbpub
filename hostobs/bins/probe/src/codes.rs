@@ -56,6 +56,35 @@ pub enum Code {
     Internal,
 }
 
+/// The budget pool named by a `budget` error's `detail` (WIRE.md section 10).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Pool {
+    /// `max_subscriptions` per connection.
+    Subscriptions,
+    /// The peer uid's distinct selections.
+    UidSelections,
+    /// The probe's distinct live selections.
+    Selections,
+    /// Rows resolved for one selection.
+    Rows,
+    /// History spans, reserved for P5b-3.
+    Spans,
+}
+
+impl Pool {
+    /// The wire spelling of the pool.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Pool::Subscriptions => "subscriptions",
+            Pool::UidSelections => "uid-selections",
+            Pool::Selections => "selections",
+            Pool::Rows => "rows",
+            Pool::Spans => "spans",
+        }
+    }
+}
+
 impl Code {
     /// Every code, in the order of WIRE.md section 10.
     pub const ALL: [Code; 23] = [
@@ -177,6 +206,8 @@ pub enum Detail {
     Empty,
     /// `{"key": <path>}`: the schema path of the offending member; empty for a text defect.
     Key(String),
+    /// `{"pool": <name>}`: the exhausted budget pool.
+    Pool(Pool),
 }
 
 impl Detail {
@@ -197,7 +228,9 @@ impl Detail {
 
 #[cfg(test)]
 mod tests {
-    use super::{Code, Detail};
+    use super::{Code, Detail, Pool};
+    use crate::encode::error_payload;
+    use hostobs_proto::envelope::{check_rep, members_up_to};
 
     #[test]
     fn the_list_is_the_closed_set_of_section_10() {
@@ -289,5 +322,37 @@ mod tests {
         assert_eq!(Detail::key(&at_bound), Detail::Key(at_bound.clone()));
         let over = "a".repeat(Detail::MAX_KEY_BYTES + 1);
         assert_eq!(Detail::key(&over), Detail::Key(String::new()));
+    }
+
+    #[test]
+    fn codes_pool_names_and_detail_pool_encoding() {
+        let names = [
+            (Pool::Subscriptions, "subscriptions"),
+            (Pool::UidSelections, "uid-selections"),
+            (Pool::Selections, "selections"),
+            (Pool::Rows, "rows"),
+            (Pool::Spans, "spans"),
+        ];
+        for (pool, name) in names {
+            assert_eq!(pool.name(), name);
+            let payload = error_payload(Code::Budget, &Detail::Pool(pool));
+            let bytes = payload.as_bytes();
+            let rep = check_rep(bytes, false).expect("error envelope");
+            assert!(!rep.ok);
+            let body = bytes.get(rep.body).expect("error body");
+            let fields = members_up_to(body, 8).expect("error members");
+            let detail = fields
+                .iter()
+                .find(|member| body.get(member.key.clone()) == Some(b"detail".as_slice()))
+                .expect("detail member");
+            let detail_text = body.get(detail.value.clone()).expect("detail object");
+            let detail_fields = members_up_to(detail_text, 8).expect("detail members");
+            assert_eq!(detail_fields.len(), 1);
+            let only = detail_fields.first().expect("pool member");
+            assert_eq!(detail_text.get(only.key.clone()), Some(b"pool".as_slice()));
+            let value = detail_text.get(only.value.clone()).expect("pool value");
+            assert_eq!(value, format!("\"{name}\"").as_bytes());
+        }
+        assert!(Detail::Pool(Pool::Spans) != Detail::Empty);
     }
 }

@@ -1,4 +1,4 @@
-"""CLI-EXT-35: the `r2` run-gate lane is a native Assay lane that run-gate can shard.
+"""CLI-EXT-41: the `r2` run-gate lane is a native Assay lane that run-gate can shard.
 
 The lane used to be a `kind = "command"` lane that called `assay run` itself, so run-gate refused
 `--shard K/N`, `--merge-shards N`, `--carry-over` and `--only-candidates` (they apply only to
@@ -119,7 +119,7 @@ def test_run_gate_accepts_the_merge_and_carry_over_requests_for_the_r2_lane() ->
 
 
 def test_run_gate_would_refuse_the_old_command_lane() -> None:
-    """The controlled wrong case: the pre-CLI-EXT-35 lane shape is refused by the same helper."""
+    """The controlled wrong case: the pre-CLI-EXT-41 lane shape is refused by the same helper."""
     rg = _run_gate()
     lane, _environment, _name = _effective()
     old = {"kind": "command", "environment": lane["environment"], "argv": ["true"]}

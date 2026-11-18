@@ -69,7 +69,7 @@ artifact = "coverage.json"
 [lanes.cli-extended.judge.mutation]
 # Ceiling (assay >= 11). Measured 1461 candidates, median 10.9 s, mean 15 s
 # (1561 candidates with `procio`). The run-gate `r2` lane is a native
-# `kind = "assay"` lane (CLI-EXT-35) with `jobs = "auto"`, so run-gate picks the
+# `kind = "assay"` lane (CLI-EXT-41) with `jobs = "auto"`, so run-gate picks the
 # worker count up to this ceiling; B157 is closed, concurrent candidate windows
 # are legal (see run-gate-project/CONSUMERS.md, Shard, merge, carry over).
 jobs_max = 3

@@ -17,7 +17,7 @@ set -euo pipefail
 
 DEVICE="" ; YES=0 ; DRY=0
 SUITE=trixie ; MIRROR=http://deb.debian.org/debian ; SECURITY_MIRROR=http://deb.debian.org/debian-security
-HOSTNAME_=drpoc ; ROOTPW=root
+HOSTNAME_=drpoc ; ROOTPW=root ; ROOTPW_HASH=""
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 die() { echo "install-btrfs: $*" >&2; exit 1; }
@@ -32,6 +32,7 @@ while [ $# -gt 0 ]; do
     --security-mirror) SECURITY_MIRROR=${2:?}; shift 2 ;;
     --hostname) HOSTNAME_=${2:?}; shift 2 ;;
     --root-password) ROOTPW=${2:?}; shift 2 ;;
+    --root-password-hash) ROOTPW_HASH=${2:?}; shift 2 ;;   # crypt(3) hash; replaces --root-password
     --dry-run) DRY=1; shift ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -141,7 +142,9 @@ run mount --bind /sys "$T/sys"
 run mount --bind /sys/firmware/efi/efivars "$T/sys/firmware/efi/efivars" || true
 
 chroot_run() { run chroot "$T" "$@"; }
-if [ "$DRY" != 1 ]; then echo "root:$ROOTPW" | chroot "$T" chpasswd; fi
+if [ "$DRY" != 1 ]; then
+  if [ -n "$ROOTPW_HASH" ]; then echo "root:$ROOTPW_HASH" | chroot "$T" chpasswd -e; else echo "root:$ROOTPW" | chroot "$T" chpasswd; fi
+fi
 run chmod 700 "$T/root"
 chroot_run update-initramfs -u -k all
 chroot_run /usr/local/sbin/dr-state install-grub

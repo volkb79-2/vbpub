@@ -185,7 +185,7 @@ pub(crate) fn parse_hello(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_hello, HelloResult, Limits, PRE_HELLO_MAX_REQUEST};
+    use super::{parse_hello, HelloResult, Limits, PRE_HELLO_MAX_FRAME, PRE_HELLO_MAX_REQUEST};
     use crate::error::{ClientError, ProtocolKind};
     use crate::level::Level;
 
@@ -285,6 +285,8 @@ mod tests {
         assert_eq!(parse_hello(&bad_level, 1, Level::Observe, 100), mismatch());
         let small = result("observe", &[("max_request_bytes", 99)], "");
         assert_eq!(parse_hello(&small, 1, Level::Observe, 100), mismatch());
+        let exact = result("observe", &[("max_request_bytes", 100)], "");
+        assert!(parse_hello(&exact, 1, Level::Observe, 100).is_ok());
         let tiny = result("observe", &[("max_frame_bytes", 11)], "");
         assert_eq!(parse_hello(&tiny, 1, Level::Observe, 100), mismatch());
         let exact = result("observe", &[("max_frame_bytes", 12)], "");
@@ -325,5 +327,17 @@ mod tests {
         assert_eq!(pending.level, Level::Operator);
         assert_eq!(pending.limits, Limits::pre_hello());
         assert_eq!(pending.limits.max_request_bytes, PRE_HELLO_MAX_REQUEST);
+    }
+
+    #[test]
+    fn pre_hello_limits_and_source_constants_are_exact() {
+        assert_eq!(PRE_HELLO_MAX_REQUEST, 32_768);
+        assert_eq!(PRE_HELLO_MAX_FRAME, 16_777_216);
+        let expected = Limits {
+            max_frame_bytes: PRE_HELLO_MAX_FRAME,
+            max_request_bytes: PRE_HELLO_MAX_REQUEST,
+            ..Limits::default()
+        };
+        assert_eq!(Limits::pre_hello(), expected);
     }
 }

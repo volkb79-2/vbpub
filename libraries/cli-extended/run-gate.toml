@@ -17,7 +17,7 @@ artifacts = ["coverage.json"]
 memory = "512m"
 
 # R2 (whole-source mutation, 1561 candidates; measured median 10.9 s, mean 15 s
-# per candidate) as a NATIVE Assay lane (CLI-EXT-35). A `kind = "command"` lane
+# per candidate) as a NATIVE Assay lane (CLI-EXT-41). A `kind = "command"` lane
 # that called `assay run` itself made run-gate refuse `--shard`, `--merge-shards`,
 # `--carry-over` and `--only-candidates` (RG-265: they apply only to
 # `kind = "assay"` lanes), so the campaign could only run as one container.

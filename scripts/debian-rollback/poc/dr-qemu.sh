@@ -27,7 +27,7 @@ die() { echo "dr-qemu: $*" >&2; exit 1; }
 
 cmd=${1:-}; [ $# -gt 0 ] && shift
 NAME="" STATE="" IMAGE="" NETWORK="" SLICE="" MEM="" CPUS="" OCODE="" OVARS=""
-BASE_RAW="" BASE_QCOW2="" SEED="" SHARES=64 RESUME=0 DRY=0
+BASE_RAW="" BASE_QCOW2="" SEED="" CONFIG_DISK="" SHARES=64 RESUME=0 DRY=0
 declare -a SIZES=() FORWARDS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -43,6 +43,7 @@ while [ $# -gt 0 ]; do
     --base-raw) BASE_RAW=${2:?}; shift 2 ;;
     --base-qcow2) BASE_QCOW2=${2:?}; shift 2 ;;
     --seed-iso) SEED=${2:?}; shift 2 ;;
+    --config-disk) CONFIG_DISK=${2:?}; shift 2 ;;   # raw image shown to the guest as a READ-ONLY virtio disk (the CIDATA stick)
     --data-disk-size) SIZES+=("${2:?}"); shift 2 ;;
     --forward) FORWARDS+=("${2:?}"); shift 2 ;;
     --cpu-shares) SHARES=${2:?}; shift 2 ;;
@@ -67,7 +68,7 @@ done
 [[ "$MEM" =~ ^[0-9]+$ ]] && [ "$MEM" -ge 512 ] && [ "$MEM" -le 8192 ] || die "--memory-mib must be 512..8192"
 [[ "$CPUS" =~ ^[1-4]$ ]] || die "--cpus must be 1..4"
 case "$NETWORK" in host|none|bridge|container:*|"") die "--network must name a dedicated user-defined network, not '$NETWORK'" ;; esac
-for p in "$STATE" "$OCODE" "$OVARS" "$BASE_RAW" "$BASE_QCOW2" "$SEED"; do
+for p in "$STATE" "$OCODE" "$OVARS" "$BASE_RAW" "$BASE_QCOW2" "$SEED" "$CONFIG_DISK"; do
   case "$p" in *,*|*\ *|*=*) die "path with comma, space or '=' refused (would inject --mount options): $p" ;; esac
 done
 for s in "${SIZES[@]:-}"; do
@@ -108,6 +109,9 @@ else
 fi
 if [ -n "$SEED" ]; then
   argv+=(--mount "type=bind,src=$SEED,dst=/media/seed.iso,readonly" --env VM_READONLY_MEDIA=/media/seed.iso)
+fi
+if [ -n "$CONFIG_DISK" ]; then
+  argv+=(--mount "type=bind,src=$CONFIG_DISK,dst=/media/config.img,readonly" --env VM_CONFIG_DISK=/media/config.img)
 fi
 hostfwd=""
 for f in "${FORWARDS[@]}"; do
@@ -152,6 +156,10 @@ for size in ${VM_EXTRA_DISK_SIZES_BYTES:-}; do
 done
 IFS=$old_ifs
 if [ -n "${VM_READONLY_MEDIA:-}" ]; then set -- "$@" -cdrom "$VM_READONLY_MEDIA"; fi
+if [ -n "${VM_CONFIG_DISK:-}" ]; then
+  set -- "$@" -drive "file=$VM_CONFIG_DISK,if=none,id=cfgdisk,format=raw,readonly=on" \
+    -device "virtio-blk-pci,drive=cfgdisk,serial=drcfg001,addr=0x6"
+fi
 umask 077
 exec qemu-system-x86_64 \
   -name "$VM_NAME" -machine q35,accel=tcg -cpu max,-vmx,-svm \
