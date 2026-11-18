@@ -57,7 +57,7 @@ from scratch.
 
 | M1d-12 | HOB-43 | the store never counts an evicted quarantined file; counts it as an evicted segment; `Evicted::is_empty` ignores quarantined files | `an_evicted_quarantined_file_is_counted_apart_from_evicted_segments` |
 | M1d-13 | HOB-43 | removing a quarantined file does not take its bytes out of the total | `quarantined_bytes_count_against_the_cap_and_go_before_any_live_segment` |
-| M1d-14 | HOB-8 | Python: the 12 to 15 byte block-frame guard is dropped | `test_the_frame_header_bounds_the_declared_length_at_both_ends`; the `block-without-directory` fixture |
+| M1d-14 | HOB-8 | Python: the 12 to 15 byte block-frame guards are dropped (two patches: the 2-byte and the 4-byte directory guard) | `test_the_frame_header_bounds_the_declared_length_at_both_ends` and the `block-without-directory` fixture (the 2-byte guard); `test_a_block_frame_of_twelve_to_fifteen_bytes_is_a_directory_truncation` (both guards) |
 | M1d-15 | HOB-43 | the `kind != File` guard on a `.corrupt` entry is dropped | none expected: **possibly an equivalent mutant**, because `read_window` fails on a directory and the name is reported anyway; if it survives, that is the explanation, not a missing test |
 | M1d-16 | HOB-43 | a quarantined / a live file deleted by hand is not recognised as gone | `a_quarantined_file_deleted_by_hand_does_not_fail_every_later_append`; `a_live_segment_deleted_by_hand_leaves_the_ring_without_failing_the_cap` |
 | M1d-17 | HOB-43 | an unproven live / a quarantined name no longer reserves its sequence number | `a_name_never_comes_back_after_a_quarantine_and_a_restart`; `an_unproven_name_still_reserves_its_own_sequence_below_the_bound` |

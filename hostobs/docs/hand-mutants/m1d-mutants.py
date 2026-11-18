@@ -36,7 +36,7 @@ The patches, each with the test that must go red:
 | M1d-11 | the time section is sized at 14 bytes a bucket again (Rust and Python; HOB-48, length half) | `the_time_section_is_fifteen_bytes_per_bucket_padded_to_eight`, `a_history_block_of_zero_to_nine_buckets_round_trips_through_the_frame`, the `history-five-buckets` fixture, `test_the_time_section_is_fifteen_bytes_per_bucket_padded_to_eight` |
 | M1d-12 | the store never counts an evicted quarantined file; counts it as an evicted segment; `Evicted::is_empty` ignores quarantined files | `an_evicted_quarantined_file_is_counted_apart_from_evicted_segments` |
 | M1d-13 | removing a quarantined file does not take its bytes out of the total | `quarantined_bytes_count_against_the_cap_and_go_before_any_live_segment` |
-| M1d-14 | Python: the 12 to 15 byte block-frame guard is dropped | `test_the_frame_header_bounds_the_declared_length_at_both_ends`, the `block-without-directory` fixture |
+| M1d-14 | Python: the 12 to 15 byte block-frame guards are dropped (two patches) | `test_the_frame_header_bounds_the_declared_length_at_both_ends`, the `block-without-directory` fixture, `test_a_block_frame_of_twelve_to_fifteen_bytes_is_a_directory_truncation` |
 | M1d-15 | the `kind != File` guard for a `.corrupt` entry is dropped (possibly an equivalent mutant) | none expected: see the doc |
 | M1d-16 | a quarantined / a live file deleted by hand is not recognised as gone | `a_quarantined_file_deleted_by_hand_does_not_fail_every_later_append`, `a_live_segment_deleted_by_hand_leaves_the_ring_without_failing_the_cap` |
 | M1d-17 | a live / a quarantined name no longer reserves its sequence number | `a_name_never_comes_back_after_a_quarantine_and_a_restart` |
