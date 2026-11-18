@@ -260,7 +260,7 @@ argv = [
   "--in-diff", "{assay.changed_diff}",
   "--output", "assay-mutants-out",
 ]
-# Memory cap (measured, first real run 2026-11-18): with cargo's default parallelism the
+# Memory cap (observed by monitoring, not recorded in files; first real run 2026-11-18): with cargo's default parallelism the
 # cold baseline build alone took the container to 6.4 GiB within 90 s on the 4-core, 8 GiB
 # host that is shared with other guests. `--jobs 1` above only serialises MUTANTS, not
 # rustc or the test threads, so the build and the test run are capped here too: one rustc

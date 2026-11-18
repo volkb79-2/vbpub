@@ -237,7 +237,8 @@ artifacts = [".assay/verdict-assay-r2.json"]
 
 # A hard container memory cap. Both first attempts (2026-11-18) ran this lane in a container with NO
 # limit and one test process of the unmutated baseline grew to GBs and had to be cancelled by hand
-# at 3.6-6.4 GiB on the shared 8 GiB host (the slice total also tripped a neighbour guest's own stop rule).
+# at 3.6-6.4 GiB on the shared 8 GiB host (controller monitoring, not recorded in files; the slice total also
+# tripped a neighbour guest's own stop rule).
 # With `--memory` such a runaway is OOM-killed inside its own container (the baseline fails and the lane
 # ends non-green) instead.
 [lanes.assay-r2.resources]
