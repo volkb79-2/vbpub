@@ -432,7 +432,11 @@ def test_the_truenas_root_is_put_on_sys_path_only_if_absent():
     def load():
         spec = importlib.util.spec_from_file_location("upstream_guard_probe", upstream.__file__)
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        sys.modules[spec.name] = module  # the module's dataclasses resolve their annotations through sys.modules
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.modules.pop(spec.name, None)
 
     saved = list(sys.path)
     try:
