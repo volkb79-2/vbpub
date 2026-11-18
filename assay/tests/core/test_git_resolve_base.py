@@ -68,6 +68,91 @@ def test_merge_commit_head_resolves_to_its_first_parent_not_merge_base(git_repo)
     assert base_resolution_mode(git_repo.path) == "first-parent"
 
 
+def _merge_head_with_requested_fork_base(git_repo):
+    """A real two-parent merge HEAD whose requested base (the fork point) is
+    NOT its first parent: returns ``(first_parent, fork_point, merge_commit)``."""
+    fork_point = git_repo.head()
+    git_repo.git("checkout", "-q", "-b", "feature")
+    git_repo.write("on_feature.py", "f = 1\n")
+    git_repo.commit_all("feature change")
+    git_repo.git("checkout", "-q", "main")
+    git_repo.write("on_main.py", "m = 1\n")
+    main_tip = git_repo.commit_all("main change")
+    git_repo.git("merge", "-q", "--no-edit", "feature")
+    return main_tip, fork_point, git_repo.head()
+
+
+def test_delegated_base_on_a_merge_head_resolves_the_requested_comparison(git_repo):
+    """B552: a delegated (`base_source = "request"`) base is the exact comparison
+    the caller asked for, so a merge HEAD resolves merge-base(request, HEAD) --
+    here the fork point -- and NOT the first parent that discards the request."""
+    first_parent, fork_point, merge_commit = _merge_head_with_requested_fork_base(git_repo)
+    assert first_parent != fork_point  # the two policies really disagree here
+
+    resolved = resolve_base(git_repo.path, fork_point, delegated=True)
+
+    assert git_repo.head() == merge_commit
+    assert resolved == fork_point
+    assert resolved != first_parent
+    # the verdict names the rule that actually ran, never "first-parent" for a
+    # request that was honoured
+    assert base_resolution_mode(git_repo.path, delegated=True) == "merge-base"
+
+
+def test_delegated_diverged_base_resolves_its_merge_base_not_its_own_tip(git_repo):
+    """B552: a requested base that is NOT an ancestor of HEAD (a diverged
+    branch) is still reduced to merge-base(request, HEAD): the resolved commit
+    is an ancestor of HEAD by construction, never the request's own tip."""
+    first_parent, fork_point, _ = _merge_head_with_requested_fork_base(git_repo)
+    git_repo.git("checkout", "-q", "-b", "other", fork_point)
+    git_repo.write("on_other.py", "o = 1\n")
+    other_tip = git_repo.commit_all("diverged branch")
+    git_repo.git("checkout", "-q", "main")
+
+    resolved = resolve_base(git_repo.path, "other", delegated=True)
+
+    assert resolved == fork_point
+    assert resolved != other_tip
+    assert resolved != first_parent
+
+
+def test_non_delegated_base_on_a_merge_head_keeps_first_parent_unchanged(git_repo):
+    """B552 control: the same merge HEAD and the same ref, declared by the lane
+    itself, still resolves the first parent (B008's policy is untouched)."""
+    first_parent, fork_point, _ = _merge_head_with_requested_fork_base(git_repo)
+
+    assert resolve_base(git_repo.path, fork_point) == first_parent
+    assert resolve_base(git_repo.path, fork_point, delegated=False) == first_parent
+    assert base_resolution_mode(git_repo.path) == "first-parent"
+
+
+def test_delegated_and_declared_agree_on_a_non_merge_head(git_repo):
+    """B552 positive control: on a non-merge HEAD the flag changes nothing."""
+    fork_point = git_repo.head()
+    git_repo.write("on_main.py", "m = 1\n")
+    git_repo.commit_all("main change")
+
+    assert (
+        resolve_base(git_repo.path, fork_point, delegated=True)
+        == resolve_base(git_repo.path, fork_point)
+        == fork_point
+    )
+    assert base_resolution_mode(git_repo.path, delegated=True) == "merge-base"
+    assert base_resolution_mode(git_repo.path) == "merge-base"
+
+
+def test_a_delegated_unresolvable_ref_still_raises_git_failed(git_repo):
+    """B552: honouring the request must not weaken its validation: an
+    unresolvable requested ref on a merge HEAD refuses by name, as before it
+    would have been silently discarded."""
+    _merge_head_with_requested_fork_base(git_repo)
+
+    with pytest.raises(AssayError) as excinfo:
+        resolve_base(git_repo.path, "no-such-ref-anywhere", delegated=True)
+
+    assert excinfo.value.reason_code is ReasonCode.GIT_FAILED
+
+
 def test_a_failing_git_command_raises_git_failed(git_repo):
     with pytest.raises(AssayError) as excinfo:
         run(git_repo.path, "rev-parse", "--verify", "refs/heads/does-not-exist")

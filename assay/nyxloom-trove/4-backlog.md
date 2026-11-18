@@ -15545,7 +15545,13 @@ is in the lane log in every case (B553).
 
 ## B552 — a delegated request base is accepted and then DISCARDED on a merge-commit HEAD, so R2 plans zero candidates and reports first-parent resolution
 
-**Status:** OPEN (filed 2026-11-16); severity: should-fix (it can make an R2
+**Status:** FIXED on branch `assay-b552-20261118` (2026-11-18, option 1 of the
+proposal below: a delegated base resolves `merge-base(request, HEAD)` on every
+HEAD shape and records `"merge-base"`; a lane-declared `judge.base` keeps
+first-parent unchanged). Reported again by run-gate's RG-272 diagnosis (the same
+cause, measured on a ciu KSM campaign run from a merge head). Awaits the
+`assay/src` host self-qualification (B534) and merge. Filed 2026-11-16;
+severity: should-fix (it can make an R2
 campaign report `NO_MUTANTS` on source that really changed). Source: the
 pre-release gate report of 2026-11-16
 (`sonnet-v1001-prerelease-gates-REPORT.md`, finding F3), measured live on a

@@ -128,7 +128,7 @@ def check_resolved_base_is_head(
     Higher-rigor callers resolve the lane's declared spelling against the
     consumer repository before P22 materializes a snapshot
     (``runner._resolve_declared_base``: the merge-base, or a merge ``HEAD``'s
-    first parent). Nothing inside the snapshot may re-derive that answer:
+    first parent unless the base is delegated, B552). Nothing inside the snapshot may re-derive that answer:
     the snapshot carries no refs, so a symbolic spelling does not resolve
     there, and resolution walks ancestry (``rev-list --parents``,
     ``merge-base``) that a snapshot whose seed omits history cannot answer
