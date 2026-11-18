@@ -40,40 +40,57 @@ whichever Stryker wrote it, and says on the wire which one that was.
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import Callable, Mapping, NamedTuple
+from typing import Any, Callable, Literal, Mapping, NamedTuple
 
-from . import mutation_report_json
-from .model import IngestedMutant, IngestedMutationReport, MutationProducerIdentity
+from . import cargo_mutants_outcomes, mutation_report_json
+from .model import (
+    MAX_MUTATION_REPORT_BYTES,
+    DirectoryArtifactLike,
+    IngestedMutant,
+    IngestedMutationReport,
+    MutationProducerIdentity,
+    ParseContext,
+)
 
 __all__ = [
     "MAX_MUTATION_REPORT_BYTES",
     "MUTATION_FORMAT_REGISTRY",
+    "DirectoryArtifactLike",
     "IngestedMutant",
     "IngestedMutationReport",
     "MutationFormatSpec",
     "MutationProducerIdentity",
+    "ParseContext",
+    "load_mutation_directory",
     "load_mutation_report",
 ]
 
-#: The fixed byte bound every ingested mutation-report read obeys, the sibling
-#: of :data:`assay.coverage.MAX_COVERAGE_ARTIFACT_BYTES` that B046's own
-#: non-repudiation item (v) asks for. A fixed bound, never an ambient or
-#: elapsed-time guess (O4).
-#:
-#: Larger than coverage's 16 MiB because the documents genuinely are: a
-#: mutation report embeds the full SOURCE of every measured file alongside
-#: every mutant's replacement text, so a repository whose coverage artifact is
-#: a few megabytes can write a mutation report several times that. The
-#: committed real fixture is one small probe package and is already ~90 KB.
-MAX_MUTATION_REPORT_BYTES = 64 * 1024 * 1024
+# `MAX_MUTATION_REPORT_BYTES` (the fixed byte bound every ingested
+# mutation-report read obeys, B046 non-repudiation item (v)) is defined in
+# `.model` -- see there for the rationale -- and re-exported above.
 
 
 class MutationFormatSpec(NamedTuple):
-    """One registered ingested-mutation format: how to recognise it, and how
-    to parse it."""
+    """One registered ingested-mutation format: how to recognise it, how to
+    parse it, and how its statuses map onto assay's buckets.
 
-    parse: Callable[[str], IngestedMutationReport]
-    sniff: Callable[[str], bool]
+    ``artifact_kind`` says what the lane's artifact IS: ``"file"`` (one
+    document, ``parse`` set) or ``"directory"`` (``parse_directory`` set).
+    ``status_buckets`` maps the parser's status strings to a bucket name and
+    ``discarded_statuses`` maps those that are LISTED as discarded (not
+    bucketed) to their :data:`assay.vocabulary.DISCARD_REASONS` entry.
+    ``accepts_changed_diff`` is whether the format's argv may carry the
+    ``{assay.changed_diff}`` placeholder (D7). ``sniff`` receives the decoded
+    text for a file kind and the report bytes for a directory kind.
+    """
+
+    parse: Callable[[str], IngestedMutationReport] | None
+    sniff: Callable[[Any], bool]
+    artifact_kind: Literal["file", "directory"]
+    parse_directory: Callable[[DirectoryArtifactLike, ParseContext], IngestedMutationReport] | None
+    status_buckets: Mapping[str, str]
+    discarded_statuses: Mapping[str, str]
+    accepts_changed_diff: bool
 
 
 #: Keyed by the exact string a lane's ``judge.mutation.format`` declares.
@@ -85,10 +102,63 @@ class MutationFormatSpec(NamedTuple):
 MUTATION_FORMAT_REGISTRY: Mapping[str, MutationFormatSpec] = MappingProxyType(
     {
         "mutation-report-json": MutationFormatSpec(
-            parse=mutation_report_json.parse, sniff=mutation_report_json.sniff
+            parse=mutation_report_json.parse,
+            sniff=mutation_report_json.sniff,
+            artifact_kind="file",
+            parse_directory=None,
+            status_buckets=mutation_report_json.STATUS_BUCKETS,
+            discarded_statuses=mutation_report_json.DISCARDED_STATUSES,
+            accepts_changed_diff=False,
+        ),
+        "cargo-mutants-outcomes": MutationFormatSpec(
+            parse=None,
+            sniff=cargo_mutants_outcomes.sniff,
+            artifact_kind="directory",
+            parse_directory=cargo_mutants_outcomes.parse_directory,
+            status_buckets=cargo_mutants_outcomes.STATUS_BUCKETS,
+            discarded_statuses=cargo_mutants_outcomes.DISCARDED_STATUSES,
+            accepts_changed_diff=True,
         ),
     }
 )
+
+
+def _spec_of(declared_format: str, kind: str) -> MutationFormatSpec:
+    from ..errors import LaneConfigError
+
+    spec = MUTATION_FORMAT_REGISTRY.get(declared_format)
+    if spec is None:
+        raise LaneConfigError(
+            f"{declared_format!r} is not a mutation-report format this "
+            f"registry knows; declared formats: "
+            f"{sorted(MUTATION_FORMAT_REGISTRY)}"
+        )
+    if spec.artifact_kind != kind:
+        raise LaneConfigError(
+            f"mutation-report format {declared_format!r} is a "
+            f"{spec.artifact_kind}-kind artifact and cannot be loaded as a "
+            f"{kind}"
+        )
+    return spec
+
+
+def load_mutation_directory(
+    artifact: DirectoryArtifactLike, *, declared_format: str, context: ParseContext
+) -> IngestedMutationReport:
+    """The directory-kind sibling of :func:`load_mutation_report`: the same
+    declared-versus-sniffed check (A-007), over the artifact's report bytes."""
+    from ..errors import AssayError, Outcome, ReasonCode
+
+    spec = _spec_of(declared_format, "directory")
+    assert spec.parse_directory is not None
+    if not spec.sniff(artifact.report):
+        raise AssayError(
+            f"declared mutation format {declared_format!r}, but the "
+            f"artifact's report does not match that format's own signature.",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.FORMAT_MISMATCH,
+        )
+    return spec.parse_directory(artifact, context)
 
 
 def load_mutation_report(
@@ -104,15 +174,10 @@ def load_mutation_report(
     broken record is ``ERROR``/``UNREADABLE_ARTIFACT`` from the matched
     parser.
     """
-    from ..errors import AssayError, LaneConfigError, Outcome, ReasonCode
+    from ..errors import AssayError, Outcome, ReasonCode
 
-    spec = MUTATION_FORMAT_REGISTRY.get(declared_format)
-    if spec is None:
-        raise LaneConfigError(
-            f"{declared_format!r} is not a mutation-report format this "
-            f"registry knows; declared formats: "
-            f"{sorted(MUTATION_FORMAT_REGISTRY)}"
-        )
+    spec = _spec_of(declared_format, "file")
+    assert spec.parse is not None
     if not spec.sniff(text):
         raise AssayError(
             f"declared mutation format {declared_format!r}, but the "

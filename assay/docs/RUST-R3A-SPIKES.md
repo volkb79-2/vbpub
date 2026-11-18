@@ -14,6 +14,12 @@ The operator named R-3 (cargo-mutants, R2 at T3) as the next Rust track on
 2026-11-18, which is a direction, not a K15 closure: design K15 ("Rust R2 is
 not adopted yet") stays true until B245 lands.
 
+Status 2026-11-18: B245 unit U2 (the v19 to v20 verdict schema hard cut: the
+`cargo-mutants` operator namespace, `report_absent`, `changed_diff`, the
+`verdict-v20` capability) is implemented on branch `assay-b245-u2-20261118`.
+The measurements below describe the v19 base the spikes ran against; the
+section "Measured facts" is not rewritten.
+
 ## Measured facts
 
 Every statement here rests on a retained file; "(log)" means the line is in the

@@ -166,7 +166,7 @@ remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
 Machine consumers can validate manifests and receipts against the packaged
 `schemas/analysis-archive.schema.json`, `schemas/analysis-receipt.schema.json`,
 and `schemas/analysis-report.schema.json`.
-Receipt verdicts are checked against the current v19 verdict schema; a receipt
+Receipt verdicts are checked against the current v20 verdict schema; a receipt
 with an `--allow-dirty` override is refused by default.
 
 ## Why use it
@@ -283,12 +283,15 @@ assay exists to close that gap mechanically, not by policy:
   `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
   kill witnesses against the current sequential pytest suite. Any uncertainty
   runs the candidate's full suite; a nonempty `PYTEST_ADDOPTS` disables witness
-  replay because it can override configured addopts. A v12 through v18 verdict
-  is a cold start under v19, and `assay verify` rejects old versions. Assay
-  12.0.0 carries the v18 hard cut (11.0.0 carried v17). See the
+  replay because it can override configured addopts. A v12 through v15 verdict
+  is a cold start under v20, a v16 through v19 verdict is refused as
+  unsupported, and `assay verify` rejects all old versions. The v20
+  hard cut is a MAJOR release (B245); Assay 12.0.0 carried the v18 hard cut
+  (11.0.0 carried v17). See the
   [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
   and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106),
-  plus the [v18-to-v19 migration notes](docs/CONSUMERS.md#migration-notes-v18-to-v19).
+  plus the [v19-to-v20](docs/CONSUMERS.md#migration-notes-v19-to-v20) and
+  [v18-to-v19 migration notes](docs/CONSUMERS.md#migration-notes-v18-to-v19).
 - **Refusals name the usable cause and keep unrelated failures distinct.** A
   Git dubious-ownership refusal explains why `safe.directory` cannot be set in
   assay's replacement environment and points to the ownership fix. Unknown or
@@ -420,14 +423,15 @@ assay exists to close that gap mechanically, not by policy:
   refused with `--candidates-file`. The run progress
   header records `jobs` and `attribution` (`serial` or
   `overlap-conservative`), and each candidate event records `worker_index`.
-  Verdict schema v19 records the campaign's maximum worker count as
+  Verdict schema v20 records the campaign's maximum worker count as
   `judgment.r2.jobs` (and its `serial` or `overlap-conservative`
   attribution), with `judgment.r2.worker_counts` giving the candidates per
   worker count across resumed and executed records (B203). Each candidate also
   carries its cgprofile resource profile; see
   the [parallel-window rationale](docs/DESIGN-GUIDE.md#native-r2-parallel-candidate-windows)
   and [consumer setup](docs/CONSUMERS.md#native-r2-parallel-candidate-windows-pr1b),
-  plus the [v18-to-v19 migration notes](docs/CONSUMERS.md#migration-notes-v18-to-v19).
+  plus the [v19-to-v20](docs/CONSUMERS.md#migration-notes-v19-to-v20) and
+  [v18-to-v19 migration notes](docs/CONSUMERS.md#migration-notes-v18-to-v19).
   After R0/R1, Assay checks the complete hierarchy before any native R2
   candidate starts. If its private cgroup view hides ancestors, it may use
   the explicitly configured observer-only socket; without a usable local view
@@ -487,7 +491,8 @@ assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
 [the consumer guide's ordered adoption step](docs/CONSUMERS.md#adopting-a-v2-capable-release)
 for why the order matters and what breaks if you split it across two commits.
-For the v19 verdict fields and the effect on old verdicts and resume, see
+For the v20 verdict fields and the effect on old verdicts and resume, see
+the [v19-to-v20 migration notes](docs/CONSUMERS.md#migration-notes-v19-to-v20),
 the [v18-to-v19 migration notes](docs/CONSUMERS.md#migration-notes-v18-to-v19),
 the [v17-to-v18 migration notes](docs/CONSUMERS.md#migration-notes-v17-to-v18),
 the [v16-to-v17 migration notes](docs/CONSUMERS.md#migration-notes-v16-to-v17),
@@ -1010,8 +1015,8 @@ The two adapter transforms are judged by the existing isolated canary runner;
   were qualified under Assay 9.0.0/schema v15; their retained verdicts and
   verifier transcripts document that release. Those canaries are distinct from
   the integrated Assay release gate. B087 did not add verdict fields; the
-  current verdict schema is v19, with the migration described in the
-  [v18-to-v19 consumer notes](docs/CONSUMERS.md#migration-notes-v18-to-v19).
+  current verdict schema is v20, with the migration described in the
+  [v19-to-v20 consumer notes](docs/CONSUMERS.md#migration-notes-v19-to-v20).
 
 **Branch coverage depends on the declared producer.** istanbul's `branchMap`
 means different things under different producers (real per-arm arcs under the

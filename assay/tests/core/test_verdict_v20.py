@@ -1,5 +1,7 @@
-"""Verdict schema v19 (B251): per-candidate outcome errors, plus the
-profile/schedule summaries, worker counts and failing test id.
+"""Verdict schema v20 (B245 hard cut over B251's v19): per-candidate outcome
+errors, plus the profile/schedule summaries, worker counts and failing test id.
+The v20 additions (`report_absent`, `changed_diff`, the `cargo-mutants`
+namespace) are in `test_verdict_v20_fields.py`.
 
 The golden verdicts are hand-written fixtures; ``jsonschema`` is the
 independent oracle and ``assay verify`` the raw verifier, and every rejection
@@ -40,9 +42,9 @@ def _killed(document: dict) -> list[dict]:
     ]
 
 
-def test_the_schema_version_is_19():
-    assert VERDICT_SCHEMA_VERSION == 19
-    assert _load(MEASURED)["schema_version"] == 19
+def test_the_schema_version_is_20():
+    assert VERDICT_SCHEMA_VERSION == 20
+    assert _load(MEASURED)["schema_version"] == 20
 
 
 @pytest.mark.parametrize("name", GOLDEN)
@@ -62,18 +64,18 @@ def test_golden_verdicts_cover_a_measured_a_partial_and_an_unmeasured_campaign()
     }
 
 
-def test_a_v18_verdict_is_refused_on_its_version_alone():
+def test_a_v19_verdict_is_refused_on_its_version_alone():
     document = _load(MEASURED)
-    document["schema_version"] = 18
+    document["schema_version"] = 19
     failures = verify_document(document)
     assert len(failures) == 1
-    assert "schema_version 18 is not this verifier's version 19" in failures[0]
+    assert "schema_version 19 is not this verifier's version 20" in failures[0]
 
 
-def test_the_schema_refuses_v18(validator):
+def test_the_schema_refuses_v19(validator):
     document = _load(MEASURED)
-    document["schema_version"] = 18
-    assert any("19 was expected" in message for message in why_invalid(validator, document))
+    document["schema_version"] = 19
+    assert any("20 was expected" in message for message in why_invalid(validator, document))
 
 
 def test_candidate_outcome_error_is_allowed_only_on_native_crashed_candidates(validator):
