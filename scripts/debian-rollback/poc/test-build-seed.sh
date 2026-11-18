@@ -42,6 +42,47 @@ assert_stage default-grub
 diff -r "$WORK/stage-explicit-grub" "$WORK/stage-default-grub" >/dev/null \
   || bad "default staging is not byte-identical to explicit grub"
 
+assert_tmpdir_empty() { # assert_tmpdir_empty LABEL DIR
+  local label=$1 dir=$2 remaining
+  remaining=$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit)
+  [ -z "$remaining" ] \
+    || bad "$label: isolated TMPDIR retained $remaining"
+}
+
+# Exercise CLI cleanup independently of the real xorriso. The temporary staging directory must
+# disappear whether packing succeeds or fails.
+mkdir "$WORK/fake-xorriso-ok" "$WORK/fake-xorriso-fail" "$WORK/tmp-success" "$WORK/tmp-failure"
+# shellcheck disable=SC2016  # these are literal expressions for the generated fake commands
+printf '%s\n' \
+  '#!/bin/bash' \
+  'set -euo pipefail' \
+  'out=' \
+  'while [ "$#" -gt 0 ]; do' \
+  '  case "$1" in' \
+  '    -o) out=$2; shift 2 ;;' \
+  '    *) shift ;;' \
+  '  esac' \
+  'done' \
+  '[ -n "$out" ]' \
+  'printf "fake iso\n" >"$out"' >"$WORK/fake-xorriso-ok/xorriso"
+# shellcheck disable=SC2016  # exit status is the whole generated failure stub
+printf '%s\n' '#!/bin/bash' 'exit 7' >"$WORK/fake-xorriso-fail/xorriso"
+chmod +x "$WORK/fake-xorriso-ok/xorriso" "$WORK/fake-xorriso-fail/xorriso"
+
+PATH="$WORK/fake-xorriso-ok:$PATH" TMPDIR="$WORK/tmp-success" \
+  "$HERE/build-seed.sh" --bootloader systemd-boot "$WORK/cleanup-success.iso" \
+  >"$WORK/cleanup-success.out" 2>"$WORK/cleanup-success.err"
+rc=$?
+[ "$rc" = 0 ] || bad "isolated success: build rc=$rc: $(tr '\n' ' ' <"$WORK/cleanup-success.err")"
+assert_tmpdir_empty "isolated success" "$WORK/tmp-success"
+
+PATH="$WORK/fake-xorriso-fail:$PATH" TMPDIR="$WORK/tmp-failure" \
+  "$HERE/build-seed.sh" --bootloader grub "$WORK/cleanup-failure.iso" \
+  >"$WORK/cleanup-failure.out" 2>"$WORK/cleanup-failure.err"
+rc=$?
+[ "$rc" != 0 ] || bad "isolated failure: failed xorriso stub was reported as success"
+assert_tmpdir_empty "isolated failure" "$WORK/tmp-failure"
+
 # The guest must read the marker, keep grub as the absent-file fallback, and pass the
 # selected backend to the installer.
 grep -Fq '/mnt/seed/bootloader' "$USER_DATA" \
@@ -143,9 +184,9 @@ if command -v xorriso >/dev/null 2>&1; then
     cmp -s "$WORK/$backend.want" "$WORK/$backend.extracted" \
       || bad "$backend ISO: extracted marker differs"
   done
-  covered="staging, executed user-data marker selection, installer pass-through, invalid-value refusal, ISO packing and extracted markers"
+  covered="staging, isolated success/failure cleanup, executed user-data marker selection, installer pass-through, invalid-value refusal, ISO packing and extracted markers"
 else
-  covered="staging, executed user-data marker selection, installer pass-through and invalid-value refusal; xorriso absent, so ISO packing and extracted markers are NOT covered"
+  covered="staging, isolated success/failure cleanup, executed user-data marker selection, installer pass-through and invalid-value refusal; xorriso absent, so real ISO packing and extracted markers are NOT covered"
 fi
 
 [ "$fail" = 0 ] && echo "test-build-seed: OK ($covered)"

@@ -187,8 +187,9 @@ seed variants and extracts `/bootloader` from each ISO. It executes the marker-s
 guest's `user-data` through a fake `poc/install-btrfs.sh` against a disposable seed directory. The fake records the
 installer argv, proving absent/grub/systemd-boot selection reaches the real invocation as
 `--bootloader <selected>` while empty/unknown values are refused. Disposable mutants with the validation case removed,
-or with the argument removed from the invocation while its text remains in a comment, are killed. With `xorriso`
-absent it reports that ISO packing and extraction are not covered.
+or with the argument removed from the invocation while its text remains in a comment, are killed. Isolated `TMPDIR`
+cases verify that the staging directory is removed after both a successful pack and a packing failure. With
+`xorriso` absent it reports that real ISO packing and extraction are not covered.
 
 `poc/test-dr-serial.py` now covers both backend sources with dr-state's empty/conflict/unknown rules, strict
 `loader.conf` default parsing, exact BLS kernel/initrd path and shared-id validation, unsafe/malformed entries,
@@ -197,7 +198,10 @@ backend and scratch results only when the real command contains both backend pat
 deleted marker probe or a completion-only replacement of the scratch scan is killed. The scenario tests require the
 exact `ESP_FILE_OK` set per entry, fail on omitted or foreign tags, nonzero file/scratch scan status, and missing
 completion tags, and cover every generated scratch name. A full config-only systemd-boot kernel flow proves that the
-baseline hashes the systemd-boot binary independently and only the backend source files that exist.
+baseline hashes the systemd-boot binary independently and only the backend source files that exist. Canonical BLS
+checks require the exact dr-state marker and title lines, a valid entry id, reversible `@os-X` to `os-X` mapping,
+and a title kernel matching the kernel-id directory. Fabricated, swapped-id, wrong-title and wrong-marker entries are
+rejected in both `sdboot-esp` and the systemd-boot `s2-s3` state-set check.
 
 The pre-existing offline suites remain green: `test-dr-state-window.sh`, `test-dr-state-prune.sh`,
 `iso/test-dr-plan.sh`, `iso/test-dr-autoinstall-guard.sh`, `poc/test-dr-pick-disk.sh`, and `poc/test-dr-qemu.sh`.
@@ -232,8 +236,8 @@ The supported run matrix for the systemd-boot variant is:
 | Scenario | Guest run | What it proves | Status |
 |---|---|---|---|
 | `boot-check` | May share a fresh overlay with `sdboot-esp`; must be first boot after install. | The installed state is the running root, systemd and networking work, D18 paths are split correctly, and the systemd-boot ESP contains `loader/loader.conf`, at least one BLS entry, `EFI/systemd/systemd-bootx64.efi`, and non-empty kernel copies. | **NOT RUN** |
-| `sdboot-esp` | May share a fresh overlay with `boot-check`. | Every BLS entry names exactly `/EFI/dr/kernels/<valid-id>/vmlinuz` and the matching `initrd.img`, and the exact non-empty files reported by the guest equal that entry's expected set. `loader.conf` has exactly one default and that entry exists; its state matches `dr-state list`; no generated scratch remains; and ESP free space is reported. | **NOT RUN** |
-| `s2-s3` | Fresh overlay; do not reuse after another snapshot-producing scenario. | Apt takes one snapshot, systemd-boot lists one entry per state, boot-once boots the earlier package state with `/etc` rolled back while service data survives, the one-shot is consumed, and set-default changes the next plain boot. | **NOT RUN** |
+| `sdboot-esp` | May share a fresh overlay with `boot-check`. | Every BLS entry is canonical: exact dr-state marker/title, valid `@os-X` to `os-X` entry mapping, and exactly `/EFI/dr/kernels/<valid-id>/vmlinuz` with the matching `initrd.img`; the exact non-empty files reported by the guest equal that entry's expected set. `loader.conf` has exactly one default and that entry exists; its state matches `dr-state list`; no generated scratch remains; and ESP free space is reported. | **NOT RUN** |
+| `s2-s3` | Fresh overlay; do not reuse after another snapshot-producing scenario. | Apt takes one snapshot; canonical marked systemd-boot entry states, not merely `.conf` count, equal `dr-state list`; boot-once boots the earlier package state with `/etc` rolled back while service data survives; the one-shot is consumed; and set-default changes the next plain boot. | **NOT RUN** |
 | `kernel-upgrade` | Fresh overlay; do not reuse after another snapshot-producing scenario. | A kernel upgrade snapshots the old state, gives the running state the new kernel and the snapshot the old kernel in BLS entries, boots both kernels, loads the old state's modules, and consumes the systemd-boot one-shot. | **NOT RUN** |
 
 Do **not** run `s5` against systemd-boot: it sends GRUB menu key presses over the serial line. Do **not** run `s6`,

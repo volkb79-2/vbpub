@@ -7,6 +7,7 @@
 # The medium also carries a one-line `bootloader` marker. Its default is grub, matching the
 # installer default; the builder guest reads it and passes the selected value explicitly.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SEED_STAGE=""
 
 stage_seed() { # stage_seed STAGE [grub|systemd-boot]
   local stage=$1 bootloader=${2:-grub}
@@ -25,7 +26,7 @@ stage_seed() { # stage_seed STAGE [grub|systemd-boot]
 
 main() {
   set -euo pipefail
-  local out="" bootloader=grub stage
+  local out="" bootloader=grub
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --bootloader)
@@ -62,10 +63,10 @@ main() {
       ;;
   esac
   [ ! -e "$out" ] || { echo "build-seed: $out exists; refusing to overwrite" >&2; return 1; }
-  stage=$(mktemp -d)
-  trap 'if [ -n "${stage:-}" ]; then rm -rf -- "$stage"; fi' EXIT
-  stage_seed "$stage" "$bootloader"
-  xorriso -as mkisofs -quiet -volid cidata -joliet -rock -o "$out" "$stage"
+  SEED_STAGE=$(mktemp -d)
+  trap 'if [ -n "${SEED_STAGE:-}" ]; then rm -rf -- "$SEED_STAGE"; fi' EXIT
+  stage_seed "$SEED_STAGE" "$bootloader"
+  xorriso -as mkisofs -quiet -volid cidata -joliet -rock -o "$out" "$SEED_STAGE"
   sha256sum "$out"
 }
 

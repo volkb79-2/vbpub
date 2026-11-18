@@ -56,6 +56,14 @@ workflow_run() { # workflow_run ROOT FREE CLUSTER COMMAND...
     DR_STATE_TEST_ESP_FREE="$free" DR_STATE_TEST_ESP_CLUSTER="$cluster" "$DR" "$@"
 }
 
+workflow_run_fail() { # workflow_run_fail ROOT STEP COMMAND...
+  local root=$1 step=$2
+  shift 2
+  env DR_STATE_TEST_MODE=1 DR_STATE_TEST_ROOT="$root" \
+    DR_STATE_TEST_ESP_FREE=999999999 DR_STATE_TEST_ESP_CLUSTER=4096 \
+    DR_STATE_TEST_FAIL_STEP="$step" "$DR" "$@"
+}
+
 workflow_fixture() { # workflow_fixture ROOT full|sparse
   local root=$1 shape=${2:-full}
   mkdir -p "$root/esp" "$root/top" "$root/etc" "$root/run" \
@@ -78,6 +86,44 @@ workflow_two_states() { # workflow_two_states ROOT
   local root=$1
   workflow_state "$root" @os-0001
   workflow_state "$root" @os-0002
+}
+
+workflow_stale_default_fixture() { # ROOT: old default @os-0002 exists, then its state disappears from TOP
+  local root=$1
+  workflow_fixture "$root" full
+  workflow_two_states "$root"
+  workflow_run "$root" 999999999 4096 gen-menu --default @os-0002 \
+    >"$WORK/out" 2>"$WORK/err" \
+    || { bad "workflow-stale-setup: gen-menu failed"; return 1; }
+  [ -s "$root/esp/loader/entries/os-0002.conf" ] \
+    || { bad "workflow-stale-setup: missing old default entry"; return 1; }
+  mv "$root/top/@os-0002" "$root/removed-state-0002"
+}
+
+assert_loader_default_exists() { # assert_loader_default_exists ROOT LABEL
+  local root=$1 label=$2 count default_id
+  case_count=$((case_count + 1))
+  [ -s "$root/esp/loader/loader.conf" ] \
+    || { bad "$label: loader.conf is missing"; return; }
+  count=$(awk '$1 == "default" {n++} END {print n+0}' "$root/esp/loader/loader.conf")
+  [ "$count" = 1 ] || { bad "$label: loader.conf has $count defaults"; return; }
+  default_id=$(awk '$1 == "default" {print $2; exit}' "$root/esp/loader/loader.conf")
+  [ -s "$root/esp/loader/entries/$default_id.conf" ] \
+    || bad "$label: default $default_id has no entry file"
+}
+
+install_failing_loader_mv() { # ROOT -> PATH stub that fails only the loader.conf publication rename
+  local root=$1
+  mkdir -p "$root/fail-bin"
+  # shellcheck disable=SC2016  # the single-quoted strings are the literal body of the generated stub
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -u' \
+    'dest=${!#}' \
+    'if [ "$dest" = "$FAIL_LOADER_CONF" ]; then exit 73; fi' \
+    'exec /bin/mv "$@"' \
+    >"$root/fail-bin/mv"
+  chmod 755 "$root/fail-bin/mv"
 }
 
 state_with_entry_id_length() { # state_with_entry_id_length N -> @os- followed by id padding
@@ -440,6 +486,8 @@ printf x >"$SCRATCH/efi-dr/bootloader"
 
 expect_exit clean-scratch-requires-test-mode 1 env -u DR_STATE_TEST_MODE "$DR" _sdboot-clean-scratch \
   "$SCRATCH/kernels" "$SCRATCH/entries" "$SCRATCH/loader/loader.conf" "$SCRATCH/efi-dr/bootloader"
+expect_exit fail-step-requires-test-mode 1 env -u DR_STATE_TEST_MODE DR_STATE_TEST_FAIL_STEP=loader-write \
+  "$DR" gen-menu
 case_count=$((case_count + 1))
 DR_STATE_TEST_MODE=1 DR_STATE_TEST_ROOT="$SCRATCH" "$DR" _sdboot-clean-scratch "$SCRATCH/kernels" "$SCRATCH/entries" \
   "$SCRATCH/loader/loader.conf" "$SCRATCH/efi-dr/bootloader" >"$WORK/out" 2>"$WORK/err"; rc=$?
@@ -624,6 +672,60 @@ elif [ "$(awk '$1 == "default" {print $2}' "$WF_DEFAULT/esp/loader/loader.conf")
   bad "workflow-set-default: loader.conf did not select os-0002"
 fi
 
+# Interruption ordering: an old default names a stale entry that the next menu would remove. Failure before
+# loader.conf publication must leave that old default entry present; failure after publication must leave the new
+# default entry present. In every case the default named by loader.conf must resolve to a real BLS file.
+for fail_step in entry-write entry-publish loader-write loader-publish stale-delete; do
+  WF_ORDER="$WORK/wf-order-$fail_step"
+  workflow_stale_default_fixture "$WF_ORDER" \
+    || bad "workflow-order-$fail_step: stale-default fixture setup failed"
+  case_count=$((case_count + 1))
+  workflow_run_fail "$WF_ORDER" "$fail_step" gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
+  if [ "$rc" != 1 ]; then
+    bad "workflow-order-$fail_step: want injected failure exit 1, got $rc"
+  fi
+  assert_loader_default_exists "$WF_ORDER" "workflow-order-$fail_step"
+done
+
+WF_LOADER_MV="$WORK/wf-order-loader-publish"
+workflow_stale_default_fixture "$WF_LOADER_MV" \
+  || bad "workflow-order-loader-publish: stale-default fixture setup failed"
+install_failing_loader_mv "$WF_LOADER_MV"
+case_count=$((case_count + 1))
+FAIL_LOADER_CONF="$WF_LOADER_MV/esp/loader/loader.conf" PATH="$WF_LOADER_MV/fail-bin:$PATH" \
+  workflow_run "$WF_LOADER_MV" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 73 ]; then
+  bad "workflow-order-loader-publish: want failing mv exit 73, got $rc"
+fi
+assert_loader_default_exists "$WF_LOADER_MV" "workflow-order-loader-publish"
+
+# Prune uses the same menu publication. A failing loader.conf install must leave the old default entry intact, and a
+# later stale-entry cleanup failure must leave the newly published default entry intact.
+WF_PRUNE_ORDER="$WORK/wf-prune-order"
+workflow_stale_default_fixture "$WF_PRUNE_ORDER" \
+  || bad "workflow-prune-order: stale-default fixture setup failed"
+install_failing_loader_mv "$WF_PRUNE_ORDER"
+case_count=$((case_count + 1))
+DR_STATE=@os-0001 FAIL_LOADER_CONF="$WF_PRUNE_ORDER/esp/loader/loader.conf" \
+  PATH="$WF_PRUNE_ORDER/fail-bin:$PATH" \
+  workflow_run "$WF_PRUNE_ORDER" 999999999 4096 prune --keep 10 \
+  >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 73 ]; then
+  bad "workflow-prune-order-loader-publish: want failing mv exit 73, got $rc"
+fi
+assert_loader_default_exists "$WF_PRUNE_ORDER" "workflow-prune-order-loader-publish"
+
+WF_PRUNE_STALE="$WORK/wf-prune-order-stale"
+workflow_stale_default_fixture "$WF_PRUNE_STALE" \
+  || bad "workflow-prune-order-stale: stale-default fixture setup failed"
+case_count=$((case_count + 1))
+DR_STATE=@os-0001 workflow_run_fail "$WF_PRUNE_STALE" stale-delete prune --keep 10 \
+  >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 1 ]; then
+  bad "workflow-prune-order-stale: want injected failure exit 1, got $rc"
+fi
+assert_loader_default_exists "$WF_PRUNE_STALE" "workflow-prune-order-stale"
+
 # Integrated near-full workflow: the reported need must include parent/record reserves, and one byte on either side
 # of the actual threshold must fail or succeed before any ESP write.
 WF_SPACE_BASE="$WORK/wf-space-base"
@@ -671,6 +773,8 @@ if [ "$rc" != 0 ]; then
   bad "workflow-prune: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
 elif [ -e "$WF_PRUNE/esp/EFI/dr/kernels/9.9.9+deb13-amd64-deadbeefcafe" ]; then
   bad "workflow-prune: unreferenced kernel directory survived"
+else
+  assert_loader_default_exists "$WF_PRUNE" "workflow-prune-success"
 fi
 
 if [ "$fail" = 0 ]; then
