@@ -23,16 +23,25 @@ and :func:`parse_directory` share one ``json.loads`` of one document (design
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
+import re
+from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from ..errors import AssayError, Outcome, ReasonCode
 from ..guards import is_nonempty_str, is_strict_int
 from ..records import record
-from ..vocabulary import DISCARD_REASONS, MAX_INGESTED_MUTANTS
+from ..vocabulary import (
+    CARGO_MUTANTS_OPERATOR_NAMESPACE,
+    DISCARD_REASONS,
+    MAX_INGESTED_MUTANTS,
+    is_ingested_operator,
+)
 from .model import (
     MAX_MUTATION_REPORT_BYTES,
     DirectoryArtifactLike,
+    IngestedMutant,
     IngestedMutationReport,
     MutationProducerIdentity,
     ParseContext,
@@ -428,14 +437,281 @@ def _producer(document: Mapping[str, Any]) -> MutationProducerIdentity:
     )
 
 
+#: The member-name grammar (design section 8 item 3): exactly ``diff/<name>``.
+_MEMBER_DIR = "diff/"
+_MEMBER_SUFFIX = ".diff"
+_HUNK_RE = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+#: Same bound and reason as the Stryker parser: a diagnostic preview, never a
+#: whole replacement.
+_DESCRIPTION_REPLACEMENT_BYTES = 60
+#: Genres whose ``name`` carries the original token, and the words that
+#: precede it. Measured on 27.1.0: ``replace + with - in add`` and ``replace
+#: match guard v > 10 with true in pick``. UnaryOperator and the other genres
+#: are not measured, so they are bound by the diff tier alone (never guessed).
+_TOKEN_HEADS: Mapping[str, str] = {
+    "BinaryOperator": "replace ",
+    "MatchArmGuard": "replace match guard ",
+}
+
+
+@record
+class _Blob:
+    """One committed source file, split by ``\\n`` ONLY (never ``splitlines``:
+    cargo-mutants counts lines by ``\\n``, and ``\\x0b``/``\\u2028`` would shift
+    every later line)."""
+
+    data: bytes
+    text: str
+    lines: tuple[str, ...]
+    line_starts: tuple[int, ...]
+
+
+def _diff_member_name(diff_path: Any) -> str:
+    """Validate one ``diff_path`` against the member-name grammar; return it."""
+    if not isinstance(diff_path, str) or not diff_path.startswith(_MEMBER_DIR):
+        raise _unreadable(f"diff_path {diff_path!r} is not of the form diff/<name>")
+    name = diff_path[len(_MEMBER_DIR) :]
+    if (
+        not name.endswith(_MEMBER_SUFFIX)
+        or any(char in name for char in ("\0", "/", "\\"))
+        or name in (".", "..")
+    ):
+        raise _unreadable(
+            f"diff_path {diff_path!r} must be diff/<one path component ending "
+            f"in .diff, without NUL, '/' or '\\'>"
+        )
+    try:
+        diff_path.encode("utf-8")
+    except UnicodeEncodeError:
+        raise _unreadable(
+            f"diff_path {diff_path!r} is not valid UTF-8 text (lone surrogate)"
+        ) from None
+    return diff_path
+
+
+def _relative_file(file: str) -> PurePosixPath:
+    path = PurePosixPath(file)
+    if path.is_absolute() or str(path) != file or ".." in path.parts or "\0" in file:
+        raise _unreadable(
+            f"mutant file {file!r} is not a normalised relative path under the "
+            f"run directory"
+        )
+    return path
+
+
+def _load_blob(
+    file: str, ctx: ParseContext, prefix: PurePosixPath, total: list[int]
+) -> _Blob:
+    data = ctx.repository.read_regular_file(
+        prefix / _relative_file(file), timeout=ctx.read_timeout
+    )
+    total[0] += len(data)
+    if total[0] > MAX_MUTATION_REPORT_BYTES:
+        raise _unreadable(
+            f"the sources the report names exceed {MAX_MUTATION_REPORT_BYTES:,} "
+            f"bytes in total"
+        )
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _unreadable(f"{file!r} at the prepared commit is not UTF-8: {exc}") from exc
+    lines = tuple(text.split("\n"))
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line.encode("utf-8")) + 1)
+    return _Blob(data=data, text=text, lines=lines, line_starts=tuple(starts))
+
+
+def _byte_offset(blob: _Blob, line: int, column: int, what: str) -> int:
+    """UTF-8 byte offset of a one-based (line, CHARACTER column) position.
+
+    The tool counts characters (measured on the unicode fixture), the end is
+    exclusive, so the last legal column of a line is ``len(line) + 1``.
+    """
+    if line > len(blob.lines):
+        raise _unreadable(f"{what} names line {line}, past the end of the source")
+    text = blob.lines[line - 1]
+    if column - 1 > len(text):
+        raise _unreadable(
+            f"{what} names line {line} column {column}, past the end of that line"
+        )
+    return blob.line_starts[line - 1] + len(text[: column - 1].encode("utf-8"))
+
+
+def _span_bytes(
+    blob: _Blob, span: tuple[int, int, int, int], what: str
+) -> tuple[int, int]:
+    start = _byte_offset(blob, span[0], span[1], f"{what} start")
+    end = _byte_offset(blob, span[2], span[3], f"{what} end")
+    if end <= start:
+        raise _unreadable(f"{what} spans [{start}, {end}), which is empty or reversed")
+    return start, end
+
+
+def _bind_genre(
+    mutant: NormalisedMutant, blob: _Blob, start: int, end: int
+) -> None:
+    """D1 content binding per genre; the diff tier then binds the rest."""
+    text = blob.data[start:end].decode("utf-8")
+    head = _TOKEN_HEADS.get(mutant.genre)
+    if head is not None:
+        prefix = f"{mutant.file}:{mutant.span[0]}:{mutant.span[1]}: {head}"
+        suffix = f" with {mutant.replacement}"
+        if mutant.function_name is not None:
+            suffix += f" in {mutant.function_name}"
+        name = mutant.name
+        if (
+            len(name) < len(prefix) + len(suffix)
+            or not name.startswith(prefix)
+            or not name.endswith(suffix)
+            or name[len(prefix) : len(name) - len(suffix)] != text
+        ):
+            raise _unreadable(
+                f"mutant {mutant.name!r}: the committed text at its span "
+                f"({text!r}) is not the token its name carries"
+            )
+    elif mutant.genre == "FnValue":
+        if mutant.function_name is None or mutant.function_span is None:
+            raise _unreadable(f"FnValue mutant {mutant.name!r} names no function")
+        fn_start, fn_end = _span_bytes(
+            blob, mutant.function_span, f"mutant {mutant.name!r} function span"
+        )
+        # The qualifier (``S::``, ``<impl T for S>::``) is not in the source
+        # at ``fn``; the last segment is. The diff tier tells ``S::f`` from
+        # ``T::f`` (design section 8 item 4).
+        segment = mutant.function_name.rsplit("::", 1)[-1]
+        found = re.search(
+            r"(?<![A-Za-z0-9_])fn " + re.escape(segment) + r"(?![A-Za-z0-9_])",
+            blob.data[fn_start:fn_end].decode("utf-8"),
+        )
+        if found is None or not (fn_start <= start and end <= fn_end):
+            raise _unreadable(
+                f"FnValue mutant {mutant.name!r}: `fn {segment}` is not in its "
+                f"function span, or the mutation span is outside it"
+            )
+
+
+def _check_diff(mutant: NormalisedMutant, raw: bytes, blob: _Blob) -> None:
+    """The per-mutant diff tier: ``---`` is the mutant file, and every ``-``
+    and context line equals the committed blob line it claims (old numbering).
+    Every line of the mutation span must be a ``-`` line, which ties the span
+    to the diff (cargo-mutants removes the whole span's lines)."""
+    where = f"mutant {mutant.name!r} diff"
+    try:
+        rows = raw.decode("utf-8").split("\n")
+    except UnicodeDecodeError as exc:
+        raise _unreadable(f"{where} is not UTF-8: {exc}") from exc
+    if rows[-1] == "":
+        rows.pop()
+    # "\ No newline at end of file" markers carry no content.
+    rows = [row for row in rows if not row.startswith("\\")]
+    if len(rows) < 2 or rows[0] != f"--- {mutant.file}" or not rows[1].startswith("+++ "):
+        raise _unreadable(
+            f"{where} does not start with '--- {mutant.file}' and a '+++' line"
+        )
+    removed: set[int] = set()
+    index = 2
+    while index < len(rows):
+        header = _HUNK_RE.fullmatch(rows[index])
+        if header is None:
+            raise _unreadable(f"{where} has a malformed hunk header {rows[index]!r}")
+        index += 1
+        old_line = int(header[1])
+        old_left = 1 if header[2] is None else int(header[2])
+        new_left = 1 if header[4] is None else int(header[4])
+        while old_left or new_left:
+            if index >= len(rows):
+                raise _unreadable(f"{where} ends inside a hunk")
+            tag, body = rows[index][:1], rows[index][1:]
+            index += 1
+            if tag == "+":
+                new_left -= 1
+                continue
+            if tag not in (" ", "-") or not old_left:
+                raise _unreadable(f"{where} has a malformed hunk line")
+            if tag == " ":
+                new_left -= 1
+            old_left -= 1
+            if not 1 <= old_line <= len(blob.lines) or blob.lines[old_line - 1] != body:
+                raise _unreadable(
+                    f"{where} line {old_line} is not the committed source line"
+                )
+            if tag == "-":
+                removed.add(old_line)
+            old_line += 1
+    if not set(range(mutant.span[0], mutant.span[2] + 1)) <= removed:
+        raise _unreadable(f"{where} does not remove the lines of the mutation span")
+
+
+def _description(mutant: NormalisedMutant) -> str:
+    preview = mutant.replacement.encode("utf-8")[:_DESCRIPTION_REPLACEMENT_BYTES].decode(
+        "utf-8", errors="ignore"
+    )
+    if len(preview) < len(mutant.replacement):
+        preview += "..."
+    return f"{mutant.genre} -> {preview}" if preview else mutant.genre
+
+
 def _bind_mutants(
     mutants: Sequence[NormalisedMutant],
     artifact: DirectoryArtifactLike,
     ctx: ParseContext,
-) -> tuple[Any, Mapping[str, str]]:
-    """U3b: spans to UTF-8 bytes on the committed blob, genre binding (FnValue
-    on the last ``::`` segment), the per-mutant diff tier and ``sources``."""
-    raise NotImplementedError("B245 U3b: mutant binding is the next package")
+) -> tuple[tuple[IngestedMutant, ...], Mapping[str, str]]:
+    """U3b: bind every mutant to the committed blob bytes.
+
+    Spans become UTF-8 byte offsets (D1), the genre is bound to the text at
+    the span, and the per-mutant diff member must agree with the blob. The
+    result is bound to the commit by CONTENT, which is why ``project_root`` is
+    ``None``. Q4 (the ``mutants.json`` cross-check) is not here: the artifact
+    carries only the ``diff/*.diff`` members named by ``outcomes.json`` (the
+    ``safeio`` member grammar), so ``mutants.json`` is not available to a
+    parser; see the design note in CHANGES.md.
+    """
+    members = artifact.members
+    names = [_diff_member_name(mutant.diff_path) for mutant in mutants]
+    if len(set(names)) != len(names):
+        raise _unreadable("outcomes.json names one diff member for two mutants")
+    if set(members) != set(names):
+        raise _unreadable(
+            f"the artifact's diff members do not match the report: missing "
+            f"{sorted(set(names) - set(members))[:3]}, extra "
+            f"{sorted(set(members) - set(names))[:3]}"
+        )
+    try:
+        prefix = PurePosixPath(ctx.run_cwd.relative_to(ctx.repo_top).as_posix())
+    except ValueError:
+        raise _unreadable(
+            f"the run directory {ctx.run_cwd} is not inside the repository "
+            f"{ctx.repo_top}"
+        ) from None
+    blobs: dict[str, _Blob] = {}
+    total = [0]
+    bound: list[IngestedMutant] = []
+    for mutant in mutants:
+        if mutant.file not in blobs:
+            blobs[mutant.file] = _load_blob(mutant.file, ctx, prefix, total)
+        blob = blobs[mutant.file]
+        start, end = _span_bytes(blob, mutant.span, f"mutant {mutant.name!r} span")
+        _bind_genre(mutant, blob, start, end)
+        _check_diff(mutant, members[mutant.diff_path], blob)
+        operator = f"{CARGO_MUTANTS_OPERATOR_NAMESPACE}:{mutant.genre}"
+        if not is_ingested_operator(operator):
+            raise _unreadable(f"mutant genre {mutant.genre!r} is not an operator name")
+        bound.append(
+            IngestedMutant(
+                path=mutant.file,
+                lineno=mutant.span[0],
+                start_byte=start,
+                end_byte=end,
+                replacement_sha256=hashlib.sha256(
+                    mutant.replacement.encode("utf-8")
+                ).hexdigest(),
+                operator=operator,
+                description=_description(mutant),
+                status=mutant.status,
+            )
+        )
+    return tuple(bound), {file: blob.text for file, blob in blobs.items()}
 
 
 def parse_directory(

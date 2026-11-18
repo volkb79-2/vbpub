@@ -357,8 +357,8 @@ def test_directory_load_checks_the_signature_then_parses():
     with pytest.raises(AssayError) as caught:
         load_mutation_directory(_Artifact(b"{}"), declared_format="cargo-mutants-outcomes", context=ctx)
     assert caught.value.reason_code is ReasonCode.FORMAT_MISMATCH
-    # U3b has not landed: the grammar and status pass runs, binding is next.
-    with pytest.raises(NotImplementedError, match="U3b"):
+    # The grammar and status pass runs, then binding needs the members.
+    with pytest.raises(AssayError, match="diff members"):
         load_mutation_directory(
             _Artifact(_raw("full")), declared_format="cargo-mutants-outcomes", context=ctx
         )
@@ -390,15 +390,6 @@ def test_a_report_without_project_root_skips_the_root_check():
     producer = MutationProducerIdentity(name="x", version="1", report_schema_version="y")
     report = IngestedMutationReport(producer=producer, project_root=None, mutants=(), sources={})
     assert mutation._check_report_project_root(report, run_cwd=Path("/nonexistent")) is None
-
-
-def test_bind_mutants_is_the_one_named_u3b_stub():
-    """``_bind_mutants`` is the single place U3b's binding lands. Until then it
-    raises ``NotImplementedError`` -- never a silent empty result -- so a report
-    that passed the grammar cannot be mistaken for a bound one."""
-    ctx = ParseContext(run_cwd=Path("."), repo_top=Path("."), repository=None, read_timeout=1.0)  # type: ignore[arg-type]
-    with pytest.raises(NotImplementedError, match="B245 U3b"):
-        cmo._bind_mutants((), _Artifact(b"{}"), ctx)
 
 
 def test_parse_directory_refuses_a_bad_document_before_it_reaches_the_stub():
