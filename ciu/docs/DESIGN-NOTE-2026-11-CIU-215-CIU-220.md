@@ -1,6 +1,7 @@
 # Design note 2026-11: CIU-215 (git common-dir mount) and CIU-220 (bounded subprocess readers)
 
-Status: design decided 2026-11-18, implementation not started. Base: `main` at `db8c4321a`.
+Status (2026-11-18): Decision 1 decided; Decision 2 recommended, pending the operator's answer to its
+open question. Implementation not started. Base: `main` at `db8c4321a`.
 Every code reference below was read on that commit. The cmru reference is
 `cmru/src/cmru/runner.py` on branch `cmru-20261118_045211-ki175-dist-dir-20261118` (`5e2a2bacc`).
 
@@ -18,20 +19,14 @@ git_common_dir = "ro"        # required in the table: "ro" | "rw"
 # services = ["test-runner-py311"]   # optional; default: every service of this stack
 ```
 
-In a **linked worktree only**, `ciu up`/`ciu render` writes a fourth engine-side compose fragment,
-`.ciu/ciu.compose.gitdir.yml`, and merges it as an extra `-f` after the ownership fragment. The fragment
-adds one long-form bind per selected service:
-
-```yaml
-services:
-  <service>:
-    volumes:
-      - type: bind
-        source: <physical git common dir>     # daemon namespace
-        target: <logical git common dir>      # exactly the path the checkout's gitfile names
-        read_only: true                       # false for "rw"
-        bind: {create_host_path: false}       # never let Docker invent an empty dir (CIU-14)
-```
+In a **linked worktree only**, `ciu up`/`ciu render` writes `.ciu/ciu.compose.gitdir.yml`. It is the
+second engine-side fragment; the ownership fragment is the first, and the secrets/governance overlay comes
+from `composefile.py`. It is merged as the last `-f`, so at most it is the fourth `-f` file:
+`ciu.compose.yml`, then the overlay, then the ownership fragment, then this one. In a linked but unmanaged checkout, which has no
+ownership labels, it can be the only extra `-f`. Each bind is long-form, with the source in the daemon
+namespace, the target exactly as the checkout's gitfile names it, and `bind: {create_host_path: false}`, so
+Docker never invents an empty dir (CIU-14). The set of binds per selected service is in "Mount layout"
+below.
 
 In a primary checkout nothing is written, the file arguments are unchanged and `ciu.compose.yml` is
 byte-identical whether or not the table exists. A stack without the table gets nothing anywhere.
@@ -67,8 +62,9 @@ changes behaviour without anyone deciding it.
   and join them lexically (`normpath`, no `resolve()`). A relative gitfile (`worktree.useRelativePaths`) is
   joined against the checkout's logical path. This is S16.4.9's derivation. Cross-check:
   `realpath(target) == realpath(git rev-parse --path-format=absolute --git-common-dir)`; if they differ,
-  refuse with both paths named. The git top comes from `worktree.discover_git_context` (a CIU root can sit
-  below the git top, as `ciu/` does in vbpub).
+  refuse with both paths named. The git top comes from `shared.discover_git_context`, the shared library
+  reached through `worktree._shared_worktree()`, because a CIU root can sit below the git top, as `ciu/`
+  does in vbpub.
 - **Source (physical common dir)**: `worktree._physical_workspace_target(repo_root, target)`, which
   translates through the primary checkout's physical root (`primary_worktree_root` +
   `workspace_env._detect_physical_repo_root`). Never `stat` it locally (AGENTS.md "Defaults and fallbacks").
@@ -85,24 +81,73 @@ it** (a service that mounts the whole primary checkout already sees `.git`). The
 its mode is not changed. Compose would merge an equal target anyway; the explicit skip keeps the
 project's mode and makes the skip visible.
 
-### Read-only by default
+### Mount layout (adopts Run-Gate's RG-NARROW/RG-86 layout) and the recommended value `ro`
 
-Verified in code:
+`git_common_dir` is required, so there is no default. The value the docs recommend is `ro`.
 
-- Assay builds its repository snapshot as a private repository: it streams objects with
-  `git pack-objects --stdout` into a seed repo (`assay/src/assay/git.py` ~1491) and reads the source only
-  through `cat-file`, `ls-tree`, `rev-list` and `status`, with `GIT_OPTIONAL_LOCKS=0`/`--no-optional-locks`.
-  It refuses a snapshot that references the source or depends on alternates (`isolation.py` ~1741). There
-  is no `git worktree add` in `assay/src`, and `git log -G` on `isolation.py`/`git.py` finds none in their
-  history.
+Run-Gate already defines the stricter layout for its container lanes (`run-gate-project/run_gate.py`:
+`container_mount_flags` ~15853, `git_worktrees_mount_flags` ~15770, `git_hook_info_mount_flags` ~15788,
+`git_worktree_pointer_mount_flags`, `git_config_overlay_flags` ~15716). CIU 7 uses the same layout and does
+not invent a third one. The sanitizer (`sanitize_git_config_entries`, `strip_url_userinfo`,
+`_nested_git_config_files`, `_MAX_GIT_OVERLAYS`) is copied and adapted into ciu, as S16.1.1 does for the
+v8 port, because ciu cannot import run-gate. A parity test feeds both implementations the same fixtures.
+
+| path under `<common>` | `"rw"` | `"ro"` |
+|---|---|---|
+| `<common>` itself | rw | ro |
+| `worktrees/` (real contents) | ro (keeps `gc` aware of siblings; `git worktree add`/`prune` hit EROFS) | ro (inherited) |
+| `worktrees/<this checkout>/` (own admin dir) | rw on top (index, HEAD, in-lane commits) | ro (inherited) |
+| `hooks/` | an empty private dir, ro | real contents, ro |
+| `info/` | ro, real contents | ro (inherited) |
+| `<checkout>/.git`, `worktrees/<this>/gitdir`, `worktrees/<this>/commondir` | ro | ro (inherited) |
+| `config`, `config.worktree`, `worktrees/*/config.worktree`, every `config`/`config.worktree` under `modules/` | sanitized copy, ro | sanitized copy, ro |
+
+The sanitized copies and the empty hooks dir live under `.ciu/gitdir/` beside the fragment. Every
+`ciu up` rewrites them with `os.replace`; `reset_service` removes them. A running container keeps the copy
+it was created with. A change to `<common>/config` (a new remote, for example) reaches the runner at its
+next `ciu up`. This is a documented limit.
+
+**What each mode exposes.** A flat mount, even `ro`, would expose `<common>/config` and submodule
+configs. Remote URLs there can carry tokens, which is why both modes get the sanitized overlay. Both modes
+show every sibling worktree's admin dir (HEAD, index, logs: branch names and paths, no credentials). That
+matches a primary checkout's runner, which sees all of them, and run-gate gave up hiding siblings in RG-86
+round 4 because hiding them let `gc --prune=now` delete objects only the siblings referenced. A flat `rw`
+would let a runner plant hooks, edit config, rewrite the gitfile pointers or run `git worktree prune` on
+siblings. The `rw` layout above closes those holes and keeps object writes and in-lane commits, as
+Run-Gate does.
+
+**What `ro` means.** Git inside the runner is read-only. `add`, `commit`, `checkout`, `stash` and anything
+else that takes `<common>/worktrees/<name>/index.lock` fail with EROFS. `status`, `diff`, `log`,
+`describe` and `rev-parse` work, and a plain `git status` silently skips its optional index refresh (the
+reviewer verified this with bwrap, 2026-11-18).
+
+**Why `ro` is enough for the known lanes (verified in code).**
+
+- Assay builds its repository snapshot as a private repository seeded by `git pack-objects --stdout`
+  (`assay/src/assay/git.py` ~1491, the P22 substrate, `487deaf14`, 2026-08-10). It refuses a snapshot that
+  references the source or depends on alternates (`isolation.py` ~1741). Its git calls are `rev-parse`,
+  `config --list -z` (`git.py` ~1750), `pack-objects`, `cat-file`, `ls-tree`, `rev-list`, `merge-base`,
+  `diff`, `ls-files`, `check-ignore` and `status`, under `GIT_OPTIONAL_LOCKS=0`/`--no-optional-locks`. The
+  `write-tree`/`read-tree`/`update-index`/`hash-object` calls run in the private snapshot, not in the
+  source. There is no `git worktree add` in `assay/src`, and `git log -G` finds none in the history of
+  `isolation.py`/`git.py`.
 - Run-Gate reads only: `rev-parse`, `status --porcelain`, `check-ignore`, `diff --quiet`, `merge-base`,
-  `symbolic-ref`, `describe` and `config --file` (`run-gate-project/run_gate.py`).
+  `symbolic-ref`, `describe` and `config --file --list -z`. Its plain `git status --porcelain`
+  (`run_gate.py` 5635, 5776, 15251) runs without `--no-optional-locks` (`host_git_environment()` does not
+  set `GIT_OPTIONAL_LOCKS`). That is harmless under `ro`, because the refresh write is optional and skipped.
 
-So `ro` is enough for the known lanes. The "rw because assay runs `git worktree add`" rationale in the
-netcup-api-filter and dstdns templates, and in SPEC-V8 S16.4.9 and S6.2.4, cannot be reproduced from
-current code. `rw` stays as an explicit value for a lane that writes to the source repository (a test that
-creates branches, commits or worktrees). A plain `git status` under `ro` skips its optional index refresh;
-the live probe below must confirm that this is silent.
+**The contrary evidence and its status.** dstdns `tools/test-runner/ciu.compose.yml.j2` lines 115-123
+(`dstdns@7a2c7b9c`, 2026-09-03) records `:ro` measured on lane `p128_persister_lineage`
+(`snapshot_selection = "repository"`) as a bare ERROR/GIT_FAILED. The RG-NARROW report
+(`run-gate-project/nyxloom-trove/reports/run-gate-RG-NARROW-2026-10-REPORT.md` line 113) found no
+`git worktree add` (the snapshot then used `clone --no-local`) and asks for the S16.4.9 premise to be
+re-checked.
+
+The measurement is **unproven against current assay, not shown superseded**. P22 predates it, but dstdns
+consumes a pinned assay release, the snapshot mechanism changed at least twice (clone, then pack-stream),
+and neither mechanism writes to the source. The failure therefore had a cause nobody recorded. So `ro`
+stays the recommendation only once the live probe (test 10) passes on that dstdns lane. If it fails,
+record the cause and recommend `rw`.
 
 ### Cost to consumers
 
@@ -113,9 +158,11 @@ de-duplication keeps it working unchanged (and keeps its `rw`).
 
 ### Change list
 
-- `ciu/src/ciu/worktree.py`: `is_linked_git_worktree` (moved from `deploy.py`), and `git_common_dir_mount(repo_root) -> (logical, physical)` with the gitfile/commondir derivation and the cross-check.
+- `ciu/src/ciu/worktree.py`: `is_linked_git_worktree` (moved from `deploy.py`), and `git_common_dir_mount(repo_root) -> GitMountPlan` (logical and physical common dir, own admin dir, pointer files) with the gitfile/commondir derivation and the cross-check. It uses `shared.discover_git_context` via `_shared_worktree()`.
+- `ciu/src/ciu/gitconfig_sanitize.py` (new): the copy and adaptation of Run-Gate's sanitizer and nested-config walk, with the same cap.
 - `ciu/src/ciu/config_model.py`: `validate_linked_worktree_table(stack_root_table)` with closed keys `git_common_dir` (`ro|rw`, required) and `services` (list of strings), refusing unknown keys and values (`[CIU-215] ...`).
-- `ciu/src/ciu/engine.py`: `GITDIR_OVERLAY_NAME = "ciu.compose.gitdir.yml"`; `write_gitdir_overlay(stack_dir, rendered_compose, table, mount)`, a sibling of `write_ownership_overlay`, with the volume parser and the de-duplication; a call in `main_execution` Step 15 after the ownership fragment, appended to `file_args`; leak-scanned like the other fragments; an unknown name in `services` refuses at render. Add the fragment to `reset_service`'s `down -f` set and its removal targets (engine.py ~1193-1295). The shipped-stack path (engine.py ~2800, no rendered template) refuses the table, so the key is never silently ignored.
+- `ciu/src/ciu/engine.py`: `GITDIR_OVERLAY_NAME = "ciu.compose.gitdir.yml"`; `write_gitdir_overlay(stack_dir, rendered_compose, table, mount)`, a sibling of `write_ownership_overlay`, with the volume parser and the de-duplication; a call in `main_execution` Step 15 after the ownership fragment, appended to `file_args`; leak-scanned like the other fragments; an unknown name in `services` refuses at render. Add the fragment to `reset_service`'s `down -f` set, and add it and `.ciu/gitdir/` to the removal targets (engine.py ~1193-1295). The shipped-stack path (engine.py ~2800, no rendered template) refuses the table, so the key is never silently ignored.
+- `ciu/src/ciu/oneshot.py` `_compose_file_args` (~720-747) passes the gitdir fragment through unchanged. It copies only the ownership fragment to its private per-run dir. The gitdir fragment's content is a pure function of the checkout and the stack config, and it is replaced atomically, so a concurrent `ciu up` cannot change it under a one-shot. `PreparedStack` needs no new field because `file_args` already carries the fragment.
 - `ciu/src/ciu/deploy.py`: the preflight/`ciu check` (beside the governance shape check, ~3889) reports an invalid table; `_is_linked_git_worktree` becomes an import.
 - Docs, in the same change: `ciu/docs/SPEC.md` (new subsection beside S16.9 ownership labels), `CONFIG.md` (the table), `CONSUMERS.md` (a block to paste, plus "delete your hand-written block"), `DESIGN-GUIDE.md` (why opt-in, why ro, why not automatic), and a CHANGES entry.
 
@@ -123,14 +170,18 @@ de-duplication keeps it working unchanged (and keeps its `rw`).
 
 1. A primary checkout with the table: `ciu.compose.yml` is byte-identical to the render without it, no `ciu.compose.gitdir.yml` exists, and `file_args` is unchanged.
 2. A linked worktree without the table: no fragment.
-3. A linked worktree with `"ro"`, using a fake physical root that differs from the logical one: every stack service gets exactly one long-form bind with physical source, gitfile-derived target, `read_only: true` and `create_host_path: false`, and the fragment follows the ownership fragment in `file_args`.
-4. `"rw"` gives `read_only: false`. `services` narrows the selection; an unknown service name refuses with the name in the message.
+3. A linked worktree with `"ro"`, using a fake physical root that differs from the logical one: every stack service gets the `ro` column of the layout table (common dir with physical source, gitfile-derived target, `read_only: true`, `create_host_path: false`, plus the sanitized config overlays). In a managed checkout the fragment follows the ownership fragment in `file_args`; in a linked but unmanaged checkout (no ownership labels) it is the only extra `-f` after the overlay.
+4. `"rw"` produces exactly the `rw` column: `worktrees/` ro with the own admin dir rw on top, the empty ro hooks dir, `info/` and the three pointer files ro, and sanitized config overlays, including nested `modules/` configs and sibling `config.worktree`. More files than the cap refuse. No credential form survives in any file under `.ciu/gitdir/`; the parity test runs with Run-Gate's fixtures. `services` narrows the selection; an unknown service name refuses with the name in the message.
 5. De-duplication: the literal netcup-api-filter short-form line (a colon inside `${...}`) is detected and that service is skipped with INFO; an ancestor target is skipped; a long-form equal target is skipped.
 6. Derivation: a relative gitfile is joined lexically; a commondir that disagrees with `git rev-parse --git-common-dir` refuses; a CIU root below the git top uses the top's `.git`.
 7. An invalid value, an unknown key or a missing `git_common_dir` refuses at render and in `ciu check`; the table on a shipped stack refuses.
 8. `reset_service` passes the fragment to `down` and removes it.
 9. Docs oracles (AGENTS.md): the CONSUMERS example parses with the shipped loader, and `ro`/`rw` appear in the docs.
-10. **Live acceptance probe** (the CIU-215 close-when, one run through the registered lane path): a netcup-api-filter linked worktree with the project block deleted and `git_common_dir = "ro"` runs `git rev-parse HEAD` and one `snapshot_selection = "repository"` assay lane to a verdict, and `git status` prints no error.
+10. **Live acceptance probe** (the CIU-215 close-when, through the registered lane path). Two runs, each with the project's hand-written block deleted and `git_common_dir = "ro"`. In each, `git rev-parse HEAD` succeeds, `git status` prints no error, `git commit` fails with EROFS, and the named lane reaches a verdict:
+    - a netcup-api-filter linked worktree, with one `snapshot_selection = "repository"` assay lane;
+    - a dstdns linked worktree, with lane `p128_persister_lineage`, which settles the contrary measurement.
+
+    If the dstdns lane fails under `ro`, record the cause and repeat with `"rw"`. In both runs, check the `rw` layout once with in-lane commits.
 
 ### Migration and compatibility
 
@@ -139,14 +190,15 @@ and projects with the hand-written block keep working through the de-duplication
 netcup-api-filter and dstdns backlogs (dstdns via its own backlog, cross-repo annotation) delete their
 blocks after adopting. v8: S6.2.4 derives the service from `exec_in` and needs no table, so the v8
 migration drops `[<stack>.linked_worktree]`. **OPEN QUESTION (v8 spec, not blocking CIU 7):** S16.4.9 and
-S6.2.4 mandate `rw` on the stale `git worktree add` rationale. Recommendation: amend v8 to `ro` with an
-opt-in `rw`, after probe 10 confirms `ro` on a live lane.
+S6.2.4 mandate a flat `rw` on the `git worktree add` rationale, which cannot be reproduced from current
+code. Recommendation: once probe 10 passes on both lanes, amend v8 to `ro`, plus an opt-in `rw` with the
+RG-NARROW/RG-86 layout above, which Run-Gate already uses.
 
 ---
 
-## Decision 2 — CIU-220 / cmru KI-178 items 3 and 4: one bounded subprocess reader in cli-extended
+## Decision 2 — CIU-220 / cmru KI-178 items 3 and 4: one bounded subprocess reader (recommended: cli-extended, pending operator)
 
-### Decision
+### Recommendation (pending the open question below)
 
 The helper becomes a new module **`cli_extended.procio`** in `libraries/cli-extended` (stdlib-only, like
 the rest of the library), ported from cmru's landed `runner.py` code. cmru, ciu, nyxloom and mdt-cockpit
@@ -197,19 +249,27 @@ helpers, buildkit clients, ssh masters, user hooks).
 | site | change |
 |---|---|
 | `engine.py:1599` `execute_docker_compose_with_logs` (`Popen`, `for line in proc.stdout`) | `procio.run_streaming` with the watchdog; the KeyboardInterrupt branch becomes the group reap |
-| `procutil.run_cmd` (`procutil.py:75`, `subprocess.run(capture_output=..., timeout=None)` by default; 86 call sites) | the body becomes `procio.run_capture`, so every caller inherits the drain; signature unchanged; add `text=False` support for bytes callers |
-| direct `subprocess.run(capture_output=True)` without timeout: `workspace_env.py` 746, 808, 942, 997, 1011, 1058, 1109, 1119, 1153 (docker; 1153 is `docker run`, which can pull through a credential helper); `cli.py:909` (`buildx bake --print`); `diagnose.py:32`; `host_enroll.py:115`; `ksm.py:403`; `worktree.py` 1218 (git) and 2074 (child `ciu env generate`); `workspace.py` 204, 228, 251 (git, 251 is bytes) | move to `procutil.run_cmd` |
-| bounded captures (`doctor.py:22`, `ksm.py` 256/364, `deploy_pkg/health.py` 419/438, `governance.py` 719/847/941/1417/1637/1769) | move to `procutil.run_cmd(timeout=...)`: today a held pipe turns a finished child into a false `TimeoutExpired` |
+| `procutil.run_cmd` (`procutil.py:75`, `subprocess.run(capture_output=capture, timeout=None)` by default) | the capture body becomes `procio.run_capture`, so every caller inherits the drain: 84 real call sites (30 `procutil.run_cmd(` + 54 `procutil.docker(`) plus `procutil.docker`'s own internal call. The signature is unchanged; add `text=False` support for bytes callers |
+| `procutil.run_cmd(capture=False)` (`deploy.py:910`, `worktree.py:5063`, both through `procutil.docker`) | no pipe, so no drain is needed; this path stays a plain `subprocess.run` with inherited stdio. `run_cmd` gains `start_new_session=True` and `procio.terminate_as_exit()` for it, so an interrupt reaps the group just as on the capture path |
+| 17 direct unbounded `subprocess.run(capture_output=True)`: `workspace_env.py` 746, 808, 942, 997, 1011, 1058, 1109, 1119, 1153 (docker; 1153 is `docker run`, which can pull through a credential helper); `cli.py:909` (`buildx bake --print`); `diagnose.py:32`; `host_enroll.py:115`; `worktree.py` 1218 (git) and 2074 (child `ciu env generate`); `workspace.py` 204, 228, 251 (git, 251 is bytes) | move to `procutil.run_cmd` |
+| bounded captures (`doctor.py:22`, `ksm.py` 256/364/403 (403 has `timeout=30`), `deploy_pkg/health.py` 419/438, `governance.py` 719/847/941/1417/1637/1769) | move to `procutil.run_cmd(timeout=...)`: today a held pipe turns a finished child into a false `TimeoutExpired` |
 
 **Out of scope, as justified exceptions:** these have no pipe, so there is no EOF to wait for, and the
 wait is on the child itself.
 
-- `subprocess.run(cmd)` with inherited stdio: `transport_ssh.py` 203, 329, 397; `workspace_env.py:2469`; `worktree.py` 2063, 2073, 4698.
+- `subprocess.run(cmd)` with inherited stdio (7): `transport_ssh.py` 203, 329, 397; `workspace_env.py:2469`; `worktree.py` 2063, 2073, 4698.
+- `subprocess.call` with inherited stdio (2): `cli.py:953`, `dev.py:329`.
 - `procutil.popen` in `oneshot.py:1218`: inherited stdout, already `start_new_session=True`.
 
-The guard test greps `ciu/src` for `subprocess.run(`, `subprocess.Popen(`, `check_output(` and
-`communicate(` outside `procutil.py`. It fails on any hit that is not in an exemption list, and each list
-entry carries a reason string. The list holds exactly the out-of-scope sites above.
+The guard test greps `ciu/src` for `subprocess.run(`, `subprocess.Popen(`, `subprocess.call(`,
+`check_call(`, `check_output(` and `communicate(` outside `procutil.py`. It fails on any hit that is not
+in an exemption list, and each list entry carries a reason string. The list holds exactly the nine
+out-of-scope sites above.
+
+The change list adds the rewrite of `procutil.py`'s module docstring. It says "Subprocess discipline for
+CIU v2" and claims (line 8) that `run_cmd` and `popen` are the only places CIU spawns children, which the
+direct sites above contradict today. After the change it states the real rule: every child goes through
+`procutil`, captures go through `procio`, and the exemptions live in the guard test.
 
 ### Adoption order
 

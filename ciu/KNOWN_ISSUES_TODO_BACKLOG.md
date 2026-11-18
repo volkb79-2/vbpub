@@ -7054,7 +7054,7 @@ turn the test red, the refreshed 7.25.1 text passes unchanged, and
 
 **Status:** OPEN (filed 2026-11-17, from cmru KI-178); severity: high for unattended runs.
 
-**Design:** design decided in `ciu/docs/DESIGN-NOTE-2026-11-CIU-215-CIU-220.md` (Decision 2), implementation not started.
+**Design:** design recommended in `ciu/docs/DESIGN-NOTE-2026-11-CIU-215-CIU-220.md` (Decision 2; the helper's home, cli-extended, is pending the operator's answer to the note's open question), implementation not started.
 
 **Observed.** `ciu/src/ciu/engine.py:1600-1605` starts a command with `stdout=PIPE, stderr=STDOUT` and iterates `proc.stdout` to EOF. EOF arrives only when every holder of the write end has closed it, so a grandchild that outlives the command (a credential helper, a daemonised helper, a restarted daemon's client) keeps `ciu` blocked after the command itself has exited. The shape was reproduced in cmru and `build-push.py` on 2026-11-17 (an 11-minute silent hang); it has not been reproduced in ciu, which is why this is filed as an audit item.
 
