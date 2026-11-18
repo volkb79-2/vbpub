@@ -2,8 +2,10 @@
 
 No docker daemon, no ssh and no network are used: `docker`, `id` and the host-table transport
 (`hx.sh`, via the test-only HOSTOBS_DEV_HX seam) are stubs on PATH that record their argv. The
-wrapper's REMOTE mode is exercised end to end by letting the stub transport run the remote
-script locally under a temporary HOME. Needs HOSTOBS_ROOT.
+stub transport copies the real scripts/controller/hx.sh layering (guard block under `set -e`,
+then the command, the whole thing shlex-quoted into `bash -c`, run through `sh -c`), so every
+quoting layer of the remote script is exercised. The wrapper's REMOTE mode is exercised end to
+end by letting that transport run the remote script locally under a temporary HOME. Needs HOSTOBS_ROOT.
 """
 
 from __future__ import annotations
@@ -14,10 +16,12 @@ import json
 import os
 import pty
 import re
+import select
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -44,6 +48,11 @@ if verb == "inspect":
             sys.exit(1)
         print(state)
         sys.exit(0)
+    if "{{{{.State.StartedAt}}}}" in args:
+        print(os.environ.get("STUB_STARTED", "2020-01-01T00:00:00Z"))
+        sys.exit(0)
+    if "{{{{.Id}}}}" in args:
+        sys.exit(0 if os.environ.get("STUB_EXISTS") == "1" else 1)
     if args[-1] == os.environ.get("STUB_SELF", "-"):
         sys.stdout.write(os.environ.get("STUB_MOUNTS", ""))
         sys.exit(0)
@@ -51,17 +60,26 @@ if verb == "inspect":
 if verb == "volume" and args[1] == "inspect":
     sys.exit(0 if os.environ.get("STUB_VOLUME", "1") == "1" else 1)
 if verb == "run":
+    if "--cidfile" in args:
+        with open(args[args.index("--cidfile") + 1], "w") as fh:
+            if not os.environ.get("STUB_NO_CID"):
+                fh.write("cid-stub-1")
     sys.exit(int(os.environ.get("STUB_RUN_RC", "0")))
 sys.exit(0)
 """
 
+# the real layering of scripts/controller/hx.sh: guard under `set -e`, then the command, shlex-quoted into `bash -c`
 HX_STUB = """#!/bin/bash
 n=$(( $(cat "$STUB_LOG_DIR/hx.count" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$STUB_LOG_DIR/hx.count"
 printf '%s\\n' "$1" >> "$STUB_LOG_DIR/hx.log"
 printf '%s' "$2" > "$STUB_LOG_DIR/hx-$n.sh"
 if [[ -n ${STUB_HX_RC:-} ]]; then exit "$STUB_HX_RC"; fi
-exec bash -c "$2"
+guard='true'
+remote_script=$(printf 'set -e\\nif ! { %s\\n}; then printf "GUARD-FAIL\\\\n" >&2; exit 98; fi\\n%s\\n' "$guard" "$2")
+quoted_script=$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$remote_script") || exit 2
+remote="bash -c $quoted_script"
+exec sh -c "$remote"
 """
 
 ID_STUB = """#!/bin/bash
@@ -107,13 +125,16 @@ class DevCase(unittest.TestCase):
             (self.stubs / name).write_text(text)
             (self.stubs / name).chmod(0o755)
         (self.tmp / "memory.current").write_text(str(1 << 30) + "\n")
-        (self.tmp / "psi" / "memory").write_text(
-            "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
-        (self.tmp / "psi" / "io").write_text(
-            "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
+        self.write_psi("0.00", "0.00")
         self.repo = self.make_repo(self.tmp / "repo")
         self.hex = worktree_hex(self.repo)
         self.dev = self.repo / "hostobs" / "tools" / "dev"
+
+    def write_psi(self, memory_some: str, io_full: str, io_some: str = "0.00") -> None:
+        (self.tmp / "psi" / "memory").write_text(
+            f"some avg10={memory_some} avg60=0.00 avg300=0.00 total=0\nfull avg10=99.00 avg60=0.00 avg300=0.00 total=0\n")
+        (self.tmp / "psi" / "io").write_text(
+            f"some avg10={io_some} avg60=0.00 avg300=0.00 total=0\nfull avg10={io_full} avg60=0.00 avg300=0.00 total=0\n")
 
     def make_repo(self, root: Path) -> Path:
         (root / "hostobs" / "tools").mkdir(parents=True)
@@ -141,13 +162,34 @@ class DevCase(unittest.TestCase):
             "HOSTOBS_DEV_TEST_PSI_DIR": str(self.tmp / "psi"),
         }
         env.update(extra)
-        return {k: v for k, v in env.items() if v is not None}
+        return env
 
     def run_dev(self, *args: str, stdin=subprocess.DEVNULL, unset: tuple = (), **extra: str):
         env = self.env(**extra)
         for key in unset:
             env.pop(key, None)
         return subprocess.run([str(self.dev), *args], env=env, stdin=stdin, capture_output=True, text=True, timeout=120)
+
+    def run_pty(self, *args: str, **extra: str):
+        """Run with stdin AND stdout on a pseudo terminal; returns (returncode, terminal output)."""
+        master, slave = pty.openpty()
+        try:
+            proc = subprocess.Popen([str(self.dev), *args], env=self.env(**extra), stdin=slave, stdout=slave,
+                                    stderr=subprocess.PIPE, text=True)
+            _, err = proc.communicate(timeout=120)
+            chunks = b""
+            while select.select([master], [], [], 0.2)[0]:
+                try:
+                    data = os.read(master, 65536)
+                except OSError:
+                    break
+                if not data:
+                    break
+                chunks += data
+        finally:
+            os.close(master)
+            os.close(slave)
+        return proc.returncode, chunks.decode(errors="replace"), err
 
     @staticmethod
     def argv_of(proc) -> list:
@@ -158,6 +200,9 @@ class DevCase(unittest.TestCase):
     def docker_calls(self) -> list:
         path = self.logs / "docker.log"
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def runs(self) -> list:
+        return [c for c in self.docker_calls() if c[0] == "run"]
 
 
 class WrapperArgvTests(DevCase):
@@ -179,21 +224,23 @@ class WrapperArgvTests(DevCase):
         self.assertEqual(self.option(argv, "--cgroup-parent"), "dev-gates.slice")
         self.assertEqual(self.option(argv, "--user"), "1003:1003")
         self.assertEqual(self.option(argv, "--pull"), "never")
+        self.assertEqual(self.option(argv, "--stop-timeout"), "10")
         self.assertEqual(self.option(argv, "--name"), f"hostobs-dev-{self.hex}")
         for fragment in FORBIDDEN_FRAGMENTS:
             self.assertNotIn(fragment, text, fragment)
         for arg in argv:
             self.assertNotIn(arg.split("=")[0], FORBIDDEN_FLAGS, arg)
         mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
-        self.assertEqual(mounts, [f"{hostdir}:/work", f"hostobs-dev-target-{self.hex}:/home/gate/.cache/hostobs-target"])
+        self.assertEqual(mounts, [f"{hostdir}:/work", f"{hostdir}/.git:/work/.git:ro",
+                                  f"hostobs-dev-target-{self.hex}:/home/gate/.cache/hostobs-target"])
         self.assertEqual(self.option(argv, "-w"), "/work/hostobs")
         for env in ("CARGO_NET_OFFLINE=true", "RUST_BACKTRACE=1", "RUST_LIB_BACKTRACE=1"):
             self.assertEqual(argv[argv.index(env) - 1], "-e")
         self.assertNotIn("CARGO_TARGET_DIR", text)
         caps = [argv[i + 1] for i, a in enumerate(argv) if a == "--cap-add"]
         self.assertEqual(caps, ["SYS_PTRACE"] if sub[0] in ("gdb", "strace") else [])
-        core = self.option(argv, "--ulimit")
-        self.assertEqual(core, "core=-1:-1" if sub[0] == "gdb" else "core=0:0")
+        # core dumps are off everywhere: a piped core_pattern would send them to a host handler outside the cgroup
+        self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "--ulimit"], ["core=0:0"])
         image = argv.index("tester-unified-rust-dev:local")
         self.assertEqual(argv[image + 1:image + 6], ["nice", "-n", "10", "ionice", "-c3"])
 
@@ -203,20 +250,43 @@ class WrapperArgvTests(DevCase):
                 proc = self.run_dev("--dry-run", *sub)
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertIn("STEP 2: preflight:", proc.stdout)
-                self.assertIn("STEP 6: sync:", proc.stdout)
+                self.assertIn("STEP 6: upload:", proc.stdout)
                 self.assertIn("git bundle create in.bundle HEAD", proc.stdout)
                 self.assertIn("git diff HEAD --binary", proc.stdout)
-                self.assert_safe(sub, self.argv_of(proc), f"$HOME/hostobs-dev/{self.hex}/work")
+                argv = self.argv_of(proc)
+                self.assert_safe(sub, argv, f"$HOME/hostobs-dev/{self.hex}/work")
+                self.assertEqual(self.option(argv, "--cidfile"), f"$HOME/hostobs-dev/{self.hex}/cid")
         # a dry run touches neither docker nor the transport
         self.assertEqual(self.docker_calls(), [])
         self.assertFalse((self.logs / "hx.log").exists())
+
+    def test_the_git_directory_is_mounted_read_only_for_every_container_subcommand(self) -> None:
+        for sub in ALL_SUBS:
+            argv = self.argv_of(self.run_dev("--dry-run", *sub))
+            self.assertIn(f"$HOME/hostobs-dev/{self.hex}/work/.git:/work/.git:ro", argv, sub)
+            self.assertLess(argv.index(f"$HOME/hostobs-dev/{self.hex}/work:/work"),
+                            argv.index(f"$HOME/hostobs-dev/{self.hex}/work/.git:/work/.git:ro"))
+        script = self.run_dev("--dry-run", "shell").stdout
+        self.assertIn('-v "$W/.git:/work/.git:ro"', script)
+
+    def test_the_host_side_git_calls_are_hardened(self) -> None:
+        script = self.run_dev("--dry-run", "shell").stdout
+        self.assertIn("export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null", script)
+        self.assertIn("g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.allow=never -c protocol.file.allow=always", script)
+        for line in script.splitlines():
+            if re.search(r"(?:^|[\s(`])git\s+-", line) and "g() {" not in line:
+                # every other git call (read-only probes in the preflight and status) carries hooksPath and fsmonitor off
+                self.assertIn("core.hooksPath=/dev/null", line, line)
+                self.assertIn("core.fsmonitor=false", line, line)
+        self.assertIn('rm -rf "$W/.git/hooks"', script)
+        self.assertIn('mkdir -m 0755 "$W/.git/hooks"', script)
+        self.assertNotRegex(script, r"(?m)^(?!.*core\.hooksPath)(?!g\(\))[^#\n]*\bgit (clone|init|fetch|checkout|reset|clean|apply)\b")
 
     def test_local_mode_is_refused_without_the_override_and_safe_with_it(self) -> None:
         proc = self.run_dev("--dry-run", "--local", "shell")
         self.assertEqual(proc.returncode, 2)
         self.assertIn("not recommended", proc.stderr)
         self.assertEqual(self.docker_calls(), [])
-        # the worktree is /tmp/.../repo: map it through a mount whose destination is its parent
         mounts = f"{self.tmp}\t/host/base\n"
         for sub in ALL_SUBS:
             with self.subTest(sub=sub):
@@ -224,7 +294,6 @@ class WrapperArgvTests(DevCase):
                                     STUB_SELF="selfbox", HOSTOBS_DEV_SELF_CONTAINER="selfbox", STUB_MOUNTS=mounts)
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assert_safe(sub, self.argv_of(proc), "/host/base/repo")
-        # the only docker calls are the read-only inspect of ourselves and the prefix listing; never `run`
         for call in self.docker_calls():
             self.assertIn(call[0], ("inspect", "ps"), call)
             if call[0] == "ps":
@@ -257,10 +326,12 @@ class WrapperArgvTests(DevCase):
         self.assertEqual(tail("test", "--no-nextest", "-p", "a"), [cargo, "test", "--offline", "--locked", "-p", "a"])
         self.assertEqual(tail("clippy"), [cargo, "clippy", "--offline", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"])
         self.assertEqual(tail("fmt", "--check"), [cargo, "fmt", "--all", "--check"])
-        self.assertEqual(tail("example", "hostobs-proto", "sp4_wire_size", "a"),
-                         [cargo, "run", "--offline", "--locked", "-p", "hostobs-proto", "--example", "sp4_wire_size", "--", "a"])
-        self.assertEqual(tail("example", "hostobs-proto", "sp4_wire_size"),
-                         [cargo, "run", "--offline", "--locked", "-p", "hostobs-proto", "--example", "sp4_wire_size"])
+        run_example = [cargo, "run", "--offline", "--locked", "-p", "hostobs-proto", "--example", "sp4_wire_size"]
+        self.assertEqual(tail("example", "hostobs-proto", "sp4_wire_size", "a"), run_example + ["--", "a"])
+        self.assertEqual(tail("example", "hostobs-proto", "sp4_wire_size"), run_example)
+        # a leading `--` of the example arguments is not doubled
+        self.assertEqual(tail("example", "hostobs-proto", "sp4_wire_size", "--", "x", "y"), run_example + ["--", "x", "y"])
+        self.assertEqual(tail("example", "hostobs-proto", "sp4_wire_size", "--"), run_example)
         self.assertEqual(tail("run", "--", "ls", "-l"), ["ls", "-l"])
         self.assertEqual(tail("shell"), ["bash"])
         self.assertEqual(tail("fixtures-shell"), ["bash"])
@@ -268,30 +339,60 @@ class WrapperArgvTests(DevCase):
         self.assertEqual(self.run_dev("--dry-run", "nonsense").returncode, 2)
         self.assertEqual(self.run_dev("--dry-run", "example", "only-one").returncode, 2)
 
-    def test_tty_flags_only_when_stdin_is_a_terminal(self) -> None:
-        batch = self.argv_of(self.run_dev("--dry-run", "shell"))
-        self.assertNotIn("-it", batch)
-        self.assertNotIn("-t", batch)
+    def test_tty_flags_only_when_stdin_and_stdout_are_terminals(self) -> None:
+        self.assertNotIn("-it", self.argv_of(self.run_dev("--dry-run", "shell")))
         master, slave = pty.openpty()
         try:
-            proc = self.run_dev("--dry-run", "shell", stdin=slave)
+            only_stdin = self.run_dev("--dry-run", "shell", stdin=slave)
         finally:
             os.close(master)
             os.close(slave)
-        self.assertIn("-it", self.argv_of(proc))
+        self.assertNotIn("-it", self.argv_of(only_stdin))
+        rc, out, err = self.run_pty("--dry-run", "shell")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("-it", out.replace("\r", "").splitlines())
 
-    def test_resource_limits_follow_the_environment_and_are_validated(self) -> None:
-        argv = self.argv_of(self.run_dev("--dry-run", "shell", HOSTOBS_DEV_MEMORY="2g", HOSTOBS_DEV_CPUS="1.5"))
-        self.assertEqual((argv[argv.index("--memory") + 1], argv[argv.index("--memory-swap") + 1], argv[argv.index("--cpus") + 1]),
-                         ("2g", "2g", "1.5"))
-        self.assertEqual(self.run_dev("--dry-run", "shell", HOSTOBS_DEV_MEMORY="3g --privileged").returncode, 2)
-        self.assertEqual(self.run_dev("--dry-run", "shell", HOSTOBS_DEV_CPUS="x").returncode, 2)
+    def test_resource_limits_follow_the_environment_within_their_bounds(self) -> None:
+        argv = self.argv_of(self.run_dev("--dry-run", "shell", HOSTOBS_DEV_MEMORY="2g", HOSTOBS_DEV_CPUS="1.5", HOSTOBS_DEV_PIDS="512"))
+        self.assertEqual((argv[argv.index("--memory") + 1], argv[argv.index("--memory-swap") + 1], argv[argv.index("--cpus") + 1],
+                          argv[argv.index("--pids-limit") + 1]), ("2g", "2g", "1.5", "512"))
+        for value in ("512m", "4g", "4096m", "2048m"):
+            self.assertEqual(self.run_dev("--dry-run", "shell", HOSTOBS_DEV_MEMORY=value).returncode, 0, value)
+        for value in ("3", "3.0"):
+            self.assertEqual(self.run_dev("--dry-run", "shell", HOSTOBS_DEV_CPUS=value).returncode, 0, value)
 
-    def test_the_governed_slice_is_required(self) -> None:
+    def test_limits_cannot_be_lifted_or_zeroed(self) -> None:
+        for value in ("0", "0g", "0m", "100g", "5g", "511m", "-1", "3g --privileged", "3g\n--privileged", "64", "", "3G", "1.5g"):
+            with self.subTest(memory=value):
+                proc = self.run_dev("--dry-run", "shell", HOSTOBS_DEV_MEMORY=value)
+                self.assertEqual(proc.returncode, 2, proc.stdout)
+                self.assertIn("HOSTOBS_DEV_MEMORY", proc.stderr)
+        for value in ("0", "0.0", "0.000", "3.001", "4", "100", "-1", "x", "2 --privileged", "2\n3", ""):
+            with self.subTest(cpus=value):
+                proc = self.run_dev("--dry-run", "shell", HOSTOBS_DEV_CPUS=value)
+                self.assertEqual(proc.returncode, 2, proc.stdout)
+                self.assertIn("HOSTOBS_DEV_CPUS", proc.stderr)
+        for value in ("0", "1025", "99999", "-1", "x", "10 --privileged"):
+            with self.subTest(pids=value):
+                self.assertEqual(self.run_dev("--dry-run", "shell", HOSTOBS_DEV_PIDS=value).returncode, 2)
+        for value in ("0", "14401", "x", "-1", "5 6"):
+            with self.subTest(max_s=value):
+                self.assertEqual(self.run_dev("--dry-run", "shell", HOSTOBS_DEV_MAX_S=value).returncode, 2)
+
+    def test_the_governed_slice_must_be_exactly_dev_gates(self) -> None:
         for args in (("--dry-run", "shell"), ("--dry-run", "--local", "shell")):
             proc = self.run_dev(*args, unset=("CGROUP_PARENT_DEV_GATES",), HOSTOBS_DEV_ALLOW_LOCAL="1")
             self.assertEqual(proc.returncode, 2, args)
             self.assertIn("CGROUP_PARENT_DEV_GATES is required", proc.stderr)
+        for value in ("-.slice", "x.slice", "-x.slice", "dev-gates.slice ", "dev-gates", "dev.slice", "dev-gates.slice\nx", "", "system.slice"):
+            with self.subTest(slice=value):
+                proc = self.run_dev("--dry-run", "shell", CGROUP_PARENT_DEV_GATES=value)
+                self.assertEqual(proc.returncode, 2, proc.stdout)
+                self.assertIn("CGROUP_PARENT_DEV_GATES", proc.stderr)
+
+    def test_the_memory_gate_reads_the_dev_gates_slice(self) -> None:
+        script = self.run_dev("--dry-run", "shell", unset=("HOSTOBS_DEV_TEST_SLICE_MEM_FILE",)).stdout
+        self.assertIn("MEM_FILE=/sys/fs/cgroup/dev.slice/dev-gates.slice/memory.current", script)
 
     def test_only_the_v1001_alias_is_accepted(self) -> None:
         self.assertEqual(self.run_dev("--dry-run", "shell", HOSTOBS_DEV_HOST="r1002", CONTROLLER_REMOTE_GATE_HOSTS="r1002 v1001").returncode, 2)
@@ -312,9 +413,82 @@ class WrapperArgvTests(DevCase):
             fh.truncate(19 * 1024 * 1024)
         self.assertEqual(self.run_dev("--dry-run", "shell").returncode, 0)
 
+    def test_an_untracked_nested_git_directory_is_refused_not_shipped(self) -> None:
+        nested = self.repo / "hostobs" / "nested"
+        nested.mkdir()
+        subprocess.run(["git", "-C", str(nested), "init", "-q"], check=True)
+        (nested / "file.txt").write_text("x\n")
+        subprocess.run(["git", "-C", str(nested), "-c", "user.name=t", "-c", "user.email=t@e.invalid", "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(nested), "-c", "user.name=t", "-c", "user.email=t@e.invalid", "commit", "-q", "-m", "n"], check=True)
+        for args in (("--dry-run", "shell"), ("shell",)):
+            proc = self.run_dev(*args)
+            self.assertEqual(proc.returncode, 2, args)
+            self.assertIn("nested", proc.stderr)
+            self.assertIn("cannot be synced", proc.stderr)
+        self.assertFalse((self.logs / "hx.log").exists())
+
+    def test_the_container_has_a_runtime_limit_and_the_dry_run_shows_it(self) -> None:
+        script = self.run_dev("--dry-run", "shell", HOSTOBS_DEV_MAX_S="120").stdout
+        self.assertIn("timeout --foreground -s TERM -k 15 120 ", script)
+        self.assertIn("--stop-timeout 10", script)
+        default = self.run_dev("--dry-run", "shell").stdout
+        self.assertIn("timeout --foreground -s TERM -k 15 3600 ", default)
+        self.assertEqual(self.run_dev("--dry-run", "shell", HOSTOBS_DEV_MAX_S="14400").returncode, 0)
+
+
+class HostileInputTests(DevCase):
+    """Nothing the user types may reach the host shell: every word is quoted, whatever it contains."""
+
+    def words(self, marker: Path) -> list:
+        return [
+            "a b", "q'uote", "x;y", "$(id)", "`id`", "$HOME/x\"; touch " + str(marker) + "; echo \"",
+            "*", "a\nb", "-v", "--privileged", '"; touch ' + str(marker) + '; "', "$HOME/hostobs-dev/x:/work", "\\", "$IFS",
+        ]
+
+    def test_remote_run_passes_every_word_byte_for_byte_and_runs_nothing_on_the_host(self) -> None:
+        marker = self.tmp / "PWNED"
+        words = self.words(marker)
+        proc = self.run_dev("run", "--", *words)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(marker.exists())
+        runs = self.runs()
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0][runs[0].index("-c3") + 1:], words)
+        # the hostile words never reached the container's option positions
+        self.assertEqual(runs[0].count("--privileged"), 1)
+        self.assertEqual(runs[0].count("-v"), 4)
+
+    def test_every_subcommand_quotes_its_arguments(self) -> None:
+        marker = self.tmp / "PWNED2"
+        evil = "$HOME/x\"; touch " + str(marker) + "; echo \""
+        for sub in (["test", "-p", evil], ["build", evil], ["clippy", evil], ["gdb", "--args", evil], ["strace", evil],
+                    ["example", "hostobs-proto", "sp4_wire_size", evil], ["fmt", evil]):
+            with self.subTest(sub=sub[0]):
+                self.assertEqual(self.run_dev(*sub).returncode, 0)
+                self.assertFalse(marker.exists())
+                self.assertEqual(self.runs()[-1][-1], evil)
+
+    def test_the_tty_path_quotes_too(self) -> None:
+        marker = self.tmp / "PWNED3"
+        evil = "$HOME/x\"; touch " + str(marker) + "; echo \""
+        rc, out, err = self.run_pty("run", "--", "echo", evil, "a b", "$(id)")
+        self.assertEqual(rc, 0, err + out)
+        self.assertFalse(marker.exists())
+        run = self.runs()[-1]
+        self.assertIn("-it", run)
+        self.assertEqual(run[run.index("-c3") + 1:], ["echo", evil, "a b", "$(id)"])
+
+    def test_the_only_literal_host_text_in_the_run_script_is_built_from_the_validated_hex(self) -> None:
+        script = self.run_dev("--dry-run", "run", "--", "$HOME/x").stdout
+        self.assertIn(f'D="$HOME/hostobs-dev/{self.hex}"; W="$D/work"; ', script)
+        self.assertIn('-v "$W:/work" -v "$W/.git:/work/.git:ro"', script)
+        # the user's $HOME word is escaped, never double-quoted
+        self.assertIn(r"\$HOME/x", script)
+        self.assertNotIn('"$HOME/x"', script)
+
 
 class WrapperRemoteExecutionTests(DevCase):
-    """The stub transport runs each remote script locally under the temporary HOME."""
+    """The stub transport (real hx.sh layering) runs each remote script locally under the temporary HOME."""
 
     def work(self) -> Path:
         return self.home / "hostobs-dev" / self.hex / "work"
@@ -331,36 +505,86 @@ class WrapperRemoteExecutionTests(DevCase):
         self.assertEqual((work / "new.txt").read_text(), "untracked\n")
         head = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
         self.assertEqual(subprocess.run(["git", "-C", str(self.work()), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(), head)
-        # stale state on the host is wiped by the next sync
+        # stale state on the host is wiped by the next sync, and a planted hook is replaced by an empty directory
         (work / "stale.txt").write_text("left behind\n")
         (work / "keep.txt").write_text("host-side edit\n")
+        hook = self.work() / ".git" / "hooks" / "post-checkout"
+        hook.write_text("#!/bin/sh\ntouch " + str(self.tmp / "HOOKRAN") + "\n")
+        hook.chmod(0o755)
         proc = self.run_dev("run", "--", "true")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertFalse((work / "stale.txt").exists())
         self.assertEqual((work / "keep.txt").read_text(), "edited\n")
-        # three transport calls per run (preflight, sync, run), every one by the v1001 alias, all through the stub
+        self.assertFalse(hook.exists())
+        self.assertEqual(list((self.work() / ".git" / "hooks").iterdir()), [])
+        self.assertFalse((self.tmp / "HOOKRAN").exists())
         hosts = (self.logs / "hx.log").read_text().split()
         self.assertEqual(hosts, ["v1001"] * 6)
-        runs = [c for c in self.docker_calls() if c[0] == "run"]
-        self.assertEqual(len(runs), 2)
-        self.assertIn(f"{self.home}/hostobs-dev/{self.hex}/work:/work", runs[0])
+        self.assertEqual(len(self.runs()), 2)
+        self.assertIn(f"{self.home}/hostobs-dev/{self.hex}/work:/work", self.runs()[0])
+        self.assertIn(f"{self.home}/hostobs-dev/{self.hex}/work/.git:/work/.git:ro", self.runs()[0])
 
-    def test_the_exit_code_of_the_command_is_propagated_and_the_container_removed_by_exact_name(self) -> None:
+    def test_a_poisoned_git_config_hook_setting_does_not_run_on_the_host(self) -> None:
+        self.assertEqual(self.run_dev("run", "--", "true").returncode, 0)
+        marker = self.tmp / "FSMONITORRAN"
+        evil = self.tmp / "evil.sh"
+        evil.write_text("#!/bin/sh\ntouch " + str(marker) + "\n")
+        evil.chmod(0o755)
+        for key, value in (("core.fsmonitor", str(evil)), ("core.hooksPath", str(self.tmp / "hooks-evil"))):
+            subprocess.run(["git", "-C", str(self.work()), "config", key, value], check=True)
+        (self.tmp / "hooks-evil").mkdir()
+        (self.tmp / "hooks-evil" / "post-checkout").write_text("#!/bin/sh\ntouch " + str(marker) + "\n")
+        (self.tmp / "hooks-evil" / "post-checkout").chmod(0o755)
+        (self.repo / "hostobs" / "keep.txt").write_text("edited again\n")
+        self.assertEqual(self.run_dev("run", "--", "true").returncode, 0)
+        self.assertFalse(marker.exists())
+
+    def test_the_exit_code_is_propagated_and_the_container_is_removed_by_the_id_of_our_own_run(self) -> None:
         proc = self.run_dev("run", "--", "false", STUB_RUN_RC="7")
         self.assertEqual(proc.returncode, 7)
-        rms = [c for c in self.docker_calls() if c[0] == "rm"]
-        self.assertEqual(rms, [["rm", "-f", f"hostobs-dev-{self.hex}"]])
+        self.assertEqual([c for c in self.docker_calls() if c[0] == "rm"], [["rm", "-f", "cid-stub-1"]])
+        self.assertFalse((self.home / "hostobs-dev" / self.hex / "cid").exists())
 
-    def test_every_docker_call_on_the_host_is_by_exact_name_or_the_own_prefix(self) -> None:
+    def test_a_failed_run_that_created_no_container_removes_nothing(self) -> None:
+        proc = self.run_dev("run", "--", "true", STUB_RUN_RC="125", STUB_NO_CID="1")
+        self.assertEqual(proc.returncode, 125)
+        self.assertEqual([c for c in self.docker_calls() if c[0] == "rm"], [])
+
+    def test_the_sync_refuses_while_the_container_name_exists(self) -> None:
+        proc = self.run_dev("run", "--", "true", STUB_EXISTS="1")
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        self.assertIn("dev stop", proc.stderr)
+        self.assertEqual(self.runs(), [])
+        self.assertEqual([c for c in self.docker_calls() if c[0] == "rm"], [])
+        self.assertFalse(self.work().exists())
+
+    def test_two_wrappers_for_one_worktree_serialise_even_with_parallel_allowed(self) -> None:
+        lock_dir = self.home / "hostobs-dev" / self.hex
+        lock_dir.mkdir(parents=True)
+        with (lock_dir / "lock").open("w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            proc = self.run_dev("run", "--", "true", HOSTOBS_DEV_ALLOW_PARALLEL="1")
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        self.assertIn("another dev call for this worktree", proc.stderr)
+        self.assertEqual(self.runs(), [])
+        self.assertEqual([c for c in self.docker_calls() if c[0] == "rm"], [])
+        self.assertFalse(self.work().exists())
+        self.assertEqual(list(lock_dir.glob("up-*")), [])
+        # the lock is released with the holder: the next call goes through
+        self.assertEqual(self.run_dev("run", "--", "true").returncode, 0)
+
+    def test_every_docker_call_on_the_host_is_by_exact_name_or_own_id_or_the_own_prefix(self) -> None:
         self.run_dev("run", "--", "true")
         self.run_dev("status", STUB_RUNNING="false")
+        self.run_dev("stop")
         self.run_dev("clean", STUB_RUNNING="absent")
+        names = (f"hostobs-dev-{self.hex}", f"hostobs-dev-target-{self.hex}", "cid-stub-1")
         for call in self.docker_calls():
             self.assertFalse(any("ancestor" in a or a in ("-a", "--all", "prune") for a in call), call)
             if call[0] == "ps":
                 self.assertEqual(call, ["ps", "--filter", "name=^hostobs-dev-", "--format", "{{.Names}}"])
             elif call[0] in ("inspect", "rm", "exec") or call[:2] in (["volume", "inspect"], ["volume", "rm"]):
-                self.assertTrue(any(a in (f"hostobs-dev-{self.hex}", f"hostobs-dev-target-{self.hex}") for a in call), call)
+                self.assertTrue(any(a in names for a in call), call)
             else:
                 self.assertEqual(call[0], "run", call)
 
@@ -369,39 +593,53 @@ class WrapperRemoteExecutionTests(DevCase):
         for value, expected in ((limit - 1, 0), (limit, 0), (limit + 1, 75), (8 << 30, 75)):
             with self.subTest(memory_current=value):
                 (self.tmp / "memory.current").write_text(f"{value}\n")
-                before = len([c for c in self.docker_calls() if c[0] == "run"])
+                before = len(self.runs())
                 proc = self.run_dev("run", "--", "true")
                 self.assertEqual(proc.returncode, expected, proc.stderr)
-                started = len([c for c in self.docker_calls() if c[0] == "run"]) - before
-                self.assertEqual(started, 1 if expected == 0 else 0)
+                self.assertEqual(len(self.runs()) - before, 1 if expected == 0 else 0)
                 if expected:
                     self.assertIn("dev-gates.slice memory.current", proc.stderr)
-        # an unreadable value is a refusal, never a pass
+                    self.assertIn("page cache", proc.stderr)
         (self.tmp / "memory.current").write_text("garbage\n")
         self.assertEqual(self.run_dev("run", "--", "true").returncode, 75)
-        # the limit is a single variable
+        (self.tmp / "memory.current").unlink()
+        self.assertEqual(self.run_dev("run", "--", "true").returncode, 75)
         (self.tmp / "memory.current").write_text(f"{limit + 1}\n")
         self.assertEqual(self.run_dev("run", "--", "true", HOSTOBS_DEV_SLICE_MEM_MAX_MB="4096").returncode, 0)
 
     def test_psi_gate_uses_memory_some_and_io_full_with_the_remote_gate_limit(self) -> None:
-        def write(memory_some: str, io_full: str, cpu_like_io_some: str = "0.00") -> None:
-            (self.tmp / "psi" / "memory").write_text(f"some avg10={memory_some} avg60=0 avg300=0 total=0\nfull avg10=99.00 avg60=0 avg300=0 total=0\n")
-            (self.tmp / "psi" / "io").write_text(f"some avg10={cpu_like_io_some} avg60=0 avg300=0 total=0\nfull avg10={io_full} avg60=0 avg300=0 total=0\n")
-        write("25.00", "25.00", "99.00")      # at the limit, memory full and io some are not signals
+        self.write_psi("25.00", "25.00", io_some="99.00")      # at the limit; memory full and io some are not signals
         self.assertEqual(self.run_dev("run", "--", "true").returncode, 0)
-        write("25.01", "0.00")
+        self.write_psi("25.01", "0.00")
         self.assertEqual(self.run_dev("run", "--", "true").returncode, 75)
-        write("0.00", "25.01")
+        self.write_psi("0.00", "25.01")
         self.assertEqual(self.run_dev("run", "--", "true").returncode, 75)
+
+    def test_psi_gate_fails_closed_when_a_file_is_missing_or_unparsable(self) -> None:
+        self.write_psi("0.00", "0.00")
+        before = len(self.runs())
+        for victim in ("memory", "io"):
+            with self.subTest(missing=victim):
+                saved = (self.tmp / "psi" / victim).read_text()
+                (self.tmp / "psi" / victim).unlink()
+                proc = self.run_dev("run", "--", "true")
+                self.assertEqual(proc.returncode, 75, proc.stderr)
+                self.assertIn("cannot read the PSI files", proc.stderr)
+                (self.tmp / "psi" / victim).write_text(saved)
+        for garbage in ("", "garbage\n", "some avg10=abc total=0\nfull avg10=abc total=0\n", "some avg10= total=0\nfull avg10= total=0\n"):
+            with self.subTest(garbage=garbage):
+                (self.tmp / "psi" / "memory").write_text(garbage)
+                (self.tmp / "psi" / "io").write_text(garbage)
+                self.assertEqual(self.run_dev("run", "--", "true").returncode, 75)
+        self.assertEqual(len(self.runs()), before)
 
     def test_a_running_dev_container_refuses_with_3_unless_parallel_is_allowed(self) -> None:
         proc = self.run_dev("run", "--", "true", STUB_PS="hostobs-dev-abcdefabcdef\n")
         self.assertEqual(proc.returncode, 3, proc.stderr)
         self.assertIn("already running", proc.stderr)
-        self.assertEqual([c for c in self.docker_calls() if c[0] == "run"], [])
+        self.assertEqual(self.runs(), [])
         proc = self.run_dev("run", "--", "true", STUB_PS="hostobs-dev-abcdefabcdef\n", HOSTOBS_DEV_ALLOW_PARALLEL="1")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        # the LOCAL mode applies the same rule
         proc = self.run_dev("--dry-run", "--local", "shell", HOSTOBS_DEV_ALLOW_LOCAL="1", STUB_PS="hostobs-dev-x\n",
                             STUB_SELF="s", HOSTOBS_DEV_SELF_CONTAINER="s", STUB_MOUNTS=f"{self.tmp}\t/h\n")
         self.assertEqual(proc.returncode, 3)
@@ -410,7 +648,7 @@ class WrapperRemoteExecutionTests(DevCase):
         proc = self.run_dev("run", "--", "true", STUB_UID="1000", STUB_GID="1000")
         self.assertEqual(proc.returncode, 2)
         self.assertIn("1003:1003", proc.stderr)
-        self.assertEqual([c for c in self.docker_calls() if c[0] == "run"], [])
+        self.assertEqual(self.runs(), [])
         proc = self.run_dev("--dry-run", "--local", "shell", HOSTOBS_DEV_ALLOW_LOCAL="1", STUB_UID="1000",
                             STUB_SELF="s", HOSTOBS_DEV_SELF_CONTAINER="s", STUB_MOUNTS=f"{self.tmp}\t/h\n")
         self.assertEqual(proc.returncode, 2)
@@ -436,14 +674,35 @@ class WrapperRemoteExecutionTests(DevCase):
             for fh in held:
                 fh.close()
         self.assertEqual(self.run_dev("run", "--", "true", CONTROLLER_REMOTE_SLOT_WAIT_S="0").returncode, 0)
-        # released afterwards: the next call can take the slot again
         self.assertEqual(self.run_dev("run", "--", "true", CONTROLLER_REMOTE_SLOT_WAIT_S="0").returncode, 0)
 
-    def test_status_and_clean_name_the_exact_volume_and_refuse_while_running(self) -> None:
-        proc = self.run_dev("status", STUB_RUNNING="false")
+    def test_status_shows_a_running_container_with_its_age(self) -> None:
+        proc = self.run_dev("status", STUB_RUNNING="true", STUB_STARTED="2020-01-01T00:00:00Z")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn(f"hostobs-dev-{self.hex}", proc.stdout)
         self.assertIn(f"hostobs-dev-target-{self.hex}", proc.stdout)
+        self.assertIn("running:   true", proc.stdout)
+        match = re.search(r"age:\s+(\d+) s", proc.stdout)
+        self.assertIsNotNone(match, proc.stdout)
+        self.assertGreater(int(match.group(1)), 60 * 60 * 24 * 365)
+        self.assertIn("dev stop", proc.stdout)
+        proc = self.run_dev("status", STUB_RUNNING="false")
+        self.assertNotIn("age:", proc.stdout)
+
+    def test_stop_removes_this_worktrees_container_by_exact_name(self) -> None:
+        dry = self.run_dev("--dry-run", "stop")
+        self.assertEqual(dry.returncode, 0)
+        self.assertIn(f'docker rm -f "$NAME"', dry.stdout)
+        self.assertEqual(self.docker_calls(), [])
+        proc = self.run_dev("stop", STUB_EXISTS="1")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(f"stopped and removed container hostobs-dev-{self.hex}", proc.stdout)
+        self.assertEqual([c for c in self.docker_calls() if c[0] == "rm"], [["rm", "-f", f"hostobs-dev-{self.hex}"]])
+        proc = self.run_dev("stop")
+        self.assertIn("nothing to stop", proc.stdout)
+        self.assertEqual(self.run_dev("stop", "now").returncode, 2)
+
+    def test_clean_names_the_exact_volume_and_refuses_while_running(self) -> None:
         proc = self.run_dev("clean", STUB_RUNNING="true")
         self.assertEqual(proc.returncode, 3)
         self.assertEqual([c for c in self.docker_calls() if c[:2] == ["volume", "rm"]], [])
@@ -452,6 +711,13 @@ class WrapperRemoteExecutionTests(DevCase):
         self.assertIn(f"volume: hostobs-dev-target-{self.hex}", proc.stdout)
         self.assertEqual([c for c in self.docker_calls() if c[:2] == ["volume", "rm"]], [["volume", "rm", f"hostobs-dev-target-{self.hex}"]])
         self.assertEqual(self.run_dev("clean", "--everything").returncode, 2)
+
+    def test_the_run_script_enforces_the_runtime_limit_and_reports_it(self) -> None:
+        self.assertEqual(self.run_dev("run", "--", "true", HOSTOBS_DEV_MAX_S="77").returncode, 0)
+        script = (self.logs / "hx-3.sh").read_text()
+        self.assertIn("timeout --foreground -s TERM -k 15 77 docker run", script)
+        self.assertIn("--stop-timeout 10", script)
+        self.assertIn("stopped by the runtime limit", script)
 
 
 class ImageSourceTests(unittest.TestCase):
@@ -467,23 +733,23 @@ class ImageSourceTests(unittest.TestCase):
             self.assertNotIn(fragment, text, fragment)
         self.assertIn("scripts/controller/hx.sh", text)
         self.assertNotRegex(text, r"(?m)^\s*ssh\b")
+        # no user word is ever inspected to decide how to quote it
+        self.assertNotIn("'$HOME/'*)", text)
 
     def test_dockerfile_dev_installs_exactly_the_listed_packages_and_ends_as_the_gate_user(self) -> None:
         text = DOCKERFILE.read_text()
         self.assertRegex(text, r"(?m)^ARG BASE_IMAGE=tester-unified-rust:local$")
         self.assertIn("FROM ${BASE_IMAGE}", text)
         self.assertIn('org.vbpub.tester-unified-rust-dev.base-image="${BASE_IMAGE}"', text)
+        self.assertIn('org.vbpub.tester-unified-rust-dev.base-image-id="${BASE_IMAGE_ID}"', text)
         install = re.search(r"apt-get install -y --no-install-recommends \\\n\s+(.+?) \\\n", text)
         self.assertIsNotNone(install)
         self.assertEqual(set(install.group(1).split()), {"gdb", "strace", "procps", "less", "ca-certificates"})
         self.assertEqual(text.count("apt-get install"), 1)
-        users = re.findall(r"(?m)^USER (.+)$", text)
-        self.assertEqual(users, ["root", "1003:1003"])
+        self.assertEqual(re.findall(r"(?m)^USER (.+)$", text), ["root", "1003:1003"])
         directives = [line.split()[0] for line in text.splitlines() if re.match(r"^[A-Z]+ ", line)]
-        self.assertIn("USER", directives)
         self.assertLess(text.index("USER 1003:1003"), text.index("WORKDIR /work"))
         self.assertEqual(directives[-1], "CMD")
-        self.assertRegex(text, r"(?m)^WORKDIR /work$")
 
     def test_dockerfile_dev_copies_nothing_and_leaves_the_cache_and_identity_alone(self) -> None:
         text = "\n".join(line for line in DOCKERFILE.read_text().splitlines() if not line.lstrip().startswith("#"))
@@ -493,7 +759,6 @@ class ImageSourceTests(unittest.TestCase):
                          "Cargo.lock.registry-sha256", "rust-crate-cache", "rustup update", "rustup toolchain", "rustup install",
                          "rustup default", "rustup self", "curl", "wget"):
             self.assertNotIn(fragment, text, fragment)
-        # the one mention of the baked lock is the read-only verifier call
         self.assertEqual(text.count("hostobs-Cargo.lock"), 1)
         self.assertIn("/usr/local/bin/verify-crate-cache /usr/local/share/hostobs-Cargo.lock", text)
 
@@ -510,36 +775,155 @@ class ImageSourceTests(unittest.TestCase):
         self.assertIn("dpkg-query -W gdb strace procps less ca-certificates", text)
         self.assertIn("rust-analyzer --version", text)
 
-    def test_build_dev_image_mirrors_build_image_and_records_versions(self) -> None:
-        text = BUILD_DEV.read_text()
-        self.assertIn('image_tag="tester-unified-rust-dev:local"', text)
-        self.assertIn('base_image="tester-unified-rust:local"', text)
-        self.assertIn('[[ -n "$cgroup_parent" ]] || {', text)
-        self.assertIn('refusing an ungoverned image build', text)
-        self.assertIn('builder="mdt-managed"', text)
-        self.assertIn('--build-arg "BASE_IMAGE=$base_image"', text)
-        self.assertIn('--cgroup-parent "$cgroup_parent"', text)
-        self.assertIn("--base)", text)
-        self.assertIn("--record)", text)
-        self.assertIn("org.vbpub.tester-unified-rust-dev.base-image", text)
-        self.assertIn("dpkg-query -W gdb strace procps less ca-certificates", text)
-        self.assertIn("rust-analyzer", text)
-        self.assertIn("build date", text)
-
-    def test_build_dev_image_refuses_without_a_governed_slice_and_documents_options(self) -> None:
-        env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": tempfile.gettempdir()}
-        proc = subprocess.run([str(BUILD_DEV)], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
-        self.assertEqual(proc.returncode, 2)
-        self.assertIn("refusing an ungoverned image build", proc.stderr)
-        proc = subprocess.run([str(BUILD_DEV), "--help"], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
-        self.assertEqual(proc.returncode, 2)
-        for option in ("--tag", "--base", "--cgroup-parent", "--record"):
-            self.assertIn(option, proc.stderr)
-
     def test_selftest_lane_syntax_checks_the_new_scripts(self) -> None:
         text = (PROJECT_ROOT / "run-gate.toml").read_text()
         self.assertIn("build-dev-image.sh", text)
         self.assertIn('"$HOSTOBS_ROOT/tools/dev"', text)
+
+
+BUILD_DOCKER_STUB = f"""#!{sys.executable}
+import json, os, sys
+args = sys.argv[1:]
+with open(os.path.join(os.environ["STUB_LOG_DIR"], "docker.log"), "a") as fh:
+    fh.write(json.dumps(args) + "\\n")
+BASE_ID = "sha256:" + "a" * 64
+if args[:2] == ["image", "inspect"]:
+    fmt, image = args[3], args[4]
+    if image == os.environ.get("STUB_MISSING_IMAGE"):
+        sys.exit(1)
+    if fmt == "{{{{.Id}}}}":
+        print(os.environ.get("STUB_BASE_ID", BASE_ID))
+    elif fmt.endswith('base-image-id"}}}}'):
+        print(os.environ.get("STUB_LABEL_ID", BASE_ID))
+    elif fmt.endswith('base-image"}}}}'):
+        print(os.environ.get("STUB_LABEL_BASE", "tester-unified-rust:local"))
+    sys.exit(0)
+if args[:2] == ["buildx", "inspect"]:
+    sys.exit(1 if args[2] == os.environ.get("STUB_UNKNOWN_BUILDER") else 0)
+if args[:2] == ["buildx", "build"]:
+    sys.exit(0)
+if args[0] == "run":
+    i = max(i for i, a in enumerate(args) if a in ("dpkg-query", "rustc", "rust-analyzer", "rustup"))
+    image = args[i - 1]
+    tool = args[i]
+    base = [("bash", "5.2-1"), ("libc6", "2.36-9"), ("ca-certificates", "20230311")]
+    dev = base[:2] + [("ca-certificates", "20240203"), ("gdb", "13.1-3"), ("libpython3.11", "3.11.2-6"), ("libdebuginfod1", "0.188-2")]
+    if tool == "dpkg-query":
+        for name, version in (base if image == "tester-unified-rust:local" else dev):
+            print(f"{{name}}\\t{{version}}")
+    elif tool == "rustc":
+        print("rustc 1.99.0 (abcdef 2026-01-01)")
+    elif tool == "rust-analyzer":
+        print("rust-analyzer 1.99.0")
+    elif tool == "rustup":
+        print("rust-src-x86_64-unknown-linux-gnu")
+        print("rust-analyzer-x86_64-unknown-linux-gnu")
+    sys.exit(0)
+sys.exit(0)
+"""
+
+
+class BuildDevImageTests(unittest.TestCase):
+    SLICE = "dev-gates.slice"
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="builddev-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        (self.tmp / "bin").mkdir()
+        (self.tmp / "logs").mkdir()
+        (self.tmp / "bin" / "docker").write_text(BUILD_DOCKER_STUB)
+        (self.tmp / "bin" / "docker").chmod(0o755)
+
+    def run_build(self, *args: str, **extra: str):
+        (self.tmp / "logs" / "docker.log").unlink(missing_ok=True)
+        env = {"PATH": f"{self.tmp / 'bin'}:/usr/local/bin:/usr/bin:/bin", "HOME": str(self.tmp), "STUB_LOG_DIR": str(self.tmp / "logs"),
+               "TMPDIR": str(self.tmp)}
+        env.update(extra)
+        proc = subprocess.run([str(BUILD_DEV), *args], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+        log = self.tmp / "logs" / "docker.log"
+        calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+        return proc, calls
+
+    def test_refuses_without_a_governed_slice_and_documents_options(self) -> None:
+        proc, calls = self.run_build()
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("refusing an ungoverned image build", proc.stderr)
+        self.assertEqual(calls, [])
+        proc, _ = self.run_build("--help")
+        self.assertEqual(proc.returncode, 2)
+        for option in ("--tag", "--base", "--cgroup-parent", "--record", "--builder", "TESTER_UNIFIED_RUST_BUILDER"):
+            self.assertIn(option, proc.stderr)
+
+    def test_builder_precedence_is_option_then_environment_then_default(self) -> None:
+        def builders(calls):
+            return ([c[c.index("inspect") + 1] for c in calls if c[:2] == ["buildx", "inspect"]],
+                    [c[c.index("--builder") + 1] for c in calls if c[:2] == ["buildx", "build"]])
+        proc, calls = self.run_build("--cgroup-parent", self.SLICE)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(builders(calls), (["default"], ["default"]))
+        self.assertIn("builder=default\n", proc.stdout)
+        proc, calls = self.run_build("--cgroup-parent", self.SLICE, TESTER_UNIFIED_RUST_BUILDER="envb")
+        self.assertEqual(builders(calls), (["envb"], ["envb"]))
+        proc, calls = self.run_build("--cgroup-parent", self.SLICE, "--builder", "optb", TESTER_UNIFIED_RUST_BUILDER="envb")
+        self.assertEqual(builders(calls), (["optb"], ["optb"]))
+        for bad in ("-x", "a b", "", "a;b", "é"):
+            proc, calls = self.run_build("--cgroup-parent", self.SLICE, "--builder", bad)
+            self.assertEqual(proc.returncode, 2, bad)
+            self.assertEqual(calls, [], bad)
+        proc, calls = self.run_build("--cgroup-parent", self.SLICE, TESTER_UNIFIED_RUST_BUILDER="-bad")
+        self.assertEqual(proc.returncode, 2)
+
+    def test_missing_base_is_refused_before_any_build(self) -> None:
+        proc, calls = self.run_build("--cgroup-parent", self.SLICE, "--base", "nope:1", STUB_MISSING_IMAGE="nope:1")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("not in the local daemon", proc.stderr)
+        self.assertEqual([c for c in calls if c[0] == "buildx"], [])
+
+    def test_the_build_records_the_base_tag_and_id_and_verifies_the_labels(self) -> None:
+        proc, calls = self.run_build("--cgroup-parent", self.SLICE, "--tag", "x:y", "--base", "tester-unified-rust:local")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        build = [c for c in calls if c[:2] == ["buildx", "build"]][0]
+        args = [build[i + 1] for i, a in enumerate(build) if a == "--build-arg"]
+        self.assertEqual(args, ["BASE_IMAGE=tester-unified-rust:local", "BASE_IMAGE_ID=sha256:" + "a" * 64])
+        self.assertEqual(build[build.index("--cgroup-parent") + 1], self.SLICE)
+        self.assertIn("-t", build)
+        self.assertIn("base_id=sha256:" + "a" * 64, proc.stdout)
+        proc, _ = self.run_build("--cgroup-parent", self.SLICE, STUB_LABEL_ID="sha256:" + "b" * 64)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("does not record the requested base", proc.stderr)
+        proc, _ = self.run_build("--cgroup-parent", self.SLICE, STUB_LABEL_BASE="other:tag")
+        self.assertEqual(proc.returncode, 2)
+
+    def test_probe_containers_are_governed_and_networkless(self) -> None:
+        _, calls = self.run_build("--cgroup-parent", self.SLICE)
+        probes = [c for c in calls if c[0] == "run"]
+        self.assertGreaterEqual(len(probes), 4)
+        for probe in probes:
+            self.assertEqual(probe[probe.index("--network") + 1], "none")
+            self.assertEqual(probe[probe.index("--cap-drop") + 1], "ALL")
+            self.assertEqual(probe[probe.index("--cgroup-parent") + 1], self.SLICE)
+            self.assertIn("--pull", probe)
+
+    def test_record_lists_the_whole_package_diff_and_the_toolchain(self) -> None:
+        record = self.tmp / "record.tsv"
+        proc, _ = self.run_build("--cgroup-parent", self.SLICE, "--record", str(record))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        lines = record.read_text().splitlines()
+        header = [line for line in lines if line.startswith("#")]
+        self.assertTrue(any("BUILD date" in line and "release date" in line for line in header), header)
+        self.assertTrue(any("base=tester-unified-rust:local" in line and "base_id=sha256:" + "a" * 64 in line for line in header), header)
+        rows = {line.split("\t")[0]: line.split("\t") for line in lines if not line.startswith("#")}
+        # added AND upgraded packages (the dependency closure), never the unchanged ones
+        for name, version in (("gdb", "13.1-3"), ("libpython3.11", "3.11.2-6"), ("libdebuginfod1", "0.188-2"), ("ca-certificates", "20240203")):
+            self.assertEqual(rows[name][1], version, name)
+            self.assertRegex(rows[name][2], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        self.assertNotIn("bash", rows)
+        self.assertNotIn("libc6", rows)
+        self.assertEqual(rows["rustc"][1], "rustc 1.99.0 (abcdef 2026-01-01)")
+        self.assertEqual(rows["rust-analyzer"][1], "rust-analyzer 1.99.0")
+        components = [line for line in lines if line.startswith("component\t")]
+        self.assertEqual(len(components), 2)
+        self.assertIn("packages added or upgraded", proc.stdout)
 
 
 if __name__ == "__main__":
