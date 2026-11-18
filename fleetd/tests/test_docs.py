@@ -24,6 +24,7 @@ from fleetd.merge import IDENTITY_SCHEMA, IDENTITY_SET_SCHEMA
 from fleetd.measurement import MEASUREMENT_SCHEMA
 from fleetd.scope import (
     CURSOR_SCHEMA,
+    DEFAULT_RESERVE_PERCENT,
     DEFAULT_SCOPE_MODE,
     EXIT_NOTHING_TO_JUDGE,
     EXIT_STALE_CURSOR,
@@ -32,7 +33,7 @@ from fleetd.scope import (
     SCOPE_SCHEMA,
     load_scope_file,
 )
-from fleetd.sizing import SIZING_SCHEMA
+from fleetd.sizing import DEFAULT_MARGIN, SIZING_SCHEMA, STATISTICS, TAIL_Z
 
 PROJECT = Path(__file__).parents[1]
 PUBLIC_DOCS = [
@@ -252,3 +253,31 @@ def test_gate_lanes_use_the_review_plugin_mode_their_scope_needs():
     assert "pytest tests/test_campaign.py" in focused
     assert "--cli-case-partial" in focused
     assert "tests/test_cli_review_cases.py" not in focused
+
+
+def test_docs_state_the_default_producers_values_a_consumer_reads_or_sets():
+    """FD-031 and FD-038: every closed value and tunable must be written down."""
+
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in PUBLIC_DOCS)
+    for value in STATISTICS:
+        assert f"`{value}`" in combined, value
+    for value in ("explicit", "derived", "default", "margin_source", "seconds_statistic", "dispersion"):
+        assert value in combined, value
+    for key in (
+        "cost_candidates", "cost_seconds_sum", "cost_seconds_mean",
+        "cost_seconds_stdev", "cost_seconds_max",
+    ):
+        assert key in combined, key
+    assert f"{DEFAULT_MARGIN:.2f}" in combined and str(TAIL_Z) in combined
+    for key in (
+        "reserve_percent", "reserved_candidates", "deferred_changed_candidates",
+        "deferred_changed_files", "deferred_candidates",
+    ):
+        assert key in combined, key
+    assert f"default **{DEFAULT_RESERVE_PERCENT}**" in (PROJECT / "docs" / "R2-DEFAULT.md").read_text(encoding="utf-8")
+    # The reserve's risk is stated where the default is set, and the estimate
+    # caveat where the budget is derived.
+    assert "changes WHAT a heavy-churn release judges" in combined
+    assert "The budget is an estimate" in combined
+    spec = (PROJECT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    assert "By design (FD-035)" in spec

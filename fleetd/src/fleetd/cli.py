@@ -249,7 +249,8 @@ def _scope_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
         default = repo / "r2-scope.toml"
         scope_file = default if default.is_file() else None
     declared = load_scope_file(scope_file) if scope_file is not None else {
-        "mode": None, "slice_size": None, "cursor": None, "note": None, "path": None,
+        "mode": None, "slice_size": None, "cursor": None, "note": None,
+        "reserve_percent": None, "path": None,
     }
     if args.mode is not None:
         mode, mode_source = args.mode, "--mode"
@@ -296,6 +297,7 @@ def _scope_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
         rebaseline=args.rebaseline,
         blobs=blobs,
         legacy_cursor=legacy_cursor,
+        reserve_percent=declared["reserve_percent"],
     )
     if args.write_cursor is not None:
         if document["cursor"] is None:
@@ -609,8 +611,8 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
             OptionSpec(("--per-candidate-seconds",), "declared per-candidate wall seconds", group="INPUT",
                        metavar="SECONDS", parser_kwargs={"type": float}),
             OptionSpec(("--per-candidate-memory",), "declared per-candidate memory charge", group="INPUT", metavar="SIZE"),
-            OptionSpec(("--margin",), "budget margin over the estimate (default: 1.10)", group="BUDGET",
-                       metavar="FACTOR", parser_kwargs={"type": float, "default": 1.10}),
+            OptionSpec(("--margin",), "explicit budget margin over the estimate (default: derived from the measured spread, at least 1.10)",
+                       group="BUDGET", metavar="FACTOR", parser_kwargs={"type": float, "default": None}),
             OptionSpec(("--minimum-budget",), "shortest per-instance budget (default: 15m)", group="BUDGET",
                        metavar="DURATION", parser_kwargs={"default": "15m"}),
             OptionSpec(("--startup-allowance",), "outer-bound allowance beside each instance budget (default: 15m)",
