@@ -2,7 +2,8 @@
 
 Measured 2026-11-18 (06:03-06:10 UTC) on v1001 with cargo-mutants 27.1.0 in
 `tester-unified-rust:local` (`--network none --memory 2g --cpus 2`, `nice`, one
-container, a debian-rollback guest running beside it, no gate container). Inputs,
+container, no gate container; another team's guest VM was running on the host, which
+is not recorded in the retained logs). Inputs,
 script and logs: [rust-b245-u0](rust-b245-u0/) (`scripts/run-u0.sh` regenerates
 everything below; `run-output/summary.txt` lists every tool exit code, each taken
 from a variable captured before any pipe; `run-output/u0.txt` is the full log).
@@ -63,10 +64,10 @@ an untracked in-tree `<out>` fails the post-run dirty check unless a committed
 - Name hazard (matrix `mkws` lines of `summary.txt`): a member DIRECTORY named `b`
   matched 0 mutants whatever the package name (`b` or `crate_b`), with exit 0 and
   `No mutants to filter`; directories `crate_b` and `b2` matched 5 from both
-  working directories. An earlier exploratory run suggested a directory named `a`
-  works; the cause of the `b` failure is unexplained (a guess is cargo-mutants'
-  handling of the `b/` diff prefix). Treat member directories named `a` or `b` at
-  the workspace root as unsupported until measured further.
+  working directories. A directory named `a` was NOT run; the cause of the `b`
+  failure is unexplained (a guess is cargo-mutants' handling of the `b/` diff
+  prefix). Treat member directories named `a` or `b` at the workspace root as
+  unsupported until measured further.
 
 **(f) Source paths with a space or non-ASCII characters.** Diff files are named
 `src__with_space.rs_line_2_col_5.diff` and `src__módulo.rs_line_2_col_5.diff`: a
