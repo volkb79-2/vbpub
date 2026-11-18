@@ -3,7 +3,8 @@
 # Run INSIDE a disposable guest (or the future installer ISO), never on a
 # machine whose disk matters. It wipes the device you name.
 #
-#   install-btrfs.sh --device /dev/vdb --yes [--suite trixie] [--mirror URL] [--security-mirror URL]
+#   install-btrfs.sh --device /dev/vdb --yes [--bootloader grub|systemd-boot]
+#                    [--suite trixie] [--mirror URL] [--security-mirror URL]
 #                    [--hostname NAME] [--root-password PW] [--dry-run]
 #
 # Layout (flat, default subvolume stays the top level, id 5):
@@ -11,11 +12,12 @@
 #   @os-0001                     the first OS state (root, /boot, /etc, /opt, ...)
 #   @home @root @srv @www @log   outside the state (D18)
 #   @docker @containers @postgresql @mysql @usr-local
-# Kernels live inside each state. The boot menu is a static grub.cfg on the ESP
-# written by dr-state (design guide F5).
+# Kernels live inside each state. GRUB (the default) reads them directly from a
+# static menu on the ESP (design guide F5). systemd-boot cannot read btrfs, so
+# dr-state copies the newest bootable pair per state to a deduplicated ESP pool.
 set -euo pipefail
 
-DEVICE="" ; YES=0 ; DRY=0
+DEVICE="" ; YES=0 ; DRY=0 ; BOOTLOADER=grub
 SUITE=trixie ; MIRROR=http://deb.debian.org/debian ; SECURITY_MIRROR=http://deb.debian.org/debian-security
 HOSTNAME_=drpoc ; ROOTPW=root ; ROOTPW_HASH=""
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,6 +35,7 @@ while [ $# -gt 0 ]; do
     --hostname) HOSTNAME_=${2:?}; shift 2 ;;
     --root-password) ROOTPW=${2:?}; shift 2 ;;
     --root-password-hash) ROOTPW_HASH=${2:?}; shift 2 ;;   # crypt(3) hash; replaces --root-password
+    --bootloader) BOOTLOADER=${2:?}; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -40,6 +43,7 @@ done
 
 [ -n "$DEVICE" ] || die "--device is required"
 [ "$YES" = 1 ] || die "refusing to wipe $DEVICE without --yes"
+case "$BOOTLOADER" in grub|systemd-boot) ;; *) die "--bootloader must be grub or systemd-boot" ;; esac
 [ "$DRY" = 1 ] || [ -b "$DEVICE" ] || die "$DEVICE is not a block device"
 [ -d /sys/firmware/efi ] || [ "$DRY" = 1 ] || die "not booted in UEFI mode (D4: UEFI only)"
 if [ "$DRY" != 1 ]; then
@@ -98,7 +102,9 @@ done
 run mkdir -p "$T/boot/efi" "$T/.top"
 run mount "$ESP" "$T/boot/efi"
 
-run debootstrap --include=linux-image-amd64,grub-efi-amd64,btrfs-progs,snapper,initramfs-tools,systemd-sysv,openssh-server,sudo,locales,ifupdown,isc-dhcp-client,dosfstools,ca-certificates "$SUITE" "$T" "$MIRROR"
+BOOT_PACKAGES=grub-efi-amd64
+[ "$BOOTLOADER" = systemd-boot ] && BOOT_PACKAGES=systemd-boot,systemd-boot-efi
+run debootstrap --include=linux-image-amd64,"$BOOT_PACKAGES",btrfs-progs,snapper,initramfs-tools,systemd-sysv,openssh-server,sudo,locales,ifupdown,isc-dhcp-client,dosfstools,ca-certificates "$SUITE" "$T" "$MIRROR"
 
 if [ "$DRY" != 1 ]; then
   RUUID=$(blkid -s UUID -o value "$ROOT")
@@ -147,7 +153,16 @@ if [ "$DRY" != 1 ]; then
 fi
 run chmod 700 "$T/root"
 chroot_run update-initramfs -u -k all
-chroot_run /usr/local/sbin/dr-state install-grub
+if [ "$BOOTLOADER" = grub ]; then
+  chroot_run /usr/local/sbin/dr-state install-grub
+else
+  # Do not depend on writable EFI variables while installing. The state-carrying config and the ESP marker both
+  # select systemd-boot; dr-state fails loudly if they later disagree.
+  chroot_run bootctl install --esp-path=/boot/efi --no-variables
+  run mkdir -p "$T/boot/efi/EFI/dr"
+  printf 'systemd-boot\n' | write_file "$T/boot/efi/EFI/dr/bootloader"
+  printf 'BOOTLOADER=systemd-boot\n' | write_file "$T/etc/dr-state.conf"
+fi
 chroot_run /usr/local/sbin/dr-state gen-menu --default "$STATE"
 
 # Hooks. apt: one writable copy of the running state before every dpkg run, menu refreshed after it.
