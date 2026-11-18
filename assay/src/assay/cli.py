@@ -1741,8 +1741,9 @@ def _built_in_registry() -> registry.Registry:
     :mod:`assay.config` refuses it at load time -- a native lane must declare a
     non-empty ``judge.mutation.operators`` while
     :data:`assay.vocabulary.MUTATION_OPERATORS_BY_LANGUAGE` has no ``rust``
-    entry, so every spellable operator is FOREIGN (``BAD_LANE_CONFIG`` naming
-    the language) -- and, behind it,
+    entry, so every spellable operator is refused (FOREIGN for another
+    language's catalogue, UNKNOWN for a ``rust:``-prefixed spelling; both
+    ``BAD_LANE_CONFIG`` naming the language) -- and, behind it,
     :meth:`~assay.adapters.rust.RustAdapter.generate_mutation_sites` is
     unconditionally ``"UNSUPPORTED"``. An INGESTED ``cargo-mutants-outcomes``
     lane declares no operators (forbidden there), so it never meets the first

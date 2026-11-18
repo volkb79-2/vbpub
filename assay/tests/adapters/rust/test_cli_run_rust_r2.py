@@ -177,6 +177,28 @@ def test_a_native_rust_r2_lane_is_refused_before_anything_runs(
     assert "another language" in (out + err)
 
 
+def test_a_native_rust_r2_lane_with_a_rust_prefixed_operator_is_refused(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """Same invariant through the other spelling: no ``rust`` catalogue exists,
+    so a ``rust:``-prefixed operator is refused as unknown and the command
+    never runs (a future ``rust`` catalogue must update this test on purpose)."""
+    marker = tmp_path / "the-command-ran"
+    path = _native_lane(
+        git_repo,
+        "R2",
+        '\n[lanes.native.judge.mutation]\njobs = 1\nmax_mutants = 10\n'
+        'operators = ["rust:compare-swap"]\n',
+        marker,
+    )
+
+    code, out, err = run(["run", "native", "--file", str(path), "--verdict-json", "-"])
+
+    assert code != 0
+    assert not marker.exists(), "the lane's command must never have run"
+    assert "rust" in (out + err)
+
+
 def test_a_rust_r3_lane_is_still_refused_before_anything_runs(
     git_repo: GitRepo, tmp_path: Path
 ):
