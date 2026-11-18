@@ -6823,8 +6823,13 @@ every checkout and by `ciu check` (stage `shape`), and refuses on a
 - **Layout** (Run-Gate's RG-NARROW/RG-86 layout): `ro` mounts the common dir
   read-only. `rw` mounts it read-write with `worktrees/` read-only, the
   checkout's own admin dir read-write on top, an empty read-only `hooks/`,
-  read-only `info/` and read-only pointer files (`<checkout>/.git`,
-  `<admin>/gitdir`, `<admin>/commondir`). In both modes `config`,
+  read-only `info/` and read-only pointer files (`<admin>/gitdir`,
+  `<admin>/commondir`). In BOTH modes the checkout's gitfile `<checkout>/.git`
+  gets its own read-only bind at the path the gitfile is read from: it lives
+  under the checkout mount (read-write for the runner), not under the common
+  dir, so without the bind a runner could repoint host git at a gitdir it
+  controls. A service that already binds that exact path keeps its own bind.
+  In both modes `config`,
   `config.worktree`, nested `modules/**` configs and sibling
   `worktrees/*/config.worktree` (at most 256) are replaced by sanitized
   read-only copies under `.ciu/gitdir/` (credentials, `include`s and helpers

@@ -156,7 +156,12 @@ def test_ro_mounts_the_common_dir_flat_with_sanitized_configs(repos, tmp_path):
         config = binds[str(main / ".git" / "config")]
         assert config["read_only"] is True
         assert config["source"].startswith(str(phys / ".worktrees" / "wt"))
-        assert set(binds) == {str(main / ".git"), str(main / ".git" / "config")}
+        assert set(binds) == {
+            str(main / ".git"), str(main / ".git" / "config"), str(linked / ".git")}
+        gitfile = binds[str(linked / ".git")]
+        assert gitfile["read_only"] is True
+        assert gitfile["source"] == str(phys / ".worktrees" / "wt" / ".git")
+        assert gitfile["bind"] == {"create_host_path": False}
     copy = stack / ".ciu" / "gitdir" / "0.config"
     assert "secret" not in copy.read_text() and "example.invalid" in copy.read_text()
     assert not (stack / ".ciu" / "gitdir" / "hooks-empty").exists()
@@ -336,3 +341,37 @@ def test_a_vanished_pointer_file_refuses(repos, tmp_path):
     (main / ".git" / "worktrees" / "wt" / "gitdir").unlink()
     with pytest.raises(ValueError, match="pointer is not a regular file"):
         _write(repos, tmp_path, "rw")
+
+
+def test_the_gitfile_is_bound_read_only_in_both_modes(repos, tmp_path):
+    _main, linked, phys = repos
+    for mode in ("ro", "rw"):
+        binds = _binds(_write(repos, tmp_path, mode)[2])
+        entry = binds[str(linked / ".git")]
+        assert entry["read_only"] is True
+        assert entry["source"] == str(phys / ".worktrees" / "wt" / ".git")
+
+
+def test_an_existing_gitfile_bind_is_kept_but_an_ancestor_mount_still_gets_ours(
+        repos, tmp_path):
+    main, linked, _phys = repos
+    gitfile = str(linked / ".git")
+    compose = yaml.safe_dump({"services": {
+        "own": {"volumes": [f"/h/.git:{gitfile}:rw"]},
+        "ancestor": {"volumes": [f"/h:{linked}"]},
+    }})
+    doc = yaml.safe_load(_write(repos, tmp_path, "ro", compose=compose)[2].read_text())
+    own = {v["target"] for v in doc["services"]["own"]["volumes"]}
+    ancestor = {v["target"] for v in doc["services"]["ancestor"]["volumes"]}
+    assert gitfile not in own and str(main / ".git") in own
+    assert gitfile in ancestor
+
+
+@pytest.mark.parametrize("mode", ["ro", "rw"])
+def test_a_gitfile_that_is_not_a_regular_file_refuses(repos, tmp_path, mode):
+    main, linked, _phys = repos
+    plan = worktree.GitMountPlan(
+        repo_root=linked, top=linked, gitfile=tmp_path / "no-such-gitfile",
+        admin=main / ".git" / "worktrees" / "wt", common=main / ".git")
+    with pytest.raises(ValueError, match="pointer is not a regular file"):
+        engine._gitdir_mount_specs(plan, mode, tmp_path / "state")

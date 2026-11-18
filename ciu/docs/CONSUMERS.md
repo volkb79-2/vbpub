@@ -864,7 +864,8 @@ git_common_dir = "ro"
 ```
 
 `ro` is recommended: git inside the runner can read (`status`, `diff`, `log`,
-`rev-parse`) but not commit. Use `"rw"` only when a lane must commit in the
+`rev-parse`) but not commit. In both modes the checkout's `.git` file is
+bound read-only, so the runner cannot repoint host git at another gitdir. Use `"rw"` only when a lane must commit in the
 runner. Add `services = ["runner"]` for a mixed stack. Primary checkouts are
 unchanged. Until you delete the hand-written block, a service that already
 mounts the common dir keeps its own mount and mode. The mount applies only to

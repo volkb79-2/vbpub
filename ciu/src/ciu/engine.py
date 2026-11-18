@@ -2068,6 +2068,15 @@ def _gitdir_mount_specs(
     common, admin = mount.common, mount.admin
     read_only = mode == "ro"
     specs: list[tuple[Path, Path, bool]] = [(mount.physical(common), common, read_only)]
+    # The checkout's gitfile sits under the checkout mount (which the runner
+    # mounts read-write), not under the common dir, so it needs its own
+    # read-only bind in BOTH modes: otherwise the runner could repoint host
+    # git at a gitdir it controls (hooks, config run on the host).
+    if not _regular_file(mount.gitfile):
+        raise ValueError(
+            f"[CIU-215] the git worktree pointer is not a regular file: {mount.gitfile}"
+        )
+    specs.append((mount.physical(mount.gitfile), mount.gitfile, True))
     if not read_only:
         # The own admin dir lives under `worktrees/`, which therefore exists.
         worktrees = common / "worktrees"
@@ -2085,7 +2094,7 @@ def _gitdir_mount_specs(
         empty_hooks.mkdir(mode=0o755, parents=True)
         specs.append((mount.physical(empty_hooks), common / "hooks", True))
         specs.append((mount.physical(common / "info"), common / "info", True))
-        for pointer in (mount.gitfile, admin / "gitdir", admin / "commondir"):
+        for pointer in (admin / "gitdir", admin / "commondir"):
             if not _regular_file(pointer):
                 raise ValueError(
                     f"[CIU-215] the git worktree pointer is not a regular file: {pointer}"
@@ -2164,9 +2173,11 @@ def write_gitdir_overlay(
 
     common = os.path.normpath(mount.common)
     selected: list[str] = []
+    own_targets: dict[str, list[str]] = {}
     for name in names:
+        own_targets[name] = _service_volume_targets(services[name])
         covering = [
-            target for target in _service_volume_targets(services[name])
+            target for target in own_targets[name]
             if _target_covers(target, common)
         ]
         if covering:
@@ -2182,9 +2193,15 @@ def write_gitdir_overlay(
 
     state_dir = Path(stack_dir) / MACHINE_DIR / GITDIR_STATE_SUBDIR
     specs = _gitdir_mount_specs(mount, table.git_common_dir, state_dir)
+    gitfile = os.path.normpath(mount.gitfile)
+    # A service that already binds the gitfile itself keeps its own bind
+    # (the project's mount wins); an ancestor mount does not count.
     fragment = {
         "services": {
-            name: {"volumes": [_gitdir_bind(*spec) for spec in specs]}
+            name: {"volumes": [
+                _gitdir_bind(*spec) for spec in specs
+                if not (str(spec[1]) == gitfile and gitfile in own_targets[name])
+            ]}
             for name in selected
         }
     }
