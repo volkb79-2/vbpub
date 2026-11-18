@@ -50,9 +50,18 @@ Wipe-guard tests were written before `dr-plan` existed: in the session the first
 | 3 | the disk from guest 1 booted alone | `boot-check` 8 PASS: kernel from `/@os-0001`, systemd running, DHCP and DNS, `grub.cfg` and `grubenv` on the ESP, outside paths mounted separately, `/opt` and `/etc` inside the state |
 | 4 | a read-only `CIDATA` disk (`HOSTNAME`, `ROOT_PASSWORD`, `TARGET_DISK=/dev/disk/by-id/virtio-drdata001`) plus the blank root disk and a blank second disk; the ISO's embedded config names no target | `CONFIG source=cidata:/dev/vdb` (the stick wins over the embedded config), `TARGET-RESOLVED …/virtio-drdata001 -> /dev/vdc`, `PLAN install /dev/vdc`, `TARGET-CONFIRMED`, `DONE rc=0` after **1358 s**; host-side allocation: **root disk 0 KiB (untouched)**, target 1.4 GB |
 
-Guests 1 to 4 ran on the ISO built at `6bffd67c3` (guests 1, 2, 3: earlier builds of the same logic; 4: the final one of that commit). The later round 11 changes (`--busy`, by-id resolved on every plan, the re-install guard as a function) are covered by offline tests; see "Not tested".
+Guests 1 to 4 ran on the ISO built at `6bffd67c3` (guests 1, 2, 3: earlier builds of the same logic; 4: the final one of that commit).
 
-Download size: **≈ 185 MiB** (194,223,362 bytes received on the guest container's network, last sample before the end of guest 4's install; the live ISO itself is 1.9 GB and is not downloaded).
+**Final-ISO re-run** (ISO built at `014b71a86`, sha256 `af748c93…`, which has the round 11 changes `--busy`, by-id resolved on every plan, the re-install guard as a function), both detached on v1001, one after the other, 17:54Z to 18:18Z:
+
+| Guest | Setup | Result |
+|---|---|---|
+| 5 | two blank disks, no `TARGET_DISK` (as guest 2) | `REFUSED` at 87 s, `DONE rc=3`, nothing downloaded (792 bytes), root disk 0 KiB, second disk 196 KiB |
+| 6 | as guest 4 (CIDATA + by-id target) | `TARGET-RESOLVED … -> /dev/vdc` **twice** (once per plan: the second plan re-resolves the link), `TARGET-CONFIRMED`, `DONE rc=0` after **1316 s**, root disk 0 KiB, download 199,177,494 bytes |
+
+Later commits (`6bffd67c3` to `a50af75b9`: guard fails closed when `lsblk` fails, no `-d` in the guard's call, doc fixes) are **not** in any guest ISO; the guard function itself (`holds_our_system`) has only run through the offline stub test, never against a real `drroot` disk in a guest, and the busy-disk counting only offline.
+
+Download size: **≈ 185 to 190 MiB** (194,223,362 bytes in guest 4, 199,177,494 bytes in guest 6, received on the guest container's network, last sample before the end of the install; the live ISO itself is 1.9 GB and is not downloaded).
 Two guest runs were lost before these results to the shared host (a memory limit applied to page cache; and a guest at `--cpu-shares 64` starving beside another team's lane: RCU stalls, never booted). The launcher now stops a guest on memory PSI (`some avg10 > 10` for 3 samples) and the guests run alone.
 
 ## Review
