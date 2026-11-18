@@ -6963,6 +6963,8 @@ test.
 
 **Status:** OPEN (filed 2026-11-13; 2026-11-18 analysis: CIU 7 has no exec-runner concept to attach the mount to; the runner is a project stack rendered from the project's own `ciu.compose.yml.j2`, so a backport must first decide how CIU 7 identifies the runner service and where it injects the mount); severity: major for projects that gate from linked worktrees. Found in netcup-api-filter (per-checkout test runners, CIU 7.25.0). Related: the v8 design mounts the git common directory for exec environments of a linked checkout (`ciu/docs/SPEC-V8.md` S16.4, S16.4.9 and S16.12; dstdns D-653 Q7); CIU 7 does not.
 
+**Design:** design decided in `ciu/docs/DESIGN-NOTE-2026-11-CIU-215-CIU-220.md` (Decision 1), implementation not started.
+
 **Observed.** A per-checkout exec runner mounts only the worktree. A linked worktree's `.git` is a file that points at the main repository's git directory outside the mount, so inside the runner `git` fails and every assay lane (which needs a git context) ends with `GIT_FAILED`. Shared runners that mount the whole repository never showed it. netcup-api-filter works around it by adding the linked worktree's `.git` common-dir mount to its own `tooling/test-runner/ciu.compose.yml.j2`.
 
 **Wanted.** Backport the v8 common-dir mount to CIU 7 for exec runners created for a linked worktree, so the project template does not need to know about it.
@@ -7051,6 +7053,8 @@ turn the test red, the refreshed 7.25.1 text passes unchanged, and
 ## CIU-220 — subprocess output loops wait for pipe EOF and can hang after the child has exited
 
 **Status:** OPEN (filed 2026-11-17, from cmru KI-178); severity: high for unattended runs.
+
+**Design:** design decided in `ciu/docs/DESIGN-NOTE-2026-11-CIU-215-CIU-220.md` (Decision 2), implementation not started.
 
 **Observed.** `ciu/src/ciu/engine.py:1600-1605` starts a command with `stdout=PIPE, stderr=STDOUT` and iterates `proc.stdout` to EOF. EOF arrives only when every holder of the write end has closed it, so a grandchild that outlives the command (a credential helper, a daemonised helper, a restarted daemon's client) keeps `ciu` blocked after the command itself has exited. The shape was reproduced in cmru and `build-push.py` on 2026-11-17 (an 11-minute silent hang); it has not been reproduced in ciu, which is why this is filed as an audit item.
 
