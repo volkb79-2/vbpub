@@ -1,0 +1,38 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Failure",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.100892326,
+          "process_status": {
+            "Failure": 102
+          },
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 0,
+  "missed": 0,
+  "caught": 0,
+  "timeout": 0,
+  "unviable": 0,
+  "success": 0,
+  "start_time": "2026-11-18T04:47:44.767491234Z",
+  "end_time": "2026-11-18T04:47:44.8694276Z",
+  "cargo_mutants_version": "27.1.0"
+}

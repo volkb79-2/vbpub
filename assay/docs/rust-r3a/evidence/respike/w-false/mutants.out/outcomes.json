@@ -1,0 +1,602 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.373455624,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=a@0.1.0",
+            "--package=b@0.1.0",
+            "--offline"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.151271787,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=a@0.1.0",
+            "--package=b@0.1.0",
+            "--offline"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "a/src/lib.rs:2:5: replace double -> i32 with 0",
+          "package": "a",
+          "file": "a/src/lib.rs",
+          "function": {
+            "function_name": "double",
+            "return_type": "-> i32",
+            "span": {
+              "start": {
+                "line": 1,
+                "column": 1
+              },
+              "end": {
+                "line": 3,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 2,
+              "column": 5
+            },
+            "end": {
+              "line": 2,
+              "column": 10
+            }
+          },
+          "replacement": "0",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/a__src__lib.rs_line_2_col_5.log",
+      "diff_path": "diff/a__src__lib.rs_line_2_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.201372209,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=a@0.1.0",
+            "--offline"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101199765,
+          "process_status": {
+            "Failure": 4
+          },
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=a@0.1.0",
+            "--offline"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "a/src/lib.rs:2:5: replace double -> i32 with 1",
+          "package": "a",
+          "file": "a/src/lib.rs",
+          "function": {
+            "function_name": "double",
+            "return_type": "-> i32",
+            "span": {
+              "start": {
+                "line": 1,
+                "column": 1
+              },
+              "end": {
+                "line": 3,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 2,
+              "column": 5
+            },
+            "end": {
+              "line": 2,
+              "column": 10
+            }
+          },
+          "replacement": "1",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/a__src__lib.rs_line_2_col_5_001.log",
+      "diff_path": "diff/a__src__lib.rs_line_2_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.151558067,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=a@0.1.0",
+            "--offline"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.100898683,
+          "process_status": {
+            "Failure": 4
+          },
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=a@0.1.0",
+            "--offline"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "a/src/lib.rs:2:5: replace double -> i32 with -1",
+          "package": "a",
+          "file": "a/src/lib.rs",
+          "function": {
+            "function_name": "double",
+            "return_type": "-> i32",
+            "span": {
+              "start": {
+                "line": 1,
+                "column": 1
+              },
+              "end": {
+                "line": 3,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 2,
+              "column": 5
+            },
+            "end": {
+              "line": 2,
+              "column": 10
+            }
+          },
+          "replacement": "-1",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/a__src__lib.rs_line_2_col_5_002.log",
+      "diff_path": "diff/a__src__lib.rs_line_2_col_5_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.201301442,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=a@0.1.0",
+            "--offline"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101042089,
+          "process_status": {
+            "Failure": 4
+          },
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=a@0.1.0",
+            "--offline"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "a/src/lib.rs:2:7: replace * with + in double",
+          "package": "a",
+          "file": "a/src/lib.rs",
+          "function": {
+            "function_name": "double",
+            "return_type": "-> i32",
+            "span": {
+              "start": {
+                "line": 1,
+                "column": 1
+              },
+              "end": {
+                "line": 3,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 2,
+              "column": 7
+            },
+            "end": {
+              "line": 2,
+              "column": 8
+            }
+          },
+          "replacement": "+",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/a__src__lib.rs_line_2_col_7.log",
+      "diff_path": "diff/a__src__lib.rs_line_2_col_7.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.201634196,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=a@0.1.0",
+            "--offline"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.100892065,
+          "process_status": {
+            "Failure": 4
+          },
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=a@0.1.0",
+            "--offline"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "a/src/lib.rs:2:7: replace * with / in double",
+          "package": "a",
+          "file": "a/src/lib.rs",
+          "function": {
+            "function_name": "double",
+            "return_type": "-> i32",
+            "span": {
+              "start": {
+                "line": 1,
+                "column": 1
+              },
+              "end": {
+                "line": 3,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 2,
+              "column": 7
+            },
+            "end": {
+              "line": 2,
+              "column": 8
+            }
+          },
+          "replacement": "/",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/a__src__lib.rs_line_2_col_7_001.log",
+      "diff_path": "diff/a__src__lib.rs_line_2_col_7_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.20117815,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=a@0.1.0",
+            "--offline"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101066627,
+          "process_status": {
+            "Failure": 4
+          },
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=a@0.1.0",
+            "--offline"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "b/src/lib.rs:2:5: replace quad -> i32 with 0",
+          "package": "b",
+          "file": "b/src/lib.rs",
+          "function": {
+            "function_name": "quad",
+            "return_type": "-> i32",
+            "span": {
+              "start": {
+                "line": 1,
+                "column": 1
+              },
+              "end": {
+                "line": 3,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 2,
+              "column": 5
+            },
+            "end": {
+              "line": 2,
+              "column": 28
+            }
+          },
+          "replacement": "0",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/b__src__lib.rs_line_2_col_5.log",
+      "diff_path": "diff/b__src__lib.rs_line_2_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.251394047,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=b@0.1.0",
+            "--offline"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101080949,
+          "process_status": {
+            "Failure": 100
+          },
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=b@0.1.0",
+            "--offline"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "b/src/lib.rs:2:5: replace quad -> i32 with 1",
+          "package": "b",
+          "file": "b/src/lib.rs",
+          "function": {
+            "function_name": "quad",
+            "return_type": "-> i32",
+            "span": {
+              "start": {
+                "line": 1,
+                "column": 1
+              },
+              "end": {
+                "line": 3,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 2,
+              "column": 5
+            },
+            "end": {
+              "line": 2,
+              "column": 28
+            }
+          },
+          "replacement": "1",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/b__src__lib.rs_line_2_col_5_001.log",
+      "diff_path": "diff/b__src__lib.rs_line_2_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.201404513,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=b@0.1.0",
+            "--offline"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.100963023,
+          "process_status": {
+            "Failure": 100
+          },
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=b@0.1.0",
+            "--offline"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "b/src/lib.rs:2:5: replace quad -> i32 with -1",
+          "package": "b",
+          "file": "b/src/lib.rs",
+          "function": {
+            "function_name": "quad",
+            "return_type": "-> i32",
+            "span": {
+              "start": {
+                "line": 1,
+                "column": 1
+              },
+              "end": {
+                "line": 3,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 2,
+              "column": 5
+            },
+            "end": {
+              "line": 2,
+              "column": 28
+            }
+          },
+          "replacement": "-1",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/b__src__lib.rs_line_2_col_5_002.log",
+      "diff_path": "diff/b__src__lib.rs_line_2_col_5_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.201466205,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=b@0.1.0",
+            "--offline"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101204695,
+          "process_status": {
+            "Failure": 100
+          },
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=b@0.1.0",
+            "--offline"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 8,
+  "missed": 0,
+  "caught": 8,
+  "timeout": 0,
+  "unviable": 0,
+  "success": 0,
+  "start_time": "2026-11-18T04:47:41.683069905Z",
+  "end_time": "2026-11-18T04:47:44.645836416Z",
+  "cargo_mutants_version": "27.1.0"
+}

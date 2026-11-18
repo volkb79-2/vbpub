@@ -5,14 +5,16 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import time
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, Protocol, Sequence
 
-from .runner_layout import progress_home_path
+from .runner_layout import NAME_PLACEHOLDER, progress_home_path
 
 
 class TransportError(RuntimeError):
@@ -21,6 +23,13 @@ class TransportError(RuntimeError):
 
 class HostUnavailable(TransportError):
     """The wrapper could not contact a host within the requested timeout."""
+
+
+class HxNotConfigured(TransportError):
+    """No hx wrapper was named and the source-checkout default does not exist."""
+
+
+HX_ENVIRONMENT = "FLEETD_HX"
 
 
 class Transport(Protocol):
@@ -63,11 +72,31 @@ def shell_command(command: Sequence[str] | str) -> str:
     return shlex.join(command)
 
 
+def resolve_hx_wrapper(explicit: Path | str | None = None, environ: Mapping[str, str] | None = None) -> Path:
+    """Pick the hx wrapper: ``--hx`` first, then ``FLEETD_HX``, then the source checkout's own.
+
+    The result is always an absolute path, so the launch never searches ``PATH``
+    for an ``hx`` of the same name. An installed wheel has no checkout beside it,
+    so with neither setting the answer is one actionable refusal.
+    """
+    if explicit is not None:
+        return Path(explicit).expanduser().absolute()
+    configured = (os.environ if environ is None else environ).get(HX_ENVIRONMENT)
+    if configured:
+        return Path(configured).expanduser().absolute()
+    default = Path(__file__).resolve().parents[3] / "scripts" / "controller" / "hx.sh"
+    if default.is_file():
+        return default
+    raise HxNotConfigured(
+        f"no hx wrapper: pass --hx PATH or set {HX_ENVIRONMENT} (an installed fleetd has no source checkout to default to)"
+    )
+
+
 class HxTransport:
     """Run commands only through the controller kit's identity-checked hx wrapper."""
 
-    def __init__(self, wrapper: Path | None = None):
-        self.wrapper = wrapper or Path(__file__).resolve().parents[3] / "scripts" / "controller" / "hx.sh"
+    def __init__(self, wrapper: Path | str | None = None, *, environ: Mapping[str, str] | None = None):
+        self.wrapper = resolve_hx_wrapper(wrapper, environ)
 
     def run(
         self,
@@ -164,6 +193,8 @@ class FakeHost:
     missing_checkouts: set[str] = field(default_factory=set)
     starts: int = 0
     stops: int = 0
+    # The probe's ``some avg10`` readings; ``None`` models an unreadable PSI file.
+    pressure: dict[str, float | None] = field(default_factory=lambda: {"memory": 0.0, "io": 0.0})
 
 
 def command_metadata(operation: str, data: Mapping[str, object]) -> str:
@@ -185,6 +216,26 @@ def _read_command_metadata(script: str) -> dict[str, object] | None:
     return value if isinstance(value, dict) else None
 
 
+def _probe_targets(script: str) -> list[dict[str, str]]:
+    """Expand the probe script's own payload, the one the real host would read.
+
+    Reading the real argument (and not a second copy in the metadata comment)
+    keeps the fake honest about what the probe sends and keeps the script small.
+    """
+    lines = script.splitlines()
+    groups = json.loads(zlib.decompress(base64.b64decode(shlex.split(lines[-1])[-2], validate=True)))
+    return [
+        {
+            "name": name,
+            "ids_path": group["ids_template"].replace(NAME_PLACEHOLDER, name),
+            "commit": group["commit"],
+            "project": group["project"],
+            "lane": group["lane"],
+        }
+        for group in groups for name in group["names"]
+    ]
+
+
 class FakeTransport:
     """In-memory transport for deterministic campaign and failure scenarios."""
 
@@ -203,6 +254,9 @@ class FakeTransport:
 
     def set_slow(self, alias: str, slow: bool = True) -> None:
         self.host(alias).slow = slow
+
+    def set_pressure(self, alias: str, *, memory: float | None = 0.0, io: float | None = 0.0) -> None:
+        self.host(alias).pressure = {"memory": memory, "io": io}
 
     def restart(self, alias: str) -> None:
         host = self.host(alias)
@@ -272,7 +326,7 @@ class FakeTransport:
             return 0, "", ""
         operation = metadata.get("operation")
         if operation == "probe":
-            return 0, self._probe(host, metadata), ""
+            return 0, self._probe(host, script), ""
         if operation == "start":
             return self._start(host_alias, host, metadata)
         if operation == "stop":
@@ -301,19 +355,16 @@ class FakeTransport:
             raise TransportError(f"remote file does not exist: {relative}")
         return host.files[relative]
 
-    def _probe(self, host: FakeHost, metadata: Mapping[str, object]) -> str:
-        targets = metadata.get("jobs", [])
+    def _probe(self, host: FakeHost, script: str) -> str:
         rows = []
-        for target in targets if isinstance(targets, list) else []:
-            if not isinstance(target, dict):
-                continue
-            name = str(target.get("name", ""))
-            job = host.jobs.get(str(name))
+        for target in _probe_targets(script):
+            name = str(target["name"])
+            job = host.jobs.get(name)
             if job is None:
-                ready = str(target.get("commit", "")) not in host.missing_checkouts
+                ready = str(target["commit"]) not in host.missing_checkouts
                 rows.append({"name": name, "state": "MISSING", "checkout_ready": ready})
                 continue
-            ids_path = str(target.get("ids_path", ""))
+            ids_path = str(target["ids_path"])
             try:
                 planned = tuple(
                     line for line in host.files[ids_path].decode("ascii").splitlines() if line
@@ -326,9 +377,7 @@ class FakeTransport:
             except (KeyError, UnicodeError):
                 list_digest = calculated_digest if planned else None
             progress_path = progress_home_path(
-                str(target.get("commit", "")),
-                str(target.get("project", ".")),
-                str(target.get("lane", "")),
+                str(target["commit"]), str(target["project"]), str(target["lane"]),
             )
             raw_progress = host.files.get(progress_path, b"")
             end_offset = job.progress_end_offset if job.state == "EXIT" else len(raw_progress)
@@ -420,7 +469,11 @@ class FakeTransport:
                 "verdict_records": verdict_records,
                 "baseline_seconds": baseline_seconds,
             })
-        return json.dumps({"jobs": rows}, sort_keys=True, separators=(",", ":"))
+        pressure = {
+            "memory_some_avg10": host.pressure["memory"],
+            "io_some_avg10": host.pressure["io"],
+        }
+        return json.dumps({"jobs": rows, "pressure": pressure}, sort_keys=True, separators=(",", ":"))
 
     def _start(self, alias: str, host: FakeHost, metadata: Mapping[str, object]) -> tuple[int, str, str]:
         name = str(metadata.get("name", ""))

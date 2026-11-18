@@ -1,0 +1,56 @@
+== --test-workspace=false (mutate crate a; its only test lives in crate b)
+Found 5 mutants to test
+FAILED   Unmutated baseline in 0s build + 0s test
+
+*** baseline
+
+*** /usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo nextest run --no-run --verbose --package=a@0.1.0 --offline
+   Compiling a v0.1.0 (/tmp/cargo-mutants-ws-imwux4.tmp/a)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+
+*** result: Success
+
+*** /usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo nextest run --verbose --package=a@0.1.0 --offline
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s
+────────────
+ Nextest run ID 35072c90-68e2-4652-9767-b5ca4fe81dcd with nextest profile: default
+    Starting 0 tests across 1 binary
+────────────
+     Summary [   0.000s] 0 tests run: 0 passed, 0 skipped
+error: no tests to run
+(hint: use `--no-tests` to customize)
+
+*** result: Failure(4)
+
+ERROR cargo test failed in an unmutated tree, so no mutants were tested
+exit=4
+{'total_mutants': 0, 'missed': 0, 'caught': 0, 'timeout': 0, 'unviable': 0}
+['run', '--verbose', '--package=a@0.1.0', '--offline']
+== --test-workspace=true (mutate crate a; its only test lives in crate b)
+Found 5 mutants to test
+FAILED   Unmutated baseline in 0s build + 0s test
+
+*** baseline
+
+*** /usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo nextest run --no-run --verbose --package=a@0.1.0 --offline
+   Compiling a v0.1.0 (/tmp/cargo-mutants-ws-V9uHUy.tmp/a)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+
+*** result: Success
+
+*** /usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo nextest run --verbose --package=a@0.1.0 --offline
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s
+────────────
+ Nextest run ID b1640099-7c0f-4fa0-9ac3-b39cba6e250c with nextest profile: default
+    Starting 0 tests across 1 binary
+────────────
+     Summary [   0.000s] 0 tests run: 0 passed, 0 skipped
+error: no tests to run
+(hint: use `--no-tests` to customize)
+
+*** result: Failure(4)
+
+ERROR cargo test failed in an unmutated tree, so no mutants were tested
+exit=4
+{'total_mutants': 0, 'missed': 0, 'caught': 0, 'timeout': 0, 'unviable': 0}
+['run', '--verbose', '--package=a@0.1.0', '--offline']

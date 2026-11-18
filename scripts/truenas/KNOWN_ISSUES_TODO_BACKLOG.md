@@ -24,8 +24,8 @@ detail lives. A FIXED entry means code, tests and docs landed together.
 | TN-11 | `vanilla-iso-patcher` upstream builds re-download the ISO into a per-run work directory; reuse the checksum-verified copy in the repo's ISO folder (`iso` of the path config, `downloads/iso/` in plain mode; was flat `downloads/` until RP-03; since RP-06 a copy that is still flat in the resolved `downloads` folder is reused too, and an `iso` folder created under sudo is handed to the invoking user) | Minor | FIXED (19f71f7ff; RP-06 follow-up) |
 | TN-12 | Registered gate lanes: confirm `unit` budget and the CoW/fsync-off lane switch (run-gate RG-149) once main's gate policy applies; keep live lanes manual | Minor | OPEN |
 | TN-13 | Storage layout migration (vm-lab, downloads, cache modes, requirements naming) | Minor | FIXED (finish-truenas-iso-20261104) |
-| TN-15 | `unit` and `unit-boot-pool-patch` lanes are red on main: the live-UI Playwright pin (1.64.0) no longer matches the pwmcp contract (1.64.1) | Major | OPEN |
-| TN-16 | `unit` and `unit-boot-pool-patch` lanes are red on main: the registered v27 RC.1 install bundle digest differs from the digest recomputed from the archive | Major | OPEN |
+| TN-15 | `unit` and `unit-boot-pool-patch` lanes are red on main: the live-UI Playwright pin (1.64.0) no longer matches the pwmcp contract (1.64.1) | Major | FIXED (truenas-red-20261118) |
+| TN-16 | `unit` and `unit-boot-pool-patch` lanes are red on main: the registered v27 RC.1 install bundle digest differs from the digest recomputed from the archive | Major | FIXED (truenas-red-20261118) |
 | TN-17 | Acceptance uses a fixed release-program lock path with no alternate-home override | Minor | OPEN 2026-11-13 |
 
 ## Entries
@@ -94,21 +94,29 @@ secrets (not VM state). The flat files that used to sit in `downloads/` moved in
 
 ### TN-15 live-UI Playwright pin behind the pwmcp contract
 
-Found 2026-11-12 at main `5358386c1`. `test_repository_live_ui_playwright_pin_matches_pwmcp_contract`
-fails in both unit lanes: `requirements-live-ui.txt` pins Playwright 1.64.0, while
-`pwmcp/pwmcp.contract.json` says 1.64.1 since the pwmcp 1.64.1 release coordinates. Fix: align
-the pin to the contract. Better: derive the expected version from the contract in one place, so
-a pwmcp release cannot leave the pin behind unnoticed.
+FIXED 2026-11-18 (truenas-red-20261118). Found 2026-11-12 at main `5358386c1`.
+`requirements-live-ui.txt` pinned Playwright 1.64.0 while `pwmcp/pwmcp.contract.json` (the
+deployed server's coordinate, `1.64.1-r2` onward since 2026-11-04) said 1.64.1. The contract is
+the source of truth because the ephemeral tester's client must match the deployed pwmcp server;
+pwmcp resolves its Playwright version under the 14-day freshness rule, so the pin followed it:
+`playwright==1.64.1`. The existing test `test_repository_live_ui_playwright_pin_matches_pwmcp_contract`
+stays the guard; a pwmcp release that moves the contract fails it until the pin follows. Open
+idea (not done): have pwmcp's `resolve-playwright-version.py --refresh` project the pin too.
 
 ### TN-16 v27 RC.1 bundle digest differs from the registry
 
-Found 2026-11-12 at main `5358386c1`. `test_registered_install_bundle_digests_are_recomputed_from_archives`
-and `test_v27_bundle_is_deterministic_and_contains_only_reviewed_members` fail in both unit lanes.
-The digest recomputed from a `git archive` export of that commit is
-`0e670257f4fcba1ef1bc135695413b298df4ae743fbee69a15fbf706710b03b2`, which is not the registered
-value. First find out which side is stale: a bundle member changed without re-registration, or
-the registered value was never updated. Do not re-register before that is known; the registry is
-the closed compatibility boundary for the boot-pool patch.
+FIXED 2026-11-18 (truenas-red-20261118). Found 2026-11-12 at main `5358386c1`. Cause: commit
+`d8deaa1f9` (2026-11-03, a `run-gate.py` to `run-gate` wording sweep after dropping the dangling
+launcher symlink) edited one line of `boot-pool-patch/v27/README.md`, which is a member of the
+RC.1 install bundle (`v27/README.md`), so the recomputed digest moved to `0e670257...03b2` while
+the registered `9d96a3ae...0409` still described the bytes of `31d4bda4d`. Proof: every other
+bundle member is byte-identical to the registering commit, and restoring the README to its
+pre-sweep bytes reproduces `9d96a3ae...0409` exactly; the nightly (own README, untouched) and v28
+digests always matched. Fix: revert that one line (the sentence is a historical record of a
+2026-10-16 run, when the launcher really was `run-gate.py`) rather than re-register, so installed
+RC.1 hosts' recorded bundle digest and the nightly reapply allowlist stay valid. Guard: the
+checker now prints every bundle member's SHA-256 on a mismatch, and DESIGN-GUIDE documents that
+bundle members are digest-frozen.
 
 ### TN-17 acceptance lock is rooted in the release-program directory
 

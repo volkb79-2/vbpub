@@ -434,8 +434,10 @@ def test_transport_paths_fake_metadata_and_fake_file_failures():
 
     assert transport.run("host-a", "# fleetd-campaign-command/1 %%%") == (0, "", "")
     assert transport.run("host-a", command_metadata("unknown", {}))[0] == 2
-    rc, out, err = transport.run("host-a", command_metadata("probe", {"jobs": "not-an-array"}))
-    assert (rc, json.loads(out), err) == (0, {"jobs": []}, "")
+    rc, out, err = transport.run("host-a", probe_script({}))
+    assert (rc, json.loads(out), err) == (
+        0, {"jobs": [], "pressure": {"io_some_avg10": 0.0, "memory_some_avg10": 0.0}}, "",
+    )
 
     transport.put("host-a", "nested/file", b"saved")
     assert transport.get("host-a", "nested/file") == b"saved"
@@ -478,9 +480,6 @@ def test_fake_probe_uses_shared_runner_files_and_rejects_invalid_start_inputs():
         "ids_path": spec.candidate_file_home_path,
     })
     assert transport.run("host-a", mismatch) == (73, "", "candidate ids file digest mismatch")
-
-    rc, out, err = transport.run("host-a", command_metadata("probe", {"jobs": [None]}))
-    assert (rc, json.loads(out), err) == (0, {"jobs": []}, "")
 
     del host.files[spec.candidate_file_home_path]
     row = runner.probe("host-a", {spec.name: spec})[spec.name]
