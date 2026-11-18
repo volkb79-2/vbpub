@@ -70,21 +70,17 @@ on-disk archive sha256 recheck are unchanged.
 ### Which image runs what
 
 An image is self-consistent: its baked verifier and its baked digest file
-belong together. The currently deployed `tester-unified-rust:local` was built
-before this change: it carries the old whole-lock verifier, `hostobs-Cargo.lock.sha256`
-and the old label, and it refuses any lock byte change. Lane files that only call the
-baked `/usr/local/bin/verify-crate-cache "$PWD/Cargo.lock"` work on both images
-(that call is unchanged), but a lock edit, even workspace-only, passes only on
-an image built from this source.
+belong together. `tester-unified-rust:local` carries the whole-lock verifier,
+`hostobs-Cargo.lock.sha256` and the old label, and it refuses any lock byte change.
+Lane files that only call the baked `/usr/local/bin/verify-crate-cache "$PWD/Cargo.lock"`
+work on both images (that call is unchanged), but a lock edit, even workspace-only,
+passes only on an image built from this source.
 
-Rollout: a NEW tag is built on a host with `build-image.sh --tag
-tester-unified-rust:<new>`; `run-gate.root.toml` is switched to it by a
-separate commit; the old tag stays until every Rust lane has passed on the new
-one; then `:local` is re-pointed. The `tester-unified-rust` environment in
-`run-gate.root.toml` now names `tester-unified-rust:rs-20261118`, the registry-set
-identity image; `tester-unified-rust:local` remains the old whole-lock image until
-it is re-pointed, and the parallel `tester-unified-rust-rs` environment names the
-same new tag.
+The `tester-unified-rust` environment in `run-gate.root.toml` names
+`tester-unified-rust:rs-20261118` (registry-set identity). `:local` is the older
+whole-lock image; it is re-pointed to the new tag only after every Rust lane has passed
+on it. A new tag is built with `build-image.sh --tag tester-unified-rust:<new>` and
+adopted by changing that one `image` line.
 
 The `selftest` lane in this project checks the precheck, lint-boundary guard,
 crate-floor tool, and shell entrypoints. Hostobs's `lint` and `selftest` lanes
