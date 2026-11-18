@@ -38,6 +38,17 @@ def _git(args, cwd):
     )
 
 
+@pytest.fixture(autouse=True)
+def hermetic_git(monkeypatch):
+    """No host git configuration reaches any git call of these tests (N4)."""
+    for key, value in (
+        ("GIT_CONFIG_GLOBAL", "/dev/null"), ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("GIT_AUTHOR_NAME", "T"), ("GIT_AUTHOR_EMAIL", "t@e.x"),
+        ("GIT_COMMITTER_NAME", "T"), ("GIT_COMMITTER_EMAIL", "t@e.x"),
+    ):
+        monkeypatch.setenv(key, value)
+
+
 @pytest.fixture
 def repos(tmp_path, monkeypatch):
     """A primary checkout and a linked worktree whose daemon root differs."""

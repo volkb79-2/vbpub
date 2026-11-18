@@ -2011,8 +2011,9 @@ def _split_short_volume(entry: str) -> list[str]:
     return fields
 
 
-def _service_volume_targets(service: object) -> list[str]:
-    """Container paths a rendered service already mounts (long and short form)."""
+def _service_raw_targets(service: object) -> list[str]:
+    """Every target string a rendered service declares (long and short form),
+    unnormalized and including unresolved ``${...}`` expressions."""
     volumes = service.get("volumes") if isinstance(service, dict) else None
     targets: list[str] = []
     for entry in volumes if isinstance(volumes, list) else []:
@@ -2023,9 +2024,25 @@ def _service_volume_targets(service: object) -> list[str]:
             target = fields[1] if len(fields) > 1 else fields[0]
         else:
             continue
-        if isinstance(target, str) and target.startswith("/"):
-            targets.append(os.path.normpath(target))
+        if isinstance(target, str):
+            targets.append(target)
     return targets
+
+
+def _service_volume_targets(service: object) -> list[str]:
+    """Absolute container paths a rendered service already mounts."""
+    return [
+        os.path.normpath(target) for target in _service_raw_targets(service)
+        if target.startswith("/")
+    ]
+
+
+def _covers_checkout(target: str, top: str, repo_root: str) -> bool:
+    """A mount at (or above) the checkout path covers it; with a CIU root below
+    the git top, a mount of a descendant of the top does too."""
+    return _target_covers(target, top) or (
+        repo_root != top and target.startswith(top + "/")
+    )
 
 
 def _target_covers(existing: str, common: str) -> bool:
@@ -2052,6 +2069,14 @@ def _gitdir_bind(source: Path, target: Path, read_only: bool) -> dict[str, Any]:
 def _regular_file(path: Path) -> bool:
     try:
         return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def _real_dir(path: Path) -> bool:
+    """``lstat`` says *path* is a directory (a symlink to one is not)."""
+    try:
+        return stat.S_ISDIR(os.lstat(path).st_mode)
     except OSError:
         return False
 
@@ -2090,6 +2115,13 @@ def _gitdir_state_dir(stack_dir: Path, create: bool) -> Path | None:
 
 def _write_private_file(path: Path, text: str, mode: int) -> None:
     """Atomically replace *path* by a new file; never follows a planted link."""
+    try:
+        # A runner may turn the destination into a directory; replace it, but
+        # never follow a symlink (lstat says directory only for a real one).
+        if stat.S_ISDIR(os.lstat(path).st_mode):
+            shutil.rmtree(path)
+    except FileNotFoundError:
+        pass
     tmp_path = path.with_name(path.name + ".tmp")
     try:
         os.unlink(tmp_path)
@@ -2157,12 +2189,40 @@ def _gitdir_mount_specs(
     source is translated into the daemon namespace and never stat-ed.
     """
     from .gitconfig_sanitize import (
-        MAX_GIT_OVERLAYS, GitConfigError, nested_git_config_files,
-        nested_git_dirs, sanitized_git_config_text,
+        MAX_GIT_OVERLAYS, GitConfigError, require_regular_config,
+        sanitized_git_config_text, scan_modules,
     )
 
     common, admin = mount.common, mount.admin
     read_only = mode == "ro"
+    # Phase 1, read-only and fail-closed: every config candidate and the
+    # `modules` tree are checked with lstat BEFORE anything is written. In `rw`
+    # the runner can write the common dir, so a symlink at any of these names is
+    # hostile or broken; skipping it would leave the unsanitized original
+    # mounted, so it refuses (N1).
+    try:
+        if not require_regular_config(common / "config"):
+            raise ValueError(
+                f"[CIU-215] git config {common / 'config'} is missing; cannot "
+                "build the credential-free overlay"
+            )
+        targets = [common / "config"] + [
+            path for path in (common / "config.worktree", admin / "config.worktree")
+            if require_regular_config(path)
+        ]
+        module_dirs, module_configs = scan_modules(common / "modules")
+        siblings = [
+            path for path in sorted((common / "worktrees").glob("*/config.worktree"))
+            if path not in targets and require_regular_config(path)
+        ]
+    except GitConfigError as exc:
+        raise ValueError(str(exc)) from exc
+    extra = module_configs + siblings
+    if len(extra) > MAX_GIT_OVERLAYS:
+        raise ValueError(
+            f"[CIU-215] {common} holds {len(extra)} submodule/sibling git config "
+            f"files; more than {MAX_GIT_OVERLAYS} cannot be sanitized safely"
+        )
     specs: list[tuple[Path, Path, bool]] = [(mount.physical(common), common, read_only)]
     # The checkout's gitfile sits under the checkout mount (which the runner
     # mounts read-write), not under the common dir, so it needs its own
@@ -2179,7 +2239,7 @@ def _gitdir_mount_specs(
         specs.append((mount.physical(worktrees), worktrees, True))
         specs.append((mount.physical(admin), admin, False))
         for name in ("hooks", "info"):
-            if (common / name).is_symlink() or not (common / name).is_dir():
+            if not _real_dir(common / name):
                 raise ValueError(
                     f"[CIU-215] the shared git {name} directory is missing or "
                     f"unsafe: {common / name}"
@@ -2190,7 +2250,6 @@ def _gitdir_mount_specs(
         specs.append((mount.physical(common / "info"), common / "info", True))
         # Submodule git dirs under `modules/**` carry their own hooks and info;
         # they get the same overlays (same enumeration as the module configs).
-        module_dirs = nested_git_dirs(common / "modules")
         if len(module_dirs) > MAX_GIT_OVERLAYS:
             raise ValueError(
                 f"[CIU-215] {common} holds {len(module_dirs)} submodule git "
@@ -2199,12 +2258,16 @@ def _gitdir_mount_specs(
         for module in module_dirs:
             for name in ("hooks", "info"):
                 inner = module / name
-                if inner.is_symlink():
+                try:
+                    inner_mode = os.lstat(inner).st_mode
+                except FileNotFoundError:
+                    # Accepted limit: a submodule git dir without `hooks/`
+                    # stays runner-creatable (nothing to overlay).
+                    continue
+                if not stat.S_ISDIR(inner_mode):
                     raise ValueError(
                         f"[CIU-215] the submodule git {name} directory is unsafe: {inner}"
                     )
-                if not inner.is_dir():
-                    continue
                 source = empty_hooks if name == "hooks" else inner
                 specs.append((mount.physical(source), inner, True))
         for pointer in (admin / "gitdir", admin / "commondir"):
@@ -2214,31 +2277,12 @@ def _gitdir_mount_specs(
                 )
             specs.append((mount.physical(pointer), pointer, True))
 
-    config = common / "config"
-    if not config.is_file():
-        raise ValueError(
-            f"[CIU-215] git config {config} is missing; cannot build the "
-            "credential-free overlay"
-        )
-    targets = [config] + [
-        path for path in (common / "config.worktree", admin / "config.worktree")
-        if path.is_file()
-    ]
-    extra = nested_git_config_files(common / "modules")
-    extra += [
-        path for path in sorted((common / "worktrees").glob("*/config.worktree"))
-        if path not in targets
-    ]
-    if len(extra) > MAX_GIT_OVERLAYS:
-        raise ValueError(
-            f"[CIU-215] {common} holds {len(extra)} submodule/sibling git config "
-            f"files; more than {MAX_GIT_OVERLAYS} cannot be sanitized safely"
-        )
     kept: set[str] = set()
     for index, target in enumerate(targets + extra):
         name = f"{index}.config"
         kept.add(name)
         try:
+            require_regular_config(target)  # re-lstat right before the read
             text = sanitized_git_config_text(target)
         except GitConfigError as exc:
             raise ValueError(str(exc)) from exc
@@ -2309,8 +2353,13 @@ def write_gitdir_overlay(
         return None
 
     top = os.path.normpath(mount.top)
-    if not any(
-        _target_covers(target, top) for name in selected for target in own_targets[name]
+    repo_root = os.path.normpath(mount.repo_root)
+    unknown_target = any(
+        "$" in target for name in selected for target in _service_raw_targets(services[name])
+    )
+    if not unknown_target and not any(
+        _covers_checkout(target, top, repo_root)
+        for name in selected for target in own_targets[name]
     ):
         logger.warning(
             "[CIU-215] no selected service mounts the checkout at its own path %s; "

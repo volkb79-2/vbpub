@@ -46,6 +46,12 @@ CONFIG = """\
 """
 
 
+@pytest.fixture(autouse=True)
+def hermetic_git(monkeypatch):
+    for key, value in (("GIT_CONFIG_GLOBAL", "/dev/null"), ("GIT_CONFIG_NOSYSTEM", "1")):
+        monkeypatch.setenv(key, value)
+
+
 @pytest.fixture(scope="module")
 def run_gate():
     if not RUN_GATE.is_file():

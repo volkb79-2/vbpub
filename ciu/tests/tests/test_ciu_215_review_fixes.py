@@ -16,7 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ciu import engine, worktree  # noqa: E402
-from test_ciu_215_gitdir_mount import COMPOSE, _binds, _git, _write, repos  # noqa: E402,F401
+from test_ciu_215_gitdir_mount import (  # noqa: E402,F401
+    COMPOSE, _binds, _git, _write, hermetic_git, repos,
+)
 from test_ciu_215_wiring import TABLE, _repo  # noqa: E402
 
 

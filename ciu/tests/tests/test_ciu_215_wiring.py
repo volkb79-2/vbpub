@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ciu import config_model, deploy, engine, oneshot, worktree  # noqa: E402
 from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts  # noqa: E402
+from test_ciu_215_gitdir_mount import hermetic_git  # noqa: E402,F401  (autouse)
 from test_ciu_engine_execution_boundaries import (  # noqa: E402
     GLOBAL_DEFAULTS, STACK_DEFAULTS, COMPOSE,
 )

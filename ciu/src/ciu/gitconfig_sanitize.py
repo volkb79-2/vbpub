@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from pathlib import Path
 
 from . import procutil
@@ -125,16 +126,64 @@ def sanitized_git_config_text(path: Path) -> str:
         sanitize_git_config_entries(read_git_config_entries(path)))
 
 
-def nested_git_dirs(modules: Path) -> list[Path]:
-    """Every submodule git directory under ``<common>/modules`` (a directory
-    holding ``HEAD``), by the same walk as :func:`nested_git_config_files`."""
-    found: list[Path] = []
-    for root, dirs, files in os.walk(modules):
+_CONFIG_NAMES = ("config", "config.worktree")
+
+
+def _unsafe(path: Path, why: str) -> GitConfigError:
+    return GitConfigError(
+        f"[CIU-215] {path} is {why}; in a read-write git common dir that is a "
+        "planted or broken entry, and skipping it would leave the unsanitized "
+        "original mounted, so CIU refuses"
+    )
+
+
+def require_regular_config(path: Path) -> bool:
+    """``True`` for a regular file, ``False`` when absent; anything else
+    (symlink, directory, device, ...) refuses. ``lstat`` only."""
+    try:
+        mode = os.lstat(path).st_mode
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(mode):
+        raise _unsafe(path, "not a regular file")
+    return True
+
+
+def scan_modules(modules: Path) -> tuple[list[Path], list[Path]]:
+    """``(git dirs, config files)`` under ``<common>/modules``, fail-closed.
+
+    The ``modules`` root and every directory walked must be a real directory
+    (never a symlink), and every ``config``/``config.worktree`` a regular file;
+    anything else at those names refuses. Symlinks are never followed and a
+    walk error refuses. Same pruning as :func:`nested_git_config_files`.
+    """
+    try:
+        root_mode = os.lstat(modules).st_mode
+    except FileNotFoundError:
+        return [], []
+    if not stat.S_ISDIR(root_mode):
+        raise _unsafe(modules, "not a real directory")
+
+    def fail(exc: OSError) -> None:
+        raise GitConfigError(f"[CIU-215] cannot walk {modules}: {exc}") from exc
+
+    git_dirs: list[Path] = []
+    configs: list[Path] = []
+    for root, dirs, files in os.walk(modules, onerror=fail, followlinks=False):
         if "HEAD" in files:
             dirs[:] = [d for d in dirs if d not in _GIT_DIR_BULK]
-            found.append(Path(root))
+            git_dirs.append(Path(root))
         dirs.sort()
-    return found
+        for name in dirs:
+            if name in _CONFIG_NAMES:
+                raise _unsafe(Path(root) / name, "a directory where a config file belongs")
+            if os.path.islink(os.path.join(root, name)):
+                raise _unsafe(Path(root) / name, "a symlink")
+        for name in sorted(files):
+            if name in _CONFIG_NAMES:
+                require_regular_config(Path(root) / name)
+                configs.append(Path(root) / name)
+    return git_dirs, configs
 
 
 def nested_git_config_files(modules: Path) -> list[Path]:
