@@ -431,9 +431,9 @@
   workspace members' `dependencies` arrays) no longer needs an image rebuild; a changed,
   added or removed registry/git package, checksum, source or lock version still does, and
   non-crates.io sources are still refused. New mode `--print-registry-digest --lock PATH`;
-  the wrapper flag `--baked-lock-sha256` became `--baked-registry-sha256`. This is source
-  only: it takes effect for the lanes when a new image tag is built on a host and
-  `run-gate.root.toml` is switched to it (HOB-3/17/27/39 stay OPEN until then).
+  the wrapper flag `--baked-lock-sha256` became `--baked-registry-sha256`. The Rust lanes
+  run on the image built from this source (`tester-unified-rust:rs-20261118`, named by
+  `run-gate.root.toml`); HOB-3/17/27/39 stay OPEN until their refactors land.
 - `docs/HAND-MUTANTS-M1B.md` and `docs/hand-mutants/m1b-mutants.py`: twenty-six patches
   became thirty-one (the fix round adds the `stat` mapping's three patches, the iocost
   overflow and the unbounded read).
