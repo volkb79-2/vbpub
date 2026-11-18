@@ -124,7 +124,7 @@ image is built on a host only on the controller's go and does not exist yet. See
 
 ## Gates
 
-The registered lanes are `lint`, `selftest`, `assay-r1` and `conformance` (the Python reference
+The registered default lanes are `lint`, `selftest`, `assay-r1` and `conformance` (the hand-run `assay-r2` is registered too, see below; the Python reference
 decoders, fixture checks and `hostobs_client` tests, standard library only; `HOB-4`). Run them through the estate's
 gate wrappers, not a bare `run-gate` (which skips slot admission and refuses container lanes
 on the main checkout). Locally, from this directory in a **linked worktree**:
@@ -157,8 +157,8 @@ a 95.0% line floor (the floor was derived from 96.04% measured over the first 33
 floored one point down; the later lanes measure 96.7% to 96.9% — derivation in
 [`assay.toml`](assay.toml)). The verdict carries the measured totals, lists the uncovered
 lines as findings, and reports branch coverage as **unavailable** (stable Rust emits no
-branch arcs; assay B523), never as zero-of-zero. R2 (mutation) and R3 (canary) are not
-registered for Rust yet. See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for the lane
+branch arcs; assay B523), never as zero-of-zero. R3 (canary) is not registered for Rust yet.
+R2 (mutation) is declared as a separate, **hand-run** lane, `assay-r2` (below). See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for the lane
 commands, what the verdict says, the floor derivation and the Python conformance run, and
 [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md) §"Gates and coverage" for why the numbers
 are pinned this way. The lane is a **command lane**, not `kind = "assay"`: it runs the judge
@@ -168,3 +168,21 @@ that re-declaration). `selftest` stays as the enforced baseline alongside it. Th
 proven through Run-Gate in this branch: `PASS` 15100/15723 = 96.0377 % in the lane's own log,
 and `FAIL/UNCOVERED_LINES` 14777/15723 = 93.9833 % when one kernel test file is deleted and
 that deletion is committed in a temporary worktree.
+
+**`assay-r2` is hand-run, never a default gate (assay B245 U8b).** It judges mutation (R2) of
+the lines a change touches in the five judged crates by ingesting cargo-mutants' report
+(`cargo-mutants-outcomes`; flags and reasons in the comment block of [`assay.toml`](assay.toml)).
+It is not in the lane list above and no sequence chains it. Run it by hand, one run at a time, on a
+host that can spend hours (about 20-35 s per mutant is an estimate, not a measurement):
+
+```sh
+run-gate assay-r2 --base <ref> --worktree <worktree>   # through the estate gate wrappers, like the other lanes
+```
+
+Choose a `<ref>` that yields about 100-300 mutants: count them first with
+`cargo mutants --list --in-diff <diff>` (there are no hostobs release tags yet, so the base is any
+earlier commit). Only `0` is a pass: a surviving mutant is `FAIL`, a timed-out mutant is
+`BUDGET_EXCEEDED` (lane `FAIL`), a crashed mutant is `ERROR`, and a diff with nothing to mutate is
+`INCONCLUSIVE/NO_MUTANTS` (lane `FAIL`, never a pass). Assay known issue K15 (no real hostobs-sized
+cargo-mutants run yet) stays open until such a run exists; the T3 queue that will run this lane
+automatically is later work.

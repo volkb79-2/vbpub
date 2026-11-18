@@ -60,10 +60,11 @@
 # - **Region coverage is not an Assay claim.** `tools/crate-floors.py` checks
 #   the per-crate line AND region floors from `cov-summary.json` inside this
 #   lane's R0 half; Assay's R1 claim itself is line-granularity only (K1/K3).
-# - **Mutation (R2) and canaries (R3) are not registered for Rust.** There is no
-#   `assay-r2`/`assay-r3` in this file; Rust R2 needs cargo-mutants ingestion
-#   (assay B245/R-3b) and R3 needs a test-break canary (B246/R-4). They remain
-#   open work, reported as such rather than approximated.
+# - **Mutation (R2) is a separate, hand-run lane; canaries (R3) are not registered
+#   for Rust.** `assay-r2` (at the end of this file; assay B245 U8b) judges mutation
+#   by ingesting cargo-mutants' report. It is declared, NOT part of any default gate,
+#   and no hostobs run exists yet (assay K15). There is no `assay-r3`: R3 needs a
+#   test-break canary (B246/R-4), open work reported as such rather than approximated.
 #
 # ## The environment fact this lane depends on
 #
@@ -179,3 +180,106 @@ require_branch = false
 [lanes.assay-r1.judge.coverage]
 format = "lcov"
 artifact = "lcov.info"
+
+# ---------------------------------------------------------------------------
+# assay-r2: Rust R2 (mutation) over the CHANGED lines of the five judged crates,
+# by ingesting cargo-mutants' own report (assay B245 U8b; template and rules:
+# assay/docs/CONSUMERS.md "Rust R2 lanes (cargo-mutants)").
+#
+# HAND-RUN ONLY. This lane is K15 evidence (the first real hostobs-sized
+# cargo-mutants campaign), never a member of a default gate: `run-gate.toml`
+# declares it as its own command lane and nothing chains it. The T3 queue that
+# will run it automatically is later work.
+#
+# R1 is NOT repeated here: `assay-r1` judges coverage. This lane declares R0
+# (the baseline test run, read from the report) and R2 only.
+#
+# - `mode = "changed_lines"` + `base_source = "request"`: assay writes the diff of
+#   the base the gate supplies (`run-gate assay-r2 --base REF`) against the judged
+#   commit, restricted to `source_roots`, and hands it to the tool through the
+#   whole-token argv placeholder `{assay.changed_diff}` (`--in-diff`). No base is
+#   guessed by assay: a direct `assay run` without a request base is
+#   `ERROR/BAD_LANE_CONFIG`, and through run-gate a missing `--base` falls back to the
+#   worktree's recorded fork point or `@{upstream}` (and refuses with `no-base` if none
+#   exists), so ALWAYS pass `--base` explicitly.
+# - `source_roots` are the five `crates/<name>/src` roots `assay-r1` judges. The
+#   output directory `assay-mutants-out` sits beside, not under, them (an artifact
+#   inside a source root is refused at lane load) and is git-ignored in
+#   `hostobs/.gitignore`; assay creates it empty. It is spelled three times (argv
+#   `--output`, `result_report.path`, `judge.mutation.artifact`) and all three name
+#   ONE directory. The lane's cwd is the project root, which holds the
+#   `[workspace]` manifest the changed-diff anchoring needs.
+# - cargo-mutants flags are the decided D8 set (assay/docs/RUST-R3A-SPIKES.md):
+#   `--test-tool nextest` (REQUIRED: a failing test must read as killed, not
+#   crashed), `--jobs 1`, `--timeout-multiplier 10 --minimum-test-timeout 120`,
+#   `--cargo-arg=--locked --cargo-arg=--offline` (the gate has no network; the lock
+#   file is the contract), plus an EXPLICIT `--test-workspace=false`: every crate
+#   here carries its own unit and integration tests, so a mutant is judged by the
+#   tests of the package it is in. The cost of that choice is deliberate and
+#   conservative: a mutant only another package's tests would catch is reported as a
+#   SURVIVOR (a FAIL, never a false PASS). `true` would multiply each mutant's cost
+#   by the whole workspace's test time; revisit after the first run measures it.
+# - `tools/cargo-offline.sh` is used exactly as `assay-r1` uses it: it verifies the
+#   image's lock-keyed crate cache, sets `CARGO_NET_OFFLINE` and execs `cargo`,
+#   which here runs the `cargo-mutants` subcommand (cargo-mutants 27.1.0 is in
+#   `tester-unified-rust:rs-20261118`). The same three passthroughs are declared
+#   (the rustup proxy needs `CARGO_HOME`/`RUSTUP_HOME`, see the header above).
+# - `budget = "4h"` is an upper bound from an estimate (about 20-35 s per mutant,
+#   compile-dominated, `--jobs 1`), not a measurement; the real figure comes from the
+#   first run. Choose a `--base` that yields about 100-300 mutants (count them with
+#   `cargo mutants --list --in-diff`), or the run will not fit.
+# - `fail_under = 100.0`: every mutant must be killed; a survivor is `FAIL`.
+#   cargo-mutants' `Timeout` outranks survivors (`BUDGET_EXCEEDED`) and a crashed
+#   mutant is `ERROR`; an empty diff is `INCONCLUSIVE/NO_MUTANTS`, never a PASS.
+# ---------------------------------------------------------------------------
+[lanes.assay-r2]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = [
+  "tools/cargo-offline.sh", "mutants",
+  "--test-tool", "nextest",
+  "--test-workspace=false",
+  "--jobs", "1",
+  "--timeout-multiplier", "10",
+  "--minimum-test-timeout", "120",
+  "--cargo-arg=--locked",
+  "--cargo-arg=--offline",
+  "--in-diff", "{assay.changed_diff}",
+  "--output", "assay-mutants-out",
+]
+env = {}
+env_passthrough = ["PATH", "CARGO_HOME", "RUSTUP_HOME"]
+budget = "4h"
+allow_argv_append = false
+
+# Identical to `[lanes.assay-r1.isolation]` -- one repository, one omission list.
+[lanes.assay-r2.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+snapshot_history = "shallow"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.assay-r2.judge]
+language = "rust"
+mode = "changed_lines"
+source_roots = [
+  "crates/model/src",
+  "crates/proto/src",
+  "crates/kernel/src",
+  "crates/store/src",
+  "crates/client/src",
+]
+base_source = "request"
+
+[lanes.assay-r2.judge.mutation]
+format = "cargo-mutants-outcomes"
+artifact = "assay-mutants-out"
+fail_under = 100.0
+
+[lanes.assay-r2.result_report]
+format = "cargo-mutants-outcomes"
+path = "assay-mutants-out"

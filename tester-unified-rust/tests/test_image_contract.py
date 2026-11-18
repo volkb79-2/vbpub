@@ -285,7 +285,7 @@ class ImageContractTests(unittest.TestCase):
 
     def test_lanes_are_network_none_and_cargo_is_locked_offline(self) -> None:
         hostobs_lanes = tomllib.loads((HOSTOBS_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]
-        self.assertEqual(set(hostobs_lanes), {"lint", "selftest", "assay-r1", "conformance"})
+        self.assertEqual(set(hostobs_lanes), {"lint", "selftest", "assay-r1", "assay-r2", "conformance"})
         for name, lane in hostobs_lanes.items():
             self.assertEqual(lane["environment"], "tester-unified-rust", name)
             self.assertEqual(lane["network"], "none", name)
@@ -300,6 +300,15 @@ class ImageContractTests(unittest.TestCase):
                 command = assay_lanes["assay-r1"]["argv"][-1]
                 self.assertIn("--locked", command, name)
                 self.assertIn("--offline", command, name)
+                continue
+            if name == "assay-r2":
+                # Hand-run Rust R2 (B245 U8b): the judge lane in assay.toml runs the offline wrapper and
+                # hands cargo-mutants --locked/--offline as cargo args; this command lane only reaches it.
+                assay_lanes = tomllib.loads((HOSTOBS_ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
+                argv = assay_lanes["assay-r2"]["argv"]
+                self.assertEqual(argv[:2], ["tools/cargo-offline.sh", "mutants"], name)
+                self.assertIn("--cargo-arg=--locked", argv, name)
+                self.assertIn("--cargo-arg=--offline", argv, name)
                 continue
             self.assertIn("--locked", lane["argv"][-1], name)
             self.assertIn("--offline", lane["argv"][-1], name)
