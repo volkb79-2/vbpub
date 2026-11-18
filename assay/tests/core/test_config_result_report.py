@@ -169,17 +169,16 @@ def test_a_malformed_declaration_refuses_naming_the_field(
     assert "lane 'package'" in str(caught.value), "the refusal names the lane"
 
 
-def test_a_directory_artifact_report_format_is_refused_until_u5a(project: Project):
-    """``cargo-mutants-outcomes`` is registered (its reader and tests exist) but
-    the runner has no reservation of ``<out>`` and no freshness window for a
-    directory artifact until work package U5a: a lane command that wrote a
-    canned report itself would otherwise be accepted as this run's report, and
-    a real cargo-mutants run rotates ``mutants.out`` so the report would be
-    silently absent."""
+def test_a_directory_artifact_report_format_needs_the_matching_mutation_format(
+    project: Project,
+):
+    """``cargo-mutants-outcomes`` is declarable (U5a wired the runner) but only
+    beside ``judge.mutation.format`` of the same name: the runner reserves
+    ``<out>`` once for both R0 and R2, so an R0-only lane is refused."""
     path = project.write(
         R0_LANE
         + '\n[lanes.package.result_report]\nformat = "cargo-mutants-outcomes"\n'
-        'path = "mutants.out/outcomes.json"\n'
+        'path = "out"\n'
     )
 
     with pytest.raises(LaneConfigError) as caught:
@@ -187,6 +186,5 @@ def test_a_directory_artifact_report_format_is_refused_until_u5a(project: Projec
 
     message = str(caught.value)
     assert "cargo-mutants-outcomes" in message
-    assert "U5a" in message
-    assert "directory-artifact" in message
+    assert "R0-only" in message
     assert "lane 'package'" in message

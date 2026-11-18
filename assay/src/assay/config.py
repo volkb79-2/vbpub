@@ -64,7 +64,7 @@ import tomllib
 from dataclasses import field as dataclass_field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
 from .coverage import FORMAT_REGISTRY
 from .errors import LaneConfigError
@@ -1097,11 +1097,6 @@ class ResultReportConfig:
         return {"format": self.format, "path": self.path}
 
 
-#: Registered result-report readers whose artifact is a tool output DIRECTORY
-#: rather than one file; declarable only once U5a wires the runner for them.
-_DIRECTORY_ARTIFACT_RESULT_REPORT_FORMATS = frozenset({"cargo-mutants-outcomes"})
-
-
 def _load_result_report(value: Any, where: str) -> ResultReportConfig | None:
     """``[lanes.X.result_report]`` (B078), or ``None`` when the lane omitted
     it -- which is the overwhelmingly common case and must stay free.
@@ -1143,21 +1138,11 @@ def _load_result_report(value: Any, where: str) -> ResultReportConfig | None:
             f"{where}: 'result_report.format' must be one of "
             f"{sorted(RESULT_REPORT_FORMATS)}, got {report_format!r}"
         )
-    if report_format in _DIRECTORY_ARTIFACT_RESULT_REPORT_FORMATS:
-        # The reader and its tests exist, but the runner has neither the
-        # reservation of the tool's output directory nor the freshness window
-        # until work package U5a: a lane command that wrote a canned report
-        # itself would be accepted as this run's report, and a real
-        # cargo-mutants run rotates `mutants.out`, leaving the report silently
-        # absent so the exit code decides.
-        raise LaneConfigError(
-            f"{where}: 'result_report.format' {report_format!r} is a "
-            f"directory-artifact format, and the directory-artifact "
-            f"result-report wiring (reservation of the output directory and "
-            f"the freshness window) arrives with work package U5a; declare "
-            f"one of the file formats "
-            f"{sorted(RESULT_REPORT_FORMATS - _DIRECTORY_ARTIFACT_RESULT_REPORT_FORMATS)}"
-        )
+    # A directory-artifact format (`cargo-mutants-outcomes`) is declarable since
+    # U5a, but only on a lane whose `judge.mutation` ingests the same format:
+    # the runner reserves `<out>` once for both R0 and R2 and the freshness
+    # window needs that reservation. That pairing is a CROSS-FIELD rule and is
+    # checked in `_check_cargo_mutants_lane`, where both tables are in scope.
     path = _validate_omission_path(
         value["path"], where=where, field="result_report.path"
     )
@@ -2009,6 +1994,16 @@ def _load_lane(
     _check_cwd_is_not_under_a_link_path(cwd, isolation, where)
 
     result_report = _load_result_report(table.get("result_report"), where)
+    _check_cargo_mutants_lane(
+        where,
+        argv=argv,
+        env=env,
+        env_passthrough=env_passthrough,
+        environment_command=environment_command,
+        cwd=cwd,
+        judge=judge,
+        result_report=result_report,
+    )
 
     return Lane(
         name=name,
@@ -2031,6 +2026,149 @@ def _load_lane(
         cwd=cwd,
         result_report=result_report,
     )
+
+
+#: The one directory-kind mutation format and the one directory-artifact
+#: result-report format; they name the same tool output and are declared
+#: together or not at all (design 1.5).
+_CARGO_MUTANTS_FORMAT = "cargo-mutants-outcomes"
+
+#: The reserved argv namespace of the ``{assay.changed_diff}`` placeholder
+#: (design 2.1). Producing and substituting it is work package U5b.
+_ASSAY_PLACEHOLDER_NAMESPACE = "{assay."
+
+#: The environment spelling of ``--output``; a second spelling of the same
+#: setting could disagree with the argv one assay validates.
+_CARGO_MUTANTS_OUTPUT_ENV = "CARGO_MUTANTS_OUTPUT"
+
+
+def _cargo_mutants_output_value(argv: Sequence[str], where: str) -> str:
+    """The ``--output`` value of *argv*: exactly one ``--output <dir>`` or
+    ``--output=<dir>`` spelling, or a refusal."""
+    values: list[str] = []
+    for index, token in enumerate(argv):
+        if token == "--output":
+            if index + 1 >= len(argv):
+                raise LaneConfigError(
+                    f"{where}: argv ends with '--output' and names no directory"
+                )
+            values.append(argv[index + 1])
+        elif token.startswith("--output="):
+            values.append(token[len("--output="):])
+    if len(values) != 1:
+        raise LaneConfigError(
+            f"{where}: a 'cargo-mutants-outcomes' lane's argv must name its "
+            f"output directory exactly once, as '--output <dir>' or "
+            f"'--output=<dir>' (found {len(values)}); assay reserves that "
+            f"directory before the command runs, so the lane must say where it is"
+        )
+    return values[0]
+
+
+def _check_cargo_mutants_lane(
+    where: str,
+    *,
+    argv: Sequence[str],
+    env: Mapping[str, str],
+    env_passthrough: Sequence[str] | None,
+    environment_command: Sequence[str] | None,
+    cwd: str | None,
+    judge: Any,
+    result_report: ResultReportConfig | None,
+) -> None:
+    """The cross-field rules of a ``cargo-mutants-outcomes`` lane (B245 U5a,
+    design 1.5 and 2.2), where ``argv``, ``env``, ``cwd``, ``judge.mutation``
+    and ``result_report`` are all in scope.
+
+    The lane's ``<out>`` directory is spelled three times, and the three
+    spellings must name ONE directory: ``--output <dir>`` (relative to the
+    lane's cwd, where the command runs), ``result_report.path`` (relative to
+    the same directory) and ``judge.mutation.artifact`` (relative to the
+    project root). assay reserves ``<out>`` -- empty, untracked and absent of
+    ``mutants.out`` -- before the command and reads it once afterwards, so a
+    lane whose spellings disagree would reserve one directory and read another.
+
+    Left to the runtime, which needs a snapshot to look at: ``<out>`` being
+    untracked at the commit (``BAD_LANE_CONFIG`` before the command runs), a
+    committed ``.gitignore`` covering ``<out>`` (without one every honest run
+    ends ``DIRTY_TREE``) and ``<out>`` being EMPTY (the tool copies a
+    non-empty in-tree ``<out>`` into the tree under test).
+
+    **``--test-tool nextest`` is documented, not enforced.** The U3
+    normaliser reads ``Failure(100)`` as a kill, which is nextest's own test
+    failure exit; design D8 lists the flag in the lane template (U6
+    CONSUMERS), and no design section makes it a load-time refusal.
+    """
+    mutation_config = None if judge is None else judge.mutation
+    ingested_format = (
+        mutation_config.format
+        if mutation_config is not None and mutation_config.is_ingested
+        else None
+    )
+    for label, tokens in (
+        ("argv", argv),
+        ("env", tuple(env.values())),
+        ("environment_command", tuple(environment_command or ())),
+    ):
+        if any(_ASSAY_PLACEHOLDER_NAMESPACE in token for token in tokens):
+            raise LaneConfigError(
+                f"{where}: '{label}' contains {_ASSAY_PLACEHOLDER_NAMESPACE!r}, "
+                f"the reserved placeholder namespace; the "
+                f"'{{assay.changed_diff}}' argv placeholder is not wired into "
+                f"the runner until work package U5b, so no lane may declare it yet"
+            )
+    declared_report_format = None if result_report is None else result_report.format
+    if declared_report_format == _CARGO_MUTANTS_FORMAT and ingested_format != _CARGO_MUTANTS_FORMAT:
+        raise LaneConfigError(
+            f"{where}: 'result_report.format' {_CARGO_MUTANTS_FORMAT!r} is "
+            f"declarable only on a lane whose 'judge.mutation.format' is the "
+            f"same {_CARGO_MUTANTS_FORMAT!r}: the runner reserves the tool's "
+            f"output directory once and reads it for both R0 and R2, so an "
+            f"R0-only lane (or one ingesting another format) has nothing to "
+            f"hold the directory for"
+        )
+    if ingested_format != _CARGO_MUTANTS_FORMAT:
+        return
+    assert mutation_config is not None
+    if declared_report_format != _CARGO_MUTANTS_FORMAT:
+        raise LaneConfigError(
+            f"{where}: a lane ingesting {_CARGO_MUTANTS_FORMAT!r} must also "
+            f"declare [lanes.X.result_report] with the same format: the "
+            f"baseline's own test run is part of that report, and without it "
+            f"cargo-mutants' exit codes 2 and 3 (surviving mutants, timeouts) "
+            f"would decide R0 instead of the report"
+        )
+    assert result_report is not None
+    artifact = PurePosixPath(mutation_config.artifact)
+    if PurePosixPath(cwd or ".") / result_report.path != artifact:
+        raise LaneConfigError(
+            f"{where}: 'result_report.path' {result_report.path!r} is relative "
+            f"to the lane's cwd ({cwd or '.'!r}) and must name the same "
+            f"directory as 'judge.mutation.artifact' "
+            f"{mutation_config.artifact!r}, which is relative to the project root"
+        )
+    if artifact.name == "mutants.out":
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.artifact' {mutation_config.artifact!r} "
+            f"names the directory cargo-mutants itself creates. Name the "
+            f"output directory the lane passes as '--output' instead (for "
+            f"example 'target/assay-mutants'): cargo-mutants rotates an "
+            f"existing 'mutants.out' to 'mutants.out.old', so assay reserves "
+            f"the PARENT, empty, and reads 'mutants.out' inside it"
+        )
+    output = _cargo_mutants_output_value(argv, where)
+    if output != result_report.path:
+        raise LaneConfigError(
+            f"{where}: argv's '--output' value {output!r} must equal "
+            f"'result_report.path' {result_report.path!r}: assay would reserve "
+            f"one directory and the command would write another"
+        )
+    if _CARGO_MUTANTS_OUTPUT_ENV in env or _CARGO_MUTANTS_OUTPUT_ENV in (env_passthrough or ()):
+        raise LaneConfigError(
+            f"{where}: {_CARGO_MUTANTS_OUTPUT_ENV} is refused in 'env' and "
+            f"'env_passthrough': it is a second spelling of '--output' that "
+            f"could disagree with the directory assay reserves"
+        )
 
 
 def _load_lane_cwd(value: Any, where: str, project_root: Path) -> str | None:
@@ -3696,23 +3834,6 @@ def _load_ingested_mutation(
             f"mutation-report format the parser registry knows; declared "
             f"formats: {sorted(MUTATION_FORMAT_REGISTRY)}"
         )
-    if MUTATION_FORMAT_REGISTRY[declared_format].artifact_kind != "file":
-        file_kinds = sorted(
-            name
-            for name, spec in MUTATION_FORMAT_REGISTRY.items()
-            if spec.artifact_kind == "file"
-        )
-        # The runner reads a lane's artifact as ONE FILE until work package
-        # U5a wires directory-kind artifacts. Accepting the lane here would
-        # run its whole command and only then fail the read, leaving a
-        # verdict `assay verify` itself rejects (R2 ERROR/BAD_LANE_CONFIG).
-        raise LaneConfigError(
-            f"{where}: 'judge.mutation.format' {declared_format!r} is a "
-            f"directory-kind format, and directory-kind formats are not wired "
-            f"into the runner until work package U5a; declare one of the "
-            f"file-kind formats {file_kinds}"
-        )
-
     native_only = sorted(
         set(value)
         & (

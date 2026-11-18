@@ -381,16 +381,15 @@ def test_the_registry_knows_the_directory_kind_format():
     assert spec.parse is None and spec.parse_directory is not None
 
 
-def test_a_directory_kind_format_is_refused_at_config_load(app_project: Project):
-    """The runner reads a lane's artifact as ONE FILE until U5a, so a lane
-    declaring a directory-kind format would run its whole command and then
-    fail the read with a verdict ``assay verify`` rejects. It is refused
-    before it can run, naming U5a and the formats that do work."""
+def test_a_directory_kind_format_without_its_result_report_is_refused(
+    app_project: Project,
+):
+    """A directory-kind format loads (U5a), but alone it is half a lane: the
+    matching ``result_report`` is required, so the refusal names it."""
     text = INGESTED_LANE.replace(
         'format = "mutation-report-json"', 'format = "cargo-mutants-outcomes"'
     )
     error = _refusal(app_project, text)
     message = str(error)
-    assert "directory-kind format" in message
-    assert "U5a" in message
-    assert "['mutation-report-json']" in message
+    assert "result_report" in message
+    assert "cargo-mutants-outcomes" in message
