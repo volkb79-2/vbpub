@@ -657,13 +657,7 @@ impl Conn {
         }
     }
 
-    fn dispatch(
-        &mut self,
-        input: &Input,
-        now_ns: u64,
-        hub: &mut SendHub,
-        backend: &dyn Backend,
-    ) {
+    fn dispatch(&mut self, input: &Input, now_ns: u64, hub: &mut SendHub, backend: &dyn Backend) {
         let first_line = self.state == State::JsonNoHello;
         match self.classify_input(input) {
             Ok(dispatch) => self.execute(&dispatch, now_ns, hub, backend),

@@ -207,17 +207,9 @@ pub fn end_ok(corr: u32, blocks: u32, dropped: u32, reason: EndReason) -> Vec<u8
 
 /// A failed stream END frame with the existing error member (design S29).
 #[must_use]
-pub fn end_error(
-    corr: u32,
-    blocks: u32,
-    dropped: u32,
-    code: Code,
-    detail: &Detail,
-) -> Vec<u8> {
+pub fn end_error(corr: u32, blocks: u32, dropped: u32, code: Code, detail: &Detail) -> Vec<u8> {
     let member = error_member(code, detail);
-    let payload = format!(
-        "{{\"ok\":false,\"blocks\":{blocks},\"dropped\":{dropped},{member}}}"
-    );
+    let payload = format!("{{\"ok\":false,\"blocks\":{blocks},\"dropped\":{dropped},{member}}}");
     control_frame(FrameType::End, corr, payload.as_bytes())
 }
 
