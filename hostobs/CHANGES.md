@@ -9,6 +9,9 @@
   from `{assay.changed_diff}`, `--jobs 1`, nextest, output `assay-mutants-out`, git-ignored). Hand-run only
   (`run-gate assay-r2 --base <ref>`), `budget = "4h"` is an estimate, never part of a default gate; assay K15
   stays open until the first hostobs run.
+- **`assay-r2` memory cap**: the first real run (2026-11-18) reached 6.4 GiB in the container within 90 s
+  (cold baseline build with cargo's default four rustc processes) on the shared 8 GiB host and was cancelled;
+  the lane now sets `CARGO_BUILD_JOBS=1`, `RUST_TEST_THREADS=1` and `NEXTEST_TEST_THREADS=1`.
 
 ### Added (the `conformance` lane; `HOB-4` fixed)
 
