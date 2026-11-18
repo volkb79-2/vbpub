@@ -1,22 +1,24 @@
 # vm-lab known issues and TODO backlog
 
-## VML-BL-01 Release registration
+## VML-BL-01 Release registration (CLOSED 2026-11-18, P-A2)
 
-vm-lab is not registered in the release machinery: no `cmru.toml` (the tag `vm-lab-v*` is already named in `pyproject.toml`, and `setuptools_scm` has no fallback version, so an untagged build is a dev version), no cmru orchestration entry, no `assay.toml` mutation lane. Copy the iobench trio when the project is adopted, under the controller's release program together with VMS-BL-01 of vmscreen.
+Registered in the iobench shape: `vm-lab/cmru.toml` (tag `vm-lab-v*`, wheel only, notes in `VM_LAB_RELEASE_NOTES`), `vm-lab/assay.toml` (judged lane `vm-lab`, coverage floor 72 against a measured 74.0 %), `vm-lab/run-gate.toml` (lanes `r0-r1`, `r2`, `wheel`, `gate`), and two entries in `cmru.orchestration.toml` (`vmscreen` before `vm-lab` in `project_order`, vm-lab `depends_on = ["vmscreen"]`; `cmru dependencies` preflight PASS, `cmru status` lists both with next tags `vmscreen-v0.1.0` / `vm-lab-v0.1.0`). Evidence: vbpub branch `vm-pa2-20261118`, commits `caf11e2c6` and `beea8b8a2`.
 
-**Close-when:** `cmru status` lists vm-lab, a release builds a wheel from a tag, and an assay lane exists.
+The release itself, and the R2 mutation lane (never run; core.py is 62.8 % covered), remain the controller's.
 
-## VML-BL-02 Wheel build not exercised
+## VML-BL-02 Wheel build not exercised (CLOSED 2026-11-18, P-A2)
 
-The package is meant to be wheel-buildable (`python -m pip wheel --no-deps vm-lab`), but no wheel was built in RP-02 (no build in the implementer session). The wheel does not carry `qemu-image/` (no package-data; `QEMU_IMAGE_CONTEXT` points at the checkout's `vm-lab/qemu-image`), so from an installed wheel `image build` needs `--context DIR` and fails with a message naming it otherwise.
+Decision: the Dockerfile ships as package data. `qemu-image/` moved to `src/vm_lab/qemu-image`, `pyproject.toml` declares `[tool.setuptools.package-data] vm_lab = ["qemu-image/*"]`, `QEMU_IMAGE_CONTEXT` resolves next to the module (checkout, editable install and wheel alike) and `--context DIR` stays the override (`resolve_image_context`). Evidence: commit `5b5377b59` (tests: resolver with and without `--context`, package-data declaration, a wheel built from a project copy that lists `vm_lab/qemu-image/Dockerfile`) and the `wheel` lane of `vm-lab/run-gate.toml` (builds both wheels, installs them into a throwaway venv, runs `vm-lab --help` and `vmscreen --help`, finds the packaged Dockerfile). The same commands were run by hand with the devcontainer Python on 2026-11-18 and all passed; the lane itself has not been run under `run-gate` yet.
 
-**Close-when:** a wheel builds in a gate lane, installs next to vmscreen, and `vm-lab --help` runs from it; decide whether the Dockerfile ships as package data (`vm_lab/qemu-image`) or the image is built from the checkout only (then say so in the mdt-cockpit image recipe).
+The mdt-cockpit image recipe can rely on the wheel carrying the build context (see VML-BL-04 for the lock directory).
 
 ## VML-BL-03 vmscreen floor or pin
 
 `pyproject.toml` depends on `vmscreen` without a version: vmscreen has no release yet. The functional floor is the `--qemu-dump-dir` option (checked at run time, `VMSCREEN_REQUIRED_OPTION`). The dependency also has no index to resolve from; install it from `libraries/vmscreen` or use `--no-deps`.
 
 **Open question (review RP-02 finding 6):** what floor, and from which release? Until then the bare name has a dependency-confusion risk: an installer pointed at a public index could resolve a foreign `vmscreen`, and `pip install vm-lab` cannot resolve it from the estate's own wheels. Install vmscreen from `libraries/vmscreen` (or the estate wheel list) first, and use `--no-deps` for the vm-lab wheel, until the floor exists. It must be resolved before any vm-lab release.
+
+**TODO (controller, after the vmscreen release):** set `vmscreen>=<first tag>` in `pyproject.toml` `dependencies`, with its reason (the `--qemu-dump-dir` option), and replace the comment above it. vmscreen is registered for release as of 2026-11-18 (VMS-BL-01 closed); the tag `vmscreen-v0.1.0` is not minted yet, so the floor cannot be written.
 
 **Close-when:** vmscreen is released and this line carries a `>=` floor with its reason.
 
