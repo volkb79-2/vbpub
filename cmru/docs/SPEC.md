@@ -2336,6 +2336,20 @@ choice: every CMRU line that already starts `[INFO]`, `[WARN]`, or `[ERROR]` is 
 three severity tokens green/yellow/red; redirected stdout/stderr is deliberately ANSI-free so
 the stable logs and machine consumers retain plain text.
 
+**S3.4a — Step process lifetime (KI-178).** A step ends when its own process exits, not when
+every holder of its output pipe closes it. After the child has exited the runner drains the
+output for at most `OUTPUT_DRAIN_SECONDS` (2 s; a module constant, not a configuration key),
+then stops reading and closes the pipe, keeps the child's own exit code, and logs one `[WARN]`
+(also written to the step log) naming the pids that still hold the pipe, found through
+`/proc/<pid>/fd`; when that scan fails the WARN omits the pids. The holders are named, never
+killed. Each command starts in its own session and process group (`start_new_session`), so an
+interrupt (Ctrl-C, or SIGTERM turned into `SystemExit`) sends SIGTERM to the whole group,
+SIGKILL after `GROUP_TERM_GRACE_SECONDS` (5 s) if any member survives, and reaps it. Output
+lines, their order, decoding (locale encoding, universal newlines) and exit codes are unchanged
+for a child that closes its pipe. A command that reads from the terminal no longer shares its
+foreground group; steps are non-interactive. A no-progress watchdog and a helper shared with
+other tools remain open under KI-178.
+
 **S3.5 — Transaction evidence lifecycle.** Release failure MUST retain its worktree, logs,
 artifacts, and generated gate evidence for inspection/resume. Successful release MUST remove
 the worktree, but MUST retain its project logs, declared artifacts, and declared gate evidence

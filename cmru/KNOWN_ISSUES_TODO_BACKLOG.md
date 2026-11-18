@@ -14,6 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-178 | OPEN (items 1 and 2 fixed 2026-11-18: bounded drain after child exit and whole-process-group reaping; item 3 no-progress watchdog and item 4 shared helper remain) | this branch's `fix(cmru): KI-178` commit |
 | KI-175 | FIXED 2026-11-18 (`dist_dir` must be a strict descendant of `project_root` at parse time and is rechecked before every recursive removal) | this branch's `fix(cmru): KI-175` commit |
 | KI-173 | FIXED 2026-11-16 (estate argv failures explain shell-expanded values for typed options and their environment fallback) | `f20d3ae566e60f591638f9bc5e66e9bfd7e38a39` |
 | KI-171 | OPEN (the packaged cmru-cli SKILL is grammar-checked but not coverage-checked: a verb or flag a release adds can be missing from it with every existing test green) | — |
@@ -3794,7 +3795,9 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-178 a step hangs forever when its child exits but a grandchild keeps the output pipe open (estate-wide pattern)
 
-**Status:** OPEN (filed 2026-11-17 during the mdt-cockpit release); severity: high (an unattended release or gate never finishes, never fails, and says nothing; found only because the operator looked).
+**Status:** OPEN, items 1 and 2 (cmru side) FIXED 2026-11-18, items 3 and 4 remain (filed 2026-11-17 during the mdt-cockpit release); severity: high (an unattended release or gate never finishes, never fails, and says nothing; found only because the operator looked).
+
+**Resolution/evidence, items 1 and 2 (2026-11-18).** `cmru/src/cmru/runner.py` `run_command` reads the child's pipe by descriptor with the same decoding as a text pipe, stops `OUTPUT_DRAIN_SECONDS` (2 s) after the child has exited, closes the reader, keeps the child's exit code and logs one WARN naming the holder pids from `/proc/<pid>/fd` (without pids when the scan fails). Children start with `start_new_session=True`; an interrupt sends SIGTERM to the group, SIGKILL after `GROUP_TERM_GRACE_SECONDS`, and reaps it (cmru has no per-step timeout, so interrupt is the only reaping trigger). Tests: `tests/test_runner_pipe_holders.py` (a `sleep 600` holder with exit 3 and exit 0, scan failure, unchanged ordinary output and exit code, split multibyte output, own session and group, whole-group interrupt by pid, SIGTERM-ignoring child). SPEC S3.4a records the rule. **Still open:** item 3 (the no-progress watchdog, with its `cmru.toml` period) and item 4 (the shared helper; the same read-to-EOF shape remains in `build-push.py` and `ciu/src/ciu/engine.py`, tracked as CIU-220, MDT-104 and NL-83). Do not close KI-178 until both land.
 
 **Observed.** The shared buildkitd was restarted mid-build (host `apt upgrade`, 16:44:34Z). `docker buildx bake` failed, its `release-bake.sh` bash exited (`<defunct>`), but an orphaned VS Code dev-containers credential helper (`docker-credential-dev-containers-*`, parent 1) that docker had spawned kept the inherited stdout pipe open. `build-push.py` sat in `anon_pipe_read` and `cmru release` behind it for 11 minutes; killing only that helper made both exit at once.
 

@@ -100,13 +100,13 @@ def test_runner_success_evidence_requires_framework_witness():
 
 
 def test_runner_run_command_streams_success_and_surfaces_quiet_failure(monkeypatch):
-    class Proc:
-        stdout = iter(["[ERROR] precise\n", "context\n"])
-        def wait(self): return 1
-    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **k: Proc())
+    # A real child on a real pipe: the runner reads the pipe descriptor itself (KI-178), so a
+    # fake iterable ``stdout`` no longer stands in for it.
     log = io.StringIO()
     with pytest.raises(subprocess.CalledProcessError) as error:
-        runner.run_command(["build"], Path("."), log, quiet=True)
+        runner.run_command(
+            ["sh", "-c", "echo '[ERROR] precise'; echo context; exit 1"], Path("."), log, quiet=True,
+        )
     assert error.value.returncode == 1 and "precise" in log.getvalue()
 
 

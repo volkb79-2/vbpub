@@ -33,6 +33,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 - fix(cmru): refuse a bundle `dist_dir` that is not a strict descendant of `project_root` at parse time and again before every recursive removal (KI-175). Adoption / Migration Notes: a `bundle.toml` whose `dist_dir` is `"."`, `".."`, an absolute path outside the project, or a symlink leaving it now fails with an error naming `dist_dir`, the resolved path and `project_root` instead of deleting that directory; keep the default `dist` or any subdirectory of the project.
+- fix(cmru): stop a release step hanging when its child exits but a grandchild keeps the output pipe open, and reap the whole process group on interrupt (KI-178 items 1 and 2; the no-progress watchdog and the shared helper stay open). Adoption / Migration Notes: after a child exits, cmru drains its output for at most 2 s, then continues with the child's own exit code and prints one `[WARN]` naming the pids still holding the pipe; steps now run in their own session and process group, so a step that reads from the terminal no longer shares its foreground group, and Ctrl-C or SIGTERM on cmru ends the whole step tree.
 - test(cmru): explain shell-expanded values for typed options in estate argv failures (KI-173).
 - test(cmru): cover unsupported image resolver context for the coverage floor (KI-168).
 - fix(cmru): reject bundle staging paths that can escape or overlap dist_dir (KI-169).
