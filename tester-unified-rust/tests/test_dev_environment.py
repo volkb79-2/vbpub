@@ -60,6 +60,22 @@ if verb == "inspect":
 if verb == "volume" and args[1] == "inspect":
     sys.exit(0 if os.environ.get("STUB_VOLUME", "1") == "1" else 1)
 if verb == "run":
+    fds = {{}}
+    for n in (8, 9):
+        try:
+            fds[n] = os.readlink("/proc/self/fd/%d" % n)
+        except OSError:
+            fds[n] = None
+    with open(os.path.join(os.environ["STUB_LOG_DIR"], "fds.log"), "a") as fh:
+        fh.write(json.dumps(fds) + "\\n")
+    hold = os.environ.get("STUB_RUN_HOLD")
+    if hold:
+        import time
+        open(hold + ".started", "w").close()
+        for _ in range(300):
+            if os.path.exists(hold):
+                break
+            time.sleep(0.1)
     if "--cidfile" in args:
         with open(args[args.index("--cidfile") + 1], "w") as fh:
             if not os.environ.get("STUB_NO_CID"):
@@ -79,6 +95,11 @@ guard='true'
 remote_script=$(printf 'set -e\\nif ! { %s\\n}; then printf "GUARD-FAIL\\\\n" >&2; exit 98; fi\\n%s\\n' "$guard" "$2")
 quoted_script=$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$remote_script") || exit 2
 remote="bash -c $quoted_script"
+if [[ $n == 1 && -n ${STUB_INJECT:-} ]]; then
+  sh -c "$remote"; rc=$?
+  printf '%b' "$STUB_INJECT"
+  exit $rc
+fi
 exec sh -c "$remote"
 """
 
@@ -104,6 +125,8 @@ ALL_SUBS = [
     ["gdb", "--args", "/bin/true"],
     ["strace", "-c", "/bin/true"],
 ]
+TIMEOUT_PREFIX = ["timeout", "--foreground", "-k", "5", "3600"]
+SKIP = 1 + len(TIMEOUT_PREFIX)     # words after "-c3" before the user's command
 FORBIDDEN_FLAGS = ("--privileged", "--pid", "--net", "--cgroupns", "--ipc", "--uts", "--userns", "--device", "--mount", "--volumes-from")
 FORBIDDEN_FRAGMENTS = ("docker.sock", "/sys", "/proc", "/dev", "propagation", "shared", "slave")
 
@@ -243,6 +266,8 @@ class WrapperArgvTests(DevCase):
         self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "--ulimit"], ["core=0:0"])
         image = argv.index("tester-unified-rust-dev:local")
         self.assertEqual(argv[image + 1:image + 6], ["nice", "-n", "10", "ionice", "-c3"])
+        # the deadline also runs INSIDE the container, so a killed wrapper cannot leave an unbounded container
+        self.assertEqual(argv[image + 6:image + 11], TIMEOUT_PREFIX)
 
     def test_remote_is_the_default_mode_and_every_subcommand_is_safe(self) -> None:
         for sub in ALL_SUBS:
@@ -318,7 +343,7 @@ class WrapperArgvTests(DevCase):
     def test_subcommands_map_to_the_checked_cargo_wrapper(self) -> None:
         def tail(*args: str) -> list:
             argv = self.argv_of(self.run_dev("--dry-run", *args))
-            return argv[argv.index("-c3") + 1:]
+            return argv[argv.index("-c3") + SKIP:]
         cargo = "tools/cargo-offline.sh"
         self.assertEqual(tail("build", "-p", "a"), [cargo, "build", "--offline", "--locked", "-p", "a"])
         self.assertEqual(tail("check"), [cargo, "check", "--offline", "--locked"])
@@ -453,7 +478,7 @@ class HostileInputTests(DevCase):
         self.assertFalse(marker.exists())
         runs = self.runs()
         self.assertEqual(len(runs), 1)
-        self.assertEqual(runs[0][runs[0].index("-c3") + 1:], words)
+        self.assertEqual(runs[0][runs[0].index("-c3") + SKIP:], words)
         # the hostile words never reached the container's option positions
         self.assertEqual(runs[0].count("--privileged"), 1)
         self.assertEqual(runs[0].count("-v"), 4)
@@ -476,7 +501,7 @@ class HostileInputTests(DevCase):
         self.assertFalse(marker.exists())
         run = self.runs()[-1]
         self.assertIn("-it", run)
-        self.assertEqual(run[run.index("-c3") + 1:], ["echo", evil, "a b", "$(id)"])
+        self.assertEqual(run[run.index("-c3") + SKIP:], ["echo", evil, "a b", "$(id)"])
 
     def test_the_only_literal_host_text_in_the_run_script_is_built_from_the_validated_hex(self) -> None:
         script = self.run_dev("--dry-run", "run", "--", "$HOME/x").stdout
@@ -604,8 +629,136 @@ class WrapperRemoteExecutionTests(DevCase):
         self.assertEqual(self.run_dev("run", "--", "true").returncode, 75)
         (self.tmp / "memory.current").unlink()
         self.assertEqual(self.run_dev("run", "--", "true").returncode, 75)
-        (self.tmp / "memory.current").write_text(f"{limit + 1}\n")
-        self.assertEqual(self.run_dev("run", "--", "true", HOSTOBS_DEV_SLICE_MEM_MAX_MB="4096").returncode, 0)
+        # the limit can only be LOWERED through the environment
+        (self.tmp / "memory.current").write_text(f"{3000 * 1048576}\n")
+        self.assertEqual(self.run_dev("run", "--", "true").returncode, 0)
+        self.assertEqual(self.run_dev("run", "--", "true", HOSTOBS_DEV_SLICE_MEM_MAX_MB="2000").returncode, 75)
+
+    def test_the_memory_limit_variable_is_bounded(self) -> None:
+        for value in ("", "x", "3585", "99999999999999999999", "9999999999", "-1", "0", "0000", "3584 --privileged", "3584\n1", "1.5"):
+            with self.subTest(value=value):
+                proc = self.run_dev("--dry-run", "shell", HOSTOBS_DEV_SLICE_MEM_MAX_MB=value)
+                self.assertEqual(proc.returncode, 2, proc.stdout)
+                self.assertIn("HOSTOBS_DEV_SLICE_MEM_MAX_MB", proc.stderr)
+        for value in ("1", "3584", "0100"):
+            self.assertEqual(self.run_dev("--dry-run", "shell", HOSTOBS_DEV_SLICE_MEM_MAX_MB=value).returncode, 0, value)
+
+    def test_the_container_command_has_an_in_container_deadline(self) -> None:
+        argv = self.argv_of(self.run_dev("--dry-run", "shell", HOSTOBS_DEV_MAX_S="120"))
+        self.assertEqual(argv[argv.index("-c3") + 1:argv.index("-c3") + SKIP], ["timeout", "--foreground", "-k", "5", "120"])
+        self.assertEqual(argv[argv.index("-c3") + SKIP:], ["bash"])
+        self.assertEqual(self.run_dev("run", "--", "true", HOSTOBS_DEV_MAX_S="77").returncode, 0)
+        run = self.runs()[-1]
+        self.assertEqual(run[run.index("-c3") + 1:run.index("-c3") + SKIP], ["timeout", "--foreground", "-k", "5", "77"])
+
+    def test_the_global_lock_serialises_worktrees_and_parallel_skips_only_it(self) -> None:
+        lock_dir = self.home / "hostobs-dev"
+        lock_dir.mkdir(parents=True)
+        with (lock_dir / ".all.lock").open("w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            proc = self.run_dev("run", "--", "true")
+            self.assertEqual(proc.returncode, 3, proc.stderr)
+            self.assertIn(".all.lock", proc.stderr)
+            self.assertEqual(self.runs(), [])
+            self.assertFalse(self.work().exists())
+            # parallel mode skips ONLY the global lock ...
+            proc = self.run_dev("run", "--", "true", HOSTOBS_DEV_ALLOW_PARALLEL="1")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(len(self.runs()), 1)
+            # ... and still passes the memory admission
+            (self.tmp / "memory.current").write_text(f"{8 << 30}\n")
+            proc = self.run_dev("run", "--", "true", HOSTOBS_DEV_ALLOW_PARALLEL="1")
+            self.assertEqual(proc.returncode, 75)
+            self.assertEqual(len(self.runs()), 1)
+
+    def test_two_different_worktrees_cannot_both_run_a_container(self) -> None:
+        other = self.make_repo(self.tmp / "repo2")
+        self.assertNotEqual(worktree_hex(other), self.hex)
+        hold = self.tmp / "release-first"
+        first = subprocess.Popen([str(self.dev), "run", "--", "true"], env=self.env(STUB_RUN_HOLD=str(hold)),
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            for _ in range(300):
+                if Path(str(hold) + ".started").exists():
+                    break
+                time.sleep(0.1)
+            self.assertTrue(Path(str(hold) + ".started").exists(), "the first container never started")
+            second = subprocess.run([str(other / "hostobs" / "tools" / "dev"), "run", "--", "true"], env=self.env(),
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+            self.assertEqual(second.returncode, 3, second.stderr)
+            self.assertIn("another dev container call is in progress", second.stderr)
+            self.assertEqual(len(self.runs()), 1)
+            # with parallel allowed the second worktree gets in
+            third = subprocess.run([str(other / "hostobs" / "tools" / "dev"), "run", "--", "true"],
+                                   env=self.env(HOSTOBS_DEV_ALLOW_PARALLEL="1"), stdin=subprocess.DEVNULL,
+                                   capture_output=True, text=True, timeout=120)
+            self.assertEqual(third.returncode, 0, third.stderr)
+        finally:
+            hold.write_text("go")
+            first.communicate(timeout=60)
+        self.assertEqual(first.returncode, 0)
+        self.assertEqual(len(self.runs()), 2)
+
+    def test_the_lock_descriptors_are_inherited_by_the_docker_client(self) -> None:
+        self.assertEqual(self.run_dev("run", "--", "true").returncode, 0)
+        fds = json.loads((self.logs / "fds.log").read_text().splitlines()[-1])
+        self.assertEqual(fds["8"], str(self.home / "hostobs-dev" / ".all.lock"))
+        self.assertEqual(fds["9"], str(self.home / "hostobs-dev" / self.hex / "lock"))
+        self.assertEqual(self.run_dev("run", "--", "true", HOSTOBS_DEV_ALLOW_PARALLEL="1").returncode, 0)
+        fds = json.loads((self.logs / "fds.log").read_text().splitlines()[-1])
+        self.assertIsNone(fds["8"])
+        self.assertEqual(fds["9"], str(self.home / "hostobs-dev" / self.hex / "lock"))
+
+    def test_a_stale_cidfile_never_gets_a_foreign_container_removed(self) -> None:
+        (self.home / "hostobs-dev" / self.hex).mkdir(parents=True)
+        (self.home / "hostobs-dev" / self.hex / "cid").write_text("old-foreign-id")
+        proc = self.run_dev("run", "--", "true", STUB_EXISTS="1")
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        self.assertEqual([c for c in self.docker_calls() if c[0] == "rm"], [])
+        self.assertFalse((self.home / "hostobs-dev" / self.hex / "cid").exists())
+        # a normal run after a stale file removes only the id its own run wrote
+        (self.home / "hostobs-dev" / self.hex / "cid").write_text("old-foreign-id")
+        self.assertEqual(self.run_dev("run", "--", "true").returncode, 0)
+        self.assertEqual([c for c in self.docker_calls() if c[0] == "rm"], [["rm", "-f", "cid-stub-1"]])
+        # and a run that creates no container removes nothing, whatever an earlier call left behind
+        (self.home / "hostobs-dev" / self.hex / "cid").write_text("old-foreign-id")
+        self.run_dev("run", "--", "true", STUB_RUN_RC="125", STUB_NO_CID="1")
+        self.assertEqual([c for c in self.docker_calls() if c[0] == "rm"], [["rm", "-f", "cid-stub-1"]])
+
+    def test_stop_and_clean_checkout_do_not_act_under_a_running_sync(self) -> None:
+        d = self.home / "hostobs-dev" / self.hex
+        (d / "work").mkdir(parents=True)
+        with (d / "lock").open("w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            proc = self.run_dev("stop")
+            self.assertEqual(proc.returncode, 3, proc.stderr)
+            self.assertIn("in progress (syncing)", proc.stderr)
+            self.assertEqual([c for c in self.docker_calls() if c[0] == "rm"], [])
+            proc = self.run_dev("clean", "--checkout", STUB_RUNNING="absent")
+            self.assertEqual(proc.returncode, 3, proc.stderr)
+            self.assertIn("in progress (syncing)", proc.stderr)
+            self.assertTrue((d / "work").exists())
+            self.assertEqual([c for c in self.docker_calls() if c[:2] == ["volume", "rm"]], [])
+            # a container that exists can still be stopped while the call that started it holds the lock
+            proc = self.run_dev("stop", STUB_EXISTS="1")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual([c for c in self.docker_calls() if c[0] == "rm"], [["rm", "-f", f"hostobs-dev-{self.hex}"]])
+        # without the lock both act
+        self.assertEqual(self.run_dev("clean", "--checkout", STUB_RUNNING="absent").returncode, 0)
+        self.assertFalse(d.exists())
+
+    def test_hostile_lines_from_the_host_never_reach_the_next_remote_script(self) -> None:
+        marker = self.tmp / "SEEDPWNED"
+        good = "a" * 40
+        inject = (f"SEED={good};touch {marker}\\nSEED=$(touch {marker})\\nHAVE=$(touch {marker})\\n"
+                  f"SEED={'b' * 39}\\nSEED=../../x\\nSEED=ABCDEF{'0' * 34}\\nHAVE=zz\\n")
+        proc = self.run_dev("run", "--", "true", STUB_INJECT=inject)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(marker.exists())
+        for n in (2, 3):
+            script = (self.logs / f"hx-{n}.sh").read_text()
+            self.assertNotIn("touch", script)
+            self.assertIn("\nSEED=\n", script)
 
     def test_psi_gate_uses_memory_some_and_io_full_with_the_remote_gate_limit(self) -> None:
         self.write_psi("25.00", "25.00", io_some="99.00")      # at the limit; memory full and io some are not signals
@@ -740,7 +893,8 @@ class ImageSourceTests(unittest.TestCase):
         text = DOCKERFILE.read_text()
         self.assertRegex(text, r"(?m)^ARG BASE_IMAGE=tester-unified-rust:local$")
         self.assertIn("FROM ${BASE_IMAGE}", text)
-        self.assertIn('org.vbpub.tester-unified-rust-dev.base-image="${BASE_IMAGE}"', text)
+        self.assertIn('org.vbpub.tester-unified-rust-dev.base-image="${BASE_IMAGE_TAG}"', text)
+        self.assertRegex(text, r"(?m)^ARG BASE_IMAGE_TAG=")
         self.assertIn('org.vbpub.tester-unified-rust-dev.base-image-id="${BASE_IMAGE_ID}"', text)
         install = re.search(r"apt-get install -y --no-install-recommends \\\n\s+(.+?) \\\n", text)
         self.assertIsNotNone(install)
@@ -884,7 +1038,8 @@ class BuildDevImageTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         build = [c for c in calls if c[:2] == ["buildx", "build"]][0]
         args = [build[i + 1] for i, a in enumerate(build) if a == "--build-arg"]
-        self.assertEqual(args, ["BASE_IMAGE=tester-unified-rust:local", "BASE_IMAGE_ID=sha256:" + "a" * 64])
+        # FROM is the immutable id (no tag race); the tag travels separately, for the label
+        self.assertEqual(args, ["BASE_IMAGE=sha256:" + "a" * 64, "BASE_IMAGE_TAG=tester-unified-rust:local", "BASE_IMAGE_ID=sha256:" + "a" * 64])
         self.assertEqual(build[build.index("--cgroup-parent") + 1], self.SLICE)
         self.assertIn("-t", build)
         self.assertIn("base_id=sha256:" + "a" * 64, proc.stdout)
