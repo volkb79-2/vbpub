@@ -284,3 +284,37 @@ cap, and cgroup environment variable are deliberately not per-run options.
 
 See [why the boundary is shaped this way](docs/DESIGN-GUIDE.md#cockpit-and-gate-boundary)
 and the [worked adoption commands](docs/CONSUMERS.md#running-a-project-gate).
+
+### After a Run-Gate release: rebuild the image
+
+The release gates of other tools require `tester-unified:local` to carry the
+PUBLISHED wheel of the newest Run-Gate release: CIU's `scripts/check_run_gate_wheel.py`
+(run by the registered lanes in its `cmru.toml`) refuses an image whose installed
+wheel differs from the selected checkout, and CMRU's `Run-Gate image identity`
+release precondition compares the image's Run-Gate labels with the release the
+host judge came from. An image left on the previous wheel therefore makes the NEXT
+tool's release gate refuse, so every Run-Gate release is followed by these steps:
+
+1. Build from the published wheel, with the `CMRU_TESTER_*` settings from
+   `cmru.orchestration.toml` exported for a direct run (the list is in the
+   direct-run paragraph earlier in this README, the one beginning "When called
+   inside a CMRU release step"; do not copy the values):
+
+   ```bash
+   BUILDX_BUILDER=default tester-unified/build-image.sh --run-gate-published latest --no-cache --tag tester-unified:wave-<date>
+   ```
+
+2. Verify the new tag before anything points at it:
+   - the labels `org.vbpub.run-gate.version` and `org.vbpub.run-gate.wheel-sha256`
+     equal the Release's version and wheel SHA-256;
+   - `importlib.metadata.version("run-gate")` inside the image prints the same version;
+   - `scripts/check_run_gate_wheel.py` of the CIU checkout passes against that
+     checkout inside the new image.
+3. Only then retag `tester-unified:local` to the new image, keeping the previous
+   one as `tester-unified:prev-<date>` for rollback.
+
+Image changes on a shared host are decided by whoever owns the host; the steps
+above are the checklist, not an authorization. Separately, the pins that are
+started with `--pull=never` (the cgroup probe image and the nested-Docker image)
+must already be present locally before a release; see "Refreshing a digest pin" in
+the [CMRU consumer guide](../cmru/docs/CONSUMERS.md).
