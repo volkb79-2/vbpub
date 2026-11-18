@@ -9343,8 +9343,11 @@ exist; only the hooks and info overlay is missing.
 
 **Mitigation and what is unverified.** `host_git_environment`
 (`run_gate.py`) sets `core.hooksPath=/dev/null` (and `core.fsmonitor=false`)
-for every host git reader inside Run-Gate, so Run-Gate's own host git calls do
-not run a planted submodule hook. The remaining exposure is OTHER host git use
+for the host git calls that pass through it (other read-only host git calls in
+`run_gate.py`, for example `rev-parse`, `diff --quiet`, `merge-base
+--is-ancestor`, `describe` and one `status`, do not use it, but none of those
+commands runs hooks), so Run-Gate's own host git calls do not run a planted
+submodule hook. The remaining exposure is OTHER host git use
 on the checkout after a lane (for example an operator running
 `git submodule update` or a checkout inside the submodule, where a
 `post-checkout` hook would be looked up in the submodule git dir). That a
@@ -9413,7 +9416,8 @@ drops only the credential-looking keys it recognises (a last segment ending in
 `*.extraheader`, `*.cookiefile`, `core.askpass`, `core.sshcommand`) and strips
 URL userinfo; every other value passes through unchanged, so a key such as
 `authorization = Bearer ...` or `private-key = ...` in a planted-link target
-would reach the copy (confirmed in a scratch test by the coordinator). A
+would reach the copy (confirmed in a scratch test against
+`sanitize_git_config_entries`: both keys pass through unchanged). A
 replaced `modules` root can also make the walk read and refuse on any
 `config` file below the link target. Where Docker places a bind mount whose
 destination is a symlink was not exercised.
