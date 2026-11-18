@@ -170,6 +170,19 @@ reset_logs
 rg gate-a proj small "$SHA" --base "$SHA" -- --jobs 3 > /dev/null 2>&1 || fail 'run with --base and extras failed'
 contains "$RG_LOG" '"--base", "'"$SHA"'"' '--base reaches remote-gate.py'
 contains "$RG_LOG" '"--", "--jobs", "3"' 'extra run-gate arguments are forwarded after --'
+# the old spelling `-- --base <ref>` reaches the same effect: the base is bundled (remote-gate.py --base) and not sent twice
+for spelling in '--base' '--base='; do
+  reset_logs
+  if [[ $spelling == --base ]]; then rg gate-a proj small "$SHA" -- --base "$SHA" --jobs 3 > /dev/null 2>&1 || fail 'run with pass-through --base failed'
+  else rg gate-a proj small "$SHA" -- "--base=$SHA" --jobs 3 > /dev/null 2>&1 || fail 'run with pass-through --base= failed'; fi
+  contains "$RG_LOG" '"--base", "'"$SHA"'"' "pass-through $spelling reaches remote-gate.py as its --base option"
+  contains "$RG_LOG" '"--", "--jobs", "3"' "pass-through $spelling leaves the other extra arguments in place"
+  [[ $(grep -o -- '--base' "$RG_LOG" | wc -l) == 1 ]] || fail "pass-through $spelling must not forward --base to run-gate as well"
+done
+reset_logs
+if rg gate-a proj small "$SHA" --base "$SHA" -- --base "$SHA" > /dev/null 2>&1; then fail 'a base given as option and as pass-through was accepted'; fi
+if rg gate-a proj small "$SHA" -- --base > /dev/null 2>&1; then fail 'a pass-through --base without a ref was accepted'; fi
+[[ ! -e $RG_LOG ]] || fail 'a refused --base reached the runner'
 reset_logs
 CONTROLLER_REMOTE_REPO_NAME=named-repo rg gate-a proj small "$SHA" > /dev/null 2>&1 || fail 'run with a configured repo name failed'
 contains "$RG_LOG" '"--repo", "named-repo"' 'a configured repo name is forwarded'

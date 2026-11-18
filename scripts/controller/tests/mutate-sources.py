@@ -1104,3 +1104,49 @@ mutant("scripts/controller/remote-gate.sh", "remote-gate-api-override.sh",
        'if [[ -n ${CONTROLLER_REMOTE_API_CHECK:-} ]]; then', 'if false; then')
 mutant("scripts/controller/remote-gate.sh", "remote-gate-runner-ref.sh",
        '    die "cannot read scripts/netcup/runner/remote-gate.py from $runner_ref" 3', '    : # unreadable runner ignored')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-base-passthrough.sh",
+       '    --base|--base=*)', '    --base-never|--base-never=*)')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-base-twice.sh",
+       "      [[ -z $base ]] || die '--base given twice (option and pass-through)'", '      : # a second base is accepted')
+# chain-run.sh: the generic chain wrapper that replaces the per-package chain-*.sh files.
+chain_gate_run = 'gate_run=${CONTROLLER_GATE_RUN_SCRIPT:-$SCRIPT_DIR/gate-run.sh}'
+mutant("scripts/controller/chain-run.sh", "chain-run-log-name.sh",
+       'log=$CONTROLLER_LOGS_DIR/$prefix-$lane.log', 'log=$CONTROLLER_LOGS_DIR/$lane.log')
+mutant("scripts/controller/chain-run.sh", "chain-run-remote-log-name.sh",
+       'log=$CONTROLLER_LOGS_DIR/$prefix-remote-$lane.log', 'log=$CONTROLLER_LOGS_DIR/$prefix-$lane.log')
+mutant("scripts/controller/chain-run.sh", "chain-run-marker-text.sh",
+       'write_marker CHAIN-DONE', 'write_marker DONE')
+mutant("scripts/controller/chain-run.sh", "chain-run-stale-marker.sh",
+       'rm -f -- "$marker"', ': # stale marker kept')
+mutant("scripts/controller/chain-run.sh", "chain-run-head-pin.sh",
+       '[[ -n $want && $want == "$head" ]] ||', 'true ||')
+mutant("scripts/controller/chain-run.sh", "chain-run-dirty-tree.sh",
+       "[[ -z $dirty ]] ||", "true ||")
+mutant("scripts/controller/chain-run.sh", "chain-run-stop-on-fail.sh",
+       'if (( lane_rc != 0 && stop_on_fail )); then', 'if false; then')
+mutant("scripts/controller/chain-run.sh", "chain-run-stop-without-flag.sh",
+       'if (( lane_rc != 0 && stop_on_fail )); then', 'if (( lane_rc != 0 )); then')
+mutant("scripts/controller/chain-run.sh", "chain-run-remote-base.sh",
+       '[[ -z $base ]] || cmd+=(--base "$base")', ': # base dropped')
+mutant("scripts/controller/chain-run.sh", "chain-run-remote-commit.sh",
+       '"$subdir" "$lane" "$head")', '"$subdir" "$lane" HEAD)')
+mutant("scripts/controller/chain-run.sh", "chain-run-remote-head-lookup.sh",
+       'if [[ -n $head_pin ]] || (( want_remote )); then', 'if [[ -n $head_pin ]]; then')
+mutant("scripts/controller/chain-run.sh", "chain-run-remote-host-ambiguity.sh",
+       '(( ${#allowed[@]} == 1 )) ||', 'true ||')
+mutant("scripts/controller/chain-run.sh", "chain-run-launcher-check.sh",
+       '(( ! want_local )) || [[ -x $gate_run ]] || refuse', 'true || refuse')
+mutant("scripts/controller/chain-run.sh", "chain-run-subdir-guard.sh",
+       '[[ $subdir != /* && $subdir != *..* ]] ||', 'true ||')
+mutant("scripts/controller/chain-run.sh", "chain-run-lane-name-guard.sh",
+       '[[ $spec =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || refuse', 'true || refuse')
+mutant("scripts/controller/chain-run.sh", "chain-run-lane-cwd.sh",
+       '(cd -- "$worktree/$subdir" && "$gate_run" "$lane")', '(cd -- "$worktree" && "$gate_run" "$lane")')
+mutant("scripts/controller/chain-run.sh", "chain-run-default-launcher.sh",
+       chain_gate_run, 'gate_run=${CONTROLLER_GATE_RUN_SCRIPT:-$SCRIPT_DIR/gate-run-missing.sh}')
+mutant("scripts/controller/chain-run.sh", "chain-run-export-image.sh",
+       chain_gate_run, 'export RUN_GATE_TESTER_UNIFIED_IMAGE=pinned-tag\n' + chain_gate_run)
+mutant("scripts/controller/chain-run.sh", "chain-run-export-socket.sh",
+       chain_gate_run, 'export CGPROFILE_CONTROL_SOCKET=/run/profiler.sock\n' + chain_gate_run)
+mutant("scripts/controller/chain-run.sh", "chain-run-profile-default.sh",
+       chain_gate_run, 'export RUN_GATE_PROFILE=off\n' + chain_gate_run)

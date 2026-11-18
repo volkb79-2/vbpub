@@ -33,6 +33,24 @@ if [[ ${1:-} == --base ]]; then
 fi
 extra=()
 if [[ ${1:-} == -- ]]; then shift; extra=("$@"); elif [[ $# -gt 0 ]]; then die "unexpected argument '$1' (extra run-gate arguments go after --)"; fi
+# The old pass-through spelling `-- --base <ref>` (or `--base=<ref>`) reaches the same effect as the --base option: only
+# remote-gate.py's own --base also bundles the base commit, so the host has it; run-gate alone would not find it there.
+kept=()
+while (( ${#extra[@]} > 0 )); do
+  case ${extra[0]} in
+    --base|--base=*)
+      [[ -z $base ]] || die '--base given twice (option and pass-through)'
+      if [[ ${extra[0]} == --base ]]; then
+        [[ ${#extra[@]} -ge 2 && -n ${extra[1]} ]] || die '--base needs a ref'
+        base=${extra[1]}; extra=("${extra[@]:2}")
+      else
+        base=${extra[0]#--base=}; extra=("${extra[@]:1}")
+        [[ -n $base ]] || die '--base needs a ref'
+      fi ;;
+    *) kept+=("${extra[0]}"); extra=("${extra[@]:1}") ;;
+  esac
+done
+extra=(${kept[@]+"${kept[@]}"})
 controller_validate_host_alias "$host" || exit 2
 [[ $pdir != /* && $pdir != *..* ]] || die 'project dir must be relative to the repo root and stay inside it'
 [[ $lane =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die 'invalid lane name'

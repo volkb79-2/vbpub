@@ -459,6 +459,66 @@ lane's own, 2 refusal, 3 identity or transport failure, 75 slots or PSI busy,
 not a lane FAIL). Every setting is a `CONTROLLER_REMOTE_*` variable in
 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md); `CONTROLLER_REMOTE_GATE_HOSTS`
 is required. The weights sample is `remote-gate-weights.tsv.example`.
+`-- --base <ref>` (or `--base=<ref>`) after the commit is accepted as a spelling
+of `--base <ref>`: either way the base commit travels to the host with the
+bundle and `--base` is forwarded to the host's `run-gate` once.
+
+## Run several lanes in a row (`chain-run.sh`)
+
+```bash
+(setsid nohup scripts/controller/chain-run.sh [--head <sha>] [--remote-host <alias>] [--stop-on-fail] \
+  <worktree> <project-subdir> <log-prefix> <lane>... >/dev/null 2>&1 </dev/null & disown)
+```
+
+One generic chain runner replaces the per-package `chain-*.sh` wrappers. A plain
+`<lane>` runs through `gate-run.sh` from `<worktree>/<project-subdir>` and logs
+to `$CONTROLLER_LOGS_DIR/<log-prefix>-<lane>.log`; `remote:<lane>` or
+`remote:<lane>:--base=<sha>` runs through `remote-gate.sh` (host from
+`--remote-host`, or the only alias in `CONTROLLER_REMOTE_GATE_HOSTS`; commit =
+the worktree HEAD) and logs to `<log-prefix>-remote-<lane>.log`. Lanes run one
+after another; the marker `$CONTROLLER_LOGS_DIR/<log-prefix>.chain` is removed
+at start and written at the end: `CHAIN-DONE` once every lane ended, or the
+reason (`HEAD moved: ...`, `tree dirty`, `lane launcher missing: ...`,
+`STOPPED-ON-FAIL: ...`) when it refused or stopped. No marker means the chain is
+still running or was killed.
+
+- The chain NEVER reads a lane's verdict: a failed lane does not stop the next
+  one (the controller reads the logs in a separate step) unless `--stop-on-fail`
+  is given, which stops on a non-zero lane exit code only.
+- `--head <sha>` (full or abbreviated) pins the commit: the chain refuses with
+  `HEAD moved: ...` when the worktree HEAD differs and with `tree dirty` when
+  the tree has any change, before the first lane starts.
+- The environment is passed on untouched. The chain exports no image tag and no
+  profiler socket; profiling is `gate-run.sh`'s default (off unless the caller
+  sets `RUN_GATE_PROFILE`), and the repository's default tester image is used.
+- Tests inject stub launchers through `CONTROLLER_GATE_RUN_SCRIPT` and
+  `CONTROLLER_REMOTE_GATE_SCRIPT` (default: the siblings of `chain-run.sh`).
+
+### Migrating an old `chain-*.sh`
+
+An old wrapper maps onto the arguments like this: the worktree variable becomes
+`<worktree>`; the `cd` into a project directory becomes `<project-subdir>`; the
+file stem of the logs (`<prefix>-<lane>.log`) and of the marker
+(`<prefix>.chain`) becomes `<log-prefix>`; the `for` list of lanes becomes the
+lane arguments; a `HEAD_WANT` check plus the `status --short` check becomes
+`--head`; a `remote-gate.sh <host> <project> <lane> <sha>` call becomes
+`remote:<lane>` (host in `--remote-host`; a pass-through `-- --base <sha>`
+becomes `:--base=<sha>`). Drop every `export RUN_GATE_TESTER_UNIFIED_IMAGE=...`
+(that image tag no longer exists), `export CGPROFILE_CONTROL_SOCKET=...` and
+`RUN_GATE_PROFILE` line. Two real examples:
+
+```bash
+# local lanes with a head pin (old: three lanes from run-gate-project, HEAD_WANT + clean-tree check,
+# logs judgeprov-final5-<lane>.log, marker judgeprov-final5.chain)
+scripts/controller/chain-run.sh --head b3c431a04e4c1fb29f39018dcb2756868d751cc6 \
+  .worktrees/pi-rg-judge-provider-20261116 run-gate-project judgeprov-final5 selftest assay-r1 assay-r3
+
+# remote lanes (old: remote-gate.sh <host> assay <lane> 204ed6147 in a for loop, logs
+# assay-burn-final3-<lane>-<host>.out, marker assayburn-final3-remote.chain); the worktree
+# must be at that commit, --head proves it
+scripts/controller/chain-run.sh --head 204ed6147 --remote-host <host-alias> \
+  .worktrees/pi-assay-burn-20261116 assay assayburn-final3-remote remote:tester-unified remote:self-qualification-provisional
+```
 
 ## Build a bounded session read-back
 

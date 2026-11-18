@@ -443,8 +443,14 @@ for gate_run_profile_mutant in default override; do
   expect_killed "gate-run-profile-$gate_run_profile_mutant" \
     env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-profile-$gate_run_profile_mutant.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 done
-for remote_gate_mutant in identity allow-list project-dir-guard slot-roundup weight-min oom-delta commit-binding slot-descriptors base-forward api-override runner-ref; do
+for remote_gate_mutant in identity allow-list project-dir-guard slot-roundup weight-min oom-delta commit-binding slot-descriptors base-forward api-override runner-ref base-passthrough base-twice; do
   expect_killed "remote-gate-$remote_gate_mutant" \
     env REMOTE_GATE_SCRIPT="$ROOT/mutants/scripts/controller/remote-gate-$remote_gate_mutant.sh" bash "$SCRIPT_DIR/test-remote-gate.sh"
+done
+for chain_run_mutant in log-name remote-log-name marker-text stale-marker head-pin dirty-tree stop-on-fail stop-without-flag \
+                        remote-base remote-commit remote-head-lookup remote-host-ambiguity launcher-check subdir-guard \
+                        lane-name-guard lane-cwd default-launcher export-image export-socket profile-default; do
+  expect_killed "chain-run-$chain_run_mutant" \
+    env CHAIN_RUN_SCRIPT="$ROOT/mutants/scripts/controller/chain-run-$chain_run_mutant.sh" bash "$SCRIPT_DIR/test-chain-run.sh"
 done
 echo "PASS hand mutations: $killed_count killed"

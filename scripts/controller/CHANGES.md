@@ -13,7 +13,26 @@ no separate version number, so entries are grouped by the work that landed.
   copy, which was otherwise older (the repo copy already polls both slots).
   Two hand mutants.
 
+- `remote-gate.sh` accepts the old pass-through spelling `-- --base <ref>` (and
+  `--base=<ref>`) as the `--base` option: the base commit is bundled and
+  forwarded once, instead of reaching the host's `run-gate` alone. A base given
+  twice is refused. Two hand mutants.
+
 ### Added
+- `chain-run.sh`: ONE generic chain runner replacing the 38 per-package
+  `chain-*.sh` wrappers of the unversioned program directory. Arguments:
+  worktree, project subdir, log prefix, lanes; `--head <sha>` pins the commit
+  (refuses with `HEAD moved: ...` or `tree dirty` in the marker before any lane),
+  `remote:<lane>[:--base=<sha>]` lanes go through `remote-gate.sh`
+  (`--remote-host`, or the only allowed alias), `--stop-on-fail` stops on a
+  non-zero lane exit; otherwise a failed lane never stops the chain and the
+  chain never reads a verdict. Logs `<prefix>-<lane>.log` and
+  `<prefix>-remote-<lane>.log`, marker `<prefix>.chain` (`CHAIN-DONE` or the
+  reason, written atomically, removed at start). It exports no image tag and no
+  profiler socket. New `tests/test-chain-run.sh` (stub launchers; asserts lane
+  order, log names, marker content, pin and dirty refusals, remote forms,
+  environment) and twenty hand mutants; README section with the migration
+  recipe and two worked examples.
 - `remote-gate.sh`: the controller's remote gate wrapper, imported from the
   unversioned program directory and parametrised. Host, SSH transport, identity
   check and guard come from the host table (`CONTROLLER_REMOTE_HOSTS_FILE`,
