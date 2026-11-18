@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,7 +31,6 @@ from conftest import (
 from assay import mutation_parsers, runner, safeio
 from assay.config import ResultReportConfig
 from assay.errors import AssayError, Outcome, ReasonCode
-from assay.result_reports import ReportUnusable
 
 FORMAT = "cargo-mutants-outcomes"
 FIXTURE_OUT = TESTS_ROOT / "fixtures" / "rust" / "cargo-mutants" / "basefail-test" / "mutants.out"
