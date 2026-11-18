@@ -52,7 +52,7 @@ directory, an interrupted `.tmp` — is reported (`TierScan::notes`) and left un
 
 ### A name is a claim the bytes must back (HOB-42)
 
-A segment's name makes two claims, and a file is served only when its bytes back both:
+A segment's name makes claims, and a file is served only when its bytes back every one:
 
 1. **Name and header agree.** The header's `seq` equals the name's `<seq>`, and the header's
    `start_real_ns` equals the name's `<start_s>` in nanoseconds (`start_s * 1_000_000_000`,
@@ -66,7 +66,14 @@ A segment's name makes two claims, and a file is served only when its bytes back
    torn tail, is not sealed history. Refusal: `sealed-without-footer`. A footer that is present
    but does not verify is already a `corrupt` tail, with its own `footer-*` refusal.
 
-The identity rule is checked first. A file that fails either rule is **quarantined whole**
+3. **An open name carries no footer.** The converse of rule 2: a footer closes a file, and a
+   `.seg.open` name says the file is still being appended to. The seal writes its footer onto a
+   temporary copy, never onto the open file, so even the crash window that leaves a stale open
+   twin beside its sealed segment leaves the twin without one. An open name holding a verified
+   footer cannot be reopened for appending, so it is not adopted as the open segment. Refusal:
+   `open-with-footer`.
+
+The identity rule is checked first. A file that fails any rule is **quarantined whole**
 (renamed `<name>.corrupt`, reported in `TierScan::quarantined` and `TierScan::notes` with the
 refusal's kind), never truncated into service: a torn tail is a normal shape for an *open*
 segment, and for a sealed name it is a file that is not what it says. The seal keeps the start

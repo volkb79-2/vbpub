@@ -252,6 +252,12 @@ pub enum StoreError {
         /// The name that claims to be sealed.
         name: String,
     },
+    /// A file named as an open segment (`.seg.open`) carries a verified footer: a closed file
+    /// under a name that says it is still being appended to.
+    OpenWithFooter {
+        /// The name that claims to be open.
+        name: String,
+    },
     /// A segment header's `seq` or `start_real_ns` disagrees with the numbers in the file's
     /// name (a hand-renamed or swapped file). HOB-42.
     SegmentIdentity {
@@ -529,6 +535,7 @@ impl StoreError {
             StoreError::FooterIdentity { .. } => "footer-identity",
             StoreError::FooterGeneration { .. } => "footer-generation",
             StoreError::SealedWithoutFooter { .. } => "sealed-without-footer",
+            StoreError::OpenWithFooter { .. } => "open-with-footer",
             StoreError::SegmentIdentity { .. } => "segment-identity",
             StoreError::SegmentName { .. } => "segment-name",
             StoreError::BadName { .. } => "bad-name",
@@ -607,6 +614,7 @@ impl StoreError {
                 | StoreError::FooterIdentity { .. }
                 | StoreError::FooterGeneration { .. }
                 | StoreError::SealedWithoutFooter { .. }
+                | StoreError::OpenWithFooter { .. }
                 | StoreError::SegmentIdentity { .. }
         )
     }
@@ -791,6 +799,10 @@ impl fmt::Display for StoreError {
                 f,
                 "{name} is named as a sealed segment but has no footer that verifies"
             ),
+            StoreError::OpenWithFooter { name } => write!(
+                f,
+                "{name} is named as an open segment but carries a footer"
+            ),
             StoreError::SegmentIdentity {
                 field,
                 name,
@@ -939,6 +951,7 @@ mod tests {
             StoreError::LengthOverflow,
             StoreError::NotSealed,
             StoreError::SealedWithoutFooter { name: "n".into() },
+            StoreError::OpenWithFooter { name: "n".into() },
             StoreError::SegmentIdentity {
                 field: "seq",
                 name: 1,
@@ -1048,6 +1061,9 @@ mod tests {
             StoreError::NotSealed,
             StoreError::SealedWithoutFooter {
                 name: "hot-0-0.seg".into(),
+            },
+            StoreError::OpenWithFooter {
+                name: "hot-0-0.seg.open".into(),
             },
             StoreError::SegmentIdentity {
                 field: "seq",
@@ -1164,6 +1180,10 @@ mod tests {
             StoreError::SegmentName { name: "x".into() }.to_string(),
             StoreError::SealedWithoutFooter {
                 name: "hot-0-0.seg".into(),
+            }
+            .to_string(),
+            StoreError::OpenWithFooter {
+                name: "hot-0-0.seg.open".into(),
             }
             .to_string(),
             StoreError::SegmentIdentity {

@@ -496,7 +496,8 @@ def check_segment_name(name: str, decoded: dict) -> None:
       in nanoseconds (saturating at the i64 maximum) -> ``segment-identity``;
     * a name that is not ``.seg.open`` claims to be sealed, so the file needs a footer that
       verified -> ``sealed-without-footer``. A footer that is present but wrong already
-      raised ``footer-*`` from :func:`decode_segment` or is reported as a corrupt tail.
+      raised ``footer-*`` from :func:`decode_segment` or is reported as a corrupt tail;
+    * a ``.seg.open`` name must not carry a verified footer -> ``open-with-footer``.
     """
     parsed = parse_segment_name(name)
     header = decoded["header"]
@@ -509,6 +510,11 @@ def check_segment_name(name: str, decoded: dict) -> None:
         )
     if not parsed["open"] and decoded["footer"] is None:
         raise SegmentError("sealed-without-footer", name=name)
+    # The converse: a footer closes a file, and a ``.seg.open`` name says it is still being
+    # appended to. The seal writes the footer onto a temporary copy, so even a stale open twin
+    # beside its sealed segment has none; an open name holding one cannot be reopened.
+    if parsed["open"] and decoded["footer"] is not None:
+        raise SegmentError("open-with-footer", name=name)
 
 
 def load_cases(fixtures_dir: Path) -> list[tuple[Path, dict, bytes]]:

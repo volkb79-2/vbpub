@@ -585,6 +585,19 @@ class SegmentNames(unittest.TestCase):
         # The same footerless bytes under an *open* name are an ordinary open segment.
         ref.check_segment_name(name + ".open", ref.decode_segment(footerless))
 
+    def test_an_open_name_that_carries_a_footer_is_refused(self):
+        # A closed file under a `.seg.open` name cannot be reopened for appending.
+        ref = hostobs_segment_ref
+        spec, data = self._case("sealed-history")
+        name = self._name_of(spec, sealed=False)
+        with self.assertRaises(ref.SegmentError) as caught:
+            ref.check_segment_name(name, ref.decode_segment(data))
+        self.assertEqual(caught.exception.as_dict(), {"error": "open-with-footer", "name": name})
+        # The same bytes under the sealed name, and the footerless bytes under the open name
+        # (the legitimate stale twin), are both fine.
+        ref.check_segment_name(self._name_of(spec, sealed=True), ref.decode_segment(data))
+        ref.check_segment_name(name, ref.decode_segment(data[: -ref.FOOTER_LEN]))
+
     def test_a_header_that_disagrees_with_its_name_is_refused_for_both_names(self):
         ref = hostobs_segment_ref
         sealed_spec, sealed_data = self._case("sealed-history")

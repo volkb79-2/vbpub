@@ -161,6 +161,17 @@ impl SegmentScan {
                 name: self.name.clone(),
             });
         }
+        // The converse: a `.seg.open` name is a file still being appended to, and a footer
+        // closes a file. The seal writes its footer onto a temporary copy, never onto the open
+        // file, so even the crash window that leaves a stale open twin beside its sealed
+        // segment leaves the twin without one. An open name holding a footer cannot be reopened
+        // for appending (`OpenSegment::open` refuses it), so it must not enter the ring as the
+        // open segment and fail the whole tier open.
+        if parsed.open && self.footer.is_some() {
+            return Err(StoreError::OpenWithFooter {
+                name: self.name.clone(),
+            });
+        }
         Ok(())
     }
 

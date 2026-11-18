@@ -2858,6 +2858,32 @@ mod tests {
     }
 
     #[test]
+    fn an_open_name_that_carries_a_footer_is_quarantined_not_adopted() {
+        // A closed file under `.seg.open` cannot be reopened for appending; adopting it as the
+        // open segment would make `Tier::open` fail as a whole on `reopen_open_segment`.
+        let temp = TempDir::new("open-footer");
+        three_sealed(&temp);
+        let closed = temp.read_file("hot-60-1.seg");
+        temp.remove("hot-60-1.seg");
+        temp.write_file("hot-60-1.seg.open", &closed);
+        let reopened = tier_with_cap(&temp, 3600, 0);
+        assert_eq!(
+            reopened.scan().quarantined,
+            vec!["hot-60-1.seg.open".to_string()]
+        );
+        assert!(!reopened.has_open());
+        assert!(temp.exists("hot-60-1.seg.open.corrupt"));
+        assert_eq!(reopened.scan().segments.len(), 2);
+        let note = reopened
+            .scan()
+            .notes
+            .iter()
+            .find(|note| note.name == "hot-60-1.seg.open")
+            .expect("reported by name");
+        assert!(note.reason.contains("open-with-footer"));
+    }
+
+    #[test]
     fn a_name_never_comes_back_after_a_quarantine_and_a_restart() {
         // Run 1 leaves an open segment with a corrupt tail. Run 2 quarantines it; the next
         // segment must not reuse its sequence, or it would crash corrupt under the same name
