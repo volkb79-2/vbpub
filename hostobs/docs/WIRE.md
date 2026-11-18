@@ -570,7 +570,7 @@ to `len / 64 KiB` reallocations for the largest frame (256 at 16 MiB); this is a
 capacity bound forbids geometric growth.
 
 5.3 **Send hub** (`proto::hub::SendHub`, server side, one per serving process that owns every
-connection's outgoing queue; P5b wraps it in one mutex). It owns the per-uid and global pools, so the
+connection's outgoing queue; P5b needs no mutex: a single-threaded `poll(2)` driver owns the hub and passes `&mut SendHub` to the connection methods, design R27). It owns the per-uid and global pools, so the
 victim of an overflow is chosen with every queue in view.
 
 Queue entries, in one FIFO per connection: `Control{bytes}` (REP/EVT/END, encoded by the caller),
@@ -694,14 +694,16 @@ without sockets):
 | `Undecided{have}` | any other byte | write the one `unknown-mode` line (§1.3), close |
 | `Undecided`, `AwaitHello`, `JsonNoHello` | `now > hello_deadline` (`hello-timer`) | `Undecided`: close silently; `AwaitHello`: REP `corr=0` `deadline`; `JsonNoHello`: `deadline` line; then close |
 | `AwaitHello` | complete REQ `hello`, `corr = 1`, valid | REP ⇒ `Ready` |
-| `AwaitHello` | complete REQ other verb, or `hello` with `corr ≠ 1` | REP `corr=<its corr>` `hello-required` (corr ≠ 1: `bad-frame`, REP `corr=0`), close |
+| `AwaitHello` | complete REQ other verb (`corr ≠ 0`), or `hello` with `corr ≠ 1`, or `corr = 0` | REP `corr=<its corr>` `hello-required` (`hello` with `corr ≠ 1`, or `corr = 0`: `bad-frame`, REP `corr=0`), close |
+| `AwaitHello` | REQ failing `check_req` (§4.2), or a `hello` with invalid args | non-fatal `bad-request` REP on its own `corr` (D-W28, §4.2 first): the state stays `AwaitHello` and the hello timer keeps running |
 | `JsonNoHello` | first complete line | handled as a request ⇒ `Ready` (hello optional, §8.4) |
 | `Ready` | complete request | dispatch; `max_outstanding` exceeded ⇒ REP `too-many-requests` |
 | `Ready` | no outstanding request, no live subscription, reader at `Header{0}`, queue empty | arm `idle_deadline = now + idle_ms` (disarmed by any received byte or enqueued frame) |
 | `Ready` | `now > idle_deadline` | `Closing(idle)` |
 | `Ready` | reader `eof()` clean (`SHUT_WR`) | `Draining`: finish outstanding requests, `end_stream` every subscription with reason `client-eof`, close when the queue is empty |
 | any | reader error, hub `Close(slow-client)`, server shutdown | `Closing(code)` |
-| `Closing(code)` | — | `drain_unpinned(c)`; if `head_partial(c)` is false and the socket accepts it without blocking, write `EVT corr=0 {"event":"closing","reason":code}` (binary) or the error line (JSON) directly (not through the hub); `remove(c)`; close. A client MUST NOT depend on receiving it. |
+| `Closing(code)` | — | `drain_unpinned(c)`; if `head_partial(c)` is false the connection holds ONE final frame outside the hub (D-W28): the REP (or error line) of the outcome for a request or reader error, `EVT corr=0 {"event":"closing","reason":code}` (binary) or the error line (JSON) for `idle`, `slow-client`, `shutting-down`; the driver makes one non-blocking write of it and abandons a short write; `remove(c)`; close. When no byte was written yet and the server prefix is queued, the final bytes start with the 8 prefix bytes (prefix guarantee); a major mismatch writes the prefix alone. A client MUST NOT depend on receiving it. |
+| `Ready` or `AwaitHello` or `JsonNoHello` or `Undecided` | stream end (EOF) | `Undecided`, `AwaitHello`, `JsonNoHello` (also mid-line or mid-frame): close without a reply (no request is owed); `Ready` at a boundary: `Draining`; inside a frame or line, or bytes after the end: close without a reply (design R10) |
 
 **Implemented (`ConnTimers`).** `ConnTimers::new(hello_ns, idle_ns)` holds the level's two
 durations; nothing is armed until `on_accept(now)` (a refused connection never calls it).
@@ -1367,6 +1369,7 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | D-W24 | `series_batch` packing is subject-major, then agg in request order, then time; metrics no agg permits are listed in `omitted`; history headers carry `seq` and mono fields 0 | one byte sequence per answer, so fixtures and cursors are deterministic (finding 11) |
 | D-W25 | Every pinned head must be completely written within `frame_completion_ms` (5 s) of its pin; the writer stall rule stays for a queue whose head is not pinned; per-uid pools are a quarter of the global ones | a reader that accepts a byte every few seconds never trips a byte-progress rule, and with 8 connections per uid could otherwise hold the whole global pool (round 2 B) |
 | D-W26 | Every JSON REP is ≤ `max_reply_bytes` = (`control_queue_bytes` − 256 KiB) / `max_outstanding` = 448 KiB; paged verbs end the page early with `next`; `cmdline` ≤ 4,096 B, `provenance` ≤ 64 objects | a legal reply can never overflow a healthy client's control queue, even with every outstanding request answered at once (§5.1 reply sizes; round 2 C) |
+| D-W28 | A connection-fatal outcome yields exactly one final frame held outside the hub (`Conn::take_final`), written once by the driver and abandoned on a short write, only when no head is partly written; if nothing was written and the server prefix is queued it is prefixed by the prefix; a malformed REQ in `AwaitHello` is a non-fatal `bad-request` on its own `corr` | §5.2 and §5.4 disagreed (hub frame vs direct write; `hello-required` vs `bad-request`); a bad request in the same read as the prefix must not leave the client without a handshake (P5b design R1, R2, R6) |
 | D-W27 | The hub keeps `last_pushed_gen` per stream; a Live tick whose generation differs from it is pushed in the dictionary form | a subscription whose interval skips the tick that changed the shared generation would otherwise get a bare block for a generation it never received (round 2 A) |
 
 ### Divergences (code or plan vs this document)
