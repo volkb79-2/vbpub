@@ -92,8 +92,20 @@ def backend_output(marker=ABSENT, config=ABSENT, done=True):
 
 def backend_guest(marker=ABSENT, config=ABSENT, done=True):
     def responder(cmd):
-        if "BACKEND_SOURCES_DONE" not in cmd:
-            raise AssertionError(f"unexpected backend command: {cmd}")
+        required = (
+            "/etc/dr-state.conf",
+            "/boot/efi/EFI/dr/bootloader",
+            "BACKEND_CONFIG_PRESENT",
+            "BACKEND_CONFIG_READABLE",
+            "BACKEND_CONFIG_B64",
+            "BACKEND_MARKER_PRESENT",
+            "BACKEND_MARKER_READABLE",
+            "BACKEND_MARKER_B64",
+            "BACKEND_SOURCES_DONE",
+        )
+        missing = [fragment for fragment in required if fragment not in cmd]
+        if missing:
+            raise AssertionError(f"backend command missing {missing}: {cmd}")
         return backend_output(marker, config, done)
 
     return ScriptedGuest(responder)
@@ -127,8 +139,8 @@ def entry_sources_output(entries):
 
 
 def scenario_guest(*, backend=None, states=("@os-0001", "@os-0002"), default="@os-0001",
-                   entries=None, file_paths=None, file_extra=(), file_done=True,
-                   loader="default os-0001\ntimeout 5\n", scratch=(), scratch_done=True,
+                   entries=None, file_paths=None, file_extra=(), file_done=True, file_rc=0,
+                   loader="default os-0001\ntimeout 5\n", scratch=(), scratch_done=True, scratch_rc=0,
                    free="12345"):
     entries = entries if entries is not None else [
         ("/boot/efi/loader/entries/os-0001.conf", bls_text("@os-0001", KID_A, KVER_A)),
@@ -152,21 +164,38 @@ def scenario_guest(*, backend=None, states=("@os-0001", "@os-0002"), default="@o
         if "BLS_B64" in cmd:
             return entry_sources_output(entries)
         if "ESP_FILE_OK" in cmd:
+            required = ("[ -f \"$f\" ]", "[ -s \"$f\" ]", "ESP_FILE_OK", "ESP_FILE_SCAN_DONE")
+            missing = [fragment for fragment in required if fragment not in cmd]
+            if missing:
+                raise AssertionError(f"ESP file command missing {missing}: {cmd}")
             requested = set(re.findall(r"(/boot/efi/[^ ;]+)", cmd))
             lines = [f"ESP_FILE_OK:{path}" for path in sorted(file_paths & requested)]
             lines.extend(f"ESP_FILE_OK:{path}" for path in file_extra)
             if file_done:
                 lines.append("ESP_FILE_SCAN_DONE:1")
-            return 0, "\n".join(lines) + "\n"
+            return file_rc, "\n".join(lines) + "\n"
         if "LOADER_B64" in cmd:
             if loader is None:
                 return 0, "LOADER_MISSING:1\n"
             return 0, f"LOADER_B64:{b64(loader)}\n"
         if "SCRATCH_SCAN_DONE" in cmd:
+            required = (
+                "/boot/efi/EFI/dr/kernels/.tmp.*",
+                "/boot/efi/EFI/dr/kernels/*/.vmlinuz.tmp.*",
+                "/boot/efi/EFI/dr/kernels/*/.initrd.img.tmp.*",
+                "/boot/efi/loader/entries/.dr-state-entry.new.*",
+                "/boot/efi/loader/entries/.*.conf.new.*",
+                "/boot/efi/loader/loader.conf.new.*",
+                "/boot/efi/EFI/dr/bootloader.new.*",
+                "SCRATCH_SCAN_DONE",
+            )
+            missing = [fragment for fragment in required if fragment not in cmd]
+            if missing:
+                raise AssertionError(f"scratch command missing {missing}: {cmd}")
             lines = [f"SCRATCH_CANDIDATE:{path}" for path in scratch]
             if scratch_done:
                 lines.append("SCRATCH_SCAN_DONE:1")
-            return 0, "\n".join(lines) + "\n"
+            return scratch_rc, "\n".join(lines) + "\n"
         if "ESP_FREE_KB" in cmd:
             return 0, f"ESP_FREE_KB:{free}\n"
         raise AssertionError(f"unexpected scenario command: {cmd}")
@@ -451,6 +480,37 @@ def main() -> int:
         if drs.is_sdboot_scratch_path(path):
             failures.append(f"foreign scratch look-alike accepted: {path}")
 
+    # The upgrade baseline treats the binary as mandatory, hashes whichever source files exist,
+    # and refuses missing completion, malformed hashes, duplicates or unreadable sources.
+    hash_a = "a" * 64
+    hash_b = "b" * 64
+    good_baseline = (
+        f"SDBOOT_BINARY_SHA:{hash_a}\n"
+        f"BACKEND_SOURCE_SHA:/etc/dr-state.conf_{hash_b}\n"
+        "EFI_BASELINE_DONE:1\n"
+    )
+    if drs.parse_efi_probe(good_baseline, "systemd-boot") != {
+        "binary": hash_a,
+        "sources": (f"/etc/dr-state.conf_{hash_b}",),
+    }:
+        failures.append("parse_efi_probe() did not read a config-only baseline")
+    for label, out in (
+        ("missing completion", good_baseline.replace("EFI_BASELINE_DONE:1\n", "")),
+        ("missing binary", good_baseline.replace(f"SDBOOT_BINARY_SHA:{hash_a}\n", "")),
+        ("short binary hash", good_baseline.replace(hash_a, "a" * 63)),
+        ("missing source", good_baseline.replace(f"BACKEND_SOURCE_SHA:/etc/dr-state.conf_{hash_b}\n", "")),
+        ("unreadable source", good_baseline.replace(
+            "EFI_BASELINE_DONE:1\n",
+            "BACKEND_SOURCE_UNREADABLE:/boot/efi/EFI/dr/bootloader\nEFI_BASELINE_DONE:1\n",
+        )),
+        ("duplicate source", good_baseline.replace(
+            "EFI_BASELINE_DONE:1\n",
+            f"BACKEND_SOURCE_SHA:/etc/dr-state.conf_{hash_b}\nEFI_BASELINE_DONE:1\n",
+        )),
+    ):
+        if drs.parse_efi_probe(out, "systemd-boot") is not None:
+            failures.append(f"parse_efi_probe(): {label} accepted")
+
     # guest_backend reads both sources and applies dr-state's presence/conflict/unknown rules.
     for label, marker, config, want in (
         ("marker grub only", "grub", ABSENT, "grub"),
@@ -516,6 +576,20 @@ def main() -> int:
     if extra_raised is not None or not extra_fails:
         failures.append(f"sdboot-esp unexpected file tag: fails={extra_fails!r} raised={extra_raised!r}")
 
+    _, file_done_fails, file_done_raised = sdboot_result(scenario_guest(
+        entries=good_entries,
+        file_done=False,
+    ))
+    if file_done_raised is not None or not file_done_fails:
+        failures.append(f"sdboot-esp omitted file scan tag: fails={file_done_fails!r} raised={file_done_raised!r}")
+
+    _, file_rc_fails, file_rc_raised = sdboot_result(scenario_guest(
+        entries=good_entries,
+        file_rc=1,
+    ))
+    if file_rc_raised is not None or not file_rc_fails:
+        failures.append(f"sdboot-esp nonzero file scan rc: fails={file_rc_fails!r} raised={file_rc_raised!r}")
+
     empty_entries = [("/boot/efi/loader/entries/os-0001.conf", "")]
     _, empty_fails, empty_raised = sdboot_result(scenario_guest(entries=empty_entries, states=("@os-0001",),
                                                                default="@os-0001"))
@@ -546,6 +620,104 @@ def main() -> int:
     _, scan_fails, scan_raised = sdboot_result(scenario_guest(entries=good_entries, scratch_done=False))
     if scan_raised is not None or not scan_fails:
         failures.append(f"sdboot-esp omitted scan tag: fails={scan_fails!r} raised={scan_raised!r}")
+    _, scan_rc_fails, scan_rc_raised = sdboot_result(scenario_guest(entries=good_entries, scratch_rc=1))
+    if scan_rc_raised is not None or not scan_rc_fails:
+        failures.append(f"sdboot-esp nonzero scratch scan rc: fails={scan_rc_fails!r} raised={scan_rc_raised!r}")
+
+    # A config-only systemd-boot install has no ESP marker. The kernel flow must baseline the
+    # independently required systemd-boot binary and hash only the backend source that exists.
+    state0 = "@os-0001"
+    pre = "@os-pre-20261118131158-605-kernel"
+    reboots = 0
+    list_calls = 0
+    baseline = (
+        "SDBOOT_BINARY_SHA:" + "1" * 64 + "\n"
+        "BACKEND_SOURCE_SHA:/etc/dr-state.conf_" + "2" * 64 + "\n"
+        "EFI_BASELINE_DONE:1\n"
+    )
+    upgraded_entries = [
+        ("/boot/efi/loader/entries/os-0001.conf", bls_text(state0, KID_B, KVER_B)),
+        (
+            "/boot/efi/loader/entries/os-pre-20261118131158-605-kernel.conf",
+            bls_text(pre, KID_A, KVER_A),
+        ),
+    ]
+
+    def kernel_responder(cmd):
+        nonlocal reboots, list_calls
+        if "BACKEND_SOURCES_DONE" in cmd:
+            return backend_output(config="BOOTLOADER=systemd-boot\n")
+        if "EFI_BASELINE_DONE" in cmd:
+            required = (
+                "/boot/efi/EFI/systemd/systemd-bootx64.efi",
+                "/etc/dr-state.conf",
+                "/boot/efi/EFI/dr/bootloader",
+                'for f in /etc/dr-state.conf /boot/efi/EFI/dr/bootloader',
+                'if [ -e "$f" ]; then',
+                "SDBOOT_BINARY_SHA",
+                "BACKEND_SOURCE_SHA",
+                "EFI_BASELINE_DONE",
+            )
+            missing = [fragment for fragment in required if fragment not in cmd]
+            if missing:
+                raise AssertionError(f"EFI baseline command missing {missing}: {cmd}")
+            if any(fragment in cmd for fragment in (
+                "test -s /boot/efi/EFI/dr/bootloader",
+                "[ -s /boot/efi/EFI/dr/bootloader ]",
+            )):
+                raise AssertionError(f"EFI baseline hard-requires the optional ESP marker: {cmd}")
+            return 0, baseline
+        if "EFIFILES:" in cmd:
+            # a config-only guest has no marker, so the old marker-gated probe is empty
+            return 0, "EFIFILES:\n"
+        if "dr-state list" in cmd and "STATES:" in cmd:
+            list_calls += 1
+            states = (state0,) if list_calls == 1 else (state0, pre)
+            return 0, "STATES:" + ",".join(states) + "\n"
+        if "DEF:" in cmd:
+            return 0, f"DEF:{state0}\n"
+        if "BLS_B64" in cmd:
+            return entry_sources_output(upgraded_entries)
+        if "dr-updates.list" in cmd:
+            return 0, ""
+        if "OFFER:" in cmd:
+            return 0, "UPDRC:0\nOFFER:1\n"
+        if "UPGRC:" in cmd:
+            return 0, (
+                "UPGRC:0\n"
+                "ARCHKB:1234\n"
+                f"KNEW:/usr/lib/modules/{KVER_B}/vmlinuz-{KVER_B}\n"
+                f"BOOTFILES:vmlinuz-{KVER_A},initrd.img-{KVER_A},vmlinuz-{KVER_B},initrd.img-{KVER_B},\n"
+            )
+        if "dr-state boot-once" in cmd:
+            return 0, "BORC:0\n"
+        if "MODRC:" in cmd:
+            return 0, f"KERNEL:{KVER_A}\nCMDLINE:rootflags=subvol={pre} ro\nMODDIRS:{KVER_A},\nMODRC:0\nLOOP:1\n"
+        if "CMDLINE:" in cmd and "KERNEL:" in cmd:
+            if reboots in (1, 3):
+                return 0, f"KERNEL:{KVER_B}\nCMDLINE:rootflags=subvol={state0} ro\n"
+            return 0, f"KERNEL:{KVER_A}\nCMDLINE:rootflags=subvol={state0} ro\n"
+        raise AssertionError(f"unexpected kernel-flow command: {cmd}")
+
+    kernel_guest = ScriptedGuest(kernel_responder)
+
+    def kernel_reboot(timeout=1200):
+        nonlocal reboots
+        reboots += 1
+        return f"boot-{reboots}"
+
+    kernel_guest.reboot = kernel_reboot
+    _, kernel_fails, kernel_raised = capture_scenario(
+        lambda: drs._kernel_flow(
+            kernel_guest,
+            io.StringIO(),
+            drs.UPDATES_SOURCES,
+            drs.OFFER_UPGRADABLE,
+            drs.DIST_UPGRADE,
+        )
+    )
+    if kernel_raised is not None or kernel_fails:
+        failures.append(f"kernel-upgrade config-only systemd-boot: fails={kernel_fails!r} raised={kernel_raised!r}")
 
     # reboot proof: the boot id must change, and the prompt must come from the NEW boot
     def reboot_guest(first_id, second_id):

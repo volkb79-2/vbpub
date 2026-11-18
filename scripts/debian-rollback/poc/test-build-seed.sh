@@ -48,27 +48,44 @@ grep -Fq '/mnt/seed/bootloader' "$USER_DATA" \
   || bad "user-data does not read /mnt/seed/bootloader"
 grep -Fq 'BL=grub' "$USER_DATA" \
   || bad "user-data has no grub fallback"
-# shellcheck disable=SC2016  # the literal variable reference is what user-data must contain
-grep -Fq -- '--bootloader "$BL"' "$USER_DATA" \
-  || bad "user-data does not pass --bootloader to install-btrfs.sh"
 
-# Execute the marker-selection block itself, with /mnt/seed redirected to a disposable
-# fake seed. The mount, apt, package, disk and installer commands are deliberately not
-# extracted: only the fallback, marker read and validation case are under test.
+# Execute the marker-selection block through its real installer invocation, with /mnt/seed
+# redirected to a disposable fake seed. The mount, apt and disk commands are deliberately
+# not extracted; the fake installer records the argv that the guest actually passes.
 run_marker_block() { # run_marker_block LABEL SEED -> sets MARKER_RC and MARKER_OUT
   local label=$1 seed=$2
+  MARKER_ARGS=$WORK/$label.argv
+  mkdir -p "$seed/poc"
+  # shellcheck disable=SC2016  # these are literal expressions for the generated fake installer
+  printf '%s\n' '#!/bin/bash' 'printf "%s\n" "$@" > "$ARGV_OUT"' >"$seed/poc/install-btrfs.sh"
+  chmod +x "$seed/poc/install-btrfs.sh"
   MARKER_OUT=$(awk -v seed="$seed" '
-    /^      bash \/mnt\/seed\/poc\/install-btrfs.sh/ { exit }
     /^      BL=grub$/ { block=1 }
     block {
       sub(/^      /, "")
       gsub("/mnt/seed", seed)
       print
+      if ($0 ~ /^bash .*poc\/install-btrfs.sh/) exit
     }
     END { print "printf '\''BL:%s\\n'\'' \"$BL\"" }
-  ' "$USER_DATA" | bash 2>&1)
+  ' "$USER_DATA" | DEV=/dev/fake-target ARGV_OUT="$MARKER_ARGS" bash 2>&1)
   MARKER_RC=$?
   [ -n "$MARKER_OUT" ] || bad "$label: marker block produced no output"
+}
+
+assert_installer_argv() { # assert_installer_argv LABEL BOOTLOADER
+  local label=$1 want=$2 arg
+  local -a got=()
+  local -a expected=(--device /dev/fake-target --yes --bootloader "$want")
+  mapfile -t got <"$WORK/$label.argv" 2>/dev/null || got=()
+  if [ "${#got[@]}" != "${#expected[@]}" ]; then
+    bad "$label: installer argc=${#got[@]}, want=${#expected[@]}: ${got[*]}"
+    return
+  fi
+  for arg in "${!expected[@]}"; do
+    [ "${got[$arg]}" = "${expected[$arg]}" ] \
+      || bad "$label: installer argv[$arg]='${got[$arg]}', want='${expected[$arg]}'"
+  done
 }
 
 mkdir "$WORK/seed-absent" "$WORK/seed-grub" "$WORK/seed-systemd" "$WORK/seed-empty" "$WORK/seed-unknown"
@@ -80,12 +97,15 @@ printf 'grub2\n' >"$WORK/seed-unknown/bootloader"
 run_marker_block absent "$WORK/seed-absent"
 [ "$MARKER_RC" = 0 ] && [ "$MARKER_OUT" = "BL:grub" ] \
   || bad "marker-block-absent: rc=$MARKER_RC output='$MARKER_OUT'"
+assert_installer_argv absent grub
 run_marker_block explicit-grub "$WORK/seed-grub"
 [ "$MARKER_RC" = 0 ] && [ "$MARKER_OUT" = "BL:grub" ] \
   || bad "marker-block-grub: rc=$MARKER_RC output='$MARKER_OUT'"
+assert_installer_argv explicit-grub grub
 run_marker_block systemd-boot "$WORK/seed-systemd"
 [ "$MARKER_RC" = 0 ] && [ "$MARKER_OUT" = "BL:systemd-boot" ] \
   || bad "marker-block-systemd: rc=$MARKER_RC output='$MARKER_OUT'"
+assert_installer_argv systemd-boot systemd-boot
 run_marker_block empty "$WORK/seed-empty"
 if ! { [ "$MARKER_RC" != 0 ] && grep -Fq 'DR-BUILD-FAIL unknown-bootloader:' <<<"$MARKER_OUT"; }; then
   bad "marker-block-empty: rc=$MARKER_RC output='$MARKER_OUT'"

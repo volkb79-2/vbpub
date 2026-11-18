@@ -184,15 +184,20 @@ invalid backend. It currently passes 17 cases.
 
 `poc/test-build-seed.sh` calls the no-xorriso staging function directly and, when `xorriso` is available, packs both
 seed variants and extracts `/bootloader` from each ISO. It executes the marker-selection block extracted from the
-guest's `user-data` against a fake seed directory, proving absent/grub/systemd-boot selection plus empty/unknown
-refusal, and checks pass-through to the installer. A disposable mutant with that validation case removed is killed.
-With `xorriso` absent it reports that ISO packing and extraction are not covered.
+guest's `user-data` through a fake `poc/install-btrfs.sh` against a disposable seed directory. The fake records the
+installer argv, proving absent/grub/systemd-boot selection reaches the real invocation as
+`--bootloader <selected>` while empty/unknown values are refused. Disposable mutants with the validation case removed,
+or with the argument removed from the invocation while its text remains in a comment, are killed. With `xorriso`
+absent it reports that ISO packing and extraction are not covered.
 
 `poc/test-dr-serial.py` now covers both backend sources with dr-state's empty/conflict/unknown rules, strict
 `loader.conf` default parsing, exact BLS kernel/initrd path and shared-id validation, unsafe/malformed entries,
-kernel-title parsing, and scripted `guest_backend`/`sdboot-esp` scenario runs. The scenario tests require the exact
-`ESP_FILE_OK` set per entry, fail on omitted or foreign tags, and cover every generated scratch name in addition to
-the original fake-serial exchanges.
+kernel-title parsing, and command-aware scripted `guest_backend`/`sdboot-esp` scenario runs. The scripted guest emits
+backend and scratch results only when the real command contains both backend paths and every exact scratch glob; a
+deleted marker probe or a completion-only replacement of the scratch scan is killed. The scenario tests require the
+exact `ESP_FILE_OK` set per entry, fail on omitted or foreign tags, nonzero file/scratch scan status, and missing
+completion tags, and cover every generated scratch name. A full config-only systemd-boot kernel flow proves that the
+baseline hashes the systemd-boot binary independently and only the backend source files that exist.
 
 The pre-existing offline suites remain green: `test-dr-state-window.sh`, `test-dr-state-prune.sh`,
 `iso/test-dr-plan.sh`, `iso/test-dr-autoinstall-guard.sh`, `poc/test-dr-pick-disk.sh`, and `poc/test-dr-qemu.sh`.
@@ -245,7 +250,9 @@ neither source may silently fall back to GRUB. The scratch check covers `.tmp.<s
 `.vmlinuz.tmp.<pid>`, `.initrd.img.tmp.<pid>`, `.dr-state-entry.new.<pid>`, the older
 `.<entry-id>.conf.new.<pid>`, `loader.conf.new.<pid>` and `bootloader.new.<pid>`. Each per-entry file probe must
 emit `ESP_FILE_SCAN_DONE:1` and the scratch scan must emit `SCRATCH_SCAN_DONE:1`; a scenario fails if either
-completion tag is absent or its scan command returns nonzero.
+completion tag is absent or its scan command returns nonzero. The kernel-upgrade baseline requires the
+`EFI/systemd/systemd-bootx64.efi` hash independently and hashes whichever of `/etc/dr-state.conf` and
+`/boot/efi/EFI/dr/bootloader` exist, so a valid config-only systemd-boot install needs no ESP marker.
 
 ## Not verified
 

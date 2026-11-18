@@ -518,11 +518,42 @@ def efi_probe_command(backend):
         return ("echo EFIFILES:$(ls -1 /boot/efi/EFI | tr '\\n' ,)_$(ls -1 /boot/efi/EFI/dr | tr '\\n' ,)"
                 "_$(sha256sum /boot/efi/EFI/BOOT/BOOTX64.EFI | cut -c1-16)")
     if backend == "systemd-boot":
-        return ("echo EFIFILES:$(test -s /boot/efi/EFI/systemd/systemd-bootx64.efi "
-                "&& test -s /boot/efi/EFI/dr/bootloader "
-                "&& sha256sum /boot/efi/EFI/systemd/systemd-bootx64.efi "
-                "/boot/efi/EFI/dr/bootloader | cut -d ' ' -f1 | tr '\\n' ,)")
+        return (
+            "if hash=$(sha256sum -- /boot/efi/EFI/systemd/systemd-bootx64.efi 2>/dev/null); then "
+            "printf 'SDBOOT_BINARY_SHA:%s\\n' \"${hash%% *}\"; "
+            "else printf 'SDBOOT_BINARY_MISSING:1\\n'; fi; "
+            "for f in /etc/dr-state.conf /boot/efi/EFI/dr/bootloader; do "
+            "if [ -e \"$f\" ]; then "
+            "if hash=$(sha256sum -- \"$f\" 2>/dev/null); then "
+            "printf 'BACKEND_SOURCE_SHA:%s_%s\\n' \"$f\" \"${hash%% *}\"; "
+            "else printf 'BACKEND_SOURCE_UNREADABLE:%s\\n' \"$f\"; fi; fi; done; "
+            "printf 'EFI_BASELINE_DONE:1\\n'"
+        )
     raise ValueError(f"unknown backend {backend!r}")
+
+
+def parse_efi_probe(out, backend):
+    """Parse the baseline while requiring every systemd-boot component and source hash to be readable."""
+    if backend == "grub":
+        return tag(out, "EFIFILES")
+    if backend != "systemd-boot":
+        raise ValueError(f"unknown backend {backend!r}")
+    if tag(out, "EFI_BASELINE_DONE") != "1":
+        return None
+    binary = tag(out, "SDBOOT_BINARY_SHA")
+    if binary is None or re.fullmatch(r"[0-9a-f]{64}", binary) is None:
+        return None
+    if tag(out, "BACKEND_SOURCE_UNREADABLE") is not None:
+        return None
+    sources = tags(out, "BACKEND_SOURCE_SHA")
+    if not sources or len(sources) != len(set(sources)):
+        return None
+    if any(re.fullmatch(
+        r"(?:/etc/dr-state\.conf|/boot/efi/EFI/dr/bootloader)_[0-9a-f]{64}",
+        source,
+    ) is None for source in sources):
+        return None
+    return {"binary": binary, "sources": tuple(sorted(sources))}
 
 
 MOUNT_PATHS_OUTSIDE = ["/home", "/root", "/srv", "/var/www", "/var/log", "/var/lib/docker", "/var/lib/containers",
@@ -801,7 +832,7 @@ def _kernel_flow(g, log, sources_cmd, offer_cmd, install_cmd):
         return
     efi_probe = efi_probe_command(backend)
     _, out = g.run(efi_probe)
-    efi_before = tag(out, "EFIFILES")
+    efi_before = parse_efi_probe(out, backend)
     # the disk of run 2a was installed without the updates and security suites (the installer now adds them)
     g.run(sources_cmd)
     _, out = g.run(f"apt-get update -qq >/dev/null 2>&1; echo UPDRC:$?; echo OFFER:$({offer_cmd})", 900)
@@ -824,12 +855,13 @@ def _kernel_flow(g, log, sources_cmd, offer_cmd, install_cmd):
     _, efi_out = g.run(efi_probe)
     if backend == "grub":
         check(log, "ESP boot files untouched by the upgrade (no grub-install side effect)",
-              bool(efi_before) and tag(efi_out, "EFIFILES") == efi_before,
-              f"before={efi_before} after={tag(efi_out, 'EFIFILES')}")
+              bool(efi_before) and parse_efi_probe(efi_out, backend) == efi_before,
+              f"before={efi_before} after={parse_efi_probe(efi_out, backend)}")
     else:
-        check(log, "systemd-boot binary and backend marker untouched by the upgrade",
-              bool(efi_before) and tag(efi_out, "EFIFILES") == efi_before,
-              f"before={efi_before} after={tag(efi_out, 'EFIFILES')}")
+        efi_after = parse_efi_probe(efi_out, backend)
+        check(log, "systemd-boot binary and existing backend source files untouched by the upgrade",
+              efi_before is not None and efi_after == efi_before,
+              f"before={efi_before} after={efi_after}")
     knew = tag(out, "KNEW") or ""
     new = knew.rsplit("vmlinuz-", 1)[-1] if "vmlinuz-" in knew else ""
     check(log, "a newer kernel is installed (/vmlinuz points at it)", bool(new) and new != old, f"old={old} new={new}")
