@@ -815,7 +815,8 @@ fn drive(bytes: &[u8]) {
             assert!(item.is_ok() || !item.unwrap_err().kind().is_empty());
         }
     }
-    if let Ok(sub) = client.subscribe(SELECTION, 1000) {
+    let subscribed = client.subscribe(SELECTION, 1000);
+    if let Ok(sub) = subscribed {
         for item in sub.take(8) {
             assert!(item.is_ok() || !item.unwrap_err().kind().is_empty());
         }
