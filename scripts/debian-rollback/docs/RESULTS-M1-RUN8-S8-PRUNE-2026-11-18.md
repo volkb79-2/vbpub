@@ -7,9 +7,12 @@ Same variant and guest setup as [run 7](RESULTS-M1-RUN7-FRESH-INSTALL-S7-2026-11
 `poc/dr-qemu.sh`, TCG, 2 vCPUs, 2 GiB, a fresh guest on `installed-btrfs-3.qcow2`, 14:45:33Z to 14:49:04Z, 3.5 min).
 The `dr-state` on the disk had no `prune`; the scenario first installed the one from the seed medium (commit
 `1be8fae64`, checked by the presence of `cmd_prune`). The `prune` command and the scenario were written
-and run in the same session; the reviewer has not seen them yet. Transcript: `artifacts/debian-rollback/m1-run8/`.
+and run in the same session. Review round 7 (FIX-FIRST on a wrong check count, a swallowed delete failure) is
+fixed afterwards in `dr-state`: `prune` now exits 1 when a delete fails (menu still rewritten) and refuses under
+`DR_STATE=none`; those two changes, and the later `|| true` fail-open fix of the dedupe window, have **not run in a
+guest** (the offline selection test covers the choice of snapshots only). Transcript: `artifacts/debian-rollback/m1-run8/`.
 
-## What ran (14 checks PASS)
+## What ran (11 checks PASS, 0 FAIL)
 
 - 30 x `dr-state snapshot --reason s8`, no failures; the menu listed all 31 states.
 - A reboot with the 31-entry menu booted the default state.
@@ -25,12 +28,12 @@ and run in the same session; the reviewer has not seen them yet. Transcript: `ar
 
 `dr-state prune [--keep N] [--dry-run]` (default 10) deletes the oldest `@os-pre-*` snapshots beyond the newest N,
 by name (the name carries the creation time). It never deletes the running state, the menu default (`saved_entry`)
-or the pending one-shot (`next_entry`), and ignores `@os-0001`. The selection is a pure function with an offline
+or the pending one-shot (`next_entry`), and ignores `@os-0001`. The parent of the running state may be pruned
+(btrfs snapshots are independent copies). The selection is a pure function with an offline
 test (`poc/test-dr-state-prune.sh`, 13 cases).
 
 ## Not verified
 
 Nothing calls `prune` automatically yet (no timer, no apt hook); what the age or count policy should be is a
-design decision, not made here. Pruning a snapshot a user booted into and then made the running state (the
-running state is protected, its parent is not) is by design allowed. Real-host disk accounting after the btrfs
+design decision, not made here. Real-host disk accounting after the btrfs
 cleaner has run was not measured.

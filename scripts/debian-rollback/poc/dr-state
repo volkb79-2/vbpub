@@ -186,16 +186,21 @@ cmd_prune() {
   [[ "$keep" =~ ^[0-9]+$ ]] || die "prune: --keep must be a number"
   ensure_top
   ensure_esp
-  local cur def next s doomed
+  [ "${DR_STATE:-}" != none ] || die "prune: refusing with DR_STATE=none (the running state would not be protected)"
+  local cur def next s doomed rc=0
   cur=$(current_state)
   def=$(grub-editenv "$ESP_DIR/grubenv" list 2>/dev/null | sed -n 's/^saved_entry=//p')
   next=$(grub-editenv "$ESP_DIR/grubenv" list 2>/dev/null | sed -n 's/^next_entry=//p')
   # shellcheck disable=SC2046  # state names have no spaces
   doomed=$(select_prune "$keep" "$cur,$def,$next" $(states))
   for s in $doomed; do
-    if [ "$dry" = 1 ]; then echo "would delete $s"; else btrfs subvolume delete "$TOP/$s" >/dev/null && echo "deleted $s"; fi
+    if [ "$dry" = 1 ]; then echo "would delete $s"
+    elif btrfs subvolume delete "$TOP/$s" >/dev/null; then echo "deleted $s"
+    else echo "dr-state: could not delete $s" >&2; rc=1; fi
   done
+  # the menu is rewritten even after a partial failure, so it names only states that still exist
   [ "$dry" = 1 ] || cmd_gen_menu
+  return "$rc"
 }
 
 cmd_boot_once() {
