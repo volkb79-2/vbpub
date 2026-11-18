@@ -1,0 +1,1 @@
+src/lib.rs:19:5: replace make -> Token with Default::default()

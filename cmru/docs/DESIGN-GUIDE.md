@@ -1693,7 +1693,10 @@ and before archive reading, so the build tree must remain private for the durati
 The two staging paths must resolve to distinct, non-overlapping strict descendants of `dist_dir`.
 This prevents a successful or variant pre-build cleanup from treating `dist_dir` or a parent as a
 staging tree. CMRU validates the paths before building and rechecks containment immediately before
-each staging-tree removal.
+each staging-tree removal. `dist_dir` is held to the same rule against `project_root` (KI-175): the
+legacy no-variant build removes it whole, so it is refused at parse time unless it is a strict
+descendant of the project, and the same check runs again on freshly resolved paths before the
+removal, because a symlink or later edit can change a path that was valid when it was parsed.
 
 ## The bundle asset name is one contract, and producers conform to it (KI-89 / PWMCP-07)
 

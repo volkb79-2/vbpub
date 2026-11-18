@@ -1,0 +1,19 @@
+--- src/lib.rs
++++ replace + with - in S::bump
+@@ -1,15 +1,15 @@
+ pub struct S {
+     pub n: i32,
+ }
+ 
+ impl S {
+     pub fn bump(&self, a: i32) -> i32 {
+-        self.n + a
++        self.n - /* ~ changed by cargo-mutants ~ */ a
+     }
+ }
+ 
+ pub trait T {
+     fn triple(&self) -> i32;
+ }
+ 
+ impl T for S {

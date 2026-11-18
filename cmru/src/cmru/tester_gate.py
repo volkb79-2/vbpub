@@ -14,7 +14,6 @@ import os
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -33,6 +32,7 @@ from cli_extended import (
 )
 from cmru import exit_codes
 from cmru.cli_support import cmru_registry
+from cmru.runner import _terminate_as_exit  # SIGTERM/SIGHUP -> SystemExit; shared with run_command
 
 
 def _unescape_mountinfo(value: str) -> str:
@@ -212,27 +212,6 @@ def _remove_container(name: str) -> bool:
         return result.returncode == 0 or "no such container" in stderr.lower()
     except (OSError, subprocess.SubprocessError):
         return False
-
-
-@contextmanager
-def _terminate_as_exit() -> Iterator[None]:
-    """Turn SIGTERM/SIGHUP into ``SystemExit`` so ``finally`` cleanup runs
-    (same pattern as ``tools/run_release_gate.py``)."""
-    previous: dict[int, object] = {}
-
-    def _handler(signum, _frame) -> None:
-        raise SystemExit(128 + signum)
-
-    try:
-        for signum in (signal.SIGTERM, signal.SIGHUP):
-            previous[signum] = signal.signal(signum, _handler)
-    except ValueError:  # not the main thread: nothing can be installed
-        previous.clear()
-    try:
-        yield
-    finally:
-        for signum, handler in previous.items():
-            signal.signal(signum, handler)
 
 
 def validate_image_reference(value: str, label: str) -> str:

@@ -14,7 +14,8 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-175 | OPEN (dist_dir containment gap can delete project or parent paths) | `126b2170b0fbcad444c6c7c0f8c9906b68f55f69` |
+| KI-178 | OPEN (items 1 and 2 fixed 2026-11-18: bounded drain after child exit and whole-process-group reaping; item 3 no-progress watchdog and item 4 shared helper remain) | `4d9ecf912` (code; earlier changes `4b59e8740`, `d21e1921b`) |
+| KI-175 | FIXED 2026-11-18 (`dist_dir` must be a strict descendant of `project_root` at parse time and is rechecked before every recursive removal) | `f582481c4` |
 | KI-173 | FIXED 2026-11-16 (estate argv failures explain shell-expanded values for typed options and their environment fallback) | `f20d3ae566e60f591638f9bc5e66e9bfd7e38a39` |
 | KI-171 | OPEN (the packaged cmru-cli SKILL is grammar-checked but not coverage-checked: a verb or flag a release adds can be missing from it with every existing test green) | — |
 | KI-170 | OPEN (bundle validator outcomes pinned; SPEC wording and R2 lane-cost policy remain) | — |
@@ -3794,7 +3795,9 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-178 a step hangs forever when its child exits but a grandchild keeps the output pipe open (estate-wide pattern)
 
-**Status:** OPEN (filed 2026-11-17 during the mdt-cockpit release); severity: high (an unattended release or gate never finishes, never fails, and says nothing; found only because the operator looked).
+**Status:** OPEN, items 1 and 2 (cmru side) FIXED 2026-11-18, items 3 and 4 remain (filed 2026-11-17 during the mdt-cockpit release); severity: high (an unattended release or gate never finishes, never fails, and says nothing; found only because the operator looked).
+
+**Resolution/evidence, items 1 and 2 (2026-11-18).** `cmru/src/cmru/runner.py` `run_command` reads the child's pipe by descriptor with the same decoding as a text pipe, stops `OUTPUT_DRAIN_SECONDS` (2 s) after the child has exited, closes the reader, keeps the child's exit code and logs one WARN naming the holder pids from `/proc/<pid>/fd` (without pids when the scan fails). Children start with `start_new_session=True`; Ctrl-C, SIGTERM and SIGHUP (the last two turned into `SystemExit` for the duration of `run_command`, main thread only, previous handlers restored; a signal ignored at start, such as `nohup`'s SIGHUP, stays ignored and is inherited by the step) send SIGTERM to the group, SIGKILL after `GROUP_TERM_GRACE_SECONDS`, and reap it (cmru has no per-step timeout, so these are the only reaping triggers; SIGKILL of cmru itself still orphans the step). The output wait uses `selectors.DefaultSelector`, so pipe descriptors >= 1024 work. A child in its own session has no controlling terminal: reads on inherited fd 0 work, `/dev/tty` opens (sudo, ssh, git prompts) fail with ENXIO. Review fixes (2026-11-18): the fd-limit, signal-orphaning and terminal-wording corrections. Tests: `tests/test_runner_pipe_holders.py` (a `sleep 600` holder with exit 3 and exit 0, scan failure, unchanged ordinary output and exit code, split multibyte output, own session and group, whole-group interrupt by pid, SIGTERM-ignoring child, descriptor above 1024, SIGTERM and SIGHUP delivered to a driver process, handler install and restore, off-main-thread). SPEC S3.4a records the rule. **Still open:** item 3 (the no-progress watchdog, with its `cmru.toml` period) and item 4 (the shared helper; the same read-to-EOF shape remains in `build-push.py` and `ciu/src/ciu/engine.py`, tracked as CIU-220, MDT-104 and NL-83). Do not close KI-178 until both land.
 
 **Observed.** The shared buildkitd was restarted mid-build (host `apt upgrade`, 16:44:34Z). `docker buildx bake` failed, its `release-bake.sh` bash exited (`<defunct>`), but an orphaned VS Code dev-containers credential helper (`docker-credential-dev-containers-*`, parent 1) that docker had spawned kept the inherited stdout pipe open. `build-push.py` sat in `anon_pipe_read` and `cmru release` behind it for 11 minutes; killing only that helper made both exit at once.
 
@@ -3830,7 +3833,9 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-175 dist-dir escape can delete the project or its parent
 
-**Status:** OPEN (filed 2026-11-16 during review round 1); severity: high (configuration can recursively delete the project checkout or another writable directory before a build).
+**Status:** FIXED 2026-11-18 (filed 2026-11-16 during review round 1); severity: high (configuration can recursively delete the project checkout or another writable directory before a build).
+
+**Resolution/evidence (2026-11-18).** `parse_config` now refuses a resolved `dist_dir` that is not a strict descendant of the resolved `project_root` (equal, parent, outside absolute path, or symlink that leaves the project), with an error naming `dist_dir`, the resolved path and `project_root`. Every recursive removal in `run_bundle` (legacy `dist_dir`, variant and success-cleanup staging trees) goes through `_remove_staging_tree`, which re-runs the containment and canonical-path check on freshly resolved paths immediately before `shutil.rmtree`. The rule is in SPEC S9.4 and the bundle table. `tests/test_bundle_dist_dir_containment.py` covers `"."`, `".."`, `"../.."`, an outside relative path, absolute outside/project/parent paths, a `dist` symlink to an outside directory, a variant build, a path component swapped to an outside symlink between parse and removal, and an ordinary `dist` build that still cleans only its own output; sentinels in the project, its parent and a sibling survive every refusal.
 
 **Problem.** `parse_config` resolves `project_root` and `dist_dir` but does not require the resolved `dist_dir` to be a strict descendant of `project_root` (`cmru/src/cmru/bundle.py`, `parse_config`). In the legacy non-variant `run_bundle` path, `shutil.rmtree(config.dist_dir)` runs before staging begins (`bundle.py`, legacy cleanup near line 1122). `dist_dir = "."` can therefore remove the whole project root; `dist_dir = ".."` can remove its parent; an absolute `dist_dir` can target any directory writable by the process.
 
@@ -3841,3 +3846,5 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Proposed acceptance test.** Use a scratch project with sentinels in `project_root`, its parent, and an absolute sibling directory. For the legacy non-variant build, try `dist_dir = "."`, `".."`, and an absolute path outside `project_root`; each must fail before cleanup and preserve every sentinel. A normal `dist_dir = "dist"` must still build and clean only its own output. Add a symlink or path-swap case if the cleanup recheck is implemented separately from parse-time validation.
 
 **Close when.** The path constraints and cleanup recheck are documented in SPEC; the acceptance cases prove every escaping path fails before any file is touched and the ordinary in-project path remains supported.
+
+**Remaining note (2026-11-18).** The rule is containment only: a `dist_dir` such as `src`, `.git`, or a symlink to another project's directory inside the project is a strict descendant and is accepted. The rule was deliberately not widened.
