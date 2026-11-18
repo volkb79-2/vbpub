@@ -73,8 +73,9 @@ EVT under the conditions of §5.4 `Closing`; a client MUST NOT depend on receivi
 | BLOCK | server → client | the column block of §3 |
 | END | server → client | `{"ok": true, "blocks": u32, "dropped": u32, "next": str\|null, "reason": str}` or `{"ok": false, "blocks": u32, "dropped": u32, "error": {...}}`, exactly these keys |
 
-END keys: `blocks` = BLOCK frames of the stream pinned for this client (§5.3), all of which precede
-the END; `dropped` = blocks of the stream dropped after the last pinned one (always 0 for query
+END keys: `blocks` = BLOCK frames of the stream sent to this client before the END (§5.3: a live
+block counted when pinned, a query block when queued, so query blocks still queued ahead of the END
+are included), all of which precede the END; `dropped` = blocks of the stream dropped after the last pinned one (always 0 for query
 streams); `next` = continuation cursor (`series_batch` `page` only, else `null`); `reason` is one of
 `complete` (`current`, `snapshot_at`, `export`, last `series_batch` page), `page` (`series_batch` with
 `next`), `unsubscribed`, `client-eof`. `END ok:false` carries any non-fatal §10 code; in M2 the server
@@ -867,8 +868,8 @@ Option<Timer>`, `enum Timer { Hello, Idle }` (the request deadline is `FrameRead
 `decode_block_with(bytes: &[u8], held: Option<&Dictionary>) -> Result<Block, ProtoError>`;
 `StreamDicts` (client side, §6.2: `accept(&mut self, corr, &Block)`);
 `SectionKind::Subject = 6`, `Block::subject: Option<u32>`; decoder rules of §3.1, §3.7, §3.10.
-Fixes `HOB-46`, `HOB-47`, `HOB-48` (subject half; the length half landed in P0), `HOB-50`, §13
-V-11..V-13. Acceptance: every §11.3 case and the reader, client and hub cases of §11.4 in Rust, one test
+Fixes `HOB-46`, `HOB-47`, `HOB-48` (subject half; the length half landed in P0), `HOB-50`,
+`HOB-51`..`HOB-53` (§13 V-11..V-13) and the P2 part of `HOB-54` (stream layer). Acceptance: every §11.3 case and the reader, client and hub cases of §11.4 in Rust, one test
 per row of §5.2, §5.3 (operations and mode detection) and the `ConnTimers` rows of §5.4; Python reference encoder/decoder updated for
 kind 6, §3.1, §3.7 and §3.10.
 
@@ -886,7 +887,7 @@ loop), `rates.py`
 required: bool) -> ProfilingState` with the five states of plan §D.2), `mark.py` (`hostobs-mark`).
 Acceptance: all `fixtures/wire` cases and the reader and client cases of `fixtures/stream`,
 `fixtures/rates/rates.json`, the §7.8 gated thresholds on the pinned CPython, a zipimport smoke test,
-no import outside the stdlib (checked by a test).
+no import outside the stdlib (checked by a test). Closes the P3 part of `HOB-54`.
 
 **P5a — Rust `client` crate (M).** `Client::connect(path, Level, ClientInfo) -> Result<Client, ClientError>`,
 `hello() -> &HelloResult`, `request(verb, serde-free JSON text) -> Reply`, `subscribe(Selection,
@@ -897,7 +898,7 @@ streams (one bare encoding per tick, the dictionary form lazily, one generation 
 §6.2), one `SendHub` for all connections, `ConnTimers` per connection, issuer derivation (§4.12),
 `series_batch` packing (§4.9), the §5.1 table as config keys. Acceptance: the connection cases of
 §11.4 and a socketpair conformance test per row of §5.1 and per verb of §4.3 marked M2, against a fake
-clock.
+clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 
 ## 13. Decisions taken, divergences, open questions
 
@@ -947,9 +948,9 @@ clock.
 | V-8 | plan §B.3 | `bad_request` | `bad-request` | none (D-W12) |
 | V-9 | plan §B.3 dictionary text | ≤ 256 B UTF-8 | also no bytes < 0x20 or 0x7F (as `dict.rs` `validate`) | none |
 | V-10 | `hostobs_wire_ref.py` line 5 | cites `hostobs/docs/WIRE-COLUMN-CODEC.md` (does not exist) | this file | `HOB-49` |
-| V-11 | `frame.rs` `decode_block` 1086-1126, `hostobs_wire_ref.py` `decode_frame` 509-535 | any body length; an unknown section may precede the header (measured on the Python reference: an optional `len = 5` section decodes, frame `len` 357; placed first, the header body starts at 69) | §3.1 decoder rules | P2 (fixtures §11.3) |
-| V-12 | `dict.rs` `decode` (891 → `intern` 596) | metric name repeated with other facts → `conflicting-column` | `duplicate-dictionary-entry` (Python reference already, measured) | P2 |
-| V-13 | `hostobs_wire_ref.py` `decode_frame` 484-493 | buffer length and `SECTIONED` checked before `not-a-block` | §3.10 precedence (Rust order) | P2 |
+| V-11 | `frame.rs` `decode_block` 1086-1126, `hostobs_wire_ref.py` `decode_frame` 509-535 | any body length; an unknown section may precede the header (measured on the Python reference: an optional `len = 5` section decodes, frame `len` 357; placed first, the header body starts at 69) | §3.1 decoder rules | `HOB-51` (P2, fixtures §11.3) |
+| V-12 | `dict.rs` `decode` (891 → `intern` 596) | metric name repeated with other facts → `conflicting-column` | `duplicate-dictionary-entry` (Python reference already, measured) | `HOB-52` (P2) |
+| V-13 | `hostobs_wire_ref.py` `decode_frame` 484-493 | buffer length and `SECTIONED` checked before `not-a-block` | §3.10 precedence (Rust order) | `HOB-53` (P2) |
 | V-14 | plan §B.3 | `(epoch, dict_gen)` probe-global | generation per selection stream / query stream; client rule relative to held | none (D-W5) |
 | V-15 | plan §B.4 | full queue drops the oldest unsent BLOCK, counted in "the next `HDR.dropped`"; `DICT/REP/EVT` over budget close | at most one unpinned tick per stream, drop-oldest across streams (victim: the largest connection with an unpinned Live entry, else the incoming tick), stamp at pin; the plan's separate query budget is kept as its own Query pool (4 MiB / connection, 4 MiB / uid, 16 MiB global, sizes are WIRE.md's) whose blocks are never dropped and never shed a tick; per-uid Live cap 8 MiB; control frames on their own budget | none (D-W8, D-W18) |
 | V-16 | plan §B.4 | observe/observer requests 4,096 B; one 5 s "frame completion age" | 32 KiB / 16 KiB (D-W21); the 5 s frame completion age is **retained** on the send side (`frame_completion_ms`, pin → completely written; it is what bounds a dribbling reader, D-W25), plus server request deadline 5 s / 25 s (control, plan's RG55 value), writer stall 5 s for an unpinned head, client reader 30 s (D-W16) | none |
@@ -972,7 +973,7 @@ clock.
 | 1 | per-stream generations contradict shared blocks (Blocker) | fixed: counter per selection stream, client rule relative, first block dictionary-bearing at any generation | §6.2, D-W5, V-14, `client-first-block-gen-5` |
 | 2 | `dropped` lost when the stamped head is dropped | fixed: stamp at pin, pinned entries never dropped | §5.3 Pin, D-W8, `hub-pin-stamps`, `hub-pinned-never-dropped` |
 | 3 | `last_progress` undefined after idle | fixed: set on empty → non-empty and on every `wrote(n > 0)` | §5.3, `hub-stall-after-idle` |
-| 4 | REP/END close a lagging client; global cap has no owner | fixed: control frames on their own budget; `SendHub` owns the global budget, victim = largest queue's oldest unpinned Live entry | §5.3, D-W18, `hub-control-cap`, `hub-global-largest` |
+| 4 | REP/END close a lagging client; global cap has no owner | fixed: control frames on their own budget; `SendHub` owns the global budget, victim = largest queue's oldest unpinned Live entry (refined in round 2 D: pools, victim must hold an unpinned Live entry) | §5.3, D-W18, `hub-control-cap`, `hub-global-largest` |
 | 5 | query blocks droppable; blocks above 4 MiB unqueueable | fixed: Query entries are backpressure; `max_block_bytes = client_queue_bytes` | §5.1, §5.3, §4.9, `hub-query-backpressure` |
 | 6 | dictionary repair undefined (no next block, cascade) | fixed: coalescing + sticky `needs_dict`; a repair that does not fit is dropped and stays flagged | §5.3 Form, `hub-needs-dict-sticky`, `hub-repair-over-budget` |
 | 7 | `feed` cannot return a frame and an error | fixed: `Feed { frames, error }` | §5.2, §12, `reader-frame-then-bad-header` |
@@ -993,3 +994,19 @@ clock.
 | 22 | `conflicting-column` vs `duplicate-dictionary-entry` | verified (Python: all three repeats `duplicate-dictionary-entry`; Rust: metric with other facts `conflicting-column`); improved on the review's "list both": one outcome | §3.7, D-W23, V-12, two §11.3 fixtures |
 | 23 | `HOB-5`/`HOB-6` rows stale | fixed | backlog |
 | — | (found while verifying) `live-block.bin` layout figures | corrected: 5 sections, bodies at 56 | §3.1 |
+
+### Review round 2 (independent re-review of rev 2 at `319f5d48b`, verdict FIX)
+
+| # | Finding (severity) | Disposition | Where fixed |
+|---|---|---|---|
+| A | a subscriber whose interval skips the generation-changing tick gets a bare block it cannot decode (major) | fixed: `TickForms::generation()`, per-stream `last_pushed_gen`; any generation the stream was not last pushed goes out in the dictionary form | §4.7, §5.3 Form, §6.2, §12, D-W27, `hub-interval-skips-generation` |
+| B | a dribbling reader holds the global budget; the plan's frame completion age was dropped (major) | fixed: a pinned head must be written within `frame_completion_ms` (5 s) of its pin; the stall rule stays, because it alone covers a head that is not pinned; per-uid pools = a quarter of the global ones | §5.1, §5.3 `poll`, §4.4, §12, D-W25, V-16, `hub-frame-completion`, `hub-uid-cap`, `conn-dribbling-reader` |
+| C | a legal reply can exceed the control queue and close a healthy client (major) | fixed: a frame into an empty control queue is always admitted; every JSON REP ≤ `max_reply_bytes` = 448 KiB, sized so `max_outstanding` replies plus END/EVT slack fit; pages end early with `next`; per-verb worst cases; `cmdline` ≤ 4,096 B, `provenance` ≤ 64 objects | §5.1 reply sizes, §4.4, §4.8, §4.10, §4.11, D-W26, `hub-control-cap`, `conn-reply-page-truncated` |
+| D | the global victim may hold no sheddable entry; queries shed other clients' ticks (major) | fixed: the victim is the largest connection that holds an unpinned Live entry, none ⇒ the incoming tick is dropped (`DroppedIncoming`); Query blocks have their own pool (4 MiB / connection, 4 MiB / uid, 16 MiB global) and only ever wait (`Backpressure`) | §5.1, §5.3 Fit, D-W18, V-15, `hub-victim-skips-pinned`, `hub-query-own-pool` |
+| E | END `blocks` misses queued Query blocks (minor) | fixed: `blocks` counts a Query entry when it is queued (a Live one at pin) | §5.3 Pin, `end_stream`, `hub-end-stream` |
+| F | entry-0 rule vs the pinned `section-order` fixture (major) | fixed: rank check first, entry-0 rule only for an unknown kind at entry 0; fixture directory read from the `.bin` (`[5, 1, 2, 3, 3]`), pinned `index: 1, kind_code: 1` stays valid, no fixture changes | §3.1, §3.10, D-W22 |
+| G | Closing row and §12 API disagree; prefix machine unnamed (minor) | fixed: `head_partial`, `drain_unpinned`, `query_ready(c, stream)`, `enum Timer { Hello, Idle }` (the request deadline is the reader's completion age, no duplicate timer), `ModeDetect` with `at` handing surplus bytes to the reader | §5.3, §5.4, §12, `conn-prefix-surplus`, `conn-closing-evt` |
+| H | previous-body view pins a whole frame; table provenance; CPython patch level (minor) | fixed: retention stated and bounded (one previous frame of ≤ 1 MiB per stream; a digest rejected, it adds a hash to the measured path and makes the skip probabilistic); table attributed to `bench2.py`, the `bytes()` row to `bench.py`; pinned CPython 3.14.10, re-measure on any version change, patch level included | §7.4, §7.8, D-W15 |
+| I | V-11..V-13 and the stream machines have no backlog id (minor) | fixed: `HOB-51`..`HOB-53` (V-11..V-13), `HOB-54` (stream layer, P2/P3/P5b exit criteria) | backlog, V-11..V-13, §12, CHANGES.md |
+
+Case counts after round 2 (§11.4): 12 reader, 6 client, 19 hub, 18 connection.

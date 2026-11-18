@@ -962,3 +962,55 @@ reserves a directory vector of `n_sec` entries (up to 65,535) before it has prov
 **Exit criteria.** `parse` (or the stream reader) enforces the flag/type rule with the
 `rep-sectioned-flag` case; the directory length is checked against the buffer before the vector is
 reserved, with a unit test for `n_sec = 65535` in a short frame.
+
+## HOB-51 — Received frames are not held to the alignment and header-first rules
+
+**Where:** `crates/proto/src/frame.rs` `decode_block` (lines 1086-1126),
+`python/reference/hostobs_wire_ref.py` `decode_frame` (lines 509-535). WIRE.md §13 V-11.
+
+Both decoders take a section body of any length and let an unknown section precede the header, so
+the "every body starts at an offset ≡ 0 (mod 8)" and "the header body sits at `16 + 8·n_sec`"
+guarantees of WIRE.md §3.1 hold only for frames this codebase encoded. Measured on the Python
+reference: an optional `len = 5` section decodes (frame `len` 357); placed first, the header body
+starts at 69.
+
+**Exit criteria (P2).** Both decoders refuse a section `len` not ≡ 0 (mod 8) with `section-length`
+and an unknown kind at directory entry 0 with `section-order`, checked after the rank check (WIRE.md
+§3.10); the `unaligned-optional-section` and `optional-section-before-header` fixtures pin them in both
+languages; the existing `section-order` fixture keeps its pinned `index: 1, kind_code: 1`.
+
+## HOB-52 — A metric repeated with other facts is `conflicting-column` in Rust
+
+**Where:** `crates/proto/src/dict.rs` `decode` (line 891 → `intern` line 596). WIRE.md §13 V-12.
+
+A dictionary that repeats a metric name with other facts is `conflicting-column` in Rust and
+`duplicate-dictionary-entry` in the Python reference (measured), so one defect has two outcomes.
+
+**Exit criteria (P2).** Every repeated dictionary identity is `duplicate-dictionary-entry` in both
+languages whatever the other fields (WIRE.md §3.7, D-W23); the `duplicate-metric-other-facts` and
+`duplicate-entity-other-label` fixtures pin it.
+
+## HOB-53 — The Python reference checks buffer length before `not-a-block`
+
+**Where:** `python/reference/hostobs_wire_ref.py` `decode_frame` (lines 484-493). WIRE.md §13 V-13.
+
+The reference checks buffer length and `SECTIONED` before the frame type, so a truncated REP is
+`truncated` in Python and `not-a-block` in Rust.
+
+**Exit criteria (P2).** The reference follows the WIRE.md §3.10 check precedence (Rust order); the
+`rep-not-sectioned-truncated` fixture pins `not-a-block` in both languages.
+
+## HOB-54 — The stream layer machines do not exist yet
+
+**Where:** `crates/proto/src/stream.rs` (new), `python/hostobs_client/stream.py` (new), the P5b serving
+loop. WIRE.md §5.2-§5.4, §12.
+
+`proto` decodes single frames only. The frame reader (WIRE.md §5.2), mode detection and send hub
+(§5.3: pin-time `dropped` stamping, coalescing, the `last_pushed_gen` form rule, Live/Query/control
+pools with per-uid caps, frame completion and stall closes) and the connection timers (§5.4) are
+specified with fake-clock tables but have no code, so no stream property of `hostobs/1` is tested.
+
+**Exit criteria.** P2: the §12 `FrameReader`, `ModeDetect`, `SendHub` and `ConnTimers` APIs in Rust
+with the 12 reader and 19 hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row; P3: the Python
+`FrameReader` passes the same 12 reader cases and the 6 client cases; P5b: the 18 connection cases
+of §11.4 against a fake clock.

@@ -9,13 +9,21 @@
   alignment rules, every M2-M3 verb with strict keys and worst-case request sizes, closed error
   codes, fake-clock state machines for the reader, the send hub (pin-time `dropped` stamping,
   per-stream coalescing, query backpressure, a global budget owner) and the connection timers
-  (hello, request, idle), per-selection dictionary generations, deterministic `series_batch`
+  (hello and idle; the request deadline is the reader's completion age), per-selection dictionary generations, deterministic `series_batch`
   packing, the efficient Python access path with deterministic gates set from measurements on
   CPython 3.14, versioning, conformance cases and the P2/P3/P5 work breakdown. Files
   `HOB-46`..`HOB-50` (bare-block validation, aggregation mask, the history subject section, a
   stale spec pointer, header and directory checks); `HOB-48` keeps only the subject half, the
   time-length half is the P0 bug fold-in's. `HOB-5` is decided (separate per-aggregation history
-  blocks) and `HOB-6` closed by design (`DICT` reserved).
+  blocks) and `HOB-6` closed by design (`DICT` reserved). Rev 3 (second review): the send hub
+  pushes the dictionary form whenever a tick's generation differs from the stream's last pushed
+  one, closes a connection whose pinned frame is not written within 5 s, caps every uid at a
+  quarter of the Live and of a new separate Query pool, sheds only connections that hold an
+  unpinned tick, admits any frame into an empty control queue and bounds every JSON reply to
+  448 KiB with paging; `section-order` checks rank before the header-first rule; the Python path
+  retains at most one previous frame of ≤ 1 MiB per stream and pins CPython 3.14.10. Files
+  `HOB-51`..`HOB-54` (received-frame alignment rules, one outcome for a repeated dictionary
+  identity, the reference's check precedence, the stream layer machines).
 
 - **`assay-r1`: the coverage verdict is assay's.** A new `assay-r1` lane in
   `run-gate.toml` binds to `assay.toml [lanes.assay-r1]`, which declares a Rust
