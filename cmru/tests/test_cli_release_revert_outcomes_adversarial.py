@@ -8,6 +8,8 @@ from cmru import cli, transaction
 
 @pytest.fixture(autouse=True)
 def fake_release_preflight(monkeypatch):
+    # Scripted git snapshots: the per-project DinD preflight would read a real blob.
+    monkeypatch.setattr(cli, "_release_dind_image_preconditions", lambda *_a, **_k: None)
     monkeypatch.setattr(cli.transaction, "read_release_source", lambda *_args: None)
     monkeypatch.setattr(cli.transaction, "source_git_root_for_projects", lambda root, _projects: root)
     monkeypatch.setattr(
