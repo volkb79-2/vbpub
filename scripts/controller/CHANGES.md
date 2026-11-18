@@ -7,7 +7,7 @@ no separate version number, so entries are grouped by the work that landed.
 ## [Unreleased]
 
 ### Added
-- `ctl-clean.sh`: removes scratch remnants of finished runs from the checkout's `.run-gate` (`run-gate-gitcfg-*`, `run-gate-test-bin-*`, `run-gate-test-invoke*`, `assay-liveness-*`, older than `--age-hours`, default 24), prunes dangling worktree entries and reports `artifacts/` and `.worktrees/` sizes. Dry run by default, `--apply` deletes; evidence and history are never touched.
+- `ctl-clean.sh`: removes scratch remnants of finished runs from the checkout's `.run-gate` (`run-gate-gitcfg-*`, `run-gate-test-bin-*`, `run-gate-test-invoke*`, `assay-liveness-*`). Eligibility uses the newest mtime of the entry and everything inside it; `--age-hours` is a bounded decimal integer from 1 to 8760, default 48h. The 48h default assumes a gate never runs that long (creating a child changes a directory's mtime, but a long-running tool can keep writing an existing nested file while its directory looks quiet). Dry run by default; `--apply` accounts for removals and failures and exits 1 on any failure. `--prune-worktrees` is explicit opt-in, only for use from the shared checkout when no session is creating or moving worktrees. `artifacts/` and `.worktrees/` are report-only, with timeouts labeled instead of printed as blank measurements. Evidence and history are never touched.
 - `gate-run.sh`: `CONTROLLER_GATE_SLOTS` (integer 1 to 8, default 2) sets the number
   of local gate slots (CTL-33). Slot 1 is `CONTROLLER_GATE_LOCK`, slot 2 is
   `CONTROLLER_GATE2_LOCK`, slots 3.. are `gate<N>.lock` in `CONTROLLER_GATE_LOCK_DIR`

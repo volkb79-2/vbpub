@@ -25,6 +25,7 @@ files=(
   "$SCRIPT_DIR/../chain-run.sh"
   "$SCRIPT_DIR/../ctl-doctor.sh"
   "$SCRIPT_DIR/../ctl-state-backup.sh"
+  "$SCRIPT_DIR/../ctl-clean.sh"
   "$SCRIPT_DIR/../release-from-wt.sh"
   "$SCRIPT_DIR/../push-image.sh"
   "$SCRIPT_DIR/../skills-sync.sh"
@@ -44,6 +45,7 @@ files=(
   "$SCRIPT_DIR/test-chain-run.sh"
   "$SCRIPT_DIR/test-ctl-doctor.sh"
   "$SCRIPT_DIR/test-ctl-state-backup.sh"
+  "$SCRIPT_DIR/test-ctl-clean.sh"
   "$SCRIPT_DIR/run-suite.sh"
   "$queue_test"
 )
@@ -65,6 +67,7 @@ bash "$SCRIPT_DIR/test-remote-gate.sh" || exit $?
 bash "$SCRIPT_DIR/test-chain-run.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-doctor.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-state-backup.sh" || exit $?
+bash "$SCRIPT_DIR/test-ctl-clean.sh" || exit $?
 bash "$queue_test" || exit $?
 bash "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh" || exit $?
 bash "$SCRIPT_DIR/test-mutations.sh" || exit $?
