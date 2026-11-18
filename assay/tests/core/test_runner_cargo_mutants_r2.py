@@ -358,6 +358,41 @@ def test_a_tampered_member_diff_is_refused(git_repo: GitRepo, tmp_path: Path):
     _refused(_run(git_repo, lane, Fake(staged, 0)))
 
 
+@pytest.mark.parametrize(
+    "constant, value",
+    [
+        ("DIRECTORY_ARTIFACT_MAX_TOTAL_BYTES", 200),
+        ("DIRECTORY_ARTIFACT_MEMBER_LIMIT", 10),
+        ("DIRECTORY_ARTIFACT_MAX_MEMBERS", 1),
+    ],
+)
+def test_an_oversize_directory_is_refused(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch, constant: str, value: int
+):
+    monkeypatch.setattr(runner, constant, value)
+    base = _seed(git_repo, "indiff")
+    lane = _lane(git_repo, base)
+
+    _refused(_run(git_repo, lane, Fake(_stage(tmp_path, "indiff"), 0)))
+
+
+def test_the_directory_ceilings_are_the_shipped_ones():
+    assert runner.DIRECTORY_ARTIFACT_MEMBER_LIMIT == 256 * 1024
+    assert runner.DIRECTORY_ARTIFACT_MAX_TOTAL_BYTES == 64 * 1024 * 1024
+    assert runner.DIRECTORY_ARTIFACT_MAX_MEMBERS == runner.vocabulary.MAX_INGESTED_MUTANTS
+
+
+def test_an_unknown_content_tier_is_refused():
+    from assay import mutation
+
+    with pytest.raises(ValueError, match="per-mutant-diff"):
+        mutation.ingest_mutation_report(
+            None, run_cwd=None, repo_top=None, source_root_paths=(), source_root_files=(),
+            mode="changed_lines", added=None, targets=None, repository=None,
+            read_timeout=1.0, spec=None, content_tier="whole-file",
+        )
+
+
 def test_an_absent_report_with_exit_zero_never_passes(git_repo: GitRepo, tmp_path: Path):
     base = _seed(git_repo, "indiff")
     lane = _lane(git_repo, base)

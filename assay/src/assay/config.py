@@ -2044,9 +2044,31 @@ _CARGO_MUTANTS_OUTPUT_ENV = "CARGO_MUTANTS_OUTPUT"
 
 def _cargo_mutants_output_value(argv: Sequence[str], where: str) -> str:
     """The ``--output`` value of *argv*: exactly one ``--output <dir>`` or
-    ``--output=<dir>`` spelling, or a refusal."""
+    ``--output=<dir>`` spelling, or a refusal.
+
+    The short spelling ``-o`` (alone or with its value attached) is NOT
+    recognised, and a second spelling that assay does not read could name a
+    different directory than the one it reserves, so it is refused. So is
+    ``--output`` after a ``--`` separator: there it belongs to the arguments
+    cargo-mutants forwards to the test command, not to cargo-mutants."""
     values: list[str] = []
+    separator_seen = False
     for index, token in enumerate(argv):
+        if token == "--":
+            separator_seen = True
+            continue
+        if token.startswith("-o") and not token.startswith("--"):
+            raise LaneConfigError(
+                f"{where}: argv contains {token!r}, the short spelling of "
+                f"'--output', which assay does not recognise; spell the output "
+                f"directory '--output <dir>' or '--output=<dir>'"
+            )
+        if separator_seen and (token == "--output" or token.startswith("--output=")):
+            raise LaneConfigError(
+                f"{where}: argv names '--output' after a '--' separator, where "
+                f"it is an argument of the forwarded test command and not "
+                f"cargo-mutants' output directory; put it before the '--'"
+            )
         if token == "--output":
             if index + 1 >= len(argv):
                 raise LaneConfigError(
@@ -2093,6 +2115,21 @@ def _check_cargo_mutants_lane(
     committed ``.gitignore`` covering ``<out>`` (without one every honest run
     ends ``DIRTY_TREE``) and ``<out>`` being EMPTY (the tool copies a
     non-empty in-tree ``<out>`` into the tree under test).
+
+    ``judge.mutation.artifact`` may not equal, or lie inside, any
+    ``judge.source_roots`` entry: the artifact directory is reserved empty
+    and written by the tool, so a source root covering it would put the
+    tool's own output into the code under measurement.
+
+    **Appended argv is left as is.** ``allow_argv_append`` is a lane-level
+    switch that this check does not look through: a lane that allows appended
+    argv accepts that a caller's extra tokens are not seen here (the runtime
+    derives the output directory from the declared lane, not from the append).
+
+    **The ``{assay.`` placeholder refusal applies to EVERY lane** (``argv``,
+    ``env`` values and ``environment_command``), not only to
+    ``cargo-mutants-outcomes`` lanes, until work package U5b lifts it for
+    cargo-mutants ``changed_lines`` lanes.
 
     **``--test-tool nextest`` is documented, not enforced.** The U3
     normaliser reads ``Failure(100)`` as a kill, which is nextest's own test
@@ -2156,6 +2193,14 @@ def _check_cargo_mutants_lane(
             f"existing 'mutants.out' to 'mutants.out.old', so assay reserves "
             f"the PARENT, empty, and reads 'mutants.out' inside it"
         )
+    for source_root in judge.source_roots or ():
+        if artifact.is_relative_to(PurePosixPath(source_root)):
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.artifact' {mutation_config.artifact!r} "
+                f"equals or lies inside 'judge.source_roots' entry "
+                f"{source_root!r}; the tool's output directory would become "
+                f"part of the source under measurement"
+            )
     output = _cargo_mutants_output_value(argv, where)
     if output != result_report.path:
         raise LaneConfigError(

@@ -7698,6 +7698,10 @@ def ingest_mutation_report(
     exactly one caller (:func:`assay.runner._ingest_r2_report`), which already
     holds the repository the lane's command ran against.
     """
+    if content_tier is not None and content_tier != "per-mutant-diff":
+        raise ValueError(
+            f"content_tier must be None or 'per-mutant-diff', not {content_tier!r}"
+        )
     producer_tool = MutationProducerTool(
         name=report.producer.name,
         version=report.producer.version,

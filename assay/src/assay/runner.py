@@ -458,6 +458,13 @@ def _wait_child(
 
 COMMAND_TAIL_BYTES = 64 * 1024
 
+#: (B245 U5a) The ceilings on a directory artifact (cargo-mutants'
+#: ``mutants.out``) assay reads after the command: one member file, the
+#: member count, and the aggregate bytes of the whole directory.
+DIRECTORY_ARTIFACT_MEMBER_LIMIT = 256 * 1024
+DIRECTORY_ARTIFACT_MAX_MEMBERS = vocabulary.MAX_INGESTED_MUTANTS
+DIRECTORY_ARTIFACT_MAX_TOTAL_BYTES = 64 * 1024 * 1024
+
 #: (B032/A-322) The ceiling on one `environment_command` preflight probe.
 #: A probe answers a yes/no question about the INVOKING environment -- "is
 #: this the environment this lane declared?" -- before any repository,
@@ -3952,9 +3959,9 @@ def _execute_snapshot_unit(
             rotated="mutants.out.old",
             report_name="outcomes.json",
             report_limit=mutation_parsers.MAX_MUTATION_REPORT_BYTES,
-            member_limit=256 * 1024,
-            max_members=vocabulary.MAX_INGESTED_MUTANTS,
-            max_total_bytes=64 * 1024 * 1024,
+            member_limit=DIRECTORY_ARTIFACT_MEMBER_LIMIT,
+            max_members=DIRECTORY_ARTIFACT_MAX_MEMBERS,
+            max_total_bytes=DIRECTORY_ARTIFACT_MAX_TOTAL_BYTES,
             create_missing_parents=True,
         )
         if _coverage_artifact_is_tracked(
