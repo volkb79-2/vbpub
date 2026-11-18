@@ -87,6 +87,7 @@ from .records import positional_record
 from .result_reports import RESULT_REPORT_FORMATS
 from .vocabulary import (
     ADJUDICATED_EVIDENCE_KEYS,
+    ARGV_PLACEHOLDER_CHANGED_DIFF,
     COVERAGE_PRODUCERS_BY_FORMAT,
     COVERAGE_PRODUCER_REQUIRED_FORMATS,
     MUTATION_OPERATORS,
@@ -1996,6 +1997,7 @@ def _load_lane(
     result_report = _load_result_report(table.get("result_report"), where)
     _check_cargo_mutants_lane(
         where,
+        rigor=rigor,
         argv=argv,
         env=env,
         env_passthrough=env_passthrough,
@@ -2034,7 +2036,8 @@ def _load_lane(
 _CARGO_MUTANTS_FORMAT = "cargo-mutants-outcomes"
 
 #: The reserved argv namespace of the ``{assay.changed_diff}`` placeholder
-#: (design 2.1). Producing and substituting it is work package U5b.
+#: (design 2.1): there is no template engine, so the one known token is
+#: spelled whole or not at all.
 _ASSAY_PLACEHOLDER_NAMESPACE = "{assay."
 
 #: The environment spelling of ``--output``; a second spelling of the same
@@ -2087,9 +2090,102 @@ def _cargo_mutants_output_value(argv: Sequence[str], where: str) -> str:
     return values[0]
 
 
+def _check_changed_diff_placeholder(
+    where: str,
+    *,
+    rigor: Sequence[str],
+    argv: Sequence[str],
+    env: Mapping[str, str],
+    environment_command: Sequence[str] | None,
+    judge: Any,
+    ingested_format: str | None,
+) -> None:
+    """Lane-load validation of the ``{assay.changed_diff}`` placeholder (B245
+    D7, design 2.2).
+
+    ``{assay.`` is a reserved namespace with ONE known token, matched as a
+    WHOLE argv token (``--in-diff={assay.changed_diff}`` is refused). It is
+    refused in ``env`` values and ``environment_command`` always, and in
+    ``argv`` unless every condition holds: R2 declared, the ingested format
+    accepts the placeholder (only ``cargo-mutants-outcomes``) and the lane
+    judges ``changed_lines``. A base is always declared on such a lane (R2
+    requires ``judge.base`` unless ``judge.base_source = "request"``, and the
+    mode that needs no base is exactly ``whole_target``), so no separate base
+    check can fire here. The placeholder must then appear exactly once, and a
+    changed-lines cargo-mutants lane must carry it: without it the tool
+    mutates the whole crate while assay judges the changed lines only.
+
+    A token appended at run time (``allow_argv_append``) is not substituted
+    and is refused by the runner: only ``argv_declared`` is.
+    """
+    for label, tokens in (
+        ("env", tuple(env.values())),
+        ("environment_command", tuple(environment_command or ())),
+    ):
+        if any(_ASSAY_PLACEHOLDER_NAMESPACE in token for token in tokens):
+            raise LaneConfigError(
+                f"{where}: '{label}' contains {_ASSAY_PLACEHOLDER_NAMESPACE!r}, "
+                f"the reserved placeholder namespace; "
+                f"'{ARGV_PLACEHOLDER_CHANGED_DIFF}' is legal only as a whole "
+                f"'argv' token"
+            )
+    for token in argv:
+        if _ASSAY_PLACEHOLDER_NAMESPACE in token and token != ARGV_PLACEHOLDER_CHANGED_DIFF:
+            raise LaneConfigError(
+                f"{where}: argv token {token!r} contains "
+                f"{_ASSAY_PLACEHOLDER_NAMESPACE!r}, the reserved placeholder "
+                f"namespace. The only known placeholder is "
+                f"'{ARGV_PLACEHOLDER_CHANGED_DIFF}', written as its own whole "
+                f"argv token (for example '\"--in-diff\", "
+                f"\"{ARGV_PLACEHOLDER_CHANGED_DIFF}\"'); an embedded or "
+                f"misspelled form is refused"
+            )
+    count = sum(1 for token in argv if token == ARGV_PLACEHOLDER_CHANGED_DIFF)
+    spec = None if ingested_format is None else MUTATION_FORMAT_REGISTRY[ingested_format]
+    accepts = spec is not None and spec.accepts_changed_diff
+    mode = None if judge is None else judge.mode
+    changed_lines = accepts and "R2" in rigor and (mode or "changed_lines") == "changed_lines"
+    if count and not changed_lines:
+        if accepts and mode == "whole_target":
+            why = (
+                "the lane judges judge.mode = 'whole_target', which names no "
+                "changed lines to restrict the tool to"
+            )
+        else:
+            why = (
+                "it is legal only on a lane that declares R2 and ingests the "
+                f"{_CARGO_MUTANTS_FORMAT!r} mutation format in "
+                "judge.mode = 'changed_lines'"
+            )
+        raise LaneConfigError(
+            f"{where}: argv holds '{ARGV_PLACEHOLDER_CHANGED_DIFF}' but {why}"
+        )
+    if count and "R3" in rigor:
+        raise LaneConfigError(
+            f"{where}: argv holds '{ARGV_PLACEHOLDER_CHANGED_DIFF}' and the "
+            f"lane declares R3: the diff is handed to the baseline command "
+            f"only, so a canary half-run of this command would receive the "
+            f"literal placeholder; declare R3 on a separate lane"
+        )
+    if count > 1:
+        raise LaneConfigError(
+            f"{where}: argv holds '{ARGV_PLACEHOLDER_CHANGED_DIFF}' {count} "
+            f"times; it must appear exactly once"
+        )
+    if changed_lines and not count:
+        raise LaneConfigError(
+            f"{where}: a {_CARGO_MUTANTS_FORMAT!r} lane judging "
+            f"'changed_lines' must carry '\"--in-diff\", "
+            f"\"{ARGV_PLACEHOLDER_CHANGED_DIFF}\"' in its argv: without it "
+            f"cargo-mutants mutates the whole crate while assay judges only "
+            f"the changed lines"
+        )
+
+
 def _check_cargo_mutants_lane(
     where: str,
     *,
+    rigor: Sequence[str],
     argv: Sequence[str],
     env: Mapping[str, str],
     env_passthrough: Sequence[str] | None,
@@ -2126,10 +2222,12 @@ def _check_cargo_mutants_lane(
     argv accepts that a caller's extra tokens are not seen here (the runtime
     derives the output directory from the declared lane, not from the append).
 
-    **The ``{assay.`` placeholder refusal applies to EVERY lane** (``argv``,
-    ``env`` values and ``environment_command``), not only to
-    ``cargo-mutants-outcomes`` lanes, until work package U5b lifts it for
-    cargo-mutants ``changed_lines`` lanes.
+    **The ``{assay.`` placeholder** is validated by
+    :func:`_check_changed_diff_placeholder` on every lane: it is refused in
+    ``env`` values and ``environment_command`` always, and in ``argv`` unless
+    the lane declares R2, ingests ``cargo-mutants-outcomes`` and judges
+    ``changed_lines`` (where it is required exactly once, as a whole token,
+    and R3 may not be declared beside it).
 
     **``--test-tool nextest`` is documented, not enforced.** The U3
     normaliser reads ``Failure(100)`` as a kill, which is nextest's own test
@@ -2142,18 +2240,15 @@ def _check_cargo_mutants_lane(
         if mutation_config is not None and mutation_config.is_ingested
         else None
     )
-    for label, tokens in (
-        ("argv", argv),
-        ("env", tuple(env.values())),
-        ("environment_command", tuple(environment_command or ())),
-    ):
-        if any(_ASSAY_PLACEHOLDER_NAMESPACE in token for token in tokens):
-            raise LaneConfigError(
-                f"{where}: '{label}' contains {_ASSAY_PLACEHOLDER_NAMESPACE!r}, "
-                f"the reserved placeholder namespace; the "
-                f"'{{assay.changed_diff}}' argv placeholder is not wired into "
-                f"the runner until work package U5b, so no lane may declare it yet"
-            )
+    _check_changed_diff_placeholder(
+        where,
+        rigor=rigor,
+        argv=argv,
+        env=env,
+        environment_command=environment_command,
+        judge=judge,
+        ingested_format=ingested_format,
+    )
     declared_report_format = None if result_report is None else result_report.format
     if declared_report_format == _CARGO_MUTANTS_FORMAT and ingested_format != _CARGO_MUTANTS_FORMAT:
         raise LaneConfigError(
