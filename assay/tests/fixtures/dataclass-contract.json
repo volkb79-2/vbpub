@@ -1276,6 +1276,21 @@
         "weakref_slot": false
       }
     },
+    "assay.safeio.DirectoryArtifact": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.statement_attribution.StatementBlock": {
       "fields": {},
       "params": {
