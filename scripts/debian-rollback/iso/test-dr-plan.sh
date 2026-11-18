@@ -69,14 +69,22 @@ expect no-config-single-disk-confirms        confirm /dev/vda "$ONE" none
 expect no-config-two-disks-REFUSES           refuse  ""       "$TWO" none
 # --- config hygiene
 expect unknown-key-REFUSES                   refuse  ""       "$ONE" "$(conf 'TARGET_DSIK=/dev/vda')"
+# shellcheck disable=SC2016  # the value must reach the config file literally, unexpanded
 expect bad-value-char-REFUSES                refuse  ""       "$ONE" "$(conf 'HOSTNAME=a b$(id)')"
 expect comment-and-blank-lines-ok            install /dev/vda "$ONE" "$(conf '# a comment' '' 'HOSTNAME=h1')"
 expect duplicate-key-REFUSES                 refuse  ""       "$TWO" "$(conf 'TARGET_DISK=/dev/vda' 'TARGET_DISK=/dev/vdb')"
 
 # the emitted settings come from the validated config only
 out=$("$PLAN" --lsblk "$ONE" --config "$(conf 'HOSTNAME=h1' 'MIRROR=http://m.example/debian')" 2>/dev/null) || true
-grep -qx 'HOSTNAME=h1' <<<"$out" && grep -qx 'MIRROR=http://m.example/debian' <<<"$out" \
-  || { echo "FAIL settings-are-emitted: $out"; fail=1; }
+if ! { grep -qx 'HOSTNAME=h1' <<<"$out" && grep -qx 'MIRROR=http://m.example/debian' <<<"$out"; }; then
+  echo "FAIL settings-are-emitted: $out"; fail=1
+fi
+
+# --check-config (used by build-iso.sh): validates the file only, never prints a password
+out=$("$PLAN" --check-config --config "$(conf 'TARGET_DISK=/dev/vda' 'ROOT_PASSWORD=s3cret')" 2>/dev/null); rc=$?
+if [ "$rc" != 0 ] || ! grep -qx 'CONFIG=ok' <<<"$out" || grep -q s3cret <<<"$out"; then echo "FAIL check-config-valid: rc=$rc $out"; fail=1; fi
+"$PLAN" --check-config --config "$(conf 'NOPE=1')" >/dev/null 2>&1; rc=$?
+[ "$rc" = 3 ] || { echo "FAIL check-config-unknown-key: rc=$rc"; fail=1; }
 
 [ "$fail" = 0 ] && echo "test-dr-plan: OK"
 exit "$fail"

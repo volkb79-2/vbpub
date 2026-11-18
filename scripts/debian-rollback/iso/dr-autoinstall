@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# dr-autoinstall: runs INSIDE the live system booted from the debian-rollback ISO and installs Debian on btrfs with
+# snapshot/rollback (poc/install-btrfs.sh) on ONE disk chosen by dr-plan. Started by the live-config hook when the
+# kernel command line has dr.mode=auto; it can also be run by hand (`/run/live/medium/dr/dr-autoinstall`).
+#
+# Order: network (DHCP) -> config (CIDATA stick, else ISO-embedded /dr/dr-install.conf, else dr.config=https://URL)
+#        -> disk decision (dr-plan: refuses when unsure) -> tools via apt -> install-btrfs.sh -> poweroff|reboot|none.
+# Console markers for test drivers: DR-AUTOINSTALL-START, -CONFIG, -PLAN, -REFUSED, -CONFIRM, -INSTALL, -DONE rc=N.
+# It never writes to any device other than the one dr-plan returned, and it re-checks that device right before.
+#
+# Command line (all optional): dr.mode=auto  dr.after=poweroff|reboot|none (default poweroff: the ISO is still
+# attached, a reboot would install again)  dr.config=https://...  dr.confirm-timeout=SECONDS (default 120)
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUN=/run/dr
+LOG=/var/log/dr-autoinstall.log
+mkdir -p "$RUN"
+exec > >(tee -a "$LOG") 2>&1
+
+say() { echo "dr-autoinstall: $*"; }
+marker() { echo "DR-AUTOINSTALL-$*"; }
+# shellcheck disable=SC2013  # kernel parameters are whitespace separated words
+cmdline_param() { local p; for p in $(cat /proc/cmdline); do case "$p" in "$1="*) echo "${p#*=}"; return 0 ;; esac; done; return 1; }
+finish() { # finish RC ; honours dr.after
+  local rc=$1 after; after=$(cmdline_param dr.after || echo poweroff)
+  marker "DONE rc=$rc"
+  case "$after" in
+    reboot) [ "$rc" != 0 ] || { sync; systemctl reboot; } ;;
+    poweroff) [ "$rc" != 0 ] || { sync; systemctl poweroff; } ;;
+    *) : ;;
+  esac
+  exit "$rc"
+}
+refuse() { marker "REFUSED $*"; say "REFUSED: $*; nothing was written to any disk"; finish 3; }
+
+marker START
+mode=$(cmdline_param dr.mode || echo manual)
+say "mode=$mode payload=$HERE"
+
+# --- network ---------------------------------------------------------------------------------------------------
+for ifc in /sys/class/net/*; do
+  n=${ifc##*/}; [ "$n" != lo ] || continue
+  ip link set "$n" up 2>/dev/null || true
+done
+dhcpcd -4 -w -t 60 >/dev/null 2>&1 || say "dhcpcd returned non-zero (continuing; apt will fail clearly if there is no network)"
+
+# --- config ----------------------------------------------------------------------------------------------------
+CONFIG=""; CONFIG_SRC=none; CONFIG_DISK=""
+stick=$(blkid -L CIDATA 2>/dev/null | head -n1 || true)
+if [ -n "$stick" ]; then
+  mkdir -p "$RUN/cidata"
+  if mount -o ro "$stick" "$RUN/cidata" 2>/dev/null; then
+    if [ -f "$RUN/cidata/dr-install.conf" ]; then
+      cp "$RUN/cidata/dr-install.conf" "$RUN/config"; CONFIG=$RUN/config; CONFIG_SRC="cidata:$stick"
+      CONFIG_DISK=$(lsblk -no PKNAME "$stick" 2>/dev/null | head -n1); [ -n "$CONFIG_DISK" ] || CONFIG_DISK=${stick#/dev/}
+    fi
+    umount "$RUN/cidata" 2>/dev/null || true
+  fi
+fi
+if [ -z "$CONFIG" ] && [ -f "$HERE/dr-install.conf" ]; then CONFIG=$HERE/dr-install.conf; CONFIG_SRC="iso-embedded"; fi
+if [ -z "$CONFIG" ]; then
+  url=$(cmdline_param dr.config || true)
+  case "$url" in
+    https://*) if curl -fsS --max-time 30 -o "$RUN/config" "$url"; then CONFIG=$RUN/config; CONFIG_SRC="url"; else refuse "dr.config URL could not be fetched"; fi ;;
+    "") : ;;
+    *) refuse "dr.config must be an https:// URL" ;;
+  esac
+fi
+marker "CONFIG source=$CONFIG_SRC"
+
+# --- disk decision ---------------------------------------------------------------------------------------------
+excl=()
+# the booted medium, the config stick, and every disk with something mounted or used as swap
+med=$(findmnt -no SOURCE /run/live/medium 2>/dev/null || true)
+if [ -n "$med" ]; then d=$(lsblk -no PKNAME "$med" 2>/dev/null | head -n1); [ -n "$d" ] || d=${med#/dev/}; excl+=(--exclude "$d"); fi
+[ -z "$CONFIG_DISK" ] || excl+=(--exclude "$CONFIG_DISK")
+for n in $(lsblk -dnr -o NAME,TYPE | awk '$2=="disk" {print $1}'); do
+  if lsblk -nr -o MOUNTPOINTS "/dev/$n" 2>/dev/null | grep -q . ; then excl+=(--exclude "$n"); fi
+done
+lsblk -dnbP -o NAME,TYPE,ROTA,RM,SIZE,TRAN >"$RUN/lsblk"
+if [ -n "$CONFIG" ]; then cfgarg=(--config "$CONFIG"); else cfgarg=(--no-config); fi
+plan=$("$HERE/dr-plan" --lsblk "$RUN/lsblk" "${cfgarg[@]}" "${excl[@]}") && rc=0 || rc=$?
+[ "$rc" = 0 ] || refuse "dr-plan refused (reason in the line above)"
+decision=$(sed -n 's/^DECISION=//p' <<<"$plan"); target=$(sed -n 's/^TARGET=//p' <<<"$plan")
+marker "PLAN decision=$decision target=$target"
+[[ "$target" =~ ^/dev/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || refuse "dr-plan returned a malformed target"
+declare -A S=()
+while IFS='=' read -r k v; do case "$k" in HOSTNAME|SUITE|MIRROR|SECURITY_MIRROR|ROOT_PASSWORD) S[$k]=$v ;; esac; done <<<"$plan"
+
+if [ "$decision" = confirm ]; then
+  t=$(cmdline_param dr.confirm-timeout || echo 120)
+  marker "CONFIRM target=$target"
+  printf '\nNo install config was found. ERASE ALL DATA on %s ? Type exactly "ERASE %s" within %s s: ' "$target" "${target#/dev/}" "$t" >/dev/console
+  ans=""; read -r -t "$t" ans </dev/console || true
+  [ "$ans" = "ERASE ${target#/dev/}" ] || refuse "no confirmation typed for $target"
+elif [ "$decision" != install ]; then
+  refuse "unexpected decision '$decision'"
+fi
+
+# the plan was made a moment ago: re-check the target is still a whole, unmounted disk right before the wipe
+[ -b "$target" ] || refuse "$target is not a block device"
+[ "$(lsblk -dno TYPE "$target" 2>/dev/null)" = disk ] || refuse "$target is not a whole disk"
+! lsblk -nr -o MOUNTPOINTS "$target" | grep -q . || refuse "$target has mounted partitions"
+
+# --- tools, then the install -----------------------------------------------------------------------------------
+marker "INSTALL target=$target"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq || { say "apt-get update failed"; finish 1; }
+apt-get install -y -qq --no-install-recommends debootstrap btrfs-progs gdisk dosfstools parted \
+  >"$RUN/apt-tools.log" 2>&1 || { tail -n 20 "$RUN/apt-tools.log"; say "installing the installer tools failed"; finish 1; }
+
+args=(--device "$target" --yes)
+[ -z "${S[HOSTNAME]:-}" ] || args+=(--hostname "${S[HOSTNAME]}")
+[ -z "${S[SUITE]:-}" ] || args+=(--suite "${S[SUITE]}")
+[ -z "${S[MIRROR]:-}" ] || args+=(--mirror "${S[MIRROR]}")
+[ -z "${S[SECURITY_MIRROR]:-}" ] || args+=(--security-mirror "${S[SECURITY_MIRROR]}")
+pw=${S[ROOT_PASSWORD]:-}
+if [ -z "$pw" ]; then
+  pw=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 16)
+  marker "ROOT-PASSWORD-GENERATED $pw"   # printed once on the console; the config set none
+fi
+args+=(--root-password "$pw")
+
+"$HERE/install-btrfs.sh" "${args[@]}"
+irc=$?
+say "install-btrfs.sh exit $irc"
+finish "$irc"

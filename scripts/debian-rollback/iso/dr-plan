@@ -30,7 +30,7 @@ if [ -z "$PICK" ]; then
 fi
 [ -x "$PICK" ] || { echo "dr-plan: dr-pick-disk not found" >&2; exit 2; }
 
-LSBLK="" CONFIG="" NOCONFIG=0 MINGIB=8
+LSBLK="" CONFIG="" NOCONFIG=0 MINGIB=8 CHECK=0
 declare -a EXCLUDE_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -39,10 +39,12 @@ while [ $# -gt 0 ]; do
     --no-config) NOCONFIG=1; shift ;;
     --exclude) EXCLUDE_ARGS+=(--exclude "${2:?}"); shift 2 ;;
     --min-gib) MINGIB=${2:?}; shift 2 ;;
+    --check-config) CHECK=1; shift ;;   # validate --config only (no disks involved): prints CONFIG=ok and the settings
     *) echo "dr-plan: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$LSBLK" ] || { echo "dr-plan: --lsblk is required" >&2; exit 2; }
+[ "$CHECK" = 1 ] || [ -n "$LSBLK" ] || { echo "dr-plan: --lsblk is required" >&2; exit 2; }
+[ "$CHECK" = 0 ] || [ "$NOCONFIG" = 0 ] || { echo "dr-plan: --check-config needs --config" >&2; exit 2; }
 if [ "$NOCONFIG" = 1 ] && [ -n "$CONFIG" ]; then echo "dr-plan: --config and --no-config are exclusive" >&2; exit 2; fi
 if [ "$NOCONFIG" = 0 ] && [ -z "$CONFIG" ]; then echo "dr-plan: give --config FILE or --no-config" >&2; exit 2; fi
 
@@ -64,6 +66,13 @@ if [ "$NOCONFIG" = 0 ]; then
     [[ "$val" =~ ^[A-Za-z0-9_./:@,+=-]*$ ]] || refuse "config line $lineno: value of $key has a character outside A-Za-z0-9_./:@,+=-"
     CFG[$key]=$val
   done <"$CONFIG"
+fi
+
+if [ "$CHECK" = 1 ]; then
+  echo "CONFIG=ok"
+  for k in TARGET_DISK HOSTNAME SUITE MIRROR SECURITY_MIRROR; do [ -z "${CFG[$k]:-}" ] || echo "$k=${CFG[$k]}"; done
+  [ -z "${CFG[ROOT_PASSWORD]:-}" ] || echo "ROOT_PASSWORD=(set)"   # never echoed back
+  exit 0
 fi
 
 # every qualifying disk, in preference order (dr-pick-disk owns the qualification rules)
