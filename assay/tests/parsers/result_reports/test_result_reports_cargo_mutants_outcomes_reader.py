@@ -105,6 +105,24 @@ def test_a_report_inside_its_command_window_is_accepted():
     assert read(_raw("full"), window=_window()).finished is True
 
 
+def test_read_verified_forwards_the_context_window_to_the_windowed_reader():
+    assert read_verified(FORMAT, _raw("full"), context=_window()).total == 26
+    stale = ReportWindow(
+        started=_at("2030-01-01T00:00:00Z"), ended=_at("2030-01-01T00:01:00Z")
+    )
+    with pytest.raises(ReportUnusable, match="not this command's report"):
+        read_verified(FORMAT, _raw("full"), context=stale)
+
+
+def test_read_verified_ignores_a_context_for_a_format_without_a_window():
+    raw = json.dumps(
+        {"success": True, "numTotalTests": 3, "numPassedTests": 3, "numFailedTests": 0}
+    ).encode()
+    assert read_verified("vitest-json", raw, context=_window()) == read_verified(
+        "vitest-json", raw
+    )
+
+
 def test_the_tolerance_is_five_seconds_each_side_and_fixed():
     assert CARGO_MUTANTS_CLOCK_TOLERANCE_SECONDS == 5
 
