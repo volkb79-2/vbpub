@@ -387,6 +387,51 @@ def test_limited_diff_matches_the_unlimited_no_renames_diff_for_judged_paths(
         ) == ("alias", "real/src")
 
 
+def test_outside_root_symlink_leaf_is_an_accepted_diff_narrowing(
+    git_repo: GitRepo,
+):
+    """A tracked symlink leaf outside ``src`` whose target is inside ``src``
+    is present in the unlimited diff but absent from the limited diff. The
+    real in-root change remains identical in both."""
+    git_repo.write("src/a.py", "one\n")
+    base = git_repo.commit_all("seed the real in-root source")
+    git_repo.write("src/a.py", "one\ntwo\n")
+    (git_repo.path / "alias.py").symlink_to("src/a.py")
+    head = git_repo.commit_all("edit the source and add an outside-root symlink")
+
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "src",))
+    judge = replace(judge, source_roots=("src",))
+    lane = make_lane(rigor=("R0", "R1"), judge=judge)
+    limited_text = git.run(
+        git_repo.path,
+        *runner._request_base_diff_args(
+            lane,
+            repo_top=git_repo.path,
+            project_root=git_repo.path,
+            base_rev=base,
+            head_rev=head,
+        ),
+    )
+    unlimited_text = git.run(
+        git_repo.path,
+        "diff",
+        "--unified=0",
+        "--no-renames",
+        base,
+        head,
+    )
+
+    assert "alias.py" in unlimited_text
+    assert "alias.py" not in limited_text
+    limited = dict(parse_added_lines(limited_text).by_file)
+    unlimited = dict(parse_added_lines(unlimited_text).by_file)
+    assert limited == {"src/a.py": frozenset({2})}
+    assert limited["src/a.py"] == unlimited["src/a.py"]
+    # Accepted narrowing: Git's symlink diff text is the link target
+    # (``src/a.py``), not source lines, so alias.py cannot produce a real
+    # mutation candidate of its own. The target is still diffed under src/a.py.
+
+
 def test_no_usable_pathspec_keeps_the_full_diff_without_an_empty_separator(
     git_repo: GitRepo, tmp_path: Path
 ):
