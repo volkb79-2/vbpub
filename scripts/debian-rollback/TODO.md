@@ -1,8 +1,14 @@
 # Next steps
 
-State 2026-11-12: the VM tool packages VML-01 to VML-03b are merged; no real
-guest has been started yet. Decisions and reasons are in
-[docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md).
+State 2026-11-18: the btrfs variant (own snapshots, ESP GRUB menu) installs, boots,
+snapshots before apt, rolls back through the menu and survives a kernel upgrade in a
+guest; see [docs/MILESTONES-2026-11-18.md](docs/MILESTONES-2026-11-18.md) (plan),
+[docs/RESULTS-M1-RUN2-2026-11-18.md](docs/RESULTS-M1-RUN2-2026-11-18.md) and
+[docs/RESULTS-M1-RUN3-KERNEL-2026-11-18.md](docs/RESULTS-M1-RUN3-KERNEL-2026-11-18.md)
+(results, with what is NOT verified). The PoC tools are in `poc/`. Next: S5 (broken
+initramfs, recovery through the GRUB menu), the strengthened s2-s3 re-run, then the
+systemd-boot and ZFS variants of the M1 matrix, then the unattended ISO (M2).
+Decisions and reasons are in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md).
 
 **The plan for everything that remains is
 [docs/WORK-PACKAGES.md](docs/WORK-PACKAGES.md)** (written 2026-11-12): package
