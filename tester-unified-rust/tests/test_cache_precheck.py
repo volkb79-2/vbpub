@@ -9,6 +9,7 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HOSTOBS_ROOT = Path(os.environ["HOSTOBS_ROOT"])
 _CACHE_MODULE = HOSTOBS_ROOT / "tools" / "verify-crate-cache.py"
@@ -285,11 +286,27 @@ class CachePrecheckTests(unittest.TestCase):
         real = HOSTOBS_ROOT / "Cargo.lock"
         document = tomllib.loads(real.read_text(encoding="utf-8"))
         canonical = verify_crate_cache.canonical_registry_set(document)
-        members = [p["name"] for p in document["package"] if "source" not in p]
+        members = {p["name"] for p in document["package"] if "source" not in p}
+        sourced = sorted(p["name"] for p in document["package"] if "source" in p)
         self.assertTrue(members)
-        for name in members:
-            self.assertNotIn(f"{name} ", canonical)
-        self.assertTrue(canonical.startswith(f"lock-version {document['version']}\n"))
+        lines = canonical.splitlines()
+        self.assertEqual(lines[0], f"lock-version {document['version']}")
+        first_tokens = [line.split(" ", 1)[0] for line in lines[1:]]
+        self.assertEqual(first_tokens, sourced)
+        self.assertFalse(members & set(first_tokens))
+
+    def test_verify_reads_and_parses_the_lock_exactly_once(self) -> None:
+        reads = []
+        original = Path.read_text
+
+        def counting(path: Path, *args: object, **kwargs: object) -> str:
+            if path == self.lock:
+                reads.append(path)
+            return original(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", counting):
+            self.assertEqual(self.verify(), ["sample-crate-1.2.3.crate"])
+        self.assertEqual(len(reads), 1)
 
     def test_extra_cached_archive_is_refused(self) -> None:
         extra = self.cache / "extra-0.1.0.crate"

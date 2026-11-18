@@ -172,7 +172,8 @@ def verify(
         raise CacheMismatch(f"baked Cargo.lock registry identity is missing or unreadable: {exc}") from exc
     if not _SHA256.fullmatch(expected_digest):
         raise CacheMismatch(f"baked Cargo.lock registry identity is malformed: {baked_registry_sha256_path}")
-    actual_digest = registry_set_digest(lock_path)
+    # Same parsed document as the package checks above: the lock is read exactly once.
+    actual_digest = hashlib.sha256(canonical_registry_set(document).encode("utf-8")).hexdigest()
     if actual_digest != expected_digest:
         raise CacheMismatch(
             "Cargo.lock registry set differs from the registry set baked into tester-unified-rust; "
