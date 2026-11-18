@@ -69,6 +69,21 @@ if [ -z "$CONFIG" ]; then
 fi
 marker "CONFIG source=$CONFIG_SRC"
 
+# TARGET_DISK=/dev/disk/by-id/... (stable on a real host, unlike sda/sdb): resolve it to the kernel name here, then let
+# dr-plan judge the kernel name like any other. A by-id link to a partition resolves to a partition and is refused there.
+if [ -n "$CONFIG" ]; then
+  spec=$(sed -n 's/^TARGET_DISK=//p' "$CONFIG" | head -n1)
+  case "$spec" in
+    /dev/disk/by-*)
+      [[ "$spec" =~ ^/dev/disk/by-[a-z]+/[A-Za-z0-9_.:@+=-]+$ ]] || refuse "TARGET_DISK '$spec' is not a plain /dev/disk/by-*/NAME path"
+      real=$(readlink -f -- "$spec" 2>/dev/null || true)
+      [ -b "$real" ] || refuse "TARGET_DISK $spec does not resolve to a block device"
+      sed "s|^TARGET_DISK=.*|TARGET_DISK=$real|" "$CONFIG" >"$RUN/config.resolved"
+      CONFIG=$RUN/config.resolved
+      marker "TARGET-RESOLVED $spec -> $real" ;;
+  esac
+fi
+
 # --- disk decision ---------------------------------------------------------------------------------------------
 excl=()
 # the booted medium, the config stick, and every disk with something mounted or used as swap
