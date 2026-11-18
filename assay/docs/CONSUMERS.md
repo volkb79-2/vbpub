@@ -2891,7 +2891,8 @@ argv = [
   "--test-tool", "nextest",
   "--test-workspace=true",
   "--jobs", "1",
-  "--timeout", "120",
+  "--timeout-multiplier", "10",
+  "--minimum-test-timeout", "120",
   "--cargo-arg=--locked",
   "--cargo-arg=--offline",
   "--in-diff", "{assay.changed_diff}",
@@ -2940,15 +2941,25 @@ above, with the comparison base from the gate request (`base_source =
   KILLED. With the default `cargo test` a failing test exits 101, which assay
   reads as `Crashed`, so every kill becomes a crash and the lane ends
   `ERROR/EXEC_FAILED`: loud, never a false pass, but useless.
-- `--test-workspace=true` (or `=false`) must be written explicitly. The unset
-  default tests only the mutated package, so a crate whose tests live in another
-  package has no tests of its own, nextest exits 4 and every mutant is
-  `Crashed`. With `=true`, `--jobs N` multiplies the per-mutant cost by the whole
-  workspace's test time; scale `--jobs` and `budget` only after measuring your
-  workspace.
+- `--test-workspace=true` (or `=false`) should be written explicitly; this is a
+  recommendation, not a rule: the lane loads without it (the template's loading
+  test does not depend on it). The unset default tests only the mutated package,
+  so a crate whose tests live in another package has no tests of its own,
+  nextest exits 4 and every mutant is `Crashed`. With `=true`, `--jobs N`
+  multiplies the per-mutant cost by the whole workspace's test time; scale
+  `--jobs` and `budget` only after measuring your workspace.
 - `--cargo-arg=--locked --cargo-arg=--offline`: the gate has no network and the
-  lock file is the contract. `--timeout <seconds>` bounds each mutant's test run;
-  a mutant that exceeds it is a `Timeout` (see the terminals below).
+  lock file is the contract.
+- `--timeout-multiplier 10 --minimum-test-timeout 120` is the decided timeout
+  set (D8, `RUST-R3A-SPIKES.md`): the per-mutant limit scales with the baseline
+  test time, with a floor. Which flag sets were MEASURED: the D8 set was accepted
+  by cargo-mutants 27.1.0 in spike 5b (with `--jobs 2`); a fixed `--timeout 20
+  --jobs 1` was the set of the U0 capture (`rust-b245-u0/scripts/run-u0.sh`). A
+  fixed `--timeout 120` was measured nowhere. A fixed `--timeout <seconds>` under
+  `--test-workspace=true` is risky: if it is shorter than the workspace's test
+  time every mutant becomes a `Timeout`, and `Timeout` outranks survivors, so the
+  lane ends `BUDGET_EXCEEDED` (see the terminals below). A mutant that exceeds
+  the limit is a `Timeout`.
 - `--in-diff {assay.changed_diff}` is the changed-lines restriction.
 - `--output <out>` is the directory assay reserves and reads; see below.
 
@@ -2988,10 +2999,13 @@ load refuses a lane whose spellings disagree, and also:
   `crates/core/src`, not the crate directory `crates/core`, when the output
   directory sits beside the sources (and never put it under `src`).
 
-At run time `<out>` must be untracked at the commit (`ERROR/BAD_LANE_CONFIG`
-otherwise) and EMPTY at the start. A non-empty in-tree `<out>` is copied into
-the tree the tests run against (measured, `.gitignore` or not), so assay
-refuses it as `ERROR/UNREADABLE_ARTIFACT` and never writes into the directory.
+At run time `<out>` must be untracked at the commit and EMPTY at the start. A
+non-empty in-tree `<out>` is copied into the tree the tests run against
+(measured, `.gitignore` or not), so assay refuses it as
+`ERROR/UNREADABLE_ARTIFACT` ("not empty") and never writes into the directory.
+A tracked `<out>` ends this way end to end: the materialised tracked file makes
+the directory non-empty and that reservation refuses first. (`BAD_LANE_CONFIG` is
+only the runner's own tracked-path branch, reached at unit level.)
 
 **The workspace-root rule.** The lane's `cwd` must be inside a cargo workspace
 or be a lone package. Assay anchors the tool's `file` paths, and the diff's
@@ -3000,10 +3014,11 @@ up from the lane's cwd and reading each manifest from the COMMITTED blob, never
 from the checkout the command could have edited; a lone package is its own
 root. No workspace and no package manifest is `ERROR/BAD_LANE_CONFIG` before the
 command runs. A wrong anchor silently selects nothing (exit 0), which is the
-zero-mutant case below, never a PASS. A workspace member DIRECTORY named `b` (and,
-to be safe, `a`) is unsupported: measured, it matched no mutant for an unexplained
-reason, and the qualification lint (U7) will refuse such members. Rename the
-directory (the package name does not matter).
+zero-mutant case below, never a PASS. A workspace member DIRECTORY named `b` is
+unsupported: measured, it matched no mutant for an unexplained reason. Only `b`
+was run; `a` was NOT run (refused as a precaution, so it is unmeasured). The
+qualification lint (U7) will refuse such members. Rename the directory (the
+package name does not matter).
 
 ### The terminals
 
@@ -3015,11 +3030,12 @@ directory (the package name does not matter).
 | An unreadable, tampered or stale report (outside the command's time window, `end_time` null, a mutant with no consistent diff, a rotated `mutants.out.old`, a symlink, a hard link, a missing member), or a non-empty `<out>` | `ERROR` / `UNREADABLE_ARTIFACT` |
 | The baseline test run failed (`cargo-mutants` exit 4) | R0 `FAIL`, decided by the report |
 | No report, exit 0, on a `changed_lines` lane that was handed the diff (nothing to mutate) | `INCONCLUSIVE` / `NO_MUTANTS`, with `judgment.r2.report_absent` true and producer version `unobserved` |
-| Any other absent report (no diff handoff, a failed exit, a refused or never-read directory) | fails closed: `ERROR` / `UNREADABLE_ARTIFACT`, or R0 decided by the exit code |
+| Any other absent report (no diff handoff, a failed exit, a refused directory) | fails closed: `ERROR` / `UNREADABLE_ARTIFACT`, or R0 decided by the exit code |
+| A directory that was never read (the run ended before the command's result was consumed) | `ERROR` / `EXEC_FAILED`, not `UNREADABLE_ARTIFACT` (under a timeout the run ends `BUDGET_EXCEEDED`) |
 
-The timeout bucket outranks survivors, so a run with both a survivor and a
-timed-out mutant reports `BUDGET_EXCEEDED`, not `FAIL`; the survivors are still
-listed. A run whose report is usable and fresh decides R0 whatever the tool's
+The precedence is crashed > timeout > survivors. The timeout bucket outranks
+survivors, so a run with both a survivor and a timed-out mutant reports
+`BUDGET_EXCEEDED`, not `FAIL`; the survivors are still listed. A run whose report is usable and fresh decides R0 whatever the tool's
 exit code was (1, 70, -9, 4); only an absent, stale or unusable report leaves R0
 to the exit code, and R2 then fails closed. A zero-mutant run is never a PASS:
 `lines_without_candidates` lists the diff's added lines under your

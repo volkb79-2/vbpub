@@ -23,7 +23,7 @@ linking against assay itself.
   the standard vbpub `tester-unified` image supplies Go, while custom judging
   images must provide it. See the [Go lane consumer guide](docs/CONSUMERS.md#go-lanes-what-exists-today-and-what-a-go-lane-will-require)
   and [DESIGN-GUIDE §10](docs/DESIGN-GUIDE.md#10-fixture-projects-and-the-go-toolchain-constraint).
-  Rust is supported at **R1 only** — changed-line LCOV judgment for `.rs`
+  Rust is supported at **R1 natively; R2 only by ingestion** — changed-line LCOV judgment for `.rs`
   files; the lane must supply a real Rust toolchain. Stable Rust branch totals
   are reported as unavailable, and R3 remains unregistered. Rust R2 exists only
   by ingesting cargo-mutants' `outcomes.json` (format `cargo-mutants-outcomes`,
