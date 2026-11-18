@@ -77,3 +77,16 @@ Open work. Each item names what it needs and what closes it. Consumers: `ciu wor
   target-specific fallback and the original refusal or short-I/O oracle.
   Close when no non-delegating exact-symbol patch remains and the registered
   R0/R1 lane passes on a clean final commit.
+
+* **COW-BL-11 one path standard for the estate (RP series, operator 2026-11-17).** Every script and test takes ISO, base-image and VM-state paths from `cowtree.toml` in the repo root through this library's resolver (`libraries/cowtree/repo-path`, `cowtree.repo_paths`); the checkout stays on ext4 and only the declared folders are CoW subvolumes under `$MDT_COW_ROOT/<repo-name>/`. The VM tool became the top-level project `vm-lab/`. Each package: Sonnet implements, an independent Sonnet reviews, serial merges, gates; one Opus review of the whole series at the end. Briefs, reports and gate logs are local (gitignored) under `artifacts/cowtree-migration/` for packages from RP-06 on; earlier ones are under `artifacts/debian-rollback/`. The rollback project depends only on RP-01 and RP-02 (the VM lab and shared base images).
+
+  | Id | Content | State |
+  |---|---|---|
+  | RP-01 | `cowtree.toml` (first `repo-paths.toml`, then `vm-lab.toml`), write-free resolver and `cowtree path` verb, standard docs (AGENTS.md, BTRFS-COW.md, MDT-044, downloads README) | merged 2026-11-17 (vbpub@27094ecbd); lane run on a throwaway commit without the observer declaration; re-run normally in a rebuilt container |
+  | RP-01b | rename to `cowtree.toml`, ownership table in the SPEC, old-name migration hint | merged 2026-11-18 (vbpub@9efe0199f) |
+  | RP-02 | top-level `vm-lab/` project (package, console script, QEMU image Dockerfile, `vmscreen` dependency, Pillow extra, lock dir for installed wheels) | merged 2026-11-17 (vbpub@ce21db7e0); open: cmru/assay registration, vmscreen floor, image and wheel never built |
+  | RP-03 | `scripts/truenas` and `truenas/tnt` on the resolver | merged 2026-11-18 (vbpub@509c46ce1) |
+  | RP-04 | debian-install-v2 harness, mounttrace, zswap synthetic runner, netcup example strings and docs on the resolver | implemented (branch rp-04), review pending |
+  | RP-06 | move the flat `downloads/` files into `iso/` and `vm-images/`; follow-ups from the RP-03 review (patcher flat-file fallback, sudo-owned `iso` folder, docs snippet `mkdir -p`, unguarded `sys.path` inserts, a lost tnt hardening check, consumer-level old-name tests); `iso/` and `vm-images/` placeholders | open, after RP-04 |
+  | RP-07 | design (frontier): VMs as `ciu up` services, one container per VM, ciu stack template, graceful stop through QMP, how vm-lab admission rules apply when ciu starts the container | open, design only |
+  * **Closes when.** No script, test or doc outside cowtree names a literal ISO, image or VM-state folder, and the series has had its Opus review.

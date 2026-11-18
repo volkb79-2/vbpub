@@ -229,27 +229,16 @@ brief after VML-04 to VML-06 have shown what scenarios really call.
 
 Lowest priority. Only pwmcp benefits; schedule when pwmcp work wants it.
 
-### Track P: one path standard and a vm-lab project (operator 2026-11-17)
+### Dependency on the path standard (RP series)
 
-Decisions: every script and test takes ISO, base-image and VM-state paths from
-one config in the repo root (`repo-paths.toml`) through a resolver in cowtree;
-the checkout stays on ext4 and only selected folders are CoW subvolumes under
-`$MDT_COW_ROOT/<repo-name>/` (one set per user and repo); the VM tool becomes a
-top-level project `vm-lab/` (wheel, console script, its own QEMU image
-Dockerfile, release lane) that depends on the `vmscreen` wheel; both wheels go
-into the mdt-cockpit image later. Each package: Sonnet implements, an independent
-Sonnet reviews, serial merges, full gates; one Opus review of the whole series at
-the end (operator 2026-11-17).
-
-| Id | Content | State |
-|---|---|---|
-| RP-01 | `cowtree.toml` (now named after its owner cowtree, RP-01b; first `repo-paths.toml`, then `vm-lab.toml`), write-free resolver and `cowtree path` verb in cowtree, standard docs (AGENTS.md, BTRFS-COW.md, MDT-044, downloads README) | **merged 2026-11-17** (vbpub@27094ecbd; 4 fix rounds, two Sonnet reviews MERGE). Gate: cowtree lane PASS with 100% coverage on the rp-01 head plus a throwaway commit that removed the lane's `resource_observer = "cgprofile"` line (observer lanes cannot run while the host cgprofile environment is being replaced; `RUN_GATE_PROFILE=off` does not waive that preflight); the throwaway commit was dropped before the merge. Re-run the lane normally after the cgprofile cut |
-| RP-02 | Create top-level `vm-lab/` from the VM tool's former place under `scripts/` (git mv, pyproject and wheel, console script `vm-lab`, `vmscreen` as a dependency instead of PATH probing, QEMU image Dockerfile, `cmru.toml`/`assay.toml`/`run-gate.toml`, defaults for network and slice from the environment, state and base paths through the resolver); the TrueNAS front imports the package | **merged 2026-11-17** (vbpub@ce21db7e0; Sonnet impl, Sonnet review FIX-FIRST then MERGE). Not done: cmru/assay registration (later, with the release program), vmscreen version floor, image never built, wheel never built; Pillow is the optional extra `vm-lab[record]`; admission lock dir via `--lock-dir`/`VM_LAB_ADMISSION_LOCK_DIR` for installed wheels. RP-03 (TrueNAS) running, RP-04 (debian-install-v2, zswap, docs; RP-05 folded in) briefed |
-| RP-03 | `scripts/truenas` (`vanilla-iso-patcher` DOWNLOADS_DIR, `golden-iso`, `tcg_vm.py` default state dir, docs) and `truenas/tnt` (TNT-59, the `test_hardening.py` pin) on the resolver | open |
-| RP-04 | debian-install-v2 harness (`HOST_DOWNLOADS_DIR`, `vmctl`, its boundary tests) on the resolver | open |
-| RP-05 | netcup consumer docs, pwmcp console-capture, zswap synthetic runner, io-governor doc | open |
-| RP-06 | Move the existing flat `downloads/` files into `iso/` and `vm-images/` (CoW subvolumes, convert the cloud image to raw), `.sha256` beside each; remove the old locations | open, after RP-03 to RP-05 |
-| RP-07 | Design (frontier): VMs as `ciu up` services, one container per VM, ciu stack template for a vm-lab VM, graceful stop through QMP, how vm-lab's admission rules (memory pressure, guest cap, locks) apply when ciu starts the container | open, design only |
+This project depends on two packages of the estate-wide path standard, both
+merged 2026-11-17: **RP-01** (`cowtree.toml` and the resolver, so VM state,
+shared base images and ISOs have one declared place, CoW on btrfs hosts) and
+**RP-02** (the VM tool as the top-level project `vm-lab/`). The rest of the
+series (RP-03 onwards: migrating TrueNAS, tnt, debian-install-v2, mounttrace,
+netcup docs, moving the flat downloads files, VMs as ciu services) is not
+rollback work. It is tracked as **COW-BL-11 in `libraries/cowtree/BACKLOG.md`**
+and nothing here waits for it.
 
 ### First real guest (after RP-02, or before with explicit env)
 
