@@ -63,6 +63,14 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-48 | A history block cannot name its subject (kind 6 `subject`, minor 1); the time-length half is the P0 bug fold-in's (`TIME_BUCKET_BYTES = 15`, no minor) | Major | OPEN (P2) |
 | HOB-49 | `hostobs_wire_ref.py` cites a non-existent `docs/WIRE-COLUMN-CODEC.md` instead of `docs/WIRE.md` | Minor | OPEN |
 | HOB-50 | Frame header and directory checks: `SECTIONED` is accepted on every frame type, and the directory vector is allocated from `n_sec` before its bytes are proven present | Minor | OPEN (P2) |
+| HOB-51 | Received frames are not held to the alignment and header-first rules: a section `len` not a multiple of 8 and an unknown section before the header both decode | Minor | OPEN (P2) |
+| HOB-52 | A metric repeated with other facts is `conflicting-column` in Rust and `duplicate-dictionary-entry` in the Python reference | Minor | OPEN (P2) |
+| HOB-53 | The Python reference checks buffer length before `not-a-block`, so a truncated REP is `truncated` in Python and `not-a-block` in Rust | Minor | OPEN (P2) |
+| HOB-54 | The stream layer machines (`FrameReader`, `ModeDetect`, `SendHub`, `ConnTimers`) do not exist yet, so no stream property of `hostobs/1` is tested | Major | OPEN (P2/P3/P5b) |
+| HOB-55 | A look-alike name such as `hot-0-18446744073709551615.seg` (or `.seg.corrupt`) set the tier's sequence water mark to `u64::MAX` before its owner was proven, so every `open_segment` failed with `LengthOverflow` until the file was removed | Minor | FIXED (P0b) |
+| HOB-56 | `StoreStats::bytes` drifted from the tiers' own byte totals: it was maintained by incremental arithmetic while a vanished file or a new segment's header changed the tier total differently | Minor | FIXED (P0b) |
+| HOB-57 | `docs/hand-mutants/m1d-mutants.py` had no per-mutant subprocess timeout, so a mutant that hangs the suite hangs the campaign | Minor | FIXED (P0b) |
+| HOB-58 | The reports of an eviction that dropped an already-gone or unremovable entry reached only `TierScan::notes`, so the caller of `append`/`evict` never saw them and a rescan reset them | Minor | FIXED (P0b) |
 
 ---
 
@@ -1049,3 +1057,84 @@ specified with fake-clock tables but have no code, so no stream property of `hos
 with the 12 reader and 19 hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row; P3: the Python
 `FrameReader` passes the same 12 reader cases and the 6 client cases; P5b: the 18 connection cases
 of §11.4 against a fake clock.
+
+## HOB-55 — A look-alike name with a huge sequence poisons the tier's water mark
+
+**Where:** `crates/store/src/format.rs` (`SegmentFileName::parse`, `SEQ_NAME_MAX`),
+`crates/store/src/tier.rs` (`rescan`, `open_segment`), `python/reference/hostobs_segment_ref.py`.
+
+`rescan` recorded `highest_seen` for every name of the tier before it proved the file was the
+store's own, so `hot-0-18446744073709551615.seg` (or the same with `.seg.corrupt`) raised the
+sequence water mark to `u64::MAX` and every later `open_segment` failed with `LengthOverflow`
+until someone removed the file. Found in the delta review of the P0 fold-in (N1).
+
+**Exit criteria.** The name parsers refuse a sequence above a bound the store can never mint, so
+every caller agrees; such a name is a look-alike (a note, never counted, adopted or deleted, and
+never raises the water mark); a name at the bound is still adopted and the sequence after it is the
+typed overflow error; both spellings are tested; the Python reference mirrors the bound; a mutant
+removes it.
+
+**FIXED (P0b).** `SEQ_NAME_MAX = u32::MAX` (136 years at one segment a second). `parse` and
+`parse_quarantined` (and the Python `parse_segment_name`/`parse_quarantine_name`) refuse a larger
+sequence in all four spellings, `open_segment` returns `LengthOverflow` once the next sequence
+would exceed it, and `docs/SEGMENT-FORMAT.md` states the rule. Tests cover `u64::MAX` and
+`SEQ_NAME_MAX + 1` in live and `.corrupt` spelling with appends still working, a name at exactly
+`SEQ_NAME_MAX` adopted with the next append refused, and the Python parity cases; stored
+hand-mutation patches `M1d-20`, not yet run.
+
+## HOB-56 — `StoreStats::bytes` drifts from the tiers' own totals
+
+**Where:** `crates/store/src/store.rs` (`write_one`, `record_event`, `evict`, `seal_all`,
+`recount`).
+
+The store kept `stats.bytes` by arithmetic (add `bytes_written`, subtract `Evicted::bytes`) while the
+tiers count differently: an entry dropped because its file was already gone leaves `Tier::bytes`
+but not `Evicted::bytes`, and a new segment's header (and a seal's footer) is in the tier total but
+not in `bytes_written`. Found in the delta review of the P0 fold-in (N2, N5).
+
+**Exit criteria.** The tiers' own totals are the single source: `stats.bytes` is recomputed from
+them after every operation that can change one and the incremental arithmetic is gone; tests
+compare it with the sum of the tiers' `bytes()` after a hand-deleted quarantined file, a
+hand-deleted live segment, a write that opens a segment and an eviction; a mutant restores the
+arithmetic.
+
+**FIXED (P0b).** `refresh_bytes` sums the history tiers and the events store and runs after every
+write, seal and eviction pass, on the error path as well; `StoreStats::bytes` documents that scope.
+Stored hand-mutation patches `M1d-18` (rewritten) and `M1d-21`, not yet run.
+
+## HOB-57 — The M1d hand-mutation script has no per-mutant timeout
+
+**Where:** `docs/hand-mutants/m1d-mutants.py`, `docs/HAND-MUTANTS-M1D.md`.
+
+A mutant that makes the suite hang (a loop that no longer ends) would hang the whole campaign: the
+script ran each suite with no subprocess timeout and left its container running. Found in the
+delta review of the P0 fold-in (N3).
+
+**Exit criteria.** `--timeout-s` bounds every run (defaults 1800 s for a Rust suite, 300 s for a
+Python one; the baseline uses the same limits); a timeout is classified `KILLED-TIMEOUT` (a hang is
+a detected mutant), counted apart in the summary, and the container of a timed-out Rust run is
+removed by its exact name; the patch count and the `--dry-run` result stay consistent (0 stale).
+
+**FIXED (P0b).** Each Rust run names its container `hostobs-mut-<pid>-<n>` and `docker rm -f` takes
+that exact name on a timeout; the method section of `docs/HAND-MUTANTS-M1D.md` documents the
+classification. The stored patch count is now 46 (`--dry-run`: 0 stale).
+
+## HOB-58 — Eviction reports never reach the caller
+
+**Where:** `crates/store/src/tier.rs` (`remove_quarantined`, `remove_segment`, `Evicted`),
+`crates/store/src/store.rs` (`Store::notes`).
+
+`remove_quarantined` and `remove_segment` reported an entry dropped because its file was already
+gone, or could not be removed, only in `scan.notes`: the caller of `append` or `evict` never saw
+it, and a rescan resets those notes. Found in the delta review of the P0 fold-in (N4).
+
+**Exit criteria.** `Evicted` carries the reports; the tier fills them in addition to `scan.notes`;
+the store copies them into its own bounded notes surface so `Store::notes()` shows them after a
+rescan; the known limit (a file that could not be removed stays on disk, uncounted, and is
+re-adopted at the next restart) is documented; tests cover both paths; a mutant removes the copy.
+
+**FIXED (P0b).** `Evicted::notes`, filled by `Tier::report`; the store keeps at most
+`MAX_EVICTION_NOTES` (256, oldest dropped first) and `Store::notes()` appends them after its
+foreign-name filter. Tests cover an already-gone quarantined file, an already-gone live segment, an
+unremovable quarantined file (a link in its place) and the write path; stored hand-mutation patches
+`M1d-22`, not yet run.

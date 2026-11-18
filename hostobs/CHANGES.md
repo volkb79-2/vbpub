@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Fixed (P0b store follow-ups)
+
+- **`HOB-55`: a look-alike name with a huge sequence no longer poisons the tier.** The store
+  never mints a segment sequence above `SEQ_NAME_MAX = u32::MAX`, so a name above it
+  (`hot-0-18446744073709551615.seg`, also `.seg.open`, `.seg.corrupt`, `.seg.open.corrupt`) is not a
+  segment name: the Rust and Python parsers refuse it, the scan notes it and never counts, adopts
+  or deletes it, and it can no longer raise the water mark to `u64::MAX` (every `open_segment`
+  used to fail with `LengthOverflow` until the file was removed). A name at exactly the bound is
+  still adopted and the next sequence is the typed overflow error.
+- **`HOB-56`: `StoreStats::bytes` is the tiers' own total.** It is recomputed from the history
+  tiers and the events store after every write, seal and eviction pass (error paths too); the
+  incremental add/subtract arithmetic, which drifted for a vanished file and for a new segment's
+  header and a seal's footer, is gone.
+- **`HOB-58`: eviction reports reach the caller.** `Evicted::notes` carries the reports of an
+  entry dropped because its file was already gone or could not be removed (a quarantined file that
+  cannot be removed stays on disk, uncounted, and the next restart adopts it again); the store keeps
+  at most `MAX_EVICTION_NOTES` (256) and `Store::notes()` shows them, surviving a tier rescan.
+- **`HOB-57`: the M1d hand-mutation script has a per-run timeout.** `--timeout-s` (default 1800 s
+  for a Rust suite, 300 s for Python); a timeout is `KILLED-TIMEOUT`, counted apart, and the
+  timed-out container is removed by its exact name `hostobs-mut-<pid>-<n>`. 46 stored patches
+  (`M1d-20` to `M1d-22` added, `M1d-18` rewritten); the campaign has still not been run.
+
 ### Fixed (P0 bug fold-in)
 
 - **`HOB-8`: `FrameHeader::parse` bounds the declared length.** It refuses a length above
