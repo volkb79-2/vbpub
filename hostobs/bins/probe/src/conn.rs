@@ -338,6 +338,12 @@ impl Conn {
         self.final_bytes.take()
     }
 
+    /// Whether final bytes are still waiting for [`Conn::take_final`].
+    #[must_use]
+    pub fn has_final(&self) -> bool {
+        self.final_bytes.is_some()
+    }
+
     /// Bytes arrived from the peer at `now_ns` (an empty read is not an event).
     pub fn on_bytes(
         &mut self,

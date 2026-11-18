@@ -7,8 +7,9 @@
 //! reader and the `hello` and `status` schemas), [`classify`] (the request precedence function,
 //! design R11), [`encode`] (the control frames, error envelope and JSON lines) and [`lines`]
 //! (the JSON line reader). Package P5b-1b adds [`backend`] (the injected identity and status
-//! source) and [`conn`] (the sans-IO connection state machine); the `Server` and the drivers
-//! arrive in later packages.
+//! source), [`conn`] (the sans-IO connection state machine) and [`server`] (the `Server` that
+//! owns the one send hub, the connections and the per-level counters); the drivers arrive in
+//! later packages.
 
 #![warn(missing_docs)]
 
@@ -20,6 +21,7 @@ pub mod conn;
 pub mod encode;
 pub mod limits;
 pub mod lines;
+pub mod server;
 pub mod verbs;
 
 /// The package name, `hostobs-probe` (the M0 scaffold identity).
