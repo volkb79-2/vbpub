@@ -603,6 +603,81 @@ def scenario_s9(g, log):
     check(log, "the system still boots its state after the episode", running_state(tag(out, "CMDLINE")) == state0, str(running_state(tag(out, "CMDLINE"))))
 
 
+def scenario_window_negative(g, log):
+    """The dedupe window must not suppress the snapshot of a different state: after a rollback (booted into the earlier
+    state A, whose own snapshot is minutes old), an apt run in A still takes a snapshot, whose btrfs parent is A. A
+    window that ignored the lineage would block it, so the check also proves the window is open for A's name."""
+    pc = _precondition(g, log)
+    if not pc or not _update_dr_state(g, log):
+        return
+    state0, _ = pc
+    before = state_list(g)
+    _, out = g.run("apt-get update -qq >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq hello "
+                   ">/var/log/dr-wn1.log 2>&1; echo APTRC:$?", 900)
+    after = state_list(g)
+    new = [s for s in after if s not in before and s.startswith("@os-pre-")]
+    check(log, "first apt run (running state) took exactly one snapshot", tag(out, "APTRC") == "0" and len(new) == 1, f"rc={tag(out, 'APTRC')} {new}")
+    if len(new) != 1:
+        return
+    a = new[0]
+    _, out = g.run(f"dr-state boot-once {a}; echo BORC:$?")
+    check(log, "boot-once accepted", tag(out, "BORC") == "0", str(tag(out, "BORC")))
+    try:
+        g.reboot()
+    except Exception as exc:  # noqa: BLE001
+        check(log, "reboot into the earlier state", False, repr(exc))
+        return
+    _, out = g.run("echo CMDLINE:$(cat /proc/cmdline)")
+    if not check(log, "running the earlier state A", running_state(tag(out, "CMDLINE")) == a, str(running_state(tag(out, "CMDLINE")))):
+        return
+    before2 = state_list(g)
+    _, out = g.run(f"dr-state _window-blocks {a} 900 $(date -u +%s); echo WB:$?")
+    check(log, "A's own name is inside the window (a lineage-blind window would block the next apt run)", tag(out, "WB") == "0", str(tag(out, "WB")))
+    _, out = g.run("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tree >/var/log/dr-wn2.log 2>&1; echo APTRC:$?; "
+                   "echo TREE:$(command -v tree || echo none)", 600)
+    after2 = state_list(g)
+    new2 = [s for s in after2 if s not in before2 and s.startswith("@os-pre-")]
+    check(log, "apt run in the rolled-back state succeeded", tag(out, "APTRC") == "0" and tag(out, "TREE") == "/usr/bin/tree", f"{tag(out, 'APTRC')} {tag(out, 'TREE')}")
+    check(log, "and took exactly one snapshot of its own", len(new2) == 1, str(new2))
+    if len(new2) == 1:
+        _, out = g.run(f"echo PARENT:$(btrfs subvolume show /.top/{new2[0]} | awk '$1==\"Parent\" && $2==\"UUID:\" {{print $3}}'); "
+                       f"echo AUUID:$(btrfs subvolume show /.top/{a} | awk '$1==\"UUID:\" {{print $2; exit}}')")
+        p, au = tag(out, "PARENT"), tag(out, "AUUID")
+        check(log, "that snapshot is a copy of A (btrfs parent uuid)", bool(p) and p == au, f"parent={p} a={au}")
+
+
+FAKE_BTRFS = ("printf '%s\\n' '#!/bin/sh' "
+              "'if [ \"$1\" = subvolume ] && [ \"$2\" = snapshot ]; then echo \"ERROR: cannot snapshot: No space left on device\" >&2; exit 1; fi' "
+              "'exec /usr/bin/btrfs \"$@\"' > /usr/local/sbin/btrfs; chmod 755 /usr/local/sbin/btrfs")
+
+
+def scenario_s9b(g, log):
+    """S9b: the apt hook's own failure path. A real full filesystem makes apt fail before our hook (S9), so this
+    SIMULATES the hook's failure: a wrapper in /usr/local/sbin makes `btrfs subvolume snapshot` fail with the ENOSPC
+    message. The Pre-Invoke hook must then stop apt before dpkg changes anything (exit 100), leave no snapshot and no
+    half state; with the wrapper removed apt works and snapshots again."""
+    pc = _precondition(g, log)
+    if not pc or not _update_dr_state(g, log):
+        return
+    state0, _ = pc
+    before = state_list(g)
+    g.run("apt-get update -qq >/dev/null 2>&1")
+    _, out = g.run(FAKE_BTRFS + "; echo WRAPRC:$?; btrfs subvolume snapshot /.top/x /.top/y >/dev/null 2>&1; echo WRAPFAIL:$?")
+    check(log, "the failing-snapshot wrapper is in place", tag(out, "WRAPRC") == "0" and tag(out, "WRAPFAIL") == "1", f"{tag(out, 'WRAPRC')} {tag(out, 'WRAPFAIL')}")
+    _, out = g.run("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq hello >/var/log/dr-s9b.log 2>&1; echo APTRC:$?; "
+                   "echo DPKGAUDIT:$(dpkg --audit | wc -l); echo HELLO:$(command -v hello || echo none); "
+                   "echo SNAPERR:$(grep -c 'No space left on device' /var/log/dr-s9b.log)", 600)
+    check(log, "apt refused to run dpkg when the snapshot failed (rc != 0)", tag(out, "APTRC") not in (None, "0"), str(tag(out, "APTRC")))
+    check(log, "nothing was installed and dpkg has nothing to repair", tag(out, "HELLO") == "none" and tag(out, "DPKGAUDIT") == "0", f"hello={tag(out, 'HELLO')} audit={tag(out, 'DPKGAUDIT')}")
+    check(log, "the failure message reached the apt log", (tag(out, "SNAPERR") or "0") != "0", str(tag(out, "SNAPERR")))
+    check(log, "no snapshot was created", state_list(g) == before, str(state_list(g)))
+    _, out = g.run("rm -f /usr/local/sbin/btrfs; hash -r; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq hello "
+                   ">/var/log/dr-s9b2.log 2>&1; echo APTRC:$?; echo HELLO:$(command -v hello || echo none)", 600)
+    after = state_list(g)
+    new = [s for s in after if s not in before and s.startswith("@os-pre-")]
+    check(log, "with the wrapper gone apt installs again and snapshots first", tag(out, "APTRC") == "0" and tag(out, "HELLO") == "/usr/bin/hello" and len(new) == 1, f"{tag(out, 'APTRC')} {tag(out, 'HELLO')} {new}")
+
+
 def scenario_s5(g, log):
     """S5: the running state's initramfs is broken. The default entry cannot boot; the earlier state, chosen in the
     GRUB menu with keys over the serial line, can. Then the earlier state is made the default (recovery)."""
@@ -682,7 +757,8 @@ def main():
     logpath = sys.argv[sys.argv.index("--log") + 1] if "--log" in sys.argv else f"/tmp/dr-serial-{name}.log"
     scenarios = {"boot-check": scenario_boot_check, "s2-s3": scenario_s2_s3, "kernel-upgrade": scenario_kernel_upgrade,
                  "s5": scenario_s5, "s6": scenario_s6, "s7": scenario_s7, "s9": scenario_s9,
-                 "backports": scenario_kernel_backports, "s8": scenario_s8}
+                 "backports": scenario_kernel_backports, "s8": scenario_s8,
+                 "window-negative": scenario_window_negative, "s9b": scenario_s9b}
     if name not in scenarios:
         print(f"unknown scenario {name}; one of {sorted(scenarios)}")
         return 2
