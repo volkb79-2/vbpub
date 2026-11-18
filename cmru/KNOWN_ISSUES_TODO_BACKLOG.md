@@ -14,6 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-186 | OPEN (migrate the remaining `subprocess.run` sites to `run_process`; 59 occurrences in 16 non-template modules after P6a; candidate effect not measured) | — |
 | KI-185 | OPEN (adopt the [cli-extended line-stream renderer proposal](../libraries/cli-extended/docs/DESIGN-LINE-STREAM-RENDERER.md) through CLI-EXT-35–CLI-EXT-40) | — |
 | KI-184 | FIXED 2026-11-18 (every line in one multi-line write is processed at a severity boundary) | `54b9d3b75` |
 | KI-183 | OPEN (the wheel-builder and probe rows and the cmru gate rows of the release preflight run only for a release that includes cmru) | — |
@@ -3952,3 +3953,34 @@ incrementally with no independent CMRU severity parser or ANSI renderer left.
 **Resolution/evidence (2026-11-18).** `_write_normal` now writes one ordinary line and returns the text after its newline. `write` loops over that remainder from line-start state, preserving the existing candidate carry-over and return length. Tests compare multiline writes with newline-separated and mid-token chunks, exhaustively check all chunkings of a small multiline sample, cover a plain line followed by a severity prefix, and pin the original input length when a held candidate precedes multiline text. Against the pre-fix code, the focused suite failed 6 tests (4 passed). Four hand mutations were killed: omitting the line-start reset (6 failures), stopping after the first newline (5), dropping the held candidate (3), and counting the held candidate in the return value (1). The focused suite passes 10 tests on the fix.
 
 **Close when.** Closed by the multiline severity boundary fix and its chunking, candidate and return-length regressions.
+
+## KI-186 - migrate the remaining `subprocess.run` sites to `run_process`
+
+**Status:** OPEN (filed 2026-11-18); severity: low (scattered subprocess keyword plumbing creates low-value mutation candidates).
+
+**Remaining sites.** `grep -c 'subprocess.run'` after P6a, excluding templates and the `process_run.py` wrapper:
+
+| Module | Count |
+| --- | ---: |
+| `bundle.py` | 2 |
+| `changelog.py` | 3 |
+| `cli.py` | 8 |
+| `config.py` | 2 |
+| `delegated.py` | 1 |
+| `gate_snapshot.py` | 3 |
+| `git_auth.py` | 1 |
+| `handlers.py` | 6 |
+| `release_notes.py` | 2 |
+| `release_preconditions.py` | 3 |
+| `runner.py` | 3 |
+| `scaffold.py` | 1 |
+| `tester_gate.py` | 7 |
+| `transaction.py` | 4 |
+| `version.py` | 8 |
+| `versions.py` | 5 |
+
+**Candidate effect.** Not measured from existing campaign evidence.
+
+**Wanted.** Migrate the remaining production `subprocess.run` sites to the shared `run_process` wrapper without changing command behavior.
+
+**Close when.** The remaining modules use `run_process`, their behavior contracts pass, and the wrapper owns the shared subprocess keyword semantics.
