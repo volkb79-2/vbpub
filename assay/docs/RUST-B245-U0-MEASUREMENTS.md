@@ -101,13 +101,15 @@ First real qualification run (B245 U7, 2026-11-18, v1001, image
 `5a83e3b17`): the `--preflight` listing matched every case's expected mutant count
 (25, 9, 9, 0, 25, 25, 8, 8, 8, 11, 10, 4) including the new-file (`--- /dev/null`,
 TAB-suffixed `+++`), paths, unicode and `ws-sub` diff shapes, and the full lane PASSED:
-all 12 cases met their expected outcome and exit code with no deviation (the `full`
-timeout mutant left no stray descendant). Wall time: `full` (25 mutants) 30.6 s,
+all 12 cases met their expected outcome and exit code with no deviation (no post-run
+process check was made, so a silently surviving descendant of the `full` timeout
+mutant is not excluded; see the risks below). Wall time: `full` (25 mutants) 30.6 s,
 `methods` 9.8 s, `w-true` 8.1 s, `crashed-f4` 6.8 s, `subdir` 6.7 s, `ws-sub` 6.5 s,
 `paths` 6.4 s, `indiff` 5.7 s, `unicode` 2.4 s, `basefail-*` 1-2 s, `zero-mutants`
-0.7 s; about 2 minutes in all, roughly 1.2 s per mutant on these tiny synthetic crates
-(the hostobs cost is the mutants in the diff times its suite time per mutant). The
-risks below were the pre-run expectations; none materialised.
+0.7 s; about 1.5 minutes of case time in all (container start and preflight come on
+top), roughly 1 s per mutant over the 142 mutants on these tiny synthetic crates (the
+hostobs cost is the mutants in the diff times its per-mutant compile and test time). The
+risks below were the pre-run expectations; none produced a deviation.
 
 Known risks for the first real qualification run (B245 U7,
 `tools/qualify_rust_r2_real.py`; each is diagnosed, not a known defect; its
