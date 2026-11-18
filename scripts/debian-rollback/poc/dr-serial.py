@@ -31,6 +31,7 @@ import shlex
 import socket
 import sys
 import time
+from pathlib import PurePosixPath
 
 END_RE = re.compile(rb"__DR_END_(\d+)__")
 FAILS = []
@@ -185,6 +186,12 @@ def tags(out, name):
     return vals
 
 
+def raw_tags(out, name):
+    """TAG values without tags()'s shell-syntax filtering. Use where an unexpected value
+    must fail an exact comparison instead of vanishing."""
+    return [v.rstrip() for v in re.findall(rf"^{re.escape(name)}:(.*?)\s*$", out, re.M)]
+
+
 def tag(out, name):
     v = tags(out, name)
     return v[-1] if v else None
@@ -222,17 +229,56 @@ def running_state(out_cmdline):
 
 
 BOOTLOADER_MARKER = "/boot/efi/EFI/dr/bootloader"
+DR_STATE_CONF = "/etc/dr-state.conf"
+KERNEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*-[0-9a-f]{12}")
+ENTRY_ID_RE = re.compile(r"os-[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
-def detect_backend(marker):
-    """Map the ESP marker's file content to a backend. Absence alone is the GRUB default; any
-    present but unrecognised value fails loudly instead of falling back."""
-    if marker is None:
-        return "grub"
-    value = marker.rstrip("\r\n")
-    if value == "systemd-boot":
-        return "systemd-boot"
-    raise ValueError(f"unknown bootloader marker {value!r}; expected systemd-boot or no marker (GRUB)")
+def parse_dr_state_config(text):
+    """Return BOOTLOADER's value, or None when the file/value is absent, using dr-state's
+    comment, duplicate, empty-value and malformed-line rules."""
+    if text is None:
+        return None
+    value = None
+    found = False
+    for line in text.split("\n"):
+        if line.endswith("\r"):
+            line = line[:-1]
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("BOOTLOADER="):
+            if found:
+                raise ValueError(f"{DR_STATE_CONF} sets BOOTLOADER more than once")
+            value = line.removeprefix("BOOTLOADER=")
+            found = True
+        elif not re.fullmatch(r"[A-Z_][A-Z0-9_]*=.*", line):
+            raise ValueError(f"{DR_STATE_CONF} contains a line that is not KEY=VALUE or a comment: {line!r}")
+    if found and not value:
+        raise ValueError("BOOTLOADER is present but empty; refusing to guess the bootloader backend")
+    return value
+
+
+def marker_value(text):
+    """Return the marker contents or None when absent. dr-state removes every CR and LF and
+    refuses an existing but empty marker."""
+    if text is None:
+        return None
+    value = text.replace("\r", "").replace("\n", "")
+    if not value:
+        raise ValueError("bootloader marker is present but empty; refusing to guess the backend")
+    return value
+
+
+def detect_backend(marker_text, config_text=None):
+    """Apply dr-state's select_bootloader contract to marker and config file contents."""
+    config = parse_dr_state_config(config_text)
+    marker = marker_value(marker_text)
+    if config and marker and config != marker:
+        raise ValueError(f"BOOTLOADER={config} conflicts with the bootloader marker ({marker})")
+    selected = config or marker or "grub"
+    if selected not in ("grub", "systemd-boot"):
+        raise ValueError(f"unknown BOOTLOADER {selected!r}")
+    return selected
 
 
 def parse_loader_default(text):
@@ -256,18 +302,42 @@ def parse_loader_default(text):
     return defaults[0]
 
 
-def _check_esp_path(path):
-    if not path.startswith("/") or "\x00" in path:
-        raise ValueError(f"BLS path is not absolute: {path!r}")
-    if any(part in ("", ".", "..") for part in path.split("/")[1:]):
-        raise ValueError(f"unsafe BLS path: {path!r}")
+def valid_kernel_id(kernel_id):
+    return bool(KERNEL_ID_RE.fullmatch(kernel_id)) and ".." not in kernel_id
+
+
+def valid_entry_id(entry_id):
+    return (bool(ENTRY_ID_RE.fullmatch(entry_id)) and ".." not in entry_id
+            and not entry_id.endswith(".") and len(entry_id) <= 240)
+
+
+def is_sdboot_scratch_path(path):
+    """True only for the seven exact interrupted-file/directory shapes dr-state generates."""
+    p = PurePosixPath(path)
+    if str(p.parent) == "/boot/efi/EFI/dr/kernels":
+        return bool(re.fullmatch(r"\.tmp\.[A-Za-z0-9]{6}", p.name))
+    if str(p.parent.parent) == "/boot/efi/EFI/dr/kernels":
+        return (valid_kernel_id(p.parent.name)
+                and bool(re.fullmatch(r"\.(?:vmlinuz|initrd\.img)\.tmp\.[0-9]+", p.name)))
+    if str(p.parent) == "/boot/efi/loader/entries":
+        if re.fullmatch(r"\.dr-state-entry\.new\.[0-9]+", p.name):
+            return True
+        m = re.fullmatch(r"\.(os-[A-Za-z0-9][A-Za-z0-9._-]*)\.conf\.new\.[0-9]+", p.name)
+        return bool(m and valid_entry_id(m.group(1)))
+    if str(p.parent) == "/boot/efi/loader":
+        return bool(re.fullmatch(r"loader\.conf\.new\.[0-9]+", p.name))
+    if str(p.parent) == "/boot/efi/EFI/dr":
+        return bool(re.fullmatch(r"bootloader\.new\.[0-9]+", p.name))
+    return False
 
 
 def parse_bls_entry(text):
     """Parse one systemd-boot BLS entry. The installer writes exactly one kernel, at least one
     initrd, and a state-bearing rootflags=subvol= option."""
     linux = []
+    linux_ids = []
     initrd = []
+    initrd_ids = []
     titles = []
     options = []
     for raw in text.splitlines():
@@ -279,13 +349,19 @@ def parse_bls_entry(text):
         if key == "linux":
             if len(fields) != 2:
                 raise ValueError(f"malformed BLS linux line: {line!r}")
-            _check_esp_path(fields[1])
+            m = re.fullmatch(r"/EFI/dr/kernels/([^/]+)/vmlinuz", fields[1])
+            if not m or not valid_kernel_id(m.group(1)):
+                raise ValueError(f"BLS kernel is not /EFI/dr/kernels/<valid-id>/vmlinuz: {fields[1]!r}")
             linux.append(fields[1])
+            linux_ids.append(m.group(1))
         elif key == "initrd":
             if len(fields) != 2:
                 raise ValueError(f"malformed BLS initrd line: {line!r}")
-            _check_esp_path(fields[1])
+            m = re.fullmatch(r"/EFI/dr/kernels/([^/]+)/initrd\.img", fields[1])
+            if not m or not valid_kernel_id(m.group(1)):
+                raise ValueError(f"BLS initrd is not /EFI/dr/kernels/<valid-id>/initrd.img: {fields[1]!r}")
             initrd.append(fields[1])
+            initrd_ids.append(m.group(1))
         elif key == "title":
             if len(fields) < 2:
                 raise ValueError("BLS entry has an empty title")
@@ -296,8 +372,10 @@ def parse_bls_entry(text):
             options.append(" ".join(fields[1:]))
     if len(linux) != 1:
         raise ValueError(f"BLS entry must name exactly one kernel; found {len(linux)}")
-    if not initrd:
-        raise ValueError("BLS entry names no initrd")
+    if len(initrd) != 1:
+        raise ValueError(f"BLS entry must name exactly one initrd; found {len(initrd)}")
+    if linux_ids[0] != initrd_ids[0]:
+        raise ValueError("BLS kernel and initrd name different kernel ids")
     if len(titles) != 1:
         raise ValueError(f"BLS entry must have exactly one title; found {len(titles)}")
     if len(options) != 1:
@@ -325,24 +403,49 @@ def parse_bls_title(text):
 
 
 def guest_backend(g, log):
-    """Read the guest marker and resolve the backend, recording a failed check for bad content."""
-    _, out = g.run(
-        f"if [ -e {BOOTLOADER_MARKER} ]; then "
-        "echo MARKER_PRESENT:1; echo MARKER_VALUE:$(cat "
-        f"{BOOTLOADER_MARKER}); "
-        "else echo MARKER_PRESENT:0; fi"
+    """Read both dr-state backend sources and apply its empty/conflict/unknown contract."""
+    cmd = (
+        f"if [ -e {DR_STATE_CONF} ]; then printf 'BACKEND_CONFIG_PRESENT:1\\n'; "
+        f"if body=$(base64 -w0 -- {DR_STATE_CONF}); then printf 'BACKEND_CONFIG_READABLE:1\\n'; "
+        "printf 'BACKEND_CONFIG_B64:%s\\n' \"$body\"; else printf 'BACKEND_CONFIG_READABLE:0\\n'; fi; "
+        "else printf 'BACKEND_CONFIG_PRESENT:0\\n'; fi; "
+        f"if [ -e {BOOTLOADER_MARKER} ]; then printf 'BACKEND_MARKER_PRESENT:1\\n'; "
+        f"if body=$(base64 -w0 -- {BOOTLOADER_MARKER}); then printf 'BACKEND_MARKER_READABLE:1\\n'; "
+        "printf 'BACKEND_MARKER_B64:%s\\n' \"$body\"; else printf 'BACKEND_MARKER_READABLE:0\\n'; fi; "
+        "else printf 'BACKEND_MARKER_PRESENT:0\\n'; fi; "
+        "printf 'BACKEND_SOURCES_DONE:1\\n'"
     )
-    present = tag(out, "MARKER_PRESENT") == "1"
-    raw = tag(out, "MARKER_VALUE")
-    marker = raw if present else None
-    if present and raw is None:
-        marker = ""
-    try:
-        backend = detect_backend(marker)
-    except ValueError as exc:
-        check(log, "ESP bootloader marker names a supported backend", False, str(exc))
+    rc, out = g.run(cmd)
+    if rc != 0 or tag(out, "BACKEND_SOURCES_DONE") != "1":
+        check(log, "both bootloader sources were read", False, f"probe rc={rc}")
         return None
-    check(log, "ESP bootloader marker names a supported backend", True, backend)
+
+    values = {}
+    for name in ("CONFIG", "MARKER"):
+        present = tag(out, f"BACKEND_{name}_PRESENT")
+        if present not in ("0", "1"):
+            check(log, "both bootloader sources were read", False, f"{name.lower()} presence tag missing")
+            return None
+        if present == "0":
+            values[name] = None
+            continue
+        readable = tag(out, f"BACKEND_{name}_READABLE")
+        if readable != "1":
+            check(log, "both bootloader sources were read", False, f"{name.lower()} is present but unreadable")
+            return None
+        body = tag(out, f"BACKEND_{name}_B64")
+        try:
+            values[name] = base64.b64decode(body or "", validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            check(log, "both bootloader sources were read", False, f"{name.lower()} decode failed: {exc}")
+            return None
+
+    try:
+        backend = detect_backend(values["MARKER"], values["CONFIG"])
+    except ValueError as exc:
+        check(log, "bootloader config and ESP marker select a supported backend", False, str(exc))
+        return None
+    check(log, "bootloader config and ESP marker select a supported backend", True, backend)
     return backend
 
 
@@ -586,23 +689,20 @@ def scenario_sdboot_esp(g, log):
         check(log, f"{name}: BLS entry has safe kernel/initrd paths and one state", True, entry["state"])
 
     if entries:
-        references = {}
-        all_paths = set()
         for entry_id, entry in entries.items():
             refs = ["/boot/efi" + entry["linux"]] + ["/boot/efi" + p for p in entry["initrd"]]
-            references[entry_id] = refs
-            all_paths.update(refs)
-        words = " ".join(shlex.quote(path) for path in sorted(all_paths))
-        _, out = g.run(
-            f"for f in {words}; do "
-            "if [ -f \"$f\" ] && [ -s \"$f\" ]; then echo ESP_FILE_OK:$f; "
-            "else echo ESP_FILE_MISSING:$f; fi; done"
-        )
-        missing = set(tags(out, "ESP_FILE_MISSING"))
-        for entry_id, refs in references.items():
-            gone = sorted(path for path in refs if path in missing)
-            check(log, f"{entry_id}.conf: named kernel and initrd files exist and are non-empty",
-                  not gone, str(gone))
+            words = " ".join(shlex.quote(path) for path in sorted(refs))
+            rc, out = g.run(
+                f"for f in {words}; do "
+                "if [ -f \"$f\" ] && [ -s \"$f\" ]; then printf 'ESP_FILE_OK:%s\\n' \"$f\"; fi; "
+                "done; printf 'ESP_FILE_SCAN_DONE:1\\n'"
+            )
+            scan_ok = rc == 0 and tag(out, "ESP_FILE_SCAN_DONE") == "1"
+            check(log, f"{entry_id}.conf: ESP_FILE_OK scan completed", scan_ok, f"rc={rc}")
+            ok_paths = raw_tags(out, "ESP_FILE_OK")
+            exact = scan_ok and sorted(ok_paths) == sorted(refs)
+            check(log, f"{entry_id}.conf: exact named kernel and initrd files are non-empty",
+                  exact, f"want={sorted(refs)} got={sorted(ok_paths)}")
 
     check(log, "one BLS entry exists per dr-state state", len(entries) == len(states),
           f"entries={len(entries)} states={len(states)}")
@@ -630,9 +730,28 @@ def scenario_sdboot_esp(g, log):
                       entries[default_id]["state"] == expected_default,
                       f"entry={entries[default_id]['state']} dr-state={expected_default}")
 
-    _, out = g.run("find /boot/efi -name '.tmp.*' -print | while IFS= read -r p; do echo SCRATCH_PATH:$p; done")
-    scratch = tags(out, "SCRATCH_PATH")
-    check(log, "no .tmp.* scratch is left on the ESP", not scratch, str(scratch))
+    rc, out = g.run(
+        "shopt -s nullglob; "
+        "for p in /boot/efi/EFI/dr/kernels/.tmp.*; do "
+        "[ -d \"$p\" ] && printf 'SCRATCH_CANDIDATE:%s\\n' \"$p\"; done; "
+        "for p in /boot/efi/EFI/dr/kernels/*/.vmlinuz.tmp.* "
+        "/boot/efi/EFI/dr/kernels/*/.initrd.img.tmp.*; do "
+        "[ -f \"$p\" ] && printf 'SCRATCH_CANDIDATE:%s\\n' \"$p\"; done; "
+        "for p in /boot/efi/loader/entries/.dr-state-entry.new.* "
+        "/boot/efi/loader/entries/.*.conf.new.*; do "
+        "[ -f \"$p\" ] && printf 'SCRATCH_CANDIDATE:%s\\n' \"$p\"; done; "
+        "for p in /boot/efi/loader/loader.conf.new.*; do "
+        "[ -f \"$p\" ] && printf 'SCRATCH_CANDIDATE:%s\\n' \"$p\"; done; "
+        "for p in /boot/efi/EFI/dr/bootloader.new.*; do "
+        "[ -f \"$p\" ] && printf 'SCRATCH_CANDIDATE:%s\\n' \"$p\"; done; "
+        "printf 'SCRATCH_SCAN_DONE:1\\n'"
+    )
+    candidates = raw_tags(out, "SCRATCH_CANDIDATE")
+    scratch = sorted(path for path in candidates if is_sdboot_scratch_path(path))
+    scan_ok = rc == 0 and tag(out, "SCRATCH_SCAN_DONE") == "1"
+    check(log, "scratch scan completed", scan_ok, f"rc={rc}")
+    check(log, "no interrupted dr-state scratch remains on the ESP", scan_ok and not scratch,
+          f"candidates={sorted(candidates)} scratch={scratch}")
 
     _, out = g.run("echo ESP_FREE_KB:$(df -k --output=avail /boot/efi | tail -1 | tr -d ' ')")
     free = tag(out, "ESP_FREE_KB")

@@ -4,6 +4,7 @@
 # packed and their /bootloader files are extracted again.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+USER_DATA=${DR_BUILD_USER_DATA:-$HERE/seed/user-data}
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 fail=0
@@ -43,13 +44,56 @@ diff -r "$WORK/stage-explicit-grub" "$WORK/stage-default-grub" >/dev/null \
 
 # The guest must read the marker, keep grub as the absent-file fallback, and pass the
 # selected backend to the installer.
-grep -Fq '/mnt/seed/bootloader' "$HERE/seed/user-data" \
+grep -Fq '/mnt/seed/bootloader' "$USER_DATA" \
   || bad "user-data does not read /mnt/seed/bootloader"
-grep -Fq 'BL=grub' "$HERE/seed/user-data" \
+grep -Fq 'BL=grub' "$USER_DATA" \
   || bad "user-data has no grub fallback"
 # shellcheck disable=SC2016  # the literal variable reference is what user-data must contain
-grep -Fq -- '--bootloader "$BL"' "$HERE/seed/user-data" \
+grep -Fq -- '--bootloader "$BL"' "$USER_DATA" \
   || bad "user-data does not pass --bootloader to install-btrfs.sh"
+
+# Execute the marker-selection block itself, with /mnt/seed redirected to a disposable
+# fake seed. The mount, apt, package, disk and installer commands are deliberately not
+# extracted: only the fallback, marker read and validation case are under test.
+run_marker_block() { # run_marker_block LABEL SEED -> sets MARKER_RC and MARKER_OUT
+  local label=$1 seed=$2
+  MARKER_OUT=$(awk -v seed="$seed" '
+    /^      bash \/mnt\/seed\/poc\/install-btrfs.sh/ { exit }
+    /^      BL=grub$/ { block=1 }
+    block {
+      sub(/^      /, "")
+      gsub("/mnt/seed", seed)
+      print
+    }
+    END { print "printf '\''BL:%s\\n'\'' \"$BL\"" }
+  ' "$USER_DATA" | bash 2>&1)
+  MARKER_RC=$?
+  [ -n "$MARKER_OUT" ] || bad "$label: marker block produced no output"
+}
+
+mkdir "$WORK/seed-absent" "$WORK/seed-grub" "$WORK/seed-systemd" "$WORK/seed-empty" "$WORK/seed-unknown"
+printf 'grub\n' >"$WORK/seed-grub/bootloader"
+printf 'systemd-boot\n' >"$WORK/seed-systemd/bootloader"
+: >"$WORK/seed-empty/bootloader"
+printf 'grub2\n' >"$WORK/seed-unknown/bootloader"
+
+run_marker_block absent "$WORK/seed-absent"
+[ "$MARKER_RC" = 0 ] && [ "$MARKER_OUT" = "BL:grub" ] \
+  || bad "marker-block-absent: rc=$MARKER_RC output='$MARKER_OUT'"
+run_marker_block explicit-grub "$WORK/seed-grub"
+[ "$MARKER_RC" = 0 ] && [ "$MARKER_OUT" = "BL:grub" ] \
+  || bad "marker-block-grub: rc=$MARKER_RC output='$MARKER_OUT'"
+run_marker_block systemd-boot "$WORK/seed-systemd"
+[ "$MARKER_RC" = 0 ] && [ "$MARKER_OUT" = "BL:systemd-boot" ] \
+  || bad "marker-block-systemd: rc=$MARKER_RC output='$MARKER_OUT'"
+run_marker_block empty "$WORK/seed-empty"
+if ! { [ "$MARKER_RC" != 0 ] && grep -Fq 'DR-BUILD-FAIL unknown-bootloader:' <<<"$MARKER_OUT"; }; then
+  bad "marker-block-empty: rc=$MARKER_RC output='$MARKER_OUT'"
+fi
+run_marker_block unknown "$WORK/seed-unknown"
+if ! { [ "$MARKER_RC" != 0 ] && grep -Fq 'DR-BUILD-FAIL unknown-bootloader:grub2' <<<"$MARKER_OUT"; }; then
+  bad "marker-block-unknown: rc=$MARKER_RC output='$MARKER_OUT'"
+fi
 
 # Unknown values are refused before staging or packing.
 "$HERE/build-seed.sh" --bootloader grub2 "$WORK/unknown.iso" >"$WORK/unknown.out" 2>"$WORK/unknown.err"
@@ -79,9 +123,9 @@ if command -v xorriso >/dev/null 2>&1; then
     cmp -s "$WORK/$backend.want" "$WORK/$backend.extracted" \
       || bad "$backend ISO: extracted marker differs"
   done
-  covered="staging, user-data wiring, invalid-value refusal, ISO packing and extracted markers"
+  covered="staging, executed user-data marker selection, installer pass-through, invalid-value refusal, ISO packing and extracted markers"
 else
-  covered="staging, user-data wiring and invalid-value refusal; xorriso absent, so ISO packing and extracted markers are NOT covered"
+  covered="staging, executed user-data marker selection, installer pass-through and invalid-value refusal; xorriso absent, so ISO packing and extracted markers are NOT covered"
 fi
 
 [ "$fail" = 0 ] && echo "test-build-seed: OK ($covered)"

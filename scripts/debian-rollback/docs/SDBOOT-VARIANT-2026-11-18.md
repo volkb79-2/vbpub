@@ -183,13 +183,16 @@ the systemd-boot package path, exact bootctl argv, backend config and marker, co
 invalid backend. It currently passes 17 cases.
 
 `poc/test-build-seed.sh` calls the no-xorriso staging function directly and, when `xorriso` is available, packs both
-seed variants and extracts `/bootloader` from each ISO. It also checks the guest's marker read/fallback/pass-through
-wiring and refusal of an unknown backend. With `xorriso` absent it reports that ISO packing and extraction are not
-covered.
+seed variants and extracts `/bootloader` from each ISO. It executes the marker-selection block extracted from the
+guest's `user-data` against a fake seed directory, proving absent/grub/systemd-boot selection plus empty/unknown
+refusal, and checks pass-through to the installer. A disposable mutant with that validation case removed is killed.
+With `xorriso` absent it reports that ISO packing and extraction are not covered.
 
-`poc/test-dr-serial.py` now covers the backend-marker decision, strict `loader.conf` default parsing, BLS entry-path
-and state parsing (including CRLF and multiple initrds), unsafe paths, malformed entries, and kernel-title parsing,
-in addition to the original fake-serial exchanges.
+`poc/test-dr-serial.py` now covers both backend sources with dr-state's empty/conflict/unknown rules, strict
+`loader.conf` default parsing, exact BLS kernel/initrd path and shared-id validation, unsafe/malformed entries,
+kernel-title parsing, and scripted `guest_backend`/`sdboot-esp` scenario runs. The scenario tests require the exact
+`ESP_FILE_OK` set per entry, fail on omitted or foreign tags, and cover every generated scratch name in addition to
+the original fake-serial exchanges.
 
 The pre-existing offline suites remain green: `test-dr-state-window.sh`, `test-dr-state-prune.sh`,
 `iso/test-dr-plan.sh`, `iso/test-dr-autoinstall-guard.sh`, `poc/test-dr-pick-disk.sh`, and `poc/test-dr-qemu.sh`.
@@ -224,7 +227,7 @@ The supported run matrix for the systemd-boot variant is:
 | Scenario | Guest run | What it proves | Status |
 |---|---|---|---|
 | `boot-check` | May share a fresh overlay with `sdboot-esp`; must be first boot after install. | The installed state is the running root, systemd and networking work, D18 paths are split correctly, and the systemd-boot ESP contains `loader/loader.conf`, at least one BLS entry, `EFI/systemd/systemd-bootx64.efi`, and non-empty kernel copies. | **NOT RUN** |
-| `sdboot-esp` | May share a fresh overlay with `boot-check`. | Every BLS entry's named kernel and initrds exist and are non-empty on the ESP, `loader.conf` has exactly one default and that entry exists, its state matches `dr-state list`, no `.tmp.*` scratch remains, and ESP free space is reported. | **NOT RUN** |
+| `sdboot-esp` | May share a fresh overlay with `boot-check`. | Every BLS entry names exactly `/EFI/dr/kernels/<valid-id>/vmlinuz` and the matching `initrd.img`, and the exact non-empty files reported by the guest equal that entry's expected set. `loader.conf` has exactly one default and that entry exists; its state matches `dr-state list`; no generated scratch remains; and ESP free space is reported. | **NOT RUN** |
 | `s2-s3` | Fresh overlay; do not reuse after another snapshot-producing scenario. | Apt takes one snapshot, systemd-boot lists one entry per state, boot-once boots the earlier package state with `/etc` rolled back while service data survives, the one-shot is consumed, and set-default changes the next plain boot. | **NOT RUN** |
 | `kernel-upgrade` | Fresh overlay; do not reuse after another snapshot-producing scenario. | A kernel upgrade snapshots the old state, gives the running state the new kernel and the snapshot the old kernel in BLS entries, boots both kernels, loads the old state's modules, and consumes the systemd-boot one-shot. | **NOT RUN** |
 
@@ -235,6 +238,14 @@ reviewed. `backports`, `window-negative`, and `live-inspect` are not part of thi
 For `s2-s3` and `kernel-upgrade`, use a new overlay on the same installed systemd-boot base for each scenario. Their
 initial precondition is that the running state is the default, and their snapshot counts depend on an empty dedupe
 window. `boot-check` and `sdboot-esp` are read-only and may share the first guest.
+
+Before any scenario runs, the backend is resolved from both `/etc/dr-state.conf` and
+`/boot/efi/EFI/dr/bootloader` using the same presence, empty-value, conflict and unknown-value rules as `dr-state`;
+neither source may silently fall back to GRUB. The scratch check covers `.tmp.<six alphanumeric characters>`,
+`.vmlinuz.tmp.<pid>`, `.initrd.img.tmp.<pid>`, `.dr-state-entry.new.<pid>`, the older
+`.<entry-id>.conf.new.<pid>`, `loader.conf.new.<pid>` and `bootloader.new.<pid>`. Each per-entry file probe must
+emit `ESP_FILE_SCAN_DONE:1` and the scratch scan must emit `SCRATCH_SCAN_DONE:1`; a scenario fails if either
+completion tag is absent or its scan command returns nonzero.
 
 ## Not verified
 
