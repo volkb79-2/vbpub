@@ -125,6 +125,18 @@ def sanitized_git_config_text(path: Path) -> str:
         sanitize_git_config_entries(read_git_config_entries(path)))
 
 
+def nested_git_dirs(modules: Path) -> list[Path]:
+    """Every submodule git directory under ``<common>/modules`` (a directory
+    holding ``HEAD``), by the same walk as :func:`nested_git_config_files`."""
+    found: list[Path] = []
+    for root, dirs, files in os.walk(modules):
+        if "HEAD" in files:
+            dirs[:] = [d for d in dirs if d not in _GIT_DIR_BULK]
+            found.append(Path(root))
+        dirs.sort()
+    return found
+
+
 def nested_git_config_files(modules: Path) -> list[Path]:
     """Every ``config`` / ``config.worktree`` anywhere under ``<common>/modules``
     (git names a submodule's dir by its PATH, so ``modules/libs/a/config`` and

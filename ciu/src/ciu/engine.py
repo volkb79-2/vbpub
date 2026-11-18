@@ -1233,7 +1233,7 @@ def reset_service(
     if ownership_path.exists():
         down_cmd += ["-f", str(ownership_path)]
     # CIU-215: the git common-dir fragment is the last `-f` of `up`.
-    if gitdir_path.exists():
+    if _regular_file(gitdir_path):
         down_cmd += ["-f", str(gitdir_path)]
     down_cmd += ["down", "-v", "--remove-orphans"]
     try:
@@ -1293,7 +1293,6 @@ def reset_service(
         stack_dir / STACK_CONFIG_RENDERED,
         overlay_path,
         ownership_path,
-        gitdir_path,
     ]
     removed = 0
     for f in targets:
@@ -1301,10 +1300,10 @@ def reset_service(
             f.unlink()
             print(f"[INFO]     Removed: {f}", flush=True)
             removed += 1
-    gitdir_state = stack_dir / MACHINE_DIR / GITDIR_STATE_SUBDIR
-    if gitdir_state.exists():
-        shutil.rmtree(gitdir_state)
-        print(f"[INFO]     Removed: {gitdir_state}", flush=True)
+    # CIU-215: the fragment and `.ciu/gitdir/`, with the lstat discipline (a
+    # runner-planted symlink refuses instead of being followed).
+    for gone in remove_gitdir_artifacts(stack_dir):
+        print(f"[INFO]     Removed: {gone}", flush=True)
         removed += 1
     rendered_dir = stack_dir / MACHINE_DIR / RENDERED_SUBDIR
     if rendered_dir.exists():
@@ -1980,6 +1979,7 @@ def write_ownership_overlay(
 GITDIR_OVERLAY_NAME = "ciu.compose.gitdir.yml"
 GITDIR_STATE_SUBDIR = "gitdir"
 _GITDIR_HOOKS_EMPTY = "hooks-empty"
+_STALE_COPY_RE = re.compile(r"[0-9]+\.config")
 
 
 def _split_short_volume(entry: str) -> list[str]:
@@ -2033,10 +2033,18 @@ def _target_covers(existing: str, common: str) -> bool:
     return existing == common or existing == "/" or common.startswith(existing + "/")
 
 
+def _compose_escape(path: object) -> str:
+    # Compose interpolates `$` in every string of a fragment; `$$` is a literal.
+    return str(path).replace("$", "$$")
+
+
 def _gitdir_bind(source: Path, target: Path, read_only: bool) -> dict[str, Any]:
     # create_host_path false: Docker must never invent an empty dir (CIU-14).
+    # A source outside the resolved primary root passes through the namespace
+    # translation unchanged and then fails loudly at compose time because of it.
     return {
-        "type": "bind", "source": str(source), "target": str(target),
+        "type": "bind", "source": _compose_escape(source),
+        "target": _compose_escape(target),
         "read_only": read_only, "bind": {"create_host_path": False},
     }
 
@@ -2046,6 +2054,95 @@ def _regular_file(path: Path) -> bool:
         return stat.S_ISREG(path.lstat().st_mode)
     except OSError:
         return False
+
+
+def _owned_real_dir(path: Path, create: bool) -> bool:
+    """CIU-215 (F1): ``path`` is a real directory owned by this user.
+
+    The `.ciu` state lives inside the checkout the runner mounts read-write, so
+    the runner may replace it by a symlink or a foreign directory. ``lstat``
+    only, never a followed path; an anomaly refuses. Absent: created when
+    *create*, else ``False``.
+    """
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        if not create:
+            return False
+        os.mkdir(path, 0o755)
+        return True
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise ValueError(
+            f"[CIU-215] {path} must be a real directory owned by the current "
+            "user (it is a symlink, a file or foreign-owned); the checkout is "
+            "mounted read-write into the runner, so CIU will not write through it"
+        )
+    return True
+
+
+def _gitdir_state_dir(stack_dir: Path, create: bool) -> Path | None:
+    """The validated ``.ciu/gitdir`` of a stack (or ``None`` when absent)."""
+    machine = Path(stack_dir) / MACHINE_DIR
+    if not _owned_real_dir(machine, create):
+        return None
+    state = machine / GITDIR_STATE_SUBDIR
+    return state if _owned_real_dir(state, create) else None
+
+
+def _write_private_file(path: Path, text: str, mode: int) -> None:
+    """Atomically replace *path* by a new file; never follows a planted link."""
+    tmp_path = path.with_name(path.name + ".tmp")
+    try:
+        os.unlink(tmp_path)
+    except FileNotFoundError:
+        pass
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    fd = os.open(tmp_path, flags, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
+        os.fchmod(handle.fileno(), mode)
+    os.replace(tmp_path, path)
+
+
+def _replace_empty_dir(path: Path) -> None:
+    """Make *path* a fresh empty directory without following a planted link."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        pass
+    else:
+        if stat.S_ISDIR(info.st_mode):
+            shutil.rmtree(path)
+        else:
+            os.unlink(path)
+    os.mkdir(path, 0o755)
+
+
+def remove_gitdir_artifacts(stack_dir: Path) -> list[Path]:
+    """Delete the gitdir fragment and ``.ciu/gitdir/`` with the same discipline.
+
+    Returns what was removed. A `.ciu` or `.ciu/gitdir` that is not a real
+    directory owned by this user refuses.
+    """
+    removed: list[Path] = []
+    machine = Path(stack_dir) / MACHINE_DIR
+    if not _owned_real_dir(machine, False):
+        return removed
+    fragment = machine / GITDIR_OVERLAY_NAME
+    try:
+        fragment_info = os.lstat(fragment)
+    except FileNotFoundError:
+        pass
+    else:
+        if stat.S_ISDIR(fragment_info.st_mode):
+            raise ValueError(f"[CIU-215] {fragment} must not be a directory")
+        os.unlink(fragment)
+        removed.append(fragment)
+    state = _gitdir_state_dir(stack_dir, False)
+    if state is not None:
+        shutil.rmtree(state)
+        removed.append(state)
+    return removed
 
 
 def _gitdir_mount_specs(
@@ -2062,7 +2159,7 @@ def _gitdir_mount_specs(
     """
     from .gitconfig_sanitize import (
         MAX_GIT_OVERLAYS, GitConfigError, nested_git_config_files,
-        sanitized_git_config_text,
+        nested_git_dirs, sanitized_git_config_text,
     )
 
     common, admin = mount.common, mount.admin
@@ -2089,11 +2186,28 @@ def _gitdir_mount_specs(
                     f"unsafe: {common / name}"
                 )
         empty_hooks = state_dir / _GITDIR_HOOKS_EMPTY
-        if empty_hooks.exists():
-            shutil.rmtree(empty_hooks)
-        empty_hooks.mkdir(mode=0o755, parents=True)
+        _replace_empty_dir(empty_hooks)
         specs.append((mount.physical(empty_hooks), common / "hooks", True))
         specs.append((mount.physical(common / "info"), common / "info", True))
+        # Submodule git dirs under `modules/**` carry their own hooks and info;
+        # they get the same overlays (same enumeration as the module configs).
+        module_dirs = nested_git_dirs(common / "modules")
+        if len(module_dirs) > MAX_GIT_OVERLAYS:
+            raise ValueError(
+                f"[CIU-215] {common} holds {len(module_dirs)} submodule git "
+                f"directories; more than {MAX_GIT_OVERLAYS} cannot be protected safely"
+            )
+        for module in module_dirs:
+            for name in ("hooks", "info"):
+                inner = module / name
+                if inner.is_symlink():
+                    raise ValueError(
+                        f"[CIU-215] the submodule git {name} directory is unsafe: {inner}"
+                    )
+                if not inner.is_dir():
+                    continue
+                source = empty_hooks if name == "hooks" else inner
+                specs.append((mount.physical(source), inner, True))
         for pointer in (admin / "gitdir", admin / "commondir"):
             if not _regular_file(pointer):
                 raise ValueError(
@@ -2121,7 +2235,6 @@ def _gitdir_mount_specs(
             f"[CIU-215] {common} holds {len(extra)} submodule/sibling git config "
             f"files; more than {MAX_GIT_OVERLAYS} cannot be sanitized safely"
         )
-    state_dir.mkdir(parents=True, exist_ok=True)
     kept: set[str] = set()
     for index, target in enumerate(targets + extra):
         name = f"{index}.config"
@@ -2131,14 +2244,17 @@ def _gitdir_mount_specs(
         except GitConfigError as exc:
             raise ValueError(str(exc)) from exc
         copy_path = state_dir / name
-        tmp_path = copy_path.with_name(name + ".tmp")
-        tmp_path.write_text(text, encoding="utf-8")
-        tmp_path.chmod(0o644)
-        os.replace(tmp_path, copy_path)
+        # 0644: the runner's user must be able to read the credential-free copy.
+        _write_private_file(copy_path, text, 0o644)
         specs.append((mount.physical(copy_path), target, True))
-    for stale in state_dir.glob("*.config"):
-        if stale.name not in kept:
-            stale.unlink()
+    with os.scandir(state_dir) as entries:
+        for entry in list(entries):
+            if (
+                _STALE_COPY_RE.fullmatch(entry.name)
+                and entry.name not in kept
+                and entry.is_file(follow_symlinks=False)
+            ):
+                os.unlink(entry.path)
     return specs
 
 
@@ -2160,6 +2276,7 @@ def write_gitdir_overlay(
     doc = _yaml.safe_load(compose_yaml_text) or {}
     services = doc.get("services") if isinstance(doc, dict) else None
     if not isinstance(services, dict) or not services:
+        remove_gitdir_artifacts(stack_dir)
         return None
     names = [str(name) for name in services]
     if table.services is not None:
@@ -2189,9 +2306,22 @@ def write_gitdir_overlay(
         else:
             selected.append(name)
     if not selected:
+        remove_gitdir_artifacts(stack_dir)
         return None
 
-    state_dir = Path(stack_dir) / MACHINE_DIR / GITDIR_STATE_SUBDIR
+    top = os.path.normpath(mount.top)
+    if not any(
+        _target_covers(target, top) for name in selected for target in own_targets[name]
+    ):
+        logger.warning(
+            "[CIU-215] no selected service mounts the checkout at its own path %s; "
+            "the read-only gitfile bind then protects only that path, so a "
+            "service that mounts the checkout elsewhere (for example /app) can "
+            "still rewrite its .git file there",
+            top,
+        )
+
+    state_dir = _gitdir_state_dir(stack_dir, True)
     specs = _gitdir_mount_specs(mount, table.git_common_dir, state_dir)
     gitfile = os.path.normpath(mount.gitfile)
     # A service that already binds the gitfile itself keeps its own bind
@@ -2206,11 +2336,8 @@ def write_gitdir_overlay(
         }
     }
     path = Path(stack_dir) / MACHINE_DIR / GITDIR_OVERLAY_NAME
-    path.parent.mkdir(parents=True, exist_ok=True)
     text = _yaml.safe_dump(fragment, sort_keys=False, default_flow_style=False)
-    tmp_path = path.with_name(path.name + ".tmp")
-    tmp_path.write_text(text, encoding="utf-8")
-    os.replace(tmp_path, path)
+    _write_private_file(path, text, 0o644)
     return path
 
 
@@ -2781,14 +2908,24 @@ def main_execution(
         # A primary checkout (or a stack without the table) writes nothing and
         # its file arguments are unchanged.
         gitdir_path = None
-        if linked_worktree is not None and worktree.is_linked_git_worktree(repo_root):
-            try:
-                gitdir_path = write_gitdir_overlay(
-                    working_dir, rendered_compose, linked_worktree,
-                    worktree.git_common_dir_mount(repo_root),
-                )
-            except worktree.WorktreeError as exc:
-                raise ValueError(str(exc)) from exc
+        try:
+            # F4: with the table present, "git cannot answer" refuses; only a
+            # clean "not linked" is silent.
+            if linked_worktree is not None:
+                worktree.require_git_answers(repo_root)
+                if worktree.is_linked_git_worktree(repo_root):
+                    gitdir_path = write_gitdir_overlay(
+                        working_dir, rendered_compose, linked_worktree,
+                        worktree.git_common_dir_mount(repo_root),
+                    )
+        except worktree.WorktreeError as exc:
+            raise ValueError(str(exc)) from exc
+        if gitdir_path is None and os.path.lexists(
+            working_dir / MACHINE_DIR / GITDIR_OVERLAY_NAME
+        ):
+            # F5: a fragment left by an earlier run (table removed, or nothing
+            # left to mount) must never be referenced by a later `down -f`.
+            remove_gitdir_artifacts(working_dir)
         if gitdir_path is not None:
             print(
                 f"[INFO] [CIU-215] git common dir mounted "

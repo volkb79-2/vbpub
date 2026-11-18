@@ -180,6 +180,31 @@ def is_linked_git_worktree(repo_root: Path) -> bool:
     return bool(git_dir and common and os.path.realpath(git_dir) != os.path.realpath(common))
 
 
+def require_git_answers(repo_root: Path) -> None:
+    """CIU-215: refuse when git cannot say whether *repo_root* is linked.
+
+    :func:`is_linked_git_worktree` answers ``False`` for "unknown" as well as
+    for "primary"; an opted-in stack must not silently lose its mount because
+    git is missing, too old for ``--path-format``, or refuses the directory
+    (dubious ownership). Only a clean answer passes.
+    """
+    argv = ["git", "-C", str(repo_root), "rev-parse", "--path-format=absolute",
+            "--git-dir", "--git-common-dir"]
+    try:
+        done = procutil.run_cmd(argv)
+    except OSError as exc:
+        raise WorktreeError(
+            f"[CIU-215] cannot tell whether {repo_root} is a linked git worktree: "
+            f"git is not runnable ({exc}); [linked_worktree] needs a git answer"
+        ) from exc
+    if done.returncode != 0 or len(done.stdout.split()) < 2:
+        detail = (done.stderr.strip().splitlines() or ["no output"])[-1]
+        raise WorktreeError(
+            f"[CIU-215] cannot tell whether {repo_root} is a linked git worktree: "
+            f"git rev-parse failed ({detail}); [linked_worktree] needs a git answer"
+        )
+
+
 @dataclass(frozen=True)
 class GitMountPlan:
     """CIU-215: where a linked checkout's git metadata lives (logical paths).
