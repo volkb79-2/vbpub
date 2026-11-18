@@ -64,6 +64,13 @@ done
 [[ "$NAME" =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "bad --name"
 [[ "$MEM" =~ ^[0-9]+$ ]] && [ "$MEM" -ge 512 ] && [ "$MEM" -le 8192 ] || die "--memory-mib must be 512..8192"
 [[ "$CPUS" =~ ^[1-4]$ ]] || die "--cpus must be 1..4"
+case "$NETWORK" in host|none|bridge|container:*|"") die "--network must name a dedicated user-defined network, not '$NETWORK'" ;; esac
+for p in "$STATE" "$OCODE" "$OVARS" "$BASE_RAW" "$BASE_QCOW2" "$SEED"; do
+  case "$p" in *,*|*\ *|*=*) die "path with comma, space or '=' refused (would inject --mount options): $p" ;; esac
+done
+for s in "${SIZES[@]:-}"; do
+  [ -z "$s" ] || [[ "$s" =~ ^[0-9]+$ ]] || die "--data-disk-size must be a number of bytes: $s"
+done
 [ -n "$BASE_RAW$BASE_QCOW2" ] || die "need --base-raw or --base-qcow2"
 [ -z "$BASE_RAW" ] || [ -z "$BASE_QCOW2" ] || die "--base-raw and --base-qcow2 are exclusive"
 [ "${#FORWARDS[@]}" -ge 1 ] || FORWARDS=(2222:22)

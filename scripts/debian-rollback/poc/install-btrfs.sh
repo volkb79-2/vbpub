@@ -41,15 +41,26 @@ done
 [ "$DRY" = 1 ] || [ -b "$DEVICE" ] || die "$DEVICE is not a block device"
 [ -d /sys/firmware/efi ] || [ "$DRY" = 1 ] || die "not booted in UEFI mode (D4: UEFI only)"
 if [ "$DRY" != 1 ]; then
-  # never wipe the disk that holds the running root or any mounted filesystem
-  if lsblk -nrpo MOUNTPOINTS "$DEVICE" | grep -q .; then
-    die "$DEVICE has mounted filesystems; refusing"
-  fi
+  # Fail closed: every check must positively succeed before anything is wiped.
+  DEVICE=$(readlink -f "$DEVICE") || die "cannot resolve $DEVICE"
+  [ "$(lsblk -dno TYPE "$DEVICE")" = disk ] || die "$DEVICE is not a whole disk"
+  mounts=$(lsblk -nro MOUNTPOINTS "$DEVICE") || die "lsblk failed on $DEVICE; refusing"
+  [ -z "${mounts//[[:space:]]/}" ] || die "$DEVICE has mounted filesystems; refusing"
+  swaps=$(swapon --noheadings --show=NAME) || die "swapon failed; refusing"
+  case "$swaps" in *"$DEVICE"*) die "$DEVICE is in use as swap; refusing" ;; esac
+  rootsrc=$(findmnt -no SOURCE /) || die "findmnt / failed; refusing"
+  case "$rootsrc" in "$DEVICE"*) die "$DEVICE holds the running root; refusing" ;; esac
 fi
 
 part() { case "$DEVICE" in *[0-9]) echo "${DEVICE}p$1" ;; *) echo "${DEVICE}$1" ;; esac; }
 ESP=$(part 1) ; ROOT=$(part 2)
 T=/mnt/drtarget ; TOP=/mnt/drtop
+cleanup() { # a failed run must not leave the target mounted (the next run's guard would refuse)
+  [ "$DRY" = 1 ] && return 0
+  umount -R "$T" 2>/dev/null || true
+  umount "$TOP" 2>/dev/null || true
+}
+trap cleanup EXIT
 STATE=@os-0001
 DATA_SUBVOLS="@home:/home @root:/root @srv:/srv @www:/var/www @log:/var/log @docker:/var/lib/docker @containers:/var/lib/containers @postgresql:/var/lib/postgresql @mysql:/var/lib/mysql @usr-local:/usr/local"
 # the database and container directories must not be copy-on-write
@@ -80,7 +91,7 @@ done
 run mkdir -p "$T/boot/efi" "$T/.top"
 run mount "$ESP" "$T/boot/efi"
 
-run debootstrap --include=linux-image-amd64,grub-efi-amd64,btrfs-progs,snapper,initramfs-tools,systemd-sysv,openssh-server,sudo,locales,ifupdown,isc-dhcp-client,dosfstools,ca-certificates "$SUITE" "$T" "$MIRROR"
+run debootstrap --include=linux-image-amd64,grub-efi-amd64,btrfs-progs,snapper,initramfs-tools,systemd-sysv,openssh-server,sudo,locales,systemd-resolved,dosfstools,ca-certificates "$SUITE" "$T" "$MIRROR"
 
 if [ "$DRY" != 1 ]; then
   RUUID=$(blkid -s UUID -o value "$ROOT")
@@ -106,6 +117,10 @@ write_file() { # write_file PATH (content on stdin); shows it instead in a dry r
 }
 echo "$fstab" | write_file "$T/etc/fstab"
 echo "$HOSTNAME_" | write_file "$T/etc/hostname"
+printf '127.0.0.1 localhost\n127.0.1.1 %s\n' "$HOSTNAME_" | write_file "$T/etc/hosts"
+# DHCP on every ethernet NIC through systemd-networkd; systemd-resolved owns resolv.conf
+run mkdir -p "$T/etc/systemd/network"
+printf '[Match]\nName=en* eth*\n\n[Network]\nDHCP=yes\n' | write_file "$T/etc/systemd/network/20-dhcp.network"
 
 run install -m 0755 "$HERE/dr-state" "$T/usr/local/sbin/dr-state"
 run mount --bind /dev "$T/dev"
@@ -116,17 +131,34 @@ run mount --bind /sys/firmware/efi/efivars "$T/sys/firmware/efi/efivars" || true
 chroot_run() { run chroot "$T" "$@"; }
 if [ "$DRY" != 1 ]; then echo "root:$ROOTPW" | chroot "$T" chpasswd; fi
 run chmod 700 "$T/root"
+chroot_run systemctl enable systemd-networkd systemd-resolved
+run ln -sf ../run/systemd/resolve/stub-resolv.conf "$T/etc/resolv.conf"
 chroot_run update-initramfs -u -k all
 chroot_run /usr/local/sbin/dr-state install-grub
 chroot_run /usr/local/sbin/dr-state gen-menu --default "$STATE"
 
-# apt hook: one writable copy of the current state before every dpkg run
+# Hooks. apt: one writable copy of the running state before every dpkg run, menu refreshed after it.
+# kernel: the menu follows kernel installs and removals (a menu naming a removed kernel does not boot).
+# DR_STATE=none in the environment skips the snapshot (recovery chroots have no rootflags= on the command line).
 if [ "$DRY" != 1 ]; then
   cat >"$T/etc/apt/apt.conf.d/80dr-state" <<'EOF'
 DPkg::Pre-Invoke { "[ ! -x /usr/local/sbin/dr-state ] || /usr/local/sbin/dr-state snapshot --reason apt || exit 100"; };
+DPkg::Post-Invoke { "[ ! -x /usr/local/sbin/dr-state ] || DR_STATE=none /usr/local/sbin/dr-state gen-menu || true"; };
 EOF
+  for d in postinst.d postrm.d; do
+    mkdir -p "$T/etc/kernel/$d"
+    cat >"$T/etc/kernel/$d/zz-dr-state" <<'EOF'
+#!/bin/sh
+# regenerate the ESP boot menu after a kernel is installed or removed
+[ -x /usr/local/sbin/dr-state ] || exit 0
+/usr/local/sbin/dr-state gen-menu || echo "dr-state: gen-menu failed, boot menu not refreshed" >&2
+exit 0
+EOF
+    chmod 755 "$T/etc/kernel/$d/zz-dr-state"
+  done
 fi
 
 run umount -R "$T"
 run umount "$TOP"
+trap - EXIT
 echo "install-btrfs: done. Shut the guest down and boot from $DEVICE alone."

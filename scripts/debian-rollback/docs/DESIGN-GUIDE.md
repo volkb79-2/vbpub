@@ -51,8 +51,8 @@ the user would lose by going back.
 | `/usr`, `/bin`, `/lib`, `/sbin` | `/home`, `/root` |
 | `/etc` (decision D6), `/opt` (D18) | `/srv`, `/var/www`, `/usr/local` |
 | `/var/lib/dpkg`, `/var/lib/apt`, `/var/cache/apt` | `/var/log` (so the log of the failed boot survives) |
-| the kernel, initramfs and modules that belong to that state | service data: `/var/lib/docker`, `/var/lib/postgresql`, `/var/lib/mysql`, game-server data, VM images |
-| the rest of `/var/lib` not listed on the right | `/var/lib/containers`, `/var/lib/docker`, `/var/lib/postgresql`, `/var/lib/mysql` (service data) |
+| the kernel, initramfs and modules that belong to that state | service data (D18): `/var/lib/docker`, `/var/lib/containers`, `/var/lib/postgresql`, `/var/lib/mysql`, game-server data, VM images |
+| the rest of `/var/lib` not listed on the right | |
 | | swap |
 
 Rules that follow from this:

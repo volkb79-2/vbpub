@@ -46,6 +46,30 @@ snapshots is verified.
 | `dr-state install-grub` and `gen-menu` in the chroot | exited 0 |
 | Peak guest load | 186% CPU of 200%, 1.78 GiB of 2.5 GiB |
 
+## What this run does and does not evaluate
+
+The PoC tool is a **snapper-free variant**: states are plain `btrfs subvolume
+snapshot` copies made by `dr-state`, and the menu comes from `dr-state gen-menu`.
+`snapper` is installed in the target but has no configuration and no hook, so
+the "btrfs + snapper + GRUB" row of the M1 plan is **not yet evaluated**. The
+snapper evaluation (F7: snapper for taking, listing and pruning on the flat
+layout) follows after the boot mechanics are proven.
+
+## Review follow-ups (2026-11-18, after this run)
+
+An independent read of the first head (6697fbbe0) found problems that run 1 did
+not exercise. They are fixed in the scripts as committed after this run, so the
+installed disk of run 1 does NOT contain these fixes and run 2 starts with a
+fresh install: the boot menu is refreshed by kernel and apt hooks (a menu naming
+a removed kernel does not boot) and refuses to be written empty; the target gets
+DHCP through systemd-networkd and systemd-resolved (run 1's guest has no
+network configuration); the wipe guard fails closed and checks swap, the running
+root and that the device is a whole disk; a failed install unmounts its target;
+`dr-state` takes a lock, requires the ESP to be mounted, and gives snapshots
+unique names (`DR_STATE=none` skips the snapshot in a recovery chroot).
+`test-dr-qemu.sh` now pins each flag together with its value. The cloud-init
+seed that drove run 1 is committed as `poc/seed/`.
+
 ## What has and has not run in a guest
 
 Ran in a guest, once: `poc/install-btrfs.sh` (all of it), and in the chroot the
