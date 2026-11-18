@@ -281,3 +281,21 @@ def test_docs_state_the_default_producers_values_a_consumer_reads_or_sets():
     assert "The budget is an estimate" in combined
     spec = (PROJECT / "docs" / "SPEC.md").read_text(encoding="utf-8")
     assert "By design (FD-035)" in spec
+
+
+def test_docs_state_the_wp3b_limits_plainly():
+    """Review follow-ups: ordering wording, the 75 percent rule, the uncapped margin."""
+
+    r2 = (PROJECT / "docs" / "R2-DEFAULT.md").read_text(encoding="utf-8")
+    guide = (PROJECT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in PUBLIC_DOCS)
+    assert "never-judged candidates first, then the pending" not in combined
+    assert "non-changed remainder" in combined and "in path order" in combined
+    assert "75 percent of `slice_size`" in r2 and "defers 5" in r2
+    assert "reserve CAPACITY" in r2
+    assert "no upper bound" in r2 and "no upper cap" in guide
+    assert "median-only" in r2
+    assert "would inflate the next median forever" in guide
+    assert "would inflate the next budget" not in guide
+    spec = (PROJECT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    assert "1e-6 s per" in spec
