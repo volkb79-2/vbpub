@@ -120,6 +120,22 @@ installers with:
 python3 scripts/truenas/boot-pool-patch/scripts/check_install_bundle_digests.py
 ```
 
+Every file inside a bundle is digest-bound, readmes and adapter metadata
+included: the v27 bundle carries `v27/README.md` (or the nightly adapter's
+`README.md`), the shared helpers, the four `apply`/`repair`/`reapply` shell
+scripts, the adapter manifests and the series patches. Even a one-word wording
+change in one of them moves the digest, so a docs sweep that touches a bundle
+member is a registry change: either leave the member alone, or re-register
+(`supported-builds.json`, `acceptance/v27_patch_state.py`, the nightly
+`reapply_from_bundle_sha256s` chain keeping the old digest, and the table above)
+with the old digest recorded as a prior bundle. On a mismatch the checker above
+prints every member's SHA-256 (`  member <sha256> <name>`); build the same
+listing from the commit that registered the digest (`git archive <commit> .`
+from `boot-pool-patch/`) and diff the two to find the changed member. On
+2026-11-03 a `run-gate.py` to `run-gate` wording sweep touched `v27/README.md`
+and left RC.1 unregistered until 2026-11-18, when the sweep edit to that one
+line was reverted to restore the registered digest.
+
 The v27 nightly's `adapter.json` `reapply_from_bundle_sha256s` field includes
 `9d96a3ae…` because that is the registered RC.1 bundle digest it is allowed to
 recognize after the RC.1-to-nightly update. It is a prior-bundle allowlist
