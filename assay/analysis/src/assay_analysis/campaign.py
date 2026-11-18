@@ -1059,7 +1059,15 @@ def _state_entry(record: dict, stem: str) -> dict:
         "bucket": bucket,
         "judge": effective,
         "mode": mode,
-        "imported_from": judge if "carry_over" in record else None,
+        # Schema 2 lets a current-judge replay retain the PRIOR judge in
+        # carry_over.from_judge_sha256. `judge_sha256` is the executing judge,
+        # so it is the wrong provenance key whenever the record carries an
+        # explicit from-judge (including schema 1).
+        "imported_from": (
+            record["carry_over"]["from_judge_sha256"]
+            if "carry_over" in record
+            else None
+        ),
     }
 
 
@@ -1840,6 +1848,12 @@ def campaign(
     limit: int = 100,
 ) -> dict:
     """Build one deterministic closeout; all paths are explicit inputs."""
+    # B561 WP2 limitation: the schema-3 `state.imported` object is closed
+    # (`additionalProperties: false`) and has no separate replay count. Its
+    # from-judge map names carry_over.from_judge_sha256 for both a real
+    # imported record and a schema-2 current-judge replay, but `count` still
+    # counts both kinds because this schema cannot expose the distinction.
+    # A separate replay count needs a future analysis-schema change.
     stage.name = "arguments"
     evidence._report_commit(expected_commit)
     if command_exit is not None and (

@@ -150,6 +150,48 @@ def test_b530_the_text_closeout_names_imported_results(tmp_path, monkeypatch):
     assert 'reasons=["assay upgrade cannot change outcomes"]' in out
 
 
+def _carry_over_v2(from_judge, into_judge):
+    return {
+        "schema_version": mutation.CARRY_OVER_SCHEMA_VERSION_V2,
+        "from_judge_sha256": from_judge,
+        "into_judge_sha256": into_judge,
+        "source": "/prior/store",
+        "reason": "schema-2 provenance",
+        "imported_at": "2026-11-18T00:00:00Z",
+        "importer_version": "12.3.0",
+        "locus_match": "exact-id",
+    }
+
+
+@pytest.mark.parametrize(
+    "record_judge",
+    [
+        J_X1,  # current-judge replay: judge B, from A, into B
+        J_X,   # real import: judge A executes, into B
+    ],
+)
+def test_schema_two_carry_over_reports_the_from_judge(
+    tmp_path, monkeypatch, record_judge
+):
+    root, head, rows = _synthetic(tmp_path, monkeypatch, 1)
+    progress = tmp_path / "progress.jsonl"
+    support.write_records(
+        progress,
+        support.run_records(head, rows, executed=[rows[0]["id"]], judge=J_X1),
+    )
+    carry = _carry_over_v2(J_X, J_X1)
+    state = support.write_state(tmp_path / "state", [
+        support.state_record(rows[0], "killed", record_judge, carry_over=carry),
+    ])
+    code, _err, document = _analyze(root, head, progress, extra=("--state-dir", str(state)))
+
+    assert code == 3
+    imported = document["state"]["imported"]
+    assert imported["count"] == 1
+    assert imported["from_judge_sha256_counts"] == {J_X: 1}
+    assert document["state"]["judge_sha256_counts"] == {J_X1: 1}
+
+
 def test_o4_a_state_record_whose_identity_does_not_match_its_file_name_is_refused(
     tmp_path, monkeypatch
 ):

@@ -49,6 +49,31 @@ def _function_job() -> mutation.MutantJob:
     )
 
 
+def _first_and_second_jobs() -> tuple[mutation.MutantJob, mutation.MutantJob]:
+    text = "def first():\n    return True\ndef second():\n    return True\n"
+    source = text.encode("utf-8")
+    first_start = source.index(b"True")
+    second_start = source.index(b"True", first_start + len(b"True"))
+    jobs = []
+    for name, start, lineno in (
+        ("first", first_start, 2),
+        ("second", second_start, 4),
+    ):
+        jobs.append(mutation.MutantJob(
+            path="pkg/flags.py",
+            original_text=text,
+            site=mutation.MutationSite(
+                start_byte=start,
+                end_byte=start + len(b"True"),
+                replacement=b"False",
+                lineno=lineno,
+                operator="python:bool-const-flip",
+                description=f"{name} True->False",
+            ),
+        ))
+    return jobs[0], jobs[1]
+
+
 def _locus_fields(job: mutation.MutantJob) -> dict[str, object]:
     source = job.original_text.encode("utf-8")
     return mutation._locus_fields(
@@ -94,11 +119,21 @@ def _seed_function(repo: GitRepo) -> None:
 
 
 def test_new_candidate_records_and_progress_events_carry_locus_and_window(
-    git_repo: GitRepo, tmp_path
+    git_repo: GitRepo, tmp_path, monkeypatch
 ):
     _seed_function(git_repo)
+    real_fields_for_job = mutation._locus_fields_for_job
+    calls = 0
+
+    def counted_fields_for_job(job):
+        nonlocal calls
+        calls += 1
+        return real_fields_for_job(job)
+
+    monkeypatch.setattr(mutation, "_locus_fields_for_job", counted_fields_for_job)
     code, events = _run(git_repo, tmp_path / "state", tmp_path / "progress.jsonl")
     assert code == 0
+    assert calls == 1
     candidate = _event(events, "candidate")
     assert candidate is not None
     assert candidate["event"] in mutation.PROGRESS_EVENTS
@@ -142,6 +177,46 @@ def test_valid_locus_and_window_load_unchanged(tmp_path):
 
     assert loaded == payload
     assert loaded["locus"] == _locus_fields(job)["locus"]
+
+
+def test_record_locus_must_bind_the_jobs_span_line_and_operator(tmp_path):
+    job, other = _first_and_second_jobs()
+    payload = _record(job)
+    swapped = _record(other)
+    for key in (
+        "start_byte",
+        "end_byte",
+        "lineno",
+        "description",
+        "locus",
+        "window_key",
+    ):
+        payload[key] = swapped[key]
+    root = _store(tmp_path, job, payload)
+
+    with pytest.raises(MutationStateError, match="stale locus"):
+        mutation._load_validated_state_record(root, job, judge=_JUDGE)
+
+
+def test_record_locus_rejects_a_span_swapped_without_its_locus(tmp_path):
+    job, other = _first_and_second_jobs()
+    payload = _record(job)
+    payload["start_byte"] = other.site.start_byte
+    payload["end_byte"] = other.site.end_byte
+    root = _store(tmp_path, job, payload)
+
+    with pytest.raises(MutationStateError, match="stale locus"):
+        mutation._load_validated_state_record(root, job, judge=_JUDGE)
+
+
+def test_record_locus_rejects_an_operator_that_does_not_bind_the_job(tmp_path):
+    job, _other = _first_and_second_jobs()
+    payload = _record(job)
+    payload["operator"] = "python:compare-swap"
+    root = _store(tmp_path, job, payload)
+
+    with pytest.raises(MutationStateError, match="stale locus"):
+        mutation._load_validated_state_record(root, job, judge=_JUDGE)
 
 
 def test_tampered_locus_is_stale_corruption(tmp_path):

@@ -1482,7 +1482,11 @@ class ProgressStream:
 
 
 def _progress_event(
-    *, candidate_index: int, candidate_total: int, job: MutantJob
+    *,
+    candidate_index: int,
+    candidate_total: int,
+    job: MutantJob,
+    locus_fields: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     original_bytes = job.original_text.encode("utf-8")
     replacement_bytes = job.site.apply(original_bytes)
@@ -1503,15 +1507,24 @@ def _progress_event(
         # same candidate, defeats the one thing a progress artifact is for.
         # The progress stream names what it actually hashes.
         "mutated_file_sha256": hashlib.sha256(replacement_bytes).hexdigest(),
-        **_locus_fields(
-            path=job.path,
-            source=original_bytes,
-            start_byte=job.site.start_byte,
-            end_byte=job.site.end_byte,
-            operator=job.site.operator,
-            replacement_sha256=job.site.replacement_sha256,
+        **(
+            _locus_fields_for_job(job)
+            if locus_fields is None
+            else locus_fields
         ),
     }
+
+
+def _locus_fields_for_job(job: MutantJob) -> dict[str, object]:
+    """Compute one candidate's optional locus fields for reusable consumers."""
+    return _locus_fields(
+        path=job.path,
+        source=job.original_text.encode("utf-8"),
+        start_byte=job.site.start_byte,
+        end_byte=job.site.end_byte,
+        operator=job.site.operator,
+        replacement_sha256=job.site.replacement_sha256,
+    )
 
 
 def _locus_fields(
@@ -2973,15 +2986,25 @@ def _validate_record_locus(
     ``assay-locus/1`` shape and equal the locus recomputed from the recorded
     path, source bytes, span, operator and replacement digest. Its companion
     ``window_key`` must be present and recompute to the same value. Any defect
-    is corruption, reported as ``stale locus``.
+    is corruption, reported as ``stale locus``. The record's span and line (and
+    its operator when present) must bind to this job before either key is
+    recomputed; recomputing from the record's own fields would let a record
+    reproduce itself while describing a different candidate.
     """
-    if "locus" not in payload:
-        if "window_key" in payload:
-            raise MutationStateError(
-                f"mutation-state record {identity} has stale locus: "
-                "window_key requires locus"
-            )
+    if "locus" not in payload and "window_key" not in payload:
         return
+    for key in ("start_byte", "end_byte", "lineno", "operator"):
+        if key in {"start_byte", "end_byte"} or key in payload:
+            if payload.get(key) != getattr(job.site, key):
+                raise MutationStateError(
+                    f"mutation-state record {identity} has stale locus: "
+                    f"{key} differs from the candidate"
+                )
+    if "locus" not in payload:
+        raise MutationStateError(
+            f"mutation-state record {identity} has stale locus: "
+            "window_key requires locus"
+        )
     raw_locus = payload["locus"]
     if _locus_from_record(raw_locus) is None:
         raise MutationStateError(
@@ -3115,6 +3138,17 @@ def _load_validated_state_record(
         "source_sha256": hashlib.sha256(job.original_text.encode("utf-8")).hexdigest(),
     }
     for key, expected in required.items():
+        if key == "operator" and (
+            "locus" in payload or "window_key" in payload
+        ):
+            # A locus-bearing record binds its operator through the locus
+            # guard below, which reports every binding defect as stale locus.
+            if key not in payload:
+                raise MutationStateError(
+                    f"mutation-state record {identity} has stale locus: "
+                    "missing operator"
+                )
+            continue
         if key not in payload:
             raise MutationStateError(f"mutation-state record {identity} is missing {key}")
         if payload[key] == expected:
@@ -7270,11 +7304,13 @@ def _execute_mutation_jobs(
                 if kill_signal_artifact is not None
                 else None
             )
+            locus_fields = _locus_fields_for_job(job_list[position])
             record = {
                 **_progress_event(
                     candidate_index=position,
                     candidate_total=total,
                     job=job_list[position],
+                    locus_fields=locus_fields,
                 ),
                 "schema_version": MUTATION_STATE_SCHEMA_VERSION,
                 "judge_sha256": judge,
@@ -7411,6 +7447,11 @@ def _execute_mutation_jobs(
                 candidate_index=position,
                 candidate_total=total,
                 job=job_list[position],
+                locus_fields=(
+                    locus_fields
+                    if state_root is not None
+                    else None
+                ),
             ),
             **schedule_keys,
             "worker_index": candidate_workers[position],
