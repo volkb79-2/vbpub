@@ -343,9 +343,7 @@ mod tests {
             let fields = members_up_to(body, 8).expect("error members");
             let detail = fields
                 .iter()
-                .find(|member| {
-                    body.get(member.key.clone()) == Some(b"detail".as_slice())
-                })
+                .find(|member| body.get(member.key.clone()) == Some(b"detail".as_slice()))
                 .expect("detail member");
             let detail_text = body.get(detail.value.clone()).expect("detail object");
             let detail_fields = members_up_to(detail_text, 8).expect("detail members");

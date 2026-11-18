@@ -162,12 +162,7 @@ fn push_array<'a>(out: &mut String, items: impl Iterator<Item = &'a str>) {
 }
 
 /// The `hello` result of WIRE.md section 4.4: `minor` is the negotiated N.
-fn hello_result(
-    level: Level,
-    minor: u16,
-    identity: &Identity,
-    limits: &Limits,
-) -> String {
+fn hello_result(level: Level, minor: u16, identity: &Identity, limits: &Limits) -> String {
     let mut out = format!("{{\"proto\":{{\"major\":{SERVER_MAJOR},\"minor\":{minor}}}");
     out.push_str(",\"level\":");
     push_string(&mut out, level.name());
@@ -262,13 +257,7 @@ impl Conn {
     /// A connection accepted at `now_ns`: `Undecided`, the hello deadline armed. `id` is the
     /// hub's `add(peer.uid, now_ns)`; `peer` is stored once and never re-read (R23).
     #[must_use]
-    pub fn new(
-        id: ConnId,
-        level: Level,
-        peer: Peer,
-        limits: &Limits,
-        now_ns: u64,
-    ) -> Conn {
+    pub fn new(id: ConnId, level: Level, peer: Peer, limits: &Limits, now_ns: u64) -> Conn {
         let hello_ns = ms_to_ns(limits.hello_deadline_ms);
         let mut timers = ConnTimers::new(hello_ns, ms_to_ns(limits.idle_ms));
         timers.on_accept(now_ns);
@@ -524,13 +513,7 @@ impl Conn {
 
     /// A fatal outcome that answers a request or a reader error: the final frame is the REP (or
     /// error line).
-    fn close_reply(
-        &mut self,
-        hub: &mut SendHub,
-        code: Code,
-        corr: u32,
-        detail: &Detail,
-    ) {
+    fn close_reply(&mut self, hub: &mut SendHub, code: Code, corr: u32, detail: &Detail) {
         let frame = self.error_bytes(corr, code, detail);
         self.finish_close(hub, Some(code), Some(frame));
     }
@@ -546,12 +529,7 @@ impl Conn {
     /// `Closing` (R1, R2): drain the unpinned entries; when no head is partly written the final
     /// bytes are `frame`, preceded by the server prefix when it is queued and nothing was
     /// written; then the conn is closed. A silent close (`frame` is `None`) has no final bytes.
-    fn finish_close(
-        &mut self,
-        hub: &mut SendHub,
-        code: Option<Code>,
-        frame: Option<Vec<u8>>,
-    ) {
+    fn finish_close(&mut self, hub: &mut SendHub, code: Option<Code>, frame: Option<Vec<u8>>) {
         if self.state == State::Closed {
             return;
         }
@@ -629,13 +607,7 @@ impl Conn {
         self.on_stream(rest, now_ns, hub, backend);
     }
 
-    fn on_stream(
-        &mut self,
-        bytes: &[u8],
-        now_ns: u64,
-        hub: &mut SendHub,
-        backend: &dyn Backend,
-    ) {
+    fn on_stream(&mut self, bytes: &[u8], now_ns: u64, hub: &mut SendHub, backend: &dyn Backend) {
         if bytes.is_empty() || self.state == State::Closed {
             return;
         }

@@ -29,7 +29,7 @@ use hostobs_proto::envelope::{members_up_to, EnvelopeError, Kind, Member};
 
 use crate::limits::IntervalRule;
 use crate::selection::{
-    Selection, SelectionError, Sel, MAX_ENTITIES, MAX_METRICS, MAX_NAME_BYTES, MAX_PATH_BYTES,
+    Sel, Selection, SelectionError, MAX_ENTITIES, MAX_METRICS, MAX_NAME_BYTES, MAX_PATH_BYTES,
 };
 
 /// Most members of any request object (the largest request object has 7).
