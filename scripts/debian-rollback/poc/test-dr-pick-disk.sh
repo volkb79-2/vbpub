@@ -25,6 +25,19 @@ expect no-usb none "$(row sda disk 0 0 64 usb)"
 expect no-removable none "$(row sda disk 0 1 64 sata)"
 # the disk holding the booted ISO is excluded
 expect exclude /dev/sdb "$(row sda disk 0 0 500 sata; row sdb disk 0 0 500 sata)" --exclude sda
+# the exclude may be given as a device path too (the caller knows the ISO disk as /dev/sda)
+expect exclude-dev-path /dev/sdb "$(row sda disk 0 0 500 sata; row sdb disk 0 0 500 sata)" --exclude /dev/sda
+expect exclude-only-disk none "$(row sda disk 0 0 500 sata)" --exclude /dev/sda
+# bad arguments are exit 2, not a pick
+for bad in "--exclude a;b" "--exclude ../sda" "--min-gib abc" "--min-gib 99999999999999999999"; do
+  # shellcheck disable=SC2086
+  printf '%s' "$(row sda disk 0 0 500 sata)" | "$PICK" $bad >/dev/null 2>&1; rc=$?
+  [ "$rc" = 2 ] || { echo "FAIL bad argument '$bad' exits $rc, want 2"; fail=1; }
+done
+# fail closed on missing or odd fields
+expect missing-rm none 'NAME="sda" TYPE="disk" ROTA="0" SIZE="536870912000" TRAN="sata"'
+expect empty-rota none 'NAME="sda" TYPE="disk" ROTA="" RM="0" SIZE="536870912000" TRAN="sata"'
+expect nonnumeric-size none 'NAME="sda" TYPE="disk" ROTA="0" RM="0" SIZE="big" TRAN="sata"'
 # too small
 expect too-small none "$(row vda disk 0 0 4 virtio)"
 expect min-gib-override /dev/vda "$(row vda disk 0 0 4 virtio)" --min-gib 2

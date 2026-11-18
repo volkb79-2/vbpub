@@ -3,7 +3,7 @@
 # Run INSIDE a disposable guest (or the future installer ISO), never on a
 # machine whose disk matters. It wipes the device you name.
 #
-#   install-btrfs.sh --device /dev/vdb --yes [--suite trixie] [--mirror URL]
+#   install-btrfs.sh --device /dev/vdb --yes [--suite trixie] [--mirror URL] [--security-mirror URL]
 #                    [--hostname NAME] [--root-password PW] [--dry-run]
 #
 # Layout (flat, default subvolume stays the top level, id 5):
@@ -16,7 +16,7 @@
 set -euo pipefail
 
 DEVICE="" ; YES=0 ; DRY=0
-SUITE=trixie ; MIRROR=http://deb.debian.org/debian
+SUITE=trixie ; MIRROR=http://deb.debian.org/debian ; SECURITY_MIRROR=http://deb.debian.org/debian-security
 HOSTNAME_=drpoc ; ROOTPW=root
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -29,6 +29,7 @@ while [ $# -gt 0 ]; do
     --yes) YES=1; shift ;;
     --suite) SUITE=${2:?}; shift 2 ;;
     --mirror) MIRROR=${2:?}; shift 2 ;;
+    --security-mirror) SECURITY_MIRROR=${2:?}; shift 2 ;;
     --hostname) HOSTNAME_=${2:?}; shift 2 ;;
     --root-password) ROOTPW=${2:?}; shift 2 ;;
     --dry-run) DRY=1; shift ;;
@@ -125,7 +126,7 @@ echo "$HOSTNAME_" | write_file "$T/etc/hostname"
 printf '127.0.0.1 localhost\n127.0.1.1 %s\n' "$HOSTNAME_" | write_file "$T/etc/hosts"
 # security and point-release updates: debootstrap configures only the base suite, so a fresh install would miss
 # kernel and security updates (found in run 2: the target had kernel 6.12.107 while the mirror offered newer ones)
-printf 'deb %s %s-updates main\ndeb http://deb.debian.org/debian-security %s-security main\n' "$MIRROR" "$SUITE" "$SUITE" \
+printf 'deb %s %s-updates main\ndeb %s %s-security main\n' "$MIRROR" "$SUITE" "$SECURITY_MIRROR" "$SUITE" \
   | write_file "$T/etc/apt/sources.list.d/dr-updates.list"
 # DHCP on the first NIC through ifupdown + isc-dhcp-client (dhclient writes resolv.conf). The menu passes
 # net.ifnames=0 so the NIC is always eth0. (systemd-resolved failed to configure inside the debootstrap chroot

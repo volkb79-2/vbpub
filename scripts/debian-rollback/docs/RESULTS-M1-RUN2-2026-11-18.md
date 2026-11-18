@@ -1,8 +1,10 @@
 # M1 run 2: install, first boot, apt snapshot and rollback in a guest (2026-11-18)
 
 Result: **the btrfs + own-snapshot + ESP-GRUB variant works end to end for the
-scenarios below on Debian 13 under UEFI (TCG guest).** An install from the
-reviewed scripts boots, an `apt install` takes a snapshot first, the earlier state
+scenarios below on Debian 13 under UEFI (TCG guest).** An install from the scripts
+of `fe6e07bdd` (reviewed at 20e726aa0) plus `249c211cf` (ifupdown change, not reviewed
+before the run; the installer at HEAD, which also adds the updates and security
+suites, is not the one that ran) boots, an `apt install` takes a snapshot first, the earlier state
 boots from the menu with its own kernel, data outside the state survives, `/etc`
 comes back as it was, and the earlier state can be made the default.
 
@@ -39,7 +41,7 @@ by-hand admission logged), with these changes:
 | S3 | the earlier state boots from the menu with its own kernel | `/proc/cmdline` has `rootflags=subvol=@os-pre-…-apt`, `BOOT_IMAGE=/@os-pre-…/boot/vmlinuz-6.12.107+deb13-amd64`; `hello` is absent |
 | S3 | data outside the state survives | `/home/marker` holds the line written after the snapshot; `/srv/marker`, `/var/lib/docker/marker` present |
 | S10 | `/etc` is the earlier one | `/etc/dr-etc-marker` holds `etc1` only; the later `etc2` line is gone |
-| S4 | making the earlier state permanent | after `dr-state set-default` and a reboot with no menu choice, the command line still has the earlier state |
+| S4 | making the earlier state permanent | after `dr-state set-default`, a second boot sequence (GRUB banner, kernel start, `login:`) follows in the transcript and the command line still has the earlier state. **Caveat:** the PASS lines of this run came from the first driver version, which did not prove a reboot by boot id and had checks that could match the echoed command line; the rows above rest on the transcript text I read, not on those PASS lines. The strengthened driver (tagged values, boot-id proof) has not yet been re-run against a guest. |
 
 ## Findings
 
@@ -54,7 +56,10 @@ by-hand admission logged), with these changes:
    test ls loadenv serial terminal efi_gop gzio`); `load_env` and the menu logic
    (`saved_entry`, `next_entry`) behaved as written for boot-once and set-default.
    Secure Boot is not involved (no signed image yet, F18).
-3. The installer's wipe guard, cleanup trap and unmounts worked on a real failure.
+3. On the real debootstrap failure the cleanup trap unmounted the target (the retry was
+   not blocked by stale mounts), and the wipe guard's pass path ran against the real
+   `lsblk`, `swapon` and `findmnt`. The guard's refusal paths were not exercised in a guest.
+   `poc/dr-pick-disk` is not called by anything yet.
 4. Kernel in the target is 6.12.107 (debootstrap's `linux-image-amd64`); a newer
    kernel from updates was not installed in this run.
 5. Slice memory: page cache counted in `memory.current` brought the shared slice near

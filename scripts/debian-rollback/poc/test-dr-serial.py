@@ -98,6 +98,57 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         failures.append(f"login on an already logged-in shell failed: {exc!r}")
 
+    # tags: the echoed command line, also wrapped by the tty at 80 columns, never satisfies a check
+    echoed = ("root@drpoc:~# echo OFFER:$(apt list --upgradable 2>/dev/null | grep -c '^linux-image'); echo KVER:$(uname\n"
+              " -r); echo MODRC:$?\nOFFER:2\nKVER:6.12.115+deb13-amd64\nMODRC:0\n")
+    if drs.tag(echoed, "OFFER") != "2" or drs.tag(echoed, "KVER") != "6.12.115+deb13-amd64" or drs.tag(echoed, "MODRC") != "0":
+        failures.append(f"tag() read wrong values from {echoed!r}")
+    only_echo = "root@drpoc:~# echo OFFER:$(apt list | grep -c linux-image); echo BORC:$?\n"
+    if drs.tag(only_echo, "OFFER") is not None or drs.tag(only_echo, "BORC") is not None:
+        failures.append("tag() matched the echoed command line (vacuous check)")
+    if drs.tags("MP:/home\nMP:/srv\nNOTMP:/opt\nNOTMP:$m\nMP:$m\n", "MP") != ["/home", "/srv"]:
+        failures.append("tags() with a loop variable echo")
+    if drs.running_state("BOOT_IMAGE=/@os-pre-20261118072759-647-apt/boot/vmlinuz-6 rootflags=subvol=@os-pre-20261118072759-647-apt ro") != "@os-pre-20261118072759-647-apt":
+        failures.append("running_state() on a snapshot state")
+
+    # reboot proof: the boot id must change, and the prompt must come from the NEW boot
+    def reboot_guest(first_id, second_id):
+        a, b = socket.socketpair()
+        a.setblocking(False)
+        gg = drs.Guest("unused", io.StringIO())
+        gg.sock = a
+
+        def rv(needle: bytes) -> None:
+            b.settimeout(30)
+            data = b""
+            while needle not in data:
+                data += b.recv(512)
+
+        def serve():
+            rv(b"boot_id")
+            b.sendall(b"echo BOOTID:$(cat /proc/sys/kernel/random/boot_id)\r\nBOOTID:" + first_id + b"\r\n__DR_END_0__\r\n")
+            rv(b"reboot\n")
+            b.sendall(b"[ OK ] Stopped systemd-logind.service - User Login Management.\r\nReached target reboot.target\r\n")
+            b.sendall(b"drpoc login: ")
+            rv(b"root\n")
+            b.sendall(b"Password: ")
+            rv(b"root\n")
+            rv(b"__DR_READY_")
+            b.sendall(b"__DR_READY_42__\r\n")
+            rv(b"boot_id")
+            b.sendall(b"BOOTID:" + second_id + b"\r\n__DR_END_0__\r\n")
+
+        threading.Thread(target=serve, daemon=True).start()
+        return gg
+
+    if reboot_guest(b"aaaa-1111", b"bbbb-2222").reboot(60) != "bbbb-2222":
+        failures.append("reboot did not return the new boot id")
+    try:
+        reboot_guest(b"same-id", b"same-id").reboot(60)
+        failures.append("a reboot with an unchanged boot id was accepted")
+    except RuntimeError:
+        pass
+
     # silence times out instead of hanging
     a, b = socket.socketpair()
     a.setblocking(False)
