@@ -160,69 +160,285 @@ def _toml_value(value: object) -> str:
     raise VersionsError(f"cannot render TOML value of type {type(value).__name__}")
 
 
-def _render_versions_toml(versions: Mapping[str, object]) -> str:
+def _table_header(path: tuple[str, ...]) -> str:
+    return "[" + ".".join(_toml_key(part) for part in path) + "]"
+
+
+def _render_table_tree(path: tuple[str, ...], table: Mapping[str, object]) -> list[str]:
+    """Text lines for a NEW table subtree: a blank line, then each header with its scalars.
+
+    A table that only holds sub-tables gets no header of its own (TOML defines it implicitly).
+    """
+    scalars = [(key, value) for key, value in table.items() if not isinstance(value, dict)]
     lines: list[str] = []
-
-    def render_table(path: list[str], table: Mapping[str, object]) -> None:
-        scalars = [(key, value) for key, value in table.items() if not isinstance(value, dict)]
-        children = [(key, value) for key, value in table.items() if isinstance(value, dict)]
-        if lines:
-            lines.append("")
-        lines.append("[" + ".".join(_toml_key(part) for part in path) + "]")
-        for key, value in scalars:
-            lines.append(f"{_toml_key(str(key))} = {_toml_value(value)}")
-        for key, child in children:
-            if child:
-                render_table([*path, str(key)], child)
-
-    if versions:
-        render_table(["versions"], versions)
-    return "\n".join(lines) + ("\n" if lines else "")
+    if scalars:
+        lines.extend(("", _table_header(path)))
+        lines.extend(f"{_toml_key(str(key))} = {_toml_value(value)}" for key, value in scalars)
+    for key, child in table.items():
+        if isinstance(child, dict):
+            lines.extend(_render_table_tree((*path, str(key)), child))
+    return lines
 
 
-def _header_is_versions(line: str) -> bool:
-    stripped = line.strip()
-    if not (stripped.startswith("[") and stripped.endswith("]") and not stripped.startswith("[[")):
-        return False
+def _prune_empty(table: Mapping[str, object]) -> dict[str, object]:
+    """Copy of a TOML document without empty tables (an empty header carries no value)."""
+    pruned: dict[str, object] = {}
+    for key, value in table.items():
+        if isinstance(value, dict):
+            value = _prune_empty(value)
+            if not value:
+                continue
+        pruned[key] = value
+    return pruned
+
+
+def _split_lines(text: str) -> list[str]:
+    """Split on ``\\n`` only (``str.splitlines`` also breaks on U+2028 and others), keeping every byte."""
+    parts = text.split("\n")
+    lines = [part + "\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
+def _scan_toml_line(line: str, multiline: str | None, depth: int) -> tuple[str | None, int, int]:
+    """Advance the TOML lexical state over one line.
+
+    Returns the open multi-line string delimiter (or None), the open ``[``/``{`` depth and the
+    index where code ends (a ``#`` comment start outside any string, else the line length).
+    """
+    index, length = 0, len(line)
+    while index < length:
+        char = line[index]
+        if multiline:
+            if multiline == '"""' and char == "\\":
+                index += 2
+            elif line.startswith(multiline, index):
+                while index < length and line[index] == multiline[0]:
+                    index += 1
+                multiline = None
+            else:
+                index += 1
+        elif char == "#":
+            return multiline, depth, index
+        elif line.startswith(('"""', "'''"), index):
+            multiline = line[index:index + 3]
+            index += 3
+        elif char == '"':
+            index += 1
+            while index < length and line[index] != '"':
+                index += 2 if line[index] == "\\" else 1
+            index += 1
+        elif char == "'":
+            closing = line.find("'", index + 1)
+            index = length if closing < 0 else closing + 1
+        else:
+            depth += (char in "[{") - (char in "]}")
+            index += 1
+    return multiline, depth, length
+
+
+@dataclass(frozen=True)
+class _TomlStatement:
+    """One top-level TOML statement: a header, a ``key = value`` entry, or anything else."""
+
+    kind: str  # "table", "array-table", "key" or "other" (comment, blank, dotted key)
+    first: int
+    last: int
+    path: tuple[str, ...] = ()
+    key: str | None = None
+    value_span: tuple[int, int] = (0, 0)
+
+
+_KEY_LINE = re.compile(r"""^\s*("(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+)\s*=\s*""")
+
+
+def _header_path(code: str) -> tuple[str, ...]:
+    node: Any = tomllib.loads(code + "\n")
+    path: list[str] = []
+    while node:
+        ((key, node),) = node.items()
+        path.append(key)
+    return tuple(path)
+
+
+def _toml_statements(lines: list[str]) -> list[_TomlStatement]:
+    statements: list[_TomlStatement] = []
+    index = 0
+    while index < len(lines):
+        first = index
+        multiline, depth, code_end = _scan_toml_line(lines[index], None, 0)
+        while (multiline or depth > 0) and index + 1 < len(lines):
+            index += 1
+            multiline, depth, _end = _scan_toml_line(lines[index], multiline, depth)
+        code = lines[first][:code_end].rstrip()
+        match = _KEY_LINE.match(code)
+        if code.lstrip().startswith("[["):
+            statement = _TomlStatement("array-table", first, index)
+        elif code.lstrip().startswith("["):
+            statement = _TomlStatement("table", first, index, path=_header_path(code.strip()))
+        elif match:
+            key = next(iter(tomllib.loads(match.group(1) + " = 0")))
+            statement = _TomlStatement("key", first, index, key=key, value_span=(match.end(), len(code)))
+        else:
+            statement = _TomlStatement("other", first, index)
+        statements.append(statement)
+        index += 1
+    return statements
+
+
+@dataclass
+class _Block:
+    """A ``[table]`` header with the plain ``key = value`` statements that follow it."""
+
+    path: tuple[str, ...]
+    header: _TomlStatement
+    end: int
+    keys: dict[str, _TomlStatement]
+
+
+def _blocks(statements: list[_TomlStatement]) -> list[_Block]:
+    blocks: list[_Block] = []
+    current: _Block | None = None
+    for statement in statements:
+        if statement.kind == "table":
+            current = _Block(statement.path, statement, statement.last, {})
+            blocks.append(current)
+        elif statement.kind == "array-table":
+            current = None
+        elif statement.kind == "key" and current is not None:
+            current.end = statement.last
+            current.keys.setdefault(str(statement.key), statement)
+    return blocks
+
+
+def _diff_tables(old: Mapping[str, object], new: Mapping[str, object], path: tuple[str, ...], out: list) -> None:
+    """Edit operations ``(kind, table path, key, value)`` that turn ``old`` into ``new``."""
+    for key, value in new.items():
+        if key not in old:
+            out.append(("add-table" if isinstance(value, dict) else "add-key", path, key, value))
+        elif isinstance(value, dict) and isinstance(old[key], dict):
+            _diff_tables(old[key], value, (*path, key), out)
+        elif isinstance(value, dict) or isinstance(old[key], dict):
+            out.append(("retype", path, key, value))
+        elif value != old[key]:
+            out.append(("set", path, key, value))
+    for key, value in old.items():
+        if key not in new:
+            out.append(("del-table" if isinstance(value, dict) else "del-key", path, key, value))
+
+
+def _describe_edit(operation: tuple) -> str:
+    kind, table, key, value = operation
+    where = _table_header(table) if table else "the top level"
+    name = _toml_key(str(key))
+    if kind == "set":
+        return f"in {where} change {name} to {_toml_value(value)}"
+    if kind == "add-key":
+        return f"in {where} add the line {name} = {_toml_value(value)}"
+    if kind == "del-key":
+        return f"in {where} delete the key {name}"
+    if kind == "del-table":
+        return f"delete the table {_table_header((*table, key))}"
+    if kind == "add-table":
+        return "add the table text:" + "\n".join(_render_table_tree((*table, key), value))
+    return f"in {where} replace {name} (it changes between a table and a value)"
+
+
+def _cannot_edit(path: Path, reason: str, edit: str) -> VersionsError:
+    return VersionsError(
+        f"cannot update {path} without rewriting its [versions] region ({reason}); no file was changed. "
+        f"Make this edit by hand, then rerun: {edit}"
+    )
+
+
+def _add_table(lines: list[str], blocks: list[_Block], table: tuple[str, ...], key: str, value: dict, eol: str) -> list[str]:
+    rendered = _render_table_tree((*table, key), value)
+    anchor = None
+    for depth in range(len(table), 0, -1):
+        ends = [block.end for block in blocks if block.path[:depth] == table[:depth]]
+        if ends:
+            anchor = max(ends)
+            break
+    if anchor is None:
+        anchor = len(lines) - 1
+        if not lines or not lines[-1].strip():
+            rendered = rendered[1:]
+    if anchor >= 0 and not lines[anchor].endswith("\n"):
+        lines[anchor] += eol
+    lines[anchor + 1:anchor + 1] = [line + eol for line in rendered]
+    return lines
+
+
+def _apply_edit(path: Path, lines: list[str], operation: tuple) -> list[str]:
+    """Apply one edit to the text lines, touching only the lines it owns; refuse otherwise."""
+    kind, table, key, value = operation
+    statements = _toml_statements(lines)
+    blocks = _blocks(statements)
+    eol = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
+    edit = _describe_edit(operation)
+    if kind == "retype":
+        raise _cannot_edit(path, f"{key!r} changes between a table and a value", edit)
+    if kind == "add-table":
+        return _add_table(lines, blocks, table, key, value, eol)
+    if kind == "del-table":
+        target = (*table, key)
+        doomed = [block for block in blocks if block.path[:len(target)] == target]
+        if not doomed:
+            raise _cannot_edit(path, f"{_table_header(target)} is not written as a [table] header", edit)
+        for block in sorted(doomed, key=lambda item: item.header.first, reverse=True):
+            del lines[block.header.first:block.end + 1]
+        return lines
+    block = next((item for item in blocks if item.path == table), None)
+    if block is None:
+        raise _cannot_edit(
+            path, f"{_table_header(table) if table else 'the top level'} is not written as a [table] header", edit,
+        )
+    if kind == "add-key":
+        if not lines[block.end].endswith("\n"):
+            lines[block.end] += eol
+        lines.insert(block.end + 1, f"{_toml_key(str(key))} = {_toml_value(value)}{eol}")
+        return lines
+    statement = block.keys.get(key)
+    if statement is None or statement.first != statement.last:
+        raise _cannot_edit(
+            path, f"{key!r} is not a plain single-line `key = value` entry of {_table_header(table)}", edit,
+        )
+    if kind == "del-key":
+        del lines[statement.first]
+        return lines
+    line = lines[statement.first]
+    start, stop = statement.value_span
+    lines[statement.first] = line[:start] + _toml_value(value) + line[stop:]
+    return lines
+
+
+def _edit_versions_text(path: Path, original: str, old_document: Mapping[str, object], new_versions: Mapping[str, object]) -> str:
+    """The text of ``original`` with only the [versions] values that changed edited in place.
+
+    The edited text is parsed again and must equal the requested document; otherwise the edit is
+    refused (never written) with the exact hand edit. The whole-region rewrite is not a fallback.
+    """
+    before = _prune_empty(old_document)
+    after = _prune_empty({**old_document, "versions": new_versions})
+    operations: list[tuple] = []
+    _diff_tables(before, after, (), operations)
+    lines = _split_lines(original)
+    for operation in operations:
+        lines = _apply_edit(path, lines, operation)
+    text = "".join(lines)
+    edits = "; ".join(_describe_edit(operation) for operation in operations)
     try:
-        table = tomllib.loads(stripped + "\n")
-    except tomllib.TOMLDecodeError:
-        return False
-    return "versions" in table
-
-
-def _replace_versions_region(document: str, versions: Mapping[str, object]) -> str:
-    lines = document.splitlines(keepends=True)
-    section_indices = [index for index, line in enumerate(lines) if line.lstrip().startswith("[")]
-    blocks: list[tuple[int, int, bool]] = []
-    for offset, start in enumerate(section_indices):
-        end = section_indices[offset + 1] if offset + 1 < len(section_indices) else len(lines)
-        blocks.append((start, end, _header_is_versions(lines[start])))
-    version_blocks = [(start, end) for start, end, is_versions in blocks if is_versions]
-    rendered = _render_versions_toml(versions)
-    if not version_blocks:
-        base = document.rstrip()
-        if not rendered:
-            return document
-        return (base + "\n\n" if base else "") + rendered
-
-    first = version_blocks[0][0]
-    removal = {index for start, end in version_blocks for index in range(start, end)}
-    output: list[str] = []
-    for index, line in enumerate(lines):
-        if index == first:
-            if rendered:
-                output.append(rendered)
-            continue
-        if index in removal:
-            continue
-        output.append(line)
-    result = "".join(output)
-    return re.sub(r"\n{3,}", "\n\n", result).rstrip() + "\n"
+        reparsed = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise _cannot_edit(path, f"the edited text would not parse: {exc}", edits) from exc
+    if _prune_empty(reparsed) != after:
+        raise _cannot_edit(path, "the edited text would not match the requested values", edits)
+    return text
 
 
 def _update_versions_file(path: Path, mutate) -> None:
-    original = path.read_text(encoding="utf-8")
+    original = path.read_bytes().decode("utf-8")
     document = _load_document(path)
     versions = copy.deepcopy(document.get("versions", {}))
     updated = mutate(versions)
@@ -232,7 +448,7 @@ def _update_versions_file(path: Path, mutate) -> None:
         parse_versions_section(updated, f"{path} [versions]", allow_partial=True)
     except ValueError as exc:
         raise VersionsError(str(exc)) from exc
-    rendered = _replace_versions_region(original, updated)
+    rendered = _edit_versions_text(path, original, document, updated)
     if rendered != original:
         _write_text_atomic(path, rendered)
 
@@ -1155,6 +1371,7 @@ def _versions_init(forge: ForgeConfig, projects: list[str], *, dry_run: bool) ->
             else project_root / PROJECT_CONFIG_FILENAME
         )
         document = _load_document(config_path)
+        pristine = copy.deepcopy(document)
         versions = document.get("versions", {})
         if not isinstance(versions, dict):
             raise VersionsError(f"{config_path} [versions] must be a table")
@@ -1225,8 +1442,8 @@ def _versions_init(forge: ForgeConfig, projects: list[str], *, dry_run: bool) ->
             except ValueError as exc:
                 raise VersionsError(str(exc)) from exc
             if not dry_run:
-                original = config_path.read_text(encoding="utf-8")
-                rendered = _replace_versions_region(original, versions)
+                original = config_path.read_bytes().decode("utf-8")
+                rendered = _edit_versions_text(config_path, original, pristine, versions)
                 pending[config_path] = (original, rendered)
             summaries.append(f"{name}: {'would add' if dry_run else 'added'} {', '.join(added)}")
         for item in skipped:
@@ -2075,6 +2292,7 @@ def _validate_manifest_target_compatibility(
         pypi_extras=discovery.get("pypi_extras", ()),
         requirements_files=discovery.get("requirements_files", ()),
     )
+    problems: list[str] = []
     for family, _slug, constraint, manifest_source in facts:
         for target_id, result in results.items():
             declaration = declarations.get(target_id, {})
@@ -2089,10 +2307,37 @@ def _validate_manifest_target_compatibility(
             manifest_identity = str(manifest_source[identity_key])
             matches = _same_source_identity(family, source_identity, manifest_identity)
             if matches and not version_satisfies(candidate.version, constraint):
-                raise VersionsError(
-                    f"target {target_id!r} resolves {source_identity}@{candidate.version}, but "
-                    f"{project_root} manifest requires {constraint!r}"
-                )
+                problems.append(_manifest_problem(
+                    project_root, family, target_id, source_identity, candidate.version, constraint,
+                ))
+    if problems:
+        raise VersionsError(
+            f"{len(problems)} version target(s) resolve to versions the committed manifests do not "
+            "allow; the manifests (package.json among them) are hand-owned and cmru does not rewrite "
+            "them, so nothing was written. Make these edits, then rerun cmru versions resolve:\n- "
+            + "\n- ".join(problems)
+        )
+
+
+def _manifest_problem(
+    project_root: Path, family: str, target_id: str, name: str, version: str, constraint: str,
+) -> str:
+    """One target the manifest contradicts, with the edit that fixes it."""
+    line = (
+        f"target {target_id!r} resolves {name}@{version}, but "
+        f"{project_root} manifest requires {constraint!r}"
+    )
+    if family != "npm":
+        return f"{line}; update the manifest entry for {name} to allow {version}"
+    document = json.loads((project_root / "package.json").read_text(encoding="utf-8"))
+    edits = [
+        f'package.json: set "{field}"."{name}" from "{document[field][name]}" to "{version}"'
+        for field in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "overrides")
+        if isinstance(document.get(field), dict)
+        and isinstance(document[field].get(name), str)
+        and document[field][name] != version
+    ]
+    return f"{line}; " + "; ".join(edits)
 
 
 def _run_resolve(

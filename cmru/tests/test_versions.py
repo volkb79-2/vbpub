@@ -2192,13 +2192,16 @@ def test_oci_candidates_handle_version_spelling_duplicates(monkeypatch):
 def test_versions_toml_writer_preserves_other_tables_and_transaction_rolls_back(tmp_path):
     text = "schema_version = 1\n\n[project]\nid = \"demo\"\n\n[versions]\nage_window_days = 14\n\n[versions.targets.old]\nmode = \"single\"\n\n[steps.test]\nquiet = true\n"
     new = {"age_window_days": 21, "targets": {"pypi.requests": _pypi_target()}}
-    updated = versions._replace_versions_region(text, new)
+    old = tomllib.loads(text)
+    updated = versions._edit_versions_text(tmp_path / "x.toml", text, old, new)
     parsed = tomllib.loads(updated)
     assert parsed["project"]["id"] == "demo"
     assert parsed["steps"]["test"]["quiet"] is True
     assert parsed["versions"]["targets"]["pypi.requests"]["pypi"]["name"] == "requests"
-    assert versions._replace_versions_region("schema_version = 1\n", new).endswith("[versions.targets.\"pypi.requests\".pypi]\nname = \"requests\"\nregistry = \"https://pypi.org\"\n")
-    assert versions._replace_versions_region(updated, {}) == "schema_version = 1\n\n[project]\nid = \"demo\"\n\n[steps.test]\nquiet = true\n"
+    assert parsed["versions"]["age_window_days"] == 21
+    assert "[versions.targets.old]" not in updated
+    bare = versions._edit_versions_text(tmp_path / "x.toml", "schema_version = 1\n", {"schema_version": 1}, new)
+    assert bare.endswith("[versions.targets.\"pypi.requests\".pypi]\nname = \"requests\"\nregistry = \"https://pypi.org\"\n")
 
     existing = tmp_path / "existing.txt"
     created = tmp_path / "created.txt"
@@ -2232,19 +2235,16 @@ def test_versions_file_read_render_and_atomic_failure_edges(monkeypatch, tmp_pat
     assert versions._toml_value([True, "x"]) == '[true, "x"]'
     with pytest.raises(versions.VersionsError, match="cannot render TOML"):
         versions._toml_value({"nested": True})
-    assert not versions._render_versions_toml({})
-    assert versions._render_versions_toml({"empty": {}}).startswith("[versions]\n")
-    assert "[versions.targets.\"pypi.requests\"]" in versions._render_versions_toml(
-        {"targets": {"pypi.requests": {"mode": "single"}}},
-    )
-    assert not versions._header_is_versions("[[array.table]]")
-    assert not versions._header_is_versions("[invalid")
-    assert versions._header_is_versions('["versions".targets]')
-    assert versions._replace_versions_region("", {"age_window_days": 14}).startswith("[versions]")
+    assert not versions._render_table_tree(("versions",), {"empty": {}})
+    assert "[versions.targets.\"pypi.requests\"]" in "\n".join(versions._render_table_tree(
+        ("versions",), {"targets": {"pypi.requests": {"mode": "single"}}},
+    ))
+    probe = tmp_path / "probe.toml"
+    assert versions._edit_versions_text(probe, "", {}, {"age_window_days": 14}).startswith("[versions]")
     source = "schema_version = 1\n\n[steps.run]\ncommands = []\n"
-    replaced = versions._replace_versions_region(source, {"age_window_days": 14})
+    replaced = versions._edit_versions_text(probe, source, tomllib.loads(source), {"age_window_days": 14})
     assert tomllib.loads(replaced)["versions"]["age_window_days"] == 14
-    assert versions._replace_versions_region(source, {}) == source
+    assert versions._edit_versions_text(probe, source, tomllib.loads(source), {}) == source
     valid = tmp_path / "valid.toml"
     valid.write_text("schema_version = 1\n", encoding="utf-8")
     with pytest.raises(versions.VersionsError, match="did not return a table"):
@@ -2325,7 +2325,6 @@ def test_file_transaction_refuses_symlinks_and_restores_missing_and_existing_pat
 
 
 def test_version_file_cleanup_errors_and_section_replacement_edges(monkeypatch, tmp_path):
-    assert not versions._header_is_versions("[bad = value]")
     path = tmp_path / "config.toml"
     path.write_text("schema_version = 1\n", encoding="utf-8")
     with pytest.raises(versions.VersionsError, match="unknown keys"):

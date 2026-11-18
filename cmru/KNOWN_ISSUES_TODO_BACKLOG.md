@@ -27,7 +27,9 @@
 | KI-164 | FIXED (`bundle-build` removes bundle and wheel staging trees after a successful archive by default) | `d6cd7fb54aff97dfb47fb7a537e0d31b0d7af3e0` |
 | KI-163 | FIXED (`bundle-build` derives a non-release version when its configured variable is absent) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
 | KI-162 | FIXED (released in cmru 7.3.1; the naf equivalence build on 2026-11-14 was EQUIVALENT, which also closes KI-126) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
-| KI-161 | OPEN (`cmru versions resolve` and `init` rewrite `cmru.toml` and drop comments; a document-wide blank-line collapse can change multi-line string values) | — |
+| KI-161 | FIXED 2026-11-18 (`cmru versions resolve` and `init` edit only the values and tables they own; comments, blank-line runs and multi-line values stay byte-identical; unsupported shapes are refused with the hand edit named) | branch `cmru-20261118_061012-p4-versions-resolve-20261118` (hash recorded at merge) |
+| KI-176 | FIXED 2026-11-18 (every manifest-contradicting target is reported in one run with the exact `package.json` edit; nothing is written) | same branch |
+| KI-177 | FIXED 2026-11-18 (same mechanism as KI-161; the mdt-cockpit ADVISORY comment shape is a regression test) | same branch |
 | KI-160 | OPEN (post-promotion evidence retention can exit 1 after a successful release) | — |
 | KI-158 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
 | KI-157 | FIXED 2026-11-16 (checked-out main worktree is derived and given its owner-scoped remedy) | `4d36980b8d6f3ed7533da2f900b955c06075cb1f` |
@@ -3536,7 +3538,7 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 ## KI-161 - `cmru versions resolve` and `cmru versions init` rewrite `cmru.toml` and drop comments (and can change multi-line string values)
 
-**Status:** OPEN (filed 2026-11-13); severity: minor (silent loss of hand-written documentation; no functional effect). Found in netcup-api-filter with cmru 7.3.0. CHANGES checked: nothing in `[Unreleased]` covers it.
+**Status:** FIXED 2026-11-18 on branch `cmru-20261118_061012-p4-versions-resolve-20261118` (option a, surgical text edits: `versions.py` `_edit_versions_text`; tests `tests/test_versions_surgical_edit.py` and `tests/test_versions_surgical_refusals.py` cover the Close-when fixture for `resolve` and `init`, SPEC section on the versions commands); formerly OPEN (filed 2026-11-13); severity: minor (silent loss of hand-written documentation; no functional effect). Found in netcup-api-filter with cmru 7.3.0. CHANGES checked: nothing in `[Unreleased]` covers it.
 
 **Evidence.** In netcup-api-filter, branch `pdns51`, the commit that ran one `cmru versions resolve` (`netcup-api-filter@9847b7b`, "chore(versions): record the PowerDNS 5.1.5 resolution") removed two hand-written comments from `cmru.toml`: a comment on the python314 target and a multi-line "partial migration" marker the previous commit had put directly above the `[versions.targets."oci.powerdns-auth"]` table. The resolved values were rewritten correctly; only the comments disappeared, so the marker that made a half-migrated state detectable was erased by the very command meant to complete it.
 
@@ -3813,7 +3815,7 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-177 `cmru versions resolve` rewrites cmru.toml and silently drops its comments
 
-**Status:** OPEN (filed 2026-11-17 while releasing mdt-cockpit); severity: medium (a refresh deletes human-owned labels; here it removed the eight `ADVISORY ... MDT-013` comments that mdt-cockpit's `test_every_oci_target_is_labelled_advisory_and_points_at_mdt_009` requires, and the loss surfaced only as a release-gate failure).
+**Status:** FIXED 2026-11-18 on branch `cmru-20261118_061012-p4-versions-resolve-20261118` (see KI-161); filed 2026-11-17 while releasing mdt-cockpit; severity: medium (a refresh deletes human-owned labels; here it removed the eight `ADVISORY ... MDT-013` comments that mdt-cockpit's `test_every_oci_target_is_labelled_advisory_and_points_at_mdt_009` requires, and the loss surfaced only as a release-gate failure).
 
 **Problem.** After `cmru versions resolve` in `mdt-cockpit/`, the committed `cmru.toml` had 6 comment lines instead of 15; only the `resolved` values should have changed.
 
@@ -3823,7 +3825,7 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-176 `cmru versions resolve` cannot refresh a project whose npm targets use `constraint = "*"`: it demands a hand-edited `package.json`
 
-**Status:** OPEN (filed 2026-11-17 while releasing mdt-cockpit); severity: medium (a release stalls once the record passes its 28-day limit, with a message that names `resolve` as the fix and then `resolve` itself refuses).
+**Status:** FIXED 2026-11-18 on branch `cmru-20261118_061012-p4-versions-resolve-20261118` for the cmru side: `resolve`, `resolve --dry-run` and `check` report every target whose resolved version the committed manifest does not allow in one run (target, resolved version, manifest requirement, exact `package.json` edit) and exit non-zero without writing; `package.json` stays hand-owned. **Still open outside cmru:** the stale-record message that tells a consumer to run `cmru versions resolve` is written by the consumer (mdt-cockpit `scripts/stage_tool_artifacts.py`, around the 28-day check) and should also name the manifest edit. Filed 2026-11-17 while releasing mdt-cockpit; severity: medium (a release stalls once the record passes its 28-day limit, with a message that names `resolve` as the fix and then `resolve` itself refuses).
 
 **Problem.** mdt-cockpit declares `npm.copilot`, `npm.openclaw` and `npm.claudelink` with `constraint = "*"`, and the committed `package.json` pins exact versions. When the registry moves, `cmru versions resolve` stops at the first target with `target 'npm.X' resolves A, but <project> manifest requires 'B'`, one target per run, so three stale pins took three failed runs and hand edits of `package.json` (dependencies and overrides). The stale-record error ("run `cmru versions resolve` ... and commit the result") does not mention the manifest edit.
 
