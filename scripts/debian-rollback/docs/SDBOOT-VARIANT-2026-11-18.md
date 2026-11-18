@@ -167,7 +167,7 @@ revision after only renaming the function; its GRUB text and operations are byte
 The failing-first suite for the new pure decisions is `poc/test-dr-state-sdboot.sh`. It covers the BLS entry text,
 content-addressed kernel ids, entry-id mapping and rejection, backend selection, byte accounting decisions,
 `loader.conf` rewriting, empty backend sources, multi-path reference extraction, FAT case collisions, interrupted-copy
-cleanup, parent-directory allocation, CRLF references, and orphan-directory selection. It currently passes 97 cases.
+cleanup, parent-directory allocation, CRLF references, and orphan-directory selection. It currently passes 105 cases.
 
 The suite also runs workflow fixtures through the real `gen-menu`, `set-default`, and `prune` paths against disposable
 ESP trees. `DR_STATE_TEST_MODE=1` with `DR_STATE_TEST_ROOT` selects a temporary root and optional deterministic ESP
@@ -182,8 +182,59 @@ accounting, and default selection — were killed.
 the systemd-boot package path, exact bootctl argv, backend config and marker, command ordering, and refusal of an
 invalid backend. It currently passes 17 cases.
 
+`poc/test-build-seed.sh` calls the no-xorriso staging function directly and, when `xorriso` is available, packs both
+seed variants and extracts `/bootloader` from each ISO. It also checks the guest's marker read/fallback/pass-through
+wiring and refusal of an unknown backend. With `xorriso` absent it reports that ISO packing and extraction are not
+covered.
+
+`poc/test-dr-serial.py` now covers the backend-marker decision, strict `loader.conf` default parsing, BLS entry-path
+and state parsing (including CRLF and multiple initrds), unsafe paths, malformed entries, and kernel-title parsing,
+in addition to the original fake-serial exchanges.
+
 The pre-existing offline suites remain green: `test-dr-state-window.sh`, `test-dr-state-prune.sh`,
-`iso/test-dr-plan.sh`, and `poc/test-dr-qemu.sh`. All touched shell files pass `shellcheck`.
+`iso/test-dr-plan.sh`, `iso/test-dr-autoinstall-guard.sh`, `poc/test-dr-pick-disk.sh`, and `poc/test-dr-qemu.sh`.
+All touched shell files pass `shellcheck`.
+
+## How to run the guests
+
+**Nothing in this section has been run.** The commands and scenario matrix are prepared for the next offline-to-guest
+handoff; every guest result below is currently unverified.
+
+Build a systemd-boot builder seed, then let the builder guest install the base disk:
+
+```sh
+scripts/debian-rollback/poc/build-seed.sh --bootloader systemd-boot /tmp/seed-systemd-boot.iso
+```
+
+The seed's `/bootloader` file contains `systemd-boot`; the builder guest reads it and invokes
+`install-btrfs.sh --device "$DEV" --yes --bootloader systemd-boot`. A seed built without `--bootloader` carries
+`grub`, exactly matching the installer's default. The systemd-boot guest runs only the systemd-boot seed, not the
+GRUB seed.
+
+Start each scenario against the running guest's serial socket, using the same state directory as `dr-qemu.sh`
+(`serial.sock` and `qmp.sock` live there):
+
+```sh
+scripts/debian-rollback/poc/dr-serial.py STATE_DIR/serial.sock SCENARIO \
+  --log STATE_DIR/SCENARIO.log
+```
+
+The supported run matrix for the systemd-boot variant is:
+
+| Scenario | Guest run | What it proves | Status |
+|---|---|---|---|
+| `boot-check` | May share a fresh overlay with `sdboot-esp`; must be first boot after install. | The installed state is the running root, systemd and networking work, D18 paths are split correctly, and the systemd-boot ESP contains `loader/loader.conf`, at least one BLS entry, `EFI/systemd/systemd-bootx64.efi`, and non-empty kernel copies. | **NOT RUN** |
+| `sdboot-esp` | May share a fresh overlay with `boot-check`. | Every BLS entry's named kernel and initrds exist and are non-empty on the ESP, `loader.conf` has exactly one default and that entry exists, its state matches `dr-state list`, no `.tmp.*` scratch remains, and ESP free space is reported. | **NOT RUN** |
+| `s2-s3` | Fresh overlay; do not reuse after another snapshot-producing scenario. | Apt takes one snapshot, systemd-boot lists one entry per state, boot-once boots the earlier package state with `/etc` rolled back while service data survives, the one-shot is consumed, and set-default changes the next plain boot. | **NOT RUN** |
+| `kernel-upgrade` | Fresh overlay; do not reuse after another snapshot-producing scenario. | A kernel upgrade snapshots the old state, gives the running state the new kernel and the snapshot the old kernel in BLS entries, boots both kernels, loads the old state's modules, and consumes the systemd-boot one-shot. | **NOT RUN** |
+
+Do **not** run `s5` against systemd-boot: it sends GRUB menu key presses over the serial line. Do **not** run `s6`,
+`s7`, `s8`, `s9`, or `s9b` until their remaining GRUB-specific menu assumptions have been made backend-aware and
+reviewed. `backports`, `window-negative`, and `live-inspect` are not part of this run matrix.
+
+For `s2-s3` and `kernel-upgrade`, use a new overlay on the same installed systemd-boot base for each scenario. Their
+initial precondition is that the running state is the default, and their snapshot counts depend on an empty dedupe
+window. `boot-check` and `sdboot-esp` are read-only and may share the first guest.
 
 ## Not verified
 

@@ -3,9 +3,11 @@
 
   dr-serial.py SOCKET SCENARIO [--log FILE]
 
-SCENARIO is one of: boot-check, s2-s3, kernel-upgrade, s5. Scenarios are NOT idempotent: s2-s3 ends with the earlier
-state as the default and both s2-s3 and kernel-upgrade require "running state == default" at the start, so run each
-of them in its own fresh guest (new overlay on the installed base); boot-check may share a guest with either. The
+SCENARIO is one of: boot-check, s2-s3, kernel-upgrade, sdboot-esp, s5, plus the other named scenarios below.
+boot-check, s2-s3, kernel-upgrade and sdboot-esp are backend-aware (GRUB or systemd-boot). Scenarios are NOT
+idempotent: s2-s3 ends with the earlier state as the default and both s2-s3 and kernel-upgrade require "running state
+== default" at the start, so run each of them in its own fresh guest (new overlay on the installed base); boot-check
+may share a guest with either. The
 apt hook's dedupe window (dr-state, default 900 s) is another reason: a second apt run of the same state within the
 window takes no snapshot, so scenarios that count new snapshots need a guest without a recent one. The guest must be running (dr-qemu.sh start) with a
 login prompt on ttyS0 and root password "root" (the PoC installer default). The log is a plain transcript
@@ -21,9 +23,11 @@ against it):
   `login:` prompt instead of probing the old shell.
 Standard library only. Host-side: it touches nothing but the socket.
 """
+import base64
 import os
 import re
 import select
+import shlex
 import socket
 import sys
 import time
@@ -217,18 +221,234 @@ def running_state(out_cmdline):
     return m.group(1) if m else None
 
 
+BOOTLOADER_MARKER = "/boot/efi/EFI/dr/bootloader"
+
+
+def detect_backend(marker):
+    """Map the ESP marker's file content to a backend. Absence alone is the GRUB default; any
+    present but unrecognised value fails loudly instead of falling back."""
+    if marker is None:
+        return "grub"
+    value = marker.rstrip("\r\n")
+    if value == "systemd-boot":
+        return "systemd-boot"
+    raise ValueError(f"unknown bootloader marker {value!r}; expected systemd-boot or no marker (GRUB)")
+
+
+def parse_loader_default(text):
+    """Return the single entry id on an uncommented `default` line in loader.conf."""
+    defaults = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        if fields[0] != "default":
+            continue
+        if len(fields) != 2:
+            raise ValueError(f"malformed loader.conf default line: {line!r}")
+        entry_id = fields[1]
+        if "/" in entry_id or "\\" in entry_id or entry_id in (".", "..") or entry_id.startswith("."):
+            raise ValueError(f"unsafe loader.conf default entry id: {entry_id!r}")
+        defaults.append(entry_id)
+    if len(defaults) != 1:
+        raise ValueError(f"loader.conf must have exactly one default line; found {len(defaults)}")
+    return defaults[0]
+
+
+def _check_esp_path(path):
+    if not path.startswith("/") or "\x00" in path:
+        raise ValueError(f"BLS path is not absolute: {path!r}")
+    if any(part in ("", ".", "..") for part in path.split("/")[1:]):
+        raise ValueError(f"unsafe BLS path: {path!r}")
+
+
+def parse_bls_entry(text):
+    """Parse one systemd-boot BLS entry. The installer writes exactly one kernel, at least one
+    initrd, and a state-bearing rootflags=subvol= option."""
+    linux = []
+    initrd = []
+    titles = []
+    options = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        key = fields[0]
+        if key == "linux":
+            if len(fields) != 2:
+                raise ValueError(f"malformed BLS linux line: {line!r}")
+            _check_esp_path(fields[1])
+            linux.append(fields[1])
+        elif key == "initrd":
+            if len(fields) != 2:
+                raise ValueError(f"malformed BLS initrd line: {line!r}")
+            _check_esp_path(fields[1])
+            initrd.append(fields[1])
+        elif key == "title":
+            if len(fields) < 2:
+                raise ValueError("BLS entry has an empty title")
+            titles.append(line)
+        elif key == "options":
+            if len(fields) < 2:
+                raise ValueError("BLS entry has an empty options line")
+            options.append(" ".join(fields[1:]))
+    if len(linux) != 1:
+        raise ValueError(f"BLS entry must name exactly one kernel; found {len(linux)}")
+    if not initrd:
+        raise ValueError("BLS entry names no initrd")
+    if len(titles) != 1:
+        raise ValueError(f"BLS entry must have exactly one title; found {len(titles)}")
+    if len(options) != 1:
+        raise ValueError(f"BLS entry must have exactly one options line; found {len(options)}")
+    subvol = None
+    for field in options[0].split():
+        if field.startswith("rootflags="):
+            for flag in field.removeprefix("rootflags=").split(","):
+                if flag.startswith("subvol="):
+                    subvol = flag.removeprefix("subvol=")
+                    break
+        if subvol is not None:
+            break
+    if not subvol:
+        raise ValueError("BLS entry options have no rootflags=subvol=<state>")
+    return {"title": titles[0], "linux": linux[0], "initrd": initrd, "options": options[0], "state": subvol}
+
+
+def parse_bls_title(text):
+    """Return (state, kernel) from the exact title generated by dr-state."""
+    m = re.fullmatch(r"title Debian (@os-\S+) \(kernel ([^)]+)\)", (text or "").strip())
+    if not m:
+        raise ValueError(f"unrecognised BLS Debian title: {text!r}")
+    return m.group(1), m.group(2)
+
+
+def guest_backend(g, log):
+    """Read the guest marker and resolve the backend, recording a failed check for bad content."""
+    _, out = g.run(
+        f"if [ -e {BOOTLOADER_MARKER} ]; then "
+        "echo MARKER_PRESENT:1; echo MARKER_VALUE:$(cat "
+        f"{BOOTLOADER_MARKER}); "
+        "else echo MARKER_PRESENT:0; fi"
+    )
+    present = tag(out, "MARKER_PRESENT") == "1"
+    raw = tag(out, "MARKER_VALUE")
+    marker = raw if present else None
+    if present and raw is None:
+        marker = ""
+    try:
+        backend = detect_backend(marker)
+    except ValueError as exc:
+        check(log, "ESP bootloader marker names a supported backend", False, str(exc))
+        return None
+    check(log, "ESP bootloader marker names a supported backend", True, backend)
+    return backend
+
+
+def menu_entry_count(g, backend):
+    """Number of boot-menu entries for this backend, or None when the probe is unreadable."""
+    if backend == "grub":
+        cmd = "echo MENU:$(grep -c '^menuentry' /boot/efi/EFI/dr/grub.cfg)"
+    elif backend == "systemd-boot":
+        cmd = "echo MENU:$(find /boot/efi/loader/entries -maxdepth 1 -type f -name '*.conf' | wc -l)"
+    else:
+        raise ValueError(f"unknown backend {backend!r}")
+    _, out = g.run(cmd)
+    value = tag(out, "MENU")
+    return int(value) if value is not None and value.isdigit() else None
+
+
+def read_bls_entry_sources(g):
+    """Return [(entry path, decoded file content)] without parsing them."""
+    _, out = g.run(
+        "for f in /boot/efi/loader/entries/*.conf; do "
+        "[ -f \"$f\" ] || continue; "
+        "echo BLS_PATH:$f; echo BLS_B64:$(base64 -w0 -- \"$f\"); "
+        "done"
+    )
+    paths = tags(out, "BLS_PATH")
+    encoded = tags(out, "BLS_B64")
+    if len(paths) != len(encoded):
+        raise ValueError(f"cannot read every BLS entry ({len(paths)} paths, {len(encoded)} file bodies)")
+    result = []
+    for path, body in zip(paths, encoded):
+        try:
+            text = base64.b64decode(body, validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValueError(f"cannot decode BLS entry {path}: {exc}") from exc
+        result.append((path, text))
+    return result
+
+
+def read_bls_entries(g):
+    """Read and parse every loader/entries/*.conf file."""
+    entries = []
+    for path, text in read_bls_entry_sources(g):
+        parsed = parse_bls_entry(text)
+        parsed["path"] = path
+        entries.append(parsed)
+    return entries
+
+
+def read_loader_conf(g):
+    """Return loader.conf content, or None when missing/unreadable."""
+    _, out = g.run(
+        "if [ -s /boot/efi/loader/loader.conf ]; then "
+        "echo LOADER_B64:$(base64 -w0 -- /boot/efi/loader/loader.conf); "
+        "else echo LOADER_MISSING:1; fi"
+    )
+    if tag(out, "LOADER_MISSING") == "1":
+        return None
+    body = tag(out, "LOADER_B64")
+    if body is None:
+        return None
+    try:
+        return base64.b64decode(body, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError(f"cannot decode loader.conf: {exc}") from exc
+
+
+def efi_probe_command(backend):
+    """Hash the files that an upgrade must not rewrite for the selected backend."""
+    if backend == "grub":
+        return ("echo EFIFILES:$(ls -1 /boot/efi/EFI | tr '\\n' ,)_$(ls -1 /boot/efi/EFI/dr | tr '\\n' ,)"
+                "_$(sha256sum /boot/efi/EFI/BOOT/BOOTX64.EFI | cut -c1-16)")
+    if backend == "systemd-boot":
+        return ("echo EFIFILES:$(test -s /boot/efi/EFI/systemd/systemd-bootx64.efi "
+                "&& test -s /boot/efi/EFI/dr/bootloader "
+                "&& sha256sum /boot/efi/EFI/systemd/systemd-bootx64.efi "
+                "/boot/efi/EFI/dr/bootloader | cut -d ' ' -f1 | tr '\\n' ,)")
+    raise ValueError(f"unknown backend {backend!r}")
+
+
 MOUNT_PATHS_OUTSIDE = ["/home", "/root", "/srv", "/var/www", "/var/log", "/var/lib/docker", "/var/lib/containers",
                        "/var/lib/postgresql", "/var/lib/mysql", "/usr/local", "/.top"]
 
 
 def scenario_boot_check(g, log):
     g.login()
+    backend = guest_backend(g, log)
+    if backend is None:
+        return
     paths = " ".join(MOUNT_PATHS_OUTSIDE + ["/opt", "/etc"])
+    if backend == "grub":
+        esp_probe = "echo ESPFILES:$(ls /boot/efi/EFI/dr | tr '\\n' ,); "
+    elif backend == "systemd-boot":
+        esp_probe = (
+            "echo SDBOOT_LOADER:$(test -s /boot/efi/loader/loader.conf && echo yes || echo no); "
+            "echo SDBOOT_ENTRIES:$(find /boot/efi/loader/entries -maxdepth 1 -type f -name '*.conf' | wc -l); "
+            "echo SDBOOT_BINARY:$(test -s /boot/efi/EFI/systemd/systemd-bootx64.efi && echo yes || echo no); "
+            "echo SDBOOT_KERNELS:$(find /boot/efi/EFI/dr/kernels -type f "
+            "\\( -name vmlinuz -o -name initrd.img \\) -size +0c | wc -l); "
+        )
+    else:
+        raise AssertionError(backend)
     rc, out = g.run("echo KERNEL:$(uname -r); echo CMDLINE:$(cat /proc/cmdline); echo ROOTSRC:$(findmnt -no SOURCE /); "
                     "echo SYSTEMD:$(systemctl is-system-running); "
                     "echo IP:$(ip -color=never -4 -br addr show scope global | head -1 | tr -s ' ' _); "
                     "echo DNS:$(getent hosts deb.debian.org | head -1 | tr -s ' ' _); "
-                    "echo ESPFILES:$(ls /boot/efi/EFI/dr | tr '\\n' ,); "
+                    f"{esp_probe}"
                     f"for m in {paths}; do if mountpoint -q $m; then echo MP:$m; else echo NOTMP:$m; fi; done")
     cmdline = tag(out, "CMDLINE") or ""
     check(log, "booted a state subvolume (from /proc/cmdline)", running_state(cmdline) is not None, cmdline[:100])
@@ -236,7 +456,17 @@ def scenario_boot_check(g, log):
     check(log, "systemd reports running", tag(out, "SYSTEMD") == "running", tag(out, "SYSTEMD") or "")
     check(log, "guest has a global IPv4 address", re.match(r"eth0_UP_\d+\.\d+\.\d+\.\d+/", tag(out, "IP") or "") is not None, tag(out, "IP") or "")
     check(log, "name resolution works", re.match(r"[0-9a-f:.]+_+.*deb\.debian\.org", tag(out, "DNS") or "") is not None, tag(out, "DNS") or "")
-    check(log, "ESP holds grub.cfg and grubenv", {"grub.cfg", "grubenv"} <= set((tag(out, "ESPFILES") or "").split(",")))
+    if backend == "grub":
+        check(log, "ESP holds grub.cfg and grubenv", {"grub.cfg", "grubenv"} <= set((tag(out, "ESPFILES") or "").split(",")))
+    else:
+        check(log, "ESP holds loader/loader.conf", tag(out, "SDBOOT_LOADER") == "yes")
+        entries = tag(out, "SDBOOT_ENTRIES")
+        check(log, "ESP holds at least one loader/entries/*.conf",
+              entries is not None and entries.isdigit() and int(entries) > 0, str(entries))
+        check(log, "ESP holds EFI/systemd/systemd-bootx64.efi", tag(out, "SDBOOT_BINARY") == "yes")
+        kernels = tag(out, "SDBOOT_KERNELS")
+        check(log, "ESP holds non-empty files under EFI/dr/kernels/*",
+              kernels is not None and kernels.isdigit() and int(kernels) > 0, str(kernels))
     mp = set(tags(out, "MP"))
     notmp = set(tags(out, "NOTMP"))
     check(log, "outside paths (D18) are separate mounts", set(MOUNT_PATHS_OUTSIDE) <= mp, str(sorted(set(MOUNT_PATHS_OUTSIDE) - mp)))
@@ -247,6 +477,9 @@ def scenario_s2_s3(g, log):
     """S2 apt install snapshots first; S3 boot the earlier state once; S10 /etc rolls back; the one-shot returns to
     the default on the next reboot; S4 set-default keeps the earlier state."""
     g.login()
+    backend = guest_backend(g, log)
+    if backend is None:
+        return
     _, out = g.run("echo CMDLINE:$(cat /proc/cmdline)")
     state0 = running_state(tag(out, "CMDLINE"))
     check(log, "running state known", state0 is not None, str(state0))
@@ -268,8 +501,8 @@ def scenario_s2_s3(g, log):
     after = state_list(g)
     new = [s for s in after if s not in before and s.startswith("@os-pre-")]
     check(log, "apt hook created exactly one new snapshot", len(new) == 1, str(new))
-    _, out = g.run("echo MENU:$(grep -c '^menuentry' /boot/efi/EFI/dr/grub.cfg)")
-    check(log, "menu has one entry per state", tag(out, "MENU") == str(len(after)), f"menu={tag(out, 'MENU')} states={after}")
+    menu = menu_entry_count(g, backend)
+    check(log, "menu has one entry per state", menu == len(after), f"menu={menu} states={after}")
     if len(new) != 1:
         return
     pre = new[0]
@@ -312,6 +545,102 @@ def scenario_s2_s3(g, log):
           str(running_state(tag(out, "CMDLINE"))))
 
 
+def scenario_sdboot_esp(g, log):
+    """Inspect the systemd-boot ESP: every BLS entry's files exist and are non-empty, loader.conf has one
+    existing default, that default matches dr-state, no .tmp.* scratch remains, and report free space."""
+    g.login()
+    backend = guest_backend(g, log)
+    if backend != "systemd-boot":
+        check(log, "sdboot-esp requires the systemd-boot backend", False, str(backend))
+        return
+    states = state_list(g)
+    expected_default = default_state(g)
+    check(log, "dr-state list is non-empty", bool(states), str(states))
+    check(log, "dr-state list marks one default state", expected_default is not None, str(expected_default))
+
+    try:
+        sources = read_bls_entry_sources(g)
+    except ValueError as exc:
+        check(log, "loader/entries/*.conf are readable", False, str(exc))
+        sources = []
+    else:
+        check(log, "loader/entries/*.conf are readable", bool(sources), f"{len(sources)} entries")
+
+    entries = {}
+    for path, text in sources:
+        name = os.path.basename(path)
+        try:
+            entry = parse_bls_entry(text)
+        except ValueError as exc:
+            check(log, f"{name}: BLS entry has safe kernel/initrd paths and one state", False, str(exc))
+            continue
+        if not name.endswith(".conf"):
+            check(log, f"{name}: BLS entry uses a .conf suffix", False, name)
+            continue
+        entry_id = name[:-5]
+        if entry_id in entries:
+            check(log, f"{name}: BLS entry id is unique", False, entry_id)
+            continue
+        entry["path"] = path
+        entries[entry_id] = entry
+        check(log, f"{name}: BLS entry has safe kernel/initrd paths and one state", True, entry["state"])
+
+    if entries:
+        references = {}
+        all_paths = set()
+        for entry_id, entry in entries.items():
+            refs = ["/boot/efi" + entry["linux"]] + ["/boot/efi" + p for p in entry["initrd"]]
+            references[entry_id] = refs
+            all_paths.update(refs)
+        words = " ".join(shlex.quote(path) for path in sorted(all_paths))
+        _, out = g.run(
+            f"for f in {words}; do "
+            "if [ -f \"$f\" ] && [ -s \"$f\" ]; then echo ESP_FILE_OK:$f; "
+            "else echo ESP_FILE_MISSING:$f; fi; done"
+        )
+        missing = set(tags(out, "ESP_FILE_MISSING"))
+        for entry_id, refs in references.items():
+            gone = sorted(path for path in refs if path in missing)
+            check(log, f"{entry_id}.conf: named kernel and initrd files exist and are non-empty",
+                  not gone, str(gone))
+
+    check(log, "one BLS entry exists per dr-state state", len(entries) == len(states),
+          f"entries={len(entries)} states={len(states)}")
+    check(log, "BLS entry states equal dr-state list", {e["state"] for e in entries.values()} == set(states),
+          str(sorted({e["state"] for e in entries.values()})))
+
+    try:
+        loader = read_loader_conf(g)
+    except ValueError as exc:
+        check(log, "loader/loader.conf is readable", False, str(exc))
+        loader = None
+    if loader is None:
+        check(log, "loader/loader.conf is readable", False, "missing or empty")
+    else:
+        check(log, "loader/loader.conf is readable", True)
+        try:
+            default_id = parse_loader_default(loader)
+        except ValueError as exc:
+            check(log, "loader.conf has exactly one default line", False, str(exc))
+        else:
+            check(log, "loader.conf has exactly one default line", True, default_id)
+            check(log, "loader.conf default names an existing BLS entry", default_id in entries, default_id)
+            if default_id in entries:
+                check(log, "default BLS entry state equals the dr-state default",
+                      entries[default_id]["state"] == expected_default,
+                      f"entry={entries[default_id]['state']} dr-state={expected_default}")
+
+    _, out = g.run("find /boot/efi -name '.tmp.*' -print | while IFS= read -r p; do echo SCRATCH_PATH:$p; done")
+    scratch = tags(out, "SCRATCH_PATH")
+    check(log, "no .tmp.* scratch is left on the ESP", not scratch, str(scratch))
+
+    _, out = g.run("echo ESP_FREE_KB:$(df -k --output=avail /boot/efi | tail -1 | tr -d ' ')")
+    free = tag(out, "ESP_FREE_KB")
+    check(log, "ESP free space is readable", free is not None and free.isdigit(), str(free))
+    if free is not None and free.isdigit():
+        say(log, f"sdboot ESP free space: {free} KiB")
+
+
 UPDATES_SOURCES = ("echo 'deb http://deb.debian.org/debian trixie-updates main' > /etc/apt/sources.list.d/dr-updates.list; "
                    "echo 'deb http://deb.debian.org/debian-security trixie-security main' >> /etc/apt/sources.list.d/dr-updates.list")
 BACKPORTS_SOURCES = UPDATES_SOURCES + ("; echo 'deb http://deb.debian.org/debian trixie-backports main' "
@@ -339,6 +668,9 @@ def scenario_kernel_backports(g, log):
 
 def _kernel_flow(g, log, sources_cmd, offer_cmd, install_cmd):
     g.login()
+    backend = guest_backend(g, log)
+    if backend is None:
+        return
     _, out = g.run("echo CMDLINE:$(cat /proc/cmdline); echo KERNEL:$(uname -r)")
     state0 = running_state(tag(out, "CMDLINE"))
     old = tag(out, "KERNEL")
@@ -348,8 +680,7 @@ def _kernel_flow(g, log, sources_cmd, offer_cmd, install_cmd):
     if not check(log, "the running state is the default (precondition: a plain reboot returns here)",
                  default_state(g) == state0, f"running={state0} default={default_state(g)}"):
         return
-    efi_probe = ("echo EFIFILES:$(ls -1 /boot/efi/EFI | tr '\\n' ,)_$(ls -1 /boot/efi/EFI/dr | tr '\\n' ,)"
-                 "_$(sha256sum /boot/efi/EFI/BOOT/BOOTX64.EFI | cut -c1-16)")
+    efi_probe = efi_probe_command(backend)
     _, out = g.run(efi_probe)
     efi_before = tag(out, "EFIFILES")
     # the disk of run 2a was installed without the updates and security suites (the installer now adds them)
@@ -360,24 +691,48 @@ def _kernel_flow(g, log, sources_cmd, offer_cmd, install_cmd):
                  f"updrc={tag(out, 'UPDRC')} offer={offer}"):
         return
     before = state_list(g)
+    menu_probe = (
+        ""
+        if backend == "systemd-boot"
+        else "echo MENU:$(grep -o 'Debian @os-[^ ]* (kernel [^)]*)' /boot/efi/EFI/dr/grub.cfg "
+             "| tr ' ' _ | tr -d '()' | tr '\\n' ,); "
+    )
     _, out = g.run(f"{install_cmd}; echo UPGRC:$?; "
                    "echo ARCHKB:$(du -sk /var/cache/apt/archives | cut -f1); echo KNEW:$(readlink /vmlinuz); "
                    "echo BOOTFILES:$(ls -1 /boot | grep -E '^(vmlinuz|initrd.img)-' | tr '\\n' ,); "
-                   "echo MENU:$(grep -o 'Debian @os-[^ ]* (kernel [^)]*)' /boot/efi/EFI/dr/grub.cfg | tr ' ' _ | tr -d '()' | tr '\\n' ,)", 5400)
+                   f"{menu_probe}", 5400)
     check(log, "dist-upgrade succeeded", tag(out, "UPGRC") == "0", f"rc={tag(out, 'UPGRC')} downloaded_kb={tag(out, 'ARCHKB')}")
     _, efi_out = g.run(efi_probe)
-    check(log, "ESP boot files untouched by the upgrade (no grub-install side effect)",
-          bool(efi_before) and tag(efi_out, "EFIFILES") == efi_before, f"before={efi_before} after={tag(efi_out, 'EFIFILES')}")
+    if backend == "grub":
+        check(log, "ESP boot files untouched by the upgrade (no grub-install side effect)",
+              bool(efi_before) and tag(efi_out, "EFIFILES") == efi_before,
+              f"before={efi_before} after={tag(efi_out, 'EFIFILES')}")
+    else:
+        check(log, "systemd-boot binary and backend marker untouched by the upgrade",
+              bool(efi_before) and tag(efi_out, "EFIFILES") == efi_before,
+              f"before={efi_before} after={tag(efi_out, 'EFIFILES')}")
     knew = tag(out, "KNEW") or ""
     new = knew.rsplit("vmlinuz-", 1)[-1] if "vmlinuz-" in knew else ""
     check(log, "a newer kernel is installed (/vmlinuz points at it)", bool(new) and new != old, f"old={old} new={new}")
     files = (tag(out, "BOOTFILES") or "").split(",")
     check(log, "old and new kernel and initrd are both in /boot",
           all(f in files for f in (f"vmlinuz-{old}", f"initrd.img-{old}", f"vmlinuz-{new}", f"initrd.img-{new}")), str(files))
-    menu = dict(re.findall(r"Debian_(@os-[^_,]+(?:-[^_,]+)*)_kernel_([^_,]+)", tag(out, "MENU") or ""))
-    check(log, "menu: the running state names the NEW kernel", menu.get(state0) == new, str(menu))
     after = state_list(g)
     pre = [s for s in after if s not in before and s.startswith("@os-pre-")]
+    if backend == "grub":
+        menu = dict(re.findall(r"Debian_(@os-[^_,]+(?:-[^_,]+)*)_kernel_([^_,]+)", tag(out, "MENU") or ""))
+    else:
+        try:
+            bls_entries = read_bls_entries(g)
+            menu = dict(parse_bls_title(entry["title"]) for entry in bls_entries)
+        except ValueError as exc:
+            check(log, "systemd-boot entries are readable after the kernel upgrade", False, str(exc))
+            return
+        check(log, "systemd-boot menu has one entry per state", len(bls_entries) == len(after),
+              f"menu={len(bls_entries)} states={after}")
+        check(log, "systemd-boot menu states equal dr-state list", set(menu) == set(after),
+              str(sorted(set(menu))))
+    check(log, "menu: the running state names the NEW kernel", menu.get(state0) == new, str(menu))
     check(log, "apt hook created exactly one snapshot for the upgrade", len(pre) == 1, str(pre))
     if len(pre) == 1:
         check(log, "menu: that snapshot keeps the OLD kernel", menu.get(pre[0]) == old, str(menu))
@@ -772,7 +1127,8 @@ def main():
         return 2
     sock, name = sys.argv[1], sys.argv[2]
     logpath = sys.argv[sys.argv.index("--log") + 1] if "--log" in sys.argv else f"/tmp/dr-serial-{name}.log"
-    scenarios = {"boot-check": scenario_boot_check, "s2-s3": scenario_s2_s3, "kernel-upgrade": scenario_kernel_upgrade,
+    scenarios = {"boot-check": scenario_boot_check, "s2-s3": scenario_s2_s3, "sdboot-esp": scenario_sdboot_esp,
+                 "kernel-upgrade": scenario_kernel_upgrade,
                  "s5": scenario_s5, "s6": scenario_s6, "s7": scenario_s7, "s9": scenario_s9,
                  "backports": scenario_kernel_backports, "s8": scenario_s8,
                  "window-negative": scenario_window_negative, "s9b": scenario_s9b,
