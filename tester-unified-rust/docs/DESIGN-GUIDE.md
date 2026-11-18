@@ -27,6 +27,10 @@ are sorted). One function in `hostobs/tools/verify-crate-cache.py` defines
 the digest; the Dockerfile and `build-image.sh` call it through
 `--print-registry-digest` instead of re-implementing it in shell.
 
+`[[patch.unused]]` entries in the lock are not part of the digest: Cargo fetches
+nothing for an unused patch. If such a patch later became used, `cargo --locked`
+rejects the stale lock before any build.
+
 BuildKit and gate containers use `CGROUP_PARENT_DEV_GATES`; host policy owns
 their CPU and memory capacity. The image and lane files do not set per-machine
 resource ceilings.

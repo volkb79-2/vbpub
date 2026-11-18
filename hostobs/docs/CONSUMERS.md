@@ -12,10 +12,12 @@ run-gate assay-r1
 All three use `tester-unified-rust` with Docker networking disabled. The image contains the
 stable Rust toolchain, the cargo tools, Python for the cache/floor helpers, and the crate
 archive closure for this exact `Cargo.lock`. Do not run Cargo from the cockpit or use a
-network fallback. The Cargo wrapper refuses before invoking Cargo if the mounted lock's
-registry-set digest, crate set, lock checksums, or cached archive bytes disagree with the
-image (the registry set is the downloaded packages plus the lock version; workspace members'
-own entries are not part of it).
+network fallback. An image BUILT FROM THIS SOURCE has a Cargo wrapper that refuses before
+invoking Cargo if the mounted lock's registry-set digest, crate set, lock checksums, or cached
+archive bytes disagree with the image (the registry set is the downloaded packages plus the
+lock version; workspace members' own entries are not part of it). The currently deployed
+`tester-unified-rust:local` is older: it still checks the sha256 of the whole `Cargo.lock`
+file, so on it any lock byte change is refused until the lanes move to a newly built tag.
 
 ## What `assay-r1` judges, and what it says
 
