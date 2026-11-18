@@ -383,7 +383,9 @@ def test_native_mutation_loader_names_withdrawn_operator(tmp_path):
 
 
 def test_ingested_sql_kill_signal_is_validated_before_sql_ingestion_refusal(tmp_path):
-    report_format = sorted(config.MUTATION_FORMAT_REGISTRY)[0]
+    # The file-kind format this test was written for; `sorted(...)[0]` became the directory-kind
+    # `cargo-mutants-outcomes` once that parser was registered (B245 U3a).
+    report_format = "mutation-report-json"
     with pytest.raises(LaneConfigError, match="cannot ingest"):
         config._load_ingested_mutation(
             {
