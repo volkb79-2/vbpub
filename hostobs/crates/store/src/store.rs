@@ -40,6 +40,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use crate::dictionary::{ActiveDictionary, Retired, DEFAULT_ACTIVE_MAX};
@@ -306,6 +307,10 @@ impl StoreConfig {
     }
 }
 
+/// The most eviction reports ([`Evicted::notes`]) the store keeps for [`Store::notes`]; the
+/// oldest leave first, so a source of repeated vanished files cannot grow the store's memory.
+pub const MAX_EVICTION_NOTES: usize = 256;
+
 /// What the store as a whole has done and lost.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StoreStats {
@@ -321,7 +326,10 @@ pub struct StoreStats {
     pub dropped_bytes: u64,
     /// Records that reached a segment.
     pub records: u64,
-    /// Segment bytes on disk (all tiers, including the events store).
+    /// Segment bytes on disk: the sum of every tier's own byte total (live segments and
+    /// quarantined files) and the events store's. It is recomputed from those totals after
+    /// every operation that can change one, never maintained by arithmetic of its own, so it
+    /// cannot drift from them (HOB-56).
     pub bytes: u64,
     /// Whole segments evicted by a bound, all tiers.
     pub evicted_segments: u64,
@@ -388,6 +396,20 @@ pub struct Store {
     /// [`Store::retire`] unions the set. Without it, `adopt(0, …)` followed by a retirement pass
     /// would free an id the store is about to write (the review of `pi-hostobs-m1c`, B1).
     unwritten: BTreeSet<u64>,
+    /// The reports of eviction passes ([`Evicted::notes`]), newest last, at most
+    /// [`MAX_EVICTION_NOTES`]: a tier's own `scan.notes` is reset by a rescan, and these are
+    /// what the caller of `write_one`, `record_event` or `evict` is shown by [`Store::notes`].
+    eviction_notes: VecDeque<TierNote>,
+}
+
+/// Keep the reports of one eviction pass, dropping the oldest past [`MAX_EVICTION_NOTES`].
+fn keep_notes(ring: &mut VecDeque<TierNote>, done: &Evicted) {
+    for note in &done.notes {
+        if ring.len() >= MAX_EVICTION_NOTES {
+            ring.pop_front();
+        }
+        ring.push_back(note.clone());
+    }
 }
 
 impl Store {
@@ -468,6 +490,7 @@ impl Store {
             queue,
             stats: StoreStats::default(),
             unwritten: BTreeSet::new(),
+            eviction_notes: VecDeque::new(),
         };
         store.recount();
         Ok(store)
@@ -535,10 +558,8 @@ impl Store {
 
     /// Recount what the tiers actually hold (after an open or an eviction pass).
     fn recount(&mut self) {
-        let mut bytes = self.events.tier().bytes();
+        self.refresh_bytes();
         let mut records = 0u64;
-        let mut evicted = 0u64;
-        let mut evicted_bytes = 0u64;
         let mut torn = self
             .events
             .tier()
@@ -556,7 +577,6 @@ impl Store {
             .try_into()
             .unwrap_or(u64::MAX);
         for state in self.tiers.values() {
-            bytes = bytes.saturating_add(state.tier.bytes());
             records = records.saturating_add(
                 state
                     .tier
@@ -573,11 +593,21 @@ impl Store {
                 u64::try_from(state.tier.scan().quarantined.len()).unwrap_or(u64::MAX),
             );
         }
-        let _ = (&mut evicted, &mut evicted_bytes);
-        self.stats.bytes = bytes;
         self.stats.records = records;
         self.stats.torn_repaired = torn;
         self.stats.quarantined = quarantined;
+    }
+
+    /// Set `stats.bytes` to the sum of what the tiers themselves report: every history tier
+    /// and the events store, each total counting live segments and quarantined files. The
+    /// tiers' own totals are the single source (HOB-56); this is called after every
+    /// operation that can change one, on the error path as well as the success path.
+    fn refresh_bytes(&mut self) {
+        let mut bytes = self.events.tier().bytes();
+        for state in self.tiers.values() {
+            bytes = bytes.saturating_add(state.tier.bytes());
+        }
+        self.stats.bytes = bytes;
     }
 
     /// The names a tier left untouched, with why (a foreign file is reported, never removed).
@@ -587,6 +617,12 @@ impl Store {
     /// holding hot and warm is the plan's own layout, so a note about a name this store owns
     /// is not reported as foreign. What remains is a name **no** tier of this store claims —
     /// which is exactly what an operator needs to see.
+    ///
+    /// The reports of eviction passes follow (an entry dropped because its file was already
+    /// gone, or could not be removed): they name a file this store owns, so they are not
+    /// filtered, they survive a tier's rescan, and at most [`MAX_EVICTION_NOTES`] are kept
+    /// (HOB-58). A quarantined file that could not be removed stays on disk, uncounted, and
+    /// is adopted again at the next restart.
     #[must_use]
     pub fn notes(&self) -> Vec<TierNote> {
         let owned: Vec<&str> = self
@@ -606,6 +642,11 @@ impl Store {
                 Err(_) => true,
             },
         );
+        for note in &self.eviction_notes {
+            if !notes.contains(note) {
+                notes.push(note.clone());
+            }
+        }
         notes
     }
 
@@ -699,7 +740,11 @@ impl Store {
             .tiers
             .get_mut(&name)
             .ok_or(StoreError::UnknownTier { name: name.clone() })?;
-        let outcome = state.tier.append(job, epoch, generation)?;
+        let appended = state.tier.append(job, epoch, generation);
+        // The tier's own total is the truth, on a refusal as well (a seal or an eviction may
+        // have changed it before the error).
+        self.refresh_bytes();
+        let outcome = appended?;
         // The record is on disk, so the ids it named are no longer "owed": the segment that
         // holds them is now their proof. A *failed* append leaves them pinned, because the
         // store never durably named them and the caller may resubmit the same job.
@@ -708,9 +753,8 @@ impl Store {
         }
         self.stats.written = self.stats.written.saturating_add(1);
         self.stats.records = self.stats.records.saturating_add(1);
-        self.stats.bytes = self.stats.bytes.saturating_add(outcome.bytes_written);
         self.stats.note_eviction(&outcome.evicted);
-        self.stats.bytes = self.stats.bytes.saturating_sub(outcome.evicted.bytes);
+        keep_notes(&mut self.eviction_notes, &outcome.evicted);
         Ok(WriteOutcome {
             tier: name,
             outcome,
@@ -729,16 +773,17 @@ impl Store {
         payload: &[u8],
         now_ns: i64,
     ) -> Result<AppendOutcome, StoreError> {
-        let outcome = self.events.record(
+        let recorded = self.events.record(
             event,
             payload,
             self.config.epoch,
             self.config.dict_generation,
-        )?;
+        );
+        self.refresh_bytes();
+        let outcome = recorded?;
         self.stats.records = self.stats.records.saturating_add(1);
-        self.stats.bytes = self.stats.bytes.saturating_add(outcome.bytes_written);
         self.stats.note_eviction(&outcome.evicted);
-        self.stats.bytes = self.stats.bytes.saturating_sub(outcome.evicted.bytes);
+        keep_notes(&mut self.eviction_notes, &outcome.evicted);
         let _ = now_ns;
         Ok(outcome)
     }
@@ -750,6 +795,15 @@ impl Store {
     /// The first seal refusal (each seal is atomic, so a refusal leaves the segment open and
     /// recoverable rather than half-renamed).
     pub fn seal_all(&mut self) -> Result<Vec<String>, StoreError> {
+        let sealed = self.seal_each();
+        // A seal replaces the open name by the sealed one (footer bytes), so the total moves.
+        self.refresh_bytes();
+        sealed
+    }
+
+    /// Seal the events store's open segment and then every tier's, stopping at the first
+    /// refusal.
+    fn seal_each(&mut self) -> Result<Vec<String>, StoreError> {
         let mut sealed = Vec::new();
         if let Some(name) = self.events.seal()? {
             sealed.push(name);
@@ -769,21 +823,36 @@ impl Store {
     /// The first eviction refusal.
     pub fn evict(&mut self, now_ns: i64) -> Result<BTreeMap<String, Evicted>, StoreError> {
         let mut evicted: BTreeMap<String, Evicted> = BTreeMap::new();
+        let result = self.evict_each(now_ns, &mut evicted);
+        // The tiers' own totals are the truth, after a refusal as well.
+        self.refresh_bytes();
+        result?;
+        Ok(evicted)
+    }
+
+    /// Run every tier's eviction and then the events store's, collecting what each removed
+    /// (a pass that only reported a vanished file is kept too, for its notes) and stopping
+    /// at the first refusal.
+    fn evict_each(
+        &mut self,
+        now_ns: i64,
+        evicted: &mut BTreeMap<String, Evicted>,
+    ) -> Result<(), StoreError> {
         for (name, state) in &mut self.tiers {
             let done = state.tier.evict(now_ns)?;
+            keep_notes(&mut self.eviction_notes, &done);
             if !done.is_empty() {
                 self.stats.note_eviction(&done);
-                self.stats.bytes = self.stats.bytes.saturating_sub(done.bytes);
                 evicted.insert(name.clone(), done);
             }
         }
         let done = self.events.evict(now_ns)?;
+        keep_notes(&mut self.eviction_notes, &done);
         if !done.is_empty() {
             self.stats.note_eviction(&done);
-            self.stats.bytes = self.stats.bytes.saturating_sub(done.bytes);
             evicted.insert(EVENTS.to_string(), done);
         }
-        Ok(evicted)
+        Ok(())
     }
 
     /// Retire dictionary entries nothing can still reach (§A.4's "GC by segment reachability").
@@ -945,6 +1014,7 @@ mod tests {
     use crate::fsio::testdir::TempDir;
     use crate::queue::Job;
     use crate::store::Store;
+    use crate::tier::Tier;
     use crate::tmpfs::{Mount, MountTable};
     use std::collections::BTreeSet;
 
@@ -1611,5 +1681,151 @@ mod tests {
         assert!(!outcome.evicted.is_empty(), "the cap took the segment");
         assert_eq!(store.stats().bytes, 0, "nothing is left on disk");
         assert_eq!(store.stats().bytes, store.events().tier().bytes());
+    }
+
+    /// The sum of every history tier's own byte total and the events store's.
+    fn tiers_total(store: &Store) -> u64 {
+        let tiers: u64 = [HOT, WARM, COLD]
+            .iter()
+            .filter_map(|name| store.tier(name))
+            .map(Tier::bytes)
+            .sum();
+        tiers + store.events().tier().bytes()
+    }
+
+    /// Write one record to the hot tier of a store over `temp`, seal it, and return the
+    /// sealed segment's name.
+    fn sealed_hot_name(temp: &TempDir, now: i64) -> String {
+        let mut store =
+            Store::open_with_mounts(config(temp), Some(tmpfs_everywhere())).expect("open");
+        store
+            .submit(Job::new(block(24), now, Vec::new()))
+            .expect("submit");
+        store.write_pending(now, 1).expect("write");
+        store.seal_all().expect("seal");
+        let hot = store.tier(HOT).expect("hot");
+        hot.scan().segments[0].name.clone()
+    }
+
+    #[test]
+    fn the_store_total_is_the_tiers_own_total_after_every_operation() {
+        // HOB-56: a new segment's header is in the tier's total but not in `bytes_written`,
+        // and a seal adds a footer; arithmetic on the written bytes drifted from both.
+        let temp = TempDir::new("total-ops");
+        let now = 2_000_000_000_000_000_000i64;
+        let mut store =
+            Store::open_with_mounts(config(&temp), Some(tmpfs_everywhere())).expect("open");
+        assert_eq!(store.stats().bytes, tiers_total(&store));
+        let written = store
+            .write_one(&Job::new(block(24), now, Vec::new()), now)
+            .expect("write");
+        assert_eq!(store.stats().bytes, tiers_total(&store));
+        assert!(
+            store.stats().bytes > written.outcome.bytes_written,
+            "the new segment's header is in the total"
+        );
+        let event =
+            crate::events::Event::new(EventKind::Point, "run", Some("run-1"), "u1", 10, None)
+                .expect("point");
+        store.record_event(&event, &evt(8), 10).expect("record");
+        assert_eq!(store.stats().bytes, tiers_total(&store));
+        store.seal_all().expect("seal");
+        assert_eq!(
+            store.stats().bytes,
+            tiers_total(&store),
+            "the footers are in the total"
+        );
+        let warm = Job::new(block(24), now - 120_000_000_000, Vec::new());
+        store.write_one(&warm, now).expect("write warm");
+        assert_eq!(store.stats().bytes, tiers_total(&store));
+        store.evict(i64::MAX / 2).expect("evict");
+        assert_eq!(store.stats().bytes, tiers_total(&store));
+    }
+
+    #[test]
+    fn the_store_total_drops_a_quarantined_file_deleted_by_hand() {
+        // HOB-56: the vanished entry leaves the tier's total but was never in
+        // `Evicted::bytes`, so subtracting the evicted bytes left the store's total too high.
+        let temp = TempDir::new("total-q-hand");
+        let now = 1_000_000_000i64;
+        let name = sealed_hot_name(&temp, now);
+        let path = format!("tiers/{name}");
+        let mut bytes = temp.read_file(&path);
+        let held = u64::try_from(bytes.len()).expect("fits");
+        bytes[crate::format::HEADER_LEN + 48 + 8 + 1] ^= 0xFF;
+        temp.write_file(&path, &bytes);
+        let mut tight = config(&temp);
+        tight.tiers[0].cap_bytes = held - 1;
+        let mut store = Store::open_with_mounts(tight, Some(tmpfs_everywhere())).expect("reopen");
+        assert_eq!(store.stats().bytes, held, "the debris counts");
+        assert_eq!(store.stats().bytes, tiers_total(&store));
+        temp.remove(&format!("{path}.corrupt"));
+        let done = store.evict(now).expect("a vanished file must not fail");
+        assert!(done.is_empty(), "nothing was removed");
+        assert_eq!(store.stats().bytes, 0);
+        assert_eq!(store.stats().bytes, tiers_total(&store));
+        assert_eq!(store.stats().evicted_bytes, 0);
+        // HOB-58: the report reaches the store's notes.
+        let notes = store.notes();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].name, format!("{name}.corrupt"));
+        assert!(notes[0].reason.contains("already gone"));
+    }
+
+    #[test]
+    fn the_store_total_drops_a_live_segment_deleted_by_hand() {
+        let temp = TempDir::new("total-seg-hand");
+        let now = 1_000_000_000i64;
+        let name = sealed_hot_name(&temp, now);
+        let mut tight = config(&temp);
+        tight.tiers[0].cap_bytes = 1;
+        let mut store = Store::open_with_mounts(tight, Some(tmpfs_everywhere())).expect("reopen");
+        assert!(store.stats().bytes > 0);
+        assert_eq!(store.stats().bytes, tiers_total(&store));
+        temp.remove(&format!("tiers/{name}"));
+        let done = store.evict(now).expect("a vanished head must not fail");
+        assert!(done.is_empty(), "nothing was removed");
+        assert_eq!(store.stats().bytes, 0);
+        assert_eq!(store.stats().bytes, tiers_total(&store));
+        assert_eq!(store.stats().evicted_segments, 0);
+        // HOB-58: a live segment's name is a tier's own, yet its report is not filtered out.
+        let notes = store.notes();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].name, name);
+        assert!(notes[0].reason.contains("already gone"));
+    }
+
+    #[test]
+    fn eviction_reports_from_the_write_path_reach_the_store_and_are_bounded() {
+        // HOB-58: `write_one` runs an eviction whose report used to reach only the tier's
+        // `scan.notes`; a rescan resets those, the store's own ring does not.
+        let temp = TempDir::new("notes-write");
+        let now = 1_000_000_000i64;
+        let name = sealed_hot_name(&temp, now);
+        let mut tight = config(&temp);
+        tight.tiers[0].cap_bytes = 1;
+        let mut store = Store::open_with_mounts(tight, Some(tmpfs_everywhere())).expect("reopen");
+        temp.remove(&format!("tiers/{name}"));
+        let written = store
+            .write_one(&Job::new(block(24), now, Vec::new()), now)
+            .expect("the append must not fail on a file that is already gone");
+        assert_eq!(written.outcome.evicted.notes.len(), 1);
+        assert_eq!(written.outcome.evicted.notes[0].name, name);
+        assert_eq!(store.notes().len(), 1);
+        assert_eq!(store.notes()[0].name, name);
+        assert_eq!(store.stats().bytes, tiers_total(&store));
+        let mut ring = std::collections::VecDeque::new();
+        let many = crate::tier::Evicted {
+            notes: (0..super::MAX_EVICTION_NOTES + 5)
+                .map(|index| crate::tier::TierNote {
+                    name: format!("n{index}"),
+                    reason: "gone".to_string(),
+                })
+                .collect(),
+            ..crate::tier::Evicted::default()
+        };
+        super::keep_notes(&mut ring, &many);
+        assert_eq!(ring.len(), super::MAX_EVICTION_NOTES);
+        assert_eq!(ring.front().map(|note| note.name.as_str()), Some("n5"));
     }
 }
