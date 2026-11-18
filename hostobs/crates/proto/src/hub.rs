@@ -1302,21 +1302,21 @@ mod tests {
     #[test]
     fn fit_order_connection_before_global() {
         let mut limits = limits();
-        limits.global_live_bytes = 1700;
+        limits.global_live_bytes = 1800;
         let mut hub = SendHub::new(limits);
         let ids = add_all(&mut hub, &[1, 2]);
         for s in 1..=2 {
             live(&mut hub, ids[0], s, &tick(1, None, 400), 0);
         }
-        for (s, len) in [(1, 400), (2, 400), (3, 100)] {
+        for (s, len) in [(1, 400), (2, 400), (3, 112)] {
             live(&mut hub, ids[1], s, &tick(1, None, len), 0);
         }
         let pushed = live(&mut hub, ids[0], 3, &tick(1, None, 300), 0);
         assert_eq!(pushed, LiveOutcome::Queued);
         // The connection shed (400) already made room globally: the other uid is spared.
         assert_eq!(hub.queued(ids[0]).live, 700);
-        assert_eq!(hub.queued(ids[1]).live, 900);
-        assert_eq!(hub.global_pools().live, 1600);
+        assert_eq!(hub.queued(ids[1]).live, 912);
+        assert_eq!(hub.global_pools().live, 1612);
         check(&hub);
     }
 
@@ -1345,19 +1345,19 @@ mod tests {
     #[test]
     fn fit_order_connection_before_uid() {
         let mut limits = limits();
-        limits.uid_live_bytes = 1700;
+        limits.uid_live_bytes = 1800;
         let mut hub = SendHub::new(limits);
         let ids = add_all(&mut hub, &[1, 1]);
-        for (s, len) in [(1, 400), (2, 400), (3, 100)] {
+        for (s, len) in [(1, 400), (2, 400), (3, 112)] {
             live(&mut hub, ids[0], s, &tick(1, None, len), 0);
         }
         for s in 1..=2 {
             live(&mut hub, ids[1], s, &tick(1, None, 400), 0);
         }
-        assert_eq!(hub.uid_pools(1).live, 1700);
+        assert_eq!(hub.uid_pools(1).live, 1712);
         let pushed = live(&mut hub, ids[1], 3, &tick(1, None, 300), 0);
         assert_eq!(pushed, LiveOutcome::Queued);
-        assert_eq!(hub.queued(ids[0]).live, 900, "no uid shed needed");
+        assert_eq!(hub.queued(ids[0]).live, 912, "no uid shed needed");
         assert_eq!(hub.queued(ids[1]).live, 700);
         check(&hub);
     }
