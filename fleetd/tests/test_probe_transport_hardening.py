@@ -13,7 +13,8 @@ import subprocess
 
 import pytest
 
-from fleetd.campaign import CampaignManager, _probe_settled
+from fleetd.contracts import ContractError
+from fleetd.campaign import STALL_FLOOR_SECONDS, CampaignManager, _probe_settled
 from fleetd.runner import JobSpec, RunnerJobs, probe_payload, probe_script
 from fleetd.transport import FakeTransport, _probe_targets, _read_command_metadata
 
@@ -206,3 +207,67 @@ def test_real_probe_of_two_checkout_groups_returns_each_job_row(tmp_path):
     rows = {row["name"]: row for row in json.loads(probe.stdout)["jobs"]}
     assert set(rows) == set(jobs)
     assert {row["state"] for row in rows.values()} == {"MISSING"}
+
+
+def test_a_job_stopped_for_a_stall_after_the_launcher_closed_its_window_is_still_probed(tmp_path):
+    """The launcher writes progress-end-offset before EXIT; a probe in that gap sees RUNNING
+    with the offset set, and a stall stop in the same tick must not settle the job."""
+    plan = _plan(1)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = next(job for job in _state(tmp_path)["jobs"].values() if job["status"] == "RUNNING")
+    host = job["host"]
+    transport.host(host).jobs[job["name"]].progress_end_offset = 0
+    clock.advance(STALL_FLOOR_SECONDS + 1)
+    manager.tick("campaign")
+    stopped = _state(tmp_path)["jobs"][job["name"]]
+    assert stopped["status"] in {"STALLED", "FAILED"}
+    assert stopped["progress_end_offset"] == 0
+    assert stopped["probe_settled"] is False
+    manager.tick("campaign")
+    assert job["name"] in _probed_names(transport, host)
+    # The stop ended the job on the host; the EXIT row closes it for good.
+    assert _state(tmp_path)["jobs"][job["name"]]["probe_settled"] is True
+    manager.tick("campaign")
+    assert job["name"] not in _probed_names(transport, host)
+
+
+def test_a_job_from_an_older_state_without_the_flag_keeps_the_status_and_offset_rule(tmp_path):
+    assert _probe_settled({"status": "COMPLETE", "progress_end_offset": 5}) is True
+    assert _probe_settled({"status": "COMPLETE", "progress_end_offset": 5, "probe_settled": False}) is False
+    assert _probe_settled({"status": "RUNNING", "progress_end_offset": 5, "probe_settled": True}) is True
+    assert _probe_settled({"status": "COMPLETE", "progress_end_offset": None, "probe_settled": False}) is False
+
+
+@pytest.mark.parametrize("field", ["campaign", "host", "project", "lane"])
+def test_an_at_sign_in_a_path_template_field_is_refused_before_the_payload_is_built(field):
+    """The path template stands the job name in with ``@NAME@``; no field may contain ``@``."""
+    spec = _many_jobs(1)
+    (name, good), = spec.items()
+    values = {
+        "campaign": good.campaign, "host": good.host, "project": good.project, "lane": good.lane,
+    }
+    values[field] = values[field] + "@NAME@"
+    bad = dataclasses.replace(good, **values)
+    with pytest.raises(ContractError):
+        probe_payload({bad.name: bad})
+
+
+def test_an_exit_row_without_a_closed_progress_window_is_not_settled(tmp_path):
+    plan = _plan(1)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = next(job for job in _state(tmp_path)["jobs"].values() if job["status"] == "RUNNING")
+    for candidate_id in job["candidate_ids"]:
+        transport.add_progress(job["host"], job["name"], candidate_id, "killed")
+    transport.finish(job["host"], job["name"])
+    transport.host(job["host"]).jobs[job["name"]].progress_end_offset = None
+    manager.tick("campaign")
+    ended = _state(tmp_path)["jobs"][job["name"]]
+    assert ended["probe_settled"] is False
+    manager.tick("campaign")
+    assert job["name"] in _probed_names(transport, job["host"])

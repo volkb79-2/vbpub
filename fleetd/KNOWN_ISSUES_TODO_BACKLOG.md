@@ -327,6 +327,8 @@ add leases, host-side locks, or a daemon.
 
 **State:** DONE (fleetd-wp1-20261118, 729b3671e). **Priority:** P2. **Filed:** 2026-11-14.
 
+Residual (WP1b): the name table still grows by about 11 bytes per non-settled job, so one host's probe reaches the 128 KiB argument cap at about 11 000 non-settled jobs; `probe_settled` closes the stall-in-the-end-offset-gap race.
+
 `probe_script` carries one JSON target per job (name, ID-file path, commit,
 project, lane) twice: once as the base64 payload argument and once in the
 leading metadata comment that only the fake transport reads. The whole script

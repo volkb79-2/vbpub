@@ -129,6 +129,10 @@ contribute their defaults. A reported value refused above its ceiling counts as
 `{unit, source, bytes}` row per listed service, in the fixed unit order, so the
 plan evidence shows exactly which term was used for which service. It is
 omitted in the `profile-constant` case, where no per-service term exists.
+Every plan host row also carries `psi_refuse_some_avg10`, the host's refusal
+threshold (a number from 0 through 100, copied from `host-facts/1.policy`), which
+the campaign supervisor compares with the probe's pressure readings before it
+starts a batch (FD-022). The field is additive to `fleet-plan/1`.
 
 A reported value above its per-service ceiling (4 x that service's documented
 default) or a total above twice the documented floors is refused, with the
@@ -253,7 +257,9 @@ home-relative files. `HxTransport` invokes the existing
 configuration. The wrapper path is `--hx PATH` first, then `FLEETD_HX`, then the
 source checkout's own `scripts/controller/hx.sh` (always made absolute, so the
 launch never searches `PATH`); an installed fleetd with none of them exits 3 with
-one line naming `--hx` and `FLEETD_HX` (FD-023). `FakeTransport` supplies in-memory job tables, files, a fake
+one line naming `--hx` and `FLEETD_HX` (FD-023). Exit 3 on a campaign verb therefore
+means "not installed or no hx wrapper"; it is a different condition from the
+stale-cursor exit 3 of `fleet scope`. `FakeTransport` supplies in-memory job tables, files, a fake
 clock, unreachable/slow states, starts, stops, and host restart behavior for
 tests. No SSH keys, addresses, provider credentials, or host aliases are
 stored in fleetd source or tests.
@@ -271,10 +277,15 @@ compressed table of job names, one entry per (campaign, host, commit, project,
 lane) with an ID-file path template the host fills from each name, never
 candidate arrays or per-job records. One probe is a single remote shell
 argument, which the kernel caps at 128 KiB; the table costs a few bytes per job
-(a 150-batch host probes with about 6 KB, a thousand batches with about 15 KB;
-FD-014). Jobs that ended with a closed progress window (`COMPLETE`, `EXIT`,
-`FAILED`, `STALLED` with `progress_end_offset` recorded) are not probed again.
-The probe also returns the host's `/proc/pressure/{memory,io}` `some avg10`. It resolves the Assay lane from the checkout's Run-Gate
+(a 150-batch host probes with about 6 KB; FD-014). The table still grows
+linearly, by about 11 bytes per non-settled job, so one host's probe reaches the
+128 KiB argument ceiling at about 11 000 non-settled jobs. A job is settled
+(`probe_settled`) only when a probe row reported it `EXIT` with its progress
+window closed, so its verdict records and baseline are already stored; a state
+file written before the flag existed keeps the earlier rule (ended with
+`progress_end_offset` recorded). A host that becomes unreachable or errors drops
+its stored pressure reading, so a start never rests on a stale one (FD-014,
+FD-022). Settled jobs are not probed again. The probe also returns the host's `/proc/pressure/{memory,io}` `some avg10`. It resolves the Assay lane from the checkout's Run-Gate
 declaration and reads the plain run's `progress-<assay-lane>.jsonl` under the
 project `.assay` directory; it does not require the optional instance
 `progress-file` pointer. Each runner job records the progress file's byte size
