@@ -3272,7 +3272,35 @@ class TestExecMode:
         assert proc.returncode == 3
         assert "declared container_name" in proc.stderr
         assert "deployment authority" in proc.stderr
-        assert "ciu" not in proc.stderr
+        # RG-290: judge the instruction text, not the paths it quotes (the
+        # checkout path may legitimately contain "ciu").
+        instruction = re.sub(r"/[^\s)]*", "", proc.stderr)
+        assert "ciu" not in instruction
+
+    def test_exec_mode_declared_name_refusal_is_checkout_path_insensitive(
+            self, tmp_path, monkeypatch):
+        # RG-290: the RG-6 oracle must judge the INSTRUCTION text of the
+        # refusal, not the paths it quotes. A checkout whose path contains
+        # "ciu" (for example a `ciu worktree` named `ciu-...`) must not change
+        # the verdict.
+        base = tmp_path / "ciu-checkout"
+        base.mkdir()
+        repo = make_repo(base)
+        cfg = EXEC_LANE.replace('mode = "exec"',
+                                'mode = "exec"\ncontainer_name = "custom-name"')
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in', 'case "$1" in\n  ps) : ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 3
+        assert "ciu-checkout" in proc.stderr  # the path is quoted, on purpose
+        assert "declared container_name" in proc.stderr
+        assert "deployment authority" in proc.stderr
+        instruction = re.sub(r"/[^\s)]*", "", proc.stderr)
+        assert "ciu" not in instruction
 
     def test_exec_mode_fails_without_ciu_config_or_declared_name(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)

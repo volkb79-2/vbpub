@@ -49,6 +49,7 @@ name = "hostobs-probe"
 version = "0.1.0"
 dependencies = [
  "hostobs-kernel",
+ "hostobs-proto",
  "ruzstd",
  "serde",
  "serde_json",

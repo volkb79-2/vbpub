@@ -9,6 +9,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Testing
+- no action needed: tests and documentation only (RG-290 and the image rebuild rule)
+
 <!-- cmru: release history -->
 
 ## [25.7.0] - 2026-11-18

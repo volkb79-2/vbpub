@@ -180,6 +180,7 @@ SPEC §9.
 | RG-287 | Run-Gate cannot provide the Assay judge to a checkout that has no `assay/` of its own (a standalone consumer such as `dstdns`), so such a project is refused `external-missing` | Enhancement | OPEN 2026-11-16; the external path today is `kind = "assay"` + `assay_command` + `pins`; a run-gate-owned judge source (pinned wheel or pinned checkout) is unbuilt |
 | RG-288 | `git_hook_info_mount_flags` overlays only `<common>/hooks` and `<common>/info`; `<common>/modules/**/hooks` and `modules/**/info` stay writable by the runner, so a runner can plant a submodule hook; whether and when host git runs it is UNVERIFIED (run-gate's own host git readers disable hooks, so the exposure is other host git use on the checkout) | Medium (unverified exposure) | OPEN 2026-11-18 (filed, not fixed); ciu's CIU-215 branch overlays them in its rw mode only (branch `ciu-20261118_055457-ciu215-gitdir-mount-20261118`, not on `origin/main` at filing) |
 | RG-289 | the host-side `git config --file` reads in `git_config_overlay_flags` follow symlinks at names a runner can plant in the writable common dir (`config.worktree`, `<admin>/config.worktree`, `modules/**/config`, the `modules` root, `worktrees/*` directory links), so a host file that parses as git config is copied sanitized into a runner-visible overlay | Medium | OPEN 2026-11-18 (filed, not fixed) |
+| RG-290 | `TestExecMode::test_exec_mode_declared_name_refusal_prescribes_project_authority` asserted `"ciu" not in proc.stderr`, but the refusal quotes the lane-config path, so a checkout whose path contains `ciu` (for example a `ciu worktree` named `ciu-...`) failed the whole selftest | Minor | FIXED 2026-11-18 (test only) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9433,3 +9434,31 @@ to these candidates.
 `modules/x/config.worktree`, the `modules` root, a `worktrees/<name>` directory
 link), each pointing at a readable file that parses as git config, show the lane
 refused with the path named and no read of the link target.
+
+## RG-290 — a selftest assertion depends on the name of the directory it runs in
+
+**Status:** FIXED 2026-11-18 (filed and fixed in the same package; tests only,
+no behaviour or message change). Severity: Minor.
+
+**Observed.** On 2026-11-18 the whole `run-gate selftest` failed in a checkout
+whose path contained `ciu` (a `ciu worktree` named `ciu-...`):
+`TestExecMode::test_exec_mode_declared_name_refusal_prescribes_project_authority`
+asserted `"ciu" not in proc.stderr`.
+
+**Cause.** The RG-6 oracle is about the refusal's instruction text (a project
+that declares `container_name` and has no `ciu.global.toml` must never be told
+to run a ciu command). The refusal also quotes the lane-config path, and the
+selftest lane keeps pytest's basetemp under the checkout, so the path of the
+checkout reached the asserted text.
+
+**Fix.** The assertion removes every absolute-path token (`/[^\s)]*`) from
+stderr before it looks for `ciu`. A neighbouring test builds the repository
+under `<tmp>/ciu-checkout` and asserts the same refusal properties; run against
+the old assertion it failed (`'ciu' is contained here: ...ciu-checkout/repo/proj/run-gate.toml...`),
+and it passes with the path-stripped assertion. The other negative-text
+assertions in `tests/` were reviewed; none else is path-sensitive (the nearest,
+`"main-only" not in proc.stderr`, names a lane, not a path word, and the
+`"refused"`/`"must own the checkout"` ones read runs whose paths come from test
+names that do not contain those words).
+
+**Close when.** Closed: both tests pass in any checkout directory name.
