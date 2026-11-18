@@ -644,6 +644,33 @@ cd libraries/cli-extended
 run-gate gate
 ```
 
+### Run the R2 mutation campaign sharded
+
+Lane `r2` is a native `kind = "assay"` run-gate lane (Assay lane `cli-extended`,
+`jobs = "auto"` up to `jobs_max = 3`). The whole-source campaign is 1,561
+candidates at a measured median of 10.9 s and mean of 15 s per candidate, so one
+unsharded run is a multi-hour window (`budget = "720m"`). Split it across
+containers, then merge strictly. Pull `tester-unified:local` once first: a shard
+starts only from an image already on the host.
+
+```bash
+cd libraries/cli-extended
+run-gate r2 --shard 0/3 & run-gate r2 --shard 1/3 & run-gate r2 --shard 2/3 & wait
+run-gate r2 --merge-shards 3
+```
+
+Each shard is its own instance (`r2.shard0of3`, ...) with its own container, Assay
+store (`.run-gate/assay-shards/<project>/r2/cli-extended/<K>of3`) and artifacts
+(`.assay/verdict-cli-extended.r2.shard0of3.json`, `.assay/progress-cli-extended.r2.shard0of3.jsonl`).
+`--merge-shards 3` is strict: every store `0..2` must exist and be complete, and
+it writes the whole-lane verdict `.assay/verdict-cli-extended.json`. After a
+judge-only change (for example an Assay upgrade) resume an earlier store with
+`run-gate r2 --carry-over .run-gate/assay-state/libraries/cli-extended --carry-over-reason "<why it cannot change outcomes>"`.
+`run-gate-project/CONSUMERS.md` ("Shard, merge, carry over and target a native
+R2 lane") has the full contract. Each shard container holds up to three workers
+(`memory = "1536m"`, `candidate_ram = "300m"`; measured candidate RSS maximum is
+256 MiB), so adding shards adds containers, not workers per container.
+
 CMRU, the Debian installer, and the Netcup entrypoints are current first-party
 adopters. The consumer guide explains how to inventory shipped entrypoints and
 review each product's command semantics before registering its grammar.

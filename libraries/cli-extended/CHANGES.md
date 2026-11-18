@@ -240,6 +240,9 @@ Behaviour changes a consumer can see:
 
 ## [Unreleased]
 
+### Changed
+- Tooling only, no action needed: the `r2` run-gate lane is now a native `kind = "assay"` lane (CLI-EXT-35), so `run-gate r2 --shard K/N`, `--merge-shards N` and `--carry-over` split and merge the whole-source mutation campaign. No library code or consumer contract changes.
+
 <!-- cmru: release history -->
 
 ## [0.7.0] - 2026-11-18

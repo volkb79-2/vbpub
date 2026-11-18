@@ -688,3 +688,26 @@ the listing. The scan now skips only the vanished descriptor. Regression test:
 `artifacts/release-program-20261027/reports/procio-flake-REPORT.md`.
 
 **Provenance:** `ciu/docs/DESIGN-NOTE-2026-11-CIU-215-CIU-220.md`, Decision 2.
+
+## CLI-EXT-35 — the `r2` run-gate lane could not be sharded
+
+**Status:** FIXED 2026-11-18. Size S.
+**Type:** Tooling
+**Area:** Gate configuration
+
+`run-gate.toml` lane `r2` was a `kind = "command"` lane that called `assay run`
+itself, so run-gate refused `--shard K/N`, `--merge-shards N`, `--carry-over` and
+`--only-candidates` (RG-265 applies them only to `kind = "assay"` lanes) and the
+1,561-candidate campaign (median 10.9 s, mean 15 s per candidate) could only run
+as one container for the whole window. The lane is now `kind = "assay"` with
+`assay_lane = "cli-extended"`, `jobs = "auto"` (ceiling `jobs_max = 3`; B157 is
+closed), `candidate_ram = "300m"` against the measured 256 MiB RSS maximum, and
+`resource_observer = "cgprofile"`. The sharded run is documented in the README
+("Run the R2 mutation campaign sharded"). Guard:
+`tests/test_r2_lane_contract.py`.
+
+**Open (first run):** the owner runs the baseline preflight and the first sharded
+campaign; the worker count `auto` picks and the per-shard wall time are not yet
+measured on the native lane.
+
+**Provenance:** release program package P12.
