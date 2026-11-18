@@ -195,10 +195,11 @@ Rules that make the table work:
    regression test. Two bounded exceptions:
    - A project may declare a **version-boundary precondition**, for example
      "no next minor without a recorded full R2 of the current line" (CMRU
-     KI-141). It is checked by the project's release gate itself (for CMRU,
-     the version-window check, which `cmru release --dry-run` reads too), not
-     by running R2 inside every release. The precondition is lifted only by a
-     reviewed change that cites a recorded T3 R2 PASS (the T3 ledger row).
+     KI-141 was one until 2026-11-18, when the operator removed CMRU's
+     version-window check). Such a precondition is checked by the project's
+     release gate itself, not by running R2 inside every release, and is
+     lifted only by a reviewed change that cites a recorded T3 R2 PASS (the
+     T3 ledger row).
    - A reviewer may ask for a **synchronous changed-line R2 at T1** for
      frozen-core or high-blast-radius work (`### Synchronous versus retroactive
      runs`). That is an accepted deviation for one branch, not a T1 default.
@@ -371,7 +372,8 @@ answers of 2026-11-10):
 
 - **T2 = CMRU's `gate`**: the release orchestrator without mutation, minus
   the duplicate runs. It always writes the R2-owed marker. The R2-including
-  `gate` is retired, so no lane named `gate` includes R2; the former
+  `gate` is to be retired (target state; today cmru's `gate` still includes
+  R2), after which no lane named `gate` includes R2; the former
   `gate-provisional` is now `release-gate`, with no alias.
 - **T3 = an always-available `r2` container lane** that builds its baseline
   facts from the checkout's own release tags and runs alone, queued by each
@@ -381,12 +383,12 @@ answers of 2026-11-10):
   run".
 - **The per-release R2-owed marker stays** as the record of the R2 still
   owed. The T3 result closes it.
-- **KI-141 stays a hard precondition** for the next CMRU minor (7.3.0). Its
-  enforcement stays where it is today: the release gate's version-window
-  check, which `cmru release --dry-run` reads too. The window is widened only
-  by the reviewed change that closes KI-141, and that change cites a T3
-  ledger PASS row for CMRU `r2` whose base reaches back to the last
-  R2-covered tag.
+- **KI-141 (superseded 2026-11-18):** it was a hard precondition for the next
+  CMRU minor, enforced by the release gate's version-window check. The
+  operator removed that window on 2026-11-18 (cmru KI-79/KI-159): every
+  release ships on R1 + R3 + independent review, R2 is owed asynchronously on
+  the latest release, and KI-141 stays the ledger of what is owed. No version
+  waits for it.
 
 The same holds for every project: whatever the release step names is T2, and
 it must not transitively contain R2 or fuzzing.
