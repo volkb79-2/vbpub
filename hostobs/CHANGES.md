@@ -171,6 +171,12 @@
 
 ### Added
 
+- **`tools/dev`: a developer container wrapper** (build, check, test, clippy, fmt, example, gdb,
+  strace, shell, status, stop, clean) that runs in `tester-unified-rust-dev` on the gate host `v1001`
+  through the controller's `hx.sh` (HEAD as a git bundle plus uncommitted changes up to 20 MiB),
+  capped, network-less and unprivileged, with a pressure gate (exit 75) and a one-at-a-time rule
+  (exit 3). Source and stub-tested argv only: the image has not been built. See
+  `tester-unified-rust/docs/DEV.md`.
 - **`docs/WIRE.md`: the normative `hostobs/1` specification** — connection and handshake,
   frame types and `corr`, the implemented block layout with offsets and the received-frame
   alignment rules, every M2-M3 verb with strict keys and worst-case request sizes, closed error
