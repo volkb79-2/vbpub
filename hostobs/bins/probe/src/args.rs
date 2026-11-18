@@ -633,8 +633,10 @@ mod tests {
             let bytes = text.as_bytes();
             assert_eq!(split_array(bytes, 0..bytes.len()), None, "{text}");
         }
-        assert_eq!(split_array(b"[1]", 0..3), Some(vec![1..2]));
-        assert_eq!(split_array(b"[\"a\\\"]\"]", 0..8), Some(vec![1..7]));
+        let first = std::iter::once(1..2).collect::<Vec<_>>();
+        assert_eq!(split_array(b"[1]", 0..3), Some(first));
+        let quoted = std::iter::once(1..7).collect::<Vec<_>>();
+        assert_eq!(split_array(b"[\"a\\\"]\"]", 0..8), Some(quoted));
     }
 
     #[test]
