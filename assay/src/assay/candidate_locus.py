@@ -3,6 +3,13 @@
 The locus key is a *lookup* input, never proof that an earlier verdict remains
 valid.  A match only tells the caller which prior record to examine or replay.
 
+The no-raise contract covers untrusted data: source bytes, ``str``/``int``
+arguments (path, operator, replacement hash, offsets), and JSON records passed
+to ``from_record``; malformed forms fail closed. ``LocusIndex`` is constructed
+only from assay's own records, so malformed identities (non-str or lone-surrogate
+ids or keys) MAY raise ``ValueError``/``TypeError`` by documented precondition;
+hostile Python objects are otherwise out of scope except the two cheap guards.
+
 A def segment starts at the tokenized ``@`` of its first decorator, including
 any parenthesised or commented decorator lines, and ends at the AST's
 ``end_lineno``/``end_col_offset``.  A comment after the final AST statement is
@@ -91,7 +98,7 @@ class Locus:
 
 def from_record(obj: object) -> Locus | None:
     """Return a strictly validated locus record, or ``None`` for any defect."""
-    if not isinstance(obj, dict) or frozenset(obj) != _LOCUS_KEYS:
+    if type(obj) is not dict or frozenset(obj) != _LOCUS_KEYS:
         return None
     schema = obj["schema"]
     key = obj["key"]
@@ -414,18 +421,28 @@ def window_key_for_site(
     )
 
 
+def _payload_sort_key(payload: object) -> tuple[str, str]:
+    payload_type = type(payload)
+    type_qualname = f"{payload_type.__module__}.{payload_type.__qualname__}"
+    try:
+        payload_repr = repr(payload)
+    except Exception:  # noqa: BLE001 -- hostile repr must not escape ranking
+        payload_repr = ""
+    return type_qualname, payload_repr
+
+
 def _entry_rank(
     entry: tuple[str, str | None, str | None, object],
 ) -> tuple[bool, str, bool, str, str, str]:
     _candidate_id, locus_key, window_key, payload = entry
-    payload_type = type(payload)
+    payload_type_qualname, payload_repr = _payload_sort_key(payload)
     return (
         locus_key is None,
         locus_key or "",
         window_key is None,
         window_key or "",
-        f"{payload_type.__module__}.{payload_type.__qualname__}",
-        repr(payload),
+        payload_type_qualname,
+        payload_repr,
     )
 
 

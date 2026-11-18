@@ -459,6 +459,13 @@ def test_hostile_byte_input_never_raises():
             assert window is None or isinstance(window, str)
 
 
+def test_from_record_refuses_a_dict_subclass():
+    class DictSubclass(dict[str, object]):
+        pass
+
+    assert from_record(DictSubclass(GOOD_RECORD)) is None
+
+
 def test_duplicate_qualname_and_segment_sha_makes_both_sites_fall_back():
     source = (
         b"if condition:\n"
@@ -566,15 +573,27 @@ def test_every_malformed_record_shape_is_refused(value: object):
         {"path": ""},
         {"path": "pkg/\0mod.py"},
         {"path": "\ud800"},
+        {"path": None},
         {"operator": ""},
         {"operator": "op\0"},
         {"operator": "\ud800"},
+        {"operator": None},
         {"replacement_sha256": "B" * 64},
         {"replacement_sha256": "b" * 63},
+        {"replacement_sha256": REPLACEMENT[:32] + "\ud800" + REPLACEMENT[33:]},
         {"replacement_sha256": None},
+        {"source": "x = 1\n"},
+        {"source": memoryview(b"x = 1\n")},
+        {"source": None},
         {"source": bytearray(b"x = 1\n")},
+        {"start_byte": None},
+        {"end_byte": None},
         {"start_byte": True},
         {"end_byte": False},
+        {"start_byte": 2**200},
+        {"start_byte": -(2**200)},
+        {"end_byte": 2**200},
+        {"end_byte": -(2**200)},
         {"start_byte": -1},
         {"end_byte": 0},
         {"start_byte": "0"},
@@ -611,7 +630,7 @@ def test_locus_and_window_refuse_unusable_inputs(change: dict[str, object]):
     )  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("lines", [True, -1, "3"])
+@pytest.mark.parametrize("lines", [None, True, -1, "3"])
 def test_window_refuses_a_bad_window_width(lines: object):
     source = b"VALUE = 1\n"
     start, end = _span(source, b"1")
@@ -784,6 +803,29 @@ def test_locus_index_conflicting_duplicate_ids_choose_deterministically():
     assert right.by_locus(locus_b) is None
 
 
+def test_locus_index_duplicate_payload_with_raising_repr_never_raises():
+    class RaisingRepr:
+        def __repr__(self) -> str:
+            raise RuntimeError("hostile repr")
+
+    locus = "a" * 64
+    payload_a = RaisingRepr()
+    payload_b = RaisingRepr()
+    entries = [
+        ("candidate-1", locus, None, payload_a),
+        ("candidate-1", locus, None, payload_b),
+    ]
+    type_qualname = (
+        f"{type(payload_a).__module__}.{type(payload_a).__qualname__}"
+    )
+
+    assert candidate_locus._payload_sort_key(payload_a) == (type_qualname, "")
+    first = LocusIndex(entries)
+    second = LocusIndex(entries)
+    assert first.by_locus(locus) is payload_a
+    assert second.by_locus(locus) is payload_a
+
+
 @pytest.mark.parametrize(
     "key",
     ["z" * 63, "Z" * 64, "not-a-key"],
@@ -800,6 +842,7 @@ def test_locus_index_refuses_unshaped_lookups(key: str):
     [
         ("", None, None, "payload"),
         ("candidate\0id", None, None, "payload"),
+        ("candidate\ud800id", None, None, "payload"),
         ("candidate-1", "A" * 64, None, "payload"),
         ("candidate-1", None, "z" * 63, "payload"),
     ],
