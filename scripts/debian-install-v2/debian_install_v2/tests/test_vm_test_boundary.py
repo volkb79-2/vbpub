@@ -779,8 +779,12 @@ def test_vm_wrapper_refuses_a_checkout_missing_its_placeholder_folders(tmp_path)
         env=_layout_env(tmp_path), capture_output=True, text=True, check=False,
     )
     assert result.returncode != 0
-    # The remediation is the truth: no committed vm-images placeholder exists yet (RP-06), so it says mkdir -p.
+    # The remediation is the truth: in plain mode the folder is the committed downloads/vm-images placeholder (RP-06),
+    # so the text says so, names mkdir -p / git checkout to recreate it, and names --provision for the CoW subvolume.
+    assert "committed downloads/vm-images placeholder" in result.stderr
     assert f"mkdir -p {repo / 'downloads' / 'vm-images'}" in result.stderr and "--provision" in result.stderr
+    assert "git checkout -- downloads/vm-images" in result.stderr
+    assert "RP-06" not in result.stderr
     assert "restore" not in result.stderr
     assert not (repo / "downloads" / "vm-images").exists()
 
@@ -1006,6 +1010,7 @@ def test_download_script_takes_an_images_dir_argument_and_never_creates_it(tmp_p
     assert result.returncode != 0
     assert "never creates it" in result.stderr and "--provision" in result.stderr
     assert f"mkdir -p {missing}" in result.stderr and "restore" not in result.stderr
+    assert "committed downloads/vm-images placeholder" in result.stderr and "RP-06" not in result.stderr
     assert not missing.exists()
     script = (TESTING / "download-base-image.sh").read_text()
     assert "flock 9" in script

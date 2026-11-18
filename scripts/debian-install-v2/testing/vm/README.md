@@ -228,12 +228,11 @@ base images are downloaded into (ISOs belong in the `iso` folder and are not use
 by this harness). The download script's optional argument is the same folder and
 wins over the resolver. Concurrent downloads are serialized with `flock`.
 
-`vm-lab/` is a **committed placeholder** in plain mode (a `README.md` and a
-`.gitignore` that ignore everything else), so every checkout, including a fresh
-clone, contains it; `downloads/vm-images/` is a plain folder that must exist (the
-`downloads/` placeholder does not yet carry its subfolders: `mkdir -p
-downloads/vm-images` until RP-06 adds the committed placeholders). On a CoW host `libraries/cowtree/repo-path NAME --provision`
-creates the subvolume. The scripts never create these folders (they do `mkdir -p`
+`vm-lab/` and `downloads/vm-images/` (and `downloads/iso/`) are **committed
+placeholders** in plain mode (each a `README.md` and a `.gitignore` that ignore
+everything else), so every checkout, including a fresh clone or worktree, contains
+them. On a CoW host `libraries/cowtree/repo-path NAME --provision` creates the
+subvolume. The scripts never create these folders (they do `mkdir -p`
 for `images/`, `runs/`, `ssh/`) and the wrapper refuses with a clear message if
 one is missing, or if the repo path config or the resolver is missing.
 Plan (owned by `ciu worktree` and `libraries/cowtree`, not built here): a new
