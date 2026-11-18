@@ -551,6 +551,29 @@ mod tests {
         }
     }
 
+    struct OverfullBackend {
+        fixed: crate::backend::FixedBackend,
+        tick: TickData,
+    }
+
+    impl Backend for OverfullBackend {
+        fn identity(&self) -> Identity {
+            self.fixed.identity()
+        }
+
+        fn status(&self) -> StatusInfo {
+            self.fixed.status()
+        }
+
+        fn current(
+            &self,
+            _selection: &Selection,
+            _max_rows: u32,
+        ) -> Result<TickData, BackendError> {
+            Ok(self.tick.clone())
+        }
+    }
+
     fn fixed_with(selection: Selection, tick: TickData) -> crate::backend::FixedBackend {
         let mut backend = crate::backend::FixedBackend::new();
         backend.current.insert(selection, Ok(tick));
@@ -912,6 +935,36 @@ mod tests {
             }
             Delivery::Push { .. } => panic!("not a push"),
         }
+    }
+
+    #[test]
+    fn registry_tick_nonconforming_backend_rows_end_budget_all() {
+        let mut streams = registry();
+        streams.limits.bounds.max_rows = 1;
+        let one = selection(1);
+        streams
+            .subscribe(key(1, 1), 1, 1, &one, caps())
+            .expect("create");
+        streams
+            .subscribe(key(1, 2), 1, 1, &one, caps())
+            .expect("join");
+        let backend = OverfullBackend {
+            fixed: crate::backend::FixedBackend::new(),
+            tick: TickData::example(1, &[1, 2], &["m"]),
+        };
+
+        let deliveries = streams.on_tick(&backend);
+        assert_eq!(deliveries.len(), 1);
+        match &deliveries[0] {
+            Delivery::End { to, code, detail } => {
+                assert_eq!(to, &vec![key(1, 1), key(1, 2)]);
+                assert_eq!(*code, Code::Budget);
+                assert_eq!(*detail, Detail::Pool(Pool::Rows));
+            }
+            Delivery::Push { .. } => panic!("not an end"),
+        }
+        assert_eq!(streams.live_selections(), 0);
+        assert_eq!(streams.subscribers(), 0);
     }
 
     #[test]

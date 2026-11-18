@@ -597,11 +597,31 @@ mod tests {
 
     #[test]
     fn tick_rows_over_max_is_rows_error() {
-        let bounds = BlockBounds {
+        let at_cap = BlockBounds {
+            max_rows: 2,
+            max_block_bytes: u32::MAX,
+        };
+        let block = query_block(data(2, 1), at_cap).expect("rows equal the cap");
+        let decoded = decode_block(&block).expect("decode");
+        assert_eq!(decoded.header.n_rows, 2);
+
+        let below_cap = BlockBounds {
+            max_rows: 1,
+            max_block_bytes: u32::MAX,
+        };
+        assert_eq!(
+            query_block(data(2, 1), below_cap).err(),
+            Some(TickError::Rows)
+        );
+
+        let empty_cap = BlockBounds {
             max_rows: 0,
             max_block_bytes: u32::MAX,
         };
-        assert_eq!(query_block(data(1, 1), bounds).err(), Some(TickError::Rows));
+        assert_eq!(
+            query_block(data(1, 1), empty_cap).err(),
+            Some(TickError::Rows)
+        );
     }
 
     #[test]
@@ -610,18 +630,37 @@ mod tests {
         let body = dictionary_body(1, &tick.entries).expect("body");
         let bare = encoded_len(&tick, None).expect("bare length");
         let dictionary = encoded_len(&tick, Some(body.len())).expect("dictionary length");
+        let real_dictionary = with_dictionary(&encode_bare(&tick, 1).expect("bare"), &body);
         assert!(bare < dictionary);
-        let encoded = Cell::new(false);
-        let bounds = BlockBounds {
+        assert_eq!(dictionary, real_dictionary.len());
+
+        let encoded_at_cap = Cell::new(false);
+        let at_cap = BlockBounds {
             max_rows: 1,
-            max_block_bytes: u32::try_from(bare).expect("small"),
+            max_block_bytes: u32::try_from(dictionary).expect("small"),
         };
-        let result = query_block_with(tick, bounds, |tick, generation| {
-            encoded.set(true);
+        let encoded = query_block_with(tick.clone(), at_cap, |tick, generation| {
+            encoded_at_cap.set(true);
+            encode_bare(tick, generation)
+        })
+        .expect("dictionary length equal to the cap");
+        assert!(encoded_at_cap.get(), "encode_bare was called at the cap");
+        assert_eq!(encoded.as_ref(), real_dictionary.as_slice());
+
+        let encoded_below_cap = Cell::new(false);
+        let below_cap = BlockBounds {
+            max_rows: 1,
+            max_block_bytes: u32::try_from(dictionary - 8).expect("small"),
+        };
+        let result = query_block_with(tick, below_cap, |tick, generation| {
+            encoded_below_cap.set(true);
             encode_bare(tick, generation)
         });
         assert_eq!(result.err(), Some(TickError::Oversize));
-        assert!(!encoded.get(), "encode_bare was not called");
+        assert!(
+            !encoded_below_cap.get(),
+            "encode_bare was not called below the cap"
+        );
     }
 
     #[test]
