@@ -904,8 +904,9 @@ def materialize_argv(plan: CommandPlan) -> tuple[str, ...]:
     The ``{assay.changed_diff}`` placeholder is replaced by the handoff file's
     path; the plan and the verdict keep the placeholder. Refused as
     ``BAD_LANE_CONFIG`` -- the literal must never reach a process -- when the
-    plan holds the placeholder with no handoff, more than once, or in a token
-    the lane did not declare (one the CLI appended).
+    plan holds the placeholder with no handoff or more than once (a CLI
+    ``--`` append of it lands here: the handoff exists only when the lane
+    declared the placeholder, so the append is always a second occurrence).
     """
     indices = [
         index
@@ -914,16 +915,13 @@ def materialize_argv(plan: CommandPlan) -> tuple[str, ...]:
     ]
     if not indices:
         return plan.argv_effective
-    if (
-        plan.changed_diff is None
-        or len(indices) != 1
-        or indices[0] >= len(plan.argv_declared)
-    ):
+    if plan.changed_diff is None or len(indices) != 1:
         raise AssayError(
             f"argv holds '{vocabulary.ARGV_PLACEHOLDER_CHANGED_DIFF}' but it "
-            "cannot be resolved: it must appear exactly once in the lane's "
-            "declared argv and the changed-lines diff must have been produced "
-            "(a CLI-appended placeholder is refused)",
+            "cannot be resolved: it must appear exactly once and the "
+            "changed-lines diff must have been produced (the diff is produced "
+            "only for a lane that declares the placeholder, so a "
+            "CLI-appended second one is refused as a repeat)",
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
@@ -4755,17 +4753,25 @@ def _produce_changed_diff(
         remaining=deadline.remaining,
     )
     directory = scratch_root / "changed-diff"
-    os.mkdir(directory, 0o700)
     path = directory / "in-diff.patch"
-    descriptor = os.open(
-        path,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-        0o600,
-    )
-    with os.fdopen(descriptor, "wb") as stream:
-        stream.write(patch)
-        stream.flush()
-        os.fsync(stream.fileno())
+    try:
+        os.mkdir(directory, 0o700)
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(patch)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError as exc:
+        raise AssayError(
+            f"the changed-lines diff could not be written for "
+            f"'{vocabulary.ARGV_PLACEHOLDER_CHANGED_DIFF}': {exc.strerror or exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        ) from exc
     return ChangedDiffHandoff(
         path=path,
         sha256=hashlib.sha256(patch).hexdigest(),
@@ -4773,6 +4779,40 @@ def _produce_changed_diff(
         base_rev=resolved.base_rev,
         head_rev=resolved.head_rev,
         relative_to=relative_to,
+    )
+
+
+def _changed_diff_tamper_error(handoff: ChangedDiffHandoff) -> AssayError | None:
+    """(B245 U5b review) ``None`` when the handoff file still holds exactly the
+    bytes the verdict's ``judgment.r2.changed_diff`` claims, else the refusal.
+
+    The command runs as the same user and can rewrite, truncate, replace or
+    delete the file by name; ``judgment.r2.changed_diff.sha256`` would then
+    attest bytes the tool never read. The file is re-read after the unit that
+    consumed it (``O_NOFOLLOW`` through :mod:`assay.safeio`, ``size + 1``
+    bytes at most) and compared to the recorded size and digest.
+    """
+    try:
+        current = safeio.read_bounded_file(
+            handoff.path.parent, handoff.path.name, limit=handoff.size + 1
+        )
+    except AssayError as exc:
+        reason = f"could not be re-read safely ({exc})"
+    else:
+        if current is None:
+            reason = "is missing"
+        elif (
+            len(current) != handoff.size
+            or hashlib.sha256(current).hexdigest() != handoff.sha256
+        ):
+            reason = "no longer holds the bytes that were produced"
+        else:
+            return None
+    return AssayError(
+        f"the changed-lines diff handed to the command {reason}; the "
+        "recorded judgment.r2.changed_diff would not describe what the tool read",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.UNREADABLE_ARTIFACT,
     )
 
 
@@ -5655,6 +5695,10 @@ def _run_prepared_lane(
             # exactly as it is for coverage (A-161).
             if r2_ingested and r2_early_claim is None:
                 ingested_r2_error = unit.mutation_report_error
+                if ingested_r2_error is None and changed_diff_handoff is not None:
+                    ingested_r2_error = _changed_diff_tamper_error(
+                        changed_diff_handoff
+                    )
                 if ingested_r2_error is None:
                     assert relocated_lane_r2 is not None
                     raw_report: bytes | safeio.DirectoryArtifact

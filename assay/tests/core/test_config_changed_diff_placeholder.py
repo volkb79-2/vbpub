@@ -163,3 +163,18 @@ def test_refused_without_base(crate_project: Project):
     # lane that declares neither, before the placeholder is looked at.
     message = _refusal(crate_project, LANE.replace('base = "main"\n', ""))
     assert "judge.base" in message
+
+
+def test_refused_beside_r3(crate_project: Project):
+    # A canary half-run executes the lane command without the handoff, so the
+    # literal placeholder would reach a process: refused at load instead.
+    crate_project.file("crate/src/lib.rs", "pub fn f() {}\n")
+    text = LANE.replace('rigor = ["R0", "R2"]', 'rigor = ["R0", "R1", "R2", "R3"]').replace(
+        'base = "main"', 'base = "main"\nfail_under = 80.0\nallow_excluded = false'
+    ) + (
+        '\n[lanes.hostobs.judge.coverage]\nformat = "lcov"\nartifact = "crate/lcov.info"\n'
+        '\n[lanes.hostobs.judge.canary]\nmechanism = "uncovered-line"\n'
+        'target = "crate/src/lib.rs"\n'
+    )
+    message = _refusal(crate_project, text)
+    assert "{assay.changed_diff}" in message and "R3" in message

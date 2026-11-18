@@ -2160,6 +2160,13 @@ def _check_changed_diff_placeholder(
         raise LaneConfigError(
             f"{where}: argv holds '{ARGV_PLACEHOLDER_CHANGED_DIFF}' but {why}"
         )
+    if count and "R3" in rigor:
+        raise LaneConfigError(
+            f"{where}: argv holds '{ARGV_PLACEHOLDER_CHANGED_DIFF}' and the "
+            f"lane declares R3: the diff is handed to the baseline command "
+            f"only, so a canary half-run of this command would receive the "
+            f"literal placeholder; declare R3 on a separate lane"
+        )
     if count > 1:
         raise LaneConfigError(
             f"{where}: argv holds '{ARGV_PLACEHOLDER_CHANGED_DIFF}' {count} "
@@ -2215,10 +2222,12 @@ def _check_cargo_mutants_lane(
     argv accepts that a caller's extra tokens are not seen here (the runtime
     derives the output directory from the declared lane, not from the append).
 
-    **The ``{assay.`` placeholder refusal applies to EVERY lane** (``argv``,
-    ``env`` values and ``environment_command``), not only to
-    ``cargo-mutants-outcomes`` lanes, until work package U5b lifts it for
-    cargo-mutants ``changed_lines`` lanes.
+    **The ``{assay.`` placeholder** is validated by
+    :func:`_check_changed_diff_placeholder` on every lane: it is refused in
+    ``env`` values and ``environment_command`` always, and in ``argv`` unless
+    the lane declares R2, ingests ``cargo-mutants-outcomes`` and judges
+    ``changed_lines`` (where it is required exactly once, as a whole token,
+    and R3 may not be declared beside it).
 
     **``--test-tool nextest`` is documented, not enforced.** The U3
     normaliser reads ``Failure(100)`` as a kill, which is nextest's own test

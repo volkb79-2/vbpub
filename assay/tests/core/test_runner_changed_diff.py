@@ -9,6 +9,7 @@ a verdict ``verify`` rejects is a bug.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import stat
 from dataclasses import replace
@@ -311,3 +312,134 @@ def test_the_handoff_path_replaces_exactly_the_declared_token(tmp_path: Path):
         str(tmp_path / "in-diff.patch"),
         "--extra",
     )
+
+
+def test_a_renamed_file_that_exists_at_base_is_a_delete_plus_add(
+    git_repo: GitRepo, tmp_path: Path
+):
+    # ``--no-renames`` is pinned: without it git emits ``rename from/to``
+    # headers and NO hunks for an unchanged-content rename, which would hand
+    # cargo-mutants a diff with no added lines.
+    _seed(git_repo, "indiff")
+    git_repo.write("src/old_name.rs", "pub fn moved() -> u8 {\n    1\n}\n")
+    base = git_repo.commit_all("add a file that will be renamed")
+    git_repo.git("mv", "src/old_name.rs", "src/new_name.rs")
+    git_repo.commit_all("rename it")
+    lane = _with_placeholder(_lane(git_repo, base))
+    fake = Recording(_stage(tmp_path, "indiff"), _exit_code("indiff"))
+
+    _run(git_repo, lane, fake)
+
+    assert fake.content is not None
+    text = fake.content.decode("utf-8")
+    assert "rename from" not in text and "similarity index" not in text
+    assert "--- a/src/old_name.rs" in text and "+++ /dev/null" in text
+    assert "--- /dev/null" in text and "+++ b/src/new_name.rs" in text
+    assert "+pub fn moved() -> u8 {" in text
+
+
+class Tampering(Recording):
+    """A :class:`Recording` command that changes the handoff file by name."""
+
+    def __init__(self, *args, tamper, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tamper = tamper
+
+    def __call__(self, argv, *, env, cwd, timeout):
+        completed = super().__call__(argv, env=env, cwd=cwd, timeout=timeout)
+        assert self.path is not None
+        self.tamper(self.path)
+        return completed
+
+
+def _rewrite_same_size(path: Path) -> None:
+    original = path.read_bytes()
+    path.write_bytes(bytes(byte ^ 1 for byte in original))
+
+
+def _truncate(path: Path) -> None:
+    path.write_bytes(path.read_bytes()[:-1])
+
+
+def _append(path: Path) -> None:
+    with path.open("ab") as stream:
+        stream.write(b"+extra line\n")
+
+
+def _delete(path: Path) -> None:
+    path.unlink()
+
+
+def _replace_with_symlink(path: Path) -> None:
+    target = path.parent / "elsewhere"
+    target.write_bytes(path.read_bytes())
+    path.unlink()
+    path.symlink_to(target)
+
+
+def _replace_directory_with_symlink(path: Path) -> None:
+    moved = path.parent.with_name("moved-diff")
+    path.parent.rename(moved)
+    path.parent.symlink_to(moved)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        _rewrite_same_size,
+        _truncate,
+        _append,
+        _delete,
+        _replace_with_symlink,
+        _replace_directory_with_symlink,
+    ],
+    ids=lambda func: func.__name__,
+)
+def test_a_command_that_rewrites_the_diff_makes_r2_an_error(
+    git_repo: GitRepo, tmp_path: Path, tamper
+):
+    base = _seed(git_repo, "indiff")
+    lane = _with_placeholder(_lane(git_repo, base))
+    fake = Tampering(
+        _stage(tmp_path, "indiff"), _exit_code("indiff"), tamper=tamper
+    )
+
+    # `_run` round-trips the document through `verify_document`.
+    verdict = _run(git_repo, lane, fake)
+
+    r2 = _claim(verdict, "R2")
+    assert r2.status is Outcome.ERROR
+    assert r2.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert r2.detail is not None and "changed-lines diff" in r2.detail
+    # No judgment.r2 (hence no sha256 that attests bytes the tool did not read).
+    assert verdict.judgment is None or verdict.judgment.r2 is None
+
+
+def test_an_untouched_diff_still_judges_r2(git_repo: GitRepo, tmp_path: Path):
+    lane, fake = _recording_case(git_repo, tmp_path, "indiff")
+
+    verdict = _run(git_repo, lane, fake)
+
+    assert _changed_diff(verdict) is not None
+    assert _claim(verdict, "R2").reason_code is not ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_a_diff_that_cannot_be_written_is_a_lane_refusal(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    lane, fake = _recording_case(git_repo, tmp_path, "indiff")
+    real_open = runner.os.open
+
+    def failing_open(path, flags, *args, **kwargs):
+        if Path(path).name == "in-diff.patch":
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(runner.os, "open", failing_open)
+
+    verdict = _run(git_repo, lane, fake)
+
+    assert fake.argv is None
+    assert verdict.outcome is Outcome.ERROR
+    assert verdict.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert verdict.judgment is None or verdict.judgment.r2 is None
