@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added (P3b: `python/hostobs_client` connection, `require_profiling`, `hostobs-mark`; the P3 part of `HOB-54` closed)
+
+- **`hostobs_client.conn`**: `Connection.open(path, level, *, client, timeout_s, clock)` (binary handshake at
+  minor 1), `.request()`, `.blocks()` (REP at call time, END counts checked), `.subscribe()` (dropped counters,
+  newest-8 queue), `.reconnect()` (`session` first/same/changed per §6.4), `.close()`; the §7.3 receive loop on one
+  socket and one `FrameReader`, no threads, every deadline from the injected clock; `OperationTimeout`,
+  `ProtocolError`. **`hostobs_client.envelope`**: REP/END/EVT shape checks (the byte rules of `envelope.rs`, plus
+  duplicate keys at any depth) as `EnvelopeError`.
+- **`hostobs_client.profiling`**: `require_profiling(level, required)` and the five plan D.2 states
+  (`absent`, `unconfigured`, `unreachable`, `refused`, `lost`) plus `available`. **`hostobs_client.mark`**:
+  `hostobs-mark` (`python3 -m hostobs_client.mark`), JSON mode on `HOSTOBS_OBSERVER_SOCKET`.
+- **Tests**: `python/tests/test_client_{conn,path,zipimport}.py` on a scripted fake probe (`fake_probe.py`,
+  socketpair stepped by hand, no sleeps; the one server thread is in `test_client_path.py`), a zipimport smoke
+  test, and the stdlib-only test now also forbids threads and any clock use outside a default argument.
+
 ### Added (P3a: `python/hostobs_client` codec, reader, stream dictionaries and rates; `HOB-54` stays open)
 
 - **`hostobs_client.wire`** (WIRE.md §7.4): `decode_block(buf, held) -> Block`, `Dictionary`, `Column`,

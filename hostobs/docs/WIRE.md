@@ -1087,6 +1087,62 @@ and `mark.py` are P3b). `wire.py` is the §7.4 decoder; `stream.py` holds `Frame
 - **Line counts.** The §7.8 model counted 141 `line` events; this decoder counts 510 at both 100 and 1,000
   rows (one function walks the passes of §3.10); the gate is the equality, not the number.
 
+*P3b implemented* (`python/hostobs_client/{conn,envelope,profiling,mark}.py`; `__init__.py` exports them;
+P3a files `wire.py`, `stream.py`, `rates.py` are unchanged). Tests: `python/tests/test_client_{conn,path,
+zipimport}.py` with the scripted fake probe `fake_probe.py`. Decisions and ambiguities:
+- **`envelope.py`** (not named in the P3 module list) ports the byte rules of `crates/proto/src/envelope.rs` for
+  REP, END and EVT: one object with `{` first and `}` last, nesting at most 8 (a C-speed bracket count with
+  strings removed, before parsing), the envelope's own keys compared as written (an escaped spelling is an
+  unknown key), the `ok` literal, exact `u32` counts, `closing` with exactly `event` and `reason`. Beyond Rust
+  it enforces §4.2 below the envelope with the `json` module and hooks: no duplicate key at any depth, no
+  `NaN`/`Infinity`, no non-finite float, no `-0`. A violation is a local `EnvelopeError` (a `WireError` subclass
+  with kinds `json-text`, `duplicate-key`, `unknown-key`, `missing-key`, `wrong-type`); the connection closes.
+  `ProtocolError` (also a `WireError` subclass) names what is not a decoder error: `unexpected-frame`,
+  `unknown-corr`, `bad-reply`, `end-counts`, `hello-mismatch`, `queue-overflow`, `corr-exhausted`.
+- **Handshake.** The prefix (`HOB\x01`, major 1, minor 1) is sent alone, the 8-byte server prefix is read with a
+  `recv_into` that never over-reads, then the `hello` REQ goes out with `corr` 1. A closed socket before the
+  prefix is `ConnectionLost`; a wrong magic is `unknown-mode`; another major is `unsupported-version`; a server
+  minor above the client's, a `proto` that disagrees with the prefix, another `level` than requested and a missing or
+  non-`u32` limit are `ProtocolError` `hello-mismatch`. Unknown extra `hello` keys are ignored (a later minor
+  adds reply keys, §9.1). After the hello the reader is replaced by one limited to
+  `min(16 MiB, limits.max_frame_bytes)`; the completion age stays 30 s.
+- **Receive loop.** One `recv_into(reader.fill())` per step; the socket timeout is `max(0.001, (deadline - now))`
+  with `deadline = frame_started + 30 s` while a frame is partial and the caller's operation deadline
+  (`now + timeout_s`) otherwise; a `TimeoutError` or a late recv runs `poll(clock())`. An operation timeout
+  closes the connection (a late reply could not be matched) and raises `OperationTimeout`. EOF inside a frame is
+  `ConnectionLost` caused by the `truncated` `WireError`; a `closing` EVT is remembered in `closing_reason`.
+  `connect()` itself is bounded by the OS through the socket timeout, not by the injected clock.
+- **Streams.** `request()` waits for its REP. `blocks()` awaits the REP at call time and returns an iterator
+  (`.result`, `.end`, `.received`, `.close()`); `subscribe()` returns a `Subscription` (`.dropped` sums the block
+  header and END counters, `.client_dropped` counts blocks this client overwrote, `.close()` sends `unsubscribe`
+  and waits for the END). Frames of other streams that arrive while waiting are decoded in arrival order and
+  queued (a subscription keeps its newest 8, a query stream up to 1,024, else `queue-overflow`). The END must
+  count exactly the BLOCK frames received; a query END reports `dropped` 0; the reason is `complete`/`page` for a
+  query (`page` iff `next`) and `unsubscribed`/`client-eof` for a subscription. A subscription wait is bounded by
+  `timeout_s + interval_ms`. Closing an unfinished block stream drops its later blocks undecoded.
+- **Reconnect (§6.4).** `Connection.reconnect()` closes the connection (every dictionary and stream is dropped)
+  and opens a new one on the same path with the same `StreamDicts`; `.session` is `first`, `same` or `changed`
+  from `on_hello`. The caller drops cursors, open span keys, sessions and windows when it is `changed`.
+- **`profiling.py`.** `require_profiling(level, required, *, features=(), ...)` returns a `ProfilingState`
+  (`name`, `required`, `detail`, `notice`, `action`, `connection`). Plan D.2 leaves open how a usable socket is
+  named and where `absent` and `lost` come from; decided: the sixth value `available` (`action` `run`, open
+  connection), `absent(required)` for the consumer's own `except ImportError`, `lost(required, reason)` after
+  start with `loss_reason()` mapping `session-lost`/`window-lost` and `session == "changed"`, `unconfigured` =
+  `HOSTOBS_<LEVEL>_SOCKET` unset or empty, `refused` = another level, a missing `features` entry (the caller names
+  the capabilities, default none, so `peak_reset` is not assumed), `unsupported-version`, or a server `forbidden`/
+  `unsupported-feature`/`unknown-verb`; every other failure is `unreachable`. Actions: unset `required` →
+  `run-with-notice` (`lost`: `record-profile-error`); `required` → `refuse` (`lost`: `evidence-invalid`, outcome
+  `EVIDENCE_INVALID`).
+- **`mark.py`.** `hostobs-mark` is JSON mode (§8.5): one `annotate` line with `corr` 1 to
+  `HOSTOBS_OBSERVER_SOCKET`, `shutdown(SHUT_WR)`, one reply line (bounded 64 KiB, deadline from the injected
+  clock), exit 0; unavailable → one stderr notice and exit 0, `--require` → exit 1, usage error → exit 2. All
+  `annotate` args keys are sent (`key`, `outcome`, `code` null when unset); `ctx` is read from
+  `HOSTOBS_CTX_{RUN,LANE,CANDIDATE,TXN,SESSION}` (the five keys of §4.10; the plan names `HOSTOBS_CTX_*` without
+  the list). Run as `python3 -m hostobs_client.mark begin|end|point NAME [--key K] [--outcome O] [--code C]
+  [--attr K=V] [--require] [--timeout S]`; the console script `hostobs-mark = hostobs_client.mark:main` is the
+  wheel's (M3) packaging entry.
+- **Not covered here:** the Python conformance lane (`HOB-4`) and a run against a live probe (P5b).
+
 **P5a — Rust `client` crate (M).** `Client::connect(path, Level, ClientInfo) -> Result<Client, ClientError>`,
 `hello() -> &HelloResult`, `request(verb, serde-free JSON text) -> Reply`, `subscribe(Selection,
 interval_ms) -> Subscription` (iterator of `Block`, held dictionary per stream), reconnect per §6.4.

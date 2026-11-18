@@ -177,6 +177,15 @@ The same run covers the Python client package `python/hostobs_client` (`wire`, `
 bounds; the absolute memory bound runs on CPython 3.14.10 only). `python3 -I python/bench_decode.py`
 prints the ungated CPU timings.
 
+The connection layer (`conn`, `envelope`, `profiling`, `mark`) is tested without a live probe:
+`test_client_conn.py` steps a scripted fake probe (`fake_probe.py`, one `socketpair`, the fake clock jumps
+instead of sleeping), `test_client_path.py` covers `Connection.open`, `reconnect`, `require_profiling` and
+`hostobs-mark` over real `AF_UNIX` paths (the only server thread of the suite), and `test_client_zipimport.py`
+builds a zip of the package in a temporary directory and runs `python3 -I` against it. Run one file with
+`python3 -I -m unittest discover -s python/tests -p 'test_client_conn.py' -v` (one Python process at a time on a shared host).
+A consumer calls `require_profiling("observer", required)` once at start and shows `state.notice` verbatim;
+`python3 -m hostobs_client.mark point NAME` writes one annotation (exit 0 when hostobs is unavailable, `--require` makes that 1).
+
 `python/tests` needs only the standard library and never imports the Rust code. The
 regeneration must reproduce the committed bytes exactly: the Python encoders are
 independent of the Rust ones, so a difference is a real divergence rather than a cache
