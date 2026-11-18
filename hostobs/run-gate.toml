@@ -229,7 +229,8 @@ exit "$rc"''',
 ]
 exit_map = { "0" = "PASS", "1" = "FAIL", "2" = "ERROR", "3" = "FAIL", "4" = "FAIL", "5" = "FAIL" }
 clean_tree = true
-# Matches `assay.toml [lanes.assay-r2].budget` (4h, an estimate; the first real run sets the
-# figure); the lane budget is the outer bound for the whole judge process.
-budget = "4h"
+# Run-gate's outer bound is deliberately LONGER than `assay.toml [lanes.assay-r2].budget`
+# (4h, the per-attempt bound, an estimate; the first real run sets the figure), so assay can
+# still write its structured BUDGET_EXCEEDED/LANE_TIMEOUT verdict before this hard limit.
+budget = "5h"
 artifacts = [".assay/verdict-assay-r2.json"]

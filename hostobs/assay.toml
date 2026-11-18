@@ -198,7 +198,10 @@ artifact = "lcov.info"
 #   the base the gate supplies (`run-gate assay-r2 --base REF`) against the judged
 #   commit, restricted to `source_roots`, and hands it to the tool through the
 #   whole-token argv placeholder `{assay.changed_diff}` (`--in-diff`). No base is
-#   guessed: without `--base` the run is `ERROR/BAD_LANE_CONFIG`.
+#   guessed by assay: a direct `assay run` without a request base is
+#   `ERROR/BAD_LANE_CONFIG`, and through run-gate a missing `--base` falls back to the
+#   worktree's recorded fork point or `@{upstream}` (and refuses with `no-base` if none
+#   exists), so ALWAYS pass `--base` explicitly.
 # - `source_roots` are the five `crates/<name>/src` roots `assay-r1` judges. The
 #   output directory `assay-mutants-out` sits beside, not under, them (an artifact
 #   inside a source root is refused at lane load) and is git-ignored in
