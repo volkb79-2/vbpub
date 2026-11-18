@@ -5806,6 +5806,15 @@ base to resolve has nothing to classify); a consumer that gates on "did R1/R2
 see the whole change" should check it rather than assume `base` alone tells
 the story.
 
+The first-parent rule applies to a base the LANE declares (`judge.base`). A lane
+that DELEGATES its base (`judge.base_source = "request"`, next section) is
+exempt (B552): the invoker named the exact comparison, so on a merge-commit
+`HEAD` it still resolves `merge-base(<request-base>, HEAD)` and records
+`"merge-base"`, never `"first-parent"` for a request that was discarded.
+Before B552 such a run planned zero candidates (`NO_MUTANTS`) on a head whose
+source really had changed; if you have a retained delegated verdict with
+`base_resolution = "first-parent"`, its R2 scope was not the one you asked for.
+
 ### Delegating the comparison base to the invoking gate request (B019)
 
 A lane that must stay portable across branches and worktrees can require
@@ -5828,7 +5837,8 @@ assay plan mutate --request-base "$MERGE_TARGET"
 ```
 
 `--request-base` takes a ref *or* an already-resolved commit, and either goes
-through exactly the merge-base resolution `judge.base` always used; the result
+through the merge-base resolution (on a merge-commit `HEAD` too: a requested
+base is never replaced by the first parent, B552); the result
 is recorded once in `judgment.resolved.base`, with `base_resolution` beside it
 as usual. Nothing downstream can tell — or needs to tell — which owner
 supplied it.

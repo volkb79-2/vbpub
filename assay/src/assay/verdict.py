@@ -3044,7 +3044,9 @@ class JudgmentResolved:
     #: `"first-parent"` on a merge-commit HEAD (the branch's own pre-merge
     #: tip -- a common pre-gate `git merge <base>` silently narrows the
     #: changed-line floor and any R2 lane to "what did the merge itself
-    #: change"), or `"merge-base"` otherwise. Optional for v7 compatibility;
+    #: change"), or `"merge-base"` otherwise -- including a DELEGATED base
+    #: (`judge.base_source = "request"`, B552) on a merge-commit HEAD, whose
+    #: requested comparison is honoured. Optional for v7 compatibility;
     #: never present without `base`.
     base_resolution: str | None = None
 
