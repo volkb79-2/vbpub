@@ -36,6 +36,34 @@ valid_builder_name "$builder" || {
   printf 'CGROUP_PARENT_DEV_GATES or --cgroup-parent is required; refusing an ungoverned image build\n' >&2
   exit 2
 }
+# The one input is the systemd slice NAME (e.g. dev-gates.slice). Two spellings are derived from it:
+# the NAME goes to every `docker run`-style consumer (cmru tester-gate below; the systemd cgroup driver
+# refuses a path there), the cgroup PATH (systemd dash expansion: a-b-c.slice -> a.slice/a-b.slice/a-b-c.slice)
+# goes to `docker buildx build --cgroup-parent` ONLY: with the plain name BuildKit puts the RUN steps in an
+# ungoverned root-level /<name>/buildkit, with the path they run inside the governed slice (measured on v1001,
+# 2026-11-18, ONLY with the docker-driver builder `default`; the default builder here, mdt-managed, was not
+# measured: check /proc/<pid>/cgroup of a RUN-step process).
+# This function is duplicated in build-dev-image.sh; tests/test_image_contract.py pins both copies identical.
+# The regex does not enforce systemd's 255-character unit-name limit: an over-long name is refused later
+# by systemd/docker, not here.
+# BEGIN slice_cgroup_path
+slice_cgroup_path() {
+  local LC_ALL=C name=$1 base prefix="" path="" part
+  local -a parts
+  [[ "$name" =~ ^[A-Za-z0-9_]+(-[A-Za-z0-9_]+)*\.slice$ ]] || return 1
+  base=${name%.slice}
+  IFS=- read -r -a parts <<< "$base"
+  for part in "${parts[@]}"; do
+    prefix+="${prefix:+-}$part"
+    path+="${path:+/}$prefix.slice"
+  done
+  printf '%s\n' "$path"
+}
+# END slice_cgroup_path
+cgroup_path="$(slice_cgroup_path "$cgroup_parent")" || {
+  printf 'invalid --cgroup-parent / CGROUP_PARENT_DEV_GATES %q: expected a systemd slice name such as dev-gates.slice (letters, digits, underscore; single - between non-empty components; ending .slice)\n' "$cgroup_parent" >&2
+  exit 2
+}
 [[ -f "$repo_root/hostobs/Cargo.lock" ]] || {
   printf 'hostobs/Cargo.lock is missing; the Rust image needs a committed lock\n' >&2
   exit 2
@@ -132,7 +160,7 @@ docker buildx inspect "$builder" >/dev/null
 docker buildx build \
   --builder "$builder" \
   --load \
-  --cgroup-parent "$cgroup_parent" \
+  --cgroup-parent "$cgroup_path" \
   --network default \
   --build-arg "RUST_IMAGE=$expected_base" \
   --build-arg "HOSTOBS_LOCK_REGISTRY_SHA256=$lock_registry_sha256" \

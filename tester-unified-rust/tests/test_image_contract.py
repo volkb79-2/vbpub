@@ -17,6 +17,93 @@ REPO_ROOT = PROJECT_ROOT.parent
 HOSTOBS_ROOT = REPO_ROOT / "hostobs"
 
 
+SLICE_TABLE = {
+    "dev-gates.slice": "dev.slice/dev-gates.slice",
+    "a-b-c.slice": "a.slice/a-b.slice/a-b-c.slice",
+    "x.slice": "x.slice",
+    "a_b-c1.slice": "a_b.slice/a_b-c1.slice",
+    "A-B.slice": "A.slice/A-B.slice",
+    "user-1000.slice": "user.slice/user-1000.slice",
+}
+INVALID_SLICE_NAMES = (
+    "-.slice", ".slice", "a-.slice", "-a.slice", "a--b.slice", "a/b.slice", "/dev.slice/dev-gates.slice",
+    "dev.slice/dev-gates.slice", "../a.slice", "a..b.slice", "a b.slice", " a.slice", "a.slice ", "a.slice\n",
+    "a\nb.slice", "dev-gates", "dev-gates.service", "a.slice/", "a.b.slice", "a;b.slice", "$(id).slice",
+    "é.slice", "a-é.slice", "ａ.slice", "a.slice.slice",
+)
+SCRIPTS_WITH_SLICE_HELPER = ("build-image.sh", "build-dev-image.sh")
+
+
+def slice_helper_source(script: str) -> str:
+    text = (PROJECT_ROOT / script).read_text(encoding="utf-8")
+    match = re.search(r"(?ms)^# BEGIN slice_cgroup_path\n(.*?)^# END slice_cgroup_path\n", text)
+    assert match is not None, script
+    return match.group(1)
+
+
+def derive_slice_path(script: str, name: str, locale: str = "C") -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-c", slice_helper_source(script) + '\nslice_cgroup_path "$1"', "_", name],
+        capture_output=True, text=True, check=False, env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": locale},
+    )
+
+
+class SliceCgroupPathTests(unittest.TestCase):
+    """The slice NAME -> cgroup PATH derivation that build-image.sh and build-dev-image.sh each carry."""
+
+    def test_both_copies_are_identical(self) -> None:
+        sources = [slice_helper_source(script) for script in SCRIPTS_WITH_SLICE_HELPER]
+        self.assertIn("slice_cgroup_path()", sources[0])
+        self.assertEqual(sources[0], sources[1])
+
+    def test_valid_names_expand_dash_by_dash(self) -> None:
+        for script in SCRIPTS_WITH_SLICE_HELPER:
+            for name, path in SLICE_TABLE.items():
+                with self.subTest(script=script, name=name):
+                    result = derive_slice_path(script, name)
+                    self.assertEqual((result.returncode, result.stdout), (0, path + "\n"), result.stderr)
+
+    def test_invalid_names_are_refused(self) -> None:
+        for script in SCRIPTS_WITH_SLICE_HELPER:
+            for name in INVALID_SLICE_NAMES:
+                with self.subTest(script=script, name=name):
+                    result = derive_slice_path(script, name)
+                    self.assertEqual((result.returncode, result.stdout), (1, ""), repr(name))
+
+    def test_non_ascii_letters_are_refused_in_a_utf8_locale_too(self) -> None:
+        listed = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=False).stdout.split()
+        # C.utf8 is codepoint-ordered, so [A-Za-z] already rejects non-ASCII there and cannot catch a dropped
+        # `local LC_ALL=C`; a collation-ordered locale such as en_US.UTF-8 is what exposes it. Run EVERY one.
+        utf8 = [name for name in listed if re.search(r"utf-?8", name, re.IGNORECASE)]
+        collating = [name for name in utf8 if not name.lower().startswith("c.")]
+        if not collating:
+            self.skipTest(f"no UTF-8 locale beyond C.utf8 is installed (locale -a lists: {utf8 or 'none'}); "
+                          "the LC_ALL=C guard cannot be exercised here")
+        for locale in utf8:
+            for script in SCRIPTS_WITH_SLICE_HELPER:
+                for name in ("é-b.slice", "a-１.slice", "٣-a.slice", "é.slice", "a-é.slice", "ａ.slice"):
+                    with self.subTest(locale=locale, script=script, name=name):
+                        self.assertEqual(derive_slice_path(script, name, locale).returncode, 1)
+
+    def test_the_utf8_locale_test_has_teeth_without_the_lc_all_guard(self) -> None:
+        # Mutation check on the real helper text: with `local LC_ALL=C` removed, a collation-ordered UTF-8
+        # locale accepts non-ASCII letters, which is what the test above must catch.
+        listed = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=False).stdout.split()
+        collating = [n for n in listed if re.search(r"utf-?8", n, re.IGNORECASE) and not n.lower().startswith("c.")]
+        if not collating:
+            self.skipTest("no collation-ordered UTF-8 locale installed")
+        mutated = slice_helper_source("build-image.sh").replace("local LC_ALL=C name=$1", "local name=$1")
+        self.assertNotEqual(mutated, slice_helper_source("build-image.sh"))
+        accepted = [
+            name for name in ("é-b.slice", "a-１.slice", "٣-a.slice")
+            if subprocess.run(
+                ["bash", "-c", mutated + '\nslice_cgroup_path "$1"', "_", name], capture_output=True, text=True,
+                check=False, env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": collating[0]},
+            ).returncode == 0
+        ]
+        self.assertTrue(accepted, f"{collating[0]} rejects non-ASCII even without LC_ALL=C: the guard is untested")
+
+
 class ImageContractTests(unittest.TestCase):
     def test_workspace_gate_entrypoints_are_executable(self) -> None:
         exec_bits = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
@@ -88,7 +175,9 @@ class ImageContractTests(unittest.TestCase):
         self.assertIn('"$repo_root/cmru.orchestration.toml"', build)
         self.assertIn('document["orchestration"]["defaults"]["env"]', build)
         self.assertIn('--cgroup-parent "$cgroup_parent"', build)
-        self.assertEqual(build.count('--cgroup-parent "$cgroup_parent"'), 2)
+        # the preflight takes the slice name, buildx the derived cgroup path
+        self.assertEqual(build.count('--cgroup-parent "$cgroup_parent"'), 1)
+        self.assertEqual(build.count('--cgroup-parent "$cgroup_path"'), 1)
         self.assertIn('if [[ "$actual_lock_registry_sha256" != "$lock_registry_sha256" ]]; then', build)
         self.assertIn('if [[ "$actual_base" != "$expected_base" ]]; then', build)
         self.assertNotIn('--resource memory=', build)
@@ -292,6 +381,7 @@ class BuildImageBuilderOptionTests(unittest.TestCase):
     """Behavioural pins (stub `docker`/`cmru` on PATH) for the selectable BuildKit builder."""
 
     SLICE = "dev-gates.slice"
+    SLICE_PATH = "dev.slice/dev-gates.slice"
     PREFLIGHT_MARKER = "STUB-CMRU-PREFLIGHT-RAN"
 
     def _run(
@@ -396,7 +486,7 @@ class BuildImageBuilderOptionTests(unittest.TestCase):
                 "buildx", "build",
                 "--builder", "default",
                 "--load",
-                "--cgroup-parent", self.SLICE,
+                "--cgroup-parent", self.SLICE_PATH,
                 "--network", "default",
                 "--build-arg", f"RUST_IMAGE={self.base}",
                 "--build-arg", f"HOSTOBS_LOCK_REGISTRY_SHA256={self.registry_digest}",
@@ -405,7 +495,7 @@ class BuildImageBuilderOptionTests(unittest.TestCase):
                 str(root / "hostobs"),
             ]],
         )
-        # The governance preflight is untouched: it ran once, with the slice, before `builder=`.
+        # The governance preflight takes the slice NAME (only buildx takes the path): it ran once, before `builder=`.
         self.assertEqual(
             cmru_calls,
             [["tester-gate", "--cwd", "run-gate-project", "--cgroup-parent", self.SLICE, "/bin/true"]],
@@ -470,6 +560,46 @@ class BuildImageBuilderOptionTests(unittest.TestCase):
                 {"LC_ALL": preferred[0], "LANG": preferred[0]},
                 f"{preferred[0]} {bad!r}",
             )
+
+    def test_buildx_gets_the_cgroup_path_and_every_other_consumer_the_slice_name(self) -> None:
+        for name, path in (
+            ("dev-gates.slice", "dev.slice/dev-gates.slice"),
+            ("a-b-c.slice", "a.slice/a-b.slice/a-b-c.slice"),
+            ("x.slice", "x.slice"),
+        ):
+            with self.subTest(name=name):
+                result, calls, cmru_calls, _ = self._run(["--cgroup-parent", name])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                builds = [c for c in calls if c[:2] == ["buildx", "build"]]
+                self.assertEqual(len(builds), 1)
+                self.assertEqual(builds[0].count("--cgroup-parent"), 1)
+                self.assertEqual(builds[0][builds[0].index("--cgroup-parent") + 1], path)
+                # nothing but buildx build sees the path; the preflight keeps the plain name
+                self.assertEqual(
+                    cmru_calls,
+                    [["tester-gate", "--cwd", "run-gate-project", "--cgroup-parent", name, "/bin/true"]],
+                )
+                for call in calls:
+                    if call[:2] != ["buildx", "build"]:
+                        self.assertNotIn("--cgroup-parent", call)
+
+    def test_the_slice_input_also_comes_from_the_environment(self) -> None:
+        result, calls, _, _ = self._run([], {"CGROUP_PARENT_DEV_GATES": "dev-gates.slice"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        build = [c for c in calls if c[:2] == ["buildx", "build"]][0]
+        self.assertEqual(build[build.index("--cgroup-parent") + 1], self.SLICE_PATH)
+
+    def test_an_invalid_slice_name_is_refused_with_exit_2_before_any_call(self) -> None:
+        for bad in INVALID_SLICE_NAMES:
+            with self.subTest(bad=bad):
+                result, calls, cmru_calls, _ = self._run(["--cgroup-parent", bad])
+                self.assertEqual(result.returncode, 2, repr(bad))
+                self.assertIn("invalid --cgroup-parent", result.stderr, repr(bad))
+                self.assertIn("systemd slice name", result.stderr, repr(bad))
+                self.assertEqual((calls, cmru_calls), ([], []), repr(bad))
+        result, calls, cmru_calls, _ = self._run([], {"CGROUP_PARENT_DEV_GATES": "dev/gates.slice"})
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual((calls, cmru_calls), ([], []))
 
     def test_cgroup_parent_is_still_required_whatever_the_builder(self) -> None:
         for args in ([], ["--builder", "default"]):
