@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -85,34 +84,11 @@ def test_the_leftover_child_guard_names_a_child_and_its_cmdline(monkeypatch):
             pass
         finally:
             child.stdin.close()
-        child.wait(timeout=60)
+        child.wait()
         if child.stdout is not None:
             child.stdout.close()
         if child.stderr is not None:
             child.stderr.close()
-
-
-def _wait_for_process_exit(pid: int, timeout: float = 5.0) -> None:
-    """Require a released child to disappear, failing fast if EOF missed."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not os.path.exists(f"/proc/{pid}"):
-            return
-        time.sleep(0.05)
-    raise AssertionError(f"inner child did not exit after pipe EOF: pid {pid}")
-
-
-def _reap_recorded_children(pid_paths: list[Path]) -> None:
-    """Reap or verify recorded children without signalling."""
-    for pid_path in pid_paths:
-        pid = int(pid_path.read_text(encoding="utf-8"))
-        try:
-            os.waitpid(pid, os.WNOHANG)
-        except ChildProcessError:
-            # The inner pytest normally reaps first.  If an ancestor subreaper
-            # owns the child instead, this process cannot reap it.
-            pass
-        _wait_for_process_exit(pid)
 
 
 def test_the_real_guard_is_autouse(request):
@@ -136,7 +112,6 @@ def test_the_real_guard_fails_an_unmarked_leak_and_honors_its_marker(
 import importlib.util
 import os
 import sys
-import time
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location("ciu_suite_conftest", {str(conftest_path)!r})
@@ -175,24 +150,23 @@ def pytest_sessionfinish(session, exitstatus):
     finally:
         os.close(ready_fd)
 
-    pending = set(pids)
-    deadline = time.monotonic() + 5.0
-    while pending and time.monotonic() < deadline:
-        for pid in tuple(pending):
-            try:
-                waited, _status = os.waitpid(pid, os.WNOHANG)
-            except ChildProcessError:
-                pending.remove(pid)
-                continue
-            if waited == pid:
-                pending.remove(pid)
-        if pending:
-            time.sleep(0.05)
-    if pending:
-        raise RuntimeError(
-            "pipe EOF did not release inner child pid(s): "
-            + ", ".join(map(str, sorted(pending)))
-        )
+    release_fd = int(os.environ["CIU_P13_CHILD_READ_FD"])
+    try:
+        os.read(release_fd, 1)
+    finally:
+        os.close(release_fd)
+
+    reaped = []
+    for pid in pids:
+        waited, _status = os.waitpid(pid, 0)
+        if waited != pid:
+            raise RuntimeError(
+                f"waitpid returned {{waited}} while reaping recorded pid {{pid}}"
+            )
+        reaped.append(pid)
+    Path(__file__).with_name("inner-reaped.txt").write_text(
+        "".join(f"{{pid}}\\n" for pid in reaped), encoding="utf-8"
+    )
 """
     )
     pytester.makepyfile(
@@ -241,13 +215,10 @@ def test_marked_leak_is_allowed():
     ready_read_fd, ready_write_fd = os.pipe()
     monkeypatch.setenv("CIU_P13_CHILD_READ_FD", str(child_read_fd))
     monkeypatch.setenv("CIU_P13_READY_FD", str(ready_write_fd))
-    pid_paths = [
-        pytester.path / "leaky-child-CIU-223.pid",
-        pytester.path / "allowed-child-CIU-223.pid",
-    ]
     stdout_path = pytester.path / "inner.stdout"
     stderr_path = pytester.path / "inner.stderr"
     failure_path = pytester.path / "inner-failure.txt"
+    reap_path = pytester.path / "inner-reaped.txt"
     proc = None
     try:
         with (
@@ -300,6 +271,8 @@ def test_marked_leak_is_allowed():
         assert "leaky-child-CIU-223" in output
         assert "allowed-child-CIU-223" not in output
         assert "2 passed, 1 error" in output
+        reaped = reap_path.read_text(encoding="utf-8").splitlines()
+        assert len(reaped) == 2
     finally:
         for fd_name in (
             "child_read_fd",
@@ -312,7 +285,6 @@ def test_marked_leak_is_allowed():
                 os.close(fd)
         if proc is not None and proc.poll() is None:
             proc.wait()
-        _reap_recorded_children(pid_paths)
     assert not suite_conftest._direct_children()
 
 
