@@ -242,6 +242,21 @@ Behaviour changes a consumer can see:
 
 <!-- cmru: release history -->
 
+## [0.7.0] - 2026-11-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=c70b15d820d87b3faab1dd3d4398b29cc9d77ea2 -->
+
+### Added
+- feat(cli-extended): procio, a bounded child-process reader (run_streaming, run_capture, no-progress watchdog) (4482c9c81)
+
+### Fixed
+- fix(cli-extended): pipe_holder_pids skips a vanished descriptor, not the whole process (4c8e8c36e)
+- fix(cli-extended): procio review fixes (strict run_capture, stale-pgid guard, exception-safe handler restore, linear line assembly, wider test margins, deterministic fake-proc fixture) (1d74a3cf3)
+
+### Documentation
+- docs(cli-extended): procio contract (SPEC 16), README, consumer call site, CHANGES, CLI-EXT-34; stdin close-on-interrupt test (752ab4c73)
+
+
 ## [0.6.0] - 2026-11-09
 <!-- cmru: generated -->
 <!-- cmru: source-end=fb370fc26736d7901c7e1dc0712e9b6152d00682 -->
