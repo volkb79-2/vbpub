@@ -1336,15 +1336,15 @@ mod tests {
                 let (head, tail) = rest.split_at(step.min(rest.len()));
                 rig.send(head);
                 rest = tail;
-                if xorshift(&mut seed) % 3 == 0 {
+                if xorshift(&mut seed).is_multiple_of(3) {
                     rig.pump(usize::try_from(xorshift(&mut seed) % 50).unwrap_or(0));
                 }
-                if xorshift(&mut seed) % 11 == 0 {
+                if xorshift(&mut seed).is_multiple_of(11) {
                     rig.tick(xorshift(&mut seed) % (6_000 * MS));
                 }
                 bounded(&rig);
             }
-            if xorshift(&mut seed) % 2 == 0 {
+            if xorshift(&mut seed).is_multiple_of(2) {
                 rig.eof();
             }
             rig.pump(usize::MAX);
