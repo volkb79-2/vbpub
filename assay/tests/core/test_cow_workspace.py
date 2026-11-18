@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from assay import _cow_workspace
+from assay.errors import AssayError, Outcome, ReasonCode
+from assay.workspace import WorkspaceCleanupError, WorkspaceEstimate
 
 
 def test_the_suite_never_inherits_the_hosts_cow_area():
@@ -19,8 +21,6 @@ def test_the_suite_never_inherits_the_hosts_cow_area():
 
     assert "MDT_COW_ROOT" not in os.environ
     assert "COWTREE_MODE" not in os.environ
-from assay.errors import AssayError, Outcome, ReasonCode
-from assay.workspace import WorkspaceCleanupError, WorkspaceEstimate
 
 
 class FakeCowError(Exception):

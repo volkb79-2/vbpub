@@ -1,0 +1,12 @@
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -4,7 +4,7 @@
+ 
+ pub fn multi(a: u32) -> u32 {
+     let b = a + 1;
+-    b * 2
++    b * 2 + 0
+ }
+ 
+ #[cfg(test)]
