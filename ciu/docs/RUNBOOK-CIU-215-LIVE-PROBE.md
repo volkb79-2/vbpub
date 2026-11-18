@@ -24,9 +24,11 @@ check fails stops the run: record it in the results table, do not improvise.
    may create is the empty `probe` commit that Run A/B step "rw sub-check" makes on the scratch branch (or
    that check (c) tries and must fail to make); the branch is deleted in cleanup.
 2. **Load.** One container-starting step at a time: no concurrent builds, no second lane, no second runner
-   stack while a step runs. v1001 is shared: **ask the controller for the window before step A1**, and tell
-   it when each Run ends. The controller devcontainer is capped at 8 GiB (OOM-killed 2026-11-08): do not run
-   the runner stacks or the lanes there. A lane outlasts a foreground tool call: launch it with
+   stack while a step runs. **Ask the controller for the window before step A1**, and tell it when each Run
+   ends. Per the VENUE DECISION in section 1 the probe runs on the controller devcontainer (measured
+   `memory.max` 12 GiB; an earlier 8 GiB cap OOM-killed the container on 2026-11-08), so keep to one
+   container-starting step at a time and watch `memory.current` and pressure; the v1001 statements in this
+   runbook are history. A lane outlasts a foreground tool call: launch it with
    `setsid nohup ... < /dev/null &`, then wait and read the verdict in separate calls (dstdns
    `nyxloom-trove/GUIDE.md` 3.4 step 4).
 3. **Containers by exact name only.** Name every container you inspect or remove by its exact name, read
@@ -34,7 +36,8 @@ check fails stops the run: record it in the results table, do not improvise.
    filters, no `docker ps -a` inventories, no `docker rm $(...)`.
 4. **Verdict reads are separate steps** from the launch, never a pipe tail (LESSONS L4).
 5. Every Bash call carries a plain-words `description`.
-6. **Shell state does not survive `hx.sh`.** Each `hx.sh <alias> '<cmd>'` is a fresh `bash -c` and takes exactly
+6. **Shell state does not survive a call** (history: written for `hx.sh`; the one-call-per-block rule still holds in the
+   devcontainer). Each `hx.sh <alias> '<cmd>'` is a fresh `bash -c` and takes exactly
    two arguments. Every code block below is ONE call and its first line is `source /tmp/ciu215-probe.env`
    (written once in section 2; it carries `PYTHONPATH`, the `ciu` function, `NAME`, `WT`, and `RUNNER` once
    known; step A5/B4 appends `RUNNER`). Variables set inside a block are gone at its end unless the block says
@@ -75,6 +78,27 @@ Nothing is pushed anywhere and no consumer branch other than the scratch one is 
 
 ## 1. Venue and access (read this before anything else)
 
+**VENUE DECISION 2026-11-18 (controller; supersedes the v1001 statements below, kept as history):** run the probe
+on the controller DEVCONTAINER, in plain Bash (no `hx.sh`; keep the one-call-per-block rule and the sourced
+`/tmp/ciu215-probe.env`). MEASURED there: `ciu`/`run-gate` at `/opt/mdt/venv/bin`, `/workspaces/netcup-api-filter`,
+`/workspaces/dstdns`, `/workspaces/vbpub` present, `CGROUP_PARENT_DEV_BACKGROUND` set, `DOCKER_HOST=unix:///run/docker-api/docker.sock`
+(the host daemon the gates use), cgroup `memory.max` 12884901888 (12 GiB). `/srv/pwmcp-instance` exists but is the
+installer tree only: NO `ciu.global.toml` and NO `pwmcp` docker network, so netcup's `PWMCP_NETWORK` sed yields
+nothing (see Run A note). Extra guards: one container-starting step at a time and only while
+`/sys/fs/cgroup/memory.current` <= 9.0e9 and `/proc/pressure/memory` `some avg10` <= 10 (hold, re-check every 60 s);
+abort and clean up a run at memory.current > 10.5e9; `nice -n 10` for anything long.
+
+**CORRECTIONS FOUND BY THE 2026-11-18 RUN (devcontainer; apply when re-running):**
+1. netcup `PWMCP_NETWORK`: `/srv/pwmcp-instance` is the installer tree, no `ciu.global.toml`, no `pwmcp` network, so `ciu` refuses to render. For `recovery_codes` (no pwmcp use) create an empty scratch network by exact name, `export PWMCP_NETWORK=<it>` in A3/A4/lane/rm, and remove it in A9.
+2. netcup: `tooling/ksm-optin/ksm-optin.so` is gitignored; a fresh worktree fails `[S15.11]`. `cp -p` it from main into the scratch worktree.
+3. Both lanes are snapshot lanes and refuse a dirty tree (`NO_MEASUREMENT/DIRTY_TREE`; netcup run 1). `run-gate` has `--allow-dirty` (usage line of `run-gate --help`); the run used `git update-index --skip-worktree` on the edited files instead (scratch index only).
+4. `ciu worktree rm`'s clean preflight needs the stack env (netcup: `NAF_GUARD_USER` via main `.env.guard` + `PWMCP_NETWORK`; dstdns: `CONTAINER_UID`, `DOCKER_GID`), contrary to rule 7 "fresh call without guard env".
+5. dstdns `ciu worktree up` needs `CONTAINER_UID=$(id -u)` and `DOCKER_GID=$(stat -c %g /run/docker-api/docker.sock)` exported, and runs INSIDE the worktree (GUIDE 3.4 step 2), not from main.
+6. dstdns images `dstdns/test-runner:local` and `dstdns/test-runner-ui:local` are NOT necessarily present ("shared, zero rebuild" is wrong on a fresh host): `docker buildx bake test-runner test-runner-ui --load` from the scratch worktree (about 3 min).
+7. dstdns lane needs a published admission limit (`run-gate admission set ...`, operator action); without it `NOT_RUN no-headroom` (`unreadable_policy=refuse`). The run set `[admission] enabled = false` in the scratch `run-gate.toml` only.
+8. Image tags (0a): ciu tags project-built netcup images with a worktree suffix (`py311-<id>`); the shared `py311`/`py314` tags did NOT move. Untag the suffixed ones after `rm`.
+9. `ciu worktree create` also creates the instance network and connects the devcontainer to it; `rm` removes both.
+
 **How the controller reaches v1001.** `/workspaces/vbpub/scripts/controller/hx.sh <host-alias> '<remote shell
 command>'` is the identity-checked SSH wrapper (provider identity API check, then the host table's `guard`,
 then your command, as one `bash -c`). The alias, SSH argv, pin and guard come only from the private
@@ -90,7 +114,16 @@ invent another host. Multi-line steps: `hx.sh v1001 'bash -s' < step.sh` (stdin 
 persistent runner, and the probe needs an uncommitted edit. So the steps below are run by hand, in a shell on
 v1001, via `hx.sh`.
 
-**Which shell on v1001 - UNVERIFIED.** `ciu`, `run-gate`, `docker` and checkouts of both consumers must be
+**MEASURED 2026-11-18 (P0 on v1001, FAILED, probe not started):** the host account (`runner`) has no `ciu`,
+no `run-gate`, no `/workspaces`, no `/srv/pwmcp-instance` (only `docker`, `git`, `python3`; the host has
+vbpub-only checkouts under `~/checkouts/<sha>` and `~/src/vbpub-current`). The cockpit container
+`mdt-cockpit-runner` (running; image `mdt-cockpit-devcontainer:*`) has `/opt/mdt/venv/bin/ciu`,
+`/opt/mdt/venv/bin/run-gate`, `docker`, and `CGROUP_PARENT_DEV_BACKGROUND` set, but its `/workspaces` holds only
+hash-named vbpub throwaway checkouts: neither netcup-api-filter nor dstdns exists on v1001 in either shell, and
+`/srv/pwmcp-instance/ciu.global.toml` is absent. The probe therefore needs the controller to provision both
+consumer checkouts (and the netcup pwmcp instance) on v1001 first; do not clone them or install ciu unasked.
+
+**Which shell on v1001 - UNVERIFIED (see the MEASURED paragraph above).** `ciu`, `run-gate`, `docker` and checkouts of both consumers must be
 available in the SAME shell, with a logical repo path that differs from the physical one only the way the
 consumers expect (`PHYSICAL_REPO_ROOT` = host path of the checkout, `ciu.repo_root` = path inside the shell).
 On the controller devcontainer that is `/workspaces/<repo>` with `DOCKER_HOST=unix:///run/docker-api/docker.sock`
@@ -334,6 +367,7 @@ grep -c "worktrees/' in ciu.repo_root" tooling/test-runner/ciu.compose.yml.j2   
 
 # A3 + A3b (ONE call, its own; the only place besides A4 that sources the guard env. Nothing from it is written to the env file)
 source /tmp/ciu215-probe.env; test -n "$WT"; cd "$WT"
+unset PHYSICAL_REPO_ROOT   # an inherited value of another checkout only makes ciu print the designed 'ignoring pre-set PHYSICAL_REPO_ROOT' warning (see the B3 note)
 eval "$(ciu env print)"
 export PWMCP_NETWORK="$(sed -n 's/^network_name = "\(.*\)"$/\1/p' /srv/pwmcp-instance/ciu.global.toml)"
 test -n "$PWMCP_NETWORK" && echo pwmcp-network-ok
@@ -351,6 +385,7 @@ exists. **Fail:** a `[CIU-215] ... refuses` message (copy it verbatim). A3b is o
 # A4  bring up this checkout's own runners: a 10-25 min build, so DETACHED, exit code kept in the log. One call;
 #     it needs the A3 environment, so repeat the A3 sourcing here; nothing else runs meanwhile.
 source /tmp/ciu215-probe.env; test -n "$WT"; cd "$WT"
+unset PHYSICAL_REPO_ROOT   # see the A3 comment
 eval "$(ciu env print)"
 export PWMCP_NETWORK="$(sed -n 's/^network_name = "\(.*\)"$/\1/p' /srv/pwmcp-instance/ciu.global.toml)"
 set -a; . /workspaces/netcup-api-filter/.env.guard; . ./.env.services; set +a
@@ -621,7 +656,14 @@ grep -c "worktrees/' in ciu.repo_root" tools/test-runner/ciu.compose.yml.j2     
 # B3  start the declared environment (core, db, runner, and the ui runner) from the EDITED templates; detached, it is long.
 #     ALWAYS through `ciu worktree up` (dstdns GUIDE 3.4 forbids hand-run `ciu render` / `ciu up --dir tools/test-runner --dry-run`
 #     in a not-yet-rendered worktree); no guard env is needed or allowed here.
-source /tmp/ciu215-probe.env; test -n "$NAME"
+#     Unset an inherited PHYSICAL_REPO_ROOT (and do not source the main checkout's ciu.env) in the shell that runs this: with a
+#     value left over from another checkout, ciu prints `ciu: ignoring pre-set PHYSICAL_REPO_ROOT=... inconsistent with the
+#     mountinfo-derived physical root` and then uses the mountinfo-derived value. That message is the designed protection
+#     against inherited shell state (SPEC S2.7, `_detect_physical_repo_root`), not a defect, and the rendered mounts stay right;
+#     unsetting the variable only removes the noise.
+source /tmp/ciu215-probe.env; test -n "$NAME"; unset PHYSICAL_REPO_ROOT
+#     Section 1 item 5: `ciu worktree up` runs INSIDE the scratch worktree and needs these two exported:
+test -n "$WT"; cd "$WT"; export CONTAINER_UID="$(id -u)" DOCKER_GID="$(stat -c %g /run/docker-api/docker.sock)"
 setsid nohup bash -c 'python3 -m ciu worktree up "$0"; echo "rc=$?"' "$NAME" > /tmp/ciu215-dst-up.log 2>&1 < /dev/null &
 echo $! > /tmp/ciu215-dst-up.pid
 #     UNVERIFIED: `ciu worktree up` renders from the checkout's working files (uncommitted edits). The proof is B4's INFO line.
@@ -940,7 +982,7 @@ Estimates, not measurements (UNVERIFIED until the first run; the numbers below a
 
 **UNVERIFIED (check each first, in this order):**
 
-1. **Venue**: that `ciu`, `run-gate`, `docker`, `CGROUP_PARENT_DEV_BACKGROUND` and BOTH consumer checkouts
+1. **Venue (WRONG as assumed, measured 2026-11-18: P0 fails on v1001, no consumer checkouts, no pwmcp-instance; see section 1)**: that `ciu`, `run-gate`, `docker`, `CGROUP_PARENT_DEV_BACKGROUND` and BOTH consumer checkouts
    exist in one shell on v1001 (P0), and which shell that is (host account or the cockpit container
    `mdt-cockpit-runner`, whose name comes from the private host table).
 2. **vbpub source on the venue** contains `c64c2ffd8`, the interpreter has Jinja2/PyYAML/tomli_w/`cli_extended`,
