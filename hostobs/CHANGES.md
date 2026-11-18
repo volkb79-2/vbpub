@@ -10,6 +10,12 @@
   with local §4.2 checks; `blocks()` (`BlockStream`, END counts checked); `subscribe()` (`Subscription`, an iterator
   with `dropped()`); `reconnect()` per §6.4 (`Session` first/same/changed); `close()` (idempotent, also on drop).
   `ClientError` is a closed enum with `kind()` and `Display`; no panic on any server byte.
+- **`proto`**: `envelope::members_up_to(bytes, max)` is `members` with the key bound chosen by the caller (`members`
+  is `members_up_to(bytes, MAX_MEMBERS)`; every envelope check is unchanged): the client reads the 9-key `hello` result
+  and its 19-key `limits` object with a bound of 64.
+- **Review round**: a stream's frames are re-checked against the announced `max_frame_bytes` after the hello; an
+  `END ok:false` counts its `dropped`; socket timeouts, the frame-age stamp, reconnect state and transport error
+  classes are asserted in tests; the hostile-bytes test asserts a closed set of error kinds.
 - **Tests**: scripted-server tests over a fake clock (`crates/client/tests/client_scripted.rs`: handshake refusals,
   every §10 code, corr and END violations, fixtures of `fixtures/stream/client-*.json` through a live client,
   exact-deadline and completion-age boundaries, byte-by-byte delivery, reconnect, a real `UnixStream` pair and

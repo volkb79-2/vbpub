@@ -9,7 +9,7 @@ mod support;
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io::{self, Write};
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -18,8 +18,9 @@ use hostobs_client::{
     Transport, ERROR_CODES,
 };
 use support::{
-    end_err, end_ok, evt_closing, fixture, frame, hello_json, info, open, prefix, rep_err, rep_ok,
-    script, session, session_bytes, with_corr, with_dropped, FakeClock, Script, BOOT, MS,
+    end_err, end_err_dropped, end_ok, evt_closing, fixture, frame, hello_json, info, open, prefix,
+    rep_err, rep_ok, script, session, session_bytes, with_corr, with_dropped, FakeClock, Script,
+    BOOT, MS,
 };
 
 const SUB_RESULT: &str = "{\"sub\":2,\"interval_ms\":1000}";
@@ -188,7 +189,12 @@ fn transport_failures_are_classified() {
     let writes = [
         (io::ErrorKind::BrokenPipe, "connection-lost"),
         (io::ErrorKind::ConnectionReset, "connection-lost"),
+        (io::ErrorKind::ConnectionAborted, "connection-lost"),
+        (io::ErrorKind::UnexpectedEof, "connection-lost"),
+        (io::ErrorKind::NotConnected, "connection-lost"),
         (io::ErrorKind::TimedOut, "timeout"),
+        (io::ErrorKind::WouldBlock, "timeout"),
+        (io::ErrorKind::Interrupted, "timeout"),
         (io::ErrorKind::PermissionDenied, "io"),
     ];
     for (kind, name) in writes {
@@ -198,6 +204,8 @@ fn transport_failures_are_classified() {
     }
     let reads = [
         (io::ErrorKind::ConnectionReset, "connection-lost"),
+        (io::ErrorKind::ConnectionAborted, "connection-lost"),
+        (io::ErrorKind::BrokenPipe, "connection-lost"),
         (io::ErrorKind::PermissionDenied, "io"),
     ];
     for (kind, name) in reads {
@@ -205,6 +213,17 @@ fn transport_failures_are_classified() {
         broken.read_error = Some(kind);
         expect_kind(open(broken, Level::Observe, None), name);
     }
+}
+
+#[test]
+fn an_interrupted_read_is_retried_not_an_error() {
+    let clock = clock();
+    let (mut script, _rig) = script(&clock, session_bytes(Level::Observe, &[]));
+    script.read_error_once = Some(io::ErrorKind::Interrupted);
+    assert!(open(script, Level::Observe, None).is_ok());
+    let (mut script, _rig) = self::script(&clock, session_bytes(Level::Observe, &[]));
+    script.read_error_once = Some(io::ErrorKind::WouldBlock);
+    assert!(open(script, Level::Observe, None).is_ok());
 }
 
 #[test]
@@ -808,17 +827,174 @@ fn drive(bytes: &[u8]) {
     let Ok(mut client) = open(script, Level::Observe, None) else {
         return;
     };
-    let reply = client.request("status", "{}");
-    assert!(reply.is_ok() || !reply.unwrap_err().kind().is_empty());
+    if let Err(error) = client.request("status", "{}") {
+        assert_closed_kind(error.kind());
+    }
     if let Ok(stream) = client.blocks("current", SELECTION) {
         for item in stream.take(8) {
-            assert!(item.is_ok() || !item.unwrap_err().kind().is_empty());
+            if let Err(error) = item {
+                assert_closed_kind(error.kind());
+            }
         }
     }
     let subscribed = client.subscribe(SELECTION, 1000);
     if let Ok(sub) = subscribed {
         for item in sub.take(8) {
-            assert!(item.is_ok() || !item.unwrap_err().kind().is_empty());
+            if let Err(error) = item {
+                assert_closed_kind(error.kind());
+            }
         }
     }
+}
+
+/// Every kind a client call can name: the 46 wire kinds of `ProtoError`, the envelope kinds
+/// and the client's own protocol, usage and transport names (the §10 codes are `ERROR_CODES`).
+const KNOWN_KINDS: &str = "truncated oversized-frame non-zero-reserved unknown-frame-type \
+    unknown-frame-flags unknown-mode unsupported-version section-reserved \
+    unsupported-required-section unsupported-section-version unknown-section-flags \
+    duplicate-section missing-section section-length trailing-bytes unknown-value-type \
+    unknown-column-kind column-reserved conflicting-column unknown-quality unknown-aggregation \
+    row-count-overflow length-overflow dictionary-entry-too-long unknown-dictionary-kind \
+    dictionary-entry-unknown-code dictionary-entry-mask duplicate-dictionary-entry \
+    dictionary-entry-reserved dictionary-too-large dangling-dictionary-ref \
+    dictionary-entry-control generation-exhausted stale-dictionary-generation rows-and-time \
+    no-rows-or-time row-reference-not-entity column-reference-not-metric column-kind-mismatch \
+    not-a-block section-order aggregation-not-permitted subject-without-time deadline \
+    generation-regressed json-text duplicate-key unknown-key missing-key wrong-type \
+    unexpected-frame unknown-corr bad-reply end-counts hello-mismatch corr-exhausted io \
+    timeout connection-lost bad-verb bad-args request-too-large bad-selection bad-client \
+    bad-timeout no-reconnect";
+
+fn assert_closed_kind(kind: &str) {
+    let known = KNOWN_KINDS.split_whitespace().any(|name| name == kind);
+    assert!(known || ERROR_CODES.contains(&kind), "unexpected kind {kind}");
+}
+
+fn secs(count: u64) -> Duration {
+    Duration::from_secs(count)
+}
+
+fn waits(rig: &support::Rig) -> Vec<Duration> {
+    rig.read_waits.borrow().clone()
+}
+
+#[test]
+fn every_transport_wait_is_the_remaining_time_to_the_nearer_bound() {
+    let clock = clock();
+    let (mut first, rig) = script(&clock, session_bytes(Level::Observe, &[]));
+    first.eof = false;
+    first.later.push_back(rep_ok(2, "{}"));
+    let mut client = open_slow(first, secs(10)).expect("open");
+    assert!(client.request("status", "{}").is_ok());
+    assert_eq!(waits(&rig), [secs(10), secs(10), secs(10), secs(10)]);
+    assert_eq!(*rig.write_waits.borrow(), [secs(10), secs(10), secs(10)]);
+    let reply = rep_ok(2, "{}");
+    let head = reply.get(..5).unwrap_or_default();
+    let (mut partial, rig) = script(&clock, session_bytes(Level::Observe, head));
+    partial.eof = false;
+    partial.idle_ns = 10_000 * MS;
+    partial.later.push_back(reply.get(5..).unwrap_or_default().to_vec());
+    let mut client = open_slow(partial, secs(100)).expect("open");
+    assert!(client.request("status", "{}").is_ok());
+    assert_eq!(waits(&rig), [secs(100), secs(100), secs(30), secs(20)]);
+}
+
+#[test]
+fn a_zero_remainder_waits_one_millisecond() {
+    let clock = clock();
+    let (mut script, rig) = script(&clock, session_bytes(Level::Observe, &[]));
+    script.eof = false;
+    script.idle_ns = 10 * MS;
+    script.later.push_back(rep_ok(2, "{}"));
+    let ten = Duration::from_millis(10);
+    let mut client = open_slow(script, ten).expect("open");
+    assert!(client.request("status", "{}").is_ok());
+    let one = Duration::from_millis(1);
+    assert_eq!(waits(&rig), [ten, ten, ten, one]);
+}
+
+#[test]
+fn a_frame_that_starts_inside_a_read_ages_from_that_read() {
+    let first = rep_ok(2, "{}");
+    let second = rep_ok(3, "{\"x\":1}");
+    let mut release = first.get(5..).unwrap_or_default().to_vec();
+    release.extend_from_slice(second.get(..5).unwrap_or_default());
+    let clock = clock();
+    let head = first.get(..5).unwrap_or_default();
+    let (mut script, rig) = script(&clock, session_bytes(Level::Observe, head));
+    script.eof = false;
+    script.idle_ns = 10_000 * MS;
+    script.later.push_back(release);
+    script.later.push_back(second.get(5..).unwrap_or_default().to_vec());
+    let mut client = open_slow(script, secs(100)).expect("open");
+    assert!(client.request("status", "{}").is_ok());
+    assert!(client.request("status", "{}").is_ok());
+    let expected = [100, 100, 30, 20, 30, 20].map(secs);
+    assert_eq!(waits(&rig), expected);
+}
+
+#[test]
+fn frames_beyond_the_announced_limit_are_refused_after_the_hello() {
+    let at_limit = frame(2, 2, &[b' '; 988]);
+    assert!(open_session_with(&at_limit).is_ok());
+    let over = frame(2, 2, &[b' '; 989]);
+    expect_kind(open_session_with(&over), "oversized-frame");
+    let clock = clock();
+    let (mut script, _rig) = script(&clock, session_bytes(Level::Observe, &[]));
+    script.eof = false;
+    script.idle_ns = 10_000 * MS;
+    script.later.push_back(over);
+    let mut client = open_slow(script, secs(100)).expect("open");
+    expect_kind(client.request("status", "{}"), "oversized-frame");
+}
+
+fn open_session_with(tail: &[u8]) -> Result<Client, ClientError> {
+    let clock = clock();
+    let (script, _rig) = script(&clock, session_bytes(Level::Observe, tail));
+    open(script, Level::Observe, None)
+}
+
+#[test]
+fn an_end_with_an_error_still_counts_its_dropped_blocks() {
+    let frames = fixture(GEN5);
+    let mut tail = rep_ok(2, SUB_RESULT);
+    tail.extend(with_corr(&frames[0], 2));
+    tail.extend(end_err_dropped(2, 1, 5, "internal"));
+    let (mut client, _rig) = session(&tail);
+    let mut sub = client.subscribe(SELECTION, 1000).expect("subscription");
+    let items: Vec<_> = sub.by_ref().collect();
+    assert_eq!(items.len(), 2);
+    assert_eq!(kind_of(items.into_iter().nth(1).expect("error")), "internal");
+    assert_eq!(sub.dropped(), 5);
+}
+
+#[test]
+fn reconnect_restarts_the_corr_and_forgets_the_closing_reason() {
+    let clock = clock();
+    let (first, _rig) = script(&clock, session_bytes(Level::Observe, &evt_closing("idle")));
+    let (second, rig) = script(&clock, session_bytes(Level::Observe, &rep_ok(2, "{}")));
+    let dialer = redial(vec![second]);
+    let mut client = open(first, Level::Observe, Some(dialer)).expect("open");
+    expect_kind(client.request("status", "{}"), "connection-lost");
+    assert_eq!(client.closing_reason(), Some("idle"));
+    assert_eq!(client.reconnect(), Ok(Session::Same));
+    assert_eq!(client.closing_reason(), None);
+    assert!(client.request("status", "{}").is_ok());
+    let written = rig.written.borrow().clone();
+    let request = frame(1, 2, b"{\"verb\":\"status\",\"args\":{}}");
+    assert!(written.ends_with(&request));
+    assert_eq!(written.get(16..20), Some([1, 0, 0, 0].as_slice()));
+}
+
+#[test]
+fn connect_dials_a_real_unix_socket_and_gives_up_after_its_timeout() {
+    let name = format!("hostobs-client-{}.sock", std::process::id());
+    let path = std::env::temp_dir().join(name);
+    let Ok(listener) = UnixListener::bind(&path) else {
+        return;
+    };
+    let info = ClientInfo::new("dial").with_timeout(Duration::from_millis(5));
+    let result = Client::connect(&path, Level::Observe, info);
+    assert_eq!(result.unwrap_err(), ClientError::Timeout);
+    drop(listener);
 }

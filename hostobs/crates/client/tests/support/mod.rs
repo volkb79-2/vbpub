@@ -60,10 +60,20 @@ pub struct Script {
     pub closed: Rc<Cell<bool>>,
     pub write_error: Option<io::ErrorKind>,
     pub read_error: Option<io::ErrorKind>,
+    /// An error returned by the first read only.
+    pub read_error_once: Option<io::ErrorKind>,
+    /// The timeout of every read, in call order.
+    pub read_waits: Rc<RefCell<Vec<Duration>>>,
+    /// The timeout of every write, in call order.
+    pub write_waits: Rc<RefCell<Vec<Duration>>>,
 }
 
 impl Transport for Script {
-    fn read(&mut self, buf: &mut [u8], _timeout: Duration) -> io::Result<usize> {
+    fn read(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
+        self.read_waits.borrow_mut().push(timeout);
+        if let Some(kind) = self.read_error_once.take() {
+            return Err(kind.into());
+        }
         if let Some(kind) = self.read_error {
             return Err(kind.into());
         }
@@ -84,7 +94,8 @@ impl Transport for Script {
         Ok(count)
     }
 
-    fn write_all(&mut self, data: &[u8], _timeout: Duration) -> io::Result<()> {
+    fn write_all(&mut self, data: &[u8], timeout: Duration) -> io::Result<()> {
+        self.write_waits.borrow_mut().push(timeout);
         if let Some(kind) = self.write_error {
             return Err(kind.into());
         }
@@ -102,12 +113,16 @@ pub struct Rig {
     pub clock: Rc<Cell<u64>>,
     pub written: Rc<RefCell<Vec<u8>>>,
     pub closed: Rc<Cell<bool>>,
+    pub read_waits: Rc<RefCell<Vec<Duration>>>,
+    pub write_waits: Rc<RefCell<Vec<Duration>>>,
 }
 
 /// A script that serves `bytes`, then end of stream.
 pub fn script(clock: &Rc<Cell<u64>>, bytes: Vec<u8>) -> (Script, Rig) {
     let written = Rc::new(RefCell::new(Vec::new()));
     let closed = Rc::new(Cell::new(false));
+    let read_waits = Rc::new(RefCell::new(Vec::new()));
+    let write_waits = Rc::new(RefCell::new(Vec::new()));
     let script = Script {
         incoming: bytes.into(),
         later: VecDeque::new(),
@@ -119,11 +134,16 @@ pub fn script(clock: &Rc<Cell<u64>>, bytes: Vec<u8>) -> (Script, Rig) {
         closed: Rc::clone(&closed),
         write_error: None,
         read_error: None,
+        read_error_once: None,
+        read_waits: Rc::clone(&read_waits),
+        write_waits: Rc::clone(&write_waits),
     };
     let rig = Rig {
         clock: Rc::clone(clock),
         written,
         closed,
+        read_waits,
+        write_waits,
     };
     (script, rig)
 }
@@ -216,9 +236,13 @@ pub fn end_ok(corr: u32, blocks: u32, dropped: u32, reason: &str, next: Option<&
 }
 
 pub fn end_err(corr: u32, blocks: u32, code: &str) -> Vec<u8> {
+    end_err_dropped(corr, blocks, 0, code)
+}
+
+pub fn end_err_dropped(corr: u32, blocks: u32, dropped: u32, code: &str) -> Vec<u8> {
     let head = format!("{{\"code\":\"{code}\",\"message\":\"m\"");
     let error = format!("{head},\"detail\":{{}}}}");
-    let start = format!("{{\"ok\":false,\"blocks\":{blocks},\"dropped\":0");
+    let start = format!("{{\"ok\":false,\"blocks\":{blocks},\"dropped\":{dropped}");
     let payload = format!("{start},\"error\":{error}}}");
     frame(6, corr, payload.as_bytes())
 }

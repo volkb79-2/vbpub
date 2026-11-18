@@ -13,10 +13,12 @@
 //!
 //! - **No panic on any server byte.** Every slice is taken with `get`, every length is
 //!   converted with `try_from`, there is no `unwrap`, `expect` or index outside tests.
-//! - **Every wait is bounded by the injected [`Clock`].** An operation waits at most the
-//!   [`ClientInfo::timeout`]; a partly received frame is bounded by its completion age (30 s
-//!   from its first byte, strict `>`). A transport timeout is never below 1 ms. A timeout
-//!   closes the connection, because a late reply could no longer be matched.
+//! - **Every wait is bounded by the injected [`Clock`].** Waiting for a frame to start is
+//!   bounded by the [`ClientInfo::timeout`]; once a frame is partly received it is bounded
+//!   only by its completion age (30 s from its first byte, strict `>`), so a server that chains
+//!   frames can keep one call waiting longer than the timeout (WIRE.md §7.3, as in the Python
+//!   client). A transport timeout is never below 1 ms. A timeout closes the connection,
+//!   because a late reply could no longer be matched.
 //! - **A failure closes the connection.** A decoder, envelope, protocol or timeout error
 //!   closes it; later calls are [`ClientError::ConnectionLost`]. Only [`ClientError::Usage`]
 //!   (nothing was sent) and a non-fatal [`ClientError::Server`] keep it open.
@@ -24,7 +26,10 @@
 //!   owns; the §4.2 envelope rules (UTF-8, one object, depth at most 8) are applied before
 //!   anything is sent.
 //! - **One stream at a time.** [`BlockStream`] and [`Subscription`] borrow the client; the
-//!   client keeps no queue of undelivered blocks (see the `streams` module docs).
+//!   client keeps no queue of undelivered blocks (see the `streams` module docs), and while a
+//!   stream is held the same client cannot issue another call (a second client is needed).
+//! - **Not `Send`.** [`Transport`] and [`Clock`] carry no `Send` bound, so a `Client` stays on
+//!   the thread that built it.
 //!
 //! # Use
 //!

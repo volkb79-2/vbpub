@@ -1,11 +1,14 @@
 //! The binary connection: handshake, requests and the receive loop (WIRE.md §1.4, §2, §5.2, §7.3).
 //!
 //! One [`Client`] is one connection, driven by the caller's thread: nothing runs between calls.
-//! Every wait is bounded by an operation deadline of `now + timeout` read from the injected
-//! [`Clock`], and while a frame is partly received by its completion age (30 s from the frame's
-//! first byte, strict `>`, WIRE.md §5.2). The socket timeout is derived from the nearer bound and
-//! is never below 1 ms. A failure of the server's bytes, a protocol violation or a timeout closes
-//! the connection; a later call is [`ClientError::ConnectionLost`].
+//! A wait for a frame is bounded by an operation deadline of `now + timeout` read from the
+//! injected [`Clock`]; once a frame is partly received it is bounded only by that frame's
+//! completion age (30 s from its first byte, strict `>`, WIRE.md §5.2, §7.3), so a server that
+//! chains frames, each completing in time, can keep one call waiting longer than the timeout.
+//! The socket timeout is derived from the nearer bound and is never below 1 ms. A failure of the
+//! server's bytes, a protocol violation or a timeout closes the connection; a later call is
+//! [`ClientError::ConnectionLost`]. A `Client` is not `Send` (its `Transport` and `Clock` carry no
+//! `Send` bound) and, while a stream borrowing it is alive, it cannot issue another call.
 
 use core::fmt;
 use std::collections::VecDeque;
@@ -208,6 +211,17 @@ fn classify(error: &io::Error) -> ClientError {
     } else {
         ClientError::Io(kind)
     }
+}
+
+/// `value` as a `usize`; `usize` is at least 32 bits on every supported target, so the
+/// saturation is a formality.
+fn to_usize(value: u32) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+/// The length of the first completed frame in `frames` that is longer than `max`.
+fn first_over(frames: &VecDeque<RawFrame>, max: u32) -> Option<u32> {
+    frames.iter().map(|f| f.header.len).find(|&len| len > max)
 }
 
 /// The transport timeout for a wait that ends at `limit_ns` when it is `now_ns`.
@@ -578,8 +592,16 @@ impl Client {
         let hello_len = u32::try_from(total).unwrap_or(u32::MAX);
         let hello = parse_hello(reply.result_json(), minor, self.level, hello_len)?;
         self.session = self.dicts.on_hello(&hello.boot_id, hello.epoch);
+        let max_frame = hello.limits.max_frame_bytes;
+        if let Some(len) = first_over(&self.pending, max_frame) {
+            let error = ProtoError::OversizedFrame {
+                len: to_usize(len),
+                max: to_usize(max_frame),
+            };
+            return Err(ClientError::Wire(error));
+        }
         if self.reader.buffered_len() == 0 {
-            self.reader = FrameReader::new(hello.limits.max_frame_bytes, COMPLETION_NS);
+            self.reader = FrameReader::new(max_frame, COMPLETION_NS);
         }
         self.hello = hello;
         Ok(())
@@ -617,9 +639,7 @@ impl Client {
             return Err(ClientError::ConnectionLost);
         }
         let total = FRAME_HEADER_LEN + payload.len();
-        let announced = self.hello.limits.max_request_bytes;
-        let limit = usize::try_from(announced).unwrap_or(usize::MAX);
-        if total > limit {
+        if total > to_usize(self.hello.limits.max_request_bytes) {
             return Err(too_large());
         }
         let deadline = self.deadline_after(0);
@@ -863,6 +883,7 @@ impl Client {
         }
         self.dicts.close(ctx.corr);
         if !end.ok {
+            ctx.header_dropped = ctx.header_dropped.saturating_add(u64::from(end.dropped));
             let text = end.error.unwrap_or_default();
             return Err(self.server_failure(&text));
         }
@@ -877,5 +898,68 @@ impl Client {
             next: end.next,
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        io, Client, ClientError, Clock, Duration, FrameReader, HelloResult, Level, ProtocolKind,
+        Session, StreamDicts, Transport, VecDeque, COMPLETION_NS, PRE_HELLO_MAX_FRAME,
+    };
+
+    struct Mute;
+
+    impl Transport for Mute {
+        fn read(&mut self, _buf: &mut [u8], _timeout: Duration) -> io::Result<usize> {
+            Ok(0)
+        }
+
+        fn write_all(&mut self, _data: &[u8], _timeout: Duration) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn close(&mut self) {}
+    }
+
+    struct Zero;
+
+    impl Clock for Zero {
+        fn now_ns(&self) -> u64 {
+            0
+        }
+    }
+
+    /// A client that never did a handshake, whose next `corr` is `next_corr`.
+    fn bare(next_corr: u32) -> Client {
+        Client {
+            transport: Some(Box::new(Mute)),
+            clock: Box::new(Zero),
+            redial: None,
+            level: Level::Observe,
+            name: "t".to_owned(),
+            timeout_ns: 1,
+            hello: HelloResult::pending(Level::Observe),
+            session: Session::First,
+            reader: FrameReader::new(PRE_HELLO_MAX_FRAME, COMPLETION_NS),
+            dicts: StreamDicts::new(),
+            pending: VecDeque::new(),
+            deferred: None,
+            buf: Vec::new(),
+            frame_started: 0,
+            next_corr,
+            closing_reason: None,
+        }
+    }
+
+    #[test]
+    fn corr_runs_up_to_u32_max_and_then_is_exhausted() {
+        let mut client = bare(u32::MAX - 1);
+        assert_eq!(client.allocate(), Ok(u32::MAX - 1));
+        assert_eq!(client.allocate(), Ok(u32::MAX));
+        assert!(!client.is_closed());
+        let exhausted = ClientError::Protocol(ProtocolKind::CorrExhausted);
+        assert_eq!(client.allocate(), Err(exhausted));
+        assert!(client.is_closed());
     }
 }

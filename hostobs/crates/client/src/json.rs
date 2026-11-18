@@ -8,7 +8,7 @@
 
 use core::str::Chars;
 
-use hostobs_proto::envelope::{check_req, members, EnvelopeError, Kind, Member};
+use hostobs_proto::envelope::{check_req, members_up_to, EnvelopeError, Kind, Member};
 
 use crate::error::ClientError;
 
@@ -18,6 +18,11 @@ const HELLO_PROTO: &str = "{\"major\":1,\"minor\":1}";
 /// The most bytes a verb may have.
 const MAX_VERB_BYTES: usize = 64;
 
+/// The most keys an object the client reads by key may have: the `hello` result has 9 and its
+/// `limits` object at most 25 (WIRE.md §10); the bound keeps the duplicate-key check, which is
+/// quadratic in the key count, finite on hostile input.
+pub(crate) const MAX_OBJECT_MEMBERS: usize = 64;
+
 /// The members of one JSON object and the text they index into.
 pub(crate) struct Object<'a> {
     text: &'a str,
@@ -25,9 +30,10 @@ pub(crate) struct Object<'a> {
 }
 
 impl<'a> Object<'a> {
-    /// The members of `text`, which must be exactly one JSON object.
+    /// The members of `text`, which must be exactly one JSON object of at most
+    /// [`MAX_OBJECT_MEMBERS`] keys.
     pub(crate) fn parse(text: &'a str) -> Result<Object<'a>, EnvelopeError> {
-        let members = members(text.as_bytes())?;
+        let members = members_up_to(text.as_bytes(), MAX_OBJECT_MEMBERS)?;
         Ok(Object { text, members })
     }
 

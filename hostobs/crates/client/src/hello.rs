@@ -251,6 +251,30 @@ mod tests {
         assert_eq!(hello.limits.max_frame_bytes, 1000);
     }
 
+    /// `count` extra keys `,"x0":0,"x1":0,...`, each preceded by a comma.
+    fn extra_keys(count: usize) -> String {
+        (0..count).map(|i| format!(",\"x{i}\":0")).collect()
+    }
+
+    /// `text` with `count` extra keys appended to its `limits` object.
+    fn widen_limits(text: &str, count: usize) -> String {
+        let extra = format!("\"tick_ms\":1000{}", extra_keys(count));
+        text.replace("\"tick_ms\":1000", &extra)
+    }
+
+    fn check(text: &str) -> Result<HelloResult, ClientError> {
+        parse_hello(text, 1, Level::Observe, 100)
+    }
+
+    #[test]
+    fn a_hello_has_nine_keys_and_up_to_twenty_five_limits_but_never_sixty_five() {
+        let ok = result("observe", &[], "");
+        assert!(check(&widen_limits(&ok, 6)).is_ok());
+        assert!(check(&result("observe", &[], &extra_keys(55))).is_ok());
+        assert_eq!(check(&result("observe", &[], &extra_keys(56))), mismatch());
+        assert_eq!(check(&widen_limits(&ok, 60)), mismatch());
+    }
+
     #[test]
     fn every_defect_is_a_hello_mismatch() {
         let ok = result("observe", &[], "");

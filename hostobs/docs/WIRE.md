@@ -1216,7 +1216,23 @@ Differences from the Python client:
 - **Timeouts.** `connect()` itself is not bounded by the injected clock (the OS bounds it); every later wait is: operation
   deadline `now + timeout` (strict `>`), the completion age of a partial frame 30 s from its first byte, transport timeout
   `max(1 ms, remaining)`, a subscription wait adds the interval, and a timeout closes the connection.
-- **Corr exhaustion** (`ProtocolKind::CorrExhausted`) is reached after 2^32 - 1 requests; no test reaches it.
+- **Hello arrays.** `features` and `verbs` must be arrays of strings (Python only requires a list); `quality_codes` must
+  be an array. The `hello` result (9 keys) and its `limits` object (19 keys, at most 25) are read with
+  `proto::envelope::members_up_to(bytes, 64)`: the 8-key cap of `members` is the envelope's, and the bound of 64 keeps
+  the quadratic duplicate-key check finite. Every other object the client reads by key (error object, END, EVT,
+  `subscribe` result, selection check) has at most 5 keys; `status`, `procs` and other results are returned as text and
+  never parsed by the client.
+- **Frames after the hello.** After the hello the reader's limit is `min(16 MiB, hello.max_frame_bytes)`. Frames the
+  pre-hello reader completed in the same read are re-checked against it (`oversized-frame`); a frame only partly
+  buffered at that moment keeps the 16 MiB bound of the old reader (parity with Python).
+- **Not `Send`, one stream per client.** `Transport` and `Clock` have no `Send` bound, so a `Client` stays on its thread;
+  while a stream borrows the client no other call can be made.
+- **Waits.** Waiting for a frame to start is bounded by the timeout; a partly received frame only by its 30 s completion age
+  (§7.3), so a server that chains frames can exceed the timeout, as in Python.
+- **END errors.** An `END ok:false` adds its `dropped` to `Subscription::dropped()`; a connection-fatal code in an
+  `END ok:false` closes the connection (Python closes only on REP errors).
+- **Corr exhaustion** (`ProtocolKind::CorrExhausted`) is reached after 2^32 - 1 requests; a unit test sets the counter near
+  `u32::MAX`.
 - The `proto` pieces reused: `FrameReader` (client limit `min(16 MiB, hello.max_frame_bytes)` once the hello is in and no
   partial frame is buffered), `StreamDicts`, `decode_block_with`, `check_rep`/`check_end`/`check_evt`/`check_req` and
   `members`.
