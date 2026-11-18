@@ -11,8 +11,9 @@ use hostobs_probe::args;
 use hostobs_probe::classify::{classify, Call, Dispatch, Mode, Phase, Prefix, Query, Refusal};
 use hostobs_probe::codes::{Code, Detail};
 use hostobs_probe::encode::{closing_evt, error_line, rep_error, rep_ok, rep_ok_line};
-use hostobs_probe::limits::Level;
+use hostobs_probe::limits::{IntervalRule, Level};
 use hostobs_probe::lines::{LineError, LineReader};
+use hostobs_probe::selection::Selection;
 use hostobs_proto::envelope::{check_evt, check_rep};
 use hostobs_proto::frame::FrameType;
 
@@ -255,6 +256,7 @@ fn check_refusal(query: &Query<'_>, refusal: &Refusal) {
             assert_eq!(refusal.code, Code::BadRequest);
             assert!(key_is_schema_text(path), "{path:?}");
         }
+        Detail::Pool(_) => assert_eq!(refusal.code, Code::Budget),
     }
     check_error_encodings(refusal.code, refusal.corr, &refusal.detail);
 }
@@ -295,6 +297,66 @@ fn check_args(bytes: &[u8]) {
     if let Err(error) = args::status(bytes) {
         assert!(key_is_schema_text(&error.key), "{:?}", error.key);
     }
+}
+
+fn check_selection(selection: &Selection) {
+    assert!(!selection.entities().is_empty());
+    assert!(!selection.metrics().is_empty());
+    assert!(selection
+        .entities()
+        .iter()
+        .zip(selection.entities().iter().skip(1))
+        .all(|(a, b)| a < b));
+    assert!(selection
+        .metrics()
+        .iter()
+        .zip(selection.metrics().iter().skip(1))
+        .all(|(a, b)| a < b));
+}
+
+fn check_argument_outcome(payload: &[u8], which: usize) {
+    let rule = IntervalRule {
+        min_ms: 1_000,
+        tick_ms: 250,
+    };
+    match which % 4 {
+        0 => match args::current(payload) {
+            Ok(selection) => check_selection(&selection),
+            Err(error) => assert!(key_is_schema_text(&error.key), "{:?}", error.key),
+        },
+        1 => match args::subscribe(payload, rule) {
+            Ok(parsed) => {
+                check_selection(&parsed.selection);
+                assert!(rule.accepts(parsed.interval_ms));
+            }
+            Err(error) => assert!(key_is_schema_text(&error.key), "{:?}", error.key),
+        },
+        _ => {
+            if let Err(error) = args::unsubscribe(payload) {
+                assert!(key_is_schema_text(&error.key), "{:?}", error.key);
+            }
+        }
+    }
+}
+
+fn argument_seeds() -> Vec<(usize, Vec<u8>)> {
+    vec![
+        (
+            0,
+            br#"{"selection":{"entities":[{"inc":1}],"metrics":["cpu"]}}"#.to_vec(),
+        ),
+        (
+            1,
+            concat!(
+                r#"{"selection":{"entities":[{"all":true},{"inc":2}],"#,
+                r#""metrics":["a-b.c_d"]},"interval_ms":1000}"#
+            )
+            .as_bytes()
+            .to_vec(),
+        ),
+        (2, br#"{"sub":0}"#.to_vec()),
+        (2, br#"{"sub":4294967295}"#.to_vec()),
+    ]
 }
 
 #[test]
@@ -365,6 +427,26 @@ fn two_thousand_mutated_valid_inputs_stay_in_the_closed_set() {
         };
         check_outcome(&query);
         check_args(&payload);
+    }
+}
+
+#[test]
+fn two_thousand_random_2a_argument_inputs_stay_in_the_closed_set() {
+    let mut rng = Xorshift(0xA24B_AED4_963E_E407);
+    for index in 0..RUNS {
+        let payload = random_payload(&mut rng);
+        check_argument_outcome(&payload, index);
+    }
+}
+
+#[test]
+fn two_thousand_mutated_valid_2a_argument_inputs_stay_in_the_closed_set() {
+    let mut rng = Xorshift(0x9FB2_1C65_1E98_DF25);
+    let seeds = argument_seeds();
+    for _index in 0..RUNS {
+        let (which, seed) = &seeds[rng.below(seeds.len())];
+        let payload = mutate(&mut rng, seed);
+        check_argument_outcome(&payload, *which);
     }
 }
 

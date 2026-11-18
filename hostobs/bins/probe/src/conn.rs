@@ -695,6 +695,11 @@ impl Conn {
                 let queued = hub.global_pools();
                 status_json(&backend.identity(), &backend.status(), queued)
             }
+            Call::Current(_) | Call::Subscribe(_) | Call::Unsubscribe(_) => {
+                let bytes = self.error_bytes(dispatch.corr, Code::Internal, &Detail::Empty);
+                self.push(hub, bytes, now_ns);
+                return;
+            }
         };
         let bytes = self.reply_bytes(dispatch.corr, &result);
         self.push(hub, bytes, now_ns);
