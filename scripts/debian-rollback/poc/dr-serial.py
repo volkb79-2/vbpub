@@ -3,7 +3,9 @@
 
   dr-serial.py SOCKET SCENARIO [--log FILE]
 
-SCENARIO is one of: boot-check, s2-s3, kernel-upgrade. The guest must be running (dr-qemu.sh start) with a
+SCENARIO is one of: boot-check, s2-s3, kernel-upgrade. Scenarios are NOT idempotent: s2-s3 ends with the earlier
+state as the default and both s2-s3 and kernel-upgrade require "running state == default" at the start, so run each
+of them in its own fresh guest (new overlay on the installed base); boot-check may share a guest with either. The guest must be running (dr-qemu.sh start) with a
 login prompt on ttyS0 and root password "root" (the PoC installer default). The log is a plain transcript
 and is the evidence; the PASS/FAIL lines are a convenience. Exit status is non-zero when any check fails.
 
@@ -130,6 +132,8 @@ class Guest:
     def reboot(self, timeout=1200):
         """Reboot and return the new boot id; raises unless the guest really came back as a new boot."""
         old = self.boot_id()
+        if not old:
+            raise RuntimeError("cannot read the boot id before the reboot; not rebooting blindly")
         self.send("reboot\n")
         self.buf = b""
         self.expect(rb"login: ?", timeout)  # a prompt of the NEW boot: shutdown output contains none
@@ -175,6 +179,12 @@ def state_list(g):
     return [s for s in (v or "").split(",") if s]
 
 
+def default_state(g):
+    """The state `dr-state list` marks as default (what a plain reboot boots)."""
+    _, out = g.run("echo DEF:$(dr-state list | awk '/\\(default\\)/{print $1}')")
+    return tag(out, "DEF")
+
+
 def running_state(out_cmdline):
     m = re.search(r"rootflags=subvol=(@os-\S+)", out_cmdline or "")
     return m.group(1) if m else None
@@ -214,6 +224,9 @@ def scenario_s2_s3(g, log):
     state0 = running_state(tag(out, "CMDLINE"))
     check(log, "running state known", state0 is not None, str(state0))
     if not state0:
+        return
+    if not check(log, "the running state is the default (precondition: a plain reboot returns here)",
+                 default_state(g) == state0, f"running={state0} default={default_state(g)}"):
         return
     before = state_list(g)
     g.run("mkdir -p /var/lib/docker /srv; echo m1 > /home/marker; echo m2 > /srv/marker; "
@@ -283,6 +296,13 @@ def scenario_kernel_upgrade(g, log):
     check(log, "running state and kernel recorded", bool(state0 and old), f"{state0} {old}")
     if not (state0 and old):
         return
+    if not check(log, "the running state is the default (precondition: a plain reboot returns here)",
+                 default_state(g) == state0, f"running={state0} default={default_state(g)}"):
+        return
+    efi_probe = ("echo EFIFILES:$(ls -1 /boot/efi/EFI | tr '\\n' ,)_$(ls -1 /boot/efi/EFI/dr | tr '\\n' ,)"
+                 "_$(sha256sum /boot/efi/EFI/BOOT/BOOTX64.EFI | cut -c1-16)")
+    _, out = g.run(efi_probe)
+    efi_before = tag(out, "EFIFILES")
     # the disk of run 2a was installed without the updates and security suites (the installer now adds them)
     g.run("echo 'deb http://deb.debian.org/debian trixie-updates main' > /etc/apt/sources.list.d/dr-updates.list; "
           "echo 'deb http://deb.debian.org/debian-security trixie-security main' >> /etc/apt/sources.list.d/dr-updates.list")
@@ -299,6 +319,9 @@ def scenario_kernel_upgrade(g, log):
                    "echo BOOTFILES:$(ls -1 /boot | grep -E '^(vmlinuz|initrd.img)-' | tr '\\n' ,); "
                    "echo MENU:$(grep -o 'Debian @os-[^ ]* (kernel [^)]*)' /boot/efi/EFI/dr/grub.cfg | tr ' ' _ | tr -d '()' | tr '\\n' ,)", 5400)
     check(log, "dist-upgrade succeeded", tag(out, "UPGRC") == "0", f"rc={tag(out, 'UPGRC')} downloaded_kb={tag(out, 'ARCHKB')}")
+    _, efi_out = g.run(efi_probe)
+    check(log, "ESP boot files untouched by the upgrade (no grub-install side effect)",
+          bool(efi_before) and tag(efi_out, "EFIFILES") == efi_before, f"before={efi_before} after={tag(efi_out, 'EFIFILES')}")
     knew = tag(out, "KNEW") or ""
     new = knew.rsplit("vmlinuz-", 1)[-1] if "vmlinuz-" in knew else ""
     check(log, "a newer kernel is installed (/vmlinuz points at it)", bool(new) and new != old, f"old={old} new={new}")
