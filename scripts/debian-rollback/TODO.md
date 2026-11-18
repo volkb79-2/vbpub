@@ -7,9 +7,13 @@ guest; see [docs/MILESTONES-2026-11-18.md](docs/MILESTONES-2026-11-18.md) (plan)
 [docs/RESULTS-M1-RUN3-KERNEL-2026-11-18.md](docs/RESULTS-M1-RUN3-KERNEL-2026-11-18.md)
 (results, with what is NOT verified). The PoC tools are in `poc/`. S5 (broken
 initramfs, recovery through the GRUB menu) and the strengthened s2-s3 re-run passed
-([run 4](docs/RESULTS-M1-RUN4-S2S3-S5-2026-11-18.md)). Next: S6, S7, S9 and the backports
-kernel on this variant, then the systemd-boot and ZFS variants of the M1 matrix, then
-the unattended ISO (M2).
+([run 4](docs/RESULTS-M1-RUN4-S2S3-S5-2026-11-18.md)); S6, S9 and the backports kernel passed
+([run 6](docs/RESULTS-M1-RUN6-S6-S7-S9-BACKPORTS-2026-11-18.md)); S7 found 18 snapshots per
+unattended run and passes with the dedupe window ([run 7](docs/RESULTS-M1-RUN7-FRESH-INSTALL-S7-2026-11-18.md),
+with a fresh install from the current installer). Next: S8 (many states, pruning), S9b (the
+hook's own no-space path), then the systemd-boot and ZFS variants of the M1 matrix, then the
+unattended ISO (M2; plan approved by the controller with 7 conditions, recorded in the
+session notes and to be restated in the ISO results doc).
 Decisions and reasons are in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md).
 
 **The plan for everything that remains is

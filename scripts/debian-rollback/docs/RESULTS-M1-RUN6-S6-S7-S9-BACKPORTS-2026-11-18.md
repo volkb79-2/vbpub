@@ -26,7 +26,7 @@ snapshots were taken first, so the `DPkg::Pre-Invoke` hook does run for it. **Bu
 calls dpkg repeatedly and the hook snapshots before each call. That floods the menu and the
 states to prune (S8). My check expected exactly one, hence the FAIL.
 
-Fix (commit `e4d212117`, **not yet run in a guest**): a dedupe window in `dr-state snapshot`:
+Fix (commit `e4d212117`; **re-run in [run 7](RESULTS-M1-RUN7-FRESH-INSTALL-S7-2026-11-18.md): one snapshot instead of 18**; the window was later made parent-aware, see run 7): a dedupe window in `dr-state snapshot`:
 for `--reason apt`, no new snapshot while the newest `@os-pre-*` is younger than
 `DR_SNAPSHOT_MIN_INTERVAL` seconds (default 900; 0 disables; manual snapshots ignore it). The
 rollback target stays the state from before the whole upgrade; intermediate states of one
@@ -55,5 +55,5 @@ initramfs) with it.
 ## Not yet verified
 
 S8 (30 states and pruning, now more relevant), the hook's own ENOSPC path (S9b), the dedupe
-window in a guest, S12 (phase 2), Secure Boot, snapper on the flat layout, systemd-boot, ZFS,
+window's lineage check in a guest (the window itself ran in run 7), S12 (phase 2), Secure Boot, snapper on the flat layout, systemd-boot, ZFS,
 real hardware. `s6`, `s7`, `s9` and `backports` have had no independent review yet.
