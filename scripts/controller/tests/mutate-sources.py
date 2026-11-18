@@ -346,15 +346,61 @@ mutant("scripts/controller/start-after.sh", "start-after-target-validation.sh",
        '[[ $target =~ ^([01][0-9]|2[0-3])[0-5][0-9]$ ]]',
        '[[ $target =~ ^[0-9]{4}$ ]]')
 mutant("scripts/controller/gate-run.sh", "gate-run-distinct-locks.sh",
-       '[[ $CONTROLLER_GATE_LOCK != "$CONTROLLER_GATE2_LOCK" ]] ||', 'true ||')
+       '[[ ${slot_lock[slot]} != "${slot_lock[other]}" ]] || {', 'true || {')
 mutant("scripts/controller/gate-run.sh", "gate-run-absolute-locks.sh",
        '[[ -n $lock && $lock == /* ]] || {', '[[ -n $lock ]] || {')
 mutant("scripts/controller/gate-run.sh", "gate-run-poll-second-slot.sh",
-       '  poll_lock 8 "$CONTROLLER_GATE2_LOCK" gate2.lock "$@"',
-       '  : # deliberately skip the second slot')
+       '    poll_lock "$slot" "$@"\n    rc=$?',
+       '    if [[ $slot == 2 ]]; then continue; fi\n    poll_lock "$slot" "$@"\n    rc=$?')
 mutant("scripts/controller/gate-run.sh", "gate-run-refusal-example.sh",
        'gate-run: CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK must both be configured as absolute paths; copy both names from controller.local.env.example and export them before running',
        'gate-run: configure the gate lock paths before running')
+for _name, _before, _after in (
+    ("slots-range", '[[ $slots =~ ^[1-8]$ ]] || {', '[[ $slots =~ ^[0-9]+$ ]] || {'),
+    ("slots-default", 'slots=${CONTROLLER_GATE_SLOTS:-2}', 'slots=${CONTROLLER_GATE_SLOTS:-3}'),
+    ("one-slot-needs-gate2", 'if (( slots == 1 )); then\n  required_locks', 'if false; then\n  required_locks'),
+    ("one-slot-message", 'gate-run: CONTROLLER_GATE_LOCK must be configured as an absolute path (CONTROLLER_GATE_SLOTS=1 uses one slot)',
+     'gate-run: CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK must be set (CONTROLLER_GATE_SLOTS=1 uses one slot)'),
+    ("lock-dir-absolute", '(( slots < 3 )) || [[ -z ${CONTROLLER_GATE_LOCK_DIR:-} || $CONTROLLER_GATE_LOCK_DIR == /* ]] || {', 'true || {'),
+    ("lock-dir-unused-below-three", '(( slots < 3 )) || [[ -z ${CONTROLLER_GATE_LOCK_DIR:-}', '(( slots < 1 )) || [[ -z ${CONTROLLER_GATE_LOCK_DIR:-}'),
+    ("distinct-detail", '(( slots == 2 )) || echo "gate-run: slots $slot and $other both use ${slot_lock[slot]}" >&2', ':'),
+    ("two-slot-distinct-oneline", '(( slots == 2 )) || echo "gate-run: slots', '(( slots == 9 )) || echo "gate-run: slots'),
+    ("first-pass-last-slot", 'for (( slot = 1; slot <= slots; slot++ )); do\n  run_slot', 'for (( slot = 1; slot < slots; slot++ )); do\n  run_slot'),
+    ("poll-last-slot", 'for (( slot = 1; slot <= slots; slot++ )); do\n    poll_lock', 'for (( slot = 1; slot < slots; slot++ )); do\n    poll_lock'),
+    ("poll-open-last-slot", 'for (( slot = 1; slot <= slots; slot++ )); do\n  # The message names', 'for (( slot = 1; slot < slots; slot++ )); do\n  # The message names'),
+    ("fd-shared", '[7]=14 [8]=15)', '[7]=14 [8]=14)'),
+    ("fd-first-slots", 'slot_fd=([1]=9 [2]=8 ', 'slot_fd=([1]=9 [2]=9 '),
+    ("slot-label", 'slot_label[slot]=gate$slot.lock', 'slot_label[slot]=gate2.lock'),
+    ("lock-held-while-running", '    nice -n 10 run-gate "$@"\n    return $?\n  else\n    rc=$?\n  fi\n  eval', '    eval "exec ${fd}>&-"\n    nice -n 10 run-gate "$@"\n    return $?\n  else\n    rc=$?\n  fi\n  eval'),
+    ("wait-two", '  2) wait_text="both slots busy,', '  2) wait_text="all 2 slots busy,'),
+    ("wait-many", '  *) wait_text="all $slots slots busy,', '  *) wait_text="both slots busy,'),
+    ("wait-one", '  1) wait_text="the only slot is busy,', '  1) wait_text="both slots busy,'),
+    ("progress-many", "busy_text='are all busy'", "busy_text='are both busy'"),
+    ("progress-two", "busy_text='are both busy'", "busy_text='are all busy'"),
+    ("progress-one", "busy_text='is busy'", "busy_text='are busy'"),
+    ("labels-join", 'if (( slot == slots )); then labels_text+=" and ${slot_label[slot]}"; else labels_text+=", ${slot_label[slot]}"; fi',
+     'labels_text+=" and ${slot_label[slot]}"'),
+    ("exit-code", '    nice -n 10 run-gate "$@"\n    return $?\n  else\n    rc=$?\n  fi\n  [[ $rc == 75 ]]', '    nice -n 10 run-gate "$@"\n    return 0\n  else\n    rc=$?\n  fi\n  [[ $rc == 75 ]]'),
+):
+    mutant("scripts/controller/gate-run.sh", f"gate-run-{_name}.sh", _before, _after)
+
+
+def gate_with_lib_mutant(name: str, before: str, after: str) -> Path:
+    variant = controller / name
+    variant.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(repo / "scripts/controller/gate-run.sh", variant / "gate-run.sh")
+    mutant("scripts/controller/lib.sh", "lib.sh", before, after, variant)
+    return variant / "gate-run.sh"
+
+
+gate_with_lib_mutant("gate-lib-derive-default-dir",
+                     '[[ -n $dir ]] || dir=$(dirname -- "${CONTROLLER_GATE_LOCK:-}")', 'dir=$(dirname -- "${CONTROLLER_GATE_LOCK:-}")')
+gate_with_lib_mutant("gate-lib-derive-dir-slash",
+                     "printf '%s/gate%s.lock\\n' \"${dir%/}\" \"$number\"", "printf '%s/gate%s.lock\\n' \"${dir}\" \"$number\"")
+gate_with_lib_mutant("gate-lib-derive-name",
+                     "printf '%s/gate%s.lock\\n' \"${dir%/}\" \"$number\"", "printf '%s/gate-%s.lock\\n' \"${dir%/}\" \"$number\"")
+gate_with_lib_mutant("gate-lib-derive-range",
+                     "[[ $number =~ ^[3-8]$ ]] || return 2", "[[ $number =~ ^[2-8]$ ]] || return 2")
 mutant("scripts/controller/build-readback.py", "build-readback-budget-minimum.py",
        'if args.budget_chars < 512:', 'if False:')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-since-marker.py",
@@ -1209,10 +1255,24 @@ for _name, _before, _after in (
     ("pinned-scan", '[[ ${#scan_dirs[@]} -eq 0 ]] || scan_roots+=("${scan_dirs[@]}")', ":"),
     ("pinned-home", 'scan_roots=("$CONTROLLER_HOME")', "scan_roots=()"),
     ("profile-default", "${RUN_GATE_PROFILE:-off} (gate-run.sh", "${RUN_GATE_PROFILE:-on} (gate-run.sh"),
-    ("gate-lock-unset", "path=${!1:-} parent\n  if [[ -z $path ]]; then", "path=${!1:-} parent\n  if false; then"),
+    ("gate-lock-unset", "another directory'; fi\n  if [[ -z $path ]]; then", "another directory'; fi\n  if false; then"),
     ("gate-lock-absolute", "elif [[ $path != /* ]]; then", "elif false; then"),
     ("gate-lock-parent", "if [[ -d $parent && -w $parent ]]; then record OK", "if true; then record OK"),
-    ("gate-lock-distinct", 'if [[ -n ${CONTROLLER_GATE_LOCK:-} && ${CONTROLLER_GATE_LOCK:-} == "${CONTROLLER_GATE2_LOCK:-}" ]]; then', "if false; then"),
+    ("gate-lock-distinct", '[[ -n ${slot_paths[slot]:-} && ${slot_paths[slot]:-} == "${slot_paths[other]:-}" ]] || continue', "continue"),
+    ("gate-slots-invalid", 'if [[ $gate_slots =~ ^[1-8]$ ]]; then', "if true; then"),
+    ("gate-slots-print", 'record INFO gate-slots "effective local gate slots: $gate_slots (CONTROLLER_GATE_SLOTS)"',
+     'record INFO gate-slots "effective local gate slots: 2 (CONTROLLER_GATE_SLOTS)"'),
+    ("gate-slots-default-print", "if [[ -z ${CONTROLLER_GATE_SLOTS:-} ]]; then record INFO gate-slots", "if false; then record INFO gate-slots"),
+    ("gate-slots-leak", "'CONTROLLER_GATE_SLOTS is not an integer from 1 to 8: gate-run.sh exits 2 for every local lane'",
+     '"CONTROLLER_GATE_SLOTS=${CONTROLLER_GATE_SLOTS} is not an integer from 1 to 8: gate-run.sh exits 2 for every local lane"'),
+    ("gate-slots-fallback", "gate_slots=2\n  record FAIL gate-slots", "gate_slots=1\n  record FAIL gate-slots"),
+    ("gate-slot2-one-slot", "(( gate_slots < 2 )) || gate_lock_check CONTROLLER_GATE2_LOCK", "gate_lock_check CONTROLLER_GATE2_LOCK"),
+    ("gate-derived-check", 'gate_lock_check "gate${slot}.lock" "${slot_paths[slot]}"', ":"),
+    ("gate-derived-range", "for (( slot = 3; slot <= gate_slots; slot++ )); do", "for (( slot = 3; slot < gate_slots; slot++ )); do"),
+    ("gate-lock-dir-absolute", 'if [[ -n ${CONTROLLER_GATE_LOCK_DIR:-} && $CONTROLLER_GATE_LOCK_DIR != /* ]]; then', "if false; then"),
+    ("gate-lock-dir-unused", "if (( gate_slots > 2 )); then", "if true; then"),
+    ("gate-collide-pair-text", "if (( slot == 1 && other == 2 )); then", "if false; then"),
+    ("gate-derived-fix", "else move='set CONTROLLER_GATE_LOCK_DIR to another directory'; fi", 'else move="point $1 at another path"; fi'),
     ("dir-missing", "if [[ ! -d $2 ]]; then", "if false; then"),
     ("dir-writable", "elif [[ ! -w $2 ]]; then", "elif false; then"),
     ("symlink-detect", "[[ -L $p ]] && return 0", "false && return 0"),

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Run a gate in one of the two configured controller slots.
+# Run a gate in one of the configured local controller slots (CONTROLLER_GATE_SLOTS, 1..8, default 2).
 # Usage: gate-run.sh <run-gate arguments...> (run from the project directory)
+#   slot 1 = CONTROLLER_GATE_LOCK, slot 2 = CONTROLLER_GATE2_LOCK, slot N >= 3 = <dir>/gate<N>.lock where <dir> is
+#   CONTROLLER_GATE_LOCK_DIR if set, else the directory that holds CONTROLLER_GATE_LOCK. CONTROLLER_GATE2_LOCK is only required
+#   when CONTROLLER_GATE_SLOTS is 2 or more. The default stays 2: the local slots guard the controller devcontainer, which has
+#   a memory cap and was OOM-killed once when too much ran at the same time.
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=lib.sh
@@ -12,26 +16,58 @@ controller_init
 export RUN_GATE_PROFILE=${RUN_GATE_PROFILE:-off}
 
 [[ $# -gt 0 ]] || { echo "usage: $0 <run-gate arguments...>" >&2; exit 2; }
-for lock in "${CONTROLLER_GATE_LOCK:-}" "${CONTROLLER_GATE2_LOCK:-}"; do
-  [[ -n $lock && $lock == /* ]] || {
-    echo 'gate-run: CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK must both be configured as absolute paths; copy both names from controller.local.env.example and export them before running' >&2
-    exit 2
-  }
+slots=${CONTROLLER_GATE_SLOTS:-2}
+[[ $slots =~ ^[1-8]$ ]] || {
+  echo 'gate-run: CONTROLLER_GATE_SLOTS must be an integer from 1 to 8 (unset it for the default 2)' >&2
+  exit 2
+}
+if (( slots == 1 )); then
+  required_locks=("${CONTROLLER_GATE_LOCK:-}")
+  refusal='gate-run: CONTROLLER_GATE_LOCK must be configured as an absolute path (CONTROLLER_GATE_SLOTS=1 uses one slot); copy the name from controller.local.env.example and export it before running'
+else
+  required_locks=("${CONTROLLER_GATE_LOCK:-}" "${CONTROLLER_GATE2_LOCK:-}")
+  refusal='gate-run: CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK must both be configured as absolute paths; copy both names from controller.local.env.example and export them before running'
+fi
+for lock in "${required_locks[@]}"; do
+  [[ -n $lock && $lock == /* ]] || { echo "$refusal" >&2; exit 2; }
 done
-[[ $CONTROLLER_GATE_LOCK != "$CONTROLLER_GATE2_LOCK" ]] || { echo 'gate lock paths must be distinct' >&2; exit 2; }
+(( slots < 3 )) || [[ -z ${CONTROLLER_GATE_LOCK_DIR:-} || $CONTROLLER_GATE_LOCK_DIR == /* ]] || {
+  echo 'gate-run: CONTROLLER_GATE_LOCK_DIR must be an absolute directory path (it holds gate3.lock, gate4.lock, ...)' >&2
+  exit 2
+}
+
+# Slot tables, indexed by slot number: lock path, label in the messages, file descriptor that holds the lock while it is taken.
+# Slots 1 and 2 keep the descriptors 9 and 8 they always had.
+slot_lock=([1]=$CONTROLLER_GATE_LOCK)
+slot_label=([1]=gate.lock)
+slot_fd=([1]=9 [2]=8 [3]=10 [4]=11 [5]=12 [6]=13 [7]=14 [8]=15)
+for (( slot = 2; slot <= slots; slot++ )); do
+  slot_label[slot]=gate$slot.lock
+  if (( slot == 2 )); then slot_lock[slot]=$CONTROLLER_GATE2_LOCK; else slot_lock[slot]=$(controller_gate_derived_lock "$slot"); fi
+done
+for (( slot = 1; slot <= slots; slot++ )); do
+  for (( other = slot + 1; other <= slots; other++ )); do
+    [[ ${slot_lock[slot]} != "${slot_lock[other]}" ]] || {
+      echo 'gate lock paths must be distinct' >&2
+      (( slots == 2 )) || echo "gate-run: slots $slot and $other both use ${slot_lock[slot]}" >&2
+      exit 2
+    }
+  done
+done
 command -v flock >/dev/null 2>&1 || { echo 'flock is required' >&2; exit 2; }
 command -v run-gate >/dev/null 2>&1 || { echo 'run-gate is required on PATH' >&2; exit 2; }
 
 slot_acquired=0
 run_slot() {
-  local lock=$1 label=$2 rc
-  shift 2
+  local rc lock=${slot_lock[$1]} label=${slot_label[$1]} fd=${slot_fd[$1]}
+  shift
   slot_acquired=0
-  if ! exec 9>"$lock"; then
+  # The descriptor number comes from the fixed table above, never from the caller's environment.
+  if ! eval "exec ${fd}>\"\$lock\""; then
     echo "cannot open gate lock: $lock" >&2
     return 2
   fi
-  if flock -n -E 75 9; then
+  if flock -n -E 75 "$fd"; then
     slot_acquired=1
     echo "gate-run: slot $label" >&2
     nice -n 10 run-gate "$@"
@@ -39,26 +75,24 @@ run_slot() {
   else
     rc=$?
   fi
-  exec 9>&-
+  eval "exec ${fd}>&-"
   [[ $rc == 75 ]] && return 75
   echo "cannot lock gate slot $label (flock exit $rc)" >&2
   return "$rc"
 }
 
-run_slot "$CONTROLLER_GATE_LOCK" gate.lock "$@"
-rc=$?
-if (( slot_acquired )); then exit "$rc"; fi
-[[ $rc == 75 ]] || exit "$rc"
-run_slot "$CONTROLLER_GATE2_LOCK" gate2.lock "$@"
-rc=$?
-if (( slot_acquired )); then exit "$rc"; fi
-[[ $rc == 75 ]] || exit "$rc"
+for (( slot = 1; slot <= slots; slot++ )); do
+  run_slot "$slot" "$@"
+  rc=$?
+  if (( slot_acquired )); then exit "$rc"; fi
+  [[ $rc == 75 ]] || exit "$rc"
+done
 
 poll_lock() {
-  local lock_fd=$1 lock=$2 label=$3 rc
-  shift 3
+  local rc lock=${slot_lock[$1]} label=${slot_label[$1]} fd=${slot_fd[$1]}
+  shift
   slot_acquired=0
-  if flock -n -E 75 "$lock_fd"; then
+  if flock -n -E 75 "$fd"; then
     slot_acquired=1
     echo "gate-run: slot $label" >&2
     nice -n 10 run-gate "$@"
@@ -71,30 +105,37 @@ poll_lock() {
   return "$rc"
 }
 
-echo 'gate-run: both slots busy, polling gate.lock and gate2.lock every 5s' >&2
-if ! exec 9>"$CONTROLLER_GATE_LOCK"; then
-  echo "cannot open gate lock: $CONTROLLER_GATE_LOCK" >&2
-  exit 2
-fi
-if ! exec 8>"$CONTROLLER_GATE2_LOCK"; then
-  echo "cannot open gate2 lock: $CONTROLLER_GATE2_LOCK" >&2
-  exit 2
-fi
+# "gate.lock and gate2.lock" for two slots, "gate.lock, gate2.lock and gate3.lock" for three, and so on.
+labels_text=${slot_label[1]}
+for (( slot = 2; slot <= slots; slot++ )); do
+  if (( slot == slots )); then labels_text+=" and ${slot_label[slot]}"; else labels_text+=", ${slot_label[slot]}"; fi
+done
+case $slots in
+  1) wait_text="the only slot is busy, polling $labels_text every 5s"; busy_text='is busy' ;;
+  2) wait_text="both slots busy, polling $labels_text every 5s"; busy_text='are both busy' ;;
+  *) wait_text="all $slots slots busy, polling $labels_text every 5s"; busy_text='are all busy' ;;
+esac
+echo "gate-run: $wait_text" >&2
+for (( slot = 1; slot <= slots; slot++ )); do
+  # The message names the slot as it always did: gate, gate2, gate3, ...
+  if (( slot == 1 )); then open_name=gate; else open_name=gate$slot; fi
+  if ! eval "exec ${slot_fd[slot]}>\"\${slot_lock[slot]}\""; then
+    echo "cannot open $open_name lock: ${slot_lock[slot]}" >&2
+    exit 2
+  fi
+done
 waited=0
 next_progress=300
 while :; do
-  poll_lock 9 "$CONTROLLER_GATE_LOCK" gate.lock "$@"
-  rc=$?
-  if (( slot_acquired )); then exit "$rc"; fi
-  [[ $rc == 75 ]] || exit "$rc"
-
-  poll_lock 8 "$CONTROLLER_GATE2_LOCK" gate2.lock "$@"
-  rc=$?
-  if (( slot_acquired )); then exit "$rc"; fi
-  [[ $rc == 75 ]] || exit "$rc"
+  for (( slot = 1; slot <= slots; slot++ )); do
+    poll_lock "$slot" "$@"
+    rc=$?
+    if (( slot_acquired )); then exit "$rc"; fi
+    [[ $rc == 75 ]] || exit "$rc"
+  done
 
   if (( waited >= next_progress )); then
-    echo "gate-run: still waiting after ${waited}s; gate.lock and gate2.lock are both busy" >&2
+    echo "gate-run: still waiting after ${waited}s; $labels_text $busy_text" >&2
     next_progress=$((next_progress + 300))
   fi
   sleep 5 || { echo 'gate-run: wait interval failed' >&2; exit 2; }

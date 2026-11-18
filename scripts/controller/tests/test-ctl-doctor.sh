@@ -10,7 +10,7 @@ ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-doctor-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
-SECRETS=(TOPSECRET-envvalue-123 TOPSECRET-serverid-456 TOPSECRET-addr TOPSECRET-keybody-789)
+SECRETS=(TOPSECRET-envvalue-123 TOPSECRET-serverid-456 TOPSECRET-addr TOPSECRET-keybody-789 TOPSECRET-slots-999)
 
 # A PATH that holds exactly the tools the doctor may use. Stubs stand in for the tools it only looks for.
 make_tools() {
@@ -259,6 +259,54 @@ run_doctor --
 expect_rc 0 'an existing writable lock file'
 line '^OK CONTROLLER_GATE_LOCK: lock file exists and is writable' 'an existing lock file is accepted'
 [[ ! -e $H/gate2.lock ]] || fail 'the doctor must not create a lock file'
+line '^INFO gate-slots: effective local gate slots: 2 \(CONTROLLER_GATE_SLOTS is not set' 'the default slot count is printed'
+
+# --- CONTROLLER_GATE_SLOTS: the count is printed, and every configured slot lock is checked like the first two
+fixture slots-four; write_env "$H" 'CONTROLLER_GATE_SLOTS=4'
+run_doctor --
+expect_rc 0 'four slots in a writable directory'
+line '^INFO gate-slots: effective local gate slots: 4 \(CONTROLLER_GATE_SLOTS\)' 'a configured slot count is printed'
+line '^OK gate3.lock: lock file will be created in a writable directory' 'slot 3 is checked'
+line '^OK gate4.lock: lock file will be created in a writable directory' 'slot 4 is checked'
+[[ ! -e $H/gate3.lock && ! -e $H/gate4.lock ]] || fail 'the doctor must not create a derived lock file'
+fixture slots-dir-missing; write_env "$H" 'CONTROLLER_GATE_SLOTS=3' "CONTROLLER_GATE_LOCK_DIR=$H/no-such-dir"
+run_doctor --
+expect_rc 1 'a derived slot in a missing directory'
+line '^FAIL gate3.lock: the directory for the lock file is missing or not writable' 'a derived slot needs a writable directory'
+line '^  fix: mkdir -p .*or set CONTROLLER_GATE_LOCK_DIR to another directory' 'the derived-slot fix names CONTROLLER_GATE_LOCK_DIR'
+fixture slots-dir-ok; mkdir -p "$H/slotdir"; write_env "$H" 'CONTROLLER_GATE_SLOTS=3' "CONTROLLER_GATE_LOCK_DIR=$H/slotdir"
+run_doctor --
+expect_rc 0 'CONTROLLER_GATE_LOCK_DIR in a writable directory'
+line "^OK gate3.lock: lock file will be created in a writable directory: .*/slotdir/gate3.lock" 'CONTROLLER_GATE_LOCK_DIR decides where slot 3 lives'
+fixture slots-dir-relative; write_env "$H" 'CONTROLLER_GATE_SLOTS=3' 'CONTROLLER_GATE_LOCK_DIR=relative/dir'
+run_doctor --
+expect_rc 1 'a relative CONTROLLER_GATE_LOCK_DIR with three slots'
+line '^FAIL CONTROLLER_GATE_LOCK_DIR: CONTROLLER_GATE_LOCK_DIR is not an absolute path' 'the lock directory must be absolute'
+fixture slots-dir-unused; write_env "$H" 'CONTROLLER_GATE_SLOTS=2' 'CONTROLLER_GATE_LOCK_DIR=relative/dir'
+run_doctor --
+expect_rc 0 'a relative CONTROLLER_GATE_LOCK_DIR that two slots never use'
+no_line 'CONTROLLER_GATE_LOCK_DIR' 'two slots do not look at CONTROLLER_GATE_LOCK_DIR'
+fixture slots-collide; write_env "$H" 'CONTROLLER_GATE_SLOTS=3' "CONTROLLER_GATE2_LOCK=$H/gate3.lock"
+run_doctor --
+expect_rc 1 'slot 2 collides with the derived slot 3'
+line '^FAIL gate-locks: gate slots 2 and 3 use the same lock path .*/gate3.lock: gate-run.sh refuses it' 'a collision with a derived slot is a failure'
+no_line 'CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK are the same path' 'only the colliding pair is reported'
+fixture slots-one; write_env "$H" 'CONTROLLER_GATE_SLOTS=1'; grep -v '^CONTROLLER_GATE2_LOCK=' "$H/controller.local.env" > "$H/env.tmp"; mv -- "$H/env.tmp" "$H/controller.local.env"
+run_doctor --
+expect_rc 0 'one slot needs no CONTROLLER_GATE2_LOCK'
+line '^INFO gate-slots: effective local gate slots: 1 \(CONTROLLER_GATE_SLOTS\)' 'one slot is printed'
+no_line 'CONTROLLER_GATE2_LOCK' 'one slot does not mention the second lock'
+fixture slots-one-unset; write_env "$H" 'CONTROLLER_GATE_SLOTS=1'; grep -vE '^CONTROLLER_GATE2?_LOCK=' "$H/controller.local.env" > "$H/env.tmp"; mv -- "$H/env.tmp" "$H/controller.local.env"
+run_doctor --
+expect_rc 1 'one slot still needs CONTROLLER_GATE_LOCK'
+line '^FAIL CONTROLLER_GATE_LOCK: CONTROLLER_GATE_LOCK is not set' 'the first lock stays required'
+for bad_slots in 0 9 TOPSECRET-slots-999; do
+  fixture slots-bad; write_env "$H" "CONTROLLER_GATE_SLOTS=$bad_slots"
+  run_doctor --
+  expect_rc 1 "CONTROLLER_GATE_SLOTS=$bad_slots"
+  line '^FAIL gate-slots: CONTROLLER_GATE_SLOTS is not an integer from 1 to 8' 'an invalid slot count fails'
+  line '^OK CONTROLLER_GATE2_LOCK: ' 'an invalid count still checks the default two locks'
+done
 
 # --- the remote-gate allow-list
 fixture allow-unknown; write_env "$H" 'CONTROLLER_REMOTE_GATE_HOSTS="alpha ghost"'

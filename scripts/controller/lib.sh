@@ -47,6 +47,19 @@ controller_init() {
   export CONTROLLER_HOME_CONFIGURED CONTROLLER_LOGS_DIR_CONFIGURED CONTROLLER_RUNS_DIR_CONFIGURED
 }
 
+# ---- local gate slots ------------------------------------------------------
+# gate-run.sh and ctl-doctor.sh share this rule, so it is defined once. CONTROLLER_GATE_SLOTS (1..8, default 2) is the number
+# of local gate slots. Slot 1 is the file CONTROLLER_GATE_LOCK and slot 2 is the file CONTROLLER_GATE2_LOCK (both names are
+# unchanged, so existing env files keep working); slot N >= 3 is the file gate<N>.lock in CONTROLLER_GATE_LOCK_DIR when that is
+# set, else in the directory that holds CONTROLLER_GATE_LOCK. The callers check that CONTROLLER_GATE_LOCK (and a set
+# CONTROLLER_GATE_LOCK_DIR) is an absolute path before they ask for a derived slot.
+controller_gate_derived_lock() {
+  local number=${1:-} dir=${CONTROLLER_GATE_LOCK_DIR:-}
+  [[ $number =~ ^[3-8]$ ]] || return 2
+  [[ -n $dir ]] || dir=$(dirname -- "${CONTROLLER_GATE_LOCK:-}")
+  printf '%s/gate%s.lock\n' "${dir%/}" "$number"
+}
+
 # ---- run-name ownership ----------------------------------------------------
 # One controller run name is owned by one live wrapper at a time. Everything a
 # run owns is keyed by its NAME (`<run>.done`, `.jsonl`, `.err`, `.events`,
