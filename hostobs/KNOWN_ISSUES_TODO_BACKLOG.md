@@ -199,8 +199,8 @@ Plan v4 §A.3 says the collectors produce `model` values. A path dependency
 `Cargo.lock` (the kernel package gains a `dependencies` entry), and the Rust lane image bakes the
 whole-lock digest (`/usr/local/share/hostobs-Cargo.lock.sha256`, the identity of an image built
 before the registry-set identity), so `cargo --locked` then fails with
-"cannot update the lock file". Hand-editing the lock is forbidden, and the deployed image needs a
-rebuild. Measured in this package in a throwaway container: adding the dev-dependency rewrote the
+"cannot update the lock file". Hand-editing the lock is forbidden, and an image built before the
+registry-set identity needs a rebuild. Measured in this package in a throwaway container: adding the dev-dependency rewrote the
 lock; removing it restored the digest. The image source now bakes a registry-set digest instead
 (`/usr/local/share/hostobs-Cargo.lock.registry-sha256`, which ignores workspace members); the Rust
 lanes run on `tester-unified-rust:rs-20261118`, which carries it, so a workspace-only lock edit needs
@@ -211,7 +211,7 @@ newtype. They are not parallel vocabularies by accident: `crates/kernel/tests/qu
 asserts the table byte-for-byte against `fixtures/wire/quality.json`, the same fixture `model`,
 `proto` and the Python decoder assert, so a renumbering fails in four places.
 
-**Exit criteria.** The first lane run on the registry-set-identity image that can carry a new lock (a workspace-only lock edit needs no further rebuild): make `kernel` depend on
+**Exit criteria.** The lanes already run on the registry-set-identity image, which carries a new lock (a workspace-only lock edit needs no rebuild); remaining: make `kernel` depend on
 `model`, delete `crates/kernel/src/{value,quality}.rs`, convert `Reading` into `model::Sample` at
 that boundary, and delete the local table assertion (the shared fixture stays).
 
@@ -483,8 +483,8 @@ only if that crate's test runs. It is a configuration fact of the current image,
 design preference.
 
 **Exit criteria.** Decide the shared-type shape (a dependency edge, or a third
-`-vocab` crate both depend on) once the Rust lanes run on an image built on the registry-set
-identity (a workspace-only `Cargo.lock` edit then needs no rebuild), and record it as a decision in
+`-vocab` crate both depend on); the Rust lanes already run on an image built on the registry-set
+identity (a workspace-only `Cargo.lock` edit needs no rebuild). Record it as a decision in
 `hostobs/docs/DESIGN-GUIDE.md`.
 
 ## HOB-4 — FIXED: the Python conformance run is the registered `conformance` lane
@@ -562,8 +562,8 @@ the two are bound to shared fixtures rather than to shared types: a header fact 
 against the real `fixtures/wire/*.bin` payloads in `crates/store/tests/golden_segment.rs`, and
 the quality table against `fixtures/wire/quality.json` in `crates/store/tests/quality_table.rs`.
 
-**Exit criteria.** The Rust lanes running on an image built on the registry-set identity (which
-admits a lock whose only change is the workspace's own path dependencies), after which `store` calls `proto`'s `FrameHeader::parse` and `model`'s `Quality` and the two
+**Exit criteria.** The Rust lanes already run on an image built on the registry-set identity (which
+admits a lock whose only change is the workspace's own path dependencies); remaining: `store` calls `proto`'s `FrameHeader::parse` and `model`'s `Quality` and the two
 duplicated modules are deleted (their tests move with them). Until then every change to the
 frame header or the quality vocabulary has to be made in two places, and the fixture tests are
 what force that.
