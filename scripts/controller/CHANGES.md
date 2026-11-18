@@ -7,6 +7,7 @@ no separate version number, so entries are grouped by the work that landed.
 ## [Unreleased]
 
 ### Added
+- `ctl-clean.sh`: removes scratch remnants of finished runs from the checkout's `.run-gate` (`run-gate-gitcfg-*`, `run-gate-test-bin-*`, `run-gate-test-invoke*`, `assay-liveness-*`, older than `--age-hours`, default 24), prunes dangling worktree entries and reports `artifacts/` and `.worktrees/` sizes. Dry run by default, `--apply` deletes; evidence and history are never touched.
 - `gate-run.sh`: `CONTROLLER_GATE_SLOTS` (integer 1 to 8, default 2) sets the number
   of local gate slots (CTL-33). Slot 1 is `CONTROLLER_GATE_LOCK`, slot 2 is
   `CONTROLLER_GATE2_LOCK`, slots 3.. are `gate<N>.lock` in `CONTROLLER_GATE_LOCK_DIR`
