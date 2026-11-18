@@ -1417,7 +1417,7 @@ with no score, not a parse of the challenge HTML.
 **Open.**
 1. A supported refresh: for example a finalize step that merges the template's `customizations.vscode.settings` into the machine settings file (template keys win, user-only keys kept), or a `mdt` verb that does the same. It needs a source for the effective settings inside the container (the workspace `devcontainer.json` as JSONC, or the metadata label).
 2. A check that warns when a template key is missing from the machine settings file.
-**Measured consequence (2026-11-18).** On a 6-folder multi-root window the missing block meant the file watcher carried only VS Code's default excludes and took 523,900 of 524,288 inotify watches (ENOSPC, the largest repo demoted to polling). Interim: the `.code-workspace` file's `settings` carry the block (`templates/vscode/multi-root.code-workspace.example`); total watches fell to 9,400. The supported refresh (open item 1) is still wanted.
+**Measured consequence (2026-11-18).** On a 6-folder multi-root window the missing block meant the file watcher carried only VS Code's default excludes and held 523,900 of 524,288 inotify watches in the container, 522,385 in the watcher process (ENOSPC, the largest repo demoted to polling). Interim: the `.code-workspace` file's `settings` carry the block (`templates/vscode/multi-root.code-workspace.example`); total watches fell to 9,400. The supported refresh (open item 1) is still wanted.
 
 ## MDT-077 - nothing in host provisioning publishes the run-gate gates cap; a reinstalled runner host refuses every dstdns lane (2026-11-05)
 
