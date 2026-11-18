@@ -2,7 +2,7 @@
 
 Read against `main` 3ef9104fb. Every `file:line` is in `assay/` at that commit, given relative to `assay/` unless it names another project.
 
-**Status (2026-11-18).** Binding design note for controller design item P4. Author: the one approved Opus design reviewer (read-only on `src`). It does NOT change `candidate_id`. It adds a second key, the **locus**, that is used only to FIND a prior record after a file edit. Soundness comes from what the run does with the record it found, not from the key. Labels: **M** = measured (source named), **C** = computed here from M data or from git objects, **E** = estimate. §7 holds the open decisions.
+**Status (2026-11-18).** Binding design note for controller design item P4. Author: the one approved Opus design reviewer (read-only on `src`). It does NOT change `candidate_id`. It adds a second key, the **locus**, that is used only to FIND a prior record after a file edit. Soundness comes from what the run does with the record it found, not from the key. Labels: **M** = measured (source named), **C** = computed here from M data or from git objects, **E** = estimate. §7 records the operator's decisions D1-D6 (2026-11-18).
 
 ## 0. Facts from the code that shape the design
 
@@ -28,7 +28,7 @@ Read against `main` 3ef9104fb. Every `file:line` is in `assay/` at that commit, 
 | ... of which in new files | 9 | |
 | Line delta (research §5, density 0.139 per line) | ~65 | 3-140 |
 
-The brief's "~65-150" is the line delta. Function granularity lands at **~210 (C)**, because cmru functions are large (`_abandon_locked` alone holds 140 candidates). Getting closer to 65 needs a finer key. Option B in §3 is sound under this design too, but it is deferred to a measurement (§7 D5).
+The brief's "~65-150" is the line delta. Function granularity lands at **~210 (C)**, because cmru functions are large (`_abandon_locked` alone holds 140 candidates). Getting closer to 65 needs a finer key. Option B in §3 is sound under this design too, and WP0 measured it (cmru 79-93 re-keys per release against 211 for A'); the operator adopted B for kill lookup only (§7 D5).
 
 **Cost per release** (serial; C from the M anchors 288 s per fail-fast candidate and 87 % kills; replay cost E):
 
@@ -36,7 +36,7 @@ The brief's "~65-150" is the line delta. Function granularity lands at **~210 (C
 |---|---|---|---|---|
 | Today: file-granular, `--carry-over` with a reason | 1,627 | 0 | 3,396, kills unverified | ~130 h, not sound for kills |
 | Phase 1, strict (§2.3): replay every carried kill | 210 | ~4,190 at 15-30 s (E), plus node baselines | ~626 survivors, pessimistic | ~35-56 h (E), sound |
-| Phase 1, kills of unchanged files trusted as today (§7 D2) | 210 | ~1,230 | 3,396 unverified + 184 | ~23-31 h (E), as sound as today |
+| Phase 1, kills of unchanged files trusted as today (§7 D2): EXPLORATORY campaigns only; a release claim refuses PASS while a `carried-unverified` kill exists | 210 | ~1,230 | 3,396 unverified + 184 | ~23-31 h (E), as sound as today |
 | Phase 2 (§2.5): footprint-proven kills | 210 | 10-40 % of kills (E) | rest | ~19-31 h (E), sound |
 
 **Non-goals.** No change to `candidate_id`, `plan_sha256` or shard assignment. No test selection or tiers (B144/B2xy). No static call-graph analysis as a proof. No non-Python adapter (go, js, rust, sql, cargo-mutants ingestion): those keep exact-id behaviour.
@@ -140,7 +140,7 @@ Phase 2 replaces the "transitive-callee closure" with what actually ran. The clo
 |---|---|---|---|---|---|
 | A | normalised-AST hash of the enclosing function + sorted hashes of in-project callee closures | unsound (§2.1, b3-d) | over-invalidates (a utility edit re-keys every caller); the closure is unbounded and unresolvable for dynamic dispatch; `ast.dump` changes with the interpreter version, so keys drift on upgrade | static call graph per plan | rejected |
 | **A'** | exact bytes of the outermost enclosing def segment + relative span + operator + replacement | not needed (§2.3) | stable across moves and edits elsewhere in the file; simple; recomputable by `assay verify` from source bytes | one `ast.parse` per file | **chosen** |
-| B | bytes of a ±k-line window around the site, clipped to the enclosing def | not needed | finer (approaches the ~65 line delta); more stale survivors carried (pessimistic) | trivial | measure first (§7 D5) |
+| B | bytes of a ±k-line window around the site, clipped to the enclosing def | not needed | finer (approaches the ~65 line delta); more stale survivors carried (pessimistic) | trivial | adopted for kill lookup only; survivors stay on A' (§7 D5, WP0 measured) |
 | C | today's file-granular id | n/a | exact-id path only | none | the fallback |
 
 ### 3.2 The locus key (A')
@@ -208,7 +208,7 @@ locus_key = sha256( "assay-locus/1" \0 path \0 qualname \0 segment_sha256 \0
 | edit a callee g or a caller h (same or other file) | g's/h's own: full | f's kills replay, so the change is caught; f's survivors are carried and may be stale (pessimistic) | same |
 | function moved, file reordered | locus matches (no full judge) | as above | n/a |
 | file renamed or moved | `path` is in both keys, so **full judge** | | |
-| tests, conftest, fixtures, pytest config, plugins, env, argv, interpreter, packages, assay version | the judge changes, every candidate goes through carry-forward. Kills: replay under the new judge, so the change is caught. Survivors: carried (S1) or full (S2, §7 D3) | | |
+| tests, conftest, fixtures, pytest config, plugins, env, argv, interpreter, packages, assay version | the judge changes, every candidate goes through carry-forward. Kills: replay under the new judge, so the change is caught. Survivors: carried pessimistically (S1, decided §7 D3; the optional probe R-a comes later, WP8) | | |
 | operator set changed | new operators' candidates: full; removed ones disappear from the plan | | |
 | `--rejudge`, `--rejudge-outcome` | full judge for the named candidates | | |
 
@@ -244,7 +244,7 @@ Everything the analyser cannot map (§3.2 fallback) uses the exact id: one byte 
   - `carried` on any bucket other than `survived`;
   - `witness-isolated` or `footprint-proven` on any bucket other than `killed`;
   - counts that disagree;
-  - a PASS that contains a `carried-unverified` kill, if D2 is decided that way.
+  - a PASS that contains a `carried-unverified` kill, for release claims (decided, §7 D2); exploratory campaigns may allow it and disclose the count.
 - **Text closeout.** `assay analyze campaign` prints one line per mode.
 
 ### 5.3 Fault-injection tests (each must end as stated; these are the acceptance gate of WP6)
@@ -286,7 +286,7 @@ Each starts from a store in which candidate C in `f` was KILLED by node X and ca
 | WP7 | Phase 2 footprint recorder and trust (its own design review first; starts only after D4) | new `src/assay/footprint.py`, witness plugin | P2-1..P2-8 | L |
 | WP8 | survivor probe R-a (optional, after D3) | `mutation.py`, store manifest | F12 variant | M |
 
-Order: WP0 and WP1 in parallel, then WP2, then WP3 first as a skeleton (the `--carry-forward` flag, lookup, survivor import, replay stubbed to "re-run in full"), then WP4 (isolated replay, whose tests F1-F9 and F16 need the flag), then the rest of WP3 (progress events, `--rejudge-carried`), then WP5 with WP6 alongside, then (decision) WP7 and WP8.
+Order: WP0 and WP1 in parallel, then WP2, then WP3 first as a skeleton (the `--carry-forward` flag, lookup, survivor import, replay stubbed to "re-run in full"), then WP4 (isolated replay, whose tests F1-F9 and F16 need the flag), then the rest of WP3 (progress events, `--rejudge-carried`), then WP5 with WP6 alongside. Decided order (2026-11-18): WP0 -> WP1 -> WP2 -> WP3a -> WP4 -> WP3b -> WP5 -> WP6; WP7 (Phase 2) only after D4 is taken (after WP0, Phase 1 in production and a measured replay share); WP8 (probe R-a) optional and later.
 
 Every WP that changes `src` needs the B534 host self-qualification before merge. WP0 ends with a short M report that replaces §1's C/E numbers. If WP0 measures the replay cost at 60 s or more, Phase 1 strict loses most of its gain and D2 must be revisited before WP4.
 
@@ -309,7 +309,7 @@ Corrected above: `--merge-shard-store` (assay) instead of `--merge-shards` (run-
 
 Open specification gaps, each to be closed in the work package named:
 1. **WP2, replayed kill vs `record_effective_judge` (`mutation.py:1920-1938`).** The function returns the effective judge only when `carry_over.from_judge_sha256 == payload.judge_sha256`. A replayed kill is executed by the CURRENT judge, so its `judge_sha256` is the current one while the schema-2 block names the prior judge: define the field (`from_judge` is provenance, never an effective-judge override) and relax or extend `_valid_carry_over` (`1904-1917`), which requires a non-empty `reason` that `--carry-forward` does not take (use a fixed machine reason such as `carry-forward`).
-2. **WP4, isolated semantics in the judge identity.** `candidate_fail_fast` enters `judge_sha256` only when on (`mutation.py:1744`); `witness-isolated` does not, so a store holding isolated kills resumes under the same judge in a plain `--resume` run even if the operator declined D1. Fold the replay mode into the judge or add a verifier rule that refuses `witness-isolated` unless the run declared it.
+2. **WP4, isolated semantics in the judge identity.** `candidate_fail_fast` enters `judge_sha256` only when on (`mutation.py:1744`); `witness-isolated` does not, so a store holding isolated kills resumes under the same judge in a plain `--resume` run. Fold the replay mode into the judge or add a verifier rule that refuses `witness-isolated` unless the run declared it.
 3. **WP1/WP3, collision rule.** "Two records with one locus key are both ignored" must first de-duplicate by `candidate_id` (the same candidate can sit in the flat record and in `judges/*/`, B527 archives), otherwise locus matching fails often.
 4. **WP7 (Phase 2), config edits.** The context digest replaces `tree_sha256` with a names-only listing, so a content edit to `pytest.ini`/`pyproject.toml`/`setup.cfg` addopts is in neither the digest nor the footprint (pytest reads it before the recorder starts): hash those files into the context digest and add a P2 test for it.
 5. **WP3, survivor loop.** A test added in the same release leaves the carried survivor carried again from the old generation, so the lane keeps failing until `--rejudge-carried` (or the R-a probe, D3) runs: state this in the run output and the docs.
