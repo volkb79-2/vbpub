@@ -80,6 +80,51 @@ workflow_two_states() { # workflow_two_states ROOT
   workflow_state "$root" @os-0002
 }
 
+state_with_entry_id_length() { # state_with_entry_id_length N -> @os- followed by id padding
+  local length=$1 prefix=@os- padding suffix
+  padding=$((length - 3))
+  [ "$padding" -ge 0 ] || return 1
+  suffix=$(printf '%*s' "$padding" '' | tr ' ' a)
+  printf '%s%s\n' "$prefix" "$suffix"
+}
+
+workflow_assert_entry() { # workflow_assert_entry ROOT STATE KVER
+  local root=$1 state=$2 kver=$3 entry_id source_kernel source_initrd sha256 kid
+  local entry linux_path initrd_path options_line
+  case_count=$((case_count + 1))
+  entry_id=$("$DR" _sdboot-entry-id "$state") || { bad "workflow-entry-id: cannot map $state"; return; }
+  source_kernel="$root/top/$state/boot/vmlinuz-$kver"
+  source_initrd="$root/top/$state/boot/initrd.img-$kver"
+  sha256=$(sha256sum -- "$source_initrd" | awk '{print $1}') \
+    || { bad "workflow-entry-source-hash: cannot hash $source_initrd"; return; }
+  kid=$("$DR" _sdboot-kernel-id "$kver" "$sha256") \
+    || { bad "workflow-entry-kernel-id: cannot map $state kernel $kver"; return; }
+  entry="$root/esp/loader/entries/$entry_id.conf"
+  linux_path="/EFI/dr/kernels/$kid/vmlinuz"
+  initrd_path="/EFI/dr/kernels/$kid/initrd.img"
+  options_line="options root=UUID=$UUID rootflags=subvol=$state ro net.ifnames=0 console=tty0 console=ttyS0,115200"
+
+  [ -s "$entry" ] || { bad "workflow-entry: missing $entry"; return; }
+  grep -Fqx -- "title Debian $state (kernel $kver)" "$entry" \
+    || bad "workflow-entry-title: $entry names the wrong kernel/state"
+  grep -Fqx -- "linux $linux_path" "$entry" \
+    || bad "workflow-entry-linux: $entry names the wrong kernel path"
+  grep -Fqx -- "initrd $initrd_path" "$entry" \
+    || bad "workflow-entry-initrd: $entry names the wrong initrd path"
+  grep -Fqx -- "$options_line" "$entry" \
+    || bad "workflow-entry-options: $entry names the wrong root/subvolume"
+
+  for copy in vmlinuz initrd.img; do
+    [ -s "$root/esp/EFI/dr/kernels/$kid/$copy" ] \
+      || bad "workflow-entry-copy: missing or empty $kid/$copy"
+  done
+  [ "$(sha256sum -- "$root/esp/EFI/dr/kernels/$kid/vmlinuz" | awk '{print $1}')" \
+      = "$(sha256sum -- "$source_kernel" | awk '{print $1}')" ] \
+    || bad "workflow-entry-copy-hash: vmlinuz differs for $state"
+  [ "$(sha256sum -- "$root/esp/EFI/dr/kernels/$kid/initrd.img" | awk '{print $1}')" = "$sha256" ] \
+    || bad "workflow-entry-copy-hash: initrd differs for $state"
+}
+
 HASH_A=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 HASH_B=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
 KVER=6.12.117+deb13-amd64
@@ -379,7 +424,9 @@ printf x >"$SCRATCH/kernels/os-keep-111111111111/.vmlinuz.tmp.123.bak"
 printf x >"$SCRATCH/kernels/os-keep-111111111111/.initrd.img.tmp.123"
 printf x >"$SCRATCH/kernels/os-keep-111111111111/.other.tmp.123"
 printf x >"$SCRATCH/entries/.os-old.conf.new.123"
+printf x >"$SCRATCH/entries/.dr-state-entry.new.123"
 printf x >"$SCRATCH/entries/.os-old.conf.new.backup"
+printf x >"$SCRATCH/entries/.dr-state-entry.new.backup"
 printf x >"$SCRATCH/entries/.os-old.tmp.123"
 printf x >"$SCRATCH/entries/.notes"
 printf x >"$SCRATCH/entries/os-old.conf"
@@ -404,6 +451,7 @@ else
     "$SCRATCH/kernels/os-keep-111111111111/.vmlinuz.tmp.123" \
     "$SCRATCH/kernels/os-keep-111111111111/.initrd.img.tmp.123" \
     "$SCRATCH/entries/.os-old.conf.new.123" \
+    "$SCRATCH/entries/.dr-state-entry.new.123" \
     "$SCRATCH/loader/loader.conf.new.123" \
     "$SCRATCH/efi-dr/bootloader.new.123"; do
     [ ! -e "$path" ] || bad "clean-scratch: known scratch survived: $path"
@@ -417,6 +465,7 @@ else
     "$SCRATCH/kernels/os-keep-111111111111/.vmlinuz.tmp.123.bak" \
     "$SCRATCH/kernels/os-keep-111111111111/.other.tmp.123" \
     "$SCRATCH/entries/.os-old.conf.new.backup" \
+    "$SCRATCH/entries/.dr-state-entry.new.backup" \
     "$SCRATCH/entries/.os-old.tmp.123" \
     "$SCRATCH/entries/.notes" \
     "$SCRATCH/entries/os-old.conf" \
@@ -438,6 +487,8 @@ printf x >"$WF_CLEAN/esp/EFI/dr/kernels/.tmp.Ab12Cd/vmlinuz"
 printf x >"$WF_CLEAN/esp/EFI/dr/kernels/.tmp.not-ours/vmlinuz"
 printf x >"$WF_CLEAN/esp/loader/loader.conf.new.123"
 printf x >"$WF_CLEAN/esp/loader/loader.conf.new.backup"
+printf x >"$WF_CLEAN/esp/loader/entries/.dr-state-entry.new.123"
+printf x >"$WF_CLEAN/esp/loader/entries/.dr-state-entry.new.backup"
 printf x >"$WF_CLEAN/esp/EFI/dr/bootloader.new.123"
 printf x >"$WF_CLEAN/esp/EFI/dr/bootloader.new.backup"
 case_count=$((case_count + 1))
@@ -446,13 +497,80 @@ if [ "$rc" != 0 ]; then
   bad "workflow-cleanup: gen-menu rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
 else
   for path in "$WF_CLEAN/esp/EFI/dr/kernels/.tmp.Ab12Cd" \
-    "$WF_CLEAN/esp/loader/loader.conf.new.123" "$WF_CLEAN/esp/EFI/dr/bootloader.new.123"; do
+    "$WF_CLEAN/esp/loader/loader.conf.new.123" \
+    "$WF_CLEAN/esp/loader/entries/.dr-state-entry.new.123" \
+    "$WF_CLEAN/esp/EFI/dr/bootloader.new.123"; do
     [ ! -e "$path" ] || bad "workflow-cleanup: own scratch survived: $path"
   done
   for path in "$WF_CLEAN/esp/EFI/dr/kernels/.tmp.not-ours" \
-    "$WF_CLEAN/esp/loader/loader.conf.new.backup" "$WF_CLEAN/esp/EFI/dr/bootloader.new.backup"; do
+    "$WF_CLEAN/esp/loader/loader.conf.new.backup" \
+    "$WF_CLEAN/esp/loader/entries/.dr-state-entry.new.backup" \
+    "$WF_CLEAN/esp/EFI/dr/bootloader.new.backup"; do
     [ -e "$path" ] || bad "workflow-cleanup: foreign look-alike removed: $path"
   done
+fi
+
+# Production workflow core output: every BLS entry and both copied files must match the selected state and source.
+WF_CORE="$WORK/wf-core"
+workflow_fixture "$WF_CORE" full
+workflow_two_states "$WF_CORE"
+case_count=$((case_count + 1))
+workflow_run "$WF_CORE" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 0 ]; then
+  bad "workflow-core: gen-menu rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+elif [ ! -s "$WF_CORE/esp/loader/loader.conf" ]; then
+  bad "workflow-core: loader.conf missing"
+else
+  workflow_assert_entry "$WF_CORE" @os-0001 "$KVER"
+  workflow_assert_entry "$WF_CORE" @os-0002 "$KVER"
+fi
+
+# Selection prefers the newest COMPLETE pair; a newer zero-byte kernel cannot hide the older bootable pair.
+WF_OLDER="$WORK/wf-older-pair"
+KVER_OLD=6.12.107+deb13-amd64
+KVER_NEW=6.12.117+deb13-amd64
+workflow_fixture "$WF_OLDER" full
+mkdir -p "$WF_OLDER/top/@os-0001/boot"
+printf 'older kernel\n' >"$WF_OLDER/top/@os-0001/boot/vmlinuz-$KVER_OLD"
+printf 'older initrd\n' >"$WF_OLDER/top/@os-0001/boot/initrd.img-$KVER_OLD"
+: >"$WF_OLDER/top/@os-0001/boot/vmlinuz-$KVER_NEW"
+printf 'newer initrd only\n' >"$WF_OLDER/top/@os-0001/boot/initrd.img-$KVER_NEW"
+case_count=$((case_count + 1))
+workflow_run "$WF_OLDER" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 0 ]; then
+  bad "workflow-latest-complete: gen-menu rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+elif ! grep -Fqx -- "title Debian @os-0001 (kernel $KVER_OLD)" \
+  "$WF_OLDER/esp/loader/entries/os-0001.conf"; then
+  bad "workflow-latest-complete: did not select the older complete pair"
+else
+  workflow_assert_entry "$WF_OLDER" @os-0001 "$KVER_OLD"
+fi
+
+# Entry-id boundary: 240 characters is accepted through a short fixed temp basename; 241 is refused before copying.
+WF_LONG_OK="$WORK/wf-long-ok"
+WF_LONG_BAD="$WORK/wf-long-bad"
+LONG_ID_240=$(state_with_entry_id_length 240)
+LONG_ID_241=$(state_with_entry_id_length 241)
+workflow_fixture "$WF_LONG_OK" full
+workflow_state "$WF_LONG_OK" "$LONG_ID_240"
+case_count=$((case_count + 1))
+workflow_run "$WF_LONG_OK" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 0 ]; then
+  bad "workflow-entry-id-240: gen-menu rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+else
+  workflow_assert_entry "$WF_LONG_OK" "$LONG_ID_240" "$KVER"
+fi
+
+workflow_fixture "$WF_LONG_BAD" full
+workflow_state "$WF_LONG_BAD" "$LONG_ID_241"
+case_count=$((case_count + 1))
+workflow_run "$WF_LONG_BAD" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 1 ]; then
+  bad "workflow-entry-id-241: want exit 1, got $rc"
+elif [ -n "$(find "$WF_LONG_BAD/esp/EFI/dr/kernels" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+  bad "workflow-entry-id-241: copied a kernel before refusing the entry id"
+elif [ -e "$WF_LONG_BAD/esp/loader/loader.conf" ]; then
+  bad "workflow-entry-id-241: wrote loader.conf before refusing the entry id"
 fi
 
 # Production workflow: a foreign case/extension alias is refused before any desired entry is overwritten.
