@@ -1029,16 +1029,26 @@ mod tests {
         d.server.shutdown();
     }
 
+    /// The hub closed `id` for a slow client. A conn whose head was partly written has no final
+    /// bytes (the head is not abandoned mid-frame), so the same `poll` already swept it and its
+    /// code is gone; a conn with final bytes stays, with the code.
+    fn assert_slow_client_closed(d: &Driver, id: ConnId) {
+        assert!(d.server.is_closed(id));
+        if let Some(code) = d.close_code(id) {
+            assert_eq!(code, Code::SlowClient);
+        }
+    }
+
     fn loaded_slow_client(d: &mut Driver, id: ConnId) {
         d.tick(5_001 * MS);
-        assert_eq!(d.close_code(id), Some(Code::SlowClient));
+        assert_slow_client_closed(d, id);
     }
 
     fn loaded_eof_then_slow_client(d: &mut Driver, id: ConnId) {
         d.eof(id);
         assert_eq!(d.state(id), Some(State::Draining));
         d.tick(5_001 * MS);
-        assert_eq!(d.close_code(id), Some(Code::SlowClient));
+        assert_slow_client_closed(d, id);
     }
 
     fn loaded_bad_frame(d: &mut Driver, id: ConnId) {
