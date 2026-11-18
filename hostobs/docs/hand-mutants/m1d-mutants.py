@@ -304,10 +304,20 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "M1d-14",
-        "Python: a 12 to 15 byte block frame reaches `struct.unpack_from` (no directory guard)",
+        "Python: a 12 to 15 byte block frame reaches `struct.unpack_from` (the 2-byte "
+        "directory guard is gone)",
         "python/reference/hostobs_wire_ref.py",
-        "    if len(data) < FRAME_HEADER_LEN + 4:",
-        "    if False:",
+        "    if have < 2:\n",
+        "    if False:\n",
+        "python",
+    ),
+    Mutant(
+        "M1d-14",
+        "Python: a 12 to 15 byte block frame reaches `struct.unpack_from` (the 4-byte "
+        "directory-header guard is gone)",
+        "python/reference/hostobs_wire_ref.py",
+        "    if have < 4:\n",
+        "    if False:\n",
         "python",
     ),
     Mutant(

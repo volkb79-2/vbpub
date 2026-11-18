@@ -1211,7 +1211,7 @@ removed by its exact name; the patch count and the `--dry-run` result stay consi
 container of that exact name first, and `docker rm -f` takes that exact name on a timeout or any
 other exception (a failed removal is reported); the method section of `docs/HAND-MUTANTS-M1D.md`
 documents the classification and that a timeout under host load is inconclusive. The stored patch
-count is 53 (`--dry-run`: 0 stale).
+count is 54 (`--dry-run`: 0 stale).
 
 ## HOB-58 — Eviction reports never reach the caller
 

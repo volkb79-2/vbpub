@@ -67,7 +67,8 @@ from scratch.
 | M1d-21 | HOB-56 | the byte total is incremental arithmetic again: the write path, `Store::evict` or `seal_all` does not recompute it | `the_store_total_is_the_tiers_own_total_after_every_operation`; `the_store_total_drops_a_quarantined_file_deleted_by_hand`; `the_store_total_drops_a_live_segment_deleted_by_hand` |
 | M1d-22 | HOB-58 | `Tier::report` does not fill `Evicted::notes`; the write path / `Store::evict` does not copy them into the store's ring; the ring has no bound; the scan notes' reports have no cap; `Store::notes` hides a tier's note about its own name, shows another tier's note about a shared-directory file, repeats a report, or leaves the ring out (the last is possibly equivalent while no store API rescans a tier) | `eviction_reports_in_the_scan_notes_are_capped_and_drop_the_oldest`; `a_note_about_a_tiers_own_quarantine_name_stays_visible_once`; `a_note_about_a_tiers_own_live_name_stays_visible_once`; `a_quarantined_file_deleted_by_hand_does_not_fail_every_later_append`; `a_quarantined_file_that_cannot_be_removed_is_reported_to_the_caller`; `eviction_reports_from_the_write_path_reach_the_store_and_are_bounded`; `the_store_total_drops_a_quarantined_file_deleted_by_hand`; `the_store_total_drops_a_live_segment_deleted_by_hand` |
 
-Fifty-three stored patches in all (`--dry-run`: 53 stored patches, 0 stale). The campaign first
+Fifty-four stored patches in all (`--dry-run`: 54 stored patches, 0 stale; `M1d-14`'s Python
+patch is two patches, one per guard of the directory header in `hostobs_wire_ref.py`). The campaign first
 runs a BASELINE per suite on the unmutated tree and stops if it is not green; a patch is `killed`
 only by a real test failure, and a docker or runner failure, a compile error or a Python import
 error is `NOT-BUILT` (unanswered).

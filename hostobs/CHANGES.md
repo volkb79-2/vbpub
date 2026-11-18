@@ -22,6 +22,8 @@
   push of a stream is the dictionary form whatever generation it carries.
 - **Gates.** `crates/proto/src/hub.rs` is a declared `assay-r1` target (37 judged files together
   with `envelope.rs` and `stream_dicts.rs`).
+- **Hand mutants.** `M1d-14`'s Python patch follows the directory guards `hostobs_wire_ref.py`
+  has since the P2a1 codec (two patches, one per guard): 54 stored patches, `--dry-run` 0 stale.
 
 ### Added (P3b: `python/hostobs_client` connection, `require_profiling`, `hostobs-mark`; the P3 part of `HOB-54` closed)
 
