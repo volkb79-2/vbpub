@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 
 from cli_extended import CheckResult, DoctorCheck
+from cmru.process_run import run_process
 
 CREDENTIAL_VARIABLES = ("GITHUB_PUSH_PAT", "GITHUB_TOKEN")
 IMAGE_VARIABLES = (
@@ -29,8 +30,8 @@ _PROBE_TIMEOUT_SECONDS = 10
 
 def _run(argv: list[str], timeout: float = _PROBE_TIMEOUT_SECONDS):
     """Run one probe command; the single subprocess seam of this module."""
-    return subprocess.run(
-        argv, capture_output=True, text=True, timeout=timeout, check=False,
+    return run_process(
+        argv, capture=True, text=True, timeout=timeout, check=False,
     )
 
 
