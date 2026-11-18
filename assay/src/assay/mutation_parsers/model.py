@@ -14,11 +14,23 @@ translation belongs, since a parser cannot know a lane's diff.
 
 from __future__ import annotations
 
+from pathlib import Path, PurePosixPath
+
 from ..records import record
-from typing import Mapping
+from typing import Mapping, Protocol
+
+#: The fixed byte bound every ingested mutation-report read obeys (defined here
+#: so a parser module can import it without importing the package that imports
+#: the parser; re-exported by :mod:`assay.mutation_parsers`). See the long
+#: rationale there.
+MAX_MUTATION_REPORT_BYTES = 64 * 1024 * 1024
 
 __all__ = [
+    "MAX_MUTATION_REPORT_BYTES",
+    "DirectoryArtifactLike",
     "INGESTED_MUTANT_STATUSES",
+    "ParseContext",
+    "RepositoryLike",
     "IngestedMutant",
     "IngestedMutationReport",
     "MutationProducerIdentity",
@@ -110,7 +122,48 @@ class IngestedMutationReport:
     """
 
     producer: MutationProducerIdentity
-    #: the report's own ``projectRoot``, verbatim and absolute.
-    project_root: str
+    #: the report's own ``projectRoot``, verbatim and absolute, or ``None``
+    #: for a format whose document carries none (cargo-mutants' does not):
+    #: such a report is bound to the commit by CONTENT instead, and
+    #: :func:`assay.mutation.ingest_mutation_report` skips the root check.
+    project_root: str | None
     mutants: tuple[IngestedMutant, ...]
     sources: Mapping[str, str]
+
+
+class DirectoryArtifactLike(Protocol):
+    """The two members a directory-kind parser reads off its artifact.
+
+    Structural so this package need not import :mod:`assay.safeio`: the real
+    ``safeio.DirectoryArtifact`` satisfies it, and so does a test double.
+    """
+
+    @property
+    def report(self) -> bytes:
+        """``mutants.out/outcomes.json``, verbatim."""
+
+    @property
+    def members(self) -> Mapping[str, bytes]:
+        """``diff/<name>.diff`` members by their ``diff_path``."""
+
+
+class RepositoryLike(Protocol):
+    """The one :class:`assay.isolation.SnapshotRepository` method parsers use."""
+
+    def read_regular_file(self, path: PurePosixPath, *, timeout: float) -> bytes:
+        """One repo-relative regular blob of the prepared commit."""
+
+
+@record
+class ParseContext:
+    """What a directory-kind parser may know about the run.
+
+    :attr:`run_cwd` is the anchor of the tool's own ``file`` values (the
+    cargo workspace root, design section 8 item 2). The time-window check is
+    NOT a parser concern here (design 1.3): it stays with the runner reader.
+    """
+
+    run_cwd: Path
+    repo_top: Path
+    repository: RepositoryLike
+    read_timeout: float

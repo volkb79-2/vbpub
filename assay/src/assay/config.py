@@ -3256,7 +3256,7 @@ def _load_mutation(
                 f"tool inside the snapshot and assay judges what it wrote -- "
                 f"and without a declared format assay has no parser to read "
                 f"that report with. Declare format = "
-                f"{sorted(MUTATION_FORMAT_REGISTRY)[0]!r}, or drop this key"
+                f"'mutation-report-json', or drop this key"
             )
     for field in _MUTATION_FIELDS:
         if field not in value:

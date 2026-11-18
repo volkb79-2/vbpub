@@ -6194,6 +6194,7 @@ def _ingest_r2_report(
         targets=declared_targets,
         repository=prepared,
         read_timeout=deadline.remaining(),
+        spec=mutation_parsers.MUTATION_FORMAT_REGISTRY[lane.judge.mutation.format],
     )
 
 

@@ -5,6 +5,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+- B245 U3a: the `cargo-mutants-outcomes` directory-kind mutation format is registered and its `outcomes.json` grammar, status normaliser (Killed/Crashed/Survived/Timeout/Unviable) and `load_mutation_directory` entry point exist; `MutationFormatSpec` gains `artifact_kind`, `parse_directory`, `status_buckets`, `discarded_statuses` and `accepts_changed_diff`, and `ingest_mutation_report` reads its status tables from the spec (Stryker's moved unchanged). Mutant binding (U3b) and the runner wiring (U5) are not in yet, so a lane that declares the format cannot run. `DISCARD_REASONS` now lives in `assay.vocabulary` (still exported from `assay.verdict`).
 - Registered the pure-Python Rust adapter at R1 for `.rs` changed-line LCOV judgments. Stable Rust's zero-only branch markers normalize to branch-unavailable, and R2/R3 remain unregistered. Added a Rust-image qualification lane that captures real nextest, libtest, and cargo-llvm-cov output offline.
 
 ### Changed

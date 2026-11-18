@@ -220,7 +220,11 @@ def expected_dir(name: str) -> str:
         return f"adapters/{words[1]}"
     if words[0] == "coverage":
         return "parsers/coverage"
-    if name in ("test_mutation_format_registry.py", "test_mutation_report_json_parser.py"):
+    if name in (
+        "test_mutation_format_registry.py",
+        "test_mutation_report_json_parser.py",
+        "test_cargo_mutants_outcomes_parser.py",
+    ):
         return "parsers/mutation"
     if words[:2] in (["result", "report"], ["result", "reports"]):
         return "parsers/result_reports"

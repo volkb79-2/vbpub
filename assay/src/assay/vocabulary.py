@@ -60,6 +60,7 @@ __all__ = [
     "CARGO_MUTANTS_OPERATOR_NAMESPACE",
     "ARGV_PLACEHOLDER_CHANGED_DIFF",
     "COMMIT_OID_RE",
+    "DISCARD_REASONS",
     "is_ingested_operator",
     "MAX_INGESTED_MUTANTS",
     "MUTATION_OPERATORS",
@@ -424,6 +425,16 @@ REFUSED_COVERAGE_PRODUCERS: Mapping[str, str] = MappingProxyType(
 #: outside a character class is a literal, and the packaged schema's pattern is
 #: pinned equal to `INGESTED_OPERATOR_RE.pattern` character for character
 #: (`re.escape` would emit `cargo\-mutants` and break that equality).
+#: (B079/schema v12; moved here by B245 U3a) Why an ingested mutant was not
+#: attempted. These are assay's own wire vocabulary, not a foreign tool's open
+#: status namespace; each parser maps the upstream statuses it accepts onto
+#: these stable names. It lives in this leaf because `assay.verdict` imports
+#: `assay.config`, which imports the parser registry, whose parsers need the
+#: names: keeping it in `assay.verdict` would close a `verdict -> config ->
+#: mutation_parsers -> verdict` cycle. `assay.verdict.DISCARD_REASONS` is the
+#: same object, re-exported.
+DISCARD_REASONS: tuple[str, ...] = ("compile_error", "runtime_error")
+
 STRYKER_OPERATOR_NAMESPACE = "stryker"
 CARGO_MUTANTS_OPERATOR_NAMESPACE = "cargo-mutants"
 INGESTED_OPERATOR_NAMESPACES: tuple[str, ...] = (

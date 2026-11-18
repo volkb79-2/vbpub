@@ -100,6 +100,7 @@ from .vocabulary import (
     ARGV_PLACEHOLDER_CHANGED_DIFF,
     CARGO_MUTANTS_OPERATOR_NAMESPACE,
     COMMIT_OID_RE,
+    DISCARD_REASONS,
     INGESTED_OPERATOR_RE,
     MAX_INGESTED_MUTANTS,
     MUTATION_OPERATORS,
@@ -721,10 +722,9 @@ KILL_ATTRIBUTIONS: tuple[str, ...] = ("declared", "unattributed")
 #: (B202/schema v17) How concurrent native R2 attempts are attributed.
 R2_ATTRIBUTIONS: tuple[str, ...] = ("serial", "overlap-conservative")
 
-#: (B079/schema v12) Why an ingested mutant was not attempted. These are
-#: assay's own wire vocabulary, not a foreign tool's open status namespace;
-#: the parser maps the two accepted upstream statuses to these stable names.
-DISCARD_REASONS: tuple[str, ...] = ("compile_error", "runtime_error")
+#: (B079/schema v12) `DISCARD_REASONS` (imported from `assay.vocabulary`, where
+#: B245 U3a moved it so the parsers can use it without an import cycle) is why
+#: an ingested mutant was not attempted; it stays re-exported from here.
 
 #: (B018/A-327) the one digest algorithm a judge identity may name. Recorded in
 #: the artifact rather than assumed by the consumer: a digest whose algorithm is
