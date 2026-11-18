@@ -10,8 +10,13 @@
   (`run-gate assay-r2 --base <ref>`), `budget = "4h"` is an estimate, never part of a default gate; assay K15
   stays open until the first hostobs run.
 - **`assay-r2` memory cap**: the first real run (2026-11-18) reached 6.4 GiB in the container within 90 s
-  (cold baseline build with cargo's default four rustc processes) on the shared 8 GiB host and was cancelled;
-  the lane now sets `CARGO_BUILD_JOBS=1`, `RUST_TEST_THREADS=1` and `NEXTEST_TEST_THREADS=1`.
+  on the shared 8 GiB host and was cancelled, and a second attempt (cargo and test threads capped at 1) reached
+  4 GiB; a sampled diagnostic run named the cause: ONE test process of the unmutated baseline,
+  `client_scripted ... transport_failures_are_classified` (`crates/client/tests/client_scripted.rs`), grows
+  200-400 MB/s without bound under this lane (it passes in `selftest`/`assay-r1`; open item for the client crate).
+  The lane now sets `CARGO_BUILD_JOBS=1`, `RUST_TEST_THREADS=1` and `NEXTEST_TEST_THREADS=1`, and
+  `run-gate.toml [lanes.assay-r2.resources] memory = "2500m"`, a hard container cap: a runaway is OOM-killed inside
+  its own container (lane ERROR) instead of taking the host and its guests down.
 
 ### Added (the `conformance` lane; `HOB-4` fixed)
 

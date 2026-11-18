@@ -234,3 +234,10 @@ clean_tree = true
 # still write its structured BUDGET_EXCEEDED/LANE_TIMEOUT verdict before this hard limit.
 budget = "5h"
 artifacts = [".assay/verdict-assay-r2.json"]
+
+# A hard container memory cap. Both first attempts (2026-11-18) ran this lane in a container with NO
+# limit and one test process of the unmutated baseline grew to GBs and had to be cancelled by hand
+# at 3.6-6.4 GiB, taking a neighbour guest down on the shared 8 GiB host. With `--memory` such a runaway
+# is OOM-killed inside its own container (the baseline fails, the lane ends ERROR) instead.
+[lanes.assay-r2.resources]
+memory = "2500m"
