@@ -873,7 +873,10 @@ writable; CIU logs a warning when no selected service mounts the checkout path.
 not owned by you, and refuses when git cannot say whether the checkout is
 linked. With `"rw"`, submodule `hooks/` and `info/` under `modules/**` are
 overlaid too; `config.worktree` creation and submodule working-tree gitfiles
-stay writable (accepted limits). Use `"rw"` only when a lane must commit in the
+stay writable (accepted limits), as does a submodule git dir that has no
+`hooks/` (nothing to overlay), and a runner racing a concurrent `ciu up` with
+directory swaps is not excluded. A symlink or other non-regular entry at a git
+config name, or in `modules/`, refuses instead of being skipped. Use `"rw"` only when a lane must commit in the
 runner. Add `services = ["runner"]` for a mixed stack. Primary checkouts are
 unchanged. Until you delete the hand-written block, a service that already
 mounts the common dir keeps its own mount and mode. The mount applies only to

@@ -6846,14 +6846,24 @@ every checkout and by `ciu check` (stage `shape`), and refuses on a
   mount (or a removed table) deletes a stale fragment and `.ciu/gitdir/`. `$` in
   bind paths is written as `$$`; a path not lexically under the resolved primary
   root passes the namespace translation unchanged and fails loudly through
-  `create_host_path: false`.
-  In both modes `config`,
-  `config.worktree`, nested `modules/**` configs and sibling
-  `worktrees/*/config.worktree` (at most 256) are replaced by sanitized
-  read-only copies under `.ciu/gitdir/` (credentials, `include`s and helpers
-  removed; `ciu` carries its own port of Run-Gate's sanitizer). `ro` makes git
-  inside the runner read-only: `status`, `diff`, `log`, `describe` and
-  `rev-parse` work, `add`/`commit` fail with EROFS.
+  `create_host_path: false`. A `N.config` destination that a runner turned into
+  a directory is removed (never through a link) before the rename.
+  Accepted limits: CIU checks with `lstat` and then reads, so a runner that
+  races a concurrent `ciu up` with directory swaps is not excluded; a
+  submodule git dir without `hooks/` stays runner-creatable in `rw` (nothing to
+  overlay).
+- **Config copies**: in both modes `config`, `config.worktree`, nested
+  `modules/**` configs and sibling `worktrees/*/config.worktree` (at most 256)
+  are replaced by sanitized read-only copies under `.ciu/gitdir/` (credentials,
+  `include`s and helpers removed; `ciu` carries its own port of Run-Gate's
+  sanitizer). Every candidate and the `modules` tree are checked with `lstat`
+  before anything is written, fail-closed: a symlink, directory or other
+  non-regular entry at a config name, a symlinked `modules` root or
+  subdirectory, or an unreadable directory refuses with a `[CIU-215]` message
+  naming the path (skipping it would leave the unsanitized original mounted);
+  nothing is followed and the file is re-checked right before it is read.
+  `ro` makes git inside the runner read-only: `status`, `diff`, `log`,
+  `describe` and `rev-parse` work, `add`/`commit` fail with EROFS.
 - A running container keeps the copies it was created with; a changed
   `<common>/config` reaches a runner at its next recreate. `reset` passes the
   fragment to `down` and removes it and `.ciu/gitdir/`.
