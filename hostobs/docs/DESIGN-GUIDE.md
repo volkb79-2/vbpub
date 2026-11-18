@@ -146,12 +146,14 @@ encoder/decoder, the Rust rate derivation, and a standard-library-only Python re
 codec written from the layout, not from the Rust code.
 
 `hostobs-proto` does **not** depend on `hostobs-model`. A path dependency changes
-`Cargo.lock`, and the Rust lane image caches exactly the committed lock, so `cargo
---locked` refuses to build ("cannot update the lock file"). Rather than hand-edit the
-lock (forbidden: the image's baked digest is the authority), the two crates are bound by
+`Cargo.lock`, and the Rust lane image deployed at the time (`tester-unified-rust:local`)
+caches exactly the committed lock and bakes its whole-file digest, so `cargo --locked`
+refuses to build ("cannot update the lock file"). Rather than hand-edit the lock
+(forbidden: the image's baked digest is the authority), the two crates are bound by
 behavior: both assert their vocabulary against `fixtures/wire/quality.json`, and the
 Python decoder asserts the same file. The cost of this choice is recorded as `HOB-3`
-together with the decision point that would remove it (the next image rebuild).
+together with the decision point that would remove it (the lanes' switch to an image
+built on the registry-set identity, which ignores workspace-member lock edits).
 
 The same constraint is why the tiny test-only JSON reader lives in `test-support/json.rs`
 (outside the workspace members) instead of pulling `serde_json` in as a dev-dependency.
@@ -243,7 +245,7 @@ budget, `checked_add` for a reading (`HOB-25`).
 
 **What SP-2 does *not* join (`HOB-26`).** The SP-2 tests compute a rate in a local helper
 rather than through `model::derive_rate`, because `kernel` cannot depend on `model` while the
-lane image pins a `Cargo.lock` that any path or dev dependency rewrites. The clock and
+deployed lane image pins a whole `Cargo.lock` that any path or dev dependency rewrites. The clock and
 identity half of SP-2 is evidenced here against hand-computed arithmetic, and the classifier
 half lives in `model` with `fixtures/rates/rates.json`; the two are joined by hand-checked
 numbers and the shared quality fixture, not by a call. Stating that is part of the evidence,
@@ -468,5 +470,6 @@ publication decision, while registry dependencies remain license-checked.
 Dependencies remain outside Git: the sampler's measured dependency floors are caret
 constraints in the workspace manifest, `Cargo.lock` pins the resolved graph, and the
 sibling tester image caches its `.crate` archives. Every lane is offline and locked, with
-a precheck tying the mounted lock bytes and each registry archive to the image build; a
-lane refuses before invoking Cargo when any of them disagree.
+a precheck tying the mounted lock's registry set (the downloaded packages and the lock
+version, not the workspace members' own entries) and each registry archive to the image
+build; a lane refuses before invoking Cargo when any of them disagree.

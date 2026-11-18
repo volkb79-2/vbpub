@@ -32,7 +32,24 @@ from .contracts import ContractError
 #: Closed set of provenance labels for a sizing input.
 BASES = ("measured", "declared")
 
+#: Which per-candidate statistic the seconds came from (``mean`` of a
+#: measurement's per-candidate sum fields, the older ``median`` of a document
+#: written before them, or a ``declared`` estimate).
+STATISTICS = ("mean", "median", "declared")
+
 SIZING_SCHEMA = "fleet-r2-sizing/1"
+
+#: The budget margin when nothing measured says otherwise (``--margin``'s old
+#: fixed default); with a measurement it is the FLOOR of the derived margin.
+DEFAULT_MARGIN = 1.10
+
+#: One-sided 95th-percentile factor of a sum of independent candidates: a
+#: shard of ``n`` candidates is budgeted at ``n x mean + TAIL_Z x stdev x
+#: sqrt(n)`` before the worker division, expressed as a margin over ``n x mean``
+#: (FD-031). An ESTIMATE: it assumes the shard's candidates are drawn like the
+#: measured ones, and a lane whose heavy candidates cluster in one shard can
+#: still exceed it, which a later instance continues.
+TAIL_Z = 1.645
 
 
 def _positive(value: object, where: str, *, kind: type | tuple[type, ...] = (int, float)) -> float:
@@ -77,6 +94,10 @@ class SizingInput:
     max_workers_per_instance: int
     baseline_seconds: float
     hosts: tuple[HostSizingInput, ...]
+    #: Coefficient of variation (stdev / mean) of the measured per-candidate
+    #: seconds; 0.0 when nothing measured it (declared, or a pre-sum document).
+    dispersion: float = 0.0
+    seconds_statistic: str = "declared"
 
 
 def _balanced_split(total: int, parts: int) -> list[int]:
@@ -93,22 +114,36 @@ def _minutes(seconds: float) -> int:
 def derive_sizing(
     sizing: SizingInput,
     *,
-    margin: float = 1.10,
+    margin: float | None = None,
     minimum_budget_seconds: int = 900,
     startup_allowance_seconds: int = 900,
 ) -> dict[str, Any]:
     """Return the ``fleet-r2-sizing/1`` document for one campaign.
 
-    *margin*, *minimum_budget_seconds* and *startup_allowance_seconds* are
+    *margin* is the EXPLICIT override of the budget margin: left ``None`` each
+    shard's margin is derived, ``max(DEFAULT_MARGIN, 1 + TAIL_Z x dispersion /
+    sqrt(candidates))``, so a measured heavy tail widens the budget of the
+    shards it threatens most (the small ones) and a flat lane keeps the fixed
+    default. The result is an estimate: a shard that still exceeds its budget
+    stops there, and its remainder continues in a later instance.
+
+    *minimum_budget_seconds* and *startup_allowance_seconds* are
     policy numbers with an explicit caller, never hidden constants: the
     defaults are what the CLI passes and what the consumer guide documents.
     """
-    if margin < 1.0 or not math.isfinite(margin):
+    if margin is not None and (margin < 1.0 or not math.isfinite(margin)):
         raise ContractError("margin: expected a finite factor of at least 1.0")
     _count(minimum_budget_seconds, "minimum_budget_seconds", minimum=1)
     _count(startup_allowance_seconds, "startup_allowance_seconds")
     if sizing.basis not in BASES:
         raise ContractError(f"basis: expected one of {', '.join(BASES)}")
+    if sizing.seconds_statistic not in STATISTICS:
+        raise ContractError(f"seconds_statistic: expected one of {', '.join(STATISTICS)}")
+    if (
+        isinstance(sizing.dispersion, bool) or not isinstance(sizing.dispersion, (int, float))
+        or not math.isfinite(float(sizing.dispersion)) or sizing.dispersion < 0
+    ):
+        raise ContractError("dispersion: expected a non-negative finite number")
     _count(sizing.candidate_count, "candidate_count")
     if sizing.candidate_count < 1:
         raise ContractError("candidate_count: an empty candidate set is nothing to judge")
@@ -200,13 +235,23 @@ def derive_sizing(
             # A shard with no candidate still pays the lane baseline: sizing
             # must never pretend an idle instance is free.
             seconds = float(sizing.baseline_seconds)
-        budget = max(minimum_budget_seconds, _minutes(seconds * margin))
+        if margin is not None:
+            shard_margin = float(margin)
+        elif candidates:
+            shard_margin = max(
+                DEFAULT_MARGIN,
+                1.0 + TAIL_Z * float(sizing.dispersion) / math.sqrt(candidates),
+            )
+        else:
+            shard_margin = DEFAULT_MARGIN
+        budget = max(minimum_budget_seconds, _minutes(seconds * shard_margin))
         shard_rows.append({
             "index": index,
             "host": host["id"],
             "candidate_count": candidates,
             "jobs": workers,
             "estimate_seconds": round(seconds, 3),
+            "margin": round(shard_margin, 3),
             "budget_seconds": budget,
             "outer_budget_seconds": budget + _minutes(startup_allowance_seconds),
         })
@@ -228,7 +273,13 @@ def derive_sizing(
         },
         "max_workers_per_instance": sizing.max_workers_per_instance,
         "baseline_seconds": round(float(sizing.baseline_seconds), 3),
-        "margin": round(float(margin), 3),
+        "margin": round(float(DEFAULT_MARGIN if margin is None else margin), 3),
+        "margin_source": (
+            "explicit" if margin is not None
+            else "derived" if sizing.seconds_statistic != "declared" else "default"
+        ),
+        "seconds_statistic": sizing.seconds_statistic,
+        "dispersion": round(float(sizing.dispersion), 6),
         "minimum_budget_seconds": minimum_budget_seconds,
         "startup_allowance_seconds": _minutes(startup_allowance_seconds),
         "shard_count": len(shard_rows),
@@ -276,6 +327,8 @@ def sizing_input_from_plan(
             "(the judge and container overhead beside the workers)"
         )
     basis = "declared"
+    statistic = "declared"
+    dispersion = 0.0
     seconds = demand["unit_seconds_ref"]
     memory = demand["unit_memory_bytes"]
     if measurement is not None:
@@ -290,8 +343,18 @@ def sizing_input_from_plan(
                 "memory_peak_bytes_median from finished candidates"
             )
         basis = "measured"
+        statistic = "median"
+        # FD-031: a shard's wall time is the SUM of its candidates, so the
+        # per-candidate MEAN over every candidate that occupied a worker is the
+        # matching estimator; a document written before the sum fields keeps
+        # its median.
+        mean = summary.get("cost_seconds_mean")
+        if mean is not None:
+            seconds, statistic = mean, "mean"
+            dispersion = float(summary.get("cost_seconds_stdev") or 0.0) / float(mean)
     if per_candidate_seconds is not None:
         seconds, basis = per_candidate_seconds, "declared"
+        statistic, dispersion = "declared", 0.0
     if per_candidate_memory_bytes is not None:
         memory, basis = per_candidate_memory_bytes, "declared"
     _positive(seconds, "per_candidate_seconds")
@@ -335,4 +398,6 @@ def sizing_input_from_plan(
         max_workers_per_instance=int(demand["efficient_upper_bound"]),
         baseline_seconds=float(demand.get("baseline_seconds", 0.0)),
         hosts=tuple(hosts),
+        dispersion=dispersion,
+        seconds_statistic=statistic,
     )

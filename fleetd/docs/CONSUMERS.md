@@ -509,6 +509,7 @@ schema_version = 1
 [r2]
 mode = "rolling-whole-target"
 slice_size = 40
+reserve_percent = 25
 cursor = ".assay/r2-scope-cursor.json"
 note = "each release judges the next 40 candidates"
 ```
@@ -531,7 +532,15 @@ The scope's `slice` object is the accounting: `changed_files`/`changed_candidate
 (candidates due again because their file content moved), `never_judged_candidates`,
 `pending_candidates` (not yet judged in this content), `judged_candidates`,
 `retired` (paths whose candidates left the plan, with their reason), and
-`new_pass` (a finished sweep restarting). Nothing is dropped silently.
+`new_pass` (a finished sweep restarting). Nothing is dropped silently. The
+changed candidates and the sweep share `slice_size`, and `reserve_percent` of
+it (default 25, set in `[r2]`, `0` restores the changed-first slice) is
+reserved for the never-judged and pending candidates, so a target edited every
+release still sweeps (FD-038). The slice also reports `reserve_percent`,
+`reserved_candidates`, `deferred_changed_candidates` and `deferred_changed_files`
+(each changed file whose candidates did not all fit, with `candidates` and
+`deferred_candidates`); a deferred file keeps its mark and continues next
+release. Changing the reserve changes what the next release judges.
 
 `--mode changed-lines|rolling-whole-target` overrides the declared mode. A
 cursor written by an older producer (`fleet-r2-scope-cursor/1`) is refused with
@@ -574,8 +583,12 @@ fleet sizing plan.json --measurement r2-week46.measurement.json
 The first call sizes from the lane's declared estimate and reports
 `"basis": "declared"`; the second uses a finished campaign's own medians and
 reports `"basis": "measured"`. Each shard row states its `candidate_count`,
-`jobs`, `estimate_seconds`, `budget_seconds` and `outer_budget_seconds`, so a
-lane's `budget` and the Run-Gate outer bound come from one derivation. Override
+`jobs`, `estimate_seconds`, `margin`, `budget_seconds` and `outer_budget_seconds`,
+so a lane's `budget` and the Run-Gate outer bound come from one derivation. A
+measured budget uses the per-candidate mean and a margin derived from the
+measured spread (`seconds_statistic`, `margin_source` and `dispersion` say so);
+`--margin` overrides that margin. The budget is an estimate: a shard that
+reaches it stops, and the remainder continues in a later instance. Override
 policy numbers with `--margin`, `--minimum-budget`, `--startup-allowance`,
 `--per-candidate-seconds` and `--per-candidate-memory`.
 
@@ -589,7 +602,11 @@ fleet measurement r2-week46
 `fleet measurement` writes `<campaign>.measurement.json` beside the campaign
 result in the same state directory. Each planned candidate carries its
 `outcome_bucket`, `elapsed_seconds` and `memory_peak_bytes`; the `summary`
-keeps medians over `killed` and `survived` candidates. A candidate the cgprofile
+keeps medians over `killed` and `survived` candidates and the additive
+per-candidate sum fields (`cost_candidates`, `cost_seconds_sum`,
+`cost_seconds_mean`, `cost_seconds_stdev`, `cost_seconds_max`) over every
+candidate that occupied a worker, `budget_exceeded` and `hung` ones at their
+bound. A candidate the cgprofile
 observer could not measure keeps `null`, never `0`, and the summary reports
 `memory_measured_candidates`, so you can see how much of the number is
 observed. Pass that file to `fleet sizing --measurement` next time.
