@@ -21,6 +21,7 @@ import time
 from typing import Any, Callable, Mapping, Sequence, TextIO
 
 from . import envelope
+from .conn import check_timeout
 from .wire import HostobsError, ServerError
 
 SOCKET_VARIABLE = "HOSTOBS_OBSERVER_SOCKET"
@@ -83,6 +84,7 @@ def send_mark(
     clock: Callable[[], int] = time.monotonic_ns,
 ) -> dict:
     """Send one ``annotate`` line and return its ``result``; failures raise :class:`MarkError`/`ServerError`."""
+    check_timeout(timeout_s)
     request = envelope.build_request("annotate", args, corr=1) + b"\n"
     deadline = clock() + int(timeout_s * _NS)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -145,8 +147,18 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--code")
     parser.add_argument("--attr", action="append", default=[], metavar="K=V")
     parser.add_argument("--require", action="store_true", help="exit 1 when the mark could not be written")
-    parser.add_argument("--timeout", type=float, default=5.0, metavar="SECONDS")
+    parser.add_argument("--timeout", type=_timeout_argument, default=5.0, metavar="SECONDS")
     return parser
+
+
+def _timeout_argument(text: str) -> float:
+    """A finite positive number of seconds (``inf``, ``nan`` and ``1e400`` are usage errors, exit 2)."""
+    try:
+        value = float(text)
+        check_timeout(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a finite positive number of seconds") from error
+    return value
 
 
 def main(

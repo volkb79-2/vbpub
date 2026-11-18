@@ -18,10 +18,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_probe import (  # noqa: E402
     BLOCK, DICT, ERROR_CODES, EVT, NS, REP, REQ, Rig, hello_result, json_bytes, raw_frame,
 )
-from hostobs_client.conn import COMPLETION_NS, FATAL_CODES, Connection, OperationTimeout, ProtocolError  # noqa: E402
+from hostobs_client.conn import COMPLETION_NS, Connection, OperationTimeout, ProtocolError  # noqa: E402
 from hostobs_client.envelope import EnvelopeError  # noqa: E402
 from hostobs_client.wire import ConnectionLost, ServerError, WireError  # noqa: E402
 
+DOCUMENTED_FATAL = frozenset(
+    ("unknown-mode", "unsupported-version", "hello-required", "bad-frame", "frame-too-large", "deadline",
+     "idle", "slow-client", "shutting-down")
+)
 SELECTION = {"entities": [{"all": True}], "metrics": ["cpu.usage_usec"]}
 
 
@@ -158,7 +162,7 @@ class Requests(RigCase):
                     conn.request("status", {})
                 self.assertEqual((raised.exception.code, raised.exception.message), (code, "msg"))
                 self.assertEqual(raised.exception.detail, {"pool": "rows"})
-                self.assertEqual(conn.closed, code in FATAL_CODES)
+                self.assertEqual(conn.closed, code in DOCUMENTED_FATAL)  # WIRE.md 5.4, spelled out here
                 rig.close()
 
     def test_non_fatal_error_keeps_the_connection(self) -> None:
@@ -337,30 +341,34 @@ class Requests(RigCase):
         def count() -> int:
             return len(os.listdir("/proc/self/fd"))
 
+        # The TEST keeps the probe end of every pair open until after the count, so only the
+        # connection's own close() can release the client end: a leaked client socket stays counted.
         before = count()
+        rigs = []
         for scenario in range(6):
             rig = Rig()
-            try:
-                conn = rig.connect()
-                if scenario == 1:
-                    rig.probe.send(struct.pack("<IBBHI", 12, 9, 0, 0, 2))
-                    with self.assertRaises(WireError):
-                        conn.request("status", {})
-                elif scenario == 2:
-                    rig.probe.rep_err(0, "idle")
-                    with self.assertRaises(ServerError):
-                        conn.request("status", {})
-                conn.close()
-            finally:
-                rig.close()
+            rigs.append(rig)
+            conn = rig.connect()
+            if scenario == 1:
+                rig.probe.send(struct.pack("<IBBHI", 12, 9, 0, 0, 2))
+                with self.assertRaises(WireError):
+                    conn.request("status", {})
+            elif scenario == 2:
+                rig.probe.rep_err(0, "idle")
+                with self.assertRaises(ServerError):
+                    conn.request("status", {})
+            conn.close()
         for _ in range(2):
             rig = Rig()
-            rig.probe.sock.close()
-            from hostobs_client.conn import Connection
-
+            rigs.append(rig)
+            rig.probe.sock.shutdown(socket.SHUT_WR)  # EOF without releasing the probe descriptor
             with self.assertRaises(ConnectionLost):
                 Connection(rig.client, "observe", client="c", timeout_s=1, clock=rig.clock)
-            rig.close()
+        try:
+            self.assertEqual(count(), before + len(rigs), "only the probe ends the test holds remain open")
+        finally:
+            for rig in rigs:
+                rig.close()
         self.assertEqual(count(), before)
 
 

@@ -16,9 +16,11 @@ import socket
 import struct
 import sys
 import tempfile
+import shutil
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -49,6 +51,7 @@ class PathServer:
         self.sock.listen(8)
         self.script = script
         self.count = 0
+        self.served = threading.Semaphore(0)  # released once per connection, after its fd is closed
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
 
@@ -65,6 +68,7 @@ class PathServer:
                 except OSError:
                     pass
             self.count += 1
+            self.served.release()
 
     def close(self) -> None:
         try:
@@ -88,11 +92,16 @@ def binary_hello(epoch_by_index):
     return script
 
 
+def socket_dir() -> str:
+    """A directory whose socket paths fit ``sun_path`` (107 bytes) whatever ``TMPDIR`` is."""
+    return tempfile.mkdtemp(prefix="hob", dir="/tmp")
+
+
 class TempDirCase(unittest.TestCase):
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.path = os.path.join(tmp.name, "observe.sock")
+        directory = socket_dir()
+        self.addCleanup(shutil.rmtree, directory, True)
+        self.path = os.path.join(directory, "observe.sock")
 
 
 class OpenAndReconnect(TempDirCase):
@@ -109,8 +118,21 @@ class OpenAndReconnect(TempDirCase):
         third = second.reconnect()
         self.assertEqual((third.session, third.epoch), (Session.CHANGED, 2))
         third.close()
-        server.thread.join(0.01)
+        for _ in range(3):  # the server thread has closed its end of each connection
+            self.assertTrue(server.served.acquire(timeout=10))
         self.assertEqual(len(os.listdir("/proc/self/fd")), before)
+
+    def test_socket_paths_fit_sun_path_under_a_long_tmpdir(self) -> None:
+        long_tmp = "/tmp/" + "x" * 145
+        with mock.patch.dict(os.environ, {"TMPDIR": long_tmp}), mock.patch.object(tempfile, "tempdir", None):
+            directory = socket_dir()
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = os.path.join(directory, "observe.sock")
+        self.assertLess(len(path.encode()), 100)
+        server = PathServer(path, binary_hello(lambda _i: 1))
+        self.addCleanup(server.close)
+        Connection.open(path, "observe", client="t", timeout_s=5).close()
+        self.assertTrue(server.served.acquire(timeout=10))
 
     def test_unreachable_paths_close_their_socket(self) -> None:
         before = len(os.listdir("/proc/self/fd"))

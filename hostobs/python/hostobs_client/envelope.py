@@ -53,7 +53,7 @@ def _fail(kind: str, **detail: object) -> EnvelopeError:
 # ------------------------------------------------------------------------------ text rules
 
 _STRING_RE = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"', re.DOTALL)
-_KEY_RE = re.compile(r'"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"')
+_KEY_RE = re.compile(r'"[^"\\\x00-\x1f]*(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})[^"\\\x00-\x1f]*)*"')
 _WS_RE = re.compile(r"[ \t\n\r]*")
 _BRACKETS = b"[]{}"
 _DROP = bytes(byte for byte in range(256) if byte not in _BRACKETS)
@@ -61,7 +61,12 @@ _DELTA = tuple((1 if chr(byte) in "[{" else -1 if chr(byte) in "]}" else 0) for 
 
 
 def max_depth(raw: bytes) -> int:
-    """The deepest nesting of ``raw`` counting every ``{``/``[`` outside strings (C-speed passes)."""
+    """The deepest nesting of ``raw`` counting every ``{``/``[`` outside strings (C-speed passes).
+
+    ``raw`` MUST be valid JSON text: on an unterminated string the string regex would retry from every
+    later quote (quadratic). Callers parse first (the C decoder is linear and refuses such text) and
+    count depth only on text that parsed; a depth bomb stops the decoder at the recursion limit.
+    """
     stripped = _STRING_RE.sub(b"", raw).translate(None, _DROP)
     return max(accumulate(map(_DELTA.__getitem__, stripped)), default=0)
 
@@ -108,9 +113,13 @@ def _text_of(data: Any) -> tuple[bytes, str]:
         raise _fail("json-text", reason="not UTF-8") from error
     if raw[:1] != b"{" or raw[-1:] != b"}":
         raise _fail("json-text", reason="not exactly one object")
+    return raw, text
+
+
+def _check_depth(raw: bytes) -> None:
+    """Refuse nesting deeper than 8; ``raw`` must already be valid JSON text (see ``max_depth``)."""
     if max_depth(raw) > MAX_DEPTH:
         raise _fail("json-text", reason="nesting deeper than 8")
-    return raw, text
 
 
 def _value(text: str, start: int) -> tuple[Any, int]:
@@ -169,16 +178,19 @@ def _members(text: str, start: int, end: int) -> list[Member]:
 
 def members(data: Any) -> tuple[str, list[Member]]:
     """The text and top-level members of ``data`` (one JSON object, WIRE.md 4.2)."""
-    _, text = _text_of(data)
-    return text, _members(text, 0, len(text))
+    raw, text = _text_of(data)
+    found = _members(text, 0, len(text))  # linear, refuses an unterminated string before any depth count
+    _check_depth(raw)
+    return text, found
 
 
 def parse_object(data: Any) -> dict:
     """The decoded JSON object of ``data`` under every text rule of WIRE.md 4.2 (any depth)."""
-    _, text = _text_of(data)
+    raw, text = _text_of(data)
     value, end = _value(text, 0)
     if end != len(text) or not isinstance(value, dict):
         raise _fail("json-text", reason="not exactly one object")
+    _check_depth(raw)
     return value
 
 
@@ -304,6 +316,8 @@ def build_request(verb: str, args: dict, corr: int | None = None) -> bytes:
         envelope = {"corr": corr, **envelope}
     try:
         raw = json.dumps(envelope, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+    except RecursionError as error:
+        raise ValueError("request nests deeper than 8") from error
     except (TypeError, UnicodeEncodeError) as error:
         raise ValueError(f"request is not encodable as JSON: {error}") from error
     if b"\\" in json.dumps(verb, ensure_ascii=False).encode("utf-8")[1:-1]:

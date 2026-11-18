@@ -56,8 +56,12 @@ class ScriptedSocket:
         self.timeouts: list[float] = []
         self.reset_after: int | None = None  # raise ECONNRESET once this many bytes were read
         self.read = 0
+        self.exact = False  # a timeout advances the clock by exactly the timeout (no extra nanosecond)
+        self.on_send = None  # called with the bytes about to be sent (may advance the clock)
 
     def settimeout(self, value: float | None) -> None:
+        # 0 would make a real socket non-blocking and a negative value raises: both are client bugs
+        assert value is not None and value > 0, f"non-positive socket timeout {value!r}"
         self.timeout = value
         self.timeouts.append(value)
 
@@ -69,12 +73,14 @@ class ScriptedSocket:
         try:
             got = self.sock.recv_into(view, 0, socket.MSG_DONTWAIT)
         except BlockingIOError:
-            self.clock.advance(self.timeout * NS + 1)
+            self.clock.advance(round(self.timeout * NS) + (0 if self.exact else 1))
             raise TimeoutError("timed out") from None
         self.read += got
         return got
 
     def sendall(self, data: bytes) -> None:
+        if self.on_send is not None:
+            self.on_send(data)
         self.sock.sendall(data)
 
     def close(self) -> None:

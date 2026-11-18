@@ -79,6 +79,32 @@ class ProtocolError(LocalError):
     )
 
 
+#: The longest ``timeout_s`` accepted (one year): ``socket.settimeout`` overflows far below ``inf``.
+U64_MAX = (1 << 64) - 1
+MAX_TIMEOUT_S = 365 * 24 * 3600.0
+#: Bytes a connection may hold in undelivered query blocks before ``queue-overflow``.
+QUERY_BYTES = 64 * 1024 * 1024
+
+
+def check_timeout(timeout_s: object) -> None:
+    """``ValueError`` unless ``timeout_s`` is a finite number in ``(0, MAX_TIMEOUT_S]``."""
+    if (
+        isinstance(timeout_s, bool)
+        or not isinstance(timeout_s, (int, float))
+        or not 0 < timeout_s <= MAX_TIMEOUT_S
+    ):
+        raise ValueError(f"timeout_s must be a number in (0, {MAX_TIMEOUT_S:g}]")
+
+
+def check_arguments(level: object, client: object, timeout_s: object) -> None:
+    """Validate the arguments of ``open``/``Connection`` (``ValueError``), before any socket exists."""
+    if level not in LEVELS:
+        raise ValueError(f"level must be one of {LEVELS}")
+    if not isinstance(client, str) or not 0 < len(client.encode("utf-8")) <= 64:
+        raise ValueError("client must be a non-empty string of at most 64 bytes")
+    check_timeout(timeout_s)
+
+
 def _protocol(kind: str, **detail: object) -> ProtocolError:
     return ProtocolError(kind, detail)
 
@@ -92,6 +118,7 @@ class _Stream:
         self.live = live
         self.queue: deque[Block] = deque()
         self.received = 0
+        self.sizes: deque[int] = deque()  # frame length of each queued block (parallel to ``queue``)
         self.header_dropped = 0
         self.client_dropped = 0
         self.discard = False
@@ -186,7 +213,7 @@ class Subscription:
         stream = self._stream
         if stream.end is not None or self._connection._sock is None:
             stream.discard = True
-            stream.queue.clear()
+            self._connection._drop_queue(stream)
             return
         self._connection._discard(stream)
         try:
@@ -227,12 +254,7 @@ class Connection:
         path: str | None = None,
         dicts: StreamDicts | None = None,
     ) -> None:
-        if level not in LEVELS:
-            raise ValueError(f"level must be one of {LEVELS}")
-        if not isinstance(client, str) or not 0 < len(client.encode("utf-8")) <= 64:
-            raise ValueError("client must be a non-empty string of at most 64 bytes")
-        if not timeout_s > 0:
-            raise ValueError("timeout_s must be positive")
+        check_arguments(level, client, timeout_s)
         self._sock: Any = sock
         self._expected_level = level
         self._client = client
@@ -247,6 +269,7 @@ class Connection:
         self._waiting: set[int] = set()
         self._replies: dict[int, envelope.Rep] = {}
         self._streams: dict[int, _Stream] = {}
+        self._query_bytes = 0
         self.closing_reason: str | None = None
         self.hello: dict = {}
         self.session = Session.FIRST
@@ -270,7 +293,15 @@ class Connection:
         clock: Callable[[], int] = time.monotonic_ns,
         _dicts: StreamDicts | None = None,
     ) -> Connection:
-        """Connect to the ``AF_UNIX`` stream socket ``path`` and complete the handshake."""
+        """Connect to the ``AF_UNIX`` stream socket ``path`` and complete the handshake.
+
+        Arguments are validated before the socket is created (``ValueError``). A connect failure
+        (missing path, refused, permission) surfaces as the ``OSError`` the system raised, unchanged,
+        and nothing leaks: ``require_profiling`` maps it to ``unreachable`` with its errno. Everything
+        after the connect is a ``ConnectionLost``, ``OperationTimeout``, ``ServerError`` or
+        ``WireError`` (WIRE.md 1.4 refusals included).
+        """
+        check_arguments(level, client, timeout_s)
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             sock.settimeout(timeout_s)
@@ -339,6 +370,7 @@ class Connection:
         for stream in self._streams.values():
             stream.discard = True
         self._streams.clear()
+        self._query_bytes = 0
         self._waiting.clear()
         self._replies.clear()
         self._dicts.reset()
@@ -375,30 +407,36 @@ class Connection:
         if minor > PROTO_MINOR:
             raise _protocol("hello-mismatch", why="server minor above the client's", minor=minor)
         corr = self._allocate()
-        self._request_frame(
-            "hello", {"client": self._client, "proto": {"major": PROTO_MAJOR, "minor": PROTO_MINOR}}, corr, deadline
-        )
+        hello_args = {"client": self._client, "proto": {"major": PROTO_MAJOR, "minor": PROTO_MINOR}}
+        hello_len = FRAME_HEADER_LEN + len(envelope.build_request("hello", hello_args))
+        self._request_frame("hello", hello_args, corr, deadline)
         rep = self._await(corr, deadline)
         result = self._reply_result(rep)
-        self._check_hello(result, minor)
+        self._check_hello(result, minor, hello_len)
         self.hello = result
         self.minor = minor
         self.session = self._dicts.on_hello(result["boot_id"], result["epoch"])
         if self._reader.buffered_len == 0:
             self._reader = FrameReader(min(MAX_FRAME_BYTES, result["limits"]["max_frame_bytes"]), COMPLETION_NS)
 
-    def _check_hello(self, result: dict, minor: int) -> None:
+    def _check_hello(self, result: dict, minor: int, hello_len: int) -> None:
         def bad(why: str, **detail: object) -> ProtocolError:
             return _protocol("hello-mismatch", why=why, **detail)
 
         proto = result.get("proto")
-        if not isinstance(proto, dict) or proto.get("major") != PROTO_MAJOR or proto.get("minor") != minor:
+        if (
+            not isinstance(proto, dict)
+            or type(proto.get("major")) is not int
+            or type(proto.get("minor")) is not int
+            or proto["major"] != PROTO_MAJOR
+            or proto["minor"] != minor
+        ):
             raise bad("proto disagrees with the prefix", proto=proto)
         if result.get("level") != self._expected_level:
             raise bad("level differs from the requested one", got=result.get("level"), want=self._expected_level)
         boot_id, epoch = result.get("boot_id"), result.get("epoch")
-        if type(boot_id) is not str or type(epoch) is not int or epoch < 0:
-            raise bad("boot_id/epoch have the wrong type")
+        if type(boot_id) is not str or type(epoch) is not int or not 0 <= epoch <= U64_MAX:
+            raise bad("boot_id/epoch have the wrong type or range")
         for key in ("features", "verbs", "quality_codes"):
             if type(result.get(key)) is not list:
                 raise bad(f"{key} is not a list")
@@ -411,6 +449,10 @@ class Connection:
             value = limits.get(key)
             if type(value) is not int or not 0 <= value <= envelope.U32_MAX:
                 raise bad("a limit is missing or not a u32", key=key)
+        if limits["max_request_bytes"] < hello_len:
+            raise bad("max_request_bytes cannot carry the client's own hello", max_request_bytes=limits["max_request_bytes"])
+        if limits["max_frame_bytes"] < FRAME_HEADER_LEN:
+            raise bad("max_frame_bytes is below a frame header", max_frame_bytes=limits["max_frame_bytes"])
 
     # ------------------------------------------------------------------ socket plumbing
 
@@ -555,13 +597,28 @@ class Connection:
         block = decode_block(frame.data, self._dicts.held(frame.corr))
         self._dicts.accept(frame.corr, block)
         stream.header_dropped += block.header.dropped
+        size = len(frame.data)
         if stream.live:
             if len(stream.queue) >= LIVE_QUEUE:
-                stream.queue.popleft()
+                self._pop(stream)
                 stream.client_dropped += 1
-        elif len(stream.queue) >= QUERY_QUEUE:
-            raise _protocol("queue-overflow", corr=frame.corr)
+        elif len(stream.queue) >= QUERY_QUEUE or self._query_bytes + size > QUERY_BYTES:
+            raise _protocol("queue-overflow", corr=frame.corr, queued=len(stream.queue), bytes=self._query_bytes)
+        else:
+            self._query_bytes += size
         stream.queue.append(block)
+        stream.sizes.append(size)
+
+    def _pop(self, stream: _Stream) -> Block:
+        block = stream.queue.popleft()
+        size = stream.sizes.popleft()
+        if not stream.live:
+            self._query_bytes = max(0, self._query_bytes - size)  # close() already zeroed it
+        return block
+
+    def _drop_queue(self, stream: _Stream) -> None:
+        while stream.queue:
+            self._pop(stream)
 
     def _on_end(self, frame: RawFrame, payload: memoryview) -> None:
         stream = self._streams.get(frame.corr)
@@ -626,7 +683,8 @@ class Connection:
         """Subscribe to ``selection`` every ``interval_ms`` (WIRE.md 4.7)."""
         stream = self._open_stream("subscribe", {"selection": selection, "interval_ms": interval_ms}, live=True)
         result = stream.result
-        if result.get("sub") != stream.corr or result.get("interval_ms") != interval_ms:
+        sub, echoed = result.get("sub"), result.get("interval_ms")
+        if type(sub) is not int or type(echoed) is not int or sub != stream.corr or echoed != interval_ms:
             self._streams.pop(stream.corr, None)
             self._fail(_protocol("bad-reply", why="subscribe result", result=result))
         return Subscription(self, stream, interval_ms)
@@ -635,7 +693,7 @@ class Connection:
 
     def _discard(self, stream: _Stream) -> None:
         stream.discard = True
-        stream.queue.clear()
+        self._drop_queue(stream)
         self._dicts.close(stream.corr)
 
     def _next_block(self, stream: _Stream, wait_ns: int) -> Block:
@@ -643,7 +701,7 @@ class Connection:
             deadline = self._clock() + wait_ns
             self._pump(deadline, lambda: bool(stream.queue) or stream.end is not None or self._sock is None)
         if stream.queue:
-            return stream.queue.popleft()
+            return self._pop(stream)
         end = stream.end
         if end is None:
             if self._sock is None:
