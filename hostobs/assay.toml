@@ -16,7 +16,8 @@
 #
 #   judged set: 33 `src/*.rs` files of crates/model, proto, kernel and store (34 since
 #   P2a2 added and declared `crates/proto/src/stream.rs`, 36 since P2c added `envelope.rs` and
-#   `stream_dicts.rs`; the measurements below are of the 33)
+#   `stream_dicts.rs`, 37 since P2b added and declared `crates/proto/src/hub.rs`; the
+#   measurements below are of the 33)
 #   coverage:   15100 / 15723 executable lines = 96.0377 %
 #               model 98.09 % (2004/2043), proto 99.71 % (3454/3464),
 #               kernel 93.52 % (2627/2809), store 94.71 % (7015/7407)
@@ -134,6 +135,7 @@ targets = [
   "crates/proto/src/envelope.rs",
   "crates/proto/src/error.rs",
   "crates/proto/src/frame.rs",
+  "crates/proto/src/hub.rs",
   "crates/proto/src/quality.rs",
   "crates/proto/src/read.rs",
   "crates/proto/src/stream.rs",

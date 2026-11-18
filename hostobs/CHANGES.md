@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Added (P2b: the send hub; `HOB-54` stays open)
+
+- **`proto::hub::SendHub`** (WIRE.md §5.3, §12): `QueueLimits`, `ConnId`, `add`/`remove`/
+  `drain_unpinned`, `push_control`/`push_live`/`push_query`, `query_ready`, `end_stream`, `head`
+  (pins and stamps `corr` and `dropped` into a private prefix)/`head_partial`/`wrote`, `poll`,
+  `queued`/`uid_pools`/`global_pools`, `TickForms`, `Close`, `LiveOutcome`, `QueryOutcome`,
+  `StreamCounts`, `Pools`. Std-only; one unit test per §5.3 operation row and consequence and a
+  pool-exactness checker over a pseudo-random run. The decisions the tables leave open are the
+  `Implemented` paragraph of §5.3.
+- **Hub fixtures** (WIRE.md §11.4): 19 `fixtures/stream/hub-*.json` with hand-derived
+  expectations, written by `python/reference/make_hub_fixtures.py`, pinned byte for byte by
+  `python/tests/test_hub_fixtures.py` and replayed by `crates/proto/tests/hub_fixtures.rs`.
+- **Stall clock.** A push restarts `last_progress_ns` only when the queue was empty before the
+  push; a coalesce or a shed that empties the queue does not restart it, so a socket that
+  accepts nothing is closed after `stall_ms` however often a tick replaces the queued one.
+- **Drain, ids, first push.** `drain_unpinned` of a dictionary-bearing Live tick sets
+  `needs_dict` for its stream (the tick is still not counted); a `ConnId` is never 0; the first
+  push of a stream is the dictionary form whatever generation it carries.
+- **Gates.** `crates/proto/src/hub.rs` is a declared `assay-r1` target (37 judged files together
+  with `envelope.rs` and `stream_dicts.rs`).
+- **Hand mutants.** `M1d-14`'s Python patch follows the directory guards `hostobs_wire_ref.py`
+  has since the P2a1 codec (two patches, one per guard): 54 stored patches, `--dry-run` 0 stale.
+
 ### Added (P3b: `python/hostobs_client` connection, `require_profiling`, `hostobs-mark`; the P3 part of `HOB-54` closed)
 
 - **Review round**: the envelope text checks are linear on hostile input (parse first, count depth only on parsed
