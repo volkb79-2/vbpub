@@ -175,6 +175,74 @@ def test_ends_the_kept_child():
     assert not Path(f"/proc/{_pid(pytester)}").exists()
 
 
+def _end(process):
+    process.kill()
+    process.wait(timeout=30)
+
+
+def test_a_recorded_child_that_is_gone_or_replaced_is_never_signalled(monkeypatch):
+    """The snapshot can be stale: another start time, another parent, or a reaped pid."""
+    own = subprocess.Popen(["sleep", "30"])
+    parent = subprocess.Popen(
+        ["bash", "-c", "sleep 30 >/dev/null 2>&1 & echo $!; wait"], stdout=subprocess.PIPE, text=True,
+    )
+    grandchild = int(parent.stdout.readline())
+    done = subprocess.Popen(["true"])
+    done.wait(timeout=30)
+    calls = []
+
+    def spy(*args):
+        calls.append(args)
+        raise AssertionError("nothing may be signalled for a stale record")
+
+    try:
+        own_start = conftest.read_stat(own.pid)[3]
+        grandchild_start = conftest.read_stat(grandchild)[3]
+        with monkeypatch.context() as patch:
+            patch.setattr(conftest.signal, "pidfd_send_signal", spy)
+            patch.setattr(os, "kill", spy)
+            patch.setattr(os, "killpg", spy)
+            assert conftest.remove_if_still_ours(own.pid, own_start + "0") is None  # start time
+            assert conftest.remove_if_still_ours(grandchild, grandchild_start) is None  # not ours
+            assert conftest.remove_if_still_ours(done.pid, "0") is None  # reaped elsewhere
+            patch.setattr(conftest, "direct_children", lambda: {
+                (own.pid, own_start + "0"): ("sleep", "S"), (done.pid, "0"): ("true", "S"),
+            })
+            assert conftest.remove_new_children(set()) == []  # skipped, so not reported either
+        assert not calls
+        assert conftest.read_stat(own.pid)[1] != "Z" and conftest.read_stat(grandchild)[1] != "Z"
+    finally:
+        os.kill(grandchild, 9)  # a process this test started
+        parent.stdout.close()
+        _end(parent)
+        _end(own)
+
+
+def test_pidfd_send_signal_is_the_only_signalling_call(monkeypatch):
+    child = subprocess.Popen(["sleep", "30"])
+    sent = []
+    real = conftest.signal.pidfd_send_signal
+
+    def record(fd, signum, *rest):
+        sent.append(signum)
+        return real(fd, signum, *rest)
+
+    def forbidden(*_args):
+        raise AssertionError("signal by pid is forbidden: the pid may have been recycled")
+
+    try:
+        start = conftest.read_stat(child.pid)[3]
+        with monkeypatch.context() as patch:
+            patch.setattr(conftest.signal, "pidfd_send_signal", record)
+            patch.setattr(os, "kill", forbidden)
+            patch.setattr(os, "killpg", forbidden)
+            assert conftest.remove_if_still_ours(child.pid, start) == -9
+        assert sent == [conftest.signal.SIGKILL]
+        assert conftest.read_stat(child.pid) is None, "killed and reaped"
+    finally:
+        child.wait(timeout=30)  # already reaped by the guard function: returns at once
+
+
 def test_direct_children_lists_zombies_and_live_children_by_pid_and_state():
     live = subprocess.Popen(["sleep", "30"])
     dying = subprocess.Popen(["sleep", "30"])
