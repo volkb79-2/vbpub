@@ -70,6 +70,39 @@ worktree that lacks `.controller-state` or `plan.yaml`, the run prints a WARNING
 naming them: the real state lives in the main checkout. What is state and what is work:
 [`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md).
 
+## Clean finished-run scratch (`ctl-clean.sh`)
+
+`scripts/controller/ctl-clean.sh [--apply] [--age-hours N] [--i-know-the-age] [--repo DIR]`
+is a dry-run by default. It considers only `run-gate-gitcfg-*`,
+`run-gate-test-bin-*`, `run-gate-test-invoke*`, and `assay-liveness-*` at the
+top level of `.run-gate`; history, evidence, `artifacts/`, `.worktrees/`, and
+unlisted entries are report-only. One `find -newermt` traversal marks a whole
+top-level entry active, and the default age is `max(48, longest s/m/h/d budget
+in a depth<=3 run-gate.toml or assay.toml + 1)` hours. Budget files are parsed
+with Python `tomllib`; an unreadable or invalid budget is an inspection failure,
+not a fallback to 48 hours.
+
+Apply requires existing `.ctl-clean-quarantine-*` entries to be removed by the
+operator first (the script prints the exact command). It snapshots mount points
+once, quarantines selected entries, rechecks their mtimes, scans the current PID
+namespace's `/proc` cwd, root, and fd links once immediately before removal,
+restores anything still active as `active-process` or changed activity, and uses
+`rm -rf --one-file-system`. Find, metadata, recount, `findmnt`, `/proc`, and `du`
+read failures count as inspection failures and make the command exit 1. The
+summary keeps eligible, removed, failed, and inspection-failed independent.
+
+The guarantee is for a quiet host. Run apply with no gate running; the script
+prints that sentence before applying. A hostile or concurrent replacement of
+`.run-gate` by a symlink after the startup check, and a process in another PID
+namespace that writes after the final recheck, are out of scope. Processes in
+other PID namespaces are covered otherwise only by the age rule and its
+budget-plus-one floor. `--i-know-the-age` lowers only the lane-budget floor; it
+is not evidence that an entry is finished or idle.
+
+This script never prunes Git worktree registrations. `git worktree prune` is the
+operator's call; it can remove a portable worktree whose directory is only
+temporarily unavailable.
+
 ## Controller loop
 
 Use this order for each implementation task.

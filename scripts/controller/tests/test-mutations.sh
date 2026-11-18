@@ -23,14 +23,14 @@ if ! CONTROLLER_TEST_PARALLEL_OD_STARTS=0 bash "$SCRIPT_DIR/test-wrappers.sh" > 
   exit 1
 fi
 echo 'PASS unmutated wrapper tests before wrapper mutation checks'
-for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh test-pi-impl.sh; do
+for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh test-pi-impl.sh test-ctl-clean.sh; do
   if ! bash "$SCRIPT_DIR/$baseline" > "$ROOT/${baseline%.sh}-unmutated.log" 2>&1; then
     cat "$ROOT/${baseline%.sh}-unmutated.log" >&2
     echo "FAIL: unmutated $baseline must pass before its mutants are judged" >&2
     exit 1
   fi
 done
-echo 'PASS unmutated job-check and hardening tests before their mutation checks'
+echo 'PASS unmutated focused suites before their mutation checks'
 export CONTROLLER_TEST_PARALLEL_OD_STARTS=0
 expect_killed() {
   local label=$1; shift
@@ -142,6 +142,12 @@ expect_killed ctl-status-pi-route \
   env CTL_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/ctl-status-pi-route.sh" bash "$SCRIPT_DIR/test-ctl-status.sh"
 expect_killed ctl-status-pi-stall \
   env CTL_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/ctl-status-pi-stall.sh" bash "$SCRIPT_DIR/test-ctl-status.sh"
+for ctl_clean_mutant in mount-guard process-guard quarantine-gate minute-budget \
+                       invalid-budget one-filesystem activity-failure; do
+  expect_killed "ctl-clean-$ctl_clean_mutant" \
+    env CTL_CLEAN_SCRIPT="$ROOT/mutants/scripts/controller/ctl-clean-$ctl_clean_mutant.sh" \
+      bash "$SCRIPT_DIR/test-ctl-clean.sh"
+done
 expect_killed hx-provider-identity-guard \
   env HX_WRAPPER="$ROOT/mutants/scripts/controller/hx-identity.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed release-evidence-archive \

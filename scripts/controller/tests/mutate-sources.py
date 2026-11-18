@@ -89,6 +89,33 @@ mutant("scripts/controller/release-from-wt.sh", "release-clean.sh",
 mutant("scripts/controller/push-image.sh", "push-image-status.sh",
        'for rc in "${statuses[@]}"; do (( rc == 0 )) || exit 1; done', ': # deliberately ignore pipeline exit statuses')
 
+# ctl-clean.sh: each mutant removes one independently testable safety decision.
+mutant("scripts/controller/ctl-clean.sh", "ctl-clean-mount-guard.sh",
+       '[[ -z ${ACTIVE[$name]+x} && -z ${MOUNTED[$name]+x} ]] && pending+=("$name")',
+       '[[ -z ${ACTIVE[$name]+x} ]] && pending+=("$name")')
+mutant("scripts/controller/ctl-clean.sh", "ctl-clean-process-guard.sh",
+       '      elif [[ -n ${PROC_ACTIVE[$name]+x} ]]; then',
+       '      elif false; then')
+mutant("scripts/controller/ctl-clean.sh", "ctl-clean-quarantine-gate.sh",
+       'if ((${#LEFTOVER[@]} > 0)); then',
+       'if false; then')
+mutant("scripts/controller/ctl-clean.sh", "ctl-clean-minute-budget.sh",
+       'kind = {"s": 1 / 3600, "m": 1 / 60, "h": 1, "d": 24}',
+       'kind = {"s": 1 / 3600, "m": 0, "h": 1, "d": 24}')
+mutant("scripts/controller/ctl-clean.sh", "ctl-clean-invalid-budget.sh",
+       '    except ValueError as exc:\n        raise SystemExit(str(exc))',
+       '    except ValueError:\n        pass')
+mutant("scripts/controller/ctl-clean.sh", "ctl-clean-one-filesystem.sh",
+       'delete_cmd=(rm -rf --one-file-system --)',
+       'delete_cmd=(rm -rf --)')
+mutant("scripts/controller/ctl-clean.sh", "ctl-clean-activity-failure.sh",
+       '  if ! find "$RG" -mindepth 1 -newermt "$AGE_H hours ago" -printf \'%P\\0\' \\\n'
+       '      > "$TMP/active"; then\n'
+       '    inspect_fail \'cannot inspect .run-gate activity\'\n'
+       '  fi',
+       '  find "$RG" -mindepth 1 -newermt "$AGE_H hours ago" -printf \'%P\\0\' \\\n'
+       '    > "$TMP/active" || true')
+
 # skills-sync.sh: five ways the ownership/staleness contract can be weakened.
 # Each turns a state the script must tell apart into its neighbour: a foreign
 # stamp becomes ours, a local edit is clobbered, a stale source reads as
