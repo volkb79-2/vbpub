@@ -552,7 +552,7 @@ and new callers would not exclude each other).
 - The runner repository name on the host is `vbpub` unless
   `CONTROLLER_REMOTE_REPO_NAME` is set; it is no longer derived from the
   checkout directory name.
-- The throwaway detached worktree is `$CONTROLLER_HOME/remote-gate-work/rgw-<time>-<pid>`
+- The throwaway detached worktree is `$CONTROLLER_REMOTE_GATE_WORKROOT/rgw-<time>-<pid>` (default `$CONTROLLER_HOME/remote-gate-work`; set the variable to a path outside every IDE workspace folder, for example `/tmp/ctl-remote-gate-work`, so the editor's Git extension does not adopt each scratch worktree as a repository)
   (the old tool used `<repo>/.worktrees/rgw-*`); it is removed when the run ends.
 
 ## Run several lanes in a row (`chain-run.sh`)
