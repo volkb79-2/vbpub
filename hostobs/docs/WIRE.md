@@ -116,9 +116,10 @@ Two decoder rules make the layout guarantees hold for **received** frames, not o
   frame has no header, so every accepted frame starts with the header.
 Hence **every body starts at a frame offset ≡ 0 (mod 8)**, a BLOCK's `len` is a multiple of 8, the
 header body sits at `16 + 8·n_sec`, and the frame ends exactly after the last body (`trailing-bytes`
-otherwise). Today neither decoder enforces the two rules (`frame.rs` `decode_block` lines 1086-1108
-take any body length; unknown kinds are exempt from the order check at 1114-1126; the Python reference
-`decode_frame` lines 509-535 likewise): §13 V-11, P2. In `fixtures/wire/live-block.bin` (344 B, 5
+otherwise). Today neither decoder enforces the two rules (`frame.rs` `decode_block` body loop at
+`body_pos`, post-P0 lines 1115-1131, takes any body length; unknown kinds are exempt from the order
+check at `last_rank`, post-P0 lines 1143-1154; the Python reference `decode_frame` body loop, post-P0
+lines 523-531, likewise): §13 V-11, P2. In `fixtures/wire/live-block.bin` (344 B, 5
 sections: header, dictionary, rows, 2 columns) the bodies start at offset 56 and `dropped` sits at 128.
 
 3.2 **Sections** (version 1 each; a known kind with another version is refused even when optional,
@@ -938,7 +939,7 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 
 | ID | Where | Code / plan says | WIRE.md says | Work |
 |---|---|---|---|---|
-| V-1 | `frame.rs` `time_body_len` (line 741), `hostobs_wire_ref.py` `time_body_len` (line 380) on this branch's base | `align8(14·n)` | `align8(15·n)` | fixed by the P0 bug fold-in (merged to main; commit `e13027cfe`: `TIME_BUCKET_BYTES = 15`, fixture `history-five-buckets`, no minor bump) |
+| V-1 | `frame.rs` `time_body_len` (line 741 on this document's base; post-P0 line 768), `hostobs_wire_ref.py` `time_body_len` (line 380 on the base; post-P0 line 384) | `align8(14·n)` | `align8(15·n)` | fixed by the P0 bug fold-in (merged to main; commit `e13027cfe`: `TIME_BUCKET_BYTES = 15`, fixture `history-five-buckets`, no minor bump) |
 | V-2 | `frame.rs` `decode_block` | references checked only against an in-frame dictionary | also against the held generation | `HOB-46` |
 | V-3 | `frame.rs` `decode_block` | bucket `agg` not checked against the metric mask | `aggregation-not-permitted` | `HOB-47` |
 | V-4 | plan §B.2 `TIME` | no subject; `series_batch` returns several entities | kind 6 `subject` | `HOB-48` |
@@ -948,9 +949,9 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | V-8 | plan §B.3 | `bad_request` | `bad-request` | none (D-W12) |
 | V-9 | plan §B.3 dictionary text | ≤ 256 B UTF-8 | also no bytes < 0x20 or 0x7F (as `dict.rs` `validate`) | none |
 | V-10 | `hostobs_wire_ref.py` line 5 | cites `hostobs/docs/WIRE-COLUMN-CODEC.md` (does not exist) | this file | `HOB-49` |
-| V-11 | `frame.rs` `decode_block` 1086-1126, `hostobs_wire_ref.py` `decode_frame` 509-535 | any body length; an unknown section may precede the header (measured on the Python reference: an optional `len = 5` section decodes, frame `len` 357; placed first, the header body starts at 69) | §3.1 decoder rules | `HOB-51` (P2, fixtures §11.3) |
+| V-11 | `frame.rs` `decode_block` (post-P0 lines 1115-1154), `hostobs_wire_ref.py` `decode_frame` (post-P0 lines 523-531) | any body length; an unknown section may precede the header (measured on the Python reference: an optional `len = 5` section decodes, frame `len` 357; placed first, the header body starts at 69) | §3.1 decoder rules | `HOB-51` (P2, fixtures §11.3) |
 | V-12 | `dict.rs` `decode` (891 → `intern` 596) | metric name repeated with other facts → `conflicting-column` | `duplicate-dictionary-entry` (Python reference already, measured) | `HOB-52` (P2) |
-| V-13 | `hostobs_wire_ref.py` `decode_frame` 484-493 | buffer length and `SECTIONED` checked before `not-a-block` | §3.10 precedence (Rust order) | `HOB-53` (P2) |
+| V-13 | `hostobs_wire_ref.py` `decode_frame` (post-P0 lines 495-504) | buffer length and `SECTIONED` checked before `not-a-block` | §3.10 precedence (Rust order) | `HOB-53` (P2) |
 | V-14 | plan §B.3 | `(epoch, dict_gen)` probe-global | generation per selection stream / query stream; client rule relative to held | none (D-W5) |
 | V-15 | plan §B.4 | full queue drops the oldest unsent BLOCK, counted in "the next `HDR.dropped`"; `DICT/REP/EVT` over budget close | at most one unpinned tick per stream, drop-oldest across streams (victim: the largest connection with an unpinned Live entry, else the incoming tick), stamp at pin; the plan's separate query budget is kept as its own Query pool (4 MiB / connection, 4 MiB / uid, 16 MiB global, sizes are WIRE.md's) whose blocks are never dropped and never shed a tick; per-uid Live cap 8 MiB; control frames on their own budget | none (D-W8, D-W18) |
 | V-16 | plan §B.4 | observe/observer requests 4,096 B; one 5 s "frame completion age" | 32 KiB / 16 KiB (D-W21); the 5 s frame completion age is **retained** on the send side (`frame_completion_ms`, pin → completely written; it is what bounds a dribbling reader, D-W25), plus server request deadline 5 s / 25 s (control, plan's RG55 value), writer stall 5 s for an unpinned head, client reader 30 s (D-W16) | none |
@@ -959,12 +960,14 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | V-19 | plan §A.2 | verbs listed per level only | `status`, `events`, `spans` also at control (relayed), `unsubscribe` at observe/operator | none (§4.3) |
 | V-20 | plan §B.4 | clients per level only | per-uid connection and selection caps, hello and idle deadlines, refuse without a byte | none (D-W19, D-W20) |
 
-### Open questions (recommendation first)
+### Open questions (both DECIDED)
 
-1. **Client-side completion age**: 30 s (recommended, D-W16: a trusted probe under load must not be
-   cut by a client) vs the server's 5 s.
-2. **Who may read spans**: all `hostobs-observe` members (recommended, plan §I question 4) — WIRE.md
-   serves `events`/`spans` at observe level on that assumption.
+1. **Client-side completion age: DECIDED, 30 s** (D-W16: a trusted probe under load must not be cut
+   by a client; the server keeps its 5 s). Reason: operator-side recommendation accepted by the
+   controller 2026-11-18.
+2. **Who may read spans: DECIDED, every `hostobs-observe` member** (plan §I question 4): WIRE.md
+   serves `events`/`spans` at observe level. Reason: operator-side recommendation accepted by the
+   controller 2026-11-18.
 
 ### Review round 1 (independent review of rev 1 at `7f1f17888`, verdict FIX)
 

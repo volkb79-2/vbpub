@@ -1008,8 +1008,8 @@ reserved, with a unit test for `n_sec = 65535` in a short frame.
 
 ## HOB-51 — Received frames are not held to the alignment and header-first rules
 
-**Where:** `crates/proto/src/frame.rs` `decode_block` (lines 1086-1126),
-`python/reference/hostobs_wire_ref.py` `decode_frame` (lines 509-535). WIRE.md §13 V-11.
+**Where:** `crates/proto/src/frame.rs` `decode_block` (post-P0 lines 1115-1154),
+`python/reference/hostobs_wire_ref.py` `decode_frame` (post-P0 lines 523-531). WIRE.md §13 V-11.
 
 Both decoders take a section body of any length and let an unknown section precede the header, so
 the "every body starts at an offset ≡ 0 (mod 8)" and "the header body sits at `16 + 8·n_sec`"
@@ -1035,7 +1035,7 @@ languages whatever the other fields (WIRE.md §3.7, D-W23); the `duplicate-metri
 
 ## HOB-53 — The Python reference checks buffer length before `not-a-block`
 
-**Where:** `python/reference/hostobs_wire_ref.py` `decode_frame` (lines 484-493). WIRE.md §13 V-13.
+**Where:** `python/reference/hostobs_wire_ref.py` `decode_frame` (post-P0 lines 495-504). WIRE.md §13 V-13.
 
 The reference checks buffer length and `SECTIONED` before the frame type, so a truncated REP is
 `truncated` in Python and `not-a-block` in Rust.
