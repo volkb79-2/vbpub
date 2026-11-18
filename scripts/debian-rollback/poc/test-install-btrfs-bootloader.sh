@@ -29,6 +29,11 @@ absent() {
   if grep -Fq -- "$3" "$2"; then bad "$1: '$2' unexpectedly contains '$3'"; fi
 }
 
+exact_line() { # exact_line LABEL FILE LINE
+  cases=$((cases + 1))
+  grep -Fqx -- "$3" "$2" || bad "$1: '$2' lacks exact line '$3'"
+}
+
 run_dry grub-default
 contains grub-default-package "$WORK/grub-default.err" \
   '--include=linux-image-amd64,grub-efi-amd64,btrfs-progs'
@@ -47,7 +52,7 @@ contains sdboot-packages "$WORK/sdboot.err" \
 contains sdboot-bootctl "$WORK/sdboot.err" \
   'chroot /mnt/drtarget bootctl install --esp-path=/boot/efi --no-variables'
 contains sdboot-config "$WORK/sdboot.out" 'BOOTLOADER=systemd-boot'
-contains sdboot-marker "$WORK/sdboot.out" 'systemd-boot'
+exact_line sdboot-marker "$WORK/sdboot.out" 'systemd-boot'
 absent sdboot-no-grub-package "$WORK/sdboot.err" 'linux-image-amd64,grub-efi-amd64'
 absent sdboot-no-grub-installer "$WORK/sdboot.err" 'dr-state install-grub'
 contains sdboot-menu-lesson "$WORK/sdboot.err" \

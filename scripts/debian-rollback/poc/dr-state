@@ -29,10 +29,24 @@ die() { echo "dr-state: $*" >&2; exit 1; }
 
 root_uuid() { awk '$2=="/" && $3=="btrfs" {sub("UUID=","",$1); print $1; exit}' /etc/fstab; }
 
-bootloader_from_conf() {
-  local line value="" found=0
-  [ -e "$DR_STATE_CONF" ] || return 0
-  [ -r "$DR_STATE_CONF" ] || die "$DR_STATE_CONF is not readable"
+sdboot_source_value() { # LABEL PRESENT VALUE -> VALUE; refuse an existing but empty source
+  local label=$1 present=$2 value=${3-}
+  case "$present" in
+    0)
+      [ -z "$value" ] || die "$label is absent but produced a value"
+      ;;
+    1)
+      [ -n "$value" ] || die "$label is present but empty; refusing to guess the bootloader backend"
+      ;;
+    *) die "$label has invalid presence state '$present'" ;;
+  esac
+  [ -z "$value" ] || printf '%s\n' "$value"
+}
+
+bootloader_from_conf_file() {
+  local file=$1 line value="" found=0
+  [ -e "$file" ] || { sdboot_source_value BOOTLOADER 0 ""; return 0; }
+  [ -r "$file" ] || die "$file is not readable"
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%$'\r'}
     case "$line" in
@@ -42,18 +56,26 @@ bootloader_from_conf() {
         value=${line#BOOTLOADER=}
         found=1 ;;
       [A-Z_][A-Z0-9_]*=*) ;;
-      *) die "$DR_STATE_CONF contains a line that is not KEY=VALUE or a comment" ;;
+      *) die "$file contains a line that is not KEY=VALUE or a comment" ;;
     esac
-  done <"$DR_STATE_CONF"
-  printf '%s\n' "$value"
+  done <"$file"
+  sdboot_source_value BOOTLOADER "$found" "$value"
+}
+
+bootloader_from_conf() {
+  bootloader_from_conf_file "$DR_STATE_CONF"
+}
+
+bootloader_from_marker_file() {
+  local file=$1 marker
+  [ -e "$file" ] || { sdboot_source_value "$file bootloader marker" 0 ""; return 0; }
+  [ -r "$file" ] || die "$file is not readable"
+  marker=$(tr -d '\r\n' <"$file") || die "cannot read $file"
+  sdboot_source_value "$file bootloader marker" 1 "$marker"
 }
 
 bootloader_from_marker() {
-  local marker
-  [ -e "$SDBOOT_MARKER" ] || return 0
-  [ -r "$SDBOOT_MARKER" ] || die "$SDBOOT_MARKER is not readable"
-  marker=$(tr -d '\r\n' <"$SDBOOT_MARKER") || die "cannot read $SDBOOT_MARKER"
-  printf '%s\n' "$marker"
+  bootloader_from_marker_file "$SDBOOT_MARKER"
 }
 
 select_bootloader() { # CONF_VALUE MARKER_VALUE -> one backend; only absence means the GRUB default
@@ -115,6 +137,23 @@ state_for_entry_id() {
   printf '@%s\n' "$id"
 }
 
+sdboot_entry_ids() { # STATE... -> one reversible id each; reject FAT case-insensitive collisions
+  local state id folded
+  local -a ids=()
+  local -A by_fold=()
+  for state in "$@"; do
+    id=$(entry_id_for_state "$state") || return 1
+    folded=${id,,}
+    if [ -n "${by_fold[$folded]+x}" ]; then
+      echo "dr-state: states ${by_fold[$folded]} and $state case-insensitively collide as entry id $folded on the vfat ESP" >&2
+      return 1
+    fi
+    by_fold["$folded"]=$state
+    ids+=("$id")
+  done
+  [ "${#ids[@]}" -eq 0 ] || printf '%s\n' "${ids[@]}"
+}
+
 kernel_id() {
   local kver=$1 sha256=$2
   [[ "$kver" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || return 1
@@ -147,16 +186,18 @@ sort-key $entry_id
 EOF
 }
 
-sdboot_entry_refs() { # BLS entries on stdin -> unique kernel ids referenced by linux or initrd
+sdboot_entry_refs() { # BLS entries on stdin -> unique kernel ids referenced by every linux/initrd path
   local id
   {
     awk '
     ($1 == "linux" || $1 == "initrd") {
-      path = $2
-      n = split(path, part, "/")
-      if (n == 6 && part[1] == "" && part[2] == "EFI" && part[3] == "dr" && part[4] == "kernels" \
-          && (part[6] == "vmlinuz" || part[6] == "initrd.img")) {
-        print part[5]
+      for (i = 2; i <= NF; i++) {
+        path = $i
+        n = split(path, part, "/")
+        if (n == 6 && part[1] == "" && part[2] == "EFI" && part[3] == "dr" && part[4] == "kernels" \
+            && (part[6] == "vmlinuz" || part[6] == "initrd.img")) {
+          print part[5]
+        }
       }
     }
   ' | while IFS= read -r id; do
@@ -192,21 +233,32 @@ sdboot_space_check() { # NEEDED FREE; 0 if it fits, 1 if it does not, 2 for a ma
   printf 'dr-state: ESP space ok: need %s bytes, %s bytes free\n' "$needed" "$free"
 }
 
+sdboot_byte_length() { # TEXT -> bytes, independent of the caller's locale
+  local text=${1-}
+  printf '%s' "$text" | LC_ALL=C wc -c | tr -d '[:space:]'
+}
+
 sdboot_loader_conf() { # DEFAULT_ID; existing loader.conf on stdin -> one default and timeout 5 plus unrelated lines
   local default_id=${1-}
-  if [ -n "$default_id" ]; then
-    [[ "$default_id" =~ ^os-[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
-    case "$default_id" in *..*|*.) return 1 ;; esac
-    [ "${#default_id}" -le 240 ] || return 1
-  fi
+  [ -n "$default_id" ] || { echo "dr-state: loader.conf rewrite requires a default entry id" >&2; return 1; }
+  state_for_entry_id "$default_id" >/dev/null || return 1
   awk -v default_id="$default_id" '
-    $1 == "default" || $1 == "timeout" { next }
+    BEGIN { bad = 0 }
+    $1 == "default" {
+      if (NF != 2 || $2 !~ /^os-[A-Za-z0-9][A-Za-z0-9._-]*$/) bad = 1
+      next
+    }
+    $1 == "timeout" {
+      if (NF != 2 || $2 !~ /^[0-9]+$/) bad = 1
+      next
+    }
     { print }
     END {
-      if (default_id != "") print "default " default_id
+      if (bad) exit 2
+      print "default " default_id
       print "timeout 5"
     }
-  '
+  ' || return 1
 }
 
 loader_default_id() {
@@ -233,6 +285,56 @@ sdboot_oneshot_id() {
   state_for_entry_id "$id" >/dev/null \
     || die "LoaderEntryOneShot names an unknown entry id '$id'; refusing to prune"
   printf '%s\n' "$id"
+}
+
+cleanup_sdboot_scratch() { # KERNEL_DIR ENTRY_DIR LOADER_CONF MARKER; remove only interrupted dr-state temporaries
+  local kernel_dir=$1 entry_dir=$2 loader_conf=$3 marker=$4
+  local path base stem eid dir
+
+  if [ -e "$kernel_dir" ] && [ ! -d "$kernel_dir" ]; then
+    die "$kernel_dir exists but is not a directory"
+  fi
+  if [ -d "$kernel_dir" ]; then
+    # copy_sdboot_kernel stages a complete pair in a top-level .tmp.* directory, then renames it.
+    while IFS= read -r -d '' path; do
+      rm -rf -- "$path"
+    done < <(find "$kernel_dir" -mindepth 1 -maxdepth 1 -type d -name '.tmp.*' -print0)
+    # A repair stages two files inside an already published kernel directory.
+    while IFS= read -r -d '' path; do
+      base=${path##*/}
+      dir=${path%/*}
+      stem=${dir##*/}
+      valid_kernel_id "$stem" || continue
+      case "$base" in
+        .vmlinuz.tmp.[0-9]*|.initrd.img.tmp.[0-9]*) rm -f -- "$path" ;;
+      esac
+    done < <(find "$kernel_dir" -mindepth 2 -maxdepth 2 -type f \
+      \( -name '.vmlinuz.tmp.*' -o -name '.initrd.img.tmp.*' \) -print0)
+  fi
+
+  if [ -e "$entry_dir" ] && [ ! -d "$entry_dir" ]; then
+    die "$entry_dir exists but is not a directory"
+  fi
+  if [ -d "$entry_dir" ]; then
+    while IFS= read -r -d '' path; do
+      base=${path##*/}
+      if [[ "$base" =~ ^\.(os-[A-Za-z0-9][A-Za-z0-9._-]*)\.conf\.new\.[0-9]+$ ]]; then
+        eid=${BASH_REMATCH[1]}
+        state_for_entry_id "$eid" >/dev/null || continue
+        rm -f -- "$path"
+      fi
+    done < <(find "$entry_dir" -mindepth 1 -maxdepth 1 -type f -name '.*.conf.new.*' -print0)
+  fi
+
+  for path in "$loader_conf" "$marker"; do
+    dir=${path%/*}
+    base=${path##*/}
+    [ "$dir" != "$path" ] || continue
+    [ -d "$dir" ] || continue
+    while IFS= read -r -d '' stem; do
+      rm -f -- "$stem"
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f -name "$base.new.*" -print0)
+  done
 }
 
 prune_sdboot_kernels() {
@@ -293,6 +395,44 @@ sdboot_allocated_bytes() { # SIZE CLUSTER -> bytes after FAT allocation
   [[ "$size" =~ ^[0-9]+$ ]] || return 1
   [[ "$cluster" =~ ^[1-9][0-9]*$ ]] || return 1
   printf '%s\n' $(( ((size + cluster - 1) / cluster) * cluster ))
+}
+
+sdboot_allocated_sum() { # CLUSTER SIZE... -> sum of independently FAT-rounded sizes
+  local cluster=$1 size total=0 bytes
+  [[ "$cluster" =~ ^[1-9][0-9]*$ ]] || return 1
+  shift
+  for size in "$@"; do
+    bytes=$(sdboot_allocated_bytes "$size" "$cluster") || return 1
+    total=$((total + bytes))
+  done
+  printf '%s\n' "$total"
+}
+
+sdboot_dir_alloc() { # ROOT CLUSTER RELDIR... -> clusters needed for every missing directory, counted once
+  local root=$1 cluster=$2 rel current part missing=0
+  local IFS=/
+  local -A seen=()
+  [[ "$cluster" =~ ^[1-9][0-9]*$ ]] || return 1
+  [ -d "$root" ] || return 1
+  shift 2
+  for rel in "$@"; do
+    [[ "$rel" =~ ^[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$ ]] || return 1
+    current=$root
+    for part in $rel; do
+      [ "$part" != . ] && [ "$part" != .. ] || return 1
+      current=$current/$part
+      if [ -n "${seen[$current]+x}" ]; then continue; fi
+      if [ -d "$current" ]; then
+        seen["$current"]=existing
+      elif [ -e "$current" ]; then
+        return 1
+      else
+        seen["$current"]=missing
+        missing=$((missing + 1))
+      fi
+    done
+  done
+  printf '%s\n' $((missing * cluster))
 }
 
 sdboot_file_allocated_bytes() { # FILE CLUSTER
@@ -367,14 +507,16 @@ copy_sdboot_kernel() { # STATE KVER KERNEL_ID INITRD_SHA256
 
 cmd_gen_menu_systemd_boot() {
   local default="" entries=0 i s kver sha256 kid eid ruuid cluster needed free text kernel_bytes initrd_bytes
+  local dir_bytes loader_bytes text_bytes entry_path base folded found_existing
   local target loader_in="" loader_out default_id="" default_requested=0 default_entry_id
-  local -a states_list=() kvers=() hashes=() kids=() eids=()
+  local -a all_states=() states_list=() kvers=() hashes=() kids=() eids=()
   local -A wanted_states=()
   while [ $# -gt 0 ]; do
     case "$1" in --default) default=$2; shift 2 ;; *) die "gen-menu: $1" ;; esac
   done
   ensure_top
   ensure_esp
+  cleanup_sdboot_scratch "$SDBOOT_KERNEL_DIR" "$SDBOOT_ENTRY_DIR" "$SDBOOT_LOADER_CONF" "$SDBOOT_MARKER"
   ruuid=$(root_uuid); [ -n "$ruuid" ] || die "no btrfs root UUID in /etc/fstab"
   if [ -n "$default" ]; then
     default_entry_id=$(entry_id_for_state "$default") || die "unsafe state name for a systemd-boot entry id: $default"
@@ -382,7 +524,12 @@ cmd_gen_menu_systemd_boot() {
   fi
 
   # Decide the whole desired menu and its ESP allocation before creating a directory or touching any menu file.
-  for s in $(states); do
+  mapfile -t all_states < <(states)
+  if [ "${#all_states[@]}" -gt 0 ]; then
+    sdboot_entry_ids "${all_states[@]}" >/dev/null \
+      || die "state names cannot be represented as unique systemd-boot entry ids; keeping the existing menu"
+  fi
+  for s in "${all_states[@]}"; do
     eid=$(entry_id_for_state "$s") || die "state name cannot be represented safely as a systemd-boot entry id: $s"
     kver=$(latest_kernel "$s")
     [ -n "$kver" ] || continue
@@ -399,6 +546,20 @@ cmd_gen_menu_systemd_boot() {
   fi
   [ "$entries" -gt 0 ] || die "no state has a kernel with an initrd; keeping the existing menu"
 
+  # A case-insensitive vfat lookup would resolve os-a.conf and OS-A.conf to one file. Refuse before any write.
+  if [ -d "$SDBOOT_ENTRY_DIR" ]; then
+    while IFS= read -r -d '' entry_path; do
+      base=${entry_path##*/}
+      base=${base%.conf}
+      folded=${base,,}
+      for eid in "${eids[@]}"; do
+        if [ "${eid,,}" = "$folded" ] && [ "$base" != "$eid" ]; then
+          die "existing BLS entry $entry_path case-insensitively collides with desired entry $eid.conf; refusing to overwrite it"
+        fi
+      done
+    done < <(find "$SDBOOT_ENTRY_DIR" -maxdepth 1 -type f -name '*.conf' -print0)
+  fi
+
   if [ -n "$default" ]; then
     default_id=$default_entry_id
   else
@@ -406,13 +567,28 @@ cmd_gen_menu_systemd_boot() {
     if [ -n "$default_id" ] && ! state_for_entry_id "$default_id" >/dev/null; then
       die "existing loader.conf default '$default_id' is not a dr-state entry id; refusing to overwrite it"
     fi
+    found_existing=0
+    for eid in "${eids[@]}"; do
+      if [ "$default_id" = "$eid" ]; then found_existing=1; break; fi
+    done
+    if [ "$found_existing" = 0 ]; then
+      # Preserve a valid existing default only while its entry remains. Otherwise select the first sorted entry.
+      default_id=${eids[0]}
+    fi
   fi
+  [ -n "$default_id" ] || die "cannot select a default systemd-boot entry; keeping the existing menu"
   if [ -r "$SDBOOT_LOADER_CONF" ]; then loader_in=$(cat "$SDBOOT_LOADER_CONF"); fi
   loader_out=$(printf '%s' "$loader_in" | sdboot_loader_conf "$default_id") \
     || die "cannot construct loader.conf"
 
   cluster=$(esp_cluster_bytes)
-  needed=$(( (( ${#loader_out} + 1 + cluster - 1) / cluster) * cluster ))
+  dir_bytes=$(sdboot_dir_alloc /boot/efi "$cluster" EFI/dr/kernels loader/entries) \
+    || die "cannot account for the systemd-boot parent directories"
+  loader_bytes=$(sdboot_byte_length "$loader_out") \
+    || die "cannot measure the rewritten loader.conf"
+  needed=$(sdboot_allocated_sum "$cluster" "$((loader_bytes + 1))") \
+    || die "cannot round loader.conf allocation"
+  needed=$((needed + dir_bytes))
   for ((i = 0; i < entries; i++)); do
     target="$SDBOOT_KERNEL_DIR/${kids[i]}"
     if [ ! -s "$target/vmlinuz" ] || [ ! -s "$target/initrd.img" ]; then
@@ -429,7 +605,8 @@ cmd_gen_menu_systemd_boot() {
     fi
     text=$(sdboot_entry_text "${states_list[i]}" "${kvers[i]}" "$ruuid" "${kids[i]}") \
       || die "cannot construct the entry for ${states_list[i]}"
-    needed=$((needed + $(sdboot_allocated_bytes "$(( ${#text} + 1 ))" "$cluster")))
+    text_bytes=$(sdboot_byte_length "$text") || die "cannot measure the entry for ${states_list[i]}"
+    needed=$((needed + $(sdboot_allocated_sum "$cluster" "$((text_bytes + 1))")))
   done
   free=$(esp_free_bytes)
   sdboot_space_check "$needed" "$free" >&2 || exit $?
@@ -628,6 +805,9 @@ cmd_prune() {
       def=$(grub-editenv "$ESP_DIR/grubenv" list 2>/dev/null | sed -n 's/^saved_entry=//p')
       next=$(grub-editenv "$ESP_DIR/grubenv" list 2>/dev/null | sed -n 's/^next_entry=//p') ;;
     systemd-boot)
+      if [ "$dry" != 1 ]; then
+        cleanup_sdboot_scratch "$SDBOOT_KERNEL_DIR" "$SDBOOT_ENTRY_DIR" "$SDBOOT_LOADER_CONF" "$SDBOOT_MARKER"
+      fi
       def=""; next=""
       entry_id=$(loader_default_id) || die "cannot read the systemd-boot default"
       [ -z "$entry_id" ] || def=$(state_for_entry_id "$entry_id") \
@@ -677,6 +857,15 @@ if [ "${1:-}" = _prune-select ]; then   # test hook: dr-state _prune-select KEEP
   shift; select_prune "${1:?keep}" "${2-}" "${@:3}"; exit $?
 fi
 
+if [ "${1:-}" = _sdboot-conf-backend ]; then
+  bootloader_from_conf_file "${2:-}"; exit $?
+fi
+if [ "${1:-}" = _sdboot-marker-backend ]; then
+  bootloader_from_marker_file "${2:-}"; exit $?
+fi
+if [ "${1:-}" = _sdboot-source-value ]; then
+  sdboot_source_value "${2:-}" "${3:-}" "${4:-}"; exit $?
+fi
 if [ "${1:-}" = _sdboot-kernel-id ]; then
   kernel_id "${2:-}" "${3:-}"; exit $?
 fi
@@ -685,6 +874,9 @@ if [ "${1:-}" = _sdboot-entry-id ]; then
 fi
 if [ "${1:-}" = _sdboot-state-from-id ]; then
   state_for_entry_id "${2:-}"; exit $?
+fi
+if [ "${1:-}" = _sdboot-entry-ids ]; then
+  shift; sdboot_entry_ids "$@"; exit $?
 fi
 if [ "${1:-}" = _sdboot-entry-text ]; then
   sdboot_entry_text "${2:-}" "${3:-}" "${4:-}" "${5:-}"; exit $?
@@ -698,11 +890,23 @@ fi
 if [ "${1:-}" = _sdboot-space-check ]; then
   sdboot_space_check "${2:-}" "${3:-}"; exit $?
 fi
+if [ "${1:-}" = _sdboot-byte-length ]; then
+  sdboot_byte_length "${2-}"; exit $?
+fi
+if [ "${1:-}" = _sdboot-alloc-sum ]; then
+  shift; sdboot_allocated_sum "$@"; exit $?
+fi
+if [ "${1:-}" = _sdboot-dir-alloc ]; then
+  shift; sdboot_dir_alloc "$@"; exit $?
+fi
 if [ "${1:-}" = _sdboot-loader-conf ]; then
   sdboot_loader_conf "${2-}"; exit $?
 fi
 if [ "${1:-}" = _sdboot-select-backend ]; then
   select_bootloader "${2-}" "${3-}"; exit $?
+fi
+if [ "${1:-}" = _sdboot-clean-scratch ]; then
+  cleanup_sdboot_scratch "${2:-}" "${3:-}" "${4:-}" "${5:-}"; exit $?
 fi
 
 sub=${1:-}; [ $# -gt 0 ] && shift

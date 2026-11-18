@@ -27,8 +27,10 @@ selection in both supported places:
 /boot/efi/EFI/dr/bootloader     systemd-boot
 ```
 
-`dr-state` also accepts either source alone. Absence of both means `grub`, preserving existing installs. If both
-exist and disagree, or either contains an unknown value, the command fails rather than guessing.
+`dr-state` also accepts either source alone. Absence of both means `grub`, preserving existing installs. Presence is
+tracked separately from the value: an existing zero-byte marker, `BOOTLOADER=` in `/etc/dr-state.conf`, or any other
+empty selected value is refused with a clear error instead of falling back to GRUB. If both sources exist and
+disagree, or either contains an unknown value, the command also fails rather than guessing.
 
 The user-visible state commands stay the same:
 
@@ -73,6 +75,11 @@ underscore, period, and hyphen. Entry ids are capped at 240 bytes. Names with an
 `..`, or a trailing period are rejected before any menu file or copied kernel is changed. This is conservative and
 reversible; whether systemd-boot itself accepts `@` remains unverified because no guest or bootloader binary was run.
 
+`/loader/entries` is on case-insensitive vfat, so all desired entry ids are additionally required to be
+case-insensitively unique. For example, `@os-lower` and `@os-LOWER` map to distinct strings in software but the same
+FAT file; such a menu is refused before any write. An existing `.conf` whose basename differs only by case from a
+desired entry is also refused rather than overwritten. This keeps the mapping reversible without silent aliasing.
+
 One entry is written per state:
 
 ```text
@@ -90,12 +97,15 @@ still protect kernel directories they reference.
 ## Default and one-shot
 
 `loader.conf` is rewritten atomically through a temporary file and rename. The rewrite preserves unrelated lines in
-their original order, removes every prior `default` and `timeout` line, then appends one `default <entry-id>` (when
-one is requested) and exactly `timeout 5`.
+their original order, removes every prior `default` and `timeout` line, then appends exactly one
+`default <entry-id>` and exactly `timeout 5`. It refuses a request without a default id and refuses malformed existing
+`default` or `timeout` lines instead of silently discarding them.
 
 `gen-menu --default STATE` and `set-default STATE` write the default only after every desired entry has been written
-successfully. `boot-once STATE` first ensures the entries exist, maps the state to its entry id, and calls one isolated
-function:
+successfully. Without `--default`, `gen-menu` preserves an existing valid default only while its state/entry is still
+in the rewritten menu; otherwise it selects the first entry in sorted state order. This guarantees that a generated
+`loader.conf` never contains zero defaults. `boot-once STATE` first ensures the entries exist, maps the state to its
+entry id, and calls one isolated function:
 
 ```sh
 bootctl set-oneshot <entry-id>
@@ -110,9 +120,10 @@ cannot be read or decoded, prune fails closed instead of risk deleting its state
 Before creating directories, copying files, or touching entries or `loader.conf`, `gen-menu` computes the
 block-rounded bytes needed for:
 
+- every missing parent directory, including the shared `EFI`, `EFI/dr`, `loader`, and `loader/entries` components;
 - each missing or incomplete kernel/initrd pair, including one allocation unit for its directory;
 - every desired BLS entry;
-- the rewritten `loader.conf`.
+- the rewritten `loader.conf`, measured with byte-safe `wc -c` arithmetic rather than shell character counts.
 
 The computed need is compared with the ESP's current free bytes. If it does not fit, the command exits non-zero with
 the need and free byte counts and leaves the existing menu untouched.
@@ -122,10 +133,15 @@ SHA-256, then renamed as a complete directory. If an interrupted older target di
 its two files are replaced through temporary names in that existing directory; the directory itself is not removed
 because an installed entry may still reference it.
 
+At the start of a non-dry-run `gen-menu` or `prune` for this backend, under the existing `dr-state` lock, the command
+removes only known interrupted-work names: top-level `.tmp.*` kernel staging directories, `.vmlinuz.tmp.*` and
+`.initrd.img.tmp.*` repair files inside valid kernel directories, `.<entry-id>.conf.new.<pid>` entry files,
+`loader.conf.new.<pid>`, and `bootloader.new.<pid>`. Unrelated files and directories are left untouched.
+
 `prune` deletes states using the existing selection policy (newest N, never the running, default, or pending one-shot
 state), regenerates the BLS menu, then removes only ESP kernel directories referenced by no remaining BLS entry. It
-does not delete a directory referenced by either a `linux` or `initrd` line. Kernel ids are validated again
-immediately before deletion.
+does not delete a directory referenced by any path argument on any `linux` or `initrd` line, including BLS
+multi-initrd lines. Kernel ids are validated again immediately before deletion.
 
 ## GRUB compatibility
 
@@ -137,7 +153,8 @@ revision after only renaming the function; its GRUB text and operations are byte
 
 The failing-first suite for the new pure decisions is `poc/test-dr-state-sdboot.sh`. It covers the BLS entry text,
 content-addressed kernel ids, entry-id mapping and rejection, backend selection, byte accounting decisions,
-`loader.conf` rewriting, reference extraction, and orphan-directory selection. It currently passes 58 cases.
+`loader.conf` rewriting, empty backend sources, multi-path reference extraction, FAT case collisions, interrupted-copy
+cleanup, parent-directory allocation, and orphan-directory selection. It currently passes 85 cases.
 
 `poc/test-install-btrfs-bootloader.sh` dry-runs the installer and checks the default and explicit GRUB package path,
 the systemd-boot package path, exact bootctl argv, backend config and marker, command ordering, and refusal of an
