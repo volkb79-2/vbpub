@@ -1,9 +1,0 @@
-[workspace]
-members = ["crate_a", "crate_b"]
-resolver = "2"
-== crate_b-edit: +++ b/crate_b/src/lib.rs 
-   matching mutants: 5
-== crate_a-edit: +++ b/crate_a/src/lib.rs 
-   matching mutants: 5
-== from crate_b dir with a diff relative to the workspace root (default git diff), and relative to the crate
-   cwd=crate_b, top diff: 2  rel diff: 0

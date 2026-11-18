@@ -8,7 +8,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.40504284,
+          "duration": 0.403653785,
           "process_status": "Success",
           "argv": [
             "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
@@ -24,7 +24,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.153540075,
+          "duration": 0.151724125,
           "process_status": "Success",
           "argv": [
             "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
@@ -79,7 +79,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.25244707,
+          "duration": 0.305701794,
           "process_status": "Success",
           "argv": [
             "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
@@ -94,7 +94,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.151134445,
+          "duration": 0.151603984,
           "process_status": {
             "Failure": 100
           },
@@ -150,7 +150,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.303415402,
+          "duration": 0.305420959,
           "process_status": "Success",
           "argv": [
             "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
@@ -165,7 +165,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.151435189,
+          "duration": 0.152679608,
           "process_status": {
             "Failure": 100
           },
@@ -221,7 +221,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.252337374,
+          "duration": 0.305697748,
           "process_status": "Success",
           "argv": [
             "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
@@ -236,7 +236,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.1511236,
+          "duration": 0.151142777,
           "process_status": {
             "Failure": 100
           },
@@ -292,7 +292,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.252396501,
+          "duration": 0.302692207,
           "process_status": "Success",
           "argv": [
             "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
@@ -307,7 +307,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.151652277,
+          "duration": 0.151299535,
           "process_status": {
             "Failure": 100
           },
@@ -363,7 +363,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.303523145,
+          "duration": 0.303889074,
           "process_status": "Success",
           "argv": [
             "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
@@ -378,7 +378,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.151968875,
+          "duration": 0.152256559,
           "process_status": {
             "Failure": 100
           },
@@ -434,7 +434,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.304006774,
+          "duration": 0.355173742,
           "process_status": "Success",
           "argv": [
             "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
@@ -449,7 +449,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.101292383,
+          "duration": 0.152176737,
           "process_status": {
             "Failure": 100
           },
@@ -505,7 +505,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.251967105,
+          "duration": 0.254286679,
           "process_status": "Success",
           "argv": [
             "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
@@ -520,7 +520,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.151209959,
+          "duration": 0.151543732,
           "process_status": {
             "Failure": 100
           },
@@ -576,7 +576,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.201715314,
+          "duration": 0.202532472,
           "process_status": "Success",
           "argv": [
             "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
@@ -591,7 +591,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.152951016,
+          "duration": 0.151837146,
           "process_status": {
             "Failure": 100
           },
@@ -614,7 +614,7 @@
   "timeout": 0,
   "unviable": 0,
   "success": 0,
-  "start_time": "2026-11-18T05:52:33.856504724Z",
-  "end_time": "2026-11-18T05:52:37.715415023Z",
+  "start_time": "2026-11-18T06:04:10.910228379Z",
+  "end_time": "2026-11-18T06:04:15.035048407Z",
   "cargo_mutants_version": "27.1.0"
 }

@@ -1,84 +1,93 @@
 # B245 U0: cargo-mutants measurements and fixtures
 
-Measured 2026-11-18 on v1001 with cargo-mutants 27.1.0 in `tester-unified-rust:local`
-(`--network none`, `--memory 2g --cpus 2`, `nice`, one container at a time, no gate
-container running; `dev-gates.slice` anonymous memory 1068 MiB, the rest reclaimable
-cache). Scripts: [rust-b245-u0/scripts](rust-b245-u0/scripts/); raw output:
-[rust-b245-u0/run-output](rust-b245-u0/run-output/); fixtures:
-`tests/fixtures/rust/cargo-mutants/` (see its `PROVENANCE.md`). This is the U0 work
-package of `DESIGN-B245-CARGO-MUTANTS-INGESTION.md`; it answers the measurements of
-that document's section 7 item 4 and changes the design where it says so (section 8
-of the design records the binding consequences).
+Measured 2026-11-18 (06:03-06:10 UTC) on v1001 with cargo-mutants 27.1.0 in
+`tester-unified-rust:local` (`--network none --memory 2g --cpus 2`, `nice`, one
+container, a debian-rollback guest running beside it, no gate container). Inputs,
+script and logs: [rust-b245-u0](rust-b245-u0/) (`scripts/run-u0.sh` regenerates
+everything below; `run-output/summary.txt` lists every tool exit code, each taken
+from a variable captured before any pipe; `run-output/u0.txt` is the full log).
+Fixtures: `tests/fixtures/rust/cargo-mutants/` (see its `PROVENANCE.md`). This is
+work package U0 of `DESIGN-B245-CARGO-MUTANTS-INGESTION.md` and answers the
+measurements of that document's section 7 item 4; section 8 of the design records
+the consequences. An earlier capture of the same day was REPLACED after review
+(its exit codes were pipeline statuses and its stop-gate reading used a non-empty
+directory only); nothing of it is kept.
 
 ## Measured facts
 
-**(a, c) A relative, in-tree `--output` works.** Run from the crate directory,
-`--output out-r` creates `out-r/mutants.out` inside that directory and the tool
-accepts an in-tree output directory (`run-output/u0.txt`, "(a,c,h)").
+**(a, c, d) A relative, in-tree `--output` works, empty or not.** Run from the
+crate directory, `--output out-r` (created empty beforehand, as assay will) gave
+`out-r/mutants.out` inside the crate directory and exit 2 with 9 mutants (`subdir`
+case). A NON-empty pre-created `<out>` is accepted too: its content (`keepme`) was
+left alone and `mutants.out` was created beside it (`nonempty-out` in
+`run-output/summary.txt`).
 
-**(b) STOP GATE FIRED: an in-tree `<out>` is copied into the mutated tree.** A
-canary test that fails when `<out>/CANARY` exists under `CARGO_MANIFEST_DIR` failed
-the unmutated baseline (`Failure(100)`, `total_mutants` 0). Consequence for D2: the
-design pre-creates `<out>` EMPTY in a fresh snapshot, so only an empty directory is
-copied and no test can see anything in it; the design stands, but it now has a
-stated precondition: assay must never put content into `<out>`, and a lane whose
-tests look at the whole crate directory sees `<out>` (an empty directory) in the
-mutant tree. This was escalated to the controller before U1 starts.
+**(b) Stop gate, with controls: only an EMPTY `<out>` is safe, `.gitignore` does not
+help.** One crate whose only test fails if a given path exists in the tree under
+test, five variants (`canary-*` lines of `summary.txt`):
+- A control, the path never exists: baseline passes (the test itself is sound).
+- B non-empty `<out>` holding `MARKER`: baseline FAILS (`Failure(100)`), the marker
+  was copied into the tree under test.
+- C EMPTY pre-created `<out>`, test asserts `<out>/mutants.out` is absent: baseline
+  passes, the `mutants.out` the tool creates inside `<out>` is NOT in the tree under
+  test.
+- D `<out>` ignored by a committed `.gitignore`, holding `MARKER`: baseline FAILS:
+  the tool copies ignored files too.
+- E ignored EMPTY `<out>`: baseline passes.
+Consequence: the design's precondition (assay creates `<out>` empty, never writes
+into it, refuses a non-empty one) is necessary and sufficient for what was
+measured; a committed `.gitignore` is needed for the post-run dirty check (see
+below) but does not keep content out of the copy. Whether the empty `<out>`
+directory itself appears in the copy was not asserted.
 
-**(d) A non-empty pre-created `<out>` is accepted** and its content is left alone
-(`keepme` survived; `mutants.out` was created beside it).
-
-**Dirty tree.** After a run, `git status --porcelain` lists `?? sub/crate1/out-r/`:
+**Dirty tree.** `git status --porcelain` after the runs lists `?? sub/crate1/out-r/`:
 an untracked in-tree `<out>` fails the post-run dirty check unless a committed
 `.gitignore` covers it (design R2 is confirmed).
 
-**(e, h) `--in-diff` path anchoring is the CARGO WORKSPACE ROOT, and a wrong anchor
-is silent.**
-- A single crate in `sub/crate1` of a git repo: `git diff --relative=sub/crate1`
-  (paths `src/lib.rs`) matched 9 mutants; the plain top-level diff (paths
-  `sub/crate1/src/lib.rs`) printed `INFO No mutants to filter` and exited 0. A wrong
-  anchor therefore filters EVERYTHING away with a success exit and no error.
-- Two crates in one workspace (git top = workspace root), run from the member
-  directory `crate_b`: the diff relative to the workspace root matched 2 mutants,
-  the diff `--relative=crate_b` matched 0. So the anchor is the workspace root
-  (where the `[workspace]` Cargo.toml is), not the process cwd and not the crate.
-- Rule for B245: the diff assay hands over is `git diff --relative=<workspace root
-  relative to the git top>` and the lane's cwd should be the workspace root (for
-  hostobs: `hostobs`). A silent zero-match is already fail-closed by D3
-  (`INCONCLUSIVE/NO_MUTANTS`, never PASS), but its cause would be misleading, so U5b
-  also checks that the produced diff touches at least one path under the anchor.
-- HAZARD: cargo-mutants strips a leading `a/` or `b/` heuristically; with workspace
-  members literally named `a` and `b` the diff for `b` never matched (default and
-  `--no-prefix` spellings alike), and renaming them to `crate_a`/`crate_b` fixed it
-  (`run-output/u0-e6.txt`, `u0-e7.txt`). A workspace member directory named `a` or
-  `b` at the anchor root is unsupported until measured further; the U7 lint should
-  refuse it.
+**(e, h) `--in-diff` path anchoring.**
+- Single crate in `sub/crate1` of a git repo: `git diff --relative=sub/crate1`
+  (paths `src/lib.rs`) gave 9 mutants; the plain top-level diff (paths
+  `sub/crate1/src/lib.rs`) from the crate directory printed `INFO No mutants to
+  filter` and exited 0 (`subdir-toplevel-from-crate`). A wrong anchor filters
+  EVERYTHING away with a success exit and no error.
+- Two-crate workspace whose root is the git top, REAL mutation runs from the member
+  directory: the diff relative to the workspace root tested 5 mutants (all caught);
+  `git diff --relative=<member>` printed `No mutants to filter`
+  (`member-cwd-top-diff`, `member-cwd-rel-diff`, `root-cwd-top-diff`). `--list`
+  matched the same 5 mutants from the workspace root and from the member directory.
+- So the anchor is the cargo WORKSPACE ROOT (the directory of the `[workspace]`
+  Cargo.toml, or of a lone package), not the process cwd and not a member. The
+  generalisation to hostobs (workspace root `hostobs` inside the vbpub git top) is
+  INFERRED from these two shapes; a workspace root that is a subdirectory of the
+  git top with several members was not run.
+- Name hazard (matrix `mkws` lines of `summary.txt`): a member DIRECTORY named `b`
+  matched 0 mutants whatever the package name (`b` or `crate_b`), with exit 0 and
+  `No mutants to filter`; directories `crate_b` and `b2` matched 5 from both
+  working directories. An earlier exploratory run suggested a directory named `a`
+  works; the cause of the `b` failure is unexplained (a guess is cargo-mutants'
+  handling of the `b/` diff prefix). Treat member directories named `a` or `b` at
+  the workspace root as unsupported until measured further.
 
 **(f) Source paths with a space or non-ASCII characters.** Diff files are named
-`src__with_space.rs_line_2_col_5.diff` and `src__módulo.rs_line_2_col_5.diff`: a space
-becomes `_`, non-ASCII characters are KEPT. The member-name grammar of design section
-7 item 3 (ASCII only) would refuse the second; use the rule in design section 8.
-Whether two source paths can collide after the space replacement (`a b.rs` and
-`a_b.rs`) was not measured.
+`src__with_space.rs_line_2_col_5.diff` and `src__módulo.rs_line_2_col_5.diff`: a
+space becomes `_`, non-ASCII characters are KEPT (`paths` case, exit 2).
 
-**(g) Methods, trait impls and generics.** `function.function_name` is the
-QUALIFIED name: `S::bump`, `<impl T for S>::triple`, and plain `pick` for a generic
-function (generics are not in the name). The `FnValue` mutant `name` repeats it
-(`replace S::bump -> i32 with 0`); a function returning a generic `X` yields
-`replace pick -> X with Default::default()`, which is `Unviable` here.
+**(g) Methods, trait impls, generics.** `function.function_name` is qualified:
+`S::bump`, `<impl T for S>::triple`, and plain `pick` for a generic function
+(`methods` case); the `FnValue` mutant `name` repeats it.
 
-**Cases.** All fixtures of `tests/fixtures/rust/cargo-mutants/` come from the same
-script; `PROVENANCE.md` there gives the measured result of each. Two additional
-facts: `basefail-build` (`--locked` without a `Cargo.lock`) is a Build-phase baseline
-failure (`Failure(102)`, no Test phase), and `crashed-f4` reproduces the default
-per-package false kill (`Failure(4)` for the 5 mutants of a crate with no tests of
-its own) in a real workspace.
+**Cases and exit codes.** Every fixture directory carries `exit-code.txt` with the
+tool's real exit status: `full` 3, `indiff` 2, `paths` 2, `rotation` 2 (second
+run), `subdir` 2, `basefail-test` 4, `basefail-build` 4 (Build `Failure(102)`, no
+Test phase), `zero-mutants` 0 with no `mutants.out` and no `--output` directory,
+`crashed-f4` 0 (5 mutants of a crate with no tests of its own are `CaughtMutant` with
+Test `Failure(4)`), `w-true` 0, `unicode` 0, `methods` 0.
 
 ## Not measured
 
 - Whether two source paths can collide in the diff file name after the
   space-to-underscore replacement.
-- A workspace root that is a SUBDIRECTORY of the git top with several members
-  (only the single-crate subdirectory case and the root-equals-git-top workspace
-  case were measured); the anchoring rule is inferred from the two.
-- The hostobs-scale cost, `--shard`, CRLF.
+- A workspace root that is a SUBDIRECTORY of the git top with several members.
+- Whether the empty `<out>` directory itself is copied into the tree under test.
+- Why a member directory named `b` never matches.
+- hostobs-scale cost, `--shard`, CRLF, a real `Signalled`/`Other` Test status.

@@ -1,37 +1,49 @@
-cargo-mutants cargo-mutants 27.1.0 / rustc 1.99.1 (58cf8f9c3 2026-10-13) / cargo-nextest 0.9.151 (6b3f99457 2026-11-02)
+cargo-mutants 27.1.0 rustc 1.99.1 nextest 0.9.151
 ##### CASES (D8 flags: nextest, --locked --offline)
-=== case full
+MISSED   src/lib.rs:34:20: replace match guard v > 10 with true in pick in 0s build + 0s test
 MISSED   src/lib.rs:34:22: replace > with >= in pick in 0s build + 0s test
 25 mutants tested in 29s: 7 missed, 16 caught, 1 unviable, 1 timeouts
-exit=0
-=== case basefail-test
+full exit=3
+*** result: Failure(100)
 
 ERROR cargo test failed in an unmutated tree, so no mutants were tested
-exit=0
-=== case zero-mutants
- INFO No mutants to filter
-exit=0
-=== case indiff
-MISSED   src/lib.rs:14:21: replace < with <= in is_even in 0s build + 0s test
-9 mutants tested in 3s: 9 missed
-exit=0
-=== case basefail-build (--locked WITHOUT a Cargo.lock)
+basefail-test exit=4
 *** result: Failure(102)
 
 ERROR cargo build failed in an unmutated tree, so no mutants were tested
-exit=0
-=== case rotation (two runs into one --output)
+basefail-build exit=4
+MISSED   src/lib.rs:14:21: replace < with > in is_even in 0s build + 0s test
+MISSED   src/lib.rs:14:21: replace < with <= in is_even in 0s build + 0s test
+9 mutants tested in 4s: 9 missed
+indiff exit=2
+ INFO No mutants to filter
+zero-mutants exit=0
+MISSED   src/lib.rs:14:21: replace < with > in is_even in 0s build + 0s test
+MISSED   src/lib.rs:14:21: replace < with <= in is_even in 0s build + 0s test
+9 mutants tested in 4s: 9 missed
+rotation-1 exit=2
+MISSED   src/lib.rs:14:21: replace < with > in is_even in 0s build + 0s test
+MISSED   src/lib.rs:14:21: replace < with <= in is_even in 0s build + 0s test
+9 mutants tested in 3s: 9 missed
+rotation-2 exit=2
 mutants.out
 mutants.out.old
-=== cases crashed-f4 (workspace, flag unset) and w-true
-tw=unset exit=0
-tw=true exit=0
-=== case unicode (non-ASCII line)
+Found 8 mutants to test
+ok       Unmutated baseline in 0s build + 0s test
+8 mutants tested in 3s: 8 caught
+w-unset exit=0
+Found 8 mutants to test
+ok       Unmutated baseline in 0s build + 0s test
+8 mutants tested in 4s: 8 caught
+w-true exit=0
+Found 4 mutants to test
+ok       Unmutated baseline in 0s build + 0s test
 4 mutants tested in 1s: 4 caught
-##### (f) space and non-ASCII source paths
+unicode exit=0
+ok       Unmutated baseline in 0s build + 0s test
 MISSED   src/módulo.rs:2:7: replace * with + in dbl in 0s build + 0s test
 10 mutants tested in 4s: 1 missed, 9 caught
-exit=0
+paths exit=2
 src__módulo.rs_line_2_col_5.diff
 src__módulo.rs_line_2_col_5_001.diff
 src__módulo.rs_line_2_col_5_002.diff
@@ -42,70 +54,83 @@ src__with_space.rs_line_2_col_5_001.diff
 src__with_space.rs_line_2_col_5_002.diff
 src__with_space.rs_line_2_col_7.diff
 src__with_space.rs_line_2_col_7_001.diff
-##### (g) methods, trait impls, generics
-BinaryOperator '<impl T for S>::triple' src/lib.rs:17:16: replace * with + in <impl T for S>::triple
-BinaryOperator '<impl T for S>::triple' src/lib.rs:17:16: replace * with / in <impl T for S>::triple
-BinaryOperator 'S::bump' src/lib.rs:7:16: replace + with * in S::bump
-BinaryOperator 'S::bump' src/lib.rs:7:16: replace + with - in S::bump
-FnValue '<impl T for S>::triple' src/lib.rs:17:9: replace <impl T for S>::triple -> i32 with -1
-FnValue '<impl T for S>::triple' src/lib.rs:17:9: replace <impl T for S>::triple -> i32 with 0
-FnValue '<impl T for S>::triple' src/lib.rs:17:9: replace <impl T for S>::triple -> i32 with 1
-FnValue 'S::bump' src/lib.rs:7:9: replace S::bump -> i32 with -1
-FnValue 'S::bump' src/lib.rs:7:9: replace S::bump -> i32 with 0
-FnValue 'S::bump' src/lib.rs:7:9: replace S::bump -> i32 with 1
-FnValue 'pick' src/lib.rs:22:5: replace pick -> X with Default::default()
+function_name ('BinaryOperator', '<impl T for S>::triple')
+function_name ('BinaryOperator', 'S::bump')
+function_name ('FnValue', '<impl T for S>::triple')
+function_name ('FnValue', 'S::bump')
+function_name ('FnValue', 'pick')
+Found 11 mutants to test
 ok       Unmutated baseline in 0s build + 0s test
 11 mutants tested in 4s: 10 caught, 1 unviable
-exit=0
-##### (a,b,c,d,h) relative in-tree --output from a crate in a SUBDIRECTORY of a git repo
--- relative diff head:
+methods exit=0
+##### subdir case: crate in sub/crate1 of a git repo, relative in-tree --output, real git diffs
 diff --git a/src/lib.rs b/src/lib.rs
 index 0c5c5a2..3cc2b4e 100644
 --- a/src/lib.rs
--- toplevel diff head:
 diff --git a/sub/crate1/src/lib.rs b/sub/crate1/src/lib.rs
 index 0c5c5a2..3cc2b4e 100644
 --- a/sub/crate1/src/lib.rs
--- (a,c,h) relative --output out-r with the --relative diff
+MISSED   src/lib.rs:14:21: replace < with > in is_even in 0s build + 0s test
 MISSED   src/lib.rs:14:21: replace < with <= in is_even in 0s build + 0s test
-9 mutants tested in 3s: 9 missed
-exit=0
-out-r:
+9 mutants tested in 4s: 9 missed
+subdir-relative exit=2
 mutants.out
-
-out-r/mutants.out:
-caught.txt
-debug.log
-diff
-lock.json
--- (h) toplevel diff from the crate dir
  INFO No mutants to filter
-exit=0
--- (d) NON-empty pre-created --output
-9 mutants tested in 3s: 9 missed
-exit=0
-keepme
-mutants.out
--- (b) is the in-tree <out> copied into the mutated tree? (canary test must FAIL the baseline if copied)
+subdir-toplevel-from-crate exit=0
+-- git status after the runs (untracked in-tree out dirs):
+?? sub/crate1/out-r/
+##### (b) stop gate: is the in-tree <out> copied into the mutant tree? Controls included.
+MISSED   src/lib.rs:1:29: replace + with - in f in 0s build + 0s test
+MISSED   src/lib.rs:1:29: replace + with * in f in 0s build + 0s test
+5 mutants tested in 2s: 5 missed
+canary-A-control exit=2
+canary-A-control baseline: Success [('Build', 'Success'), ('Test', 'Success')] total_mutants 5
 *** result: Failure(100)
 
 ERROR cargo test failed in an unmutated tree, so no mutants were tested
-exit=0
-canary baseline: Failure [('Build', 'Success'), ('Test', {'Failure': 100})] total_mutants 0
--- does git see the in-tree out dir? (the post-run dirty check)
- M sub/crate1/src/lib.rs
-?? sub/crate1/out-c/
-?? sub/crate1/out-d/
-?? sub/crate1/out-r/
--- keep subdir case
-##### (e) workspace root ABOVE the run cwd
-diff --git a/src/lib.rs b/src/lib.rs
-index 371d976..5cc4e3a 100644
---- a/src/lib.rs
- INFO No mutants to filter
-exit=0
-ls: cannot access 'out-w': No such file or directory
-*** result: Failure(4)
+canary-B-nonempty-marker exit=4
+canary-B-nonempty-marker baseline: Failure [('Build', 'Success'), ('Test', {'Failure': 100})] total_mutants 0
+MISSED   src/lib.rs:1:29: replace + with - in f in 0s build + 0s test
+MISSED   src/lib.rs:1:29: replace + with * in f in 0s build + 0s test
+5 mutants tested in 2s: 5 missed
+canary-C-empty-out-mutants-out exit=2
+canary-C-empty-out-mutants-out baseline: Success [('Build', 'Success'), ('Test', 'Success')] total_mutants 5
+*** result: Failure(100)
 
 ERROR cargo test failed in an unmutated tree, so no mutants were tested
-exit=0
+canary-D-gitignored-marker exit=4
+canary-D-gitignored-marker baseline: Failure [('Build', 'Success'), ('Test', {'Failure': 100})] total_mutants 0
+MISSED   src/lib.rs:1:29: replace + with - in f in 0s build + 0s test
+MISSED   src/lib.rs:1:29: replace + with * in f in 0s build + 0s test
+5 mutants tested in 2s: 5 missed
+canary-E-gitignored-empty-mutants-out exit=2
+canary-E-gitignored-empty-mutants-out baseline: Success [('Build', 'Success'), ('Test', 'Success')] total_mutants 5
+##### (d) NON-empty pre-created --output with a real run
+MISSED   src/lib.rs:14:21: replace < with > in is_even in 0s build + 0s test
+MISSED   src/lib.rs:14:21: replace < with <= in is_even in 0s build + 0s test
+9 mutants tested in 4s: 9 missed
+nonempty-out exit=2
+keepme
+mutants.out
+##### (e, h) in-diff anchoring matrix: git top = cargo workspace root; names of directory and package varied independently
+matrix dirb-pkgb (dirB=b pkgB=b) cwd= matched=0 first=[ INFO No mutants to filter] exit=0
+matrix dirb-pkgb (dirB=b pkgB=b) cwd=/b matched=0 first=[ INFO No mutants to filter] exit=0
+matrix dirb-pkgcb (dirB=b pkgB=crate_b) cwd= matched=0 first=[ INFO No mutants to filter] exit=0
+matrix dirb-pkgcb (dirB=b pkgB=crate_b) cwd=/b matched=0 first=[ INFO No mutants to filter] exit=0
+matrix dircb-pkgb (dirB=crate_b pkgB=b) cwd= matched=5 first=[crate_b/src/lib.rs:2:5: replace quad -> i32 with 0] exit=0
+matrix dircb-pkgb (dirB=crate_b pkgB=b) cwd=/crate_b matched=5 first=[crate_b/src/lib.rs:2:5: replace quad -> i32 with 0] exit=0
+matrix dircb-pkgcb (dirB=crate_b pkgB=crate_b) cwd= matched=5 first=[crate_b/src/lib.rs:2:5: replace quad -> i32 with 0] exit=0
+matrix dircb-pkgcb (dirB=crate_b pkgB=crate_b) cwd=/crate_b matched=5 first=[crate_b/src/lib.rs:2:5: replace quad -> i32 with 0] exit=0
+matrix dirb2-pkgb2 (dirB=b2 pkgB=b2) cwd= matched=5 first=[b2/src/lib.rs:2:5: replace quad -> i32 with 0] exit=0
+matrix dirb2-pkgb2 (dirB=b2 pkgB=b2) cwd=/b2 matched=5 first=[b2/src/lib.rs:2:5: replace quad -> i32 with 0] exit=0
+##### (e2) REAL mutation run from the member directory, diff anchored at the workspace root vs at the member
+Found 5 mutants to test
+ok       Unmutated baseline in 0s build + 0s test
+5 mutants tested in 2s: 5 caught
+member-cwd-top-diff exit=0
+ INFO No mutants to filter
+member-cwd-rel-diff exit=0
+Found 5 mutants to test
+ok       Unmutated baseline in 0s build + 0s test
+5 mutants tested in 2s: 5 caught
+root-cwd-top-diff exit=0
