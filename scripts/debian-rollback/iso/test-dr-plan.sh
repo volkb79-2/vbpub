@@ -71,6 +71,14 @@ SMALLBIG=$WORK/smallbig.lsblk; { disk vda 0 0 4; disk vdb 0 0 500; } > "$SMALLBI
 expect small-boot-disk-plus-big-REFUSES      refuse  ""       "$SMALLBIG" "$(conf 'HOSTNAME=h1')"
 expect small-boot-disk-explicit-big-ok       install /dev/vdb "$SMALLBIG" "$(conf 'TARGET_DISK=/dev/vdb')"
 expect usb-stick-NOT-excluded-no-config      refuse  ""       "$USB" none
+# review round 11: a disk with something mounted ("busy") is never a target but still COUNTS as an internal disk
+expect busy-second-disk-REFUSES              refuse  ""       "$TWO" "$(conf 'HOSTNAME=h1')" --busy vdb
+expect busy-second-disk-no-config-REFUSES    refuse  ""       "$TWO" none --busy vdb
+expect busy-explicit-target-REFUSES          refuse  ""       "$TWO" "$(conf 'TARGET_DISK=/dev/vdb')" --busy vdb
+expect busy-explicit-other-target-ok         install /dev/vda "$TWO" "$(conf 'TARGET_DISK=/dev/vda')" --busy vdb
+expect first-ssd-skips-busy-disk             install /dev/sdb "$THREE" "$(conf 'TARGET_DISK=first-ssd')" --busy nvme0n1
+expect busy-and-excluded-are-different       install /dev/vda "$TWO" "$(conf 'HOSTNAME=h1')" --exclude vdb
+expect busy-names-validated                  refuse  ""       "$TWO" "$(conf 'TARGET_DISK=/dev/vda')" --busy 'vdb;x'
 expect rom-and-loop-do-not-count             install /dev/vda "$WORK/loop.lsblk" "$(conf 'HOSTNAME=h1')"
 # root password hash (never a plaintext password in the ISO or in a process list)
 # shellcheck disable=SC2016  # crypt hashes contain literal dollar signs

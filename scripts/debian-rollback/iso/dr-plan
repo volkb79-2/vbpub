@@ -31,13 +31,14 @@ fi
 [ -x "$PICK" ] || { echo "dr-plan: dr-pick-disk not found" >&2; exit 2; }
 
 LSBLK="" CONFIG="" NOCONFIG=0 MINGIB=8 CHECK=0
-declare -a EXCLUDE_ARGS=()
+declare -a EXCLUDE_ARGS=() BUSY_NAMES=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --lsblk) LSBLK=${2:?}; shift 2 ;;
     --config) CONFIG=${2:?}; shift 2 ;;
     --no-config) NOCONFIG=1; shift ;;
     --exclude) EXCLUDE_ARGS+=(--exclude "${2:?}"); shift 2 ;;
+    --busy) BUSY_NAMES+=("${2:?}"); shift 2 ;;   # in use (mounted/swap): never a target, but it still counts as an internal disk
     --min-gib) MINGIB=${2:?}; shift 2 ;;
     --check-config) CHECK=1; shift ;;   # validate --config only (no disks involved): prints CONFIG=ok and the settings
     *) echo "dr-plan: unknown argument: $1" >&2; exit 2 ;;
@@ -85,7 +86,12 @@ fi
 
 # every qualifying disk, in preference order (dr-pick-disk owns the qualification rules)
 if [ "$LSBLK" = - ]; then input=$(cat); else [ -r "$LSBLK" ] || refuse "lsblk file $LSBLK is not readable"; input=$(cat "$LSBLK"); fi
-candidates=$(printf '%s\n' "$input" | "$PICK" --list --min-gib "$MINGIB" "${EXCLUDE_ARGS[@]}" 2>/dev/null) || candidates=""
+declare -a PICK_EXCLUDE=("${EXCLUDE_ARGS[@]}")   # excluded + busy: neither can be a target
+for b in "${BUSY_NAMES[@]}"; do
+  [[ "$b" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || refuse "--busy value '$b' is not a disk name"
+  PICK_EXCLUDE+=(--exclude "$b")
+done
+candidates=$(printf '%s\n' "$input" | "$PICK" --list --min-gib "$MINGIB" "${PICK_EXCLUDE[@]}" 2>/dev/null) || candidates=""
 ncand=$(printf '%s' "$candidates" | grep -c . || true)
 # "the only disk" means the only internal disk of ANY kind (small, removable, USB, rotational), not just the only one
 # that qualifies: otherwise a small boot disk beside a big data disk would make the data disk look like the only one.
