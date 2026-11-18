@@ -32,7 +32,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
-
+### Changed
+- cmru R2 (`cmru-first-release-r2`): `candidate_fail_fast = true` removes per-candidate coverage and stops at the first failing test, cutting measured runtime from ~570 s to ~288 s per candidate (assay P1 of the R2 time-reduction program).
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->

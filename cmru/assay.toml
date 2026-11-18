@@ -359,11 +359,16 @@ artifact = "coverage.json"
 # This lane runs after the initial stable release, when it has no prior
 # CMRU release baseline to compare. Keep its whole-source R2 policy aligned
 # with Assay's own Python qualification campaign.
-# Ceiling for concurrent candidate windows (assay >= 11). Measured 2026-11-05:
+# Ceiling for concurrent candidate windows (assay >= 11). Pre-fail-fast baseline
+# measured 2026-11-05:
 # ~570 s per candidate, ~85% of one core, 1-1.75 GiB RSS (pytest + coverage), so
 # this suite is CPU- and memory-bound: 2, not 3, and the lane container needs 4g
 # (run-gate.toml). Assay's `--shard` across hosts is the real lever for the
 # 4605-candidate whole-source plan.
+# `candidate_fail_fast` removes per-candidate coverage and adds `-x`, so a kill
+# stops at its first failing test; the R0/R1 baseline keeps full coverage and
+# survivors still run the full suite. Nov-8 shard lanes measured ~570 s -> ~288 s
+# per candidate over 1712 candidates, with kill outcomes unchanged (WP1).
 jobs_max = 2
 max_mutants = 10000
 operators = [
@@ -374,6 +379,7 @@ operators = [
 ]
 budget_per_candidate = "auto"
 liveness = true
+candidate_fail_fast = true
 
 [lanes.cmru-first-release-r2.judge.canary]
 mechanism = "import-break"
