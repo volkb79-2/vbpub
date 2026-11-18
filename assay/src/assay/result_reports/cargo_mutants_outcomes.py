@@ -24,7 +24,9 @@ null refusal, and is memoised on the bytes, so this reader, ``diff_paths`` and
 ``parse_directory`` share ONE parse of one document (design 7.14). Its
 ``AssayError`` refusals are surfaced here as :class:`ReportUnusable`, the
 registry's refusal type (R0 falls back to the exit code; R2 carries the
-reason, design 1.4).
+reason, design 1.4). The ``load_document`` memo is NOT cleared on the R0-only
+path (this reader never releases it); U5 must call
+``load_document.cache_clear()`` after the single consume.
 
 **The time window (design 1.3).** ``finished`` means ``end_time`` is set AND
 the document's ``[start_time, end_time]`` lies inside the command's own
@@ -66,7 +68,8 @@ CARGO_MUTANTS_CLOCK_TOLERANCE_SECONDS = 5
 #: RFC 3339 UTC with an optional fraction of up to nanoseconds, as cargo-mutants
 #: writes it (``2026-11-18T04:36:08.039112716Z``).
 _TIMESTAMP_RE = re.compile(
-    r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z"
+    r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})"
+    r"(?:\.([0-9]{1,9}))?Z"
 )
 
 

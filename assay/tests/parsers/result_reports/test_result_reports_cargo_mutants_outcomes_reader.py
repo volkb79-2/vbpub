@@ -162,6 +162,27 @@ def test_a_fractionless_and_a_short_fraction_stamp_are_read():
     assert read(raw, window=_window()).total == 26
 
 
+def test_a_report_that_starts_and_ends_at_the_same_instant_is_accepted():
+    """``start == end`` is a legal (instant) span; only ``end < start`` is the
+    reversed shape refused above."""
+    raw = _edited(
+        start_time="2026-11-18T06:03:30.000000000Z",
+        end_time="2026-11-18T06:03:30.000000000Z",
+    )
+
+    assert read(raw, window=_window()).total == 26
+
+
+@pytest.mark.parametrize("field", ["start_time", "end_time"])
+def test_a_stamp_written_in_non_ascii_digits_refuses(field: str):
+    """``int()`` and a Unicode-aware digit class both accept Arabic-Indic
+    digits; RFC 3339 does not."""
+    raw = _edited(**{field: "2026-11-18T06:03:3\u0660Z"})
+
+    with pytest.raises(ReportUnusable, match="not an RFC 3339 UTC timestamp"):
+        read(raw, window=_window())
+
+
 @pytest.mark.parametrize("field", ["start_time", "end_time"])
 @pytest.mark.parametrize(
     "bad",

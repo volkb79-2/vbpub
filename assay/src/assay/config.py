@@ -1097,6 +1097,11 @@ class ResultReportConfig:
         return {"format": self.format, "path": self.path}
 
 
+#: Registered result-report readers whose artifact is a tool output DIRECTORY
+#: rather than one file; declarable only once U5a wires the runner for them.
+_DIRECTORY_ARTIFACT_RESULT_REPORT_FORMATS = frozenset({"cargo-mutants-outcomes"})
+
+
 def _load_result_report(value: Any, where: str) -> ResultReportConfig | None:
     """``[lanes.X.result_report]`` (B078), or ``None`` when the lane omitted
     it -- which is the overwhelmingly common case and must stay free.
@@ -1137,6 +1142,21 @@ def _load_result_report(value: Any, where: str) -> ResultReportConfig | None:
         raise LaneConfigError(
             f"{where}: 'result_report.format' must be one of "
             f"{sorted(RESULT_REPORT_FORMATS)}, got {report_format!r}"
+        )
+    if report_format in _DIRECTORY_ARTIFACT_RESULT_REPORT_FORMATS:
+        # The reader and its tests exist, but the runner has neither the
+        # reservation of the tool's output directory nor the freshness window
+        # until work package U5a: a lane command that wrote a canned report
+        # itself would be accepted as this run's report, and a real
+        # cargo-mutants run rotates `mutants.out`, leaving the report silently
+        # absent so the exit code decides.
+        raise LaneConfigError(
+            f"{where}: 'result_report.format' {report_format!r} is a "
+            f"directory-artifact format, and the directory-artifact "
+            f"result-report wiring (reservation of the output directory and "
+            f"the freshness window) arrives with work package U5a; declare "
+            f"one of the file formats "
+            f"{sorted(RESULT_REPORT_FORMATS - _DIRECTORY_ARTIFACT_RESULT_REPORT_FORMATS)}"
         )
     path = _validate_omission_path(
         value["path"], where=where, field="result_report.path"
