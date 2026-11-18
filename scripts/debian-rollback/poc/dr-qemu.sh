@@ -6,7 +6,9 @@
 # running container) and a container with host /sys/fs/cgroup and the D-Bus socket
 # (find_cgroup_inspector(), core.py:~705). This script mirrors vm-lab's `docker run` argv
 # (core.py build of create_argv, ~lines 1905-1950) and QEMU command (_HOST_SCRIPT_TEMPLATE,
-# ~lines 1740-1830) as of main 5b107f4bd, WITHOUT its admission checks. The caller does the
+# ~lines 1740-1830) as of main 5b107f4bd, WITHOUT its admission checks, its `--label` pair
+# (vm-lab's cleanup and admission do not see these containers) and without `--rm` (a restart
+# under the same name needs the old container removed by exact name). The caller does the
 # admission by hand before every start (one guest, slice memory, PSI) and logs it.
 # test-dr-qemu.sh pins the hardening flags so this copy cannot drift silently.
 #

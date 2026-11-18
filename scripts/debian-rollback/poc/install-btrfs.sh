@@ -143,7 +143,7 @@ chroot_run /usr/local/sbin/dr-state gen-menu --default "$STATE"
 if [ "$DRY" != 1 ]; then
   cat >"$T/etc/apt/apt.conf.d/80dr-state" <<'EOF'
 DPkg::Pre-Invoke { "[ ! -x /usr/local/sbin/dr-state ] || /usr/local/sbin/dr-state snapshot --reason apt || exit 100"; };
-DPkg::Post-Invoke { "[ ! -x /usr/local/sbin/dr-state ] || DR_STATE=none /usr/local/sbin/dr-state gen-menu || true"; };
+DPkg::Post-Invoke { "[ ! -x /usr/local/sbin/dr-state ] || /usr/local/sbin/dr-state gen-menu || true"; };
 EOF
   for d in postinst.d postrm.d; do
     mkdir -p "$T/etc/kernel/$d"
@@ -158,6 +158,7 @@ EOF
   done
 fi
 
+run rm -f "$T/run/dr-state.lock"   # the lock file must not be carried into the state (and its snapshots)
 run umount -R "$T"
 run umount "$TOP"
 trap - EXIT
