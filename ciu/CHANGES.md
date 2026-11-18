@@ -21,6 +21,12 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Fixed
+- CIU-217: the KSM shim verifier now refuses an ELF64 object whose declared program-header entry size is smaller than the 56-byte ELF64 program header, with the normal `cannot verify` refusal. It previously accepted such an object as dependency-free.
+
+### Adoption / Migration Notes
+- CIU-217: no action needed; a shim that CIU built itself always has a valid program-header table. Only a hand-placed or corrupted artifact in the KSM cache is newly refused.
+
 <!-- cmru: release history -->
 
 ## [7.25.1] - 2026-11-12

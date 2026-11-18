@@ -4884,7 +4884,11 @@ artifact exists):
   DELETED, never cached — a libc-linked shim is not a degraded shim, it is a
   container that will not start under the other libc. An artifact that cannot
   be parsed is refused too: "could not verify" MUST NOT be treated as "verified
-  good". A cache HIT is re-verified on every use for the same reason.
+  good". A cache HIT is re-verified on every use for the same reason. A
+  program-header table whose declared entry size (`e_phentsize`) is smaller than
+  the 56-byte ELF64 program header the parser reads is unparseable and refused
+  the same way (CIU-217); an object with no program headers has no table to
+  read, so its entry size is not checked.
 - Every failure (no Docker, image unavailable offline, compile error, timeout,
   failed verification) is a configuration/environment error naming the cause;
   CIU never proceeds with an unverified shim.

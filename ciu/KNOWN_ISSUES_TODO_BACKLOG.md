@@ -6981,7 +6981,7 @@ test.
 
 ## CIU-217 — KSM ELF verifier accepts a zero-sized program-header entry declaration
 
-**Status:** OPEN (filed 2026-11-13); severity: minor, fail-open artifact verification.
+**Status:** FIXED (2026-11-18; `_dt_needed_count` refuses a program-header table with `e_phentsize` below 56 when `e_phnum` is non-zero; the xfail is removed and undersized-entry oracles added); severity: minor, fail-open artifact verification.
 
 **Observed.** A dependency-free ELF64-shaped object with one program header and `e_phentsize = 0` passes `_verify`. `_dt_needed_count` uses the zero entry size for its bounds check, then reads program-header fields at their fixed offsets anyway. The verifier therefore accepts an artifact whose declared program-header table cannot be interpreted as specified. The strict xfail `test_zero_program_header_entry_size_is_refused` records this behavior without weakening the verifier or hiding the issue.
 
