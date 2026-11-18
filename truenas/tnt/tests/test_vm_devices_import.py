@@ -758,7 +758,7 @@ def test_uploads_search_iso_then_vm_images_then_the_flat_downloads_top_level(tmp
     assert uploads.verify_download("only-image.bin", folders).label == "vm-images"
     legacy = uploads.verify_download("legacy.bin", folders)
     assert (legacy.label, legacy.sha256) == ("downloads", old_digest)
-    with pytest.raises(Refused) as err:  # the old downloads/ folder accepts flat names only
+    with pytest.raises(Refused) as err:  # the old flat downloads folder accepts flat names only
         uploads.verify_download("sub/nested.bin", folders)
     text = str(err.value)
     assert "does not exist in any searched folder" in text

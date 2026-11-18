@@ -31210,7 +31210,7 @@
       "confirmation": false,
       "constraints": [],
       "delegated_metadata": [],
-      "description": "Upload verified files from the repository downloads/ folder.",
+      "description": "Upload verified files from the iso or vm-images folder named in cowtree.toml.",
       "group": "EXPLORATION",
       "id": "route:entrypoint:tnt/files",
       "kind": "delegate-group",
@@ -31238,7 +31238,7 @@
       "subcommands": [
         "route:entrypoint:tnt/files/put"
       ],
-      "summary": "Upload verified files from the repository downloads/ folder.",
+      "summary": "Upload verified files from the iso or vm-images folder named in cowtree.toml.",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null
@@ -31251,7 +31251,7 @@
           "choices": null,
           "const": null,
           "default": null,
-          "description": "File inside the repository downloads/ folder (its .sha256 must sit beside it).",
+          "description": "File inside the iso or vm-images folder named in cowtree.toml (its .sha256 must sit beside it).",
           "help_group": "positional arguments",
           "hidden": false,
           "id": "argument:route:entrypoint:tnt/files/put/name",
@@ -31589,15 +31589,15 @@
         {
           "behavior": [],
           "confirmation": false,
-          "description": "Upload verified files from the repository downloads/ folder.",
+          "description": "Upload verified files from the iso or vm-images folder named in cowtree.toml.",
           "group": "EXPLORATION",
           "id": null,
           "name": "files",
-          "summary": "Upload verified files from the repository downloads/ folder.",
+          "summary": "Upload verified files from the iso or vm-images folder named in cowtree.toml.",
           "synopsis": null
         }
       ],
-      "description": "Upload downloads/NAME to a NAS dataset directory through the API (sha256-verified, never overwrites).",
+      "description": "Upload NAME from the iso or vm-images folder (cowtree.toml) to a NAS dataset directory through the API (sha256-verified, never overwrites).",
       "group": "MODIFICATION",
       "id": "route:entrypoint:tnt/files/put",
       "kind": "invocation",
@@ -31655,7 +31655,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Upload downloads/NAME to a NAS dataset directory through the API (sha256-verified, never overwrites).",
+      "summary": "Upload NAME from the iso or vm-images folder (cowtree.toml) to a NAS dataset directory through the API (sha256-verified, never overwrites).",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

@@ -17,7 +17,7 @@ internal library, not a separately published release target.
   (SPEC P1-P4) and test that a truncated `owner.json` is untrusted and retained.
 
 ### Added
-- Add `cowtree.repo_paths` and the repo-root `vm-lab.toml` config: one tracked file names a repository's shared
+- Add `cowtree.repo_paths` and the repo-root `cowtree.toml` config (first named `vm-lab.toml`, renamed under Changed): one tracked file names a repository's shared
   paths (top-level `repo` key naming the CoW folder, shared by every worktree; plain location, optional CoW location
   below `$MDT_COW_ROOT/<repo>/`, compression), a resolver
   (`load_repo_paths`, `find_repo_root`, `RepoPaths.resolve` and `.provision`) returns the CoW folder only when the
