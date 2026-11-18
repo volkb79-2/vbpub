@@ -8,6 +8,12 @@ any parenthesised or commented decorator lines, and ends at the AST's
 ``end_lineno``/``end_col_offset``.  A comment after the final AST statement is
 therefore outside the segment and does not change the key; a comment before the
 final statement is inside and does.
+
+Python accepts a bare CR (``\\r`` not followed by ``\\n``) as a physical newline,
+but its AST and tokenizer line mappings do not align with this module's byte-line
+table.  If such a byte occurs anywhere in the source, both public helpers fail
+closed by returning ``None`` so callers use file-granular identity.  LF and
+CRLF sources remain supported.
 """
 
 from __future__ import annotations
@@ -130,6 +136,13 @@ def _line_starts(source: bytes) -> tuple[int, ...]:
     return tuple(starts)
 
 
+def _has_bare_cr(source: bytes) -> bool:
+    return any(
+        byte == 0x0D and (index + 1 == len(source) or source[index + 1] != 0x0A)
+        for index, byte in enumerate(source)
+    )
+
+
 def _line_count(source: bytes, starts: tuple[int, ...]) -> int:
     if source.endswith(b"\n"):
         return len(starts) - 1
@@ -219,16 +232,16 @@ def _collect_segments(tree: ast.Module, source: bytes) -> tuple[_Segment, ...]:
 def _parse_source(source: bytes) -> _SourceIndex | None:
     try:
         text = source.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-    try:
         tree = ast.parse(text)
-    except (SyntaxError, ValueError):
+        return _SourceIndex(
+            line_starts=_line_starts(source),
+            segments=_collect_segments(tree, source),
+        )
+    except Exception:  # noqa: BLE001 -- malformed byte input must fail closed
+        # This is the byte-input trust boundary: invalid UTF-8 and malformed
+        # source are expected to fail closed, including parser/tokenizer errors
+        # for unusual but byte-valid input.
         return None
-    return _SourceIndex(
-        line_starts=_line_starts(source),
-        segments=_collect_segments(tree, source),
-    )
 
 
 @lru_cache(maxsize=8)
@@ -301,6 +314,8 @@ def locus_for_site(
         or not _valid_span(source, start_byte, end_byte)
     ):
         return None
+    if _has_bare_cr(source):
+        return None
     index = _source_index(path, source)
     if index is None:
         return None
@@ -368,6 +383,8 @@ def window_key_for_site(
         or isinstance(lines, bool)
         or lines < 0
     ):
+        return None
+    if _has_bare_cr(source):
         return None
     index = _source_index(path, source)
     if index is None:

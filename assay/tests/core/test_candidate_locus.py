@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import random
 
 import pytest
 
@@ -358,6 +359,103 @@ def test_parse_and_encoding_failures_have_no_locus_or_window(source: bytes):
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        b"def f():\r    return 1\r",
+        b"@decorate\rdef f():\r    return 1\r",
+    ],
+)
+def test_bare_cr_sources_have_no_locus_or_window(source: bytes):
+    start, end = _span(source, b"1")
+
+    assert locus_for_site(
+        "pkg/mod.py", source, start, end, OPERATOR, REPLACEMENT
+    ) is None
+    assert (
+        window_key_for_site(
+            "pkg/mod.py", source, start, end, OPERATOR, REPLACEMENT
+        )
+        is None
+    )
+
+
+def test_crlf_sources_still_have_a_locus_and_window():
+    source = b"def f():\r\n    return 1\r\n"
+    start, end = _span(source, b"1")
+    segment = _segment(source, b"def", b"return 1")
+
+    locus = locus_for_site(
+        "pkg/mod.py", source, start, end, OPERATOR, REPLACEMENT
+    )
+    window = window_key_for_site(
+        "pkg/mod.py", source, start, end, OPERATOR, REPLACEMENT
+    )
+
+    assert locus is not None
+    assert locus.qualname == "f"
+    assert locus.segment_sha256 == hashlib.sha256(segment).hexdigest()
+    assert window == _expected_window_key(
+        "pkg/mod.py", segment, start - source.index(b"def")
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        b"def f():\n    return 1\r",
+        b"def f():\r\r\n    return 1\r\n",
+    ],
+)
+def test_bare_cr_edges_have_no_locus_or_window(source: bytes):
+    start, end = _span(source, b"1")
+
+    assert locus_for_site(
+        "pkg/mod.py", source, start, end, OPERATOR, REPLACEMENT
+    ) is None
+    assert (
+        window_key_for_site(
+            "pkg/mod.py", source, start, end, OPERATOR, REPLACEMENT
+        )
+        is None
+    )
+
+
+def test_hostile_byte_input_never_raises():
+    rng = random.Random(0)
+    random_sources = [rng.randbytes(rng.randrange(0, 65)) for _ in range(64)]
+    seeds = [
+        b"def f():\n    return 1\n",
+        b"def f():\r\n    return 1\r\n",
+        b"def f():\r    return 1\r",
+        b"@decorate\ndef f():\n    return 1\n",
+        b"class C:\n    @decorate\n    def f(self):\n        return 1\n",
+        b"VALUE = 1\0\n",
+        b"VALUE = \xff\n",
+        b"if True:\n\treturn 1\n",
+    ]
+    truncated_sources = [
+        seed[:cutoff] for seed in seeds for cutoff in range(0, len(seed), 7)
+    ]
+    sources = random_sources + truncated_sources
+
+    assert len(sources) <= 200
+    for source in sources:
+        if len(source) > 1:
+            start = rng.randrange(len(source) - 1)
+            end = rng.randrange(start + 1, len(source) + 1)
+        else:
+            start, end = 0, 1
+        locus = locus_for_site(
+            "pkg/mod.py", source, start, end, OPERATOR, REPLACEMENT
+        )
+        window = window_key_for_site(
+            "pkg/mod.py", source, start, end, OPERATOR, REPLACEMENT
+        )
+        assert locus is None or isinstance(locus, Locus)
+        assert window is None or isinstance(window, str)
 
 
 def test_duplicate_qualname_and_segment_sha_makes_both_sites_fall_back():
