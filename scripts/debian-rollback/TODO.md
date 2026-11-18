@@ -5,9 +5,11 @@ snapshots before apt, rolls back through the menu and survives a kernel upgrade 
 guest; see [docs/MILESTONES-2026-11-18.md](docs/MILESTONES-2026-11-18.md) (plan),
 [docs/RESULTS-M1-RUN2-2026-11-18.md](docs/RESULTS-M1-RUN2-2026-11-18.md) and
 [docs/RESULTS-M1-RUN3-KERNEL-2026-11-18.md](docs/RESULTS-M1-RUN3-KERNEL-2026-11-18.md)
-(results, with what is NOT verified). The PoC tools are in `poc/`. Next: S5 (broken
-initramfs, recovery through the GRUB menu), the strengthened s2-s3 re-run, then the
-systemd-boot and ZFS variants of the M1 matrix, then the unattended ISO (M2).
+(results, with what is NOT verified). The PoC tools are in `poc/`. S5 (broken
+initramfs, recovery through the GRUB menu) and the strengthened s2-s3 re-run passed
+([run 4](docs/RESULTS-M1-RUN4-S2S3-S5-2026-11-18.md)). Next: S6, S7, S9 and the backports
+kernel on this variant, then the systemd-boot and ZFS variants of the M1 matrix, then
+the unattended ISO (M2).
 Decisions and reasons are in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md).
 
 **The plan for everything that remains is

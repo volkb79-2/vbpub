@@ -46,7 +46,7 @@ transcript is the evidence (`artifacts/debian-rollback/m1-run3k/`, local).
   this should be impossible, but it has not been tried), S7 (unattended-upgrades
   taking a snapshot), S8 (many states and pruning), S9 (full disk before an upgrade),
   S11 (backports kernel), S12 (phase 2), Secure Boot, other candidates (systemd-boot,
-  ZFS), snapper itself, and the strengthened `s2-s3` scenario (the earlier run 2b
-  used the first driver version).
+  ZFS), snapper itself. (S5 and the strengthened `s2-s3` re-run have since passed,
+  see [run 4](RESULTS-M1-RUN4-S2S3-S5-2026-11-18.md).)
 - The download of the upgrade (286 MiB) is for a minimal system; a real host may
   need more.
