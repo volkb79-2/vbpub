@@ -10,11 +10,12 @@ requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Volker Badziong"}]
 # vmscreen reads the exact screen text of a guest (`console text`, `console wait-for-text`, `console record`); the tool runs it as
-# a subprocess (the `vmscreen` executable on PATH, else `python -m vmscreen`). No version floor yet: vmscreen has no release
-# (its tag `vmscreen-v*` is not minted, KNOWN_ISSUES_TODO_BACKLOG.md VML-BL-03). The functional floor is the `--qemu-dump-dir`
-# option, which `vm_lab.text` checks at run time (VMSCREEN_REQUIRED_OPTION, added by VML-03a); replace this line with a
-# `>=` floor naming that release when vmscreen ships one. The argparse CLI needs no cli-extended; the rest is standard library.
-dependencies = ["vmscreen"]
+# a subprocess (the `vmscreen` executable on PATH, else `python -m vmscreen`). Floor 0.1.0: the first vmscreen release
+# (tag `vmscreen-v0.1.0`, 2026-11-18) is the first one that has the `--qemu-dump-dir` option, which `vm_lab.text` also checks
+# at run time (VMSCREEN_REQUIRED_OPTION, added by VML-03a). The release is a GitHub Release wheel, not on a public index:
+# install it from the estate wheel list (KNOWN_ISSUES_TODO_BACKLOG.md VML-BL-03). The argparse CLI needs no cli-extended;
+# the rest is standard library.
+dependencies = ["vmscreen>=0.1.0"]
 dynamic = ["version"]
 
 # External requirements (not pip dependencies): Docker (the guests run in containers of the QEMU image built by

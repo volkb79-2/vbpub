@@ -5,6 +5,7 @@ All notable changes to vm-lab are recorded here.
 ## [Unreleased]
 
 ### Changed
+- **vmscreen floor (VML-BL-03):** `dependencies = ["vmscreen>=0.1.0"]`, the first vmscreen release (`vmscreen-v0.1.0`, 2026-11-18), which has the `--qemu-dump-dir` option that `vm_lab.text` requires.
 - **vm-lab is a top-level project (RP-02, mdt-cockpit MDT-044).** The tool moved from `scripts/vm-lab/` (`vm_lab.py`, `vm_lab_console.py`, `vm_lab_text.py`) to `vm-lab/` with the package `vm_lab` in `src/` (`vm_lab.core`, `vm_lab.console`, `vm_lab.text`, `vm_lab.cli`), a `pyproject.toml` (name `vm-lab`, Python >= 3.11, dependency `vmscreen`, console script `vm-lab = vm_lab.cli:main`) and `python -m vm_lab`. History follows (`git mv`). Importers: `from vm_lab import core as vm_lab` for the functions tests patch; `from vm_lab import <name>` still works for the names `scripts/truenas/tcg_vm.py` re-exports. The TrueNAS front only changed its `sys.path` entry (`<repo>/vm-lab/src`) and its import lines.
 - `python3 scripts/vm-lab/vm_lab.py <verb>` is gone; use `vm-lab/vm-lab <verb>` (a wrapper that sets `PYTHONPATH` to `vm-lab/src` relative to itself, so a bare checkout needs no install) or the installed `vm-lab` command.
 - The start refusal for an unset `DOCKER_NETWORK_INTERNAL` now says the value comes from the ciu stack environment or the devcontainer (`ciu env print`).
@@ -14,7 +15,7 @@ All notable changes to vm-lab are recorded here.
 - The unit lane is now `r0-r1` (`vm-lab/run-gate.toml`: coverage floor 72 %, measured 74.0 %), next to the new `r2` (assay mutation lane), `wheel` and `gate` lanes. A test builds a wheel from a copy of the project, so the lane first installs the pinned build tools (`setuptools==82.0.1`, `wheel==0.47.0`, `setuptools_scm==10.0.5`).
 
 ### Added
-- **Release registration (VML-BL-01):** `cmru.toml` (tag `vm-lab-v*`, wheel only to GitHub Releases, notes in `VM_LAB_RELEASE_NOTES`), `assay.toml` (judged lane `vm-lab`) and an entry in `cmru.orchestration.toml` that releases `vmscreen` first. Not released yet: the `vmscreen>=` floor needs the first vmscreen tag (VML-BL-03).
+- **Release registration (VML-BL-01):** `cmru.toml` (tag `vm-lab-v*`, wheel only to GitHub Releases, notes in `VM_LAB_RELEASE_NOTES`), `assay.toml` (judged lane `vm-lab`) and an entry in `cmru.orchestration.toml` that releases `vmscreen` first. The `vmscreen>=0.1.0` floor is set (VML-BL-03).
 - `wheel` gate lane: builds the vmscreen and vm-lab wheels from copies of the sources, installs both into a throwaway venv, runs `vm-lab --help` and `vmscreen --help` and checks the packaged Dockerfile. No Docker, no QEMU.
 - Admission lock from an installed wheel: when the Git probe next to the module finds no repository (or no git), the lock directory is `--lock-dir` (on `start` and `disk promote`), else `VM_LAB_ADMISSION_LOCK_DIR` (absolute, existing, writable); neither: refusal naming both. The lock file name is unchanged; checkout, wrapper, editable and TrueNAS use are unchanged.
 - `vm-lab/qemu-image/Dockerfile`: the QEMU container image (`debian:trixie-slim`, `qemu-system-x86`, `qemu-utils`, `procps`; no OVMF, no USER, no privileges), and the verb `vm-lab image build [--tag TAG] [--context DIR]` (default tag `vm-lab-qemu:local`; runs `docker build`).

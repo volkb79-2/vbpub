@@ -9,7 +9,7 @@ command `vm-lab` (same arguments).
 ```
 # 1. Pick one install form.
 vm-lab/vm-lab --help                                    # bare checkout: nothing to install
-/opt/mdt/venv/bin/python -m pip install -e libraries/vmscreen -e vm-lab   # editable; vmscreen first (no release yet)
+/opt/mdt/venv/bin/python -m pip install -e libraries/vmscreen -e vm-lab   # editable; vmscreen first
 python -m pip wheel --no-deps vm-lab -w /tmp/wheels     # a wheel; pip install it next to the vmscreen wheel
 export PATH="/opt/mdt/venv/bin:$PATH"                   # the venv's bin/ holds the `vm-lab` command
 
