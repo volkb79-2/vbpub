@@ -17,6 +17,10 @@ Case kinds:
   refusal a conforming decoder must produce. Rust tests assert the same refusal
   kind, so the error vocabulary is shared too.
 
+A case with a top-level ``held`` key (``{"generation", "entries"}``, the same entry form as
+``frame.dictionary``) is decoded against that held dictionary (``decode_frame(data, held)``,
+Rust ``decode_block_with``); every other case is decoded with no held dictionary.
+
 Never edit ``.bin`` by hand: change the description here and regenerate.
 """
 

@@ -58,11 +58,15 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-43 | Quarantined `.corrupt` files (corrupt, oversized) are kept for an operator but are never counted in `bytes`, never evicted and never bounded in number, so repeated damage can fill the directory beyond `cap_bytes` | Major | FIXED (P0 bug fold-in) |
 | HOB-44 | CLOSED — `tester-unified-rust` carries no `pip`/`ensurepip`/`python3-venv`, so the original `kind = "assay"` `assay-r1` lane died at Run-Gate's editable install before judging. Fixed by re-declaring the lane as a `kind = "command"` lane that runs the judge from the worktree's own `assay/src` (`PYTHONPATH`, no install); the image is unchanged. Proven through Run-Gate: PASS with the measured totals in the lane log, and FAIL/UNCOVERED_LINES when one kernel test file is deleted | Major | CLOSED (2026-11-16) |
 | HOB-45 | Rust R2/R3 remain unregistered for hostobs: no `assay-r2` (cargo-mutants ingestion) or `assay-r3` (canary) lane exists, so test quality rests on the hand-mutation campaigns | Major | OPEN (assay R-3b/R-4) |
-| HOB-46 | A block without an in-frame dictionary cannot be validated: `decode_block` checks row/column references only against a dictionary carried in the same frame | Major | OPEN (P2) |
-| HOB-47 | A history bucket's aggregation is never checked against the column metric's permitted mask | Minor | OPEN (P2) |
-| HOB-48 | A history block cannot name its subject (kind 6 `subject`, minor 1); the time-length half is the P0 bug fold-in's (`TIME_BUCKET_BYTES = 15`, no minor) | Major | OPEN (P2) |
+| HOB-46 | A block without an in-frame dictionary could not be validated: `decode_block_with(bytes, held)` now judges a bare block's generation, references, column kinds and bucket aggregations against the held dictionary (the stream-state `generation-regressed` rule stays with HOB-54) | Major | FIXED (P2a1) |
+| HOB-47 | A history bucket's aggregation is now checked against every column metric's permitted mask in both decoders (`aggregation-not-permitted`) | Minor | FIXED (P2a1) |
+| HOB-48 | A history block names its subject in kind 6 `subject` (minor 1, `PROTO_MINOR = 1`, `subject-without-time`), and the time length is `align8(15·n)` (the P0 bug fold-in's half) | Major | FIXED (P2a1; time-length half P0) |
 | HOB-49 | `hostobs_wire_ref.py` cites a non-existent `docs/WIRE-COLUMN-CODEC.md` instead of `docs/WIRE.md` | Minor | OPEN |
-| HOB-50 | Frame header and directory checks: `SECTIONED` is accepted on every frame type, and the directory vector is allocated from `n_sec` before its bytes are proven present | Minor | OPEN (P2) |
+| HOB-50 | `SECTIONED` is refused on every frame type but BLOCK (`unknown-frame-flags` locally), and the directory byte count is proven present before the directory vector is reserved | Minor | FIXED (P2a1) |
+| HOB-51 | Received frames are held to the alignment and header-first rules: every section `len` is a multiple of 8 (`section-length`) and an unknown kind at directory entry 0 is `section-order` at index 0, after the rank check | Minor | FIXED (P2a1) |
+| HOB-52 | A repeated dictionary identity is `duplicate-dictionary-entry` in Rust whatever the other fields hold, as in the Python reference | Minor | FIXED (P2a1) |
+| HOB-53 | The Python reference follows the WIRE.md §3.10 precedence: `not-a-block` before the buffer length and `SECTIONED` checks | Minor | FIXED (P2a1) |
+| HOB-54 | The stream layer machines (`FrameReader`, `ModeDetect`, `SendHub`, `ConnTimers`, client stream dictionaries) do not exist yet | Major | OPEN (P2) |
 
 ---
 
@@ -953,6 +957,17 @@ for a dictionary-bearing block that does not exceed it), plus the `bare-block-he
 `bare-block-dangling`, `generation-rollover` and `generation-regressed` cases of WIRE.md §11.3/§11.4
 in Rust and Python.
 
+**FIXED (P2a1).** `decode_block_with(bytes, held)` exists in Rust (`decode_block` is
+`decode_block_with(bytes, None)`) and `decode_frame(data, held)` in the Python reference. A block
+with an in-frame dictionary is judged against it and `held` is not consulted. A block without one
+and with a held dictionary must declare the held generation (`stale-dictionary-generation`), and
+its rows, columns, subject, column kinds and bucket aggregations are checked against the held
+dictionary. With `held = None` no reference check is possible and none is made, exactly as before.
+The fixtures `bare-block-held-dict` and `bare-block-dangling` carry the held dictionary as a
+top-level `"held": {"generation", "entries"}` key. The `generation-regressed` and
+`generation-rollover` rules need the per-stream held state and stay with the stream layer
+(`HOB-54`); they are not part of this fix.
+
 ## HOB-47 — History aggregation is not checked against the metric mask
 
 **Where:** `crates/proto/src/frame.rs` `decode_block`, `python/reference/hostobs_wire_ref.py`.
@@ -962,6 +977,16 @@ is in the mask of every column of the block, so `mean` over a counter decodes as
 
 **Exit criteria.** Both decoders refuse with `aggregation-not-permitted` (WIRE.md §3.6) and the
 `history-agg-not-permitted` fixture pins it.
+
+**FIXED (P2a1).** After the reference checks, both decoders refuse a history block with an
+`agg` outside the permitted mask of any of its columns as `aggregation-not-permitted` (the error
+names the metric's dictionary index and the aggregation code); counters permit raw, last and
+delta, gauges last, mean, min and max, states last. The check runs for an in-frame dictionary and
+for a held one. The fixtures `history-agg-not-permitted` (`mean` over a counter) and
+`history-gauge-aggs` (every gauge aggregation) pin it, and `history-buckets`, `history-five-buckets`
+were regenerated with `last` buckets, because their mixed counter and gauge columns permit no other
+aggregation (the n-bucket length pin is unchanged). Rust tests cover all six aggregations against
+a counter, a gauge and a state column.
 
 ## HOB-48 — A history block cannot name its subject
 
@@ -975,6 +1000,15 @@ instead of `align8(15·n)`, is a bug fix without a version change and lands in t
 **Exit criteria (P2).** The `subject` section (kind 6, version 1, required, `u32 ent | u32 0`, time
 blocks only, `subject-without-time` otherwise) per WIRE.md §3.8; `PROTO_MINOR = 1`; the
 `history-subject` and `subject-in-live-block` fixtures in both languages.
+
+**FIXED (P2a1; the time-length half landed in the P0 bug fold-in).** `SectionKind::Subject`
+(kind 6, version 1, directory required flag written and not enforced on decode, body
+`u32 ent | u32 0`, canonical rank between the dictionary and the rows/time sections),
+`Block::subject`, `encode_subject_body` and `PROTO_MINOR = 1` exist in Rust, and the Python
+reference does the same. A non-zero reserved word is `unknown-section-flags` (section 6), a subject
+that is not an entity is `row-reference-not-entity` (a dangling one `dangling-dictionary-ref`), and
+a subject without a time section is `subject-without-time` in both the decoder and the encoder.
+The fixtures `history-subject` and `subject-in-live-block` are decoded by both languages.
 
 ## HOB-49 — The Python reference cites a missing specification file
 
@@ -998,6 +1032,14 @@ reserves a directory vector of `n_sec` entries (up to 65,535) before it has prov
 `rep-sectioned-flag` case; the directory length is checked against the buffer before the vector is
 reserved, with a unit test for `n_sec = 65535` in a short frame.
 
+**FIXED (P2a1).** `FrameHeader::parse` refuses `SECTIONED` on every frame type but BLOCK as
+`unknown-frame-flags` (`bad-frame` on the wire), with the same fixed-field precedence as before
+(so it is judged before `not-a-block` and the length). `decode_block_with` proves that
+`8·n_sec` directory bytes are present (`truncated`, context "block directory") before it reserves
+the directory vector. The `rep-sectioned-flag` fixture pins the flag rule in both languages, the
+`block-as-req` fixture was regenerated with the flag cleared (only byte 5 changed), and a Rust
+unit test pins `n_sec = 65535` in a 16-byte frame.
+
 ## HOB-51 — Received frames are not held to the alignment and header-first rules
 
 **Where:** `crates/proto/src/frame.rs` `decode_block` (lines 1086-1126),
@@ -1014,6 +1056,13 @@ and an unknown kind at directory entry 0 with `section-order`, checked after the
 §3.10); the `unaligned-optional-section` and `optional-section-before-header` fixtures pin them in both
 languages; the existing `section-order` fixture keeps its pinned `index: 1, kind_code: 1`.
 
+**FIXED (P2a1).** Both decoders refuse a directory entry whose `len` is not a multiple of 8,
+unknown optional kinds included, as `section-length`; the check runs after the directory is read
+and before the order check. After the rank check an unknown kind at directory entry 0 is
+`section-order` at index 0 (a known non-header kind there is already a rank violation or a missing
+header). The `unaligned-optional-section` and `optional-section-before-header` fixtures pin both in
+Rust and Python, and the `section-order` fixture still reports `index: 1, kind_code: 1`.
+
 ## HOB-52 — A metric repeated with other facts is `conflicting-column` in Rust
 
 **Where:** `crates/proto/src/dict.rs` `decode` (line 891 → `intern` line 596). WIRE.md §13 V-12.
@@ -1025,6 +1074,13 @@ A dictionary that repeats a metric name with other facts is `conflicting-column`
 languages whatever the other fields (WIRE.md §3.7, D-W23); the `duplicate-metric-other-facts` and
 `duplicate-entity-other-label` fixtures pin it.
 
+**FIXED (P2a1).** `Dictionary::decode` turns the `conflicting-column` that `intern` reports for a
+metric name repeated with other facts into `duplicate-dictionary-entry` at that entry's index, so
+all three repeats (metric with other facts, `inc` with another label, exact repeat) have one
+outcome in Rust and in the Python reference. `intern` itself still reports `conflicting-column` for
+a live table. The `duplicate-metric-other-facts` and `duplicate-entity-other-label` fixtures pin it
+in both languages.
+
 ## HOB-53 — The Python reference checks buffer length before `not-a-block`
 
 **Where:** `python/reference/hostobs_wire_ref.py` `decode_frame` (lines 484-493). WIRE.md §13 V-13.
@@ -1034,6 +1090,12 @@ The reference checks buffer length and `SECTIONED` before the frame type, so a t
 
 **Exit criteria (P2).** The reference follows the WIRE.md §3.10 check precedence (Rust order); the
 `rep-not-sectioned-truncated` fixture pins `not-a-block` in both languages.
+
+**FIXED (P2a1).** `decode_frame` in the Python reference now checks the frame type
+(`not-a-block`) before the buffer length (`truncated`, `trailing-bytes`) and before `SECTIONED`
+(`missing-section`), the order of Rust `decode_block` and of WIRE.md §3.10. The
+`rep-not-sectioned-truncated` fixture (a REP of declared length 32 holding 24 bytes, flag clear)
+pins `not-a-block` in both languages.
 
 ## HOB-54 — The stream layer machines do not exist yet
 

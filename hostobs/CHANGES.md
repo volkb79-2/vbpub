@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Added and fixed (P2a1: wire codec and Python reference)
+
+- **`HOB-48`: the `subject` section (kind 6) and `PROTO_MINOR = 1`.** A history block names the one
+  incarnation it describes (`u32 ent | u32 0`, canonical rank between the dictionary and the
+  rows/time sections); `Block::subject`, `encode_subject_body` and the Python reference carry it.
+  It needs the time section (`subject-without-time`, decoder and encoder), must name an entity
+  (`row-reference-not-entity`) and has a zero reserved word (`unknown-section-flags`).
+- **`HOB-46`: `decode_block_with(bytes, held)`.** A block without an in-frame dictionary is judged
+  against the held one (`stale-dictionary-generation`, reference, kind and mask checks); `decode_block` is
+  `held = None` and behaves as before. Fixtures carry the held dictionary as a top-level `"held"` key.
+- **`HOB-47`: `aggregation-not-permitted`.** Every history bucket's aggregation must be in every
+  column metric's mask, in both decoders. `history-buckets` and `history-five-buckets` were
+  regenerated with `last` buckets (their counter and gauge columns permit no other), the 15-byte
+  length pin is unchanged.
+- **`HOB-50`/`HOB-51`: received frames.** `SECTIONED` on a non-BLOCK frame is `unknown-frame-flags`
+  (`block-as-req` was regenerated with the flag cleared), every section length is a multiple of 8
+  (`section-length`), an unknown kind at directory entry 0 is `section-order` at index 0 (after the
+  rank check), and the directory bytes are proven present before the vector is reserved.
+- **`HOB-52`/`HOB-53`: one outcome per defect.** A metric name repeated with other facts is
+  `duplicate-dictionary-entry` in Rust; the Python reference judges `not-a-block` before the buffer
+  length. Twelve new fixtures: `fixtures/wire` holds 41 cases (11 valid, 30 refusals); two new
+  `ProtoError` variants (44 in all). Not part of this change: the stream layer (`HOB-54`), the
+  `generation-regressed` rule, and `HOB-49`.
+
 ### Fixed (P0 bug fold-in)
 
 - **`HOB-8`: `FrameHeader::parse` bounds the declared length.** It refuses a length above

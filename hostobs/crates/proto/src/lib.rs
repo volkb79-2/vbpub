@@ -26,6 +26,12 @@
 //! - **A reference is checked for kind, not only for range.** A row names an incarnation and
 //!   a column names a metric; a column's declared kind must agree with the dictionary's
 //!   metric facts, because a consumer aggregates by whichever one it trusts.
+//! - **A bare block is judged against the held dictionary.** `decode_block_with(bytes, held)`
+//!   applies the generation, reference, column-kind and aggregation-mask checks to a block
+//!   that carries no dictionary of its own; `decode_block` is the `held = None` case, which
+//!   makes no reference check.
+//! - **A history bucket's aggregation must be in every column's mask** (counters raw, last,
+//!   delta; gauges last, mean, min, max; states last): `aggregation-not-permitted`.
 //! - **Rows and buckets are exclusive by presence**, and a non-zero row count needs one of
 //!   them: values without an entity or a bucket cannot be addressed, so they are refused
 //!   rather than carried as a "rowless block" nobody defined.
@@ -61,7 +67,8 @@
 //!   it, and carrying it inside the block is what makes an exported segment self-contained
 //!   (§C.5) and the fixture a single file per case. The `DICT` frame type stays defined and
 //!   unconsumed; a later package may split it out without a wire change.
-//! - **`kind` codes**: 1 header, 2 rows, 3 column, 4 time, 5 dictionary.
+//! - **`kind` codes**: 1 header, 2 rows, 3 column, 4 time, 5 dictionary, 6 subject (protocol
+//!   minor 1: the incarnation a history block describes; a minor-0 reader refuses it).
 //! - **History blocks carry `n_rows` buckets** in the header, so every section keeps one
 //!   authoritative row count and a disagreement is a typed refusal rather than a guess.
 

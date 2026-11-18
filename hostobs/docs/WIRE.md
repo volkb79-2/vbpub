@@ -116,9 +116,10 @@ Two decoder rules make the layout guarantees hold for **received** frames, not o
   frame has no header, so every accepted frame starts with the header.
 Hence **every body starts at a frame offset ≡ 0 (mod 8)**, a BLOCK's `len` is a multiple of 8, the
 header body sits at `16 + 8·n_sec`, and the frame ends exactly after the last body (`trailing-bytes`
-otherwise). Today neither decoder enforces the two rules (`frame.rs` `decode_block` lines 1086-1108
-take any body length; unknown kinds are exempt from the order check at 1114-1126; the Python reference
-`decode_frame` lines 509-535 likewise): §13 V-11, P2. In `fixtures/wire/live-block.bin` (344 B, 5
+otherwise). Both decoders enforce the two rules (`HOB-51`, §13 V-11; fixtures
+`unaligned-optional-section` and `optional-section-before-header`). A third decoder rule: the
+directory's `8·n_sec` bytes must be present before storage is reserved for them (`truncated`, context
+"block directory"; `HOB-50`). In `fixtures/wire/live-block.bin` (344 B, 5
 sections: header, dictionary, rows, 2 columns) the bodies start at offset 56 and `dropped` sits at 128.
 
 3.2 **Sections** (version 1 each; a known kind with another version is refused even when optional,
@@ -172,24 +173,26 @@ derived mask; label: u8 kind, u8 source; free: none), then `text_len` bytes of U
 < 0x20 or 0x7F. Entries are unaligned. Entry *i* is index *i*. Identity is the entity's `inc`, the
 metric's name, the label's `(kind, source, text)`, the free entry's text; a repeated identity is
 `duplicate-dictionary-entry` **whatever the other fields hold** (a metric name repeated with other
-facts, an `inc` repeated with another label, an exact repeat). The Python reference does exactly this
-(`hostobs_wire_ref.py` lines 294-299); Rust reports a metric name repeated with other facts as
-`conflicting-column` because `Dictionary::decode` goes through `intern` (`dict.rs` lines 591-596 via
-891), and the other two as `duplicate-dictionary-entry` (line 895): §13 V-12, P2. Code tables:
-`dict.rs` lines 48-155.
+facts, an `inc` repeated with another label, an exact repeat). Both decoders do exactly this: the
+Python reference always did, and Rust `Dictionary::decode` now maps the `conflicting-column` that
+`intern` reports for a metric name repeated with other facts to `duplicate-dictionary-entry` at that
+entry's index (`HOB-52`, §13 V-12; `intern` itself keeps `conflicting-column` for a live table).
+Code tables: `dict.rs` lines 48-155.
 
 3.8 **Subject body (kind 6, ver 1, minor ≥ 1, required flag set)**: u32 `ent`@0 (dictionary index,
 MUST name an Entity), u32 reserved@4 = 0. Allowed only with a time section (`subject-without-time`);
 it names the one incarnation a history block describes. A minor-0 reader refuses it, which is correct:
-a history block it cannot attribute must not be read. (`HOB-48` adds it to the codec.)
+a history block it cannot attribute must not be read. (Both codecs implement it since P2a1, `HOB-48`.)
+The directory's required flag is written by the encoders and is not enforced on decode.
 
 3.9 **Quality** (`quality.rs`, `fixtures/wire/quality.json`): 0 ok, 1 absent, 2 unreadable, 3 stale,
 4 reset, 5 not-sampled, 6 unsupported, 7 unknown-topology; any other byte is `unknown-quality`. Only 0
 is a measurement. Codes are append-only and announced in `hello.quality_codes`.
 
 3.10 **Decoder error kinds** are the `ProtoError::kind()` names (`error.rs` lines 478-530), e.g.
-`truncated`, `oversized-frame`, `section-order`, `stale-dictionary-generation`; P2 adds
-`aggregation-not-permitted`, `subject-without-time`, `generation-regressed`. They are local outcomes
+`truncated`, `oversized-frame`, `section-order`, `stale-dictionary-generation`; P2a1 added
+`aggregation-not-permitted` and `subject-without-time` (44 kinds in all) and the stream layer adds
+`generation-regressed`. They are local outcomes
 (fixtures `expect_error.kind`), never sent on the wire; §5.2 maps the reader's ones to wire codes.
 There are exactly two vocabularies: wire codes (§10, sent) and decoder kinds (local). Client APIs
 raise one of them (P3 `ServerError(code)` / `WireError(kind)`, plus `ConnectionLost` for EOF or reset);
@@ -204,10 +207,16 @@ then cross-section checks. Within `section-order`, two checks in this order: (1)
 pass in directory order, reports the first known entry whose rank is lower than the highest rank before
 it (detail `index`, `kind_code` of that entry; unknown kinds are skipped); (2) only if (1) passed, an
 unknown kind at entry 0 is reported (`index` 0, its `kind_code`). `fixtures/wire/section-order` (directory
-kinds `[5, 1, 2, 3, 3]`, read from the `.bin`) therefore keeps its pinned `index: 1, kind_code: 1`, and
-no existing fixture changes (the other 25 satisfy both §3.1 rules). Rust `decode_block` follows it after P0 (`FrameHeader::parse` bounds `len`);
-the Python reference checks buffer length and `SECTIONED` before `not-a-block`
-(`hostobs_wire_ref.py` lines 484-493): §13 V-13, P2.
+kinds `[5, 1, 2, 3, 3]`, read from the `.bin`) therefore keeps its pinned `index: 1, kind_code: 1`.
+`SECTIONED` on a frame type other than BLOCK is one of the fixed fields (`unknown-frame-flags`,
+`bad-frame` on the wire), so it is judged before `not-a-block`. Both decoders follow this order
+(`HOB-53`, §13 V-13). Three existing fixtures changed with P2a1, and only for the reasons below:
+`block-as-req` was regenerated with `SECTIONED` cleared (byte 5 only; with the flag set the same
+bytes are now `unknown-frame-flags`), and `history-buckets` and `history-five-buckets` were
+regenerated with every bucket `last`, because their counter and gauge columns together permit no
+other aggregation (§3.6, `HOB-47`). The 15-byte-per-bucket length pin of `history-five-buckets` (80
+bytes for five buckets, §13 V-1) is unchanged; the other 26 of the 29 pre-existing fixtures
+regenerate byte-identically.
 
 ## 4. Requests and replies
 
@@ -712,8 +721,8 @@ peer that negotiated `< m`.
 unknown version is refused, `frame.rs` `decode_block`). Unknown optional sections are skipped by
 `len`; unknown required ones are refused, surfaced to the client caller as `unsupported-section`.
 9.3 A major change changes the frame grammar; only the 8-byte prefix survives it.
-9.4 Minor 1 = kind 6 `subject` (and `series_batch`, which needs it). `PROTO_MINOR` becomes 1 with
-`HOB-48`'s subject half (P2). The §3.6 time length is not a minor: it is the layout version 1 always
+9.4 Minor 1 = kind 6 `subject` (and `series_batch`, which needs it). `PROTO_MINOR` is 1 since
+`HOB-48`'s subject half (P2a1). The §3.6 time length is not a minor: it is the layout version 1 always
 had, fixed as a bug in P0 (§13 V-1).
 
 ## 10. Wire error codes (closed list, minor 0 + 1)
@@ -746,12 +755,19 @@ Python `python/reference/hostobs_wire_ref.py`; both must reproduce `.json` or `e
 `oversized-frame`, `required-section-refused`, `row-references-metric`, `section-order`,
 `truncated-directory`, `truncated-frame` (named error). The P3 client must pass all of them too.
 
-11.3 **New block cases** (P2 adds bytes from the Python reference encoder, Rust and Python agree):
+11.3 **New block cases** (P2a1 added the 12 cases below, except `history-five-buckets`, from the
+Python reference encoder; Rust and Python agree, `fixtures/wire` holds 41 cases: 11 valid, 30
+refusals). A case with a top-level `"held": {"generation", "entries"}` key is decoded against that
+held dictionary (`decode_block_with(bytes, Some(held))`, Python `decode_frame(data, held)`), in the
+same entry form as `frame.dictionary`; every other case is decoded with `held = None`. P2a1
+regenerated `history-buckets`, `history-five-buckets` (every bucket `last`, §3.6) and `block-as-req`
+(`SECTIONED` cleared), see §3.10.
 
 | Case | Purpose | Expected |
 |---|---|---|
-| `history-five-buckets` | §3.6 length `align8(15·5) = 80`; **added by P0**, P2 does not re-add it | ok |
-| `history-subject` | kind 6 with time | ok |
+| `history-five-buckets` | §3.6 length `align8(15·5) = 80`; **added by P0**, P2 does not re-add it; regenerated by P2a1 with `last` buckets | ok |
+| `history-gauge-aggs` | gauge-only history block, `mean`, `min`, `max` and `last` buckets, no subject (added by P2a1) | ok |
+| `history-subject` | kind 6 with time, counter column with `raw`, `last`, `delta` buckets | ok |
 | `unaligned-optional-section` | unknown optional kind, `len = 5`, last | `section-length` |
 | `optional-section-before-header` | unknown optional kind, `len = 8`, directory entry 0 | `section-order` |
 | `duplicate-metric-other-facts` | metric name repeated with another unit | `duplicate-dictionary-entry` |
@@ -759,8 +775,8 @@ Python `python/reference/hostobs_wire_ref.py`; both must reproduce `.json` or `e
 | `rep-not-sectioned-truncated` | REP type, buffer shorter than `len` | `not-a-block` (precedence, §3.10) |
 | `subject-in-live-block` | kind 6 with rows | `subject-without-time` |
 | `history-agg-not-permitted` | `mean` on a counter column | `aggregation-not-permitted` |
-| `bare-block-held-dict` | no dictionary section, decoded with a held generation | ok |
-| `bare-block-dangling` | bare block, row index past the held dictionary | `dangling-dictionary-ref` |
+| `bare-block-held-dict` | no dictionary section, `held` generation 1 | ok |
+| `bare-block-dangling` | bare block, `held` with 4 entries, row index 99 | `dangling-dictionary-ref` |
 | `rep-sectioned-flag` | REP frame with `SECTIONED` | `bad-frame` (`unknown-frame-flags` locally) |
 
 11.4 **Stream cases** (`fixtures/stream/<case>.json`: `{"case", "doc", "side": "client|server",
@@ -938,19 +954,19 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 
 | ID | Where | Code / plan says | WIRE.md says | Work |
 |---|---|---|---|---|
-| V-1 | `frame.rs` `time_body_len` (line 741), `hostobs_wire_ref.py` `time_body_len` (line 380) on this branch's base | `align8(14·n)` | `align8(15·n)` | fixed by the P0 bug fold-in (merged to main; commit `e13027cfe`: `TIME_BUCKET_BYTES = 15`, fixture `history-five-buckets`, no minor bump) |
-| V-2 | `frame.rs` `decode_block` | references checked only against an in-frame dictionary | also against the held generation | `HOB-46` |
-| V-3 | `frame.rs` `decode_block` | bucket `agg` not checked against the metric mask | `aggregation-not-permitted` | `HOB-47` |
-| V-4 | plan §B.2 `TIME` | no subject; `series_batch` returns several entities | kind 6 `subject` | `HOB-48` |
-| V-5 | `FrameHeader::parse`, `decode_block` | no `len` bound; `SECTIONED` allowed on any type; directory capacity from `n_sec` before bytes are proven | §2.1, §11.1 | `len` bound: P0 (`HOB-8`, commit `6724fe8be`); the rest `HOB-50` (P2) |
+| V-1 | `frame.rs` `time_body_len` (line 741), `hostobs_wire_ref.py` `time_body_len` (line 380) on this branch's base | `align8(14·n)` | `align8(15·n)` | fixed by the P0 bug fold-in (merged to main; commit `e13027cfe`: `TIME_BUCKET_BYTES = 15`, fixture `history-five-buckets`, no minor bump); P2a1 regenerated the two history fixtures with `last` buckets (§3.6 mask rule, §3.10) and the 15-byte length pin is unchanged |
+| V-2 | `frame.rs` `decode_block` | references checked only against an in-frame dictionary | also against the held generation | fixed by P2a1 (`HOB-46`, `decode_block_with`) |
+| V-3 | `frame.rs` `decode_block` | bucket `agg` not checked against the metric mask | `aggregation-not-permitted` | fixed by P2a1 (`HOB-47`) |
+| V-4 | plan §B.2 `TIME` | no subject; `series_batch` returns several entities | kind 6 `subject` | fixed by P2a1 (`HOB-48`) |
+| V-5 | `FrameHeader::parse`, `decode_block` | no `len` bound; `SECTIONED` allowed on any type; directory capacity from `n_sec` before bytes are proven | §2.1, §11.1 | `len` bound: P0 (`HOB-8`, commit `6724fe8be`); the rest fixed by P2a1 (`HOB-50`; `block-as-req` regenerated with the flag cleared) |
 | V-6 | plan §B.1 | `DICT` = dictionary delta or full generation | reserved, unsent | none (D-W6) |
 | V-7 | plan §B.1 | procs page is a BLOCK | JSON page | none (D-W11) |
 | V-8 | plan §B.3 | `bad_request` | `bad-request` | none (D-W12) |
 | V-9 | plan §B.3 dictionary text | ≤ 256 B UTF-8 | also no bytes < 0x20 or 0x7F (as `dict.rs` `validate`) | none |
 | V-10 | `hostobs_wire_ref.py` line 5 | cites `hostobs/docs/WIRE-COLUMN-CODEC.md` (does not exist) | this file | `HOB-49` |
-| V-11 | `frame.rs` `decode_block` 1086-1126, `hostobs_wire_ref.py` `decode_frame` 509-535 | any body length; an unknown section may precede the header (measured on the Python reference: an optional `len = 5` section decodes, frame `len` 357; placed first, the header body starts at 69) | §3.1 decoder rules | `HOB-51` (P2, fixtures §11.3) |
-| V-12 | `dict.rs` `decode` (891 → `intern` 596) | metric name repeated with other facts → `conflicting-column` | `duplicate-dictionary-entry` (Python reference already, measured) | `HOB-52` (P2) |
-| V-13 | `hostobs_wire_ref.py` `decode_frame` 484-493 | buffer length and `SECTIONED` checked before `not-a-block` | §3.10 precedence (Rust order) | `HOB-53` (P2) |
+| V-11 | `frame.rs` `decode_block` 1086-1126, `hostobs_wire_ref.py` `decode_frame` 509-535 on the P2a1 base | any body length; an unknown section may precede the header (measured on the Python reference: an optional `len = 5` section decodes, frame `len` 357; placed first, the header body starts at 69) | §3.1 decoder rules | fixed by P2a1 (`HOB-51`, fixtures §11.3) |
+| V-12 | `dict.rs` `decode` (891 → `intern` 596) on the P2a1 base | metric name repeated with other facts → `conflicting-column` | `duplicate-dictionary-entry` (Python reference already, measured) | fixed by P2a1 (`HOB-52`) |
+| V-13 | `hostobs_wire_ref.py` `decode_frame` 484-493 on the P2a1 base | buffer length and `SECTIONED` checked before `not-a-block` | §3.10 precedence (Rust order) | fixed by P2a1 (`HOB-53`) |
 | V-14 | plan §B.3 | `(epoch, dict_gen)` probe-global | generation per selection stream / query stream; client rule relative to held | none (D-W5) |
 | V-15 | plan §B.4 | full queue drops the oldest unsent BLOCK, counted in "the next `HDR.dropped`"; `DICT/REP/EVT` over budget close | at most one unpinned tick per stream, drop-oldest across streams (victim: the largest connection with an unpinned Live entry, else the incoming tick), stamp at pin; the plan's separate query budget is kept as its own Query pool (4 MiB / connection, 4 MiB / uid, 16 MiB global, sizes are WIRE.md's) whose blocks are never dropped and never shed a tick; per-uid Live cap 8 MiB; control frames on their own budget | none (D-W8, D-W18) |
 | V-16 | plan §B.4 | observe/observer requests 4,096 B; one 5 s "frame completion age" | 32 KiB / 16 KiB (D-W21); the 5 s frame completion age is **retained** on the send side (`frame_completion_ms`, pin → completely written; it is what bounds a dribbling reader, D-W25), plus server request deadline 5 s / 25 s (control, plan's RG55 value), writer stall 5 s for an unpinned head, client reader 30 s (D-W16) | none |

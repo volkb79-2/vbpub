@@ -16,6 +16,7 @@
 //! TIMESEC  := n × i64 bucket_real_ns | n × u32 covered_ms | n × u16 samples |
 //!             n × u8 agg | pad to 8      -- replaces ROWSSEC in a history block
 //! DICTSEC  := the whole generation, see [`crate::dict`]
+//! SUBJSEC  := u32 ent | u32 0                 -- minor 1, history blocks only
 //! ```
 //!
 //! Every body length is a multiple of eight, so every body starts eight-byte aligned
@@ -56,9 +57,22 @@
 //! | 3 | columns | no | yes | `COLSEC` |
 //! | 4 | time | no | no | `TIMESEC` (history block) |
 //! | 5 | dictionary | no | no | `DICTSEC` |
+//! | 6 | subject (minor 1) | yes when present | no | `SUBJSEC` (history block) |
 //!
 //! A block carries rows **or** time buckets; both at once, or columns for a row count
-//! nobody declared, are refused.
+//! nobody declared, are refused. The canonical order is header, dictionary, subject,
+//! rows or time, then columns. The subject names the one incarnation a history block
+//! describes and needs the time section (`subject-without-time`).
+//!
+//! # Received frames
+//!
+//! `decode_block_with(bytes, held)` judges a block that carries no dictionary against the
+//! dictionary the stream holds. Beyond the encoder's layout, a received frame must have
+//! every section length a multiple of eight (`section-length`), the header at directory
+//! entry 0 (an unknown kind there is `section-order`, judged after the rank check), the
+//! directory's bytes present before storage is reserved for them, `SECTIONED` on BLOCK
+//! frames only, and every history bucket's aggregation inside every column's metric mask
+//! (`aggregation-not-permitted`). The order in which they are judged is WIRE.md §3.10.
 
 use crate::dict::{Aggregation, Dictionary, Entry, MetricKind, MetricValueType};
 use crate::error::{ProtoError, MAX_FRAME_BYTES};

@@ -8,6 +8,10 @@
 //! asserts. The Python reference codec (`python/reference/`) asserts the same files; that
 //! run is a manual check until the registered `conformance` lane exists (`HOB-4`).
 //!
+//! A case with a top-level `"held": {"generation", "entries"}` key (the same entry form as
+//! `frame.dictionary`) is decoded with `decode_block_with` against that held dictionary; every
+//! other case is decoded with no held dictionary.
+//!
 //! A fixture that the Rust encoder reproduces is a second check: for every valid case the
 //! Rust *encoder* must emit the identical bytes, so neither direction can drift alone.
 
