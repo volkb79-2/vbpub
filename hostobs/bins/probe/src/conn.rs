@@ -708,11 +708,15 @@ impl Conn {
 
 #[cfg(test)]
 mod tests {
-    use hostobs_proto::frame::FrameType;
-    use hostobs_proto::hub::{QueueLimits, SendHub};
+    use std::sync::Arc;
 
-    use super::{Conn, Peer, Pools, Reader, State};
-    use crate::backend::FixedBackend;
+    use hostobs_proto::envelope::members_up_to;
+    use hostobs_proto::frame::FrameType;
+    use hostobs_proto::hub::{ConnId, LiveOutcome, QueryOutcome, QueueLimits, SendHub, TickForms};
+    use hostobs_proto::quality;
+
+    use super::{Conn, Peer, Pools, Reader, State, SERVER_MINOR};
+    use crate::backend::{FixedBackend, TickInfo, TierInfo};
     use crate::codes::{Code, Detail};
     use crate::encode::{
         closing_evt, control_frame, error_line, rep_error, server_prefix, unknown_mode_line,
@@ -885,6 +889,8 @@ mod tests {
         assert_eq!(rig.conn.state(), State::Undecided);
         assert_eq!(rig.conn.peer(), Peer { uid: 1000, pid: 7 });
         assert_eq!(rig.conn.level(), Level::Observe);
+        assert_eq!(rig.conn.id(), ConnId(1));
+        assert_eq!(rig.conn.bytes_written(), 0);
         assert!(!rig.conn.is_closed() && rig.queue_empty());
     }
 
@@ -938,21 +944,25 @@ mod tests {
         assert!(!rig.conn.is_closed());
         rig.tick(1);
         assert!(rig.conn.is_closed());
+        assert_eq!(rig.conn.close_code(), Some(Code::Deadline));
         assert_eq!(rig.conn.take_final(), None);
         let mut rig = await_rig();
         rig.tick(deadline + 1);
         let expected = rep_error(0, Code::Deadline, &Detail::Empty);
+        assert_eq!(rig.conn.close_code(), Some(Code::Deadline));
         assert_eq!(rig.conn.take_final(), Some(expected.clone()));
         let mut unwritten = Rig::new(Level::Observe);
         unwritten.send(&client_prefix(1));
         unwritten.tick(deadline + 1);
         let mut both = server_prefix(1, 1).to_vec();
         both.extend_from_slice(&expected);
+        assert_eq!(unwritten.conn.close_code(), Some(Code::Deadline));
         assert_eq!(unwritten.conn.take_final(), Some(both));
         let mut json = Rig::new(Level::Observe);
         json.send(b"{");
         json.tick(deadline + 1);
         let line = error_line(0, Code::Deadline, &Detail::Empty);
+        assert_eq!(json.conn.close_code(), Some(Code::Deadline));
         assert_eq!(json.conn.take_final(), Some(line));
     }
 
@@ -964,6 +974,8 @@ mod tests {
         rig.send(&input);
         assert_eq!(rig.conn.state(), State::Ready);
         let out = rig.finish();
+        let len = u64::try_from(out.len()).unwrap_or(0);
+        assert_eq!(rig.conn.bytes_written(), len);
         assert_eq!(out[..8], server_prefix(1, 1));
         let parsed = frames(&out[8..]);
         assert_eq!((parsed[0].0, parsed[0].1), (FrameType::Rep.code(), 1));
@@ -993,11 +1005,13 @@ mod tests {
         rig.send(&req(7, "status"));
         assert!(rig.conn.is_closed());
         let expected = rep_error(7, Code::HelloRequired, &Detail::Empty);
+        assert_eq!(rig.conn.close_code(), Some(Code::HelloRequired));
         assert_eq!(rig.conn.take_final(), Some(expected));
-        for bad in [req(2, "hello"), req(0, "hello")] {
+        for bad in [req(2, "hello"), req(0, "hello"), raw_req(0, "{")] {
             let mut rig = await_rig();
             rig.send(&bad);
             let expected = rep_error(0, Code::BadFrame, &Detail::Empty);
+            assert_eq!(rig.conn.close_code(), Some(Code::BadFrame));
             assert_eq!(rig.conn.take_final(), Some(expected));
         }
     }
@@ -1024,6 +1038,10 @@ mod tests {
         rig.send(&line(3, "status", "{}"));
         assert_eq!(rig.conn.state(), State::Ready);
         assert_eq!(rig.conn.minor(), 0);
+        // The first complete line disarmed the hello timer, though `status` is no `hello`.
+        rig.tick(5_001 * MS);
+        assert!(!rig.conn.is_closed());
+        assert_eq!(rig.conn.state(), State::Ready);
         rig.send(&line(4, "hello", HELLO_ARGS));
         let out = text(&rig.finish());
         assert!(out.contains("\"corr\":3,\"result\":{\"server\":"));
@@ -1033,6 +1051,9 @@ mod tests {
         let mut garbage = Rig::new(Level::Observe);
         garbage.send(b"{x\n");
         assert_eq!(garbage.conn.state(), State::Ready);
+        garbage.tick(5_001 * MS);
+        assert!(!garbage.conn.is_closed());
+        assert_eq!(garbage.conn.state(), State::Ready);
         let reply = text(&garbage.finish());
         let key = "\"corr\":0,\"error\":{\"code\":\"bad-request\"";
         assert!(reply.contains(key));
@@ -1040,6 +1061,7 @@ mod tests {
         let skew = r#"{"client":"t","proto":{"major":2,"minor":1}}"#;
         major.send(&line(1, "hello", skew));
         let expected = error_line(1, Code::UnsupportedVersion, &Detail::Empty);
+        assert_eq!(major.conn.close_code(), Some(Code::UnsupportedVersion));
         assert_eq!(major.conn.take_final(), Some(expected));
     }
 
@@ -1103,6 +1125,7 @@ mod tests {
         rig.send(&[0x40]);
         rig.tick(400_000 * MS);
         let expected = rep_error(0, Code::Deadline, &Detail::Empty);
+        assert_eq!(rig.conn.close_code(), Some(Code::Deadline));
         assert_eq!(rig.conn.take_final(), Some(expected));
         let mut busy = ready_bin(Level::Observe);
         busy.send(&req(2, "status"));
@@ -1134,6 +1157,7 @@ mod tests {
         late.eof();
         late.send(b"x");
         assert!(late.conn.is_closed());
+        assert_eq!(late.conn.close_code(), None);
         assert_eq!(late.conn.take_final(), None);
     }
 
@@ -1150,6 +1174,7 @@ mod tests {
         for rig in &mut rigs {
             rig.eof();
             assert!(rig.conn.is_closed());
+            assert_eq!(rig.conn.close_code(), None);
             assert_eq!(rig.conn.take_final(), None);
         }
     }
@@ -1161,21 +1186,68 @@ mod tests {
         rig.pump(5);
         rig.conn.close_for(Code::SlowClient, &mut rig.hub);
         assert!(rig.conn.is_closed());
+        assert_eq!(rig.conn.close_code(), Some(Code::SlowClient));
         assert_eq!(rig.conn.take_final(), None);
         let mut whole = ready_bin(Level::Observe);
         whole.send(&req(2, "status"));
         whole.conn.close_for(Code::ShuttingDown, &mut whole.hub);
         assert!(whole.queue_empty());
         let evt = closing_evt(Code::ShuttingDown);
+        assert_eq!(whole.conn.close_code(), Some(Code::ShuttingDown));
         assert_eq!(whole.conn.take_final(), Some(evt));
         assert_eq!(whole.conn.take_final(), None);
         let mut json = ready_json(Level::Observe);
         json.conn.close_for(Code::SlowClient, &mut json.hub);
         let expected = error_line(0, Code::SlowClient, &Detail::Empty);
+        assert_eq!(json.conn.close_code(), Some(Code::SlowClient));
         assert_eq!(json.conn.take_final(), Some(expected));
         let mut early = Rig::new(Level::Observe);
         early.conn.close_for(Code::ShuttingDown, &mut early.hub);
         assert!(early.conn.is_closed() && early.conn.take_final().is_none());
+        assert_eq!(early.conn.close_code(), Some(Code::ShuttingDown));
+    }
+
+    #[test]
+    fn close_for_with_each_reason_gives_a_closing_evt() {
+        for code in [Code::Idle, Code::SlowClient, Code::ShuttingDown] {
+            let mut bin = ready_bin(Level::Observe);
+            bin.conn.close_for(code, &mut bin.hub);
+            assert!(bin.conn.is_closed() && bin.queue_empty());
+            assert_eq!(bin.conn.close_code(), Some(code));
+            assert_eq!(bin.conn.take_final(), Some(closing_evt(code)));
+            let mut json = ready_json(Level::Observe);
+            json.conn.close_for(code, &mut json.hub);
+            assert_eq!(json.conn.close_code(), Some(code));
+            let expected = error_line(0, code, &Detail::Empty);
+            assert_eq!(json.conn.take_final(), Some(expected));
+            let mut again = ready_bin(Level::Observe);
+            again.conn.close_for(code, &mut again.hub);
+            again.conn.close_for(Code::Idle, &mut again.hub);
+            assert_eq!(again.conn.close_code(), Some(code));
+        }
+    }
+
+    #[test]
+    fn conn_a_head_pinned_with_nothing_written_then_a_fatal_outcome_repeats_the_prefix() {
+        let mut rig = Rig::new(Level::Observe);
+        rig.send(&client_prefix(1));
+        let id = rig.conn.id();
+        let pinned = rig.hub.head(id, rig.now).map(|[a, b]| [a, b].concat());
+        assert_eq!(pinned, Some(server_prefix(1, 1).to_vec()));
+        assert!(!rig.hub.head_partial(id));
+        rig.send(&[12, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(rig.conn.is_closed());
+        assert_eq!(rig.conn.bytes_written(), 0);
+        let mut expected = server_prefix(1, 1).to_vec();
+        expected.extend_from_slice(&rep_error(0, Code::BadFrame, &Detail::Empty));
+        assert_eq!(rig.conn.take_final(), Some(expected));
+        // The hub still holds the pinned prefix: the final bytes carry it, so a driver that wrote
+        // the hub head after `is_closed` would send the prefix twice (module doc).
+        assert!(!rig.queue_empty());
+        rig.conn.on_written(8, rig.now, &mut rig.hub);
+        assert_eq!(rig.conn.bytes_written(), 0);
+        assert_eq!(rig.pump(usize::MAX), 0);
+        assert!(rig.out.is_empty());
     }
 
     #[test]
@@ -1187,12 +1259,15 @@ mod tests {
         assert!(rig.conn.is_closed() && rig.queue_empty());
         let mut expected = server_prefix(1, 1).to_vec();
         expected.extend_from_slice(&rep_error(0, Code::BadFrame, &Detail::Empty));
+        assert_eq!(rig.conn.close_code(), Some(Code::BadFrame));
         assert_eq!(rig.conn.take_final(), Some(expected));
         let mut half = Rig::new(Level::Observe);
         half.send(&client_prefix(1));
         half.pump(3);
+        assert_eq!(half.conn.bytes_written(), 3);
         half.send(&[12, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0]);
         assert!(half.conn.is_closed());
+        assert_eq!(half.conn.close_code(), Some(Code::BadFrame));
         assert_eq!(half.conn.take_final(), None);
         assert_eq!(half.out, server_prefix(1, 1)[..3].to_vec());
     }
@@ -1215,6 +1290,7 @@ mod tests {
         rig.send(&input);
         assert!(rig.queue_empty());
         assert_eq!(rig.finish(), rep_error(0, Code::BadFrame, &Detail::Empty));
+        assert_eq!(rig.conn.close_code(), Some(Code::BadFrame));
         let mut json = ready_json(Level::Observe);
         let mut input = line(3, "hello", HELLO_ARGS);
         input.extend_from_slice(&line(4, "status", "{}"));
@@ -1229,10 +1305,12 @@ mod tests {
         let mut big = ready_bin(Level::Observe);
         big.send(&[0x40, 0x9C, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0]);
         let expected = rep_error(0, Code::FrameTooLarge, &Detail::Empty);
+        assert_eq!(big.conn.close_code(), Some(Code::FrameTooLarge));
         assert_eq!(big.conn.take_final(), Some(expected));
         let mut line_big = ready_json(Level::Observe);
         line_big.send(&vec![b'a'; 40_000]);
         let expected = error_line(0, Code::FrameTooLarge, &Detail::Empty);
+        assert_eq!(line_big.conn.close_code(), Some(Code::FrameTooLarge));
         assert_eq!(line_big.conn.take_final(), Some(expected));
         // A SECTIONED REQ (flag bit 0 on a non-BLOCK frame) is refused by `FrameHeader::parse`
         // inside the frame reader, so it takes this reader-error path (`bad-frame`); the conn
@@ -1282,6 +1360,265 @@ mod tests {
         }
     }
 
+    fn hello_args(minor: u16) -> String {
+        format!(r#"{{"client":"t","proto":{{"major":1,"minor":{minor}}}}}"#)
+    }
+
+    /// `(key, raw value text)` of every member of the JSON object `json`, in order.
+    fn pairs(json: &str) -> Vec<(String, String)> {
+        let bytes = json.as_bytes();
+        let found = members_up_to(bytes, 32).expect("one object");
+        let mut out = Vec::new();
+        for member in &found {
+            let key = text(&bytes[member.key.clone()]);
+            out.push((key, text(&bytes[member.value.clone()])));
+        }
+        out
+    }
+
+    fn want(items: &[(&str, &str)]) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for (key, value) in items {
+            out.push((String::from(*key), String::from(*value)));
+        }
+        out
+    }
+
+    /// The raw value text of member `key` of the JSON object `json`.
+    fn member(json: &str, key: &str) -> String {
+        let found = pairs(json.trim_end());
+        let hit = found.into_iter().find(|(name, _)| name.as_str() == key);
+        hit.map(|(_, value)| value).expect("member")
+    }
+
+    fn keys_of(json: &str) -> Vec<String> {
+        pairs(json).into_iter().map(|(key, _)| key).collect()
+    }
+
+    /// The objects of a flat array of flat objects, each with its braces.
+    fn flat_objects(array: &str) -> Vec<String> {
+        let inner = array.trim_start_matches("[{").trim_end_matches("}]");
+        let parts = inner.split("},{");
+        parts.map(|part| format!("{{{part}}}")).collect()
+    }
+
+    const HELLO_KEYS: [&str; 9] = [
+        "proto",
+        "level",
+        "server",
+        "boot_id",
+        "epoch",
+        "features",
+        "verbs",
+        "quality_codes",
+        "limits",
+    ];
+
+    const STATUS_KEYS: [&str; 9] = [
+        "server",
+        "boot_id",
+        "epoch",
+        "started_real_ns",
+        "uptime_ms",
+        "tick",
+        "clients",
+        "queues",
+        "tiers",
+    ];
+
+    const STATUS_SCALARS: [(&str, &str); 5] = [
+        ("server", r#""hostobs-probe 9.9""#),
+        ("boot_id", r#""11111111-2222-4333-8444-555555555555""#),
+        ("epoch", "42"),
+        ("started_real_ns", "1700000000123456789"),
+        ("uptime_ms", "86400001"),
+    ];
+
+    /// A backend whose every answer differs from the default and from the others.
+    fn rich_backend() -> FixedBackend {
+        let mut backend = FixedBackend::new();
+        backend.identity.server = String::from("hostobs-probe 9.9");
+        backend.identity.boot_id = String::from("11111111-2222-4333-8444-555555555555");
+        backend.identity.epoch = 42;
+        backend.identity.features = vec![String::from("peak_reset"), String::from("damon")];
+        backend.status.started_real_ns = 1_700_000_000_123_456_789;
+        backend.status.uptime_ms = 86_400_001;
+        backend.status.tick = TickInfo {
+            seq: 77,
+            last_mono_ns: 5_000_000_123,
+            scan_ms: 31,
+        };
+        backend.status.clients = vec![
+            (Level::Observe, 2),
+            (Level::Operator, 0),
+            (Level::Observer, 1),
+        ];
+        backend.status.dropped_blocks = 5;
+        backend.status.tiers = vec![
+            TierInfo {
+                name: String::from("hot"),
+                step_ms: 1_000,
+                keep_s: 3_600,
+                bytes: 123_456,
+                cap_bytes: 1_048_576,
+            },
+            TierInfo {
+                name: String::from("warm"),
+                step_ms: 10_000,
+                keep_s: 86_400,
+                bytes: 7_654_321,
+                cap_bytes: 8_388_608,
+            },
+        ];
+        backend
+    }
+
+    /// A tick of `self.0` zero bytes in the dictionary form: the hub only counts its bytes.
+    struct Forms(usize);
+
+    impl TickForms for Forms {
+        fn generation(&self) -> u32 {
+            1
+        }
+
+        fn bare(&self) -> Option<Arc<[u8]>> {
+            None
+        }
+
+        fn dict_form(&self) -> Arc<[u8]> {
+            Arc::from(vec![0u8; self.0])
+        }
+    }
+
+    #[test]
+    fn conn_hello_negotiates_the_minor_in_both_modes() {
+        assert_eq!(SERVER_MINOR, 1);
+        for client in [0u16, 1, 5] {
+            let negotiated = client.min(SERVER_MINOR);
+            let proto = format!("{{\"major\":1,\"minor\":{negotiated}}}");
+            let args = hello_args(client);
+            let hello = format!("{{\"verb\":\"hello\",\"args\":{args}}}");
+            let mut bin = Rig::new(Level::Observe);
+            let mut input = client_prefix(client);
+            input.extend_from_slice(&raw_req(1, &hello));
+            bin.send(&input);
+            assert_eq!(bin.conn.state(), State::Ready);
+            assert_eq!(bin.conn.minor(), negotiated);
+            let out = bin.finish();
+            assert_eq!(out[..8], server_prefix(1, negotiated));
+            let parsed = frames(&out[8..]);
+            let result = member(&parsed[0].2, "result");
+            assert_eq!(member(&result, "proto"), proto);
+            let mut json = Rig::new(Level::Observe);
+            json.send(&line(1, "hello", &args));
+            assert_eq!(json.conn.minor(), negotiated);
+            let reply = text(&json.finish());
+            assert_eq!(member(&member(&reply, "result"), "proto"), proto);
+        }
+        let mut bare = Rig::new(Level::Observe);
+        bare.send(&line(1, "status", "{}"));
+        assert_eq!(bare.conn.state(), State::Ready);
+        assert_eq!(bare.conn.minor(), 0);
+    }
+
+    #[test]
+    fn conn_hello_result_pins_every_field_and_the_key_order() {
+        let mut rig = Rig::new(Level::Observe);
+        rig.backend = rich_backend();
+        let mut input = client_prefix(1);
+        input.extend_from_slice(&req(1, "hello"));
+        rig.send(&input);
+        let out = rig.finish();
+        let parsed = frames(&out[8..]);
+        let result = member(&parsed[0].2, "result");
+        assert_eq!(keys_of(&result), HELLO_KEYS);
+        let mut codes = String::from("[");
+        for (index, entry) in quality::ALL.iter().enumerate() {
+            if index > 0 {
+                codes.push(',');
+            }
+            let (code, name) = (entry.code(), entry.name());
+            codes.push_str(&format!("{{\"code\":{code},\"name\":\"{name}\"}}"));
+        }
+        codes.push(']');
+        let expected = [
+            ("level", r#""observe""#),
+            ("server", r#""hostobs-probe 9.9""#),
+            ("boot_id", r#""11111111-2222-4333-8444-555555555555""#),
+            ("epoch", "42"),
+            ("features", r#"["peak_reset","damon"]"#),
+            ("verbs", r#"["hello","status"]"#),
+            ("quality_codes", codes.as_str()),
+        ];
+        for (key, value) in expected {
+            assert_eq!(member(&result, key), value, "{key}");
+        }
+        assert!(codes.starts_with(r#"[{"code":0,"name":"ok"}"#));
+        let proto = member(&result, "proto");
+        let expected = want(&[("major", "1"), ("minor", "1")]);
+        assert_eq!(pairs(&proto), expected);
+        let limits = member(&result, "limits");
+        let announced = Limits::for_level(Level::Observe).hello_json();
+        assert_eq!(pairs(&limits), pairs(&announced));
+        let names = keys_of(&limits);
+        assert_eq!(names.len(), 19);
+        assert_eq!(names.first().map(String::as_str), Some("max_frame_bytes"));
+        assert_eq!(names.last().map(String::as_str), Some("tick_ms"));
+    }
+
+    #[test]
+    fn conn_status_result_pins_every_field_the_key_order_and_the_queued_bytes() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend = rich_backend();
+        let id = rig.conn.id();
+        let live = rig.hub.push_live(id, 7, &Forms(1_000), rig.now);
+        assert_eq!(live, LiveOutcome::Queued);
+        let block: Arc<[u8]> = Arc::from(vec![0u8; 300]);
+        let query = rig.hub.push_query(id, 8, block, rig.now);
+        assert_eq!(query, QueryOutcome::Queued);
+        rig.send(&req(2, "status"));
+        let out = rig.finish();
+        let parsed = frames(&out[1_300..]);
+        assert_eq!((parsed[0].0, parsed[0].1), (FrameType::Rep.code(), 2));
+        let result = member(&parsed[0].2, "result");
+        assert_eq!(keys_of(&result), STATUS_KEYS);
+        for (key, value) in STATUS_SCALARS {
+            assert_eq!(member(&result, key), value, "{key}");
+        }
+        let expected = want(&[
+            ("seq", "77"),
+            ("last_mono_ns", "5000000123"),
+            ("scan_ms", "31"),
+        ]);
+        assert_eq!(pairs(&member(&result, "tick")), expected);
+        let expected = want(&[
+            ("observe", "2"),
+            ("operator", "0"),
+            ("observer", "1"),
+        ]);
+        assert_eq!(pairs(&member(&result, "clients")), expected);
+        let expected = want(&[("queued_bytes", "1300"), ("dropped_blocks", "5")]);
+        assert_eq!(pairs(&member(&result, "queues")), expected);
+        let tiers = flat_objects(&member(&result, "tiers"));
+        assert_eq!(tiers.len(), 2);
+        let hot = want(&[
+            ("name", r#""hot""#),
+            ("step_ms", "1000"),
+            ("keep_s", "3600"),
+            ("bytes", "123456"),
+            ("cap_bytes", "1048576"),
+        ]);
+        assert_eq!(pairs(&tiers[0]), hot);
+        let warm = want(&[
+            ("name", r#""warm""#),
+            ("step_ms", "10000"),
+            ("keep_s", "86400"),
+            ("bytes", "7654321"),
+            ("cap_bytes", "8388608"),
+        ]);
+        assert_eq!(pairs(&tiers[1]), warm);
+    }
+
     fn xorshift(state: &mut u64) -> u64 {
         let mut x = *state;
         x ^= x << 13;
@@ -1312,7 +1649,11 @@ mod tests {
             for _ in 0..(xorshift(&mut seed) % 6) {
                 let pick = xorshift(&mut seed) % 7;
                 match pick {
-                    0 => input.extend_from_slice(&client_prefix(u16::from(pick == 0))),
+                    0 => {
+                        let major = 1 + u16::from(xorshift(&mut seed).is_multiple_of(5));
+                        let minor = u16::try_from(xorshift(&mut seed) % 4).unwrap_or(0);
+                        input.extend_from_slice(&server_prefix(major, minor));
+                    }
                     1 => input.extend_from_slice(&req(1, "hello")),
                     2 => input.extend_from_slice(&req(2, "status")),
                     3 => input.extend_from_slice(&line(1, "hello", HELLO_ARGS)),
@@ -1346,9 +1687,44 @@ mod tests {
             rig.tick(400_000 * MS);
             rig.tick(400_000 * MS);
             assert!(rig.conn.is_closed(), "run {run} left the connection open");
-            let last = rig.conn.take_final().unwrap_or_default();
-            assert!(last.len() <= 8 + 4096);
-            assert!(rig.hub.queued(rig.conn.id()).control <= 8 * 1024);
+            closed_oracle(&mut rig, run);
         }
+    }
+
+    /// What must hold of a closed connection (WIRE.md section 5.4 `Closing`, design R1, R2), and
+    /// that nothing more happens to it after the close.
+    fn closed_oracle(rig: &mut Rig, run: usize) {
+        let id = rig.conn.id();
+        let code = rig.conn.close_code();
+        assert!(code.is_none_or(Code::fatal), "run {run}: {code:?}");
+        let at_close = rig.hub.queued(id);
+        assert!(at_close.live == 0 && at_close.query == 0, "run {run}");
+        assert!(at_close.control <= 8 * 1024, "run {run}");
+        let partial = rig.hub.head_partial(id);
+        let (written, queued) = (rig.conn.bytes_written(), rig.conn.prefix_queued);
+        let last = rig.conn.take_final();
+        if partial {
+            assert_eq!(last, None, "run {run}: a partly written head");
+        }
+        if let Some(bytes) = &last {
+            assert!(bytes.len() <= 8 + 4096, "run {run}");
+            let prefixed = bytes.starts_with(b"HOB\x01");
+            let owed = queued && written == 0;
+            let alone = !queued && code == Some(Code::UnsupportedVersion) && bytes.len() == 8;
+            assert_eq!(prefixed, owed || alone, "run {run}: the prefix guarantee");
+            if owed {
+                let minor = rig.conn.minor();
+                assert_eq!(bytes[..8], server_prefix(1, minor), "run {run}");
+            }
+        }
+        rig.send(&req(2, "status"));
+        rig.send(&line(5, "status", "{}"));
+        rig.eof();
+        rig.tick(MS);
+        rig.pump(usize::MAX);
+        assert_eq!(rig.hub.queued(id), at_close, "run {run}: queued late");
+        assert_eq!(rig.conn.bytes_written(), written, "run {run}");
+        assert_eq!(rig.conn.close_code(), code, "run {run}");
+        assert!(!rig.conn.has_final(), "run {run}");
     }
 }
