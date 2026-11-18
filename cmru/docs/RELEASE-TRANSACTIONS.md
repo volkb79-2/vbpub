@@ -135,10 +135,9 @@ printf 'controller_commit=%s cmru_sha256=%s cli_extended_sha256=%s\n' \
 
 Record the verified commit and digest facts in the release record. The release
 command independently writes the controller identity to its launcher and
-transaction logs. While KI-79 holds, the release must stay on an authorized
-patch line; the latest is 7.3 (`>= 7.3.0`, `< 7.4.0`). Pass an explicit next
-patch with `--set-version` rather than accepting an automatic plan outside the
-current window. Run from the foreground; never start
+transaction logs. The standing release rule (KI-79/KI-159) has no version
+window: any planned version is accepted by the gate, and R2 is owed
+asynchronously on the latest release. Run from the foreground; never start
 this release from a background Bash task. Disable resource profiling and trust
 only the separately printed exit status, never output piped through a
 formatter:
