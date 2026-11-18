@@ -11,6 +11,7 @@ from fleetd.cli import main
 from fleetd.contracts import ContractError
 from fleetd.scope import (
     CURSOR_SCHEMA,
+    DEFAULT_RESERVE_PERCENT,
     DEFAULT_SCOPE_MODE,
     EXIT_NOTHING_TO_JUDGE,
     EXIT_OK,
@@ -1422,3 +1423,215 @@ def test_rebaseline_still_reports_retired_paths_from_the_discarded_cursor():
     },)
     assert result.new_pass is False
     assert result.pass_index == 3
+
+
+# ------------------------------------- FD-038: a reserved share for the sweep
+def _churn_target(release, *, edited=3, stable_new=4, per_file=4, new_per_file=5):
+    """One release of a target whose ``edited`` files change EVERY release.
+
+    ``f0..`` are re-edited each release (new blob, new ids); ``n0..`` are never
+    edited and never judged until the sweep reaches them.
+    """
+    rows = []
+    blobs = {}
+    for index in range(edited):
+        path = f"src/f{index}.py"
+        blobs[path] = candidate_list_digest([f"blob|{path}|{release}"])[:40]
+        for site in range(per_file):
+            rows.append({
+                "id": candidate_list_digest([f"{path}|{release}|{site}"]),
+                "path": path, "lineno": site + 1, "operator": "python:compare-swap",
+            })
+    for index in range(stable_new):
+        path = f"src/n{index}.py"
+        blobs[path] = candidate_list_digest([f"blob|{path}"])[:40]
+        for site in range(new_per_file):
+            rows.append({
+                "id": candidate_list_digest([f"{path}|{site}"]),
+                "path": path, "lineno": site + 1, "operator": "python:compare-swap",
+            })
+    return plan_candidates(_plan(rows), require_site_identity=True), blobs
+
+
+def _seed_cursor_over_the_edited_files():
+    """Release 0 judges only the edited files (the never-judged ones are new later)."""
+    rows, blobs = _churn_target(0)
+    only_edited = [row for row in rows if "/f" in row.path]
+    result = rolling_slice(
+        only_edited, slice_size=100, lane="r2", blobs={p: b for p, b in blobs.items() if "/f" in p},
+    )
+    return cursor_document(lane="r2", slice_size=100, result=result, previous=None, commit=C)
+
+
+def test_a_target_edited_every_release_still_judges_the_reserved_never_judged_share():
+    assert DEFAULT_RESERVE_PERCENT == 25
+    cursor = _seed_cursor_over_the_edited_files()
+    previous = None
+    for release in range(1, 5):
+        rows, blobs = _churn_target(release)
+        result = rolling_slice(rows, slice_size=8, lane="r2", blobs=blobs, cursor=cursor)
+        by_id = {row.id: row for row in rows}
+        chosen = [by_id[item] for item in result.selected]
+        assert len(chosen) <= 8
+        never_judged = [row for row in chosen if row.path.startswith("src/n")]
+        # 25 percent of 8 = 2 slots, whatever the 12 changed candidates want.
+        assert len(never_judged) >= 2, release
+        assert result.reserved_candidates == 2
+        # No deferred changed file is absent from the accounting: every changed
+        # path either has all its candidates selected or is listed with the count.
+        changed_paths = {row.path for row in rows if row.path.startswith("src/f")}
+        selected_per_path = {
+            path: sum(1 for row in chosen if row.path == path) for path in changed_paths
+        }
+        deferred = {item["path"]: item for item in result.deferred_changed_files}
+        for path in changed_paths:
+            missing = 4 - selected_per_path[path]
+            assert (path in deferred) == (missing > 0), (release, path)
+            if missing:
+                assert deferred[path] == {
+                    "path": path, "candidates": 4, "deferred_candidates": missing,
+                }
+        assert result.deferred_changed_candidates == sum(
+            item["deferred_candidates"] for item in result.deferred_changed_files
+        ) == 12 - sum(selected_per_path.values())
+        previous, cursor = cursor, cursor_document(
+            lane="r2", slice_size=8, result=result, previous=cursor, commit=C
+        )
+
+
+def test_reserving_nothing_restores_the_changed_first_behaviour_and_the_cap_leaves_a_changed_slot():
+    cursor = _seed_cursor_over_the_edited_files()
+    rows, blobs = _churn_target(1)
+    off = rolling_slice(rows, slice_size=8, lane="r2", blobs=blobs, cursor=cursor, reserve_percent=0)
+    assert all(row.path.startswith("src/f") for row in rows if row.id in off.selected)
+    assert off.reserved_candidates == 0
+    assert off.deferred_changed_candidates == 4
+    # 100 percent never starves the changed candidates completely: one slot stays.
+    full = rolling_slice(rows, slice_size=8, lane="r2", blobs=blobs, cursor=cursor, reserve_percent=100)
+    kinds = [row.path.startswith("src/f") for row in rows if row.id in full.selected]
+    assert kinds.count(True) == 1 and kinds.count(False) == 7
+    assert full.reserved_candidates == 7
+    # A slice of one has nothing to reserve: the changed candidate goes first.
+    single = rolling_slice(rows, slice_size=1, lane="r2", blobs=blobs, cursor=cursor)
+    assert single.reserved_candidates == 0 and len(single.selected) == 1
+    assert single.deferred_changed_candidates == 11
+
+
+def test_a_reserve_larger_than_the_remainder_gives_the_slots_back_to_the_changed_files():
+    cursor = _seed_cursor_over_the_edited_files()
+    rows, blobs = _churn_target(1, stable_new=1, new_per_file=1)
+    result = rolling_slice(rows, slice_size=8, lane="r2", blobs=blobs, cursor=cursor)
+    # One never-judged candidate exists, so only one slot is reserved and the
+    # other seven go to the 12 changed candidates.
+    assert result.reserved_candidates == 1
+    assert len(result.selected) == 8
+    assert result.deferred_changed_candidates == 12 - 7
+
+
+def test_a_scope_with_no_churn_is_unchanged_by_the_reserve_and_reports_nothing_deferred():
+    rows = _candidates(("src/a.py", 1, "python:compare-swap"), ("src/b.py", 1, "python:compare-swap"))
+    blobs = _blobs(**{"src/a.py": A, "src/b.py": B})
+    result = rolling_slice(rows, slice_size=2, lane="r2", blobs=blobs)
+    assert len(result.selected) == 2
+    assert result.deferred_changed_files == () and result.deferred_changed_candidates == 0
+
+
+def test_the_scope_document_reports_the_reserve_and_the_deferred_changed_files():
+    cursor = _seed_cursor_over_the_edited_files()
+    rows, blobs = _churn_target(1)
+    plan = _plan([
+        {"id": row.id, "path": row.path, "lineno": row.lineno, "operator": row.operator}
+        for row in rows
+    ])
+    document = scope_document(
+        mode=ROLLING_MODE, mode_source="--mode", lane="r2", from_tag="t",
+        commit=C, plan=plan, slice_size=8, blobs=blobs, cursor=cursor,
+    )
+    slice_ = document["slice"]
+    assert slice_["reserve_percent"] == DEFAULT_RESERVE_PERCENT
+    assert slice_["reserved_candidates"] == 2
+    assert slice_["deferred_changed_candidates"] == 6
+    assert sum(item["deferred_candidates"] for item in slice_["deferred_changed_files"]) == 6
+    custom = scope_document(
+        mode=ROLLING_MODE, mode_source="--mode", lane="r2", from_tag="t",
+        commit=C, plan=plan, slice_size=8, blobs=blobs, cursor=cursor, reserve_percent=50,
+    )
+    assert custom["slice"]["reserve_percent"] == 50
+    assert custom["slice"]["reserved_candidates"] == 4
+    with pytest.raises(ContractError, match="reserve_percent"):
+        scope_document(
+            mode=ROLLING_MODE, mode_source="--mode", lane="r2", from_tag="t",
+            commit=C, plan=plan, slice_size=8, blobs=blobs, reserve_percent=101,
+        )
+    # A changed-lines scope has no slice, so the reserve does not apply to it.
+    assert scope_document(
+        mode="changed-lines", mode_source="--mode", lane="r2", from_tag="t",
+        commit=C, plan=plan, diff_text="", reserve_percent=50,
+    )["slice"] is None
+
+
+def test_rolling_slice_refuses_a_bad_reserve_percent():
+    rows = _candidates(("src/a.py", 1, "python:compare-swap"))
+    for bad in (-1, 101, True, 12.5, "25"):
+        with pytest.raises(ContractError, match="reserve_percent"):
+            rolling_slice(rows, slice_size=1, lane="r2", blobs={"src/a.py": A}, reserve_percent=bad)
+
+
+def test_the_scope_file_declares_the_reserve_and_validates_it(tmp_path):
+    declared = load_scope_file(_write(
+        tmp_path / "r2-scope.toml",
+        "schema_version = 1\n[r2]\nmode = 'rolling-whole-target'\nslice_size = 40\nreserve_percent = 10\n",
+    ))
+    assert declared["reserve_percent"] == 10
+    plain = load_scope_file(_write(
+        tmp_path / "plain.toml",
+        "schema_version = 1\n[r2]\nmode = 'rolling-whole-target'\nslice_size = 40\n",
+    ))
+    assert plain["reserve_percent"] is None
+    assert load_scope_file(tmp_path / "absent.toml")["reserve_percent"] is None
+    zero = load_scope_file(_write(
+        tmp_path / "zero.toml",
+        "schema_version = 1\n[r2]\nmode = 'rolling-whole-target'\nslice_size = 40\nreserve_percent = 0\n",
+    ))
+    assert zero["reserve_percent"] == 0
+    for value in ("-1", "101", "true", "12.5", "'25'"):
+        with pytest.raises(ContractError, match="r2.reserve_percent"):
+            load_scope_file(_write(
+                tmp_path / "bad.toml",
+                f"schema_version = 1\n[r2]\nmode = 'rolling-whole-target'\nslice_size = 40\nreserve_percent = {value}\n",
+            ))
+
+
+def test_a_cursor_written_before_the_reserve_existed_still_loads_and_resumes(tmp_path):
+    # The cursor document is unchanged (fleet-r2-scope-cursor/2 carries no
+    # reserve field), so a cursor an older producer wrote validates and resumes.
+    old = _with_digest(_cursor(
+        files={"src/a.py": _mark(blob=A, count=1, keys=[_key("src/a.py")])},
+    ))
+    path = tmp_path / "old-cursor.json"
+    path.write_text(json.dumps(old), encoding="utf-8")
+    cursor, legacy = load_cursor(path)
+    assert legacy is None and cursor == old
+    rows = _candidates(("src/a.py", 1, "python:compare-swap"), ("src/b.py", 1, "python:compare-swap"))
+    result = rolling_slice(rows, slice_size=1, lane="r2", blobs={"src/a.py": A, "src/b.py": B}, cursor=cursor)
+    assert result.selected == (_cid(1),)
+    assert result.stale_reason is None
+
+
+def test_scope_cli_passes_the_scope_files_reserve_percent_to_the_rolling_slice(tmp_path, capsys):
+    repo = _git_repo(tmp_path / "repo")
+    plan_path = _write(tmp_path / "plan.json", json.dumps(_plan(_rows(
+        ("src/a.py", 1, "python:compare-swap"), ("src/a.py", 2, "python:compare-swap"),
+        ("src/c.py", 1, "python:compare-swap"), ("src/c.py", 2, "python:compare-swap"),
+    ))))
+    base = "schema_version = 1\n\n[r2]\nmode = 'rolling-whole-target'\nslice_size = 4\n"
+    scope_file = tmp_path / "scope.toml"
+    argv = ["scope", "r2", "--plan", str(plan_path), "--repo", str(repo), "--scope-file", str(scope_file)]
+    _write(scope_file, base)
+    assert main(argv) == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["slice"]["reserve_percent"] == DEFAULT_RESERVE_PERCENT
+    _write(scope_file, base + "reserve_percent = 50\n")
+    assert main(argv) == EXIT_OK
+    document = json.loads(capsys.readouterr().out)
+    assert document["slice"]["reserve_percent"] == 50
+    assert document["slice"]["reserved_candidates"] == 2

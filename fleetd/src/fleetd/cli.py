@@ -249,7 +249,8 @@ def _scope_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
         default = repo / "r2-scope.toml"
         scope_file = default if default.is_file() else None
     declared = load_scope_file(scope_file) if scope_file is not None else {
-        "mode": None, "slice_size": None, "cursor": None, "note": None, "path": None,
+        "mode": None, "slice_size": None, "cursor": None, "note": None,
+        "reserve_percent": None, "path": None,
     }
     if args.mode is not None:
         mode, mode_source = args.mode, "--mode"
@@ -296,6 +297,7 @@ def _scope_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
         rebaseline=args.rebaseline,
         blobs=blobs,
         legacy_cursor=legacy_cursor,
+        reserve_percent=declared["reserve_percent"],
     )
     if args.write_cursor is not None:
         if document["cursor"] is None:
