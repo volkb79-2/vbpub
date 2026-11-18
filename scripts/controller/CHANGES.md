@@ -28,6 +28,10 @@ no separate version number, so entries are grouped by the work that landed.
   and incremental-report wording.
 
 ### Added
+- `docs/STATE-VS-WORK.md` (the work-versus-state table with measured sizes, what the
+  backup covers, what is rebuildable, the `git clean` hazard, operator checklist) and
+  `docs/runbooks/host-access-template.md` (sanitized identity-checked host access flow,
+  placeholders only, two sample host-table aliases). CTL-31 and CTL-32 filed.
 - `ctl-state-backup.sh`: archive of the non-rebuildable controller state into
   `CONTROLLER_BACKUP_DIR` (refuses when unset, relative or inside a git work tree);
   `--list`, `--include-large`, `--max-file-bytes`, `--verify <archive>`; mode 0600,

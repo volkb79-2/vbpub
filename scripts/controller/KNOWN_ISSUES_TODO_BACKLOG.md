@@ -1427,3 +1427,29 @@ under a home-directory path of the controller account. Replace it with
 placeholders.
 
 **Close when.** `git grep -n '/home/' -- scripts/netcup/runner/*.example*` is empty.
+
+## CTL-31 — ctl-doctor reads controller.local.env line by line and does not run the identity check
+
+**Status:** OPEN (filed 2026-11-18 by the import's doctor work; by design for now).
+
+`ctl-doctor.sh` refuses (never executes) every line of `controller.local.env`
+that is not a `NAME=value` assignment, so a legitimate multi-line assignment reads
+as a stray line, and it only checks that each host's `api_check` command is an
+executable file: it does not run it (the identity check talks to the provider). A
+`--live` option could run `api_check` per alias and report the exit code only.
+
+**Close when.** Either the env-file scan understands quoted multi-line values and
+`--live` exists with a test and a mutant, or the README keeps the limit stated.
+
+## CTL-32 — no restore helper for ctl-state-backup, and keys/pins are outside it by design
+
+**Status:** OPEN (filed 2026-11-18 by the import's backup work; not fixed).
+
+`ctl-state-backup.sh` writes `repo/`, `home/` and `runs/` members and the operator
+restores by hand (`tar -xf`, then copy). SSH keys and pin files are deliberately
+not saved. A `--restore <archive> <dir>` that extracts into an empty directory and
+prints the copy commands (never overwriting) would remove the manual step; keys and
+pins stay a documented operator duty (`docs/STATE-VS-WORK.md`).
+
+**Close when.** `--restore` exists with a test for the no-overwrite refusal, or the
+by-design note stays in `docs/STATE-VS-WORK.md`.

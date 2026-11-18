@@ -104,7 +104,10 @@ A host that runs gates through `remote-gate.py` may also carry `runner_home`
 `image` (the default tester image) and `repos.<name>` (per-repository overrides
 such as `run_gate_min`, `run_gate_bins`, `tester_image`); all four are optional
 and validated by `remote-gate.py`, never by the shell kit. Keep one table:
-`remote-gate.sh`, `hx.sh` and the queue read the same file.
+`remote-gate.sh`, `hx.sh` and the queue read the same file. A sanitized walk-through
+of the identity-checked access flow (pin file, strict checking, on-host asserts) with
+two sample aliases is in [`runbooks/host-access-template.md`](runbooks/host-access-template.md);
+`ctl-doctor.sh` checks the table, key modes and pin files.
 
 `api_check` must perform the provider-side identity check before remote work.
 Use an absolute command path so it works from the controller home and from a
