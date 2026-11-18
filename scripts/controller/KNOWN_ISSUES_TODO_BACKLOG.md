@@ -38,6 +38,13 @@ together.
 | CTL-24 | The tool-subtree scope for the progress rule is all of the agent's descendants, so a long-lived helper the agent keeps as a child reads as progress (errs toward `LONG-TOOL`) | Known limit | BY DESIGN 2026-11-17 |
 | CTL-25 | `job-check`'s read-only lock probe holds an exclusive `flock -n` for about a millisecond, so a claim that lands in that window fails with `already owned by pid <unknown>` (exit 2) | Should-fix | OPEN |
 | CTL-26 | `pi-live.py` makes the whole progress reading `None` when one member vanishes between the process scan and its `/proc/<pid>/stat` read, and a churn-only tool under an idle parent reads `HUNG-TOOL` while the row's `steer=` points at the parent | Should-fix | OPEN |
+| CTL-27 | `ctl-status.sh` lacks three generic sections the older controller-local copy had: the controller memory/swap/load/PSI line, the "worktrees with work" table (ahead of origin/main, dirty, or committed in the last 24 h) and a `--remote` one-call status of the newest remote-gate run | Nice-to-have | OPEN |
+| CTL-28 | `scripts/netcup/runner/remote-gate.py` hardcodes the controller's program directory as `DEFAULT_OUT`, so a direct run without `--out-dir` or `REMOTE_GATE_OUT` writes into an unversioned, controller-local path | Should-fix | OPEN |
+| CTL-29 | `remote-gate.sh` repeats `hx.sh`'s guard-wrapping and quoting for its OOM-counter probe instead of calling one shared function, so a change to one can drift from the other | Should-fix | OPEN |
+| CTL-30 | `scripts/netcup/runner/remote-gate-hosts.example.json` carries a controller-local home path (`run_gate_bins`) in a committed example, against the no-local-paths rule | Nice-to-have | FIXED 2026-11-18 |
+| CTL-31 | `ctl-doctor.sh` reads `controller.local.env` line by line (a multi-line assignment reads as a stray line) and does not run the identity check | Nice-to-have | OPEN |
+| CTL-32 | `ctl-state-backup.sh` has no restore helper, and keys/pins are outside the archive by design | Nice-to-have | OPEN |
+| CTL-33 | The local gate slots are hardcoded to two (`CONTROLLER_GATE_LOCK`/`CONTROLLER_GATE2_LOCK`); the count should be configurable | Should-fix | OPEN |
 
 ---
 
@@ -1368,3 +1375,105 @@ controller can look before acting.
 **Close when.** A vanished member no longer voids the reading (test with a member
 that exits between scan and read, mutant that restores the whole-reading `None`),
 and the by-design note is in the design guide next to the CTL-24 scope note.
+
+## CTL-27 — ctl-status lost three generic sections in the rewrite
+
+**Status:** OPEN (filed 2026-11-18 by the controller-import inventory; not fixed).
+
+The controller-local copy of `ctl-status.sh` printed (a) one line of the
+controller cgroup's anon/swap/max memory, load and memory PSI, (b) a table of
+worktrees with work (ahead of `origin/main`, dirty, or last commit under 24 h),
+and (c) with `--remote`, one identity-checked status call for the newest
+remote-gate run. The repo rewrite is lib.sh-driven and deliberately read-only
+(no fetch, SSH or Docker), and has none of them. (a) and (b) are generic and
+cheap and need `tests/test-ctl-status.sh` cases with a fake root; (c) needs the
+remote-gate result layout and should come with its own test, or be dropped.
+
+**Close when.** (a) and (b) are in with tests and mutants, and (c) is either
+implemented with a test or recorded as not wanted.
+
+## CTL-28 — remote-gate.py defaults its output directory to a controller-local path
+
+**Status:** OPEN (filed 2026-11-18 by the controller-import inventory; not fixed,
+`remote-gate.py` was out of scope for that work).
+
+`DEFAULT_OUT` in `scripts/netcup/runner/remote-gate.py` is an absolute path inside
+the unversioned program directory. `remote-gate.sh` always passes `--out-dir`, but
+a direct invocation silently writes there. The default should come from
+`REMOTE_GATE_OUT` or `$CONTROLLER_HOME/remote-gates` and refuse when neither is
+resolvable.
+
+**Close when.** The runner has no controller-local literal and its tests show the
+refusal.
+
+## CTL-29 — one shared host-command function for hx.sh and remote-gate.sh
+
+**Status:** OPEN (filed 2026-11-18 by the controller-import; not fixed).
+
+`hx.sh` runs a command on a host through the table's `ssh` argv, the `guard`
+text under `set -e` and `shlex.quote`. `remote-gate.sh` needs the same wrapping
+for its OOM-counter probe against its own host table and repeats it
+(`remote_probe`). Extract `controller_host_run <host> <command> [hosts-file]`
+into `lib.sh`, make `hx.sh` and `remote-gate.sh` call it, and keep the existing
+`hx.sh` tests and mutants (the identity-check and guard-failure mutants move with
+the code).
+
+**Close when.** Both callers use one function, with the hx and remote-gate tests
+green and a mutant for the guard wrapper killed in both.
+
+## CTL-30 — a committed example carries a controller-local home path
+
+**Status:** FIXED 2026-11-18 (DONE in the controller-import review round; filed the same day by the controller-import hygiene grep).
+
+`scripts/netcup/runner/remote-gate-hosts.example.json` listed `run_gate_bins`
+under a home-directory path of the controller account. It now carries
+placeholder paths.
+
+**Close when.** `git grep -n '/home/' -- scripts/netcup/runner/remote-gate-hosts.example.json` shows only the runner account's own home (it does).
+
+## CTL-31 — ctl-doctor reads controller.local.env line by line and does not run the identity check
+
+**Status:** OPEN (filed 2026-11-18 by the import's doctor work; by design for now).
+
+`ctl-doctor.sh` flags (and stops before sourcing) every line of
+`controller.local.env` that is not a `NAME=value` assignment, so a legitimate
+multi-line assignment reads as a stray line (an assignment with a command
+substitution passes the filter and runs when `lib.sh` sources the file), and it only checks that each host's `api_check` command is an
+executable file: it does not run it (the identity check talks to the provider). A
+`--live` option could run `api_check` per alias and report the exit code only.
+
+**Close when.** Either the env-file scan understands quoted multi-line values and
+`--live` exists with a test and a mutant, or the README keeps the limit stated.
+
+## CTL-32 — no restore helper for ctl-state-backup, and keys/pins are outside it by design
+
+**Status:** OPEN (filed 2026-11-18 by the import's backup work; not fixed).
+
+`ctl-state-backup.sh` writes `repo/`, `home/` and `runs/` members and the operator
+restores by hand (`tar -xf`, then copy). SSH keys and pin files are deliberately
+not saved. A `--restore <archive> <dir>` that extracts into an empty directory and
+prints the copy commands (never overwriting) would remove the manual step; keys and
+pins stay a documented operator duty (`docs/STATE-VS-WORK.md`).
+
+**Close when.** `--restore` exists with a test for the no-overwrite refusal, or the
+by-design note stays in `docs/STATE-VS-WORK.md`.
+
+## CTL-33 — the local gate slot count is hardcoded to two
+
+**Status:** OPEN (filed 2026-11-18 in the controller-import review round; deliberately not implemented there).
+
+`gate-run.sh` knows exactly two local slots, `CONTROLLER_GATE_LOCK` and
+`CONTROLLER_GATE2_LOCK`. Make the count configurable through
+`CONTROLLER_GATE_SLOTS` (default 2) with the lock files `gate.lock`, `gate2.lock`,
+`gate3.lock`, ... and make `chain-run.sh` and `ctl-doctor.sh` aware of the count
+(the doctor's lock check and the chain's documentation both name the two variables).
+
+Reasoning: the remote hosts already run four weight-based slots
+(`CONTROLLER_REMOTE_SLOTS`), so a fixed two is an arbitrary local limit on a
+controller whose capacity is host-owned; and the fleet daemon's RAM-first
+admission is meant to replace static slot counts altogether, so this entry covers
+the interim only and may close as superseded when that admission exists.
+
+**Close when.** `CONTROLLER_GATE_SLOTS` is honoured by `gate-run.sh`, `chain-run.sh`
+and `ctl-doctor.sh` with tests and mutants, or the fleet daemon's admission replaces
+the static count and this entry is closed as superseded.

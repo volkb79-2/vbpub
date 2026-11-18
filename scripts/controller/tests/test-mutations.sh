@@ -439,4 +439,41 @@ expect_killed queue-controller-library-selection \
   env QUEUE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/queue-controller-lib.sh" bash "$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh"
 expect_killed ctl-status-fresh-results-guard \
   env CTL_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/ctl-status-fresh-results.sh" bash "$SCRIPT_DIR/test-ctl-status.sh"
+for gate_run_profile_mutant in default override; do
+  expect_killed "gate-run-profile-$gate_run_profile_mutant" \
+    env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-profile-$gate_run_profile_mutant.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+done
+for remote_gate_mutant in identity allow-list project-dir-guard slot-roundup weight-min oom-delta commit-binding slot-descriptors base-forward api-override runner-ref base-passthrough base-twice \
+                          old-env-silent old-env-one-dropped weights-unreadable-silent weights-missing-warns repo-name-default snapshot-fixed-name snapshot-leftover; do
+  expect_killed "remote-gate-$remote_gate_mutant" \
+    env REMOTE_GATE_SCRIPT="$ROOT/mutants/scripts/controller/remote-gate-$remote_gate_mutant.sh" bash "$SCRIPT_DIR/test-remote-gate.sh"
+done
+for chain_run_mutant in log-name remote-log-name marker-text stale-marker head-pin dirty-tree stop-on-fail stop-without-flag \
+                        remote-base remote-commit remote-head-lookup remote-host-ambiguity launcher-check subdir-guard \
+                        lane-name-guard lane-cwd default-launcher export-image export-socket profile-default unset-env unset-env-name; do
+  expect_killed "chain-run-$chain_run_mutant" \
+    env CHAIN_RUN_SCRIPT="$ROOT/mutants/scripts/controller/chain-run-$chain_run_mutant.sh" bash "$SCRIPT_DIR/test-chain-run.sh"
+done
+for doctor_mutant in tool-flock-severity tool-docker-severity home-missing env-missing env-syntax env-stray hosts-missing hosts-ssh-shape \
+                     hosts-guard hosts-lanes-shape hosts-lanes-warn hosts-api-exec hosts-key-missing hosts-key-mode hosts-pin hosts-pin-devnull hosts-pin-devnull-ok hosts-strict \
+                     hosts-nopin hosts-leak allow-unknown allow-unset remote-file-split image-absent image-exact-name image-unreachable \
+                     image-no-docker image-toml pinned-warn pinned-logs pinned-scan pinned-home profile-default gate-lock-unset gate-lock-absolute gate-lock-parent gate-lock-distinct dir-missing dir-writable \
+                     symlink-detect residency-ignore residency-outside residency-runs json exit-code usage-exit; do
+  # Only the non-root block of the doctor test can kill this one: as root it is reported skipped, never killed.
+  if [[ $doctor_mutant == dir-writable && $(id -u) == 0 ]]; then
+    echo "SKIPPED: ctl-doctor-$doctor_mutant (its test block needs a non-root uid)"
+    continue
+  fi
+  expect_killed "ctl-doctor-$doctor_mutant" \
+    env CTL_DOCTOR_SCRIPT="$ROOT/mutants/scripts/controller/ctl-doctor-$doctor_mutant.sh" bash "$SCRIPT_DIR/test-ctl-doctor.sh"
+done
+for doctor_lib_mutant in readonly-mkdir readonly-resolve configured-home configured-runs; do
+  expect_killed "ctl-doctor-lib-$doctor_lib_mutant" \
+    env CTL_DOCTOR_SCRIPT="$ROOT/mutants/scripts/controller/doctor-lib-$doctor_lib_mutant/ctl-doctor.sh" bash "$SCRIPT_DIR/test-ctl-doctor.sh"
+done
+for backup_mutant in cap jsonl git-dir work-tree unset relative list-only mode follow-links sidecar verify-compare runs-state \
+                     remote-summaries empty overwrite link-targets hardlink-targets chmod-existing chmod-never verify-empty verify-no-sidecar linked-detect linked-members; do
+  expect_killed "ctl-state-backup-$backup_mutant" \
+    env CTL_STATE_BACKUP_SCRIPT="$ROOT/mutants/scripts/controller/ctl-state-backup-$backup_mutant.sh" bash "$SCRIPT_DIR/test-ctl-state-backup.sh"
+done
 echo "PASS hand mutations: $killed_count killed"

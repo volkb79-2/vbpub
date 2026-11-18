@@ -6,7 +6,108 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Fixed (review round of the controller import)
+- `ctl-state-backup.sh`: the member relabel no longer rewrites symlink targets
+  (`--transform flags=rh`; an absolute link stays absolute, a relative one stays
+  relative, hardlink members keep pointing at the relabelled member); a
+  pre-existing `CONTROLLER_BACKUP_DIR` keeps its mode (only a directory the run
+  creates is 700); `--verify` exits 1 for an archive with 0 members or without
+  its sidecar; a `CONTROLLER_REPO` that is a linked worktree without
+  `.controller-state`/`plan.yaml` prints a WARNING. 8 new hand mutants.
+- `remote-gate.sh`: each old program-directory environment name that is set
+  prints a one-line warning naming its `CONTROLLER_REMOTE_*` replacement (never
+  mapped); a weights file that exists but cannot be read warns; the runner
+  repository name defaults to `vbpub`; the runner snapshot is written to a
+  `mktemp` file and renamed, so concurrent runs cannot corrupt it (a
+  concurrent-run test with sync files). README documents the differences, the
+  moved throwaway worktree directory and the rule to stop using the old tool
+  before using this one. 7 new hand mutants.
+- `chain-run.sh`: `--unset-env NAME` (repeatable); the README states that
+  `gate-run.sh` requires both gate locks (a chain over unset locks still ends
+  with `CHAIN-DONE`, by design) and the old-to-new remote log and marker names.
+  2 new hand mutants.
+- `ctl-doctor.sh`: FAILs when `CONTROLLER_GATE_LOCK`/`CONTROLLER_GATE2_LOCK` are
+  unset, relative, equal or in an unwritable directory; `UserKnownHostsFile=/dev/null`
+  no longer counts as a pin; the wording no longer claims nothing is executed
+  (`controller.local.env` is sourced by `lib.sh`). 6 new hand mutants; the
+  root-only unwritable-directory check prints a SKIP line and the mutation
+  runner reports its mutant as skipped under uid 0.
+- `run-gate.toml`: the `suite` lane budget is 30m (measured about 15 min wall at
+  354 mutants; it was 15m, sized for 222).
+- `scripts/netcup/runner/remote-gate-hosts.example.json` carries placeholder
+  paths (CTL-30 fixed); CTL-31, CTL-32 in the backlog index; CTL-33 filed (local
+  gate slot count is hardcoded to two).
+
+### Changed
+- `gate-run.sh` defaults `RUN_GATE_PROFILE` to `off` (the caller can still set
+  `on`): local gates run without profiling data so they behave the same before
+  and after the resource-observer cutover. Reconciled from the program-directory
+  copy, which was otherwise older (the repo copy already polls both slots).
+  Two hand mutants.
+
+- `remote-gate.sh` accepts the old pass-through spelling `-- --base <ref>` (and
+  `--base=<ref>`) as the `--base` option: the base commit is bundled and
+  forwarded once, instead of reaching the host's `run-gate` alone. A base given
+  twice is refused. Two hand mutants.
+
+- Rules and templates reconciled with the program-directory copies (the repo
+  copies were the newer ones; only missing content was folded in): `rules.md`
+  names `gate-run.sh` instead of a bare `flock` on one lock, forbids launching
+  other agent sessions from inside a job, reports stale in-flight records
+  instead of deleting them silently and requires a `description` on every Bash
+  call; `BRIEF-TEMPLATE.md` section 6/8 gain the dependency, Docker, style and
+  stop-condition lines; the two finisher prompts gain the "call tools for real"
+  and incremental-report wording.
+
 ### Added
+- `docs/STATE-VS-WORK.md` (the work-versus-state table with measured sizes, what the
+  backup covers, what is rebuildable, the `git clean` hazard, operator checklist) and
+  `docs/runbooks/host-access-template.md` (sanitized identity-checked host access flow,
+  placeholders only, two sample host-table aliases). CTL-31 and CTL-32 filed.
+- `ctl-state-backup.sh`: archive of the non-rebuildable controller state into
+  `CONTROLLER_BACKUP_DIR` (refuses when unset, relative or inside a git work tree);
+  `--list`, `--include-large`, `--max-file-bytes`, `--verify <archive>`; mode 0600,
+  temporary name then rename, `.sha256` sidecar, symlinks stored as links, never
+  `*.jsonl`, `.git`, worktrees, logs or artifacts. Test `tests/test-ctl-state-backup.sh`,
+  15 hand mutants.
+- `ctl-doctor.sh`: read-only preflight of a controller machine (home and env file,
+  host table schema, key mode 600 and pin files, remote-gate allow-list, required
+  tools, default tester image by exact name, the removed `run-gate-2560` tag,
+  effective `RUN_GATE_PROFILE`, runs/logs directories, and the symlink-into-a-
+  work-tree `git clean` hazard). Exits non-zero on any failure, prints the fix per
+  failure, never prints a secret value; `--json` and `--scan <dir>`. `lib.sh`
+  gains `CONTROLLER_INIT_READONLY=1` (no directory is created) and the exported
+  `CONTROLLER_{HOME,LOGS_DIR,RUNS_DIR}_CONFIGURED` spellings (before symlinks are
+  resolved). Test `tests/test-ctl-doctor.sh`, 44 hand mutants.
+- `sonnet-continuation-preamble.md` and `backlog-burn-generic.md`: the two
+  reusable prompt blocks that only existed in the program directory, sanitised
+  (no absolute paths, addresses, pinned image tag).
+- `chain-run.sh`: ONE generic chain runner replacing the 38 per-package
+  `chain-*.sh` wrappers of the unversioned program directory. Arguments:
+  worktree, project subdir, log prefix, lanes; `--head <sha>` pins the commit
+  (refuses with `HEAD moved: ...` or `tree dirty` in the marker before any lane),
+  `remote:<lane>[:--base=<sha>]` lanes go through `remote-gate.sh`
+  (`--remote-host`, or the only allowed alias), `--stop-on-fail` stops on a
+  non-zero lane exit; otherwise a failed lane never stops the chain and the
+  chain never reads a verdict. Logs `<prefix>-<lane>.log` and
+  `<prefix>-remote-<lane>.log`, marker `<prefix>.chain` (`CHAIN-DONE` or the
+  reason, written atomically, removed at start). It exports no image tag and no
+  profiler socket. New `tests/test-chain-run.sh` (stub launchers; asserts lane
+  order, log names, marker content, pin and dirty refusals, remote forms,
+  environment) and twenty hand mutants; README section with the migration
+  recipe and two worked examples.
+- `remote-gate.sh`: the controller's remote gate wrapper, imported from the
+  unversioned program directory and parametrised. Host, SSH transport, identity
+  check and guard come from the host table (`CONTROLLER_REMOTE_HOSTS_FILE`,
+  default `CONTROLLER_HOSTS_FILE`) instead of a private env script; the
+  allow-list of gate hosts is the required `CONTROLLER_REMOTE_GATE_HOSTS`; the
+  throwaway worktree lives under `CONTROLLER_HOME`, not in the repository;
+  `--base <ref>` is a wrapper option forwarded to `remote-gate.py`; the lane
+  weight is rounded up (a measured 800 MiB peak with 15 percent headroom is 920,
+  not 919). New `tests/test-remote-gate.sh` (fake `remote-gate.py`, ssh and
+  identity stubs; no network) and eleven hand mutants. Sample
+  `remote-gate-weights.tsv.example`; settings documented in
+  `docs/CONFIGURATION.md`.
 - `LONG-TOOL` / `HUNG-TOOL` (CTL-18): `job-status.sh` separates a heavy tool that
   is still working from one that stopped. `HUNG-TOOL` requires the ABSENCE of
   progress evidence, and the evidence set is the IN-FLIGHT TOOL CALL's own

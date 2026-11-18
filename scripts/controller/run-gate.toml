@@ -4,10 +4,12 @@ schema_version = 1
 kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/scripts/controller && bash tests/run-suite.sh"]
-# Measured need, not a safety margin for flakiness: the unit-level suites are
-# ~1.5 min and the hand-mutation campaign (222 mutants, each one a full focused
-# test run) is ~11-12 min on a loaded host, so the lane's real work needs ~13
-# min. The lane is therefore declared at 15m; a longer run would be a real
-# regression in the campaign's cost and should be investigated, not absorbed
-# here.
-budget = "15m"
+# Measured need, not a safety margin for flakiness: the registered lane run on
+# the controller-import branch (354 hand mutants, each one a full focused test
+# run, plus the unit-level suites) took about 15 min wall on a lightly loaded
+# host, against the previous 15m budget, i.e. no margin at all. The budget is
+# the measured time x 1.6 (about 24 min, rounded up to 30m because the review
+# fixes of that branch add mutants and test blocks on top of the measured 354).
+# A run that needs more than that would be a real regression in the campaign's
+# cost and should be investigated, not absorbed here.
+budget = "30m"

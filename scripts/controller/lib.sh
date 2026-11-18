@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Shared local configuration and host-table helpers for the controller kit.
 
+controller_init_resolve() {
+  # $1 = variable name. Replaces its value with the physical path. With CONTROLLER_INIT_READONLY=1 (ctl-doctor.sh) a
+  # directory that does not exist keeps its configured spelling, so a read-only caller can still report on it.
+  local -n target=$1
+  if [[ -n ${CONTROLLER_INIT_READONLY:-} && ! -d $target ]]; then return 0; fi
+  target=$(cd -- "$target" && pwd -P)
+}
+
 controller_init() {
   : "${HOME:?HOME must be set}"
   CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
@@ -13,14 +21,20 @@ controller_init() {
   fi
   [[ -z $requested_runs_dir ]] || CONTROLLER_RUNS_DIR=$requested_runs_dir
   CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
-  CONTROLLER_HOME=$(cd -- "$CONTROLLER_HOME" && pwd -P)
+  # The configured spellings (before symlinks are resolved) are kept for ctl-doctor.sh: the resolved paths below no
+  # longer show that a directory lives behind a symlink.
+  [[ $CONTROLLER_HOME == /* ]] || CONTROLLER_HOME=$PWD/$CONTROLLER_HOME
+  CONTROLLER_HOME_CONFIGURED=$CONTROLLER_HOME
+  controller_init_resolve CONTROLLER_HOME
   CONTROLLER_LOGS_DIR=${CONTROLLER_LOGS_DIR:-"$CONTROLLER_HOME/logs"}
   CONTROLLER_RUNS_DIR=${CONTROLLER_RUNS_DIR:-"$CONTROLLER_HOME/runs"}
   [[ $CONTROLLER_LOGS_DIR == /* ]] || CONTROLLER_LOGS_DIR=$CONTROLLER_HOME/$CONTROLLER_LOGS_DIR
   [[ $CONTROLLER_RUNS_DIR == /* ]] || CONTROLLER_RUNS_DIR=$CONTROLLER_HOME/$CONTROLLER_RUNS_DIR
-  mkdir -p -- "$CONTROLLER_LOGS_DIR" "$CONTROLLER_HOME/runs" "$CONTROLLER_RUNS_DIR"
-  CONTROLLER_LOGS_DIR=$(cd -- "$CONTROLLER_LOGS_DIR" && pwd -P)
-  CONTROLLER_RUNS_DIR=$(cd -- "$CONTROLLER_RUNS_DIR" && pwd -P)
+  CONTROLLER_LOGS_DIR_CONFIGURED=$CONTROLLER_LOGS_DIR
+  CONTROLLER_RUNS_DIR_CONFIGURED=$CONTROLLER_RUNS_DIR
+  [[ -n ${CONTROLLER_INIT_READONLY:-} ]] || mkdir -p -- "$CONTROLLER_LOGS_DIR" "$CONTROLLER_HOME/runs" "$CONTROLLER_RUNS_DIR"
+  controller_init_resolve CONTROLLER_LOGS_DIR
+  controller_init_resolve CONTROLLER_RUNS_DIR
   local script_dir
   script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
   CONTROLLER_REPO=${CONTROLLER_REPO:-$(cd -- "$script_dir/../.." && pwd -P)}
@@ -30,6 +44,7 @@ controller_init() {
     CONTROLLER_REPO=$(cd -- "$CONTROLLER_REPO" && pwd -P)
   fi
   export CONTROLLER_HOME CONTROLLER_LOGS_DIR CONTROLLER_RUNS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
+  export CONTROLLER_HOME_CONFIGURED CONTROLLER_LOGS_DIR_CONFIGURED CONTROLLER_RUNS_DIR_CONFIGURED
 }
 
 # ---- run-name ownership ----------------------------------------------------

@@ -152,6 +152,7 @@ cat > "$ROOT/bin/run-gate" <<'SH'
 #!/usr/bin/env bash
 set -uo pipefail
 printf '%s|%s\n' "$PWD" "$*" >> "$RUN_GATE_LOG"
+printf '%s\n' "${RUN_GATE_PROFILE-unset}" >> "$RUN_GATE_LOG.profile"
 exit "${FAKE_RUN_GATE_RC:-0}"
 SH
 chmod +x "$ROOT/bin/codex" "$ROOT/bin/fake-impl" "$ROOT/bin/pgrep" "$ROOT/bin/after-impl" "$ROOT/bin/run-gate"
@@ -448,6 +449,13 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
   "$GATE_RUN_SRC" suite --verbose > "$ROOT/gate-first.out" 2>&1 \
   || fail 'gate-run failed in the first free slot'
 contains "$ROOT/gate-first.out" 'slot gate.lock' 'gate-run uses the first configured slot'
+# Local gates run without profiling unless the caller says otherwise: the resource observer needs the rebuilt container.
+[[ $(tail -n 1 "$RUN_GATE_LOG.profile") == off ]] || fail 'gate-run must default RUN_GATE_PROFILE to off'
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" RUN_GATE_PROFILE=on \
+  CONTROLLER_GATE_LOCK="$LOCK1" CONTROLLER_GATE2_LOCK="$LOCK2" \
+  "$GATE_RUN_SRC" suite --profile-on > "$ROOT/gate-profile-on.out" 2>&1 \
+  || fail 'gate-run failed with the profile override'
+[[ $(tail -n 1 "$RUN_GATE_LOG.profile") == on ]] || fail 'gate-run overrode a caller-set RUN_GATE_PROFILE'
 
 hold_lock() {
   local lock=$1 ready=$2 release=$3

@@ -26,6 +26,49 @@ For the host-table schema and the additional `queue_lanes` field, see
 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) and the
 [queue validation design](docs/DESIGN-GUIDE.md#queue-lane-validation).
 
+## Preflight (`ctl-doctor.sh`)
+
+`scripts/controller/ctl-doctor.sh [--json] [--scan <dir>]...` checks a controller
+machine without changing it and exits non-zero on any failure. Each finding is one
+`OK|WARN|FAIL|INFO <check>: <message>` line, with an indented `fix:` line under
+every WARN and FAIL. It checks: `$CONTROLLER_HOME` and `controller.local.env`
+(the env file is shell-sourced by `lib.sh` like for every controller tool and must
+hold assignments only: the doctor flags any other line but cannot make a value
+inert, `A=$(cmd)` runs when sourced); every
+host-table alias (`ssh`, `api_check`, `guard`, `queue_lanes`, the SSH key file with
+mode 600, the pinned `known_hosts` file, `StrictHostKeyChecking=yes`, the identity
+command is executable); that `CONTROLLER_REMOTE_GATE_HOSTS` names only aliases of the
+host table; `flock`, `git`, `python3`, `jq` (failures) and `docker`, `shellcheck`
+(warnings) on `PATH`; the default tester image of `run-gate.root.toml` by exact name
+(`docker image inspect`; an unreachable daemon only warns); any file under
+`$CONTROLLER_HOME` (and each `--scan` directory) that still names the removed
+`run-gate-2560` image tag; the effective `RUN_GATE_PROFILE`; writable runs and logs
+directories; that `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK` (required by
+`gate-run.sh`) are set, absolute, distinct and in a writable directory (a failure
+otherwise); and where `$CONTROLLER_HOME` and `CONTROLLER_RUNS_DIR` really live (a
+symlink target inside a git work tree is a warning: `git clean -fdx` would delete it,
+see [`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md)). It prints names and paths only,
+never a value from the env file, the host table or a key. Limit: the env file is
+scanned line by line, so a multi-line assignment reads as a stray line.
+
+## State backup (`ctl-state-backup.sh`)
+
+`scripts/controller/ctl-state-backup.sh [--list] [--include-large] [--max-file-bytes <n>]`
+archives the non-rebuildable controller state into `$CONTROLLER_BACKUP_DIR` (required,
+absolute, never inside a git work tree): `.controller-state/` and `plan.yaml` of the
+repository root, `$CONTROLLER_HOME/*.local.*`, `reports/`, the remote-gate
+`result.json`/`meta.json` summaries, and the runs' `*.thread`, `*.state.md`, `*.done`.
+Never `*.jsonl` session streams, `.git`, worktrees, logs, artifacts, or a file over the
+cap (5 MiB). Symlinks are stored as links, never followed (link targets are kept
+exactly as they were). `--list` writes nothing; the archive is mode 0600 (zstd if
+installed, else gzip) with a `.sha256` sidecar, and `ctl-state-backup.sh --verify
+<archive>` checks it (exit 1 for an archive with 0 members or without its sidecar,
+not just for a bad checksum). A backup directory the run creates gets mode 700; an
+existing `CONTROLLER_BACKUP_DIR` keeps its mode. When `CONTROLLER_REPO` is a linked
+worktree that lacks `.controller-state` or `plan.yaml`, the run prints a WARNING
+naming them: the real state lives in the main checkout. What is state and what is work:
+[`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md).
+
 ## Controller loop
 
 Use this order for each implementation task.
@@ -408,7 +451,11 @@ choose a provider and model with `opencode run -m <provider>/<model>`.
 
 The reusable brief format is [`BRIEF-TEMPLATE.md`](BRIEF-TEMPLATE.md), and
 implementation-job constraints are in [`rules.md`](rules.md). The two
-finisher prompts live beside them. Read the [design guide](docs/DESIGN-GUIDE.md)
+finisher prompts live beside them, together with two reusable prompt blocks:
+[`sonnet-continuation-preamble.md`](sonnet-continuation-preamble.md) (overrides
+for a Sonnet implementer that takes over a task whose Codex run hit the usage
+limit) and [`backlog-burn-generic.md`](backlog-burn-generic.md) (the generic
+backlog burn-down package a per-project wrapper brief points at). Read the [design guide](docs/DESIGN-GUIDE.md)
 for the reasons behind the boundaries, and the [consumer guide](docs/CONSUMERS.md)
 for copyable setup and run examples.
 
@@ -436,7 +483,124 @@ both locks with non-blocking attempts every 5 seconds, takes whichever slot is
 freed first, and prints which slot it took. It prints a progress line every
 300 seconds while both remain busy. The gate command's exit code is propagated
 unchanged, and the configured-path and distinct-path refusals still run before
-the gate command can start.
+the gate command can start. Gates run with `RUN_GATE_PROFILE=off` unless the
+caller sets it: the resource observer needs the rebuilt container, and a lane
+that declares one goes to a remote gate worker instead.
+
+## Run one lane on a remote gate worker
+
+```bash
+scripts/controller/remote-gate.sh <host-alias> <project-dir> <lane> <commit-or-branch> [--base <ref>] [-- extra run-gate args]
+```
+
+`remote-gate.sh` is the identity-checked, commit-pinned, slot-admitted wrapper
+around `scripts/netcup/runner/remote-gate.py`. It resolves the commit in the
+controller checkout, runs the provider identity check from the host table,
+admits the lane by weight into k of N flock slots (declared
+`resources.memory`, measured peak from `remote-gate-weights.tsv`, else one
+slot), builds a throwaway detached worktree under `CONTROLLER_HOME`, runs the
+lane and writes `$CONTROLLER_LOGS_DIR/<run>.log` with a binding line
+`run-gate.commit=<sha>` plus the copied verdict JSON files. Exit codes: the
+lane's own, 2 refusal, 3 identity or transport failure, 75 slots or PSI busy,
+76 `INCONCLUSIVE-OOM` (an OOM kill in the host's gate slice during the run;
+not a lane FAIL). Every setting is a `CONTROLLER_REMOTE_*` variable in
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md); `CONTROLLER_REMOTE_GATE_HOSTS`
+is required. The weights sample is `remote-gate-weights.tsv.example`.
+`-- --base <ref>` (or `--base=<ref>`) after the commit is accepted as a spelling
+of `--base <ref>`: either way the base commit travels to the host with the
+bundle and `--base` is forwarded to the host's `run-gate` once.
+
+Differences from the program-directory `remote-gate.sh` this replaces. One rule
+first: stop using the old program-dir tool before using this one; the controller
+replaces the old script with a shim (the slot locks live in different places, so old
+and new callers would not exclude each other).
+
+- The old environment names (`REMOTE_GATE_V1001_SLOTS`, `REMOTE_GATE_V1001_BUDGET_MB`,
+  `REMOTE_GATE_WEIGHT_MB`, `REMOTE_GATE_SLOT_WAIT_S`, `REMOTE_GATE_WAIT_PSI`,
+  `REMOTE_GATE_DRYRUN`, `REMOTE_GATE_PY`) are NOT mapped: each one that is set
+  prints a one-line stderr warning naming its `CONTROLLER_REMOTE_*` replacement.
+- The weights table lives at `$CONTROLLER_HOME/remote-gate-weights.tsv` (copy the
+  old one there). A missing table is the documented fallback (declared memory,
+  else one slot); a table that exists but cannot be read prints a warning.
+- The runner repository name on the host is `vbpub` unless
+  `CONTROLLER_REMOTE_REPO_NAME` is set; it is no longer derived from the
+  checkout directory name.
+- The throwaway detached worktree is `$CONTROLLER_HOME/remote-gate-work/rgw-<time>-<pid>`
+  (the old tool used `<repo>/.worktrees/rgw-*`); it is removed when the run ends.
+
+## Run several lanes in a row (`chain-run.sh`)
+
+```bash
+(setsid nohup scripts/controller/chain-run.sh [--head <sha>] [--remote-host <alias>] [--stop-on-fail] [--unset-env <NAME>]... \
+  <worktree> <project-subdir> <log-prefix> <lane>... >/dev/null 2>&1 </dev/null & disown)
+```
+
+One generic chain runner replaces the per-package `chain-*.sh` wrappers. A plain
+`<lane>` runs through `gate-run.sh` from `<worktree>/<project-subdir>` and logs
+to `$CONTROLLER_LOGS_DIR/<log-prefix>-<lane>.log`; `remote:<lane>` or
+`remote:<lane>:--base=<sha>` runs through `remote-gate.sh` (host from
+`--remote-host`, or the only alias in `CONTROLLER_REMOTE_GATE_HOSTS`; commit =
+the worktree HEAD) and logs to `<log-prefix>-remote-<lane>.log`. Lanes run one
+after another; the marker `$CONTROLLER_LOGS_DIR/<log-prefix>.chain` is removed
+at start and written at the end: `CHAIN-DONE` once every lane ended, or the
+reason (`HEAD moved: ...`, `tree dirty`, `lane launcher missing: ...`,
+`STOPPED-ON-FAIL: ...`) when it refused or stopped. No marker means the chain is
+still running or was killed.
+
+- The chain NEVER reads a lane's verdict: a failed lane does not stop the next
+  one (the controller reads the logs in a separate step) unless `--stop-on-fail`
+  is given, which stops on a non-zero lane exit code only.
+- `--head <sha>` (full or abbreviated) pins the commit: the chain refuses with
+  `HEAD moved: ...` when the worktree HEAD differs and with `tree dirty` when
+  the tree has any change, before the first lane starts.
+- The environment is passed on untouched, except the names given with
+  `--unset-env NAME` (repeatable; for example `--unset-env RUN_GATE_TESTER_UNIFIED_IMAGE`
+  for an old chain that began with `unset RUN_GATE_TESTER_UNIFIED_IMAGE`). The
+  chain exports no image tag and no profiler socket; profiling is `gate-run.sh`'s
+  default (off unless the caller sets `RUN_GATE_PROFILE`), and the repository's
+  default tester image is used.
+- `gate-run.sh` REQUIRES `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK` (two
+  distinct absolute paths, normally set in `controller.local.env`): when one is
+  unset it exits 2 for every local lane, and because the chain never reads a
+  verdict it still ends with `CHAIN-DONE`, by design. Read the lane logs, and run
+  `ctl-doctor.sh`, which FAILs when either lock is unset, relative, equal to the
+  other or in an unwritable directory.
+- Tests inject stub launchers through `CONTROLLER_GATE_RUN_SCRIPT` and
+  `CONTROLLER_REMOTE_GATE_SCRIPT` (default: the siblings of `chain-run.sh`).
+
+### Migrating an old `chain-*.sh`
+
+An old wrapper maps onto the arguments like this: the worktree variable becomes
+`<worktree>`; the `cd` into a project directory becomes `<project-subdir>`; the
+file stem of the logs (`<prefix>-<lane>.log`) and of the marker
+(`<prefix>.chain`) becomes `<log-prefix>`; the `for` list of lanes becomes the
+lane arguments; a `HEAD_WANT` check plus the `status --short` check becomes
+`--head`; a `remote-gate.sh <host> <project> <lane> <sha>` call becomes
+`remote:<lane>` (host in `--remote-host`; a pass-through `-- --base <sha>`
+becomes `:--base=<sha>`). Drop every `export RUN_GATE_TESTER_UNIFIED_IMAGE=...`
+(that image tag no longer exists), `export CGPROFILE_CONTROL_SOCKET=...` and
+`RUN_GATE_PROFILE` line; an `unset NAME` line becomes `--unset-env NAME`.
+
+Log and marker names change for remote lanes, so monitors keyed on the old names
+must be updated: a remote lane's log `<prefix>-<lane>-<host>.out` (for example
+`assayburn-final3-tester-unified-<host>.out`) is now `<prefix>-remote-<lane>.log`
+(`assayburn-final3-remote-tester-unified.log`), and a separate `<prefix>-remote.chain`
+marker of an old remote chain is now `<prefix>.chain` (local lanes keep
+`<prefix>-<lane>.log`). The new name carries no host alias. Two real examples:
+
+```bash
+# local lanes with a head pin (old: three lanes from run-gate-project, HEAD_WANT + clean-tree check,
+# logs judgeprov-final5-<lane>.log, marker judgeprov-final5.chain)
+scripts/controller/chain-run.sh --head b3c431a04e4c1fb29f39018dcb2756868d751cc6 \
+  .worktrees/pi-rg-judge-provider-20261116 run-gate-project judgeprov-final5 selftest assay-r1 assay-r3
+
+# remote lanes (old: remote-gate.sh <host> assay <lane> 204ed6147 in a for loop, logs
+# assayburn-final3-<lane>-<host>.out, marker assayburn-final3-remote.chain); new logs are
+# assayburn-final3-remote-<lane>.log and the marker assayburn-final3.chain. The worktree
+# must be at that commit, --head proves it
+scripts/controller/chain-run.sh --head 204ed6147 --remote-host <host-alias> \
+  .worktrees/pi-assay-burn-20261116 assay assayburn-final3 remote:tester-unified remote:self-qualification-provisional
+```
 
 ## Build a bounded session read-back
 

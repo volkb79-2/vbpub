@@ -1078,3 +1078,190 @@ queue_with_lib_variant(
     'isinstance(x, str) and x.count("|") == 1 and "\\n" not in x and "\\r" not in x\n        and all(part.strip() for part in x.split("|", 1))',
     'isinstance(x, str) and "|" in x',
 )
+mutant("scripts/controller/gate-run.sh", "gate-run-profile-default.sh",
+       'export RUN_GATE_PROFILE=${RUN_GATE_PROFILE:-off}', 'export RUN_GATE_PROFILE=${RUN_GATE_PROFILE:-on}')
+mutant("scripts/controller/gate-run.sh", "gate-run-profile-override.sh",
+       'export RUN_GATE_PROFILE=${RUN_GATE_PROFILE:-off}', 'export RUN_GATE_PROFILE=off')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-identity.sh",
+       'api_check >/dev/null 2>&1 || die "provider identity', 'true || die "provider identity')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-allow-list.sh",
+       '  *" $host "*) ;;', '  *) ;;')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-project-dir-guard.sh",
+       '[[ $pdir != /* && $pdir != *..* ]] ||', 'true ||')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-slot-roundup.sh",
+       'need=$(( (weight + unit - 1) / unit ));', 'need=$(( weight / unit ));')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-weight-min.sh",
+       '    w = min(cands)', '    w = max(cands)')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-oom-delta.sh",
+       '(( oomd > 0 ))', '(( oomd > 5 ))')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-commit-binding.sh",
+       'if [[ ${checked:-0} -ge 1 ]]; then', 'if false; then')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-slot-descriptors.sh",
+       '( close_slots; cd "$wt" &&', '( cd "$wt" &&')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-base-forward.sh",
+       '[[ -z $base ]] || run_args+=(--base "$base")', ': # base dropped')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-api-override.sh",
+       'if [[ -n ${CONTROLLER_REMOTE_API_CHECK:-} ]]; then', 'if false; then')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-runner-ref.sh",
+       '    die "cannot read scripts/netcup/runner/remote-gate.py from $runner_ref" 3', '    : # unreadable runner ignored')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-base-passthrough.sh",
+       '    --base|--base=*)', '    --base-never|--base-never=*)')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-base-twice.sh",
+       "      [[ -z $base ]] || die '--base given twice (option and pass-through)'", '      : # a second base is accepted')
+for _name, _before, _after in (
+    ("old-env-silent", '[[ -z ${!old_name:-} ]] || echo', 'true || echo'),
+    ("old-env-one-dropped", " REMOTE_GATE_DRYRUN:CONTROLLER_REMOTE_DRYRUN \\\n", " \\\n"),
+    ("weights-unreadable-silent", "except FileNotFoundError:\n    pass", "except OSError:\n    pass"),
+    ("weights-missing-warns", "except FileNotFoundError:\n    pass", "except KeyError:\n    pass"),
+    ("repo-name-default", '"${CONTROLLER_REMOTE_REPO_NAME:-vbpub}"', '"${CONTROLLER_REMOTE_REPO_NAME:-}"'),
+    ("snapshot-fixed-name", 'rg_tmp=$(mktemp "$rg.XXXXXX") || die "cannot create a temporary runner snapshot beside $rg" 3', 'rg_tmp=$rg.new'),
+    ("snapshot-leftover", '    rm -f -- "$rg_tmp"\n    die "cannot read scripts', '    die "cannot read scripts'),
+):
+    mutant("scripts/controller/remote-gate.sh", f"remote-gate-{_name}.sh", _before, _after)
+# chain-run.sh: the generic chain wrapper that replaces the per-package chain-*.sh files.
+chain_gate_run = 'gate_run=${CONTROLLER_GATE_RUN_SCRIPT:-$SCRIPT_DIR/gate-run.sh}'
+mutant("scripts/controller/chain-run.sh", "chain-run-log-name.sh",
+       'log=$CONTROLLER_LOGS_DIR/$prefix-$lane.log', 'log=$CONTROLLER_LOGS_DIR/$lane.log')
+mutant("scripts/controller/chain-run.sh", "chain-run-remote-log-name.sh",
+       'log=$CONTROLLER_LOGS_DIR/$prefix-remote-$lane.log', 'log=$CONTROLLER_LOGS_DIR/$prefix-$lane.log')
+mutant("scripts/controller/chain-run.sh", "chain-run-marker-text.sh",
+       'write_marker CHAIN-DONE', 'write_marker DONE')
+mutant("scripts/controller/chain-run.sh", "chain-run-stale-marker.sh",
+       'rm -f -- "$marker"', ': # stale marker kept')
+mutant("scripts/controller/chain-run.sh", "chain-run-head-pin.sh",
+       '[[ -n $want && $want == "$head" ]] ||', 'true ||')
+mutant("scripts/controller/chain-run.sh", "chain-run-dirty-tree.sh",
+       "[[ -z $dirty ]] ||", "true ||")
+mutant("scripts/controller/chain-run.sh", "chain-run-stop-on-fail.sh",
+       'if (( lane_rc != 0 && stop_on_fail )); then', 'if false; then')
+mutant("scripts/controller/chain-run.sh", "chain-run-stop-without-flag.sh",
+       'if (( lane_rc != 0 && stop_on_fail )); then', 'if (( lane_rc != 0 )); then')
+mutant("scripts/controller/chain-run.sh", "chain-run-remote-base.sh",
+       '[[ -z $base ]] || cmd+=(--base "$base")', ': # base dropped')
+mutant("scripts/controller/chain-run.sh", "chain-run-remote-commit.sh",
+       '"$subdir" "$lane" "$head")', '"$subdir" "$lane" HEAD)')
+mutant("scripts/controller/chain-run.sh", "chain-run-remote-head-lookup.sh",
+       'if [[ -n $head_pin ]] || (( want_remote )); then', 'if [[ -n $head_pin ]]; then')
+mutant("scripts/controller/chain-run.sh", "chain-run-remote-host-ambiguity.sh",
+       '(( ${#allowed[@]} == 1 )) ||', 'true ||')
+mutant("scripts/controller/chain-run.sh", "chain-run-launcher-check.sh",
+       '(( ! want_local )) || [[ -x $gate_run ]] || refuse', 'true || refuse')
+mutant("scripts/controller/chain-run.sh", "chain-run-subdir-guard.sh",
+       '[[ $subdir != /* && $subdir != *..* ]] ||', 'true ||')
+mutant("scripts/controller/chain-run.sh", "chain-run-lane-name-guard.sh",
+       '[[ $spec =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || refuse', 'true || refuse')
+mutant("scripts/controller/chain-run.sh", "chain-run-lane-cwd.sh",
+       '(cd -- "$worktree/$subdir" && "$gate_run" "$lane")', '(cd -- "$worktree" && "$gate_run" "$lane")')
+mutant("scripts/controller/chain-run.sh", "chain-run-default-launcher.sh",
+       chain_gate_run, 'gate_run=${CONTROLLER_GATE_RUN_SCRIPT:-$SCRIPT_DIR/gate-run-missing.sh}')
+mutant("scripts/controller/chain-run.sh", "chain-run-export-image.sh",
+       chain_gate_run, 'export RUN_GATE_TESTER_UNIFIED_IMAGE=pinned-tag\n' + chain_gate_run)
+mutant("scripts/controller/chain-run.sh", "chain-run-export-socket.sh",
+       chain_gate_run, 'export CGPROFILE_CONTROL_SOCKET=/run/profiler.sock\n' + chain_gate_run)
+mutant("scripts/controller/chain-run.sh", "chain-run-profile-default.sh",
+       chain_gate_run, 'export RUN_GATE_PROFILE=off\n' + chain_gate_run)
+mutant("scripts/controller/chain-run.sh", "chain-run-unset-env.sh",
+       'for name in ${unset_names[@]+"${unset_names[@]}"}; do unset "$name"; done', ':')
+mutant("scripts/controller/chain-run.sh", "chain-run-unset-env-name.sh",
+       '--unset-env) [[ $# -ge 2 && $2 =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || usage;', '--unset-env) [[ $# -ge 2 ]] || usage;')
+
+
+# ctl-doctor.sh: one hand mutant per check; the lib.sh read-only/configured-path mutants ship beside their own doctor copy.
+def doctor_with_lib_mutant(name: str, before: str, after: str) -> Path:
+    variant = controller / name
+    variant.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(repo / "scripts/controller/ctl-doctor.sh", variant / "ctl-doctor.sh")
+    mutant("scripts/controller/lib.sh", "lib.sh", before, after, variant)
+    return variant / "ctl-doctor.sh"
+
+
+for _name, _before, _after in (
+    ("tool-flock-severity", "tool_check flock FAIL util-linux", "tool_check flock WARN util-linux"),
+    ("tool-docker-severity", "tool_check docker WARN 'a docker CLI'", "tool_check docker FAIL 'a docker CLI'"),
+    ("home-missing", "if [[ ! -d $home_in ]]; then", "if false; then"),
+    ("env-missing", "if [[ ! -f $env_file ]]; then", "if false; then"),
+    ("env-syntax", 'if ! bash -n "$env_file" 2>/dev/null; then', "if false; then"),
+    ("env-stray", "if [[ -n $stray ]]; then", "if false; then"),
+    ("hosts-missing", "if [[ ! -f $file ]]; then", "if false; then"),
+    ("hosts-ssh-shape", "if not strings(row.get(key)):", "if False:"),
+    ("hosts-guard", 'if not isinstance(row.get("guard"), str) or not row["guard"].strip():', "if False:"),
+    ("hosts-lanes-shape", 'or not all(isinstance(x, str) and x.count("|") == 1 and', "or not all(isinstance(x, str) and"),
+    ("hosts-lanes-warn", "if lanes is None:", "if False:"),
+    ("hosts-api-exec", "if not full or not os.path.isfile(full) or not os.access(full, os.X_OK):", "if False:"),
+    ("hosts-key-missing", 'if not os.path.isfile(full):\n                out("FAIL", f"{where}:key"', 'if False:\n                out("FAIL", f"{where}:key"'),
+    ("hosts-key-mode", "elif os.stat(full).st_mode & 0o077:", "elif False:"),
+    ("hosts-pin", "elif not os.path.isfile(full):\n                out(\"FAIL\", f\"{where}:pin\"", "elif False:\n                out(\"FAIL\", f\"{where}:pin\""),
+    ("hosts-pin-devnull", "if os.path.normpath(full) == os.devnull:", "if False:"),
+    ("hosts-pin-devnull-ok", "                bad = True   # no OK line: the pin is not in place\n", ""),
+    ("hosts-strict", "if not strict:", "if False:"),
+    ("hosts-nopin", "if not pins:", "if False:"),
+    ("hosts-leak", '"ssh does not set StrictHostKeyChecking=yes"', 'f"ssh does not set StrictHostKeyChecking=yes {argv}"'),
+    ("allow-unknown", "if name not in hosts:", "if False:"),
+    ("allow-unset", "if not names:", "if False:"),
+    ("remote-file-split", 'if [[ $remote_file == "$hosts_file" ]]; then', "if true; then"),
+    ("image-absent", "elif [[ $inspect_err == *'No such image'* ]]; then", "elif false; then"),
+    ("image-exact-name", """docker image inspect --format '{{.Id}}' "$image" 2>&1""", """docker image inspect --format '{{.Id}}' "${image%%:*}" 2>&1"""),
+    ("image-unreachable", 'record WARN image "docker is unreachable', 'record FAIL image "docker is unreachable'),
+    ("image-no-docker", "elif ! command -v docker >/dev/null 2>&1; then", "elif false; then"),
+    ("image-toml", "if [[ -z $image ]]; then", "if false; then"),
+    ("pinned-warn", "if [[ -n $pinned_files ]]; then", "if false; then"),
+    ("pinned-logs", "--exclude-dir=logs ", ""),
+    ("pinned-scan", '[[ ${#scan_dirs[@]} -eq 0 ]] || scan_roots+=("${scan_dirs[@]}")', ":"),
+    ("pinned-home", 'scan_roots=("$CONTROLLER_HOME")', "scan_roots=()"),
+    ("profile-default", "${RUN_GATE_PROFILE:-off} (gate-run.sh", "${RUN_GATE_PROFILE:-on} (gate-run.sh"),
+    ("gate-lock-unset", "path=${!1:-} parent\n  if [[ -z $path ]]; then", "path=${!1:-} parent\n  if false; then"),
+    ("gate-lock-absolute", "elif [[ $path != /* ]]; then", "elif false; then"),
+    ("gate-lock-parent", "if [[ -d $parent && -w $parent ]]; then record OK", "if true; then record OK"),
+    ("gate-lock-distinct", 'if [[ -n ${CONTROLLER_GATE_LOCK:-} && ${CONTROLLER_GATE_LOCK:-} == "${CONTROLLER_GATE2_LOCK:-}" ]]; then', "if false; then"),
+    ("dir-missing", "if [[ ! -d $2 ]]; then", "if false; then"),
+    ("dir-writable", "elif [[ ! -w $2 ]]; then", "elif false; then"),
+    ("symlink-detect", "[[ -L $p ]] && return 0", "false && return 0"),
+    ("residency-ignore", 'git -C "$top" check-ignore -q -- "$real" 2>/dev/null && ignored=1', "ignored=1"),
+    ("residency-outside", "if [[ -z $top ]]; then", "if true; then"),
+    ("residency-runs", 'if [[ $CONTROLLER_RUNS_DIR != "$CONTROLLER_HOME"/* ]]; then', "if false; then"),
+    ("json", "if (( json )); then", "if false; then"),
+    ("exit-code", "(( fails == 0 )) || exit 1", ":"),
+    ("usage-exit", """unknown argument '$1'" >&2; echo 'usage: ctl-doctor.sh [--json] [--scan <dir>]...' >&2; exit 2 ;;""",
+     """unknown argument '$1'" >&2; echo 'usage: ctl-doctor.sh [--json] [--scan <dir>]...' >&2; exit 0 ;;"""),
+):
+    mutant("scripts/controller/ctl-doctor.sh", f"ctl-doctor-{_name}.sh", _before, _after)
+doctor_with_lib_mutant("doctor-lib-readonly-mkdir",
+                       '  [[ -n ${CONTROLLER_INIT_READONLY:-} ]] || mkdir -p -- "$CONTROLLER_LOGS_DIR"',
+                       '  mkdir -p -- "$CONTROLLER_LOGS_DIR"')
+doctor_with_lib_mutant("doctor-lib-readonly-resolve",
+                       "if [[ -n ${CONTROLLER_INIT_READONLY:-} && ! -d $target ]]; then return 0; fi",
+                       "if false; then return 0; fi")
+doctor_with_lib_mutant("doctor-lib-configured-home",
+                       "  CONTROLLER_HOME_CONFIGURED=$CONTROLLER_HOME\n  controller_init_resolve CONTROLLER_HOME\n",
+                       "  controller_init_resolve CONTROLLER_HOME\n  CONTROLLER_HOME_CONFIGURED=$CONTROLLER_HOME\n")
+doctor_with_lib_mutant("doctor-lib-configured-runs",
+                       "  CONTROLLER_RUNS_DIR_CONFIGURED=$CONTROLLER_RUNS_DIR\n",
+                       "  CONTROLLER_RUNS_DIR_CONFIGURED=\n")
+
+# ctl-state-backup.sh: one hand mutant per guard and per selection rule.
+for _name, _before, _after in (
+    ("cap", "(( size > cap && ! include_large ))", "(( size > cap && include_large ))"),
+    ("jsonl", " ! -name '*.jsonl'", ""),
+    ("git-dir", " ! -path '*/.git/*'", ""),
+    ("work-tree", 'if git -C "$anchor" rev-parse --is-inside-work-tree', "if false && git -C \"$anchor\" rev-parse --is-inside-work-tree"),
+    ("unset", "[[ -n $backup_dir ]] || die", "true || die"),
+    ("relative", "[[ $backup_dir == /* ]] || die", "true || die"),
+    ("list-only", "if (( list_only )); then", "if false; then"),
+    ("mode", 'chmod 600 -- "$tmp"', 'chmod 644 -- "$tmp"'),
+    ("follow-links", "tar -${mode}f", "tar -${mode}hf"),
+    ("sidecar", "printf '%s  %s\\n' \"$sum\"", "printf '%s  %s\\n' \"0$sum\""),
+    ("verify-compare", '[[ $(cut -d\' \' -f1 "$verify.sha256") == "$actual" ]] || die', "true || die"),
+    ("runs-state", " -o -name '*.state.md'", ""),
+    ("remote-summaries", "-o -name meta.json \\)", "-o -name '*' \\)"),
+    ("empty", "(( ${#files[@]} > 0 )) || die", ": || die"),
+    ("overwrite", "while [[ -e $final ]]; do", "while false; do"),
+    ("link-targets", '"flags=rh;s,^\\./,,;s,^,$label/,"', '"s,^\\./,,;s,^,$label/,"'),
+    ("chmod-existing", "(( ! created_dir )) || chmod 700", "(( created_dir )) || chmod 700"),
+    ("chmod-never", "(( ! created_dir )) || chmod 700", ": || chmod 700"),
+    ("verify-empty", "(( count > 0 )) || die", ": || die"),
+    ("verify-no-sidecar", '[[ -f $verify.sha256 ]] || die', ': || die'),
+    ("linked-detect", 'if [[ -n $git_dir && $git_dir != "$common_dir" ]]; then', 'if [[ -n $git_dir && $git_dir == "$common_dir" ]]; then'),
+    ("linked-members", '[[ -e $repo_root/$member ]] || absent+=" $member"', 'absent+=" $member"'),
+    ("hardlink-targets",'"flags=rh;s,^\\./,,;s,^,$label/,"', '"flags=r;s,^\\./,,;s,^,$label/,"'),
+):
+    mutant("scripts/controller/ctl-state-backup.sh", f"ctl-state-backup-{_name}.sh", _before, _after)

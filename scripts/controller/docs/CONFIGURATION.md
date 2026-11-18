@@ -7,7 +7,11 @@ controller scripts derive runtime files from `CONTROLLER_HOME`, defaulting to
 
 ## `controller.local.env`
 
-This is shell syntax, loaded by `scripts/controller/lib.sh`. Set the selected
+This is shell syntax, SOURCED by `scripts/controller/lib.sh` in every controller
+tool (so also by `ctl-doctor.sh`): it must contain plain `NAME=value` assignment
+lines only. `ctl-doctor.sh` flags any other line, but it cannot make a value
+inert: an assignment such as `A=$(cmd)` still runs when the file is sourced.
+Set the selected
 Codex profile directories, shared Codex session database, controller checkout,
 OpenCode command if needed, chosen CMRU engine venv, and provider token-file
 location here. Store secret values in the provider's supported credential
@@ -46,7 +50,19 @@ Useful settings:
 | `OPENCODE_PROVIDER` | Provider id used with the default DeepSeek model; defaults to `opendesign_github2`. |
 | `OPENCODE_MODEL` | Full OpenCode provider/model identifier; overrides `OPENCODE_PROVIDER`. |
 | `NETCUP_TOKEN_FILE` | Local provider token-file location for the configured `api_check` command. |
-| `REMOTE_GATE_HOSTS` | Host table used by `remote-gate.py`; defaults to `hosts.local.json`. |
+| `REMOTE_GATE_HOSTS` | Host table used by `remote-gate.py` when it is run directly; defaults to `hosts.local.json`. `remote-gate.sh` passes its own host table explicitly. |
+| `CONTROLLER_REMOTE_GATE_HOSTS` | Required by `remote-gate.sh`: space-separated aliases that may receive a gate. The host table also names acceptance hosts, so the allow-list is local policy, never inferred from the table. |
+| `CONTROLLER_REMOTE_HOSTS_FILE` | Host table for `remote-gate.sh`; defaults to `CONTROLLER_HOSTS_FILE`. A relative path resolves under `CONTROLLER_HOME`. |
+| `CONTROLLER_REMOTE_API_CHECK` | Optional executable run as `<command> <alias>` instead of the host table's `api_check`; exit 0 means the provider-side identity matches. |
+| `CONTROLLER_REMOTE_PYTHON` | Interpreter for the weight calculation and `remote-gate.py`; needs `tomllib` (Python 3.11+). Defaults to `python3`. |
+| `CONTROLLER_REMOTE_GATE_PY`, `CONTROLLER_REMOTE_GATE_PY_REF` | Explicit `remote-gate.py` path, or the git ref (default `origin/main`) its `scripts/netcup/runner/remote-gate.py` is snapshotted from into `$CONTROLLER_HOME/tools/`. The runner never comes from the commit under test. |
+| `CONTROLLER_REMOTE_SLOTS`, `CONTROLLER_REMOTE_BUDGET_MB` | Slot model: `slots` flock slots (1..8, default 4) of `budget / slots` MiB each (default budget 5120, the gate slice's MemoryHigh). Keep one value for every caller of one host. Stop using the old program-dir tool before using this one; the controller replaces the old script with a shim. |
+| `CONTROLLER_REMOTE_WEIGHTS_FILE` | Measured-peak table (default `$CONTROLLER_HOME/remote-gate-weights.tsv`, sample `remote-gate-weights.tsv.example`). |
+| `CONTROLLER_REMOTE_WEIGHT_MB`, `CONTROLLER_REMOTE_SLOT_WAIT_S`, `CONTROLLER_REMOTE_WAIT_PSI`, `CONTROLLER_REMOTE_REPO_NAME`, `CONTROLLER_REMOTE_OUT` | Forced lane weight in MiB; seconds to wait for slots (default 7200, then exit 75); seconds the host job may wait for PSI (default 120); repository name on the host (default `vbpub`, this repository; never derived from the checkout directory name); result directory (default `$CONTROLLER_HOME/remote-gates`). |
+| `CONTROLLER_REMOTE_DRYRUN`, `CONTROLLER_REMOTE_DRY_HOLD` | Non-empty `CONTROLLER_REMOTE_DRYRUN` stops after slot admission (nothing is sent to the host); `CONTROLLER_REMOTE_DRY_HOLD` seconds to keep the slots, for a contention check. |
+| `CONTROLLER_GATE_RUN_SCRIPT`, `CONTROLLER_REMOTE_GATE_SCRIPT` | Test injection for `chain-run.sh`: the launcher used for plain lanes and for `remote:<lane>` lanes. Default: `gate-run.sh` / `remote-gate.sh` next to `chain-run.sh`. A chain's logs and marker go to `CONTROLLER_LOGS_DIR`. |
+| `CONTROLLER_BACKUP_DIR` | Required by `ctl-state-backup.sh`: absolute directory for the state archives; must lie outside every git work tree. Keep it on a different volume than the state. |
+| `CONTROLLER_INIT_READONLY` | Set to `1` by `ctl-doctor.sh` only: `controller_init` then creates no directory and keeps the spelling of one that does not exist. `CONTROLLER_HOME_CONFIGURED`, `CONTROLLER_LOGS_DIR_CONFIGURED`, `CONTROLLER_RUNS_DIR_CONFIGURED` are exported by `controller_init` and hold the paths before symlinks are resolved (read by the doctor; never set them). |
 | `CTX_STATE_DIR` | Optional controller state directory for `hooks/ctx-hooks.py`; defaults to the hook input's own `cwd/.controller-state`. |
 | `CTX_EXTRACT_CMD` | The extract command `hooks/ctx-hooks.py` runs; defaults to `nyxloom-harness` on `PATH`. |
 | `CTX_READBACK_BUDGET_TOKENS` | Readback budget for a controller session; defaults to `30000` (a spawned session's controller passes a smaller flag or this variable). |
@@ -86,6 +102,16 @@ Example shape (replace every placeholder locally):
   }
 }
 ```
+
+A host that runs gates through `remote-gate.py` may also carry `runner_home`
+(the runner account's home on the host), `cockpit` (the cockpit container name),
+`image` (the default tester image) and `repos.<name>` (per-repository overrides
+such as `run_gate_min`, `run_gate_bins`, `tester_image`); all four are optional
+and validated by `remote-gate.py`, never by the shell kit. Keep one table:
+`remote-gate.sh`, `hx.sh` and the queue read the same file. A sanitized walk-through
+of the identity-checked access flow (pin file, strict checking, on-host asserts) with
+two sample aliases is in [`runbooks/host-access-template.md`](runbooks/host-access-template.md);
+`ctl-doctor.sh` checks the table, key modes and pin files.
 
 `api_check` must perform the provider-side identity check before remote work.
 Use an absolute command path so it works from the controller home and from a
