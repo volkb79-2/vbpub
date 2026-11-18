@@ -169,6 +169,10 @@ class WireFixtures(unittest.TestCase):
         hostobs_wire_ref.decode_dictionary(body)
         with self.assertRaises(hostobs_wire_ref.WireError) as caught:
             hostobs_wire_ref.decode_dictionary(body[:-1])
+        # The missing pad byte is a short read, exactly as in the Rust cursor.
+        self.assertEqual(caught.exception.refusal, "truncated")
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_dictionary(body + b"\x00" * 8)
         self.assertEqual(caught.exception.refusal, "trailing-bytes")
         with self.assertRaises(hostobs_wire_ref.WireError):
             hostobs_wire_ref.encode_dictionary(
@@ -350,7 +354,7 @@ class WireFixtures(unittest.TestCase):
             wire.decode_frame(header(wire.FRAME_HEADER_LEN))
         self.assertEqual(
             caught.exception.as_dict(),
-            {"kind": "truncated", "context": "block directory", "need": wire.FRAME_HEADER_LEN + 4, "have": wire.FRAME_HEADER_LEN},
+            {"kind": "truncated", "context": "block directory", "need": 2, "have": 0},
         )
         # Exactly the upper bound passes the length check and only then meets the buffer.
         with self.assertRaises(wire.WireError) as caught:

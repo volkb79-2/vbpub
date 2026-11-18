@@ -30,7 +30,7 @@ use hostobs_proto::dict::{
 use hostobs_proto::error::ProtoError;
 use hostobs_proto::frame::{
     decode_block, decode_block_with, encode_block, Block, BlockHeaderFacts, Column, FrameType, Row,
-    TimeBucket, TypedValue,
+    SectionKind, TimeBucket, TypedValue,
 };
 use hostobs_proto::quality::{Quality, ALL as ALL_QUALITIES};
 use json::Json;
@@ -407,6 +407,39 @@ fn refusal_of(error: &ProtoError) -> BTreeMap<&'static str, String> {
         }
         ProtoError::SubjectWithoutTime { subject } => {
             map.insert("subject", subject.to_string());
+        }
+        ProtoError::DuplicateSection { kind } => {
+            map.insert("kind_code", kind.to_string());
+        }
+        ProtoError::ConflictingColumn { metric } => {
+            map.insert("metric", metric.to_string());
+        }
+        ProtoError::MissingSection { kind } => {
+            // The Python reference names the missing section; only the header can be missing.
+            if *kind == SectionKind::Header.code() {
+                map.insert("section", "header".to_string());
+            }
+        }
+        ProtoError::SectionReserved(value) => {
+            map.insert("value", value.to_string());
+        }
+        ProtoError::UnknownSectionFlags { kind, flags } => {
+            map.insert("kind_code", kind.to_string());
+            map.insert("flags", flags.to_string());
+        }
+        ProtoError::UnknownFrameType(code) | ProtoError::UnknownAggregation(code) => {
+            map.insert("code", code.to_string());
+        }
+        ProtoError::DictionaryTooLarge { count, max } => {
+            map.insert("count", count.to_string());
+            map.insert("max", max.to_string());
+        }
+        ProtoError::DictionaryEntryControl { index, offset } => {
+            map.insert("index", index.to_string());
+            map.insert("offset", offset.to_string());
+        }
+        ProtoError::DictionaryEntryNotUtf8 { index } => {
+            map.insert("index", index.to_string());
         }
         _ => {}
     }

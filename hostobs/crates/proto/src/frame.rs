@@ -74,6 +74,8 @@
 //! frames only, and every history bucket's aggregation inside every column's metric mask
 //! (`aggregation-not-permitted`). The order in which they are judged is WIRE.md §3.10.
 
+use std::collections::HashSet;
+
 use crate::dict::{Aggregation, Dictionary, Entry, MetricKind, MetricValueType};
 use crate::error::{ProtoError, MAX_FRAME_BYTES};
 use crate::quality::Quality;
@@ -939,8 +941,9 @@ fn check_canonical_order(sections: &[Section]) -> Result<(), ProtoError> {
 /// [`ProtoError::NotABlock`] when `block.frame_type` is not [`FrameType::Block`],
 /// [`ProtoError::SectionOrder`], [`ProtoError::OversizedFrame`],
 /// [`ProtoError::RowsAndTime`], [`ProtoError::DuplicateSection`],
-/// [`ProtoError::SectionLength`] (a column whose row count differs from `header.n_rows`)
-/// and every dictionary-encoding refusal.
+/// [`ProtoError::SectionLength`] (a column whose row count differs from `header.n_rows`),
+/// [`ProtoError::SubjectWithoutTime`], [`ProtoError::AggregationNotPermitted`] (a bucket
+/// whose aggregation a column's kind does not permit) and every dictionary-encoding refusal.
 pub fn encode_block(block: &Block) -> Result<Vec<u8>, ProtoError> {
     // §B.1 gives each frame type one payload shape. A `REQ`/`REP`/`EVT` carries a small
     // JSON control object and a `DICT` a dictionary, so a block section list under any
@@ -982,6 +985,20 @@ pub fn encode_block(block: &Block) -> Result<Vec<u8>, ProtoError> {
     if let Some(subject) = block.subject {
         if block.time.is_empty() {
             return Err(ProtoError::SubjectWithoutTime { subject });
+        }
+    }
+    // The encoder refuses what the decoder refuses (§B.5): a bucket whose aggregation a column's
+    // kind does not permit. The mask follows the column's own kind, so no dictionary is needed.
+    // A subject that does not name an entity cannot be checked here: the block may carry no
+    // dictionary, and the decoder judges it against the dictionary that is in force.
+    for bucket in &block.time {
+        for column in &block.columns {
+            if column.kind.aggregation_mask() & bucket.agg.bit() == 0 {
+                return Err(ProtoError::AggregationNotPermitted {
+                    metric: column.metric,
+                    agg: bucket.agg as u8,
+                });
+            }
         }
     }
     let mut sections = Vec::new();
@@ -1132,9 +1149,10 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
 ///
 /// With an in-frame dictionary the checks are those of [`decode_block`] and `held` is not
 /// consulted. Without one and with `held` given, the header's `dict_gen` must equal the held
-/// generation (`stale-dictionary-generation`) and every reference, column kind and bucket
-/// aggregation is checked against it. Without one and with `held` of `None` no reference
-/// check is possible and none is made.
+/// generation (`stale-dictionary-generation`) and every reference and column kind is checked
+/// against it. Without one and with `held` of `None` no generation or reference check is
+/// possible and none is made (the stream layer owns that judgement, HOB-54). Every bucket's
+/// aggregation is checked against its column's own kind in all three cases.
 ///
 /// # Errors
 ///
@@ -1297,6 +1315,15 @@ pub fn decode_block_with(bytes: &[u8], held: Option<&Dictionary>) -> Result<Bloc
                         supported: section.version(),
                     });
                 }
+                // The header and the subject are required sections: their directory entry
+                // carries the required flag (WIRE.md §3.1, §3.8), and a clear flag is refused
+                // as a flags defect of that section.
+                if section.is_required() && *flags & 1 == 0 {
+                    return Err(ProtoError::UnknownSectionFlags {
+                        kind: section.code(),
+                        flags: u32::from(*flags),
+                    });
+                }
                 if section == SectionKind::Header && header_facts.is_none() {
                     // The body index matches the directory order.
                     let index = directory
@@ -1320,6 +1347,7 @@ pub fn decode_block_with(bytes: &[u8], held: Option<&Dictionary>) -> Result<Bloc
     let mut rows: Vec<Row> = Vec::new();
     let mut time: Vec<TimeBucket> = Vec::new();
     let mut columns: Vec<Column> = Vec::new();
+    let mut seen_metrics: HashSet<u32> = HashSet::new();
     let mut dictionary: Option<Dictionary> = None;
     let mut subject: Option<u32> = None;
     let mut seen_single: Vec<UnknownSectionKind> = Vec::new();
@@ -1350,10 +1378,7 @@ pub fn decode_block_with(bytes: &[u8], held: Option<&Dictionary>) -> Result<Bloc
             }
             SectionKind::Column => {
                 let column = decode_column_body(body, n_rows)?;
-                if columns
-                    .iter()
-                    .any(|existing| existing.metric == column.metric)
-                {
+                if !seen_metrics.insert(column.metric) {
                     return Err(ProtoError::ConflictingColumn {
                         metric: column.metric,
                     });
@@ -1427,17 +1452,18 @@ pub fn decode_block_with(bytes: &[u8], held: Option<&Dictionary>) -> Result<Bloc
                 }
             }
         }
-        // Every bucket's aggregation must be permitted by every column's mask (HOB-47). The
-        // loop above made each column's kind equal its dictionary metric's kind, so the
-        // column's own kind names the mask.
-        for bucket in &time {
-            for column in &columns {
-                if column.kind.aggregation_mask() & bucket.agg.bit() == 0 {
-                    return Err(ProtoError::AggregationNotPermitted {
-                        metric: column.metric,
-                        agg: bucket.agg as u8,
-                    });
-                }
+    }
+    // Every bucket's aggregation must be permitted by every column's mask (HOB-47). The mask is
+    // the column's own kind's: with a dictionary the loop above has just proven that kind equal
+    // to the metric's, and without one the column kind is all there is, so the check also runs
+    // for a bare block with nothing held.
+    for bucket in &time {
+        for column in &columns {
+            if column.kind.aggregation_mask() & bucket.agg.bit() == 0 {
+                return Err(ProtoError::AggregationNotPermitted {
+                    metric: column.metric,
+                    agg: bucket.agg as u8,
+                });
             }
         }
     }
@@ -1795,7 +1821,7 @@ mod tests {
                 real_ns: 0,
                 covered_ms: 0,
                 samples: 0,
-                agg: Aggregation::Raw,
+                agg: Aggregation::Last,
             },
             TimeBucket {
                 real_ns: 1,
@@ -3446,21 +3472,67 @@ mod tests {
         assert_eq!(decode_held(&bytes, &unrelated), Ok(live_block()));
     }
 
+    /// The bytes of a history block built section by section, so that a bucket the encoder
+    /// refuses (`aggregation-not-permitted`) can still reach the decoder.
+    fn history_bytes(block: &Block) -> Vec<u8> {
+        let header = super::encode_header_body(&block.header);
+        let mut sections = vec![Section::new(SectionKind::Header, header)];
+        if let Some(table) = &block.dictionary {
+            let body = table.encode().expect("dict");
+            sections.push(Section::new(SectionKind::Dictionary, body));
+        }
+        let time = super::encode_time_body(&block.time).expect("time");
+        sections.push(Section::new(SectionKind::Time, time));
+        for column in &block.columns {
+            let body = super::encode_column_body(column).expect("column");
+            sections.push(Section::new(SectionKind::Column, body));
+        }
+        encode_frame(FrameType::Block, block.corr, &sections).expect("encode")
+    }
+
     #[test]
-    fn a_bare_history_block_has_its_aggregations_judged_against_the_held_dictionary() {
+    fn a_bare_history_block_has_its_aggregations_judged_with_or_without_a_held_dictionary() {
         let gauge = column_of(3, MetricKind::Gauge, 1);
         let mut bare = history_block(&[Aggregation::Raw], vec![gauge]);
         bare.dictionary = None;
-        let bytes = encode_block(&bare).expect("encode");
+        let bytes = history_bytes(&bare);
         let held = dictionary();
+        let refused = Err(ProtoError::AggregationNotPermitted { metric: 3, agg: 0 });
+        assert_eq!(decode_held(&bytes, &held), refused);
+        // With nothing held the mask is still the column's own kind's (WIRE.md 3.10).
+        assert_eq!(super::decode_block_with(&bytes, None), refused);
+        assert_eq!(decode_block(&bytes), refused);
+    }
+
+    #[test]
+    fn the_encoder_refuses_an_aggregation_a_column_does_not_permit() {
+        // Gauge and `raw`, counter and `mean`, state and `delta`: each is refused by the
+        // encoder without any dictionary, naming the column's metric and the bucket's code.
+        let cases = [
+            (3, MetricKind::Gauge, Aggregation::Raw, 0),
+            (2, MetricKind::Counter, Aggregation::Mean, 3),
+            (4, MetricKind::State, Aggregation::Delta, 2),
+        ];
+        for (metric, kind, agg, code) in cases {
+            let column = column_of(metric, kind, 1);
+            let mut block = history_block(&[agg], vec![column]);
+            block.dictionary = None;
+            assert_eq!(
+                encode_block(&block),
+                Err(ProtoError::AggregationNotPermitted { metric, agg: code }),
+                "{kind:?} does not permit {agg:?}"
+            );
+        }
+        // A permitted aggregation encodes, and the second column is judged too.
+        let counter = column_of(2, MetricKind::Counter, 1);
+        let gauge = column_of(3, MetricKind::Gauge, 1);
+        let both = history_block(&[Aggregation::Delta], vec![counter, gauge]);
         assert_eq!(
-            decode_held(&bytes, &held),
-            Err(ProtoError::AggregationNotPermitted { metric: 3, agg: 0 })
+            encode_block(&both),
+            Err(ProtoError::AggregationNotPermitted { metric: 3, agg: 2 })
         );
-        assert!(
-            super::decode_block_with(&bytes, None).is_ok(),
-            "without a held dictionary nothing can be judged"
-        );
+        let last = history_block(&[Aggregation::Last], both.columns.clone());
+        assert!(encode_block(&last).is_ok(), "last suits every kind");
     }
 
     #[test]
@@ -3490,7 +3562,7 @@ mod tests {
                 let agg = Aggregation::from_code(code).expect("a defined aggregation");
                 let mut block = history_block(&[agg], vec![column_of(metric, kind, 1)]);
                 block.dictionary = Some(table.clone());
-                let decoded = decode_block(&encode_block(&block).expect("encode"));
+                let decoded = decode_block(&history_bytes(&block));
                 if (mask >> code) & 1 == 1 {
                     assert_eq!(decoded, Ok(block), "{kind:?} permits {agg:?}");
                 } else {
@@ -3507,7 +3579,7 @@ mod tests {
         let gauge = column_of(3, MetricKind::Gauge, 1);
         let both = history_block(&[Aggregation::Delta], vec![counter, gauge]);
         assert_eq!(
-            decode_block(&encode_block(&both).expect("encode")),
+            decode_block(&history_bytes(&both)),
             Err(ProtoError::AggregationNotPermitted { metric: 3, agg: 2 })
         );
     }
@@ -3630,12 +3702,29 @@ mod tests {
     }
 
     #[test]
-    fn the_subject_required_flag_is_written_but_not_enforced_on_decode() {
-        let mut bytes = encode_block(&subject_block()).expect("encode");
-        let index = section_index_of(&bytes, SectionKind::Subject.code()).expect("a subject");
-        bytes[FRAME_HEADER_LEN + 4 + index * super::SECTION_DIR_ENTRY_LEN + 3] = 0;
-        let decoded = decode_block(&bytes).expect("a clear required flag is not refused");
-        assert_eq!(decoded.subject, Some(1));
+    fn the_header_and_the_subject_must_carry_the_required_flag() {
+        let bytes = encode_block(&subject_block()).expect("encode");
+        for kind in [SectionKind::Header, SectionKind::Subject] {
+            let index = section_index_of(&bytes, kind.code()).expect("the section");
+            let flags_at = FRAME_HEADER_LEN + 4 + index * super::SECTION_DIR_ENTRY_LEN + 3;
+            assert_eq!(bytes[flags_at], 1, "{kind:?} flag is set");
+            let mut cleared = bytes.clone();
+            cleared[flags_at] = 0;
+            assert_eq!(
+                decode_block(&cleared),
+                Err(ProtoError::UnknownSectionFlags {
+                    kind: kind.code(),
+                    flags: 0,
+                }),
+                "a clear required flag on {kind:?} is refused"
+            );
+        }
+        // A section that is not required keeps its clear flag: the dictionary is written
+        // with flags 0 and decodes.
+        let index = section_index_of(&bytes, SectionKind::Dictionary.code()).expect("dictionary");
+        let dictionary_flags = FRAME_HEADER_LEN + 4 + index * super::SECTION_DIR_ENTRY_LEN + 3;
+        assert_eq!(bytes[dictionary_flags], 0);
+        assert!(decode_block(&bytes).is_ok());
     }
 
     #[test]

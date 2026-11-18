@@ -31,6 +31,7 @@ SECTION_DIR_ENTRY_LEN = 8
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 HEADER_BODY_LEN = 80
 MAX_ENTRY_TEXT = 256
+MAX_DICTIONARY_ENTRIES = 65_536
 
 FRAME_TYPES = {"req": 1, "rep": 2, "evt": 3, "dict": 4, "block": 5, "end": 6}
 FRAME_TYPES_BY_CODE = {code: name for name, code in FRAME_TYPES.items()}
@@ -249,33 +250,56 @@ def _entry_identity(entry: dict) -> tuple:
 
 
 def decode_dictionary(body: bytes) -> dict:
-    if len(body) < 8:
-        raise WireError("truncated", context="dictionary section", need=8, have=len(body))
-    generation, count = struct.unpack_from("<II", body, 0)
-    offset = 8
+    """Decode a dictionary body, refusing exactly what Rust `Dictionary::decode` refuses.
+
+    The checks run in the same order as the Rust cursor reads them, so one hostile body names
+    one error in both languages and no `struct.error` or `UnicodeDecodeError` escapes.
+    """
+    position = 0
+
+    def take(count: int) -> bytes:
+        nonlocal position
+        end = position + count
+        if end > len(body):
+            raise WireError("truncated", context="dictionary section", need=end, have=len(body))
+        chunk = body[position:end]
+        position = end
+        return chunk
+
+    (generation,) = struct.unpack("<I", take(4))
+    (count,) = struct.unpack("<I", take(4))
+    if count > MAX_DICTIONARY_ENTRIES:
+        raise WireError("dictionary-too-large", count=count, max=MAX_DICTIONARY_ENTRIES)
     entries = []
-    seen_identities: list[object] = []
+    seen_identities: set[tuple] = set()
     for index in range(count):
-        kind_code, flags, length = struct.unpack_from("<BBH", body, offset)
-        offset += 4
+        kind_code = take(1)[0]
+        flags = take(1)[0]
         if flags != 0:
             raise WireError("dictionary-entry-reserved", index=index, flags=flags)
+        (length,) = struct.unpack("<H", take(2))
         if length > MAX_ENTRY_TEXT:
             raise WireError("dictionary-entry-too-long", index=index, len=length)
         if kind_code not in DICTIONARY_KINDS_BY_CODE:
             raise WireError("unknown-dictionary-kind", index=index, code=kind_code)
         entry: dict = {"kind": DICTIONARY_KINDS_BY_CODE[kind_code]}
         if kind_code == DICTIONARY_KINDS["entity"]:
-            (inc,) = struct.unpack_from("<Q", body, offset)
-            offset += 8
+            (inc,) = struct.unpack("<Q", take(8))
             entry["inc"] = inc
         elif kind_code == DICTIONARY_KINDS["metric"]:
-            unit, kind, scope, source, mask = struct.unpack_from("<BBBBH", body, offset)
-            offset += 6
-            if unit not in UNITS_BY_CODE or kind not in COLUMN_KINDS_BY_CODE:
-                raise WireError("dictionary-entry-unknown-code", index=index, code=unit if unit not in UNITS_BY_CODE else kind)
-            if scope not in SCOPES_BY_CODE or source not in SOURCES_BY_CODE:
+            unit = take(1)[0]
+            if unit not in UNITS_BY_CODE:
+                raise WireError("dictionary-entry-unknown-code", index=index, code=unit)
+            kind = take(1)[0]
+            if kind not in COLUMN_KINDS_BY_CODE:
+                raise WireError("unknown-column-kind", code=kind)
+            scope = take(1)[0]
+            if scope not in SCOPES_BY_CODE:
                 raise WireError("dictionary-entry-unknown-code", index=index, code=scope)
+            source = take(1)[0]
+            if source not in SOURCES_BY_CODE:
+                raise WireError("dictionary-entry-unknown-code", index=index, code=source)
+            (mask,) = struct.unpack("<H", take(2))
             entry["facts"] = {
                 "unit": UNITS_BY_CODE[unit],
                 "kind": COLUMN_KINDS_BY_CODE[kind],
@@ -290,24 +314,31 @@ def decode_dictionary(body: bytes) -> dict:
                     expected=AGGREGATION_MASKS[COLUMN_KINDS_BY_CODE[kind]],
                 )
         elif kind_code == DICTIONARY_KINDS["label"]:
-            label_kind, label_source = struct.unpack_from("<BB", body, offset)
-            offset += 2
-            entry["label_kind"] = label_kind
-            entry["label_source"] = label_source
-        entry["text"] = body[offset : offset + length].decode("utf-8", errors="strict")
-        offset += length
+            entry["label_kind"] = take(1)[0]
+            entry["label_source"] = take(1)[0]
+        raw_text = take(length)
+        try:
+            entry["text"] = raw_text.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            raise WireError("dictionary-entry-not-utf8", index=index) from None
         # A wire list is the sender's numbering: entry `index` must be at index `index`.
         # A repeated identity is a corrupt frame, not a list to de-duplicate, because
-        # de-duplicating would shift every later index away from what the sender wrote.
+        # de-duplicating would shift every later index away from what the sender wrote. It is
+        # judged before the text's control bytes, as the Rust `intern` does.
         identity = _entry_identity(entry)
         if identity in seen_identities:
             raise WireError("duplicate-dictionary-entry", index=index)
-        seen_identities.append(identity)
+        for offset, byte in enumerate(raw_text):
+            if byte < 0x20 or byte == 0x7F:
+                raise WireError("dictionary-entry-control", index=index, offset=offset)
+        seen_identities.add(identity)
         entries.append(entry)
-    end = _align8(offset)
-    pad = body[offset:end]
-    if any(byte != 0 for byte in pad) or end != len(body):
-        raise WireError("trailing-bytes", extra=len(body) - offset)
+    for _ in range(_align8(position) - position):
+        pad_byte = take(1)[0]
+        if pad_byte != 0:
+            raise WireError("non-zero-reserved", value=pad_byte)
+    if position != len(body):
+        raise WireError("trailing-bytes", extra=len(body) - position)
     return {"generation": generation, "entries": entries}
 
 
@@ -370,9 +401,11 @@ def decode_column(body: bytes, n_rows: int) -> dict:
         if code >= len(QUALITIES):
             raise WireError("unknown-quality", row=row, code=code)
         names.append(QUALITIES[code])
-    end = _align8(offset)
-    if any(byte != 0 for byte in body[offset:end]) or end != len(body):
-        raise WireError("trailing-bytes", extra=len(body) - offset)
+    # The body length is exact, so only the pad bytes are left; a non-zero one is corrupt
+    # (Rust `Cursor::pad_to_end`).
+    for byte in body[offset:_align8(offset)]:
+        if byte != 0:
+            raise WireError("non-zero-reserved", value=byte)
     column = {"metric": metric, "type": value_type, "kind": COLUMN_KINDS_BY_CODE[kind_code], "quality": names}
     if value_type == "f64":
         column["value_bits"] = [f"0x{value:016x}" for value in raw_values]
@@ -411,13 +444,15 @@ def decode_time(body: bytes, n_buckets: int) -> list[dict]:
     offset += n_buckets * 2
     aggs = body[offset : offset + n_buckets]
     offset += n_buckets
-    end = _align8(offset)
-    if any(byte != 0 for byte in body[offset:end]) or end != len(body):
-        raise WireError("trailing-bytes", extra=len(body) - offset)
+    # The aggregation bytes are judged before the pad, as the Rust decoder reads them first.
+    for code in aggs:
+        if code not in AGGREGATIONS_BY_CODE:
+            raise WireError("unknown-aggregation", code=code)
+    for byte in body[offset : _align8(offset)]:
+        if byte != 0:
+            raise WireError("non-zero-reserved", value=byte)
     buckets = []
     for index in range(n_buckets):
-        if aggs[index] not in AGGREGATIONS_BY_CODE:
-            raise WireError("unknown-aggregation", code=aggs[index])
         buckets.append(
             {
                 "real_ns": real[index],
@@ -486,16 +521,30 @@ def decode_frame(data: bytes, held: dict | None = None) -> dict:
     an in-frame dictionary is validated against it (HOB-46); ``None`` does no reference check
     on such a block.
     """
-    if len(data) < FRAME_HEADER_LEN:
-        raise WireError("truncated", context="frame header", need=FRAME_HEADER_LEN, have=len(data))
-    length, type_code, flags, reserved, corr = struct.unpack_from("<IBBHI", data, 0)
+    # The fixed fields are read in order and each is judged as soon as its bytes exist, as the
+    # Rust `FrameHeader::parse` cursor does: a 5 to 11 byte buffer with an unknown type byte is
+    # `unknown-frame-type`, not `truncated` (WIRE.md 3.10).
+    def need(end: int) -> None:
+        if len(data) < end:
+            raise WireError("truncated", context="frame header", need=end, have=len(data))
+
+    need(4)
+    (length,) = struct.unpack_from("<I", data, 0)
+    need(5)
+    type_code = data[4]
     if type_code not in FRAME_TYPES_BY_CODE:
         raise WireError("unknown-frame-type", code=type_code)
+    need(6)
+    flags = data[5]
     # SECTIONED is defined for BLOCK only (WIRE.md 2.1): on any other frame it is an unknown flag.
     if flags & ~FRAME_SECTIONED or (flags & FRAME_SECTIONED and type_code != FRAME_TYPES["block"]):
         raise WireError("unknown-frame-flags", flags=flags)
+    need(8)
+    (reserved,) = struct.unpack_from("<H", data, 6)
     if reserved != 0:
         raise WireError("non-zero-reserved", value=reserved)
+    need(FRAME_HEADER_LEN)
+    (corr,) = struct.unpack_from("<I", data, 8)
     # HOB-8: the declared length is bounded by the header parse itself (the Rust
     # ``FrameHeader::parse`` does the same), judged after the fixed fields and before any
     # comparison with the buffer, so a streaming reader may allocate ``length`` bytes.
@@ -517,20 +566,23 @@ def decode_frame(data: bytes, held: dict | None = None) -> dict:
     if not flags & FRAME_SECTIONED:
         raise WireError("missing-section", section="header")
     # A block that ends inside its own directory header (the smallest legal declared
-    # length is the 12-byte frame header) is a truncation, never a struct.error.
-    if len(data) < FRAME_HEADER_LEN + 4:
-        raise WireError("truncated", context="block directory", need=FRAME_HEADER_LEN + 4, have=len(data))
+    # length is the 12-byte frame header) is a truncation, never a struct.error. The need and
+    # have are the directory's own, as in Rust: the bytes after the 12-byte frame header.
+    have = len(data) - FRAME_HEADER_LEN
+    if have < 2:
+        raise WireError("truncated", context="block directory", need=2, have=have)
+    if have < 4:
+        raise WireError("truncated", context="block directory", need=4, have=have)
     n_sec, dir_reserved = struct.unpack_from("<HH", data, FRAME_HEADER_LEN)
     if dir_reserved != 0:
         raise WireError("section-reserved", value=dir_reserved)
     offset = FRAME_HEADER_LEN + 4
+    # HOB-50: the directory's bytes must be present before anything is built from `n_sec`.
+    directory_bytes = n_sec * SECTION_DIR_ENTRY_LEN
+    if len(data) - offset < directory_bytes:
+        raise WireError("truncated", context="block directory", need=directory_bytes, have=len(data) - offset)
     directory = []
     for _ in range(n_sec):
-        # A directory shorter than its own declared entry count is a truncation, not a
-        # struct.error: the reference decoder refuses untrusted bytes with WireError
-        # exactly the way the Rust decoder does.
-        if offset + SECTION_DIR_ENTRY_LEN > len(data):
-            raise WireError("truncated", context="block directory", need=offset + SECTION_DIR_ENTRY_LEN, have=len(data))
         kind, version, section_flags, body_len = struct.unpack_from("<HBBI", data, offset)
         offset += 8
         directory.append((kind, version, section_flags, body_len))
@@ -563,9 +615,15 @@ def decode_frame(data: bytes, held: dict | None = None) -> dict:
             continue
         if version != 1:
             raise WireError("unsupported-section-version", kind_code=kind, version=version, supported=1)
+        # The header and the subject are required sections: their directory entry carries
+        # the required flag (WIRE.md 3.1, 3.8); a clear flag is refused as a flags defect.
+        if kind in (SECTION_KINDS["header"], SECTION_KINDS["subject"]) and not section_flags & 1:
+            raise WireError("unknown-section-flags", kind_code=kind, flags=section_flags)
         if SECTION_KINDS_BY_CODE[kind] not in names:
             names.append(SECTION_KINDS_BY_CODE[kind])
-        if kind == SECTION_KINDS["header"]:
+        # Only the FIRST header's body is decoded here: a second header is `duplicate-section`
+        # below, whatever its body holds (as Rust does).
+        if kind == SECTION_KINDS["header"] and header is None:
             header = decode_header_body(body)
     if header is None:
         raise WireError("missing-section", section="header")
@@ -582,6 +640,7 @@ def decode_frame(data: bytes, held: dict | None = None) -> dict:
     }
     n_rows = header["n_rows"]
     seen = set()
+    seen_metrics = set()
     saw_rows = False
     saw_time = False
     for (kind, _version, _flags, _body_len), body in zip(directory, bodies, strict=True):
@@ -602,8 +661,9 @@ def decode_frame(data: bytes, held: dict | None = None) -> dict:
             frame["time"] = decode_time(body, n_rows)
         elif name == "columns":
             column = decode_column(body, n_rows)
-            if any(existing["metric"] == column["metric"] for existing in frame["columns"]):
+            if column["metric"] in seen_metrics:
                 raise WireError("conflicting-column", metric=column["metric"])
+            seen_metrics.add(column["metric"])
             frame["columns"].append(column)
         elif name == "dictionary":
             frame["dictionary"] = decode_dictionary(body)
@@ -653,13 +713,14 @@ def decode_frame(data: bytes, held: dict | None = None) -> dict:
                     declared=COLUMN_KINDS[column["kind"]],
                     dictionary=COLUMN_KINDS[facts["kind"]],
                 )
-        # Every bucket's aggregation must be permitted by every column's mask (HOB-47).
-        for bucket in frame["time"]:
-            agg = AGGREGATIONS[bucket["agg"]]
-            for column in frame["columns"]:
-                mask = AGGREGATION_MASKS[entries[column["metric"]]["facts"]["kind"]]
-                if not mask & (1 << agg):
-                    raise WireError("aggregation-not-permitted", metric=column["metric"], agg=agg)
+    # Every bucket's aggregation must be permitted by every column's mask (HOB-47). The mask
+    # follows the column's own kind, which a dictionary (in-frame or held) has just proven equal
+    # to the metric's, so the check needs no dictionary and also runs with `held = None`.
+    for bucket in frame["time"]:
+        agg = AGGREGATIONS[bucket["agg"]]
+        for column in frame["columns"]:
+            if not AGGREGATION_MASKS[column["kind"]] & (1 << agg):
+                raise WireError("aggregation-not-permitted", metric=column["metric"], agg=agg)
     return frame
 
 
