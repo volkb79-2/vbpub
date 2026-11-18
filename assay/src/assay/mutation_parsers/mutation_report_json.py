@@ -49,7 +49,7 @@ from typing import Any, Mapping
 
 from ..errors import AssayError, Outcome, ReasonCode
 from ..guards import is_nonempty_str, is_strict_int
-from ..vocabulary import INGESTED_OPERATOR_NAMESPACES, MAX_INGESTED_MUTANTS
+from ..vocabulary import MAX_INGESTED_MUTANTS, STRYKER_OPERATOR_NAMESPACE
 from .model import (
     INGESTED_MUTANT_STATUSES,
     IngestedMutant,
@@ -93,7 +93,9 @@ SUPPORTED_REPORT_SCHEMA_MAJORS: frozenset[str] = frozenset({"1"})
 #: The namespace prefix ingested operators are qualified with. Derived from
 #: `assay.vocabulary` rather than spelled here, so this module, the model, the
 #: schema branch and the config loader cannot drift (A-362).
-_NAMESPACE = INGESTED_OPERATOR_NAMESPACES[0]
+#: Selected BY NAME: the namespace tuple is shared with other ingested
+#: producers (B245 added `cargo-mutants`), so an index would be position-coupled.
+_NAMESPACE = STRYKER_OPERATOR_NAMESPACE
 
 #: Stryker's `mutatorName` values are CamelCase identifiers
 #: (`BlockStatement`, `EqualityOperator`, ...). The pattern is

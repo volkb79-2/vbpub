@@ -107,6 +107,7 @@ from .verdict import (
     CanaryResult,
     CampaignBinding,
     CandidateOutcomeError,
+    ChangedDiff,
     Claim,
     Coverage,
     Evidence,
@@ -1247,6 +1248,153 @@ def _check_ingested_r2_agrees_with_its_payload(
             "judgment.r2 records producer 'ingested' with no producer_tool; a "
             "verdict resting on a foreign tool's word must name the tool "
             "(A-230a/A-361 -- declared by artifact, and said so)"
+        )
+
+
+#: (B245, schema v20) The literals the raw verifier compares, TRANSCRIBED and
+#: never imported from the model's vocabulary (the independence every closed
+#: vocabulary in this module keeps): the unobserved producer version, the
+#: cargo-mutants producer name, the argv placeholder and the full-OID grammar.
+_UNOBSERVED_PRODUCER_VERSION = "unobserved"
+_CARGO_MUTANTS_TOOL = "cargo-mutants"
+_CHANGED_DIFF_PLACEHOLDER = "{assay.changed_diff}"
+_COMMIT_OID_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_CHANGED_DIFF_KEYS = {"base_rev", "head_rev", "relative_to", "sha256", "bytes"}
+
+
+def _check_v20_r2_fields(document: dict, failures: list[str]) -> None:
+    """(B245, schema v20) Independently re-state the `report_absent` and
+    `changed_diff` rules of ``judgment.r2`` at the raw layer.
+
+    * Both keys are ingested-only.
+    * `report_absent` is the boolean `true` (omitted, never false), pairs with
+      the producer version literal `unobserved` in both directions, and needs
+      an `INCONCLUSIVE/NO_MUTANTS` R2 claim whose payload has `total == 0` and
+      `candidate_count == 0`.
+    * `changed_diff` is required iff `argv_declared` holds the whole
+      placeholder token and the ingested producer is cargo-mutants, forbidden
+      otherwise; when present its shapes are checked, `base_rev` equals
+      `judgment.resolved.base` and `head_rev` equals the verdict commit. The
+      digest cannot be recomputed from the document alone.
+    """
+    judgment = document.get("judgment")
+    r2 = judgment.get("r2") if isinstance(judgment, dict) else None
+    producer = _validated_r2_producer(r2)
+    if producer is None:
+        return
+    assert isinstance(r2, dict)
+    if producer != "ingested":
+        for key in ("report_absent", "changed_diff"):
+            if key in r2:
+                failures.append(
+                    f"judgment.r2.{key} is legal only under producer 'ingested'"
+                )
+        return
+    tool = r2.get("producer_tool")
+    tool = tool if isinstance(tool, dict) else {}
+    unobserved = tool.get("version") == _UNOBSERVED_PRODUCER_VERSION
+    absent = r2.get("report_absent")
+    if "report_absent" in r2 and absent is not True:
+        failures.append(
+            "judgment.r2.report_absent must be the boolean true when present "
+            "(omitted, never false)"
+        )
+    if absent is True and not unobserved:
+        failures.append(
+            "judgment.r2.report_absent is true but producer_tool.version is "
+            f"not {_UNOBSERVED_PRODUCER_VERSION!r}"
+        )
+    if unobserved and absent is not True:
+        failures.append(
+            f"judgment.r2.producer_tool.version {_UNOBSERVED_PRODUCER_VERSION!r} "
+            "is legal only with report_absent true"
+        )
+    if absent is True:
+        claims = document.get("claims")
+        claim = _raw_claim(claims, "R2") if isinstance(claims, list) else None
+        payload = _mutation_of(claim)
+        if (
+            not isinstance(claim, dict)
+            or not isinstance(payload, dict)
+            or claim.get("status") != "INCONCLUSIVE"
+            or claim.get("reason_code") != "NO_MUTANTS"
+        ):
+            failures.append(
+                "judgment.r2.report_absent is true but the R2 claim is not "
+                "INCONCLUSIVE/NO_MUTANTS with a mutation payload"
+            )
+        elif payload.get("total") != 0 or payload.get("candidate_count") != 0:
+            failures.append(
+                "judgment.r2.report_absent is true but the R2 payload records "
+                f"total {payload.get('total')!r} and candidate_count "
+                f"{payload.get('candidate_count')!r}; an absent report lists "
+                "no candidate"
+            )
+    argv = document.get("argv_declared")
+    expected = (
+        isinstance(argv, list)
+        and _CHANGED_DIFF_PLACEHOLDER in argv
+        and tool.get("name") == _CARGO_MUTANTS_TOOL
+    )
+    diff = r2.get("changed_diff")
+    if expected and "changed_diff" not in r2:
+        failures.append(
+            "judgment.r2.changed_diff is required: argv_declared holds "
+            f"{_CHANGED_DIFF_PLACEHOLDER} and the ingested producer is "
+            f"{_CARGO_MUTANTS_TOOL}"
+        )
+    if "changed_diff" not in r2:
+        return
+    if not expected:
+        failures.append(
+            "judgment.r2.changed_diff is forbidden unless argv_declared holds "
+            f"{_CHANGED_DIFF_PLACEHOLDER} and the ingested producer is "
+            f"{_CARGO_MUTANTS_TOOL}"
+        )
+    if not isinstance(diff, dict) or set(diff) != _CHANGED_DIFF_KEYS:
+        failures.append(
+            "judgment.r2.changed_diff must be an object with exactly "
+            f"{sorted(_CHANGED_DIFF_KEYS)}"
+        )
+        return
+    for name in ("base_rev", "head_rev"):
+        value = diff[name]
+        if not isinstance(value, str) or not _COMMIT_OID_PATTERN.fullmatch(value):
+            failures.append(
+                f"judgment.r2.changed_diff.{name} must be a full lowercase hex "
+                f"commit OID, got {value!r}"
+            )
+    relative = diff["relative_to"]
+    if relative != "." and (
+        not _is_text(relative)
+        or "\\" in relative
+        or "\x00" in relative
+        or relative.startswith("/")
+        or any(part in ("", ".", "..") for part in relative.split("/"))
+    ):
+        failures.append(
+            "judgment.r2.changed_diff.relative_to must be '.' or a normalized "
+            f"relative forward-slash path, got {relative!r}"
+        )
+    if not _is_sha256_digest(diff["sha256"]):
+        failures.append(
+            "judgment.r2.changed_diff.sha256 must be 64 lowercase hex characters"
+        )
+    if not _is_int(diff["bytes"]) or diff["bytes"] < 0:
+        failures.append(
+            "judgment.r2.changed_diff.bytes must be a non-negative integer"
+        )
+    resolved = judgment.get("resolved") if isinstance(judgment, dict) else None
+    base = resolved.get("base") if isinstance(resolved, dict) else None
+    if isinstance(base, str) and diff["base_rev"] != base:
+        failures.append(
+            f"judgment.r2.changed_diff.base_rev {diff['base_rev']!r} differs "
+            f"from judgment.resolved.base {base!r}"
+        )
+    if diff["head_rev"] != document.get("commit"):
+        failures.append(
+            f"judgment.r2.changed_diff.head_rev {diff['head_rev']!r} differs "
+            f"from the verdict commit {document.get('commit')!r}"
         )
 
 
@@ -2868,6 +3016,15 @@ def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
         # validates -- JSON's own dict, no separate reconstruction needed.
         liveness=raw.get("liveness"),
         cold_witness_kills=raw.get("cold_witness_kills"),
+        # (B245, schema v20) read with `.get`: ingested-only and omitted when
+        # false/absent; `JudgmentR2` decides whether a presence is legal, and
+        # `_reject_unknown_keys` below refuses a serialised `false`.
+        report_absent=raw.get("report_absent", False),
+        changed_diff=(
+            ChangedDiff.from_dict(raw["changed_diff"])
+            if isinstance(raw.get("changed_diff"), dict)
+            else None
+        ),
         r2_command=(
             _reconstruct_r2_command(raw["r2_command"])
             if isinstance(raw.get("r2_command"), dict)
@@ -3957,6 +4114,7 @@ def verify_document(document: Any) -> list[str]:
     _check_v15_r2_command(document, failures)
     _check_v15_campaign(document, failures)
     _check_ingested_r2_agrees_with_its_payload(document, failures)
+    _check_v20_r2_fields(document, failures)
     _check_a_judged_status_carries_its_own_payload(document, failures)
     _check_helpers_have_a_judged_claim(document, failures)
 

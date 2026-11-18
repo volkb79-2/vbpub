@@ -56,6 +56,10 @@ __all__ = [
     "REFUSED_COVERAGE_PRODUCERS",
     "INGESTED_OPERATOR_NAMESPACES",
     "INGESTED_OPERATOR_RE",
+    "STRYKER_OPERATOR_NAMESPACE",
+    "CARGO_MUTANTS_OPERATOR_NAMESPACE",
+    "ARGV_PLACEHOLDER_CHANGED_DIFF",
+    "COMMIT_OID_RE",
     "is_ingested_operator",
     "MAX_INGESTED_MUTANTS",
     "MUTATION_OPERATORS",
@@ -409,9 +413,23 @@ REFUSED_COVERAGE_PRODUCERS: Mapping[str, str] = MappingProxyType(
 #: suffix, verbatim. `INGESTED_OPERATOR_RE` is the shipped predicate and is
 #: normative for the schema's own `mutation_operator` pattern branch: no
 #: assay-native name can match it (every native name's prefix is a LANGUAGE,
-#: and no language is named `stryker`), and no ingested name can be confused
-#: for a native one.
-INGESTED_OPERATOR_NAMESPACES: tuple[str, ...] = ("stryker",)
+#: and no language is named `stryker` or `cargo-mutants`), and no ingested
+#: name can be confused for a native one.
+#:
+#: (B245/schema v20) `cargo-mutants` joins `stryker`. Its operator genres are
+#: DATA the tool's own report carries (`FnValue`, `BinaryOperator`,
+#: `UnaryOperator`, `MatchArm`, `MatchArmGuard`, `StructField` are the ones
+#: documented so far), so the suffix stays the same OPEN `[A-Za-z0-9]+`
+#: pattern as for Stryker. The names are joined UNESCAPED below: a hyphen
+#: outside a character class is a literal, and the packaged schema's pattern is
+#: pinned equal to `INGESTED_OPERATOR_RE.pattern` character for character
+#: (`re.escape` would emit `cargo\-mutants` and break that equality).
+STRYKER_OPERATOR_NAMESPACE = "stryker"
+CARGO_MUTANTS_OPERATOR_NAMESPACE = "cargo-mutants"
+INGESTED_OPERATOR_NAMESPACES: tuple[str, ...] = (
+    STRYKER_OPERATOR_NAMESPACE,
+    CARGO_MUTANTS_OPERATOR_NAMESPACE,
+)
 
 #: The pattern the schema's `mutation_operator` gains as a v9 branch. Kept
 #: here so the schema, the model and the parser cannot drift -- the same
@@ -419,6 +437,20 @@ INGESTED_OPERATOR_NAMESPACES: tuple[str, ...] = ("stryker",)
 INGESTED_OPERATOR_RE = re.compile(
     r"^(?:" + "|".join(INGESTED_OPERATOR_NAMESPACES) + r"):[A-Za-z0-9]+$"
 )
+
+
+#: (B245/schema v20) The exact whole argv token an ingested cargo-mutants lane
+#: writes where assay substitutes the path of the changed-lines diff at the
+#: process boundary (`--in-diff {assay.changed_diff}`). The verdict keeps the
+#: PLACEHOLDER in `argv_declared`/`argv_effective`; the reproducible facts are
+#: recorded in `judgment.r2.changed_diff`. Lane-load validation lands with the
+#: runner wiring.
+ARGV_PLACEHOLDER_CHANGED_DIFF = "{assay.changed_diff}"
+
+#: (B245/schema v20) A full git commit object name: 40 lowercase hex (SHA-1) or
+#: 64 (SHA-256 object format). Used for `judgment.r2.changed_diff.base_rev` and
+#: `head_rev`; the packaged schema carries the same string.
+COMMIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 
 def is_ingested_operator(operator: str) -> bool:
