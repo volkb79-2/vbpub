@@ -3231,3 +3231,131 @@ def test_every_contact_failure_site_starts_the_clock_at_now_not_at_last_contact(
     clock.advance(10)
     manager._start_available(state)
     assert host_state["status"] == "UNREACHABLE" and host_state["unreachable_since_mono"] == clock()
+
+
+# FD-026: a host that stays in ERROR is aged and warned about, never declared lost.
+
+
+def _fail_probe_with(manager: CampaignManager, host: str, error: Exception) -> dict:
+    """Make one host's probe raise ``error``; return a switch dict (``active``) to clear it."""
+    switch = {"active": True}
+    probe = manager.runner.probe
+
+    def probe_or_fail(target, wanted):
+        if target == host and switch["active"]:
+            raise error
+        return probe(target, wanted)
+
+    manager.runner.probe = probe_or_fail
+    return switch
+
+
+def _host_row(status: dict, host: str) -> dict:
+    return next(row for row in status["hosts"] if row["host"] == host)
+
+
+def test_a_persistent_contract_error_is_aged_and_warned_but_never_lost_or_requeued(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = _first_running(_state(tmp_path), "host-a")
+    stops = []
+    real_stop = manager.runner.stop
+    manager.runner.stop = lambda host, name: stops.append((host, name)) or real_stop(host, name)
+    _fail_probe_with(manager, "host-a", ContractError("digest mismatch"))
+
+    status = manager.tick("campaign")
+    first = _host_row(status, "host-a")
+    assert first["state"] == "ERROR" and first["error_seconds"] == 0
+    assert first["error_since"] is not None and first["warning"] is None
+    assert _state(tmp_path)["warnings"] == []
+
+    clock.advance(1799)
+    status = manager.tick("campaign")
+    assert _host_row(status, "host-a")["error_seconds"] == 1799
+    assert _host_row(status, "host-a")["warning"] is None
+
+    for _ in range(30):
+        clock.advance(600)
+        status = manager.tick("campaign")
+    row = _host_row(status, "host-a")
+    assert row["state"] == "ERROR"
+    assert row["error_seconds"] == 1799 + 30 * 600 > 5 * 3600 - 1
+    assert "ERROR" in row["warning"] and "digest mismatch" in row["warning"]
+    state = _state(tmp_path)
+    assert len([w for w in state["warnings"] if "host-a" in w and "ERROR" in w]) == 1
+    assert state["hosts"]["host-a"]["error_since_mono"] == 100.0
+    assert state["hosts"]["host-a"]["status"] == "ERROR"
+    assert state["jobs"][job["name"]]["status"] == "RUNNING"
+    assert not any(row.get("requeue_reason") for row in state["jobs"].values() if row["host"] == "host-a")
+    assert [stop for stop in stops if stop[0] == "host-a"] == []
+    assert _host_row(status, "host-b")["warning"] is None and _host_row(status, "host-b")["error_since"] is None
+
+
+def test_a_contract_error_that_clears_before_the_threshold_leaves_no_warning(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    manager = CampaignManager(tmp_path, FakeTransport(clock=clock), clock=clock)
+    manager.run("campaign", plan)
+    switch = _fail_probe_with(manager, "host-a", ContractError("digest mismatch"))
+    manager.tick("campaign")
+    clock.advance(1000)
+    switch["active"] = False
+    status = manager.tick("campaign")
+    row = _host_row(status, "host-a")
+    assert row["state"] == "ONLINE" and row["error_seconds"] is None and row["error_since"] is None
+    assert _state(tmp_path)["warnings"] == []
+    # A later error starts its own clock.
+    clock.advance(5000)
+    switch["active"] = True
+    status = manager.tick("campaign")
+    assert _host_row(status, "host-a")["error_seconds"] == 0
+
+
+def test_an_error_clock_keeps_its_first_instant_across_different_messages_and_resets_on_unreachable(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    switch = _fail_probe_with(manager, "host-a", TransportError("first"))
+    manager.tick("campaign")
+    clock.advance(100)
+    switch["active"] = False
+    switch = _fail_probe_with(manager, "host-a", TransportError("second"))
+    status = manager.tick("campaign")
+    row = _host_row(status, "host-a")
+    assert row["error"] == "second" and row["error_seconds"] == 100
+    switch["active"] = False
+    transport.set_unreachable("host-a")
+    status = manager.tick("campaign")
+    row = _host_row(status, "host-a")
+    assert row["state"] == "UNREACHABLE" and row["error_seconds"] is None and row["error_since"] is None
+    assert "error_since_mono" not in _state(tmp_path)["hosts"]["host-a"]
+
+
+def test_a_start_error_and_a_successful_start_follow_the_same_error_clock(tmp_path):
+    clock = FakeClock()
+    manager = CampaignManager(tmp_path, FakeTransport(clock=clock), clock=clock)
+    manager.run("campaign", _plan(1))
+    state = _state(tmp_path)
+    job = next(iter(state["jobs"].values()))
+    host_state = state["hosts"][job["host"]]
+    host_state["pressure"] = {"memory_some_avg10": 0.0, "io_some_avg10": 0.0}
+    job["status"] = "QUEUED"
+
+    def refuse(_spec):
+        raise TransportError("start refused")
+
+    real_start = manager.runner.start
+    manager.runner.start = refuse
+    manager._start_available(state)
+    assert host_state["status"] == "ERROR" and host_state["error_since_mono"] == clock()
+    clock.advance(50)
+    host_state["status"] = "ONLINE"
+    host_state["pressure"] = {"memory_some_avg10": 0.0, "io_some_avg10": 0.0}
+    manager.runner.start = real_start
+    manager._start_available(state)
+    assert host_state["status"] == "ONLINE" and "error_since_mono" not in host_state

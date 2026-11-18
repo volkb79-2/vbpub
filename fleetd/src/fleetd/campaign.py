@@ -25,6 +25,7 @@ STATE_SCHEMA = "fleet-campaign-state/2"
 RESULT_SCHEMA = "fleet-campaign-result/1"
 STALL_FLOOR_SECONDS = 15 * 60
 LOST_AFTER_SECONDS = 30 * 60
+ERROR_WARN_AFTER_SECONDS = 30 * 60
 _CAMPAIGN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\Z")
 _EXEC_COMMIT = re.compile(r"[0-9a-f]{40,64}\Z")
 _EXEC_IMAGE = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -550,6 +551,7 @@ class CampaignManager:
                 continue
             except (ContractError, TransportError) as exc:
                 self._record_host_error(host_state, str(exc))
+        self._warn_aged_errors(state)
 
     def _refresh_host(
         self,
@@ -579,6 +581,7 @@ class CampaignManager:
         host_state["last_contact_mono"] = now
         host_state["status"] = "ONLINE"
         host_state.pop("error", None)
+        self._clear_error_clock(host_state)
         host_state["pressure"] = self.runner.pressure(host_id)
         if returned_lost:
             host_state["loss_requeued"] = False
@@ -744,12 +747,44 @@ class CampaignManager:
             host_state["unreachable_since_mono"] = now
         host_state["status"] = "SLOW" if isinstance(exc, HostSlow) else "UNREACHABLE"
         host_state["pressure"] = None
+        CampaignManager._clear_error_clock(host_state)
 
-    @staticmethod
-    def _record_host_error(host_state: dict[str, Any], message: str) -> None:
+    def _record_host_error(self, host_state: dict[str, Any], message: str) -> None:
+        """Record a refusal or contract fault (FD-021) and start its age clock (FD-026).
+
+        The clock keeps its first instant while the host stays in ERROR. It only
+        ages and warns: an ERROR host may have live batches, so nothing here
+        declares it lost or re-queues its work.
+        """
+        if host_state["status"] != "ERROR" or host_state.get("error_since_mono") is None:
+            host_state["error_since_mono"] = self.clock()
+            host_state.pop("error_warned", None)
         host_state["status"] = "ERROR"
         host_state["pressure"] = None
         host_state["error"] = message
+
+    @staticmethod
+    def _clear_error_clock(host_state: dict[str, Any]) -> None:
+        for key in ("error_since_mono", "error_since_utc", "error_warned"):
+            host_state.pop(key, None)
+
+    def _warn_aged_errors(self, state: dict[str, Any]) -> None:
+        now = self.clock()
+        for host_id in sorted(state["hosts"]):
+            host_state = state["hosts"][host_id]
+            since = host_state.get("error_since_mono")
+            if host_state["status"] != "ERROR" or since is None or host_state.get("error_warned"):
+                continue
+            if now - since >= ERROR_WARN_AFTER_SECONDS:
+                host_state["error_warned"] = True
+                state["warnings"].append(self._error_warning(host_id, now - since, host_state.get("error")))
+
+    @staticmethod
+    def _error_warning(host_id: str, seconds: float, error: object) -> str:
+        return (
+            f"host {host_id} has been in ERROR for {seconds:.0f} s ({error}); its batches keep running "
+            "and nothing is re-queued automatically: the operator decides"
+        )
 
     def _stop_superseded_host(self, state: dict[str, Any], host_id: str) -> None:
         for job in state["jobs"].values():
@@ -1133,6 +1168,7 @@ class CampaignManager:
                 job["status"] = "RUNNING"
                 job["adopted"] = not started
                 host_state["status"] = "ONLINE"
+                self._clear_error_clock(host_state)
                 host_state["last_contact_mono"] = self.clock()
                 active.append(job)
                 free -= 1
@@ -1178,10 +1214,19 @@ class CampaignManager:
                 and any(job["status"] == "QUEUED" for job in host_jobs)
                 else None
             )
+            error_since = host_state.get("error_since_mono") if host_state["status"] == "ERROR" else None
+            error_seconds = None if error_since is None else max(0.0, now - error_since)
             result_hosts.append({
                 "host": host_id,
                 "state": host_state["status"],
                 "error": host_state.get("error"),
+                "error_since": host_state.get("error_since_utc") if error_since is not None else None,
+                "error_seconds": self._round(error_seconds),
+                "warning": (
+                    self._error_warning(host_id, error_seconds, host_state.get("error"))
+                    if error_seconds is not None and error_seconds >= ERROR_WARN_AFTER_SECONDS
+                    else None
+                ),
                 "start_deferred": deferral,
                 "reserve_bytes": host_plan.get("reserve_bytes"),
                 "reserve_source": host_plan.get("reserve_source"),
