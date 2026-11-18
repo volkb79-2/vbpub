@@ -34,6 +34,9 @@
 | KI-176 | FIXED 2026-11-18 (every manifest-contradicting target is reported in one run with the exact `package.json` edit; nothing is written) | `7b3364a7b` (merged into main by `5f862034b`) |
 | KI-177 | FIXED 2026-11-18 (same mechanism as KI-161; the mdt-cockpit ADVISORY comment shape is a regression test) | `7b3364a7b` (merged into main by `5f862034b`) |
 | KI-160 | OPEN (post-promotion evidence retention can exit 1 after a successful release) | — |
+| KI-159 | FIXED 2026-11-18 (the per-minor KI-79 window is removed; standing release rule, operator decision 2026-11-18) | `MERGE-HASH-PENDING` |
+| KI-141 | OPEN (R2 owed on the latest release at all times; ledger entry, no version upper bound after KI-159) | — |
+| KI-79 | FIXED 2026-11-18 (`gate-provisional` renamed `release-gate`; no version window; R2 owed asynchronously, recorded by marker, manifest and KI-141) | `MERGE-HASH-PENDING` |
 | KI-158 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
 | KI-157 | FIXED 2026-11-16 (checked-out main worktree is derived and given its owner-scoped remedy) | `4d36980b8d6f3ed7533da2f900b955c06075cb1f` |
 | KI-155 | FIXED (2026-11-12; tuple resource evidence) | `152ba5c9a5181b128ebf1364a9d57d2524ce4415` |
@@ -1973,7 +1976,7 @@ one-command UX without shell-specific pipe-status traps.
 
 ### KI-79 — CMRU provisional releases defer the long R2 campaign
 
-**Status:** OPEN (R2 debt); the deferral mechanism remains IN FORCE for the 6.2 patch line (`>= 6.2.0`, `< 6.3.0`) and the 7.0 through 7.3 patch lines (`>= 7.0.0`, `< 7.1.0`; `>= 7.1.0`, `< 7.2.0`; `>= 7.2.0`, `< 7.3.0`; `>= 7.3.0`, `< 7.4.0`; `POSTPONEMENT_RELEASE_VERSIONS` holds a tuple of (low, below) windows per id): first applied to the 2026-10-14 6.2.0 release candidate, widened by operator decisions through 2026-11-12; R2 remains owed (see Follow-up); severity: major (mutation evidence gap).
+**Status:** FIXED 2026-11-18 in `MERGE-HASH-PENDING` (the mechanism is now the standing release rule, with no version window); R2 remains owed on the latest release (ledger KI-141); severity: major (mutation evidence gap). **Operator decision 2026-11-18 (verbatim):** "change/remove rule. like we agreed for any release: need R1,R3 (full branch coverage and canary) and review for no hollow tests and no issues, then release. R2 runs async." The release gate is R0/R1 (full branch coverage) plus R3 (canary) as the `run-tests` step; the independent review is a hand-off requirement of the release controller, not code; R2 mutation is owed asynchronously on the latest release. `POSTPONEMENT_RELEASE_VERSIONS`, the `KI-79 waiver window` dry-run precondition and `run_tests_uses_provisional_gate` are removed, the lane `gate-provisional` is renamed `release-gate` with no alias, and the tracking id value `KI-79` and the marker and manifest shapes are kept so retained evidence stays readable. The text below is the history of the window mechanism; where it names a window, an upper bound or `gate-provisional`, read `release-gate` and "no window". Moving the window once per minor had blocked the cmru 7.4.0 release on 2026-11-18.
 
 **Reason:** the full CMRU mutation lane is a multi-hour R2 campaign. The operator's release objective explicitly permits long R2 to run asynchronously or be postponed so short correctness, coverage, and integration gates can unblock the tool release wave.
 
@@ -3521,7 +3524,7 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 ## KI-159 - KI-79 release windows need a policy that does not require a new edit for each minor
 
-**Status:** OPEN (filed 2026-11-12); severity: minor (release-window maintenance).
+**Status:** FIXED 2026-11-18 in `MERGE-HASH-PENDING`; severity: minor (release-window maintenance). Operator decision 2026-11-18 (verbatim): "change/remove rule. like we agreed for any release: need R1,R3 (full branch coverage and canary) and review for no hollow tests and no issues, then release. R2 runs async." The window allowlist was removed instead of rolled or declared: a release of any version passes the gate path identically (`tools/run_release_gate.py` `_validate_postponement`; tests `tests/test_release_gate.py`, `tests/test_release_gate_provisional.py`, `tests/test_release_gate_preconditions.py`).
 
 **Problem.** KI-79's explicit bounded windows have been extended one minor line at a time. Each extension needs synchronized gate, test, changelog, and user-documentation edits; a missed bound can refuse the next provisional release before its gates run.
 
@@ -3825,6 +3828,8 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Status:** OPEN (filed 2026-11-18); severity: medium (a stale candidate branch and its worktree stay behind with no supported way to retire them).
 
 **Observed.** The branch `cmru-release-20261106_123441-ciu-yh40ow` carries one commit (`cf063357a`, `chore(ciu): prepare release inputs`, 32 added lines in `ciu/CHANGES.md`) whose CHANGES content equals main's `62d8b67c6` (the same subject, 33 added lines) except for two differences: the `source-end` marker (`ae894f93b0083af9c13a47e8962785ca02cd2e2d` on the candidate, `13cff77c1c7f5a3de59a74af8791a01a8723cd6b` on main) and one extra bullet on main under `### Testing`, `test(ciu): close the 100% coverage gap on the CIU-141/138/202 refusal paths ... (4bbf8d49a)`. So the content is a strict subset of main's, not identical. `cmru abandon` withholds it with "origin contains selected-scope release tag refs that changed during this transaction" (the ciu-v7.24.0, ciu-v7.24.1, ciu-v7.25.0 and ciu-v7.25.1 tags), and the message offers no operator path; the only way out is raw git.
+
+**Second instance (2026-11-18, cli-extended 0.7.0).** A release attempt failed in its gate before any promotion and left the candidate `cmru-release-20261118_070201-cli-extended-h1uxqk` (head `50ae0429d`, not an ancestor of main, no tag pointing at it). The fresh retry then released `cli-extended-v0.7.0`; `cmru abandon --dry-run` on the failed candidate answered `Withheld ... origin contains selected-scope release tag refs that changed during this transaction: cli-extended-v0.7.0`. So a clean failed-attempt candidate becomes unretirable the moment its own retry succeeds. The operator retired it by hand after checking that the head is not an ancestor of main and no tag points at it (worktree removal, local branch delete, remote branch delete of that exact name). Wanted for this case: retire a candidate whose head is not reachable from main and not tagged, when the only changed tag ref is the one the superseding successful release created, printing those two checks as evidence.
 
 **Wanted.** An explicit, evidence-checked way to retire a candidate whose content is already on main (patch or content equivalence of every changed path) or whose version has since been released, without raw git: the command prints the evidence it checked (equivalent commit on main, or the released tag that carries the version) and refuses when it cannot show either.
 
