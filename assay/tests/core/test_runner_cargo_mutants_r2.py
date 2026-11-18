@@ -16,17 +16,25 @@ a runner state that yields a verdict ``verify`` rejects is a bug.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from conftest import GitRepo, TESTS_ROOT, completed_process, make_lane
+from conftest import (
+    GitRepo,
+    TESTS_ROOT,
+    completed_process,
+    make_lane,
+    prepared_snapshot,
+    timeout_expired,
+)
 
-from assay import runner
+from assay import runner, safeio
 from assay.adapters.rust import RustAdapter
 from assay.config import JudgeConfig, MutationConfig, ResultReportConfig
-from assay.errors import Outcome, ReasonCode
+from assay.errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from assay.verify import verify_document
 
 CASES = TESTS_ROOT / "fixtures" / "rust" / "cargo-mutants"
@@ -216,3 +224,339 @@ def test_a_failed_baseline_fails_r0_decided_by_the_report(
     r0 = _claim(verdict, "R0")
     assert r0.status is Outcome.FAIL
     assert verdict.outcome is Outcome.FAIL
+
+
+def test_a_crashed_package_is_an_execution_failure(git_repo: GitRepo, tmp_path: Path):
+    base = _seed(git_repo, "crashed-f4")
+    lane = _lane(git_repo, base, source_roots=("a/src", "b/src"))
+    fake = Fake(_stage(tmp_path, "crashed-f4"), _exit_code("crashed-f4"))
+
+    verdict = _run(git_repo, lane, fake)
+
+    r2 = _claim(verdict, "R2")
+    assert r2.status is Outcome.ERROR
+    assert r2.reason_code is ReasonCode.EXEC_FAILED
+
+
+def test_a_workspace_root_below_the_git_top_is_the_anchor(git_repo: GitRepo, tmp_path: Path):
+    prefix = "sub/crate1"
+    base = _seed(git_repo, "subdir", prefix=prefix)
+    lane = _lane(git_repo, base, prefix=prefix)
+    fake = Fake(_stage(tmp_path, "subdir"), _exit_code("subdir"))
+
+    verdict = _run(git_repo, lane, fake)
+
+    r2 = _claim(verdict, "R2")
+    assert r2.status is Outcome.FAIL
+    assert r2.reason_code is ReasonCode.MUTANTS_SURVIVED
+
+
+# --- refusals: every one is an ERROR that verify accepts -----------------------
+
+
+def _refused(verdict, reason: ReasonCode = ReasonCode.UNREADABLE_ARTIFACT):
+    r2 = _claim(verdict, "R2")
+    assert r2.status is Outcome.ERROR
+    assert r2.reason_code is reason
+    return r2
+
+
+def test_a_non_empty_out_at_reservation_is_refused(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    real = safeio.reserve_directory_output
+
+    def littered(root, artifact, **kwargs):
+        (Path(root) / artifact).mkdir(parents=True, exist_ok=True)
+        (Path(root) / artifact / "junk.txt").write_text("x", encoding="utf-8")
+        return real(root, artifact, **kwargs)
+
+    monkeypatch.setattr(runner.safeio, "reserve_directory_output", littered)
+    lane, fake = _case(git_repo, tmp_path, "indiff")
+
+    verdict = _run(git_repo, lane, fake)
+
+    _refused(verdict)
+    assert fake.calls == 0
+
+
+def test_a_tracked_out_is_refused_before_the_command_runs(git_repo: GitRepo, tmp_path: Path):
+    # The materialised tracked file makes `<out>` non-empty, which the
+    # reservation refuses before the tracked-path check is reached (that
+    # BAD_LANE_CONFIG branch is pinned in test_runner_cargo_mutants_wiring.py).
+    git_repo.write(".gitignore", "")
+    git_repo.write(f"{OUT}/keep.txt", "tracked\n")
+    git_repo.commit_all("track the output directory")
+    base = git_repo.head()
+    git_repo.write("src/lib.rs", "pub fn f() {}\n")
+    git_repo.write("Cargo.toml", '[package]\nname = "x"\nversion = "0.1.0"\n')
+    git_repo.commit_all("subject")
+    lane = _lane(git_repo, base)
+    fake = Fake(_stage(tmp_path, "indiff"), 0)
+
+    verdict = _run(git_repo, lane, fake)
+
+    _refused(verdict)
+    assert fake.calls == 0
+
+
+def test_a_stale_rotated_directory_is_refused(git_repo: GitRepo, tmp_path: Path):
+    def rotated(cwd: Path) -> None:
+        (cwd / OUT / "mutants.out.old").mkdir()
+
+    base = _seed(git_repo, "indiff")
+    lane = _lane(git_repo, base)
+    fake = Fake(_stage(tmp_path, "indiff"), 0, before=rotated)
+
+    _refused(_run(git_repo, lane, fake))
+
+
+def test_a_report_outside_the_command_window_is_refused(git_repo: GitRepo, tmp_path: Path):
+    base = _seed(git_repo, "indiff")
+    lane = _lane(git_repo, base)
+    fake = Fake(_stage(tmp_path, "indiff", window=(-100, -50)), 0)
+
+    _refused(_run(git_repo, lane, fake))
+
+
+def test_an_out_replaced_by_a_symlink_is_refused(git_repo: GitRepo, tmp_path: Path):
+    elsewhere = tmp_path / "elsewhere"
+
+    def symlinked(cwd: Path) -> None:
+        shutil.copytree(_stage(tmp_path, "indiff", label="linked"), elsewhere / "mutants.out")
+        shutil.rmtree(cwd / OUT)
+        os.symlink(elsewhere, cwd / OUT)
+
+    base = _seed(git_repo, "indiff")
+    lane = _lane(git_repo, base)
+    fake = Fake(None, 0, before=symlinked)
+
+    _refused(_run(git_repo, lane, fake))
+
+
+def test_an_out_renamed_away_and_recreated_is_refused(git_repo: GitRepo, tmp_path: Path):
+    def renamed(cwd: Path) -> None:
+        os.rename(cwd / OUT, cwd / "moved")
+        (cwd / OUT).mkdir()
+
+    base = _seed(git_repo, "indiff")
+    lane = _lane(git_repo, base)
+    fake = Fake(_stage(tmp_path, "indiff"), 0, before=renamed)
+
+    _refused(_run(git_repo, lane, fake))
+
+
+def test_a_tampered_member_diff_is_refused(git_repo: GitRepo, tmp_path: Path):
+    staged = _stage(tmp_path, "indiff")
+    victim = next((staged / "diff").iterdir())
+    victim.write_text(
+        victim.read_text(encoding="utf-8").replace("n % 2", "n % 3"), encoding="utf-8"
+    )
+    base = _seed(git_repo, "indiff")
+    lane = _lane(git_repo, base)
+
+    _refused(_run(git_repo, lane, Fake(staged, 0)))
+
+
+def test_an_absent_report_with_exit_zero_never_passes(git_repo: GitRepo, tmp_path: Path):
+    base = _seed(git_repo, "indiff")
+    lane = _lane(git_repo, base)
+
+    # NOT through `_run`: `verify_document` rejects the payload-free
+    # NO_MEASUREMENT/EMPTY_COVERAGE R2 beside a PASSING R0 (the same gap the
+    # file kind has); U5c replaces this state with INCONCLUSIVE/NO_MUTANTS.
+    verdict = runner.run_lane(
+        lane,
+        commit=git_repo.head(),
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=RustAdapter(),
+        assay_version="0.1.0",
+        process_runner=Fake(None, 0),
+        clock=lambda: MOMENT,
+    )
+
+    r2 = _claim(verdict, "R2")
+    assert r2.status is Outcome.NO_MEASUREMENT
+    assert r2.reason_code is ReasonCode.EMPTY_COVERAGE
+    assert verdict.outcome is not Outcome.PASS
+
+
+def test_the_directory_is_consumed_exactly_once(git_repo: GitRepo, tmp_path: Path, monkeypatch):
+    real = safeio.DirectoryArtifactReservation.consume
+    calls: list[int] = []
+
+    def spy(self, **kwargs):
+        calls.append(1)
+        return real(self, **kwargs)
+
+    monkeypatch.setattr(safeio.DirectoryArtifactReservation, "consume", spy)
+    lane, fake = _case(git_repo, tmp_path, "indiff")
+
+    _run(git_repo, lane, fake)
+
+    assert calls == [1]
+
+
+def test_a_timed_out_run_is_budget_exceeded_and_never_consumed(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    real = safeio.DirectoryArtifactReservation.consume
+    calls: list[int] = []
+    monkeypatch.setattr(
+        safeio.DirectoryArtifactReservation,
+        "consume",
+        lambda self, **kw: calls.append(1) or real(self, **kw),
+    )
+
+    def times_out(argv, *, env, cwd, timeout):
+        raise timeout_expired(argv, timeout)
+
+    base = _seed(git_repo, "indiff")
+    lane = _lane(git_repo, base)
+
+    verdict = _run(git_repo, lane, times_out)
+
+    assert verdict.outcome is not Outcome.PASS
+    assert calls == []
+
+
+# --- _directory_report_error, branch by branch ---------------------------------
+
+
+def _present(unusable: str | None) -> runner._DirectoryPresent:
+    artifact = safeio.DirectoryArtifact(
+        artifact=f"{OUT}/mutants.out", identity=(1, 2), report=b"{}", members={}
+    )
+    return runner._DirectoryPresent(artifact=artifact, summary=None, unusable=unusable)
+
+
+def test_a_refusal_is_returned_as_the_very_error():
+    refusal = AssayError("no", outcome=Outcome.ERROR, reason_code=ReasonCode.UNREADABLE_ARTIFACT)
+
+    assert runner._directory_report_error(runner._DirectoryRefused(error=refusal), OUT) is refusal
+
+
+def test_an_absent_directory_is_no_measurement():
+    error = runner._directory_report_error(runner._DirectoryAbsent(), OUT)
+
+    assert error is not None
+    assert error.outcome is Outcome.NO_MEASUREMENT
+    assert error.reason_code is ReasonCode.EMPTY_COVERAGE
+    assert repr(OUT) in str(error)
+
+
+def test_a_directory_never_consumed_is_an_execution_failure():
+    error = runner._directory_report_error(runner._DirectoryNotConsumed(), OUT)
+
+    assert error is not None
+    assert error.outcome is Outcome.ERROR
+    assert error.reason_code is ReasonCode.EXEC_FAILED
+
+
+def test_an_unusable_present_report_is_unreadable():
+    error = runner._directory_report_error(_present("bad shape"), OUT)
+
+    assert error is not None
+    assert error.outcome is Outcome.ERROR
+    assert error.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert "bad shape" in str(error)
+
+
+def test_a_usable_present_report_has_no_error():
+    assert runner._directory_report_error(_present(None), OUT) is None
+
+
+# --- _cargo_workspace_root over a real prepared snapshot -----------------------
+
+PACKAGE = '[package]\nname = "p"\nversion = "0.1.0"\n'
+WORKSPACE = '[workspace]\nmembers = ["crate1"]\n'
+
+
+def _root(git_repo: GitRepo, tmp_path: Path, cwd: str, *, edit=None) -> Path:
+    scratch = tmp_path / "snapshot"
+    scratch.mkdir()
+    with prepared_snapshot(git_repo, scratch_root=scratch) as prepared:
+        with prepared.materialize(timeout=60) as snapshot:
+            if edit is not None:
+                edit(snapshot.root)
+            found = runner._cargo_workspace_root(
+                snapshot.root / cwd, snapshot.root, prepared, timeout=60.0
+            )
+            assert found == snapshot.root / found.relative_to(snapshot.root)
+            return found.relative_to(snapshot.root)
+
+
+def test_the_workspace_above_the_cwd_is_the_root(git_repo: GitRepo, tmp_path: Path):
+    git_repo.write("Cargo.toml", WORKSPACE)
+    git_repo.write("crate1/Cargo.toml", PACKAGE)
+    git_repo.commit_all("workspace")
+
+    assert _root(git_repo, tmp_path, "crate1") == Path(".")
+
+
+def test_a_nested_workspace_nearest_the_cwd_wins(git_repo: GitRepo, tmp_path: Path):
+    git_repo.write("Cargo.toml", WORKSPACE)
+    git_repo.write("sub/Cargo.toml", WORKSPACE)
+    git_repo.write("sub/crate1/Cargo.toml", PACKAGE)
+    git_repo.commit_all("nested workspaces")
+
+    assert _root(git_repo, tmp_path, "sub/crate1") == Path("sub")
+
+
+def test_a_lone_package_is_its_own_root(git_repo: GitRepo, tmp_path: Path):
+    git_repo.write("crate1/Cargo.toml", PACKAGE)
+    git_repo.commit_all("lone package")
+
+    assert _root(git_repo, tmp_path, "crate1") == Path("crate1")
+
+
+def test_the_cwd_itself_may_be_the_workspace_root(git_repo: GitRepo, tmp_path: Path):
+    git_repo.write("Cargo.toml", WORKSPACE)
+    git_repo.commit_all("workspace at the top")
+
+    assert _root(git_repo, tmp_path, ".") == Path(".")
+
+
+def test_no_manifest_at_all_is_a_lane_config_error(git_repo: GitRepo, tmp_path: Path):
+    with pytest.raises(LaneConfigError, match="no cargo workspace root"):
+        _root(git_repo, tmp_path, ".")
+
+
+def test_a_package_above_the_cwd_without_a_workspace_is_not_a_root(
+    git_repo: GitRepo, tmp_path: Path
+):
+    git_repo.write("Cargo.toml", PACKAGE)
+    git_repo.write("deep/er/readme.txt", "x\n")
+    git_repo.commit_all("package above, no manifest at the cwd")
+
+    with pytest.raises(LaneConfigError, match="no cargo workspace root"):
+        _root(git_repo, tmp_path, "deep/er")
+
+
+def test_an_unparseable_manifest_is_a_lane_config_error(git_repo: GitRepo, tmp_path: Path):
+    git_repo.write("Cargo.toml", "[package\nname = \n")
+    git_repo.commit_all("broken manifest")
+
+    with pytest.raises(LaneConfigError, match="cannot parse the committed cargo manifest"):
+        _root(git_repo, tmp_path, ".")
+
+
+def test_a_non_utf8_manifest_is_a_lane_config_error(git_repo: GitRepo, tmp_path: Path):
+    (git_repo.path / "Cargo.toml").write_bytes(b"[package]\nname = \"\xff\xfe\"\n")
+    git_repo.commit_all("binary manifest")
+
+    with pytest.raises(LaneConfigError, match="cannot parse the committed cargo manifest"):
+        _root(git_repo, tmp_path, ".")
+
+
+def test_a_manifest_edited_by_the_command_is_ignored(git_repo: GitRepo, tmp_path: Path):
+    git_repo.write("Cargo.toml", WORKSPACE)
+    git_repo.write("crate1/Cargo.toml", PACKAGE)
+    git_repo.commit_all("workspace")
+
+    def edit(root: Path) -> None:
+        (root / "Cargo.toml").write_text(PACKAGE, encoding="utf-8")
+        (root / "crate1" / "Cargo.toml").write_text(WORKSPACE, encoding="utf-8")
+
+    assert _root(git_repo, tmp_path, "crate1", edit=edit) == Path(".")
