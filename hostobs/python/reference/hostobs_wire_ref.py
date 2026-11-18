@@ -25,7 +25,7 @@ from pathlib import Path
 
 MAGIC = b"HOB\x01"
 PROTO_MAJOR = 1
-PROTO_MINOR = 0
+PROTO_MINOR = 1
 FRAME_HEADER_LEN = 12
 SECTION_DIR_ENTRY_LEN = 8
 MAX_FRAME_BYTES = 16 * 1024 * 1024
@@ -35,9 +35,10 @@ MAX_ENTRY_TEXT = 256
 FRAME_TYPES = {"req": 1, "rep": 2, "evt": 3, "dict": 4, "block": 5, "end": 6}
 FRAME_TYPES_BY_CODE = {code: name for name, code in FRAME_TYPES.items()}
 
-SECTION_KINDS = {"header": 1, "rows": 2, "columns": 3, "time": 4, "dictionary": 5}
+SECTION_KINDS = {"header": 1, "rows": 2, "columns": 3, "time": 4, "dictionary": 5, "subject": 6}
 SECTION_KINDS_BY_CODE = {code: name for name, code in SECTION_KINDS.items()}
-ONE_OF = {1, 2, 4, 5}
+ONE_OF = {1, 2, 4, 5, 6}
+SUBJECT_BODY_LEN = 8
 
 UNIT_CODES = {
     "none": 0,
@@ -97,7 +98,7 @@ FRAME_SECTIONED = 0b0000_0001
 # The one order the encoder emits and the decoder requires (plan v4 B.2): header,
 # dictionary, rows-or-time, then columns. An unknown section kind is outside this
 # version's layout and is exempt (it is skipped by its declared length).
-CANONICAL_RANK = {"header": 0, "dictionary": 1, "rows": 2, "time": 2, "columns": 3}
+CANONICAL_RANK = {"header": 0, "dictionary": 1, "subject": 2, "rows": 3, "time": 3, "columns": 4}
 
 
 def _check_canonical_order(sections: list[tuple]) -> None:
@@ -115,6 +116,10 @@ def _check_canonical_order(sections: list[tuple]) -> None:
         if last is not None and rank < last:
             raise WireError("section-order", index=index, kind_code=kind)
         last = rank
+    # WIRE.md 3.1/3.10: entry 0 must be the header. The rank check above already refuses a
+    # known non-header kind there when a header follows; only an unknown kind is left.
+    if sections and sections[0][0] not in SECTION_KINDS_BY_CODE:
+        raise WireError("section-order", index=0, kind_code=sections[0][0])
 
 
 class WireError(ValueError):
@@ -440,8 +445,9 @@ def encode_frame(frame: dict) -> bytes:
             "rows": lambda: encode_rows(frame.get("rows", [])),
             "time": lambda: encode_time(frame.get("time", [])),
             "dictionary": lambda: encode_dictionary(frame["dictionary"]),
+            "subject": lambda: struct.pack("<II", frame["subject"], 0),
         }[name]()
-        sections.append((SECTION_KINDS[name], 1, 1 if name == "header" else 0, body))
+        sections.append((SECTION_KINDS[name], 1, 1 if name in ("header", "subject") else 0, body))
     # Unknown sections are declared, never invented: the fixture spells them out so a
     # conforming decoder's skip-or-refuse behaviour is exercised by committed bytes.
     for extra in frame.get("unknown_sections", []):
@@ -472,14 +478,21 @@ def encode_frame(frame: dict) -> bytes:
     return bytes(out)
 
 
-def decode_frame(data: bytes) -> dict:
-    """Decode canonical bytes into the fixture description."""
+def decode_frame(data: bytes, held: dict | None = None) -> dict:
+    """Decode canonical bytes into the fixture description.
+
+    The checks run in the WIRE.md 3.10 order, so the first failing check names the error.
+    ``held`` is the stream's held dictionary (``{"generation", "entries"}``): a block without
+    an in-frame dictionary is validated against it (HOB-46); ``None`` does no reference check
+    on such a block.
+    """
     if len(data) < FRAME_HEADER_LEN:
         raise WireError("truncated", context="frame header", need=FRAME_HEADER_LEN, have=len(data))
     length, type_code, flags, reserved, corr = struct.unpack_from("<IBBHI", data, 0)
     if type_code not in FRAME_TYPES_BY_CODE:
         raise WireError("unknown-frame-type", code=type_code)
-    if flags & ~FRAME_SECTIONED:
+    # SECTIONED is defined for BLOCK only (WIRE.md 2.1): on any other frame it is an unknown flag.
+    if flags & ~FRAME_SECTIONED or (flags & FRAME_SECTIONED and type_code != FRAME_TYPES["block"]):
         raise WireError("unknown-frame-flags", flags=flags)
     if reserved != 0:
         raise WireError("non-zero-reserved", value=reserved)
@@ -492,16 +505,17 @@ def decode_frame(data: bytes) -> dict:
         raise WireError(
             "truncated", context="frame length shorter than the header", need=FRAME_HEADER_LEN, have=length
         )
+    # Plan v4 B.1: only `block` carries column sections. A block-shaped payload under
+    # another frame type is type/payload confusion, refused before the buffer is judged
+    # (WIRE.md 3.10: not-a-block precedes truncated and trailing-bytes).
+    if type_code != FRAME_TYPES["block"]:
+        raise WireError("not-a-block", frame_type=type_code)
     if len(data) < length:
         raise WireError("truncated", context="frame", need=length, have=len(data))
     if len(data) > length:
         raise WireError("trailing-bytes", extra=len(data) - length)
     if not flags & FRAME_SECTIONED:
         raise WireError("missing-section", section="header")
-    # Plan v4 B.1: only `block` carries column sections. A block-shaped payload under
-    # another frame type is type/payload confusion, refused before any section is read.
-    if type_code != FRAME_TYPES["block"]:
-        raise WireError("not-a-block", frame_type=type_code)
     # A block that ends inside its own directory header (the smallest legal declared
     # length is the 12-byte frame header) is a truncation, never a struct.error.
     if len(data) < FRAME_HEADER_LEN + 4:
@@ -520,6 +534,11 @@ def decode_frame(data: bytes) -> dict:
         kind, version, section_flags, body_len = struct.unpack_from("<HBBI", data, offset)
         offset += 8
         directory.append((kind, version, section_flags, body_len))
+    # Every section length is a multiple of 8, unknown optional kinds included (HOB-51); it is
+    # judged before the order so a frame with both defects reports the length (WIRE.md 3.10).
+    for kind, _version, _flags, body_len in directory:
+        if body_len % 8 != 0:
+            raise WireError("section-length", section=kind, declared=body_len, expected=_align8(body_len))
     _check_canonical_order(directory)
     bodies = []
     for kind, _version, _flags, body_len in directory:
@@ -588,6 +607,8 @@ def decode_frame(data: bytes) -> dict:
             frame["columns"].append(column)
         elif name == "dictionary":
             frame["dictionary"] = decode_dictionary(body)
+        elif name == "subject":
+            frame["subject"] = decode_subject(body)
     # Rows and buckets are exclusive by PRESENCE: a block carrying both sections is refused
     # even when both are empty, so the two layouts can never be mixed by accident.
     if saw_rows and saw_time:
@@ -595,11 +616,23 @@ def decode_frame(data: bytes) -> dict:
     # Values with neither an entity nor a bucket have no place in a block.
     if n_rows > 0 and not saw_rows and not saw_time:
         raise WireError("no-rows-or-time", n_rows=n_rows)
+    # A subject names the incarnation a history block describes: it needs the time section.
+    if "subject" in frame and not saw_time:
+        raise WireError("subject-without-time", subject=frame["subject"])
+    # The in-frame dictionary wins; a bare block is judged against the held one (HOB-46).
     dictionary = frame.get("dictionary")
+    if dictionary is None:
+        dictionary = held
     if dictionary is not None:
         if dictionary["generation"] != header["dict_gen"]:
             raise WireError("stale-dictionary-generation", needed=header["dict_gen"], held=dictionary["generation"])
         entries = dictionary["entries"]
+        if "subject" in frame:
+            ent = frame["subject"]
+            if ent >= len(entries):
+                raise WireError("dangling-dictionary-ref", index=ent, entries=len(entries))
+            if entries[ent]["kind"] != "entity":
+                raise WireError("row-reference-not-entity", index=ent)
         # A row addresses an incarnation and a column a metric: a reference of the right
         # range but the wrong entry kind would make a consumer read text as an id.
         for row in frame["rows"]:
@@ -620,12 +653,33 @@ def decode_frame(data: bytes) -> dict:
                     declared=COLUMN_KINDS[column["kind"]],
                     dictionary=COLUMN_KINDS[facts["kind"]],
                 )
+        # Every bucket's aggregation must be permitted by every column's mask (HOB-47).
+        for bucket in frame["time"]:
+            agg = AGGREGATIONS[bucket["agg"]]
+            for column in frame["columns"]:
+                mask = AGGREGATION_MASKS[entries[column["metric"]]["facts"]["kind"]]
+                if not mask & (1 << agg):
+                    raise WireError("aggregation-not-permitted", metric=column["metric"], agg=agg)
     return frame
+
+
+def decode_subject(body: bytes) -> int:
+    """The subject section body: ``u32 ent | u32 0`` (WIRE.md 3.8)."""
+    if len(body) != SUBJECT_BODY_LEN:
+        raise WireError("section-length", section="subject", declared=len(body), expected=SUBJECT_BODY_LEN)
+    ent, reserved = struct.unpack_from("<II", body, 0)
+    if reserved != 0:
+        raise WireError("unknown-section-flags", kind_code=SECTION_KINDS["subject"], flags=reserved)
+    return ent
+
+
+#: The same function under the name WIRE.md 12 gives the decoder.
+decode_block = decode_frame
 
 
 def normalise(frame: dict) -> dict:
     """Drop keys a case does not declare, so a decode comparison is exact."""
-    keys = ("type", "corr", "sections", "header", "rows", "time", "columns", "skipped")
+    keys = ("type", "corr", "sections", "header", "subject", "rows", "time", "columns", "skipped")
     return {key: frame[key] for key in keys if key in frame}
 
 
@@ -647,7 +701,7 @@ def check_case(spec: dict, data: bytes) -> None:
     expect_error = spec.get("expect_error")
     if expect_error is not None:
         try:
-            decode_frame(data)
+            decode_frame(data, spec.get("held"))
         except WireError as error:
             # The fixture declares the refusal's *identity*; a case that does not spell out
             # a layout-dependent number (a byte offset, a length) does not have to pin it.
@@ -665,7 +719,7 @@ def check_case(spec: dict, data: bytes) -> None:
             f"{spec['case']}: the reference encoder does not reproduce the committed bytes "
             f"({len(encoded)} vs {len(data)} bytes)"
         )
-    decoded = decode_frame(data)
+    decoded = decode_frame(data, spec.get("held"))
     if normalise(decoded) != normalise(spec["frame"]):
         raise AssertionError(f"{spec['case']}: the reference decoder does not reproduce the fixture")
 
