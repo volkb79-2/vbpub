@@ -299,7 +299,7 @@ Every unit updates README/DESIGN-GUIDE/CONSUMERS where behaviour changes, plus C
 
 **U6 — Docs (S).**
 - CONSUMERS gets the "Rust R2 lanes" template: D8 flags, `{assay.changed_diff}`, `--output`, the committed `.gitignore` of `<out>/`, and an explicit `--test-workspace`.
-- DESIGN-RUST-ADAPTER §D/§G status. K15 stays until U8.
+- DESIGN-RUST-ADAPTER §D/§G status. K15 stayed until U8 (closed by the real hostobs run of 2026-11-18).
 
 **U7 — `tools/qualify_rust_r2_real.py` (M, host).** Real cargo-mutants in `tester-unified-rust` on the U0 subjects, asserting each case's verdict, subdir and zero mutants included.
 
