@@ -2993,7 +2993,10 @@ mod tests {
         noted.sort_unstable();
         let mut expected: Vec<&str> = planted.iter().map(String::as_str).collect();
         expected.sort_unstable();
-        assert_eq!(noted, expected, "every look-alike is reported, none adopted");
+        assert_eq!(
+            noted, expected,
+            "every look-alike is reported, none adopted"
+        );
         assert!(tier.scan().quarantined_files.is_empty());
         assert_eq!(tier.scan().segments.len(), 3);
         let held: u64 = tier.scan().segments.iter().map(|s| s.file_len).sum();
