@@ -21,6 +21,9 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Testing
+- CIU-223: the CIU-215 tests now disable git's automatic gc and maintenance per process, and an autouse test fixture reports any direct child left under pytest without signalling it. Tests only; no consumer action.
+
 <!-- cmru: release history -->
 
 ## [7.26.0] - 2026-11-18

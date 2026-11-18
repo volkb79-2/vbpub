@@ -364,7 +364,7 @@ artifact = "coverage.json"
 # ~570 s per candidate, ~85% of one core, 1-1.75 GiB RSS (pytest + coverage), so
 # this suite is CPU- and memory-bound: 2, not 3, and the lane container needs 4g
 # (run-gate.toml). Assay's `--shard` across hosts is the real lever for the
-# 4605-candidate whole-source plan.
+# ~5,000-candidate whole-source plan (5,022 at cmru-v7.4.0; 4,890 at v7.3.1).
 # `candidate_fail_fast` removes per-candidate coverage and adds `-x`, so a kill
 # stops at its first failing test; the R0/R1 baseline keeps full coverage and
 # survivors still run the full suite. Nov-8 shard lanes measured ~570 s -> ~288 s
