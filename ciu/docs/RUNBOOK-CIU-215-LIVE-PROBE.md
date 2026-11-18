@@ -34,6 +34,39 @@ check fails stops the run: record it in the results table, do not improvise.
    filters, no `docker ps -a` inventories, no `docker rm $(...)`.
 4. **Verdict reads are separate steps** from the launch, never a pipe tail (LESSONS L4).
 5. Every Bash call carries a plain-words `description`.
+6. **Shell state does not survive `hx.sh`.** Each `hx.sh <alias> '<cmd>'` is a fresh `bash -c` and takes exactly
+   two arguments. Every code block below is ONE call and its first line is `source /tmp/ciu215-probe.env`
+   (written once in section 2; it carries `PYTHONPATH`, the `ciu` function, `NAME`, `WT`, and `RUNNER` once
+   known; step A5/B4 appends `RUNNER`). Variables set inside a block are gone at its end unless the block says
+   `>> /tmp/ciu215-probe.env`.
+7. **Secret hygiene.** Only the env-load block (A3) and the runner bring-up (A4) source `ciu env print` and
+   the main checkout's `.env.guard` / `.env.services`. They are their own calls, never combined with another
+   block, and nothing from them goes into `/tmp/ciu215-probe.env`. `ciu worktree create`, `inspect`, `up`, `rm`
+   and Run B's `create` run in a fresh call that has NOT sourced A3 (a leaked scratch identity or guard
+   secret would otherwise be inherited). Never print the guard values.
+8. **Guards.** `test -n` guards are written into the blocks that use `$RUNNER`,
+   `$WT`, `$NAME`, `$VBPUB`: an empty value must stop the block, never reach `docker exec`, `git worktree
+   remove` or `ciu worktree rm`.
+
+---
+
+## 0a. WRITES OUTSIDE THE SCRATCH WORKTREE (read before the window; tell the controller)
+
+The probe is "scratch only" for the two edited templates, but it is not write-free outside the scratch
+worktrees. Everything below is expected, shared, and either cleaned in A9/B9/Z or listed here as left behind:
+
+| where | what is written | cleaned? |
+|---|---|---|
+| each consumer's MAIN checkout `.git` (netcup-api-filter, dstdns) | `ciu worktree create`: `worktrees/<name>/` admin dir, `refs/heads/<name>`, an appended line in `info/exclude`, and the shared workspace-record dir plus allocation lock of the managed-worktree registry (`ciu/src/ciu/worktree.py` ~2321 and 6369+, `libraries/worktree/core.py`) | `ciu worktree rm ... --delete-branch` removes the admin dir, the branch and the record; the `info/exclude` line may stay (check `git diff` of nothing, read the file) |
+| each consumer's MAIN object store | the rw sub-check commit (A8, B8) writes loose objects into `<COMMON>/objects` through the rw bind; refs move only on the scratch branch | objects stay until git gc (unreachable once the branch is deleted); harmless |
+| vbpub main `.git` | only if section 2 step 1 creates the detached source worktree (`git worktree add --detach`): `worktrees/ciu215-probe-src` | step Z removes it |
+| Docker image TAGS | `ciu up --dir tooling/test-runner` (netcup) rebuilds the SHARED tags `netcup-api-filter/test-runner:py311` and `:py314` (the tags main's runners and the R2 ephemeral environment use; content identical, but the tag moves to a new image id); dstdns starts from the shared `dstdns/test-runner:local` and `dstdns/test-runner-ui:local` (no rebuild) | not cleaned (tags are shared); record image ids before and after: `docker image inspect --format '{{.Id}}' <tag>` |
+| Docker instance resources | the instance network, the named volumes `run-gate-state-*`, the runner containers (netcup: py311 and py314; dstdns: `test-runner` and `test-runner-ui`, plus core and db services via `ciu worktree up`); the estate pwmcp network is only joined | `ciu worktree rm` runs `ciu clean` for the instance |
+| dstdns lane containers | `scripts/p128-assay-schema.sh` creates `<prefix>schema-p128-<pid>` and `<prefix>schema-p128-<pid>-runner`, removed by exact name in the script's own trap | leftovers are matched by the instance prefix and removed by `ciu clean` |
+| host-side run-gate state | lock files `run-gate-exec-<container>.lock`, run records, admission state, the lane log and `--json` artifact | left behind; they are run-gate's own bookkeeping |
+| the venue's `/tmp` | `/tmp/ciu215-*` (env file, patches, logs, pid files) | step Z removes the env file and patches; logs stay until copied into the results table |
+
+Nothing is pushed anywhere and no consumer branch other than the scratch one is created.
 
 ---
 
@@ -68,6 +101,9 @@ command -v ciu run-gate docker git python3        # all five must print a path
 docker version --format '{{.Server.Version}}'     # must print a version (the daemon is reachable)
 ls -d /workspaces/netcup-api-filter/.git /workspaces/dstdns/.git   # both must exist (or the host's ~/checkouts equivalents; use ONE consistent root)
 test -f /srv/pwmcp-instance/ciu.global.toml && echo pwmcp-instance-present   # netcup runner needs the estate pwmcp network (UNVERIFIED on v1001)
+test -n "$CGROUP_PARENT_DEV_BACKGROUND" && echo cgroup-parent-set            # dstdns p128 script hard-requires it (`:?`, scripts/p128-assay-schema.sh line 11) and the lane passes it through (assay.toml env_passthrough); the value must come from the venue's login environment, never typed here
+git -C /workspaces/netcup-api-filter status --short > /tmp/ciu215-naf-main.status    # baselines for the "main untouched" check in step Z
+git -C /workspaces/dstdns status --short > /tmp/ciu215-dst-main.status
 ```
 
 Below, `NAF=/workspaces/netcup-api-filter` and `DST=/workspaces/dstdns` (the main checkouts; adjust to the
@@ -80,7 +116,8 @@ root P0 found, consistently).
 The ciu with CIU-215 is on `main` (merge `c64c2ffd8`) and not released. Do not `pip install` it over the
 installed ciu (devcontainer tool installs get clobbered, `which -a` first). ciu spawns itself as
 `sys.executable -m ciu.cli ...` for `up`/`clean`/`env generate` (`ciu/src/ciu/worktree.py` ~2157, 4835), so one
-exported `PYTHONPATH` reaches the children too.
+exported `PYTHONPATH` reaches the children too (settled by the independent audit; the `[CIU-215]` INFO line
+below is the in-run proof, and the `import ciu` path print is the import check).
 
 ```bash
 # 1. a vbpub checkout containing c64c2ffd8 (UNVERIFIED: the vbpub path on the venue; any detached checkout is fine)
@@ -97,14 +134,22 @@ python3 -c 'import ciu, cli_extended, jinja2, yaml, tomli_w; print(ciu.__file__)
 #    PASS: prints <CIU_SRC_ROOT>/ciu/src/ciu/__init__.py  (any other path = the installed ciu: fix PYTHONPATH)
 #    ModuleNotFoundError for jinja2/yaml/tomli_w: use the interpreter of the installed ciu (head -1 "$(command -v ciu)")
 
-# 3. shadow the installed console script for THIS shell only
-ciu() { python3 -m ciu "$@"; }
-export -f ciu 2>/dev/null || true
+# 3. the env file that EVERY later hx.sh call sources first (shell state does not survive hx.sh; rule 6)
+cat > /tmp/ciu215-probe.env <<EOF
+export VBPUB="$VBPUB"
+export CIU_SRC_ROOT="$CIU_SRC_ROOT"
+export PYTHONPATH="$PYTHONPATH"
+ciu() { python3 -m ciu "\$@"; }
+EOF
+#    (Run A and Run B append NAME, WT and later RUNNER with: echo 'export NAME=...' >> /tmp/ciu215-probe.env)
+source /tmp/ciu215-probe.env
+test -n "$VBPUB" && test -n "$CIU_SRC_ROOT"                                  # both must be non-empty
 grep -c "linked_worktree" "$CIU_SRC_ROOT/ciu/src/ciu/config_model.py"      # PASS: 6 or more
 python3 -m ciu worktree --help | head -3                                    # PASS: lists the worktree verbs
 ```
 
 ```bash
+source /tmp/ciu215-probe.env
 # 4. extract the two patches from THIS runbook (first ```diff block = netcup, second = dstdns); RB = this file on the venue
 RB="$CIU_SRC_ROOT/ciu/docs/RUNBOOK-CIU-215-LIVE-PROBE.md"     # UNVERIFIED: present only in a vbpub checkout that contains this runbook's commit; otherwise copy the file over
 python3 - "$RB" <<'PY'
@@ -128,7 +173,10 @@ python and docker). `run-gate` runs in the same shell and `docker exec`s into th
 its own installed version (do not change it for this probe).
 
 **`ciu worktree` flags used** (`ciu worktree create --help` first; UNVERIFIED: option spelling): `create <name>
---base main` (no `--up`: the edit must precede the first `up`), `inspect <name> --json`, `rm <name> --yes`.
+--base main` (no `--up`: the edit must precede the first `up`), `inspect <name> --json`, `rm <name> --dry-run`,
+then `rm <name> --yes --discard-changes <name> --discard-protected-state <name> --delete-branch` (the consent
+values are the EXACT branch name, `ciu worktree rm --help`: "for this exact branch"; the branch name equals
+the logical name `$NAME`, settled by the audit; confirm with `ciu worktree inspect`).
 
 ---
 
@@ -151,8 +199,10 @@ that has nothing to do with the mount: `scripts/p128-assay-schema.sh` spawns nes
 `--user`, root-owned files land in assay's private snapshot, assay cannot remove it
 (`dstdns docs/archive/handoff/dstdns-P171-seeded-infra-program/dstdns-P171-REPORT.md` FU-5, measured at
 `84ac0b0b`, with the read-write mount). So on any GIT_FAILED read the message before concluding, and run the
-`rw` control (section 6 step B7): the same lane failing identically under `rw` means the mount mode is not
-the cause.
+controls of section 6a. The ciu `rw` layout alone cannot discriminate (it keeps `<COMMON>/worktrees/` read-only
+with only the checkout's own admin dir writable, so a `git worktree add` into `<COMMON>/worktrees/<snap>`
+fails under both `ro` and ciu-`rw`): the BASELINE control (the unedited templates, flat hand-written `:rw`
+bind) is the one that implicates or clears the mount mode.
 
 Where to read it:
 
@@ -188,9 +238,10 @@ The final line to quote is `run-gate: lane ... verdict <X>`; the last verdict li
   target, budget 30m. All four whole-target lanes (`token_auth`, `account_auth`, `recovery_codes`, `utils`)
   run the full `tests` tree under coverage; `recovery_codes` is the smallest coverage target (76 lines, 12
   branches). The lane needs no `--base`. Do not use the `_r2` lanes (8h budget, ephemeral runner).
-- Env order (docs): `ciu env print`, `PWMCP_NETWORK`, `.env.guard`, then `.env.services`. A linked worktree has
-  no copy of the gitignored `.env.guard` / `.env.services`; source them from the main checkout in the shell
-  (never copy the guard file).
+- Env order (docs): `ciu env print`, `PWMCP_NETWORK`, `.env.guard`, then `.env.services`. `.env.services` is
+  tracked in git (so a fresh worktree has it); `.env.guard` is gitignored: source it from the main checkout,
+  never copy it. `PWMCP_NETWORK` is derived with the `sed` line verbatim from `docs/DEV_INFRA_SETUP.md:59`.
+  These exports live ONLY in the A3/A4 calls (rule 7).
 
 ### The edit (a unified diff against `netcup-api-filter` main, 2026-11-18)
 
@@ -255,48 +306,68 @@ insert the three-line table before `[test_runner.run_gate]`), and note the drift
 ### Steps
 
 ```bash
-# A0  preconditions (one shell, venue from section 1, ciu from section 2)
+# A0+A1 (ONE call; fresh shell that has NOT sourced A3). Window agreed with the controller first.
+source /tmp/ciu215-probe.env
 cd /workspaces/netcup-api-filter                       # MAIN checkout: only used to CREATE and REMOVE the scratch worktree
 git status --short | head -3                           # informational; do not touch anything shown
-NAME=ciu215-probe-naf
-
-# A1  window agreed with the controller; create the scratch worktree WITHOUT --up
-ciu worktree create "$NAME" --base main
-ciu worktree inspect "$NAME" --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d)'   # read the checkout path and INSTANCE_ID
-WT=/workspaces/netcup-api-filter/.worktrees/$NAME      # UNVERIFIED default dir: confirm against the inspect output
+echo 'export NAME=ciu215-probe-naf' >> /tmp/ciu215-probe.env
+echo 'export WT=/workspaces/netcup-api-filter/.worktrees/ciu215-probe-naf' >> /tmp/ciu215-probe.env
+source /tmp/ciu215-probe.env; test -n "$NAME" && test -n "$WT"
+ciu worktree create "$NAME" --base main                # WITHOUT --up
+ciu worktree inspect "$NAME" --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d)'   # read the checkout path, branch and INSTANCE_ID
 test -f "$WT/.git" && cat "$WT/.git"                   # PASS: one line, gitdir: <main>/.git/worktrees/<name>
+#   branch name = $NAME and path = <primary>/.worktrees/<NAME> (audit-verified in worktree.py); the inspect output must agree, else stop
 
-# A2  the edit, scratch only
+# A2  the edit, scratch only (own call)
+source /tmp/ciu215-probe.env; test -n "$WT"
 cd "$WT"
 git apply --check /tmp/ciu215-naf.patch && git apply /tmp/ciu215-naf.patch
 git status --short                                      # PASS: exactly the two .j2 files modified, nothing else
 grep -c "linked_worktree" tooling/test-runner/ciu.defaults.toml.j2          # PASS: 1
 grep -c "worktrees/' in ciu.repo_root" tooling/test-runner/ciu.compose.yml.j2   # PASS: 0
 
-# A3  environment, in the documented order
+# A3 + A3b (ONE call, its own; the only place besides A4 that sources the guard env. Nothing from it is written to the env file)
+source /tmp/ciu215-probe.env; test -n "$WT"; cd "$WT"
 eval "$(ciu env print)"
 export PWMCP_NETWORK="$(sed -n 's/^network_name = "\(.*\)"$/\1/p' /srv/pwmcp-instance/ciu.global.toml)"
 test -n "$PWMCP_NETWORK" && echo pwmcp-network-ok
-set -a; . /workspaces/netcup-api-filter/.env.guard; . ./.env.services; set +a   # UNVERIFIED: .env.services is not in a fresh worktree; if absent run the generator named in docs/CONFIGURATION_GUIDE.md / tooling/ciu_resolve_env.py first
-
-# A3b  render-only preview, no containers (checks the table and the fragment before any build)
-ciu render --dir tooling/test-runner 2>&1 | grep -n "CIU-215\|ERROR\|refus" ; ls -l tooling/test-runner/.ciu/ciu.compose.gitdir.yml   # UNVERIFIED that `ciu render --dir` writes the fragment; if it does not, A4 is the check
+set -a; . /workspaces/netcup-api-filter/.env.guard; . ./.env.services; set +a
+# A3b  fragment preview WITHOUT containers. `ciu render` has no --dir (it takes --profile --phases --root-folder --host).
+#      engine.py writes the fragment and prints the INFO line (~2960-2985) BEFORE the `if dry_run:` return (~3020), so:
+ciu up --dir tooling/test-runner --dry-run 2>&1 | grep -n "CIU-215\|ERROR\|refus"      # UNVERIFIED (code reading only); if it errors for a reason unrelated to CIU-215, skip A3b and rely on A4
+ls -l tooling/test-runner/.ciu/ciu.compose.gitdir.yml                                   # UNVERIFIED as above
 ```
 
 **A3b expected:** `[INFO] [CIU-215] git common dir mounted (ro) via .ciu/ciu.compose.gitdir.yml` and the file
-exists. **Fail:** a `[CIU-215] ... refuses` message (copy it verbatim) or no fragment after A4.
+exists. **Fail:** a `[CIU-215] ... refuses` message (copy it verbatim). A3b is optional; A4 is the binding check.
 
 ```bash
-# A4  bring up this checkout's own runners (builds two images; the longest step; one at a time, nothing else running)
-ciu up --dir tooling/test-runner 2>&1 | tee /tmp/ciu215-naf-up.log | grep -n "CIU-215\|ERROR\|\[WARN\]"
+# A4  bring up this checkout's own runners: a 10-25 min build, so DETACHED, exit code kept in the log. One call;
+#     it needs the A3 environment, so repeat the A3 sourcing here; nothing else runs meanwhile.
+source /tmp/ciu215-probe.env; test -n "$WT"; cd "$WT"
+eval "$(ciu env print)"
+export PWMCP_NETWORK="$(sed -n 's/^network_name = "\(.*\)"$/\1/p' /srv/pwmcp-instance/ciu.global.toml)"
+set -a; . /workspaces/netcup-api-filter/.env.guard; . ./.env.services; set +a
+setsid nohup bash -c 'python3 -m ciu up --dir tooling/test-runner; echo "rc=$?"' > /tmp/ciu215-naf-up.log 2>&1 < /dev/null &
+echo $! > /tmp/ciu215-naf-up.pid
+```
+
+```bash
+# A4b  wait and read in SEPARATE calls (no guard env needed): until the log has an `rc=` line
+source /tmp/ciu215-probe.env; test -n "$WT"; cd "$WT"
+tail -n 3 /tmp/ciu215-naf-up.log; kill -0 "$(cat /tmp/ciu215-naf-up.pid)" 2>&1 | head -1    # "No such process" = finished
+grep -n "^rc=" /tmp/ciu215-naf-up.log                                  # PASS: rc=0 (anything else: stop, capture, section 7)
+grep -n "CIU-215\|ERROR\|\[WARN\]" /tmp/ciu215-naf-up.log
 grep -c "git common dir mounted (ro)" /tmp/ciu215-naf-up.log          # PASS: 1
 ls -l tooling/test-runner/.ciu/ciu.compose.gitdir.yml                  # PASS: exists
 grep -n "read_only: true" tooling/test-runner/.ciu/ciu.compose.gitdir.yml | head -3   # PASS: the common dir bind is read_only
 
 # A5  the exact runner name, from run-gate itself (header line `container <name>`)
 run-gate recovery_codes --worktree "$PWD" --dry-run 2>&1 | grep -n "container"
-RUNNER=<the py314 container name from that line>       # expect: naf-<INSTANCE_ID>-test-runner-py314
+echo 'export RUNNER=<the py314 container name from that line>' >> /tmp/ciu215-probe.env    # expect: naf-<INSTANCE_ID>-test-runner-py314 (type the real name)
+source /tmp/ciu215-probe.env; test -n "$RUNNER"
 docker inspect --type container "$RUNNER" --format '{{.State.Status}}'     # PASS: running
+docker image inspect --format '{{.Id}}' netcup-api-filter/test-runner:py314   # record: the shared tag moved (section 0a)
 ```
 
 ### Checks (a)-(c) inside the runner (py314), exact expected output
@@ -304,6 +375,7 @@ docker inspect --type container "$RUNNER" --format '{{.State.Status}}'     # PAS
 `COMMON` below = the directory named by the gitfile minus `/worktrees/<name>`: read it, never guess.
 
 ```bash
+source /tmp/ciu215-probe.env; test -n "$RUNNER" && test -n "$WT"          # one call for all rows below; no guard env
 WTIN=$(docker exec "$RUNNER" pwd)                                       # = the logical checkout path
 docker exec "$RUNNER" cat "$WTIN/.git"                                  # gitdir: <COMMON>/worktrees/<name>
 COMMON=$(docker exec "$RUNNER" sh -c 'sed -e "s#^gitdir: ##" -e "s#/worktrees/.*##" .git')
@@ -324,14 +396,17 @@ Informational (record, no verdict): `docker exec "$RUNNER" sh -c ': > "$0/probe-
 ### (d) The lane
 
 ```bash
-# A6  launch detached (a lane outlasts the foreground cap), from the scratch worktree
-cd "$WT"
+# A6  launch detached (a lane outlasts the foreground cap), from the scratch worktree; no guard env needed
+source /tmp/ciu215-probe.env; test -n "$WT"; cd "$WT"
 setsid nohup run-gate recovery_codes --worktree "$PWD" --json > /tmp/ciu215-naf-lane.json 2> /tmp/ciu215-naf-lane.err < /dev/null &
-# wait in separate calls: tail -n 3 /tmp/ciu215-naf-lane.err ; kill -0 <pid of run-gate>
+echo $! > /tmp/ciu215-naf-lane.pid
+# wait in separate calls: tail -n 3 /tmp/ciu215-naf-lane.err ; kill -0 "$(cat /tmp/ciu215-naf-lane.pid)"
+# (UNVERIFIED: that run-gate needs none of the .env.services forward_env values for this lane; recovery_codes declares no required_env)
 ```
 
 ```bash
 # A7  read the verdict (separate step)
+source /tmp/ciu215-probe.env
 python3 -c 'import json; d=json.load(open("/tmp/ciu215-naf-lane.json")); print({k: d.get(k) for k in ("verdict","exit_code","reason","log_path")}); print(d)' | head -40
 LOG=<log_path>; grep -n -i "verdict\|GIT_FAILED\|Read-only file system\|fatal:\|could not create directory\|CIU-215" "$LOG"
 ```
@@ -345,28 +420,64 @@ Do this once, after A7, in the same scratch worktree. Hand-edit `git_common_dir 
 `tooling/test-runner/ciu.defaults.toml.j2` (Edit tool, one word), then recreate only the runners:
 
 ```bash
-ciu down --dir tooling/test-runner && ciu up --dir tooling/test-runner 2>&1 | grep -n "git common dir mounted"   # PASS: "(rw)"
-# repeat checks a and b unchanged (PASS as above), then:
-docker exec "$RUNNER" git -c user.name=probe -c user.email=probe@invalid commit --allow-empty -m probe; echo "rc=$?"   # PASS: a commit line and rc=0
-docker exec "$RUNNER" git -c user.name=probe -c user.email=probe@invalid worktree add --detach /tmp/probe-wt HEAD; echo "rc=$?"   # PASS (informational): refuses, Read-only file system on <COMMON>/worktrees/ (worktrees/ is ro in the rw layout)
-git -C "$WT" log --oneline -1                                       # shows the probe commit: it is on the scratch branch only
+# A8a  recreate the runners under rw: the A4 launch block (A3 sourcing, detached `python3 -m ciu up --dir tooling/test-runner`
+#      writing /tmp/ciu215-naf-up.log with a final rc= line), preceded by `python3 -m ciu down --dir tooling/test-runner`
+#      in the same call. Read it as A4b; PASS: rc=0 and "git common dir mounted (rw)".
 ```
 
-Under `rw` the lane is NOT re-run for Run A unless A7 failed with GIT_FAILED (then re-run A6-A7 under `rw`
-and compare, section 3a). The recreate may rebuild nothing: the image tag is unchanged.
+```bash
+# A8b  checks, one call, no guard env
+source /tmp/ciu215-probe.env; test -n "$RUNNER" && test -n "$WT"
+# repeat checks a and b unchanged (PASS as above), then:
+docker exec "$RUNNER" git -c user.name=probe -c user.email=probe@invalid commit --allow-empty -m probe; echo "rc=$?"   # PASS: a commit line and rc=0
+git -C "$WT" log --oneline -1                                       # shows the probe commit: it is on the scratch branch only
+# informational worktree-add probe, GATED: only when the rw layout is really in place, i.e. a `<COMMON>/worktrees` bind
+# with rw=false exists. If that bind is missing or rw, SKIP it: git worktree add would write into the consumer's MAIN .git.
+docker inspect --type container "$RUNNER" --format '{{range .Mounts}}{{.Destination}} rw={{.RW}}{{"\n"}}{{end}}' | grep -n "/worktrees "   # expect: <COMMON>/worktrees rw=false
+#   only if that line shows rw=false:
+docker exec "$RUNNER" git -c user.name=probe -c user.email=probe@invalid worktree add --detach /tmp/probe-wt HEAD; echo "rc=$?"   # PASS (informational): refuses with Read-only file system
+docker exec "$RUNNER" git worktree remove --force /tmp/probe-wt 2>&1 | head -2      # no-op when the add was refused; mandatory if it succeeded
+git -C /workspaces/netcup-api-filter worktree list | grep -c "probe-wt"             # PASS: 0 (main checkout shows no probe-wt)
+```
+
+Under `rw` the lane is NOT re-run for Run A unless A7 failed with GIT_FAILED (then follow section 6a). The
+recreate may rebuild nothing: the image tag is unchanged.
 
 ### A9 cleanup (always, even after a failure)
 
+A plain `ciu worktree rm "$NAME" --yes` REFUSES here: the scratch checkout has uncommitted edits (the two `.j2`
+files), protected ignored state (`.assay/`, `vol-*`) and, after the rw sub-check, an unmerged branch tip. So
+dry-run first, read the blockers, abort on any surprise, then remove with the three exact-branch consents.
+
 ```bash
-cd /workspaces/netcup-api-filter                       # main checkout; an implementer cannot remove its own cwd
-docker inspect --type container "$RUNNER" --format '{{.Name}}' # record both exact names first: "$RUNNER" and its -py311 sibling (same prefix)
-ciu worktree rm "$NAME" --yes                           # runs ciu clean under that instance, then removes the checkout and the scratch branch if unmerged tip rules allow
+# A9a  fresh call, NOT the A3 environment. Record the exact names, then read the dry-run.
+source /tmp/ciu215-probe.env; test -n "$NAME" && test -n "$RUNNER"
+cd /workspaces/netcup-api-filter                       # main checkout; the remover cannot be inside the checkout it removes
+docker inspect --type container "$RUNNER" --format '{{.Name}}'                              # exact py314 name
+PY311="${RUNNER%-py314}-py311"; docker inspect --type container "$PY311" --format '{{.Name}}'   # exact py311 name (same prefix, template naming)
+docker inspect --type container "$RUNNER" --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}'   # exact volume name(s)
+ciu worktree rm "$NAME" --dry-run                      # READ the output
+```
+
+**Abort rule.** The dry-run may list ONLY: the two modified `.j2` files, `.assay/`, and rendered `.ciu`
+artifacts (`.ciu/`, `.ciu/gitdir/`, rendered `ciu.toml` / `ciu.compose.yml` / `ciu.compose.gitdir.yml`), plus
+`vol-*` protected state and the unmerged scratch branch. If it lists anything else (a path outside those, a
+second branch, a mount under the checkout, a refusal that is not a consent), STOP, capture it, and ask the
+controller; do not widen the consents.
+
+```bash
+# A9b  only after the dry-run passed the abort rule
+source /tmp/ciu215-probe.env; test -n "$NAME"
+cd /workspaces/netcup-api-filter
+ciu worktree rm "$NAME" --yes --discard-changes "$NAME" --discard-protected-state "$NAME" --delete-branch
+#   consent values = the EXACT branch name = $NAME (UNVERIFIED beyond the audit's reading of worktree.py create()/remove(): the
+#   dry-run output and `ciu worktree rm --help` must agree; if the refusal names another branch string, use that exact string)
 ciu worktree list                                       # PASS: no "$NAME"
 git worktree list | grep -c "$NAME"                     # PASS: 0
-docker inspect --type container <exact py314 name>      # PASS: "No such object" (repeat for the py311 name)
-docker volume inspect run-gate-state-py314-<...> 2>&1   # only if `ciu clean` was not clean; exact volume name from the earlier `docker inspect` mounts output
-git branch --list "$NAME*"                              # PASS: empty. If it lists the scratch branch (no commits beyond main except the rw probe commit): git branch -D <that exact name>
-rm -f /tmp/ciu215-naf.patch                             # logs /tmp/ciu215-naf-*.{log,json,err} stay until the results are copied into the table
+git branch --list "$NAME*"                              # PASS: empty (--delete-branch removed it; no manual branch -D)
+docker inspect --type container "$RUNNER"              # PASS: "No such object"
+docker inspect --type container "${RUNNER%-py314}-py311"   # PASS: "No such object"
+docker volume inspect <each exact volume name recorded in A9a>   # PASS: "No such volume" (if one remains: docker volume rm <that exact name>)
 ```
 
 If a container still exists after `ciu worktree rm`, remove it by exact name only (`docker rm -f <exact name>`);
@@ -477,41 +588,60 @@ Run B starts only after A9 has passed and the controller has confirmed Run A's e
 ### Steps
 
 ```bash
-# B0  preconditions: Run A cleaned up; same shell and ciu as section 2
+# B0+B1 (ONE call; fresh shell that has NOT sourced A3 or any guard env; Run A is cleaned up and the window confirmed)
+source /tmp/ciu215-probe.env
+test -n "$CGROUP_PARENT_DEV_BACKGROUND" && echo cgroup-parent-set      # p128 script hard-requires it (`:?`)
 cd /workspaces/dstdns
-NAME=ciu215-probe-dst
-
-# B1  window; create the scratch worktree WITHOUT --up (UNVERIFIED flags: `ciu worktree create --help`)
-ciu worktree create "$NAME" --base main
+echo 'export NAME=ciu215-probe-dst' >> /tmp/ciu215-probe.env
+echo 'export WT=/workspaces/dstdns/.worktrees/ciu215-probe-dst' >> /tmp/ciu215-probe.env
+sed -i '/^export RUNNER=/d' /tmp/ciu215-probe.env      # drop Run A's runner name (the env file is the runbook's own scratch file)
+source /tmp/ciu215-probe.env; test -n "$NAME" && test -n "$WT"
+ciu worktree create "$NAME" --base main                # WITHOUT --up (UNVERIFIED flags: `ciu worktree create --help`)
 ciu worktree inspect "$NAME" --json | python3 -c 'import json,sys; print(json.load(sys.stdin))'
-WT=/workspaces/dstdns/.worktrees/$NAME                  # GUIDE: .worktrees/<name>; confirm against inspect
-cat "$WT/.git"                                          # PASS: gitdir: <main>/.git/worktrees/<name>
+cat "$WT/.git"                                          # PASS: gitdir: <main>/.git/worktrees/<name>; inspect must agree on path and branch
 
-# B2  the edit, scratch only
+# B2  the edit, scratch only (own call)
+source /tmp/ciu215-probe.env; test -n "$WT"
 cd "$WT"
 git apply --check /tmp/ciu215-dst.patch && git apply /tmp/ciu215-dst.patch
 git status --short                                       # PASS: exactly the two .j2 files modified
 grep -c "linked_worktree" tools/test-runner/ciu.defaults.toml.j2                   # PASS: 1
 grep -c "worktrees/' in ciu.repo_root" tools/test-runner/ciu.compose.yml.j2        # PASS: 0
 
-# B3  start the declared environment (core, db, runner) from the EDITED templates; detached, it is long
-setsid nohup ciu worktree up "$NAME" > /tmp/ciu215-dst-up.log 2>&1 < /dev/null &
+# B3  start the declared environment (core, db, runner, and the ui runner) from the EDITED templates; detached, it is long.
+#     ALWAYS through `ciu worktree up` (dstdns GUIDE 3.4 forbids hand-run `ciu render` / `ciu up --dir tools/test-runner --dry-run`
+#     in a not-yet-rendered worktree); no guard env is needed or allowed here.
+source /tmp/ciu215-probe.env; test -n "$NAME"
+setsid nohup bash -c 'python3 -m ciu worktree up "$0"; echo "rc=$?"' "$NAME" > /tmp/ciu215-dst-up.log 2>&1 < /dev/null &
+echo $! > /tmp/ciu215-dst-up.pid
 #     UNVERIFIED: `ciu worktree up` renders from the checkout's working files (uncommitted edits). The proof is B4's INFO line.
-#     wait in separate calls; done when the process has exited; then:
-tail -n 20 /tmp/ciu215-dst-up.log
+```
 
-# B4  proof the new ciu rendered the fragment for the runner stack, and the runner exists
+```bash
+# B3b/B4  separate calls: wait for the `rc=` line, then read
+source /tmp/ciu215-probe.env; test -n "$WT"; cd "$WT"
+tail -n 3 /tmp/ciu215-dst-up.log; kill -0 "$(cat /tmp/ciu215-dst-up.pid)" 2>&1 | head -1
+grep -n "^rc=" /tmp/ciu215-dst-up.log                   # PASS: rc=0
 grep -n "CIU-215" /tmp/ciu215-dst-up.log                # PASS: "[INFO] [CIU-215] git common dir mounted (ro) via .ciu/ciu.compose.gitdir.yml"
 ls -l tools/test-runner/.ciu/ciu.compose.gitdir.yml     # PASS: exists
-run-gate p128_persister_lineage --worktree "$PWD" --base HEAD~1 --dry-run 2>&1 | grep -n "container"    # UNVERIFIED flag order; `run-gate --help`
-RUNNER=<container name from that line>                  # expect: dstdns-<INSTANCE_ID>-test-runner
+# the lane base (MEDIUM-6): the PARENT of the last commit that touched libs/common/src, so changed lines exist
+LASTC=$(git log -n 1 --format=%H -- libs/common/src); test -n "$LASTC"
+BASE=$(git rev-parse "$LASTC^"); test -n "$BASE"
+echo "export BASE=$BASE" >> /tmp/ciu215-probe.env
+git diff --stat "$BASE" HEAD -- libs/common/src | tail -3     # PASS: at least one .py file changed (else pick an older base; never HEAD~1 blindly)
+run-gate p128_persister_lineage --worktree "$PWD" --base "$BASE" --dry-run 2>&1 | grep -n "container"    # flag order is irrelevant for run-gate (audit)
+echo 'export RUNNER=<container name from that line>' >> /tmp/ciu215-probe.env       # expect: dstdns-<INSTANCE_ID>-test-runner (type the real name)
+source /tmp/ciu215-probe.env; test -n "$RUNNER"
 docker inspect --type container "$RUNNER" --format '{{.State.Status}}'      # PASS: running
 ```
 
 If `[CIU-215]` is missing from `/tmp/ciu215-dst-up.log` because `worktree up` re-ran an already-rendered
-runner without recreating it: `ciu up --dir tools/test-runner` from `$WT` with the same exported
-`PYTHONPATH`, and re-read B4. A runner that kept the old (no-mount) config shows no common-dir bind in `docker
-inspect`: it must be recreated before the checks.
+runner without recreating it, the runner kept its old (no-mount) config: `docker inspect` then shows no
+common-dir bind and the checks are meaningless. Stop and ask the controller how to force a recreate (UNVERIFIED
+which verb does; `ciu worktree up --help` first). Do not hand-run `ciu up --dir tools/test-runner --dry-run`
+or `ciu render` in a not-yet-rendered worktree (GUIDE 3.4); by this point the worktree IS rendered, so a
+plain `ciu up --dir tools/test-runner` from `$WT` (with `PYTHONPATH` exported) is the fallback the controller
+may approve.
 
 ### Checks (a)-(c)
 
@@ -523,51 +653,85 @@ as the documented retry in row (a), and record that it was needed.
 ### (d) The lane
 
 ```bash
-# B6  detach; --base is required by the lane (changed_lines, base_source = request). HEAD~1 is any commit that
-#     exists in the scratch checkout; the changed-lines coverage result is irrelevant to the probe.
-cd "$WT"
-setsid nohup run-gate p128_persister_lineage --worktree "$PWD" --base HEAD~1 --json > /tmp/ciu215-dst-lane.json 2> /tmp/ciu215-dst-lane.err < /dev/null &
-# B7  read separately, as in A7 (section 3 rules):
+# B6  detach; --base is required by the lane (changed_lines, base_source = request). $BASE (written in B4) is the parent
+#     of the last commit touching libs/common/src, so the lane has changed lines to judge; HEAD~1 could touch no Python
+#     there and give NO_MEASUREMENT / INCONCLUSIVE without ever running the script (a false PASS).
+source /tmp/ciu215-probe.env; test -n "$WT" && test -n "$BASE" && test -n "$RUNNER"; cd "$WT"
+setsid nohup run-gate p128_persister_lineage --worktree "$PWD" --base "$BASE" --json > /tmp/ciu215-dst-lane.json 2> /tmp/ciu215-dst-lane.err < /dev/null &
+echo $! > /tmp/ciu215-dst-lane.pid
+# wait in separate calls: tail -n 3 /tmp/ciu215-dst-lane.err ; kill -0 "$(cat /tmp/ciu215-dst-lane.pid)"
+```
+
+```bash
+# B7  read separately, as in A7 (section 3 rules)
+source /tmp/ciu215-probe.env
 python3 -c 'import json; d=json.load(open("/tmp/ciu215-dst-lane.json")); print({k: d.get(k) for k in ("verdict","exit_code","reason","log_path")}); print(d)' | head -40
 LOG=<log_path>
 grep -n -i "verdict\|GIT_FAILED\|Read-only file system\|fatal:\|could not create directory\|Permission denied\|CIU-215" "$LOG"
+grep -n "schema-p128" "$LOG"          # REQUIRED evidence that scripts/p128-assay-schema.sh ran (the `<prefix>schema-p128-<pid>` container line)
 ```
+
+**Evidence rule for Run B.** A verdict counts toward `ro confirmed` only if the log also shows the script ran
+(the `schema-p128` container line). A verdict without it (for example `NO_MEASUREMENT` because the base touched
+no changed lines, or a lane that stopped before the script) is INCONCLUSIVE: choose an older `$BASE` and rerun.
 
 **What each outcome means for the open question.**
 
 | B7 result | reading |
 |---|---|
 | verdict reached (any of PASS/FAIL by test or coverage), no `could not create directory` / `Read-only file system` text | **`ro` confirmed for dstdns**: the 2026-09-03 measurement is not reproducible on the current pinned judge (`tools/assay/assay-12.0.0.pyz`). Evidence to quote: the final verdict line, the INFO line from B4, rows a-c, the `mount` row |
-| `ERROR/GIT_FAILED` and the log contains `fatal: could not create directory of '.../.git/worktrees/...': Read-only file system` | **`ro` refuted**: assay still runs `git worktree add` in the source. Go to section 7 |
-| `ERROR/GIT_FAILED` with a message about removing/cleaning the snapshot, `Permission denied`, root-owned files | not the mount (dstdns FU-5): run the `rw` control B8; if `rw` fails identically, record "GIT_FAILED independent of mount mode" and the probe for dstdns is INCONCLUSIVE, not a pass or a refutation of `ro` |
-| `ERROR/GIT_FAILED` with no message | run B8; compare the two logs line by line |
+| `ERROR/GIT_FAILED` and the log contains `fatal: could not create directory of '.../.git/worktrees/...': Read-only file system` | **`ro` implicated, not yet refuted for good**: the mount mode is a candidate cause. Run the controls of section 6a (baseline FIRST) before any recommendation |
+| `ERROR/GIT_FAILED` with a message about removing/cleaning the snapshot, `Permission denied`, root-owned files | probably not the mount (dstdns FU-5): run the baseline control (section 6a); if the baseline fails the same way, record "GIT_FAILED independent of mount mode" and the dstdns probe is INCONCLUSIVE, neither a pass nor a refutation of `ro` |
+| `ERROR/GIT_FAILED` with no message | run the controls of section 6a; compare the logs line by line |
 
-### B8 `rw` control and rw sub-check
+### B8 in-lane-commit rw sub-check (design note test 10) and the controls
 
-Mandatory when B7 is GIT_FAILED; otherwise do the in-lane-commit sub-check only (design note test 10), as in A8:
-change `"ro"` to `"rw"` in `tools/test-runner/ciu.defaults.toml.j2`, recreate the runner
-(`ciu up --dir tools/test-runner`; the stack's other services stay up), confirm the INFO line now says `(rw)`,
-repeat checks a and b (PASS as above), run the in-runner commit (PASS: `rc=0`, a commit line; the commit lands on the scratch branch only),
-and, only when B7 failed, repeat B6-B7 under `rw` and record both verdict lines side by side.
+The in-lane-commit sub-check is done as A8 (set `"rw"` in `tools/test-runner/ciu.defaults.toml.j2`, recreate the
+runner through `ciu worktree up "$NAME"` or the controller-approved fallback of B4, confirm the INFO line says
+`(rw)`, repeat checks a and b, run the in-runner commit: PASS `rc=0`, a commit line, on the scratch branch only;
+the gated `git worktree add` probe of A8b applies unchanged, with the dstdns main checkout in the last line).
+When B7 was GIT_FAILED, the controls of section 6a are mandatory and replace "repeat under rw" on its own.
 
 ### B9 cleanup (always)
 
+As in A9: a plain `rm --yes` refuses (uncommitted `.j2` edits, `.assay/` and `vol-*` protected state, an
+unmerged branch tip), so dry-run, read, abort on surprises, then remove with the exact-branch consents.
+
 ```bash
+# B9a  fresh call, NOT the guard env
+source /tmp/ciu215-probe.env; test -n "$NAME" && test -n "$RUNNER"
 cd /workspaces/dstdns
-docker inspect --type container "$RUNNER" --format '{{.Name}}'      # record exact names of the runner and the ui runner (same prefix)
-ciu worktree rm "$NAME" --yes                            # ciu clean under that instance (also removes leftover disposable p128 containers, which carry the instance prefix), then the checkout
-ciu worktree list; git worktree list | grep -c "$NAME"  # PASS: not listed / 0
-docker inspect --type container <each exact name recorded above>   # PASS: "No such object" each
-git branch --list "$NAME*"                               # PASS: empty; else git branch -D <that exact name> (scratch branch only)
-rm -f /tmp/ciu215-dst.patch
+docker inspect --type container "$RUNNER" --format '{{.Name}}'      # exact runner name; record also the exact ui runner name (<prefix>-test-runner-ui, from `ciu worktree inspect`/the up log; never an inventory)
+docker inspect --type container "$RUNNER" --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}'   # exact volume name(s)
+ciu worktree rm "$NAME" --dry-run                        # READ the output; same abort rule as A9 (only the two .j2 files, .assay/, .ciu artifacts, vol-*, the unmerged branch)
 ```
 
-Step Z (only if you created the detached vbpub source checkout in section 2):
-`git -C /workspaces/vbpub worktree remove --force "$VBPUB/.worktrees/ciu215-probe-src"`.
+```bash
+# B9b  only after the dry-run passed the abort rule
+source /tmp/ciu215-probe.env; test -n "$NAME"
+cd /workspaces/dstdns
+ciu worktree rm "$NAME" --yes --discard-changes "$NAME" --discard-protected-state "$NAME" --delete-branch   # ciu clean under that instance (also removes leftover disposable p128 containers, which carry the instance prefix), then the checkout and the branch
+ciu worktree list; git worktree list | grep -c "$NAME"  # PASS: not listed / 0
+git branch --list "$NAME*"                               # PASS: empty (no manual branch -D)
+docker inspect --type container "$RUNNER"               # PASS: "No such object"; repeat for each exact name recorded in B9a (ui runner, volumes via docker volume inspect)
+```
 
-Verify the consumers' main checkouts were not touched: `git -C /workspaces/netcup-api-filter status --short` and
-`git -C /workspaces/dstdns status --short` must show the same lines as before A0/B0 (P0 snapshot), and `git
-log origin/main..` shows nothing pushed.
+```bash
+# Step Z  last call of the probe
+source /tmp/ciu215-probe.env
+test -n "$VBPUB" && test -n "$CIU_SRC_ROOT"
+# only if section 2 step 1 created the detached vbpub source checkout (CIU_SRC_ROOT != VBPUB):
+[ "$CIU_SRC_ROOT" != "$VBPUB" ] && git -C "$VBPUB" worktree remove --force "$VBPUB/.worktrees/ciu215-probe-src"
+git -C /workspaces/netcup-api-filter status --short | diff - /tmp/ciu215-naf-main.status && echo naf-main-unchanged
+git -C /workspaces/dstdns status --short | diff - /tmp/ciu215-dst-main.status && echo dst-main-unchanged
+git -C /workspaces/netcup-api-filter log origin/main.. --oneline | head -3      # nothing pushed or committed on main
+git -C /workspaces/dstdns log origin/main.. --oneline | head -3
+rm -f /tmp/ciu215-naf.patch /tmp/ciu215-dst.patch /tmp/ciu215-probe.env /tmp/ciu215-*-main.status
+```
+
+(`git status --short` in a consumer main checkout lists ignored-nothing; an `info/exclude` line added by `ciu
+worktree create` does not show there: read `<main>/.git/info/exclude` once if the controller wants it clean,
+section 0a.)
 
 ---
 
@@ -586,11 +750,15 @@ log origin/main..` shows nothing pushed.
 | c `git commit` (exact error line, rc) | | |
 | c2 no probe commit on host | | |
 | mount row (common dir ro, `.git` ro, no rw common-dir bind) | | |
-| lane (run-gate name / assay lane) | `recovery_codes` | `p128_persister_lineage` (`--base HEAD~1`) |
+| lane (run-gate name / assay lane) | `recovery_codes` | `p128_persister_lineage` (`--base $BASE`, parent of the last commit touching `libs/common/src`) |
+| script-ran evidence (`schema-p128` line in the log) | n/a | |
+| image ids of the shared tags before / after `ciu up` | | n/a (no rebuild) |
+| baseline control (flat hand-written `:rw`, unedited templates): mount row, verdict line, cause | | |
+| ciu-`rw` control: INFO line `(rw)`, verdict line, cause | | |
 | lane `verdict` / `exit_code` / `reason` / assay outcome | | |
 | final `run-gate: lane ... verdict` line | | |
 | `GIT_FAILED` / `Read-only file system` / `could not create directory` in log (yes/no, line) | | |
-| `rw` control run (needed? verdict line) | | |
+| controls needed? (only after a GIT_FAILED, section 6a) | | |
 | rw sub-check: a, b, commit rc=0, worktree-add refusal | | |
 | probe reading (PASS / FAIL / INCONCLUSIVE) | | |
 | cleanup verified (worktree list, `No such object` per name, branch gone) | | |
@@ -600,6 +768,47 @@ log origin/main..` shows nothing pushed.
 recommendation stands; amend SPEC-V8 S16.4.9 / S6.2.4 to `ro` plus an opt-in `rw` with the RG-NARROW/RG-86
 layout. Any run FAIL: section 7. Any run INCONCLUSIVE: repeat that run's lane step (not the whole run) after
 fixing the stated cause; do not close CIU-215 or move the v8 spec on an INCONCLUSIVE.
+
+---
+
+## 6a. Controls after a `GIT_FAILED` under `ro` (baseline FIRST, then ciu-`rw`)
+
+Needed only when a lane gave `ERROR/GIT_FAILED` under `ro` (Run A or Run B). Do not skip the baseline: ciu-`rw`
+alone cannot discriminate (section 3a). One container-starting step at a time; the same scratch worktree, the
+same lane and (Run B) the same `$BASE`. Each recreate is its own detached call with the right shell hygiene
+(rule 7): Run A recreates through the A4 launch block, Run B through `ciu worktree up "$NAME"` (B3 block).
+
+**Control 1, BASELINE (the unedited templates: the flat hand-written `:rw` bind, no table).**
+
+```bash
+source /tmp/ciu215-probe.env; test -n "$WT"; cd "$WT"
+git apply -R /tmp/ciu215-naf.patch            # Run B: /tmp/ciu215-dst.patch. Restores the hand-written block, removes the table
+git status --short                             # PASS: clean (the two .j2 files are back to HEAD)
+```
+
+Recreate the runner (stale fragment: ciu removes it when the table is gone, F5), then record: the INFO line is
+ABSENT, `.ciu/ciu.compose.gitdir.yml` is gone, and the mount row shows the flat bind (`<COMMON>` with
+`rw=true`, nothing else under `<COMMON>`). Re-run checks a and b (PASS), check c now PASSES as a commit (rc=0,
+the flat bind is writable; this is the baseline, expected) and then re-run the lane (A6/A7 or B6/B7 with the
+same `$BASE`).
+
+**Control 2, ciu-`rw`.** `git apply /tmp/ciu215-*.patch`, change `"ro"` to `"rw"` in the defaults `.j2` (Edit
+tool), recreate, confirm `(rw)` in the INFO line, re-run checks a, b and the lane.
+
+**Decision table** (verdict classes per section 3: "fails" = `GIT_FAILED` with a mount-type message; "passes" =
+a verdict reached with evidence the script/snapshot ran):
+
+| `ro` | baseline | ciu-`rw` | reading and recommendation |
+|---|---|---|---|
+| passes | not run | not run | `ro` confirmed for this lane; keep the note's recommendation `ro` |
+| fails | passes | passes | the mount mode matters but ciu's `rw` layout is enough: switch the note's recommendation to **ciu `rw`** (the RG-NARROW/RG-86 layout), keep `ro` as an opt-in for lanes that do not snapshot; SPEC-V8 gets `rw` as default |
+| fails | passes | fails | **only this row** means the whole common dir must be flat `rw`: ciu's layout keeps `worktrees/` read-only and assay writes `<COMMON>/worktrees/<snap>`. Do NOT recommend ciu `rw`. Recommend either a flat-`rw` mode in ciu (a design change: new CIU entry, adversarial review) or assay no longer adding a worktree in the source (assay backlog); SPEC-V8 stays flat `rw` until decided; CIU-215 does not close |
+| fails | fails | (either) | the failure is not the mount mode (FU-5 cleanup, root-owned snapshot, image, network): `ro` is NOT refuted; the probe is INCONCLUSIVE for that lane; fix or file the cause (3a) and rerun |
+| fails with cause A | fails with cause B | any | two different causes: INCONCLUSIVE; record both messages verbatim; no recommendation |
+| passes | fails | any | the baseline is broken (not a valid control): record and stop; the `ro` pass stands |
+
+Leave the scratch worktree in the control's state until cleanup: A9/B9 handle uncommitted edits through the
+`--discard-changes` consent.
 
 ---
 
@@ -613,23 +822,28 @@ fixing the stated cause; do not close CIU-215 or move the v8 spec on an INCONCLU
    `... --format '{{json .HostConfig.Binds}}'`.
 3. The lane log (`log_path`) and the `--json` result file; the lines matching
    `GIT_FAILED|Read-only file system|fatal:|could not create directory|Permission denied`.
-4. In the runner, the exact failing git call reproduced by hand, with trace:
+4. In the runner, the exact failing git call reproduced by hand, with trace, GATED: only when the mount row
+   shows NO `rw` bind of the common dir (the `ro` layout), because otherwise the add would write into the
+   consumer's MAIN `.git`:
    `docker exec -e GIT_TRACE=1 "$RUNNER" git -C <logical checkout path> worktree add --detach /tmp/probe-wt HEAD`
-   (shows whether the failure is `<COMMON>/worktrees/` creation, i.e. assay-style `git worktree add`).
+   (shows whether the failure is `<COMMON>/worktrees/` creation, i.e. assay-style `git worktree add`). Follow
+   with `docker exec "$RUNNER" git worktree remove --force /tmp/probe-wt` and check
+   `git -C <consumer main checkout> worktree list | grep -c probe-wt` prints 0. Skip it under the baseline.
 5. Host side: `git -C <scratch worktree> rev-parse --git-dir --git-common-dir` and `cat <scratch worktree>/.git`.
 6. ciu's own refusal text if any (`[CIU-215] ...`), verbatim.
 
-**Recommendation when the dstdns lane fails under `ro` (or a netcup lane does) for a mount reason.** Switch
-the design note's recommendation to `rw`, and the docs (CONSUMERS 5f, CONFIG.md, SPEC S16.9a) accordingly. The
-evidence that supports it, in order of strength: (1) the `ro` log line `could not create directory of
-'.../.git/worktrees/<snap>': Read-only file system` from a lane whose runner mount shows the common dir
-`rw=false` (the mount row) and whose same lane PASSES or reaches a verdict under `rw` (B8 control); (2) the
-trace in capture item 4 showing the `git worktree add` came from assay inside the runner (that would also
-make the 2026-09-03 measurement valid against the current pinned judge and the note's "cannot be reproduced
-from current code" statement wrong: say so); (3) rows a, b, c passing, i.e. the mount itself worked as
-specified and only the lane's own write failed. Under `rw` keep the layout from the note (`worktrees/` ro
-with the own admin dir rw on top, empty ro hooks dir, `info/` ro, sanitized config overlays), SPEC-V8
-S16.4.9 / S6.2.4 stay on their flat-`rw` wording, and file the assay behaviour as an assay backlog entry
+**Recommendation when a lane fails under `ro` for a mount reason: follow the decision table of section 6a, not
+the `ro` failure alone.** "Switch to `rw`" is justified only by the row it names: ciu-`rw` passing where `ro`
+failed (and the baseline passing). The supporting evidence, in order of strength: (1) the `ro` log line `could
+not create directory of '.../.git/worktrees/<snap>': Read-only file system` from a lane whose runner mount
+shows the common dir `rw=false`, with the SAME lane reaching a verdict under the baseline and under ciu-`rw`;
+(2) the trace in capture item 4 showing the `git worktree add` came from assay inside the runner (that would
+also make the 2026-09-03 measurement valid against the current pinned judge and the note's "cannot be
+reproduced from current code" statement wrong: say so); (3) rows a, b, c passing, i.e. the mount itself worked
+as specified and only the lane's own write failed. If the baseline passes but ciu-`rw` fails, the whole-common-
+dir flat `rw` is what the lane needs and ciu's layout is not enough (section 6a, third row): that is a design
+finding, not a recommendation to adopt ciu `rw`. In every case SPEC-V8 S16.4.9 / S6.2.4 keep their flat-`rw`
+wording until the controller decides, and the assay behaviour is filed in the assay backlog
 (`assay/nyxloom-trove/4-backlog.md`) if the trace shows a worktree add against the source.
 
 **If the failure is not the mount** (3a: cleanup, root-owned snapshot, dubious ownership, network/pwmcp, a
@@ -658,31 +872,49 @@ Estimates, not measurements (UNVERIFIED until the first run; the numbers below a
 | Run B: create + edit (B1-B2) | 5 min |
 | Run B: `ciu worktree up` (core, db, runner; vault init, postgres, redis; images shared) | 15-30 min |
 | Run B: checks a-c, rw sub-check | 10 min |
-| Run B: lane `p128_persister_lineage` (budget 10m; plus a disposable PostgreSQL) | 10-15 min; with the `rw` control +15 min |
+| Run B: lane `p128_persister_lineage` (budget 10m; plus a disposable PostgreSQL) | 10-15 min |
+| Controls (6a), only after a GIT_FAILED: baseline recreate + lane, then ciu-`rw` recreate + lane | +30-45 min |
 | Run B: cleanup | 5-10 min |
-| **Total** | **about 2 to 3.5 hours** of host window, strictly sequential; ask the controller for 4 hours |
+| **Total** | **about 2 to 3.5 hours** of host window, strictly sequential (3 to 4.5 with the controls); ask the controller for 4-5 hours |
 
 ---
 
-## 9. UNVERIFIED items (check each first, in this order)
+## 9. Settled by the independent audit, and what is still UNVERIFIED
 
-1. **Venue**: that `ciu`, `run-gate`, `docker` and BOTH consumer checkouts exist in one shell on v1001 (P0),
-   and which shell that is (host account or the cockpit container `mdt-cockpit-runner`, whose name comes from
-   the private host table).
-2. **vbpub source on the venue** contains `c64c2ffd8`, and the interpreter has Jinja2/PyYAML/tomli_w/
-   `cli_extended` (section 2 check 2); that `PYTHONPATH` survives `ciu worktree`'s sanitized child
-   environment (proof: the `[CIU-215]` INFO line).
-3. `ciu worktree create <name> --base main` flags and default checkout dir (`.worktrees/<name>`) for
-   netcup-api-filter; `ciu worktree inspect <name> --json` field names.
-4. netcup `.env.services` in a fresh worktree (A3) and the estate pwmcp instance at `/srv/pwmcp-instance`
-   on v1001; `ciu render --dir tooling/test-runner` writing the fragment (A3b).
-5. netcup bringing up both py311 and py314 (no way found to start py314 only); first-build duration.
-6. dstdns `ciu worktree up <name>` rendering from uncommitted edits, and its needing nothing beyond the
-   declared `core` + `db` + `runner` on this host (vault init needs no operator input).
-7. `run-gate` flag order for `--base`, `--json`, `--dry-run` (`run-gate --help`), the `--json` field names, and
-   `HEAD~1` as an acceptable base for `p128_persister_lineage`.
-8. The exact EROFS wording and `rc=128` of check (c) (git's text for a read-only index lock); the `safe.directory`
-   behaviour of the netcup runner image (check a/b may need the documented retry).
+**Settled (read from code or docs by the audit; not run here):**
+
+- `PYTHONPATH` survives into `ciu worktree`'s children (they are `sys.executable -m ciu.cli ...`); the `import
+  ciu` path print and the `[CIU-215]` INFO line are the checks.
+- The managed worktree's branch name equals the logical name `$NAME`, and its path is
+  `<primary>/.worktrees/<NAME>`; the `rm` consent values are that exact branch name.
+- netcup `.env.services` is tracked in git (a fresh worktree has it); `.env.guard` is gitignored (source it from
+  the main checkout). The `PWMCP_NETWORK` `sed` line is verbatim from `docs/DEV_INFRA_SETUP.md:59`.
+- `run-gate` flag order is irrelevant (`--base`, `--json`, `--dry-run`).
+- The EROFS wording of check (c) is `fatal: Unable to create '<COMMON>/worktrees/<name>/index.lock': Read-only
+  file system`, rc 128, taken from git's source, not run here (the run is the confirmation).
+- `ciu render` has no `--dir` (only `--profile --phases --root-folder --host`); the fragment and INFO line are
+  written before the `if dry_run:` return in `engine.py` (~2960-2985 vs ~3020).
+- ciu's `rw` layout keeps `<COMMON>/worktrees/` read-only, so `ro` and ciu-`rw` fail identically on a
+  `git worktree add` into `<COMMON>/worktrees/<snap>`: only the baseline control discriminates (section 6a).
+
+**UNVERIFIED (check each first, in this order):**
+
+1. **Venue**: that `ciu`, `run-gate`, `docker`, `CGROUP_PARENT_DEV_BACKGROUND` and BOTH consumer checkouts
+   exist in one shell on v1001 (P0), and which shell that is (host account or the cockpit container
+   `mdt-cockpit-runner`, whose name comes from the private host table).
+2. **vbpub source on the venue** contains `c64c2ffd8`, the interpreter has Jinja2/PyYAML/tomli_w/`cli_extended`,
+   and this runbook's file is present there for the patch extraction (section 2).
+3. `ciu worktree create/inspect` option and JSON field names (`ciu worktree create --help`); the exact consent
+   strings `ciu worktree rm --dry-run` asks for; that the dry-run lists only the allowed blockers (A9a).
+4. `ciu up --dir tooling/test-runner --dry-run` writing the fragment and printing the INFO line (A3b; code
+   reading only; optional, A4 is binding).
+5. The estate pwmcp instance at `/srv/pwmcp-instance` on v1001; netcup bringing up both py311 and py314 (no
+   way found to start py314 only); first-build duration; that the shared image tags moving is acceptable.
+6. dstdns `ciu worktree up <name>` rendering from uncommitted edits, needing nothing beyond the declared
+   `core` + `db` + `runner` on this host, and how to force a runner recreate for the controls (B4, 6a).
+7. That run-gate needs none of netcup's `forward_env` values for `recovery_codes`; the `--json` field names of
+   the run-gate result; that `$BASE` (parent of the last `libs/common/src` commit) gives changed lines.
+8. The `safe.directory` behaviour of both runner images (check a/b may need the documented retry).
 9. Whether dstdns FU-5 (root-owned snapshot files) is still present with the current run-gate and assay
    (`dstdns` P171 report, measured at `84ac0b0b`); it can turn B7 into INCONCLUSIVE regardless of the mount.
 10. All time estimates in section 8.
