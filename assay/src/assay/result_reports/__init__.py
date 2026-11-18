@@ -9,7 +9,9 @@ two names, so a new format is a module plus one line in
 * ``read(raw: bytes) -> assay.result_reports.model.ReportSummary`` --
   strict parsing of that format's own document, raising
   :class:`~assay.result_reports.model.ReportUnusable` on anything it cannot
-  use.
+  use. A reader whose format can be checked against the command's own time
+  window (``cargo-mutants-outcomes``) also accepts an optional keyword-only
+  ``window``; the registry call below is bytes-only and passes none.
 
 **Why a package of its own, and not ``assay.adapters/``.** ``adapters/`` is
 the LANGUAGE registry: keyed by language, and every member implements the
@@ -38,7 +40,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
 
-from . import vitest_json
+from . import cargo_mutants_outcomes, vitest_json
 from .model import ReportSummary, ReportUnusable, verify_complete
 
 __all__ = [
@@ -61,6 +63,7 @@ MAX_RESULT_REPORT_BYTES = 8 * 1024 * 1024
 
 _READERS: Mapping[str, Callable[[bytes], ReportSummary]] = MappingProxyType(
     {
+        cargo_mutants_outcomes.FORMAT: cargo_mutants_outcomes.read,
         vitest_json.FORMAT: vitest_json.read,
     }
 )

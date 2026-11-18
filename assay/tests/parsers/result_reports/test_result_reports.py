@@ -168,11 +168,12 @@ def test_an_unregistered_format_refuses_rather_than_guessing():
     assert "pytest-json-report" in str(caught.value)
 
 
-def test_the_registered_vocabulary_is_exactly_checkpoint_one():
-    """Checkpoints 2 and 3 are explicitly NOT this wave. This asserts it: a
-    format declarable before its reader ships would be a lane that silently
-    falls back forever."""
-    assert RESULT_REPORT_FORMATS == frozenset({"vitest-json"})
+def test_the_registered_vocabulary_is_exactly_the_shipped_readers():
+    """Checkpoints 2 and 3 (pytest-json-report, go test -json) are explicitly
+    NOT shipped. This asserts it: a format declarable before its reader ships
+    would be a lane that silently falls back forever. ``cargo-mutants-outcomes``
+    is B245 U4's reader."""
+    assert RESULT_REPORT_FORMATS == frozenset({"vitest-json", "cargo-mutants-outcomes"})
 
 
 def test_the_read_bound_is_a_fixed_positive_ceiling():

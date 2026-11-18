@@ -80,6 +80,13 @@ def allowed(importer: str, imported: str) -> bool:
             return True
         return imported in ADAPTER_DEPS
     if ci.startswith("parsers."):
+        if (
+            importer == "assay.result_reports.cargo_mutants_outcomes"
+            and imported == "assay.mutation_parsers.cargo_mutants_outcomes"
+        ):
+            # B245 U4: one parse of one document, shared by the R0 reader and
+            # the mutation parser (design 7.14); the grammar is not copied.
+            return True
         return imported in PARSER_DEPS
     if ct == "parsers.coverage" and importer == "assay.coverage":
         return True  # format dispatcher
