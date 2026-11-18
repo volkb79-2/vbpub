@@ -115,6 +115,7 @@ from . import (
     result_reports,
     safeio,
     termination,
+    vocabulary,
     workspace as workspace_api,
 )
 from .adapters.base import HelperInvocation, LanguageAdapter
@@ -1240,6 +1241,109 @@ def _consume_result_report(
         return None
 
 
+@record
+class _DirectoryNotConsumed:
+    """The run ended before the reservation was read (timeout, process error).
+
+    Never the zero-mutant marker: nothing was observed.
+    """
+
+
+@record
+class _DirectoryAbsent:
+    """The tool wrote nothing at the declared child (the zero-mutant shape
+    only after a COMPLETED run whose R0 was a PASS by exit code)."""
+
+
+@record
+class _DirectoryRefused:
+    """The reservation refused the artifact; *error* is what it raised."""
+
+    error: AssayError
+
+
+@record
+class _DirectoryPresent:
+    """The artifact was read. *summary* is the verified R0 summary, or ``None``
+    when the report was unusable, in which case *unusable* says why."""
+
+    artifact: safeio.DirectoryArtifact
+    summary: result_reports.ReportSummary | None
+    unusable: str | None
+
+
+_DirectoryReportState = (
+    _DirectoryNotConsumed | _DirectoryAbsent | _DirectoryRefused | _DirectoryPresent
+)
+
+
+class _DirectoryReportHandle:
+    """(B245 U5a) One armed directory-artifact reservation and the four-state
+    value its single consumption produced.
+
+    ``execute_plan`` swallows every refusal and returns early on a timeout, so
+    a bare "consumed is None" would conflate absent, refused and never
+    consumed. This handle consumes AT MOST ONCE, stores which of the four it
+    was, and keeps it reachable for the post-run reader. R0 only ever sees the
+    summary: ``None`` (absent, refused, unusable) is B078's exit-code fallback,
+    and R2 carries the reason.
+    """
+
+    def __init__(self, reservation: safeio.DirectoryArtifactReservation) -> None:
+        self._reservation = reservation
+        self._state: _DirectoryReportState = _DirectoryNotConsumed()
+
+    @property
+    def state(self) -> _DirectoryReportState:
+        return self._state
+
+    @property
+    def summary(self) -> result_reports.ReportSummary | None:
+        state = self._state
+        return state.summary if isinstance(state, _DirectoryPresent) else None
+
+    def consume_once(
+        self,
+        *,
+        members: Callable[[bytes], Sequence[str]],
+        result_report_format: str,
+        started_at: datetime,
+        ended_at: datetime,
+    ) -> _DirectoryReportState:
+        """Consume the reservation the first time only; later calls return the
+        stored state unchanged (the reservation raises on a second consume)."""
+        if not isinstance(self._state, _DirectoryNotConsumed):
+            return self._state
+        try:
+            consumed = self._reservation.consume(members=members)
+        except AssayError as exc:
+            self._state = _DirectoryRefused(error=exc)
+            return self._state
+        if consumed is safeio.ABSENT:
+            self._state = _DirectoryAbsent()
+            return self._state
+        try:
+            summary: result_reports.ReportSummary | None = result_reports.read_verified(
+                result_report_format,
+                consumed.report,
+                context=result_reports.cargo_mutants_outcomes.ReportWindow(
+                    started=started_at, ended=ended_at
+                ),
+            )
+            unusable = None
+        except result_reports.ReportUnusable as exc:
+            summary, unusable = None, str(exc)
+        finally:
+            mutation_parsers.cargo_mutants_outcomes.load_document.cache_clear()
+        self._state = _DirectoryPresent(
+            artifact=consumed, summary=summary, unusable=unusable
+        )
+        return self._state
+
+    def close(self) -> None:
+        self._reservation.close()
+
+
 def _resolve_candidate_fail_fast(
     declared: bool, *, cold_witness: bool, diagnostics: Any
 ) -> bool:
@@ -1354,6 +1458,7 @@ def execute_plan(
     result_report_create_missing_parents: bool = False,
     classify_resource_contention: bool = False,
     classify_r0_termination: bool = False,
+    directory_report: "_DirectoryReportHandle | None" = None,
 ) -> CommandResult:
     """Execute one already-frozen command plan with a required remainder.
 
@@ -1409,6 +1514,12 @@ def execute_plan(
     *result_report_create_missing_parents* is B006(b)'s opt-in, threaded to
     :func:`_reserve_result_report`; only the snapshot baseline passes ``True``,
     because only it owns an ephemeral, assay-managed checkout.
+
+    *directory_report* (B245 U5a) is the already-armed directory-artifact
+    reservation of a ``cargo-mutants-outcomes`` lane. It IS that lane's result
+    report, so when it is set no file reservation is made and the run consumes
+    the handle once instead; the handle outlives this call (its state is read
+    afterwards) and is closed here.
     """
     if not is_positive_or_inf(timeout):
         raise ValueError(
@@ -1435,6 +1546,8 @@ def execute_plan(
             started=iso_utc(started_at),
             ended=iso_utc(clock()),
         )
+        if directory_report is not None:
+            directory_report.close()
         if classify_r0_termination:
             return _classify_r0_result(
                 refused,
@@ -1449,10 +1562,14 @@ def execute_plan(
     # to -- the directory the test runner's own `--outputFile` resolves
     # against -- which is why the join happens before the reservation.
     run_cwd = resolve_run_cwd(cwd, plan)
-    reservation = _reserve_result_report(
-        run_cwd,
-        result_report,
-        create_missing_parents=result_report_create_missing_parents,
+    reservation = (
+        None
+        if directory_report is not None
+        else _reserve_result_report(
+            run_cwd,
+            result_report,
+            create_missing_parents=result_report_create_missing_parents,
+        )
     )
     try:
         if termination_requested():
@@ -1474,6 +1591,7 @@ def execute_plan(
                         started_at=started_at,
                         reservation=reservation,
                         result_report=result_report,
+                        directory_report=directory_report,
                     )
                 observation = contention_window.observation
                 result = replace(result, observation=observation)
@@ -1487,6 +1605,7 @@ def execute_plan(
                     started_at=started_at,
                     reservation=reservation,
                     result_report=result_report,
+                    directory_report=directory_report,
                 )
             if classify_r0_termination:
                 result = _classify_r0_result(
@@ -1506,6 +1625,8 @@ def execute_plan(
         # early-return and every raise without a second bookkeeping flag.
         if reservation is not None:
             reservation.close()
+        if directory_report is not None:
+            directory_report.close()
 
 
 def _execute_plan_inner(
@@ -1518,6 +1639,7 @@ def _execute_plan_inner(
     started_at: datetime,
     reservation: safeio.OutputReservation | None,
     result_report: ResultReportConfig | None,
+    directory_report: "_DirectoryReportHandle | None" = None,
 ) -> CommandResult:
     """:func:`execute_plan`'s body, from launch to terminal.
 
@@ -1621,11 +1743,25 @@ def _execute_plan_inner(
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.EXEC_FAILED,
         ) from exc
-    ended = iso_utc(clock())
+    ended_at = clock()
+    ended = iso_utc(ended_at)
     process_tree_evidence = getattr(proc, "process_tree_evidence", None)
     stdout_extra_dropped = int(getattr(proc, "assay_stdout_dropped_bytes", 0))
     stderr_extra_dropped = int(getattr(proc, "assay_stderr_dropped_bytes", 0))
-    summary = _consume_result_report(reservation, result_report)
+    if directory_report is not None:
+        # (B245 U5a) The directory artifact is this lane's result report: one
+        # consume, whose four-state value stays on the handle for the R2
+        # reader. R0 only needs the summary (`None` = the exit code decides).
+        assert result_report is not None
+        directory_report.consume_once(
+            members=mutation_parsers.cargo_mutants_outcomes.diff_paths,
+            result_report_format=result_report.format,
+            started_at=started_at,
+            ended_at=ended_at,
+        )
+        summary = directory_report.summary
+    else:
+        summary = _consume_result_report(reservation, result_report)
     if (
         isinstance(process_tree_evidence, Mapping)
         and process_tree_evidence.get("outliving_descendants", 0) > 0
@@ -3496,6 +3632,10 @@ class SnapshotUnitResult:
     #: (B046) ``NO_MEASUREMENT``/``EMPTY_COVERAGE`` when the command wrote no
     #: report at all, or whatever the reservation's own consume raised.
     mutation_report_error: AssayError | None = None
+    #: (B245 U5a) The directory-artifact handle of a ``cargo-mutants-outcomes``
+    #: lane, or ``None`` for every other lane. Its four-state value is read
+    #: after the run by the R2 ingest; the run itself already consumed it.
+    directory_report: _DirectoryReportHandle | None = None
 
 
 def _execute_snapshot_unit(
@@ -3526,6 +3666,9 @@ def _execute_snapshot_unit(
     equivalence_artifact: str | None = None,
     kill_signal_artifact: str | None = None,
     mutation_artifact: str | None = None,
+    #: (B245 U5a) The lane's ``judge.mutation.format``: only used to pick the
+    #: artifact kind of *mutation_artifact* (``directory`` for cargo-mutants).
+    mutation_format: str | None = None,
     #: (B064) The lane-wide progress stream, or ``None``. Passed ONLY by the
     #: lane's own baseline unit: :mod:`assay.canary`'s control/transform
     #: halves share this engine and deliberately stay silent, because R3
@@ -3706,7 +3849,15 @@ def _execute_snapshot_unit(
     # declared path and be judged as evidence -- which is the stale-artifact
     # hole `safeio.reserve_output` exists to close for coverage (P20/A-174).
     mutation_reservation: safeio.OutputReservation | None = None
-    if mutation_artifact is not None:
+    # (B245 U5a) A directory-kind format (cargo-mutants' `<out>/mutants.out`)
+    # reserves a DIRECTORY artifact instead, below; the file path is unchanged.
+    directory_kind = (
+        mutation_artifact is not None
+        and mutation_format is not None
+        and mutation_parsers.MUTATION_FORMAT_REGISTRY[mutation_format].artifact_kind
+        == "directory"
+    )
+    if mutation_artifact is not None and not directory_kind:
         mutation_reservation = safeio.reserve_output(
             snapshot.project_root,
             mutation_artifact,
@@ -3733,10 +3884,48 @@ def _execute_snapshot_unit(
             )
         mutation_reservation.arm()
 
+    directory_report: _DirectoryReportHandle | None = None
+    if directory_kind:
+        assert mutation_artifact is not None
+        directory_reservation = safeio.reserve_directory_output(
+            snapshot.project_root,
+            mutation_artifact,
+            child="mutants.out",
+            rotated="mutants.out.old",
+            report_name="outcomes.json",
+            report_limit=mutation_parsers.MAX_MUTATION_REPORT_BYTES,
+            member_limit=256 * 1024,
+            max_members=vocabulary.MAX_INGESTED_MUTANTS,
+            max_total_bytes=64 * 1024 * 1024,
+            create_missing_parents=True,
+        )
+        if _coverage_artifact_is_tracked(
+            snapshot.root, snapshot.project_root, mutation_artifact,
+            remaining=deadline.remaining,
+        ):
+            directory_reservation.close()
+            if equivalence_reservation is not None:
+                equivalence_reservation.close()
+            if reservation is not None:
+                reservation.close()
+            raise AssayError(
+                f"the declared judge.mutation.artifact {mutation_artifact!r} "
+                f"is tracked by git inside the prepared snapshot -- "
+                f"measurement output must not be committed, and a COMMITTED "
+                f"mutation report is one assay would read as evidence of a "
+                f"run that never happened",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        directory_reservation.arm()
+        directory_report = _DirectoryReportHandle(directory_reservation)
+
     if kill_signal_artifact is not None and _coverage_artifact_is_tracked(
         snapshot.root, snapshot.project_root, kill_signal_artifact,
         remaining=deadline.remaining,
     ):
+        if directory_report is not None:
+            directory_report.close()
         if mutation_reservation is not None:
             mutation_reservation.close()
         if equivalence_reservation is not None:
@@ -3789,6 +3978,7 @@ def _execute_snapshot_unit(
             result_report_create_missing_parents=True,
             classify_resource_contention=classify_resource_contention,
             classify_r0_termination=classify_r0_termination,
+            directory_report=directory_report,
         )
     if progress is not None:
         progress.emit(_command_finished_event(result, phase=progress_phase))
@@ -3908,6 +4098,7 @@ def _execute_snapshot_unit(
         equivalence_error=equivalence_error,
         mutation_report_bytes=mutation_report_bytes,
         mutation_report_error=mutation_report_error,
+        directory_report=directory_report,
     )
 
 
@@ -4669,6 +4860,7 @@ def _run_prepared_lane(
             equivalence_artifact=equivalence_artifact,
             kill_signal_artifact=kill_signal_artifact,
             mutation_artifact=mutation_artifact,
+            mutation_format=lane.judge.mutation.format if r2_ingested else None,
             progress=progress_stream,
             progress_heartbeat_seconds=progress_heartbeat_seconds,
             classify_r0_termination=True,

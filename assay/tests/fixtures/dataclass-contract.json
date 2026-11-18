@@ -1276,6 +1276,66 @@
         "weakref_slot": false
       }
     },
+    "assay.runner._DirectoryAbsent": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.runner._DirectoryNotConsumed": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.runner._DirectoryPresent": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.runner._DirectoryRefused": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.runner._PreparedOutcome": {
       "fields": {},
       "params": {
