@@ -550,8 +550,7 @@ def _parse_pressure(value: object) -> dict[str, float | None] | None:
         valid = (
             not isinstance(reading, bool)
             and isinstance(reading, (int, float))
-            and math.isfinite(float(reading))
-            and 0 <= reading <= 100
+            and 0 <= reading <= 100  # NaN and infinity fail this range test
         )
         result[key] = float(reading) if valid else None
     return result

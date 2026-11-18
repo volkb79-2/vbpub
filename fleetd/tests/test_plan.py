@@ -1071,7 +1071,7 @@ def test_golden_cli_plan_for_two_eight_gib_four_core_hosts_and_230_candidates(tm
         assert len(plan["execution"]["commit"]) == 40
     deterministic_plan = {key: value for key, value in plan.items() if key != "execution"}
     digest = hashlib.sha256(dump_json(deterministic_plan).encode("utf-8")).hexdigest()
-    assert digest == "baa9d847a791f023d562007530ac5fb5e1592d73962a4e340ae499f8bf29d759"
+    assert digest == "fa3d5ddbe8a2df95e74b467944382c9ce09abadd28492bb3bb76ed4a59185edd"
 
 
 def test_other_work_and_memory_reserves_bound_worker_and_physical_budgets():

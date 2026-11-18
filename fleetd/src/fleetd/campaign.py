@@ -575,6 +575,7 @@ class CampaignManager:
         host_state["last_contact_mono"] = now
         host_state["status"] = "ONLINE"
         host_state.pop("error", None)
+        host_state["pressure"] = self.runner.pressure(host_id)
         if returned_lost:
             host_state["loss_requeued"] = False
             host_state["returned_after_loss"] = True
@@ -1045,10 +1046,34 @@ class CampaignManager:
             next_batch += 1
             state["jobs"][spec.name] = self._job_record(spec, self.clock(), batch.get("kind", "regular"), reason=reason)
 
+    @staticmethod
+    def _start_deferral(state: Mapping[str, Any], host_id: str) -> str | None:
+        """Why this host gets no new batch for now, or ``None`` when its pressure allows one.
+
+        A running batch is never stopped for pressure: this only defers a start.
+        The comparison is the planner's (``value > threshold``). An unreadable
+        PSI file, or a plan that never recorded the threshold, defers too: the
+        supervisor does not start work on a host it cannot show is quiet.
+        """
+        plan_host = next(row for row in state["plan"]["hosts"] if row["id"] == host_id)
+        threshold = plan_host.get("psi_refuse_some_avg10")
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(float(threshold)):
+            return "plan records no psi_refuse_some_avg10; re-plan to start new batches on this host"
+        pressure = state["hosts"][host_id].get("pressure")
+        for resource in ("memory", "io"):
+            value = pressure.get(f"{resource}_some_avg10") if isinstance(pressure, dict) else None
+            if value is None:
+                return f"{resource} PSI some avg10 is unknown on the host; no new batch starts"
+            if value > threshold:
+                return f"{resource} PSI some avg10 {value:g}% exceeds {threshold:g}%; no new batch starts until it falls"
+        return None
+
     def _start_available(self, state: dict[str, Any]) -> None:
         for host_id in sorted(host["id"] for host in state["plan"]["hosts"] if host.get("status") == "available"):
             host_state = state["hosts"][host_id]
             if host_state["status"] not in {"ONLINE", "UNKNOWN"}:
+                continue
+            if self._start_deferral(state, host_id) is not None:
                 continue
             limit = host_state["inflight_limit"]
             active = [
@@ -1129,10 +1154,18 @@ class CampaignManager:
                     "exit_code": job.get("exit_code"),
                     "reason": job.get("failure_reason"),
                 })
+            deferral = (
+                self._start_deferral(state, host_id)
+                if host_plan.get("status") == "available"
+                and host_state["status"] in {"ONLINE", "UNKNOWN"}
+                and any(job["status"] == "QUEUED" for job in host_jobs)
+                else None
+            )
             result_hosts.append({
                 "host": host_id,
                 "state": host_state["status"],
                 "error": host_state.get("error"),
+                "start_deferred": deferral,
                 "reserve_bytes": host_plan.get("reserve_bytes"),
                 "reserve_source": host_plan.get("reserve_source"),
                 "reserve_missing_services": host_plan.get("reserve_missing_services", []),
