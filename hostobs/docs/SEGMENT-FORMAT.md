@@ -56,7 +56,10 @@ consumer reads them back. That split is why `store` needs no dependency on `prot
   adopted.** A file is proven by being adopted as a live segment (its header is this tier's and
   its `seq` and start agree with the name, the identity rule below); a look-alike at the bound
   (garbage, a foreign header, a quarantined file whose key was not identity-checked) reserves at
-  most `SEQ_NAME_MAX - 1`, so the next segment can still be minted at the bound. When the next
+  most `SEQ_NAME_MAX - 1`, so the next segment can still be minted at the bound. Known limit: a
+  genuinely quarantined segment at exactly `SEQ_NAME_MAX` reserves only `SEQ_NAME_MAX - 1`, so a
+  mint at the bound with the same `start_s` could later be refused its quarantine rename because
+  `<name>.seg.open.corrupt` already exists; reaching it needs 2^32 segments. When the next
   sequence would exceed `SEQ_NAME_MAX` the tier fails with the typed overflow error
   (`LengthOverflow`, legitimate exhaustion). The Python reference mirrors the bound in
   `parse_segment_name` and `parse_quarantine_name`.

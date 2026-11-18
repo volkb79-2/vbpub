@@ -72,6 +72,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-57 | `docs/hand-mutants/m1d-mutants.py` had no per-mutant subprocess timeout, so a mutant that hangs the suite hangs the campaign | Minor | FIXED (P0b) |
 | HOB-58 | The reports of an eviction that dropped an already-gone or unremovable entry reach only `TierScan::notes`, so the caller of `append`/`evict` never sees them and a rescan resets them | Minor | FIXED (P0b) |
 | HOB-59 | `Tier::append` and `Store::evict` drop the partial `Evicted` (counts and notes) when an eviction fails after a partial pass | Minor | OPEN |
+| HOB-60 | `Store::notes` visibility is decided by name, not by directory, and the store's eviction-notes ring may be redundant with the tiers' `scan.notes` | Minor | OPEN |
 
 ---
 
@@ -1081,7 +1082,10 @@ reference mirrors the bound; mutants remove each guard.
 `parse_quarantined` (and the Python `parse_segment_name`/`parse_quarantine_name`) refuse a larger
 sequence in all four spellings; `rescan` lets a name reserve at most `SEQ_NAME_MAX - 1` until an
 adopted live segment proves it (then its full sequence); `open_segment` returns `LengthOverflow`
-once the next sequence would exceed the bound; `docs/SEGMENT-FORMAT.md` states the rule. Stored
+once the next sequence would exceed the bound; `docs/SEGMENT-FORMAT.md` states the rule. Known
+limit: a genuinely quarantined segment at exactly `SEQ_NAME_MAX` reserves only `SEQ_NAME_MAX - 1`,
+so a mint at the bound with the same `start_s` could later be refused its quarantine rename because
+`<name>.seg.open.corrupt` exists; reaching it needs 2^32 segments. Stored
 hand-mutation patches `M1d-17` and `M1d-20`, not yet run.
 
 ## HOB-56 — `StoreStats::bytes` drifts from the tiers' own totals
@@ -1161,3 +1165,20 @@ own `scan.notes`.
 with the error (or the counters and notes are applied before the error is propagated), the store
 counts the partial pass, and a test makes a removal fail after a successful one and checks the
 counts and the notes.
+
+## HOB-60 — `Store::notes` visibility is by name, and the notes ring may be redundant
+
+**Where:** `crates/store/src/store.rs` (`is_visible`, `Store::notes`, `keep_notes`).
+
+`Store::notes` hides a scan note whose name parses to a tier of the store other than the tier whose
+scan made it. That decision is by name, not by directory: a foreign `warm-0-3.seg` in a directory
+warm does not scan is hidden although no tier owns it. The store's eviction-notes ring is
+redundant with the tiers' `scan.notes` for every case reachable through the store's API (the store
+has no call that rescans a tier), so the claim that the ring outlives a rescan is not tested and is
+not made; a mutant that leaves the ring out (`M1d-22`) is possibly equivalent for the same reason.
+
+**Exit criteria.** `is_visible` hides a cross-tier note only when the producer's directory is also
+the directory of the tier the name belongs to (shared directory), and a test plants a foreign
+`warm-0-3.seg` in cold's directory and sees it; either a store call rescans a tier and a test shows
+the ring keeping a report across it, or the ring is removed and `Store::notes` reads `scan.notes`
+alone.

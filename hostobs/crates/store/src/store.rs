@@ -633,8 +633,8 @@ impl Store {
     /// another tier kind), because that is what an operator needs to see.
     ///
     /// The reports of eviction passes follow (an entry dropped because its file was already
-    /// gone, or could not be removed), once each: they survive a tier's rescan, and at most
-    /// [`MAX_EVICTION_NOTES`] are kept, the oldest dropped first (HOB-58). A quarantined file
+    /// gone, or could not be removed), once each, and at most [`MAX_EVICTION_NOTES`] are kept,
+    /// the oldest dropped first (HOB-58). A quarantined file
     /// that could not be removed stays on disk, uncounted, and is adopted again at the next
     /// restart.
     #[must_use]
