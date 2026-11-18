@@ -485,6 +485,8 @@ from ssh exit 255. Until then, call `tick` every few minutes (SPEC, README).
 
 **Resolved (2026-11-18, cb7a00b33).** The loss clock starts at the first failed contact the controller observed (`unreachable_since = now`, persisted, at every contact-failure site); a timeout (rc 124) raises `HostSlow` and is reported `SLOW`, feeding the same 1800 s clock; ssh 255 is unchanged.
 
+**Follow-up (WP2b, 28c91bbda).** An `ERROR` answer now also ends an open unreachable episode (one shared helper with the good-probe path); before, a probe-level error left the old clock open and the next failed probe declared the host `LOST` at once and re-queued batches still running there. A host already `UNREACHABLE` when this code takes over a state keeps its old clock and may go `LOST` on the first new tick (documented in SPEC).
+
 ## FD-021 One host's error aborts the scheduling step
 
 **State:** DONE (2026-11-14). **Priority:** P2. **Filed:** 2026-11-14 (Opus series review).
@@ -601,6 +603,8 @@ chosen, has its unfinished candidates re-queued) and that a recovery before the
 threshold keeps its batches; SPEC and design guide state the rule.
 
 **Resolved (2026-11-18, 18c8b30dc).** Ruling: age and warn only. `status` host rows carry `error_since`, `error_seconds` and a `warning` from 1800 s; no automatic LOST and no re-queue (an ERROR host may have live batches), the operator decides.
+
+**Follow-up (WP2b, 28c91bbda).** The error clock is decided once per command from the host's final status (after the start step for `run`/`tick`, at the end of the refresh for `status`/`collect`/`measurement`); an error raised after a good probe (digest mismatch, invalid record, refused stop or start) no longer restarts it, so the 1800 s warning fires exactly once. Known limit: a `status` between ticks ends a refused-start episode (it probes successfully and cannot start); the next refused start begins a new clock.
 
 ## FD-029 Nothing wires the default R2 commands into a workflow
 

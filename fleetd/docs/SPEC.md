@@ -332,7 +332,13 @@ successful contact (FD-020): more than 1800 seconds of continuous failed contact
 marks the host lost, and one failed probe after a long gap does not. A probe that
 times out (exit 124) is reported as `SLOW` instead of `UNREACHABLE`; it feeds the
 same clock and counts toward `LOST` only after the same 1800 seconds. ssh exit 255
-is `UNREACHABLE`. A recovery before the threshold keeps every batch.
+is `UNREACHABLE`. A recovery before the threshold keeps every batch. Any answer
+from the host ends the episode, including an `ERROR` one (a garbled probe, a
+digest mismatch): the silent time is added to the stall pause and the clock is
+cleared, so the next failed contact starts a fresh one and never inherits an old
+instant. A host that is already `UNREACHABLE` when this clock takes over a
+campaign state keeps its old `last_contact`-based clock and may go `LOST` on the
+first new tick, as before.
 All work owned by the lost host, including batches that were queued but never
 started, is marked lost and considered for re-planning. Only unfinished
 candidate IDs are sent to the reachable planned host with the largest
@@ -358,15 +364,26 @@ or stalled batch with no finished candidate from its own start becomes
 failure reason and exit code when available. Re-queue remains unlimited for batches that made progress. A stalled
 batch that made progress keeps its `STALLED` marker and creates one replacement
 batch. A returning host may finish a duplicate; no lease or renewal is used.
+Known limit: if the lost source host returns and re-adopts a deferred candidate
+(FD-017), and a third, larger host then comes online, the retry excludes only the
+source host's in-flight jobs and may start the candidate there as well; the
+returning host may finish it too. The collector counts the second result as an
+ignored duplicate; no logic prevents the second start.
 Transport or contract errors mark only the affected host `ERROR`; a tick still
 supervises the other hosts and reports the error in status. A host that stays
 in `ERROR` is aged, never lost (FD-026): the host row carries `error_since` (UTC
 seconds), `error_seconds` and, from 1800 seconds, a `warning`; the campaign state
 records one warning per episode. There is no automatic `LOST` and no re-queue,
 because an `ERROR` host (contract or identity refusal) may have live batches and
-re-queueing would duplicate work: the operator decides. The clock keeps its first
-instant while the host stays in `ERROR` and clears on recovery or on an
-unreachable or slow contact.
+re-queueing would duplicate work: the operator decides. The clock is decided once
+per command from the host's final status: `run` and `tick` after the start step
+(so an error raised after a good probe, such as a digest mismatch, an invalid
+record or a refused start, cannot restart it), `status`, `collect` and
+`measurement` at the end of their refresh. An `ERROR` host without a clock gets
+one, an `ERROR` host keeps its first instant, any other status clears it. Known
+limit: a refused start is only detected by `run` and `tick`; a `status` between
+two ticks probes the host successfully and so ends that episode, and the next
+refused start begins a new clock.
 
 Before uploading a batch's ID file, start reads the probe's `checkout_ready`
 flag for the missing job: the persistent checkout must be a non-symlink

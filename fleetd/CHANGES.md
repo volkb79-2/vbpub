@@ -20,6 +20,14 @@ All notable changes to this project are recorded here.
   re-queue target no longer drops the placeable others, and the unplaceable ids
   wait in `deferred_requeues` with the planner's reason until a larger host is
   online, else `collect` reports them missing with that reason (FD-017).
+- Campaign supervision follow-up (WP2b). An `ERROR` answer (a garbled probe, a
+  digest mismatch) now ends an open unreachable episode like a good probe, so a
+  later failed probe starts a fresh loss clock instead of declaring the host
+  `LOST` at once and re-queueing work that still runs there (FD-020). The error
+  clock is decided once per command from the host's final status, so an error
+  raised after a good probe or a refused start no longer restarts it and the
+  1800 s warning fires once (FD-026). A batch that exits on an `ERROR` host is
+  deferred with an ERROR reason instead of "unreachable".
 - Size R2 shard budgets from the per-candidate mean and a measured tail margin
   (FD-031). `fleet-r2-measurement/1` stays `/1` and its `summary` gains
   additive optional fields `cost_candidates`, `cost_seconds_sum`,

@@ -434,10 +434,13 @@ scheduler records the message and continues the tick for other hosts; identity
 and guard refusals remain errors rather than being misclassified as host loss.
 A persistent `ERROR` is aged and warned about at 1800 seconds but never turned
 into `LOST` or re-queued (FD-026): such a host may have live batches, so an
-automatic re-queue would duplicate work and the operator decides.
+automatic re-queue would duplicate work and the operator decides. The clock is
+decided once per command from the host's final status, never by the individual
+error site: an error raised after a good probe cannot restart it.
 
 The loss clock starts at the first failed contact the controller observed. A
-timeout is reported as `SLOW` and feeds the same clock (FD-020). When a re-queue
+timeout is reported as `SLOW` and feeds the same clock (FD-020). Any answer,
+including an `ERROR` one, ends the episode and clears the clock. When a re-queue
 target cannot take every pending candidate, the ones that fit are queued and the
 rest wait, with the planner's reason, until a larger host is online (FD-017).
 

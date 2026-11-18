@@ -3813,3 +3813,34 @@ def test_a_slow_host_is_never_stall_stopped_before_the_loss_clock_even_past_the_
     assert state["hosts"]["host-a"]["status"] == "SLOW"
     assert state["jobs"][job["name"]]["status"] == "RUNNING"
     assert [stop for stop in stops if stop[0] == "host-a"] == []
+
+
+def test_a_host_returns_after_loss_when_the_clock_passed_or_status_says_lost_even_without_a_requeue(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    # (a) the clock passed the loss threshold but no failed probe has said LOST yet.
+    transport.set_unreachable("host-a")
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    transport.set_unreachable("host-a", False)
+    manager.tick("campaign")
+    host = _state(tmp_path)["hosts"]["host-a"]
+    assert host["status"] == "ONLINE" and host["returned_after_loss"] is True
+    # (b) LOST by a refresh-only command (status): nothing was re-queued.
+    transport.set_unreachable("host-b")
+    manager.status("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    manager.status("campaign")
+    host = _state(tmp_path)["hosts"]["host-b"]
+    assert host["status"] == "LOST" and host["loss_requeued"] is False
+    # Drop the clock by hand: only the LOST status itself carries the fact now.
+    state = _state(tmp_path)
+    state["hosts"]["host-b"]["unreachable_since_mono"] = None
+    manager._write_state(state)
+    transport.set_unreachable("host-b", False)
+    manager.status("campaign")
+    host = _state(tmp_path)["hosts"]["host-b"]
+    assert host["status"] == "ONLINE" and host["returned_after_loss"] is True
