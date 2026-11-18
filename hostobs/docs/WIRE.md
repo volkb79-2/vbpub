@@ -518,7 +518,7 @@ buffer for the allocation tests; a poisoned reader holds no buffer. The 64 KiB g
 to `len / 64 KiB` reallocations for the largest frame (256 at 16 MiB); this is accepted, because the
 capacity bound forbids geometric growth.
 
-5.3 **Send hub** (`proto::stream::SendHub`, server side, one per serving process that owns every
+5.3 **Send hub** (`proto::hub::SendHub`, server side, one per serving process that owns every
 connection's outgoing queue; P5b wraps it in one mutex). It owns the per-uid and global pools, so the
 victim of an overflow is chosen with every queue in view.
 
@@ -585,6 +585,33 @@ close another (the victim is whoever holds the most sheddable bytes, and only Li
 one uid holds at most a quarter of each pool and each frame it is sent must complete within
 `frame_completion_ms`, so a dribbling reader cannot starve other clients; a stalled writer is closed
 after `stall_ms` from the last byte it accepted, never sooner after an idle period.
+
+**Implemented (`crates/proto/src/hub.rs`).** One unit test per operation row and per consequence
+above (`control_row_*`, `live_row_*`, `fit_*`, `query_row_*`, `end_stream_row_*`, `head_row_*`,
+`poll_row_*`, `drain_unpinned_row_*`, `remove_row_*`), plus a pool-exactness checker that recomputes
+every pool from the queues after each operation of a pseudo-random run. Precisions the tables leave
+open: bytes stay in a pool until the entry is popped, shed, coalesced, drained or removed, so a partly
+written head still counts; `head` returns the **unwritten rest** of the entry as `[prefix part,
+tail part]` (a control frame has an empty prefix; after `wrote(n)` the prefix part shrinks first), and
+`wrote` clamps to the entry's length, ignores a call without a pinned head and pops a zero-length
+entry on any call; a control frame is pinned like a block (`pinned_ns` and the frame-completion rule
+apply to it) but has nothing to stamp; "empty → non-empty" is judged at the moment the entry is
+inserted, so a push that sheds the queue empty and then inserts restarts `last_progress_ns`; a
+coalesced tick keeps its queue position (the replaced entry's sequence number) and, when it then does
+not fit, counts two drops (the replaced and the incoming tick); the victim of the uid and global pools
+may be the pushing connection itself (it holds the most sheddable bytes); `drain_unpinned` and
+`remove` do not count the removed ticks (the connection is closing); `end_stream` of a stream with no
+state (never pushed, or already ended) returns zeros, and a Query block of an ended stream that is
+pinned later is stamped `dropped = 0` with its own `corr`; `query_ready` compares per pool (connection,
+uid, global) the freed-Query-bytes counter at refusal with its current value, so only bytes freed in a
+pool that refused wake the stream, and it answers true for an unknown connection (the retry is then
+discarded as `Queued`); operations on an unknown connection are no-ops (`push_control` `Ok`,
+`push_live` `DroppedIncoming`, `push_query` `Queued`, `head` `None`, pools zero); `poll` is `&self`
+and keeps reporting a connection until the caller `remove`s it; `ConnId` starts at 1 and a wrapped
+id still in use is skipped; a stamped field that lies outside a block shorter than its header is not
+written (no panic). A tick's generation MUST be at least 1 (`last_pushed_gen` 0 means nothing
+pushed). The hub lives in `proto::hub`, not `proto::stream`, to keep `stream.rs` the reader and
+timers only.
 
 **Mode detection** (`proto::stream::ModeDetect`, server, P2; drives §5.4's `Undecided` rows):
 `feed(bytes) -> Detect` with `Detect::Need` (consumed everything, fewer than 8 prefix bytes so far),
@@ -967,7 +994,7 @@ unwritten head: EVT `closing` written; with a partially written head: no EVT, cl
 ## 12. Work breakdown
 
 **P2 — `proto` stream layer and codec additions (L).** Modules `crates/proto/src/stream.rs` (`FrameReader`,
-`ModeDetect`, `SendHub`, `ConnTimers`, `StreamDicts`), `crates/proto/src/envelope.rs` (REQ/REP/END/EVT JSON shape checks without a JSON
+`ModeDetect`, `ConnTimers`, `StreamDicts`), `crates/proto/src/hub.rs` (`SendHub`), `crates/proto/src/envelope.rs` (REQ/REP/END/EVT JSON shape checks without a JSON
 dependency: byte-level only — `proto` stays dependency-free; JSON parsing is the caller's),
 `frame.rs` additions. Public API:
 `FrameReader::new(max_frame: u32, completion_ns: u64) -> FrameReader`;

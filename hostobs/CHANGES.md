@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added (P2b: the send hub; `HOB-54` stays open, hub fixtures PARTIAL)
+
+- **`proto::hub::SendHub`** (WIRE.md §5.3, §12): `QueueLimits`, `ConnId`, `add`/`remove`/
+  `drain_unpinned`, `push_control`/`push_live`/`push_query`, `query_ready`, `end_stream`, `head`
+  (pins and stamps `corr` and `dropped` into a private prefix)/`head_partial`/`wrote`, `poll`,
+  `queued`/`uid_pools`/`global_pools`, `TickForms`, `Close`, `LiveOutcome`, `QueryOutcome`,
+  `StreamCounts`, `Pools`. Std-only; one unit test per §5.3 operation row and consequence and a
+  pool-exactness checker over a pseudo-random run. The decisions the tables leave open are the
+  `Implemented` paragraph of §5.3.
+- **Gates.** `crates/proto/src/hub.rs` is a declared `assay-r1` target (35 judged files).
+
 ### Added (P2a2: the stream reader, mode detection and connection timers; `HOB-54` stays open)
 
 - **`proto::stream::FrameReader`** (WIRE.md §5.2): `feed(bytes, now_ns) -> Feed { frames, error }`,

@@ -1119,8 +1119,9 @@ specified with fake-clock tables but have no code, so no stream property of `hos
 test per row), `ModeDetect` (the §5.3 mode-detection rows) and `ConnTimers` (one test per §5.4 timer
 row); `ProtoError::Deadline` is the reader's completion-age error. The 12 reader cases are
 `fixtures/stream/reader-*.json` (generator `python/reference/make_stream_fixtures.py`, replayed by
-`crates/proto/tests/stream_fixtures.rs`). Still open: `SendHub` and the 19 hub cases, `StreamDicts` and
-the 6 client cases, `envelope.rs`, the Python `stream.py`, and P5b's 18 connection cases.
+`crates/proto/tests/stream_fixtures.rs`). **P2b:** `crates/proto/src/hub.rs` holds `SendHub` (one unit
+test per §5.3 row and consequence); the 19 `fixtures/stream/hub-*.json` files, their generator and
+replay are not written yet. Still open: the 19 hub fixtures, `StreamDicts` and the 6 client cases, `envelope.rs`, the Python `stream.py`, and P5b's 18 connection cases.
 
 **Exit criteria.** P2: the §12 `FrameReader`, `ModeDetect`, `SendHub` and `ConnTimers` APIs in Rust
 with the 12 reader and 19 hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row; P3: the Python
