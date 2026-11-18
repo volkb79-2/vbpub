@@ -92,14 +92,27 @@ def test_the_leftover_child_guard_names_a_child_and_its_cmdline(monkeypatch):
             child.stderr.close()
 
 
-def _wait_for_completion(path: Path, timeout: float = 60.0) -> None:
-    """Wait without signalling for the inner test's self-terminating child."""
+def _wait_for_process_exit(pid: int, timeout: float = 300.0) -> None:
+    """Wait for a non-child PID to disappear after the pipe's EOF released it."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if path.is_file():
+        if not os.path.exists(f"/proc/{pid}"):
             return
         time.sleep(0.05)
-    raise AssertionError(f"inner child did not terminate by its own lifetime: {path}")
+    raise AssertionError(f"inner child did not exit after pipe EOF: pid {pid}")
+
+
+def _reap_recorded_children(pid_paths: list[Path]) -> None:
+    """Reap direct children after EOF; tolerate normal reparenting to init."""
+    for pid_path in pid_paths:
+        pid = int(pid_path.read_text(encoding="utf-8"))
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            # Without a subreaper the child was reparented to init and is not
+            # this process's child.  The /proc check below is cleanup only.
+            pass
+        _wait_for_process_exit(pid)
 
 
 def test_the_real_guard_is_autouse(request):
@@ -128,10 +141,6 @@ _spec.loader.exec_module(_suite)
 
 pytest_configure = _suite.pytest_configure
 _no_leftover_direct_children = _suite._no_leftover_direct_children
-
-
-def pytest_sessionfinish():
-    Path(__file__).with_name("inner-run-finished").write_text("finished", encoding="utf-8")
 """
     )
     pytester.makepyfile(
@@ -144,30 +153,24 @@ import pytest
 
 _CHILD = '''\\
 import sys
-import time
-from pathlib import Path
 
-token, release, finished = sys.argv[1:]
 print("ready", flush=True)
-deadline = time.monotonic() + 30.0
-while not Path(release).exists() and time.monotonic() < deadline:
-    time.sleep(0.05)
-Path(finished).write_text(token, encoding="utf-8")
+sys.stdin.buffer.read()
 '''
 
 
 def _spawn(token):
-    release = Path(__file__).with_name("inner-run-finished")
-    finished = Path(__file__).with_name(token + ".finished")
+    pid_path = Path(__file__).with_name(token + ".pid")
     child = subprocess.Popen(
-        [sys.executable, "-c", _CHILD, token, str(release), str(finished)],
+        [sys.executable, "-c", _CHILD, token],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
     assert child.stdout is not None
     assert child.stdout.readline().strip() == "ready"
-    return finished
+    pid_path.write_text(str(child.pid), encoding="utf-8")
+    return pid_path
 
 
 def test_unmarked_leak_fails_in_fixture_teardown():
@@ -179,18 +182,42 @@ def test_marked_leak_is_allowed():
     _spawn("allowed-child-CIU-223")
 """
     )
-    result = pytester.runpytest_subprocess("-q", "--strict-markers")
-    assert result.ret != 0
-    result.assert_outcomes(errors=1, passed=2)
-    teardown_error = (
-        "ERROR at teardown of "
-        "test_unmarked_leak_fails_in_fixture_teardown"
-    )
-    assert teardown_error in result.stdout.str()
-    assert "leaky-child-CIU-223" in result.stdout.str()
-    assert "allowed-child-CIU-223" not in result.stdout.str()
-    _wait_for_completion(pytester.path / "leaky-child-CIU-223.finished")
-    _wait_for_completion(pytester.path / "allowed-child-CIU-223.finished")
+    read_fd, write_fd = os.pipe()
+    pid_paths = [
+        pytester.path / "leaky-child-CIU-223.pid",
+        pytester.path / "allowed-child-CIU-223.pid",
+    ]
+    try:
+        # fd 0 in the inner pytest is a duplicate of the read end.  Its test
+        # children inherit fd 0, so they block here until the outer test closes
+        # the write end.  No fd or timeout decides pass/fail before that EOF.
+        result = pytester.run(
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "--strict-markers",
+            f"--basetemp={pytester.path / 'runpytest-pipe'}",
+            stdin=read_fd,
+        )
+        os.close(read_fd)
+        read_fd = -1
+        assert result.ret != 0
+        result.assert_outcomes(errors=1, passed=2)
+        teardown_error = (
+            "ERROR at teardown of "
+            "test_unmarked_leak_fails_in_fixture_teardown"
+        )
+        assert teardown_error in result.stdout.str()
+        assert "leaky-child-CIU-223" in result.stdout.str()
+        assert "allowed-child-CIU-223" not in result.stdout.str()
+    finally:
+        if read_fd >= 0:
+            os.close(read_fd)
+        os.close(write_fd)
+        write_fd = -1
+        _reap_recorded_children(pid_paths)
+    assert not suite_conftest._direct_children()
 
 
 @pytest.fixture
