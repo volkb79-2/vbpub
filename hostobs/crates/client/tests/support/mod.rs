@@ -15,6 +15,14 @@ use hostobs_client::{Client, ClientError, ClientInfo, Clock, Level, Redial, Tran
 /// One millisecond in nanoseconds.
 pub const MS: u64 = 1_000_000;
 
+/// The most reads (and the most writes) one scripted transport serves. No legitimate test comes
+/// near it (a frame delivered one byte per read needs one call per byte of a small frame); a client
+/// that loops on its transport without the clock moving (for example a hang mutant of the
+/// retry path) would otherwise push a wait per call for as long as the test runner lets it
+/// live: gigabytes within seconds. At this bound the script panics, so the test fails at once
+/// (about 16 MB of waits, a few milliseconds).
+pub const MAX_TRANSPORT_CALLS: usize = 1_000_000;
+
 /// The names of the 19 limits of a hello.
 pub const LIMIT_KEYS: [&str; 19] = [
     "max_frame_bytes",
@@ -70,6 +78,11 @@ pub struct Script {
 
 impl Transport for Script {
     fn read(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
+        let calls = self.read_waits.borrow().len();
+        assert!(
+            calls < MAX_TRANSPORT_CALLS,
+            "runaway transport loop: {calls} reads"
+        );
         self.read_waits.borrow_mut().push(timeout);
         if let Some(kind) = self.read_error_once.take() {
             return Err(kind.into());
@@ -95,6 +108,11 @@ impl Transport for Script {
     }
 
     fn write_all(&mut self, data: &[u8], timeout: Duration) -> io::Result<()> {
+        let calls = self.write_waits.borrow().len();
+        assert!(
+            calls < MAX_TRANSPORT_CALLS,
+            "runaway transport loop: {calls} writes"
+        );
         self.write_waits.borrow_mut().push(timeout);
         if let Some(kind) = self.write_error {
             return Err(kind.into());
