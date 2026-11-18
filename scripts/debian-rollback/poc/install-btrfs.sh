@@ -56,7 +56,12 @@ part() { case "$DEVICE" in *[0-9]) echo "${DEVICE}p$1" ;; *) echo "${DEVICE}$1" 
 ESP=$(part 1) ; ROOT=$(part 2)
 T=/mnt/drtarget ; TOP=/mnt/drtop
 cleanup() { # a failed run must not leave the target mounted (the next run's guard would refuse)
+  local rc=$?
   [ "$DRY" = 1 ] && return 0
+  if [ "$rc" != 0 ] && [ -s "$T/debootstrap/debootstrap.log" ]; then
+    echo "install-btrfs: failed (rc $rc); tail of debootstrap.log:" >&2
+    tail -n 60 "$T/debootstrap/debootstrap.log" >&2 || true
+  fi
   umount -R "$T" 2>/dev/null || true
   umount "$TOP" 2>/dev/null || true
 }
@@ -91,7 +96,7 @@ done
 run mkdir -p "$T/boot/efi" "$T/.top"
 run mount "$ESP" "$T/boot/efi"
 
-run debootstrap --include=linux-image-amd64,grub-efi-amd64,btrfs-progs,snapper,initramfs-tools,systemd-sysv,openssh-server,sudo,locales,systemd-resolved,dosfstools,ca-certificates "$SUITE" "$T" "$MIRROR"
+run debootstrap --include=linux-image-amd64,grub-efi-amd64,btrfs-progs,snapper,initramfs-tools,systemd-sysv,openssh-server,sudo,locales,ifupdown,isc-dhcp-client,dosfstools,ca-certificates "$SUITE" "$T" "$MIRROR"
 
 if [ "$DRY" != 1 ]; then
   RUUID=$(blkid -s UUID -o value "$ROOT")
@@ -118,9 +123,11 @@ write_file() { # write_file PATH (content on stdin); shows it instead in a dry r
 echo "$fstab" | write_file "$T/etc/fstab"
 echo "$HOSTNAME_" | write_file "$T/etc/hostname"
 printf '127.0.0.1 localhost\n127.0.1.1 %s\n' "$HOSTNAME_" | write_file "$T/etc/hosts"
-# DHCP on every ethernet NIC through systemd-networkd; systemd-resolved owns resolv.conf
-run mkdir -p "$T/etc/systemd/network"
-printf '[Match]\nName=en* eth*\n\n[Network]\nDHCP=yes\n' | write_file "$T/etc/systemd/network/20-dhcp.network"
+# DHCP on the first NIC through ifupdown + isc-dhcp-client (dhclient writes resolv.conf). The menu passes
+# net.ifnames=0 so the NIC is always eth0. (systemd-resolved failed to configure inside the debootstrap chroot
+# in run 2a, see RESULTS; networkd/resolved is the better product answer and stays an open item.)
+run mkdir -p "$T/etc/network/interfaces.d"
+printf 'allow-hotplug eth0\niface eth0 inet dhcp\n' | write_file "$T/etc/network/interfaces.d/eth0"
 
 run install -m 0755 "$HERE/dr-state" "$T/usr/local/sbin/dr-state"
 run mount --bind /dev "$T/dev"
@@ -131,8 +138,6 @@ run mount --bind /sys/firmware/efi/efivars "$T/sys/firmware/efi/efivars" || true
 chroot_run() { run chroot "$T" "$@"; }
 if [ "$DRY" != 1 ]; then echo "root:$ROOTPW" | chroot "$T" chpasswd; fi
 run chmod 700 "$T/root"
-chroot_run systemctl enable systemd-networkd systemd-resolved
-run ln -sf ../run/systemd/resolve/stub-resolv.conf "$T/etc/resolv.conf"
 chroot_run update-initramfs -u -k all
 chroot_run /usr/local/sbin/dr-state install-grub
 chroot_run /usr/local/sbin/dr-state gen-menu --default "$STATE"
