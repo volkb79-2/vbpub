@@ -17,8 +17,8 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-2 | SP-4 measured bytes only: encode/decode CPU, allocations and maintenance cost unmeasured | Minor | OPEN |
 | HOB-3 | `model` and `proto` duplicate the quality/metric vocabularies because the locked image cannot take the path dependency; a shared fixture, not a shared type, binds them | Major | OPEN (needs an image rebuild decision) |
 | HOB-4 | No registered `conformance` lane: the independent Python fixture check is not gate-enforced | Major | OPEN |
-| HOB-5 | Section version 1 has no history min/max/mean columns; `TIME` carries one value per bucket plus the aggregation code | Minor | OPEN (M2 work) |
-| HOB-6 | `DICT` frame type is defined but consumed nowhere: the dictionary travels inside the block frame | Minor | OPEN (deliberate) |
+| HOB-5 | Section version 1 has no history min/max/mean columns; `TIME` carries one value per bucket plus the aggregation code | Minor | OPEN (decided: WIRE.md §3.6/§4.9 D-W10, no layout change; lands with P5b `series_batch`) |
+| HOB-6 | `DICT` frame type is defined but consumed nowhere: the dictionary travels inside the block frame | Minor | CLOSED (by design: reserved and unsent, WIRE.md §2.2 D-W6) |
 | HOB-7 | `IncarnationRegistry` grows without bound and `end_round` is O(all ids ever minted) | Major | OPEN (SP-3 bound) |
 | HOB-8 | `FrameHeader::parse` does not bound its declared length; only `decode_block` does | Major | OPEN (next package's streaming reader) |
 | HOB-9 | `derive_rate` carries no boot/epoch/incarnation context, so "no rate across a boundary" is a caller contract only | Major | OPEN (store package) |
@@ -60,7 +60,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-45 | Rust R2/R3 remain unregistered for hostobs: no `assay-r2` (cargo-mutants ingestion) or `assay-r3` (canary) lane exists, so test quality rests on the hand-mutation campaigns | Major | OPEN (assay R-3b/R-4) |
 | HOB-46 | A block without an in-frame dictionary cannot be validated: `decode_block` checks row/column references only against a dictionary carried in the same frame | Major | OPEN (P2) |
 | HOB-47 | A history bucket's aggregation is never checked against the column metric's permitted mask | Minor | OPEN (P2) |
-| HOB-48 | The time section length is `align8(14·n)` in both codecs while its content is `15·n` bytes, so no history block of four or more buckets can round-trip; and a history block cannot name its subject | Major | OPEN (P2) |
+| HOB-48 | A history block cannot name its subject (kind 6 `subject`, minor 1); the time-length half is the P0 bug fold-in's (`TIME_BUCKET_BYTES = 15`, no minor) | Major | OPEN (P2) |
 | HOB-49 | `hostobs_wire_ref.py` cites a non-existent `docs/WIRE-COLUMN-CODEC.md` instead of `docs/WIRE.md` | Minor | OPEN |
 | HOB-50 | Frame header and directory checks: `SECTIONED` is accepted on every frame type, and the directory vector is allocated from `n_sec` before its bytes are proven present | Minor | OPEN (P2) |
 
@@ -497,6 +497,12 @@ and history is an M2 query surface.
 value triple) or a second bucket section kind, decided with M2's history query shape, and
 a fixture case.
 
+**Decided (WIRE.md §3.6, §4.9, D-W10).** Neither: min, max and mean of a gauge are separate
+history blocks of the same subject, one aggregation per block, packed subject-major then by
+the request's agg order; the existing bucket `agg` code says which. No layout change. Closes
+when P5b's `series_batch` serves it and the P2 fixture `history-agg-not-permitted` plus a
+three-agg packing test pass.
+
 ## HOB-6 — `DICT` frame type is defined and unused
 
 **Where:** `crates/proto/src/frame.rs` `FrameType` (type code 4), crate docs decision 2.
@@ -510,6 +516,10 @@ than deleted.
 **Exit criteria.** Either the probe emits a standalone `DICT` frame before a first block
 of a generation (and the fixtures grow that case), or the type is retired with a note in
 the crate docs.
+
+**CLOSED (by design, WIRE.md §2.2, D-W6).** The type code stays reserved and is never sent in
+`hostobs/1`; a peer that receives one treats it as `bad-frame`. The in-block dictionary
+serves live, query and segment paths, so no producer needs it. P2's stream layer refuses it.
 
 ## HOB-27 — `store` cannot depend on `proto` or `model`
 
@@ -918,22 +928,18 @@ is in the mask of every column of the block, so `mean` over a counter decodes as
 **Exit criteria.** Both decoders refuse with `aggregation-not-permitted` (WIRE.md §3.6) and the
 `history-agg-not-permitted` fixture pins it.
 
-## HOB-48 — Time section length and the missing history subject
+## HOB-48 — A history block cannot name its subject
 
-**Where:** `crates/proto/src/frame.rs` `time_body_len` (line 741) and
-`python/reference/hostobs_wire_ref.py` `time_body_len` (line 380).
+**Where:** `crates/proto/src/frame.rs` `SectionKind`, `decode_block`; `python/reference/hostobs_wire_ref.py`.
 
-The time body holds `8 + 4 + 2 + 1 = 15` bytes per bucket, but both codecs compute its length as
-`align8(14·n)`. The two agree with the content only for n ≤ 3; for n = 4 the encoder writes 64
-bytes and the decoder demands 56, and every larger n fails the same way, so no history block of
-four or more buckets can round-trip. The only fixture (`history-buckets`, n = 3) sits on the agreeing
-side. Separately, a history block has no entity reference at all, so a multi-subject
-`series_batch` reply cannot say which incarnation each block describes.
+A history block has no entity reference, so a multi-subject `series_batch` reply cannot say which
+incarnation each block describes. (The time section's length half of this entry, `align8(14·n)`
+instead of `align8(15·n)`, is a bug fix without a version change and lands in the P0 bug fold-in:
+`TIME_BUCKET_BYTES = 15`, fixture `history-five-buckets`; WIRE.md §3.6, §13 V-1.)
 
-**Exit criteria.** `align8(15·n)` in both codecs; the `subject` section (kind 6, version 1,
-required, `u32 ent | u32 0`, time blocks only, `subject-without-time` otherwise) per WIRE.md §3.8;
-`PROTO_MINOR = 1`; the `history-four-buckets`, `history-subject` and `subject-in-live-block`
-fixtures in both languages.
+**Exit criteria (P2).** The `subject` section (kind 6, version 1, required, `u32 ent | u32 0`, time
+blocks only, `subject-without-time` otherwise) per WIRE.md §3.8; `PROTO_MINOR = 1`; the
+`history-subject` and `subject-in-live-block` fixtures in both languages.
 
 ## HOB-49 — The Python reference cites a missing specification file
 

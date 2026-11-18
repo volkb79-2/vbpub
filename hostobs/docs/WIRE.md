@@ -736,7 +736,7 @@ the timer: silent close), `conn-unknown-mode`, `conn-json-first-line`, `conn-hel
 ## 12. Work breakdown
 
 **P2 — `proto` stream layer and codec additions (L).** Modules `crates/proto/src/stream.rs` (`FrameReader`,
-`SendQueue`), `crates/proto/src/envelope.rs` (REQ/REP/END/EVT JSON shape checks without a JSON
+`SendHub`, `ConnTimers`, `StreamDicts`), `crates/proto/src/envelope.rs` (REQ/REP/END/EVT JSON shape checks without a JSON
 dependency: byte-level only — `proto` stays dependency-free; JSON parsing is the caller's),
 `frame.rs` additions. Public API:
 `FrameReader::new(max_frame: u32, completion_ns: u64) -> FrameReader`;

@@ -5,12 +5,17 @@
 ### Added
 
 - **`docs/WIRE.md`: the normative `hostobs/1` specification** — connection and handshake,
-  frame types and `corr`, the implemented block layout with offsets, every M2-M3 verb with strict
-  keys, closed error codes, reader and send-queue state machines, dictionaries and reconnect, the
-  efficient Python access path with gated measurements, versioning, conformance cases and the
-  P2/P3/P5 work breakdown. Files `HOB-46`..`HOB-50` (bare-block validation, aggregation mask, the
-  time-section length defect plus the history subject section, a stale spec pointer, header and
-  directory checks).
+  frame types and `corr`, the implemented block layout with offsets and the received-frame
+  alignment rules, every M2-M3 verb with strict keys and worst-case request sizes, closed error
+  codes, fake-clock state machines for the reader, the send hub (pin-time `dropped` stamping,
+  per-stream coalescing, query backpressure, a global budget owner) and the connection timers
+  (hello, request, idle), per-selection dictionary generations, deterministic `series_batch`
+  packing, the efficient Python access path with deterministic gates set from measurements on
+  CPython 3.14, versioning, conformance cases and the P2/P3/P5 work breakdown. Files
+  `HOB-46`..`HOB-50` (bare-block validation, aggregation mask, the history subject section, a
+  stale spec pointer, header and directory checks); `HOB-48` keeps only the subject half, the
+  time-length half is the P0 bug fold-in's. `HOB-5` is decided (separate per-aggregation history
+  blocks) and `HOB-6` closed by design (`DICT` reserved).
 
 - **`assay-r1`: the coverage verdict is assay's.** A new `assay-r1` lane in
   `run-gate.toml` binds to `assay.toml [lanes.assay-r1]`, which declares a Rust
