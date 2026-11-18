@@ -30,11 +30,12 @@ if [ -z "$PICK" ]; then
 fi
 [ -x "$PICK" ] || { echo "dr-plan: dr-pick-disk not found" >&2; exit 2; }
 
-LSBLK="" CONFIG="" NOCONFIG=0 MINGIB=8 CHECK=0
+LSBLK="" LSBLK_FULL="" CONFIG="" NOCONFIG=0 MINGIB=8 CHECK=0
 declare -a EXCLUDE_ARGS=() BUSY_NAMES=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --lsblk) LSBLK=${2:?}; shift 2 ;;
+    --lsblk-full) LSBLK_FULL=${2:?}; shift 2 ;;   # `lsblk -nbP -o NAME,TYPE,...` WITHOUT -d: also lists raid/lvm/crypt/mpath devices stacked on disks
     --config) CONFIG=${2:?}; shift 2 ;;
     --no-config) NOCONFIG=1; shift ;;
     --exclude) EXCLUDE_ARGS+=(--exclude "${2:?}"); shift 2 ;;
@@ -99,18 +100,32 @@ ncand=$(printf '%s' "$candidates" | grep -c . || true)
 declare -A EXCLUDED=()
 for ((i = 1; i < ${#EXCLUDE_ARGS[@]}; i += 2)); do x=${EXCLUDE_ARGS[i]}; EXCLUDED[${x#/dev/}]=1; done
 nall=0
-nother=0   # top-level storage that is not a plain disk: md raid, multipath, lvm, crypt, ... (loop, rom and partitions do not count)
+nother=0   # storage stacked on disks that is not a plain disk: md raid, multipath, lvm, crypt, ... (loop, rom and partitions do not count)
+# The main listing is `lsblk -d` (top-level devices only): raid/lvm/crypt/mpath devices built on a disk are invisible in it.
+# With --lsblk-full the caller gives a listing WITHOUT -d, and only that one is searched for such devices; without it the
+# main listing is used (fixtures, hand use).
+if [ -n "$LSBLK_FULL" ]; then
+  [ -r "$LSBLK_FULL" ] || refuse "full lsblk file $LSBLK_FULL is not readable"
+  full_input=$(cat "$LSBLK_FULL")
+else
+  full_input=$input
+fi
+while IFS= read -r line || [ -n "$line" ]; do
+  [[ "$line" =~ (^|[[:space:]])NAME=\"([^\"]*)\" ]] || continue
+  name=${BASH_REMATCH[2]}
+  [ -z "${EXCLUDED[$name]+x}" ] || continue
+  [[ "$line" =~ (^|[[:space:]])TYPE=\"disk\" ]] && nall=$((nall + 1))
+done <<<"$input"
 while IFS= read -r line || [ -n "$line" ]; do
   [[ "$line" =~ (^|[[:space:]])NAME=\"([^\"]*)\" ]] || continue
   name=${BASH_REMATCH[2]}
   [ -z "${EXCLUDED[$name]+x}" ] || continue
   [[ "$line" =~ (^|[[:space:]])TYPE=\"([^\"]*)\" ]] || continue
   case "${BASH_REMATCH[2]}" in
-    disk) nall=$((nall + 1)) ;;
-    loop|rom|part|"") ;;
+    disk|loop|rom|part|"") ;;
     *) nother=$((nother + 1)) ;;
   esac
-done <<<"$input"
+done <<<"$full_input"
 
 emit_settings() {
   local k

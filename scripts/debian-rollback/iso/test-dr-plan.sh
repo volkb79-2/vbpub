@@ -106,6 +106,21 @@ expect lvm-device-present-REFUSES            refuse  ""       "$LVMS" "$(conf 'H
 expect raid-device-present-no-config         refuse  ""       "$OTHER" none
 expect raid-device-explicit-target-ok        install /dev/vda "$OTHER" "$(conf 'TARGET_DISK=/dev/vda')"
 expect loop-and-rom-still-do-not-count       install /dev/vda "$WORK/loop.lsblk" "$(conf 'HOSTNAME=h1')"
+# review r14: `lsblk -d` (the main listing) shows ONLY top-level devices, so a raid/lvm/crypt/mpath device stacked on a
+# disk never appears in it. dr-autoinstall therefore passes a second, FULL listing (no -d) with --lsblk-full, and only
+# that one is searched for other storage. These fixtures are what the real tools print: -d shows the disk alone.
+FULLMD=$WORK/full-md.lsblk
+{ disk vda 0 0 20; printf 'NAME="vda1" TYPE="part" ROTA="0" RM="0" SIZE="%s" TRAN=""\nNAME="md0" TYPE="raid1" ROTA="0" RM="0" SIZE="%s" TRAN=""\n' "$GIB" "$((19 * GIB))"; } > "$FULLMD"
+FULLLVM=$WORK/full-lvm.lsblk
+{ disk vda 0 0 20; printf 'NAME="vda2" TYPE="part" ROTA="0" RM="0" SIZE="%s" TRAN=""\nNAME="vg-root" TYPE="lvm" ROTA="0" RM="0" SIZE="%s" TRAN=""\n' "$((19 * GIB))" "$((18 * GIB))"; } > "$FULLLVM"
+FULLPLAIN=$WORK/full-plain.lsblk
+{ disk vda 0 0 20; printf 'NAME="vda1" TYPE="part" ROTA="0" RM="0" SIZE="%s" TRAN=""\nNAME="loop0" TYPE="loop" ROTA="0" RM="0" SIZE="%s" TRAN=""\nNAME="sr0" TYPE="rom" ROTA="1" RM="1" SIZE="%s" TRAN="sata"\n' "$GIB" "$GIB" "$((2 * GIB))"; } > "$FULLPLAIN"
+expect full-listing-raid-REFUSES             refuse  ""       "$ONE" "$(conf 'HOSTNAME=h1')" --lsblk-full "$FULLMD"
+expect full-listing-lvm-REFUSES              refuse  ""       "$ONE" "$(conf 'HOSTNAME=h1')" --lsblk-full "$FULLLVM"
+expect full-listing-raid-no-config-REFUSES   refuse  ""       "$ONE" none --lsblk-full "$FULLMD"
+expect full-listing-plain-live-system-ok     install /dev/vda "$ONE" "$(conf 'HOSTNAME=h1')" --lsblk-full "$FULLPLAIN"
+expect full-listing-raid-explicit-target-ok  install /dev/vda "$ONE" "$(conf 'TARGET_DISK=/dev/vda')" --lsblk-full "$FULLMD"
+expect full-listing-missing-file-REFUSES     refuse  ""       "$ONE" "$(conf 'HOSTNAME=h1')" --lsblk-full "$WORK/does-not-exist"
 # shellcheck disable=SC2016
 expect password-and-hash-REFUSES             refuse  ""       "$ONE" "$(conf 'ROOT_PASSWORD=abc' 'ROOT_PASSWORD_HASH=$6$salt$hash')"
 # REINSTALL=yes is a known key (the runner reads it; dr-plan only validates it)
