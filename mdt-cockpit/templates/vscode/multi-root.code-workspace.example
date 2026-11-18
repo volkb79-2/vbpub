@@ -1,0 +1,58 @@
+// Template: a multi-root .code-workspace for a devcontainer, with the file-watcher and Git settings that keep a large
+// estate from exhausting fs.inotify.max_user_watches. Copy it next to your repos (outside any repo, or git-excluded),
+// edit "folders", and open it with "File > Open Workspace from File". See ../vscode/README.md, section
+// "File watcher exhaustion".
+//
+// Why here and not only in devcontainer.json: the devcontainer's customizations.vscode.settings reach the window
+// through the machine settings file (~/.vscode-server/data/Machine/settings.json), which a rebuild does not rewrite
+// (MDT-076). Measured 2026-11-18 on a window whose machine settings lacked the block: every file-watcher request
+// carried only VS Code's built-in excludes, and the watcher took 523,900 of 524,288 inotify watches. The "settings"
+// of the workspace file are read on every open and apply to every folder of the workspace.
+//
+// Keep the patterns in the "**/name/**" form. Remember that an excluded folder is not live-refreshed in the explorer
+// (git is unaffected); drop an entry if you need live refresh there.
+{
+  "folders": [
+    { "path": "/workspaces/repo-a" },
+    { "path": "/workspaces/repo-b" },
+    { "path": "/home/vscode", "name": "home (~)" }
+  ],
+  "settings": {
+    "files.watcherExclude": {
+      // VS Code defaults (a custom value replaces the default map, so keep them)
+      "**/.git/objects/**": true,
+      "**/.git/subtree-cache/**": true,
+      "**/.hg/store/**": true,
+      "**/node_modules/**": true,
+      // build, test and tool caches
+      "**/.venv/**": true,
+      "**/__pycache__/**": true,
+      "**/.mypy_cache/**": true,
+      "**/.pytest_cache/**": true,
+      "**/.ruff_cache/**": true,
+      "**/.hypothesis/**": true,
+      "**/target/**": true,
+      // generated trees that can hold hundreds of thousands of directories (gate scratch, linked worktrees, evidence)
+      "**/.worktrees/**": true,
+      "**/.run-gate/**": true,
+      "**/pytest-of-*/**": true,
+      "**/.assay/**": true,
+      "**/artifacts/**": true,
+      "**/downloads/**": true,
+      "**/evidence/**": true,
+      "**/logs/**": true,
+      // the home folder: tool state, caches and the VS Code server's own logs (trace logging there feeds itself)
+      "**/.vscode-server/**": true,
+      "**/.codex*/**": true,
+      "**/.claude/**": true,
+      "**/.npm/**": true,
+      "**/.cache/**": true
+    },
+    // The Git extension adopts every repository it finds, including linked worktrees that scratch tools create
+    // and delete (a scratch worktree of a large repo raises the "too many active changes" popup).
+    "git.autoRepositoryDetection": "subFolders",
+    "git.openRepositoryInParentFolders": "never",
+    "git.repositoryScanMaxDepth": 1,
+    "git.repositoryScanIgnoredFolders": ["node_modules", ".worktrees", ".run-gate", ".assay"]
+  }
+}
