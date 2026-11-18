@@ -47,8 +47,9 @@ from test_runner_ingested_r2 import (  # the same real-artifact harness
 )
 
 
-@pytest.fixture
-def ingested_document(git_repo: GitRepo, tmp_path: Path) -> dict:
+def build_ingested_document(git_repo: GitRepo, tmp_path: Path) -> dict:
+    """One real StrykerJS run, as the verdict dict (shared with
+    `test_verdict_v20_fields.py`, which wraps it in its own fixture)."""
     document = _report_document()
     document["projectRoot"] = PLACEHOLDER
     staged = _stage_report(tmp_path, document)
@@ -63,6 +64,11 @@ def ingested_document(git_repo: GitRepo, tmp_path: Path) -> dict:
         assay_version="0.1.0",
     )
     return json.loads(json.dumps(verdict.to_dict()))
+
+
+@pytest.fixture
+def ingested_document(git_repo: GitRepo, tmp_path: Path) -> dict:
+    return build_ingested_document(git_repo, tmp_path)
 
 
 def _failures(document: dict) -> list[str]:

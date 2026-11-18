@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 
 import pytest
 from conftest import VERDICT_FIXTURE_DIR, why_invalid
@@ -34,14 +35,20 @@ from assay.vocabulary import (
     is_ingested_operator,
 )
 
-from test_verify_ingested_r2 import (  # noqa: F401  (fixture + shared helpers)
+from conftest import GitRepo
+from test_verify_ingested_r2 import (
     _r2_claim,
     as_cargo_mutants,
     as_report_absent,
-    ingested_document,
+    build_ingested_document,
 )
 
 OID = "a" * 40
+
+
+@pytest.fixture
+def ingested_document(git_repo: GitRepo, tmp_path: Path) -> dict:
+    return build_ingested_document(git_repo, tmp_path)
 
 
 def _model(document: dict):
