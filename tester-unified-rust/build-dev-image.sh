@@ -45,6 +45,29 @@ valid_builder_name "$builder" || {
   printf 'CGROUP_PARENT_DEV_GATES or --cgroup-parent is required (the estate rule for every image build); refusing to build without it\n' >&2
   exit 2
 }
+# The one input is the systemd slice NAME (e.g. dev-gates.slice). Two spellings are derived from it:
+# the NAME goes to every `docker run` (the systemd cgroup driver refuses a path there), the cgroup PATH
+# (systemd dash expansion: a-b-c.slice -> a.slice/a-b.slice/a-b-c.slice) goes to `docker buildx build
+# --cgroup-parent` ONLY. This function is duplicated in build-image.sh; tests/test_image_contract.py
+# pins both copies identical.
+# BEGIN slice_cgroup_path
+slice_cgroup_path() {
+  local LC_ALL=C name=$1 base prefix="" path="" part
+  local -a parts
+  [[ "$name" =~ ^[A-Za-z0-9_]+(-[A-Za-z0-9_]+)*\.slice$ ]] || return 1
+  base=${name%.slice}
+  IFS=- read -r -a parts <<< "$base"
+  for part in "${parts[@]}"; do
+    prefix+="${prefix:+-}$part"
+    path+="${path:+/}$prefix.slice"
+  done
+  printf '%s\n' "$path"
+}
+# END slice_cgroup_path
+cgroup_path="$(slice_cgroup_path "$cgroup_parent")" || {
+  printf 'invalid --cgroup-parent / CGROUP_PARENT_DEV_GATES %q: expected a systemd slice name such as dev-gates.slice (letters, digits, underscore; single - between non-empty components; ending .slice)\n' "$cgroup_parent" >&2
+  exit 2
+}
 [[ -f "$repo_root/tester-unified-rust/Dockerfile.dev" ]] || {
   printf 'tester-unified-rust/Dockerfile.dev is missing\n' >&2
   exit 2
@@ -67,12 +90,14 @@ context="$(mktemp -d)"
 trap 'rmdir "$context" 2>/dev/null || true' EXIT
 
 printf 'builder=%s\n' "$builder"
-# What --cgroup-parent does and does not do (measured on v1001, docker cgroup driver systemd): containers
-# started with `docker run --cgroup-parent dev-gates.slice` land in the governed dev.slice/dev-gates.slice,
-# but the RUN-step processes of a docker-driver BuildKit build land in a root-level, UNGOVERNED
-# /sys/fs/cgroup/dev-gates.slice/buildkit (memory.max = max). The flag below is passed because the estate
-# requires it, not because it governs this build. Watch the build's memory yourself (docs/DEV.md).
-printf 'NOTE: on the docker-driver builder --cgroup-parent does NOT place this build in the governed slice: the build runs in an ungoverned cgroup (v1001: /sys/fs/cgroup/dev-gates.slice/buildkit); watch its memory\n' >&2
+# Two spellings of the one slice input (measured on v1001, 2026-11-18, docker cgroup driver systemd,
+# docker-driver BuildKit): `docker run --cgroup-parent dev-gates.slice` (the NAME) lands the container in
+# the governed /sys/fs/cgroup/dev.slice/dev-gates.slice. For the build, the NAME makes BuildKit put the
+# RUN-step processes in a root-level, UNGOVERNED /dev-gates.slice/buildkit/<id> (memory.max = max), while
+# the PATH form (dev.slice/dev-gates.slice, derived above) puts them in
+# /dev.slice/dev-gates.slice/buildkit/<id>, INSIDE the governed slice. The daemon refuses the path form for
+# `docker run` (invalid slice name), so buildx gets the path and every probe below gets the name.
+printf 'NOTE: --cgroup-parent for the build is the cgroup PATH %s (derived from the slice name %s): the BuildKit RUN steps run inside the governed slice (v1001, 2026-11-18); the plain slice name would put them in an ungoverned root-level cgroup. Probes use the slice name.\n' "$cgroup_path" "$cgroup_parent" >&2
 docker buildx inspect "$builder" >/dev/null
 # The build starts FROM a content-named tag of the exact base image id: a moved tag cannot change it,
 # and it is a plain reference every builder accepts (a bare `sha256:<id>` in FROM is not, on every
@@ -83,7 +108,7 @@ docker buildx build \
   --builder "$builder" \
   --load \
   --progress plain \
-  --cgroup-parent "$cgroup_parent" \
+  --cgroup-parent "$cgroup_path" \
   --network default \
   --build-arg "BASE_IMAGE=$base_tag" \
   --build-arg "BASE_IMAGE_TAG=$base_image" \
@@ -110,8 +135,8 @@ fi
 
 # Everything this layer added or upgraded, with its version: the DIFF of `dpkg-query -W` between the
 # base image and the dev image (the dependency closure of gdb and friends included), plus the
-# toolchain lines. The probe containers are started with `docker run --cgroup-parent`, which DOES place
-# them in the governed slice (unlike the build above); they have no network and no capabilities.
+# toolchain lines. The probe containers are started with `docker run --cgroup-parent <slice NAME>`, which
+# places them in the governed slice; they have no network and no capabilities.
 probe() {
   docker run --rm --pull never --network none --cap-drop ALL \
     --security-opt no-new-privileges --cgroup-parent "$cgroup_parent" \

@@ -1017,6 +1017,7 @@ sys.exit(0)
 
 class BuildDevImageTests(unittest.TestCase):
     SLICE = "dev-gates.slice"
+    SLICE_PATH = "dev.slice/dev-gates.slice"
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="builddev-")).resolve()
@@ -1085,7 +1086,7 @@ class BuildDevImageTests(unittest.TestCase):
         self.assertEqual([c for c in calls if c[0] == "tag"], [["tag", "sha256:" + "a" * 64, "tester-unified-rust-base:" + "a" * 64]])
         self.assertLess(names.index(["tag", "sha256:" + "a" * 64]), names.index(["buildx", "build"]))
         self.assertEqual([c for c in calls if c[0] in ("rmi", "image") and "rm" in c[:2]], [])
-        self.assertEqual(build[build.index("--cgroup-parent") + 1], self.SLICE)
+        self.assertEqual(build[build.index("--cgroup-parent") + 1], self.SLICE_PATH)
         self.assertIn("-t", build)
         self.assertIn("base_id=sha256:" + "a" * 64, proc.stdout)
         proc, _ = self.run_build("--cgroup-parent", self.SLICE, STUB_LABEL_ID="sha256:" + "b" * 64)
@@ -1103,15 +1104,81 @@ class BuildDevImageTests(unittest.TestCase):
                 self.assertEqual(proc.returncode, 2, proc.stdout)
                 self.assertIn("not built on the layers of base image", proc.stderr)
 
-    def test_the_build_says_plainly_that_it_is_not_in_the_governed_slice(self) -> None:
+    def test_the_build_states_the_measured_truth_about_the_governed_slice(self) -> None:
         proc, calls = self.run_build("--cgroup-parent", self.SLICE)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("NOTE: on the docker-driver builder --cgroup-parent does NOT place this build in the governed slice", proc.stderr)
-        self.assertIn("/sys/fs/cgroup/dev-gates.slice/buildkit", proc.stderr)
-        # the flag is still passed (estate rule), and the untested path form is not used
+        note = [line for line in proc.stderr.splitlines() if line.startswith("NOTE:")]
+        self.assertEqual(len(note), 1, proc.stderr)
+        self.assertIn("cgroup PATH dev.slice/dev-gates.slice (derived from the slice name dev-gates.slice)", note[0])
+        self.assertIn("RUN steps run inside the governed slice (v1001, 2026-11-18)", note[0])
+        self.assertIn("plain slice name would put them in an ungoverned root-level cgroup", note[0])
+        self.assertIn("Probes use the slice name", note[0])
+        for stale in ("does NOT place", "watch its memory", "/sys/fs/cgroup/dev-gates.slice/buildkit"):
+            self.assertNotIn(stale, proc.stderr)
+        # buildx gets the PATH form, exactly once
         build = [c for c in calls if c[:2] == ["buildx", "build"]][0]
-        self.assertEqual(build[build.index("--cgroup-parent") + 1], self.SLICE)
-        self.assertNotIn("dev.slice/dev-gates.slice", " ".join(" ".join(c) for c in calls))
+        self.assertEqual(build.count("--cgroup-parent"), 1)
+        self.assertEqual(build[build.index("--cgroup-parent") + 1], self.SLICE_PATH)
+
+    def test_buildx_gets_the_path_and_probes_the_name_for_every_slice_shape(self) -> None:
+        for name, path in (
+            ("dev-gates.slice", "dev.slice/dev-gates.slice"),
+            ("a-b-c.slice", "a.slice/a-b.slice/a-b-c.slice"),
+            ("x.slice", "x.slice"),
+        ):
+            with self.subTest(name=name):
+                proc, calls = self.run_build("--cgroup-parent", name)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                builds = [c for c in calls if c[:2] == ["buildx", "build"]]
+                self.assertEqual(len(builds), 1)
+                self.assertEqual(builds[0][builds[0].index("--cgroup-parent") + 1], path)
+                probes = [c for c in calls if c[0] == "run"]
+                self.assertGreaterEqual(len(probes), 4)
+                for probe in probes:
+                    self.assertEqual(probe.count("--cgroup-parent"), 1)
+                    self.assertEqual(probe[probe.index("--cgroup-parent") + 1], name)
+                # no other docker call carries a cgroup parent at all
+                for call in calls:
+                    if call[:2] != ["buildx", "build"] and call[0] != "run":
+                        self.assertNotIn("--cgroup-parent", call)
+
+    def test_the_slice_input_also_comes_from_the_environment(self) -> None:
+        proc, calls = self.run_build(CGROUP_PARENT_DEV_GATES=self.SLICE)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        build = [c for c in calls if c[:2] == ["buildx", "build"]][0]
+        self.assertEqual(build[build.index("--cgroup-parent") + 1], self.SLICE_PATH)
+        probe = [c for c in calls if c[0] == "run"][0]
+        self.assertEqual(probe[probe.index("--cgroup-parent") + 1], self.SLICE)
+
+    def test_an_invalid_slice_name_is_refused_with_exit_2_before_any_docker_call(self) -> None:
+        for bad in ("-.slice", "a--b.slice", "a-.slice", "dev.slice/dev-gates.slice", "/dev.slice/dev-gates.slice",
+                    "../a.slice", "a b.slice", "a.slice\n", "dev-gates", "é.slice", ""):
+            with self.subTest(bad=bad):
+                proc, calls = self.run_build("--cgroup-parent", bad)
+                self.assertEqual(proc.returncode, 2, repr(bad))
+                self.assertEqual(calls, [], repr(bad))
+                self.assertTrue("invalid --cgroup-parent" in proc.stderr or "is required" in proc.stderr, proc.stderr)
+        proc, calls = self.run_build(CGROUP_PARENT_DEV_GATES="a/b.slice")
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(calls, [])
+        self.assertIn("invalid --cgroup-parent / CGROUP_PARENT_DEV_GATES", proc.stderr)
+        self.assertIn("systemd slice name", proc.stderr)
+
+    def test_the_ungoverned_claims_are_gone_from_the_scripts_and_docs(self) -> None:
+        stale = (
+            "does NOT place", "does not place", "NOT in a governed", "not in the governed slice",
+            "untested path form", "watch its memory", "not because it governs this build",
+            "passed because the estate requires it", "(unlike the build above)",
+        )
+        for relative in ("build-dev-image.sh", "build-image.sh", "README.md", "CHANGES.md",
+                         "docs/DEV.md", "docs/CONSUMERS.md", "docs/DESIGN-GUIDE.md"):
+            text = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
+            for phrase in stale:
+                self.assertNotIn(phrase, text, f"{relative}: {phrase}")
+        for relative in ("docs/DEV.md", "docs/CONSUMERS.md"):
+            text = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn("dev.slice/dev-gates.slice", text, relative)
+            self.assertIn("/dev-gates.slice/buildkit", text, relative)
 
     def test_probe_containers_are_governed_and_networkless(self) -> None:
         _, calls = self.run_build("--cgroup-parent", self.SLICE)
@@ -1120,6 +1187,7 @@ class BuildDevImageTests(unittest.TestCase):
         for probe in probes:
             self.assertEqual(probe[probe.index("--network") + 1], "none")
             self.assertEqual(probe[probe.index("--cap-drop") + 1], "ALL")
+            # `docker run` takes the slice NAME: the systemd cgroup driver refuses the path form
             self.assertEqual(probe[probe.index("--cgroup-parent") + 1], self.SLICE)
             self.assertIn("--pull", probe)
 

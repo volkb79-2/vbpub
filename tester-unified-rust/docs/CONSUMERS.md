@@ -23,11 +23,16 @@ The builder is selectable: `--builder NAME`, else the environment variable
 docker call). Hosts without the managed builder, such as the gate host v1001 and
 its cockpit container, which only have the `default` docker-driver builder, run
 `build-image.sh --builder default ...`; the script never creates a builder.
-The docker driver honours `--cgroup-parent` (measured on v1001: the RUN-step
-processes ran under `dev-gates.slice/buildkit`); the docker-container driver does
-not. Check each build: during a RUN step the build's processes must appear under the
-requested slice (`systemd-cgls` or `<slice>/cgroup.procs` on the host); a build that
-does not land there is to be discarded. `--builder` changes nothing else:
+The scripts take one slice-name input (`--cgroup-parent dev-gates.slice` or
+`CGROUP_PARENT_DEV_GATES`) and derive the cgroup PATH for `docker buildx build
+--cgroup-parent` themselves (systemd dash expansion: `dev-gates.slice` becomes
+`dev.slice/dev-gates.slice`); the CMRU preflight and every `docker run` get the plain
+name, which the systemd cgroup driver requires there. Measured on v1001 (2026-11-18,
+docker cgroup driver systemd, docker-driver BuildKit): with the path form the
+BuildKit RUN-step processes run in `/dev.slice/dev-gates.slice/buildkit/<id>`, inside
+the governed slice; with the plain slice name they land in the ungoverned root-level
+`/dev-gates.slice/buildkit` (`memory.max` is `max`). The docker-container driver is
+not covered by that measurement. `--builder` changes nothing else:
 `--cgroup-parent` stays required, the CMRU preflight, build arguments and label
 checks are unchanged, and the script prints `builder=<name>` before it builds.
 
@@ -53,8 +58,9 @@ Prerequisites for a build on the gate host v1001, run inside its cockpit contain
 - `BUILDX_CONFIG` points at a private directory writable by that uid (the cockpit's
   `~/.config/docker/buildx` is root-owned);
 - `--builder default` (or `TESTER_UNIFIED_RUST_BUILDER=default`) and
-  `--cgroup-parent dev-gates.slice`; no other gate runs on the host meanwhile, and the
-  slice's `memory.current` is watched (a build peaked at 3.3 GB).
+  `--cgroup-parent dev-gates.slice` (the slice name; the script derives the buildx path
+  form); the build is governed by the slice, and no other gate runs on the host meanwhile.
+  Still watch the governed slice's `memory.current` (a build peaked at 3.3 GB).
 
 In a Rust workspace, route all Cargo calls through a checked wrapper that
 invokes `/usr/local/bin/verify-crate-cache` first, then sets
