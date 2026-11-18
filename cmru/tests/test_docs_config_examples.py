@@ -257,6 +257,24 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     for name in ("cmru", "cmru-r0-r1", "cmru-first-release", "cmru-first-release-r2"):
         assert changelog_preflight_ignore in assay_config[name]["argv"]
 
+    first_r2 = assay_config["cmru-first-release-r2"]
+    assert first_r2["argv"] == [
+        "/opt/tester-venv/bin/python",
+        "-m",
+        "pytest",
+        "tests",
+        "-q",
+        "--ignore=tests/test_w3_prep_changelog_preflight.py",
+        "--cov=src/cmru",
+        "--cov-branch",
+        "--cov-report=json:coverage.json",
+    ]
+    assert first_r2["env"] == {
+        "PYTHONPATH": "src:../libraries/worktree/src",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "CMRU_TEST_ORDER": "heavy-last",
+    }
+
     first_r2_mutation = assay_config["cmru-first-release-r2"]["judge"]["mutation"]
     assert first_r2_mutation == {
         "jobs_max": 2,
