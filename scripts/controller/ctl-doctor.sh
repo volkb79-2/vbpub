@@ -301,11 +301,13 @@ dir_check logs-dir "$CONTROLLER_LOGS_DIR"
 
 # ---- local gate slots: gate-run.sh REQUIRES both lock paths --------------------------------------------------------------
 gate_lock_check() {
-  # $1 variable name; nothing is created: a lock file that does not exist yet needs a writable directory
-  local name=$1 path=${!1:-} parent
+  # $1 variable name (slots 1 and 2) or the label gate<N>.lock of a derived slot, $2 the path of a derived slot.
+  # Nothing is created: a lock file that does not exist yet needs a writable directory.
+  local name=$1 path=${2:-} parent move="point $1 at another path"
+  if [[ $name == CONTROLLER_* ]]; then path=${!1:-}; else move='set CONTROLLER_GATE_LOCK_DIR to another directory'; fi
   if [[ -z $path ]]; then
     record FAIL "$name" "$name is not set: gate-run.sh exits 2 for every local lane (a chain over such lanes still ends with CHAIN-DONE)" \
-      "set $name=<absolute lock file path> in '$env_file'; CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK are both required and must differ"
+      "set $name=<absolute lock file path> in '$env_file'; CONTROLLER_GATE_LOCK is always required, CONTROLLER_GATE2_LOCK from two slots on, and every slot lock must differ"
   elif [[ $path != /* ]]; then
     record FAIL "$name" "$name is not an absolute path: $path" "set $name to an absolute lock file path in '$env_file'"
   elif [[ -e $path ]]; then
@@ -314,14 +316,43 @@ gate_lock_check() {
   else
     parent=$(dirname -- "$path")
     if [[ -d $parent && -w $parent ]]; then record OK "$name" "lock file will be created in a writable directory: $(disp "$path")"
-    else record FAIL "$name" "the directory for the lock file is missing or not writable: $(disp "$parent")" "mkdir -p '$parent' and make it writable, or point $name at another path"; fi
+    else record FAIL "$name" "the directory for the lock file is missing or not writable: $(disp "$parent")" "mkdir -p '$parent' and make it writable, or $move"; fi
   fi
 }
-gate_lock_check CONTROLLER_GATE_LOCK
-gate_lock_check CONTROLLER_GATE2_LOCK
-if [[ -n ${CONTROLLER_GATE_LOCK:-} && ${CONTROLLER_GATE_LOCK:-} == "${CONTROLLER_GATE2_LOCK:-}" ]]; then
-  record FAIL gate-locks 'CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK are the same path: gate-run.sh refuses it' "give CONTROLLER_GATE2_LOCK its own path in '$env_file'"
+gate_slots=${CONTROLLER_GATE_SLOTS:-2}
+if [[ $gate_slots =~ ^[1-8]$ ]]; then
+  if [[ -z ${CONTROLLER_GATE_SLOTS:-} ]]; then record INFO gate-slots "effective local gate slots: $gate_slots (CONTROLLER_GATE_SLOTS is not set: the default of 2 keeps the memory-capped controller devcontainer safe)"
+  else record INFO gate-slots "effective local gate slots: $gate_slots (CONTROLLER_GATE_SLOTS)"; fi
+else
+  # The configured value is not echoed: it is whatever the env file holds. The lock checks below still run for the default 2.
+  gate_slots=2
+  record FAIL gate-slots 'CONTROLLER_GATE_SLOTS is not an integer from 1 to 8: gate-run.sh exits 2 for every local lane' "set CONTROLLER_GATE_SLOTS to a number from 1 to 8 in '$env_file', or remove it for the default 2"
 fi
+gate_lock_check CONTROLLER_GATE_LOCK
+(( gate_slots < 2 )) || gate_lock_check CONTROLLER_GATE2_LOCK
+# Slots 3.. are gate<N>.lock beside CONTROLLER_GATE_LOCK or in CONTROLLER_GATE_LOCK_DIR (controller_gate_derived_lock in lib.sh).
+slot_paths=([1]="${CONTROLLER_GATE_LOCK:-}")
+(( gate_slots < 2 )) || slot_paths[2]=${CONTROLLER_GATE2_LOCK:-}
+if (( gate_slots > 2 )); then
+  if [[ -n ${CONTROLLER_GATE_LOCK_DIR:-} && $CONTROLLER_GATE_LOCK_DIR != /* ]]; then
+    record FAIL CONTROLLER_GATE_LOCK_DIR "CONTROLLER_GATE_LOCK_DIR is not an absolute path: $CONTROLLER_GATE_LOCK_DIR" "set CONTROLLER_GATE_LOCK_DIR to an absolute directory in '$env_file', or remove it to keep gate3.lock.. beside CONTROLLER_GATE_LOCK"
+  elif [[ ${CONTROLLER_GATE_LOCK:-} == /* ]]; then
+    for (( slot = 3; slot <= gate_slots; slot++ )); do
+      slot_paths[slot]=$(controller_gate_derived_lock "$slot")
+      gate_lock_check "gate${slot}.lock" "${slot_paths[slot]}"
+    done
+  fi
+fi
+for (( slot = 1; slot <= gate_slots; slot++ )); do
+  for (( other = slot + 1; other <= gate_slots; other++ )); do
+    [[ -n ${slot_paths[slot]:-} && ${slot_paths[slot]:-} == "${slot_paths[other]:-}" ]] || continue
+    if (( slot == 1 && other == 2 )); then
+      record FAIL gate-locks 'CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK are the same path: gate-run.sh refuses it' "give CONTROLLER_GATE2_LOCK its own path in '$env_file'"
+    else
+      record FAIL gate-locks "gate slots $slot and $other use the same lock path $(disp "${slot_paths[slot]}"): gate-run.sh refuses it" "change CONTROLLER_GATE_LOCK, CONTROLLER_GATE2_LOCK or CONTROLLER_GATE_LOCK_DIR in '$env_file' so that every slot has its own lock file (slots 3.. are gate<N>.lock)"
+    fi
+  done
+done
 
 # ---- where the state lives: symlinks and git work trees ----------------------------------------------------------------
 behind_symlink() {

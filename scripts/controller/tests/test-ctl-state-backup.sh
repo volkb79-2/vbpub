@@ -97,6 +97,25 @@ mkdir -p "$ROOT/restore"; tar -xf "$archive" -C "$ROOT/restore"
 run_backup --include-large --max-file-bytes 100
 archive2=$(sed -n 's/^archive: //p' "$ROOT/out")
 tar -tf "$archive2" | grep -qx 'repo/.controller-state/big.bin' || fail '--include-large must archive the large file'
+# Two backups with the same timestamp must not overwrite each other. The clock is frozen, so this never depends on two runs
+# landing in the same second (a slow host made the 'overwrite' mutant survive once).
+fixture frozen
+mkdir -p "$ROOT/frozen-bin"
+cat > "$ROOT/frozen-bin/date" <<SH
+#!/bin/sh
+if [ "\$1" = -u ] && [ "\$2" = +%Y%m%dT%H%M%SZ ]; then echo 20200101T000000Z; exit 0; fi
+exec $(command -v date) "\$@"
+SH
+chmod +x "$ROOT/frozen-bin/date"
+saved_path=$PATH
+PATH="$ROOT/frozen-bin:$PATH"
+run_backup; expect_rc 0 'the first backup under a frozen clock'
+first_frozen=$(sed -n 's/^archive: //p' "$ROOT/out")
+run_backup; expect_rc 0 'the second backup under the same frozen timestamp'
+second_frozen=$(sed -n 's/^archive: //p' "$ROOT/out")
+PATH=$saved_path
+[[ -n $first_frozen && $first_frozen != "$second_frozen" && -e $first_frozen && -e $second_frozen ]] || fail 'two backups with one timestamp must produce two archives'
+[[ $first_frozen == *20200101T000000Z.* && $second_frozen == *20200101T000000Z-1.* ]] || fail "the frozen clock was not used: $first_frozen $second_frozen"
 
 # --- --verify
 run_backup --verify "$archive"; expect_rc 0 'verify'; said '13 member(s)' 'verify counts the members'; said 'matches the sidecar' 'verify compares the sidecar'

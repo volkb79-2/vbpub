@@ -371,12 +371,14 @@ applies the same map, prefix, live-process and future-retry checks without
 launching jobs. `start-after.sh` provides a separate UTC launch time when an
 operator wants to schedule work.
 
-## Two-slot gate scheduling
+## Gate slot scheduling (two slots by default)
 
 `gate-run.sh` requires two distinct absolute lock paths from local controller
-configuration. Its refusal names `controller.local.env.example`,
+configuration (`CONTROLLER_GATE_SLOTS`, 1 to 8, changes the count; the default
+stays 2 because the controller devcontainer is memory capped and was OOM-killed once;
+the slot lock rule is in the README). Its refusal names `controller.local.env.example`,
 `CONTROLLER_GATE_LOCK`, and `CONTROLLER_GATE2_LOCK`. It tries each slot without
-waiting; when both are occupied it polls both locks with non-blocking attempts
+waiting; when all are occupied it polls all locks with non-blocking attempts
 every 5 seconds and takes whichever frees first. A progress line every 300
 seconds makes a long wait visible. It does not invent a lock path or launch
 outside the configured locks. The command runs from the caller's project

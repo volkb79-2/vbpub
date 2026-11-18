@@ -44,7 +44,8 @@
   scripts/controller/gate-run.sh <lane>
   ```
 
-  It takes `CONTROLLER_GATE_LOCK`, else `CONTROLLER_GATE2_LOCK`, else polls both
+  It takes `CONTROLLER_GATE_LOCK`, else `CONTROLLER_GATE2_LOCK` (and the further
+  slots when `CONTROLLER_GATE_SLOTS` raises the count), else polls all of them
   and takes whichever frees first; the arguments and the working directory are
   exactly `run-gate`'s. Wait for a lane in the FOREGROUND of a tool call
   (a bounded poll loop) and never end a run while a lane is queued. Read the

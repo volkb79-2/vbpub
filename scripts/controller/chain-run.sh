@@ -16,9 +16,9 @@
 #   (setsid nohup chain-run.sh ... >/dev/null 2>&1 </dev/null & disown)
 # Profiling follows gate-run.sh (off unless the caller sets RUN_GATE_PROFILE). The environment is passed on untouched (except
 # the names given with --unset-env): no image tag and no profiler socket are exported here.
-# gate-run.sh REQUIRES CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK (it exits 2 for every local lane when one is unset). The chain
-# does not read verdicts, so it still ends with CHAIN-DONE in that case, by design: read the lane logs, and run ctl-doctor.sh,
-# which FAILs when the two locks are not configured.
+# gate-run.sh REQUIRES CONTROLLER_GATE_LOCK and, from two slots on (CONTROLLER_GATE_SLOTS, default 2), CONTROLLER_GATE2_LOCK (it exits
+# 2 for every local lane when one is unset). The chain does not read verdicts, so it still ends with CHAIN-DONE in that case, by
+# design: read the lane logs, and run ctl-doctor.sh, which FAILs when the slot locks are not configured.
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=lib.sh

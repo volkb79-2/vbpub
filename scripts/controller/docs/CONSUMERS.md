@@ -339,8 +339,9 @@ CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
 
 `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK` must be distinct absolute
 paths from controller configuration; copy their names from
-`controller.local.env.example` and export both. Once both slots are busy the
-wrapper polls both every 5 seconds and prints progress every 300 seconds, so a
+`controller.local.env.example` and export both (`CONTROLLER_GATE_SLOTS`, 1 to 8,
+default 2, changes the slot count; see the README). Once all slots are busy the
+wrapper polls all of them every 5 seconds and prints progress every 300 seconds, so a
 gate uses the first freed slot instead of waiting only for the first path. The
 suite is a validation lane, not a release lane.
 

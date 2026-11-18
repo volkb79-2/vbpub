@@ -36,6 +36,7 @@ files=(
   "$SCRIPT_DIR/test-wrappers.sh"
   "$SCRIPT_DIR/test-pi-impl.sh"
   "$SCRIPT_DIR/test-hardening-tools.sh"
+  "$SCRIPT_DIR/test-gate-slots.sh"
   "$SCRIPT_DIR/test-ctx-hooks.sh"
   "$SCRIPT_DIR/test-mutations.sh"
   "$SCRIPT_DIR/test-skills-sync.sh"
@@ -57,6 +58,7 @@ bash "$SCRIPT_DIR/test-job-check.sh" || exit $?
 bash "$SCRIPT_DIR/test-wrappers.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-impl.sh" || exit $?
 bash "$SCRIPT_DIR/test-hardening-tools.sh" || exit $?
+bash "$SCRIPT_DIR/test-gate-slots.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctx-hooks.sh" || exit $?
 bash "$SCRIPT_DIR/test-skills-sync.sh" || exit $?
 bash "$SCRIPT_DIR/test-remote-gate.sh" || exit $?

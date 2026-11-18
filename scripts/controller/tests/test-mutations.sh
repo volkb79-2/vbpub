@@ -23,7 +23,7 @@ if ! CONTROLLER_TEST_PARALLEL_OD_STARTS=0 bash "$SCRIPT_DIR/test-wrappers.sh" > 
   exit 1
 fi
 echo 'PASS unmutated wrapper tests before wrapper mutation checks'
-for baseline in test-job-check.sh test-hardening-tools.sh test-pi-impl.sh; do
+for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh test-pi-impl.sh; do
   if ! bash "$SCRIPT_DIR/$baseline" > "$ROOT/${baseline%.sh}-unmutated.log" 2>&1; then
     cat "$ROOT/${baseline%.sh}-unmutated.log" >&2
     echo "FAIL: unmutated $baseline must pass before its mutants are judged" >&2
@@ -354,6 +354,16 @@ expect_killed gate-run-poll-both-final-wait-locks \
   env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-poll-second-slot.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed gate-run-refusal-names-example \
   env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-refusal-example.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+for gate_slots_mutant in slots-range slots-default one-slot-needs-gate2 one-slot-message lock-dir-absolute lock-dir-unused-below-three \
+                         distinct-detail two-slot-distinct-oneline first-pass-last-slot poll-last-slot poll-open-last-slot fd-shared fd-first-slots \
+                         slot-label lock-held-while-running wait-two wait-many wait-one progress-many progress-two progress-one labels-join exit-code; do
+  expect_killed "gate-run-$gate_slots_mutant" \
+    env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-$gate_slots_mutant.sh" bash "$SCRIPT_DIR/test-gate-slots.sh"
+done
+for gate_lib_mutant in derive-default-dir derive-dir-slash derive-name derive-range; do
+  expect_killed "gate-run-lib-$gate_lib_mutant" \
+    env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-lib-$gate_lib_mutant/gate-run.sh" bash "$SCRIPT_DIR/test-gate-slots.sh"
+done
 expect_killed job-any-sol-trailer \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-any-sol-trailer.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-sol-route-exact-trailer \
@@ -444,7 +454,7 @@ for gate_run_profile_mutant in default override; do
     env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-profile-$gate_run_profile_mutant.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 done
 for remote_gate_mutant in identity allow-list project-dir-guard slot-roundup weight-min oom-delta commit-binding slot-descriptors base-forward api-override runner-ref base-passthrough base-twice \
-                          old-env-silent old-env-one-dropped weights-unreadable-silent weights-missing-warns repo-name-default snapshot-fixed-name snapshot-leftover; do
+                          old-env-silent old-env-one-dropped old-env-py-name old-env-dry-hold weights-unreadable-silent weights-missing-warns repo-name-default snapshot-fixed-name snapshot-leftover; do
   expect_killed "remote-gate-$remote_gate_mutant" \
     env REMOTE_GATE_SCRIPT="$ROOT/mutants/scripts/controller/remote-gate-$remote_gate_mutant.sh" bash "$SCRIPT_DIR/test-remote-gate.sh"
 done
@@ -457,7 +467,7 @@ done
 for doctor_mutant in tool-flock-severity tool-docker-severity home-missing env-missing env-syntax env-stray hosts-missing hosts-ssh-shape \
                      hosts-guard hosts-lanes-shape hosts-lanes-warn hosts-api-exec hosts-key-missing hosts-key-mode hosts-pin hosts-pin-devnull hosts-pin-devnull-ok hosts-strict \
                      hosts-nopin hosts-leak allow-unknown allow-unset remote-file-split image-absent image-exact-name image-unreachable \
-                     image-no-docker image-toml pinned-warn pinned-logs pinned-scan pinned-home profile-default gate-lock-unset gate-lock-absolute gate-lock-parent gate-lock-distinct dir-missing dir-writable \
+                     image-no-docker image-toml pinned-warn pinned-logs pinned-scan pinned-home profile-default gate-lock-unset gate-lock-absolute gate-lock-parent gate-lock-distinct gate-slots-invalid gate-slots-print gate-slots-default-print gate-slots-leak gate-slots-fallback gate-slot2-one-slot gate-derived-check gate-derived-range gate-lock-dir-absolute gate-lock-dir-unused gate-collide-pair-text gate-derived-fix dir-missing dir-writable \
                      symlink-detect residency-ignore residency-outside residency-runs json exit-code usage-exit; do
   # Only the non-root block of the doctor test can kill this one: as root it is reported skipped, never killed.
   if [[ $doctor_mutant == dir-writable && $(id -u) == 0 ]]; then
