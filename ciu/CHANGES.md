@@ -21,6 +21,63 @@ the technical detail below it.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [7.26.0] - 2026-11-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=b6681b1196a3f4fce370b1eb2774e80a4e1d52a7 -->
+
+### Added
+- feat(ciu): CIU-215 bind the checkout gitfile read-only in both modes; docs and design-note errata (4341e6f16)
+- feat(ciu): CIU-215 opt-in git common-dir fragment for linked-worktree services (96130f760)
+
+### Fixed
+- fix(ciu): CIU-215 N1-N4 fail-closed lstat scan of config candidates and modules, dir destination, precise WARN, hermetic git tests (65e6e853d)
+- fix(ciu): CIU-215 review fixes F1-F7 (lstat discipline, submodule hooks/info, git-must-answer, stale fragment, $ escape, e2e test) (242569746)
+- fix(ciu): CIU-215 rw layout mounts worktrees/ unconditionally; branch-complete tests (12ab136a1)
+- fix(ciu): CIU-209 ciu dev resolves profiles like ciu up and checks the selection record (3710298ba)
+- fix(ciu): CIU-208 profile-mode ciu up applies the profile's topology_overrides to the per-stack render (8d8dd2ed3)
+- fix(ciu): keep the one-argument build_selection call when no phases are given; reshape CIU-216 (7101d67fa)
+- fix(ciu): CIU-214 accept every listed flag on ciu down --dir (6776a1a0f)
+- fix(ciu): CIU-217 refuse an undersized ELF program-header entry size in the KSM verifier (7b9bbd337)
+
+### Changed
+- ciu: CIU-215 live-probe runbook: devcontainer venue decision and corrections from the 2026-11-18 run (v1001 P0 history kept) (c0468256f)
+- refactor(ciu): CIU-215 drop an unreachable branch in the state-dir helper (fd3da5ef0)
+- backlog: subprocess readers that wait for pipe EOF can hang after the child exits (cmru KI-178, mdt-cockpit MDT-104, ciu CIU-220, nyxloom NL-83) (60709acce)
+- skills: refresh agent skills, drop fleetd-cli (fleetd ships its own), add skills-sync.sh with tests and mutants (squash of pi-skills-refresh-20261115 at b7354f626, rebuilt on current main because the branch carried an untrailered merge commit; content equals the reviewed three-dot diff) (6eeceb398)
+- backlog(ciu): correct CIU-214..216 after review; add CIU-213..216 to the summary table and the Last-updated line (ac4fe77b5)
+- backlog(ciu): file CIU-214..216, the ciu gaps found migrating netcup-api-filter (db552d2dc)
+
+### Documentation
+- docs(ciu): CIU-215 closure wording matches the probe report (uid condition, inferred causes, assay B556, SPEC-V8 section names) (0f6923bde)
+- docs(ciu): CIU-215 closed after the live probe; SPEC-V8 S16.4.9/S6.2.4 amended to ro by default with opt-in rw; release verification note in CHANGES (f08ccb0a8)
+- docs: runbook rule 2 and venue decision agree, PHYSICAL_REPO_ROOT unset in Run A, B3 runs in the worktree with the documented exports; wording nits (CIU-215 hold, run-gate source-end commit) (06c47068e)
+- docs(ciu): CIU-215 live probe result (netcup PASS, dstdns blocked by an unrelated GIT_FAILED); runbook note on an inherited PHYSICAL_REPO_ROOT (78d316e06)
+- docs(ciu): CIU-215 probe runbook re-audit fixes (blockers-only abort rule, control-1 revert step, real p128 evidence, main sha check, outside-scratch additions) (492e071eb)
+- docs(ciu): CIU-215 probe runbook audit fixes (rm consents, baseline control, hx.sh env file, detached builds, outside-scratch writes) (ec4262862)
+- docs(ciu): CIU-215 live probe runbook (probe 10: netcup-api-filter and dstdns, ro vs rw, UNVERIFIED items marked) (81df78772)
+- docs(ciu): CIU-215 N1/N2 limits, SPEC list split fixed (9b6826432)
+- docs(ciu): CIU-215 review limits (gitfile bind scope, host-side writes, submodule hooks/info) (cb27c9b3c)
+- docs(ciu): CIU-215 SPEC S16.9a, CONFIG, CONSUMERS 5f, DESIGN-GUIDE, CHANGES, backlog status (22df99d59)
+- docs(ciu): CIU-221 drops the last 'on the CIU-208 branch' wording (d1125f731)
+- docs(ciu): CIU-208/209/221 backlog statuses name the merge into main (987f541c2)
+- docs(ciu): file CIU-221, ciu up --dir applies no profile topology_overrides (a76d81b5e)
+- docs(ciu): design note round three, evidence and capture=False corrections (e39b53230)
+- docs(ciu): fold the review of ccae298bc into the CIU-215/CIU-220 design note (6cb24c378)
+- docs(ciu): record the CIU-208 and CIU-209 fix commits in the backlog (1508d9205)
+- docs(ciu): design note for CIU-215 (opt-in git common-dir mount) and CIU-220 (cli_extended.procio bounded readers) (ccae298bc)
+- docs(ciu): record fix hashes for CIU-214 and CIU-217; analysis for CIU-215 and CIU-216 (a919a89cd)
+- docs(fleetd): document campaign workflow and MVP-C backlog (ffd55cd4c)
+- docs(ciu): list CIU-217 in the backlog summary table (8efbc95de)
+
+### Testing
+- test(ciu): CIU-215 cover a volume entry without a usable target (9b538781c)
+- test(ciu): CIU-215 hand-mutation survivors killed (ancestor boundary, cap boundary, symlinked hooks/info) (8eb01d91e)
+- test(ciu): CIU-215 sanitizer parity with run-gate and engine/deploy/oneshot wiring tests (12578d83a)
+- test(ciu): close KSM R2 survivor gaps (03036404c)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - CIU-215 (FIXED; accepted by the live probe on 2026-11-18: netcup-api-filter lane PASS under `ro`, dstdns lane reached a coverage verdict under `ro` once its sibling runner used the invoking uid): an opt-in `[<root>.linked_worktree]` stack-config table (`git_common_dir = "ro" | "rw"`, optional `services`) makes `ciu up`/`ciu render` in a LINKED worktree write `.ciu/ciu.compose.gitdir.yml`, the last `-f`, which mounts the git common dir (Run-Gate's RG-NARROW/RG-86 layout, sanitized config copies under `.ciu/gitdir/`, daemon-namespace sources, `create_host_path: false`) into the selected services, so a per-checkout runner has a working git and assay lanes no longer end in `GIT_FAILED`. A service that already mounts the common dir or an ancestor keeps its own mount. In both modes the checkout's `.git` gitfile is also bound read-only (it sits under the runner's read-write checkout mount, so without the bind the runner could repoint host git at a gitdir it controls); the design note's table said "inherited", which was imprecise. The gitfile bind protects a checkout mounted at its own path only (a WARN is logged when no selected service does; a service mounting the checkout at `/app` leaves `/app/.git` writable). CIU writes `.ciu/gitdir/` with lstat/`O_NOFOLLOW` discipline and refuses a symlinked or foreign-owned `.ciu`/`.ciu/gitdir`; with the table present, a git that cannot answer refuses; a stale fragment is deleted when nothing is left to mount; in `rw`, submodule `hooks`/`info` are overlaid too (accepted limits: new `config.worktree`, submodule working-tree gitfiles, a submodule git dir without `hooks/`, a runner racing a concurrent `ciu up`). Every git config candidate and the `modules` tree are checked with `lstat` before anything is written and refuse (never skip, never follow) on a symlink or other non-regular entry; a copy destination turned into a directory is replaced; the checkout-path WARN no longer fires for a CIU root below the git top with a descendant mount or for an unresolved `${...}` target. Primary checkouts and stacks without the table render byte-identically. `ciu check` reports an invalid table (stage `shape`); `--shipped` stacks refuse it. Docs: SPEC S16.9a, CONFIG, CONSUMERS section 5f, DESIGN-GUIDE.
 
@@ -40,8 +97,7 @@ the technical detail below it.
 ### Release verification
 - What the release step runs: `run-ciu-tests.py` through `cmru tester-gate` (pytest with line AND branch coverage, `--cov-fail-under=100`) and the isolated enrollment gate `run-gate enroll`. The release step does not run the R3 canary and does not run the R2 mutation lane.
 - What was run by hand on top, before the release: `run-gate ciu-gate` (R0, R1 and R3, no R2; budget 100 minutes) on the ciu source branch heads of this wave (the CIU-215 implementation passed on `bbe6da1e4`; the documentation commits of this release passed on `06c47068e`), with the logs retained by the package owner. R2 mutation is owed asynchronously.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [7.25.1] - 2026-11-12
 <!-- cmru: generated -->
