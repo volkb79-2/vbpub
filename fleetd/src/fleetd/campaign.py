@@ -108,10 +108,17 @@ def _job_spec(job: Mapping[str, Any]) -> JobSpec:
 def _probe_settled(job: Mapping[str, Any]) -> bool:
     """True when another probe cannot change this job's record.
 
-    A job that ended and whose progress window is closed (``progress_end_offset``
-    is only written when the host reports it exited) has nothing left to read.
-    One that ended without a closed window, or is still running, is probed.
+    ``probe_settled`` is recorded only from a probe row that reported the job
+    ``EXIT`` with its progress window closed, so the verdict records and baseline
+    of that row are already in hand. Status plus offset cannot stand in for it:
+    the launcher writes the end offset just before EXIT, so a probe in that gap
+    (and a stall stop in the same tick) leaves a job that ended on the controller's
+    side but not yet in the host's EXIT row. A job from a state written before the
+    flag existed keeps the earlier rule: ended, with a window recorded.
     """
+    flag = job.get("probe_settled")
+    if flag is not None:
+        return flag
     return job["status"] in {"COMPLETE", "EXIT", "FAILED", "STALLED"} and job.get("progress_end_offset") is not None
 
 
@@ -351,6 +358,7 @@ class CampaignManager:
             "failure_reason": None,
             "requeued": False,
             "stop_pending": False,
+            "probe_settled": False,
             "requeue_reason": reason,
         }
 
@@ -541,6 +549,7 @@ class CampaignManager:
                     if host_state["unreachable_since_mono"] is None:
                         host_state["unreachable_since_mono"] = now
                 host_state["status"] = "UNREACHABLE"
+                host_state["pressure"] = None
                 if now - host_state["unreachable_since_mono"] > LOST_AFTER_SECONDS:
                     host_state["status"] = "LOST"
                 continue
@@ -697,6 +706,7 @@ class CampaignManager:
                     job["last_progress_mono"] = now
                 job["status"] = "RUNNING"
             elif state_name == "EXIT":
+                job["probe_settled"] = job["progress_end_offset"] is not None
                 job["exit_code"] = row.get("exit_code")
                 job["ended_mono"] = job.get("ended_mono", now)
                 if job["status"] not in {"STALLED", "FAILED"}:
@@ -728,6 +738,7 @@ class CampaignManager:
     @staticmethod
     def _record_host_error(host_state: dict[str, Any], message: str) -> None:
         host_state["status"] = "ERROR"
+        host_state["pressure"] = None
         host_state["error"] = message
 
     def _stop_superseded_host(self, state: dict[str, Any], host_id: str) -> None:
@@ -741,6 +752,7 @@ class CampaignManager:
                 self.runner.stop(host_id, job["name"])
             except HostUnavailable:
                 state["hosts"][host_id]["status"] = "UNREACHABLE"
+                state["hosts"][host_id]["pressure"] = None
                 if state["hosts"][host_id]["unreachable_since_mono"] is None:
                     state["hosts"][host_id]["unreachable_since_mono"] = state["hosts"][host_id]["last_contact_mono"]
                 continue
@@ -764,6 +776,7 @@ class CampaignManager:
                     self.runner.stop(host_id, job["name"])
                 except HostUnavailable:
                     state["hosts"][host_id]["status"] = "UNREACHABLE"
+                    state["hosts"][host_id]["pressure"] = None
                     continue
                 except (TransportError, ContractError) as exc:
                     self._record_host_error(state["hosts"][host_id], str(exc))
@@ -873,6 +886,7 @@ class CampaignManager:
                 self.runner.stop(job["host"], job["name"])
             except HostUnavailable:
                 host_state["status"] = "UNREACHABLE"
+                host_state["pressure"] = None
                 host_state["unreachable_since_mono"] = host_state["last_contact_mono"] or now
                 continue
             except (TransportError, ContractError) as exc:
@@ -1102,6 +1116,7 @@ class CampaignManager:
                     job["status"] = "QUEUED"
                     job["started_mono"], job["last_progress_mono"] = previous_clocks
                     host_state["status"] = "UNREACHABLE"
+                    host_state["pressure"] = None
                     host_state["unreachable_since_mono"] = host_state["last_contact_mono"] or now
                     job["start_error"] = str(exc)
                     break
