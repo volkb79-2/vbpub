@@ -1,0 +1,54 @@
+# tester-unified-rust-dev: the developer layer on top of the gate image.
+#
+# The gate image `tester-unified-rust` stays minimal. This layer adds what a person needs to
+# compile, debug and run user-space code and a gate does not: gdb (rust-gdb), strace, procps,
+# less, rust-src and rust-analyzer. It must NOT install, upgrade or replace rustc or cargo and it
+# must not touch the baked crate cache or its identity files: the RUN below fails the build when
+# `rustc -vV` differs before and after the component layer. Network is needed only at build
+# time (apt and rustup); containers started from this image run with `--network none`.
+#
+# Build on a host with tester-unified-rust/build-dev-image.sh (see docs/DEV.md); never from a
+# governed devcontainer.
+
+ARG BASE_IMAGE=tester-unified-rust:local
+
+FROM ${BASE_IMAGE}
+ARG BASE_IMAGE
+
+LABEL org.vbpub.tester-unified-rust-dev.base-image="${BASE_IMAGE}"
+
+USER root
+
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      gdb strace procps less ca-certificates \
+ && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# The components are added to the toolchain that is ALREADY installed. `rustc -vV` (release,
+# commit hash, host, LLVM) before and after must be identical, otherwise this layer changed the
+# toolchain the gate lanes are verified against and the build stops.
+RUN set -eux; \
+    before="$(rustc -vV)"; \
+    toolchain="$(rustup show active-toolchain | cut -d' ' -f1)"; \
+    test -n "$toolchain"; \
+    rustup component add --toolchain "$toolchain" rust-src rust-analyzer; \
+    after="$(rustc -vV)"; \
+    test "$before" = "$after"; \
+    printf 'toolchain=%s\n%s\n' "$toolchain" "$after"; \
+    rustup component list --toolchain "$toolchain" --installed; \
+    dpkg-query -W gdb strace procps less ca-certificates
+
+USER 1003:1003
+WORKDIR /work
+
+# Read-only checks as the gate user: the verifier is the gate image's own, the tools must run.
+RUN /usr/local/bin/verify-crate-cache /usr/local/share/hostobs-Cargo.lock \
+ && rustc --version \
+ && cargo --version \
+ && cargo nextest --version \
+ && rust-analyzer --version \
+ && rust-gdb --version \
+ && strace -V \
+ && ps --version
+
+CMD ["bash"]
