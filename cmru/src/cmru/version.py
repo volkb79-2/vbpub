@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from cmru.config_names import PROJECT_CONFIG_FILENAME
 from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
+from cmru.process_run import run_process
 
 
 # ---------------------------------------------------------------------------
@@ -36,9 +37,9 @@ from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
 # ---------------------------------------------------------------------------
 
 def _git(repo_root: Path, *args: str) -> str:
-    result = subprocess.run(
+    result = run_process(
         ["git", *args], cwd=repo_root,
-        capture_output=True, text=True,
+        capture=True, text=True,
     )
     if result.returncode:
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
@@ -109,7 +110,7 @@ def _git_log(
             + [pathspec_exclude(path) for path in exclude]
         )
     try:
-        result = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True)
+        result = run_process(cmd, cwd=repo_root, capture=True, text=True)
     except OSError as exc:
         raise ReleasePlanRefused(
             f"cannot inspect commit history since {since_ref!r}: "
@@ -282,9 +283,9 @@ def _latest_tag_for_prefix(
     Callers that don't need either guarantee (read-only previews, migrations)
     get today's plain local read by leaving this False.
     """
-    result = subprocess.run(
+    result = run_process(
         ["git", "tag", "--list", f"{prefix}*"],
-        cwd=repo_root, capture_output=True, text=True,
+        cwd=repo_root, capture=True, text=True,
     )
     tags = [t for t in result.stdout.splitlines() if t.strip()]
     from cmru.release import _semver_key
@@ -409,9 +410,9 @@ def bump_version(current: str, bump: str) -> str:
 
 def _next_counter_version(repo_root: Path, prefix: str, base_version: str) -> str:
     """Increment the counter suffix: <prefix><base_version>-r<N> → r<N+1>."""
-    result = subprocess.run(
+    result = run_process(
         ["git", "tag", "--list", f"{prefix}{base_version}-r*"],
-        cwd=repo_root, capture_output=True, text=True,
+        cwd=repo_root, capture=True, text=True,
     )
     existing = [t for t in result.stdout.splitlines() if t.strip()]
     if not existing:
@@ -480,11 +481,15 @@ def _apply_strategy_file(
         print(f"[DRY] Would write {vfile} → {next_version}, commit, tag {tag}")
         return tag
     vfile.write_text(next_version + "\n", encoding="utf-8")
-    subprocess.run(["git", "add", str(vfile)], cwd=repo_root, check=True)
+    run_process(
+        ["git", "add", str(vfile)], cwd=repo_root, check=True,
+        capture=False, text=None,
+    )
     # Only commit if VERSION actually changed; otherwise tag current HEAD. This makes a
     # re-release at the existing version idempotent instead of failing on an empty commit.
-    has_staged = subprocess.run(
-        ["git", "diff", "--cached", "--quiet", "--", str(vfile)], cwd=repo_root
+    has_staged = run_process(
+        ["git", "diff", "--cached", "--quiet", "--", str(vfile)],
+        cwd=repo_root, capture=False, text=None,
     ).returncode != 0
     if has_staged:
         run_local_git(
@@ -538,9 +543,9 @@ def _tag_covers_head(repo_root: Path, tag: str) -> bool:
     objects. Also true, trivially, for the ordinary "genuinely unchanged"
     case's opposite (tag behind HEAD) being False.
     """
-    result = subprocess.run(
+    result = run_process(
         ["git", "merge-base", "--is-ancestor", "HEAD", tag],
-        cwd=repo_root, capture_output=True, text=True,
+        cwd=repo_root, capture=True, text=True,
     )
     if result.returncode not in (0, 1):
         raise ReleasePlanRefused(
@@ -577,9 +582,9 @@ def _tag_head_relationship(repo_root: Path, tag: str) -> str:
         return "equal"
     if _tag_covers_head(repo_root, tag):
         return "ahead"
-    result = subprocess.run(
+    result = run_process(
         ["git", "merge-base", "--is-ancestor", tag_commit, head_commit],
-        cwd=repo_root, capture_output=True, text=True,
+        cwd=repo_root, capture=True, text=True,
     )
     if result.returncode == 0:
         return "behind"
