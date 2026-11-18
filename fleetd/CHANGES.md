@@ -6,6 +6,20 @@ All notable changes to this project are recorded here.
 
 ### Fixed
 
+- Campaign supervision (WP2). The host-loss clock starts at the first failed
+  contact the controller observed instead of the last successful contact, so one
+  failed probe after a long gap no longer marks a healthy host `LOST`; a probe
+  timeout (rc 124) is reported `SLOW` (`HostSlow`, a `HostUnavailable` subclass)
+  and counts toward the same 1800 s clock (FD-020). A host that stays in `ERROR`
+  reports `error_since`, `error_seconds` and a `warning` from 1800 s in `status`
+  and the campaign state; it is never declared lost or re-queued automatically
+  (FD-026). A host without a comparable Geekbench reference gets its first stall
+  window widened to 3 x the unscaled reference until it has observed a finished
+  candidate (`NONCOMPARABLE_FIRST_WINDOW_FACTOR`, FD-025). `replan_pending`
+  now returns `(batches, unplaceable)`: one candidate that does not fit the
+  re-queue target no longer drops the placeable others, and the unplaceable ids
+  wait in `deferred_requeues` with the planner's reason until a larger host is
+  online, else `collect` reports them missing with that reason (FD-017).
 - Probe follow-ups to FD-014/FD-022/FD-023 (WP1b). A job is now settled for
   probing only when a probe row reported it `EXIT` with its progress window
   closed (`probe_settled`), so a stall stop in the gap between the launcher's

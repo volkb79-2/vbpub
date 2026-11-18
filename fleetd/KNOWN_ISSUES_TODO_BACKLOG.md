@@ -22,16 +22,16 @@
 | FD-014 | Probe command grows with the number of batches and hits the 128 KiB argument limit near 100 batches per host | P2 | DONE | 2026-11-14 |
 | FD-015 | Cold-start stall threshold ignores the predicted candidate time, so slow lanes stall and re-queue without end | P1 | DONE | 2026-11-14 |
 | FD-016 | A batch that exits without progress is re-queued on every exit, without limit | P1 | DONE | 2026-11-14 |
-| FD-017 | One candidate that does not fit the re-queue target drops every other pending candidate of its batch | P2 | OPEN | 2026-11-14 |
+| FD-017 | One candidate that does not fit the re-queue target drops every other pending candidate of its batch | P2 | DONE | 2026-11-14 |
 | FD-018 | Collect counts a verdict's never-started budget_exceeded candidates as timeouts and hides missing work | P1 | DONE | 2026-11-14 |
 | FD-019 | Stale records in the append-only progress file count as finished for a later campaign on the same commit | P2 | DONE | 2026-11-14 |
-| FD-020 | Host loss is measured from the last contact, and a slow probe counts as unreachable | P2 | OPEN | 2026-11-14 |
+| FD-020 | Host loss is measured from the last contact, and a slow probe counts as unreachable | P2 | DONE | 2026-11-14 |
 | FD-021 | A transport or contract error on one host aborts the scheduling step for every host | P2 | DONE | 2026-11-14 |
 | FD-022 | Dispatch does not re-check memory/IO PSI before starting the next batch | P2 | DONE | 2026-11-14 |
 | FD-023 | The hx wrapper path is derived from the source checkout and fails from an installed wheel | P3 | DONE | 2026-11-14 |
 | FD-024 | Deferred re-queue de-duplication is not pinned for three or more hosts | P3 | DONE | 2026-11-14 |
-| FD-025 | The first stall window uses unscaled reference seconds when no comparable host speed reference exists | P3 | OPEN | 2026-11-14 |
-| FD-026 | A host that stays in ERROR has no loss timer | P3 | OPEN | 2026-11-14 |
+| FD-025 | The first stall window uses unscaled reference seconds when no comparable host speed reference exists | P3 | DONE | 2026-11-14 |
+| FD-026 | A host that stays in ERROR has no loss timer | P3 | DONE | 2026-11-14 |
 | FD-029 | Nothing wires `fleet scope`/`fleet sizing`/`fleet merge-check` into a release or campaign workflow | P2 | OPEN | 2026-11-15 |
 | FD-030 | The new per-worker demand keys are not accepted inside `run-gate.toml` | P2 | OPEN | 2026-11-15 |
 | FD-031 | Sizing budgets come from medians and a fixed margin, not a measured tail | P2 | OPEN | 2026-11-15 |
@@ -397,7 +397,7 @@ pending candidates. `test_failed_zero_progress_batch_is_not_requeued_across_ten_
 
 ## FD-017 Re-plan of a lost batch is all-or-nothing
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-14 (Opus series review).
+**State:** DONE (2026-11-18, 4157958d3). **Priority:** P2. **Filed:** 2026-11-14 (Opus series review).
 
 `_enqueue_replanned()` calls `replan_pending()` with the whole pending list of
 one batch. If one candidate does not fit the target host (larger than its
@@ -411,6 +411,8 @@ differ.
 Fix: let `replan_pending()` return placed batches plus the unplaceable IDs;
 re-queue the placed ones and keep the unplaceable ones deferred until a host
 with enough `cap_alone` is online (or report them missing with the reason).
+
+**Resolved (2026-11-18, 4157958d3).** `replan_pending` returns `(batches, unplaceable)`; the placeable candidates are re-queued and the unplaceable ids stay in `deferred_requeues` with the planner's reason (and a state warning) until a larger host is online, and `collect` reports them missing with that reason.
 
 ## FD-018 Verdict fallback hides never-started candidates
 
@@ -463,7 +465,7 @@ the declared Assay artifact lane before recording the job's start offset.
 
 ## FD-020 Host loss timing and slow probes
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-14 (Opus series review).
+**State:** DONE (2026-11-18, cb7a00b33). **Priority:** P2. **Filed:** 2026-11-14 (Opus series review).
 
 The loss clock starts at the host's last successful contact, not at the first
 failed probe. With manual or sparse `tick` calls (more than 30 minutes apart),
@@ -476,6 +478,8 @@ loaded host with a large progress file can drift toward that limit.
 Fix: start the loss clock at the first failed contact (or at
 `max(last_contact, previous tick)`), and treat a timeout as "slow" separately
 from ssh exit 255. Until then, call `tick` every few minutes (SPEC, README).
+
+**Resolved (2026-11-18, cb7a00b33).** The loss clock starts at the first failed contact the controller observed (`unreachable_since = now`, persisted, at every contact-failure site); a timeout (rc 124) raises `HostSlow` and is reported `SLOW`, feeding the same 1800 s clock; ssh 255 is unchanged.
 
 ## FD-021 One host's error aborts the scheduling step
 
@@ -538,7 +542,7 @@ again. Removing the in-flight filter is killed by that test (commit
 
 ## FD-025 First stall window with a non-comparable speed reference
 
-**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-14 (fix4 review, for the Opus final review).
+**State:** DONE (2026-11-18, 3fc04670b). **Priority:** P3. **Filed:** 2026-11-14 (fix4 review, for the Opus final review).
 
 `CampaignManager._predicted_candidate_seconds` scales a candidate's
 `time_ref_seconds` by the reference baseline, the host's single-core score and
@@ -562,9 +566,11 @@ host whose first candidate takes more than `3 x time_ref_seconds + baseline`
 (and more than 900 s) is not stalled in its first window, and the SPEC and
 design guide state the new rule.
 
+**Resolved (2026-11-18, 3fc04670b).** Ruling: while a host without a comparable Geekbench reference has observed no finished candidate, its predicted candidate time is `NONCOMPARABLE_FIRST_WINDOW_FACTOR` (3) x the unscaled reference, so the first window is `max(900 s, 9 x reference)` plus the baseline; documented in the SPEC and design guide.
+
 ## FD-026 Host in ERROR has no loss timer
 
-**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-14 (fix4 review, for the Opus final review); code path traced and confirmed 2026-11-14.
+**State:** DONE (2026-11-18, 18c8b30dc). **Priority:** P3. **Filed:** 2026-11-14 (fix4 review, for the Opus final review); code path traced and confirmed 2026-11-14.
 
 FD-021 records a `ContractError` or non-`HostUnavailable` `TransportError` on one
 host as `ERROR` and keeps supervising the others. The loss timer lives only in
@@ -589,6 +595,8 @@ lost host; contract faults mean its batches may in fact be alive). **Close when.
 Tests show a host in `ERROR` beyond the threshold is reported (and, if LOST is
 chosen, has its unfinished candidates re-queued) and that a recovery before the
 threshold keeps its batches; SPEC and design guide state the rule.
+
+**Resolved (2026-11-18, 18c8b30dc).** Ruling: age and warn only. `status` host rows carry `error_since`, `error_seconds` and a `warning` from 1800 s; no automatic LOST and no re-queue (an ERROR host may have live batches), the operator decides.
 
 ## FD-029 Nothing wires the default R2 commands into a workflow
 

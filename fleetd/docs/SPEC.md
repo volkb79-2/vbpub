@@ -308,24 +308,37 @@ The stall threshold is `max(900 seconds, 3 × p95 predicted candidate time for
 this batch on this host, 3 × p95 observed candidate time on this host)`. The
 prediction uses each candidate's `time_ref_seconds`, the host's matching
 Geekbench baseline and single-core score, and that host's `f_h`; when scores
-cannot be compared, fleetd uses the candidate's reference time. Observations
+cannot be compared, fleetd uses the candidate's reference time, widened (FD-025):
+while such a host has observed no finished candidate its predicted candidate
+time is 3 × the unscaled reference (`NONCOMPARABLE_FIRST_WINDOW_FACTOR`), so the
+first stall window is `max(900 seconds, 9 × reference)` plus the baseline; the
+first observed candidate time on the host replaces the widening. Observations
 and predictions are never pooled across hosts. The declared `baseline_seconds`
 or p95 of completed baseline measurements on this host is added to the first
 window, before any candidate has finished in the batch. Later windows measure
 silence since the last candidate finished without adding the baseline again.
 The threshold never acts as a campaign wall budget. The stall clock pauses
-while the host is unreachable. More than 1800 seconds without host contact marks the host lost.
+while the host is unreachable or slow. The loss clock starts at the first failed
+contact this controller observed (`unreachable_since`, persisted), not at the last
+successful contact (FD-020): more than 1800 seconds of continuous failed contact
+marks the host lost, and one failed probe after a long gap does not. A probe that
+times out (exit 124) is reported as `SLOW` instead of `UNREACHABLE`; it feeds the
+same clock and counts toward `LOST` only after the same 1800 seconds. ssh exit 255
+is `UNREACHABLE`. A recovery before the threshold keeps every batch.
 All work owned by the lost host, including batches that were queued but never
 started, is marked lost and considered for re-planning. Only unfinished
 candidate IDs are sent to the reachable planned host with the largest
 `cap_alone_bytes`, using the existing planner placement functions. If no
-target is available the work is deferred. Idle planned hosts are probed even
+target is available the work is deferred. A candidate that does not fit the
+target (larger than its alone cap or sum budget) never drops the others (FD-017):
+the placeable ones are queued and the unplaceable ids stay in the campaign's
+`deferred_requeues` with the planner's reason and a state warning until a larger
+host is online; `collect` reports them `missing` with that reason otherwise.
+`replan_pending` returns `(batches, unplaceable)` with `{id, reason}` rows. Idle planned hosts are probed even
 when they had no initial batch, so they can become requeue targets. A host
 the planner refused (shared-prod, unknown role, PSI, missing facts) that owns
 no job of the campaign is never contacted by `run`, `status`, `tick`, or
-`collect`. Host loss is measured from the last successful contact, so call
-`tick` at least every few minutes: after a longer gap a single failed probe
-marks the host lost at once (FD-020). Dispatch re-checks PSI on every probe
+`collect`. Dispatch re-checks PSI on every probe
 (FD-022): a host whose memory or IO `some avg10` is above the plan host row's
 `psi_refuse_some_avg10` (strictly greater, as in the planner), whose PSI cannot
 be read, or whose plan records no threshold starts no new batch; `status` names
@@ -338,7 +351,14 @@ failure reason and exit code when available. Re-queue remains unlimited for batc
 batch that made progress keeps its `STALLED` marker and creates one replacement
 batch. A returning host may finish a duplicate; no lease or renewal is used.
 Transport or contract errors mark only the affected host `ERROR`; a tick still
-supervises the other hosts and reports the error in status.
+supervises the other hosts and reports the error in status. A host that stays
+in `ERROR` is aged, never lost (FD-026): the host row carries `error_since` (UTC
+seconds), `error_seconds` and, from 1800 seconds, a `warning`; the campaign state
+records one warning per episode. There is no automatic `LOST` and no re-queue,
+because an `ERROR` host (contract or identity refusal) may have live batches and
+re-queueing would duplicate work: the operator decides. The clock keeps its first
+instant while the host stays in `ERROR` and clears on recovery or on an
+unreachable or slow contact.
 
 Before uploading a batch's ID file, start reads the probe's `checkout_ready`
 flag for the missing job: the persistent checkout must be a non-symlink
