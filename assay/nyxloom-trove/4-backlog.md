@@ -15637,6 +15637,22 @@ requested comparison or refuses by name, the verdict can never record
 is covered by an unchanged control, and the consumer doc tells a reader which
 rule applies to which declaration.
 
+**Fix evidence and gates (2026-11-18).** Branch `assay-b552-20261118` head
+`5cfb6fbf6` (four commits over origin/main e765d6977; also fixes
+`assay/analysis/src/assay_analysis/campaign.py`, which reconstructed a delegated
+base with the first-parent rule and would have failed its plan-versus-verdict
+base check on a merge head). Merge gate per the controller: assay `tooling-tests`
+PASS and the host `self-qualification-provisional` PASS on the exact head, plus an
+independent review MERGE bound to it. The FULL `assay tester-unified` host suite
+(5 h, also the lane for `assay/analysis`) is NOT a pre-merge requirement; as for
+the Rust R-1 package it stays a PRE-RELEASE gate: run it before the next assay
+release, as its own announced long window. Named limit:
+`measurability.check_base_is_head` resolves without `delegated`; it is reached only
+by direct library callers (the run path always passes the already-resolved base).
+Follow-up in another project: run-gate's SPEC and RG-54 text still say assay
+discards a supplied base on a merge HEAD, which is no longer true for delegated
+lanes.
+
 ## B553 — an inner `die` from the B105 driver scripts does not reach the lane log, so a precondition refusal is reported as `container exit 2`
 
 **Status:** OPEN (filed 2026-11-16; rewritten in review round 1 the same day
