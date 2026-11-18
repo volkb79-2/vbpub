@@ -1027,12 +1027,18 @@ def replan_pending(
     plan: Mapping[str, Any],
     candidate_ids: list[str] | tuple[str, ...],
     host_id: str,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Rebuild batches for unfinished planned candidates on one selected host.
 
     The host choice remains the campaign scheduler's policy; all RAM, worker,
     mix, retry, and batching decisions are delegated to the same placement
     functions used by the original planner.
+
+    Returns ``(batches, unplaceable)``: the batches for every candidate that
+    fits the selected host, and ``{"id", "reason"}`` rows for the candidates
+    that do not (larger than its alone cap or sum budget, or a spent memory-crash
+    retry). One candidate that does not fit never drops the placeable others
+    (FD-017); the caller decides where the unplaceable ones wait.
     """
     candidates_by_id = {
         candidate["id"]: candidate
@@ -1046,7 +1052,7 @@ def replan_pending(
     if selected_host is None:
         raise ContractError(f"replan host {host_id!r} is not available in the original plan")
     if not candidate_ids:
-        return []
+        return [], []
 
     resolved: list[dict[str, Any]] = []
     for index, candidate_id in enumerate(candidate_ids):
@@ -1091,9 +1097,10 @@ def replan_pending(
         time_reference.get("geekbench_version"),
         time_reference.get("baseline_score"),
     )
-    if unplaced or terminal:
-        details = unplaced + terminal
-        raise ContractError("planner could not place re-queued candidates: " + ", ".join(row["id"] for row in details))
+    unplaceable = sorted(
+        ({"id": row["id"], "reason": row["reason"]} for row in unplaced + terminal),
+        key=lambda row: row["id"],
+    )
     normal = assignments[host_id]
     alone_and_retry = specials[host_id]
     retry_rows = [item for item in alone_and_retry if item["input"].memory_crash_evidence]
@@ -1104,7 +1111,7 @@ def replan_pending(
     batches.extend(_single_group(item, capacity, retry=True) for item in sorted(retry_rows, key=lambda row: row["input"].candidate_id))
     for index, batch in enumerate(batches):
         batch["batch"] = index
-    return batches
+    return batches, unplaceable
 
 
 def extract_demand(path: str | Path, lane: str) -> dict[str, Any]:

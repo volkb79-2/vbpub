@@ -3416,3 +3416,99 @@ def test_the_widened_window_applies_only_without_a_comparable_reference_and_befo
     plan_host["f_h"] = 1.0
     comparable["jobs"] = {name: dict(row, records=[], finished_ids=[]) for name, row in comparable["jobs"].items()}
     assert CampaignManager._stall_threshold(comparable, comparable["jobs"][job["name"]]) == 3 * 560 + 400
+
+
+# FD-017: one candidate that does not fit the re-queue target never drops the placeable others.
+
+
+def _plan_with_one_oversized_candidate() -> tuple[dict, list[str], str]:
+    plan = _plan(8)
+    candidates = [dict(item) for host in plan["hosts"] for item in host["assigned"]]
+    assert len(candidates) == 8
+    huge = candidates[0]
+    huge["memory_bytes"] = 9 * 1024**3
+    owner, other = plan["hosts"][0], plan["hosts"][1]
+    owner["assigned"] = candidates
+    owner["batches"] = [{"batch": 0, "kind": "regular", "candidate_ids": [item["id"] for item in candidates]}]
+    other["assigned"], other["batches"] = [], []
+    for host in plan["hosts"]:
+        for item in host["assigned"]:
+            if item["id"] == huge["id"]:
+                item["memory_bytes"] = 9 * 1024**3
+    return plan, [item["id"] for item in candidates[1:]], huge["id"]
+
+
+def test_a_lost_host_requeues_the_seven_placeable_candidates_and_defers_the_nine_gib_one(tmp_path):
+    plan, placeable, huge_id = _plan_with_one_oversized_candidate()
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    assert _first_running(_state(tmp_path), "host-a")
+    transport.set_unreachable("host-a")
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    requeued = [row for row in state["jobs"].values() if row.get("requeue_reason") == "host-lost"]
+    assert sorted(item for row in requeued for item in row["candidate_ids"]) == sorted(placeable)
+    assert all(row["host"] == "host-b" for row in requeued)
+    assert len(state["deferred_requeues"]) == 1
+    deferred = state["deferred_requeues"][0]
+    assert deferred["candidate_ids"] == [huge_id]
+    assert "host-b" in deferred["reason"] and "requires" in deferred["reason"]
+    assert not any("could not re-plan" in warning for warning in state["warnings"])
+    assert any(huge_id not in row["candidate_ids"] for row in requeued)
+
+    # Every later tick keeps it deferred with the reason (no growth, no loss).
+    for _ in range(3):
+        manager.tick("campaign")
+    state = _state(tmp_path)
+    assert [item["candidate_ids"] for item in state["deferred_requeues"]] == [[huge_id]]
+    assert len([row for row in state["jobs"].values() if row.get("requeue_reason") == "host-lost"]) == len(requeued)
+    result, report, _, _ = manager.collect("campaign")
+    row = next(item for item in result["candidates"] if item["candidate_id"] == huge_id)
+    assert row["outcome"] == "missing" and "requires" in row["reason"] and "host-b" in row["reason"]
+    assert row["reason"] in report or "requires" in report
+
+
+def test_a_recovery_before_the_threshold_keeps_every_batch_and_defers_nothing(tmp_path):
+    plan, _placeable, _huge_id = _plan_with_one_oversized_candidate()
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = _first_running(_state(tmp_path), "host-a")
+    transport.set_unreachable("host-a")
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS - 1)
+    manager.tick("campaign")
+    transport.set_unreachable("host-a", False)
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    assert state["hosts"]["host-a"]["status"] == "ONLINE"
+    assert state["jobs"][job["name"]]["status"] == "RUNNING"
+    assert state["deferred_requeues"] == []
+    assert len(state["jobs"]) == 1
+
+
+def test_a_retry_that_still_does_not_fit_stays_deferred_and_the_rest_is_queued_once_a_target_returns(tmp_path):
+    plan, placeable, huge_id = _plan_with_one_oversized_candidate()
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    transport.set_unreachable("host-a")
+    transport.set_unreachable("host-b")
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    assert state["hosts"]["host-a"]["status"] == "LOST"
+    assert [item["reason"] for item in state["deferred_requeues"]] == ["lost host has no reachable planner target yet"]
+    transport.set_unreachable("host-b", False)
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    requeued = [row for row in state["jobs"].values() if row.get("requeue_reason") == "host-lost"]
+    assert sorted(item for row in requeued for item in row["candidate_ids"]) == sorted(placeable)
+    assert [item["candidate_ids"] for item in state["deferred_requeues"]] == [[huge_id]]

@@ -898,21 +898,22 @@ class CampaignManager:
         return max(candidates, key=lambda row: (row[0], row[1]))[1]
 
     def _retry_deferred(self, state: dict[str, Any]) -> None:
-        still_deferred = []
-        for item in state["deferred_requeues"]:
+        waiting, state["deferred_requeues"] = state["deferred_requeues"], []
+        for item in waiting:
             source_job = state["jobs"].get(item["source_job"])
             if source_job is None:
                 continue
             target = self._largest_available_host(state, excluding={source_job["host"]})
             if target is None:
-                still_deferred.append(item)
+                state["deferred_requeues"].append(item)
                 continue
             done = self._done_ids(state)
             inflight = self._inflight_ids(state, exclude_host=source_job["host"])
             pending = [candidate_id for candidate_id in item["candidate_ids"] if candidate_id not in done and candidate_id not in inflight]
             if pending:
+                # Candidates that still do not fit the target are re-deferred by
+                # _enqueue_replanned with the planner's reason.
                 self._enqueue_replanned(state, source_job, pending, target, "host-lost")
-        state["deferred_requeues"] = still_deferred
 
     def _detect_stalls(self, state: dict[str, Any]) -> None:
         now = self.clock()
@@ -1099,10 +1100,23 @@ class CampaignManager:
         reason: str,
     ) -> None:
         try:
-            batches = replan_pending(state["plan"], list(candidate_ids), target_host)
+            batches, unplaceable = replan_pending(state["plan"], list(candidate_ids), target_host)
         except ContractError as exc:
             state["warnings"].append(f"could not re-plan unfinished candidates from {old_job['name']}: {exc}")
             return
+        # FD-017: the candidates that do not fit the target wait in
+        # deferred_requeues with the planner's reason until a host with enough
+        # capacity is online; the placeable ones are queued below regardless.
+        reasons: dict[str, list[str]] = {}
+        for row in unplaceable:
+            reasons.setdefault(row["reason"], []).append(row["id"])
+        for reason_text, ids in sorted(reasons.items()):
+            message = f"cannot re-plan {len(ids)} candidate(s) of {old_job['name']} on {target_host}: {reason_text}"
+            state["deferred_requeues"].append({
+                "source_job": old_job["name"], "candidate_ids": sorted(ids), "reason": message,
+            })
+            if message not in state["warnings"]:
+                state["warnings"].append(message)
         next_batch = max(
             (job["batch"] for job in state["jobs"].values() if job["host"] == target_host),
             default=-1,
@@ -1409,6 +1423,11 @@ class CampaignManager:
             for failed in failed_jobs
             for candidate_id in failed["candidate_ids"]
         }
+        deferred_reasons = {
+            candidate_id: item["reason"]
+            for item in state["deferred_requeues"]
+            for candidate_id in item["candidate_ids"]
+        }
         by_candidate: dict[str, list[dict[str, Any]]] = {}
         for event in events:
             candidate_id = event.get("candidate_id")
@@ -1435,6 +1454,7 @@ class CampaignManager:
                         failed_candidate_reasons.get(candidate_id)
                         or not_started_reasons.get(candidate_id)
                         or state["unplaced_reasons"].get(candidate_id)
+                        or deferred_reasons.get(candidate_id)
                     ),
                 })
                 continue
