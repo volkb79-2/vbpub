@@ -240,6 +240,8 @@ Behaviour changes a consumer can see:
 
 ## [Unreleased]
 
+### Changed
+- Tooling only, no action needed: the `r2` run-gate lane is now a native `kind = "assay"` lane (CLI-EXT-41), so `run-gate r2 --shard K/N`, `--merge-shards N` and `--carry-over` split and merge the whole-source mutation campaign. No library code or consumer contract changes.
 - Tests only, no action needed: a leftover-children guard fails any test that leaves a child process of pytest behind (assay's R0/R2 judge the tree at the leader's exit), and four `procio` tests now reap their orphaned shell grandchildren.
 
 <!-- cmru: release history -->
