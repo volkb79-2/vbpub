@@ -36,7 +36,7 @@ and verified empirically against a real git binary while writing this module:
   other ``HEAD`` resolves to ``merge-base(base, HEAD)`` (the feature branch's
   fork point). One command, ``git rev-list --parents -n 1 HEAD``, tells you
   which case you are in — its token count is 2 for a normal commit and ≥3 for
-  a merge.
+  a merge. (B552: a DELEGATED base, ``judge.base_source = "request"``, skips this.)
 * :func:`dirty_paths` — ``git status --porcelain`` **always** reports paths
   relative to the repository's top level, never to the ``-C`` directory or the
   process cwd (unlike ``git diff --relative``). A caller that forgets this and
@@ -867,7 +867,8 @@ def base_resolution_mode(
     """(B008) Which of :func:`resolve_base`'s two branches fired for the
     CURRENT ``HEAD`` -- ``"first-parent"`` on a merge commit, ``"merge-base"``
     otherwise; always ``"merge-base"`` for a *delegated* base (B552), whose
-    requested comparison is honoured on every ``HEAD`` shape. A caller merging the declared base INTO a feature branch (the
+    requested comparison is honoured on every ``HEAD`` shape. A caller
+    merging the declared base INTO a feature branch (the
     common pre-gate sync) hits ``"first-parent"``, whose resolved commit is
     the branch's OWN pre-merge tip: the changed-line floor and any R2 lane
     both silently narrow to "what did the merge itself change" -- often

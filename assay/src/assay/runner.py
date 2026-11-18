@@ -4359,7 +4359,8 @@ def _resolve_declared_base(
     consume this OID directly through
     :func:`~assay.measurability.check_resolved_base_is_head` (B101 P1); the
     declaration is never re-resolved after P22 has removed symbolic refs,
-    and the first-parent rule for a merge ``HEAD`` is decided HERE, where
+    and the first-parent rule for a merge ``HEAD`` (not applied to a
+    *delegated* base, B552) is decided HERE, where
     ``HEAD``'s parents are certainly visible, never inside a snapshot whose
     seed may cut them off.
     """

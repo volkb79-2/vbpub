@@ -4,8 +4,10 @@ guards, the library-only argument checks and the bounded refusal renderer."""
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
+import types
 
 import pytest
 
@@ -38,13 +40,46 @@ def test_lane_plan_returns_the_planner_rows_and_the_resolved_base(tmp_path, monk
     lane_file = load_lane_file(root / "assay.toml")
     monkeypatch.setattr("assay.cli.plan_jobs", lambda *_a, **_k: rows)
     declared = []
+    delegated_flags = []
     monkeypatch.setattr(
         "assay.runner.resolve_declared_base",
-        lambda project_root, declaration: declared.append(declaration) or "f" * 40,
+        lambda project_root, declaration, *, delegated=False: (
+            declared.append(declaration) or delegated_flags.append(delegated) or "f" * 40
+        ),
     )
     plan = _REAL_LANE_PLAN(lane_file, "package", None)
     assert plan == {"status": "ok", "candidates": rows, "_resolved_base": "f" * 40}
     assert len(declared) == 1
+    # (B552) the lane declares a base itself, so it does not delegate
+    assert delegated_flags == [False]
+
+
+def test_lane_plan_resolves_a_delegated_base_with_the_delegated_rule(tmp_path, monkeypatch):
+    """(B552) A `base_source = "request"` lane must reconstruct its base the way
+    the run resolved it (merge-base of the request), or the campaign's
+    plan-versus-verdict base comparison fails on a merge-commit HEAD."""
+    root, _head, rows = _synthetic(tmp_path, monkeypatch, 2)
+    real = load_lane_file(root / "assay.toml")
+    lane = real.lane("package")
+    delegating = dataclasses.replace(
+        lane, judge=dataclasses.replace(lane.judge, base=None, base_source="request")
+    )
+    lane_file = types.SimpleNamespace(
+        project_root=real.project_root, lane=lambda _name: delegating
+    )
+    monkeypatch.setattr("assay.cli.plan_jobs", lambda *_a, **_k: rows)
+    seen = []
+    monkeypatch.setattr(
+        "assay.runner.resolve_declared_base",
+        lambda project_root, declaration, *, delegated=False: (
+            seen.append((declaration, delegated)) or "f" * 40
+        ),
+    )
+    monkeypatch.setattr(
+        "assay.runner.resolve_base_declaration", lambda _lane, request: request
+    )
+    _REAL_LANE_PLAN(lane_file, "package", "feedc0de" * 5)
+    assert seen == [("feedc0de" * 5, True)]
 
 
 # ---- pilot selection refusals --------------------------------------------------

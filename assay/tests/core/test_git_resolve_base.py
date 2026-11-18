@@ -99,6 +99,23 @@ def test_delegated_base_on_a_merge_head_resolves_the_requested_comparison(git_re
     assert base_resolution_mode(git_repo.path, delegated=True) == "merge-base"
 
 
+def test_delegated_diverged_base_resolves_its_merge_base_not_its_own_tip(git_repo):
+    """B552: a requested base that is NOT an ancestor of HEAD (a diverged
+    branch) is still reduced to merge-base(request, HEAD): the resolved commit
+    is an ancestor of HEAD by construction, never the request's own tip."""
+    first_parent, fork_point, _ = _merge_head_with_requested_fork_base(git_repo)
+    git_repo.git("checkout", "-q", "-b", "other", fork_point)
+    git_repo.write("on_other.py", "o = 1\n")
+    other_tip = git_repo.commit_all("diverged branch")
+    git_repo.git("checkout", "-q", "main")
+
+    resolved = resolve_base(git_repo.path, "other", delegated=True)
+
+    assert resolved == fork_point
+    assert resolved != other_tip
+    assert resolved != first_parent
+
+
 def test_non_delegated_base_on_a_merge_head_keeps_first_parent_unchanged(git_repo):
     """B552 control: the same merge HEAD and the same ref, declared by the lane
     itself, still resolves the first parent (B008's policy is untouched)."""
