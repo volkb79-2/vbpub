@@ -1,0 +1,30 @@
+#cloud-config
+# PoC builder guest: installs Debian 13 on btrfs onto the blank 8G second disk.
+# Packages come from the official Debian mirror with signature checks on.
+disable_root: false
+ssh_pwauth: true
+chpasswd:
+  expire: false
+  users:
+    - {name: root, password: root, type: text}
+write_files:
+  - path: /usr/local/sbin/dr-build.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      exec > >(tee /dev/ttyS0 /var/log/dr-build.log) 2>&1
+      set -x
+      mkdir -p /mnt/seed && mount -o ro /dev/sr0 /mnt/seed
+      uname -r; modprobe btrfs; grep -w btrfs /proc/filesystems || { echo "DR-BUILD-FAIL no-btrfs"; exit 1; }
+      apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq debootstrap btrfs-progs gdisk dosfstools grub-efi-amd64-bin parted
+      DEV=$(lsblk -dnpo NAME,SIZE,TYPE | awk '$3=="disk" && $2=="8G" {print $1; exit}')
+      echo "target device: $DEV"; lsblk
+      [ -n "$DEV" ] || { echo "DR-BUILD-FAIL no-8G-disk"; exit 1; }
+      bash /mnt/seed/poc/install-btrfs.sh --device "$DEV" --yes
+      rc=$?
+      echo "DR-BUILD-DONE rc=$rc"
+      sync
+      exit $rc
+runcmd:
+  - [ bash, -c, "/usr/local/sbin/dr-build.sh; echo DR-RUNCMD-END rc=$? > /dev/ttyS0; sync; poweroff" ]
