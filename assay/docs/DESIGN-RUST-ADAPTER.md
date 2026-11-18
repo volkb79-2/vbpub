@@ -121,7 +121,7 @@ and the v20 verdict cut. The copy-paste lane and its rules are in
 differs from the table and bullets below, `DESIGN-B245-CARGO-MUTANTS-INGESTION.md`
 and that CONSUMERS section win. What stays open is the real-toolchain
 qualification on the U0 subjects (U7) and the hostobs T3 registration (U8);
-K15 stays open until U8. U8a registered Rust at R2 in the CLI registry
+K15 was open until U8 and is CLOSED by the real hostobs run (see the last paragraph below). U8a registered Rust at R2 in the CLI registry
 (ingested cargo-mutants lanes only; native Rust R2 and Rust R3 stay refused).
 The first hand run of hostobs `assay-r2` (2026-11-18, v1001, base `7835ec25a`) ended
 `R0 PASS` / `R2 INCONCLUSIVE NO_MUTANTS` (assay exit 5, the lane fails closed): all changed
@@ -136,6 +136,10 @@ cargo-mutants' 120 s test timeout (the unmutated test passes, as in `selftest`/`
 what is inferred in `RUST-B245-U0-MEASUREMENTS.md`). The unmerged U8b-fix branch gives the lane a hard
 container memory cap intended to OOM-kill such a mutant inside its own container; that is untested, and how
 assay classifies an OOM-killed mutant is a K15 verdict-semantics point to read from the real run.
+The real run then happened (2026-11-18, base `0dd7230b1`, 345 mutants, 17 minutes): 271 caught, 47
+unviable, 21 missed, 6 timeouts; the lane's R2 claim is `BUDGET_EXCEEDED / LANE_TIMEOUT` (exit 4, the
+timeouts outrank the survivors), nothing was OOM-killed. K15 is closed by that evidence for the ingested
+Rust R2 path; the verdict-semantics and timeout-cost follow-ups are B559 and B560.
 
 **Contract read from upstream ([V] mutants.rs pages and `src/outcome.rs`, `src/mutant.rs`, `src/process.rs`):**
 exit 0 all caught, 1 usage, 2 missed mutants, 3 timeouts, 4 baseline failing, 5 `--in-diff` new side does not
@@ -367,7 +371,7 @@ the README/DESIGN-GUIDE/CONSUMERS of the tool it touches in the same change.
 | K12 | cargo-mutants output format has no stability promise [V] | upstream choice | strict parser + qualification test on every bump |
 | K13 | full instrumented build per lane run (fresh snapshot) | correctness over cache reuse | measured cost, ~minutes |
 | K14 | `unsafe` allowed in `kernel`/`act` without miri/sanitizers | operator decision 5 | review; VM lanes; BL-RUST-MIRI |
-| K15 | Rust R2 is not adopted yet | record the status once as a known issue, not a per-release waiver | assay's ingestion shipped (B245 U0-U5c, docs U6); registry lifted (U8a); K15 stays open until a hostobs T3 run exists (U8) |
+| K15 | Rust R2 is not adopted yet | record the status once as a known issue, not a per-release waiver | assay's ingestion shipped (B245 U0-U5c, docs U6); registry lifted (U8a); K15 CLOSED by the real hostobs run of 2026-11-18 (345 mutants, 17 min, R2 BUDGET_EXCEEDED/LANE_TIMEOUT exit 4; B559/B560 follow) |
 
 Assay work packages are already filed as B241–B250 in
 `assay/nyxloom-trove/4-backlog.md`; B251 is the next new sequential id (B522 is

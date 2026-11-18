@@ -164,8 +164,26 @@ branch and its OOM-kill behaviour is untested (the sampler cancelled at 2.3 GB, 
 for every hand-run heavy lane: declare `[lanes.<name>.resources] memory` (docker `--memory`) with an equal
 `memory_swap`, sample the container every few seconds for the first minutes (a 60 s monitor missed the
 step), and keep page cache in mind when sharing a host (the vbpub-debian-rollback session reported that
-its stop rule on container `memory.current`, not only anon, tripped; no log of that is kept here). K15
-stays open.
+its stop rule on container `memory.current`, not only anon, tripped; no log of that is kept here).
+
+The real hostobs run (2026-11-18, v1001, run `rgw-assay-r2-20261118T162138-v1001`, head `87d2d6e39` =
+the U8b-fix branch merged with origin/main including the hostobs client crate's transport-call guard, base
+`0dd7230b1`, container `--memory 2500m --memory-swap 2500m`, `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` and
+`NEXTEST_TEST_THREADS` = 1): the cockpit's remote-gate wrapper was killed with its devcontainer at about
+16:23Z but the job lives on the host and finished: `345 mutants tested in 17m: 21 missed, 271 caught, 47
+unviable, 6 timeouts` (unmutated baseline 4 s build + 2 s test on a warm cache; command 16:22:31 ->
+16:39:31, 1031 s). Assay verdict (exit 4, run-gate lane FAIL by the fail-closed `exit_map`): `R0 PASS`,
+`R2 BUDGET_EXCEEDED / LANE_TIMEOUT`, mutation block `candidate_count 341, killed 269, survived 21,
+budget_exceeded 6, crashed 0, hung 0`. No mutant was OOM-killed and the cap was never reached (the six
+timeout mutants spin, for example `Clock::now_ns -> 0`/`1` in `crates/client/src/transport.rs:83`, and
+allocate nothing). The 21 survivors are real test gaps in the client crate (BinaryOperator 15, FnValue 3,
+UnaryOperator 1, MatchArmGuard 1, StructField 1; `client.rs` 13, `hello.rs` 6, `json.rs` 1, `streams.rs` 1).
+Cost: the 6 timeout mutants took 6 x 120 s (`--minimum-test-timeout 120`) = 12 of the 17 minutes; the other
+339 took about 5 minutes (about 0.9 s each on a warm cache). Two verdict-semantics points are filed as
+B559 (timeouts outrank survivors, so a lane with even one timeout reports no survivor verdict) and B560 (the
+timeout floor does not follow the measured baseline). The evidence (lane log, verdict, progress, survivor
+list) is kept in the sub-controller's state directory, not in the repository. K15 is closed by this
+evidence for the ingested Rust R2 path.
 
 Known risks for the first real qualification run (B245 U7,
 `tools/qualify_rust_r2_real.py`; each is diagnosed, not a known defect; its
