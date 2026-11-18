@@ -576,7 +576,7 @@ impl Client {
         let reply = self.wait_reply(corr, deadline)?;
         let total = FRAME_HEADER_LEN + payload.len();
         let hello_len = u32::try_from(total).unwrap_or(u32::MAX);
-        let hello =parse_hello(reply.result_json(), minor, self.level, hello_len)?;
+        let hello = parse_hello(reply.result_json(), minor, self.level, hello_len)?;
         self.session = self.dicts.on_hello(&hello.boot_id, hello.epoch);
         if self.reader.buffered_len() == 0 {
             self.reader = FrameReader::new(hello.limits.max_frame_bytes, COMPLETION_NS);
@@ -593,7 +593,7 @@ impl Client {
             let wait = wait_for(deadline, self.clock.now_ns());
             let slot = self.transport.as_mut();
             let transport = slot.ok_or(ClientError::ConnectionLost)?;
-            let rest =prefix.get_mut(have..).unwrap_or_default();
+            let rest = prefix.get_mut(have..).unwrap_or_default();
             match transport.read(rest, wait) {
                 Ok(0) => return Err(self.fail(ClientError::ConnectionLost)),
                 Ok(got) => have += got,

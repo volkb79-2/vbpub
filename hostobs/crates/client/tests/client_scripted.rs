@@ -502,6 +502,7 @@ fn a_subscription_judges_generations_and_ends_with_the_connection() {
     let (mut client, _rig) = session(&sub_tail());
     let mut sub = client.subscribe(SELECTION, 1000).expect("subscription");
     assert_eq!(sub.by_ref().take(2).filter(Result::is_ok).count(), 2);
+    assert_eq!(sub.dropped(), 0);
     expect_kind(sub.next().expect("lost"), "connection-lost");
     assert!(sub.next().is_none());
     assert_eq!(sub.close(), Ok(()));
