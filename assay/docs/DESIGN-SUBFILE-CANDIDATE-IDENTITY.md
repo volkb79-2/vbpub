@@ -44,7 +44,7 @@ The brief's "~65-150" is the line delta. Function granularity lands at **~210 (C
 **It must never:**
 
 - report a candidate `killed` on evidence that the current judge did not produce or prove;
-- let a carried record reach a PASS-supporting bucket;
+- let a carried record reach a PASS-supporting bucket (for release claims; an exploratory campaign may allow a `carried-unverified` kill under §7 D2 and must disclose the count);
 - mix carried and fresh outcomes without per-candidate disclosure;
 - need an operator reason for anything it does by itself.
 
@@ -91,7 +91,7 @@ The current judge J runs the current plan. Every candidate C ends in exactly one
 
 **Claim.** In a Phase 1 verdict every `killed` outcome is evidence that J produced in this campaign, or an exact resume of such evidence. A wrong, stale or colliding locus match costs time (a failed replay followed by a full judge) or adds one disclosed pessimistic survivor. It can never add a kill. The proof depends only on (i) and (ii), which are executions under J. It does not depend on the key, on callees, on tests being unchanged, or on any static analysis. The verifier enforces the claim structurally (§5.2: `killed` is never `carried`).
 
-**Isolated kill semantics, the price of cheapness.** "X alone fails on M, and X alone passes on P" proves that the suite contains a test which detects M. The current judge's semantics are different: the suite in its order fails on M. The two differ only for order-dependent tests: X fails on M alone but passes after earlier tests, and nothing else fails. Then isolated says killed, the suite run says survived. Both runs use the same one-item collection, so the B106 objection (a narrowed collection changes what session fixtures see, `DESIGN-GUIDE.md:1872-1876`) applies symmetrically to baseline and mutant and does not invalidate the comparison. This is a judge-semantics change and therefore an operator decision (§7 D1). The fallback without it is the B106 prefix replay: sound, with Phase 1's kill gain about 0 (§0).
+**Isolated kill semantics, the price of cheapness.** "X alone fails on M, and X alone passes on P" proves that the suite contains a test which detects M. The current judge's semantics are different: the suite in its order fails on M. The two differ only for order-dependent tests: X fails on M alone but passes after earlier tests, and nothing else fails. Then isolated says killed, the suite run says survived. Both runs use the same one-item collection, so the B106 objection (a narrowed collection changes what session fixtures see, `DESIGN-GUIDE.md:1872-1876`) applies symmetrically to baseline and mutant and does not invalidate the comparison. This is a judge-semantics change; the operator decided it (§7 D1, yes): an isolated kill is accepted and disclosed as `witness-isolated`. For the record, the alternative that was not chosen is the B106 prefix replay: sound, with Phase 1's kill gain about 0 (§0).
 
 ### 2.4 The "whole-test-tree hash" variant, analysed
 
@@ -111,7 +111,7 @@ Phase 1 still executes ~4,190 replays per release. Phase 2 trusts a kill without
   - the segment of `<module>` and of `<class C>` is the text minus nested def bodies. Signatures, defaults and decorators stay in it, because they run at import time.
 
   An audit hook records every `open` of a project file outside the import system as a whole-file item, and every `os.listdir`/`os.scandir`.
-- **Footprint.** The sorted set of `(path, segment kind, qualname, segment_sha256)` items and whole-file items, plus a **context digest**: `judge_sha256` recomputed with `tree_sha256` replaced by the digest of the project's path listing (names only), so that an added, removed or renamed file invalidates.
+- **Footprint.** The sorted set of `(path, segment kind, qualname, segment_sha256)` items and whole-file items, plus a **context digest**: `judge_sha256` recomputed with `tree_sha256` replaced by the digest of the project's path listing (names only), so that an added, removed or renamed file invalidates. Decided (§7 D6): the assay version enters the digest only through a separate `classifier_version` (bumped when the candidate classification or locus rules change), not through the full assay version, so an assay upgrade without such a change does not void every footprint.
 - **Trust rule.** A prior isolated kill is trusted under J, without execution, iff:
   - its context digest equals J's;
   - every footprint item of both runs (P and M) hashes the same in J's tree;
@@ -286,9 +286,9 @@ Each starts from a store in which candidate C in `f` was KILLED by node X and ca
 | WP7 | Phase 2 footprint recorder and trust (its own design review first; starts only after D4) | new `src/assay/footprint.py`, witness plugin | P2-1..P2-8 | L |
 | WP8 | survivor probe R-a (optional, after D3) | `mutation.py`, store manifest | F12 variant | M |
 
-Order: WP0 and WP1 in parallel, then WP2, then WP3 first as a skeleton (the `--carry-forward` flag, lookup, survivor import, replay stubbed to "re-run in full"), then WP4 (isolated replay, whose tests F1-F9 and F16 need the flag), then the rest of WP3 (progress events, `--rejudge-carried`), then WP5 with WP6 alongside. Decided order (2026-11-18): WP0 -> WP1 -> WP2 -> WP3a -> WP4 -> WP3b -> WP5 -> WP6; WP7 (Phase 2) only after D4 is taken (after WP0, Phase 1 in production and a measured replay share); WP8 (probe R-a) optional and later.
+Order (the original proposal, superseded by the decided order below; its content remains the definition of WP3a/WP3b: WP3 first as a skeleton (the `--carry-forward` flag, lookup, survivor import, replay stubbed to "re-run in full"), then WP4 (isolated replay, whose tests F1-F9 and F16 need the flag), then the rest of WP3 (progress events, `--rejudge-carried`)). Decided order (2026-11-18): WP0 -> WP1 -> WP2 -> WP3a -> WP4 -> WP3b -> WP5 -> WP6; WP7 (Phase 2) only after D4 is taken (after WP0, Phase 1 in production and a measured replay share); WP8 (probe R-a) optional and later.
 
-Every WP that changes `src` needs the B534 host self-qualification before merge. WP0 ends with a short M report that replaces §1's C/E numbers. If WP0 measures the replay cost at 60 s or more, Phase 1 strict loses most of its gain and D2 must be revisited before WP4.
+Every WP that changes `src` needs the B534 host self-qualification before merge. WP0 ends with a short M report that replaces §1's C/E numbers. If the measured replay cost is 60 s or more, Phase 1 strict loses most of its gain; that is a performance finding to report to the operator, and it does not reopen D2 (decided by claim type: release claims refuse PASS while `carried-unverified` kills exist, exploratory campaigns may allow it).
 
 ## 7. Decisions (operator, 2026-11-18)
 
