@@ -2895,7 +2895,7 @@ mod tests {
         first.append(&job(0, 16), 1, 1).expect("append");
         drop(first);
         damage(&temp, "hot-0-0.seg.open");
-        let mut second = tier_with_cap(&temp, 3600, 0);
+        let second = tier_with_cap(&temp, 3600, 0);
         assert_eq!(
             second.scan().quarantined,
             vec!["hot-0-0.seg.open".to_string()]
