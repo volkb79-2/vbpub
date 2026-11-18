@@ -25,6 +25,9 @@
 //! - **A reconnect drops every dictionary** ([`StreamDicts::on_hello`]); the probe identity of
 //!   the previous hello is kept so the caller learns whether its cursors and sessions
 //!   survive (§6.4).
+//! - **`accept` clones a dictionary-bearing block's dictionary** (the §12 signature takes
+//!   `&Block`, so the block stays the caller's): fine for the sizes of a live stream, and the
+//!   P3/P5 wiring may revisit it (a by-value `accept` would move it).
 //! - **The number of streams is the caller's bound.** A client opens at most `max_outstanding`
 //!   requests and `max_subscriptions` subscriptions (§5.1) and routes only the blocks of
 //!   those corrs here; it calls [`StreamDicts::close`] at every END.

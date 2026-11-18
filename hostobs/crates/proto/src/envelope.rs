@@ -16,8 +16,15 @@
 //! - **Strict.** Whitespace between tokens is allowed; whitespace or any other byte before the
 //!   `{` or after the closing `}` is not. Key order is free. A key is compared as written, so an
 //!   escaped spelling of a key name is an unknown key. A `verb` containing an escape is refused.
-//! - **A violation is `bad-request`** on the wire (`detail.key` `""` for a text error, the
-//!   offending key otherwise); [`EnvelopeError::kind`] names it locally.
+//! - **The caller strips the line terminator.** A JSON-mode line ends in `\n` (WIRE.md §8.1),
+//!   which is framing and not part of the JSON text: the check sees the object only, and a
+//!   trailing `\n` or `\r` is a trailing byte, refused.
+//! - **A lone surrogate escape passes.** The scan checks that an escape is well-formed (four hex
+//!   digits), not that it names a scalar value: surrogates are the server's JSON layer's job.
+//! - **A violation of a request is `bad-request`** on the wire (`detail.key` `""` for a text
+//!   error, the offending key otherwise). A client that checks a REP, END or EVT gets the local
+//!   [`EnvelopeError`] (the server is then the faulty peer, WIRE.md §6.5); [`EnvelopeError::kind`]
+//!   names every refusal locally.
 //! - **No panic, no recursion, no unchecked index.** Nesting is tracked in a fixed array.
 
 use core::ops::Range;
@@ -256,11 +263,10 @@ impl Scan<'_> {
                 Kind::Number => self.number()?,
             }
             loop {
-                if depth == 0 {
+                let Some(&top) = depth.checked_sub(1).and_then(|at| stack.get(at)) else {
                     return Ok(first);
-                }
+                };
                 self.skip_ws();
-                let top = stack.get(depth - 1).copied().unwrap_or(0);
                 match self.peek() {
                     Some(b',') => {
                         self.at += 1;
@@ -345,9 +351,6 @@ fn object_members(bytes: &[u8], span: Range<usize>) -> Result<Vec<Member>, Envel
     }
 }
 
-/// One key an envelope defines: its name, the accepted value types and whether it is required.
-type KeySpec = (&'static str, &'static [Kind], bool);
-
 const ANY_BOOL: &[Kind] = &[Kind::True, Kind::False];
 const STR: &[Kind] = &[Kind::Str];
 const OBJECT: &[Kind] = &[Kind::Object];
@@ -360,26 +363,47 @@ fn named<'a>(bytes: &[u8], members: &'a [Member], name: &str) -> Option<&'a Memb
         .find(|member| bytes.get(member.key.clone()) == Some(name.as_bytes()))
 }
 
-/// Every member is a defined key of an accepted type and every required key is present.
-fn shape(bytes: &[u8], members: &[Member], keys: &[KeySpec]) -> Result<(), EnvelopeError> {
+/// Every member's key is one of `allowed` (all of an envelope's keys are required, so the
+/// presence of each is checked by [`field`]).
+fn only_keys(bytes: &[u8], members: &[Member], allowed: &[&str]) -> Result<(), EnvelopeError> {
     for member in members {
         let name = bytes.get(member.key.clone());
-        let spec = keys.iter().find(|spec| name == Some(spec.0.as_bytes()));
-        let Some(&(label, kinds, _)) = spec else {
+        if !allowed.iter().any(|label| name == Some(label.as_bytes())) {
             return Err(EnvelopeError::UnknownKey {
                 key: member.key.clone(),
             });
-        };
-        if !kinds.contains(&member.kind) {
-            return Err(EnvelopeError::WrongType(label));
-        }
-    }
-    for &(label, _, required) in keys {
-        if required && named(bytes, members, label).is_none() {
-            return Err(EnvelopeError::MissingKey(label));
         }
     }
     Ok(())
+}
+
+/// The member `label`, present and of one of `kinds`.
+fn field<'a>(
+    bytes: &[u8],
+    members: &'a [Member],
+    label: &'static str,
+    kinds: &[Kind],
+) -> Result<&'a Member, EnvelopeError> {
+    let member = named(bytes, members, label).ok_or(EnvelopeError::MissingKey(label))?;
+    if kinds.contains(&member.kind) {
+        Ok(member)
+    } else {
+        Err(EnvelopeError::WrongType(label))
+    }
+}
+
+/// `base` plus `corr` in JSON mode.
+fn allow(base: &[&'static str], json_mode: bool) -> Vec<&'static str> {
+    let mut all = base.to_vec();
+    if json_mode {
+        all.push("corr");
+    }
+    all
+}
+
+/// The text between the quotes of a string member's value range.
+fn unquoted(range: &Range<usize>) -> Range<usize> {
+    range.start + 1..range.end - 1
 }
 
 fn u32_of(bytes: &[u8], member: &Member, label: &'static str) -> Result<u32, EnvelopeError> {
@@ -391,24 +415,28 @@ fn u32_of(bytes: &[u8], member: &Member, label: &'static str) -> Result<u32, Env
 }
 
 /// The `corr` member of a JSON-mode line (an exact u32), `None` in binary mode where the key
-/// is not defined and so is refused by [`shape`].
+/// is not defined and so is refused by [`only_keys`].
 fn corr_of(
     bytes: &[u8],
     members: &[Member],
     json_mode: bool,
 ) -> Result<Option<u32>, EnvelopeError> {
-    match named(bytes, members, "corr") {
-        Some(member) if json_mode => u32_of(bytes, member, "corr").map(Some),
-        _ => Ok(None),
+    if !json_mode {
+        return Ok(None);
     }
+    let member = field(bytes, members, "corr", NUMBER)?;
+    u32_of(bytes, member, "corr").map(Some)
 }
 
-fn with_corr(keys: &[KeySpec], json_mode: bool) -> Vec<KeySpec> {
-    let mut all = keys.to_vec();
-    if json_mode {
-        all.push(("corr", NUMBER, true));
-    }
-    all
+fn count_of(bytes: &[u8], members: &[Member], label: &'static str) -> Result<u32, EnvelopeError> {
+    let member = field(bytes, members, label, NUMBER)?;
+    u32_of(bytes, member, label)
+}
+
+fn has_backslash(bytes: &[u8], range: &Range<usize>) -> bool {
+    bytes
+        .get(range.clone())
+        .is_some_and(|text| text.contains(&b'\\'))
 }
 
 /// A checked REQ payload `{"verb": str, "args": object}` (JSON mode adds `"corr"`).
@@ -430,21 +458,19 @@ pub struct Req {
 /// [`EnvelopeError::WrongType`].
 pub fn check_req(bytes: &[u8], json_mode: bool) -> Result<Req, EnvelopeError> {
     let found = members(bytes)?;
-    let keys = with_corr(&[("verb", STR, true), ("args", OBJECT, true)], json_mode);
-    shape(bytes, &found, &keys)?;
+    only_keys(bytes, &found, &allow(&["verb", "args"], json_mode))?;
+    let verb = field(bytes, &found, "verb", STR)?;
+    let args = field(bytes, &found, "args", OBJECT)?;
     let corr = corr_of(bytes, &found, json_mode)?;
     if corr == Some(0) {
         return Err(EnvelopeError::WrongType("corr"));
     }
-    let verb = range_of(bytes, &found, "verb");
-    let args = range_of(bytes, &found, "args");
-    let text = bytes.get(verb.clone()).unwrap_or(&[]);
-    if text.contains(&b'\\') {
+    if has_backslash(bytes, &verb.value) {
         return Err(EnvelopeError::WrongType("verb"));
     }
     Ok(Req {
-        verb: verb.start + 1..verb.end - 1,
-        args,
+        verb: unquoted(&verb.value),
+        args: args.value.clone(),
         corr,
     })
 }
@@ -452,12 +478,11 @@ pub fn check_req(bytes: &[u8], json_mode: bool) -> Result<Req, EnvelopeError> {
 /// The error envelope's inner object `{"code": str, "message": str, "detail": object}`.
 fn check_error_object(bytes: &[u8], range: &Range<usize>) -> Result<(), EnvelopeError> {
     let found = object_members(bytes, range.clone())?;
-    let keys: [KeySpec; 3] = [
-        ("code", STR, true),
-        ("message", STR, true),
-        ("detail", OBJECT, true),
-    ];
-    shape(bytes, &found, &keys)
+    only_keys(bytes, &found, &["code", "message", "detail"])?;
+    field(bytes, &found, "code", STR)?;
+    field(bytes, &found, "message", STR)?;
+    field(bytes, &found, "detail", OBJECT)?;
+    Ok(())
 }
 
 /// A checked REP payload.
@@ -472,12 +497,8 @@ pub struct Rep {
 }
 
 fn ok_of(bytes: &[u8], members: &[Member]) -> Result<bool, EnvelopeError> {
-    match named(bytes, members, "ok") {
-        Some(member) if member.kind == Kind::True => Ok(true),
-        Some(member) if member.kind == Kind::False => Ok(false),
-        Some(_) => Err(EnvelopeError::WrongType("ok")),
-        None => Err(EnvelopeError::MissingKey("ok")),
-    }
+    let member = field(bytes, members, "ok", ANY_BOOL)?;
+    Ok(member.kind == Kind::True)
 }
 
 /// Check a REP payload: `{"ok": true, "result": object}` or the error envelope of §4.1
@@ -489,20 +510,15 @@ fn ok_of(bytes: &[u8], members: &[Member]) -> Result<bool, EnvelopeError> {
 pub fn check_rep(bytes: &[u8], json_mode: bool) -> Result<Rep, EnvelopeError> {
     let found = members(bytes)?;
     let ok = ok_of(bytes, &found)?;
-    let body_key: KeySpec = if ok {
-        ("result", OBJECT, true)
-    } else {
-        ("error", OBJECT, true)
-    };
-    let keys = with_corr(&[("ok", ANY_BOOL, true), body_key], json_mode);
-    shape(bytes, &found, &keys)?;
-    let body = range_of(bytes, &found, body_key.0);
+    let label = if ok { "result" } else { "error" };
+    only_keys(bytes, &found, &allow(&["ok", label], json_mode))?;
+    let body = field(bytes, &found, label, OBJECT)?;
     if !ok {
-        check_error_object(bytes, &body)?;
+        check_error_object(bytes, &body.value)?;
     }
     Ok(Rep {
         ok,
-        body,
+        body: body.value.clone(),
         corr: corr_of(bytes, &found, json_mode)?,
     })
 }
@@ -531,49 +547,34 @@ pub struct End {
 pub fn check_end(bytes: &[u8]) -> Result<End, EnvelopeError> {
     let found = members(bytes)?;
     let ok = ok_of(bytes, &found)?;
-    let common: [KeySpec; 3] = [
-        ("ok", ANY_BOOL, true),
-        ("blocks", NUMBER, true),
-        ("dropped", NUMBER, true),
-    ];
-    let mut keys = common.to_vec();
-    if ok {
-        keys.push(("next", STR_OR_NULL, true));
-        keys.push(("reason", STR, true));
+    let allowed: &[&str] = if ok {
+        &["ok", "blocks", "dropped", "next", "reason"]
     } else {
-        keys.push(("error", OBJECT, true));
-    }
-    shape(bytes, &found, &keys)?;
+        &["ok", "blocks", "dropped", "error"]
+    };
+    only_keys(bytes, &found, allowed)?;
     let blocks = count_of(bytes, &found, "blocks")?;
     let dropped = count_of(bytes, &found, "dropped")?;
-    if let Some(error) = named(bytes, &found, "error") {
+    if !ok {
+        let error = field(bytes, &found, "error", OBJECT)?;
         check_error_object(bytes, &error.value)?;
+        return Ok(End {
+            ok,
+            blocks,
+            dropped,
+            reason: None,
+            next: None,
+        });
     }
+    let next = field(bytes, &found, "next", STR_OR_NULL)?;
+    let reason = field(bytes, &found, "reason", STR)?;
     Ok(End {
         ok,
         blocks,
         dropped,
-        reason: text_of(bytes, &found, "reason"),
-        next: text_of(bytes, &found, "next"),
+        reason: Some(unquoted(&reason.value)),
+        next: (next.kind == Kind::Str).then(|| unquoted(&next.value)),
     })
-}
-
-fn count_of(bytes: &[u8], members: &[Member], label: &'static str) -> Result<u32, EnvelopeError> {
-    named(bytes, members, label)
-        .ok_or(EnvelopeError::MissingKey(label))
-        .and_then(|member| u32_of(bytes, member, label))
-}
-
-/// The value range of a key `shape` proved present (the empty range is never used).
-fn range_of(bytes: &[u8], members: &[Member], label: &str) -> Range<usize> {
-    named(bytes, members, label)
-        .map_or(0..0, |member| member.value.clone())
-}
-
-fn text_of(bytes: &[u8], members: &[Member], label: &str) -> Option<Range<usize>> {
-    named(bytes, members, label)
-        .filter(|member| member.kind == Kind::Str)
-        .map(|member| member.value.start + 1..member.value.end - 1)
 }
 
 /// A checked EVT payload.
@@ -592,16 +593,11 @@ pub struct Evt {
 /// An [`EnvelopeError`].
 pub fn check_evt(bytes: &[u8]) -> Result<Evt, EnvelopeError> {
     let found = members(bytes)?;
-    let Some(member) = named(bytes, &found, "event") else {
-        return Err(EnvelopeError::MissingKey("event"));
-    };
-    if member.kind != Kind::Str {
-        return Err(EnvelopeError::WrongType("event"));
-    }
-    let event = member.value.start + 1..member.value.end - 1;
+    let member = field(bytes, &found, "event", STR)?;
+    let event = unquoted(&member.value);
     if bytes.get(event.clone()) == Some(b"closing".as_slice()) {
-        let keys: [KeySpec; 2] = [("event", STR, true), ("reason", STR, true)];
-        shape(bytes, &found, &keys)?;
+        only_keys(bytes, &found, &["event", "reason"])?;
+        field(bytes, &found, "reason", STR)?;
     }
     Ok(Evt { event })
 }
@@ -615,6 +611,20 @@ mod tests {
             Ok(_) => "ok",
             Err(error) => error.kind(),
         }
+    }
+
+    fn req_kind(payload: &str) -> &'static str {
+        kind(check_req(payload.as_bytes(), false))
+    }
+
+    /// A JSON unicode escape built at run time: the source never spells one out.
+    fn unicode_escape(hex: &str) -> String {
+        format!("{}u{hex}", '\\')
+    }
+
+    /// A valid request whose `args.a` string holds `value` verbatim.
+    fn with_arg(value: &str) -> String {
+        format!(r#"{{"verb":"x","args":{{"a":"{value}"}}}}"#)
     }
 
     fn text(bytes: &[u8], range: &core::ops::Range<usize>) -> String {
@@ -784,7 +794,7 @@ mod tests {
             br#"{"ok":false,"blocks":2,"dropped":0,"error":{"code":"","message":"","detail":{}}}"#;
         let end = check_end(bad).expect("valid");
         assert!(!end.ok && end.reason.is_none());
-        let table: [(&[u8], &str); 9] = [
+        let table: [(&[u8], &str); 12] = [
             (
                 br#"{"ok":true,"blocks":1,"dropped":0,"reason":"complete"}"#,
                 "missing-key",
@@ -821,6 +831,15 @@ mod tests {
                 br#"{"ok":false,"blocks":1,"dropped":0,"error":{"code":"x"}}"#,
                 "missing-key",
             ),
+            (
+                br#"{"ok":true,"blocks":1,"next":null,"reason":"x"}"#,
+                "missing-key",
+            ),
+            (
+                br#"{"ok":true,"blocks":1,"dropped":0,"next":null,"reason":1}"#,
+                "wrong-type",
+            ),
+            (br#"{"ok":false,"blocks":1,"dropped":0}"#, "missing-key"),
         ];
         for (payload, expected) in table {
             assert_eq!(
@@ -865,10 +884,37 @@ mod tests {
 
     #[test]
     fn an_escaped_key_spelling_is_an_unknown_key_and_names_are_exact() {
-        let escaped = br#"{"verb":"x","args":{}}"#;
-        assert_eq!(kind(check_req(escaped, false)), "unknown-key");
-        let upper = br#"{"Verb":"x","args":{}}"#;
-        assert_eq!(kind(check_req(upper, false)), "unknown-key");
+        let key = format!("{}erb", unicode_escape("0076"));
+        let escaped = format!(r#"{{"{key}":"x","args":{{}}}}"#);
+        assert!(escaped.contains('\\'), "has an escape");
+        assert_eq!(req_kind(&escaped), "unknown-key");
+        // Keys are compared as written, so the escaped spelling is no duplicate of `verb`.
+        let twice = format!(r#"{{"verb":"x","{key}":"y","args":{{}}}}"#);
+        assert!(twice.contains('\\'), "has an escape");
+        assert_eq!(req_kind(&twice), "unknown-key");
+        let plain = r#"{"verb":"x","verb":"y","args":{}}"#;
+        assert_eq!(req_kind(plain), "duplicate-key");
+        let upper = r#"{"Verb":"x","args":{}}"#;
+        assert_eq!(req_kind(upper), "unknown-key");
+    }
+
+    #[test]
+    fn whitespace_strings_and_escapes_follow_the_json_grammar() {
+        let spaced = "{\t\"verb\"\t:\r\n\"x y\" ,\n\"args\" : { } \r\n}";
+        let req = check_req(spaced.as_bytes(), false).expect("valid");
+        assert_eq!(text(spaced.as_bytes(), &req.verb), "x y");
+        let escapes = r#"{"verb":"x","args":{"a":"\"\\\/\b\f\n\r\t"}}"#;
+        assert_eq!(req_kind(escapes), "ok");
+        let hex = ["09af", "AF09", "aAfF"].map(unicode_escape).concat();
+        assert_eq!(req_kind(&with_arg(&hex)), "ok");
+        let short = unicode_escape("123");
+        assert_eq!(req_kind(&with_arg(&short)), "json-text");
+        // A lone surrogate passes the scan: the server's JSON layer owns it.
+        let lone = unicode_escape("d800");
+        assert_eq!(req_kind(&with_arg(&lone)), "ok");
+        // The caller strips the line terminator (JSON mode, WIRE.md 8.1) before the check.
+        let line = "{\"verb\":\"x\",\"args\":{}}\n";
+        assert_eq!(req_kind(line), "json-text");
     }
 
     #[test]

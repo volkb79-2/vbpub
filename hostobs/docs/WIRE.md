@@ -290,8 +290,10 @@ are the same iff their canonical forms are equal (no resolution: `{"inc":5}` and
 incarnation 5 are distinct). A selection resolving to more than `limits.max_rows` entities is `budget`
 `{"pool":"rows"}`. Every object below is **strict**: a missing required key, an unknown key or a wrong
 type is `bad-request`. JSON text rules (both modes): UTF-8, no duplicate key at any depth, nesting
-depth ≤ 8, exact integers (§8.3); a violation is `bad-request` (the server's JSON layer enforces them;
-`proto` has no JSON parser).
+depth ≤ 8 (the envelope object is depth 1; the bound holds for requests and for the client's checks of
+REP, END and EVT), exact integers (§8.3); a violation is `bad-request` (the server's JSON layer enforces
+them; `proto` has no JSON parser). The JSON text excludes the JSON-mode line terminator (§8.1): the caller
+strips the `\n` before any check, and a trailing `\n` or `\r` is a trailing byte.
 *Implemented* (`crates/proto/src/envelope.rs`, P2c): `check_req`, `check_rep`, `check_end` and `check_evt` scan
 a payload byte-wise and return byte ranges into it (no JSON dependency). They check UTF-8, one object with
 nothing before the `{` and nothing after the `}` (whitespace between tokens is allowed), string escapes,
@@ -301,8 +303,10 @@ duplicates in `args`, `result` and `detail` are the server's JSON layer's job, a
 envelope. A key spelled with escapes is an unknown key, and so is a ninth key (an envelope has at most five,
 `MAX_MEMBERS` is 8); a `verb` containing a backslash is refused; a JSON-mode REQ with `corr` 0 is refused
 (§2.3) while a REP may carry `corr` 0 (§8.2); the END counts are exact `u32`s (§8.3). An EVT needs a string
-`event`, at most 8 keys, and `closing` carries exactly `{event, reason}`. Every envelope violation is
-`bad-request` on the wire (`detail.key` `""` for a text error, else the offending key).
+`event`, at most 8 keys, and `closing` carries exactly `{event, reason}`. A lone surrogate escape (an
+escape whose four hex digits name a surrogate) passes the scan: the server's JSON layer owns it. A violation
+of a request is `bad-request` on the wire (`detail.key` `""` for a text error, else the offending key); a
+violation of a REP, END or EVT is a local `EnvelopeError` of the client (the server is the faulty peer).
 **Worst-case size.** A JSON encoder may escape every non-ASCII character (`\uXXXX`, a surrogate pair
 for 4-byte UTF-8), so a string costs at most 3× its decoded length plus 2 quotes; control characters
 are excluded. Worst selection: 16 × (`{"prefix":` 10 + 512·3 + 2 + `}` 1 + `,` 1) = 24,800 B, metrics
