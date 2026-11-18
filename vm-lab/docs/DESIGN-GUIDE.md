@@ -28,7 +28,7 @@ its own, `vm-lab/`, with the package `vm_lab` in `src/` and the console script
 - **Bare checkouts keep working.** The wrapper `vm-lab/vm-lab` sets `PYTHONPATH`
   relative to itself, like `libraries/cowtree/repo-path`; the TrueNAS front puts
   `vm-lab/src` on `sys.path` from its own location. Neither needs an install.
-- **The image is built, not pulled.** `qemu-image/Dockerfile` carries the same
+- **The image is built, not pulled.** `src/vm_lab/qemu-image/Dockerfile` (package data, so the wheel carries it) carries the same
   plain package set as the debian-install-v2 test-VM image (QEMU for TCG, no KVM,
   no privileges) minus what only that harness uses. `vm-lab image build` runs
   `docker build` on it (default tag `vm-lab-qemu:local`). OVMF is not in the image:

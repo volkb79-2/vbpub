@@ -32,6 +32,10 @@ vm-lab = "vm_lab.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The image build context ships with the wheel: `vm-lab image build` finds it next to the module (QEMU_IMAGE_CONTEXT).
+[tool.setuptools.package-data]
+vm_lab = ["qemu-image/*"]
+
 # Version comes from the git tag `vm-lab-vX.Y.Z` (minted by cmru once the project is registered for release, see
 # KNOWN_ISSUES_TODO_BACKLOG.md VML-BL-01). No fallback_version: a build without git metadata must fail (AGENTS.md "Defaults
 # and fallbacks are hazards").
