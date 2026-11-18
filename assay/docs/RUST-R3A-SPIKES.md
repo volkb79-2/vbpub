@@ -46,8 +46,10 @@ Non-`.rs` files, renames and deletions in the diff were not tried.
 diff, with an empty diff, and with a diff whose new side mismatches the tree
 leave NO `--output` directory at all (`respike/spikes5.log` steps 1-3: `ls`
 reports `No such file or directory` for each). The first two print `INFO No
-mutants to filter` / `INFO Diff file is empty` and exit 0; the mismatch run
-prints `Diff content doesn't match source file` and exits 5.
+mutants to filter` / `INFO Diff file is empty` and exit 0 (the empty-diff exit
+status is `respike/spikes6.log`; the `exit=?` in `spikes5.log` step 2 is a
+script slip, not a tool result); the mismatch run prints `Diff content doesn't
+match source file` and exits 5.
 
 **Exit codes.** 0 all caught, 2 survivors, 3 timeouts, 4 baseline failed, 5 diff
 mismatch (log). A run with survivors AND a timeout exits 3: the exit code
@@ -66,7 +68,11 @@ per-mutant `diff/*.diff` (minus-lines are the original source),
 set), containing ONLY the `Baseline` outcome with summary `Failure` and Test
 `{"Failure": 100}`; `total_mutants` is 0 although 25 were listed
 (`basefail/mutants.out/outcomes.json`). Test status alone cannot tell a
-baseline failure from a kill; the scenario decides.
+baseline failure from a kill; the scenario decides. A baseline can also fail
+in the BUILD phase: a `--locked` run without a `Cargo.lock` produced a
+`Baseline`/`Failure` outcome with Build `{"Failure": 102}` and no Test phase
+(`respike/o-git/mutants.out.old/outcomes.json`). Any non-`Success` baseline is
+the same FAIL, whatever phase failed.
 
 **`--test-workspace` default is per-package, and a test-less crate "dies
 caught".** In a two-crate workspace whose only test lives in crate `b`, mutants
@@ -87,7 +93,9 @@ source tree gets no file (the run happens in a `/tmp/cargo-mutants-*.tmp`
 copy). A second run into the same `--output` rotates the first result to
 `mutants.out.old` (`spikes-s3-reuse.log`). A PRE-CREATED EMPTY `mutants.out`
 is also rotated to `mutants.out.old`, and a fresh `mutants.out` is made
-(`respike/spikes5.log` step 4); a pre-created empty `--output` directory is
+(`respike/spikes5.log` step 4: `mutants.out.old` is listed beside the fresh
+`mutants.out`; that `.old` directory was pruned from the retained evidence, so
+its emptiness is inferred); a pre-created empty `--output` directory is
 simply used (step 5). `--output` pointing at an existing file fails with
 `Not a directory` (`spikes-s3-reuse.log`; the `exit=0` lines there are the
 exit status of a `tail` pipeline, not the tool).
@@ -150,7 +158,13 @@ neither `<out>/mutants.out` nor `<out>/mutants.out.old` exists and does not
 create `mutants.out`, (b) after the command opens `<out>/mutants.out/outcomes.json`
 and the `diff/` files through a `O_NOFOLLOW` chain, (c) requires `.old` still
 absent and the report's `start_time` and `end_time` inside the command's observed
-wall window. New code in `safeio`/`runner`, not a lane-level trick.
+wall window (the tool's own clock inside the container; assay's window is
+taken with a tolerance and the container shares the host clock source). New
+code in `safeio`/`runner`, not a lane-level trick. It serves the SNAPSHOT path
+only, where every run starts from a clean checkout. The direct R0 path
+measures the live tree and does not create directories (`create_missing_parents
+=False`), so a Rust R2 lane is declared ingested/snapshot-only; a stale
+`mutants.out.old` left in a live tree would otherwise refuse every second run.
 
 **D3 Zero mutants (DECIDED 2026-11-18, left to the assay owner by the operator,
 adopting the recommendation below).** Missing output directory after exit 0
@@ -161,7 +175,14 @@ ends INCONCLUSIVE/`NO_MUTANTS` (the existing ingested terminal), never PASS and
 never ERROR. For R2 at T3 (advisory, async) an inconclusive "nothing to mutate"
 on a docs-only diff is the honest answer. The rejected alternative is a
 textual rule keyed on the declared argv (`--list --in-diff X` exits 0 with no
-report and would satisfy it).
+report and would satisfy it). Two implementation consequences B245 must carry
+into the v20 cut: `verify.py` rejects `NO_MUTANTS` without a mutation payload,
+so the runner synthesises the zero/zero `Mutation` record, and an ingested
+`judgment.r2` carries `producer_tool` and `fail_under` (and the other
+ingested-only fields, `verdict.py` `_INGESTED_ONLY_FIELDS`), so the zero-mutant
+verdict fills them from the lane declaration, not from a report. An absent
+report with a NON-zero exit is not this case: it falls to the R0 exit-code
+rule (exit 5, 1 and 70 are FAILs).
 
 **D4 Result-report completeness (DECIDED with a caveat).** Complete means
 `end_time` set and a `Baseline` outcome present. `Baseline` summary other than
@@ -177,7 +198,8 @@ Exits 2 and 3 do not decide R0 once a complete report exists; exits 5, 1 and
 (`{"Failure": 4}` measured, `Signalled`, `Other`) is `crashed`; `MissedMutant`
 is `survived`; `Unviable` is `discarded` (Build failure, no Test phase);
 `Timeout` is `budget_exceeded`; an unknown summary, phase or status key refuses
-the report. `INGESTED_STATUS_BUCKETS` has no `crashed` entry and keys on one
+the report (a Build-only phase list is valid for `Unviable` mutants and for a
+failed `Baseline`, so the parser must not require a Test phase there). `INGESTED_STATUS_BUCKETS` has no `crashed` entry and keys on one
 string, so B245 needs a normalising layer (summary + Test status to the assay
 status) in the parser, then maps that to the existing buckets; the bucket
 table gains a `crashed` row or the parser discards with a reason.

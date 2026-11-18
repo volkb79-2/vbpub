@@ -10,5 +10,5 @@ for p in sorted(glob.glob('/out/rerun/mutants.out*/outcomes.json')):
     o=json.load(open(p)); b=o['outcomes'][0]
     print(p, o['start_time'], [x['argv'][-3:] for x in b['phase_results']])
 PY
-echo "== output dir that is an existing FILE"; : > /out/afile; cargo mutants $F2 --output /out/afile --in-diff /work/diffs/v2.diff 2>&1 | tail -2; echo exit=$?
+echo "== output dir that is an existing FILE"; : > /out/afile; cargo mutants --test-tool nextest --cargo-arg=--offline --output /out/afile --in-diff /work/diffs/v2.diff 2>&1 | tail -2; echo exit=$?
 echo DONE > /out/DONE3

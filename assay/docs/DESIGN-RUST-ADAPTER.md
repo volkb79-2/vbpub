@@ -136,7 +136,7 @@ BinaryOperator, UnaryOperator, MatchArm, MatchArmGuard, StructField} [V]. Span c
 | `Failure`/`Timeout` on Baseline | lane FAIL (exit 4), reader refuses the report with an explicit reason | measured: the report is complete but has `total_mutants` 0 and the Baseline Test status is `Failure(100)`, the same as a kill; the scenario, never the status, decides (`RUST-R3A-SPIKES.md` D4). |
 
 - **Identity**: `operator = "cargo-mutants:<Genre>"` (new namespace in `vocabulary.INGESTED_OPERATOR_NAMESPACES`
-  [V]; schema impact [U] S7), `replacement_sha256` = sha256 of `replacement`, byte span from `span` converted
+  [V]; schema impact: a verdict v20 cut, operator-approved 2026-11-18, `RUST-R3A-SPIKES.md` D6), `replacement_sha256` = sha256 of `replacement`, byte span from `span` converted
   against the committed blob.
 - **What differs from Stryker, and how it stays fail-closed.** The report embeds no `source` and no `projectRoot`
   [V]. (1) Freshness rests on the existing artifact reservation, "never accepts a report it did not watch being
@@ -151,7 +151,9 @@ BinaryOperator, UnaryOperator, MatchArm, MatchArmGuard, StructField} [V]. Span c
   R0 `COMMAND_FAILED` before assay reads the report (Stryker needs `thresholds.break: null` for the same reason
   [V]). cargo-mutants has no such switch [K]. Fix through the existing B078 seam [V]: a `result_report` reader
   `cargo-mutants-outcomes` reading `outcomes.json`; complete = `end_time` set and a Baseline outcome present;
-  failures = Baseline summary is not `Success`. Exit 2/3 then no longer decide R0; exit 4 (baseline failed) is a
+  a Baseline summary other than `Success` is a FAIL, but the existing reader shape requires a positive
+  `total_mutants` and a baseline-failure report has 0, so that FAIL rides the exit-4 path with an explicit refusal
+  reason (`RUST-R3A-SPIKES.md` D4). Exit 2/3 then no longer decide R0; exit 4 (baseline failed) is a
   FAIL; exit 1/70 leave no complete report and fall back to the exit code (FAIL). Rejected: a per-lane `bash`
   wrapper mapping exit codes, which is hand-written fail-open territory.
 - **Diff scoping.** assay owns the base (`base_source = "request"`) and currently exports nothing about it to the
@@ -307,7 +309,7 @@ S < 300 changed lines, M < 900, L more.
 | R-2 | assay `RustAdapter` registered at R1; nextest/libtest first-failure recognizers; real-toolchain fixtures (`tests/fixtures/rust/`, generated in the image, A-234 discipline [V go.py header]); `tools/qualify_rust_r1_real.py` run inside the image; CONSUMERS "Rust lanes" + DESIGN-GUIDE §11 row; hostobs `assay-r1` replaces `selftest` | M | Codex / Fable once, then Sonnet | assay's own lanes + qualification in the image | R-1 |
 | **MILESTONE 2** | **100% diff-line coverage judged by assay on hostobs.** | | | | R-2 |
 | R-3a | MEASURED 2026-11-18 in `RUST-R3A-SPIKES.md` (D1-D8; D2 reservation, D3 zero mutants, D6 schema and D7 diff handoff stay OPEN for B245's carve; S7 schema impact was derived from the code, not measured): S3/S4/S7 spikes (span units, zero-mutant `--in-diff`, baseline-failure report, directory artifact reservation, schema impact) | S | Codex | measurements | R-1, R2 adoption decision |
-| R-3b | DEFERRED until R2 adoption: `cargo-mutants-outcomes` format + diff content check; result_report; `ASSAY_CHANGED_DIFF`; namespace; Rust R2 registration; real-run fixtures | L | Codex / Sonnet | assay lanes + qualification | R-2, R-3a |
+| R-3b | DEFERRED until R2 adoption: `cargo-mutants-outcomes` format + diff content check; result_report; directory-artifact reservation (D2); argv placeholder for the diff path (D7, replaces `ASSAY_CHANGED_DIFF`); namespace + v20 cut; Rust R2 registration; real-run fixtures | L | Codex / Sonnet | assay lanes + qualification | R-2, R-3a |
 | **FUTURE MILESTONE (R2 NOT YET ADOPTED)** | **diff-scoped cargo-mutants gate (`assay-r2`) on hostobs.** | | | | R-3b |
 | R-4 | test-break/import-break canary injector and real-toolchain `COMMAND_FAILED` oracle with receipt in T2 `assay-r3`; uncovered-line injector and `UNCOVERED_LINES` oracle in a separate T3 lane | S-M | Codex / Sonnet | qualification in the image | R-2 |
 | R-5 | cmru `.crates` source, Cargo.lock writer, image cache rebuild, advisories in `check` | M-L | Codex / Sonnet (Fable once) | cmru own gate; a dry resolve against hostobs | R-1 (parallel to R-2..R-4) |
