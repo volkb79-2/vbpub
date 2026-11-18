@@ -23,7 +23,8 @@ All notable changes to this project are recorded here.
 - Reserve a share of the rolling slice for the never-judged remainder (FD-038).
   `[r2] reserve_percent` in `r2-scope.toml` (integer 0 to 100, default **25**,
   rounded up, capped at `slice_size - 1`) keeps that share of every slice for
-  never-judged and pending candidates, so a target edited every release by more
+  non-changed candidates (never-judged and the pending candidates of a
+  half-judged file, in path order), so a target edited every release by more
   than `slice_size` candidates still sweeps; a reserve the remainder cannot fill
   returns to the changed files, `0` restores the changed-first slice. The
   scope document's `slice` gains `reserve_percent`, `reserved_candidates`,
