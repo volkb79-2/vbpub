@@ -83,6 +83,7 @@ import threading
 import time
 import tomllib
 from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
@@ -131,7 +132,13 @@ from .config import (
 )
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
-from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
+from .errors import (
+    AssayError,
+    LaneConfigError,
+    Outcome,
+    ReasonCode,
+    describe_os_error,
+)
 from .evaluate import (
     # (B074) `_is_test_filename` is imported rather than reproduced: R2's
     # declared-target gate below must split "test by DIRECTORY" from "test by
@@ -219,6 +226,18 @@ __all__ = [
     # CD18: public for assay_analysis.
     "resolve_declared_base",
 ]
+
+
+#: The phase of the higher-rigor lane block currently executing. A ContextVar
+#: keeps this local to the lane's synchronous call stack (including the shared
+#: `_execute_snapshot_unit` engine) without widening that engine's API.
+_LANE_PHASE: ContextVar[str] = ContextVar(
+    "assay_lane_phase", default="seed/snapshot"
+)
+
+
+def _mark_lane_phase(phase: str) -> None:
+    _LANE_PHASE.set(phase)
 
 
 class ProcessRunner(Protocol):
@@ -505,6 +524,17 @@ def _probe_refusal_terminal(
     if probe_result.reason_code is ReasonCode.LANE_TIMEOUT:
         return probe_result.outcome, ReasonCode.LANE_TIMEOUT
     return Outcome.ERROR, ReasonCode.BAD_LANE_CONFIG
+
+
+def _lane_oserror(exc: OSError, *, phase: str) -> AssayError:
+    """The existing whole-lane refusal, with B556's diagnostic sentence."""
+    wrapped = AssayError(
+        describe_os_error(exc, phase=phase),
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.GIT_FAILED,
+    )
+    wrapped.__cause__ = exc
+    return wrapped
 
 
 def announce_refusal(
@@ -1876,6 +1906,7 @@ def _execute_plan_inner(
     process_tree_evidence = getattr(proc, "process_tree_evidence", None)
     stdout_extra_dropped = int(getattr(proc, "assay_stdout_dropped_bytes", 0))
     stderr_extra_dropped = int(getattr(proc, "assay_stderr_dropped_bytes", 0))
+    _mark_lane_phase("artifact collection")
     if directory_report is not None:
         # (B245 U5a) The directory artifact is this lane's result report: one
         # consume, whose four-state value stays on the handle for the R2
@@ -1890,6 +1921,7 @@ def _execute_plan_inner(
         summary = directory_report.summary
     else:
         summary = _consume_result_report(reservation, result_report)
+    _mark_lane_phase("descendant handling")
     if (
         isinstance(process_tree_evidence, Mapping)
         and process_tree_evidence.get("outliving_descendants", 0) > 0
@@ -4194,6 +4226,7 @@ def _execute_snapshot_unit(
                 "argv": list(plan.argv_effective),
             }
         )
+    _mark_lane_phase("lane command")
     with _command_heartbeat(
         progress, interval_seconds=progress_heartbeat_seconds, phase=progress_phase
     ):
@@ -4223,9 +4256,11 @@ def _execute_snapshot_unit(
             classify_r0_termination=classify_r0_termination,
             directory_report=directory_report,
         )
+    _mark_lane_phase("descendant handling")
     if progress is not None:
         progress.emit(_command_finished_event(result, phase=progress_phase))
 
+    _mark_lane_phase("artifact collection")
     # (B053/DA-R8) One `dirty_paths` call and `head_rev` ONLY on the clean
     # branch -- the A-178 observation order is unchanged. What changed is that
     # both facts are KEPT instead of evaluated for truthiness and dropped, so
@@ -4337,6 +4372,7 @@ def _execute_snapshot_unit(
             directory_report.state, mutation_artifact
         )
 
+    _mark_lane_phase("cleanup")
     return SnapshotUnitResult(
         result=result,
         post_reason=post_reason,
@@ -5162,7 +5198,9 @@ def _run_prepared_lane(
                 }
             ),
         )
+    _mark_lane_phase("workspace")
     with prepared.materialize(timeout=deadline.remaining()) as baseline_snapshot:
+        _mark_lane_phase("lane command")
         # (B245 U5a review) A directory-kind ingested lane anchors the tool's
         # own file paths on the cargo workspace root, which is read from the
         # committed manifests. It is resolved HERE, before the command runs,
@@ -5275,8 +5313,10 @@ def _run_prepared_lane(
             classify_r0_termination=True,
             classify_resource_contention=_gate_contention_attribution_enabled(),
         )
+        _mark_lane_phase("descendant handling")
         result = unit.result
         _announce_r0_pressure(result, diagnostics=diagnostics)
+        _mark_lane_phase("artifact collection")
         if cold_witness:
             coverage_facts = receipt_facts(coverage_receipt)
             coverage_proof_failure = survivor_proof_failure(
@@ -5371,6 +5411,7 @@ def _run_prepared_lane(
                 )
                 for level in rigor_levels
             )
+            _mark_lane_phase("cleanup")
             return _PreparedOutcome(
                 result=result,
                 command_plan=plan,
@@ -5864,6 +5905,7 @@ def _run_prepared_lane(
                         )
                     except AssayError as exc:
                         ingested_r2_error = exc
+        _mark_lane_phase("cleanup")
     # `baseline_snapshot` is closed from here on -- R2/R3 use `prepared`
     # directly, each materialising its own independent snapshot.
 
@@ -6284,6 +6326,7 @@ def _run_prepared_lane(
                         else None
                     ),
                 )
+            _mark_lane_phase("lane command")
             try:
                 mutation_result = mutation.run_mutation(
                     baseline=result,
@@ -6446,6 +6489,7 @@ def _run_prepared_lane(
             else:
                 r2_claim = mutation.build_mutation_claim(result, mutation_result)
                 claims += (r2_claim,)
+                _mark_lane_phase("artifact collection")
                 # R2 is attempted on this path even when the adapter reports
                 # UNSUPPORTED and the claim therefore has no mutation payload.
                 # Verdict verification still needs the policy that governed
@@ -6567,6 +6611,7 @@ def _run_prepared_lane(
             judgment_r3 = r3_judgment
         else:
             terminal: AssayError | None = None
+            _mark_lane_phase("lane command")
             try:
                 canary_result, terminal = run_isolated_canaries(
                     lane,
@@ -6657,6 +6702,7 @@ def _run_prepared_lane(
             r3=judgment_r3,
         )
 
+    _mark_lane_phase("cleanup")
     return _PreparedOutcome(
         result=result,
         command_plan=plan,
@@ -7396,6 +7442,7 @@ def _run_higher_rigor_lane(
         )
 
     outcome_holder: list[_PreparedOutcome] = []
+    phase_token = _LANE_PHASE.set("seed/snapshot")
     try:
         # A P22 snapshot carries the resolved commit's full reachable OBJECT
         # closure, never a branch/tag REF -- a symbolic `judge.base` (the
@@ -7435,7 +7482,9 @@ def _run_higher_rigor_lane(
                 resolved_base=resolved_base,
                 limits=snapshot_limits,
             )
+            _mark_lane_phase("workspace")
             workspace_factory = workspace_api.factory_for_lane(lane)
+            _mark_lane_phase("seed/snapshot")
             with isolation.prepare_snapshot(
                 spec,
                 timeout=deadline.remaining(),
@@ -7524,12 +7573,14 @@ def _run_higher_rigor_lane(
                         diagnostics=diagnostics,
                     )
                     plan = prepared_outcome.command_plan
+                    _mark_lane_phase("cleanup")
                 outcome_holder.append(
                     replace(
                         prepared_outcome,
                         worktree_integrity=worktree_integrity,
                     )
                 )
+                _mark_lane_phase("cleanup")
     except workspace_api.WorkspaceCleanupError as exc:
         # (B199) The CoW workspace failed to CLOSE after the measurement had
         # completed: every verdict input exists, so the cleanup problem is an
@@ -7581,12 +7632,12 @@ def _run_higher_rigor_lane(
         # DA-R3's five sites, so nothing before this covered it -- but the
         # rule is the same one: a refusal site that HAS the fact and does not
         # compose it leaves the operator with a two-word pair and a guess.
+        # Git's spawn/repository boundaries convert every raw `OSError` into
+        # an `AssayError`, so a raw `OSError` here is the non-git lane-block
+        # failure B556 is about; genuine Git failures stay byte-identical
+        # on the `except AssayError` branch above.
         os_detail = announce_refusal(
-            AssayError(
-                f"snapshot preparation or cleanup failed: {exc}",
-                outcome=Outcome.ERROR,
-                reason_code=ReasonCode.GIT_FAILED,
-            ),
+            _lane_oserror(exc, phase=_LANE_PHASE.get()),
             diagnostics=diagnostics,
         )
         if outcome_holder:
@@ -7629,6 +7680,8 @@ def _run_higher_rigor_lane(
             raise
     else:
         outcome = outcome_holder[0]
+    finally:
+        _LANE_PHASE.reset(phase_token)
 
     return assemble_verdict(
         lane=lane,

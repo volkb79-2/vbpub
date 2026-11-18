@@ -23,17 +23,20 @@ every other module may depend on it.
 
 from __future__ import annotations
 
+import errno
+import os
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Mapping
 
 __all__ = [
-    "AssayError",
     "EXIT_CODES",
+    "REASON_CODES",
+    "AssayError",
     "LaneConfigError",
     "Outcome",
-    "REASON_CODES",
     "ReasonCode",
+    "describe_os_error",
     "require_advance",
 ]
 
@@ -281,6 +284,41 @@ REASON_CODES: Mapping[Outcome, frozenset[ReasonCode]] = MappingProxyType(
         ),
     }
 )
+
+
+def describe_os_error(exc: OSError, *, phase: str) -> str:
+    """Render a non-git ``OSError`` with the facts needed to diagnose it.
+
+    ``str(OSError)`` often ends at an integer file descriptor for failures
+    raised by fd-based calls such as ``os.chmod``. Resolve that descriptor
+    through ``/proc/self/fd`` while the exception is still being converted;
+    if it is already closed, name it as unresolved rather than inventing a
+    path. The operation here is the OS-provided ``strerror``; ``OSError``
+    carries no syscall/function name.
+    """
+    errno_name = errno.errorcode.get(exc.errno, "?")
+    operation = exc.strerror or str(exc) or "unknown error"
+    parts = [
+        (
+            f"snapshot preparation or cleanup failed during phase {phase!r}: "
+            f"[Errno {exc.errno} {errno_name}] operation={operation!r}"
+        )
+    ]
+    for label, attribute in (("path", "filename"), ("path2", "filename2")):
+        filename = getattr(exc, attribute, None)
+        if filename is None:
+            continue
+        if isinstance(filename, int):
+            try:
+                resolved = os.readlink(f"/proc/self/fd/{filename}")
+            except OSError:
+                rendered = f"fd {filename} (unresolved)"
+            else:
+                rendered = f"{resolved!r} (fd {filename})"
+        else:
+            rendered = repr(filename)
+        parts.append(f"{label}={rendered}")
+    return "; ".join(parts)
 
 
 class AssayError(Exception):
