@@ -73,6 +73,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-58 | The reports of an eviction that dropped an already-gone or unremovable entry reach only `TierScan::notes`, so the caller of `append`/`evict` never sees them and a rescan resets them | Minor | FIXED (P0b) |
 | HOB-59 | `Tier::append` and `Store::evict` drop the partial `Evicted` (counts and notes) when an eviction fails after a partial pass | Minor | OPEN |
 | HOB-60 | `Store::notes` visibility is decided by name, not by directory, and the store's eviction-notes ring is redundant with the tiers' `scan.notes` through the public API | Minor | OPEN |
+| HOB-61 | `json.rs` `skip_ws` / `string_end` `+=` to `*=` are pure infinite loops: suite-level TIMEOUT under `assay-r2` by nature (accepted known limit; expected 0 MISSED + 2 TIMEOUT) | Minor | OPEN (accepted) |
 
 ---
 
@@ -1274,3 +1275,21 @@ the directory of the tier the name belongs to (shared directory), and a test pla
 `warm-0-3.seg` in cold's directory and sees it; either a store call rescans a tier (so the ring
 matters through the API) or the ring is removed together with the two rescan tests and
 `Store::notes` reads `scan.notes` alone.
+
+## HOB-61 — Two client mutants are suite-level timeouts under `assay-r2` by nature
+
+**Where:** `crates/client/src/json.rs` (`skip_ws` line 140, `string_end` line 152).
+
+The mutants `+=` to `*=` at those two lines turn a pure scanning loop into an infinite loop that
+no in-process test can stop: the dedicated tests (`skip_ws_always_makes_progress`,
+`string_end_always_makes_progress`) run the helper on a worker thread and fail after two seconds,
+but existing callers in the same test process (for example `array_strings_accepts_strings_only`
+and the hello parsing tests) spin on the mutated helper, so the whole suite ends only at the
+lane's timeout. Killing them would need a killable child-process harness per probe. Decision
+(controller, 2026-11-18): keep it simple, a documented known limit. The lane's timeout classifies
+both as TIMEOUT, assay B560 (timeout floor derived from the baseline) makes them cheap, and the
+expected `assay-r2` result for `hostobs/crates/client` is 0 MISSED and 2 TIMEOUT.
+
+**Exit criteria.** Either a child-process probe harness kills both loops with a fast FAIL, or the
+two mutants are listed as accepted timeouts in the lane's mutation policy so that the lane
+verdict does not count them.
