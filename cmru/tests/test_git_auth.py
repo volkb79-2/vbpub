@@ -205,6 +205,29 @@ def test_run_local_git_scrubs_caller_supplied_environment_without_mutating_it(
     assert supplied["GITHUB_PUSH_PAT"] == "publisher-secret"
 
 
+@pytest.mark.parametrize("remote", [False, True])
+@pytest.mark.parametrize("capture_output,expected", [(None, False), (True, True)])
+def test_git_helpers_map_capture_output_to_shared_capture(
+    monkeypatch, tmp_path, remote, capture_output, expected,
+):
+    calls = []
+    monkeypatch.setattr(
+        git_auth, "run_process",
+        lambda argv, **kwargs: calls.append((argv, kwargs))
+        or subprocess.CompletedProcess(argv, 0),
+    )
+    options = {} if capture_output is None else {"capture_output": capture_output}
+
+    if remote:
+        git_auth.run_remote_git(tmp_path, "status", auth=None, **options)
+    else:
+        git_auth.run_local_git(tmp_path, "status", **options)
+
+    assert calls[0][1]["capture"] is expected
+    assert calls[0][1]["cwd"] == tmp_path
+    assert "capture_output" not in calls[0][1]
+
+
 def test_without_publisher_tokens_temporarily_clears_and_restores_only_present_keys(
     monkeypatch,
 ):
