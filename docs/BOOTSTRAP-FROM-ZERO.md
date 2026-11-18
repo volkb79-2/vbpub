@@ -34,8 +34,8 @@ The checked-in level view must match the graph:
 
 ```project-order
 L0: cli-extended, assay, test-policy, tls-edge, iogovmon, tester-base
-L1: augeaswrap, tnt, ciu, fleetd, nyxloom, pwmcp, iobench, rigor-record
-L2: cgprofile, topos
+L1: augeaswrap, tnt, ciu, fleetd, nyxloom, pwmcp, iobench, vmscreen, rigor-record
+L2: cgprofile, topos, vm-lab
 L3: run-gate-project
 L4: cmru
 L5: mdt-cockpit

@@ -15,7 +15,8 @@ export PATH="/opt/mdt/venv/bin:$PATH"                   # the venv's bin/ holds 
 
 # 2. Build the QEMU image once per Docker host (tag vm-lab-qemu:local; `start` finds it by that tag).
 vm-lab/vm-lab image build
-vm-lab/vm-lab image build --tag my-qemu:1 --context vm-lab/qemu-image   # another tag; needed as --context from a wheel
+vm-lab/vm-lab image build --tag my-qemu:1                                # another tag; the wheel carries the build context too
+vm-lab/vm-lab image build --context /path/to/dir                         # a different build context (override)
 ```
 
 `vmscreen` (screen text) is a dependency of the package and a separate wheel;
