@@ -162,6 +162,41 @@ cmd_set_default() {
   grub-editenv "$ESP_DIR/grubenv" set saved_entry="$1"
 }
 
+# select_prune KEEP PROTECTED_CSV NAME...: prints, oldest first, the @os-pre-* snapshots to delete: all but the KEEP
+# newest (by name = by creation time), never a protected one (the running, default and one-shot states). Other names
+# (the @os-0001 state) are ignored.
+select_prune() {
+  local keep=$1 protected=",$2," n i
+  shift 2
+  local -a names
+  mapfile -t names < <(printf '%s\n' "$@" | grep -- '^@os-pre-' | sort || true)
+  n=${#names[@]}
+  [ "$n" -gt "$keep" ] || return 0
+  for ((i = 0; i < n - keep; i++)); do
+    case "$protected" in *",${names[i]},"*) ;; *) echo "${names[i]}" ;; esac
+  done
+}
+
+cmd_prune() {
+  local keep=10 dry=0
+  while [ $# -gt 0 ]; do
+    case "$1" in --keep) keep=${2:?}; shift 2 ;; --dry-run) dry=1; shift ;; *) die "prune: $1" ;; esac
+  done
+  [[ "$keep" =~ ^[0-9]+$ ]] || die "prune: --keep must be a number"
+  ensure_top
+  ensure_esp
+  local cur def next s doomed
+  cur=$(current_state)
+  def=$(grub-editenv "$ESP_DIR/grubenv" list 2>/dev/null | sed -n 's/^saved_entry=//p')
+  next=$(grub-editenv "$ESP_DIR/grubenv" list 2>/dev/null | sed -n 's/^next_entry=//p')
+  # shellcheck disable=SC2046  # state names have no spaces
+  doomed=$(select_prune "$keep" "$cur,$def,$next" $(states))
+  for s in $doomed; do
+    if [ "$dry" = 1 ]; then echo "would delete $s"; else btrfs subvolume delete "$TOP/$s" >/dev/null && echo "deleted $s"; fi
+  done
+  [ "$dry" = 1 ] || cmd_gen_menu
+}
+
 cmd_boot_once() {
   ensure_top
   [ -d "$TOP/${1:?state}" ] || die "no such state: $1"
@@ -172,9 +207,13 @@ if [ "${1:-}" = _window-blocks ]; then   # test hook: dr-state _window-blocks NA
   window_blocks "${2:?name}" "${3:?interval}" "${4:?now}"; exit $?
 fi
 
+if [ "${1:-}" = _prune-select ]; then   # test hook: dr-state _prune-select KEEP PROTECTED_CSV NAME...
+  shift; select_prune "${1:?keep}" "${2-}" "${@:3}"; exit $?
+fi
+
 sub=${1:-}; [ $# -gt 0 ] && shift
 case "$sub" in
-  install-grub|gen-menu|snapshot|set-default|boot-once)
+  install-grub|gen-menu|snapshot|set-default|boot-once|prune)
     # one writer at a time (apt hook, kernel hooks and manual runs can overlap)
     exec 9>/run/dr-state.lock
     flock -w 60 9 || die "another dr-state run holds the lock" ;;
@@ -186,5 +225,6 @@ case "$sub" in
   list) cmd_list "$@" ;;
   set-default) cmd_set_default "$@" ;;
   boot-once) cmd_boot_once "$@" ;;
-  *) die "usage: dr-state install-grub|gen-menu|snapshot|list|set-default STATE|boot-once STATE" ;;
+  prune) cmd_prune "$@" ;;
+  *) die "usage: dr-state install-grub|gen-menu|snapshot|list|set-default STATE|boot-once STATE|prune [--keep N] [--dry-run]" ;;
 esac

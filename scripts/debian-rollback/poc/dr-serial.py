@@ -429,15 +429,66 @@ def _precondition(g, log):
     return state0, kernel
 
 
-def _update_dr_state(g, log):
+def _update_dr_state(g, log, needle="subvol_parent_uuid", what="parent-aware dedupe window"):
     """Install the dr-state from the seed ISO (attached as read-only media at /dev/sr0) over the one on the disk, so a
-    scenario can test the current tool without a 21-minute reinstall. Returns True when the new version is in place."""
+    scenario can test the current tool without a 21-minute reinstall. Returns True when the new version is in place
+    (`needle` is a name that only the new version contains)."""
     _, out = g.run("mkdir -p /mnt/seed; mount -o ro /dev/sr0 /mnt/seed; echo MNTRC:$?; "
                    "install -m 0755 /mnt/seed/poc/dr-state /usr/local/sbin/dr-state; echo INSRC:$?; umount /mnt/seed; "
-                   "echo NEWWINDOW:$(grep -c 'subvol_parent_uuid' /usr/local/sbin/dr-state)")
-    return check(log, "dr-state updated from the seed medium (parent-aware dedupe window present)",
-                 tag(out, "MNTRC") == "0" and tag(out, "INSRC") == "0" and (tag(out, "NEWWINDOW") or "0") not in ("0", ""),
-                 f"mnt={tag(out, 'MNTRC')} install={tag(out, 'INSRC')} window={tag(out, 'NEWWINDOW')}")
+                   f"echo NEWFEATURE:$(grep -c '{needle}' /usr/local/sbin/dr-state)")
+    return check(log, f"dr-state updated from the seed medium ({what} present)",
+                 tag(out, "MNTRC") == "0" and tag(out, "INSRC") == "0" and (tag(out, "NEWFEATURE") or "0") not in ("0", ""),
+                 f"mnt={tag(out, 'MNTRC')} install={tag(out, 'INSRC')} feature={tag(out, 'NEWFEATURE')}")
+
+
+def scenario_s8(g, log):
+    """S8: many states and pruning. 30 snapshots, a boot with a 31-entry menu, `prune --keep 5` keeps the newest five,
+    and a one-shot target outside the newest N is protected and still boots."""
+    pc = _precondition(g, log)
+    if not pc or not _update_dr_state(g, log, "cmd_prune", "prune command"):
+        return
+    state0, _ = pc
+    before = state_list(g)
+    _, out = g.run("echo USEDKB:$(df -k --output=used / | tail -1 | tr -d ' ')")
+    used0 = tag(out, "USEDKB")
+    _, out = g.run("fails=0; for i in $(seq 1 30); do dr-state snapshot --reason s8 >/dev/null 2>&1 || fails=$((fails+1)); done; "
+                   "echo SNAPFAILS:$fails", 3000)
+    states = state_list(g)
+    made = sorted(s for s in states if s not in before and s.startswith("@os-pre-"))
+    check(log, "30 snapshots were created", tag(out, "SNAPFAILS") == "0" and len(made) == 30, f"fails={tag(out, 'SNAPFAILS')} made={len(made)}")
+    _, out = g.run("echo MENU:$(grep -c '^menuentry' /boot/efi/EFI/dr/grub.cfg); echo USEDKB:$(df -k --output=used / | tail -1 | tr -d ' ')")
+    check(log, "the menu lists every state", tag(out, "MENU") == str(len(states)), f"menu={tag(out, 'MENU')} states={len(states)}")
+    say(log, f"S8 disk use of / : {used0} KB before, {tag(out, 'USEDKB')} KB with 30 snapshots (btrfs shares the extents)")
+    if len(made) != 30:
+        return
+    try:
+        g.reboot()
+    except Exception as exc:  # noqa: BLE001
+        check(log, "reboot with a 31-entry menu", False, repr(exc))
+        return
+    _, out = g.run("echo CMDLINE:$(cat /proc/cmdline)")
+    check(log, "the default entry boots with 31 entries in the menu", running_state(tag(out, "CMDLINE")) == state0, str(running_state(tag(out, "CMDLINE"))))
+    # prune: keep the newest 5
+    _, out = g.run("echo PRUNED:$(dr-state prune --keep 5 | grep -c '^deleted')", 900)
+    check(log, "prune --keep 5 deleted 25 snapshots", tag(out, "PRUNED") == "25", str(tag(out, "PRUNED")))
+    left = state_list(g)
+    check(log, "what is left: the running state and exactly the newest five", sorted(left) == sorted([state0] + made[-5:]), str(left))
+    _, out = g.run("echo MENU:$(grep -c '^menuentry' /boot/efi/EFI/dr/grub.cfg); echo USEDKB:$(df -k --output=used / | tail -1 | tr -d ' ')")
+    check(log, "the menu follows the pruning", tag(out, "MENU") == "6", str(tag(out, "MENU")))
+    say(log, f"S8 disk use of / after pruning: {tag(out, 'USEDKB')} KB")
+    # protection: a one-shot target outside the newest N must survive a prune
+    target = made[-5]
+    _, out = g.run(f"dr-state boot-once {target}; echo BORC:$?; echo PRUNED:$(dr-state prune --keep 2 | grep -c '^deleted')")
+    check(log, "prune --keep 2 deleted the unprotected two", tag(out, "BORC") == "0" and tag(out, "PRUNED") == "2", f"{tag(out, 'BORC')} {tag(out, 'PRUNED')}")
+    left = state_list(g)
+    check(log, "the one-shot target survived next to the newest two", sorted(left) == sorted([state0, target] + made[-2:]), str(left))
+    try:
+        g.reboot()
+    except Exception as exc:  # noqa: BLE001
+        check(log, "reboot into the protected target", False, repr(exc))
+        return
+    _, out = g.run("echo CMDLINE:$(cat /proc/cmdline)")
+    check(log, "the protected snapshot still boots", running_state(tag(out, "CMDLINE")) == target, str(running_state(tag(out, "CMDLINE"))))
 
 
 def scenario_s6(g, log):
@@ -631,7 +682,7 @@ def main():
     logpath = sys.argv[sys.argv.index("--log") + 1] if "--log" in sys.argv else f"/tmp/dr-serial-{name}.log"
     scenarios = {"boot-check": scenario_boot_check, "s2-s3": scenario_s2_s3, "kernel-upgrade": scenario_kernel_upgrade,
                  "s5": scenario_s5, "s6": scenario_s6, "s7": scenario_s7, "s9": scenario_s9,
-                 "backports": scenario_kernel_backports}
+                 "backports": scenario_kernel_backports, "s8": scenario_s8}
     if name not in scenarios:
         print(f"unknown scenario {name}; one of {sorted(scenarios)}")
         return 2
