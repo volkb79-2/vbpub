@@ -5,6 +5,7 @@ command's leader exits, so a test that leaves a child of the pytest process behi
 zombie nobody ``wait()``ed for, fails the whole R0/R2 run with ``leaked-process-tree``. The
 guard makes that visible per test instead of at the end of the run.
 """
+import ctypes
 import os
 import signal
 from pathlib import Path
@@ -12,6 +13,7 @@ from pathlib import Path
 import pytest
 
 pytest_plugins = ["pytester"]
+PR_SET_CHILD_SUBREAPER = 36
 
 
 def direct_children() -> dict:
@@ -38,6 +40,12 @@ def direct_children() -> dict:
 
 
 def pytest_configure(config):
+    # assay makes the command's leader a child subreaper, so a test's orphaned grandchild (a
+    # holder whose parent already exited) becomes a child of this process and, once killed,
+    # a zombie nobody reaps. Do the same here so a plain pytest run sees exactly what assay
+    # sees (idempotent when assay already did it).
+    if ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "prctl(PR_SET_CHILD_SUBREAPER) failed")
     config.addinivalue_line(
         "markers",
         "allow_children(reason): the test legitimately keeps a helper child process of the "

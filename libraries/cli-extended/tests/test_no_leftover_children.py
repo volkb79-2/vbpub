@@ -77,6 +77,24 @@ def test_zombie_is_gone_afterwards():
     assert not Path(f"/proc/{pid}").exists()
 
 
+def test_an_orphaned_grandchild_killed_by_pid_is_a_leak_because_the_runner_is_a_subreaper(pytester):
+    result = _inner(pytester, '''
+def test_kills_an_orphan_without_reaping_it():
+    started = subprocess.run(
+        ["bash", "-c", "sleep 30 >/dev/null 2>&1 & echo $!"],
+        capture_output=True, text=True, check=True,
+    )
+    pid = int(started.stdout)
+    Path("pid.txt").write_text(str(pid))
+    os.kill(pid, 9)
+''')
+    pid = _pid(pytester)
+    assert result.ret != 0
+    result.assert_outcomes(passed=1, errors=1)
+    result.stdout.fnmatch_lines([f"*pid {pid} comm sleep*"])
+    assert not Path(f"/proc/{pid}").exists()
+
+
 def test_a_child_that_is_started_and_waited_for_passes(pytester):
     result = _inner(pytester, '''
 def test_waits_properly():
