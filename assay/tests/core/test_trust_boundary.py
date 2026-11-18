@@ -30,9 +30,10 @@ PRODUCER_ONLY_VERDICT_NAMES = frozenset({"claim_for", "claim_carries", "_require
 _VERDICT_NAMES = (
     "CLAIM_DETAIL_BYTES",
     "CampaignBinding",
-    "CandidateOutcomeError",  # B251: verify rebuilds v19 candidate_error
+    "CandidateOutcomeError",  # B251: verify rebuilds v20 candidate_error
     "CanaryAttempt",
     "CanaryResult",
+    "ChangedDiff",  # B245: verify rebuilds the v20 changed_diff record
     "Claim",
     "Coverage",
     "DISCARD_REASONS",

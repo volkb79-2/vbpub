@@ -717,7 +717,7 @@ state on the coordinator in candidate-index order, and keeps resume identity
 independent of N. WP7's end-of-sweep retry remains serial. Native pilots still
 require `--pilot-jobs 1`; `--jobs` is refused with `--candidates-file`.
 
-Verdict schema v19 records the campaign's maximum worker count as
+Verdict schema v20 records the campaign's maximum worker count as
 `judgment.r2.jobs` with the matching attribution (`serial` for one worker,
 `overlap-conservative` for more) and the candidates per worker count as
 `judgment.r2.worker_counts`. Resume identity deliberately does not include the
@@ -856,7 +856,7 @@ happen.
 After the required pre-candidate capability probe succeeds, a missing endpoint
 or an uncomparable window is telemetry with status `unobserved`. Assay records
 the reason in the private mutation state and candidate progress stream, emits
-one advisory line, omits `resource_limit_evidence` from that candidate's v19
+one advisory line, omits `resource_limit_evidence` from that candidate's v20
 verdict entry, and continues the campaign. An identity change reports the
 specific cgroup index, path or mount, controller file, or observation-mode
 field that changed. A configured limit-value change leaves the window
@@ -1114,7 +1114,7 @@ that root hook. It must preserve pytest's session exit status; if it changes
 the status, Assay refuses to use the receipt to prove a kill or survivor.
 Every other unreviewed hook keeps the proof unavailable.
 
-These proofs were introduced in v15 and remain in the current v19 verdict,
+These proofs were introduced in v15 and remain in the current v20 verdict,
 where they are checked independently by `assay verify`. B105 adds a separate
 source-bound check: it reads the lane
 argv and pytest configuration from the judged Git commit, independently
@@ -1341,7 +1341,11 @@ path = "vitest-report.json"
 ```
 
 `format` is closed against the shipped reader registry
-(`assay.result_reports.RESULT_REPORT_FORMATS`) — today, `vitest-json` alone.
+(`assay.result_reports.RESULT_REPORT_FORMATS`) — today, `vitest-json` and
+`cargo-mutants-outcomes`. The latter reads a DIRECTORY (cargo-mutants'
+`<out>/mutants.out`) that the runner reserves once and reads once for both R0 and
+R2, so it is declarable only beside `judge.mutation.format =
+"cargo-mutants-outcomes"` (see CONSUMERS "Rust R2 lanes (cargo-mutants)").
 `path` is relative to the directory the lane's command **runs in** (its `cwd`
 when it declares one), because that is what the runner's own `--outputFile`
 resolves against.
@@ -1843,7 +1847,7 @@ costly case where source and tests changed: it uses a prior result only to
 choose a test node worth replaying, never to carry an old kill into the new
 verdict.
 
-The prior artifact must be a current-verifier-accepted v19, complete,
+The prior artifact must be a current-verifier-accepted v20, complete,
 unsharded native campaign. Each candidate ID commits to the canonical path,
 operator, source-file digest, byte span, and full mutated-file digest. On the
 new run Assay passes the current R0 baseline first, rediscovers the complete
@@ -3416,7 +3420,7 @@ build actually wires it to (§7 — an adapter existing is not a capability):
 | `sql` | R2 only | a stdlib lexer over DDL; no coverage tool exists for it, so no R1, and A-192 forbids R3 without R1 |
 | `javascript` | R1, R2 by ingestion (B046), R3 canary (B087) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. The existing import-break and uncovered-line injectors use the shared isolated R3 runner and have local real-Vitest oracles; import-break expects a clean `COMMAND_FAILED`, while uncovered-line expects `UNCOVERED_LINES`. Both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | `go` | R1 only (A-394) | requires the real Go toolchain for source-derived statement positions (A-217); R2 and R3 have no producer path and are not registered |
-| `rust` | R1 only (B243) | changed-line LCOV judgment; the adapter normalizes stable cargo-llvm-cov's marker-only zero branch totals before the shared parser. Rust R2 and R3 are not registered |
+| `rust` | R1 (B243), R2 by ingestion (B245) | changed-line LCOV judgment; the adapter normalizes stable cargo-llvm-cov's marker-only zero branch totals before the shared parser. R2 is only the ingested `cargo-mutants-outcomes` report (mutation format and R0 result-report format; the lane runs cargo-mutants with `--test-tool nextest` and the `{assay.changed_diff}` argv placeholder), with no native `generate_mutation_sites`; no consumer has adopted it yet. R3 is not registered |
 
 ### R3 import-break receipt attribution
 
@@ -4573,7 +4577,8 @@ Rust R2 uses ingested `cargo-mutants` outcomes rather than a new Assay-owned
 mutator. D8 places its diff-scoped campaign at asynchronous T3 against the
 latest release, with the previous release tag as its base. It never gates a
 merge or release; survivors become backlog items. Rust R2 not yet adopted
-(R-3b pending) is recorded once as a known issue, with no per-release waiver.
+(Assay's ingestion, R-3b, is implemented as B245 U0-U5c; the hostobs T3 lane,
+U8, is pending) is recorded once as a known issue, with no per-release waiver.
 
 Dependencies stay out of Git because a repository vendor tree would duplicate
 the crate cache: `tester-unified-rust` carries the cache built from

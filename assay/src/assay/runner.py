@@ -71,6 +71,7 @@ package's ``scope.touch``).
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import math
 import os
 import shlex
@@ -115,6 +116,7 @@ from . import (
     result_reports,
     safeio,
     termination,
+    vocabulary,
     workspace as workspace_api,
 )
 from .adapters.base import HelperInvocation, LanguageAdapter
@@ -168,6 +170,7 @@ from .statement_attribution import attribute_statements
 from .verdict import (
     CanaryAttempt,
     CanaryResult,
+    ChangedDiff,
     Claim,
     Coverage,
     Evidence,
@@ -456,6 +459,13 @@ def _wait_child(
 
 
 COMMAND_TAIL_BYTES = 64 * 1024
+
+#: (B245 U5a) The ceilings on a directory artifact (cargo-mutants'
+#: ``mutants.out``) assay reads after the command: one member file, the
+#: member count, and the aggregate bytes of the whole directory.
+DIRECTORY_ARTIFACT_MEMBER_LIMIT = 256 * 1024
+DIRECTORY_ARTIFACT_MAX_MEMBERS = vocabulary.MAX_INGESTED_MUTANTS
+DIRECTORY_ARTIFACT_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 
 #: (B032/A-322) The ceiling on one `environment_command` preflight probe.
 #: A probe answers a yes/no question about the INVOKING environment -- "is
@@ -807,6 +817,27 @@ def _utc_now() -> datetime:
 
 
 @record
+class ChangedDiffHandoff:
+    """(B245 U5b, D7) The produced ``git diff`` patch handed to a foreign
+    mutation tool through the ``{assay.changed_diff}`` argv placeholder.
+
+    *path* is a file outside the snapshot tree (in the lane's scratch root)
+    that exists only for the lifetime of the lane; it is substituted into the
+    argv at the process boundary alone (:func:`materialize_argv`) and never
+    appears in the verdict. The reproducible facts are the other five fields,
+    which become ``judgment.r2.changed_diff``.
+    """
+
+    path: Path
+    sha256: str
+    size: int
+    base_rev: str
+    head_rev: str
+    #: ``.`` at the git top, else the cargo workspace root relative to it.
+    relative_to: str
+
+
+@record
 class CommandPlan:
     """What WILL run, resolved before anything executes.
 
@@ -861,6 +892,42 @@ class CommandPlan:
     #: command), and it gets that behaviour by construction rather than by
     #: remembering to opt out.
     cwd_declared: str | None = None
+    #: (B245 U5b) The changed-lines diff the ``{assay.changed_diff}``
+    #: placeholder in ``argv_declared`` resolves to; ``None`` on every plan
+    #: but the ingested cargo-mutants baseline's.
+    changed_diff: ChangedDiffHandoff | None = None
+
+
+def materialize_argv(plan: CommandPlan) -> tuple[str, ...]:
+    """(B245 U5b) ``plan.argv_effective`` as the process boundary receives it.
+
+    The ``{assay.changed_diff}`` placeholder is replaced by the handoff file's
+    path; the plan and the verdict keep the placeholder. Refused as
+    ``BAD_LANE_CONFIG`` -- the literal must never reach a process -- when the
+    plan holds the placeholder with no handoff or more than once (a CLI
+    ``--`` append of it lands here: the handoff exists only when the lane
+    declared the placeholder, so the append is always a second occurrence).
+    """
+    indices = [
+        index
+        for index, token in enumerate(plan.argv_effective)
+        if token == vocabulary.ARGV_PLACEHOLDER_CHANGED_DIFF
+    ]
+    if not indices:
+        return plan.argv_effective
+    if plan.changed_diff is None or len(indices) != 1:
+        raise AssayError(
+            f"argv holds '{vocabulary.ARGV_PLACEHOLDER_CHANGED_DIFF}' but it "
+            "cannot be resolved: it must appear exactly once and the "
+            "changed-lines diff must have been produced (the diff is produced "
+            "only for a lane that declares the placeholder, so a "
+            "CLI-appended second one is refused as a repeat)",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+    argv = list(plan.argv_effective)
+    argv[indices[0]] = str(plan.changed_diff.path)
+    return tuple(argv)
 
 
 def _plan_passthrough_values(plan: CommandPlan) -> tuple[str, ...]:
@@ -1240,6 +1307,169 @@ def _consume_result_report(
         return None
 
 
+@record
+class _DirectoryNotConsumed:
+    """The run ended before the reservation was read (timeout, process error).
+
+    Never the zero-mutant marker: nothing was observed.
+    """
+
+
+@record
+class _DirectoryAbsent:
+    """The tool wrote nothing at the declared child (the zero-mutant shape
+    only after a COMPLETED run whose R0 was a PASS by exit code)."""
+
+
+@record
+class _DirectoryRefused:
+    """The reservation refused the artifact; *error* is what it raised."""
+
+    error: AssayError
+
+
+@record
+class _DirectoryPresent:
+    """The artifact was read. *summary* is the verified R0 summary, or ``None``
+    when the report was unusable, in which case *unusable* says why."""
+
+    artifact: safeio.DirectoryArtifact
+    summary: result_reports.ReportSummary | None
+    unusable: str | None
+
+
+_DirectoryReportState = (
+    _DirectoryNotConsumed | _DirectoryAbsent | _DirectoryRefused | _DirectoryPresent
+)
+
+
+def _directory_report_error(
+    state: "_DirectoryReportState", artifact: str | None
+) -> AssayError | None:
+    """(B245 U5a) The R2 refusal a directory artifact's stored state carries,
+    or ``None`` when the artifact was read and its report is usable.
+
+    ``Refused`` is the reservation's own refusal, and an unusable report whose
+    R0 summary fell back to the exit code is ``ERROR``/``UNREADABLE_ARTIFACT``.
+    ``Absent`` is also ``ERROR``/``UNREADABLE_ARTIFACT`` (unlike the file
+    kind): a payload-free ``NO_MEASUREMENT``/``EMPTY_COVERAGE`` claim beside a
+    PASS R0 is rejected by ``verify``, and ``verify`` accepts this refusal.
+    The caller (U5c) overrides this refusal for the one zero-mutant shape --
+    a PASSED R0 on a changed_lines lane that was handed the placeholder diff
+    -- and synthesises ``INCONCLUSIVE``/``NO_MUTANTS`` instead; every other
+    absent report stays this refusal. ``NotConsumed`` is an error and never
+    the zero-mutant marker: nothing was observed.
+    """
+    if isinstance(state, _DirectoryRefused):
+        return state.error
+    if isinstance(state, _DirectoryAbsent):
+        return AssayError(
+            f"the lane declared judge.mutation.artifact {artifact!r} but the "
+            f"cargo-mutants run produced no outcomes.json. An ingested R2 "
+            f"lane's whole evidence IS that artifact, so there is nothing to "
+            f"judge. Only a changed_lines lane handed the diff placeholder "
+            f"may read a missing report as zero mutants; this run fails "
+            f"closed rather than reporting a silent green.",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
+    if isinstance(state, _DirectoryNotConsumed):
+        return AssayError(
+            f"the directory artifact {artifact!r} was never read: the run "
+            f"ended before the command's result was consumed, so nothing was "
+            f"observed and no mutation verdict can be derived from it",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+        )
+    if state.unusable is not None:
+        return AssayError(
+            f"the directory artifact {artifact!r} holds an unusable report: "
+            f"{state.unusable}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
+    return None
+
+
+class _DirectoryReportHandle:
+    """(B245 U5a) One armed directory-artifact reservation and the four-state
+    value its single consumption produced.
+
+    ``execute_plan`` swallows every refusal and returns early on a timeout, so
+    a bare "consumed is None" would conflate absent, refused and never
+    consumed. This handle consumes AT MOST ONCE, stores which of the four it
+    was, and keeps it reachable for the post-run reader. R0 only ever sees the
+    summary: ``None`` (absent, refused, unusable) is B078's exit-code fallback,
+    and R2 carries the reason.
+    """
+
+    def __init__(self, reservation: safeio.DirectoryArtifactReservation) -> None:
+        self._reservation = reservation
+        self._state: _DirectoryReportState = _DirectoryNotConsumed()
+
+    @property
+    def state(self) -> _DirectoryReportState:
+        return self._state
+
+    @property
+    def summary(self) -> result_reports.ReportSummary | None:
+        state = self._state
+        return state.summary if isinstance(state, _DirectoryPresent) else None
+
+    def consume_once(
+        self,
+        *,
+        members: Callable[[bytes], Sequence[str]],
+        result_report_format: str,
+        started_at: datetime,
+        ended_at: datetime,
+    ) -> _DirectoryReportState:
+        """Consume the reservation the first time only; later calls return the
+        stored state unchanged (the reservation raises on a second consume)."""
+        if not isinstance(self._state, _DirectoryNotConsumed):
+            return self._state
+        # `members` (diff_paths) and the report read both go through the
+        # parser's one-entry `load_document` memo, which must not outlive this
+        # consumption on ANY path (a refusal after `diff_paths` ran included).
+        try:
+            try:
+                consumed = self._reservation.consume(members=members)
+            except AssayError as exc:
+                self._state = _DirectoryRefused(error=exc)
+                return self._state
+            if consumed is safeio.ABSENT:
+                self._state = _DirectoryAbsent()
+                return self._state
+            summary: result_reports.ReportSummary | None = None
+            unusable: str | None
+            try:
+                # Built inside the guard: a backward wall-clock step makes the
+                # window invalid, and an unusable window is an unusable report
+                # (fail closed: the exit code then decides R0, R2 refuses).
+                window = result_reports.cargo_mutants_outcomes.ReportWindow(
+                    started=started_at, ended=ended_at
+                )
+            except ValueError as exc:
+                unusable = f"the command's wall-clock window is invalid: {exc}"
+            else:
+                try:
+                    summary = result_reports.read_verified(
+                        result_report_format, consumed.report, context=window
+                    )
+                    unusable = None
+                except result_reports.ReportUnusable as exc:
+                    unusable = str(exc)
+            self._state = _DirectoryPresent(
+                artifact=consumed, summary=summary, unusable=unusable
+            )
+            return self._state
+        finally:
+            mutation_parsers.cargo_mutants_outcomes.load_document.cache_clear()
+
+    def close(self) -> None:
+        self._reservation.close()
+
+
 def _resolve_candidate_fail_fast(
     declared: bool, *, cold_witness: bool, diagnostics: Any
 ) -> bool:
@@ -1354,6 +1584,7 @@ def execute_plan(
     result_report_create_missing_parents: bool = False,
     classify_resource_contention: bool = False,
     classify_r0_termination: bool = False,
+    directory_report: "_DirectoryReportHandle | None" = None,
 ) -> CommandResult:
     """Execute one already-frozen command plan with a required remainder.
 
@@ -1409,6 +1640,12 @@ def execute_plan(
     *result_report_create_missing_parents* is B006(b)'s opt-in, threaded to
     :func:`_reserve_result_report`; only the snapshot baseline passes ``True``,
     because only it owns an ephemeral, assay-managed checkout.
+
+    *directory_report* (B245 U5a) is the already-armed directory-artifact
+    reservation of a ``cargo-mutants-outcomes`` lane. It IS that lane's result
+    report, so when it is set no file reservation is made and the run consumes
+    the handle once instead; the handle outlives this call (its state is read
+    afterwards) and is closed here.
     """
     if not is_positive_or_inf(timeout):
         raise ValueError(
@@ -1435,6 +1672,8 @@ def execute_plan(
             started=iso_utc(started_at),
             ended=iso_utc(clock()),
         )
+        if directory_report is not None:
+            directory_report.close()
         if classify_r0_termination:
             return _classify_r0_result(
                 refused,
@@ -1449,10 +1688,14 @@ def execute_plan(
     # to -- the directory the test runner's own `--outputFile` resolves
     # against -- which is why the join happens before the reservation.
     run_cwd = resolve_run_cwd(cwd, plan)
-    reservation = _reserve_result_report(
-        run_cwd,
-        result_report,
-        create_missing_parents=result_report_create_missing_parents,
+    reservation = (
+        None
+        if directory_report is not None
+        else _reserve_result_report(
+            run_cwd,
+            result_report,
+            create_missing_parents=result_report_create_missing_parents,
+        )
     )
     try:
         if termination_requested():
@@ -1474,6 +1717,7 @@ def execute_plan(
                         started_at=started_at,
                         reservation=reservation,
                         result_report=result_report,
+                        directory_report=directory_report,
                     )
                 observation = contention_window.observation
                 result = replace(result, observation=observation)
@@ -1487,6 +1731,7 @@ def execute_plan(
                     started_at=started_at,
                     reservation=reservation,
                     result_report=result_report,
+                    directory_report=directory_report,
                 )
             if classify_r0_termination:
                 result = _classify_r0_result(
@@ -1506,6 +1751,8 @@ def execute_plan(
         # early-return and every raise without a second bookkeeping flag.
         if reservation is not None:
             reservation.close()
+        if directory_report is not None:
+            directory_report.close()
 
 
 def _execute_plan_inner(
@@ -1518,6 +1765,7 @@ def _execute_plan_inner(
     started_at: datetime,
     reservation: safeio.OutputReservation | None,
     result_report: ResultReportConfig | None,
+    directory_report: "_DirectoryReportHandle | None" = None,
 ) -> CommandResult:
     """:func:`execute_plan`'s body, from launch to terminal.
 
@@ -1526,9 +1774,11 @@ def _execute_plan_inner(
     four terminal paths -- four places to get right, and four for a later edit
     to get wrong.
     """
+    # (B245 U5b) The one place the diff-handoff placeholder becomes a path.
+    argv = materialize_argv(plan)
     try:
         proc = process_runner(
-            plan.argv_effective,
+            argv,
             env=plan.env_effective,
             cwd=run_cwd,
             timeout=child_timeout,
@@ -1621,11 +1871,25 @@ def _execute_plan_inner(
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.EXEC_FAILED,
         ) from exc
-    ended = iso_utc(clock())
+    ended_at = clock()
+    ended = iso_utc(ended_at)
     process_tree_evidence = getattr(proc, "process_tree_evidence", None)
     stdout_extra_dropped = int(getattr(proc, "assay_stdout_dropped_bytes", 0))
     stderr_extra_dropped = int(getattr(proc, "assay_stderr_dropped_bytes", 0))
-    summary = _consume_result_report(reservation, result_report)
+    if directory_report is not None:
+        # (B245 U5a) The directory artifact is this lane's result report: one
+        # consume, whose four-state value stays on the handle for the R2
+        # reader. R0 only needs the summary (`None` = the exit code decides).
+        assert result_report is not None
+        directory_report.consume_once(
+            members=mutation_parsers.cargo_mutants_outcomes.diff_paths,
+            result_report_format=result_report.format,
+            started_at=started_at,
+            ended_at=ended_at,
+        )
+        summary = directory_report.summary
+    else:
+        summary = _consume_result_report(reservation, result_report)
     if (
         isinstance(process_tree_evidence, Mapping)
         and process_tree_evidence.get("outliving_descendants", 0) > 0
@@ -3496,6 +3760,10 @@ class SnapshotUnitResult:
     #: (B046) ``NO_MEASUREMENT``/``EMPTY_COVERAGE`` when the command wrote no
     #: report at all, or whatever the reservation's own consume raised.
     mutation_report_error: AssayError | None = None
+    #: (B245 U5a) The directory-artifact handle of a ``cargo-mutants-outcomes``
+    #: lane, or ``None`` for every other lane. Its four-state value is read
+    #: after the run by the R2 ingest; the run itself already consumed it.
+    directory_report: _DirectoryReportHandle | None = None
 
 
 def _execute_snapshot_unit(
@@ -3526,6 +3794,9 @@ def _execute_snapshot_unit(
     equivalence_artifact: str | None = None,
     kill_signal_artifact: str | None = None,
     mutation_artifact: str | None = None,
+    #: (B245 U5a) The lane's ``judge.mutation.format``: only used to pick the
+    #: artifact kind of *mutation_artifact* (``directory`` for cargo-mutants).
+    mutation_format: str | None = None,
     #: (B064) The lane-wide progress stream, or ``None``. Passed ONLY by the
     #: lane's own baseline unit: :mod:`assay.canary`'s control/transform
     #: halves share this engine and deliberately stay silent, because R3
@@ -3706,7 +3977,15 @@ def _execute_snapshot_unit(
     # declared path and be judged as evidence -- which is the stale-artifact
     # hole `safeio.reserve_output` exists to close for coverage (P20/A-174).
     mutation_reservation: safeio.OutputReservation | None = None
-    if mutation_artifact is not None:
+    # (B245 U5a) A directory-kind format (cargo-mutants' `<out>/mutants.out`)
+    # reserves a DIRECTORY artifact instead, below; the file path is unchanged.
+    directory_kind = (
+        mutation_artifact is not None
+        and mutation_format is not None
+        and mutation_parsers.MUTATION_FORMAT_REGISTRY[mutation_format].artifact_kind
+        == "directory"
+    )
+    if mutation_artifact is not None and not directory_kind:
         mutation_reservation = safeio.reserve_output(
             snapshot.project_root,
             mutation_artifact,
@@ -3733,10 +4012,48 @@ def _execute_snapshot_unit(
             )
         mutation_reservation.arm()
 
+    directory_report: _DirectoryReportHandle | None = None
+    if directory_kind:
+        assert mutation_artifact is not None
+        directory_reservation = safeio.reserve_directory_output(
+            snapshot.project_root,
+            mutation_artifact,
+            child="mutants.out",
+            rotated="mutants.out.old",
+            report_name="outcomes.json",
+            report_limit=mutation_parsers.MAX_MUTATION_REPORT_BYTES,
+            member_limit=DIRECTORY_ARTIFACT_MEMBER_LIMIT,
+            max_members=DIRECTORY_ARTIFACT_MAX_MEMBERS,
+            max_total_bytes=DIRECTORY_ARTIFACT_MAX_TOTAL_BYTES,
+            create_missing_parents=True,
+        )
+        if _coverage_artifact_is_tracked(
+            snapshot.root, snapshot.project_root, mutation_artifact,
+            remaining=deadline.remaining,
+        ):
+            directory_reservation.close()
+            if equivalence_reservation is not None:
+                equivalence_reservation.close()
+            if reservation is not None:
+                reservation.close()
+            raise AssayError(
+                f"the declared judge.mutation.artifact {mutation_artifact!r} "
+                f"is tracked by git inside the prepared snapshot -- "
+                f"measurement output must not be committed, and a COMMITTED "
+                f"mutation report is one assay would read as evidence of a "
+                f"run that never happened",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        directory_reservation.arm()
+        directory_report = _DirectoryReportHandle(directory_reservation)
+
     if kill_signal_artifact is not None and _coverage_artifact_is_tracked(
         snapshot.root, snapshot.project_root, kill_signal_artifact,
         remaining=deadline.remaining,
     ):
+        if directory_report is not None:
+            directory_report.close()
         if mutation_reservation is not None:
             mutation_reservation.close()
         if equivalence_reservation is not None:
@@ -3789,6 +4106,7 @@ def _execute_snapshot_unit(
             result_report_create_missing_parents=True,
             classify_resource_contention=classify_resource_contention,
             classify_r0_termination=classify_r0_termination,
+            directory_report=directory_report,
         )
     if progress is not None:
         progress.emit(_command_finished_event(result, phase=progress_phase))
@@ -3896,6 +4214,13 @@ def _execute_snapshot_unit(
                 )
     if mutation_reservation is not None:
         mutation_reservation.close()
+    if post_reason is None and directory_report is not None:
+        # (B245 U5a) The directory artifact was already consumed ONCE, inside
+        # `execute_plan`; this only reads the stored four-state value. The
+        # artifact itself stays on `directory_report.state` for the R2 reader.
+        mutation_report_error = _directory_report_error(
+            directory_report.state, mutation_artifact
+        )
 
     return SnapshotUnitResult(
         result=result,
@@ -3908,6 +4233,7 @@ def _execute_snapshot_unit(
         equivalence_error=equivalence_error,
         mutation_report_bytes=mutation_report_bytes,
         mutation_report_error=mutation_report_error,
+        directory_report=directory_report,
     )
 
 
@@ -4373,6 +4699,125 @@ def _resolve_declared_base(
 resolve_declared_base = _resolve_declared_base
 
 
+def _produce_changed_diff(
+    lane: Lane,
+    *,
+    snapshot: "isolation.Snapshot",
+    project_root: Path,
+    workspace_root: Path,
+    resolved_base: str | None,
+    scratch_root: Path,
+    deadline: LaneDeadline,
+) -> ChangedDiffHandoff:
+    """(B245 U5b, D7) Produce the changed-lines patch for the
+    ``{assay.changed_diff}`` placeholder and write it OUTSIDE the snapshot.
+
+    The patch is ``git diff base head`` inside *snapshot*, anchored on the
+    cargo *workspace_root* (``--relative``, omitted at the repository top) and
+    restricted to the lane's source roots (§7.6): cargo-mutants resolves the
+    diff's paths against its own workspace root, so a cwd-relative diff would
+    match nothing. An empty diff is still written -- the tool prints that the
+    diff is empty and the lane ends INCONCLUSIVE/NO_MUTANTS (D3), never PASS.
+    ``base == head`` is the existing ``BASE_IS_HEAD`` refusal, raised before
+    any diff exists. Explicit prefixes and ``--no-renames`` keep the shape
+    independent of the repository's ``diff.noprefix``/``mnemonicPrefix``/
+    ``diff.renames`` settings.
+    """
+    assert resolved_base is not None
+    resolved = measurability.check_resolved_base_is_head(
+        snapshot.root, resolved_base, remaining=deadline.remaining
+    )
+    relative_to = workspace_root.relative_to(snapshot.root).as_posix()
+    relocated = _relocate_source_roots(
+        lane, project_root=project_root, scratch_project_root=snapshot.project_root
+    )
+    assert relocated.judge is not None
+    # Repository-top-relative, as git's pathspecs are with ``--relative``
+    # (measured); ``git.py`` runs every command with literal pathspecs.
+    pathspecs = [
+        root.relative_to(snapshot.root).as_posix()
+        for root in relocated.judge.source_root_paths
+    ]
+    patch = git.run_bytes(
+        snapshot.root,
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--no-renames",
+        *([f"--relative={relative_to}"] if relative_to != "." else []),
+        resolved.base_rev,
+        resolved.head_rev,
+        "--",
+        *pathspecs,
+        remaining=deadline.remaining,
+    )
+    directory = scratch_root / "changed-diff"
+    path = directory / "in-diff.patch"
+    try:
+        os.mkdir(directory, 0o700)
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(patch)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError as exc:
+        raise AssayError(
+            f"the changed-lines diff could not be written for "
+            f"'{vocabulary.ARGV_PLACEHOLDER_CHANGED_DIFF}': {exc.strerror or exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        ) from exc
+    return ChangedDiffHandoff(
+        path=path,
+        sha256=hashlib.sha256(patch).hexdigest(),
+        size=len(patch),
+        base_rev=resolved.base_rev,
+        head_rev=resolved.head_rev,
+        relative_to=relative_to,
+    )
+
+
+def _changed_diff_tamper_error(handoff: ChangedDiffHandoff) -> AssayError | None:
+    """(B245 U5b review) ``None`` when the handoff file still holds exactly the
+    bytes the verdict's ``judgment.r2.changed_diff`` claims, else the refusal.
+
+    The command runs as the same user and can rewrite, truncate, replace or
+    delete the file by name; ``judgment.r2.changed_diff.sha256`` would then
+    attest bytes the tool never read. The file is re-read after the unit that
+    consumed it (``O_NOFOLLOW`` through :mod:`assay.safeio`, ``size + 1``
+    bytes at most) and compared to the recorded size and digest.
+    """
+    try:
+        current = safeio.read_bounded_file(
+            handoff.path.parent, handoff.path.name, limit=handoff.size + 1
+        )
+    except AssayError as exc:
+        reason = f"could not be re-read safely ({exc})"
+    else:
+        if current is None:
+            reason = "is missing"
+        elif (
+            len(current) != handoff.size
+            or hashlib.sha256(current).hexdigest() != handoff.sha256
+        ):
+            reason = "no longer holds the bytes that were produced"
+        else:
+            return None
+    return AssayError(
+        f"the changed-lines diff handed to the command {reason}; the "
+        "recorded judgment.r2.changed_diff would not describe what the tool read",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+    )
+
+
 def _run_prepared_lane(
     lane: Lane,
     *,
@@ -4408,6 +4853,9 @@ def _run_prepared_lane(
     state_root_fd: int | None = None,
     state_root_guard: Callable[[], None] | None = None,
     liveness_dir: Path | None = None,
+    #: (B245 U5b) The lane's scratch root: the changed-diff handoff file lives
+    #: beneath it, outside every snapshot tree.
+    scratch_root: Path | None = None,
     expected_plan_sha256: str | None = None,
     campaign_deadline_sha256: str | None = None,
     cold_witness: bool = False,
@@ -4576,6 +5024,7 @@ def _run_prepared_lane(
     # value, never two independently-typed-out paths that could drift.
     liveness_candidates_dir: Path | None = None
     baseline_plan = plan
+    changed_diff_handoff: ChangedDiffHandoff | None = None
     reuse_sequential_supported: bool | None = None
     if liveness_injected:
         liveness_baseline_events_path = (
@@ -4599,6 +5048,42 @@ def _run_prepared_lane(
             ),
         )
     with prepared.materialize(timeout=deadline.remaining()) as baseline_snapshot:
+        # (B245 U5a review) A directory-kind ingested lane anchors the tool's
+        # own file paths on the cargo workspace root, which is read from the
+        # committed manifests. It is resolved HERE, before the command runs,
+        # so an unusable manifest is a lane-level BAD_LANE_CONFIG refusal
+        # (like a tracked `<out>`) and never an R2 error beside a passing R0.
+        cargo_workspace_root: Path | None = None
+        if (
+            r2_ingested
+            and mutation_parsers.MUTATION_FORMAT_REGISTRY[
+                lane.judge.mutation.format
+            ].artifact_kind
+            == "directory"
+        ):
+            cargo_workspace_root = _cargo_workspace_root(
+                resolve_run_cwd(baseline_snapshot.project_root, plan),
+                baseline_snapshot.root,
+                prepared,
+                timeout=deadline.remaining(),
+            )
+        if vocabulary.ARGV_PLACEHOLDER_CHANGED_DIFF in plan.argv_declared:
+            # (B245 U5b, D7) The placeholder is legal only on an ingested
+            # cargo-mutants changed_lines lane (config.py), whose workspace
+            # root was just resolved. The diff exists BEFORE the baseline
+            # unit, which is the only command that receives it. An error here
+            # is a lane-level refusal, exactly like the workspace-root one.
+            assert cargo_workspace_root is not None and scratch_root is not None
+            changed_diff_handoff = _produce_changed_diff(
+                lane,
+                snapshot=baseline_snapshot,
+                project_root=project_root,
+                workspace_root=cargo_workspace_root,
+                resolved_base=resolved_base,
+                scratch_root=scratch_root,
+                deadline=deadline,
+            )
+            baseline_plan = replace(baseline_plan, changed_diff=changed_diff_handoff)
         if cold_witness:
             assert r2_plan is not None
             r2_cwd = resolve_run_cwd(baseline_snapshot.project_root, r2_plan)
@@ -4669,6 +5154,7 @@ def _run_prepared_lane(
             equivalence_artifact=equivalence_artifact,
             kill_signal_artifact=kill_signal_artifact,
             mutation_artifact=mutation_artifact,
+            mutation_format=lane.judge.mutation.format if r2_ingested else None,
             progress=progress_stream,
             progress_heartbeat_seconds=progress_heartbeat_seconds,
             classify_r0_termination=True,
@@ -5211,12 +5697,47 @@ def _run_prepared_lane(
             # exactly as it is for coverage (A-161).
             if r2_ingested and r2_early_claim is None:
                 ingested_r2_error = unit.mutation_report_error
-                if ingested_r2_error is None:
-                    assert unit.mutation_report_bytes is not None
+                # (B245 U5c) The zero-mutant shape: R0 PASSED by exit code
+                # (this block is reached only on a PASS, and an `Absent`
+                # report cannot decide R0), the tool wrote no report, and
+                # the lane is a changed_lines lane whose placeholder diff
+                # was handed over -- the tool was told to mutate only the
+                # diff, and the diff selected nothing. Every other absent
+                # state (no handoff, i.e. whole_target) keeps its
+                # fail-closed refusal.
+                zero_mutant = (
+                    unit.directory_report is not None
+                    and isinstance(unit.directory_report.state, _DirectoryAbsent)
+                    and changed_diff_handoff is not None
+                )
+                if zero_mutant:
+                    ingested_r2_error = None
+                if ingested_r2_error is None and changed_diff_handoff is not None:
+                    ingested_r2_error = _changed_diff_tamper_error(
+                        changed_diff_handoff
+                    )
+                if ingested_r2_error is None and zero_mutant:
+                    assert relocated_lane_r2 is not None and added is not None
+                    ingested_r2 = mutation.synthesize_zero_mutant_result(
+                        added,
+                        repo_top=baseline_snapshot.root,
+                        source_root_paths=relocated_lane_r2.judge.source_root_paths,
+                    )
+                elif ingested_r2_error is None:
                     assert relocated_lane_r2 is not None
+                    raw_report: bytes | safeio.DirectoryArtifact
+                    if unit.directory_report is not None:
+                        # (B245 U5a) `unit.mutation_report_error` is None only
+                        # for a usable Present state (`_directory_report_error`).
+                        present = unit.directory_report.state
+                        assert isinstance(present, _DirectoryPresent)
+                        raw_report = present.artifact
+                    else:
+                        assert unit.mutation_report_bytes is not None
+                        raw_report = unit.mutation_report_bytes
                     try:
                         ingested_r2 = _ingest_r2_report(
-                            unit.mutation_report_bytes,
+                            raw_report,
                             lane=lane,
                             relocated_lane=relocated_lane_r2,
                             plan=plan,
@@ -5225,6 +5746,7 @@ def _run_prepared_lane(
                             deadline=deadline,
                             added=added,
                             project_prefix=project_prefix,
+                            workspace_root=cargo_workspace_root,
                         )
                     except AssayError as exc:
                         ingested_r2_error = exc
@@ -5312,7 +5834,9 @@ def _run_prepared_lane(
                 # raises a typed refusal above. Unlike native R2's
                 # `UNSUPPORTED` capability marker, this branch has no
                 # payload-free success shape.
-                judgment_r2 = _build_ingested_judgment_r2(lane, ingested_r2)
+                judgment_r2 = _build_ingested_judgment_r2(
+                    lane, ingested_r2, changed_diff=changed_diff_handoff
+                )
             ended = iso_utc(clock())
         else:
             assert targets is not None
@@ -6107,8 +6631,77 @@ def _build_judgment_resolved(
     )
 
 
+#: (B245 U5a review) Upper bound on one committed ``Cargo.toml`` read to find
+#: the workspace root. A real manifest is a few KiB; the bound keeps a
+#: pathological committed blob out of the TOML parser.
+_MAX_CARGO_MANIFEST_BYTES: Final = 1024 * 1024
+
+
+def _cargo_workspace_root(
+    run_cwd: Path,
+    repo_top: Path,
+    repository: "isolation.SnapshotRepository",
+    *,
+    timeout: float,
+) -> Path:
+    """(B245 U5a, design 8 item 2) The cargo workspace root of a lane that ran
+    in *run_cwd*: the first directory from *run_cwd* up to *repo_top* whose
+    ``Cargo.toml`` holds a ``[workspace]`` table, else *run_cwd* itself when it
+    is a lone package. It is the anchor of the tool's own ``file`` values, so
+    it is what the parser's ``ParseContext.run_cwd`` must be, not the lane cwd.
+
+    Every manifest is read from the COMMITTED blob through *repository*, the
+    same API the parser binds mutants with, and never from the materialised
+    snapshot: the lane's own command could have edited a file there, and the
+    anchor must not move with it. Only a ``[workspace]`` TABLE names a
+    workspace (a bare ``workspace = true`` key does not).
+
+    ``BAD_LANE_CONFIG`` when no manifest names a workspace and *run_cwd* has no
+    package manifest of its own, when a manifest is not a regular tracked file
+    (a symlink), is larger than :data:`_MAX_CARGO_MANIFEST_BYTES` or cannot be
+    parsed. :func:`_run_prepared_lane` calls this BEFORE the lane's command
+    runs: a refusal found after R0 passed would leave a verdict whose R2
+    ``BAD_LANE_CONFIG`` beside a passing R0 is not one ``verify`` accepts."""
+    start = PurePosixPath(run_cwd.relative_to(repo_top).as_posix())
+    own_package = False
+    for directory in (start, *start.parents):
+        manifest = directory / "Cargo.toml"
+        if not repository.paths_under(manifest):
+            continue
+        own_package = own_package or directory == start
+        if not repository.has_regular_file(manifest):
+            raise LaneConfigError(
+                f"the committed cargo manifest {manifest} is not a regular "
+                f"tracked file (a symlink?); the workspace root cannot be read "
+                f"from it"
+            )
+        blob = repository.read_regular_file(manifest, timeout=timeout)
+        if len(blob) > _MAX_CARGO_MANIFEST_BYTES:
+            raise LaneConfigError(
+                f"the committed cargo manifest {manifest} is {len(blob)} "
+                f"bytes, over the {_MAX_CARGO_MANIFEST_BYTES}-byte bound for "
+                f"finding the workspace root"
+            )
+        try:
+            parsed = tomllib.loads(blob.decode("utf-8"))
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            raise LaneConfigError(
+                f"cannot parse the committed cargo manifest {manifest} to "
+                f"find the workspace root: {exc}"
+            ) from exc
+        if isinstance(parsed.get("workspace"), dict):
+            return repo_top / directory
+    if own_package:
+        return run_cwd
+    raise LaneConfigError(
+        f"no cargo workspace root (a committed Cargo.toml with [workspace], or "
+        f"the lane cwd's own package Cargo.toml) was found from {start} up to "
+        f"the repository top; cargo-mutants' file paths cannot be anchored"
+    )
+
+
 def _ingest_r2_report(
-    raw: bytes,
+    raw: "bytes | safeio.DirectoryArtifact",
     *,
     lane: Lane,
     relocated_lane: Lane,
@@ -6118,6 +6711,7 @@ def _ingest_r2_report(
     deadline: LaneDeadline,
     added: diff.AddedLines | None,
     project_prefix: PurePosixPath,
+    workspace_root: Path | None = None,
 ) -> "mutation.IngestedMutationResult":
     """(B046) Decode, parse and INGEST the report the lane's own command
     wrote, entirely against *snapshot*.
@@ -6143,28 +6737,53 @@ def _ingest_r2_report(
     could have been rewritten by the lane's own command between then and now
     -- which is one of the three causes this check exists to name.
     """
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise AssayError(
-            f"mutation report is not valid UTF-8: {exc}",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-        ) from exc
+    # Decode FIRST, before anything about the lane or snapshot is consulted:
+    # undecodable bytes are a refusal that needs neither (a directory read
+    # has no decode; its bytes are the parser's own).
+    text: str | None = None
+    if isinstance(raw, bytes):
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise AssayError(
+                f"mutation report is not valid UTF-8: {exc}",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            ) from exc
     assert lane.judge is not None and lane.judge.mutation is not None
     assert lane.judge.mutation.format is not None
-    report = mutation_parsers.load_mutation_report(
-        text, declared_format=lane.judge.mutation.format
-    )
-    # (B043/A-367) The directory the command actually ran in. This is what the
-    # report's own `projectRoot` must equal and what its relative file keys are
-    # anchored at, so it must be the SAME answer `execute_plan` used when it
-    # started that command -- which is why it comes from the one join,
-    # `resolve_run_cwd`, over the very `CommandPlan` that ran, and not from a
-    # fifth hand-rederivation of `project_root / lane.cwd`. The two agreed when
-    # this was written; A-367 exists precisely because "agrees today" is not a
-    # property an edit to either side preserves.
+    spec = mutation_parsers.MUTATION_FORMAT_REGISTRY[lane.judge.mutation.format]
+    directory_kind = spec.artifact_kind == "directory"
+    # (B043/A-367) The directory the command actually ran in -- the one join,
+    # `resolve_run_cwd`, over the very `CommandPlan` that ran. For a directory
+    # kind the anchor of the tool's own `file` values is the cargo workspace
+    # root instead (design 8 item 2), above or equal to that directory.
     run_cwd = resolve_run_cwd(snapshot.project_root, plan)
+    if directory_kind:
+        # Resolved by `_run_prepared_lane` BEFORE the command ran (a refusal
+        # found here would come after R0 passed and could not verify).
+        assert workspace_root is not None
+        run_cwd = workspace_root
+        # (B245 U5a) No UTF-8 decode: the artifact is a directory read. The
+        # parser anchors on the cargo WORKSPACE root, not the lane cwd
+        # (design 8 item 2), and binds each mutant's content to the committed
+        # blobs itself (the per-mutant-diff tier below).
+        assert isinstance(raw, safeio.DirectoryArtifact)
+        report = mutation_parsers.load_mutation_directory(
+            raw,
+            declared_format=lane.judge.mutation.format,
+            context=mutation_parsers.ParseContext(
+                run_cwd=run_cwd,
+                repo_top=snapshot.root,
+                repository=prepared,
+                read_timeout=deadline.remaining(),
+            ),
+        )
+    else:
+        assert text is not None
+        report = mutation_parsers.load_mutation_report(
+            text, declared_format=lane.judge.mutation.format
+        )
     assert relocated_lane.judge is not None
     # `judge.targets` is PROJECT-relative (A-145) and every wire path is
     # repo-top-relative, so the declared targets are re-spelled here rather
@@ -6194,11 +6813,16 @@ def _ingest_r2_report(
         targets=declared_targets,
         repository=prepared,
         read_timeout=deadline.remaining(),
+        spec=spec,
+        content_tier="per-mutant-diff" if directory_kind else None,
     )
 
 
 def _build_ingested_judgment_r2(
-    lane: Lane, ingested: "mutation.IngestedMutationResult"
+    lane: Lane,
+    ingested: "mutation.IngestedMutationResult",
+    *,
+    changed_diff: ChangedDiffHandoff | None = None,
 ) -> JudgmentR2:
     """(B046) The ``judgment.r2`` of an INGESTED lane.
 
@@ -6223,6 +6847,7 @@ def _build_ingested_judgment_r2(
         survived_uncovered=ingested.survived_uncovered,
         discarded=ingested.discarded,
         lines_without_candidates=ingested.lines_without_candidates,
+        report_absent=ingested.report_absent,
         # B050/A-427 (schema v10): the floor the ingested judgment applied,
         # read from the lane rather than assumed to be 100.0 -- which is the
         # whole point of the field. It is REQUIRED under `ingested` and
@@ -6234,6 +6859,17 @@ def _build_ingested_judgment_r2(
             tuple(sorted(lane.judge.targets))
             if lane.judge.mode == "whole_target"
             and lane.judge.targets is not None
+            else None
+        ),
+        changed_diff=(
+            ChangedDiff(
+                base_rev=changed_diff.base_rev,
+                head_rev=changed_diff.head_rev,
+                relative_to=changed_diff.relative_to,
+                sha256=changed_diff.sha256,
+                bytes=changed_diff.size,
+            )
+            if changed_diff is not None
             else None
         ),
     )
@@ -6761,6 +7397,7 @@ def _run_higher_rigor_lane(
                         state_root_fd=state_root_fd,
                         state_root_guard=state_root_guard,
                         liveness_dir=Path(raw_liveness_dir),
+                        scratch_root=scratch_root,
                         expected_plan_sha256=expected_plan_sha256,
                         campaign_deadline_sha256=campaign_deadline_sha256,
                         cold_witness=cold_witness,

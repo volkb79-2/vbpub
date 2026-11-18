@@ -7,6 +7,28 @@ know when upgrading; it is not generated.
 
 ## Contract and upgrade notes
 
+### Unreleased — `cli_extended.procio`: one bounded subprocess reader
+
+Library contract version remains 1 and the surface manifest schema remains 7;
+the module adds no CLI control, so no `surface sync` is needed. The base install
+still has no runtime dependencies.
+
+- **New module `cli_extended.procio`** (design note
+  `ciu/docs/DESIGN-NOTE-2026-11-CIU-215-CIU-220.md`, Decision 2; the scope
+  widening from "CLI contract" to "CLI contract plus child-process supervision"
+  was approved by the operator on 2026-11-18). `run_streaming` and `run_capture`
+  stop reading `drain_seconds` after the child exits instead of waiting for
+  pipe EOF (cmru KI-178, ciu CIU-220, mdt-cockpit MDT-104, nyxloom NL-83), keep
+  the child's own exit code, name the processes still holding the pipe, run each
+  child in its own session and process group, and reap that group on SIGINT,
+  SIGTERM and SIGHUP. `run_streaming` adds the no-progress watchdog
+  (`no_progress_seconds` is required and positive; there is no "off" and no
+  library default) and returns the process tree taken before the kill.
+  `terminate_as_exit`, `reap_process_group`, `pipe_holder_pids` and
+  `process_tree` are public building blocks. Contract: SPEC section 16; call
+  site to paste: the consumer guide. Each tool raises its `cli-extended` floor
+  to the first release that ships `procio` when it adopts it.
+
 ### 0.6.0 — endpoint publisher ownership and damaged-fragment warnings
 
 Library contract version remains 1 and the surface manifest schema remains 7.
@@ -219,6 +241,21 @@ Behaviour changes a consumer can see:
 ## [Unreleased]
 
 <!-- cmru: release history -->
+
+## [0.7.0] - 2026-11-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=c70b15d820d87b3faab1dd3d4398b29cc9d77ea2 -->
+
+### Added
+- feat(cli-extended): procio, a bounded child-process reader (run_streaming, run_capture, no-progress watchdog) (4482c9c81)
+
+### Fixed
+- fix(cli-extended): pipe_holder_pids skips a vanished descriptor, not the whole process (4c8e8c36e)
+- fix(cli-extended): procio review fixes (strict run_capture, stale-pgid guard, exception-safe handler restore, linear line assembly, wider test margins, deterministic fake-proc fixture) (1d74a3cf3)
+
+### Documentation
+- docs(cli-extended): procio contract (SPEC 16), README, consumer call site, CHANGES, CLI-EXT-34; stdin close-on-interrupt test (752ab4c73)
+
 
 ## [0.6.0] - 2026-11-09
 <!-- cmru: generated -->

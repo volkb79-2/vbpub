@@ -6789,6 +6789,85 @@ lifecycle, not a one-line addition here.
 **Detection and destruction.** Shipped in **S16.10** (`ciu worktree reap`),
 which consumes exactly the substrate above.
 
+### S16.9a — Opt-in git common-dir mount for a linked worktree (CIU-215)
+
+A linked worktree's `.git` is a file naming an admin dir inside the primary
+checkout's git directory, so a service that mounts only the checkout has no
+working git. A stack opts in with one table in its stack config:
+
+```toml
+[<root>.linked_worktree]
+git_common_dir = "ro"   # required: "ro" | "rw"; there is no default
+# services = ["runner"] # optional; default: every service of this stack
+```
+
+In a **linked worktree only**, `ciu up`/`ciu render` writes
+`.ciu/ciu.compose.gitdir.yml` and appends it as the last `-f` (after the
+ownership fragment, S16.9). A primary checkout and a stack without the table
+render byte-identically and write nothing. The table is closed (unknown keys,
+other values and an empty `services` refuse with `[CIU-215]`), is validated on
+every checkout and by `ciu check` (stage `shape`), and refuses on a
+`--shipped` stack. A `services` name that is not a rendered service refuses.
+
+- **Target**: the common dir exactly as the checkout's gitfile and
+  `<admin>/commondir` name it (joined lexically; a relative gitfile against the
+  checkout), cross-checked against `git rev-parse --git-common-dir`; a
+  disagreement refuses naming both.
+- **Source**: the same path translated into the daemon namespace
+  (`primary_worktree_root` + the physical root), never stat-ed locally.
+  A common dir outside the primary checkout (`--separate-git-dir`) passes
+  through unchanged: documented limit.
+- **De-duplication**: a service whose rendered `volumes` already mount the
+  common dir or an ancestor (short form split on `:` outside `${...}`, or long
+  form `target`) keeps its own mount and gets one INFO line.
+- **Layout** (Run-Gate's RG-NARROW/RG-86 layout): `ro` mounts the common dir
+  read-only. `rw` mounts it read-write with `worktrees/` read-only, the
+  checkout's own admin dir read-write on top, an empty read-only `hooks/`,
+  read-only `info/` and read-only pointer files (`<admin>/gitdir`,
+  `<admin>/commondir`). In BOTH modes the checkout's gitfile `<checkout>/.git`
+  gets its own read-only bind at the path the gitfile is read from: it lives
+  under the checkout mount (read-write for the runner), not under the common
+  dir, so without the bind a runner could repoint host git at a gitdir it
+  controls. The bind protects the checkout only at its own logical path: a
+  service that mounts the checkout elsewhere (for example `/app`) leaves
+  `/app/.git` writable, and CIU logs one WARN per stack when no selected
+  service mounts the checkout path. A service that already binds that exact
+  path keeps its own bind. In `rw`, `modules/**/hooks` get the same empty
+  read-only directory and `modules/**/info` a read-only bind (at most 256
+  submodule git dirs). Accepted limits: a newly created `config.worktree` and
+  submodule working-tree gitfiles stay writable.
+- **Host-side writes**: `.ciu/` lives inside the checkout the runner mounts
+  read-write, so CIU writes with `lstat` only: a `.ciu` or `.ciu/gitdir` that is
+  a symlink, a non-directory or not owned by the current user refuses
+  (`[CIU-215]`); temp files are created unlinked-then-`O_EXCL|O_NOFOLLOW`
+  and renamed; only regular `<digits>.config` files are removed. With the table
+  present, a git that cannot answer (missing, too old for `--path-format`,
+  dubious ownership) refuses; a clean "not linked" is silent. Nothing left to
+  mount (or a removed table) deletes a stale fragment and `.ciu/gitdir/`. `$` in
+  bind paths is written as `$$`; a path not lexically under the resolved primary
+  root passes the namespace translation unchanged and fails loudly through
+  `create_host_path: false`. A `N.config` destination that a runner turned into
+  a directory is removed (never through a link) before the rename.
+  Accepted limits: CIU checks with `lstat` and then reads, so a runner that
+  races a concurrent `ciu up` with directory swaps is not excluded; a
+  submodule git dir without `hooks/` stays runner-creatable in `rw` (nothing to
+  overlay).
+- **Config copies**: in both modes `config`, `config.worktree`, nested
+  `modules/**` configs and sibling `worktrees/*/config.worktree` (at most 256)
+  are replaced by sanitized read-only copies under `.ciu/gitdir/` (credentials,
+  `include`s and helpers removed; `ciu` carries its own port of Run-Gate's
+  sanitizer). Every candidate and the `modules` tree are checked with `lstat`
+  before anything is written, fail-closed: a symlink, directory or other
+  non-regular entry at a config name, a symlinked `modules` root or
+  subdirectory, or an unreadable directory refuses with a `[CIU-215]` message
+  naming the path (skipping it would leave the unsanitized original mounted);
+  nothing is followed and the file is re-checked right before it is read.
+  `ro` makes git inside the runner read-only: `status`, `diff`, `log`,
+  `describe` and `rev-parse` work, `add`/`commit` fail with EROFS.
+- A running container keeps the copies it was created with; a changed
+  `<common>/config` reaches a runner at its next recreate. `reset` passes the
+  fragment to `down` and removes it and `.ciu/gitdir/`.
+
 ### S16.10 — Docker-resource reap (`ciu worktree reap`, CIU-25 docker half)
 
 `ciu worktree reap [-y] [--category C1,C2] [--dry-run] [--json]` is the

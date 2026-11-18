@@ -355,3 +355,43 @@ def test_assay_plan_names_why_an_ingested_lane_cannot_be_planned(
     assert "ingests R2 evidence" in payload["reason"]
     assert "mutation-report-json" in payload["reason"]
     assert "cannot enumerate candidates" in payload["reason"]
+
+
+# --------------------------------------------------------------------------
+# (B245 U3a) A directory-kind format is a REGISTERED format
+# --------------------------------------------------------------------------
+
+
+def test_the_missing_format_message_names_the_file_kind_format_explicitly(
+    app_project: Project,
+):
+    """The remedy names ``mutation-report-json`` literally: the registry's
+    first sorted key is now ``cargo-mutants-outcomes``, a directory-kind format
+    that is the wrong suggestion for a lane that declared only ``artifact``."""
+    text = INGESTED_LANE.replace('format = "mutation-report-json"\n', "")
+    error = _refusal(app_project, text)
+    message = str(error)
+    assert "Declare format = 'mutation-report-json', or drop this key" in message
+    assert "cargo-mutants-outcomes" not in message
+
+
+def test_the_registry_knows_the_directory_kind_format():
+    spec = MUTATION_FORMAT_REGISTRY["cargo-mutants-outcomes"]
+    assert spec.artifact_kind == "directory"
+    assert spec.parse is None and spec.parse_directory is not None
+
+
+def test_a_directory_kind_format_without_its_result_report_is_refused(
+    app_project: Project,
+):
+    """A directory-kind format loads (U5a), but alone it is half a lane: the
+    matching ``result_report`` is required, so the refusal names it."""
+    text = INGESTED_LANE.replace(
+        'format = "mutation-report-json"', 'format = "cargo-mutants-outcomes"'
+    ).replace(
+        '["npx", "stryker", "run"]', '["npx", "stryker", "--in-diff", "{assay.changed_diff}"]'
+    )
+    error = _refusal(app_project, text)
+    message = str(error)
+    assert "result_report" in message
+    assert "cargo-mutants-outcomes" in message

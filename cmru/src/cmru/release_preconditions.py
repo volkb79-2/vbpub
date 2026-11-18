@@ -82,21 +82,6 @@ def _load_release_gate(source_git_root: Path, revision: str) -> ModuleType:
     return module
 
 
-def _prepared_version_error(gate, version: str) -> str | None:
-    """Ask the release gate's own postponement validator about this planned version."""
-    with tempfile.TemporaryDirectory(prefix="cmru-release-precondition-") as temporary:
-        project_root = Path(temporary)
-        (project_root / "CHANGES.md").write_text(
-            f"## [{version}] - 2000-01-01\n",
-            encoding="utf-8",
-        )
-        try:
-            gate._validate_postponement(project_root, "KI-79")
-        except RuntimeError as exc:
-            return str(exc)
-    return None
-
-
 def _is_docker_unavailable(detail: str) -> bool:
     lowered = detail.lower()
     return any(marker in lowered for marker in _DOCKER_UNAVAILABLE)
@@ -455,68 +440,24 @@ def _bootstrap_version_precondition(
     )
 
 
-def run_tests_uses_provisional_gate(config_text: str) -> bool:
-    """True when ``[steps.run-tests]`` in a cmru.toml runs ``gate-provisional``.
-
-    Only that lane carries the KI-79 R2 postponement, so only a release that
-    configures it needs the waiver-window check.
-    """
-    document = tomllib.loads(config_text)
-    commands = document.get("steps", {}).get("run-tests", {}).get("commands", [])
-    return any("gate-provisional" in command.get("argv", []) for command in commands)
-
-
 def evaluate_release_gate_preconditions(
     repo_root: Path,
     source_git_root: Path,
     revision: str,
     planned_versions: Mapping[str, str],
     *,
-    gate_provisional: bool = True,
     require_docker: bool = False,
 ) -> list[GatePrecondition]:
-    """Evaluate CMRU's three release-gate preconditions for the planned release.
+    """Evaluate CMRU's release-gate preconditions for the planned release.
 
-    ``gate_provisional`` says whether cmru.toml's run-tests step runs the
-    provisional gate; the KI-79 window only binds then.
+    Under the standing release rule (KI-79/KI-159) no planned version is checked against a
+    waiver window: the gate path is identical for every version. Only the tester-image and
+    bootstrap-version preconditions remain.
     """
     version = planned_versions.get("cmru")
     if version is None:
         return []
-    if not gate_provisional:
-        return [
-            GatePrecondition(
-                "cmru", "KI-79 waiver window", "SKIPPED",
-                "cmru.toml's run-tests step does not run `gate-provisional`; the full "
-                "gate is configured, so no R2 postponement is used.",
-            ),
-            check_run_gate_image_precondition(
-                repo_root, source_git_root, revision, require_docker=require_docker,
-            ),
-            _bootstrap_version_precondition(source_git_root, revision),
-        ]
-    try:
-        gate = _load_release_gate(source_git_root, revision)
-        waiver_error = _prepared_version_error(gate, version)
-        if waiver_error is None:
-            waiver = GatePrecondition(
-                "cmru", "KI-79 waiver window", "PASS",
-                f"planned version {version} is accepted by the release gate's KI-79 validator.",
-            )
-        else:
-            waiver = GatePrecondition(
-                "cmru", "KI-79 waiver window", "FAIL", waiver_error,
-                "Change `cmru/cmru.toml`'s run-tests command from `run-gate gate-provisional` "
-                "to `run-gate gate` (the full lane, no postponement; the check is then "
-                "SKIPPED), or obtain a recorded operator decision to widen KI-79.",
-            )
-    except Exception as exc:
-        waiver = GatePrecondition(
-            "cmru", "KI-79 waiver window", "FAIL", str(exc),
-            "Repair the release gate source in the selected release commit, then rerun the dry-run.",
-        )
     return [
-        waiver,
         check_run_gate_image_precondition(
             repo_root, source_git_root, revision, require_docker=require_docker,
         ),

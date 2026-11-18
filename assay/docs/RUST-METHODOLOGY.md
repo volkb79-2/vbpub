@@ -4,7 +4,8 @@
 `judge.language = "rust"` for changed-line LCOV judgment. The adapter does not
 run Cargo: a lane supplies the pinned Rust tools, normally through
 `tester-unified-rust`. Stable Rust branch totals are unavailable after the
-producer-specific LCOV normalization; R2 and R3 remain unregistered. The
+producer-specific LCOV normalization; R3 remains unregistered; Rust R2 only by
+cargo-mutants ingestion (B245). The
 hostobs baseline keeps `lint`/`selftest` AND declares the consumer
 `assay-r1` lane (see below) as a `kind = "command"` lane that runs the judge from
 the worktree's own `assay/src` with `PYTHONPATH`, so the locked offline Rust gate
@@ -94,7 +95,8 @@ tripwire is cache/lock agreement at the start of a Rust lane.
 - Rust R2 is a T3 cargo-mutants campaign using `--in-diff` against the latest
   release, with `--base <previous release tag>`. It runs asynchronously and
   never gates a merge or release; survivors become backlog items.
-- Rust R2 not yet adopted (R-3b pending) is recorded once as a known issue,
+- Rust R2 not yet adopted (assay's ingestion side is shipped, B245 U0-U5c; the
+  hostobs consumer lane U8 and the real-run qualification U7 are open) is recorded once as a known issue,
   not as a per-release waiver. The target remains the full R1-R3 contract;
   tests, reviews, R1, and the other release gates stay required.
 - Whole-crate mutation campaigns are advisory T3 lanes, run asynchronously on

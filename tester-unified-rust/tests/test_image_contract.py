@@ -219,7 +219,7 @@ class ImageContractTests(unittest.TestCase):
 
         central = tomllib.loads((REPO_ROOT / "run-gate.root.toml").read_text(encoding="utf-8"))
         environment = central["environments"]["tester-unified-rust"]
-        self.assertEqual(environment["image"], "tester-unified-rust:local")
+        self.assertEqual(environment["image"], "tester-unified-rust:rs-20261118")
         self.assertEqual(environment["cgroup_slice_env"], "CGROUP_PARENT_DEV_GATES")
         self.assertEqual(environment["network"], "none")
 

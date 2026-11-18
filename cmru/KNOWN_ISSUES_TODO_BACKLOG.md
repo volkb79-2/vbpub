@@ -14,6 +14,9 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-181 | OPEN (`dist_dir` containment still accepts project-owned directories such as `src`, `.git` or a symlink to another project directory) | — |
+| KI-180 | OPEN (runner residuals: a signal between fork and `Popen` return can leave the child unreaped; a failing group reap skips the explicit pipe close) | — |
+| KI-179 | OPEN (`cmru abandon` withholds a superseded release candidate whose content is on main and offers no operator path) | — |
 | KI-178 | OPEN (items 1 and 2 fixed 2026-11-18: bounded drain after child exit and whole-process-group reaping; item 3 no-progress watchdog and item 4 shared helper remain) | `4d9ecf912` (code; earlier changes `4b59e8740`, `d21e1921b`) |
 | KI-175 | FIXED 2026-11-18 (`dist_dir` must be a strict descendant of `project_root` at parse time and is rechecked before every recursive removal) | `f582481c4` |
 | KI-173 | FIXED 2026-11-16 (estate argv failures explain shell-expanded values for typed options and their environment fallback) | `f20d3ae566e60f591638f9bc5e66e9bfd7e38a39` |
@@ -27,8 +30,13 @@
 | KI-164 | FIXED (`bundle-build` removes bundle and wheel staging trees after a successful archive by default) | `d6cd7fb54aff97dfb47fb7a537e0d31b0d7af3e0` |
 | KI-163 | FIXED (`bundle-build` derives a non-release version when its configured variable is absent) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
 | KI-162 | FIXED (released in cmru 7.3.1; the naf equivalence build on 2026-11-14 was EQUIVALENT, which also closes KI-126) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
-| KI-161 | OPEN (`cmru versions resolve` and `init` rewrite `cmru.toml` and drop comments; a document-wide blank-line collapse can change multi-line string values) | — |
+| KI-161 | FIXED 2026-11-18 (`cmru versions resolve` and `init` edit only the values and tables they own; comments, blank-line runs and multi-line values stay byte-identical; unsupported shapes are refused with the hand edit named) | `7b3364a7b` (merged into main by `5f862034b`) |
+| KI-176 | FIXED 2026-11-18 (every manifest-contradicting target is reported in one run with the exact `package.json` edit; nothing is written) | `7b3364a7b` (merged into main by `5f862034b`) |
+| KI-177 | FIXED 2026-11-18 (same mechanism as KI-161; the mdt-cockpit ADVISORY comment shape is a regression test) | `7b3364a7b` (merged into main by `5f862034b`) |
 | KI-160 | OPEN (post-promotion evidence retention can exit 1 after a successful release) | — |
+| KI-159 | FIXED 2026-11-18 (the per-minor KI-79 window is removed; standing release rule, operator decision 2026-11-18) | `0e6e28f8b` |
+| KI-141 | OPEN (R2 owed on the latest release at all times; ledger entry, no version upper bound after KI-159) | — |
+| KI-79 | FIXED 2026-11-18 (`gate-provisional` renamed `release-gate`; no version window; R2 owed asynchronously, recorded by marker, manifest and KI-141) | `0e6e28f8b` |
 | KI-158 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
 | KI-157 | FIXED 2026-11-16 (checked-out main worktree is derived and given its owner-scoped remedy) | `4d36980b8d6f3ed7533da2f900b955c06075cb1f` |
 | KI-155 | FIXED (2026-11-12; tuple resource evidence) | `152ba5c9a5181b128ebf1364a9d57d2524ce4415` |
@@ -1968,7 +1976,7 @@ one-command UX without shell-specific pipe-status traps.
 
 ### KI-79 — CMRU provisional releases defer the long R2 campaign
 
-**Status:** OPEN (R2 debt); the deferral mechanism remains IN FORCE for the 6.2 patch line (`>= 6.2.0`, `< 6.3.0`) and the 7.0 through 7.3 patch lines (`>= 7.0.0`, `< 7.1.0`; `>= 7.1.0`, `< 7.2.0`; `>= 7.2.0`, `< 7.3.0`; `>= 7.3.0`, `< 7.4.0`; `POSTPONEMENT_RELEASE_VERSIONS` holds a tuple of (low, below) windows per id): first applied to the 2026-10-14 6.2.0 release candidate, widened by operator decisions through 2026-11-12; R2 remains owed (see Follow-up); severity: major (mutation evidence gap).
+**Status:** FIXED 2026-11-18 in `0e6e28f8b` (the mechanism is now the standing release rule, with no version window); R2 remains owed on the latest release (ledger KI-141); severity: major (mutation evidence gap). **Operator decision 2026-11-18 (verbatim):** "change/remove rule. like we agreed for any release: need R1,R3 (full branch coverage and canary) and review for no hollow tests and no issues, then release. R2 runs async." The release gate is R0/R1 (full branch coverage) plus R3 (canary) as the `run-tests` step; the independent review is a hand-off requirement of the release controller, not code; R2 mutation is owed asynchronously on the latest release. `POSTPONEMENT_RELEASE_VERSIONS`, the `KI-79 waiver window` dry-run precondition and `run_tests_uses_provisional_gate` are removed, the lane `gate-provisional` is renamed `release-gate` with no alias, and the tracking id value `KI-79` and the marker and manifest shapes are kept so retained evidence stays readable. The text below is the history of the window mechanism; where it names a window, an upper bound or `gate-provisional`, read `release-gate` and "no window". Moving the window once per minor had blocked the cmru 7.4.0 release on 2026-11-18.
 
 **Reason:** the full CMRU mutation lane is a multi-hour R2 campaign. The operator's release objective explicitly permits long R2 to run asynchronously or be postponed so short correctness, coverage, and integration gates can unblock the tool release wave.
 
@@ -3224,15 +3232,15 @@ not implementable as the brief's "small" follow-on.
 
 The 2026-11-12 T3 rehearsal of `r2` remained PARTIAL: its preflight had six failing process-tree fixture tests, Assay's declared `../libraries/cowtree/src` package root was rejected, and the campaign crashed when `ResourceLimitEvidence.between` returned its current tuple contract. KI-153 through KI-155 fix these lane blockers in source and tests; the rehearsal is not an R2 campaign result and this entry remains open. The measured controls took 368, 752, and 825 seconds with other lanes running. The registered control ceiling is now 1800 seconds (2.18 times the longest measurement), and candidate timeouts retain the existing twice-control scaling.
 
-**Constraint.** The 2026-11-12 operator decision extends KI-79 through `>= 7.3.0`, `< 7.4.0`, so 7.3.0 may use `gate-provisional` without an earlier R2 run. The full R2 obligation is still open and follows the standing T3 schedule: run it asynchronously after the latest provisional release, before KI-79's current upper bound 7.4.0 unless the operator records another decision.
+**Constraint.** Under the standing release rule (operator decision 2026-11-18: a release needs R1 full branch coverage, R3 canary and an independent review, and R2 runs asynchronously), R2 is owed on the latest release at all times; no version window or upper bound exists any more. The release step runs `release-gate`, whose retained marker `.assay/mutation-postponed-cmru.json` and snapshot `deferred_lanes` entry are the record that R2 is owed for that release; this entry is the ledger of what is owed.
 
 **Fix.** Finish the owed whole-source R2 as the T3 lane `r2` on the latest release tag, using the controller-selected base (currently `cmru-v6.1.0` when no newer R2 PASS row exists); the copyable lane command is `run-gate --base cmru-v6.1.0 r2` when that base is selected. Kill the survivors of KI-129/133/134/135/138; an unkillable (equivalent) survivor leaves the existing operator-decision branch of Close when.
 
-**Close when.** A T3 ledger PASS row records cmru `r2` at the latest 7.3.x release tag, with a base at or before the last R2-covered tag (`cmru-v6.1.0`) and every candidate killed with no survivors; the campaign judges the latest released source and closes the accumulated 7.2.x/7.3.x R2 debt.
+**Close when.** A T3 ledger PASS row records cmru `r2` at the latest release tag, with a base at or before the last R2-covered tag (`cmru-v6.1.0`) and every candidate killed with no survivors; the campaign judges the latest released source and closes the accumulated R2 debt of every provisional release up to it.
 
 **Remaining WP-CMRU parts 6, 7, and 9.** Part 6 follows a successful part-5 T3 rehearsal: make CMRU's `gate` a mutation-free release orchestrator and always write the R2-owed marker with `follow_up_lane = "r2"`. Part 7 follows parts 6 and 1 (`whole_target`): retire `cmru-first-release`, `assay-first-release`, and the `_plan_gate` first-release branch. Part 9 still needs the `TMPDIR`/`PYTHONPYCACHEPREFIX` A/B and a duration survey on a quiet host, including an explanation of the control variance in an isolated run; the current `io_sync = "relaxed"` setting remains in place.
 
-**After KI-141 closes.** KI-159 tracks whether to replace per-minor window edits with a rolling rule or a declared release-policy field. Until that design is selected and implemented, KI-79 remains a bounded allowlist.
+**Window policy.** KI-159 (FIXED 2026-11-18) removed the per-minor window allowlist: the standing release rule above replaced KI-79's bounded windows, so this entry no longer waits on any window design.
 
 **Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md); KI-79 above; cmru-v7.2.4 release (2026-11-08).
 
@@ -3516,13 +3524,13 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 ## KI-159 - KI-79 release windows need a policy that does not require a new edit for each minor
 
-**Status:** OPEN (filed 2026-11-12); severity: minor (release-window maintenance).
+**Status:** FIXED 2026-11-18 in `0e6e28f8b`; severity: minor (release-window maintenance). Operator decision 2026-11-18 (verbatim): "change/remove rule. like we agreed for any release: need R1,R3 (full branch coverage and canary) and review for no hollow tests and no issues, then release. R2 runs async." The window allowlist was removed instead of rolled or declared: a release of any version passes the gate path identically (`tools/run_release_gate.py` `_validate_postponement`; tests `tests/test_release_gate.py`, `tests/test_release_gate_provisional.py`, `tests/test_release_gate_preconditions.py`).
 
-**Problem.** KI-79's explicit bounded windows have been extended one minor line at a time. Each extension needs synchronized gate, test, changelog, and user-documentation edits; a missed bound can refuse the next provisional release before its gates run.
+**Problem (resolved; kept as history).** KI-79's explicit bounded windows were extended one minor line at a time. Each extension needed synchronized gate, test, changelog, and user-documentation edits; a missed bound could refuse the next release before its gates ran (it blocked cmru 7.4.0 on 2026-11-18).
 
-**Proposal.** Decide whether the allowed window should roll across the latest minor line plus its predecessor, or come from a declared release-policy field. Keep refusal behavior explicit and tested at both edges. No implementation is part of this backlog item.
+**Resolution.** The operator removed the window instead of choosing a rolling policy: the release gate is R0/R1 plus R3 for every version, the independent review is a controller hand-off requirement, and R2 is owed asynchronously on the latest release (see Status; the owed R2 stays tracked in KI-141).
 
-**Close when.** The operator selects one policy, its edge behavior and compatibility are documented, and a separate reviewed change implements and tests it across the gate and dry-run precondition.
+**Close when (met).** The version-window allowlist, its precondition and its tests are removed and the lane is named `release-gate`.
 
 ## KI-160 - successful promotion can exit 1 before retaining artifacts when declared gate evidence is missing
 
@@ -3536,7 +3544,7 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 ## KI-161 - `cmru versions resolve` and `cmru versions init` rewrite `cmru.toml` and drop comments (and can change multi-line string values)
 
-**Status:** OPEN (filed 2026-11-13); severity: minor (silent loss of hand-written documentation; no functional effect). Found in netcup-api-filter with cmru 7.3.0. CHANGES checked: nothing in `[Unreleased]` covers it.
+**Status:** FIXED 2026-11-18 in `7b3364a7b` (merged into main by `5f862034b`; option a, surgical text edits: `versions.py` `_edit_versions_text`; tests `tests/test_versions_surgical_edit.py` and `tests/test_versions_surgical_refusals.py` cover the Close-when fixture for `resolve` and `init`, SPEC section on the versions commands); formerly OPEN (filed 2026-11-13); severity: minor (silent loss of hand-written documentation; no functional effect). Found in netcup-api-filter with cmru 7.3.0. CHANGES `[Unreleased]` documents the fix (`fix(cmru): make cmru versions resolve and cmru versions init edit cmru.toml as text ...`).
 
 **Evidence.** In netcup-api-filter, branch `pdns51`, the commit that ran one `cmru versions resolve` (`netcup-api-filter@9847b7b`, "chore(versions): record the PowerDNS 5.1.5 resolution") removed two hand-written comments from `cmru.toml`: a comment on the python314 target and a multi-line "partial migration" marker the previous commit had put directly above the `[versions.targets."oci.powerdns-auth"]` table. The resolved values were rewritten correctly; only the comments disappeared, so the marker that made a half-migrated state detectable was erased by the very command meant to complete it.
 
@@ -3793,6 +3801,40 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Close when.** A change that adds a `cmru` call to a shell script is refused or auto-extended with the cmru lane, shown by a test of the selection rule, and the trigger list is derived from the scanner's own file selection.
 
+## KI-181 `dist_dir` containment accepts project-owned directories (`src`, `.git`, a symlink to another project directory)
+
+**Status:** OPEN (filed 2026-11-18, residual of KI-175); severity: medium.
+
+**Observed.** KI-175 requires only that the resolved `dist_dir` is a strict descendant of `project_root`. `dist_dir = "src"`, `".git"` or a symlink inside the project that points at another project's directory passes that rule, and the bundle build then removes it recursively before staging.
+
+**Wanted.** A deny-list of directories the build must never remove (for example `.git`, the source directories declared by the bundle, and any path that is another project's root), or an explicit-ownership marker that a removable output directory must carry (created by the build on first use, required before any recursive removal).
+
+**Close when.** Tests show `dist_dir` set to `src`, `.git` and a symlink to a sibling project directory is refused before any file is touched, while an ordinary `dist` (new or previously built by cmru) still works.
+
+## KI-180 residuals of the KI-178 runner fix: signal between fork and `Popen` return, and a skipped pipe close when the group reap raises
+
+**Status:** OPEN (filed 2026-11-18, residuals of KI-178 items 1 and 2); severity: low.
+
+**Observed.** (1) A SIGTERM or SIGHUP that arrives in the microseconds between the fork and the return of `Popen` can leave the child unreaped, because the handler that turns the signal into `SystemExit` runs before the child handle exists. (2) If the whole-group reap itself raises, the explicit close of the output pipe is skipped; garbage collection closes it later.
+
+**Code (checked against main at `5f862034b`).** `cmru/src/cmru/runner.py`: `_terminate_as_exit` installs a handler that raises `SystemExit(128 + signum)` and blocks nothing around the fork; `_run_command` sets `process = None` and assigns it only when `subprocess.Popen` returns, so a `SystemExit` raised before that assignment finds `process is None` and reaps nothing. The `except BaseException` branch calls `_reap_process_group(process)` and only then `process.stdout.close()`, so a raising reap skips the close.
+
+**Wanted.** Block SIGTERM and SIGHUP with `pthread_sigmask` around `Popen` and unblock once the child handle is recorded; close the pipe in a `finally` that cannot be skipped by a failing reap.
+
+**Close when.** A test delivers the signal inside the fork window (a patched `Popen` that signals the process before returning) and shows the child is reaped; a test makes the group reap raise and shows the pipe is closed.
+
+## KI-179 `cmru abandon` withholds a superseded release candidate and offers no operator path
+
+**Status:** OPEN (filed 2026-11-18); severity: medium (a stale candidate branch and its worktree stay behind with no supported way to retire them).
+
+**Observed.** The branch `cmru-release-20261106_123441-ciu-yh40ow` carries one commit (`cf063357a`, `chore(ciu): prepare release inputs`, 32 added lines in `ciu/CHANGES.md`) whose CHANGES content equals main's `62d8b67c6` (the same subject, 33 added lines) except for two differences: the `source-end` marker (`ae894f93b0083af9c13a47e8962785ca02cd2e2d` on the candidate, `13cff77c1c7f5a3de59a74af8791a01a8723cd6b` on main) and one extra bullet on main under `### Testing`, `test(ciu): close the 100% coverage gap on the CIU-141/138/202 refusal paths ... (4bbf8d49a)`. So the content is a strict subset of main's, not identical. `cmru abandon` withholds it with "origin contains selected-scope release tag refs that changed during this transaction" (the ciu-v7.24.0, ciu-v7.24.1, ciu-v7.25.0 and ciu-v7.25.1 tags), and the message offers no operator path; the only way out is raw git.
+
+**Second instance (2026-11-18, cli-extended 0.7.0).** A release attempt failed in its gate before any promotion and left the candidate `cmru-release-20261118_070201-cli-extended-h1uxqk` (head `50ae0429d`, not an ancestor of main, no tag pointing at it). The fresh retry then released `cli-extended-v0.7.0`; `cmru abandon --dry-run` on the failed candidate answered `Withheld ... origin contains selected-scope release tag refs that changed during this transaction: cli-extended-v0.7.0`. So a clean failed-attempt candidate becomes unretirable the moment its own retry succeeds. The operator retired it by hand after checking that the head is not an ancestor of main and no tag points at it (worktree removal, local branch delete, remote branch delete of that exact name). Wanted for this case: retire a candidate whose head is not reachable from main and not tagged, when the only changed tag ref is the one the superseding successful release created, printing those two checks as evidence.
+
+**Wanted.** An explicit, evidence-checked way to retire a candidate whose content is already on main (patch or content equivalence of every changed path) or whose version has since been released, without raw git: the command prints the evidence it checked (equivalent commit on main, or the released tag that carries the version) and refuses when it cannot show either.
+
+**Close when.** Tests cover a candidate whose content equals a commit on main, a candidate whose version has a released tag, and a candidate with neither (still withheld, with the reason named), each without the operator running git.
+
 ## KI-178 a step hangs forever when its child exits but a grandchild keeps the output pipe open (estate-wide pattern)
 
 **Status:** OPEN, items 1 and 2 (cmru side) FIXED 2026-11-18, items 3 and 4 remain (filed 2026-11-17 during the mdt-cockpit release); severity: high (an unattended release or gate never finishes, never fails, and says nothing; found only because the operator looked).
@@ -3813,7 +3855,7 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-177 `cmru versions resolve` rewrites cmru.toml and silently drops its comments
 
-**Status:** OPEN (filed 2026-11-17 while releasing mdt-cockpit); severity: medium (a refresh deletes human-owned labels; here it removed the eight `ADVISORY ... MDT-013` comments that mdt-cockpit's `test_every_oci_target_is_labelled_advisory_and_points_at_mdt_009` requires, and the loss surfaced only as a release-gate failure).
+**Status:** FIXED 2026-11-18 in `7b3364a7b` (merged into main by `5f862034b`; see KI-161); filed 2026-11-17 while releasing mdt-cockpit; severity: medium (a refresh deletes human-owned labels; here it removed the eight `ADVISORY ... MDT-013` comments that mdt-cockpit's `test_every_oci_target_is_labelled_advisory_and_points_at_mdt_009` requires, and the loss surfaced only as a release-gate failure).
 
 **Problem.** After `cmru versions resolve` in `mdt-cockpit/`, the committed `cmru.toml` had 6 comment lines instead of 15; only the `resolved` values should have changed.
 
@@ -3823,7 +3865,7 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-176 `cmru versions resolve` cannot refresh a project whose npm targets use `constraint = "*"`: it demands a hand-edited `package.json`
 
-**Status:** OPEN (filed 2026-11-17 while releasing mdt-cockpit); severity: medium (a release stalls once the record passes its 28-day limit, with a message that names `resolve` as the fix and then `resolve` itself refuses).
+**Status:** FIXED 2026-11-18 in `7b3364a7b` (merged into main by `5f862034b`) for the cmru side: `resolve`, `resolve --dry-run` and `check` report every target whose resolved version the committed manifest does not allow in one run (target, resolved version, manifest requirement, exact `package.json` edit) and exit non-zero without writing; cmru does not rewrite `package.json` to get past this refusal (once the compatibility check passes, `_run_npm` does update `overrides` and the dependency fields of `package.json` for the resolved packages). **Still open outside cmru:** the stale-record message that tells a consumer to run `cmru versions resolve` is written by the consumer (mdt-cockpit `scripts/stage_tool_artifacts.py`, around the 28-day check) and should also name the manifest edit. Filed 2026-11-17 while releasing mdt-cockpit; severity: medium (a release stalls once the record passes its 28-day limit, with a message that names `resolve` as the fix and then `resolve` itself refuses).
 
 **Problem.** mdt-cockpit declares `npm.copilot`, `npm.openclaw` and `npm.claudelink` with `constraint = "*"`, and the committed `package.json` pins exact versions. When the registry moves, `cmru versions resolve` stops at the first target with `target 'npm.X' resolves A, but <project> manifest requires 'B'`, one target per run, so three stale pins took three failed runs and hand edits of `package.json` (dependencies and overrides). The stale-record error ("run `cmru versions resolve` ... and commit the result") does not mention the manifest edit.
 

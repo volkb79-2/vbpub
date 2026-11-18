@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:19",
-  "title": "assay verdict artifact v19",
+  "$id": "urn:assay:schema:verdict:20",
+  "title": "assay verdict artifact v20",
   "description": "One verdict, one lane, one commit. Computed R0-R4 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model. LAYER OWNERSHIP (A-182): this document owns every LOCALLY expressible rule -- enums, ranges, requiredness, string grammar, and reason/payload conditionals within a single object. It deliberately does NOT own cross-object arithmetic (candidate_count against judgment.r2.max_mutants), cross-object equality (canary.attempts[i].target against judgment.r3.targets[i]), or temporal ordering (ended >= started): Draft 2020-12 has no $data, so claiming those here would be a hollow contract. They live in the Python model AND, independently worded, in assay.verify's raw-document checks. It also does not own the BYTE bound on claim.detail -- maxLength counts characters, so the document's bound is satisfied by every legal artifact and the real one is enforced in the model and the verifier (A-428).",
   "type": "object",
   "required": [
@@ -18,9 +18,9 @@
   ],
   "properties": {
     "schema_version": {
-      "description": "The verdict schema version, independent of assay.toml lane schema version. Exactly one schema is active in a released build: producers emit v19 and the verifier refuses every other version.",
+      "description": "The verdict schema version, independent of assay.toml lane schema version. Exactly one schema is active in a released build: producers emit v20 and the verifier refuses every other version.",
       "type": "integer",
-      "const": 19
+      "const": 20
     },
     "assay_version": {
       "type": "string",
@@ -1326,6 +1326,46 @@
       },
       "additionalProperties": false
     },
+    "changed_diff": {
+      "description": "B245 (schema v20): the reproducible identity of the changed-lines diff assay handed to an ingested cargo-mutants run through the argv placeholder {assay.changed_diff} (git diff base_rev head_rev, relative to relative_to). The verdict keeps the PLACEHOLDER in argv_declared/argv_effective, never the per-run temporary path, so identical runs stay byte-identical; these five facts are what is reproducible. base_rev and head_rev are full commit OIDs; relative_to is the cargo workspace root relative to the repository top ('.' at the top, otherwise a normalized forward-slash path); sha256 and bytes describe the exact diff bytes written. DECLARED-BY-ARTIFACT FOR sha256 AND bytes: a verifier holding only this document cannot recompute the diff, so it checks the shapes and that base_rev equals judgment.resolved.base and head_rev equals the verdict's commit, never the digest itself -- recomputing it needs the repository.",
+      "type": "object",
+      "required": [
+        "base_rev",
+        "head_rev",
+        "relative_to",
+        "sha256",
+        "bytes"
+      ],
+      "properties": {
+        "base_rev": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])"
+        },
+        "head_rev": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])"
+        },
+        "relative_to": {
+          "oneOf": [
+            {
+              "const": "."
+            },
+            {
+              "$ref": "#/$defs/wire_path"
+            }
+          ]
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
     "mutation_producer_tool": {
       "description": "B046 (schema v9): the identity of the foreign mutation tool whose report assay ingested, copied VERBATIM from that report (framework.name/framework.version and schemaVersion of mutation-testing-report-schema). DECLARED-BY-ARTIFACT, NOT VERIFIED: assay read these strings out of a file the lane's own command wrote and has no independent evidence for any of them. This is deliberately NOT helpers[] -- helpers records tools ASSAY ITSELF INVOKED and resolved on PATH (A-230a), and assay did not invoke Stryker; putting an ingested tool there would launder a declared fact into a verified one.",
       "type": "object",
@@ -1351,7 +1391,7 @@
       "additionalProperties": false
     },
     "mutation_operator": {
-      "description": "A language-qualified operator name, OR (schema v9, B046) an INGESTED operator in a namespace assay owns. The language-qualified prefix MUST equal judgment.resolved.language; that equality is cross-object and therefore lives in the model and the raw verifier, not here. Each language's vocabulary is closed, so a Python lane cannot declare a SQL operator. Adding a language, or an operator to a language, is an additive oneOf change and needs no further version bump. REMOVING one is not additive, which is why python:uuid-equality-swap and python:enum-comparison-swap -- withdrawn in behaviour at 2.4.2 (B034/A-326) but still spellable under v7 -- lose their spellings HERE, at the v7->v8 cut, and not before (A-331). The 'stryker:' branch is NOT a language: it is a NAMESPACE naming the foreign tool whose report assay ingested, and its member set is deliberately OPEN (a pattern, not an enum) because a foreign tool's mutator names are DATA assay records, never a catalogue assay closes. The language-equality rule above therefore does not and must not apply to it -- see assay.vocabulary.is_ingested_operator, which every prefix-equals-language check consults first.",
+      "description": "A language-qualified operator name, OR (schema v9, B046) an INGESTED operator in a namespace assay owns. The language-qualified prefix MUST equal judgment.resolved.language; that equality is cross-object and therefore lives in the model and the raw verifier, not here. Each language's vocabulary is closed, so a Python lane cannot declare a SQL operator. Adding a language, or an operator to a language, is an additive oneOf change and needs no further version bump. REMOVING one is not additive, which is why python:uuid-equality-swap and python:enum-comparison-swap -- withdrawn in behaviour at 2.4.2 (B034/A-326) but still spellable under v7 -- lose their spellings HERE, at the v7->v8 cut, and not before (A-331). The 'stryker:' and 'cargo-mutants:' branches are NOT languages: each is a NAMESPACE naming the foreign tool whose report assay ingested, and its member set is deliberately OPEN (a pattern, not an enum) because a foreign tool's mutator names are DATA assay records, never a catalogue assay closes. The language-equality rule above therefore does not and must not apply to it -- see assay.vocabulary.is_ingested_operator, which every prefix-equals-language check consults first.",
       "oneOf": [
         {
           "enum": [
@@ -1380,9 +1420,9 @@
           ]
         },
         {
-          "description": "B046 (schema v9): an operator name copied verbatim from an ingested mutation-testing-report-schema report, namespaced under the tool assay read it from. Open by construction; the three enum branches above stay closed. The pattern is the SAME SOURCE STRING assay.vocabulary.INGESTED_OPERATOR_RE compiles, character for character, and test_verdict_schema_is_packaged asserts that equality -- which is why the single-alternative group is spelled out rather than simplified away: adding a second ingested namespace must be one edit that fails loudly here until it is made in both places, not a simplification that quietly lets the two drift.",
+          "description": "B046 (schema v9): an operator name copied verbatim from an ingested mutation-testing-report-schema report, namespaced under the tool assay read it from. Open by construction; the three enum branches above stay closed. The pattern is the SAME SOURCE STRING assay.vocabulary.INGESTED_OPERATOR_RE compiles, character for character, and test_verdict_schema_is_packaged asserts that equality -- which is why the alternation group is spelled out with the hyphen unescaped (outside a character class it is a literal): adding another ingested namespace must be one edit that fails loudly here until it is made in both places, not a simplification that quietly lets the two drift. B245/schema v20 added the cargo-mutants namespace: its operator genres (FnValue, BinaryOperator, UnaryOperator, MatchArm, MatchArmGuard, StructField) are data the tool's own report carries, so the suffix stays the same OPEN [A-Za-z0-9]+ pattern as for stryker.",
           "type": "string",
-          "pattern": "^(?:stryker):[A-Za-z0-9]+$"
+          "pattern": "^(?:stryker|cargo-mutants):[A-Za-z0-9]+(?![\\s\\S])"
         }
       ]
     },
@@ -2400,6 +2440,14 @@
           "description": "B046: required when producer = 'ingested', forbidden when it is 'native' (assay's own identity is judge_provenance's, not a foreign tool's).",
           "$ref": "#/$defs/mutation_producer_tool"
         },
+        "report_absent": {
+          "description": "B245 (schema v20): true means the ingested tool produced NO report at all because it ran zero mutants (cargo-mutants writes no mutants.out for an empty --in-diff). Present only when true -- omitted, never false. Legal ONLY on an ingested judgment whose R2 claim is INCONCLUSIVE/NO_MUTANTS with mutation.total == 0 and mutation.candidate_count == 0, and then producer_tool is cargo-mutants with report_schema_version 'outcomes.json' and version the literal 'unobserved' (assay read no report to copy a version from); conversely a producer_tool.version of 'unobserved' is legal only with report_absent true. The cross-object conditions (claim terminal, mutation counts) live in the model and the raw verifier; this schema owns the report_absent / producer_tool.version pairing and forbids the key under producer = 'native'.",
+          "const": true
+        },
+        "changed_diff": {
+          "description": "B245 (schema v20): the changed-lines diff handed to an ingested cargo-mutants run. Required exactly when judgment.r2 exists AND argv_declared contains the whole token {assay.changed_diff} AND the ingested producer is cargo-mutants (producer_tool.name) AND judgment.r2.mode is 'changed_lines'; forbidden otherwise (so forbidden under mode 'whole_target', which this schema also states directly), and forbidden under producer = 'native'. A verdict that ends before an R2 claim exists carries the placeholder in argv_declared and no judgment.r2, and is valid without this field. The argv, producer and judgment cross-object requirement is owned by the model and the raw verifier. A document-only verifier cannot recompute sha256 (it needs the repository); see the changed_diff definition.",
+          "$ref": "#/$defs/changed_diff"
+        },
         "fail_under": {
           "description": "B050/A-427 (schema v10): the mutation-score floor this judgment applied. REQUIRED under producer = 'ingested' and FORBIDDEN under 'native'. Spelled byte-identically to judgment_r1.fail_under -- the same quantity at a different tier, and two spellings of one policy number is how they drift. The fork is not ergonomics: a native R2 has no floor at all (judge_mutation's survived branch fails on any survivor whatsoever), so a native document carrying one would record a policy that nothing applied. Until this field existed the loader FORCED the floor to 100.0 so the verifier could assume it; the assumption is now READ from the document, which is what makes the re-derivation total rather than partial.",
           "type": "number",
@@ -2848,6 +2896,79 @@
       "additionalProperties": false,
       "allOf": [
         {
+          "description": "B245 (schema v20): report_absent true is legal only beside producer_tool.version 'unobserved' (assay read no report, so there is no version to copy) and only for the cargo-mutants producer with the assay-owned report_schema_version 'outcomes.json' (design Q1).",
+          "if": {
+            "required": [
+              "report_absent"
+            ]
+          },
+          "then": {
+            "required": [
+              "producer_tool"
+            ],
+            "properties": {
+              "producer_tool": {
+                "properties": {
+                  "name": {
+                    "const": "cargo-mutants"
+                  },
+                  "version": {
+                    "const": "unobserved"
+                  },
+                  "report_schema_version": {
+                    "const": "outcomes.json"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "B245 (schema v20): changed_diff is a changed_lines-mode field. Under mode 'whole_target' assay hands the tool no diff, so the key is forbidden. (The remaining half -- required iff argv_declared holds {assay.changed_diff} and the producer is cargo-mutants -- is cross-object and lives in the model and the raw verifier.)",
+          "if": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "whole_target"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "changed_diff"
+              ]
+            }
+          }
+        },
+        {
+          "description": "B245 (schema v20): the converse -- the literal producer_tool.version 'unobserved' is legal only with report_absent true.",
+          "if": {
+            "required": [
+              "producer_tool"
+            ],
+            "properties": {
+              "producer_tool": {
+                "required": [
+                  "version"
+                ],
+                "properties": {
+                  "version": {
+                    "const": "unobserved"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "report_absent"
+            ]
+          }
+        },
+        {
           "description": "A-227/A-236b: the pairing its own description already claimed. kill_attribution is DERIVED from this field's presence, so the two can never disagree in a real producer; this closes the gap for a foreign document.",
           "if": {
             "required": [
@@ -2990,6 +3111,20 @@
                 "not": {
                   "required": [
                     "fail_under"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "report_absent"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "changed_diff"
                   ]
                 }
               }

@@ -1,5 +1,7 @@
-# vm-lab gate: pure unit tests. No Docker, no QEMU, no network; the tests run the
-# container shell script only against fake qemu programs.
+# vm-lab gate: pure unit tests, a coverage floor, the assay mutation lane and a wheel-install lane. No Docker, no QEMU,
+# no network beyond the package index for the pinned build tools; the tests run the container shell script only against
+# fake qemu programs. cmru.toml runs `r0-r1`; `r2` consumes the judged lane declared in assay.toml; `wheel` proves the
+# release artifacts (VML-BL-02).
 schema_version = 1
 
 [environments.tester-unified]
@@ -7,12 +9,78 @@ mode = "ephemeral"
 image = "tester-unified:local"
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 
-[lanes.unit]
+# One test builds a wheel from a copy of the project (`pip wheel --no-build-isolation`), so the venv gets the pinned build
+# tools first (the same pins as pyproject.toml [build-system]; the lane needs the package index for them).
+[lanes.r0-r1]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/vm-lab && \"$TESTER_VENV/bin/python\" -m pytest tests/ -q"]
-budget = "3m"
-description = "General VM launcher unit tests (profiles, sizing, forwards, labels, shared admission, console reset)"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/vm-lab && /opt/tester-venv/bin/python3 -m pip install setuptools==82.0.1 wheel==0.47.0 setuptools_scm==10.0.5 && PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q --cov=vm_lab --cov-branch --cov-fail-under=72 --cov-report=term-missing --cov-report=json:coverage.json",
+]
+clean_tree = false
+budget = "20m"
+artifacts = ["coverage.json"]
+description = "General VM launcher unit tests (profiles, sizing, forwards, labels, shared admission, console reset, image context package data) with the 72 % coverage floor"
 
-[lanes.unit.resources]
-memory = "256m"
+[lanes.r0-r1.resources]
+memory = "1g"
+
+[lanes.r2]
+kind = "assay"
+assay_lane = "vm-lab"
+resource_observer = "cgprofile"
+environment = "tester-unified"
+jobs = "auto"
+clean_tree = false
+budget = "240m"
+artifacts = [".assay/verdict-vm-lab.json",
+  ".assay/progress-vm-lab.jsonl"]
+
+[lanes.r2.resources]
+pids = 8192
+memory = "1536m"
+io_sync = "durable"
+
+# Wheel lane (VML-BL-02): build the vmscreen and vm-lab wheels from copies of the sources (the worktree stays clean), install
+# both into a throwaway venv with no index, then run both console scripts and check that the Dockerfile is installed next to
+# the module. cli_extended (vmscreen's dependency) comes from the worktree source. No Docker, no QEMU.
+[lanes.wheel]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  '''
+  set -eu
+  work=$(mktemp -d) && trap 'rm -rf "$work"' EXIT
+  /opt/tester-venv/bin/python3 -m pip install setuptools==82.0.1 wheel==0.47.0 setuptools_scm==10.0.5
+  export PYTHONDONTWRITEBYTECODE=1 SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VMSCREEN=0.0.0 SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VM_LAB=0.0.0
+  cp -a {worktree}/libraries/vmscreen "$work/vmscreen" && cp -a {worktree}/vm-lab "$work/vm-lab"
+  /opt/tester-venv/bin/python3 -m pip wheel --no-deps --no-build-isolation --no-index -w "$work/wheels" "$work/vmscreen"
+  /opt/tester-venv/bin/python3 -m pip wheel --no-deps --no-build-isolation --no-index -w "$work/wheels" "$work/vm-lab"
+  /opt/tester-venv/bin/python3 -c "import sys, zipfile; names = zipfile.ZipFile(sys.argv[1]).namelist(); assert 'vm_lab/qemu-image/Dockerfile' in names, names" "$work"/wheels/vm_lab-*.whl
+  /opt/tester-venv/bin/python3 -m venv "$work/venv"
+  "$work/venv/bin/pip" install --no-index --no-deps "$work"/wheels/vmscreen-*.whl "$work"/wheels/vm_lab-*.whl
+  cd "$work"
+  export PYTHONPATH={worktree}/libraries/cli-extended/src
+  "$work/venv/bin/vmscreen" --help > /dev/null
+  "$work/venv/bin/vm-lab" --help > /dev/null
+  "$work/venv/bin/python" -c "import pathlib, vm_lab.core as core; d = core.QEMU_IMAGE_CONTEXT; assert (d / 'Dockerfile').is_file() and 'site-packages' in str(d), d; print('image context', d)"
+  ''',
+]
+clean_tree = false
+budget = "10m"
+description = "Build the vmscreen and vm-lab wheels, install both into a throwaway venv, run both --help and find the packaged Dockerfile"
+
+[lanes.wheel.resources]
+memory = "1g"
+
+[lanes.gate]
+kind = "command"
+environment = "bare-host"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/vm-lab && run-gate --worktree {worktree} r0-r1 && run-gate --worktree {worktree} wheel && run-gate --worktree {worktree} r2",
+]
+clean_tree = false
+budget = "270m"

@@ -23,9 +23,12 @@ linking against assay itself.
   the standard vbpub `tester-unified` image supplies Go, while custom judging
   images must provide it. See the [Go lane consumer guide](docs/CONSUMERS.md#go-lanes-what-exists-today-and-what-a-go-lane-will-require)
   and [DESIGN-GUIDE §10](docs/DESIGN-GUIDE.md#10-fixture-projects-and-the-go-toolchain-constraint).
-  Rust is supported at **R1 only** — changed-line LCOV judgment for `.rs`
+  Rust is supported at **R1 natively; R2 only by ingestion** — changed-line LCOV judgment for `.rs`
   files; the lane must supply a real Rust toolchain. Stable Rust branch totals
-  are reported as unavailable, and R2/R3 remain unregistered. Hostobs keeps
+  are reported as unavailable, and R3 remains unregistered. Rust R2 exists only
+  by ingesting cargo-mutants' `outcomes.json` (format `cargo-mutants-outcomes`,
+  see [Rust R2 lanes](docs/CONSUMERS.md#rust-r2-lanes-cargo-mutants)); no
+  consumer has adopted it yet. Hostobs keeps
   separate 90% line / 85% region crate floors, and has also adopted the
   `assay-r1` consumer lane (33 whole-target `src` files at a 95.0% line floor,
   declared alongside its own `selftest`) as a `kind = "command"` lane that runs
@@ -166,7 +169,7 @@ remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
 Machine consumers can validate manifests and receipts against the packaged
 `schemas/analysis-archive.schema.json`, `schemas/analysis-receipt.schema.json`,
 and `schemas/analysis-report.schema.json`.
-Receipt verdicts are checked against the current v19 verdict schema; a receipt
+Receipt verdicts are checked against the current v20 verdict schema; a receipt
 with an `--allow-dirty` override is refused by default.
 
 ## Why use it
@@ -283,12 +286,15 @@ assay exists to close that gap mechanically, not by policy:
   `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
   kill witnesses against the current sequential pytest suite. Any uncertainty
   runs the candidate's full suite; a nonempty `PYTEST_ADDOPTS` disables witness
-  replay because it can override configured addopts. A v12 through v18 verdict
-  is a cold start under v19, and `assay verify` rejects old versions. Assay
-  12.0.0 carries the v18 hard cut (11.0.0 carried v17). See the
+  replay because it can override configured addopts. A v12 through v15 verdict
+  is a cold start under v20, a v16 through v19 verdict is refused as
+  unsupported, and `assay verify` rejects all old versions. The v20
+  hard cut is a MAJOR release (B245); Assay 12.0.0 carried the v18 hard cut
+  (11.0.0 carried v17). See the
   [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
   and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106),
-  plus the [v18-to-v19 migration notes](docs/CONSUMERS.md#migration-notes-v18-to-v19).
+  plus the [v19-to-v20](docs/CONSUMERS.md#migration-notes-v19-to-v20) and
+  [v18-to-v19 migration notes](docs/CONSUMERS.md#migration-notes-v18-to-v19).
 - **Refusals name the usable cause and keep unrelated failures distinct.** A
   Git dubious-ownership refusal explains why `safe.directory` cannot be set in
   assay's replacement environment and points to the ownership fix. Unknown or
@@ -420,14 +426,15 @@ assay exists to close that gap mechanically, not by policy:
   refused with `--candidates-file`. The run progress
   header records `jobs` and `attribution` (`serial` or
   `overlap-conservative`), and each candidate event records `worker_index`.
-  Verdict schema v19 records the campaign's maximum worker count as
+  Verdict schema v20 records the campaign's maximum worker count as
   `judgment.r2.jobs` (and its `serial` or `overlap-conservative`
   attribution), with `judgment.r2.worker_counts` giving the candidates per
   worker count across resumed and executed records (B203). Each candidate also
   carries its cgprofile resource profile; see
   the [parallel-window rationale](docs/DESIGN-GUIDE.md#native-r2-parallel-candidate-windows)
   and [consumer setup](docs/CONSUMERS.md#native-r2-parallel-candidate-windows-pr1b),
-  plus the [v18-to-v19 migration notes](docs/CONSUMERS.md#migration-notes-v18-to-v19).
+  plus the [v19-to-v20](docs/CONSUMERS.md#migration-notes-v19-to-v20) and
+  [v18-to-v19 migration notes](docs/CONSUMERS.md#migration-notes-v18-to-v19).
   After R0/R1, Assay checks the complete hierarchy before any native R2
   candidate starts. If its private cgroup view hides ancestors, it may use
   the explicitly configured observer-only socket; without a usable local view
@@ -487,7 +494,8 @@ assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
 [the consumer guide's ordered adoption step](docs/CONSUMERS.md#adopting-a-v2-capable-release)
 for why the order matters and what breaks if you split it across two commits.
-For the v19 verdict fields and the effect on old verdicts and resume, see
+For the v20 verdict fields and the effect on old verdicts and resume, see
+the [v19-to-v20 migration notes](docs/CONSUMERS.md#migration-notes-v19-to-v20),
 the [v18-to-v19 migration notes](docs/CONSUMERS.md#migration-notes-v18-to-v19),
 the [v17-to-v18 migration notes](docs/CONSUMERS.md#migration-notes-v17-to-v18),
 the [v16-to-v17 migration notes](docs/CONSUMERS.md#migration-notes-v16-to-v17),
@@ -532,9 +540,9 @@ declared level:
 
 | Rigor | Question it answers | What it needs beyond the level below |
 |---|---|---|
-| **R0** | Did the declared command succeed? | Nothing — reads the wrapped `argv`'s exit code by default, or (B078) a **verified-complete test report** in a registered format (`vitest-json` today) when the framework's own machinery can set a misleading exit code. No language adapter is resolved for R0 at all: it is the one fully language-agnostic layer, available for any command in any language, including ones assay has no adapter for. |
+| **R0** | Did the declared command succeed? | Nothing — reads the wrapped `argv`'s exit code by default, or (B078) a **verified-complete test report** in a registered format (`vitest-json`, and `cargo-mutants-outcomes` for a Rust R2 lane) when the framework's own machinery can set a misleading exit code. No language adapter is resolved for R0 at all: it is the one fully language-agnostic layer, available for any command in any language, including ones assay has no adapter for. |
 | **R1** | Of the code judged, how much did that execution's tests actually exercise? | A coverage profile the same command produced as a side effect (an extra flag, e.g. `-coverprofile=...` or `--cov-report=json`), plus a language-specific reader. Go additionally needs a real Go toolchain on the judging machine (a statement-position oracle — see below). |
-| **R2** | If a bug were deliberately introduced into the judged code, would the suite fail? | A language-specific mutant generator (or, for JS, externally-ingested mutation evidence judged rather than produced), and re-running the suite once per candidate. |
+| **R2** | If a bug were deliberately introduced into the judged code, would the suite fail? | A language-specific mutant generator (or, for JS, externally-ingested mutation evidence judged rather than produced; for Rust, only the ingested `cargo-mutants-outcomes` report), and re-running the suite once per candidate. |
 | **R3** | Does behavior hold across an independently-mutated scratch copy (canary/parity)? | Two independently-owned scratch copies of the repository; the consumer's own worktree is never touched. |
 
 R1 has two independent axes, and support differs per axis:
@@ -577,7 +585,7 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 | **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — an external producer such as Stryker owns candidate execution/retry; Assay scores the completed report, with no Assay candidate-state resume/rejudge or per-candidate resource-event checks | ✅ **registered and locally exercised** — R3 runs import-break and uncovered-line canaries (B087); import-break requires a matching execution receipt, so lanes that lint or type-check before tests should use uncovered-line; a pre-test static failure is inconclusive. See the [receipt rationale](docs/DESIGN-GUIDE.md#r3-import-break-receipt-attribution) and [host-load verdict rules](docs/DESIGN-GUIDE.md#host-load-and-verdicts). Both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
 | **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered, native; uses the same Assay candidate state, resume/rejudge, one serial tail retry for current-run `crashed`, per-candidate `budget_exceeded` and `hung` results, progress and resource-event path as Python | ❌ not registered |
-| **Rust** | ✅ | ✅ **registered at R1** — changed-line LCOV judgment; the lane must run Cargo in `tester-unified-rust` or an equivalent pinned environment; if it is declared `kind = "assay"`, Run-Gate source-installs assay there and the environment must ALSO carry `pip`, which that image ships none of (B549). Declaring it `kind = "command"` and running the judge from the worktree's own `assay/src` needs no install and no `pip`, which is what hostobs does | ❌ **unavailable on stable Rust** — marker-only `BRF:0` / `BRH:0` records normalize to `branches = None`; `require_branch = true` refuses `NO_MEASUREMENT/BRANCH_UNAVAILABLE` | ❌ **not implemented** — planned ingestion of `cargo-mutants` `outcomes.json`; Rust R2 is not adopted and remains a known issue, not a per-release waiver | ❌ **not registered** — the design target has one test-break/import-break canary per lane; uncovered-line remains a separate T3 probe |
+| **Rust** | ✅ | ✅ **registered at R1** — changed-line LCOV judgment; the lane must run Cargo in `tester-unified-rust` or an equivalent pinned environment; if it is declared `kind = "assay"`, Run-Gate source-installs assay there and the environment must ALSO carry `pip`, which that image ships none of (B549). Declaring it `kind = "command"` and running the judge from the worktree's own `assay/src` needs no install and no `pip`, which is what hostobs does | ❌ **unavailable on stable Rust** — marker-only `BRF:0` / `BRH:0` records normalize to `branches = None`; `require_branch = true` refuses `NO_MEASUREMENT/BRANCH_UNAVAILABLE` | ✅ **by ingestion only** — format `cargo-mutants-outcomes` (`outcomes.json` plus `diff/*.diff`, cargo-mutants 27.x, run with `--test-tool nextest`; changed-lines through the `{assay.changed_diff}` argv placeholder); no assay-native mutator. Assay's side is implemented (B245 U0-U5c), but no consumer lane is adopted and the real-toolchain qualification is open, so Rust R2 remains a known issue, not a per-release waiver; see [CONSUMERS](docs/CONSUMERS.md#rust-r2-lanes-cargo-mutants) | ❌ **not registered** — the design target has one test-break/import-break canary per lane; uncovered-line remains a separate T3 probe |
 
 #### Cross-cutting capabilities beyond language adapters
 
@@ -1010,8 +1018,8 @@ The two adapter transforms are judged by the existing isolated canary runner;
   were qualified under Assay 9.0.0/schema v15; their retained verdicts and
   verifier transcripts document that release. Those canaries are distinct from
   the integrated Assay release gate. B087 did not add verdict fields; the
-  current verdict schema is v19, with the migration described in the
-  [v18-to-v19 consumer notes](docs/CONSUMERS.md#migration-notes-v18-to-v19).
+  current verdict schema is v20, with the migration described in the
+  [v19-to-v20 consumer notes](docs/CONSUMERS.md#migration-notes-v19-to-v20).
 
 **Branch coverage depends on the declared producer.** istanbul's `branchMap`
 means different things under different producers (real per-arm arcs under the

@@ -50,7 +50,7 @@ artifacts = ["lcov.info", "cov-summary.json"]
 # ran (`No module named pip`, verdict ERROR 2), so its declaration was the defect
 # and not the image.
 #
-# The judged lane itself (rigor, judge, argv, the 95.0 line floor over the 43
+# The judged lane itself (rigor, judge, argv, the 95.0 line floor over the 44
 # declared `src/*.rs` files, the floor's derivation) still lives in
 # `assay.toml [lanes.assay-r1]` -- this lane only says how to REACH the judge in
 # this image. Parity with the estate's assay lanes is kept where it is free:

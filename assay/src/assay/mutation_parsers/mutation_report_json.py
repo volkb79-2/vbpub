@@ -45,11 +45,16 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from ..errors import AssayError, Outcome, ReasonCode
 from ..guards import is_nonempty_str, is_strict_int
-from ..vocabulary import INGESTED_OPERATOR_NAMESPACES, MAX_INGESTED_MUTANTS
+from ..vocabulary import (
+    DISCARD_REASONS,
+    MAX_INGESTED_MUTANTS,
+    STRYKER_OPERATOR_NAMESPACE,
+)
 from .model import (
     INGESTED_MUTANT_STATUSES,
     IngestedMutant,
@@ -57,7 +62,46 @@ from .model import (
     MutationProducerIdentity,
 )
 
-__all__ = ["MAX_INGESTED_MUTANTS", "SUPPORTED_REPORT_SCHEMA_MAJORS", "parse", "sniff"]
+__all__ = [
+    "DISCARDED_STATUSES",
+    "MAX_INGESTED_MUTANTS",
+    "STATUS_BUCKETS",
+    "SUPPORTED_REPORT_SCHEMA_MAJORS",
+    "parse",
+    "sniff",
+]
+
+#: (B046; moved here from `assay.mutation` by B245 U3a, UNCHANGED) The upstream
+#: `MutantStatus` -> assay-bucket map, each direction chosen for the
+#: VISIBLE-FAILURE side:
+#:
+#: * `Killed` -> `killed`, `Survived` -> `survived`: the identity cases.
+#: * `NoCoverage` -> `survived`, AND separately listed in
+#:   `judgment.r2.survived_uncovered` (the worst kind of survivor must not be
+#:   buried inside a count).
+#: * `Timeout` -> `budget_exceeded`: not `killed` -- a mutant that hung is not
+#:   one the suite caught (A-122).
+#:
+#: `CompileError`/`RuntimeError` and `Ignored` are deliberately ABSENT: neither
+#: is a bucket. See `DISCARDED_STATUSES` and A-377.
+_STATUS_BUCKETS: dict[str, str] = {
+    "Killed": "killed",
+    "Survived": "survived",
+    "NoCoverage": "survived",
+    "Timeout": "budget_exceeded",
+}
+STATUS_BUCKETS: Mapping[str, str] = MappingProxyType(_STATUS_BUCKETS)
+
+#: (B046, RESHAPED by B070 at schema v11; moved here by B245 U3a, UNCHANGED)
+#: Statuses whose mutants are LISTED on `judgment.r2.discarded` -- by identity
+#: -- and excluded from the `pct` denominator, mapped to their wire reason.
+#: `CompileError` (never built) and `RuntimeError` (crashed the runner) are
+#: distinct facts (filed as B079).
+_DISCARDED_STATUSES: dict[str, str] = {
+    "CompileError": DISCARD_REASONS[0],
+    "RuntimeError": DISCARD_REASONS[1],
+}
+DISCARDED_STATUSES: Mapping[str, str] = MappingProxyType(_DISCARDED_STATUSES)
 
 #: The `mutation-testing-report-schema` majors this build reads. Pinned to the
 #: major the committed real fixture carries (B046's own non-repudiation item
@@ -93,7 +137,9 @@ SUPPORTED_REPORT_SCHEMA_MAJORS: frozenset[str] = frozenset({"1"})
 #: The namespace prefix ingested operators are qualified with. Derived from
 #: `assay.vocabulary` rather than spelled here, so this module, the model, the
 #: schema branch and the config loader cannot drift (A-362).
-_NAMESPACE = INGESTED_OPERATOR_NAMESPACES[0]
+#: Selected BY NAME: the namespace tuple is shared with other ingested
+#: producers (B245 added `cargo-mutants`), so an index would be position-coupled.
+_NAMESPACE = STRYKER_OPERATOR_NAMESPACE
 
 #: Stryker's `mutatorName` values are CamelCase identifiers
 #: (`BlockStatement`, `EqualityOperator`, ...). The pattern is

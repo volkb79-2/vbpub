@@ -278,8 +278,9 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     )
     survivor_command = " ".join(gate["lanes"]["survivor-regressions"]["argv"])
     assert "--editable ../assay" in survivor_command
-    provisional = gate["lanes"]["gate-provisional"]
-    assert provisional["argv"][-2:] == ["--postpone-mutation", "KI-79"]
+    assert "gate-provisional" not in gate["lanes"]  # renamed, no alias (KI-79/KI-159)
+    release_lane = gate["lanes"]["release-gate"]
+    assert release_lane["argv"][-2:] == ["--postpone-mutation", "KI-79"]
     release_preconditions = " ".join(gate["lanes"]["release-preconditions"]["argv"])
     assert "tests/test_w3_prep_changelog_preflight.py" in release_preconditions
     release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")
@@ -287,7 +288,9 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     cmru = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
     release_steps = cmru["steps"]["run-tests"]["commands"]
     assert len(release_steps) == 1
-    assert release_steps[0]["argv"] == ["run-gate", "gate-provisional"]
+    assert release_steps[0]["argv"] == ["run-gate", "release-gate"]
+    assert release_steps[0]["argv"][1] in gate["lanes"]  # the step names a lane that exists
+    assert release_steps[0]["label"] == "cmru: release gate (R0/R1 + R3; R2 owed asynchronously)"
     backlog = (ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
     assert "KI-79" in backlog
     for name in (

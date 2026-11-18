@@ -97,6 +97,11 @@ from .r2_command import (
     transform_argv,
 )
 from .vocabulary import (
+    ARGV_PLACEHOLDER_CHANGED_DIFF,
+    CARGO_MUTANTS_OPERATOR_NAMESPACE,
+    CARGO_MUTANTS_REPORT_SCHEMA,
+    COMMIT_OID_RE,
+    DISCARD_REASONS,
     INGESTED_OPERATOR_RE,
     MAX_INGESTED_MUTANTS,
     MUTATION_OPERATORS,
@@ -141,6 +146,7 @@ __all__ = [
     "CanaryResult",
     "CampaignBinding",
     "CandidateOutcomeError",
+    "ChangedDiff",
     "Claim",
     "Coverage",
     "Evidence",
@@ -400,7 +406,17 @@ __all__ = [
 #: cold/declared attempts. Liveness policy discloses its effective CPU and
 #: idle windows. Campaign deadlines bind resumed work to one commit and plan.
 #: Versions 12-15 are bounded `--reuse-from` cold starts; v11 and older remain
-#: refused. Producers emit v19, and `assay verify` refuses every other version.
+#: refused. Producers emit v20, and `assay verify` refuses every other version.
+#:
+#: **Bumped 19 -> 20 (B245; hard cut, major assay release).** The ingested
+#: operator namespace gains `cargo-mutants` (the schema's `mutation_operator`
+#: pattern changes), and an ingested `judgment.r2` gains the optional
+#: `report_absent` (the tool produced no report because it ran zero mutants;
+#: legal only with `INCONCLUSIVE/NO_MUTANTS`, zero totals and the literal
+#: producer version `unobserved`) and `changed_diff` (the identity of the
+#: changed-lines diff handed to cargo-mutants through the argv placeholder
+#: `{assay.changed_diff}`). The verifier refuses v19 and older: no
+#: compatibility shim (A-170).
 #:
 #: **Bumped 17 -> 18 (B203/B205/B206/B207/B208, assay 12.0.0; hard cut).**
 #: `judgment.r2` gains `worker_counts` (candidates per worker count; `jobs`
@@ -424,7 +440,12 @@ __all__ = [
 #: native worker count and attribution, receipt cause for R3, stable process
 #: tree identities and signal evidence, and the suite result beneath a
 #: cleanup crash. Host-varying cleanup duration is removed.
-VERDICT_SCHEMA_VERSION = 19
+VERDICT_SCHEMA_VERSION = 20
+
+#: (B245/schema v20) The literal `judgment.r2.producer_tool.version` an ingested
+#: judgment records when the tool wrote no report (`report_absent`): assay read
+#: no report, so there is no version to copy.
+PRODUCER_VERSION_UNOBSERVED = "unobserved"
 
 #: B251/schema v19 bounds candidate-local outcome-construction diagnostics.
 CANDIDATE_OUTCOME_ERROR_MAX_BYTES = 2048
@@ -702,10 +723,9 @@ KILL_ATTRIBUTIONS: tuple[str, ...] = ("declared", "unattributed")
 #: (B202/schema v17) How concurrent native R2 attempts are attributed.
 R2_ATTRIBUTIONS: tuple[str, ...] = ("serial", "overlap-conservative")
 
-#: (B079/schema v12) Why an ingested mutant was not attempted. These are
-#: assay's own wire vocabulary, not a foreign tool's open status namespace;
-#: the parser maps the two accepted upstream statuses to these stable names.
-DISCARD_REASONS: tuple[str, ...] = ("compile_error", "runtime_error")
+#: (B079/schema v12) `DISCARD_REASONS` (imported from `assay.vocabulary`, where
+#: B245 U3a moved it so the parsers can use it without an import cycle) is why
+#: an ingested mutant was not attempted; it stays re-exported from here.
 
 #: (B018/A-327) the one digest algorithm a judge identity may name. Recorded in
 #: the artifact rather than assumed by the consumer: a digest whose algorithm is
@@ -1026,12 +1046,12 @@ MAX_SHARD_COUNT = 10_000
 #: `hung` (B091/RW-33) a sixth -- a `LivenessRunner`-classified idle stall,
 #: scored like `budget_exceeded` (excluded from `killed/(killed+survived)`)
 #: but reported as its own bucket, NATIVE-ONLY (an ingested report never
-#: produces one; `INGESTED_STATUS_BUCKETS` in `mutation.py` has no entry that
-#: maps to it). Named once rather than transcribed at each of the sites that
-#: iterate them: A-228's own root cause was a new bucket reaching some of the
-#: layers that constrain the others and not the rest, and a literal list
-#: repeated per call site is exactly how that happens again. **Additive under
-#: schema v11 (no v12 cut)**: a document produced before `hung` existed omits
+#: produces one; no parser's `STATUS_BUCKETS` in `assay.mutation_parsers`
+#: has an entry that maps to it). Named once rather than transcribed at each
+#: of the sites that iterate them: A-228's own root cause was a new bucket
+#: reaching some of the layers that constrain the others and not the rest, and
+#: a literal list repeated per call site is exactly how that happens again.
+#: **Additive under schema v11 (no v12 cut)**: a document produced before `hung` existed omits
 #: the key entirely -- `verify.py`'s `_mutation_of`/`_reconstruct_mutation`
 #: both default a missing `hung` to empty, matching how `budget_per_
 #: candidate_derived_s` (A1) was read back additively.
@@ -3314,6 +3334,72 @@ class SourcePosition:
 
 
 @record
+class ChangedDiff:
+    """(B245, schema v20) The reproducible identity of the changed-lines diff
+    assay handed to an ingested cargo-mutants run through the argv placeholder
+    ``{assay.changed_diff}``.
+
+    The verdict records the PLACEHOLDER in ``argv_declared`` and never the
+    per-run temporary path, so these five facts are what a reader can
+    reproduce: ``git diff base_rev head_rev`` relative to ``relative_to``.
+    **``sha256`` and ``bytes`` are declared by the artifact**: a verifier
+    holding only the verdict document cannot recompute them (that needs the
+    repository), so it checks their shapes and the two revisions against the
+    judgment's resolved base and the verdict's commit, never the digest.
+    """
+
+    base_rev: str
+    head_rev: str
+    #: the cargo workspace root relative to the repository top (not the lane
+    #: cwd): ``"."`` at the top, otherwise a normalized forward-slash path.
+    relative_to: str
+    sha256: str
+    bytes: int
+
+    def __post_init__(self) -> None:
+        for name in ("base_rev", "head_rev"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not COMMIT_OID_RE.fullmatch(value):
+                raise ValueError(
+                    f"judgment.r2.changed_diff.{name} must be a full lowercase "
+                    f"hex commit OID, got {value!r}"
+                )
+        if self.relative_to != ".":
+            _check_wire_path(self.relative_to, "judgment.r2.changed_diff.relative_to")
+        if not is_sha256_hex(self.sha256):
+            raise ValueError(
+                f"judgment.r2.changed_diff.sha256 must be 64 lowercase hex "
+                f"characters, got {self.sha256!r}"
+            )
+        if not is_strict_int(self.bytes) or self.bytes < 0:
+            raise ValueError(
+                f"judgment.r2.changed_diff.bytes must be a non-negative "
+                f"integer, got {self.bytes!r}"
+            )
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "ChangedDiff":
+        if set(value) != {"base_rev", "head_rev", "relative_to", "sha256", "bytes"}:
+            raise ValueError("judgment.r2.changed_diff has unknown or missing fields")
+        return cls(
+            base_rev=value["base_rev"],
+            head_rev=value["head_rev"],
+            relative_to=value["relative_to"],
+            sha256=value["sha256"],
+            bytes=value["bytes"],
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "base_rev": self.base_rev,
+            "head_rev": self.head_rev,
+            "relative_to": self.relative_to,
+            "sha256": self.sha256,
+            "bytes": self.bytes,
+        }
+
+
+@record
 class MutationProducerTool:
     """(B046, schema v9) The identity of the foreign mutation tool whose
     report assay ingested, copied VERBATIM from that report.
@@ -3384,6 +3470,19 @@ class JudgmentR2:
     producer: str = "native"
     #: (B046) `None` under `"native"`; required under `"ingested"`.
     producer_tool: MutationProducerTool | None = None
+    #: (B245/schema v20) True means the ingested tool produced no report at all
+    #: because it ran zero mutants. **Ingested only, and omitted from the wire
+    #: when false.** The conditions that make `True` honest span the claim
+    #: (`INCONCLUSIVE/NO_MUTANTS`, `total == 0`, `candidate_count == 0`) and
+    #: are checked one level up in :meth:`Verdict._check_v20_ingested_r2`; the
+    #: pairing with `producer_tool.version == "unobserved"` is local to this
+    #: record and checked here, in both directions.
+    report_absent: bool = False
+    #: (B245/schema v20) The changed-lines diff handed to an ingested
+    #: cargo-mutants run. Required iff the lane's `argv_declared` holds the
+    #: placeholder and this judgment's producer is ingested cargo-mutants,
+    #: forbidden otherwise (:meth:`Verdict._check_v20_ingested_r2`).
+    changed_diff: ChangedDiff | None = None
     #: (B046) The `NoCoverage` mutants -- ones no test even EXERCISED. They
     #: count in the `survived` bucket (a mutant nothing ran is not killed), but
     #: they are listed here as well, BY POSITION, so the worst kind of
@@ -3580,6 +3679,7 @@ class JudgmentR2:
             self._check_native_policy()
         else:
             self._check_ingested_record()
+        self._check_v20_fields()
         if self.kill_attribution not in KILL_ATTRIBUTIONS:
             raise ValueError(
                 f"judgment.r2.kill_attribution must be one of "
@@ -3742,6 +3842,44 @@ class JudgmentR2:
                 f"judgment.r2 records producer {forbidden_label!r} but is "
                 f"missing {missing}, which every {forbidden_label} R2 "
                 f"judgment must carry"
+            )
+
+    def _check_v20_fields(self) -> None:
+        """(B245, schema v20) The record-local rules of `report_absent` and
+        `changed_diff`; the claim- and argv-dependent halves are
+        :meth:`Verdict._check_v20_ingested_r2`'s."""
+        if type(self.report_absent) is not bool:
+            raise ValueError("judgment.r2.report_absent must be a bool")
+        if self.changed_diff is not None and not isinstance(
+            self.changed_diff, ChangedDiff
+        ):
+            raise ValueError("judgment.r2.changed_diff has the wrong type")
+        if self.producer == "native":
+            if self.report_absent:
+                raise ValueError(
+                    "judgment.r2.report_absent is legal only under producer "
+                    "'ingested' -- assay's own engine has no report to be absent"
+                )
+            if self.changed_diff is not None:
+                raise ValueError(
+                    "judgment.r2.changed_diff is legal only under producer "
+                    "'ingested' -- a native run receives no diff through argv"
+                )
+            return
+        assert self.producer_tool is not None  # _check_producer_fork
+        unobserved = self.producer_tool.version == PRODUCER_VERSION_UNOBSERVED
+        if self.report_absent and not unobserved:
+            raise ValueError(
+                f"judgment.r2.report_absent is true but producer_tool.version "
+                f"is {self.producer_tool.version!r}, not "
+                f"{PRODUCER_VERSION_UNOBSERVED!r} -- assay read no report, so "
+                f"it has no version to copy"
+            )
+        if unobserved and not self.report_absent:
+            raise ValueError(
+                f"judgment.r2.producer_tool.version {PRODUCER_VERSION_UNOBSERVED!r} "
+                f"is legal only with report_absent true -- a report assay "
+                f"actually read names its own version"
             )
 
     def _check_native_policy(self) -> None:
@@ -3986,6 +4124,11 @@ class JudgmentR2:
         else:
             assert self.producer_tool is not None  # _check_producer_fork
             payload["producer_tool"] = self.producer_tool.to_dict()
+            # B245/schema v20: omitted, never false (A-051).
+            if self.report_absent:
+                payload["report_absent"] = True
+            if self.changed_diff is not None:
+                payload["changed_diff"] = self.changed_diff.to_dict()
             payload["survived_uncovered"] = [
                 item.to_dict() for item in self.survived_uncovered or ()
             ]
@@ -5895,6 +6038,7 @@ class Verdict:
         if judgment_r2 is not None:
             self._check_operator_language_agrees(judgment_r2)
             self._check_cold_witness_policy(r2_claim, judgment_r2)
+            self._check_v20_ingested_r2(r2_claim, judgment_r2)
         if r2_judged and judgment_r2 is not None:
             # P21/A-180: `killed` is now in this sweep. Under v3 it was a bare
             # count, so a killed mutant produced by an operator the lane never
@@ -6078,6 +6222,95 @@ class Verdict:
                 f"a lane whose judgment.resolved.language is {language!r} -- a "
                 f"mutant carries the operator that produced it, so a foreign "
                 f"prefix says the run applied a catalogue it does not have"
+            )
+
+    def _check_v20_ingested_r2(self, claim: Claim | None, policy: JudgmentR2) -> None:
+        """(B245, schema v20) The cross-object halves of `report_absent` and
+        `changed_diff`, for an INGESTED judgment (the native half is local to
+        :class:`JudgmentR2`).
+
+        * `report_absent` is true only on a payload that attempted and listed
+          nothing -- `INCONCLUSIVE/NO_MUTANTS` with `total == 0` and
+          `candidate_count == 0` -- because the tool wrote no report at all.
+        * `changed_diff` is required exactly when this judgment exists, the
+          lane's `argv_declared` holds the whole token
+          `{assay.changed_diff}` and the ingested producer is cargo-mutants
+          (`producer_tool.name`) and the R2 scope is `changed_lines`; it is
+          forbidden otherwise (a `whole_target` lane hands the tool no diff). A verdict that
+          ends before an R2 claim exists has no `judgment.r2`, so this method
+          is never reached for it and the placeholder alone is legal.
+        * a present `changed_diff` names the judgment's resolved base and the
+          verdict's own commit.
+        """
+        if policy.producer != "ingested":
+            return
+        assert policy.producer_tool is not None  # _check_producer_fork
+        if policy.report_absent:
+            if (
+                policy.producer_tool.name != CARGO_MUTANTS_OPERATOR_NAMESPACE
+                or policy.producer_tool.report_schema_version
+                != CARGO_MUTANTS_REPORT_SCHEMA
+            ):
+                raise ValueError(
+                    f"judgment.r2.report_absent is true but producer_tool is "
+                    f"{policy.producer_tool.name!r} / "
+                    f"{policy.producer_tool.report_schema_version!r}, not "
+                    f"{CARGO_MUTANTS_OPERATOR_NAMESPACE!r} / "
+                    f"{CARGO_MUTANTS_REPORT_SCHEMA!r} -- only a cargo-mutants "
+                    f"run writes no report for an empty diff"
+                )
+            mutation = None if claim is None else claim.mutation
+            if (
+                mutation is None  # no claim at all reads as no payload
+                or claim.status is not Outcome.INCONCLUSIVE
+                or claim.reason_code is not ReasonCode.NO_MUTANTS
+            ):
+                raise ValueError(
+                    "judgment.r2.report_absent is true but the R2 claim is not "
+                    "INCONCLUSIVE/NO_MUTANTS with a mutation payload -- a tool "
+                    "that wrote no report ran zero mutants"
+                )
+            if mutation.total != 0 or mutation.candidate_count != 0:
+                raise ValueError(
+                    f"judgment.r2.report_absent is true but claim[R2].mutation "
+                    f"records total {mutation.total} and candidate_count "
+                    f"{mutation.candidate_count}; an absent report lists no "
+                    f"candidate at all"
+                )
+        expected = (
+            ARGV_PLACEHOLDER_CHANGED_DIFF in (self.argv_declared or ())
+            and policy.producer_tool.name == CARGO_MUTANTS_OPERATOR_NAMESPACE
+            and policy.mode == "changed_lines"
+        )
+        if expected and policy.changed_diff is None:
+            raise ValueError(
+                f"judgment.r2.changed_diff is required: argv_declared holds "
+                f"{ARGV_PLACEHOLDER_CHANGED_DIFF}, the ingested producer is "
+                f"{CARGO_MUTANTS_OPERATOR_NAMESPACE} and judgment.r2.mode is "
+                f"'changed_lines'"
+            )
+        if policy.changed_diff is None:
+            return
+        if not expected:
+            raise ValueError(
+                f"judgment.r2.changed_diff is forbidden unless argv_declared "
+                f"holds {ARGV_PLACEHOLDER_CHANGED_DIFF}, the ingested "
+                f"producer is {CARGO_MUTANTS_OPERATOR_NAMESPACE} and "
+                f"judgment.r2.mode is 'changed_lines'"
+            )
+        assert self.judgment is not None  # the caller holds judgment.r2
+        resolved_base = self.judgment.resolved.base
+        if resolved_base is not None and policy.changed_diff.base_rev != resolved_base:
+            raise ValueError(
+                f"judgment.r2.changed_diff.base_rev "
+                f"{policy.changed_diff.base_rev!r} differs from "
+                f"judgment.resolved.base {resolved_base!r}"
+            )
+        if policy.changed_diff.head_rev != self.commit:
+            raise ValueError(
+                f"judgment.r2.changed_diff.head_rev "
+                f"{policy.changed_diff.head_rev!r} differs from the verdict "
+                f"commit {self.commit!r}"
             )
 
     def _check_ingested_operators_only(self, policy: JudgmentR2) -> None:

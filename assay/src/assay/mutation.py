@@ -125,7 +125,7 @@ from dataclasses import replace as _dataclass_replace
 from datetime import datetime
 from functools import partial, wraps
 from pathlib import Path, PurePosixPath
-from types import MappingProxyType, SimpleNamespace
+from types import SimpleNamespace
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -150,6 +150,7 @@ from .diff import AddedLines
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from .guards import is_finite_positive, is_int_at_least, is_nonempty_str, is_strict_int
 from .isolation import SnapshotRepository, netstring
+from .mutation_parsers import MutationFormatSpec
 from .mutation_parsers.model import IngestedMutationReport
 from .r2_command import transform_argv
 from .mutation_witness import (
@@ -183,10 +184,10 @@ from .resource_limits import (
 )
 from .verdict import (
     CANDIDATE_OUTCOME_ERROR_MAX_BYTES,
-    DISCARD_REASONS,
     MAX_CANDIDATE_CEILING,
     MAX_SHARD_COUNT,
     MUTATION_BUCKETS,
+    PRODUCER_VERSION_UNOBSERVED,
     Claim,
     CandidateOutcomeError,
     MutantEvidence,
@@ -199,7 +200,11 @@ from .verdict import (
     SourcePosition,
     iso_utc,
 )
-from .vocabulary import MUTATION_OPERATORS
+from .vocabulary import (
+    CARGO_MUTANTS_OPERATOR_NAMESPACE,
+    CARGO_MUTANTS_REPORT_SCHEMA,
+    MUTATION_OPERATORS,
+)
 
 if TYPE_CHECKING:  # pragma: no cover -- annotation-only imports; importing at runtime creates cycles
     # Annotation-only: `.adapters.base` imports `MutationSite` from this
@@ -7598,59 +7603,12 @@ def _execute_mutation_jobs(
     return mutation, complete_campaign
 
 
-#: (B046) The upstream `MutantStatus` -> assay-bucket map, each direction
-#: chosen for the VISIBLE-FAILURE side. Named once, here, rather than written
-#: out at the two sites that consume it, for `MUTATION_BUCKETS`' own reason:
-#: A-228's root cause was a mapping that reached some layers and not others.
-#:
-#: * `Killed` -> `killed`, `Survived` -> `survived`: the identity cases.
-#: * `NoCoverage` -> `survived`, AND separately listed in
-#:   `judgment.r2.survived_uncovered`. A mutant no test even exercised is not
-#:   killed, so it belongs in `survived`; it is also the WORST kind of
-#:   survivor, and burying it inside a count would hide exactly the fact a
-#:   consumer most needs.
-#: * `Timeout` -> `budget_exceeded`: Stryker's per-mutant timeout IS the
-#:   per-candidate budget one name over. Not `killed` -- a mutant that hung is
-#:   not a mutant the suite caught, and Stryker's own docs describe treating
-#:   timeouts as kills, which is precisely the conflation
-#:   `MUTATION_BUCKETS`' five-way split exists to refuse (A-122: nyxloom's own
-#:   `MutationResult` collapsed crashed and budget-exceeded into "killed").
-#:
-#: `CompileError`/`RuntimeError` and `Ignored` are deliberately ABSENT from
-#: this map: neither is a bucket. See `_INGESTED_DISCARDED_STATUSES` and
-#: A-377.
-INGESTED_STATUS_BUCKETS: Mapping[str, str] = MappingProxyType(
-    {
-        "Killed": "killed",
-        "Survived": "survived",
-        "NoCoverage": "survived",
-        "Timeout": "budget_exceeded",
-    }
-)
-
-#: (B046, RESHAPED by B070 at schema v11) Statuses whose mutants are LISTED on
-#: `judgment.r2.discarded` -- by identity, one entry each -- and excluded from
-#: the `pct` denominator: invalid mutants assay's native engine never emits at
-#: all. Excluded because a mutant that could not compile tested nothing;
-#: RECORDED rather than dropped because a report that could not build most of
-#: its own mutants measured far less than its score implies, and a bare
-#: percentage cannot say so. Through v10 they were only COUNTED, which is
-#: exactly why the count could never be verified: see B070.
-#:
-#: The two members are folded into one undifferentiated list, and the sentence
-#: above says "could not build" rather than "could not compile" for that
-#: reason -- `CompileError` (a mutant that never built) and `RuntimeError` (a
-#: mutant that crashed the runner) are materially different facts and the
-#: record does not currently carry which is which. Filed as B079 (renumbered
-#: from B078 at merge time -- collided with main's own B078); deliberately
-#: out of B070's scope, which was bound to exactly one wire decision.
-_INGESTED_DISCARDED_STATUSES: frozenset[str] = frozenset(
-    {"CompileError", "RuntimeError"}
-)
-_DISCARD_REASON_BY_STATUS: Mapping[str, str] = {
-    "CompileError": DISCARD_REASONS[0],
-    "RuntimeError": DISCARD_REASONS[1],
-}
+#: (B245 U3a) The status -> bucket map and the discarded-status table are
+#: PER FORMAT now: `MutationFormatSpec.status_buckets` and
+#: `MutationFormatSpec.discarded_statuses`, passed to
+#: `ingest_mutation_report` as `spec`. Stryker's own tables moved UNCHANGED to
+#: `mutation_parsers.mutation_report_json` (`STATUS_BUCKETS`,
+#: `DISCARDED_STATUSES`), their B046/B070/A-122/A-377 rationale with them.
 
 
 @record
@@ -7680,6 +7638,70 @@ class IngestedMutationResult:
     #: not a count of them. See :attr:`assay.verdict.JudgmentR2.discarded`.
     discarded: tuple[MutantOutcome, ...]
     lines_without_candidates: tuple[SourcePosition, ...]
+    #: (B245 U5c, schema v20) ``True`` only for the synthesised zero-mutant
+    #: result (:func:`synthesize_zero_mutant_result`): the tool wrote no
+    #: report because it ran zero mutants, so ``judgment.r2.report_absent``
+    #: and the ``unobserved`` producer version are recorded.
+    report_absent: bool = False
+
+
+def _under_source_roots(
+    repo_path: str, *, repo_top: Path, source_root_paths: Sequence[Path]
+) -> bool:
+    """Whether the repo-top-relative *repo_path* lies under a declared source
+    root (a directory root by containment, a file root by equality)."""
+    absolute = Path(repo_top) / repo_path
+    return any(absolute.is_relative_to(Path(root)) for root in source_root_paths)
+
+
+def synthesize_zero_mutant_result(
+    added: AddedLines,
+    *,
+    repo_top: Path,
+    source_root_paths: Sequence[Path],
+) -> IngestedMutationResult:
+    """(B245 U5c) The R2 result of a cargo-mutants run that wrote NO report.
+
+    cargo-mutants prints "No mutants to filter" / "Diff file is empty" and
+    writes no ``mutants.out`` when ``--in-diff`` selects nothing (design 1.4,
+    D3): zero mutants ran. The payload is a ``Mutation`` with every bucket
+    empty and ``candidate_count`` 0, so ``judge_mutation`` yields
+    ``INCONCLUSIVE``/``NO_MUTANTS`` -- never a PASS (operator decision, D3).
+    ``producer_tool.version`` is the literal ``unobserved`` (Q1): assay read
+    no report, so it observed no version.
+
+    ``lines_without_candidates`` (Q3) is the diff's added lines within the
+    declared source roots, so "nothing to mutate" stays reviewable: the
+    consumer sees which changed lines the tool never produced a mutant for.
+    """
+    return IngestedMutationResult(
+        mutation=Mutation(
+            candidate_count=0,
+            total=0,
+            **{name: () for name in MUTATION_BUCKETS},
+        ),
+        producer_tool=MutationProducerTool(
+            name=CARGO_MUTANTS_OPERATOR_NAMESPACE,
+            version=PRODUCER_VERSION_UNOBSERVED,
+            report_schema_version=CARGO_MUTANTS_REPORT_SCHEMA,
+        ),
+        survived_uncovered=(),
+        discarded=(),
+        lines_without_candidates=tuple(
+            sorted(
+                (
+                    SourcePosition(path=path, lineno=lineno)
+                    for path, lines in added.by_file.items()
+                    if _under_source_roots(
+                        path, repo_top=repo_top, source_root_paths=source_root_paths
+                    )
+                    for lineno in lines
+                ),
+                key=lambda position: position.sort_key,
+            )
+        ),
+        report_absent=True,
+    )
 
 
 def ingest_mutation_report(
@@ -7694,8 +7716,21 @@ def ingest_mutation_report(
     targets: Sequence[str] | None,
     repository: SnapshotRepository,
     read_timeout: float,
+    spec: MutationFormatSpec,
+    content_tier: str | None = None,
 ) -> IngestedMutationResult:
     """Turn a parsed foreign mutation report into assay's own R2 payload.
+
+    *content_tier* (B245 U5a) is ``None`` for a report that carries its own
+    ``projectRoot`` and embedded ``source`` (Stryker): both are checked. For
+    ``"per-mutant-diff"`` (cargo-mutants) the parser already bound each
+    mutant's content to the committed blobs, so the project-root and
+    source-matches-commit checks are skipped: filling ``sources`` from blobs
+    and comparing them with the same blobs would be a tautology.
+
+    *spec* is the declared format's registry entry (B245 U3a): its
+    ``status_buckets`` and ``discarded_statuses`` say where each of the
+    parser's statuses lands, so this function holds no per-tool table.
 
     **Scope is assay's computation, not the tool's** (B046's own "Judgment"
     section). Stryker mutated whatever its configuration told it to; which of
@@ -7732,13 +7767,19 @@ def ingest_mutation_report(
     exactly one caller (:func:`assay.runner._ingest_r2_report`), which already
     holds the repository the lane's command ran against.
     """
+    if content_tier is not None and content_tier != "per-mutant-diff":
+        raise ValueError(
+            f"content_tier must be None or 'per-mutant-diff', not {content_tier!r}"
+        )
     producer_tool = MutationProducerTool(
         name=report.producer.name,
         version=report.producer.version,
         report_schema_version=report.producer.report_schema_version,
     )
 
-    _check_report_project_root(report, run_cwd=run_cwd)
+    per_mutant_diff = content_tier == "per-mutant-diff"
+    if not per_mutant_diff:
+        _check_report_project_root(report, run_cwd=run_cwd)
     wire_paths = _resolve_report_paths(
         report,
         run_cwd=run_cwd,
@@ -7754,12 +7795,13 @@ def ingest_mutation_report(
     # `lines_without_candidates` -- is derived from the very text this check
     # is about, so judging first and checking after would build a payload out
     # of text assay is in the middle of deciding not to trust.
-    _check_report_source_matches_commit(
-        report,
-        wire_paths=wire_paths,
-        repository=repository,
-        timeout=read_timeout,
-    )
+    if not per_mutant_diff:
+        _check_report_source_matches_commit(
+            report,
+            wire_paths=wire_paths,
+            repository=repository,
+            timeout=read_timeout,
+        )
     in_scope = _in_scope_predicate(mode=mode, added=added, targets=targets)
 
     buckets: dict[str, list[MutantOutcome]] = {name: [] for name in MUTATION_BUCKETS}
@@ -7813,9 +7855,9 @@ def ingest_mutation_report(
             replacement_sha256=mutant.replacement_sha256,
             operator=mutant.operator,
             description=mutant.description,
-            discard_reason=_DISCARD_REASON_BY_STATUS.get(mutant.status),
+            discard_reason=spec.discarded_statuses.get(mutant.status),
         )
-        if mutant.status in _INGESTED_DISCARDED_STATUSES:
+        if mutant.status in spec.discarded_statuses:
             # B070: RECORDED, not dropped. The record is built above, before
             # the fork, so a discarded mutant carries byte-for-byte the same
             # identity a bucketed one does -- which is what lets
@@ -7823,7 +7865,7 @@ def ingest_mutation_report(
             # overlap at all.
             discarded.append(outcome)
             continue
-        bucket = INGESTED_STATUS_BUCKETS[mutant.status]
+        bucket = spec.status_buckets[mutant.status]
         buckets[bucket].append(outcome)
         if mutant.status == "NoCoverage":
             survived_uncovered.add((wire_path, mutant.lineno))
@@ -7885,6 +7927,11 @@ def _check_report_project_root(
     great many systems ``/tmp`` is itself a symlink, so two spellings of one
     directory is the normal case rather than the suspicious one.
     """
+    if report.project_root is None:
+        # (B245 U3a) A format whose document carries no projectRoot (cargo-
+        # mutants) is bound to the commit by CONTENT instead; there is no
+        # root to compare.
+        return
     declared = os.path.realpath(report.project_root)
     actual = os.path.realpath(run_cwd)
     if declared != actual:

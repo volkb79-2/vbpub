@@ -1697,8 +1697,8 @@ or timed-out pull MUST fail preflight with the exact remedy and, on timeout, nam
 A dry-run MUST NOT pull a missing builder and MUST report its pullability as `SKIPPED`, with a
 message that registry availability was not verified. The image checks
 MUST also run when `--skip-gates` is selected because the wheel-build step still uses these
-images. When gates are enabled, the preflight MUST run the declared version-window, selected
-tester-image identity, and bootstrap-version checks against the exact source revision. The
+images. When gates are enabled, the preflight MUST run the selected
+tester-image identity and bootstrap-version checks against the exact source revision. The
 selected tester-image identity check MUST report a non-empty Run-Gate version and a valid
 64-digit lowercase SHA-256 for the published wheel. An omitted or malformed identity field is
 a failed precondition; CMRU MUST NOT substitute `unknown` or another invented value. A
@@ -2005,7 +2005,7 @@ and `CMRU_TESTER_CGROUP_PARENT` so it can prove its build slice before launching
 
 #### Release-gate controller interpreter (KI-81)
 
-The registered `gate` and `gate-provisional` lanes are `bare-host` and start
+The registered `gate` and `release-gate` lanes are `bare-host` and start
 `python3 -I -B {worktree}/cmru/tools/run_release_gate.py`. The controller MUST import only the
 standard library before it has decided its interpreter, MUST derive the third-party modules it
 requires from `[project].dependencies` of CMRU's own `pyproject.toml` (never a name list in the
@@ -2031,15 +2031,20 @@ otherwise unchanged.
 
 #### Release-gate provisional evidence
 
-A deferral tracking id is bound to explicit release-version windows: `KI-79` authorizes only CMRU
-`>= 6.2.0` and `< 6.3.0` (the 6.2 patch line), `>= 7.0.0` and `< 7.1.0` (the 7.0 patch line),
-`>= 7.1.0` and `< 7.2.0` (the 7.1 patch line), `>= 7.2.0` and `< 7.3.0` (the 7.2 patch line),
-or `>= 7.3.0` and `< 7.4.0` (the 7.3 patch line; operator decisions 2026-10-14, 2026-10-21,
-2026-10-23, 2026-10-27, 2026-11-04, and 2026-11-12), read from
-the prepared changelog, and `FIRST-RELEASE-R2` only a first release with no published
-stable tag. Any other id or prepared version refuses before a lane runs.
+The standing release rule (operator decision 2026-11-18; KI-79 and KI-159) is: a release
+needs R0/R1 (full line and branch coverage) and R3 (canary) as the `run-tests` step, plus an
+independent review of the change for hollow tests and defects (a hand-off requirement of the
+release controller, not enforced by CMRU code); the long R2 mutation lane runs asynchronously
+and is owed on the latest release. The registered `release-gate` lane implements the gate half:
+it runs every lane of the full `gate` conjunction except `mutation`. No release version is
+compared against a window and none is refused for its number. The recognised deferral tracking
+id is `KI-79` (the id value is kept because retained markers and manifests record it), and
+`FIRST-RELEASE-R2` is recognised only for a first release with no published stable tag. Both
+require a dated prepared changelog heading, whose version is recorded as the marker's
+`target_version`. Any other id, or a missing or undated prepared heading, refuses before a lane
+runs.
 
-A gate that deliberately defers the mutation lane (`--postpone-mutation`, `gate-provisional`)
+A gate that deliberately defers the mutation lane (`--postpone-mutation`, `release-gate`)
 exits 0 after every required non-mutation lane and the final canary pass, and records:
 
 - `cmru/.assay/release-gate-snapshot.json` (`schema_version` 4): `state` is `"provisional"`
@@ -2262,6 +2267,23 @@ generated result plus native outputs: Python constraints, npm direct versions/ov
 lockfile, Go `go.mod`/`go.sum`, OCI JSON, and any configured strict Jinja2 output. `cmru versions
 check` performs a fresh read-only comparison. None of these actions is coupled to build, release,
 gates, or scheduling.
+
+`cmru versions resolve` and `cmru versions init` edit `cmru.toml` as text. They change only the
+values and tables they own inside the `[versions]` region (the `resolved` tables, and the target
+tables `init` creates) and leave every other byte identical: comments above, between and below the
+version tables, blank-line runs, multi-line string values, key order and line endings. A new table
+is inserted after the last existing `[versions...]` block (at the end of the file when the file has
+none). When a target cannot be edited as text (an inline table, a dotted key, a multi-line value, a
+header written twice) the command refuses before writing, names the table and the exact edit to
+make by hand, and never falls back to rewriting the region; the edited text is parsed again and must
+equal the requested document before it replaces the file. `cmru.toml` is the only file these two
+commands write with this rule; cmru does not rewrite `package.json` to get past the manifest
+refusal: when one or more resolved targets contradict the committed manifest (typically
+`constraint = "*"` npm targets whose exact pin is older than the registry's eligible version)
+`resolve`, `resolve --dry-run` and `check` report every such target in one run (target, resolved
+version, manifest requirement and the exact `package.json` edit) and exit non-zero without writing
+a partial record. (Once the compatibility check passes, the npm lockfile step does update the
+`overrides` and the dependency fields of `package.json` for the resolved packages.)
 
 Timestamp evidence is recorded per source. PyPI uses upload time; npm uses registry version
 time; Go uses module proxy `.info` `Time`, which is VCS commit time rather than proxy publication
@@ -3702,7 +3724,7 @@ newest release with a recorded R2 PASS, or `cmru-v6.1.0` when no R2 PASS row
 exists.
 
 **S16.4 — Publisher credential boundary (exact-HEAD snapshot, KI-74).** The registered
-host `gate` and `gate-provisional` lanes MUST run from a linked Git worktree with no tracked
+host `gate` and `release-gate` lanes MUST run from a linked Git worktree with no tracked
 changes and MUST refuse a main checkout before launching any lane. Before allocation they MUST
 refuse a tracked `cmru.secret.toml`, a configured Git filter that could execute during checkout,
 and tracked files at the paths reserved for gate evidence. Every tester lane then runs from an

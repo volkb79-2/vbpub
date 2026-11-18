@@ -1,0 +1,133 @@
+{
+  "case": "hub-query-backpressure",
+  "doc": "a Query pool refusal is backpressure, nothing is dropped; freed Query bytes make query_ready true and the retry is queued",
+  "limits": {
+    "client_queue_bytes": 1000,
+    "uid_live_bytes": 2000,
+    "global_live_bytes": 8000,
+    "query_queue_bytes": 1000,
+    "uid_query_bytes": 1000,
+    "global_query_bytes": 4000,
+    "control_queue_bytes": 500,
+    "stall_ms": 5000,
+    "frame_completion_ms": 5000
+  },
+  "conns": [
+    1
+  ],
+  "steps": [
+    {
+      "t_ms": 0,
+      "op": "push_query",
+      "c": 0,
+      "s": 1,
+      "len": 600
+    },
+    {
+      "t_ms": 0,
+      "op": "push_query",
+      "c": 0,
+      "s": 1,
+      "len": 600
+    },
+    {
+      "t_ms": 0,
+      "op": "query_ready",
+      "c": 0,
+      "s": 1
+    },
+    {
+      "t_ms": 0,
+      "op": "head",
+      "c": 0,
+      "block": true
+    },
+    {
+      "t_ms": 0,
+      "op": "query_ready",
+      "c": 0,
+      "s": 1
+    },
+    {
+      "t_ms": 0,
+      "op": "wrote",
+      "c": 0,
+      "n": 600
+    },
+    {
+      "t_ms": 0,
+      "op": "query_ready",
+      "c": 0,
+      "s": 1
+    },
+    {
+      "t_ms": 0,
+      "op": "push_query",
+      "c": 0,
+      "s": 1,
+      "len": 600
+    },
+    {
+      "t_ms": 0,
+      "op": "query_ready",
+      "c": 0,
+      "s": 1
+    },
+    {
+      "t_ms": 0,
+      "op": "end_stream",
+      "c": 0,
+      "s": 1
+    }
+  ],
+  "expect": [
+    [
+      "queued"
+    ],
+    [
+      "backpressure"
+    ],
+    [
+      {
+        "ready": false
+      }
+    ],
+    [
+      {
+        "head": {
+          "len": 600,
+          "corr": 1,
+          "dropped": 0,
+          "tail_tag": 160
+        }
+      }
+    ],
+    [
+      {
+        "ready": false
+      }
+    ],
+    [],
+    [
+      {
+        "ready": true
+      }
+    ],
+    [
+      "queued"
+    ],
+    [
+      {
+        "ready": false
+      }
+    ],
+    [
+      {
+        "counts": {
+          "blocks": 2,
+          "dropped": 0
+        }
+      }
+    ]
+  ]
+}

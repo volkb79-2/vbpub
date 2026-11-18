@@ -167,3 +167,24 @@ def test_a_malformed_declaration_refuses_naming_the_field(
 
     assert expected in str(caught.value)
     assert "lane 'package'" in str(caught.value), "the refusal names the lane"
+
+
+def test_a_directory_artifact_report_format_needs_the_matching_mutation_format(
+    project: Project,
+):
+    """``cargo-mutants-outcomes`` is declarable (U5a wired the runner) but only
+    beside ``judge.mutation.format`` of the same name: the runner reserves
+    ``<out>`` once for both R0 and R2, so an R0-only lane is refused."""
+    path = project.write(
+        R0_LANE
+        + '\n[lanes.package.result_report]\nformat = "cargo-mutants-outcomes"\n'
+        'path = "out"\n'
+    )
+
+    with pytest.raises(LaneConfigError) as caught:
+        load_lane_file(path)
+
+    message = str(caught.value)
+    assert "cargo-mutants-outcomes" in message
+    assert "R0-only" in message
+    assert "lane 'package'" in message

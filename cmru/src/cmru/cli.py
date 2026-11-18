@@ -7168,7 +7168,6 @@ def _release_gate_preconditions_before_dispatch(
         check_release_build_images_precondition,
         evaluate_release_gate_preconditions,
         format_gate_precondition_report,
-        run_tests_uses_provisional_gate,
     )
     from cmru.version import status_records
 
@@ -7234,12 +7233,8 @@ def _release_gate_preconditions_before_dispatch(
             "cmru has no CMRU-derived tagged release version in this plan.",
         )]
     else:
-        _config_rel, config_text = _cmru_snapshot_config_text(
-            source_git_root, revision, config_path, configs,
-        )
         rows = evaluate_release_gate_preconditions(
             repo_root, source_git_root, revision, {"cmru": planned_version},
-            gate_provisional=run_tests_uses_provisional_gate(config_text),
             require_docker=not dry_run,
         )
     rows.extend(build_image_rows)

@@ -112,6 +112,17 @@ unregistered) and `HOB-30` (no session spools, which are out of this package's s
 kernel-side rate arithmetic is a test-local helper, because `kernel` cannot depend on `model`
 (`HOB-17`).
 
+## Developing and debugging
+
+[`tools/dev`](tools/dev) runs `build`, `check`, `test`, `clippy`, `fmt`, `example`, `gdb`,
+`strace` and an interactive shell in a capped, network-less, unprivileged container that shares
+the gate image's exact toolchain and offline crate cache. It runs on the gate host `v1001`
+(your worktree, including uncommitted changes up to 20 MiB, is synced there per call); local
+mode is refused by default. Try `tools/dev --dry-run test -p hostobs-store` to see the plan.
+A green dev run is **not** gate evidence; only the lanes below on a committed head are. The
+image is built on a host only on the controller's go and does not exist yet. See
+[`../tester-unified-rust/docs/DEV.md`](../tester-unified-rust/docs/DEV.md).
+
 ## Gates
 
 The registered lanes are `lint`, `selftest` and `assay-r1`. Run them through the estate's
@@ -141,8 +152,9 @@ switched to it by a separate `run-gate.root.toml` commit). `selftest` is the wor
 R0/R1 baseline (nextest, doctests, llvm-cov and the per-crate line/region floors).
 
 **`assay-r1` is the estate-standard coverage verdict**: assay's Rust R1 judge reads the
-same `lcov.info` and judges 43 declared `src` files of the five functional crates against
-a 95.0% line floor (measured 96.04%, floored one point down — derivation in
+same `lcov.info` and judges the 44 declared `src` files of the five functional crates against
+a 95.0% line floor (the floor was derived from 96.04% measured over the first 33 files and
+floored one point down; the later lanes measure 96.7% to 96.9% — derivation in
 [`assay.toml`](assay.toml)). The verdict carries the measured totals, lists the uncovered
 lines as findings, and reports branch coverage as **unavailable** (stable Rust emits no
 branch arcs; assay B523), never as zero-of-zero. R2 (mutation) and R3 (canary) are not
