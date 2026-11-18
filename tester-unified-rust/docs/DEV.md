@@ -96,12 +96,16 @@ The controller gives the go; a controller-run implementer or the controller does
    `TESTER_UNIFIED_RUST_BUILDER`, then the default), `--record FILE`. The default builder is the
    docker driver, the kind that can see a base image that exists only in the local daemon; a
    docker-container builder cannot. The build needs the network for apt and rustup only. It
-   refuses an ungoverned build like `build-image.sh`, builds `FROM` the base image **id** (build
-   arg `BASE_IMAGE=sha256:...`, so a moved tag cannot race the build), keeps the tag only as a label
-   (`org.vbpub.tester-unified-rust-dev.base-image`, with `...base-image-id` next to it; both
-   verified after the build) and prints the packages the layer added or upgraded. That a docker-driver
-   BuildKit accepts a bare image id in `FROM` is reasoned, not measured: if the first build refuses
-   it, that is the first thing to fix.
+   refuses an ungoverned build like `build-image.sh`, builds `FROM` a **content-named tag of the exact
+   base image id**: before the build it runs `docker tag <id> tester-unified-rust-base:<64 hex of
+   the id>` (build arg `BASE_IMAGE`), so a moved `tester-unified-rust:local` cannot race the build and
+   the reference is a plain one every builder accepts. The script creates that tag (exact name, the
+   same id on every re-run) and never removes it; remove it by hand when the base image is gone. The
+   original tag is kept only as a label (`org.vbpub.tester-unified-rust-dev.base-image`, with
+   `...base-image-id` next to it). After the build the labels are compared with the build args (that
+   comparison only echoes them) and, independently of them, the dev image's layer list must start with
+   every layer of the base image, in order. The script then prints the packages the layer added or
+   upgraded.
 3. Because the image is built on the host that runs it, no image transfer is needed. If it must be
    built elsewhere, `docker save IMAGE | docker load` from the host that holds it moves it, but it
    is a multi-GB transfer; only the controller decides that.
@@ -268,7 +272,13 @@ It refuses with exit **3** when:
 
 `dev stop` and `dev clean` try the same per-worktree lock: while a call is syncing (lock held,
 no container yet) they print "a call for this worktree is in progress (syncing); retry" and exit 3
-instead of acting under the sync; a container that already exists can still be stopped.
+instead of acting under the sync; a container that already exists can still be stopped. For a
+worktree that has never run there is no host directory yet, so they cannot take the lock and can
+race a first-ever call of that worktree.
+
+`HOSTOBS_DEV_ALLOW_PARALLEL=1` does **not** bound the sum of the memory of simultaneous containers:
+the admission samples the slice's `memory.current` once, before the sync, so several parallel calls
+can each pass it and then add up to more than the threshold. Use it only knowingly.
 Exit 3 also covers identity-check, guard or ssh
 failures. The wrapper also takes **one admission slot** (weight 1) of the same flock slots
 `remote-gate.sh` uses (`$CONTROLLER_HOME/remote-gate-locks/<host>.slotN`, `CONTROLLER_REMOTE_SLOTS`
@@ -285,6 +295,11 @@ client is stopped and a cleanup removes the container by the id recorded in the 
 own** run, so a run that failed on a name conflict never removes someone else's container.
 `dev stop` removes this worktree's container by exact name and prints what it did; `dev status`
 shows a running container and its age.
+
+Exit 124 is ambiguous by nature: it is the in-container or the host runtime limit, or the command
+itself returned 124 (the wrapper says so). The host-side helpers (every git call, the untracked-file
+`tar`, the cleanup `docker rm`) close the lock descriptors and git runs with `gc.auto=0` and
+`maintenance.auto=false`, so no background process can keep the locks after the wrapper is gone.
 
 The command inside the container is also prefixed with `timeout --foreground -k 5 <HOSTOBS_DEV_MAX_S>`,
 so a container whose wrapper was killed still ends by itself after the same limit (plus 5 s).

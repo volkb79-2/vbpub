@@ -68,13 +68,18 @@ trap 'rmdir "$context" 2>/dev/null || true' EXIT
 
 printf 'builder=%s\n' "$builder"
 docker buildx inspect "$builder" >/dev/null
+# The build starts FROM a content-named tag of the exact base image id: a moved tag cannot change it,
+# and it is a plain reference every builder accepts (a bare `sha256:<id>` in FROM is not, on every
+# driver). The script creates this tag (exact name, same id: re-running is idempotent) and never removes it.
+base_tag="tester-unified-rust-base:${base_id#sha256:}"
+docker tag "$base_id" "$base_tag"
 docker buildx build \
   --builder "$builder" \
   --load \
   --progress plain \
   --cgroup-parent "$cgroup_parent" \
   --network default \
-  --build-arg "BASE_IMAGE=$base_id" \
+  --build-arg "BASE_IMAGE=$base_tag" \
   --build-arg "BASE_IMAGE_TAG=$base_image" \
   --build-arg "BASE_IMAGE_ID=$base_id" \
   -f "$repo_root/tester-unified-rust/Dockerfile.dev" \
@@ -86,6 +91,14 @@ actual_base_id="$(docker image inspect --format '{{index .Config.Labels "org.vbp
 if [[ "$actual_base" != "$base_image" || "$actual_base_id" != "$base_id" ]]; then
   printf 'loaded dev image does not record the requested base\n' >&2
   printf 'expected: %s %s\nobserved: %s %s\n' "$base_image" "$base_id" "${actual_base:-<no label>}" "${actual_base_id:-<no label>}" >&2
+  exit 2
+fi
+# The labels only echo the build args. The layer stack does not: the dev image must start with every
+# layer of the base image, in order.
+base_layers="$(docker image inspect --format '{{json .RootFS.Layers}}' "$base_id")"
+dev_layers="$(docker image inspect --format '{{json .RootFS.Layers}}' "$image_tag")"
+if [[ -z "$base_layers" || "$base_layers" == "null" || "$dev_layers" != "${base_layers%]},"* ]]; then
+  printf 'loaded dev image is not built on the layers of base image %s\n' "$base_id" >&2
   exit 2
 fi
 
@@ -102,7 +115,7 @@ package_list() { probe "$1" dpkg-query -W -f '${Package}\t${Version}\n' | LC_ALL
 base_packages="$(mktemp)"
 dev_packages="$(mktemp)"
 trap 'rmdir "$context" 2>/dev/null || true; rm -f "$base_packages" "$dev_packages"' EXIT
-package_list "$base_image" > "$base_packages"
+package_list "$base_id" > "$base_packages"
 package_list "$image_tag" > "$dev_packages"
 added="$(LC_ALL=C comm -13 "$base_packages" "$dev_packages")"
 

@@ -23,7 +23,7 @@
 #
 # Exit codes: 2 usage/refusal, 3 identity/transport failure, a hostobs-dev-* container already
 # runs or another call for this worktree is in progress, 75 host under memory/PSI pressure (or
-# unreadable) or no admission slot free, 124 stopped by the runtime limit, otherwise the
+# unreadable) or no admission slot free, 124 a runtime limit (or the command itself), otherwise the
 # command's own.
 # Environment (all optional): HOSTOBS_DEV_HOST (default: the only alias in
 # CONTROLLER_REMOTE_GATE_HOSTS; only v1001 is accepted), HOSTOBS_DEV_IMAGE, HOSTOBS_DEV_MEMORY (3g;
@@ -324,7 +324,9 @@ EOF
 sync_text() {
   cat <<'EOF'
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
-g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.allow=never -c protocol.file.allow=always "$@"; }
+# no auto gc/maintenance (it daemonizes), and no lock descriptor (7, 8, 9) may leak into any helper process:
+# a background process holding them would keep the locks long after the wrapper exited
+g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c gc.auto=0 -c maintenance.auto=false -c protocol.allow=never -c protocol.file.allow=always "$@" 7>&- 8>&- 9>&-; }
 if [ ! -d "$W/.git" ]; then
   rm -rf "$W"
   if [ -n "$SEED" ]; then g clone -q --no-checkout "$HOME/checkouts/$SEED" "$W"; else g init -q "$W"; fi
@@ -336,7 +338,7 @@ g -C "$W" checkout -q -f --detach "$SHA"
 g -C "$W" reset -q --hard "$SHA"
 g -C "$W" clean -q -ffdx
 if [ -s "$UP/tracked.patch" ]; then g -C "$W" apply --binary --whitespace=nowarn "$UP/tracked.patch"; fi
-if [ -s "$UP/untracked.tar" ]; then tar -xf "$UP/untracked.tar" -C "$W"; fi
+if [ -s "$UP/untracked.tar" ]; then tar -xf "$UP/untracked.tar" -C "$W" 7>&- 8>&- 9>&-; fi
 rm -rf "$UP"
 echo "synced $SHA"
 EOF
@@ -369,7 +371,7 @@ fi
 # a cidfile left by an earlier call names a container that is not ours: forget it BEFORE the cleanup can see it
 rm -f "$D/cid"
 cleanup() {
-  if [ -s "$D/cid" ]; then docker rm -f "$(cat "$D/cid")" >/dev/null 2>&1 || true; fi
+  if [ -s "$D/cid" ]; then docker rm -f "$(cat "$D/cid")" >/dev/null 2>&1 7>&- 8>&- 9>&- || true; fi
   rm -f "$D/cid"
   rm -rf "$UP"
 }
@@ -401,7 +403,7 @@ EOF
     printf '%s </dev/null || rc=$?\n' "$text"
   fi
   cat <<'EOF'
-if [ "$rc" = 124 ]; then echo "dev: stopped by the runtime limit; the container is removed" >&2; fi
+if [ "$rc" = 124 ]; then echo "dev: exit 124: the in-container or the host runtime limit, or the command itself returned 124; the container is removed" >&2; fi
 exit $rc
 EOF
 }

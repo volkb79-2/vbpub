@@ -85,6 +85,15 @@ sys.exit(0)
 """
 
 # the real layering of scripts/controller/hx.sh: guard under `set -e`, then the command, shlex-quoted into `bash -c`
+REAL_GIT = shutil.which("git") or "/usr/bin/git"
+GIT_STUB = f"""#!{sys.executable}
+import json, os, sys
+args = sys.argv[1:]
+with open(os.path.join(os.environ["STUB_LOG_DIR"], "git.log"), "a") as fh:
+    fh.write(json.dumps({{"args": args, "fds": sorted(os.listdir("/proc/self/fd"))}}) + "\\n")
+os.execv({REAL_GIT!r}, [{REAL_GIT!r}] + args)
+"""
+
 HX_STUB = """#!/bin/bash
 n=$(( $(cat "$STUB_LOG_DIR/hx.count" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$STUB_LOG_DIR/hx.count"
@@ -144,7 +153,7 @@ class DevCase(unittest.TestCase):
         self.home = self.tmp / "home"
         for d in (self.stubs, self.logs, self.home, self.tmp / "psi"):
             d.mkdir()
-        for name, text in (("docker", DOCKER_STUB), ("hx", HX_STUB), ("id", ID_STUB)):
+        for name, text in (("docker", DOCKER_STUB), ("hx", HX_STUB), ("id", ID_STUB), ("git", GIT_STUB)):
             (self.stubs / name).write_text(text)
             (self.stubs / name).chmod(0o755)
         (self.tmp / "memory.current").write_text(str(1 << 30) + "\n")
@@ -297,7 +306,7 @@ class WrapperArgvTests(DevCase):
     def test_the_host_side_git_calls_are_hardened(self) -> None:
         script = self.run_dev("--dry-run", "shell").stdout
         self.assertIn("export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null", script)
-        self.assertIn("g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.allow=never -c protocol.file.allow=always", script)
+        self.assertIn("g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c gc.auto=0 -c maintenance.auto=false -c protocol.allow=never -c protocol.file.allow=always", script)
         for line in script.splitlines():
             if re.search(r"(?:^|[\s(`])git\s+-", line) and "g() {" not in line:
                 # every other git call (read-only probes in the preflight and status) carries hooksPath and fsmonitor off
@@ -747,6 +756,22 @@ class WrapperRemoteExecutionTests(DevCase):
         self.assertEqual(self.run_dev("clean", "--checkout", STUB_RUNNING="absent").returncode, 0)
         self.assertFalse(d.exists())
 
+    def test_host_git_calls_close_the_lock_descriptors_and_never_auto_gc(self) -> None:
+        (self.repo / "hostobs" / "new.txt").write_text("untracked\n")
+        self.assertEqual(self.run_dev("run", "--", "true").returncode, 0)
+        records = [json.loads(line) for line in (self.logs / "git.log").read_text().splitlines()]
+        sync = [r for r in records if "core.hooksPath=/dev/null" in r["args"] and any(v in r["args"] for v in ("checkout", "reset", "clean", "apply", "init", "fetch"))]
+        self.assertGreaterEqual(len(sync), 4)
+        for record in sync:
+            for fd in ("7", "8", "9"):
+                self.assertNotIn(fd, record["fds"], record)
+            self.assertIn("gc.auto=0", record["args"])
+            self.assertIn("maintenance.auto=false", record["args"])
+        script = (self.logs / "hx-3.sh").read_text()
+        self.assertIn('-C "$W" 7>&- 8>&- 9>&-', script.replace('"$UP/untracked.tar" -C "$W" 7>&-', '-C "$W" 7>&-'))
+        self.assertIn('docker rm -f "$(cat "$D/cid")" >/dev/null 2>&1 7>&- 8>&- 9>&-', script)
+        self.assertIn('7>&- 8>&- 9>&-; }', script)
+
     def test_a_non_hex_have_line_from_the_host_is_ignored_by_the_bundle_logic(self) -> None:
         # `HAVE=HEAD` resolves locally; used as a bundle base it would produce no bundle and the host sync would fail
         proc = self.run_dev("run", "--", "true", STUB_INJECT="HAVE=HEAD\\n")
@@ -878,7 +903,7 @@ class WrapperRemoteExecutionTests(DevCase):
         script = (self.logs / "hx-3.sh").read_text()
         self.assertIn("timeout --foreground -s TERM -k 15 77 docker run", script)
         self.assertIn("--stop-timeout 10", script)
-        self.assertIn("stopped by the runtime limit", script)
+        self.assertIn("exit 124: the in-container or the host runtime limit, or the command itself returned 124", script)
 
 
 class ImageSourceTests(unittest.TestCase):
@@ -953,7 +978,12 @@ if args[:2] == ["image", "inspect"]:
     fmt, image = args[3], args[4]
     if image == os.environ.get("STUB_MISSING_IMAGE"):
         sys.exit(1)
-    if fmt == "{{{{.Id}}}}":
+    if fmt == "{{{{json .RootFS.Layers}}}}":
+        if image.startswith("sha256:"):
+            print('["sha256:l1","sha256:l2"]')
+        else:
+            print(os.environ.get("STUB_DEV_LAYERS", '["sha256:l1","sha256:l2","sha256:l3"]'))
+    elif fmt == "{{{{.Id}}}}":
         print(os.environ.get("STUB_BASE_ID", BASE_ID))
     elif fmt.endswith('base-image-id"}}}}'):
         print(os.environ.get("STUB_LABEL_ID", BASE_ID))
@@ -971,7 +1001,7 @@ if args[0] == "run":
     base = [("bash", "5.2-1"), ("libc6", "2.36-9"), ("ca-certificates", "20230311")]
     dev = base[:2] + [("ca-certificates", "20240203"), ("gdb", "13.1-3"), ("libpython3.11", "3.11.2-6"), ("libdebuginfod1", "0.188-2")]
     if tool == "dpkg-query":
-        for name, version in (base if image == "tester-unified-rust:local" else dev):
+        for name, version in (base if image.startswith("sha256:") else dev):
             print(f"{{name}}\\t{{version}}")
     elif tool == "rustc":
         print("rustc 1.99.0 (abcdef 2026-01-01)")
@@ -1047,7 +1077,13 @@ class BuildDevImageTests(unittest.TestCase):
         build = [c for c in calls if c[:2] == ["buildx", "build"]][0]
         args = [build[i + 1] for i, a in enumerate(build) if a == "--build-arg"]
         # FROM is the immutable id (no tag race); the tag travels separately, for the label
-        self.assertEqual(args, ["BASE_IMAGE=sha256:" + "a" * 64, "BASE_IMAGE_TAG=tester-unified-rust:local", "BASE_IMAGE_ID=sha256:" + "a" * 64])
+        self.assertEqual(args, ["BASE_IMAGE=tester-unified-rust-base:" + "a" * 64, "BASE_IMAGE_TAG=tester-unified-rust:local",
+                                "BASE_IMAGE_ID=sha256:" + "a" * 64])
+        # the content-named tag is created from the exact id, before the build, and never removed
+        names = [c[:2] for c in calls]
+        self.assertEqual([c for c in calls if c[0] == "tag"], [["tag", "sha256:" + "a" * 64, "tester-unified-rust-base:" + "a" * 64]])
+        self.assertLess(names.index(["tag", "sha256:" + "a" * 64]), names.index(["buildx", "build"]))
+        self.assertEqual([c for c in calls if c[0] in ("rmi", "image") and "rm" in c[:2]], [])
         self.assertEqual(build[build.index("--cgroup-parent") + 1], self.SLICE)
         self.assertIn("-t", build)
         self.assertIn("base_id=sha256:" + "a" * 64, proc.stdout)
@@ -1056,6 +1092,15 @@ class BuildDevImageTests(unittest.TestCase):
         self.assertIn("does not record the requested base", proc.stderr)
         proc, _ = self.run_build("--cgroup-parent", self.SLICE, STUB_LABEL_BASE="other:tag")
         self.assertEqual(proc.returncode, 2)
+
+    def test_the_dev_image_must_sit_on_the_layers_of_the_base_image(self) -> None:
+        proc, _ = self.run_build("--cgroup-parent", self.SLICE)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        for layers in ('["sha256:l1","sha256:lX","sha256:l3"]', '["sha256:l1","sha256:l2"]', '["sha256:l2","sha256:l1","sha256:l3"]', "null", ""):
+            with self.subTest(layers=layers):
+                proc, _ = self.run_build("--cgroup-parent", self.SLICE, STUB_DEV_LAYERS=layers)
+                self.assertEqual(proc.returncode, 2, proc.stdout)
+                self.assertIn("not built on the layers of base image", proc.stderr)
 
     def test_probe_containers_are_governed_and_networkless(self) -> None:
         _, calls = self.run_build("--cgroup-parent", self.SLICE)
