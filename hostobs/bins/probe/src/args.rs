@@ -1153,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_elements_report_kinds() {
+    fn elements_report_kinds() {
         let text = "{\"all\":[{\"a\":1},\"s\",1,true,false,null]}";
         let object = Obj::parse(text.as_bytes(), "").expect("object");
         let found = object.elements("all").expect("elements");

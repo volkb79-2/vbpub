@@ -360,6 +360,7 @@ mod tests {
         call_after_served, call_of, classify, classify_with, Call, ConnFacts, Dispatch, Mode,
         Phase, Prefix, Query, Refusal, HELLO_CORR, SERVER_MAJOR,
     };
+    use crate::args::HelloArgs;
     use crate::codes::{Code, Detail};
     use crate::limits::{IntervalRule, Level};
     use crate::verbs::{find, Shape};
@@ -1034,9 +1035,32 @@ mod tests {
         }
     }
 
-    fn assert_default_facts_unchanged(query: &Query<'_>) {
-        let facts = ConnFacts::default();
-        assert_eq!(classify(query), classify_with(query, &facts));
+    /// A frozen P5b-1a result. These literals are the oracle for `classify` itself.
+    #[derive(Debug, Eq, PartialEq)]
+    enum OldOutcome {
+        Dispatch(Dispatch),
+        Refusal {
+            code: Code,
+            corr: u32,
+            detail: Detail,
+            fatal: bool,
+        },
+    }
+
+    fn assert_old_outcome(query: &Query<'_>, expected: OldOutcome) {
+        let actual = match classify(query) {
+            Ok(dispatch) => OldOutcome::Dispatch(dispatch),
+            Err(refusal) => {
+                let fatal = refusal.fatal();
+                OldOutcome::Refusal {
+                    code: refusal.code,
+                    corr: refusal.corr,
+                    detail: refusal.detail,
+                    fatal,
+                }
+            }
+        };
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -1091,6 +1115,21 @@ mod tests {
         assert_eq!(call, Call::Unsubscribe(4));
         assert_eq!(status.shape, Shape::Json);
         assert_eq!(unsubscribe.shape, Shape::Json);
+
+        let facts = ConnFacts {
+            corr_in_use: true,
+            ..full_facts()
+        };
+        let text = line("status", "{}", 5);
+        let query = json(text.as_bytes());
+        let done = classify_with(&query, &facts).expect("JSON ignores the binary facts");
+        assert_eq!(
+            done,
+            Dispatch {
+                corr: 5,
+                call: Call::Status,
+            }
+        );
     }
 
     #[test]
@@ -1131,27 +1170,302 @@ mod tests {
 
     #[test]
     fn classify_default_facts_equal_old_classify() {
-        let status = req("status", "{}");
-        let query = binary(status.as_bytes());
-        assert_default_facts_unchanged(&query);
+        let binary_status_text = req("status", "{}");
+        let json_status_text = line("status", "{}", 9);
+        let binary_hello_text = req("hello", HELLO_ARGS);
+        let json_hello_text = line("hello", &hello_with(1, 7), 2);
+        let missing_args_text = "{\"verb\":\"status\"}";
+        let status_args_text = req("status", "{\"a\":1}");
+        let json_bad_verb_text = "{\"verb\":7,\"args\":{},\"corr\":9}";
+        let unknown_text = req("nope", "{}");
+        let hello_required_text = req("status", "{}");
+        let wrong_hello_corr_text = req("hello", HELLO_ARGS);
+        let json_current_text = line("current", "{}", 3);
+        let ready_hello_text = req("hello", HELLO_ARGS);
+        let observer_status_text = req("status", "{}");
+        let unsupported_hello_text = line("hello", &hello_with(2, 1), 2);
+        let bad_hello_text = line(
+            "hello",
+            "{\"client\":1,\"proto\":{\"major\":2,\"minor\":1}}",
+            2,
+        );
+        let unserved_text = req("events", "{}");
+        let mismatched_hello_text = req("hello", &hello_with(2, 1));
+        let duplicate_status_text = line("status", "{\"pid\":1,\"pid\":1}", 6);
 
-        let status = line("status", "{}", 3);
-        let query = json(status.as_bytes());
-        assert_default_facts_unchanged(&query);
-
-        let hello = req("hello", HELLO_ARGS);
-        let query = Query {
-            corr: HELLO_CORR,
-            ..before_hello(hello.as_bytes())
+        let binary_status = binary(binary_status_text.as_bytes());
+        let json_status = Query {
+            phase: Phase::BeforeHello,
+            ..json(json_status_text.as_bytes())
         };
-        assert_default_facts_unchanged(&query);
+        let binary_hello = Query {
+            corr: HELLO_CORR,
+            ..before_hello(binary_hello_text.as_bytes())
+        };
+        let json_hello = Query {
+            phase: Phase::BeforeHello,
+            ..json(json_hello_text.as_bytes())
+        };
+        let rep_frame = Query {
+            frame_type: FrameType::Rep,
+            ..binary(binary_status_text.as_bytes())
+        };
+        let evt_frame = Query {
+            frame_type: FrameType::Evt,
+            ..before_hello(binary_status_text.as_bytes())
+        };
+        let end_frame = Query {
+            frame_type: FrameType::End,
+            ..binary(binary_status_text.as_bytes())
+        };
+        let zero_corr = Query {
+            corr: 0,
+            ..binary(binary_status_text.as_bytes())
+        };
+        let malformed = binary(b"not json");
+        let missing_args = binary(missing_args_text.as_bytes());
+        let status_args = binary(status_args_text.as_bytes());
+        let json_bad_verb = json(json_bad_verb_text.as_bytes());
+        let unknown = binary(unknown_text.as_bytes());
+        let hello_required = Query {
+            corr: 7,
+            ..before_hello(hello_required_text.as_bytes())
+        };
+        let wrong_hello_corr = Query {
+            corr: 2,
+            ..before_hello(wrong_hello_corr_text.as_bytes())
+        };
+        let json_current = json(json_current_text.as_bytes());
+        let ready_hello = binary(ready_hello_text.as_bytes());
+        let observer_status = Query {
+            level: Level::Observer,
+            ..binary(observer_status_text.as_bytes())
+        };
+        let unsupported_hello = Query {
+            phase: Phase::BeforeHello,
+            ..json(unsupported_hello_text.as_bytes())
+        };
+        let bad_hello = Query {
+            phase: Phase::BeforeHello,
+            ..json(bad_hello_text.as_bytes())
+        };
+        let unserved = binary(unserved_text.as_bytes());
+        let mismatched_hello = before_hello(mismatched_hello_text.as_bytes());
+        let duplicate_status = json(duplicate_status_text.as_bytes());
 
-        let query = binary(b"garbage");
-        assert_default_facts_unchanged(&query);
+        let table = [
+            (
+                binary_status,
+                OldOutcome::Dispatch(Dispatch {
+                    corr: 5,
+                    call: Call::Status,
+                }),
+            ),
+            (
+                json_status,
+                OldOutcome::Dispatch(Dispatch {
+                    corr: 9,
+                    call: Call::Status,
+                }),
+            ),
+            (
+                binary_hello,
+                OldOutcome::Dispatch(Dispatch {
+                    corr: 1,
+                    call: Call::Hello(HelloArgs {
+                        client: "t".to_string(),
+                        major: 1,
+                        minor: 1,
+                    }),
+                }),
+            ),
+            (
+                json_hello,
+                OldOutcome::Dispatch(Dispatch {
+                    corr: 2,
+                    call: Call::Hello(HelloArgs {
+                        client: "t".to_string(),
+                        major: 1,
+                        minor: 7,
+                    }),
+                }),
+            ),
+            (
+                rep_frame,
+                OldOutcome::Refusal {
+                    code: Code::BadFrame,
+                    corr: 0,
+                    detail: Detail::Empty,
+                    fatal: true,
+                },
+            ),
+            (
+                evt_frame,
+                OldOutcome::Refusal {
+                    code: Code::BadFrame,
+                    corr: 0,
+                    detail: Detail::Empty,
+                    fatal: true,
+                },
+            ),
+            (
+                end_frame,
+                OldOutcome::Refusal {
+                    code: Code::BadFrame,
+                    corr: 0,
+                    detail: Detail::Empty,
+                    fatal: true,
+                },
+            ),
+            (
+                zero_corr,
+                OldOutcome::Refusal {
+                    code: Code::BadFrame,
+                    corr: 0,
+                    detail: Detail::Empty,
+                    fatal: true,
+                },
+            ),
+            (
+                malformed,
+                OldOutcome::Refusal {
+                    code: Code::BadRequest,
+                    corr: 5,
+                    detail: key(""),
+                    fatal: false,
+                },
+            ),
+            (
+                missing_args,
+                OldOutcome::Refusal {
+                    code: Code::BadRequest,
+                    corr: 5,
+                    detail: key("args"),
+                    fatal: false,
+                },
+            ),
+            (
+                status_args,
+                OldOutcome::Refusal {
+                    code: Code::BadRequest,
+                    corr: 5,
+                    detail: key("a"),
+                    fatal: false,
+                },
+            ),
+            (
+                json_bad_verb,
+                OldOutcome::Refusal {
+                    code: Code::BadRequest,
+                    corr: 9,
+                    detail: key("verb"),
+                    fatal: false,
+                },
+            ),
+            (
+                unknown,
+                OldOutcome::Refusal {
+                    code: Code::UnknownVerb,
+                    corr: 5,
+                    detail: Detail::Empty,
+                    fatal: false,
+                },
+            ),
+            (
+                hello_required,
+                OldOutcome::Refusal {
+                    code: Code::HelloRequired,
+                    corr: 7,
+                    detail: Detail::Empty,
+                    fatal: true,
+                },
+            ),
+            (
+                wrong_hello_corr,
+                OldOutcome::Refusal {
+                    code: Code::BadFrame,
+                    corr: 0,
+                    detail: Detail::Empty,
+                    fatal: true,
+                },
+            ),
+            (
+                json_current,
+                OldOutcome::Refusal {
+                    code: Code::BinaryRequired,
+                    corr: 3,
+                    detail: Detail::Empty,
+                    fatal: false,
+                },
+            ),
+            (
+                ready_hello,
+                OldOutcome::Refusal {
+                    code: Code::BadRequest,
+                    corr: 5,
+                    detail: key("verb"),
+                    fatal: false,
+                },
+            ),
+            (
+                observer_status,
+                OldOutcome::Refusal {
+                    code: Code::Forbidden,
+                    corr: 5,
+                    detail: Detail::Empty,
+                    fatal: false,
+                },
+            ),
+            (
+                unsupported_hello,
+                OldOutcome::Refusal {
+                    code: Code::UnsupportedVersion,
+                    corr: 2,
+                    detail: Detail::Empty,
+                    fatal: true,
+                },
+            ),
+            (
+                bad_hello,
+                OldOutcome::Refusal {
+                    code: Code::BadRequest,
+                    corr: 2,
+                    detail: key("client"),
+                    fatal: false,
+                },
+            ),
+            (
+                unserved,
+                OldOutcome::Refusal {
+                    code: Code::UnknownVerb,
+                    corr: 5,
+                    detail: Detail::Empty,
+                    fatal: false,
+                },
+            ),
+            (
+                mismatched_hello,
+                OldOutcome::Refusal {
+                    code: Code::BadRequest,
+                    corr: 1,
+                    detail: key("proto.major"),
+                    fatal: false,
+                },
+            ),
+            (
+                duplicate_status,
+                OldOutcome::Refusal {
+                    code: Code::BadRequest,
+                    corr: 6,
+                    detail: key("pid"),
+                    fatal: false,
+                },
+            ),
+        ];
 
-        let events = req("events", "{\"a\":1,\"a\":2}");
-        let query = binary(events.as_bytes());
-        assert_default_facts_unchanged(&query);
+        for (query, expected) in table {
+            assert_old_outcome(&query, expected);
+        }
     }
 
     // ---- a deterministic hostile table
