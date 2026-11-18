@@ -558,6 +558,10 @@ mod tests {
         let pair = client_of("~uD83D~uDE00").expect("a valid pair decodes");
         assert_eq!(pair, "\u{1F600}");
         assert_eq!(client_of("~u00e9"), Ok("\u{e9}".to_string()));
+        let first = client_of("~uD800~uDC00").expect("U+10000 is the first pair");
+        assert_eq!(first, "\u{10000}");
+        let last = client_of("~uDBFF~uDFFF").expect("U+10FFFF is the last pair");
+        assert_eq!(last, "\u{10FFFF}");
     }
 
     #[test]
@@ -568,6 +572,9 @@ mod tests {
         assert!(client_of("~uD83Dx").is_err());
         assert!(client_of("~uDE00~uD83D").is_err());
         assert!(client_of("~uD83D~uD83D").is_err());
+        assert!(client_of("~uDC00").is_err());
+        assert!(client_of("~uDFFF").is_err());
+        assert!(client_of("~uD800~uDBFF").is_err());
     }
 
     #[test]
@@ -625,6 +632,14 @@ mod tests {
         assert!(object.array("missing").is_err());
         assert!(object.get("a", super::Kind::Str).is_err());
         assert!(object.get("a", super::Kind::Array).is_ok());
+    }
+
+    #[test]
+    fn tab_cr_and_lf_are_space_between_array_elements() {
+        let text = b"[\t1\t,\r2\r,\n3\n]";
+        assert_eq!(text.len(), 13);
+        let found = split_array(text, 0..text.len());
+        assert_eq!(found, Some(vec![2..3, 6..7, 10..11]));
     }
 
     #[test]
