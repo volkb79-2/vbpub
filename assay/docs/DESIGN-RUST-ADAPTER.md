@@ -138,7 +138,7 @@ container memory cap intended to OOM-kill such a mutant inside its own container
 assay classifies an OOM-killed mutant is a K15 verdict-semantics point to read from the real run.
 The real run then happened (2026-11-18, base `0dd7230b1`, 345 mutants, 17 minutes): 271 caught, 47
 unviable, 21 missed, 6 timeouts; the lane's R2 claim is `BUDGET_EXCEEDED / LANE_TIMEOUT` (exit 4, the
-timeouts outrank the survivors), nothing was OOM-killed. K15 is closed by that evidence for the ingested
+timeouts outrank the survivors), the container was not OOM-killed. K15 is closed by that evidence for the ingested
 Rust R2 path; the verdict-semantics and timeout-cost follow-ups are B559 and B560.
 
 **Contract read from upstream ([V] mutants.rs pages and `src/outcome.rs`, `src/mutant.rs`, `src/process.rs`):**

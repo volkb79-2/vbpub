@@ -171,12 +171,18 @@ the U8b-fix branch merged with origin/main including the hostobs client crate's 
 `0dd7230b1`, container `--memory 2500m --memory-swap 2500m`, `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` and
 `NEXTEST_TEST_THREADS` = 1): the cockpit's remote-gate wrapper was killed with its devcontainer at about
 16:23Z but the job lives on the host and finished: `345 mutants tested in 17m: 21 missed, 271 caught, 47
-unviable, 6 timeouts` (unmutated baseline 4 s build + 2 s test on a warm cache; command 16:22:31 ->
-16:39:31, 1031 s). Assay verdict (exit 4, run-gate lane FAIL by the fail-closed `exit_map`): `R0 PASS`,
+unviable, 6 timeouts` (unmutated baseline 4 s build + 2 s test on a warm cache; the assay command ran
+about 16:22:20 -> 16:39:31, 1031 s by the progress stream). Assay verdict (exit 4, run-gate lane FAIL by the fail-closed `exit_map`): `R0 PASS`,
 `R2 BUDGET_EXCEEDED / LANE_TIMEOUT`, mutation block `candidate_count 341, killed 269, survived 21,
-budget_exceeded 6, crashed 0, hung 0`. No mutant was OOM-killed and the cap was never reached (the six
-timeout mutants spin, for example `Clock::now_ns -> 0`/`1` in `crates/client/src/transport.rs:83`, and
-allocate nothing). The 21 survivors are real test gaps in the client crate (BinaryOperator 15, FnValue 3,
+budget_exceeded 6, crashed 0, hung 0`. The container was not OOM-killed and the lane ended normally;
+the memory sampler covers only the first minute (peak about 236 MiB of 2.44 GiB), so the later peak is
+not measured, and a mutant test process killed by the cgroup would most likely have been counted as caught
+(not separately visible), so "no mutant OOM-killed" is supported by `crashed 0`, the absence of signal lines
+in the lane log and the normal exit, not by a memory trace. The six timeout mutants spin, for example
+`Clock::now_ns -> 0`/`1` in `crates/client/src/transport.rs:83` (inferred not to allocate). The counts
+are not fully reconciled: cargo-mutants reports 271 caught and 47 unviable, assay's verdict 269 killed
+and 45 discarded (candidate_count 341 = 296 judged + 45 discarded), so four of the 345 are not in
+assay's accounting and the reason is not yet traced. The 21 survivors are real test gaps in the client crate (BinaryOperator 15, FnValue 3,
 UnaryOperator 1, MatchArmGuard 1, StructField 1; `client.rs` 13, `hello.rs` 6, `json.rs` 1, `streams.rs` 1).
 Cost: the 6 timeout mutants took 6 x 120 s (`--minimum-test-timeout 120`) = 12 of the 17 minutes; the other
 339 took about 5 minutes (about 0.9 s each on a warm cache). Two verdict-semantics points are filed as
