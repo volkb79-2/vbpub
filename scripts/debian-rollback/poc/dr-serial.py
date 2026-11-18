@@ -77,7 +77,21 @@ class Guest:
             self._pump()
         raise TimeoutError(f"timeout {timeout}s waiting for {pattern!r}; tail: {self.buf[-300:]!r}")
 
+    def _shell_answers(self, wait):
+        """True when a shell answers a probe within `wait` seconds. The echoed probe has `$((20+22))`, only the
+        shell's answer has 42."""
+        self.buf = b""
+        self.send("echo __DR_READY_$((20+22))__\n")
+        try:
+            self.expect(rb"__DR_READY_42__", wait)
+            return True
+        except TimeoutError:
+            return False
+
     def login(self, timeout=900):
+        # a previous scenario may have left a root shell on the line
+        if self._shell_answers(6):
+            return
         self.send("\n")
         self.expect(rb"login: ?$|login: ", timeout)
         self.send("root\n")
@@ -87,13 +101,8 @@ class Guest:
         # shell answers. The echoed probe has `$((20+22))`, only the shell's answer has 42.
         deadline = time.monotonic() + 400
         while time.monotonic() < deadline:
-            self.buf = b""
-            self.send("echo __DR_READY_$((20+22))__\n")
-            try:
-                self.expect(rb"__DR_READY_42__", 10)
+            if self._shell_answers(10):
                 return
-            except TimeoutError:
-                continue
         raise TimeoutError("no working shell after login")
 
     def run(self, cmd, timeout=300):
@@ -119,13 +128,22 @@ def check(log, label, ok, detail=""):
 def scenario_boot_check(g, log):
     g.login()
     rc, out = g.run("uname -r; cat /proc/cmdline; findmnt -no SOURCE,OPTIONS /; systemctl is-system-running; "
-                    "ip -4 -br addr show scope global; getent hosts deb.debian.org | head -1; "
+                    "ip -color=never -4 -br addr show scope global; getent hosts deb.debian.org | head -1; "
                     "dr-state list; ls /boot/efi/EFI/dr /boot/efi/EFI/BOOT; "
-                    "sed -n 1,40p /boot/efi/EFI/dr/grub.cfg; mountpoint /home /srv /var/log /var/lib/docker /.top /opt")
+                    "sed -n 1,40p /boot/efi/EFI/dr/grub.cfg; "
+                    "for m in /home /root /srv /var/www /var/log /var/lib/docker /var/lib/containers "
+                    "/var/lib/postgresql /var/lib/mysql /usr/local /.top /opt /etc; do "
+                    "if mountpoint -q $m; then echo MP:$m; else echo NOTMP:$m; fi; done")
     check(log, "boot-check commands ran", rc == 0)
     check(log, "booted a state subvolume", "rootflags=subvol=@os-" in out)
-    check(log, "guest has a global IPv4 address", re.search(r"\d+\.\d+\.\d+\.\d+/", out) is not None)
-    check(log, "name resolution works", "deb.debian.org" in out)
+    check(log, "system is running (systemd)", re.search(r"^running\s*$", out, re.M) is not None)
+    check(log, "guest has a global IPv4 address", re.search(r"^eth0\s+UP\s+\d+\.\d+\.\d+\.\d+/", out, re.M) is not None)
+    check(log, "name resolution works", re.search(r"^[0-9a-f:.]+\s+.*deb\.debian\.org\s*$", out, re.M) is not None)
+    outside = ["/home", "/root", "/srv", "/var/www", "/var/log", "/var/lib/docker", "/var/lib/containers",
+               "/var/lib/postgresql", "/var/lib/mysql", "/usr/local", "/.top"]
+    check(log, "outside paths (D18) are separate mounts",
+          all(f"MP:{p}" in out for p in outside), str([p for p in outside if f"MP:{p}" not in out]))
+    check(log, "/opt and /etc are inside the state (D18)", "NOTMP:/opt" in out and "NOTMP:/etc" in out)
 
 
 def scenario_s2_s3(g, log):

@@ -75,6 +75,7 @@ def main() -> int:
             data += b.recv(256)
 
     def serve_login():
+        recv_until(b"__DR_READY_")           # the up-front "already logged in?" probe: no shell yet, no answer
         b.sendall(b"drpoc login: ")
         recv_until(b"root\n")
         b.sendall(b"Password: ")
@@ -89,6 +90,13 @@ def main() -> int:
         g.login(30)
     except Exception as exc:  # noqa: BLE001 - report any failure of the fake exchange
         failures.append(f"login with a swallowed first probe failed: {exc!r}")
+
+    # already logged in: the first probe is answered, no login prompt is needed
+    g = fake_guest(b"echo __DR_READY_$((20+22))__\r\n__DR_READY_42__\r\n")
+    try:
+        g.login(30)
+    except Exception as exc:  # noqa: BLE001
+        failures.append(f"login on an already logged-in shell failed: {exc!r}")
 
     # silence times out instead of hanging
     a, b = socket.socketpair()
