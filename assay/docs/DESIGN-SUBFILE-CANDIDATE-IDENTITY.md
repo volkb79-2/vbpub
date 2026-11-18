@@ -43,7 +43,7 @@ The brief's "~65-150" is the line delta. Function granularity lands at **~210 (C
 
 **It must never:**
 
-- report a candidate `killed` on evidence that the current judge did not produce or prove;
+- report a candidate `killed` on evidence that the current judge did not produce or prove (the strict mode, which every release claim uses; an exploratory campaign may count a disclosed `carried-unverified` kill, §7 D2);
 - let a carried record reach a PASS-supporting bucket (for release claims; an exploratory campaign may allow a `carried-unverified` kill under §7 D2 and must disclose the count);
 - mix carried and fresh outcomes without per-candidate disclosure;
 - need an operator reason for anything it does by itself.
@@ -73,7 +73,7 @@ A record "killed by node X" states that the suite, run on the mutated tree M, fa
 - **A stale survivor** is a record "survived" for a candidate that is now killed. Every survivor fails R2 (§0), so it can only turn a true PASS into a FAIL. It hides an improvement and adds noise to the survivor list. It can never produce a PASS. The same holds for a survivor carried onto the wrong candidate through a locus collision.
 - **A stale `equivalent`, `crashed`, `hung` or `budget_exceeded` record** is never carried (`CARRY_OVER_IMPORTABLE_BUCKETS`, `mutation.py:1805`). That rule stays.
 
-Hence the design rule: **a carried KILL must be re-proved by the current judge before it counts; a carried SURVIVOR may be carried pessimistically, with disclosure.**
+Hence the design rule: **a carried KILL must be re-proved by the current judge before it counts (strict mode, mandatory for release claims; an exploratory campaign may keep a disclosed `carried-unverified` kill, §7 D2); a carried SURVIVOR may be carried pessimistically, with disclosure.**
 
 ### 2.3 Phase 1 theorem (no new trust)
 
@@ -89,7 +89,7 @@ The current judge J runs the current plan. Every candidate C ends in exactly one
 4. **Carried survivor.** A prior `survived` record found by exact id or by locus is imported into the bucket `survived` with execution mode `carried` and provenance.
 5. **Never-started**, as today.
 
-**Claim.** In a Phase 1 verdict every `killed` outcome is evidence that J produced in this campaign, or an exact resume of such evidence. A wrong, stale or colliding locus match costs time (a failed replay followed by a full judge) or adds one disclosed pessimistic survivor. It can never add a kill. The proof depends only on (i) and (ii), which are executions under J. It does not depend on the key, on callees, on tests being unchanged, or on any static analysis. The verifier enforces the claim structurally (§5.2: `killed` is never `carried`).
+**Claim (strict mode, i.e. every release claim; the exploratory exception of §7 D2 is a disclosed `carried-unverified` bucket outside this claim).** In a Phase 1 verdict every `killed` outcome is evidence that J produced in this campaign, or an exact resume of such evidence. A wrong, stale or colliding locus match costs time (a failed replay followed by a full judge) or adds one disclosed pessimistic survivor. It can never add a kill. The proof depends only on (i) and (ii), which are executions under J. It does not depend on the key, on callees, on tests being unchanged, or on any static analysis. The verifier enforces the claim structurally (§5.2: `killed` is never `carried`).
 
 **Isolated kill semantics, the price of cheapness.** "X alone fails on M, and X alone passes on P" proves that the suite contains a test which detects M. The current judge's semantics are different: the suite in its order fails on M. The two differ only for order-dependent tests: X fails on M alone but passes after earlier tests, and nothing else fails. Then isolated says killed, the suite run says survived. Both runs use the same one-item collection, so the B106 objection (a narrowed collection changes what session fixtures see, `DESIGN-GUIDE.md:1872-1876`) applies symmetrically to baseline and mutant and does not invalidate the comparison. This is a judge-semantics change; the operator decided it (§7 D1, yes): an isolated kill is accepted and disclosed as `witness-isolated`. For the record, the alternative that was not chosen is the B106 prefix replay: sound, with Phase 1's kill gain about 0 (§0).
 
@@ -230,7 +230,7 @@ Everything the analyser cannot map (§3.2 fallback) uses the exact id: one byte 
 
 ### 5.1 Claims
 
-- **R2 PASS, "every candidate killed".** Phase 1 keeps it, because every kill is fresh. The claim's meaning changes from "the ordered suite fails" to "some test of the suite, run alone, fails while it passes alone on the baseline" (§7 D1).
+- **R2 PASS, "every candidate killed".** Phase 1 keeps it in the strict (release-claim) mode, because every kill is fresh; an exploratory campaign that allows `carried-unverified` kills does not make this claim (§7 D2). The claim's meaning changes from "the ordered suite fails" to "some test of the suite, run alone, fails while it passes alone on the baseline" (§7 D1).
 - **Phase 2** adds an assumption to kills: determinism plus completeness of observation, with residuals named in §2.5. The verdict must state it.
 - **The survivor list** may contain stale entries, each one disclosed as `carried` with its source judge. Its count is `provenance.carried_survivor`.
 - **Legacy `--carry-over` kills** remain an unverified operator claim, now visible per candidate.
