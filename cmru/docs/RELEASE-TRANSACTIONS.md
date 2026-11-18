@@ -807,7 +807,7 @@ The following release gates are now declared through `cmru tester-gate`:
 | Project | Current state | Required follow-up |
 |---|---|---|
 | ciu | Full pytest coverage floor | `run-ciu-tests.py` |
-| cmru | Contract-2 resource observation on the native-R2 `mutation` and `assay-first-release-r2` lanes only (other lanes declare memory/PID limits without event evidence, KI-77); the 6.2.x and 7.0.x through 7.3.x candidates use the KI-79 provisional R2 deferral (bounded to `>= 6.2.0`, `< 6.3.0`, `>= 7.0.0`, `< 7.1.0`, `>= 7.1.0`, `< 7.2.0`, `>= 7.2.0`, `< 7.3.0`, and `>= 7.3.0`, `< 7.4.0`; 7.3.x by operator decision 2026-11-12) | `run-gate gate` for full R2; `run-gate gate-provisional` records an approved deferral only |
+| cmru | Contract-2 resource observation on the native-R2 `mutation` and `assay-first-release-r2` lanes only (other lanes declare memory/PID limits without event evidence, KI-77); every candidate uses the standing release rule's R2 deferral (KI-79/KI-159, operator decision 2026-11-18; no version window) | `run-gate gate` for full R2; `run-gate release-gate` records the owed R2 only |
 | nyxloom | Full unit/contract suite | `pytest tests -q` |
 | MDT | Source-first release-flow and OCI-staging contracts | focused `unittest` modules |
 | pwmcp | Resolver and builder contracts | `pytest tests -q` |
