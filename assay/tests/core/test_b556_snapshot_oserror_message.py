@@ -8,10 +8,18 @@ import os
 from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 from assay.adapters.python import PythonAdapter
+from assay.config import MutationConfig
 from assay.errors import AssayError, Outcome, ReasonCode
-from conftest import GitRepo, completed_process, make_lane, make_r1_judge
+from conftest import (
+    GitRepo,
+    completed_process,
+    make_lane,
+    make_r1_judge,
+    make_r2_judge,
+)
 
 from assay import errors, runner
 
@@ -61,12 +69,16 @@ def test_eperm_int_filename_is_resolved_through_proc(tmp_path):
     assert "phase 'cleanup'" in text
     assert "[Errno 1 EPERM]" in text
     assert "operation='Operation not permitted'" in text
-    assert f"path={str(path)!r} (fd {fd})" in text
+    assert f"path=fd {fd} -> {str(path)!r}" in text
 
 
-def test_eperm_already_closed_fd_names_the_fd_as_unresolved():
-    fd = os.open(os.devnull, os.O_RDONLY)
-    os.close(fd)
+def test_eperm_unresolvable_fd_names_the_fd_as_unresolved(monkeypatch):
+    fd = 12
+
+    def fail_readlink(_path):
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), _path)
+
+    monkeypatch.setattr(errors.os, "readlink", fail_readlink)
 
     text = errors.describe_os_error(
         PermissionError(errno.EPERM, os.strerror(errno.EPERM), fd),
@@ -97,7 +109,7 @@ def test_enoent_str_filename_and_second_filename_are_named(tmp_path):
 
 
 def test_eacces_bytes_filename_is_shown_unchanged():
-    filename = b"/tmp/bytes-path"
+    filename = b"/tmp/non-utf8-\xff"
     text = errors.describe_os_error(
         PermissionError(errno.EACCES, os.strerror(errno.EACCES), filename),
         phase="workspace",
@@ -105,6 +117,47 @@ def test_eacces_bytes_filename_is_shown_unchanged():
 
     assert "[Errno 13 EACCES]" in text
     assert f"path={filename!r}" in text
+    assert "\xff" not in text
+
+
+def test_control_characters_in_a_str_filename_are_escaped():
+    filename = "/tmp/line\nbreak\x1b"
+
+    text = errors.describe_os_error(
+        PermissionError(errno.EACCES, os.strerror(errno.EACCES), filename),
+        phase="workspace",
+    )
+
+    assert "\n" not in text
+    assert "\x1b" not in text
+    assert "path='/tmp/line\\nbreak\\x1b'" in text
+
+
+def test_huge_integer_filename_falls_back_to_bounded_text():
+    text = errors.describe_os_error(
+        OSError(errno.EPERM, "synthetic", 10**5000),
+        phase="cleanup",
+    )
+
+    assert "phase 'cleanup'" in text
+    assert "synthetic" in text
+    assert len(text) <= 4096
+
+
+def test_filename_object_whose_str_raises_cannot_mask_the_original_error():
+    class StringRefusingFilename:
+        def __str__(self):
+            raise ValueError("filename string conversion refused")
+
+    text = errors.describe_os_error(
+        OSError(errno.EPERM, "synthetic", StringRefusingFilename()),
+        phase="cleanup",
+    )
+
+    assert "phase 'cleanup'" in text
+    assert "synthetic" in text
+    assert "StringRefusingFilename" in text
+    assert len(text) <= 4096
 
 
 def test_unknown_errno_is_named():
@@ -144,16 +197,27 @@ def test_lane_oserror_keeps_the_original_cause_and_git_failed_reason():
     assert errors.describe_os_error(cause, phase="cleanup") in str(wrapped)
 
 
-def _run_lane(git_repo: GitRepo, lane, *, diagnostics=None, process_runner=None):
+def _run_lane(
+    git_repo: GitRepo,
+    lane,
+    *,
+    commit=None,
+    diagnostics=None,
+    process_runner=None,
+    progress_stream=None,
+    cold_witness=False,
+):
     return runner.run_lane(
         lane,
-        commit=git_repo.head(),
+        commit=git_repo.head() if commit is None else commit,
         repo=git_repo.path,
         project_root=git_repo.path,
         adapter=PythonAdapter(),
         assay_version="12.0.0",
         diagnostics=diagnostics,
         process_runner=process_runner or _write_coverage,
+        progress_stream=progress_stream,
+        cold_witness=cold_witness,
     )
 
 
@@ -276,7 +340,7 @@ def test_cleanup_oserror_names_its_phase(git_repo: GitRepo, monkeypatch):
     detail = _failing_detail(verdict)
     assert "phase 'cleanup'" in detail
     assert "[Errno 1 EPERM]" in detail
-    assert "fd 12 (unresolved)" in detail
+    assert "path=fd 12 " in detail
 
 
 def test_genuine_git_assayerror_message_is_byte_identical(
@@ -300,3 +364,133 @@ def test_genuine_git_assayerror_message_is_byte_identical(
     detail = _failing_detail(verdict)
     assert detail == message
     assert diagnostics.getvalue().endswith(f"ERROR/GIT_FAILED: {message}\n")
+
+
+def test_a_raw_file_not_found_from_the_git_spawn_path_is_formatted(
+    git_repo: GitRepo, monkeypatch
+):
+    head, lane = _seed_r1_lane(git_repo)
+    missing_interpreter = git_repo.path / "git-wrapper"
+    cause = FileNotFoundError(
+        errno.ENOENT,
+        os.strerror(errno.ENOENT),
+        str(missing_interpreter),
+    )
+
+    def fail_spawn(*_args, **_kwargs):
+        raise cause
+
+    monkeypatch.setattr(runner.git, "_p22_spawn", fail_spawn)
+    verdict = _run_lane(git_repo, lane, commit=head)
+
+    detail = _failing_detail(verdict)
+    assert verdict.exit_code == Outcome.ERROR.exit_code
+    assert "phase 'seed/snapshot'" in detail
+    assert "[Errno 2 ENOENT]" in detail
+    assert f"path={str(missing_interpreter)!r}" in detail
+
+
+def test_cold_witness_second_materialize_oserror_names_workspace(
+    git_repo: GitRepo, monkeypatch
+):
+    git_repo.write("src/mod.py", "def flag(value):\n    return 0\n")
+    base = git_repo.commit_all("seed R2 source")
+    git_repo.write("src/mod.py", "def flag(value):\n    return value > 0\n")
+    head = git_repo.commit_all("change R2 source")
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",),
+        base=base,
+        mutation=MutationConfig(
+            max_mutants=50,
+            operators=("python:compare-swap",),
+            liveness="false",
+        ),
+    )
+    lane = make_lane(
+        rigor=("R0", "R2"),
+        judge=judge,
+        argv=("pytest", "tests", "-q"),
+    )
+    cause = PermissionError(
+        errno.EPERM,
+        os.strerror(errno.EPERM),
+        git_repo.path / "second-workspace",
+    )
+    real_materialize = runner.isolation.SnapshotRepository.materialize
+    calls = 0
+
+    def fail_on_second_materialize(self, *, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise cause
+        return real_materialize(self, timeout=timeout)
+
+    monkeypatch.setattr(
+        runner.isolation.SnapshotRepository,
+        "materialize",
+        fail_on_second_materialize,
+    )
+    monkeypatch.setattr(
+        runner,
+        "inject_witness_plugin",
+        lambda plan, **_kwargs: SimpleNamespace(active=True, plan=plan),
+    )
+    monkeypatch.setattr(
+        runner,
+        "receipt_facts",
+        lambda _receipt: SimpleNamespace(
+            duplicates=0,
+            runtime_fingerprint_sha256="a" * 64,
+            collection_count=1,
+            collection_sha256="b" * 64,
+            hook_fingerprint_sha256="c" * 64,
+            hook_count=0,
+        ),
+    )
+    monkeypatch.setattr(runner, "survivor_proof_failure", lambda *_a, **_k: None)
+    monkeypatch.setattr(runner, "supports_sequential_pytest", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        runner.mutation, "supports_sequential_pytest", lambda *_a, **_k: True
+    )
+    diagnostics = StringIO()
+    verdict = _run_lane(
+        git_repo,
+        lane,
+        commit=head,
+        diagnostics=diagnostics,
+        process_runner=lambda argv, **_kwargs: completed_process(
+            list(argv), 0, stdout="", stderr=""
+        ),
+        cold_witness=True,
+    )
+
+    assert verdict.outcome is Outcome.ERROR, diagnostics.getvalue()
+    assert verdict.reason_code is ReasonCode.GIT_FAILED, diagnostics.getvalue()
+    detail = _failing_detail(verdict)
+    assert calls == 2
+    assert "phase 'workspace'" in detail
+    assert "[Errno 1 EPERM]" in detail
+    assert "second-workspace" in detail
+
+
+def test_snapshot_materialized_progress_oserror_names_progress_emission(
+    git_repo: GitRepo,
+):
+    _head, lane = _seed_r1_lane(git_repo)
+    cause = PermissionError(
+        errno.EPERM,
+        os.strerror(errno.EPERM),
+        git_repo.path / "progress",
+    )
+
+    class FailingProgress:
+        def emit(self, _event):
+            raise cause
+
+    verdict = _run_lane(git_repo, lane, progress_stream=FailingProgress())
+
+    detail = _failing_detail(verdict)
+    assert "phase 'progress emission'" in detail
+    assert "[Errno 1 EPERM]" in detail
+    assert "progress" in detail

@@ -4219,6 +4219,7 @@ def _execute_snapshot_unit(
     # the entry was filed about -- so it is bracketed by a phase pair and
     # ticked while it runs.
     if progress is not None:
+        _mark_lane_phase("progress emission")
         progress.emit(
             {
                 "event": "command_started",
@@ -4258,6 +4259,7 @@ def _execute_snapshot_unit(
         )
     _mark_lane_phase("descendant handling")
     if progress is not None:
+        _mark_lane_phase("progress emission")
         progress.emit(_command_finished_event(result, phase=progress_phase))
 
     _mark_lane_phase("artifact collection")
@@ -4290,6 +4292,7 @@ def _execute_snapshot_unit(
         except AssayError as exc:
             profile_error = exc
         if progress is not None:
+            _mark_lane_phase("progress emission")
             # (B064) R1 lanes only -- `wants_coverage` is exactly the
             # `r1_declared` disposition one layer up, so a lane with no
             # coverage judge never emits a phase it does not have. Emitted
@@ -4310,6 +4313,7 @@ def _execute_snapshot_unit(
                     ),
                 }
             )
+            _mark_lane_phase("artifact collection")
     if reservation is not None:
         reservation.close()
 
@@ -5200,7 +5204,7 @@ def _run_prepared_lane(
         )
     _mark_lane_phase("workspace")
     with prepared.materialize(timeout=deadline.remaining()) as baseline_snapshot:
-        _mark_lane_phase("lane command")
+        _mark_lane_phase("baseline setup")
         # (B245 U5a review) A directory-kind ingested lane anchors the tool's
         # own file paths on the cargo workspace root, which is read from the
         # committed manifests. It is resolved HERE, before the command runs,
@@ -5260,6 +5264,7 @@ def _run_prepared_lane(
                 env=plan.env_effective,
             )
         if progress_stream is not None:
+            _mark_lane_phase("progress emission")
             progress_stream.emit(
                 {
                     "event": "snapshot_materialized",
@@ -5267,6 +5272,7 @@ def _run_prepared_lane(
                     "commit": baseline_snapshot.commit,
                 }
             )
+        _mark_lane_phase("baseline setup")
         coverage_receipt_capture = None
         if cold_witness:
             coverage_receipt_capture = ReceiptCapture()
@@ -6092,7 +6098,9 @@ def _run_prepared_lane(
                     )
                 r2_manifest_sidecar = witness_dir / "r2-manifest.txt"
                 try:
+                    _mark_lane_phase("workspace")
                     with prepared.materialize(timeout=deadline.remaining()) as r2_snapshot:
+                        _mark_lane_phase("baseline setup")
                         r2_cwd = resolve_run_cwd(r2_snapshot.project_root, r2_plan)
                         if not mutation.supports_sequential_pytest(
                             r2_plan.argv_effective,
@@ -6263,6 +6271,8 @@ def _run_prepared_lane(
                             coverage_baseline=coverage_baseline_facts,
                             r2_baseline=r2_baseline_facts,
                         )
+                        _mark_lane_phase("cleanup")
+                    _mark_lane_phase("artifact collection")
                     if r2_manifest is not None:
                         temporary_name = None
                         descriptor = None
@@ -7632,10 +7642,14 @@ def _run_higher_rigor_lane(
         # DA-R3's five sites, so nothing before this covered it -- but the
         # rule is the same one: a refusal site that HAS the fact and does not
         # compose it leaves the operator with a two-word pair and a guess.
-        # Git's spawn/repository boundaries convert every raw `OSError` into
-        # an `AssayError`, so a raw `OSError` here is the non-git lane-block
-        # failure B556 is about; genuine Git failures stay byte-identical
-        # on the `except AssayError` branch above.
+        # Most genuine Git failures reach the branch above as `AssayError`
+        # and stay byte-identical there. One raw shape can still arrive here:
+        # `_p22_spawn` deliberately re-raises a spawn `OSError` (for example,
+        # an executable Git wrapper whose shebang interpreter is missing),
+        # and `_p22_git` calls it directly. That spawn failure now gets the
+        # richer B556 text; its `GIT_FAILED`, outcome and exit code are
+        # unchanged. Every other raw `OSError` here is the non-git lane-block
+        # failure B556 is about.
         os_detail = announce_refusal(
             _lane_oserror(exc, phase=_LANE_PHASE.get()),
             diagnostics=diagnostics,
