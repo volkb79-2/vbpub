@@ -95,3 +95,18 @@ Test `Failure(4)`), `w-true` 0, `unicode` 0, `methods` 0.
   `--build-timeout`) and an `Unviable` mutant whose Build status is `Signalled`
   or `Other`: the parser refuses both as an unmeasured cargo-mutants phase shape.
 - hostobs-scale cost, `--shard`, CRLF, a real `Signalled`/`Other` Test status.
+
+Known risks for the first real qualification run (B245 U7,
+`tools/qualify_rust_r2_real.py`; each is diagnosed, not a known defect; its
+`--preflight` mode lists the real mutants of every case in seconds first):
+
+- Descendants of the `full` timeout mutant may outlive it: assay then reports
+  `outliving_descendants` and `ERROR`/`EXEC_FAILED` for `full` only. Diagnose from
+  `process_tree_evidence` in the saved `verdicts/full.json`.
+- `ws-sub` (workspace root below the git top, several members) is unmeasured and
+  member `a` of the original `ws` input was never matrixed (the tool renames the
+  members `crate_a`/`crate_b`): a `ws-sub` deviation is information about that
+  shape. The real tool output of a deviating case is kept in
+  `deviations/<case>/`.
+- `--timeout 20` is wall-clock per mutant and flaky under host load: re-run on a
+  quiet host before reading a timing-dependent deviation as a defect.

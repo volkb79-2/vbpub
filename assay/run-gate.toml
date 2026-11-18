@@ -146,12 +146,16 @@ memory = "1g"
 # process, asserts each case's verdict and mutation counts against the committed
 # tests/fixtures/rust/cargo-mutants fixtures and round-trips every verdict through
 # `assay verify`. Evidence and per-case wall seconds: .assay/rust-r2-real/summary.json.
+# The run starts with the tool's own preflight (imports, tool versions, the real
+# `cargo mutants --list --in-diff` of every case, no mutation) and exits 2 when it
+# fails; `--preflight` runs only that (seconds), `--no-preflight` skips it, and a
+# deviating case's real assay-out lands in .assay/rust-r2-real/deviations/<case>/.
 # Same PYTHONPATH/Cowtree rationale as rust-r1-qualification above.
 [lanes.rust-r2-qualification]
 kind = "command"
 environment = "tester-unified-rust"
 network = "none"
-description = "Qualify Assay's ingested Rust R2 lane against real offline cargo-mutants."
+description = "Qualify Assay's ingested Rust R2 lane against real offline cargo-mutants (args: --preflight lists the real mutants per case in seconds, --no-preflight, --case NAME)."
 argv = [
   "bash", "-c",
   '''set -eu
