@@ -509,7 +509,10 @@ uses it to derive its queue from its reply bound (design R28): the observer serv
 `annotate` (`status` is forbidden there, §4.3), every observer reply and error envelope is below 3 KiB
 (fixed-shape replies below), and the observer `hello` reply too (≤ 2 verbs, ≤ 8 quality codes, 19 limit
 keys), so `max_reply_bytes` is 16 KiB and `control_queue_bytes` is 4 * 16 KiB + 256 KiB = 320 KiB (128 observer
-connections hold at most 40 MiB of control queue, not 256 MiB). The cap measures the binary REP payload
+connections hold at most 40 MiB of control queue, not 256 MiB). The one hub carries the widest
+`control_queue_bytes` of the served levels, so the server enforces a smaller level cap itself after
+each read (a connection whose queued control bytes exceed its own level's cap is `slow-client`; a
+frame is at most `max_reply_bytes`, so this equals the hub's rule). The cap measures the binary REP payload
 alone, and the JSON-mode reply line without its `\n` and including its `,"corr":N` member. A paged verb
 (`events`, `spans`, `procs`) ends its page before the item that would push the REP over
 `max_reply_bytes` and sets `next`; every page carries at least one item, because the worst item is far
@@ -1080,7 +1083,7 @@ one `dict_form` call per push:
 | `hub-shared-block` | two connections, one `Arc`, distinct `corr`/`dropped` prefixes, identical tails |
 | `hub-end-stream` | `end_stream` of a live stream removes the unpinned tick, returns `blocks`/`dropped`; of a query stream with one pinned and two queued unpinned Query blocks returns `blocks = 3` and leaves both queued |
 
-Connection cases (P5b, Rust only, an in-process socketpair and a fake clock, one per §5.4 row):
+Connection cases (P5b, Rust only, a fake clock, one per §5.4 row; in P5b-1 and P5b-2 the case runs against the sans-IO core (`Conn` and `Server` fed bytes in memory, design R21), and the socketpair runs of the same cases move to P5b-4 with the drivers):
 `conn-refuse-level-cap`, `conn-refuse-uid-cap` (no byte written), `conn-silent-hello-timeout`
 (nothing sent, closed at `+5001` ms, no byte written), `conn-prefix-partial` (`HOB\x01` + 2 bytes, then
 the timer: silent close), `conn-unknown-mode`, `conn-json-first-line`, `conn-hello-required`,
@@ -1090,8 +1093,9 @@ the timer: silent close), `conn-unknown-mode`, `conn-json-first-line`, `conn-hel
 `conn-prefix-surplus` (the 8-byte prefix and a complete `hello` REQ in one write: hello answered),
 `conn-dribbling-reader` (a subscriber reading one byte per 4 s: `slow-client` at its pinned head's
 `pinned_ns + frame_completion_ms + 1`; a second connection's ticks are never shed meanwhile),
-`conn-reply-page-truncated` (`events` at `limit` 1,000 with 8 attrs of 256 B each: REP ≤
-`max_reply_bytes`, fewer items, `next` set, connection stays), `conn-closing-evt` (`Closing` with an
+`conn-reply-page-truncated` (retargeted to `procs` in P5b-3, because `events` is M3: `procs` at its
+page limit with a `cmdline` of 4,096 B per item: REP ≤ `max_reply_bytes`, fewer items, `next` set,
+connection stays; the original `events` form, `limit` 1,000 with 8 attrs of 256 B each, returns with M3), `conn-closing-evt` (`Closing` with an
 unwritten head: EVT `closing` written; with a partially written head: no EVT, closed).
 
 ## 12. Work breakdown
