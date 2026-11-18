@@ -13,6 +13,8 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from cmru.process_run import run_process
 from typing import Iterator
 from urllib.parse import unquote, urlsplit
 
@@ -210,7 +212,8 @@ def run_remote_git(
             ))
             child_env.update(git_env)
         command.extend(args)
-        return subprocess.run(command, cwd=repo_root, **kwargs)
+        capture = kwargs.pop("capture_output", False)
+        return run_process(command, cwd=repo_root, capture=capture, **kwargs)
 
 
 def run_local_git(repo_root: Path, *args: str, **kwargs) -> subprocess.CompletedProcess:
@@ -225,4 +228,5 @@ def run_local_git(repo_root: Path, *args: str, **kwargs) -> subprocess.Completed
     for key in _PUBLISHER_ENV_KEYS:
         child_env.pop(key, None)
     kwargs["env"] = child_env
-    return subprocess.run(["git", *args], cwd=repo_root, **kwargs)
+    capture = kwargs.pop("capture_output", False)
+    return run_process(["git", *args], cwd=repo_root, capture=capture, **kwargs)

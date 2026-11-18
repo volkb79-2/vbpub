@@ -66,13 +66,14 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-51 | Received frames are held to the alignment and header-first rules: every section `len` is a multiple of 8 (`section-length`) and an unknown kind at directory entry 0 is `section-order` at index 0, after the rank check | Minor | FIXED (P2a1) |
 | HOB-52 | A repeated dictionary identity is `duplicate-dictionary-entry` in Rust whatever the other fields hold, as in the Python reference | Minor | FIXED (P2a1) |
 | HOB-53 | The Python reference follows the WIRE.md §3.10 precedence: `not-a-block` before the buffer length and `SECTIONED` checks | Minor | FIXED (P2a1) |
-| HOB-54 | The probe's serving loop does not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `SendHub`, the envelope checks, the Rust client (`crates/client`) and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | OPEN (P2: `FrameReader`, `ModeDetect`, `ConnTimers`, `SendHub`, `StreamDicts`, `envelope.rs` exist; P3a: the Python reader, `StreamDicts`, decoder and `rate()` exist, P3b: `conn.py`, `profiling.py`, `mark.py` exist, the P3 part is closed; P5a: `crates/client` exists and the Rust client part is closed; P5b-1a (code complete, awaiting its first lane): `bins/probe/src` `limits`, `verbs`, `codes`, `args`, `classify`, `encode` and `lines` exist; P5b-1b (code complete, awaiting its lanes): `backend`, `conn` (the sans-IO state machine) and `server` (the `Server`: accept caps, `finish` as the single release path, the timer order, `status.clients`) exist; P5b-2a: the canonical selection, request schemas, interval rule, BLK-only outstanding precedence, new `Call` arms, budget pools and stream END/result encoders exist, with the three verbs still unserved; then P5b-2b/2c/2d (live streams) and later, see `docs/P5B2-LIVE-STREAMS-DESIGN.md`) |
+| HOB-54 | The probe's serving loop does not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `SendHub`, the envelope checks, the Rust client (`crates/client`) and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | OPEN (P2: `FrameReader`, `ModeDetect`, `ConnTimers`, `SendHub`, `StreamDicts`, `envelope.rs` exist; P3a: the Python reader, `StreamDicts`, decoder and `rate()` exist, P3b: `conn.py`, `profiling.py`, `mark.py` exist, the P3 part is closed; P5a: `crates/client` exists and the Rust client part is closed; P5b-1a (code complete, awaiting its first lane): `bins/probe/src` `limits`, `verbs`, `codes`, `args`, `classify`, `encode` and `lines` exist; P5b-1b (code complete, awaiting its lanes): `backend`, `conn` (the sans-IO state machine) and `server` (the `Server`: accept caps, `finish` as the single release path, the timer order, `status.clients`) exist; P5b-2a: the canonical selection, request schemas, interval rule, BLK-only outstanding precedence, new `Call` arms, budget pools and stream END/result encoders exist, with the three verbs still unserved; P5b-2b (code complete, awaiting its lanes): `Backend::current`/`TickData`, tick validation/encoding, the shared `SelectionStreams` registry and hub `dropped_blocks`/`query_room` exist; then P5b-2c/2d (live streams) and later, see `docs/P5B2-LIVE-STREAMS-DESIGN.md`) |
 | HOB-55 | A look-alike name such as `hot-0-18446744073709551615.seg` (or `.seg.corrupt`) sets the tier's sequence water mark to `u64::MAX` before its owner is proven, so every `open_segment` fails with `LengthOverflow` until the file is removed | Minor | FIXED (P0b) |
 | HOB-56 | `StoreStats::bytes` maintained by incremental arithmetic drifts from the tiers' own byte totals when a file vanishes or a new segment's header is written | Minor | FIXED (P0b) |
 | HOB-57 | `docs/hand-mutants/m1d-mutants.py` had no per-mutant subprocess timeout, so a mutant that hangs the suite hangs the campaign | Minor | FIXED (P0b) |
 | HOB-58 | The reports of an eviction that dropped an already-gone or unremovable entry reach only `TierScan::notes`, so the caller of `append`/`evict` never sees them and a rescan resets them | Minor | FIXED (P0b) |
 | HOB-59 | `Tier::append` and `Store::evict` drop the partial `Evicted` (counts and notes) when an eviction fails after a partial pass | Minor | OPEN |
 | HOB-60 | `Store::notes` visibility is decided by name, not by directory, and the store's eviction-notes ring is redundant with the tiers' `scan.notes` through the public API | Minor | OPEN |
+| HOB-61 | `json.rs` `skip_ws` / `string_end` `+=` to `*=` are pure infinite loops: suite-level TIMEOUT under `assay-r2` by nature (accepted known limit; expected 0 MISSED + 2 TIMEOUT) | Minor | OPEN (accepted) |
 
 ---
 
@@ -1274,3 +1275,22 @@ the directory of the tier the name belongs to (shared directory), and a test pla
 `warm-0-3.seg` in cold's directory and sees it; either a store call rescans a tier (so the ring
 matters through the API) or the ring is removed together with the two rescan tests and
 `Store::notes` reads `scan.notes` alone.
+
+## HOB-61 — Two client mutants are suite-level timeouts under `assay-r2` by nature
+
+**Where:** `crates/client/src/json.rs` (`skip_ws` line 140, `string_end` line 152).
+
+The mutants `+=` to `*=` at those two lines turn a pure scanning loop into an infinite loop that
+no in-process test can stop: the dedicated tests (`skip_ws_always_makes_progress`,
+`string_end_always_makes_progress`) run the helper on a worker thread and fail after two seconds,
+but existing callers in the same test process (for example `array_strings_accepts_strings_only`
+and the hello parsing tests) spin on the mutated helper, so the whole suite ends only at the
+lane's timeout. Killing them would need a killable child-process harness per probe. Decision
+(controller, 2026-11-18): keep it simple, a documented known limit. The lane's timeout classifies
+both as TIMEOUT; today each costs the full 120-second floor (assay.toml), and assay B560 (timeout
+floor derived from the baseline, still OPEN) would make them cheap once implemented. The
+expected `assay-r2` result for `hostobs/crates/client` is 0 MISSED and 2 TIMEOUT.
+
+**Exit criteria.** Either a child-process probe harness kills both loops with a fast FAIL, or the
+two mutants are listed as accepted timeouts in the lane's mutation policy so that the lane
+verdict does not count them.

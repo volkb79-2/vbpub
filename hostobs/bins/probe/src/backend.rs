@@ -10,12 +10,21 @@
 //!
 //! - `queues.queued_bytes` is read by the connection from the send hub it is handed
 //!   (`global_pools()`: Live plus Query bytes; the control pool exists per connection only).
-//! - `clients` (connections per level) and `queues.dropped_blocks` are the server layer's: the
-//!   server wraps its backend in an adapter whose [`Backend::status`] returns the counters in
-//!   [`StatusInfo::clients`] and [`StatusInfo::dropped_blocks`]. A plain backend leaves them
-//!   empty and 0 (`dropped_blocks` stays 0 until the hub counts drops, P5b-2).
+//! - `clients` (connections per level) is the server layer's: the server wraps its backend in
+//!   an adapter whose [`Backend::status`] returns the counters in [`StatusInfo::clients`].
+//! - `queues.dropped_blocks` comes from the server's send hub, not from
+//!   [`StatusInfo::dropped_blocks`]; the connection reads the hub's count.
+
+use std::collections::BTreeMap;
+
+use hostobs_proto::dict::{
+    Entry, MetricFacts, MetricKind, MetricScope, MetricSource, MetricUnit, MetricValueType,
+};
+use hostobs_proto::frame::{BlockHeaderFacts, Column, Row};
+use hostobs_proto::quality::Quality;
 
 use crate::limits::Level;
+use crate::selection::Selection;
 
 /// What `hello` announces about the server (WIRE.md section 4.4).
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,18 +76,118 @@ pub struct StatusInfo {
     pub tick: TickInfo,
     /// `clients`: connections per level, in the order given (the server layer fills it).
     pub clients: Vec<(Level, u32)>,
-    /// `queues.dropped_blocks` (the server layer fills it; 0 in P5b-1).
+    /// `queues.dropped_blocks` (ignored by the connection, which reads the hub's count).
     pub dropped_blocks: u64,
     /// `tiers`, at most 8 (a longer list overflows `max_reply_bytes` and answers `internal`).
     pub tiers: Vec<TierInfo>,
 }
 
-/// The probe's side of the serving core: identity and status, both read-only.
+/// One backend tick: the dictionary plus the live block's rows and columns.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TickData {
+    /// `boot_id`, `epoch`, `seq`, `mono_start_ns`, `mono_end_ns`, `boot_ns` and `real_ns` are
+    /// taken as given; `dict_gen`, `n_rows`, `dropped` and `flags` are overwritten by the
+    /// server (design S16).
+    pub header: BlockHeaderFacts,
+    /// The dictionary of this tick: index `i` of a row's `ent` or a column's `metric` is
+    /// `entries[i]`.
+    pub entries: Vec<Entry>,
+    /// The task's entity rows.
+    pub rows: Vec<Row>,
+    /// The task's metric columns.
+    pub columns: Vec<Column>,
+}
+
+impl TickData {
+    /// A deterministic sample for tests and the P5b-4 bring-up: one [`Entry::Entity`] per
+    /// incarnation (label `inc-<n>`), then one [`Entry::Metric`] per name. Rows are in
+    /// incarnation order; every metric is a gauge/count/probe/U64 column whose value is
+    /// `inc.wrapping_mul(1000).wrapping_add(seq)` with quality [`Quality::Ok`]. The header
+    /// has `seq = seq`, epoch 1, zero boot id and times, and zero server-owned fields.
+    #[must_use]
+    pub fn example(seq: u64, incs: &[u64], metrics: &[&str]) -> TickData {
+        let mut entries = Vec::with_capacity(incs.len().saturating_add(metrics.len()));
+        for &inc in incs {
+            entries.push(Entry::Entity {
+                inc,
+                label: format!("inc-{inc}"),
+            });
+        }
+        let entity_count = u32::try_from(entries.len()).unwrap_or(u32::MAX);
+        for name in metrics {
+            entries.push(Entry::Metric {
+                facts: MetricFacts {
+                    unit: MetricUnit::Count,
+                    kind: MetricKind::Gauge,
+                    scope: MetricScope::Cgroup,
+                    source: MetricSource::Probe,
+                },
+                name: (*name).to_string(),
+            });
+        }
+        let rows: Vec<Row> = incs
+            .iter()
+            .enumerate()
+            .map(|(index, _)| Row {
+                ent: u32::try_from(index).unwrap_or(u32::MAX),
+                t_off_us: 0,
+            })
+            .collect();
+        let quality = vec![Quality::Ok.code(); incs.len()];
+        let columns = metrics
+            .iter()
+            .enumerate()
+            .map(|(index, _)| Column {
+                metric: entity_count.saturating_add(u32::try_from(index).unwrap_or(u32::MAX)),
+                value_type: MetricValueType::U64,
+                kind: MetricKind::Gauge,
+                values: incs
+                    .iter()
+                    .map(|inc| inc.wrapping_mul(1_000).wrapping_add(seq))
+                    .collect(),
+                quality: quality.clone(),
+            })
+            .collect();
+        TickData {
+            header: BlockHeaderFacts {
+                boot_id: [0; 16],
+                epoch: 1,
+                seq,
+                mono_start_ns: 0,
+                mono_end_ns: 0,
+                boot_ns: 0,
+                real_ns: 0,
+                dict_gen: 0,
+                n_rows: u32::try_from(rows.len()).unwrap_or(u32::MAX),
+                dropped: 0,
+                flags: 0,
+            },
+            entries,
+            rows,
+            columns,
+        }
+    }
+}
+
+/// Why a backend could not answer [`Backend::current`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackendError {
+    /// No current tick resolves this selection.
+    Unavailable,
+    /// Resolution would exceed the request's row bound.
+    TooManyRows,
+}
+
+/// The probe's side of the serving core: identity, status and the current tick data.
 pub trait Backend {
     /// The facts `hello` announces.
     fn identity(&self) -> Identity;
     /// The facts `status` reports.
     fn status(&self) -> StatusInfo;
+    /// The latest tick's data for `selection`. Resolution is the backend's: the protocol has
+    /// none. The backend stops resolving at `max_rows + 1` rows and answers
+    /// [`BackendError::TooManyRows`], so one request costs at most that many rows of work.
+    fn current(&self, selection: &Selection, max_rows: u32) -> Result<TickData, BackendError>;
 }
 
 /// A backend with fixed answers, for tests and the P5b-4 bring-up.
@@ -88,6 +197,8 @@ pub struct FixedBackend {
     pub identity: Identity,
     /// The answer of [`Backend::status`].
     pub status: StatusInfo,
+    /// The answer of [`Backend::current`], keyed by the canonical selection.
+    pub current: BTreeMap<Selection, Result<TickData, BackendError>>,
 }
 
 impl FixedBackend {
@@ -102,6 +213,7 @@ impl FixedBackend {
                 features: Vec::new(),
             },
             status: StatusInfo::default(),
+            current: BTreeMap::new(),
         }
     }
 }
@@ -120,11 +232,33 @@ impl Backend for FixedBackend {
     fn status(&self) -> StatusInfo {
         self.status.clone()
     }
+
+    fn current(&self, selection: &Selection, max_rows: u32) -> Result<TickData, BackendError> {
+        match self.current.get(selection) {
+            None => Err(BackendError::Unavailable),
+            Some(Err(error)) => Err(*error),
+            Some(Ok(data)) => {
+                let limit = usize::try_from(max_rows).unwrap_or(usize::MAX);
+                if data.rows.len() > limit {
+                    Err(BackendError::TooManyRows)
+                } else {
+                    Ok(data.clone())
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Backend, FixedBackend};
+    use hostobs_proto::dict::Entry;
+
+    use super::{Backend, BackendError, FixedBackend, TickData};
+    use crate::selection::{Sel, Selection};
+
+    fn selection() -> Selection {
+        Selection::new(vec![Sel::Inc(1)], vec!["m".to_string()]).expect("selection")
+    }
 
     #[test]
     fn fixed_backend_answers_what_it_holds() {
@@ -137,5 +271,34 @@ mod tests {
         assert_eq!(backend.identity().epoch, 7);
         assert_eq!(backend.status().uptime_ms, 9);
         assert_eq!(FixedBackend::default(), FixedBackend::new());
+    }
+
+    #[test]
+    fn backend_fixed_too_many_rows() {
+        let key = selection();
+        let mut backend = FixedBackend::new();
+        backend
+            .current
+            .insert(key.clone(), Ok(TickData::example(3, &[1, 2, 3], &["m"])));
+        assert_eq!(backend.current(&key, 2), Err(BackendError::TooManyRows));
+        let found = backend.current(&key, 3).expect("three rows fit");
+        assert_eq!(found.rows.len(), 3);
+        let other = Selection::new(vec![Sel::Inc(2)], vec!["m".to_string()]).expect("other");
+        assert_eq!(backend.current(&other, 4), Err(BackendError::Unavailable));
+    }
+
+    #[test]
+    fn tick_example_wraps() {
+        let data = TickData::example(u64::MAX, &[u64::MAX], &["m"]);
+        assert_eq!(
+            data.entries.first(),
+            Some(&Entry::Entity {
+                inc: u64::MAX,
+                label: format!("inc-{}", u64::MAX),
+            })
+        );
+        let column = data.columns.first().expect("column");
+        let expected = u64::MAX.wrapping_mul(1_000).wrapping_add(u64::MAX);
+        assert_eq!(column.values.first(), Some(&expected));
     }
 }

@@ -67,10 +67,11 @@ use std::hash::Hash;
 
 use hostobs_proto::hub::{ConnId, QueueLimits, SendHub};
 
-use crate::backend::{Backend, Identity, StatusInfo};
+use crate::backend::{Backend, BackendError, Identity, StatusInfo, TickData};
 use crate::codes::Code;
 use crate::conn::{Conn, Peer};
 use crate::limits::{Level, Limits};
+use crate::selection::Selection;
 
 /// The levels the probe serves, in the order `status.clients` lists them.
 const SERVED: [Level; 3] = [Level::Observe, Level::Operator, Level::Observer];
@@ -254,6 +255,10 @@ impl<B: Backend> Backend for StatusView<'_, B> {
         }
         status.clients = clients;
         status
+    }
+
+    fn current(&self, selection: &Selection, max_rows: u32) -> Result<TickData, BackendError> {
+        self.backend.current(selection, max_rows)
     }
 }
 
