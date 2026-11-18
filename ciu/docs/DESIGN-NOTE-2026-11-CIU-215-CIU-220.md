@@ -170,6 +170,8 @@ pack-stream code in this repo nor anything in its history. Live probe 10, on bot
 lane and the dstdns `p128_persister_lineage` lane, has to settle it. `ro` stays the recommendation only
 once probe 10 passes on that dstdns lane. If it fails, record the cause and recommend `rw`.
 
+**Errata (2026-11-18, implementation):** the table row "`<checkout>/.git` ... ro (inherited)" is imprecise for `ro`: the gitfile is under the checkout mount, not under the common dir, so it is inherited from nothing. The implementation binds `<checkout>/.git` read-only in both modes (as Run-Gate's `git_worktree_pointer_mount_flags` does); a service that already binds that exact path keeps its own bind.
+
 ### Cost to consumers
 
 None unless they opt in. An adopter adds two lines to the runner stack's config and deletes its

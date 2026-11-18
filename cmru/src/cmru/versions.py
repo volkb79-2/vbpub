@@ -2313,8 +2313,8 @@ def _validate_manifest_target_compatibility(
     if problems:
         raise VersionsError(
             f"{len(problems)} version target(s) resolve to versions the committed manifests do not "
-            "allow; the manifests (package.json among them) are hand-owned and cmru does not rewrite "
-            "them, so nothing was written. Make these edits, then rerun cmru versions resolve:\n- "
+            "allow; cmru does not rewrite the manifests (package.json among them) to get past this "
+            "refusal, so nothing was written. Make these edits, then rerun cmru versions resolve:\n- "
             + "\n- ".join(problems)
         )
 
