@@ -78,12 +78,20 @@ def test_the_config_name_is_cowtrees_and_the_fallback_only_names_a_missing_resol
         _paths.iso_dir()
 
 
-def test_a_directory_with_only_the_old_config_name_is_refused_by_the_resolver_with_a_migration_hint(tmp_path):
+def test_a_repo_with_only_the_old_config_name_is_refused_by_tnt_with_cowtrees_migration_hint(tmp_path, monkeypatch):
+    """The consumer's own refusal (through tnt._paths, as every tnt caller asks) carries cowtree's one-line hint."""
     from cowtree import repo_paths
 
     (tmp_path / repo_paths.LEGACY_CONFIG_NAME).write_text(CONFIG)
-    with pytest.raises(repo_paths.UsageError, match=r"was renamed to cowtree\.toml: git mv"):
-        repo_paths.load_repo_paths(tmp_path)
+    monkeypatch.setattr(_paths, "REPO_ROOT", tmp_path)
+    for ask in (_paths.iso_dir, _paths.vm_images_dir, _paths.downloads_dir, _paths.vm_state_root):
+        with pytest.raises(Refused) as err:
+            ask()
+        message = str(err.value)
+        assert err.value.rule == "repo-paths"
+        assert f"{tmp_path / repo_paths.LEGACY_CONFIG_NAME}" in message
+        assert f"was renamed to {_paths.config_name()}: git mv {repo_paths.LEGACY_CONFIG_NAME} {_paths.config_name()}" in message
+        assert "\n" not in message and "not found" not in message
 
 
 def test_a_broken_cow_root_is_a_refusal_not_a_silent_plain_answer(plain_repo, monkeypatch):

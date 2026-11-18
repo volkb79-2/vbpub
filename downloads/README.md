@@ -20,14 +20,20 @@ holds the folder, the subvolume `$MDT_COW_ROOT/<repo-name>/downloads/iso` (and s
 Fetched third-party inputs and base images that several projects start from
 belong here. A VM's own disks, runs and state are the project's, in
 `<project>/vm-lab/`; reports and other build output go in `<project>/artifacts/`.
-See AGENTS.md "Directory conventions and VM files". Files that predate the
-subfolders (the Debian genericcloud qcow2, the TrueNAS ISO) move into them when
-their consumers are updated.
+See AGENTS.md "Directory conventions and VM files". The files that used to sit flat
+here (the Debian genericcloud qcow2, the TrueNAS ISO) live in the `iso/` and
+`vm-images/` folders now (RP-06); nothing but this README, `.gitignore` and the
+transient `.download.lock` belongs at the top level any more.
 
-Everything in this folder except this README and `.gitignore` is ignored and
-regenerable by re-downloading; do not commit its contents. Scripts verify the
-checksum before use and take a lock while fetching, so concurrent runs are safe.
+Everything in this folder except this README, `.gitignore` and the two committed
+placeholder directories `iso/` and `vm-images/` (each with its own README and
+`.gitignore`) is ignored and regenerable by re-downloading; do not commit its
+contents. Scripts verify the checksum before use and take a lock while fetching, so
+concurrent runs are safe.
 
-This folder is a plain directory of the checkout. On a CoW host the same content
-lives in the resolver's CoW subvolume instead, and this folder stays empty. A
-fresh checkout or worktree starts empty and the scripts download again.
+This folder is a plain directory of the checkout, and `iso/` and `vm-images/` are
+committed placeholders in it, so they exist after a fresh clone or worktree and
+scripts never have to create them in plain mode. On a CoW host the same content
+lives in the resolver's CoW subvolumes instead (`repo-path iso --provision` and
+`repo-path vm-images --provision` create them once), and these folders stay
+empty. A fresh checkout or worktree starts empty and the scripts download again.

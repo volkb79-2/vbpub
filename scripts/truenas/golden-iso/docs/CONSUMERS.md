@@ -170,15 +170,17 @@ host-side SSH commands.
 
 ```sh
 cd scripts/truenas/golden-iso   # from the repository root
-mkdir -p artifacts ../vm-lab/golden-source-27-20GiB
-ISO_DIR="$("$(git rev-parse --show-toplevel)/libraries/cowtree/repo-path" iso)"
+REPO_PATH="$(git rev-parse --show-toplevel)/libraries/cowtree/repo-path"
+ISO_DIR="$("$REPO_PATH" iso)"
+VM_LAB="$("$REPO_PATH" vm-lab --project scripts/truenas)"
+mkdir -p artifacts "$ISO_DIR" "$VM_LAB/golden-source-27-20GiB"
 ```
 
 Fetched inputs (the TrueNAS installer ISO, the Debian live base) go to the
 repository's `iso` folder (`$ISO_DIR`, `downloads/iso/` in plain mode, a CoW subvolume on CoW
 hosts) with their `.sha256`; VM state goes to the `vm-lab` folder of `scripts/truenas`
-(`scripts/truenas/vm-lab/<vm>/` in plain mode; the `../vm-lab/...` paths below are that plain
-folder, print the one in use with `repo-path vm-lab --project scripts/truenas`); credentials and
+(`$VM_LAB`, `scripts/truenas/vm-lab/<vm>/` in plain mode; the `../vm-lab/...` paths below are that plain
+folder, substitute `$VM_LAB` on a CoW host); credentials and
 built golden outputs stay in this project's ignored `artifacts/`.
 
 ## Download and verify the installer

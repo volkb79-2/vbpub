@@ -77,12 +77,23 @@ def test_the_config_name_is_cowtrees_and_the_fallback_only_names_a_missing_resol
         access.iso_dir()
 
 
-def test_a_directory_with_only_the_old_config_name_is_refused_by_the_resolver_with_a_migration_hint(tmp_path):
+def test_a_repo_with_only_the_old_config_name_is_refused_by_the_helper_with_cowtrees_migration_hint(tmp_path, monkeypatch):
+    """The consumer's own refusal (through repo_paths_access, as every scripts/truenas caller asks) carries cowtree's
+    one-line hint."""
     from cowtree import repo_paths
 
     (tmp_path / repo_paths.LEGACY_CONFIG_NAME).write_text(CONFIG)
-    with pytest.raises(repo_paths.UsageError, match=r"was renamed to cowtree\.toml: git mv"):
-        repo_paths.load_repo_paths(tmp_path)
+    monkeypatch.setattr(access, "REPO_ROOT", tmp_path)
+    for ask in (access.iso_dir, access.vm_images_dir, access.downloads_dir, access.vm_state_root):
+        with pytest.raises(access.RepoPathsError) as err:
+            ask()
+        message = str(err.value)
+        assert f"{tmp_path / repo_paths.LEGACY_CONFIG_NAME}" in message
+        assert (
+            f"was renamed to {access.config_name()}: git mv {repo_paths.LEGACY_CONFIG_NAME} {access.config_name()}"
+            in message
+        )
+        assert "\n" not in message and "not found" not in message
 
 
 def test_a_broken_cow_root_is_a_refusal_not_a_silent_plain_answer(plain_repo, monkeypatch):

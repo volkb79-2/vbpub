@@ -41,7 +41,7 @@ BASE_URL="https://cloud.debian.org/images/cloud/trixie/latest"
 LOCAL_PATH="$DOWNLOADS_DIR/$IMAGE_NAME"
 SUMS_PATH="$DOWNLOADS_DIR/SHA512SUMS"
 
-[ -d "$DOWNLOADS_DIR" ] || { echo "images dir $DOWNLOADS_DIR is missing (this script never creates it: 'mkdir -p $DOWNLOADS_DIR', committed downloads/iso and downloads/vm-images placeholders come with RP-06; or on a CoW host run 'libraries/cowtree/repo-path vm-images --provision')" >&2; exit 1; }
+[ -d "$DOWNLOADS_DIR" ] || { echo "images dir $DOWNLOADS_DIR is missing (this script never creates it: 'mkdir -p $DOWNLOADS_DIR'; in plain mode the resolved vm-images folder is the committed downloads/vm-images placeholder of the checkout; on a CoW host run 'libraries/cowtree/repo-path vm-images --provision' to create the subvolume)" >&2; exit 1; }
 # One shared images folder: serialize fetch/verify/rename across processes.
 exec 9>"$DOWNLOADS_DIR/.download.lock"
 flock 9

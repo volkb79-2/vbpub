@@ -3,6 +3,7 @@ docs hygiene, gate and dependency configuration, menu notes."""
 import base64
 import json
 import os
+import re
 import tomllib
 from pathlib import Path
 from urllib.parse import quote
@@ -121,7 +122,11 @@ def test_vm_lab_placeholder_is_committed_and_vm_state_only_comes_through_the_res
     for path in sources:
         text = path.read_text()
         if path == paths_module:
+            # The one module that may name the entry (once, as the resolver's entry name): it defines no VM-state
+            # constant (TNT_VM, VM_LAB, ...).
             assert text.count('"vm-lab"') == 1 and "artifacts" not in text, path
+            assert "TNT_VM" not in text, path
+            assert not re.search(r"^\s*(?:TNT_)?VM_LAB\w*\s*(?::[^=\n]*)?=", text, re.MULTILINE | re.IGNORECASE), path
             continue
         assert "vm-lab" not in text and "VM_LAB" not in text.upper().replace("-", "_"), path
         assert "TNT_VM" not in text, path

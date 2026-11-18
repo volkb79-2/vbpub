@@ -37,6 +37,29 @@ def test_qmp_default_socket_is_computed_from_the_resolved_vm_lab_folder(monkeypa
     assert qmp.default_socket() == source / "qmp.sock"
 
 
+def test_qmp_puts_the_truenas_root_on_sys_path_only_if_absent() -> None:
+    root = str(TRUENAS_ROOT)
+
+    def load() -> None:
+        probe = importlib.util.spec_from_file_location("qmp_guard_probe", GOLDEN_ROOT / "qmp.py")
+        assert probe is not None and probe.loader is not None
+        probe.loader.exec_module(importlib.util.module_from_spec(probe))
+
+    saved = list(sys.path)
+    try:
+        sys.path[:] = [entry for entry in sys.path if entry != root]
+        load()
+        assert sys.path.count(root) == 1 and sys.path[0] == root
+        load()  # present now: a second load must not add another entry
+        assert sys.path.count(root) == 1
+        load_count = sys.path.count(root)
+        sys.path.insert(0, "marker")
+        load()
+        assert sys.path[0] == "marker" and sys.path.count(root) == load_count
+    finally:
+        sys.path[:] = saved
+
+
 def test_step1_source_names_no_literal_vm_folder() -> None:
     for name in ("step1-install-prepare-truenas.py", "qmp.py"):
         text = (GOLDEN_ROOT / name).read_text()

@@ -13,7 +13,12 @@ All notable changes to debian-install-v2 are recorded here.
   and `vmctl --state-dir/--downloads-dir` are unchanged and an explicit option or `download-base-image.sh`
   argument still wins. A CoW-resolved folder outside the checkout is translated through the Docker mount table.
   Runner layout label `vm-lab-3` -> `vm-lab-4` (a running runner is refused as stale: `--stop-daemon` once).
-  Existing VM state under `artifacts/vm-lab/` and the cloud image under `downloads/` are not moved here.
+  Existing VM state under `artifacts/vm-lab/` and the cloud image under `downloads/` are not moved by this
+  change; the cloud image and base moved into the resolved `vm-images` folder afterwards (RP-06).
+- RP-06: `downloads/iso/` and `downloads/vm-images/` are committed placeholder folders (README +
+  `.gitignore`), so the harness and `download-base-image.sh` find `vm-images` in a fresh clone or worktree;
+  their "folder is missing" refusals now say it is the committed placeholder (recreate with `mkdir -p` or
+  `git checkout -- downloads/vm-images`) and name `repo-path vm-images --provision` for the CoW subvolume.
 
 ### Added (div2-docker-builder-gc)
 - `docker_builder_gc_max_used_gb` (default 50) and `docker_builder_gc_reserved_gb` (default 10)

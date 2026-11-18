@@ -328,7 +328,9 @@ def download_verified_iso(
         temporary.unlink(missing_ok=True)
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_TRUENAS_ROOT = str(Path(__file__).resolve().parents[1])
+if _TRUENAS_ROOT not in sys.path:  # only if absent: a repeated import or an already-prepared path stays unchanged
+    sys.path.insert(0, _TRUENAS_ROOT)
 import repo_paths_access  # noqa: E402  (the one place scripts/truenas asks the repo path config for its folders)
 
 
@@ -349,29 +351,90 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def flat_downloads_dir() -> Path | None:
+    """The flat `downloads` folder of the repo path config, where an ISO that predates the `iso` folder may still sit.
+
+    Looked at only after the `iso` folder (same fallback as tnt uploads). A missing repo path config is not an error
+    here: `iso_dir()` already refuses naming it, and a fallback location that cannot be asked is simply not searched.
+    """
+    try:
+        return repo_paths_access.downloads_dir()
+    except repo_paths_access.RepoPathsError:
+        return None
+
+
+def _sudo_owner() -> tuple[int, int] | None:
+    """The invoking user's (uid, gid) when running as root under sudo, else None."""
+    if os.geteuid() == 0 and os.environ.get("SUDO_UID", "").isdigit() and os.environ.get("SUDO_GID", "").isdigit():
+        return int(os.environ["SUDO_UID"]), int(os.environ["SUDO_GID"])
+    return None
+
+
+def _ensure_directory(directory: Path) -> None:
+    """Make sure the folder exists without touching an existing one.
+
+    A folder that must be created under sudo is handed to the invoking user (every directory this call created, like the
+    ISO and its sidecar), so a root-owned `iso` folder never breaks a later non-sudo run.
+    """
+    if directory.is_dir():
+        return
+    created = [directory]
+    for parent in directory.parents:
+        if parent.exists():
+            break
+        created.append(parent)
+    directory.mkdir(parents=True, exist_ok=True)
+    owner = _sudo_owner()
+    if owner is not None:
+        for path in created:
+            os.chown(path, *owner)
+
+
+def _verified_existing(path: Path, expected: str, progress: Callable[[str], None] | None) -> str | None:
+    """The SHA-256 of an existing ISO that matches the published digest, None when absent; a mismatch is refused."""
+    if not path.exists():
+        return None
+    actual = _file_sha256(path)
+    if actual != expected:
+        raise UpstreamError(
+            f"{path} exists but its SHA-256 {actual} differs from the published {expected}; "
+            "remove it deliberately and retry"
+        )
+    if progress is not None:
+        progress(f"Reusing verified {path}")
+    return actual
+
+
 def ensure_in_iso_dir(
     asset: UpstreamIso,
     *,
     expected_sha256: str,
     iso_folder: Path | None = None,
+    flat_folder: Path | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> tuple[Path, str]:
-    """Return a checksum-verified copy of the ISO in the `iso` folder, fetching it once.
+    """Return a checksum-verified copy of the ISO, fetching it into the `iso` folder only when no copy exists.
 
-    A present file is reused only when its SHA-256 equals the published digest; a
-    mismatching file is refused, never overwritten. A fetch under sudo is handed
-    back to the invoking user so the shared folder does not fill with root files.
-    Concurrent runs serialize on an advisory lock file (<iso folder>/.<name>.lock),
-    so the second run waits and then reuses the first run's verified copy.
+    The `iso` folder is looked at first, then the flat `downloads` folder (`flat_folder`; with the default `iso` folder
+    it is the resolved `downloads` entry, with an explicit `iso_folder` only an explicit `flat_folder`), so an ISO that
+    is still flat is not downloaded again. A present file is reused only when its SHA-256 equals the published digest;
+    a mismatching file is refused, never overwritten. A fetch under sudo is handed back to the invoking user, and so is
+    an `iso` folder this call had to create, so the shared folder never holds root-owned entries.
+    Concurrent runs serialize on an advisory lock file (<iso folder>/.<name>.lock), so the second run waits and then
+    reuses the first run's verified copy.
     """
-    directory = iso_folder or iso_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    if iso_folder is None:
+        directory = iso_dir()
+        flat = flat_folder if flat_folder is not None else flat_downloads_dir()
+    else:
+        directory, flat = iso_folder, flat_folder
+    _ensure_directory(directory)
     lock_path = directory / f".{asset.filename}.lock"
     try:
         with lock_path.open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             return _ensure_in_iso_dir_locked(
-                asset, directory, expected_sha256=expected_sha256, progress=progress
+                asset, directory, flat, expected_sha256=expected_sha256, progress=progress
             )
     except OSError as exc:
         if isinstance(exc, UpstreamError):
@@ -382,27 +445,27 @@ def ensure_in_iso_dir(
 def _ensure_in_iso_dir_locked(
     asset: UpstreamIso,
     directory: Path,
+    flat: Path | None,
     *,
     expected_sha256: str,
     progress: Callable[[str], None] | None,
 ) -> tuple[Path, str]:
     target = directory / asset.filename
     expected = expected_sha256.lower()
-    if target.exists():
-        actual = _file_sha256(target)
-        if actual != expected:
-            raise UpstreamError(
-                f"{target} exists but its SHA-256 {actual} differs from the published {expected}; "
-                "remove it deliberately and retry"
-            )
-        if progress is not None:
-            progress(f"Reusing verified {target}")
+    actual = _verified_existing(target, expected, progress)
+    if actual is not None:
         return target, actual
+    if flat is not None:
+        flat_target = flat / asset.filename
+        actual = _verified_existing(flat_target, expected, progress)
+        if actual is not None:
+            return flat_target, actual
     actual = download_verified_iso(asset, target, expected_sha256=expected, progress=progress)
     sidecar = target.with_name(target.name + ".sha256")
     if not sidecar.exists():
         sidecar.write_text(f"{actual}  {asset.filename}\n", encoding="utf-8")
-    if os.geteuid() == 0 and os.environ.get("SUDO_UID", "").isdigit() and os.environ.get("SUDO_GID", "").isdigit():
+    owner = _sudo_owner()
+    if owner is not None:
         for path in (target, sidecar):
-            os.chown(path, int(os.environ["SUDO_UID"]), int(os.environ["SUDO_GID"]))
+            os.chown(path, *owner)
     return target, actual

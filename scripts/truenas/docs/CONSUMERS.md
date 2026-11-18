@@ -20,8 +20,8 @@ guest folder on `start`; `--state-dir` overrides it explicitly. The `vm-lab/...`
 the examples below are the plain-mode folder; on a CoW host substitute the printed one.
 Installer ISOs live in the `iso` folder (`downloads/iso/` in plain mode), base images in
 `vm-images` (`downloads/vm-images/`), each with a `.sha256`, never in a project folder.
-The `../../downloads/iso/...` ISO paths below are the plain-mode `iso` folder (an ISO still
-in the old flat `downloads/` works as an explicit path until RP-06 moves it). Run overlays and sparse data disks use
+The `../../downloads/iso/...` ISO paths below are the plain-mode `iso` folder (the files that used to sit flat in
+`downloads/` have moved into `iso/` and `vm-images/`; the vanilla-iso-patcher still finds an ISO that is flat there). Run overlays and sparse data disks use
 `cache=unsafe` because they are disposable; an installed golden source disk is a
 base that later runs clone from and uses `cache=writeback`. No environment value
 relocates these folders.

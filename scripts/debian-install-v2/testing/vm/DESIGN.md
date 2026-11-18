@@ -365,8 +365,9 @@ stock image already matches it.
   downloaded into"; the genericcloud qcow2 is a base image), which keeps the
   container-side contract unchanged: only the host source of the bind moved.
   The `iso` folder is not used by this harness.
-- **Placeholders**: `vm-lab/` is tracked (README + a `*` `.gitignore`), so a
-  fresh clone has it; scripts only `mkdir -p` the subfolders. A resolved folder
+- **Placeholders**: `vm-lab/`, `downloads/vm-images/` and `downloads/iso/` are
+  tracked (README + a `*` `.gitignore` each), so a fresh clone has them; scripts
+  only `mkdir -p` the subfolders. A resolved folder
   outside the checkout (a CoW subvolume) is translated to the daemon's path
   through the cockpit's Docker mount table, like every other path.
 - **Worktrees** (plan, owned by `ciu worktree` + `libraries/cowtree`): a new

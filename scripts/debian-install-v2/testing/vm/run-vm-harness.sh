@@ -238,7 +238,7 @@ resolve_vm_lab() {
     VM_LAB_NS="$(resolve_shared_path vm-lab --project "$project_rel")" || exit 1
     DOWNLOADS_NS="$(resolve_shared_path vm-images)" || exit 1
     [ -d "$VM_LAB_NS" ] || die "$VM_LAB_NS is missing or a dangling symlink: create it with 'mkdir -p $VM_LAB_NS' (the project's committed vm-lab/ placeholder normally provides it), or on a CoW host run 'libraries/cowtree/repo-path vm-lab --project $project_rel --provision'"
-    [ -d "$DOWNLOADS_NS" ] || die "$DOWNLOADS_NS is missing: create it with 'mkdir -p $DOWNLOADS_NS' (committed downloads/iso and downloads/vm-images placeholders come with RP-06), or on a CoW host run 'libraries/cowtree/repo-path vm-images --provision'"
+    [ -d "$DOWNLOADS_NS" ] || die "$DOWNLOADS_NS is missing: in plain mode it is the committed downloads/vm-images placeholder of this checkout, so recreate it with 'mkdir -p $DOWNLOADS_NS' (or 'git checkout -- downloads/vm-images'); on a CoW host run 'libraries/cowtree/repo-path vm-images --provision' to create the subvolume"
     VM_LAB_NS="$(cd "$VM_LAB_NS" && pwd -P)"
     DOWNLOADS_NS="$(cd "$DOWNLOADS_NS" && pwd -P)"
     HOST_VM_LAB_DIR="$(host_dir_for "$VM_LAB_NS" "vm-lab")" || exit 1

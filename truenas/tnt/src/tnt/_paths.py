@@ -51,11 +51,17 @@ def config_name() -> str:
 def resolve(name: str, project: str | None = None) -> Path:
     """The folder of the named path of the repo path config (plain or CoW, as the resolver decides)."""
     repo_paths = _repo_paths_module()
+    from cowtree.errors import CowError
+
     config = REPO_ROOT / repo_paths.CONFIG_NAME
     if not config.is_file():
+        try:
+            repo_paths.load_repo_paths(config.parent)
+        except CowError as exc:
+            if (config.parent / repo_paths.LEGACY_CONFIG_NAME).is_file():  # a repo with only the pre-rename file
+                raise Refused("repo-paths", str(exc)) from None  # cowtree's own migration hint, one line
         raise Refused("repo-paths", f"{config} not found: ISO, image and VM-state folders come from the repository's "
                                     f"{repo_paths.CONFIG_NAME}, so run tnt from a vbpub checkout")
-    from cowtree.errors import CowError
 
     try:
         return repo_paths.load_repo_paths(config.parent).resolve(name, project=project).path

@@ -900,9 +900,9 @@ is a different table and stays open.
   and `scripts/debian-rollback` already name the new location. The `vm-lab` tool still builds a qcow2 overlay on a base
   disk; moving it to raw reflink copies of `downloads/vm-images/` is package VML-06 of `scripts/debian-rollback/docs/WORK-PACKAGES.md`.
 - Existing state (2026-11-17): the subvolumes `downloads/iso`, `downloads/vm-images` and `scripts/debian-rollback/vm-lab` exist under
-  `$MDT_COW_ROOT/<repo-name>/` (BTRFS-COW.md section 10). Files already in the flat `downloads/` stay until
-  `scripts/truenas/vanilla-iso-patcher/upstream.py` (`DOWNLOADS_DIR`) and the debian-install-v2 harness (`HOST_DOWNLOADS_DIR`, its
-  boundary tests) take their paths from the resolver; moving them earlier breaks those tools.
+  `$MDT_COW_ROOT/<repo-name>/` (BTRFS-COW.md section 10). The files that were flat in `downloads/` moved into the `iso` and
+  `vm-images` folders on 2026-11-18 (RP-06) after those tools took their paths from the resolver; `downloads/iso/` and
+  `downloads/vm-images/` are committed placeholders.
 - Reflinks from the resolved `vm-images` path into the resolved `vm-lab` path work in cow mode (both are subvolumes of the one CoW
   filesystem); on a plain host they are ordinary folders of the checkout and the tool must say so.
 

@@ -14,7 +14,9 @@ import time
 import zlib
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_TRUENAS_ROOT = str(Path(__file__).resolve().parent.parent)
+if _TRUENAS_ROOT not in sys.path:  # only if absent: a repeated import or an already-prepared path stays unchanged
+    sys.path.insert(0, _TRUENAS_ROOT)
 import repo_paths_access  # noqa: E402  (the one place scripts/truenas asks the repo path config for its folders)
 
 
