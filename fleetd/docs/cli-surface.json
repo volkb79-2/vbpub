@@ -62,6 +62,19 @@
       "signature": "sha256:6d14d2e168f238487ab0016271ead397bae2a601eb065682a5802c419132af94"
     },
     {
+      "id": "case:route:entrypoint:fleet/collect/option-spelling/option:route:entrypoint:fleet/collect/--hx/--hx",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/collect/--hx"
+      ],
+      "route_id": "route:entrypoint:fleet/collect",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/collect/--hx",
+        "spelling": "--hx"
+      },
+      "signature": "sha256:2e6c0154d76a38c8707bf66cb6f143c5843af016013676ca3cef6a2898c01b0c"
+    },
+    {
       "id": "case:route:entrypoint:fleet/collect/option-spelling/option:route:entrypoint:fleet/collect/--json/--json",
       "kind": "option-spelling",
       "members": [
@@ -307,6 +320,19 @@
         "spelling": "--debug-raw"
       },
       "signature": "sha256:17d7ca28b35790dc85399c3006a1f095a88374b09fe974d476bc981b6e7fca5d"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/measurement/option-spelling/option:route:entrypoint:fleet/measurement/--hx/--hx",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/measurement/--hx"
+      ],
+      "route_id": "route:entrypoint:fleet/measurement",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/measurement/--hx",
+        "spelling": "--hx"
+      },
+      "signature": "sha256:7495bf904bca4ab72a2ad2bcef9171e2cf8b227b8e1b3cda1576db6e49688479"
     },
     {
       "id": "case:route:entrypoint:fleet/measurement/option-spelling/option:route:entrypoint:fleet/measurement/--json/--json",
@@ -632,6 +658,19 @@
         "spelling": "--debug-raw"
       },
       "signature": "sha256:efdb275ce1b822b1fcf5b6d2916b0c0b28b9e1a6de793bbbbba1b61f29fe7731"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/run/option-spelling/option:route:entrypoint:fleet/run/--hx/--hx",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/run/--hx"
+      ],
+      "route_id": "route:entrypoint:fleet/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/run/--hx",
+        "spelling": "--hx"
+      },
+      "signature": "sha256:7b268c9b72dd4fa4dddee9b538da3f139cd9090de3aed4245cec71866b476635"
     },
     {
       "id": "case:route:entrypoint:fleet/run/option-spelling/option:route:entrypoint:fleet/run/--json/--json",
@@ -1746,6 +1785,19 @@
       "signature": "sha256:eff70ade71d0e6d48a0c1b4ff8ad059fc7e94185ee4ad7fb041ad77b624f96a2"
     },
     {
+      "id": "case:route:entrypoint:fleet/status/option-spelling/option:route:entrypoint:fleet/status/--hx/--hx",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/status/--hx"
+      ],
+      "route_id": "route:entrypoint:fleet/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/status/--hx",
+        "spelling": "--hx"
+      },
+      "signature": "sha256:6b727c755804db689ea9056508af84d3d4cb72484ddf86bbdceb67d33e359a1b"
+    },
+    {
       "id": "case:route:entrypoint:fleet/status/option-spelling/option:route:entrypoint:fleet/status/--json/--json",
       "kind": "option-spelling",
       "members": [
@@ -1844,6 +1896,19 @@
         "spelling": "--debug-raw"
       },
       "signature": "sha256:fbe98a760752990e8f900ccaf7dac8a292433b38e8c31f4639cab3f8d286a9b6"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/tick/option-spelling/option:route:entrypoint:fleet/tick/--hx/--hx",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/tick/--hx"
+      ],
+      "route_id": "route:entrypoint:fleet/tick",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/tick/--hx",
+        "spelling": "--hx"
+      },
+      "signature": "sha256:b500294017f30df7fdc385b255b15835cdd4b4743b42ff1cff7aa31e1bc450dd"
     },
     {
       "id": "case:route:entrypoint:fleet/tick/option-spelling/option:route:entrypoint:fleet/tick/--json/--json",
@@ -1982,6 +2047,48 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
+          "canonical": "--hx",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "path of the identity-checked hx wrapper (default: $FLEETD_HX, else the source checkout's scripts/controller/hx.sh; an installed fleetd needs one of them)",
+          "dest": "hx",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--hx"
+          ],
+          "help_group": "TRANSPORT",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/collect/--hx",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "collect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
           "canonical": "--state-dir",
           "choices": null,
           "const": null,
@@ -2045,6 +2152,7 @@
       "kind": "invocation",
       "no_args_action": false,
       "opaque_fields": [
+        "option:route:entrypoint:fleet/collect/--hx.type",
         "option:route:entrypoint:fleet/collect/--state-dir.type"
       ],
       "parser_configured_by_callback": false,
@@ -2632,6 +2740,48 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
+          "canonical": "--hx",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "path of the identity-checked hx wrapper (default: $FLEETD_HX, else the source checkout's scripts/controller/hx.sh; an installed fleetd needs one of them)",
+          "dest": "hx",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--hx"
+          ],
+          "help_group": "TRANSPORT",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/measurement/--hx",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "measurement"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
           "canonical": "--state-dir",
           "choices": null,
           "const": null,
@@ -2695,6 +2845,7 @@
       "kind": "invocation",
       "no_args_action": false,
       "opaque_fields": [
+        "option:route:entrypoint:fleet/measurement/--hx.type",
         "option:route:entrypoint:fleet/measurement/--state-dir.type"
       ],
       "parser_configured_by_callback": false,
@@ -3296,6 +3447,48 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
+          "canonical": "--hx",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "path of the identity-checked hx wrapper (default: $FLEETD_HX, else the source checkout's scripts/controller/hx.sh; an installed fleetd needs one of them)",
+          "dest": "hx",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--hx"
+          ],
+          "help_group": "TRANSPORT",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/run/--hx",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
           "canonical": "--state-dir",
           "choices": null,
           "const": null,
@@ -3364,6 +3557,7 @@
       "no_args_action": false,
       "opaque_fields": [
         "argument:route:entrypoint:fleet/run/plan.type",
+        "option:route:entrypoint:fleet/run/--hx.type",
         "option:route:entrypoint:fleet/run/--state-dir.type"
       ],
       "parser_configured_by_callback": false,
@@ -5222,6 +5416,48 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
+          "canonical": "--hx",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "path of the identity-checked hx wrapper (default: $FLEETD_HX, else the source checkout's scripts/controller/hx.sh; an installed fleetd needs one of them)",
+          "dest": "hx",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--hx"
+          ],
+          "help_group": "TRANSPORT",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/status/--hx",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "status"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
           "canonical": "--state-dir",
           "choices": null,
           "const": null,
@@ -5285,6 +5521,7 @@
       "kind": "invocation",
       "no_args_action": false,
       "opaque_fields": [
+        "option:route:entrypoint:fleet/status/--hx.type",
         "option:route:entrypoint:fleet/status/--state-dir.type"
       ],
       "parser_configured_by_callback": false,
@@ -5399,6 +5636,48 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
+          "canonical": "--hx",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "path of the identity-checked hx wrapper (default: $FLEETD_HX, else the source checkout's scripts/controller/hx.sh; an installed fleetd needs one of them)",
+          "dest": "hx",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--hx"
+          ],
+          "help_group": "TRANSPORT",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/tick/--hx",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "tick"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
           "canonical": "--state-dir",
           "choices": null,
           "const": null,
@@ -5462,6 +5741,7 @@
       "kind": "invocation",
       "no_args_action": false,
       "opaque_fields": [
+        "option:route:entrypoint:fleet/tick/--hx.type",
         "option:route:entrypoint:fleet/tick/--state-dir.type"
       ],
       "parser_configured_by_callback": false,
