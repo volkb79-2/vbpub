@@ -887,15 +887,18 @@ mod tests {
 
     #[test]
     fn r8_a_json_hello_negotiates_from_any_minor_and_refuses_another_major() {
+        let phase = Phase::BeforeHello;
         for minor in [0, 1, 7, 65_535] {
             let text = line("hello", &hello_with(1, minor), 2);
-            let done = dispatched(&json(text.as_bytes()));
-            match done.call {
+            let query = Query {
+                phase,
+                ..json(text.as_bytes())
+            };
+            match dispatched(&query).call {
                 Call::Hello(hello) => assert_eq!(u32::from(hello.minor), minor),
                 Call::Status => panic!("status"),
             }
         }
-        let phase = Phase::BeforeHello;
         for major in [0, 2, 65_535] {
             let text = line("hello", &hello_with(major, 1), 2);
             let query = Query {
