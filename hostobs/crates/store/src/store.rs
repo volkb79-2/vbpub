@@ -1597,4 +1597,19 @@ mod tests {
         assert_eq!(store.stats().bytes, 0, "nothing is left on disk");
         assert_eq!(store.stats().bytes, store.tier(HOT).expect("hot").bytes());
     }
+
+    #[test]
+    fn the_event_write_path_subtracts_what_its_own_eviction_removed() {
+        let temp = TempDir::new("event-bytes");
+        let mut tight = config(&temp);
+        tight.events.cap_bytes = 1;
+        let mut store = Store::open_with_mounts(tight, Some(tmpfs_everywhere())).expect("open");
+        let event =
+            crate::events::Event::new(EventKind::Point, "run", Some("run-1"), "u1", 10, None)
+                .expect("point");
+        let outcome = store.record_event(&event, &evt(8), 10).expect("record");
+        assert!(!outcome.evicted.is_empty(), "the cap took the segment");
+        assert_eq!(store.stats().bytes, 0, "nothing is left on disk");
+        assert_eq!(store.stats().bytes, store.events().tier().bytes());
+    }
 }

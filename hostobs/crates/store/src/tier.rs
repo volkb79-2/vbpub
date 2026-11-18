@@ -2826,11 +2826,13 @@ mod tests {
             held,
             "no byte of the vanished file stays in the total"
         );
-        assert!(tier
+        let gone_note = tier
             .scan()
             .notes
             .iter()
-            .any(|note| note.name == "hot-0-0.seg.corrupt"));
+            .find(|note| note.name == "hot-0-0.seg.corrupt")
+            .expect("the vanished file is reported by name");
+        assert!(gone_note.reason.contains("already gone"));
         // The cap path takes the same way out: a tight cap and a debris file deleted by hand.
         let temp = TempDir::new("q-by-hand-cap");
         three_sealed(&temp);
@@ -2903,6 +2905,10 @@ mod tests {
             1,
             "the quarantined name holds its sequence"
         );
+        // With the damaged open file renamed away, the quarantined file alone holds the name.
+        drop(second);
+        let mut second = tier_with_cap(&temp, 3600, 0);
+        assert_eq!(second.next_seq(), 1, "the quarantined file alone holds it");
         let next = second.append(&job(0, 16), 1, 1).expect("append");
         assert_eq!(next.segment, "hot-0-1.seg.open");
         drop(second);
