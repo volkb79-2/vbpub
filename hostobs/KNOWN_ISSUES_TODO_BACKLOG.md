@@ -66,7 +66,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-51 | Received frames are held to the alignment and header-first rules: every section `len` is a multiple of 8 (`section-length`) and an unknown kind at directory entry 0 is `section-order` at index 0, after the rank check | Minor | FIXED (P2a1) |
 | HOB-52 | A repeated dictionary identity is `duplicate-dictionary-entry` in Rust whatever the other fields hold, as in the Python reference | Minor | FIXED (P2a1) |
 | HOB-53 | The Python reference follows the WIRE.md §3.10 precedence: `not-a-block` before the buffer length and `SECTIONED` checks | Minor | FIXED (P2a1) |
-| HOB-54 | The Rust client and the probe's serving loop do not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `SendHub`, the envelope checks and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | OPEN (P2: `FrameReader`, `ModeDetect`, `ConnTimers`, `SendHub`, `StreamDicts`, `envelope.rs` exist; P3a: the Python reader, `StreamDicts`, decoder and `rate()` exist, P3b: `conn.py`, `profiling.py`, `mark.py` exist, the P3 part is closed; the Rust client (P5a) and P5b remain) |
+| HOB-54 | The probe's serving loop does not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `SendHub`, the envelope checks, the Rust client (`crates/client`) and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | OPEN (P2: `FrameReader`, `ModeDetect`, `ConnTimers`, `SendHub`, `StreamDicts`, `envelope.rs` exist; P3a: the Python reader, `StreamDicts`, decoder and `rate()` exist, P3b: `conn.py`, `profiling.py`, `mark.py` exist, the P3 part is closed; P5a: `crates/client` exists and the Rust client part is closed; P5b remains) |
 | HOB-55 | A look-alike name such as `hot-0-18446744073709551615.seg` (or `.seg.corrupt`) sets the tier's sequence water mark to `u64::MAX` before its owner is proven, so every `open_segment` fails with `LengthOverflow` until the file is removed | Minor | FIXED (P0b) |
 | HOB-56 | `StoreStats::bytes` maintained by incremental arithmetic drifts from the tiers' own byte totals when a file vanishes or a new segment's header is written | Minor | FIXED (P0b) |
 | HOB-57 | `docs/hand-mutants/m1d-mutants.py` had no per-mutant subprocess timeout, so a mutant that hangs the suite hangs the campaign | Minor | FIXED (P0b) |
@@ -1139,8 +1139,10 @@ with the §7.3 `fill()`/`advance()` buffering, replaying the 12 reader cases) an
 `on_hello`, replaying the 6 client cases); `wire.py` and `rates.py` carry the efficient decoder and `rate()`.
 **What exists (P3b).** `conn.py` (`Connection`, the §7.3 receive loop, block streams, subscriptions, reconnect),
 `envelope.py`, `profiling.py` (`require_profiling`, the five plan D.2 states) and `mark.py` (`hostobs-mark`),
-tested on a scripted fake probe and by a zipimport smoke test: the P3 part is closed. Still open: the Rust
-client (P5a) and P5b's connection cases.
+tested on a scripted fake probe and by a zipimport smoke test: the P3 part is closed.
+**What exists (P5a).** `crates/client` (`Client`, `Level`, `ClientInfo`, `HelloResult`, `BlockStream`,
+`Subscription`, `ClientError`; the injected `Transport` and `Clock`), tested against scripted servers over a fake
+clock: the P5a part is closed. Still open: P5b's connection cases.
 
 **Exit criteria.** P2: the §12 `FrameReader`, `ModeDetect`, `SendHub` and `ConnTimers` APIs in Rust
 with the 12 reader and 19 hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row; P3: the Python
