@@ -49,7 +49,7 @@ MEM_CURRENT_FACTS = {
 class WireFixtures(unittest.TestCase):
     def test_every_fixture_round_trips_in_the_reference_codec(self):
         cases = hostobs_wire_ref.load_cases(FIXTURES)
-        self.assertEqual(len(cases), 27, "the fixture case list is part of the contract")
+        self.assertEqual(len(cases), 29, "the fixture case list is part of the contract")
         for spec_path, spec, data in cases:
             with self.subTest(case=spec_path.stem):
                 hostobs_wire_ref.check_case(spec, data)

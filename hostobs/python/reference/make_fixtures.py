@@ -393,6 +393,18 @@ def oversized_frame() -> dict:
     return frame
 
 
+def below_header_frame() -> dict:
+    frame = live_frame()
+    frame["corr"] = 21
+    return frame
+
+
+def header_only_frame() -> dict:
+    frame = live_frame()
+    frame["corr"] = 22
+    return frame
+
+
 def reserved_frame() -> dict:
     frame = live_frame()
     frame["corr"] = 14
@@ -606,6 +618,18 @@ CASES: list[tuple[str, dict, list[tuple[int, bytes]] | None, dict | None]] = [
         {"kind": "truncated", "context": "frame"},
     ),
     (
+        "frame-length-below-header",
+        below_header_frame(),
+        "length-below-header",
+        {"kind": "truncated", "context": "frame length shorter than the header"},
+    ),
+    (
+        "block-without-directory",
+        header_only_frame(),
+        "header-only",
+        {"kind": "truncated", "context": "block directory"},
+    ),
+    (
         "non-zero-reserved",
         reserved_frame(),
         "reserved",
@@ -730,6 +754,19 @@ def build(name: str, frame: dict, edits: object) -> tuple[bytes, dict | None]:
             "len": wire.MAX_FRAME_BYTES + 1,
             "max": wire.MAX_FRAME_BYTES,
         }
+    if edits == "length-below-header":
+        # A header declaring a total of 4 bytes, less than the 12-byte header itself.
+        return patch(data, 0, struct.pack("<I", 4)), {
+            "kind": "truncated",
+            "context": "frame length shorter than the header",
+        }
+    if edits == "header-only":
+        # Exactly the 12 header bytes of a sectioned block and nothing after them: the length
+        # is legal, the section directory is missing.
+        header_only = struct.pack(
+            "<IBBHI", wire.FRAME_HEADER_LEN, wire.FRAME_TYPES["block"], wire.FRAME_SECTIONED, 0, frame["corr"]
+        )
+        return header_only, {"kind": "truncated", "context": "block directory"}
     if edits == "truncate":
         return data[:-8], {"kind": "truncated", "context": "frame", "need": len(data), "have": len(data) - 8}
     if edits == "reserved":
@@ -855,6 +892,15 @@ DOC = {
     "future-section-version": "A known section kind carrying version 2.",
     "oversized-frame": "A frame header declaring more than the 16 MiB maximum.",
     "truncated-frame": "A valid frame with its last eight body bytes removed.",
+    "frame-length-below-header": (
+        "A frame header declaring a total length of 4 bytes, shorter than the 12-byte header. Only the "
+        "refusal kind and its context are contractual; the need/have numbers are not pinned."
+    ),
+    "block-without-directory": (
+        "Exactly the 12 header bytes of a sectioned block frame (declared length 12) and no section "
+        "directory. Only the refusal kind and its context are contractual: the Rust cursor reports "
+        "need 2 / have 0 and the Python reference need 16 / have 12, and neither is pinned."
+    ),
     "non-zero-reserved": "A frame header whose reserved u16 is not zero.",
     "column-reserved": "A column whose reserved u16 padding field is not zero.",
     "duplicate-dictionary-entry": (
