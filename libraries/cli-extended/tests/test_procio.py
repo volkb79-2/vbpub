@@ -1186,6 +1186,33 @@ def test_pipe_holder_scan_names_holders_and_skips_what_it_cannot_inspect(monkeyp
             process.wait()
 
 
+def test_pipe_holder_scan_survives_a_descriptor_closing_mid_scan(monkeypatch):
+    """A descriptor closed between the listing and its readlink must not hide the holder.
+
+    A child inside ``execve`` closes its close-on-exec descriptors while ``Popen`` has already
+    returned (the errpipe closes first), so ``/proc/<pid>/fd`` still lists a descriptor whose
+    ``readlink`` then fails with ENOENT. The pipe end it passed with ``pass_fds`` is still open.
+    """
+    own = os.getpid()
+    vanishing, other = own + 1, own + 2  # derived from our pid so they never collide with it
+    listings = {
+        "/proc": [str(vanishing), str(other)],
+        f"/proc/{vanishing}/fd": ["3", "4"],  # the closing descriptor is listed first
+        f"/proc/{other}/fd": ["3"],
+    }
+    links = {f"/proc/{vanishing}/fd/4": "pipe:[4242]", f"/proc/{other}/fd/3": "pipe:[1]"}
+
+    def readlink(path):
+        if str(path) not in links:
+            raise FileNotFoundError("injected: closed since the listing")
+        return links[str(path)]
+
+    monkeypatch.setattr(procio, "_PROC_ROOT", "/proc")
+    monkeypatch.setattr(procio.os, "listdir", lambda path: listings[str(path)])
+    monkeypatch.setattr(procio.os, "readlink", readlink)
+    assert procio.pipe_holder_pids(4242) == [vanishing]
+
+
 def test_process_tree_lists_a_real_process_and_its_descendants(tmp_path):
     shell_pidfile, child_pidfile = tmp_path / "shell.pid", tmp_path / "child.pid"
     process = subprocess.Popen(
