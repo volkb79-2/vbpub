@@ -22,12 +22,25 @@ The builder is selectable: `--builder NAME`, else the environment variable
 `^[A-Za-z0-9][A-Za-z0-9._-]*$`; anything else is refused with exit 2 before any
 docker call). Hosts without the managed builder, such as the gate host v1001 and
 its cockpit container, which only have the `default` docker-driver builder, run
-`build-image.sh --builder default ...`; the script never creates a builder. As
-documented buildx behaviour, the `default` docker-driver builder honours
-`--cgroup-parent` for RUN steps; verify on first use: the build's cgroup
-placement. `--builder` changes nothing else: `--cgroup-parent` stays required, the
-CMRU preflight, build arguments and label checks are unchanged, and the script
-prints `builder=<name>` before it builds.
+`build-image.sh --builder default ...`; the script never creates a builder.
+`--cgroup-parent` is expected, but not yet verified, to be passed through by the
+docker driver (the docker-container driver does not honour it). Verify on first
+use: during a RUN step, the build's processes must appear under the requested
+slice (`systemd-cgls` or `<slice>/cgroup.procs` on the host); a build that does
+not land there is to be discarded. `--builder` changes nothing else:
+`--cgroup-parent` stays required, the CMRU preflight, build arguments and label
+checks are unchanged, and the script prints `builder=<name>` before it builds.
+
+The CMRU preflight (`cmru tester-gate`, run by the script as its governance
+check and never skipped) calls `discover_git_root` and refuses outside a git
+worktree, so the checkout the script runs in must be a git repository or linked
+worktree. A plain `git archive` export needs `git init && git add -A && git
+commit` first (a local one-commit repository is enough, no remote). The
+preflight also needs the `tester-unified:local` image (the default
+`CMRU_TESTER_UNIFIED_IMAGE`, `cmru.orchestration.toml`) and the digest-pinned
+probe image (`CMRU_TESTER_CGROUP_PROBE_IMAGE`) present or pullable on the
+daemon, python3 >= 3.11 (`tomllib`), and `hostobs/tools/verify-crate-cache.py`
+plus `cmru.orchestration.toml` in the checkout.
 
 In a Rust workspace, route all Cargo calls through a checked wrapper that
 invokes `/usr/local/bin/verify-crate-cache` first, then sets
