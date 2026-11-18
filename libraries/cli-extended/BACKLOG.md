@@ -687,4 +687,17 @@ the listing. The scan now skips only the vanished descriptor. Regression test:
 `test_pipe_holder_scan_survives_a_descriptor_closing_mid_scan`. Report:
 `artifacts/release-program-20261027/reports/procio-flake-REPORT.md`.
 
+**Finding (2026-11-18, fixed, tests only; package P11):** the R2 of 0.7.0 ended after 4 minutes
+with `ERROR/EXEC_FAILED`, `leaked-process-tree: ... comm=sleep` (24 entries). All were zombies:
+assay makes the pytest leader a child subreaper, so when a `procio` test killed a shell group,
+the `sleep` the scripted shell had running was orphaned onto pytest and nobody `wait()`ed for it
+(a plain run hides it: with no subreaper the zombies go to init). A subreaper wrapper measured 25
+zombie `sleep` children for `tests/test_procio.py` and 0 for every other file. No library call
+leaked: `src` is unchanged since `cli-extended-v0.7.0`. Fix: `tests/conftest.py` now has an
+autouse guard that fails any test leaving a new direct child of pytest (zombie or alive; it
+reaps/kills by pid) and sets the subreaper flag so a plain run behaves like assay's; the guard
+named four tests, which now use the `reap_orphans` fixture of `tests/test_procio.py`. Meta-test:
+`tests/test_no_leftover_children.py`. After: the wrapper reports `leaked=0` for the whole suite
+and for `test_procio.py` (3 runs).
+
 **Provenance:** `ciu/docs/DESIGN-NOTE-2026-11-CIU-215-CIU-220.md`, Decision 2.

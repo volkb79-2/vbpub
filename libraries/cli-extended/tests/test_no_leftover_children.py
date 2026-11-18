@@ -91,7 +91,9 @@ def test_kills_an_orphan_without_reaping_it():
     pid = _pid(pytester)
     assert result.ret != 0
     result.assert_outcomes(passed=1, errors=1)
-    result.stdout.fnmatch_lines([f"*pid {pid} comm sleep*"])
+    # The comm is not asserted: a shell's background child killed between fork and exec is
+    # still named "bash" (measured once in a whole-suite run).
+    result.stdout.fnmatch_lines([f"*pid {pid} comm *"])
     assert not Path(f"/proc/{pid}").exists()
 
 

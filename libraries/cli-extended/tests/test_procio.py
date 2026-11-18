@@ -20,9 +20,11 @@ from pathlib import Path
 import pytest
 
 from cli_extended import procio
+from conftest import direct_children
 
 DRAIN = 0.5
 JOIN_LIMIT = 60.0
+ORPHAN_LIMIT = 15.0  # a scripted shell's own ``sleep 1`` ends by itself well inside this
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 TERMINATION_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
 
@@ -68,6 +70,32 @@ def _kill_quietly(pid: int | None) -> None:
         os.waitpid(pid, 0)
     except ChildProcessError:
         pass  # not our child (reaped by another owner already)
+
+
+@pytest.fixture
+def reap_orphans():
+    """Reap the grandchildren a test's scripted shell leaves behind (package P11).
+
+    assay makes the pytest process a child subreaper (``conftest.py`` does the same), so when a
+    test kills a shell group, a ``sleep`` the shell had running is orphaned onto this process
+    and stays a zombie nobody ``wait()``s for. The test cannot know its pid in advance, so after
+    the test this waits (bounded) for every new child to end and reaps it. A child that is
+    still alive at the deadline is left for the leftover-children guard to report and kill.
+    """
+    before = set(direct_children())
+    yield
+    deadline = time.monotonic() + ORPHAN_LIMIT
+    while True:
+        new = {key: state for key, (_, state) in direct_children().items() if key not in before}
+        for (pid, _), state in new.items():
+            if state == "Z":
+                try:
+                    os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    pass  # reaped by somebody else in the meantime
+        if not new or time.monotonic() >= deadline:
+            return
+        time.sleep(0.02)
 
 
 def _stream(argv, tmp_path, *, watchdog=600.0, **kwargs):
@@ -211,7 +239,7 @@ def test_holder_the_scan_cannot_see_is_reported_as_another_process(tmp_path, mon
         _kill_quietly(holder)
 
 
-def test_drain_ends_the_wait_at_drain_seconds_not_before_and_not_at_eof(tmp_path):
+def test_drain_ends_the_wait_at_drain_seconds_not_before_and_not_at_eof(tmp_path, reap_orphans):
     """A holder that keeps writing is cut off at the drain deadline; earlier output is kept."""
     pidfile = tmp_path / "holder.pid"
     script = (
@@ -407,7 +435,7 @@ def test_output_bytes_count_as_progress_and_reset_the_clock(tmp_path):
     assert result.outcome == "exited" and result.returncode == 0 and len(lines) == 12
 
 
-def test_a_progress_path_size_change_counts_as_progress(tmp_path):
+def test_a_progress_path_size_change_counts_as_progress(tmp_path, reap_orphans):
     log = tmp_path / "step.log"
     script = f"for i in $(seq 12); do echo more >> {log}; sleep 1; done"  # ~12 s > the 10 s limit
     kept, _ = _stream(["bash", "-c", script], tmp_path, watchdog=10.0, progress_paths=[log])
@@ -1126,7 +1154,7 @@ def test_reap_waits_out_a_group_member_that_outlives_its_leader_then_kills_it(tm
         _kill_quietly(member)
 
 
-def test_an_interrupted_reap_wait_still_kills_the_group(tmp_path):
+def test_an_interrupted_reap_wait_still_kills_the_group(tmp_path, reap_orphans):
     shell_pidfile = tmp_path / "shell.pid"
     real = subprocess.Popen(
         ["bash", "-c", f"trap '' TERM; echo $$ > {shell_pidfile}; while :; do sleep 0.1; done"],
@@ -1213,7 +1241,7 @@ def test_pipe_holder_scan_survives_a_descriptor_closing_mid_scan(monkeypatch):
     assert procio.pipe_holder_pids(4242) == [vanishing]
 
 
-def test_process_tree_lists_a_real_process_and_its_descendants(tmp_path):
+def test_process_tree_lists_a_real_process_and_its_descendants(tmp_path, reap_orphans):
     shell_pidfile, child_pidfile = tmp_path / "shell.pid", tmp_path / "child.pid"
     process = subprocess.Popen(
         ["bash", "-c", f"echo $$ > {shell_pidfile}; sleep 600 & echo $! > {child_pidfile}; wait"],
