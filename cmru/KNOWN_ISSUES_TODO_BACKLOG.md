@@ -3245,6 +3245,8 @@ The 2026-11-12 T3 rehearsal of `r2` remained PARTIAL: its preflight had six fail
 
 **Window policy.** KI-159 (FIXED 2026-11-18) removed the per-minor window allowlist: the standing release rule above replaced KI-79's bounded windows, so this entry no longer waits on any window design.
 
+**Claim shape (operator decision 2026-11-18).** The R2 claim is the WHOLE source, assembled from carried and re-verified results: an earlier tested candidate whose tested code locus and tests are unchanged stays the same candidate (identity-valid), so earlier work is reused instead of repeated; it is not a delta-only claim, and a delta run alone never closes this entry. What may be reused is bounded by `assay/docs/DESIGN-SUBFILE-CANDIDATE-IDENTITY.md` (section 2.2): a carried SURVIVOR may be carried pessimistically, with disclosure; a carried KILL is only a lookup hit and is re-proved by the current judge before it counts (strict mode, mandatory for release claims). Unchanged tests never authorize carrying a kill without that re-proof.
+
 **Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md); KI-79 above; cmru-v7.2.4 release (2026-11-08).
 
 ## KI-142 - real releases read an external version before prepare under 7.2.4
