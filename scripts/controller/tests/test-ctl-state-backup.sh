@@ -20,6 +20,8 @@ fixture() {
   printf 'x\n' > "$R/.controller-state/sub/.git/config"
   printf '{}\n' > "$R/.controller-state/stream.jsonl"
   ln -s "$ROOT/outside/secret" "$R/.controller-state/escape"
+  ln -s HANDOFF.md "$R/.controller-state/rel-link"
+  ln "$R/.controller-state/HANDOFF.md" "$R/.controller-state/hard"
   printf 'plan\n' > "$R/plan.yaml"
   printf 'A=1\n' > "$H/controller.local.env"; printf '{}\n' > "$H/hosts.local.json"; printf 'notes\n' > "$H/notes.txt"
   printf 'report\n' > "$H/reports/r.md"
@@ -38,6 +40,8 @@ home/remote-gates/rgw-1/result.json
 home/reports/r.md
 repo/.controller-state/HANDOFF.md
 repo/.controller-state/escape
+repo/.controller-state/hard
+repo/.controller-state/rel-link
 repo/plan.yaml
 runs/a.done
 runs/a.state.md
@@ -62,7 +66,7 @@ expect_rc 0 '--list'
 [[ ! -e $B ]] || fail '--list must not create the backup directory'
 [[ $(sed -n -E 's,^[0-9]+ ((home|repo|runs)/.*)$,\1,p' "$ROOT/out" | LC_ALL=C sort) == "$EXPECT" ]] || { cat "$ROOT/out" >&2; fail 'the --list entries differ from the expected state set'; }
 said 'SKIPPED (over 100 bytes; --include-large): 300 repo/.controller-state/big.bin' 'a large file is reported as skipped'
-said 'total: 11 file(s)' 'the list total'
+said 'total: 13 file(s)' 'the list total'
 grep -qE '^[0-9]+ home/controller.local.env$' "$ROOT/out" || fail 'a list entry is "<size> <name>"'
 run_backup --list --include-large --max-file-bytes 100
 grep -q 'repo/.controller-state/big.bin' "$ROOT/out" || fail '--include-large keeps the large file'
@@ -80,17 +84,22 @@ archive=$(sed -n 's/^archive: //p' "$ROOT/out")
 for leftover in "$B"/.[!.]* "$B"/*.tmp*; do [[ ! -e $leftover ]] || fail "a temporary file was left in the backup directory: $leftover"; done
 sum=$(sha256sum "$archive" | cut -d' ' -f1)
 said "sha256:  $sum" 'the printed sha256 is the archive checksum'
-said "$(stat -c %s "$archive") byte(s), 11 file(s), 1 skipped as large" 'the printed size'
+said "$(stat -c %s "$archive") byte(s), 13 file(s), 1 skipped as large" 'the printed size'
 [[ $(tar -tf "$archive" | LC_ALL=C sort) == "$EXPECT" ]] || { tar -tf "$archive" >&2; fail 'the archive members differ from the expected state set (no jsonl, .git, worktrees, logs, artifacts, large files)'; }
 mkdir -p "$ROOT/restore"; tar -xf "$archive" -C "$ROOT/restore"
 [[ -L $ROOT/restore/repo/.controller-state/escape ]] || fail 'a symlink must be archived as a link'
+# The member-name relabel must not rewrite where a link points (tar --transform rewrites symlink targets by default).
+[[ $(readlink "$ROOT/restore/repo/.controller-state/escape") == "$ROOT/outside/secret" ]] || fail 'an absolute symlink target must survive the archive unchanged'
+[[ $(readlink "$ROOT/restore/repo/.controller-state/rel-link") == HANDOFF.md ]] || fail 'a relative symlink target must survive the archive unchanged'
+# A hardlink member names its target by member name: that name must carry the same label as the target member itself.
+[[ $ROOT/restore/repo/.controller-state/hard -ef $ROOT/restore/repo/.controller-state/HANDOFF.md ]] || fail 'a hardlink member must still point at the relabelled target member'
 ! grep -rqF 'OUTSIDE-SECRET-CONTENT' "$ROOT/restore" || fail 'a symlink must never be followed into the archive'
 run_backup --include-large --max-file-bytes 100
 archive2=$(sed -n 's/^archive: //p' "$ROOT/out")
 tar -tf "$archive2" | grep -qx 'repo/.controller-state/big.bin' || fail '--include-large must archive the large file'
 
 # --- --verify
-run_backup --verify "$archive"; expect_rc 0 'verify'; said '11 member(s)' 'verify counts the members'; said 'matches the sidecar' 'verify compares the sidecar'
+run_backup --verify "$archive"; expect_rc 0 'verify'; said '13 member(s)' 'verify counts the members'; said 'matches the sidecar' 'verify compares the sidecar'
 printf '%s  x\n' 0000000000000000000000000000000000000000000000000000000000000000 > "$archive.sha256"
 run_backup --verify "$archive"; expect_rc 1 'a sidecar that differs'; said 'sha256 differs' 'verify refuses a changed checksum'
 head -c 40 "$archive" > "$ROOT/truncated.${archive##*.}"; case $archive in *.zst) ext=tar.zst ;; *) ext=tar.gz ;; esac

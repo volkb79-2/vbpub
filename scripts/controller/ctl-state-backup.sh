@@ -108,7 +108,9 @@ for entry in "${roots[@]}"; do
   IFS='|' read -r id label root <<< "$entry"
   [[ -s $stage/$id.list ]] || continue
   if (( first )); then mode=c; first=0; else mode=r; fi
-  tar -${mode}f "$tarfile" --null --transform "s,^\./,,;s,^,$label/," -C "$root" -T "$stage/$id.list" || die "tar failed for $label" 1
+  # flags=rh: rewrite member names and HARDLINK targets only; the default flags also rewrite symlink targets (an absolute
+  # link -> /etc would be stored as -> repo//etc, a relative one as -> repo/a.md).
+  tar -${mode}f "$tarfile" --null --transform "flags=rh;s,^\./,,;s,^,$label/," -C "$root" -T "$stage/$id.list" || die "tar failed for $label" 1
 done
 if command -v zstd >/dev/null 2>&1; then ext=tar.zst; zstd -q -c -- "$tarfile" > "$stage/out" || die 'zstd failed' 1
 else ext=tar.gz; gzip -c -- "$tarfile" > "$stage/out" || die 'gzip failed' 1; fi

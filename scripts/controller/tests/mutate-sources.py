@@ -1235,5 +1235,7 @@ for _name, _before, _after in (
     ("remote-summaries", "-o -name meta.json \\)", "-o -name '*' \\)"),
     ("empty", "(( ${#files[@]} > 0 )) || die", ": || die"),
     ("overwrite", "while [[ -e $final ]]; do", "while false; do"),
+    ("link-targets", '"flags=rh;s,^\\./,,;s,^,$label/,"', '"s,^\\./,,;s,^,$label/,"'),
+    ("hardlink-targets", '"flags=rh;s,^\\./,,;s,^,$label/,"', '"flags=r;s,^\\./,,;s,^,$label/,"'),
 ):
     mutant("scripts/controller/ctl-state-backup.sh", f"ctl-state-backup-{_name}.sh", _before, _after)
