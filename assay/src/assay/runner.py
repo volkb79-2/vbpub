@@ -1285,23 +1285,25 @@ def _directory_report_error(
 
     ``Refused`` is the reservation's own refusal, and an unusable report whose
     R0 summary fell back to the exit code is ``ERROR``/``UNREADABLE_ARTIFACT``.
-    ``Absent`` keeps the file path's ``NO_MEASUREMENT``/``EMPTY_COVERAGE``:
-    it must never pass silently, and U5c replaces it with the synthesised
-    ``INCONCLUSIVE``/``NO_MUTANTS`` only for an exit-0 run. ``NotConsumed`` is
+    ``Absent`` is also ``ERROR``/``UNREADABLE_ARTIFACT`` (unlike the file
+    kind): a payload-free ``NO_MEASUREMENT``/``EMPTY_COVERAGE`` claim beside a
+    PASS R0 is rejected by ``verify``, and ``verify`` accepts this refusal.
+    U5c synthesises the zero-mutant ``INCONCLUSIVE``/``NO_MUTANTS`` for an
+    exit-0 run; until then an absent report fails closed. ``NotConsumed`` is
     an error and never the zero-mutant marker: nothing was observed.
     """
     if isinstance(state, _DirectoryRefused):
         return state.error
     if isinstance(state, _DirectoryAbsent):
         return AssayError(
-            f"the lane declared judge.mutation.artifact {artifact!r} but its "
-            f"own command did not write the tool's output directory. An "
-            f"ingested R2 lane's whole evidence IS that artifact: there is "
-            f"nothing here to judge, and a lane that reports PASS on a "
-            f"mutation run that produced none would be the silent green this "
-            f"project exists to remove.",
-            outcome=Outcome.NO_MEASUREMENT,
-            reason_code=ReasonCode.EMPTY_COVERAGE,
+            f"the lane declared judge.mutation.artifact {artifact!r} but the "
+            f"cargo-mutants run produced no outcomes.json. An ingested R2 "
+            f"lane's whole evidence IS that artifact, so there is nothing to "
+            f"judge. The zero-mutant case is synthesised by work package U5c; "
+            f"until then a run that wrote no report fails closed rather than "
+            f"reporting a silent green.",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
         )
     if isinstance(state, _DirectoryNotConsumed):
         return AssayError(
@@ -6443,6 +6445,19 @@ def _ingest_r2_report(
     could have been rewritten by the lane's own command between then and now
     -- which is one of the three causes this check exists to name.
     """
+    # Decode FIRST, before anything about the lane or snapshot is consulted:
+    # undecodable bytes are a refusal that needs neither (a directory read
+    # has no decode; its bytes are the parser's own).
+    text: str | None = None
+    if isinstance(raw, bytes):
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise AssayError(
+                f"mutation report is not valid UTF-8: {exc}",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            ) from exc
     assert lane.judge is not None and lane.judge.mutation is not None
     assert lane.judge.mutation.format is not None
     spec = mutation_parsers.MUTATION_FORMAT_REGISTRY[lane.judge.mutation.format]
@@ -6472,15 +6487,7 @@ def _ingest_r2_report(
             ),
         )
     else:
-        assert isinstance(raw, bytes)
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise AssayError(
-                f"mutation report is not valid UTF-8: {exc}",
-                outcome=Outcome.ERROR,
-                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-            ) from exc
+        assert text is not None
         report = mutation_parsers.load_mutation_report(
             text, declared_format=lane.judge.mutation.format
         )

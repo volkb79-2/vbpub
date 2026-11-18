@@ -362,23 +362,11 @@ def test_an_absent_report_with_exit_zero_never_passes(git_repo: GitRepo, tmp_pat
     base = _seed(git_repo, "indiff")
     lane = _lane(git_repo, base)
 
-    # NOT through `_run`: `verify_document` rejects the payload-free
-    # NO_MEASUREMENT/EMPTY_COVERAGE R2 beside a PASSING R0 (the same gap the
-    # file kind has); U5c replaces this state with INCONCLUSIVE/NO_MUTANTS.
-    verdict = runner.run_lane(
-        lane,
-        commit=git_repo.head(),
-        repo=git_repo.path,
-        project_root=git_repo.path,
-        adapter=RustAdapter(),
-        assay_version="0.1.0",
-        process_runner=Fake(None, 0),
-        clock=lambda: MOMENT,
-    )
+    # Until U5c synthesises the zero-mutant INCONCLUSIVE/NO_MUTANTS, an absent
+    # report fails closed as an unreadable artifact (which `verify` accepts).
+    verdict = _run(git_repo, lane, Fake(None, 0))
 
-    r2 = _claim(verdict, "R2")
-    assert r2.status is Outcome.NO_MEASUREMENT
-    assert r2.reason_code is ReasonCode.EMPTY_COVERAGE
+    _refused(verdict)
     assert verdict.outcome is not Outcome.PASS
 
 
@@ -437,13 +425,14 @@ def test_a_refusal_is_returned_as_the_very_error():
     assert runner._directory_report_error(runner._DirectoryRefused(error=refusal), OUT) is refusal
 
 
-def test_an_absent_directory_is_no_measurement():
+def test_an_absent_directory_fails_closed_as_unreadable_until_u5c():
     error = runner._directory_report_error(runner._DirectoryAbsent(), OUT)
 
     assert error is not None
-    assert error.outcome is Outcome.NO_MEASUREMENT
-    assert error.reason_code is ReasonCode.EMPTY_COVERAGE
+    assert error.outcome is Outcome.ERROR
+    assert error.reason_code is ReasonCode.UNREADABLE_ARTIFACT
     assert repr(OUT) in str(error)
+    assert "no outcomes.json" in str(error)
 
 
 def test_a_directory_never_consumed_is_an_execution_failure():
