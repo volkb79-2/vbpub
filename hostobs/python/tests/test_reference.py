@@ -456,5 +456,146 @@ class SegmentFixtures(unittest.TestCase):
         self.assertEqual(evt_spec["header"]["payload"], "evt")
 
 
+class SegmentNames(unittest.TestCase):
+    """HOB-42/HOB-43: the file name must be backed by the bytes, and a quarantine name keeps its key.
+
+    No committed fixture is possible for these rules: the file name is not part of the file's
+    bytes, so ``make_segment_fixtures.py`` cannot express them. The bytes are built here, with
+    the reference encoder, and the same cases are pinned on the Rust side in
+    ``crates/store/src/tier.rs`` (the tier tests) and ``format.rs``.
+    """
+
+    @staticmethod
+    def _case(name: str) -> tuple[dict, bytes]:
+        for path, spec, data in hostobs_segment_ref.load_cases(SEGMENTS):
+            if path.stem == name:
+                return spec, data
+        raise AssertionError(f"fixture {name} is missing")
+
+    @staticmethod
+    def _name_of(spec: dict, *, sealed: bool, seq: int | None = None, start_s: int | None = None) -> str:
+        header = spec["header"]
+        seq = header["seq"] if seq is None else seq
+        start_s = header["start_real_ns"] // 1_000_000_000 if start_s is None else start_s
+        return f"hot-{start_s}-{seq}.seg" + ("" if sealed else ".open")
+
+    def test_a_name_parses_from_the_right_and_foreign_names_are_refused(self):
+        ref = hostobs_segment_ref
+        self.assertEqual(
+            ref.parse_segment_name("focus-web-1700000000-12.seg"),
+            {"tier": "focus-web", "start_s": 1700000000, "seq": 12, "open": False},
+        )
+        self.assertEqual(ref.parse_segment_name("hot-0-1.seg.open")["open"], True)
+        for foreign in (
+            "notes.txt",
+            "hot-1.seg",
+            "hot--1-2.seg",
+            "hot-1-2.seg.tmp",
+            "-1-2.seg",
+            "hot-1-x.seg",
+            "hot-1-2.seg.open.open",
+            "hot-1-+2.seg",
+            "hot-18446744073709551616-2.seg",
+        ):
+            with self.subTest(name=foreign), self.assertRaises(ref.SegmentError) as caught:
+                ref.parse_segment_name(foreign)
+            self.assertEqual(caught.exception.as_dict(), {"error": "segment-name", "name": foreign})
+
+    def test_a_quarantine_name_keeps_the_key_of_the_segment_it_was(self):
+        ref = hostobs_segment_ref
+        self.assertEqual(
+            ref.parse_quarantine_name("hot-60-1.seg.corrupt"),
+            {"tier": "hot", "start_s": 60, "seq": 1, "open": False},
+        )
+        self.assertEqual(ref.parse_quarantine_name("hot-60-1.seg.open.corrupt")["open"], True)
+        for foreign in (
+            "hot-60-1.seg",
+            "hot-60-1.seg.open",
+            "hot-x-1.seg.corrupt",
+            "hot-60-1.corrupt",
+            "hot-60-1.seg.corrupt.corrupt",
+            ".corrupt",
+        ):
+            with self.subTest(name=foreign), self.assertRaises(ref.SegmentError) as caught:
+                ref.parse_quarantine_name(foreign)
+            self.assertEqual(caught.exception.refusal, "segment-name")
+
+    def test_a_sealed_and_an_open_segment_agree_with_their_names(self):
+        ref = hostobs_segment_ref
+        for case, sealed in (("sealed-history", True), ("sealed-empty", True), ("open-history", False)):
+            spec, data = self._case(case)
+            with self.subTest(case=case):
+                ref.check_segment_name(self._name_of(spec, sealed=sealed), ref.decode_segment(data))
+
+    def test_a_sealed_name_without_a_verified_footer_is_refused(self):
+        ref = hostobs_segment_ref
+        spec, data = self._case("sealed-history")
+        name = self._name_of(spec, sealed=True)
+        footerless = data[: -ref.FOOTER_LEN]
+        cases = {
+            "the footer cut off": footerless,
+            "a torn sealed file": data[: -ref.FOOTER_LEN - 8],
+            "an open segment's bytes under a sealed name": self._case("open-history")[1],
+        }
+        for label, content in cases.items():
+            decoded = ref.decode_segment(content)
+            # The open-history bytes carry another identity; rename so only the footer rule fails.
+            file_name = name if content is not cases["an open segment's bytes under a sealed name"] else (
+                self._name_of(self._case("open-history")[0], sealed=True)
+            )
+            with self.subTest(case=label), self.assertRaises(ref.SegmentError) as caught:
+                ref.check_segment_name(file_name, decoded)
+            self.assertEqual(caught.exception.refusal, "sealed-without-footer")
+            self.assertEqual(caught.exception.fields, {"name": file_name})
+        # The same footerless bytes under an *open* name are an ordinary open segment.
+        ref.check_segment_name(name + ".open", ref.decode_segment(footerless))
+
+    def test_a_header_that_disagrees_with_its_name_is_refused_for_both_names(self):
+        ref = hostobs_segment_ref
+        sealed_spec, sealed_data = self._case("sealed-history")
+        open_spec, open_data = self._case("open-history")
+        header = sealed_spec["header"]
+        start_s = header["start_real_ns"] // 1_000_000_000
+        sealed = ref.decode_segment(sealed_data)
+        opened = ref.decode_segment(open_data)
+        with self.assertRaises(ref.SegmentError) as caught:
+            ref.check_segment_name(f"hot-{start_s}-{header['seq'] + 3}.seg", sealed)
+        self.assertEqual(
+            caught.exception.as_dict(),
+            {"error": "segment-identity", "field": "seq", "name": header["seq"] + 3, "header": header["seq"]},
+        )
+        with self.assertRaises(ref.SegmentError) as caught:
+            ref.check_segment_name(f"hot-{start_s + 60}-{header['seq']}.seg", sealed)
+        self.assertEqual(
+            caught.exception.as_dict(),
+            {
+                "error": "segment-identity",
+                "field": "start_real_ns",
+                "name": (start_s + 60) * 1_000_000_000,
+                "header": header["start_real_ns"],
+            },
+        )
+        with self.assertRaises(ref.SegmentError) as caught:
+            ref.check_segment_name(f"hot-{start_s}-{open_spec['header']['seq'] + 6}.seg.open", opened)
+        self.assertEqual(caught.exception.refusal, "segment-identity")
+
+    def test_the_identity_rule_comes_before_the_footer_rule(self):
+        ref = hostobs_segment_ref
+        spec, data = self._case("sealed-history")
+        footerless = ref.decode_segment(data[: -ref.FOOTER_LEN])
+        wrong_seq = self._name_of(spec, sealed=True, seq=spec["header"]["seq"] + 1)
+        with self.assertRaises(ref.SegmentError) as caught:
+            ref.check_segment_name(wrong_seq, footerless)
+        self.assertEqual(caught.exception.refusal, "segment-identity")
+
+    def test_a_start_second_past_the_i64_range_saturates_like_the_rust_name(self):
+        ref = hostobs_segment_ref
+        spec, data = self._case("open-history")
+        decoded = ref.decode_segment(data)
+        decoded["header"] = {**decoded["header"], "start_real_ns": (1 << 63) - 1}
+        name = f"hot-{(1 << 64) - 1}-{decoded['header']['seq']}.seg.open"
+        ref.check_segment_name(name, decoded)
+
+
 if __name__ == "__main__":
     unittest.main()

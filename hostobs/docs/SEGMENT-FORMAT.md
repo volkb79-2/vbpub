@@ -50,6 +50,34 @@ Only a name that parses *and* whose first 64 bytes are this store's header for t
 segment the store may delete. Anything else in the directory — a foreign file, a symbolic link, a
 directory, an interrupted `.tmp` — is reported (`TierScan::notes`) and left untouched.
 
+### A name is a claim the bytes must back (HOB-42)
+
+A segment's name makes two claims, and a file is served only when its bytes back both:
+
+1. **Name and header agree.** The header's `seq` equals the name's `<seq>`, and the header's
+   `start_real_ns` equals the name's `<start_s>` in nanoseconds (`start_s * 1_000_000_000`,
+   saturating at the `i64` maximum — exactly the value the tier writes when it creates the
+   segment). A file renamed by hand would otherwise keep serving the identity of its header.
+   Refusal: `segment-identity`, naming the field (`seq` or `start_real_ns`) and both values. It
+   applies to `.seg` and `.seg.open` alike.
+2. **A sealed name carries a verified footer.** Any name that is not `.seg.open` says "sealed",
+   which means the footer that closes the records is present and agrees with them (the footer
+   rules below). A `.seg` whose footer was lost, or a truncated sealed file whose remainder is a
+   torn tail, is not sealed history. Refusal: `sealed-without-footer`. A footer that is present
+   but does not verify is already a `corrupt` tail, with its own `footer-*` refusal.
+
+The identity rule is checked first. A file that fails either rule is **quarantined whole**
+(renamed `<name>.corrupt`, reported in `TierScan::quarantined` and `TierScan::notes` with the
+refusal's kind), never truncated into service: a torn tail is a normal shape for an *open*
+segment, and for a sealed name it is a file that is not what it says. The seal keeps the start
+second of the open name (it is not re-derived from the header with the current `segment_s`), so a
+restart with a different step cannot make a good seal fail the identity rule.
+
+The Python reference implements the rules as `check_segment_name(name, decoded)` and
+`parse_segment_name`. No golden fixture exists for them: a file's name is not part of the file's
+bytes, so the fixture generator cannot express the case, and the Python tests build the bytes
+themselves.
+
 ## Layout
 
 Little-endian, every field fixed width. Numbers in brackets are byte offsets.
@@ -182,6 +210,24 @@ Every tier is bounded by `keep_s` **and** `cap_bytes`, whichever binds first. Th
 is the whole segment: cutting inside one would leave a file whose footer no longer describes it.
 Ordering is by the name's own `start_s`, then its `seq` — never by insertion order, so a clock step
 cannot make a newer segment look older.
+
+**Quarantined files are inside the cap (HOB-43).** A quarantined file (`<segment name>.corrupt`) is the tier's disk use, so it is bounded by the same
+two limits as history:
+
+* it counts in the tier's byte total, so `cap_bytes` bounds live segments and quarantined files
+  **together**;
+* `keep_s` applies to it, using the `(start_s, seq)` its name keeps (`<name>.corrupt` parses back
+  to the segment name it was, including `.seg.open.corrupt`);
+* when the tier is over `cap_bytes`, quarantined files are evicted **first**, oldest
+  `(start_s, seq)` first, and only then live segments. A source of repeated damage therefore
+  exhausts its own debris before it can cost the tier one good segment.
+
+Every such removal is reported (`Evicted::quarantined`) and counted (`StoreStats::evicted_quarantined`,
+bytes in `evicted_bytes`). A `.corrupt` name that does not parse to this tier, a directory or link
+under that name, or a file whose header is not this tier's corpus is **not adopted**: it is
+reported as a note, never counted, never evicted and never removed, because the store removes only
+what its name and its header prove is its own. Those bytes are therefore outside the cap, which
+bounds what the store provably wrote.
 
 `keep_s` compares a segment's **end** to the window: a segment whose end is exactly `now - keep_s`
 is still inside it. `cap_bytes` is strict, and if the only remaining segment is the open one and it
