@@ -859,9 +859,9 @@ the limit headers. The retry bound is per request (3 retries of at most 60 s eac
 per run: there is no cumulative sleep budget, and Docker Hub sends no `Retry-After`, so against Hub a 429 fails at once.
 `cmru versions resolve` and `init` edit `cmru.toml` as text: only the `resolved` values and the target tables they
 create change, and every comment, blank line, multi-line value and key order stays byte-identical. When a target is
-written in a shape they cannot edit as text they refuse before writing and name the edit to make by hand. `package.json`
-stays hand-owned: if several `constraint = "*"` npm targets resolve past what the committed manifest pins, one run lists
-all of them with the exact `package.json` change; apply it, then rerun.
+written in a shape they cannot edit as text they refuse before writing and name the edit to make by hand. cmru does not
+rewrite `package.json` to get past the manifest refusal: if several `constraint = "*"` npm targets resolve past what the
+committed manifest pins, one run lists all of them with the exact `package.json` change; apply it, then rerun.
 `cmru versions resolve` saves every target it finished to
 `$XDG_CACHE_HOME/cmru/versions-resume-<hash>.json` (default `~/.cache`; outside the repository), and the same command
 rerun after the window reuses those targets (unchanged declaration, same age window, saved within 24 h) and resolves only
