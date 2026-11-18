@@ -661,8 +661,8 @@ entries.
 | CIU-205 | `ciu up --dir` omits S3.12 selection facts, and the resolved selection is not recorded/guarded across invocations | Medium | FIXED 2026-11-11 on `ciu-205-dir-selection-20261111` (unreleased) |
 | CIU-206 | No host-wide cross-checkout operator secret; an uncached stack can re-prompt or fail in another checkout only when neither an environment value nor a cached value is available, and env silently replaces a cached value | Medium | FIXED 2026-11-11 on `ciu-206-host-secret-20261111` (unreleased) |
 | CIU-207 | Broad CIU R2 campaigns have no diff-scoped base or cost preflight for release planning | Major | OPEN 2026-11-11 |
-| CIU-208 | Profile-mode `ciu up` drops a profile's `topology_overrides` from the per-stack engine render even though preflight renders and `ciu resolve` apply them | Medium | OPEN 2026-11-11 |
-| CIU-209 | `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check | Medium | OPEN 2026-11-11 |
+| CIU-208 | Profile-mode `ciu up` drops a profile's `topology_overrides` from the per-stack engine render even though preflight renders and `ciu resolve` apply them | Medium | FIXED 2026-11-18 |
+| CIU-209 | `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check | Medium | FIXED 2026-11-18 |
 | CIU-210 | The CIU R2 lane is pinned to one worker in both tag-time configuration and its documentation-contract test | Major | PENDING on `r2-jobs-20261111` |
 | CIU-211 | CIU R2 campaign 7241 survivor equivalences and seven bounded timeout decisions | Minor | KNOWN ISSUE/work record on `ciu-r2-tests-20261112` |
 | CIU-212 | The CIU test suite has no per-test timeout, so non-terminating mutants exhaust the candidate budget | Major | OPEN 2026-11-12 |
@@ -6510,7 +6510,7 @@ Keep the implementation in the supported campaign/planning surfaces; do not enco
 
 ## CIU-208 — profile-mode `ciu up` drops a profile's `topology_overrides` from the per-stack engine render
 
-**Status:** OPEN (filed 2026-11-11); priority medium; source: CIU-205 implementation report section 4 item 4; related to S7.4/CIU-44 and CIU-205. CIU-44 is FIXED; CIU-205 is FIXED, unreleased, and merged on main. This is a pre-existing S7.4 defect in profile-mode `ciu up`, not a missing part of CIU-205's deliberately narrower `--dir` selection-facts fix.
+**Status:** FIXED 2026-11-18 on `ciu-20261118_052908-profile-bugs-20261118` (unreleased; fix commit 8d8dd2ed3). Resolution: `Profile.topology_overrides` carries the accumulated override; `action_deploy` -> `_run_stack` -> `engine.main_execution(topology_overrides=...)` deep-merges it over the per-stack render's own `topology` (override only, not the root `Profile.config`, so the render's own chain values for every other key stay); callers passing none keep today's call shape. A nested global layer cannot exist below a CIU root (a nested defaults file becomes its own env root), so the nested-fixture idea was replaced by a unit test that the merge never swaps the rendered chain. `ciu up --dir` is unchanged (CIU-205 scope; it derives only the selection facts). Original filing: priority medium; source: CIU-205 implementation report section 4 item 4; related to S7.4/CIU-44 and CIU-205. CIU-44 is FIXED; CIU-205 is FIXED, unreleased, and merged on main. This is a pre-existing S7.4 defect in profile-mode `ciu up`, not a missing part of CIU-205's deliberately narrower `--dir` selection-facts fix.
 
 **Problem.** Profile resolution deep-merges a selected profile's
 `topology_overrides` into `Profile.config`. CIU's preflight render and the
@@ -6603,7 +6603,7 @@ and the normative/documented contract matches the implementation.
 
 ## CIU-209 — `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check
 
-**Status:** OPEN (filed 2026-11-11); priority medium; source: CIU-205 implementation report section 4 item 4; related to CIU-205, which is FIXED, unreleased, and merged on main. This does not reopen CIU-205's `ciu up --dir` scope.
+**Status:** FIXED 2026-11-18 on `ciu-20261118_052908-profile-bugs-20261118` (unreleased; fix commit 3710298ba). Resolution: `ciu dev` resolves through `deploy.resolve_profiles` and calls `selection_record.enforce(..., write=False)` after resolving and before any stack render or Docker call; SPEC S3.12 clause 5 and S5a.3, CONSUMERS and CHANGES (behaviour change noted) updated. Original filing: priority medium; source: CIU-205 implementation report section 4 item 4; related to CIU-205, which is FIXED, unreleased, and merged on main. This does not reopen CIU-205's `ciu up --dir` scope.
 
 **Problem.** `ciu dev` calls
 `deploy_pkg.profiles.resolve_profiles` directly. That resolver falls back to
