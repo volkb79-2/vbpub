@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
 from typing import Mapping
@@ -257,13 +257,9 @@ def check_run_gate_image_precondition(
 
 def check_release_build_images_precondition(
     configured_env: Mapping[str, object], *, process_env: Mapping[str, object] | None = None,
-    require_docker: bool = False, dind_image_required: bool = False,
+    require_docker: bool = False,
 ) -> list[GatePrecondition]:
-    """Check the image refs the selected release config will pass to build handlers.
-
-    The DinD sidecar row exists only when *dind_image_required* (a step uses
-    ``--enable-docker``); it has the cgroup probe's ``--pull=never`` contract.
-    """
+    """Check the image refs the selected release config will pass to build handlers."""
     builder = resolve_environment_value(
         WHEEL_BUILDER_IMAGE_ENV,
         context=EnvironmentResolutionContext.RELEASE,
@@ -276,7 +272,7 @@ def check_release_build_images_precondition(
         configured_env=configured_env,
         process_env=process_env,
     )
-    rows = [
+    return [
         _check_local_image_precondition(
             WHEEL_BUILDER_IMAGE_ENV, builder, "Wheel-builder image",
             require_docker=require_docker, pull_if_missing=True,
@@ -286,28 +282,49 @@ def check_release_build_images_precondition(
             require_docker=require_docker, pull_if_missing=False,
         ),
     ]
-    if dind_image_required:
-        dind = resolve_environment_value(
-            DIND_IMAGE_ENV,
-            context=EnvironmentResolutionContext.RELEASE,
-            configured_env=configured_env,
-            process_env=process_env,
-        )
-        rows.append(_check_local_image_precondition(
-            DIND_IMAGE_ENV, dind, "DinD sidecar image",
-            require_docker=require_docker, pull_if_missing=False,
-        ))
-    return rows
+
+
+def check_dind_image_precondition(
+    configured_env: Mapping[str, object], *, process_env: Mapping[str, object] | None = None,
+    require_docker: bool = False, project: str = "cmru", label: str = "DinD sidecar image",
+) -> GatePrecondition:
+    """Check one project's ``CMRU_TESTER_DIND_IMAGE`` (``--pull=never``, never pulled here)."""
+    dind = resolve_environment_value(
+        DIND_IMAGE_ENV,
+        context=EnvironmentResolutionContext.RELEASE,
+        configured_env=configured_env,
+        process_env=process_env,
+    )
+    return replace(
+        _check_local_image_precondition(
+            DIND_IMAGE_ENV, dind, label, require_docker=require_docker, pull_if_missing=False,
+        ),
+        project=project,
+    )
 
 
 def release_config_enables_docker(config_text: str) -> bool:
-    """Whether any ``[steps.*]`` command argv carries the ``--enable-docker`` flag."""
-    steps = tomllib.loads(config_text).get("steps", {})
-    return any(
-        _ENABLE_DOCKER_FLAG in command.get("argv", ())
-        for step in steps.values()
-        for command in step.get("commands", ())
-    )
+    """Whether any ``[steps.*]`` command argv carries the ``--enable-docker`` flag.
+
+    Reads the TOML structure; any other shape (a string where a table or list is
+    expected, a non-string argv element) is ignored rather than raised.
+    """
+    steps = tomllib.loads(config_text).get("steps")
+    if not isinstance(steps, dict):
+        return False
+    for step in steps.values():
+        commands = step.get("commands") if isinstance(step, dict) else None
+        if not isinstance(commands, list):
+            continue
+        for command in commands:
+            argv = command.get("argv") if isinstance(command, dict) else None
+            if (
+                isinstance(argv, list)
+                and all(isinstance(argument, str) for argument in argv)
+                and _ENABLE_DOCKER_FLAG in argv
+            ):
+                return True
+    return False
 
 
 def _check_local_image_precondition(
