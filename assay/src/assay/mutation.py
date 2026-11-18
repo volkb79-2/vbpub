@@ -7648,8 +7648,16 @@ def ingest_mutation_report(
     repository: SnapshotRepository,
     read_timeout: float,
     spec: MutationFormatSpec,
+    content_tier: str | None = None,
 ) -> IngestedMutationResult:
     """Turn a parsed foreign mutation report into assay's own R2 payload.
+
+    *content_tier* (B245 U5a) is ``None`` for a report that carries its own
+    ``projectRoot`` and embedded ``source`` (Stryker): both are checked. For
+    ``"per-mutant-diff"`` (cargo-mutants) the parser already bound each
+    mutant's content to the committed blobs, so the project-root and
+    source-matches-commit checks are skipped: filling ``sources`` from blobs
+    and comparing them with the same blobs would be a tautology.
 
     *spec* is the declared format's registry entry (B245 U3a): its
     ``status_buckets`` and ``discarded_statuses`` say where each of the
@@ -7696,7 +7704,9 @@ def ingest_mutation_report(
         report_schema_version=report.producer.report_schema_version,
     )
 
-    _check_report_project_root(report, run_cwd=run_cwd)
+    per_mutant_diff = content_tier == "per-mutant-diff"
+    if not per_mutant_diff:
+        _check_report_project_root(report, run_cwd=run_cwd)
     wire_paths = _resolve_report_paths(
         report,
         run_cwd=run_cwd,
@@ -7712,12 +7722,13 @@ def ingest_mutation_report(
     # `lines_without_candidates` -- is derived from the very text this check
     # is about, so judging first and checking after would build a payload out
     # of text assay is in the middle of deciding not to trust.
-    _check_report_source_matches_commit(
-        report,
-        wire_paths=wire_paths,
-        repository=repository,
-        timeout=read_timeout,
-    )
+    if not per_mutant_diff:
+        _check_report_source_matches_commit(
+            report,
+            wire_paths=wire_paths,
+            repository=repository,
+            timeout=read_timeout,
+        )
     in_scope = _in_scope_predicate(mode=mode, added=added, targets=targets)
 
     buckets: dict[str, list[MutantOutcome]] = {name: [] for name in MUTATION_BUCKETS}

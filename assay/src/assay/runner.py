@@ -1277,6 +1277,50 @@ _DirectoryReportState = (
 )
 
 
+def _directory_report_error(
+    state: "_DirectoryReportState", artifact: str | None
+) -> AssayError | None:
+    """(B245 U5a) The R2 refusal a directory artifact's stored state carries,
+    or ``None`` when the artifact was read and its report is usable.
+
+    ``Refused`` is the reservation's own refusal, and an unusable report whose
+    R0 summary fell back to the exit code is ``ERROR``/``UNREADABLE_ARTIFACT``.
+    ``Absent`` keeps the file path's ``NO_MEASUREMENT``/``EMPTY_COVERAGE``:
+    it must never pass silently, and U5c replaces it with the synthesised
+    ``INCONCLUSIVE``/``NO_MUTANTS`` only for an exit-0 run. ``NotConsumed`` is
+    an error and never the zero-mutant marker: nothing was observed.
+    """
+    if isinstance(state, _DirectoryRefused):
+        return state.error
+    if isinstance(state, _DirectoryAbsent):
+        return AssayError(
+            f"the lane declared judge.mutation.artifact {artifact!r} but its "
+            f"own command did not write the tool's output directory. An "
+            f"ingested R2 lane's whole evidence IS that artifact: there is "
+            f"nothing here to judge, and a lane that reports PASS on a "
+            f"mutation run that produced none would be the silent green this "
+            f"project exists to remove.",
+            outcome=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.EMPTY_COVERAGE,
+        )
+    if isinstance(state, _DirectoryNotConsumed):
+        return AssayError(
+            f"the directory artifact {artifact!r} was never read: the run "
+            f"ended before the command's result was consumed, so nothing was "
+            f"observed and no mutation verdict can be derived from it",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+        )
+    if state.unusable is not None:
+        return AssayError(
+            f"the directory artifact {artifact!r} holds an unusable report: "
+            f"{state.unusable}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
+    return None
+
+
 class _DirectoryReportHandle:
     """(B245 U5a) One armed directory-artifact reservation and the four-state
     value its single consumption produced.
@@ -4086,6 +4130,13 @@ def _execute_snapshot_unit(
                 )
     if mutation_reservation is not None:
         mutation_reservation.close()
+    if post_reason is None and directory_report is not None:
+        # (B245 U5a) The directory artifact was already consumed ONCE, inside
+        # `execute_plan`; this only reads the stored four-state value. The
+        # artifact itself stays on `directory_report.state` for the R2 reader.
+        mutation_report_error = _directory_report_error(
+            directory_report.state, mutation_artifact
+        )
 
     return SnapshotUnitResult(
         result=result,
@@ -5404,11 +5455,20 @@ def _run_prepared_lane(
             if r2_ingested and r2_early_claim is None:
                 ingested_r2_error = unit.mutation_report_error
                 if ingested_r2_error is None:
-                    assert unit.mutation_report_bytes is not None
                     assert relocated_lane_r2 is not None
+                    raw_report: bytes | safeio.DirectoryArtifact
+                    if unit.directory_report is not None:
+                        # (B245 U5a) `unit.mutation_report_error` is None only
+                        # for a usable Present state (`_directory_report_error`).
+                        present = unit.directory_report.state
+                        assert isinstance(present, _DirectoryPresent)
+                        raw_report = present.artifact
+                    else:
+                        assert unit.mutation_report_bytes is not None
+                        raw_report = unit.mutation_report_bytes
                     try:
                         ingested_r2 = _ingest_r2_report(
-                            unit.mutation_report_bytes,
+                            raw_report,
                             lane=lane,
                             relocated_lane=relocated_lane_r2,
                             plan=plan,
@@ -6299,8 +6359,41 @@ def _build_judgment_resolved(
     )
 
 
+def _cargo_workspace_root(run_cwd: Path, repo_top: Path) -> Path:
+    """(B245 U5a, design 8 item 2) The cargo workspace root of a lane that ran
+    in *run_cwd*: the first directory from *run_cwd* up to *repo_top* whose
+    ``Cargo.toml`` holds a ``[workspace]`` table, else *run_cwd* itself when it
+    is a lone package. It is the anchor of the tool's own ``file`` values, so
+    it is what the parser's ``ParseContext.run_cwd`` must be, not the lane cwd.
+    ``BAD_LANE_CONFIG`` when neither exists inside the repository."""
+    top = repo_top
+    current = run_cwd
+    while current == top or top in current.parents:
+        manifest = current / "Cargo.toml"
+        if manifest.is_file():
+            try:
+                parsed = tomllib.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+                raise LaneConfigError(
+                    f"cannot read the cargo manifest {manifest} to find the "
+                    f"workspace root: {exc}"
+                ) from exc
+            if "workspace" in parsed:
+                return current
+        if current == top:
+            break
+        current = current.parent
+    if (run_cwd / "Cargo.toml").is_file():
+        return run_cwd
+    raise LaneConfigError(
+        f"no cargo workspace root (a Cargo.toml with [workspace], or the lane "
+        f"cwd's own package Cargo.toml) was found from {run_cwd} up to the "
+        f"repository top; cargo-mutants' file paths cannot be anchored"
+    )
+
+
 def _ingest_r2_report(
-    raw: bytes,
+    raw: "bytes | safeio.DirectoryArtifact",
     *,
     lane: Lane,
     relocated_lane: Lane,
@@ -6335,28 +6428,45 @@ def _ingest_r2_report(
     could have been rewritten by the lane's own command between then and now
     -- which is one of the three causes this check exists to name.
     """
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise AssayError(
-            f"mutation report is not valid UTF-8: {exc}",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-        ) from exc
     assert lane.judge is not None and lane.judge.mutation is not None
     assert lane.judge.mutation.format is not None
-    report = mutation_parsers.load_mutation_report(
-        text, declared_format=lane.judge.mutation.format
-    )
-    # (B043/A-367) The directory the command actually ran in. This is what the
-    # report's own `projectRoot` must equal and what its relative file keys are
-    # anchored at, so it must be the SAME answer `execute_plan` used when it
-    # started that command -- which is why it comes from the one join,
-    # `resolve_run_cwd`, over the very `CommandPlan` that ran, and not from a
-    # fifth hand-rederivation of `project_root / lane.cwd`. The two agreed when
-    # this was written; A-367 exists precisely because "agrees today" is not a
-    # property an edit to either side preserves.
+    spec = mutation_parsers.MUTATION_FORMAT_REGISTRY[lane.judge.mutation.format]
+    directory_kind = spec.artifact_kind == "directory"
+    # (B043/A-367) The directory the command actually ran in -- the one join,
+    # `resolve_run_cwd`, over the very `CommandPlan` that ran. For a directory
+    # kind the anchor of the tool's own `file` values is the cargo workspace
+    # root instead (design 8 item 2), above or equal to that directory.
     run_cwd = resolve_run_cwd(snapshot.project_root, plan)
+    if directory_kind:
+        run_cwd = _cargo_workspace_root(run_cwd, snapshot.root)
+        # (B245 U5a) No UTF-8 decode: the artifact is a directory read. The
+        # parser anchors on the cargo WORKSPACE root, not the lane cwd
+        # (design 8 item 2), and binds each mutant's content to the committed
+        # blobs itself (the per-mutant-diff tier below).
+        assert isinstance(raw, safeio.DirectoryArtifact)
+        report = mutation_parsers.load_mutation_directory(
+            raw,
+            declared_format=lane.judge.mutation.format,
+            context=mutation_parsers.ParseContext(
+                run_cwd=run_cwd,
+                repo_top=snapshot.root,
+                repository=prepared,
+                read_timeout=deadline.remaining(),
+            ),
+        )
+    else:
+        assert isinstance(raw, bytes)
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise AssayError(
+                f"mutation report is not valid UTF-8: {exc}",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            ) from exc
+        report = mutation_parsers.load_mutation_report(
+            text, declared_format=lane.judge.mutation.format
+        )
     assert relocated_lane.judge is not None
     # `judge.targets` is PROJECT-relative (A-145) and every wire path is
     # repo-top-relative, so the declared targets are re-spelled here rather
@@ -6386,7 +6496,8 @@ def _ingest_r2_report(
         targets=declared_targets,
         repository=prepared,
         read_timeout=deadline.remaining(),
-        spec=mutation_parsers.MUTATION_FORMAT_REGISTRY[lane.judge.mutation.format],
+        spec=spec,
+        content_tier="per-mutant-diff" if directory_kind else None,
     )
 
 
