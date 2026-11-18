@@ -14570,7 +14570,7 @@ first.
 
 ## B244 — R-3a: Rust mutation, report, and reservation spikes
 
-**Status:** OPEN — planned; depends on B242. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §D/§G R-3a and spikes S3/S4/S7.
+**Status:** DONE (2026-11-18, docs and evidence only; no `assay/src` change). Every spike ran in `tester-unified-rust:local` on v1001 against cargo-mutants 27.1.0 and is recorded with its commands, subjects and raw reports in `assay/docs/RUST-R3A-SPIKES.md` and `assay/docs/rust-r3a/evidence/`. The decisions D1-D8 there bound B245. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §D/§G R-3a and spikes S3/S4/S7.
 
 Measure and record cargo-mutants span-column units, `FnValue` span starts, zero-mutant `--in-diff` output, `--test-workspace=false`, directory-artifact reservation and dirty-tree checks, and report completeness after a baseline failure. Determine the assay schema impact of the `cargo-mutants:<Genre>` operator namespace and the `ASSAY_CHANGED_DIFF` environment handoff. The output is measured evidence and a bounded implementation decision, not an assumed upstream JSON shape.
 
@@ -14580,7 +14580,7 @@ Measure and record cargo-mutants span-column units, `FnValue` span starts, zero-
 
 ## B245 — R-3b: cargo-mutants R2 ingestion
 
-**Status:** OPEN — planned; depends on B243 and B244. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §D and §G R-3b; `assay/docs/RUST-METHODOLOGY.md`.
+**Status:** OPEN — ready to carve (B243 and B244 done; the T3 queue, plan item T3-Q, is needed only for the T3 lane registration at the end, not for the parser). **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §D and §G R-3b; `assay/docs/RUST-METHODOLOGY.md`; measured decisions D1-D8 in `assay/docs/RUST-R3A-SPIKES.md`. **Open decisions before implementation:** D3 (a zero-mutant `--in-diff` run leaves NO artifact, so "no report" needs a reviewed rule) and D6 (the `cargo-mutants` namespace is a verdict-schema widening: one v20 cut shared with B550's `coverage_producer`, a major assay release).
 
 Add a strict `cargo-mutants-outcomes` format parser and result-report reader beside the existing mutation-report formats. Map only the reviewed completion states to `killed`, `crashed`, `survived`, `budget_exceeded`, or `discarded`; an incomplete or contradictory report is `UNREADABLE_ARTIFACT`. Bind each mutant to committed source bytes and require the lane's nextest kill witness. Export the assay-resolved diff to the lane through `ASSAY_CHANGED_DIFF` for `cargo mutants --in-diff`. Register the ingested Rust R2 lane at a 100% diff-scoped kill floor. It runs asynchronously at T3 against the latest release, using `--base <previous release tag>`; it never gates a merge or release, and survivors become backlog items. Rust R2 not yet adopted (R-3b pending) is recorded once as a known issue, not as a per-release waiver (A-501). Fixtures must include real caught, missed, unviable, timeout, and baseline-failure reports.
 

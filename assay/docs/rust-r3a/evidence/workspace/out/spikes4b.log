@@ -1,0 +1,12 @@
+== no --package, --test-workspace=false
+exit=0
+{'total_mutants': 8, 'missed': 0, 'caught': 8, 'timeout': 0, 'unviable': 0}
+Baseline Success ['run', '--verbose', '--package=a@0.1.0', '--package=b@0.1.0', '--offline']
+a/src/lib.rs:2:5: replace double -> i32 with 0 CaughtMutant ['run', '--verbose', '--package=a@0.1.0', '--offline']
+a/src/lib.rs:2:5: replace double -> i32 with 1 CaughtMutant ['run', '--verbose', '--package=a@0.1.0', '--offline']
+== no --package, --test-workspace=true
+exit=0
+{'total_mutants': 8, 'missed': 0, 'caught': 8, 'timeout': 0, 'unviable': 0}
+Baseline Success ['run', '--verbose', '--package=a@0.1.0', '--package=b@0.1.0', '--offline']
+a/src/lib.rs:2:5: replace double -> i32 with 0 CaughtMutant ['run', '--verbose', '--workspace', '--offline']
+a/src/lib.rs:2:5: replace double -> i32 with 1 CaughtMutant ['run', '--verbose', '--workspace', '--offline']

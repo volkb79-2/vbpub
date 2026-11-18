@@ -1,0 +1,23 @@
+== first run
+exit=2
+total 12
+drwxr-xr-x 3 gate gate 4096 Nov 18 04:38 .
+drwxrwxr-x 3 gate gate 4096 Nov 18 04:38 ..
+drwxr-xr-x 4 gate gate 4096 Nov 18 04:38 mutants.out
+{  "outcomes": [    {      "scenario": "Baseline",      "summary": "Success",      "log_path": "log/baseline.log",      "diff_path": null,      "phase_results": [        {          "phase": "
+== second run into the same --output (default --test-workspace)
+MISSED   src/lib.rs:14:21: replace < with > in is_even in 0s build + 0s test
+MISSED   src/lib.rs:14:21: replace < with <= in is_even in 0s build + 0s test
+9 mutants tested in 3s: 9 missed
+exit=0
+total 16
+drwxr-xr-x 4 gate gate 4096 Nov 18 04:38 .
+drwxrwxr-x 3 gate gate 4096 Nov 18 04:38 ..
+drwxr-xr-x 4 gate gate 4096 Nov 18 04:38 mutants.out
+drwxr-xr-x 4 gate gate 4096 Nov 18 04:38 mutants.out.old
+/out/rerun/mutants.out.old/outcomes.json 2026-11-18T04:38:47.8349599Z [['--verbose', '--package=r3a@0.1.0', '--offline'], ['--verbose', '--package=r3a@0.1.0', '--offline']]
+/out/rerun/mutants.out/outcomes.json 2026-11-18T04:38:51.078714662Z [['--verbose', '--package=r3a@0.1.0', '--offline'], ['--verbose', '--package=r3a@0.1.0', '--offline']]
+== output dir that is an existing FILE
+Caused by:
+    Not a directory (os error 20)
+exit=0

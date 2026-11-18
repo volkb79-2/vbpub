@@ -1,0 +1,63 @@
+
+*** src/lib.rs:26:11: replace += with *= in spin
+
+*** mutation diff:
+--- src/lib.rs
++++ replace += with *= in spin
+@@ -18,17 +18,17 @@
+ pub fn make(id: u32) -> Token {
+     Token { id }
+ }
+ 
+ /// Timeout: `i += 1` -> `i *= 1` never terminates.
+ pub fn spin(n: u32) -> u32 {
+     let mut i = 0;
+     while i < n {
+-        i += 1;
++        i *= /* ~ changed by cargo-mutants ~ */ 1;
+     }
+     i
+ }
+ 
+ /// Match arms and a guard.
+ pub fn pick(a: Option<u32>) -> u32 {
+     match a {
+         Some(v) if v > 10 => v,
+
+
+*** /usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo nextest run --no-run --verbose --package=r3a@0.1.0 --offline
+   Compiling r3a v0.1.0 (/tmp/cargo-mutants-subject-lWZHLU.tmp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+
+*** result: Success
+
+*** /usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo nextest run --verbose --package=r3a@0.1.0 --offline
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s
+────────────
+ Nextest run ID 7332ed3c-00b7-49e5-b5cf-a5dd221b64f6 with nextest profile: default
+    Starting 4 tests across 1 binary
+       START [         ] (1/4) r3a tests::make_keeps_id
+             command: /tmp/cargo-mutants-subject-lWZHLU.tmp/target/debug/deps/r3a-f8edb014fd441bd3 --exact tests::make_keeps_id --nocapture
+       START [         ] (1/4) r3a tests::add_sums
+             command: /tmp/cargo-mutants-subject-lWZHLU.tmp/target/debug/deps/r3a-f8edb014fd441bd3 --exact tests::add_sums --nocapture
+        PASS [   0.005s] (1/4) r3a tests::make_keeps_id
+       START [         ] (2/4) r3a tests::pick_cases
+             command: /tmp/cargo-mutants-subject-lWZHLU.tmp/target/debug/deps/r3a-f8edb014fd441bd3 --exact tests::pick_cases --nocapture
+        PASS [   0.005s] (2/4) r3a tests::add_sums
+       START [         ] (3/4) r3a tests::spin_counts
+             command: /tmp/cargo-mutants-subject-lWZHLU.tmp/target/debug/deps/r3a-f8edb014fd441bd3 --exact tests::spin_counts --nocapture
+        PASS [   0.005s] (3/4) r3a tests::pick_cases
+  Cancelling due to signal: 1 test still running
+     SIGTERM [  19.924s] (4/4) r3a tests::spin_counts
+  stdout ───
+
+    running 1 test
+
+    (test aborted with signal 15: SIGTERM)
+
+────────────
+     Summary [  19.930s] 4 tests run: 3 passed, 1 failed, 0 skipped
+     SIGTERM [  19.924s] (4/4) r3a tests::spin_counts
+error: test run failed
+
+*** result: Timeout

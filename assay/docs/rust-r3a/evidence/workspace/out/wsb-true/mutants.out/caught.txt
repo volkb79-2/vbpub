@@ -1,0 +1,8 @@
+a/src/lib.rs:2:5: replace double -> i32 with 0
+a/src/lib.rs:2:5: replace double -> i32 with 1
+a/src/lib.rs:2:5: replace double -> i32 with -1
+a/src/lib.rs:2:7: replace * with + in double
+a/src/lib.rs:2:7: replace * with / in double
+b/src/lib.rs:2:5: replace quad -> i32 with 0
+b/src/lib.rs:2:5: replace quad -> i32 with 1
+b/src/lib.rs:2:5: replace quad -> i32 with -1
