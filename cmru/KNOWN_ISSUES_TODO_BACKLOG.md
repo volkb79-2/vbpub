@@ -14,6 +14,8 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-185 | OPEN (adopt the [cli-extended line-stream renderer proposal](../libraries/cli-extended/docs/DESIGN-LINE-STREAM-RENDERER.md) through CLI-EXT-35–CLI-EXT-40) | — |
+| KI-184 | FIXED 2026-11-18 (every line in one multi-line write is processed at a severity boundary) | `54b9d3b75` |
 | KI-183 | OPEN (the wheel-builder and probe rows and the cmru gate rows of the release preflight run only for a release that includes cmru) | — |
 | KI-182 | FIXED 2026-11-18 (the release preflight checks the DinD sidecar image of every project in the scope that has an `--enable-docker` step) | see KI-182 entry |
 | KI-181 | OPEN (`dist_dir` containment still accepts project-owned directories such as `src`, `.git` or a symlink to another project directory) | — |
@@ -3244,6 +3246,8 @@ The 2026-11-12 T3 rehearsal of `r2` remained PARTIAL: its preflight had six fail
 
 **Window policy.** KI-159 (FIXED 2026-11-18) removed the per-minor window allowlist: the standing release rule above replaced KI-79's bounded windows, so this entry no longer waits on any window design.
 
+**Claim shape (operator decision 2026-11-18).** The R2 claim is the WHOLE source, assembled from carried and re-verified results: an earlier tested candidate whose tested code locus and tests are unchanged stays the same candidate (identity-valid), so earlier work is reused instead of repeated; it is not a delta-only claim, and a delta run alone never closes this entry. What may be reused is bounded by `assay/docs/DESIGN-SUBFILE-CANDIDATE-IDENTITY.md` (section 2.2): a carried SURVIVOR may be carried pessimistically, with disclosure; a carried KILL is only a lookup hit and is re-proved by the current judge before it counts (strict mode, mandatory for release claims). Unchanged tests never authorize carrying a kill without that re-proof.
+
 **Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md); KI-79 above; cmru-v7.2.4 release (2026-11-08).
 
 ## KI-142 - real releases read an external version before prepare under 7.2.4
@@ -3825,6 +3829,28 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Close when.** A release scoped to a project other than cmru refuses before dispatch when its probe image is absent, shown by a test.
 
+## KI-185 adopt the cli-extended line-stream renderer in the cmru output layer
+
+**Status:** OPEN; severity: medium.
+
+**Observed.** `cmru/src/cmru/output.py` owns a separate `SeverityStream` for
+severity parsing and terminal colour. CMRU output therefore does not share the
+line-oriented renderer proposed for `cli-extended`.
+
+**Wanted.** Adopt the shared engine as a thin CMRU output adapter, then migrate
+new and intentionally changed output call sites in small packages. Leave
+untouched call sites alone until their own migration package. The current
+multi-line `SeverityStream` defect is handled separately by P14.
+
+**Design and implementation packages.** See the
+[cli-extended line-stream renderer proposal](../libraries/cli-extended/docs/DESIGN-LINE-STREAM-RENDERER.md)
+and CLI-EXT-35–CLI-EXT-40. Preserve CMRU's output contract; decide the existing
+optional short timestamp behavior before removing its implementation.
+
+**Close when.** The CMRU adapter delegates rendering to the shared engine,
+output tests preserve plain and terminal behavior, and call sites have moved
+incrementally with no independent CMRU severity parser or ANSI renderer left.
+
 ## KI-181 `dist_dir` containment accepts project-owned directories (`src`, `.git`, a symlink to another project directory)
 
 **Status:** OPEN (filed 2026-11-18, residual of KI-175); severity: medium.
@@ -3916,3 +3942,13 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Close when.** The path constraints and cleanup recheck are documented in SPEC; the acceptance cases prove every escaping path fails before any file is touched and the ordinary in-project path remains supported.
 
 **Remaining note (2026-11-18).** The rule is containment only: a `dist_dir` such as `src`, `.git`, or a symlink to another project's directory inside the project is a strict descendant and is accepted. The rule was deliberately not widened.
+
+## KI-184 - `SeverityStream` decorates only the first line of a multi-line write
+
+**Status:** FIXED 2026-11-18; severity: low (subsequent severity prefixes in a single write lose their terminal colour and prefix decoration).
+
+**Problem.** `SeverityStream._write_normal` previously consumed every newline in the current text in one loop. Although it reset `_line_start`, `write` did not revisit the severity matcher for the remainder of that same write, so lines after the first were emitted raw.
+
+**Resolution/evidence (2026-11-18).** `_write_normal` now writes one ordinary line and returns the text after its newline. `write` loops over that remainder from line-start state, preserving the existing candidate carry-over and return length. Tests compare multiline writes with newline-separated and mid-token chunks, exhaustively check all chunkings of a small multiline sample, cover a plain line followed by a severity prefix, and pin the original input length when a held candidate precedes multiline text. Against the pre-fix code, the focused suite failed 6 tests (4 passed). Four hand mutations were killed: omitting the line-start reset (6 failures), stopping after the first newline (5), dropping the held candidate (3), and counting the held candidate in the return value (1). The focused suite passes 10 tests on the fix.
+
+**Close when.** Closed by the multiline severity boundary fix and its chunking, candidate and return-length regressions.
