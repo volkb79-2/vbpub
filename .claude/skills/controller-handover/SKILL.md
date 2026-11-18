@@ -1,69 +1,50 @@
 ---
 name: controller-handover
-description: Write the controller's own handover, the prose that primes its next session after a compaction, a restart, a devcontainer rebuild or a successor takeover: binding decisions with reasons, state of everything in flight with how to check it, the forward plan with its reasoning, open operator questions, and a read-first list. Use when the context nears the ceiling, before /compact or a rebuild, when the operator says "prepare for my /compact", "write the handoff", "readback" or "prime the next session", when a context-pressure hook note appears, or when a controller session is replaced. For implementers and reviewers use the agent finalization contract, not this skill.
+description: Controller sessions only (the session that dispatches agents and owns plan.yaml). Write the controller's own handover, the prose that primes its next session after a compaction, restart, devcontainer rebuild or takeover: first action, binding decisions with reasons, temporary constraints, what is in flight and how to check it, the merge queue, the forward plan with its reasoning, open operator questions, read-first list. Use when a "[context Nk, controller]" pressure note appears, before /compact or a rebuild, or when the operator says "prepare for my /compact", "write the handoff", "readback", "prime the next session". Not for implementers or reviewers (they return DONE/PARTIAL/BLOCKED with a finalization).
 ---
 
 # Controller handover
 
-Design and rationale: `docs/design/agctl/DESIGN.md` sections 4 and 5. A controller's value is **prose**: decisions with their reasons, the progress ledger, what is in flight and how to check it, and the reasoning about what comes next. Tool output, logs and file contents are re-readable: point to them, never paste them. The handover is authored by the one who knows (a) the whole past and (b) the plan, at the moment he is about to lose (a). Nothing mechanical (the transcript extract, `readback-N.md`) replaces the judgment parts; the extract complements them.
+Rationale: `docs/design/agctl/DESIGN.md` sections 4-5. The controller's value is prose: decisions with their reasons, what is in flight, what comes next and why. Tool output, logs and file contents are re-readable: point to them, never paste. You write it because you know (a) the whole past and (b) the plan, at the moment you are about to lose (a). This skill defines WHAT to write; the ceiling and timing are configured elsewhere (a big warm context is cheap, the tail is the cost).
 
-## 0. Use it when, and not when
-- Use: before `/compact` (manual or because a hook says pressure), before a devcontainer rebuild or any planned stop, when handing the controller role to a successor, after a user stop of the controller.
-- Not for implementers/reviewers: they return `DONE | PARTIAL | BLOCKED` with a finalization (DESIGN.md section 5). Not a substitute for `plan.yaml` (items) or `operator-decisions.md` (verbatim turns): it points to them.
-- Timing is not "as early as possible". A large warm context is cheap; the cost is the tail. Compact at the configured ceiling, warm (inside the cache TTL), and before a planned tool-heavy fan-out. This skill defines what you write at that moment, not when.
-
-## 1. Where things live (one fact, one place)
-| What | File | Rule |
-|---|---|---|
-| Items, status, next | `plan.yaml` | update item statuses; no narrative |
-| Operator turns, verbatim | `operator-decisions.md` | append every new turn BEFORE you act on it, with the decisions derived |
-| The handover | `HANDOFF.md`, newest `## RESUME HERE #N` block | supersedes older blocks; forward-oriented only |
-| Per-agent living state | `codex/runs/<run>.state.md` | agents keep it; you only point to it |
-| Pointer for the next session | `MEMORY.md` controller line | read order and current N |
-| Mechanical transcript readback | `readback-N.md` (hook-built) | complement, not the handover |
-Layout today: `.controller-state/` in the main checkout, `plan.yaml` at its root. Planned: `~/controller-state/<name>/` per controller (DESIGN.md section 3); follow whatever `CONTROLLER_STATE_DIR` says once it exists.
-
-## 2. Procedure
-1. **Reach a boundary.** Nothing half-edited; your own worktrees clean; every running agent has a living state file; a gate or monitor you started is noted with its marker. If an agent's result is minutes away, wait for it or note exactly what to do on arrival.
-2. **Check reality, do not write from memory.** Run, in this order, and keep only the facts: `git fetch -q origin; git log origin/main --oneline -8`; `git worktree list`; running agents (`ListAgents`, run records without `.done`); `pgrep -af 'run-gate|cmru release'`; gate logs of anything in flight (verdict line AND `run-gate.commit`); host units (read-only checks over the identity-checked transport); `date -u` for every timestamp you write (estimated times were wrong in the past: never estimate).
-3. **Update `plan.yaml`**: statuses of the items you touched; add the next items. Items, not stories.
-4. **Append the operator's unrecorded turns** to `operator-decisions.md`, verbatim, with the derived decisions under each. Corrections you accepted (including "that was wrong") are recorded as the current rule, not as an incident.
-5. **Write the `RESUME HERE #N` block** (template below). Forward-oriented: current state, next steps, standing rules, live risks. No history of old mistakes; fix the process instead and move on.
-6. **Update the `MEMORY.md` controller line** (the read order, the new N, the one-sentence headline) and any memory file whose fact changed. Do not duplicate what the repo records.
-7. **If the read-first list changed**, update the session-start hook text (`READ_ORDER` in `scripts/controller/hooks/ctx-hooks.py` and the live copy) so the next session is told to read the right files in the right order.
-8. **Cold-read test.** Pretend to know nothing: follow only the READ-FIRST list. Does every path exist (`ls`)? Does every command run (dry run where it mutates)? Can the next action be taken without asking? Are hashes and ids copy-pasteable? Fix gaps now. No tokens, keys or host addresses anywhere.
-
-## 3. The RESUME HERE block (template)
+## 1. The block (write this first, fill it from step 2 facts)
+Append to `HANDOFF.md` (today `.controller-state/`; later `~/controller-state/<name>/`), at most 8,000 characters; point to files for the rest. The newest block supersedes older ones.
 ```
 ## RESUME HERE #N (<date -u>, <controller name>) SUPERSEDES #N-1 where they differ
-HEADLINE: where we are in two or three sentences, and what the operator wants now.
-DECISIONS (binding, with reasons; operator wording where contested): ...
-STATE:
-  merged since #N-1: <merge number> <hash> <what>; next merge number: ...
-  in flight (one line each): <what> | where (worktree/branch/log/unit/agent id) | how to check (exact command) | what to do on arrival
-  host/experiments: units, timetable, stop and cleanup commands, what must be checked after a reboot
-NEXT STEPS, ordered, each with why this order: ...
-OPEN QUESTIONS for the operator: exact question, my recommended default, what depends on it.
-STANDING RULES that apply: pointers (AGENTS.md section, memory file names), not restatements.
-WATCH (live risks only): ...
-READ FIRST, in order, each with why: 1) ... 2) ...
-AFTER A RESTART OF THE ENVIRONMENT: what dies (agents, monitors, scratch), what lives, the commands to re-establish (doctor, monitors, reconnects).
+FIRST ACTION: the one thing to do before anything else (a hazard to revert, a lease to renew), or "none".
+HEADLINE: where we are, what the operator wants now (2-3 sentences).
+DECISIONS (binding, with reasons; operator wording where contested; corrections are the current rule, not an incident).
+TEMPORARY CONSTRAINTS: what, until when, who lifts it (e.g. gate profile off until the rebuilt container; no docker during a cut).
+STATE
+  merged since #N-1: <merge number> <hash> <what>; next merge number
+  in flight, one line each: what | where (worktree/branch/log/unit/agent id) | check command | on arrival do X | agent: resume route (SendMessage, or successor if user-stopped) and expected DONE/PARTIAL/BLOCKED + finalization path
+  hosts/experiments: units, timetable, stop and cleanup commands, what to check after a reboot
+  PEERS and reservations: other sessions, keep-out paths, host leases, what each waits for
+  MERGE QUEUE with conditions (e.g. q57 after lane PASS bound to the head, then q58)
+  MONITORS: id, prefix, expiry, re-arm name. FINISHED agents: nothing to stop.
+NEXT STEPS, ordered, each with why this order.
+OPEN QUESTIONS for the operator: exact question, my default, what depends on it.
+UNKNOWNS: what you did not verify; do not assume it.
+RULES: pointers (AGENTS.md sections, memory file names), not restatements.
+READ FIRST, in order, each with why.
+AFTER A RESTART OF THE ENVIRONMENT: what dies (subagents, monitors, background tasks, scratch), what lives, the first commands.
 ```
+Between blocks append `(#N HH:MMZ) ...` update lines from `date -u`; the next block folds them in. Keep merged-since hashes and the merge numbering; keep a lesson only as a rule; drop incident narratives, tool output, file contents, re-derivable facts.
 
-## 4. Content rules
-- **Include:** decisions and the reasons that make them binding; hashes, ids, run names, exact commands; for each in-flight item the check command and the next action; the operator's open questions with a default; the plan's order with reasoning; live risks.
-- **Exclude:** tool output, logs, file contents (point to them), transcripts of reasoning, finished history, past-mistake narratives, anything re-derivable from git or the logs within one command.
-- **Prose over lists** for reasoning (the next session must understand why), lists for facts (ids, commands).
-- **Drop on the fly:** the handover is your chance to decide what the next session does NOT need. If a fact is not needed to act, it does not go in.
-- Never state a number, hash or status you did not just check in step 2.
+## 2. Before writing: check reality (one pass, keep only facts)
+```
+date -u; git fetch -q origin; git log origin/main --oneline -8; git worktree list
+for each in-flight worktree: git -C <wt> status --short; git -C <wt> rev-parse HEAD
+ListAgents + run records without .done; armed monitors (id, expiry); pgrep -af 'run-gate|cmru release'
+gate logs: verdict line AND run-gate.commit; remote-gates/<id>/result.json
+scripts/controller/job-check.sh <run>; ctl-status.sh; ctl-doctor.sh
+host units: read-only checks through hx.sh (failed units, timers, the experiment's own log tail)
+docker: exact container names only; grep operator-decisions.md for unanswered questions
+```
+Every number, hash and status in the block comes from this pass; a fact from a peer or an agent is tagged `(peer said)` / `(agent said)`. Never estimate a timestamp.
 
-## 5. Variants
-- **Before a devcontainer rebuild:** add the AFTER-A-RESTART section: what dies (Agent-tool subagents, Monitors, background Bash tasks, scratchpad files), what lives (home, `/tmp`, the artifacts directory, host-side units and their logs), and the first commands: `ctl-doctor.sh`, re-arm one monitor, check each host unit, re-check observer-lane availability after the rebuild (drop the profile-off default if the observer works).
-- **Successor takeover (context-full or user stop):** also run `nyxloom extract --preset readback` for the mechanical complement and name the transcript path; adopt the controller name instead of creating one.
-- **Before the operator's `/compact`:** same procedure; the PreCompact hook steers the summary toward the handover and the session-start hook prints the read order. Keep the handover as a FILE: text passed through the hook is re-summarised and capped (10,000 characters).
+## 3. Procedure
+1. Reach a boundary: nothing half-edited, your worktrees clean, each agent has a living state file. 2. Run the reality pass. 3. Update `plan.yaml` item statuses (items, not stories). 4. Append unrecorded operator turns verbatim to `operator-decisions.md` with the derived decisions. 5. Write the block. 6. Update the `MEMORY.md` controller line (read order, N, headline). 7. If the read-first list changed, update the session-start hook text (`READ_ORDER`): edit the live `.controller-state/hooks/ctx.py` and file a CTL item to reconcile the tracked `scripts/controller/hooks/ctx-hooks.py` (a repo change needs its own gate and review). 8. Cold-read test: follow only READ FIRST as a stranger: every path exists, every command runs (dry where it mutates), the next action needs no question, no secrets or host addresses anywhere, and the hook read-order output stays under 9,000 characters.
 
-## 6. Quality checklist
-1. Every claim re-checked in step 2. 2. Timestamps from `date -u`. 3. Operator turns recorded verbatim before use. 4. Each in-flight item has a check command and a next action. 5. Next steps are ordered with reasons. 6. Open questions carry a default. 7. READ-FIRST paths exist. 8. No history or incident narratives. 9. No secrets or addresses. 10. The memory line and the hook read order match the block.
-
-## 7. Known limits
-Not yet tested end to end through the hooks with a real compaction; whether a multi-KB handover through the PreCompact hook survives is unmeasured (DESIGN.md section 10), which is why the file path is the primary channel. The per-controller state directory is a plan; until it exists the layout in section 1 applies.
+## 4. Variants
+Rebuild: fill AFTER A RESTART fully (first commands: `ctl-doctor.sh`, re-arm one monitor, check each host unit, re-test observer-lane availability and drop the profile-off default if it works). Successor takeover: add `nyxloom extract --preset readback` as the mechanical complement and name the transcript; adopt a controller name only with a stale lease or `--force`. Before the operator's `/compact`: the handover stays a FILE (text through the PreCompact hook is re-summarised and capped at 10,000 characters).
