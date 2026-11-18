@@ -4,12 +4,15 @@
 //! Each module owns one concern and none of them performs I/O, reads a clock or keeps
 //! connection state: [`limits`] (levels and the section 5.1 bounds), [`verbs`] (the section 4.3
 //! table), [`codes`] (the wire error codes and `detail`), [`args`] (the strict request-argument
-//! reader and the `hello` and `status` schemas). The connection state machine and the drivers
-//! arrive in later packages.
+//! reader and the `hello` and `status` schemas), [`classify`] (the request precedence function,
+//! design R11), [`encode`] (the control frames, error envelope and JSON lines) and [`lines`]
+//! (the JSON line reader). The connection state machine and the drivers arrive in later
+//! packages.
 
 #![warn(missing_docs)]
 
 pub mod args;
+pub mod classify;
 pub mod codes;
 pub mod encode;
 pub mod limits;
