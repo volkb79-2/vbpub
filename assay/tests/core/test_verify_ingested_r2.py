@@ -30,7 +30,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from conftest import PROJECT_ROOT, GitRepo
+from conftest import PROJECT_ROOT, VERDICT_FIXTURE_DIR, GitRepo
 
 from assay import runner
 from assay.adapters.javascript import JavaScriptAdapter
@@ -606,3 +606,339 @@ def test_ascending_link_paths_are_accepted_by_the_RAW_layer(
     assert not any(
         "snapshot_policy.link_paths" in failure for failure in _failures(document)
     )
+
+
+# --------------------------------------------------------------------------
+# B245 / schema v20: `report_absent`, `changed_diff` and the `cargo-mutants`
+# namespace at the RAW layer. Both directions of every rule, each asserting
+# the raw checker's own wording (the model words the same rules differently,
+# and `test_verdict_v20_fields.py` asserts those).
+# --------------------------------------------------------------------------
+
+PLACEHOLDER_TOKEN = "{assay.changed_diff}"
+_MUTATION_LISTS = (
+    "killed",
+    "survived",
+    "crashed",
+    "budget_exceeded",
+    "equivalent",
+    "hung",
+)
+
+
+def _r2_claim(document: dict) -> dict:
+    return next(item for item in document["claims"] if item["rigor"] == "R2")
+
+
+def as_report_absent(document: dict) -> dict:
+    """The one legal `report_absent` shape: cargo-mutants wrote no report."""
+    document = copy.deepcopy(document)
+    claim = _r2_claim(document)
+    claim["status"] = "INCONCLUSIVE"
+    claim["reason_code"] = "NO_MUTANTS"
+    for key in _MUTATION_LISTS:
+        claim["mutation"][key] = []
+    claim["mutation"]["candidate_count"] = 0
+    claim["mutation"]["total"] = 0
+    document["outcome"] = "INCONCLUSIVE"
+    document["reason_code"] = "NO_MUTANTS"
+    document["exit_code"] = 5
+    r2 = document["judgment"]["r2"]
+    r2["survived_uncovered"] = []
+    r2["lines_without_candidates"] = []
+    r2["producer_tool"] = {
+        "name": "cargo-mutants",
+        "version": "unobserved",
+        "report_schema_version": "outcomes.json",
+    }
+    r2["report_absent"] = True
+    return document
+
+
+def as_cargo_mutants(document: dict, *, changed_diff: bool = True) -> dict:
+    """An ingested document whose producer is cargo-mutants and whose argv
+    carries the changed-diff placeholder (declared and effective)."""
+    document = copy.deepcopy(document)
+    document["argv_declared"] = [*document["argv_declared"], PLACEHOLDER_TOKEN]
+    document["argv_effective"] = [*document["argv_effective"], PLACEHOLDER_TOKEN]
+    r2 = document["judgment"]["r2"]
+    r2["producer_tool"] = {
+        "name": "cargo-mutants",
+        "version": "27.1.0",
+        "report_schema_version": "outcomes.json",
+    }
+    if changed_diff:
+        r2["changed_diff"] = {
+            "base_rev": document["judgment"]["resolved"]["base"],
+            "head_rev": document["commit"],
+            "relative_to": "app",
+            "sha256": "ab" * 32,
+            "bytes": 321,
+        }
+    return document
+
+
+def _v20_failures(document: dict) -> list[str]:
+    failures: list[str] = []
+    raw_verify._check_v20_r2_fields(document, failures)
+    return failures
+
+
+def _v20_named(document: dict, fragment: str) -> None:
+    """The raw checker says it, and the whole verifier refuses the document."""
+    failures = _v20_failures(document)
+    assert any(fragment in failure for failure in failures), failures
+    assert _failures(document), "verify_document accepted the document"
+
+
+def test_a_report_absent_document_verifies_clean(ingested_document: dict):
+    document = as_report_absent(ingested_document)
+    assert _v20_failures(document) == []
+    assert _failures(document) == []
+
+
+def test_report_absent_with_a_nonzero_total_is_caught(ingested_document: dict):
+    document = as_report_absent(ingested_document)
+    _r2_claim(document)["mutation"]["total"] = 1
+    _v20_named(document, "records total 1 and candidate_count 0")
+
+
+def test_report_absent_with_a_nonzero_candidate_count_is_caught(
+    ingested_document: dict,
+):
+    document = as_report_absent(ingested_document)
+    _r2_claim(document)["mutation"]["candidate_count"] = 4
+    _v20_named(document, "records total 0 and candidate_count 4")
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [("INCONCLUSIVE", "BUDGET_EXCEEDED"), ("FAIL", "MUTANTS_SURVIVED")],
+)
+def test_report_absent_without_no_mutants_is_caught(
+    ingested_document: dict, status: str, reason: str
+):
+    document = as_report_absent(ingested_document)
+    claim = _r2_claim(document)
+    claim["status"] = status
+    claim["reason_code"] = reason
+    _v20_named(document, "is not INCONCLUSIVE/NO_MUTANTS")
+
+
+def test_report_absent_without_an_r2_claim_payload_is_caught(
+    ingested_document: dict,
+):
+    document = as_report_absent(ingested_document)
+    del _r2_claim(document)["mutation"]
+    _v20_named(document, "is not INCONCLUSIVE/NO_MUTANTS")
+    document["claims"] = [c for c in document["claims"] if c["rigor"] != "R2"]
+    _v20_named(document, "is not INCONCLUSIVE/NO_MUTANTS")
+
+
+def test_the_unobserved_version_without_report_absent_is_caught(
+    ingested_document: dict,
+):
+    document = as_report_absent(ingested_document)
+    del document["judgment"]["r2"]["report_absent"]
+    _v20_named(document, "is legal only with report_absent true")
+
+
+def test_report_absent_with_a_real_version_is_caught(ingested_document: dict):
+    document = as_report_absent(ingested_document)
+    document["judgment"]["r2"]["producer_tool"]["version"] = "27.1.0"
+    _v20_named(document, "is true but producer_tool.version is not 'unobserved'")
+
+
+def test_a_serialised_false_report_absent_is_caught(ingested_document: dict):
+    document = copy.deepcopy(ingested_document)
+    document["judgment"]["r2"]["report_absent"] = False
+    _v20_named(document, "must be the boolean true when present")
+
+
+@pytest.mark.parametrize("key", ["report_absent", "changed_diff"])
+def test_the_v20_keys_are_refused_under_native(ingested_document: dict, key: str):
+    document = copy.deepcopy(ingested_document)
+    document["judgment"]["r2"]["producer"] = "native"
+    document["judgment"]["r2"][key] = (
+        True if key == "report_absent" else {"base_rev": "0" * 40}
+    )
+    _v20_named(document, f"judgment.r2.{key} is legal only under producer 'ingested'")
+
+
+def test_a_cargo_mutants_document_with_its_changed_diff_verifies_clean(
+    ingested_document: dict,
+):
+    document = as_cargo_mutants(ingested_document)
+    assert _v20_failures(document) == []
+    assert _failures(document) == []
+
+
+def test_the_changed_diff_is_required_when_the_placeholder_is_present(
+    ingested_document: dict,
+):
+    document = as_cargo_mutants(ingested_document, changed_diff=False)
+    _v20_named(document, "judgment.r2.changed_diff is required")
+
+
+def test_a_placeholder_with_a_non_cargo_mutants_producer_needs_no_changed_diff(
+    ingested_document: dict,
+):
+    document = as_cargo_mutants(ingested_document, changed_diff=False)
+    document["judgment"]["r2"]["producer_tool"]["name"] = "StrykerJS"
+    assert _v20_failures(document) == []
+    document["judgment"]["r2"]["changed_diff"] = as_cargo_mutants(ingested_document)[
+        "judgment"
+    ]["r2"]["changed_diff"]
+    _v20_named(document, "judgment.r2.changed_diff is forbidden")
+
+
+def test_the_changed_diff_is_forbidden_without_the_placeholder(
+    ingested_document: dict,
+):
+    document = as_cargo_mutants(ingested_document)
+    document["argv_declared"] = document["argv_declared"][:-1]
+    document["argv_effective"] = document["argv_effective"][:-1]
+    _v20_named(document, "judgment.r2.changed_diff is forbidden")
+
+
+def test_a_placeholder_embedded_in_a_longer_token_is_not_the_placeholder(
+    ingested_document: dict,
+):
+    """The placeholder is a WHOLE argv token, so a substring is not it."""
+    document = as_cargo_mutants(ingested_document)
+    document["argv_declared"][-1] = "--in-diff=" + PLACEHOLDER_TOKEN
+    _v20_named(document, "judgment.r2.changed_diff is forbidden")
+
+
+def test_a_changed_diff_base_rev_that_is_not_the_resolved_base_is_caught(
+    ingested_document: dict,
+):
+    document = as_cargo_mutants(ingested_document)
+    document["judgment"]["r2"]["changed_diff"]["base_rev"] = "c" * 40
+    _v20_named(document, "differs from judgment.resolved.base")
+
+
+def test_a_changed_diff_head_rev_that_is_not_the_commit_is_caught(
+    ingested_document: dict,
+):
+    document = as_cargo_mutants(ingested_document)
+    document["judgment"]["r2"]["changed_diff"]["head_rev"] = "d" * 40
+    _v20_named(document, "differs from the verdict commit")
+
+
+def test_with_no_resolved_base_the_base_rev_is_unchecked_and_head_rev_still_is(
+    ingested_document: dict,
+):
+    document = as_cargo_mutants(ingested_document)
+    resolved = document["judgment"]["resolved"]
+    del resolved["base"]
+    del resolved["base_resolution"]
+    document["judgment"]["r2"]["changed_diff"]["base_rev"] = "c" * 40
+    assert _v20_failures(document) == []
+    document["judgment"]["r2"]["changed_diff"]["head_rev"] = "d" * 40
+    assert [
+        failure for failure in _v20_failures(document) if "differs" in failure
+    ] == [
+        "judgment.r2.changed_diff.head_rev "
+        f"{'d' * 40!r} differs from the verdict commit {document['commit']!r}"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "fragment"),
+    [
+        ("base_rev", "A" * 40, "changed_diff.base_rev must be a full lowercase hex"),
+        ("head_rev", "abc123", "changed_diff.head_rev must be a full lowercase hex"),
+        ("head_rev", 7, "changed_diff.head_rev must be a full lowercase hex"),
+        ("relative_to", "/abs", "relative_to must be '.' or a normalized"),
+        ("relative_to", "a/../b", "relative_to must be '.' or a normalized"),
+        ("relative_to", "a\\b", "relative_to must be '.' or a normalized"),
+        ("relative_to", 5, "relative_to must be '.' or a normalized"),
+        ("sha256", "XYZ", "changed_diff.sha256 must be 64 lowercase hex"),
+        ("sha256", "AB" * 32, "changed_diff.sha256 must be 64 lowercase hex"),
+        ("bytes", -1, "changed_diff.bytes must be a non-negative integer"),
+        ("bytes", True, "changed_diff.bytes must be a non-negative integer"),
+        ("bytes", "3", "changed_diff.bytes must be a non-negative integer"),
+    ],
+)
+def test_a_malformed_changed_diff_field_is_named(
+    ingested_document: dict, field: str, value: object, fragment: str
+):
+    document = as_cargo_mutants(ingested_document)
+    document["judgment"]["r2"]["changed_diff"][field] = value
+    _v20_named(document, fragment)
+
+
+def test_a_dot_relative_to_and_a_nested_relative_to_are_accepted(
+    ingested_document: dict,
+):
+    document = as_cargo_mutants(ingested_document)
+    for value in (".", "crates/core", "a"):
+        document["judgment"]["r2"]["changed_diff"]["relative_to"] = value
+        assert _v20_failures(document) == []
+
+
+@pytest.mark.parametrize("change", ["extra", "missing", "not-an-object"])
+def test_a_changed_diff_with_the_wrong_keys_is_caught(
+    ingested_document: dict, change: str
+):
+    document = as_cargo_mutants(ingested_document)
+    diff = document["judgment"]["r2"]["changed_diff"]
+    if change == "extra":
+        diff["note"] = "x"
+    elif change == "missing":
+        del diff["bytes"]
+    else:
+        document["judgment"]["r2"]["changed_diff"] = "a diff"
+    _v20_named(document, "changed_diff must be an object with exactly")
+
+
+def test_a_refused_lane_carrying_the_placeholder_and_no_r2_judgment_verifies():
+    """A lane that ended before any R2 claim exists (here: the baseline run
+    crashed) keeps the placeholder in its argv but has no `judgment.r2`: the
+    cargo-mutants rule never applies, and the raw layer says nothing."""
+    document = json.loads(
+        (VERDICT_FIXTURE_DIR / "r2_error_exec_failed_baseline_crashed.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "r2" not in document.get("judgment", {})
+    assert _failures(document) == []
+    document["argv_declared"] = [*document["argv_declared"], PLACEHOLDER_TOKEN]
+    document["argv_effective"] = [*document["argv_effective"], PLACEHOLDER_TOKEN]
+    assert _v20_failures(document) == []
+    assert _failures(document) == []
+
+
+def test_a_v19_document_is_refused_with_the_version_message(
+    ingested_document: dict,
+):
+    document = copy.deepcopy(ingested_document)
+    document["schema_version"] = 19
+    failures = _failures(document)
+    assert len(failures) == 1
+    assert "is not this verifier's version 20" in failures[0]
+
+
+@pytest.mark.parametrize(
+    ("operator", "accepted"),
+    [
+        ("stryker:BlockStatement", True),
+        ("cargo-mutants:FnValue", True),
+        ("cargo-mutants:BinaryOperator", True),
+        ("other-tool:FnValue", False),
+        ("cargo-mutants:", False),
+        ("cargo-mutants", False),
+        ("cargo_mutants:FnValue", False),
+    ],
+)
+def test_the_ingested_operator_namespaces_at_the_raw_layer(
+    ingested_document: dict, operator: str, accepted: bool
+):
+    document = copy.deepcopy(ingested_document)
+    claim = _r2_claim(document)
+    for bucket in ("killed", "survived"):
+        for entry in claim["mutation"][bucket]:
+            entry["operator"] = operator
+    failures = _failures(document)
+    assert (failures == []) is accepted, failures
