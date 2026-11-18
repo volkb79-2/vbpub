@@ -145,6 +145,9 @@ def _dt_needed_count(so_path: Path) -> int | None:
 
     e_phoff, e_phentsize, e_phnum = u(32, 8), u(54, 2), u(56, 2)
     PT_DYNAMIC, DT_NEEDED, DT_NULL = 2, 1, 0
+    ELF64_PHDR_SIZE = 56  # p_type..p_align; the loop below reads fields up to +40
+    if e_phnum and e_phentsize < ELF64_PHDR_SIZE:
+        return None  # the declared table cannot hold the entries we read
     for i in range(e_phnum):
         ph = e_phoff + i * e_phentsize
         if ph + e_phentsize > len(blob):
