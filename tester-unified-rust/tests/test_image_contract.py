@@ -288,5 +288,119 @@ class ImageContractTests(unittest.TestCase):
         self.assertNotIn("vendor", (HOSTOBS_ROOT / ".dockerignore").read_text(encoding="utf-8"))
 
 
+class BuildImageBuilderOptionTests(unittest.TestCase):
+    """Behavioural pins (stub `docker`/`cmru` on PATH) for the selectable BuildKit builder."""
+
+    def _run(self, args: list[str], extra_env: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+        dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        base = re.search(r"(?m)^ARG RUST_IMAGE=(.+)$", dockerfile).group(1)
+        lock = (HOSTOBS_ROOT / "Cargo.lock").read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tester-unified-rust").mkdir()
+            (root / "hostobs" / "tools").mkdir(parents=True)
+            (root / "bin").mkdir()
+            shutil.copy(
+                HOSTOBS_ROOT / "tools" / "verify-crate-cache.py",
+                root / "hostobs" / "tools" / "verify-crate-cache.py",
+            )
+            registry_digest = subprocess.run(
+                ["python3", "-I", str(HOSTOBS_ROOT / "tools" / "verify-crate-cache.py"),
+                 "--print-registry-digest", "--lock", str(HOSTOBS_ROOT / "Cargo.lock")],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            shutil.copy(PROJECT_ROOT / "build-image.sh", root / "tester-unified-rust" / "build-image.sh")
+            shutil.copy(PROJECT_ROOT / "Dockerfile", root / "tester-unified-rust" / "Dockerfile")
+            shutil.copy(REPO_ROOT / "cmru.orchestration.toml", root / "cmru.orchestration.toml")
+            (root / "hostobs" / "Cargo.lock").write_bytes(lock)
+            (root / "bin" / "cmru").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            (root / "bin" / "docker").write_text(
+                "#!/bin/sh\n"
+                'echo "$*" >> "$STUB_DOCKER_LOG"\n'
+                'case "$*" in\n'
+                f"  *hostobs-lock-registry-sha256*) echo {registry_digest} ;;\n"
+                f"  *base-image*) echo {base} ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            for stub in ("cmru", "docker"):
+                (root / "bin" / stub).chmod(0o755)
+            environment = {
+                name: value for name, value in os.environ.items()
+                if not name.startswith("CMRU_TESTER_")
+                and name not in {"CGROUP_PARENT_DEV_GATES", "TESTER_UNIFIED_RUST_BUILDER"}
+            }
+            environment["PATH"] = f"{root / 'bin'}:{environment.get('PATH', '/usr/bin:/bin')}"
+            environment["STUB_DOCKER_LOG"] = str(root / "docker.log")
+            environment.update(extra_env or {})
+            result = subprocess.run(
+                ["bash", str(root / "tester-unified-rust" / "build-image.sh"), *args],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+            log = root / "docker.log"
+            calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        return result, calls
+
+    def _builders(self, calls: list[str]) -> tuple[list[str], list[str]]:
+        inspected = [c.split()[2] for c in calls if c.startswith("buildx inspect ")]
+        built = []
+        for call in calls:
+            if call.startswith("buildx build "):
+                words = call.split()
+                built.append(words[words.index("--builder") + 1])
+        return inspected, built
+
+    def test_default_builder_is_mdt_managed_in_inspect_and_build(self) -> None:
+        result, calls = self._run(["--cgroup-parent", "dev-gates.slice"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._builders(calls), (["mdt-managed"], ["mdt-managed"]))
+        self.assertIn("builder=mdt-managed\n", result.stdout)
+        self.assertLess(result.stdout.index("builder="), result.stdout.index("image="))
+
+    def test_builder_option_is_honoured_in_inspect_and_build(self) -> None:
+        result, calls = self._run(["--builder", "default", "--cgroup-parent", "dev-gates.slice"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._builders(calls), (["default"], ["default"]))
+        self.assertIn("builder=default\n", result.stdout)
+        # --builder changes nothing else: the governed cgroup parent still reaches the build.
+        build = next(c for c in calls if c.startswith("buildx build "))
+        self.assertIn("--cgroup-parent dev-gates.slice", build)
+        self.assertIn("--load", build)
+
+    def test_builder_environment_is_honoured_and_the_option_beats_it(self) -> None:
+        result, calls = self._run(
+            ["--cgroup-parent", "dev-gates.slice"], {"TESTER_UNIFIED_RUST_BUILDER": "from-env"}
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._builders(calls), (["from-env"], ["from-env"]))
+        result, calls = self._run(
+            ["--builder", "from-option", "--cgroup-parent", "dev-gates.slice"],
+            {"TESTER_UNIFIED_RUST_BUILDER": "from-env"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._builders(calls), (["from-option"], ["from-option"]))
+        self.assertIn("builder=from-option\n", result.stdout)
+
+    def test_invalid_builder_name_is_refused_with_exit_2_before_any_docker_call(self) -> None:
+        for bad in ("", "-x", ".x", "a b", "a/b", "a;b", "$(id)", "a\nb"):
+            result, calls = self._run(["--builder", bad, "--cgroup-parent", "dev-gates.slice"])
+            self.assertEqual(result.returncode, 2, repr(bad))
+            self.assertIn("usage:", result.stderr, repr(bad))
+            self.assertEqual(calls, [], repr(bad))
+            self.assertNotIn("builder=", result.stdout, repr(bad))
+        result, calls = self._run(
+            ["--cgroup-parent", "dev-gates.slice"], {"TESTER_UNIFIED_RUST_BUILDER": "bad name"}
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(calls, [])
+
+    def test_cgroup_parent_is_still_required_whatever_the_builder(self) -> None:
+        for args in ([], ["--builder", "default"]):
+            result, calls = self._run(args)
+            self.assertEqual(result.returncode, 2, args)
+            self.assertIn("refusing an ungoverned image build", result.stderr)
+            self.assertEqual(calls, [], args)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -17,6 +17,18 @@ labels against the current base and the registry-set digest of
 `hostobs/Cargo.lock`. Image builds use network access for `cargo install` and
 `cargo fetch --locked`; lane containers do not have network access.
 
+The builder is selectable: `--builder NAME`, else the environment variable
+`TESTER_UNIFIED_RUST_BUILDER`, else the default `mdt-managed` (NAME matches
+`^[A-Za-z0-9][A-Za-z0-9._-]*$`; anything else is refused with exit 2 before any
+docker call). Hosts without the managed builder, such as the gate host v1001 and
+its cockpit container, which only have the `default` docker-driver builder, run
+`build-image.sh --builder default ...`; the script never creates a builder. As
+documented buildx behaviour, the `default` docker-driver builder honours
+`--cgroup-parent` for RUN steps; verify on first use: the build's cgroup
+placement. `--builder` changes nothing else: `--cgroup-parent` stays required, the
+CMRU preflight, build arguments and label checks are unchanged, and the script
+prints `builder=<name>` before it builds.
+
 In a Rust workspace, route all Cargo calls through a checked wrapper that
 invokes `/usr/local/bin/verify-crate-cache` first, then sets
 `CARGO_NET_OFFLINE=true` and calls Cargo with `--locked --offline`. The image

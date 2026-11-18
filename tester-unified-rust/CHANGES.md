@@ -13,4 +13,5 @@
 
 ### Added
 
+- `build-image.sh --builder NAME` (environment `TESTER_UNIFIED_RUST_BUILDER`, option first, default `mdt-managed`) selects the buildx builder for the preflight inspect and the build, for hosts that only have the `default` docker-driver builder (v1001); invalid names are refused with exit 2 before any docker call, `--cgroup-parent` stays required, and `builder=<name>` is printed before the build. Nothing else changes; verify the build's cgroup placement on first use of the `default` builder.
 - Added the dedicated Rust gate image with a lock-bound offline crate cache, cache precheck, and registered selftest lane.

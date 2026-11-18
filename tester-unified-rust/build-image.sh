@@ -4,8 +4,11 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 image_tag="tester-unified-rust:local"
 cgroup_parent="${CGROUP_PARENT_DEV_GATES:-}"
+# BuildKit builder: --builder, then TESTER_UNIFIED_RUST_BUILDER, then the managed default.
+builder="${TESTER_UNIFIED_RUST_BUILDER:-mdt-managed}"
 usage() {
   printf 'usage: %s [--tag IMAGE] [--cgroup-parent SLICE]\n' "$0" >&2
+  printf '  --builder NAME (or TESTER_UNIFIED_RUST_BUILDER) selects the buildx builder; default mdt-managed\n' >&2
   exit 2
 }
 
@@ -13,11 +16,16 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag) image_tag=${2:?}; shift 2 ;;
     --cgroup-parent) cgroup_parent=${2:?}; shift 2 ;;
+    --builder) [[ $# -ge 2 ]] || usage; builder=$2; shift 2 ;;
     -h|--help) usage ;;
     *) usage ;;
   esac
 done
 
+[[ "$builder" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+  printf 'invalid buildx builder name: %q\n' "$builder" >&2
+  usage
+}
 [[ -n "$cgroup_parent" ]] || {
   printf 'CGROUP_PARENT_DEV_GATES or --cgroup-parent is required; refusing an ungoverned image build\n' >&2
   exit 2
@@ -113,9 +121,10 @@ cmru tester-gate \
   --cgroup-parent "$cgroup_parent" \
   /bin/true
 
-docker buildx inspect mdt-managed >/dev/null
+printf 'builder=%s\n' "$builder"
+docker buildx inspect "$builder" >/dev/null
 docker buildx build \
-  --builder mdt-managed \
+  --builder "$builder" \
   --load \
   --cgroup-parent "$cgroup_parent" \
   --network default \
