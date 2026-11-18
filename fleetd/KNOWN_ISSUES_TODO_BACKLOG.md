@@ -19,7 +19,7 @@
 | FD-011 | Optional persistent campaign scheduler after the one-shot loop is proven | P2 | OPEN | 2026-11-13 |
 | FD-012 | Export campaign progress for cgprofile guard policy and evidence | P2 | OPEN | 2026-11-13 |
 | FD-013 | Serialize concurrent campaign state updates | P2 | DONE | 2026-11-14 |
-| FD-014 | Probe command grows with the number of batches and hits the 128 KiB argument limit near 100 batches per host | P2 | OPEN | 2026-11-14 |
+| FD-014 | Probe command grows with the number of batches and hits the 128 KiB argument limit near 100 batches per host | P2 | DONE | 2026-11-14 |
 | FD-015 | Cold-start stall threshold ignores the predicted candidate time, so slow lanes stall and re-queue without end | P1 | DONE | 2026-11-14 |
 | FD-016 | A batch that exits without progress is re-queued on every exit, without limit | P1 | DONE | 2026-11-14 |
 | FD-017 | One candidate that does not fit the re-queue target drops every other pending candidate of its batch | P2 | OPEN | 2026-11-14 |
@@ -27,8 +27,8 @@
 | FD-019 | Stale records in the append-only progress file count as finished for a later campaign on the same commit | P2 | DONE | 2026-11-14 |
 | FD-020 | Host loss is measured from the last contact, and a slow probe counts as unreachable | P2 | OPEN | 2026-11-14 |
 | FD-021 | A transport or contract error on one host aborts the scheduling step for every host | P2 | DONE | 2026-11-14 |
-| FD-022 | Dispatch does not re-check memory/IO PSI before starting the next batch | P2 | OPEN | 2026-11-14 |
-| FD-023 | The hx wrapper path is derived from the source checkout and fails from an installed wheel | P3 | OPEN | 2026-11-14 |
+| FD-022 | Dispatch does not re-check memory/IO PSI before starting the next batch | P2 | DONE | 2026-11-14 |
+| FD-023 | The hx wrapper path is derived from the source checkout and fails from an installed wheel | P3 | DONE | 2026-11-14 |
 | FD-024 | Deferred re-queue de-duplication is not pinned for three or more hosts | P3 | DONE | 2026-11-14 |
 | FD-025 | The first stall window uses unscaled reference seconds when no comparable host speed reference exists | P3 | OPEN | 2026-11-14 |
 | FD-026 | A host that stays in ERROR has no loss timer | P3 | OPEN | 2026-11-14 |
@@ -325,7 +325,7 @@ add leases, host-side locks, or a daemon.
 
 ## FD-014 Probe size is bounded by batches per host
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-14.
+**State:** DONE (fleetd-wp1-20261118, 729b3671e). **Priority:** P2. **Filed:** 2026-11-14.
 
 `probe_script` carries one JSON target per job (name, ID-file path, commit,
 project, lane) twice: once as the base64 payload argument and once in the
@@ -497,7 +497,7 @@ the message as host `ERROR`, and continue refreshing the other hosts.
 
 ## FD-022 Dispatch does not re-check PSI
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-14 (Opus series review).
+**State:** DONE (fleetd-wp1-20261118, 7411617f3). **Priority:** P2. **Filed:** 2026-11-14 (Opus series review).
 
 Design §4.3 says fleetd starts nothing new on a host whose memory or IO PSI
 `some avg10` exceeds 25. `fleet plan` applies that once, from the facts
@@ -511,7 +511,7 @@ and defer starts on that host above the plan's `psi_refuse_some_avg10`
 
 ## FD-023 hx wrapper path only valid in a source checkout
 
-**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-14 (Opus series review).
+**State:** DONE (fleetd-wp1-20261118, 3258259fa). **Priority:** P3. **Filed:** 2026-11-14 (Opus series review).
 
 `HxTransport()` defaults to `Path(__file__).resolve().parents[3] /
 "scripts/controller/hx.sh"`, which exists only when fleetd runs from the

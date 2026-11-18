@@ -4,6 +4,24 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+### Fixed
+
+- The probe no longer grows with the batch count (FD-014). It sends one
+  compressed job-name table per (campaign, host, commit, project, lane) group
+  with an ID-file path template, keeps a single copy of the payload, and skips
+  jobs that ended with a closed progress window; a 150-batch host probes with
+  about 6 KB instead of failing at the 128 KiB argument cap near 100 batches.
+- Name the hx wrapper with `--hx PATH` or `FLEETD_HX`; an installed fleetd with
+  neither exits 3 with one actionable line instead of "could not launch hx
+  transport" (FD-023). Precedence: `--hx`, then `FLEETD_HX`, then the source
+  checkout default; `PATH` is never searched.
+- Defer new batch starts on a host whose memory or IO PSI `some avg10` is above
+  the plan's `psi_refuse_some_avg10`, whose PSI cannot be read, or whose plan
+  records no threshold (FD-022). `status` names the reason in `start_deferred`;
+  running batches are never stopped. Plan host rows carry
+  `psi_refuse_some_avg10` (additive to `fleet-plan/1`; a campaign started from an
+  older plan needs a re-plan before it starts new batches).
+
 ### Changed
 
 - Rewrite the rolling whole-target sweep so an edit no longer restarts it
