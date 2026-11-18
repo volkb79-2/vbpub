@@ -1066,8 +1066,8 @@ so its image must already be local; a missing probe reports the exact
 `docker pull <ref>` remedy. This also runs for `--skip-gates`, because the
 wheel-build step still uses those images. `cmru release --dry-run` reports the
 same preflight checks; with gates enabled, an actual release and its dry-run
-also check the planned version's KI-79 window, selected tester image's Run-Gate
-version and wheel digest, and zero-release guide version.
+also check the selected tester image's Run-Gate version and wheel digest, and
+zero-release guide version. No planned version is checked against a waiver window.
 During an actual release, a missing Docker CLI or daemon fails preflight; a
 dry-run may report image inspection as `SKIPPED` only when Docker is positively
 unavailable. The image identity check requires a non-empty Run-Gate version
@@ -1078,9 +1078,16 @@ The native-R2 `mutation` lane requests contract-2 `cgprofile` resource-event
 observation. Other tester lanes declare memory and PID ceilings but do not yet
 collect event evidence; [KI-77](KNOWN_ISSUES_TODO_BACKLOG.md#ki-77--the-release-gate-lacks-container-resource-event-evidence-on-non-mutation-lanes-and-cannot-confine-every-shared-git-ref)
 tracks that gap. The CMRU release step currently selects
-`gate-provisional`: it runs the ref, installed-wheel, and Assay R0/R1/R3 checks,
-then records the operator-approved R2 deferral under KI-79.
-That deferral is bound to five explicit windows: the 6.2 patch line (`>= 6.2.0`, `< 6.3.0`), the 7.0 patch line (`>= 7.0.0`, `< 7.1.0`), the 7.1 patch line (`>= 7.1.0`, `< 7.2.0`), the 7.2 patch line (`>= 7.2.0`, `< 7.3.0`), and the 7.3 patch line (`>= 7.3.0`, `< 7.4.0`). The 7.3 window follows the 2026-11-12 operator decision; the earlier windows were approved on 2026-10-14, 2026-10-21, 2026-10-23, 2026-10-27, and 2026-11-04. The gate refuses any other prepared version (6.3.x through 6.9.x and 7.4.0 or later). The dry-run checks the same version rule before it allocates a candidate worktree. A provisional release records no mutation event evidence. R2 is owed asynchronously through T3 after the latest provisional release; for the current 7.3.x line, the T3 command is `run-gate --base cmru-v6.1.0 r2` when that is the selected base. The outstanding R2 must be completed before 7.4.0 unless the operator records another decision (KI-79). The bounded-window rationale is in the [release dry-run design](docs/DESIGN-GUIDE.md#release-dry-run-checks-gate-preconditions); the full `gate` lane remains available for the mutation campaign.
+`release-gate`: it runs the ref, installed-wheel, and Assay R0/R1 (full line and
+branch coverage) and R3 (canary) checks, then records that R2 is owed under KI-79.
+This is the standing release rule (operator decision 2026-11-18, KI-79 and KI-159):
+a release needs R1, R3 and an independent review for hollow tests and defects, and R2
+mutation runs asynchronously. The review is a hand-off requirement of the release
+controller, not something CMRU enforces. No release version is refused for its number and no
+version window needs moving per minor. A release through this lane records no mutation event
+evidence; R2 is owed on the latest release at all times and is run through T3 (the command is
+`run-gate --base cmru-v6.1.0 r2` when that is the selected base; ledger: KI-141). The
+full `gate` lane remains available for the mutation campaign.
 Both are `bare-host` lanes (the controller starts lane containers itself), so they need
 the estate Python environment that holds the installed `cmru` wheel and its declared
 `cli-extended` dependency, with that environment's `bin` directory on `PATH`. The
