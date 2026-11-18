@@ -1125,6 +1125,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   the devcontainer/CI default) rather than a wrong `$RUN_GATE_CGROUPFS_ROOT`:
   host-side slice truth is then reachable ONLY through the cgprofile
   daemon, `doctor`'s own "profiler" check (`R-30c`) being exactly that path.
+  The WARNING names exactly ONE remedy (RG-283): under a private namespace it
+  names the daemon and `doctor` and never the export (no export can help);
+  with a readable-path-but-hidden cgroupfs (`memory.max` absent and the
+  namespace not private) it names the `$RUN_GATE_CGROUPFS_ROOT` export and
+  never the daemon; a `memory.max` that is readable but not a byte count
+  (`max`, empty, garbled) states what was read and prescribes nothing. The
+  admission stays a WARNING plus shared-infra-only admission in every case.
   This counts EVERYTHING in the slice (kernel truth), so no cross-process
   bookkeeping can drift. **CPU half (RG-48):** `resources.cpus` (lane, or
   the environment fallback) → a real `docker run --cpus <n>` on ephemeral
@@ -2904,7 +2911,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   supplied by the host launcher). The Docker API socket and the cockpit's group
   database are never used to infer it; the socket's owning GID can belong to a
   proxy or relay instead of the host Docker group. If neither variable is set,
-  preflight refuses and names both variables; a malformed selected value names
+  preflight refuses and names both variables, states that the host launcher
+  publishes the value as `$MDT_HOST_DOCKER_GID` (the other variable is the
+  explicit override) and that it cannot be derived from inside the
+  container, without presenting "set the variable" as something a cockpit
+  operator can do (RG-283; the profiling warning appends what degrades,
+  "basic in-lane sampling only"); a malformed selected value names
   the variable that failed validation. Collision messages print both GIDs and
   the source. Before every
   control-socket connection Run-Gate checks that its GID is non-zero and differs
