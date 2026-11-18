@@ -24,9 +24,11 @@ check fails stops the run: record it in the results table, do not improvise.
    may create is the empty `probe` commit that Run A/B step "rw sub-check" makes on the scratch branch (or
    that check (c) tries and must fail to make); the branch is deleted in cleanup.
 2. **Load.** One container-starting step at a time: no concurrent builds, no second lane, no second runner
-   stack while a step runs. v1001 is shared: **ask the controller for the window before step A1**, and tell
-   it when each Run ends. The controller devcontainer is capped at 8 GiB (OOM-killed 2026-11-08): do not run
-   the runner stacks or the lanes there. A lane outlasts a foreground tool call: launch it with
+   stack while a step runs. **Ask the controller for the window before step A1**, and tell it when each Run
+   ends. Per the VENUE DECISION in section 1 the probe runs on the controller devcontainer (measured
+   `memory.max` 12 GiB; an earlier 8 GiB cap OOM-killed the container on 2026-11-08), so keep to one
+   container-starting step at a time and watch `memory.current` and pressure; the v1001 statements in this
+   runbook are history. A lane outlasts a foreground tool call: launch it with
    `setsid nohup ... < /dev/null &`, then wait and read the verdict in separate calls (dstdns
    `nyxloom-trove/GUIDE.md` 3.4 step 4).
 3. **Containers by exact name only.** Name every container you inspect or remove by its exact name, read
@@ -34,7 +36,8 @@ check fails stops the run: record it in the results table, do not improvise.
    filters, no `docker ps -a` inventories, no `docker rm $(...)`.
 4. **Verdict reads are separate steps** from the launch, never a pipe tail (LESSONS L4).
 5. Every Bash call carries a plain-words `description`.
-6. **Shell state does not survive `hx.sh`.** Each `hx.sh <alias> '<cmd>'` is a fresh `bash -c` and takes exactly
+6. **Shell state does not survive a call** (history: written for `hx.sh`; the one-call-per-block rule still holds in the
+   devcontainer). Each `hx.sh <alias> '<cmd>'` is a fresh `bash -c` and takes exactly
    two arguments. Every code block below is ONE call and its first line is `source /tmp/ciu215-probe.env`
    (written once in section 2; it carries `PYTHONPATH`, the `ciu` function, `NAME`, `WT`, and `RUNNER` once
    known; step A5/B4 appends `RUNNER`). Variables set inside a block are gone at its end unless the block says
@@ -364,6 +367,7 @@ grep -c "worktrees/' in ciu.repo_root" tooling/test-runner/ciu.compose.yml.j2   
 
 # A3 + A3b (ONE call, its own; the only place besides A4 that sources the guard env. Nothing from it is written to the env file)
 source /tmp/ciu215-probe.env; test -n "$WT"; cd "$WT"
+unset PHYSICAL_REPO_ROOT   # an inherited value of another checkout only makes ciu print the designed 'ignoring pre-set PHYSICAL_REPO_ROOT' warning (see the B3 note)
 eval "$(ciu env print)"
 export PWMCP_NETWORK="$(sed -n 's/^network_name = "\(.*\)"$/\1/p' /srv/pwmcp-instance/ciu.global.toml)"
 test -n "$PWMCP_NETWORK" && echo pwmcp-network-ok
@@ -381,6 +385,7 @@ exists. **Fail:** a `[CIU-215] ... refuses` message (copy it verbatim). A3b is o
 # A4  bring up this checkout's own runners: a 10-25 min build, so DETACHED, exit code kept in the log. One call;
 #     it needs the A3 environment, so repeat the A3 sourcing here; nothing else runs meanwhile.
 source /tmp/ciu215-probe.env; test -n "$WT"; cd "$WT"
+unset PHYSICAL_REPO_ROOT   # see the A3 comment
 eval "$(ciu env print)"
 export PWMCP_NETWORK="$(sed -n 's/^network_name = "\(.*\)"$/\1/p' /srv/pwmcp-instance/ciu.global.toml)"
 set -a; . /workspaces/netcup-api-filter/.env.guard; . ./.env.services; set +a
@@ -657,6 +662,8 @@ grep -c "worktrees/' in ciu.repo_root" tools/test-runner/ciu.compose.yml.j2     
 #     against inherited shell state (SPEC S2.7, `_detect_physical_repo_root`), not a defect, and the rendered mounts stay right;
 #     unsetting the variable only removes the noise.
 source /tmp/ciu215-probe.env; test -n "$NAME"; unset PHYSICAL_REPO_ROOT
+#     Section 1 item 5: `ciu worktree up` runs INSIDE the scratch worktree and needs these two exported:
+test -n "$WT"; cd "$WT"; export CONTAINER_UID="$(id -u)" DOCKER_GID="$(stat -c %g /run/docker-api/docker.sock)"
 setsid nohup bash -c 'python3 -m ciu worktree up "$0"; echo "rc=$?"' "$NAME" > /tmp/ciu215-dst-up.log 2>&1 < /dev/null &
 echo $! > /tmp/ciu215-dst-up.pid
 #     UNVERIFIED: `ciu worktree up` renders from the checkout's working files (uncommitted edits). The proof is B4's INFO line.
