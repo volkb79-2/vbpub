@@ -286,6 +286,10 @@ pub enum ProtoError {
         /// The dictionary index the subject section names.
         subject: u32,
     },
+    /// A frame did not complete within the reader's completion age (WIRE.md §5.2).
+    ///
+    /// The age runs from the first byte of the frame, so an idle connection never trips it.
+    Deadline,
 }
 
 impl fmt::Display for ProtoError {
@@ -492,6 +496,9 @@ impl fmt::Display for ProtoError {
                     "subject {subject} names an incarnation in a block without a time section"
                 )
             }
+            ProtoError::Deadline => {
+                f.write_str("frame did not complete within the completion deadline")
+            }
         }
     }
 }
@@ -552,6 +559,7 @@ impl ProtoError {
             ProtoError::SectionOrder { .. } => "section-order",
             ProtoError::AggregationNotPermitted { .. } => "aggregation-not-permitted",
             ProtoError::SubjectWithoutTime { .. } => "subject-without-time",
+            ProtoError::Deadline => "deadline",
         }
     }
 }
@@ -640,6 +648,7 @@ mod tests {
             ProtoError::SectionOrder { index: 2, kind: 1 },
             ProtoError::AggregationNotPermitted { metric: 3, agg: 3 },
             ProtoError::SubjectWithoutTime { subject: 0 },
+            ProtoError::Deadline,
         ];
         for case in cases {
             let rendered = case.to_string();
@@ -811,6 +820,7 @@ mod tests {
                 "subject-without-time",
                 ProtoError::SubjectWithoutTime { subject: 0 },
             ),
+            ("deadline", ProtoError::Deadline),
         ];
         let mut names = Vec::new();
         for (expected, error) in cases {
@@ -823,7 +833,7 @@ mod tests {
         }
         assert_eq!(
             names.len(),
-            44,
+            45,
             "the refused-variant count is part of the contract"
         );
     }

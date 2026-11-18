@@ -41,6 +41,10 @@
 //! - **Unknown future versions are refused**, never guessed: an unknown *required*
 //!   section fails the block, a known section with a newer version fails even when
 //!   optional, and an unknown quality code or column type is an error.
+//! - **A stream is read by one state machine** ([`stream`]: `FrameReader`, `ModeDetect`,
+//!   `ConnTimers`; WIRE.md §5.2-§5.4). Time is injected, a frame's age runs from its first
+//!   byte, a frame completed before an error is returned with it, and a declared length is
+//!   never an allocation size.
 //! - **No panic on untrusted bytes** (this crate forbids `unsafe`; every length is
 //!   checked before it is used, every arithmetic operation is checked). A decode returns
 //!   either a complete validated value or one typed error — never a partial success and
@@ -84,4 +88,5 @@ pub mod error;
 pub mod frame;
 pub mod quality;
 pub mod read;
+pub mod stream;
 pub mod write;
