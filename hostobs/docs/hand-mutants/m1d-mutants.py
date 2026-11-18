@@ -142,8 +142,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "M1d-5",
         "a quarantine name of another tier is adopted",
         "crates/store/src/tier.rs",
-        "                if parsed.tier != self.config.name {\n                    notes.push(TierNote {\n                        name: entry.name.clone(),\n                        reason: \"names another tier\".to_string(),\n                    });\n                    continue;\n                }\n                if entry.kind != EntryKind::File {",
-        "                if false && parsed.tier != self.config.name {\n                    notes.push(TierNote {\n                        name: entry.name.clone(),\n                        reason: \"names another tier\".to_string(),\n                    });\n                    continue;\n                }\n                if entry.kind != EntryKind::File {",
+        "                if parsed.tier != self.config.name {\n                    notes.push(TierNote {\n                        name: entry.name.clone(),\n                        reason: \"names another tier\".to_string(),\n                    });\n                    continue;\n                }\n                highest_seen = highest_seen.max(Some(parsed.seq));\n                if entry.kind != EntryKind::File {",
+        "                if false && parsed.tier != self.config.name {\n                    notes.push(TierNote {\n                        name: entry.name.clone(),\n                        reason: \"names another tier\".to_string(),\n                    });\n                    continue;\n                }\n                highest_seen = highest_seen.max(Some(parsed.seq));\n                if entry.kind != EntryKind::File {",
         "store",
     ),
     Mutant(
