@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Added (P5b-2c connection: subscribe lifecycle, current, outstanding requests and Draining; `HOB-54` stays open)
+
+- **`bins/probe/src/conn.rs`**: `current` now resolves, bounds, encodes and queues a dictionary-bearing
+  Query block in REP/BLOCK/END order; Query backpressure records only the selection and needed length,
+  and `retry_pending` re-resolves the latest tick when room appears. `subscribe` applies the
+  per-connection, uid and probe budgets, returns its REP without resolving a tick and waits for the
+  first due stream block. `unsubscribe` removes the registry entry and ends the stream with exact
+  pinned-block/unpinned-drop counts. Clean client EOF enters Draining, ends every subscription in
+  `corr` order with `client-eof`, then finishes outstanding requests before closing silently.
+- **State guards**: `subs` and `pending` participate in `corr`-in-use, `max_outstanding`,
+  `subscriptions()`, idle suppression and every push path. All new pushes stop immediately after the
+  connection closes; `end_subscription` on a closed connection only removes the connection-side key,
+  leaving registry release to `Server::finish`.
+- **`bins/probe/src/server.rs`**: the server owns `SelectionStreams` built from unified stream bounds;
+  observe/operator now share `tick_ms`, `max_rows` and the smaller `max_block_bytes`, each clamped to
+  its Query and Live pools. `drive` passes the registry, `on_eof` uses `drive`, `finish` releases the
+  connection's registry entries before removing its hub state, and `Server::streams()` exposes the
+  counters. `status` takes `dropped_blocks` from the hub and ignores the backend's field.
+- **Tests**: every P5b-2c section 5.3 case, including all `current`, subscribe, unsubscribe,
+  outstanding, corr-in-use, Draining, idle, server-ended stream and status cases; every close path
+  verifies registry, hub and connection counters return to zero. `Conn` sequences are parsed by the
+  Rust client's REP/END checks and block dictionary state. The 2,000-step stream-operation hostile run
+  checks registry and hub exactness after termination.
+- **`WIRE.md`**: the `current` pre-REP resolution/size rule and pending retry, subscription ownership
+  and next-tick delivery, unsubscribe counts, Draining completion, outstanding accounting, unified
+  block bounds, idle/Draining rows and decisions D-W29/D-W30.
+
 ### Added (P5b-2b data side: backend seam, tick encoding, registry and hub additions; `HOB-54` stays open)
 
 - **`Backend`**: `TickData` (server-owned header fields separated from backend facts), a deterministic

@@ -43,31 +43,39 @@
 //!   it), `slow-client` and `shutting-down` (WIRE.md section 5.4). Another code would put that
 //!   code in a `closing` EVT, which a client does not expect; a fatal request or reader outcome
 //!   never goes through `close_for`.
-//! - **Impossible cases are ignored, never a panic.** A reader error that owes no reply
-//!   (`Truncated`, `TrailingBytes`) cannot reach the conn, because it feeds a reader only while
-//!   open and ends it only at a boundary; if it did, the error would be ignored and the timers
-//!   would close the connection. A `SECTIONED` REQ never reaches `classify` either: the frame
-//!   header parse refuses the flag on any frame but a BLOCK, so the reader reports `bad-frame`.
+//! - **Reader errors are mapped once.** The frame reader maps every error except oversize and
+//!   deadline to `bad-frame`; the line reader supplies its own code. An `eof()` error is consumed
+//!   by [`Conn::on_eof`] as the silent-close branch, so it never reaches dispatch. A `SECTIONED`
+//!   REQ never reaches `classify`: the frame-header parse refuses the flag on every non-BLOCK
+//!   frame and reports `bad-frame` through that same reader path.
+//! - **P5b-2 stream state.** `subs` maps a live subscription `corr` to its registry selection id;
+//!   `pending` holds only a backpressured `current` request's selection and length, never block
+//!   bytes. The registry itself belongs to [`Server`](crate::server::Server), which releases every
+//!   entry at `finish` even when the connection closed before it could be finished.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use hostobs_proto::error::ProtoError;
 use hostobs_proto::frame::{FrameType, FRAME_HEADER_LEN, PROTO_MINOR};
-use hostobs_proto::hub::{Close, ConnId, Pools, SendHub};
+use hostobs_proto::hub::{Close, ConnId, Pools, QueryOutcome, SendHub};
 use hostobs_proto::quality;
 use hostobs_proto::stream::{ConnTimers, Detect, Feed, FrameReader, ModeDetect, RawFrame, Timer};
 
 use crate::backend::{Backend, Identity, StatusInfo};
 use crate::classify::{
-    classify, Call, Dispatch, Mode, Phase, Prefix, Query, Refusal, SERVER_MAJOR,
+    classify_with, Call, ConnFacts, Dispatch, Mode, Phase, Prefix, Query, Refusal, SERVER_MAJOR,
 };
-use crate::codes::{Code, Detail};
+use crate::codes::{Code, Detail, Pool};
 use crate::encode::{
-    closing_evt, error_line, push_string, rep_error, rep_ok, rep_ok_line, server_prefix,
-    unknown_mode_line,
+    closing_evt, current_result, end_error, end_ok, error_line, push_string, rep_error, rep_ok,
+    rep_ok_line, server_prefix, subscribe_result, unknown_mode_line, EndReason, UNSUBSCRIBE_RESULT,
 };
 use crate::limits::{Level, Limits};
 use crate::lines::{LineError, LineFeed, LineReader};
+use crate::registry::{SelId, SelectionCaps, SelectionStreams, SubKey};
+use crate::selection::Selection;
+use crate::tick::{query_block, BlockBounds, LiveTick};
 use crate::verbs::served_at;
 
 /// The highest protocol minor the probe serves.
@@ -191,7 +199,7 @@ fn hello_result(level: Level, minor: u16, identity: &Identity, limits: &Limits) 
 }
 
 /// The `status` result of WIRE.md section 4.5; `queued` is the global Live plus Query bytes.
-fn status_json(identity: &Identity, status: &StatusInfo, queued: Pools) -> String {
+fn status_json(identity: &Identity, status: &StatusInfo, queued: Pools, dropped: u64) -> String {
     let mut out = String::from("{\"server\":");
     push_string(&mut out, &identity.server);
     out.push_str(",\"boot_id\":");
@@ -216,7 +224,7 @@ fn status_json(identity: &Identity, status: &StatusInfo, queued: Pools) -> Strin
     let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
     out.push_str(&format!(
         "}},\"queues\":{{\"queued_bytes\":{bytes},\"dropped_blocks\":{}}}",
-        status.dropped_blocks
+        dropped
     ));
     out.push_str(",\"tiers\":[");
     for (index, tier) in status.tiers.iter().enumerate() {
@@ -232,6 +240,13 @@ fn status_json(identity: &Identity, status: &StatusInfo, queued: Pools) -> Strin
     }
     out.push_str("]}");
     out
+}
+
+/// One `current` request waiting for Query room (design S7 and D-W30).
+#[derive(Debug)]
+struct Pending {
+    selection: Selection,
+    need: usize,
 }
 
 /// One accepted connection (module doc: the contracts).
@@ -251,6 +266,8 @@ pub struct Conn {
     written: u64,
     close_code: Option<Code>,
     final_bytes: Option<Vec<u8>>,
+    subs: BTreeMap<u32, SelId>,
+    pending: BTreeMap<u32, Pending>,
 }
 
 impl Conn {
@@ -276,6 +293,8 @@ impl Conn {
             written: 0,
             close_code: None,
             final_bytes: None,
+            subs: BTreeMap::new(),
+            pending: BTreeMap::new(),
         }
     }
 
@@ -347,15 +366,16 @@ impl Conn {
         now_ns: u64,
         hub: &mut SendHub,
         backend: &dyn Backend,
+        streams: &mut SelectionStreams,
     ) {
         if bytes.is_empty() || self.state == State::Closed {
             return;
         }
         self.timers.on_byte();
         match self.state {
-            State::Undecided => self.on_undecided(bytes, now_ns, hub, backend),
+            State::Undecided => self.on_undecided(bytes, now_ns, hub, backend, streams),
             State::AwaitHello | State::JsonNoHello | State::Ready => {
-                self.on_stream(bytes, now_ns, hub, backend);
+                self.on_stream(bytes, now_ns, hub, backend, streams);
             }
             State::Draining => self.finish_close(hub, None, None),
             State::Closed => {}
@@ -365,7 +385,7 @@ impl Conn {
 
     /// The peer ended its stream (R10): silent close before `Ready` or inside a frame or line;
     /// in `Ready` a clean end is `Draining`, which closes when the queue is empty.
-    pub fn on_eof(&mut self, now_ns: u64, hub: &mut SendHub) {
+    pub fn on_eof(&mut self, now_ns: u64, hub: &mut SendHub, streams: &mut SelectionStreams) {
         match self.state {
             State::Closed | State::Draining => {}
             State::Ready => {
@@ -376,6 +396,21 @@ impl Conn {
                 };
                 if clean {
                     self.state = State::Draining;
+                    let corrs: Vec<u32> = self.subs.keys().copied().collect();
+                    for corr in corrs {
+                        if self.is_closed() {
+                            break;
+                        }
+                        self.subs.remove(&corr);
+                        streams.unsubscribe(SubKey {
+                            conn: self.id,
+                            corr,
+                        });
+                        let counts = hub.end_stream(self.id, corr);
+                        let bytes =
+                            end_ok(corr, counts.blocks, counts.dropped, EndReason::ClientEof);
+                        self.push(hub, bytes, now_ns);
+                    }
                     self.complete_draining(hub);
                 } else {
                     self.finish_close(hub, None, None);
@@ -386,6 +421,97 @@ impl Conn {
             }
         }
         self.refresh_idle(now_ns, hub);
+    }
+
+    /// Queue one subscription tick (design S13). A closed or draining connection, or one that
+    /// no longer owns `corr`, ignores it; a registry/connection mismatch never panics.
+    pub fn push_tick(&mut self, corr: u32, tick: &LiveTick, now_ns: u64, hub: &mut SendHub) {
+        if self.is_closed() || self.state == State::Draining || !self.subs.contains_key(&corr) {
+            return;
+        }
+        hub.push_live(self.id, corr, tick, now_ns);
+        self.timers.on_enqueue();
+    }
+
+    /// End a subscription the server ended (design S17). On a closed connection this only
+    /// removes the connection-side key; the server releases the registry entry through `finish`.
+    pub fn end_subscription(
+        &mut self,
+        corr: u32,
+        code: Code,
+        detail: &Detail,
+        now_ns: u64,
+        hub: &mut SendHub,
+    ) {
+        let removed = self.subs.remove(&corr).is_some();
+        if self.is_closed() || !removed {
+            return;
+        }
+        let counts = hub.end_stream(self.id, corr);
+        let bytes = end_error(corr, counts.blocks, counts.dropped, code, detail);
+        self.push(hub, bytes, now_ns);
+    }
+
+    /// Retry backpressured `current` requests in ascending `corr` (design S7). Each retry
+    /// re-resolves the latest tick, so pending state holds no block bytes (D-W30).
+    pub fn retry_pending(&mut self, now_ns: u64, hub: &mut SendHub, backend: &dyn Backend) {
+        if self.is_closed() {
+            return;
+        }
+        let corrs: Vec<u32> = self.pending.keys().copied().collect();
+        for corr in corrs {
+            if self.is_closed() {
+                return;
+            }
+            let Some(pending) = self.pending.get(&corr) else {
+                continue;
+            };
+            if !hub.query_room(self.id, pending.need) {
+                continue;
+            }
+            let resolved = self.current_block(&pending.selection, backend);
+            match resolved {
+                Ok(block) => match hub.push_query(self.id, corr, block, now_ns) {
+                    QueryOutcome::Queued => {
+                        self.pending.remove(&corr);
+                        let counts = hub.end_stream(self.id, corr);
+                        let bytes =
+                            end_ok(corr, counts.blocks, counts.dropped, EndReason::Complete);
+                        self.push(hub, bytes, now_ns);
+                    }
+                    QueryOutcome::Backpressure(block) => {
+                        if let Some(pending) = self.pending.get_mut(&corr) {
+                            pending.need = block.len();
+                        }
+                    }
+                },
+                Err((code, detail)) => {
+                    self.pending.remove(&corr);
+                    let counts = hub.end_stream(self.id, corr);
+                    let bytes = end_error(corr, counts.blocks, counts.dropped, code, &detail);
+                    self.push(hub, bytes, now_ns);
+                }
+            }
+        }
+        self.complete_draining(hub);
+    }
+
+    /// The number of live subscriptions of this connection.
+    #[must_use]
+    pub fn subscriptions(&self) -> usize {
+        self.subs.len()
+    }
+
+    /// The number of backpressured `current` requests.
+    #[must_use]
+    pub fn outstanding(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Whether any `current` request is backpressured.
+    #[must_use]
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
     }
 
     /// The clock reached `now_ns` (R20): the hello deadline, then the request deadline (the
@@ -473,12 +599,14 @@ impl Conn {
     fn refresh_idle(&mut self, now_ns: u64, hub: &SendHub) {
         let idle = self.state == State::Ready
             && self.at_boundary()
-            && hub.queued(self.id) == Pools::default();
+            && hub.queued(self.id) == Pools::default()
+            && self.subs.is_empty()
+            && self.pending.is_empty();
         self.timers.on_idle_condition(idle, now_ns);
     }
 
     fn complete_draining(&mut self, hub: &mut SendHub) {
-        if hub.queued(self.id) == Pools::default() {
+        if self.pending.is_empty() && hub.queued(self.id) == Pools::default() {
             self.finish_close(hub, None, None);
         }
     }
@@ -555,6 +683,7 @@ impl Conn {
         now_ns: u64,
         hub: &mut SendHub,
         backend: &dyn Backend,
+        streams: &mut SelectionStreams,
     ) {
         match self.detect.feed(bytes) {
             Detect::Need => {}
@@ -568,11 +697,11 @@ impl Conn {
                 self.reader = Reader::Lines(reader);
                 self.state = State::JsonNoHello;
                 let rest = bytes.get(at..).unwrap_or_default();
-                self.on_stream(rest, now_ns, hub, backend);
+                self.on_stream(rest, now_ns, hub, backend, streams);
             }
             Detect::Binary { prefix, at } => {
                 let rest = bytes.get(at..).unwrap_or_default();
-                self.on_prefix(prefix, rest, now_ns, hub, backend);
+                self.on_prefix(prefix, rest, now_ns, hub, backend, streams);
             }
         }
     }
@@ -586,6 +715,7 @@ impl Conn {
         now_ns: u64,
         hub: &mut SendHub,
         backend: &dyn Backend,
+        streams: &mut SelectionStreams,
     ) {
         let [_, _, _, _, a0, a1, b0, b1] = prefix;
         let major = u16::from_le_bytes([a0, a1]);
@@ -604,10 +734,17 @@ impl Conn {
         self.prefix_queued = true;
         let reply = server_prefix(SERVER_MAJOR, self.minor).to_vec();
         self.push(hub, reply, now_ns);
-        self.on_stream(rest, now_ns, hub, backend);
+        self.on_stream(rest, now_ns, hub, backend, streams);
     }
 
-    fn on_stream(&mut self, bytes: &[u8], now_ns: u64, hub: &mut SendHub, backend: &dyn Backend) {
+    fn on_stream(
+        &mut self,
+        bytes: &[u8],
+        now_ns: u64,
+        hub: &mut SendHub,
+        backend: &dyn Backend,
+        streams: &mut SelectionStreams,
+    ) {
         if bytes.is_empty() || self.state == State::Closed {
             return;
         }
@@ -620,7 +757,7 @@ impl Conn {
             if self.state == State::Closed {
                 return;
             }
-            self.dispatch(input, now_ns, hub, backend);
+            self.dispatch(input, now_ns, hub, backend, streams);
         }
         if self.state == State::Closed {
             return;
@@ -631,36 +768,63 @@ impl Conn {
     }
 
     fn classify_input(&self, input: &Input) -> Result<Dispatch, Refusal> {
+        let corr_in_use = match input {
+            Input::Frame(frame) => {
+                self.subs.contains_key(&frame.header.corr)
+                    || self.pending.contains_key(&frame.header.corr)
+            }
+            Input::Line(_) => false,
+        };
+        let outstanding_full = self.pending.len()
+            >= usize::try_from(self.limits.max_outstanding).unwrap_or(usize::MAX);
+        let facts = ConnFacts {
+            corr_in_use,
+            outstanding_full,
+            interval: self.limits.interval_rule(),
+        };
         match input {
             Input::Frame(frame) => {
                 let header = frame.header;
                 let payload = frame.bytes.get(FRAME_HEADER_LEN..).unwrap_or_default();
-                classify(&Query {
-                    frame_type: header.frame_type,
-                    corr: header.corr,
-                    mode: Mode::Binary,
+                classify_with(
+                    &Query {
+                        frame_type: header.frame_type,
+                        corr: header.corr,
+                        mode: Mode::Binary,
+                        phase: self.phase(),
+                        level: self.level,
+                        prefix: self.client_prefix,
+                        payload,
+                    },
+                    &facts,
+                )
+            }
+            Input::Line(line) => classify_with(
+                &Query {
+                    frame_type: FrameType::Req,
+                    corr: 0,
+                    mode: Mode::Json,
                     phase: self.phase(),
                     level: self.level,
                     prefix: self.client_prefix,
-                    payload,
-                })
-            }
-            Input::Line(line) => classify(&Query {
-                frame_type: FrameType::Req,
-                corr: 0,
-                mode: Mode::Json,
-                phase: self.phase(),
-                level: self.level,
-                prefix: self.client_prefix,
-                payload: line,
-            }),
+                    payload: line,
+                },
+                &facts,
+            ),
         }
     }
 
-    fn dispatch(&mut self, input: &Input, now_ns: u64, hub: &mut SendHub, backend: &dyn Backend) {
+    fn dispatch(
+        &mut self,
+        input: &Input,
+        now_ns: u64,
+        hub: &mut SendHub,
+        backend: &dyn Backend,
+        streams: &mut SelectionStreams,
+    ) {
         let first_line = self.state == State::JsonNoHello;
         match self.classify_input(input) {
-            Ok(dispatch) => self.execute(&dispatch, now_ns, hub, backend),
+            Ok(dispatch) => self.execute(&dispatch, now_ns, hub, backend, streams),
             Err(refusal) => self.refuse(&refusal, now_ns, hub),
         }
         if first_line && self.state == State::JsonNoHello {
@@ -684,7 +848,11 @@ impl Conn {
         now_ns: u64,
         hub: &mut SendHub,
         backend: &dyn Backend,
+        streams: &mut SelectionStreams,
     ) {
+        if self.is_closed() {
+            return;
+        }
         let result = match &dispatch.call {
             Call::Hello(args) => {
                 self.minor = args.minor.min(SERVER_MINOR);
@@ -693,10 +861,111 @@ impl Conn {
             }
             Call::Status => {
                 let queued = hub.global_pools();
-                status_json(&backend.identity(), &backend.status(), queued)
+                let dropped = hub.dropped_blocks();
+                status_json(&backend.identity(), &backend.status(), queued, dropped)
             }
-            Call::Current(_) | Call::Subscribe(_) | Call::Unsubscribe(_) => {
-                let bytes = self.error_bytes(dispatch.corr, Code::Internal, &Detail::Empty);
+            Call::Current(selection) => {
+                let block = match self.current_block(selection, backend) {
+                    Ok(block) => block,
+                    Err((code, detail)) => {
+                        let bytes = self.error_bytes(dispatch.corr, code, &detail);
+                        self.push(hub, bytes, now_ns);
+                        return;
+                    }
+                };
+                let result = current_result(self.limits.tick_ms);
+                let bytes = self.reply_bytes(dispatch.corr, &result);
+                self.push(hub, bytes, now_ns);
+                if self.is_closed() {
+                    return;
+                }
+                match hub.push_query(self.id, dispatch.corr, block, now_ns) {
+                    QueryOutcome::Queued => {
+                        let counts = hub.end_stream(self.id, dispatch.corr);
+                        let bytes = end_ok(
+                            dispatch.corr,
+                            counts.blocks,
+                            counts.dropped,
+                            EndReason::Complete,
+                        );
+                        self.push(hub, bytes, now_ns);
+                    }
+                    QueryOutcome::Backpressure(block) => {
+                        self.pending.insert(
+                            dispatch.corr,
+                            Pending {
+                                selection: selection.clone(),
+                                need: block.len(),
+                            },
+                        );
+                    }
+                }
+                return;
+            }
+            Call::Subscribe(args) => {
+                let cap = usize::try_from(self.limits.max_subscriptions).unwrap_or(usize::MAX);
+                if self.subs.len() >= cap {
+                    self.budget(dispatch.corr, Pool::Subscriptions, now_ns, hub);
+                    return;
+                }
+                let every = args
+                    .interval_ms
+                    .checked_div(self.limits.tick_ms)
+                    .filter(|value| *value > 0);
+                let Some(every) = every else {
+                    let bytes = self.error_bytes(dispatch.corr, Code::Internal, &Detail::Empty);
+                    self.push(hub, bytes, now_ns);
+                    return;
+                };
+                let caps = SelectionCaps {
+                    per_uid: self.limits.max_uid_selections,
+                    per_probe: self.limits.max_selections,
+                };
+                let key = SubKey {
+                    conn: self.id,
+                    corr: dispatch.corr,
+                };
+                match streams.subscribe(key, self.peer.uid, every, &args.selection, caps) {
+                    Err(crate::registry::Refused::Budget(pool)) => {
+                        self.budget(dispatch.corr, pool, now_ns, hub);
+                        return;
+                    }
+                    Err(_) => {
+                        let bytes = self.error_bytes(dispatch.corr, Code::Internal, &Detail::Empty);
+                        self.push(hub, bytes, now_ns);
+                        return;
+                    }
+                    Ok(admit) => {
+                        let sel_id = match admit {
+                            crate::registry::Admit::Joined(id)
+                            | crate::registry::Admit::Created(id) => id,
+                        };
+                        self.subs.insert(dispatch.corr, sel_id);
+                    }
+                }
+                let result = subscribe_result(dispatch.corr, args.interval_ms);
+                let bytes = self.reply_bytes(dispatch.corr, &result);
+                self.push(hub, bytes, now_ns);
+                return;
+            }
+            Call::Unsubscribe(sub) => {
+                if !self.subs.contains_key(sub) {
+                    let bytes = self.error_bytes(dispatch.corr, Code::NotFound, &Detail::Empty);
+                    self.push(hub, bytes, now_ns);
+                    return;
+                }
+                self.subs.remove(sub);
+                streams.unsubscribe(SubKey {
+                    conn: self.id,
+                    corr: *sub,
+                });
+                let bytes = self.reply_bytes(dispatch.corr, UNSUBSCRIBE_RESULT);
+                self.push(hub, bytes, now_ns);
+                if self.is_closed() {
+                    return;
+                }
+                let counts = hub.end_stream(self.id, *sub);
+                let bytes = end_ok(*sub, counts.blocks, counts.dropped, EndReason::Unsubscribed);
                 self.push(hub, bytes, now_ns);
                 return;
             }
@@ -709,24 +978,55 @@ impl Conn {
             self.timers.on_hello_complete();
         }
     }
+
+    fn budget(&mut self, corr: u32, pool: Pool, now_ns: u64, hub: &mut SendHub) {
+        let bytes = self.error_bytes(corr, Code::Budget, &Detail::Pool(pool));
+        self.push(hub, bytes, now_ns);
+    }
+
+    fn current_block(
+        &self,
+        selection: &Selection,
+        backend: &dyn Backend,
+    ) -> Result<Arc<[u8]>, (Code, Detail)> {
+        let data = backend
+            .current(selection, self.limits.max_rows)
+            .map_err(|error| {
+                let detail = Detail::Pool(Pool::Rows);
+                match error {
+                    crate::backend::BackendError::TooManyRows => (Code::Budget, detail),
+                    crate::backend::BackendError::Unavailable => (Code::Internal, Detail::Empty),
+                }
+            })?;
+        let bounds = BlockBounds {
+            max_rows: self.limits.max_rows,
+            max_block_bytes: self.limits.max_block_bytes,
+        };
+        query_block(data, bounds).map_err(|error| error.refusal())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use hostobs_proto::envelope::members_up_to;
-    use hostobs_proto::frame::FrameType;
+    use hostobs_proto::envelope::{check_end, check_rep, members_up_to};
+    use hostobs_proto::frame::{decode_block_with, FrameType};
     use hostobs_proto::hub::{ConnId, LiveOutcome, QueryOutcome, QueueLimits, SendHub, TickForms};
     use hostobs_proto::quality;
+    use hostobs_proto::stream_dicts::StreamDicts;
 
-    use super::{Conn, Peer, Pools, Reader, State, SERVER_MINOR};
-    use crate::backend::{FixedBackend, TickInfo, TierInfo};
+    use super::{Call, Conn, Dispatch, Peer, Pools, Reader, State, SERVER_MINOR};
+    use crate::args::SubscribeArgs;
+    use crate::backend::{BackendError, FixedBackend, TickData, TickInfo, TierInfo};
     use crate::codes::{Code, Detail};
     use crate::encode::{
         closing_evt, control_frame, error_line, rep_error, server_prefix, unknown_mode_line,
     };
     use crate::limits::{Level, Limits};
+    use crate::registry::{Delivery, SelectionStreams, StreamLimits};
+    use crate::selection::{Sel, Selection};
+    use crate::tick::BlockBounds;
 
     const MS: u64 = 1_000_000;
     const HELLO_ARGS: &str = r#"{"client":"t","proto":{"major":1,"minor":1}}"#;
@@ -767,16 +1067,74 @@ mod tests {
         out
     }
 
+    /// `(type, corr, whole frame)` of every well-formed frame in `bytes`.
+    fn raw_frames(bytes: &[u8]) -> Vec<(u8, u32, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut rest = bytes;
+        while rest.len() >= 12 {
+            let len = u32::from_le_bytes([rest[0], rest[1], rest[2], rest[3]]);
+            let len = usize::try_from(len).expect("len");
+            assert!(len >= 12 && len <= rest.len());
+            let corr = u32::from_le_bytes([rest[8], rest[9], rest[10], rest[11]]);
+            out.push((rest[4], corr, rest[..len].to_vec()));
+            rest = &rest[len..];
+        }
+        out
+    }
+
+    fn payload(frame: &[u8]) -> &[u8] {
+        frame.get(12..).unwrap_or_default()
+    }
+
+    fn selection(inc: u64) -> Selection {
+        Selection::new(vec![Sel::Inc(inc)], vec![String::from("m")]).expect("selection")
+    }
+
+    fn is_error(frame: &[u8], code: Code) -> bool {
+        let body = text(payload(frame));
+        let rep = check_rep(body.as_bytes(), false).expect("REP");
+        assert!(!rep.ok, "{body}");
+        body.contains(&format!("\"code\":\"{}\"", code.name()))
+    }
+
+    fn end_info(frame: &[u8]) -> (bool, u32, u32, Option<String>) {
+        let body = payload(frame);
+        let end = check_end(body).expect("END");
+        let reason = end.reason.map(|range| {
+            String::from_utf8(body.get(range).expect("reason range").to_vec()).expect("utf-8")
+        });
+        (end.ok, end.blocks, end.dropped, reason)
+    }
+
+    fn assert_end_ok(frame: &[u8], blocks: u32, dropped: u32, reason: &str) {
+        assert_eq!(
+            end_info(frame),
+            (true, blocks, dropped, Some(reason.to_string()))
+        );
+    }
+
+    fn assert_end_error(frame: &[u8], blocks: u32, dropped: u32, code: Code) {
+        let (ok, got_blocks, got_dropped, _) = end_info(frame);
+        assert!(!ok);
+        assert_eq!((got_blocks, got_dropped), (blocks, dropped));
+        assert!(is_error_payload(payload(frame), code));
+    }
+
+    fn is_error_payload(body: &[u8], code: Code) -> bool {
+        text(body).contains(&format!("\"code\":\"{}\"", code.name()))
+    }
+
     fn queue_limits(limits: &Limits) -> QueueLimits {
         let size = |value: u32| usize::try_from(value).unwrap_or(usize::MAX);
         let client = size(limits.client_queue_bytes);
+        let query = size(limits.query_queue_bytes);
         QueueLimits {
             client_queue_bytes: client,
             uid_live_bytes: client.saturating_mul(2),
             global_live_bytes: client.saturating_mul(4),
-            query_queue_bytes: client,
-            uid_query_bytes: client.saturating_mul(2),
-            global_query_bytes: client.saturating_mul(4),
+            query_queue_bytes: query,
+            uid_query_bytes: query,
+            global_query_bytes: query.saturating_mul(4),
             control_queue_bytes: size(limits.control_queue_bytes),
             stall_ns: u64::from(limits.stall_ms) * MS,
             frame_completion_ns: u64::from(limits.frame_completion_ms) * MS,
@@ -787,6 +1145,7 @@ mod tests {
         hub: SendHub,
         conn: Conn,
         backend: FixedBackend,
+        streams: SelectionStreams,
         limits: Limits,
         now: u64,
         out: Vec<u8>,
@@ -802,10 +1161,17 @@ mod tests {
             let id = hub.add(1000, 0);
             let peer = Peer { uid: 1000, pid: 7 };
             let conn = Conn::new(id, level, peer, &limits, 0);
+            let streams = SelectionStreams::new(StreamLimits {
+                bounds: BlockBounds {
+                    max_rows: limits.max_rows,
+                    max_block_bytes: limits.max_block_bytes,
+                },
+            });
             Rig {
                 hub,
                 conn,
                 backend: FixedBackend::new(),
+                streams,
                 limits,
                 now: 0,
                 out: Vec::new(),
@@ -813,12 +1179,80 @@ mod tests {
         }
 
         fn send(&mut self, bytes: &[u8]) {
-            self.conn
-                .on_bytes(bytes, self.now, &mut self.hub, &self.backend);
+            self.conn.on_bytes(
+                bytes,
+                self.now,
+                &mut self.hub,
+                &self.backend,
+                &mut self.streams,
+            );
         }
 
         fn eof(&mut self) {
-            self.conn.on_eof(self.now, &mut self.hub);
+            self.conn.on_eof(self.now, &mut self.hub, &mut self.streams);
+        }
+
+        fn ready(&mut self) {
+            let mut input = client_prefix(1);
+            input.extend_from_slice(&req(1, "hello"));
+            self.send(&input);
+            self.pump(usize::MAX);
+            self.out.clear();
+            assert_eq!(self.conn.state(), State::Ready);
+        }
+
+        fn execute(&mut self, corr: u32, call: Call) {
+            let dispatch = Dispatch { corr, call };
+            self.conn.execute(
+                &dispatch,
+                self.now,
+                &mut self.hub,
+                &self.backend,
+                &mut self.streams,
+            );
+        }
+
+        fn current(&mut self, corr: u32, selection: Selection) {
+            self.execute(corr, Call::Current(selection));
+        }
+
+        fn subscribe(&mut self, corr: u32, selection: Selection, interval_ms: u32) {
+            self.execute(
+                corr,
+                Call::Subscribe(SubscribeArgs {
+                    selection,
+                    interval_ms,
+                }),
+            );
+        }
+
+        fn streaming_tick(&mut self) {
+            let deliveries = self.streams.on_tick(&self.backend);
+            for delivery in deliveries {
+                match delivery {
+                    Delivery::Push { tick, to } => {
+                        for key in to {
+                            if key.conn == self.conn.id() {
+                                self.conn
+                                    .push_tick(key.corr, &tick, self.now, &mut self.hub);
+                            }
+                        }
+                    }
+                    Delivery::End { to, code, detail } => {
+                        for key in to {
+                            if key.conn == self.conn.id() {
+                                self.conn.end_subscription(
+                                    key.corr,
+                                    code,
+                                    &detail,
+                                    self.now,
+                                    &mut self.hub,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         fn tick(&mut self, ns: u64) {
@@ -856,6 +1290,10 @@ mod tests {
 
         fn queue_empty(&self) -> bool {
             self.hub.queued(self.conn.id()) == Pools::default()
+        }
+
+        fn pending_need(&self, corr: u32) -> Option<usize> {
+            self.conn.pending.get(&corr).map(|pending| pending.need)
         }
     }
 
@@ -1120,6 +1558,7 @@ mod tests {
         assert_eq!(rig.conn.take_final(), Some(closing_evt(Code::Idle)));
         let mut json = ready_json(Level::Observe);
         json.tick(300_000 * MS + 1);
+        assert_eq!(json.conn.close_code(), Some(Code::Idle));
         let expected = error_line(0, Code::Idle, &Detail::Empty);
         assert_eq!(json.conn.take_final(), Some(expected));
     }
@@ -1495,6 +1934,22 @@ mod tests {
         }
     }
 
+    struct FrameForm(Arc<[u8]>);
+
+    impl TickForms for FrameForm {
+        fn generation(&self) -> u32 {
+            1
+        }
+
+        fn bare(&self) -> Option<Arc<[u8]>> {
+            Some(Arc::clone(&self.0))
+        }
+
+        fn dict_form(&self) -> Arc<[u8]> {
+            Arc::clone(&self.0)
+        }
+    }
+
     #[test]
     fn conn_hello_negotiates_the_minor_in_both_modes() {
         assert_eq!(SERVER_MINOR, 1);
@@ -1524,6 +1979,597 @@ mod tests {
         bare.send(&line(1, "status", "{}"));
         assert_eq!(bare.conn.state(), State::Ready);
         assert_eq!(bare.conn.minor(), 0);
+    }
+
+    fn current_data(seq: u64) -> TickData {
+        TickData::example(seq, &[1], &["m"])
+    }
+
+    fn current_rig(limits: Limits, selection: Selection, data: TickData) -> Rig {
+        let mut rig = Rig::with(Level::Observe, limits);
+        rig.backend.current.insert(selection, Ok(data));
+        rig
+    }
+
+    fn query_len(limits: &Limits, data: &TickData) -> usize {
+        crate::tick::query_block(
+            data.clone(),
+            BlockBounds {
+                max_rows: limits.max_rows,
+                max_block_bytes: limits.max_block_bytes,
+            },
+        )
+        .expect("query block")
+        .len()
+    }
+
+    fn blocked_current_rig(data: TickData) -> (Rig, Selection, usize) {
+        let selection = selection(1);
+        let mut limits = Limits::for_level(Level::Observe);
+        let need = query_len(&limits, &data);
+        let queue = u32::try_from(need).expect("query length");
+        limits.query_queue_bytes = queue;
+        limits.max_block_bytes = queue;
+        let mut rig = current_rig(limits, selection.clone(), data);
+        rig.ready();
+        let placeholder: Arc<[u8]> = Arc::from(vec![0u8]);
+        let outcome = rig.hub.push_query(rig.conn.id(), 99, placeholder, rig.now);
+        assert_eq!(outcome, QueryOutcome::Queued);
+        assert_eq!(rig.hub.queued(rig.conn.id()).query, 1);
+        assert!(!rig.hub.query_room(rig.conn.id(), need));
+        (rig, selection, need)
+    }
+
+    #[test]
+    fn conn_current_queued_replies_block_and_complete_in_fifo_order() {
+        let sel = selection(1);
+        let mut rig = current_rig(
+            Limits::for_level(Level::Observe),
+            sel.clone(),
+            current_data(5),
+        );
+        rig.current(2, sel);
+        let out = rig.finish();
+        let raw = raw_frames(&out);
+        assert_eq!(raw.len(), 3);
+        assert_eq!((raw[0].0, raw[0].1), (FrameType::Rep.code(), 2));
+        assert_eq!((raw[1].0, raw[1].1), (FrameType::Block.code(), 2));
+        assert_eq!((raw[2].0, raw[2].1), (FrameType::End.code(), 2));
+        assert!(text(payload(&raw[0].2)).contains("\"stream\":{\"tick_ms\":1000}"));
+        let block = decode_block_with(&raw[1].2, None).expect("block");
+        assert!(block.dictionary.is_some());
+        let mut dicts = StreamDicts::new();
+        dicts.accept(2, &block).expect("client dictionary");
+        assert_end_ok(&raw[2].2, 1, 0, "complete");
+    }
+
+    #[test]
+    fn conn_current_backend_error_is_internal_without_a_block() {
+        let mut rig = Rig::new(Level::Observe);
+        rig.current(2, selection(1));
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 1);
+        assert!(is_error(&raw[0].2, Code::Internal));
+        assert_eq!(rig.conn.outstanding(), 0);
+    }
+
+    #[test]
+    fn conn_current_rows_budget_is_not_outstanding() {
+        let mut limits = Limits::for_level(Level::Observe);
+        limits.max_rows = 1;
+        let sel = selection(1);
+        let data = TickData::example(5, &[1, 2], &["m"]);
+        let mut rig = current_rig(limits, sel.clone(), data);
+        rig.current(2, sel);
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 1);
+        assert!(is_error(&raw[0].2, Code::Budget));
+        assert!(text(payload(&raw[0].2)).contains("\"detail\":{\"pool\":\"rows\"}"));
+        assert_eq!(rig.conn.outstanding(), 0);
+    }
+
+    #[test]
+    fn conn_current_oversize_is_internal_before_the_rep() {
+        let mut limits = Limits::for_level(Level::Observe);
+        limits.max_block_bytes = 128;
+        let sel = selection(1);
+        let mut rig = current_rig(limits, sel.clone(), current_data(5));
+        rig.current(2, sel);
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 1);
+        assert!(is_error(&raw[0].2, Code::Internal));
+        assert_eq!(rig.conn.outstanding(), 0);
+    }
+
+    #[test]
+    fn conn_current_backpressure_leaves_one_outstanding_request() {
+        let (mut rig, sel, need) = blocked_current_rig(current_data(5));
+        rig.current(2, sel);
+        let out = rig.finish();
+        assert_eq!(rig.conn.outstanding(), 1, "{}", text(&out));
+        assert!(rig.conn.has_pending());
+        assert_eq!(rig.pending_need(2), Some(need));
+        assert!(text(&out).contains("\"stream\":{\"tick_ms\":1000}"));
+        assert_eq!(rig.hub.queued(rig.conn.id()).query, 0);
+    }
+
+    #[test]
+    fn conn_current_retry_when_room_queues_block_then_end() {
+        let (mut rig, sel, _need) = blocked_current_rig(current_data(5));
+        rig.current(2, sel);
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        assert!(rig.queue_empty());
+        rig.conn.retry_pending(rig.now, &mut rig.hub, &rig.backend);
+        assert_eq!(rig.conn.outstanding(), 0);
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 2);
+        assert_eq!((raw[0].0, raw[0].1), (FrameType::Block.code(), 2));
+        assert_eq!((raw[1].0, raw[1].1), (FrameType::End.code(), 2));
+        assert_end_ok(&raw[1].2, 1, 0, "complete");
+    }
+
+    #[test]
+    fn conn_current_retry_failure_after_rep_ends_the_stream_with_error() {
+        let (mut rig, sel, _need) = blocked_current_rig(current_data(5));
+        rig.current(2, sel.clone());
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.backend
+            .current
+            .insert(sel, Err(BackendError::Unavailable));
+        rig.conn.retry_pending(rig.now, &mut rig.hub, &rig.backend);
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 1);
+        assert_end_error(&raw[0].2, 0, 0, Code::Internal);
+    }
+
+    #[test]
+    fn conn_current_retried_block_is_from_the_newer_tick() {
+        let (mut rig, sel, _need) = blocked_current_rig(current_data(5));
+        rig.current(2, sel.clone());
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.backend.current.insert(sel, Ok(current_data(6)));
+        rig.conn.retry_pending(rig.now, &mut rig.hub, &rig.backend);
+        let raw = raw_frames(&rig.finish());
+        let block = decode_block_with(&raw[0].2, None).expect("block");
+        assert_eq!(block.header.seq, 6);
+        assert_end_ok(&raw[1].2, 1, 0, "complete");
+    }
+
+    #[test]
+    fn conn_current_uses_unified_bounds() {
+        let sel = selection(1);
+        let data = current_data(5);
+        let need = u32::try_from(
+            crate::tick::query_block(
+                data.clone(),
+                BlockBounds {
+                    max_rows: 4096,
+                    max_block_bytes: u32::MAX,
+                },
+            )
+            .expect("block")
+            .len(),
+        )
+        .expect("length");
+        let mut limits = Limits::for_level(Level::Observe);
+        limits.max_block_bytes = need;
+        limits.query_queue_bytes = need;
+        let mut rig = current_rig(limits, sel.clone(), data);
+        rig.current(2, sel);
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 3);
+        assert_end_ok(&raw[2].2, 1, 0, "complete");
+    }
+
+    #[test]
+    fn conn_subscribe_rep_shape_echoes_the_request() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.subscribe(2, selection(1), 2_000);
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 1);
+        assert_eq!((raw[0].0, raw[0].1), (FrameType::Rep.code(), 2));
+        let body = text(payload(&raw[0].2));
+        let rep = check_rep(body.as_bytes(), false).expect("REP");
+        assert!(rep.ok);
+        assert_eq!(member(&body, "result"), "{\"sub\":2,\"interval_ms\":2000}");
+        assert_eq!(rig.conn.subscriptions(), 1);
+        assert_eq!(rig.streams.subscribers(), 1);
+    }
+
+    #[test]
+    fn conn_subscribe_max_subscriptions_accepts_four_and_refuses_five() {
+        let mut rig = ready_bin(Level::Observe);
+        for corr in 2..6 {
+            rig.subscribe(corr, selection(u64::from(corr)), 1_000);
+        }
+        rig.subscribe(6, selection(6), 1_000);
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 5);
+        assert!(is_error(&raw[4].2, Code::Budget));
+        assert!(text(payload(&raw[4].2)).contains("\"pool\":\"subscriptions\""));
+        assert_eq!(rig.conn.subscriptions(), 4);
+        assert_eq!(rig.streams.subscribers(), 4);
+    }
+
+    #[test]
+    fn conn_subscribe_uid_and_probe_budgets_use_the_requesting_level() {
+        let mut uid_limits = Limits::for_level(Level::Observe);
+        uid_limits.max_uid_selections = 1;
+        let mut uid = Rig::with(Level::Observe, uid_limits);
+        uid.subscribe(2, selection(1), 1_000);
+        uid.subscribe(3, selection(2), 1_000);
+        let raw = raw_frames(&uid.finish());
+        assert!(is_error(&raw[1].2, Code::Budget));
+        assert!(text(payload(&raw[1].2)).contains("\"pool\":\"uid-selections\""));
+
+        let mut probe_limits = Limits::for_level(Level::Observe);
+        probe_limits.max_selections = 1;
+        let mut probe = Rig::with(Level::Observe, probe_limits);
+        probe.subscribe(2, selection(1), 1_000);
+        probe.subscribe(3, selection(2), 1_000);
+        let raw = raw_frames(&probe.finish());
+        assert!(is_error(&raw[1].2, Code::Budget));
+        assert!(text(payload(&raw[1].2)).contains("\"pool\":\"selections\""));
+    }
+
+    #[test]
+    fn conn_subscribe_does_no_block_or_backend_work_before_the_next_tick() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.subscribe(2, selection(1), 1_000);
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        assert!(rig.backend.current.is_empty());
+        assert_eq!(rig.hub.queued(rig.conn.id()), Pools::default());
+        assert_eq!(rig.streams.generation(crate::registry::SelId(1)), Some(0));
+    }
+
+    #[test]
+    fn conn_subscribe_first_block_is_dictionary_bearing_at_the_next_tick() {
+        let sel = selection(1);
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend.current.insert(sel.clone(), Ok(current_data(5)));
+        rig.subscribe(2, sel, 1_000);
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.streaming_tick();
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 1);
+        assert_eq!((raw[0].0, raw[0].1), (FrameType::Block.code(), 2));
+        let block = decode_block_with(&raw[0].2, None).expect("block");
+        assert!(block.dictionary.is_some());
+        let mut dicts = StreamDicts::new();
+        dicts.accept(2, &block).expect("first dictionary");
+        assert_eq!(block.header.seq, 5);
+    }
+
+    fn subscribe_then_tick(blocks_written: bool) -> Rig {
+        let sel = selection(1);
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend.current.insert(sel.clone(), Ok(current_data(5)));
+        rig.subscribe(2, sel, 1_000);
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.streaming_tick();
+        if blocks_written {
+            rig.pump(usize::MAX);
+            rig.out.clear();
+        }
+        rig
+    }
+
+    #[test]
+    fn conn_unsubscribe_replies_then_ends_with_unsubscribed() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.subscribe(2, selection(1), 1_000);
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.execute(3, Call::Unsubscribe(2));
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 2);
+        assert_eq!((raw[0].0, raw[0].1), (FrameType::Rep.code(), 3));
+        assert!(text(payload(&raw[0].2)).contains("\"result\":{}"));
+        assert_eq!((raw[1].0, raw[1].1), (FrameType::End.code(), 2));
+        assert_end_ok(&raw[1].2, 0, 0, "unsubscribed");
+        assert_eq!(rig.conn.subscriptions(), 0);
+        assert_eq!(rig.streams.subscribers(), 0);
+        assert_eq!(rig.streams.live_selections(), 0);
+    }
+
+    #[test]
+    fn conn_unsubscribe_unknown_zero_and_query_corr_are_not_found() {
+        let mut rig = ready_bin(Level::Observe);
+        let sel = selection(1);
+        rig.backend.current.insert(sel.clone(), Ok(current_data(5)));
+        rig.current(2, sel);
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        for (corr, sub) in [(3, 0), (4, 2), (5, 99)] {
+            rig.execute(corr, Call::Unsubscribe(sub));
+        }
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 3);
+        for frame in &raw {
+            assert_eq!(frame.0, FrameType::Rep.code());
+            assert!(is_error(&frame.2, Code::NotFound));
+        }
+    }
+
+    #[test]
+    fn conn_unsubscribe_queued_unpinned_tick_is_counted_in_dropped() {
+        let mut rig = subscribe_then_tick(false);
+        rig.execute(3, Call::Unsubscribe(2));
+        let raw = raw_frames(&rig.finish());
+        let ends: Vec<_> = raw
+            .iter()
+            .filter(|frame| frame.0 == FrameType::End.code())
+            .collect();
+        assert_eq!(ends.len(), 1);
+        assert_end_ok(&ends[0].2, 0, 1, "unsubscribed");
+        assert!(!raw.iter().any(|frame| frame.0 == FrameType::Block.code()));
+    }
+
+    #[test]
+    fn conn_unsubscribe_pinned_tick_is_counted_in_blocks() {
+        let mut rig = subscribe_then_tick(true);
+        rig.execute(3, Call::Unsubscribe(2));
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw[0].0, FrameType::Rep.code());
+        assert_eq!(raw[1].0, FrameType::End.code());
+        assert_end_ok(&raw[1].2, 1, 0, "unsubscribed");
+    }
+
+    #[test]
+    fn conn_unsubscribe_is_not_found_in_json_mode() {
+        let mut rig = ready_json(Level::Observe);
+        rig.execute(3, Call::Unsubscribe(2));
+        let out = text(&rig.finish());
+        assert!(out.contains("\"corr\":3"));
+        assert!(out.contains("\"code\":\"not-found\""));
+    }
+
+    #[test]
+    fn conn_corr_reuse_after_end_ok_is_legal() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.subscribe(2, selection(1), 1_000);
+        rig.execute(3, Call::Unsubscribe(2));
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.subscribe(2, selection(2), 1_000);
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 1);
+        assert_eq!((raw[0].0, raw[0].1), (FrameType::Rep.code(), 2));
+        assert_eq!(rig.conn.subscriptions(), 1);
+        assert_eq!(rig.streams.subscribers(), 1);
+    }
+
+    #[test]
+    fn conn_corr_in_use_subscription_is_fatal() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.subscribe(2, selection(1), 1_000);
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.send(&raw_req(2, "{"));
+        assert!(rig.conn.is_closed());
+        assert_eq!(rig.conn.close_code(), Some(Code::BadFrame));
+        assert_eq!(
+            text(&rig.finish()),
+            text(&rep_error(0, Code::BadFrame, &Detail::Empty))
+        );
+    }
+
+    #[test]
+    fn conn_corr_in_use_pending_is_fatal() {
+        let (mut rig, sel, _need) = blocked_current_rig(current_data(5));
+        rig.current(2, sel);
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.send(&raw_req(2, "{"));
+        assert!(rig.conn.is_closed());
+        assert_eq!(rig.conn.close_code(), Some(Code::BadFrame));
+        assert_eq!(
+            text(&rig.finish()),
+            text(&rep_error(0, Code::BadFrame, &Detail::Empty))
+        );
+    }
+
+    #[test]
+    fn conn_too_many_requests_refuses_block_verbs_but_spares_status() {
+        let (mut rig, sel, _need) = blocked_current_rig(current_data(5));
+        for corr in 2..6 {
+            rig.current(corr, sel.clone());
+        }
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        let current = String::from(
+            "{\"verb\":\"current\",\"args\":{\"selection\":{\"entities\":[{\"inc\":1}],\
+             \"metrics\":[\"m\"]}}}",
+        );
+        let before = rig.conn.outstanding();
+        rig.send(&raw_req(6, &current));
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(before, 4);
+        assert_eq!(rig.conn.state(), State::Ready);
+        assert!(raw
+            .iter()
+            .any(|frame| is_error(&frame.2, Code::TooManyRequests)));
+
+        rig.out.clear();
+        rig.send(&req(7, "status"));
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 1);
+        let body = text(payload(&raw[0].2));
+        assert!(check_rep(body.as_bytes(), false).expect("status").ok);
+
+        rig.out.clear();
+        rig.execute(8, Call::Unsubscribe(99));
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 1);
+        assert!(is_error(&raw[0].2, Code::NotFound));
+        assert_eq!(rig.conn.state(), State::Ready);
+
+        let one = rig.conn.pending.keys().next().copied().expect("pending");
+        rig.conn.pending.remove(&one);
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.send(&raw_req(6, &current));
+        let raw = raw_frames(&rig.finish());
+        assert!(raw
+            .iter()
+            .any(|frame| is_error(&frame.2, Code::UnknownVerb)));
+    }
+
+    #[test]
+    fn conn_closed_stops_every_push_path() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.subscribe(2, selection(1), 1_000);
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.conn.close_for(Code::SlowClient, &mut rig.hub);
+        let subscribers = rig.streams.subscribers();
+        let before = rig.hub.queued(rig.conn.id());
+        rig.conn
+            .end_subscription(2, Code::Internal, &Detail::Empty, rig.now, &mut rig.hub);
+        assert_eq!(rig.conn.subscriptions(), 0);
+        assert_eq!(rig.streams.subscribers(), subscribers);
+        assert_eq!(rig.hub.queued(rig.conn.id()), before);
+        rig.execute(3, Call::Status);
+        rig.current(4, selection(2));
+        rig.subscribe(5, selection(3), 1_000);
+        rig.execute(6, Call::Unsubscribe(2));
+        rig.conn.retry_pending(rig.now, &mut rig.hub, &rig.backend);
+        let sel = selection(1);
+        let tick = crate::tick::LiveTick::new(
+            1,
+            None,
+            Arc::from(vec![0u8; 200]),
+            Arc::from(Vec::<u8>::new()),
+        );
+        rig.conn.push_tick(2, &tick, rig.now, &mut rig.hub);
+        assert_eq!(rig.hub.queued(rig.conn.id()), before);
+        assert_eq!(rig.streams.subscribers(), subscribers);
+        let _ = sel;
+    }
+
+    #[test]
+    fn conn_draining_ends_each_subscription_in_corr_order_with_exact_counts() {
+        let sel = selection(1);
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend.current.insert(sel.clone(), Ok(current_data(5)));
+        rig.subscribe(2, sel.clone(), 1_000);
+        rig.subscribe(3, sel, 1_000);
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.streaming_tick();
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.eof();
+        assert_eq!(rig.conn.state(), State::Draining);
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 2);
+        assert_eq!((raw[0].0, raw[0].1), (FrameType::End.code(), 2));
+        assert_eq!((raw[1].0, raw[1].1), (FrameType::End.code(), 3));
+        assert_end_ok(&raw[0].2, 1, 0, "client-eof");
+        assert_end_ok(&raw[1].2, 1, 0, "client-eof");
+        assert!(rig.conn.is_closed());
+        assert_eq!(rig.conn.close_code(), None);
+    }
+
+    #[test]
+    fn conn_draining_pending_finishes_then_silently_closes() {
+        let (mut rig, sel, _need) = blocked_current_rig(current_data(5));
+        rig.current(2, sel);
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.eof();
+        assert_eq!(rig.conn.state(), State::Draining);
+        assert!(rig.conn.has_pending());
+        rig.conn.retry_pending(rig.now, &mut rig.hub, &rig.backend);
+        assert!(!rig.conn.has_pending());
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 2);
+        assert_eq!(raw[0].0, FrameType::Block.code());
+        assert_end_ok(&raw[1].2, 1, 0, "complete");
+        assert!(rig.conn.is_closed());
+        assert_eq!(rig.conn.close_code(), None);
+        assert_eq!(rig.conn.take_final(), None);
+    }
+
+    #[test]
+    fn conn_draining_closes_only_when_pending_and_queue_are_empty() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.subscribe(2, selection(1), 1_000);
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.eof();
+        assert_eq!(rig.conn.state(), State::Draining);
+        rig.pump(1);
+        assert_eq!(rig.conn.state(), State::Draining);
+        rig.pump(usize::MAX);
+        assert!(rig.conn.is_closed());
+    }
+
+    #[test]
+    fn conn_idle_is_not_armed_with_a_subscription_or_a_pending_request() {
+        let sel = selection(1);
+        let mut subscribed = ready_bin(Level::Observe);
+        subscribed.subscribe(2, sel.clone(), 1_000);
+        subscribed.pump(usize::MAX);
+        subscribed.tick(300_001 * MS);
+        assert!(!subscribed.conn.is_closed());
+
+        let (mut pending, sel, _need) = blocked_current_rig(current_data(5));
+        pending.current(2, sel);
+        pending.pump(usize::MAX);
+        pending.tick(300_001 * MS);
+        assert!(!pending.conn.is_closed());
+    }
+
+    #[test]
+    fn conn_idle_is_armed_again_after_unsubscribe() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.subscribe(2, selection(1), 1_000);
+        rig.execute(3, Call::Unsubscribe(2));
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.tick(300_001 * MS);
+        assert!(rig.conn.is_closed());
+        assert_eq!(rig.conn.close_code(), Some(Code::Idle));
+    }
+
+    #[test]
+    fn conn_server_end_budget_rows_and_internal_are_end_errors() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.subscribe(2, selection(1), 1_000);
+        rig.subscribe(3, selection(2), 1_000);
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.conn.end_subscription(
+            2,
+            Code::Budget,
+            &Detail::Pool(crate::codes::Pool::Rows),
+            rig.now,
+            &mut rig.hub,
+        );
+        rig.conn
+            .end_subscription(3, Code::Internal, &Detail::Empty, rig.now, &mut rig.hub);
+        let raw = raw_frames(&rig.finish());
+        assert_eq!(raw.len(), 2);
+        assert_end_error(&raw[0].2, 0, 0, Code::Budget);
+        assert!(text(payload(&raw[0].2)).contains("\"pool\":\"rows\""));
+        assert_end_error(&raw[1].2, 0, 0, Code::Internal);
+        assert_eq!(rig.conn.subscriptions(), 0);
+    }
+
+    #[test]
+    fn conn_server_end_unknown_corr_is_ignored() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.conn
+            .end_subscription(9, Code::Internal, &Detail::Empty, rig.now, &mut rig.hub);
+        assert!(rig.finish().is_empty());
+        assert!(!rig.conn.is_closed());
     }
 
     #[test]
@@ -1565,6 +2611,8 @@ mod tests {
         let limits = member(&result, "limits");
         let announced = Limits::for_level(Level::Observe).hello_json();
         assert_eq!(pairs(&limits), pairs(&announced));
+        assert_eq!(member(&limits, "idle_ms"), "300000");
+        assert_eq!(member(&limits, "hello_deadline_ms"), "5000");
         let names = keys_of(&limits);
         assert_eq!(names.len(), 19);
         assert_eq!(names.first().map(String::as_str), Some("max_frame_bytes"));
@@ -1598,7 +2646,7 @@ mod tests {
         assert_eq!(pairs(&member(&result, "tick")), expected);
         let expected = want(&[("observe", "2"), ("operator", "0"), ("observer", "1")]);
         assert_eq!(pairs(&member(&result, "clients")), expected);
-        let expected = want(&[("queued_bytes", "1300"), ("dropped_blocks", "5")]);
+        let expected = want(&[("queued_bytes", "1300"), ("dropped_blocks", "0")]);
         assert_eq!(pairs(&member(&result, "queues")), expected);
         let tiers = flat_objects(&member(&result, "tiers"));
         assert_eq!(tiers.len(), 2);
@@ -1618,6 +2666,57 @@ mod tests {
             ("cap_bytes", "8388608"),
         ]);
         assert_eq!(pairs(&tiers[1]), warm);
+    }
+
+    fn status_result_from(out: &[u8]) -> String {
+        let raw = raw_frames(out);
+        let status = raw
+            .iter()
+            .find(|frame| frame.0 == FrameType::Rep.code())
+            .expect("status REP");
+        let body = text(payload(&status.2));
+        let rep = check_rep(body.as_bytes(), false).expect("status REP");
+        assert!(rep.ok);
+        member(&body, "result")
+    }
+
+    #[test]
+    fn conn_status_tests_rewritten_ignore_the_backends_drop_count() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend = rich_backend();
+        assert_eq!(rig.backend.status.dropped_blocks, 5);
+        rig.send(&req(2, "status"));
+        let result = status_result_from(&rig.finish());
+        assert_eq!(
+            pairs(&member(&result, "queues")),
+            want(&[("queued_bytes", "0"), ("dropped_blocks", "0")])
+        );
+    }
+
+    #[test]
+    fn conn_status_dropped_blocks_from_hub_is_the_counted_total() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend = rich_backend();
+        let id = rig.conn.id();
+        let live: Arc<[u8]> = Arc::from(control_frame(FrameType::Evt, 99, &[b'x'; 80]));
+        let len = live.len();
+        for index in 0..6 {
+            let tick = FrameForm(Arc::clone(&live));
+            let outcome = rig.hub.push_live(id, 9, &tick, rig.now);
+            if index == 0 {
+                assert_eq!(outcome, LiveOutcome::Queued);
+            } else {
+                assert_eq!(outcome, LiveOutcome::Coalesced);
+            }
+        }
+        assert_eq!(rig.hub.dropped_blocks(), 5);
+        rig.send(&req(2, "status"));
+        let result = status_result_from(&rig.finish());
+        let queued = len.to_string();
+        assert_eq!(
+            pairs(&member(&result, "queues")),
+            want(&[("queued_bytes", queued.as_str()), ("dropped_blocks", "5")])
+        );
     }
 
     fn xorshift(state: &mut u64) -> u64 {
@@ -1643,6 +2742,27 @@ mod tests {
     #[test]
     fn conn_hostile_2000_runs_stay_bounded_and_always_close() {
         let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut coverage = OracleCoverage::default();
+        {
+            let mut alone = Rig::new(Level::Observe);
+            alone.send(&[b'H', b'O', b'B', 1, 2, 0, 0, 0]);
+            closed_oracle(&mut alone, 0, 0, &mut coverage);
+        }
+        {
+            let mut owed = Rig::new(Level::Observe);
+            let mut input = client_prefix(1);
+            input.extend_from_slice(&[12, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0]);
+            owed.send(&input);
+            closed_oracle(&mut owed, 0, 0, &mut coverage);
+        }
+        {
+            let mut partial = ready_bin(Level::Observe);
+            let written_base = partial.conn.bytes_written();
+            partial.send(&req(2, "status"));
+            partial.pump(3);
+            partial.conn.close_for(Code::SlowClient, &mut partial.hub);
+            closed_oracle(&mut partial, 0, written_base, &mut coverage);
+        }
         let levels = [Level::Observe, Level::Operator, Level::Observer];
         for run in 0..2_000usize {
             let mut rig = Rig::new(levels[run % 3]);
@@ -1688,13 +2808,95 @@ mod tests {
             rig.tick(400_000 * MS);
             rig.tick(400_000 * MS);
             assert!(rig.conn.is_closed(), "run {run} left the connection open");
-            closed_oracle(&mut rig, run);
+            closed_oracle(&mut rig, run, 0, &mut coverage);
         }
+        assert!(coverage.owed > 0, "{coverage:?}");
+        assert!(coverage.alone > 0, "{coverage:?}");
+        assert!(coverage.partial > 0, "{coverage:?}");
+    }
+
+    #[test]
+    fn conn_hostile_2000_stream_operations_keep_registry_and_hub_exact() {
+        let mut seed = 0xD1B5_4A32_D192_ED03u64;
+        for run in 0..2_000usize {
+            let mut rig = ready_bin(Level::Observe);
+            for inc in 1..=4 {
+                rig.backend
+                    .current
+                    .insert(selection(inc), Ok(current_data(inc)));
+            }
+            for _ in 0..32 {
+                let pick = xorshift(&mut seed) % 9;
+                match pick {
+                    0 => {
+                        let corr = 2 + u32::try_from(xorshift(&mut seed) % 4).unwrap_or(0);
+                        let inc = 1 + xorshift(&mut seed) % 4;
+                        rig.current(corr, selection(inc));
+                    }
+                    1 => {
+                        let corr = 10 + u32::try_from(xorshift(&mut seed) % 4).unwrap_or(0);
+                        let inc = 1 + xorshift(&mut seed) % 4;
+                        let interval =
+                            1_000 * (1 + u32::try_from(xorshift(&mut seed) % 3).unwrap_or(0));
+                        rig.subscribe(corr, selection(inc), interval);
+                    }
+                    2 => {
+                        let request = 20 + u32::try_from(xorshift(&mut seed) % 4).unwrap_or(0);
+                        let sub = 10 + u32::try_from(xorshift(&mut seed) % 4).unwrap_or(0);
+                        rig.execute(request, Call::Unsubscribe(sub));
+                    }
+                    3 => rig.streaming_tick(),
+                    4 => {
+                        let max = usize::try_from(xorshift(&mut seed) % 600).unwrap_or(0);
+                        rig.pump(max);
+                    }
+                    5 => rig.conn.retry_pending(rig.now, &mut rig.hub, &rig.backend),
+                    6 => {
+                        let sub = 10 + u32::try_from(xorshift(&mut seed) % 4).unwrap_or(0);
+                        let (code, detail) = if xorshift(&mut seed).is_multiple_of(2) {
+                            (Code::Budget, Detail::Pool(crate::codes::Pool::Rows))
+                        } else {
+                            (Code::Internal, Detail::Empty)
+                        };
+                        rig.conn
+                            .end_subscription(sub, code, &detail, rig.now, &mut rig.hub);
+                    }
+                    7 => rig.execute(30, Call::Status),
+                    _ => {
+                        let ns = xorshift(&mut seed) % (2_000 * MS);
+                        rig.tick(ns);
+                    }
+                }
+                bounded(&rig);
+                if rig.conn.is_closed() {
+                    break;
+                }
+            }
+            if !rig.conn.is_closed() {
+                rig.conn.close_for(Code::ShuttingDown, &mut rig.hub);
+            }
+            let id = rig.conn.id();
+            let uid = rig.conn.peer().uid;
+            let subscribers = rig.streams.subscribers();
+            assert_eq!(rig.streams.release_conn(id), subscribers);
+            rig.hub.remove(id);
+            assert_eq!(rig.streams.live_selections(), 0, "run {run}");
+            assert_eq!(rig.streams.subscribers(), 0, "run {run}");
+            assert_eq!(rig.streams.uid_selections(uid), 0, "run {run}");
+            assert_eq!(rig.hub.queued(id), Pools::default(), "run {run}");
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct OracleCoverage {
+        owed: usize,
+        alone: usize,
+        partial: usize,
     }
 
     /// What must hold of a closed connection (WIRE.md section 5.4 `Closing`, design R1, R2), and
     /// that nothing more happens to it after the close.
-    fn closed_oracle(rig: &mut Rig, run: usize) {
+    fn closed_oracle(rig: &mut Rig, run: usize, written_base: u64, coverage: &mut OracleCoverage) {
         let id = rig.conn.id();
         let code = rig.conn.close_code();
         assert!(code.is_none_or(Code::fatal), "run {run}: {code:?}");
@@ -1703,6 +2905,9 @@ mod tests {
         assert!(at_close.control <= 8 * 1024, "run {run}");
         let partial = rig.hub.head_partial(id);
         let (written, queued) = (rig.conn.bytes_written(), rig.conn.prefix_queued);
+        let at_oracle = written.saturating_sub(written_base);
+        assert_eq!(at_oracle, u64::try_from(rig.out.len()).unwrap_or(u64::MAX));
+        coverage.partial += usize::from(partial);
         let last = rig.conn.take_final();
         if partial {
             assert_eq!(last, None, "run {run}: a partly written head");
@@ -1712,6 +2917,8 @@ mod tests {
             let prefixed = bytes.starts_with(b"HOB\x01");
             let owed = queued && written == 0;
             let alone = !queued && code == Some(Code::UnsupportedVersion) && bytes.len() == 8;
+            coverage.owed += usize::from(owed);
+            coverage.alone += usize::from(alone);
             assert_eq!(prefixed, owed || alone, "run {run}: the prefix guarantee");
             if owed {
                 let minor = rig.conn.minor();

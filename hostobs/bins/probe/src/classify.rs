@@ -234,9 +234,6 @@ fn verb_gate(query: &Query<'_>, corr: u32, name: &[u8]) -> Result<&'static Verb,
     if !binary && verb.shape == Shape::Block {
         return Err(refuse(Code::BinaryRequired, corr));
     }
-    if !verb.served {
-        return Err(refuse(Code::UnknownVerb, corr));
-    }
     Ok(verb)
 }
 
@@ -311,6 +308,18 @@ fn call_after_served(
     call_of(query, corr, verb, text, facts)
 }
 
+/// Step 10 in P5b-2c: the cap is observable through `Conn::on_bytes` while the final
+/// `served` flip belongs to P5b-2d. Once 2d serves the verbs this remains the same order.
+fn outstanding_refusal(
+    query: &Query<'_>,
+    corr: u32,
+    verb: &Verb,
+    facts: &ConnFacts,
+) -> Option<Refusal> {
+    (query.mode == Mode::Binary && facts.outstanding_full && verb.shape == Shape::Block)
+        .then(|| refuse(Code::TooManyRequests, corr))
+}
+
 /// Classify one request (module doc: the precedence list).
 ///
 /// # Errors
@@ -349,6 +358,12 @@ pub fn classify_with(query: &Query<'_>, facts: &ConnFacts) -> Result<Dispatch, R
     };
     let name = query.payload.get(req.verb.clone()).unwrap_or_default();
     let verb = verb_gate(query, corr, name)?;
+    if let Some(refusal) = outstanding_refusal(query, corr, verb, facts) {
+        return Err(refusal);
+    }
+    if !verb.served {
+        return Err(refuse(Code::UnknownVerb, corr));
+    }
     let text = query.payload.get(req.args.clone()).unwrap_or_default();
     let call = call_after_served(query, corr, verb, text, facts)?;
     Ok(Dispatch { corr, call })
