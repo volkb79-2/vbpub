@@ -4,6 +4,8 @@ ASSAY_DIR = ".assay"
 PLAN_IDS_DIR = "fleetd-plan"
 PROGRESS_PREFIX = "progress-"
 PROGRESS_SUFFIX = ".jsonl"
+# Stands for a job name in a path template; job names never contain "@".
+NAME_PLACEHOLDER = "@NAME@"
 
 
 def project_relative(project: str, path: str) -> str:

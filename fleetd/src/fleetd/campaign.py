@@ -105,6 +105,16 @@ def _job_spec(job: Mapping[str, Any]) -> JobSpec:
     return spec
 
 
+def _probe_settled(job: Mapping[str, Any]) -> bool:
+    """True when another probe cannot change this job's record.
+
+    A job that ended and whose progress window is closed (``progress_end_offset``
+    is only written when the host reports it exited) has nothing left to read.
+    One that ended without a closed window, or is still running, is probed.
+    """
+    return job["status"] in {"COMPLETE", "EXIT", "FAILED", "STALLED"} and job.get("progress_end_offset") is not None
+
+
 def _event_key(event: Mapping[str, object], host: str, job: str) -> tuple[float, str, str]:
     emitted = event.get("emitted_at")
     try:
@@ -545,6 +555,9 @@ class CampaignManager:
         job_rows: Mapping[str, dict[str, Any]],
         now: float,
     ) -> None:
+        # Finished jobs are not probed: the probe is one remote argument capped at
+        # 128 KiB and a long campaign accumulates settled batches.
+        job_rows = {name: job for name, job in job_rows.items() if not _probe_settled(job)}
         wanted = {name: _job_spec(job) for name, job in job_rows.items()}
         rows = self.runner.probe(host_id, wanted)
         prior_status = host_state["status"]
