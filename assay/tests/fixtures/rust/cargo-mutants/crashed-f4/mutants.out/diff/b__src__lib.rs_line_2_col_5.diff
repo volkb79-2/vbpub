@@ -1,0 +1,14 @@
+--- b/src/lib.rs
++++ replace quad -> i32 with 0
+@@ -1,10 +1,10 @@
+ pub fn quad(x: i32) -> i32 {
+-    a::double(a::double(x))
++    0 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     #[test]
+     fn quad_is_four_times() {
+         assert_eq!(super::quad(3), 12);
+     }

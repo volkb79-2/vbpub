@@ -1,0 +1,290 @@
+[
+  {
+    "diff": "--- src/lib.rs\n+++ replace is_even -> bool with true\n@@ -6,17 +6,17 @@\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n     a + b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n-    n % 2 == 0 && n < 1000\n+    true /* ~ changed by cargo-mutants ~ */\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "is_even",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 12
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:14:5: replace is_even -> bool with true",
+    "package": "r3a",
+    "replacement": "true",
+    "span": {
+      "end": {
+        "column": 27,
+        "line": 14
+      },
+      "start": {
+        "column": 5,
+        "line": 14
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace is_even -> bool with false\n@@ -6,17 +6,17 @@\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n     a + b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n-    n % 2 == 0 && n < 1000\n+    false /* ~ changed by cargo-mutants ~ */\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "is_even",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 12
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:14:5: replace is_even -> bool with false",
+    "package": "r3a",
+    "replacement": "false",
+    "span": {
+      "end": {
+        "column": 27,
+        "line": 14
+      },
+      "start": {
+        "column": 5,
+        "line": 14
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace && with || in is_even\n@@ -6,17 +6,17 @@\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n     a + b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n-    n % 2 == 0 && n < 1000\n+    n % 2 == 0 || /* ~ changed by cargo-mutants ~ */ n < 1000\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "is_even",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 12
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:14:16: replace && with || in is_even",
+    "package": "r3a",
+    "replacement": "||",
+    "span": {
+      "end": {
+        "column": 18,
+        "line": 14
+      },
+      "start": {
+        "column": 16,
+        "line": 14
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace == with != in is_even\n@@ -6,17 +6,17 @@\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n     a + b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n-    n % 2 == 0 && n < 1000\n+    n % 2 != /* ~ changed by cargo-mutants ~ */ 0 && n < 1000\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "is_even",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 12
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:14:11: replace == with != in is_even",
+    "package": "r3a",
+    "replacement": "!=",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 14
+      },
+      "start": {
+        "column": 11,
+        "line": 14
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace % with / in is_even\n@@ -6,17 +6,17 @@\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n     a + b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n-    n % 2 == 0 && n < 1000\n+    n / /* ~ changed by cargo-mutants ~ */ 2 == 0 && n < 1000\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "is_even",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 12
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:14:7: replace % with / in is_even",
+    "package": "r3a",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 8,
+        "line": 14
+      },
+      "start": {
+        "column": 7,
+        "line": 14
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace % with + in is_even\n@@ -6,17 +6,17 @@\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n     a + b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n-    n % 2 == 0 && n < 1000\n+    n + /* ~ changed by cargo-mutants ~ */ 2 == 0 && n < 1000\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "is_even",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 12
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:14:7: replace % with + in is_even",
+    "package": "r3a",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 8,
+        "line": 14
+      },
+      "start": {
+        "column": 7,
+        "line": 14
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace < with == in is_even\n@@ -6,17 +6,17 @@\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n     a + b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n-    n % 2 == 0 && n < 1000\n+    n % 2 == 0 && n == /* ~ changed by cargo-mutants ~ */ 1000\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "is_even",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 12
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:14:21: replace < with == in is_even",
+    "package": "r3a",
+    "replacement": "==",
+    "span": {
+      "end": {
+        "column": 22,
+        "line": 14
+      },
+      "start": {
+        "column": 21,
+        "line": 14
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace < with > in is_even\n@@ -6,17 +6,17 @@\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n     a + b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n-    n % 2 == 0 && n < 1000\n+    n % 2 == 0 && n > /* ~ changed by cargo-mutants ~ */ 1000\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "is_even",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 12
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:14:21: replace < with > in is_even",
+    "package": "r3a",
+    "replacement": ">",
+    "span": {
+      "end": {
+        "column": 22,
+        "line": 14
+      },
+      "start": {
+        "column": 21,
+        "line": 14
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace < with <= in is_even\n@@ -6,17 +6,17 @@\n \n /// Caught: the tests pin the sum.\n pub fn add(a: i32, b: i32) -> i32 {\n     a + b\n }\n \n /// Missed: no test calls it.\n pub fn is_even(n: u32) -> bool {\n-    n % 2 == 0 && n < 1000\n+    n % 2 == 0 && n <= /* ~ changed by cargo-mutants ~ */ 1000\n }\n \n /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.\n pub fn make(id: u32) -> Token {\n     Token { id }\n }\n \n /// Timeout: `i += 1` -> `i *= 1` never terminates.\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "is_even",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 12
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:14:21: replace < with <= in is_even",
+    "package": "r3a",
+    "replacement": "<=",
+    "span": {
+      "end": {
+        "column": 22,
+        "line": 14
+      },
+      "start": {
+        "column": 21,
+        "line": 14
+      }
+    }
+  }
+]

@@ -1,0 +1,14 @@
+--- src/lib.rs
++++ replace + with - in uni
+@@ -1,10 +1,10 @@
+ pub fn uni(a: usize) -> usize {
+-    let s = "héllo→"; s.len() + a
++    let s = "héllo→"; s.len() - /* ~ changed by cargo-mutants ~ */ a
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     #[test]
+     fn t() {
+         assert_eq!(super::uni(1), 10);
+     }

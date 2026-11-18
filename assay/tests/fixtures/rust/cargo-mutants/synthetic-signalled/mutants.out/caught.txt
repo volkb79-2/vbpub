@@ -1,0 +1,16 @@
+src/lib.rs:9:5: replace add -> i32 with 0
+src/lib.rs:9:5: replace add -> i32 with 1
+src/lib.rs:9:5: replace add -> i32 with -1
+src/lib.rs:9:7: replace + with - in add
+src/lib.rs:9:7: replace + with * in add
+src/lib.rs:24:5: replace spin -> u32 with 0
+src/lib.rs:24:5: replace spin -> u32 with 1
+src/lib.rs:25:13: replace < with == in spin
+src/lib.rs:25:13: replace < with > in spin
+src/lib.rs:25:13: replace < with <= in spin
+src/lib.rs:26:11: replace += with -= in spin
+src/lib.rs:33:5: replace pick -> u32 with 0
+src/lib.rs:33:5: replace pick -> u32 with 1
+src/lib.rs:34:20: replace match guard v > 10 with false in pick
+src/lib.rs:34:22: replace > with == in pick
+src/lib.rs:34:22: replace > with < in pick

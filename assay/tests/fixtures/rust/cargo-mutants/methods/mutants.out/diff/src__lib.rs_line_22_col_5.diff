@@ -1,0 +1,25 @@
+--- src/lib.rs
++++ replace pick -> X with Default::default()
+@@ -14,21 +14,17 @@
+ 
+ impl T for S {
+     fn triple(&self) -> i32 {
+         self.n * 3
+     }
+ }
+ 
+ pub fn pick<X: Copy>(a: X, _b: X, first: bool) -> X {
+-    if first {
+-        a
+-    } else {
+-        _b
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]
+     fn all() {
