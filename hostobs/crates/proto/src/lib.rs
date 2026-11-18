@@ -45,6 +45,10 @@
 //!   `ConnTimers`; WIRE.md §5.2-§5.4). Time is injected, a frame's age runs from its first
 //!   byte, a frame completed before an error is returned with it, and a declared length is
 //!   never an allocation size.
+//! - **One send hub owns every outgoing queue** ([`hub`]: `SendHub`; WIRE.md §5.3). Three
+//!   pools (Live, Query, control), `corr` and `dropped` stamped into a private prefix when
+//!   an entry is pinned, one unpinned tick per stream, shedding in the order connection,
+//!   uid, global, and the two slow-client closes, all against an injected clock.
 //! - **No panic on untrusted bytes** (this crate forbids `unsafe`; every length is
 //!   checked before it is used, every arithmetic operation is checked). A decode returns
 //!   either a complete validated value or one typed error — never a partial success and
@@ -86,6 +90,7 @@
 pub mod dict;
 pub mod error;
 pub mod frame;
+pub mod hub;
 pub mod quality;
 pub mod read;
 pub mod stream;
