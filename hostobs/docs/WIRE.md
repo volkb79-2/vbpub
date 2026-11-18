@@ -618,7 +618,13 @@ value during decode or validation** (C-speed O(n) work remains and is expected):
 `max(q)`, 79-85 µs vs 178-183 µs per 1,000-row frame); row references are `max(ents) < len(dict)` and
 `not any(map(kinds.__getitem__, ents))` with a per-generation `bytes` kind map (0 = entity); the
 stream keeps a `memoryview` of the previous validated rows body (no copy) and a byte-identical rows
-body (C `==`) skips both. Dictionary decoding is a per-entry loop and runs once per generation; a
+body (C `==`) skips both. **Retention:** that view pins the previous frame's whole `bytearray`, so a
+stream retains at most one previous frame, and only one of `len ≤ 1 MiB` (SP-4 frames are ≤ 120 KB); a
+larger frame is not retained and its successor validates in full. The view is released when the next
+frame of the stream validates, when the stream ends and on any decoder error, so a client holds ≤ 1 MiB
+of retained frames per live stream (≤ 4 MiB per connection at `max_subscriptions` 4). A digest instead
+of the view was rejected: it puts a hash of every rows body on the measured path and turns the skip
+into "probably equal". Dictionary decoding is a per-entry loop and runs once per generation; a
 dictionary body byte-identical to a held one reuses it.
 
 7.5 **Integers.** u64 counters are read only through `cast('Q')`, `array('Q')` or `struct` `Q`, and
@@ -642,11 +648,15 @@ steady-state 8,272 / 80,240 B and dictionary-bearing 12,360 / 120,328 B frames f
 `docs/SP-4-WIRE-SIZES.md`; every measured decode alternates **two distinct rows bodies** so the `==`
 skip never fires and row validation runs), published in `docs/SP-4-WIRE-SIZES.md` with the gate
 image and `sys.version` named. **Python version rule:** the gate runs on the CPython of the P3 gate
-image, pinned to **CPython 3.14** (measured 3.14.10); the absolute memory bound below is re-measured
-and re-set in this table in the same change that moves the image to another CPython minor.
+image, pinned to **CPython 3.14.10** (the patch level the bounds were measured on); the absolute
+memory bound below is re-measured and re-set in this table in the same change that moves the gate
+image to any other CPython version, **a patch-level change included** (3.14.10 → 3.14.11 too), and the
+growth and line-count gates are re-run in that change.
 
-Model measurements behind the thresholds (this design's decoder of §7.4 written stdlib-only,
-`nice -n 19 python3 -I`, CPython 3.14.10, devcontainer, 2026-11-18; times are min of 7 × 200 decodes,
+Model measurements behind the thresholds (this design's decoder of §7.4 written stdlib-only as
+`bench2.py`; the `bytes()` row is the earlier `bench.py`, which copied the previous rows body; both are
+P1 design scratch, not checked in: P3 re-measures with its real decoder and publishes the numbers in
+`docs/SP-4-WIRE-SIZES.md`; `nice -n 19 python3 -I`, CPython 3.14.10, devcontainer, 2026-11-18; times are min of 7 × 200 decodes,
 two runs; peaks are `tracemalloc` peaks of one decode with the frame allocated before `start()`;
 lines = `sys.settrace` `line` events in all frames during one decode):
 
@@ -657,7 +667,7 @@ lines = `sys.settrace` `line` events in all frames during one decode):
 | distinct, quality via `max(q)` | 23.2-25.4 | 178-183 | 7.21-7.69 | 6,009 / 6,297 | 141 / 141 |
 | defect: per-value Python loop on quality | 25.5-28.5 | 202-212 | 7.45-7.93 | 6,009 / 6,297 | 1,733 / 16,133 |
 | defect: `list()` of every column | 19.8-20.5 | 242-251 | 11.81-12.65 | 7,177 / 38,313 | 149 / 149 |
-| (variant copying the previous rows body with `bytes()`) | — | — | — | 6,964 / 16,252 | — |
+| (`bench.py`: distinct, copying the previous rows body with `bytes()`) | — | — | — | 6,964 / 16,252 | — |
 
 The CPU ratio cannot gate: the correct path (5.6-5.7) and a per-value loop (7.5-7.9) are too close for
 a load-independent threshold, and a legitimate C-speed path (`max(q)`) already sits at 7.2-7.7.
@@ -667,7 +677,7 @@ Bytecode counts and memory separate them deterministically:
 |---|---|---|
 | `sys.settrace` `line` events during `decode()` + validation | equal at 100 and 1,000 rows | any per-value Python loop (model: 141 = 141; a loop: 1,733 vs 16,133) |
 | `tracemalloc` peak of `decode()` (frame allocated before `start()`) | 1,000-row peak − 100-row peak ≤ 4 KiB (model 2,088 B) | per-row objects or copies (`list()`: 31,136 B; a rows copy: 9,288 B) |
-| same, absolute 1,000-row peak, CPython 3.14 only | ≤ 16 KiB (model 8,219 B) | fixed-cost bloat |
+| same, absolute 1,000-row peak, CPython 3.14.10 only | ≤ 16 KiB (model 8,219 B) | fixed-cost bloat |
 | CPU absolute and ratio, steady state and dictionary-bearing | published, not gated (estate: no load-dependent verdict) | trend evidence; target ≤ 250 µs at 1,000 cgroups |
 | `measured_list()` of one 1,000-row column | published | materialisation is O(n) by definition |
 
@@ -909,7 +919,7 @@ clock.
 | D-W12 | Error codes are kebab-case (`bad-request`, not `bad_request`) | every other code in plan and codec is kebab-case |
 | D-W13 | JSON mode refuses block verbs (`binary-required`) | a second JSON rendering of blocks would be a second codec to keep conformant |
 | D-W14 | Python reads each frame into its own exact-size `bytearray(len)` after the header validates against the client limit (16 MiB), the one exception to "never allocate by `len`"; the §5.2 machine is otherwise shared, with an injected clock and a deadline-based `settimeout` | decoded views stay valid as long as the caller holds the block; the only peer is the probe chosen by socket path; one allocation per frame is cheap at ≤ 120 KB/s |
-| D-W15 | Python gates are deterministic: equal `sys.settrace` line counts at 100 and 1,000 rows, and `tracemalloc` peak growth ≤ 4 KiB plus an absolute ≤ 16 KiB on pinned CPython 3.14; CPU ratio and absolute times are published only | measured (§7.8): the ratio of the correct path (5.6-5.7) and of a per-value loop (7.5-7.9) are too close to gate; line counts (141 = 141 vs 1,733 / 16,133) and memory growth (2,088 B vs 31,136 B for `list()`) separate them without load dependence |
+| D-W15 | Python gates are deterministic: equal `sys.settrace` line counts at 100 and 1,000 rows, and `tracemalloc` peak growth ≤ 4 KiB plus an absolute ≤ 16 KiB on pinned CPython 3.14.10 (re-measured on any version change, patch level included); CPU ratio and absolute times are published only | measured (§7.8): the ratio of the correct path (5.6-5.7) and of a per-value loop (7.5-7.9) are too close to gate; line counts (141 = 141 vs 1,733 / 16,133) and memory growth (2,088 B vs 31,136 B for `list()`) separate them without load dependence |
 | D-W16 | Client-side reader limits 16 MiB / 30 s; server limits per level as §5.1 | the probe must not be cut by its own client under host load; the probe's stall bound (5 s) protects the probe from clients, the reverse protection only needs to bound a dead probe |
 | D-W17 | Section layouts are frozen at version 1; changes take new kind codes | the implemented decoder refuses a known kind with another version even when optional |
 | D-W18 | One `SendHub` owns every connection's queue and three pools: Live (droppable, 4 MiB / connection, 8 MiB / uid, 32 MiB global), Query (backpressure, never dropped, 4 / 4 / 16 MiB) and control (2 MiB / connection, a frame into an empty control queue always admitted); a pool overflow sheds the oldest unpinned Live entry of the largest connection that has one, else the incoming tick is dropped; queries never shed ticks | a REP/END can no longer close a lagging client; history and snapshot replies never lose data and a history loop cannot churn other clients' ticks; one slow group member or one uid cannot close or starve another (finding 4, round 2 D) |
