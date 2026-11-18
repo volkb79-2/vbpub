@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-### Added (P2b: the send hub; `HOB-54` stays open, hub fixtures PARTIAL)
+### Added (P2b: the send hub; `HOB-54` stays open)
 
 - **`proto::hub::SendHub`** (WIRE.md §5.3, §12): `QueueLimits`, `ConnId`, `add`/`remove`/
   `drain_unpinned`, `push_control`/`push_live`/`push_query`, `query_ready`, `end_stream`, `head`
@@ -11,6 +11,12 @@
   `StreamCounts`, `Pools`. Std-only; one unit test per §5.3 operation row and consequence and a
   pool-exactness checker over a pseudo-random run. The decisions the tables leave open are the
   `Implemented` paragraph of §5.3.
+- **Hub fixtures** (WIRE.md §11.4): 19 `fixtures/stream/hub-*.json` with hand-derived
+  expectations, written by `python/reference/make_hub_fixtures.py`, pinned byte for byte by
+  `python/tests/test_hub_fixtures.py` and replayed by `crates/proto/tests/hub_fixtures.rs`.
+- **Stall clock.** A push restarts `last_progress_ns` only when the queue was empty before the
+  push; a coalesce or a shed that empties the queue no longer restarts it, so a socket that
+  accepts nothing is closed after `stall_ms` however often a tick replaces the queued one.
 - **Gates.** `crates/proto/src/hub.rs` is a declared `assay-r1` target (35 judged files).
 
 ### Added (P2a2: the stream reader, mode detection and connection timers; `HOB-54` stays open)

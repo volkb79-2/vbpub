@@ -952,9 +952,23 @@ generation 5: ok), `client-first-block-bare` (`stale-dictionary-generation`), `c
 `client-epoch-change` (reconnect hello with a new epoch: dictionaries, cursors and subscriptions
 dropped).
 
-Hub cases (`fixtures/stream/hub-*.json`, Rust only, fake clock; a step is a §5.3 operation, `expect`
-lists the outcome, the Live/Query/control pools of the touched connections and uids and, after `head`,
-the stamped `corr`/`dropped`):
+Hub cases (`fixtures/stream/hub-*.json`, 19 files written by `python/reference/make_hub_fixtures.py`,
+replayed by `crates/proto/tests/hub_fixtures.rs` with a fake clock, `t_ms * 1_000_000` as `now_ns`;
+a Python test pins the committed bytes to the generator). Format: `{"case", "doc", "limits", "conns",
+"steps", "expect"}`; `limits` holds the nine `QueueLimits` fields (scaled: Live 1000/2000/8000 per
+connection/uid/global, Query 1000/1000/4000, control 500, stall and frame completion 5000 ms),
+`conns` the peer uid of each connection (index 0 first, added at t = 0). Every block is a
+2-section BLOCK of the stated length (at least 112; `dropped` at offset 104, tail from 112
+filled with `tag`, default 160). A step is `{"t_ms", "op", ...}` with `op` one of `push_live {c, s,
+gen, bare|null, dict, tag?, share?}` (`share` names one tick object used by several pushes),
+`push_query {c, s, len}`, `push_control {c, len}`, `query_ready {c, s}`, `end_stream {c, s}`,
+`head {c, block}`, `head_partial {c}`, `wrote {c, n}`, `poll`, `drain_unpinned {c}`, `remove {c}`,
+each with an optional `watch` list of `c<i>`, `u<uid>` and `g`. `expect` has one list per step: the
+operation's output (`queued|coalesced|dropped-incoming`, `queued|backpressure`, `ok|close`,
+`{"counts": {"blocks", "dropped"}}`, `{"head": {"len": remaining, "corr", "dropped", "tail_tag"}}`
+or `null`, `{"ready": bool}`, `{"partial": bool}`, `{"closed": [conn indexes]}`), then
+`{"pools": {key: [live, query, control]}}` when the step watches. The replay also asserts at most
+one `dict_form` call per push:
 
 | Case | Expected |
 |---|---|
@@ -972,7 +986,7 @@ the stamped `corr`/`dropped`):
 | `hub-query-backpressure` | `push_query` over the Query pool: `Backpressure`, no Query entry dropped; after `wrote` frees Query bytes `query_ready(c, s)` is true and the retry is `Queued` |
 | `hub-query-own-pool` | Live pool full of other connections' unpinned ticks: `push_query` sheds none of them; Query pool full: `push_live` unaffected |
 | `hub-control-cap` | a frame larger than `control_queue_bytes` into an empty control queue: admitted; a second control push while it is unsent: `Close(slow-client)`; blocks never block a control push |
-| `hub-frame-completion` | pinned head, `wrote(1)` every 4 s: no stall close, no close at `pinned_ns + frame_completion_ms`, `slow-client` at `+1` |
+| `hub-frame-completion` | pinned head, `wrote(1)` at 4 s: `head_partial`, no stall close, no close at `pinned_ns + frame_completion_ms`, `slow-client` at `+1` |
 | `hub-stall` | non-empty, no `wrote`, no `head`: no close at `+stall_ms`, `slow-client` at `+stall_ms + 1` |
 | `hub-stall-after-idle` | queue empty for 60 s, then a push and `poll` at `+1`: no close |
 | `hub-shared-block` | two connections, one `Arc`, distinct `corr`/`dropped` prefixes, identical tails |
