@@ -760,8 +760,15 @@ fn decode_column_body(body: &[u8], n_rows: usize) -> Result<Column, ProtoError> 
     Column::new(metric, value_type, kind, values, quality)
 }
 
+/// Bytes one time bucket occupies in the (column-wise) time section body: `i64 real_ns` (8),
+/// `u32 covered_ms` (4), `u16 samples` (2) and `u8 agg` (1). The body is these four columns
+/// back to back, padded to eight bytes as a whole.
+const TIME_BUCKET_BYTES: usize = 8 + 4 + 2 + 1;
+
 fn time_body_len(buckets: usize) -> Result<usize, ProtoError> {
-    let raw = buckets.checked_mul(14).ok_or(ProtoError::LengthOverflow)?;
+    let raw = buckets
+        .checked_mul(TIME_BUCKET_BYTES)
+        .ok_or(ProtoError::LengthOverflow)?;
     crate::read::align_up(raw, 8)
 }
 
@@ -1776,6 +1783,92 @@ mod tests {
         assert!(!decode_block(&encode_block(&live_block()).expect("encode"))
             .expect("decode")
             .is_history());
+    }
+
+    /// `n` distinct buckets, so a reader that confuses two columns or two buckets is caught.
+    fn buckets(n: usize) -> Vec<TimeBucket> {
+        let aggs = [
+            Aggregation::Raw,
+            Aggregation::Last,
+            Aggregation::Delta,
+            Aggregation::Mean,
+            Aggregation::Min,
+            Aggregation::Max,
+        ];
+        (0..n)
+            .map(|index| TimeBucket {
+                real_ns: i64::try_from(index).expect("small") * 1_000_000_007 - 1,
+                covered_ms: u32::try_from(index).expect("small") * 100_003,
+                samples: u16::try_from(index).expect("small") * 7_001,
+                agg: aggs[index % aggs.len()],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_time_section_is_fifteen_bytes_per_bucket_padded_to_eight() {
+        // HOB-48 (length half): i64 + u32 + u16 + u8 = 15 bytes a bucket. The old factor of 14
+        // agrees with this only up to three buckets (42 and 45 both pad to 48), so every count
+        // from 0 to 9 is pinned by its exact length, not by a formula.
+        let expected = [0usize, 16, 32, 48, 64, 80, 96, 112, 120, 136];
+        for (n, want) in expected.iter().enumerate() {
+            let time = buckets(n);
+            let body = super::encode_time_body(&time).expect("encode");
+            assert_eq!(body.len(), *want, "{n} buckets");
+            assert_eq!(
+                super::time_body_len(n).expect("length"),
+                *want,
+                "the length helper agrees with the encoder for {n} buckets"
+            );
+            assert_eq!(
+                super::decode_time_body(&body, n).expect("decode"),
+                time,
+                "{n} buckets round-trip"
+            );
+        }
+        assert_eq!(super::TIME_BUCKET_BYTES, 15);
+    }
+
+    #[test]
+    fn a_history_block_of_zero_to_nine_buckets_round_trips_through_the_frame() {
+        for n in 0..=9usize {
+            let mut block = live_block();
+            block.rows = Vec::new();
+            block.header.n_rows = u32::try_from(n).expect("small");
+            block.time = buckets(n);
+            block.columns = vec![Column::new(
+                2,
+                MetricValueType::U64,
+                MetricKind::Counter,
+                (0..u64::try_from(n).expect("small")).collect(),
+                vec![Quality::Ok.code(); n],
+            )
+            .expect("column")];
+            let bytes = encode_block(&block).expect("encode");
+            let decoded = decode_block(&bytes).expect("decode");
+            assert_eq!(decoded, block, "{n} buckets");
+            assert_eq!(
+                encode_block(&decoded).expect("encode again"),
+                bytes,
+                "{n} buckets: encoding is the exact inverse"
+            );
+        }
+    }
+
+    #[test]
+    fn a_time_body_of_the_old_length_is_refused() {
+        // Four buckets used to be sized 56 bytes by the decoder and written as 64 by the
+        // encoder; the decoder now refuses the 56-byte body instead of reading it.
+        let mut body = super::encode_time_body(&buckets(4)).expect("encode");
+        body.truncate(56);
+        assert_eq!(
+            super::decode_time_body(&body, 4),
+            Err(ProtoError::SectionLength {
+                kind: SectionKind::Time.code(),
+                declared: 56,
+                expected: 64,
+            })
+        );
     }
 
     #[test]

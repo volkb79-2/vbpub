@@ -31,6 +31,7 @@ The patches, each with the test that must go red:
 | M1d-8 | the header `start_real_ns` is not compared with the name's (Rust and Python) | the same two tests |
 | M1d-9 | the seal re-derives its start second from the header with the current step | `a_sealed_segment_keeps_the_start_of_its_open_name_across_a_step_change` |
 | M1d-10 | `keep_s` is not applied to quarantined files | `keep_s_removes_a_quarantined_file_by_the_key_its_name_keeps` |
+| M1d-11 | the time section is sized at 14 bytes a bucket again (Rust and Python; HOB-48, length half) | `the_time_section_is_fifteen_bytes_per_bucket_padded_to_eight`, `a_history_block_of_zero_to_nine_buckets_round_trips_through_the_frame`, the `history-five-buckets` fixture, `test_the_time_section_is_fifteen_bytes_per_bucket_padded_to_eight` |
 
 The results are recorded in [`../HAND-MUTANTS-M1D.md`](../HAND-MUTANTS-M1D.md) once the campaign
 has been run on the gate head.
@@ -217,6 +218,23 @@ MUTANTS: tuple[Mutant, ...] = (
         "        let start_s = match SegmentFileName::parse(open.name()) {\n            Ok(parsed) => parsed.start_s,\n",
         "        let start_s = match self.start_for(open.header().start_real_ns.max(0)) {\n            Ok(start_s) => start_s,\n",
         "store",
+    ),
+    # ------------------------------ HOB-48 (length half): the time section's bucket size
+    Mutant(
+        "M1d-11",
+        "the time section is sized at 14 bytes a bucket again (Rust)",
+        "crates/proto/src/frame.rs",
+        "const TIME_BUCKET_BYTES: usize = 8 + 4 + 2 + 1;",
+        "const TIME_BUCKET_BYTES: usize = 8 + 4 + 2;",
+        "proto",
+    ),
+    Mutant(
+        "M1d-11",
+        "the time section is sized at 14 bytes a bucket again (Python)",
+        "python/reference/hostobs_wire_ref.py",
+        "TIME_BUCKET_BYTES = 8 + 4 + 2 + 1",
+        "TIME_BUCKET_BYTES = 8 + 4 + 2",
+        "python",
     ),
 )
 

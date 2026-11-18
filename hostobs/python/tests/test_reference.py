@@ -49,7 +49,7 @@ MEM_CURRENT_FACTS = {
 class WireFixtures(unittest.TestCase):
     def test_every_fixture_round_trips_in_the_reference_codec(self):
         cases = hostobs_wire_ref.load_cases(FIXTURES)
-        self.assertEqual(len(cases), 26, "the fixture case list is part of the contract")
+        self.assertEqual(len(cases), 27, "the fixture case list is part of the contract")
         for spec_path, spec, data in cases:
             with self.subTest(case=spec_path.stem):
                 hostobs_wire_ref.check_case(spec, data)
@@ -178,6 +178,41 @@ class WireFixtures(unittest.TestCase):
             with self.subTest(declared=declared), self.assertRaises(hostobs_wire_ref.WireError) as caught:
                 hostobs_wire_ref.decode_frame(data)
             self.assertEqual(caught.exception.as_dict()["kind"], "truncated")
+
+    def test_the_time_section_is_fifteen_bytes_per_bucket_padded_to_eight(self):
+        # HOB-48 (length half): i64 + u32 + u16 + u8 = 15 bytes a bucket. A factor of 14 gives
+        # the same padded length up to three buckets, so every count from 0 to 9 is pinned by
+        # its exact length, and the five-bucket fixture pins it on committed bytes.
+        wire = hostobs_wire_ref
+        expected = [0, 16, 32, 48, 64, 80, 96, 112, 120, 136]
+        aggs = list(wire.AGGREGATIONS)
+        for n, want in enumerate(expected):
+            buckets = [
+                {
+                    "real_ns": index * 1_000_000_007 - 1,
+                    "covered_ms": index * 100_003,
+                    "samples": index * 7_001,
+                    "agg": aggs[index % len(aggs)],
+                }
+                for index in range(n)
+            ]
+            body = wire.encode_time(buckets)
+            with self.subTest(buckets=n):
+                self.assertEqual(len(body), want)
+                self.assertEqual(wire.time_body_len(n), want)
+                self.assertEqual(wire.decode_time(body, n), buckets)
+        self.assertEqual(wire.TIME_BUCKET_BYTES, 15)
+        # The decoder refuses the length the old factor demanded for four buckets.
+        with self.assertRaises(wire.WireError) as caught:
+            wire.decode_time(wire.encode_time([{"real_ns": 0, "covered_ms": 0, "samples": 0, "agg": "raw"}] * 4)[:56], 4)
+        self.assertEqual(
+            caught.exception.as_dict(),
+            {"kind": "section-length", "section": "time", "declared": 56, "expected": 64},
+        )
+        spec = json.loads((FIXTURES / "history-five-buckets.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(spec["frame"]["time"]), 5)
+        decoded = wire.decode_frame((FIXTURES / "history-five-buckets.bin").read_bytes())
+        self.assertEqual(len(decoded["time"]), 5)
 
     def test_the_frame_header_bounds_the_declared_length_at_both_ends(self):
         # HOB-8: the Rust FrameHeader::parse refuses a declared length outside

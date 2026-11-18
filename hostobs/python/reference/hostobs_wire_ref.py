@@ -377,8 +377,12 @@ def decode_column(body: bytes, n_rows: int) -> dict:
     return column
 
 
+#: Bytes one time bucket occupies: i64 real_ns (8) + u32 covered_ms (4) + u16 samples (2) + u8 agg (1).
+TIME_BUCKET_BYTES = 8 + 4 + 2 + 1
+
+
 def time_body_len(n_buckets: int) -> int:
-    return _align8(n_buckets * 14)
+    return _align8(n_buckets * TIME_BUCKET_BYTES)
 
 
 def encode_time(time: list[dict]) -> bytes:

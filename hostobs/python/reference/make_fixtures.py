@@ -232,6 +232,42 @@ def history_frame() -> dict:
     }
 
 
+def history_five_frame() -> dict:
+    """A history block with five buckets (HOB-48, length half).
+
+    The time section carries 15 bytes per bucket, so five buckets are 75 bytes padded to 80. A
+    factor of 14 reproduces the old answer only up to three buckets (42 -> 48), which is why the
+    first history fixture could not catch it.
+    """
+    frame = history_frame()
+    frame["corr"] = 5
+    frame["header"] = header(5, dict_gen=2, epoch=8, seq=2)
+    frame["time"] = [
+        {"real_ns": 1_700_000_000_000_000_000, "covered_ms": 1000, "samples": 5, "agg": "mean"},
+        {"real_ns": 1_700_000_001_000_000_000, "covered_ms": 1000, "samples": 4, "agg": "min"},
+        {"real_ns": 1_700_000_002_000_000_000, "covered_ms": 999, "samples": 65535, "agg": "max"},
+        {"real_ns": -1, "covered_ms": 0, "samples": 0, "agg": "raw"},
+        {"real_ns": 1_700_000_004_000_000_000, "covered_ms": 4_294_967_295, "samples": 1, "agg": "mean"},
+    ]
+    frame["columns"] = [
+        {
+            "metric": 1,
+            "type": "u64",
+            "kind": "gauge",
+            "values": ["2048", "0", str(2**64 - 1), "7", "1"],
+            "quality": ["ok", "stale", "not-sampled", "ok", "ok"],
+        },
+        {
+            "metric": 2,
+            "type": "u64",
+            "kind": "counter",
+            "values": ["9000", "0", "1", "9001", "9002"],
+            "quality": ["ok", "absent", "reset", "ok", "ok"],
+        },
+    ]
+    return frame
+
+
 def unicode_dictionary_frame() -> dict:
     return {
         "type": "block",
@@ -522,6 +558,7 @@ CASES: list[tuple[str, dict, list[tuple[int, bytes]] | None, dict | None]] = [
     ("live-block", live_frame(), None, None),
     ("u64-boundaries", u64_boundary_frame(), None, None),
     ("history-buckets", history_frame(), None, None),
+    ("history-five-buckets", history_five_frame(), None, None),
     ("unicode-dictionary", unicode_dictionary_frame(), None, None),
     ("all-quality-codes", all_qualities_frame(), None, None),
     ("empty-selection", empty_frame(), None, None),
@@ -789,6 +826,10 @@ DOC = {
     "history-buckets": (
         "A history block: `time` replaces `rows`, with a real timestamp, coverage, sample count and "
         "aggregation per bucket, including a negative real_ns and an empty bucket (0 samples)."
+    ),
+    "history-five-buckets": (
+        "A history block with five buckets: the time section is 15 bytes per bucket (75, padded to 80), "
+        "so a body length computed with another per-bucket size is wrong from four buckets up."
     ),
     "unicode-dictionary": (
         "Unicode dictionary text on all four entry kinds, plus a second boot id."
