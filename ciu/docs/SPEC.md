@@ -601,6 +601,10 @@ requirements are marked *(withdrawn)*.
      `ciu up --dir` records it at the same point of its one stack, after the
      global render and before the stack render.
      `ciu up --dir --shipped` has no selection facts and is not guarded.
+     `ciu dev` (CIU-209) is guarded READ-ONLY: it checks an existing record
+     against its selection, with the same exit-2 refusal, after resolving its
+     profile and before any stack render or Docker call, but never creates a
+     record, because a dev run does not establish a deployment type.
      When `<ciu-root>/.ciu/selection-record.json` (`{"api":
      "ciu/selection-record", "api_version": 1, "profiles": [...]}`; under the
      S1.7-ignored `.ciu/`) exists, a different subset (order-insensitive;
@@ -1011,7 +1015,12 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   published — `sh -c '<prebuild…> && exec <command>'`, so generated files land
   in the served tree and a failed prebuild never starts the server.
 - **S5a.3** `--no-prebuild` re-runs only the dev server (skips prebuild);
-  `--profile` selects the host profile for rendering; `--root-folder` overrides
+  `--profile` selects the host profile for rendering and, like `ciu up`
+  (CIU-209), wins over `[ciu.instance] service_profiles`, which wins over
+  `CIU_SERVICES_PROFILE`, so `ciu dev` renders the same
+  `ciu.selected_profiles` and topology as `ciu up` does for the checkout. An
+  existing CIU-205 selection record is checked before any render or Docker
+  call (S3.12 clause 5) and never created; `--root-folder` overrides
   the repo root. The verb is for the local dev loop only — it is **not** part of
   the `up`/`down`/`clean` lifecycle and creates no rendered/overlay artifacts.
 
