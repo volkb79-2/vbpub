@@ -20,7 +20,7 @@ use hostobs_client::{
 use support::{
     end_err, end_err_dropped, end_ok, evt_closing, fixture, frame, hello_json, info, open, prefix,
     rep_err, rep_ok, script, session, session_bytes, with_corr, with_dropped, FakeClock, Script,
-    BOOT, MS,
+    BOOT, MAX_TRANSPORT_CALLS, MS,
 };
 
 const SUB_RESULT: &str = "{\"sub\":2,\"interval_ms\":1000}";
@@ -213,6 +213,45 @@ fn transport_failures_are_classified() {
         broken.read_error = Some(kind);
         expect_kind(open(broken, Level::Observe, None), name);
     }
+}
+
+// A client that loops on its transport with the clock standing still (a hang mutant of the
+// retry path, found by the assay-r2 run) must fail the test within milliseconds, not push a
+// wait per call until the runner's timeout: the scripted transport panics at its call bound.
+#[test]
+#[should_panic(expected = "runaway transport loop")]
+fn a_runaway_read_loop_panics_instead_of_growing_without_bound() {
+    let clock = clock();
+    let (mut script, _rig) = script(&clock, Vec::new());
+    script.eof = false;
+    let mut buf = [0_u8; 4];
+    for _ in 0..=MAX_TRANSPORT_CALLS {
+        let _ = script.read(&mut buf, Duration::from_secs(1));
+    }
+}
+
+#[test]
+#[should_panic(expected = "runaway transport loop")]
+fn a_runaway_write_loop_panics_instead_of_growing_without_bound() {
+    let clock = clock();
+    let (mut script, _rig) = script(&clock, Vec::new());
+    script.write_error = Some(io::ErrorKind::WouldBlock);
+    for _ in 0..=MAX_TRANSPORT_CALLS {
+        let _ = script.write_all(b"x", Duration::from_secs(1));
+    }
+}
+
+#[test]
+fn the_call_bound_is_far_above_what_any_test_needs() {
+    let clock = clock();
+    let (mut script, rig) = script(&clock, vec![7; 4096]);
+    script.chunk = 1;
+    let mut buf = [0_u8; 1];
+    for _ in 0..4096 {
+        assert_eq!(script.read(&mut buf, Duration::from_secs(1)).ok(), Some(1));
+    }
+    assert_eq!(rig.read_waits.borrow().len(), 4096);
+    assert!(rig.read_waits.borrow().len() * 100 < MAX_TRANSPORT_CALLS);
 }
 
 #[test]
