@@ -173,7 +173,8 @@ impl Replay {
         for key in watch {
             let key = key.as_str().expect("watch key");
             let pools = if let Some(index) = key.strip_prefix('c') {
-                self.hub.queued(self.ids[index.parse::<usize>().expect("conn index")])
+                self.hub
+                    .queued(self.ids[index.parse::<usize>().expect("conn index")])
             } else if let Some(uid) = key.strip_prefix('u') {
                 self.hub.uid_pools(uid.parse::<u32>().expect("uid"))
             } else {
@@ -229,11 +230,15 @@ impl Replay {
                 out.push(text.to_string());
             }
             "query_ready" => {
-                let ready = self.hub.query_ready(self.conn(step), small(step.field("s"), "s"));
+                let ready = self
+                    .hub
+                    .query_ready(self.conn(step), small(step.field("s"), "s"));
                 out.push(format!("ready:{ready}"));
             }
             "end_stream" => {
-                let counts = self.hub.end_stream(self.conn(step), small(step.field("s"), "s"));
+                let counts = self
+                    .hub
+                    .end_stream(self.conn(step), small(step.field("s"), "s"));
                 out.push(format!("counts:{}/{}", counts.blocks, counts.dropped));
             }
             "head" => {
@@ -242,9 +247,14 @@ impl Replay {
                 out.push(head_text(&mut self.hub, id, now, is_block));
             }
             "head_partial" => {
-                out.push(format!("partial:{}", self.hub.head_partial(self.conn(step))));
+                out.push(format!(
+                    "partial:{}",
+                    self.hub.head_partial(self.conn(step))
+                ));
             }
-            "wrote" => self.hub.wrote(self.conn(step), number(step.field("n"), "n"), now),
+            "wrote" => self
+                .hub
+                .wrote(self.conn(step), number(step.field("n"), "n"), now),
             "poll" => {
                 let closed = self.hub.poll(now);
                 let list: Vec<String> = closed
@@ -303,7 +313,10 @@ fn render_object(object: &Json) -> String {
     }
     if let Some(counts) = object.get("counts") {
         let blocks = number(counts.field("blocks"), "blocks");
-        return format!("counts:{blocks}/{}", number(counts.field("dropped"), "dropped"));
+        return format!(
+            "counts:{blocks}/{}",
+            number(counts.field("dropped"), "dropped")
+        );
     }
     if let Some(closed) = object.get("closed") {
         let items = closed.as_array().expect("closed list");
@@ -336,7 +349,11 @@ fn replay(name: &str, spec: &Json) {
     assert!(!state.uids.is_empty(), "{name}: at least one connection");
     let steps = spec.field("steps").as_array().expect("steps");
     let expect = spec.field("expect").as_array().expect("expect");
-    assert_eq!(steps.len(), expect.len(), "{name}: one expectation per step");
+    assert_eq!(
+        steps.len(),
+        expect.len(),
+        "{name}: one expectation per step"
+    );
     for (index, (step, want)) in steps.iter().zip(expect).enumerate() {
         let want: Vec<String> = want
             .as_array()
@@ -366,7 +383,11 @@ fn hub_fixture_paths() -> Vec<PathBuf> {
 #[test]
 fn every_hub_fixture_replays_against_the_send_hub() {
     let paths = hub_fixture_paths();
-    assert_eq!(paths.len(), HUB_CASES, "the hub fixture set is exactly {HUB_CASES} cases");
+    assert_eq!(
+        paths.len(),
+        HUB_CASES,
+        "the hub fixture set is exactly {HUB_CASES} cases"
+    );
     for path in paths {
         let label = path.display().to_string();
         let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("read {label}: {error}"));

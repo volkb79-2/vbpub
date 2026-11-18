@@ -483,12 +483,7 @@ impl SendHub {
 
     /// Queue a REP/EVT/END frame. An empty control pool admits any length; otherwise a frame
     /// that would exceed `control_queue_bytes` is `Close(SlowClient)` and is not queued.
-    pub fn push_control(
-        &mut self,
-        id: ConnId,
-        bytes: Arc<[u8]>,
-        now_ns: u64,
-    ) -> Result<(), Close> {
+    pub fn push_control(&mut self, id: ConnId, bytes: Arc<[u8]>, now_ns: u64) -> Result<(), Close> {
         self.arrive(id, now_ns);
         let used = self.conn_totals(id).pools.control;
         if used != 0 && used.saturating_add(bytes.len()) > self.limits.control_queue_bytes {
