@@ -55,12 +55,14 @@ cd scripts/debian-install-v2/testing/vm
 ```
 
 For a NoCloud seed ISO, keep the credential-bearing artifact in the ignored
-`artifacts/vm-lab/` folder (the project's gitignored VM state folder) with mode
-`0600`; inside the runner it is `/vm-lab/`. Confirm the ignore rule before
-putting a private artifact there:
+`vm-lab/` folder (the project's gitignored VM state folder, resolved by
+`libraries/cowtree/repo-path vm-lab --project scripts/debian-install-v2`; plain
+location `scripts/debian-install-v2/vm-lab/`) with mode `0600`; inside the runner
+it is `/vm-lab/`. Confirm the ignore rule before putting a private artifact there:
 
 ```bash
-git check-ignore -v ../../artifacts/vm-lab/private-seed.iso
+VM_LAB="$(../../../../libraries/cowtree/repo-path vm-lab --project scripts/debian-install-v2)"
+git check-ignore -v "$VM_LAB/private-seed.iso"
 ```
 
 The ISO must provision the runner's `tester` account with the runner's SSH
@@ -76,7 +78,7 @@ the key; destroy that throwaway run but keep the runner alive:
 ./run-vm-harness.sh prepare-base case-b # if this runner has no staged base yet
 ./run-vm-harness.sh start key-init --case case-b --no-apt-cache
 ./run-vm-harness.sh destroy key-init
-cat ../../artifacts/vm-lab/ssh/id_ed25519.pub
+cat "$(../../../../libraries/cowtree/repo-path vm-lab --project scripts/debian-install-v2)/ssh/id_ed25519.pub"
 ```
 
 Copy that public-key line into the temporary test seed as the `tester` user's
@@ -124,7 +126,7 @@ host-escape -- docker exec "$VM_RUNNER" /work/vm/vmctl console "$VM_RUN"
 
 Replace the fingerprint placeholder with the actual name printed by the
 wrapper. The seed path is in the runner's namespace (`/vm-lab/` for files kept
-in `artifacts/vm-lab/`). Do not pass a
+in the project's `vm-lab/` folder). Do not pass a
 devcontainer path that is not mounted into the runner.
 
 `vmctl wait --timeout-s` limits only the wait for SSH to become reachable.
@@ -305,10 +307,10 @@ its workloads but printed no score summary and exited 255 when upload/DNS
 failed. If a score is needed, add the narrow Browser allowlist above and record
 the public result URL, or use a Geekbench license with offline support. Keep
 any claim URL in a private, git-ignored artifact
-under `artifacts/vm-lab/`; it is not a repository document or a public link:
+under the project's `vm-lab/` folder; it is not a repository document or a public link:
 
 ```bash
-VM_LAB="$REPO_ROOT/scripts/debian-install-v2/artifacts/vm-lab"
+VM_LAB="$("$REPO_ROOT/libraries/cowtree/repo-path" vm-lab --project scripts/debian-install-v2)"
 mkdir -p "$VM_LAB"
 timestamp_lines() {
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -406,7 +408,7 @@ profile on the client (the report extra must be installed):
 
 ```bash
 cgprofilectl stop "$PROFILE_SESSION" --json
-PROFILE_ARTIFACTS="$REPO_ROOT/scripts/debian-install-v2/artifacts/vm-lab/cgprofile-$PROFILE_SESSION"
+PROFILE_ARTIFACTS="$("$REPO_ROOT/libraries/cowtree/repo-path" vm-lab --project scripts/debian-install-v2)/cgprofile-$PROFILE_SESSION"
 mkdir -p "$PROFILE_ARTIFACTS"
 cgprofile report "$PROFILE_SESSION" --out "$PROFILE_ARTIFACTS" --md-only
 ```
@@ -432,7 +434,7 @@ Its console output was not captured with per-line host timestamps, so the
 profile is strongest for whole-run resource use and can only support
 approximate phase alignment if workload boundaries are visible in saved
 output. The benchmark command above timestamps each output line on the host
-and stores the transcript in the ignored `artifacts/vm-lab/` folder for future runs.
+and stores the transcript in the ignored `vm-lab/` folder for future runs.
 
 As a reference point, Geekbench's [May 2024 benchmark-internals document](https://www.geekbench.com/doc/geekbench6-benchmark-internals.pdf)
 publishes page-granular working-set sizes for each workload: Horizon Detection
@@ -485,7 +487,7 @@ At 09:18 UTC, Geekbench 6.7.2 completed and uploaded the TCG result: 65
 single-core and 215 multi-core. The public result is
 [Geekbench Browser result 19341722](https://browser.geekbench.com/v6/cpu/19341722);
 the separate claim URL is kept only in the ignored private artifact
-`artifacts/vm-lab/geekbench-tcg-result.txt`.
+`geekbench-tcg-result.txt` of the project's `vm-lab/` folder (recorded when that folder was `artifacts/vm-lab/`).
 
 The host cgprofile session `s-20261014T074505Z-069f` ran from 07:45:05 to
 09:19:21 at one-second sampling. Across the whole runner cgroup it recorded
@@ -497,7 +499,7 @@ report also recorded repeated zswap-refault events, so host memory pressure
 may have affected this score. Its 56 automatically detected changepoints are
 not labeled Geekbench workloads. Because this run's console lines were not
 timestamped individually, do not assign per-workload elapsed time or memory
-peaks from those changepoints. The ignored `artifacts/vm-lab/` folder
+peaks from those changepoints. The ignored `vm-lab/` folder (then `artifacts/vm-lab/`)
 preserves the profiler summary, raw one-second samples, charts, and Markdown
 report for later analysis.
 
@@ -506,7 +508,7 @@ from 09:43:09 to 09:49:12 UTC. It scored 1,667 single-core and 4,596
 multi-core; the public result is
 [Geekbench Browser result 19341831](https://browser.geekbench.com/v6/cpu/19341831),
 and its claim URL is only in the ignored
-`artifacts/vm-lab/geekbench-native-result.txt`. The host had load averages
+`geekbench-native-result.txt` of the project's `vm-lab/` folder (then `artifacts/vm-lab/`). The host had load averages
 2.35/3.53/4.91 at launch, and a separate Pterodactyl container used about one
 CPU. Geekbench reported eight processors despite the four-CPU affinity; TBB
 reported the worker pool limited to three workers plus the caller. Treat the
@@ -575,7 +577,7 @@ drop-by-default firewall blocked the result upload (4,060 packets / 278,988
 bytes dropped), so this run produced no score and exited 255 at the expected
 upload step. The complete private bundle—timestamped console, raw five-second
 samples, charts, and report—is preserved under the ignored
-`artifacts/vm-lab/cgprofile-s-20261014T101335Z-d097/` directory (the original
+`cgprofile-s-20261014T101335Z-d097/` directory of the project's `vm-lab/` folder (then `artifacts/vm-lab/`; the original
 2026-10-14 run kept it under the since-removed `testing/vm/.vm/`).
 
 One earlier egress-check `vmctl ssh` client remained waiting for over an hour

@@ -351,14 +351,24 @@ stock image already matches it.
 
 ## 3b. State layout, worktrees and ownership
 
-- **vm-lab** (`<project>/artifacts/vm-lab`): per checkout/worktree, derived by
-  fixed depth from the script location; no env overrides. `images/`,
-  `runs/<name>/`, `ssh/`. Disposable state is tied to the source under test and
-  is cleaned with the worktree.
-- **downloads** (`<repo root>/downloads`, of the checkout that runs): shared by
-  all projects, immutable, checksum-verified, `flock`ed.
-- **Placeholders**: both top folders are tracked (README + a `*` `.gitignore`),
-  so a fresh clone has them; scripts only `mkdir -p` the subfolders.
+- **vm-lab** (the `vm-lab` entry of the repo path config, asked of the resolver
+  `libraries/cowtree/repo-path vm-lab --project <project>`; plain location
+  `<project>/vm-lab`): per checkout/worktree (the repo root is derived by fixed
+  depth from the script location, never from the current directory); no env
+  overrides. `images/`, `runs/<name>/`, `ssh/`. Disposable state is tied to the
+  source under test and is cleaned with the worktree. A CoW host answers with a
+  compressed btrfs subvolume instead; the scripts do not care.
+- **vm-images** (the `vm-images` entry; plain location `<repo root>/downloads/vm-images`,
+  of the checkout that runs): shared by all projects, immutable,
+  checksum-verified, `flock`ed. The wrapper binds it at the in-runner
+  `/downloads` (the `--downloads-dir` meaning is "the folder base images are
+  downloaded into"; the genericcloud qcow2 is a base image), which keeps the
+  container-side contract unchanged: only the host source of the bind moved.
+  The `iso` folder is not used by this harness.
+- **Placeholders**: `vm-lab/` is tracked (README + a `*` `.gitignore`), so a
+  fresh clone has it; scripts only `mkdir -p` the subfolders. A resolved folder
+  outside the checkout (a CoW subvolume) is translated to the daemon's path
+  through the cockpit's Docker mount table, like every other path.
 - **Worktrees** (plan, owned by `ciu worktree` + `libraries/cowtree`): a new
   worktree gets CoW clones of the main checkout's declared gitignored paths, so
   it already holds main's downloads and staged bases; scripts just use the
@@ -374,15 +384,15 @@ stock image already matches it.
 - **Reuse**: layout/owner labels, mount sources and device:inode of the bind
   folders must match the current caller; otherwise the wrapper refuses a stale
   runner (older code, deleted/replaced/mounted-over folder).
-- **CoW subvolume** over vm-lab is invisible to the scripts; its provisioning is
-  a separate host-side helper (see README, "CoW").
+- **CoW subvolume**: the resolver decides (see README, "CoW"); provisioning is
+  `libraries/cowtree/repo-path NAME --provision`.
 
 ## 4. Detailed walkthrough (what was actually run, live, 2026-09-09)
 
 This is the real transcript of the harness's first end-to-end proof,
 not an idealized example. It predates the move of VM state to
-`artifacts/vm-lab/`; current wrapper runs use `/vm-lab` and `/downloads` inside
-the runner.
+`artifacts/vm-lab/` (since replaced by the resolved `vm-lab` folder); current
+wrapper runs use `/vm-lab` and `/downloads` inside the runner.
 
 ```
 $ ./run-vm-harness.sh prepare-base case-b
@@ -393,11 +403,12 @@ $ ./run-vm-harness.sh prepare-base case-b
 ```
 
 `download-base-image.sh` fetched and SHA512-verified the current Debian
-13 `genericcloud` qcow2 (~339MB) and staged a copy under `artifacts/vm-lab/images/`.
+13 `genericcloud` qcow2 (~339MB) and staged a copy under `<vm-lab folder>/images/`
+(then `artifacts/vm-lab/images/`).
 The copy (not a symlink) is deliberate: `images/case-b-base.qcow2` in the vm-lab folder is
 the thing every overlay is backed by and must never move or change out
 from under a running test; the original download under
-the shared `downloads/` folder can be independently re-verified or refreshed later
+the shared `vm-images` folder can be independently re-verified or refreshed later
 without touching an in-use base.
 
 ```

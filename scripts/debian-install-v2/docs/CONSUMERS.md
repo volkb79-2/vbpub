@@ -467,7 +467,7 @@ scores in our offline attempt, so allow host egress only if publication is
 acceptable (or use a license with offline support). The successful run scored
 1,667 single-core / 4,596 multi-core and is public at
 [Geekbench Browser result 19341831](https://browser.geekbench.com/v6/cpu/19341831);
-its claim URL is private under `artifacts/vm-lab/`.
+its claim URL is private under the project's `vm-lab/` folder.
 Geekbench's single- and multi-core sequences run sequentially and can exceed
 the repository runner's 15-minute convenience timeout; invoke the downloaded
 binary directly with the three-hour bound in the
@@ -476,7 +476,7 @@ The same procedure shows host cgprofile sampling at five-second intervals.
 Correlate its whole-runner memory series with host-timestamped Geekbench
 workload output and an idle-VM baseline for approximate per-phase elapsed time
 and host-charged memory; this is not guest process RSS. Keep any claim URL in
-the ignored `artifacts/vm-lab/` folder; do not commit it. The guide links
+the ignored `vm-lab/` folder; do not commit it. The guide links
 Geekbench's published per-workload working-set figures, clearly distinguished
 from measured peak RSS. The reviewed Geekbench 6 materials do not document a
 control for per-workload runtime. Do not substitute another benchmark or invent
