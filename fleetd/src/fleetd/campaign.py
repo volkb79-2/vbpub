@@ -18,7 +18,7 @@ from .contracts import ContractError, is_candidate_id
 from .measurement import measurement_document
 from .plan import replan_pending
 from .runner import JobSpec, RunnerJobs, parse_progress, validate_job_spec
-from .transport import HostUnavailable, Transport, TransportError
+from .transport import HostSlow, HostUnavailable, Transport, TransportError
 
 
 STATE_SCHEMA = "fleet-campaign-state/2"
@@ -543,13 +543,8 @@ class CampaignManager:
                 continue
             try:
                 self._refresh_host(state, host_id, host_state, job_rows, now)
-            except HostUnavailable:
-                if host_state["unreachable_since_mono"] is None:
-                    host_state["unreachable_since_mono"] = host_state["last_contact_mono"]
-                    if host_state["unreachable_since_mono"] is None:
-                        host_state["unreachable_since_mono"] = now
-                host_state["status"] = "UNREACHABLE"
-                host_state["pressure"] = None
+            except HostUnavailable as exc:
+                self._note_unavailable(host_state, exc, now)
                 if now - host_state["unreachable_since_mono"] > LOST_AFTER_SECONDS:
                     host_state["status"] = "LOST"
                 continue
@@ -736,6 +731,21 @@ class CampaignManager:
         self._stop_superseded_host(state, host_id)
 
     @staticmethod
+    def _note_unavailable(host_state: dict[str, Any], exc: HostUnavailable, now: float) -> None:
+        """Record a failed contact (FD-020).
+
+        The loss clock starts at the first failed contact THIS controller
+        observed, never at ``last_contact``: with sparse ticks the last contact
+        may be hours old and one transient failure would otherwise be loss. A
+        timeout (``HostSlow``) is reported as ``SLOW``; it feeds the same clock
+        and counts toward ``LOST`` only after the same ``LOST_AFTER_SECONDS``.
+        """
+        if host_state["unreachable_since_mono"] is None:
+            host_state["unreachable_since_mono"] = now
+        host_state["status"] = "SLOW" if isinstance(exc, HostSlow) else "UNREACHABLE"
+        host_state["pressure"] = None
+
+    @staticmethod
     def _record_host_error(host_state: dict[str, Any], message: str) -> None:
         host_state["status"] = "ERROR"
         host_state["pressure"] = None
@@ -750,11 +760,8 @@ class CampaignManager:
                 continue
             try:
                 self.runner.stop(host_id, job["name"])
-            except HostUnavailable:
-                state["hosts"][host_id]["status"] = "UNREACHABLE"
-                state["hosts"][host_id]["pressure"] = None
-                if state["hosts"][host_id]["unreachable_since_mono"] is None:
-                    state["hosts"][host_id]["unreachable_since_mono"] = state["hosts"][host_id]["last_contact_mono"]
+            except HostUnavailable as exc:
+                self._note_unavailable(state["hosts"][host_id], exc, self.clock())
                 continue
             except (TransportError, ContractError) as exc:
                 self._record_host_error(state["hosts"][host_id], str(exc))
@@ -774,9 +781,8 @@ class CampaignManager:
             if set(job["candidate_ids"]) <= done_elsewhere:
                 try:
                     self.runner.stop(host_id, job["name"])
-                except HostUnavailable:
-                    state["hosts"][host_id]["status"] = "UNREACHABLE"
-                    state["hosts"][host_id]["pressure"] = None
+                except HostUnavailable as exc:
+                    self._note_unavailable(state["hosts"][host_id], exc, self.clock())
                     continue
                 except (TransportError, ContractError) as exc:
                     self._record_host_error(state["hosts"][host_id], str(exc))
@@ -884,10 +890,8 @@ class CampaignManager:
                 continue
             try:
                 self.runner.stop(job["host"], job["name"])
-            except HostUnavailable:
-                host_state["status"] = "UNREACHABLE"
-                host_state["pressure"] = None
-                host_state["unreachable_since_mono"] = host_state["last_contact_mono"] or now
+            except HostUnavailable as exc:
+                self._note_unavailable(host_state, exc, now)
                 continue
             except (TransportError, ContractError) as exc:
                 self._record_host_error(host_state, str(exc))
@@ -1115,9 +1119,7 @@ class CampaignManager:
                 except HostUnavailable as exc:
                     job["status"] = "QUEUED"
                     job["started_mono"], job["last_progress_mono"] = previous_clocks
-                    host_state["status"] = "UNREACHABLE"
-                    host_state["pressure"] = None
-                    host_state["unreachable_since_mono"] = host_state["last_contact_mono"] or now
+                    self._note_unavailable(host_state, exc, now)
                     job["start_error"] = str(exc)
                     break
                 except (TransportError, ContractError) as exc:

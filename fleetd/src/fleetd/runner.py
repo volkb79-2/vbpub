@@ -22,7 +22,7 @@ from .runner_layout import (
     candidate_ids_relative,
     progress_home_path,
 )
-from .transport import HostUnavailable, Transport, TransportError, command_metadata, json_output
+from .transport import Transport, TransportError, command_metadata, host_unavailable, json_output
 
 
 _SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\Z")
@@ -478,7 +478,7 @@ class RunnerJobs:
         self._pressure.pop(host, None)
         rc, out, err = self.transport.run(host, probe_script(jobs), self.timeout)
         if rc in {124, 255}:
-            raise HostUnavailable(f"probe could not reach {host}: {err.strip()}")
+            raise host_unavailable(rc, f"probe could not reach {host}: {err.strip()}")
         if rc != 0:
             raise TransportError(f"probe failed on {host} with exit {rc}: {err.strip()}")
         try:
@@ -527,7 +527,7 @@ class RunnerJobs:
     def stop(self, host: str, name: str) -> bool:
         rc, out, err = self.transport.run(host, stop_script(name), self.timeout)
         if rc in {124, 255}:
-            raise HostUnavailable(f"stop-job could not reach {host}: {err.strip()}")
+            raise host_unavailable(rc, f"stop-job could not reach {host}: {err.strip()}")
         if rc != 0:
             raise TransportError(f"stop-job failed for {name} with exit {rc}: {err.strip()}")
         return out.strip() == "STOPPED"

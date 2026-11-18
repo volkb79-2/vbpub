@@ -25,6 +25,15 @@ class HostUnavailable(TransportError):
     """The wrapper could not contact a host within the requested timeout."""
 
 
+class HostSlow(HostUnavailable):
+    """The host did not answer within the timeout (rc 124), as opposed to ssh exit 255."""
+
+
+def host_unavailable(rc: int, message: str) -> HostUnavailable:
+    """The exception for a contact failure: ``HostSlow`` for a timeout, else ``HostUnavailable``."""
+    return (HostSlow if rc == 124 else HostUnavailable)(message)
+
+
 class HxNotConfigured(TransportError):
     """No hx wrapper was named and the source-checkout default does not exist."""
 
@@ -146,7 +155,7 @@ class HxTransport:
         )
         rc, _out, err = self.run(host, script, timeout)
         if rc in {124, 255}:
-            raise HostUnavailable(f"host {host} is unavailable: {err.strip()}")
+            raise host_unavailable(rc, f"host {host} is unavailable: {err.strip()}")
         if rc != 0:
             raise TransportError(f"could not upload {relative} to {host}: {err.strip()}")
 
@@ -155,7 +164,7 @@ class HxTransport:
         target = f'"$HOME"/{shlex.quote(relative)}'
         rc, out, err = self.run(host, f"set -euo pipefail\nbase64 --wrap=0 -- {target} | tr -d '\\n'", timeout)
         if rc in {124, 255}:
-            raise HostUnavailable(f"host {host} is unavailable: {err.strip()}")
+            raise host_unavailable(rc, f"host {host} is unavailable: {err.strip()}")
         if rc != 0:
             raise TransportError(f"could not fetch {relative} from {host}: {err.strip()}")
         try:
@@ -340,7 +349,7 @@ class FakeTransport:
         if not host.online:
             raise HostUnavailable(f"host {host_alias} is unreachable")
         if host.slow:
-            raise HostUnavailable(f"transport to {host_alias} timed out")
+            raise HostSlow(f"transport to {host_alias} timed out")
         host.files[relative] = bytes(content)
 
     def get(self, host_alias: str, remote_path: str, timeout: float | None = None) -> bytes:
@@ -350,7 +359,7 @@ class FakeTransport:
         if not host.online:
             raise HostUnavailable(f"host {host_alias} is unreachable")
         if host.slow:
-            raise HostUnavailable(f"transport to {host_alias} timed out")
+            raise HostSlow(f"transport to {host_alias} timed out")
         if relative not in host.files:
             raise TransportError(f"remote file does not exist: {relative}")
         return host.files[relative]
