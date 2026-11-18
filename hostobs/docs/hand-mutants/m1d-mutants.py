@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Replayable hand-mutation campaign for the P0 bug fold-in (`HOB-8`, `HOB-42`, `HOB-43`).
+"""Replayable hand-mutation campaign for the P0 bug fold-in (`HOB-8`, `HOB-42`, `HOB-43`)
+and its P0b follow-up (`HOB-55`, `HOB-56`, `HOB-58`).
 
 Rust R2 (`cargo-mutants`, R-3b) is still not available in the lane image, so the guards this
 package adds are checked by hand mutation, exactly as `m1c-mutants.py` does it: one stored patch
@@ -13,6 +14,7 @@ is counted as unanswered, never as a kill.
     python3 -I docs/hand-mutants/m1d-mutants.py --dry-run  # the patches only, each checked
                                                            # to match the source exactly once
     python3 -I docs/hand-mutants/m1d-mutants.py --only M1d-3  # one finding's patches, re-run
+    python3 -I docs/hand-mutants/m1d-mutants.py --timeout-s 900  # a shorter per-run limit
 
 `--dry-run` lists every patch and also reports, without changing any file, whether its stored
 fragment occurs in the source exactly once; a fragment that does not is a stale patch.
@@ -38,12 +40,19 @@ The patches, each with the test that must go red:
 | M1d-15 | the `kind != File` guard for a `.corrupt` entry is dropped (possibly an equivalent mutant) | none expected: see the doc |
 | M1d-16 | a quarantined / a live file deleted by hand is not recognised as gone | `a_quarantined_file_deleted_by_hand_does_not_fail_every_later_append`, `a_live_segment_deleted_by_hand_leaves_the_ring_without_failing_the_cap` |
 | M1d-17 | a live / a quarantined name no longer reserves its sequence number | `a_name_never_comes_back_after_a_quarantine_and_a_restart` |
-| M1d-18 | the segment / the event write path does not subtract its own eviction | `the_write_paths_subtract_what_their_own_eviction_removed`, `the_event_write_path_subtracts_what_its_own_eviction_removed` |
+| M1d-18 | the segment / the event write path does not recompute the byte total from the tiers (HOB-56) | `the_store_total_is_the_tiers_own_total_after_every_operation`, `the_write_paths_subtract_what_their_own_eviction_removed`, `the_event_write_path_subtracts_what_its_own_eviction_removed` |
 | M1d-19 | an open name that carries a footer is adopted (Rust and Python) | `an_open_name_that_carries_a_footer_is_quarantined_not_adopted`, `test_an_open_name_that_carries_a_footer_is_refused` |
+| M1d-20 | a sequence above `SEQ_NAME_MAX` is accepted by the name parser / minted by `open_segment` / accepted by the Python parser (HOB-55) | `a_sequence_above_the_name_bound_is_not_a_segment_name`, `a_name_above_the_sequence_bound_is_a_look_alike_and_never_poisons_the_water_mark`, `a_name_at_the_sequence_bound_is_adopted_and_the_next_segment_is_refused`, `test_a_sequence_above_the_name_bound_is_a_look_alike_in_every_spelling` |
+| M1d-21 | the byte total is incremental arithmetic again: the write path, `Store::evict`, or `seal_all` does not recompute it (HOB-56) | `the_store_total_is_the_tiers_own_total_after_every_operation`, `the_store_total_drops_a_quarantined_file_deleted_by_hand`, `the_store_total_drops_a_live_segment_deleted_by_hand` |
+| M1d-22 | the eviction reports are not filled / not copied into the store's ring (write path and `evict`) / the ring has no bound / `Store::notes` leaves them out (HOB-58) | `a_quarantined_file_deleted_by_hand_does_not_fail_every_later_append`, `a_quarantined_file_that_cannot_be_removed_is_reported_to_the_caller`, `eviction_reports_from_the_write_path_reach_the_store_and_are_bounded`, `the_store_total_drops_a_quarantined_file_deleted_by_hand`, `the_store_total_drops_a_live_segment_deleted_by_hand` |
 
 The campaign first runs a BASELINE on the unmutated tree for each suite it will use and stops if
 it is not green. A patch is `killed` only by a real test failure; a docker or runner failure,
-a compile error or a Python import/syntax error is `NOT-BUILT` and counts as unanswered.
+a compile error or a Python import/syntax error is `NOT-BUILT` and counts as unanswered. A suite
+run that exceeds `--timeout-s` (default 1800 s for a Rust suite, 300 s for a Python one; the
+baseline uses the same limits) is `KILLED-TIMEOUT`: a mutant that makes the suite hang is detected,
+as in standard mutation testing, and it is counted apart from `killed` in the summary. The
+container of a timed-out Rust run is named `hostobs-mut-<pid>-<n>` and removed by that exact name.
 
 The results are recorded in [`../HAND-MUTANTS-M1D.md`](../HAND-MUTANTS-M1D.md) once the campaign
 has been run on the gate head.
@@ -53,6 +62,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import os
 import subprocess
 import sys
@@ -61,6 +71,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 IMAGE = "tester-unified-rust:local"
+# A suite run that exceeds its limit is a mutant that hangs the suite: detected, as in standard
+# mutation testing, and classified KILLED-TIMEOUT (HOB-57). `--timeout-s` overrides both.
+RUST_TIMEOUT_S = 1800
+PYTHON_TIMEOUT_S = 300
+# Every Rust run names its container `hostobs-mut-<pid>-<n>`, so a timed-out run is stopped by
+# its exact name and never by a filter or an ancestor.
+_RUN_NUMBERS = itertools.count()
 
 
 @dataclass(frozen=True)
@@ -332,18 +349,18 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "M1d-18",
-        "the segment write path does not subtract its own eviction from the byte counter",
+        "the segment write path does not recompute the byte total from the tiers after an append",
         "crates/store/src/store.rs",
-        "        self.stats.note_eviction(&outcome.evicted);\n        self.stats.bytes = self.stats.bytes.saturating_sub(outcome.evicted.bytes);\n        Ok(WriteOutcome {",
-        "        self.stats.note_eviction(&outcome.evicted);\n        Ok(WriteOutcome {",
+        "        self.refresh_bytes();\n        let outcome = appended?;",
+        "        let outcome = appended?;",
         "store",
     ),
     Mutant(
         "M1d-18",
-        "the event write path does not subtract its own eviction from the byte counter",
+        "the event write path does not recompute the byte total from the tiers after a record",
         "crates/store/src/store.rs",
-        "        self.stats.note_eviction(&outcome.evicted);\n        self.stats.bytes = self.stats.bytes.saturating_sub(outcome.evicted.bytes);\n        let _ = now_ns;",
-        "        self.stats.note_eviction(&outcome.evicted);\n        let _ = now_ns;",
+        "        self.refresh_bytes();\n        let outcome = recorded?;",
+        "        let outcome = recorded?;",
         "store",
     ),
     Mutant(
@@ -361,6 +378,97 @@ MUTANTS: tuple[Mutant, ...] = (
         "    if parsed[\"open\"] and decoded[\"footer\"] is not None:",
         "    if False:",
         "python",
+    ),
+    # ----------------------------------- HOB-55: the sequence bound of a segment name
+    Mutant(
+        "M1d-20",
+        "the name parser accepts a sequence above `SEQ_NAME_MAX` again",
+        "crates/store/src/format.rs",
+        "        if seq > SEQ_NAME_MAX {\n            // Not a sequence this store ever mints (HOB-55): a look-alike, never ours.\n            return Err(StoreError::SegmentName {\n                name: name.to_string(),\n            });\n        }\n",
+        "",
+        "store",
+    ),
+    Mutant(
+        "M1d-20",
+        "`open_segment` mints a sequence above `SEQ_NAME_MAX` instead of failing",
+        "crates/store/src/tier.rs",
+        "        if seq > SEQ_NAME_MAX {\n            // A name above the bound is not a segment name of this store (HOB-55), so the\n            // sequence space is exhausted rather than continued under a name no scan accepts.\n            return Err(StoreError::LengthOverflow);\n        }\n",
+        "",
+        "store",
+    ),
+    Mutant(
+        "M1d-20",
+        "Python: the reference parser accepts a sequence above `SEQ_NAME_MAX`",
+        "python/reference/hostobs_segment_ref.py",
+        "    if int(start_s) >= 1 << 64 or int(seq) > SEQ_NAME_MAX:",
+        "    if int(start_s) >= 1 << 64 or int(seq) >= 1 << 64:",
+        "python",
+    ),
+    # ------------------------------ HOB-56: the byte total is the tiers' own total
+    Mutant(
+        "M1d-21",
+        "the segment write path is incremental arithmetic again (adds written bytes, subtracts evicted bytes)",
+        "crates/store/src/store.rs",
+        "        self.refresh_bytes();\n        let outcome = appended?;",
+        "        let outcome = appended?;\n        self.stats.bytes = self.stats.bytes.saturating_add(outcome.bytes_written);\n        self.stats.bytes = self.stats.bytes.saturating_sub(outcome.evicted.bytes);",
+        "store",
+    ),
+    Mutant(
+        "M1d-21",
+        "`Store::evict` subtracts the evicted bytes instead of recomputing (a vanished file drifts the total)",
+        "crates/store/src/store.rs",
+        "        // The tiers' own totals are the truth, after a refusal as well.\n        self.refresh_bytes();\n        result?;",
+        "        for done in evicted.values() {\n            self.stats.bytes = self.stats.bytes.saturating_sub(done.bytes);\n        }\n        result?;",
+        "store",
+    ),
+    Mutant(
+        "M1d-21",
+        "`seal_all` does not recompute the byte total (the footers are missing from it)",
+        "crates/store/src/store.rs",
+        "        let sealed = self.seal_each();\n        // A seal replaces the open name by the sealed one (footer bytes), so the total moves.\n        self.refresh_bytes();\n        sealed",
+        "        self.seal_each()",
+        "store",
+    ),
+    # --------------------------------------- HOB-58: eviction reports reach the caller
+    Mutant(
+        "M1d-22",
+        "`Tier::report` does not fill `Evicted::notes`",
+        "crates/store/src/tier.rs",
+        "        evicted.notes.push(note.clone());\n        self.scan.notes.push(note);",
+        "        self.scan.notes.push(note);",
+        "store",
+    ),
+    Mutant(
+        "M1d-22",
+        "the write path does not copy the eviction's notes into the store's ring",
+        "crates/store/src/store.rs",
+        "        keep_notes(&mut self.eviction_notes, &outcome.evicted);\n        Ok(WriteOutcome {",
+        "        Ok(WriteOutcome {",
+        "store",
+    ),
+    Mutant(
+        "M1d-22",
+        "`Store::evict` does not copy a tier's notes into the store's ring",
+        "crates/store/src/store.rs",
+        "            let done = state.tier.evict(now_ns)?;\n            keep_notes(&mut self.eviction_notes, &done);\n",
+        "            let done = state.tier.evict(now_ns)?;\n",
+        "store",
+    ),
+    Mutant(
+        "M1d-22",
+        "the store's notes ring has no bound",
+        "crates/store/src/store.rs",
+        "        if ring.len() >= MAX_EVICTION_NOTES {\n            ring.pop_front();\n        }\n",
+        "",
+        "store",
+    ),
+    Mutant(
+        "M1d-22",
+        "`Store::notes` leaves the ring's reports out",
+        "crates/store/src/store.rs",
+        "        for note in &self.eviction_notes {\n            if !notes.contains(note) {\n                notes.push(note.clone());\n            }\n        }\n",
+        "",
+        "store",
     ),
 )
 
@@ -426,13 +534,16 @@ def host_namespace(path: Path) -> tuple[Path, Path, Path]:
     return host_path, source, destination
 
 
-def run_rust(package: str) -> tuple[str, list[str]]:
+def run_rust(package: str, timeout_s: int) -> tuple[str, list[str]]:
     environment = os.environ.copy()
     host_path, host_source, cockpit_path = host_namespace(ROOT)
+    container = f"hostobs-mut-{os.getpid()}-{next(_RUN_NUMBERS)}"
     command = [
         "docker",
         "run",
         "--rm",
+        "--name",
+        container,
         "--network",
         "none",
         "--cgroup-parent",
@@ -450,7 +561,15 @@ def run_rust(package: str) -> tuple[str, list[str]]:
         "-c",
         f"export CARGO_TARGET_DIR=/tmp/t; tools/cargo-offline.sh test -p hostobs-{package} --offline --locked",
     ]
-    run = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        run = subprocess.run(
+            command, capture_output=True, text=True, check=False, timeout=timeout_s
+        )
+    except subprocess.TimeoutExpired:
+        # `subprocess.run` stops the docker client, not the container it started: remove that
+        # one container by its exact name (never by a filter or an ancestor).
+        subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
+        return "timeout", [f"no verdict within {timeout_s} s"]
     log = run.stdout + run.stderr
     if run.returncode == 0:
         return "survived", []
@@ -466,14 +585,18 @@ def run_rust(package: str) -> tuple[str, list[str]]:
     return "not-built", [f"no test verdict (exit {run.returncode})"]
 
 
-def run_python() -> tuple[str, list[str]]:
-    run = subprocess.run(
-        [sys.executable, "-I", "-m", "unittest", "discover", "-s", "python/tests"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def run_python(timeout_s: int) -> tuple[str, list[str]]:
+    try:
+        run = subprocess.run(
+            [sys.executable, "-I", "-m", "unittest", "discover", "-s", "python/tests"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return "timeout", [f"no verdict within {timeout_s} s"]
     log = run.stdout + run.stderr
     if run.returncode == 0:
         return "survived", []
@@ -489,9 +612,15 @@ def run_python() -> tuple[str, list[str]]:
     return "not-built", [f"no test verdict (exit {run.returncode})"]
 
 
-def measure(package: str) -> tuple[str, list[str]]:
-    """One suite run: `killed`, `survived` (green) or `not-built` (no verdict)."""
-    return run_python() if package == "python" else run_rust(package)
+def measure(package: str, timeout_s: int | None = None) -> tuple[str, list[str]]:
+    """One suite run: `killed`, `survived` (green), `timeout` (hung) or `not-built` (no verdict).
+
+    `timeout_s` overrides the per-suite default (1800 s for Rust, 300 s for Python); the
+    baseline uses the same limits as the mutants.
+    """
+    if package == "python":
+        return run_python(PYTHON_TIMEOUT_S if timeout_s is None else timeout_s)
+    return run_rust(package, RUST_TIMEOUT_S if timeout_s is None else timeout_s)
 
 
 def main() -> int:
@@ -506,7 +635,19 @@ def main() -> int:
         metavar="FINDING",
         help="run only the patches whose finding id is this (a focused re-run, never a substitute)",
     )
+    parser.add_argument(
+        "--timeout-s",
+        type=int,
+        metavar="SECONDS",
+        help=(
+            "kill a suite run (the baseline included) after this many seconds; default "
+            f"{RUST_TIMEOUT_S} for a Rust suite and {PYTHON_TIMEOUT_S} for a Python one. A mutant "
+            "whose run times out is KILLED-TIMEOUT: it hangs the suite, which detects it"
+        ),
+    )
     args = parser.parse_args()
+    if args.timeout_s is not None and args.timeout_s < 1:
+        parser.error("--timeout-s must be at least 1")
     if args.dry_run:
         stale = 0
         for mutant in MUTANTS:
@@ -528,13 +669,15 @@ def main() -> int:
     # (including a runner that cannot start) stops the campaign before any file is touched.
     wanted = [m for m in MUTANTS if not args.only or m.finding == args.only]
     for package in sorted({m.package for m in wanted}):
-        outcome, detail = measure(package)
+        outcome, detail = measure(package, args.timeout_s)
         print(f"BASELINE\t{package}\t{outcome}\t{'; '.join(detail) if detail else '-'}")
         sys.stdout.flush()
         if outcome != "survived":
             print(f"the unmutated {package} suite is not green; no mutant was applied", file=sys.stderr)
             return 2
     survivors = 0
+    killed = 0
+    killed_timeout = 0
     for mutant in MUTANTS:
         if args.only and mutant.finding != args.only:
             continue
@@ -549,24 +692,35 @@ def main() -> int:
         failing: list[str] = []
         try:
             path.write_text(original.replace(mutant.old, mutant.new, 1), encoding="utf-8")
-            outcome, failing = measure(mutant.package)
-            verdict = {"killed": "killed", "survived": "SURVIVED", "not-built": "NOT-BUILT"}[
-                outcome
-            ]
+            outcome, failing = measure(mutant.package, args.timeout_s)
+            verdict = {
+                "killed": "killed",
+                "survived": "SURVIVED",
+                "not-built": "NOT-BUILT",
+                "timeout": "KILLED-TIMEOUT",
+            }[outcome]
         finally:
             # The restore happens even when the measurement raises: a crashed campaign must
             # never leave a mutation in the tree.
             path.write_text(original, encoding="utf-8")
         after = digest(path)
         assert before == after, f"restore mismatch in {mutant.path}"
-        if verdict != "killed":
+        if verdict == "killed":
+            killed += 1
+        elif verdict == "KILLED-TIMEOUT":
+            killed_timeout += 1
+        else:
             survivors += 1
         print(
             f"{verdict}\t{mutant.finding}\t{mutant.label}\t"
             + ("; ".join(failing[:3]) if failing else "-")
         )
         sys.stdout.flush()
-    print(f"\n{len(MUTANTS)} patches, {survivors} survived; every restore verified by SHA-256")
+    print(
+        f"\n{len(MUTANTS)} patches: {killed} killed, {killed_timeout} killed by timeout, "
+        f"{survivors} not killed (survived, not built or not applied); "
+        "every restore verified by SHA-256"
+    )
     return 1 if survivors else 0
 
 

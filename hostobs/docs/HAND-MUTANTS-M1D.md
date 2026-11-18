@@ -4,7 +4,9 @@ Rust R2 (a `cargo-mutants` campaign judged by assay) is **not adopted yet** (`HO
 guards the P0 package adds are checked by hand mutation, in exactly the method of
 [`HAND-MUTANTS-M1C.md`](HAND-MUTANTS-M1C.md). The earlier campaigns are
 [`HAND-MUTANTS-M1.md`](HAND-MUTANTS-M1.md), [`HAND-MUTANTS-M1B.md`](HAND-MUTANTS-M1B.md) and
-M1C. The package fixes `HOB-8`, `HOB-42`, `HOB-43` and the length half of `HOB-48`.
+M1C. The package fixes `HOB-8`, `HOB-42`, `HOB-43` and the length half of `HOB-48`; the P0b
+follow-up adds `HOB-55`, `HOB-56`, `HOB-57` (the timeout) and `HOB-58` (patches `M1d-20` to
+`M1d-22`, and `M1d-18` rewritten for the recomputed total).
 
 **Status: the campaign has not been run.** The stored patches were written and checked with
 `--dry-run` (each fragment occurs in the source exactly once); no mutant has been executed,
@@ -19,6 +21,7 @@ Every mutation is a **stored patch** in a replayable script, not prose:
 python3 -I docs/hand-mutants/m1d-mutants.py            # the full campaign
 python3 -I docs/hand-mutants/m1d-mutants.py --dry-run   # the patches only, each checked
 python3 -I docs/hand-mutants/m1d-mutants.py --only M1d-3  # one finding's patches, re-run
+python3 -I docs/hand-mutants/m1d-mutants.py --timeout-s 900  # a shorter per-run limit
 ```
 
 Each step: record the file's SHA-256, replace one exact fragment, run the affected suite,
@@ -58,13 +61,27 @@ from scratch.
 | M1d-15 | HOB-43 | the `kind != File` guard on a `.corrupt` entry is dropped | none expected: **possibly an equivalent mutant**, because `read_window` fails on a directory and the name is reported anyway; if it survives, that is the explanation, not a missing test |
 | M1d-16 | HOB-43 | a quarantined / a live file deleted by hand is not recognised as gone | `a_quarantined_file_deleted_by_hand_does_not_fail_every_later_append`; `a_live_segment_deleted_by_hand_leaves_the_ring_without_failing_the_cap` |
 | M1d-17 | HOB-43 | a live / a quarantined name no longer reserves its sequence number | `a_name_never_comes_back_after_a_quarantine_and_a_restart` |
-| M1d-18 | HOB-43 | the segment / the event write path does not subtract its own eviction | `the_write_paths_subtract_what_their_own_eviction_removed`; `the_event_write_path_subtracts_what_its_own_eviction_removed` |
+| M1d-18 | HOB-43, HOB-56 | the segment / the event write path does not recompute the byte total from the tiers | `the_store_total_is_the_tiers_own_total_after_every_operation`; `the_write_paths_subtract_what_their_own_eviction_removed`; `the_event_write_path_subtracts_what_its_own_eviction_removed` |
 | M1d-19 | HOB-42 | an open name that carries a footer is adopted (Rust and Python) | `an_open_name_that_carries_a_footer_is_quarantined_not_adopted`; `test_an_open_name_that_carries_a_footer_is_refused` |
+| M1d-20 | HOB-55 | the name parser accepts a sequence above `SEQ_NAME_MAX`; `open_segment` mints one instead of failing; the Python parser accepts one | `a_sequence_above_the_name_bound_is_not_a_segment_name`; `a_name_above_the_sequence_bound_is_a_look_alike_and_never_poisons_the_water_mark`; `a_name_at_the_sequence_bound_is_adopted_and_the_next_segment_is_refused`; `test_a_sequence_above_the_name_bound_is_a_look_alike_in_every_spelling` |
+| M1d-21 | HOB-56 | the byte total is incremental arithmetic again: the write path, `Store::evict` or `seal_all` does not recompute it | `the_store_total_is_the_tiers_own_total_after_every_operation`; `the_store_total_drops_a_quarantined_file_deleted_by_hand`; `the_store_total_drops_a_live_segment_deleted_by_hand` |
+| M1d-22 | HOB-58 | `Tier::report` does not fill `Evicted::notes`; the write path / `Store::evict` does not copy them into the store's ring; the ring has no bound; `Store::notes` leaves them out | `a_quarantined_file_deleted_by_hand_does_not_fail_every_later_append`; `a_quarantined_file_that_cannot_be_removed_is_reported_to_the_caller`; `eviction_reports_from_the_write_path_reach_the_store_and_are_bounded`; `the_store_total_drops_a_quarantined_file_deleted_by_hand`; `the_store_total_drops_a_live_segment_deleted_by_hand` |
 
-Thirty-five stored patches in all (`--dry-run`: 35 stored patches, 0 stale). The campaign first
+Forty-six stored patches in all (`--dry-run`: 46 stored patches, 0 stale). The campaign first
 runs a BASELINE per suite on the unmutated tree and stops if it is not green; a patch is `killed`
 only by a real test failure, and a docker or runner failure, a compile error or a Python import
 error is `NOT-BUILT` (unanswered).
+
+### Timeouts (`HOB-57`)
+
+Every suite run, the baseline included, has a limit: `--timeout-s SECONDS` (default 1800 s for a
+Rust suite, 300 s for a Python one). A run that exceeds it is **`KILLED-TIMEOUT`**: a mutant that
+makes the suite hang is detected, exactly as standard mutation testing counts a timeout as a
+kill. It is reported in its own count in the summary line (`N killed, T killed by timeout, S not
+killed`) so a reader can see how many kills are hangs rather than red tests. A baseline that
+times out is not green and stops the campaign. Each Rust run's container is named
+`hostobs-mut-<pid>-<n>`; on a timeout the script stops the docker client and then runs
+`docker rm -f` on that exact name, never a filter or an ancestor.
 
 ## Results
 
