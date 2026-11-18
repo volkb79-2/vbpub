@@ -826,6 +826,27 @@ def test_locus_index_duplicate_payload_with_raising_repr_never_raises():
     assert second.by_locus(locus) is payload_a
 
 
+def test_payload_sort_key_hostile_class_metadata_never_raises():
+    class RaisingText:
+        def __str__(self) -> str:
+            raise RuntimeError("hostile module text")
+
+        __format__ = None  # type: ignore[assignment]
+
+    class Payload:
+        pass
+
+    Payload.__module__ = RaisingText()  # type: ignore[assignment]
+    locus = "a" * 64
+    entries = [
+        ("candidate-1", locus, None, Payload()),
+        ("candidate-1", locus, None, Payload()),
+    ]
+
+    assert candidate_locus._payload_sort_key(Payload())[0] == ""
+    assert LocusIndex(entries).by_locus(locus) is not None
+
+
 @pytest.mark.parametrize(
     "key",
     ["z" * 63, "Z" * 64, "not-a-key"],

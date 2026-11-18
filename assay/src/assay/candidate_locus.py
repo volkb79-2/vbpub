@@ -422,8 +422,11 @@ def window_key_for_site(
 
 
 def _payload_sort_key(payload: object) -> tuple[str, str]:
-    payload_type = type(payload)
-    type_qualname = f"{payload_type.__module__}.{payload_type.__qualname__}"
+    try:
+        payload_type = type(payload)
+        type_qualname = f"{payload_type.__module__}.{payload_type.__qualname__}"
+    except Exception:  # noqa: BLE001 -- hostile class metadata must not escape ranking
+        type_qualname = ""
     try:
         payload_repr = repr(payload)
     except Exception:  # noqa: BLE001 -- hostile repr must not escape ranking
