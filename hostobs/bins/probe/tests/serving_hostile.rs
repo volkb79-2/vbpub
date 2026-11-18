@@ -326,10 +326,7 @@ fn a_valid_hello_and_status_dispatch_in_their_contexts() {
         mode: Mode::Binary,
         phase: Phase::BeforeHello,
         level: Level::Observe,
-        prefix: Prefix {
-            major: 1,
-            minor: 1,
-        },
+        prefix: Prefix { major: 1, minor: 1 },
         payload: hello.as_bytes(),
     };
     let done = classify(&query).expect("hello");

@@ -818,14 +818,29 @@ mod tests {
     fn step_10_hello_arguments_name_the_member() {
         let cases = [
             ("{\"proto\":{\"major\":1,\"minor\":1}}", "client"),
-            ("{\"client\":1,\"proto\":{\"major\":1,\"minor\":1}}", "client"),
+            (
+                "{\"client\":1,\"proto\":{\"major\":1,\"minor\":1}}",
+                "client",
+            ),
             ("{\"client\":\"t\"}", "proto"),
             ("{\"client\":\"t\",\"proto\":{\"minor\":1}}", "proto.major"),
             ("{\"client\":\"t\",\"proto\":{\"major\":1}}", "proto.minor"),
-            ("{\"client\":\"t\",\"proto\":{\"major\":1,\"minor\":65536}}", "proto.minor"),
-            ("{\"client\":\"t\",\"proto\":{\"major\":-1,\"minor\":1}}", "proto.major"),
-            ("{\"client\":\"t\",\"proto\":{\"major\":1,\"minor\":1.0}}", "proto.minor"),
-            ("{\"client\":\"t\",\"proto\":{\"major\":1,\"minor\":1},\"uid\":0}", "uid"),
+            (
+                "{\"client\":\"t\",\"proto\":{\"major\":1,\"minor\":65536}}",
+                "proto.minor",
+            ),
+            (
+                "{\"client\":\"t\",\"proto\":{\"major\":-1,\"minor\":1}}",
+                "proto.major",
+            ),
+            (
+                "{\"client\":\"t\",\"proto\":{\"major\":1,\"minor\":1.0}}",
+                "proto.minor",
+            ),
+            (
+                "{\"client\":\"t\",\"proto\":{\"major\":1,\"minor\":1},\"uid\":0}",
+                "uid",
+            ),
         ];
         for (args, path) in cases {
             let text = req("hello", args);
