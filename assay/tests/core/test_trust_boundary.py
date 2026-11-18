@@ -33,6 +33,7 @@ _VERDICT_NAMES = (
     "CandidateOutcomeError",  # B251: verify rebuilds v20 candidate_error
     "CanaryAttempt",
     "CanaryResult",
+    "ChangedDiff",  # B245: verify rebuilds the v20 changed_diff record
     "Claim",
     "Coverage",
     "DISCARD_REASONS",

@@ -1306,6 +1306,21 @@
         "weakref_slot": false
       }
     },
+    "assay.verdict.ChangedDiff": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.verdict.Claim": {
       "fields": {},
       "params": {
@@ -1449,7 +1464,11 @@
       }
     },
     "assay.verdict.JudgmentR2": {
-      "fields": {},
+      "fields": {
+        "report_absent": {
+          "default": false
+        }
+      },
       "params": {
         "eq": true,
         "frozen": true,
