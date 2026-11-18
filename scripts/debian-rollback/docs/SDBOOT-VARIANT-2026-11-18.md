@@ -77,8 +77,10 @@ reversible; whether systemd-boot itself accepts `@` remains unverified because n
 
 `/loader/entries` is on case-insensitive vfat, so all desired entry ids are additionally required to be
 case-insensitively unique. For example, `@os-lower` and `@os-LOWER` map to distinct strings in software but the same
-FAT file; such a menu is refused before any write. An existing `.conf` whose basename differs only by case from a
-desired entry is also refused rather than overwritten. This keeps the mapping reversible without silent aliasing.
+FAT file; such a menu is refused before any write. Every existing name in `/loader/entries` is compared case-folded
+as a complete basename, including the extension. A foreign `OS-0001.CONF` therefore collides with the intended
+`os-0001.conf` and is refused rather than overwritten. An exact target must carry the dr-state entry marker; a
+same-named foreign file is also refused. This keeps the mapping reversible without silent aliasing.
 
 One entry is written per state:
 
@@ -125,6 +127,13 @@ block-rounded bytes needed for:
 - every desired BLS entry;
 - the rewritten `loader.conf`, measured with byte-safe `wc -c` arithmetic rather than shell character counts.
 
+The persistent file/directory allocations still do not model FAT's LFN directory records. Space accounting therefore
+also reserves a deliberately conservative estimate: two clusters for every child name this operation can create or
+stage, plus one cluster for every involved parent directory. Temporary kernel, entry, marker, and `loader.conf` names
+are included. This is an estimate, not a claim about a particular vfat implementation's directory packing. It can
+refuse a menu that would fit, but it is intended to avoid accepting a menu that later runs out of space during
+directory or rename operations.
+
 The computed need is compared with the ESP's current free bytes. If it does not fit, the command exits non-zero with
 the need and free byte counts and leaves the existing menu untouched.
 
@@ -134,14 +143,18 @@ its two files are replaced through temporary names in that existing directory; t
 because an installed entry may still reference it.
 
 At the start of a non-dry-run `gen-menu` or `prune` for this backend, under the existing `dr-state` lock, the command
-removes only known interrupted-work names: top-level `.tmp.*` kernel staging directories, `.vmlinuz.tmp.*` and
-`.initrd.img.tmp.*` repair files inside valid kernel directories, `.<entry-id>.conf.new.<pid>` entry files,
-`loader.conf.new.<pid>`, and `bootloader.new.<pid>`. Unrelated files and directories are left untouched.
+removes only the exact shapes this tool generates: a top-level kernel staging directory `.tmp.<six mktemp
+characters>`, `.vmlinuz.tmp.<numeric-pid>` and `.initrd.img.tmp.<numeric-pid>` repair files inside valid kernel
+directories, `.<entry-id>.conf.new.<numeric-pid>` entry files, `loader.conf.new.<numeric-pid>`, and
+`bootloader.new.<numeric-pid>`. Prefix look-alikes such as `.tmp.not-ours`, `loader.conf.new.backup`, and
+`bootloader.new.backup` survive. The destructive `_sdboot-clean-scratch` test hook refuses to run unless
+`DR_STATE_TEST_MODE=1`.
 
 `prune` deletes states using the existing selection policy (newest N, never the running, default, or pending one-shot
 state), regenerates the BLS menu, then removes only ESP kernel directories referenced by no remaining BLS entry. It
 does not delete a directory referenced by any path argument on any `linux` or `initrd` line, including BLS
-multi-initrd lines. Kernel ids are validated again immediately before deletion.
+multi-initrd lines. A trailing CR is removed before every BLS line is parsed, so CRLF entries protect their kernels
+the same way LF entries do. Kernel ids are validated again immediately before deletion.
 
 ## GRUB compatibility
 
@@ -154,7 +167,16 @@ revision after only renaming the function; its GRUB text and operations are byte
 The failing-first suite for the new pure decisions is `poc/test-dr-state-sdboot.sh`. It covers the BLS entry text,
 content-addressed kernel ids, entry-id mapping and rejection, backend selection, byte accounting decisions,
 `loader.conf` rewriting, empty backend sources, multi-path reference extraction, FAT case collisions, interrupted-copy
-cleanup, parent-directory allocation, and orphan-directory selection. It currently passes 85 cases.
+cleanup, parent-directory allocation, CRLF references, and orphan-directory selection. It currently passes 97 cases.
+
+The suite also runs workflow fixtures through the real `gen-menu`, `set-default`, and `prune` paths against disposable
+ESP trees. `DR_STATE_TEST_MODE=1` with `DR_STATE_TEST_ROOT` selects a temporary root and optional deterministic ESP
+cluster/free inputs; without both the production mounts and paths remain in force. These fixtures prove that cleanup,
+all-name collision refusal, space checking, first-entry default selection, `set-default`, and ESP kernel pruning are
+actually called. A near-full fixture brackets the reported need by one byte and also checks that the conservative
+parent/FAT-record reserve is present. For mutation evidence, disposable `/tmp` copies with each production call
+removed were run through this suite; all five mutants — cleanup, collision scan, space check, parent-directory
+accounting, and default selection — were killed.
 
 `poc/test-install-btrfs-bootloader.sh` dry-runs the installer and checks the default and explicit GRUB package path,
 the systemd-boot package path, exact bootctl argv, backend config and marker, command ordering, and refusal of an

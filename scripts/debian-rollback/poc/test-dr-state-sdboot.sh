@@ -18,6 +18,9 @@
 #   _sdboot-dir-alloc ROOT CLUSTER RELDIR...
 #   _sdboot-alloc-sum CLUSTER SIZE...
 #   _sdboot-clean-scratch KERNEL_DIR ENTRY_DIR LOADER_CONF MARKER
+#
+# Workflow fixtures run the real gen-menu/set-default/prune commands with DR_STATE_TEST_MODE=1 and a disposable
+# temporary root. They never mount or touch /boot/efi or /.top.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DR="$HERE/dr-state"
@@ -44,6 +47,37 @@ expect_text() { # expect_text LABEL WANT COMMAND...
     echo "FAIL $label: want rc=0 text='$want'; got rc=$rc text='$got' ($(tr '\n' ' ' <"$WORK/err"))"
     fail=1
   fi
+}
+
+workflow_run() { # workflow_run ROOT FREE CLUSTER COMMAND...
+  local root=$1 free=$2 cluster=$3
+  shift 3
+  env DR_STATE_TEST_MODE=1 DR_STATE_TEST_ROOT="$root" \
+    DR_STATE_TEST_ESP_FREE="$free" DR_STATE_TEST_ESP_CLUSTER="$cluster" "$DR" "$@"
+}
+
+workflow_fixture() { # workflow_fixture ROOT full|sparse
+  local root=$1 shape=${2:-full}
+  mkdir -p "$root/esp" "$root/top" "$root/etc" "$root/run" \
+    "$root/sys/firmware/efi/efivars"
+  printf 'BOOTLOADER=systemd-boot\n' >"$root/etc/dr-state.conf"
+  printf '%s / btrfs defaults,noatime 0 0\n' "$UUID" >"$root/etc/fstab"
+  if [ "$shape" = full ]; then
+    mkdir -p "$root/esp/EFI/dr/kernels" "$root/esp/loader/entries"
+  fi
+}
+
+workflow_state() { # workflow_state ROOT STATE
+  local root=$1 state=$2
+  mkdir -p "$root/top/$state/boot"
+  printf 'kernel for %s\n' "$state" >"$root/top/$state/boot/vmlinuz-$KVER"
+  printf 'initrd for %s\n' "$state" >"$root/top/$state/boot/initrd.img-$KVER"
+}
+
+workflow_two_states() { # workflow_two_states ROOT
+  local root=$1
+  workflow_state "$root" @os-0001
+  workflow_state "$root" @os-0002
 }
 
 HASH_A=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
@@ -312,35 +346,61 @@ expect_exit orphan-bad-reference 1 "$DR" _sdboot-orphan-kernels 'safe' '../escap
 expect_exit entry-refs-empty 0 bash -c "printf 'title only\\n' | \"\$1\" _sdboot-entry-refs" _ "$DR"
 expect_text entry-refs-dedupe "$ID_A" bash -c "printf 'linux /EFI/dr/kernels/$ID_A/vmlinuz\\ninitrd /EFI/dr/kernels/$ID_A/initrd.img\\n' | \"\$1\" _sdboot-entry-refs" _ "$DR"
 
+# CRLF is legal in BLS text arriving from foreign editors; a retained CR must not hide a referenced kernel.
+printf 'linux /EFI/dr/kernels/crlf-a-111111111111/vmlinuz\r\ninitrd /EFI/dr/kernels/crlf-b-222222222222/initrd.img\r\n' \
+  >"$WORK/crlf-single"
+got=$("$DR" _sdboot-entry-refs <"$WORK/crlf-single" 2>"$WORK/err"); rc=$?
+case_count=$((case_count + 1))
+if [ "$rc" != 0 ] || [ "$got" != $'crlf-a-111111111111\ncrlf-b-222222222222' ]; then
+  echo "FAIL entry-refs-crlf-single: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"; echo "$got"; fail=1
+fi
+
+printf 'linux /EFI/dr/kernels/crlf-a-111111111111/vmlinuz\r\ninitrd /EFI/dr/kernels/crlf-a-111111111111/initrd.img /EFI/dr/kernels/crlf-b-222222222222/initrd.img\r\n' \
+  >"$WORK/crlf-multi"
+got=$("$DR" _sdboot-entry-refs <"$WORK/crlf-multi" 2>"$WORK/err"); rc=$?
+case_count=$((case_count + 1))
+if [ "$rc" != 0 ] || [ "$got" != $'crlf-a-111111111111\ncrlf-b-222222222222' ]; then
+  echo "FAIL entry-refs-crlf-multi: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"; echo "$got"; fail=1
+fi
+
 # Interrupted copies use known dr-state scratch names; cleanup removes those and leaves every unrelated file alone.
 SCRATCH="$WORK/scratch"
-mkdir -p "$SCRATCH/kernels/.tmp.old" "$SCRATCH/kernels/os-keep-111111111111" \
+mkdir -p "$SCRATCH/kernels/.tmp.Ab12Cd" "$SCRATCH/kernels/.tmp.not-ours" \
+  "$SCRATCH/kernels/.tmp.Ab12Cd.extra" "$SCRATCH/kernels/os-keep-111111111111" \
   "$SCRATCH/entries" "$SCRATCH/loader" "$SCRATCH/efi-dr"
-printf x >"$SCRATCH/kernels/.tmp.old/vmlinuz"
+printf x >"$SCRATCH/kernels/.tmp.Ab12Cd/vmlinuz"
+printf x >"$SCRATCH/kernels/.tmp.not-ours/vmlinuz"
+printf x >"$SCRATCH/kernels/.tmp.Ab12Cd.extra/vmlinuz"
 printf x >"$SCRATCH/kernels/.foreign-hidden"
 printf x >"$SCRATCH/kernels/os-keep-111111111111/vmlinuz"
 printf x >"$SCRATCH/kernels/os-keep-111111111111/initrd.img"
 printf x >"$SCRATCH/kernels/os-keep-111111111111/.vmlinuz.tmp.123"
+printf x >"$SCRATCH/kernels/os-keep-111111111111/.vmlinuz.tmp.123.bak"
 printf x >"$SCRATCH/kernels/os-keep-111111111111/.initrd.img.tmp.123"
 printf x >"$SCRATCH/kernels/os-keep-111111111111/.other.tmp.123"
 printf x >"$SCRATCH/entries/.os-old.conf.new.123"
+printf x >"$SCRATCH/entries/.os-old.conf.new.backup"
 printf x >"$SCRATCH/entries/.os-old.tmp.123"
 printf x >"$SCRATCH/entries/.notes"
 printf x >"$SCRATCH/entries/os-old.conf"
 printf x >"$SCRATCH/loader/loader.conf.new.123"
+printf x >"$SCRATCH/loader/loader.conf.new.backup"
 printf x >"$SCRATCH/loader/other.new.123"
 printf x >"$SCRATCH/loader/loader.conf"
 printf x >"$SCRATCH/efi-dr/bootloader.new.123"
+printf x >"$SCRATCH/efi-dr/bootloader.new.backup"
 printf x >"$SCRATCH/efi-dr/bootloader"
 
+expect_exit clean-scratch-requires-test-mode 1 env -u DR_STATE_TEST_MODE "$DR" _sdboot-clean-scratch \
+  "$SCRATCH/kernels" "$SCRATCH/entries" "$SCRATCH/loader/loader.conf" "$SCRATCH/efi-dr/bootloader"
 case_count=$((case_count + 1))
-"$DR" _sdboot-clean-scratch "$SCRATCH/kernels" "$SCRATCH/entries" \
+DR_STATE_TEST_MODE=1 DR_STATE_TEST_ROOT="$SCRATCH" "$DR" _sdboot-clean-scratch "$SCRATCH/kernels" "$SCRATCH/entries" \
   "$SCRATCH/loader/loader.conf" "$SCRATCH/efi-dr/bootloader" >"$WORK/out" 2>"$WORK/err"; rc=$?
 if [ "$rc" != 0 ]; then
   bad "clean-scratch: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
 else
   for path in \
-    "$SCRATCH/kernels/.tmp.old" \
+    "$SCRATCH/kernels/.tmp.Ab12Cd" \
     "$SCRATCH/kernels/os-keep-111111111111/.vmlinuz.tmp.123" \
     "$SCRATCH/kernels/os-keep-111111111111/.initrd.img.tmp.123" \
     "$SCRATCH/entries/.os-old.conf.new.123" \
@@ -349,18 +409,150 @@ else
     [ ! -e "$path" ] || bad "clean-scratch: known scratch survived: $path"
   done
   for path in \
+    "$SCRATCH/kernels/.tmp.not-ours" \
+    "$SCRATCH/kernels/.tmp.Ab12Cd.extra" \
     "$SCRATCH/kernels/.foreign-hidden" \
     "$SCRATCH/kernels/os-keep-111111111111/vmlinuz" \
     "$SCRATCH/kernels/os-keep-111111111111/initrd.img" \
+    "$SCRATCH/kernels/os-keep-111111111111/.vmlinuz.tmp.123.bak" \
     "$SCRATCH/kernels/os-keep-111111111111/.other.tmp.123" \
+    "$SCRATCH/entries/.os-old.conf.new.backup" \
     "$SCRATCH/entries/.os-old.tmp.123" \
     "$SCRATCH/entries/.notes" \
     "$SCRATCH/entries/os-old.conf" \
+    "$SCRATCH/loader/loader.conf.new.backup" \
     "$SCRATCH/loader/other.new.123" \
     "$SCRATCH/loader/loader.conf" \
+    "$SCRATCH/efi-dr/bootloader.new.backup" \
     "$SCRATCH/efi-dr/bootloader"; do
     [ -e "$path" ] || bad "clean-scratch: unrelated file was removed: $path"
   done
+fi
+
+# Production workflow: cleanup is called before generation, and foreign look-alikes survive the real command.
+WF_CLEAN="$WORK/wf-clean"
+workflow_fixture "$WF_CLEAN" full
+workflow_two_states "$WF_CLEAN"
+mkdir -p "$WF_CLEAN/esp/EFI/dr/kernels/.tmp.Ab12Cd" "$WF_CLEAN/esp/EFI/dr/kernels/.tmp.not-ours"
+printf x >"$WF_CLEAN/esp/EFI/dr/kernels/.tmp.Ab12Cd/vmlinuz"
+printf x >"$WF_CLEAN/esp/EFI/dr/kernels/.tmp.not-ours/vmlinuz"
+printf x >"$WF_CLEAN/esp/loader/loader.conf.new.123"
+printf x >"$WF_CLEAN/esp/loader/loader.conf.new.backup"
+printf x >"$WF_CLEAN/esp/EFI/dr/bootloader.new.123"
+printf x >"$WF_CLEAN/esp/EFI/dr/bootloader.new.backup"
+case_count=$((case_count + 1))
+workflow_run "$WF_CLEAN" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 0 ]; then
+  bad "workflow-cleanup: gen-menu rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+else
+  for path in "$WF_CLEAN/esp/EFI/dr/kernels/.tmp.Ab12Cd" \
+    "$WF_CLEAN/esp/loader/loader.conf.new.123" "$WF_CLEAN/esp/EFI/dr/bootloader.new.123"; do
+    [ ! -e "$path" ] || bad "workflow-cleanup: own scratch survived: $path"
+  done
+  for path in "$WF_CLEAN/esp/EFI/dr/kernels/.tmp.not-ours" \
+    "$WF_CLEAN/esp/loader/loader.conf.new.backup" "$WF_CLEAN/esp/EFI/dr/bootloader.new.backup"; do
+    [ -e "$path" ] || bad "workflow-cleanup: foreign look-alike removed: $path"
+  done
+fi
+
+# Production workflow: a foreign case/extension alias is refused before any desired entry is overwritten.
+WF_COLLISION="$WORK/wf-collision"
+workflow_fixture "$WF_COLLISION" full
+workflow_state "$WF_COLLISION" @os-0001
+printf 'title foreign owner\n' >"$WF_COLLISION/esp/loader/entries/OS-0001.CONF"
+case_count=$((case_count + 1))
+workflow_run "$WF_COLLISION" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 1 ]; then
+  bad "workflow-collision: want exit 1, got $rc"
+elif ! grep -Fq 'case-insensitively collides' "$WORK/err"; then
+  bad "workflow-collision: refusal did not explain the case alias"
+elif [ "$(cat "$WF_COLLISION/esp/loader/entries/OS-0001.CONF")" != 'title foreign owner' ]; then
+  bad "workflow-collision: foreign entry was changed"
+elif [ -e "$WF_COLLISION/esp/loader/loader.conf" ]; then
+  bad "workflow-collision: loader.conf was written despite refusal"
+fi
+
+# Production workflow: even an exact filename is refused when it does not carry the dr-state ownership marker.
+WF_FOREIGN="$WORK/wf-foreign-exact"
+workflow_fixture "$WF_FOREIGN" full
+workflow_state "$WF_FOREIGN" @os-0001
+printf 'title foreign exact name\n' >"$WF_FOREIGN/esp/loader/entries/os-0001.conf"
+case_count=$((case_count + 1))
+workflow_run "$WF_FOREIGN" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 1 ]; then
+  bad "workflow-foreign-exact: want exit 1, got $rc"
+elif ! grep -Fq 'is not owned by dr-state' "$WORK/err"; then
+  bad "workflow-foreign-exact: refusal did not explain ownership"
+elif [ "$(cat "$WF_FOREIGN/esp/loader/entries/os-0001.conf")" != 'title foreign exact name' ]; then
+  bad "workflow-foreign-exact: foreign entry was changed"
+fi
+
+# Production workflow: no requested existing default still emits exactly one valid default; set-default rewrites it.
+WF_DEFAULT="$WORK/wf-default"
+workflow_fixture "$WF_DEFAULT" full
+workflow_two_states "$WF_DEFAULT"
+case_count=$((case_count + 1))
+workflow_run "$WF_DEFAULT" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 0 ]; then
+  bad "workflow-default-first: gen-menu rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+elif [ "$(awk '$1 == "default" {print $2}' "$WF_DEFAULT/esp/loader/loader.conf")" != os-0001 ]; then
+  bad "workflow-default-first: first sorted entry was not selected"
+fi
+case_count=$((case_count + 1))
+workflow_run "$WF_DEFAULT" 999999999 4096 set-default @os-0002 >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 0 ]; then
+  bad "workflow-set-default: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+elif [ "$(awk '$1 == "default" {print $2}' "$WF_DEFAULT/esp/loader/loader.conf")" != os-0002 ]; then
+  bad "workflow-set-default: loader.conf did not select os-0002"
+fi
+
+# Integrated near-full workflow: the reported need must include parent/record reserves, and one byte on either side
+# of the actual threshold must fail or succeed before any ESP write.
+WF_SPACE_BASE="$WORK/wf-space-base"
+WF_SPACE_OVER="$WORK/wf-space-over"
+WF_SPACE_UNDER="$WORK/wf-space-under"
+for root in "$WF_SPACE_BASE" "$WF_SPACE_OVER" "$WF_SPACE_UNDER"; do
+  workflow_fixture "$root" sparse
+  workflow_two_states "$root"
+done
+case_count=$((case_count + 1))
+workflow_run "$WF_SPACE_BASE" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
+needed=$(sed -n 's/.*ESP space ok: need \([0-9][0-9]*\) bytes.*/\1/p' "$WORK/err" | tail -n1)
+if [ "$rc" != 0 ] || [ -z "$needed" ]; then
+  bad "workflow-space-baseline: rc=$rc needed='$needed' ($(tr '\n' ' ' <"$WORK/err"))"
+elif [ "$needed" -lt $((64 * 4096)) ]; then
+  bad "workflow-space-reserve: need $needed omits conservative parent/FAT-record reserve"
+else
+  case_count=$((case_count + 1))
+  workflow_run "$WF_SPACE_OVER" "$((needed - 1))" 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
+  if [ "$rc" != 1 ]; then
+    bad "workflow-space-over: want exit 1 at $((needed - 1)) bytes, got $rc"
+  elif [ -e "$WF_SPACE_OVER/esp/loader/loader.conf" ] || [ -e "$WF_SPACE_OVER/esp/EFI/dr/kernels" ]; then
+    bad "workflow-space-over: ESP was changed despite refusal"
+  fi
+  case_count=$((case_count + 1))
+  workflow_run "$WF_SPACE_UNDER" "$needed" 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
+  if [ "$rc" != 0 ]; then
+    bad "workflow-space-under: want exit 0 at $needed bytes, got $rc ($(tr '\n' ' ' <"$WORK/err"))"
+  elif [ ! -s "$WF_SPACE_UNDER/esp/loader/loader.conf" ]; then
+    bad "workflow-space-under: loader.conf missing"
+  fi
+fi
+
+# Production prune route removes an unreferenced ESP kernel after regenerating the BLS entries.
+WF_PRUNE="$WORK/wf-prune"
+workflow_fixture "$WF_PRUNE" full
+workflow_two_states "$WF_PRUNE"
+mkdir -p "$WF_PRUNE/esp/EFI/dr/kernels/9.9.9+deb13-amd64-deadbeefcafe"
+printf x >"$WF_PRUNE/esp/EFI/dr/kernels/9.9.9+deb13-amd64-deadbeefcafe/vmlinuz"
+printf x >"$WF_PRUNE/esp/EFI/dr/kernels/9.9.9+deb13-amd64-deadbeefcafe/initrd.img"
+case_count=$((case_count + 1))
+DR_STATE=@os-0001 workflow_run "$WF_PRUNE" 999999999 4096 prune --keep 10 \
+  >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 0 ]; then
+  bad "workflow-prune: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+elif [ -e "$WF_PRUNE/esp/EFI/dr/kernels/9.9.9+deb13-amd64-deadbeefcafe" ]; then
+  bad "workflow-prune: unreferenced kernel directory survived"
 fi
 
 if [ "$fail" = 0 ]; then
