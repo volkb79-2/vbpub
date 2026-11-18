@@ -267,6 +267,38 @@ pub enum ProtoError {
         /// The section kind found at that position.
         kind: u16,
     },
+    /// A history bucket's aggregation is not permitted by a column's metric mask.
+    ///
+    /// Counters permit raw, last and delta, gauges last, mean, min and max, and states
+    /// last (WIRE.md §3.6); a bucket whose `agg` falls outside any column's mask would
+    /// be read as a measurement the metric can never have.
+    AggregationNotPermitted {
+        /// The dictionary index of the column's metric.
+        metric: u32,
+        /// The aggregation code of the offending bucket.
+        agg: u8,
+    },
+    /// A subject section appears in a block that has no time section.
+    ///
+    /// The subject names the one incarnation a history block describes (WIRE.md §3.8),
+    /// so a live block, which names its incarnations per row, may not carry one.
+    SubjectWithoutTime {
+        /// The dictionary index the subject section names.
+        subject: u32,
+    },
+    /// A frame did not complete within the reader's completion age (WIRE.md §5.2).
+    ///
+    /// The age runs from the first byte of the frame, so an idle connection never trips it.
+    Deadline,
+    /// A dictionary-bearing block of a stream does not carry a generation above the one the
+    /// stream holds (WIRE.md §6.2). A stream that holds nothing holds generation 0, so a
+    /// first block at generation 0 is refused with the same error.
+    GenerationRegressed {
+        /// The generation the stream holds (0 when it holds nothing).
+        held: u32,
+        /// The generation the block carries.
+        got: u32,
+    },
 }
 
 impl fmt::Display for ProtoError {
@@ -461,6 +493,27 @@ impl fmt::Display for ProtoError {
                     "section {index} (kind {kind}) is out of the canonical order"
                 )
             }
+            ProtoError::AggregationNotPermitted { metric, agg } => {
+                write!(
+                    f,
+                    "aggregation {agg} is not permitted by the mask of metric {metric}"
+                )
+            }
+            ProtoError::SubjectWithoutTime { subject } => {
+                write!(
+                    f,
+                    "subject {subject} names an incarnation in a block without a time section"
+                )
+            }
+            ProtoError::Deadline => {
+                f.write_str("frame did not complete within the completion deadline")
+            }
+            ProtoError::GenerationRegressed { held, got } => {
+                write!(
+                    f,
+                    "dictionary-bearing block carries generation {got}, which does not exceed the held {held}"
+                )
+            }
         }
     }
 }
@@ -519,6 +572,10 @@ impl ProtoError {
             ProtoError::ColumnKindMismatch { .. } => "column-kind-mismatch",
             ProtoError::NotABlock { .. } => "not-a-block",
             ProtoError::SectionOrder { .. } => "section-order",
+            ProtoError::AggregationNotPermitted { .. } => "aggregation-not-permitted",
+            ProtoError::SubjectWithoutTime { .. } => "subject-without-time",
+            ProtoError::Deadline => "deadline",
+            ProtoError::GenerationRegressed { .. } => "generation-regressed",
         }
     }
 }
@@ -605,6 +662,10 @@ mod tests {
             },
             ProtoError::NotABlock { frame_type: 1 },
             ProtoError::SectionOrder { index: 2, kind: 1 },
+            ProtoError::AggregationNotPermitted { metric: 3, agg: 3 },
+            ProtoError::SubjectWithoutTime { subject: 0 },
+            ProtoError::Deadline,
+            ProtoError::GenerationRegressed { held: 3, got: 3 },
         ];
         for case in cases {
             let rendered = case.to_string();
@@ -768,6 +829,19 @@ mod tests {
                 "section-order",
                 ProtoError::SectionOrder { index: 2, kind: 1 },
             ),
+            (
+                "aggregation-not-permitted",
+                ProtoError::AggregationNotPermitted { metric: 3, agg: 3 },
+            ),
+            (
+                "subject-without-time",
+                ProtoError::SubjectWithoutTime { subject: 0 },
+            ),
+            ("deadline", ProtoError::Deadline),
+            (
+                "generation-regressed",
+                ProtoError::GenerationRegressed { held: 2, got: 2 },
+            ),
         ];
         let mut names = Vec::new();
         for (expected, error) in cases {
@@ -780,7 +854,7 @@ mod tests {
         }
         assert_eq!(
             names.len(),
-            42,
+            46,
             "the refused-variant count is part of the contract"
         );
     }

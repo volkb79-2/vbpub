@@ -116,9 +116,15 @@ Two decoder rules make the layout guarantees hold for **received** frames, not o
   frame has no header, so every accepted frame starts with the header.
 Hence **every body starts at a frame offset ≡ 0 (mod 8)**, a BLOCK's `len` is a multiple of 8, the
 header body sits at `16 + 8·n_sec`, and the frame ends exactly after the last body (`trailing-bytes`
-otherwise). Today neither decoder enforces the two rules (`frame.rs` `decode_block` lines 1086-1108
-take any body length; unknown kinds are exempt from the order check at 1114-1126; the Python reference
-`decode_frame` lines 509-535 likewise): §13 V-11, P2. In `fixtures/wire/live-block.bin` (344 B, 5
+otherwise). Both decoders enforce the two rules (`HOB-51`, §13 V-11; fixtures
+`unaligned-optional-section` and `optional-section-before-header`). Three more decoder rules:
+the directory's `8·n_sec` bytes must be present before storage is reserved for them (`truncated`,
+context "block directory"; `HOB-50`); the header and the subject directory entries MUST carry the
+required flag (bit 0), and a clear flag is `unknown-section-flags` with `kind_code` the section's kind
+and `flags` the entry's flag byte (fixtures `header-required-flag-clear`,
+`subject-required-flag-clear`); only the first header section's body is decoded, so a second header is
+`duplicate-section` whatever its body holds (fixture `duplicate-header-bad-second-body`). In
+`fixtures/wire/live-block.bin` (344 B, 5
 sections: header, dictionary, rows, 2 columns) the bodies start at offset 56 and `dropped` sits at 128.
 
 3.2 **Sections** (version 1 each; a known kind with another version is refused even when optional,
@@ -151,17 +157,21 @@ this client since its previous pinned block (saturating, §5.3). History blocks:
 3.5 **Column body (kind 3)**: u32 `metric`@0 (MUST name a Metric), u8 `type`@4 (1 u64, 2 i64, 3 f64),
 u8 `kind`@5 (0 gauge, 1 counter, 2 state; MUST equal the dictionary's kind, `column-kind-mismatch`),
 u16 reserved@6 = 0 (`column-reserved`), `n_rows × 8 B` values @8, `n_rows × u8` quality @`8 + 8·n_rows`,
-zero pad. Length exactly `align8(8 + 9·n_rows)`. A row whose quality is not `ok` keeps its 8 bytes
-(any content, e.g. NaN bits) and they MUST NOT be read as a measurement.
+zero pad (a non-zero pad byte is `non-zero-reserved`, `value` the first such byte; the same holds for
+the pad of the time body and the dictionary body). Length exactly `align8(8 + 9·n_rows)`. A row whose
+quality is not `ok` keeps its 8 bytes (any content, e.g. NaN bits) and they MUST NOT be read as a
+measurement.
 
 3.6 **Time body (kind 4, history)**: `n × i64 bucket_real_ns` @0, `n × u32 covered_ms` @8n,
 `n × u16 samples` @12n, `n × u8 agg` @14n (0 raw, 1 last, 2 delta, 3 mean, 4 min, 5 max), zero pad;
-`n = n_rows`. Length exactly **`align8(15·n)`** (`TIME_BUCKET_BYTES = 15`). This was always the
-section's layout: the encoder wrote 15 bytes per bucket while `time_body_len` computed `align8(14·n)`,
-so no frame with `n ≥ 4` could ever round-trip; the P0 bug fold-in fixes the length in both languages
-with fixture `history-five-buckets` and no minor bump (§13 V-1). Every bucket's `agg` MUST be permitted
+`n = n_rows`. Length exactly **`align8(15·n)`** (`TIME_BUCKET_BYTES = 15`; five buckets are 80
+bytes, fixture `history-five-buckets`, §13 V-1; layout version 1, no minor). The `agg` bytes are
+judged (`unknown-aggregation`) before the pad (`non-zero-reserved`), so a body with both defects is
+`unknown-aggregation` (fixture `time-bad-agg-and-pad`). Every bucket's `agg` MUST be permitted
 by every column's metric mask (§3.7) — counters raw/last/delta, gauges last/mean/min/max, state last
-(`aggregation-not-permitted`, `HOB-47`). Gauge min/max/mean are separate history blocks of the same
+(`aggregation-not-permitted`, `HOB-47`). The mask is the column's own kind's, so the check needs no
+dictionary: it runs for an in-frame dictionary, a held one and none at all, and the encoders refuse
+it too. Gauge min/max/mean are separate history blocks of the same
 subject, one aggregation per block, packed by §4.9 (this is how `HOB-5` is served, no wire change).
 
 3.7 **Dictionary body (kind 5)** (`dict.rs` `encode`/`decode`): u32 `generation`@0, u32 `count`@4
@@ -172,24 +182,44 @@ derived mask; label: u8 kind, u8 source; free: none), then `text_len` bytes of U
 < 0x20 or 0x7F. Entries are unaligned. Entry *i* is index *i*. Identity is the entity's `inc`, the
 metric's name, the label's `(kind, source, text)`, the free entry's text; a repeated identity is
 `duplicate-dictionary-entry` **whatever the other fields hold** (a metric name repeated with other
-facts, an `inc` repeated with another label, an exact repeat). The Python reference does exactly this
-(`hostobs_wire_ref.py` lines 294-299); Rust reports a metric name repeated with other facts as
-`conflicting-column` because `Dictionary::decode` goes through `intern` (`dict.rs` lines 591-596 via
-891), and the other two as `duplicate-dictionary-entry` (line 895): §13 V-12, P2. Code tables:
-`dict.rs` lines 48-155.
+facts, an `inc` repeated with another label, an exact repeat; `HOB-52`, §13 V-12); Rust
+`Dictionary::decode` maps the `conflicting-column` that `intern` reports for a metric name repeated
+with other facts to `duplicate-dictionary-entry` at that entry's index (`intern` itself keeps
+`conflicting-column` for a live table). Both decoders judge one entry in this order, the Rust cursor's:
+`dictionary-entry-reserved`, `dictionary-entry-too-long`, `unknown-dictionary-kind`, the metric's
+unit, kind (`unknown-column-kind`), scope and source codes (`dictionary-entry-unknown-code`), the mask
+(`dictionary-entry-mask`), the text (`truncated` when the body ends first, `dictionary-entry-not-utf8`),
+a repeated identity (`duplicate-dictionary-entry`), then control bytes in the text
+(`dictionary-entry-control`, `index` and byte `offset`); the pad is `non-zero-reserved` and a longer body
+`trailing-bytes`. A count above 65,536 is `dictionary-too-large` before any entry is read, and every
+short read is `truncated` with context "dictionary section": no hostile body raises anything but a
+typed refusal in either language (fixtures `dictionary-count-too-large`, `dictionary-entry-control`,
+`dictionary-text-past-body`, `dictionary-invalid-utf8`, `dictionary-short-entry-header`,
+`dictionary-nonzero-pad`). Code tables: `dict.rs` lines 48-155.
 
 3.8 **Subject body (kind 6, ver 1, minor ≥ 1, required flag set)**: u32 `ent`@0 (dictionary index,
 MUST name an Entity), u32 reserved@4 = 0. Allowed only with a time section (`subject-without-time`);
 it names the one incarnation a history block describes. A minor-0 reader refuses it, which is correct:
-a history block it cannot attribute must not be read. (`HOB-48` adds it to the codec.)
+a history block it cannot attribute must not be read. Both codecs implement it (`HOB-48`). The
+directory's required flag is written by the encoders and enforced on decode: a clear flag is
+`unknown-section-flags` (`kind_code` 6, `flags` the entry's flag byte, fixture
+`subject-required-flag-clear`; the section version is judged first, fixture
+`header-version-and-required-flag-clear`). The decoder takes no negotiated minor: a kind 6 section is
+decoded whatever minor was negotiated, and the rule that a minor-0 peer is never sent one belongs to the
+stream layer (`HOB-54`). A body that is not 8 bytes is `section-length`, a non-zero reserved
+word `unknown-section-flags` (`flags` the word), a subject past the dictionary `dangling-dictionary-ref`,
+one that is not an entity `row-reference-not-entity` (fixtures `subject-wrong-length`,
+`subject-reserved-word`, `subject-dangling`, `subject-not-entity`). The encoder cannot check that the
+subject names an entity when the block carries no dictionary, so only the decoder does.
 
 3.9 **Quality** (`quality.rs`, `fixtures/wire/quality.json`): 0 ok, 1 absent, 2 unreadable, 3 stale,
 4 reset, 5 not-sampled, 6 unsupported, 7 unknown-topology; any other byte is `unknown-quality`. Only 0
 is a measurement. Codes are append-only and announced in `hello.quality_codes`.
 
-3.10 **Decoder error kinds** are the `ProtoError::kind()` names (`error.rs` lines 478-530), e.g.
-`truncated`, `oversized-frame`, `section-order`, `stale-dictionary-generation`; P2 adds
-`aggregation-not-permitted`, `subject-without-time`, `generation-regressed`. They are local outcomes
+3.10 **Decoder error kinds** are the `ProtoError::kind()` names (`ProtoError::kind`), e.g.
+`truncated`, `oversized-frame`, `section-order`, `stale-dictionary-generation`,
+`aggregation-not-permitted`, `subject-without-time` (46 kinds in all: `deadline` is the reader's
+completion-age kind, `generation-regressed` the stream layer's, §6.2). They are local outcomes
 (fixtures `expect_error.kind`), never sent on the wire; §5.2 maps the reader's ones to wire codes.
 There are exactly two vocabularies: wire codes (§10, sent) and decoder kinds (local). Client APIs
 raise one of them (P3 `ServerError(code)` / `WireError(kind)`, plus `ConnectionLost` for EOF or reset);
@@ -204,10 +234,43 @@ then cross-section checks. Within `section-order`, two checks in this order: (1)
 pass in directory order, reports the first known entry whose rank is lower than the highest rank before
 it (detail `index`, `kind_code` of that entry; unknown kinds are skipped); (2) only if (1) passed, an
 unknown kind at entry 0 is reported (`index` 0, its `kind_code`). `fixtures/wire/section-order` (directory
-kinds `[5, 1, 2, 3, 3]`, read from the `.bin`) therefore keeps its pinned `index: 1, kind_code: 1`, and
-no existing fixture changes (the other 25 satisfy both §3.1 rules). Rust `decode_block` follows it after P0 (`FrameHeader::parse` bounds `len`);
-the Python reference checks buffer length and `SECTIONED` before `not-a-block`
-(`hostobs_wire_ref.py` lines 484-493): §13 V-13, P2.
+kinds `[5, 1, 2, 3, 3]`, read from the `.bin`) therefore keeps its pinned `index: 1, kind_code: 1`.
+`SECTIONED` on a frame type other than BLOCK is one of the fixed fields (`unknown-frame-flags`,
+`bad-frame` on the wire), so it is judged before `not-a-block`. Both decoders follow this order
+(`HOB-53`, §13 V-13).
+
+**Fixed fields are read in wire order** (length word, type byte, flags byte, reserved word, `corr`) and
+each is judged as soon as its bytes exist: a 5 to 11 byte buffer whose type byte is unknown is
+`unknown-frame-type`, not `truncated`; a buffer too short for the next field is `truncated`, context
+"frame header" (fixture `truncated-unknown-type`). A header with an unknown type, bad flags and a
+reserved word names the type; bad flags and a reserved word name the flags.
+
+**Pass structure** (one pass is finished before the next starts, and the first failure ends the decode):
+1. frame header fixed fields, `len` bounds;
+2. `not-a-block`, buffer length (`truncated`, `trailing-bytes`), `SECTIONED` (`missing-section`);
+3. directory header (`truncated`, `section-reserved`), the directory's byte count (`truncated`, context
+   "block directory", need `8·n_sec`, have the bytes left; an exact fit passes), then the entries;
+4. every entry's `len` multiple of 8 (`section-length`), the rank rule and then entry 0
+   (`section-order`);
+5. body bounds: bodies laid end to end (`truncated`, context "section body"), then `trailing-bytes`;
+6. directory entries in order: flags (`unknown-section-flags` for a bit other than bit 0), unknown kind
+   (`unsupported-required-section` or skipped), version (`unsupported-section-version`), the required
+   flag of the header and the subject (`unknown-section-flags`), and the **first** header's body
+   (`section-length`, `unknown-section-flags` for its flags word); no header is `missing-section`;
+7. bodies in directory order: a repeated single section (`duplicate-section`) before its body, then the
+   body's own refusals (rows, time, column, dictionary, subject), `conflicting-column`;
+8. cross-section checks: `rows-and-time`, `no-rows-or-time`, `subject-without-time`;
+9. with a dictionary in force (in the frame, else the held one): generation
+   (`stale-dictionary-generation`), the subject (`dangling-dictionary-ref`,
+   `row-reference-not-entity`), each row, each column (`dangling-dictionary-ref`,
+   `column-reference-not-metric`, `column-kind-mismatch`);
+10. every bucket against every column's mask (`aggregation-not-permitted`), with or without a
+    dictionary.
+
+**A bare block with nothing held** (no in-frame dictionary and `held = None`) is judged by the frame
+rules (passes 1 to 8) and by pass 10, whose mask is the column's own kind's. It has no generation or
+reference judgement: that belongs to the stream layer, which always has a held dictionary or knows it
+has none (`HOB-54`, §6.1).
 
 ## 4. Requests and replies
 
@@ -227,8 +290,23 @@ are the same iff their canonical forms are equal (no resolution: `{"inc":5}` and
 incarnation 5 are distinct). A selection resolving to more than `limits.max_rows` entities is `budget`
 `{"pool":"rows"}`. Every object below is **strict**: a missing required key, an unknown key or a wrong
 type is `bad-request`. JSON text rules (both modes): UTF-8, no duplicate key at any depth, nesting
-depth ≤ 8, exact integers (§8.3); a violation is `bad-request` (the server's JSON layer enforces them;
-`proto` has no JSON parser).
+depth ≤ 8 (the envelope object is depth 1; the bound holds for requests and for the client's checks of
+REP, END and EVT), exact integers (§8.3); a violation is `bad-request` (the server's JSON layer enforces
+them; `proto` has no JSON parser). The JSON text excludes the JSON-mode line terminator (§8.1): the caller
+strips the `\n` before any check, and a trailing `\n` or `\r` is a trailing byte.
+*Implemented* (`crates/proto/src/envelope.rs`, P2c): `check_req`, `check_rep`, `check_end` and `check_evt` scan
+a payload byte-wise and return byte ranges into it (no JSON dependency). They check UTF-8, one object with
+nothing before the `{` and nothing after the `}` (whitespace between tokens is allowed), string escapes,
+the number grammar and nesting depth ≤ 8 (the envelope object is depth 1), then the envelope's key set,
+types and `ok` literal. Duplicate keys are detected at the envelope's own level and in the error object;
+duplicates in `args`, `result` and `detail` are the server's JSON layer's job, as is every schema below the
+envelope. A key spelled with escapes is an unknown key, and so is a ninth key (an envelope has at most five,
+`MAX_MEMBERS` is 8); a `verb` containing a backslash is refused; a JSON-mode REQ with `corr` 0 is refused
+(§2.3) while a REP may carry `corr` 0 (§8.2); the END counts are exact `u32`s (§8.3). An EVT needs a string
+`event`, at most 8 keys, and `closing` carries exactly `{event, reason}`. A lone surrogate escape (an
+escape whose four hex digits name a surrogate) passes the scan: the server's JSON layer owns it. A violation
+of a request is `bad-request` on the wire (`detail.key` `""` for a text error, else the offending key); a
+violation of a REP, END or EVT is a local `EnvelopeError` of the client (the server is the faulty peer).
 **Worst-case size.** A JSON encoder may escape every non-ASCII character (`\uXXXX`, a surrogate pair
 for 4-byte UTF-8), so a string costs at most 3× its decoded length plus 2 quotes; control characters
 are excluded. Worst selection: 16 × (`{"prefix":` 10 + 512·3 + 2 + `}` 1 + `,` 1) = 24,800 B, metrics
@@ -440,6 +518,21 @@ Wire mapping on the server (a reader error on a request): `oversized-frame` → 
 `deadline`; `truncated` at EOF and `trailing-bytes` after a clean EOF → close without a reply (the peer
 is gone). All of them are fatal (§5.4).
 
+**Implemented (`crates/proto/src/stream.rs`).** `FrameReader` is the table above, one unit test per
+row (`header_row_*`, `body_row_*`, `poll_row_*`, `eof_row_*`, `poisoned_row_*`, `closed_row_*`), and
+the 12 reader cases of §11.4 replay against it. Precisions the table leaves open: an empty `feed` is
+not an event (it stamps nothing; a poisoned reader still returns its error); `feed` never checks the
+age, only `poll` does, so a frame that completes late inside one `feed` is delivered; a second `eof`
+after a clean one stays `Ok`; the effective maximum is `min(max_frame, 16 MiB)` because
+`FrameHeader::parse` already refuses a longer `len`; the fixed header fields are judged before `len`
+(the first refusal of the codec and of the Python reference); a `len` above the codec's own 16 MiB
+limit is `oversized-frame` naming the reader's `max_frame` as the bound; the age error is
+`ProtoError::Deadline` (`deadline`), and `truncated` at EOF names its context (`frame header at end
+of stream`, `frame body at end of stream`). `buffered_len()` and `buffered_capacity()` expose the
+buffer for the allocation tests; a poisoned reader holds no buffer. The 64 KiB growth step costs up
+to `len / 64 KiB` reallocations for the largest frame (256 at 16 MiB); this is accepted, because the
+capacity bound forbids geometric growth.
+
 5.3 **Send hub** (`proto::stream::SendHub`, server side, one per serving process that owns every
 connection's outgoing queue; P5b wraps it in one mutex). It owns the per-uid and global pools, so the
 victim of an overflow is chosen with every queue in view.
@@ -515,7 +608,13 @@ bytes seen; the caller applies §1.4 to the prefix fields), `Detect::Unknown`. `
 `bytes` of the first byte not consumed by the detector (`{` itself for JSON: it is the line's first
 byte); the caller passes `&bytes[at..]` to the `FrameReader` (binary) or the JSON line reader in the
 same call, so surplus bytes after the prefix are never lost. A detector that returned anything but
-`Need` is finished; further `feed` calls are a caller bug (panic in debug).
+`Need` is finished; further `feed` calls are a caller bug and return `Detect::Unknown` in every build.
+
+**Implemented.** The detector decides at the earliest byte: `{` at prefix offset 0 is `Json { at }`
+(`at` is that byte's index, not consumed); a byte among the first four that differs from `HOB\x01`
+(a `{` after the first byte included) is `Unknown`; bytes 5 to 8 may be any value; the eighth byte
+gives `Binary { prefix, at: index + 1 }`. An empty `feed` is `Need`. After a decision, `feed`
+returns `Unknown` in every build. Tests: `detect_row_*`.
 
 5.4 **Connection state machine** (server, P5b; `proto::stream::ConnTimers` holds the hello and idle
 deadlines, the request deadline is the reader's completion age (§5.2), so the table is unit-testable
@@ -539,6 +638,15 @@ without sockets):
 | any | reader error, hub `Close(slow-client)`, server shutdown | `Closing(code)` |
 | `Closing(code)` | — | `drain_unpinned(c)`; if `head_partial(c)` is false and the socket accepts it without blocking, write `EVT corr=0 {"event":"closing","reason":code}` (binary) or the error line (JSON) directly (not through the hub); `remove(c)`; close. A client MUST NOT depend on receiving it. |
 
+**Implemented (`ConnTimers`).** `ConnTimers::new(hello_ns, idle_ns)` holds the level's two
+durations; nothing is armed until `on_accept(now)` (a refused connection never calls it).
+`on_hello_complete()` disarms the hello deadline (the first complete line in JSON mode counts),
+`on_byte()` and `on_enqueue()` disarm idle, `on_idle_condition(true, now)` arms idle at `now +
+idle_ns` only when it is not armed (an armed deadline is kept, never pushed out) and
+`on_idle_condition(false, now)` disarms it; deadlines saturate at `u64::MAX`. `expired(now)` is
+strict (`now > deadline`) and reports `Timer::Hello` before `Timer::Idle`. Tests: `timers_row_*`,
+one per row above.
+
 **Connection-fatal codes**: `unknown-mode`, `unsupported-version`, `hello-required`, `bad-frame`,
 `frame-too-large`, `deadline`, `idle`, `slow-client`, `shutting-down`. Every other code answers one
 request and keeps the connection. A refused connection (`refuse`) carries no code at all: the mode is
@@ -548,7 +656,11 @@ unknown before the first byte, so no reply could be framed.
 
 6.1 **Client side: a dictionary is held per stream** = `(connection, corr)`. A BLOCK without a
 dictionary section is decoded against the stream's held dictionary and its rows/columns are checked
-against it exactly as against an in-frame one (`HOB-46`).
+against it exactly as against an in-frame one (`HOB-46`; `decode_block_with(bytes, held)` and Python
+`decode_frame(data, held)`). The codec judges only what it is given: with `held = None` and no
+in-frame dictionary it makes no generation or reference check (§3.10), and the stream layer is what
+supplies the held dictionary, treats "nothing held" as `stale-dictionary-generation` and enforces the
+rules below (`HOB-54`).
 6.2 **Server side: a generation counter belongs to the producer of the encoded bytes.** A live
 selection stream (one per distinct selection, §4.2, shared by every subscriber, §5.3) owns one
 dictionary and one counter: it starts at 1 when the selection stream is created and increases by one on
@@ -567,6 +679,18 @@ dictionary-bearing entry is pushed for a first block, for any generation the str
 (including a change tick the subscriber's interval skipped) and after a dropped or replaced
 dictionary-bearing entry, and in each case its generation exceeds what the client holds. At `u32::MAX` the selection stream ends every
 subscription (`END ok:false`, `internal`).
+*Implemented* (`crates/proto/src/stream_dicts.rs`, P2c): `StreamDicts` holds one dictionary per `corr`.
+`held(corr)` is what to pass to `decode_block_with`; `accept(corr, &block)` applies the rules above to a
+decoded block and stores a dictionary-bearing block's dictionary; `close(corr)` forgets one stream (at its
+END, at an unsubscribe, after any decoder error); `reset()` forgets all; `on_hello(boot_id, epoch)` drops
+every dictionary and returns `Session::{First, Same, Changed}` against the previous hello, so the caller
+decides about cursors and sessions (§6.4). A stream that holds nothing holds generation 0 and generations
+start at 1, so a first dictionary-bearing block at generation 0, and any later one at an equal or lower
+generation, is `generation-regressed`. `accept` forgets the stream's dictionary on any error, and the caller
+MUST `close(corr)` after any decoder error and then close the connection (§6.5). `accept` does not compare
+`block.corr` with its argument (the caller routes by corr). There is no cap on the number of streams: the
+caller's bound is `max_outstanding` + `max_subscriptions` (§5.1). `generation-rollover` has no client-side
+rule beyond `generation-regressed`: the server ends the subscriptions at `u32::MAX`.
 6.3 Query replies carry their dictionary in their first BLOCK; a `series_batch` continuation (new
 corr) is a new stream. Exported segments carry it in every record (plan §C.5).
 6.4 **Epoch.** A probe process takes a new epoch at start (greater than every epoch it served under
@@ -712,9 +836,8 @@ peer that negotiated `< m`.
 unknown version is refused, `frame.rs` `decode_block`). Unknown optional sections are skipped by
 `len`; unknown required ones are refused, surfaced to the client caller as `unsupported-section`.
 9.3 A major change changes the frame grammar; only the 8-byte prefix survives it.
-9.4 Minor 1 = kind 6 `subject` (and `series_batch`, which needs it). `PROTO_MINOR` becomes 1 with
-`HOB-48`'s subject half (P2). The §3.6 time length is not a minor: it is the layout version 1 always
-had, fixed as a bug in P0 (§13 V-1).
+9.4 Minor 1 = kind 6 `subject` (and `series_batch`, which needs it); `PROTO_MINOR` is 1 (`HOB-48`). The
+§3.6 time length is not a minor: it is layout version 1 (§13 V-1).
 
 ## 10. Wire error codes (closed list, minor 0 + 1)
 
@@ -740,18 +863,50 @@ are parsed only after the frame is complete and bounded; JSON nesting depth ≤ 
 Python `python/reference/hostobs_wire_ref.py`; both must reproduce `.json` or `expect_error`):
 `live-block`, `history-buckets`, `empty-selection`, `all-quality-codes`, `u64-boundaries`,
 `unicode-dictionary`, `unknown-optional-section` (decode ok); `bad-metric-mask`, `bad-quality-code`,
-`block-as-req`, `column-kind-mismatch`, `column-references-entity`, `column-reserved`,
-`dangling-dictionary-ref`, `duplicate-dictionary-entry`, `empty-rows-and-time`,
-`future-section-version`, `generation-mismatch`, `no-rows-or-time`, `non-zero-reserved`,
-`oversized-frame`, `required-section-refused`, `row-references-metric`, `section-order`,
-`truncated-directory`, `truncated-frame` (named error). The P3 client must pass all of them too.
+`block-as-req`, `block-without-directory`, `column-kind-mismatch`, `column-references-entity`,
+`column-reserved`, `dangling-dictionary-ref`, `duplicate-dictionary-entry`, `empty-rows-and-time`,
+`frame-length-below-header`, `future-section-version`, `generation-mismatch`, `no-rows-or-time`,
+`non-zero-reserved`, `oversized-frame`, `required-section-refused`, `row-references-metric`,
+`section-order`, `truncated-directory`, `truncated-frame` (named error). The P3 client must pass all of
+them too.
 
-11.3 **New block cases** (P2 adds bytes from the Python reference encoder, Rust and Python agree):
+11.3 **New block cases** (bytes from the Python reference encoder, Rust and Python agree;
+`fixtures/wire` holds 70 cases: 11 valid, 59 refusals, the lists of §11.2 and below).
+`history-buckets` and `history-five-buckets` carry `last` buckets only, because their counter and gauge
+columns together permit no other aggregation (§3.6); `block-as-req` has `SECTIONED` clear (§3.10). A
+case with a top-level `"held": {"generation", "entries"}` key is decoded against that held dictionary
+(`decode_block_with(bytes, Some(held))`, Python `decode_frame(data, held)`), in the same entry form as
+`frame.dictionary`; every other case is decoded with `held = None`.
 
 | Case | Purpose | Expected |
 |---|---|---|
-| `history-five-buckets` | §3.6 length `align8(15·5) = 80`; **added by P0**, P2 does not re-add it | ok |
-| `history-subject` | kind 6 with time | ok |
+| `history-five-buckets` | §3.6 length `align8(15·5) = 80` | ok |
+| `history-gauge-aggs` | gauge-only history block, `mean`, `min`, `max` and `last` buckets, no subject | ok |
+| `duplicate-header-bad-second-body` | a second header whose flags word is 1 | `duplicate-section` (kind 1) |
+| `column-nonzero-pad`, `time-nonzero-pad`, `dictionary-nonzero-pad` | pad byte 1 | `non-zero-reserved` (value 1) |
+| `time-bad-agg-and-pad` | agg byte 9 and a pad byte 1 | `unknown-aggregation` (code 9) |
+| `dictionary-count-too-large` | count 65,537 | `dictionary-too-large` |
+| `dictionary-entry-control` | text byte 0x01 | `dictionary-entry-control` (index 0, offset 0) |
+| `dictionary-text-past-body` | text length 200 past the body | `truncated` (dictionary section) |
+| `dictionary-invalid-utf8` | text byte 0xFF | `dictionary-entry-not-utf8` |
+| `dictionary-short-entry-header` | count 5, four entries, body ends in the fifth header | `truncated` (dictionary section) |
+| `truncated-unknown-type` | 5 bytes, type byte 9 | `unknown-frame-type` |
+| `header-required-flag-clear`, `subject-required-flag-clear` | entry flags 0 | `unknown-section-flags` (kind 1, kind 6) |
+| `unknown-section-flags-directory` | a column entry with flags 2 | `unknown-section-flags` (kind 3) |
+| `unknown-section-flags-header` | header flags word 1 | `unknown-section-flags` (kind 1, flags 1) |
+| `section-reserved` | directory reserved word 1 | `section-reserved` |
+| `missing-header` | no header in the directory | `missing-section` |
+| `duplicate-section` | two dictionary sections | `duplicate-section` (kind 5) |
+| `conflicting-column` | metric 2 twice | `conflicting-column` |
+| `subject-wrong-length` | subject body 16 bytes | `section-length` (declared 16, expected 8) |
+| `subject-reserved-word` | subject reserved word 1 | `unknown-section-flags` (kind 6, flags 1) |
+| `subject-dangling`, `subject-not-entity` | subject 99, subject 1 (a metric) | `dangling-dictionary-ref`, `row-reference-not-entity` |
+| `subject-stale-generation-held` | bare history block, `dict_gen` 2, `held` generation 3 | `stale-dictionary-generation` |
+| `aggregation-not-permitted-held` | bare block, `raw` over a gauge, `held` generation 2 | `aggregation-not-permitted` |
+| `history-gauge-raw`, `history-state-delta` | `raw` over a gauge, `delta` over a state | `aggregation-not-permitted` |
+| `duplicate-entity-other-label-control-byte` | `inc` repeated with a label that starts with 0x01 | `duplicate-dictionary-entry` (judged before the control byte) |
+| `header-version-and-required-flag-clear` | header entry with version 2 and the required flag clear | `unsupported-section-version` (version before the flag) |
+| `history-subject` | kind 6 with time, counter column with `raw`, `last`, `delta` buckets | ok |
 | `unaligned-optional-section` | unknown optional kind, `len = 5`, last | `section-length` |
 | `optional-section-before-header` | unknown optional kind, `len = 8`, directory entry 0 | `section-order` |
 | `duplicate-metric-other-facts` | metric name repeated with another unit | `duplicate-dictionary-entry` |
@@ -759,23 +914,30 @@ Python `python/reference/hostobs_wire_ref.py`; both must reproduce `.json` or `e
 | `rep-not-sectioned-truncated` | REP type, buffer shorter than `len` | `not-a-block` (precedence, §3.10) |
 | `subject-in-live-block` | kind 6 with rows | `subject-without-time` |
 | `history-agg-not-permitted` | `mean` on a counter column | `aggregation-not-permitted` |
-| `bare-block-held-dict` | no dictionary section, decoded with a held generation | ok |
-| `bare-block-dangling` | bare block, row index past the held dictionary | `dangling-dictionary-ref` |
+| `bare-block-held-dict` | no dictionary section, `held` generation 1 | ok |
+| `bare-block-dangling` | bare block, `held` with 4 entries, row index 99 | `dangling-dictionary-ref` |
 | `rep-sectioned-flag` | REP frame with `SECTIONED` | `bad-frame` (`unknown-frame-flags` locally) |
 
 11.4 **Stream cases** (`fixtures/stream/<case>.json`: `{"case", "doc", "side": "client|server",
 "max_frame", "completion_ms", "steps": [{"t_ms", "feed_hex"} | {"t_ms", "poll": true} | {"t_ms", "eof":
 true}], "expect": [[<outputs of step 0>], [<outputs of step 1>], ...]` with outputs `{"frame": {"type",
 "corr", "len"}}`, `{"error": kind}`, `{"closed": "clean"}`; one list per step, in order; Rust and
-Python both replay them). Reader cases (`fixtures/stream/reader-*.json`, one per §5.2 row):
+Python both replay them). A client case (`"side": "client"`) has the two steps `{"t_ms", "feed_hex"}`,
+one complete BLOCK frame of stream corr 5 (decode with `decode_block_with(bytes, held(5))`, then
+`accept(5, block)`; on any error `close(5)`), and `{"t_ms", "hello": {"boot_id", "epoch"}}` (`on_hello`),
+with outputs `{"ok": generation}` (the block's header `dict_gen`), `{"error": kind}` and `{"session":
+"first|same|changed"}`; one output per step. Reader cases (`fixtures/stream/reader-*.json`, one per §5.2 row; written by
+`python/reference/make_stream_fixtures.py` from the §5.2 rules, not by running a reader; Rust
+`crates/proto/tests/stream_fixtures.rs`; `python/tests/test_stream_fixtures.py` checks the files against
+the generator and replays them with an independent reader):
 
 | Case | Expected |
 |---|---|
 | `reader-dribbled-bytes` (one byte per step, within the age) | one frame at the last step |
 | `reader-split-every-offset` (frame cut at each offset 1..len−1) | one frame each |
 | `reader-two-frames-one-feed` | two frames from one feed |
-| `reader-frame-then-bad-header` (one feed: a good frame, then a header with type 9) | `[frame, error unknown-frame-type]` in that step |
-| `reader-oversized-len` (`max_frame + 1`) | `oversized-frame`, poisoned, buffer capacity 12 |
+| `reader-frame-then-bad-header` (one feed: a good frame, then a header with type 9; then a second feed) | `[frame, error unknown-frame-type]` in the first step, the same error and no frame in the second |
+| `reader-oversized-len` (`max_frame + 1`) | `oversized-frame`, poisoned, buffer capacity 12 (the fixture format has no capacity key: the unit tests `an_oversized_len_never_allocates_beyond_the_header_buffer` and `body_row_buffer_grows_with_received_bytes_never_with_len` pin it) |
 | `reader-len-below-header` (`len = 11`) | `truncated`, poisoned |
 | `reader-completion-age` (half a frame at t=0, poll at `completion_ms`, then `+1`) | nothing, then `deadline` |
 | `reader-age-from-first-byte` (idle 60 s at `Header{0}`, then a frame dribbled within the age) | one frame (idle time does not count) |
@@ -785,13 +947,18 @@ Python both replay them). Reader cases (`fixtures/stream/reader-*.json`, one per
 | `reader-feed-after-eof` | `trailing-bytes` |
 
 Client stream cases (`fixtures/stream/client-*.json`, both languages; steps feed BLOCK frames to a
-stream state with `decode_block_with`): `client-first-block-gen-5` (first block dictionary-bearing at
-generation 5: ok), `client-first-block-bare` (`stale-dictionary-generation`), `client-generation-step`
-(dict gen 2, bare 2, dict gen 3, bare 2: ok, ok, ok, `stale-dictionary-generation`),
-`client-generation-regressed` (dict gen 2 then dict gen 2: `generation-regressed`),
-`client-required-section` (unknown required kind: `unsupported-required-section`, stream closed),
-`client-epoch-change` (reconnect hello with a new epoch: dictionaries, cursors and subscriptions
-dropped).
+stream state with `decode_block_with`; written by `python/reference/make_client_stream_fixtures.py`
+from the §6 rules, not by running a client; Rust `crates/proto/tests/client_stream_fixtures.rs`;
+`python/tests/test_client_stream_fixtures.py` checks the files against the generator and replays them
+with an independent client): `client-first-block-gen-5` (first block dictionary-bearing at
+generation 5: ok, then a bare 5: ok), `client-first-block-bare` (`stale-dictionary-generation`, twice),
+`client-generation-step` (dict gen 2, bare 2, dict gen 3, bare 2: ok, ok, ok, `stale-dictionary-generation`),
+`client-generation-regressed` (dict gen 2 then dict gen 2: `generation-regressed`, the stream is closed so
+a bare 2 is stale, a fresh dict gen 4 is ok, dict gen 3 is regressed),
+`client-required-section` (unknown required kind in a dictionary-bearing block: `unsupported-required-section`,
+stream closed, so the bare block after it is stale), `client-epoch-change` (hello `first`, a dictionary,
+hello with a new epoch `changed`: the bare block finds nothing held; a dictionary, hello with the same
+epoch `same`: dictionaries are dropped here too; cursors and subscriptions are the caller's, §6.4).
 
 Hub cases (`fixtures/stream/hub-*.json`, Rust only, fake clock; a step is a §5.3 operation, `expect`
 lists the outcome, the Live/Query/control pools of the touched connections and uids and, after `head`,
@@ -862,7 +1029,7 @@ Vec<(ConnId, Close)>`; `queued(ConnId) -> Pools { live: usize, query: usize, con
 generation(&self) -> u32; fn bare(&self) -> Option<Arc<[u8]>>; fn dict_form(&self) -> Arc<[u8]>; }`;
 `enum Close { SlowClient }`;
 `ConnTimers { hello_deadline_ns: Option<u64>, idle_deadline_ns: Option<u64> }` with
-`on_accept(now_ns)`, `on_hello_complete()`, `on_byte()` and `on_enqueue()` (both disarm idle),
+`ConnTimers::new(hello_ns: u64, idle_ns: u64)`, `on_accept(now_ns)`, `on_hello_complete()`, `on_byte()` and `on_enqueue()` (both disarm idle),
 `on_idle_condition(idle: bool, now_ns)` (arms at `now + idle_ms` when it turns true), `expired(now_ns) ->
 Option<Timer>`, `enum Timer { Hello, Idle }` (the request deadline is `FrameReader`'s completion age);
 `decode_block_with(bytes: &[u8], held: Option<&Dictionary>) -> Result<Block, ProtoError>`;
@@ -888,6 +1055,123 @@ required: bool) -> ProfilingState` with the five states of plan §D.2), `mark.py
 Acceptance: all `fixtures/wire` cases and the reader and client cases of `fixtures/stream`,
 `fixtures/rates/rates.json`, the §7.8 gated thresholds on the pinned CPython, a zipimport smoke test,
 no import outside the stdlib (checked by a test). Closes the P3 part of `HOB-54`.
+
+*P3a implemented* (`python/hostobs_client/{__init__,wire,stream,rates}.py`; `conn.py`, `profiling.py`
+and `mark.py` are P3b). `wire.py` is the §7.4 decoder; `stream.py` holds `FrameReader`, `RawFrame`,
+`StreamDicts` and `Session` (`"first"|"same"|"changed"`); `rates.py` holds `rate()` and `Reading`. Tests:
+`python/tests/test_client_{wire,stream,rates,stdlib_only,budgets}.py`. Decisions and deviations:
+- **Reader API.** Besides `feed`/`poll`/`eof`, the reader exposes `fill() -> memoryview` (the writable
+  slice of the buffer being filled: the rest of the 12-byte header, then the rest of the one
+  `bytearray(len)`) and `advance(n, now_ns)` (accounts for `n` bytes written there). P3b's `conn.py`
+  calls `sock.recv_into(reader.fill())` then `advance`; `feed` is the same pair over a `bytes` argument.
+  `fill()` never spans two frames, so one `recv_into` completes at most one frame. `RawFrame` is
+  `(type, corr, length, data)` with `data` the owned `bytearray`.
+- **Errors.** `StreamDicts.accept` raises `WireError` (the Python style) where Rust returns `Err`; the
+  reader returns its error in the `feed`/`poll`/`eof` result as §12 specifies. `WireError.detail` holds the
+  fixtures' `expect_error` fields; an oversized length names the reader's `max_frame` as `max`.
+- **Retained rows.** The skip compares and retains only the `ent` half of the rows body (the only part
+  validation reads), so a changed `t_off_us` does not defeat it; the retained view lives on the
+  `Dictionary` it was validated against (`Dictionary._rows_ok`), so it can never be applied to another
+  dictionary, and `StreamDicts.close/reset` and any decoder error drop it. A bare block with no rows
+  section clears it.
+- **Buffer ownership.** A buffer passed to `decode_block` is owned by the returned `Block` (and, for the
+  entity half of its rows, by the held dictionary) and MUST never be mutated or reused afterwards. As a
+  defence the skip never applies when the retained view and the rows being decoded are views of the same
+  underlying object (`previous.obj is ents_mv.obj`), so a buffer overwritten in place is validated in full.
+- **Gate image and the absolute memory bound.** No registered lane runs `python/tests` yet (`HOB-4`):
+  every `hostobs/run-gate.toml` lane uses `tester-unified-rust`, whose `python3` is Debian's apt package
+  (`tester-unified-rust/Dockerfile`; its version is not measured here). The image that will run these tests
+  is chosen when the lane is registered. The absolute 1,000-row peak bound (16 KiB) was measured on CPython
+  3.14.10 only (3,395 B there) and is skipped on every other version; the growth and line-count gates run
+  on every version. Per the §7.8 rule the absolute bound is re-measured and re-set in the change that
+  registers the lane or moves its image (or CPython) to a version the bound was not measured on; until then
+  no 3.14.10 number is claimed for any other version.
+- **Dictionary reuse.** A dictionary section byte-identical to the held dictionary's body returns the held
+  object (`Block.dictionary is held`); `Block.dictionary` is the carried dictionary (`None` for a bare
+  block) and `Block.dictionary_in_force` the one the block was judged against.
+- **Byte order.** `wire._NATIVE_VIEWS` (`sys.byteorder == "little"` at import) selects casts; the copy path
+  is `array.array` plus `byteswap()` when `sys.byteorder == "big"`, and both are tested by patching
+  `_NATIVE_VIEWS` and `sys.byteorder`.
+- **`rate()`** returns a dict for both outcomes (`ok` true with `delta`, `denominator`, `per_second`,
+  `missed`; `ok` false with `reason`, `reading`, `quality`); `per_second` is `delta * 10**9 / elapsed` over
+  Python ints (exact until the one final division); an unknown quality or a non-`u64` value raises
+  `ValueError`.
+- **Line counts.** The §7.8 model counted 141 `line` events; this decoder counts 510 at both 100 and 1,000
+  rows (one function walks the passes of §3.10); the gate is the equality, not the number.
+
+*P3b implemented* (`python/hostobs_client/{conn,envelope,profiling,mark}.py`; `__init__.py` exports them;
+P3a files `wire.py`, `stream.py`, `rates.py` are unchanged). Tests: `python/tests/test_client_{conn,path,
+zipimport}.py` with the scripted fake probe `fake_probe.py`. Decisions and ambiguities:
+- **`envelope.py`** (not named in the P3 module list) ports the byte rules of `crates/proto/src/envelope.rs` for
+  REP, END and EVT: one object with `{` first and `}` last, nesting at most 8 (a C-speed bracket count with
+  strings removed, before parsing), the envelope's own keys compared as written (an escaped spelling is an
+  unknown key), the `ok` literal, exact `u32` counts, `closing` with exactly `event` and `reason`. Beyond Rust
+  it enforces §4.2 below the envelope with the `json` module and hooks: no duplicate key at any depth, no
+  `NaN`/`Infinity`, no non-finite float, no `-0`. A violation is a local `EnvelopeError` (a `WireError` subclass
+  with kinds `json-text`, `duplicate-key`, `unknown-key`, `missing-key`, `wrong-type`); the connection closes.
+  `ProtocolError` (also a `WireError` subclass) names what is not a decoder error: `unexpected-frame`,
+  `unknown-corr`, `bad-reply`, `end-counts`, `hello-mismatch`, `queue-overflow`, `corr-exhausted`.
+- **Handshake.** The prefix (`HOB\x01`, major 1, minor 1) is sent alone, the 8-byte server prefix is read with a
+  `recv_into` that never over-reads, then the `hello` REQ goes out with `corr` 1. A closed socket before the
+  prefix is `ConnectionLost`; a wrong magic is `unknown-mode`; another major is `unsupported-version`; a server
+  minor above the client's, a `proto` that disagrees with the prefix, another `level` than requested and a missing or
+  non-`u32` limit are `ProtocolError` `hello-mismatch`. Unknown extra `hello` keys are ignored (a later minor
+  adds reply keys, §9.1). After the hello the reader is replaced by one limited to
+  `min(16 MiB, limits.max_frame_bytes)`; the completion age stays 30 s.
+- **Receive loop.** One `recv_into(reader.fill())` per step; the socket timeout is `max(0.001, (deadline - now))`
+  with `deadline = frame_started + 30 s` while a frame is partial and the caller's operation deadline
+  (`now + timeout_s`) otherwise; a `TimeoutError` or a late recv runs `poll(clock())`. An operation timeout
+  closes the connection (a late reply could not be matched) and raises `OperationTimeout`. EOF inside a frame is
+  `ConnectionLost` caused by the `truncated` `WireError`; a `closing` EVT is remembered in `closing_reason`.
+  `connect()` itself is bounded by the OS through the socket timeout, not by the injected clock.
+- **Streams.** `request()` waits for its REP. `blocks()` awaits the REP at call time and returns an iterator
+  (`.result`, `.end`, `.received`, `.close()`); `subscribe()` returns a `Subscription` (`.dropped` sums the block
+  header and END counters, `.client_dropped` counts blocks this client overwrote, `.close()` sends `unsubscribe`
+  and waits for the END). Frames of other streams that arrive while waiting are decoded in arrival order and
+  queued (a subscription keeps its newest 8, a query stream up to 1,024, else `queue-overflow`). The END must
+  count exactly the BLOCK frames received; a query END reports `dropped` 0; the reason is `complete`/`page` for a
+  query (`page` iff `next`) and `unsubscribed`/`client-eof` for a subscription. A subscription wait is bounded by
+  `timeout_s + interval_ms`. Closing an unfinished block stream drops its later blocks undecoded.
+- **Reconnect (§6.4).** `Connection.reconnect()` closes the connection (every dictionary and stream is dropped)
+  and opens a new one on the same path with the same `StreamDicts`; `.session` is `first`, `same` or `changed`
+  from `on_hello`. The caller drops cursors, open span keys, sessions and windows when it is `changed`.
+- **`profiling.py`.** `require_profiling(level, required, *, features=(), ...)` returns a `ProfilingState`
+  (`name`, `required`, `detail`, `notice`, `action`, `connection`). Plan D.2 leaves open how a usable socket is
+  named and where `absent` and `lost` come from; decided: the sixth value `available` (`action` `run`, open
+  connection), `absent(required)` for the consumer's own `except ImportError`, `lost(required, reason)` after
+  start with `loss_reason()` mapping `session-lost`/`window-lost` and `session == "changed"`, `unconfigured` =
+  `HOSTOBS_<LEVEL>_SOCKET` unset or empty, `refused` = another level, a missing `features` entry (the caller names
+  the capabilities, default none, so `peak_reset` is not assumed), `unsupported-version`, or a server `forbidden`/
+  `unsupported-feature`/`unknown-verb`; every other failure is `unreachable`. Actions: unset `required` →
+  `run-with-notice` (`lost`: `record-profile-error`); `required` → `refuse` (`lost`: `evidence-invalid`, outcome
+  `EVIDENCE_INVALID`).
+- **`mark.py`.** `hostobs-mark` is JSON mode (§8.5): one `annotate` line with `corr` 1 to
+  `HOSTOBS_OBSERVER_SOCKET`, `shutdown(SHUT_WR)`, one reply line (bounded 64 KiB, deadline from the injected
+  clock), exit 0; unavailable → one stderr notice and exit 0, `--require` → exit 1, usage error → exit 2. All
+  `annotate` args keys are sent (`key`, `outcome`, `code` null when unset); `ctx` is read from
+  `HOSTOBS_CTX_{RUN,LANE,CANDIDATE,TXN,SESSION}` (the five keys of §4.10; the plan names `HOSTOBS_CTX_*` without
+  the list). Run as `python3 -m hostobs_client.mark begin|end|point NAME [--key K] [--outcome O] [--code C]
+  [--attr K=V] [--require] [--timeout S]`; the console script `hostobs-mark = hostobs_client.mark:main` is the
+  wheel's (M3) packaging entry.
+- **Linear time.** The text checks never run a quadratic scan on hostile input: the payload is parsed first (the C
+  decoder is linear, refuses an unterminated string and stops a depth bomb at the recursion limit) and the
+  bracket-depth count (strings removed by regex) runs only on text that parsed. The top-level key scan uses an
+  unrolled pattern. Tests assert a wall-time cap on 20,000-repeat payloads and, structurally, that the depth count
+  is never called on text that did not parse.
+- **Queue policy is a client decision beyond this specification.** A subscription keeps its newest 8 undelivered
+  blocks (`client_dropped` counts the overwritten ones) and a query stream up to 1,024 blocks and 64 MiB of frames
+  per connection (`QUERY_BYTES`), then `queue-overflow`. The bounds are count- and frame-byte-bounded, the oldest
+  block of a subscription is the one shed (stale-ordered), and a subscription's bytes are not bounded (8 frames of at
+  most 16 MiB). The receive loop returns as soon as the awaited stream has a block, so `client_dropped` only grows
+  while another call (a request, another stream) is pumping.
+- **Validation.** `Connection.open` validates `level`, `client` and `timeout_s` (a finite number in `(0, 1 year]`;
+  `inf`, `nan`, `bool`, strings are `ValueError`) before creating a socket; a connect failure is the system's
+  `OSError`, unchanged (`require_profiling` maps it to `unreachable` with its errno), everything after the connect is
+  `ConnectionLost`/`OperationTimeout`/`ServerError`/`WireError`. `hello` fields are exact integers (`proto`, `epoch`
+  in `0..2**64-1`, every limit a `u32`), and a hello whose `max_request_bytes` cannot carry the client's own hello or
+  whose `max_frame_bytes` is below 12 is `hello-mismatch`. `hostobs-mark --timeout` outside `(0, 1 year]` is a usage
+  error (exit 2). Args nested deeper than the interpreter's recursion limit are a `ValueError` like any other deep args.
+- **Not covered here:** the Python conformance lane (`HOB-4`) and a run against a live probe (P5b).
 
 **P5a — Rust `client` crate (M).** `Client::connect(path, Level, ClientInfo) -> Result<Client, ClientError>`,
 `hello() -> &HelloResult`, `request(verb, serde-free JSON text) -> Reply`, `subscribe(Selection,
@@ -938,19 +1222,19 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 
 | ID | Where | Code / plan says | WIRE.md says | Work |
 |---|---|---|---|---|
-| V-1 | `frame.rs` `time_body_len` (line 741), `hostobs_wire_ref.py` `time_body_len` (line 380) on this branch's base | `align8(14·n)` | `align8(15·n)` | fixed by the P0 bug fold-in (merged to main; commit `e13027cfe`: `TIME_BUCKET_BYTES = 15`, fixture `history-five-buckets`, no minor bump) |
-| V-2 | `frame.rs` `decode_block` | references checked only against an in-frame dictionary | also against the held generation | `HOB-46` |
-| V-3 | `frame.rs` `decode_block` | bucket `agg` not checked against the metric mask | `aggregation-not-permitted` | `HOB-47` |
-| V-4 | plan §B.2 `TIME` | no subject; `series_batch` returns several entities | kind 6 `subject` | `HOB-48` |
-| V-5 | `FrameHeader::parse`, `decode_block` | no `len` bound; `SECTIONED` allowed on any type; directory capacity from `n_sec` before bytes are proven | §2.1, §11.1 | `len` bound: P0 (`HOB-8`, commit `6724fe8be`); the rest `HOB-50` (P2) |
+| V-1 | `frame.rs` `time_body_len` (line 741 on this document's base; post-P0 line 768), `hostobs_wire_ref.py` `time_body_len` (line 380 on the base; post-P0 line 384) | `align8(14·n)` | `align8(15·n)` | fixed by the P0 bug fold-in (merged to main; commit `e13027cfe`: `TIME_BUCKET_BYTES = 15`, fixture `history-five-buckets`, no minor bump) |
+| V-2 | `frame.rs` `decode_block` | references checked only against an in-frame dictionary | also against the held generation | fixed by P2a1 (`HOB-46`, `decode_block_with`) |
+| V-3 | `frame.rs` `decode_block` | bucket `agg` not checked against the metric mask | `aggregation-not-permitted` | fixed by P2a1 (`HOB-47`) |
+| V-4 | plan §B.2 `TIME` | no subject; `series_batch` returns several entities | kind 6 `subject` | fixed by P2a1 (`HOB-48`) |
+| V-5 | `FrameHeader::parse`, `decode_block` | no `len` bound; `SECTIONED` allowed on any type; directory capacity from `n_sec` before bytes are proven | §2.1, §11.1 | `len` bound: P0 (`HOB-8`, commit `6724fe8be`); the rest fixed by P2a1 (`HOB-50`; `block-as-req` regenerated with the flag cleared) |
 | V-6 | plan §B.1 | `DICT` = dictionary delta or full generation | reserved, unsent | none (D-W6) |
 | V-7 | plan §B.1 | procs page is a BLOCK | JSON page | none (D-W11) |
 | V-8 | plan §B.3 | `bad_request` | `bad-request` | none (D-W12) |
 | V-9 | plan §B.3 dictionary text | ≤ 256 B UTF-8 | also no bytes < 0x20 or 0x7F (as `dict.rs` `validate`) | none |
 | V-10 | `hostobs_wire_ref.py` line 5 | cites `hostobs/docs/WIRE-COLUMN-CODEC.md` (does not exist) | this file | `HOB-49` |
-| V-11 | `frame.rs` `decode_block` 1086-1126, `hostobs_wire_ref.py` `decode_frame` 509-535 | any body length; an unknown section may precede the header (measured on the Python reference: an optional `len = 5` section decodes, frame `len` 357; placed first, the header body starts at 69) | §3.1 decoder rules | `HOB-51` (P2, fixtures §11.3) |
-| V-12 | `dict.rs` `decode` (891 → `intern` 596) | metric name repeated with other facts → `conflicting-column` | `duplicate-dictionary-entry` (Python reference already, measured) | `HOB-52` (P2) |
-| V-13 | `hostobs_wire_ref.py` `decode_frame` 484-493 | buffer length and `SECTIONED` checked before `not-a-block` | §3.10 precedence (Rust order) | `HOB-53` (P2) |
+| V-11 | `frame.rs` `decode_block` 1086-1126, `hostobs_wire_ref.py` `decode_frame` 509-535 on the P2a1 base | any body length; an unknown section may precede the header (measured on the Python reference: an optional `len = 5` section decodes, frame `len` 357; placed first, the header body starts at 69) | §3.1 decoder rules | fixed by P2a1 (`HOB-51`, fixtures §11.3) |
+| V-12 | `dict.rs` `decode` (891 → `intern` 596) on the P2a1 base | metric name repeated with other facts → `conflicting-column` | `duplicate-dictionary-entry` (Python reference already, measured) | fixed by P2a1 (`HOB-52`) |
+| V-13 | `hostobs_wire_ref.py` `decode_frame` 484-493 on the P2a1 base | buffer length and `SECTIONED` checked before `not-a-block` | §3.10 precedence (Rust order) | fixed by P2a1 (`HOB-53`) |
 | V-14 | plan §B.3 | `(epoch, dict_gen)` probe-global | generation per selection stream / query stream; client rule relative to held | none (D-W5) |
 | V-15 | plan §B.4 | full queue drops the oldest unsent BLOCK, counted in "the next `HDR.dropped`"; `DICT/REP/EVT` over budget close | at most one unpinned tick per stream, drop-oldest across streams (victim: the largest connection with an unpinned Live entry, else the incoming tick), stamp at pin; the plan's separate query budget is kept as its own Query pool (4 MiB / connection, 4 MiB / uid, 16 MiB global, sizes are WIRE.md's) whose blocks are never dropped and never shed a tick; per-uid Live cap 8 MiB; control frames on their own budget | none (D-W8, D-W18) |
 | V-16 | plan §B.4 | observe/observer requests 4,096 B; one 5 s "frame completion age" | 32 KiB / 16 KiB (D-W21); the 5 s frame completion age is **retained** on the send side (`frame_completion_ms`, pin → completely written; it is what bounds a dribbling reader, D-W25), plus server request deadline 5 s / 25 s (control, plan's RG55 value), writer stall 5 s for an unpinned head, client reader 30 s (D-W16) | none |
@@ -959,12 +1243,14 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | V-19 | plan §A.2 | verbs listed per level only | `status`, `events`, `spans` also at control (relayed), `unsubscribe` at observe/operator | none (§4.3) |
 | V-20 | plan §B.4 | clients per level only | per-uid connection and selection caps, hello and idle deadlines, refuse without a byte | none (D-W19, D-W20) |
 
-### Open questions (recommendation first)
+### Open questions (both DECIDED)
 
-1. **Client-side completion age**: 30 s (recommended, D-W16: a trusted probe under load must not be
-   cut by a client) vs the server's 5 s.
-2. **Who may read spans**: all `hostobs-observe` members (recommended, plan §I question 4) — WIRE.md
-   serves `events`/`spans` at observe level on that assumption.
+1. **Client-side completion age: DECIDED, 30 s** (D-W16; the server keeps its 5 s). Reason: a
+   trusted probe under host load must not be cut by its own client, and the probe's stall bound
+   (5 s) already protects the probe.
+2. **Who may read spans: DECIDED, every `hostobs-observe` member** (plan §I question 4). Reason:
+   this is the plan's recommendation, and WIRE.md serves `events`/`spans` at observe level on
+   that basis.
 
 ### Review round 1 (independent review of rev 1 at `7f1f17888`, verdict FIX)
 

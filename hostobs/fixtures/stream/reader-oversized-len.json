@@ -1,0 +1,43 @@
+{
+  "case": "reader-oversized-len",
+  "doc": "A header whose len is max_frame + 1: nothing at 11 bytes, oversized-frame at the 12th, then poisoned (more bytes and a poll return it). The reader never reserves for the declared len.",
+  "side": "server",
+  "max_frame": 1024,
+  "completion_ms": 5000,
+  "steps": [
+    {
+      "t_ms": 0,
+      "feed_hex": "0104000001000000040000"
+    },
+    {
+      "t_ms": 1,
+      "feed_hex": "00"
+    },
+    {
+      "t_ms": 2,
+      "feed_hex": "000102"
+    },
+    {
+      "t_ms": 3,
+      "poll": true
+    }
+  ],
+  "expect": [
+    [],
+    [
+      {
+        "error": "oversized-frame"
+      }
+    ],
+    [
+      {
+        "error": "oversized-frame"
+      }
+    ],
+    [
+      {
+        "error": "oversized-frame"
+      }
+    ]
+  ]
+}

@@ -163,6 +163,7 @@ fn column_block_with_dictionary(cgroups: usize, with_dictionary: bool) -> Block 
         } else {
             None
         },
+        subject: None,
         skipped_sections: Vec::new(),
     }
 }

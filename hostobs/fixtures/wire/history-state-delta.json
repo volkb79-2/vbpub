@@ -1,0 +1,105 @@
+{
+  "case": "history-state-delta",
+  "doc": "A `delta` bucket over a state column: states permit only last.",
+  "frame": {
+    "type": "block",
+    "corr": 70,
+    "sections": [
+      "header",
+      "dictionary",
+      "time",
+      "columns"
+    ],
+    "header": {
+      "boot_id": "00112233-4455-6677-8899-aabbccddeeff",
+      "epoch": 8,
+      "seq": 0,
+      "mono_start_ns": 1000000000,
+      "mono_end_ns": 2000000000,
+      "boot_ns": 500,
+      "real_ns": 1700000000000000000,
+      "dict_gen": 2,
+      "n_rows": 1,
+      "dropped": 1,
+      "flags": 0
+    },
+    "dictionary": {
+      "generation": 2,
+      "entries": [
+        {
+          "kind": "entity",
+          "inc": 11,
+          "text": "/system.slice"
+        },
+        {
+          "kind": "metric",
+          "text": "mem.current",
+          "facts": {
+            "unit": "bytes",
+            "kind": "gauge",
+            "scope": "cgroup",
+            "source": "cgroupfs"
+          }
+        },
+        {
+          "kind": "metric",
+          "text": "signed.value",
+          "facts": {
+            "unit": "none",
+            "kind": "gauge",
+            "scope": "daemon",
+            "source": "probe"
+          }
+        },
+        {
+          "kind": "metric",
+          "text": "psi.io.some.total",
+          "facts": {
+            "unit": "usec",
+            "kind": "counter",
+            "scope": "host",
+            "source": "procfs"
+          }
+        },
+        {
+          "kind": "metric",
+          "text": "ksm.run",
+          "facts": {
+            "unit": "none",
+            "kind": "state",
+            "scope": "host",
+            "source": "sysfs"
+          }
+        }
+      ]
+    },
+    "rows": [],
+    "time": [
+      {
+        "real_ns": 1700000000000000000,
+        "covered_ms": 1000,
+        "samples": 5,
+        "agg": "delta"
+      }
+    ],
+    "columns": [
+      {
+        "metric": 4,
+        "type": "u64",
+        "kind": "state",
+        "values": [
+          "1"
+        ],
+        "quality": [
+          "ok"
+        ]
+      }
+    ],
+    "skipped": []
+  },
+  "expect_error": {
+    "kind": "aggregation-not-permitted",
+    "metric": 4,
+    "agg": 2
+  }
+}

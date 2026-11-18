@@ -1,0 +1,47 @@
+{
+  "case": "reader-poisoned-stays",
+  "doc": "A header with type 9, then a good REQ, a poll and an eof: every later call returns the same error and no frame.",
+  "side": "server",
+  "max_frame": 1024,
+  "completion_ms": 5000,
+  "steps": [
+    {
+      "t_ms": 0,
+      "feed_hex": "0c0000000900000003000000"
+    },
+    {
+      "t_ms": 1,
+      "feed_hex": "2600000001000000010000007b2276657262223a2268656c6c6f222c2261726773223a7b7d7d"
+    },
+    {
+      "t_ms": 2,
+      "poll": true
+    },
+    {
+      "t_ms": 3,
+      "eof": true
+    }
+  ],
+  "expect": [
+    [
+      {
+        "error": "unknown-frame-type"
+      }
+    ],
+    [
+      {
+        "error": "unknown-frame-type"
+      }
+    ],
+    [
+      {
+        "error": "unknown-frame-type"
+      }
+    ],
+    [
+      {
+        "error": "unknown-frame-type"
+      }
+    ]
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "case": "subject-reserved-word",
+  "doc": "A subject section whose reserved word is 1.",
+  "frame": {
+    "type": "block",
+    "corr": 64,
+    "sections": [
+      "header",
+      "dictionary",
+      "subject",
+      "time",
+      "columns"
+    ],
+    "header": {
+      "boot_id": "00112233-4455-6677-8899-aabbccddeeff",
+      "epoch": 8,
+      "seq": 0,
+      "mono_start_ns": 1000000000,
+      "mono_end_ns": 2000000000,
+      "boot_ns": 500,
+      "real_ns": 1700000000000000000,
+      "dict_gen": 2,
+      "n_rows": 3,
+      "dropped": 1,
+      "flags": 0
+    },
+    "dictionary": {
+      "generation": 2,
+      "entries": [
+        {
+          "kind": "entity",
+          "inc": 11,
+          "text": "/system.slice"
+        },
+        {
+          "kind": "metric",
+          "text": "mem.current",
+          "facts": {
+            "unit": "bytes",
+            "kind": "gauge",
+            "scope": "cgroup",
+            "source": "cgroupfs"
+          }
+        },
+        {
+          "kind": "metric",
+          "text": "signed.value",
+          "facts": {
+            "unit": "none",
+            "kind": "gauge",
+            "scope": "daemon",
+            "source": "probe"
+          }
+        },
+        {
+          "kind": "metric",
+          "text": "psi.io.some.total",
+          "facts": {
+            "unit": "usec",
+            "kind": "counter",
+            "scope": "host",
+            "source": "procfs"
+          }
+        }
+      ]
+    },
+    "rows": [],
+    "time": [
+      {
+        "real_ns": 1700000000000000000,
+        "covered_ms": 1000,
+        "samples": 5,
+        "agg": "last"
+      },
+      {
+        "real_ns": 1700000001000000000,
+        "covered_ms": 1000,
+        "samples": 5,
+        "agg": "last"
+      },
+      {
+        "real_ns": 1700000002000000000,
+        "covered_ms": 1000,
+        "samples": 5,
+        "agg": "last"
+      }
+    ],
+    "columns": [
+      {
+        "metric": 1,
+        "type": "u64",
+        "kind": "gauge",
+        "values": [
+          "100",
+          "101",
+          "102"
+        ],
+        "quality": [
+          "ok",
+          "ok",
+          "ok"
+        ]
+      }
+    ],
+    "skipped": [],
+    "subject": 0
+  },
+  "expect_error": {
+    "kind": "unknown-section-flags",
+    "kind_code": 6,
+    "flags": 1
+  }
+}
