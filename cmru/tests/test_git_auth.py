@@ -138,7 +138,7 @@ def test_run_remote_git_uses_secret_only_for_matching_origin(monkeypatch, tmp_pa
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(git_auth.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_auth, "run_process", fake_run)
     result = git_auth.run_remote_git(
         tmp_path, "push", "origin", "HEAD:refs/heads/main", auth=auth,
         capture_output=True, text=True,
@@ -170,7 +170,7 @@ def test_run_local_git_strips_publisher_tokens_from_hook_environment(monkeypatch
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(git_auth.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_auth, "run_process", fake_run)
 
     result = git_auth.run_local_git(tmp_path, "commit", "-m", "prepare", check=True)
 
@@ -194,7 +194,7 @@ def test_run_local_git_scrubs_caller_supplied_environment_without_mutating_it(
     }
     calls = []
     monkeypatch.setattr(
-        git_auth.subprocess, "run",
+        git_auth, "run_process",
         lambda argv, **kwargs: calls.append((argv, kwargs))
         or subprocess.CompletedProcess(argv, 0, stdout="", stderr=""),
     )
@@ -293,7 +293,7 @@ def test_run_remote_git_fetch_uses_fetch_origin_auth_scope(monkeypatch, tmp_path
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(git_auth.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_auth, "run_process", fake_run)
 
     result = git_auth.run_remote_git(tmp_path, "fetch", "--prune", "origin", auth=auth)
 
@@ -348,7 +348,7 @@ def test_origin_urls_selects_fetch_or_push_remote_and_filters_empty_lines(
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="https://github.com/acme/vbpub.git\n\n", stderr="")
 
-    monkeypatch.setattr(git_auth.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_auth, "run_process", fake_run)
 
     assert git_auth._origin_urls(tmp_path, for_push=for_push) == [
         "https://github.com/acme/vbpub.git",
@@ -383,7 +383,7 @@ def test_run_remote_git_does_not_forward_tokens_to_a_different_remote(monkeypatc
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(git_auth.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_auth, "run_process", fake_run)
     git_auth.run_remote_git(tmp_path, "push", "origin", "HEAD:main", auth=auth)
 
     argv, kwargs = calls[0]
