@@ -611,3 +611,171 @@ def test_the_synthesised_result_keeps_only_added_lines_under_a_source_root(
     ]
     assert result.report_absent is True
     assert result.mutation.total == 0 and result.mutation.candidate_count == 0
+
+
+# --- U5c review finding 1: only an ABSENT report is ever synthesised --------------
+#
+# Every state below runs under a PLACEHOLDER lane, so the changed-lines diff
+# handoff exists and exit 0 holds. The `_DirectoryAbsent` clause of the
+# zero-mutant decision is then the only thing that keeps a present, refused or
+# unusable report from being replaced by the synthesised "ran zero mutants"
+# result: removing it would turn a real FAIL/BUDGET_EXCEEDED into an
+# INCONCLUSIVE/NO_MUTANTS that hides real mutants.
+
+
+def _not_zero_mutant(verdict) -> None:
+    r2 = _claim(verdict, "R2")
+    assert r2.reason_code is not ReasonCode.NO_MUTANTS
+    assert verdict.reason_code is not ReasonCode.NO_MUTANTS
+    assert verdict.judgment is None or verdict.judgment.r2 is None or (
+        verdict.judgment.r2.report_absent is False
+    )
+
+
+def _unreadable(verdict) -> None:
+    r2 = _claim(verdict, "R2")
+    assert r2.status is Outcome.ERROR
+    assert r2.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    _not_zero_mutant(verdict)
+    assert verdict.judgment is None or verdict.judgment.r2 is None
+
+
+def test_a_usable_report_with_the_handoff_is_its_own_terminal_not_zero_mutants(
+    git_repo: GitRepo, tmp_path: Path
+):
+    base = _seed(git_repo, "full")
+    lane = _with_placeholder(_lane(git_repo, base))
+    fake = Recording(_stage(tmp_path, "full"), 0)
+
+    verdict = _run(git_repo, lane, fake)
+
+    assert fake.calls == 1 and fake.content
+    r2 = _claim(verdict, "R2")
+    assert r2.status is Outcome.BUDGET_EXCEEDED
+    assert r2.reason_code is ReasonCode.LANE_TIMEOUT
+    assert verdict.outcome is Outcome.BUDGET_EXCEEDED
+    _not_zero_mutant(verdict)
+    assert _changed_diff(verdict) is not None
+    assert verdict.judgment.r2.report_absent is False
+
+
+def test_a_usable_report_with_survivors_and_the_handoff_fails_the_floor(
+    git_repo: GitRepo, tmp_path: Path
+):
+    base = _seed(git_repo, "indiff")
+    lane = _with_placeholder(_lane(git_repo, base))
+    fake = Recording(_stage(tmp_path, "indiff"), 0)
+
+    verdict = _run(git_repo, lane, fake)
+
+    r2 = _claim(verdict, "R2")
+    assert r2.status is Outcome.FAIL
+    assert r2.reason_code is ReasonCode.MUTANTS_SURVIVED
+    assert verdict.outcome is Outcome.FAIL
+    _not_zero_mutant(verdict)
+    assert verdict.judgment.r2.report_absent is False
+
+
+def test_a_refused_reservation_with_the_handoff_is_not_zero_mutants(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    real = runner.safeio.reserve_directory_output
+
+    def littered(root, artifact, **kwargs):
+        (Path(root) / artifact).mkdir(parents=True, exist_ok=True)
+        (Path(root) / artifact / "junk.txt").write_text("x", encoding="utf-8")
+        return real(root, artifact, **kwargs)
+
+    monkeypatch.setattr(runner.safeio, "reserve_directory_output", littered)
+    base = _seed(git_repo, "full")
+    lane = _with_placeholder(_lane(git_repo, base))
+    fake = Recording(_stage(tmp_path, "full"), 0)
+
+    verdict = _run(git_repo, lane, fake)
+
+    assert fake.argv is None
+    _unreadable(verdict)
+
+
+def test_a_tracked_out_with_the_handoff_is_not_zero_mutants(
+    git_repo: GitRepo, tmp_path: Path
+):
+    git_repo.write(".gitignore", "")
+    git_repo.write(f"{OUT}/keep.txt", "tracked\n")
+    git_repo.commit_all("track the output directory")
+    base = git_repo.head()
+    git_repo.write("src/lib.rs", "pub fn f() {}\n")
+    git_repo.write("Cargo.toml", '[package]\nname = "x"\nversion = "0.1.0"\n')
+    git_repo.commit_all("subject")
+    lane = _with_placeholder(_lane(git_repo, base))
+    fake = Recording(_stage(tmp_path, "full"), 0)
+
+    verdict = _run(git_repo, lane, fake)
+
+    assert fake.argv is None
+    _unreadable(verdict)
+
+
+def test_a_report_outside_the_window_with_the_handoff_is_not_zero_mutants(
+    git_repo: GitRepo, tmp_path: Path
+):
+    base = _seed(git_repo, "indiff")
+    lane = _with_placeholder(_lane(git_repo, base))
+    fake = Recording(_stage(tmp_path, "indiff", window=(-100, -50)), 0)
+
+    verdict = _run(git_repo, lane, fake)
+
+    assert fake.content
+    _unreadable(verdict)
+
+
+def test_a_tampered_member_diff_with_the_handoff_is_not_zero_mutants(
+    git_repo: GitRepo, tmp_path: Path
+):
+    staged = _stage(tmp_path, "indiff")
+    victim = next((staged / "diff").iterdir())
+    victim.write_text(
+        victim.read_text(encoding="utf-8").replace("n % 2", "n % 3"), encoding="utf-8"
+    )
+    base = _seed(git_repo, "indiff")
+    lane = _with_placeholder(_lane(git_repo, base))
+    fake = Recording(staged, 0)
+
+    verdict = _run(git_repo, lane, fake)
+
+    assert fake.content
+    _unreadable(verdict)
+
+
+def test_a_stale_rotated_directory_with_the_handoff_is_not_zero_mutants(
+    git_repo: GitRepo, tmp_path: Path
+):
+    # A refusal found while CONSUMING the directory (after the command ran).
+    def rotated(cwd: Path) -> None:
+        (cwd / OUT / "mutants.out.old").mkdir()
+
+    base = _seed(git_repo, "indiff")
+    lane = _with_placeholder(_lane(git_repo, base))
+    fake = Recording(_stage(tmp_path, "indiff"), 0, before=rotated)
+
+    verdict = _run(git_repo, lane, fake)
+
+    assert fake.content
+    _unreadable(verdict)
+
+
+def test_an_out_renamed_away_with_the_handoff_is_not_zero_mutants(
+    git_repo: GitRepo, tmp_path: Path
+):
+    def renamed(cwd: Path) -> None:
+        (cwd / OUT).rename(cwd / "moved")
+        (cwd / OUT).mkdir()
+
+    base = _seed(git_repo, "indiff")
+    lane = _with_placeholder(_lane(git_repo, base))
+    fake = Recording(_stage(tmp_path, "indiff"), 0, before=renamed)
+
+    verdict = _run(git_repo, lane, fake)
+
+    assert fake.content
+    _unreadable(verdict)
