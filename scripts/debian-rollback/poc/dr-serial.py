@@ -429,6 +429,17 @@ def _precondition(g, log):
     return state0, kernel
 
 
+def _update_dr_state(g, log):
+    """Install the dr-state from the seed ISO (attached as read-only media at /dev/sr0) over the one on the disk, so a
+    scenario can test the current tool without a 21-minute reinstall. Returns True when the new version is in place."""
+    _, out = g.run("mkdir -p /mnt/seed; mount -o ro /dev/sr0 /mnt/seed; echo MNTRC:$?; "
+                   "install -m 0755 /mnt/seed/poc/dr-state /usr/local/sbin/dr-state; echo INSRC:$?; umount /mnt/seed; "
+                   "echo NEWWINDOW:$(grep -c 'subvol_parent_uuid' /usr/local/sbin/dr-state)")
+    return check(log, "dr-state updated from the seed medium (parent-aware dedupe window present)",
+                 tag(out, "MNTRC") == "0" and tag(out, "INSRC") == "0" and (tag(out, "NEWWINDOW") or "0") not in ("0", ""),
+                 f"mnt={tag(out, 'MNTRC')} install={tag(out, 'INSRC')} window={tag(out, 'NEWWINDOW')}")
+
+
 def scenario_s6(g, log):
     """S6: the kernel package an earlier state needs is removed in the running state (what an apt autoremove of old
     kernels does). Kernels live inside each state, so the earlier state must still boot its own kernel."""
@@ -479,7 +490,7 @@ def scenario_s7(g, log):
     """S7: an unattended upgrade takes a snapshot too. unattended-upgrade drives dpkg through libapt, which runs the
     DPkg::Pre-Invoke hook; this checks it instead of assuming it."""
     pc = _precondition(g, log)
-    if not pc:
+    if not pc or not _update_dr_state(g, log):
         return
     g.run(UPDATES_SOURCES)
     g.run("apt-get update -qq >/dev/null 2>&1")
