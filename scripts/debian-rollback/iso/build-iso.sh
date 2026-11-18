@@ -6,7 +6,7 @@
 # No squashfs or initrd is rebuilt. The overlay is plain files added to the ISO9660 tree:
 #   /dr/*                          the installer payload (dr-autoinstall, dr-plan, dr-pick-disk, install-btrfs.sh, dr-state)
 #   /dr/dr-install.conf            optional ISO-embedded config (--config); a CIDATA stick takes precedence
-#   /live/config-hooks/10-dr-autoinstall   run by live-config when the command line has live-config.hooks=medium
+#   /live/config-hooks/10-dr-autoinstall   run by live-config when the command line has live-config.hooks=file:///run/live/medium/live/config-hooks/10-dr-autoinstall
 #   /boot/grub/grub.cfg            two new first entries (unattended, and live with the payload), the rest unchanged
 # The base ISO's boot catalog is replayed (`-boot_image any replay`), so UEFI booting works as in the base. The BIOS
 # (isolinux) menu is unchanged: the installer is UEFI-only. md5sum.txt/sha256sum.txt on the medium describe the base
@@ -75,11 +75,11 @@ grep -q '^# Live boot' "$SCRATCH/grub.base" || die "base grub.cfg has no '# Live
     /^# Live boot/ && !done {
       print "# debian-rollback entries (added by build-iso.sh)"
       print "menuentry \"debian-rollback: UNATTENDED install to the disk named by the config (UEFI)\" {"
-      print "\tlinux\t" k " boot=live components live-config.hooks=medium dr.mode=auto console=tty0 console=ttyS0,115200n8"
+      print "\tlinux\t" k " boot=live components live-config.hooks=file:///run/live/medium/live/config-hooks/10-dr-autoinstall dr.mode=auto console=tty0 console=ttyS0,115200n8"
       print "\tinitrd\t" i
       print "}"
       print "menuentry \"debian-rollback: live system with the installer payload in /run/live/medium/dr\" {"
-      print "\tlinux\t" k " boot=live components live-config.hooks=medium console=tty0 console=ttyS0,115200n8"
+      print "\tlinux\t" k " boot=live components live-config.hooks=file:///run/live/medium/live/config-hooks/10-dr-autoinstall console=tty0 console=ttyS0,115200n8"
       print "\tinitrd\t" i
       print "}"
       done=1

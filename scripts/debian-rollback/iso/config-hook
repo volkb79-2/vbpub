@@ -1,6 +1,9 @@
 #!/bin/sh
 # live-config hook, installed on the ISO as /live/config-hooks/10-dr-autoinstall and run by live-config as root
-# when the kernel command line has `live-config.hooks=medium` (usr/lib/live/config/9990-hooks in the live image).
+# when the kernel command line has live-config.hooks=file:///run/live/medium/live/config-hooks/10-dr-autoinstall
+# (usr/lib/live/config/9990-hooks in the live image). `live-config.hooks=medium` would be the natural spelling, but in
+# live-config 11.0.5 on trixie it looks in /lib/live/mount/medium, which does not exist (the medium is at
+# /run/live/medium), so it silently runs nothing; the file:// form takes the local-file branch of the same script.
 # It only decides whether to start the installer; the installer itself runs as a systemd service so a long install
 # does not hold up the rest of the boot. Without dr.mode=auto the live system boots normally and the payload stays
 # available at /run/live/medium/dr/ for a manual run.
