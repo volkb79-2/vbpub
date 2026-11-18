@@ -167,7 +167,7 @@ def _carry_over_v2(from_judge, into_judge):
     [
         (J_X1, J_X, 0, {}),          # current-judge replay: judge B, from A, into B
         (J_X, J_X, 1, {J_X: 1}),     # true import: judge A executes, into B
-        (J_X1, J_X1, 0, {}),         # self-replay: from == into == executing judge
+        (J_X1, J_X1, 1, {J_X1: 1}),  # same-judge import (deadline binding change): reported, never hidden
     ],
 )
 def test_schema_two_carry_over_reports_the_from_judge(

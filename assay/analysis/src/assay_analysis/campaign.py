@@ -1066,13 +1066,12 @@ def _state_entry(record: dict, stem: str) -> dict:
             record["carry_over"]["from_judge_sha256"]
             if "carry_over" in record
             and record["judge_sha256"] == record["carry_over"]["from_judge_sha256"]
-            # A schema-2 record whose from-judge equals its into-judge moved
-            # nothing between judges: it is a current-judge replay too.
-            and not (
-                record["carry_over"].get("schema_version") == 2
-                and record["carry_over"]["from_judge_sha256"]
-                == record["carry_over"]["into_judge_sha256"]
-            )
+            # A schema-2 record with from == into == executing judge is
+            # ambiguous: `--carry-over` writes one when only the campaign
+            # deadline binding changed (a real same-judge import), a replay
+            # of an identical judge would look the same. It is reported as an
+            # import: visible in the closeout, never hidden. A later schema
+            # disambiguates replays explicitly.
             else None
         ),
     }
