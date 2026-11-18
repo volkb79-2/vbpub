@@ -75,11 +75,14 @@ def _no_leftover_children(request):
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:  # it ended on its own just now
                 pass
+        ended = "?"
         try:
-            os.waitpid(pid, os.WNOHANG if state == "Z" else 0)
+            _, raw = os.waitpid(pid, os.WNOHANG if state == "Z" else 0)
+            ended = os.waitstatus_to_exitcode(raw)
         except ChildProcessError:  # somebody else reaped it in the meantime
             pass
-        leaked.append(f"pid {pid} comm {comm} ({'zombie' if state == 'Z' else 'alive'})")
+        kind = "zombie" if state == "Z" else f"alive, ended with status {ended}"
+        leaked.append(f"pid {pid} comm {comm} ({kind})")
     if leaked:
         pytest.fail(
             "the test left child processes of the pytest process behind (killed and reaped "

@@ -127,7 +127,8 @@ def test_the_live_child_was_killed_and_reaped():
     pid = _pid(pytester)
     assert result.ret != 0
     result.assert_outcomes(passed=2, errors=1)
-    result.stdout.fnmatch_lines([f"*pid {pid} comm sleep (alive)*"])
+    # status -9: the guard sent SIGKILL (a guard that merely waited would report 0 after 30 s)
+    result.stdout.fnmatch_lines([f"*pid {pid} comm sleep (alive, ended with status -9)*"])
     assert not Path(f"/proc/{pid}").exists(), "the guard must kill and reap it, not the exit"
 
 
