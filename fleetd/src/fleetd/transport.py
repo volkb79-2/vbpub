@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import time
@@ -22,6 +23,13 @@ class TransportError(RuntimeError):
 
 class HostUnavailable(TransportError):
     """The wrapper could not contact a host within the requested timeout."""
+
+
+class HxNotConfigured(TransportError):
+    """No hx wrapper was named and the source-checkout default does not exist."""
+
+
+HX_ENVIRONMENT = "FLEETD_HX"
 
 
 class Transport(Protocol):
@@ -64,11 +72,31 @@ def shell_command(command: Sequence[str] | str) -> str:
     return shlex.join(command)
 
 
+def resolve_hx_wrapper(explicit: Path | str | None = None, environ: Mapping[str, str] | None = None) -> Path:
+    """Pick the hx wrapper: ``--hx`` first, then ``FLEETD_HX``, then the source checkout's own.
+
+    The result is always an absolute path, so the launch never searches ``PATH``
+    for an ``hx`` of the same name. An installed wheel has no checkout beside it,
+    so with neither setting the answer is one actionable refusal.
+    """
+    if explicit is not None:
+        return Path(explicit).expanduser().absolute()
+    configured = (os.environ if environ is None else environ).get(HX_ENVIRONMENT)
+    if configured:
+        return Path(configured).expanduser().absolute()
+    default = Path(__file__).resolve().parents[3] / "scripts" / "controller" / "hx.sh"
+    if default.is_file():
+        return default
+    raise HxNotConfigured(
+        f"no hx wrapper: pass --hx PATH or set {HX_ENVIRONMENT} (an installed fleetd has no source checkout to default to)"
+    )
+
+
 class HxTransport:
     """Run commands only through the controller kit's identity-checked hx wrapper."""
 
-    def __init__(self, wrapper: Path | None = None):
-        self.wrapper = wrapper or Path(__file__).resolve().parents[3] / "scripts" / "controller" / "hx.sh"
+    def __init__(self, wrapper: Path | str | None = None, *, environ: Mapping[str, str] | None = None):
+        self.wrapper = resolve_hx_wrapper(wrapper, environ)
 
     def run(
         self,
