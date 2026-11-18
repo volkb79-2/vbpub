@@ -436,7 +436,9 @@ both locks with non-blocking attempts every 5 seconds, takes whichever slot is
 freed first, and prints which slot it took. It prints a progress line every
 300 seconds while both remain busy. The gate command's exit code is propagated
 unchanged, and the configured-path and distinct-path refusals still run before
-the gate command can start.
+the gate command can start. Gates run with `RUN_GATE_PROFILE=off` unless the
+caller sets it: the resource observer needs the rebuilt container, and a lane
+that declares one goes to a remote gate worker instead.
 
 ## Run one lane on a remote gate worker
 

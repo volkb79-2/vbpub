@@ -6,6 +6,10 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
 controller_init
+# Operator decision 2026-11-17: local gates run WITHOUT profiling data, so they behave the same before and after the
+# host's resource-observer cutover (the observer needs the rebuilt container). The caller can still set RUN_GATE_PROFILE=on.
+# A lane that declares resource_observer = "cgprofile" cannot run here at all: it goes to a remote gate worker (remote-gate.sh).
+export RUN_GATE_PROFILE=${RUN_GATE_PROFILE:-off}
 
 [[ $# -gt 0 ]] || { echo "usage: $0 <run-gate arguments...>" >&2; exit 2; }
 for lock in "${CONTROLLER_GATE_LOCK:-}" "${CONTROLLER_GATE2_LOCK:-}"; do

@@ -1078,6 +1078,10 @@ queue_with_lib_variant(
     'isinstance(x, str) and x.count("|") == 1 and "\\n" not in x and "\\r" not in x\n        and all(part.strip() for part in x.split("|", 1))',
     'isinstance(x, str) and "|" in x',
 )
+mutant("scripts/controller/gate-run.sh", "gate-run-profile-default.sh",
+       'export RUN_GATE_PROFILE=${RUN_GATE_PROFILE:-off}', 'export RUN_GATE_PROFILE=${RUN_GATE_PROFILE:-on}')
+mutant("scripts/controller/gate-run.sh", "gate-run-profile-override.sh",
+       'export RUN_GATE_PROFILE=${RUN_GATE_PROFILE:-off}', 'export RUN_GATE_PROFILE=off')
 mutant("scripts/controller/remote-gate.sh", "remote-gate-identity.sh",
        'api_check >/dev/null 2>&1 || die "provider identity', 'true || die "provider identity')
 mutant("scripts/controller/remote-gate.sh", "remote-gate-allow-list.sh",

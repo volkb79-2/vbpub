@@ -6,6 +6,13 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Changed
+- `gate-run.sh` defaults `RUN_GATE_PROFILE` to `off` (the caller can still set
+  `on`): local gates run without profiling data so they behave the same before
+  and after the resource-observer cutover. Reconciled from the program-directory
+  copy, which was otherwise older (the repo copy already polls both slots).
+  Two hand mutants.
+
 ### Added
 - `remote-gate.sh`: the controller's remote gate wrapper, imported from the
   unversioned program directory and parametrised. Host, SSH transport, identity
