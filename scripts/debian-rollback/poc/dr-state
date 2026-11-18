@@ -170,9 +170,10 @@ latest_kernel() { # latest_kernel STATE -> newest version that has BOTH vmlinuz 
   done
 }
 
-# A BLS entry id is a file basename. Acceptance of '@' by systemd-boot was not verified offline, so the PoC does not
-# rely on it: @os-X maps reversibly to entry id os-X. Unsafe names are refused rather than silently changed. Relative
-# components and embedded '@' are rejected even though FAT would allow most of them.
+# systemd-boot's type #1 entry id is the complete file name, including .conf. Internally dr-state keeps the extension
+# separate; @os-X maps reversibly to the basename os-X. Acceptance of '@' by systemd-boot was not verified offline,
+# so the PoC does not rely on it. Unsafe names are refused rather than silently changed. Relative components and
+# embedded '@' are rejected even though FAT would allow most of them.
 entry_id_for_state() {
   local state=$1 id
   [[ "$state" =~ ^@os-[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
@@ -182,11 +183,18 @@ entry_id_for_state() {
   printf '%s\n' "$id"
 }
 
-state_for_entry_id() {
-  local id=$1
+sdboot_bare_entry_id() { # ENTRY_ID[.conf] -> suffix-less basename used by dr-state state mapping
+  local id=${1-}
+  if [[ "$id" == *.conf ]]; then id=${id%.conf}; fi
   [[ "$id" =~ ^os-[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
   case "$id" in *..*|*.) return 1 ;; esac
   [ "${#id}" -le 240 ] || return 1
+  printf '%s\n' "$id"
+}
+
+state_for_entry_id() {
+  local id
+  id=$(sdboot_bare_entry_id "${1-}") || return 1
   printf '@%s\n' "$id"
 }
 
@@ -293,14 +301,14 @@ sdboot_byte_length() { # TEXT -> bytes, independent of the caller's locale
 }
 
 sdboot_loader_conf() { # DEFAULT_ID; existing loader.conf on stdin -> one default and timeout 5 plus unrelated lines
-  local default_id=${1-}
-  [ -n "$default_id" ] || { echo "dr-state: loader.conf rewrite requires a default entry id" >&2; return 1; }
-  state_for_entry_id "$default_id" >/dev/null || return 1
+  local default_id
+  [ -n "${1-}" ] || { echo "dr-state: loader.conf rewrite requires a default entry id" >&2; return 1; }
+  default_id=$(sdboot_bare_entry_id "$1") || return 1
   awk -v default_id="$default_id" '
     BEGIN { bad = 0 }
     { sub(/\r$/, "") }
     $1 == "default" {
-      if (NF != 2 || $2 !~ /^os-[A-Za-z0-9][A-Za-z0-9._-]*$/) bad = 1
+      if (NF != 2 || $2 !~ /^os-[A-Za-z0-9][A-Za-z0-9._-]*(\.conf)?$/) bad = 1
       next
     }
     $1 == "timeout" {
@@ -310,35 +318,44 @@ sdboot_loader_conf() { # DEFAULT_ID; existing loader.conf on stdin -> one defaul
     { print }
     END {
       if (bad) exit 2
-      print "default " default_id
+      print "default " default_id ".conf"
       print "timeout 5"
     }
   ' || return 1
 }
 
 loader_default_id() {
+  local id bare
   [ -e "$SDBOOT_LOADER_CONF" ] || return 0
   [ -r "$SDBOOT_LOADER_CONF" ] || die "$SDBOOT_LOADER_CONF is not readable"
-  awk '{sub(/\r$/, ""); if ($1 == "default") {print $2; exit}}' "$SDBOOT_LOADER_CONF"
+  id=$(awk '{sub(/\r$/, ""); if ($1 == "default") {print $2; exit}}' "$SDBOOT_LOADER_CONF")
+  [ -n "$id" ] || return 0
+  if bare=$(sdboot_bare_entry_id "$id"); then
+    printf '%s\n' "$bare"
+  else
+    printf '%s\n' "$id"
+  fi
 }
 
 bootctl_set_oneshot() { # the only place that writes the systemd-boot one-shot variable
-  bootctl set-oneshot "$1"
+  local id
+  id=$(sdboot_bare_entry_id "${1-}") || return 1
+  bootctl set-oneshot "$id.conf"
 }
 
 sdboot_oneshot_id() {
-  local id
+  local id raw
   [ -d "$SDBOOT_EFIVARS_DIR" ] \
-    || die "efivarfs is unavailable; refusing to prune without checking LoaderEntryOneShot"
+    || die "efivarfs is unavailable; refusing to inspect LoaderEntryOneShot"
   [ -e "$SDBOOT_ONESHOT_EFIVAR" ] || return 0
   [ -r "$SDBOOT_ONESHOT_EFIVAR" ] \
-    || die "cannot read LoaderEntryOneShot; refusing to prune without knowing the pending one-shot state"
-  id=$(dd if="$SDBOOT_ONESHOT_EFIVAR" bs=1 skip=4 status=none 2>/dev/null \
+    || die "cannot read LoaderEntryOneShot; refusing without knowing the pending one-shot state"
+  raw=$(dd if="$SDBOOT_ONESHOT_EFIVAR" bs=1 skip=4 status=none 2>/dev/null \
     | iconv -f UTF-16LE -t UTF-8 2>/dev/null | tr -d '\000\r\n') \
-    || die "cannot decode LoaderEntryOneShot; refusing to prune without knowing the pending one-shot state"
-  [ -n "$id" ] || die "LoaderEntryOneShot is empty; refusing to prune without knowing the pending one-shot state"
-  state_for_entry_id "$id" >/dev/null \
-    || die "LoaderEntryOneShot names an unknown entry id '$id'; refusing to prune"
+    || die "cannot decode LoaderEntryOneShot; refusing without knowing the pending one-shot state"
+  [ -n "$raw" ] || die "LoaderEntryOneShot is empty; refusing without knowing the pending one-shot state"
+  id=$(sdboot_bare_entry_id "$raw") \
+    || die "LoaderEntryOneShot names an unknown entry id '$raw'; refusing"
   printf '%s\n' "$id"
 }
 
@@ -595,7 +612,7 @@ cmd_gen_menu_systemd_boot() {
   local default="" entries=0 i s kver sha256 kid eid ruuid cluster needed free text kernel_bytes initrd_bytes
   local dir_bytes loader_bytes text_bytes entry_path base folded found_existing expected
   local missing_dirs record_children=0 record_parents=0 record_bytes
-  local target entry_tmp loader_in="" loader_out default_id="" default_requested=0 default_entry_id
+  local target entry_tmp loader_in="" loader_out default_id="" default_requested=0 default_entry_id oneshot_id=""
   local -a all_states=() states_list=() kvers=() hashes=() kids=() eids=()
   local -A wanted_states=()
   while [ $# -gt 0 ]; do
@@ -604,6 +621,7 @@ cmd_gen_menu_systemd_boot() {
   ensure_top
   ensure_esp
   cleanup_sdboot_scratch "$SDBOOT_KERNEL_DIR" "$SDBOOT_ENTRY_DIR" "$SDBOOT_LOADER_CONF" "$SDBOOT_MARKER"
+  oneshot_id=$(sdboot_oneshot_id) || die "cannot read the systemd-boot one-shot entry"
   ruuid=$(root_uuid); [ -n "$ruuid" ] || die "no btrfs root UUID in /etc/fstab"
   if [ -n "$default" ]; then
     default_entry_id=$(entry_id_for_state "$default") || die "unsafe state name for a systemd-boot entry id: $default"
@@ -740,12 +758,15 @@ cmd_gen_menu_systemd_boot() {
   sdboot_test_failure loader-publish
   mv "$SDBOOT_LOADER_CONF.new.$$" "$SDBOOT_LOADER_CONF"
 
-  # Remove only entries that carry our marker and no longer name a state. Foreign BLS entries are left alone.
+  # Remove only entries that carry our marker and are neither the new default nor a pending one-shot. Foreign BLS
+  # entries are left alone.
   local entry_path entry_base entry_id entry_state
   while IFS= read -r entry_path; do
     [ "$(head -n 1 "$entry_path")" = "$SDBOOT_ENTRY_MARKER" ] || continue
     entry_base=${entry_path##*/}
     entry_id=${entry_base%.conf}
+    [ "$entry_id" != "$default_id" ] || continue
+    [ -z "$oneshot_id" ] || [ "$entry_id" != "$oneshot_id" ] || continue
     entry_state=$(state_for_entry_id "$entry_id") || {
       sdboot_test_failure stale-delete
       rm -f -- "$entry_path"
