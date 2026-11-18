@@ -316,6 +316,9 @@ read by the Run-Gate process that starts the container and is not forwarded
 into it. See the
 [image identity rationale](docs/DESIGN-GUIDE.md#per-invocation-image-identity)
 and [consumer example](CONSUMERS.md#per-invocation-image-selection).
+A Run-Gate release must be followed by a rebuild of the shared `tester-unified:local`
+image, or the next tool's release gate refuses; see
+[After a Run-Gate release: rebuild the image](../tester-unified/README.md#after-a-run-gate-release-rebuild-the-image).
 
 ### xdist workers for command lanes (RG-146, RG-147)
 
