@@ -671,7 +671,7 @@ preflight. After it succeeds, a later observer loss or unstable before/after
 window is candidate telemetry: Assay emits one advisory line, records
 `resource_observation.status = "unobserved"` and the reason in progress and
 resume state, omits that candidate's optional `resource_limit_evidence` from
-  the v19 verdict, and continues the campaign. A PASS with an exited leader
+  the v20 verdict, and continues the campaign. A PASS with an exited leader
 remains `survived`; a PASS with a signaled leader is `crashed`. A FAIL
 without resource evidence counts as `killed` only when a current-run pytest
 failed-call witness records a normal exit status of 1 and process-tree evidence
@@ -4694,7 +4694,7 @@ assay run worker_lane \
 This option does not carry forward an old outcome. New candidates and prior
 survivors, crashes, hangs, timeouts, equivalents, or kills without a usable
 witness run the full current suite. `--rejudge <id>` also forces a full run for
-that candidate. A v12 through v18 verdict is a cold start under v19:
+that candidate. A v12 through v19 verdict is a cold start under v20:
 `assay plan` marks its evidence unproven and `assay run` runs every candidate
 fully after the baseline; `assay verify` refuses older versions. Wrapped commands, xdist,
 nonempty `PYTEST_ADDOPTS`, custom test loops, or uncertain pytest hooks also use
@@ -4787,7 +4787,7 @@ that looks like a real finding.
 
 ## Adopting a v2-capable release
 
-The current verdict schema is v19, a hard cut from v18. Lane schema v2 is also
+The current verdict schema is v20, a hard cut from v19. Lane schema v2 is also
 current, a hard cut from v1 (no dual-version verifier, no compatibility
 shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
@@ -4795,8 +4795,9 @@ for why interpreting an old lane file as if it declared the new grammar would be
 shadowing default this project forbids elsewhere). That cuts both directions at once: a v2-capable
 assay refuses a v1 lane file's now-required `[isolation]` table with
 `BAD_LANE_CONFIG`, and a v1-pinned assay cannot parse a v2 file's `[isolation]`
-table at all — it is simply an unknown key. `assay verify` rejects v18 and
-earlier verdicts on the schema version alone; see the [v18-to-v19 migration
+table at all — it is simply an unknown key. `assay verify` rejects v19 and
+earlier verdicts on the schema version alone; see the [v19-to-v20 migration
+notes](#migration-notes-v19-to-v20), the [v18-to-v19 migration
 notes](#migration-notes-v18-to-v19), the [v17-to-v18 migration
 notes](#migration-notes-v17-to-v18), the [v16-to-v17 migration
 notes](#migration-notes-v16-to-v17), the [v15-to-v16 migration
@@ -5006,7 +5007,54 @@ written under `/14` are counted as rejected on resume; a malformed record
 written under the current identity remains a state error.
 
 `assay lanes --json` advertises the capabilities `r2-resource-profile` and
-`verdict-v19` for callers that detect the change without parsing versions.
+`verdict-v20` for callers that detect the change without parsing versions.
+
+## Migration notes (v19 to v20)
+
+Verdict schema v20 is a **hard cut** from v19 and a MAJOR assay release.
+`assay verify` accepts only v20; keep v19 artifacts as historical evidence or
+regenerate them. A v19 verdict is a cold start for `--reuse-from`. There is no
+dual-version verifier, compatibility shim or in-place upgrade. `assay lanes
+--json` advertises `verdict-v20` in place of `verdict-v19`.
+
+Three changes, all on an INGESTED R2 judgment (`judgment.r2.producer =
+"ingested"`); a native verdict differs from v19 only by its version number:
+
+- **A second ingested operator namespace.** An ingested mutant's `operator` is
+  `stryker:<Name>` or `cargo-mutants:<Name>`, where `<Name>` is the producing
+  tool's own genre name (`FnValue`, `BinaryOperator`, `MatchArm`, ...), kept
+  verbatim and matching `[A-Za-z0-9]+`. Any other prefix, and an empty
+  `cargo-mutants:`, is refused by the schema, the model and `assay verify`. The
+  schema's `mutation_operator` pattern gains the `cargo-mutants` branch, so a
+  consumer that validates operator strings with its own copy of the pattern
+  must add it.
+- **`judgment.r2.report_absent`.** The boolean `true`, present only when the
+  ingested tool wrote no report at all because it ran zero mutants (omitted,
+  never `false`). It is legal only with `producer_tool.version` equal to the
+  literal `"unobserved"` (assay read no report, so there is no version to
+  copy) and the reverse: `"unobserved"` is legal only with `report_absent`.
+  The R2 claim must be `INCONCLUSIVE` / `NO_MUTANTS` with an empty mutation
+  payload (`total` and `candidate_count` 0), so a consumer never reads "the
+  tool crashed silently" as "no mutants were needed". Forbidden under `native`.
+- **`judgment.r2.changed_diff`.** An object `{base_rev, head_rev, relative_to,
+  sha256, bytes}` naming the changed-lines diff assay handed to an ingested
+  cargo-mutants run through the argv token `{assay.changed_diff}`. The verdict
+  records the placeholder (never a per-run temporary path) in `argv_declared`
+  and `argv_effective`; the diff is reproduced as `git diff <base_rev>
+  <head_rev>` relative to `relative_to` (`"."` at the repository top, else a
+  normalized forward-slash path). It is **required** exactly when the
+  judgment exists, `argv_declared` holds the whole token `{assay.changed_diff}`
+  and `producer_tool.name` is `cargo-mutants`, and forbidden otherwise,
+  including under `native`. `base_rev` equals `judgment.resolved.base` (when
+  one is recorded), `head_rev` equals the verdict `commit`, both full lowercase
+  hex object names (40 or 64 characters). `sha256` and `bytes` are declared
+  by the artifact: `assay verify` checks their shape, not the digest, because
+  recomputing it needs the repository. A lane that ends before an R2 claim
+  exists has no `judgment.r2` and may carry the placeholder alone.
+
+An ingested document may also carry a crashed mutant (`mutation.crashed`
+non-empty, R2 `ERROR` / `EXEC_FAILED`); that was always legal and is now pinned
+by a test.
 
 ## Migration notes (v18 to v19)
 
@@ -5219,7 +5267,7 @@ suite, so raise `jobs_max` stepwise and compare buckets against a serial replay.
 
 The run event reports this invocation's `jobs` and `attribution` (`serial` or
 `overlap-conservative`); each candidate event reports `worker_index` and
-`worker_count`. Verdict schema v19 stores the campaign maximum as
+`worker_count`. Verdict schema v20 stores the campaign maximum as
 `judgment.r2.jobs` with its `attribution`, and `judgment.r2.worker_counts`
 gives the candidates per worker count: a resumed campaign can combine candidate
 records produced at different worker counts, and each record states its own.
