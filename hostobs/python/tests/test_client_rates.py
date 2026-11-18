@@ -46,6 +46,23 @@ class Rates(unittest.TestCase):
         got = rate(Reading(0, 0), Reading(1, big), 0)
         self.assertEqual(got["per_second"], big * 10**9 / 1)
 
+    def test_integer_delta_first_differs_from_float_first_and_is_pinned(self):
+        delta, elapsed = 12745503462193745463, 4051686261
+        got = rate(Reading(0, 0), Reading(elapsed, delta), 10**9)
+        self.assertEqual(got["per_second"], delta * 10**9 / elapsed)
+        self.assertEqual(got["per_second"], 3.145728134203564e18)
+        self.assertNotEqual(got["per_second"], float(delta) * 1e9 / elapsed)
+
+    def test_mono_ns_is_validated_like_value(self):
+        for bad in (1.5, -1, 2**64, True, None, "5"):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                rate(Reading(bad, 1), Reading(10**9, 2), 1)
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                rate(Reading(0, 1), Reading(bad, 2), 1)
+        with self.assertRaises(ValueError):
+            rate(Reading(0.0, None, "absent"), Reading(10**9, 2), 1)
+        self.assertTrue(rate(Reading(0, 1), Reading(2**64 - 1, 2), 1)["ok"])
+
     def test_missed_samples_saturate_and_a_zero_nominal_reports_none(self):
         self.assertEqual(rate(Reading(0, 0), Reading(10**9 * 2**33, 5), 10)["missed"], 2**32 - 1)
         self.assertEqual(rate(Reading(0, 0), Reading(10**9, 5), 0)["missed"], 0)

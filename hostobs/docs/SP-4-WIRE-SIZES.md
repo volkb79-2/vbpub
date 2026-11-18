@@ -116,6 +116,13 @@ per-row cost without the dictionary: 82 B (1,000 cgroups: 80 B)
 
 ## P3 decoder measurements
 
+**Gate image.** No registered lane runs these tests yet (`HOB-4`); the hostobs lanes use
+`tester-unified-rust`, whose `python3` is Debian's apt package (version not measured here). All numbers
+below were measured on CPython 3.14.10 only. On any other version the absolute-peak test is skipped (its
+reason names the pinned version) and only the growth and line-count gates run; WIRE.md §7.8 requires the
+absolute bound to be re-measured and re-set in the change that registers the lane or moves its image to a
+CPython the bound was not measured on.
+
 Measured with the real decoder `python/hostobs_client/wire.py` (WIRE.md §7.4, §7.8) by
 `python/tests/test_client_budgets.py` (gated) and `python/bench_decode.py` (not gated), one run each,
 2026-11-18, devcontainer (8 cores, shared with a production game server, load average about 1.7),
