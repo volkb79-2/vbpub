@@ -67,9 +67,10 @@ it validates the four payload frame-header facts itself and binds its quality ta
 `fixtures/wire/quality.json` instead of to a type.
 
 The `probe` binary's `main` is still the M0 scaffold; its library (`bins/probe/src`) now holds the
-pure serving functions of P5b-1a (`limits`, `verbs`, `codes`, `args`, `classify`, `encode`, `lines`),
-and the connection state machine and the drivers are the next packages
-(`docs/P5B-SERVER-DESIGN.md`). The proven topos sampler (`topos-sampler-poc-20261105`, `topos/sampler/`) is the
+pure serving functions of P5b-1a (`limits`, `verbs`, `codes`, `args`, `classify`, `encode`, `lines`)
+and the sans-IO serving core of P5b-1b (`backend`, `conn` the connection state machine, `server` the
+`Server` that owns the one send hub, the connections and the per-level and per-uid counters); the
+drivers are the next packages (`docs/P5B-SERVER-DESIGN.md`). The proven topos sampler (`topos-sampler-poc-20261105`, `topos/sampler/`) is the
 behavioural source the `kernel` collectors were ported from: its scheduling around a stalled
 `/proc/<pid>/cmdline` read is deliberately not ported, and the parts plan v4 requires to
 change were changed (crate docs, `docs/DESIGN-GUIDE.md` §"Collecting the host", and
@@ -155,7 +156,8 @@ which carries it). `selftest` is the workspace's own
 R0/R1 baseline (nextest, doctests, llvm-cov and the per-crate line/region floors).
 
 **`assay-r1` is the estate-standard coverage verdict**: assay's Rust R1 judge reads the
-same `lcov.info` and judges the 44 declared `src` files of the five functional crates against
+same `lcov.info` and judges the 56 declared `src` files of the six functional packages (the five crates and
+`bins/probe`) against
 a 95.0% line floor (the floor was derived from 96.04% measured over the first 33 files and
 floored one point down; the later lanes measure 96.7% to 96.9% — derivation in
 [`assay.toml`](assay.toml)). The verdict carries the measured totals, lists the uncovered

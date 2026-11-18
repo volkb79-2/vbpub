@@ -129,6 +129,49 @@ def test_diff_relative_to_workspace_root_in_subproject(git_repo: GitRepo, tmp_pa
     assert changed.relative_to == prefix
 
 
+def test_changed_diff_uses_the_shared_request_base_pathspecs(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    """B558 keeps the U5b handoff on the same judged-path helper as the three
+    request-base candidate diffs; otherwise its private list could drift."""
+    lane, fake = _recording_case(git_repo, tmp_path, "indiff")
+    calls: list[tuple[str, ...]] = []
+    real = runner._request_base_diff_pathspecs
+
+    def spy(candidate_lane, *, repo_top, project_root):
+        pathspecs = real(
+            candidate_lane, repo_top=repo_top, project_root=project_root
+        )
+        calls.append(pathspecs)
+        return pathspecs
+
+    monkeypatch.setattr(runner, "_request_base_diff_pathspecs", spy)
+
+    _run(git_repo, lane, fake)
+
+    assert calls and all(pathspecs == ("src",) for pathspecs in calls)
+    assert fake.content is not None
+    assert b"README" not in fake.content
+
+
+def test_changed_diff_with_no_usable_pathspec_keeps_the_full_diff(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    """B558's no-path fallback omits the empty ``--`` separator instead of
+    making Git silently choose every path."""
+    lane, fake = _recording_case(git_repo, tmp_path, "indiff")
+    monkeypatch.setattr(
+        runner,
+        "_request_base_diff_pathspecs",
+        lambda *args, **kwargs: (),
+    )
+
+    _run(git_repo, lane, fake)
+
+    assert fake.content is not None
+    assert b"Cargo.lock" in fake.content
+
+
 def test_diff_at_the_git_top_is_relative_to_dot(git_repo: GitRepo, tmp_path: Path):
     lane, fake = _recording_case(git_repo, tmp_path, "indiff")
 

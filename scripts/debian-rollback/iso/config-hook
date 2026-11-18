@@ -1,0 +1,36 @@
+#!/bin/sh
+# live-config hook, installed on the ISO as /live/config-hooks/10-dr-autoinstall and run by live-config as root
+# when the kernel command line has live-config.hooks=file:///run/live/medium/live/config-hooks/10-dr-autoinstall
+# (usr/lib/live/config/9990-hooks in the live image). `live-config.hooks=medium` would be the natural spelling, but in
+# live-config 11.0.5 on trixie it looks in /lib/live/mount/medium, which does not exist (the medium is at
+# /run/live/medium), so it silently runs nothing; the file:// form takes the local-file branch of the same script.
+# It only decides whether to start the installer; the installer itself runs as a systemd service so a long install
+# does not hold up the rest of the boot. Without dr.mode=auto the live system boots normally and the payload stays
+# available at /run/live/medium/dr/ for a manual run.
+set -eu
+
+grep -qw 'dr.mode=auto' /proc/cmdline || exit 0
+
+medium=/run/live/medium
+[ -d "$medium/dr" ] || medium=/lib/live/mount/medium
+[ -x "$medium/dr/dr-autoinstall" ] || { echo "dr-hook: $medium/dr/dr-autoinstall missing" >&2; exit 0; }
+
+# a RAM copy: the medium must not be needed while the installer runs
+rm -rf /opt/dr
+mkdir -p /opt/dr
+cp -a "$medium/dr/." /opt/dr/
+
+cat >/run/systemd/system/dr-autoinstall.service <<'EOF'
+[Unit]
+Description=debian-rollback unattended install
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/dr/dr-autoinstall
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=infinity
+EOF
+systemctl daemon-reload
+systemctl start --no-block dr-autoinstall.service
