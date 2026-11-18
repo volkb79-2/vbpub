@@ -109,6 +109,25 @@ cmd_snapshot() {
   done
   if [ "${DR_STATE:-}" = none ]; then echo "dr-state: DR_STATE=none, snapshot skipped" >&2; return 0; fi
   ensure_top
+  # Dedupe window for the apt hook (found by S7: one unattended-upgrade run called dpkg 18 times and took 18
+  # snapshots). While a snapshot younger than DR_SNAPSHOT_MIN_INTERVAL seconds exists (default 900), another apt run
+  # takes none: the rollback target stays the state from before the whole upgrade. 0 disables the window; manual
+  # snapshots (--reason other than apt) ignore it.
+  local interval=${DR_SNAPSHOT_MIN_INTERVAL:-900}
+  [[ "$interval" =~ ^[0-9]+$ ]] || die "DR_SNAPSHOT_MIN_INTERVAL must be a number of seconds"
+  if [ "$reason" = apt ] && [ "$interval" -gt 0 ]; then
+    local newest ts made now
+    newest=$(states | grep '^@os-pre-' | sort | tail -n1 || true)
+    if [ -n "$newest" ]; then
+      ts=${newest#@os-pre-}; ts=${ts%%-*}
+      made=$(date -u -d "${ts:0:8} ${ts:8:2}:${ts:10:2}:${ts:12:2}" +%s 2>/dev/null) || made=0
+      now=$(date -u +%s)
+      if [ $((now - made)) -ge 0 ] && [ $((now - made)) -lt "$interval" ]; then
+        echo "dr-state: $newest is $((now - made)) s old (window $interval s), no new snapshot" >&2
+        return 0
+      fi
+    fi
+  fi
   local cur name; cur=$(current_state)
   name="@os-pre-$(date -u +%Y%m%d%H%M%S)-$$-$reason"   # pid keeps two runs in one second apart
   btrfs subvolume snapshot "$TOP/$cur" "$TOP/$name" >/dev/null

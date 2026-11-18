@@ -481,7 +481,9 @@ def scenario_s7(g, log):
         return
     g.run(UPDATES_SOURCES)
     g.run("apt-get update -qq >/dev/null 2>&1")
-    _, out = g.run("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq unattended-upgrades >/var/log/dr-s7-install.log 2>&1; echo INSRC:$?", 900)
+    # DR_STATE=none: no snapshot for this install, so the dedupe window is empty when the unattended run starts
+    _, out = g.run("DR_STATE=none DEBIAN_FRONTEND=noninteractive apt-get install -y -qq unattended-upgrades "
+                   ">/var/log/dr-s7-install.log 2>&1; echo INSRC:$?", 900)
     check(log, "unattended-upgrades installed", tag(out, "INSRC") == "0", str(tag(out, "INSRC")))
     before = state_list(g)
     _, out = g.run("unattended-upgrade -v >/var/log/dr-s7.log 2>&1; echo UURC:$?; "
@@ -491,7 +493,7 @@ def scenario_s7(g, log):
     new = [s for s in after if s not in before and s.startswith("@os-pre-")]
     check(log, "the unattended run upgraded something (otherwise this scenario proves nothing)",
           tag(out, "UURC") == "0" and (tag(out, "UPGRADED") or "0") != "0", f"rc={tag(out, 'UURC')} upgraded={tag(out, 'UPGRADED')} nothing={tag(out, 'NOTHING')}")
-    check(log, "the unattended run took a snapshot first", len(new) == 1, str(new))
+    check(log, "the unattended run took exactly one snapshot first (dpkg runs many times, the window dedupes)", len(new) == 1, f"{len(new)}: {new}")
 
 
 def scenario_s9(g, log):
