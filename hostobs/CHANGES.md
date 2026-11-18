@@ -13,27 +13,26 @@
   against the held one (`stale-dictionary-generation`, reference, kind and mask checks); `decode_block` is
   `held = None` and behaves as before. Fixtures carry the held dictionary as a top-level `"held"` key.
 - **`HOB-47`: `aggregation-not-permitted`.** Every history bucket's aggregation must be in every
-  column metric's mask, in both decoders. `history-buckets` and `history-five-buckets` were
-  regenerated with `last` buckets (their counter and gauge columns permit no other), the 15-byte
-  length pin is unchanged.
+  column metric's mask, in both decoders. `history-buckets` and `history-five-buckets` carry `last`
+  buckets (their counter and gauge columns permit no other); the 15-byte length pin is unchanged.
 - **`HOB-50`/`HOB-51`: received frames.** `SECTIONED` on a non-BLOCK frame is `unknown-frame-flags`
-  (`block-as-req` was regenerated with the flag cleared), every section length is a multiple of 8
+  (`block-as-req` has the flag clear), every section length is a multiple of 8
   (`section-length`), an unknown kind at directory entry 0 is `section-order` at index 0 (after the
   rank check), and the directory bytes are proven present before the vector is reserved.
-- **Parity of the two decoders (review round 1).** Only the first header body is decoded (a second
-  header is `duplicate-section`); a non-zero pad byte in a column, time or dictionary body is
-  `non-zero-reserved` and the time body's `agg` bytes are judged before its pad; the Python
-  `decode_dictionary` refuses exactly what Rust `Dictionary::decode` refuses with the same kinds and
+- **Both decoders give the same error for the same bytes.** Only the first header body is decoded (a
+  second header is `duplicate-section`); a non-zero pad byte in a column, time or dictionary body is
+  `non-zero-reserved`, and the time body's `agg` bytes are judged before its pad; the Python
+  `decode_dictionary` refuses exactly what Rust `Dictionary::decode` refuses, with the same kinds, and
   raises nothing but `WireError`; the fixed header fields are read and judged in wire order (a short
   buffer with an unknown type byte is `unknown-frame-type`); the header and the subject must carry the
-  directory required flag; the aggregation mask needs no dictionary (`held = None` included) and
-  `encode_block` refuses `aggregation-not-permitted`; the column scan uses a set. 27 new fixtures:
-  `fixtures/wire` holds 68 cases (11 valid, 57 refusals).
+  directory required flag, judged after the section version; the aggregation mask needs no dictionary
+  (`held = None` included) and `encode_block` refuses `aggregation-not-permitted`; the column scan uses
+  a set.
 - **`HOB-52`/`HOB-53`: one outcome per defect.** A metric name repeated with other facts is
-  `duplicate-dictionary-entry` in Rust; the Python reference judges `not-a-block` before the buffer
-  length. Twelve new fixtures in the first round (41 cases, 68 after review round 1); two new
-  `ProtoError` variants (44 in all). Not part of this change: the stream layer (`HOB-54`), the
-  `generation-regressed` rule, and `HOB-49`.
+  `duplicate-dictionary-entry` in Rust, judged before the text's control bytes; the Python reference
+  judges `not-a-block` before the buffer length. There are two new `ProtoError` variants (44 in all).
+- **Fixtures.** `fixtures/wire` holds 70 cases (11 valid, 59 refusals): 29 existing cases and 41 new ones.
+  Not part of this change: the stream layer (`HOB-54`), the `generation-regressed` rule, and `HOB-49`.
 
 ### Fixed (P0 bug fold-in)
 

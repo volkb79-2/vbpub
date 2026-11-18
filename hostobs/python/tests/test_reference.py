@@ -49,7 +49,7 @@ MEM_CURRENT_FACTS = {
 class WireFixtures(unittest.TestCase):
     def test_every_fixture_round_trips_in_the_reference_codec(self):
         cases = hostobs_wire_ref.load_cases(FIXTURES)
-        self.assertEqual(len(cases), 68, "the fixture case list is part of the contract")
+        self.assertEqual(len(cases), 70, "the fixture case list is part of the contract")
         valid = [path.stem for path, spec, _data in cases if "expect_error" not in spec]
         self.assertEqual(len(valid), 11)
         for spec_path, spec, data in cases:
@@ -103,6 +103,16 @@ class WireFixtures(unittest.TestCase):
         for label, hostile, kind in cases:
             with self.subTest(label):
                 self.assertEqual(self._refusal_of_dictionary(hostile)["kind"], kind)
+
+    def test_the_section_version_is_judged_before_the_required_flag(self):
+        # WIRE.md 3.10 pass 6: flags, unknown kind, version, then the required flag.
+        data = (FIXTURES / "header-version-and-required-flag-clear.bin").read_bytes()
+        self.assertEqual(
+            self._refusal(data),
+            {"kind": "unsupported-section-version", "kind_code": 1, "version": 2, "supported": 1},
+        )
+        flag_only = (FIXTURES / "header-required-flag-clear.bin").read_bytes()
+        self.assertEqual(self._refusal(flag_only)["kind"], "unknown-section-flags")
 
     def _refusal_of_dictionary(self, body):
         with self.assertRaises(hostobs_wire_ref.WireError) as caught:

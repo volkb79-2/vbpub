@@ -604,6 +604,13 @@ def duplicate_entity_other_label_frame() -> dict:
     return frame
 
 
+def duplicate_entity_control_frame() -> dict:
+    """The repeated incarnation of `duplicate_entity_other_label_frame`, corr 71."""
+    frame = duplicate_entity_other_label_frame()
+    frame["corr"] = 71
+    return frame
+
+
 def bare_frame(corr: int) -> dict:
     """The live block without its dictionary section: it is judged against a held generation."""
     frame = live_frame()
@@ -953,6 +960,8 @@ CASES: list[tuple[str, dict, list[tuple[int, bytes]] | None, dict | None]] = [
     ("aggregation-not-permitted-held", bare_history_frame(68, ["raw"], [1]), "agg-held", None),
     ("history-gauge-raw", history_frame_of(69, ["raw"], [1], None), "agg-gauge-raw", None),
     ("history-state-delta", history_state_frame(70, "delta"), "agg-state-delta", None),
+    ("duplicate-entity-other-label-control-byte", duplicate_entity_control_frame(), "duplicate-control", None),
+    ("header-version-and-required-flag-clear", live_frame(), "header-version-flag", None),
 ]
 
 
@@ -1146,6 +1155,22 @@ def build(name: str, frame: dict, edits: object) -> tuple[bytes, dict | None]:
     if edits == "header-flag-clear":
         offset = directory_offset(data, section_index(data, "header")) + 3
         return patch(data, offset, b"\x00"), {"kind": "unknown-section-flags", "kind_code": 1, "flags": 0}
+    if edits == "duplicate-control":
+        # The repeated incarnation's label also starts with the control byte 0x01: the repeated
+        # identity is judged before the text's control bytes.
+        return patch(data, dictionary_entry_offset(data, 2) + 4 + 8, b"\x01"), {
+            "kind": "duplicate-dictionary-entry",
+            "index": 2,
+        }
+    if edits == "header-version-flag":
+        # Version 2 AND a clear required flag on the header entry: the version is judged first.
+        offset = directory_offset(data, section_index(data, "header"))
+        return patch(data, offset + 2, b"\x02\x00"), {
+            "kind": "unsupported-section-version",
+            "kind_code": 1,
+            "version": 2,
+            "supported": 1,
+        }
     if edits == "subject-flag-clear":
         offset = directory_offset(data, section_index(data, "subject")) + 3
         return patch(data, offset, b"\x00"), {"kind": "unknown-section-flags", "kind_code": 6, "flags": 0}
@@ -1412,6 +1437,14 @@ DOC = {
     ),
     "history-gauge-raw": "A `raw` bucket over a gauge column: gauges permit last, mean, min and max.",
     "history-state-delta": "A `delta` bucket over a state column: states permit only last.",
+    "duplicate-entity-other-label-control-byte": (
+        "The incarnation 11 repeated at index 2 with a label that starts with the control byte 0x01: "
+        "the repeated identity is judged before the text's control bytes."
+    ),
+    "header-version-and-required-flag-clear": (
+        "The header's directory entry with version 2 and the required flag clear: the version is "
+        "judged before the required flag."
+    ),
 }
 
 

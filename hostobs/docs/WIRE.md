@@ -203,7 +203,10 @@ it names the one incarnation a history block describes. A minor-0 reader refuses
 a history block it cannot attribute must not be read. Both codecs implement it (`HOB-48`). The
 directory's required flag is written by the encoders and enforced on decode: a clear flag is
 `unknown-section-flags` (`kind_code` 6, `flags` the entry's flag byte, fixture
-`subject-required-flag-clear`). A body that is not 8 bytes is `section-length`, a non-zero reserved
+`subject-required-flag-clear`; the section version is judged first, fixture
+`header-version-and-required-flag-clear`). The decoder takes no negotiated minor: a kind 6 section is
+decoded whatever minor was negotiated, and the rule that a minor-0 peer is never sent one belongs to the
+stream layer (`HOB-54`). A body that is not 8 bytes is `section-length`, a non-zero reserved
 word `unknown-section-flags` (`flags` the word), a subject past the dictionary `dangling-dictionary-ref`,
 one that is not an entity `row-reference-not-entity` (fixtures `subject-wrong-length`,
 `subject-reserved-word`, `subject-dangling`, `subject-not-entity`). The encoder cannot check that the
@@ -811,7 +814,7 @@ Python `python/reference/hostobs_wire_ref.py`; both must reproduce `.json` or `e
 them too.
 
 11.3 **New block cases** (bytes from the Python reference encoder, Rust and Python agree;
-`fixtures/wire` holds 68 cases: 11 valid, 57 refusals, the lists of §11.2 and below).
+`fixtures/wire` holds 70 cases: 11 valid, 59 refusals, the lists of §11.2 and below).
 `history-buckets` and `history-five-buckets` carry `last` buckets only, because their counter and gauge
 columns together permit no other aggregation (§3.6); `block-as-req` has `SECTIONED` clear (§3.10). A
 case with a top-level `"held": {"generation", "entries"}` key is decoded against that held dictionary
@@ -844,6 +847,8 @@ case with a top-level `"held": {"generation", "entries"}` key is decoded against
 | `subject-stale-generation-held` | bare history block, `dict_gen` 2, `held` generation 3 | `stale-dictionary-generation` |
 | `aggregation-not-permitted-held` | bare block, `raw` over a gauge, `held` generation 2 | `aggregation-not-permitted` |
 | `history-gauge-raw`, `history-state-delta` | `raw` over a gauge, `delta` over a state | `aggregation-not-permitted` |
+| `duplicate-entity-other-label-control-byte` | `inc` repeated with a label that starts with 0x01 | `duplicate-dictionary-entry` (judged before the control byte) |
+| `header-version-and-required-flag-clear` | header entry with version 2 and the required flag clear | `unsupported-section-version` (version before the flag) |
 | `history-subject` | kind 6 with time, counter column with `raw`, `last`, `delta` buckets | ok |
 | `unaligned-optional-section` | unknown optional kind, `len = 5`, last | `section-length` |
 | `optional-section-before-header` | unknown optional kind, `len = 8`, directory entry 0 | `section-order` |
