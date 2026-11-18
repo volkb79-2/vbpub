@@ -120,7 +120,7 @@ def test_o4_a_state_record_bucket_that_disagrees_with_the_verdict_names_the_file
 
 def test_b530_the_text_closeout_names_imported_results(tmp_path, monkeypatch):
     """A record carried over from another judge is counted for the current
-    judge, and the text closeout says it was imported, not executed."""
+    judge, and the text closeout labels it as imported."""
     root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
     rows = _plan_rows(_fixture_document("r2_pass"))
     _set_judge(progress, J_X)
@@ -143,8 +143,7 @@ def test_b530_the_text_closeout_names_imported_results(tmp_path, monkeypatch):
     )
     assert (code, err) == (0, ""), out
     assert (
-        "carry-over: 1 counted result(s) were IMPORTED from another judge identity, "
-        "not executed by this one"
+        "carry-over: 1 counted result(s) were imported from another judge identity"
     ) in out
     assert f'from={{"{J_X1}": 1}}' in out
     assert 'reasons=["assay upgrade cannot change outcomes"]' in out
@@ -164,14 +163,14 @@ def _carry_over_v2(from_judge, into_judge):
 
 
 @pytest.mark.parametrize(
-    "record_judge",
+    ("record_judge", "import_count", "from_counts"),
     [
-        J_X1,  # current-judge replay: judge B, from A, into B
-        J_X,   # real import: judge A executes, into B
+        (J_X1, 0, {}),          # current-judge replay: judge B, from A, into B
+        (J_X, 1, {J_X: 1}),     # true import: judge A executes, into B
     ],
 )
 def test_schema_two_carry_over_reports_the_from_judge(
-    tmp_path, monkeypatch, record_judge
+    tmp_path, monkeypatch, record_judge, import_count, from_counts
 ):
     root, head, rows = _synthetic(tmp_path, monkeypatch, 1)
     progress = tmp_path / "progress.jsonl"
@@ -187,9 +186,38 @@ def test_schema_two_carry_over_reports_the_from_judge(
 
     assert code == 3
     imported = document["state"]["imported"]
-    assert imported["count"] == 1
-    assert imported["from_judge_sha256_counts"] == {J_X: 1}
+    assert imported["count"] == import_count
+    assert imported["from_judge_sha256_counts"] == from_counts
     assert document["state"]["judge_sha256_counts"] == {J_X1: 1}
+
+
+def test_imported_counts_exclude_schema_two_replays_but_include_both_import_schemas(
+    tmp_path, monkeypatch
+):
+    root, head, rows = _synthetic(tmp_path, monkeypatch, 3)
+    progress = tmp_path / "progress.jsonl"
+    support.write_records(
+        progress,
+        support.run_records(head, rows, executed=[row["id"] for row in rows], judge=J_X1),
+    )
+    schema_two_import = _carry_over_v2(J_X, J_X1)
+    schema_one_import = {
+        key: value for key, value in schema_two_import.items() if key != "locus_match"
+    }
+    schema_one_import["schema_version"] = mutation.CARRY_OVER_SCHEMA_VERSION
+    state = support.write_state(tmp_path / "state", [
+        support.state_record(rows[0], "killed", J_X1, carry_over=_carry_over_v2(J_X, J_X1)),
+        support.state_record(rows[1], "killed", J_X, carry_over=schema_two_import),
+        support.state_record(rows[2], "killed", J_X, carry_over=schema_one_import),
+    ])
+
+    code, _err, document = _analyze(root, head, progress, extra=("--state-dir", str(state)))
+
+    assert code == 3
+    assert document["state"]["counted"] == 3
+    assert document["state"]["imported"]["count"] == 2
+    assert document["state"]["imported"]["from_judge_sha256_counts"] == {J_X: 2}
+    assert document["state"]["judge_sha256_counts"] == {J_X1: 3}
 
 
 def test_o4_a_state_record_whose_identity_does_not_match_its_file_name_is_refused(

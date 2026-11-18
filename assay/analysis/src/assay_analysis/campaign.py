@@ -1047,9 +1047,9 @@ def _state_entry(record: dict, stem: str) -> dict:
     judge = record.get("judge_sha256")
     if not isinstance(judge, str) or not _SHA256_RE.fullmatch(judge):
         raise ValueError("judge_sha256 is not a SHA-256 digest")
-    # (B530) A carried-over record keeps its executing judge and is evidence
-    # for the judge it was imported into; it is counted under that one and
-    # reported separately as imported.
+    # A true import was executed by its from-judge. Schema-2 current-judge
+    # replays were executed by into-judge and remain ordinary current-judge
+    # records, not imports.
     effective = mutation.record_effective_judge(record)
     if effective is None:
         raise ValueError("carry_over provenance is malformed")
@@ -1059,13 +1059,13 @@ def _state_entry(record: dict, stem: str) -> dict:
         "bucket": bucket,
         "judge": effective,
         "mode": mode,
-        # Schema 2 lets a current-judge replay retain the PRIOR judge in
-        # carry_over.from_judge_sha256. `judge_sha256` is the executing judge,
-        # so it is the wrong provenance key whenever the record carries an
-        # explicit from-judge (including schema 1).
+        # `judge_sha256` is the executing judge. Only records executed by
+        # from_judge are imports; schema-2 replays executed by into_judge are
+        # included in the current judge's counts, but not in state.imported.
         "imported_from": (
             record["carry_over"]["from_judge_sha256"]
             if "carry_over" in record
+            and record["judge_sha256"] == record["carry_over"]["from_judge_sha256"]
             else None
         ),
     }
@@ -1848,12 +1848,11 @@ def campaign(
     limit: int = 100,
 ) -> dict:
     """Build one deterministic closeout; all paths are explicit inputs."""
-    # B561 WP2 limitation: the schema-3 `state.imported` object is closed
-    # (`additionalProperties: false`) and has no separate replay count. Its
-    # from-judge map names carry_over.from_judge_sha256 for both a real
-    # imported record and a schema-2 current-judge replay, but `count` still
-    # counts both kinds because this schema cannot expose the distinction.
-    # A separate replay count needs a future analysis-schema change.
+    # state.imported reports only counted carry-over records executed by
+    # from_judge_sha256 (schema-1 and schema-2 imports). A schema-2 replay
+    # executed by into_judge_sha256 is counted under the current judge in
+    # judge_sha256_counts, but the closed schema-3 report has no separate
+    # replay field or replay count.
     stage.name = "arguments"
     evidence._report_commit(expected_commit)
     if command_exit is not None and (
@@ -2398,10 +2397,9 @@ def run_campaign_command(args: argparse.Namespace, *, stdout, stderr) -> int:
         print("  blockers: " + ", ".join(result["complete_blockers"] or ["none"]), file=stdout)
         imported = (result.get("state") or {}).get("imported") or {}
         if imported.get("count"):
-            # (B530) never silently merged: name what this judge did NOT execute.
             print(
-                f"  carry-over: {imported['count']} counted result(s) were IMPORTED "
-                f"from another judge identity, not executed by this one; "
+                f"  carry-over: {imported['count']} counted result(s) were imported "
+                f"from another judge identity; "
                 f"from={json.dumps(imported['from_judge_sha256_counts'], sort_keys=True)} "
                 f"reasons={json.dumps(imported['reasons'])}",
                 file=stdout,
