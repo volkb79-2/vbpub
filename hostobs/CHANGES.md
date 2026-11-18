@@ -42,12 +42,14 @@
   git; a hang mutant), `client_scripted ... transport_failures_are_classified`
   (`crates/client/tests/client_scripted.rs`), grew 200-400 MB/s (the unmutated test passes in
   `selftest`/`assay-r1`). The client crate's test double now panics after one million scripted calls
-  (`e2efb1c55`), so such a mutant dies as a caught mutant. The lane now sets `CARGO_BUILD_JOBS=1`, `RUST_TEST_THREADS=1` and `NEXTEST_TEST_THREADS=1`, and
+  (`e2efb1c55`), which bounds such a runaway (in the real run the two client-crate hang mutants,
+  `client.rs:623` `read_prefix` and `client.rs:706` `read_some`, still ended as 120 s timeouts, but without
+  growing memory beyond the cap). The lane now sets `CARGO_BUILD_JOBS=1`, `RUST_TEST_THREADS=1` and `NEXTEST_TEST_THREADS=1`, and
   `run-gate.toml [lanes.assay-r2.resources] memory = "2500m"` with `memory_swap = "2500m"` (docker
   `--memory`/`--memory-swap`, memory plus swap equal): a runaway is OOM-killed inside its own container and the
   lane ends non-green (ERROR or FAIL, not yet observed) instead of spilling into the host's swap and taking
   neighbours down. The next run measured it: the full lane (baseline plus 345 mutants, 17 minutes) completed
-  inside the cap with no OOM kill (the peak itself was not recorded beyond the first minute).
+  inside the cap with no OOM kill (`crashed 0`, normal exit); no memory peak was recorded.
 
 ### Added (the `conformance` lane; `HOB-4` fixed)
 
