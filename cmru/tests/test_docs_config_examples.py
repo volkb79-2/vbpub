@@ -269,6 +269,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         ],
         "budget_per_candidate": "auto",
         "liveness": True,
+        "candidate_fail_fast": True,
     }
 
     gate = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))
