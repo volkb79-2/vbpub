@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# dr-pick-disk: choose the install target disk. Pure function of `lsblk -dnbP -o NAME,TYPE,ROTA,RM,SIZE,TRAN` output.
+#
+#   lsblk -dnbP -o NAME,TYPE,ROTA,RM,SIZE,TRAN | dr-pick-disk [--exclude NAME]... [--min-gib 8]
+#
+# Rule (operator 2026-11-18): the first non-rotational disk (SSD/NVMe), else the first rotational disk.
+# Never: a removable device, a USB-attached device (the config stick or the install medium), anything
+# listed with --exclude (the disk that holds the booted ISO), anything smaller than --min-gib.
+# "First" is by kernel name in natural order with NVMe before SATA/virtio (lsblk's order is not trusted).
+# Prints /dev/NAME on stdout; exit 1 with a reason on stderr when nothing qualifies.
+set -euo pipefail
+
+MIN_GIB=8
+declare -a EXCLUDE=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --exclude)
+      x=${2:?}; x=${x#/dev/}   # accept the device path as well as the kernel name
+      [[ "$x" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "dr-pick-disk: bad --exclude value: $2" >&2; exit 2; }
+      EXCLUDE+=("$x"); shift 2 ;;
+    --min-gib) MIN_GIB=${2:?}; shift 2 ;;
+    *) echo "dr-pick-disk: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+[[ "$MIN_GIB" =~ ^[0-9]{1,6}$ ]] || { echo "dr-pick-disk: --min-gib must be a number of at most 6 digits" >&2; exit 2; }
+
+field() { # field KEY LINE -> value of KEY="value" (empty if absent)
+  local re="(^|[[:space:]])$1=\"([^\"]*)\""
+  if [[ "$2" =~ $re ]]; then printf '%s' "${BASH_REMATCH[2]}"; fi
+}
+
+candidates=""
+while IFS= read -r line || [ -n "$line" ]; do   # keep a last line without trailing newline
+  [ -n "$line" ] || continue
+  name=$(field NAME "$line"); type=$(field TYPE "$line"); rota=$(field ROTA "$line")
+  rm_=$(field RM "$line"); size=$(field SIZE "$line"); tran=$(field TRAN "$line")
+  [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || continue
+  [ "$type" = disk ] || continue
+  [ "$rm_" = 0 ] || continue
+  [ "$tran" != usb ] || continue
+  [[ "$size" =~ ^[0-9]+$ ]] && [ "$size" -ge $((MIN_GIB * 1024 * 1024 * 1024)) ] || continue
+  [[ "$rota" =~ ^[01]$ ]] || continue
+  skip=0
+  for x in "${EXCLUDE[@]:-}"; do [ "$x" != "$name" ] || skip=1; done
+  [ "$skip" = 0 ] || continue
+  case "$name" in nvme*) prio=0 ;; *) prio=1 ;; esac
+  candidates+="$rota $prio $name"$'\n'
+done
+
+pick=$(printf '%s' "$candidates" | sort -k1,1n -k2,2n -k3,3V | sed -n '1s/^[^ ]* [^ ]* //p')   # no head: no SIGPIPE under pipefail
+if [ -z "$pick" ]; then
+  echo "dr-pick-disk: no qualifying disk (need non-removable, non-USB, >= ${MIN_GIB} GiB, not excluded)" >&2
+  exit 1
+fi
+echo "/dev/$pick"

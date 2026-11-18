@@ -87,7 +87,7 @@ EOF
       cat <<EOF
 menuentry "Debian $s (kernel $kver)" --id $s {
   search --no-floppy --fs-uuid --set=root $ruuid
-  linux /$s/boot/vmlinuz-$kver root=UUID=$ruuid rootflags=subvol=$s ro console=tty0 console=ttyS0,115200
+  linux /$s/boot/vmlinuz-$kver root=UUID=$ruuid rootflags=subvol=$s ro net.ifnames=0 console=tty0 console=ttyS0,115200
   initrd /$s/boot/initrd.img-$kver
 }
 EOF

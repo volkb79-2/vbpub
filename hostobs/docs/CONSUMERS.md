@@ -168,8 +168,24 @@ python3 python/reference/make_fixtures.py /tmp/fixtures-expected     # wire case
 python3 python/reference/make_segment_fixtures.py /tmp/segment-expected  # segment files
 diff -r fixtures/wire /tmp/fixtures-expected                         # committed bytes are current
 diff -r fixtures/segment /tmp/segment-expected                       # ditto, whole files
-python3 -I -m unittest discover -s python/tests -v                   # decoders + rate reference
+python3 -I -m unittest discover -s python/tests -v                   # decoders, rate reference, hostobs_client
 ```
+
+The same run covers the Python client package `python/hostobs_client` (`wire`, `stream`, `rates`):
+`test_client_wire.py` (the 70 wire fixtures and a differential fuzz against the reference),
+`test_client_stream.py` (the 12 reader and 6 client stream fixtures), `test_client_rates.py`,
+`test_client_stdlib_only.py` and `test_client_budgets.py` (the gated §7.8 line-count and memory
+bounds; the absolute memory bound runs on CPython 3.14.10 only). `python3 -I python/bench_decode.py`
+prints the ungated CPU timings.
+
+The connection layer (`conn`, `envelope`, `profiling`, `mark`) is tested without a live probe:
+`test_client_conn.py` steps a scripted fake probe (`fake_probe.py`, one `socketpair`, the fake clock jumps
+instead of sleeping), `test_client_path.py` covers `Connection.open`, `reconnect`, `require_profiling` and
+`hostobs-mark` over real `AF_UNIX` paths (the only server thread of the suite), and `test_client_zipimport.py`
+builds a zip of the package in a temporary directory and runs `python3 -I` against it. Run one file with
+`python3 -I -m unittest discover -s python/tests -p 'test_client_conn.py' -v` (one Python process at a time on a shared host).
+A consumer calls `require_profiling("observer", required)` once at start and shows `state.notice` verbatim;
+`python3 -m hostobs_client.mark point NAME` writes one annotation (exit 0 when hostobs is unavailable, `--require` makes that 1).
 
 `python/tests` needs only the standard library and never imports the Rust code. The
 regeneration must reproduce the committed bytes exactly: the Python encoders are

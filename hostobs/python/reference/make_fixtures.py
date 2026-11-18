@@ -17,6 +17,10 @@ Case kinds:
   refusal a conforming decoder must produce. Rust tests assert the same refusal
   kind, so the error vocabulary is shared too.
 
+A case with a top-level ``held`` key (``{"generation", "entries"}``, the same entry form as
+``frame.dictionary``) is decoded against that held dictionary (``decode_frame(data, held)``,
+Rust ``decode_block_with``); every other case is decoded with no held dictionary.
+
 Never edit ``.bin`` by hand: change the description here and regenerate.
 """
 
@@ -208,9 +212,9 @@ def history_frame() -> dict:
         },
         "rows": [],
         "time": [
-            {"real_ns": 1_700_000_000_000_000_000, "covered_ms": 1000, "samples": 5, "agg": "mean"},
-            {"real_ns": -1, "covered_ms": 0, "samples": 0, "agg": "raw"},
-            {"real_ns": 1_700_000_000_120_000_000, "covered_ms": 640, "samples": 3, "agg": "max"},
+            {"real_ns": 1_700_000_000_000_000_000, "covered_ms": 1000, "samples": 5, "agg": "last"},
+            {"real_ns": -1, "covered_ms": 0, "samples": 0, "agg": "last"},
+            {"real_ns": 1_700_000_000_120_000_000, "covered_ms": 640, "samples": 3, "agg": "last"},
         ],
         "columns": [
             {
@@ -243,11 +247,11 @@ def history_five_frame() -> dict:
     frame["corr"] = 5
     frame["header"] = header(5, dict_gen=2, epoch=8, seq=2)
     frame["time"] = [
-        {"real_ns": 1_700_000_000_000_000_000, "covered_ms": 1000, "samples": 5, "agg": "mean"},
-        {"real_ns": 1_700_000_001_000_000_000, "covered_ms": 1000, "samples": 4, "agg": "min"},
-        {"real_ns": 1_700_000_002_000_000_000, "covered_ms": 999, "samples": 65535, "agg": "max"},
-        {"real_ns": -1, "covered_ms": 0, "samples": 0, "agg": "raw"},
-        {"real_ns": 1_700_000_004_000_000_000, "covered_ms": 4_294_967_295, "samples": 1, "agg": "mean"},
+        {"real_ns": 1_700_000_000_000_000_000, "covered_ms": 1000, "samples": 5, "agg": "last"},
+        {"real_ns": 1_700_000_001_000_000_000, "covered_ms": 1000, "samples": 4, "agg": "last"},
+        {"real_ns": 1_700_000_002_000_000_000, "covered_ms": 999, "samples": 65535, "agg": "last"},
+        {"real_ns": -1, "covered_ms": 0, "samples": 0, "agg": "last"},
+        {"real_ns": 1_700_000_004_000_000_000, "covered_ms": 4_294_967_295, "samples": 1, "agg": "last"},
     ]
     frame["columns"] = [
         {
@@ -494,6 +498,148 @@ def section_order_frame() -> dict:
     return frame
 
 
+def history_dictionary(generation: int = 2) -> dict:
+    """An incarnation, two gauges and a counter, for the P2a1 history cases."""
+    return {
+        "generation": generation,
+        "entries": [
+            {"kind": "entity", "inc": 11, "text": "/system.slice"},
+            {"kind": "metric", "text": "mem.current", "facts": METRIC_FACTS["mem_current"]},
+            {"kind": "metric", "text": "signed.value", "facts": METRIC_FACTS["signed_gauge"]},
+            {"kind": "metric", "text": "psi.io.some.total", "facts": METRIC_FACTS["psi_total"]},
+        ],
+    }
+
+
+def history_columns(metrics: list[int], n: int) -> list[dict]:
+    kinds = {1: "gauge", 2: "gauge", 3: "counter"}
+    return [
+        {
+            "metric": metric,
+            "type": "u64",
+            "kind": kinds[metric],
+            "values": [str(100 * metric + index) for index in range(n)],
+            "quality": ["ok"] * n,
+        }
+        for metric in metrics
+    ]
+
+
+def history_frame_of(corr: int, aggs: list[str], metrics: list[int], subject: int | None) -> dict:
+    """A history block of `len(aggs)` buckets, one per agg, optionally naming its subject."""
+    n = len(aggs)
+    frame = {
+        "type": "block",
+        "corr": corr,
+        "sections": ["header", "dictionary"] + (["subject"] if subject is not None else []) + ["time", "columns"],
+        "header": header(n, dict_gen=2, epoch=8, seq=0),
+        "dictionary": history_dictionary(),
+        "rows": [],
+        "time": [
+            {"real_ns": 1_700_000_000_000_000_000 + index * 1_000_000_000, "covered_ms": 1000, "samples": 5, "agg": agg}
+            for index, agg in enumerate(aggs)
+        ],
+        "columns": history_columns(metrics, n),
+        "skipped": [],
+    }
+    if subject is not None:
+        frame["subject"] = subject
+    return frame
+
+
+def history_subject_frame() -> dict:
+    """A history block that names its subject (kind 6): counter columns, raw/last/delta buckets."""
+    return history_frame_of(41, ["raw", "last", "delta"], [3], 0)
+
+
+def history_gauge_aggs_frame() -> dict:
+    """A gauge-only history block: mean, min, max and last buckets (no subject, minor-0 shape)."""
+    return history_frame_of(42, ["mean", "min", "max", "last"], [1, 2], None)
+
+
+def history_agg_not_permitted_frame() -> dict:
+    """`mean` over a counter column: the counter mask is raw/last/delta."""
+    return history_frame_of(43, ["last", "mean"], [3], 0)
+
+
+def subject_in_live_frame() -> dict:
+    """A live block carrying a subject section: only a time block may."""
+    frame = live_frame()
+    frame["corr"] = 44
+    frame["sections"] = ["header", "dictionary", "subject", "rows", "columns"]
+    frame["subject"] = 0
+    return frame
+
+
+def duplicate_metric_other_facts_frame() -> dict:
+    """The metric name `cpu.usage_usec` repeated with another unit (index 3)."""
+    frame = live_frame()
+    frame["corr"] = 45
+    other = dict(METRIC_FACTS["cpu_usage"], unit="bytes")
+    frame["dictionary"] = {
+        "generation": 1,
+        "entries": [
+            {"kind": "entity", "inc": 11, "text": "/system.slice"},
+            {"kind": "entity", "inc": 12, "text": "/docker/abc"},
+            {"kind": "metric", "text": "cpu.usage_usec", "facts": METRIC_FACTS["cpu_usage"]},
+            {"kind": "metric", "text": "cpu.usage_usec", "facts": other},
+        ],
+    }
+    return frame
+
+
+def duplicate_entity_other_label_frame() -> dict:
+    """The incarnation 11 repeated with another label (index 2)."""
+    frame = live_frame()
+    frame["corr"] = 46
+    frame["dictionary"] = {
+        "generation": 1,
+        "entries": [
+            {"kind": "entity", "inc": 11, "text": "/system.slice"},
+            {"kind": "entity", "inc": 12, "text": "/docker/abc"},
+            {"kind": "entity", "inc": 11, "text": "/other-label"},
+            {"kind": "metric", "text": "mem.current", "facts": METRIC_FACTS["mem_current"]},
+        ],
+    }
+    return frame
+
+
+def duplicate_entity_control_frame() -> dict:
+    """The repeated incarnation of `duplicate_entity_other_label_frame`, corr 71."""
+    frame = duplicate_entity_other_label_frame()
+    frame["corr"] = 71
+    return frame
+
+
+def bare_frame(corr: int) -> dict:
+    """The live block without its dictionary section: it is judged against a held generation."""
+    frame = live_frame()
+    frame["corr"] = corr
+    frame["sections"] = ["header", "rows", "columns"]
+    del frame["dictionary"]
+    return frame
+
+
+def bare_held_dictionary() -> dict:
+    """The generation 1 the bare block's stream holds (the live block's dictionary)."""
+    return dictionary()
+
+
+def unaligned_optional_frame() -> dict:
+    """An unknown optional section of 8 bytes, last; the edit shortens it to 5 (unaligned)."""
+    frame = live_frame()
+    frame["corr"] = 47
+    frame["unknown_sections"] = [{"kind_code": 9, "version": 1, "flags": 0, "body_hex": "00" * 8}]
+    return frame
+
+
+def rep_frames_bytes(sectioned: bool, truncated: bool) -> bytes:
+    """A REP frame (type 2) of 32 declared bytes with 8 bytes of payload after a 12-byte header."""
+    flags = wire.FRAME_SECTIONED if sectioned else 0
+    data = struct.pack("<IBBHI", 32, wire.FRAME_TYPES["rep"], flags, 0, 48) + b"\x00" * 20
+    return data[:24] if truncated else data
+
+
 def truncated_directory() -> bytes:
     """A 16-byte frame that declares one section but carries no directory entry.
 
@@ -564,6 +710,49 @@ def section_index(data: bytes, kind_name: str) -> int:
         if struct.unpack_from("<H", data, directory_offset(data, index))[0] == kind:
             return index
     raise SystemExit(f"the frame has no {kind_name} section")
+
+
+def split(data: bytes) -> list[tuple[int, int, int, bytes]]:
+    """The directory entries of a frame as `(kind, version, flags, body)`, in directory order."""
+    n_sec = struct.unpack_from("<H", data, wire.FRAME_HEADER_LEN)[0]
+    entries = []
+    for index in range(n_sec):
+        kind, version, flags, length = struct.unpack_from("<HBBI", data, directory_offset(data, index))
+        start = body_offset(data, index)
+        entries.append((kind, version, flags, data[start : start + length]))
+    return entries
+
+
+def assemble(data: bytes, entries: list[tuple[int, int, int, bytes]]) -> bytes:
+    """Re-emit the frame header of `data` around `entries`, with the declared length fixed up."""
+    out = bytearray(data[: wire.FRAME_HEADER_LEN])
+    out += struct.pack("<HH", len(entries), 0)
+    for kind, version, flags, body in entries:
+        out += struct.pack("<HBBI", kind, version, flags, len(body))
+    for entry in entries:
+        out += entry[3]
+    out[0:4] = struct.pack("<I", len(out))
+    return bytes(out)
+
+
+def bare_history_frame(corr: int, aggs: list[str], metrics: list[int], subject: int | None = None) -> dict:
+    """A history block without its dictionary section, for a held dictionary (generation 2)."""
+    frame = history_frame_of(corr, aggs, metrics, subject)
+    frame["sections"] = ["header"] + (["subject"] if subject is not None else []) + ["time", "columns"]
+    del frame["dictionary"]
+    return frame
+
+
+def history_state_frame(corr: int, agg: str) -> dict:
+    """A history block over one `state` column (metric 4 of a five-entry dictionary)."""
+    frame = history_frame_of(corr, [agg], [1], None)
+    frame["dictionary"]["entries"].append(
+        {"kind": "metric", "text": "ksm.run", "facts": METRIC_FACTS["ksm_state"]}
+    )
+    frame["columns"] = [
+        {"metric": 4, "type": "u64", "kind": "state", "values": ["1"], "quality": ["ok"]}
+    ]
+    return frame
 
 
 CASES: list[tuple[str, dict, list[tuple[int, bytes]] | None, dict | None]] = [
@@ -695,12 +884,84 @@ CASES: list[tuple[str, dict, list[tuple[int, bytes]] | None, dict | None]] = [
         "section-order",
         {"kind": "section-order", "index": 1, "kind_code": 1},
     ),
+    ("history-subject", history_subject_frame(), None, None),
+    ("history-gauge-aggs", history_gauge_aggs_frame(), None, None),
+    ("bare-block-held-dict", bare_frame(50), None, None),
+    (
+        "unaligned-optional-section",
+        unaligned_optional_frame(),
+        "unaligned-optional",
+        None,
+    ),
+    (
+        "optional-section-before-header",
+        unknown_optional_frame(),
+        "optional-before-header",
+        None,
+    ),
+    (
+        "duplicate-metric-other-facts",
+        duplicate_metric_other_facts_frame(),
+        None,
+        {"kind": "duplicate-dictionary-entry", "index": 3},
+    ),
+    (
+        "duplicate-entity-other-label",
+        duplicate_entity_other_label_frame(),
+        None,
+        {"kind": "duplicate-dictionary-entry", "index": 2},
+    ),
+    ("rep-not-sectioned-truncated", bare_frame(48), "rep-truncated", None),
+    (
+        "subject-in-live-block",
+        subject_in_live_frame(),
+        None,
+        {"kind": "subject-without-time", "subject": 0},
+    ),
+    (
+        "history-agg-not-permitted",
+        history_agg_not_permitted_frame(),
+        None,
+        {"kind": "aggregation-not-permitted", "metric": 3, "agg": 3},
+    ),
+    ("bare-block-dangling", bare_frame(51), "bare-dangling", None),
+    ("rep-sectioned-flag", bare_frame(49), "rep-sectioned", None),
     (
         "truncated-directory",
         block_as_req_frame(),
         "truncated-directory",
         {"kind": "truncated", "context": "block directory"},
     ),
+    # P2a1 review round 1: parity cases (every refusal below is the same error in both decoders).
+    ("duplicate-header-bad-second-body", live_frame(), "dup-header", None),
+    ("column-nonzero-pad", live_frame(), "column-pad", None),
+    ("time-nonzero-pad", history_frame_of(60, ["last"] * 3, [1], None), "time-pad", None),
+    ("dictionary-nonzero-pad", live_frame(), "dictionary-pad", None),
+    ("time-bad-agg-and-pad", history_frame_of(61, ["last"] * 3, [1], None), "time-agg-pad", None),
+    ("dictionary-count-too-large", live_frame(), "dictionary-count", None),
+    ("dictionary-entry-control", live_frame(), "dictionary-control", None),
+    ("dictionary-text-past-body", live_frame(), "dictionary-text-past", None),
+    ("dictionary-invalid-utf8", live_frame(), "dictionary-utf8", None),
+    ("dictionary-short-entry-header", live_frame(), "dictionary-short-header", None),
+    ("truncated-unknown-type", block_as_req_frame(), "unknown-type-short", None),
+    ("header-required-flag-clear", live_frame(), "header-flag-clear", None),
+    ("subject-required-flag-clear", history_frame_of(62, ["last"] * 3, [1], 0), "subject-flag-clear", None),
+    ("unknown-section-flags-directory", live_frame(), "directory-flags", None),
+    ("unknown-section-flags-header", live_frame(), "header-flags-word", None),
+    ("section-reserved", live_frame(), "section-reserved", None),
+    ("missing-header", live_frame(), "missing-header", None),
+    ("duplicate-section", live_frame(), "duplicate-dictionary-section", None),
+    ("conflicting-column", live_frame(), "conflicting-column", None),
+    ("subject-wrong-length", history_frame_of(63, ["last"] * 3, [1], 0), "subject-length", None),
+    ("subject-reserved-word", history_frame_of(64, ["last"] * 3, [1], 0), "subject-reserved", None),
+    ("subject-dangling", history_frame_of(65, ["last"] * 3, [1], 0), "subject-dangling", None),
+    ("subject-not-entity", history_frame_of(66, ["last"] * 3, [1], 0), "subject-metric", None),
+    ("subject-stale-generation-held", bare_history_frame(67, ["last"], [1], 0), "subject-held", None),
+    ("aggregation-not-permitted-held", bare_history_frame(68, ["raw"], [1]), "agg-held", None),
+    ("history-gauge-raw", history_frame_of(69, ["raw"], [1], None), "agg-gauge-raw", None),
+    ("history-state-delta", history_state_frame(70, "delta"), "agg-state-delta", None),
+    ("duplicate-entity-other-label-control-byte", duplicate_entity_control_frame(), "duplicate-control", None),
+    ("header-version-and-required-flag-clear", live_frame(), "header-version-flag", None),
 ]
 
 
@@ -710,8 +971,10 @@ def build(name: str, frame: dict, edits: object) -> tuple[bytes, dict | None]:
         return truncated_directory(), {"kind": "truncated", "context": "block directory"}
     data = wire.encode_frame(frame)
     if edits == "not-a-block":
-        # A canonical block with the header's type byte changed to REQ (frame type 1).
-        return patch(data, 4, bytes([wire.FRAME_TYPES["req"]])), {"kind": "not-a-block", "frame_type": 1}
+        # A canonical block with the header's type byte changed to REQ (frame type 1) and the
+        # SECTIONED flag cleared: SECTIONED on a REQ is itself a refusal (`rep-sectioned-flag`), so
+        # the type/payload confusion is only reachable with the flag clear (WIRE.md 2.1, 3.10).
+        return patch(data, 4, bytes([wire.FRAME_TYPES["req"], 0])), {"kind": "not-a-block", "frame_type": 1}
     if edits == "section-order":
         # Header and dictionary swap places, bodies included: every length still matches.
         n_sec = struct.unpack_from("<H", data, wire.FRAME_HEADER_LEN)[0]
@@ -808,6 +1071,164 @@ def build(name: str, frame: dict, edits: object) -> tuple[bytes, dict | None]:
             "declared": 0,
             "dictionary": 1,
         }
+    if edits == "unaligned-optional":
+        # The unknown optional section is last: its directory length becomes 5 and 3 bytes go.
+        n_sec = struct.unpack_from("<H", data, wire.FRAME_HEADER_LEN)[0]
+        data = patch(data, directory_offset(data, n_sec - 1) + 4, struct.pack("<I", 5))[:-3]
+        return patch(data, 0, struct.pack("<I", len(data))), {"kind": "section-length", "section": 9, "declared": 5, "expected": 8}
+    if edits == "optional-before-header":
+        # The unknown optional section moves to directory entry 0; its length (8) is aligned.
+        n_sec = struct.unpack_from("<H", data, wire.FRAME_HEADER_LEN)[0]
+        return reorder(data, [n_sec - 1] + list(range(n_sec - 1))), {"kind": "section-order", "index": 0, "kind_code": 9}
+    if edits == "bare-dangling":
+        rows = section_index(data, "rows")
+        return patch(data, body_offset(data, rows), struct.pack("<I", 99)), {
+            "kind": "dangling-dictionary-ref",
+            "index": 99,
+            "entries": 4,
+        }
+    if edits == "rep-truncated":
+        return rep_frames_bytes(False, True), {"kind": "not-a-block", "frame_type": 2}
+    if edits == "rep-sectioned":
+        return rep_frames_bytes(True, False), {"kind": "unknown-frame-flags", "flags": 1}
+    if edits == "dup-header":
+        # A second header whose body is bad (flags word 1): only the first header is decoded, so
+        # the frame is refused as a duplicate section, not for the second body.
+        entries = split(data)
+        entries.insert(1, (wire.SECTION_KINDS["header"], 1, 1, entries[0][3][:-4] + struct.pack("<I", 1)))
+        return assemble(data, entries), {"kind": "duplicate-section", "kind_code": 1}
+    if edits == "column-pad":
+        # The first column of three rows is 8 + 27 = 35 bytes of content: byte 35 is pad.
+        offset = body_offset(data, section_index(data, "columns")) + 8 + 9 * 3
+        return patch(data, offset, b"\x01"), {"kind": "non-zero-reserved", "value": 1}
+    if edits == "time-pad":
+        # Three buckets are 45 bytes of content: bytes 45..47 are pad.
+        offset = body_offset(data, section_index(data, "time")) + 15 * 3
+        return patch(data, offset, b"\x01"), {"kind": "non-zero-reserved", "value": 1}
+    if edits == "dictionary-pad":
+        # The four entries end at byte 101 of the body; the body is padded to 104.
+        offset = dictionary_entry_offset(data, 4)
+        return patch(data, offset, b"\x01"), {"kind": "non-zero-reserved", "value": 1}
+    if edits == "time-agg-pad":
+        # Both a bad aggregation byte (9, bucket 0) and a non-zero pad byte: the aggregation
+        # bytes are judged first (WIRE.md 3.10).
+        start = body_offset(data, section_index(data, "time"))
+        data = patch(data, start + 14 * 3, b"\x09")
+        return patch(data, start + 15 * 3, b"\x01"), {"kind": "unknown-aggregation", "code": 9}
+    if edits == "dictionary-count":
+        start = body_offset(data, section_index(data, "dictionary"))
+        return patch(data, start + 4, struct.pack("<I", 65_537)), {
+            "kind": "dictionary-too-large",
+            "count": 65_537,
+            "max": wire.MAX_DICTIONARY_ENTRIES,
+        }
+    if edits == "dictionary-control":
+        # The first text byte of entry 0 becomes 0x01.
+        return patch(data, dictionary_entry_offset(data, 0) + 4 + 8, b"\x01"), {
+            "kind": "dictionary-entry-control",
+            "index": 0,
+            "offset": 0,
+        }
+    if edits == "dictionary-text-past":
+        # Entry 3 declares 200 bytes of text; the body ends long before.
+        return patch(data, dictionary_entry_offset(data, 3) + 2, struct.pack("<H", 200)), {
+            "kind": "truncated",
+            "context": "dictionary section",
+        }
+    if edits == "dictionary-utf8":
+        return patch(data, dictionary_entry_offset(data, 0) + 4 + 8, b"\xff"), {
+            "kind": "dictionary-entry-not-utf8",
+            "index": 0,
+        }
+    if edits == "dictionary-short-header":
+        # Five entries are declared and four present; the body ends 3 bytes into the fifth
+        # entry's 4-byte header.
+        start = body_offset(data, section_index(data, "dictionary"))
+        return patch(data, start + 4, struct.pack("<I", 5)), {
+            "kind": "truncated",
+            "context": "dictionary section",
+        }
+    if edits == "unknown-type-short":
+        # Five bytes: the length word and a type byte of 9. The type is judged as soon as its
+        # byte exists, so this is not a truncation (WIRE.md 3.10).
+        return struct.pack("<IB", 12, 9), {"kind": "unknown-frame-type", "code": 9}
+    if edits == "header-flag-clear":
+        offset = directory_offset(data, section_index(data, "header")) + 3
+        return patch(data, offset, b"\x00"), {"kind": "unknown-section-flags", "kind_code": 1, "flags": 0}
+    if edits == "duplicate-control":
+        # The repeated incarnation's label also starts with the control byte 0x01: the repeated
+        # identity is judged before the text's control bytes.
+        return patch(data, dictionary_entry_offset(data, 2) + 4 + 8, b"\x01"), {
+            "kind": "duplicate-dictionary-entry",
+            "index": 2,
+        }
+    if edits == "header-version-flag":
+        # Version 2 AND a clear required flag on the header entry: the version is judged first.
+        offset = directory_offset(data, section_index(data, "header"))
+        return patch(data, offset + 2, b"\x02\x00"), {
+            "kind": "unsupported-section-version",
+            "kind_code": 1,
+            "version": 2,
+            "supported": 1,
+        }
+    if edits == "subject-flag-clear":
+        offset = directory_offset(data, section_index(data, "subject")) + 3
+        return patch(data, offset, b"\x00"), {"kind": "unknown-section-flags", "kind_code": 6, "flags": 0}
+    if edits == "directory-flags":
+        offset = directory_offset(data, section_index(data, "columns")) + 3
+        return patch(data, offset, b"\x02"), {"kind": "unknown-section-flags", "kind_code": 3, "flags": 2}
+    if edits == "header-flags-word":
+        offset = body_offset(data, section_index(data, "header")) + 76
+        return patch(data, offset, struct.pack("<I", 1)), {
+            "kind": "unknown-section-flags",
+            "kind_code": 1,
+            "flags": 1,
+        }
+    if edits == "section-reserved":
+        return patch(data, wire.FRAME_HEADER_LEN + 2, b"\x01\x00"), {"kind": "section-reserved", "value": 1}
+    if edits == "missing-header":
+        entries = split(data)
+        del entries[0]
+        return assemble(data, entries), {"kind": "missing-section", "section": "header"}
+    if edits == "duplicate-dictionary-section":
+        entries = split(data)
+        entries.insert(2, entries[1])
+        return assemble(data, entries), {"kind": "duplicate-section", "kind_code": 5}
+    if edits == "conflicting-column":
+        entries = split(data)
+        first = next(index for index, entry in enumerate(entries) if entry[0] == wire.SECTION_KINDS["columns"])
+        entries.insert(first + 1, entries[first])
+        return assemble(data, entries), {"kind": "conflicting-column", "metric": 2}
+    if edits == "subject-length":
+        entries = split(data)
+        index = next(index for index, entry in enumerate(entries) if entry[0] == wire.SECTION_KINDS["subject"])
+        kind, version, flags, _body = entries[index]
+        entries[index] = (kind, version, flags, struct.pack("<IIII", 0, 0, 0, 0))
+        return assemble(data, entries), {"kind": "section-length", "declared": 16, "expected": 8}
+    if edits == "subject-reserved":
+        offset = body_offset(data, section_index(data, "subject")) + 4
+        return patch(data, offset, struct.pack("<I", 1)), {
+            "kind": "unknown-section-flags",
+            "kind_code": 6,
+            "flags": 1,
+        }
+    if edits == "subject-dangling":
+        offset = body_offset(data, section_index(data, "subject"))
+        return patch(data, offset, struct.pack("<I", 99)), {
+            "kind": "dangling-dictionary-ref",
+            "index": 99,
+            "entries": 4,
+        }
+    if edits == "subject-metric":
+        offset = body_offset(data, section_index(data, "subject"))
+        return patch(data, offset, struct.pack("<I", 1)), {"kind": "row-reference-not-entity", "index": 1}
+    if edits == "subject-held":
+        # Bare block of generation 2 decoded against a held generation 3 (`HELD`).
+        return data, {"kind": "stale-dictionary-generation", "needed": 2, "held": 3}
+    if edits in ("agg-held", "agg-gauge-raw"):
+        return data, {"kind": "aggregation-not-permitted", "metric": 1, "agg": 0}
+    if edits == "agg-state-delta":
+        return data, {"kind": "aggregation-not-permitted", "metric": 4, "agg": 2}
     if edits is None:
         return data, None
     raise SystemExit(f"unknown edit {edits!r} for case {name}")
@@ -826,6 +1247,8 @@ def main() -> int:
             "doc": DOC.get(name, ""),
             "frame": {key: value for key, value in frame.items() if key != "frame_corr"},
         }
+        if name in HELD:
+            document["held"] = HELD[name]
         if refusal is not None:
             document["expect_error"] = refusal
         spec_path = out / f"{name}.json"
@@ -849,6 +1272,15 @@ def main() -> int:
     print(f"wrote {len(written)} fixtures plus quality.json into {out}")
     return 0
 
+
+# Cases whose bytes are decoded against a held dictionary (WIRE.md 6.1): the top-level `held` key
+# of the case JSON, `{"generation", "entries"}` as in a frame's `dictionary`.
+HELD = {
+    "bare-block-held-dict": bare_held_dictionary(),
+    "bare-block-dangling": bare_held_dictionary(),
+    "subject-stale-generation-held": history_dictionary(3),
+    "aggregation-not-permitted-held": history_dictionary(2),
+}
 
 DOC = {
     "live-block": (
@@ -898,8 +1330,8 @@ DOC = {
     ),
     "block-without-directory": (
         "Exactly the 12 header bytes of a sectioned block frame (declared length 12) and no section "
-        "directory. Only the refusal kind and its context are contractual: the Rust cursor reports "
-        "need 2 / have 0 and the Python reference need 16 / have 12, and neither is pinned."
+        "directory. Only the refusal kind and its context are contractual; both decoders report "
+        "need 2 / have 0, which is not pinned."
     ),
     "non-zero-reserved": "A frame header whose reserved u16 is not zero.",
     "column-reserved": "A column whose reserved u16 padding field is not zero.",
@@ -916,10 +1348,102 @@ DOC = {
     "column-kind-mismatch": (
         "A column declaring kind `gauge` for a metric the dictionary declares `counter`."
     ),
+    "history-subject": (
+        "A history block naming its subject (section kind 6, incarnation index 0) over a counter column "
+        "with raw, last and delta buckets: every agg is permitted by the counter mask."
+    ),
+    "history-gauge-aggs": (
+        "A gauge-only history block with mean, min, max and last buckets, no subject: every agg is "
+        "permitted by the gauge mask."
+    ),
+    "bare-block-held-dict": (
+        "The live block without its dictionary section (header dict_gen 1), decoded against the held "
+        "generation 1 given in `held`: rows and columns resolve against it."
+    ),
+    "unaligned-optional-section": (
+        "An unknown optional section last in the directory with a length of 5: every section length is a "
+        "multiple of 8, unknown kinds included."
+    ),
+    "optional-section-before-header": (
+        "An unknown optional section (length 8) at directory entry 0: entry 0 must be the header."
+    ),
+    "duplicate-metric-other-facts": (
+        "The metric name `cpu.usage_usec` repeated with another unit: a repeated identity is a duplicate "
+        "whatever the other fields hold."
+    ),
+    "duplicate-entity-other-label": (
+        "The incarnation 11 repeated with another label at index 2: a repeated identity is a duplicate."
+    ),
+    "rep-not-sectioned-truncated": (
+        "A REP frame (type 2) of declared length 32 with only 24 bytes and no SECTIONED flag: the type is "
+        "judged before the buffer length (WIRE.md 3.10), so not-a-block, not truncated."
+    ),
+    "subject-in-live-block": "A live block (rows) carrying a subject section: it needs the time section.",
+    "history-agg-not-permitted": "A `mean` bucket over a counter column; the counter mask is raw/last/delta.",
+    "bare-block-dangling": (
+        "The bare live block decoded against a held 4-entry generation, its first row naming index 99."
+    ),
+    "rep-sectioned-flag": (
+        "A REP frame with the SECTIONED flag set: SECTIONED is defined for BLOCK only, so it is an unknown "
+        "frame flag locally (`bad-frame` on the wire)."
+    ),
     "no-rows-or-time": "A block declaring three rows but carrying neither a rows nor a time section.",
     "empty-rows-and-time": (
         "A block with zero rows that carries BOTH the rows and the time section (each empty): "
         "rows and buckets are exclusive by presence, not by count."
+    ),
+    "duplicate-header-bad-second-body": (
+        "A second header section whose body is bad (non-zero flags word): only the first header is "
+        "decoded, so the frame is refused as a duplicate section, not for the second body."
+    ),
+    "column-nonzero-pad": "A column whose pad byte after the quality bytes is 1: non-zero padding is corrupt.",
+    "time-nonzero-pad": "A time section (three buckets, 45 bytes of content) whose pad byte is 1.",
+    "dictionary-nonzero-pad": "A dictionary body whose pad byte after the last entry is 1.",
+    "time-bad-agg-and-pad": (
+        "A time section with BOTH an undefined aggregation byte (9) and a non-zero pad byte: the "
+        "aggregation bytes are judged before the pad, so the refusal is unknown-aggregation."
+    ),
+    "dictionary-count-too-large": "A dictionary declaring 65,537 entries, one past the 65,536 bound.",
+    "dictionary-entry-control": "A dictionary entry whose text starts with the control byte 0x01.",
+    "dictionary-text-past-body": "A dictionary entry declaring 200 bytes of text that the body does not hold.",
+    "dictionary-invalid-utf8": "A dictionary entry whose text starts with the byte 0xFF, which is not UTF-8.",
+    "dictionary-short-entry-header": (
+        "A dictionary declaring five entries with four present: the body ends inside the fifth "
+        "entry's 4-byte header."
+    ),
+    "truncated-unknown-type": (
+        "Five bytes: a length word and a frame type byte of 9. The type byte is judged as soon as it "
+        "exists, so the refusal is unknown-frame-type, not truncated (WIRE.md 3.10)."
+    ),
+    "header-required-flag-clear": "The header's directory entry with the required flag clear.",
+    "subject-required-flag-clear": "The subject's directory entry with the required flag clear.",
+    "unknown-section-flags-directory": "A column's directory entry with flag bit 1 set: only bit 0 is defined.",
+    "unknown-section-flags-header": "A header body whose flags word is 1: it must be zero.",
+    "section-reserved": "A directory whose reserved u16 is 1.",
+    "missing-header": "A frame whose directory holds no header (dictionary, rows, columns only).",
+    "duplicate-section": "A directory with the dictionary section twice.",
+    "conflicting-column": "A directory with the same column (metric 2) twice.",
+    "subject-wrong-length": "A subject section of 16 bytes instead of 8.",
+    "subject-reserved-word": "A subject section whose reserved word is 1.",
+    "subject-dangling": "A subject naming dictionary index 99 in a four-entry generation.",
+    "subject-not-entity": "A subject naming dictionary index 1, a metric.",
+    "subject-stale-generation-held": (
+        "A bare history block with a subject, header dict_gen 2, decoded against a held generation 3: "
+        "the generation is judged first."
+    ),
+    "aggregation-not-permitted-held": (
+        "A bare history block with a `raw` bucket over a gauge column, decoded against a held "
+        "dictionary: the mask is judged on the held path too."
+    ),
+    "history-gauge-raw": "A `raw` bucket over a gauge column: gauges permit last, mean, min and max.",
+    "history-state-delta": "A `delta` bucket over a state column: states permit only last.",
+    "duplicate-entity-other-label-control-byte": (
+        "The incarnation 11 repeated at index 2 with a label that starts with the control byte 0x01: "
+        "the repeated identity is judged before the text's control bytes."
+    ),
+    "header-version-and-required-flag-clear": (
+        "The header's directory entry with version 2 and the required flag clear: the version is "
+        "judged before the required flag."
     ),
 }
 

@@ -1,0 +1,36 @@
+{
+  "case": "reader-frame-then-bad-header",
+  "doc": "One feed: a good REQ, then a 12-byte header with type 9. The frame completed before the error is returned with it; a later feed returns the same error and no frame (poisoned).",
+  "side": "server",
+  "max_frame": 1024,
+  "completion_ms": 5000,
+  "steps": [
+    {
+      "t_ms": 0,
+      "feed_hex": "2600000001000000010000007b2276657262223a2268656c6c6f222c2261726773223a7b7d7d0c0000000900000003000000"
+    },
+    {
+      "t_ms": 1,
+      "feed_hex": "1700000002000000020000007b226f6b223a747275657d"
+    }
+  ],
+  "expect": [
+    [
+      {
+        "frame": {
+          "type": "req",
+          "corr": 1,
+          "len": 38
+        }
+      },
+      {
+        "error": "unknown-frame-type"
+      }
+    ],
+    [
+      {
+        "error": "unknown-frame-type"
+      }
+    ]
+  ]
+}

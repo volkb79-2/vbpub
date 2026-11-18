@@ -1,0 +1,114 @@
+{
+  "case": "bare-block-dangling",
+  "doc": "The bare live block decoded against a held 4-entry generation, its first row naming index 99.",
+  "frame": {
+    "type": "block",
+    "corr": 51,
+    "sections": [
+      "header",
+      "rows",
+      "columns"
+    ],
+    "header": {
+      "boot_id": "00112233-4455-6677-8899-aabbccddeeff",
+      "epoch": 7,
+      "seq": 42,
+      "mono_start_ns": 1000000000,
+      "mono_end_ns": 2000000000,
+      "boot_ns": 500,
+      "real_ns": 1700000000000000000,
+      "dict_gen": 1,
+      "n_rows": 3,
+      "dropped": 1,
+      "flags": 0
+    },
+    "rows": [
+      {
+        "ent": 0,
+        "t_off_us": 0
+      },
+      {
+        "ent": 1,
+        "t_off_us": 20000
+      },
+      {
+        "ent": 0,
+        "t_off_us": 40000
+      }
+    ],
+    "time": [],
+    "columns": [
+      {
+        "metric": 2,
+        "type": "u64",
+        "kind": "counter",
+        "values": [
+          "1000",
+          "9007199254740993",
+          "18446744073709551615"
+        ],
+        "quality": [
+          "ok",
+          "ok",
+          "ok"
+        ]
+      },
+      {
+        "metric": 3,
+        "type": "f64",
+        "kind": "gauge",
+        "value_bits": [
+          "0x4059000000000000",
+          "0x8000000000000000",
+          "0x7ff8000000000000"
+        ],
+        "quality": [
+          "ok",
+          "ok",
+          "absent"
+        ]
+      }
+    ],
+    "skipped": []
+  },
+  "held": {
+    "generation": 1,
+    "entries": [
+      {
+        "kind": "entity",
+        "inc": 11,
+        "text": "/system.slice"
+      },
+      {
+        "kind": "entity",
+        "inc": 12,
+        "text": "/docker/abc"
+      },
+      {
+        "kind": "metric",
+        "text": "cpu.usage_usec",
+        "facts": {
+          "unit": "usec",
+          "kind": "counter",
+          "scope": "cgroup",
+          "source": "cgroupfs"
+        }
+      },
+      {
+        "kind": "metric",
+        "text": "mem.current",
+        "facts": {
+          "unit": "bytes",
+          "kind": "gauge",
+          "scope": "cgroup",
+          "source": "cgroupfs"
+        }
+      }
+    ]
+  },
+  "expect_error": {
+    "kind": "dangling-dictionary-ref",
+    "index": 99,
+    "entries": 4
+  }
+}

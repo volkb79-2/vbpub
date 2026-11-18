@@ -96,6 +96,12 @@ whole-lock image; it is re-pointed to the new tag only after every Rust lane has
 on it. A new tag is built with `build-image.sh --tag tester-unified-rust:<new>` and
 adopted by changing that one `image` line.
 
+### Developer container (not a gate)
+
+`tester-unified-rust-dev` is built ON this image (`build-dev-image.sh`) and is used only through
+`hostobs/tools/dev`; no lane selects it. See [`DEV.md`](DEV.md). Its evidence value is none: a
+lane on a committed head is the only gate evidence.
+
 The `selftest` lane in this project checks the precheck, lint-boundary guard,
 crate-floor tool, and shell entrypoints. Hostobs's `lint` and `selftest` lanes
 exercise the real Cargo toolchain and cache on `network = "none"`.
