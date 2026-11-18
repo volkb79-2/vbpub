@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# dr-autoinstall: runs INSIDE the live system booted from the debian-rollback ISO and installs Debian on btrfs with
+# snapshot/rollback (poc/install-btrfs.sh) on ONE disk chosen by dr-plan. Started by the live-config hook when the
+# kernel command line has dr.mode=auto; it can also be run by hand (`/run/live/medium/dr/dr-autoinstall`).
+#
+# Order: network (DHCP) -> config (CIDATA stick, else ISO-embedded /dr/dr-install.conf, else dr.config=https://URL)
+#        -> disk decision (dr-plan: refuses when unsure) -> tools via apt -> install-btrfs.sh -> poweroff|reboot|none.
+# Console markers for test drivers: DR-AUTOINSTALL-START, -CONFIG, -PLAN, -REFUSED, -CONFIRM, -INSTALL, -DONE rc=N.
+# It never writes to any device other than the one dr-plan returned, and it re-checks that device right before.
+#
+# Command line (all optional): dr.mode=auto  dr.after=poweroff|reboot|none (default poweroff: the ISO is still
+# attached, a reboot would install again)  dr.config=https://...  dr.confirm-timeout=SECONDS (default 120)
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# does this disk already hold a system installed by this tool (a partition with the btrfs label drroot)?
+# Fails CLOSED: if lsblk itself fails the answer is "yes, holds a system" (rc 0), so the runner refuses rather than wipes.
+holds_our_system() { local out; out=$(lsblk -nr -o LABEL "$1" 2>/dev/null) || return 0; grep -qx drroot <<<"$out"; }
+# test hook, handled before anything touches the system: `dr-autoinstall _holds-system /dev/X` (offline test stubs lsblk)
+if [ "${1:-}" = _holds-system ]; then holds_our_system "${2:?target}"; exit $?; fi
+
+RUN=/run/dr
+LOG=/var/log/dr-autoinstall.log
+mkdir -p "$RUN"
+exec > >(tee -a "$LOG") 2>&1
+
+say() { echo "dr-autoinstall: $*"; }
+marker() { echo "DR-AUTOINSTALL-$*"; }
+# shellcheck disable=SC2013  # kernel parameters are whitespace separated words
+cmdline_param() { local p; for p in $(cat /proc/cmdline); do case "$p" in "$1="*) echo "${p#*=}"; return 0 ;; esac; done; return 1; }
+finish() { # finish RC ; honours dr.after
+  local rc=$1 after; after=$(cmdline_param dr.after || echo poweroff)
+  marker "DONE rc=$rc"
+  case "$after" in
+    reboot) [ "$rc" != 0 ] || { sync; systemctl reboot; } ;;
+    poweroff) [ "$rc" != 0 ] || { sync; systemctl poweroff; } ;;
+    *) : ;;
+  esac
+  exit "$rc"
+}
+refuse() { marker "REFUSED $*"; say "REFUSED: $*; nothing was written to any disk"; finish 3; }
+
+marker START
+mode=$(cmdline_param dr.mode || echo manual)
+say "mode=$mode payload=$HERE (the mode only decides whether the hook starts this script; once it runs, the config and dr-plan decide)"
+
+# --- network ---------------------------------------------------------------------------------------------------
+for ifc in /sys/class/net/*; do
+  n=${ifc##*/}; [ "$n" != lo ] || continue
+  ip link set "$n" up 2>/dev/null || true
+done
+dhcpcd -4 -w -t 60 >/dev/null 2>&1 || say "dhcpcd returned non-zero (continuing; apt will fail clearly if there is no network)"
+
+# --- config ----------------------------------------------------------------------------------------------------
+CONFIG=""; CONFIG_SRC=none; CONFIG_DISK=""
+# several sticks labelled CIDATA: take the first by device name, and say so (the order must not depend on probe timing)
+# Fail closed: a stick that cannot be seen or placed on its disk would not be excluded and could be planned as the target.
+devlist=$(lsblk -nrp -o NAME,LABEL 2>/dev/null) || refuse "cannot list block devices (lsblk failed): the config stick could not be told apart from a target"
+stick=$(awk '$2=="CIDATA" {print $1}' <<<"$devlist" | sort | sed -n 1p)
+[ "$(awk '$2=="CIDATA"' <<<"$devlist" | wc -l)" -le 1 ] || say "WARNING: more than one CIDATA medium; using $stick"
+if [ -n "$stick" ]; then
+  mkdir -p "$RUN/cidata"
+  if mount -o ro "$stick" "$RUN/cidata" 2>/dev/null; then
+    if [ -f "$RUN/cidata/dr-install.conf" ]; then
+      stype=$(lsblk -dno TYPE "$stick" 2>/dev/null) || stype=""
+      case "$stype" in
+        part) CONFIG_DISK=$(lsblk -no PKNAME "$stick" 2>/dev/null | head -n1) ;;   # the stick's whole disk, not the partition
+        disk|rom) CONFIG_DISK=${stick#/dev/} ;;
+      esac
+      [ -n "$CONFIG_DISK" ] || refuse "cannot tell which disk the CIDATA medium $stick is on"
+      cp "$RUN/cidata/dr-install.conf" "$RUN/config" || refuse "cannot copy the config from $stick"
+      CONFIG=$RUN/config; CONFIG_SRC="cidata:$stick"
+    fi
+    umount "$RUN/cidata" 2>/dev/null || true
+  fi
+fi
+if [ -z "$CONFIG" ] && [ -f "$HERE/dr-install.conf" ]; then CONFIG=$HERE/dr-install.conf; CONFIG_SRC="iso-embedded"; fi
+if [ -z "$CONFIG" ]; then
+  url=$(cmdline_param dr.config || true)
+  case "$url" in
+    https://*) if curl -fsS --max-time 30 -o "$RUN/config" "$url"; then CONFIG=$RUN/config; CONFIG_SRC="url"; else refuse "dr.config URL could not be fetched"; fi ;;
+    "") : ;;
+    *) refuse "dr.config must be an https:// URL" ;;
+  esac
+fi
+marker "CONFIG source=$CONFIG_SRC"
+
+# TARGET_DISK=/dev/disk/by-id/... (stable on a real host, unlike sda/sdb): resolve it to the kernel name, then let
+# dr-plan judge the kernel name like any other. A by-id link to a partition resolves to a partition and is refused there.
+# make_plan calls this on EVERY run (also the second one after the tool install), so a re-pointed link is noticed.
+CONFIG_ORIG=$CONFIG
+resolve_target() {
+  local spec real
+  CONFIG=$CONFIG_ORIG
+  [ -n "$CONFIG" ] || return 0
+  spec=$(sed -n 's/^TARGET_DISK=//p' "$CONFIG" | tr -d '\r' | head -n1)
+  case "$spec" in
+    /dev/disk/by-*)
+      [[ "$spec" =~ ^/dev/disk/by-[a-z]+/[A-Za-z0-9_.:@+=-]+$ ]] || refuse "TARGET_DISK '$spec' is not a plain /dev/disk/by-*/NAME path"
+      real=$(readlink -f -- "$spec" 2>/dev/null || true)
+      [ -b "$real" ] || refuse "TARGET_DISK $spec does not resolve to a block device"
+      sed "0,/^TARGET_DISK=/s|^TARGET_DISK=.*|TARGET_DISK=$real|" "$CONFIG_ORIG" >"$RUN/config.resolved"   # first line only: a duplicate stays visible and dr-plan refuses it
+      CONFIG=$RUN/config.resolved
+      marker "TARGET-RESOLVED $spec -> $real" ;;
+  esac
+}
+
+# --- disk decision ---------------------------------------------------------------------------------------------
+# make_plan: compute the exclusions and the lsblk snapshot afresh and ask dr-plan; sets PLAN, decision, target and FP
+# (FP = size/serial/wwn/model of the planned disk). It runs twice: now, and again after the slow tool installation,
+# and the install only goes ahead when both runs name the same disk with the same identity.
+make_plan() {
+  local med d n rc
+  local -a busy=()
+  resolve_target
+  excl=()
+  # excluded (not counted as a disk, not a target): the booted medium and the config stick only.
+  med=$(findmnt -no SOURCE /run/live/medium 2>/dev/null || true)
+  if [ -n "$med" ]; then d=$(lsblk -no PKNAME "$med" 2>/dev/null | head -n1); [ -n "$d" ] || d=${med#/dev/}; excl+=(--exclude "$d"); fi
+  [ -z "$CONFIG_DISK" ] || excl+=(--exclude "$CONFIG_DISK")
+  # busy (never a target, but still COUNTED as an internal disk, so a mounted second disk cannot make the first look
+  # like the only one): every other disk with something mounted or used as swap
+  for n in $(lsblk -dnr -o NAME,TYPE | awk '$2=="disk" {print $1}'); do
+    if lsblk -nr -o MOUNTPOINTS "/dev/$n" 2>/dev/null | grep -q . ; then busy+=(--busy "$n"); fi
+  done
+  lsblk -dnbP -o NAME,TYPE,ROTA,RM,SIZE,TRAN >"$RUN/lsblk" || refuse "lsblk failed"
+  # the same without -d: raid/lvm/crypt/mpath devices stacked on disks only show up here (dr-plan --lsblk-full)
+  lsblk -nbP -o NAME,TYPE,ROTA,RM,SIZE,TRAN,PKNAME >"$RUN/lsblk-full" || refuse "lsblk (full listing) failed"
+  if [ -n "$CONFIG" ]; then cfgarg=(--config "$CONFIG"); else cfgarg=(--no-config); fi
+  PLAN=$("$HERE/dr-plan" --lsblk "$RUN/lsblk" --lsblk-full "$RUN/lsblk-full" "${cfgarg[@]}" "${excl[@]}" "${busy[@]}") && rc=0 || rc=$?
+  [ "$rc" = 0 ] || refuse "dr-plan refused (reason in the line above)"
+  decision=$(sed -n 's/^DECISION=//p' <<<"$PLAN"); target=$(sed -n 's/^TARGET=//p' <<<"$PLAN")
+  [[ "$target" =~ ^/dev/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || refuse "dr-plan returned a malformed target"
+  FP=$(lsblk -dnbo SIZE,SERIAL,WWN,MODEL "$target" 2>/dev/null | tr -s ' ')
+}
+make_plan
+marker "PLAN decision=$decision target=$target"
+declare -A S=()
+while IFS='=' read -r k v; do
+  case "$k" in HOSTNAME|SUITE|MIRROR|SECURITY_MIRROR|ROOT_PASSWORD|ROOT_PASSWORD_HASH|REINSTALL) S[$k]=$v ;; esac
+done <<<"$PLAN"
+
+# a medium that is still attached after a finished install must not wipe the installed system again
+# (REINSTALL=yes is the explicit override; with it and an attached medium the host reinstalls on EVERY boot, by design)
+guard_reinstall() {
+  if holds_our_system "$target" && [ "${S[REINSTALL]:-no}" != yes ]; then
+    refuse "$target already holds a debian-rollback system (btrfs label drroot); set REINSTALL=yes in the config to wipe it"
+  fi
+}
+guard_reinstall
+
+if [ "$decision" = confirm ]; then
+  t=$(cmdline_param dr.confirm-timeout || echo 120)
+  marker "CONFIRM target=$target"
+  printf '\nNo install config was found. ERASE ALL DATA on %s ? Type exactly "ERASE %s" within %s s: ' "$target" "${target#/dev/}" "$t" >/dev/console
+  ans=""; read -r -t "$t" ans </dev/console || true
+  [ "$ans" = "ERASE ${target#/dev/}" ] || refuse "no confirmation typed for $target"
+elif [ "$decision" != install ]; then
+  refuse "unexpected decision '$decision'"
+fi
+
+# --- tools, then the install -----------------------------------------------------------------------------------
+marker "INSTALL target=$target"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq || { say "apt-get update failed"; finish 1; }
+apt-get install -y -qq --no-install-recommends debootstrap btrfs-progs gdisk dosfstools parted \
+  >"$RUN/apt-tools.log" 2>&1 || { tail -n 20 "$RUN/apt-tools.log"; say "installing the installer tools failed"; finish 1; }
+
+# the plan is minutes old now (confirmation, apt): decide again from the current state and demand the same disk
+first_target=$target; first_fp=$FP
+make_plan
+[ "$target" = "$first_target" ] && [ "$FP" = "$first_fp" ] \
+  || refuse "the target changed while the tools were installed ($first_target '$first_fp' -> $target '$FP')"
+guard_reinstall   # again: the first check is minutes old
+[ -n "$(lsblk -dno SERIAL,WWN "$target" 2>/dev/null | tr -d '[:space:]')" ] \
+  || say "WARNING: $target has no serial or WWN here (virtual disk?): the identity check between the two plans is only size and model"
+[ -b "$target" ] || refuse "$target is not a block device"
+[ "$(lsblk -dno TYPE "$target" 2>/dev/null)" = disk ] || refuse "$target is not a whole disk"
+! lsblk -nr -o MOUNTPOINTS "$target" | grep -q . || refuse "$target has mounted partitions"
+marker "TARGET-CONFIRMED $target"
+
+args=(--device "$target" --yes)
+[ -z "${S[HOSTNAME]:-}" ] || args+=(--hostname "${S[HOSTNAME]}")
+[ -z "${S[SUITE]:-}" ] || args+=(--suite "${S[SUITE]}")
+[ -z "${S[MIRROR]:-}" ] || args+=(--mirror "${S[MIRROR]}")
+[ -z "${S[SECURITY_MIRROR]:-}" ] || args+=(--security-mirror "${S[SECURITY_MIRROR]}")
+pw=${S[ROOT_PASSWORD]:-}
+if [ -n "${S[ROOT_PASSWORD_HASH]:-}" ]; then
+  args+=(--root-password-hash "${S[ROOT_PASSWORD_HASH]}")   # a hash: no plaintext in the ISO or the command line
+else
+  if [ -z "$pw" ]; then
+    pw=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 16)
+    marker "ROOT-PASSWORD-GENERATED $pw"   # printed once on the console; the config set none
+  fi
+  args+=(--root-password "$pw")
+fi
+
+"$HERE/install-btrfs.sh" "${args[@]}"
+irc=$?
+say "install-btrfs.sh exit $irc"
+finish "$irc"

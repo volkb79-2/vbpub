@@ -40,6 +40,17 @@ pair --mount type=bind,src=/b.raw,dst=/base/disk.raw,readonly
 pair --mount type=bind,src=/seed.iso,dst=/media/seed.iso,readonly
 pair --entrypoint /bin/sh
 single img:1
+# the optional config disk (CIDATA stick): absent by default, read-only when given
+absent --env=VM_CONFIG_DISK=/media/config.img
+if printf '%s\n' "$OUT" | grep -qF 'VM_CONFIG_DISK=/media/config.img'; then bad "config disk env present without --config-disk"; fi
+OUT_CFG=$("$HERE/dr-qemu.sh" "${args[@]}" --config-disk /cfg.img)
+printf '%s\n' "$OUT_CFG" | awk 'prev == "--mount" && $0 == "type=bind,src=/cfg.img,dst=/media/config.img,readonly" {ok=1} {prev=$0} END {exit !ok}' \
+  || bad "config disk is not bind-mounted read-only"
+printf '%s\n' "$OUT_CFG" | awk 'prev == "--env" && $0 == "VM_CONFIG_DISK=/media/config.img" {ok=1} {prev=$0} END {exit !ok}' \
+  || bad "config disk env missing"
+for needle in 'id=cfgdisk,format=raw,readonly=on' 'serial=drcfg001'; do
+  printf '%s\n' "$OUT_CFG" | grep -qF -- "$needle" || bad "guest script lacks '$needle'"
+done
 for flag in --publish -p --privileged --cap-add --pid --ipc --device; do absent "$flag"; done
 # the QEMU side: no monitor, no display, qmp only on a unix socket in the state dir, TCG without nested virt
 for needle in '-machine q35,accel=tcg' '-cpu max,-vmx,-svm' '-monitor none -display none' \
@@ -58,6 +69,7 @@ refuse --network none
 refuse --network container:other
 refuse --state-dir /s,src=/etc
 refuse --ovmf-code '/c with space'
+refuse --config-disk /cfg,src=/etc
 refuse --data-disk-size notanumber
 refuse --forward 22
 refuse --base-qcow2 /b.qcow2   # exclusive with --base-raw

@@ -104,9 +104,10 @@ class Guest:
     def _do_login(self):
         """Type the credentials at an existing login prompt, then probe until the shell answers (login(1) discards
         input typed while it sets the session up, which is slow under TCG)."""
-        self.send("root\n")
+        # the Debian live image has no root login: DR_LOGIN_USER=user DR_LOGIN_PASSWORD=live (then use sudo)
+        self.send(os.environ.get("DR_LOGIN_USER", "root") + "\n")
         self.expect(rb"[Pp]assword: ?", 60)
-        self.send("root\n")
+        self.send(os.environ.get("DR_LOGIN_PASSWORD", "root") + "\n")
         deadline = time.monotonic() + 400
         while time.monotonic() < deadline:
             if self._shell_answers(10):
@@ -678,6 +679,22 @@ def scenario_s9b(g, log):
     check(log, "with the wrapper gone apt installs again and snapshots first", tag(out, "APTRC") == "0" and tag(out, "HELLO") == "/usr/bin/hello" and len(new) == 1, f"{tag(out, 'APTRC')} {tag(out, 'HELLO')} {new}")
 
 
+def scenario_live_inspect(g, log):
+    """Read-only look inside a booted live ISO guest (DR_LOGIN_USER=user DR_LOGIN_PASSWORD=live). Prints what the
+    installer service and the hook did; changes nothing."""
+    g.login()
+    for title, cmd in (("service", "sudo -n systemctl status dr-autoinstall.service --no-pager 2>&1 | tail -n 15"),
+                       ("journal", "sudo -n journalctl -u dr-autoinstall.service -u live-config.service --no-pager 2>&1 | tail -n 40"),
+                       ("hooks", "ls -ld /lib/live/mount /lib/live/mount/medium /run/live/medium 2>&1; "
+                                 "ls -la /run/live/medium/live/config-hooks /run/live/medium/dr 2>&1 | head -n 20; "
+                                 "mount | grep -c live/medium"),
+                       ("disks", "lsblk -dno NAME,TYPE,SIZE,RM,TRAN 2>&1"),
+                       ("net", "ip -br addr 2>&1 | head -n 5"),
+                       ("log", "tail -n 25 /var/log/dr-autoinstall.log 2>&1")):
+        _, out = g.run(cmd, 120)
+        say(log, f"=== {title}\n{out.strip()}")
+
+
 def scenario_s5(g, log):
     """S5: the running state's initramfs is broken. The default entry cannot boot; the earlier state, chosen in the
     GRUB menu with keys over the serial line, can. Then the earlier state is made the default (recovery)."""
@@ -758,7 +775,8 @@ def main():
     scenarios = {"boot-check": scenario_boot_check, "s2-s3": scenario_s2_s3, "kernel-upgrade": scenario_kernel_upgrade,
                  "s5": scenario_s5, "s6": scenario_s6, "s7": scenario_s7, "s9": scenario_s9,
                  "backports": scenario_kernel_backports, "s8": scenario_s8,
-                 "window-negative": scenario_window_negative, "s9b": scenario_s9b}
+                 "window-negative": scenario_window_negative, "s9b": scenario_s9b,
+                 "live-inspect": scenario_live_inspect}
     if name not in scenarios:
         print(f"unknown scenario {name}; one of {sorted(scenarios)}")
         return 2

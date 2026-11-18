@@ -147,6 +147,11 @@ def pytest_configure(config):
         "real_release_gates_plan: run the real CMRU-SKIP-01 gates record "
         "instead of the pass-through stub unrelated release-child tests get",
     )
+    config.addinivalue_line(
+        "markers",
+        "real_dind_release_preflight: run the real KI-182 per-project DinD sidecar "
+        "image preflight instead of the no-op unrelated launcher tests get",
+    )
 
 
 #: The release-controller identity unit tests see. The launcher records it and
@@ -265,6 +270,27 @@ def _neutral_release_target_tag_guard(request):
         yield
     finally:
         cli._refuse_existing_release_targets = saved
+
+
+@pytest.fixture(autouse=True)
+def _neutral_dind_release_preflight(request):
+    """Launcher tests of OTHER behaviour script their git snapshots.
+
+    The KI-182 preflight reads each scope project's release-source config blob
+    from git, which those scripted, non-repository fixtures lack. They get a
+    no-op; tests carrying ``real_dind_release_preflight`` exercise the real one.
+    """
+    if request.node.get_closest_marker("real_dind_release_preflight"):
+        yield
+        return
+    from cmru import cli
+
+    saved = cli._release_dind_image_preconditions
+    cli._release_dind_image_preconditions = lambda *_args, **_kwargs: None
+    try:
+        yield
+    finally:
+        cli._release_dind_image_preconditions = saved
 
 
 @pytest.fixture(autouse=True)

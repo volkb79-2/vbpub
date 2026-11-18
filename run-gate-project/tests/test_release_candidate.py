@@ -8,6 +8,7 @@ import json
 import re
 import runpy
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
@@ -39,6 +40,22 @@ def _receipt(**overrides):
 
 def _completed(stdout="", stderr="", returncode=0):
     return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=returncode)
+
+
+_OLD_CANDIDATE_SELFTEST_CODE = "\n".join((
+    "import importlib.metadata",
+    "from pathlib import Path",
+    "import run_gate",
+    "import run_gate_admission",
+    "distribution = importlib.metadata.distribution('run-gate')",
+    "owned = {Path(distribution.locate_file(item)).resolve(strict=True) "
+    "for item in (distribution.files or ())}",
+    "for module in (run_gate, run_gate_admission):",
+    "    path = Path(module.__file__).resolve(strict=True)",
+    "    if path not in owned:",
+    "        raise SystemExit(f'Run-Gate module loaded outside the installed wheel: {path}')",
+    "raise SystemExit(run_gate.main(['selftest']))",
+))
 
 
 def test_release_image_bootstrap_uses_only_explicit_overrides(monkeypatch, tmp_path):
@@ -1597,6 +1614,95 @@ def test_main_dispatches_all_commands_and_reports_supported_failures(monkeypatch
     assert calls[0] == ("prepare", None)
     assert calls[1] == ("prepare", "tester-unified:custom")
     assert calls[-1] == ("run-selftest", Path(tmp_path / "receipt"))
+
+
+def test_main_runs_canary_with_lane_returncode_and_maps_release_errors(
+    monkeypatch, capsys, tmp_path,
+):
+    receipt_path = tmp_path / "receipt.json"
+    monkeypatch.setattr(release_candidate, "run_canary", lambda path: 9)
+
+    assert release_candidate.main(["run-canary", "--receipt", str(receipt_path)]) == 9
+
+    def fail(_path):
+        raise release_candidate.ReleaseCandidateError("canary refused")
+
+    monkeypatch.setattr(release_candidate, "run_canary", fail)
+    assert release_candidate.main(["run-canary", "--receipt", str(receipt_path)]) == 2
+    assert "run-gate release candidate: canary refused" in capsys.readouterr().err
+
+
+def test_run_canary_uses_receipt_specific_image_and_assay_r3_code(monkeypatch, tmp_path):
+    project_root = tmp_path / "run-gate-project"
+    receipt_path = project_root / ".assay" / "receipt.json"
+    receipt_path.parent.mkdir(parents=True)
+    wheel_path = project_root / "dist" / "run_gate-24.0.0-py3-none-any.whl"
+    wheel_path.parent.mkdir()
+    wheel_path.write_bytes(b"exact candidate wheel")
+    receipt = _receipt(
+        image_tag="tester-unified:run-gate-candidate-deadbeef1234",
+        sha256=hashlib.sha256(wheel_path.read_bytes()).hexdigest(),
+    )
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    monkeypatch.setattr(release_candidate, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(release_candidate, "_git", lambda *_args: receipt["candidate_commit"])
+    monkeypatch.setattr(release_candidate, "_verify_receipt_image", lambda _receipt: None)
+    candidate_cli = tmp_path / "candidate-venv" / "bin" / "run-gate"
+    candidate_cli.parent.mkdir(parents=True)
+    candidate_python = candidate_cli.parent / "python"
+    candidate_python.write_text("unused by mocked process", encoding="utf-8")
+    candidate_python.chmod(0o755)
+    monkeypatch.setattr(
+        release_candidate,
+        "_candidate_cli",
+        lambda wheel, temp_root: candidate_cli,
+    )
+    calls = []
+
+    def run(argv, *, cwd, env, check):
+        calls.append((argv, cwd, env, check))
+        return _completed(returncode=11)
+
+    monkeypatch.setattr(release_candidate.subprocess, "run", run)
+    assert release_candidate.run_canary(Path(".assay/receipt.json")) == 11
+    argv, cwd, env, check = calls[0]
+    assert argv[:2] == [str(candidate_cli.parent / "python"), "-I"]
+    assert argv[2] == "-c"
+    assert argv[3] == _OLD_CANDIDATE_SELFTEST_CODE.replace(
+        "['selftest']", "['assay-r3']",
+    )
+    assert cwd == project_root
+    assert env["RUN_GATE_RELEASE_WHEEL_RECEIPT"] == ".assay/receipt.json"
+    assert env["RUN_GATE_TESTER_UNIFIED_IMAGE"] == receipt["image_id"]
+    assert check is False
+
+
+def test_run_canary_refuses_a_receipt_from_a_different_commit(monkeypatch, tmp_path):
+    project_root = tmp_path / "project"
+    receipt_path = project_root / ".assay" / "receipt.json"
+    receipt_path.parent.mkdir(parents=True)
+    receipt_path.write_text(json.dumps(_receipt()), encoding="utf-8")
+    monkeypatch.setattr(release_candidate, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(release_candidate, "_git", lambda *_args: "2" * 40)
+
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="receipt is for"):
+        release_candidate.run_canary(receipt_path)
+
+
+def test_candidate_lane_code_preserves_the_ownership_check_for_selftest():
+    assert release_candidate._candidate_lane_code("selftest") == _OLD_CANDIDATE_SELFTEST_CODE
+
+
+def test_cmru_release_gate_runs_prepare_selftest_and_canary_in_order():
+    config = tomllib.loads(
+        (TOOLS.parents[0] / "cmru.toml").read_text(encoding="utf-8"),
+    )
+    commands = config["steps"]["run-tests"]["commands"]
+    assert [command["argv"] for command in commands] == [
+        ["python", "tools/release_candidate.py", "prepare"],
+        ["python", "tools/release_candidate.py", "run-selftest"],
+        ["python", "tools/release_candidate.py", "run-canary"],
+    ]
 
 
 def test_run_selftest_uses_receipt_specific_image_without_mutating_shared_tag(monkeypatch, tmp_path):
