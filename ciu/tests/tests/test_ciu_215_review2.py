@@ -217,6 +217,12 @@ def test_a_descendant_mount_covers_only_when_the_ciu_root_is_below_the_git_top(r
     assert _overlay(repos, below, "/h:/elsewhere", caplog) != []
 
 
+def test_a_volume_entry_without_a_usable_target_is_ignored(repos, tmp_path):
+    compose = yaml.safe_dump({"services": {"a": {"volumes": [
+        {"type": "volume", "source": "named"}, {"target": 5}]}}})
+    assert _write(repos, tmp_path, "ro", compose=compose)[2] is not None
+
+
 def test_an_unresolved_target_expression_does_not_warn(repos, caplog):
     _main, linked, _phys = repos
     assert _overlay(repos, linked, "/h:${CHECKOUT_PATH:-/x}", caplog) == []
