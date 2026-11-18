@@ -390,7 +390,7 @@ def test_all_stale_star_npm_targets_are_reported_with_the_exact_package_json_edi
     assert 'set "overrides"."alpha" from "1.0.0" to "1.1.0"' in message
     assert 'set "optionalDependencies"."beta" from "2.0.0" to "2.1.0"' in message
     assert "unrelated" not in message and "gamma" not in message
-    assert "hand-owned" in message and "nothing was written" in message
+    assert "does not rewrite the manifests" in message and "nothing was written" in message
 
     document = json.loads((project_root / "package.json").read_text(encoding="utf-8"))
     document["dependencies"]["alpha"] = "1.1.0"
