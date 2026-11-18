@@ -535,7 +535,8 @@ The scope's `slice` object is the accounting: `changed_files`/`changed_candidate
 `new_pass` (a finished sweep restarting). Nothing is dropped silently. The
 changed candidates and the sweep share `slice_size`, and `reserve_percent` of
 it (default 25, set in `[r2]`, `0` restores the changed-first slice) is
-reserved for the never-judged and pending candidates, so a target edited every
+reserved for the non-changed remainder (never-judged and the pending
+candidates of a half-judged file, in path order), so a target edited every
 release still sweeps (FD-038). The slice also reports `reserve_percent`,
 `reserved_candidates`, `deferred_changed_candidates` and `deferred_changed_files`
 (each changed file whose candidates did not all fit, with `candidates` and

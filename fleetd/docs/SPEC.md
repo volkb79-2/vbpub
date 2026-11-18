@@ -401,7 +401,8 @@ content). A project declares its mode in a committed
 `r2-scope.toml` (`schema_version = 1`, `[r2]` with `mode`, optional
 `slice_size`, `cursor`, `note`, `reserve_percent`). `reserve_percent` (an
 integer 0 to 100, default 25) reserves that share of every slice, rounded up and
-capped at `slice_size - 1`, for the never-judged and pending candidates, so a
+capped at `slice_size - 1`, for the non-changed remainder in path order
+(never-judged and the pending candidates of a half-judged file), so a
 target edited every release by more than `slice_size` candidates still reaches
 its remainder; `0` restores the changed-first slice. The scope document's
 `slice` object reports `reserve_percent`, `reserved_candidates`,
@@ -426,7 +427,10 @@ is derived from the per-candidate MEAN (a shard's wall time is the sum of its
 candidates) and a per-shard margin `max(1.10, 1 + 1.645 x cv / sqrt(n))` from
 the measured spread; `--margin` is the explicit override, and the document
 states `seconds_statistic` (`mean`, `median` or `declared`) and `margin_source`
-(`explicit`, `derived` or `default`). The budget is an ESTIMATE: an instance that
+(`explicit`, `derived` or `default`; `derived` is also set for an older
+median-only measurement, whose margin is then just the 1.10 floor). The derived
+margin has no upper bound, and the top-level `margin` reports only the floor,
+the per-shard `margin` is what applied. The budget is an ESTIMATE: an instance that
 reaches it stops, and its remainder continues in a later instance (FD-031).
 
 `fleet measurement ID` writes `fleet-r2-measurement/1` from the same
@@ -437,7 +441,12 @@ per-candidate sum fields (`cost_candidates`, `cost_seconds_sum`,
 `cost_seconds_mean`, `cost_seconds_stdev`, `cost_seconds_max`, over killed,
 survived, `budget_exceeded` and `hung` candidates; the document stays
 `fleet-r2-measurement/1` and an older document without them still loads and
-sizes from its median). A missing number is `null`, never zero. `memory_peak_bytes` is the cgprofile observer's
+sizes from its median). The validator cross-checks the fields when
+`cost_candidates` is present: `cost_candidates` is 0 exactly when the four
+values are `null`, the mean and the standard deviation do not exceed the
+maximum, and the sum equals the mean times `cost_candidates` within 1e-6 s per
+candidate plus 1e-6 s (the recorder's six-decimal rounding). A missing number is
+`null`, never zero. `memory_peak_bytes` is the cgprofile observer's
 `resource-profile/1` metric; Assay 12 removed its own sampled
 `peak_rss_bytes`.
 
