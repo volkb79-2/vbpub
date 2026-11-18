@@ -1428,14 +1428,14 @@ green and a mutant for the guard wrapper killed in both.
 `scripts/netcup/runner/remote-gate-hosts.example.json` listed `run_gate_bins`
 under a home-directory path of the controller account. It now carries
 placeholder paths. The same literal also sat in the comments of
-`scripts/netcup/runner/runner.env.example` (the `RUN_GATE_BIN` lines: a `/home/vscode`
-default path and a venv path); those two comment lines now read
+`scripts/netcup/runner/runner.env.example` (the `RUN_GATE_BIN` lines: a default path and a venv
+path under the controller account's home); those two comment lines now read
 `<cockpit home>/.local/bin/run-gate` and `/path/to/venv/bin/run-gate` (package
 pi-ctl33; no netcup test reads those comments: `test_runner_host_endpoints.py` only
 scans the file for endpoint-path and GID literals, `test_runner_scripts.py` and
 `test_cow_select.py` read variable names and `COW_DEVICE`).
 
-**Close when.** Done: `git grep -n '/home/vscode' -- scripts/netcup/runner/remote-gate-hosts.example.json scripts/netcup/runner/runner.env.example` prints nothing. Other files (docs, evidence, `scripts/netcup/runner/README.md`) still name controller-local paths in prose and are outside this entry.
+**Close when.** Done: a `git grep` for the controller account's home directory name over `scripts/netcup/runner/remote-gate-hosts.example.json` and `scripts/netcup/runner/runner.env.example` prints nothing. Other files (docs, evidence, `scripts/netcup/runner/README.md`) still name controller-local paths in prose and are outside this entry.
 
 ## CTL-31 — ctl-doctor reads controller.local.env line by line and does not run the identity check
 
