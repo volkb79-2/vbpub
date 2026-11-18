@@ -713,5 +713,642 @@ impl Conn {
 
 #[cfg(test)]
 mod tests {
-    // PLACEHOLDER-TESTS
+    use hostobs_proto::frame::FrameType;
+    use hostobs_proto::hub::{QueueLimits, SendHub};
+
+    use super::{Conn, Peer, Pools, Reader, State};
+    use crate::backend::FixedBackend;
+    use crate::codes::{Code, Detail};
+    use crate::encode::{
+        closing_evt, control_frame, error_line, rep_error, server_prefix, unknown_mode_line,
+    };
+    use crate::limits::{Level, Limits};
+
+    const MS: u64 = 1_000_000;
+    const HELLO_ARGS: &str = r#"{"client":"t","proto":{"major":1,"minor":1}}"#;
+
+    fn req(corr: u32, verb: &str) -> Vec<u8> {
+        let args = if verb == "hello" { HELLO_ARGS } else { "{}" };
+        let json = format!("{{\"verb\":\"{verb}\",\"args\":{args}}}");
+        control_frame(FrameType::Req, corr, json.as_bytes())
+    }
+
+    fn raw_req(corr: u32, json: &str) -> Vec<u8> {
+        control_frame(FrameType::Req, corr, json.as_bytes())
+    }
+
+    fn line(corr: u32, verb: &str, args: &str) -> Vec<u8> {
+        format!("{{\"corr\":{corr},\"verb\":\"{verb}\",\"args\":{args}}}\n").into_bytes()
+    }
+
+    fn text(bytes: &[u8]) -> String {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    fn client_prefix(minor: u16) -> Vec<u8> {
+        server_prefix(1, minor).to_vec()
+    }
+
+    /// `(type, corr, payload text)` of every frame of `bytes` (well-formed input only).
+    fn frames(bytes: &[u8]) -> Vec<(u8, u32, String)> {
+        let mut out = Vec::new();
+        let mut rest = bytes;
+        while rest.len() >= 12 {
+            let len = u32::from_le_bytes([rest[0], rest[1], rest[2], rest[3]]);
+            let len = usize::try_from(len).expect("len");
+            let corr = u32::from_le_bytes([rest[8], rest[9], rest[10], rest[11]]);
+            out.push((rest[4], corr, text(&rest[12..len])));
+            rest = &rest[len..];
+        }
+        out
+    }
+
+    fn queue_limits(limits: &Limits) -> QueueLimits {
+        let size = |value: u32| usize::try_from(value).unwrap_or(usize::MAX);
+        let client = size(limits.client_queue_bytes);
+        QueueLimits {
+            client_queue_bytes: client,
+            uid_live_bytes: client.saturating_mul(2),
+            global_live_bytes: client.saturating_mul(4),
+            query_queue_bytes: client,
+            uid_query_bytes: client.saturating_mul(2),
+            global_query_bytes: client.saturating_mul(4),
+            control_queue_bytes: size(limits.control_queue_bytes),
+            stall_ns: u64::from(limits.stall_ms) * MS,
+            frame_completion_ns: u64::from(limits.frame_completion_ms) * MS,
+        }
+    }
+
+    struct Rig {
+        hub: SendHub,
+        conn: Conn,
+        backend: FixedBackend,
+        limits: Limits,
+        now: u64,
+        out: Vec<u8>,
+    }
+
+    impl Rig {
+        fn new(level: Level) -> Rig {
+            Rig::with(level, Limits::for_level(level))
+        }
+
+        fn with(level: Level, limits: Limits) -> Rig {
+            let mut hub = SendHub::new(queue_limits(&limits));
+            let id = hub.add(1000, 0);
+            let peer = Peer { uid: 1000, pid: 7 };
+            let conn = Conn::new(id, level, peer, &limits, 0);
+            Rig {
+                hub,
+                conn,
+                backend: FixedBackend::new(),
+                limits,
+                now: 0,
+                out: Vec::new(),
+            }
+        }
+
+        fn send(&mut self, bytes: &[u8]) {
+            self.conn.on_bytes(bytes, self.now, &mut self.hub, &self.backend);
+        }
+
+        fn eof(&mut self) {
+            self.conn.on_eof(self.now, &mut self.hub);
+        }
+
+        fn tick(&mut self, ns: u64) {
+            self.now += ns;
+            self.conn.poll(self.now, &mut self.hub);
+        }
+
+        /// Write at most `max` bytes of the queue the way a driver would.
+        fn pump(&mut self, max: usize) -> usize {
+            let mut total = 0;
+            while total < max && !self.conn.is_closed() {
+                let chunk: Vec<u8> = match self.hub.head(self.conn.id(), self.now) {
+                    Some([a, b]) => [a, b].concat(),
+                    None => break,
+                };
+                let take = chunk.len().min(max - total);
+                if take == 0 {
+                    break;
+                }
+                self.out.extend_from_slice(&chunk[..take]);
+                self.conn.on_written(take, self.now, &mut self.hub);
+                total += take;
+            }
+            total
+        }
+
+        /// Everything the peer would receive: the queue, then the final bytes.
+        fn finish(&mut self) -> Vec<u8> {
+            self.pump(usize::MAX);
+            if let Some(last) = self.conn.take_final() {
+                self.out.extend_from_slice(&last);
+            }
+            std::mem::take(&mut self.out)
+        }
+
+        fn queue_empty(&self) -> bool {
+            self.hub.queued(self.conn.id()) == Pools::default()
+        }
+    }
+
+    fn ready_bin(level: Level) -> Rig {
+        let mut rig = Rig::new(level);
+        let mut input = client_prefix(1);
+        input.extend_from_slice(&req(1, "hello"));
+        rig.send(&input);
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        assert_eq!(rig.conn.state(), State::Ready);
+        rig
+    }
+
+    fn ready_json(level: Level) -> Rig {
+        let mut rig = Rig::new(level);
+        rig.send(&line(1, "hello", HELLO_ARGS));
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        assert_eq!(rig.conn.state(), State::Ready);
+        rig
+    }
+
+    fn await_rig() -> Rig {
+        let mut rig = Rig::new(Level::Observe);
+        rig.send(&client_prefix(1));
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        assert_eq!(rig.conn.state(), State::AwaitHello);
+        rig
+    }
+
+    #[test]
+    fn conn_row_1_accept_arms_the_hello_deadline_and_starts_undecided() {
+        let rig = Rig::new(Level::Observe);
+        assert_eq!(rig.conn.state(), State::Undecided);
+        assert_eq!(rig.conn.peer(), Peer { uid: 1000, pid: 7 });
+        assert_eq!(rig.conn.level(), Level::Observe);
+        assert!(!rig.conn.is_closed() && rig.queue_empty());
+    }
+
+    #[test]
+    fn conn_row_2_brace_selects_json_and_the_first_line_is_the_hello() {
+        let mut rig = Rig::new(Level::Observe);
+        rig.send(b"{");
+        assert_eq!(rig.conn.state(), State::JsonNoHello);
+        rig.send(&line(1, "hello", HELLO_ARGS)[1..]);
+        assert_eq!(rig.conn.state(), State::Ready);
+        let out = text(&rig.finish());
+        let head = "{\"ok\":true,\"corr\":1,\"result\":{\"proto\":{\"major\":1";
+        assert!(out.starts_with(head));
+        assert!(out.contains("\"minor\":1}") && out.ends_with("}\n"));
+        assert_eq!(rig.conn.minor(), 1);
+    }
+
+    #[test]
+    fn conn_row_3_prefix_progression_and_the_negotiated_minor() {
+        for (client, negotiated) in [(0u16, 0u16), (1, 1), (5, 1)] {
+            let mut rig = Rig::new(Level::Observe);
+            let prefix = client_prefix(client);
+            for byte in &prefix[..7] {
+                rig.send(&[*byte]);
+                assert_eq!(rig.conn.state(), State::Undecided);
+                assert!(rig.queue_empty());
+            }
+            rig.send(&prefix[7..]);
+            assert_eq!(rig.conn.state(), State::AwaitHello);
+            assert_eq!(rig.finish(), server_prefix(1, negotiated).to_vec());
+        }
+    }
+
+    #[test]
+    fn conn_row_4_any_other_first_byte_is_the_unknown_mode_line() {
+        for input in [&b"GET / HTTP"[..], b"HOX", b"\x00", b"H\x00"] {
+            let mut rig = Rig::new(Level::Observe);
+            rig.send(input);
+            assert!(rig.conn.is_closed());
+            assert_eq!(rig.conn.close_code(), Some(Code::UnknownMode));
+            assert_eq!(rig.conn.take_final(), Some(unknown_mode_line()));
+        }
+    }
+
+    #[test]
+    fn conn_row_5_hello_timer_in_each_state_with_its_exact_reply() {
+        let deadline = 5_000 * MS;
+        let mut rig = Rig::new(Level::Observe);
+        rig.send(b"HOB");
+        rig.tick(deadline);
+        assert!(!rig.conn.is_closed());
+        rig.tick(1);
+        assert!(rig.conn.is_closed());
+        assert_eq!(rig.conn.take_final(), None);
+        let mut rig = await_rig();
+        rig.tick(deadline + 1);
+        let expected = rep_error(0, Code::Deadline, &Detail::Empty);
+        assert_eq!(rig.conn.take_final(), Some(expected.clone()));
+        let mut unwritten = Rig::new(Level::Observe);
+        unwritten.send(&client_prefix(1));
+        unwritten.tick(deadline + 1);
+        let mut both = server_prefix(1, 1).to_vec();
+        both.extend_from_slice(&expected);
+        assert_eq!(unwritten.conn.take_final(), Some(both));
+        let mut json = Rig::new(Level::Observe);
+        json.send(b"{");
+        json.tick(deadline + 1);
+        let line = error_line(0, Code::Deadline, &Detail::Empty);
+        assert_eq!(json.conn.take_final(), Some(line));
+    }
+
+    #[test]
+    fn conn_row_6_hello_in_await_hello_answers_and_becomes_ready() {
+        let mut rig = Rig::new(Level::Observe);
+        let mut input = client_prefix(1);
+        input.extend_from_slice(&req(1, "hello"));
+        rig.send(&input);
+        assert_eq!(rig.conn.state(), State::Ready);
+        let out = rig.finish();
+        assert_eq!(out[..8], server_prefix(1, 1));
+        let parsed = frames(&out[8..]);
+        assert_eq!((parsed[0].0, parsed[0].1), (FrameType::Rep.code(), 1));
+        let body = &parsed[0].2;
+        assert!(body.contains("\"level\":\"observe\""));
+        assert!(body.contains("\"epoch\":1"));
+        assert!(body.contains("\"verbs\":[\"hello\",\"status\"]"));
+        let codes = "\"quality_codes\":[{\"code\":0,\"name\":\"ok\"}";
+        assert!(body.contains(codes));
+        assert!(body.contains("\"limits\":{\"max_frame_bytes\":16777216,"));
+        let observer = text(&ready_hello_body(Level::Observer));
+        assert!(observer.contains("\"verbs\":[\"hello\"]"));
+        assert!(observer.contains("\"max_subscriptions\":0"));
+    }
+
+    fn ready_hello_body(level: Level) -> Vec<u8> {
+        let mut rig = Rig::new(level);
+        let mut input = client_prefix(1);
+        input.extend_from_slice(&req(1, "hello"));
+        rig.send(&input);
+        rig.finish()
+    }
+
+    #[test]
+    fn conn_row_7_await_hello_other_verb_or_wrong_corr_is_fatal() {
+        let mut rig = await_rig();
+        rig.send(&req(7, "status"));
+        assert!(rig.conn.is_closed());
+        let expected = rep_error(7, Code::HelloRequired, &Detail::Empty);
+        assert_eq!(rig.conn.take_final(), Some(expected));
+        for bad in [req(2, "hello"), req(0, "hello")] {
+            let mut rig = await_rig();
+            rig.send(&bad);
+            let expected = rep_error(0, Code::BadFrame, &Detail::Empty);
+            assert_eq!(rig.conn.take_final(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn conn_row_7_a_defective_hello_or_request_is_non_fatal_on_its_own_corr() {
+        let mut rig = await_rig();
+        let skewed = r#"{"verb":"hello","args":{"client":"t","proto":{"major":1,"minor":0}}}"#;
+        rig.send(&raw_req(1, skewed));
+        rig.send(&raw_req(5, "{"));
+        assert_eq!(rig.conn.state(), State::AwaitHello);
+        let parsed = frames(&rig.finish());
+        assert_eq!(parsed[0].1, 1);
+        assert!(parsed[0].2.contains("\"key\":\"proto.minor\""));
+        assert_eq!(parsed[1].1, 5);
+        assert!(parsed[1].2.contains("\"code\":\"bad-request\""));
+        rig.send(&req(1, "hello"));
+        assert_eq!(rig.conn.state(), State::Ready);
+    }
+
+    #[test]
+    fn conn_row_8_json_first_line_is_handled_as_a_request_and_ends_the_hello_wait() {
+        let mut rig = Rig::new(Level::Observe);
+        rig.send(&line(3, "status", "{}"));
+        assert_eq!(rig.conn.state(), State::Ready);
+        assert_eq!(rig.conn.minor(), 0);
+        rig.send(&line(4, "hello", HELLO_ARGS));
+        let out = text(&rig.finish());
+        assert!(out.contains("\"corr\":3,\"result\":{\"server\":"));
+        let wrong = "\"corr\":4,\"error\":{\"code\":\"bad-request\"";
+        assert!(out.contains(wrong));
+        assert!(out.contains("\"detail\":{\"key\":\"verb\"}"));
+        let mut garbage = Rig::new(Level::Observe);
+        garbage.send(b"{x\n");
+        assert_eq!(garbage.conn.state(), State::Ready);
+        let reply = text(&garbage.finish());
+        let key = "\"corr\":0,\"error\":{\"code\":\"bad-request\"";
+        assert!(reply.contains(key));
+        let mut major = Rig::new(Level::Observe);
+        let skew = r#"{"client":"t","proto":{"major":2,"minor":1}}"#;
+        major.send(&line(1, "hello", skew));
+        let expected = error_line(1, Code::UnsupportedVersion, &Detail::Empty);
+        assert_eq!(major.conn.take_final(), Some(expected));
+    }
+
+    #[test]
+    fn conn_row_9_ready_dispatch_status_in_both_modes() {
+        let mut bin = ready_bin(Level::Operator);
+        bin.send(&req(2, "status"));
+        let parsed = frames(&bin.finish());
+        assert_eq!((parsed[0].0, parsed[0].1), (FrameType::Rep.code(), 2));
+        let body = &parsed[0].2;
+        let head = "{\"ok\":true,\"result\":{\"server\":\"hostobs-probe\"";
+        assert!(body.starts_with(head));
+        let queues = "\"queues\":{\"queued_bytes\":0,\"dropped_blocks\":0}";
+        assert!(body.contains(queues));
+        assert!(body.contains("\"clients\":{}"));
+        assert!(body.contains("\"tiers\":[]"));
+        let mut json = ready_json(Level::Observe);
+        json.send(&line(9, "status", "{}"));
+        let out = text(&json.finish());
+        let head = "{\"ok\":true,\"corr\":9,\"result\":{\"server\"";
+        assert!(out.starts_with(head));
+    }
+
+    #[test]
+    fn conn_row_9_ready_refusals_keep_the_connection() {
+        let mut rig = ready_bin(Level::Observer);
+        rig.send(&req(2, "status"));
+        rig.send(&req(3, "current"));
+        rig.send(&req(4, "bogus"));
+        rig.send(&req(5, "hello"));
+        let parsed = frames(&rig.finish());
+        assert!(parsed[0].2.contains("\"code\":\"forbidden\""));
+        assert!(parsed[1].2.contains("\"code\":\"forbidden\""));
+        assert!(parsed[2].2.contains("\"code\":\"unknown-verb\""));
+        assert!(parsed[3].2.contains("\"key\":\"verb\""));
+        assert_eq!(rig.conn.state(), State::Ready);
+        let mut json = ready_json(Level::Observe);
+        json.send(&line(2, "current", "{}"));
+        let reply = text(&json.finish());
+        assert!(reply.contains("\"code\":\"binary-required\""));
+    }
+
+    #[test]
+    fn conn_row_10_11_idle_arms_when_quiet_and_expires_strictly() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.tick(300_000 * MS);
+        assert!(!rig.conn.is_closed());
+        rig.tick(1);
+        assert!(rig.conn.is_closed());
+        assert_eq!(rig.conn.close_code(), Some(Code::Idle));
+        assert_eq!(rig.conn.take_final(), Some(closing_evt(Code::Idle)));
+        let mut json = ready_json(Level::Observe);
+        json.tick(300_000 * MS + 1);
+        let expected = error_line(0, Code::Idle, &Detail::Empty);
+        assert_eq!(json.conn.take_final(), Some(expected));
+    }
+
+    #[test]
+    fn conn_row_10_a_received_byte_or_a_queued_frame_disarms_idle_and_the_deadline_wins() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.send(&[0x40]);
+        rig.tick(400_000 * MS);
+        let expected = rep_error(0, Code::Deadline, &Detail::Empty);
+        assert_eq!(rig.conn.take_final(), Some(expected));
+        let mut busy = ready_bin(Level::Observe);
+        busy.send(&req(2, "status"));
+        busy.tick(400_000 * MS);
+        assert!(!busy.conn.is_closed());
+        busy.pump(usize::MAX);
+        busy.tick(300_000 * MS + 1);
+        assert_eq!(busy.conn.close_code(), Some(Code::Idle));
+    }
+
+    #[test]
+    fn conn_row_12_clean_eof_drains_the_queue_then_closes_without_a_frame() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.send(&req(2, "status"));
+        rig.eof();
+        assert_eq!(rig.conn.state(), State::Draining);
+        rig.pump(5);
+        assert_eq!(rig.conn.state(), State::Draining);
+        rig.pump(usize::MAX);
+        assert!(rig.conn.is_closed());
+        assert_eq!(rig.conn.close_code(), None);
+        assert_eq!(rig.conn.take_final(), None);
+        assert_eq!(frames(&rig.out).len(), 1);
+        let mut empty = ready_json(Level::Observe);
+        empty.eof();
+        assert!(empty.conn.is_closed());
+        let mut late = ready_bin(Level::Observe);
+        late.send(&req(2, "status"));
+        late.eof();
+        late.send(b"x");
+        assert!(late.conn.is_closed());
+        assert_eq!(late.conn.take_final(), None);
+    }
+
+    #[test]
+    fn conn_row_13_eof_before_ready_or_inside_a_request_closes_silently() {
+        let mut undecided = Rig::new(Level::Observe);
+        undecided.send(b"HO");
+        let mut await_hello = await_rig();
+        let mut json = Rig::new(Level::Observe);
+        json.send(b"{\"corr\":1");
+        let mut inside = ready_bin(Level::Observe);
+        inside.send(&req(2, "status")[..14]);
+        let mut rigs = [&mut undecided, &mut await_hello, &mut json, &mut inside];
+        for rig in &mut rigs {
+            rig.eof();
+            assert!(rig.conn.is_closed());
+            assert_eq!(rig.conn.take_final(), None);
+        }
+    }
+
+    #[test]
+    fn conn_row_14_closing_writes_the_final_frame_only_without_a_partial_head() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.send(&req(2, "status"));
+        rig.pump(5);
+        rig.conn.close_for(Code::SlowClient, &mut rig.hub);
+        assert!(rig.conn.is_closed());
+        assert_eq!(rig.conn.take_final(), None);
+        let mut whole = ready_bin(Level::Observe);
+        whole.send(&req(2, "status"));
+        whole.conn.close_for(Code::ShuttingDown, &mut whole.hub);
+        assert!(whole.queue_empty());
+        let evt = closing_evt(Code::ShuttingDown);
+        assert_eq!(whole.conn.take_final(), Some(evt));
+        assert_eq!(whole.conn.take_final(), None);
+        let mut json = ready_json(Level::Observe);
+        json.conn.close_for(Code::SlowClient, &mut json.hub);
+        let expected = error_line(0, Code::SlowClient, &Detail::Empty);
+        assert_eq!(json.conn.take_final(), Some(expected));
+        let mut early = Rig::new(Level::Observe);
+        early.conn.close_for(Code::ShuttingDown, &mut early.hub);
+        assert!(early.conn.is_closed() && early.conn.take_final().is_none());
+    }
+
+    #[test]
+    fn conn_r2_prefix_and_a_bad_request_in_one_read_keep_the_handshake_whole() {
+        let mut rig = Rig::new(Level::Observe);
+        let mut input = client_prefix(1);
+        input.extend_from_slice(&[12, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0]);
+        rig.send(&input);
+        assert!(rig.conn.is_closed() && rig.queue_empty());
+        let mut expected = server_prefix(1, 1).to_vec();
+        expected.extend_from_slice(&rep_error(0, Code::BadFrame, &Detail::Empty));
+        assert_eq!(rig.conn.take_final(), Some(expected));
+        let mut half = Rig::new(Level::Observe);
+        half.send(&client_prefix(1));
+        half.pump(3);
+        half.send(&[12, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(half.conn.is_closed());
+        assert_eq!(half.conn.take_final(), None);
+        assert_eq!(half.out, server_prefix(1, 1)[..3].to_vec());
+    }
+
+    #[test]
+    fn conn_r2_a_major_mismatch_gets_the_server_prefix_alone() {
+        let mut rig = Rig::new(Level::Observe);
+        let wrong = [b'H', b'O', b'B', 1, 2, 0, 0, 0];
+        rig.send(&wrong);
+        assert!(rig.conn.is_closed() && rig.queue_empty());
+        assert_eq!(rig.conn.close_code(), Some(Code::UnsupportedVersion));
+        assert_eq!(rig.conn.take_final(), Some(server_prefix(1, 1).to_vec()));
+    }
+
+    #[test]
+    fn conn_r1_frames_after_a_fatal_outcome_are_discarded() {
+        let mut rig = ready_bin(Level::Observe);
+        let mut input = req(0, "status");
+        input.extend_from_slice(&req(2, "status"));
+        rig.send(&input);
+        assert!(rig.queue_empty());
+        assert_eq!(rig.finish(), rep_error(0, Code::BadFrame, &Detail::Empty));
+        let mut json = ready_json(Level::Observe);
+        let mut input = line(3, "hello", HELLO_ARGS);
+        input.extend_from_slice(&line(4, "status", "{}"));
+        json.send(&input);
+        let out = text(&json.finish());
+        assert!(out.contains("\"corr\":3") && out.contains("\"corr\":4"));
+        assert_eq!(json.conn.state(), State::Ready);
+    }
+
+    #[test]
+    fn conn_r6_to_r9_reader_errors_map_to_their_codes() {
+        let mut big = ready_bin(Level::Observe);
+        big.send(&[0x40, 0x9C, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0]);
+        let expected = rep_error(0, Code::FrameTooLarge, &Detail::Empty);
+        assert_eq!(big.conn.take_final(), Some(expected));
+        let mut line_big = ready_json(Level::Observe);
+        line_big.send(&vec![b'a'; 40_000]);
+        let expected = error_line(0, Code::FrameTooLarge, &Detail::Empty);
+        assert_eq!(line_big.conn.take_final(), Some(expected));
+        let mut sectioned = ready_bin(Level::Observe);
+        let mut frame = req(2, "status");
+        frame[5] = 1;
+        sectioned.send(&frame);
+        let expected = rep_error(0, Code::BadFrame, &Detail::Empty);
+        assert_eq!(sectioned.conn.take_final(), Some(expected));
+    }
+
+    #[test]
+    fn conn_control_queue_overflow_is_slow_client_with_the_prefix_kept() {
+        let mut limits = Limits::for_level(Level::Observe);
+        limits.control_queue_bytes = 600;
+        let mut rig = Rig::with(Level::Observe, limits);
+        let mut input = client_prefix(1);
+        input.extend_from_slice(&req(1, "hello"));
+        rig.send(&input);
+        assert!(rig.conn.is_closed());
+        assert_eq!(rig.conn.close_code(), Some(Code::SlowClient));
+        let mut expected = server_prefix(1, 1).to_vec();
+        expected.extend_from_slice(&closing_evt(Code::SlowClient));
+        assert_eq!(rig.conn.take_final(), Some(expected));
+    }
+
+    #[test]
+    fn conn_bytewise_delivery_gives_the_one_shot_reply_in_both_modes() {
+        let mut binary = client_prefix(1);
+        binary.extend_from_slice(&req(1, "hello"));
+        binary.extend_from_slice(&req(2, "status"));
+        let mut json = line(1, "hello", HELLO_ARGS);
+        json.extend_from_slice(&line(2, "status", "{}"));
+        for input in [binary, json] {
+            let mut whole = Rig::new(Level::Operator);
+            whole.send(&input);
+            let expected = whole.finish();
+            let mut slow = Rig::new(Level::Operator);
+            for byte in &input {
+                slow.send(&[*byte]);
+                slow.pump(usize::MAX);
+            }
+            assert_eq!(slow.finish(), expected);
+            assert!(expected.len() > 100 && !slow.conn.is_closed());
+        }
+    }
+
+    fn xorshift(state: &mut u64) -> u64 {
+        let mut x = *state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *state = x;
+        x
+    }
+
+    fn bounded(rig: &Rig) {
+        let max = usize::try_from(rig.limits.max_request_bytes).unwrap_or(0);
+        let held = match &rig.conn.reader {
+            Reader::Frames(reader) => reader.buffered_capacity(),
+            Reader::Lines(reader) => reader.buffered_capacity(),
+            Reader::None => 0,
+        };
+        assert!(held <= max + 16);
+        assert!(rig.hub.queued(rig.conn.id()).control <= 64 * 1024);
+    }
+
+    #[test]
+    fn conn_hostile_2000_runs_stay_bounded_and_always_close() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let levels = [Level::Observe, Level::Operator, Level::Observer];
+        for run in 0..2_000usize {
+            let mut rig = Rig::new(levels[run % 3]);
+            let mut input = Vec::new();
+            for _ in 0..(xorshift(&mut seed) % 6) {
+                let pick = xorshift(&mut seed) % 7;
+                match pick {
+                    0 => input.extend_from_slice(&client_prefix(u16::from(pick == 0))),
+                    1 => input.extend_from_slice(&req(1, "hello")),
+                    2 => input.extend_from_slice(&req(2, "status")),
+                    3 => input.extend_from_slice(&line(1, "hello", HELLO_ARGS)),
+                    4 => input.extend_from_slice(&line(5, "status", "{}")),
+                    5 => input.extend_from_slice(b"{\"corr\":1,\"ve"),
+                    _ => {
+                        for _ in 0..(xorshift(&mut seed) % 40) {
+                            input.push(u8::try_from(xorshift(&mut seed) % 256).unwrap_or(0));
+                        }
+                    }
+                }
+            }
+            let mut rest = &input[..];
+            while !rest.is_empty() && !rig.conn.is_closed() {
+                let step = usize::try_from(1 + xorshift(&mut seed) % 9).unwrap_or(1);
+                let (head, tail) = rest.split_at(step.min(rest.len()));
+                rig.send(head);
+                rest = tail;
+                if xorshift(&mut seed) % 3 == 0 {
+                    rig.pump(usize::try_from(xorshift(&mut seed) % 50).unwrap_or(0));
+                }
+                if xorshift(&mut seed) % 11 == 0 {
+                    rig.tick(xorshift(&mut seed) % (6_000 * MS));
+                }
+                bounded(&rig);
+            }
+            if xorshift(&mut seed) % 2 == 0 {
+                rig.eof();
+            }
+            rig.pump(usize::MAX);
+            rig.tick(400_000 * MS);
+            rig.tick(400_000 * MS);
+            assert!(rig.conn.is_closed(), "run {run} left the connection open");
+            let last = rig.conn.take_final().unwrap_or_default();
+            assert!(last.len() <= 8 + 4096);
+            assert!(rig.hub.queued(rig.conn.id()).control <= 8 * 1024);
+        }
+    }
 }
