@@ -71,13 +71,15 @@ pub const MAGIC: [u8; 4] = *b"HOB\x01";
 /// The protocol major this codec speaks.
 pub const PROTO_MAJOR: u16 = 1;
 /// The protocol minor this codec speaks; an additive change raises it.
-pub const PROTO_MINOR: u16 = 0;
+pub const PROTO_MINOR: u16 = 1;
 /// The frame header size in bytes.
 pub const FRAME_HEADER_LEN: usize = 12;
 /// The section directory entry size in bytes.
 pub const SECTION_DIR_ENTRY_LEN: usize = 8;
 /// The header section body size (80 bytes, eight-aligned).
 pub const HEADER_BODY_LEN: usize = 80;
+/// The subject section body size (`u32 ent | u32 0`, eight-aligned).
+pub const SUBJECT_BODY_LEN: usize = 8;
 
 /// The frame types of plan v4 §B.1.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -154,6 +156,8 @@ pub enum SectionKind {
     Time = 4,
     /// A complete dictionary generation.
     Dictionary = 5,
+    /// The one incarnation a history block describes (minor 1).
+    Subject = 6,
 }
 
 /// A raw section kind code that this codec does not know.
@@ -175,6 +179,7 @@ impl SectionKind {
             SectionKind::Column => "columns",
             SectionKind::Time => "time",
             SectionKind::Dictionary => "dictionary",
+            SectionKind::Subject => "subject",
         }
     }
 
@@ -193,6 +198,7 @@ impl SectionKind {
             3 => Some(SectionKind::Column),
             4 => Some(SectionKind::Time),
             5 => Some(SectionKind::Dictionary),
+            6 => Some(SectionKind::Subject),
             _ => None,
         }
     }
@@ -206,7 +212,7 @@ impl SectionKind {
     /// True for the sections a reader cannot work without.
     #[must_use]
     pub const fn is_required(self) -> bool {
-        matches!(self, SectionKind::Header)
+        matches!(self, SectionKind::Header | SectionKind::Subject)
     }
 }
 
@@ -457,6 +463,8 @@ pub struct Block {
     pub columns: Vec<Column>,
     /// The dictionary generation carried inside the frame, if any.
     pub dictionary: Option<Dictionary>,
+    /// The dictionary index of the incarnation a history block describes (kind 6), if any.
+    pub subject: Option<u32>,
     /// Unknown **optional** section kinds that were skipped, in directory order.
     pub skipped_sections: Vec<UnknownSectionKind>,
 }
@@ -507,6 +515,11 @@ impl FrameHeader {
         let frame_type = FrameType::from_code(cursor.u8()?)?;
         let flags = cursor.u8()?;
         if flags & !DEFINED_FRAME_FLAGS != 0 {
+            return Err(ProtoError::UnknownFrameFlags(flags));
+        }
+        // SECTIONED is defined for BLOCK only (WIRE.md §2.1): on any other frame it is an
+        // unknown flag, `bad-frame` on the wire.
+        if flags & FLAG_SECTIONED != 0 && frame_type != FrameType::Block {
             return Err(ProtoError::UnknownFrameFlags(flags));
         }
         let reserved = cursor.u16()?;
@@ -849,9 +862,39 @@ fn canonical_rank(kind: SectionKind) -> u8 {
     match kind {
         SectionKind::Header => 0,
         SectionKind::Dictionary => 1,
-        SectionKind::Rows | SectionKind::Time => 2,
-        SectionKind::Column => 3,
+        SectionKind::Subject => 2,
+        SectionKind::Rows | SectionKind::Time => 3,
+        SectionKind::Column => 4,
     }
+}
+
+/// Encode the subject section body: `u32 ent | u32 0`.
+#[must_use]
+pub fn encode_subject_body(ent: u32) -> Vec<u8> {
+    let mut writer = Writer::with_capacity(SUBJECT_BODY_LEN);
+    writer.u32(ent);
+    writer.u32(0);
+    writer.finish()
+}
+
+fn decode_subject_body(body: &[u8]) -> Result<u32, ProtoError> {
+    if body.len() != SUBJECT_BODY_LEN {
+        return Err(ProtoError::SectionLength {
+            kind: SectionKind::Subject.code(),
+            declared: body.len(),
+            expected: SUBJECT_BODY_LEN,
+        });
+    }
+    let mut cursor = Cursor::new(body, "subject section");
+    let ent = cursor.u32()?;
+    let reserved = cursor.u32()?;
+    if reserved != 0 {
+        return Err(ProtoError::UnknownSectionFlags {
+            kind: SectionKind::Subject.code(),
+            flags: reserved,
+        });
+    }
+    Ok(ent)
 }
 
 /// Check that every **known** section appears in the canonical order.
@@ -922,6 +965,11 @@ pub fn encode_block(block: &Block) -> Result<Vec<u8>, ProtoError> {
             expected: n_rows,
         });
     }
+    if let Some(subject) = block.subject {
+        if block.time.is_empty() {
+            return Err(ProtoError::SubjectWithoutTime { subject });
+        }
+    }
     let mut sections = Vec::new();
     sections.push(Section::new(
         SectionKind::Header,
@@ -929,6 +977,10 @@ pub fn encode_block(block: &Block) -> Result<Vec<u8>, ProtoError> {
     ));
     if let Some(dictionary) = &block.dictionary {
         sections.push(Section::new(SectionKind::Dictionary, dictionary.encode()?));
+    }
+    if let Some(ent) = block.subject {
+        let body = encode_subject_body(ent);
+        sections.push(Section::new(SectionKind::Subject, body));
     }
     if !block.rows.is_empty() {
         sections.push(Section::new(
@@ -1058,6 +1110,22 @@ pub fn encode_frame(
 /// Every malformed frame is a typed refusal; nothing is silently skipped except an
 /// unknown **optional** section, which is reported in [`Block::skipped_sections`].
 pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
+    decode_block_with(bytes, None)
+}
+
+/// Decode a whole frame into a block, judging a block without an in-frame dictionary against
+/// the dictionary generation the stream holds (WIRE.md §6.1, HOB-46).
+///
+/// With an in-frame dictionary the checks are those of [`decode_block`] and `held` is not
+/// consulted. Without one and with `held` given, the header's `dict_gen` must equal the held
+/// generation (`stale-dictionary-generation`) and every reference, column kind and bucket
+/// aggregation is checked against it. Without one and with `held` of `None` no reference
+/// check is possible and none is made.
+///
+/// # Errors
+///
+/// Every malformed frame is a typed refusal, in the order of WIRE.md §3.10.
+pub fn decode_block_with(bytes: &[u8], held: Option<&Dictionary>) -> Result<Block, ProtoError> {
     let header_frame = FrameHeader::parse(bytes)?;
     // §B.1: only `BLOCK` carries block sections. A `REQ`/`REP`/`EVT` payload is a small
     // JSON control object and a `DICT` payload is a dictionary, so a block-shaped frame
@@ -1104,6 +1172,17 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
     if reserved != 0 {
         return Err(ProtoError::SectionReserved(reserved));
     }
+    // HOB-50: the directory bytes are proven present before storage is reserved for them.
+    let dir_len = usize::from(n_sec)
+        .checked_mul(SECTION_DIR_ENTRY_LEN)
+        .ok_or(ProtoError::LengthOverflow)?;
+    if cursor.remaining() < dir_len {
+        return Err(ProtoError::Truncated {
+            context: "block directory",
+            need: dir_len,
+            have: cursor.remaining(),
+        });
+    }
     let mut directory = Vec::with_capacity(usize::from(n_sec));
     for _ in 0..n_sec {
         let kind = cursor.u16()?;
@@ -1112,6 +1191,46 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
         let len = cursor.u32()?;
         directory.push((kind, version, flags, len));
     }
+    // Every section length is a multiple of 8, unknown optional kinds included (HOB-51); it is
+    // judged before the order, as WIRE.md §3.10 lists the directory checks.
+    for (kind, _version, _flags, len) in &directory {
+        if len % 8 != 0 {
+            let declared = usize::try_from(*len).map_err(|_| ProtoError::LengthOverflow)?;
+            return Err(ProtoError::SectionLength {
+                kind: *kind,
+                declared,
+                expected: crate::read::align_up(declared, 8)?,
+            });
+        }
+    }
+    // The canonical order is the encoder's, checked before any body is decoded: a
+    // directory reordering of otherwise valid sections would produce a second byte string
+    // for one value (§B.5). An unknown optional section is exempt — it is outside this
+    // version's layout and is skipped by its declared length.
+    let mut last_rank: Option<u8> = None;
+    for (index, (kind, _version, _flags, _len)) in directory.iter().enumerate() {
+        let Some(section) = SectionKind::from_code(*kind) else {
+            continue;
+        };
+        let rank = canonical_rank(section);
+        if let Some(previous) = last_rank {
+            if rank < previous {
+                return Err(ProtoError::SectionOrder { index, kind: *kind });
+            }
+        }
+        last_rank = Some(rank);
+    }
+    // Entry 0 is the header (WIRE.md §3.1). A known non-header kind there is already a rank
+    // violation (or a missing header), so only an unknown kind is left to refuse here.
+    if let Some((kind, _version, _flags, _len)) = directory.first() {
+        if SectionKind::from_code(*kind).is_none() {
+            return Err(ProtoError::SectionOrder {
+                index: 0,
+                kind: *kind,
+            });
+        }
+    }
+
     let mut body_pos = FRAME_HEADER_LEN
         .checked_add(cursor.position())
         .ok_or(ProtoError::LengthOverflow)?;
@@ -1134,24 +1253,6 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
         return Err(ProtoError::TrailingBytes {
             extra: bytes.len() - body_pos,
         });
-    }
-
-    // The canonical order is the encoder's, checked before any body is decoded: a
-    // directory reordering of otherwise valid sections would produce a second byte string
-    // for one value (§B.5). An unknown optional section is exempt — it is outside this
-    // version's layout and is skipped by its declared length.
-    let mut last_rank: Option<u8> = None;
-    for (index, (kind, _version, _flags, _len)) in directory.iter().enumerate() {
-        let Some(section) = SectionKind::from_code(*kind) else {
-            continue;
-        };
-        let rank = canonical_rank(section);
-        if let Some(previous) = last_rank {
-            if rank < previous {
-                return Err(ProtoError::SectionOrder { index, kind: *kind });
-            }
-        }
-        last_rank = Some(rank);
     }
 
     // Pass one: the header, and the directory's own validity. A block's other sections
@@ -1206,6 +1307,7 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
     let mut time: Vec<TimeBucket> = Vec::new();
     let mut columns: Vec<Column> = Vec::new();
     let mut dictionary: Option<Dictionary> = None;
+    let mut subject: Option<u32> = None;
     let mut seen_single: Vec<UnknownSectionKind> = Vec::new();
     let mut saw_rows = false;
     let mut saw_time = false;
@@ -1247,6 +1349,7 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
             SectionKind::Dictionary => {
                 dictionary = Some(Dictionary::decode(body, crate::dict::DEFAULT_ACTIVE_MAX)?)
             }
+            SectionKind::Subject => subject = Some(decode_subject_body(body)?),
         }
     }
     // Rows and buckets are exclusive by presence, not by count: a block carrying both
@@ -1265,8 +1368,21 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
             n_rows: header.n_rows,
         });
     }
-    if let Some(table) = &dictionary {
+    // A subject names the incarnation a history block describes: it needs the time section.
+    if let Some(ent) = subject {
+        if !saw_time {
+            return Err(ProtoError::SubjectWithoutTime { subject: ent });
+        }
+    }
+    // The in-frame dictionary wins; a bare block is judged against the held one (HOB-46).
+    if let Some(table) = dictionary.as_ref().or(held) {
         table.require_generation(header.dict_gen)?;
+        if let Some(ent) = subject {
+            match table.lookup(ent)? {
+                Entry::Entity { .. } => {}
+                _ => return Err(ProtoError::RowReferenceNotEntity { index: ent }),
+            }
+        }
         // A row addresses an incarnation and a column addresses a metric. A reference of
         // the right range but the wrong entry kind would make a consumer read a label's
         // text as a cgroup id or a metric's facts as a path, so the kind is checked too.
@@ -1297,6 +1413,19 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
                 }
             }
         }
+        // Every bucket's aggregation must be permitted by every column's mask (HOB-47).
+        for bucket in &time {
+            for column in &columns {
+                if let Entry::Metric { facts, .. } = table.lookup(column.metric)? {
+                    if facts.kind.aggregation_mask() & bucket.agg.bit() == 0 {
+                        return Err(ProtoError::AggregationNotPermitted {
+                            metric: column.metric,
+                            agg: bucket.agg as u8,
+                        });
+                    }
+                }
+            }
+        }
     }
     Ok(Block {
         frame_type: header_frame.frame_type,
@@ -1306,6 +1435,7 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
         time,
         columns,
         dictionary,
+        subject,
         skipped_sections,
     })
 }
@@ -1417,6 +1547,7 @@ mod tests {
                 .expect("column"),
             ],
             dictionary: Some(dictionary()),
+            subject: None,
             skipped_sections: Vec::new(),
         }
     }

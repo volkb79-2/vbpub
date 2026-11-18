@@ -888,7 +888,12 @@ impl Dictionary {
             // table), so a body that repeats an identity would come back with fewer
             // entries and every later index shifted. That is a corrupt frame, not a table
             // to normalise: refuse it instead of renumbering the sender's data.
-            let interned = dictionary.intern(entry)?;
+            let interned = match dictionary.intern(entry) {
+                Err(ProtoError::ConflictingColumn { .. }) => {
+                    return Err(ProtoError::DuplicateDictionaryEntry { index });
+                }
+                other => other?,
+            };
             let position =
                 u32::try_from(index).map_err(|_| ProtoError::RowCountOverflow(index as u64))?;
             if interned != position {
