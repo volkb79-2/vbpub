@@ -1697,8 +1697,8 @@ or timed-out pull MUST fail preflight with the exact remedy and, on timeout, nam
 A dry-run MUST NOT pull a missing builder and MUST report its pullability as `SKIPPED`, with a
 message that registry availability was not verified. The image checks
 MUST also run when `--skip-gates` is selected because the wheel-build step still uses these
-images. When gates are enabled, the preflight MUST run the declared version-window, selected
-tester-image identity, and bootstrap-version checks against the exact source revision. The
+images. When gates are enabled, the preflight MUST run the selected
+tester-image identity and bootstrap-version checks against the exact source revision. The
 selected tester-image identity check MUST report a non-empty Run-Gate version and a valid
 64-digit lowercase SHA-256 for the published wheel. An omitted or malformed identity field is
 a failed precondition; CMRU MUST NOT substitute `unknown` or another invented value. A

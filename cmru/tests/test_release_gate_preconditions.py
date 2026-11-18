@@ -1726,4 +1726,3 @@ def test_dry_run_accepts_a_run_tests_step_with_either_release_lane(
     output = capsys.readouterr()
     assert "Release gate preconditions: PASS (cmru 7.1.4)." in output.out
     assert "window" not in (output.out + output.err).lower()
-

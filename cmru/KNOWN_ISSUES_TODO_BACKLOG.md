@@ -3526,11 +3526,11 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 **Status:** FIXED 2026-11-18 in `MERGE-HASH-PENDING`; severity: minor (release-window maintenance). Operator decision 2026-11-18 (verbatim): "change/remove rule. like we agreed for any release: need R1,R3 (full branch coverage and canary) and review for no hollow tests and no issues, then release. R2 runs async." The window allowlist was removed instead of rolled or declared: a release of any version passes the gate path identically (`tools/run_release_gate.py` `_validate_postponement`; tests `tests/test_release_gate.py`, `tests/test_release_gate_provisional.py`, `tests/test_release_gate_preconditions.py`).
 
-**Problem.** KI-79's explicit bounded windows have been extended one minor line at a time. Each extension needs synchronized gate, test, changelog, and user-documentation edits; a missed bound can refuse the next provisional release before its gates run.
+**Problem (resolved; kept as history).** KI-79's explicit bounded windows were extended one minor line at a time. Each extension needed synchronized gate, test, changelog, and user-documentation edits; a missed bound could refuse the next release before its gates ran (it blocked cmru 7.4.0 on 2026-11-18).
 
-**Proposal.** Decide whether the allowed window should roll across the latest minor line plus its predecessor, or come from a declared release-policy field. Keep refusal behavior explicit and tested at both edges. No implementation is part of this backlog item.
+**Resolution.** The operator removed the window instead of choosing a rolling policy: the release gate is R0/R1 plus R3 for every version, the independent review is a controller hand-off requirement, and R2 is owed asynchronously on the latest release (see Status; the owed R2 stays tracked in KI-141).
 
-**Close when.** The operator selects one policy, its edge behavior and compatibility are documented, and a separate reviewed change implements and tests it across the gate and dry-run precondition.
+**Close when (met).** The version-window allowlist, its precondition and its tests are removed and the lane is named `release-gate`.
 
 ## KI-160 - successful promotion can exit 1 before retaining artifacts when declared gate evidence is missing
 
