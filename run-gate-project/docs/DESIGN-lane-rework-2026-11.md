@@ -77,7 +77,10 @@ Class B gaps in detail:
 
 - **ciu:** the pre-merge pointer runs the R2 lane `ciu` (`ciu/nyxloom-trove/nyxloom.toml:58` → `ciu`: R0–R3, 8 h). The release runs `run-ciu-tests.py` through `cmru tester-gate` with no R3 (`ciu/cmru.toml:77-79`).
 - **run-gate:**
-  - the release runs `selftest` only, whose `coverage_gate.py` judges just three files (`run_gate.py`, `run_gate_admission.py`, `run_gate_profile.py`);
+  - before P10c-rg, the release ran `selftest` only, whose `coverage_gate.py`
+    judges just three files (`run_gate.py`, `run_gate_admission.py`,
+    `run_gate_profile.py`); the release gate now also runs `assay-r3` in the
+    same receipt-specific image;
   - `gate-full` adds `assay-r1`, which judges `source_roots = ["."]` including `tools/` (`run-gate-project/assay.toml:5-16`). That is a wider claim, not a duplicate.
 - **pwmcp and iobench:** no R3 at release.
 - **topos:** the release step runs pytest **without coverage**, so there is no release R1 at all. `topos-suite`'s `coverage_gate.py --base main` is vacuous on a release tree.
@@ -170,7 +173,7 @@ Conclusion (D6): defer RG-253.
 **B178 trust.** A baseline-as-control cannot produce a false R3 PASS. R3 PASS needs the *transformed* run to fail for the mechanism's expected cause (import receipt, floor rejection). What is given up is detecting a nondeterministic materialization; that is by design.
 
 **RG-F1 rules.**
-- **T2** = the lanes the release step invokes, expanded through sequences. Recognize `run-gate <lane>` plus the two known wrapper scripts: `assay tools/release-gate.sh <lane>` and run-gate-project `tools/release_candidate.py run-selftest`. Anything else reports **UNDERIVABLE**, a status of its own.
+- **T2** = the lanes the release step invokes, expanded through sequences. Recognize `run-gate <lane>` plus the two known wrapper scripts: `assay tools/release-gate.sh <lane>` and run-gate-project `tools/release_candidate.py` with `run-selftest` or `run-canary`. Anything else reports **UNDERIVABLE**, a status of its own.
 - **T1** = trove `phase = "implementation"` gates, or the project's `r0-r1`.
 - **T3** = Assay rigor containing R2, or a lane named `r2`/`mutation`/`fuzz*`.
 - Checks:
