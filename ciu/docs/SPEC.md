@@ -560,8 +560,8 @@ requirements are marked *(withdrawn)*.
      an invalid selection is the same exit-2 error it is there), and
      `deployed_stacks` is exactly that one stack, as for `ciu dev`. Only the
      facts are derived: `--dir` still applies no profile `env_overrides`,
-     `compose_profiles` or `topology_overrides` (a profile-mode per-stack
-     engine render re-renders the global chain from disk too). `--dir
+     `compose_profiles` or `topology_overrides` (profile-mode `ciu up` does
+     apply the topology override to every stack's render, S7.4). `--dir
      --shipped` renders no CIU template and gets no facts. Outside these renders the two
      fact keys are absent from the context: a template referencing them
      elsewhere fails loudly (Jinja UndefinedError) rather than silently
@@ -1230,7 +1230,13 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `env_overrides = { K = "V" }`, and `[deploy.profiles.<name>.topology_overrides]`
   deep-merged over `topology.*` while the profile is active (cross-host
   addressing: host B's profile points `topology.services.vault` at host A's
-  external address).
+  external address). **One effective render (CIU-208):** the same overridden
+  `topology.*` values apply to every render of a profile-mode `ciu up` — the
+  preflight render, `ciu resolve`, and the per-stack render that starts each
+  workload (the stack's own global chain is rendered, then the accumulated
+  override is deep-merged over its `topology`, so keys the profile does not
+  override keep that chain's value). A shipped stack renders no CIU template
+  and is unaffected.
 - **S7.5** CLI: `ciu up --profile <name>` (repeatable; comma form also
   accepted: `--profile core,db`); default from `CIU_SERVICES_PROFILE` in
   `ciu.env` (comma-separated ordered list, e.g. `core,db,worker-io`).
