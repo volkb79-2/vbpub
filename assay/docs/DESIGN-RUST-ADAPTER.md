@@ -119,8 +119,8 @@ format, the directory-artifact reservation of `<out>`, the
 and the v20 verdict cut. The copy-paste lane and its rules are in
 `CONSUMERS.md` "Rust R2 lanes (cargo-mutants)" (U6). Where the shipped code
 differs from the table and bullets below, `DESIGN-B245-CARGO-MUTANTS-INGESTION.md`
-and that CONSUMERS section win. What stays open is the real-toolchain
-qualification on the U0 subjects (U7) and the hostobs T3 registration (U8);
+and that CONSUMERS section win. What stayed open until later on 2026-11-18 was the real-toolchain
+qualification on the U0 subjects (U7) and the hostobs T3 registration (U8), both now done;
 K15 was open until U8 and is CLOSED by the real hostobs run (see the last paragraph below). U8a registered Rust at R2 in the CLI registry
 (ingested cargo-mutants lanes only; native Rust R2 and Rust R3 stay refused).
 The first hand run of hostobs `assay-r2` (2026-11-18, v1001, base `7835ec25a`) ended
