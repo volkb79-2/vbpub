@@ -394,7 +394,7 @@ supplies the whole-source line-and-branch qualification.
    CMRU checks before running its own lanes.
 
 5. **Release CMRU, then the remaining projects in graph order.** The
-   configured `gate-provisional` release gate queries origin with CMRU's
+   configured `release-gate` (formerly `gate-provisional`) release gate queries origin with CMRU's
    scoped Git auth. When it finds no published stable CMRU tag, it uses the
    registered whole-source R0/R1/R3 lane instead of requiring a nonexistent
    changed-lines baseline. The gate is allowed to make that first-release

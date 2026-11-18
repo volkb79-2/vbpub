@@ -361,17 +361,18 @@ hermetic), or are a guard the project keeps on purpose (rule 7). The lane
 comment says which. Before dropping a "duplicate", check that it judges the
 same scope: a lane whose R1 covers more files is a different claim.
 
-### How the tiers map onto CMRU's `gate` and `gate-provisional`
+### How the tiers map onto CMRU's `gate` and `release-gate`
 
 CMRU's `gate` is the conjunction *with* the multi-hour R2 mutation lane;
-`gate-provisional` is the same minus R2 and records a KI-79 postponement
-marker. The release step names `gate-provisional`. In tier terms (operator
+`release-gate` (formerly `gate-provisional`, renamed on 2026-11-18 when the
+per-version R2 waiver window was removed) is the same minus R2 and records
+the owed-R2 postponement marker. The release step names `release-gate`. In tier terms (operator
 answers of 2026-11-10):
 
 - **T2 = CMRU's `gate`**: the release orchestrator without mutation, minus
   the duplicate runs. It always writes the R2-owed marker. The R2-including
-  `gate` is retired, so no lane named `gate` includes R2; `gate-provisional`
-  is removed (or kept one release as an alias).
+  `gate` is retired, so no lane named `gate` includes R2; the former
+  `gate-provisional` is now `release-gate`, with no alias.
 - **T3 = an always-available `r2` container lane** that builds its baseline
   facts from the checkout's own release tags and runs alone, queued by each
   release. Today `mutation` can run only inside the aggregate `gate`, which
