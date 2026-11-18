@@ -1217,3 +1217,23 @@ doctor_with_lib_mutant("doctor-lib-configured-home",
 doctor_with_lib_mutant("doctor-lib-configured-runs",
                        "  CONTROLLER_RUNS_DIR_CONFIGURED=$CONTROLLER_RUNS_DIR\n",
                        "  CONTROLLER_RUNS_DIR_CONFIGURED=\n")
+
+# ctl-state-backup.sh: one hand mutant per guard and per selection rule.
+for _name, _before, _after in (
+    ("cap", "(( size > cap && ! include_large ))", "(( size > cap && include_large ))"),
+    ("jsonl", " ! -name '*.jsonl'", ""),
+    ("git-dir", " ! -path '*/.git/*'", ""),
+    ("work-tree", 'if git -C "$anchor" rev-parse --is-inside-work-tree', "if false && git -C \"$anchor\" rev-parse --is-inside-work-tree"),
+    ("unset", "[[ -n $backup_dir ]] || die", "true || die"),
+    ("relative", "[[ $backup_dir == /* ]] || die", "true || die"),
+    ("list-only", "if (( list_only )); then", "if false; then"),
+    ("mode", 'chmod 600 -- "$tmp"', 'chmod 644 -- "$tmp"'),
+    ("follow-links", "tar -${mode}f", "tar -${mode}hf"),
+    ("sidecar", "printf '%s  %s\\n' \"$sum\"", "printf '%s  %s\\n' \"0$sum\""),
+    ("verify-compare", '[[ $(cut -d\' \' -f1 "$verify.sha256") == "$actual" ]] || die', "true || die"),
+    ("runs-state", " -o -name '*.state.md'", ""),
+    ("remote-summaries", "-o -name meta.json \\)", "-o -name '*' \\)"),
+    ("empty", "(( ${#files[@]} > 0 )) || die", ": || die"),
+    ("overwrite", "while [[ -e $final ]]; do", "while false; do"),
+):
+    mutant("scripts/controller/ctl-state-backup.sh", f"ctl-state-backup-{_name}.sh", _before, _after)

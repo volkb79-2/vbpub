@@ -28,6 +28,12 @@ no separate version number, so entries are grouped by the work that landed.
   and incremental-report wording.
 
 ### Added
+- `ctl-state-backup.sh`: archive of the non-rebuildable controller state into
+  `CONTROLLER_BACKUP_DIR` (refuses when unset, relative or inside a git work tree);
+  `--list`, `--include-large`, `--max-file-bytes`, `--verify <archive>`; mode 0600,
+  temporary name then rename, `.sha256` sidecar, symlinks stored as links, never
+  `*.jsonl`, `.git`, worktrees, logs or artifacts. Test `tests/test-ctl-state-backup.sh`,
+  15 hand mutants.
 - `ctl-doctor.sh`: read-only preflight of a controller machine (home and env file,
   host table schema, key mode 600 and pin files, remote-gate allow-list, required
   tools, default tester image by exact name, the removed `run-gate-2560` tag,

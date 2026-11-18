@@ -47,6 +47,19 @@ see [`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md)). It prints names and paths
 never a value from the env file, the host table or a key. Limit: the env file is
 scanned line by line, so a multi-line assignment reads as a stray line.
 
+## State backup (`ctl-state-backup.sh`)
+
+`scripts/controller/ctl-state-backup.sh [--list] [--include-large] [--max-file-bytes <n>]`
+archives the non-rebuildable controller state into `$CONTROLLER_BACKUP_DIR` (required,
+absolute, never inside a git work tree): `.controller-state/` and `plan.yaml` of the
+repository root, `$CONTROLLER_HOME/*.local.*`, `reports/`, the remote-gate
+`result.json`/`meta.json` summaries, and the runs' `*.thread`, `*.state.md`, `*.done`.
+Never `*.jsonl` session streams, `.git`, worktrees, logs, artifacts, or a file over the
+cap (5 MiB). Symlinks are stored as links, never followed. `--list` writes nothing; the
+archive is mode 0600 (zstd if installed, else gzip) with a `.sha256` sidecar, and
+`ctl-state-backup.sh --verify <archive>` checks it. What is state and what is work:
+[`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md).
+
 ## Controller loop
 
 Use this order for each implementation task.
