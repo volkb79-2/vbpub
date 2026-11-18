@@ -1,0 +1,62 @@
+# M2: unattended installer ISO, btrfs with snapshots (2026-11-18)
+
+**What this ISO does NOT do** (read this first):
+- **No offline install.** The installer downloads Debian from `deb.debian.org` (debootstrap, `apt`); without network it stops.
+- **No Secure Boot.** The boot loader written to the disk is an unsigned GRUB image (`poc/dr-state install-grub`).
+- **No ZFS.** btrfs only. **UEFI only**: the added boot entries exist in the ISO's GRUB menu, not in the BIOS (isolinux) menu.
+- **No authentication of the config.** Whoever can attach a `CIDATA` medium, edit the ISO or serve the `dr.config` URL decides which disk is wiped (the wipe guard limits which disks qualify, not who asks). A `CIDATA` medium overrides the config embedded in the ISO.
+- **No `debian-install-v2` post-configuration** (kept separate by decision D19), no cloud-init user-data, no SSH-key setting, no md/LVM/dm awareness beyond "mounted disks are never a target".
+- **Tested only in blank-disk guests** on v1001 (TCG, 2.5 GiB). Never on a real disk, never written to a device.
+- A medium that stays attached **reinstalls on every boot when the config says `REINSTALL=yes`**; the default is to refuse a disk that already holds our system (label `drroot`) and to power off after a finished install.
+
+## What it is
+
+`iso/build-iso.sh` remasters the official Debian 13.7.0 live ISO (`debian-live-13.7.0-amd64-standard.iso`, sha256 checked against its `.sha256`) with `xorriso`. Nothing inside the squashfs or the initrd is rebuilt; the overlay is plain files:
+
+| Added to the ISO | Purpose |
+|---|---|
+| `/dr/{dr-autoinstall,dr-plan,dr-pick-disk,install-btrfs.sh,dr-state}` | the installer payload (the PoC scripts of M1) |
+| `/dr/dr-install.conf` (optional, `--config`) | config embedded in the ISO |
+| `/live/config-hooks/10-dr-autoinstall` | live-config hook that starts the installer service |
+| `/boot/grub/grub.cfg` | two new first entries: **UNATTENDED install** (default, 10 s) and a live system with the payload in `/run/live/medium/dr` |
+
+The UNATTENDED entry adds `live-config.hooks=file:///run/live/medium/live/config-hooks/10-dr-autoinstall dr.mode=auto`. **Finding (live-config 11.0.5, trixie):** the natural `live-config.hooks=medium` runs nothing, because that branch looks in `/lib/live/mount/medium`, which does not exist on this image (the medium is `/run/live/medium`). Found in a guest (the hook never started); the `file://` form of the same script works.
+
+Flow in the live system (`/opt/dr/dr-autoinstall`, one systemd service): DHCP → config (first a block device labelled `CIDATA` holding `dr-install.conf`, else the file embedded in the ISO, else `dr.config=https://…`) → `dr-plan` (the wipe guard, below) → `apt-get install debootstrap btrfs-progs gdisk dosfstools parted` → plan **again** and require the same disk (size, serial, WWN, model) → `poc/install-btrfs.sh --yes` → power off. Console markers for drivers: `DR-AUTOINSTALL-START / CONFIG / PLAN / CONFIRM / INSTALL / TARGET-CONFIRMED / REFUSED / DONE rc=N`.
+
+## Config (`dr-install.conf`, `KEY=VALUE`)
+
+Keys: `TARGET_DISK`, `HOSTNAME`, `SUITE`, `MIRROR`, `SECURITY_MIRROR`, `ROOT_PASSWORD`, `ROOT_PASSWORD_HASH` (crypt hash; use it instead of the plaintext), `REINSTALL` (`yes|no`). Unknown keys, duplicate keys and characters outside `A-Za-z0-9_./:@,+=-` (hash: `$` too) are refused. Without a password the installer generates one and prints it once on the console (`DR-AUTOINSTALL-ROOT-PASSWORD-GENERATED`).
+`build-cidata.sh --config F --out IMG` makes a `CIDATA` ISO9660 image (for a USB stick write it yourself; the script refuses `/dev` paths).
+
+## Disk rule (the wipe guard, `iso/dr-plan`)
+
+A pure function of `lsblk` output, the config and the caller's exclusions; it never touches a disk.
+- `TARGET_DISK=/dev/X` (kernel name) or `/dev/disk/by-*/NAME` (resolved on every plan): exactly that disk, if it is a whole disk, not removable, not USB, ≥ 8 GiB, not the medium or config stick, not mounted. Otherwise **refuse** (never falls back to another disk).
+- `TARGET_DISK=first-ssd`: the operator's rule, explicit: first non-rotational disk (NVMe before SATA), else the first rotational one.
+- **`TARGET_DISK` unset: only if the host has exactly one internal disk of any kind** (small, removable, USB and mounted disks count; only the booted medium and the config stick do not). Two or more: **refuse**.
+- **No config at all:** never unattended: a typed confirmation `ERASE <disk>` on the console (120 s), and only with a single internal disk.
+
+## Results (v1001, blank disks only, one guest at a time)
+
+Wipe-guard tests were written before `dr-plan` existed: the first run of `test-dr-plan.sh` failed all 25 cases with `dr-plan: not found` (rc 127), then passed; later rounds added cases first and showed them failing before the fix. Mutants of the rules (multi-disk allowed, exclusions ignored, unknown key allowed, nall dropped, password+hash allowed, substring label match) are killed. Offline tests: `iso/test-dr-plan.sh` (≈45 cases), `iso/test-dr-autoinstall-guard.sh`, `poc/test-dr-qemu.sh` (config disk pinned), `poc/test-dr-pick-disk.sh`.
+
+| Guest | Setup | Result |
+|---|---|---|
+| 1 | one blank 20 GiB disk, config embedded in the ISO | `PLAN install /dev/vda`, `TARGET-CONFIRMED`, `install-btrfs.sh` exit 0, `DONE rc=0` after **1462 s** of guest time; 1.4 GB allocated on the disk |
+| 2 | two blank disks, config without `TARGET_DISK` | `REFUSED` at **88 s**, nothing downloaded (792 bytes on the container network), host-side allocation afterwards: root disk 0 KiB, second disk 196 KiB (empty qcow2 header) |
+| 3 | the disk from guest 1 booted alone | `boot-check` 8 PASS: kernel from `/@os-0001`, systemd running, DHCP and DNS, `grub.cfg` and `grubenv` on the ESP, outside paths mounted separately, `/opt` and `/etc` inside the state |
+| 4 | a read-only `CIDATA` disk (`HOSTNAME`, `ROOT_PASSWORD`, `TARGET_DISK=/dev/disk/by-id/virtio-drdata001`) plus the blank root disk and a blank second disk; the ISO's embedded config names no target | `CONFIG source=cidata:/dev/vdb` (the stick wins over the embedded config), `TARGET-RESOLVED …/virtio-drdata001 -> /dev/vdc`, `PLAN install /dev/vdc`, `TARGET-CONFIRMED`, `DONE rc=0` after **1358 s**; host-side allocation: **root disk 0 KiB (untouched)**, target 1.4 GB |
+
+Guests 1 to 4 ran on the ISO built at `6bffd67c3` (guests 1, 2, 3: earlier builds of the same logic; 4: the final one of that commit). The later round 11 changes (`--busy`, by-id resolved on every plan, the re-install guard as a function) are covered by offline tests; see "Not tested".
+
+Download size: **≈ 185 MiB** (194,223,362 bytes received on the guest container's network, last sample before the end of guest 4's install; the live ISO itself is 1.9 GB and is not downloaded).
+Two guest runs were lost before these results to the shared host (a memory limit applied to page cache; and a guest at `--cpu-shares 64` starving beside another team's lane: RCU stalls, never booted). The launcher now stops a guest on memory PSI (`some avg10 > 10` for 3 samples) and the guests run alone.
+
+## Review
+
+Independent review rounds 10 and 11 (fresh Sonnet session) were FIX-FIRST and found real holes, all fixed with tests: a medium left attached re-wiped the installed system; "only disk" counted only qualifying disks (a small boot disk beside a big data disk made the data disk look alone) and then ignored mounted disks; an unchecked `--scratch` deletion and a broken re-exec in `build-iso.sh`; no re-check of the target after the slow tool install; plaintext root password. Open, documented: console confirmation can be eaten by a getty on the same console (fails safe: refusal); no md/dm/LVM or loop-backed-medium detection; the `dr.config=https://` fetch and the `CIDATA` path are authenticated by nothing (TLS only for the URL).
+
+## Not tested
+
+The `drroot` re-install guard in a guest (offline stub test only); `dr.config=https://…`; the fallback "no config" confirmation in a guest; `first-ssd` in a guest; physical hardware, USB sticks, real NVMe/SATA naming; a second boot of the same medium after a finished install; the systemd-boot and ZFS variants.
