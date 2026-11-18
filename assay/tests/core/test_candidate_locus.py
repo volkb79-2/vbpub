@@ -155,10 +155,83 @@ def test_any_edit_inside_the_segment_changes_the_locus_key(edited: bytes):
     assert changed.key != original.key
 
 
+def test_comment_after_the_last_statement_is_outside_the_segment():
+    source = b"def f():\n    return TARGET\n"
+    trailing_comment = b"def f():\n    return TARGET\n    # after the last statement\n"
+
+    original = locus_for_site(
+        "pkg/mod.py", source, *_span(source, b"TARGET"), OPERATOR, REPLACEMENT
+    )
+    after = locus_for_site(
+        "pkg/mod.py",
+        trailing_comment,
+        *_span(trailing_comment, b"TARGET"),
+        OPERATOR,
+        REPLACEMENT,
+    )
+
+    assert original is not None
+    assert after is not None
+    assert after.key == original.key
+    assert after.rel_start == original.rel_start
+    assert after.rel_end == original.rel_end
+
+
+def test_comment_before_the_last_statement_is_inside_the_segment():
+    source = b"def f():\n    return TARGET\n"
+    comment = b"def f():\n    # before the last statement\n    return TARGET\n"
+
+    original = locus_for_site(
+        "pkg/mod.py", source, *_span(source, b"TARGET"), OPERATOR, REPLACEMENT
+    )
+    changed = locus_for_site(
+        "pkg/mod.py", comment, *_span(comment, b"TARGET"), OPERATOR, REPLACEMENT
+    )
+
+    assert original is not None
+    assert changed is not None
+    assert changed.key != original.key
+
+
 def test_a_site_inside_a_nested_def_maps_to_the_outermost_def():
     source = b"def outer():\n    def inner():\n        return 1\n    return inner\n"
     start, end = _span(source, b"1")
     segment = _segment(source, b"def outer", b"return inner")
+    locus = locus_for_site("pkg/mod.py", source, start, end, OPERATOR, REPLACEMENT)
+
+    assert locus is not None
+    assert locus.qualname == "outer"
+    assert locus.segment_sha256 == hashlib.sha256(segment).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "source,end_text",
+    [
+        (
+            b"def outer():\n"
+            b"    def inner():\n"
+            b"        return 1\n",
+            b"return 1",
+        ),
+        (
+            b"def outer():\n"
+            b"    class Inner:\n"
+            b"        value = 1\n",
+            b"value = 1",
+        ),
+        (
+            b"def outer():\n"
+            b"    with context():\n"
+            b"        value = 1\n",
+            b"value = 1",
+        ),
+    ],
+)
+def test_compound_tail_still_ends_at_the_outer_def_end_lineno(
+    source: bytes, end_text: bytes
+):
+    start, end = _span(source, b"1")
+    segment = _segment(source, b"def outer", end_text)
     locus = locus_for_site("pkg/mod.py", source, start, end, OPERATOR, REPLACEMENT)
 
     assert locus is not None
@@ -178,6 +251,34 @@ def test_decorators_are_part_of_the_segment_and_a_decorator_edit_rekeys_it():
 
     assert locus is not None
     assert locus.rel_start == _span(source, b"1")[0]
+    assert rekeyed is not None
+    assert rekeyed.key != locus.key
+
+
+def test_multiline_parenthesized_decorator_starts_at_the_at_token():
+    source = b"@(\n    decorate\n)\ndef f():\n    return 1\n"
+    start, end = _span(source, b"1")
+    segment = _segment(source, b"@(", b"return 1")
+    locus = locus_for_site("pkg/mod.py", source, start, end, OPERATOR, REPLACEMENT)
+
+    assert locus is not None
+    assert locus.rel_start == start - source.index(b"@(")
+    assert locus.segment_sha256 == hashlib.sha256(segment).hexdigest()
+
+
+def test_comments_between_decorator_lines_are_inside_the_segment():
+    source = b"@a  # first decorator\n@b\ndef f():\n    return 1\n"
+    edited = b"@a  # edited decorator\n@b\ndef f():\n    return 1\n"
+    start, end = _span(source, b"1")
+    segment = _segment(source, b"@a", b"return 1")
+    locus = locus_for_site("pkg/mod.py", source, start, end, OPERATOR, REPLACEMENT)
+    rekeyed = locus_for_site(
+        "pkg/mod.py", edited, *_span(edited, b"1"), OPERATOR, REPLACEMENT
+    )
+
+    assert locus is not None
+    assert locus.rel_start == start - source.index(b"@a")
+    assert locus.segment_sha256 == hashlib.sha256(segment).hexdigest()
     assert rekeyed is not None
     assert rekeyed.key != locus.key
 

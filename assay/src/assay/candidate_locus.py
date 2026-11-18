@@ -2,12 +2,20 @@
 
 The locus key is a *lookup* input, never proof that an earlier verdict remains
 valid.  A match only tells the caller which prior record to examine or replay.
+
+A def segment starts at the tokenized ``@`` of its first decorator, including
+any parenthesised or commented decorator lines, and ends at the AST's
+``end_lineno``/``end_col_offset``.  A comment after the final AST statement is
+therefore outside the segment and does not change the key; a comment before the
+final statement is inside and does.
 """
 
 from __future__ import annotations
 
 import ast
 import hashlib
+import io
+import tokenize
 from bisect import bisect_right
 from functools import lru_cache
 from typing import Iterable, NamedTuple, cast
@@ -132,28 +140,47 @@ def _byte_offset(starts: tuple[int, ...], lineno: int, col_offset: int) -> int:
     return starts[lineno - 1] + col_offset
 
 
-def _decorator_start(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
+def _token_byte_offset(
     source: bytes,
     starts: tuple[int, ...],
+    lineno: int,
+    char_column: int,
+) -> int:
+    line_start = starts[lineno - 1]
+    line = source[line_start:].partition(b"\n")[0].decode("utf-8")
+    return line_start + len(line[:char_column].encode("utf-8"))
+
+
+def _at_token_offsets(source: bytes, starts: tuple[int, ...]) -> tuple[int, ...]:
+    tokens = tokenize.generate_tokens(io.StringIO(source.decode("utf-8")).readline)
+    return tuple(
+        _token_byte_offset(source, starts, *tok.start)
+        for tok in tokens
+        if tok.type == tokenize.OP and tok.string == "@"
+    )
+
+
+def _decorator_start(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    starts: tuple[int, ...],
+    at_offsets: tuple[int, ...],
 ) -> int:
     if not node.decorator_list:
         return _byte_offset(starts, node.lineno, node.col_offset)
     first = min(node.decorator_list, key=lambda item: (item.lineno, item.col_offset))
-    offset = starts[first.lineno - 1]
-    while source[offset : offset + 1] in {b" ", b"\t", b"\f"}:
-        offset += 1
-    return offset
+    expression_start = _byte_offset(starts, first.lineno, first.col_offset)
+    return at_offsets[bisect_right(at_offsets, expression_start) - 1]
 
 
 def _collect_segments(tree: ast.Module, source: bytes) -> tuple[_Segment, ...]:
     starts = _line_starts(source)
+    at_offsets = _at_token_offsets(source, starts)
     provisional: list[tuple[str, int, int, str]] = []
 
     def visit(node: ast.AST, classes: tuple[str, ...]) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             qualname = ".".join((*classes, node.name))
-            start = _decorator_start(node, source, starts)
+            start = _decorator_start(node, starts, at_offsets)
             end = _byte_offset(
                 starts,
                 cast(int, node.end_lineno),
