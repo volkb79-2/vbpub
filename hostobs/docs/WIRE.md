@@ -1036,7 +1036,7 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 
 | ID | Where | Code / plan says | WIRE.md says | Work |
 |---|---|---|---|---|
-| V-1 | `frame.rs` `time_body_len` (line 741), `hostobs_wire_ref.py` `time_body_len` (line 380) on this branch's base | `align8(14·n)` | `align8(15·n)` | fixed by the P0 bug fold-in (merged to main; commit `e13027cfe`: `TIME_BUCKET_BYTES = 15`, fixture `history-five-buckets`, no minor bump); P2a1 regenerated the two history fixtures with `last` buckets (§3.6 mask rule, §3.10) and the 15-byte length pin is unchanged |
+| V-1 | `frame.rs` `time_body_len` (line 741 on this document's base; post-P0 line 768), `hostobs_wire_ref.py` `time_body_len` (line 380 on the base; post-P0 line 384) | `align8(14·n)` | `align8(15·n)` | fixed by the P0 bug fold-in (merged to main; commit `e13027cfe`: `TIME_BUCKET_BYTES = 15`, fixture `history-five-buckets`, no minor bump) |
 | V-2 | `frame.rs` `decode_block` | references checked only against an in-frame dictionary | also against the held generation | fixed by P2a1 (`HOB-46`, `decode_block_with`) |
 | V-3 | `frame.rs` `decode_block` | bucket `agg` not checked against the metric mask | `aggregation-not-permitted` | fixed by P2a1 (`HOB-47`) |
 | V-4 | plan §B.2 `TIME` | no subject; `series_batch` returns several entities | kind 6 `subject` | fixed by P2a1 (`HOB-48`) |
@@ -1057,12 +1057,14 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | V-19 | plan §A.2 | verbs listed per level only | `status`, `events`, `spans` also at control (relayed), `unsubscribe` at observe/operator | none (§4.3) |
 | V-20 | plan §B.4 | clients per level only | per-uid connection and selection caps, hello and idle deadlines, refuse without a byte | none (D-W19, D-W20) |
 
-### Open questions (recommendation first)
+### Open questions (both DECIDED)
 
-1. **Client-side completion age**: 30 s (recommended, D-W16: a trusted probe under load must not be
-   cut by a client) vs the server's 5 s.
-2. **Who may read spans**: all `hostobs-observe` members (recommended, plan §I question 4) — WIRE.md
-   serves `events`/`spans` at observe level on that assumption.
+1. **Client-side completion age: DECIDED, 30 s** (D-W16; the server keeps its 5 s). Reason: a
+   trusted probe under host load must not be cut by its own client, and the probe's stall bound
+   (5 s) already protects the probe.
+2. **Who may read spans: DECIDED, every `hostobs-observe` member** (plan §I question 4). Reason:
+   this is the plan's recommendation, and WIRE.md serves `events`/`spans` at observe level on
+   that basis.
 
 ### Review round 1 (independent review of rev 1 at `7f1f17888`, verdict FIX)
 

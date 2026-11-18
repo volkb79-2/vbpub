@@ -34,6 +34,32 @@
 - **Fixtures.** `fixtures/wire` holds 70 cases (11 valid, 59 refusals): 29 existing cases and 41 new ones.
   Not part of this change: the stream layer (`HOB-54`), the `generation-regressed` rule, and `HOB-49`.
 
+### Fixed (P0b store follow-ups)
+
+- **`HOB-55`: a look-alike name with a huge sequence cannot poison the tier.** The store never
+  mints a segment sequence above `SEQ_NAME_MAX = u32::MAX`, so a name above it
+  (`hot-0-18446744073709551615.seg`, also `.seg.open`, `.seg.corrupt`, `.seg.open.corrupt`) is not a
+  segment name: the Rust and Python parsers refuse it, and the scan notes it and never counts,
+  adopts or deletes it or lets it raise the water mark. An unproven name never raises the mark
+  above the bound minus one; a proven one (an adopted segment whose header agrees with its name)
+  is adopted at the bound itself, and the sequence after the bound is the typed `LengthOverflow`.
+- **`HOB-56`: `StoreStats::bytes` is the tiers' own total.** It is recomputed from the history
+  tiers and the events store after every write, seal and eviction pass (error paths too), with no
+  incremental add/subtract arithmetic, so a vanished file, a new segment's header and a seal's
+  footer are always in it.
+- **`HOB-58`: eviction reports reach the caller.** `Evicted::notes` carries the reports of an
+  entry dropped because its file was already gone or could not be removed (a quarantined file that
+  cannot be removed stays on disk, uncounted, and the next restart adopts it again). A tier keeps
+  at most `MAX_EVICTION_NOTES` (256) of them in `scan.notes` after its rescan notes, and the store
+  at most 256 in its ring, the oldest dropped first; `Store::notes()` shows them once and hides
+  only one tier's "names another tier" note about another tier's file in a shared directory, so a
+  note about a tier's own garbage name stays visible.
+- **`HOB-57`: the M1d hand-mutation script has a per-run timeout.** `--timeout-s` (default 1800 s
+  for a Rust suite, 300 s for Python); a timeout is `KILLED-TIMEOUT`, counted apart (and
+  inconclusive under host load), and the container is removed by its exact name
+  `hostobs-mut-<pid>-<n>` on a timeout or any exception. 53 stored patches (`M1d-20` to `M1d-22`
+  added, `M1d-18` rewritten); the campaign has not been run.
+
 ### Fixed (P0 bug fold-in)
 
 - **`HOB-8`: `FrameHeader::parse` bounds the declared length.** It refuses a length above

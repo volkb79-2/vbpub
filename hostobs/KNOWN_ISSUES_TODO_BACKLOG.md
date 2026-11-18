@@ -67,6 +67,12 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-52 | A repeated dictionary identity is `duplicate-dictionary-entry` in Rust whatever the other fields hold, as in the Python reference | Minor | FIXED (P2a1) |
 | HOB-53 | The Python reference follows the WIRE.md §3.10 precedence: `not-a-block` before the buffer length and `SECTIONED` checks | Minor | FIXED (P2a1) |
 | HOB-54 | The stream layer machines (`FrameReader`, `ModeDetect`, `SendHub`, `ConnTimers`, client stream dictionaries) do not exist yet | Major | OPEN (P2) |
+| HOB-55 | A look-alike name such as `hot-0-18446744073709551615.seg` (or `.seg.corrupt`) sets the tier's sequence water mark to `u64::MAX` before its owner is proven, so every `open_segment` fails with `LengthOverflow` until the file is removed | Minor | FIXED (P0b) |
+| HOB-56 | `StoreStats::bytes` maintained by incremental arithmetic drifts from the tiers' own byte totals when a file vanishes or a new segment's header is written | Minor | FIXED (P0b) |
+| HOB-57 | `docs/hand-mutants/m1d-mutants.py` had no per-mutant subprocess timeout, so a mutant that hangs the suite hangs the campaign | Minor | FIXED (P0b) |
+| HOB-58 | The reports of an eviction that dropped an already-gone or unremovable entry reach only `TierScan::notes`, so the caller of `append`/`evict` never sees them and a rescan resets them | Minor | FIXED (P0b) |
+| HOB-59 | `Tier::append` and `Store::evict` drop the partial `Evicted` (counts and notes) when an eviction fails after a partial pass | Minor | OPEN |
+| HOB-60 | `Store::notes` visibility is decided by name, not by directory, and the store's eviction-notes ring may be redundant with the tiers' `scan.notes` | Minor | OPEN |
 
 ---
 
@@ -1044,8 +1050,8 @@ unit test pins `n_sec = 65535` in a 16-byte frame.
 
 ## HOB-51 — Received frames are not held to the alignment and header-first rules
 
-**Where:** `crates/proto/src/frame.rs` `decode_block` (lines 1086-1126),
-`python/reference/hostobs_wire_ref.py` `decode_frame` (lines 509-535). WIRE.md §13 V-11.
+**Where:** `crates/proto/src/frame.rs` `decode_block` (post-P0 lines 1115-1154),
+`python/reference/hostobs_wire_ref.py` `decode_frame` (post-P0 lines 523-531). WIRE.md §13 V-11.
 
 Both decoders take a section body of any length and let an unknown section precede the header, so
 the "every body starts at an offset ≡ 0 (mod 8)" and "the header body sits at `16 + 8·n_sec`"
@@ -1085,7 +1091,7 @@ in both languages.
 
 ## HOB-53 — The Python reference checks buffer length before `not-a-block`
 
-**Where:** `python/reference/hostobs_wire_ref.py` `decode_frame` (lines 484-493). WIRE.md §13 V-13.
+**Where:** `python/reference/hostobs_wire_ref.py` `decode_frame` (post-P0 lines 495-504). WIRE.md §13 V-13.
 
 The reference checks buffer length and `SECTIONED` before the frame type, so a truncated REP is
 `truncated` in Python and `not-a-block` in Rust.
@@ -1113,3 +1119,126 @@ specified with fake-clock tables but have no code, so no stream property of `hos
 with the 12 reader and 19 hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row; P3: the Python
 `FrameReader` passes the same 12 reader cases and the 6 client cases; P5b: the 18 connection cases
 of §11.4 against a fake clock.
+
+## HOB-55 — A look-alike name with a huge sequence poisons the tier's water mark
+
+**Where:** `crates/store/src/format.rs` (`SegmentFileName::parse`, `SEQ_NAME_MAX`),
+`crates/store/src/tier.rs` (`rescan`, `open_segment`), `python/reference/hostobs_segment_ref.py`.
+
+`rescan` records `highest_seen` for every name of the tier before it proves the file is the
+store's own, so `hot-0-18446744073709551615.seg` (or the same with `.seg.corrupt`) raises the
+sequence water mark to `u64::MAX` and every later `open_segment` fails with `LengthOverflow`
+until someone removes the file; a look-alike at `u32::MAX` would do the same one step later.
+
+**Exit criteria.** The name parsers refuse a sequence above a bound the store can never mint, so
+every caller agrees; such a name is a look-alike (a note, never counted, adopted or deleted, and
+never raises the water mark). An unproven name never raises the mark above the bound minus one; a
+proven one (an adopted segment) is adopted at the bound, and the sequence after the bound is the
+typed overflow error. All four spellings, a garbage name at the bound, a valid segment at the
+bound, and minting the bound from a tier whose scan saw the bound minus one are tested; the Python
+reference mirrors the bound; mutants remove each guard.
+
+**FIXED (P0b).** `SEQ_NAME_MAX = u32::MAX` (136 years at one segment a second). `parse` and
+`parse_quarantined` (and the Python `parse_segment_name`/`parse_quarantine_name`) refuse a larger
+sequence in all four spellings; `rescan` lets a name reserve at most `SEQ_NAME_MAX - 1` until an
+adopted live segment proves it (then its full sequence); `open_segment` returns `LengthOverflow`
+once the next sequence would exceed the bound; `docs/SEGMENT-FORMAT.md` states the rule. Known
+limit: a genuinely quarantined segment at exactly `SEQ_NAME_MAX` reserves only `SEQ_NAME_MAX - 1`,
+so a mint at the bound with the same `start_s` could later be refused its quarantine rename because
+`<name>.seg.open.corrupt` exists; reaching it needs 2^32 segments. Stored
+hand-mutation patches `M1d-17` and `M1d-20`, not yet run.
+
+## HOB-56 — `StoreStats::bytes` drifts from the tiers' own totals
+
+**Where:** `crates/store/src/store.rs` (`write_one`, `record_event`, `evict`, `seal_all`,
+`recount`).
+
+Maintaining `stats.bytes` by arithmetic (add `bytes_written`, subtract `Evicted::bytes`) disagrees
+with the tiers' own totals: an entry dropped because its file was already gone leaves `Tier::bytes`
+but not `Evicted::bytes`, and a new segment's header (and a seal's footer) is in the tier total but
+not in `bytes_written`.
+
+**Exit criteria.** The tiers' own totals are the single source: `stats.bytes` is recomputed from
+them after every operation that can change one and the incremental arithmetic is gone; tests
+compare it with the sum of the tiers' `bytes()` and with the summed `file_len` of their segments
+and quarantined files after a hand-deleted quarantined file, a hand-deleted live segment, a write
+that opens a segment, a seal and an eviction; a mutant restores the arithmetic.
+
+**FIXED (P0b).** `refresh_bytes` sums the history tiers and the events store and runs after every
+write, seal and eviction pass, on the error path as well; `StoreStats::bytes` documents that scope.
+Stored hand-mutation patches `M1d-18` (rewritten) and `M1d-21`, not yet run.
+
+## HOB-57 — The M1d hand-mutation script has no per-mutant timeout
+
+**Where:** `docs/hand-mutants/m1d-mutants.py`, `docs/HAND-MUTANTS-M1D.md`.
+
+A mutant that makes the suite hang (a loop that no longer ends) hangs the whole campaign when the
+script runs each suite with no subprocess timeout, and the container stays running.
+
+**Exit criteria.** `--timeout-s` bounds every run (defaults 1800 s for a Rust suite, 300 s for a
+Python one; the baseline uses the same limits); a timeout is classified `KILLED-TIMEOUT` (a hang is
+a detected mutant), counted apart in the summary, and the container of a timed-out Rust run is
+removed by its exact name; the patch count and the `--dry-run` result stay consistent (0 stale).
+
+**FIXED (P0b).** Each Rust run names its container `hostobs-mut-<pid>-<n>`, removes a stale
+container of that exact name first, and `docker rm -f` takes that exact name on a timeout or any
+other exception (a failed removal is reported); the method section of `docs/HAND-MUTANTS-M1D.md`
+documents the classification and that a timeout under host load is inconclusive. The stored patch
+count is 53 (`--dry-run`: 0 stale).
+
+## HOB-58 — Eviction reports never reach the caller
+
+**Where:** `crates/store/src/tier.rs` (`remove_quarantined`, `remove_segment`, `Evicted`),
+`crates/store/src/store.rs` (`Store::notes`).
+
+`remove_quarantined` and `remove_segment` reported an entry dropped because its file was already
+gone, or could not be removed, only in `scan.notes`: the caller of `append` or `evict` never sees
+it, a rescan resets those notes, and nothing bounds them.
+
+**Exit criteria.** `Evicted` carries the reports; the tier fills them in addition to `scan.notes`,
+capped at `MAX_EVICTION_NOTES` with the oldest dropped; the store copies them into its own ring
+with the same cap so `Store::notes()` shows each once; `Store::notes()` hides only one tier's note
+about another tier's file in a shared directory, never a tier's note about its own name; the known
+limit (a file that could not be removed stays on disk, uncounted, and is re-adopted at the next
+restart) is documented; tests cover both paths, the cap and the filter; mutants remove each piece.
+
+**FIXED (P0b).** `Evicted::notes`, filled by `Tier::report` (the scan notes' reports capped, the
+rescan's own notes never dropped for them); the store keeps at most 256 in a ring and
+`Store::notes()` appends them once after its filter. Tests cover an already-gone quarantined file,
+an already-gone live segment, an unremovable quarantined file (a link in its place), the write
+path, the cap, garbage under a tier's own live and quarantine names, and the shared-directory
+case; stored hand-mutation patches `M1d-22`, not yet run.
+
+## HOB-59 — A failing eviction drops the partial `Evicted`
+
+**Where:** `crates/store/src/tier.rs` (`Tier::append`, `Tier::evict`),
+`crates/store/src/store.rs` (`Store::write_one`, `Store::evict`, `evict_each`).
+
+`Tier::evict` returns `Err` from `remove_segment` when a live segment cannot be removed, after
+earlier entries of the same pass were already removed or reported. The `Evicted` of that partial
+pass (its counts, bytes and notes) is lost, so `StoreStats::evicted_*` and `Store::notes()` miss
+what the pass did before the refusal, and `Tier::append` returns the error although its record is
+on disk. `stats.bytes` itself stays true (it is recomputed from the tiers), as do the tiers'
+own `scan.notes`.
+
+**Exit criteria.** The partial result of a failed pass reaches the caller: `Evicted` is returned
+with the error (or the counters and notes are applied before the error is propagated), the store
+counts the partial pass, and a test makes a removal fail after a successful one and checks the
+counts and the notes.
+
+## HOB-60 — `Store::notes` visibility is by name, and the notes ring may be redundant
+
+**Where:** `crates/store/src/store.rs` (`is_visible`, `Store::notes`, `keep_notes`).
+
+`Store::notes` hides a scan note whose name parses to a tier of the store other than the tier whose
+scan made it. That decision is by name, not by directory: a foreign `warm-0-3.seg` in a directory
+warm does not scan is hidden although no tier owns it. The store's eviction-notes ring is
+redundant with the tiers' `scan.notes` for every case reachable through the store's API (the store
+has no call that rescans a tier), so the claim that the ring outlives a rescan is not tested and is
+not made; a mutant that leaves the ring out (`M1d-22`) is possibly equivalent for the same reason.
+
+**Exit criteria.** `is_visible` hides a cross-tier note only when the producer's directory is also
+the directory of the tier the name belongs to (shared directory), and a test plants a foreign
+`warm-0-3.seg` in cold's directory and sees it; either a store call rescans a tier and a test shows
+the ring keeping a report across it, or the ring is removed and `Store::notes` reads `scan.notes`
+alone.

@@ -95,8 +95,11 @@ and the time-section length); its campaign is to be run on the gate head and sta
 yet.
 
 Open items found while building these packages are in
-[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-45`; `HOB-8`,
-`HOB-42` and `HOB-43` are FIXED by the P0 bug fold-in): the sharpest still-open ones are `HOB-17`/`HOB-27` (the `kernel` and `store` crates carry their
+[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-60`; `HOB-8`,
+`HOB-42` and `HOB-43` are FIXED by the P0 bug fold-in, `HOB-55` … `HOB-58` by the P0b store
+follow-ups, `HOB-46` … `HOB-48` and `HOB-50` … `HOB-53` by the P2a1 wire codec; `HOB-54` is the
+open stream-layer work for P2, P3 and P5b, specified in [`docs/WIRE.md`](docs/WIRE.md), and
+`HOB-49` is a citation fix in the Python reference): the sharpest still-open ones are `HOB-17`/`HOB-27` (the `kernel` and `store` crates carry their
 own value and quality types until the Rust lane image can be rebuilt against a new
 `Cargo.lock`), `HOB-21`/`HOB-29` (no `/sys` device-topology source, and `store`'s tmpfs check
 reads the mount table rather than `statfs`), `HOB-39` (a store range answer is the stored
