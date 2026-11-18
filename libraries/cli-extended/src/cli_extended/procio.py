@@ -119,7 +119,9 @@ class StreamResult:
 
     ``returncode`` is always the child's own (a negative signal number after a watchdog kill).
     ``abandoned_holders`` is ``()`` when nothing was abandoned, the pids that still held the
-    pipe when reading stopped, or ``None`` when the ``/proc`` scan failed. ``warning`` is the
+    pipe when reading stopped, or ``None`` when the ``/proc`` scan failed. ``()`` is ambiguous
+    by itself ("nothing abandoned" or "abandoned, none found"): only ``warning`` says a pipe
+    was abandoned. ``warning`` is the
     one-line WARN text (without a level prefix) when reading was abandoned, else ``None``.
     """
 
@@ -243,6 +245,7 @@ class _SignalScope:
         self._signals = tuple(signals)
         self._previous: dict[int, Any] = {}
         self._deferring = False
+        self._restoring = False
         self._pending: int | None = None
         self.process: subprocess.Popen | None = None
 
@@ -262,13 +265,29 @@ class _SignalScope:
                 raise
         return self
 
-    def __exit__(self, *_exc: object) -> None:
+    def __exit__(self, exc_type: object, *_exc: object) -> None:
         self._restore()
+        if exc_type is None and self._pending is not None:
+            pending, self._pending = self._pending, None
+            raise self._exception(pending)  # a signal that arrived while restoring is not lost
 
     def _restore(self) -> None:
-        for signum, handler in self._previous.items():
-            signal.signal(signum, handler if handler is not None else signal.SIG_DFL)
-        self._previous = {}
+        """Put every installed handler back; one failing or interrupted restore never skips the rest.
+
+        While restoring, our own handler records a signal instead of raising it, so it cannot
+        abort the loop half way; the first error is re-raised once everything is restored.
+        """
+        self._restoring = True
+        previous, self._previous = self._previous, {}
+        first_error: BaseException | None = None
+        for signum, handler in previous.items():
+            try:
+                signal.signal(signum, handler if handler is not None else signal.SIG_DFL)
+            except BaseException as error:  # noqa: BLE001 - re-raised below
+                first_error = first_error or error
+        self._restoring = False
+        if first_error is not None:
+            raise first_error
 
     @staticmethod
     def _exception(signum: int) -> BaseException:
@@ -277,11 +296,15 @@ class _SignalScope:
         return SystemExit(128 + signum)
 
     def __call__(self, signum: int, _frame: object) -> None:
-        if self._deferring:
+        if self._deferring or self._restoring:
             if self._pending is None:
                 self._pending = signum
             return
         raise self._exception(signum)
+
+    def _take_pending(self) -> BaseException | None:
+        pending, self._pending = self._pending, None
+        return None if pending is None else self._exception(pending)
 
     def spawn(self, argv: Sequence[Any], **kwargs: Any) -> subprocess.Popen:
         """``subprocess.Popen`` in its own session; a signal during it is delivered afterwards."""
@@ -290,12 +313,14 @@ class _SignalScope:
             self.process = subprocess.Popen(argv, start_new_session=True, **kwargs)
         except BaseException as error:
             self._deferring = False
-            if self._pending is not None:
-                raise self._exception(self._pending) from error
+            pending = self._take_pending()
+            if pending is not None:
+                raise pending from error
             raise
         self._deferring = False
-        if self._pending is not None:
-            raise self._exception(self._pending)
+        pending = self._take_pending()
+        if pending is not None:
+            raise pending
         return self.process
 
 
@@ -328,10 +353,17 @@ def reap_process_group(proc: subprocess.Popen, grace: float) -> None:
 
     ``proc`` must have been started with ``start_new_session=True`` so its process group is
     exactly the child and whatever it spawned; nothing the caller owns is signalled. Returns
-    early once the leader has exited and the group is empty. If the wait itself is interrupted
-    the group is SIGKILLed before the interruption propagates.
+    early once the leader has exited and the group is empty; a leader that was already reaped
+    whose group is gone is not signalled at all (its pid may have been reused). If the wait
+    itself is interrupted the group is SIGKILLed and the leader waited for before the
+    interruption propagates, so no zombie is left behind.
     """
     group = proc.pid
+    if proc.returncode is not None:
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            return
     _signal_group(group, signal.SIGTERM)
     deadline = time.monotonic() + grace
     try:
@@ -344,6 +376,7 @@ def reap_process_group(proc: subprocess.Popen, grace: float) -> None:
             time.sleep(_REAP_STEP_SECONDS)
     except BaseException:
         _signal_group(group, signal.SIGKILL)
+        proc.wait()
         raise
     _signal_group(group, signal.SIGKILL)
     proc.wait()
@@ -365,11 +398,11 @@ def _require_seconds(name: str, value: Any, *, positive: bool) -> None:
         raise ValueError(f"{name} must be {kind} finite number of seconds{extra}; got {value!r}")
 
 
-def _make_decoder() -> io.IncrementalNewlineDecoder:
-    """Text-pipe decoding: locale encoding, universal newlines, undecodable bytes replaced."""
+def _make_decoder(errors: str) -> io.IncrementalNewlineDecoder:
+    """Text-pipe decoding: locale encoding, universal newlines, ``errors`` for bad bytes."""
     encoding = "utf-8" if sys.flags.utf8_mode else locale.getencoding()
     return io.IncrementalNewlineDecoder(
-        codecs.getincrementaldecoder(encoding)(errors="replace"), translate=True,
+        codecs.getincrementaldecoder(encoding)(errors=errors), translate=True,
     )
 
 
@@ -378,16 +411,23 @@ class _Lines:
 
     def __init__(self, on_line: Callable[[str], object]) -> None:
         self._on_line = on_line
-        self._decoder = _make_decoder()
-        self._pending = ""
+        # Log lines are not parsed: undecodable bytes become U+FFFD rather than failing a child.
+        self._decoder = _make_decoder("replace")
+        self._pieces: list[str] = []  # the unterminated tail, kept as pieces (no quadratic copy)
         self.last_line: str | None = None
 
     def feed(self, chunk: bytes, *, final: bool = False) -> None:
-        *complete, self._pending = (self._pending + self._decoder.decode(chunk, final)).split("\n")
-        for line in complete:
-            self._emit(line + "\n")
-        if final and self._pending:
-            tail, self._pending = self._pending, ""
+        text = self._decoder.decode(chunk, final)
+        if "\n" in text:
+            *complete, tail = text.split("\n")
+            complete[0] = "".join(self._pieces) + complete[0]
+            self._pieces = [tail] if tail else []
+            for line in complete:
+                self._emit(line + "\n")
+        elif text:
+            self._pieces.append(text)
+        if final and self._pieces:
+            tail, self._pieces = "".join(self._pieces), []
             self._emit(tail)
 
     def _emit(self, line: str) -> None:
@@ -546,9 +586,10 @@ def run_streaming(
     """Run ``argv`` and feed its combined stdout/stderr to ``on_line``, line by line.
 
     The child starts in its own session with ``stdout=PIPE, stderr=STDOUT`` and an inherited
-    stdin. Output is decoded like a text pipe (locale encoding, universal newlines, undecodable
-    bytes replaced) and every line reaches ``on_line`` with its terminator; an unterminated last
-    line is delivered without one. Reading ends ``drain_seconds`` after the child exits, even
+    stdin. Output is decoded like a text pipe (locale encoding, universal newlines) but
+    undecodable bytes become U+FFFD, so lines are for logs and display: a caller that parses
+    output uses :func:`run_capture`, which is strict. Every line reaches ``on_line`` with its
+    terminator; an unterminated last line is delivered without one. Reading ends ``drain_seconds`` after the child exits, even
     when a grandchild still holds the pipe; the result then names the holders and carries the
     WARN text, and the exit code stays the child's own.
 
@@ -657,8 +698,9 @@ def run_capture(
     ``drain_seconds`` after the child exits even if a grandchild holds a pipe; the returned
     :class:`CaptureResult` (a ``CompletedProcess``) then names the holders in
     ``abandoned_holders`` and carries the WARN text in ``warning``. ``text=True`` decodes like
-    a text pipe (locale encoding, universal newlines, undecodable bytes replaced); ``False``
-    returns ``bytes``. With ``input is None`` stdin is inherited. ``timeout`` (seconds, from
+    a text pipe (locale encoding, universal newlines) and, like ``subprocess.run``, is strict:
+    undecodable output raises ``UnicodeDecodeError`` after the child has been reaped; ``False``
+    returns the ``bytes`` intact. With ``input is None`` stdin is inherited. ``timeout`` (seconds, from
     the start) reaps the whole process group and raises ``subprocess.TimeoutExpired`` with the
     partial output as bytes. Signals to the caller reap the group like :func:`run_streaming`.
     """
@@ -722,5 +764,5 @@ def run_capture(
     if state["timed_out"]:
         raise subprocess.TimeoutExpired(proc.args, timeout, output=out, stderr=err)
     if text:
-        out, err = (_make_decoder().decode(part, True) for part in (out, err))
+        out, err = (_make_decoder("strict").decode(part, True) for part in (out, err))
     return CaptureResult(proc.args, returncode, out, err, holders, warning)

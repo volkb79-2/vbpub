@@ -1564,14 +1564,24 @@ bounds the wait, and nothing watches for silence.
    pid(s) P; stopped reading after Ns and kept the exit code.` (`another
    process` replaces the pids when there are none). Holders are named, never
    killed. Otherwise `abandoned_holders == ()` and `warning is None`.
+   `abandoned_holders == ()` is therefore ambiguous on its own (nothing was
+   abandoned, or something was abandoned and the scan found no pid, for
+   example a holder owned by another user or in another pid namespace): only
+   `warning is not None` says that the pipe was abandoned.
 3. *Selector, not `select(2)`.* Reading uses `selectors.DefaultSelector`, so
    descriptors at or above 1024 work.
 4. *Decoding.* Text uses the locale encoding (UTF-8 under UTF-8 mode) with
-   universal newlines and undecodable bytes replaced, so a finished child is
-   never failed by its own output; a multibyte character split across reads
-   decodes as in a text pipe. `on_line` receives each line with its
-   terminator; an unterminated final line arrives without one. `last_line` is
-   the last non-blank line. `run_capture(text=False)` returns `bytes`.
+   universal newlines; a multibyte character split across reads decodes as in
+   a text pipe. `run_streaming` lines are for logs and display: undecodable
+   bytes become U+FFFD, so a finished child is never failed by its own
+   output, and a caller that parses output must not rely on them.
+   `run_capture(text=True)` is strict like `subprocess.run`: undecodable
+   output raises `UnicodeDecodeError` (after the child has been reaped), and
+   `text=False` returns the `bytes` intact; callers that parse output use
+   `run_capture`. `on_line` receives each line with its terminator; an
+   unterminated final line arrives without one (a huge unterminated line is
+   assembled without quadratic copying). `last_line` is the last non-blank
+   line.
 5. *No-progress watchdog (`run_streaming`).* Progress is bytes read from the
    pipe or a size or mtime change (or the appearance) of any path in
    `progress_paths`, on a monotonic clock. `no_progress_seconds` is required
@@ -1586,7 +1596,11 @@ bounds the wait, and nothing watches for silence.
    `last_line`, `process_tree`, `escaped_pids`, `render(setting)` for
    `'<argv0>' produced no output for Ns (<setting> = N); last output line:
    <line>`). A tree member outside the group (`setsid`) is listed in
-   `escaped_pids` and never killed. An output pipe that closes while the child
+   `escaped_pids` and never killed. The limit of that naming: the tree is built
+   from ppid links, so a process that left the group AND was reparented away
+   from the child (its parent exited, or it double-forked) is in neither
+   `process_tree` nor `escaped_pids`; the watchdog then neither names nor kills
+   it. An output pipe that closes while the child
    lives does not end the wait: the watchdog still applies.
 6. *`run_capture`.* Stdout and stderr share one selector (no deadlock when one
    fills while the other is idle), `input` is written without blocking (a

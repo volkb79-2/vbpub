@@ -628,7 +628,9 @@ the pipe plus the WARN text; every child runs in its own process group, which
 SIGINT, SIGTERM and SIGHUP to the caller reap. `run_streaming` also ends a
 child that makes no progress for `no_progress_seconds` (required, positive,
 no default and no "off") and returns the live process tree taken before the
-kill. The contract is [SPEC section 16](SPEC.md#16-child-process-supervision-cli_extendedprocio);
+kill. Streamed lines are for logs (undecodable bytes become U+FFFD); callers
+that parse output use `run_capture`, which is strict like `subprocess.run`.
+The contract is [SPEC section 16](SPEC.md#16-child-process-supervision-cli_extendedprocio);
 a call site to paste is in the [consumer guide](docs/CONSUMERS.md#bound-a-child-process-read-with-procio).
 
 ## Test and gate

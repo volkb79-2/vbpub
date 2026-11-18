@@ -259,11 +259,32 @@ def test_multibyte_output_split_across_reads_is_decoded_like_a_text_pipe(tmp_pat
     assert _capture([sys.executable, "-c", script], tmp_path).stdout == expected
 
 
-def test_undecodable_bytes_are_replaced_and_never_fail_a_finished_child(tmp_path):
-    script = "import sys; sys.stdout.buffer.write(b'ok \\xff\\xfe end\\n\\xe2\\x82'); sys.stdout.flush()"
-    result, lines = _stream([sys.executable, "-c", script], tmp_path)
+UNDECODABLE = "import sys; sys.stdout.buffer.write(b'ok \\xff\\xfe end\\n\\xe2\\x82'); sys.stdout.flush()"
+
+
+def test_streaming_lines_replace_undecodable_bytes_and_never_fail_a_finished_child(tmp_path):
+    result, lines = _stream([sys.executable, "-c", UNDECODABLE], tmp_path)
     assert lines == ["ok \ufffd\ufffd end\n", "\ufffd"] and result.returncode == 0
-    assert _capture([sys.executable, "-c", script], tmp_path).stdout == "ok \ufffd\ufffd end\n\ufffd"
+
+
+def test_capture_text_is_strict_like_subprocess_run_and_bytes_mode_keeps_the_bytes(tmp_path):
+    with pytest.raises(UnicodeDecodeError):
+        _capture([sys.executable, "-c", UNDECODABLE], tmp_path)
+    raw = _capture([sys.executable, "-c", UNDECODABLE], tmp_path, text=False)
+    assert raw.stdout == b"ok \xff\xfe end\n\xe2\x82" and raw.returncode == 0
+
+
+def test_one_huge_unterminated_line_is_assembled_without_quadratic_copying(tmp_path):
+    script = (
+        "import sys\n"
+        "for _ in range(20):\n"
+        "    sys.stdout.write('x' * 1_000_000); sys.stdout.flush()\n"
+    )
+    started = time.monotonic()
+    result, lines = _stream([sys.executable, "-c", script], tmp_path)
+    assert len(lines) == 1 and lines[0] == "x" * 20_000_000 and result.returncode == 0
+    assert result.last_line == "x" * 20_000_000
+    assert time.monotonic() - started < JOIN_LIMIT
 
 
 def test_a_command_that_cannot_start_raises_the_plain_popen_error(tmp_path):
@@ -324,18 +345,19 @@ def test_watchdog_ends_a_silent_live_child_with_the_tree_taken_before_the_kill(t
     )
     shell = child = escaped = None
     try:
-        result, lines = _stream(["bash", "-c", script], tmp_path, watchdog=1.0, term_grace_seconds=5.0)
+        # The limit only has to outlast the child's setup (milliseconds): 5 s, never a close call.
+        result, lines = _stream(["bash", "-c", script], tmp_path, watchdog=5.0, term_grace_seconds=5.0)
         shell, child = _wait_pidfile(shell_pidfile), _wait_pidfile(child_pidfile)
         escaped = _wait_pidfile(escaped_pidfile)
         assert result.outcome == "watchdog" and result.returncode < 0
         assert lines == ["started\n"] and result.last_line == "started"
         report = result.watchdog
-        assert report.last_line == "started" and report.limit_seconds == 1.0
+        assert report.last_line == "started" and report.limit_seconds == 5.0
         assert report.render("no_progress_timeout_seconds") == (
-            "'bash' produced no output for 1s (no_progress_timeout_seconds = 1); "
+            "'bash' produced no output for 5s (no_progress_timeout_seconds = 5); "
             "last output line: started"
         )
-        assert "(no_progress_seconds = 1)" in report.render()
+        assert "(no_progress_seconds = 5)" in report.render()
         tree = {entry.pid: entry for entry in report.process_tree}
         assert {shell, child, escaped} <= set(tree), "the tree is taken before the group is signalled"
         assert tree[shell].ppid == os.getpid() and tree[child].ppid == shell
@@ -380,15 +402,15 @@ def test_watchdog_fires_after_the_child_closed_its_output(tmp_path):
 
 
 def test_output_bytes_count_as_progress_and_reset_the_clock(tmp_path):
-    script = "for i in $(seq 14); do echo line$i; sleep 0.25; done"  # ~3.5 s > the 2 s limit
-    result, lines = _stream(["bash", "-c", script], tmp_path, watchdog=2.0)
-    assert result.outcome == "exited" and result.returncode == 0 and len(lines) == 14
+    script = "for i in $(seq 12); do echo line$i; sleep 1; done"  # ~12 s > the 10 s limit
+    result, lines = _stream(["bash", "-c", script], tmp_path, watchdog=10.0)
+    assert result.outcome == "exited" and result.returncode == 0 and len(lines) == 12
 
 
 def test_a_progress_path_size_change_counts_as_progress(tmp_path):
     log = tmp_path / "step.log"
-    script = f"for i in $(seq 14); do echo more >> {log}; sleep 0.25; done"
-    kept, _ = _stream(["bash", "-c", script], tmp_path, watchdog=2.0, progress_paths=[log])
+    script = f"for i in $(seq 12); do echo more >> {log}; sleep 1; done"  # ~12 s > the 10 s limit
+    kept, _ = _stream(["bash", "-c", script], tmp_path, watchdog=10.0, progress_paths=[log])
     assert kept.outcome == "exited" and kept.returncode == 0
     log.unlink()
     silent, _ = _stream(["bash", "-c", script], tmp_path, watchdog=1.0)
@@ -398,8 +420,8 @@ def test_a_progress_path_size_change_counts_as_progress(tmp_path):
 def test_a_progress_path_mtime_change_counts_as_progress(tmp_path):
     log = tmp_path / "step.log"
     log.write_text("fixed", encoding="utf-8")
-    script = f"for i in $(seq 14); do touch -d @$((1000 + i)) {log}; sleep 0.25; done"
-    result, _ = _stream(["bash", "-c", script], tmp_path, watchdog=2.0, progress_paths=(str(log),))
+    script = f"for i in $(seq 12); do touch -d @$((1000 + i)) {log}; sleep 1; done"
+    result, _ = _stream(["bash", "-c", script], tmp_path, watchdog=10.0, progress_paths=(str(log),))
     assert result.outcome == "exited" and log.read_text(encoding="utf-8") == "fixed"
 
 
@@ -412,8 +434,9 @@ def test_a_progress_path_that_never_changes_does_not_hold_the_watchdog_off(tmp_p
 
 def test_a_missing_progress_path_appearing_counts_as_progress(tmp_path):
     log = tmp_path / "later.log"
-    script = f"sleep 1.2; echo x > {log}; sleep 1.2; echo y >> {log}; sleep 1.2"
-    result, _ = _stream(["bash", "-c", script], tmp_path, watchdog=2.0, progress_paths=[log])
+    # 12 s in total is silent for longer than the 10 s limit unless the file appearing at 6 s resets it
+    script = f"sleep 6; : > {log}; sleep 6"
+    result, _ = _stream(["bash", "-c", script], tmp_path, watchdog=10.0, progress_paths=[log])
     assert result.outcome == "exited" and result.returncode == 0
 
 
@@ -575,8 +598,8 @@ def test_handlers_are_installed_while_running_and_restored_afterwards(tmp_path, 
 
 
 def test_a_caller_owned_sigint_handler_is_left_alone(tmp_path, default_signals):
-    def mine(_signum, _frame):  # pragma: no cover - never delivered
-        raise AssertionError
+    def mine(_signum, _frame):
+        raise AssertionError("a caller-owned SIGINT handler must not run in this test")
 
     signal.signal(signal.SIGINT, mine)
     seen: dict[int, object] = {}
@@ -637,7 +660,7 @@ def test_a_failed_second_install_restores_the_first(tmp_path, monkeypatch, defau
     monkeypatch.setattr(signal, "signal", flaky)
     with pytest.raises(OSError, match="injected install failure"):
         with procio.terminate_as_exit():
-            pytest.fail("the body must not run after a failed install")  # pragma: no cover
+            pytest.fail("the body must not run after a failed install")
     monkeypatch.undo()
     assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
     assert signal.getsignal(signal.SIGHUP) == signal.SIG_DFL
@@ -845,6 +868,24 @@ def test_capture_timeout_reaps_the_group_and_raises_timeout_expired(tmp_path):
         _kill_quietly(holder)
 
 
+def test_capture_timeout_ends_the_call_at_the_timeout_not_when_the_child_ends(tmp_path):
+    """A child with a bounded lifetime (25 s): reaping makes the call return long before that."""
+    shell_pidfile, holder_pidfile = tmp_path / "shell.pid", tmp_path / "holder.pid"
+    script = f"echo $$ > {shell_pidfile}; sleep 25 & echo $! > {holder_pidfile}; wait"
+    shell = holder = None
+    try:
+        started = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            _capture(["bash", "-c", script], tmp_path, timeout=1.0)
+        elapsed = time.monotonic() - started
+        shell, holder = _wait_pidfile(shell_pidfile), _wait_pidfile(holder_pidfile)
+        assert elapsed < 15.0, f"the call waited for the child instead of reaping it ({elapsed:.1f}s)"
+        assert not _alive(shell) and not _alive(holder), "the group was still running on return"
+    finally:
+        _kill_quietly(shell)
+        _kill_quietly(holder)
+
+
 def test_capture_timeout_escalates_to_sigkill_for_a_child_that_ignores_sigterm(tmp_path, monkeypatch):
     monkeypatch.setattr(procio, "DEFAULT_TERM_GRACE_SECONDS", 0.3)
     shell_pidfile = tmp_path / "shell.pid"
@@ -988,6 +1029,73 @@ def test_reap_of_an_already_finished_group_finds_nothing_to_signal():
     assert process.returncode == 0
 
 
+def test_reap_of_a_reaped_leader_with_no_group_signals_nothing(monkeypatch):
+    """A stale pgid may belong to an unrelated process by now: only the existence probe runs."""
+    process = subprocess.Popen(["true"], start_new_session=True)
+    process.wait()
+    sent: list[tuple[int, int]] = []
+    real_killpg = os.killpg
+
+    def killpg(group, signum):
+        sent.append((group, signum))
+        return real_killpg(group, signum)
+
+    monkeypatch.setattr(procio.os, "killpg", killpg)
+    procio.reap_process_group(process, 5.0)
+    assert sent == [(process.pid, 0)]
+
+
+def test_reap_tolerates_a_leader_reaped_behind_its_back(monkeypatch):
+    process = subprocess.Popen(["true"], start_new_session=True)
+    os.waitpid(process.pid, 0)  # reaped by someone else: returncode is still unknown here
+    assert process.returncode is None
+    procio.reap_process_group(process, 0.0)  # nothing to signal, nothing to wait for
+    assert process.returncode == 0
+
+
+def test_signal_arriving_while_handlers_are_restored_is_delivered_after_all_are_restored(
+    monkeypatch, default_signals,
+):
+    real_signal = signal.signal
+    first_restore: list[int] = []
+
+    def signalling(signum, handler):
+        if handler is signal.SIG_DFL and not first_restore:
+            first_restore.append(signum)
+            os.kill(os.getpid(), signal.SIGTERM)  # our handler is still installed for it
+        return real_signal(signum, handler)
+
+    with pytest.raises(SystemExit) as raised:
+        with procio.terminate_as_exit():
+            monkeypatch.setattr(signal, "signal", signalling)
+    monkeypatch.undo()
+    assert first_restore and raised.value.code == 128 + signal.SIGTERM
+    assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
+    assert signal.getsignal(signal.SIGHUP) == signal.SIG_DFL
+
+
+def test_a_failing_restore_does_not_skip_the_remaining_handlers(monkeypatch, default_signals):
+    real_signal = signal.signal
+    attempts: list[int] = []
+
+    def flaky(signum, handler):
+        if handler is signal.SIG_DFL:
+            attempts.append(signum)
+            if len(attempts) == 1:
+                raise OSError("injected restore failure")
+        return real_signal(signum, handler)
+
+    with pytest.raises(OSError, match="injected restore failure"):
+        with procio.terminate_as_exit():
+            monkeypatch.setattr(signal, "signal", flaky)
+    monkeypatch.undo()
+    assert len(attempts) == 2, "the second handler was still restored"
+    restored = [s for s in TERMINATION_SIGNALS if signal.getsignal(s) == signal.SIG_DFL]
+    assert len(restored) == 1, "exactly the one whose restore failed keeps our handler"
+    for signum in TERMINATION_SIGNALS:
+        signal.signal(signum, signal.SIG_DFL)
+
+
 def test_reap_with_no_grace_kills_at_once_and_reaps_the_leader(tmp_path):
     pidfile = tmp_path / "ready.pid"
     process = subprocess.Popen(
@@ -1027,18 +1135,24 @@ def test_an_interrupted_reap_wait_still_kills_the_group(tmp_path):
 
     class Interrupted:
         pid = real.pid
+        returncode = None
+        waited = False
 
         def poll(self):
             raise KeyboardInterrupt
 
-        def wait(self):  # pragma: no cover - never reached
-            raise AssertionError
+        def wait(self):
+            self.waited = True
+            return real.wait()
 
+    interrupted = Interrupted()
     try:
         _wait_pidfile(shell_pidfile)
         with pytest.raises(KeyboardInterrupt):
-            procio.reap_process_group(Interrupted(), 30.0)
-        assert real.wait(timeout=JOIN_LIMIT) == -signal.SIGKILL, "SIGKILL went out before the raise"
+            procio.reap_process_group(interrupted, 30.0)
+        assert interrupted.waited and real.returncode == -signal.SIGKILL, (
+            "SIGKILL went out and the leader was waited for (no zombie) before the raise"
+        )
     finally:
         _kill_quietly(real.pid)
 
@@ -1129,16 +1243,18 @@ def test_process_tree_parses_odd_entries_from_a_fake_proc(tmp_path, monkeypatch)
 
 def test_pipe_holder_scan_reads_descriptor_links_from_a_fake_proc(tmp_path, monkeypatch):
     root = tmp_path / "proc"
-    for pid, target in ((11, "pipe:[777]"), (12, "pipe:[778]"), (13, "pipe:[777]")):
+    own = os.getpid()  # fake pids are derived from it, so they can never collide with it
+    first, second, third, no_fd = own + 1, own + 2, own + 3, own + 4
+    for pid, target in ((first, "pipe:[777]"), (second, "pipe:[778]"), (third, "pipe:[777]")):
         (root / str(pid) / "fd").mkdir(parents=True)
         (root / str(pid) / "fd" / "3").symlink_to("/dev/null")
         (root / str(pid) / "fd" / "4").symlink_to(target)
-    (root / "14").mkdir()  # no fd directory
-    (root / str(os.getpid()) / "fd").mkdir(parents=True)
-    (root / str(os.getpid()) / "fd" / "5").symlink_to("pipe:[777]")  # never reported: ourselves
+    (root / str(no_fd)).mkdir()  # no fd directory
+    (root / str(own) / "fd").mkdir(parents=True)
+    (root / str(own) / "fd" / "5").symlink_to("pipe:[777]")  # never reported: ourselves
     (root / "not-a-pid").mkdir()
     monkeypatch.setattr(procio, "_PROC_ROOT", str(root))
-    assert procio.pipe_holder_pids(777) == [11, 13]
+    assert procio.pipe_holder_pids(777) == [first, third]
 
 
 # ------------------------------------------------------------------- package contract

@@ -1336,8 +1336,14 @@ if result.returncode != 0:
     raise subprocess.CalledProcessError(result.returncode, "docker")
 
 captured = procio.run_capture(["git", "status", "--porcelain"], cwd=Path("."), env=None, timeout=30)
-print(captured.stdout)             # str; text=False returns bytes
+print(captured.stdout)             # str, strict like subprocess.run; text=False returns bytes
 ```
+
+Streamed lines are for logs: an undecodable byte becomes U+FFFD, so a caller
+that parses a child's output uses `run_capture` (strict, or `text=False` for
+raw bytes), not `on_line`. `warning is not None` is what says a pipe was
+abandoned; `abandoned_holders == ()` alone can also mean "abandoned, no pid
+found".
 
 Keep interactive children (a terminal `docker exec -it`) on plain
 `subprocess.run` with inherited stdio: a child under `procio` is in its own
