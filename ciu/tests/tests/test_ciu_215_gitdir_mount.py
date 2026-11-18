@@ -92,8 +92,8 @@ def test_the_leftover_child_guard_names_a_child_and_its_cmdline(monkeypatch):
             child.stderr.close()
 
 
-def _wait_for_process_exit(pid: int, timeout: float = 300.0) -> None:
-    """Wait for a non-child PID to disappear after the pipe's EOF released it."""
+def _wait_for_process_exit(pid: int, timeout: float = 5.0) -> None:
+    """Require a released child to disappear, failing fast if EOF missed."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not os.path.exists(f"/proc/{pid}"):
@@ -103,14 +103,14 @@ def _wait_for_process_exit(pid: int, timeout: float = 300.0) -> None:
 
 
 def _reap_recorded_children(pid_paths: list[Path]) -> None:
-    """Reap direct children after EOF; tolerate normal reparenting to init."""
+    """Reap or verify recorded children without signalling."""
     for pid_path in pid_paths:
         pid = int(pid_path.read_text(encoding="utf-8"))
         try:
-            os.waitpid(pid, 0)
+            os.waitpid(pid, os.WNOHANG)
         except ChildProcessError:
-            # Without a subreaper the child was reparented to init and is not
-            # this process's child.  The /proc check below is cleanup only.
+            # The inner pytest normally reaps first.  If an ancestor subreaper
+            # owns the child instead, this process cannot reap it.
             pass
         _wait_for_process_exit(pid)
 
@@ -126,12 +126,17 @@ def test_the_real_guard_is_autouse(request):
     assert name in request._fixturemanager._getautousenames(request.node)
 
 
-def test_the_real_guard_fails_an_unmarked_leak_and_honors_its_marker(pytester):
+def test_the_real_guard_fails_an_unmarked_leak_and_honors_its_marker(
+    pytester, monkeypatch,
+):
     """Run the real autouse fixture against leaking and opted-out inner tests."""
     conftest_path = Path(suite_conftest.__file__).resolve()
     pytester.makeconftest(
         f"""\
 import importlib.util
+import os
+import sys
+import time
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location("ciu_suite_conftest", {str(conftest_path)!r})
@@ -141,6 +146,53 @@ _spec.loader.exec_module(_suite)
 
 pytest_configure = _suite.pytest_configure
 _no_leftover_direct_children = _suite._no_leftover_direct_children
+
+_PID_NAMES = (
+    "leaky-child-CIU-223.pid",
+    "allowed-child-CIU-223.pid",
+)
+
+
+def pytest_runtest_logreport(report):
+    if (
+        report.when == "teardown"
+        and report.failed
+        and report.nodeid.endswith("test_unmarked_leak_fails_in_fixture_teardown")
+    ):
+        Path(__file__).with_name("inner-failure.txt").write_text(
+            str(report.longrepr), encoding="utf-8"
+        )
+
+
+def pytest_sessionfinish(session, exitstatus):
+    pid_paths = [Path(__file__).with_name(name) for name in _PID_NAMES]
+    pids = [int(path.read_text(encoding="utf-8")) for path in pid_paths]
+    ready_fd = int(os.environ["CIU_P13_READY_FD"])
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        os.write(ready_fd, b"F" if int(exitstatus) else b"P")
+    finally:
+        os.close(ready_fd)
+
+    pending = set(pids)
+    deadline = time.monotonic() + 5.0
+    while pending and time.monotonic() < deadline:
+        for pid in tuple(pending):
+            try:
+                waited, _status = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pending.remove(pid)
+                continue
+            if waited == pid:
+                pending.remove(pid)
+        if pending:
+            time.sleep(0.05)
+    if pending:
+        raise RuntimeError(
+            "pipe EOF did not release inner child pid(s): "
+            + ", ".join(map(str, sorted(pending)))
+        )
 """
     )
     pytester.makepyfile(
@@ -160,9 +212,12 @@ sys.stdin.buffer.read()
 
 
 def _spawn(token):
+    import os
+
     pid_path = Path(__file__).with_name(token + ".pid")
     child = subprocess.Popen(
         [sys.executable, "-c", _CHILD, token],
+        stdin=int(os.environ["CIU_P13_CHILD_READ_FD"]),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -182,40 +237,81 @@ def test_marked_leak_is_allowed():
     _spawn("allowed-child-CIU-223")
 """
     )
-    read_fd, write_fd = os.pipe()
+    child_read_fd, child_write_fd = os.pipe()
+    ready_read_fd, ready_write_fd = os.pipe()
+    monkeypatch.setenv("CIU_P13_CHILD_READ_FD", str(child_read_fd))
+    monkeypatch.setenv("CIU_P13_READY_FD", str(ready_write_fd))
     pid_paths = [
         pytester.path / "leaky-child-CIU-223.pid",
         pytester.path / "allowed-child-CIU-223.pid",
     ]
+    stdout_path = pytester.path / "inner.stdout"
+    stderr_path = pytester.path / "inner.stderr"
+    failure_path = pytester.path / "inner-failure.txt"
+    proc = None
     try:
-        # fd 0 in the inner pytest is a duplicate of the read end.  Its test
-        # children inherit fd 0, so they block here until the outer test closes
-        # the write end.  No fd or timeout decides pass/fail before that EOF.
-        result = pytester.run(
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "--strict-markers",
-            f"--basetemp={pytester.path / 'runpytest-pipe'}",
-            stdin=read_fd,
-        )
-        os.close(read_fd)
-        read_fd = -1
-        assert result.ret != 0
-        result.assert_outcomes(errors=1, passed=2)
+        with (
+            stdout_path.open("w", encoding="utf-8") as stdout,
+            stderr_path.open("w", encoding="utf-8") as stderr,
+        ):
+            proc = pytester.popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "-q",
+                    "--strict-markers",
+                    f"--basetemp={pytester.path / 'runpytest-pipe'}",
+                ],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=subprocess.DEVNULL,
+                pass_fds=(child_read_fd, ready_write_fd),
+            )
+        os.close(child_read_fd)
+        child_read_fd = -1
+        os.close(ready_write_fd)
+        ready_write_fd = -1
+
+        readiness = os.read(ready_read_fd, 1)
+        os.close(ready_read_fd)
+        ready_read_fd = -1
+        assert readiness == b"F"
+        failure = failure_path.read_text(encoding="utf-8")
+        assert "the test left direct child process(es) of pytest behind" in failure
+        assert "leaky-child-CIU-223" in failure
+        assert "allowed-child-CIU-223" not in failure
+
+        # The inner session-finish hook is now waiting in waitpid for its own
+        # direct children.  Closing the outer write end gives them EOF; pytest
+        # then reaps them before it exits, so an ancestor subreaper cannot
+        # retain zombies.  This is the only release action, and it is not a
+        # signal.
+        os.close(child_write_fd)
+        child_write_fd = -1
+        rc = proc.wait()
+        assert rc != 0
+        output = stdout_path.read_text(encoding="utf-8")
         teardown_error = (
             "ERROR at teardown of "
             "test_unmarked_leak_fails_in_fixture_teardown"
         )
-        assert teardown_error in result.stdout.str()
-        assert "leaky-child-CIU-223" in result.stdout.str()
-        assert "allowed-child-CIU-223" not in result.stdout.str()
+        assert teardown_error in output
+        assert "leaky-child-CIU-223" in output
+        assert "allowed-child-CIU-223" not in output
+        assert "2 passed, 1 error" in output
     finally:
-        if read_fd >= 0:
-            os.close(read_fd)
-        os.close(write_fd)
-        write_fd = -1
+        for fd_name in (
+            "child_read_fd",
+            "child_write_fd",
+            "ready_read_fd",
+            "ready_write_fd",
+        ):
+            fd = locals()[fd_name]
+            if fd >= 0:
+                os.close(fd)
+        if proc is not None and proc.poll() is None:
+            proc.wait()
         _reap_recorded_children(pid_paths)
     assert not suite_conftest._direct_children()
 
