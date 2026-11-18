@@ -130,7 +130,8 @@ fn over(len: usize, max_reply_bytes: u32) -> bool {
 }
 
 /// A binary REP frame for `result_json` (one JSON object). A payload above `max_reply_bytes` is
-/// replaced by an `internal` error on the same `corr` (R25).
+/// replaced by an `internal` error on the same `corr` (R25). The cap is measured on the payload
+/// alone (`{"ok":true,"result":...}`): the 12-byte header and the `corr` are not counted.
 #[must_use]
 pub fn rep_ok(corr: u32, result_json: &str, max_reply_bytes: u32) -> Vec<u8> {
     let payload = ok_payload(result_json);
@@ -141,7 +142,9 @@ pub fn rep_ok(corr: u32, result_json: &str, max_reply_bytes: u32) -> Vec<u8> {
 }
 
 /// The JSON-mode success line for `result_json`, `"corr"` included, ending in `\n`. A reply
-/// above `max_reply_bytes` (the line without its `\n`) is replaced by an `internal` error line.
+/// above `max_reply_bytes` is replaced by an `internal` error line. The cap is measured on the
+/// whole line without its `\n`, so the `,"corr":N` member counts (unlike [`rep_ok`], whose cap
+/// measures the payload alone).
 #[must_use]
 pub fn rep_ok_line(corr: u32, result_json: &str, max_reply_bytes: u32) -> Vec<u8> {
     let mut line = format!("{{\"ok\":true,\"corr\":{corr},\"result\":{result_json}}}");
@@ -347,6 +350,76 @@ mod tests {
         let err_body = line_over.get(..line_over.len() - 1).expect("body");
         assert_eq!(error_parts(err_body, true).0, "\"internal\"");
         assert_eq!(check_rep(err_body, true).expect("rep").corr, Some(3));
+    }
+
+    #[test]
+    fn the_reply_cap_is_exact_for_the_line_and_for_the_payload() {
+        let result = format!("{{\"pad\":\"{}\"}}", "x".repeat(40));
+        let full = rep_ok_line(3, &result, u32::MAX);
+        assert_eq!(full.last(), Some(&b'\n'));
+        let cap = u32::try_from(full.len() - 1).expect("small");
+        // The line cap is the line without its newline, `,"corr":N` included.
+        assert_eq!(rep_ok_line(3, &result, cap), full);
+        let over = rep_ok_line(3, &result, cap - 1);
+        let body = over.get(..over.len() - 1).expect("body");
+        assert_eq!(error_parts(body, true).0, "\"internal\"");
+        assert_eq!(check_rep(body, true).expect("rep").corr, Some(3));
+        // Nine more corr digits make the same result nine bytes longer.
+        let wide = rep_ok_line(4_294_967_295, &result, cap);
+        let body = wide.get(..wide.len() - 1).expect("body");
+        assert_eq!(error_parts(body, true).0, "\"internal\"");
+        let wide = rep_ok_line(4_294_967_295, &result, cap + 9);
+        let body = wide.get(..wide.len() - 1).expect("body");
+        assert!(check_rep(body, true).expect("rep").ok);
+        // The binary cap is the payload alone: the corr is in the header, not counted.
+        let payload_cap = u32::try_from(ok_payload(&result).len()).expect("small");
+        let frame = rep_ok(4_294_967_295, &result, payload_cap);
+        assert!(check_rep(split(&frame).1, false).expect("rep").ok);
+        let frame = rep_ok(4_294_967_295, &result, payload_cap - 1);
+        assert_eq!(error_parts(split(&frame).1, false).0, "\"internal\"");
+    }
+
+    #[test]
+    fn rep_error_golden_bytes_for_a_key_detail() {
+        let frame = rep_error(7, Code::BadRequest, &Detail::key("proto.minor"));
+        let mut expected = vec![123u8, 0, 0, 0, 2, 0, 0, 0, 7, 0, 0, 0];
+        let payload = concat!(
+            r#"{"ok":false,"error":{"code":"bad-request","#,
+            r#""message":"the request is malformed","#,
+            r#""detail":{"key":"proto.minor"}}}"#
+        );
+        expected.extend_from_slice(payload.as_bytes());
+        assert_eq!(expected.len(), 123);
+        assert_eq!(frame, expected);
+    }
+
+    #[test]
+    fn error_line_golden_bytes_with_a_spaced_message() {
+        let line = error_line(3, Code::Idle, &Detail::Empty);
+        let expected = concat!(
+            r#"{"ok":false,"corr":3,"error":{"code":"idle","#,
+            r#""message":"the connection was idle for too long","#,
+            r#""detail":{}}}"#,
+            "\n"
+        );
+        assert_eq!(line, expected.as_bytes());
+        let line = error_line(7, Code::BadRequest, &Detail::key("proto.minor"));
+        let expected = concat!(
+            r#"{"ok":false,"corr":7,"error":{"code":"bad-request","#,
+            r#""message":"the request is malformed","#,
+            r#""detail":{"key":"proto.minor"}}}"#,
+            "\n"
+        );
+        assert_eq!(line, expected.as_bytes());
+    }
+
+    #[test]
+    fn closing_evt_golden_bytes() {
+        let frame = closing_evt(Code::Deadline);
+        let mut expected = vec![51u8, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0];
+        expected.extend_from_slice(br#"{"event":"closing","reason":"deadline"}"#);
+        assert_eq!(expected.len(), 51);
+        assert_eq!(frame, expected);
     }
 
     #[test]

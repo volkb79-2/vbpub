@@ -252,7 +252,9 @@ fn call_of(query: &Query<'_>, corr: u32, verb: &Verb, text: &[u8]) -> Result<Cal
             Ok(()) => Ok(Call::Status),
             Err(error) => Err(bad_args(corr, &error)),
         },
-        _ => Err(refuse(Code::UnknownVerb, corr)),
+        // Unreachable while `verb_gate` passes only served verbs (`hello`, `status`): a served
+        // verb without a schema here is a server defect, never the client's `unknown-verb`.
+        _ => Err(refuse(Code::Internal, corr)),
     }
 }
 
@@ -883,6 +885,18 @@ mod tests {
         let text = req("hello", &hello_with(2, 9));
         let query = before_hello(text.as_bytes());
         assert_refusal(&query, Code::BadRequest, 1, &key("proto.major"));
+    }
+
+    #[test]
+    fn r7_a_binary_hello_with_major_0_or_minor_0_is_refused_against_prefix_1_1() {
+        let text = req("hello", &hello_with(0, 1));
+        let query = before_hello(text.as_bytes());
+        assert_refusal(&query, Code::BadRequest, 1, &key("proto.major"));
+        assert!(!refused(&query).fatal());
+        let text = req("hello", &hello_with(1, 0));
+        let query = before_hello(text.as_bytes());
+        assert_refusal(&query, Code::BadRequest, 1, &key("proto.minor"));
+        assert!(!refused(&query).fatal());
     }
 
     #[test]

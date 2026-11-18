@@ -467,3 +467,147 @@ fn the_line_reader_keeps_its_bounds_under_random_streams() {
         }
     }
 }
+
+/// One cell of the classify grid.
+struct Case {
+    mode: Mode,
+    phase: Phase,
+    level: Level,
+    verb: &'static str,
+    corr: u32,
+}
+
+const GRID_VERBS: [&str; 7] = [
+    "hello",
+    "status",
+    "current",
+    "snapshot_at",
+    "procs",
+    "events",
+    "bogus",
+];
+
+const TELEMETRY: [Level; 2] = [Level::Observe, Level::Operator];
+const WITH_CONTROL: [Level; 3] = [Level::Observe, Level::Operator, Level::Control];
+
+/// Whether `level` knows `verb` (WIRE.md section 4.3), written out here from the table.
+fn knows(level: Level, verb: &str) -> bool {
+    match verb {
+        "hello" => true,
+        "status" | "events" => WITH_CONTROL.contains(&level),
+        "current" | "snapshot_at" | "procs" => TELEMETRY.contains(&level),
+        _ => false,
+    }
+}
+
+/// The expected `(refusal code or None for a dispatch, corr)` of a valid-args request, derived
+/// by hand from the R11 table (not by calling `classify`).
+fn expected(case: &Case) -> (Option<Code>, u32) {
+    let corr = case.corr;
+    let binary = case.mode == Mode::Binary;
+    let hello = case.verb == "hello";
+    if corr == 0 && binary {
+        return (Some(Code::BadFrame), 0);
+    }
+    if corr == 0 {
+        return (Some(Code::BadRequest), 0);
+    }
+    if binary && case.phase == Phase::BeforeHello {
+        if !hello {
+            return (Some(Code::HelloRequired), corr);
+        }
+        if corr != 1 {
+            return (Some(Code::BadFrame), 0);
+        }
+    }
+    if case.verb == "bogus" {
+        return (Some(Code::UnknownVerb), corr);
+    }
+    if !knows(case.level, case.verb) {
+        return (Some(Code::Forbidden), corr);
+    }
+    if hello && case.phase == Phase::Ready {
+        return (Some(Code::BadRequest), corr);
+    }
+    if !binary && matches!(case.verb, "current" | "snapshot_at") {
+        return (Some(Code::BinaryRequired), corr);
+    }
+    if !matches!(case.verb, "hello" | "status") {
+        return (Some(Code::UnknownVerb), corr);
+    }
+    (None, corr)
+}
+
+fn payload_of(case: &Case) -> String {
+    let args = if case.verb == "hello" { HELLO_ARGS } else { "{}" };
+    let verb = case.verb;
+    if case.mode == Mode::Binary {
+        format!("{{\"verb\":\"{verb}\",\"args\":{args}}}")
+    } else {
+        let corr = case.corr;
+        format!("{{\"verb\":\"{verb}\",\"args\":{args},\"corr\":{corr}}}")
+    }
+}
+
+#[test]
+fn the_grid_of_valid_requests_matches_the_hand_derived_r11_table() {
+    let mut runs = 0;
+    for mode in [Mode::Binary, Mode::Json] {
+        for phase in [Phase::BeforeHello, Phase::Ready] {
+            for level in Level::ALL {
+                for verb in GRID_VERBS {
+                    for corr in [0u32, 1, 5] {
+                        let case = Case {
+                            mode,
+                            phase,
+                            level,
+                            verb,
+                            corr,
+                        };
+                        let text = payload_of(&case);
+                        let query = Query {
+                            frame_type: FrameType::Req,
+                            corr,
+                            mode,
+                            phase,
+                            level,
+                            prefix: Prefix { major: 1, minor: 1 },
+                            payload: text.as_bytes(),
+                        };
+                        let (code, want_corr) = expected(&case);
+                        let label = format!("{mode:?} {phase:?} {} {verb} {corr}", level.name());
+                        match (classify(&query), code) {
+                            (Ok(done), None) => {
+                                assert_eq!(done.corr, want_corr, "{label}");
+                                let is_hello = matches!(done.call, Call::Hello(_));
+                                assert_eq!(is_hello, verb == "hello", "{label}");
+                            }
+                            (Err(refusal), Some(code)) => {
+                                let got = (refusal.code, refusal.corr);
+                                assert_eq!(got, (code, want_corr), "{label}");
+                            }
+                            (other, _) => panic!("{label}: {other:?}"),
+                        }
+                        runs += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(runs, 336);
+}
+
+#[test]
+fn a_line_reader_run_that_jumps_past_the_completion_deadline_is_deadline() {
+    let mut reader = LineReader::new(LINE_MAX, 5_000 * MS);
+    let feed = reader.feed(b"{\"verb\":\"status\"}\n{\"verb\":", MS);
+    assert_eq!(feed.lines.len(), 1);
+    assert_eq!(feed.error, None);
+    // The incomplete tail started at `MS`: exactly at the limit is still in time.
+    assert_eq!(reader.poll(5_001 * MS), Ok(()));
+    // A clock that jumps far past the limit is the deadline, and the reader stays poisoned.
+    assert_eq!(reader.poll(60_000 * MS), Err(LineError::Deadline));
+    assert_eq!(reader.poll(0), Err(LineError::Deadline));
+    let after = reader.feed(b"x", 61_000 * MS);
+    assert_eq!(after.error, Some(LineError::Deadline));
+}

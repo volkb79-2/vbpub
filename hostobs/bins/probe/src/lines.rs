@@ -17,7 +17,9 @@
 //!   fed bytes and only the incomplete tail is buffered ([`LineReader::scanned`] counts the
 //!   scanned bytes, so a test asserts `scanned == fed` instead of timing anything).
 //! - **Bounded buffer.** The tail's capacity never exceeds `min(max_request_bytes, received +
-//!   4 KiB)`, and a poisoned reader holds no buffer.
+//!   4 KiB)`, and a poisoned reader holds no buffer. The 4 KiB growth step means a 1-byte
+//!   dribble re-reserves (and copies the tail) about once per 4 KiB received, so an incomplete
+//!   line costs O(n^2 / 4096) copying, bounded by `max_request_bytes`.
 //! - **The reader does not interpret a line.** The returned line has its `\n` removed and
 //!   nothing else: a `\r` stays (so a CRLF line reaches the envelope check with a trailing
 //!   byte, `bad-request`), and an empty line is an empty line (`bad-request`, not fatal).
@@ -387,17 +389,10 @@ mod tests {
         assert_eq!(LineError::Deadline.code(), Some(Code::Deadline));
         assert_eq!(LineError::Truncated.code(), None);
         assert_eq!(LineError::TrailingBytes.code(), None);
-        let kinds = [
-            LineError::TooLarge,
-            LineError::Deadline,
-            LineError::Truncated,
-            LineError::TrailingBytes,
-        ];
-        let names: Vec<&str> = kinds.iter().map(|error| error.kind()).collect();
-        assert_eq!(names.len(), 4);
-        for (index, name) in names.iter().enumerate() {
-            assert!(!names[..index].contains(name));
-        }
+        assert_eq!(LineError::TooLarge.kind(), "line-too-large");
+        assert_eq!(LineError::Deadline.kind(), "deadline");
+        assert_eq!(LineError::Truncated.kind(), "truncated");
+        assert_eq!(LineError::TrailingBytes.kind(), "trailing-bytes");
     }
 
     // ---- rows: the age ------------------------------------------------------------------
