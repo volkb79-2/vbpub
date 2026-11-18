@@ -2,10 +2,13 @@
 # dr-plan: decide, WITHOUT touching any disk, whether the unattended installer may wipe a disk and which one.
 # A pure function of: lsblk output, the install config, and the names the caller excludes.
 #
-#   dr-plan --lsblk FILE (--config FILE | --no-config) [--exclude NAME]... [--min-gib N]
+#   dr-plan --lsblk FILE [--lsblk-full FILE] (--config FILE | --no-config) [--exclude NAME]... [--busy NAME]... [--min-gib N]
 #
 #   FILE is `lsblk -dnbP -o NAME,TYPE,ROTA,RM,SIZE,TRAN` output (use "-" for stdin).
-#   --exclude: the disk the ISO booted from, the disk of the config stick, anything mounted (repeatable).
+#   --lsblk-full: the same WITHOUT -d and with PKNAME added (`lsblk -nbP -o NAME,TYPE,ROTA,RM,SIZE,TRAN,PKNAME`): the only listing
+#     in which raid/lvm/crypt/mpath devices stacked on disks appear; without it the main listing is searched.
+#   --exclude: the disk the ISO booted from and the disk of the config stick (not counted, never a target; repeatable).
+#   --busy: disks with something mounted or in use as swap (never a target, but they COUNT as internal disks).
 #
 # Prints, on stdout:  DECISION=install|confirm|refuse  TARGET=/dev/NAME  and the validated config settings (KEY=VALUE).
 # Exit 0 for install and confirm, 3 for refuse (reason on stderr), 2 for a usage error.
@@ -105,8 +108,10 @@ nother=0   # storage stacked on disks that is not a plain disk: md raid, multipa
 # With --lsblk-full the caller gives a listing WITHOUT -d, and only that one is searched for such devices; without it the
 # main listing is used (fixtures, hand use).
 if [ -n "$LSBLK_FULL" ]; then
-  [ -r "$LSBLK_FULL" ] || refuse "full lsblk file $LSBLK_FULL is not readable"
-  full_input=$(cat "$LSBLK_FULL")
+  # fail closed: a listing that cannot be read or has no rows must not read as "no other storage"
+  [ -f "$LSBLK_FULL" ] && [ -r "$LSBLK_FULL" ] || refuse "full lsblk file $LSBLK_FULL is not a readable regular file"
+  full_input=$(cat "$LSBLK_FULL") || refuse "cannot read the full lsblk file $LSBLK_FULL"
+  grep -q 'NAME="' <<<"$full_input" || refuse "the full lsblk listing has no device rows"
 else
   full_input=$input
 fi
@@ -116,10 +121,28 @@ while IFS= read -r line || [ -n "$line" ]; do
   [ -z "${EXCLUDED[$name]+x}" ] || continue
   [[ "$line" =~ (^|[[:space:]])TYPE=\"disk\" ]] && nall=$((nall + 1))
 done <<<"$input"
+# Devices stacked ONLY on an excluded disk (a crypt/lvm device on the config stick) are not storage of the host: the full
+# listing carries PKNAME (the parent), and a row whose parent is an excluded device or a descendant of one is ignored.
+# A device with two parents (a raid across the stick and another disk) has two rows; the one under the other disk counts.
+declare -A UNDER_EXCLUDED=()
+for k in "${!EXCLUDED[@]}"; do UNDER_EXCLUDED[$k]=1; done
+changed=1
+while [ "$changed" = 1 ]; do
+  changed=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ (^|[[:space:]])NAME=\"([^\"]*)\" ]] || continue
+    name=${BASH_REMATCH[2]}
+    [[ "$line" =~ (^|[[:space:]])PKNAME=\"([^\"]+)\" ]] || continue
+    [ -n "${UNDER_EXCLUDED[${BASH_REMATCH[2]}]+x}" ] || continue
+    [ -z "${UNDER_EXCLUDED[$name]+x}" ] || continue
+    UNDER_EXCLUDED[$name]=1; changed=1
+  done <<<"$full_input"
+done
 while IFS= read -r line || [ -n "$line" ]; do
   [[ "$line" =~ (^|[[:space:]])NAME=\"([^\"]*)\" ]] || continue
   name=${BASH_REMATCH[2]}
   [ -z "${EXCLUDED[$name]+x}" ] || continue
+  if [[ "$line" =~ (^|[[:space:]])PKNAME=\"([^\"]+)\" ]] && [ -n "${UNDER_EXCLUDED[${BASH_REMATCH[2]}]+x}" ]; then continue; fi
   [[ "$line" =~ (^|[[:space:]])TYPE=\"([^\"]*)\" ]] || continue
   case "${BASH_REMATCH[2]}" in
     disk|loop|rom|part|"") ;;
@@ -148,6 +171,7 @@ case "$target_spec" in
     echo "DECISION=install"; echo "TARGET=$candidates"; emit_settings; exit 0 ;;
   first-ssd)
     [ "$ncand" -ge 1 ] || refuse "no qualifying disk"
+    [ "$nother" -eq 0 ] || refuse "first-ssd is a rule, not a named disk: $nother other storage devices (md/lvm/crypt/mpath) are present; name the disk with TARGET_DISK=/dev/X"
     echo "DECISION=install"; echo "TARGET=$(printf '%s\n' "$candidates" | sed -n 1p)"; emit_settings; exit 0 ;;
   *)
     name=${target_spec#/dev/}

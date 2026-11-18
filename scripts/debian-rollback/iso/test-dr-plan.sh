@@ -121,6 +121,24 @@ expect full-listing-raid-no-config-REFUSES   refuse  ""       "$ONE" none --lsbl
 expect full-listing-plain-live-system-ok     install /dev/vda "$ONE" "$(conf 'HOSTNAME=h1')" --lsblk-full "$FULLPLAIN"
 expect full-listing-raid-explicit-target-ok  install /dev/vda "$ONE" "$(conf 'TARGET_DISK=/dev/vda')" --lsblk-full "$FULLMD"
 expect full-listing-missing-file-REFUSES     refuse  ""       "$ONE" "$(conf 'HOSTNAME=h1')" --lsblk-full "$WORK/does-not-exist"
+# review r15: a full listing that cannot be trusted must refuse (fail closed), not count as "no other storage"
+: > "$WORK/empty.lsblk"; printf 'this is not lsblk output\n' > "$WORK/garbage.lsblk"
+expect full-listing-directory-REFUSES        refuse  ""       "$ONE" "$(conf 'HOSTNAME=h1')" --lsblk-full "$WORK"
+expect full-listing-empty-file-REFUSES       refuse  ""       "$ONE" "$(conf 'HOSTNAME=h1')" --lsblk-full "$WORK/empty.lsblk"
+expect full-listing-garbage-REFUSES          refuse  ""       "$ONE" "$(conf 'HOSTNAME=h1')" --lsblk-full "$WORK/garbage.lsblk"
+# review r15: storage stacked ONLY on an excluded disk (a crypt device on the config stick) is not "other storage" of the
+# host; the full listing carries PKNAME so descendants of excluded disks are ignored. A raid that also sits on a
+# non-excluded disk still counts.
+pk() { printf 'NAME="%s" TYPE="%s" ROTA="0" RM="0" SIZE="%s" TRAN="" PKNAME="%s"\n' "$1" "$2" "$((1 * GIB))" "$3"; }
+FULLSTICK=$WORK/full-stick.lsblk
+{ disk vda 0 0 20; pk vda1 part vda; disk sdb 0 1 16 usb; pk sdb1 part sdb; pk luks-sdb1 crypt sdb1; } > "$FULLSTICK"
+FULLSPAN=$WORK/full-span.lsblk
+{ disk vda 0 0 20; pk vda1 part vda; disk sdb 0 1 16 usb; pk sdb1 part sdb; pk md0 raid1 vda1; pk md0 raid1 sdb1; } > "$FULLSPAN"
+expect crypt-on-excluded-stick-is-ignored    install /dev/vda "$USB" "$(conf 'HOSTNAME=h1')" --exclude sdb --lsblk-full "$FULLSTICK"
+expect raid-spanning-excluded-and-other-REFUSES refuse "" "$USB" "$(conf 'HOSTNAME=h1')" --exclude sdb --lsblk-full "$FULLSPAN"
+# first-ssd is rule-based, not a named disk: it must not bypass the array check either
+expect first-ssd-with-raid-REFUSES           refuse  ""       "$ONE" "$(conf 'TARGET_DISK=first-ssd')" --lsblk-full "$FULLMD"
+expect first-ssd-plain-ok                    install /dev/vda "$ONE" "$(conf 'TARGET_DISK=first-ssd')" --lsblk-full "$FULLPLAIN"
 # shellcheck disable=SC2016
 expect password-and-hash-REFUSES             refuse  ""       "$ONE" "$(conf 'ROOT_PASSWORD=abc' 'ROOT_PASSWORD_HASH=$6$salt$hash')"
 # REINSTALL=yes is a known key (the runner reads it; dr-plan only validates it)
