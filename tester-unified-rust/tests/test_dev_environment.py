@@ -1036,10 +1036,11 @@ class BuildDevImageTests(unittest.TestCase):
         calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
         return proc, calls
 
-    def test_refuses_without_a_governed_slice_and_documents_options(self) -> None:
+    def test_refuses_without_a_cgroup_parent_and_documents_options(self) -> None:
         proc, calls = self.run_build()
         self.assertEqual(proc.returncode, 2)
-        self.assertIn("refusing an ungoverned image build", proc.stderr)
+        self.assertIn("is required (the estate rule for every image build); refusing to build without it", proc.stderr)
+        self.assertNotIn("ungoverned image build", proc.stderr)
         self.assertEqual(calls, [])
         proc, _ = self.run_build("--help")
         self.assertEqual(proc.returncode, 2)
@@ -1101,6 +1102,16 @@ class BuildDevImageTests(unittest.TestCase):
                 proc, _ = self.run_build("--cgroup-parent", self.SLICE, STUB_DEV_LAYERS=layers)
                 self.assertEqual(proc.returncode, 2, proc.stdout)
                 self.assertIn("not built on the layers of base image", proc.stderr)
+
+    def test_the_build_says_plainly_that_it_is_not_in_the_governed_slice(self) -> None:
+        proc, calls = self.run_build("--cgroup-parent", self.SLICE)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("NOTE: on the docker-driver builder --cgroup-parent does NOT place this build in the governed slice", proc.stderr)
+        self.assertIn("/sys/fs/cgroup/dev-gates.slice/buildkit", proc.stderr)
+        # the flag is still passed (estate rule), and the untested path form is not used
+        build = [c for c in calls if c[:2] == ["buildx", "build"]][0]
+        self.assertEqual(build[build.index("--cgroup-parent") + 1], self.SLICE)
+        self.assertNotIn("dev.slice/dev-gates.slice", " ".join(" ".join(c) for c in calls))
 
     def test_probe_containers_are_governed_and_networkless(self) -> None:
         _, calls = self.run_build("--cgroup-parent", self.SLICE)

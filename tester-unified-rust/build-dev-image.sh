@@ -42,7 +42,7 @@ valid_builder_name "$builder" || {
   exit 2
 }
 [[ -n "$cgroup_parent" ]] || {
-  printf 'CGROUP_PARENT_DEV_GATES or --cgroup-parent is required; refusing an ungoverned image build\n' >&2
+  printf 'CGROUP_PARENT_DEV_GATES or --cgroup-parent is required (the estate rule for every image build); refusing to build without it\n' >&2
   exit 2
 }
 [[ -f "$repo_root/tester-unified-rust/Dockerfile.dev" ]] || {
@@ -67,6 +67,12 @@ context="$(mktemp -d)"
 trap 'rmdir "$context" 2>/dev/null || true' EXIT
 
 printf 'builder=%s\n' "$builder"
+# What --cgroup-parent does and does not do (measured on v1001, docker cgroup driver systemd): containers
+# started with `docker run --cgroup-parent dev-gates.slice` land in the governed dev.slice/dev-gates.slice,
+# but the RUN-step processes of a docker-driver BuildKit build land in a root-level, UNGOVERNED
+# /sys/fs/cgroup/dev-gates.slice/buildkit (memory.max = max). The flag below is passed because the estate
+# requires it, not because it governs this build. Watch the build's memory yourself (docs/DEV.md).
+printf 'NOTE: on the docker-driver builder --cgroup-parent does NOT place this build in the governed slice: the build runs in an ungoverned cgroup (v1001: /sys/fs/cgroup/dev-gates.slice/buildkit); watch its memory\n' >&2
 docker buildx inspect "$builder" >/dev/null
 # The build starts FROM a content-named tag of the exact base image id: a moved tag cannot change it,
 # and it is a plain reference every builder accepts (a bare `sha256:<id>` in FROM is not, on every
@@ -104,7 +110,8 @@ fi
 
 # Everything this layer added or upgraded, with its version: the DIFF of `dpkg-query -W` between the
 # base image and the dev image (the dependency closure of gdb and friends included), plus the
-# toolchain lines. The probe containers have no network, no capabilities and sit in the same governed slice.
+# toolchain lines. The probe containers are started with `docker run --cgroup-parent`, which DOES place
+# them in the governed slice (unlike the build above); they have no network and no capabilities.
 probe() {
   docker run --rm --pull never --network none --cap-drop ALL \
     --security-opt no-new-privileges --cgroup-parent "$cgroup_parent" \

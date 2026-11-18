@@ -96,7 +96,7 @@ The controller gives the go; a controller-run implementer or the controller does
    `TESTER_UNIFIED_RUST_BUILDER`, then the default), `--record FILE`. The default builder is the
    docker driver, the kind that can see a base image that exists only in the local daemon; a
    docker-container builder cannot. The build needs the network for apt and rustup only. It
-   refuses an ungoverned build like `build-image.sh`, builds `FROM` a **content-named tag of the exact
+   requires `CGROUP_PARENT_DEV_GATES` or `--cgroup-parent` like `build-image.sh` (the estate rule), builds `FROM` a **content-named tag of the exact
    base image id**: before the build it runs `docker tag <id> tester-unified-rust-base:<64 hex of
    the id>` (build arg `BASE_IMAGE`), so a moved `tester-unified-rust:local` cannot race the build and
    the reference is a plain one every builder accepts. The script creates that tag (exact name, the
@@ -106,6 +106,18 @@ The controller gives the go; a controller-run implementer or the controller does
    comparison only echoes them) and, independently of them, the dev image's layer list must start with
    every layer of the base image, in order. The script then prints the packages the layer added or
    upgraded.
+
+   **The build itself is NOT in a governed cgroup.** Measured on `v1001` (docker cgroup driver
+   systemd): containers started with `docker run --cgroup-parent dev-gates.slice` land in
+   `/sys/fs/cgroup/dev.slice/dev-gates.slice` (MemoryMax 6.5 GiB), but the RUN-step processes of a
+   docker-driver BuildKit build with `--cgroup-parent dev-gates.slice` land in a root-level,
+   **ungoverned** `/sys/fs/cgroup/dev-gates.slice/buildkit` (`memory.max` is `max`). The flag is
+   passed because the estate requires it; the script prints a NOTE saying so on every build. The
+   probe containers it starts afterwards (package list, versions) are governed. So the first build
+   must be **watched**: the memory of that cgroup (the observer should abort above 3.5 GB), and it
+   is started only with the controller's go. A path form such as `--cgroup-parent
+   dev.slice/dev-gates.slice` might place a build under the governed slice; it is **untested** and
+   the script does not use it.
 3. Because the image is built on the host that runs it, no image transfer is needed. If it must be
    built elsewhere, `docker save IMAGE | docker load` from the host that holds it moves it, but it
    is a multi-GB transfer; only the controller decides that.
