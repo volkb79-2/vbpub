@@ -1287,7 +1287,8 @@ but existing callers in the same test process (for example `array_strings_accept
 and the hello parsing tests) spin on the mutated helper, so the whole suite ends only at the
 lane's timeout. Killing them would need a killable child-process harness per probe. Decision
 (controller, 2026-11-18): keep it simple, a documented known limit. The lane's timeout classifies
-both as TIMEOUT, assay B560 (timeout floor derived from the baseline) makes them cheap, and the
+both as TIMEOUT; today each costs the full 120-second floor (assay.toml), and assay B560 (timeout
+floor derived from the baseline, still OPEN) would make them cheap once implemented. The
 expected `assay-r2` result for `hostobs/crates/client` is 0 MISSED and 2 TIMEOUT.
 
 **Exit criteria.** Either a child-process probe harness kills both loops with a fast FAIL, or the
