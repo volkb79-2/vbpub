@@ -661,6 +661,26 @@ def _require_component(label: str, name: str) -> None:
         raise ValueError(f"{label} must be one non-empty path component, got {name!r}")
 
 
+def _lstat_or_refuse(name: str, *, dir_fd: int, artifact: str) -> os.stat_result | None:
+    """:func:`_lstat_relative` for the directory reservation: absence is still
+    ``None``, but any OTHER ``OSError`` (``EACCES`` on a directory the command
+    chmod'ed after the descriptor was opened, ``ESTALE``, ...) is a data-shaped
+    ``ERROR``/``UNREADABLE_ARTIFACT`` refusal, never a raw exception.
+    :class:`OutputReservation` keeps its own behaviour and does not use this."""
+    try:
+        return _lstat_relative(name, dir_fd=dir_fd)
+    except OSError as exc:
+        raise _refuse(f"{artifact!r}: {name!r} could not be inspected: {exc}") from exc
+
+
+def _is_strict_utf8(text: str) -> bool:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _member_basename(name: object) -> str:
     """Return the component of a ``diff/<name>`` member, or refuse.
 
@@ -669,6 +689,14 @@ def _member_basename(name: object) -> str:
     or ``\\``. Ending in ``.diff`` already excludes ``.`` and ``..``. Any other
     character, non-ASCII included, is safe because the member is opened by NAME
     through a held directory descriptor and never globbed or joined into a path.
+
+    A non-``str`` name refuses, and so does a ``str`` that is not strict UTF-8
+    (a lone surrogate, which JSON can spell as ``"\\ud800"``): ``os.open`` would
+    raise ``UnicodeEncodeError`` for it, or, for a ``surrogateescape`` spelling
+    such as ``"\\udcff"``, silently open the file whose name holds the raw byte
+    ``0xff``, so two distinct strings could alias one file and defeat the
+    duplicate check. Requiring a strict UTF-8 round trip makes distinct names
+    distinct byte strings by construction.
     """
     prefix, separator, base = name.partition("/") if isinstance(name, str) else ("", "", "")
     if (
@@ -676,10 +704,11 @@ def _member_basename(name: object) -> str:
         or not separator
         or not base.endswith(".diff")
         or any(character in base for character in ("/", "\\", "\0"))
+        or not _is_strict_utf8(base)
     ):
         raise _refuse(
             f"member name {name!r} is not exactly 'diff/<name>.diff' with one "
-            f"path component and no NUL, '/' or backslash"
+            f"path component, no NUL, '/' or backslash, and strict UTF-8 text"
         )
     return base
 
@@ -737,17 +766,36 @@ class DirectoryArtifactReservation:
         """The project-relative path of the child directory."""
         return "/".join((*self._out_parts, self._child))
 
+    def _lstat(self, name: str, held_fd: int) -> os.stat_result | None:
+        return _lstat_or_refuse(name, dir_fd=held_fd, artifact=self._out_dir)
+
     def _refuse_if_child_or_rotated_present(self, held_fd: int, *, when: str) -> None:
         for name in (self._child, self._rotated):
-            if _lstat_relative(name, dir_fd=held_fd) is not None:
+            if self._lstat(name, held_fd) is not None:
                 raise _refuse(
                     f"{'/'.join((*self._out_parts, name))!r} {when} -- assay reserved "
                     f"{self._out_dir!r} empty and never accepts an object it did not "
                     f"observe absent, because the tool would rotate or reuse it"
                 )
 
+    def _refuse_if_not_empty(self, held_fd: int, *, when: str) -> None:
+        """Only an EMPTY ``<out>`` may exist when the command starts: the tool
+        copies it into every mutant tree, where a test could read what is in it.
+        Hidden entries count; this lists the held descriptor, never a path."""
+        try:
+            entries = os.listdir(held_fd)
+        except OSError as exc:
+            raise _refuse(f"{self._out_dir!r} could not be listed: {exc}") from exc
+        if entries:
+            raise _refuse(
+                f"{self._out_dir!r} is not empty {when} -- only an empty directory is "
+                f"ever reserved, because it is copied into the tool's work tree and a "
+                f"test could read what is in it"
+            )
+
     def arm(self) -> None:
-        """Repeat the absence checks of reserve time; unlinks nothing."""
+        """Repeat the absence and emptiness checks of reserve time; unlinks
+        nothing."""
         if self._held_fd is None:
             raise RuntimeError("reservation already closed")
         if self._armed:
@@ -755,6 +803,7 @@ class DirectoryArtifactReservation:
         self._refuse_if_child_or_rotated_present(
             self._held_fd, when="appeared after reservation but before arming"
         )
+        self._refuse_if_not_empty(self._held_fd, when="at arming")
         self._armed = True
 
     def _refuse_if_out_was_renamed(self) -> None:
@@ -770,7 +819,9 @@ class DirectoryArtifactReservation:
             self._project_root, self._out_parts, artifact=self._out_dir
         )
         try:
-            current = _lstat_relative(self._out_parts[-1], dir_fd=parent_fd)
+            current = _lstat_or_refuse(
+                self._out_parts[-1], dir_fd=parent_fd, artifact=self._out_dir
+            )
         finally:
             os.close(parent_fd)
         if current is None or _identity(current) != self._out_identity:
@@ -801,13 +852,13 @@ class DirectoryArtifactReservation:
                 held_fd, artifact=self.artifact, where=repr(self._out_dir)
             )
             self._refuse_if_out_was_renamed()
-            if _lstat_relative(self._rotated, dir_fd=held_fd) is not None:
+            if self._lstat(self._rotated, held_fd) is not None:
                 raise _refuse(
                     f"{'/'.join((*self._out_parts, self._rotated))!r} exists after the "
                     f"run -- the tool rotated a {self._child!r} that was absent at "
                     f"arming, so the command ran twice or something else wrote there"
                 )
-            child_stat = _lstat_relative(self._child, dir_fd=held_fd)
+            child_stat = self._lstat(self._child, held_fd)
             if child_stat is None:
                 return ABSENT
             if not stat_module.S_ISDIR(child_stat.st_mode):
@@ -836,7 +887,7 @@ class DirectoryArtifactReservation:
                     f"died mid-run or wrote an incomplete directory"
                 )
             files = self._read_members(child_fd, members(report))
-            final = _lstat_relative(self._child, dir_fd=held_fd)
+            final = self._lstat(self._child, held_fd)
             if final is None or _identity(final) != identity:
                 raise _refuse(f"{self.artifact!r} was replaced while it was being read")
             return DirectoryArtifact(
@@ -861,9 +912,10 @@ class DirectoryArtifactReservation:
             )
         bases: dict[str, str] = {}
         for name in names:
+            base = _member_basename(name)  # first: a non-str name must not reach a hash
             if name in bases:
                 raise _refuse(f"member {name!r} is named twice")
-            bases[name] = _member_basename(name)
+            bases[name] = base
         if not bases:
             return {}
         try:
@@ -960,12 +1012,7 @@ def reserve_directory_output(
         reservation._refuse_if_child_or_rotated_present(
             held_fd, when="already exists at reservation"
         )
-        if os.listdir(held_fd):
-            raise _refuse(
-                f"{out_dir!r} already exists and is not empty -- only an empty "
-                f"directory is ever reserved, because it is copied into the tool's "
-                f"work tree and a test could read what is in it"
-            )
+        reservation._refuse_if_not_empty(held_fd, when="at reservation")
     except BaseException:
         reservation.close()
         raise

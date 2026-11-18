@@ -190,19 +190,42 @@ def test_reserve_refuses_preexisting_rotated(tmp_path: Path):
     assert (out / ROTATED).read_text() == "leftover"
 
 
-def test_reserve_refuses_nonempty_out(tmp_path: Path):
+@pytest.mark.parametrize("entry", ["notes.txt", ".keep", ".hidden-dir/"])
+def test_reserve_refuses_nonempty_out(tmp_path: Path, entry: str):
     """The stop-gate precondition (design section 8 item 1): the tool copies a
     pre-created <out> into every mutant tree, so only an EMPTY directory may be
-    reserved. Whatever is there is left untouched."""
+    reserved, hidden entries included. Whatever is there is left untouched."""
     out = tmp_path / "out"
     out.mkdir()
-    (out / "notes.txt").write_text("a test could read this")
+    if entry.endswith("/"):
+        (out / entry).mkdir()
+    else:
+        (out / entry).write_text("a test could read this")
     with pytest.raises(AssayError) as excinfo:
         _reserve(tmp_path)
     message = _assert_refused(excinfo)
-    assert "not empty" in message
-    assert sorted(p.name for p in out.iterdir()) == ["notes.txt"]
-    assert (out / "notes.txt").read_text() == "a test could read this"
+    assert "not empty at reservation" in message
+    assert [p.name for p in out.iterdir()] == [entry.rstrip("/")]
+    if not entry.endswith("/"):
+        assert (out / entry).read_text() == "a test could read this"
+
+
+def test_reserve_refuses_an_out_that_cannot_be_listed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    (tmp_path / "out").mkdir()
+
+    real = os.listdir
+
+    def broken_listdir(path):
+        if isinstance(path, int):  # the held descriptor; the fd-leak fixture lists a path
+            raise PermissionError(13, "no listing")
+        return real(path)
+
+    monkeypatch.setattr(os, "listdir", broken_listdir)
+    with pytest.raises(AssayError) as excinfo:
+        _reserve(tmp_path)
+    assert "could not be listed" in _assert_refused(excinfo)
 
 
 @pytest.mark.parametrize(
@@ -959,3 +982,248 @@ def test_fds_are_closed_after_success_absent_and_failed_reserve(tmp_path: Path):
     with pytest.raises(AssayError):
         _reserve(tmp_path, "out3")
     assert _fd_count() == before, "a refused reserve released the descriptor it had opened"
+
+
+# --- review round 1: member names that are not text, or alias another name -----
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [["diff/x.diff"], {"diff/x.diff": 1}, b"diff/x.diff", 7, None],
+    ids=["list-unhashable", "dict-unhashable", "bytes", "int", "none"],
+)
+def test_non_str_member_name_refuses_as_assay_error_not_type_error(tmp_path: Path, bad: object):
+    """An unhashable name used to reach the duplicate check and raise a raw
+    TypeError; the grammar now runs first, so every non-str refuses the same way."""
+    reservation = _armed(tmp_path)
+    _write_child(tmp_path / "out", members={"x.diff": b"x"})
+    with pytest.raises(AssayError) as excinfo:
+        reservation.consume(members=lambda raw: [bad])  # type: ignore[list-item,return-value]
+    assert "is not exactly 'diff/<name>.diff'" in _assert_refused(excinfo)
+
+
+def test_lone_surrogate_member_name_refuses_as_assay_error_not_unicode_error(tmp_path: Path):
+    reservation = _armed(tmp_path)
+    _write_child(tmp_path / "out")
+    with pytest.raises(AssayError) as excinfo:
+        reservation.consume(members=lambda raw: ["diff/\ud800.diff"])
+    assert "strict UTF-8" in _assert_refused(excinfo)
+
+
+def test_surrogateescape_alias_of_a_real_file_is_refused_not_read(tmp_path: Path):
+    """CHOSEN: refuse every name that is not strict UTF-8. '\\udcff' would
+    otherwise open the REAL file whose name holds the raw byte 0xff, and two
+    distinct strings could name one file past the duplicate check."""
+    reservation = _armed(tmp_path)
+    child = _write_child(tmp_path / "out", members={})
+    raw_name = b"\xff.diff"
+    (child / "diff" / os.fsdecode(raw_name)).write_bytes(b"read through an alias")
+    assert os.fsencode("\udcff.diff") == raw_name, "precondition: the alias is real"
+    with pytest.raises(AssayError) as excinfo:
+        reservation.consume(members=lambda raw: ["diff/\udcff.diff"])
+    assert "strict UTF-8" in _assert_refused(excinfo)
+
+
+def test_two_names_aliasing_one_file_cannot_both_get_in(tmp_path: Path):
+    reservation = _armed(tmp_path)
+    child = _write_child(tmp_path / "out", members={})
+    (child / "diff" / os.fsdecode(b"\xff.diff")).write_bytes(b"x")
+    with pytest.raises(AssayError):
+        reservation.consume(members=lambda raw: ["diff/\udcff.diff", "diff/\udcff.diff"])
+
+
+# --- review round 1: arm re-checks emptiness -----------------------------------
+
+
+@pytest.mark.parametrize("entry", ["late.txt", ".keep", ".late-dir/"])
+def test_arm_refuses_an_out_that_gained_an_entry_after_reserve(tmp_path: Path, entry: str):
+    reservation = _reserve(tmp_path)
+    out = tmp_path / "out"
+    try:
+        if entry.endswith("/"):
+            (out / entry).mkdir()
+        else:
+            (out / entry).write_text("x")
+        with pytest.raises(AssayError) as excinfo:
+            reservation.arm()
+        assert "not empty at arming" in _assert_refused(excinfo)
+        assert [p.name for p in out.iterdir()] == [entry.rstrip("/")], "arm unlinks nothing"
+        with pytest.raises(RuntimeError, match="not armed"):
+            reservation.consume(members=_one_member())
+    finally:
+        reservation.close()
+
+
+def test_arm_refuses_an_out_that_cannot_be_listed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    reservation = _reserve(tmp_path)
+    try:
+        monkeypatch.setattr(
+            os, "listdir", lambda path: (_ for _ in ()).throw(PermissionError(13, "no"))
+        )
+        with pytest.raises(AssayError) as excinfo:
+            reservation.arm()
+        assert "could not be listed" in _assert_refused(excinfo)
+    finally:
+        monkeypatch.undo()
+        reservation.close()
+
+
+# --- review round 1: an lstat that fails for any reason but absence ------------
+
+needs_permission_checks = pytest.mark.skipif(
+    os.geteuid() == 0, reason="root ignores directory permission bits"
+)
+
+
+@needs_permission_checks
+def test_reserve_refuses_a_preexisting_out_with_mode_0400(tmp_path: Path):
+    out = tmp_path / "out"
+    out.mkdir()
+    out.chmod(0o400)
+    try:
+        with pytest.raises(AssayError) as excinfo:
+            _reserve(tmp_path, create_missing_parents=False)
+        assert "could not be inspected" in _assert_refused(excinfo)
+    finally:
+        out.chmod(0o700)
+
+
+@needs_permission_checks
+def test_arm_refuses_when_the_command_chmods_out_after_reserve(tmp_path: Path):
+    reservation = _reserve(tmp_path)
+    out = tmp_path / "out"
+    out.chmod(0o600)
+    try:
+        with pytest.raises(AssayError) as excinfo:
+            reservation.arm()
+        assert "could not be inspected" in _assert_refused(excinfo)
+    finally:
+        out.chmod(0o700)
+        reservation.close()
+
+
+@needs_permission_checks
+def test_consume_refuses_when_the_command_chmods_out_after_arm(tmp_path: Path):
+    before = _fd_count()
+    reservation = _armed(tmp_path)
+    out = tmp_path / "out"
+    out.chmod(0o600)
+    try:
+        with pytest.raises(AssayError) as excinfo:
+            reservation.consume(members=_one_member())
+        assert "could not be inspected" in _assert_refused(excinfo)
+        assert _fd_count() == before, "the held descriptor was closed on the refusal"
+    finally:
+        out.chmod(0o700)
+
+
+@pytest.mark.parametrize(
+    ("target", "nth", "site"),
+    [(ROTATED, 1, "rotated"), (CHILD, 1, "child"), (CHILD, 2, "final re-lstat"), ("out", 1, "<out> walk")],
+    ids=["rotated", "child", "final-relstat", "out-walk"],
+)
+def test_consume_refuses_an_lstat_that_fails_at_every_site(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str, nth: int, site: str
+):
+    """Each lstat of consume, failing with EACCES (deterministic, independent of
+    the uid the lane runs as), is a refusal and never a raw PermissionError."""
+    before = _fd_count()
+    reservation = _armed(tmp_path)
+    _write_child(tmp_path / "out")
+    real = safeio._lstat_relative
+    seen: dict[str, int] = {}
+
+    def failing(name: str, *, dir_fd: int):
+        seen[name] = seen.get(name, 0) + 1
+        if name == target and seen[name] == nth:
+            raise PermissionError(13, "Permission denied")
+        return real(name, dir_fd=dir_fd)
+
+    monkeypatch.setattr(safeio, "_lstat_relative", failing)
+    with pytest.raises(AssayError) as excinfo:
+        reservation.consume(members=_one_member())
+    assert "could not be inspected" in _assert_refused(excinfo)
+    assert _fd_count() == before
+
+
+# --- review round 1: FIFOs never block, intermediate components are walked -----
+
+
+class _Timeout(Exception):
+    pass
+
+
+@pytest.fixture
+def bounded():
+    """Fail (not hang) when a FIFO read would block: a 5 s interval timer."""
+    import signal
+
+    def on_alarm(signum, frame):
+        raise _Timeout("a FIFO blocked the reservation")
+
+    previous = signal.signal(signal.SIGALRM, on_alarm)
+    signal.setitimer(signal.ITIMER_REAL, 5)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def test_a_fifo_as_report_is_refused_without_blocking(tmp_path: Path, bounded):
+    reservation = _armed(tmp_path)
+    child = _write_child(tmp_path / "out")
+    (child / REPORT).unlink()
+    os.mkfifo(child / REPORT)
+    with pytest.raises(AssayError) as excinfo:
+        reservation.consume(members=_one_member())
+    assert "not a regular file" in _assert_refused(excinfo)
+
+
+def test_a_fifo_as_member_is_refused_without_blocking(tmp_path: Path, bounded):
+    reservation = _armed(tmp_path)
+    child = _write_child(tmp_path / "out")
+    (child / "diff" / MEMBER).unlink()
+    os.mkfifo(child / "diff" / MEMBER)
+    with pytest.raises(AssayError) as excinfo:
+        reservation.consume(members=_one_member())
+    assert "not a regular file" in _assert_refused(excinfo)
+
+
+def test_a_fifo_as_child_is_refused_without_blocking(tmp_path: Path, bounded):
+    reservation = _armed(tmp_path)
+    os.mkfifo(tmp_path / "out" / CHILD)
+    with pytest.raises(AssayError) as excinfo:
+        reservation.consume(members=_one_member())
+    assert "not a directory" in _assert_refused(excinfo)
+
+
+@pytest.mark.parametrize(
+    ("how", "expected"),
+    [
+        ("replaced", "renamed away or replaced"),
+        ("symlinked", "not an existing, non-symlink directory"),
+        ("moved-away", "does not exist"),
+    ],
+)
+def test_swap_of_an_intermediate_component_above_out_is_caught(
+    tmp_path: Path, how: str, expected: str
+):
+    """target/assay is swapped while <out> below it is held: the held inode
+    keeps a positive link count, so only the by-name walk can notice."""
+    before = _fd_count()
+    reservation = _armed_in(tmp_path, "target/assay/out")
+    middle = tmp_path / "target" / "assay"
+    middle.rename(tmp_path / "target" / "assay.moved")
+    if how == "replaced":
+        (middle / "out").mkdir(parents=True)
+        _write_child(middle / "out")
+    elif how == "symlinked":
+        middle.symlink_to(tmp_path / "target" / "assay.moved")
+    assert os.fstat(reservation._held_fd).st_nlink > 0
+    with pytest.raises(AssayError) as excinfo:
+        reservation.consume(members=_one_member())
+    assert expected in _assert_refused(excinfo)
+    assert _fd_count() == before
