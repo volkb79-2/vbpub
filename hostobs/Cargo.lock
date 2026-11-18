@@ -28,6 +28,9 @@ dependencies = [
 [[package]]
 name = "hostobs-client"
 version = "0.1.0"
+dependencies = [
+ "hostobs-proto",
+]
 
 [[package]]
 name = "hostobs-eval"

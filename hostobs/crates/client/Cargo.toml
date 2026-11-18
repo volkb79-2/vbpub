@@ -4,5 +4,8 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[dependencies]
+hostobs-proto = { path = "../proto" }
+
 [lints]
 workspace = true
