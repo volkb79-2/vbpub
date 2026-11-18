@@ -66,7 +66,10 @@ depend on `proto`/`model` (a path dependency would rewrite the locked `Cargo.loc
 it validates the four payload frame-header facts itself and binds its quality table to
 `fixtures/wire/quality.json` instead of to a type.
 
-The `probe` binary is the next package and is still the M0 scaffold. The proven topos sampler (`topos-sampler-poc-20261105`, `topos/sampler/`) is the
+The `probe` binary's `main` is still the M0 scaffold; its library (`bins/probe/src`) now holds the
+pure serving functions of P5b-1a (`limits`, `verbs`, `codes`, `args`, `classify`, `encode`, `lines`),
+and the connection state machine and the drivers are the next packages
+(`docs/P5B-SERVER-DESIGN.md`). The proven topos sampler (`topos-sampler-poc-20261105`, `topos/sampler/`) is the
 behavioural source the `kernel` collectors were ported from: its scheduling around a stalled
 `/proc/<pid>/cmdline` read is deliberately not ported, and the parts plan v4 requires to
 change were changed (crate docs, `docs/DESIGN-GUIDE.md` §"Collecting the host", and
