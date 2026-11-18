@@ -181,6 +181,26 @@ class ReaderRows(unittest.TestCase):
         error = body.eof()
         self.assertEqual((error.kind, error.detail["need"], error.detail["have"]), ("truncated", 50, 30))
 
+    def test_the_age_runs_from_the_first_header_byte_not_the_last(self):
+        reader = self.reader(completion_ms=1000)
+        data = frame(1, 1, 30)
+        reader.feed(data[:1], 0)
+        reader.feed(data[1:2], 600 * MS)
+        reader.feed(data[2:3], 900 * MS)
+        self.assertIsNone(reader.poll(1000 * MS))
+        self.assertEqual(reader.poll(1000 * MS + 1).kind, "deadline")
+
+    def test_advance_rejects_a_negative_count_before_any_state_branch(self):
+        reader = self.reader()
+        with self.assertRaises(ValueError):
+            reader.advance(-1, 0)
+        self.assertIsNone(reader.eof())
+        with self.assertRaises(ValueError):
+            reader.advance(-1, 0)
+        frames, error = reader.advance(3, 0)
+        self.assertEqual((frames, error.kind, error.detail), ([], "trailing-bytes", {"extra": 3}))
+        self.assertIs(reader.advance(5, 0)[1], error, "poisoned: the same error")
+
     def test_idle_time_at_a_frame_boundary_does_not_age_the_next_frame(self):
         reader = self.reader(completion_ms=1000)
         self.assertIsNone(reader.poll(10**15))

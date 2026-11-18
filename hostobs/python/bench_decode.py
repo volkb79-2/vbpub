@@ -39,7 +39,7 @@ def best(fn) -> float:
 
 
 def main() -> None:
-    print(f"python {sys.version.split()[0]} ({sys.version.splitlines()[0]}) on {platform.platform()} {platform.machine()}")
+    print(f"python {sys.version.splitlines()[0]} on {platform.platform()} {platform.machine()}")
     for n in (100, 1000):
         held = Dictionary.decode(ref.encode_dictionary(sp4_frames.dictionary(n)))
         bare = [bytearray(sp4_frames.frame(n, v)) for v in (0, 1)]

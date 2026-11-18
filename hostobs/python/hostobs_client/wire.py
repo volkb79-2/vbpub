@@ -572,6 +572,11 @@ def decode_block(buf, held: Dictionary | None = None) -> Block:
     ``held`` is the stream's held dictionary: a bare block is judged against it and, when the
     rows validated last time are unchanged, the row checks are skipped. A decoder error clears
     ``held``'s retained rows.
+
+    Ownership rule: a buffer passed to ``decode_block`` is owned by the returned ``Block`` (and,
+    for the entity half of its rows, by ``held``) and MUST never be mutated or reused afterwards.
+    The skip never applies to the same underlying object as the retained view, but a mutated old
+    buffer is outside the contract.
     """
     try:
         return _decode(buf, held)
@@ -751,7 +756,9 @@ def _decode(buf, held: Dictionary | None) -> Block:  # noqa: C901 - one pass per
         if rows_at is not None:
             ents_mv = mv[rows_at : rows_at + 4 * n_rows]
             previous = dictionary._rows_ok
-            if previous is None or ents_mv != previous:
+            # The skip needs a DIFFERENT buffer: a view of the very object being decoded again
+            # (a buffer overwritten in place) is the retained memory, so equality proves nothing.
+            if previous is None or previous.obj is ents_mv.obj or ents_mv != previous:
                 ents = _view(ents_mv, "I")
                 if n_rows and (max(ents) >= dict_len or any(map(dkinds.__getitem__, ents))):
                     for ent in ents:

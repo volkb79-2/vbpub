@@ -116,6 +116,12 @@ per-row cost without the dictionary: 82 B (1,000 cgroups: 80 B)
 
 ## P3 decoder measurements
 
+**Gate image.** The gate image that will run these tests is `tester-base` (`python:3.14.7-trixie`),
+not the CPython 3.14.10 these numbers were measured on. Nothing below was measured on 3.14.7: there
+the absolute-peak test is skipped (its reason names the pinned version), only the growth and line-count
+gates run, and WIRE.md §7.8 requires the absolute bound to be re-measured and re-set in the change that
+moves the gate image to a CPython it was not measured on.
+
 Measured with the real decoder `python/hostobs_client/wire.py` (WIRE.md §7.4, §7.8) by
 `python/tests/test_client_budgets.py` (gated) and `python/bench_decode.py` (not gated), one run each,
 2026-11-18, devcontainer (8 cores, shared with a production game server, load average about 1.7),

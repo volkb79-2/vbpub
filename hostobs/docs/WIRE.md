@@ -1074,6 +1074,16 @@ and `mark.py` are P3b). `wire.py` is the §7.4 decoder; `stream.py` holds `Frame
   `Dictionary` it was validated against (`Dictionary._rows_ok`), so it can never be applied to another
   dictionary, and `StreamDicts.close/reset` and any decoder error drop it. A bare block with no rows
   section clears it.
+- **Buffer ownership.** A buffer passed to `decode_block` is owned by the returned `Block` (and, for the
+  entity half of its rows, by the held dictionary) and MUST never be mutated or reused afterwards. As a
+  defence the skip never applies when the retained view and the rows being decoded are views of the same
+  underlying object (`previous.obj is ents_mv.obj`), so a buffer overwritten in place is validated in full.
+- **Gate image and the absolute memory bound.** The gate image for these tests is `tester-base`
+  (`python:3.14.7-trixie`, `tester-base/cmru.toml`), not the 3.14.10 of the §7.8 pin. The absolute
+  1,000-row peak bound (16 KiB) was measured on CPython 3.14.10 only (3,395 B there) and is skipped on
+  3.14.7; the growth and line-count gates run on every version. Per the §7.8 rule the absolute bound is
+  re-measured and re-set in the change that moves the gate image (or its CPython) to a version the bound
+  was not measured on; until then no 3.14.10 number is claimed for 3.14.7.
 - **Dictionary reuse.** A dictionary section byte-identical to the held dictionary's body returns the held
   object (`Block.dictionary is held`); `Block.dictionary` is the carried dictionary (`None` for a bare
   block) and `Block.dictionary_in_force` the one the block was judged against.

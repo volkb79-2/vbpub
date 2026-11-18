@@ -22,6 +22,7 @@ sys.path.insert(0, str(HOSTOBS / "python"))
 sys.path.insert(0, str(HOSTOBS / "python" / "tests"))
 
 import sp4_frames  # noqa: E402
+from hostobs_client import wire  # noqa: E402
 from hostobs_client.wire import Dictionary, decode_block  # noqa: E402
 
 PINNED = (3, 14, 10)
@@ -49,11 +50,12 @@ def line_events(n: int) -> int:
 
     # The tracer is installed by settrace only for frames that start after it: the call itself
     # is the first traced frame, and every nested Python frame is traced too.
+    outer = sys.gettrace()
     sys.settrace(tracer)
     try:
         decode_block(buffers[1], held)
     finally:
-        sys.settrace(None)
+        sys.settrace(outer)
     return count
 
 
@@ -92,28 +94,23 @@ class Budgets(unittest.TestCase):
         self.assertNotEqual(retained, held._rows_ok)
 
     def test_a_per_value_loop_would_be_caught(self):
-        # the gate must be able to fail: count lines of a Python loop over the same rows
-        def loop(values):
-            total = 0
-            for value in values:
-                total += value
-            return total
+        # The gate must be able to fail: run the REAL decoder with its entity view replaced by a
+        # sequence whose iteration is a Python generator (a per-value loop in the validation).
+        class PythonIterated:
+            def __init__(self, view):
+                self.view = view
 
-        counts = []
-        for n in (100, 1000):
-            seen = 0
+            def __iter__(self):
+                for value in self.view:
+                    yield value
 
-            def tracer(_f, event, _a):
-                nonlocal seen
-                if event == "line":
-                    seen += 1
-                return tracer
-
-            sys.settrace(tracer)
-            loop(range(n))
-            sys.settrace(None)
-            counts.append(seen)
-        self.assertNotEqual(counts[0], counts[1])
+        original = wire._view
+        wire._view = lambda mv, fmt: PythonIterated(original(mv, fmt))
+        try:
+            small, large = line_events(100), line_events(1000)
+        finally:
+            wire._view = original
+        self.assertGreater(large, small + 800)
 
     def test_the_peak_grows_by_at_most_4_kib_from_100_to_1000_rows(self):
         small, large = peak(100), peak(1000)

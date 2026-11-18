@@ -30,6 +30,9 @@ def _reading(sample, which: str) -> tuple[Reading, str]:
         reading = Reading(sample["mono_ns"], sample.get("value"), sample["quality"], sample.get("type", "u64"))
     else:
         reading = Reading(*sample)
+    mono = reading.mono_ns
+    if not isinstance(mono, int) or isinstance(mono, bool) or not 0 <= mono <= _U64_MAX:
+        raise ValueError(f"{which} mono_ns {mono!r} is not a u64")
     quality = reading.quality
     if isinstance(quality, int):
         if not 0 <= quality < len(QUALITY_NAMES):

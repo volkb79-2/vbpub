@@ -79,14 +79,20 @@ class FrameReader:
         return memoryview(self._hdr)[self._have :]
 
     def advance(self, n: int, now_ns: int) -> tuple[list[RawFrame], WireError | None]:
-        """Account for ``n`` bytes written into the last ``fill()`` slice at ``now_ns``."""
+        """Account for ``n`` bytes written into the last ``fill()`` slice at ``now_ns``.
+
+        After ``eof()`` any ``n > 0`` is ``trailing-bytes`` with ``extra = n``, the bytes this call
+        accounts for (``feed`` names its whole chunk, the same thing when it is one ``recv``).
+        """
+        if n < 0:
+            raise ValueError("advance() of a negative byte count")
         if self._error is not None:
             return [], self._error
         if n == 0:
             return [], None
         if self._closed:
             return [], self._poison(_err("trailing-bytes", extra=n))
-        if n < 0 or n > len(self.fill()):
+        if n > len(self.fill()):
             raise ValueError("advance() beyond the slice fill() returned")
         if self._buf is None:
             if self._have == 0:
