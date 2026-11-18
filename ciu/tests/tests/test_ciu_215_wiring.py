@@ -181,3 +181,24 @@ def test_ciu_check_reports_an_invalid_table_under_the_shape_stage():
     assert re.search(r"validate_linked_worktree_table\(merged\.get\(root_key", source)
     with pytest.raises(ValueError, match="CIU-215"):
         config_model.validate_linked_worktree_table({"linked_worktree": {"git_common_dir": "no"}})
+
+
+def test_check_reports_an_invalid_table_in_the_shape_stage(monkeypatch, tmp_path):
+    """`ciu check` reports the engine's own refusal without rendering."""
+    from types import SimpleNamespace as NS
+    profile = NS(config={"deploy": {}}, name="test")
+    merged = {"app": {"linked_worktree": {"git_common_dir": "flat"}}}
+    monkeypatch.setattr(deploy.config_model, "deep_merge", lambda *_a, **_k: merged)
+    monkeypatch.setattr(deploy.secret_directives, "discover", lambda *_a, **_k: [])
+    monkeypatch.setattr(deploy.secret_directives, "find_misplaced", lambda *_a, **_k: [])
+    monkeypatch.setattr(deploy.config_model, "find_secret_shaped_keys", lambda *_a, **_k: [])
+    monkeypatch.setattr(deploy.governance_mod, "resolve_stack_governance", lambda *_a, **_k: None)
+    report = deploy._CheckReport()
+    deploy._check_stack_config(
+        rel="tools/app", stack_cfg={"app": {}}, profile=profile, repo_root=tmp_path,
+        root_key="app", ciu_context={}, identity={}, identity_unreadable=False,
+        report=report, cache={},
+    )
+    finding = report._stages["shape"]["findings"][0]["message"]
+    assert report._stages["shape"]["status"] == "fail"
+    assert finding.startswith("[CIU-215]") and "flat" in finding

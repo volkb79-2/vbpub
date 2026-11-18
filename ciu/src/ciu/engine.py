@@ -2069,9 +2069,9 @@ def _gitdir_mount_specs(
     read_only = mode == "ro"
     specs: list[tuple[Path, Path, bool]] = [(mount.physical(common), common, read_only)]
     if not read_only:
+        # The own admin dir lives under `worktrees/`, which therefore exists.
         worktrees = common / "worktrees"
-        if worktrees.is_dir():
-            specs.append((mount.physical(worktrees), worktrees, True))
+        specs.append((mount.physical(worktrees), worktrees, True))
         specs.append((mount.physical(admin), admin, False))
         for name in ("hooks", "info"):
             if (common / name).is_symlink() or not (common / name).is_dir():

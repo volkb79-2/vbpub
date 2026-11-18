@@ -284,7 +284,7 @@ def test_a_service_that_already_mounts_the_common_dir_is_skipped(
     else:
         volume = volume.replace("@COMMON@", common)
     compose = yaml.safe_dump({"services": {
-        "owner": {"image": "x", "volumes": [volume, 5]}, "free": {"image": "x"}}})
+        "owner": {"image": "x", "volumes": [volume, 5, "relative-only"]}, "free": {"image": "x"}}})
     doc = yaml.safe_load(_write(repos, tmp_path, "ro", compose=compose)[2].read_text())
     assert ("owner" not in doc["services"]) is skipped
     assert "free" in doc["services"]
@@ -329,3 +329,10 @@ def test_valid_tables_normalize():
     assert check({"linked_worktree": {"git_common_dir": "rw"}}) == _table("rw", None)
     assert check({"linked_worktree": {"git_common_dir": "ro", "services": ["a"]}}) == _table(
         "ro", ("a",))
+
+
+def test_a_vanished_pointer_file_refuses(repos, tmp_path):
+    main, _l, _p = repos
+    (main / ".git" / "worktrees" / "wt" / "gitdir").unlink()
+    with pytest.raises(ValueError, match="pointer is not a regular file"):
+        _write(repos, tmp_path, "rw")
