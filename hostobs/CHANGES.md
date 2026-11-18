@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added (P5b-1a, part 1: the probe's pure serving functions; `HOB-54` stays open)
+
+- **`bins/probe/src`** gains `limits` (levels and the WIRE.md §5.1 bounds per level; the observer
+  `control_queue_bytes` is derived from `max_reply_bytes` 16 KiB as 4 * 16 KiB + 256 KiB = 320 KiB,
+  design R28), `verbs` (the §4.3 table as const data), `codes` (the §10 codes with fixed messages and
+  the bounded `detail`) and `args` (the strict request-argument reader on `proto::envelope`, design R4
+  and R14 to R17, with the `hello` and `status` schemas). `hostobs-probe` now depends on
+  `hostobs-proto`. `classify`, `encode` and `lines` follow in the same package.
+
 ### Added (the `conformance` lane; `HOB-4` fixed)
 
 - **`run-gate.toml` `[lanes.conformance]`**: the Python reference decoders, fixture regeneration checks

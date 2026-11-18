@@ -454,8 +454,8 @@ values are the defaults; the ones a client needs are announced in `hello.limits`
 | distinct live selections per peer uid / per probe | 4 / 8 | 4 / 8 | — | — | `budget` `{"pool":"uid-selections"}` / `{"pool":"selections"}` |
 | Live pool: queued subscription BLOCK bytes per connection (`client_queue_bytes`) / per peer uid / global | 4 MiB / 8 MiB / 32 MiB | same | — | — | §5.3 (oldest unpinned Live entry shed, else the incoming tick dropped) |
 | Query pool: queued query BLOCK bytes per connection (`query_queue_bytes`) / per peer uid / global | 4 MiB / 4 MiB / 16 MiB | same | — | — | §5.3 `Backpressure` (the producer waits, nothing is dropped) |
-| queued REP/EVT/END bytes per connection (`control_queue_bytes`) | 2 MiB | 2 MiB | 2 MiB | 2 MiB | `slow-client`, fatal (a frame into an empty control queue is always admitted) |
-| largest JSON REP the server builds (`max_reply_bytes`) | 448 KiB | 448 KiB | 448 KiB | 448 KiB | never built (pages end early with `next`, reply sizes below) |
+| queued REP/EVT/END bytes per connection (`control_queue_bytes`) | 2 MiB | 2 MiB | 320 KiB | 2 MiB | `slow-client`, fatal (a frame into an empty control queue is always admitted) |
+| largest JSON REP the server builds (`max_reply_bytes`) | 448 KiB | 448 KiB | 16 KiB | 448 KiB | never built (pages end early with `next`, reply sizes below) |
 | frame completion: a pinned head, pin → completely written (`frame_completion_ms`) | 5 s | 5 s | 5 s | 5 s | `slow-client`, fatal |
 | writer stall: queue non-empty, no byte written (`stall_ms`) | 5 s | 5 s | 5 s | 5 s | `slow-client`, fatal |
 | largest BLOCK the server builds (`max_block_bytes`) | 4 MiB | 4 MiB | — | — | never built (§4.9 splits) |
@@ -474,7 +474,12 @@ quarter of either pool, however slowly it reads.
 
 **Reply sizes.** `max_reply_bytes = (control_queue_bytes − 256 KiB) / max_outstanding` = 448 KiB, so the
 replies of every outstanding request plus 256 KiB of END/EVT frames always fit one control queue; a
-client that keeps sending requests without reading their replies is `slow-client`. A paged verb
+client that keeps sending requests without reading their replies is `slow-client`. The formula runs
+both ways, `control_queue_bytes = max_outstanding * max_reply_bytes + 256 KiB`, and the observer level
+uses it to derive its queue from its reply bound (design R28): the observer serves `hello`, `status`
+and `annotate`, every observer reply and error envelope is below 3 KiB (fixed-shape replies below), so
+`max_reply_bytes` is 16 KiB and `control_queue_bytes` is 4 * 16 KiB + 256 KiB = 320 KiB (128 observer
+connections hold at most 40 MiB of control queue, not 256 MiB). A paged verb
 (`events`, `spans`, `procs`) ends its page before the item that would push the REP over
 `max_reply_bytes` and sets `next`; every page carries at least one item, because the worst item is far
 below the bound. Worst cases at 3× per client-supplied string (§4.2) and 6× per server-read string
