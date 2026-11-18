@@ -74,7 +74,8 @@ docker buildx build \
   --progress plain \
   --cgroup-parent "$cgroup_parent" \
   --network default \
-  --build-arg "BASE_IMAGE=$base_image" \
+  --build-arg "BASE_IMAGE=$base_id" \
+  --build-arg "BASE_IMAGE_TAG=$base_image" \
   --build-arg "BASE_IMAGE_ID=$base_id" \
   -f "$repo_root/tester-unified-rust/Dockerfile.dev" \
   -t "$image_tag" \
