@@ -80,7 +80,8 @@ impl Default for MonotonicClock {
 
 impl Clock for MonotonicClock {
     fn now_ns(&self) -> u64 {
-        u64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(u64::MAX)
+        let nanos = self.origin.elapsed().as_nanos();
+        u64::try_from(nanos).unwrap_or(u64::MAX)
     }
 }
 
