@@ -9,6 +9,7 @@ unset REMOTE_GATE_V1001_SLOTS REMOTE_GATE_V1001_BUDGET_MB REMOTE_GATE_WEIGHT_MB 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 RG_SCRIPT=${REMOTE_GATE_SCRIPT:-$SCRIPT_DIR/../remote-gate.sh}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-remote-gate-test.XXXXXX")
+ROOT=$(cd -- "$ROOT" && pwd -P)  # the wrapper reports physical paths; compare against the same spelling
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -290,7 +291,7 @@ CONTROLLER_REMOTE_GATE_WORKROOT="$ROOT/work root/abs" rg gate-a proj small topic
 [[ $(git -C "$ROOT/repo" worktree list | wc -l) == 1 ]] || fail 'override worktree was not removed'
 reset_logs
 ( cd "$ROOT" && CONTROLLER_REMOTE_GATE_WORKROOT="rel-root" rg gate-a proj small topic > /dev/null 2> "$ROOT/wr2.err" ) || { cat "$ROOT/wr2.err" >&2; fail 'workroot override (relative) failed'; }
-[[ $(sed -n 1p "$RG_LOG.cwd") == /* ]] || fail 'a relative workroot was not made absolute'
+[[ $(sed -n 1p "$RG_LOG.cwd") == "$ROOT/rel-root/"* ]] || fail 'a relative workroot must resolve against the invocation directory'
 [[ $(git -C "$ROOT/repo" worktree list | wc -l) == 1 ]] || fail 'relative-override worktree was not removed'
 
 echo 'PASS remote-gate wrapper'
