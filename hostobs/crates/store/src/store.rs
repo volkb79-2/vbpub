@@ -710,6 +710,7 @@ impl Store {
         self.stats.records = self.stats.records.saturating_add(1);
         self.stats.bytes = self.stats.bytes.saturating_add(outcome.bytes_written);
         self.stats.note_eviction(&outcome.evicted);
+        self.stats.bytes = self.stats.bytes.saturating_sub(outcome.evicted.bytes);
         Ok(WriteOutcome {
             tier: name,
             outcome,
@@ -737,6 +738,7 @@ impl Store {
         self.stats.records = self.stats.records.saturating_add(1);
         self.stats.bytes = self.stats.bytes.saturating_add(outcome.bytes_written);
         self.stats.note_eviction(&outcome.evicted);
+        self.stats.bytes = self.stats.bytes.saturating_sub(outcome.evicted.bytes);
         let _ = now_ns;
         Ok(outcome)
     }
@@ -1532,5 +1534,67 @@ mod tests {
         assert_eq!(tier.scan().segments[0].records, 1);
         assert!(reopened.stats().torn_repaired == 0, "nothing was torn");
         assert_eq!(reopened.notes(), Vec::new());
+    }
+
+    #[test]
+    fn an_evicted_quarantined_file_is_counted_apart_from_evicted_segments() {
+        // HOB-43 at the store's counters: a quarantined file removed by the cap is
+        // `evicted_quarantined`, never `evicted_segments`, and its bytes are in `evicted_bytes`.
+        let temp = TempDir::new("q-stats");
+        let now = 1_000_000_000i64;
+        let name = {
+            let mut store =
+                Store::open_with_mounts(config(&temp), Some(tmpfs_everywhere())).expect("open");
+            store
+                .submit(Job::new(block(24), now, Vec::new()))
+                .expect("submit");
+            store.write_pending(now, 1).expect("write");
+            store.seal_all().expect("seal");
+            let hot = store.tier(HOT).expect("hot");
+            hot.scan().segments[0].name.clone()
+        };
+        let path = format!("tiers/{name}");
+        let mut bytes = temp.read_file(&path);
+        let held = u64::try_from(bytes.len()).expect("fits");
+        bytes[crate::format::HEADER_LEN + 48 + 8 + 1] ^= 0xFF;
+        temp.write_file(&path, &bytes);
+        let mut tight = config(&temp);
+        tight.tiers[0].cap_bytes = held - 1;
+        let mut store = Store::open_with_mounts(tight, Some(tmpfs_everywhere())).expect("reopen");
+        assert_eq!(store.stats().quarantined, 1);
+        assert_eq!(
+            store.stats().bytes,
+            held,
+            "the quarantined file is in the total"
+        );
+        let done = store.evict(now).expect("evict");
+        assert_eq!(done[HOT].quarantined, vec![format!("{name}.corrupt")]);
+        let stats = store.stats();
+        assert_eq!(stats.evicted_quarantined, 1);
+        assert_eq!(stats.evicted_segments, 0, "debris is not a live segment");
+        assert_eq!(stats.evicted_bytes, held);
+        assert_eq!(stats.bytes, 0);
+        assert!(!temp.exists(&format!("{path}.corrupt")));
+    }
+
+    #[test]
+    fn the_write_paths_subtract_what_their_own_eviction_removed() {
+        // A strict cap drops the segment the record just landed in. The store's byte counter
+        // added the record's bytes on the way in and must subtract the eviction on the way
+        // out, as `Store::evict` does, or it drifts upward until the next recount.
+        let temp = TempDir::new("write-bytes");
+        let now = 1_000_000_000i64;
+        let mut tight = config(&temp);
+        tight.tiers[0].cap_bytes = 1;
+        let mut store = Store::open_with_mounts(tight, Some(tmpfs_everywhere())).expect("open");
+        let written = store
+            .write_one(&Job::new(block(24), now, Vec::new()), now)
+            .expect("write");
+        assert!(
+            !written.outcome.evicted.is_empty(),
+            "the cap took the segment"
+        );
+        assert_eq!(store.stats().bytes, 0, "nothing is left on disk");
+        assert_eq!(store.stats().bytes, store.tier(HOT).expect("hot").bytes());
     }
 }
