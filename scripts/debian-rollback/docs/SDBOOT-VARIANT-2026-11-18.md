@@ -71,7 +71,7 @@ The BLS entry id is the file name without `.conf`. The implementation does not a
 `@` in an entry id: `@os-...` maps to `os-...` by stripping the single leading `@`. The inverse adds it back.
 
 Accepted state names are `@os-` followed by an alphanumeric first character and then only ASCII alphanumerics,
-underscore, period, and hyphen. Entry ids are capped at 240 bytes. Names with an unsafe character, an embedded `@`,
+underscore, period, and hyphen. Entry ids are capped at 240 bytes (240 is accepted and writes its entry, 241 is refused before any kernel is copied; entry temp files use a short fixed name, so the id length does not matter for them). `latest_kernel` only returns a version whose `vmlinuz` AND initrd are both non-empty, so a newer incomplete pair is skipped for the older complete one. Names with an unsafe character, an embedded `@`,
 `..`, or a trailing period are rejected before any menu file or copied kernel is changed. This is conservative and
 reversible; whether systemd-boot itself accepts `@` remains unverified because no guest or bootloader binary was run.
 
@@ -145,7 +145,7 @@ because an installed entry may still reference it.
 At the start of a non-dry-run `gen-menu` or `prune` for this backend, under the existing `dr-state` lock, the command
 removes only the exact shapes this tool generates: a top-level kernel staging directory `.tmp.<six mktemp
 characters>`, `.vmlinuz.tmp.<numeric-pid>` and `.initrd.img.tmp.<numeric-pid>` repair files inside valid kernel
-directories, `.<entry-id>.conf.new.<numeric-pid>` entry files, `loader.conf.new.<numeric-pid>`, and
+directories, `.dr-state-entry.new.<numeric-pid>` entry temp files (the older `.<entry-id>.conf.new.<numeric-pid>` shape is still cleaned), `loader.conf.new.<numeric-pid>`, and
 `bootloader.new.<numeric-pid>`. Prefix look-alikes such as `.tmp.not-ours`, `loader.conf.new.backup`, and
 `bootloader.new.backup` survive. The destructive `_sdboot-clean-scratch` test hook refuses to run unless
 `DR_STATE_TEST_MODE=1`.
