@@ -41,11 +41,26 @@ Two facts exist because a reader must not turn one into the other:
   that is not it is the agent, and the agent's own descendants are the tool's
   processes. The agent node itself is excluded with the wrapper and the sidecar.
 
-  A tick is progress only when the SAME set of processes (`pid` + the kernel's
-  own start ticks, so a recycled pid is a different process) shows a strictly
-  positive delta in CPU ticks or IO bytes. A decrease, a set change (a tool
-  exited, another started) and an unreadable `/proc` are baselines, never
-  progress; `unknown` stays null rather than being clamped to the tool's start.
+  A tick is progress only when a SURVIVING process (`pid` plus the kernel's own
+  start ticks, so a recycled pid is a different process) shows a strictly
+  positive delta in CPU ticks or IO bytes. A surviving member is one present in
+  BOTH readings with the same identity; a set that merely changed membership
+  (a `make -j` worker started, a per-test subprocess exited) has no survivor to
+  compare and is therefore neither progress NOR a reset of the quiet clock: the
+  baseline of the current tool call stays where it was first read, so a silent
+  churning tool still reads `HUNG-TOOL` after the threshold. A decrease and an
+  unreadable `/proc` are baselines too, never progress; `unknown` stays null
+  rather than being clamped to the tool's start.
+
+  `progress_measured` says whether the progress fact on this snapshot rests on
+  a MEASUREMENT of the current in-flight tool: the tool's subtree was read this
+  tick, or evidence was produced this tick. A tick that could not read the
+  subtree at all (the agent child or the wrapper is missing from the process
+  table, an empty `/proc`) carries the previous epoch forward as UNMEASURED, and
+  an epoch older than the in-flight call is published as `null` with the flag
+  false - never lifted up to the tool's start. Lifting it is the wall-clock rule
+  CTL-18 removed: the tool's own age would stand in for evidence nobody read,
+  and `HUNG-TOOL` would be decided on that age alone.
 
 The tool in flight also carries `tool_in_flight_command` (the tool's own
 `args.command`, bounded) and `steering_children` (the tool call's own live
@@ -222,54 +237,80 @@ def short_command(pid: int) -> str | None:
 
 
 class Sample:
-    """One comparable counter reading: WHICH processes, and their totals."""
+    """One comparable counter reading: WHICH processes, and each one's totals.
 
-    __slots__ = ("identity", "cpu", "io")
+    Each member is kept separately (not only the summed set) because that is
+    what lets a reader tell a SURVIVOR's growth from a set change: a member
+    present in both readings with the same `(pid, kernel start ticks)` identity
+    has a before/after pair to compare, while a set that merely changed
+    membership has nothing to compare for its new member.
+    """
 
-    def __init__(
-        self, identity: frozenset[tuple[int, int | None]], cpu: int, io: int
-    ) -> None:
-        self.identity = identity
-        self.cpu = cpu
-        self.io = io
+    __slots__ = ("members",)
+
+    def __init__(self, members: dict[tuple[int, int | None], tuple[int, int]]) -> None:
+        # (pid, start ticks) -> (cpu ticks, io bytes)
+        self.members = members
+
+    @property
+    def identity(self) -> frozenset[tuple[int, int | None]]:
+        return frozenset(self.members)
+
+
+def survivor_delta(previous: "Sample", sample: "Sample") -> bool:
+    """Did a process present in BOTH readings grow?
+
+    A survivor is the SAME process in both readings: the same pid number AND the
+    same kernel start ticks, so a recycled pid never counts. A set that merely
+    changed membership (a `make -j` worker starting, a per-test subprocess
+    exiting) contributes nothing - its new member has no earlier reading - and
+    only a strictly positive per-member delta in CPU ticks or IO bytes is
+    progress. A decrease is never progress either.
+    """
+    for member in previous.identity & sample.identity:
+        old_cpu, old_io = previous.members[member]
+        new_cpu, new_io = sample.members[member]
+        if new_cpu > old_cpu or new_io > old_io:
+            return True
+    return False
 
 
 def read_counters(
     pids: list[int], table: dict[int, tuple[int, int | None]]
 ) -> Sample | None:
-    """(identity, cpu ticks, io bytes) summed over these pids.
+    """One counter reading per pid: {(pid, start ticks): (cpu ticks, io bytes)}.
 
-    An empty set is a defined fact - no tool process is running - and sums to
-    zero. A NON-empty set whose counters cannot be read is unknown (`None`),
-    never zero: "could not read it" and "nothing happened" are different facts.
+    An empty set is a defined fact - no tool process is running - and reads as an
+    empty mapping. A NON-empty set whose counters cannot be read is unknown
+    (`None`), never empty: "could not read it" and "nothing happened" are
+    different facts. A single unreadable member makes the whole reading unknown,
+    because a partial set would compare a partial sum against a full one.
     """
     if not pids:
-        return Sample(frozenset(), 0, 0)
-    cpu = 0
-    io = 0
-    readable = False
+        return Sample({})
+    members: dict[tuple[int, int | None], tuple[int, int]] = {}
     for pid in pids:
+        cpu: int | None = None
+        io = 0
         stat_line = read_text(f"{PROC_ROOT}/{pid}/stat")
         if stat_line is not None:
             _, _, rest = stat_line.partition(") ")
             fields = rest.split()
             if len(fields) >= 15:
                 try:
-                    cpu += int(fields[11]) + int(fields[12])
-                    readable = True
+                    cpu = int(fields[11]) + int(fields[12])
                 except ValueError:
-                    pass
+                    cpu = None
         io_text = read_text(f"{PROC_ROOT}/{pid}/io")
         if io_text is not None:
             for line in io_text.splitlines():
                 key, _, value = line.partition(":")
                 if key in ("read_bytes", "write_bytes") and value.strip().isdigit():
                     io += int(value.strip())
-                    readable = True
-    if not readable:
-        return None
-    identity = frozenset((pid, table.get(pid, (0, None))[1]) for pid in pids)
-    return Sample(identity, cpu, io)
+        if cpu is None:
+            return None
+        members[(pid, table.get(pid, (0, None))[1])] = (cpu, io)
+    return Sample(members)
 
 
 def alive(pid: int) -> bool:
@@ -416,22 +457,28 @@ class Progress:
     rather than tuned against a threshold:
 
     * stream growth (new bytes in the run's event stream) is progress;
-    * a counter reading is progress only when the SAME set of processes shows a
-      STRICTLY POSITIVE delta in CPU ticks or IO bytes. The same set means the
-      same pids with the same kernel start ticks, because a recycled pid number
-      is not the process that was measured before.
+    * a counter reading is progress only when a SURVIVOR shows a STRICTLY
+      POSITIVE delta in CPU ticks or IO bytes. A survivor is the same process in
+      both readings: the same pid with the same kernel start ticks, because a
+      recycled pid number is not the process that was measured before.
 
-    Three boundaries are NOT progress: a process set that changed (the tool
-    exited, another started, a pid was recycled), a tool call that STARTS (the
-    bytes that announce it are its boundary, not evidence it did anything yet,
-    and a start resets the counter baseline with it), and a `/proc` that cannot
-    be read.
+    A process SET that changed (a worker started or exited) is NOT progress and
+    does not reset the quiet clock: its new members have no earlier reading to
+    compare, so nothing about them was measured against anything. Only a
+    survivor's growth is evidence. Everything else is a baseline update and
+    leaves the epoch where it was - and it leaves the BASELINE where it was too,
+    so a tool that silently churns its process set for half an hour still has a
+    measured absence of progress once the threshold passes.
 
-    Everything else is a baseline update and leaves the epoch where it was: a
-    counter decrease (a shorter-lived counter, a process that was reaped), a
-    set change (the tool exited, another started, a pid was recycled) and an
-    unreadable `/proc` (`None`, which is unknown). An empty set is a defined
-    fact - no tool process is running - and sums to zero.
+    A tool call that STARTS is a boundary, not evidence (the bytes that
+    announce it are its boundary, and a start resets the counter baseline with
+    it), and a `/proc` that cannot be read is unknown.
+
+    `measured` is the reader's licence (see the module docstring): the current
+    tool's subtree was read this tick, or evidence was produced this tick. A
+    tick that read nothing leaves the epoch where it was but marks it
+    unmeasured, so a reader never turns stale or absent evidence into a
+    tool-age-only verdict.
 
     The summed set is the in-flight tool call's own subtree, never the wrapper's
     whole tree: the agent and this sidecar grow every tick on their own, and
@@ -450,6 +497,9 @@ class Progress:
         self.tree_nodes: int | None = None
         self.tree_truncated = False
         self.reason: str | None = None
+        # Whether the progress fact rests on a measurement of the CURRENT tool
+        # (see the module docstring). A carried, unread epoch is measured=False.
+        self.measured = False
         self.tool_in_flight = tool_in_flight
 
     def set_tool_in_flight(self, in_flight: bool) -> None:
@@ -467,6 +517,9 @@ class Progress:
         self.tool_in_flight = in_flight
         self.sample = None
         self.baseline = None
+        # The epoch measured while the PREVIOUS tool ran is no evidence about
+        # the next one.
+        self.measured = False
 
     def observe(
         self, now: int, grew: bool, sample: Sample | None, nodes: int | None = None,
@@ -478,8 +531,11 @@ class Progress:
         if sample is None and not grew:
             # This tick observed nothing (no tool subtree, no stream bytes). A
             # tick that observed nothing cannot be a baseline change either: the
-            # previous measurement stands until something is actually read.
+            # previous measurement stands until something is actually read - and
+            # it is carried as UNMEASURED, because nothing about the current
+            # state was read.
             self.reason = "unread"
+            self.measured = False
             return self.epoch
         changed = bool(grew)
         reason = "stream" if grew else "none"
@@ -497,20 +553,24 @@ class Progress:
             reason = "idle" if not grew else reason
         elif sample is not None:
             previous = self.sample
-            if (
-                previous is not None
-                and previous.identity == sample.identity
-                and (sample.cpu > previous.cpu or sample.io > previous.io)
-            ):
+            if previous is not None and survivor_delta(previous, sample):
                 changed = True
                 reason = "counters"
             self.sample = sample
+            # The baseline is set ONCE per tool call, on the first reading: the
+            # quiet clock starts there and a changed process set neither
+            # advances nor resets it (see the class docstring).
             if self.baseline is None:
                 self.baseline = now
         else:
             reason = "unknown" if not grew else reason
         if changed:
             self.epoch = now
+        # The reader's licence: a measurement of the current state is the tool's
+        # own subtree read this tick, or evidence produced this tick. A tool
+        # call's boundary without its own output measures nothing about the
+        # tool, so it only counts when its counters were read.
+        self.measured = bool(changed) or sample is not None
         self.reason = reason
         return self.epoch
 
@@ -525,6 +585,7 @@ def payload(
     located: tuple[list[int], bool] | None = None,
 ) -> dict[str, object]:
     progress_epoch = None if progress is None else progress.epoch
+    progress_measured = False if progress is None else progress.measured
     progress_baseline = None if progress is None else progress.baseline
     progress_reason = None if progress is None else progress.reason
     tree_nodes = None if progress is None else progress.tree_nodes
@@ -565,17 +626,20 @@ def payload(
     # started (a `bash -lc` shell, its `pytest` workers, a compiler's children).
     steering_pids = [] if located is None else located[0]
     tree_rows = [{"pid": pid, "command": short_command(pid)} for pid in steering_pids]
-    # A tool cannot have made progress before it started, so a MEASURED progress
-    # epoch earlier than the tool's own start is bounded by that start. This is
-    # a bound on a MEASURED fact, never a substitute for a missing one: an
-    # unknown progress fact (`None`, from an unreadable `/proc`) stays null, so
-    # a reader can tell "no evidence" from "evidence at the tool's start".
-    # Clamping null up to the start restored a wall-clock-only rule exactly in
-    # the case the fact exists for (counters unreadable), which is the CTL-18
-    # defect in its second form.
-    if tool_started is not None and progress_epoch is not None:
-        if progress_epoch < tool_started:
-            progress_epoch = tool_started
+    # A tool cannot have made progress before it started. An epoch EARLIER than
+    # the in-flight tool's own start is evidence about something else - the run,
+    # or the tool before this one - so the epoch is published as `null`, never
+    # lifted up to the tool's start: lifting it makes the tool's own age stand
+    # in for evidence nobody read, which is the wall-clock-only rule CTL-18
+    # removed. The `measured` flag is NOT cleared by this: it describes whether
+    # the current tool's counters were READ this tick, and a baseline from that
+    # reading is a real measurement of a tool that has not moved yet.
+    if (
+        tool_started is not None
+        and progress_epoch is not None
+        and progress_epoch < tool_started
+    ):
+        progress_epoch = None
     return {
         "run": run,
         "wrapper_pid": wrapper_pid,
@@ -590,6 +654,7 @@ def payload(
         "tool_in_flight_command": tool_command,
         "tool_in_flight_output_epoch": tool_output,
         "progress_epoch": progress_epoch,
+        "progress_measured": bool(progress_measured),
         "progress_reason": progress_reason,
         "progress_baseline_epoch": progress_baseline,
         "progress_tree_nodes": tree_nodes,
@@ -689,7 +754,7 @@ def main(argv: list[str]) -> int:
     ticks = tick_source(arguments.tick_stream)
 
     def note_tick(now: int, nodes: int | None, truncated: bool, epoch: int | None,
-                  reason: str | None, baseline: int | None) -> None:
+                  reason: str | None, baseline: int | None, measured: bool) -> None:
         """One JSON line per FINISHED tick.
 
         A test's sync point: it knows tick N ended before it changes the fake
@@ -703,7 +768,7 @@ def main(argv: list[str]) -> int:
                 log.write(json.dumps({
                     "tick": now, "nodes": nodes, "truncated": bool(truncated),
                     "reason": reason, "progress": epoch,
-                    "baseline": baseline,
+                    "baseline": baseline, "measured": bool(measured),
                 }, sort_keys=True) + "\n")
         except OSError:
             pass
@@ -725,7 +790,7 @@ def main(argv: list[str]) -> int:
             arguments.wrapper_pid, state, progress, located,
         )
         note_tick(now, nodes, truncated, progress.epoch, progress.reason,
-                  progress.baseline)
+                  progress.baseline, progress.measured)
         try:
             write_atomic(target, body)
         except OSError:

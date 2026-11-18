@@ -28,6 +28,15 @@
 # the snapshotter and grows every tick), so it is a fact read from the kernel and
 # the stream, never a guess from wall-clock alone.
 #
+# The sidecar's `progress_measured` flag is the licence for that evidence, and it
+# is read, never assumed: a tick that could not re-read the tool's subtree
+# carries a previous epoch forward (or nothing at all) and publishes it as
+# unmeasured, and an epoch older than the in-flight call is published as null.
+# Both are UNKNOWN here - the row prints `progress=-` and the weaker word - so a
+# tool's age alone can never decide HUNG-TOOL, which is the shape the defect took
+# when a stream from BEFORE the tool started was lifted up to the tool's start.
+# A payload that predates the flag is unknown for the same reason.
+#
 # Steering a stuck tool: kill the EXACT child pid printed as `steer=`, never the
 # wrapper. Killing the wrapper discards the run's classification, its `.done`
 # marker and its continuation history, and the tool it was waiting on is what
@@ -377,17 +386,28 @@ def active_line(name, payload, owner):
     # and only when the sidecar actually read the counters: a `/proc` it could
     # not read leaves both null and the row prints `progress=-`.
     progress_baseline_seconds = age(payload.get("progress_baseline_epoch"))
-    progress_measured = (
-        progress_seconds if progress_seconds is not None else progress_baseline_seconds
-    )
+    # The sidecar's own licence, and it is read, never assumed: `progress_measured`
+    # says whether that fact rests on a measurement of the CURRENT tool. One flag
+    # covers every unmeasured state the producer has - a tick that could not read
+    # the subtree at all (`progress_reason=unread`, epoch carried forward as a
+    # leftover) and an epoch older than the in-flight call (published as null with
+    # the same flag) - because the producer clears it in both cases. A payload
+    # that predates the field is unknown for the same reason: absence of a
+    # measurement may never license HUNG-TOOL.
+    progress_flag = payload.get("progress_measured")
     progress_reason = payload.get("progress_reason")
     progress_reason_text = progress_reason if isinstance(progress_reason, str) and progress_reason else "-"
-    tool_command = payload.get("tool_in_flight_command")
-    steer = command_text(payload.get("steering_children"))
-    if progress_measured is None:
+    progress_unknown = progress_flag is not True
+    progress_age = (
+        progress_seconds if progress_seconds is not None else progress_baseline_seconds
+    )
+    if progress_unknown or progress_age is None:
+        progress_age = None
         progress_text = "-"
     else:
-        progress_text = f"{progress_measured}s"
+        progress_text = f"{progress_age}s"
+    tool_command = payload.get("tool_in_flight_command")
+    steer = command_text(payload.get("steering_children"))
     ahead = payload.get("commits_ahead")
     # `since-commit` names WHOSE commit the age belongs to. Before this run's
     # first commit the newest commit on the branch is the BASE commit, and an
@@ -407,8 +427,9 @@ def active_line(name, payload, owner):
     elif tool_seconds is not None and tool_seconds > hung_limit:
         # Age alone is not a hung tool: it is a hung tool only when the run has
         # ALSO stopped showing progress evidence within the same threshold. An
-        # unreadable progress fact (null) cannot license the stronger word.
-        if progress_measured is not None and progress_measured > hung_limit:
+        # unknown progress fact (no reading, or a tick that could not measure)
+        # cannot license the stronger word.
+        if progress_age is not None and progress_age > hung_limit:
             state = "HUNG-TOOL"
         else:
             state = "LONG-TOOL"

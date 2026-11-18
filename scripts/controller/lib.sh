@@ -48,9 +48,12 @@ controller_init() {
 # the wrapper by hours; `controller_close_ownership_fds` is therefore called
 # immediately before every exec of a child (pi-impl.sh, codex-impl.sh), so a
 # killed wrapper leaves the name claimable straight away and a child can never
-# hold a name hostage. The lock file itself records who claimed the name last (the
-# wrapper pid, its start epoch, the pid's own kernel start time and the boot id)
-# so a reader can still name the owner after it died.
+# hold a name hostage. The lock file itself records who STARTED the name last (the
+# wrapper pid, its start epoch, the pid's own kernel start time and the boot id;
+# written by controller_run_record_owner once a launch is real, never by a refused
+# one) so a reader can still name the owner after it died. A claimed name whose
+# launch never got that far has an empty lock file or still carries the previous
+# owner's record; only the kernel lock says whether a wrapper holds it right now.
 #
 # A claim NEVER bypasses a live owner, not even with CONTROLLER_RUN_FORCE=1:
 # force is offered only as the supported way to RETIRE the records of a dead

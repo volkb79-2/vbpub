@@ -70,6 +70,17 @@ can name the live owner and `job-check.sh` can tell a dead owner from a live
 one. The agent and the liveness sidecar close their inherited copy of the
 descriptor, so a child that outlives its wrapper never holds the name hostage.
 
+**Every exec site, not just the first one.** A `codex-impl.sh` run has THREE
+places where it execs a child — the new launch, a manual `resume`, and the
+automatic continuation loop — and only the first was covered by a SIGKILL
+check for a while. The resume path is the ROUTINE one: every follow-up of a
+long job runs it, and a killed resume whose child inherited the descriptor
+strands the run name exactly as a killed new launch does. So the check kills a
+wrapper at EACH site, with the agent and the setsid daemon alive, and asserts
+the name is free at once and a forced relaunch is accepted — and a mutant
+deletes the close from ONE line at a time, so a fix that covered only the
+obvious site fails.
+
 Force is deliberately not a bypass: `CONTROLLER_RUN_FORCE=1` is refused while an
 owner is alive, and for a dead owner it RETIRES the whole record set into
 `retired/<run>/<utc-stamp>/` with the previous owner's identity written beside
@@ -176,6 +187,50 @@ same reason: `cmd=` and `steer=` are the tool's command and the exact child pid,
 because the earlier row named neither and the only actionable process it could
 describe was the wrapper — the one process that must not be killed.
 
+**Why progress is a SURVIVOR's delta, not a change of the set.** The first
+version compared rounded sums over an exactly-equal set, so ANY churn reset the
+comparison: a `make -j` that forked and reaped a worker between two ticks, or a
+`pytest` whose per-test subprocesses come and go, changed the set and the tool
+looked freshly measured — a silent churn could read `LONG-TOOL` for as long as
+it kept churning, and `HUNG-TOOL` was unreachable again. The rule is defined
+over members, not over the set: a SURVIVOR (same pid, same kernel start ticks
+in both readings) that shows a strictly positive CPU/IO delta is progress; a
+set change alone is neither progress NOR a reset of the quiet clock, whose
+baseline is the first reading of the current tool call. So churn with idle
+survivors reads quiet (and `HUNG-TOOL` at the threshold), churn with a survivor
+that burns CPU reads progress, and a pid RECYCLED between two ticks (same
+number, different start ticks) is not a survivor at all — its counters say
+nothing about the process measured before.
+
+**Why the sidecar publishes `progress_measured`, and not just an epoch.** The
+first version of the progress fact was one absolute epoch, and a reader could
+not tell three different situations apart: evidence measured on this tick,
+evidence from an EARLIER tick carried forward because the tool's subtree could
+not be read this time, and evidence from BEFORE the tool call started (the run's
+own session bytes). The third was the damaging one: when the tool's subtree
+could not be located, the epoch was lifted up to the tool's start, and the tool's
+age then stood in for progress — `HUNG-TOOL` decided on wall-clock alone, which
+is exactly what the `LONG-TOOL` split exists to stop. So the epoch and its
+provenance are two facts: `progress_measured` is false when the tick did not
+read the CURRENT tool (no `/proc` subtree, or an epoch older than the call), and
+the reader takes an unmeasured epoch as unknown, prints `progress=-` and uses
+the weaker word. A payload without the flag is unknown for the same reason: a
+missing measurement is not a measurement, and the producer writes the fact now,
+so absence can only mean an older snapshot or a broken one.
+
+**Scope of the tool's subtree (by design, CTL-24).** The processes whose
+counters count as the tool's progress are ALL descendants of the agent, not only
+the ones the tool call started: the sidecar locates the set structurally (the
+agent is the wrapper's other direct child) and cannot tell which descendant
+belongs to which call. A long-lived helper the agent keeps as a child — a
+language server, a watcher, a dev server — therefore sits in the set and, as a
+survivor that does work, reads as progress. That errs toward `LONG-TOOL`, the
+weaker word, so the controller waits longer on a tool that is really stuck; it
+never kills a tool that is working, which is the safe direction for a word that
+decides whether an agent is stopped. Narrowing the set to the single call's
+processes would need the agent's own call-to-pid mapping, which the stream does
+not carry, so it is documented rather than built.
+
 Continuation is bounded and class-specific on purpose. Only `EMPTY-COMPLETION`
 is continued, because only that class is a provider/model anomaly: the session
 is intact and the same conversation can finish the work. `UNCOMMITTED`,
@@ -242,6 +297,31 @@ flag, and a name nobody ever owned keeps the prototype's `RUNNING (no .done)`
 with the explicit `owner record: none`. The comparison is now as strong as the
 message: `RUNNING` is only printed when a recorded owner is alive, and every
 other case either names why the owner is dead or says that no record exists.
+
+The owner record belongs to a launch that is REAL (CTL-23). The claim takes the
+name's lock and creates the lock file empty; the wrapper writes its identity
+into it only after every refusal that can still happen (a bad route, a bad
+continuation count, blocked accounts, a missing credential file or key), and
+`pi-impl.sh` touches the name's own `.wt`, `.route`, `.thread` and `.done`
+records only after the same point. A launch refused earlier therefore leaves the
+previous owner's identity and the previous run's records byte-identical, so a
+name that never started cannot read as `DIED`, and a refused first launch leaves
+no evidence that would refuse its retry. What it does leave is the empty lock
+file, which `job-check.sh` reads as its own state: an empty lock, no stream and
+a lock nobody holds is `NOT-STARTED` (red, exit 1); the same empty lock while a
+wrapper holds it is that wrapper still preflighting and stays `RUNNING`; a lock
+with unparsable content, or an empty one beside a stream, keeps the
+no-owner-record wording because nothing says the name was only claimed. The same
+kernel-lock probe is applied whenever the recorded owner is dead: a resume of a
+`DIED` name holds the lock while its record still names the previous owner, and
+that reads `RUNNING (preflighting, previous owner gone)`, not `DIED`; the same
+record with a free lock is `DIED`. `CONTROLLER_RUN_FORCE=1` follows the same
+rule: the evidence preflight only decides that a retirement is wanted, and the
+retirement into `retired/<run>/<utc-stamp>/` runs together with the owner
+record, once the launch is real, so a forced launch that is refused moves
+nothing. Known limit (CTL-25): the lock probe itself takes `flock -n` for about a
+millisecond, so a claim landing in that window is refused as `already owned by
+pid <unknown>`.
 The recovery the reader owes a controller does not stop there: a killed wrapper
 usually dies before writing `<run>.thread`, and a controller without a thread id
 can only restart (about an hour of re-orientation). So the id is READ from the

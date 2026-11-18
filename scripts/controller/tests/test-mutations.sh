@@ -88,6 +88,32 @@ expect_killed codex-resume-stale-marker \
 expect_killed codex-run-name-child-close \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-run-name-child-close/codex-impl.sh" \
     bash "$SCRIPT_DIR/test-wrappers.sh"
+# CTL-22: one mutant per EXEC SITE, because the resume and the auto-resume
+# lines are the routine paths and the shared-function mutant above cannot
+# distinguish them from the new-launch line.
+expect_killed codex-newlaunch-child-close \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-newlaunch-child-close.sh" \
+    bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-resume-child-close \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-resume-child-close.sh" \
+    bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-autoresume-child-close \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-autoresume-child-close.sh" \
+    bash "$SCRIPT_DIR/test-wrappers.sh"
+# CTL-23: the owner record is written only by a launch that is real, so each
+# refusal after the claim has its own mutant that writes it just before that
+# refusal, judged by the case that refuses there.
+for codex_record_mutant in codex-record-owner-early codex-record-owner-before-count codex-record-owner-before-accounts \
+  codex-force-retire-early; do
+  expect_killed "$codex_record_mutant" \
+    env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$codex_record_mutant.sh" \
+      bash "$SCRIPT_DIR/test-wrappers.sh"
+done
+for job_check_mutant in job-check-not-started-off job-check-not-started-held job-check-not-started-stream \
+  job-check-not-started-content job-check-died-held-lock job-check-died-no-probe; do
+  expect_killed "$job_check_mutant" \
+    env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/$job_check_mutant.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+done
 expect_killed job-prototype-missing-done-owner-record \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-missing-done-owner-record.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-report-litter-detector \
@@ -165,7 +191,16 @@ for pi_case in \
   pi-continue-exhausted:outcome-empty pi-continue-prompt-file:prompt-file \
   pi-continue-bound-validation:retry-validation \
   pi-report-unset-skips:report-unset \
-  pi-run-name-refusal-overwrites:refusal-own-record; do
+  pi-run-name-refusal-overwrites:refusal-own-record \
+  pi-run-name-refusal-overwrites:refusal-keeps-records \
+  pi-record-owner-before-accounts:refusal-keeps-records \
+  pi-record-owner-before-credentials:refusal-keeps-records \
+  pi-done-removed-before-credentials:refusal-keeps-records \
+  pi-route-written-before-credentials:refusal-keeps-records \
+  pi-force-retire-early:refusal-keeps-records \
+  pi-force-retire-before-credentials:refusal-keeps-records \
+  pi-resume-block-inverted:accepted-resume-records \
+  pi-record-owner-new-only:accepted-resume-records; do
   pi_mutant=${pi_case%%:*}
   pi_focus=${pi_case#*:}
   expect_killed "$pi_mutant" \
@@ -180,6 +215,11 @@ for pi_live_case in \
   pi-live-progress-counts-agent:live-progress \
   pi-live-progress-counts-sidecar:live-progress \
   pi-live-progress-any-change:live-progress \
+  pi-live-progress-sum-delta:live-progress \
+  pi-live-progress-churn-resets-baseline:live-progress \
+  pi-live-progress-pid-recycle:live-progress \
+  pi-live-progress-lift-unmeasured:live-progress \
+  pi-live-progress-measured-kept:live-progress \
   pi-live-progress-null-clamped:live-progress \
   pi-live-progress-tool-start:live-progress \
   pi-live-progress-silent-cap:live-progress \
@@ -188,6 +228,8 @@ for pi_live_case in \
   job-status-stall-threshold:status-states job-status-hung-tool:status-states \
   job-status-hung-without-progress:status-states \
   job-status-progress-unknown-as-hung:status-states \
+  job-status-progress-unmeasured-as-measured:status-states \
+  job-status-progress-absent-flag-as-measured:status-states \
   job-status-hung-tool-command:status-states job-status-steer-target:status-states \
   job-status-since-commit-unqualified:status-states \
   job-status-tokens-last-report:status-states \

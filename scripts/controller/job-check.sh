@@ -20,6 +20,20 @@ controller_init
 [[ $# -ge 3 ]] || { echo "usage: $0 <run-name> <worktree-path> <luna|sol|deepseek|deepseek-volker|deepseek-github2|deepseek-pi|deepseek-pi-volker|deepseek-pi-github2|opencode|any|none> [absolute-report-path ...]" >&2; exit 2; }
 run=$1 worktree=$2 route=$3; shift 3
 [[ $run =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $run != *..* ]] || { echo "invalid run name" >&2; exit 2; }
+probe_run_lock() {
+  # $1 the run name's lock file. Sets lock_state to `held` (a wrapper holds the
+  # name right now), `free` (nobody does) or `unknown` (the file cannot be
+  # opened). The kernel lock, not the record, says whether a wrapper is alive:
+  # a launch records its identity only once it is real, so a wrapper that is
+  # still preflighting holds the lock while the record is empty or still names
+  # the PREVIOUS (dead) owner.
+  local probe_fd
+  lock_state=unknown
+  if exec {probe_fd}< "$1" 2>/dev/null; then
+    if flock -n "$probe_fd"; then lock_state=free; else lock_state=held; fi
+    exec {probe_fd}>&-
+  fi
+}
 recover_thread_from_stream() {
   # The first session/thread id the run stream carries, or nothing: a fact read
   # from the record the run already produced, never an invented id.
@@ -120,7 +134,15 @@ else
       fi
     fi
   fi
-  if [[ -n $dead_reason ]]; then
+  lock_state=unknown
+  if [[ -n $dead_reason ]]; then probe_run_lock "$owner_record"; fi
+  if [[ -n $dead_reason && $lock_state == held ]]; then
+    # The record still names the previous owner, but a wrapper holds the name
+    # right now: a resume of a DIED name that has not reached its owner record yet.
+    echo "RUNNING (preflighting, previous owner gone)"
+    printf 'owner record: previous owner %s (%s); the run name is held by a wrapper that is still preflighting (lock %s)\n' \
+      "${owner_pid:-<unknown>}" "$dead_reason" "$owner_record"
+  elif [[ -n $dead_reason ]]; then
     # A dead owner is never RUNNING: the controller must be able to relaunch.
     echo "DIED ($dead_reason, no .done)"
     echo "RUN-NAME OWNER DIED: <run>.done is missing and the recorded owner is not alive; relaunch the run or retire its records deliberately"
@@ -166,9 +188,26 @@ else
     printf 'owner record: pid %s alive%s (lock %s)\n' "$owner_pid" \
       "${owner_started:+ since $owner_started}" "$owner_record"
   else
-    echo "RUNNING (no .done)"
-    printf 'owner record: none (%s absent or unreadable; a live wrapper and a dead one cannot be told apart here)\n' \
-      "$owner_record"
+    # No owner identity was recorded. An EMPTY lock file with no stream is a name
+    # that was CLAIMED and never started: a launch records its identity only once
+    # it is real, so a launch refused after the claim (a bad route, blocked
+    # accounts, a missing credential) leaves exactly this. The kernel lock tells
+    # it from a wrapper that is still preflighting.
+    if [[ -e $owner_record && ! -s $owner_record && ! -e $run_file ]]; then
+      probe_run_lock "$owner_record"
+    fi
+    if [[ $lock_state == free ]]; then
+      echo "NOT-STARTED (no .done, no stream, no owner record: the run name was claimed but no wrapper started an agent on it)"
+      echo "RUN NEVER STARTED: the launch was refused or died before it recorded itself; read that launch's own message, fix the cause and relaunch the run"
+      red=1
+    elif [[ $lock_state == held ]]; then
+      echo "RUNNING (no .done)"
+      printf 'owner record: none yet (%s is held by a wrapper that is still preflighting)\n' "$owner_record"
+    else
+      echo "RUNNING (no .done)"
+      printf 'owner record: none (%s absent or unreadable; a live wrapper and a dead one cannot be told apart here)\n' \
+        "$owner_record"
+    fi
   fi
   if (( red != 0 )); then exit 1; fi
   exit 0

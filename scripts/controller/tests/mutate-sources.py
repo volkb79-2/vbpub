@@ -198,8 +198,8 @@ mutant("scripts/controller/job-check.sh", "job-check-run-traversal.sh",
 # A name that no wrapper ever owned is a distinct state, and the line says so
 # instead of borrowing RUNNING's claim about a process.
 mutant("scripts/controller/job-check.sh", "job-check-missing-done-owner-record.sh",
-       "    printf 'owner record: none",
-       "    : printf 'owner record: none")
+       "      printf 'owner record: none (%s absent",
+       "      : printf 'owner record: none (%s absent")
 # CTL-19: the Codex wrapper owns its run name and states its outcome on every
 # exit path, including a resume whose child fails.
 mutant("scripts/controller/codex-impl.sh", "codex-run-name-claim.sh",
@@ -231,6 +231,30 @@ codex_wrapper_with_lib_mutant(
     '  eval "exec $fd>&-" 2>/dev/null || :\n  return 0\n}\n\ncontroller_run_owner_pid',
     '  :\n  return 0\n}\n\ncontroller_run_owner_pid',
 )
+# CTL-22: EVERY Codex exec site closes the ownership descriptor, and the resume
+# and auto-resume sites are the ROUTINE ones. A shared-function mutant (the
+# `codex-run-name-child-close` lib mutant) cannot tell the three call sites
+# apart, so one mutant per site: deleting the call on that line alone must make
+# its own SIGKILL case fail.
+mutant("scripts/controller/codex-impl.sh", "codex-newlaunch-child-close.sh",
+       '  if (controller_close_ownership_fds && \\\n'
+       '    nice codex exec -C "$worktree"',
+       '  if (\\\n'
+       '    nice codex exec -C "$worktree"')
+mutant("scripts/controller/codex-impl.sh", "codex-resume-child-close.sh",
+       '  if (cd -- "$worktree" && controller_close_ownership_fds && \\\n'
+       '    nice codex exec resume -m "$model" -c "model_reasoning_effort=\\"$effort\\"" \\\n'
+       '    --skip-git-repo-check --json "$session_id"',
+       '  if (cd -- "$worktree" && \\\n'
+       '    nice codex exec resume -m "$model" -c "model_reasoning_effort=\\"$effort\\"" \\\n'
+       '    --skip-git-repo-check --json "$session_id"')
+mutant("scripts/controller/codex-impl.sh", "codex-autoresume-child-close.sh",
+       '  if (cd -- "$worktree" && controller_close_ownership_fds && \\\n'
+       '    nice codex exec resume -m "$model" -c "model_reasoning_effort=\\"$effort\\"" \\\n'
+       '    --skip-git-repo-check --json "$thread_id"',
+       '  if (cd -- "$worktree" && \\\n'
+       '    nice codex exec resume -m "$model" -c "model_reasoning_effort=\\"$effort\\"" \\\n'
+       '    --skip-git-repo-check --json "$thread_id"')
 mutant("scripts/controller/job-check.sh", "job-check-report-litter.sh",
        "stray=$(git -C \"$worktree\" status --short --ignored 2>/dev/null | grep -E '^\\?\\? (reports|scripts/.*/reports)/' | head -2 || true)",
        "stray='' ")
@@ -462,6 +486,74 @@ pi_wrapper_with_lib_mutant(
 mutant("scripts/controller/pi-impl.sh", "pi-run-name-refusal-overwrites.sh",
        'controller_run_claim "$name" || exit 2',
        'controller_run_claim "$name" || exit 2\ncontroller_run_record_owner')
+# CTL-23: the owner record belongs to a launch that is REAL. One mutant per
+# refusal the record must stay behind, so each clause is judged by its own case.
+mutant("scripts/controller/pi-impl.sh", "pi-record-owner-before-accounts.sh",
+       'if [[ -n $od_start_kind ]]; then\n  case $od_start_kind in',
+       'controller_run_record_owner\nif [[ -n $od_start_kind ]]; then\n  case $od_start_kind in')
+mutant("scripts/controller/pi-impl.sh", "pi-record-owner-before-credentials.sh",
+       'if [[ ! -r $HOME/.env.ai ]]; then',
+       'controller_run_record_owner\nif [[ ! -r $HOME/.env.ai ]]; then')
+mutant("scripts/controller/pi-impl.sh", "pi-done-removed-before-credentials.sh",
+       'if [[ ! -r $HOME/.env.ai ]]; then',
+       'if [[ $mode == resume ]]; then rm -f -- "$out/$name.done"; fi\nif [[ ! -r $HOME/.env.ai ]]; then')
+mutant("scripts/controller/pi-impl.sh", "pi-route-written-before-credentials.sh",
+       'if [[ ! -r $HOME/.env.ai ]]; then',
+       'printf \'%s\\n\' "$route_record" > "$out/$name.route"\nif [[ ! -r $HOME/.env.ai ]]; then')
+# The block a real launch DOES run, flipped: an accepted RESUME must remove the
+# previous marker and record its thread, and every accepted launch records its owner.
+mutant("scripts/controller/pi-impl.sh", "pi-resume-block-inverted.sh",
+       'if [[ $mode == resume ]]; then\n  rm -f -- "$out/$name.done"',
+       'if [[ $mode != resume ]]; then\n  rm -f -- "$out/$name.done"')
+mutant("scripts/controller/pi-impl.sh", "pi-record-owner-new-only.sh",
+       'controller_run_record_owner\nprintf \'%s\\n\' "$worktree" > "$out/$name.wt"',
+       '[[ $mode == new ]] && controller_run_record_owner\nprintf \'%s\\n\' "$worktree" > "$out/$name.wt"')
+# A forced launch retires the previous records only once it is real: restoring
+# the early retirement moves them aside on a refusal that follows.
+mutant("scripts/controller/pi-impl.sh", "pi-force-retire-early.sh",
+       'controller_run_claim "$name" || exit 2\nretire_existing=0',
+       'controller_run_claim "$name" || exit 2\n'
+       '[[ $mode != new || ${CONTROLLER_RUN_FORCE:-0} != 1 ]] || controller_run_retire_records "$name" >/dev/null\n'
+       'retire_existing=0')
+mutant("scripts/controller/pi-impl.sh", "pi-force-retire-before-credentials.sh",
+       'if [[ ! -r $HOME/.env.ai ]]; then',
+       'if [[ $retire_existing == 1 ]]; then controller_run_retire_records "$name" >/dev/null; fi\n'
+       'if [[ ! -r $HOME/.env.ai ]]; then')
+mutant("scripts/controller/codex-impl.sh", "codex-force-retire-early.sh",
+       'controller_run_claim "$name" || exit 2\nretire_existing=0',
+       'controller_run_claim "$name" || exit 2\n'
+       '[[ $mode != new || ${CONTROLLER_RUN_FORCE:-0} != 1 ]] || controller_run_retire_records "$name" >/dev/null\n'
+       'retire_existing=0')
+mutant("scripts/controller/codex-impl.sh", "codex-record-owner-early.sh",
+       'controller_run_claim "$name" || exit 2\nretire_existing=0',
+       'controller_run_claim "$name" || exit 2\ncontroller_run_record_owner\nretire_existing=0')
+mutant("scripts/controller/codex-impl.sh", "codex-record-owner-before-count.sh",
+       'auto_limit=${CODEX_AUTO_CONTINUE:-$auto_default}\n',
+       'controller_run_record_owner\nauto_limit=${CODEX_AUTO_CONTINUE:-$auto_default}\n')
+mutant("scripts/controller/codex-impl.sh", "codex-record-owner-before-accounts.sh",
+       'if [[ -n $od_start_kind ]]; then\n  volker_home=',
+       'controller_run_record_owner\nif [[ -n $od_start_kind ]]; then\n  volker_home=')
+# CTL-23: a claimed name that never started is its own state, told from a
+# preflighting wrapper by the kernel lock and from a started run by its stream.
+mutant("scripts/controller/job-check.sh", "job-check-not-started-off.sh",
+       'if [[ $lock_state == free ]]; then',
+       'if [[ $lock_state == never ]]; then')
+mutant("scripts/controller/job-check.sh", "job-check-not-started-held.sh",
+       'if flock -n "$probe_fd"; then lock_state=free; else lock_state=held; fi',
+       'if flock -n "$probe_fd"; then lock_state=free; else lock_state=free; fi')
+# A held lock with a dead previous owner's record is a resume still preflighting.
+mutant("scripts/controller/job-check.sh", "job-check-died-held-lock.sh",
+       'if [[ -n $dead_reason && $lock_state == held ]]; then',
+       'if [[ -n $dead_reason && $lock_state == never ]]; then')
+mutant("scripts/controller/job-check.sh", "job-check-died-no-probe.sh",
+       'if [[ -n $dead_reason ]]; then probe_run_lock "$owner_record"; fi',
+       ': # the lock of a dead owner is not probed')
+mutant("scripts/controller/job-check.sh", "job-check-not-started-stream.sh",
+       '[[ -e $owner_record && ! -s $owner_record && ! -e $run_file ]]',
+       '[[ -e $owner_record && ! -s $owner_record ]]')
+mutant("scripts/controller/job-check.sh", "job-check-not-started-content.sh",
+       '[[ -e $owner_record && ! -s $owner_record && ! -e $run_file ]]',
+       '[[ -e $owner_record && ! -e $run_file ]]')
 pi_wrapper_with_lib_mutant(
     "pi-run-name-retire-deletes",
     '    mv -- "$runs/$name.$extension" "$archive/" || return 2',
@@ -626,8 +718,8 @@ mutant("scripts/controller/pi-live.py", "pi-live-tokens-zero-as-measurement.py",
 # CTL-18: progress evidence is stream growth OR kernel counter growth. Without
 # the counters a long tool that keeps working but prints nothing reads as hung.
 mutant("scripts/controller/pi-live.py", "pi-live-progress-stream-only.py",
-       '                and (sample.cpu > previous.cpu or sample.io > previous.io)',
-       '                and False')
+       '            if previous is not None and survivor_delta(previous, sample):',
+       '            if False:')
 # CTL-18 (blocker 1): the summed set is the in-flight TOOL's subtree. The agent
 # (a direct child of the wrapper) and the sidecar grow on their own every tick,
 # so counting them makes a blocked tool read as working forever.
@@ -640,18 +732,57 @@ mutant("scripts/controller/pi-live.py", "pi-live-progress-counts-sidecar.py",
 # Any difference is not progress: a decrease and a changed process set are
 # baselines. Deciding on "it differs" reintroduces exactly the wrong direction.
 mutant("scripts/controller/pi-live.py", "pi-live-progress-any-change.py",
-       '                and (sample.cpu > previous.cpu or sample.io > previous.io)',
-       '                and (sample.cpu != previous.cpu or sample.io != previous.io)')
-# An unreadable /proc must not license the stronger word: clamping a null
-# progress fact up to the tool's start restores a wall-clock-only rule exactly
-# where the counters cannot be read.
-mutant("scripts/controller/pi-live.py", "pi-live-progress-null-clamped.py",
+       '        if new_cpu > old_cpu or new_io > old_io:',
+       '        if new_cpu != old_cpu or new_io != old_io:')
+# CTL-20: an epoch the sidecar could not re-read is NOT a measurement. Lifting
+# an epoch older than the in-flight tool up to the tool's own start publishes the
+# tool's AGE as its progress age, and HUNG-TOOL is then decided on wall-clock
+# alone - the CTL-18 defect in its third form (the fixture's stream grew BEFORE
+# the tool started, and the tool's subtree could not be located).
+mutant("scripts/controller/pi-live.py", "pi-live-progress-lift-unmeasured.py",
+       '    if (\n'
+       '        tool_started is not None\n'
+       '        and progress_epoch is not None\n'
+       '        and progress_epoch < tool_started\n'
+       '    ):\n'
+       '        progress_epoch = None',
        '    if tool_started is not None and progress_epoch is not None:\n'
        '        if progress_epoch < tool_started:\n'
-       '            progress_epoch = tool_started',
+       '            progress_epoch = tool_started')
+# An unreadable /proc must not license the stronger word either: clamping a null
+# progress fact up to the tool's start is the same wall-clock rule where nothing
+# could be read at all.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-null-clamped.py",
+       '    if (\n'
+       '        tool_started is not None\n'
+       '        and progress_epoch is not None\n'
+       '        and progress_epoch < tool_started\n'
+       '    ):\n'
+       '        progress_epoch = None',
        '    if tool_started is not None:\n'
        '        if progress_epoch is None or progress_epoch < tool_started:\n'
        '            progress_epoch = tool_started')
+# The MEASURED flag is the reader's licence: a tick that could not read the
+# tool's subtree carries the previous epoch forward, so it must say so or the
+# carried leftover is read as a measurement.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-measured-kept.py",
+       '            self.reason = "unread"\n            self.measured = False',
+       '            self.reason = "unread"\n            self.measured = self.measured')
+# A survivor's growth is progress; the SUM over a changed set is not.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-sum-delta.py",
+       '    for member in previous.identity & sample.identity:',
+       '    for member in sample.identity:')
+# A set change must not reset the quiet clock either: resetting the baseline on
+# every tick keeps a silently churning tool at LONG-TOOL forever.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-churn-resets-baseline.py",
+       '            if self.baseline is None:\n'
+       '                self.baseline = now',
+       '            self.baseline = now')
+# A recycled pid number is a different process, so its counters say nothing
+# about the one measured before.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-pid-recycle.py",
+       '        members[(pid, table.get(pid, (0, None))[1])] = (cpu, io)',
+       '        members[(pid, None)] = (cpu, io)')
 # A tool call's own announcement is a boundary, not evidence.
 mutant("scripts/controller/pi-live.py", "pi-live-progress-tool-start.py",
        '        if tool_started:\n            # A tool call',
@@ -679,12 +810,23 @@ mutant("scripts/controller/job-status.sh", "job-status-hung-tool.sh",
 # CTL-18: HUNG-TOOL is age AND absence of progress evidence. Deciding it on the
 # tool age alone is exactly the defect (a heavy-but-working tool reads as hung).
 mutant("scripts/controller/job-status.sh", "job-status-hung-without-progress.sh",
-       '        if progress_measured is not None and progress_measured > hung_limit:',
+       '        if progress_age is not None and progress_age > hung_limit:',
        '        if True:')
 # An unknown progress fact must not license the stronger word either.
 mutant("scripts/controller/job-status.sh", "job-status-progress-unknown-as-hung.sh",
-       '        if progress_measured is not None and progress_measured > hung_limit:',
-       '        if progress_measured is None or progress_measured > hung_limit:')
+       '        if progress_age is not None and progress_age > hung_limit:',
+       '        if progress_age is None or progress_age > hung_limit:')
+# CTL-20: the reader must take the producer's MEASURED flag, not the epoch it
+# carried: an unmeasured leftover printed as a progress age licenses HUNG-TOOL
+# on the tool's age alone.
+mutant("scripts/controller/job-status.sh", "job-status-progress-unmeasured-as-measured.sh",
+       '    progress_unknown = progress_flag is not True',
+       '    progress_unknown = False')
+# Absence of the flag is not a measurement: a payload that predates it must not
+# be read as if it had certified the epoch.
+mutant("scripts/controller/job-status.sh", "job-status-progress-absent-flag-as-measured.sh",
+       '    progress_unknown = progress_flag is not True',
+       '    progress_unknown = progress_flag is False')
 # The row must name the tool's command and the exact child pid to steer.
 mutant("scripts/controller/job-status.sh", "job-status-hung-tool-command.sh",
        '        tool_text += f" cmd={tool_command[:80]}"',

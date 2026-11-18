@@ -73,6 +73,54 @@ no separate version number, so entries are grouped by the work that landed.
   invocation never overwrites the identity of the owner it refused on.
 
 ### Fixed
+- A refused launch no longer overwrites the previous owner record (CTL-23): both
+  wrappers write the owner record only after every refusal that can follow the
+  claim (route, continuation count, blocked accounts, and for `pi-impl.sh` the
+  credential file and key), and `pi-impl.sh` touches `.wt`, `.route`, `.thread`
+  and `.done` only after the same point, so a launch that never started leaves the
+  previous run's records byte-identical and a refused first launch leaves no
+  evidence that would refuse its retry. `job-check.sh` reads the empty lock a
+  refused launch leaves as `NOT-STARTED` (red) instead of `RUNNING` or `DIED`;
+  an empty lock that a wrapper still holds stays `RUNNING` (preflighting).
+- CTL-23 review follow-up: `job-check.sh` reads a HELD lock that still carries a
+  dead previous owner's record (a `DIED` name being resumed, before its own
+  record) as `RUNNING (preflighting, previous owner gone)` instead of `DIED`;
+  `CONTROLLER_RUN_FORCE=1` retires the previous records only once the launch is
+  real, so a forced launch refused at the route, accounts or credentials moves
+  nothing into `retired/`; an accepted pi resume is pinned from the other side
+  (lock names the wrapper, `.done` absent while the agent works, `.thread` is the
+  session); the `lib.sh` header says the lock records who STARTED the name. Filed
+  without fixing: CTL-25 (the lock probe can make a concurrent claim fail) and
+  CTL-26 (a vanished member voids the progress reading; churn under an idle
+  parent points `steer=` at the parent).
+- The scope of the tool's subtree (every descendant of the agent) is documented
+  as a known limit that errs toward `LONG-TOOL` (CTL-24, no code).
+- The Codex resume and auto-resume exec sites have their own killed-wrapper
+  evidence (CTL-22): a SIGKILL check now kills the wrapper at each of the three
+  sites (new launch, manual resume, automatic continuation) with the agent and
+  the setsid daemon it left alive, asserts the run name is free at once and the
+  relaunch is accepted, and one mutant per site deletes the ownership-descriptor
+  close from that ONE line — so the routine resume path can no longer lose the
+  close unnoticed.
+- Progress is a surviving process's delta, not a change of the set (CTL-21):
+  `pi-live.py` keeps each member of the in-flight tool's subtree separately and
+  counts a SURVIVOR's strictly positive CPU/IO delta (the same pid AND the same
+  kernel start ticks in both readings). A process-set change (`make -j` starting
+  or reaping a worker, per-test subprocesses) is neither progress nor a reset of
+  the quiet clock — its baseline is the first reading of the current tool call —
+  so a silently churning tool still reads `HUNG-TOOL` at the threshold while a
+  churning tool with a CPU-burning survivor reads `LONG-TOOL`. A recycled pid
+  number is a different process and never a survivor.
+- An unmeasurable progress epoch is no longer read as measured progress (CTL-20):
+  `pi-live.py` publishes `progress_measured` beside `progress_epoch` — true only
+  when the current tick read the in-flight tool's own subtree or evidence was
+  produced on it, false when the tick could not re-read the subtree (the
+  previous epoch is carried forward as a leftover) or when the epoch is older
+  than the call (it is then published as `null`, never lifted to the tool's
+  start). `job-status.sh` takes that flag as its only licence, so an unmeasured
+  epoch prints `progress=- progress-why=unread` and the weaker word: the tool's
+  age alone can no longer decide `HUNG-TOOL`, which the lift made it do again
+  whenever the run's stream grew before a tool whose subtree could not be read.
 - `job-status` liveness and the dead-wrapper/orphan case: `ACTIVE`/`WRAPPER-DEAD`
   is decided from the run name's owner record (`<run>.lock`), the same rule
   `job-check.sh` applies, so a recycled wrapper pid no longer reads `ACTIVE` and

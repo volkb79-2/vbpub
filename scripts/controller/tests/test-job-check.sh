@@ -608,6 +608,73 @@ contains "$ROOT/dead-no-id.out" 'thread: none' \
 not_contains "$ROOT/dead-no-id.out" 'resume: ' \
   'no resume command is printed without a thread id'
 
+# CTL-23: a name that was CLAIMED but never started. A launch that refuses after
+# the claim leaves only the empty lock file the claim created (the owner record is
+# written once the launch is real), and that is neither a dead wrapper (DIED) nor
+# a running one. The kernel lock tells a refused or killed launch (free) from a
+# wrapper that is still preflighting (held).
+: > "$HOME_ROOT/runs/refused-only.lock"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" refused-only "$REPO" luna > "$ROOT/refused-only.out" 2>&1; then
+  cat "$ROOT/refused-only.out" >&2
+  fail 'a name that was claimed and never started was accepted as running'
+fi
+contains "$ROOT/refused-only.out" 'NOT-STARTED' 'a claimed-but-never-started name says it never started'
+not_contains "$ROOT/refused-only.out" 'DIED' 'a name that never started is not reported as a dead wrapper'
+not_contains "$ROOT/refused-only.out" 'RUNNING' 'a name that never started is not reported as running'
+# The same empty lock while a wrapper HOLDS it: the wrapper is preflighting.
+: > "$HOME_ROOT/runs/preflighting.lock"
+exec {preflight_fd}>>"$HOME_ROOT/runs/preflighting.lock"
+flock -n "$preflight_fd" || fail 'the check could not take the lock it simulates a wrapper with'
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO \
+  "$SRC" preflighting "$REPO" luna > "$ROOT/preflighting.out" 2>&1 \
+  || { cat "$ROOT/preflighting.out" >&2; exec {preflight_fd}>&-; fail 'a name held by a preflighting wrapper was reported as not started'; }
+exec {preflight_fd}>&-
+contains "$ROOT/preflighting.out" 'RUNNING (no .done)' 'a held empty lock is a wrapper that is still starting'
+contains "$ROOT/preflighting.out" 'still preflighting' 'the preflighting wrapper is named as such'
+not_contains "$ROOT/preflighting.out" 'NOT-STARTED' 'a held lock is not a name that never started'
+# A DIED name that is being RESUMED: the record still names the previous (dead)
+# owner because the resuming wrapper has not reached its own record yet, and the
+# kernel lock says a wrapper holds the name. That is preflighting, not DIED; the
+# same record with nobody holding the lock stays DIED (the dead-owner case above).
+printf '{"type":"session","id":"resumed-thread"}\n' > "$HOME_ROOT/runs/resumed-preflight.jsonl"
+printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=12345 boot_id=%s\n' \
+  2147483646 1700000000 2023-11-14T22:13:20Z "$boot_id" > "$HOME_ROOT/runs/resumed-preflight.lock"
+exec {resume_fd}>>"$HOME_ROOT/runs/resumed-preflight.lock"
+flock -n "$resume_fd" || fail 'the check could not take the lock it simulates a resuming wrapper with'
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO \
+  "$SRC" resumed-preflight "$REPO" deepseek-pi > "$ROOT/resumed-preflight.out" 2>&1 \
+  || { cat "$ROOT/resumed-preflight.out" >&2; exec {resume_fd}>&-; fail 'a held lock with a dead previous owner was reported as DIED'; }
+exec {resume_fd}>&-
+contains "$ROOT/resumed-preflight.out" 'RUNNING (preflighting, previous owner gone)' \
+  'a held lock with a dead previous owner is a resume that is still preflighting'
+not_contains "$ROOT/resumed-preflight.out" 'DIED' 'a resuming wrapper is not reported as a dead one'
+# The same record once the resuming wrapper is gone (the lock is free) is DIED.
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" resumed-preflight "$REPO" deepseek-pi > "$ROOT/resumed-gone.out" 2>&1; then
+  fail 'a dead previous owner with a free lock was accepted as running'
+fi
+contains "$ROOT/resumed-gone.out" 'DIED (wrapper pid 2147483646 gone, no .done)' \
+  'the same record with a free lock is DIED'
+# A lock that holds something unparsable is not the claim's empty file: no claim
+# is inferred from it, and the prototype wording is kept.
+printf 'not an owner record\n' > "$HOME_ROOT/runs/garbage-lock.lock"
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO \
+  "$SRC" garbage-lock "$REPO" luna > "$ROOT/garbage-lock.out" 2>&1 \
+  || { cat "$ROOT/garbage-lock.out" >&2; fail 'an unparsable lock was reported as not started'; }
+contains "$ROOT/garbage-lock.out" 'owner record: none' 'an unparsable lock keeps the no-record wording'
+not_contains "$ROOT/garbage-lock.out" 'NOT-STARTED' 'an unparsable lock is not a claimed-but-never-started name'
+# An empty lock beside a stream is a run something else started: the prototype
+# wording (no record, a live and a dead wrapper cannot be told apart) is kept.
+: > "$HOME_ROOT/runs/empty-lock-stream.lock"
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"working"}}\n' \
+  > "$HOME_ROOT/runs/empty-lock-stream.jsonl"
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO \
+  "$SRC" empty-lock-stream "$REPO" luna > "$ROOT/empty-lock-stream.out" 2>&1 \
+  || { cat "$ROOT/empty-lock-stream.out" >&2; fail 'an empty lock beside a stream was reported as not started'; }
+contains "$ROOT/empty-lock-stream.out" 'owner record: none' 'an empty lock beside a stream keeps the no-record wording'
+not_contains "$ROOT/empty-lock-stream.out" 'NOT-STARTED' 'a name with a stream has started'
+
 # A recycled pid: the recorded pid exists NOW but its kernel start time differs,
 # so it is not the owner this record describes.
 printf '{"type":"item.completed","item":{"type":"agent_message","text":"working"}}\n' \
