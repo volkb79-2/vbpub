@@ -111,6 +111,7 @@ class Guest:
         out, m = self.expect(END_RE, timeout)
         rc = int(m.group(1))
         text = END_RE.sub(b"", out).decode("utf-8", "replace")
+        text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text).replace("\r\n", "\n")  # plain lines for the checks
         return rc, text
 
 
@@ -185,13 +186,62 @@ def scenario_s2_s3(g, log):
     check(log, "earlier state is the default after set-default (S4)", f"rootflags=subvol={pre[0]}" in out)
 
 
+def _vkey(v):
+    return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", v) if p]
+
+
+def _reboot(g, timeout=1200):
+    g.send("reboot\n")
+    time.sleep(5)
+    g.buf = b""
+    g.login(timeout)
+
+
+def scenario_kernel_upgrade(g, log):
+    """A kernel change: apt dist-upgrade brings a newer kernel into the running state; the menu must show it for
+    that state and keep the old kernel for the snapshot; boot new, boot the earlier state once (old kernel and its
+    modules), and check that the one-shot returns to the default on the next reboot."""
+    g.login()
+    rc, out = g.run("uname -r; dr-state list")
+    old = out.strip().splitlines()[1].strip() if len(out.strip().splitlines()) > 1 else ""
+    check(log, "running kernel recorded", bool(old), old)
+    # the disk of run 2a was installed without the updates and security suites
+    g.run("echo 'deb http://deb.debian.org/debian trixie-updates main' > /etc/apt/sources.list.d/dr-updates.list; "
+          "echo 'deb http://deb.debian.org/debian-security trixie-security main' >> /etc/apt/sources.list.d/dr-updates.list")
+    rc, out = g.run("apt-get update -qq 2>&1 | tail -3; apt list --upgradable 2>/dev/null | grep -E '^linux-image' | cut -c1-120", 900)
+    if not check(log, "a newer kernel package is on offer", re.search(r"linux-image", out) is not None, out[-200:]):
+        return
+    rc, out = g.run("DEBIAN_FRONTEND=noninteractive apt-get -y -qq dist-upgrade 2>&1 | tail -5; echo ===; ls /boot; "
+                    "echo ===; dr-state list; echo ===; grep -E '^menuentry' /boot/efi/EFI/dr/grub.cfg", 5400)
+    kernels = sorted(set(re.findall(r"^vmlinuz-(\S+)$", out, re.M)), key=_vkey)
+    new = kernels[-1] if kernels else ""
+    check(log, "a newer kernel was installed next to the old one", bool(new) and new != old and old in kernels, str(kernels))
+    menu = dict(re.findall(r'menuentry "Debian (@os-\S+) \(kernel (\S+)\)"', out))
+    check(log, "menu: the running state names the NEW kernel", menu.get("@os-0001") == new, str(menu))
+    pre = [s for s in menu if s.startswith("@os-pre-")]
+    check(log, "menu: the snapshot keeps the OLD kernel", bool(pre) and all(menu[s] == old for s in pre), str(menu))
+    if not (new and pre):
+        return
+    _reboot(g)
+    rc, out = g.run("uname -r")
+    check(log, "default boot runs the new kernel", out.strip().splitlines()[-1].strip() == new, out.strip()[-60:])
+    rc, out = g.run(f"dr-state boot-once {pre[0]} && echo ok")
+    _reboot(g)
+    rc, out = g.run("uname -r; cat /proc/cmdline | tr ' ' '\\n' | grep rootflags; ls /lib/modules; modprobe loop && echo MODOK")
+    check(log, "earlier state boots its OLD kernel", out.strip().splitlines()[1].strip() == old if len(out.strip().splitlines()) > 1 else False, out.strip()[:120])
+    check(log, "earlier state's modules match its kernel (modprobe works)", "MODOK" in out)
+    _reboot(g)
+    rc, out = g.run("uname -r")
+    check(log, "the one-shot returned to the default on the next reboot", out.strip().splitlines()[-1].strip() == new, out.strip()[-60:])
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__)
         return 2
     sock, name = sys.argv[1], sys.argv[2]
     logpath = sys.argv[sys.argv.index("--log") + 1] if "--log" in sys.argv else f"/tmp/dr-serial-{name}.log"
-    scenarios = {"boot-check": scenario_boot_check, "s2-s3": scenario_s2_s3}
+    scenarios = {"boot-check": scenario_boot_check, "s2-s3": scenario_s2_s3, "kernel-upgrade": scenario_kernel_upgrade}
     if name not in scenarios:
         print(f"unknown scenario {name}; one of {sorted(scenarios)}")
         return 2

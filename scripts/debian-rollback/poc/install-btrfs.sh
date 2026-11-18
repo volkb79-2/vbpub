@@ -123,6 +123,10 @@ write_file() { # write_file PATH (content on stdin); shows it instead in a dry r
 echo "$fstab" | write_file "$T/etc/fstab"
 echo "$HOSTNAME_" | write_file "$T/etc/hostname"
 printf '127.0.0.1 localhost\n127.0.1.1 %s\n' "$HOSTNAME_" | write_file "$T/etc/hosts"
+# security and point-release updates: debootstrap configures only the base suite, so a fresh install would miss
+# kernel and security updates (found in run 2: the target had kernel 6.12.107 while the mirror offered newer ones)
+printf 'deb %s %s-updates main\ndeb http://deb.debian.org/debian-security %s-security main\n' "$MIRROR" "$SUITE" "$SUITE" \
+  | write_file "$T/etc/apt/sources.list.d/dr-updates.list"
 # DHCP on the first NIC through ifupdown + isc-dhcp-client (dhclient writes resolv.conf). The menu passes
 # net.ifnames=0 so the NIC is always eth0. (systemd-resolved failed to configure inside the debootstrap chroot
 # in run 2a, see RESULTS; networkd/resolved is the better product answer and stays an open item.)
