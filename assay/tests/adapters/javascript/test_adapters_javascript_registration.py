@@ -307,6 +307,7 @@ def test_the_built_in_registry_names_exactly_the_languages_this_build_reaches():
         # extents as statement truth. This test is what made that landing
         # visible rather than silent, which is what it is for.
         "go": ["R1"],
-        # B243: rust, at R1 ONLY (R2 ingestion and R3 canaries are unregistered).
-        "rust": ["R1"],
+        # B243: rust at R1; B245 U8a adds R2 for the INGESTED cargo-mutants
+        # path only (R3 canaries are unregistered).
+        "rust": ["R1", "R2"],
     }

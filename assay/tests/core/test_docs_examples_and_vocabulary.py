@@ -81,15 +81,19 @@ _LANGUAGE_DISPLAY_NAMES = {
     "rust": "Rust",
     "sql": "SQL",
 }
-_INGESTED_ONLY_SKILL_CAPABILITIES = {("javascript", "R2")}
+_INGESTED_ONLY_SKILL_CAPABILITIES = {
+    ("javascript", "R2"): " (ingested Stryker report; B046)",
+    ("rust", "R2"): " (ingested cargo-mutants report; B245)",
+}
 
 
 def _required_cli_skill_capabilities() -> set[str]:
     """Derive native pairs from the same registry the CLI run path uses.
 
     R0 is adapter-free. JavaScript R2 is admitted by that registry only for
-    B046's ingested Stryker report path, so the skill must preserve that
-    qualifier rather than imply a native JavaScript mutation engine.
+    B046's ingested Stryker report path, and Rust R2 only for B245's ingested
+    cargo-mutants report, so the skill must preserve those qualifiers rather
+    than imply a native mutation engine.
     """
     required = {"R0"}
     for language, entry in _built_in_registry().entries.items():
@@ -97,7 +101,7 @@ def _required_cli_skill_capabilities() -> set[str]:
         for level in entry.rigor:
             label = f"{display} {level}"
             if (language, level) in _INGESTED_ONLY_SKILL_CAPABILITIES:
-                label += " (ingested Stryker report; B046)"
+                label += _INGESTED_ONLY_SKILL_CAPABILITIES[(language, level)]
             required.add(label)
     return required
 

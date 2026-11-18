@@ -2747,7 +2747,8 @@ bounded integer columns. Fixed-length
 
 ## Rust lanes (R1)
 
-`judge.language = "rust"` is registered at R1 for changed-line LCOV judgment.
+`judge.language = "rust"` is registered at R1 for changed-line LCOV judgment
+(and at R2 for ingested cargo-mutants lanes only, B245 U8a).
 The adapter maps `.rs` files and normalizes stable `cargo-llvm-cov`'s complete
 zero `BRF`/`BRH` markers when the artifact has no `BRDA` records. That result
 has branch capability `unavailable`; a lane that sets `require_branch = true`
@@ -2876,6 +2877,12 @@ R0 evidence, so the baseline's own test run decides R0 instead of cargo-mutants'
 exit codes 2 and 3). Assay accepts only cargo-mutants `27.x` reports. The
 lane is a `changed_lines` lane: assay produces the diff itself and hands it to
 the tool through the argv placeholder `{assay.changed_diff}`.
+
+`judge.language = "rust"` is registered at R1 and R2 in the CLI registry (B245
+U8a), so `assay run` accepts this lane directly. Only the ingested path exists:
+a native Rust R2 lane (no `judge.mutation.format`) is refused at lane load, as
+for native `javascript`, because assay has no Rust mutator; Rust R3 is not
+registered.
 
 ### The lane template
 
