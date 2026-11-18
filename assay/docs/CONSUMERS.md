@@ -1926,6 +1926,16 @@ for the explicit `--rejudge crashed` command.
 Every native R2 `candidate` progress event includes `resource_limit_changes`,
 with an empty list when no configured limit values changed.
 
+New native candidate records and `candidate` progress events also carry the
+optional `locus` object (`schema`, `key`, `qualname`, `segment_sha256`,
+`rel_start`, `rel_end`) and lookup-only `window_key` when the mutation site has
+a unique enclosing function. Both fields are absent for the exact-id fallback.
+They help find an earlier record after unrelated file edits; they do not prove
+that its outcome is still valid. A stored record with malformed locus metadata
+or values that do not reproduce from its own recorded path, source digest,
+span, operator and replacement digest is `UNREADABLE_ARTIFACT` (`stale locus`).
+Pre-B561 records without these fields remain valid exact-id records.
+
 Three consequences worth planning around:
 
 * **Resume is per-tree and per-passthrough-value, not per-commit.** Two commits with identical trees
@@ -2007,8 +2017,9 @@ and its bucket is `killed` or `survived`; `crashed`, `hung` and
 the judge that executed it and gains
 
 ```json
-"carry_over": {"schema_version": 1, "from_judge_sha256": "...", "into_judge_sha256": "...",
-               "source": "<DIR>", "reason": "<text>", "imported_at": "...Z", "importer_version": "..."}
+"carry_over": {"schema_version": 2, "from_judge_sha256": "...", "into_judge_sha256": "...",
+               "source": "<DIR>", "reason": "<text>", "imported_at": "...Z",
+               "importer_version": "...", "locus_match": "exact-id"}
 ```
 
 so the next `--resume` reuses it without the flag. Nothing is silently merged
@@ -2019,6 +2030,13 @@ into "judged by this judge": the progress stream emits a `carry_over` event
 `carry-over: N counted result(s) were IMPORTED ...` line in its text closeout.
 Known limit (B532): the verdict document itself does not yet mark imported
 outcomes.
+
+Schema-1 blocks remain accepted unchanged. In schema 2, `locus_match` names
+how a future carry-forward search found the record (`exact-id`, `locus` or
+`window`), and the machine reason `carry-forward` is valid without an
+operator-authored text. `from_judge_sha256` is provenance only, including for
+a kill replayed by the current judge: `into_judge_sha256` is the effective
+judge in both the imported and replay shapes.
 
 `--merge-state DIR` (repeatable) copies records of the SAME judge from another
 store -- the way shard stores are merged (below). It needs no reason; records
@@ -4690,7 +4708,7 @@ never says `coverage_parsed`.
 | `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total`, `judge_sha256` (the digest of the judge that runs the sweep; additive, B108) |
 | `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5 — records dropped by `--rejudge`/`--rejudge-outcome` so they re-execute; `0` on every run that passed neither flag) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`) |
 | `baseline` | the sweep's baseline record | `candidate_total` |
-| `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (including `hung`, B091/RW-33 — see below), `elapsed_seconds`, and `tests_completed` (B091 A4/B097 — owner-process `test` count; `None` when liveness never ran, `0` when it ran and saw no owner event). `phase_seconds` (`materialize`/`command`/`integrity`/`teardown`) and `startup_seconds` (`to_session_start`/`to_first_test`) are Assay's own clock. Assay 12 (B206) removed the sampled `cpu_seconds`, `peak_rss_bytes`, `write_bytes`, `judge_rss_bytes` and the `resources` object: every resource number now comes from the cgprofile observer as `profile` (a `resource-profile/1` object: `status` `MEASURED`/`PARTIAL`/`NO_MEASUREMENT`, one `reason` when there is no measurement, `wall_seconds` from Assay's clock, `metrics`, `missing`, `observer`; see [the v17-to-v18 migration notes](#migration-notes-v17-to-v18)). `worker_count` is the workers of the invocation that ran the candidate (B203), and a `killed` candidate carries `first_failing_test` (B205; null when unknown). Profiles are diagnostic and never classify a candidate; they are also stored in the candidate state record and as one line in `profile-<lane>.jsonl` beside the progress file. A witness replay that did not kill counts only in `elapsed_seconds`. Liveness lanes also write a `<events>.resources.json` sidecar next to each candidate's events file (`format`, `spawned_at`) |
+| `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (including `hung`, B091/RW-33 — see below), `elapsed_seconds`, and `tests_completed` (B091 A4/B097 — owner-process `test` count; `None` when liveness never ran, `0` when it ran and saw no owner event). B561 adds optional `locus` and `window_key`, both absent for the exact-id fallback. `phase_seconds` (`materialize`/`command`/`integrity`/`teardown`) and `startup_seconds` (`to_session_start`/`to_first_test`) are Assay's own clock. Assay 12 (B206) removed the sampled `cpu_seconds`, `peak_rss_bytes`, `write_bytes`, `judge_rss_bytes` and the `resources` object: every resource number now comes from the cgprofile observer as `profile` (a `resource-profile/1` object: `status` `MEASURED`/`PARTIAL`/`NO_MEASUREMENT`, one `reason` when there is no measurement, `wall_seconds` from Assay's clock, `metrics`, `missing`, `observer`; see [the v17-to-v18 migration notes](#migration-notes-v17-to-v18)). `worker_count` is the workers of the invocation that ran the candidate (B203), and a `killed` candidate carries `first_failing_test` (B205; null when unknown). Profiles are diagnostic and never classify a candidate; they are also stored in the candidate state record and as one line in `profile-<lane>.jsonl` beside the progress file. A witness replay that did not kill counts only in `elapsed_seconds`. Liveness lanes also write a `<events>.resources.json` sidecar next to each candidate's events file (`format`, `spawned_at`) |
 | `end` | the mutation sweep ended, on every path out | `buckets` (per-bucket counts, now including `hung`), `reason`, `budget_exceeded_dispatched`, `budget_exceeded_unstarted` (B524 — see below; both additive, and both `0` on the three early-return `reason`s, where nothing was attempted) |
 | `verdict_written` | terminal, for every tier | `outcome`, `reason_code`, `exit_code`, `destination` |
 

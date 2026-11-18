@@ -146,6 +146,10 @@ from . import contention as _contention
 from . import git, liveness, observer_windows, safeio
 from . import termination as _termination
 from .candidate_identity import candidate_id_from_fields
+from .candidate_locus import LocusIndex
+from .candidate_locus import from_record as _locus_from_record
+from .candidate_locus import locus_for_site as _locus_for_site
+from .candidate_locus import window_key_for_site as _window_key_for_site
 from .diff import AddedLines
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from .guards import is_finite_positive, is_int_at_least, is_nonempty_str, is_strict_int
@@ -259,6 +263,7 @@ __all__ = [
     "SHARD_MANIFEST_NAME",
     "ShardStoreMergeError",
     "record_effective_judge",
+    "locus_index_for_records",
     "terminal_record_judges",
     "mutation_state_record_name",
     "mutation_state_record_path",
@@ -1498,7 +1503,57 @@ def _progress_event(
         # same candidate, defeats the one thing a progress artifact is for.
         # The progress stream names what it actually hashes.
         "mutated_file_sha256": hashlib.sha256(replacement_bytes).hexdigest(),
+        **_locus_fields(
+            path=job.path,
+            source=original_bytes,
+            start_byte=job.site.start_byte,
+            end_byte=job.site.end_byte,
+            operator=job.site.operator,
+            replacement_sha256=job.site.replacement_sha256,
+        ),
     }
+
+
+def _locus_fields(
+    *,
+    path: object,
+    source: object,
+    start_byte: object,
+    end_byte: object,
+    operator: object,
+    replacement_sha256: object,
+) -> dict[str, object]:
+    """Return optional record fields for the site, never raising into a run.
+
+    ``locus_for_site`` returning ``None`` is the exact-id fallback, so neither
+    field is written. The window key is lookup-only and accompanies A'; it is
+    never evidence that a prior outcome remains valid.
+    """
+    try:
+        locus = _locus_for_site(
+            path,
+            source,
+            start_byte,
+            end_byte,
+            operator,
+            replacement_sha256,
+        )
+        if locus is None:
+            return {}
+        fields: dict[str, object] = {"locus": locus.to_record()}
+        window_key = _window_key_for_site(
+            path,
+            source,
+            start_byte,
+            end_byte,
+            operator,
+            replacement_sha256,
+        )
+        if window_key is not None:
+            fields["window_key"] = window_key
+        return fields
+    except Exception:  # noqa: BLE001 -- untrusted source must never fail a run
+        return {}
 
 
 def candidate_identity_fields(job: MutantJob) -> dict[str, object]:
@@ -1811,8 +1866,14 @@ RESOURCE_SENSITIVE_BUCKETS: frozenset[str] = frozenset(
     {"crashed", "hung", "budget_exceeded"}
 )
 
+#: Schema 1 is the original exact-id carry-over block. It remains supported
+#: byte-for-byte for stores written before sub-file identity.
 CARRY_OVER_SCHEMA_VERSION = 1
-_CARRY_OVER_KEYS = frozenset(
+#: Schema 2 is emitted by new carry-over imports. Its locus_match names how
+#: the record was found, while from_judge_sha256 is provenance only.
+CARRY_OVER_SCHEMA_VERSION_V2 = 2
+CARRY_FORWARD_REASON = "carry-forward"
+_CARRY_OVER_V1_KEYS = frozenset(
     {
         "schema_version",
         "from_judge_sha256",
@@ -1823,6 +1884,8 @@ _CARRY_OVER_KEYS = frozenset(
         "importer_version",
     }
 )
+_CARRY_OVER_V2_KEYS = _CARRY_OVER_V1_KEYS | {"locus_match"}
+_CARRY_OVER_LOCUS_MATCHES = frozenset({"exact-id", "locus", "window"})
 #: Bound on the operator's ``--carry-over-reason`` text.
 CARRY_OVER_REASON_MAX_BYTES = 1024
 
@@ -1902,19 +1965,42 @@ class FlexOptions:
 
 
 def _valid_carry_over(value: Any) -> bool:
-    if not isinstance(value, Mapping) or set(value) != _CARRY_OVER_KEYS:
+    """Whether *value* is a supported carry-over provenance block.
+
+    Schema 1 is the original exact-id import block emitted by
+    ``--carry-over``. Schema 2 keeps every schema-1 key and adds
+    ``locus_match`` (``exact-id``, ``locus`` or ``window``). The reason may be
+    operator text or the fixed machine value ``carry-forward``.
+
+    In both schemas ``into_judge_sha256`` is the effective judge. Schema 2's
+    ``from_judge_sha256`` is provenance only: it may name the prior judge of a
+    replay executed by the current judge. It never overrides ``into``.
+    """
+    if not isinstance(value, Mapping):
         return False
-    if type(value["schema_version"]) is not int or value["schema_version"] != (
-        CARRY_OVER_SCHEMA_VERSION
-    ):
+    version = value.get("schema_version")
+    if type(version) is not int:
+        return False
+    if version == CARRY_OVER_SCHEMA_VERSION:
+        expected_keys = _CARRY_OVER_V1_KEYS
+    elif version == CARRY_OVER_SCHEMA_VERSION_V2:
+        expected_keys = _CARRY_OVER_V2_KEYS
+    else:
+        return False
+    if set(value) != expected_keys:
         return False
     for key in ("from_judge_sha256", "into_judge_sha256"):
         if not isinstance(value[key], str) or _CANDIDATE_ID_RE.fullmatch(value[key]) is None:
             return False
-    return all(
+    if not all(
         isinstance(value[key], str) and value[key]
         for key in ("source", "reason", "imported_at", "importer_version")
-    )
+    ):
+        return False
+    if version == CARRY_OVER_SCHEMA_VERSION:
+        return True
+    locus_match = value["locus_match"]
+    return isinstance(locus_match, str) and locus_match in _CARRY_OVER_LOCUS_MATCHES
 
 
 def record_effective_judge(payload: Mapping[str, Any]) -> str | None:
@@ -1933,7 +2019,19 @@ def record_effective_judge(payload: Mapping[str, Any]) -> str | None:
     if "carry_over" not in payload:
         return judge
     carry = payload["carry_over"]
-    if _valid_carry_over(carry) and carry["from_judge_sha256"] == judge:
+    if not _valid_carry_over(carry):
+        return None
+    if carry["schema_version"] == CARRY_OVER_SCHEMA_VERSION:
+        if carry["from_judge_sha256"] == judge:
+            return carry["into_judge_sha256"]
+        return None
+    # Schema 2 permits both the imported shape (executing judge = from) and
+    # the replay shape (executing judge = into). `from` identifies the prior
+    # evidence; it never chooses the effective judge.
+    if judge in {
+        carry["from_judge_sha256"],
+        carry["into_judge_sha256"],
+    }:
         return carry["into_judge_sha256"]
     return None
 
@@ -2865,6 +2963,87 @@ def _terminal_result_matches_bucket(
     )
 
 
+def _validate_record_locus(
+    payload: Mapping[str, Any], *, job: MutantJob, identity: str
+) -> None:
+    """Validate optional locus metadata against the record's mutation tuple.
+
+    Records without ``locus`` predate sub-file identity and remain valid for
+    exact-id resume. When present, ``locus`` must have the strict
+    ``assay-locus/1`` shape and equal the locus recomputed from the recorded
+    path, source bytes, span, operator and replacement digest. Its companion
+    ``window_key`` must be present and recompute to the same value. Any defect
+    is corruption, reported as ``stale locus``.
+    """
+    if "locus" not in payload:
+        if "window_key" in payload:
+            raise MutationStateError(
+                f"mutation-state record {identity} has stale locus: "
+                "window_key requires locus"
+            )
+        return
+    raw_locus = payload["locus"]
+    if _locus_from_record(raw_locus) is None:
+        raise MutationStateError(
+            f"mutation-state record {identity} has stale locus: invalid locus shape"
+        )
+    expected = _locus_fields(
+        path=payload.get("path"),
+        source=job.original_text.encode("utf-8"),
+        start_byte=payload.get("start_byte"),
+        end_byte=payload.get("end_byte"),
+        operator=payload.get("operator"),
+        replacement_sha256=payload.get("replacement_sha256"),
+    )
+    if expected.get("locus") != raw_locus:
+        raise MutationStateError(
+            f"mutation-state record {identity} has stale locus: "
+            "recorded locus does not match its mutation"
+        )
+    if payload.get("window_key") != expected.get("window_key"):
+        raise MutationStateError(
+            f"mutation-state record {identity} has stale locus: "
+            "window_key does not match its locus"
+        )
+
+
+def locus_index_for_records(
+    records: Iterable[Mapping[str, Any]],
+) -> LocusIndex:
+    """Build the deduplicated locus/window lookup index for prior records.
+
+    Malformed records contribute no key. ``LocusIndex`` first de-duplicates
+    the same candidate id across flat and generation spellings; a locus key
+    held by two different candidate ids is then reported ambiguous and
+    ``by_locus`` returns ``None`` for it. Such records are ignored for lookup,
+    never deleted or treated as an error.
+    """
+    entries: list[tuple[str, str | None, str | None, object]] = []
+    for payload in records:
+        if not isinstance(payload, Mapping):
+            continue
+        candidate = payload.get("candidate_id")
+        if (
+            not isinstance(candidate, str)
+            or _CANDIDATE_ID_RE.fullmatch(candidate) is None
+        ):
+            continue
+        locus = _locus_from_record(payload.get("locus"))
+        if locus is None:
+            locus_key = window_key = None
+        else:
+            locus_key = locus.key
+            raw_window_key = payload.get("window_key")
+            window_key = (
+                raw_window_key
+                if isinstance(raw_window_key, str)
+                and _CANDIDATE_ID_RE.fullmatch(raw_window_key) is not None
+                else None
+            )
+        entries.append((candidate, locus_key, window_key, payload))
+    return LocusIndex(entries)
+
+
 def _load_validated_state_record(
     state_root: Path,
     job: MutantJob,
@@ -2965,6 +3144,7 @@ def _load_validated_state_record(
         # source_sha256 specifically) would discard exactly the evidence
         # this check exists to surface.
         raise MutationStateError(f"mutation-state record {identity} has stale {key}")
+    _validate_record_locus(payload, job=job, identity=identity)
     legacy_tree = payload.get("process_tree_evidence")
     if (
         isinstance(legacy_tree, Mapping)
@@ -4122,13 +4302,14 @@ def _carry_over_records(
         else:
             payload = dict(chosen)
             payload["carry_over"] = {
-                "schema_version": CARRY_OVER_SCHEMA_VERSION,
+                "schema_version": CARRY_OVER_SCHEMA_VERSION_V2,
                 "from_judge_sha256": chosen["judge_sha256"],
                 "into_judge_sha256": judge,
                 "source": str(chosen_source),
                 "reason": flex.carry_over_reason,
                 "imported_at": imported_at,
                 "importer_version": _tool_version() or "unknown",
+                "locus_match": "exact-id",
             }
             payload.pop("campaign_deadline_sha256", None)
             if campaign_deadline_sha256 is not None:

@@ -1746,6 +1746,25 @@ Shards assign by keyed digest of the candidate ID. Their merge is
 a manifest-level set proof: exact index coverage, one schema/lane/commit/count,
 and duplicate-free IDs—not bucket-count arithmetic.
 
+### Carry-over provenance schema 2 (B561/WP2)
+
+Every new native candidate record and its `candidate` progress event may carry
+the optional sub-file `locus` object and its lookup-only `window_key`. Both are
+absent when the locus helper selects the exact-id fallback. The loader
+recomputes them from the record's own path, source digest, byte span,
+operator and replacement digest. A present locus with the wrong shape or a
+value that does not recompute is corruption (`stale locus`), not a cache miss;
+a record with neither field is an unchanged pre-B561 record and resumes by
+exact candidate id as before.
+
+`carry_over.schema_version` 1 remains the original exact-id shape. Schema 2
+keeps its seven keys and adds `locus_match` (`exact-id`, `locus` or `window`).
+`from_judge_sha256` is provenance only. `into_judge_sha256` is always the
+effective judge: a non-replayed import has `judge_sha256 = from`, while a
+current-judge replay may have `judge_sha256 = into`. The fixed machine reason
+`carry-forward` is valid for schema 2, so `--carry-forward` does not require an
+operator-authored reason.
+
 ### Serial tail retries for native R2 (B179)
 
 After the first sweep, Assay retries once, serially, each candidate executed in

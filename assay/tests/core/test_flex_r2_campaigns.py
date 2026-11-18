@@ -417,9 +417,14 @@ def test_carry_over_imports_finished_records_with_provenance(
     assert _executed(second) == [], "an imported record is not re-executed"
     (record,) = _records(state)
     assert record["judge_sha256"] == judge_a, "the executing judge is never rewritten"
+    assert (
+        record["carry_over"]["schema_version"]
+        == mutation.CARRY_OVER_SCHEMA_VERSION_V2
+    )
     assert record["carry_over"]["from_judge_sha256"] == judge_a
     assert record["carry_over"]["into_judge_sha256"] == judge_b
     assert record["carry_over"]["reason"] == "comment-only test change"
+    assert record["carry_over"]["locus_match"] == "exact-id"
     assert record["carry_over"]["source"] == str(state)
     assert mutation.record_effective_judge(record) == judge_b
 
