@@ -1,0 +1,56 @@
+# vm-lab's judged lane, consumed through run-gate.toml (lanes r0-r1 and r2). Modelled on libraries/iobench/assay.toml.
+schema_version = 2
+
+[lanes.vm-lab]
+scope = "S1"
+rigor = ["R0", "R1", "R2"]
+enforcement = "gate"
+# The unit suite uses fakes only: no Docker, no QEMU, no network. One test builds a wheel from a copy of the project
+# (`pip wheel --no-build-isolation`), so the venv needs setuptools, wheel and setuptools_scm (run-gate.toml installs them).
+argv = [
+  "/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q",
+  "--cov=vm_lab", "--cov-branch", "--cov-report=json:coverage.json",
+]
+env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH"]
+budget = "240m"
+allow_argv_append = false
+
+[lanes.vm-lab.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.vm-lab.judge]
+language = "python"
+source_roots = ["src/vm_lab"]
+mode = "whole_target"
+# Every executable shipped module. The docstring-only __init__.py is a re-export list; __main__.py (a `raise SystemExit(main())`
+# shim) is not judged: no test runs `python -m vm_lab` in-process.
+targets = [
+  "src/vm_lab/cli.py",
+  "src/vm_lab/console.py",
+  "src/vm_lab/core.py",
+  "src/vm_lab/text.py",
+]
+# Measured 2026-11-18 with the lane's own pytest command (456 passed): 74.0 % line+branch over vm_lab (core.py 62.8 %, console.py
+# 93.3 %, text.py 96.2 %). The floor is that value rounded down by two points; the uncovered core.py paths are the real-Docker
+# and real-guest effects the unit suite cannot reach (nothing has booted a guest, VML-BL-06). Raising it is a coverage task,
+# not part of registering the lane.
+fail_under = 72.0
+allow_excluded = false
+require_branch = true
+
+[lanes.vm-lab.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.vm-lab.judge.mutation]
+jobs_max = 3
+max_mutants = 6000
+operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
+budget_per_candidate = "auto"
+liveness = true
