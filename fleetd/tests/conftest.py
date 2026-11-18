@@ -23,6 +23,8 @@ import tempfile
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+import pytest
+
 # The working version of an unreleased tree. Metadata and the CLI identity agree by
 # construction because both read this same value; it is deliberately NOT derived from a
 # git tag, because the gate's checkout may carry none.
@@ -59,3 +61,11 @@ _publish_fleetd_metadata()
 # every active reviewed case links a collected, correctly marked test. A focused local run of
 # one test file needs `--cli-case-partial`; the gate runs the whole suite and stays strict.
 pytest_plugins = ["cli_extended.pytest_plugin"]
+
+
+@pytest.fixture(autouse=True)
+def _dummy_hx_wrapper(monkeypatch):
+    """Name an hx wrapper that is never launched, so no test depends on the repository's
+    ``scripts/controller/hx.sh`` (a copy that holds only ``fleetd/`` has none). Tests of
+    the resolution itself unset or override it."""
+    monkeypatch.setenv("FLEETD_HX", "/nonexistent/fleetd-test-hx.sh")

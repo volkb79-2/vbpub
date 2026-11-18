@@ -1328,7 +1328,7 @@ def _vm_disk_import(args: Any, runtime: CliRuntime, opener: SessionOpener, size:
 
 
 def _files_put(args: Any, runtime: CliRuntime, opener: SessionOpener) -> int:
-    """Upload one verified file from the repository downloads/ folder to a NAS dataset directory through the API."""
+    """Upload one verified file from the iso or vm-images folder (cowtree.toml) to a NAS dataset directory through the API."""
     from .uploads import make_sender, verify_download
 
     download = verify_download(args.name)
@@ -1692,10 +1692,10 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
     _workflow_group(registry, ident, "user", "Manage local users and SSH public keys.", _user_verbs(ident, opener))
     _workflow_group(registry, ident, "container", "Manage TrueNAS containers.", _container_verbs(ident, opener))
     _workflow_group(registry, ident, "vm", "Manage virtual machines and their devices.", _vm_verbs(ident, opener))
-    _workflow_group(registry, ident, "files", "Upload verified files from the repository downloads/ folder.", [
-        VerbSpec("put", None, "Upload downloads/NAME to a NAS dataset directory through the API (sha256-verified, never overwrites).",
+    _workflow_group(registry, ident, "files", "Upload verified files from the iso or vm-images folder named in cowtree.toml.", [
+        VerbSpec("put", None, "Upload NAME from the iso or vm-images folder (cowtree.toml) to a NAS dataset directory through the API (sha256-verified, never overwrites).",
                  group=VerbGroup.MODIFICATION.value,
-                 arguments=(ArgumentSpec("name", "File inside the repository downloads/ folder (its .sha256 must sit beside it).",
+                 arguments=(ArgumentSpec("name", "File inside the iso or vm-images folder named in cowtree.toml (its .sha256 must sit beside it).",
                                          metavar="NAME"),
                             ArgumentSpec("directory", "Existing NAS directory, such as /mnt/tank/images.", metavar="DATASET_DIR")),
                  options=HOST_OPTIONS + ACTION_OPTIONS,

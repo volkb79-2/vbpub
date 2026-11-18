@@ -105,6 +105,23 @@ def _job_spec(job: Mapping[str, Any]) -> JobSpec:
     return spec
 
 
+def _probe_settled(job: Mapping[str, Any]) -> bool:
+    """True when another probe cannot change this job's record.
+
+    ``probe_settled`` is recorded only from a probe row that reported the job
+    ``EXIT`` with its progress window closed, so the verdict records and baseline
+    of that row are already in hand. Status plus offset cannot stand in for it:
+    the launcher writes the end offset just before EXIT, so a probe in that gap
+    (and a stall stop in the same tick) leaves a job that ended on the controller's
+    side but not yet in the host's EXIT row. A job from a state written before the
+    flag existed keeps the earlier rule: ended, with a window recorded.
+    """
+    flag = job.get("probe_settled")
+    if flag is not None:
+        return flag
+    return job["status"] in {"COMPLETE", "EXIT", "FAILED", "STALLED"} and job.get("progress_end_offset") is not None
+
+
 def _event_key(event: Mapping[str, object], host: str, job: str) -> tuple[float, str, str]:
     emitted = event.get("emitted_at")
     try:
@@ -341,6 +358,7 @@ class CampaignManager:
             "failure_reason": None,
             "requeued": False,
             "stop_pending": False,
+            "probe_settled": False,
             "requeue_reason": reason,
         }
 
@@ -531,6 +549,7 @@ class CampaignManager:
                     if host_state["unreachable_since_mono"] is None:
                         host_state["unreachable_since_mono"] = now
                 host_state["status"] = "UNREACHABLE"
+                host_state["pressure"] = None
                 if now - host_state["unreachable_since_mono"] > LOST_AFTER_SECONDS:
                     host_state["status"] = "LOST"
                 continue
@@ -545,6 +564,9 @@ class CampaignManager:
         job_rows: Mapping[str, dict[str, Any]],
         now: float,
     ) -> None:
+        # Finished jobs are not probed: the probe is one remote argument capped at
+        # 128 KiB and a long campaign accumulates settled batches.
+        job_rows = {name: job for name, job in job_rows.items() if not _probe_settled(job)}
         wanted = {name: _job_spec(job) for name, job in job_rows.items()}
         rows = self.runner.probe(host_id, wanted)
         prior_status = host_state["status"]
@@ -562,6 +584,7 @@ class CampaignManager:
         host_state["last_contact_mono"] = now
         host_state["status"] = "ONLINE"
         host_state.pop("error", None)
+        host_state["pressure"] = self.runner.pressure(host_id)
         if returned_lost:
             host_state["loss_requeued"] = False
             host_state["returned_after_loss"] = True
@@ -683,6 +706,7 @@ class CampaignManager:
                     job["last_progress_mono"] = now
                 job["status"] = "RUNNING"
             elif state_name == "EXIT":
+                job["probe_settled"] = job["progress_end_offset"] is not None
                 job["exit_code"] = row.get("exit_code")
                 job["ended_mono"] = job.get("ended_mono", now)
                 if job["status"] not in {"STALLED", "FAILED"}:
@@ -714,6 +738,7 @@ class CampaignManager:
     @staticmethod
     def _record_host_error(host_state: dict[str, Any], message: str) -> None:
         host_state["status"] = "ERROR"
+        host_state["pressure"] = None
         host_state["error"] = message
 
     def _stop_superseded_host(self, state: dict[str, Any], host_id: str) -> None:
@@ -727,6 +752,7 @@ class CampaignManager:
                 self.runner.stop(host_id, job["name"])
             except HostUnavailable:
                 state["hosts"][host_id]["status"] = "UNREACHABLE"
+                state["hosts"][host_id]["pressure"] = None
                 if state["hosts"][host_id]["unreachable_since_mono"] is None:
                     state["hosts"][host_id]["unreachable_since_mono"] = state["hosts"][host_id]["last_contact_mono"]
                 continue
@@ -750,6 +776,7 @@ class CampaignManager:
                     self.runner.stop(host_id, job["name"])
                 except HostUnavailable:
                     state["hosts"][host_id]["status"] = "UNREACHABLE"
+                    state["hosts"][host_id]["pressure"] = None
                     continue
                 except (TransportError, ContractError) as exc:
                     self._record_host_error(state["hosts"][host_id], str(exc))
@@ -859,6 +886,7 @@ class CampaignManager:
                 self.runner.stop(job["host"], job["name"])
             except HostUnavailable:
                 host_state["status"] = "UNREACHABLE"
+                host_state["pressure"] = None
                 host_state["unreachable_since_mono"] = host_state["last_contact_mono"] or now
                 continue
             except (TransportError, ContractError) as exc:
@@ -1032,10 +1060,34 @@ class CampaignManager:
             next_batch += 1
             state["jobs"][spec.name] = self._job_record(spec, self.clock(), batch.get("kind", "regular"), reason=reason)
 
+    @staticmethod
+    def _start_deferral(state: Mapping[str, Any], host_id: str) -> str | None:
+        """Why this host gets no new batch for now, or ``None`` when its pressure allows one.
+
+        A running batch is never stopped for pressure: this only defers a start.
+        The comparison is the planner's (``value > threshold``). An unreadable
+        PSI file, or a plan that never recorded the threshold, defers too: the
+        supervisor does not start work on a host it cannot show is quiet.
+        """
+        plan_host = next(row for row in state["plan"]["hosts"] if row["id"] == host_id)
+        threshold = plan_host.get("psi_refuse_some_avg10")
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(float(threshold)):
+            return "plan records no psi_refuse_some_avg10; re-plan to start new batches on this host"
+        pressure = state["hosts"][host_id].get("pressure")
+        for resource in ("memory", "io"):
+            value = pressure.get(f"{resource}_some_avg10") if isinstance(pressure, dict) else None
+            if value is None:
+                return f"{resource} PSI some avg10 is unknown on the host; no new batch starts"
+            if value > threshold:
+                return f"{resource} PSI some avg10 {value:g}% exceeds {threshold:g}%; no new batch starts until it falls"
+        return None
+
     def _start_available(self, state: dict[str, Any]) -> None:
         for host_id in sorted(host["id"] for host in state["plan"]["hosts"] if host.get("status") == "available"):
             host_state = state["hosts"][host_id]
             if host_state["status"] not in {"ONLINE", "UNKNOWN"}:
+                continue
+            if self._start_deferral(state, host_id) is not None:
                 continue
             limit = host_state["inflight_limit"]
             active = [
@@ -1064,6 +1116,7 @@ class CampaignManager:
                     job["status"] = "QUEUED"
                     job["started_mono"], job["last_progress_mono"] = previous_clocks
                     host_state["status"] = "UNREACHABLE"
+                    host_state["pressure"] = None
                     host_state["unreachable_since_mono"] = host_state["last_contact_mono"] or now
                     job["start_error"] = str(exc)
                     break
@@ -1116,10 +1169,18 @@ class CampaignManager:
                     "exit_code": job.get("exit_code"),
                     "reason": job.get("failure_reason"),
                 })
+            deferral = (
+                self._start_deferral(state, host_id)
+                if host_plan.get("status") == "available"
+                and host_state["status"] in {"ONLINE", "UNKNOWN"}
+                and any(job["status"] == "QUEUED" for job in host_jobs)
+                else None
+            )
             result_hosts.append({
                 "host": host_id,
                 "state": host_state["status"],
                 "error": host_state.get("error"),
+                "start_deferred": deferral,
                 "reserve_bytes": host_plan.get("reserve_bytes"),
                 "reserve_source": host_plan.get("reserve_source"),
                 "reserve_missing_services": host_plan.get("reserve_missing_services", []),

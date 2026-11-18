@@ -68,7 +68,7 @@ from .scope import (
 )
 from .sizing import derive_sizing, sizing_input_from_plan
 from .campaign import CampaignManager
-from .transport import HxTransport, TransportError
+from .transport import HxNotConfigured, HxTransport, TransportError
 
 PROG = "fleet"
 LONG_NAME = "RAM-first fleet facts and campaign plans"
@@ -203,7 +203,11 @@ def _manager(args: argparse.Namespace) -> CampaignManager:
     # the INVOCATION's environment. A default resolved at registration time would bake
     # one machine's home directory into the exported surface, the generated SPEC region
     # and every reviewed signature, so two hosts would disagree about the same CLI.
-    return CampaignManager(args.state_dir or _default_state_dir(), HxTransport())
+    try:
+        transport = HxTransport(args.hx)
+    except HxNotConfigured as exc:
+        raise CliFailure(str(exc), exit_code=EXIT_NOT_INSTALLED) from exc
+    return CampaignManager(args.state_dir or _default_state_dir(), transport)
 
 
 def _run_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
@@ -384,6 +388,14 @@ def _campaign_options() -> tuple[OptionSpec, ...]:
             group="TRANSPORT",
             metavar="NAME",
             parser_kwargs={"choices": ("hx",), "default": "hx"},
+        ),
+        OptionSpec(
+            ("--hx",),
+            "path of the identity-checked hx wrapper (default: $FLEETD_HX, else the source "
+            "checkout's scripts/controller/hx.sh; an installed fleetd needs one of them)",
+            group="TRANSPORT",
+            metavar="PATH",
+            parser_kwargs={"type": Path},
         ),
         OptionSpec(
             ("--state-dir",),

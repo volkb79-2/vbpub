@@ -194,7 +194,7 @@ def test_campaign_commands_keep_their_json_schemas_and_exit_codes(monkeypatch, c
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps(_plan(2)), encoding="utf-8")
     state_dir = tmp_path / "state"
-    monkeypatch.setattr("fleetd.cli.HxTransport", lambda: FakeTransport())
+    monkeypatch.setattr("fleetd.cli.HxTransport", lambda *_args, **_kwargs: FakeTransport())
 
     assert run(["run", str(plan_path), "--transport", "hx", "--campaign", "c", "--state-dir", str(state_dir)]) == 0
     assert json.loads(capsys.readouterr().out)["schema"] == "fleet-campaign-status/1"

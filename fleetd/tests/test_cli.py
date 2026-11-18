@@ -151,7 +151,7 @@ def test_fleet_campaign_cli_run_status_tick_collect_with_fake_transport(monkeypa
     plan_path.write_text(json.dumps(_plan(2)), encoding="utf-8")
     state_dir = tmp_path / "state"
     transport = FakeTransport()
-    monkeypatch.setattr(cli, "HxTransport", lambda: transport)
+    monkeypatch.setattr(cli, "HxTransport", lambda *_args, **_kwargs: transport)
 
     assert main(["run", str(plan_path), "--transport", "hx", "--campaign", "cli-campaign", "--state-dir", str(state_dir)]) == 0
     run_output = json.loads(capsys.readouterr().out)

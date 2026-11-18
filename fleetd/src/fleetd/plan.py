@@ -521,6 +521,7 @@ def _refusal(host: HostInput, other_memory: int, other_workers: int, other_conta
 
 def _capacity(host: HostInput, demand: dict[str, Any]) -> dict[str, Any]:
     facts = host.facts
+    policy = facts["policy"]
     reserve = _control_plane_reserve(facts)
     reserve_bytes, reserve_source, missing_services = reserve.bytes, reserve.source, list(reserve.missing)
     other_memory = sum(job["expected_memory_bytes"] for job in host.other_running)
@@ -531,6 +532,8 @@ def _capacity(host: HostInput, demand: dict[str, Any]) -> dict[str, Any]:
         "id": host.host_id,
         "status": "refused" if refusal else "available",
         "f_h": host.f_h,
+        # The campaign supervisor defers new batch starts above this PSI (FD-022).
+        "psi_refuse_some_avg10": policy["psi_refuse_some_avg10"],
         "other_running_memory_bytes": other_memory,
         "other_running_workers": other_workers,
         "other_running_containers": other_containers,

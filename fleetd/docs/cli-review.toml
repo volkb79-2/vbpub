@@ -62,6 +62,19 @@ effects = ["Refused by the shared parser, a declared constraint or the verb's ow
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[collect-option-spelling-d691fade]"]
 
 [[cases]]
+id = "case:route:entrypoint:fleet/collect/option-spelling/option:route:entrypoint:fleet/collect/--hx/--hx"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:2e6c0154d76a38c8707bf66cb6f143c5843af016013676ca3cef6a2898c01b0c"
+rationale = "The option is accepted in exactly this spelling (no prefix abbreviation)."
+invocation = ["collect", "x", "--hx", "x"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["Refused by the shared parser, a declared constraint or the verb's own input validation before any host is contacted; no campaign state and no file outside the sandbox is changed."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[collect-option-spelling-cb361013]"]
+
+[[cases]]
 id = "case:route:entrypoint:fleet/collect/option-spelling/option:route:entrypoint:fleet/collect/--json/--json"
 state = "active"
 decision = "refuse"
@@ -281,6 +294,19 @@ expected_stdout_contains = ""
 expected_stderr_contains = "[ERROR]"
 effects = ["Refused by the shared parser, a declared constraint or the verb's own input validation before any host is contacted; no campaign state and no file outside the sandbox is changed."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[measurement-option-spelling-9bc58895]"]
+
+[[cases]]
+id = "case:route:entrypoint:fleet/measurement/option-spelling/option:route:entrypoint:fleet/measurement/--hx/--hx"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:7495bf904bca4ab72a2ad2bcef9171e2cf8b227b8e1b3cda1576db6e49688479"
+rationale = "The option is accepted in exactly this spelling (no prefix abbreviation)."
+invocation = ["measurement", "x", "--hx", "x"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["Refused by the shared parser, a declared constraint or the verb's own input validation before any host is contacted; no campaign state and no file outside the sandbox is changed."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[measurement-option-spelling-35b8d12f]"]
 
 [[cases]]
 id = "case:route:entrypoint:fleet/measurement/option-spelling/option:route:entrypoint:fleet/measurement/--json/--json"
@@ -567,6 +593,19 @@ expected_stdout_contains = ""
 expected_stderr_contains = "[ERROR]"
 effects = ["Refused by the shared parser, a declared constraint or the verb's own input validation before any host is contacted; no campaign state and no file outside the sandbox is changed."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run-option-spelling-5213ba9b]"]
+
+[[cases]]
+id = "case:route:entrypoint:fleet/run/option-spelling/option:route:entrypoint:fleet/run/--hx/--hx"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:7b268c9b72dd4fa4dddee9b538da3f139cd9090de3aed4245cec71866b476635"
+rationale = "The option is accepted in exactly this spelling (no prefix abbreviation)."
+invocation = ["run", "@invalid-plan.json", "--campaign", "x", "--hx", "x"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["Refused by the shared parser, a declared constraint or the verb's own input validation before any host is contacted; no campaign state and no file outside the sandbox is changed."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run-option-spelling-2b2f3fbe]"]
 
 [[cases]]
 id = "case:route:entrypoint:fleet/run/option-spelling/option:route:entrypoint:fleet/run/--json/--json"
@@ -1609,6 +1648,19 @@ effects = ["Refused by the shared parser, a declared constraint or the verb's ow
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[status-option-spelling-bc614cbf]"]
 
 [[cases]]
+id = "case:route:entrypoint:fleet/status/option-spelling/option:route:entrypoint:fleet/status/--hx/--hx"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:6b727c755804db689ea9056508af84d3d4cb72484ddf86bbdceb67d33e359a1b"
+rationale = "The option is accepted in exactly this spelling (no prefix abbreviation)."
+invocation = ["status", "x", "--hx", "x"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["Refused by the shared parser, a declared constraint or the verb's own input validation before any host is contacted; no campaign state and no file outside the sandbox is changed."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[status-option-spelling-515e6c91]"]
+
+[[cases]]
 id = "case:route:entrypoint:fleet/status/option-spelling/option:route:entrypoint:fleet/status/--json/--json"
 state = "active"
 decision = "refuse"
@@ -1698,6 +1750,19 @@ expected_stdout_contains = ""
 expected_stderr_contains = "[ERROR]"
 effects = ["Refused by the shared parser, a declared constraint or the verb's own input validation before any host is contacted; no campaign state and no file outside the sandbox is changed."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[tick-option-spelling-ccaa8c64]"]
+
+[[cases]]
+id = "case:route:entrypoint:fleet/tick/option-spelling/option:route:entrypoint:fleet/tick/--hx/--hx"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:b500294017f30df7fdc385b255b15835cdd4b4743b42ff1cff7aa31e1bc450dd"
+rationale = "The option is accepted in exactly this spelling (no prefix abbreviation)."
+invocation = ["tick", "x", "--hx", "x"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["Refused by the shared parser, a declared constraint or the verb's own input validation before any host is contacted; no campaign state and no file outside the sandbox is changed."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[tick-option-spelling-581fedea]"]
 
 [[cases]]
 id = "case:route:entrypoint:fleet/tick/option-spelling/option:route:entrypoint:fleet/tick/--json/--json"

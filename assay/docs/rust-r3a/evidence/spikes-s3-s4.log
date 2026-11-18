@@ -1,0 +1,156 @@
+cargo-mutants: cargo-mutants 27.1.0
+rustc 1.99.1 (58cf8f9c3 2026-10-13)
+cargo-nextest 0.9.151 (6b3f99457 2026-11-02)
+=== s3-list-json: sh -c cargo mutants --list --json > /out/s3-list.json; echo bytes=$(wc -c </out/s3-list.json)
+bytes=27067
+exit=0
+=== s3-list-text: sh -c cargo mutants --list --line-col
+error: a value is required for '--line-col <LINE_COL>' but none was supplied
+  [possible values: true, false]
+
+For more information, try '--help'.
+exit=1
+=== s3-indiff-zero: cargo mutants --test-tool nextest --test-workspace=false --jobs 1 --timeout 20 --cargo-arg=--offline --in-diff /work/diffs/comment.diff --output /out/zero
+ INFO No mutants to filter
+exit=0
+ls: cannot access '/out/zero/mutants.out': No such file or directory
+=== s3-indiff-mismatch: cargo mutants --test-tool nextest --test-workspace=false --jobs 1 --timeout 20 --cargo-arg=--offline --in-diff /work/diffs/v2.diff --output /out/mismatch
+ WARN Diff content doesn't match source file path="src/lib.rs" lineno=14 diff_content="    n % 2 == 0 && n < 1000" source_content="    n % 2 == 0"
+ERROR Diff content doesn't match source file: src/lib.rs line 14
+diff has:   "    n % 2 == 0 && n < 1000"
+source has: "    n % 2 == 0"
+The diff might be out of date with this source tree.
+
+exit=5
+=== s3-indiff-match: cargo mutants --test-tool nextest --test-workspace=false --jobs 1 --timeout 20 --cargo-arg=--offline --in-diff /work/diffs/v2.diff --output /out/indiff
+Found 9 mutants to test
+ok       Unmutated baseline in 0s build + 0s test
+MISSED   src/lib.rs:14:5: replace is_even -> bool with true in 0s build + 0s test
+MISSED   src/lib.rs:14:5: replace is_even -> bool with false in 0s build + 0s test
+MISSED   src/lib.rs:14:16: replace && with || in is_even in 0s build + 0s test
+MISSED   src/lib.rs:14:11: replace == with != in is_even in 0s build + 0s test
+MISSED   src/lib.rs:14:7: replace % with / in is_even in 0s build + 0s test
+MISSED   src/lib.rs:14:7: replace % with + in is_even in 0s build + 0s test
+MISSED   src/lib.rs:14:21: replace < with == in is_even in 0s build + 0s test
+MISSED   src/lib.rs:14:21: replace < with > in is_even in 0s build + 0s test
+MISSED   src/lib.rs:14:21: replace < with <= in is_even in 0s build + 0s test
+9 mutants tested in 3s: 9 missed
+exit=2
+=== s3-full: cargo mutants --test-tool nextest --test-workspace=false --jobs 1 --timeout 20 --cargo-arg=--offline --output /out/full
+Found 25 mutants to test
+ok       Unmutated baseline in 0s build + 0s test
+MISSED   src/lib.rs:14:5: replace is_even -> bool with true in 0s build + 0s test
+MISSED   src/lib.rs:14:5: replace is_even -> bool with false in 0s build + 0s test
+MISSED   src/lib.rs:14:11: replace == with != in is_even in 0s build + 0s test
+MISSED   src/lib.rs:14:7: replace % with / in is_even in 0s build + 0s test
+MISSED   src/lib.rs:14:7: replace % with + in is_even in 0s build + 0s test
+TIMEOUT  src/lib.rs:26:11: replace += with *= in spin in 0s build + 20s test
+MISSED   src/lib.rs:34:20: replace match guard v > 10 with true in pick in 0s build + 0s test
+MISSED   src/lib.rs:34:22: replace > with >= in pick in 0s build + 0s test
+25 mutants tested in 27s: 7 missed, 16 caught, 1 unviable, 1 timeouts
+exit=3
+=== s3-testworkspace-true: cargo mutants --list --test-workspace=true
+src/lib.rs:9:5: replace add -> i32 with 0
+src/lib.rs:9:5: replace add -> i32 with 1
+src/lib.rs:9:5: replace add -> i32 with -1
+src/lib.rs:9:7: replace + with - in add
+src/lib.rs:9:7: replace + with * in add
+src/lib.rs:14:5: replace is_even -> bool with true
+src/lib.rs:14:5: replace is_even -> bool with false
+src/lib.rs:14:11: replace == with != in is_even
+src/lib.rs:14:7: replace % with / in is_even
+src/lib.rs:14:7: replace % with + in is_even
+src/lib.rs:19:5: replace make -> Token with Default::default()
+src/lib.rs:24:5: replace spin -> u32 with 0
+src/lib.rs:24:5: replace spin -> u32 with 1
+src/lib.rs:25:13: replace < with == in spin
+src/lib.rs:25:13: replace < with > in spin
+src/lib.rs:25:13: replace < with <= in spin
+src/lib.rs:26:11: replace += with -= in spin
+src/lib.rs:26:11: replace += with *= in spin
+src/lib.rs:33:5: replace pick -> u32 with 0
+src/lib.rs:33:5: replace pick -> u32 with 1
+src/lib.rs:34:20: replace match guard v > 10 with true in pick
+src/lib.rs:34:20: replace match guard v > 10 with false in pick
+src/lib.rs:34:22: replace > with == in pick
+src/lib.rs:34:22: replace > with < in pick
+src/lib.rs:34:22: replace > with >= in pick
+exit=0
+=== s4-baseline-fail: cargo mutants --test-tool nextest --test-workspace=false --jobs 1 --timeout 20 --cargo-arg=--offline --output /out/basefail
+Found 25 mutants to test
+FAILED   Unmutated baseline in 0s build + 0s test
+
+*** baseline
+
+*** /usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo nextest run --no-run --verbose --package=r3a@0.1.0 --offline
+   Compiling r3a v0.1.0 (/tmp/cargo-mutants-subject-bf-lXwZHR.tmp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+
+*** result: Success
+
+*** /usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo nextest run --verbose --package=r3a@0.1.0 --offline
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s
+────────────
+ Nextest run ID 08232c92-9cdd-46f0-af48-e5b1b78eb150 with nextest profile: default
+    Starting 4 tests across 1 binary
+       START [         ] (1/4) r3a tests::make_keeps_id
+             command: /tmp/cargo-mutants-subject-bf-lXwZHR.tmp/target/debug/deps/r3a-f8edb014fd441bd3 --exact tests::make_keeps_id --nocapture
+       START [         ] (1/4) r3a tests::add_sums
+             command: /tmp/cargo-mutants-subject-bf-lXwZHR.tmp/target/debug/deps/r3a-f8edb014fd441bd3 --exact tests::add_sums --nocapture
+        PASS [   0.005s] (1/4) r3a tests::make_keeps_id
+       START [         ] (2/4) r3a tests::pick_cases
+             command: /tmp/cargo-mutants-subject-bf-lXwZHR.tmp/target/debug/deps/r3a-f8edb014fd441bd3 --exact tests::pick_cases --nocapture
+        FAIL [   0.005s] (2/4) r3a tests::add_sums
+  stdout ───
+
+    running 1 test
+    test tests::add_sums ... FAILED
+
+    failures:
+
+    failures:
+        tests::add_sums
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'tests::add_sums' (3738) panicked at src/lib.rs:46:9:
+    assertion `left == right` failed
+      left: 5
+     right: 6
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  Cancelling due to test failure: 1 test still running
+        PASS [   0.005s] (3/4) r3a tests::pick_cases
+────────────
+     Summary [   0.010s] 3/4 tests run: 2 passed, 1 failed, 0 skipped
+        FAIL [   0.005s] (2/4) r3a tests::add_sums
+warning: 1/4 tests were not run due to test failure (run with --no-fail-fast to run all tests, or run with --max-fail)
+error: test run failed
+
+*** result: Failure(100)
+
+ERROR cargo test failed in an unmutated tree, so no mutants were tested
+exit=4
+total 56
+drwxr-xr-x 4 gate gate  4096 Nov 18 04:36 .
+drwxr-xr-x 3 gate gate  4096 Nov 18 04:36 ..
+-rw-r--r-- 1 gate gate     0 Nov 18 04:36 caught.txt
+-rw-r--r-- 1 gate gate  3682 Nov 18 04:36 debug.log
+drwxr-xr-x 2 gate gate  4096 Nov 18 04:36 diff
+-rw-r--r-- 1 gate gate   141 Nov 18 04:36 lock.json
+drwxr-xr-x 2 gate gate  4096 Nov 18 04:36 log
+-rw-r--r-- 1 gate gate     0 Nov 18 04:36 missed.txt
+-rw-r--r-- 1 gate gate 27067 Nov 18 04:36 mutants.json
+-rw-r--r-- 1 gate gate  1212 Nov 18 04:36 outcomes.json
+-rw-r--r-- 1 gate gate     0 Nov 18 04:36 timeout.txt
+-rw-r--r-- 1 gate gate     0 Nov 18 04:36 unviable.txt
+=== s3-tree-after: sh -c ls -la /work/subject; ls -la /work/subject/mutants.out 2>&1 | head
+total 16
+drwxr-xr-x 3 gate gate 4096 Nov 18 04:35 .
+drwxrwxr-x 8 gate gate 4096 Nov 18 04:35 ..
+-rw-r--r-- 1 gate gate   85 Nov 18 04:35 Cargo.toml
+drwxr-xr-x 2 gate gate 4096 Nov 18 04:35 src
+ls: cannot access '/work/subject/mutants.out': No such file or directory
+exit=0

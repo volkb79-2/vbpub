@@ -418,8 +418,8 @@ def ensure_in_iso_dir(
     The `iso` folder is looked at first, then the flat `downloads` folder (`flat_folder`; with the default `iso` folder
     it is the resolved `downloads` entry, with an explicit `iso_folder` only an explicit `flat_folder`), so an ISO that
     is still flat is not downloaded again. A present file is reused only when its SHA-256 equals the published digest;
-    a mismatching file is refused, never overwritten. A fetch under sudo is handed back to the invoking user, and so is
-    an `iso` folder this call had to create, so the shared folder never holds root-owned entries.
+    a mismatching file is refused, never overwritten. A fetch under sudo is handed back to the invoking user, and so are
+    an `iso` folder this call had to create and the lock file, so the shared folder never holds root-owned entries.
     Concurrent runs serialize on an advisory lock file (<iso folder>/.<name>.lock), so the second run waits and then
     reuses the first run's verified copy.
     """
@@ -432,6 +432,9 @@ def ensure_in_iso_dir(
     lock_path = directory / f".{asset.filename}.lock"
     try:
         with lock_path.open("a") as lock:
+            owner = _sudo_owner()
+            if owner is not None:
+                os.chown(lock_path, *owner)
             fcntl.flock(lock, fcntl.LOCK_EX)
             return _ensure_in_iso_dir_locked(
                 asset, directory, flat, expected_sha256=expected_sha256, progress=progress
