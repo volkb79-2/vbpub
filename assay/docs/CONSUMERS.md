@@ -6107,6 +6107,19 @@ is recorded once in `judgment.resolved.base`, with `base_resolution` beside it
 as usual. Nothing downstream can tell — or needs to tell — which owner
 supplied it.
 
+The request-base changed-line diff is limited to the lane's declared
+`source_roots` and exact source files, using both their lexical and resolved
+spellings. Accepted narrowing: a tracked symlink leaf outside those roots
+whose target resolves inside a root is not diffed under its own path. A git
+symlink's diff text is its target string, not source lines, so that leaf
+cannot produce a real mutation candidate of its own; the target file is
+diffed under its real path. Apart from that narrowing, larger out-of-root
+changes no longer count against the bounded Git-output guard. Every limited
+diff uses `--no-renames`: a rename into a root is a whole-file addition at its
+new path, while a rename out of a root is a deletion that produces no added
+lines. If no usable path is available, assay keeps the historical
+full-repository diff rather than passing an empty pathspec.
+
 Three refusals bound this, and each names the one line to change:
 
 | situation | what happens |
