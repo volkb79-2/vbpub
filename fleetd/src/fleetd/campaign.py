@@ -26,6 +26,11 @@ RESULT_SCHEMA = "fleet-campaign-result/1"
 STALL_FLOOR_SECONDS = 15 * 60
 LOST_AFTER_SECONDS = 30 * 60
 ERROR_WARN_AFTER_SECONDS = 30 * 60
+# FD-025: without a comparable Geekbench reference the unscaled reference seconds
+# are only a guess at this host's speed, so while the host has observed no
+# finished candidate its predicted candidate time is this many times the
+# reference (the stall threshold is then 3 x that, plus the baseline).
+NONCOMPARABLE_FIRST_WINDOW_FACTOR = 3
 _CAMPAIGN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\Z")
 _EXEC_COMMIT = re.compile(r"[0-9a-f]{40,64}\Z")
 _EXEC_IMAGE = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -954,7 +959,15 @@ class CampaignManager:
         return ordered[index]
 
     @staticmethod
-    def _predicted_candidate_seconds(state: Mapping[str, Any], job: Mapping[str, Any]) -> list[float]:
+    def _reference_comparison(
+        state: Mapping[str, Any], job: Mapping[str, Any]
+    ) -> tuple[bool, Any, Any, Mapping[str, Any]]:
+        """``(comparable, reference_baseline, speed, host_plan)`` for the job's host.
+
+        A host is comparable only when its Geekbench major, version and baseline
+        score match the plan's ``time_reference`` and it has a positive
+        single-core score.
+        """
         plan = state["plan"]
         time_reference = plan.get("time_reference", {})
         reference_baseline = time_reference.get("baseline_score") if isinstance(time_reference, dict) else None
@@ -973,6 +986,11 @@ class CampaignManager:
             and not isinstance(speed.get("single_core"), bool)
             and speed["single_core"] > 0
         )
+        return comparable, reference_baseline, speed, host_plan
+
+    @staticmethod
+    def _predicted_candidate_seconds(state: Mapping[str, Any], job: Mapping[str, Any]) -> list[float]:
+        comparable, reference_baseline, speed, host_plan = CampaignManager._reference_comparison(state, job)
         factor = host_plan.get("f_h", 1.0)
         result = []
         for candidate_id in job["candidate_ids"]:
@@ -1008,6 +1026,14 @@ class CampaignManager:
         )
         predicted_p95 = cls._p95(cls._predicted_candidate_seconds(state, job))
         observed_p95 = cls._p95(durations)
+        if (
+            predicted_p95 is not None
+            and observed_p95 is None
+            and not cls._reference_comparison(state, job)[0]
+        ):
+            # FD-025: no comparable speed reference and nothing observed on this
+            # host yet, so the unscaled reference is a guess: widen the window.
+            predicted_p95 *= NONCOMPARABLE_FIRST_WINDOW_FACTOR
         threshold = max(
             float(STALL_FLOOR_SECONDS),
             3.0 * predicted_p95 if predicted_p95 is not None else 0.0,

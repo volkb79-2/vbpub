@@ -16,7 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from fleetd.campaign import CampaignManager, LOST_AFTER_SECONDS, STALL_FLOOR_SECONDS, _atomic_write, _event_key, _system_boot_id
+from fleetd.campaign import (
+    CampaignManager, LOST_AFTER_SECONDS, NONCOMPARABLE_FIRST_WINDOW_FACTOR, STALL_FLOOR_SECONDS, _atomic_write, _event_key, _system_boot_id,
+)
 from fleetd.contracts import CONTROL_PLANE_SERVICE_UNITS, ContractError
 from fleetd.plan import plan_campaign
 from fleetd.runner import (
@@ -747,7 +749,7 @@ def test_first_stall_window_uses_batch_prediction_and_declared_baseline(tmp_path
     manager.run("slow", plan)
     state = _state(tmp_path, "slow")
     job = next(job for job in state["jobs"].values() if job["status"] == "RUNNING")
-    assert CampaignManager._stall_threshold(state, job) == 3 * 560 + 400
+    assert CampaignManager._stall_threshold(state, job) == 9 * 560 + 400
 
     clock.advance(3 * 560 + 400 - 1)
     manager.tick("slow")
@@ -840,6 +842,7 @@ def test_first_stall_window_uses_baseline_observed_on_the_same_host(tmp_path):
     observed_job = state["jobs"][job["name"]]
     assert observed_job["baseline_seconds"] == 400
     observed_job["finished_ids"] = []
+    # A candidate finished on this host: the observed time corrects the window.
     assert CampaignManager._stall_threshold(state, observed_job) == 3 * 560 + 400
 
 
@@ -3359,3 +3362,57 @@ def test_a_start_error_and_a_successful_start_follow_the_same_error_clock(tmp_pa
     manager.runner.start = real_start
     manager._start_available(state)
     assert host_state["status"] == "ONLINE" and "error_since_mono" not in host_state
+
+
+# FD-025: a host without a comparable speed reference gets a widened first stall window.
+
+
+def _non_comparable_campaign(tmp_path, *, reference_seconds=560, baseline=400):
+    plan = _plan(1)
+    plan["time_reference"] = {"reason": "no comparable host scores"}
+    plan["demand"]["baseline_seconds"] = baseline
+    assigned = next(candidate for host in plan["hosts"] for candidate in host["assigned"])
+    assigned["time_ref_seconds"] = reference_seconds
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = next(job for job in _state(tmp_path)["jobs"].values() if job["status"] == "RUNNING")
+    return manager, transport, clock, job
+
+
+def test_a_non_comparable_host_is_not_stalled_in_its_first_window_when_slower_than_three_times_reference(tmp_path):
+    manager, _transport, clock, job = _non_comparable_campaign(tmp_path)
+    clock.advance(3 * 560 + 400 + 1)  # past the old threshold, and past the 900 s floor
+    manager.tick("campaign")
+    assert _state(tmp_path)["jobs"][job["name"]]["status"] == "RUNNING"
+    clock.advance(3 * 3 * 560 + 400 - (3 * 560 + 400 + 1) - 1)
+    manager.tick("campaign")
+    assert _state(tmp_path)["jobs"][job["name"]]["status"] == "RUNNING"
+    clock.advance(1)
+    manager.tick("campaign")
+    failed = _state(tmp_path)["jobs"][job["name"]]
+    assert failed["status"] == "FAILED"
+    assert failed["stall_after_seconds"] == NONCOMPARABLE_FIRST_WINDOW_FACTOR * 3 * 560 + 400
+
+
+def test_the_widened_window_applies_only_without_a_comparable_reference_and_before_any_observation(tmp_path):
+    manager, transport, clock, job = _non_comparable_campaign(tmp_path)
+    state = _state(tmp_path)
+    assert NONCOMPARABLE_FIRST_WINDOW_FACTOR == 3
+    assert CampaignManager._stall_threshold(state, state["jobs"][job["name"]]) == 9 * 560 + 400
+    # The host has now observed a candidate: the observed p95 corrects the window.
+    transport.add_progress(job["host"], job["name"], job["candidate_ids"][0], "killed", elapsed_seconds=700)
+    manager.status("campaign")
+    state = _state(tmp_path)
+    unfinished = dict(state["jobs"][job["name"]], finished_ids=[])
+    assert CampaignManager._stall_threshold(state, unfinished) == max(3 * 560, 3 * 700, STALL_FLOOR_SECONDS) + 400
+    # A comparable reference keeps the scaled prediction, not the widened one.
+    comparable = copy.deepcopy(state)
+    reference = {"baseline_score": 100, "geekbench_major": 6, "geekbench_version": "6.3.0"}
+    comparable["plan"]["time_reference"] = dict(reference)
+    plan_host = next(row for row in comparable["plan"]["hosts"] if row["id"] == job["host"])
+    plan_host["speed"] = {**reference, "single_core": 100}
+    plan_host["f_h"] = 1.0
+    comparable["jobs"] = {name: dict(row, records=[], finished_ids=[]) for name, row in comparable["jobs"].items()}
+    assert CampaignManager._stall_threshold(comparable, comparable["jobs"][job["name"]]) == 3 * 560 + 400
