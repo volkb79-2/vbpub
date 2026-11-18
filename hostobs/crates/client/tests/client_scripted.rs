@@ -11,7 +11,6 @@ use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -72,14 +71,6 @@ impl Transport for ClockedUnixStream {
 
     fn close(&mut self) {
         let _ = self.stream.shutdown(Shutdown::Both);
-    }
-}
-
-struct SocketFile(PathBuf);
-
-impl Drop for SocketFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
     }
 }
 
@@ -1279,7 +1270,6 @@ fn connect_dials_a_real_unix_socket() {
         .map_or(0, |elapsed| elapsed.subsec_nanos());
     let name = format!("hc-{}-{nanos}.sock", std::process::id());
     let path = std::env::temp_dir().join(name);
-    let _cleanup = SocketFile(path.clone());
     let listener = UnixListener::bind(&path).expect("bind");
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept");
