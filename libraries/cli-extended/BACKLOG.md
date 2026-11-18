@@ -657,3 +657,34 @@ R2 on 0190edc3c (1461 judged) left four survivors:
 - `testing.py:28` and `testing.py:82` `False->True` (`isolated` defaults of the private `_child_environment` and `_run`): dead defaults, both callers (`invoke_script`, `invoke_module`) always pass the value. The defaults are removed so the parameter is required; the public default (`isolated=False`) stays covered by `test_cx19_isolated_drops_inherited_pythonpath_in_a_real_child`.
 
 **Provenance:** R2 closeout 2026-11-05 (MUTANTS_SURVIVED, 4 of 1461).
+
+## CLI-EXT-34 — one bounded subprocess reader for the estate (`cli_extended.procio`)
+
+**Status:** Implemented 2026-11-18 (library only; unreleased). Size M.
+**Type:** Feature (scope widening approved by the operator 2026-11-18)
+**Area:** Child-process supervision
+
+Reading a child's pipe until EOF hangs a finished child's caller when a grandchild
+keeps the pipe open (cmru KI-178, ciu CIU-220, mdt-cockpit MDT-104, nyxloom NL-83).
+`cli_extended.procio` ports cmru's landed reader and adds `run_capture` and the
+no-progress watchdog; contract in [SPEC section 16](SPEC.md#16-child-process-supervision-cli_extendedprocio).
+
+**Open (R2):** the module is listed in `assay.toml` targets, but the mutation
+campaign has not been run for it; the owner runs the `r2` lane before release.
+Adoption in cmru, mdt-cockpit `build-push.py`, ciu and nyxloom follows the release,
+one package each, with the floor raised to the first release that ships `procio`.
+
+**Finding (2026-11-18, fixed):** the gate lane failed once on
+`test_pipe_holder_scan_names_holders_and_skips_what_it_cannot_inspect` (`[228] == [228, 229]`).
+Root cause was a library defect, not a test race: `pipe_holder_pids` caught `OSError` around
+the whole per-process descriptor loop, so one descriptor closing between the `/proc/<pid>/fd`
+listing and its `readlink` (ENOENT) dropped the process even though the pipe end was still
+open. A child inside `execve` does exactly that: `Popen` returns when the errpipe closes, while
+the child still drops its other close-on-exec descriptors. Measured in the gate image:
+31-36 of 200 loops lost a holder before the fix (about 5 of 200 with three CPU burners),
+0 of 2000 after, and every observed miss was ENOENT on `readlink` of fd 3, never EACCES on
+the listing. The scan now skips only the vanished descriptor. Regression test:
+`test_pipe_holder_scan_survives_a_descriptor_closing_mid_scan`. Report:
+`artifacts/release-program-20261027/reports/procio-flake-REPORT.md`.
+
+**Provenance:** `ciu/docs/DESIGN-NOTE-2026-11-CIU-215-CIU-220.md`, Decision 2.

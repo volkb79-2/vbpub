@@ -389,5 +389,5 @@ def test_lane_inventory_advertises_the_scheduling_capabilities():
         "r2-memory-budget",
         "r2-schedule-tem",
         "r2-resource-profile",
-        "verdict-v19",
+        "verdict-v20",
     )

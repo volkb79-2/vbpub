@@ -9,7 +9,9 @@ two names, so a new format is a module plus one line in
 * ``read(raw: bytes) -> assay.result_reports.model.ReportSummary`` --
   strict parsing of that format's own document, raising
   :class:`~assay.result_reports.model.ReportUnusable` on anything it cannot
-  use.
+  use. A reader whose format can be checked against the command's own time
+  window (``cargo-mutants-outcomes``) also accepts an optional keyword-only
+  ``window``; the registry call below is bytes-only and passes none.
 
 **Why a package of its own, and not ``assay.adapters/``.** ``adapters/`` is
 the LANGUAGE registry: keyed by language, and every member implements the
@@ -38,7 +40,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
 
-from . import vitest_json
+from . import cargo_mutants_outcomes, vitest_json
 from .model import ReportSummary, ReportUnusable, verify_complete
 
 __all__ = [
@@ -61,6 +63,7 @@ MAX_RESULT_REPORT_BYTES = 8 * 1024 * 1024
 
 _READERS: Mapping[str, Callable[[bytes], ReportSummary]] = MappingProxyType(
     {
+        cargo_mutants_outcomes.FORMAT: cargo_mutants_outcomes.read,
         vitest_json.FORMAT: vitest_json.read,
     }
 )
@@ -71,8 +74,19 @@ _READERS: Mapping[str, Callable[[bytes], ReportSummary]] = MappingProxyType(
 RESULT_REPORT_FORMATS: frozenset[str] = frozenset(_READERS)
 
 
-def read_verified(format: str, raw: bytes) -> ReportSummary:
+#: Formats whose reader accepts the command's own time window (design 1.3).
+#: Derived from the one reader that does; a vitest report has no window.
+_WINDOWED_FORMATS: frozenset[str] = frozenset({cargo_mutants_outcomes.FORMAT})
+
+
+def read_verified(
+    format: str, raw: bytes, *, context: cargo_mutants_outcomes.ReportWindow | None = None
+) -> ReportSummary:
     """*raw*, read as *format* and checked against SR-2's completeness bar.
+
+    *context* is the command's own wall-clock window (B245 U5a). It is
+    forwarded as the reader's ``window`` ONLY for a format that checks one
+    (``cargo-mutants-outcomes``); every other format ignores it.
 
     The one composition point: a caller never invokes a reader directly, so
     "was this report verified complete" cannot become a question each call
@@ -88,4 +102,6 @@ def read_verified(format: str, raw: bytes) -> ReportSummary:
             f"no reader is registered for result-report format {format!r}; "
             f"registered formats: {sorted(RESULT_REPORT_FORMATS)}"
         )
+    if context is not None and format in _WINDOWED_FORMATS:
+        return verify_complete(cargo_mutants_outcomes.read(raw, window=context))
     return verify_complete(reader(raw))

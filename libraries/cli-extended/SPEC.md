@@ -1523,3 +1523,106 @@ control flag raises `ValueError`; and `fail_exit_code: int = 1` (see item 7).
    `remedy` is collapsed the same way and omitted when empty. `details` are
    serialised with `allow_nan=False`, so NaN and infinity also give
    `check returned non-JSON details`.
+
+## 16. Child-process supervision (`cli_extended.procio`)
+
+`cli_extended.procio` is the one bounded subprocess reader for the estate. It
+adds no CLI control, no registry entry and no manifest content, so
+`CONTRACT_VERSION` and the surface schema are unchanged. It uses only the
+standard library and reads `/proc` (Linux). It never prints: every WARN and
+ERROR text is returned as data for the caller's own logger.
+
+**Why.** Reading a child's output pipe until EOF waits for every holder of the
+write end, not for the child: a grandchild that inherited the pipe (a
+credential helper, a build client, an ssh master) keeps it open after the
+child has exited, and the caller hangs without a message. Nothing else
+bounds the wait, and nothing watches for silence.
+
+**Public API.**
+
+- `run_streaming(argv, *, cwd, env, on_line, drain_seconds=2.0,
+  no_progress_seconds, progress_paths=(), term_grace_seconds=5.0) ->
+  StreamResult`.
+- `run_capture(argv, *, cwd, env, input=None, timeout=None, text=True,
+  drain_seconds=2.0) -> CaptureResult` (a `subprocess.CompletedProcess`).
+- `terminate_as_exit()`, `reap_process_group(proc, grace)`,
+  `pipe_holder_pids(inode)` and `process_tree(pid)`.
+
+**Rules.**
+
+1. *Own group.* Every child starts with `start_new_session=True`. The group is
+   exactly the child and what it spawned; a reap signals only that group.
+   A child in its own session has no controlling terminal: reads on an
+   inherited stdin work, opening `/dev/tty` fails. A caller that needs the
+   terminal (an interactive `docker exec -it`) must not use this module.
+2. *Bounded drain.* Reading stops `drain_seconds` after the child has exited,
+   with the output read so far kept. The result's `returncode` is always the
+   child's own. If a pipe was still open then, `abandoned_holders` lists the
+   pids found through `/proc/<pid>/fd` (`()` when none was found, `None` when
+   the scan failed) and `warning` holds the one-line text
+   `'<argv0>' exited with code N but its output pipe is still held open by
+   pid(s) P; stopped reading after Ns and kept the exit code.` (`another
+   process` replaces the pids when there are none). Holders are named, never
+   killed. Otherwise `abandoned_holders == ()` and `warning is None`.
+   `abandoned_holders == ()` is therefore ambiguous on its own (nothing was
+   abandoned, or something was abandoned and the scan found no pid, for
+   example a holder owned by another user or in another pid namespace): only
+   `warning is not None` says that the pipe was abandoned.
+3. *Selector, not `select(2)`.* Reading uses `selectors.DefaultSelector`, so
+   descriptors at or above 1024 work.
+4. *Decoding.* Text uses the locale encoding (UTF-8 under UTF-8 mode) with
+   universal newlines; a multibyte character split across reads decodes as in
+   a text pipe. `run_streaming` lines are for logs and display: undecodable
+   bytes become U+FFFD, so a finished child is never failed by its own
+   output, and a caller that parses output must not rely on them.
+   `run_capture(text=True)` is strict like `subprocess.run`: undecodable
+   output raises `UnicodeDecodeError` (after the child has been reaped), and
+   `text=False` returns the `bytes` intact; callers that parse output use
+   `run_capture`. `on_line` receives each line with its terminator; an
+   unterminated final line arrives without one (a huge unterminated line is
+   assembled without quadratic copying). `last_line` is the last non-blank
+   line.
+5. *No-progress watchdog (`run_streaming`).* Progress is bytes read from the
+   pipe or a size or mtime change (or the appearance) of any path in
+   `progress_paths`, on a monotonic clock. `no_progress_seconds` is required
+   and must be a finite number greater than zero: `None`, zero, negative,
+   `bool`, NaN and infinity raise `ValueError`; there is no "off" and the
+   library has no default (the caller passes the value it resolved). On
+   expiry the live process tree is captured first (`process_tree`, one
+   `pid ppid state argv` line per process, argv cut to 200 characters), then
+   SIGTERM goes to the child's own group and, after `term_grace_seconds`,
+   SIGKILL. `outcome` is `"watchdog"` (closed set `OUTCOMES = ("exited",
+   "watchdog")`) and `watchdog` is a `WatchdogReport` (`limit_seconds`,
+   `last_line`, `process_tree`, `escaped_pids`, `render(setting)` for
+   `'<argv0>' produced no output for Ns (<setting> = N); last output line:
+   <line>`). A tree member outside the group (`setsid`) is listed in
+   `escaped_pids` and never killed. The limit of that naming: the tree is built
+   from ppid links, so a process that left the group AND was reparented away
+   from the child (its parent exited, or it double-forked) is in neither
+   `process_tree` nor `escaped_pids`; the watchdog then neither names nor kills
+   it. An output pipe that closes while the child
+   lives does not end the wait: the watchdog still applies.
+6. *`run_capture`.* Stdout and stderr share one selector (no deadlock when one
+   fills while the other is idle), `input` is written without blocking (a
+   child that stops reading it is not an error), and the same drain applies.
+   With `timeout`, expiry reaps the group (SIGTERM, then SIGKILL after 5 s)
+   and raises `subprocess.TimeoutExpired` with the partial output as bytes.
+   `input=None` leaves stdin inherited.
+7. *Signals.* Both functions convert SIGTERM and SIGHUP to `SystemExit(128 +
+   signum)` and SIGINT (only while it still has Python's default handler) to
+   `KeyboardInterrupt` for their duration, main thread only, and reap the
+   whole group before the exception propagates; the same happens for any
+   exception from `on_line`. A signal that is `SIG_IGN` at entry (`nohup`'s
+   SIGHUP) stays ignored for the caller and, since the disposition survives
+   `exec`, the child. Only handlers installed here are restored, including
+   after a partial install. A signal arriving while the process is being
+   spawned is deferred and delivered immediately afterwards, so the child is
+   always reaped; signals are not blocked with `pthread_sigmask` because the
+   child would inherit the blocked mask. `terminate_as_exit()` exposes the
+   SIGTERM/SIGHUP part as a context manager for callers that compose their own
+   loop. SIGKILL of the caller still orphans the child: no library can prevent it.
+8. *Cleanup.* Pipes are closed exactly once on every path, including when the
+   reap itself raises. A command that cannot start raises the plain `Popen`
+   error.
+
+Tests for this module assert behaviour by pid and never use process-name kills.

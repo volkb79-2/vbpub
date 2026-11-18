@@ -15,14 +15,18 @@ is the registry-set digest of the lock (downloaded packages and lock version,
 not workspace members), so a workspace-only lock edit needs no rebuild; see
 [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for which image tag runs what.
 
+For interactive development and debugging there is a separate developer layer,
+`Dockerfile.dev` / [`build-dev-image.sh`](build-dev-image.sh), driven by
+`hostobs/tools/dev` on the gate host; see [`docs/DEV.md`](docs/DEV.md). It reuses this
+image's exact toolchain and crate cache, and a green dev run is not gate evidence.
+
 The BuildKit builder defaults to `mdt-managed` and is selectable with
 `--builder NAME` or `TESTER_UNIFIED_RUST_BUILDER` for hosts that only have the
-`default` docker-driver builder. There `--cgroup-parent` is expected, but not
-yet verified, to be passed through by the docker driver (the docker-container
-driver does not honour it); verify on first use: during a RUN step the build's
-processes must appear under the requested slice (`systemd-cgls` or
-`<slice>/cgroup.procs` on the host), and a build that does not land there is to
-be discarded. `--builder` changes nothing else; see
+`default` docker-driver builder. The docker driver passes `--cgroup-parent`
+through (measured on v1001; the docker-container driver does not honour it):
+during a RUN step the build's processes must appear under the requested slice
+(`systemd-cgls` or `<slice>/cgroup.procs` on the host), and a build that does
+not land there is to be discarded. `--builder` changes nothing else; see
 [`docs/CONSUMERS.md`](docs/CONSUMERS.md), which also lists what the CMRU
 preflight needs (a git checkout among other things).
 

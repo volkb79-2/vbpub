@@ -66,7 +66,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-51 | Received frames are held to the alignment and header-first rules: every section `len` is a multiple of 8 (`section-length`) and an unknown kind at directory entry 0 is `section-order` at index 0, after the rank check | Minor | FIXED (P2a1) |
 | HOB-52 | A repeated dictionary identity is `duplicate-dictionary-entry` in Rust whatever the other fields hold, as in the Python reference | Minor | FIXED (P2a1) |
 | HOB-53 | The Python reference follows the WIRE.md §3.10 precedence: `not-a-block` before the buffer length and `SECTIONED` checks | Minor | FIXED (P2a1) |
-| HOB-54 | The send hub, stream dictionaries, envelope checks and the Python/Rust clients do not exist yet; `FrameReader`, `ModeDetect` and `ConnTimers` exist | Major | OPEN (P2: `FrameReader`, `ModeDetect`, `ConnTimers` exist; `SendHub`, `StreamDicts`, `envelope.rs` do not) |
+| HOB-54 | The Rust client and the probe's serving loop do not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `SendHub`, the envelope checks and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | OPEN (P2: `FrameReader`, `ModeDetect`, `ConnTimers`, `SendHub`, `StreamDicts`, `envelope.rs` exist; P3a: the Python reader, `StreamDicts`, decoder and `rate()` exist, P3b: `conn.py`, `profiling.py`, `mark.py` exist, the P3 part is closed; the Rust client (P5a) and P5b remain) |
 | HOB-55 | A look-alike name such as `hot-0-18446744073709551615.seg` (or `.seg.corrupt`) sets the tier's sequence water mark to `u64::MAX` before its owner is proven, so every `open_segment` fails with `LengthOverflow` until the file is removed | Minor | FIXED (P0b) |
 | HOB-56 | `StoreStats::bytes` maintained by incremental arithmetic drifts from the tiers' own byte totals when a file vanishes or a new segment's header is written | Minor | FIXED (P0b) |
 | HOB-57 | `docs/hand-mutants/m1d-mutants.py` had no per-mutant subprocess timeout, so a mutant that hangs the suite hangs the campaign | Minor | FIXED (P0b) |
@@ -492,8 +492,10 @@ identity (a workspace-only `Cargo.lock` edit then needs no rebuild), and record 
 **Where:** `run-gate.toml` declares `lint` and `selftest` only.
 
 Plan v4 §B.5 and the Rust methodology both name a `conformance` lane for the Python
-reference decoder. The Python side exists and passes (`python3 -m unittest discover -s
-python/tests`, nine cases, standard library only), and the Rust side asserts the same
+reference decoder. The Python side exists and passes (`python3 -I -m unittest discover -s
+python/tests`, 196 tests as of P3b: the reference decoders, the 70 wire fixtures, the stream and rate
+fixtures, the `hostobs_client` decoder, connection, profiling and mark tests on a fake probe, the §7.8 gated
+bounds and a zipimport smoke test; standard library only), and the Rust side asserts the same
 fixture files in `crates/proto/tests/golden_fixtures.rs`. What is missing is a *registered*
 lane: the Python run has no declared environment, so it is not gate evidence and cannot
 fail a merge by itself. The cross-language claim currently rests on two independent test
@@ -501,8 +503,10 @@ suites that happen to read the same files, not on one executed lane.
 
 **Exit notes from this package.** The lane was not added here because the brief scoped
 this slice to `model` and `proto` and any lane's environment/argv must be reviewed as
-gate change. The work is small: `tester-unified` (not `-rust`) with
-`python3 -m unittest discover -s python/tests`, no network, plus the fixture
+gate change. Current state: no registered lane. The image is `tester-unified-rust`, which carries an apt
+`python3` (no pip; its CPython version is unmeasured, and the §7.8 absolute memory bound is gated on
+3.14.10 only, see the P3a note in `docs/WIRE.md` §12), with
+`python3 -I -m unittest discover -s python/tests`, no network, plus the fixture
 regeneration check (`python3 python/reference/make_fixtures.py <tmpdir>` compared with
 the committed bytes).
 
@@ -1105,7 +1109,7 @@ The reference checks buffer length and `SECTIONED` before the frame type, so a t
 `rep-not-sectioned-truncated` fixture (a REP of declared length 32 holding 24 bytes, flag clear)
 pins `not-a-block` in both languages.
 
-## HOB-54 — The send hub, stream dictionaries, envelope checks and clients do not exist yet
+## HOB-54 — The Rust client and the probe's serving loop do not exist yet
 
 **Where:** `crates/proto/src/stream.rs` (new), `python/hostobs_client/stream.py` (new), the P5b serving
 loop. WIRE.md §5.2-§5.4, §12.
@@ -1119,11 +1123,24 @@ specified with fake-clock tables but have no code, so no stream property of `hos
 test per row), `ModeDetect` (the §5.3 mode-detection rows) and `ConnTimers` (one test per §5.4 timer
 row); `ProtoError::Deadline` is the reader's completion-age error. The 12 reader cases are
 `fixtures/stream/reader-*.json` (generator `python/reference/make_stream_fixtures.py`, replayed by
-`crates/proto/tests/stream_fixtures.rs`). **P2b:** `crates/proto/src/hub.rs` holds `SendHub` (one unit
-test per §5.3 row and consequence) and the 19 `fixtures/stream/hub-*.json` files (generator
+`crates/proto/tests/stream_fixtures.rs`).
+
+**What exists (P2b).** `crates/proto/src/hub.rs` holds `SendHub` (one unit test per §5.3 row and
+consequence) and the 19 `fixtures/stream/hub-*.json` files (generator
 `python/reference/make_hub_fixtures.py`, replayed by `crates/proto/tests/hub_fixtures.rs`).
-Still open: `StreamDicts` and the 6 client cases, `envelope.rs`, the Python `stream.py`, and
-P5b's 18 connection cases.
+
+**What exists (P2c).** `crates/proto/src/stream_dicts.rs` holds `StreamDicts` (the §6.2 per-stream rules and
+`on_hello`; the 6 client cases are `fixtures/stream/client-*.json`, generator
+`python/reference/make_client_stream_fixtures.py`, replayed by `crates/proto/tests/client_stream_fixtures.rs`)
+and `crates/proto/src/envelope.rs` the REQ/REP/END/EVT shape checks.
+
+**What exists (P3a).** `python/hostobs_client/stream.py` holds the Python `FrameReader` (the §5.2 machine
+with the §7.3 `fill()`/`advance()` buffering, replaying the 12 reader cases) and `StreamDicts` (§6.2,
+`on_hello`, replaying the 6 client cases); `wire.py` and `rates.py` carry the efficient decoder and `rate()`.
+**What exists (P3b).** `conn.py` (`Connection`, the §7.3 receive loop, block streams, subscriptions, reconnect),
+`envelope.py`, `profiling.py` (`require_profiling`, the five plan D.2 states) and `mark.py` (`hostobs-mark`),
+tested on a scripted fake probe and by a zipimport smoke test: the P3 part is closed. Still open: the Rust
+client (P5a) and P5b's connection cases.
 
 **Exit criteria.** P2: the §12 `FrameReader`, `ModeDetect`, `SendHub` and `ConnTimers` APIs in Rust
 with the 12 reader and 19 hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row; P3: the Python

@@ -1,0 +1,29 @@
+{
+  "case": "client-first-block-bare",
+  "doc": "A first block without a dictionary has nothing to be judged against: stale-dictionary-generation, and the stream still holds nothing for the next bare block.",
+  "side": "client",
+  "max_frame": 16777216,
+  "completion_ms": 30000,
+  "steps": [
+    {
+      "t_ms": 0,
+      "feed_hex": "780000000501000005000000020000000100010150000000020001000800000000112233445566778899aabbccddeeff07000000000000002a0000000000000000ca9a3b000000000094357700000000f40100000000000000002a36fe9c9717010000000100000000000000000000000000000000000000"
+    },
+    {
+      "t_ms": 1,
+      "feed_hex": "780000000501000005000000020000000100010150000000020001000800000000112233445566778899aabbccddeeff07000000000000002a0000000000000000ca9a3b000000000094357700000000f40100000000000000002a36fe9c9717010000000100000000000000000000000000000000000000"
+    }
+  ],
+  "expect": [
+    [
+      {
+        "error": "stale-dictionary-generation"
+      }
+    ],
+    [
+      {
+        "error": "stale-dictionary-generation"
+      }
+    ]
+  ]
+}

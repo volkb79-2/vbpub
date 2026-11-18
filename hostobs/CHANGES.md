@@ -20,7 +20,62 @@
 - **Drain, ids, first push.** `drain_unpinned` of a dictionary-bearing Live tick sets
   `needs_dict` for its stream (the tick is still not counted); a `ConnId` is never 0; the first
   push of a stream is the dictionary form whatever generation it carries.
-- **Gates.** `crates/proto/src/hub.rs` is a declared `assay-r1` target (35 judged files).
+- **Gates.** `crates/proto/src/hub.rs` is a declared `assay-r1` target (37 judged files together
+  with `envelope.rs` and `stream_dicts.rs`).
+
+### Added (P3b: `python/hostobs_client` connection, `require_profiling`, `hostobs-mark`; the P3 part of `HOB-54` closed)
+
+- **Review round**: the envelope text checks are linear on hostile input (parse first, count depth only on parsed
+  text); `Connection.open` validates before it connects (no socket leak, `timeout_s` finite and bounded); `hello`
+  integers are exact and `epoch` is a `u64`; hostile `hello` limits are `hello-mismatch`; the query queue is also
+  bounded in bytes (64 MiB); `hostobs-mark --timeout` rejects `inf`/`nan`; exact-boundary, corr, queue and table
+  tests (`test_client_hardening.py`).
+- **`hostobs_client.conn`**: `Connection.open(path, level, *, client, timeout_s, clock)` (binary handshake at
+  minor 1), `.request()`, `.blocks()` (REP at call time, END counts checked), `.subscribe()` (dropped counters,
+  newest-8 queue), `.reconnect()` (`session` first/same/changed per §6.4), `.close()`; the §7.3 receive loop on one
+  socket and one `FrameReader`, no threads, every deadline from the injected clock; `OperationTimeout`,
+  `ProtocolError`. **`hostobs_client.envelope`**: REP/END/EVT shape checks (the byte rules of `envelope.rs`, plus
+  duplicate keys at any depth) as `EnvelopeError`.
+- **`hostobs_client.profiling`**: `require_profiling(level, required)` and the five plan D.2 states
+  (`absent`, `unconfigured`, `unreachable`, `refused`, `lost`) plus `available`. **`hostobs_client.mark`**:
+  `hostobs-mark` (`python3 -m hostobs_client.mark`), JSON mode on `HOSTOBS_OBSERVER_SOCKET`.
+- **Tests**: `python/tests/test_client_{conn,path,zipimport}.py` on a scripted fake probe (`fake_probe.py`,
+  socketpair stepped by hand, no sleeps; the one server thread is in `test_client_path.py`), a zipimport smoke
+  test, and the stdlib-only test now also forbids threads and any clock use outside a default argument.
+
+### Added (P3a: `python/hostobs_client` codec, reader, stream dictionaries and rates; `HOB-54` stays open)
+
+- **`hostobs_client.wire`** (WIRE.md §7.4): `decode_block(buf, held) -> Block`, `Dictionary`, `Column`,
+  `WireError(kind, detail)` (the 46 decoder kinds), `ServerError`, `ConnectionLost`. Explicit `<` struct
+  formats, one cached directory `Struct` per `n_sec`, memoryview casts on little-endian hosts (one swapped
+  `array.array` copy per accessed array on big-endian), quality validity by `bytes.translate`, row
+  references by `max` and a per-generation kind map, and a retained previous rows view that skips both
+  row checks on byte-identical entity references. Reproduces the 70 `fixtures/wire` cases (kinds and
+  fields) and agrees with the Python reference on a seeded byte-flip fuzz.
+- **`hostobs_client.stream`**: `FrameReader` (the §5.2 machine; §7.3 buffering through `fill()` and
+  `advance()`, `feed()` on top) replaying the 12 `reader-*` cases, `StreamDicts` (§6.2) replaying the 6
+  `client-*` cases. **`hostobs_client.rates`**: `rate(prev, cur, nominal_interval_ns)` on
+  `fixtures/rates/rates.json`, integer delta first, divide last.
+- **Tests and measurements**: `python/tests/test_client_{wire,stream,rates,stdlib_only,budgets}.py` (the
+  §7.8 gated settrace-line-count and tracemalloc bounds) and `python/bench_decode.py` (CPU, not gated; numbers
+  in `docs/SP-4-WIRE-SIZES.md`).
+
+### Added (P2c: client dictionary state and envelope checks; `HOB-54` stays open)
+
+- **`proto::stream_dicts::StreamDicts`** (WIRE.md §6.1, §6.2, §6.4, §6.5): one dictionary per stream
+  `corr`; `held`, `accept`, `close`, `reset`, `stream_count` and `on_hello(boot_id, epoch) ->
+  Session::{First, Same, Changed}`. A dictionary-bearing block must exceed the held generation (nothing
+  held is generation 0, so a first block at generation 0 is refused too) and a bare block must carry
+  exactly the held one; `accept` forgets the stream's dictionary on any error.
+  `ProtoError::GenerationRegressed { held, got }` (`generation-regressed`) is the new variant (46).
+- **`proto::envelope`** (§2.2, §4.1, §4.2, §8.2): byte-level `check_req`, `check_rep`, `check_end` and
+  `check_evt` without a JSON dependency, returning byte ranges; text rules (UTF-8, no BOM or trailing
+  byte, escapes, number grammar, depth 8), envelope-level duplicate keys, key sets and types, JSON-mode
+  `corr`. Both modules are `assay-r1` targets (36 judged files).
+- **Fixtures.** `fixtures/stream/client-*.json` (6 cases, written by
+  `python/reference/make_client_stream_fixtures.py`, replayed by `crates/proto/tests/client_stream_fixtures.rs`
+  and checked by `python/tests/test_client_stream_fixtures.py` with an independent replay); the §11.4 format
+  gains the `hello` step and the `ok` and `session` outputs.
 
 ### Added (P2a2: the stream reader, mode detection and connection timers; `HOB-54` stays open)
 
@@ -137,6 +192,12 @@
 
 ### Added
 
+- **`tools/dev`: a developer container wrapper** (build, check, test, clippy, fmt, example, gdb,
+  strace, shell, status, stop, clean) that runs in `tester-unified-rust-dev` on the gate host `v1001`
+  through the controller's `hx.sh` (HEAD as a git bundle plus uncommitted changes up to 20 MiB),
+  capped, network-less and unprivileged, with a pressure gate (exit 75) and a one-at-a-time rule
+  (exit 3). Source and stub-tested argv only: the image has not been built. See
+  `tester-unified-rust/docs/DEV.md`.
 - **`docs/WIRE.md`: the normative `hostobs/1` specification** — connection and handshake,
   frame types and `corr`, the implemented block layout with offsets and the received-frame
   alignment rules, every M2-M3 verb with strict keys and worst-case request sizes, closed error

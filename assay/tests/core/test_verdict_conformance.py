@@ -1423,9 +1423,9 @@ def test_v16_verdict_is_refused_with_exactly_one_diagnostic():
     document["schema_version"] = 16
 
     assert verify_document(document) == [
-        "schema_version 16 is not this verifier's version 19: a verdict artifact "
+        "schema_version 16 is not this verifier's version 20: a verdict artifact "
         "is rejected, never upgraded in place -- re-produce it with an assay "
-        "whose VERDICT_SCHEMA_VERSION is 19"
+        "whose VERDICT_SCHEMA_VERSION is 20"
     ]
 
 
@@ -1434,18 +1434,18 @@ def test_v17_verdict_is_refused_with_exactly_one_diagnostic():
     document["schema_version"] = 17
 
     assert verify_document(document) == [
-        "schema_version 17 is not this verifier's version 19: a verdict artifact "
+        "schema_version 17 is not this verifier's version 20: a verdict artifact "
         "is rejected, never upgraded in place -- re-produce it with an assay "
-        "whose VERDICT_SCHEMA_VERSION is 19"
+        "whose VERDICT_SCHEMA_VERSION is 20"
     ]
 
 
 #: A-477: pin the exact current verdict schema bytes. Operator decision D2
 #: freezes the wire contract of the current version so producer and verifier
-#: cannot drift. v19 (B251) replaces the v18 entry: only the current version's
+#: cannot drift. v20 (B245) replaces the v19 entry: only the current version's
 #: schema ships.
 _VERDICT_SCHEMA_SHA256 = {
-    19: "a76467aea133522919464bfdf44ea70fa641fc0f45d82c8ae5d081edcfe69010",
+    20: "1898ed9d4be5cdd440e34c21908db61d57092a6595af3d3e822a3efa09c5fd55",
 }
 
 

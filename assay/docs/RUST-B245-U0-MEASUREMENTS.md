@@ -91,4 +91,7 @@ Test `Failure(4)`), `w-true` 0, `unicode` 0, `methods` 0.
 - A workspace root that is a SUBDIRECTORY of the git top with several members.
 - Whether the empty `<out>` directory itself is copied into the tree under test.
 - Why a member directory named `b` never matches.
+- A Build-phase timeout (`Timeout` with phases `["Timeout"]` under
+  `--build-timeout`) and an `Unviable` mutant whose Build status is `Signalled`
+  or `Other`: the parser refuses both as an unmeasured cargo-mutants phase shape.
 - hostobs-scale cost, `--shard`, CRLF, a real `Signalled`/`Other` Test status.

@@ -49,6 +49,12 @@
 //!   pools (Live, Query, control), `corr` and `dropped` stamped into a private prefix when
 //!   an entry is pinned, one unpinned tick per stream, shedding in the order connection,
 //!   uid, global, and the two slow-client closes, all against an injected clock.
+//! - **A client holds one dictionary per stream** ([`stream_dicts`]: `StreamDicts`; WIRE.md §6):
+//!   a dictionary-bearing block must exceed the held generation, a bare block must carry exactly
+//!   it, any error forgets the stream and a hello drops every dictionary.
+//! - **A JSON envelope is checked byte-wise** ([`envelope`]: `check_req`, `check_rep`,
+//!   `check_end`, `check_evt`; WIRE.md §2.2, §4.2): UTF-8, one object, depth 8 and the envelope's
+//!   own keys and types, returning ranges into the payload; parsing the values is the caller's.
 //! - **No panic on untrusted bytes** (this crate forbids `unsafe`; every length is
 //!   checked before it is used, every arithmetic operation is checked). A decode returns
 //!   either a complete validated value or one typed error — never a partial success and
@@ -88,10 +94,12 @@
 )]
 
 pub mod dict;
+pub mod envelope;
 pub mod error;
 pub mod frame;
 pub mod hub;
 pub mod quality;
 pub mod read;
 pub mod stream;
+pub mod stream_dicts;
 pub mod write;

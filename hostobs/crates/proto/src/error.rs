@@ -290,6 +290,15 @@ pub enum ProtoError {
     ///
     /// The age runs from the first byte of the frame, so an idle connection never trips it.
     Deadline,
+    /// A dictionary-bearing block of a stream does not carry a generation above the one the
+    /// stream holds (WIRE.md §6.2). A stream that holds nothing holds generation 0, so a
+    /// first block at generation 0 is refused with the same error.
+    GenerationRegressed {
+        /// The generation the stream holds (0 when it holds nothing).
+        held: u32,
+        /// The generation the block carries.
+        got: u32,
+    },
 }
 
 impl fmt::Display for ProtoError {
@@ -499,6 +508,12 @@ impl fmt::Display for ProtoError {
             ProtoError::Deadline => {
                 f.write_str("frame did not complete within the completion deadline")
             }
+            ProtoError::GenerationRegressed { held, got } => {
+                write!(
+                    f,
+                    "dictionary-bearing block carries generation {got}, which does not exceed the held {held}"
+                )
+            }
         }
     }
 }
@@ -560,6 +575,7 @@ impl ProtoError {
             ProtoError::AggregationNotPermitted { .. } => "aggregation-not-permitted",
             ProtoError::SubjectWithoutTime { .. } => "subject-without-time",
             ProtoError::Deadline => "deadline",
+            ProtoError::GenerationRegressed { .. } => "generation-regressed",
         }
     }
 }
@@ -649,6 +665,7 @@ mod tests {
             ProtoError::AggregationNotPermitted { metric: 3, agg: 3 },
             ProtoError::SubjectWithoutTime { subject: 0 },
             ProtoError::Deadline,
+            ProtoError::GenerationRegressed { held: 3, got: 3 },
         ];
         for case in cases {
             let rendered = case.to_string();
@@ -821,6 +838,10 @@ mod tests {
                 ProtoError::SubjectWithoutTime { subject: 0 },
             ),
             ("deadline", ProtoError::Deadline),
+            (
+                "generation-regressed",
+                ProtoError::GenerationRegressed { held: 2, got: 2 },
+            ),
         ];
         let mut names = Vec::new();
         for (expected, error) in cases {
@@ -833,7 +854,7 @@ mod tests {
         }
         assert_eq!(
             names.len(),
-            45,
+            46,
             "the refused-variant count is part of the contract"
         );
     }

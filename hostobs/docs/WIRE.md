@@ -218,8 +218,8 @@ is a measurement. Codes are append-only and announced in `hello.quality_codes`.
 
 3.10 **Decoder error kinds** are the `ProtoError::kind()` names (`ProtoError::kind`), e.g.
 `truncated`, `oversized-frame`, `section-order`, `stale-dictionary-generation`,
-`aggregation-not-permitted`, `subject-without-time` (45 kinds in all: `deadline` is the reader's
-completion-age kind; the stream layer still adds `generation-regressed`). They are local outcomes
+`aggregation-not-permitted`, `subject-without-time` (46 kinds in all: `deadline` is the reader's
+completion-age kind, `generation-regressed` the stream layer's, §6.2). They are local outcomes
 (fixtures `expect_error.kind`), never sent on the wire; §5.2 maps the reader's ones to wire codes.
 There are exactly two vocabularies: wire codes (§10, sent) and decoder kinds (local). Client APIs
 raise one of them (P3 `ServerError(code)` / `WireError(kind)`, plus `ConnectionLost` for EOF or reset);
@@ -290,8 +290,23 @@ are the same iff their canonical forms are equal (no resolution: `{"inc":5}` and
 incarnation 5 are distinct). A selection resolving to more than `limits.max_rows` entities is `budget`
 `{"pool":"rows"}`. Every object below is **strict**: a missing required key, an unknown key or a wrong
 type is `bad-request`. JSON text rules (both modes): UTF-8, no duplicate key at any depth, nesting
-depth ≤ 8, exact integers (§8.3); a violation is `bad-request` (the server's JSON layer enforces them;
-`proto` has no JSON parser).
+depth ≤ 8 (the envelope object is depth 1; the bound holds for requests and for the client's checks of
+REP, END and EVT), exact integers (§8.3); a violation is `bad-request` (the server's JSON layer enforces
+them; `proto` has no JSON parser). The JSON text excludes the JSON-mode line terminator (§8.1): the caller
+strips the `\n` before any check, and a trailing `\n` or `\r` is a trailing byte.
+*Implemented* (`crates/proto/src/envelope.rs`, P2c): `check_req`, `check_rep`, `check_end` and `check_evt` scan
+a payload byte-wise and return byte ranges into it (no JSON dependency). They check UTF-8, one object with
+nothing before the `{` and nothing after the `}` (whitespace between tokens is allowed), string escapes,
+the number grammar and nesting depth ≤ 8 (the envelope object is depth 1), then the envelope's key set,
+types and `ok` literal. Duplicate keys are detected at the envelope's own level and in the error object;
+duplicates in `args`, `result` and `detail` are the server's JSON layer's job, as is every schema below the
+envelope. A key spelled with escapes is an unknown key, and so is a ninth key (an envelope has at most five,
+`MAX_MEMBERS` is 8); a `verb` containing a backslash is refused; a JSON-mode REQ with `corr` 0 is refused
+(§2.3) while a REP may carry `corr` 0 (§8.2); the END counts are exact `u32`s (§8.3). An EVT needs a string
+`event`, at most 8 keys, and `closing` carries exactly `{event, reason}`. A lone surrogate escape (an
+escape whose four hex digits name a surrogate) passes the scan: the server's JSON layer owns it. A violation
+of a request is `bad-request` on the wire (`detail.key` `""` for a text error, else the offending key); a
+violation of a REP, END or EVT is a local `EnvelopeError` of the client (the server is the faulty peer).
 **Worst-case size.** A JSON encoder may escape every non-ASCII character (`\uXXXX`, a surrogate pair
 for 4-byte UTF-8), so a string costs at most 3× its decoded length plus 2 quotes; control characters
 are excluded. Worst selection: 16 × (`{"prefix":` 10 + 512·3 + 2 + `}` 1 + `,` 1) = 24,800 B, metrics
@@ -693,6 +708,18 @@ dictionary-bearing entry is pushed for a first block, for any generation the str
 (including a change tick the subscriber's interval skipped) and after a dropped or replaced
 dictionary-bearing entry, and in each case its generation exceeds what the client holds. At `u32::MAX` the selection stream ends every
 subscription (`END ok:false`, `internal`).
+*Implemented* (`crates/proto/src/stream_dicts.rs`, P2c): `StreamDicts` holds one dictionary per `corr`.
+`held(corr)` is what to pass to `decode_block_with`; `accept(corr, &block)` applies the rules above to a
+decoded block and stores a dictionary-bearing block's dictionary; `close(corr)` forgets one stream (at its
+END, at an unsubscribe, after any decoder error); `reset()` forgets all; `on_hello(boot_id, epoch)` drops
+every dictionary and returns `Session::{First, Same, Changed}` against the previous hello, so the caller
+decides about cursors and sessions (§6.4). A stream that holds nothing holds generation 0 and generations
+start at 1, so a first dictionary-bearing block at generation 0, and any later one at an equal or lower
+generation, is `generation-regressed`. `accept` forgets the stream's dictionary on any error, and the caller
+MUST `close(corr)` after any decoder error and then close the connection (§6.5). `accept` does not compare
+`block.corr` with its argument (the caller routes by corr). There is no cap on the number of streams: the
+caller's bound is `max_outstanding` + `max_subscriptions` (§5.1). `generation-rollover` has no client-side
+rule beyond `generation-regressed`: the server ends the subscriptions at `u32::MAX`.
 6.3 Query replies carry their dictionary in their first BLOCK; a `series_batch` continuation (new
 corr) is a new stream. Exported segments carry it in every record (plan §C.5).
 6.4 **Epoch.** A probe process takes a new epoch at start (greater than every epoch it served under
@@ -924,7 +951,11 @@ case with a top-level `"held": {"generation", "entries"}` key is decoded against
 "max_frame", "completion_ms", "steps": [{"t_ms", "feed_hex"} | {"t_ms", "poll": true} | {"t_ms", "eof":
 true}], "expect": [[<outputs of step 0>], [<outputs of step 1>], ...]` with outputs `{"frame": {"type",
 "corr", "len"}}`, `{"error": kind}`, `{"closed": "clean"}`; one list per step, in order; Rust and
-Python both replay them). Reader cases (`fixtures/stream/reader-*.json`, one per §5.2 row; written by
+Python both replay them). A client case (`"side": "client"`) has the two steps `{"t_ms", "feed_hex"}`,
+one complete BLOCK frame of stream corr 5 (decode with `decode_block_with(bytes, held(5))`, then
+`accept(5, block)`; on any error `close(5)`), and `{"t_ms", "hello": {"boot_id", "epoch"}}` (`on_hello`),
+with outputs `{"ok": generation}` (the block's header `dict_gen`), `{"error": kind}` and `{"session":
+"first|same|changed"}`; one output per step. Reader cases (`fixtures/stream/reader-*.json`, one per §5.2 row; written by
 `python/reference/make_stream_fixtures.py` from the §5.2 rules, not by running a reader; Rust
 `crates/proto/tests/stream_fixtures.rs`; `python/tests/test_stream_fixtures.py` checks the files against
 the generator and replays them with an independent reader):
@@ -945,13 +976,18 @@ the generator and replays them with an independent reader):
 | `reader-feed-after-eof` | `trailing-bytes` |
 
 Client stream cases (`fixtures/stream/client-*.json`, both languages; steps feed BLOCK frames to a
-stream state with `decode_block_with`): `client-first-block-gen-5` (first block dictionary-bearing at
-generation 5: ok), `client-first-block-bare` (`stale-dictionary-generation`), `client-generation-step`
-(dict gen 2, bare 2, dict gen 3, bare 2: ok, ok, ok, `stale-dictionary-generation`),
-`client-generation-regressed` (dict gen 2 then dict gen 2: `generation-regressed`),
-`client-required-section` (unknown required kind: `unsupported-required-section`, stream closed),
-`client-epoch-change` (reconnect hello with a new epoch: dictionaries, cursors and subscriptions
-dropped).
+stream state with `decode_block_with`; written by `python/reference/make_client_stream_fixtures.py`
+from the §6 rules, not by running a client; Rust `crates/proto/tests/client_stream_fixtures.rs`;
+`python/tests/test_client_stream_fixtures.py` checks the files against the generator and replays them
+with an independent client): `client-first-block-gen-5` (first block dictionary-bearing at
+generation 5: ok, then a bare 5: ok), `client-first-block-bare` (`stale-dictionary-generation`, twice),
+`client-generation-step` (dict gen 2, bare 2, dict gen 3, bare 2: ok, ok, ok, `stale-dictionary-generation`),
+`client-generation-regressed` (dict gen 2 then dict gen 2: `generation-regressed`, the stream is closed so
+a bare 2 is stale, a fresh dict gen 4 is ok, dict gen 3 is regressed),
+`client-required-section` (unknown required kind in a dictionary-bearing block: `unsupported-required-section`,
+stream closed, so the bare block after it is stale), `client-epoch-change` (hello `first`, a dictionary,
+hello with a new epoch `changed`: the bare block finds nothing held; a dictionary, hello with the same
+epoch `same`: dictionaries are dropped here too; cursors and subscriptions are the caller's, §6.4).
 
 Hub cases (`fixtures/stream/hub-*.json`, 19 files written by `python/reference/make_hub_fixtures.py`,
 replayed by `crates/proto/tests/hub_fixtures.rs` with a fake clock, `t_ms * 1_000_000` as `now_ns`;
@@ -1062,6 +1098,123 @@ required: bool) -> ProfilingState` with the five states of plan §D.2), `mark.py
 Acceptance: all `fixtures/wire` cases and the reader and client cases of `fixtures/stream`,
 `fixtures/rates/rates.json`, the §7.8 gated thresholds on the pinned CPython, a zipimport smoke test,
 no import outside the stdlib (checked by a test). Closes the P3 part of `HOB-54`.
+
+*P3a implemented* (`python/hostobs_client/{__init__,wire,stream,rates}.py`; `conn.py`, `profiling.py`
+and `mark.py` are P3b). `wire.py` is the §7.4 decoder; `stream.py` holds `FrameReader`, `RawFrame`,
+`StreamDicts` and `Session` (`"first"|"same"|"changed"`); `rates.py` holds `rate()` and `Reading`. Tests:
+`python/tests/test_client_{wire,stream,rates,stdlib_only,budgets}.py`. Decisions and deviations:
+- **Reader API.** Besides `feed`/`poll`/`eof`, the reader exposes `fill() -> memoryview` (the writable
+  slice of the buffer being filled: the rest of the 12-byte header, then the rest of the one
+  `bytearray(len)`) and `advance(n, now_ns)` (accounts for `n` bytes written there). P3b's `conn.py`
+  calls `sock.recv_into(reader.fill())` then `advance`; `feed` is the same pair over a `bytes` argument.
+  `fill()` never spans two frames, so one `recv_into` completes at most one frame. `RawFrame` is
+  `(type, corr, length, data)` with `data` the owned `bytearray`.
+- **Errors.** `StreamDicts.accept` raises `WireError` (the Python style) where Rust returns `Err`; the
+  reader returns its error in the `feed`/`poll`/`eof` result as §12 specifies. `WireError.detail` holds the
+  fixtures' `expect_error` fields; an oversized length names the reader's `max_frame` as `max`.
+- **Retained rows.** The skip compares and retains only the `ent` half of the rows body (the only part
+  validation reads), so a changed `t_off_us` does not defeat it; the retained view lives on the
+  `Dictionary` it was validated against (`Dictionary._rows_ok`), so it can never be applied to another
+  dictionary, and `StreamDicts.close/reset` and any decoder error drop it. A bare block with no rows
+  section clears it.
+- **Buffer ownership.** A buffer passed to `decode_block` is owned by the returned `Block` (and, for the
+  entity half of its rows, by the held dictionary) and MUST never be mutated or reused afterwards. As a
+  defence the skip never applies when the retained view and the rows being decoded are views of the same
+  underlying object (`previous.obj is ents_mv.obj`), so a buffer overwritten in place is validated in full.
+- **Gate image and the absolute memory bound.** No registered lane runs `python/tests` yet (`HOB-4`):
+  every `hostobs/run-gate.toml` lane uses `tester-unified-rust`, whose `python3` is Debian's apt package
+  (`tester-unified-rust/Dockerfile`; its version is not measured here). The image that will run these tests
+  is chosen when the lane is registered. The absolute 1,000-row peak bound (16 KiB) was measured on CPython
+  3.14.10 only (3,395 B there) and is skipped on every other version; the growth and line-count gates run
+  on every version. Per the §7.8 rule the absolute bound is re-measured and re-set in the change that
+  registers the lane or moves its image (or CPython) to a version the bound was not measured on; until then
+  no 3.14.10 number is claimed for any other version.
+- **Dictionary reuse.** A dictionary section byte-identical to the held dictionary's body returns the held
+  object (`Block.dictionary is held`); `Block.dictionary` is the carried dictionary (`None` for a bare
+  block) and `Block.dictionary_in_force` the one the block was judged against.
+- **Byte order.** `wire._NATIVE_VIEWS` (`sys.byteorder == "little"` at import) selects casts; the copy path
+  is `array.array` plus `byteswap()` when `sys.byteorder == "big"`, and both are tested by patching
+  `_NATIVE_VIEWS` and `sys.byteorder`.
+- **`rate()`** returns a dict for both outcomes (`ok` true with `delta`, `denominator`, `per_second`,
+  `missed`; `ok` false with `reason`, `reading`, `quality`); `per_second` is `delta * 10**9 / elapsed` over
+  Python ints (exact until the one final division); an unknown quality or a non-`u64` value raises
+  `ValueError`.
+- **Line counts.** The §7.8 model counted 141 `line` events; this decoder counts 510 at both 100 and 1,000
+  rows (one function walks the passes of §3.10); the gate is the equality, not the number.
+
+*P3b implemented* (`python/hostobs_client/{conn,envelope,profiling,mark}.py`; `__init__.py` exports them;
+P3a files `wire.py`, `stream.py`, `rates.py` are unchanged). Tests: `python/tests/test_client_{conn,path,
+zipimport}.py` with the scripted fake probe `fake_probe.py`. Decisions and ambiguities:
+- **`envelope.py`** (not named in the P3 module list) ports the byte rules of `crates/proto/src/envelope.rs` for
+  REP, END and EVT: one object with `{` first and `}` last, nesting at most 8 (a C-speed bracket count with
+  strings removed, before parsing), the envelope's own keys compared as written (an escaped spelling is an
+  unknown key), the `ok` literal, exact `u32` counts, `closing` with exactly `event` and `reason`. Beyond Rust
+  it enforces §4.2 below the envelope with the `json` module and hooks: no duplicate key at any depth, no
+  `NaN`/`Infinity`, no non-finite float, no `-0`. A violation is a local `EnvelopeError` (a `WireError` subclass
+  with kinds `json-text`, `duplicate-key`, `unknown-key`, `missing-key`, `wrong-type`); the connection closes.
+  `ProtocolError` (also a `WireError` subclass) names what is not a decoder error: `unexpected-frame`,
+  `unknown-corr`, `bad-reply`, `end-counts`, `hello-mismatch`, `queue-overflow`, `corr-exhausted`.
+- **Handshake.** The prefix (`HOB\x01`, major 1, minor 1) is sent alone, the 8-byte server prefix is read with a
+  `recv_into` that never over-reads, then the `hello` REQ goes out with `corr` 1. A closed socket before the
+  prefix is `ConnectionLost`; a wrong magic is `unknown-mode`; another major is `unsupported-version`; a server
+  minor above the client's, a `proto` that disagrees with the prefix, another `level` than requested and a missing or
+  non-`u32` limit are `ProtocolError` `hello-mismatch`. Unknown extra `hello` keys are ignored (a later minor
+  adds reply keys, §9.1). After the hello the reader is replaced by one limited to
+  `min(16 MiB, limits.max_frame_bytes)`; the completion age stays 30 s.
+- **Receive loop.** One `recv_into(reader.fill())` per step; the socket timeout is `max(0.001, (deadline - now))`
+  with `deadline = frame_started + 30 s` while a frame is partial and the caller's operation deadline
+  (`now + timeout_s`) otherwise; a `TimeoutError` or a late recv runs `poll(clock())`. An operation timeout
+  closes the connection (a late reply could not be matched) and raises `OperationTimeout`. EOF inside a frame is
+  `ConnectionLost` caused by the `truncated` `WireError`; a `closing` EVT is remembered in `closing_reason`.
+  `connect()` itself is bounded by the OS through the socket timeout, not by the injected clock.
+- **Streams.** `request()` waits for its REP. `blocks()` awaits the REP at call time and returns an iterator
+  (`.result`, `.end`, `.received`, `.close()`); `subscribe()` returns a `Subscription` (`.dropped` sums the block
+  header and END counters, `.client_dropped` counts blocks this client overwrote, `.close()` sends `unsubscribe`
+  and waits for the END). Frames of other streams that arrive while waiting are decoded in arrival order and
+  queued (a subscription keeps its newest 8, a query stream up to 1,024, else `queue-overflow`). The END must
+  count exactly the BLOCK frames received; a query END reports `dropped` 0; the reason is `complete`/`page` for a
+  query (`page` iff `next`) and `unsubscribed`/`client-eof` for a subscription. A subscription wait is bounded by
+  `timeout_s + interval_ms`. Closing an unfinished block stream drops its later blocks undecoded.
+- **Reconnect (§6.4).** `Connection.reconnect()` closes the connection (every dictionary and stream is dropped)
+  and opens a new one on the same path with the same `StreamDicts`; `.session` is `first`, `same` or `changed`
+  from `on_hello`. The caller drops cursors, open span keys, sessions and windows when it is `changed`.
+- **`profiling.py`.** `require_profiling(level, required, *, features=(), ...)` returns a `ProfilingState`
+  (`name`, `required`, `detail`, `notice`, `action`, `connection`). Plan D.2 leaves open how a usable socket is
+  named and where `absent` and `lost` come from; decided: the sixth value `available` (`action` `run`, open
+  connection), `absent(required)` for the consumer's own `except ImportError`, `lost(required, reason)` after
+  start with `loss_reason()` mapping `session-lost`/`window-lost` and `session == "changed"`, `unconfigured` =
+  `HOSTOBS_<LEVEL>_SOCKET` unset or empty, `refused` = another level, a missing `features` entry (the caller names
+  the capabilities, default none, so `peak_reset` is not assumed), `unsupported-version`, or a server `forbidden`/
+  `unsupported-feature`/`unknown-verb`; every other failure is `unreachable`. Actions: unset `required` →
+  `run-with-notice` (`lost`: `record-profile-error`); `required` → `refuse` (`lost`: `evidence-invalid`, outcome
+  `EVIDENCE_INVALID`).
+- **`mark.py`.** `hostobs-mark` is JSON mode (§8.5): one `annotate` line with `corr` 1 to
+  `HOSTOBS_OBSERVER_SOCKET`, `shutdown(SHUT_WR)`, one reply line (bounded 64 KiB, deadline from the injected
+  clock), exit 0; unavailable → one stderr notice and exit 0, `--require` → exit 1, usage error → exit 2. All
+  `annotate` args keys are sent (`key`, `outcome`, `code` null when unset); `ctx` is read from
+  `HOSTOBS_CTX_{RUN,LANE,CANDIDATE,TXN,SESSION}` (the five keys of §4.10; the plan names `HOSTOBS_CTX_*` without
+  the list). Run as `python3 -m hostobs_client.mark begin|end|point NAME [--key K] [--outcome O] [--code C]
+  [--attr K=V] [--require] [--timeout S]`; the console script `hostobs-mark = hostobs_client.mark:main` is the
+  wheel's (M3) packaging entry.
+- **Linear time.** The text checks never run a quadratic scan on hostile input: the payload is parsed first (the C
+  decoder is linear, refuses an unterminated string and stops a depth bomb at the recursion limit) and the
+  bracket-depth count (strings removed by regex) runs only on text that parsed. The top-level key scan uses an
+  unrolled pattern. Tests assert a wall-time cap on 20,000-repeat payloads and, structurally, that the depth count
+  is never called on text that did not parse.
+- **Queue policy is a client decision beyond this specification.** A subscription keeps its newest 8 undelivered
+  blocks (`client_dropped` counts the overwritten ones) and a query stream up to 1,024 blocks and 64 MiB of frames
+  per connection (`QUERY_BYTES`), then `queue-overflow`. The bounds are count- and frame-byte-bounded, the oldest
+  block of a subscription is the one shed (stale-ordered), and a subscription's bytes are not bounded (8 frames of at
+  most 16 MiB). The receive loop returns as soon as the awaited stream has a block, so `client_dropped` only grows
+  while another call (a request, another stream) is pumping.
+- **Validation.** `Connection.open` validates `level`, `client` and `timeout_s` (a finite number in `(0, 1 year]`;
+  `inf`, `nan`, `bool`, strings are `ValueError`) before creating a socket; a connect failure is the system's
+  `OSError`, unchanged (`require_profiling` maps it to `unreachable` with its errno), everything after the connect is
+  `ConnectionLost`/`OperationTimeout`/`ServerError`/`WireError`. `hello` fields are exact integers (`proto`, `epoch`
+  in `0..2**64-1`, every limit a `u32`), and a hello whose `max_request_bytes` cannot carry the client's own hello or
+  whose `max_frame_bytes` is below 12 is `hello-mismatch`. `hostobs-mark --timeout` outside `(0, 1 year]` is a usage
+  error (exit 2). Args nested deeper than the interpreter's recursion limit are a `ValueError` like any other deep args.
+- **Not covered here:** the Python conformance lane (`HOB-4`) and a run against a live probe (P5b).
 
 **P5a — Rust `client` crate (M).** `Client::connect(path, Level, ClientInfo) -> Result<Client, ClientError>`,
 `hello() -> &HelloResult`, `request(verb, serde-free JSON text) -> Reply`, `subscribe(Selection,
