@@ -508,7 +508,8 @@ Checks only a real deployment can make:
   repos add their own subvolumes the same way: one set per user, per repo, declared in that repo's `cowtree.toml`.
 - Move the consumers onto the resolver (MDT-044 follow-up list: the `vm-lab` project, truenas and tnt, debian-install-v2, the
   netcup, pwmcp, zswap and io-governor docs) and move the files that predate the subfolders (the flat `downloads/` TrueNAS ISOs and
-  Debian cloud image) into `downloads/iso` and `downloads/vm-images` with them. Projects that still use `<project>/artifacts/vm-lab`
+  Debian cloud image) into `downloads/iso` and `downloads/vm-images` with them (done 2026-11-18, RP-06; both folders are now
+  committed placeholders in the checkout). Projects that still use `<project>/artifacts/vm-lab`
   migrate to `<project>/vm-lab` in the same step.
 - Add `btrfs-progs` (and `rsync`) to the image, so tools do not depend on installing them.
 - Compression of VM disks: the benchmark and the no-CoW fallback for hot disks (BTRFS-COW-OPTIONS.md 4.6).

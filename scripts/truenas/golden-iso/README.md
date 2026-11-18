@@ -166,7 +166,7 @@ source installer and image digests with each run rather than treating the
 golden image as a rolling release.
 
 The v28 nightly ISO used for patch work belongs under
-the repository's `iso` folder (`downloads/iso/` in plain mode; RP-06 moves older flat files there), not in this golden-image project. Its
+the repository's `iso` folder (`downloads/iso/` in plain mode, a committed placeholder; older flat files have moved there, RP-06), not in this golden-image project. Its
 temporary hard-link alias under this directory was removed on 2026-10-17 after
 all three retained VM manifests were rebound to the canonical path and the
 active guest was cleanly recreated with its COW disk and EFI state preserved.
