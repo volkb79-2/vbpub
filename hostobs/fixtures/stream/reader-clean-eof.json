@@ -1,0 +1,38 @@
+{
+  "case": "reader-clean-eof",
+  "doc": "A complete BLOCK frame, an idle poll an hour later, then end of stream at the frame boundary: a clean close.",
+  "side": "server",
+  "max_frame": 1024,
+  "completion_ms": 5000,
+  "steps": [
+    {
+      "t_ms": 0,
+      "feed_hex": "68000000050100000300000001000000010001015000000000112233445566778899aabbccddeeff07000000000000002a0000000000000000ca9a3b000000000094357700000000f40100000000000000002a36fe9c971701000000000000000000000000000000"
+    },
+    {
+      "t_ms": 3600000,
+      "poll": true
+    },
+    {
+      "t_ms": 3600001,
+      "eof": true
+    }
+  ],
+  "expect": [
+    [
+      {
+        "frame": {
+          "type": "block",
+          "corr": 3,
+          "len": 104
+        }
+      }
+    ],
+    [],
+    [
+      {
+        "closed": "clean"
+      }
+    ]
+  ]
+}

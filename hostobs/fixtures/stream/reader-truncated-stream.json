@@ -1,0 +1,25 @@
+{
+  "case": "reader-truncated-stream",
+  "doc": "A BLOCK frame cut in its body, then end of stream: truncated.",
+  "side": "server",
+  "max_frame": 1024,
+  "completion_ms": 5000,
+  "steps": [
+    {
+      "t_ms": 0,
+      "feed_hex": "6800000005010000030000000100000001000101"
+    },
+    {
+      "t_ms": 1,
+      "eof": true
+    }
+  ],
+  "expect": [
+    [],
+    [
+      {
+        "error": "truncated"
+      }
+    ]
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "case": "reader-completion-age",
+  "doc": "Half a REQ at t=0; a poll at t=completion_ms does nothing (the deadline is strict), a poll at completion_ms+1 is deadline; the reader stays poisoned (eof returns it).",
+  "side": "server",
+  "max_frame": 1024,
+  "completion_ms": 5000,
+  "steps": [
+    {
+      "t_ms": 0,
+      "feed_hex": "2600000001000000010000007b227665726222"
+    },
+    {
+      "t_ms": 5000,
+      "poll": true
+    },
+    {
+      "t_ms": 5001,
+      "poll": true
+    },
+    {
+      "t_ms": 5002,
+      "eof": true
+    }
+  ],
+  "expect": [
+    [],
+    [],
+    [
+      {
+        "error": "deadline"
+      }
+    ],
+    [
+      {
+        "error": "deadline"
+      }
+    ]
+  ]
+}
