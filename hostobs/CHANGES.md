@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Added (P3a: `python/hostobs_client` codec, reader, stream dictionaries and rates; `HOB-54` stays open)
+
+- **`hostobs_client.wire`** (WIRE.md §7.4): `decode_block(buf, held) -> Block`, `Dictionary`, `Column`,
+  `WireError(kind, detail)` (the 46 decoder kinds), `ServerError`, `ConnectionLost`. Explicit `<` struct
+  formats, one cached directory `Struct` per `n_sec`, memoryview casts on little-endian hosts (one swapped
+  `array.array` copy per accessed array on big-endian), quality validity by `bytes.translate`, row
+  references by `max` and a per-generation kind map, and a retained previous rows view that skips both
+  row checks on byte-identical entity references. Reproduces the 70 `fixtures/wire` cases (kinds and
+  fields) and agrees with the Python reference on a seeded byte-flip fuzz.
+- **`hostobs_client.stream`**: `FrameReader` (the §5.2 machine; §7.3 buffering through `fill()` and
+  `advance()`, `feed()` on top) replaying the 12 `reader-*` cases, `StreamDicts` (§6.2) replaying the 6
+  `client-*` cases. **`hostobs_client.rates`**: `rate(prev, cur, nominal_interval_ns)` on
+  `fixtures/rates/rates.json`, integer delta first, divide last.
+- **Tests and measurements**: `python/tests/test_client_{wire,stream,rates,stdlib_only,budgets}.py` (the
+  §7.8 gated settrace-line-count and tracemalloc bounds) and `python/bench_decode.py` (CPU, not gated; numbers
+  in `docs/SP-4-WIRE-SIZES.md`).
+
 ### Added (P2c: client dictionary state and envelope checks; `HOB-54` stays open)
 
 - **`proto::stream_dicts::StreamDicts`** (WIRE.md §6.1, §6.2, §6.4, §6.5): one dictionary per stream

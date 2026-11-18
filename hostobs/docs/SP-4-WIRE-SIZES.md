@@ -113,3 +113,34 @@ without a quality column, which the sampler cannot represent at all):
 at 100 cgroups the dictionary-bearing frame is 12360 B, of which the dictionary is 4080 B (33 %)
 per-row cost without the dictionary: 82 B (1,000 cgroups: 80 B)
 ```
+
+## P3 decoder measurements
+
+Measured with the real decoder `python/hostobs_client/wire.py` (WIRE.md §7.4, §7.8) by
+`python/tests/test_client_budgets.py` (gated) and `python/bench_decode.py` (not gated), one run each,
+2026-11-18, devcontainer (8 cores, shared with a production game server, load average about 1.7),
+`nice -n 19 python3 -I`, `sys.version` = `3.14.10 (main, Nov  5 2026, 09:34:56) [GCC 14.2.0]`
+(`Linux-7.2.12+deb13-amd64-x86_64-with-glibc2.41`). Frames come from `python/tests/sp4_frames.py` (8
+columns, entity labels `/system.slice/unit-<inc>.scope`); steady-state frames are 8,272 and 80,240 B as
+in the table above, the dictionary-bearing ones are 12,568 and 121,440 B here (longer labels than SP-4's
+12,360 and 120,328). Every steady-state decode alternates two distinct rows bodies.
+
+**Gated (deterministic):**
+
+| Measurement | 100 rows | 1,000 rows | Bound |
+|---|---|---|---|
+| `sys.settrace` `line` events in one `decode_block` (bare block, held dictionary) | 510 | 510 | equal |
+| `tracemalloc` peak of one `decode_block` | 1,865 B | 3,395 B | growth 1,530 B <= 4,096 B; absolute <= 16,384 B (CPython 3.14.10 only) |
+
+**Trend evidence only (CPU, min of 7 x 200 decodes, never gated):**
+
+| Frame | us per decode |
+|---|---|
+| steady state, 100 rows (8,272 B) | 22.1 |
+| steady state, 1,000 rows (80,240 B) | 87.9 |
+| dictionary-bearing, 100 rows (12,568 B; dictionary decoded each time) | 148.5 |
+| dictionary-bearing, 1,000 rows (121,440 B; dictionary decoded each time) | 1,256.7 |
+| `measured_list()` of one 1,000-row column | 26.8 |
+
+The steady-state 1,000-row decode is far under the 250 us target; the dictionary decode is a per-entry
+loop that runs once per generation, and a dictionary section byte-identical to the held one is reused.

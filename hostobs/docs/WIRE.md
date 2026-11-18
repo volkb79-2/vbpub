@@ -1056,6 +1056,37 @@ Acceptance: all `fixtures/wire` cases and the reader and client cases of `fixtur
 `fixtures/rates/rates.json`, the §7.8 gated thresholds on the pinned CPython, a zipimport smoke test,
 no import outside the stdlib (checked by a test). Closes the P3 part of `HOB-54`.
 
+*P3a implemented* (`python/hostobs_client/{__init__,wire,stream,rates}.py`; `conn.py`, `profiling.py`
+and `mark.py` are P3b). `wire.py` is the §7.4 decoder; `stream.py` holds `FrameReader`, `RawFrame`,
+`StreamDicts` and `Session` (`"first"|"same"|"changed"`); `rates.py` holds `rate()` and `Reading`. Tests:
+`python/tests/test_client_{wire,stream,rates,stdlib_only,budgets}.py`. Decisions and deviations:
+- **Reader API.** Besides `feed`/`poll`/`eof`, the reader exposes `fill() -> memoryview` (the writable
+  slice of the buffer being filled: the rest of the 12-byte header, then the rest of the one
+  `bytearray(len)`) and `advance(n, now_ns)` (accounts for `n` bytes written there). P3b's `conn.py`
+  calls `sock.recv_into(reader.fill())` then `advance`; `feed` is the same pair over a `bytes` argument.
+  `fill()` never spans two frames, so one `recv_into` completes at most one frame. `RawFrame` is
+  `(type, corr, length, data)` with `data` the owned `bytearray`.
+- **Errors.** `StreamDicts.accept` raises `WireError` (the Python style) where Rust returns `Err`; the
+  reader returns its error in the `feed`/`poll`/`eof` result as §12 specifies. `WireError.detail` holds the
+  fixtures' `expect_error` fields; an oversized length names the reader's `max_frame` as `max`.
+- **Retained rows.** The skip compares and retains only the `ent` half of the rows body (the only part
+  validation reads), so a changed `t_off_us` does not defeat it; the retained view lives on the
+  `Dictionary` it was validated against (`Dictionary._rows_ok`), so it can never be applied to another
+  dictionary, and `StreamDicts.close/reset` and any decoder error drop it. A bare block with no rows
+  section clears it.
+- **Dictionary reuse.** A dictionary section byte-identical to the held dictionary's body returns the held
+  object (`Block.dictionary is held`); `Block.dictionary` is the carried dictionary (`None` for a bare
+  block) and `Block.dictionary_in_force` the one the block was judged against.
+- **Byte order.** `wire._NATIVE_VIEWS` (`sys.byteorder == "little"` at import) selects casts; the copy path
+  is `array.array` plus `byteswap()` when `sys.byteorder == "big"`, and both are tested by patching
+  `_NATIVE_VIEWS` and `sys.byteorder`.
+- **`rate()`** returns a dict for both outcomes (`ok` true with `delta`, `denominator`, `per_second`,
+  `missed`; `ok` false with `reason`, `reading`, `quality`); `per_second` is `delta * 10**9 / elapsed` over
+  Python ints (exact until the one final division); an unknown quality or a non-`u64` value raises
+  `ValueError`.
+- **Line counts.** The §7.8 model counted 141 `line` events; this decoder counts 510 at both 100 and 1,000
+  rows (one function walks the passes of §3.10); the gate is the equality, not the number.
+
 **P5a — Rust `client` crate (M).** `Client::connect(path, Level, ClientInfo) -> Result<Client, ClientError>`,
 `hello() -> &HelloResult`, `request(verb, serde-free JSON text) -> Reply`, `subscribe(Selection,
 interval_ms) -> Subscription` (iterator of `Block`, held dictionary per stream), reconnect per §6.4.
