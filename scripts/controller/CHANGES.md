@@ -7,6 +7,7 @@ no separate version number, so entries are grouped by the work that landed.
 ## [Unreleased]
 
 ### Added
+- `remote-gate.sh`: `CONTROLLER_REMOTE_GATE_WORKROOT` sets where the per-run throwaway worktree lives (default unchanged: `$CONTROLLER_HOME/remote-gate-work`). A workroot under an IDE workspace folder makes the editor's Git extension adopt every scratch worktree as a repository ("too many active changes" popup) and lets language servers index it; point it outside every workspace folder.
 - `gate-run.sh`: `CONTROLLER_GATE_SLOTS` (integer 1 to 8, default 2) sets the number
   of local gate slots (CTL-33). Slot 1 is `CONTROLLER_GATE_LOCK`, slot 2 is
   `CONTROLLER_GATE2_LOCK`, slots 3.. are `gate<N>.lock` in `CONTROLLER_GATE_LOCK_DIR`

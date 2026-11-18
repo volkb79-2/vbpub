@@ -23,6 +23,13 @@ pub const MS: u64 = 1_000_000;
 /// (about 16 MB of waits, a few milliseconds).
 pub const MAX_TRANSPORT_CALLS: usize = 1_000_000;
 
+/// The default limit on injected-clock reads in a client test. A clock-driven retry loop
+/// fails here instead of relying on the runner's timeout.
+pub const MAX_CLOCK_CALLS: usize = 100_000;
+
+/// A tighter clock bound for a test that deliberately exercises a timed-out socket.
+pub const FAIL_FAST_CLOCK_CALLS: usize = 1_000;
+
 /// The names of the 19 limits of a hello.
 pub const LIMIT_KEYS: [&str; 19] = [
     "max_frame_bytes",
@@ -52,6 +59,36 @@ pub struct FakeClock(pub Rc<Cell<u64>>);
 impl Clock for FakeClock {
     fn now_ns(&self) -> u64 {
         self.0.get()
+    }
+}
+
+/// A clock wrapper that panics when a client keeps reading it without making progress.
+pub struct BoundedClock<C> {
+    inner: C,
+    calls: Cell<usize>,
+    limit: usize,
+}
+
+impl<C> BoundedClock<C> {
+    pub fn new(inner: C) -> BoundedClock<C> {
+        BoundedClock::with_limit(inner, MAX_CLOCK_CALLS)
+    }
+
+    pub fn with_limit(inner: C, limit: usize) -> BoundedClock<C> {
+        BoundedClock {
+            inner,
+            calls: Cell::new(0),
+            limit,
+        }
+    }
+}
+
+impl<C: Clock> Clock for BoundedClock<C> {
+    fn now_ns(&self) -> u64 {
+        let calls = self.calls.get();
+        assert!(calls < self.limit, "runaway clock loop: {calls} calls");
+        self.calls.set(calls + 1);
+        self.inner.now_ns()
     }
 }
 
@@ -173,7 +210,7 @@ pub fn info() -> ClientInfo {
 
 /// Build a client over `script` at `level`.
 pub fn open(script: Script, level: Level, redial: Option<Redial>) -> Result<Client, ClientError> {
-    let clock = Box::new(FakeClock(Rc::clone(&script.clock)));
+    let clock = Box::new(BoundedClock::new(FakeClock(Rc::clone(&script.clock))));
     Client::from_transport(Box::new(script), clock, level, info(), redial)
 }
 
