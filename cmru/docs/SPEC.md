@@ -2342,13 +2342,18 @@ output for at most `OUTPUT_DRAIN_SECONDS` (2 s; a module constant, not a configu
 then stops reading and closes the pipe, keeps the child's own exit code, and logs one `[WARN]`
 (also written to the step log) naming the pids that still hold the pipe, found through
 `/proc/<pid>/fd`; when that scan fails the WARN omits the pids. The holders are named, never
-killed. Each command starts in its own session and process group (`start_new_session`), so an
-interrupt (Ctrl-C, or SIGTERM turned into `SystemExit`) sends SIGTERM to the whole group,
-SIGKILL after `GROUP_TERM_GRACE_SECONDS` (5 s) if any member survives, and reaps it. Output
-lines, their order, decoding (locale encoding, universal newlines) and exit codes are unchanged
-for a child that closes its pipe. A command that reads from the terminal no longer shares its
-foreground group; steps are non-interactive. A no-progress watchdog and a helper shared with
-other tools remain open under KI-178.
+killed. Each command starts in its own session and process group (`start_new_session`). While a
+command runs, `run_command` turns SIGTERM and SIGHUP delivered to cmru into `SystemExit` (main
+thread only; other threads install nothing; the previous handlers are restored afterwards), and
+Ctrl-C raises `KeyboardInterrupt`; each of them sends SIGTERM to the whole group, SIGKILL after
+`GROUP_TERM_GRACE_SECONDS` (5 s) if any member survives, and reaps it. SIGKILL of cmru itself
+cannot be caught and still leaves the step running as an orphan in its own session. The output
+wait uses poll/epoll, so it works for pipe descriptors numbered 1024 and above. Output lines,
+their order, decoding (locale encoding, universal newlines) and exit codes are unchanged for a
+child that closes its pipe. A command in its own session has no controlling terminal: plain
+reads on the inherited standard input still work, but anything that opens `/dev/tty` (sudo, ssh
+or git prompts) fails with `ENXIO`; steps are non-interactive. A no-progress watchdog and a
+helper shared with other tools remain open under KI-178.
 
 **S3.5 — Transaction evidence lifecycle.** Release failure MUST retain its worktree, logs,
 artifacts, and generated gate evidence for inspection/resume. Successful release MUST remove
