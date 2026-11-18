@@ -747,6 +747,14 @@ class WrapperRemoteExecutionTests(DevCase):
         self.assertEqual(self.run_dev("clean", "--checkout", STUB_RUNNING="absent").returncode, 0)
         self.assertFalse(d.exists())
 
+    def test_a_non_hex_have_line_from_the_host_is_ignored_by_the_bundle_logic(self) -> None:
+        # `HAVE=HEAD` resolves locally; used as a bundle base it would produce no bundle and the host sync would fail
+        proc = self.run_dev("run", "--", "true", STUB_INJECT="HAVE=HEAD\\n")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue((self.work() / ".git").exists())
+        head = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(subprocess.run(["git", "-C", str(self.work()), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(), head)
+
     def test_hostile_lines_from_the_host_never_reach_the_next_remote_script(self) -> None:
         marker = self.tmp / "SEEDPWNED"
         good = "a" * 40
