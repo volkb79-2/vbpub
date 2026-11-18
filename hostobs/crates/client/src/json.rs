@@ -212,10 +212,15 @@ pub(crate) fn hello_args(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{array_strings, hello_args, request_payload, unescape, Object, HELLO_PROTO};
+    use super::{
+        array_strings, hello_args, request_payload, skip_ws, string_end, unescape, Object,
+        HELLO_PROTO, MAX_VERB_BYTES,
+    };
     use crate::error::ClientError;
     use hostobs_proto::envelope::Kind;
     use hostobs_proto::frame::{PROTO_MAJOR, PROTO_MINOR};
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     /// A JSON unicode escape built at run time: the source never spells one out.
     fn u_escape(unit: u16) -> String {
@@ -305,6 +310,8 @@ mod tests {
             request_payload(&long, "{}"),
             Err(ClientError::Usage("bad-verb"))
         );
+        let longest = "a".repeat(MAX_VERB_BYTES);
+        assert!(request_payload(&longest, "{}").is_ok());
         let bad_args = ["[]", "{", "{} x", "{},\"x\":1", "{\"a\":nul}", ""];
         for args in bad_args {
             let error = request_payload("status", args);
@@ -328,5 +335,29 @@ mod tests {
         let escaped = hello_args("a\"b\\c");
         assert!(escaped.starts_with("{\"client\":\"a\\\"b\\\\c\""));
         assert!(Object::parse(&escaped).is_ok());
+    }
+
+    #[test]
+    fn skip_ws_always_makes_progress() {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(skip_ws(b"  x", 0));
+        });
+        let result = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("skip_ws did not return");
+        assert_eq!(result, 2);
+    }
+
+    #[test]
+    fn string_end_always_makes_progress() {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(string_end(b"\"a\"", 0));
+        });
+        let result = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("string_end did not return");
+        assert_eq!(result, Some(3));
     }
 }

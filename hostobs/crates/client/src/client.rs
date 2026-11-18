@@ -904,8 +904,9 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::{
-        io, Client, ClientError, Clock, Duration, FrameReader, HelloResult, Level, ProtocolKind,
-        Session, StreamDicts, Transport, VecDeque, COMPLETION_NS, PRE_HELLO_MAX_FRAME,
+        io, Client, ClientError, ClientInfo, Clock, Duration, FrameReader, HelloResult, Level,
+        ProtocolKind, Session, StreamDicts, Transport, VecDeque, COMPLETION_NS, MAX_TIMEOUT,
+        PRE_HELLO_MAX_FRAME,
     };
 
     struct Mute;
@@ -961,5 +962,23 @@ mod tests {
         let exhausted = ClientError::Protocol(ProtocolKind::CorrExhausted);
         assert_eq!(client.allocate(), Err(exhausted));
         assert!(client.is_closed());
+    }
+
+    #[test]
+    fn client_info_accepts_the_one_year_timeout_boundary() {
+        let boundary = Duration::from_secs(31_536_000);
+        assert_eq!(MAX_TIMEOUT, boundary);
+        let nanos = u64::try_from(boundary.as_nanos()).expect("fits");
+        assert_eq!(
+            ClientInfo::new("a").with_timeout(boundary).validate(),
+            Ok(nanos)
+        );
+        let over = boundary + Duration::from_nanos(1);
+        assert_eq!(
+            ClientInfo::new("a").with_timeout(over).validate(),
+            Err(ClientError::Usage("bad-timeout"))
+        );
+        let longest_name = "n".repeat(64);
+        assert!(ClientInfo::new(longest_name).validate().is_ok());
     }
 }
