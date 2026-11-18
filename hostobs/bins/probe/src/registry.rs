@@ -1,6 +1,6 @@
 //! Shared selection streams, subscribers and generation counters (design S9-S11, S19 and S24).
 //!
-//! Every canonical [`Selection`] has at most one live [`Stream`]. Subscribers join it by their
+//! Every canonical [`Selection`] has at most one live `Stream`. Subscribers join it by their
 //! connection id and request `corr`; the next due tick is encoded once and shared by all of
 //! them. The registry owns no block bytes between ticks.
 
