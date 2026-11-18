@@ -31,20 +31,21 @@ BASE_IMAGE_LABEL = "org.vbpub.tester-unified.base-image"
 BASE_IMAGE_ENV = "RUN_GATE_TESTER_UNIFIED_BASE_IMAGE"
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")
 _IMAGE_REFERENCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]*\Z")
-_CANDIDATE_SELFTEST_CODE = "\n".join((
-    "import importlib.metadata",
-    "from pathlib import Path",
-    "import run_gate",
-    "import run_gate_admission",
-    "distribution = importlib.metadata.distribution('run-gate')",
-    "owned = {Path(distribution.locate_file(item)).resolve(strict=True) "
-    "for item in (distribution.files or ())}",
-    "for module in (run_gate, run_gate_admission):",
-    "    path = Path(module.__file__).resolve(strict=True)",
-    "    if path not in owned:",
-    "        raise SystemExit(f'Run-Gate module loaded outside the installed wheel: {path}')",
-    "raise SystemExit(run_gate.main(['selftest']))",
-))
+def _candidate_lane_code(lane: str) -> str:
+    return "\n".join((
+        "import importlib.metadata",
+        "from pathlib import Path",
+        "import run_gate",
+        "import run_gate_admission",
+        "distribution = importlib.metadata.distribution('run-gate')",
+        "owned = {Path(distribution.locate_file(item)).resolve(strict=True) "
+        "for item in (distribution.files or ())}",
+        "for module in (run_gate, run_gate_admission):",
+        "    path = Path(module.__file__).resolve(strict=True)",
+        "    if path not in owned:",
+        "        raise SystemExit(f'Run-Gate module loaded outside the installed wheel: {path}')",
+        f"raise SystemExit(run_gate.main([{lane!r}]))",
+    ))
 STABLE_SEMVER = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z"
 )
@@ -873,8 +874,8 @@ def _verify_installed_candidate_wheel(receipt: dict[str, str]) -> None:
         )
 
 
-def run_selftest(receipt_path: Path = RECEIPT_PATH) -> int:
-    """Run selftest from modules owned by the installed receipted wheel."""
+def run_candidate_lane(lane: str, receipt_path: Path) -> int:
+    """Run a lane from modules owned by the installed receipted wheel."""
     if not receipt_path.is_absolute():
         receipt_path = PROJECT_ROOT / receipt_path
     receipt = _read_receipt(receipt_path)
@@ -891,7 +892,7 @@ def run_selftest(receipt_path: Path = RECEIPT_PATH) -> int:
         ).as_posix()
     except ValueError as exc:
         raise ReleaseCandidateError(
-            "Run-Gate selftest receipt must be inside the selected project checkout"
+            f"Run-Gate {lane} receipt must be inside the selected project checkout"
         ) from exc
     env = os.environ.copy()
     env["RUN_GATE_RELEASE_WHEEL_RECEIPT"] = container_receipt
@@ -905,14 +906,24 @@ def run_selftest(receipt_path: Path = RECEIPT_PATH) -> int:
             )
         try:
             result = subprocess.run(
-                [str(python), "-I", "-c", _CANDIDATE_SELFTEST_CODE],
+                [str(python), "-I", "-c", _candidate_lane_code(lane)],
                 cwd=PROJECT_ROOT, env=env, check=False,
             )
         except OSError as exc:
             raise ReleaseCandidateError(
-                f"cannot start the receipted Run-Gate selftest: {exc}"
+                f"cannot start the receipted Run-Gate {lane}: {exc}"
             ) from exc
         return result.returncode
+
+
+def run_selftest(receipt_path: Path = RECEIPT_PATH) -> int:
+    """Run selftest from modules owned by the installed receipted wheel."""
+    return run_candidate_lane("selftest", receipt_path)
+
+
+def run_canary(receipt_path: Path = RECEIPT_PATH) -> int:
+    """Run the R3 canary from modules owned by the installed receipted wheel."""
+    return run_candidate_lane("assay-r3", receipt_path)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -927,6 +938,8 @@ def main(argv: list[str] | None = None) -> int:
     running_parser.add_argument("--receipt", type=Path, required=True)
     selftest_parser = commands.add_parser("run-selftest", help="run selftest with its receipt-specific image")
     selftest_parser.add_argument("--receipt", type=Path, default=RECEIPT_PATH)
+    canary_parser = commands.add_parser("run-canary", help="run the R3 canary with its receipt-specific image")
+    canary_parser.add_argument("--receipt", type=Path, default=RECEIPT_PATH)
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare":
@@ -935,6 +948,8 @@ def main(argv: list[str] | None = None) -> int:
             verify_built(args.image, args.receipt)
         elif args.command == "run-selftest":
             return run_selftest(args.receipt)
+        elif args.command == "run-canary":
+            return run_canary(args.receipt)
         else:
             verify_running_image(args.receipt)
     except (ReleaseCandidateError, OSError, subprocess.SubprocessError) as exc:

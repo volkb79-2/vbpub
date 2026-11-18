@@ -9,6 +9,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Release verification
+- the release gate now also runs the R3 canary in the receipt image; no action needed for consumers
+
 ### Testing
 - no action needed: tests and documentation only (RG-290 and the image rebuild rule)
 

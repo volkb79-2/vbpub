@@ -181,6 +181,7 @@ SPEC §9.
 | RG-288 | `git_hook_info_mount_flags` overlays only `<common>/hooks` and `<common>/info`; `<common>/modules/**/hooks` and `modules/**/info` stay writable by the runner, so a runner can plant a submodule hook; whether and when host git runs it is UNVERIFIED (run-gate's own host git readers disable hooks, so the exposure is other host git use on the checkout) | Medium (unverified exposure) | OPEN 2026-11-18 (filed, not fixed); ciu's CIU-215 branch overlays them in its rw mode only (branch `ciu-20261118_055457-ciu215-gitdir-mount-20261118`, not on `origin/main` at filing) |
 | RG-289 | the host-side `git config --file` reads in `git_config_overlay_flags` follow symlinks at names a runner can plant in the writable common dir (`config.worktree`, `<admin>/config.worktree`, `modules/**/config`, the `modules` root, `worktrees/*` directory links), so a host file that parses as git config is copied sanitized into a runner-visible overlay | Medium | OPEN 2026-11-18 (filed, not fixed) |
 | RG-290 | `TestExecMode::test_exec_mode_declared_name_refusal_prescribes_project_authority` asserted `"ciu" not in proc.stderr`, but the refusal quotes the lane-config path, so a checkout whose path contains `ciu` (for example a `ciu worktree` named `ciu-...`) failed the whole selftest | Minor | FIXED 2026-11-18 (test only) |
+| RG-291 | the release gate ran only `selftest`, so it did not prove R3 canary rejection in the exact receipt-specific tester image before tagging | Major | FIXED 2026-11-18 (P10c-rg) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9462,3 +9463,35 @@ assertions in `tests/` were reviewed; none else is path-sensitive (the nearest,
 names that do not contain those words).
 
 **Close when.** Closed: both tests pass in any checkout directory name.
+
+## RG-291 — the release step does not run the R3 canary in the receipt image
+
+**Status:** FIXED 2026-11-18 (package P10c-rg). Severity: Major (release
+contract).
+
+**Observed.** `run-gate-project/cmru.toml` `[steps.run-tests]` ran
+`tools/release_candidate.py prepare` and then `run-selftest`. The declared
+`assay-r3` canary existed and could reject known-bad code, but the release step
+did not invoke it. Its own comment therefore described `selftest` as the whole
+release gate and left a bounded R3 conjunction as a follow-up.
+
+**Cause.** `tools/release_candidate.py` embedded one anonymous candidate
+program whose final call was hard-coded to `run_gate.main(['selftest'])`. The
+receipt-bound, module-ownership-checked candidate environment was therefore
+usable only for the selftest lane, and the release step had no command that
+could run a second lane in the same prebuilt image.
+
+**Fix.** The embedded program is now derived by
+`_candidate_lane_code(lane)`, preserving the module-ownership check and changing
+only the final `run_gate.main([<lane>])` call. `run_candidate_lane` owns the
+receipt, commit, wheel, image, environment and isolated-CLI checks;
+`run_selftest` and new `run_canary` are thin lane-specific wrappers. The new
+`run-canary` CLI command runs `assay-r3` with
+`RUN_GATE_TESTER_UNIFIED_IMAGE` set to the receipt's image ID. `cmru.toml`
+now runs prepare, receipt-image selftest, and receipt-image R3 canary in that
+order. Tests pin the ownership program, canary argv/environment, commit
+refusal, CLI return and error mapping, and the parsed three-command order.
+
+**Close when.** Closed: the focused release-candidate tests pass, the config
+oracle parses exactly the prepare/selftest/canary sequence, and the final
+registered gate reports 100% diff coverage for the changed code.
