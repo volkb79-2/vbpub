@@ -1,0 +1,354 @@
+[
+  {
+    "diff": "--- src/lib.rs\n+++ replace S::bump -> i32 with 0\n@@ -1,15 +1,15 @@\n pub struct S {\n     pub n: i32,\n }\n \n impl S {\n     pub fn bump(&self, a: i32) -> i32 {\n-        self.n + a\n+        0 /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n pub trait T {\n     fn triple(&self) -> i32;\n }\n \n impl T for S {\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "S::bump",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 8
+        },
+        "start": {
+          "column": 5,
+          "line": 6
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:7:9: replace S::bump -> i32 with 0",
+    "package": "methods",
+    "replacement": "0",
+    "span": {
+      "end": {
+        "column": 19,
+        "line": 7
+      },
+      "start": {
+        "column": 9,
+        "line": 7
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace S::bump -> i32 with 1\n@@ -1,15 +1,15 @@\n pub struct S {\n     pub n: i32,\n }\n \n impl S {\n     pub fn bump(&self, a: i32) -> i32 {\n-        self.n + a\n+        1 /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n pub trait T {\n     fn triple(&self) -> i32;\n }\n \n impl T for S {\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "S::bump",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 8
+        },
+        "start": {
+          "column": 5,
+          "line": 6
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:7:9: replace S::bump -> i32 with 1",
+    "package": "methods",
+    "replacement": "1",
+    "span": {
+      "end": {
+        "column": 19,
+        "line": 7
+      },
+      "start": {
+        "column": 9,
+        "line": 7
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace S::bump -> i32 with -1\n@@ -1,15 +1,15 @@\n pub struct S {\n     pub n: i32,\n }\n \n impl S {\n     pub fn bump(&self, a: i32) -> i32 {\n-        self.n + a\n+        -1 /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n pub trait T {\n     fn triple(&self) -> i32;\n }\n \n impl T for S {\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "S::bump",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 8
+        },
+        "start": {
+          "column": 5,
+          "line": 6
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:7:9: replace S::bump -> i32 with -1",
+    "package": "methods",
+    "replacement": "-1",
+    "span": {
+      "end": {
+        "column": 19,
+        "line": 7
+      },
+      "start": {
+        "column": 9,
+        "line": 7
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace + with - in S::bump\n@@ -1,15 +1,15 @@\n pub struct S {\n     pub n: i32,\n }\n \n impl S {\n     pub fn bump(&self, a: i32) -> i32 {\n-        self.n + a\n+        self.n - /* ~ changed by cargo-mutants ~ */ a\n     }\n }\n \n pub trait T {\n     fn triple(&self) -> i32;\n }\n \n impl T for S {\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "S::bump",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 8
+        },
+        "start": {
+          "column": 5,
+          "line": 6
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:7:16: replace + with - in S::bump",
+    "package": "methods",
+    "replacement": "-",
+    "span": {
+      "end": {
+        "column": 17,
+        "line": 7
+      },
+      "start": {
+        "column": 16,
+        "line": 7
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace + with * in S::bump\n@@ -1,15 +1,15 @@\n pub struct S {\n     pub n: i32,\n }\n \n impl S {\n     pub fn bump(&self, a: i32) -> i32 {\n-        self.n + a\n+        self.n * /* ~ changed by cargo-mutants ~ */ a\n     }\n }\n \n pub trait T {\n     fn triple(&self) -> i32;\n }\n \n impl T for S {\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "S::bump",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 8
+        },
+        "start": {
+          "column": 5,
+          "line": 6
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:7:16: replace + with * in S::bump",
+    "package": "methods",
+    "replacement": "*",
+    "span": {
+      "end": {
+        "column": 17,
+        "line": 7
+      },
+      "start": {
+        "column": 16,
+        "line": 7
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace <impl T for S>::triple -> i32 with 0\n@@ -9,17 +9,17 @@\n }\n \n pub trait T {\n     fn triple(&self) -> i32;\n }\n \n impl T for S {\n     fn triple(&self) -> i32 {\n-        self.n * 3\n+        0 /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n pub fn pick<X: Copy>(a: X, _b: X, first: bool) -> X {\n     if first {\n         a\n     } else {\n         _b\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "<impl T for S>::triple",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 18
+        },
+        "start": {
+          "column": 5,
+          "line": 16
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:17:9: replace <impl T for S>::triple -> i32 with 0",
+    "package": "methods",
+    "replacement": "0",
+    "span": {
+      "end": {
+        "column": 19,
+        "line": 17
+      },
+      "start": {
+        "column": 9,
+        "line": 17
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace <impl T for S>::triple -> i32 with 1\n@@ -9,17 +9,17 @@\n }\n \n pub trait T {\n     fn triple(&self) -> i32;\n }\n \n impl T for S {\n     fn triple(&self) -> i32 {\n-        self.n * 3\n+        1 /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n pub fn pick<X: Copy>(a: X, _b: X, first: bool) -> X {\n     if first {\n         a\n     } else {\n         _b\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "<impl T for S>::triple",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 18
+        },
+        "start": {
+          "column": 5,
+          "line": 16
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:17:9: replace <impl T for S>::triple -> i32 with 1",
+    "package": "methods",
+    "replacement": "1",
+    "span": {
+      "end": {
+        "column": 19,
+        "line": 17
+      },
+      "start": {
+        "column": 9,
+        "line": 17
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace <impl T for S>::triple -> i32 with -1\n@@ -9,17 +9,17 @@\n }\n \n pub trait T {\n     fn triple(&self) -> i32;\n }\n \n impl T for S {\n     fn triple(&self) -> i32 {\n-        self.n * 3\n+        -1 /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n pub fn pick<X: Copy>(a: X, _b: X, first: bool) -> X {\n     if first {\n         a\n     } else {\n         _b\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "<impl T for S>::triple",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 18
+        },
+        "start": {
+          "column": 5,
+          "line": 16
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:17:9: replace <impl T for S>::triple -> i32 with -1",
+    "package": "methods",
+    "replacement": "-1",
+    "span": {
+      "end": {
+        "column": 19,
+        "line": 17
+      },
+      "start": {
+        "column": 9,
+        "line": 17
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace * with + in <impl T for S>::triple\n@@ -9,17 +9,17 @@\n }\n \n pub trait T {\n     fn triple(&self) -> i32;\n }\n \n impl T for S {\n     fn triple(&self) -> i32 {\n-        self.n * 3\n+        self.n + /* ~ changed by cargo-mutants ~ */ 3\n     }\n }\n \n pub fn pick<X: Copy>(a: X, _b: X, first: bool) -> X {\n     if first {\n         a\n     } else {\n         _b\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "<impl T for S>::triple",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 18
+        },
+        "start": {
+          "column": 5,
+          "line": 16
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:17:16: replace * with + in <impl T for S>::triple",
+    "package": "methods",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 17,
+        "line": 17
+      },
+      "start": {
+        "column": 16,
+        "line": 17
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace * with / in <impl T for S>::triple\n@@ -9,17 +9,17 @@\n }\n \n pub trait T {\n     fn triple(&self) -> i32;\n }\n \n impl T for S {\n     fn triple(&self) -> i32 {\n-        self.n * 3\n+        self.n / /* ~ changed by cargo-mutants ~ */ 3\n     }\n }\n \n pub fn pick<X: Copy>(a: X, _b: X, first: bool) -> X {\n     if first {\n         a\n     } else {\n         _b\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "<impl T for S>::triple",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 18
+        },
+        "start": {
+          "column": 5,
+          "line": 16
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:17:16: replace * with / in <impl T for S>::triple",
+    "package": "methods",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 17,
+        "line": 17
+      },
+      "start": {
+        "column": 16,
+        "line": 17
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace pick -> X with Default::default()\n@@ -14,21 +14,17 @@\n \n impl T for S {\n     fn triple(&self) -> i32 {\n         self.n * 3\n     }\n }\n \n pub fn pick<X: Copy>(a: X, _b: X, first: bool) -> X {\n-    if first {\n-        a\n-    } else {\n-        _b\n-    }\n+    Default::default() /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n \n     #[test]\n     fn all() {\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "pick",
+      "return_type": "-> X",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 27
+        },
+        "start": {
+          "column": 1,
+          "line": 21
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:22:5: replace pick -> X with Default::default()",
+    "package": "methods",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 6,
+        "line": 26
+      },
+      "start": {
+        "column": 5,
+        "line": 22
+      }
+    }
+  }
+]

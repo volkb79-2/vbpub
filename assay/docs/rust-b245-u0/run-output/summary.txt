@@ -1,0 +1,61 @@
+cargo-mutants 27.1.0 rustc 1.99.1 nextest 0.9.151
+full exit=3
+basefail-test exit=4
+basefail-build exit=4
+indiff exit=2
+zero-mutants exit=0
+rotation-1 exit=2
+rotation-2 exit=2
+mutants.out
+mutants.out.old
+w-unset exit=0
+w-true exit=0
+unicode exit=0
+paths exit=2
+src__módulo.rs_line_2_col_5.diff
+src__módulo.rs_line_2_col_5_001.diff
+src__módulo.rs_line_2_col_5_002.diff
+src__módulo.rs_line_2_col_7.diff
+src__módulo.rs_line_2_col_7_001.diff
+src__with_space.rs_line_2_col_5.diff
+src__with_space.rs_line_2_col_5_001.diff
+src__with_space.rs_line_2_col_5_002.diff
+src__with_space.rs_line_2_col_7.diff
+src__with_space.rs_line_2_col_7_001.diff
+function_name ('BinaryOperator', '<impl T for S>::triple')
+function_name ('BinaryOperator', 'S::bump')
+function_name ('FnValue', '<impl T for S>::triple')
+function_name ('FnValue', 'S::bump')
+function_name ('FnValue', 'pick')
+methods exit=0
+subdir-relative exit=2
+mutants.out
+subdir-toplevel-from-crate exit=0
+-- git status after the runs (untracked in-tree out dirs):
+?? sub/crate1/out-r/
+canary-A-control exit=2
+canary-A-control baseline: Success [('Build', 'Success'), ('Test', 'Success')] total_mutants 5
+canary-B-nonempty-marker exit=4
+canary-B-nonempty-marker baseline: Failure [('Build', 'Success'), ('Test', {'Failure': 100})] total_mutants 0
+canary-C-empty-out-mutants-out exit=2
+canary-C-empty-out-mutants-out baseline: Success [('Build', 'Success'), ('Test', 'Success')] total_mutants 5
+canary-D-gitignored-marker exit=4
+canary-D-gitignored-marker baseline: Failure [('Build', 'Success'), ('Test', {'Failure': 100})] total_mutants 0
+canary-E-gitignored-empty-mutants-out exit=2
+canary-E-gitignored-empty-mutants-out baseline: Success [('Build', 'Success'), ('Test', 'Success')] total_mutants 5
+nonempty-out exit=2
+keepme
+mutants.out
+matrix dirb-pkgb (dirB=b pkgB=b) cwd= matched=0 first=[ INFO No mutants to filter] exit=0
+matrix dirb-pkgb (dirB=b pkgB=b) cwd=/b matched=0 first=[ INFO No mutants to filter] exit=0
+matrix dirb-pkgcb (dirB=b pkgB=crate_b) cwd= matched=0 first=[ INFO No mutants to filter] exit=0
+matrix dirb-pkgcb (dirB=b pkgB=crate_b) cwd=/b matched=0 first=[ INFO No mutants to filter] exit=0
+matrix dircb-pkgb (dirB=crate_b pkgB=b) cwd= matched=5 first=[crate_b/src/lib.rs:2:5: replace quad -> i32 with 0] exit=0
+matrix dircb-pkgb (dirB=crate_b pkgB=b) cwd=/crate_b matched=5 first=[crate_b/src/lib.rs:2:5: replace quad -> i32 with 0] exit=0
+matrix dircb-pkgcb (dirB=crate_b pkgB=crate_b) cwd= matched=5 first=[crate_b/src/lib.rs:2:5: replace quad -> i32 with 0] exit=0
+matrix dircb-pkgcb (dirB=crate_b pkgB=crate_b) cwd=/crate_b matched=5 first=[crate_b/src/lib.rs:2:5: replace quad -> i32 with 0] exit=0
+matrix dirb2-pkgb2 (dirB=b2 pkgB=b2) cwd= matched=5 first=[b2/src/lib.rs:2:5: replace quad -> i32 with 0] exit=0
+matrix dirb2-pkgb2 (dirB=b2 pkgB=b2) cwd=/b2 matched=5 first=[b2/src/lib.rs:2:5: replace quad -> i32 with 0] exit=0
+member-cwd-top-diff exit=0
+member-cwd-rel-diff exit=0
+root-cwd-top-diff exit=0

@@ -1,0 +1,4 @@
+src/lib.rs:2:5: replace uni -> usize with 0
+src/lib.rs:2:5: replace uni -> usize with 1
+src/lib.rs:2:31: replace + with - in uni
+src/lib.rs:2:31: replace + with * in uni

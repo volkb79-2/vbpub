@@ -41,6 +41,17 @@ image = "tester-unified-rust:local"
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 network = "none"
 
+# Parallel declaration of `tester-unified-rust` on the image whose baked crate-cache
+# identity is the digest of the sorted registry-package set (built by
+# tester-unified-rust/build-image.sh as tester-unified-rust:rs-20261118). No lane
+# names it; remove it or fold it into `tester-unified-rust` when that environment
+# moves to this tag.
+[environments.tester-unified-rust-rs]
+mode = "ephemeral"
+image = "tester-unified-rust:rs-20261118"
+cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
+network = "none"
+
 # These names are ordinary declared environments. Their mode, not their
 # spelling, selects execution: `host` remains the former default container;
 # `bare-host` is the explicit subprocess mode.
