@@ -1108,6 +1108,16 @@ mutant("scripts/controller/remote-gate.sh", "remote-gate-base-passthrough.sh",
        '    --base|--base=*)', '    --base-never|--base-never=*)')
 mutant("scripts/controller/remote-gate.sh", "remote-gate-base-twice.sh",
        "      [[ -z $base ]] || die '--base given twice (option and pass-through)'", '      : # a second base is accepted')
+for _name, _before, _after in (
+    ("old-env-silent", '[[ -z ${!old_name:-} ]] || echo', 'true || echo'),
+    ("old-env-one-dropped", " REMOTE_GATE_DRYRUN:CONTROLLER_REMOTE_DRYRUN \\\n", " \\\n"),
+    ("weights-unreadable-silent", "except FileNotFoundError:\n    pass", "except OSError:\n    pass"),
+    ("weights-missing-warns", "except FileNotFoundError:\n    pass", "except KeyError:\n    pass"),
+    ("repo-name-default", '"${CONTROLLER_REMOTE_REPO_NAME:-vbpub}"', '"${CONTROLLER_REMOTE_REPO_NAME:-}"'),
+    ("snapshot-fixed-name", 'rg_tmp=$(mktemp "$rg.XXXXXX") || die "cannot create a temporary runner snapshot beside $rg" 3', 'rg_tmp=$rg.new'),
+    ("snapshot-leftover", '    rm -f -- "$rg_tmp"\n    die "cannot read scripts', '    die "cannot read scripts'),
+):
+    mutant("scripts/controller/remote-gate.sh", f"remote-gate-{_name}.sh", _before, _after)
 # chain-run.sh: the generic chain wrapper that replaces the per-package chain-*.sh files.
 chain_gate_run = 'gate_run=${CONTROLLER_GATE_RUN_SCRIPT:-$SCRIPT_DIR/gate-run.sh}'
 mutant("scripts/controller/chain-run.sh", "chain-run-log-name.sh",

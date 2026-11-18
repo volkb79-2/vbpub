@@ -501,6 +501,21 @@ is required. The weights sample is `remote-gate-weights.tsv.example`.
 of `--base <ref>`: either way the base commit travels to the host with the
 bundle and `--base` is forwarded to the host's `run-gate` once.
 
+Differences from the program-directory `remote-gate.sh` this replaces:
+
+- The old environment names (`REMOTE_GATE_V1001_SLOTS`, `REMOTE_GATE_V1001_BUDGET_MB`,
+  `REMOTE_GATE_WEIGHT_MB`, `REMOTE_GATE_SLOT_WAIT_S`, `REMOTE_GATE_WAIT_PSI`,
+  `REMOTE_GATE_DRYRUN`, `REMOTE_GATE_PY`) are NOT mapped: each one that is set
+  prints a one-line stderr warning naming its `CONTROLLER_REMOTE_*` replacement.
+- The weights table lives at `$CONTROLLER_HOME/remote-gate-weights.tsv` (copy the
+  old one there). A missing table is the documented fallback (declared memory,
+  else one slot); a table that exists but cannot be read prints a warning.
+- The runner repository name on the host is `vbpub` unless
+  `CONTROLLER_REMOTE_REPO_NAME` is set; it is no longer derived from the
+  checkout directory name.
+- The throwaway detached worktree is `$CONTROLLER_HOME/remote-gate-work/rgw-<time>-<pid>`
+  (the old tool used `<repo>/.worktrees/rgw-*`); it is removed when the run ends.
+
 ## Run several lanes in a row (`chain-run.sh`)
 
 ```bash

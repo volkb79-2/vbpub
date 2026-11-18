@@ -5,6 +5,7 @@ unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CO
 unset CONTROLLER_REMOTE_GATE_HOSTS CONTROLLER_REMOTE_HOSTS_FILE CONTROLLER_REMOTE_API_CHECK CONTROLLER_REMOTE_PYTHON CONTROLLER_REMOTE_GATE_PY
 unset CONTROLLER_REMOTE_GATE_PY_REF CONTROLLER_REMOTE_REPO_NAME CONTROLLER_REMOTE_SLOTS CONTROLLER_REMOTE_BUDGET_MB CONTROLLER_REMOTE_WEIGHTS_FILE
 unset CONTROLLER_REMOTE_WEIGHT_MB CONTROLLER_REMOTE_SLOT_WAIT_S CONTROLLER_REMOTE_DRYRUN CONTROLLER_REMOTE_DRY_HOLD CONTROLLER_REMOTE_OUT CONTROLLER_REMOTE_WAIT_PSI
+unset REMOTE_GATE_V1001_SLOTS REMOTE_GATE_V1001_BUDGET_MB REMOTE_GATE_WEIGHT_MB REMOTE_GATE_SLOT_WAIT_S REMOTE_GATE_WAIT_PSI REMOTE_GATE_DRYRUN REMOTE_GATE_PY
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 RG_SCRIPT=${REMOTE_GATE_SCRIPT:-$SCRIPT_DIR/../remote-gate.sh}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-remote-gate-test.XXXXXX")
@@ -47,6 +48,17 @@ def target(fd):
         return ""
 leaked = [p for p in os.listdir("/proc/self/fd") if "/remote-gate-locks/" in target(p)]
 open(os.environ["RG_LOG"] + ".leak", "w").write("\n".join(leaked))
+barrier = os.environ.get("RG_BARRIER")
+if barrier:
+    # concurrency check: this runner finishes only once a second runner is up too (a sync file, not a time bound)
+    open(os.path.join(barrier, str(os.getpid()) + ".up"), "w").close()
+    import time
+    for _ in range(6000):
+        if len(os.listdir(barrier)) >= 2:
+            break
+        time.sleep(0.01)
+    else:
+        sys.exit(97)
 out = a[a.index("--out-dir") + 1]
 name = a[a.index("--name") + 1]
 d = os.path.join(out, name)
@@ -111,7 +123,8 @@ contains "$ROOT/ok.err" "slots [1] of 4 (weight 500 MiB, unit 1024), commit $SHA
 contains "$RG_LOG" '"--hosts-file", "'"$ROOT"'/controller/hosts.local.json"' 'the host table is passed to remote-gate.py'
 contains "$RG_LOG" '"--project-dir", "proj"' 'project dir is forwarded'
 contains "$RG_LOG" '"--wait-psi", "120"' 'default PSI wait is forwarded'
-not_contains "$RG_LOG" '"--repo"' 'no repo name is forced unless configured'
+contains "$RG_LOG" '"--repo", "vbpub"' 'the runner repo name defaults to vbpub, not to the checkout directory name'
+not_contains "$ROOT/ok.err" 'WARNING' 'a clean environment prints no migration warning'
 not_contains "$RG_LOG" '"--base"' 'no base unless requested'
 final=$(sed -n 's/^log: *//p' "$ROOT/ok.out")
 [[ -f $final && $final == "$ROOT/controller/logs/"* ]] || fail 'final log must be written under CONTROLLER_LOGS_DIR'
@@ -131,6 +144,25 @@ CONTROLLER_REMOTE_GATE_PY='' CONTROLLER_REMOTE_GATE_PY_REF=HEAD rg gate-a proj s
 reset_logs
 if CONTROLLER_REMOTE_GATE_PY='' CONTROLLER_REMOTE_GATE_PY_REF=no-such-ref rg gate-a proj small "$SHA" > /dev/null 2>&1; then fail 'a runner ref that does not resolve was accepted'; else rc=$?; [[ $rc == 3 ]] || fail "unreadable runner ref exit was $rc, expected 3"; fi
 [[ ! -e $RG_LOG ]] || fail 'a runner ran although its source ref was unreadable'
+[[ $(find "$ROOT/controller/tools" -mindepth 1 ! -name remote-gate-main.py | wc -l) == 0 ]] || fail 'a failed snapshot left a temporary file behind'
+# The snapshot is written to a private temporary file and renamed: a stale fixed-name file is never touched or reused.
+reset_logs
+rm -rf -- "$ROOT/controller/tools"; mkdir -p "$ROOT/controller/tools"
+printf 'STALE-SENTINEL\n' > "$ROOT/controller/tools/remote-gate-main.py.new"
+CONTROLLER_REMOTE_GATE_PY='' CONTROLLER_REMOTE_GATE_PY_REF=HEAD rg gate-a proj small "$SHA" > /dev/null 2>&1 || fail 'runner snapshot beside a stale fixed-name file failed'
+[[ $(cat "$ROOT/controller/tools/remote-gate-main.py.new") == STALE-SENTINEL ]] || fail 'the snapshot must not use a fixed temporary name'
+cmp -s "$ROOT/controller/tools/remote-gate-main.py" <(git -C "$ROOT/repo" show HEAD:scripts/netcup/runner/remote-gate.py) || fail 'the runner snapshot differs from the reference'
+[[ $(find "$ROOT/controller/tools" -mindepth 1 ! -name remote-gate-main.py ! -name remote-gate-main.py.new | wc -l) == 0 ]] || fail 'a successful snapshot left a temporary file behind'
+# Two runs at once (each runner waits for the other through sync files): both succeed and the snapshot is whole.
+reset_logs
+rm -rf -- "$ROOT/controller/tools" "$ROOT/barrier"; mkdir -p "$ROOT/barrier"
+for lane in small plain; do
+  ( RG_BARRIER=$ROOT/barrier CONTROLLER_REMOTE_GATE_PY='' CONTROLLER_REMOTE_GATE_PY_REF=HEAD rg gate-a proj "$lane" "$SHA" > "$ROOT/conc-$lane.out" 2>&1; echo $? > "$ROOT/conc-$lane.rc" ) &
+done
+wait
+for lane in small plain; do [[ $(cat "$ROOT/conc-$lane.rc") == 0 ]] || { cat "$ROOT/conc-$lane.out" >&2; fail "concurrent run of lane $lane failed"; }; done
+cmp -s "$ROOT/controller/tools/remote-gate-main.py" <(git -C "$ROOT/repo" show HEAD:scripts/netcup/runner/remote-gate.py) || fail 'concurrent runs left a damaged runner snapshot'
+[[ $(find "$ROOT/controller/tools" -mindepth 1 ! -name remote-gate-main.py | wc -l) == 0 ]] || fail 'concurrent runs left a temporary file behind'
 
 # --- refusals happen before the host is contacted
 reset_logs
@@ -195,6 +227,22 @@ dry() { rm -f -- "$SSH_LOG" "$RG_LOG"; CONTROLLER_REMOTE_DRYRUN=1 rg gate-a proj
 [[ $(dry measured) == *'(weight 920 MiB, unit 1024)'* ]] || fail 'a measured peak carries 15 percent headroom'
 [[ $(dry bounded) == *'(weight 115 MiB, unit 1024)'* ]] || fail 'the smaller of declared and measured weight wins'
 [[ ! -e $SSH_LOG && ! -e $RG_LOG ]] || fail 'a dry run contacted the host or the runner'
+# a weights file that exists but cannot be read warns; a missing one is the documented silent fallback
+mkdir -p "$ROOT/weights-dir"
+CONTROLLER_REMOTE_WEIGHTS_FILE=$ROOT/weights-dir CONTROLLER_REMOTE_DRYRUN=1 rg gate-a proj plain "$SHA" > /dev/null 2> "$ROOT/wunread.err" || fail 'an unreadable weights file must not stop the run'
+contains "$ROOT/wunread.err" "WARNING: weights file $ROOT/weights-dir exists but cannot be read" 'an unreadable weights file warns'
+contains "$ROOT/wunread.err" 'slots [1] of 4 (weight 1024 MiB' 'an unreadable weights file falls back to the class weight'
+CONTROLLER_REMOTE_WEIGHTS_FILE=$ROOT/no-such-weights CONTROLLER_REMOTE_DRYRUN=1 rg gate-a proj plain "$SHA" > /dev/null 2> "$ROOT/wmissing.err" || fail 'a missing weights file must not stop the run'
+not_contains "$ROOT/wmissing.err" 'WARNING' 'a missing weights file is a silent fallback'
+contains "$ROOT/wmissing.err" 'slots [1] of 4 (weight 1024 MiB' 'a missing weights file falls back to the class weight'
+# the program-directory tool's env names are not mapped: every one that is set names its replacement
+for pair in REMOTE_GATE_V1001_SLOTS:CONTROLLER_REMOTE_SLOTS REMOTE_GATE_V1001_BUDGET_MB:CONTROLLER_REMOTE_BUDGET_MB \
+            REMOTE_GATE_WEIGHT_MB:CONTROLLER_REMOTE_WEIGHT_MB REMOTE_GATE_SLOT_WAIT_S:CONTROLLER_REMOTE_SLOT_WAIT_S \
+            REMOTE_GATE_WAIT_PSI:CONTROLLER_REMOTE_WAIT_PSI REMOTE_GATE_DRYRUN:CONTROLLER_REMOTE_DRYRUN REMOTE_GATE_PY:CONTROLLER_REMOTE_GATE_PY; do
+  env "${pair%%:*}=7" CONTROLLER_REMOTE_DRYRUN=1 "$RG_SCRIPT" gate-a proj small "$SHA" > /dev/null 2> "$ROOT/oldenv.err" || fail "run with the old name ${pair%%:*} failed"
+  contains "$ROOT/oldenv.err" "WARNING: ${pair%%:*} is set but not read here (not mapped); use ${pair#*:}" "the old name ${pair%%:*} is named in a warning"
+  [[ $(grep -c WARNING "$ROOT/oldenv.err") == 1 ]] || fail "the old name ${pair%%:*} must produce exactly one warning line"
+done
 [[ $(CONTROLLER_REMOTE_WEIGHT_MB=2500 CONTROLLER_REMOTE_DRYRUN=1 rg gate-a proj small "$SHA" 2>&1 >/dev/null | grep -c 'slots \[1 2 3\] of 4 (weight 2500 MiB') == 1 ]] || fail 'a forced weight must be rounded up to whole slots'
 
 # --- slot contention: partial holders are refused with exit 75, a single free slot is enough for a small lane

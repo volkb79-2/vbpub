@@ -24,6 +24,15 @@ controller_init
 
 die() { echo "remote-gate.sh: $*" >&2; exit "${2:-2}"; }
 
+# The program-directory tool read other names; a stale setting would be ignored silently, so name the replacement (never mapped).
+for renamed in REMOTE_GATE_V1001_SLOTS:CONTROLLER_REMOTE_SLOTS REMOTE_GATE_V1001_BUDGET_MB:CONTROLLER_REMOTE_BUDGET_MB \
+               REMOTE_GATE_WEIGHT_MB:CONTROLLER_REMOTE_WEIGHT_MB REMOTE_GATE_SLOT_WAIT_S:CONTROLLER_REMOTE_SLOT_WAIT_S \
+               REMOTE_GATE_WAIT_PSI:CONTROLLER_REMOTE_WAIT_PSI REMOTE_GATE_DRYRUN:CONTROLLER_REMOTE_DRYRUN \
+               REMOTE_GATE_PY:CONTROLLER_REMOTE_GATE_PY; do
+  old_name=${renamed%%:*}
+  [[ -z ${!old_name:-} ]] || echo "remote-gate.sh: WARNING: $old_name is set but not read here (not mapped); use ${renamed#*:}" >&2
+done
+
 [[ $# -ge 4 ]] || die 'usage: remote-gate.sh <host-alias> <project-dir> <lane> <commit-or-branch> [--base <ref>] [-- extra run-gate args...]'
 host=$1 pdir=$2 lane=$3 ref=$4; shift 4
 base=''
@@ -126,8 +135,10 @@ try:
         if line.startswith("#") or not line.strip(): continue
         k, v = line.split("\t")[:2]
         if k == f"{pdir.rstrip('/')}:{lane}": measured = float(v) * 1.15   # measured peak + 15% headroom
-except OSError:
-    pass
+except FileNotFoundError:
+    pass    # no table yet is the documented fallback (declared memory, else the lane class default)
+except OSError as error:
+    print(f"remote-gate.sh: WARNING: weights file {wf} exists but cannot be read ({error.strerror}); falling back to the declared or class weight", file=sys.stderr)
 cands = [x for x in (declared, measured) if x]
 if cands:
     w = min(cands)
@@ -199,17 +210,20 @@ if [[ -z $rg ]]; then
   # The runner is taken from the reference branch, never from the commit under test: a gate must not run its own runner.
   rg=$CONTROLLER_HOME/tools/remote-gate-main.py
   runner_ref=${CONTROLLER_REMOTE_GATE_PY_REF:-origin/main}
-  if git -C "$repo" show "$runner_ref:scripts/netcup/runner/remote-gate.py" > "$rg.new" 2>/dev/null; then
-    mv -- "$rg.new" "$rg" || die "cannot install the runner snapshot: $rg" 3
+  # Concurrent runs share this path: each writes its own temporary file in the same directory and renames it over the
+  # snapshot (atomic), so one run can never publish or truncate the other's half-written copy.
+  rg_tmp=$(mktemp "$rg.XXXXXX") || die "cannot create a temporary runner snapshot beside $rg" 3
+  if git -C "$repo" show "$runner_ref:scripts/netcup/runner/remote-gate.py" > "$rg_tmp" 2>/dev/null; then
+    mv -f -- "$rg_tmp" "$rg" || { rm -f -- "$rg_tmp"; die "cannot install the runner snapshot: $rg" 3; }
   else
-    rm -f -- "$rg.new"
+    rm -f -- "$rg_tmp"
     die "cannot read scripts/netcup/runner/remote-gate.py from $runner_ref" 3
   fi
 fi
 [[ -f $rg ]] || die "remote-gate.py not found: $rg" 3
 
 run_args=(--hosts-file "$hosts_file" --out-dir "$out" run "$host" . "$lane" --project-dir "$pdir")
-[[ -z ${CONTROLLER_REMOTE_REPO_NAME:-} ]] || run_args+=(--repo "$CONTROLLER_REMOTE_REPO_NAME")
+run_args+=(--repo "${CONTROLLER_REMOTE_REPO_NAME:-vbpub}")   # this IS the vbpub repo: the checkout directory name must not decide
 [[ -z $base ]] || run_args+=(--base "$base")
 run_args+=(--name "$name" --wait-psi "${CONTROLLER_REMOTE_WAIT_PSI:-120}")
 tmp=$(mktemp "$CONTROLLER_HOME/.rgw-XXXXXX.out")
