@@ -47,6 +47,7 @@ import os
 import re
 import shlex
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
@@ -1293,6 +1294,68 @@ def validate_stack_shape(stack_config: dict) -> str:
         )
 
     return root_key
+
+
+# ---------------------------------------------------------------------------
+# CIU-215: [<stack root>.linked_worktree] — opt-in git common-dir mount
+# ---------------------------------------------------------------------------
+
+LINKED_WORKTREE_KEYS = frozenset({"git_common_dir", "services"})
+LINKED_WORKTREE_MODES = frozenset({"ro", "rw"})
+
+
+@dataclass(frozen=True)
+class LinkedWorktreeConfig:
+    """The validated ``[<root>.linked_worktree]`` table."""
+
+    git_common_dir: str
+    services: tuple[str, ...] | None
+
+
+def validate_linked_worktree_table(root_table: Mapping[str, object]) -> LinkedWorktreeConfig | None:
+    """Validate the stack root's optional ``linked_worktree`` table (CIU-215).
+
+    ``None`` when the table is absent. Closed keys: ``git_common_dir``
+    (``"ro"`` or ``"rw"``, required, no default) and ``services`` (optional
+    non-empty list of non-empty strings). Anything else refuses with a
+    ``[CIU-215]`` message; the table is never silently ignored.
+    """
+    table = root_table.get("linked_worktree")
+    if table is None:
+        return None
+    if not isinstance(table, dict):
+        raise ValueError(
+            f"[CIU-215] linked_worktree must be a table, got {type(table).__name__}."
+        )
+    unknown = sorted(str(key) for key in table if key not in LINKED_WORKTREE_KEYS)
+    if unknown:
+        raise ValueError(
+            f"[CIU-215] linked_worktree has unknown key(s): {', '.join(unknown)} "
+            f"(allowed: {', '.join(sorted(LINKED_WORKTREE_KEYS))})."
+        )
+    mode = table.get("git_common_dir")
+    if mode is None:
+        raise ValueError(
+            "[CIU-215] linked_worktree requires git_common_dir = \"ro\" or \"rw\" "
+            "(there is no default)."
+        )
+    if mode not in LINKED_WORKTREE_MODES:
+        raise ValueError(
+            f"[CIU-215] linked_worktree.git_common_dir must be \"ro\" or \"rw\", got {mode!r}."
+        )
+    services = table.get("services")
+    if services is None:
+        return LinkedWorktreeConfig(mode, None)
+    if (
+        not isinstance(services, list)
+        or not services
+        or not all(isinstance(name, str) and name for name in services)
+    ):
+        raise ValueError(
+            "[CIU-215] linked_worktree.services must be a non-empty list of "
+            f"non-empty service names, got {services!r}."
+        )
+    return LinkedWorktreeConfig(mode, tuple(services))
 
 
 # ---------------------------------------------------------------------------
