@@ -71,7 +71,7 @@ budget = "10m"
 # ran (`No module named pip`, verdict ERROR 2), so its declaration was the defect
 # and not the image.
 #
-# The judged lane itself (rigor, judge, argv, the 95.0 line floor over the 53
+# The judged lane itself (rigor, judge, argv, the 95.0 line floor over the 56
 # declared `src/*.rs` files, the floor's derivation) still lives in
 # `assay.toml [lanes.assay-r1]` -- this lane only says how to REACH the judge in
 # this image. Parity with the estate's assay lanes is kept where it is free:
@@ -234,3 +234,15 @@ clean_tree = true
 # still write its structured BUDGET_EXCEEDED/LANE_TIMEOUT verdict before this hard limit.
 budget = "5h"
 artifacts = [".assay/verdict-assay-r2.json"]
+
+# A hard container memory cap. Both first attempts (2026-11-18) ran this lane in a container with NO
+# limit and one test process of the unmutated baseline grew to GBs and had to be cancelled by hand
+# at 3.6-6.4 GiB on the shared 8 GiB host (controller monitoring, not recorded in files; the slice total also
+# tripped a neighbour guest's own stop rule).
+# With `--memory` such a runaway is OOM-killed inside its own container (the baseline fails and the lane
+# ends non-green) instead.
+[lanes.assay-r2.resources]
+memory = "2500m"
+# Equal to `memory`: docker's `--memory-swap` is memory PLUS swap, so without it a runaway spills into the
+# host's swap partitions instead of being OOM-killed at the cap (pwmcp PWMCP-61, iogovmon use the same pair).
+memory_swap = "2500m"

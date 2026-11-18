@@ -11,9 +11,11 @@
 set -euo pipefail
 
 MIN_GIB=8
+LIST=0
 declare -a EXCLUDE=()
 while [ $# -gt 0 ]; do
   case "$1" in
+    --list) LIST=1; shift ;;   # print every qualifying disk in preference order instead of the first one
     --exclude)
       x=${2:?}; x=${x#/dev/}   # accept the device path as well as the kernel name
       [[ "$x" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "dr-pick-disk: bad --exclude value: $2" >&2; exit 2; }
@@ -47,9 +49,14 @@ while IFS= read -r line || [ -n "$line" ]; do   # keep a last line without trail
   candidates+="$rota $prio $name"$'\n'
 done
 
-pick=$(printf '%s' "$candidates" | sort -k1,1n -k2,2n -k3,3V | sed -n '1s/^[^ ]* [^ ]* //p')   # no head: no SIGPIPE under pipefail
+ordered=$(printf '%s' "$candidates" | sort -k1,1n -k2,2n -k3,3V | sed 's/^[^ ]* [^ ]* //')
+pick=$(printf '%s\n' "$ordered" | sed -n '1p')   # no head: no SIGPIPE under pipefail
 if [ -z "$pick" ]; then
   echo "dr-pick-disk: no qualifying disk (need non-removable, non-USB, >= ${MIN_GIB} GiB, not excluded)" >&2
   exit 1
 fi
-echo "/dev/$pick"
+if [ "$LIST" = 1 ]; then
+  printf '%s\n' "$ordered" | sed '/^$/d; s|^|/dev/|'
+else
+  echo "/dev/$pick"
+fi

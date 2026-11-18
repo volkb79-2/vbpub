@@ -14,6 +14,8 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-183 | OPEN (the wheel-builder and probe rows and the cmru gate rows of the release preflight run only for a release that includes cmru) | — |
+| KI-182 | FIXED 2026-11-18 (the release preflight checks the DinD sidecar image of every project in the scope that has an `--enable-docker` step) | see KI-182 entry |
 | KI-181 | OPEN (`dist_dir` containment still accepts project-owned directories such as `src`, `.git` or a symlink to another project directory) | — |
 | KI-180 | OPEN (runner residuals: a signal between fork and `Popen` return can leave the child unreaped; a failing group reap skips the explicit pipe close) | — |
 | KI-179 | OPEN (`cmru abandon` withholds a superseded release candidate whose content is on main and offers no operator path) | — |
@@ -3801,6 +3803,28 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Close when.** A change that adds a `cmru` call to a shell script is refused or auto-extended with the cmru lane, shown by a test of the selection rule, and the trigger list is derived from the scanner's own file selection.
 
+## KI-182 `cmru release` fails minutes into the gate when the digest-pinned DinD sidecar image is missing on the Docker host
+
+**Status:** FIXED 2026-11-18; severity: medium (a multi-minute test step was spent before the failure, and the failed candidate had to be retired by hand, see KI-179).
+
+**Observed.** A ciu 7.26.0 release attempt (attempt 2) pinned `CMRU_TESTER_DIND_IMAGE = "docker@sha256:..."` in `ciu/cmru.toml` for its `--enable-docker` enrollment gate. The image was absent from the Docker host, and `cmru tester-gate` failed with a bare `CalledProcessError ... exit status 125` four minutes into the release, after the 6681-test step.
+
+**Cause.** The sidecar is started with `--pull=never`, so an absent reference surfaces only when the gate step starts it. KI-168's preflight (`check_release_build_images_precondition`) covered the wheel-builder image and the cgroup probe image but not `CMRU_TESTER_DIND_IMAGE`, which has the probe's contract.
+
+**Fix.** A per-project preflight, independent of the cmru-only rows (`cli._release_dind_image_preconditions`). It runs for EVERY project in the release scope (not on `--resume`, and not only when `cmru` is in the scope): it reads that project's own release-source config (`_project_snapshot_config_text`, the generalization of the cmru-only helper), and `release_config_enables_docker` looks for an exact `--enable-docker` element in the argv of any `[steps.*]` command (a TOML read; any other shape is ignored, never raised). A project with such a step gets a `DinD sidecar image` row (label suffix ` (<project>)` when the scope has several projects or the project is not cmru), resolved in release context from that project's own `[env]` over the orchestration defaults, with the caller's process value as fallback (`CMRU_TESTER_DIND_IMAGE` is in `BUILD_IMAGE_ENV_NAMES`), and checked with `pull_if_missing=False`: empty value fails, absent image fails with the exact `docker pull <ref>` remedy, Docker unavailable is `SKIPPED` on a dry-run and a failure on a release. A FAIL refuses with exit 4 before dispatch or workspace creation. A project without such a step gets no row and no docker call. An unreadable or invalid project config surfaces as the same domain error the cmru path surfaces (exit 1). The existing wheel-builder and probe rows and the Run-Gate identity and bootstrap rows are unchanged and stay cmru-release-only (KI-183). SPEC S-REL.7, README and CONSUMERS describe it. Tests: `tests/test_release_gate_preconditions.py` (`test_dind_*`, `test_release_config_enable_docker_detection_reads_the_toml_argv`, `test_release_launcher_*dind*`).
+
+**Close when.** Closed by this fix: fake-Docker tests show that a release scoped to `ciu` alone refuses a dry-run and a release with the row before any dispatch, a `cmru` + `ciu` scope adds the ciu row beside unchanged cmru rows, a scope without the flag has no rows and no docker call, a present image passes, and the row FAILs on an empty value and SKIPs or FAILs without Docker.
+
+## KI-183 the existing image rows of the release preflight do not run for non-cmru releases
+
+**Status:** OPEN (filed 2026-11-18); severity: low.
+
+**Observed.** `_release_gate_preconditions_before_dispatch` and its rows (Run-Gate image identity, Bootstrap, `Wheel-builder image`, `Cgroup probe image`) run only when `cmru` is in the release scope. A release of any other project (`cmru release ciu`) skips them, although its gate and wheel build use the same `--pull=never` probe image and the wheel builder. The DinD row (KI-182) is the only image row that already runs per project.
+
+**Wanted.** Evaluate the wheel-builder and probe rows for every project in the release scope against that project's own config, as KI-182 does for the DinD row.
+
+**Close when.** A release scoped to a project other than cmru refuses before dispatch when its probe image is absent, shown by a test.
+
 ## KI-181 `dist_dir` containment accepts project-owned directories (`src`, `.git`, a symlink to another project directory)
 
 **Status:** OPEN (filed 2026-11-18, residual of KI-175); severity: medium.
@@ -3830,6 +3854,8 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Observed.** The branch `cmru-release-20261106_123441-ciu-yh40ow` carries one commit (`cf063357a`, `chore(ciu): prepare release inputs`, 32 added lines in `ciu/CHANGES.md`) whose CHANGES content equals main's `62d8b67c6` (the same subject, 33 added lines) except for two differences: the `source-end` marker (`ae894f93b0083af9c13a47e8962785ca02cd2e2d` on the candidate, `13cff77c1c7f5a3de59a74af8791a01a8723cd6b` on main) and one extra bullet on main under `### Testing`, `test(ciu): close the 100% coverage gap on the CIU-141/138/202 refusal paths ... (4bbf8d49a)`. So the content is a strict subset of main's, not identical. `cmru abandon` withholds it with "origin contains selected-scope release tag refs that changed during this transaction" (the ciu-v7.24.0, ciu-v7.24.1, ciu-v7.25.0 and ciu-v7.25.1 tags), and the message offers no operator path; the only way out is raw git.
 
 **Second instance (2026-11-18, cli-extended 0.7.0).** A release attempt failed in its gate before any promotion and left the candidate `cmru-release-20261118_070201-cli-extended-h1uxqk` (head `50ae0429d`, not an ancestor of main, no tag pointing at it). The fresh retry then released `cli-extended-v0.7.0`; `cmru abandon --dry-run` on the failed candidate answered `Withheld ... origin contains selected-scope release tag refs that changed during this transaction: cli-extended-v0.7.0`. So a clean failed-attempt candidate becomes unretirable the moment its own retry succeeds. The operator retired it by hand after checking that the head is not an ancestor of main and no tag points at it (worktree removal, local branch delete, remote branch delete of that exact name). Wanted for this case: retire a candidate whose head is not reachable from main and not tagged, when the only changed tag ref is the one the superseding successful release created, printing those two checks as evidence.
+
+**Third and fourth instances (2026-11-18, ciu 7.26.0).** Two failed attempts of one release each left a candidate: `cmru-release-20261118_143909-ciu-jskygu` (attempt 1; the gate refused because the tester image carried an older run-gate wheel; head `e8c45461f`, not an ancestor of main, no tag points at it) and `cmru-release-20261118_144606-ciu-agfllr` (attempt 2; the DinD sidecar image was absent, see KI-182; head `7370f13ba`, same facts). Both were retired by hand after the checks `not an ancestor of main` and `no tag points at it`. So `cmru abandon` still withholds a failed-attempt candidate once a later attempt has created the tag; the wanted behaviour is the one stated under the second instance above.
 
 **Wanted.** An explicit, evidence-checked way to retire a candidate whose content is already on main (patch or content equivalence of every changed path) or whose version has since been released, without raw git: the command prints the evidence it checked (equivalent commit on main, or the released tag that carries the version) and refuses when it cannot show either.
 
