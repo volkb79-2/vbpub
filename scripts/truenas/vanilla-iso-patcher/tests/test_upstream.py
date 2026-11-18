@@ -262,6 +262,189 @@ def test_the_iso_cache_and_its_lock_are_in_the_resolved_iso_folder(tmp_path, mon
     assert (tmp_path / "iso" / f"{asset.filename}.sha256").is_file()
 
 
+def _no_download(monkeypatch):
+    calls = []
+    monkeypatch.setattr(upstream, "_request", lambda *a, **k: calls.append(1) or _Response(b"must not be fetched"))
+    return calls
+
+
+def test_an_iso_that_is_still_flat_in_downloads_is_reused_not_fetched_again(tmp_path, monkeypatch, asset):
+    payload = b"vanilla installer ISO fixture"
+    expected = hashlib.sha256(payload).hexdigest()
+    flat = tmp_path / "downloads"
+    flat.mkdir()
+    (flat / asset.filename).write_bytes(payload)
+    monkeypatch.setattr(upstream.repo_paths_access, "iso_dir", lambda: flat / "iso")
+    monkeypatch.setattr(upstream.repo_paths_access, "downloads_dir", lambda: flat)
+    calls = _no_download(monkeypatch)
+    messages = []
+
+    path, digest = upstream.ensure_in_iso_dir(asset, expected_sha256=expected, progress=messages.append)
+
+    assert path == flat / asset.filename and digest == expected and calls == []
+    assert messages == [f"Reusing verified {flat / asset.filename}"]
+    # The lock stays in the iso folder; nothing else is written there.
+    assert sorted(p.name for p in (flat / "iso").iterdir()) == [f".{asset.filename}.lock"]
+
+
+def test_the_iso_folder_wins_over_the_flat_downloads_copy(tmp_path, monkeypatch, asset):
+    payload = b"vanilla installer ISO fixture"
+    expected = hashlib.sha256(payload).hexdigest()
+    (tmp_path / "iso").mkdir()
+    (tmp_path / "iso" / asset.filename).write_bytes(payload)
+    (tmp_path / asset.filename).write_bytes(b"a flat copy that is never even read")
+    monkeypatch.setattr(upstream.repo_paths_access, "iso_dir", lambda: tmp_path / "iso")
+    monkeypatch.setattr(upstream.repo_paths_access, "downloads_dir", lambda: tmp_path)
+    assert _no_download(monkeypatch) == []
+
+    path, _ = upstream.ensure_in_iso_dir(asset, expected_sha256=expected)
+
+    assert path == tmp_path / "iso" / asset.filename
+
+
+def test_a_flat_copy_with_a_wrong_digest_is_refused_and_kept(tmp_path, monkeypatch, asset):
+    flat = tmp_path / "downloads"
+    flat.mkdir()
+    (flat / asset.filename).write_bytes(b"tampered")
+    monkeypatch.setattr(upstream.repo_paths_access, "iso_dir", lambda: flat / "iso")
+    monkeypatch.setattr(upstream.repo_paths_access, "downloads_dir", lambda: flat)
+    calls = _no_download(monkeypatch)
+
+    with pytest.raises(upstream.UpstreamError, match="differs from the published"):
+        upstream.ensure_in_iso_dir(asset, expected_sha256="0" * 64)
+
+    assert calls == [] and (flat / asset.filename).read_bytes() == b"tampered"
+    assert not (flat / "iso" / asset.filename).exists()
+
+
+def test_no_flat_copy_means_one_fetch_into_the_iso_folder(tmp_path, monkeypatch, asset):
+    payload = b"vanilla installer ISO fixture"
+    expected = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(upstream.repo_paths_access, "iso_dir", lambda: tmp_path / "iso")
+    monkeypatch.setattr(upstream.repo_paths_access, "downloads_dir", lambda: tmp_path)
+    calls = []
+    monkeypatch.setattr(upstream, "_request", lambda *a, **k: calls.append(1) or _Response(payload))
+
+    path, _ = upstream.ensure_in_iso_dir(asset, expected_sha256=expected)
+
+    assert path == tmp_path / "iso" / asset.filename and len(calls) == 1
+
+
+def test_an_unresolvable_flat_folder_is_not_searched(tmp_path, monkeypatch, asset):
+    payload = b"vanilla installer ISO fixture"
+    expected = hashlib.sha256(payload).hexdigest()
+
+    def refuse():
+        raise upstream.repo_paths_access.RepoPathsError("no downloads entry")
+
+    monkeypatch.setattr(upstream.repo_paths_access, "iso_dir", lambda: tmp_path / "iso")
+    monkeypatch.setattr(upstream.repo_paths_access, "downloads_dir", refuse)
+    monkeypatch.setattr(upstream, "_request", lambda *a, **k: _Response(payload))
+    assert upstream.flat_downloads_dir() is None
+
+    path, _ = upstream.ensure_in_iso_dir(asset, expected_sha256=expected)
+
+    assert path == tmp_path / "iso" / asset.filename
+
+
+def test_an_explicit_iso_folder_does_not_search_the_resolved_flat_folder(tmp_path, monkeypatch, asset):
+    payload = b"vanilla installer ISO fixture"
+    expected = hashlib.sha256(payload).hexdigest()
+    flat = tmp_path / "flat"
+    flat.mkdir()
+    (flat / asset.filename).write_bytes(payload)
+    monkeypatch.setattr(upstream.repo_paths_access, "downloads_dir", lambda: flat)
+    calls = []
+    monkeypatch.setattr(upstream, "_request", lambda *a, **k: calls.append(1) or _Response(payload))
+
+    path, _ = upstream.ensure_in_iso_dir(asset, expected_sha256=expected, iso_folder=tmp_path / "iso")
+    assert path == tmp_path / "iso" / asset.filename and len(calls) == 1
+    # An explicit flat folder is honoured.
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / asset.filename).write_bytes(payload)
+    again, _ = upstream.ensure_in_iso_dir(
+        asset, expected_sha256=expected, iso_folder=tmp_path / "iso2", flat_folder=other
+    )
+    assert again == other / asset.filename and len(calls) == 1
+
+
+def _pretend_sudo(monkeypatch):
+    chowned = []
+    monkeypatch.setattr(upstream.os, "geteuid", lambda: 0)
+    monkeypatch.setenv("SUDO_UID", "1234")
+    monkeypatch.setenv("SUDO_GID", "5678")
+    monkeypatch.setattr(upstream.os, "chown", lambda path, uid, gid: chowned.append((Path(path), uid, gid)))
+    return chowned
+
+
+def test_under_sudo_a_created_iso_folder_and_its_parents_go_to_the_invoking_user(tmp_path, monkeypatch, asset):
+    payload = b"vanilla installer ISO fixture"
+    expected = hashlib.sha256(payload).hexdigest()
+    iso = tmp_path / "cow" / "downloads" / "iso"
+    monkeypatch.setattr(upstream, "_request", lambda *a, **k: _Response(payload))
+    chowned = _pretend_sudo(monkeypatch)
+
+    upstream.ensure_in_iso_dir(asset, expected_sha256=expected, iso_folder=iso)
+
+    owned = {path for path, uid, gid in chowned if (uid, gid) == (1234, 5678)}
+    assert owned == {
+        tmp_path / "cow", tmp_path / "cow" / "downloads", iso, iso / asset.filename, iso / f"{asset.filename}.sha256"
+    }
+
+
+def test_under_sudo_an_existing_iso_folder_is_left_alone(tmp_path, monkeypatch, asset):
+    payload = b"vanilla installer ISO fixture"
+    expected = hashlib.sha256(payload).hexdigest()
+    iso = tmp_path / "iso"
+    iso.mkdir()
+    monkeypatch.setattr(upstream, "_request", lambda *a, **k: _Response(payload))
+    chowned = _pretend_sudo(monkeypatch)
+
+    upstream.ensure_in_iso_dir(asset, expected_sha256=expected, iso_folder=iso)
+
+    # Only the fetched ISO and its sidecar are handed over; the folder (not created by this run) is never touched.
+    assert {path for path, *_ in chowned} == {iso / asset.filename, iso / f"{asset.filename}.sha256"}
+
+
+def test_without_sudo_nothing_is_chowned_and_an_existing_folder_is_not_recreated(tmp_path, monkeypatch, asset):
+    payload = b"vanilla installer ISO fixture"
+    expected = hashlib.sha256(payload).hexdigest()
+    iso = tmp_path / "iso"
+    iso.mkdir()
+    monkeypatch.setattr(upstream, "_request", lambda *a, **k: _Response(payload))
+    monkeypatch.setattr(upstream.os, "chown", lambda *a: pytest.fail("chown without sudo"))
+    made = []
+    real_mkdir = Path.mkdir
+    monkeypatch.setattr(Path, "mkdir", lambda self, *a, **k: made.append(self) or real_mkdir(self, *a, **k))
+
+    upstream.ensure_in_iso_dir(asset, expected_sha256=expected, iso_folder=iso)
+
+    assert made == []
+
+
+def test_the_truenas_root_is_put_on_sys_path_only_if_absent():
+    import importlib.util
+    import sys
+
+    root = str(Path(upstream.__file__).resolve().parents[1])
+
+    def load():
+        spec = importlib.util.spec_from_file_location("upstream_guard_probe", upstream.__file__)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+    saved = list(sys.path)
+    try:
+        sys.path[:] = [entry for entry in sys.path if entry != root]
+        load()
+        assert sys.path.count(root) == 1 and sys.path[0] == root
+        load()  # present now: a second load must not add another entry
+        assert sys.path.count(root) == 1
+    finally:
+        sys.path[:] = saved
+
+
 def test_the_iso_folder_is_the_repo_path_config_iso_entry_in_plain_mode(monkeypatch):
     monkeypatch.delenv("MDT_COW_ROOT", raising=False)
     monkeypatch.delenv("COWTREE_MODE", raising=False)

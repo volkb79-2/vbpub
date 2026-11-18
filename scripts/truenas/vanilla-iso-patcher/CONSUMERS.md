@@ -71,8 +71,10 @@ sudo "$(command -v python3)" \
 
 The command reuses the vanilla ISO from the repository's `iso` folder (`downloads/iso/` in plain
 mode, a CoW subvolume on CoW hosts; `libraries/cowtree/repo-path iso` prints it; the download lock
-files `.<name>.lock` live there too), or fetches it there once, and verifies its published checksum (a file whose digest
-differs is refused, never overwritten). It then rebuilds the SquashFS, and replaces its existing data
+files `.<name>.lock` live there too), then the flat resolved `downloads` folder (`libraries/cowtree/repo-path downloads`;
+an ISO that is still flat there is used and not downloaded again), or fetches it into the `iso` folder once, and verifies its
+published checksum (a file whose digest differs is refused, never overwritten). Run under `sudo`, a fetch and an `iso`
+folder it has to create are handed back to the invoking user. It then rebuilds the SquashFS, and replaces its existing data
 extent in a byte-for-byte copy of the ISO. It creates the maximum-compression
 xdelta patch, applies it to a temporary copy, and checks that the reconstructed
 ISO hash matches the generator output. It publishes the ISO, delta, and JSON
