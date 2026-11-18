@@ -96,9 +96,12 @@ The controller gives the go; a controller-run implementer or the controller does
    `TESTER_UNIFIED_RUST_BUILDER`, then the default), `--record FILE`. The default builder is the
    docker driver, the kind that can see a base image that exists only in the local daemon; a
    docker-container builder cannot. The build needs the network for apt and rustup only. It
-   refuses an ungoverned build like `build-image.sh`, records the base image **id** next to its tag
-   (build arg and label `org.vbpub.tester-unified-rust-dev.base-image-id`, verified after the
-   build) and prints the packages the layer added or upgraded.
+   refuses an ungoverned build like `build-image.sh`, builds `FROM` the base image **id** (build
+   arg `BASE_IMAGE=sha256:...`, so a moved tag cannot race the build), keeps the tag only as a label
+   (`org.vbpub.tester-unified-rust-dev.base-image`, with `...base-image-id` next to it; both
+   verified after the build) and prints the packages the layer added or upgraded. That a docker-driver
+   BuildKit accepts a bare image id in `FROM` is reasoned, not measured: if the first build refuses
+   it, that is the first thing to fix.
 3. Because the image is built on the host that runs it, no image transfer is needed. If it must be
    built elsewhere, `docker save IMAGE | docker load` from the host that holds it moves it, but it
    is a multi-GB transfer; only the controller decides that.
@@ -239,8 +242,8 @@ is refused with exit 2) and the pressure gate reads that same slice.
 Before every start the host-side preflight refuses (exit **75**, the same meaning as
 `remote-gate.sh`: the host said not yet, nothing ran; retry later) when:
 
-* `dev-gates.slice` `memory.current` is above `HOSTOBS_DEV_SLICE_MEM_MAX_MB` (default 3584 MiB,
-  about 3.5 GiB; the file is `/sys/fs/cgroup/dev.slice/dev-gates.slice/memory.current`, the
+* `dev-gates.slice` `memory.current` is above `HOSTOBS_DEV_SLICE_MEM_MAX_MB` (default and ceiling
+  3584 MiB, about 3.5 GiB; the variable can only lower it, 1..3584; the file is `/sys/fs/cgroup/dev.slice/dev-gates.slice/memory.current`, the
   slice `remote-gate.sh` already reads for its OOM counter) or cannot be read, or
 * memory PSI `some avg10` or io PSI `full avg10` is above 25 (the limit and the rule of
   `scripts/netcup/runner/remote-gate.py`; CPU PSI is not a signal) **or a PSI file is missing,
@@ -250,12 +253,23 @@ Before every start the host-side preflight refuses (exit **75**, the same meanin
 lot even though little is in use; that is why the threshold exists. The check refuses instead of
 waiting: retry in a few minutes, or look at `status` of the host's gate slice.
 
-It refuses with exit **3** when any `hostobs-dev-*` container already runs on the host
-(`HOSTOBS_DEV_ALLOW_PARALLEL=1` overrides; only for different worktrees), when the container name
-of this worktree exists (a previous run is still up: `dev stop`), and when **another dev call for
-the same worktree is in progress**: a host-side `flock` on `~/hostobs-dev/<12-hex>/lock` is held
-from before the sync through the end of the container run, non-blocking, and
-`HOSTOBS_DEV_ALLOW_PARALLEL` never bypasses it. Exit 3 also covers identity-check, guard or ssh
+It refuses with exit **3** when:
+
+* any `hostobs-dev-*` container already runs on the host, or **another worktree's call holds the
+  host-global lock** `~/hostobs-dev/.all.lock`. That lock is a non-blocking `flock` taken before the
+  admission check and held through the container run (the docker client inherits the descriptor), so
+  two worktrees cannot both pass admission and both start a container during the long sync.
+  `HOSTOBS_DEV_ALLOW_PARALLEL=1` skips **only** this global lock and the running-container listing;
+  parallel mode still passes the memory/PSI admission and the per-worktree lock;
+* the container name of this worktree exists (a previous run is still up: `dev stop`);
+* **another dev call for the same worktree is in progress**: a host-side `flock` on
+  `~/hostobs-dev/<12-hex>/lock` is held from before the sync through the end of the container run,
+  non-blocking, and `HOSTOBS_DEV_ALLOW_PARALLEL` never bypasses it.
+
+`dev stop` and `dev clean` try the same per-worktree lock: while a call is syncing (lock held,
+no container yet) they print "a call for this worktree is in progress (syncing); retry" and exit 3
+instead of acting under the sync; a container that already exists can still be stopped.
+Exit 3 also covers identity-check, guard or ssh
 failures. The wrapper also takes **one admission slot** (weight 1) of the same flock slots
 `remote-gate.sh` uses (`$CONTROLLER_HOME/remote-gate-locks/<host>.slotN`, `CONTROLLER_REMOTE_SLOTS`
 default 4, wait `CONTROLLER_REMOTE_SLOT_WAIT_S` default 7200 then exit 75), so a dev run and gate
@@ -272,10 +286,17 @@ own** run, so a run that failed on a name conflict never removes someone else's 
 `dev stop` removes this worktree's container by exact name and prints what it did; `dev status`
 shows a running container and its age.
 
+The command inside the container is also prefixed with `timeout --foreground -k 5 <HOSTOBS_DEV_MAX_S>`,
+so a container whose wrapper was killed still ends by itself after the same limit (plus 5 s).
+
 **Not covered:** there is no watchdog on your terminal. ssh without a tty gives the container no
 hangup, so a Ctrl-C, a killed wrapper or a dropped ssh session may leave the container running
-until the runtime limit or until `dev stop`, while the local admission slot is already released.
-Run `dev status` after an interrupted call and `dev stop` when it is still up.
+until the in-container deadline or until `dev stop`, while the local admission slot is already
+released (the host-side locks last as long as the docker client lives). Run `dev status` after an
+interrupted call and `dev stop` when it is still up. **LOCAL mode** (`--local`, refused unless
+`HOSTOBS_DEV_ALLOW_LOCAL=1`) has the in-container deadline but no host-side `timeout`, no
+per-worktree or global lock, no admission slot and no memory/PSI gate: it only checks the uid and
+that no `hostobs-dev-*` container runs.
 
 ## What is on the host and how to clean it
 
