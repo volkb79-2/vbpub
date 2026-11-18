@@ -854,7 +854,8 @@ const KNOWN_KINDS: &str = "truncated oversized-frame non-zero-reserved unknown-f
     unsupported-required-section unsupported-section-version unknown-section-flags \
     duplicate-section missing-section section-length trailing-bytes unknown-value-type \
     unknown-column-kind column-reserved conflicting-column unknown-quality unknown-aggregation \
-    row-count-overflow length-overflow dictionary-entry-too-long unknown-dictionary-kind \
+    row-count-overflow length-overflow dictionary-entry-too-long dictionary-entry-not-utf8 \
+    unknown-dictionary-kind \
     dictionary-entry-unknown-code dictionary-entry-mask duplicate-dictionary-entry \
     dictionary-entry-reserved dictionary-too-large dangling-dictionary-ref \
     dictionary-entry-control generation-exhausted stale-dictionary-generation rows-and-time \
@@ -998,11 +999,12 @@ fn reconnect_restarts_the_corr_and_forgets_the_closing_reason() {
 
 #[test]
 fn connect_dials_a_real_unix_socket_and_gives_up_after_its_timeout() {
-    let name = format!("hostobs-client-{}.sock", std::process::id());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.subsec_nanos());
+    let name = format!("hc-{}-{nanos}.sock", std::process::id());
     let path = std::env::temp_dir().join(name);
-    let Ok(listener) = UnixListener::bind(&path) else {
-        return;
-    };
+    let listener = UnixListener::bind(&path).expect("bind");
     let info = ClientInfo::new("dial").with_timeout(Duration::from_millis(5));
     let result = Client::connect(&path, Level::Observe, info);
     assert_eq!(result.unwrap_err(), ClientError::Timeout);
