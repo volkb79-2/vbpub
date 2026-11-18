@@ -45,7 +45,9 @@ use hostobs_proto::quality;
 use hostobs_proto::stream::{ConnTimers, Detect, Feed, FrameReader, ModeDetect, RawFrame, Timer};
 
 use crate::backend::{Backend, Identity, StatusInfo};
-use crate::classify::{classify, Call, Dispatch, Mode, Phase, Prefix, Query, Refusal, SERVER_MAJOR};
+use crate::classify::{
+    classify, Call, Dispatch, Mode, Phase, Prefix, Query, Refusal, SERVER_MAJOR,
+};
 use crate::codes::{Code, Detail};
 use crate::encode::{
     closing_evt, error_line, push_string, rep_error, rep_ok, rep_ok_line, server_prefix,
@@ -417,7 +419,9 @@ impl Conn {
             return;
         }
         hub.wrote(self.id, n, now_ns);
-        self.written = self.written.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
+        self.written = self
+            .written
+            .saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
         if self.state == State::Draining {
             self.complete_draining(hub);
         }
@@ -809,7 +813,8 @@ mod tests {
         }
 
         fn send(&mut self, bytes: &[u8]) {
-            self.conn.on_bytes(bytes, self.now, &mut self.hub, &self.backend);
+            self.conn
+                .on_bytes(bytes, self.now, &mut self.hub, &self.backend);
         }
 
         fn eof(&mut self) {
