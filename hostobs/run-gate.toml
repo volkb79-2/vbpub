@@ -150,3 +150,86 @@ exit_map = { "0" = "PASS", "2" = "ERROR" }
 clean_tree = true
 budget = "20m"
 artifacts = ["lcov.info", "cov-summary.json", ".assay/verdict-assay-r1.json"]
+
+# Assay Rust R2 (mutation, by ingesting cargo-mutants' report) over the CHANGED lines of the
+# five judged crates (assay B245 U8b). The judged lane lives in `assay.toml [lanes.assay-r2]`
+# (flags, source roots, output directory, the budget estimate and their reasons); this lane,
+# like `assay-r1` above, only says how to REACH the judge in this image (source Assay from the
+# worktree, no install).
+#
+# HAND-RUN ONLY, K15 evidence, never in a default gate: it is not a member of any sequence
+# and nothing chains it. A cargo-mutants campaign costs about 20-35 s per mutant (estimate,
+# compile-dominated), so hours per run; the T3 queue that runs it automatically is later
+# work. Use it as
+#
+#   run-gate assay-r2 --base <ref> --worktree <worktree>
+#
+# with a base that yields about 100-300 mutants (count them first with `cargo mutants --list
+# --in-diff <diff>`; there are no hostobs release tags yet, so pick a commit). K15 stays open
+# until one such run exists.
+#
+# HOW THE BASE REACHES THE JUDGE. `assay.toml` declares `judge.base_source = "request"`, so
+# the judge refuses to run without `--request-base` (`ERROR/BAD_LANE_CONFIG`, never a guessed
+# base). A run-gate COMMAND lane has no automatic forwarding; it receives the base through the
+# `{base}` token in its argv (the mechanism `gate-full` in run-gate-project and `r2` in cmru
+# use), which run-gate fills from `--base REF` or, when absent, from its own resolution of the
+# worktree's recorded fork point. The script passes it as `--request-base "{base}"`.
+#
+# EXIT STATUS. The judge's closed exit codes are 0 PASS, 1 FAIL (a surviving mutant), 2 ERROR,
+# 3 NO_MEASUREMENT, 4 BUDGET_EXCEEDED (a timed-out mutant, or the campaign budget) and 5
+# INCONCLUSIVE (a diff with nothing to mutate: `NO_MUTANTS`). Only 0 is a pass. Run-gate's
+# command `exit_map` can map to PASS, FAIL or ERROR only, so 3, 4 and 5 are mapped to FAIL
+# EXPLICITLY (they would be FAIL by default; stating it keeps a future reader from
+# "fixing" 5 to PASS: a run that mutated nothing proved nothing). The post-checks below exit 2
+# (ERROR) when the artifact cannot be bound to this lane's HEAD.
+#
+# The same environment facts as `assay-r1` apply: `network = "none"`, cargo `--offline
+# --locked` from the image's lock-keyed crate cache, `PYTHONDONTWRITEBYTECODE=1`. The
+# cargo-mutants output directory `assay-mutants-out` is git-ignored and is assay's to create
+# (empty) in its own snapshot, so there is no `mkdir` of it here.
+[lanes.assay-r2]
+kind = "command"
+environment = "tester-unified-rust"
+network = "none"
+description = "Hand-run Assay Rust R2 (cargo-mutants, changed lines vs --base) over the five judged crates; K15 evidence, never default."
+argv = [
+  "bash", "-c",
+  '''set -eu
+cd {worktree}/hostobs
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="{worktree}/assay/src:{worktree}/assay/analysis/src:{worktree}/libraries/cowtree/src"
+mkdir -p .assay .run-gate/assay-state
+rm -f -- .assay/verdict-assay-r2.json .assay/progress-assay-r2.jsonl
+# The judge's status is captured, not left to abort the script: the checks below
+# must run even on FAIL, so a red log still states what was measured and why.
+rc=0
+python3 -m assay.cli run assay-r2 --file assay.toml \
+  --request-base "{base}" \
+  --verdict-json .assay/verdict-assay-r2.json \
+  --resume --progress .assay/progress-assay-r2.jsonl \
+  --state-dir .run-gate/assay-state || rc=$?
+python3 -m assay.cli verify .assay/verdict-assay-r2.json \
+  || { echo "run-gate: the Assay verdict is not schema-conformant" >&2; exit 2; }
+if ! python3 -m assay.cli analyze verdict .assay/verdict-assay-r2.json \
+     --expected-commit "$(git rev-parse HEAD)" --format text \
+     > .assay/verdict-assay-r2-summary.txt; then
+  echo "run-gate: the Assay verdict does not describe this lane's HEAD" >&2
+  exit 2
+fi
+cat .assay/verdict-assay-r2-summary.txt
+python3 - .assay/verdict-assay-r2.json <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    claims = json.load(handle)["claims"]
+for claim in claims:
+    print("assay-r2 claim: %s %s %s" % (
+        claim["rigor"], claim["status"], claim.get("reason_code") or ""))
+PY
+exit "$rc"''',
+]
+exit_map = { "0" = "PASS", "1" = "FAIL", "2" = "ERROR", "3" = "FAIL", "4" = "FAIL", "5" = "FAIL" }
+clean_tree = true
+# Matches `assay.toml [lanes.assay-r2].budget` (4h, an estimate; the first real run sets the
+# figure); the lane budget is the outer bound for the whole judge process.
+budget = "4h"
+artifacts = [".assay/verdict-assay-r2.json"]

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added (the hand-run `assay-r2` lane; assay B245 U8b)
+
+- **`assay.toml` `[lanes.assay-r2]` and `run-gate.toml` `[lanes.assay-r2]`**: Rust R2 (mutation) of the changed
+  lines of the five judged crates by ingesting cargo-mutants' report (`cargo-mutants-outcomes`, `--in-diff`
+  from `{assay.changed_diff}`, `--jobs 1`, nextest, output `assay-mutants-out`, git-ignored). Hand-run only
+  (`run-gate assay-r2 --base <ref>`), `budget = "4h"` is an estimate, never part of a default gate; assay K15
+  stays open until the first hostobs run.
+
 ### Added (the `conformance` lane; `HOB-4` fixed)
 
 - **`run-gate.toml` `[lanes.conformance]`**: the Python reference decoders, fixture regeneration checks
