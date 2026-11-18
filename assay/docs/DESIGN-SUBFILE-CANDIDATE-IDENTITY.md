@@ -193,7 +193,7 @@ locus_key = sha256( "assay-locus/1" \0 path \0 qualname \0 segment_sha256 \0
 | **new `--carry-forward DIR`** (repeatable, **no reason required**) | for each pending job, finds prior records by exact id, then by locus, in `DIR/<id>.json` and `DIR/judges/*/` (`_carry_over_candidates`, `3975-3989`; a locus index is built by one bounded scan of the source). Survivors are imported as `carried`, kills are queued for isolated replay, other buckets run in full |
 | `--carry-over DIR --carry-over-reason` | unchanged exact-id import. Under v21 its imported kills are marked `carried-unverified` (§7 D2) |
 | `--merge-state`, `--merge-shard-store` | unchanged: same effective judge only (`4088-4095`). Carried and replayed records merge like any other |
-| `--shard K/N` | unchanged assignment (by current id). Each shard carries forward and replays its own jobs. Node baselines are cached per shard store (`<store>/node-baselines/<judge>/<sha256(node)>.json`), so a node shared by two shards costs two baselines (E: small). `--merge-shards` copies the cache like records |
+| `--shard K/N` | unchanged assignment (by current id). Each shard carries forward and replays its own jobs. Node baselines are cached per shard store (`<store>/node-baselines/<judge>/<sha256(node)>.json`), so a node shared by two shards costs two baselines (E: small). assay's `--merge-shard-store` copies the cache like records (run-gate's `--merge-shards` only drives it) |
 | `--reuse-from` (B106) | unchanged. `--carry-forward` is its shard-compatible, store-driven sibling. The two flags are mutually exclusive in one run |
 | `--rejudge-outcome survived` | also re-runs carried survivors. New `--rejudge-carried` re-runs every `carried` record |
 
@@ -269,7 +269,7 @@ Each starts from a store in which candidate C in `f` was KILLED by node X and ca
 | F14 | tampered `locus` in a record | `MutationStateError`, "stale locus" |
 | F15 | verdict edited: a `killed` outcome with mode `carried` | `assay verify` refuses |
 | F16 | lane with xdist, nonempty `PYTEST_ADDOPTS` or cold-witness | no isolated replay, full judge |
-| F17 | shard run, then `--merge-shards` | provenance and node baselines survive; counts re-derive |
+| F17 | shard run, then `--merge-shard-store` | provenance and node baselines survive; counts re-derive |
 | P2-1..P2-8 (Phase 2) | an unexecuted function edited (positive control: trusted); an executed callee edited; a module constant edited; a data file read via `open` edited; a file added under the source root; a test that spawns a subprocess; a project module imported before the recorder; footprint overflow | positive control: `footprint-proven`; every other case: replay, never trusted |
 
 ## 6. Work packages (Sonnet implementers; Opus review per series)
@@ -281,12 +281,12 @@ Each starts from a store in which candidate C in `f` was KILLED by node X and ca
 | WP2 | record `locus` write and validate; `carry_over` schema 2 | `mutation.py:1479-1501` (`_progress_event`), `1814-1938`, `2930-2967`, `7092-7119`, `~7236` | F13, F14, old-record compatibility | M |
 | WP3 | `--carry-forward`: lookup, survivor import, kill queue, progress event `carry_forward`, `assay plan --list-pending` classification, `--rejudge-carried` | `cli.py:401-462, 2224-2292`; `FlexOptions` `mutation.py:1830-1901`; new `_carry_forward_records` beside `3992-4163`; `run_mutation` `5670-5721` | F10-F13, F17 | M-L |
 | WP4 | `witness-isolated` execution: plugin keeps only the target item (the env beside `WITNESS_TARGET_ENV`, `mutation_witness.py:31, 1200-1222`), node baseline and cache, `_run_one` branch beside `6638-6672`, fallbacks, B106 exclusions | `mutation.py`, `mutation_witness.py` | F1-F9, F16 | L |
-| WP5 | verdict v21 (folds B532): modes, `prior`, `provenance` counts, JSON schema, verify rules, CONSUMERS and DESIGN-GUIDE sections, v20 to v21 migration note | `verdict.py:443, 2191-2266`; `verify.py`; `schemas/verdict.schema.json`; docs | F15, schema pin test | M |
+| WP5 | verdict v21 (folds B532): modes, `prior`, `provenance` counts, JSON schema, verify rules, CONSUMERS and DESIGN-GUIDE sections, v20 to v21 migration note | `verdict.py:443, 2191-2266`; `verify.py`; `src/assay/schemas/verdict.schema.json`; docs | F15, schema pin test | M |
 | WP6 | fault-injection suite §5.3 F1-F17 as fixture projects (small, fast, no docker) | `tests/core/test_carry_forward_*.py` | itself | M |
 | WP7 | Phase 2 footprint recorder and trust (its own design review first; starts only after D4) | new `src/assay/footprint.py`, witness plugin | P2-1..P2-8 | L |
 | WP8 | survivor probe R-a (optional, after D3) | `mutation.py`, store manifest | F12 variant | M |
 
-Order: WP0 and WP1 in parallel, then WP2, then WP4, then WP3, then WP5 with WP6 alongside, then (decision) WP7 and WP8.
+Order: WP0 and WP1 in parallel, then WP2, then WP3 first as a skeleton (the `--carry-forward` flag, lookup, survivor import, replay stubbed to "re-run in full"), then WP4 (isolated replay, whose tests F1-F9 and F16 need the flag), then the rest of WP3 (progress events, `--rejudge-carried`), then WP5 with WP6 alongside, then (decision) WP7 and WP8.
 
 Every WP that changes `src` needs the B534 host self-qualification before merge. WP0 ends with a short M report that replaces §1's C/E numbers. If WP0 measures the replay cost at 60 s or more, Phase 1 strict loses most of its gain and D2 must be revisited before WP4.
 
@@ -298,3 +298,14 @@ Every WP that changes `src` needs the B534 host self-qualification before merge.
 - **D4, Phase 2 go or no-go.** Decide after WP0, Phase 1 in production, and a measured replay share.
 - **D5, finer key (B).** Adopt a line-window key for kill lookup only (survivors stay on A') if WP0 shows at least 30 % fewer full judges than A'.
 - **D6, the assay version in the Phase 2 context.** Split out a `classifier_version` that is bumped only when bucket semantics change, so that an assay upgrade does not void every footprint.
+
+## 8. Review corrections and specification gaps (fact-check of 2026-11-18, to settle before WP2/WP4)
+
+Corrected above: `--merge-shard-store` (assay) instead of `--merge-shards` (run-gate only), the schema path, the WP3/WP4 order. Wording points: the research report §5 counts callers (x2-3) in its gain estimate though its identity definition omits them; the existing execution modes also include `ledger` (`verdict.py:2202`), which the mode list in §5.2 omits; §1 uses 1,627 re-keyed candidates (C, proxy) where the research report says ~1,560 (31 %): the proxy replaces it; the Phase 1 hours (35-56 h, 23-31 h) include padding for node baselines that the arithmetic of the table rows alone (34-52 h, 22-27 h) does not show.
+
+Open specification gaps, each to be closed in the work package named:
+1. **WP2, replayed kill vs `record_effective_judge` (`mutation.py:1920-1938`).** The function returns the effective judge only when `carry_over.from_judge_sha256 == payload.judge_sha256`. A replayed kill is executed by the CURRENT judge, so its `judge_sha256` is the current one while the schema-2 block names the prior judge: define the field (`from_judge` is provenance, never an effective-judge override) and relax or extend `_valid_carry_over` (`1904-1917`), which requires a non-empty `reason` that `--carry-forward` does not take (use a fixed machine reason such as `carry-forward`).
+2. **WP4, isolated semantics in the judge identity.** `candidate_fail_fast` enters `judge_sha256` only when on (`mutation.py:1744`); `witness-isolated` does not, so a store holding isolated kills resumes under the same judge in a plain `--resume` run even if the operator declined D1. Fold the replay mode into the judge or add a verifier rule that refuses `witness-isolated` unless the run declared it.
+3. **WP1/WP3, collision rule.** "Two records with one locus key are both ignored" must first de-duplicate by `candidate_id` (the same candidate can sit in the flat record and in `judges/*/`, B527 archives), otherwise locus matching fails often.
+4. **WP7 (Phase 2), config edits.** The context digest replaces `tree_sha256` with a names-only listing, so a content edit to `pytest.ini`/`pyproject.toml`/`setup.cfg` addopts is in neither the digest nor the footprint (pytest reads it before the recorder starts): hash those files into the context digest and add a P2 test for it.
+5. **WP3, survivor loop.** A test added in the same release leaves the carried survivor carried again from the old generation, so the lane keeps failing until `--rejudge-carried` (or the R-a probe, D3) runs: state this in the run output and the docs.
