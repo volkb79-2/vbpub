@@ -283,8 +283,9 @@ assay exists to close that gap mechanically, not by policy:
   `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
   kill witnesses against the current sequential pytest suite. Any uncertainty
   runs the candidate's full suite; a nonempty `PYTEST_ADDOPTS` disables witness
-  replay because it can override configured addopts. A v12 through v19 verdict
-  is a cold start under v20, and `assay verify` rejects old versions. The v20
+  replay because it can override configured addopts. A v12 through v15 verdict
+  is a cold start under v20, a v16 through v19 verdict is refused as
+  unsupported, and `assay verify` rejects all old versions. The v20
   hard cut is a MAJOR release (B245); Assay 12.0.0 carried the v18 hard cut
   (11.0.0 carried v17). See the
   [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)

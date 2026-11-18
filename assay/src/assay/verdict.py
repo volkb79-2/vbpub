@@ -99,6 +99,7 @@ from .r2_command import (
 from .vocabulary import (
     ARGV_PLACEHOLDER_CHANGED_DIFF,
     CARGO_MUTANTS_OPERATOR_NAMESPACE,
+    CARGO_MUTANTS_REPORT_SCHEMA,
     COMMIT_OID_RE,
     INGESTED_OPERATOR_RE,
     MAX_INGESTED_MUTANTS,
@@ -6234,7 +6235,8 @@ class Verdict:
         * `changed_diff` is required exactly when this judgment exists, the
           lane's `argv_declared` holds the whole token
           `{assay.changed_diff}` and the ingested producer is cargo-mutants
-          (`producer_tool.name`); it is forbidden otherwise. A verdict that
+          (`producer_tool.name`) and the R2 scope is `changed_lines`; it is
+          forbidden otherwise (a `whole_target` lane hands the tool no diff). A verdict that
           ends before an R2 claim exists has no `judgment.r2`, so this method
           is never reached for it and the placeholder alone is legal.
         * a present `changed_diff` names the judgment's resolved base and the
@@ -6244,10 +6246,22 @@ class Verdict:
             return
         assert policy.producer_tool is not None  # _check_producer_fork
         if policy.report_absent:
+            if (
+                policy.producer_tool.name != CARGO_MUTANTS_OPERATOR_NAMESPACE
+                or policy.producer_tool.report_schema_version
+                != CARGO_MUTANTS_REPORT_SCHEMA
+            ):
+                raise ValueError(
+                    f"judgment.r2.report_absent is true but producer_tool is "
+                    f"{policy.producer_tool.name!r} / "
+                    f"{policy.producer_tool.report_schema_version!r}, not "
+                    f"{CARGO_MUTANTS_OPERATOR_NAMESPACE!r} / "
+                    f"{CARGO_MUTANTS_REPORT_SCHEMA!r} -- only a cargo-mutants "
+                    f"run writes no report for an empty diff"
+                )
             mutation = None if claim is None else claim.mutation
             if (
-                claim is None
-                or mutation is None
+                mutation is None  # no claim at all reads as no payload
                 or claim.status is not Outcome.INCONCLUSIVE
                 or claim.reason_code is not ReasonCode.NO_MUTANTS
             ):
@@ -6266,20 +6280,23 @@ class Verdict:
         expected = (
             ARGV_PLACEHOLDER_CHANGED_DIFF in (self.argv_declared or ())
             and policy.producer_tool.name == CARGO_MUTANTS_OPERATOR_NAMESPACE
+            and policy.mode == "changed_lines"
         )
         if expected and policy.changed_diff is None:
             raise ValueError(
                 f"judgment.r2.changed_diff is required: argv_declared holds "
-                f"{ARGV_PLACEHOLDER_CHANGED_DIFF} and the ingested producer is "
-                f"{CARGO_MUTANTS_OPERATOR_NAMESPACE}"
+                f"{ARGV_PLACEHOLDER_CHANGED_DIFF}, the ingested producer is "
+                f"{CARGO_MUTANTS_OPERATOR_NAMESPACE} and judgment.r2.mode is "
+                f"'changed_lines'"
             )
         if policy.changed_diff is None:
             return
         if not expected:
             raise ValueError(
                 f"judgment.r2.changed_diff is forbidden unless argv_declared "
-                f"holds {ARGV_PLACEHOLDER_CHANGED_DIFF} and the ingested "
-                f"producer is {CARGO_MUTANTS_OPERATOR_NAMESPACE}"
+                f"holds {ARGV_PLACEHOLDER_CHANGED_DIFF}, the ingested "
+                f"producer is {CARGO_MUTANTS_OPERATOR_NAMESPACE} and "
+                f"judgment.r2.mode is 'changed_lines'"
             )
         assert self.judgment is not None  # the caller holds judgment.r2
         resolved_base = self.judgment.resolved.base

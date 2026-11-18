@@ -1445,7 +1445,7 @@ def test_v17_verdict_is_refused_with_exactly_one_diagnostic():
 #: cannot drift. v20 (B245) replaces the v19 entry: only the current version's
 #: schema ships.
 _VERDICT_SCHEMA_SHA256 = {
-    20: "d08718882f47c9d1eec6a2835d056f5a0b55aaf7289188f8bdd9bdf94e8965c4",
+    20: "1898ed9d4be5cdd440e34c21908db61d57092a6595af3d3e822a3efa09c5fd55",
 }
 
 
