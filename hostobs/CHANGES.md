@@ -4,6 +4,14 @@
 
 ### Added
 
+- **`docs/WIRE.md`: the normative `hostobs/1` specification** — connection and handshake,
+  frame types and `corr`, the implemented block layout with offsets, every M2-M3 verb with strict
+  keys, closed error codes, reader and send-queue state machines, dictionaries and reconnect, the
+  efficient Python access path with gated measurements, versioning, conformance cases and the
+  P2/P3/P5 work breakdown. Files `HOB-46`..`HOB-50` (bare-block validation, aggregation mask, the
+  time-section length defect plus the history subject section, a stale spec pointer, header and
+  directory checks).
+
 - **`assay-r1`: the coverage verdict is assay's.** A new `assay-r1` lane in
   `run-gate.toml` binds to `assay.toml [lanes.assay-r1]`, which declares a Rust
   `whole_target` R1 judge over the 33 `src/*.rs` files of `model`, `proto`, `kernel` and

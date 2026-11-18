@@ -58,6 +58,11 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-43 | Quarantined `.corrupt` files (corrupt, oversized) are kept for an operator but are never counted in `bytes`, never evicted and never bounded in number, so repeated damage can fill the directory beyond `cap_bytes` | Major | OPEN |
 | HOB-44 | CLOSED — `tester-unified-rust` carries no `pip`/`ensurepip`/`python3-venv`, so the original `kind = "assay"` `assay-r1` lane died at Run-Gate's editable install before judging. Fixed by re-declaring the lane as a `kind = "command"` lane that runs the judge from the worktree's own `assay/src` (`PYTHONPATH`, no install); the image is unchanged. Proven through Run-Gate: PASS with the measured totals in the lane log, and FAIL/UNCOVERED_LINES when one kernel test file is deleted | Major | CLOSED (2026-11-16) |
 | HOB-45 | Rust R2/R3 remain unregistered for hostobs: no `assay-r2` (cargo-mutants ingestion) or `assay-r3` (canary) lane exists, so test quality rests on the hand-mutation campaigns | Major | OPEN (assay R-3b/R-4) |
+| HOB-46 | A block without an in-frame dictionary cannot be validated: `decode_block` checks row/column references only against a dictionary carried in the same frame | Major | OPEN (P2) |
+| HOB-47 | A history bucket's aggregation is never checked against the column metric's permitted mask | Minor | OPEN (P2) |
+| HOB-48 | The time section length is `align8(14·n)` in both codecs while its content is `15·n` bytes, so no history block of four or more buckets can round-trip; and a history block cannot name its subject | Major | OPEN (P2) |
+| HOB-49 | `hostobs_wire_ref.py` cites a non-existent `docs/WIRE-COLUMN-CODEC.md` instead of `docs/WIRE.md` | Minor | OPEN |
+| HOB-50 | Frame header and directory checks: `SECTIONED` is accepted on every frame type, and the directory vector is allocated from `n_sec` before its bytes are proven present | Minor | OPEN (P2) |
 
 ---
 
@@ -886,3 +891,68 @@ reduced to the survivors those lanes cannot express.
 
 **Source.** Filed 2026-11-15 by the hostobs assay-r1 adoption; assay A-501 (Rust R2 not
 adopted is a known issue), `assay/docs/RUST-METHODOLOGY.md`.
+
+## HOB-46 — A bare block cannot be validated against the held dictionary
+
+**Where:** `crates/proto/src/frame.rs` `decode_block` (reference checks run only under
+`if let Some(table) = &dictionary`).
+
+A live stream carries its dictionary only when the generation changes (`docs/WIRE.md` §6.2), so
+most live blocks are bare. For those, `decode_block` checks neither the generation nor the
+row/column references: a dangling index or a row naming a metric is accepted, and the caller has no
+API to supply the held generation.
+
+**Exit criteria.** `decode_block_with(bytes, held: Option<&Dictionary>)` applies the in-frame checks
+against the held generation (`stale-dictionary-generation` for a mismatch, `generation-regressed`
+for a dictionary-bearing block that does not exceed it), plus the `bare-block-held-dict`,
+`bare-block-dangling`, `generation-rollover` and `generation-regressed` cases of WIRE.md §11.3/§11.4
+in Rust and Python.
+
+## HOB-47 — History aggregation is not checked against the metric mask
+
+**Where:** `crates/proto/src/frame.rs` `decode_block`, `python/reference/hostobs_wire_ref.py`.
+
+The dictionary's metric mask is derived and verified, but no decoder checks that a bucket's `agg`
+is in the mask of every column of the block, so `mean` over a counter decodes as valid.
+
+**Exit criteria.** Both decoders refuse with `aggregation-not-permitted` (WIRE.md §3.6) and the
+`history-agg-not-permitted` fixture pins it.
+
+## HOB-48 — Time section length and the missing history subject
+
+**Where:** `crates/proto/src/frame.rs` `time_body_len` (line 741) and
+`python/reference/hostobs_wire_ref.py` `time_body_len` (line 380).
+
+The time body holds `8 + 4 + 2 + 1 = 15` bytes per bucket, but both codecs compute its length as
+`align8(14·n)`. The two agree with the content only for n ≤ 3; for n = 4 the encoder writes 64
+bytes and the decoder demands 56, and every larger n fails the same way, so no history block of
+four or more buckets can round-trip. The only fixture (`history-buckets`, n = 3) sits on the agreeing
+side. Separately, a history block has no entity reference at all, so a multi-subject
+`series_batch` reply cannot say which incarnation each block describes.
+
+**Exit criteria.** `align8(15·n)` in both codecs; the `subject` section (kind 6, version 1,
+required, `u32 ent | u32 0`, time blocks only, `subject-without-time` otherwise) per WIRE.md §3.8;
+`PROTO_MINOR = 1`; the `history-four-buckets`, `history-subject` and `subject-in-live-block`
+fixtures in both languages.
+
+## HOB-49 — The Python reference cites a missing specification file
+
+**Where:** `python/reference/hostobs_wire_ref.py` line 5.
+
+The docstring names `hostobs/docs/WIRE-COLUMN-CODEC.md`, which does not exist; the normative
+specification is `docs/WIRE.md`.
+
+**Exit criteria.** The docstring points at `docs/WIRE.md` (§3 for the block layout).
+
+## HOB-50 — Frame header flag/type consistency and directory allocation
+
+**Where:** `crates/proto/src/frame.rs` `FrameHeader::parse`, `decode_block` (`Vec::with_capacity(n_sec)`).
+
+`parse` accepts `SECTIONED` on REQ/REP/EVT/END, which WIRE.md §2.1 makes `bad-frame`. `decode_block`
+reserves a directory vector of `n_sec` entries (up to 65,535) before it has proven that
+`4 + 8·n_sec` bytes exist, so a 16-byte frame causes an allocation sized by an untrusted field
+(bounded, but against WIRE.md §11.1).
+
+**Exit criteria.** `parse` (or the stream reader) enforces the flag/type rule with the
+`rep-sectioned-flag` case; the directory length is checked against the buffer before the vector is
+reserved, with a unit test for `n_sec = 65535` in a short frame.
