@@ -103,10 +103,10 @@ Open items found while building these packages are in
 follow-ups, `HOB-46` … `HOB-48` and `HOB-50` … `HOB-53` by the P2a1 wire codec; `HOB-54` is the
 open stream-layer work for P2, P3 and P5b, specified in [`docs/WIRE.md`](docs/WIRE.md), and
 `HOB-49` is a citation fix in the Python reference): the sharpest still-open ones are `HOB-17`/`HOB-27` (the `kernel` and `store` crates carry their
-own value and quality types until the Rust lane image can be rebuilt against a new
-`Cargo.lock`), `HOB-21`/`HOB-29` (no `/sys` device-topology source, and `store`'s tmpfs check
+own value and quality types until the path-dependency refactor lands; the lane image's
+registry-set identity now allows it), `HOB-21`/`HOB-29` (no `/sys` device-topology source, and `store`'s tmpfs check
 reads the mount table rather than `statfs`), `HOB-39` (a store range answer is the stored
-payload, not decoded `model` rows — the join waits for the same rebuild), `HOB-45` (Rust R2/R3 are
+payload, not decoded `model` rows — the join waits for the `HOB-27` refactor), `HOB-45` (Rust R2/R3 are
 unregistered) and `HOB-30` (no session spools, which are out of this package's scope). `HOB-26` states the SP-2 limit plainly: the
 kernel-side rate arithmetic is a test-local helper, because `kernel` cannot depend on `model`
 (`HOB-17`).
@@ -147,8 +147,8 @@ executing host; see [`docs/CONSUMERS.md`](docs/CONSUMERS.md).
 
 Cargo is offline and locked, and each Cargo invocation checks the mounted `Cargo.lock`
 against the image's registry-set identity and cache manifest first (workspace-member lock
-edits do not change that identity; a new tag carrying it is built on a host and the lanes are
-switched to it by a separate `run-gate.root.toml` commit). `selftest` is the workspace's own
+edits do not change that identity; the Rust lanes run on `tester-unified-rust:rs-20261118`,
+which carries it). `selftest` is the workspace's own
 R0/R1 baseline (nextest, doctests, llvm-cov and the per-crate line/region floors).
 
 **`assay-r1` is the estate-standard coverage verdict**: assay's Rust R1 judge reads the
