@@ -288,7 +288,9 @@ class _HandlerSpy:
         pass
 
 
-def test_run_command_installs_termination_handlers_and_restores_the_previous_ones(tmp_path):
+def test_run_command_installs_termination_handlers_and_restores_the_previous_ones(
+    tmp_path, default_termination_signals,
+):
     before = {signum: signal.getsignal(signum) for signum in TERMINATION_SIGNALS}
     spy = _HandlerSpy()
 
@@ -315,30 +317,42 @@ def test_run_command_off_the_main_thread_installs_no_handlers_and_still_runs(tmp
 
 
 DRIVER = """\
+import signal
 import sys
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
 from cmru import runner
 
+if len(sys.argv) > 5 and sys.argv[5] == "ignore-hup":
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)  # what `nohup cmru release ...` sets up
+
 with open(sys.argv[2], "a", encoding="utf-8") as log:
     runner.run_command(["bash", "-c", sys.argv[3]], Path(sys.argv[4]), log, quiet=True)
 """
 
 
-@pytest.mark.parametrize("signum", TERMINATION_SIGNALS, ids=["SIGTERM", "SIGHUP"])
-def test_termination_signal_to_cmru_reaps_the_whole_step_tree(tmp_path, signum):
-    """cmru dying of SIGTERM/SIGHUP must not leave the step running as an orphan in its own session."""
+def _start_driver(tmp_path: Path, script: str, *, ignore_hup: bool = False) -> subprocess.Popen:
     driver_file = tmp_path / "driver.py"
     driver_file.write_text(DRIVER, encoding="utf-8")
+    source_root = str(Path(runner.__file__).resolve().parent.parent)
+    argv = [sys.executable, str(driver_file), source_root, str(tmp_path / "step.log"), script, str(tmp_path)]
+    if ignore_hup:
+        argv.append("ignore-hup")
+    return subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+@pytest.mark.parametrize(
+    ("signum", "ignore_hup"),
+    [(signal.SIGTERM, False), (signal.SIGHUP, False), (signal.SIGTERM, True)],
+    ids=["SIGTERM", "SIGHUP", "SIGTERM-with-SIGHUP-ignored"],
+)
+def test_termination_signal_to_cmru_reaps_the_whole_step_tree(tmp_path, signum, ignore_hup):
+    """cmru dying of SIGTERM/SIGHUP must not leave the step running as an orphan in its own session."""
     pidfile = tmp_path / "holder.pid"
     shell_pidfile = tmp_path / "shell.pid"
     script = f"echo $$ > {shell_pidfile}; sleep 600 & echo $! > {pidfile}; wait"
-    source_root = str(Path(runner.__file__).resolve().parent.parent)
-    driver = subprocess.Popen(
-        [sys.executable, str(driver_file), source_root, str(tmp_path / "step.log"), script, str(tmp_path)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    driver = _start_driver(tmp_path, script, ignore_hup=ignore_hup)
     holder = shell = None
     try:
         holder = _wait_pidfile(pidfile)
@@ -356,3 +370,135 @@ def test_termination_signal_to_cmru_reaps_the_whole_step_tree(tmp_path, signum):
             driver.wait()
         _kill_quietly(holder)
         _kill_quietly(shell)
+
+
+def test_sighup_ignored_at_start_stays_ignored_and_the_step_finishes(tmp_path):
+    """A SIGHUP ignored when cmru started (``nohup``) must not abort the step (driver process)."""
+    shell_pidfile = tmp_path / "shell.pid"
+    script = f"echo $$ > {shell_pidfile}; sleep 2; echo finished"
+    driver = _start_driver(tmp_path, script, ignore_hup=True)
+    shell = None
+    try:
+        shell = _wait_pidfile(shell_pidfile)
+        os.kill(driver.pid, signal.SIGHUP)
+        assert driver.wait(timeout=JOIN_LIMIT) == 0
+        assert "finished" in (tmp_path / "step.log").read_text(encoding="utf-8")
+    finally:
+        if driver.poll() is None:
+            driver.kill()
+            driver.wait()
+        _kill_quietly(shell)
+
+
+class _SignalOnLine:
+    """A log handle that delivers ``signum`` to this process when ``marker`` is written."""
+
+    def __init__(self, marker: str, signum: int, sink):
+        self.marker, self.signum, self.sink = marker, signum, sink
+
+    def write(self, text: str) -> int:
+        if self.marker in text:
+            os.kill(os.getpid(), self.signum)
+        return self.sink.write(text)
+
+    def flush(self) -> None:
+        self.sink.flush()
+
+
+@pytest.fixture
+def default_termination_signals():
+    """Start from SIG_DFL (a test runner may itself run under nohup) and restore afterwards."""
+    before = {signum: signal.getsignal(signum) for signum in TERMINATION_SIGNALS}
+    for signum in TERMINATION_SIGNALS:
+        signal.signal(signum, signal.SIG_DFL)
+    yield
+    for signum, handler in before.items():
+        signal.signal(signum, handler)
+
+
+def test_ignored_sighup_is_not_overridden_and_children_inherit_the_ignore(tmp_path, default_termination_signals):
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    script = (
+        "import signal; print('started', flush=True); import time; time.sleep(0.5); "
+        "print('child-ignores-hup', signal.getsignal(signal.SIGHUP) == signal.SIG_IGN)"
+    )
+    log = tmp_path / "step.log"
+    with log.open("a", encoding="utf-8") as handle:
+        runner.run_command(
+            [sys.executable, "-c", script], tmp_path, _SignalOnLine("started", signal.SIGHUP, handle),
+        )
+    assert "child-ignores-hup True" in log.read_text(encoding="utf-8")
+    assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
+
+
+def test_unignored_sigterm_is_still_handled_while_sighup_is_ignored(tmp_path, default_termination_signals):
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    seen: dict[int, object] = {}
+
+    class Spy:
+        def write(self, text: str) -> int:
+            seen.update({signum: signal.getsignal(signum) for signum in TERMINATION_SIGNALS})
+            return len(text)
+
+        def flush(self) -> None:
+            pass
+
+    runner.run_command(["echo", "hi"], tmp_path, Spy())
+    assert seen[signal.SIGHUP] == signal.SIG_IGN
+    assert callable(seen[signal.SIGTERM]) and seen[signal.SIGTERM] != signal.SIG_DFL
+    assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
+    assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
+
+
+def test_signal_right_after_popen_returns_still_reaps_the_step(tmp_path, monkeypatch, default_termination_signals):
+    """A SIGTERM landing between ``Popen`` returning and the read loop must take the reaping path."""
+    real_popen = subprocess.Popen
+    started: list[int] = []
+
+    class SignallingPopen(real_popen):
+        armed = False
+
+        @property
+        def stdout(self):
+            if SignallingPopen.armed:
+                SignallingPopen.armed = False
+                os.kill(os.getpid(), signal.SIGTERM)
+            return self._test_stdout
+
+        @stdout.setter
+        def stdout(self, value):
+            self._test_stdout = value
+
+    def factory(*args, **kwargs):
+        process = SignallingPopen(*args, **kwargs)
+        started.append(process.pid)
+        SignallingPopen.armed = True
+        return process
+
+    monkeypatch.setattr(runner.subprocess, "Popen", factory)
+    try:
+        with pytest.raises(SystemExit) as exited:
+            runner.run_command(["sleep", "600"], tmp_path, _InterruptingLog("never"), quiet=True)
+        assert exited.value.code == 128 + signal.SIGTERM
+        assert started and not _alive(started[0]), "the step was left running after the signal"
+    finally:
+        for pid in started:
+            _kill_quietly(pid)
+
+
+def test_failed_second_handler_install_restores_the_first(tmp_path, monkeypatch, default_termination_signals):
+    real_signal = signal.signal
+    calls: list[int] = []
+
+    def flaky(signum, handler):
+        calls.append(signum)
+        if len(calls) == 2:
+            raise OSError("injected install failure")
+        return real_signal(signum, handler)
+
+    monkeypatch.setattr(signal, "signal", flaky)
+    with pytest.raises(OSError, match="injected install failure"):
+        runner.run_command(["echo", "hi"], tmp_path, _InterruptingLog("never"), quiet=True)
+    monkeypatch.undo()
+    assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
+    assert signal.getsignal(signal.SIGHUP) == signal.SIG_DFL

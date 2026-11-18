@@ -491,17 +491,21 @@ def _terminate_as_exit() -> Iterator[None]:
     default action (ssh or terminal drop, ``timeout``, ``kill -- -pgid``) would leave it running
     as an orphan; the ``SystemExit`` instead takes the group-reaping path. ``signal.signal`` only
     works in the main thread: in any other thread nothing is installed and the caller's own
-    signal policy stands. The previous handlers are restored on exit.
+    signal policy stands. A signal that is ignored when this starts (a SIGHUP set to ``SIG_IGN``
+    by ``nohup``) stays ignored, for cmru and, since the disposition survives exec, for the step.
+    Only what was installed here is restored on exit, even when a later install fails.
     """
     previous: dict[int, object] = {}
 
     def _handler(signum, _frame) -> None:
         raise SystemExit(128 + signum)
 
-    if threading.current_thread() is threading.main_thread():
-        for signum in (signal.SIGTERM, signal.SIGHUP):
-            previous[signum] = signal.signal(signum, _handler)
     try:
+        if threading.current_thread() is threading.main_thread():
+            for signum in (signal.SIGTERM, signal.SIGHUP):
+                if signal.getsignal(signum) == signal.SIG_IGN:
+                    continue
+                previous[signum] = signal.signal(signum, _handler)
         yield
     finally:
         for signum, handler in previous.items():
@@ -557,18 +561,6 @@ def _run_command(
     # case immediate; arbitrary child tools still control their own buffering.
     command_env["PYTHONUNBUFFERED"] = "1"
     start = monotonic()
-    process = subprocess.Popen(
-        argv,
-        cwd=str(cwd),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        bufsize=0,
-        env=command_env,
-        # Its own session and process group: an interrupt reaps the step and everything it
-        # spawned (KI-178), and a terminal Ctrl-C reaches only cmru, which does that reaping.
-        start_new_session=True,
-    )
-    assert process.stdout is not None
     tail: deque[str] = deque(maxlen=TAIL_LINES_ON_FAILURE) if quiet else deque(maxlen=0)
     # First-seen, not last-seen: docker buildx bake always ends with a generic
     # "ERROR: failed to solve: ..." summary line, so a last-N policy would let
@@ -576,7 +568,22 @@ def _run_command(
     # failure produces more than ERROR_LINES_ON_FAILURE matches.
     error_lines: list[str] = []
     evidence_lines: deque[str] = deque(maxlen=300)
+    process: Optional[subprocess.Popen] = None
     try:
+        # Started inside the try so a termination signal arriving right after it returns
+        # still takes the reaping path below (KI-178).
+        process = subprocess.Popen(
+            argv,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=0,
+            env=command_env,
+            # Its own session and process group: an interrupt reaps the step and everything it
+            # spawned, and a terminal Ctrl-C reaches only cmru, which does that reaping.
+            start_new_session=True,
+        )
+        assert process.stdout is not None
         for line in _output_lines(process, argv, log_handle):
             _write_line(log_handle, line)
             if mirror_handle is not None:
@@ -592,10 +599,12 @@ def _run_command(
     except BaseException:
         # Ctrl-C / SystemExit from a SIGTERM handler: never leave the child, or anything
         # in its process group, running (or unreaped) behind us (BG-02, KI-178).
-        _reap_process_group(process)
+        if process is not None:
+            _reap_process_group(process)
         raise
     finally:
-        process.stdout.close()
+        if process is not None and process.stdout is not None:
+            process.stdout.close()
     elapsed_seconds = monotonic() - start
     if exit_code != 0:
         if quiet and error_lines:
