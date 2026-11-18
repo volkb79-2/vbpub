@@ -258,73 +258,161 @@ their `args`/`result` keys are fixed by the M5/M6 packages (`resource-limits/1`,
 
 ## 5. Budgets, streams and state machines
 
-5.1 **Bounds** (plan §B.4; values are config proposals, announced in `hello.limits`):
+Every time below comes from an injected monotonic clock (`now_ns: u64`); no component reads a clock
+itself, so every transition is a fake-clock unit test. A deadline fires when `now > deadline`
+(strictly): at exactly `deadline` nothing happens.
 
-| Bound | observe/operator | observer | control | On violation |
-|---|---|---|---|---|
-| clients per level | 16 / 8 | 128 | 64 | accept then `EVT closing busy`, close |
-| request frame bytes (`max_request_bytes`) | 4,096 | 4,096 | 1 MiB | `frame-too-large`, close |
-| request deadline (first byte → complete) | 5 s | 5 s | 25 s | `deadline`, close |
-| server→client frame (`max_frame_bytes`) | 16 MiB | 16 MiB | 16 MiB | server never builds one |
-| outstanding requests | 4 | 4 | 4 | `too-many-requests`, stays open |
-| queued bytes per client / global | 4 MiB / 32 MiB | same | same | §5.3 |
-| frame completion age (writer) | 5 s | 5 s | 5 s | `slow-client`, close |
+5.1 **Bounds** (plan §B.4 where it agrees, §13 V-15/V-16 where not; config keys of `hostobsd.toml`,
+values are the defaults; the ones a client needs are announced in `hello.limits`, §4.4):
 
-An outstanding request is one whose final REP/END is not yet enqueued; live subscriptions do not count.
+| Bound (`hello.limits` key) | observe | operator | observer | control | On violation |
+|---|---|---|---|---|---|
+| connections per level | 16 | 8 | 128 | 64 | accept, close at once, no byte written (§5.4 `refuse`) |
+| connections per peer uid per level | 8 | 4 | 64 | 32 | same |
+| hello deadline, accept → hello complete (`hello_deadline_ms`) | 5 s | 5 s | 5 s | 5 s | §5.4 row `hello-timer` |
+| request frame or line bytes (`max_request_bytes`) | 32 KiB | 32 KiB | 16 KiB | 1 MiB | `frame-too-large`, fatal |
+| request deadline, first byte → complete (`request_deadline_ms`) | 5 s | 5 s | 5 s | 25 s | `deadline`, fatal |
+| idle deadline (`idle_ms`) | 300 s | 300 s | 300 s | 300 s | `idle`, fatal |
+| outstanding requests (`max_outstanding`) | 4 | 4 | 4 | 4 | `too-many-requests`, request refused, connection stays |
+| live subscriptions per connection (`max_subscriptions`) | 4 | 4 | — | — | `budget` `{"pool":"subscriptions"}` |
+| distinct live selections per peer uid / per probe | 4 / 8 | 4 / 8 | — | — | `budget` `{"pool":"uid-selections"}` / `{"pool":"selections"}` |
+| queued BLOCK bytes per connection (`client_queue_bytes`) / global | 4 MiB / 32 MiB | same | — | — | §5.3 (live blocks dropped, query blocks wait) |
+| queued REP/EVT/END bytes per connection (`control_queue_bytes`) | 2 MiB | 2 MiB | 2 MiB | 2 MiB | `slow-client`, fatal |
+| writer stall: queue non-empty, no byte written (`stall_ms`) | 5 s | 5 s | 5 s | 5 s | `slow-client`, fatal |
+| largest BLOCK the server builds (`max_block_bytes`) | 4 MiB | 4 MiB | — | — | never built (§4.9 splits) |
+| largest frame either side accepts (`max_frame_bytes`) | 16 MiB | 16 MiB | 16 MiB | 16 MiB | client reader: `oversized-frame` |
 
-5.2 **Reader** (`proto::stream::FrameReader`, both sides; times from an injected clock):
+`max_request_bytes` is derived from the worst legal request (§4.2, §4.12 give the arithmetic), so a
+request that obeys every field bound always fits. An **outstanding request** is one whose final REP or
+END is not yet enqueued; live subscriptions do not count. A **distinct selection** is the canonical
+form of §4.2; a uid's selections are those its connections' live subscriptions use (a selection two
+uids use counts for both). `max_block_bytes = client_queue_bytes`, so an empty queue can always take
+the largest block (no query can wait forever on its own budget).
+
+5.2 **Reader** (`proto::stream::FrameReader`, both sides and both languages; P3's `stream.py` is the
+same machine, §7.3). `feed(bytes, now)` returns the frames it completed **and** at most one error:
+frames completed before the error in the same call are returned with it, never lost.
 
 | State | Input | Transition / output |
 |---|---|---|
-| `Header{have}` | bytes | append; at 12 B validate header (§2.1, `len ≤ max_frame`) → error ⇒ `Poisoned`; `len = 12` ⇒ emit frame, `Header{0}`; else `Body{hdr, have=12, started}` |
-| `Body` | bytes | append up to `len`; complete ⇒ emit frame, `Header{0}`; surplus bytes go to the next frame in the same call |
-| `Header{have>0}` or `Body` | `poll(now)`, `now − started > completion` | `Poisoned(deadline)` |
-| `Header{0}` | EOF | `Closed` (clean) |
-| `Header{have>0}` or `Body` | EOF | `Poisoned(truncated)` |
-| `Poisoned(e)` | anything | stays; returns `e` |
+| `Header{have}` | bytes | append to the 12-byte header buffer; `have = 0 → 1` sets `started = now`; at 12 B validate (§2.1 fixed fields, then `12 ≤ len ≤ max_frame`) → error ⇒ `Poisoned(e)`; `len = 12` ⇒ emit, `Header{0}`; else `Body{hdr, have: 12, started}` |
+| `Body` | bytes | append up to `len`; complete ⇒ emit, `Header{0}`; surplus bytes start the next frame in the same call (with `started = now`) |
+| `Header{have > 0}` or `Body` | `poll(now)`, `now > started + completion` | `Poisoned(deadline)` |
+| `Header{0}` | `poll(now)` | nothing (an idle connection is §5.4's business, not the reader's) |
+| `Header{0}` | `eof()` | `Closed` (clean) |
+| `Header{have > 0}` or `Body` | `eof()` | `Poisoned(truncated)` |
+| `Poisoned(e)` | `feed`, `poll`, `eof` | stays; returns `e` (no frames) |
+| `Closed` | `feed` | `Poisoned(trailing-bytes)` |
 
-`started` is the clock when the frame's first byte was fed. The body buffer grows with received bytes
-(capacity ≤ `min(len, received + 64 KiB)`), never with `len` alone. Server side: `max_frame` =
-`max_request_bytes`, `completion` = request deadline; client side: 16 MiB and 30 s (the server is the
-peer that must not stall the client; §11 open question 1).
+Buffering: the Rust reader grows its body buffer with received bytes (capacity ≤ `min(len, received +
+64 KiB)`), never by `len` alone. Parameters: server `max_frame = max_request_bytes`, `completion =
+request_deadline_ms` of the level; client `max_frame = 16 MiB`, `completion = 30 s` (D-W16).
 
-5.3 **Writer queue** (`proto::stream::SendQueue`, server side, one per client). Entries are
-`{bytes: Arc<[u8]>, class: Control | Block{stream, dict_bearing}, written: usize}`; `queued` = sum of
-unsent bytes. Identical selections share one immutable encoded block; the per-client fields are
-patched into a private copy of the first `16 + 8·n_sec + 80` bytes when the frame becomes the head of
-the queue (`corr` @8, `dropped` @`88 + 8·n_sec`), and the frame is written as `[prefix, shared tail]`.
+Wire mapping on the server (a reader error on a request): `oversized-frame` → REP `corr=0`
+`frame-too-large`; any other header error (`unknown-frame-type`, `unknown-frame-flags`,
+`non-zero-reserved`, `truncated` for `len < 12`) → REP `corr=0` `bad-frame`; `deadline` → REP `corr=0`
+`deadline`; `truncated` at EOF and `trailing-bytes` after a clean EOF → close without a reply (the peer
+is gone). All of them are fatal (§5.4).
 
-| Input | Rule |
+5.3 **Send hub** (`proto::stream::SendHub`, server side, one per serving process that owns every
+connection's outgoing queue; P5b wraps it in one mutex). It owns the global budget, so the victim of a
+global overflow is chosen with every queue in view.
+
+Queue entries, in one FIFO per connection: `Control{bytes}` (REP/EVT/END, encoded by the caller),
+`Live{stream, tick}` (a subscription tick, droppable), `Query{stream, bytes}` (a block of `current`,
+`snapshot_at`, `series_batch` or `export`, never dropped). `stream` is the subscribing or requesting
+`corr`. `tick` implements `TickForms`: `bare() -> Option<Arc<[u8]>>` (absent on the tick that changes the
+generation) and `dict_form() -> Arc<[u8]>` (encoded at most once per tick, on first call). Per
+connection: `block_bytes` (unsent bytes of Live and Query entries), `control_bytes`,
+`last_progress_ns`, per stream `pending_drops: u32`, `needs_dict: bool`, `pinned_blocks: u32`; hub:
+`global_block_bytes`.
+
+**Pin.** `head(c)` returns the head entry as `[prefix, tail]`. The first `head` call for an entry
+**pins** it: for a Live or Query block the hub copies the first `16 + 8·n_sec + 80` bytes (n_sec from
+offset 12; §3.1 guarantees the header is the first body), writes `corr` @8 and `dropped =
+pending_drops[stream]` (saturating) @`88 + 8·n_sec`, resets `pending_drops[stream] = 0` and increments
+`pinned_blocks[stream]`. A pinned entry is never dropped or replaced: it is written completely or the
+connection is closed. Stamping at pin, not at push, is what makes `dropped` exact: every drop happens
+to an unpinned entry, so it is counted in the next pinned block of its stream or in that stream's END.
+
+**Form.** A Live entry is pushed as `dict_form()` when `needs_dict[stream]` is set, when the stream has
+no pinned block yet (first block), or when `bare()` is absent; otherwise as `bare()`. Pushing a
+dictionary-bearing entry clears `needs_dict[stream]`; dropping or replacing a dictionary-bearing Live
+entry sets it. The flag is sticky across an empty queue, so a later tick repairs it however long the
+gap.
+
+| Operation | Rule (in this order) |
 |---|---|
-| `push_control(f)` | if `queued + len > per_client` or global over ⇒ `Closing(slow-client)`; else append |
-| `push_block(b)` | while over budget and an unsent BLOCK with `written = 0` exists: drop the oldest, `pending_drops[stream] += 1`; if still over budget, drop `b` itself (counted); else append |
-| drop of a dict-bearing block | the next queued block of that stream, if bare, is replaced by its dictionary-bearing form |
-| head becomes current | stamp `dropped = pending_drops[stream]` (saturating u32), reset it to 0 |
-| `wrote(n)` | advance `written`; complete ⇒ pop, `last_progress = now` |
-| `poll(now)` | head partially written and `now − last_progress > 5 s` ⇒ `Closing(slow-client)` |
+| `push_control(c, f, now)` | `control_bytes + len > control_queue_bytes` ⇒ return `Close(slow-client)`; else append. Control bytes never count toward block budgets and are never dropped. |
+| `push_live(c, s, tick, now)` | 1. **Coalesce**: if stream `s` has an unpinned Live entry, it is replaced in place by the new tick (`pending_drops[s] += 1`; if the old one was dictionary-bearing, `needs_dict[s] = true`); the form rule then picks the new entry's form. 2. **Per-connection fit**: while `block_bytes > client_queue_bytes`, drop the oldest unpinned Live entry of another stream of `c` (counted on its stream, sets its `needs_dict` if dictionary-bearing). 3. **Global fit**: while `global_block_bytes > 32 MiB`, drop the oldest unpinned Live entry of the connection with the largest `block_bytes` (ties: lowest connection id), excluding the entry just pushed. 4. If either budget is still exceeded, the new entry itself is dropped (counted, `needs_dict` set if it was dictionary-bearing) ⇒ `DroppedIncoming`; else `Queued`/`Coalesced`. |
+| `push_query(c, s, block, now)` | Run steps 2-3 for a block of this length without inserting it; if both budgets then fit, append ⇒ `Queued`; else nothing is dropped beyond the Live entries already shed and the hub returns `Backpressure(block)`: the producer keeps the block and pauses that stream until `query_ready(c)` (§5.3 last row). Query blocks are never dropped. |
+| `end_stream(c, s)` | Removes every unpinned Live entry of `s` (counted), returns `{blocks: pinned_blocks[s], dropped: pending_drops[s]}` for the END payload (§2.2) and forgets the stream; the caller then `push_control`s the END. |
+| empty → non-empty (any push) | `last_progress_ns = now` |
+| `wrote(c, n, now)` | `n > 0` ⇒ `last_progress_ns = now`; advance; a complete head is popped and its bytes leave both budgets. |
+| `poll(now)` | for each connection with a non-empty queue and `now > last_progress_ns + stall_ms` ⇒ `Close(slow-client)`; returns the list. |
+| `query_ready(c)` | true when an earlier `push_query` of `c` returned `Backpressure` and a pop or drop has freed bytes since; the producer retries. |
+| `remove(c)` | drops everything of `c`, releases its bytes. |
 
-DICT/REP/EVT/END are never dropped. A partially written frame is never dropped: it is finished or the
-connection is closed.
+Consequences, each a test (§11.4): a connection holds at most one unpinned Live entry per stream, so a
+lagging subscriber sees the newest tick and a `dropped` count, never a stale backlog; a REP or END never
+competes with blocks; a query never loses data, it waits; one slow group member cannot close another
+(the global victim is whoever holds the most bytes, and only its Live entries are shed); a stalled
+writer is closed after `stall_ms` from the last byte it accepted, never sooner after an idle period.
 
-5.4 **Connection-fatal codes**: `unknown-mode`, `unsupported-version`, `hello-required`, `bad-frame`,
-`frame-too-large`, `deadline`, `slow-client`, `shutting-down`. Every other code answers one request
-and keeps the connection.
+5.4 **Connection state machine** (server, P5b; `proto::stream::ConnTimers` holds the three deadlines
+so the table is unit-testable without sockets):
+
+| State | Event | Next / action |
+|---|---|---|
+| (accept) | level or peer-uid connection cap reached | `refuse`: close, no byte written, nothing read |
+| (accept) | else | `Undecided{have: 0}`; `hello_deadline = now + hello_deadline_ms`; peer credentials read (§4.12) |
+| `Undecided{have}` | byte `0x7B` at `have = 0` | `JsonNoHello` (§8) |
+| `Undecided{have}` | byte equal to `HOB\x01`[have] (have < 4) or any byte (4 ≤ have < 8) | `have + 1`; at 8 ⇒ send the server prefix (§1.4) ⇒ `AwaitHello` (major mismatch ⇒ prefix, close) |
+| `Undecided{have}` | any other byte | write the one `unknown-mode` line (§1.3), close |
+| `Undecided`, `AwaitHello`, `JsonNoHello` | `now > hello_deadline` (`hello-timer`) | `Undecided`: close silently; `AwaitHello`: REP `corr=0` `deadline`; `JsonNoHello`: `deadline` line; then close |
+| `AwaitHello` | complete REQ `hello`, `corr = 1`, valid | REP ⇒ `Ready` |
+| `AwaitHello` | complete REQ other verb, or `hello` with `corr ≠ 1` | REP `corr=<its corr>` `hello-required` (corr ≠ 1: `bad-frame`, REP `corr=0`), close |
+| `JsonNoHello` | first complete line | handled as a request ⇒ `Ready` (hello optional, §8.4) |
+| `Ready` | complete request | dispatch; `max_outstanding` exceeded ⇒ REP `too-many-requests` |
+| `Ready` | no outstanding request, no live subscription, reader at `Header{0}`, queue empty | arm `idle_deadline = now + idle_ms` (disarmed by any received byte or enqueued frame) |
+| `Ready` | `now > idle_deadline` | `Closing(idle)` |
+| `Ready` | reader `eof()` clean (`SHUT_WR`) | `Draining`: finish outstanding requests, `end_stream` every subscription with reason `client-eof`, close when the queue is empty |
+| any | reader error, hub `Close(slow-client)`, server shutdown | `Closing(code)` |
+| `Closing(code)` | — | `remove` the hub queue's unpinned entries; if no entry is partially written and the socket accepts it without blocking, write `EVT corr=0 {"event":"closing","reason":code}` (binary) or the error line (JSON); close. A client MUST NOT depend on receiving it. |
+
+**Connection-fatal codes**: `unknown-mode`, `unsupported-version`, `hello-required`, `bad-frame`,
+`frame-too-large`, `deadline`, `idle`, `slow-client`, `shutting-down`. Every other code answers one
+request and keeps the connection. A refused connection (`refuse`) carries no code at all: the mode is
+unknown before the first byte, so no reply could be framed.
 
 ## 6. Dictionaries, generations, epochs, reconnect
 
-6.1 A dictionary is scoped to **one stream** = `(connection, corr)`. A reply BLOCK without a dictionary
-section is decoded against the stream's held generation and its rows/columns are checked against it
-exactly as an in-frame one (`HOB-46`).
-6.2 Generations start at 1 per stream and increase by one on **any** change (append or retire); the
-changed generation is sent complete inside the next BLOCK. A dictionary-bearing block's generation MUST
-exceed the held one (`generation-regressed`); a bare block MUST equal it
-(`stale-dictionary-generation`). At `u32::MAX` the server ends the stream (`END ok:false`, `internal`).
-6.3 Query replies carry their own dictionary in their first BLOCK; exported segments carry it in every
-record (plan §C.5).
-6.4 Epoch and boot do not change within a connection. On reconnect a client MUST drop every dictionary
-and live subscription; if `hello.epoch` or `hello.boot_id` differs it MUST also drop cursors and open
-span keys and report `lost` for any session or window it held (plan §D.2); with the same epoch its
-cursors stay valid.
+6.1 **Client side: a dictionary is held per stream** = `(connection, corr)`. A BLOCK without a
+dictionary section is decoded against the stream's held dictionary and its rows/columns are checked
+against it exactly as against an in-frame one (`HOB-46`).
+6.2 **Server side: a generation counter belongs to the producer of the encoded bytes.** A live
+selection stream (one per distinct selection, §4.2, shared by every subscriber, §5.3) owns one
+dictionary and one counter: it starts at 1 when the selection stream is created and increases by one on
+**any** change (append or retire); the tick that changes it carries the new generation complete (it
+has no bare form). Every subscriber receives the same bytes, so the same `dict_gen`. A query stream
+(private bytes) numbers its own from 1. Because a subscriber may join at generation 5, the client rule
+is relative to what the stream holds, never absolute:
+- the first BLOCK of every stream is dictionary-bearing (any generation ≥ 1);
+- a later dictionary-bearing BLOCK's generation MUST exceed the held one (`generation-regressed`);
+- a bare BLOCK's generation MUST equal the held one (`stale-dictionary-generation`); a bare BLOCK with
+  nothing held is `stale-dictionary-generation` too.
+The §5.3 form rule guarantees a conforming server never violates these: a dictionary-bearing entry is
+pushed only for a first block, a generation change or after a dropped dictionary-bearing entry, and in
+the last case the client never received that generation. At `u32::MAX` the selection stream ends every
+subscription (`END ok:false`, `internal`).
+6.3 Query replies carry their dictionary in their first BLOCK; a `series_batch` continuation (new
+corr) is a new stream. Exported segments carry it in every record (plan §C.5).
+6.4 **Epoch.** A probe process takes a new epoch at start (greater than every epoch it served under
+the same `boot_id`, persisted beside the store) and keeps it until it exits; epoch and boot therefore
+never change within a connection. On reconnect a client MUST drop every dictionary and live
+subscription; if `hello.epoch` or `hello.boot_id` differs it MUST also drop cursors and open span keys
+and report `session-lost`/`window-lost` for any session or window it held (plan §D.2); with the same
+epoch its cursors stay valid.
 6.5 A client that sees any decoder error on a BLOCK MUST close the connection and reconnect (the
 server is the only producer, so the stream is no longer trustworthy).
 
