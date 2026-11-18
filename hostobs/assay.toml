@@ -16,7 +16,9 @@
 #
 #   judged set: 33 `src/*.rs` files of crates/model, proto, kernel and store (34 since
 #   P2a2 added and declared `crates/proto/src/stream.rs`, 36 since P2c added `envelope.rs` and
-#   `stream_dicts.rs`; the measurements below are of the 33)
+#   `stream_dicts.rs`, 43 since P5a added and declared the seven judged `crates/client/src` files
+#   `client.rs`, `error.rs`, `hello.rs`, `json.rs`, `level.rs`, `streams.rs` and `transport.rs`;
+#   the measurements below are of the 33)
 #   coverage:   15100 / 15723 executable lines = 96.0377 %
 #               model 98.09 % (2004/2043), proto 99.71 % (3454/3464),
 #               kernel 93.52 % (2627/2809), store 94.71 % (7015/7407)
@@ -28,9 +30,9 @@
 #   lane's argv) remain the tighter bound and are never lowered to accommodate
 #   this lane, and a floor is never lowered for a crate whose coverage drops.
 #
-# Three of the four `crates/*/src/lib.rs` files are NOT judged targets:
-# `model`, `proto` and `store` are module declarations and `//!` documentation
-# only, so cargo-llvm-cov emits no `SF:` record for them. `kernel`'s `lib.rs`
+# Four of the five `crates/*/src/lib.rs` files are NOT judged targets:
+# `model`, `proto`, `store` and `client` are module declarations, re-exports and `//!`
+# documentation only, so cargo-llvm-cov emits no `SF:` record for them. `kernel`'s `lib.rs`
 # carries `Bounds`, so it IS declared (7 executable lines, all covered).
 # Assay's whole-target mode refuses a declared target with
 # no artifact entry (`NO_MEASUREMENT/TARGET_NOT_MEASURED`) rather than excusing
@@ -108,13 +110,26 @@ unsafe_symlink_omissions = [
 
 [lanes.assay-r1.judge]
 language = "rust"
-source_roots = ["crates/model/src", "crates/proto/src", "crates/kernel/src", "crates/store/src"]
+source_roots = [
+  "crates/model/src",
+  "crates/proto/src",
+  "crates/kernel/src",
+  "crates/store/src",
+  "crates/client/src",
+]
 # whole_target: every executable line of every declared target is judged, not
 # only the lines a commit changed. That is what makes this lane a whole-project
 # floor rather than a diff gate; `judge.targets` is required and honoured in
 # this mode, and `judge.base`/`base_source` are forbidden (there is no diff).
 mode = "whole_target"
 targets = [
+  "crates/client/src/client.rs",
+  "crates/client/src/error.rs",
+  "crates/client/src/hello.rs",
+  "crates/client/src/json.rs",
+  "crates/client/src/level.rs",
+  "crates/client/src/streams.rs",
+  "crates/client/src/transport.rs",
   "crates/kernel/src/cgroup.rs",
   "crates/kernel/src/clock.rs",
   "crates/kernel/src/cmdline.rs",
