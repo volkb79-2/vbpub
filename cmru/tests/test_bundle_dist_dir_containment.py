@@ -202,3 +202,22 @@ def test_validate_staging_paths_requires_strict_descendant_of_project_root(tmp_p
         project / "dist", project / "dist" / "bundle", project / "dist" / "client",
         project_root=project,
     )
+
+
+@pytest.mark.parametrize("target", ["dist_dir", "bundle_dir", "client_dir"])
+def test_removal_helper_itself_refuses_a_config_whose_dist_dir_is_outside_project(tmp_path, target):
+    """The removal helper rechecks on its own, whatever the caller validated earlier."""
+    scratch = Scratch(tmp_path, "dist")
+    parsed = bundle.parse_config(scratch.config)
+    outside = scratch.sibling.resolve()
+    victim = outside / "bundle"
+    victim.mkdir()
+    (victim / "precious.txt").write_text("precious\n", encoding="utf-8")
+    unsafe = replace(parsed, dist_dir=outside, bundle_dir=victim, client_dir=outside / "client")
+    before = scratch.snapshot()
+
+    with pytest.raises(ValueError, match="dist_dir.*project_root"):
+        bundle._remove_staging_tree(unsafe, getattr(unsafe, target))
+
+    scratch.assert_untouched(before)
+    assert (victim / "precious.txt").is_file()
