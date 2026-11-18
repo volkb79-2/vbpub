@@ -66,7 +66,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-51 | Received frames are held to the alignment and header-first rules: every section `len` is a multiple of 8 (`section-length`) and an unknown kind at directory entry 0 is `section-order` at index 0, after the rank check | Minor | FIXED (P2a1) |
 | HOB-52 | A repeated dictionary identity is `duplicate-dictionary-entry` in Rust whatever the other fields hold, as in the Python reference | Minor | FIXED (P2a1) |
 | HOB-53 | The Python reference follows the WIRE.md §3.10 precedence: `not-a-block` before the buffer length and `SECTIONED` checks | Minor | FIXED (P2a1) |
-| HOB-54 | The stream layer machines (`FrameReader`, `ModeDetect`, `SendHub`, `ConnTimers`, client stream dictionaries) do not exist yet | Major | OPEN (P2) |
+| HOB-54 | The stream layer machines (`FrameReader`, `ModeDetect`, `SendHub`, `ConnTimers`, client stream dictionaries) do not exist yet | Major | OPEN (P2: `FrameReader`, `ModeDetect`, `ConnTimers` exist; `SendHub`, `StreamDicts`, `envelope.rs` do not) |
 | HOB-55 | A look-alike name such as `hot-0-18446744073709551615.seg` (or `.seg.corrupt`) sets the tier's sequence water mark to `u64::MAX` before its owner is proven, so every `open_segment` fails with `LengthOverflow` until the file is removed | Minor | FIXED (P0b) |
 | HOB-56 | `StoreStats::bytes` maintained by incremental arithmetic drifts from the tiers' own byte totals when a file vanishes or a new segment's header is written | Minor | FIXED (P0b) |
 | HOB-57 | `docs/hand-mutants/m1d-mutants.py` had no per-mutant subprocess timeout, so a mutant that hangs the suite hangs the campaign | Minor | FIXED (P0b) |
@@ -1114,6 +1114,13 @@ loop. WIRE.md §5.2-§5.4, §12.
 (§5.3: pin-time `dropped` stamping, coalescing, the `last_pushed_gen` form rule, Live/Query/control
 pools with per-uid caps, frame completion and stall closes) and the connection timers (§5.4) are
 specified with fake-clock tables but have no code, so no stream property of `hostobs/1` is tested.
+
+**What exists (P2a2).** `crates/proto/src/stream.rs` holds `FrameReader` (the §5.2 machine, one unit
+test per row), `ModeDetect` (the §5.3 mode-detection rows) and `ConnTimers` (one test per §5.4 timer
+row); `ProtoError::Deadline` is the reader's completion-age error. The 12 reader cases are
+`fixtures/stream/reader-*.json` (generator `python/reference/make_stream_fixtures.py`, replayed by
+`crates/proto/tests/stream_fixtures.rs`). Still open: `SendHub` and the 19 hub cases, `StreamDicts` and
+the 6 client cases, `envelope.rs`, the Python `stream.py`, and P5b's 18 connection cases.
 
 **Exit criteria.** P2: the §12 `FrameReader`, `ModeDetect`, `SendHub` and `ConnTimers` APIs in Rust
 with the 12 reader and 19 hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row; P3: the Python

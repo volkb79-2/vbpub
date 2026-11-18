@@ -503,6 +503,18 @@ Wire mapping on the server (a reader error on a request): `oversized-frame` → 
 `deadline`; `truncated` at EOF and `trailing-bytes` after a clean EOF → close without a reply (the peer
 is gone). All of them are fatal (§5.4).
 
+**Implemented (`crates/proto/src/stream.rs`).** `FrameReader` is the table above, one unit test per
+row (`header_row_*`, `body_row_*`, `poll_row_*`, `eof_row_*`, `poisoned_row_*`, `closed_row_*`), and
+the 12 reader cases of §11.4 replay against it. Precisions the table leaves open: an empty `feed` is
+not an event (it stamps nothing; a poisoned reader still returns its error); `feed` never checks the
+age, only `poll` does, so a frame that completes late inside one `feed` is delivered; a second `eof`
+after a clean one stays `Ok`; the effective maximum is `min(max_frame, 16 MiB)` because
+`FrameHeader::parse` already refuses a longer `len`; the fixed header fields are judged before `len`
+(the first refusal of the codec and of the Python reference); the age error is
+`ProtoError::Deadline` (`deadline`), and `truncated` at EOF names its context (`frame header at end
+of stream`, `frame body at end of stream`). `buffered_len()` and `buffered_capacity()` expose the
+buffer for the allocation tests; a poisoned reader holds no buffer.
+
 5.3 **Send hub** (`proto::stream::SendHub`, server side, one per serving process that owns every
 connection's outgoing queue; P5b wraps it in one mutex). It owns the per-uid and global pools, so the
 victim of an overflow is chosen with every queue in view.
@@ -580,6 +592,12 @@ byte); the caller passes `&bytes[at..]` to the `FrameReader` (binary) or the JSO
 same call, so surplus bytes after the prefix are never lost. A detector that returned anything but
 `Need` is finished; further `feed` calls are a caller bug (panic in debug).
 
+**Implemented.** The detector decides at the earliest byte: `{` at prefix offset 0 is `Json { at }`
+(`at` is that byte's index, not consumed); a byte among the first four that differs from `HOB\x01`
+(a `{` after the first byte included) is `Unknown`; bytes 5 to 8 may be any value; the eighth byte
+gives `Binary { prefix, at: index + 1 }`. An empty `feed` is `Need`. After a decision, `feed`
+panics in debug builds and returns `Unknown` in release builds. Tests: `detect_row_*`.
+
 5.4 **Connection state machine** (server, P5b; `proto::stream::ConnTimers` holds the hello and idle
 deadlines, the request deadline is the reader's completion age (§5.2), so the table is unit-testable
 without sockets):
@@ -601,6 +619,15 @@ without sockets):
 | `Ready` | reader `eof()` clean (`SHUT_WR`) | `Draining`: finish outstanding requests, `end_stream` every subscription with reason `client-eof`, close when the queue is empty |
 | any | reader error, hub `Close(slow-client)`, server shutdown | `Closing(code)` |
 | `Closing(code)` | — | `drain_unpinned(c)`; if `head_partial(c)` is false and the socket accepts it without blocking, write `EVT corr=0 {"event":"closing","reason":code}` (binary) or the error line (JSON) directly (not through the hub); `remove(c)`; close. A client MUST NOT depend on receiving it. |
+
+**Implemented (`ConnTimers`).** `ConnTimers::new(hello_ns, idle_ns)` holds the level's two
+durations; nothing is armed until `on_accept(now)` (a refused connection never calls it).
+`on_hello_complete()` disarms the hello deadline (the first complete line in JSON mode counts),
+`on_byte()` and `on_enqueue()` disarm idle, `on_idle_condition(true, now)` arms idle at `now +
+idle_ns` only when it is not armed (an armed deadline is kept, never pushed out) and
+`on_idle_condition(false, now)` disarms it; deadlines saturate at `u64::MAX`. `expired(now)` is
+strict (`now > deadline`) and reports `Timer::Hello` before `Timer::Idle`. Tests: `timers_row_*`,
+one per row above.
 
 **Connection-fatal codes**: `unknown-mode`, `unsupported-version`, `hello-required`, `bad-frame`,
 `frame-too-large`, `deadline`, `idle`, `slow-client`, `shutting-down`. Every other code answers one
@@ -865,7 +892,10 @@ case with a top-level `"held": {"generation", "entries"}` key is decoded against
 "max_frame", "completion_ms", "steps": [{"t_ms", "feed_hex"} | {"t_ms", "poll": true} | {"t_ms", "eof":
 true}], "expect": [[<outputs of step 0>], [<outputs of step 1>], ...]` with outputs `{"frame": {"type",
 "corr", "len"}}`, `{"error": kind}`, `{"closed": "clean"}`; one list per step, in order; Rust and
-Python both replay them). Reader cases (`fixtures/stream/reader-*.json`, one per §5.2 row):
+Python both replay them). Reader cases (`fixtures/stream/reader-*.json`, one per §5.2 row; written by
+`python/reference/make_stream_fixtures.py` from the §5.2 rules, not by running a reader; Rust
+`crates/proto/tests/stream_fixtures.rs`; `python/tests/test_stream_fixtures.py` checks the files against
+the generator and replays them with an independent reader):
 
 | Case | Expected |
 |---|---|
@@ -960,7 +990,7 @@ Vec<(ConnId, Close)>`; `queued(ConnId) -> Pools { live: usize, query: usize, con
 generation(&self) -> u32; fn bare(&self) -> Option<Arc<[u8]>>; fn dict_form(&self) -> Arc<[u8]>; }`;
 `enum Close { SlowClient }`;
 `ConnTimers { hello_deadline_ns: Option<u64>, idle_deadline_ns: Option<u64> }` with
-`on_accept(now_ns)`, `on_hello_complete()`, `on_byte()` and `on_enqueue()` (both disarm idle),
+`ConnTimers::new(hello_ns: u64, idle_ns: u64)`, `on_accept(now_ns)`, `on_hello_complete()`, `on_byte()` and `on_enqueue()` (both disarm idle),
 `on_idle_condition(idle: bool, now_ns)` (arms at `now + idle_ms` when it turns true), `expired(now_ns) ->
 Option<Timer>`, `enum Timer { Hello, Idle }` (the request deadline is `FrameReader`'s completion age);
 `decode_block_with(bytes: &[u8], held: Option<&Dictionary>) -> Result<Block, ProtoError>`;

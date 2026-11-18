@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added (P2a2: the stream reader, mode detection and connection timers; `HOB-54` stays open)
+
+- **`proto::stream::FrameReader`** (WIRE.md §5.2): `feed(bytes, now_ns) -> Feed { frames, error }`,
+  `poll(now_ns)`, `eof()`. A frame completed before an error in the same call is returned with it; the
+  age runs from a frame's first byte and fires strictly after `completion`; a body buffer grows with
+  the received bytes (capacity at most `min(len, received + 64 KiB)`, never from `len` alone, and an
+  oversized or malformed header is refused with a 12-byte buffer); an error poisons the reader; a feed
+  after a clean `eof` is `trailing-bytes`. `ProtoError::Deadline` (`deadline`) is the new variant (45).
+- **`ModeDetect`** (§5.3, `Detect { Need, Json { at }, Binary { prefix, at }, Unknown }`) and
+  **`ConnTimers`** (§5.4, `Timer { Hello, Idle }`; `ConnTimers::new(hello_ns, idle_ns)` takes the
+  level's two durations). `SendHub`, `StreamDicts` and `envelope.rs` are not part of this change.
+- **Fixtures.** `fixtures/stream/reader-*.json` (12 cases, written by
+  `python/reference/make_stream_fixtures.py`, replayed by `crates/proto/tests/stream_fixtures.rs` and
+  checked by `python/tests/test_stream_fixtures.py` with an independent replay). The valid frames of
+  `fixtures/wire` are also fed through every split point and a fixed pseudo-random splitter.
+
 ### Added and fixed (P2a1: wire codec and Python reference)
 
 - **`HOB-48`: the `subject` section (kind 6) and `PROTO_MINOR = 1`.** A history block names the one
