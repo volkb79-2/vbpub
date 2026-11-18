@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # build-iso.sh: remaster the official Debian live ISO into the debian-rollback unattended installer ISO.
 #
-#   build-iso.sh --base BASE.iso --out OUT.iso [--config dr-install.conf] [--scratch DIR]
+#   build-iso.sh --base BASE.iso --out OUT.iso [--config dr-install.conf] [--scratch PARENT_DIR] [--allow-unverified]
 #
 # No squashfs or initrd is rebuilt. The overlay is plain files added to the ISO9660 tree:
 #   /dr/*                          the installer payload (dr-autoinstall, dr-plan, dr-pick-disk, install-btrfs.sh, dr-state)
@@ -17,7 +17,7 @@
 # read-only and its sha256 is checked against BASE.iso.sha256 when that file exists.
 set -euo pipefail
 
-BASE="" OUT="" CONF="" SCRATCH=""
+BASE="" OUT="" CONF="" SCRATCH="" SCRATCH_PARENT="" ALLOW_UNVERIFIED=0
 ORIG_ARGS=("$@")   # the option loop shifts $@ away; the nice re-exec below needs the original list
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { echo "build-iso: $*" >&2; exit 1; }
@@ -26,7 +26,8 @@ while [ $# -gt 0 ]; do
     --base) BASE=${2:?}; shift 2 ;;
     --out) OUT=${2:?}; shift 2 ;;
     --config) CONF=${2:?}; shift 2 ;;
-    --scratch) SCRATCH=${2:?}; shift 2 ;;
+    --scratch) SCRATCH_PARENT=${2:?}; shift 2 ;;   # a directory to work in; only a fresh subdirectory of it is created and removed
+    --allow-unverified) ALLOW_UNVERIFIED=1; shift ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -37,17 +38,21 @@ case "$OUT" in /dev/*) die "refusing to write to a device path: $OUT" ;; esac
 [ -z "$CONF" ] || [ -f "$CONF" ] || die "--config file not found"
 command -v xorriso >/dev/null || die "xorriso missing"
 
-if [ "${BUILD_ISO_NICED:-}" != 1 ]; then BUILD_ISO_NICED=1 exec nice -n 19 ionice -c3 "$0" "${ORIG_ARGS[@]}"; fi
+if [ "${BUILD_ISO_NICED:-}" != 1 ]; then BUILD_ISO_NICED=1 exec nice -n 19 ionice -c3 bash "$(readlink -f "$0")" "${ORIG_ARGS[@]}"; fi
 
 if [ -f "$BASE.sha256" ]; then
   want=$(cut -d' ' -f1 <"$BASE.sha256"); got=$(sha256sum "$BASE" | cut -d' ' -f1)
   [ "$want" = "$got" ] || die "base ISO sha256 does not match $BASE.sha256"
+elif [ "$ALLOW_UNVERIFIED" = 1 ]; then
+  echo "build-iso: WARNING no $BASE.sha256, base ISO NOT verified (--allow-unverified)" >&2
 else
-  echo "build-iso: WARNING no $BASE.sha256, base ISO not verified" >&2
+  die "no $BASE.sha256 next to the base ISO; verify the download and add it, or pass --allow-unverified"
 fi
 
-[ -n "$SCRATCH" ] || SCRATCH="$(dirname "$OUT")/dr-build-scratch.$$"
-mkdir -p "$SCRATCH"
+# the scratch is always a fresh directory created here; only that directory is removed on exit, never --scratch itself
+[ -n "$SCRATCH_PARENT" ] || SCRATCH_PARENT=$(dirname "$OUT")
+mkdir -p "$SCRATCH_PARENT"
+SCRATCH=$(mktemp -d "$SCRATCH_PARENT/dr-build.XXXXXX")
 trap 'rm -rf "$SCRATCH"' EXIT
 STAGE=$SCRATCH/stage
 mkdir -p "$STAGE/dr" "$STAGE/hooks"
@@ -88,6 +93,7 @@ grep -q '^# Live boot' "$SCRATCH/grub.base" || die "base grub.cfg has no '# Live
 } >"$SCRATCH/grub.cfg"
 # the base file starts with `source /boot/grub/config.cfg` which may set its own timeout/default: ours comes first and
 # config.cfg is sourced after it, so also keep our values after that line
+grep -qx 'source /boot/grub/config.cfg' "$SCRATCH/grub.cfg" || die "base grub.cfg has no 'source /boot/grub/config.cfg' line to re-assert default/timeout after"
 sed -i 's|^source /boot/grub/config.cfg$|source /boot/grub/config.cfg\nset default=0\nset timeout=10|' "$SCRATCH/grub.cfg"
 
 mkdir -p "$(dirname "$OUT")"

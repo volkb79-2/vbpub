@@ -36,7 +36,7 @@ refuse() { marker "REFUSED $*"; say "REFUSED: $*; nothing was written to any dis
 
 marker START
 mode=$(cmdline_param dr.mode || echo manual)
-say "mode=$mode payload=$HERE"
+say "mode=$mode payload=$HERE (the mode only decides whether the hook starts this script; once it runs, the config and dr-plan decide)"
 
 # --- network ---------------------------------------------------------------------------------------------------
 for ifc in /sys/class/net/*; do
@@ -47,7 +47,9 @@ dhcpcd -4 -w -t 60 >/dev/null 2>&1 || say "dhcpcd returned non-zero (continuing;
 
 # --- config ----------------------------------------------------------------------------------------------------
 CONFIG=""; CONFIG_SRC=none; CONFIG_DISK=""
-stick=$(blkid -L CIDATA 2>/dev/null | head -n1 || true)
+# several sticks labelled CIDATA: take the first by device name, and say so (the order must not depend on probe timing)
+stick=$(lsblk -nrp -o NAME,LABEL 2>/dev/null | awk '$2=="CIDATA" {print $1}' | sort | sed -n 1p || true)
+[ "$(lsblk -nr -o LABEL 2>/dev/null | grep -cx CIDATA || true)" -le 1 ] || say "WARNING: more than one CIDATA medium; using $stick"
 if [ -n "$stick" ]; then
   mkdir -p "$RUN/cidata"
   if mount -o ro "$stick" "$RUN/cidata" 2>/dev/null; then
@@ -85,23 +87,38 @@ if [ -n "$CONFIG" ]; then
 fi
 
 # --- disk decision ---------------------------------------------------------------------------------------------
-excl=()
-# the booted medium, the config stick, and every disk with something mounted or used as swap
-med=$(findmnt -no SOURCE /run/live/medium 2>/dev/null || true)
-if [ -n "$med" ]; then d=$(lsblk -no PKNAME "$med" 2>/dev/null | head -n1); [ -n "$d" ] || d=${med#/dev/}; excl+=(--exclude "$d"); fi
-[ -z "$CONFIG_DISK" ] || excl+=(--exclude "$CONFIG_DISK")
-for n in $(lsblk -dnr -o NAME,TYPE | awk '$2=="disk" {print $1}'); do
-  if lsblk -nr -o MOUNTPOINTS "/dev/$n" 2>/dev/null | grep -q . ; then excl+=(--exclude "$n"); fi
-done
-lsblk -dnbP -o NAME,TYPE,ROTA,RM,SIZE,TRAN >"$RUN/lsblk"
-if [ -n "$CONFIG" ]; then cfgarg=(--config "$CONFIG"); else cfgarg=(--no-config); fi
-plan=$("$HERE/dr-plan" --lsblk "$RUN/lsblk" "${cfgarg[@]}" "${excl[@]}") && rc=0 || rc=$?
-[ "$rc" = 0 ] || refuse "dr-plan refused (reason in the line above)"
-decision=$(sed -n 's/^DECISION=//p' <<<"$plan"); target=$(sed -n 's/^TARGET=//p' <<<"$plan")
+# make_plan: compute the exclusions and the lsblk snapshot afresh and ask dr-plan; sets PLAN, decision, target and FP
+# (FP = size/serial/wwn/model of the planned disk). It runs twice: now, and again after the slow tool installation,
+# and the install only goes ahead when both runs name the same disk with the same identity.
+make_plan() {
+  local med d n rc
+  excl=()
+  # the booted medium, the config stick, and every disk with something mounted or used as swap
+  med=$(findmnt -no SOURCE /run/live/medium 2>/dev/null || true)
+  if [ -n "$med" ]; then d=$(lsblk -no PKNAME "$med" 2>/dev/null | head -n1); [ -n "$d" ] || d=${med#/dev/}; excl+=(--exclude "$d"); fi
+  [ -z "$CONFIG_DISK" ] || excl+=(--exclude "$CONFIG_DISK")
+  for n in $(lsblk -dnr -o NAME,TYPE | awk '$2=="disk" {print $1}'); do
+    if lsblk -nr -o MOUNTPOINTS "/dev/$n" 2>/dev/null | grep -q . ; then excl+=(--exclude "$n"); fi
+  done
+  lsblk -dnbP -o NAME,TYPE,ROTA,RM,SIZE,TRAN >"$RUN/lsblk"
+  if [ -n "$CONFIG" ]; then cfgarg=(--config "$CONFIG"); else cfgarg=(--no-config); fi
+  PLAN=$("$HERE/dr-plan" --lsblk "$RUN/lsblk" "${cfgarg[@]}" "${excl[@]}") && rc=0 || rc=$?
+  [ "$rc" = 0 ] || refuse "dr-plan refused (reason in the line above)"
+  decision=$(sed -n 's/^DECISION=//p' <<<"$PLAN"); target=$(sed -n 's/^TARGET=//p' <<<"$PLAN")
+  [[ "$target" =~ ^/dev/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || refuse "dr-plan returned a malformed target"
+  FP=$(lsblk -dnbo SIZE,SERIAL,WWN,MODEL "$target" 2>/dev/null | tr -s ' ')
+}
+make_plan
 marker "PLAN decision=$decision target=$target"
-[[ "$target" =~ ^/dev/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || refuse "dr-plan returned a malformed target"
 declare -A S=()
-while IFS='=' read -r k v; do case "$k" in HOSTNAME|SUITE|MIRROR|SECURITY_MIRROR|ROOT_PASSWORD) S[$k]=$v ;; esac; done <<<"$plan"
+while IFS='=' read -r k v; do
+  case "$k" in HOSTNAME|SUITE|MIRROR|SECURITY_MIRROR|ROOT_PASSWORD|ROOT_PASSWORD_HASH|REINSTALL) S[$k]=$v ;; esac
+done <<<"$PLAN"
+
+# a medium that is still attached after a finished install must not wipe the installed system again
+if lsblk -nr -o LABEL "$target" 2>/dev/null | grep -qx drroot && [ "${S[REINSTALL]:-no}" != yes ]; then
+  refuse "$target already holds a debian-rollback system (btrfs label drroot); set REINSTALL=yes in the config to wipe it"
+fi
 
 if [ "$decision" = confirm ]; then
   t=$(cmdline_param dr.confirm-timeout || echo 120)
@@ -113,11 +130,6 @@ elif [ "$decision" != install ]; then
   refuse "unexpected decision '$decision'"
 fi
 
-# the plan was made a moment ago: re-check the target is still a whole, unmounted disk right before the wipe
-[ -b "$target" ] || refuse "$target is not a block device"
-[ "$(lsblk -dno TYPE "$target" 2>/dev/null)" = disk ] || refuse "$target is not a whole disk"
-! lsblk -nr -o MOUNTPOINTS "$target" | grep -q . || refuse "$target has mounted partitions"
-
 # --- tools, then the install -----------------------------------------------------------------------------------
 marker "INSTALL target=$target"
 export DEBIAN_FRONTEND=noninteractive
@@ -125,17 +137,31 @@ apt-get update -qq || { say "apt-get update failed"; finish 1; }
 apt-get install -y -qq --no-install-recommends debootstrap btrfs-progs gdisk dosfstools parted \
   >"$RUN/apt-tools.log" 2>&1 || { tail -n 20 "$RUN/apt-tools.log"; say "installing the installer tools failed"; finish 1; }
 
+# the plan is minutes old now (confirmation, apt): decide again from the current state and demand the same disk
+first_target=$target; first_fp=$FP
+make_plan
+[ "$target" = "$first_target" ] && [ "$FP" = "$first_fp" ] \
+  || refuse "the target changed while the tools were installed ($first_target '$first_fp' -> $target '$FP')"
+[ -b "$target" ] || refuse "$target is not a block device"
+[ "$(lsblk -dno TYPE "$target" 2>/dev/null)" = disk ] || refuse "$target is not a whole disk"
+! lsblk -nr -o MOUNTPOINTS "$target" | grep -q . || refuse "$target has mounted partitions"
+marker "TARGET-CONFIRMED $target"
+
 args=(--device "$target" --yes)
 [ -z "${S[HOSTNAME]:-}" ] || args+=(--hostname "${S[HOSTNAME]}")
 [ -z "${S[SUITE]:-}" ] || args+=(--suite "${S[SUITE]}")
 [ -z "${S[MIRROR]:-}" ] || args+=(--mirror "${S[MIRROR]}")
 [ -z "${S[SECURITY_MIRROR]:-}" ] || args+=(--security-mirror "${S[SECURITY_MIRROR]}")
 pw=${S[ROOT_PASSWORD]:-}
-if [ -z "$pw" ]; then
-  pw=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 16)
-  marker "ROOT-PASSWORD-GENERATED $pw"   # printed once on the console; the config set none
+if [ -n "${S[ROOT_PASSWORD_HASH]:-}" ]; then
+  args+=(--root-password-hash "${S[ROOT_PASSWORD_HASH]}")   # a hash: no plaintext in the ISO or the command line
+else
+  if [ -z "$pw" ]; then
+    pw=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 16)
+    marker "ROOT-PASSWORD-GENERATED $pw"   # printed once on the console; the config set none
+  fi
+  args+=(--root-password "$pw")
 fi
-args+=(--root-password "$pw")
 
 "$HERE/install-btrfs.sh" "${args[@]}"
 irc=$?

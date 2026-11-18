@@ -50,7 +50,7 @@ if [ "$NOCONFIG" = 0 ] && [ -z "$CONFIG" ]; then echo "dr-plan: give --config FI
 
 refuse() { echo "DECISION=refuse"; echo "dr-plan: refusing: $*" >&2; exit 3; }
 
-KNOWN=" TARGET_DISK HOSTNAME SUITE MIRROR SECURITY_MIRROR ROOT_PASSWORD "
+KNOWN=" TARGET_DISK HOSTNAME SUITE MIRROR SECURITY_MIRROR ROOT_PASSWORD ROOT_PASSWORD_HASH REINSTALL "
 declare -A CFG=()
 if [ "$NOCONFIG" = 0 ]; then
   [ -r "$CONFIG" ] || refuse "config file $CONFIG is not readable"
@@ -63,15 +63,23 @@ if [ "$NOCONFIG" = 0 ]; then
     key=${BASH_REMATCH[1]}; val=${BASH_REMATCH[2]}
     case "$KNOWN" in *" $key "*) ;; *) refuse "config line $lineno: unknown key $key" ;; esac
     [ -z "${CFG[$key]+x}" ] || refuse "config line $lineno: duplicate key $key"
-    [[ "$val" =~ ^[A-Za-z0-9_./:@,+=-]*$ ]] || refuse "config line $lineno: value of $key has a character outside A-Za-z0-9_./:@,+=-"
+    if [ "$key" = ROOT_PASSWORD_HASH ]; then   # a crypt(3) hash: $id$salt$hash, e.g. from `mkpasswd -m yescrypt`
+      hash_re='^\$[0-9a-z]+\$[A-Za-z0-9./,=$-]+$'   # in a variable: an unquoted $- in a pattern is the shell's option list
+      [[ "$val" =~ $hash_re ]] || refuse "config line $lineno: ROOT_PASSWORD_HASH is not a crypt hash"
+    else
+      [[ "$val" =~ ^[A-Za-z0-9_./:@,+=-]*$ ]] || refuse "config line $lineno: value of $key has a character outside A-Za-z0-9_./:@,+=-"
+    fi
     CFG[$key]=$val
   done <"$CONFIG"
+  case "${CFG[REINSTALL]:-no}" in yes|no) ;; *) refuse "REINSTALL must be yes or no" ;; esac
+  [ -z "${CFG[ROOT_PASSWORD]:-}" ] || [ -z "${CFG[ROOT_PASSWORD_HASH]:-}" ] || refuse "set ROOT_PASSWORD or ROOT_PASSWORD_HASH, not both"
 fi
 
 if [ "$CHECK" = 1 ]; then
   echo "CONFIG=ok"
   for k in TARGET_DISK HOSTNAME SUITE MIRROR SECURITY_MIRROR; do [ -z "${CFG[$k]:-}" ] || echo "$k=${CFG[$k]}"; done
   [ -z "${CFG[ROOT_PASSWORD]:-}" ] || echo "ROOT_PASSWORD=(set)"   # never echoed back
+  [ -z "${CFG[ROOT_PASSWORD_HASH]:-}" ] || echo "ROOT_PASSWORD_HASH=(set)"
   exit 0
 fi
 
@@ -79,10 +87,22 @@ fi
 if [ "$LSBLK" = - ]; then input=$(cat); else [ -r "$LSBLK" ] || refuse "lsblk file $LSBLK is not readable"; input=$(cat "$LSBLK"); fi
 candidates=$(printf '%s\n' "$input" | "$PICK" --list --min-gib "$MINGIB" "${EXCLUDE_ARGS[@]}" 2>/dev/null) || candidates=""
 ncand=$(printf '%s' "$candidates" | grep -c . || true)
+# "the only disk" means the only internal disk of ANY kind (small, removable, USB, rotational), not just the only one
+# that qualifies: otherwise a small boot disk beside a big data disk would make the data disk look like the only one.
+# Only the caller's exclusions (the booted medium, the config stick, mounted disks) are left out of the count.
+declare -A EXCLUDED=()
+for ((i = 1; i < ${#EXCLUDE_ARGS[@]}; i += 2)); do x=${EXCLUDE_ARGS[i]}; EXCLUDED[${x#/dev/}]=1; done
+nall=0
+while IFS= read -r line || [ -n "$line" ]; do
+  [[ "$line" =~ (^|[[:space:]])TYPE=\"disk\" ]] || continue
+  [[ "$line" =~ (^|[[:space:]])NAME=\"([^\"]*)\" ]] || continue
+  [ -z "${EXCLUDED[${BASH_REMATCH[2]}]+x}" ] || continue
+  nall=$((nall + 1))
+done <<<"$input"
 
 emit_settings() {
   local k
-  for k in HOSTNAME SUITE MIRROR SECURITY_MIRROR ROOT_PASSWORD; do
+  for k in HOSTNAME SUITE MIRROR SECURITY_MIRROR ROOT_PASSWORD ROOT_PASSWORD_HASH REINSTALL; do
     [ -z "${CFG[$k]:-}" ] || echo "$k=${CFG[$k]}"
   done
 }
@@ -90,14 +110,14 @@ emit_settings() {
 target_spec=${CFG[TARGET_DISK]:-}
 if [ "$NOCONFIG" = 1 ]; then
   [ "$ncand" -ge 1 ] || refuse "no qualifying disk"
-  [ "$ncand" -eq 1 ] || refuse "no config and $ncand qualifying disks: run the installer by hand with --device"
+  [ "$ncand" -eq 1 ] && [ "$nall" -eq 1 ] || refuse "no config and $ncand qualifying of $nall internal disks: run the installer by hand with --device"
   echo "DECISION=confirm"; echo "TARGET=$candidates"; exit 0
 fi
 
 case "$target_spec" in
   "")
     [ "$ncand" -ge 1 ] || refuse "no qualifying disk"
-    [ "$ncand" -eq 1 ] || refuse "$ncand qualifying disks and the config names no TARGET_DISK (set TARGET_DISK=/dev/X, or TARGET_DISK=first-ssd to take the first SSD else the first rotational disk)"
+    [ "$ncand" -eq 1 ] && [ "$nall" -eq 1 ] || refuse "$ncand qualifying of $nall internal disks and the config names no TARGET_DISK (set TARGET_DISK=/dev/X, or TARGET_DISK=first-ssd to take the first SSD else the first rotational disk)"
     echo "DECISION=install"; echo "TARGET=$candidates"; emit_settings; exit 0 ;;
   first-ssd)
     [ "$ncand" -ge 1 ] || refuse "no qualifying disk"

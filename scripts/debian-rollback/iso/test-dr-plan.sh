@@ -23,6 +23,7 @@ THREE=$WORK/three.lsblk; { disk sda 1 0 500; disk nvme0n1 0 0 256 nvme; disk sdb
 USB=$WORK/usb.lsblk;   { disk vda 0 0 20; disk sdb 0 1 16 usb; } > "$USB"
 SMALL=$WORK/small.lsblk; { disk vda 0 0 4; } > "$SMALL"
 NONE=$WORK/none.lsblk; : > "$NONE"
+{ disk vda 0 0 20; printf 'NAME="loop0" TYPE="loop" ROTA="0" RM="0" SIZE="%s" TRAN=""\nNAME="sr0" TYPE="rom" ROTA="1" RM="1" SIZE="%s" TRAN="sata"\n' "$((GIB))" "$((2 * GIB))"; } > "$WORK/loop.lsblk"
 printf 'NAME="vda1" TYPE="part" ROTA="0" RM="0" SIZE="%s" TRAN=""\nNAME="vda" TYPE="disk" ROTA="0" RM="0" SIZE="%s" TRAN=""\n' "$GIB" "$((20 * GIB))" > "$WORK/part.lsblk"
 
 conf() { printf '%s\n' "$@" > "$WORK/conf"; echo "$WORK/conf"; }
@@ -63,7 +64,24 @@ expect explicit-target-injection-REFUSES     refuse  ""       "$TWO" "$(conf 'TA
 expect explicit-target-dotdot-REFUSES        refuse  ""       "$TWO" "$(conf 'TARGET_DISK=/dev/../etc/passwd')"
 expect explicit-target-empty-value-is-unset  refuse  ""       "$TWO" "$(conf 'TARGET_DISK=')"
 # --- the config stick / mounted disks are excluded by the caller, which can leave exactly one disk
-expect config-stick-excluded-leaves-one      install /dev/vda "$USB" "$(conf 'HOSTNAME=h1')"
+expect config-stick-excluded-leaves-one      install /dev/vda "$USB" "$(conf 'HOSTNAME=h1')" --exclude sdb
+# review 2026-11-18: "the only disk" means the only internal disk of any kind, not the only one that qualifies
+expect usb-stick-NOT-excluded-REFUSES        refuse  ""       "$USB" "$(conf 'HOSTNAME=h1')"
+SMALLBIG=$WORK/smallbig.lsblk; { disk vda 0 0 4; disk vdb 0 0 500; } > "$SMALLBIG"
+expect small-boot-disk-plus-big-REFUSES      refuse  ""       "$SMALLBIG" "$(conf 'HOSTNAME=h1')"
+expect small-boot-disk-explicit-big-ok       install /dev/vdb "$SMALLBIG" "$(conf 'TARGET_DISK=/dev/vdb')"
+expect usb-stick-NOT-excluded-no-config      refuse  ""       "$USB" none
+expect rom-and-loop-do-not-count             install /dev/vda "$WORK/loop.lsblk" "$(conf 'HOSTNAME=h1')"
+# root password hash (never a plaintext password in the ISO or in a process list)
+# shellcheck disable=SC2016  # crypt hashes contain literal dollar signs
+expect password-hash-ok                      install /dev/vda "$ONE" "$(conf 'ROOT_PASSWORD_HASH=$y$j9T$abcdefgh$XYZ.123/abc')"
+# shellcheck disable=SC2016
+expect password-hash-bad-REFUSES             refuse  ""       "$ONE" "$(conf 'ROOT_PASSWORD_HASH=plaintext')"
+# shellcheck disable=SC2016
+expect password-and-hash-REFUSES             refuse  ""       "$ONE" "$(conf 'ROOT_PASSWORD=abc' 'ROOT_PASSWORD_HASH=$6$salt$hash')"
+# REINSTALL=yes is a known key (the runner reads it; dr-plan only validates it)
+expect reinstall-key-known                   install /dev/vda "$ONE" "$(conf 'REINSTALL=yes')"
+expect reinstall-bad-value-REFUSES           refuse  ""       "$ONE" "$(conf 'REINSTALL=maybe')"
 # --- no config at all: never unattended, at most a typed confirmation
 expect no-config-single-disk-confirms        confirm /dev/vda "$ONE" none
 expect no-config-two-disks-REFUSES           refuse  ""       "$TWO" none
