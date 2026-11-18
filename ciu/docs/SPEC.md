@@ -6828,7 +6828,25 @@ every checkout and by `ciu check` (stage `shape`), and refuses on a
   gets its own read-only bind at the path the gitfile is read from: it lives
   under the checkout mount (read-write for the runner), not under the common
   dir, so without the bind a runner could repoint host git at a gitdir it
-  controls. A service that already binds that exact path keeps its own bind.
+  controls. The bind protects the checkout only at its own logical path: a
+  service that mounts the checkout elsewhere (for example `/app`) leaves
+  `/app/.git` writable, and CIU logs one WARN per stack when no selected
+  service mounts the checkout path. A service that already binds that exact
+  path keeps its own bind. In `rw`, `modules/**/hooks` get the same empty
+  read-only directory and `modules/**/info` a read-only bind (at most 256
+  submodule git dirs). Accepted limits: a newly created `config.worktree` and
+  submodule working-tree gitfiles stay writable.
+- **Host-side writes**: `.ciu/` lives inside the checkout the runner mounts
+  read-write, so CIU writes with `lstat` only: a `.ciu` or `.ciu/gitdir` that is
+  a symlink, a non-directory or not owned by the current user refuses
+  (`[CIU-215]`); temp files are created unlinked-then-`O_EXCL|O_NOFOLLOW`
+  and renamed; only regular `<digits>.config` files are removed. With the table
+  present, a git that cannot answer (missing, too old for `--path-format`,
+  dubious ownership) refuses; a clean "not linked" is silent. Nothing left to
+  mount (or a removed table) deletes a stale fragment and `.ciu/gitdir/`. `$` in
+  bind paths is written as `$$`; a path not lexically under the resolved primary
+  root passes the namespace translation unchanged and fails loudly through
+  `create_host_path: false`.
   In both modes `config`,
   `config.worktree`, nested `modules/**` configs and sibling
   `worktrees/*/config.worktree` (at most 256) are replaced by sanitized

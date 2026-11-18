@@ -1367,5 +1367,10 @@ rendered file.
 `ro` is the recommended value because the known consumers (assay's snapshot
 and Run-Gate's readers) only read git; `rw` reuses Run-Gate's RG-NARROW/RG-86
 layout so a runner can still commit without being able to plant hooks, edit
-config or prune sibling worktrees. Which of the two a dstdns lane needs is
+config or prune sibling worktrees, including the hooks and info of submodule
+git dirs under `modules/`. What `rw` does not protect is stated, not hidden: the
+read-only gitfile bind covers a checkout mounted at its own path only, a newly
+created `config.worktree` and submodule working-tree gitfiles stay writable,
+and `.ciu/` sits inside the runner's own read-write mount, which is why CIU
+writes it with lstat discipline and refuses a planted link. Which of the two a dstdns lane needs is
 settled by the live acceptance probe, not by this document.
