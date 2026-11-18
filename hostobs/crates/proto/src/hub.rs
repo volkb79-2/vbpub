@@ -398,9 +398,8 @@ impl Conn {
         }
         self.pin = None;
         self.written = 0;
-        self.queue.pop_front().map(|item| {
+        self.queue.pop_front().inspect(|item| {
             self.totals.release(item.kind, total);
-            item
         })
     }
 
