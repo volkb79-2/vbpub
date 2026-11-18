@@ -80,6 +80,8 @@ from `docs/SEGMENT-FORMAT.md` and decoded by both implementations. The `kernel` 
 driven by committed fixture trees under `crates/kernel/tests/fixtures/` (cgroupfs and `/proc`,
 copied from the sampler's own fixtures), never by a live host. SP-4's wire-size measurement and
 the numbers that confirm decision D4 are in [`docs/SP-4-WIRE-SIZES.md`](docs/SP-4-WIRE-SIZES.md).
+The normative `hostobs/1` protocol (connection, frames, verbs, budgets, the Python access path) is
+[`docs/WIRE.md`](docs/WIRE.md).
 
 The test-quality claim for these crates is a hand mutation campaign (Rust R2 is not adopted
 yet), recorded in [`docs/HAND-MUTANTS-M1.md`](docs/HAND-MUTANTS-M1.md) (twenty-one mutations,
