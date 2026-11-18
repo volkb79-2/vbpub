@@ -1078,12 +1078,14 @@ and `mark.py` are P3b). `wire.py` is the §7.4 decoder; `stream.py` holds `Frame
   entity half of its rows, by the held dictionary) and MUST never be mutated or reused afterwards. As a
   defence the skip never applies when the retained view and the rows being decoded are views of the same
   underlying object (`previous.obj is ents_mv.obj`), so a buffer overwritten in place is validated in full.
-- **Gate image and the absolute memory bound.** The gate image for these tests is `tester-base`
-  (`python:3.14.7-trixie`, `tester-base/cmru.toml`), not the 3.14.10 of the §7.8 pin. The absolute
-  1,000-row peak bound (16 KiB) was measured on CPython 3.14.10 only (3,395 B there) and is skipped on
-  3.14.7; the growth and line-count gates run on every version. Per the §7.8 rule the absolute bound is
-  re-measured and re-set in the change that moves the gate image (or its CPython) to a version the bound
-  was not measured on; until then no 3.14.10 number is claimed for 3.14.7.
+- **Gate image and the absolute memory bound.** No registered lane runs `python/tests` yet (`HOB-4`):
+  every `hostobs/run-gate.toml` lane uses `tester-unified-rust`, whose `python3` is Debian's apt package
+  (`tester-unified-rust/Dockerfile`; its version is not measured here). The image that will run these tests
+  is chosen when the lane is registered. The absolute 1,000-row peak bound (16 KiB) was measured on CPython
+  3.14.10 only (3,395 B there) and is skipped on every other version; the growth and line-count gates run
+  on every version. Per the §7.8 rule the absolute bound is re-measured and re-set in the change that
+  registers the lane or moves its image (or CPython) to a version the bound was not measured on; until then
+  no 3.14.10 number is claimed for any other version.
 - **Dictionary reuse.** A dictionary section byte-identical to the held dictionary's body returns the held
   object (`Block.dictionary is held`); `Block.dictionary` is the carried dictionary (`None` for a bare
   block) and `Block.dictionary_in_force` the one the block was judged against.
