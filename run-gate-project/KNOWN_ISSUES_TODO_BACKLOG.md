@@ -9343,10 +9343,9 @@ exist; only the hooks and info overlay is missing.
 
 **Mitigation and what is unverified.** `host_git_environment`
 (`run_gate.py`) sets `core.hooksPath=/dev/null` (and `core.fsmonitor=false`)
-for the host git calls that pass through it (other read-only host git calls in
-`run_gate.py`, for example `rev-parse`, `diff --quiet`, `merge-base
---is-ancestor`, `describe` and one `status`, do not use it, but none of those
-commands runs hooks), so Run-Gate's own host git calls do not run a planted
+for the host git calls that pass through it (four read-only host git calls in
+`run_gate.py` do not pass it: two `rev-parse` calls, `diff --quiet` and
+`merge-base --is-ancestor`; none of those commands runs hooks), so Run-Gate's own host git calls do not run a planted
 submodule hook. The remaining exposure is OTHER host git use
 on the checkout after a lane (for example an operator running
 `git submodule update` or a checkout inside the submodule, where a
