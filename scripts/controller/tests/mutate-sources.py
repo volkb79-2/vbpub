@@ -1248,6 +1248,12 @@ for _name, _before, _after in (
     ("empty", "(( ${#files[@]} > 0 )) || die", ": || die"),
     ("overwrite", "while [[ -e $final ]]; do", "while false; do"),
     ("link-targets", '"flags=rh;s,^\\./,,;s,^,$label/,"', '"s,^\\./,,;s,^,$label/,"'),
-    ("hardlink-targets", '"flags=rh;s,^\\./,,;s,^,$label/,"', '"flags=r;s,^\\./,,;s,^,$label/,"'),
+    ("chmod-existing", "(( ! created_dir )) || chmod 700", "(( created_dir )) || chmod 700"),
+    ("chmod-never", "(( ! created_dir )) || chmod 700", ": || chmod 700"),
+    ("verify-empty", "(( count > 0 )) || die", ": || die"),
+    ("verify-no-sidecar", '[[ -f $verify.sha256 ]] || die', ': || die'),
+    ("linked-detect", 'if [[ -n $git_dir && $git_dir != "$common_dir" ]]; then', 'if [[ -n $git_dir && $git_dir == "$common_dir" ]]; then'),
+    ("linked-members", '[[ -e $repo_root/$member ]] || absent+=" $member"', 'absent+=" $member"'),
+    ("hardlink-targets",'"flags=rh;s,^\\./,,;s,^,$label/,"', '"flags=r;s,^\\./,,;s,^,$label/,"'),
 ):
     mutant("scripts/controller/ctl-state-backup.sh", f"ctl-state-backup-{_name}.sh", _before, _after)

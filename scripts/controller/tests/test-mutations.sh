@@ -467,7 +467,7 @@ for doctor_lib_mutant in readonly-mkdir readonly-resolve configured-home configu
     env CTL_DOCTOR_SCRIPT="$ROOT/mutants/scripts/controller/doctor-lib-$doctor_lib_mutant/ctl-doctor.sh" bash "$SCRIPT_DIR/test-ctl-doctor.sh"
 done
 for backup_mutant in cap jsonl git-dir work-tree unset relative list-only mode follow-links sidecar verify-compare runs-state \
-                     remote-summaries empty overwrite link-targets hardlink-targets; do
+                     remote-summaries empty overwrite link-targets hardlink-targets chmod-existing chmod-never verify-empty verify-no-sidecar linked-detect linked-members; do
   expect_killed "ctl-state-backup-$backup_mutant" \
     env CTL_STATE_BACKUP_SCRIPT="$ROOT/mutants/scripts/controller/ctl-state-backup-$backup_mutant.sh" bash "$SCRIPT_DIR/test-ctl-state-backup.sh"
 done

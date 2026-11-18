@@ -57,9 +57,14 @@ absolute, never inside a git work tree): `.controller-state/` and `plan.yaml` of
 repository root, `$CONTROLLER_HOME/*.local.*`, `reports/`, the remote-gate
 `result.json`/`meta.json` summaries, and the runs' `*.thread`, `*.state.md`, `*.done`.
 Never `*.jsonl` session streams, `.git`, worktrees, logs, artifacts, or a file over the
-cap (5 MiB). Symlinks are stored as links, never followed. `--list` writes nothing; the
-archive is mode 0600 (zstd if installed, else gzip) with a `.sha256` sidecar, and
-`ctl-state-backup.sh --verify <archive>` checks it. What is state and what is work:
+cap (5 MiB). Symlinks are stored as links, never followed (link targets are kept
+exactly as they were). `--list` writes nothing; the archive is mode 0600 (zstd if
+installed, else gzip) with a `.sha256` sidecar, and `ctl-state-backup.sh --verify
+<archive>` checks it (exit 1 for an archive with 0 members or without its sidecar,
+not just for a bad checksum). A backup directory the run creates gets mode 700; an
+existing `CONTROLLER_BACKUP_DIR` keeps its mode. When `CONTROLLER_REPO` is a linked
+worktree that lacks `.controller-state` or `plan.yaml`, the run prints a WARNING
+naming them: the real state lives in the main checkout. What is state and what is work:
 [`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md).
 
 ## Controller loop

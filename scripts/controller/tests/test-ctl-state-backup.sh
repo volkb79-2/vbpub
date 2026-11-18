@@ -106,6 +106,32 @@ head -c 40 "$archive" > "$ROOT/truncated.${archive##*.}"; case $archive in *.zst
 mv -- "$ROOT/truncated.${archive##*.}" "$ROOT/cut.$ext"
 run_backup --verify "$ROOT/cut.$ext"; expect_rc 1 'a truncated archive'
 run_backup --verify "$ROOT/none.tar.gz"; expect_rc 2 'a missing archive'
+# a copy without its sidecar and an archive with no members are not "verified"
+case $archive in *.zst) ext=tar.zst ;; *) ext=tar.gz ;; esac
+cp -- "$archive" "$ROOT/nosidecar.$ext"
+run_backup --verify "$ROOT/nosidecar.$ext"; expect_rc 1 'an archive without its sidecar'; said 'no sidecar' 'a missing sidecar is named'
+tar -cf - -T /dev/null | gzip -c > "$ROOT/empty.tar.gz"
+sha256sum "$ROOT/empty.tar.gz" | sed 's, .*, empty.tar.gz,' > "$ROOT/empty.tar.gz.sha256"
+run_backup --verify "$ROOT/empty.tar.gz"; expect_rc 1 'an archive with no members'; said '0 members' 'an empty archive is named'
+
+# --- directory modes: a directory this run creates is 700, a pre-existing one is left alone
+[[ $(stat -c %a "$B") == 700 ]] || fail 'a backup directory created by the run must be mode 700'
+fixture modes; mkdir -m 755 "$B"
+run_backup; expect_rc 0 'backup into an existing directory'
+[[ $(stat -c %a "$B") == 755 ]] || fail 'a pre-existing CONTROLLER_BACKUP_DIR must keep its mode'
+
+# --- a linked worktree as CONTROLLER_REPO warns about the state that lives in the main checkout
+fixture linked
+git -C "$R" -c user.email=t@example.invalid -c user.name=t commit -q --allow-empty -m init
+git -C "$R" worktree add -q "$ROOT/linked/wt"
+printf 'plan\n' > "$ROOT/linked/wt/plan.yaml"
+MAIN=$R
+R=$ROOT/linked/wt run_backup --list; expect_rc 0 'listing from a linked worktree'
+said 'WARNING: CONTROLLER_REPO' 'a linked worktree without state warns'
+said 'lacks .controller-state;' 'the missing member is named'
+! grep -qF 'plan.yaml;' "$ROOT/err" || fail 'a member that exists must not be named as missing'
+R=$MAIN run_backup --list; expect_rc 0 'listing from the main checkout'
+! grep -qF 'WARNING' "$ROOT/err" || fail 'the main checkout must not warn'
 
 # --- nothing to save
 fixture empty

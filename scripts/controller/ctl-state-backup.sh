@@ -12,7 +12,9 @@
 # --list prints what would be saved (size and name, then the skipped large files) and writes nothing. Refuses when
 # CONTROLLER_BACKUP_DIR is unset, relative, or inside any git work tree (a backup next to the state it protects is no backup).
 # The archive is zstd when `zstd` is installed, else gzip; mode 0600; written to a temporary name and renamed; a `.sha256`
-# sidecar is written beside it. --verify checks the compression, lists the members and compares the sidecar.
+# sidecar is written beside it. --verify checks the compression, lists the members and compares the sidecar; an archive with
+# 0 members or without its sidecar fails (exit 1). A backup directory this run creates gets mode 700; an existing one is not touched.
+# A CONTROLLER_REPO that is a linked worktree lacking .controller-state / plan.yaml prints a WARNING (the state is in the main checkout).
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=lib.sh
@@ -41,13 +43,11 @@ if [[ -n $verify ]]; then
   esac
   members=$(tar -tf "$verify") || die 'tar cannot list the archive' 1
   count=$(printf '%s\n' "$members" | grep -c .)
+  (( count > 0 )) || die 'archive has 0 members: nothing was saved in it, so it cannot restore anything' 1
   actual=$(sha256sum -- "$verify" | cut -d' ' -f1)
-  if [[ -f $verify.sha256 ]]; then
-    [[ $(cut -d' ' -f1 "$verify.sha256") == "$actual" ]] || die "sha256 differs from $verify.sha256" 1
-    echo "verified: $count member(s), sha256 $actual matches the sidecar"
-  else
-    echo "verified: $count member(s), sha256 $actual (no sidecar to compare)"
-  fi
+  [[ -f $verify.sha256 ]] || die "no sidecar $verify.sha256 to compare the checksum with (the archive's sha256 is $actual): a copy without its sidecar is unverified" 1
+  [[ $(cut -d' ' -f1 "$verify.sha256") == "$actual" ]] || die "sha256 differs from $verify.sha256" 1
+  echo "verified: $count member(s), sha256 $actual matches the sidecar"
   exit 0
 fi
 
@@ -61,6 +61,16 @@ if git -C "$anchor" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   die "CONTROLLER_BACKUP_DIR is inside a git work tree ($anchor): a git clean could remove the backup with the state"
 fi
 repo_root=$(git -C "$CONTROLLER_REPO" rev-parse --show-toplevel 2>/dev/null) || repo_root=''
+if [[ -n $repo_root ]]; then
+  # The state (.controller-state, plan.yaml) is untracked and lives in the main checkout: a linked worktree normally lacks it.
+  git_dir=$(cd -- "$repo_root" && cd -- "$(git rev-parse --git-dir)" && pwd -P) || git_dir=''
+  common_dir=$(cd -- "$repo_root" && cd -- "$(git rev-parse --git-common-dir)" && pwd -P) || common_dir=''
+  if [[ -n $git_dir && $git_dir != "$common_dir" ]]; then
+    absent=''
+    for member in .controller-state plan.yaml; do [[ -e $repo_root/$member ]] || absent+=" $member"; done
+    [[ -z $absent ]] || echo "ctl-state-backup.sh: WARNING: CONTROLLER_REPO ($repo_root) is a linked worktree and lacks${absent}; the real controller state lives in the main checkout: set CONTROLLER_REPO to it" >&2
+  fi
+fi
 
 stage=$(mktemp -d "${TMPDIR:-/tmp}/ctl-state-backup.XXXXXX") || die 'cannot create a staging directory'
 trap 'rm -rf -- "$stage"' EXIT
@@ -98,8 +108,11 @@ if (( list_only )); then
 fi
 
 (( ${#files[@]} > 0 )) || die 'nothing to save (no state files found)' 1
+created_dir=0
+[[ -d $backup_dir ]] || created_dir=1
 mkdir -p -- "$backup_dir" || die "cannot create $backup_dir"
-chmod 700 -- "$backup_dir" 2>/dev/null
+# Only a directory this run created is tightened: a pre-existing CONTROLLER_BACKUP_DIR (even $HOME) keeps its mode.
+(( ! created_dir )) || chmod 700 -- "$backup_dir" 2>/dev/null
 umask 077
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 tarfile=$stage/state.tar
