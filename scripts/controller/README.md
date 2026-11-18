@@ -510,7 +510,10 @@ is required. The weights sample is `remote-gate-weights.tsv.example`.
 of `--base <ref>`: either way the base commit travels to the host with the
 bundle and `--base` is forwarded to the host's `run-gate` once.
 
-Differences from the program-directory `remote-gate.sh` this replaces:
+Differences from the program-directory `remote-gate.sh` this replaces. One rule
+first: stop using the old program-dir tool before using this one; the controller
+replaces the old script with a shim (the slot locks live in different places, so old
+and new callers would not exclude each other).
 
 - The old environment names (`REMOTE_GATE_V1001_SLOTS`, `REMOTE_GATE_V1001_BUDGET_MB`,
   `REMOTE_GATE_WEIGHT_MB`, `REMOTE_GATE_SLOT_WAIT_S`, `REMOTE_GATE_WAIT_PSI`,
@@ -576,7 +579,14 @@ lane arguments; a `HEAD_WANT` check plus the `status --short` check becomes
 `remote:<lane>` (host in `--remote-host`; a pass-through `-- --base <sha>`
 becomes `:--base=<sha>`). Drop every `export RUN_GATE_TESTER_UNIFIED_IMAGE=...`
 (that image tag no longer exists), `export CGPROFILE_CONTROL_SOCKET=...` and
-`RUN_GATE_PROFILE` line; an `unset NAME` line becomes `--unset-env NAME`. Two real examples:
+`RUN_GATE_PROFILE` line; an `unset NAME` line becomes `--unset-env NAME`.
+
+Log and marker names change for remote lanes, so monitors keyed on the old names
+must be updated: a remote lane's log `<prefix>-<lane>-<host>.out` (for example
+`assayburn-final3-tester-unified-<host>.out`) is now `<prefix>-remote-<lane>.log`
+(`assayburn-final3-remote-tester-unified.log`), and a separate `<prefix>-remote.chain`
+marker of an old remote chain is now `<prefix>.chain` (local lanes keep
+`<prefix>-<lane>.log`). The new name carries no host alias. Two real examples:
 
 ```bash
 # local lanes with a head pin (old: three lanes from run-gate-project, HEAD_WANT + clean-tree check,
@@ -585,10 +595,11 @@ scripts/controller/chain-run.sh --head b3c431a04e4c1fb29f39018dcb2756868d751cc6 
   .worktrees/pi-rg-judge-provider-20261116 run-gate-project judgeprov-final5 selftest assay-r1 assay-r3
 
 # remote lanes (old: remote-gate.sh <host> assay <lane> 204ed6147 in a for loop, logs
-# assay-burn-final3-<lane>-<host>.out, marker assayburn-final3-remote.chain); the worktree
+# assayburn-final3-<lane>-<host>.out, marker assayburn-final3-remote.chain); new logs are
+# assayburn-final3-remote-<lane>.log and the marker assayburn-final3.chain. The worktree
 # must be at that commit, --head proves it
 scripts/controller/chain-run.sh --head 204ed6147 --remote-host <host-alias> \
-  .worktrees/pi-assay-burn-20261116 assay assayburn-final3-remote remote:tester-unified remote:self-qualification-provisional
+  .worktrees/pi-assay-burn-20261116 assay assayburn-final3 remote:tester-unified remote:self-qualification-provisional
 ```
 
 ## Build a bounded session read-back

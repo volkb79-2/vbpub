@@ -41,7 +41,10 @@ together.
 | CTL-27 | `ctl-status.sh` lacks three generic sections the older controller-local copy had: the controller memory/swap/load/PSI line, the "worktrees with work" table (ahead of origin/main, dirty, or committed in the last 24 h) and a `--remote` one-call status of the newest remote-gate run | Nice-to-have | OPEN |
 | CTL-28 | `scripts/netcup/runner/remote-gate.py` hardcodes the controller's program directory as `DEFAULT_OUT`, so a direct run without `--out-dir` or `REMOTE_GATE_OUT` writes into an unversioned, controller-local path | Should-fix | OPEN |
 | CTL-29 | `remote-gate.sh` repeats `hx.sh`'s guard-wrapping and quoting for its OOM-counter probe instead of calling one shared function, so a change to one can drift from the other | Should-fix | OPEN |
-| CTL-30 | `scripts/netcup/runner/remote-gate-hosts.example.json` carries a controller-local home path (`run_gate_bins`) in a committed example, against the no-local-paths rule | Nice-to-have | OPEN |
+| CTL-30 | `scripts/netcup/runner/remote-gate-hosts.example.json` carries a controller-local home path (`run_gate_bins`) in a committed example, against the no-local-paths rule | Nice-to-have | FIXED 2026-11-18 |
+| CTL-31 | `ctl-doctor.sh` reads `controller.local.env` line by line (a multi-line assignment reads as a stray line) and does not run the identity check | Nice-to-have | OPEN |
+| CTL-32 | `ctl-state-backup.sh` has no restore helper, and keys/pins are outside the archive by design | Nice-to-have | OPEN |
+| CTL-33 | The local gate slots are hardcoded to two (`CONTROLLER_GATE_LOCK`/`CONTROLLER_GATE2_LOCK`); the count should be configurable | Should-fix | OPEN |
 
 ---
 
@@ -1420,21 +1423,22 @@ green and a mutant for the guard wrapper killed in both.
 
 ## CTL-30 — a committed example carries a controller-local home path
 
-**Status:** OPEN (filed 2026-11-18 by the controller-import hygiene grep; not fixed).
+**Status:** FIXED 2026-11-18 (DONE in the controller-import review round; filed the same day by the controller-import hygiene grep).
 
-`scripts/netcup/runner/remote-gate-hosts.example.json` lists `run_gate_bins`
-under a home-directory path of the controller account. Replace it with
-placeholders.
+`scripts/netcup/runner/remote-gate-hosts.example.json` listed `run_gate_bins`
+under a home-directory path of the controller account. It now carries
+placeholder paths.
 
-**Close when.** `git grep -n '/home/' -- scripts/netcup/runner/*.example*` is empty.
+**Close when.** `git grep -n '/home/' -- scripts/netcup/runner/remote-gate-hosts.example.json` shows only the runner account's own home (it does).
 
 ## CTL-31 — ctl-doctor reads controller.local.env line by line and does not run the identity check
 
 **Status:** OPEN (filed 2026-11-18 by the import's doctor work; by design for now).
 
-`ctl-doctor.sh` refuses (never executes) every line of `controller.local.env`
-that is not a `NAME=value` assignment, so a legitimate multi-line assignment reads
-as a stray line, and it only checks that each host's `api_check` command is an
+`ctl-doctor.sh` flags (and stops before sourcing) every line of
+`controller.local.env` that is not a `NAME=value` assignment, so a legitimate
+multi-line assignment reads as a stray line (an assignment with a command
+substitution passes the filter and runs when `lib.sh` sources the file), and it only checks that each host's `api_check` command is an
 executable file: it does not run it (the identity check talks to the provider). A
 `--live` option could run `api_check` per alias and report the exit code only.
 
@@ -1453,3 +1457,23 @@ pins stay a documented operator duty (`docs/STATE-VS-WORK.md`).
 
 **Close when.** `--restore` exists with a test for the no-overwrite refusal, or the
 by-design note stays in `docs/STATE-VS-WORK.md`.
+
+## CTL-33 — the local gate slot count is hardcoded to two
+
+**Status:** OPEN (filed 2026-11-18 in the controller-import review round; deliberately not implemented there).
+
+`gate-run.sh` knows exactly two local slots, `CONTROLLER_GATE_LOCK` and
+`CONTROLLER_GATE2_LOCK`. Make the count configurable through
+`CONTROLLER_GATE_SLOTS` (default 2) with the lock files `gate.lock`, `gate2.lock`,
+`gate3.lock`, ... and make `chain-run.sh` and `ctl-doctor.sh` aware of the count
+(the doctor's lock check and the chain's documentation both name the two variables).
+
+Reasoning: the remote hosts already run four weight-based slots
+(`CONTROLLER_REMOTE_SLOTS`), so a fixed two is an arbitrary local limit on a
+controller whose capacity is host-owned; and the fleet daemon's RAM-first
+admission is meant to replace static slot counts altogether, so this entry covers
+the interim only and may close as superseded when that admission exists.
+
+**Close when.** `CONTROLLER_GATE_SLOTS` is honoured by `gate-run.sh`, `chain-run.sh`
+and `ctl-doctor.sh` with tests and mutants, or the fleet daemon's admission replaces
+the static count and this entry is closed as superseded.

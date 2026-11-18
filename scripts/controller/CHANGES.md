@@ -6,6 +6,38 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Fixed (review round of the controller import)
+- `ctl-state-backup.sh`: the member relabel no longer rewrites symlink targets
+  (`--transform flags=rh`; an absolute link stays absolute, a relative one stays
+  relative, hardlink members keep pointing at the relabelled member); a
+  pre-existing `CONTROLLER_BACKUP_DIR` keeps its mode (only a directory the run
+  creates is 700); `--verify` exits 1 for an archive with 0 members or without
+  its sidecar; a `CONTROLLER_REPO` that is a linked worktree without
+  `.controller-state`/`plan.yaml` prints a WARNING. 8 new hand mutants.
+- `remote-gate.sh`: each old program-directory environment name that is set
+  prints a one-line warning naming its `CONTROLLER_REMOTE_*` replacement (never
+  mapped); a weights file that exists but cannot be read warns; the runner
+  repository name defaults to `vbpub`; the runner snapshot is written to a
+  `mktemp` file and renamed, so concurrent runs cannot corrupt it (a
+  concurrent-run test with sync files). README documents the differences, the
+  moved throwaway worktree directory and the rule to stop using the old tool
+  before using this one. 7 new hand mutants.
+- `chain-run.sh`: `--unset-env NAME` (repeatable); the README states that
+  `gate-run.sh` requires both gate locks (a chain over unset locks still ends
+  with `CHAIN-DONE`, by design) and the old-to-new remote log and marker names.
+  2 new hand mutants.
+- `ctl-doctor.sh`: FAILs when `CONTROLLER_GATE_LOCK`/`CONTROLLER_GATE2_LOCK` are
+  unset, relative, equal or in an unwritable directory; `UserKnownHostsFile=/dev/null`
+  no longer counts as a pin; the wording no longer claims nothing is executed
+  (`controller.local.env` is sourced by `lib.sh`). 6 new hand mutants; the
+  root-only unwritable-directory check prints a SKIP line and the mutation
+  runner reports its mutant as skipped under uid 0.
+- `run-gate.toml`: the `suite` lane budget is 30m (measured about 15 min wall at
+  354 mutants; it was 15m, sized for 222).
+- `scripts/netcup/runner/remote-gate-hosts.example.json` carries placeholder
+  paths (CTL-30 fixed); CTL-31, CTL-32 in the backlog index; CTL-33 filed (local
+  gate slot count is hardcoded to two).
+
 ### Changed
 - `gate-run.sh` defaults `RUN_GATE_PROFILE` to `off` (the caller can still set
   `on`): local gates run without profiling data so they behave the same before

@@ -21,7 +21,7 @@ import (2026-11-18); they show the order of magnitude, not a quota.
 | `logs/` | state | 46M | gate and chain logs, verdict JSON copies | no |
 | `reports/` | state | 24M | per-job reports | yes |
 | `remote-gates/` | state | 141M | per-run result directory of `remote-gate.sh` (summaries, logs, artifacts) | only `result.json` and `meta.json` |
-| host runbooks (`r1002/`, `v1001/` style directories) | state | 103M and 906M | host notes, evidence, live-test material | no (large; keep the runbook text itself under review with `reports/`) |
+| host runbooks (one `<host-alias>/` directory per host) | state | 103M and 906M | host notes, evidence, live-test material | no (large; keep the runbook text itself under review with `reports/`) |
 | readbacks (`readback-*.md`) | state | small | context readbacks of earlier controller sessions | no (rebuildable from the session transcript with `build-readback.py`) |
 | `$CONTROLLER_HOME/*.local.*` | state, secret-adjacent | 3.8M for the whole home | `controller.local.env`, `hosts.local.json` (paths and host facts; no key contents) | yes |
 | repo root `.controller-state/` | state | 3.4M | handoff, operator decisions, hook state | yes |
