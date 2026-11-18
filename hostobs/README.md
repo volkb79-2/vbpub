@@ -151,8 +151,9 @@ switched to it by a separate `run-gate.root.toml` commit). `selftest` is the wor
 R0/R1 baseline (nextest, doctests, llvm-cov and the per-crate line/region floors).
 
 **`assay-r1` is the estate-standard coverage verdict**: assay's Rust R1 judge reads the
-same `lcov.info` and judges 33 declared `src` files of the four functional crates against
-a 95.0% line floor (measured 96.04%, floored one point down — derivation in
+same `lcov.info` and judges the 37 declared `src` files of the four functional crates against
+a 95.0% line floor (the floor was derived from 96.04% measured over the first 33 files and
+floored one point down; the later lanes measure 96.7% to 96.8% — derivation in
 [`assay.toml`](assay.toml)). The verdict carries the measured totals, lists the uncovered
 lines as findings, and reports branch coverage as **unavailable** (stable Rust emits no
 branch arcs; assay B523), never as zero-of-zero. R2 (mutation) and R3 (canary) are not

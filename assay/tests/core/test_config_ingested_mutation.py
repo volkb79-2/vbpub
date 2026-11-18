@@ -388,6 +388,8 @@ def test_a_directory_kind_format_without_its_result_report_is_refused(
     matching ``result_report`` is required, so the refusal names it."""
     text = INGESTED_LANE.replace(
         'format = "mutation-report-json"', 'format = "cargo-mutants-outcomes"'
+    ).replace(
+        '["npx", "stryker", "run"]', '["npx", "stryker", "--in-diff", "{assay.changed_diff}"]'
     )
     error = _refusal(app_project, text)
     message = str(error)

@@ -1,6 +1,6 @@
 """KI-81: the bare-host release-gate controller runs in the installed CMRU environment.
 
-``run-gate gate`` / ``gate-provisional`` are ``bare-host`` lanes that start
+``run-gate gate`` / ``release-gate`` are ``bare-host`` lanes that start
 ``python3 -I -B run_release_gate.py``. ``python3`` there is whatever the host PATH
 names, which need not hold the declared ``cli-extended`` wheel. These tests run the
 REAL script as a subprocess. ``-I -S`` starts it from an interpreter that genuinely
@@ -550,7 +550,7 @@ def test_an_unreadable_declaration_is_a_loud_refusal(tmp_path, monkeypatch, cont
 
 def test_the_registered_gate_lanes_name_no_host_specific_interpreter():
     lanes = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]
-    for name in ("gate", "gate-provisional"):
+    for name in ("gate", "release-gate"):
         argv = lanes[name]["argv"]
         assert lanes[name]["environment"] == "bare-host"
         assert argv[:4] == [

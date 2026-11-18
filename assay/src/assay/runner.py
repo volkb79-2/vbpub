@@ -71,6 +71,7 @@ package's ``scope.touch``).
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import math
 import os
 import shlex
@@ -169,6 +170,7 @@ from .statement_attribution import attribute_statements
 from .verdict import (
     CanaryAttempt,
     CanaryResult,
+    ChangedDiff,
     Claim,
     Coverage,
     Evidence,
@@ -815,6 +817,27 @@ def _utc_now() -> datetime:
 
 
 @record
+class ChangedDiffHandoff:
+    """(B245 U5b, D7) The produced ``git diff`` patch handed to a foreign
+    mutation tool through the ``{assay.changed_diff}`` argv placeholder.
+
+    *path* is a file outside the snapshot tree (in the lane's scratch root)
+    that exists only for the lifetime of the lane; it is substituted into the
+    argv at the process boundary alone (:func:`materialize_argv`) and never
+    appears in the verdict. The reproducible facts are the other five fields,
+    which become ``judgment.r2.changed_diff``.
+    """
+
+    path: Path
+    sha256: str
+    size: int
+    base_rev: str
+    head_rev: str
+    #: ``.`` at the git top, else the cargo workspace root relative to it.
+    relative_to: str
+
+
+@record
 class CommandPlan:
     """What WILL run, resolved before anything executes.
 
@@ -869,6 +892,42 @@ class CommandPlan:
     #: command), and it gets that behaviour by construction rather than by
     #: remembering to opt out.
     cwd_declared: str | None = None
+    #: (B245 U5b) The changed-lines diff the ``{assay.changed_diff}``
+    #: placeholder in ``argv_declared`` resolves to; ``None`` on every plan
+    #: but the ingested cargo-mutants baseline's.
+    changed_diff: ChangedDiffHandoff | None = None
+
+
+def materialize_argv(plan: CommandPlan) -> tuple[str, ...]:
+    """(B245 U5b) ``plan.argv_effective`` as the process boundary receives it.
+
+    The ``{assay.changed_diff}`` placeholder is replaced by the handoff file's
+    path; the plan and the verdict keep the placeholder. Refused as
+    ``BAD_LANE_CONFIG`` -- the literal must never reach a process -- when the
+    plan holds the placeholder with no handoff or more than once (a CLI
+    ``--`` append of it lands here: the handoff exists only when the lane
+    declared the placeholder, so the append is always a second occurrence).
+    """
+    indices = [
+        index
+        for index, token in enumerate(plan.argv_effective)
+        if token == vocabulary.ARGV_PLACEHOLDER_CHANGED_DIFF
+    ]
+    if not indices:
+        return plan.argv_effective
+    if plan.changed_diff is None or len(indices) != 1:
+        raise AssayError(
+            f"argv holds '{vocabulary.ARGV_PLACEHOLDER_CHANGED_DIFF}' but it "
+            "cannot be resolved: it must appear exactly once and the "
+            "changed-lines diff must have been produced (the diff is produced "
+            "only for a lane that declares the placeholder, so a "
+            "CLI-appended second one is refused as a repeat)",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+    argv = list(plan.argv_effective)
+    argv[indices[0]] = str(plan.changed_diff.path)
+    return tuple(argv)
 
 
 def _plan_passthrough_values(plan: CommandPlan) -> tuple[str, ...]:
@@ -1295,9 +1354,11 @@ def _directory_report_error(
     ``Absent`` is also ``ERROR``/``UNREADABLE_ARTIFACT`` (unlike the file
     kind): a payload-free ``NO_MEASUREMENT``/``EMPTY_COVERAGE`` claim beside a
     PASS R0 is rejected by ``verify``, and ``verify`` accepts this refusal.
-    U5c synthesises the zero-mutant ``INCONCLUSIVE``/``NO_MUTANTS`` for an
-    exit-0 run; until then an absent report fails closed. ``NotConsumed`` is
-    an error and never the zero-mutant marker: nothing was observed.
+    The caller (U5c) overrides this refusal for the one zero-mutant shape --
+    a PASSED R0 on a changed_lines lane that was handed the placeholder diff
+    -- and synthesises ``INCONCLUSIVE``/``NO_MUTANTS`` instead; every other
+    absent report stays this refusal. ``NotConsumed`` is an error and never
+    the zero-mutant marker: nothing was observed.
     """
     if isinstance(state, _DirectoryRefused):
         return state.error
@@ -1306,9 +1367,9 @@ def _directory_report_error(
             f"the lane declared judge.mutation.artifact {artifact!r} but the "
             f"cargo-mutants run produced no outcomes.json. An ingested R2 "
             f"lane's whole evidence IS that artifact, so there is nothing to "
-            f"judge. The zero-mutant case is synthesised by work package U5c; "
-            f"until then a run that wrote no report fails closed rather than "
-            f"reporting a silent green.",
+            f"judge. Only a changed_lines lane handed the diff placeholder "
+            f"may read a missing report as zero mutants; this run fails "
+            f"closed rather than reporting a silent green.",
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.UNREADABLE_ARTIFACT,
         )
@@ -1713,9 +1774,11 @@ def _execute_plan_inner(
     four terminal paths -- four places to get right, and four for a later edit
     to get wrong.
     """
+    # (B245 U5b) The one place the diff-handoff placeholder becomes a path.
+    argv = materialize_argv(plan)
     try:
         proc = process_runner(
-            plan.argv_effective,
+            argv,
             env=plan.env_effective,
             cwd=run_cwd,
             timeout=child_timeout,
@@ -4636,6 +4699,125 @@ def _resolve_declared_base(
 resolve_declared_base = _resolve_declared_base
 
 
+def _produce_changed_diff(
+    lane: Lane,
+    *,
+    snapshot: "isolation.Snapshot",
+    project_root: Path,
+    workspace_root: Path,
+    resolved_base: str | None,
+    scratch_root: Path,
+    deadline: LaneDeadline,
+) -> ChangedDiffHandoff:
+    """(B245 U5b, D7) Produce the changed-lines patch for the
+    ``{assay.changed_diff}`` placeholder and write it OUTSIDE the snapshot.
+
+    The patch is ``git diff base head`` inside *snapshot*, anchored on the
+    cargo *workspace_root* (``--relative``, omitted at the repository top) and
+    restricted to the lane's source roots (§7.6): cargo-mutants resolves the
+    diff's paths against its own workspace root, so a cwd-relative diff would
+    match nothing. An empty diff is still written -- the tool prints that the
+    diff is empty and the lane ends INCONCLUSIVE/NO_MUTANTS (D3), never PASS.
+    ``base == head`` is the existing ``BASE_IS_HEAD`` refusal, raised before
+    any diff exists. Explicit prefixes and ``--no-renames`` keep the shape
+    independent of the repository's ``diff.noprefix``/``mnemonicPrefix``/
+    ``diff.renames`` settings.
+    """
+    assert resolved_base is not None
+    resolved = measurability.check_resolved_base_is_head(
+        snapshot.root, resolved_base, remaining=deadline.remaining
+    )
+    relative_to = workspace_root.relative_to(snapshot.root).as_posix()
+    relocated = _relocate_source_roots(
+        lane, project_root=project_root, scratch_project_root=snapshot.project_root
+    )
+    assert relocated.judge is not None
+    # Repository-top-relative, as git's pathspecs are with ``--relative``
+    # (measured); ``git.py`` runs every command with literal pathspecs.
+    pathspecs = [
+        root.relative_to(snapshot.root).as_posix()
+        for root in relocated.judge.source_root_paths
+    ]
+    patch = git.run_bytes(
+        snapshot.root,
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--no-renames",
+        *([f"--relative={relative_to}"] if relative_to != "." else []),
+        resolved.base_rev,
+        resolved.head_rev,
+        "--",
+        *pathspecs,
+        remaining=deadline.remaining,
+    )
+    directory = scratch_root / "changed-diff"
+    path = directory / "in-diff.patch"
+    try:
+        os.mkdir(directory, 0o700)
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(patch)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError as exc:
+        raise AssayError(
+            f"the changed-lines diff could not be written for "
+            f"'{vocabulary.ARGV_PLACEHOLDER_CHANGED_DIFF}': {exc.strerror or exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        ) from exc
+    return ChangedDiffHandoff(
+        path=path,
+        sha256=hashlib.sha256(patch).hexdigest(),
+        size=len(patch),
+        base_rev=resolved.base_rev,
+        head_rev=resolved.head_rev,
+        relative_to=relative_to,
+    )
+
+
+def _changed_diff_tamper_error(handoff: ChangedDiffHandoff) -> AssayError | None:
+    """(B245 U5b review) ``None`` when the handoff file still holds exactly the
+    bytes the verdict's ``judgment.r2.changed_diff`` claims, else the refusal.
+
+    The command runs as the same user and can rewrite, truncate, replace or
+    delete the file by name; ``judgment.r2.changed_diff.sha256`` would then
+    attest bytes the tool never read. The file is re-read after the unit that
+    consumed it (``O_NOFOLLOW`` through :mod:`assay.safeio`, ``size + 1``
+    bytes at most) and compared to the recorded size and digest.
+    """
+    try:
+        current = safeio.read_bounded_file(
+            handoff.path.parent, handoff.path.name, limit=handoff.size + 1
+        )
+    except AssayError as exc:
+        reason = f"could not be re-read safely ({exc})"
+    else:
+        if current is None:
+            reason = "is missing"
+        elif (
+            len(current) != handoff.size
+            or hashlib.sha256(current).hexdigest() != handoff.sha256
+        ):
+            reason = "no longer holds the bytes that were produced"
+        else:
+            return None
+    return AssayError(
+        f"the changed-lines diff handed to the command {reason}; the "
+        "recorded judgment.r2.changed_diff would not describe what the tool read",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+    )
+
+
 def _run_prepared_lane(
     lane: Lane,
     *,
@@ -4671,6 +4853,9 @@ def _run_prepared_lane(
     state_root_fd: int | None = None,
     state_root_guard: Callable[[], None] | None = None,
     liveness_dir: Path | None = None,
+    #: (B245 U5b) The lane's scratch root: the changed-diff handoff file lives
+    #: beneath it, outside every snapshot tree.
+    scratch_root: Path | None = None,
     expected_plan_sha256: str | None = None,
     campaign_deadline_sha256: str | None = None,
     cold_witness: bool = False,
@@ -4839,6 +5024,7 @@ def _run_prepared_lane(
     # value, never two independently-typed-out paths that could drift.
     liveness_candidates_dir: Path | None = None
     baseline_plan = plan
+    changed_diff_handoff: ChangedDiffHandoff | None = None
     reuse_sequential_supported: bool | None = None
     if liveness_injected:
         liveness_baseline_events_path = (
@@ -4881,6 +5067,23 @@ def _run_prepared_lane(
                 prepared,
                 timeout=deadline.remaining(),
             )
+        if vocabulary.ARGV_PLACEHOLDER_CHANGED_DIFF in plan.argv_declared:
+            # (B245 U5b, D7) The placeholder is legal only on an ingested
+            # cargo-mutants changed_lines lane (config.py), whose workspace
+            # root was just resolved. The diff exists BEFORE the baseline
+            # unit, which is the only command that receives it. An error here
+            # is a lane-level refusal, exactly like the workspace-root one.
+            assert cargo_workspace_root is not None and scratch_root is not None
+            changed_diff_handoff = _produce_changed_diff(
+                lane,
+                snapshot=baseline_snapshot,
+                project_root=project_root,
+                workspace_root=cargo_workspace_root,
+                resolved_base=resolved_base,
+                scratch_root=scratch_root,
+                deadline=deadline,
+            )
+            baseline_plan = replace(baseline_plan, changed_diff=changed_diff_handoff)
         if cold_witness:
             assert r2_plan is not None
             r2_cwd = resolve_run_cwd(baseline_snapshot.project_root, r2_plan)
@@ -5494,7 +5697,33 @@ def _run_prepared_lane(
             # exactly as it is for coverage (A-161).
             if r2_ingested and r2_early_claim is None:
                 ingested_r2_error = unit.mutation_report_error
-                if ingested_r2_error is None:
+                # (B245 U5c) The zero-mutant shape: R0 PASSED by exit code
+                # (this block is reached only on a PASS, and an `Absent`
+                # report cannot decide R0), the tool wrote no report, and
+                # the lane is a changed_lines lane whose placeholder diff
+                # was handed over -- the tool was told to mutate only the
+                # diff, and the diff selected nothing. Every other absent
+                # state (no handoff, i.e. whole_target) keeps its
+                # fail-closed refusal.
+                zero_mutant = (
+                    unit.directory_report is not None
+                    and isinstance(unit.directory_report.state, _DirectoryAbsent)
+                    and changed_diff_handoff is not None
+                )
+                if zero_mutant:
+                    ingested_r2_error = None
+                if ingested_r2_error is None and changed_diff_handoff is not None:
+                    ingested_r2_error = _changed_diff_tamper_error(
+                        changed_diff_handoff
+                    )
+                if ingested_r2_error is None and zero_mutant:
+                    assert relocated_lane_r2 is not None and added is not None
+                    ingested_r2 = mutation.synthesize_zero_mutant_result(
+                        added,
+                        repo_top=baseline_snapshot.root,
+                        source_root_paths=relocated_lane_r2.judge.source_root_paths,
+                    )
+                elif ingested_r2_error is None:
                     assert relocated_lane_r2 is not None
                     raw_report: bytes | safeio.DirectoryArtifact
                     if unit.directory_report is not None:
@@ -5605,7 +5834,9 @@ def _run_prepared_lane(
                 # raises a typed refusal above. Unlike native R2's
                 # `UNSUPPORTED` capability marker, this branch has no
                 # payload-free success shape.
-                judgment_r2 = _build_ingested_judgment_r2(lane, ingested_r2)
+                judgment_r2 = _build_ingested_judgment_r2(
+                    lane, ingested_r2, changed_diff=changed_diff_handoff
+                )
             ended = iso_utc(clock())
         else:
             assert targets is not None
@@ -6588,7 +6819,10 @@ def _ingest_r2_report(
 
 
 def _build_ingested_judgment_r2(
-    lane: Lane, ingested: "mutation.IngestedMutationResult"
+    lane: Lane,
+    ingested: "mutation.IngestedMutationResult",
+    *,
+    changed_diff: ChangedDiffHandoff | None = None,
 ) -> JudgmentR2:
     """(B046) The ``judgment.r2`` of an INGESTED lane.
 
@@ -6613,6 +6847,7 @@ def _build_ingested_judgment_r2(
         survived_uncovered=ingested.survived_uncovered,
         discarded=ingested.discarded,
         lines_without_candidates=ingested.lines_without_candidates,
+        report_absent=ingested.report_absent,
         # B050/A-427 (schema v10): the floor the ingested judgment applied,
         # read from the lane rather than assumed to be 100.0 -- which is the
         # whole point of the field. It is REQUIRED under `ingested` and
@@ -6624,6 +6859,17 @@ def _build_ingested_judgment_r2(
             tuple(sorted(lane.judge.targets))
             if lane.judge.mode == "whole_target"
             and lane.judge.targets is not None
+            else None
+        ),
+        changed_diff=(
+            ChangedDiff(
+                base_rev=changed_diff.base_rev,
+                head_rev=changed_diff.head_rev,
+                relative_to=changed_diff.relative_to,
+                sha256=changed_diff.sha256,
+                bytes=changed_diff.size,
+            )
+            if changed_diff is not None
             else None
         ),
     )
@@ -7151,6 +7397,7 @@ def _run_higher_rigor_lane(
                         state_root_fd=state_root_fd,
                         state_root_guard=state_root_guard,
                         liveness_dir=Path(raw_liveness_dir),
+                        scratch_root=scratch_root,
                         expected_plan_sha256=expected_plan_sha256,
                         campaign_deadline_sha256=campaign_deadline_sha256,
                         cold_witness=cold_witness,

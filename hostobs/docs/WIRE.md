@@ -533,7 +533,7 @@ buffer for the allocation tests; a poisoned reader holds no buffer. The 64 KiB g
 to `len / 64 KiB` reallocations for the largest frame (256 at 16 MiB); this is accepted, because the
 capacity bound forbids geometric growth.
 
-5.3 **Send hub** (`proto::stream::SendHub`, server side, one per serving process that owns every
+5.3 **Send hub** (`proto::hub::SendHub`, server side, one per serving process that owns every
 connection's outgoing queue; P5b wraps it in one mutex). It owns the per-uid and global pools, so the
 victim of an overflow is chosen with every queue in view.
 
@@ -600,6 +600,35 @@ close another (the victim is whoever holds the most sheddable bytes, and only Li
 one uid holds at most a quarter of each pool and each frame it is sent must complete within
 `frame_completion_ms`, so a dribbling reader cannot starve other clients; a stalled writer is closed
 after `stall_ms` from the last byte it accepted, never sooner after an idle period.
+
+**Implemented (`crates/proto/src/hub.rs`).** One unit test per operation row and per consequence
+above (`control_row_*`, `live_row_*`, `fit_*`, `query_row_*`, `end_stream_row_*`, `head_row_*`,
+`poll_row_*`, `drain_unpinned_row_*`, `remove_row_*`), plus a pool-exactness checker that recomputes
+every pool from the queues after each operation of a pseudo-random run. Precisions the tables leave
+open: bytes stay in a pool until the entry is popped, shed, coalesced, drained or removed, so a partly
+written head still counts; `head` returns the **unwritten rest** of the entry as `[prefix part,
+tail part]` (a control frame has an empty prefix; after `wrote(n)` the prefix part shrinks first), and
+`wrote` clamps to the entry's length, ignores a call without a pinned head and pops a pinned
+zero-length entry on any call; a control frame is pinned like a block (`pinned_ns` and the frame-completion rule
+apply to it) but has nothing to stamp; "empty → non-empty" is judged before the push touches the
+queue, so a coalesce or a shed that empties the queue and then inserts never restarts
+`last_progress_ns` (a stalled socket with one tick per second is still closed); a
+coalesced tick keeps its queue position (the replaced entry's sequence number) and, when it then does
+not fit, counts two drops (the replaced and the incoming tick); the victim of the uid and global pools
+may be the pushing connection itself (it holds the most sheddable bytes); `drain_unpinned` and
+`remove` do not count the removed ticks (the connection is closing), but `drain_unpinned` of a
+dictionary-bearing tick sets `needs_dict` for its stream; `end_stream` of a stream with no
+state (never pushed, or already ended) returns zeros, and a Query block of an ended stream that is
+pinned later is stamped `dropped = 0` with its own `corr`; `query_ready` compares per pool (connection,
+uid, global) the freed-Query-bytes counter at refusal with its current value, so only bytes freed in a
+pool that refused wake the stream, and it answers true for an unknown connection (the retry is then
+discarded as `Queued`); operations on an unknown connection are no-ops (`push_control` `Ok`,
+`push_live` `DroppedIncoming`, `push_query` `Queued`, `head` `None`, pools zero); `poll` is `&self`
+and keeps reporting a connection until the caller `remove`s it; `ConnId` starts at 1, a wrap skips 0
+and an id still in use; a stamped field that lies outside a block shorter than its header is not
+written (no panic). A tick's generation MUST be at least 1 (`last_pushed_gen` 0 means nothing
+pushed, and the first push of a stream is the dictionary form whatever generation it carries). The hub lives in `proto::hub`, not `proto::stream`, to keep `stream.rs` the reader and
+timers only.
 
 **Mode detection** (`proto::stream::ModeDetect`, server, P2; drives §5.4's `Undecided` rows):
 `feed(bytes) -> Detect` with `Detect::Need` (consumed everything, fewer than 8 prefix bytes so far),
@@ -963,9 +992,23 @@ stream closed, so the bare block after it is stale), `client-epoch-change` (hell
 hello with a new epoch `changed`: the bare block finds nothing held; a dictionary, hello with the same
 epoch `same`: dictionaries are dropped here too; cursors and subscriptions are the caller's, §6.4).
 
-Hub cases (`fixtures/stream/hub-*.json`, Rust only, fake clock; a step is a §5.3 operation, `expect`
-lists the outcome, the Live/Query/control pools of the touched connections and uids and, after `head`,
-the stamped `corr`/`dropped`):
+Hub cases (`fixtures/stream/hub-*.json`, 19 files written by `python/reference/make_hub_fixtures.py`,
+replayed by `crates/proto/tests/hub_fixtures.rs` with a fake clock, `t_ms * 1_000_000` as `now_ns`;
+a Python test pins the committed bytes to the generator). Format: `{"case", "doc", "limits", "conns",
+"steps", "expect"}`; `limits` holds the nine `QueueLimits` fields (scaled: Live 1000/2000/8000 per
+connection/uid/global, Query 1000/1000/4000, control 500, stall and frame completion 5000 ms),
+`conns` the peer uid of each connection (index 0 first, added at t = 0). Every block is a
+2-section BLOCK of the stated length (at least 112; `dropped` at offset 104, tail from 112
+filled with `tag`, default 160). A step is `{"t_ms", "op", ...}` with `op` one of `push_live {c, s,
+gen, bare|null, dict, tag?, share?}` (`share` names one tick object used by several pushes),
+`push_query {c, s, len}`, `push_control {c, len}`, `query_ready {c, s}`, `end_stream {c, s}`,
+`head {c, block}`, `head_partial {c}`, `wrote {c, n}`, `poll`, `drain_unpinned {c}`, `remove {c}`,
+each with an optional `watch` list of `c<i>`, `u<uid>` and `g`. `expect` has one list per step: the
+operation's output (`queued|coalesced|dropped-incoming`, `queued|backpressure`, `ok|close`,
+`{"counts": {"blocks", "dropped"}}`, `{"head": {"len": remaining, "corr", "dropped", "tail_tag"}}`
+or `null`, `{"ready": bool}`, `{"partial": bool}`, `{"closed": [conn indexes]}`), then
+`{"pools": {key: [live, query, control]}}` when the step watches. The replay also asserts at most
+one `dict_form` call per push:
 
 | Case | Expected |
 |---|---|
@@ -983,7 +1026,7 @@ the stamped `corr`/`dropped`):
 | `hub-query-backpressure` | `push_query` over the Query pool: `Backpressure`, no Query entry dropped; after `wrote` frees Query bytes `query_ready(c, s)` is true and the retry is `Queued` |
 | `hub-query-own-pool` | Live pool full of other connections' unpinned ticks: `push_query` sheds none of them; Query pool full: `push_live` unaffected |
 | `hub-control-cap` | a frame larger than `control_queue_bytes` into an empty control queue: admitted; a second control push while it is unsent: `Close(slow-client)`; blocks never block a control push |
-| `hub-frame-completion` | pinned head, `wrote(1)` every 4 s: no stall close, no close at `pinned_ns + frame_completion_ms`, `slow-client` at `+1` |
+| `hub-frame-completion` | pinned head, `wrote(1)` at 4 s: `head_partial`, no stall close, no close at `pinned_ns + frame_completion_ms`, `slow-client` at `+1` |
 | `hub-stall` | non-empty, no `wrote`, no `head`: no close at `+stall_ms`, `slow-client` at `+stall_ms + 1` |
 | `hub-stall-after-idle` | queue empty for 60 s, then a push and `poll` at `+1`: no close |
 | `hub-shared-block` | two connections, one `Arc`, distinct `corr`/`dropped` prefixes, identical tails |
@@ -1006,7 +1049,7 @@ unwritten head: EVT `closing` written; with a partially written head: no EVT, cl
 ## 12. Work breakdown
 
 **P2 — `proto` stream layer and codec additions (L).** Modules `crates/proto/src/stream.rs` (`FrameReader`,
-`ModeDetect`, `SendHub`, `ConnTimers`, `StreamDicts`), `crates/proto/src/envelope.rs` (REQ/REP/END/EVT JSON shape checks without a JSON
+`ModeDetect`, `ConnTimers`, `StreamDicts`), `crates/proto/src/hub.rs` (`SendHub`), `crates/proto/src/envelope.rs` (REQ/REP/END/EVT JSON shape checks without a JSON
 dependency: byte-level only — `proto` stays dependency-free; JSON parsing is the caller's),
 `frame.rs` additions. Public API:
 `FrameReader::new(max_frame: u32, completion_ns: u64) -> FrameReader`;

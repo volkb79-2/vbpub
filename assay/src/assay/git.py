@@ -1,7 +1,7 @@
 """The thin git subprocess boundary.
 
 Every other module in this package that needs git talks to it through here —
-one function that shells out (:func:`_run_bytes`, a raw-bytes boundary),
+one function that shells out (:func:`run_bytes`, a raw-bytes boundary),
 :func:`run` which decodes its output, and a handful of thin wrappers over
 specific invocations. Nothing above this module ever builds a
 ``["git", ...]`` argv itself.
@@ -46,7 +46,7 @@ and verified empirically against a real git binary while writing this module:
   :func:`repo_top` is what lets a caller convert correctly.
 
 **P15 (A-067 finding 5, sol's post-series review).** Every invocation through
-:func:`run`/:func:`_run_bytes` now forces ``-c core.quotePath=false`` — the
+:func:`run`/:func:`run_bytes` now forces ``-c core.quotePath=false`` — the
 half of git's path-quoting behaviour this project can simply turn off: a
 non-ASCII byte then passes through raw instead of being octal-escaped inside
 a quoted string. That does NOT disable quoting for a control byte (including
@@ -64,7 +64,7 @@ module's own docstring.
 **Controller repair (A-134).** Turning ``core.quotePath`` off is exactly what
 lets a raw non-ASCII byte reach this process, so the *decoding* side of the
 boundary had to move with it: every command now goes through
-:func:`_run_bytes` and one :func:`_decode_or_reject` policy, not just
+:func:`run_bytes` and one :func:`_decode_or_reject` policy, not just
 :func:`dirty_paths`. Decoding via ``subprocess``' ``text=True`` would have
 picked git's output apart with **the ambient locale's** codec — under a
 non-UTF-8 ``LC_CTYPE`` a path assay can represent perfectly well became a
@@ -109,6 +109,7 @@ __all__ = [
     "repo_top",
     "resolve_base",
     "run",
+    "run_bytes",
     "tree_entry_info",
     "tree_entry_kind",
     "verify_exact_commit",
@@ -685,7 +686,7 @@ def run(repo: Path, *args: str, remaining: Remaining | None = None) -> str:
     only for a genuine non-lane caller.
     """
     return _decode_or_reject(
-        _run_bytes(repo, *args, remaining=remaining), f"the output of git {' '.join(args)}"
+        run_bytes(repo, *args, remaining=remaining), f"the output of git {' '.join(args)}"
     )
 
 
@@ -702,7 +703,7 @@ def _run_raw(
     The shared construction every git call in this module (before P22) goes
     through: fresh executable/repository resolution (A-173, no cross-call
     cache), the literal-pathspec/git-dir/work-tree anchor, and *remaining*
-    forwarded to both the bootstrap and the substantive child. :func:`_run_bytes`
+    forwarded to both the bootstrap and the substantive child. :func:`run_bytes`
     is the ordinary "any nonzero exit is GIT_FAILED" sibling; the narrow P26
     attestation helpers (:func:`is_ancestor`, :func:`tree_entry_kind`,
     :func:`path_is_current`) call this directly because THEY, not a generic
@@ -740,7 +741,7 @@ def _run_raw(
         return _run_bounded(argv, remaining=remaining, stdin=stream)
 
 
-def _run_bytes(repo: Path, *args: str, remaining: Remaining | None = None) -> bytes:
+def run_bytes(repo: Path, *args: str, remaining: Remaining | None = None) -> bytes:
     """Run a git command and return its raw stdout bytes, undecoded.
 
     Every caller in this module reaches git through here (or, for the narrow
@@ -750,6 +751,11 @@ def _run_bytes(repo: Path, *args: str, remaining: Remaining | None = None) -> by
     (:func:`_decode_or_reject`) and the *where do records end* question
     (``-z`` in :func:`dirty_paths`) are then answered deliberately, in one
     place, instead of by ``subprocess``' defaults.
+
+    Public (B245 U5b) for the one caller outside this module that must keep
+    the bytes: the changed-diff handoff (:mod:`assay.runner`), whose patch
+    is hashed and written verbatim, so an unrelated non-UTF-8 byte in the
+    patch is the consumer's business, not a ``GIT_FAILED`` of ours.
     """
     returncode, stdout, stderr = _run_raw(repo, *args, remaining=remaining)
     if returncode != 0:
@@ -929,7 +935,7 @@ def dirty_paths(repo: Path, *, remaining: Remaining | None = None) -> tuple[str,
     brand-new untracked source file from this function with no self-reporting
     trail. A-177's restriction stands.
     """
-    raw = _run_bytes(repo, "status", "--porcelain=v1", "-z", remaining=remaining)
+    raw = run_bytes(repo, "status", "--porcelain=v1", "-z", remaining=remaining)
     # ``-z`` NUL-TERMINATES every record rather than separating them, so real
     # output always ends in a trailing NUL when there is at least one record,
     # and is simply zero bytes when there are none (``b"".split(b"\x00") ==
@@ -953,7 +959,7 @@ def dirty_paths(repo: Path, *, remaining: Remaining | None = None) -> tuple[str,
             # here and discarded rather than reported.
             index += 1
 
-    untracked = _run_bytes(
+    untracked = run_bytes(
         repo,
         "ls-files",
         "--others",
@@ -994,9 +1000,9 @@ def path_is_ignored(
     same lane -- the identical failure B031 measured for the progress file.
     An ignored path is invisible to `dirty_paths` and therefore harmless.
 
-    Uses :func:`_run_raw` rather than :func:`_run_bytes` because THIS caller
+    Uses :func:`_run_raw` rather than :func:`run_bytes` because THIS caller
     owns what the exit codes mean: `check-ignore -q` is 0 for ignored, 1 for
-    not ignored, and anything else is a real git fault. `_run_bytes` would
+    not ignored, and anything else is a real git fault. `run_bytes` would
     turn the ordinary "not ignored" answer into `GIT_FAILED`.
     """
     returncode, _stdout, stderr = _run_raw(
@@ -1429,7 +1435,7 @@ def _p22_git(
 ) -> bytes:
     """Run one P22 plumbing command against an EXPLICIT repository.
 
-    Unlike :func:`_run_bytes` this never discovers a repository: a private
+    Unlike :func:`run_bytes` this never discovers a repository: a private
     seed or snapshot is created by assay and its git-dir is already known,
     so discovery could only reintroduce ambient identity. Output is either
     accumulated under *max_stdout* or streamed to *on_stdout*.

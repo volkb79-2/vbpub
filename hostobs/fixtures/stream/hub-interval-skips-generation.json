@@ -1,0 +1,156 @@
+{
+  "case": "hub-interval-skips-generation",
+  "doc": "a stream that missed the generation-changing tick gets the dictionary form on its next push",
+  "limits": {
+    "client_queue_bytes": 1000,
+    "uid_live_bytes": 2000,
+    "global_live_bytes": 8000,
+    "query_queue_bytes": 1000,
+    "uid_query_bytes": 1000,
+    "global_query_bytes": 4000,
+    "control_queue_bytes": 500,
+    "stall_ms": 5000,
+    "frame_completion_ms": 5000
+  },
+  "conns": [
+    1
+  ],
+  "steps": [
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 0,
+      "s": 1,
+      "gen": 1,
+      "bare": 200,
+      "dict": 240,
+      "watch": [
+        "c0"
+      ]
+    },
+    {
+      "t_ms": 0,
+      "op": "head",
+      "c": 0,
+      "block": true
+    },
+    {
+      "t_ms": 0,
+      "op": "wrote",
+      "c": 0,
+      "n": 240
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 0,
+      "s": 1,
+      "gen": 2,
+      "bare": 200,
+      "dict": 280,
+      "watch": [
+        "c0"
+      ]
+    },
+    {
+      "t_ms": 0,
+      "op": "head",
+      "c": 0,
+      "block": true
+    },
+    {
+      "t_ms": 0,
+      "op": "wrote",
+      "c": 0,
+      "n": 280
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 0,
+      "s": 1,
+      "gen": 2,
+      "bare": 200,
+      "dict": 280,
+      "watch": [
+        "c0"
+      ]
+    },
+    {
+      "t_ms": 0,
+      "op": "head",
+      "c": 0,
+      "block": true
+    }
+  ],
+  "expect": [
+    [
+      "queued",
+      {
+        "pools": {
+          "c0": [
+            240,
+            0,
+            0
+          ]
+        }
+      }
+    ],
+    [
+      {
+        "head": {
+          "len": 240,
+          "corr": 1,
+          "dropped": 0,
+          "tail_tag": 160
+        }
+      }
+    ],
+    [],
+    [
+      "queued",
+      {
+        "pools": {
+          "c0": [
+            280,
+            0,
+            0
+          ]
+        }
+      }
+    ],
+    [
+      {
+        "head": {
+          "len": 280,
+          "corr": 1,
+          "dropped": 0,
+          "tail_tag": 160
+        }
+      }
+    ],
+    [],
+    [
+      "queued",
+      {
+        "pools": {
+          "c0": [
+            200,
+            0,
+            0
+          ]
+        }
+      }
+    ],
+    [
+      {
+        "head": {
+          "len": 200,
+          "corr": 1,
+          "dropped": 0,
+          "tail_tag": 160
+        }
+      }
+    ]
+  ]
+}
