@@ -38,6 +38,8 @@ not transfer (section 6).
 | D15 | The VM launcher in `scripts/truenas/tcg_vm.py` becomes a general tool in its own directory and stops being TrueNAS-specific (section 9). |
 | D16 | Keep planning until a host is free; no host work before the lease. |
 | D17 | VM files (decided 2026-11-17, estate rule in AGENTS.md "Directory conventions and VM files"): project VMs in `<project>/vm-lab/`, ISOs in `downloads/iso/`, shared qemu base images in `downloads/vm-images/`. Raw disks on btrfs, per-VM disks as reflink copies of a base, zstd compression (storage is scarce; the random-write concern is kept in mdt-cockpit `BTRFS-COW-OPTIONS.md` 4.6, no benchmark yet). Run disks use `cache=unsafe`, **including the rollback experiments**: the host page cache survives a killed QEMU, so a hard power cut of the guest stays testable; a host crash is out of scope. |
+| D18 | Operator 2026-11-18: outside the snapshot by default are `/home`, `/root`, `/srv`, `/var/www`, `/var/lib/docker`, `/var/lib/containers`, `/var/log`, `/var/lib/postgresql`, `/var/lib/mysql`. `/opt` is inside by default (it usually holds software that must match the OS state; opt-out per host in the install config). `/etc` stays inside: boot and system configuration (systemd units and slices, apt configuration) changes together with apt install/remove and must roll back with it. `/usr/local` stays outside (not asked, left as in this section). |
+| D19 | Operator 2026-11-18: evaluate by hand first (PoC matrix: btrfs with snapper and GRUB, btrfs with systemd-boot, ZFS boot environments with ZFSBootMenu or GRUB), in nested QEMU (TCG assumed) on v1001 within the controller's limits; the unattended btrfs ISO flavor starts about 5 h after the PoC begins; `debian-install-v2` stays separate (documented handoff point only). Plan in [MILESTONES-2026-11-18.md](MILESTONES-2026-11-18.md). |
 
 ## 3. What "the operating system" means here
 
@@ -47,10 +49,11 @@ the user would lose by going back.
 | Inside the rolled-back state | Outside (never rolled back) |
 |---|---|
 | `/usr`, `/bin`, `/lib`, `/sbin` | `/home`, `/root` |
-| `/etc` (decision D6) | `/srv`, `/opt`, `/usr/local` |
+| `/etc` (decision D6), `/opt` (D18) | `/srv`, `/var/www`, `/usr/local` |
 | `/var/lib/dpkg`, `/var/lib/apt`, `/var/cache/apt` | `/var/log` (so the log of the failed boot survives) |
-| the kernel, initramfs and modules that belong to that state | service data: `/var/lib/docker`, `/var/lib/postgresql`, `/var/lib/mysql`, game-server data, VM images |
-| the rest of `/var/lib` not listed on the right | swap |
+| the kernel, initramfs and modules that belong to that state | service data (D18): `/var/lib/docker`, `/var/lib/containers`, `/var/lib/postgresql`, `/var/lib/mysql`, game-server data, VM images |
+| the rest of `/var/lib` not listed on the right | |
+| | swap |
 
 Rules that follow from this:
 

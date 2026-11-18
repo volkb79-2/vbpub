@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace <impl T for S>::triple -> i32 with -1
+@@ -9,17 +9,17 @@
+ }
+ 
+ pub trait T {
+     fn triple(&self) -> i32;
+ }
+ 
+ impl T for S {
+     fn triple(&self) -> i32 {
+-        self.n * 3
++        -1 /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ pub fn pick<X: Copy>(a: X, _b: X, first: bool) -> X {
+     if first {
+         a
+     } else {
+         _b
