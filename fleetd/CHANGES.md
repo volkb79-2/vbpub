@@ -6,6 +6,13 @@ All notable changes to this project are recorded here.
 
 ### Fixed
 
+- Probe follow-ups to FD-014/FD-022/FD-023 (WP1b). A job is now settled for
+  probing only when a probe row reported it `EXIT` with its progress window
+  closed (`probe_settled`), so a stall stop in the gap between the launcher's
+  end-offset write and EXIT no longer leaves a job without its verdict records;
+  states written before the flag keep the earlier rule. A host that becomes
+  unreachable or errors drops its stored PSI reading. The tests no longer depend
+  on the checkout's `scripts/controller/hx.sh`.
 - The probe no longer grows with the batch count (FD-014). It sends one
   compressed job-name table per (campaign, host, commit, project, lane) group
   with an ID-file path template, keeps a single copy of the payload, and skips

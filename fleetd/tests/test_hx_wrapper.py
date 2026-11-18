@@ -13,7 +13,17 @@ from fleetd import cli, transport as transport_module
 from fleetd.cli import main
 from fleetd.transport import HX_ENVIRONMENT, HxNotConfigured, HxTransport, TransportError, resolve_hx_wrapper
 
-CHECKOUT_DEFAULT = Path(transport_module.__file__).resolve().parents[3] / "scripts" / "controller" / "hx.sh"
+
+
+@pytest.fixture
+def checkout(monkeypatch, tmp_path):
+    """A source checkout of its own: the package three levels below a root holding the wrapper."""
+    monkeypatch.delenv(HX_ENVIRONMENT, raising=False)
+    wrapper = tmp_path / "scripts" / "controller" / "hx.sh"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(transport_module, "__file__", str(tmp_path / "fleetd" / "src" / "fleetd" / "transport.py"))
+    return wrapper
 
 
 @pytest.fixture
@@ -24,11 +34,9 @@ def installed(monkeypatch, tmp_path):
     return tmp_path
 
 
-def test_the_source_checkout_default_still_works_without_any_setting(monkeypatch):
-    monkeypatch.delenv(HX_ENVIRONMENT, raising=False)
-    assert CHECKOUT_DEFAULT.is_file()
-    assert resolve_hx_wrapper() == CHECKOUT_DEFAULT
-    assert HxTransport().wrapper == CHECKOUT_DEFAULT
+def test_the_source_checkout_default_still_works_without_any_setting(checkout):
+    assert resolve_hx_wrapper() == checkout
+    assert HxTransport().wrapper == checkout
 
 
 def test_the_environment_beats_the_checkout_default(monkeypatch, tmp_path):
@@ -44,9 +52,9 @@ def test_the_argument_beats_the_environment_and_the_checkout_default(monkeypatch
     assert HxTransport(tmp_path / "from-arg.sh", environ={HX_ENVIRONMENT: "/elsewhere/hx.sh"}).wrapper == tmp_path / "from-arg.sh"
 
 
-def test_an_empty_environment_value_counts_as_unset(monkeypatch):
+def test_an_empty_environment_value_counts_as_unset(monkeypatch, checkout):
     monkeypatch.setenv(HX_ENVIRONMENT, "")
-    assert resolve_hx_wrapper() == CHECKOUT_DEFAULT
+    assert resolve_hx_wrapper() == checkout
 
 
 def test_a_bare_name_is_made_absolute_so_the_launch_never_searches_path(monkeypatch, tmp_path):
