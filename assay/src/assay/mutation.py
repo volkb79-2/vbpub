@@ -187,6 +187,7 @@ from .verdict import (
     MAX_CANDIDATE_CEILING,
     MAX_SHARD_COUNT,
     MUTATION_BUCKETS,
+    PRODUCER_VERSION_UNOBSERVED,
     Claim,
     CandidateOutcomeError,
     MutantEvidence,
@@ -199,7 +200,11 @@ from .verdict import (
     SourcePosition,
     iso_utc,
 )
-from .vocabulary import MUTATION_OPERATORS
+from .vocabulary import (
+    CARGO_MUTANTS_OPERATOR_NAMESPACE,
+    CARGO_MUTANTS_REPORT_SCHEMA,
+    MUTATION_OPERATORS,
+)
 
 if TYPE_CHECKING:  # pragma: no cover -- annotation-only imports; importing at runtime creates cycles
     # Annotation-only: `.adapters.base` imports `MutationSite` from this
@@ -7633,6 +7638,70 @@ class IngestedMutationResult:
     #: not a count of them. See :attr:`assay.verdict.JudgmentR2.discarded`.
     discarded: tuple[MutantOutcome, ...]
     lines_without_candidates: tuple[SourcePosition, ...]
+    #: (B245 U5c, schema v20) ``True`` only for the synthesised zero-mutant
+    #: result (:func:`synthesize_zero_mutant_result`): the tool wrote no
+    #: report because it ran zero mutants, so ``judgment.r2.report_absent``
+    #: and the ``unobserved`` producer version are recorded.
+    report_absent: bool = False
+
+
+def _under_source_roots(
+    repo_path: str, *, repo_top: Path, source_root_paths: Sequence[Path]
+) -> bool:
+    """Whether the repo-top-relative *repo_path* lies under a declared source
+    root (a directory root by containment, a file root by equality)."""
+    absolute = Path(repo_top) / repo_path
+    return any(absolute.is_relative_to(Path(root)) for root in source_root_paths)
+
+
+def synthesize_zero_mutant_result(
+    added: AddedLines,
+    *,
+    repo_top: Path,
+    source_root_paths: Sequence[Path],
+) -> IngestedMutationResult:
+    """(B245 U5c) The R2 result of a cargo-mutants run that wrote NO report.
+
+    cargo-mutants prints "No mutants to filter" / "Diff file is empty" and
+    writes no ``mutants.out`` when ``--in-diff`` selects nothing (design 1.4,
+    D3): zero mutants ran. The payload is a ``Mutation`` with every bucket
+    empty and ``candidate_count`` 0, so ``judge_mutation`` yields
+    ``INCONCLUSIVE``/``NO_MUTANTS`` -- never a PASS (operator decision, D3).
+    ``producer_tool.version`` is the literal ``unobserved`` (Q1): assay read
+    no report, so it observed no version.
+
+    ``lines_without_candidates`` (Q3) is the diff's added lines within the
+    declared source roots, so "nothing to mutate" stays reviewable: the
+    consumer sees which changed lines the tool never produced a mutant for.
+    """
+    return IngestedMutationResult(
+        mutation=Mutation(
+            candidate_count=0,
+            total=0,
+            **{name: () for name in MUTATION_BUCKETS},
+        ),
+        producer_tool=MutationProducerTool(
+            name=CARGO_MUTANTS_OPERATOR_NAMESPACE,
+            version=PRODUCER_VERSION_UNOBSERVED,
+            report_schema_version=CARGO_MUTANTS_REPORT_SCHEMA,
+        ),
+        survived_uncovered=(),
+        discarded=(),
+        lines_without_candidates=tuple(
+            sorted(
+                (
+                    SourcePosition(path=path, lineno=lineno)
+                    for path, lines in added.by_file.items()
+                    if _under_source_roots(
+                        path, repo_top=repo_top, source_root_paths=source_root_paths
+                    )
+                    for lineno in lines
+                ),
+                key=lambda position: position.sort_key,
+            )
+        ),
+        report_absent=True,
+    )
 
 
 def ingest_mutation_report(

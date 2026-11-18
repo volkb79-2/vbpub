@@ -397,8 +397,9 @@ def test_an_absent_report_with_exit_zero_never_passes(git_repo: GitRepo, tmp_pat
     base = _seed(git_repo, "indiff")
     lane = _lane(git_repo, base)
 
-    # Until U5c synthesises the zero-mutant INCONCLUSIVE/NO_MUTANTS, an absent
-    # report fails closed as an unreadable artifact (which `verify` accepts).
+    # This hand-built lane has no placeholder diff handoff (config would refuse
+    # it), so U5c's zero-mutant synthesis does not apply: an absent report
+    # fails closed as an unreadable artifact (which `verify` accepts).
     verdict = _run(git_repo, lane, Fake(None, 0))
 
     _refused(verdict)
@@ -460,7 +461,7 @@ def test_a_refusal_is_returned_as_the_very_error():
     assert runner._directory_report_error(runner._DirectoryRefused(error=refusal), OUT) is refusal
 
 
-def test_an_absent_directory_fails_closed_as_unreadable_until_u5c():
+def test_an_absent_directory_fails_closed_as_unreadable_without_the_zero_mutant_shape():
     error = runner._directory_report_error(runner._DirectoryAbsent(), OUT)
 
     assert error is not None
