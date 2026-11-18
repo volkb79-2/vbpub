@@ -365,8 +365,14 @@ def _resolve_staging_path(base: Path, raw: str, name: str) -> Path:
 
 def _validate_staging_paths(
     dist_dir: Path, bundle_dir: Path, client_dir: Path, *, require_canonical: bool = False,
+    project_root: Optional[Path] = None,
 ) -> None:
-    """Keep removable staging trees disjoint and contained by the output directory."""
+    """Keep removable staging trees disjoint and contained by the output directory.
+
+    With ``project_root`` the output directory itself must also be a strict descendant of it
+    (KI-175): the legacy build removes ``dist_dir`` whole, so one that equals the project, its
+    parent or any outside directory would delete data the build never owned.
+    """
     paths = {
         "dist_dir": dist_dir,
         "bundle_dir": bundle_dir,
@@ -382,6 +388,15 @@ def _validate_staging_paths(
             raise ValueError(f"{name} changed to a symlink or non-canonical path before cleanup")
 
     root = resolved["dist_dir"]
+    if project_root is not None:
+        try:
+            project = project_root.resolve()
+        except (OSError, RuntimeError) as exc:
+            raise ValueError(f"project_root cannot be resolved safely: {exc}") from exc
+        if not _is_strict_descendant(root, project):
+            raise ValueError(
+                f"dist_dir {root} must resolve to a strict descendant of project_root {project}"
+            )
     for name in ("bundle_dir", "client_dir"):
         if not _is_strict_descendant(resolved[name], root):
             raise ValueError(f"{name} must resolve to a strict descendant of dist_dir")
@@ -557,7 +572,7 @@ def parse_config(config_path: Path) -> BundleConfig:
     client_dir = _resolve_staging_path(
         dist_dir, _string_value(config, "client_dir", "bundle config", default="client"), "client_dir",
     )
-    _validate_staging_paths(dist_dir, bundle_dir, client_dir)
+    _validate_staging_paths(dist_dir, bundle_dir, client_dir, project_root=project_root)
 
     wheel = config.get("wheel", {})
     if not isinstance(wheel, dict):
@@ -1075,6 +1090,21 @@ def _preflight_bundle_steps(
             raise ValueError(problem)
 
 
+def _remove_staging_tree(config: BundleConfig, target: Path) -> None:
+    """Remove ``target`` (``dist_dir`` or a staging tree) after re-proving the paths are safe.
+
+    The containment is rechecked on freshly resolved paths immediately before the recursive
+    removal (KI-175, KI-169): a path that was valid at parse time but now resolves through a
+    symlink, or outside ``project_root``, is refused before anything is deleted.
+    """
+    _validate_staging_paths(
+        config.dist_dir, config.bundle_dir, config.client_dir, require_canonical=True,
+        project_root=config.project_root,
+    )
+    if target.exists():
+        shutil.rmtree(target)
+
+
 def run_bundle(
     config_path: Path,
     *,
@@ -1115,18 +1145,14 @@ def run_bundle(
 
     _validate_staging_paths(
         config.dist_dir, config.bundle_dir, config.client_dir, require_canonical=True,
+        project_root=config.project_root,
     )
     log_info("Preparing dist directories")
     if variant is None:
-        if config.dist_dir.exists():
-            shutil.rmtree(config.dist_dir)
+        _remove_staging_tree(config, config.dist_dir)
     else:
         for stale in (config.bundle_dir, config.client_dir):
-            _validate_staging_paths(
-                config.dist_dir, config.bundle_dir, config.client_dir, require_canonical=True,
-            )
-            if stale.exists():
-                shutil.rmtree(stale)
+            _remove_staging_tree(config, stale)
         own_archive.unlink(missing_ok=True)
     config.bundle_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1146,16 +1172,9 @@ def run_bundle(
         warned_paths=warned_paths,
     )
     if not config.keep_tree:
-        _validate_staging_paths(
-            config.dist_dir, config.bundle_dir, config.client_dir, require_canonical=True,
-        )
         staged_dirs = {config.bundle_dir, config.client_dir}
         for staged_dir in sorted(staged_dirs, key=lambda path: len(path.parts), reverse=True):
-            _validate_staging_paths(
-                config.dist_dir, config.bundle_dir, config.client_dir, require_canonical=True,
-            )
-            if staged_dir.exists():
-                shutil.rmtree(staged_dir)
+            _remove_staging_tree(config, staged_dir)
     return archive
 
 

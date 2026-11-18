@@ -14,7 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-175 | OPEN (dist_dir containment gap can delete project or parent paths) | `126b2170b0fbcad444c6c7c0f8c9906b68f55f69` |
+| KI-175 | FIXED 2026-11-18 (`dist_dir` must be a strict descendant of `project_root` at parse time and is rechecked before every recursive removal) | this branch's `fix(cmru): KI-175` commit |
 | KI-173 | FIXED 2026-11-16 (estate argv failures explain shell-expanded values for typed options and their environment fallback) | `f20d3ae566e60f591638f9bc5e66e9bfd7e38a39` |
 | KI-171 | OPEN (the packaged cmru-cli SKILL is grammar-checked but not coverage-checked: a verb or flag a release adds can be missing from it with every existing test green) | — |
 | KI-170 | OPEN (bundle validator outcomes pinned; SPEC wording and R2 lane-cost policy remain) | — |
@@ -3830,7 +3830,9 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-175 dist-dir escape can delete the project or its parent
 
-**Status:** OPEN (filed 2026-11-16 during review round 1); severity: high (configuration can recursively delete the project checkout or another writable directory before a build).
+**Status:** FIXED 2026-11-18 (filed 2026-11-16 during review round 1); severity: high (configuration can recursively delete the project checkout or another writable directory before a build).
+
+**Resolution/evidence (2026-11-18).** `parse_config` now refuses a resolved `dist_dir` that is not a strict descendant of the resolved `project_root` (equal, parent, outside absolute path, or symlink that leaves the project), with an error naming `dist_dir`, the resolved path and `project_root`. Every recursive removal in `run_bundle` (legacy `dist_dir`, variant and success-cleanup staging trees) goes through `_remove_staging_tree`, which re-runs the containment and canonical-path check on freshly resolved paths immediately before `shutil.rmtree`. The rule is in SPEC S9.4 and the bundle table. `tests/test_bundle_dist_dir_containment.py` covers `"."`, `".."`, `"../.."`, an outside relative path, absolute outside/project/parent paths, a `dist` symlink to an outside directory, a variant build, a path component swapped to an outside symlink between parse and removal, and an ordinary `dist` build that still cleans only its own output; sentinels in the project, its parent and a sibling survive every refusal.
 
 **Problem.** `parse_config` resolves `project_root` and `dist_dir` but does not require the resolved `dist_dir` to be a strict descendant of `project_root` (`cmru/src/cmru/bundle.py`, `parse_config`). In the legacy non-variant `run_bundle` path, `shutil.rmtree(config.dist_dir)` runs before staging begins (`bundle.py`, legacy cleanup near line 1122). `dist_dir = "."` can therefore remove the whole project root; `dist_dir = ".."` can remove its parent; an absolute `dist_dir` can target any directory writable by the process.
 

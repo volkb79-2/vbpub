@@ -3012,7 +3012,7 @@ covered by the existing subtree mount.
 | Key | Type | Requirement and meaning |
 |---|---|---|
 | `project_root` | path | Required. Relative to the directory containing the config. It is the base for copied source paths and for the default wheel project root. |
-| `dist_dir` | path | Optional; defaults to `dist`. Relative to `project_root`. A legacy no-variant build removes this whole tree before assembly. A variant build removes only `bundle_dir`, `client_dir` and that variant's archive, preserving sibling variant archives. |
+| `dist_dir` | path | Optional; defaults to `dist`. Relative to `project_root`. It MUST resolve (after symlinks) to a strict descendant of `project_root` (S9.4). A legacy no-variant build removes this whole tree before assembly. A variant build removes only `bundle_dir`, `client_dir` and that variant's archive, preserving sibling variant archives. |
 | `bundle_dir` | path | Optional; defaults to `bundle`. Relative to `dist_dir`; this is the assembled archive root. It MUST resolve to a strict descendant of `dist_dir` and MUST NOT equal, contain, or be contained by `client_dir`. |
 | `client_dir` | path | Optional; defaults to `client`. Relative to `dist_dir`; enabled wheel builds place client wheels here. It MUST resolve to a strict descendant of `dist_dir` and MUST NOT equal, contain, or be contained by `bundle_dir`. |
 | `[wheel].enabled` | boolean | Optional; defaults to `false`. Enables `python -m pip wheel`. |
@@ -3092,6 +3092,13 @@ configuration boundary (KI-33).
   rules apply to regular files, so a directory named `certs.pem/` is traversed.
 - The name-class exclusions and `.pyc`/`__pycache__` remain non-keepable. A suffix-class file
   left by stage without a keep entry fails closed before the manifest or archive is written.
+- `dist_dir` MUST resolve to a strict descendant of `project_root` (KI-175). A value that equals
+  `project_root`, resolves to its parent or any other outside directory, or reaches outside
+  through a symlink is refused during configuration parsing with an error that names `dist_dir`,
+  the resolved path and `project_root`. The legacy no-variant build removes `dist_dir` whole, so
+  every recursive removal (`dist_dir`, `bundle_dir`, `client_dir`) rechecks this containment, and
+  that the paths are still canonical, on freshly resolved paths immediately before it runs; a path
+  that changed after parsing is refused before anything is deleted.
 - `bundle_dir` and `client_dir` MUST resolve to distinct, non-overlapping strict descendants of
   `dist_dir`. Equal paths, nested staging paths, `dist_dir` itself, its parent, and paths outside it
   are refused during configuration parsing before any output file is changed. Variant pre-build

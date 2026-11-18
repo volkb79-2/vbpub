@@ -32,6 +32,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
+- fix(cmru): refuse a bundle `dist_dir` that is not a strict descendant of `project_root` at parse time and again before every recursive removal (KI-175). Adoption / Migration Notes: a `bundle.toml` whose `dist_dir` is `"."`, `".."`, an absolute path outside the project, or a symlink leaving it now fails with an error naming `dist_dir`, the resolved path and `project_root` instead of deleting that directory; keep the default `dist` or any subdirectory of the project.
 - test(cmru): explain shell-expanded values for typed options in estate argv failures (KI-173).
 - test(cmru): cover unsupported image resolver context for the coverage floor (KI-168).
 - fix(cmru): reject bundle staging paths that can escape or overlap dist_dir (KI-169).
