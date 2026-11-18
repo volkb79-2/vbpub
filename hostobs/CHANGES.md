@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Added (P5b-1b part 2: the `Server` layer; `HOB-54` stays open)
+
+- **`bins/probe/src/server.rs`**: `Server<B: Backend>` owns ONE `SendHub`, the conns (iterated in
+  `ConnId` order), the per-level and per-(level, uid) counters, the per-level `Limits`
+  (`ServerLimits`) and the backend. `accept(level, peer, now)` answers `Accept::Accepted(id)` or
+  `Accept::Refused` (Control, a missing peer, a full level or a full uid: nothing counted, no hub
+  entry, no byte; accept when `count < cap`); `on_bytes`, `on_eof`, `poll` (R20: every conn's timers
+  in id order, then the hub's `slow-client` closes, then a sweep), `output`, `wrote` (delegates to
+  `Conn::on_written`), `take_final`, `is_closed` (true for a gone id), `shutdown` and `finish`, the
+  single idempotent release path (R22): level and uid counters, a zero uid entry, the hub entry, the
+  conn. `poll` and `shutdown` finish the closed conns that hold no final bytes. The backend handed to
+  the conns fills `status.clients` per level (`observe`, `operator`, `observer`, zeros included). The
+  hub's caps are the widest of the levels (`ServerLimits::queue_limits`); the observer's 320 KiB
+  control queue is enforced by the server after every `on_bytes` (`slow-client`), because the hub has
+  one `control_queue_bytes` for all levels.
+- **`Limits::queue_limits`** (the hub caps of one level: per-uid pools a quarter of the global ones)
+  and **`Conn::has_final`**.
+- Tests: one per §5.1 accept row, R22 counters, `uid_pools`, `global_pools` and hub back to zero after
+  each of ten close paths at every level, `finish` idempotence, R20 ties (hello deadline against the
+  stall on the unread prefix) and id order, shutdown with several conns, byte-by-byte interleaving of a
+  binary and a JSON conn against a one-shot feed, `status` clients per level, the observer control cap
+  and 2,000 deterministic hostile steps over three slots.
+
+### Added (P5b-1b part 1: the sans-IO connection state machine; `HOB-54` stays open)
+
+- **`bins/probe/src/backend.rs`**: the `Backend` trait (`identity()`, `status()`), `Identity`,
+  `StatusInfo` (+ `TickInfo`, `TierInfo`) and `FixedBackend` for tests and the P5b-4 bring-up.
+- **`bins/probe/src/conn.rs`**: `Conn` (`Undecided`, `AwaitHello`, `JsonNoHello`, `Ready`,
+  `Draining`, `Closed`): mode detection (R24), the negotiated prefix as the first queued frame, binary
+  and JSON request reading, `classify` dispatch, `hello` and `status` replies, the final frame held
+  outside the hub (R1) with the prefix guarantee (R2), the EOF rules (R10), the timer order (R20) and
+  the idle condition; `max_outstanding` and corr-in-use stay P5b-2. Row tests `conn_row_*`, R1/R2
+  tests, byte-by-byte delivery and 2,000 deterministic hostile runs.
+
 ### Added (P5b-1a: the probe's pure serving functions; `HOB-54` stays open)
 
 - **`bins/probe/src`** gains seven modules, none of which does I/O, reads a clock or keeps connection

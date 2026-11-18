@@ -27,7 +27,9 @@ a later move into a crate).
   decrement and hub `add` uses the stored uid, never a re-read; `None` = refuse uncounted),
   `on_bytes(id, bytes, now)`, `on_eof(id, now)`, `poll(now)`, `output(id, now) -> Option<[&[u8]; 2]>`
   (the hub's `head`, which PINS: never call it to test emptiness; use `hub.queued(c) == Pools::default()`),
-  `wrote(id, n, now)`, `take_final(id) -> Option<Vec<u8>>`, `is_closed(id)`, `finish(id)`, `shutdown(now)`.
+  `wrote(id, n, now)`, `take_final(id) -> Option<Vec<u8>>`, `is_closed(id)`, `finish(id)`, `shutdown()`
+  (no clock: it closes every conn with `shutting-down`; the server keeps no stopping flag, the driver
+  stops calling `accept` after it).
 - **`finish(id)` is the single close path** (R22): it decrements the level and uid counters, deletes a
   uid entry at 0, calls `hub.remove`, drops the conn; idempotent; used by EVERY close (silent,
   unknown-mode, major mismatch, Closing, Draining done, driver I/O error, shutdown). `refuse` never

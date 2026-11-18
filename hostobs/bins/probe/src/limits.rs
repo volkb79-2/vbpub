@@ -17,6 +17,10 @@
 //! `control_queue_bytes` is derived: 4 * 16 KiB + 256 KiB = 320 KiB. That caps what 128 observer
 //! connections can hold at 40 MiB instead of 256 MiB, with no hub change.
 
+use hostobs_proto::hub::QueueLimits;
+
+/// Nanoseconds per millisecond.
+const NS_PER_MS: u64 = 1_000_000;
 /// One KiB.
 const KIB: u32 = 1024;
 /// One MiB.
@@ -245,6 +249,28 @@ impl Limits {
         }
         out.push('}');
         out
+    }
+
+    /// The send-hub caps of this level (WIRE.md sections 5.1 and 5.3): the per-uid pools are a
+    /// quarter of the global ones (Live 4 MiB, 8 MiB, 32 MiB; Query 4 MiB, 4 MiB, 16 MiB), the
+    /// control queue and the two timers are the level's own.
+    #[must_use]
+    pub fn queue_limits(&self) -> QueueLimits {
+        let size = |value: u32| usize::try_from(value).unwrap_or(usize::MAX);
+        let live = size(self.client_queue_bytes);
+        let query = size(self.query_queue_bytes);
+        let ns = |ms: u32| u64::from(ms).saturating_mul(NS_PER_MS);
+        QueueLimits {
+            client_queue_bytes: live,
+            uid_live_bytes: live.saturating_mul(2),
+            global_live_bytes: live.saturating_mul(8),
+            query_queue_bytes: query,
+            uid_query_bytes: query,
+            global_query_bytes: query.saturating_mul(4),
+            control_queue_bytes: size(self.control_queue_bytes),
+            stall_ns: ns(self.stall_ms),
+            frame_completion_ns: ns(self.frame_completion_ms),
+        }
     }
 }
 

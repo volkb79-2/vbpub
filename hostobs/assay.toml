@@ -20,7 +20,9 @@
 #   added and declared the seven judged `crates/client/src` files `client.rs`, `error.rs`,
 #   `hello.rs`, `json.rs`, `level.rs`, `streams.rs` and `transport.rs`, 53 since P5b-1a added
 #   and declared the nine `bins/probe/src` files `args.rs`, `classify.rs`, `codes.rs`,
-#   `encode.rs`, `lib.rs`, `limits.rs`, `lines.rs`, `main.rs` and `verbs.rs`; the
+#   `encode.rs`, `lib.rs`, `limits.rs`, `lines.rs`, `main.rs` and `verbs.rs`, 55 since P5b-1b
+#   added and declared `bins/probe/src/backend.rs` and `conn.rs`, 56 since P5b-1b part 2
+#   added and declared `bins/probe/src/server.rs`; the
 #   measurements below are of the 33)
 #   coverage:   15100 / 15723 executable lines = 96.0377 %
 #               model 98.09 % (2004/2043), proto 99.71 % (3454/3464),
@@ -129,13 +131,16 @@ source_roots = [
 mode = "whole_target"
 targets = [
   "bins/probe/src/args.rs",
+  "bins/probe/src/backend.rs",
   "bins/probe/src/classify.rs",
   "bins/probe/src/codes.rs",
+  "bins/probe/src/conn.rs",
   "bins/probe/src/encode.rs",
   "bins/probe/src/lib.rs",
   "bins/probe/src/limits.rs",
   "bins/probe/src/lines.rs",
   "bins/probe/src/main.rs",
+  "bins/probe/src/server.rs",
   "bins/probe/src/verbs.rs",
   "crates/client/src/client.rs",
   "crates/client/src/error.rs",
