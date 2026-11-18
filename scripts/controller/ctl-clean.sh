@@ -1,324 +1,309 @@
 #!/usr/bin/env bash
-# ctl-clean.sh - remove scratch remnants that finished runs leave in the repo checkout.
+# ctl-clean.sh - remove finished-run scratch from the checkout's .run-gate.
 #
-# Dry run by default: prints the eligible count, apparent size, and oldest/newest
-# examples per class. `--apply` deletes. Only classes with no value after a run are
-# considered: run-gate-gitcfg-*, run-gate-test-bin-*, run-gate-test-invoke* and
-# assay-liveness-*.
-#
-# An entry is eligible only when its NEWEST mtime -- including every file and
-# directory inside it -- is older than --age-hours. The default is 48h, on the
-# assumption that a gate never runs that long. This deliberately does not trust a
-# directory's own mtime: creating a child updates it, but a long-running tool may
-# keep modifying an existing nested file while the directory itself stays quiet.
-#
-# `git worktree prune` is opt-in. `--prune-worktrees` must only be used from the
-# shared checkout when no session is creating or moving worktrees; in a shared
-# multi-session checkout, the default path never prunes worktree admin entries.
-#
-# Evidence, history.json, artifacts/ and .worktrees/ are REPORTED, never deleted
-# here (worktree-sprawl rule: those need a human or controller decision).
-#
-# Usage: ctl-clean.sh [--apply] [--age-hours N] [--repo DIR] [--prune-worktrees]
+# One recursive traversal decides activity: any descendant newer than the age
+# window marks its top-level entry active. Apply first atomically moves eligible
+# entries to a quarantine directory, rechecks them, and deletes only entries
+# that stayed inactive. artifacts/, .worktrees/, evidence and history are
+# report-only. The default age is max(48, longest hour lane budget + 1).
 set -u -o pipefail
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_NAMESPACE
 
 usage() {
   printf '%s\n' \
-    'Usage: ctl-clean.sh [--apply] [--age-hours N] [--repo DIR] [--prune-worktrees]' \
+    'Usage: ctl-clean.sh [--apply] [--age-hours N] [--i-know-the-age]' \
+    '                     [--repo DIR] [--prune-worktrees]' \
     '' \
-    'Dry run by default. Eligible scratch entries are older than --age-hours based' \
-    'on the newest mtime of the entry and everything inside it. Default: 48h.' \
+    'Dry run by default. An entry is eligible only when no file inside it is' \
+    'newer than --age-hours. Default: max(48, longest lane hour budget + 1).' \
     '' \
-    '  --apply              delete eligible scratch entries' \
-    '  --age-hours N        integer from 1 to 8760 (default 48)' \
-    '  --repo DIR           worktree root to inspect (default: current worktree root)' \
+    '  --apply              quarantine, recheck and delete eligible entries' \
+    '  --age-hours N        decimal integer 1..8760 (and >= longest budget + 1)' \
+    '  --i-know-the-age     allow --apply below the longest lane budget + 1' \
+    '  --repo DIR           worktree root to inspect (default: current root)' \
     '  --prune-worktrees    opt in to git worktree prune; use only from the shared' \
     '                       checkout when no session is creating or moving worktrees'
 }
-
-die() {
-  printf 'ctl-clean: %s\n' "$*" >&2
-  exit 2
-}
-
+die() { printf 'ctl-clean: %s\n' "$*" >&2; exit 2; }
 parse_age_hours() {
   local raw=$1 zeros digits
   [[ -n $raw ]] || die '--age-hours requires a non-empty integer from 1 to 8760'
-  case $raw in
-    *[!0-9]*) die "--age-hours must be an integer from 1 to 8760 (got '$raw')" ;;
-  esac
-
-  # Strip leading zeroes before arithmetic so 08 is decimal 8 and a very long
-  # digit string cannot overflow Bash's signed integer expression.
+  case $raw in *[!0-9]*) die "--age-hours must be an integer from 1 to 8760 (got '$raw')" ;; esac
   zeros=${raw%%[!0]*}
   digits=${raw#"$zeros"}
   [[ -n $digits ]] || digits=0
-  ((${#digits} <= 4)) ||
-    die "--age-hours must be an integer from 1 to 8760 (got '$raw')"
-
+  ((${#digits} <= 4)) || die "--age-hours must be an integer from 1 to 8760 (got '$raw')"
   AGE_H=$((10#$digits))
   ((AGE_H > 0 && AGE_H <= 8760)) ||
     die "--age-hours must be an integer from 1 to 8760 (got '$raw')"
 }
 
-APPLY=0
-PRUNE_WORKTREES=0
-AGE_H=48
-REPO=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+APPLY=0 PRUNE_WORKTREES=0 AGE_SET=0 KNOW_AGE=0 AGE_H=48
+START_DIR=$(pwd -P) || die 'cannot determine the current directory'
+REPO=$(git -C "$START_DIR" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$START_DIR")
 while (($# > 0)); do
   case $1 in
-    --apply)
-      APPLY=1
-      ;;
+    --apply) APPLY=1 ;;
     --age-hours)
       (($# >= 2)) || die '--age-hours requires an integer from 1 to 8760'
-      parse_age_hours "$2"
-      shift
-      ;;
+      parse_age_hours "$2"; AGE_SET=1; shift ;;
+    --i-know-the-age) KNOW_AGE=1 ;;
     --repo)
       (($# >= 2)) || die '--repo requires a directory'
       [[ -n $2 ]] || die '--repo requires a non-empty directory'
-      case $2 in
-        -*) die "--repo must not start with '-' (got '$2')" ;;
-      esac
-      REPO=$2
-      shift
-      ;;
-    --prune-worktrees)
-      PRUNE_WORKTREES=1
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      die "unknown argument $1"
-      ;;
+      case $2 in -*) die "--repo must not start with '-' (got '$2')" ;; esac
+      REPO=$2; shift ;;
+    --prune-worktrees) PRUNE_WORKTREES=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown argument $1" ;;
   esac
   shift
 done
 
-requested=$(cd -- "$REPO" 2>/dev/null && pwd -P) ||
-  die "--repo is not a directory: $REPO"
-# `git -C` does not accept `--` between the option and its path. The leading-dash
-# refusal above is the guard that makes passing REPO directly safe here.
-worktree_root=$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null) ||
+requested=$(cd -- "$REPO" 2>/dev/null && pwd -P) || die "--repo is not a directory: $REPO"
+root=$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null) ||
   die "--repo is not inside a Git worktree: $REPO"
-[[ -n $worktree_root ]] || die "--repo is not inside a Git worktree: $REPO"
-worktree_root=$(cd -- "$worktree_root" 2>/dev/null && pwd -P) ||
-  die "cannot resolve the Git worktree root for: $REPO"
-[[ $worktree_root == "$requested" ]] ||
-  die "--repo must name the worktree root, not a subdirectory or unrelated path (got '$requested', root is '$worktree_root')"
-
+root=$(cd -- "$root" 2>/dev/null && pwd -P) || die "cannot resolve the Git worktree root for: $REPO"
+[[ $root == "$requested" ]] ||
+  die "--repo must name the worktree root, not a subdirectory or unrelated path (got '$requested', root is '$root')"
 REPO=$requested
 cd -- "$REPO" || die "cannot enter repo: $REPO"
-RG=./.run-gate
-CLASSES=('run-gate-gitcfg-*' 'run-gate-test-bin-*' 'run-gate-test-invoke*' 'assay-liveness-*')
-
-printf 'ctl-clean: target=%s age=%sh mode=%s prune-worktrees=%s\n' \
-  "$REPO" "$AGE_H" "$([[ $APPLY == 1 ]] && echo APPLY || echo dry-run)" \
-  "$([[ $PRUNE_WORKTREES == 1 ]] && echo opt-in || echo off)"
-
-newest_mtime() {
-  local entry=$1 newest
-  newest=$(find "$entry" -printf '%T@\n' 2>/dev/null | LC_ALL=C sort -nr | sed -n '1p')
-  [[ $newest =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
-  printf '%s\n' "$newest"
-}
-
-show_examples() {
-  local -a oldest=() newest=()
-  local i epoch path encoded
-  mapfile -t oldest < <(
-    for i in "${!EX_EPOCH[@]}"; do
-      printf '%s\t%s\n' "${EX_EPOCH[i]}" "${EX_PATH[i]}"
-    done | LC_ALL=C sort -n
-  )
-  mapfile -t newest < <(
-    for i in "${!EX_EPOCH[@]}"; do
-      printf '%s\t%s\n' "${EX_EPOCH[i]}" "${EX_PATH[i]}"
-    done | LC_ALL=C sort -nr
-  )
-  for i in 0 1 2; do
-    ((i < ${#oldest[@]})) || break
-    encoded=${oldest[i]}
-    epoch=${encoded%%$'\t'*}
-    path=${encoded#*$'\t'}
-    printf '    oldest: %s  %s\n' \
-      "$(date -u -d "@$epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf '%s' "$epoch")" \
-      "$path"
-  done
-  for i in 0 1 2; do
-    ((i < ${#newest[@]})) || break
-    encoded=${newest[i]}
-    epoch=${encoded%%$'\t'*}
-    path=${encoded#*$'\t'}
-    printf '    newest: %s  %s\n' \
-      "$(date -u -d "@$epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf '%s' "$epoch")" \
-      "$path"
-  done
-}
-
-class_size() {
-  local -a batch
-  local i out rc bytes path total=0
-  for ((i = 0; i < $#; i += 128)); do
-    batch=("${@:i+1:128}")
-    if out=$(timeout 60 du -sb -- "${batch[@]}" 2>/dev/null); then
-      while IFS=$'\t' read -r bytes path; do
-        [[ $bytes =~ ^[0-9]+$ ]] || {
-          SIZE_TEXT='(size not computed: invalid du output)'
-          return 1
-        }
-        total=$((total + bytes))
-      done <<< "$out"
-    else
-      rc=$?
-      if ((rc == 124)); then
-        SIZE_TEXT='(size not computed: timed out)'
-      else
-        SIZE_TEXT='(size not computed)'
-      fi
-      return 1
-    fi
-  done
-  SIZE_TEXT="$total bytes"
-}
-
-delete_entry() {
-  local entry=$1
-  if ((USE_PRIORITY)); then
-    printf '%s\0' "$entry" | nice -n 19 ionice -c3 xargs -0 -r rm -rf --
-  else
-    printf '%s\0' "$entry" | xargs -0 -r rm -rf --
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/ctl-clean.XXXXXX") || die 'cannot create a temporary directory'
+QUARANTINE=
+cleanup() {
+  local status=$?
+  if [[ -n $QUARANTINE && -d $QUARANTINE ]] && ! rmdir -- "$QUARANTINE" 2>/dev/null; then
+    printf 'ctl-clean: WARNING quarantined entries remain at %s\n' "$QUARANTINE" >&2
   fi
+  rm -rf -- "$TMP"
+  return "$status"
 }
+trap cleanup EXIT
 
-removed=0
-failed=0
-selected=0
-inspect_failed=0
-prune_failed=0
-USE_PRIORITY=0
-if ((APPLY)) && command -v nice >/dev/null 2>&1 && command -v ionice >/dev/null 2>&1; then
-  USE_PRIORITY=1
-elif ((APPLY)); then
-  printf 'ctl-clean: INFO nice/ionice unavailable; using plain xargs rm\n' >&2
+eligible=0 removed=0 failed=0 inspection_failed=0 prune_failed=0
+summary() {
+  printf 'ctl-clean: eligible %d, removed %d, failed %d, inspection-failed %d scratch entries\n' \
+    "$eligible" "$removed" "$failed" "$inspection_failed"
+}
+fail_discovery() { printf 'ctl-clean: %s\n' "$*" >&2; summary; exit 1; }
+
+BUDGET_H=0 BUDGET_FILE=
+if ! find "$REPO" -maxdepth 3 -path "$REPO/.run-gate" -prune -o \
+    -name run-gate.toml -type f -print0 > "$TMP/run-gates"; then
+  fail_discovery 'cannot discover lane budgets from run-gate.toml files'
+fi
+while IFS= read -r -d '' file; do
+  if ! mapfile -t lines < "$file"; then
+    fail_discovery "cannot read lane budgets from $file"
+  fi
+  for line in "${lines[@]}"; do
+    [[ $line =~ ^[[:space:]]*budget[[:space:]]*=[[:space:]]*\"([0-9]+)h\" ]] || continue
+    digits=${BASH_REMATCH[1]#"${BASH_REMATCH[1]%%[!0]*}"}
+    [[ -n $digits ]] || digits=0
+    ((${#digits} <= 4)) && n=$((10#$digits)) || n=9999
+    if ((n > BUDGET_H)); then BUDGET_H=$n BUDGET_FILE=$file; fi
+  done
+done < "$TMP/run-gates"
+required_age=$((BUDGET_H + 1))
+((required_age >= 48)) || required_age=48
+if ((AGE_SET == 0)); then
+  ((required_age <= 8760)) ||
+    die "longest lane budget ${BUDGET_H}h requires --age-hours above the supported 8760h limit"
+  AGE_H=$required_age
+fi
+if ((BUDGET_H > 0 && AGE_H < BUDGET_H + 1 && KNOW_AGE == 0)); then
+  ((APPLY == 0)) ||
+    die "--age-hours ${AGE_H}h is below the longest lane budget ${BUDGET_H}h + 1 (${BUDGET_FILE})"
+  printf 'ctl-clean: WARNING --age-hours %sh is below lane budget %sh + 1 from %s\n' \
+    "$AGE_H" "$BUDGET_H" "$BUDGET_FILE" >&2
+fi
+printf 'ctl-clean: target=%s age=%sh mode=%s prune-worktrees=%s\n' "$REPO" "$AGE_H" \
+  "$([[ $APPLY == 1 ]] && printf APPLY || printf dry-run)" \
+  "$([[ $PRUNE_WORKTREES == 1 ]] && printf opt-in || printf off)"
+((BUDGET_H == 0)) || printf 'ctl-clean: longest lane hour budget=%sh (%s)\n' "$BUDGET_H" "$BUDGET_FILE"
+
+RG=.run-gate
+CLASSES=('run-gate-gitcfg-*' 'run-gate-test-bin-*' 'run-gate-test-invoke*' 'assay-liveness-*')
+declare -A ELIGIBLE=() ACTIVE=() SIZE=() NEWEST=()
+if [[ -L $RG ]]; then
+  fail_discovery '.run-gate is a symlink; refusing to traverse or delete through it'
+elif [[ -e $RG && ! -d $RG ]]; then
+  fail_discovery '.run-gate is not a directory'
+elif [[ -d $RG ]]; then
+  for idx in "${!CLASSES[@]}"; do
+    find "$RG" -mindepth 1 -maxdepth 1 -name "${CLASSES[idx]}" \
+      -printf '%P\0' > "$TMP/candidates-$idx" ||
+      fail_discovery "cannot discover ${CLASSES[idx]} candidates"
+  done
+  if ! find "$RG" -mindepth 1 -newermt "$AGE_H hours ago" -printf '%P\0' > "$TMP/active"; then
+    inspection_failed=1
+    fail_discovery 'cannot inspect .run-gate activity'
+  fi
+  while IFS= read -r -d '' relative; do ACTIVE[${relative%%/*}]=1; done < "$TMP/active"
+  for idx in "${!CLASSES[@]}"; do
+    while IFS= read -r -d '' name; do
+      if [[ -z ${ACTIVE[$name]+x} ]]; then ELIGIBLE[$name]=1; eligible=$((eligible + 1)); fi
+    done < "$TMP/candidates-$idx"
+  done
 fi
 
-if [[ -d $RG ]]; then
-  for pattern in "${CLASSES[@]}"; do
-    ENTRIES=()
-    mapfile -d '' -t ENTRIES < <(
-      find "$RG" -mindepth 1 -maxdepth 1 -name "$pattern" -print0 2>/dev/null
-    )
-    candidate_count=${#ENTRIES[@]}
-    ((candidate_count > 0)) || continue
+META_OK=0
+if ((APPLY == 0)) && [[ -d $RG ]]; then
+  if find "$RG" -mindepth 1 -printf '%T@\t%s\t%P\0' > "$TMP/meta"; then
+    META_OK=1
+    while IFS= read -r -d '' record; do
+      stamp=${record%%$'\t'*}
+      rest=${record#*$'\t'}
+      bytes=${rest%%$'\t'*}
+      top=${rest#*$'\t'}
+      top=${top%%/*}
+      [[ -n ${ELIGIBLE[$top]+x} ]] || continue
+      SIZE[$top]=$(( ${SIZE[$top]:-0} + bytes ))
+      whole=${stamp%%.*}
+      if [[ -z ${NEWEST[$top]+x} || ${NEWEST[$top]%%.*} -lt $whole ]]; then NEWEST[$top]=$stamp; fi
+    done < "$TMP/meta"
+  else
+    printf 'ctl-clean: WARNING cannot inspect scratch sizes and timestamps\n' >&2
+  fi
+fi
 
-    EX_EPOCH=()
-    EX_PATH=()
-    for entry in "${ENTRIES[@]}"; do
-      if ! recent=$(find "$entry" -newermt "-${AGE_H} hours" -print -quit 2>/dev/null); then
-        printf 'ctl-clean: WARNING cannot inspect activity; keeping %s\n' "$entry" >&2
-        inspect_failed=$((inspect_failed + 1))
-        continue
-      fi
-      [[ -z $recent ]] || continue
-      if ! epoch=$(newest_mtime "$entry"); then
-        printf 'ctl-clean: WARNING cannot determine newest mtime; keeping %s\n' "$entry" >&2
-        inspect_failed=$((inspect_failed + 1))
-        continue
-      fi
-      EX_EPOCH+=("$epoch")
-      EX_PATH+=("$entry")
+examples() {
+  local order=$1 stamp name record count sort_arg label
+  shift
+  (($# > 0)) || return 0
+  for name in "$@"; do printf '%s\t%s\0' "${NEWEST[$name]}" "$name"; done > "$TMP/ex"
+  if [[ $order == oldest ]]; then sort_arg=-n label=oldest; else sort_arg=-nr label=newest; fi
+  LC_ALL=C sort -z "$sort_arg" "$TMP/ex" > "$TMP/ex.sorted" || return 0
+  count=0
+  while IFS= read -r -d '' record; do
+    ((count++ < 3)) || break
+    stamp=${record%%$'\t'*}
+    name=${record#*$'\t'}
+    printf '    %s: %s  %s\n' "$label" \
+      "$(date -u -d "@$stamp" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf '%s' "$stamp")" "$name"
+  done < "$TMP/ex.sorted"
+}
+
+USE_PRIORITY=0
+if ((APPLY)); then
+  if command -v nice >/dev/null && command -v ionice >/dev/null; then USE_PRIORITY=1
+  else printf 'ctl-clean: INFO nice/ionice unavailable; using plain xargs rm\n' >&2; fi
+fi
+moved=()
+if ((APPLY && eligible)); then
+  QUARANTINE=$RG/.ctl-clean-quarantine-$$-$RANDOM
+  if ! mkdir -m 700 -- "$QUARANTINE"; then
+    failed=$eligible
+    printf 'ctl-clean: FAILED to quarantine %d eligible entries under %s\n' "$eligible" "$RG" >&2
+    summary
+    exit 1
+  fi
+fi
+
+for idx in "${!CLASSES[@]}"; do
+  [[ -d $RG ]] || break
+  mapfile -d '' -t names < "$TMP/candidates-$idx"
+  ((${#names[@]})) || continue
+  selected=()
+  for name in "${names[@]}"; do [[ -n ${ELIGIBLE[$name]+x} ]] && selected+=("$name"); done
+  if ((APPLY)); then
+    printf '  %-26s eligible %d of %d; older than %sh (newest file inside included)\n' \
+      "${CLASSES[idx]}" "${#selected[@]}" "${#names[@]}" "$AGE_H"
+    for name in "${selected[@]}"; do
+      if mv -- "$RG/$name" "$QUARANTINE/$name"; then moved+=("$name")
+      else failed=$((failed + 1)); printf 'ctl-clean: FAILED to quarantine %s\n' "$RG/$name" >&2; fi
     done
+  else
+    total=0
+    for name in "${selected[@]}"; do total=$((total + ${SIZE[$name]:-0})); done
+    if ((META_OK == 0)); then size_text='(size not computed)'
+    elif ((${#selected[@]} == 0)); then size_text='0 bytes'
+    else size_text="$total bytes"; fi
+    printf '  %-26s eligible %d of %d; older than %sh (newest file inside included); %s\n' \
+      "${CLASSES[idx]}" "${#selected[@]}" "${#names[@]}" "$AGE_H" "$size_text"
+    ((META_OK)) && examples oldest "${selected[@]}"
+    ((META_OK)) && examples newest "${selected[@]}"
+  fi
+done
 
-    eligible=${#EX_PATH[@]}
-    selected=$((selected + eligible))
-    if ((APPLY)); then
-      printf '  %-26s eligible %d of %d; older than %sh (newest file inside included)\n' \
-        "$pattern" "$eligible" "$candidate_count" "$AGE_H"
-      for entry in "${EX_PATH[@]}"; do
-        if delete_entry "$entry"; then
-          removed=$((removed + 1))
-        else
-          failed=$((failed + 1))
-          printf 'ctl-clean: FAILED to remove %s\n' "$entry" >&2
-        fi
-      done
-    else
-      SIZE_TEXT='(size not computed)'
-      if ((eligible > 0)); then
-        class_size "${EX_PATH[@]}" >/dev/null 2>&1
+if ((APPLY && ${#moved[@]})); then
+  declare -A Q_ACTIVE=() Q_REMAIN=()
+  q_ok=1
+  if ! find "$QUARANTINE" -mindepth 1 -newermt "$AGE_H hours ago" -printf '%P\0' > "$TMP/qactive"; then
+    q_ok=0
+    printf 'ctl-clean: cannot recheck quarantined activity\n' >&2
+  else
+    while IFS= read -r -d '' relative; do Q_ACTIVE[${relative%%/*}]=1; done < "$TMP/qactive"
+  fi
+  safe=()
+  for name in "${moved[@]}"; do
+    if ((q_ok == 0 || ${Q_ACTIVE[$name]:-0})); then
+      failed=$((failed + 1))
+      if [[ -e $RG/$name || -L $RG/$name ]] || ! mv -- "$QUARANTINE/$name" "$RG/$name"; then
+        printf 'ctl-clean: FAILED to restore %s; it remains at %s\n' "$RG/$name" "$QUARANTINE/$name" >&2
       else
-        SIZE_TEXT='0 bytes'
+        printf 'ctl-clean: keeping %s (activity changed after selection)\n' "$RG/$name" >&2
       fi
-      printf '  %-26s eligible %d of %d; older than %sh (newest file inside included); %s\n' \
-        "$pattern" "$eligible" "$candidate_count" "$AGE_H" "$SIZE_TEXT"
-      ((eligible > 0)) && show_examples
+    else
+      safe+=("$QUARANTINE/$name")
     fi
   done
+  if ((${#safe[@]})); then
+    if ((USE_PRIORITY)); then
+      printf '%s\0' "${safe[@]}" | nice -n 19 ionice -c3 xargs -0 -r rm -rf --
+    else
+      printf '%s\0' "${safe[@]}" | xargs -0 -r rm -rf --
+    fi
+    rm_status=$?
+    if ! find "$QUARANTINE" -mindepth 1 -maxdepth 1 -printf '%P\0' > "$TMP/qremain"; then
+      failed=$((failed + ${#safe[@]}))
+      printf 'ctl-clean: cannot verify deletion results; counted all selected entries as failed\n' >&2
+    else
+      while IFS= read -r -d '' name; do Q_REMAIN[$name]=1; done < "$TMP/qremain"
+      for path in "${safe[@]}"; do
+        name=${path#"$QUARANTINE"/}
+        if [[ -n ${Q_REMAIN[$name]+x} ]]; then
+          failed=$((failed + 1)); printf 'ctl-clean: FAILED to remove %s\n' "$RG/$name" >&2
+        else removed=$((removed + 1)); fi
+      done
+    fi
+    ((rm_status == 0)) || printf 'ctl-clean: removal command reported failure\n' >&2
+  fi
+fi
+[[ -z $QUARANTINE || ! -d $QUARANTINE ]] || rmdir -- "$QUARANTINE" 2>/dev/null || true
 
-  keep=0
-  while IFS= read -r -d '' entry; do
-    keep=$((keep + 1))
-  done < <(find "$RG" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
-  printf '  .run-gate entries now: %d (history.json and unlisted classes are kept)\n' "$keep"
+if [[ -d $RG ]]; then
+  find "$RG" -mindepth 1 -maxdepth 1 -print0 > "$TMP/recount" ||
+    fail_discovery 'cannot recount .run-gate entries'
+  mapfile -d '' -t recount < "$TMP/recount"
+  printf '  .run-gate entries now: %d (history.json and unlisted classes are kept)\n' "${#recount[@]}"
 else
   printf '  no .run-gate here\n'
 fi
 
 if ((PRUNE_WORKTREES)); then
-  if ((APPLY)); then
-    cmd=(git worktree prune -v)
-    label='prune'
-  else
-    cmd=(git worktree prune -n -v)
-    label='would prune'
-  fi
-  if prune_output=$("${cmd[@]}" 2>&1); then
-    :
-  else
-    prune_failed=1
-  fi
+  if ((APPLY)); then prune_args=(worktree prune -v) label=prune
+  else prune_args=(worktree prune -n -v) label='would prune'; fi
+  if prune_output=$(git -C "$REPO" "${prune_args[@]}" 2>&1); then :; else prune_failed=1; fi
   if [[ -n $prune_output ]]; then
-    while IFS= read -r line; do
-      printf '  %s: %s\n' "$label" "$line"
-    done <<< "$prune_output"
+    while IFS= read -r line; do printf '  %s: %s\n' "$label" "$line"; done <<< "$prune_output"
   fi
   ((prune_failed == 0)) || printf 'ctl-clean: git worktree prune failed\n' >&2
 fi
 
 printf 'report (never deleted by this script):\n'
-mapfile -t wt_lines < <(git worktree list 2>/dev/null || true)
-mapfile -t merged_lines < <(git branch --merged origin/main 2>/dev/null || true)
+mapfile -t wt < <(git -C "$REPO" worktree list 2>/dev/null || true)
+mapfile -t merged < <(git -C "$REPO" branch --merged origin/main 2>/dev/null || true)
 printf '  worktrees: %d   local branches merged into origin/main: %d   (see the worktree-sprawl recipe)\n' \
-  "${#wt_lines[@]}" "${#merged_lines[@]}"
-
+  "${#wt[@]}" "${#merged[@]}"
 report_dir() {
   local dir=$1 size rc output
   [[ -d $dir ]] || return 0
-  if output=$(timeout 60 du -sh -- "$dir" 2>/dev/null); then
-    size=${output%%$'\t'*}
-  else
-    rc=$?
-    if ((rc == 124)); then
-      size='(size not computed: timed out)'
-    else
-      size='(size not computed)'
-    fi
-  fi
+  if output=$(timeout 60 du -sh -- "$dir" 2>/dev/null); then size=${output%%$'\t'*}
+  else rc=$?; ((rc == 124)) && size='(size not computed: timed out)' || size='(size not computed)'; fi
   printf '  %-12s %s (use dust -d 1 %s to drill down)\n' "$(basename -- "$dir")" "$size" "$dir"
 }
 report_dir "$REPO/artifacts"
 report_dir "$REPO/.worktrees"
-
-if ((APPLY)); then
-  printf 'ctl-clean: removed %d, failed %d scratch entries\n' "$removed" "$failed"
-else
-  printf 'ctl-clean: selected %d scratch entries; dry-run made no deletions\n' "$selected"
-fi
-
-if ((failed > 0 || inspect_failed > 0 || prune_failed > 0)); then
-  exit 1
-fi
+summary
+((failed == 0 && inspection_failed == 0 && prune_failed == 0)) || exit 1
