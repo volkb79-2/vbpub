@@ -20,20 +20,28 @@ data-shaped refusals; there is no locally-defined exception type here
 
 from __future__ import annotations
 
+import enum
 import os
 import posixpath
 import re
 import stat as stat_module
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
-from types import TracebackType
+from types import MappingProxyType, TracebackType
 from typing import Self
 
 from .errors import AssayError, Outcome, ReasonCode
+from .records import record
 
 __all__ = [
+    "ABSENT",
+    "Absent",
+    "DirectoryArtifact",
+    "DirectoryArtifactReservation",
     "OutputReservation",
     "read_bounded_file",
     "read_bounded_input",
+    "reserve_directory_output",
     "reserve_output",
 ]
 
@@ -243,6 +251,60 @@ def _require_safe_pre_existing(basename: str, st: os.stat_result) -> None:
         raise _refuse(f"{basename!r} exists but is not a regular file (mode {oct(st.st_mode)})")
 
 
+def _refuse_if_held_directory_replaced(held_fd: int, *, artifact: str, where: str) -> None:
+    """(B049/A-408) Refuse a reservation whose HELD directory the lane's own
+    tool deleted and recreated during the run.
+
+    :func:`reserve_output` opens the artifact's parent directory ONCE,
+    before the lane's command starts, and the reservation holds that
+    descriptor for the command's whole execution; ``consume`` then opens the
+    basename relative to it. A tool that does ``rm -rf <dir> && mkdir <dir>
+    && write <artifact>`` -- Vitest's own default ``coverage.clean = true``,
+    and a common convention well beyond it -- writes into a DIFFERENT inode
+    that merely answers to the same path. The held descriptor still refers
+    to the orphaned original, whose directory entry is gone, so the basename
+    lookup raises ``FileNotFoundError`` and ``_safe_bounded_read`` returns
+    ``None`` -- which every caller reads as "the command wrote nothing at
+    all" (``NO_MEASUREMENT``/``EMPTY_COVERAGE`` for a coverage read, a
+    ``crashed`` mutant for :mod:`assay.mutation`'s absent read). Each of
+    those messages asserts a checkable falsehood over an artifact that was
+    complete on disk at the declared path the whole time.
+
+    ``st_nlink == 0`` on the already-held descriptor is the exact, name-free
+    witness for that state: an unlinked directory inode keeps its own open
+    descriptor alive with a zero link count even though a NEW inode now
+    answers to the same path (measured on this filesystem: held fd
+    ``nlink=0``, recreated directory a different ``st_ino``). Reading it
+    costs one ``fstat`` on a descriptor the reservation already owns, so --
+    unlike re-opening the parent chain by NAME (option (1) in B049) -- it
+    adds no TOCTOU surface at all.
+
+    *artifact* names the declared output in the message and *where* is the
+    already-quoted description of the held directory (``repr`` of its path,
+    or "the project root"). The refusal is ``ERROR``/``UNREADABLE_ARTIFACT``,
+    which ``assay.coverage``'s own vocabulary note already reserves for "an
+    object that exists but cannot be trusted ... or a race the caller's own
+    reservation already detected". No new reason code, no schema change
+    (A-138/A-170).
+
+    A directory that was RENAMED away (not unlinked) keeps ``st_nlink`` above
+    zero, so this check does not see it; :class:`DirectoryArtifactReservation`
+    adds a by-name identity comparison for that case.
+    """
+    st = os.fstat(held_fd)
+    if st.st_nlink != 0:
+        return
+    raise _refuse(
+        f"{artifact!r}: the directory {where} that assay reserved "
+        f"this output in was deleted and recreated while the lane's "
+        f"command ran, so assay's reservation was orphaned and the "
+        f"artifact your tool actually wrote is unreachable through it. "
+        f"Turn the tool's clean/rm-first option off (for example "
+        f"Vitest's `coverage.clean = false`) or have it write into the "
+        f"existing directory instead of replacing it."
+    )
+
+
 class OutputReservation:
     """A single-owner reservation for one project-relative output.
 
@@ -339,52 +401,15 @@ class OutputReservation:
 
     def _refuse_if_parent_was_replaced(self, parent_fd: int) -> None:
         """(B049/A-408) Refuse a reservation whose parent directory the
-        lane's own tool deleted and recreated during the run.
-
-        :func:`reserve_output` opens the artifact's parent directory ONCE,
-        before the lane's command starts, and this reservation holds that
-        descriptor for the command's whole execution; :meth:`consume` then
-        opens the basename relative to it. A tool that does ``rm -rf
-        <dir> && mkdir <dir> && write <artifact>`` -- Vitest's own default
-        ``coverage.clean = true``, and a common convention well beyond it --
-        writes into a DIFFERENT inode that merely answers to the same path.
-        The held descriptor still refers to the orphaned original, whose
-        directory entry is gone, so the basename lookup raises
-        ``FileNotFoundError`` and ``_safe_bounded_read`` returns ``None`` --
-        which every caller reads as "the command wrote nothing at all"
-        (``NO_MEASUREMENT``/``EMPTY_COVERAGE`` for a coverage read, a
-        ``crashed`` mutant for :mod:`assay.mutation`'s absent read). Each of
-        those messages asserts a checkable falsehood over an artifact that
-        was complete on disk at the declared path the whole time.
-
-        ``st_nlink == 0`` on the already-held descriptor is the exact,
-        name-free witness for that state: an unlinked directory inode keeps
-        its own open descriptor alive with a zero link count even though a
-        NEW inode now answers to the same path (measured on this
-        filesystem: held fd ``nlink=0``, recreated directory a different
-        ``st_ino``). Reading it costs one ``fstat`` on a descriptor this
-        object already owns, so -- unlike re-opening the parent chain by
-        NAME (option (1) in B049) -- it adds no TOCTOU surface at all.
-
-        The refusal is ``ERROR``/``UNREADABLE_ARTIFACT``, which
-        ``assay.coverage``'s own vocabulary note already reserves for "an
-        object that exists but cannot be trusted ... or a race the caller's
-        own reservation already detected". No new reason code, no schema
-        change (A-138/A-170).
+        lane's own tool deleted and recreated during the run -- see
+        :func:`_refuse_if_held_directory_replaced`, the shared module
+        function that holds the rule and its rationale.
         """
-        st = os.fstat(parent_fd)
-        if st.st_nlink != 0:
-            return
         parent = posixpath.dirname(self._artifact)
-        where = repr(parent) if parent else "the project root"
-        raise _refuse(
-            f"{self._artifact!r}: the directory {where} that assay reserved "
-            f"this output in was deleted and recreated while the lane's "
-            f"command ran, so assay's reservation was orphaned and the "
-            f"artifact your tool actually wrote is unreachable through it. "
-            f"Turn the tool's clean/rm-first option off (for example "
-            f"Vitest's `coverage.clean = false`) or have it write into the "
-            f"existing directory instead of replacing it."
+        _refuse_if_held_directory_replaced(
+            parent_fd,
+            artifact=self._artifact,
+            where=repr(parent) if parent else "the project root",
         )
 
     def close(self) -> None:
@@ -589,3 +614,359 @@ def read_bounded_input(
         return _safe_bounded_read(parts[-1], dir_fd=parent_fd, limit=limit)
     finally:
         os.close(parent_fd)
+
+
+# --- directory-artifact reservation (B245 / U1) --------------------------------
+
+
+class Absent(enum.Enum):
+    """The one value :meth:`DirectoryArtifactReservation.consume` returns,
+    rather than raises, when the tool wrote nothing at the declared child.
+
+    A distinguished value and not ``None``: "the child is absent" is a fact the
+    caller has to decide on (a zero-mutant run), and it must never be confusable
+    with an unset or never-consumed reservation.
+    """
+
+    ABSENT = "absent"
+
+
+ABSENT = Absent.ABSENT
+
+
+@record
+class DirectoryArtifact:
+    """What a consumed :class:`DirectoryArtifactReservation` read, as bytes.
+
+    *artifact* is the project-relative path of the child directory,
+    *identity* its ``(st_dev, st_ino)`` as opened, *report* the bytes of its
+    report file, and *members* the bytes of each declared member keyed by the
+    name the *members* callable returned (``diff/<name>.diff``), in sorted key
+    order.
+    """
+
+    artifact: str
+    identity: tuple[int, int]
+    report: bytes
+    members: Mapping[str, bytes]
+
+
+def _identity(st: os.stat_result) -> tuple[int, int]:
+    return (st.st_dev, st.st_ino)
+
+
+def _require_component(label: str, name: str) -> None:
+    """A programmer-supplied single path component (never data-shaped)."""
+    if not name or name in {".", ".."} or "/" in name or "\0" in name:
+        raise ValueError(f"{label} must be one non-empty path component, got {name!r}")
+
+
+def _member_basename(name: object) -> str:
+    """Return the component of a ``diff/<name>`` member, or refuse.
+
+    The grammar (B245 design section 8 item 3): exactly ``diff/<name>`` with
+    ``<name>`` one non-empty component ending ``.diff`` and holding no NUL, ``/``
+    or ``\\``. Ending in ``.diff`` already excludes ``.`` and ``..``. Any other
+    character, non-ASCII included, is safe because the member is opened by NAME
+    through a held directory descriptor and never globbed or joined into a path.
+    """
+    prefix, separator, base = name.partition("/") if isinstance(name, str) else ("", "", "")
+    if (
+        prefix != "diff"
+        or not separator
+        or not base.endswith(".diff")
+        or any(character in base for character in ("/", "\\", "\0"))
+    ):
+        raise _refuse(
+            f"member name {name!r} is not exactly 'diff/<name>.diff' with one "
+            f"path component and no NUL, '/' or backslash"
+        )
+    return base
+
+
+class DirectoryArtifactReservation:
+    """A single-owner reservation for a DIRECTORY artifact a tool writes into
+    a directory assay holds (B245 / U1): RESERVED -> ARMED -> CONSUMED/CLOSED.
+
+    The held descriptor is the reserved ``<out>`` directory itself, never the
+    *child* the tool creates inside it, because a tool such as cargo-mutants
+    renames a pre-existing ``child`` to *rotated* and a held ``child`` would
+    follow the rotated inode. ``<out>`` is empty when reserved and nothing is
+    ever written into it or unlinked from it by this object, so a pre-existing
+    *child* or *rotated* is never accepted (it is refused at reserve and again
+    at arm), and only an empty directory is ever copied into a tool's own work
+    tree. :meth:`consume` RAISES ``AssayError(ERROR, UNREADABLE_ARTIFACT)`` on
+    every refusal and RETURNS :data:`ABSENT` when *child* is absent; this module
+    names no outcome state beyond that (the runner owns the rest).
+    ``close`` is idempotent and never mutates the filesystem. Invalid state
+    transitions are programmer defects and raise ``RuntimeError``.
+    """
+
+    def __init__(
+        self,
+        *,
+        project_root: Path,
+        out_dir: str,
+        out_parts: tuple[str, ...],
+        held_fd: int,
+        out_identity: tuple[int, int],
+        child: str,
+        rotated: str,
+        report_name: str,
+        report_limit: int,
+        member_limit: int,
+        max_members: int,
+        max_total_bytes: int,
+    ) -> None:
+        self._project_root = project_root
+        self._out_dir = out_dir
+        self._out_parts = out_parts
+        self._held_fd: int | None = held_fd
+        self._out_identity = out_identity
+        self._child = child
+        self._rotated = rotated
+        self._report_name = report_name
+        self._report_limit = report_limit
+        self._member_limit = member_limit
+        self._max_members = max_members
+        self._max_total_bytes = max_total_bytes
+        self._armed = False
+
+    @property
+    def artifact(self) -> str:
+        """The project-relative path of the child directory."""
+        return "/".join((*self._out_parts, self._child))
+
+    def _refuse_if_child_or_rotated_present(self, held_fd: int, *, when: str) -> None:
+        for name in (self._child, self._rotated):
+            if _lstat_relative(name, dir_fd=held_fd) is not None:
+                raise _refuse(
+                    f"{'/'.join((*self._out_parts, name))!r} {when} -- assay reserved "
+                    f"{self._out_dir!r} empty and never accepts an object it did not "
+                    f"observe absent, because the tool would rotate or reuse it"
+                )
+
+    def arm(self) -> None:
+        """Repeat the absence checks of reserve time; unlinks nothing."""
+        if self._held_fd is None:
+            raise RuntimeError("reservation already closed")
+        if self._armed:
+            raise RuntimeError("reservation already armed")
+        self._refuse_if_child_or_rotated_present(
+            self._held_fd, when="appeared after reservation but before arming"
+        )
+        self._armed = True
+
+    def _refuse_if_out_was_renamed(self) -> None:
+        """Re-walk ``<out>`` by NAME and compare it with the held inode.
+
+        :func:`_refuse_if_held_directory_replaced` sees a deleted directory
+        (``st_nlink == 0``) but not one that was RENAMED away and replaced:
+        that inode keeps a link count above zero. Only the by-name comparison
+        catches it, so the artifact the tool wrote at the declared path would
+        otherwise be read through an orphaned descriptor.
+        """
+        parent_fd = _open_parent_chain(
+            self._project_root, self._out_parts, artifact=self._out_dir
+        )
+        try:
+            current = _lstat_relative(self._out_parts[-1], dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+        if current is None or _identity(current) != self._out_identity:
+            raise _refuse(
+                f"{self._out_dir!r} was renamed away or replaced while the lane's "
+                f"command ran, so the directory assay reserved is not the one now "
+                f"at that path -- refusing to read through the orphaned reservation"
+            )
+
+    def consume(self, *, members: Callable[[bytes], Sequence[str]]) -> DirectoryArtifact | Absent:
+        """Read the child directory once and close the reservation.
+
+        *members* maps the report's BYTES to the member names to read, each
+        exactly ``diff/<name>.diff`` (see :func:`_member_basename`).
+
+        Every refusal raises ``AssayError(ERROR, UNREADABLE_ARTIFACT)``. Every
+        descriptor opened here is closed in ``finally``, and so is the held
+        one, which is also what makes a second call raise ``RuntimeError``.
+        """
+        if self._held_fd is None:
+            raise RuntimeError("reservation already closed or consumed")
+        if not self._armed:
+            raise RuntimeError("reservation not armed")
+        held_fd = self._held_fd
+        child_fd: int | None = None
+        try:
+            _refuse_if_held_directory_replaced(
+                held_fd, artifact=self.artifact, where=repr(self._out_dir)
+            )
+            self._refuse_if_out_was_renamed()
+            if _lstat_relative(self._rotated, dir_fd=held_fd) is not None:
+                raise _refuse(
+                    f"{'/'.join((*self._out_parts, self._rotated))!r} exists after the "
+                    f"run -- the tool rotated a {self._child!r} that was absent at "
+                    f"arming, so the command ran twice or something else wrote there"
+                )
+            child_stat = _lstat_relative(self._child, dir_fd=held_fd)
+            if child_stat is None:
+                return ABSENT
+            if not stat_module.S_ISDIR(child_stat.st_mode):
+                raise _refuse(
+                    f"{self.artifact!r} is not a directory (mode {oct(child_stat.st_mode)}) "
+                    f"-- a symlink or other object is refused, never followed"
+                )
+            try:
+                child_fd = os.open(self._child, _OPEN_DIR_FLAGS, dir_fd=held_fd)
+            except OSError as exc:
+                raise _refuse(f"{self.artifact!r} could not be opened safely: {exc}") from exc
+            identity = _identity(os.fstat(child_fd))
+            if identity != _identity(child_stat):
+                raise _refuse(
+                    f"{self.artifact!r} was swapped between inspection and opening"
+                )
+            report = _safe_bounded_read(
+                self._report_name,
+                dir_fd=child_fd,
+                limit=self._report_limit,
+                require_single_link=True,
+            )
+            if report is None:
+                raise _refuse(
+                    f"{self.artifact!r} has no {self._report_name!r} -- the tool "
+                    f"died mid-run or wrote an incomplete directory"
+                )
+            files = self._read_members(child_fd, members(report))
+            final = _lstat_relative(self._child, dir_fd=held_fd)
+            if final is None or _identity(final) != identity:
+                raise _refuse(f"{self.artifact!r} was replaced while it was being read")
+            return DirectoryArtifact(
+                artifact=self.artifact,
+                identity=identity,
+                report=report,
+                members=MappingProxyType(files),
+            )
+        finally:
+            if child_fd is not None:
+                os.close(child_fd)
+            os.close(held_fd)
+            self._held_fd = None
+
+    def _read_members(self, child_fd: int, names: Sequence[str]) -> dict[str, bytes]:
+        """Read every member of ``diff/`` by name, bounded in count, per-member
+        size and aggregate size; refuse a duplicate, missing or unsafe one."""
+        if len(names) > self._max_members:
+            raise _refuse(
+                f"{self.artifact!r} names {len(names)} members, above the "
+                f"{self._max_members}-member bound"
+            )
+        bases: dict[str, str] = {}
+        for name in names:
+            if name in bases:
+                raise _refuse(f"member {name!r} is named twice")
+            bases[name] = _member_basename(name)
+        if not bases:
+            return {}
+        try:
+            diff_fd = os.open("diff", _OPEN_DIR_FLAGS, dir_fd=child_fd)
+        except OSError as exc:
+            raise _refuse(f"{self.artifact!r}/diff could not be opened safely: {exc}") from exc
+        try:
+            collected: dict[str, bytes] = {}
+            total = 0
+            for name, base in bases.items():
+                data = _safe_bounded_read(
+                    base, dir_fd=diff_fd, limit=self._member_limit, require_single_link=True
+                )
+                if data is None:
+                    raise _refuse(f"member {name!r} is named by the report but missing")
+                total += len(data)
+                if total > self._max_total_bytes:
+                    raise _refuse(
+                        f"members of {self.artifact!r} exceed the "
+                        f"{self._max_total_bytes}-byte aggregate bound"
+                    )
+                collected[name] = data
+        finally:
+            os.close(diff_fd)
+        return dict(sorted(collected.items()))
+
+    def close(self) -> None:
+        """Close the owned descriptor without unlinking; safe more than once."""
+        if self._held_fd is not None:
+            os.close(self._held_fd)
+            self._held_fd = None
+
+
+def reserve_directory_output(
+    project_root: Path,
+    out_dir: str,
+    *,
+    child: str,
+    rotated: str,
+    report_name: str,
+    report_limit: int,
+    member_limit: int,
+    max_members: int,
+    max_total_bytes: int,
+    create_missing_parents: bool = False,
+) -> DirectoryArtifactReservation:
+    """Reserve a lexical project-relative directory *out_dir* that a tool will
+    write the directory *child* (with *report_name* and ``diff/*.diff``) into.
+
+    *out_dir* itself is held open, not *child*. It is created empty (0700) only
+    when *create_missing_parents* is true, exactly as in :func:`reserve_output`
+    (B006(b)), and otherwise must already exist, and EMPTY: a non-empty
+    pre-existing *out_dir* is refused, because only an empty directory may ever
+    be copied into the tool's work tree. *child* and *rotated* must both be
+    absent, and *child* is never created. Non-positive limits and a *child*,
+    *rotated* or *report_name* that is not a single path component are
+    programmer defects (``ValueError``).
+    """
+    for label, bound in (
+        ("report_limit", report_limit),
+        ("member_limit", member_limit),
+        ("max_members", max_members),
+        ("max_total_bytes", max_total_bytes),
+    ):
+        if bound <= 0:
+            raise ValueError(f"{label} must be positive, got {bound}")
+    for label, name in (("child", child), ("rotated", rotated), ("report_name", report_name)):
+        _require_component(label, name)
+    parts = _lexical_components(out_dir)
+    parent_fd = _open_parent_chain(
+        project_root, parts, artifact=out_dir, create_missing=create_missing_parents
+    )
+    try:
+        held_fd = _open_child_dir(
+            parts[-1], dir_fd=parent_fd, artifact=out_dir, create_missing=create_missing_parents
+        )
+    finally:
+        os.close(parent_fd)
+    reservation = DirectoryArtifactReservation(
+        project_root=project_root,
+        out_dir=out_dir,
+        out_parts=parts,
+        held_fd=held_fd,
+        out_identity=_identity(os.fstat(held_fd)),
+        child=child,
+        rotated=rotated,
+        report_name=report_name,
+        report_limit=report_limit,
+        member_limit=member_limit,
+        max_members=max_members,
+        max_total_bytes=max_total_bytes,
+    )
+    try:
+        reservation._refuse_if_child_or_rotated_present(
+            held_fd, when="already exists at reservation"
+        )
+        if os.listdir(held_fd):
+            raise _refuse(
+                f"{out_dir!r} already exists and is not empty -- only an empty "
+                f"directory is ever reserved, because it is copied into the tool's "
+                f"work tree and a test could read what is in it"
+            )
+    except BaseException:
+        reservation.close()
+        raise
+    return reservation
