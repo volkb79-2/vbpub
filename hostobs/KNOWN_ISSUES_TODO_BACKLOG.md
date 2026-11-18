@@ -15,7 +15,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 |---|---|---|---|
 | HOB-1 | Counter wrap is never inferred: every backwards raw counter is a reset | Minor | OPEN (by design, awaiting a declared-width policy) |
 | HOB-2 | SP-4 measured bytes only: encode/decode CPU, allocations and maintenance cost unmeasured | Minor | OPEN |
-| HOB-3 | `model` and `proto` duplicate the quality/metric vocabularies because the locked image cannot take the path dependency; a shared fixture, not a shared type, binds them | Major | OPEN (needs an image rebuild decision) |
+| HOB-3 | `model` and `proto` duplicate the quality/metric vocabularies because the locked image cannot take the path dependency; a shared fixture, not a shared type, binds them | Major | OPEN (needs one image build on the registry-set identity, then workspace-only lock edits need no further rebuild) |
 | HOB-4 | No registered `conformance` lane: the independent Python fixture check is not gate-enforced | Major | OPEN |
 | HOB-5 | Section version 1 has no history min/max/mean columns; `TIME` carries one value per bucket plus the aggregation code | Minor | OPEN (M2 work) |
 | HOB-6 | `DICT` frame type is defined but consumed nowhere: the dictionary travels inside the block frame | Minor | OPEN (deliberate) |
@@ -29,7 +29,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-14 | `decode_block` accepted a block shape under any frame type, and `encode_block` would emit one | Major | FIXED (M1b) |
 | HOB-15 | The section directory's canonical order was checked on encode but not on decode | Major | FIXED (M1b) |
 | HOB-16 | A truncated section directory reached the Python decoder's `struct.unpack` and raised `struct.error` instead of a `WireError` | Minor | FIXED (M1b) |
-| HOB-17 | `kernel` carries its own `Reading`/`QualityCode` because a path dependency to `model` rewrites the locked `Cargo.lock`; a shared fixture, not a type, binds them | Major | OPEN (needs an image rebuild) |
+| HOB-17 | `kernel` carries its own `Reading`/`QualityCode` because a path dependency to `model` rewrites the locked `Cargo.lock`; a shared fixture, not a type, binds them | Major | OPEN (needs one image build on the registry-set identity, then workspace-only lock edits need no further rebuild) |
 | HOB-18 | Cgroup identity uses `st_dev` rather than `statx`'s mount id, and `starttime` ticks need a caller-supplied `CLK_TCK` | Minor | OPEN (deliberate; see the entry) |
 | HOB-19 | No package converts `kernel::Reading` into `model::Sample`, so that boundary has no test | Minor | OPEN (probe package) |
 | HOB-20 | The sampler treated an unknown device topology as a bottom device, double-counting stacked I/O; `kernel` refuses instead | Major | FIXED in `kernel`, sampler worktree unchanged |
@@ -39,7 +39,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-24 | `RealFs::read` refused a file by its *reported* length (a sysfs attribute reports one page) and `max_bytes + 1` overflowed at `usize::MAX` | Minor | FIXED (M1b fix round) |
 | HOB-25 | `io.stat`'s iocost sums used `saturating_add` (silently clamping at `u64::MAX`) where the counters use `checked_add` | Minor | FIXED (M1b fix round) |
 | HOB-26 | The SP-2 rate arithmetic is a test-local helper, not `model::derive_rate`, because the crates cannot depend on each other | Minor | OPEN (documented limit) |
-| HOB-27 | `store` cannot depend on `proto`/`model`: a path or dev dependency rewrites the locked `Cargo.lock`, so the crate re-implements four frame-header checks and carries its own quality table | Major | OPEN (needs an image rebuild) |
+| HOB-27 | `store` cannot depend on `proto`/`model`: a path or dev dependency rewrites the locked `Cargo.lock`, so the crate re-implements four frame-header checks and carries its own quality table | Major | OPEN (needs one image build on the registry-set identity, then workspace-only lock edits need no further rebuild) |
 | HOB-28 | A segment's records are found by scanning every record body, not from a footer index; a range query re-reads each candidate file from the start | Minor | OPEN (M2 query surface) |
 | HOB-29 | The `require_tmpfs` check reads `/proc/self/mounts` and matches path prefixes; it does not ask `statfs` what filesystem the directory is actually on | Major | OPEN |
 | HOB-30 | No session spools: a crashed probe's rate/span continuation (`§C.4`'s spool) has no store at all | Major | OPEN (out of this package's scope) |
@@ -51,7 +51,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-36 | Events are keyed by `(issuer, key)` strings rather than dictionary incarnations, so an event's cgroup identity is a label a caller supplies, not an identity the store can validate | Minor | OPEN (probe package) |
 | HOB-37 | Span abandonment is a caller call (`abandon_issuer`); nothing in the store ties it to an incarnation disappearing, so `inferred: true` closes only happen when the caller loops over them | Minor | OPEN (probe package) |
 | HOB-38 | A full writer queue always drops the oldest job; there is no blocking or sample-shedding policy, which is a product choice to revisit with the probe's own loop | Minor | OPEN (probe package) |
-| HOB-39 | A range answer is the stored payload bytes (a whole `proto` BLOCK) plus the record's time and incarnations, not decoded `model` values with quality codes: the join needs `proto`/`model`, which `HOB-27` forbids | Major | OPEN (needs an image rebuild) |
+| HOB-39 | A range answer is the stored payload bytes (a whole `proto` BLOCK) plus the record's time and incarnations, not decoded `model` values with quality codes: the join needs `proto`/`model`, which `HOB-27` forbids | Major | OPEN (needs the lanes on the registry-set-identity image, as `HOB-27`) |
 | HOB-40 | No focus tier is configured by `plan_v4`; the tier machinery accepts one, but the plan does not yet say what a focus tier keeps | Minor | OPEN (plan decision) |
 | HOB-41 | No golden fixture has a non-zero record pad, so the padding rule is pinned by unit tests on each side, not by a cross-language file | Minor | OPEN |
 | HOB-42 | A `.seg` name is trusted as sealed without a footer, and the header's `seq`/`start_real_ns` are never compared with the name | Minor | OPEN |
@@ -182,17 +182,21 @@ counts 1..4 and that no `struct.error` escapes.
 Plan v4 §A.3 says the collectors produce `model` values. A path dependency
 `hostobs-model = { path = "../model" }` — even as a *dev*-dependency — makes Cargo rewrite
 `Cargo.lock` (the kernel package gains a `dependencies` entry), and the Rust lane image bakes the
-lock digest (`/usr/local/share/hostobs-Cargo.lock.sha256`), so `cargo --locked` then fails with
-"cannot update the lock file". Hand-editing the lock is forbidden, and a new crate needs an image
+whole-lock digest (`/usr/local/share/hostobs-Cargo.lock.sha256`, the identity of the image
+currently deployed as `tester-unified-rust:local`), so `cargo --locked` then fails with
+"cannot update the lock file". Hand-editing the lock is forbidden, and the deployed image needs a
 rebuild. Measured in this package in a throwaway container: adding the dev-dependency rewrote the
-lock; removing it restored the digest.
+lock; removing it restored the digest. The image source now bakes a registry-set digest instead
+(`/usr/local/share/hostobs-Cargo.lock.registry-sha256`, which ignores workspace members), but no
+image carrying it exists until a NEW tag is built on a host; until `run-gate.root.toml` points the
+Rust lanes at that tag the paragraph above is still the truth for the lanes.
 
 The crate is therefore dependency-free and carries a three-variant `Value` and a `QualityCode`
 newtype. They are not parallel vocabularies by accident: `crates/kernel/tests/quality_table.rs`
 asserts the table byte-for-byte against `fixtures/wire/quality.json`, the same fixture `model`,
 `proto` and the Python decoder assert, so a renumbering fails in four places.
 
-**Exit criteria.** The first image rebuild that can carry a new lock: make `kernel` depend on
+**Exit criteria.** The first lane run on the registry-set-identity image that can carry a new lock (a workspace-only lock edit needs no further rebuild): make `kernel` depend on
 `model`, delete `crates/kernel/src/{value,quality}.rs`, convert `Reading` into `model::Sample` at
 that boundary, and delete the local table assertion (the shared fixture stays).
 
@@ -442,7 +446,8 @@ dictionary field codes in `crates/proto/src/dict.rs`.
 `hostobs-model` holds the in-memory value vocabulary; `hostobs-proto` holds the same
 closed table for wire codes. `hostobs-proto` deliberately does **not** depend on
 `hostobs-model`: adding a path dependency changes `Cargo.lock`, and the Rust lane image
-caches exactly the committed lock, so `cargo --locked` refuses to build (`cannot update
+deployed as `tester-unified-rust:local` caches exactly the committed lock and bakes its
+whole-file digest, so `cargo --locked` refuses to build (`cannot update
 the lock file`). The two tables are therefore bound by *behavior*, not by a type: both
 assert themselves against the committed fixture `fixtures/wire/quality.json`, and the
 independent Python decoder asserts the same file. A divergence in either crate is a red
@@ -454,8 +459,8 @@ only if that crate's test runs. It is a configuration fact of the current image,
 design preference.
 
 **Exit criteria.** Decide the shared-type shape (a dependency edge, or a third
-`-vocab` crate both depend on) at the next image rebuild, when `Cargo.lock` may
-legitimately change together with the image, and record it as a decision in
+`-vocab` crate both depend on) once the Rust lanes run on an image built on the registry-set
+identity (a workspace-only `Cargo.lock` edit then needs no rebuild), and record it as a decision in
 `hostobs/docs/DESIGN-GUIDE.md`.
 
 ## HOB-4 — No registered `conformance` lane
@@ -520,8 +525,8 @@ the two are bound to shared fixtures rather than to shared types: a header fact 
 against the real `fixtures/wire/*.bin` payloads in `crates/store/tests/golden_segment.rs`, and
 the quality table against `fixtures/wire/quality.json` in `crates/store/tests/quality_table.rs`.
 
-**Exit criteria.** An image rebuild taken from a lock that admits the workspace's own crates,
-after which `store` calls `proto`'s `FrameHeader::parse` and `model`'s `Quality` and the two
+**Exit criteria.** The Rust lanes running on an image built on the registry-set identity (which
+admits a lock whose only change is the workspace's own path dependencies), after which `store` calls `proto`'s `FrameHeader::parse` and `model`'s `Quality` and the two
 duplicated modules are deleted (their tests move with them). Until then every change to the
 frame header or the quality vocabulary has to be made in two places, and the fixture tests are
 what force that.
@@ -715,7 +720,7 @@ Doing the join inside the store would mean a decoder and a value model in this c
 duplication `HOB-27` already forces on four header facts, multiplied by the whole column codec,
 which is the wrong trade while the lock is pinned.
 
-**Exit criteria.** After the image rebuild that `HOB-27` needs, `Store::range` (or a layer above
+**Exit criteria.** After the image switch that `HOB-27` needs (lanes on the registry-set-identity image), `Store::range` (or a layer above
 it) returns `model` rows with their quality codes and the payload form becomes an internal
 detail; `quality::Reading` is then replaced by `model`'s type.
 
