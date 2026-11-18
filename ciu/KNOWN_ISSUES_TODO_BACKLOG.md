@@ -7089,7 +7089,7 @@ turn the test red, the refreshed 7.25.1 text passes unchanged, and
 
 ## CIU-223 — CIU-215 tests leave git maintenance children behind
 
-**Status:** FIXED (2026-11-18, `132f7bebb` on branch
+**Status:** FIXED (2026-11-18, `132f7bebb` and follow-up `d4c4d5f09` on branch
 `ciu-20261118_181352-p13-test-git-maintenance`; tests only); severity: major
 for CIU R2 baselines because assay treats any process left under its pytest
 subreaper as `EXEC_FAILED` / `leaked-process-tree`.
@@ -7112,8 +7112,13 @@ pytest process's direct children before each test and fails the test after
 its body if a new child remains, naming the pid, state, command name, and
 command line. It never signals or reaps anything. A CIU-215 meta-test starts
 one stdin-controlled child, proves the guard names it, and waits for that
-child so the guard itself leaves nothing behind.
+child so the guard itself leaves nothing behind. The first full-gate run
+showed that existing tests install process-wide `pathlib.Path` fakes; the
+guard now uses only `os.listdir`/built-in file reads, and the meta-test makes
+`Path.iterdir`, `Path.read_text`, and `Path.read_bytes` fail while proving the
+report still works.
 
 **Evidence.** The baseline leak counts are the 28/28/21/8 scan above. The fix
-commit passed all four files together: 105 passed. The package owner retains
-the tester-unified subreaper scan and registered-lane evidence.
+commits passed all four files together under a child-subreaper wrapper:
+105 passed, `LEAKCHECK rc=0 leaked=0`. The package owner retains the
+tester-unified registered-lane evidence.
