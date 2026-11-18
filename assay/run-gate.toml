@@ -99,6 +99,7 @@ export PYTHONPATH="analysis/src:{worktree}/libraries/cowtree/src"
   tests/adapters/rust/test_adapters_rust_output_fixtures.py \
   tests/adapters/rust/test_adapters_rust_coverage_text.py \
   tests/adapters/rust/test_adapters_rust_native_lane.py \
+  tests/adapters/rust/test_qualify_rust_r2_real.py \
   tests/core/test_import_contracts.py "$@"''',
   "tooling-tests",
 ]
@@ -138,6 +139,39 @@ artifacts = [".assay/rust-r1-real"]
 
 [lanes.rust-r1-qualification.resources]
 memory = "1g"
+
+# B245 U7: qualify the ingested Rust R2 lane against REAL cargo-mutants (27.x) and
+# cargo-nextest in the offline Rust image. The script builds one throwaway git
+# repository per case from docs/rust-b245-u0/inputs, runs assay's runner in
+# process, asserts each case's verdict and mutation counts against the committed
+# tests/fixtures/rust/cargo-mutants fixtures and round-trips every verdict through
+# `assay verify`. Evidence and per-case wall seconds: .assay/rust-r2-real/summary.json.
+# The run starts with the tool's own preflight (imports, tool versions, the real
+# `cargo mutants --list --in-diff` of every case, no mutation) and exits 2 when it
+# fails; `--preflight` runs only that (seconds), `--no-preflight` skips it, and a
+# deviating case's real assay-out lands in .assay/rust-r2-real/deviations/<case>/.
+# Same PYTHONPATH/Cowtree rationale as rust-r1-qualification above.
+[lanes.rust-r2-qualification]
+kind = "command"
+environment = "tester-unified-rust"
+network = "none"
+description = "Qualify Assay's ingested Rust R2 lane against real offline cargo-mutants (args: --preflight lists the real mutants per case in seconds, --no-preflight, --case NAME)."
+argv = [
+  "bash", "-c",
+  '''set -eu
+cd {worktree}/assay
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="src:{worktree}/libraries/cowtree/src"
+python3 tools/qualify_rust_r2_real.py "$@"''',
+  "rust-r2-qualification",
+]
+accepts_args = true
+clean_tree = false
+budget = "45m"
+artifacts = [".assay/rust-r2-real"]
+
+[lanes.rust-r2-qualification.resources]
+memory = "2g"
 
 # Re-run only the contention-sensitive hung Docker client test while a sibling
 # CPU burner runs in the same tester-unified container. This measures the test
