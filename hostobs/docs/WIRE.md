@@ -109,8 +109,10 @@ its first REP answers one `REP ok:false` and no END; one that fails after it end
 Two decoder rules make the layout guarantees hold for **received** frames, not only for encoded ones:
 - every directory entry's `len` is a multiple of 8, unknown optional sections included
   (`section-length`);
-- directory entry 0 is the header (kind 1); any other kind there, an unknown one included, is
-  `section-order`.
+- directory entry 0 is the header (kind 1). It is checked after the rank rule of §3.2 (order in §3.10):
+  an unknown kind at entry 0 is `section-order` at index 0; a known non-header kind there is already a
+  rank violation at the header's index (the header has the lowest rank), or `missing-section` if the
+  frame has no header, so every accepted frame starts with the header.
 Hence **every body starts at a frame offset ≡ 0 (mod 8)**, a BLOCK's `len` is a multiple of 8, the
 header body sits at `16 + 8·n_sec`, and the frame ends exactly after the last body (`trailing-bytes`
 otherwise). Today neither decoder enforces the two rules (`frame.rs` `decode_block` lines 1086-1108
@@ -197,7 +199,12 @@ fields (`unknown-frame-type`, `unknown-frame-flags`, `non-zero-reserved`), then 
 (`oversized-frame`, `truncated` for `len < 12`), then `not-a-block`, then buffer length
 (`truncated`, `trailing-bytes`), then `SECTIONED` (`missing-section`), then directory (`truncated`,
 `section-reserved`, `section-length`, `section-order`), then per-section checks in directory order,
-then cross-section checks. Rust `decode_block` follows it after P0 (`FrameHeader::parse` bounds `len`);
+then cross-section checks. Within `section-order`, two checks in this order: (1) the rank check, one
+pass in directory order, reports the first known entry whose rank is lower than the highest rank before
+it (detail `index`, `kind_code` of that entry; unknown kinds are skipped); (2) only if (1) passed, an
+unknown kind at entry 0 is reported (`index` 0, its `kind_code`). `fixtures/wire/section-order` (directory
+kinds `[5, 1, 2, 3, 3]`, read from the `.bin`) therefore keeps its pinned `index: 1, kind_code: 1`, and
+no existing fixture changes (the other 25 satisfy both §3.1 rules). Rust `decode_block` follows it after P0 (`FrameHeader::parse` bounds `len`);
 the Python reference checks buffer length and `SECTIONED` before `not-a-block`
 (`hostobs_wire_ref.py` lines 484-493): §13 V-13, P2.
 
@@ -909,7 +916,7 @@ clock.
 | D-W19 | Over-cap connections are refused by close without a byte; `busy` is not a code | the mode is unknown before the first byte, so no reply can be framed (finding 8) |
 | D-W20 | Hello deadline 5 s from accept, idle deadline 300 s, per-uid connection caps (half the level cap) and selection caps (4 of 8) | a silent or idle connection cannot hold a slot; one uid cannot lock a level or the selection pool (finding 9) |
 | D-W21 | Selection bounds 16 entities, paths ≤ 512 B without control characters; observe/operator requests ≤ 32 KiB, observer ≤ 16 KiB; annotate attr key ≤ 64 B, value ≤ 256 B | the worst legal request, at 3× JSON escaping, fits with margin (§4.2, §4.12 arithmetic), so a legal request is never `frame-too-large` (finding 10) |
-| D-W22 | Received-frame rules: every section `len` ≡ 0 (mod 8) (`section-length`), directory entry 0 is the header (`section-order`) | the alignment, the header offset and the `dropped` offset are then true for received frames, not only for encoded ones (finding 12) |
+| D-W22 | Received-frame rules: every section `len` ≡ 0 (mod 8) (`section-length`), directory entry 0 is the header (`section-order`, checked after the rank check, §3.10, so the pinned `section-order` fixture is unchanged) | the alignment, the header offset and the `dropped` offset are then true for received frames, not only for encoded ones (finding 12) |
 | D-W23 | A repeated dictionary identity is `duplicate-dictionary-entry` whatever the other fields | one outcome per defect in both languages; the Python reference already does it (finding 22) |
 | D-W24 | `series_batch` packing is subject-major, then agg in request order, then time; metrics no agg permits are listed in `omitted`; history headers carry `seq` and mono fields 0 | one byte sequence per answer, so fixtures and cursors are deterministic (finding 11) |
 | D-W25 | Every pinned head must be completely written within `frame_completion_ms` (5 s) of its pin; the writer stall rule stays for a queue whose head is not pinned; per-uid pools are a quarter of the global ones | a reader that accepts a byte every few seconds never trips a byte-progress rule, and with 8 connections per uid could otherwise hold the whole global pool (round 2 B) |
