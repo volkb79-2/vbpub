@@ -216,10 +216,10 @@ subject names an entity when the block carries no dictionary, so only the decode
 4 reset, 5 not-sampled, 6 unsupported, 7 unknown-topology; any other byte is `unknown-quality`. Only 0
 is a measurement. Codes are append-only and announced in `hello.quality_codes`.
 
-3.10 **Decoder error kinds** are the `ProtoError::kind()` names (`error.rs` lines 478-530), e.g.
+3.10 **Decoder error kinds** are the `ProtoError::kind()` names (`ProtoError::kind`), e.g.
 `truncated`, `oversized-frame`, `section-order`, `stale-dictionary-generation`,
-`aggregation-not-permitted`, `subject-without-time` (44 kinds in all; the stream layer adds
-`generation-regressed`). They are local outcomes
+`aggregation-not-permitted`, `subject-without-time` (45 kinds in all: `deadline` is the reader's
+completion-age kind; the stream layer still adds `generation-regressed`). They are local outcomes
 (fixtures `expect_error.kind`), never sent on the wire; §5.2 maps the reader's ones to wire codes.
 There are exactly two vocabularies: wire codes (§10, sent) and decoder kinds (local). Client APIs
 raise one of them (P3 `ServerError(code)` / `WireError(kind)`, plus `ConnectionLost` for EOF or reset);

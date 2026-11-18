@@ -515,9 +515,9 @@ pub struct FrameHeader {
 impl FrameHeader {
     /// Parse the first [`FRAME_HEADER_LEN`] bytes of a frame.
     ///
-    /// The declared length is bounded here, not only in [`decode_block`]: a streaming
-    /// reader allocates `len` bytes straight after `parse`, so a returned header always
-    /// carries `FRAME_HEADER_LEN <= len <= MAX_FRAME_BYTES`.
+    /// The declared length is bounded here, not only in [`decode_block`]: a returned header
+    /// always carries `FRAME_HEADER_LEN <= len <= MAX_FRAME_BYTES`. A streaming reader must
+    /// not allocate from `len` alone (see `stream::FrameReader`).
     ///
     /// # Errors
     ///

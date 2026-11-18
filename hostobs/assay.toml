@@ -14,7 +14,8 @@
 # Measured in the registered `selftest` lane on this workspace at worktree head
 # `3b46df06` (image `tester-unified:run-gate-2560`, Docker network `none`):
 #
-#   judged set: 33 `src/*.rs` files of crates/model, proto, kernel and store
+#   judged set: 33 `src/*.rs` files of crates/model, proto, kernel and store (34 since
+#   P2a2 added and declared `crates/proto/src/stream.rs`; the measurements below are of the 33)
 #   coverage:   15100 / 15723 executable lines = 96.0377 %
 #               model 98.09 % (2004/2043), proto 99.71 % (3454/3464),
 #               kernel 93.52 % (2627/2809), store 94.71 % (7015/7407)
@@ -133,6 +134,7 @@ targets = [
   "crates/proto/src/frame.rs",
   "crates/proto/src/quality.rs",
   "crates/proto/src/read.rs",
+  "crates/proto/src/stream.rs",
   "crates/proto/src/write.rs",
   "crates/store/src/crc.rs",
   "crates/store/src/dictionary.rs",

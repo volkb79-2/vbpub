@@ -66,7 +66,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-51 | Received frames are held to the alignment and header-first rules: every section `len` is a multiple of 8 (`section-length`) and an unknown kind at directory entry 0 is `section-order` at index 0, after the rank check | Minor | FIXED (P2a1) |
 | HOB-52 | A repeated dictionary identity is `duplicate-dictionary-entry` in Rust whatever the other fields hold, as in the Python reference | Minor | FIXED (P2a1) |
 | HOB-53 | The Python reference follows the WIRE.md §3.10 precedence: `not-a-block` before the buffer length and `SECTIONED` checks | Minor | FIXED (P2a1) |
-| HOB-54 | The stream layer machines (`FrameReader`, `ModeDetect`, `SendHub`, `ConnTimers`, client stream dictionaries) do not exist yet | Major | OPEN (P2: `FrameReader`, `ModeDetect`, `ConnTimers` exist; `SendHub`, `StreamDicts`, `envelope.rs` do not) |
+| HOB-54 | The send hub, stream dictionaries, envelope checks and the Python/Rust clients do not exist yet; `FrameReader`, `ModeDetect` and `ConnTimers` exist | Major | OPEN (P2: `FrameReader`, `ModeDetect`, `ConnTimers` exist; `SendHub`, `StreamDicts`, `envelope.rs` do not) |
 | HOB-55 | A look-alike name such as `hot-0-18446744073709551615.seg` (or `.seg.corrupt`) sets the tier's sequence water mark to `u64::MAX` before its owner is proven, so every `open_segment` fails with `LengthOverflow` until the file is removed | Minor | FIXED (P0b) |
 | HOB-56 | `StoreStats::bytes` maintained by incremental arithmetic drifts from the tiers' own byte totals when a file vanishes or a new segment's header is written | Minor | FIXED (P0b) |
 | HOB-57 | `docs/hand-mutants/m1d-mutants.py` had no per-mutant subprocess timeout, so a mutant that hangs the suite hangs the campaign | Minor | FIXED (P0b) |
@@ -1105,7 +1105,7 @@ The reference checks buffer length and `SECTIONED` before the frame type, so a t
 `rep-not-sectioned-truncated` fixture (a REP of declared length 32 holding 24 bytes, flag clear)
 pins `not-a-block` in both languages.
 
-## HOB-54 — The stream layer machines do not exist yet
+## HOB-54 — The send hub, stream dictionaries, envelope checks and clients do not exist yet
 
 **Where:** `crates/proto/src/stream.rs` (new), `python/hostobs_client/stream.py` (new), the P5b serving
 loop. WIRE.md §5.2-§5.4, §12.
