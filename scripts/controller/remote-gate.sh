@@ -28,7 +28,7 @@ die() { echo "remote-gate.sh: $*" >&2; exit "${2:-2}"; }
 for renamed in REMOTE_GATE_V1001_SLOTS:CONTROLLER_REMOTE_SLOTS REMOTE_GATE_V1001_BUDGET_MB:CONTROLLER_REMOTE_BUDGET_MB \
                REMOTE_GATE_WEIGHT_MB:CONTROLLER_REMOTE_WEIGHT_MB REMOTE_GATE_SLOT_WAIT_S:CONTROLLER_REMOTE_SLOT_WAIT_S \
                REMOTE_GATE_WAIT_PSI:CONTROLLER_REMOTE_WAIT_PSI REMOTE_GATE_DRYRUN:CONTROLLER_REMOTE_DRYRUN \
-               REMOTE_GATE_PY:CONTROLLER_REMOTE_GATE_PY; do
+               REMOTE_GATE_PY:CONTROLLER_REMOTE_PYTHON REMOTE_GATE_DRY_HOLD:CONTROLLER_REMOTE_DRY_HOLD; do
   old_name=${renamed%%:*}
   [[ -z ${!old_name:-} ]] || echo "remote-gate.sh: WARNING: $old_name is set but not read here (not mapped); use ${renamed#*:}" >&2
 done

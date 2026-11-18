@@ -1157,6 +1157,8 @@ mutant("scripts/controller/remote-gate.sh", "remote-gate-base-twice.sh",
 for _name, _before, _after in (
     ("old-env-silent", '[[ -z ${!old_name:-} ]] || echo', 'true || echo'),
     ("old-env-one-dropped", " REMOTE_GATE_DRYRUN:CONTROLLER_REMOTE_DRYRUN \\\n", " \\\n"),
+    ("old-env-py-name", "REMOTE_GATE_PY:CONTROLLER_REMOTE_PYTHON ", "REMOTE_GATE_PY:CONTROLLER_REMOTE_GATE_PY "),
+    ("old-env-dry-hold", " REMOTE_GATE_DRY_HOLD:CONTROLLER_REMOTE_DRY_HOLD; do", "; do"),
     ("weights-unreadable-silent", "except FileNotFoundError:\n    pass", "except OSError:\n    pass"),
     ("weights-missing-warns", "except FileNotFoundError:\n    pass", "except KeyError:\n    pass"),
     ("repo-name-default", '"${CONTROLLER_REMOTE_REPO_NAME:-vbpub}"', '"${CONTROLLER_REMOTE_REPO_NAME:-}"'),

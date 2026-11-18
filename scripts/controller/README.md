@@ -541,8 +541,11 @@ and new callers would not exclude each other).
 
 - The old environment names (`REMOTE_GATE_V1001_SLOTS`, `REMOTE_GATE_V1001_BUDGET_MB`,
   `REMOTE_GATE_WEIGHT_MB`, `REMOTE_GATE_SLOT_WAIT_S`, `REMOTE_GATE_WAIT_PSI`,
-  `REMOTE_GATE_DRYRUN`, `REMOTE_GATE_PY`) are NOT mapped: each one that is set
-  prints a one-line stderr warning naming its `CONTROLLER_REMOTE_*` replacement.
+  `REMOTE_GATE_DRYRUN`, `REMOTE_GATE_DRY_HOLD`, `REMOTE_GATE_PY`) are NOT mapped: each
+  one that is set prints a one-line stderr warning naming its `CONTROLLER_REMOTE_*`
+  replacement. Note that `REMOTE_GATE_PY` was the Python INTERPRETER of the old tool and is
+  replaced by `CONTROLLER_REMOTE_PYTHON`, not by `CONTROLLER_REMOTE_GATE_PY` (that one is
+  the path of `remote-gate.py`).
 - The weights table lives at `$CONTROLLER_HOME/remote-gate-weights.tsv` (copy the
   old one there). A missing table is the documented fallback (declared memory,
   else one slot); a table that exists but cannot be read prints a warning.
