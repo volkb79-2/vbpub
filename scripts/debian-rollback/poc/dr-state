@@ -102,6 +102,20 @@ EOF
   if [ -n "$default" ]; then grub-editenv "$ESP_DIR/grubenv" set saved_entry="$default"; fi
 }
 
+# both print nothing (and succeed) when btrfs cannot show the subvolume, so the window fails open under set -e/pipefail
+subvol_uuid() { { btrfs subvolume show "$TOP/$1" 2>/dev/null || true; } | awk '$1=="UUID:" {print $2; exit}'; }
+subvol_parent_uuid() { { btrfs subvolume show "$TOP/$1" 2>/dev/null || true; } | awk '$1=="Parent" && $2=="UUID:" {print $3; exit}'; }
+
+# window_blocks NAME INTERVAL NOW: exit 0 when the snapshot NAME (@os-pre-<YYYYmmddHHMMSS>-...) is younger than
+# INTERVAL seconds at NOW (epoch). A malformed name or a name from the future (clock jump) never blocks.
+window_blocks() {
+  local name=$1 interval=$2 now=$3 ts made
+  ts=${name#@os-pre-}; ts=${ts%%-*}
+  [[ "$ts" =~ ^[0-9]{14}$ ]] || return 1
+  made=$(date -u -d "${ts:0:8} ${ts:8:2}:${ts:10:2}:${ts:12:2}" +%s 2>/dev/null) || return 1
+  [ $((now - made)) -ge 0 ] && [ $((now - made)) -lt "$interval" ]
+}
+
 cmd_snapshot() {
   local reason=manual
   while [ $# -gt 0 ]; do
@@ -110,6 +124,24 @@ cmd_snapshot() {
   if [ "${DR_STATE:-}" = none ]; then echo "dr-state: DR_STATE=none, snapshot skipped" >&2; return 0; fi
   ensure_top
   local cur name; cur=$(current_state)
+  # Dedupe window for the apt hook (found by S7: one unattended-upgrade run called dpkg 18 times and took 18
+  # snapshots). While an APT snapshot of THIS running state younger than DR_SNAPSHOT_MIN_INTERVAL seconds exists
+  # (default 900), another apt run takes none: the rollback target stays the state from before the whole upgrade.
+  # Only apt snapshots whose btrfs parent is the running state count; manual snapshots (--reason other than apt) and
+  # snapshots of another state (after a rollback) neither start nor satisfy the window. 0 disables it.
+  local interval=${DR_SNAPSHOT_MIN_INTERVAL:-900}
+  [[ "$interval" =~ ^[0-9]+$ ]] || die "DR_SNAPSHOT_MIN_INTERVAL must be a number of seconds"
+  if [ "$reason" = apt ] && [ "$interval" -gt 0 ]; then
+    local cur_uuid newest="" s
+    cur_uuid=$(subvol_uuid "$cur")
+    for s in $(states | grep -- '^@os-pre-.*-apt$' | sort || true); do
+      [ -z "$cur_uuid" ] || [ "$(subvol_parent_uuid "$s")" != "$cur_uuid" ] || newest=$s
+    done
+    if [ -n "$newest" ] && window_blocks "$newest" "$interval" "$(date -u +%s)"; then
+      echo "dr-state: $newest (a snapshot of $cur) is inside the window of $interval s, no new snapshot" >&2
+      return 0
+    fi
+  fi
   name="@os-pre-$(date -u +%Y%m%d%H%M%S)-$$-$reason"   # pid keeps two runs in one second apart
   btrfs subvolume snapshot "$TOP/$cur" "$TOP/$name" >/dev/null
   cmd_gen_menu
@@ -131,15 +163,63 @@ cmd_set_default() {
   grub-editenv "$ESP_DIR/grubenv" set saved_entry="$1"
 }
 
+# select_prune KEEP PROTECTED_CSV NAME...: prints, oldest first, the @os-pre-* snapshots to delete: all but the KEEP
+# newest (by name = by creation time), never a protected one (the running, default and one-shot states). Other names
+# (the @os-0001 state) are ignored.
+select_prune() {
+  local keep=$1 protected=",$2," n i
+  shift 2
+  local -a names
+  mapfile -t names < <(printf '%s\n' "$@" | grep -- '^@os-pre-' | sort || true)
+  n=${#names[@]}
+  [ "$n" -gt "$keep" ] || return 0
+  for ((i = 0; i < n - keep; i++)); do
+    case "$protected" in *",${names[i]},"*) ;; *) echo "${names[i]}" ;; esac
+  done
+}
+
+cmd_prune() {
+  local keep=10 dry=0
+  while [ $# -gt 0 ]; do
+    case "$1" in --keep) keep=${2:?}; shift 2 ;; --dry-run) dry=1; shift ;; *) die "prune: $1" ;; esac
+  done
+  [[ "$keep" =~ ^[0-9]+$ ]] || die "prune: --keep must be a number"
+  ensure_top
+  ensure_esp
+  [ "${DR_STATE:-}" != none ] || die "prune: refusing with DR_STATE=none (the running state would not be protected)"
+  local cur def next s doomed rc=0
+  cur=$(current_state)
+  def=$(grub-editenv "$ESP_DIR/grubenv" list 2>/dev/null | sed -n 's/^saved_entry=//p')
+  next=$(grub-editenv "$ESP_DIR/grubenv" list 2>/dev/null | sed -n 's/^next_entry=//p')
+  # shellcheck disable=SC2046  # state names have no spaces
+  doomed=$(select_prune "$keep" "$cur,$def,$next" $(states))
+  for s in $doomed; do
+    if [ "$dry" = 1 ]; then echo "would delete $s"
+    elif btrfs subvolume delete "$TOP/$s" >/dev/null; then echo "deleted $s"
+    else echo "dr-state: could not delete $s" >&2; rc=1; fi
+  done
+  # the menu is rewritten even after a partial failure, so it names only states that still exist
+  [ "$dry" = 1 ] || cmd_gen_menu
+  return "$rc"
+}
+
 cmd_boot_once() {
   ensure_top
   [ -d "$TOP/${1:?state}" ] || die "no such state: $1"
   grub-editenv "$ESP_DIR/grubenv" set next_entry="$1"
 }
 
+if [ "${1:-}" = _window-blocks ]; then   # test hook: dr-state _window-blocks NAME INTERVAL NOW; exit 0 = blocks
+  window_blocks "${2:?name}" "${3:?interval}" "${4:?now}"; exit $?
+fi
+
+if [ "${1:-}" = _prune-select ]; then   # test hook: dr-state _prune-select KEEP PROTECTED_CSV NAME...
+  shift; select_prune "${1:?keep}" "${2-}" "${@:3}"; exit $?
+fi
+
 sub=${1:-}; [ $# -gt 0 ] && shift
 case "$sub" in
-  install-grub|gen-menu|snapshot|set-default|boot-once)
+  install-grub|gen-menu|snapshot|set-default|boot-once|prune)
     # one writer at a time (apt hook, kernel hooks and manual runs can overlap)
     exec 9>/run/dr-state.lock
     flock -w 60 9 || die "another dr-state run holds the lock" ;;
@@ -151,5 +231,6 @@ case "$sub" in
   list) cmd_list "$@" ;;
   set-default) cmd_set_default "$@" ;;
   boot-once) cmd_boot_once "$@" ;;
-  *) die "usage: dr-state install-grub|gen-menu|snapshot|list|set-default STATE|boot-once STATE" ;;
+  prune) cmd_prune "$@" ;;
+  *) die "usage: dr-state install-grub|gen-menu|snapshot|list|set-default STATE|boot-once STATE|prune [--keep N] [--dry-run]" ;;
 esac

@@ -1,8 +1,22 @@
 # Next steps
 
-State 2026-11-12: the VM tool packages VML-01 to VML-03b are merged; no real
-guest has been started yet. Decisions and reasons are in
-[docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md).
+State 2026-11-18: the btrfs variant (own snapshots, ESP GRUB menu) installs, boots,
+snapshots before apt, rolls back through the menu and survives a kernel upgrade in a
+guest; see [docs/MILESTONES-2026-11-18.md](docs/MILESTONES-2026-11-18.md) (plan),
+[docs/RESULTS-M1-RUN2-2026-11-18.md](docs/RESULTS-M1-RUN2-2026-11-18.md) and
+[docs/RESULTS-M1-RUN3-KERNEL-2026-11-18.md](docs/RESULTS-M1-RUN3-KERNEL-2026-11-18.md)
+(results, with what is NOT verified). The PoC tools are in `poc/`. S5 (broken
+initramfs, recovery through the GRUB menu) and the strengthened s2-s3 re-run passed
+([run 4](docs/RESULTS-M1-RUN4-S2S3-S5-2026-11-18.md)); S6, S9 and the backports kernel passed
+([run 6](docs/RESULTS-M1-RUN6-S6-S7-S9-BACKPORTS-2026-11-18.md)); S7 found 18 snapshots per
+unattended run and passes with the dedupe window ([run 7](docs/RESULTS-M1-RUN7-FRESH-INSTALL-S7-2026-11-18.md),
+with a fresh install from the current installer); S8 (30 states, `dr-state prune`) passed
+([run 8](docs/RESULTS-M1-RUN8-S8-PRUNE-2026-11-18.md)); the hook's failure path (simulated)
+and the dedupe window's negative case passed
+([run 9](docs/RESULTS-M1-RUN9-WINDOW-NEGATIVE-S9B-2026-11-18.md)). Next: the
+systemd-boot and ZFS variants of the M1 matrix, then the unattended ISO (M2; the controller
+approved the plan with 7 conditions, which the ISO results doc will list when M2 starts).
+Decisions and reasons are in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md).
 
 **The plan for everything that remains is
 [docs/WORK-PACKAGES.md](docs/WORK-PACKAGES.md)** (written 2026-11-12): package

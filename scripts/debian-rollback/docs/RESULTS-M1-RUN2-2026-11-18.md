@@ -41,7 +41,7 @@ by-hand admission logged), with these changes:
 | S3 | the earlier state boots from the menu with its own kernel | `/proc/cmdline` has `rootflags=subvol=@os-pre-…-apt`, `BOOT_IMAGE=/@os-pre-…/boot/vmlinuz-6.12.107+deb13-amd64`; `hello` is absent |
 | S3 | data outside the state survives | `/home/marker` holds the line written after the snapshot; `/srv/marker`, `/var/lib/docker/marker` present |
 | S10 | `/etc` is the earlier one | `/etc/dr-etc-marker` holds `etc1` only; the later `etc2` line is gone |
-| S4 | making the earlier state permanent | after `dr-state set-default`, a second boot sequence (GRUB banner, kernel start, `login:`) follows in the transcript and the command line still has the earlier state. **Caveat:** the PASS lines of this run came from the first driver version, which did not prove a reboot by boot id and had checks that could match the echoed command line; the rows above rest on the transcript text I read, not on those PASS lines. The strengthened driver (tagged values, boot-id proof) has not yet been re-run against a guest. |
+| S4 | making the earlier state permanent | after `dr-state set-default`, a second boot sequence (GRUB banner, kernel start, `login:`) follows in the transcript and the command line still has the earlier state. **Caveat:** the PASS lines of this run came from the first driver version, which did not prove a reboot by boot id and had checks that could match the echoed command line; the rows above rest on the transcript text I read, not on those PASS lines. The strengthened driver (tagged values, boot-id proof) re-ran the same scenario in a fresh guest and passed: see [run 4](RESULTS-M1-RUN4-S2S3-S5-2026-11-18.md). |
 
 ## Findings
 
