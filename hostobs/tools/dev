@@ -1,0 +1,588 @@
+#!/usr/bin/env bash
+# hostobs developer container: compile, test, debug and run user-space Rust code against the
+# offline fixtures, in the tester-unified-rust-dev image, resource-capped and network-less.
+#
+# usage: dev [--dry-run] [--local] SUBCOMMAND [ARGS...]
+#   shell | fixtures-shell      interactive bash in the container
+#   run -- CMD...               any command
+#   build|check|clippy [ARGS]   cargo through tools/cargo-offline.sh (offline, locked, cache verified)
+#   fmt [ARGS]                  cargo fmt --all ARGS
+#   test [--no-nextest] [ARGS]  cargo nextest run (or plain cargo test) offline, locked
+#   example CRATE NAME [ARGS]   cargo run -p CRATE --example NAME -- ARGS
+#   gdb ARGS | strace ARGS      rust-gdb / strace; the only subcommands with CAP_SYS_PTRACE
+#   status | clean [--checkout] state of the container, volume and host checkout / remove them
+#
+# MODES. REMOTE is the default and the mode every real use takes: the caller's worktree (HEAD as
+# a git bundle plus the uncommitted changes as a patch and an untracked-files tar, 20 MiB cap) is
+# shipped to the gate host through the controller's host table (scripts/controller/hx.sh, which
+# runs the provider identity check and the on-host guard on every call) and the container runs
+# there. LOCAL (--local) uses the docker daemon of THIS machine; it is refused unless
+# HOSTOBS_DEV_ALLOW_LOCAL=1 because the devcontainer is capped and shares a production host.
+#
+# Exit codes: 2 usage/refusal, 3 identity/transport failure or a hostobs-dev-* container already
+# runs, 75 host under memory/PSI pressure or no admission slot free, otherwise the command's own.
+# Environment (all optional): HOSTOBS_DEV_HOST (default: the only alias in
+# CONTROLLER_REMOTE_GATE_HOSTS; only v1001 is accepted), HOSTOBS_DEV_IMAGE, HOSTOBS_DEV_MEMORY (3g),
+# HOSTOBS_DEV_CPUS (2), HOSTOBS_DEV_ALLOW_PARALLEL=1, HOSTOBS_DEV_ALLOW_LOCAL=1,
+# HOSTOBS_DEV_SLICE_MEM_MAX_MB (3584), CONTROLLER_REMOTE_SLOTS/CONTROLLER_REMOTE_SLOT_WAIT_S/
+# CONTROLLER_HOME (the remote-gate.sh admission slots). Test-only seams: HOSTOBS_DEV_HX,
+# HOSTOBS_DEV_TEST_SLICE_MEM_FILE, HOSTOBS_DEV_TEST_PSI_DIR, HOSTOBS_DEV_SELF_CONTAINER.
+set -euo pipefail
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+worktree=$(cd "$script_dir/../.." && pwd -P)
+
+readonly TARGET_MOUNT=/home/gate/.cache/hostobs-target
+readonly WORK_MOUNT=/work
+readonly WORKDIR=/work/hostobs
+readonly SYNC_CAP_BYTES=$((20 * 1024 * 1024))
+readonly REQUIRED_HOST=v1001
+
+image=${HOSTOBS_DEV_IMAGE:-tester-unified-rust-dev:local}
+memory=${HOSTOBS_DEV_MEMORY:-3g}
+cpus=${HOSTOBS_DEV_CPUS:-2}
+allow_parallel=${HOSTOBS_DEV_ALLOW_PARALLEL:-0}
+mem_max_mb=${HOSTOBS_DEV_SLICE_MEM_MAX_MB:-3584}
+mem_file=${HOSTOBS_DEV_TEST_SLICE_MEM_FILE:-/sys/fs/cgroup/dev.slice/dev-gates.slice/memory.current}
+psi_dir=${HOSTOBS_DEV_TEST_PSI_DIR:-/proc/pressure}
+
+dry_run=0
+mode=remote
+tmpdirs=()
+
+die() {
+  local code=$1; shift
+  printf 'dev: %s\n' "$*" >&2
+  exit "$code"
+}
+
+cleanup() {
+  local d
+  for d in "${tmpdirs[@]}"; do [[ -z $d ]] || rm -rf -- "$d"; done
+  if [[ -n ${stty_saved:-} ]]; then stty "$stty_saved" 2>/dev/null || true; fi
+}
+trap cleanup EXIT
+
+usage() {
+  sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' >&2
+  exit "${1:-2}"
+}
+
+# ---- identity of this worktree: container, volume and host directory names ---------------------
+worktree_hex=$(printf '%s' "$worktree" | sha256sum | cut -c1-12)
+cname="hostobs-dev-$worktree_hex"
+vname="hostobs-dev-target-$worktree_hex"
+
+# ---- argument parsing ---------------------------------------------------------------------------
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) dry_run=1; shift ;;
+    --local) mode=local; shift ;;
+    -h|--help) usage 0 ;;
+    --) break ;;
+    -*) die 2 "unknown global option: $1 (see --help)" ;;
+    *) break ;;
+  esac
+done
+[[ $# -ge 1 ]] || usage 2
+sub=$1; shift
+
+[[ $memory =~ ^[0-9]+[kmg]?$ ]] || die 2 "HOSTOBS_DEV_MEMORY must look like 3g or 2048m, got '$memory'"
+[[ $cpus =~ ^[0-9]+(\.[0-9]+)?$ ]] || die 2 "HOSTOBS_DEV_CPUS must be a number, got '$cpus'"
+[[ $allow_parallel == 0 || $allow_parallel == 1 ]] || die 2 'HOSTOBS_DEV_ALLOW_PARALLEL must be 0 or 1'
+[[ $mem_max_mb =~ ^[0-9]+$ ]] || die 2 'HOSTOBS_DEV_SLICE_MEM_MAX_MB must be a number of MiB'
+[[ $image =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]*$ ]] || die 2 "invalid HOSTOBS_DEV_IMAGE '$image'"
+
+if [[ $mode == local && ${HOSTOBS_DEV_ALLOW_LOCAL:-0} != 1 ]]; then
+  die 2 'LOCAL mode runs a container on this machine'\''s docker daemon, which on the shared devcontainer is capped and shares a production host: not recommended and refused. The default REMOTE mode runs on the gate host. Set HOSTOBS_DEV_ALLOW_LOCAL=1 to override.'
+fi
+
+# ---- subcommand -> container command ------------------------------------------------------------
+cmd=()
+want_ptrace=0
+want_core=0
+case "$sub" in
+  shell|fixtures-shell)
+    [[ $# -eq 0 ]] || die 2 "$sub takes no arguments"
+    cmd=(bash) ;;
+  run)
+    [[ ${1:-} == -- ]] || die 2 'usage: dev run -- CMD...'
+    shift
+    [[ $# -ge 1 ]] || die 2 'usage: dev run -- CMD... (a command is required)'
+    cmd=("$@") ;;
+  build|check)
+    cmd=(tools/cargo-offline.sh "$sub" --offline --locked "$@") ;;
+  clippy)
+    if [[ $# -eq 0 ]]; then set -- --workspace --all-targets -- -D warnings; fi
+    cmd=(tools/cargo-offline.sh clippy --offline --locked "$@") ;;
+  fmt)
+    cmd=(tools/cargo-offline.sh fmt --all "$@") ;;
+  test)
+    if [[ ${1:-} == --no-nextest ]]; then
+      shift; cmd=(tools/cargo-offline.sh test --offline --locked "$@")
+    else
+      cmd=(tools/cargo-offline.sh nextest run --offline --locked "$@")
+    fi ;;
+  example)
+    [[ $# -ge 2 ]] || die 2 'usage: dev example CRATE NAME [ARGS...]'
+    [[ $1 =~ ^[A-Za-z0-9_-]+$ && $2 =~ ^[A-Za-z0-9_-]+$ ]] || die 2 'crate and example names must be plain identifiers'
+    cmd=(tools/cargo-offline.sh run --offline --locked -p "$1" --example "$2")
+    ex_args=("${@:3}")
+    if [[ ${#ex_args[@]} -gt 0 ]]; then cmd+=(-- "${ex_args[@]}"); fi ;;
+  gdb)
+    cmd=(rust-gdb -iex 'set cwd '"$TARGET_MOUNT" -iex 'set disable-randomization off' "$@")
+    want_ptrace=1; want_core=1 ;;
+  strace)
+    cmd=(strace "$@"); want_ptrace=1 ;;
+  status|clean) ;;
+  *) die 2 "unknown subcommand '$sub' (see --help)" ;;
+esac
+clean_checkout=0
+if [[ $sub == clean ]]; then
+  case "${1:-}" in
+    '') ;;
+    --checkout) clean_checkout=1 ;;
+    *) die 2 'usage: dev clean [--checkout]' ;;
+  esac
+elif [[ $sub == status && $# -gt 0 ]]; then
+  die 2 'status takes no arguments'
+fi
+
+# ---- common checks ------------------------------------------------------------------------------
+command -v docker >/dev/null 2>&1 || [[ $mode == remote ]] || die 2 'docker is not on PATH'
+
+cgroup_parent=${CGROUP_PARENT_DEV_GATES:-}
+if [[ $sub != status && $sub != clean ]]; then
+  [[ -n $cgroup_parent ]] || die 2 'CGROUP_PARENT_DEV_GATES is required; refusing an ungoverned container'
+  [[ $cgroup_parent =~ ^[A-Za-z0-9_.@-]+\.slice$ ]] || die 2 "CGROUP_PARENT_DEV_GATES must be a systemd slice name, got '$cgroup_parent'"
+fi
+
+# ---- docker run argv (shared by REMOTE and LOCAL) -----------------------------------------------
+# $1 = host directory that is bind-mounted at /work
+build_docker_argv() {
+  local src=$1
+  dargv=(docker run --rm --init --pull never --name "$cname")
+  if [[ -t 0 ]]; then dargv+=(-it -e "TERM=${TERM:-xterm}"); fi
+  dargv+=(--network none --cap-drop ALL)
+  if (( want_ptrace )); then dargv+=(--cap-add SYS_PTRACE); fi
+  dargv+=(--security-opt no-new-privileges
+    --pids-limit 1024 --memory "$memory" --memory-swap "$memory" --cpus "$cpus"
+    --cgroup-parent "$cgroup_parent" --user 1003:1003)
+  if (( want_core )); then dargv+=(--ulimit core=-1:-1); else dargv+=(--ulimit core=0:0); fi
+  dargv+=(-v "$src:$WORK_MOUNT" -v "$vname:$TARGET_MOUNT" -w "$WORKDIR"
+    -e CARGO_NET_OFFLINE=true -e RUST_BACKTRACE=1 -e RUST_LIB_BACKTRACE=1
+    "$image" nice -n 10 ionice -c3 "${cmd[@]}")
+}
+
+# one argument as shell text for the remote script: $HOME stays unexpanded (the host's home is only known there)
+shell_word() {
+  # shellcheck disable=SC2016 # the literal text $HOME is the point
+  case $1 in
+    '$HOME/'*) printf '"%s"' "$1" ;;
+    *) printf '%q' "$1" ;;
+  esac
+}
+shell_words() {
+  local first=1 a
+  for a in "$@"; do
+    if (( first )); then first=0; else printf ' '; fi
+    shell_word "$a"
+  done
+}
+
+# ---- the script text that runs ON THE HOST (or locally in LOCAL mode) -----------------------------
+# Every docker call below is by exact container or volume name; the only listing is by the name
+# prefix of our own containers.
+remote_prelude() {
+  cat <<EOF
+set -u
+HEX=$worktree_hex
+SHA=${sync_sha:-0}
+SEED=${sync_seed:-}
+D=\$HOME/hostobs-dev/\$HEX
+W=\$D/work
+NAME=$cname
+VOL=$vname
+ALLOW_PARALLEL=$allow_parallel
+CHECK_HOST=$1
+MEM_MAX_MB=$mem_max_mb
+MEM_FILE=$(printf '%q' "$mem_file")
+PSI_DIR=$(printf '%q' "$psi_dir")
+PSI_LIMIT=25
+EOF
+  cat <<'EOF'
+# memory some avg10 and io full avg10 only; CPU PSI is a stall measure, not utilisation (the same rule and the
+# same limit as scripts/netcup/runner/remote-gate.py)
+psi_high() { awk -v lim="$PSI_LIMIT" 'FNR==1 {n++} (n==1 && /^some/) || (n==2 && /^full/) {sub("avg10=","",$2); if ($2+0 > lim) f=1} END {exit !f}' "$PSI_DIR/memory" "$PSI_DIR/io"; }
+dev_admit() {
+  local cur running
+  if [ "$(id -u):$(id -g)" != 1003:1003 ]; then
+    echo "dev: the user here is $(id -u):$(id -g) but the image bakes 1003:1003 and the checkout must be owned by it; refusing" >&2
+    return 2
+  fi
+  if [ "$CHECK_HOST" = 1 ]; then
+    cur=$(cat "$MEM_FILE" 2>/dev/null) || cur=''
+    case $cur in
+      ''|*[!0-9]*) echo "dev: cannot read $MEM_FILE; refusing to start (exit 75)" >&2; return 75 ;;
+    esac
+    if [ "$cur" -gt $((MEM_MAX_MB * 1048576)) ]; then
+      echo "dev: dev-gates.slice memory.current is $((cur / 1048576)) MiB, above $MEM_MAX_MB MiB; refusing to start, retry when the host is quieter" >&2
+      return 75
+    fi
+    if psi_high; then
+      echo "dev: PSI above $PSI_LIMIT (memory some / io full); refusing to start, retry when the host is quieter" >&2
+      return 75
+    fi
+  fi
+  running=$(docker ps --filter 'name=^hostobs-dev-' --format '{{.Names}}') || { echo "dev: cannot list hostobs-dev-* containers" >&2; return 3; }
+  if [ -n "$running" ] && [ "$ALLOW_PARALLEL" != 1 ]; then
+    echo "dev: a dev container is already running ($(echo $running)); one heavy dev job at a time (HOSTOBS_DEV_ALLOW_PARALLEL=1 overrides)" >&2
+    return 3
+  fi
+  return 0
+}
+EOF
+}
+
+preflight_script() {
+  remote_prelude "$1"
+  cat <<'EOF'
+dev_admit || exit $?
+if [ -d "$W/.git" ]; then
+  if git -C "$W" cat-file -e "$SHA^{commit}" 2>/dev/null; then echo HASSHA=1; else echo HASSHA=0; fi
+  echo "HAVE=$(git -C "$W" rev-parse HEAD 2>/dev/null || true)"
+else
+  echo HASSHA=0
+  echo HAVE=
+  for s in "$HOME"/checkouts/*; do
+    b=${s##*/}
+    case $b in *[!0-9a-f]*|'') continue ;; esac
+    [ ${#b} -ge 40 ] && echo "SEED=$b"
+  done
+fi
+exit 0
+EOF
+}
+
+sync_script() {
+  remote_prelude 1
+  cat <<'EOF'
+set -e
+mkdir -p -m 0700 "$D"
+rm -rf "$D/in"
+mkdir -m 0700 "$D/in"
+tar -xf - -C "$D/in"
+if [ ! -d "$W/.git" ]; then
+  rm -rf "$W"
+  if [ -n "$SEED" ]; then git clone -q --no-checkout "$HOME/checkouts/$SEED" "$W"; else git init -q "$W"; fi
+fi
+if [ -f "$D/in/in.bundle" ]; then git -C "$W" fetch -q "$D/in/in.bundle" HEAD; fi
+git -C "$W" checkout -q -f --detach "$SHA"
+git -C "$W" reset -q --hard "$SHA"
+git -C "$W" clean -q -ffdx
+if [ -s "$D/in/tracked.patch" ]; then git -C "$W" apply --binary --whitespace=nowarn "$D/in/tracked.patch"; fi
+if [ -s "$D/in/untracked.tar" ]; then tar -xf "$D/in/untracked.tar" -C "$W"; fi
+rm -rf "$D/in"
+echo "synced $SHA"
+EOF
+}
+
+# $1 = CHECK_HOST, $2 = 1 when stdin is a tty; the docker argv is the global dargv
+run_script() {
+  remote_prelude "$1"
+  cat <<'EOF'
+dev_admit || exit $?
+trap 'docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT HUP INT TERM
+EOF
+  if [[ $2 == 1 ]]; then
+    printf 'script -qefc %s /dev/null\n' "$(printf '%q' "$(shell_words "${dargv[@]}")")"
+  else
+    printf '%s </dev/null\n' "$(shell_words "${dargv[@]}")"
+  fi
+}
+
+status_script() {
+  remote_prelude "$1"
+  cat <<'EOF'
+echo "container: $NAME"
+state=$(docker inspect --format '{{.State.Running}}' "$NAME" 2>/dev/null) || state=absent
+echo "running:   $state"
+echo "volume:    $VOL"
+if docker volume inspect --format '{{.Name}}' "$VOL" >/dev/null 2>&1; then
+  echo "volume present: yes"
+  if [ "$state" = true ]; then
+    echo "volume size: $(docker exec "$NAME" du -sh /home/gate/.cache/hostobs-target 2>/dev/null | cut -f1)"
+  else
+    echo "volume size: unknown while the container is not running (dev run -- du -sh /home/gate/.cache/hostobs-target)"
+  fi
+else
+  echo "volume present: no"
+fi
+echo "checkout:  $W $(if [ -d "$W/.git" ]; then echo "(present, $(du -sh "$W" 2>/dev/null | cut -f1), at $(git -C "$W" rev-parse --short HEAD 2>/dev/null))"; else echo '(absent)'; fi)"
+echo "running hostobs-dev-* containers: $(docker ps --filter 'name=^hostobs-dev-' --format '{{.Names}}' | tr '\n' ' ')"
+EOF
+}
+
+clean_script() {
+  remote_prelude "$1"
+  cat <<EOF
+CLEAN_CHECKOUT=$clean_checkout
+EOF
+  cat <<'EOF'
+echo "volume: $VOL"
+state=$(docker inspect --format '{{.State.Running}}' "$NAME" 2>/dev/null) || state=absent
+if [ "$state" = true ]; then echo "dev: container $NAME is running; stop it first" >&2; exit 3; fi
+if docker volume inspect --format '{{.Name}}' "$VOL" >/dev/null 2>&1; then
+  docker volume rm "$VOL"
+  echo "removed volume $VOL"
+else
+  echo "volume $VOL does not exist, nothing to remove"
+fi
+if [ "$CLEAN_CHECKOUT" = 1 ]; then
+  echo "checkout: $D"
+  rm -rf -- "$D"
+  echo "removed $D"
+fi
+EOF
+}
+
+# ---- transport ------------------------------------------------------------------------------------
+resolve_host() {
+  host=${HOSTOBS_DEV_HOST:-}
+  if [[ -z $host ]]; then
+    # shellcheck disable=SC2206 # an alias list is whitespace separated by definition
+    local aliases=(${CONTROLLER_REMOTE_GATE_HOSTS:-})
+    [[ ${#aliases[@]} -eq 1 ]] || die 2 'set HOSTOBS_DEV_HOST (CONTROLLER_REMOTE_GATE_HOSTS does not name exactly one alias)'
+    host=${aliases[0]}
+  fi
+  [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die 2 "invalid host alias '$host'"
+  [[ $host == "$REQUIRED_HOST" ]] || die 2 "the dev container runs on $REQUIRED_HOST only, not '$host'"
+  if [[ -n ${CONTROLLER_REMOTE_GATE_HOSTS:-} ]]; then
+    case " $CONTROLLER_REMOTE_GATE_HOSTS " in
+      *" $host "*) ;;
+      *) die 2 "host '$host' is not in CONTROLLER_REMOTE_GATE_HOSTS" ;;
+    esac
+  fi
+  hx=${HOSTOBS_DEV_HX:-$worktree/scripts/controller/hx.sh}
+}
+
+load_controller_env() {
+  # the same configuration remote-gate.sh reads (controller.local.env): slots, hosts, CONTROLLER_HOME
+  local lib=$worktree/scripts/controller/lib.sh
+  [[ -f $lib && -z ${HOSTOBS_DEV_HX:-} ]] || return 0
+  set +e
+  # shellcheck disable=SC1090
+  ( export CONTROLLER_INIT_READONLY=1; . "$lib"; controller_init; declare -p CONTROLLER_HOME CONTROLLER_REMOTE_GATE_HOSTS CONTROLLER_REMOTE_SLOTS CONTROLLER_REMOTE_SLOT_WAIT_S 2>/dev/null ) >"$ctl_env_file" 2>/dev/null
+  set -e
+  return 0
+}
+
+hx_call() {
+  # $1 = script; stdin is passed through. hx.sh exit codes 97 (identity), 98 (guard), 255 (ssh) are transport failures.
+  local rc=0
+  "$hx" "$host" "$1" || rc=$?
+  case $rc in
+    97|98|255) printf 'dev: transport or identity failure talking to %s (exit %s)\n' "$host" "$rc" >&2; return 3 ;;
+  esac
+  return "$rc"
+}
+
+# the admission slot: the same flock files, ticket and slot count as scripts/controller/remote-gate.sh, weight 1
+slot_fd=''
+take_slot() {
+  local slots=${CONTROLLER_REMOTE_SLOTS:-4} deadline=${CONTROLLER_REMOTE_SLOT_WAIT_S:-7200} home lockdir waited=0 i sfd mfd
+  [[ $slots =~ ^[1-8]$ ]] || die 2 'CONTROLLER_REMOTE_SLOTS must be 1..8'
+  [[ $deadline =~ ^[0-9]+$ ]] || die 2 'CONTROLLER_REMOTE_SLOT_WAIT_S must be a non-negative integer'
+  home=${CONTROLLER_HOME:-$HOME/controller}
+  lockdir=$home/remote-gate-locks
+  mkdir -p -- "$lockdir"
+  exec {mfd}>"$lockdir/$host.admit"
+  flock -w "$deadline" "$mfd" || die 75 "admission ticket not obtained within ${deadline}s"
+  while :; do
+    for i in $(seq 1 "$slots"); do
+      exec {sfd}>"$lockdir/$host.slot$i"
+      if flock -n "$sfd"; then slot_fd=$sfd; break 2; fi
+      exec {sfd}>&-
+    done
+    (( waited >= deadline )) && die 75 "no $host admission slot free after ${waited}s"
+    (( waited % 300 == 0 )) && printf 'dev: waiting for a %s admission slot (%ss)\n' "$host" "$waited" >&2
+    sleep 5; waited=$((waited + 5))
+  done
+  exec {mfd}>&-
+}
+
+# ---- dry-run printing -----------------------------------------------------------------------------
+print_argv() {
+  printf 'DOCKER-ARGV-BEGIN\n'
+  printf '%s\n' "${dargv[@]}"
+  printf 'DOCKER-ARGV-END\n'
+}
+print_step() { printf 'STEP %s: %s\n' "$1" "$2"; }
+print_script() { printf 'SCRIPT-BEGIN %s\n%s\nSCRIPT-END %s\n' "$1" "$2" "$1"; }
+
+# ---- LOCAL mode -----------------------------------------------------------------------------------
+resolve_local_host_path() {
+  # Docker resolves bind sources in the HOST namespace: map the worktree through this container's own mounts.
+  local self=${HOSTOBS_DEV_SELF_CONTAINER:-} mounts dest src best_dest='' best_src=''
+  if [[ -z $self && -r /etc/hostname ]]; then self=$(</etc/hostname); fi
+  if [[ -n $self ]] && mounts=$(docker inspect --format '{{range .Mounts}}{{.Destination}}{{"\t"}}{{.Source}}{{"\n"}}{{end}}' "$self" 2>/dev/null); then
+    while IFS=$'\t' read -r dest src; do
+      [[ -n $dest && $dest != / ]] || continue
+      if [[ $worktree == "$dest" || $worktree == "$dest"/* ]] && (( ${#dest} > ${#best_dest} )); then
+        best_dest=$dest; best_src=$src
+      fi
+    done <<< "$mounts"
+    [[ -n $best_dest ]] || die 2 "the worktree $worktree is not on a bind mount of this container; Docker would resolve it on the host and mount an empty directory"
+    local_src=$best_src${worktree#"$best_dest"}
+  else
+    printf 'dev: not inside a container the daemon knows; using the worktree path as the host path\n' >&2
+    local_src=$worktree
+  fi
+  [[ $local_src != *:* && $local_src != *,* ]] || die 2 "host path '$local_src' contains ':' or ','; Docker cannot mount it with -v"
+}
+
+run_local() {
+  local rc=0
+  case $sub in
+    status|clean)
+      local script
+      if [[ $sub == status ]]; then script=$(status_script 0); else script=$(clean_script 0); fi
+      if (( dry_run )) && [[ $sub == clean ]]; then print_script "$sub" "$script"; return 0; fi
+      exec bash -c "$script" ;;
+  esac
+  resolve_local_host_path
+  build_docker_argv "$local_src"
+  bash -c "$(preflight_script 0)" >/dev/null || rc=$?
+  (( rc == 0 )) || exit "$rc"
+  if (( dry_run )); then print_argv; return 0; fi
+  exec "${dargv[@]}"
+}
+
+# ---- REMOTE mode ----------------------------------------------------------------------------------
+sync_sha=''
+sync_seed=''
+patch_bytes=0
+
+stage_overlay() {
+  # stage: tracked.patch (git diff HEAD --binary), untracked.list (NUL) and untracked.tar; refuses past the cap
+  local total=0 f size
+  git -C "$worktree" rev-parse --verify --quiet 'HEAD^{commit}' >/dev/null || die 2 'the worktree has no HEAD commit'
+  sync_sha=$(git -C "$worktree" rev-parse HEAD)
+  [[ $sync_sha =~ ^[0-9a-f]{40,64}$ ]] || die 2 "unexpected HEAD id '$sync_sha'"
+  git -C "$worktree" diff HEAD --binary > "$stage/tracked.patch"
+  git -C "$worktree" ls-files -o --exclude-standard -z > "$stage/untracked.list"
+  total=$(stat -c %s "$stage/tracked.patch")
+  while IFS= read -r -d '' f; do
+    size=$(stat -c %s -- "$worktree/$f" 2>/dev/null || echo 0)
+    total=$((total + size))
+  done < "$stage/untracked.list"
+  patch_bytes=$total
+  if (( total > SYNC_CAP_BYTES )); then
+    die 2 "the uncommitted changes are $((total / 1048576)) MiB (tracked patch plus untracked files), above the $((SYNC_CAP_BYTES / 1048576)) MiB sync cap; commit them (a commit travels in the bundle) or drop them"
+  fi
+  if [[ -s $stage/untracked.list ]]; then
+    tar -cf "$stage/untracked.tar" --null -C "$worktree" -T "$stage/untracked.list"
+  fi
+}
+
+pick_seed_and_bundle() {
+  # $1 = HASSHA, $2 = HAVE (host's last synced head), then SEED shas. Creates stage/in.bundle when objects are missing.
+  local hassha=$1 have=$2 c n best='' best_n='' base=''; shift 2
+  sync_seed=''
+  if [[ $hassha == 1 ]]; then return 0; fi
+  if [[ -n $have ]] && git -C "$worktree" cat-file -e "$have^{commit}" 2>/dev/null; then
+    base=$have
+  else
+    for c in "$@"; do
+      git -C "$worktree" cat-file -e "$c^{commit}" 2>/dev/null || continue
+      n=$(git -C "$worktree" rev-list --count HEAD "^$c")
+      if [[ -z $best_n ]] || (( n < best_n )); then best=$c; best_n=$n; fi
+    done
+    if [[ -z $have && -n $best ]]; then sync_seed=$best; fi
+    base=$best
+  fi
+  if [[ -n $base ]]; then
+    git -C "$worktree" bundle create "$stage/in.bundle" HEAD "^$base" >/dev/null 2>&1 || rm -f "$stage/in.bundle"
+  else
+    git -C "$worktree" bundle create "$stage/in.bundle" HEAD >/dev/null 2>&1 || die 2 'git bundle failed'
+  fi
+}
+
+run_remote() {
+  # shellcheck disable=SC2016 # $HOME is expanded on the host, not here
+  local rc=0 tty=0 mounted_src='$HOME/hostobs-dev/'"$worktree_hex"'/work'
+  [[ -t 0 ]] && tty=1
+  stage=$(mktemp -d); tmpdirs+=("$stage")
+  ctl_env_file=$stage/ctl.env
+  load_controller_env
+  # shellcheck disable=SC1090
+  [[ -s $ctl_env_file ]] && . "$ctl_env_file"
+  resolve_host
+  stty_saved=''
+
+  case $sub in
+    status|clean)
+      local script
+      if [[ $sub == status ]]; then script=$(status_script 1); else script=$(clean_script 1); fi
+      if (( dry_run )); then
+        print_step 1 "$hx $host <remote script>"
+        print_script "$sub" "$script"
+        return 0
+      fi
+      hx_call "$script" </dev/null
+      return $? ;;
+  esac
+
+  stage_overlay
+  build_docker_argv "$mounted_src"
+  local preflight run
+  preflight=$(preflight_script 1)
+  run=$(run_script 1 "$tty")
+  if (( dry_run )); then
+    print_step 1 "admission: ticket then 1 slot of ${CONTROLLER_REMOTE_SLOTS:-4} ($host.slotN under ${CONTROLLER_HOME:-$HOME/controller}/remote-gate-locks, weight 1)"
+    print_step 2 "preflight: $hx $host <remote script> (identity and guard, uid, slice memory, PSI, one-at-a-time, host checkout state)"
+    print_script preflight "$preflight"
+    print_step 3 "bundle: git bundle create in.bundle HEAD ^<base> in the stage directory when the host lacks $sync_sha"
+    print_step 4 "patch: git diff HEAD --binary > tracked.patch ($patch_bytes bytes of uncommitted changes counted, cap $SYNC_CAP_BYTES)"
+    print_step 5 "untracked: git ls-files -o --exclude-standard -z, tar -cf untracked.tar"
+    print_step 6 "sync: tar stream of the stage directory on stdin: $hx $host <remote script> (reset to $sync_sha, apply patch, extract untracked)"
+    print_script sync "$(sync_script)"
+    print_step 7 "run: $hx $host <remote script> (exit code propagated)"
+    print_script run "$run"
+    print_argv
+    return 0
+  fi
+
+  take_slot
+  # children must not inherit the slot descriptor: a process that outlived this one would hold the slot
+  local out
+  out=$( { eval "exec $slot_fd>&-"; hx_call "$preflight" </dev/null; } ) || rc=$?
+  (( rc == 0 )) || exit "$rc"
+  local hassha=0 have='' seeds=() line f
+  while IFS= read -r line; do
+    case $line in
+      HASSHA=1) hassha=1 ;;
+      HAVE=*) have=${line#HAVE=} ;;
+      SEED=*) seeds+=("${line#SEED=}") ;;
+    esac
+  done <<< "$out"
+  pick_seed_and_bundle "$hassha" "$have" "${seeds[@]}"
+  local sync files=()
+  sync=$(sync_script)
+  for f in in.bundle tracked.patch untracked.tar; do
+    [[ ! -e $stage/$f ]] || files+=("$f")
+  done
+  tar -cf - -C "$stage" "${files[@]}" \
+    | { eval "exec $slot_fd>&-"; hx_call "$sync" >&2; } || exit $?
+  if (( tty )); then
+    stty_saved=$(stty -g)
+    stty -echo -icanon -isig
+    if ( eval "exec $slot_fd>&-"; hx_call "$run" ); then rc=0; else rc=$?; fi
+    stty "$stty_saved"; stty_saved=''
+  else
+    if ( eval "exec $slot_fd>&-"; hx_call "$run" </dev/null ); then rc=0; else rc=$?; fi
+  fi
+  exit "$rc"
+}
+
+if [[ $mode == local ]]; then run_local; else run_remote; fi
