@@ -6359,36 +6359,51 @@ def _build_judgment_resolved(
     )
 
 
-def _cargo_workspace_root(run_cwd: Path, repo_top: Path) -> Path:
+def _cargo_workspace_root(
+    run_cwd: Path,
+    repo_top: Path,
+    repository: "isolation.SnapshotRepository",
+    *,
+    timeout: float,
+) -> Path:
     """(B245 U5a, design 8 item 2) The cargo workspace root of a lane that ran
     in *run_cwd*: the first directory from *run_cwd* up to *repo_top* whose
     ``Cargo.toml`` holds a ``[workspace]`` table, else *run_cwd* itself when it
     is a lone package. It is the anchor of the tool's own ``file`` values, so
     it is what the parser's ``ParseContext.run_cwd`` must be, not the lane cwd.
-    ``BAD_LANE_CONFIG`` when neither exists inside the repository."""
-    top = repo_top
-    current = run_cwd
-    while current == top or top in current.parents:
-        manifest = current / "Cargo.toml"
-        if manifest.is_file():
-            try:
-                parsed = tomllib.loads(manifest.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-                raise LaneConfigError(
-                    f"cannot read the cargo manifest {manifest} to find the "
-                    f"workspace root: {exc}"
-                ) from exc
-            if "workspace" in parsed:
-                return current
-        if current == top:
-            break
-        current = current.parent
-    if (run_cwd / "Cargo.toml").is_file():
+
+    Every manifest is read from the COMMITTED blob through *repository*, the
+    same API the parser binds mutants with, and never from the materialised
+    snapshot: the lane's own command could have edited a file there, and the
+    anchor must not move with it. ``BAD_LANE_CONFIG`` when no manifest names a
+    workspace and *run_cwd* has no package manifest of its own, or when a
+    manifest cannot be parsed."""
+    start = PurePosixPath(run_cwd.relative_to(repo_top).as_posix())
+    own_package = False
+    for directory in (start, *start.parents):
+        manifest = directory / "Cargo.toml"
+        if not repository.paths_under(manifest):
+            continue
+        own_package = own_package or directory == start
+        try:
+            parsed = tomllib.loads(
+                repository.read_regular_file(manifest, timeout=timeout).decode(
+                    "utf-8"
+                )
+            )
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            raise LaneConfigError(
+                f"cannot parse the committed cargo manifest {manifest} to "
+                f"find the workspace root: {exc}"
+            ) from exc
+        if "workspace" in parsed:
+            return repo_top / directory
+    if own_package:
         return run_cwd
     raise LaneConfigError(
-        f"no cargo workspace root (a Cargo.toml with [workspace], or the lane "
-        f"cwd's own package Cargo.toml) was found from {run_cwd} up to the "
-        f"repository top; cargo-mutants' file paths cannot be anchored"
+        f"no cargo workspace root (a committed Cargo.toml with [workspace], or "
+        f"the lane cwd's own package Cargo.toml) was found from {start} up to "
+        f"the repository top; cargo-mutants' file paths cannot be anchored"
     )
 
 
@@ -6438,7 +6453,9 @@ def _ingest_r2_report(
     # root instead (design 8 item 2), above or equal to that directory.
     run_cwd = resolve_run_cwd(snapshot.project_root, plan)
     if directory_kind:
-        run_cwd = _cargo_workspace_root(run_cwd, snapshot.root)
+        run_cwd = _cargo_workspace_root(
+            run_cwd, snapshot.root, prepared, timeout=deadline.remaining()
+        )
         # (B245 U5a) No UTF-8 decode: the artifact is a directory read. The
         # parser anchors on the cargo WORKSPACE root, not the lane cwd
         # (design 8 item 2), and binds each mutant's content to the committed
