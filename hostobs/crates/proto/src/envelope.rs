@@ -292,7 +292,16 @@ pub fn members(bytes: &[u8]) -> Result<Vec<Member>, EnvelopeError> {
     if core::str::from_utf8(bytes).is_err() {
         return Err(EnvelopeError::Json);
     }
-    let mut scan = Scan { bytes, at: 0 };
+    object_members(bytes, 0..bytes.len())
+}
+
+/// The members of the object that is exactly `span` of `bytes` (valid UTF-8 already), with
+/// ranges relative to `bytes`.
+fn object_members(bytes: &[u8], span: Range<usize>) -> Result<Vec<Member>, EnvelopeError> {
+    let mut scan = Scan {
+        bytes,
+        at: span.start,
+    };
     if scan.peek() != Some(b'{') {
         return Err(EnvelopeError::Json);
     }
@@ -329,7 +338,7 @@ pub fn members(bytes: &[u8]) -> Result<Vec<Member>, EnvelopeError> {
             }
         }
     }
-    if scan.at == bytes.len() {
+    if scan.at == span.end {
         Ok(out)
     } else {
         Err(EnvelopeError::Json)
@@ -442,14 +451,13 @@ pub fn check_req(bytes: &[u8], json_mode: bool) -> Result<Req, EnvelopeError> {
 
 /// The error envelope's inner object `{"code": str, "message": str, "detail": object}`.
 fn check_error_object(bytes: &[u8], range: &Range<usize>) -> Result<(), EnvelopeError> {
-    let inner = bytes.get(range.clone()).unwrap_or(&[]);
-    let found = members(inner)?;
+    let found = object_members(bytes, range.clone())?;
     let keys: [KeySpec; 3] = [
         ("code", STR, true),
         ("message", STR, true),
         ("detail", OBJECT, true),
     ];
-    shape(inner, &found, &keys)
+    shape(bytes, &found, &keys)
 }
 
 /// A checked REP payload.
@@ -615,7 +623,7 @@ mod tests {
 
     #[test]
     fn a_valid_request_returns_its_ranges() {
-        let bytes = br#"{"args": {"a": [1, 2.5e3, "xé"]}, "verb": "status"}"#;
+        let bytes = r#"{"args": {"a": [1, 2.5e3, "xé"]}, "verb": "status"}"#.as_bytes();
         let req = check_req(bytes, false).expect("valid");
         assert_eq!(text(bytes, &req.verb), "status");
         assert_eq!(text(bytes, &req.args), r#"{"a": [1, 2.5e3, "xé"]}"#);
@@ -720,7 +728,7 @@ mod tests {
         let rep = check_rep(err, true).expect("valid");
         assert!(!rep.ok);
         assert_eq!(rep.corr, Some(0));
-        let table: [(&[u8], bool, &str); 12] = [
+        let table: [(&[u8], bool, &str); 13] = [
             (br#"{"ok":true}"#, false, "missing-key"),
             (br#"{"ok":true,"error":{}}"#, false, "unknown-key"),
             (br#"{"ok":false,"result":{}}"#, false, "unknown-key"),
@@ -728,9 +736,26 @@ mod tests {
             (br#"{"ok":1,"result":{}}"#, false, "wrong-type"),
             (br#"{"result":{}}"#, false, "missing-key"),
             (br#"{"ok":true,"result":[]}"#, false, "wrong-type"),
-            (br#"{"ok":false,"error":{"code":"x","message":"m"}}"#, false, "missing-key"),
-            (br#"{"ok":false,"error":{"code":1,"message":"m","detail":{}}}"#, false, "wrong-type"),
-            (br#"{"ok":false,"error":{"code":"x","message":"m","detail":{},"x":1}}"#, false, "unknown-key"),
+            (
+                br#"{"ok":false,"error":{"code":"x","message":"m"}}"#,
+                false,
+                "missing-key",
+            ),
+            (
+                br#"{"ok":false,"error":{"code":1,"message":"m","detail":{}}}"#,
+                false,
+                "wrong-type",
+            ),
+            (
+                br#"{"ok":false,"error":{"code":"x","message":"m","detail":{},"x":1}}"#,
+                false,
+                "unknown-key",
+            ),
+            (
+                br#"{"ok":false,"error":{"code":"x","code":"y","message":"m","detail":{}}}"#,
+                false,
+                "duplicate-key",
+            ),
             (br#"{"ok":true,"result":{}}"#, true, "missing-key"),
             (br#"{"ok":true,"result":{},"corr":1.5}"#, true, "wrong-type"),
         ];
@@ -749,33 +774,69 @@ mod tests {
         let ok = br#"{"ok":true,"blocks":3,"dropped":1,"next":"c1","reason":"page"}"#;
         let end = check_end(ok).expect("valid");
         assert_eq!((end.blocks, end.dropped, end.ok), (3, 1, true));
-        assert_eq!(end.reason.map(|range| text(ok, &range)), Some("page".to_string()));
-        assert_eq!(end.next.map(|range| text(ok, &range)), Some("c1".to_string()));
+        let reason = end.reason.map(|range| text(ok, &range));
+        assert_eq!(reason, Some("page".to_string()));
+        let next = end.next.map(|range| text(ok, &range));
+        assert_eq!(next, Some("c1".to_string()));
         let done = br#"{"reason":"complete","next":null,"dropped":0,"blocks":0,"ok":true}"#;
         assert_eq!(check_end(done).expect("valid").next, None);
-        let bad = br#"{"ok":false,"blocks":2,"dropped":0,"error":{"code":"internal","message":"m","detail":{}}}"#;
+        let bad =
+            br#"{"ok":false,"blocks":2,"dropped":0,"error":{"code":"","message":"","detail":{}}}"#;
         let end = check_end(bad).expect("valid");
         assert!(!end.ok && end.reason.is_none());
         let table: [(&[u8], &str); 9] = [
-            (br#"{"ok":true,"blocks":1,"dropped":0,"reason":"complete"}"#, "missing-key"),
-            (br#"{"ok":true,"blocks":-1,"dropped":0,"next":null,"reason":"x"}"#, "wrong-type"),
-            (br#"{"ok":true,"blocks":1.0,"dropped":0,"next":null,"reason":"x"}"#, "wrong-type"),
-            (br#"{"ok":true,"blocks":4294967296,"dropped":0,"next":null,"reason":"x"}"#, "wrong-type"),
-            (br#"{"ok":true,"blocks":"1","dropped":0,"next":null,"reason":"x"}"#, "wrong-type"),
-            (br#"{"ok":true,"blocks":1,"dropped":0,"next":1,"reason":"x"}"#, "wrong-type"),
-            (br#"{"ok":true,"blocks":1,"dropped":0,"next":null,"reason":"x","error":{}}"#, "unknown-key"),
-            (br#"{"ok":false,"blocks":1,"dropped":0,"reason":"x"}"#, "unknown-key"),
-            (br#"{"ok":false,"blocks":1,"dropped":0,"error":{"code":"x"}}"#, "missing-key"),
+            (
+                br#"{"ok":true,"blocks":1,"dropped":0,"reason":"complete"}"#,
+                "missing-key",
+            ),
+            (
+                br#"{"ok":true,"blocks":-1,"dropped":0,"next":null,"reason":"x"}"#,
+                "wrong-type",
+            ),
+            (
+                br#"{"ok":true,"blocks":1.0,"dropped":0,"next":null,"reason":"x"}"#,
+                "wrong-type",
+            ),
+            (
+                br#"{"ok":true,"blocks":4294967296,"dropped":0,"next":null,"reason":"x"}"#,
+                "wrong-type",
+            ),
+            (
+                br#"{"ok":true,"blocks":"1","dropped":0,"next":null,"reason":"x"}"#,
+                "wrong-type",
+            ),
+            (
+                br#"{"ok":true,"blocks":1,"dropped":0,"next":1,"reason":"x"}"#,
+                "wrong-type",
+            ),
+            (
+                br#"{"ok":true,"blocks":1,"dropped":0,"next":null,"reason":"x","error":{}}"#,
+                "unknown-key",
+            ),
+            (
+                br#"{"ok":false,"blocks":1,"dropped":0,"reason":"x"}"#,
+                "unknown-key",
+            ),
+            (
+                br#"{"ok":false,"blocks":1,"dropped":0,"error":{"code":"x"}}"#,
+                "missing-key",
+            ),
         ];
         for (payload, expected) in table {
-            assert_eq!(kind(check_end(payload)), expected, "{}", String::from_utf8_lossy(payload));
+            assert_eq!(
+                kind(check_end(payload)),
+                expected,
+                "{}",
+                String::from_utf8_lossy(payload)
+            );
         }
     }
 
     #[test]
     fn events_need_a_string_event_and_closing_has_exactly_a_reason() {
         let closing = br#"{"event":"closing","reason":"idle"}"#;
-        assert_eq!(text(closing, &check_evt(closing).expect("valid").event), "closing");
+        let evt = check_evt(closing).expect("valid");
+        assert_eq!(text(closing, &evt.event), "closing");
         let other = br#"{"event":"span","a":[1],"b":{}}"#;
         assert_eq!(kind(check_evt(other)), "ok");
         let table: [(&[u8], &str); 6] = [
@@ -783,11 +844,22 @@ mod tests {
             (br#"{"event":1}"#, "wrong-type"),
             (br#"{"event":"closing"}"#, "missing-key"),
             (br#"{"event":"closing","reason":1}"#, "wrong-type"),
-            (br#"{"event":"closing","reason":"x","more":1}"#, "unknown-key"),
-            (br#"{"event":"closing","event":"closing","reason":"x"}"#, "duplicate-key"),
+            (
+                br#"{"event":"closing","reason":"x","more":1}"#,
+                "unknown-key",
+            ),
+            (
+                br#"{"event":"closing","event":"closing","reason":"x"}"#,
+                "duplicate-key",
+            ),
         ];
         for (payload, expected) in table {
-            assert_eq!(kind(check_evt(payload)), expected, "{}", String::from_utf8_lossy(payload));
+            assert_eq!(
+                kind(check_evt(payload)),
+                expected,
+                "{}",
+                String::from_utf8_lossy(payload)
+            );
         }
     }
 
@@ -797,5 +869,32 @@ mod tests {
         assert_eq!(kind(check_req(escaped, false)), "unknown-key");
         let upper = br#"{"Verb":"x","args":{}}"#;
         assert_eq!(kind(check_req(upper, false)), "unknown-key");
+    }
+
+    #[test]
+    fn numbers_follow_the_json_grammar_and_nothing_wider() {
+        let valid = br#"{"verb":"x","args":{"n":[-0,0.5,1E+2,2e-2,10,-1.25e10]}}"#;
+        assert_eq!(kind(check_req(valid, false)), "ok");
+        let bad_exponent = br#"{"verb":"x","args":{"n":1e+}}"#;
+        assert_eq!(kind(check_req(bad_exponent, false)), "json-text");
+        let leading_plus = br#"{"verb":"x","args":{"n":+1}}"#;
+        assert_eq!(kind(check_req(leading_plus, false)), "json-text");
+    }
+
+    #[test]
+    fn an_error_object_reports_ranges_into_the_whole_payload() {
+        let payload = br#"{"ok":false,"error":{"code":"x","message":"m","detail":{},"extra":1}}"#;
+        match check_rep(payload, false) {
+            Err(EnvelopeError::UnknownKey { key }) => assert_eq!(text(payload, &key), "extra"),
+            other => panic!("expected an unknown key, got {other:?}"),
+        }
+        let twice = br#"{"ok":false,"error":{"code":"x","code":"y","message":"m","detail":{}}}"#;
+        match check_rep(twice, false) {
+            Err(EnvelopeError::DuplicateKey { key }) => {
+                assert_eq!(text(twice, &key), "code");
+                assert!(key.start > 30, "the second occurrence, past the first");
+            }
+            other => panic!("expected a duplicate key, got {other:?}"),
+        }
     }
 }
