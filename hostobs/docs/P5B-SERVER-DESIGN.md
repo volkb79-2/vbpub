@@ -83,6 +83,9 @@ see §1.
 **R6 Invalid hello in `AwaitHello`.** Bad args: REP `corr=1` `bad-request`, state stays `AwaitHello`
 (non-fatal), hello timer keeps running. A REQ failing `check_req` in `AwaitHello`: `bad-request` on its own
 `corr`, stays.
+*Open for P5b-1b:* WIRE §5.4's row `AwaitHello` (a malformed REQ answers `hello-required` and closes) must
+be reconciled with §4.2 (a request failing `check_req` is a non-fatal `bad-request`, as `classify` does):
+fix the row or the rule in P5b-1b, together with the connection state machine.
 **R7 `hello.proto`** must equal the CLIENT's own prefix (major 1, minor C), not the negotiated N. The
 result carries N = min(C, server minor). (The Rust client sends `PROTO_MINOR` in `hello` and checks
 `result.proto.minor == N`.)
@@ -96,12 +99,14 @@ request owed); EOF mid-line in JSON mode: close without reply (mirrors §5.2 `tr
 `Draining`; bytes after EOF: `trailing-bytes`, close without reply.
 **R11 Request check precedence (§4.2/§4.3/§10):** (1) frame type != REQ: `bad-frame`, fatal; (2) `corr == 0`
 (binary), or (P5b-2) `corr` in use: `bad-frame`, fatal; (3) `check_req`: `bad-request`; (4) `AwaitHello` gate;
-(5) verb not in the table, reserved (§4.13), or known-but-not-served in this package: `unknown-verb`;
-(6) level: `forbidden`; (7) JSON mode and a block verb: `binary-required`; (8) (P5b-2) `max_outstanding`:
-`too-many-requests`; (9) args schema: `bad-request`; (10) (P5b-3) verb-level feature `unsupported-feature`;
-(11) execute. So duplicate keys inside an UNKNOWN verb's args are never inspected (state it in §4.2).
-Known M2 verbs not served yet answer `unknown-verb` and are absent from `hello.verbs`; `forbidden` and
-`binary-required` still come from the full table and stay testable. Never `internal` for them.
+(5) verb not in the table or reserved (§4.13): `unknown-verb`; (6) level: `forbidden`; (7) `hello` when the
+connection is `Ready` (either mode): `bad-request` `{"key":"verb"}` (R8); (8) JSON mode and a block verb:
+`binary-required`; (9) known but not served in this package: `unknown-verb` (last of the table checks, so
+`forbidden`, the second-hello check and `binary-required` still come from the full table); (10) (P5b-2)
+`max_outstanding`: `too-many-requests`; (11) args schema: `bad-request`; (12) (P5b-3) verb-level feature
+`unsupported-feature`; (13) execute. So duplicate keys inside an UNKNOWN verb's args are never inspected
+(state it in §4.2). Known M2 verbs not served yet answer `unknown-verb` and are absent from
+`hello.verbs`; `forbidden` and `binary-required` stay testable. Never `internal` for them.
 **R12 JSON-mode `corr`:** echoed only if `members()` succeeds and `corr` is one exact u32 != 0, else 0;
 a JSON-mode `corr` of 0 is `bad-request` `{"key":"corr"}`, non-fatal; binary `corr` 0 is `bad-frame`, fatal.
 **R13 JSON `LineReader`:** a line including its `\n` is at most `max_request_bytes`; at that many bytes

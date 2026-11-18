@@ -27,7 +27,7 @@ silently at its hello deadline (§5.1).
 | `0x7B` (`{`) | JSON lines (§8) for the whole connection | read lines |
 | `48 4F 42 01` (`HOB\x01`) `u16 major` `u16 minor` (8 B) | binary | §1.4 |
 | 1-7 bytes whose first `min(have, 4)` match `HOB\x01` (bytes 5-8 are the version, any value) | undecided | wait until the hello deadline (§5.1), then close silently |
-| any other byte, or a byte that diverges from `HOB\x01` | refused | write one line `{"ok":false,"corr":0,"error":{"code":"unknown-mode","message":"..."}}\n`, close |
+| any other byte, or a byte that diverges from `HOB\x01` | refused | write one line `{"ok":false,"corr":0,"error":{"code":"unknown-mode","message":"...","detail":{}}}\n`, close |
 
 1.4 **Binary handshake.**
 1. Client → `HOB\x01` + `u16 major = 1` + `u16 minor = C` (its highest minor).
@@ -505,10 +505,12 @@ quarter of either pool, however slowly it reads.
 replies of every outstanding request plus 256 KiB of END/EVT frames always fit one control queue; a
 client that keeps sending requests without reading their replies is `slow-client`. The formula runs
 both ways, `control_queue_bytes = max_outstanding * max_reply_bytes + 256 KiB`, and the observer level
-uses it to derive its queue from its reply bound (design R28): the observer serves `hello`, `status`
-and `annotate`, every observer reply and error envelope is below 3 KiB (fixed-shape replies below), so
-`max_reply_bytes` is 16 KiB and `control_queue_bytes` is 4 * 16 KiB + 256 KiB = 320 KiB (128 observer
-connections hold at most 40 MiB of control queue, not 256 MiB). A paged verb
+uses it to derive its queue from its reply bound (design R28): the observer serves only `hello` and
+`annotate` (`status` is forbidden there, §4.3), every observer reply and error envelope is below 3 KiB
+(fixed-shape replies below), and the observer `hello` reply too (≤ 2 verbs, ≤ 8 quality codes, 19 limit
+keys), so `max_reply_bytes` is 16 KiB and `control_queue_bytes` is 4 * 16 KiB + 256 KiB = 320 KiB (128 observer
+connections hold at most 40 MiB of control queue, not 256 MiB). The cap measures the binary REP payload
+alone, and the JSON-mode reply line without its `\n` and including its `,"corr":N` member. A paged verb
 (`events`, `spans`, `procs`) ends its page before the item that would push the REP over
 `max_reply_bytes` and sets `next`; every page carries at least one item, because the worst item is far
 below the bound. Worst cases at 3× per client-supplied string (§4.2) and 6× per server-read string
@@ -520,7 +522,7 @@ below the bound. Worst cases at 3× per client-supplied string (§4.2) and 6× p
 - `procs` item: `cmdline` ≤ 4,096 B decoded (§4.11) × 6 = 24,576, `comm` 15 × 6 = 90, eight integer
   fields and `pid`/`start_ticks`/`inc` with keys < 500: < 25,200 B, so a page holds ≥ 18 items; without
   `cmdline` < 600 B, so a full 256-item page (< 154 KB) always fits.
-- fixed-shape replies: `hello` < 4 KiB (≤ 32 verbs, ≤ 8 quality codes, ≤ 25 limit keys), `status` <
+- fixed-shape replies: `hello` < 4 KiB (≤ 32 verbs, ≤ 8 quality codes, 19 limit keys), `status` <
   2 KiB (≤ 8 tiers), `series_batch` REP ≤ 64 omitted names × 67 + 100 < 4.5 KB, `snapshot_at` with
   `provenance` ≤ 64 objects × 1 KiB < 66 KiB, every other REP and every error envelope (message ≤ 256 B,
   detail < 2 KiB) < 3 KiB; END < 1 KiB (a cursor is ≤ 256 B).
