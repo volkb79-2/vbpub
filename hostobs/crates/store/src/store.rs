@@ -307,9 +307,7 @@ impl StoreConfig {
     }
 }
 
-/// The most eviction reports ([`Evicted::notes`]) the store keeps for [`Store::notes`]; the
-/// oldest leave first, so a source of repeated vanished files cannot grow the store's memory.
-pub const MAX_EVICTION_NOTES: usize = 256;
+pub use crate::tier::MAX_EVICTION_NOTES;
 
 /// What the store as a whole has done and lost.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -400,6 +398,20 @@ pub struct Store {
     /// [`MAX_EVICTION_NOTES`]: a tier's own `scan.notes` is reset by a rescan, and these are
     /// what the caller of `write_one`, `record_event` or `evict` is shown by [`Store::notes`].
     eviction_notes: VecDeque<TierNote>,
+}
+
+/// Whether [`Store::notes`] shows a note that the tier named `producer` made.
+///
+/// It is hidden only when its name parses (as a live or a quarantined segment name) to a
+/// tier of this store that is not the producer: one tier noting another's file in a shared
+/// directory. A note about the producer's own name, or a name no tier claims, is visible.
+fn is_visible(note: &TierNote, producer: &str, owned: &[&str]) -> bool {
+    let parsed = crate::format::SegmentFileName::parse(&note.name)
+        .or_else(|_| crate::format::SegmentFileName::parse_quarantined(&note.name));
+    match parsed {
+        Ok(parsed) => parsed.tier == producer || !owned.contains(&parsed.tier.as_str()),
+        Err(_) => true,
+    }
 }
 
 /// Keep the reports of one eviction pass, dropping the oldest past [`MAX_EVICTION_NOTES`].
@@ -612,17 +624,19 @@ impl Store {
 
     /// The names a tier left untouched, with why (a foreign file is reported, never removed).
     ///
-    /// A tier that shares its directory with another tier of this store sees the other's
-    /// segments and reports each as "names another tier". Those are *expected*: one directory
-    /// holding hot and warm is the plan's own layout, so a note about a name this store owns
-    /// is not reported as foreign. What remains is a name **no** tier of this store claims —
-    /// which is exactly what an operator needs to see.
+    /// Exactly one kind of note is filtered out: a note one tier's scan made about a segment
+    /// name (live or `.corrupt`) of a *different* tier of this store. A directory shared by hot
+    /// and warm is the plan's own layout, so warm reports hot's files as "names another tier"
+    /// and that is expected, not foreign. Everything else stays visible: a note about a name no
+    /// tier of this store claims, and a note a tier made about **its own** name (garbage under
+    /// `hot-0-3.seg` or `hot-0-3.seg.corrupt`, a directory under that name, a header of
+    /// another tier kind), because that is what an operator needs to see.
     ///
     /// The reports of eviction passes follow (an entry dropped because its file was already
-    /// gone, or could not be removed): they name a file this store owns, so they are not
-    /// filtered, they survive a tier's rescan, and at most [`MAX_EVICTION_NOTES`] are kept
-    /// (HOB-58). A quarantined file that could not be removed stays on disk, uncounted, and
-    /// is adopted again at the next restart.
+    /// gone, or could not be removed), once each: they survive a tier's rescan, and at most
+    /// [`MAX_EVICTION_NOTES`] are kept, the oldest dropped first (HOB-58). A quarantined file
+    /// that could not be removed stays on disk, uncounted, and is adopted again at the next
+    /// restart.
     #[must_use]
     pub fn notes(&self) -> Vec<TierNote> {
         let owned: Vec<&str> = self
@@ -631,22 +645,19 @@ impl Store {
             .map(String::as_str)
             .chain(std::iter::once(self.config.events.name.as_str()))
             .collect();
+        let mut producers: Vec<&Tier> = self.tiers.values().map(|state| &state.tier).collect();
+        producers.push(self.events.tier());
         let mut notes: Vec<TierNote> = Vec::new();
-        for state in self.tiers.values() {
-            notes.extend(state.tier.scan().notes.iter().cloned());
-        }
-        notes.extend(self.events.tier().scan().notes.iter().cloned());
-        // A quarantined name (`<segment name>.corrupt`) is a segment name of the tier it names
-        // too: hot and warm share a directory, so warm notes hot's quarantined file as "names
-        // another tier", and that is as expected as the same note about a live segment.
-        notes.retain(|note| {
-            let parsed = crate::format::SegmentFileName::parse(&note.name)
-                .or_else(|_| crate::format::SegmentFileName::parse_quarantined(&note.name));
-            match parsed {
-                Ok(parsed) => !owned.contains(&parsed.tier.as_str()),
-                Err(_) => true,
+        for tier in producers {
+            let producer = tier.config().name.as_str();
+            for note in &tier.scan().notes {
+                if is_visible(note, producer, &owned) {
+                    notes.push(note.clone());
+                }
             }
-        });
+        }
+        // A tier's own report of a vanished file is in its scan notes too, so the ring's copy
+        // is the same note: shown once.
         for note in &self.eviction_notes {
             if !notes.contains(note) {
                 notes.push(note.clone());
@@ -1698,6 +1709,34 @@ mod tests {
         tiers + store.events().tier().bytes()
     }
 
+    /// The sum of the file lengths the tiers' rings hold: every live segment and every
+    /// quarantined file, the events store's included.
+    fn files_total(store: &Store) -> u64 {
+        let mut tiers: Vec<&Tier> = [HOT, WARM, COLD]
+            .iter()
+            .filter_map(|name| store.tier(name))
+            .collect();
+        tiers.push(store.events().tier());
+        let mut total = 0u64;
+        for tier in tiers {
+            let scan = tier.scan();
+            for segment in &scan.segments {
+                total = total.saturating_add(segment.file_len);
+            }
+            for file in &scan.quarantined_files {
+                total = total.saturating_add(file.len);
+            }
+        }
+        total
+    }
+
+    /// `stats.bytes` equals the tiers' own byte totals and the files their rings hold.
+    fn assert_total(store: &Store) {
+        let bytes = store.stats().bytes;
+        assert_eq!(bytes, tiers_total(store));
+        assert_eq!(bytes, files_total(store));
+    }
+
     /// Write one record to the hot tier of a store over `temp`, seal it, and return the
     /// sealed segment's name.
     fn sealed_hot_name(temp: &TempDir, now: i64) -> String {
@@ -1715,16 +1754,16 @@ mod tests {
     #[test]
     fn the_store_total_is_the_tiers_own_total_after_every_operation() {
         // HOB-56: a new segment's header is in the tier's total but not in `bytes_written`,
-        // and a seal adds a footer; arithmetic on the written bytes drifted from both.
+        // and a seal adds a footer; arithmetic on the written bytes would miss both.
         let temp = TempDir::new("total-ops");
         let now = 2_000_000_000_000_000_000i64;
         let mut store =
             Store::open_with_mounts(config(&temp), Some(tmpfs_everywhere())).expect("open");
-        assert_eq!(store.stats().bytes, tiers_total(&store));
+        assert_total(&store);
         let written = store
             .write_one(&Job::new(block(24), now, Vec::new()), now)
             .expect("write");
-        assert_eq!(store.stats().bytes, tiers_total(&store));
+        assert_total(&store);
         assert!(
             store.stats().bytes > written.outcome.bytes_written,
             "the new segment's header is in the total"
@@ -1733,18 +1772,15 @@ mod tests {
             crate::events::Event::new(EventKind::Point, "run", Some("run-1"), "u1", 10, None)
                 .expect("point");
         store.record_event(&event, &evt(8), 10).expect("record");
-        assert_eq!(store.stats().bytes, tiers_total(&store));
+        assert_total(&store);
         store.seal_all().expect("seal");
-        assert_eq!(
-            store.stats().bytes,
-            tiers_total(&store),
-            "the footers are in the total"
-        );
+        // The footers are in the total.
+        assert_total(&store);
         let warm = Job::new(block(24), now - 120_000_000_000, Vec::new());
         store.write_one(&warm, now).expect("write warm");
-        assert_eq!(store.stats().bytes, tiers_total(&store));
+        assert_total(&store);
         store.evict(i64::MAX / 2).expect("evict");
-        assert_eq!(store.stats().bytes, tiers_total(&store));
+        assert_total(&store);
     }
 
     #[test]
@@ -1763,12 +1799,12 @@ mod tests {
         tight.tiers[0].cap_bytes = held - 1;
         let mut store = Store::open_with_mounts(tight, Some(tmpfs_everywhere())).expect("reopen");
         assert_eq!(store.stats().bytes, held, "the debris counts");
-        assert_eq!(store.stats().bytes, tiers_total(&store));
+        assert_total(&store);
         temp.remove(&format!("{path}.corrupt"));
         let done = store.evict(now).expect("a vanished file must not fail");
         assert!(done.is_empty(), "nothing was removed");
         assert_eq!(store.stats().bytes, 0);
-        assert_eq!(store.stats().bytes, tiers_total(&store));
+        assert_total(&store);
         assert_eq!(store.stats().evicted_bytes, 0);
         // HOB-58: the report reaches the store's notes.
         let notes = store.notes();
@@ -1786,12 +1822,12 @@ mod tests {
         tight.tiers[0].cap_bytes = 1;
         let mut store = Store::open_with_mounts(tight, Some(tmpfs_everywhere())).expect("reopen");
         assert!(store.stats().bytes > 0);
-        assert_eq!(store.stats().bytes, tiers_total(&store));
+        assert_total(&store);
         temp.remove(&format!("tiers/{name}"));
         let done = store.evict(now).expect("a vanished head must not fail");
         assert!(done.is_empty(), "nothing was removed");
         assert_eq!(store.stats().bytes, 0);
-        assert_eq!(store.stats().bytes, tiers_total(&store));
+        assert_total(&store);
         assert_eq!(store.stats().evicted_segments, 0);
         // HOB-58: a live segment's name is a tier's own, yet its report is not filtered out.
         let notes = store.notes();
@@ -1802,8 +1838,9 @@ mod tests {
 
     #[test]
     fn eviction_reports_from_the_write_path_reach_the_store_and_are_bounded() {
-        // HOB-58: `write_one` runs an eviction whose report used to reach only the tier's
-        // `scan.notes`; a rescan resets those, the store's own ring does not.
+        // HOB-58: `write_one` runs an eviction whose report reaches the caller in
+        // `Evicted::notes` and the store's ring, not only the tier's `scan.notes` (a rescan
+        // resets those).
         let temp = TempDir::new("notes-write");
         let now = 1_000_000_000i64;
         let name = sealed_hot_name(&temp, now);
@@ -1818,7 +1855,7 @@ mod tests {
         assert_eq!(written.outcome.evicted.notes[0].name, name);
         assert_eq!(store.notes().len(), 1);
         assert_eq!(store.notes()[0].name, name);
-        assert_eq!(store.stats().bytes, tiers_total(&store));
+        assert_total(&store);
         let mut ring = std::collections::VecDeque::new();
         let many = crate::tier::Evicted {
             notes: (0..super::MAX_EVICTION_NOTES + 5)
@@ -1832,5 +1869,36 @@ mod tests {
         super::keep_notes(&mut ring, &many);
         assert_eq!(ring.len(), super::MAX_EVICTION_NOTES);
         assert_eq!(ring.front().map(|note| note.name.as_str()), Some("n5"));
+    }
+
+    fn open_store(temp: &TempDir) -> Store {
+        Store::open_with_mounts(config(temp), Some(tmpfs_everywhere())).expect("open")
+    }
+
+    /// Plant garbage under `hot-0-3<suffix>` in the directory hot and warm share, reopen the
+    /// store, and return the planted name with what `Store::notes` shows.
+    fn notes_for_garbage(suffix: &str) -> (String, Vec<crate::tier::TierNote>) {
+        let temp = TempDir::new("own-garbage");
+        drop(open_store(&temp));
+        let planted = format!("hot-0-3{suffix}");
+        temp.write_file(&format!("tiers/{planted}"), b"not a segment");
+        let store = open_store(&temp);
+        (planted, store.notes())
+    }
+
+    #[test]
+    fn a_note_about_a_tiers_own_quarantine_name_stays_visible_once() {
+        // Hot reports its own garbage `.corrupt` name; warm, sharing the directory, reports it
+        // as "names another tier", which is the one note the store hides.
+        let (planted, notes) = notes_for_garbage(".seg.corrupt");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].name, planted);
+    }
+
+    #[test]
+    fn a_note_about_a_tiers_own_live_name_stays_visible_once() {
+        let (planted, notes) = notes_for_garbage(".seg");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].name, planted);
     }
 }
