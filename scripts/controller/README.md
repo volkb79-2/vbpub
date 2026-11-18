@@ -438,6 +438,26 @@ freed first, and prints which slot it took. It prints a progress line every
 unchanged, and the configured-path and distinct-path refusals still run before
 the gate command can start.
 
+## Run one lane on a remote gate worker
+
+```bash
+scripts/controller/remote-gate.sh <host-alias> <project-dir> <lane> <commit-or-branch> [--base <ref>] [-- extra run-gate args]
+```
+
+`remote-gate.sh` is the identity-checked, commit-pinned, slot-admitted wrapper
+around `scripts/netcup/runner/remote-gate.py`. It resolves the commit in the
+controller checkout, runs the provider identity check from the host table,
+admits the lane by weight into k of N flock slots (declared
+`resources.memory`, measured peak from `remote-gate-weights.tsv`, else one
+slot), builds a throwaway detached worktree under `CONTROLLER_HOME`, runs the
+lane and writes `$CONTROLLER_LOGS_DIR/<run>.log` with a binding line
+`run-gate.commit=<sha>` plus the copied verdict JSON files. Exit codes: the
+lane's own, 2 refusal, 3 identity or transport failure, 75 slots or PSI busy,
+76 `INCONCLUSIVE-OOM` (an OOM kill in the host's gate slice during the run;
+not a lane FAIL). Every setting is a `CONTROLLER_REMOTE_*` variable in
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md); `CONTROLLER_REMOTE_GATE_HOSTS`
+is required. The weights sample is `remote-gate-weights.tsv.example`.
+
 ## Build a bounded session read-back
 
 For the controller's own compaction recovery use the operator-mandated recipe in the root `AGENTS.md` (`nyxloom-harness extract --preset readback --budget-tokens N`, which never drops operator turns or interview answers). `build-readback.py` below is the older character-budget builder; it also bundles Codex run finals, but its character cut can truncate operator material, so do not use it alone for compaction recovery.

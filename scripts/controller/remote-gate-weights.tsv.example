@@ -1,0 +1,10 @@
+# Copy to $CONTROLLER_HOME/remote-gate-weights.tsv (or point CONTROLLER_REMOTE_WEIGHTS_FILE at it).
+# <project-dir>:<lane><TAB><measured peak MiB of the lane container (or slice) on the gate worker>
+# remote-gate.sh weighs a lane as min(declared resources.memory, measured peak * 1.15); the weight, rounded up to
+# whole slots (budget / slots MiB each), is how many of the worker's flock slots the lane takes.
+# R2-class lanes (r2, mutation, self-qualification*, campaign) are deliberately NOT listed: their weight is the declared
+# cap (workers grow over a long run). An unlisted, undeclared lane takes one slot (two for an R2-class name).
+# Lines starting with # and blank lines are ignored. The numbers below are examples, not measurements to rely on.
+project-a:r1	997
+project-b:selftest	1073
+project-c:tooling-tests	567

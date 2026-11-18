@@ -46,7 +46,16 @@ Useful settings:
 | `OPENCODE_PROVIDER` | Provider id used with the default DeepSeek model; defaults to `opendesign_github2`. |
 | `OPENCODE_MODEL` | Full OpenCode provider/model identifier; overrides `OPENCODE_PROVIDER`. |
 | `NETCUP_TOKEN_FILE` | Local provider token-file location for the configured `api_check` command. |
-| `REMOTE_GATE_HOSTS` | Host table used by `remote-gate.py`; defaults to `hosts.local.json`. |
+| `REMOTE_GATE_HOSTS` | Host table used by `remote-gate.py` when it is run directly; defaults to `hosts.local.json`. `remote-gate.sh` passes its own host table explicitly. |
+| `CONTROLLER_REMOTE_GATE_HOSTS` | Required by `remote-gate.sh`: space-separated aliases that may receive a gate. The host table also names acceptance hosts, so the allow-list is local policy, never inferred from the table. |
+| `CONTROLLER_REMOTE_HOSTS_FILE` | Host table for `remote-gate.sh`; defaults to `CONTROLLER_HOSTS_FILE`. A relative path resolves under `CONTROLLER_HOME`. |
+| `CONTROLLER_REMOTE_API_CHECK` | Optional executable run as `<command> <alias>` instead of the host table's `api_check`; exit 0 means the provider-side identity matches. |
+| `CONTROLLER_REMOTE_PYTHON` | Interpreter for the weight calculation and `remote-gate.py`; needs `tomllib` (Python 3.11+). Defaults to `python3`. |
+| `CONTROLLER_REMOTE_GATE_PY`, `CONTROLLER_REMOTE_GATE_PY_REF` | Explicit `remote-gate.py` path, or the git ref (default `origin/main`) its `scripts/netcup/runner/remote-gate.py` is snapshotted from into `$CONTROLLER_HOME/tools/`. The runner never comes from the commit under test. |
+| `CONTROLLER_REMOTE_SLOTS`, `CONTROLLER_REMOTE_BUDGET_MB` | Slot model: `slots` flock slots (1..8, default 4) of `budget / slots` MiB each (default budget 5120, the gate slice's MemoryHigh). Keep one value for every caller of one host. |
+| `CONTROLLER_REMOTE_WEIGHTS_FILE` | Measured-peak table (default `$CONTROLLER_HOME/remote-gate-weights.tsv`, sample `remote-gate-weights.tsv.example`). |
+| `CONTROLLER_REMOTE_WEIGHT_MB`, `CONTROLLER_REMOTE_SLOT_WAIT_S`, `CONTROLLER_REMOTE_WAIT_PSI`, `CONTROLLER_REMOTE_REPO_NAME`, `CONTROLLER_REMOTE_OUT` | Forced lane weight in MiB; seconds to wait for slots (default 7200, then exit 75); seconds the host job may wait for PSI (default 120); repository name on the host (default derived by `remote-gate.py`); result directory (default `$CONTROLLER_HOME/remote-gates`). |
+| `CONTROLLER_REMOTE_DRYRUN`, `CONTROLLER_REMOTE_DRY_HOLD` | Non-empty `CONTROLLER_REMOTE_DRYRUN` stops after slot admission (nothing is sent to the host); `CONTROLLER_REMOTE_DRY_HOLD` seconds to keep the slots, for a contention check. |
 | `CTX_STATE_DIR` | Optional controller state directory for `hooks/ctx-hooks.py`; defaults to the hook input's own `cwd/.controller-state`. |
 | `CTX_EXTRACT_CMD` | The extract command `hooks/ctx-hooks.py` runs; defaults to `nyxloom-harness` on `PATH`. |
 | `CTX_READBACK_BUDGET_TOKENS` | Readback budget for a controller session; defaults to `30000` (a spawned session's controller passes a smaller flag or this variable). |
@@ -86,6 +95,13 @@ Example shape (replace every placeholder locally):
   }
 }
 ```
+
+A host that runs gates through `remote-gate.py` may also carry `runner_home`
+(the runner account's home on the host), `cockpit` (the cockpit container name),
+`image` (the default tester image) and `repos.<name>` (per-repository overrides
+such as `run_gate_min`, `run_gate_bins`, `tester_image`); all four are optional
+and validated by `remote-gate.py`, never by the shell kit. Keep one table:
+`remote-gate.sh`, `hx.sh` and the queue read the same file.
 
 `api_check` must perform the provider-side identity check before remote work.
 Use an absolute command path so it works from the controller home and from a

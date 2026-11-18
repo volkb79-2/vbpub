@@ -21,6 +21,7 @@ files=(
   "$SCRIPT_DIR/../resume-usage-limited.sh"
   "$SCRIPT_DIR/../start-after.sh"
   "$SCRIPT_DIR/../gate-run.sh"
+  "$SCRIPT_DIR/../remote-gate.sh"
   "$SCRIPT_DIR/../release-from-wt.sh"
   "$SCRIPT_DIR/../push-image.sh"
   "$SCRIPT_DIR/../skills-sync.sh"
@@ -35,6 +36,7 @@ files=(
   "$SCRIPT_DIR/test-ctx-hooks.sh"
   "$SCRIPT_DIR/test-mutations.sh"
   "$SCRIPT_DIR/test-skills-sync.sh"
+  "$SCRIPT_DIR/test-remote-gate.sh"
   "$SCRIPT_DIR/run-suite.sh"
   "$queue_test"
 )
@@ -51,6 +53,7 @@ bash "$SCRIPT_DIR/test-pi-impl.sh" || exit $?
 bash "$SCRIPT_DIR/test-hardening-tools.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctx-hooks.sh" || exit $?
 bash "$SCRIPT_DIR/test-skills-sync.sh" || exit $?
+bash "$SCRIPT_DIR/test-remote-gate.sh" || exit $?
 bash "$queue_test" || exit $?
 bash "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh" || exit $?
 bash "$SCRIPT_DIR/test-mutations.sh" || exit $?

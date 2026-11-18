@@ -1078,3 +1078,25 @@ queue_with_lib_variant(
     'isinstance(x, str) and x.count("|") == 1 and "\\n" not in x and "\\r" not in x\n        and all(part.strip() for part in x.split("|", 1))',
     'isinstance(x, str) and "|" in x',
 )
+mutant("scripts/controller/remote-gate.sh", "remote-gate-identity.sh",
+       'api_check >/dev/null 2>&1 || die "provider identity', 'true || die "provider identity')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-allow-list.sh",
+       '  *" $host "*) ;;', '  *) ;;')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-project-dir-guard.sh",
+       '[[ $pdir != /* && $pdir != *..* ]] ||', 'true ||')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-slot-roundup.sh",
+       'need=$(( (weight + unit - 1) / unit ));', 'need=$(( weight / unit ));')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-weight-min.sh",
+       '    w = min(cands)', '    w = max(cands)')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-oom-delta.sh",
+       '(( oomd > 0 ))', '(( oomd > 5 ))')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-commit-binding.sh",
+       'if [[ ${checked:-0} -ge 1 ]]; then', 'if false; then')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-slot-descriptors.sh",
+       '( close_slots; cd "$wt" &&', '( cd "$wt" &&')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-base-forward.sh",
+       '[[ -z $base ]] || run_args+=(--base "$base")', ': # base dropped')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-api-override.sh",
+       'if [[ -n ${CONTROLLER_REMOTE_API_CHECK:-} ]]; then', 'if false; then')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-runner-ref.sh",
+       '    die "cannot read scripts/netcup/runner/remote-gate.py from $runner_ref" 3', '    : # unreadable runner ignored')

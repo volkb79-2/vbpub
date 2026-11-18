@@ -7,6 +7,18 @@ no separate version number, so entries are grouped by the work that landed.
 ## [Unreleased]
 
 ### Added
+- `remote-gate.sh`: the controller's remote gate wrapper, imported from the
+  unversioned program directory and parametrised. Host, SSH transport, identity
+  check and guard come from the host table (`CONTROLLER_REMOTE_HOSTS_FILE`,
+  default `CONTROLLER_HOSTS_FILE`) instead of a private env script; the
+  allow-list of gate hosts is the required `CONTROLLER_REMOTE_GATE_HOSTS`; the
+  throwaway worktree lives under `CONTROLLER_HOME`, not in the repository;
+  `--base <ref>` is a wrapper option forwarded to `remote-gate.py`; the lane
+  weight is rounded up (a measured 800 MiB peak with 15 percent headroom is 920,
+  not 919). New `tests/test-remote-gate.sh` (fake `remote-gate.py`, ssh and
+  identity stubs; no network) and eleven hand mutants. Sample
+  `remote-gate-weights.tsv.example`; settings documented in
+  `docs/CONFIGURATION.md`.
 - `LONG-TOOL` / `HUNG-TOOL` (CTL-18): `job-status.sh` separates a heavy tool that
   is still working from one that stopped. `HUNG-TOOL` requires the ABSENCE of
   progress evidence, and the evidence set is the IN-FLIGHT TOOL CALL's own
