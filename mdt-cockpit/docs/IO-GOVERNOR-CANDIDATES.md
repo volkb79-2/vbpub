@@ -123,7 +123,7 @@ expressed in sampling windows, so a scenario of minutes stands for the real hour
 **Storage for the VM.**
 - OS image: a qcow2 base on the **btrfs lab subvolume** (`/srv/mdt-cockpit-cow/vm-lab`, zstd), one cheap
   reflink clone per run. Verified: the subvolume can be bind-mounted into the running devcontainer at
-  `mdt-cockpit/artifacts/vm-lab` without recreating it (a helper clones the mount with `open_tree` and
+  the project's `vm-lab` folder (then `mdt-cockpit/artifacts/vm-lab`; now the resolver's `vm-lab` answer for `mdt-cockpit`) without recreating it (a helper clones the mount with `open_tree` and
   moves it into the container's mount namespace; it must be repeated after a container restart).
 - Test data disk: a **sparse raw file on tmpfs** (RAM), sized small (1 to 2 GB). Reason: the throttle sets
   the speed, so the backing store should be neutral and must not add IO to the production disk; tmpfs

@@ -16,9 +16,11 @@
 # that class of test belongs instead: the guest's /dev/vda and its swap
 # are the GUEST kernel's own, entirely separate from the host's.
 #
-# <vm-lab> = <project>/artifacts/vm-lab (a tracked placeholder folder; contents
-# are gitignored). Global options before the subcommand: --state-dir DIR,
-# --downloads-dir DIR (used by the in-runner wrapper for its mount points).
+# <vm-lab> = the resolved `vm-lab` folder of this project (<project>/vm-lab, a
+# committed placeholder; contents are gitignored; a CoW subvolume on a CoW host).
+# Global options before the subcommand: --state-dir DIR, --downloads-dir DIR
+# (the folder base images are downloaded into: the resolved `vm-images` folder;
+# both are used by the in-runner wrapper for its mount points).
 # Design (credited: this repo's own operator ran the same question past a
 # separate research session, cross-checked against this implementation --
 # see the 2026-09-09 KVM-setup discussion in project memory):
@@ -32,7 +34,7 @@
 #     userspace, so no host loop device is involved in booting one.
 #
 # Usage:
-#   vmctl prepare-base <case>          # download + stage <vm-lab>/images/<case>-base.qcow2
+#   vmctl prepare-base <case>          # download (vm-images folder) + stage <vm-lab>/images/<case>-base.qcow2
 #   vmctl prepare-ready-base <case>    # prepare-base, then boot+wait for cloud-init to
 #                                       # finish, disable it, flatten -> <case>-ready-base.qcow2
 #   vmctl start <run>  [--case <case>] [--ssh-port N] [--mem MB] [--smp N] [--disk-gb N] [--no-apt-cache] [--seed-iso PATH]
@@ -55,16 +57,20 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# State lives in <project>/artifacts/vm-lab (gitignored). It may be a plain
-# directory or a CoW subvolume mounted over it; this script does not care.
-# HERE is <project>/testing/vm.
+# State lives in the resolved `vm-lab` folder of this project (gitignored; a
+# plain directory or a CoW subvolume, as the resolver decides; this script does
+# not care). HERE is <project>/testing/vm.
 PROJECT_DIR="$(cd "$HERE/../.." && pwd -P)"
-# Fixed-depth defaults (<repo>/scripts/debian-install-v2/testing/vm). No env
-# overrides: the layout is a repo decision. The in-runner wrapper cannot derive
-# them (its /work is only the testing dir), so it passes the global options
-# --state-dir /vm-lab --downloads-dir /downloads before the subcommand.
-STATE_DIR="$PROJECT_DIR/artifacts/vm-lab"
-DOWNLOADS_DIR="$(cd "$PROJECT_DIR/../.." && pwd -P)/downloads"
+# Defaults come from the repo path config through libraries/cowtree/repo-path,
+# with the repo root derived by fixed depth (<repo>/scripts/debian-install-v2/
+# testing/vm). No env overrides: the layout is a repo decision. The in-runner
+# wrapper cannot ask the resolver (its /work is only the testing dir), so it
+# passes the global options --state-dir /vm-lab --downloads-dir /downloads
+# before the subcommand; an explicit option always wins and then the resolver
+# is not asked at all. --downloads-dir is the folder base images are
+# downloaded into: its default is the resolved `vm-images` folder.
+STATE_DIR=""
+DOWNLOADS_DIR=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --state-dir) STATE_DIR="${2:?--state-dir requires a path}"; shift 2 ;;
@@ -72,6 +78,26 @@ while [ $# -gt 0 ]; do
         *) break ;;
     esac
 done
+REPO_ROOT="$(cd "$PROJECT_DIR/../.." && pwd -P)"
+resolve_default() {  # resolve_default <name> [--project DIR]: the resolver's folder, or ONE line on stderr and failure
+    local out err_file
+    err_file="$(mktemp)"
+    if out="$("$REPO_ROOT/libraries/cowtree/repo-path" "$1" --repo-root "$REPO_ROOT" "${@:2}" 2>"$err_file")"; then
+        rm -f "$err_file"
+        printf '%s\n' "$out"
+        return 0
+    fi
+    echo "vmctl: cannot resolve '$1' from the repo path config of $REPO_ROOT: $(tr '\n' ' ' <"$err_file")(pass --state-dir/--downloads-dir to override)" >&2
+    rm -f "$err_file"
+    return 1
+}
+if [ -z "$STATE_DIR" ]; then
+    # --project is this project's directory relative to the repo root (derived from the script location).
+    STATE_DIR="$(resolve_default vm-lab --project "${PROJECT_DIR#"$REPO_ROOT"/}")" || exit 1
+fi
+if [ -z "$DOWNLOADS_DIR" ]; then
+    DOWNLOADS_DIR="$(resolve_default vm-images)" || exit 1
+fi
 IMAGES_DIR="$STATE_DIR/images"
 RUNS_DIR="$STATE_DIR/runs"
 SSH_DIR="$STATE_DIR/ssh"

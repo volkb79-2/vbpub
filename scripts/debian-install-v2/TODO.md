@@ -389,8 +389,8 @@ debian-install-v2 stays the seed-ISO builder only; no TrueNAS API code goes into
 say how the cloud image reaches the NAS. Change it so that the TrueNAS steps are a pointer to tnt (TNT-61 imports the cloud image
 into a zvol, TNT-60 manages the devices), as:
 
-1. Put the Debian cloud image and the seed ISO (and their `.sha256` files) in the repo-level `downloads/`.
-2. `tnt files put <name> <dataset-dir>` (API upload from `downloads/` only, verified against the sha256; TNT-61 stage 1).
+1. Put the Debian cloud image (and its `.sha256` file) in the repo's `vm-images` folder and the seed ISO (and its `.sha256`) in the `iso` folder (`libraries/cowtree/repo-path vm-images` / `iso`; plain `downloads/vm-images/`, `downloads/iso/`).
+2. `tnt files put <name> <dataset-dir>` (API upload from those resolved folders only, verified against the sha256; TNT-61 stage 1).
 3. `tnt vm disk import <dataset-path> --zvol <pool/zvol>` (TNT-61 stage 2, with its capability probe).
 4. `tnt vm create --iso <seed>`.
 5. `tnt vm device add` (and `tnt vm device list/update/delete`, TNT-60, to inspect or fix the devices).

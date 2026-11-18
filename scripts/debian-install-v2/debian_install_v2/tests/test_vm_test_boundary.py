@@ -11,6 +11,7 @@ import importlib.util
 import os
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,28 @@ import pytest
 PROJECT = Path(__file__).resolve().parents[2]
 TESTING = PROJECT / "testing"
 VM = TESTING / "vm"
+#: This checkout: the source of the resolver (libraries/cowtree) and of the repo path config that wrapper tests copy.
+REPO_ROOT = PROJECT.parents[1]
+COWTREE = REPO_ROOT / "libraries" / "cowtree"
+#: The project directory the harness asks the resolver for (relative to the repo root).
+PROJECT_REL = "scripts/debian-install-v2"
+
+
+def _config_name():
+    """The file name of the repo path config, as cowtree names it (no test writes the name down)."""
+    if str(COWTREE / "src") not in sys.path:
+        sys.path.insert(0, str(COWTREE / "src"))
+    from cowtree.repo_paths import CONFIG_NAME
+
+    return CONFIG_NAME
+
+
+def _plain_env():
+    """The process environment minus the host-owned CoW inputs: the resolver answers with the plain folders only."""
+    env = os.environ.copy()
+    for name in ("MDT_COW_ROOT", "COWTREE_MODE"):
+        env.pop(name, None)
+    return env
 
 
 def test_legacy_privileged_container_runner_is_gone():
@@ -44,12 +67,19 @@ def test_vm_runner_is_governed_and_has_no_host_device_passthrough():
     assert 'BUILD_BUILDER="${BUILDX_BUILDER:-}"' in runner
     assert 'VM_STATE_DIR="/vm-lab"' in runner
     assert 'VM_DOWNLOADS_DIR="/downloads"' in runner
-    assert 'HOST_VM_LAB_DIR="$HOST_PROJECT_DIR/artifacts/vm-lab"' in runner
-    assert 'HOST_DOWNLOADS_DIR="$HOST_REPO_ROOT/downloads"' in runner
-    # No env overrides and no main-checkout/git resolution: the layout is fixed.
+    # The host sources of both binds come from the resolver, by entry name, never from a literal folder.
+    assert 'resolve_shared_path vm-lab --project "$project_rel"' in runner
+    assert 'resolve_shared_path vm-images' in runner
+    # No env overrides and no main-checkout/git resolution: the layout is the repo path config's.
     for forbidden in ("MDT_VM_STATE_DIR", "MDT_DOWNLOADS_DIR", "MDT_VM_MAIN_IMAGES_DIR",
-                      "git-common-dir", "main-vm-images", 'mkdir -p "$VM_LAB_NS"'):
+                      "git-common-dir", "main-vm-images", 'mkdir -p "$VM_LAB_NS"',
+                      "artifacts/vm-lab", '$REPO_ROOT/downloads', '$HOST_REPO_ROOT/downloads',
+                      _config_name()):
         assert forbidden not in runner
+    for script in (VM / "vmctl", TESTING / "download-base-image.sh"):
+        text = script.read_text()
+        assert "artifacts/vm-lab" not in text and _config_name() not in text, script.name
+        assert "libraries/cowtree/repo-path" in text, script.name
     assert '--state-dir "$VM_STATE_DIR" --downloads-dir "$VM_DOWNLOADS_DIR"' in runner
     assert '--mount "type=bind,src=$HOST_VM_LAB_DIR,dst=$VM_STATE_DIR"' in runner
     assert 'docker exec -i --user "$RUNNER_OWNER"' in runner
@@ -154,15 +184,22 @@ def test_vm_shell_entrypoints_parse(path):
 
 
 def _layout_copy(tmp_path):
-    """Copy the scripts into a tmp repo layout with the tracked placeholder
-    folders, so wrapper tests never touch this checkout's vm-lab/downloads."""
+    """Copy the scripts, the resolver and the repo path config into a tmp repo
+    layout with the placeholder folders (plain mode: wrapper tests are run with
+    ``_plain_env``, no CoW area), so they never touch this checkout's real
+    vm-lab/downloads folders."""
     import shutil
 
     repo = (tmp_path / "repo").resolve()
     project = repo / "scripts" / "debian-install-v2"
-    shutil.copytree(TESTING, project / "testing", ignore=shutil.ignore_patterns("__pycache__"))
-    (project / "artifacts" / "vm-lab").mkdir(parents=True)
-    (repo / "downloads").mkdir()
+    ignore = shutil.ignore_patterns("__pycache__")
+    shutil.copytree(TESTING, project / "testing", ignore=ignore)
+    (repo / "libraries" / "cowtree").mkdir(parents=True)
+    shutil.copy2(COWTREE / "repo-path", repo / "libraries" / "cowtree" / "repo-path")
+    shutil.copytree(COWTREE / "src", repo / "libraries" / "cowtree" / "src", ignore=ignore)
+    shutil.copy2(REPO_ROOT / _config_name(), repo / _config_name())
+    (project / "vm-lab").mkdir()
+    (repo / "downloads" / "vm-images").mkdir(parents=True)
     return repo, project, project / "testing" / "vm"
 
 
@@ -219,7 +256,7 @@ esac
         .replace("MOUNT_COMMAND", mount_command)
     )
     fake_docker.chmod(0o755)
-    env = os.environ.copy()
+    env = _plain_env()
     env.update(
         PATH=f"{tmp_path}:{env['PATH']}",
         FAKE_DOCKER_LOG=str(fake_log),
@@ -243,10 +280,73 @@ esac
     expected_project = str(physical)
     assert f"type=bind,src={expected_testing},dst=/work,readonly" in calls
     assert f"type=bind,src={expected_project},dst=/source,readonly" in calls
-    # vm-lab and downloads follow the same mapping, by fixed depth.
-    assert f"type=bind,src={physical / 'artifacts' / 'vm-lab'},dst=/vm-lab" in calls
-    assert f"type=bind,src={tmp_path / 'physical' / 'downloads'},dst=/downloads" in calls
-    assert "/main-vm-images" not in calls
+    # The resolved vm-lab and vm-images folders (plain mode, inside the checkout) follow the same mapping.
+    assert f"type=bind,src={physical / 'vm-lab'},dst=/vm-lab" in calls
+    assert f"type=bind,src={tmp_path / 'physical' / 'downloads' / 'vm-images'},dst=/downloads" in calls
+    assert "/main-vm-images" not in calls and "artifacts/vm-lab" not in calls
+
+
+def test_vm_wrapper_maps_a_cow_resolved_folder_through_the_docker_mount_table(tmp_path):
+    """A CoW-resolved folder lies outside the checkout: it must be translated through the cockpit's mount table.
+
+    The plain ``vm-lab`` folder is a symlink to a CoW-looking path below a separate area (what the resolver returns on a
+    CoW host is such a path), and the fake cockpit's mount table maps that area to a different host source.
+    """
+    repo, project, vm = _layout_copy(tmp_path)
+    cow_area = (tmp_path / "cow-area").resolve()
+    cow_vm_lab = cow_area / "vbpub" / "scripts" / "debian-install-v2" / "vm-lab"
+    cow_vm_lab.mkdir(parents=True)
+    (project / "vm-lab").rmdir()
+    (project / "vm-lab").symlink_to(cow_vm_lab, target_is_directory=True)
+    physical = tmp_path / "physical" / "scripts" / "debian-install-v2"
+    (physical / "testing").mkdir(parents=True)
+    host_cow = tmp_path / "host-cow-area"
+    fake_log = tmp_path / "docker.log"
+    fake_docker = tmp_path / "docker"
+    mount_command = (
+        f"printf '{project / 'testing'}\\t{physical / 'testing'}\\n{cow_area}\\t{host_cow}\\n'"
+    )
+    fake_docker.write_text(
+        """#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+case "${1:-}" in
+  ps) case " $* " in *' -q '*) printf '%s\\n' physical-id ;; esac ;;
+  inspect)
+    case "$*" in
+      *Config.Hostname*) printf '%s\\n' "$FAKE_HOSTNAME" ;;
+      *HostConfig.CgroupParent*) printf '%s\\n' dev-interactive.slice ;;
+      *Mounts*) MOUNT_COMMAND ;;
+      *) printf '%s\\n' image-id ;;
+    esac ;;
+  image) exit 1 ;;
+  buildx) exit 0 ;;
+  run) case " $* " in *' -d '*) printf '%s\\n' runner-id ;; esac ;;
+  *) : ;;
+esac
+""".replace("MOUNT_COMMAND", mount_command)
+    )
+    fake_docker.chmod(0o755)
+    env = _plain_env()
+    env.update(
+        PATH=f"{tmp_path}:{env['PATH']}",
+        FAKE_DOCKER_LOG=str(fake_log),
+        FAKE_HOSTNAME=Path("/etc/hostname").read_text().strip(),
+        CGROUP_PARENT_DEV_GATES="dev-gates.slice",
+        CGROUP_PARENT_DEV_INTERACTIVE="dev-interactive.slice",
+        BUILDX_BUILDER="fake-builder",
+    )
+    result = subprocess.run(
+        [str(vm / "run-vm-harness.sh"), "--daemon"], env=env, capture_output=True, text=True, check=False,
+    )
+    if not _IN_COCKPIT:
+        # Outside a cockpit the path is already the daemon's: it is bound as resolved, no table involved.
+        assert result.returncode == 0, result.stderr
+        assert f"type=bind,src={cow_vm_lab},dst=/vm-lab" in fake_log.read_text()
+        return
+    assert result.returncode == 0, result.stderr + "\nDocker calls:\n" + fake_log.read_text()
+    calls = fake_log.read_text()
+    assert f"type=bind,src={host_cow / 'vbpub' / 'scripts' / 'debian-install-v2' / 'vm-lab'},dst=/vm-lab" in calls
 
 
 def test_vm_wrapper_maps_an_explicit_project_source_to_the_physical_mount(tmp_path):
@@ -288,7 +388,7 @@ esac
 """.replace("MOUNT_COMMAND", mount_command)
     )
     fake_docker.chmod(0o755)
-    env = os.environ.copy()
+    env = _plain_env()
     env.update(
         PATH=f"{tmp_path}:{env['PATH']}",
         FAKE_DOCKER_LOG=str(fake_log),
@@ -564,7 +664,7 @@ esac
 def _layout_env(tmp_path, **extra):
     (tmp_path / "docker").write_text(_LAYOUT_FAKE_DOCKER)
     (tmp_path / "docker").chmod(0o755)
-    env = os.environ.copy()
+    env = _plain_env()
     env.update(
         PATH=f"{tmp_path}:{env['PATH']}",
         FAKE_DOCKER_LOG=str(tmp_path / "docker.log"),
@@ -594,11 +694,13 @@ def test_vm_wrapper_runs_vmctl_as_the_vm_lab_owner_never_root(tmp_path):
     calls = (tmp_path / "docker.log").read_text()
     owner = f"{os.getuid()}:{os.getgid()}"
     assert f"--label mdt.vm.owner={owner}" in calls
-    assert "--label mdt.vm.layout=vm-lab-3" in calls
+    assert "--label mdt.vm.layout=vm-lab-4" in calls
     assert f"exec -i --user {owner} " in calls
     assert "./vmctl --state-dir /vm-lab --downloads-dir /downloads prepare-base case-b" in calls
-    assert f"src={_host(tmp_path, project / 'artifacts/vm-lab')},dst=/vm-lab" in calls
-    assert f"src={_host(tmp_path, repo / 'downloads')},dst=/downloads" in calls
+    # Plain mode: the resolver's answers are <project>/vm-lab and <repo>/downloads/vm-images; the in-runner
+    # mount points stay /vm-lab and /downloads.
+    assert f"src={_host(tmp_path, project / 'vm-lab')},dst=/vm-lab" in calls
+    assert f"src={_host(tmp_path, repo / 'downloads' / 'vm-images')},dst=/downloads" in calls
     import hashlib
     default_fingerprint = hashlib.sha256(f"{project / 'testing'}\0".encode()).hexdigest()[:12]
     assert f"debian-install-vm:{default_fingerprint}" in calls
@@ -611,8 +713,10 @@ def test_vm_wrapper_accepts_mdt_vm_project_dir(tmp_path):
     consumer = repo / "scripts" / "mounttrace"
     cow_state = repo / "cow-state" / "mounttrace"
     cow_state.mkdir(parents=True)
-    (consumer / "artifacts").mkdir(parents=True)
-    (consumer / "artifacts" / "vm-lab").symlink_to(cow_state, target_is_directory=True)
+    # The resolver is asked for the consumer's own project (scripts/mounttrace): its plain vm-lab folder, here a
+    # symlink to a physical target, which is what gets bound (translated like every other path).
+    consumer.mkdir(parents=True)
+    (consumer / "vm-lab").symlink_to(cow_state, target_is_directory=True)
     env = _layout_env(tmp_path, MDT_VM_PROJECT_DIR=str(consumer))
     result = subprocess.run(
         [str(vm / "run-vm-harness.sh"), "prepare-base", "case-b"],
@@ -669,25 +773,42 @@ def test_vm_wrapper_rejects_invalid_mdt_vm_project_dir_shapes(tmp_path, relative
 
 def test_vm_wrapper_refuses_a_checkout_missing_its_placeholder_folders(tmp_path):
     repo, project, vm = _layout_copy(tmp_path)
-    (repo / "downloads").rmdir()
+    (repo / "downloads" / "vm-images").rmdir()
     result = subprocess.run(
         [str(vm / "run-vm-harness.sh"), "--daemon"],
         env=_layout_env(tmp_path), capture_output=True, text=True, check=False,
     )
     assert result.returncode != 0
-    assert "tracked placeholder" in result.stderr
-    assert not (repo / "downloads").exists()
+    # The remediation is the truth: no committed vm-images placeholder exists yet (RP-06), so it says mkdir -p.
+    assert f"mkdir -p {repo / 'downloads' / 'vm-images'}" in result.stderr and "--provision" in result.stderr
+    assert "restore" not in result.stderr
+    assert not (repo / "downloads" / "vm-images").exists()
 
     missing_lab = tmp_path / "missing-lab"
     _repo2, project2, vm2 = _layout_copy(missing_lab)
-    (project2 / "artifacts" / "vm-lab").rmdir()
+    (project2 / "vm-lab").rmdir()
     result = subprocess.run(
         [str(vm2 / "run-vm-harness.sh"), "prepare-base", "case-b"],
         env=_layout_env(missing_lab), capture_output=True, text=True, check=False,
     )
     assert result.returncode != 0
-    assert "owning project's vm-lab setup to create its CoW symlink" in result.stderr
-    assert not (project2 / "artifacts" / "vm-lab").exists()
+    assert f"mkdir -p {project2 / 'vm-lab'}" in result.stderr and "--provision" in result.stderr
+    assert not (project2 / "vm-lab").exists()
+
+
+def test_vm_wrapper_refuses_a_checkout_without_the_repo_path_config(tmp_path):
+    """No config, no guess: ONE line that carries the resolver's refusal (names the missing file) and the wrapper's context."""
+    repo, project, vm = _layout_copy(tmp_path)
+    (repo / _config_name()).unlink()
+    result = subprocess.run(
+        [str(vm / "run-vm-harness.sh"), "--daemon"],
+        env=_layout_env(tmp_path), capture_output=True, text=True, check=False,
+    )
+    assert result.returncode != 0
+    assert _config_name() in result.stderr
+    assert "cannot resolve 'vm-lab' from the repo path config" in result.stderr
+    assert len(result.stderr.strip().splitlines()) == 1, result.stderr
+    assert "run -d" not in (tmp_path / "docker.log").read_text()
 
 
 def _first_runner(tmp_path, vm):
@@ -707,11 +828,11 @@ def _first_runner(tmp_path, vm):
 def _reuse_env(tmp_path, layout, name, **overrides):
     import hashlib
     repo, project, vm = layout
-    vmlab, dl = project / "artifacts" / "vm-lab", repo / "downloads"
+    vmlab, dl = project / "vm-lab", repo / "downloads" / "vm-images"
     ids = {k: f"{os.stat(p).st_dev}:{os.stat(p).st_ino}" for k, p in (("vm", vmlab), ("dl", dl))}
     values = dict(
         FAKE_RUNNING=name,
-        FAKE_LAYOUT="vm-lab-3",
+        FAKE_LAYOUT="vm-lab-4",
         FAKE_OWNER=f"{os.getuid()}:{os.getgid()}",
         FAKE_VMLAB_SRC=_host(tmp_path, vmlab),
         FAKE_DL_SRC=_host(tmp_path, dl),
@@ -767,20 +888,20 @@ def _stub_download_script(testing_dir, tmp_path):
     stub.chmod(0o755)
 
 
-def test_vmctl_derives_vm_lab_and_downloads_by_fixed_depth_and_stages_bases(tmp_path):
+def test_vmctl_takes_vm_lab_and_images_from_the_resolver_and_stages_bases(tmp_path):
     repo, project, vm = _layout_copy(tmp_path)
     _stub_download_script(project / "testing", tmp_path)
     arg_log = tmp_path / "arg.log"
-    env = os.environ.copy()
+    env = _plain_env()
     env.update(STUB_ARG_LOG=str(arg_log), MDT_VM_STATE_DIR="/ignored", MDT_DOWNLOADS_DIR="/ignored")
     result = subprocess.run(
         [str(vm / "vmctl"), "prepare-base", "case-b"],
         env=env, capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0, result.stderr
-    # Defaults: this checkout's <repo>/downloads and <project>/artifacts/vm-lab.
-    assert arg_log.read_text().strip() == str(repo / "downloads")
-    base = project / "artifacts/vm-lab/images/case-b-base.qcow2"
+    # Plain-mode defaults: the resolved `vm-images` folder of this checkout and its <project>/vm-lab.
+    assert arg_log.read_text().strip() == str(repo / "downloads" / "vm-images")
+    base = project / "vm-lab/images/case-b-base.qcow2"
     assert base.read_bytes() == b"cloud image"
     assert not Path("/ignored").exists()
 
@@ -810,7 +931,72 @@ def test_vmctl_derives_vm_lab_and_downloads_by_fixed_depth_and_stages_bases(tmp_
     assert missing.returncode != 0 and "no base image" in missing.stderr
 
 
-def test_download_script_takes_a_downloads_dir_argument_and_never_creates_it(tmp_path):
+def test_vmctl_explicit_options_win_and_a_missing_config_is_a_clear_refusal(tmp_path):
+    repo, project, vm = _layout_copy(tmp_path)
+    _stub_download_script(project / "testing", tmp_path)
+    (repo / _config_name()).unlink()
+    arg_log = tmp_path / "arg.log"
+    env = _plain_env()
+    env.update(STUB_ARG_LOG=str(arg_log))
+    # Without options the defaults come from the resolver, which has no config here: one clear refusal, nothing staged.
+    result = subprocess.run(
+        [str(vm / "vmctl"), "prepare-base", "case-b"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode != 0
+    assert _config_name() in result.stderr
+    assert "cannot resolve 'vm-lab' from the repo path config" in result.stderr
+    assert len(result.stderr.strip().splitlines()) == 1, result.stderr
+    assert not arg_log.exists() and not (project / "vm-lab" / "images").exists()
+    # Only the missing option is resolved: --state-dir given, the image folder default still refuses.
+    state, images = tmp_path / "state", tmp_path / "images"
+    images.mkdir()
+    half = subprocess.run(
+        [str(vm / "vmctl"), "--state-dir", str(state), "prepare-base", "case-b"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert half.returncode != 0 and "cannot resolve 'vm-images'" in half.stderr
+    assert len(half.stderr.strip().splitlines()) == 1, half.stderr
+    assert not arg_log.exists()
+    # Both given (what the in-runner wrapper passes): the resolver is not asked at all.
+    both = subprocess.run(
+        [str(vm / "vmctl"), "--state-dir", str(state), "--downloads-dir", str(images), "prepare-base", "case-b"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert both.returncode == 0, both.stderr
+    assert arg_log.read_text().strip() == str(images)
+    assert (state / "images" / "case-b-base.qcow2").read_bytes() == b"cloud image"
+
+
+def test_download_script_default_is_the_resolved_vm_images_folder_and_an_argument_wins(tmp_path):
+    repo, project, vm = _layout_copy(tmp_path)
+    script = project / "testing" / "download-base-image.sh"
+    env = {**_plain_env(), "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    # A fake wget stops the run right after the default folder is chosen and locked: it records where it was asked to write.
+    (tmp_path / "wget").write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$WGET_LOG"\nexit 1\n')
+    (tmp_path / "wget").chmod(0o755)
+    env["WGET_LOG"] = str(tmp_path / "wget.log")
+    result = subprocess.run([str(script)], capture_output=True, text=True, check=False, env=env)
+    assert result.returncode != 0
+    assert f"-O {repo / 'downloads' / 'vm-images'}/SHA512SUMS.new" in (tmp_path / "wget.log").read_text()
+    assert (repo / "downloads" / "vm-images" / ".download.lock").exists()
+    # An explicit argument wins over the resolver.
+    other = tmp_path / "other-images"
+    other.mkdir()
+    (tmp_path / "wget.log").unlink()
+    subprocess.run([str(script), str(other)], capture_output=True, text=True, check=False, env=env)
+    assert f"-O {other}/SHA512SUMS.new" in (tmp_path / "wget.log").read_text()
+    # No repo path config: a clear refusal naming the config, no fetch.
+    (tmp_path / "wget.log").unlink()
+    (repo / _config_name()).unlink()
+    refused = subprocess.run([str(script)], capture_output=True, text=True, check=False, env=env)
+    assert refused.returncode != 0
+    assert _config_name() in refused.stderr and "cannot resolve the vm-images folder" in refused.stderr
+    assert len(refused.stderr.strip().splitlines()) == 1, refused.stderr
+    assert not (tmp_path / "wget.log").exists()
+
+
+def test_download_script_takes_an_images_dir_argument_and_never_creates_it(tmp_path):
     missing = tmp_path / "no-such-downloads"
     result = subprocess.run(
         [str(TESTING / "download-base-image.sh"), str(missing)],
@@ -818,7 +1004,8 @@ def test_download_script_takes_a_downloads_dir_argument_and_never_creates_it(tmp
         env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
     )
     assert result.returncode != 0
-    assert "placeholder" in result.stderr
+    assert "never creates it" in result.stderr and "--provision" in result.stderr
+    assert f"mkdir -p {missing}" in result.stderr and "restore" not in result.stderr
     assert not missing.exists()
     script = (TESTING / "download-base-image.sh").read_text()
     assert "flock 9" in script

@@ -5,8 +5,9 @@
 #
 # Uses the shared harness scripts/debian-install-v2/testing/vm (vmctl) with
 # MDT_VM_PROJECT_DIR=scripts/mounttrace, so all VM state lives in THIS
-# project's artifacts/vm-lab (an ignored symlink into the btrfs CoW area:
-# run setup-vm-lab.sh once).
+# project's resolved vm-lab folder (libraries/cowtree/repo-path vm-lab
+# --project scripts/mounttrace: the committed plain placeholder vm-lab/, or its
+# btrfs CoW subvolume on a CoW host, created once with --provision).
 #
 # Saved state / rollback: the first run builds the sealed base image
 # "mounttrace-ready-v2" (Debian 13 cloud image + cloud-init done + btrfs-progs,
@@ -29,7 +30,6 @@ REPO_ROOT="$(cd "$PROJECT_DIR/../.." && pwd -P)"
 HARNESS="$REPO_ROOT/scripts/debian-install-v2/testing/vm/run-vm-harness.sh"
 export MDT_VM_PROJECT_DIR="$PROJECT_DIR"
 export MDT_VM_SOURCE_DIR="$REPO_ROOT"
-VM_LAB="$PROJECT_DIR/artifacts/vm-lab"
 BASE_CASE=mounttrace-ready-v2
 GUEST_DIR=/home/tester/mounttrace
 SOURCE_PROJECT=scripts/mounttrace
@@ -75,7 +75,12 @@ if [ "$CHECK_INPUTS" = 1 ]; then
 fi
 
 [ -x "$HARNESS" ] || die "shared harness missing: $HARNESS"
-[ -d "$VM_LAB" ] || die "$VM_LAB missing; run $HERE/setup-vm-lab.sh first"
+# Asked of the resolver only here, after the input check above: that check needs no resolver, python or CoW area.
+if ! VM_LAB="$("$REPO_ROOT/libraries/cowtree/repo-path" vm-lab --repo-root "$REPO_ROOT" --project "${PROJECT_DIR#"$REPO_ROOT"/}" 2>"${TMPDIR:-/tmp}/mt-repo-path.$$")"; then
+    die "cannot resolve the vm-lab folder of ${PROJECT_DIR#"$REPO_ROOT"/} from the repo path config: $(tr '\n' ' ' <"${TMPDIR:-/tmp}/mt-repo-path.$$"; rm -f "${TMPDIR:-/tmp}/mt-repo-path.$$")"
+fi
+rm -f "${TMPDIR:-/tmp}/mt-repo-path.$$"
+[ -d "$VM_LAB" ] || die "$VM_LAB missing; restore the committed vm-lab/ placeholder, or on a CoW host run 'libraries/cowtree/repo-path vm-lab --project scripts/mounttrace --provision'"
 
 # One lane per checkout: the runner's forwarded SSH port is one resource.
 LOCK_PATH="/tmp/mdt-mounttrace-vm-$(printf '%s' "$PROJECT_DIR" | sha256sum | cut -c1-12).lock"

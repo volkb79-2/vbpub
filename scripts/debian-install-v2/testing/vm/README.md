@@ -134,12 +134,12 @@ lane.
 For NoCloud/ISO acceptance tests, `start --seed-iso PATH` attaches the supplied
 seed ISO instead of generating the harness's normal `tester` seed. The path is
 resolved inside the runner container; a file saved in the project's
-`artifacts/vm-lab/` folder is visible there as `/vm-lab/<name>.iso`. The supplied
+`vm-lab/` folder is visible there as `/vm-lab/<name>.iso`. The supplied
 user-data must provision the harness SSH key for a `tester` account with
 passwordless sudo, because `wait` and `ssh` connect as `tester`. `vmctl` copies
 the source ISO into the disposable run directory with mode `0600`; it does not
 modify the source artifact. Keep credential-bearing seed ISOs in the ignored
-`artifacts/vm-lab/` folder, not in tracked source.
+`vm-lab/` folder, not in tracked source.
 
 `start --disk-gb N` grows the new CoW overlay's virtual capacity to `N` GiB
 before boot. It never resizes the base image and does not request a shrink;
@@ -187,37 +187,55 @@ caching that would require rewriting debian-install-v2's own generated
 `docker.sources` to use apt-cacher-ng's special `/HTTPS/` URL convention,
 which isn't worth coupling the real installer to a test-harness detail for
 a comparatively small, infrequently-hit package set. The cache lives inside the runner
-container's own filesystem (not in `artifacts/vm-lab/`, not bind-mounted), so it persists
+container's own filesystem (not in `vm-lab/`, not bind-mounted), so it persists
 across VM resets within one runner lifetime but is lost on
 `run-vm-harness.sh --stop-daemon`.
 
 ### Where files live
 
-All VM files live in `<project>/artifacts/vm-lab/` (gitignored), **per checkout
-and per worktree**: staged base images (`images/`), each run's qcow2 overlay,
-cloud-init seed, QMP socket, pidfile and serial log (`runs/<name>/`), and the
-test-only SSH key (`ssh/`, generated under `flock`). The path is fixed: the
-wrapper and `vmctl` derive `<project>/artifacts/vm-lab` by fixed depth from the
-script location, so a worktree uses its own. Using `artifacts/vm-lab` and
-`downloads/` is a repo decision; the one selector is **`MDT_VM_PROJECT_DIR`**:
-another project of the same checkout (`<repo>/scripts/<name>`, e.g.
-`scripts/mounttrace`) reuses this harness with **its own** `artifacts/vm-lab`
-and, unless `MDT_VM_SOURCE_DIR` says otherwise, its own directory at `/source`.
-Its runner gets its own name (the project is part of the fingerprint); unset,
-nothing changes. A `vm-lab` that is an ignored symlink into the CoW area
-(mdt-cockpit `docs/BTRFS-COW.md` 6.2) is bound by its physical target. `vmctl`
-accepts the global options `--state-dir DIR` and `--downloads-dir DIR` before the
-subcommand (the wrapper passes its mount points `/vm-lab` and `/downloads` this
-way).
+All VM files live in the project's `vm-lab` folder (`<project>/vm-lab/` in plain
+mode, gitignored; **plain mode: per checkout and per worktree; CoW mode: one
+subvolume per repo and project, shared by the main checkout and every worktree**,
+so run names must not collide across worktrees and the state is not cleaned with
+a worktree): staged base images
+(`images/`), each run's qcow2 overlay, cloud-init seed, QMP socket, pidfile and
+serial log (`runs/<name>/`), and the test-only SSH key (`ssh/`, generated under
+`flock`). The folder is never written down in the scripts: the wrapper and `vmctl`
+ask the repo path resolver (`libraries/cowtree/repo-path vm-lab --project
+<project>`; the repo root is derived by fixed depth from the script location, so a
+worktree uses its own plain folders). The answer is the plain folder or, on a CoW
+host, the compressed btrfs subvolume under `$MDT_COW_ROOT/<repo>/...`; the scripts
+do not care which (AGENTS.md "Directory conventions and VM files"). The one
+selector is **`MDT_VM_PROJECT_DIR`**: another project of the same checkout
+(`<repo>/scripts/<name>`, e.g. `scripts/mounttrace`) reuses this harness with
+**its own** `vm-lab` folder (resolved for that project) and, unless
+`MDT_VM_SOURCE_DIR` says otherwise, its own directory at `/source`. Its runner
+gets its own name (the project is part of the fingerprint); unset, nothing
+changes. A resolved folder inside the checkout is bound at its mapped host path;
+any other (a CoW subvolume, a symlink's physical target) is translated through
+the cockpit's Docker mount table like every other path (the CoW path is the same
+on host and in the devcontainer). `vmctl` accepts the global options `--state-dir
+DIR` and `--downloads-dir DIR` before the subcommand (the wrapper passes its
+mount points `/vm-lab` and `/downloads` this way); an explicit option always wins,
+and without it `vmctl` asks the resolver (`vm-lab` for its own project, `vm-images`
+for the download folder).
 
-Big shared downloads (the cloud image) go to `<repo root>/downloads/` of the
-checkout that runs (also fixed depth); the download script's optional argument
-is the same folder. Concurrent downloads are serialized with `flock`.
+Big shared downloads (the cloud image, a base image) go to the repo's `vm-images`
+folder (`downloads/vm-images/` in plain mode), asked of the resolver by the
+wrapper and by `download-base-image.sh`. The wrapper binds that one folder at the
+in-runner `/downloads`, which is what `vmctl --downloads-dir` means: the folder
+base images are downloaded into (ISOs belong in the `iso` folder and are not used
+by this harness). The download script's optional argument is the same folder and
+wins over the resolver. Concurrent downloads are serialized with `flock`.
 
-Both top folders are **tracked placeholders** (a `README.md` and a `.gitignore`
-that ignores everything else), so every checkout, including a fresh clone,
-contains them; the scripts never create them (they do `mkdir -p` for `images/`,
-`runs/`, `ssh/`) and the wrapper refuses with a clear message if one is missing.
+`vm-lab/` is a **committed placeholder** in plain mode (a `README.md` and a
+`.gitignore` that ignore everything else), so every checkout, including a fresh
+clone, contains it; `downloads/vm-images/` is a plain folder that must exist (the
+`downloads/` placeholder does not yet carry its subfolders: `mkdir -p
+downloads/vm-images` until RP-06 adds the committed placeholders). On a CoW host `libraries/cowtree/repo-path NAME --provision`
+creates the subvolume. The scripts never create these folders (they do `mkdir -p`
+for `images/`, `runs/`, `ssh/`) and the wrapper refuses with a clear message if
+one is missing, or if the repo path config or the resolver is missing.
 Plan (owned by `ciu worktree` and `libraries/cowtree`, not built here): a new
 worktree gets a CoW clone of the main checkout's declared gitignored paths, so it
 already contains main's downloads and staged bases. Without CoW a worktree starts
@@ -232,7 +250,7 @@ Ownership: `run-vm-harness.sh` bind-mounts the folders as `/vm-lab` and
 of vm-lab>`, so nothing written there is root-owned and `git worktree remove` /
 `rm -rf` keep working. The runner's entry command (as root) only creates the
 passwd entry for that uid and starts `apt-cacher-ng`. A root-owned vm-lab, or
-vm-lab and downloads owned by different users, is refused.
+vm-lab and vm-images owned by different users, is refused.
 
 Runner reuse: a running runner is reused only if its layout label
 (`mdt.vm.layout`), owner label, and `/vm-lab` and `/downloads` mount sources
@@ -240,24 +258,28 @@ match, and the folders' device:inode match inside and outside the runner (so a
 folder deleted, replaced or mounted over after the runner started is detected).
 Otherwise the wrapper refuses and says to run `--stop-daemon`.
 
-CoW: a btrfs subvolume mounted over `<project>/artifacts/vm-lab` is invisible to
-these scripts. Provisioning it (creating the mount point as the checkout owner,
-refusing a non-empty plain directory unless migrating, re-attaching it to a
-running devcontainer, reflink staging from a same-filesystem `downloads/`) is a
-separate host-side helper owned by mdt-cockpit, not built here. Rules the helper
-and operators must keep: never mount over a vm-lab with live runs or content
-(the mount hides it; a runner started earlier keeps writing into the hidden
-directory), stop the runner after (un)mounting, and never `rm -rf`/`git clean -x`
-a worktree whose vm-lab is mounted. The reuse check above catches a runner that
-predates a mount. Staging uses `cp --reflink=auto`, and `prepare-base` prints an
-INFO line when vm-lab is not on btrfs (a full copy).
+Moving to the resolver orphans state under the old locations: sealed bases that
+mounttrace built under `artifacts/vm-lab` or `$MDT_COW_ROOT/<repo>/vm-lab/<checkout>/mounttrace`
+are not found any more and are rebuilt once by the next lane run.
+
+CoW: where the resolver answers with a btrfs subvolume (`MDT_COW_ROOT` set and the
+folder provisioned with `repo-path NAME --provision`), the wrapper binds that path;
+the scripts do not know the difference. Rules operators must keep: never switch a
+vm-lab with live runs or content between its plain folder and the subvolume (the
+other one is hidden from the resolver; a runner started earlier keeps writing into
+the old folder), stop the runner after the switch, and never `rm -rf`/`git clean -x`
+a worktree whose plain vm-lab holds VM disks. The reuse check above catches a
+runner whose bound folder differs from the resolver's current answer. Staging uses
+`cp --reflink=auto` (instant when `vm-images` and `vm-lab` share a btrfs, as they
+do in CoW mode), and `prepare-base` prints an INFO line when vm-lab is not on
+btrfs (a full copy).
 
 ## Base images
 
 - **`case-b`** (implemented): the plain, unmodified Debian genericcloud
   qcow2 — root fills the disk, exactly Case B's real starting shape on a
   freshly-imaged host. `prepare-base case-b` calls the sibling
-  `../download-base-image.sh` and stages a copy in `artifacts/vm-lab/images/`.
+  `../download-base-image.sh` and stages a copy in `<vm-lab folder>/images/`.
 - **`case-a`** (not yet implemented — `prepare-base case-a` says so and
   exits non-zero): needs a small root with real free trailing space,
   which the stock cloud image doesn't have (cloud-init's `growpart` grows

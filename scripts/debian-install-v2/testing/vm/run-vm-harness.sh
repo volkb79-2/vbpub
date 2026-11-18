@@ -26,19 +26,22 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 TESTING_DIR="$(cd "$HERE/.." && pwd -P)"
 # Another project of this checkout (<repo>/scripts/<name>) may reuse this
-# harness: MDT_VM_PROJECT_DIR selects whose artifacts/vm-lab holds the VM
+# harness: MDT_VM_PROJECT_DIR selects whose vm-lab holds the VM
 # state and, unless MDT_VM_SOURCE_DIR says otherwise, what is mounted at
 # /source. Unset = debian-install-v2 itself (unchanged behaviour and names).
 STATE_PROJECT_NAMESPACE_DIR="${MDT_VM_PROJECT_DIR:-}"
 SOURCE_NAMESPACE_DIR="${MDT_VM_SOURCE_DIR:-}"
-# In-runner mount points. The host side is derived below, by fixed depth from
-# this script: <project>/artifacts/vm-lab and <repo root>/downloads of the
-# checkout that runs (a worktree uses its own).
+# In-runner mount points (unchanged names). The host side is asked of the
+# resolver (libraries/cowtree/repo-path, repo root derived by fixed depth from
+# this script, so a worktree uses its own plain folders): the `vm-lab` folder of
+# the selected project is bound at /vm-lab and the `vm-images` folder at
+# /downloads, where vmctl downloads and stages base images.
 VM_STATE_DIR="/vm-lab"
 VM_DOWNLOADS_DIR="/downloads"
 # Layout generation: bump when the runner's mounts/env/user contract changes,
 # so a runner started by older code is refused instead of silently reused.
-RUNNER_LAYOUT="vm-lab-3"
+# 4: the host sources come from the repo path config (vm-lab/ and vm-images).
+RUNNER_LAYOUT="vm-lab-4"
 RUNNER_HOME="/tmp/vmlab-home"
 DOCKERFILE_SHA="$(sha256sum "$HERE/Dockerfile" | awk '{print $1}')"
 
@@ -60,9 +63,9 @@ die() {
 # Bind-mount the PARENT testing/ directory read-only, not just vm/: vmctl's
 # prepare-base reaches one level up for ../download-base-image.sh, which
 # only exists at that path relative to vm/. VM state and downloads are
-# separate read-write binds of the selected project's artifacts/vm-lab
-# (tracked placeholder or setup-created CoW symlink) and the repo downloads/
-# placeholder; the (read-only) project and testing mounts are never written.
+# separate read-write binds of the selected project's resolved vm-lab folder
+# (committed placeholder, or its CoW subvolume) and the resolved vm-images
+# folder; the (read-only) project and testing mounts are never written.
 # Also mount the project directory read-only at /source. This gives vmctl a
 # stable namespace path for copying debian_install_v2 into the guest; path
 # traversal through /work/.. cannot escape a Docker bind mount.
@@ -71,7 +74,7 @@ HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
 HOST_SOURCE_DIR="$HOST_PROJECT_DIR"
 # Namespace-local project and repo root, derived from this script's location by
 # fixed depth (<repo>/scripts/debian-install-v2/testing/vm), physical paths.
-# The selected project's vm-lab and the repo downloads placeholder must be
+# The selected project's vm-lab and the repo's vm-images folder must be
 # prepared by their owning workflows; Docker must never create either bind source.
 PROJECT_DIR="$(cd "$TESTING_DIR/.." && pwd -P)"
 REPO_ROOT="$(cd "$TESTING_DIR/../../.." && pwd -P)"
@@ -192,27 +195,55 @@ if [ "$inside_container" = "0" ] && [ -n "$SOURCE_NAMESPACE_DIR" ]; then
     HOST_SOURCE_DIR="$SOURCE_NAMESPACE_DIR"
 fi
 
-# --- state / downloads: fixed-depth paths of THIS checkout, then host paths.
-# downloads is a tracked placeholder; the selected project's vm-lab is either
-# its tracked placeholder or its setup-created CoW symlink. Prepare both
-# through their owning workflows; this harness never creates bind sources.
-VM_LAB_NS="$STATE_PROJECT_DIR/artifacts/vm-lab"
-HOST_VM_LAB_DIR="$HOST_PROJECT_DIR/artifacts/vm-lab"
-# Another project's vm-lab, or an ignored symlink into the CoW area
-# (mdt-cockpit BTRFS-COW.md 6.2; this also applies to debian-install-v2's own
-# vm-lab once it is a symlink, where binding the link path through the mount
-# table translation would be wrong): bind its physical target, translated like
-# every other path. The device:inode reuse check then compares the target too.
-# Resolved lazily in ensure_runner, so --stop-daemon works without a vm-lab.
-resolve_vm_lab() {
-    if [ "$STATE_PROJECT_DIR" != "$PROJECT_DIR" ] || [ -L "$VM_LAB_NS" ]; then
-        [ -d "$VM_LAB_NS" ] || die "$VM_LAB_NS is missing or a dangling symlink (run the project's vm-lab setup)"
-        VM_LAB_NS="$(cd "$VM_LAB_NS" && pwd -P)"
-        HOST_VM_LAB_DIR="$(host_path_for "$VM_LAB_NS" "vm-lab")" || exit 1
+# --- state / base images: the resolver's folders, then host paths.
+# The resolver (libraries/cowtree/repo-path, from this checkout) answers with the
+# plain folder of this checkout or, on a CoW host, the btrfs subvolume under
+# $MDT_COW_ROOT/<repo>/...; both are prepared by their owning workflows (the
+# committed placeholders, or `repo-path NAME --provision`); this harness never
+# creates bind sources. A folder inside this checkout maps to the host through
+# the host repo root; any other (a CoW subvolume, a symlink's physical target)
+# is translated through the cockpit's Docker mount table like every other path
+# (same-path binds make that the identity). The device:inode reuse check then
+# compares the resolved folder too. Resolved lazily in ensure_runner, so
+# --stop-daemon works without a config.
+VM_LAB_NS=""
+HOST_VM_LAB_DIR=""
+DOWNLOADS_NS=""
+HOST_DOWNLOADS_DIR=""
+resolve_shared_path() {  # resolve_shared_path <name> [--project DIR]: the resolver's folder, or die
+    local out err_file
+    err_file="$(mktemp)"
+    if out="$("$REPO_ROOT/libraries/cowtree/repo-path" "$1" --repo-root "$REPO_ROOT" "${@:2}" 2>"$err_file")"; then
+        rm -f "$err_file"
+        printf '%s\n' "$out"
+        return 0
     fi
+    local msg
+    msg="$(tr '\n' ' ' <"$err_file")"
+    rm -f "$err_file"
+    die "cannot resolve '$1' from the repo path config of $REPO_ROOT: ${msg}(the harness takes its VM state and base-image folders only from the resolver)"
 }
-DOWNLOADS_NS="$REPO_ROOT/downloads"
-HOST_DOWNLOADS_DIR="$HOST_REPO_ROOT/downloads"
+host_dir_for() {  # host_dir_for <namespace path> <what>: the Docker daemon's path of a resolved folder
+    local path="$1" what="$2"
+    if [ -d "$path" ]; then
+        path="$(cd "$path" && pwd -P)"
+    fi
+    case "$path" in
+        "$REPO_ROOT"/*) printf '%s\n' "$HOST_REPO_ROOT${path#"$REPO_ROOT"}" ;;
+        *) host_path_for "$path" "$what" ;;
+    esac
+}
+resolve_vm_lab() {
+    local project_rel="${STATE_PROJECT_DIR#"$REPO_ROOT"/}"
+    VM_LAB_NS="$(resolve_shared_path vm-lab --project "$project_rel")" || exit 1
+    DOWNLOADS_NS="$(resolve_shared_path vm-images)" || exit 1
+    [ -d "$VM_LAB_NS" ] || die "$VM_LAB_NS is missing or a dangling symlink: create it with 'mkdir -p $VM_LAB_NS' (the project's committed vm-lab/ placeholder normally provides it), or on a CoW host run 'libraries/cowtree/repo-path vm-lab --project $project_rel --provision'"
+    [ -d "$DOWNLOADS_NS" ] || die "$DOWNLOADS_NS is missing: create it with 'mkdir -p $DOWNLOADS_NS' (committed downloads/iso and downloads/vm-images placeholders come with RP-06), or on a CoW host run 'libraries/cowtree/repo-path vm-images --provision'"
+    VM_LAB_NS="$(cd "$VM_LAB_NS" && pwd -P)"
+    DOWNLOADS_NS="$(cd "$DOWNLOADS_NS" && pwd -P)"
+    HOST_VM_LAB_DIR="$(host_dir_for "$VM_LAB_NS" "vm-lab")" || exit 1
+    HOST_DOWNLOADS_DIR="$(host_dir_for "$DOWNLOADS_NS" "vm-images")" || exit 1
+}
 
 # A fixed runner name would silently reuse whichever worktree first created
 # it. That can make a gate execute another worktree's source. Derive both
@@ -353,22 +384,13 @@ ensure_runner() {
     verify_cgroup_parent
     resolve_vm_lab
 
-    # downloads is a tracked placeholder; the selected project's vm-lab is a
-    # tracked placeholder or a project-created CoW symlink. Never create bind
+    # resolve_vm_lab already refused a missing folder. Never create bind
     # sources here (Docker would make a missing source root-owned). A deleted-
     # and-recreated folder is caught by the inode compare.
-    for folder in "$VM_LAB_NS" "$DOWNLOADS_NS"; do
-        if [ ! -d "$folder" ]; then
-            if [ "$folder" = "$VM_LAB_NS" ]; then
-                die "$folder is missing; restore its tracked placeholder or run the owning project's vm-lab setup to create its CoW symlink"
-            fi
-            die "$folder is missing; restore the repo's tracked placeholder with git checkout"
-        fi
-    done
     RUNNER_OWNER="$(stat -c '%u:%g' "$VM_LAB_NS")"
     downloads_owner="$(stat -c '%u:%g' "$DOWNLOADS_NS")"
     [ "$RUNNER_OWNER" = "$downloads_owner" ] || die \
-        "vm-lab ($VM_LAB_NS) is owned by $RUNNER_OWNER but downloads ($DOWNLOADS_NS) by $downloads_owner; the runner executes as one owner, fix the ownership"
+        "vm-lab ($VM_LAB_NS) is owned by $RUNNER_OWNER but vm-images ($DOWNLOADS_NS) by $downloads_owner; the runner executes as one owner, fix the ownership"
     if [ "${RUNNER_OWNER%%:*}" = "0" ] && [ "$(id -u)" != "0" ]; then
         die "vm-lab $VM_LAB_NS is root-owned; refusing to run the VM tooling as root against the worktree (chown it to $(id -u):$(id -g) first)"
     fi

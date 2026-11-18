@@ -5,29 +5,44 @@
 # (bootloader, initramfs, kernel), not something built from scratch with
 # debootstrap, and it's the same kind of image the real Case B live-test
 # hosts are provisioned from. The image is a shared download: it lives in
-# the repo's gitignored downloads/ folder (<repo root>/downloads, derived by
-# fixed depth from this script; a tracked placeholder keeps the folder in every
-# checkout). The in-runner VM wrapper passes its mount point as the optional
-# argument. Concurrent runs are serialized with flock. A second run of
+# the repo's shared base-image folder (the `vm-images` entry of the repo path
+# config, asked of libraries/cowtree/repo-path: the plain downloads/vm-images
+# folder, or its CoW subvolume on a CoW host; the repo root is derived by fixed
+# depth from this script). The in-runner VM wrapper passes its mount point of
+# that folder as the optional argument (an explicit argument always wins).
+# Concurrent runs are serialized with flock. A second run of
 # testing/vm/vmctl prepare-base doesn't re-download; it only refetches if
 # the file is missing or its checksum doesn't match what's currently
 # published (Debian repoints
 # "latest" at a new build periodically).
 #
-# Usage: testing/download-base-image.sh [downloads-dir]
+# Usage: testing/download-base-image.sh [images-dir]
 # Prints the path to the verified local qcow2 on success.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # HERE is <repo>/scripts/debian-install-v2/testing: fixed depth, no git needed.
-DOWNLOADS_DIR="${1:-$(cd "$HERE/../../.." && pwd -P)/downloads}"
+REPO_ROOT="$(cd "$HERE/../../.." && pwd -P)"
+# The default folder is the resolved `vm-images` path; it is asked only when no
+# argument was given (the in-runner wrapper has no repo checkout to ask).
+if [ -n "${1:-}" ]; then
+    DOWNLOADS_DIR="$1"
+else
+    err_file="$(mktemp)"
+    if ! DOWNLOADS_DIR="$("$REPO_ROOT/libraries/cowtree/repo-path" vm-images --repo-root "$REPO_ROOT" 2>"$err_file")"; then
+        echo "download-base-image: cannot resolve the vm-images folder from the repo path config of $REPO_ROOT: $(tr '\n' ' ' <"$err_file")(pass an images dir argument to override)" >&2
+        rm -f "$err_file"
+        exit 1
+    fi
+    rm -f "$err_file"
+fi
 IMAGE_NAME="debian-13-genericcloud-amd64.qcow2"
 BASE_URL="https://cloud.debian.org/images/cloud/trixie/latest"
 LOCAL_PATH="$DOWNLOADS_DIR/$IMAGE_NAME"
 SUMS_PATH="$DOWNLOADS_DIR/SHA512SUMS"
 
-[ -d "$DOWNLOADS_DIR" ] || { echo "downloads dir $DOWNLOADS_DIR is missing (a checkout contains the tracked downloads/ placeholder)" >&2; exit 1; }
-# One shared downloads folder: serialize fetch/verify/rename across processes.
+[ -d "$DOWNLOADS_DIR" ] || { echo "images dir $DOWNLOADS_DIR is missing (this script never creates it: 'mkdir -p $DOWNLOADS_DIR', committed downloads/iso and downloads/vm-images placeholders come with RP-06; or on a CoW host run 'libraries/cowtree/repo-path vm-images --provision')" >&2; exit 1; }
+# One shared images folder: serialize fetch/verify/rename across processes.
 exec 9>"$DOWNLOADS_DIR/.download.lock"
 flock 9
 

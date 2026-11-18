@@ -4,6 +4,17 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Changed (rp-04, shared paths from the repo path config)
+- The VM test harness (`testing/vm/run-vm-harness.sh`, `vmctl`, `testing/download-base-image.sh`) no longer
+  hardcodes `artifacts/vm-lab` and `downloads/`: the host folders come from the repo path resolver
+  (`libraries/cowtree/repo-path`): the `vm-lab` folder of the selected project (plain `<project>/vm-lab/`,
+  committed placeholder replacing `artifacts/vm-lab/`) is bound at `/vm-lab`, and the `vm-images` folder
+  (plain `downloads/vm-images/`) at `/downloads` where base images are downloaded; the in-runner mount points
+  and `vmctl --state-dir/--downloads-dir` are unchanged and an explicit option or `download-base-image.sh`
+  argument still wins. A CoW-resolved folder outside the checkout is translated through the Docker mount table.
+  Runner layout label `vm-lab-3` -> `vm-lab-4` (a running runner is refused as stale: `--stop-daemon` once).
+  Existing VM state under `artifacts/vm-lab/` and the cloud image under `downloads/` are not moved here.
+
 ### Added (div2-docker-builder-gc)
 - `docker_builder_gc_max_used_gb` (default 50) and `docker_builder_gc_reserved_gb` (default 10)
   config keys, rendered as `builder.gc` (`enabled`, `defaultMaxUsedSpace`, `defaultReservedSpace`)

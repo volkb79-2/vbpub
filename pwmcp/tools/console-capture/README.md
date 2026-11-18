@@ -21,8 +21,9 @@ belongs to pwmcp; QEMU runs in the host background slice after the VM tool's
 admission checks.
 
 ```sh
-VM=pwmcp/artifacts/vm-lab/truenas-console
-BASE=pwmcp/artifacts/vm-lab/truenas-console-base.qcow2
+VM_LAB="$(libraries/cowtree/repo-path vm-lab --project pwmcp)"   # plain: pwmcp/vm-lab, or its CoW subvolume
+VM="$VM_LAB/truenas-console"
+BASE="$VM_LAB/truenas-console-base.qcow2"
 export VM_LAB_QEMU_IMAGE=<image-with-qemu-system-x86_64-and-qemu-img>
 
 # The state directory must be empty on the first start. Replace BASE with your

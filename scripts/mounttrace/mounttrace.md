@@ -670,17 +670,16 @@ scripts/mounttrace/
   mounttrace.md            this guide
   docs/                    design and consumer guides
   tests/                   mounttrace, adapter and reviewed-surface suites
-  testing/vm/setup-vm-lab.sh   once per checkout: replace the empty vm-lab placeholder with its CoW link
   testing/vm/run-vm-tests.sh   the VM lane
-  artifacts/vm-lab -> $MDT_COW_ROOT/<repo>/vm-lab/<checkout>/mounttrace   (setup-created ignored symlink)
+  vm-lab/                      committed placeholder: the plain location of the resolved vm-lab folder
 ```
 
-- **VM state on CoW storage.** A fresh checkout has the tracked placeholder; after setup,
-  `artifacts/vm-lab` is the symlink shown above. `setup-vm-lab.sh` follows mdt-cockpit
-  `docs/BTRFS-COW.md`: §5 (the
-  root comes from `MDT_COW_ROOT`, it must be btrfs, no silent fallback) and §6.2 (the checkout stays
-  on its normal filesystem; its scratch is an ignored symlink into the CoW area). `<checkout>` is
-  `main` or the worktree name, so worktrees never share VM state.
+- **VM state on CoW storage.** A fresh checkout has the tracked placeholder `vm-lab/`. The lane
+  asks the repo path resolver (`libraries/cowtree/repo-path vm-lab --project scripts/mounttrace`)
+  where the folder is: the placeholder, or on a CoW host the btrfs subvolume under
+  `$MDT_COW_ROOT/<repo>/scripts/mounttrace/vm-lab`, created once with `--provision` (AGENTS.md
+  "Directory conventions and VM files"; the root must be btrfs, no silent fallback). The checkout
+  stays on its normal filesystem and every worktree has its own plain folder.
 - **Harness.** The lane drives the shared QEMU harness `scripts/debian-install-v2/testing/vm`
   (`vmctl`, the governed runner container in `$CGROUP_PARENT_DEV_GATES`) with
   `MDT_VM_PROJECT_DIR=scripts/mounttrace`. That gives the lane its own runner and this project's
@@ -695,7 +694,7 @@ scripts/mounttrace/
   and leaves the old `mounttrace-ready-base.qcow2` orphaned in the previous image area.
 
 ```bash
-scripts/mounttrace/testing/vm/setup-vm-lab.sh        # once per checkout
+libraries/cowtree/repo-path vm-lab --project scripts/mounttrace --provision   # once, on a CoW host only
 scripts/mounttrace/testing/vm/run-vm-tests.sh        # first run also seals the base
 scripts/mounttrace/testing/vm/run-vm-tests.sh --keep # then: MDT_VM_PROJECT_DIR=$PWD/scripts/mounttrace \
                                                      #   scripts/debian-install-v2/testing/vm/run-vm-harness.sh ssh <run>
