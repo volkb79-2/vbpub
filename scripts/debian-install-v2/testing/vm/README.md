@@ -194,7 +194,10 @@ across VM resets within one runner lifetime but is lost on
 ### Where files live
 
 All VM files live in the project's `vm-lab` folder (`<project>/vm-lab/` in plain
-mode, gitignored), **per checkout and per worktree**: staged base images
+mode, gitignored; **plain mode: per checkout and per worktree; CoW mode: one
+subvolume per repo and project, shared by the main checkout and every worktree**,
+so run names must not collide across worktrees and the state is not cleaned with
+a worktree): staged base images
 (`images/`), each run's qcow2 overlay, cloud-init seed, QMP socket, pidfile and
 serial log (`runs/<name>/`), and the test-only SSH key (`ssh/`, generated under
 `flock`). The folder is never written down in the scripts: the wrapper and `vmctl`
@@ -228,8 +231,8 @@ wins over the resolver. Concurrent downloads are serialized with `flock`.
 `vm-lab/` is a **committed placeholder** in plain mode (a `README.md` and a
 `.gitignore` that ignore everything else), so every checkout, including a fresh
 clone, contains it; `downloads/vm-images/` is a plain folder that must exist (the
-`downloads/` placeholder does not yet carry its subfolders: create it with `mkdir`
-until it does). On a CoW host `libraries/cowtree/repo-path NAME --provision`
+`downloads/` placeholder does not yet carry its subfolders: `mkdir -p
+downloads/vm-images` until RP-06 adds the committed placeholders). On a CoW host `libraries/cowtree/repo-path NAME --provision`
 creates the subvolume. The scripts never create these folders (they do `mkdir -p`
 for `images/`, `runs/`, `ssh/`) and the wrapper refuses with a clear message if
 one is missing, or if the repo path config or the resolver is missing.
@@ -254,6 +257,10 @@ Runner reuse: a running runner is reused only if its layout label
 match, and the folders' device:inode match inside and outside the runner (so a
 folder deleted, replaced or mounted over after the runner started is detected).
 Otherwise the wrapper refuses and says to run `--stop-daemon`.
+
+Moving to the resolver orphans state under the old locations: sealed bases that
+mounttrace built under `artifacts/vm-lab` or `$MDT_COW_ROOT/<repo>/vm-lab/<checkout>/mounttrace`
+are not found any more and are rebuilt once by the next lane run.
 
 CoW: where the resolver answers with a btrfs subvolume (`MDT_COW_ROOT` set and the
 folder provisioned with `repo-path NAME --provision`), the wrapper binds that path;

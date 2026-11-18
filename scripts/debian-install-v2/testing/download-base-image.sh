@@ -28,17 +28,20 @@ REPO_ROOT="$(cd "$HERE/../../.." && pwd -P)"
 if [ -n "${1:-}" ]; then
     DOWNLOADS_DIR="$1"
 else
-    DOWNLOADS_DIR="$("$REPO_ROOT/libraries/cowtree/repo-path" vm-images --repo-root "$REPO_ROOT")" || {
-        echo "download-base-image: cannot resolve the vm-images folder from the repo path config of $REPO_ROOT (see the message above); pass an images dir argument to override" >&2
+    err_file="$(mktemp)"
+    if ! DOWNLOADS_DIR="$("$REPO_ROOT/libraries/cowtree/repo-path" vm-images --repo-root "$REPO_ROOT" 2>"$err_file")"; then
+        echo "download-base-image: cannot resolve the vm-images folder from the repo path config of $REPO_ROOT: $(tr '\n' ' ' <"$err_file")(pass an images dir argument to override)" >&2
+        rm -f "$err_file"
         exit 1
-    }
+    fi
+    rm -f "$err_file"
 fi
 IMAGE_NAME="debian-13-genericcloud-amd64.qcow2"
 BASE_URL="https://cloud.debian.org/images/cloud/trixie/latest"
 LOCAL_PATH="$DOWNLOADS_DIR/$IMAGE_NAME"
 SUMS_PATH="$DOWNLOADS_DIR/SHA512SUMS"
 
-[ -d "$DOWNLOADS_DIR" ] || { echo "images dir $DOWNLOADS_DIR is missing (this script never creates it: restore the tracked downloads/ placeholder tree, or on a CoW host run 'libraries/cowtree/repo-path vm-images --provision')" >&2; exit 1; }
+[ -d "$DOWNLOADS_DIR" ] || { echo "images dir $DOWNLOADS_DIR is missing (this script never creates it: 'mkdir -p $DOWNLOADS_DIR', committed downloads/iso and downloads/vm-images placeholders come with RP-06; or on a CoW host run 'libraries/cowtree/repo-path vm-images --provision')" >&2; exit 1; }
 # One shared images folder: serialize fetch/verify/rename across processes.
 exec 9>"$DOWNLOADS_DIR/.download.lock"
 flock 9

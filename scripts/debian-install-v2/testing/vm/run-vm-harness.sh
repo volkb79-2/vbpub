@@ -211,8 +211,17 @@ HOST_VM_LAB_DIR=""
 DOWNLOADS_NS=""
 HOST_DOWNLOADS_DIR=""
 resolve_shared_path() {  # resolve_shared_path <name> [--project DIR]: the resolver's folder, or die
-    "$REPO_ROOT/libraries/cowtree/repo-path" "$1" --repo-root "$REPO_ROOT" "${@:2}" || die \
-        "cannot resolve '$1' from the repo path config of $REPO_ROOT (message above); the harness takes its VM state and base-image folders only from the resolver"
+    local out err_file
+    err_file="$(mktemp)"
+    if out="$("$REPO_ROOT/libraries/cowtree/repo-path" "$1" --repo-root "$REPO_ROOT" "${@:2}" 2>"$err_file")"; then
+        rm -f "$err_file"
+        printf '%s\n' "$out"
+        return 0
+    fi
+    local msg
+    msg="$(tr '\n' ' ' <"$err_file")"
+    rm -f "$err_file"
+    die "cannot resolve '$1' from the repo path config of $REPO_ROOT: ${msg}(the harness takes its VM state and base-image folders only from the resolver)"
 }
 host_dir_for() {  # host_dir_for <namespace path> <what>: the Docker daemon's path of a resolved folder
     local path="$1" what="$2"
@@ -228,8 +237,8 @@ resolve_vm_lab() {
     local project_rel="${STATE_PROJECT_DIR#"$REPO_ROOT"/}"
     VM_LAB_NS="$(resolve_shared_path vm-lab --project "$project_rel")" || exit 1
     DOWNLOADS_NS="$(resolve_shared_path vm-images)" || exit 1
-    [ -d "$VM_LAB_NS" ] || die "$VM_LAB_NS is missing or a dangling symlink: restore the project's committed vm-lab/ placeholder, or on a CoW host run 'libraries/cowtree/repo-path vm-lab --project $project_rel --provision'"
-    [ -d "$DOWNLOADS_NS" ] || die "$DOWNLOADS_NS is missing: restore the downloads/vm-images placeholder, or on a CoW host run 'libraries/cowtree/repo-path vm-images --provision'"
+    [ -d "$VM_LAB_NS" ] || die "$VM_LAB_NS is missing or a dangling symlink: create it with 'mkdir -p $VM_LAB_NS' (the project's committed vm-lab/ placeholder normally provides it), or on a CoW host run 'libraries/cowtree/repo-path vm-lab --project $project_rel --provision'"
+    [ -d "$DOWNLOADS_NS" ] || die "$DOWNLOADS_NS is missing: create it with 'mkdir -p $DOWNLOADS_NS' (committed downloads/iso and downloads/vm-images placeholders come with RP-06), or on a CoW host run 'libraries/cowtree/repo-path vm-images --provision'"
     VM_LAB_NS="$(cd "$VM_LAB_NS" && pwd -P)"
     DOWNLOADS_NS="$(cd "$DOWNLOADS_NS" && pwd -P)"
     HOST_VM_LAB_DIR="$(host_dir_for "$VM_LAB_NS" "vm-lab")" || exit 1

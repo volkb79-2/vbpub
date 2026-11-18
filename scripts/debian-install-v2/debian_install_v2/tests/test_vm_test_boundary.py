@@ -779,7 +779,9 @@ def test_vm_wrapper_refuses_a_checkout_missing_its_placeholder_folders(tmp_path)
         env=_layout_env(tmp_path), capture_output=True, text=True, check=False,
     )
     assert result.returncode != 0
-    assert "vm-images placeholder" in result.stderr and "--provision" in result.stderr
+    # The remediation is the truth: no committed vm-images placeholder exists yet (RP-06), so it says mkdir -p.
+    assert f"mkdir -p {repo / 'downloads' / 'vm-images'}" in result.stderr and "--provision" in result.stderr
+    assert "restore" not in result.stderr
     assert not (repo / "downloads" / "vm-images").exists()
 
     missing_lab = tmp_path / "missing-lab"
@@ -790,12 +792,12 @@ def test_vm_wrapper_refuses_a_checkout_missing_its_placeholder_folders(tmp_path)
         env=_layout_env(missing_lab), capture_output=True, text=True, check=False,
     )
     assert result.returncode != 0
-    assert "committed vm-lab/ placeholder" in result.stderr and "--provision" in result.stderr
+    assert f"mkdir -p {project2 / 'vm-lab'}" in result.stderr and "--provision" in result.stderr
     assert not (project2 / "vm-lab").exists()
 
 
 def test_vm_wrapper_refuses_a_checkout_without_the_repo_path_config(tmp_path):
-    """No config, no guess: the resolver's refusal names the missing file and the wrapper adds its own line."""
+    """No config, no guess: ONE line that carries the resolver's refusal (names the missing file) and the wrapper's context."""
     repo, project, vm = _layout_copy(tmp_path)
     (repo / _config_name()).unlink()
     result = subprocess.run(
@@ -805,6 +807,7 @@ def test_vm_wrapper_refuses_a_checkout_without_the_repo_path_config(tmp_path):
     assert result.returncode != 0
     assert _config_name() in result.stderr
     assert "cannot resolve 'vm-lab' from the repo path config" in result.stderr
+    assert len(result.stderr.strip().splitlines()) == 1, result.stderr
     assert "run -d" not in (tmp_path / "docker.log").read_text()
 
 
@@ -943,6 +946,7 @@ def test_vmctl_explicit_options_win_and_a_missing_config_is_a_clear_refusal(tmp_
     assert result.returncode != 0
     assert _config_name() in result.stderr
     assert "cannot resolve 'vm-lab' from the repo path config" in result.stderr
+    assert len(result.stderr.strip().splitlines()) == 1, result.stderr
     assert not arg_log.exists() and not (project / "vm-lab" / "images").exists()
     # Only the missing option is resolved: --state-dir given, the image folder default still refuses.
     state, images = tmp_path / "state", tmp_path / "images"
@@ -952,6 +956,7 @@ def test_vmctl_explicit_options_win_and_a_missing_config_is_a_clear_refusal(tmp_
         env=env, capture_output=True, text=True, check=False,
     )
     assert half.returncode != 0 and "cannot resolve 'vm-images'" in half.stderr
+    assert len(half.stderr.strip().splitlines()) == 1, half.stderr
     assert not arg_log.exists()
     # Both given (what the in-runner wrapper passes): the resolver is not asked at all.
     both = subprocess.run(
@@ -987,6 +992,7 @@ def test_download_script_default_is_the_resolved_vm_images_folder_and_an_argumen
     refused = subprocess.run([str(script)], capture_output=True, text=True, check=False, env=env)
     assert refused.returncode != 0
     assert _config_name() in refused.stderr and "cannot resolve the vm-images folder" in refused.stderr
+    assert len(refused.stderr.strip().splitlines()) == 1, refused.stderr
     assert not (tmp_path / "wget.log").exists()
 
 
@@ -999,6 +1005,7 @@ def test_download_script_takes_an_images_dir_argument_and_never_creates_it(tmp_p
     )
     assert result.returncode != 0
     assert "never creates it" in result.stderr and "--provision" in result.stderr
+    assert f"mkdir -p {missing}" in result.stderr and "restore" not in result.stderr
     assert not missing.exists()
     script = (TESTING / "download-base-image.sh").read_text()
     assert "flock 9" in script

@@ -7,6 +7,13 @@ version sources. This work does not create a new release or bump the version.
 
 ## [Unreleased]
 
+### VM lane state folder (RP-04)
+- `testing/vm/run-vm-tests.sh` takes its VM state folder from the repo path resolver
+  (`libraries/cowtree/repo-path vm-lab --project scripts/mounttrace`: the committed placeholder `vm-lab/`, or the CoW
+  subvolume) instead of the `artifacts/vm-lab` symlink; `testing/vm/setup-vm-lab.sh` is removed. Sealed bases built under
+  the old location (`$MDT_COW_ROOT/<repo>/vm-lab/<checkout>/mounttrace`, `artifacts/vm-lab`) are orphaned: the next lane
+  run rebuilds `mounttrace-ready-v2` once (15 to 40 minutes). In CoW mode the folder is shared by every worktree.
+
 ### Upgrade notes: 3.2.0 CLI restructuring
 
 Version 3.2.0 replaces the former root-level option modes with five

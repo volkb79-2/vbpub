@@ -78,15 +78,22 @@ while [ $# -gt 0 ]; do
         *) break ;;
     esac
 done
-resolve_default() {  # resolve_default <name> [--project DIR]: the resolver's folder, or fail with its message
-    local repo_root
-    repo_root="$(cd "$PROJECT_DIR/../.." && pwd -P)"
-    "$repo_root/libraries/cowtree/repo-path" "$1" --repo-root "$repo_root" "${@:2}" \
-        || { echo "vmctl: cannot resolve '$1' from the repo path config of $repo_root (message above); pass --state-dir/--downloads-dir to override" >&2; return 1; }
+REPO_ROOT="$(cd "$PROJECT_DIR/../.." && pwd -P)"
+resolve_default() {  # resolve_default <name> [--project DIR]: the resolver's folder, or ONE line on stderr and failure
+    local out err_file
+    err_file="$(mktemp)"
+    if out="$("$REPO_ROOT/libraries/cowtree/repo-path" "$1" --repo-root "$REPO_ROOT" "${@:2}" 2>"$err_file")"; then
+        rm -f "$err_file"
+        printf '%s\n' "$out"
+        return 0
+    fi
+    echo "vmctl: cannot resolve '$1' from the repo path config of $REPO_ROOT: $(tr '\n' ' ' <"$err_file")(pass --state-dir/--downloads-dir to override)" >&2
+    rm -f "$err_file"
+    return 1
 }
 if [ -z "$STATE_DIR" ]; then
-    # --project is this project's directory relative to the repo root.
-    STATE_DIR="$(resolve_default vm-lab --project "scripts/${PROJECT_DIR##*/}")" || exit 1
+    # --project is this project's directory relative to the repo root (derived from the script location).
+    STATE_DIR="$(resolve_default vm-lab --project "${PROJECT_DIR#"$REPO_ROOT"/}")" || exit 1
 fi
 if [ -z "$DOWNLOADS_DIR" ]; then
     DOWNLOADS_DIR="$(resolve_default vm-images)" || exit 1

@@ -30,8 +30,6 @@ REPO_ROOT="$(cd "$PROJECT_DIR/../.." && pwd -P)"
 HARNESS="$REPO_ROOT/scripts/debian-install-v2/testing/vm/run-vm-harness.sh"
 export MDT_VM_PROJECT_DIR="$PROJECT_DIR"
 export MDT_VM_SOURCE_DIR="$REPO_ROOT"
-VM_LAB="$("$REPO_ROOT/libraries/cowtree/repo-path" vm-lab --repo-root "$REPO_ROOT" --project scripts/mounttrace)" || die \
-    "cannot resolve the vm-lab folder of scripts/mounttrace from the repo path config (message above)"
 BASE_CASE=mounttrace-ready-v2
 GUEST_DIR=/home/tester/mounttrace
 SOURCE_PROJECT=scripts/mounttrace
@@ -77,6 +75,11 @@ if [ "$CHECK_INPUTS" = 1 ]; then
 fi
 
 [ -x "$HARNESS" ] || die "shared harness missing: $HARNESS"
+# Asked of the resolver only here, after the input check above: that check needs no resolver, python or CoW area.
+if ! VM_LAB="$("$REPO_ROOT/libraries/cowtree/repo-path" vm-lab --repo-root "$REPO_ROOT" --project "${PROJECT_DIR#"$REPO_ROOT"/}" 2>"${TMPDIR:-/tmp}/mt-repo-path.$$")"; then
+    die "cannot resolve the vm-lab folder of ${PROJECT_DIR#"$REPO_ROOT"/} from the repo path config: $(tr '\n' ' ' <"${TMPDIR:-/tmp}/mt-repo-path.$$"; rm -f "${TMPDIR:-/tmp}/mt-repo-path.$$")"
+fi
+rm -f "${TMPDIR:-/tmp}/mt-repo-path.$$"
 [ -d "$VM_LAB" ] || die "$VM_LAB missing; restore the committed vm-lab/ placeholder, or on a CoW host run 'libraries/cowtree/repo-path vm-lab --project scripts/mounttrace --provision'"
 
 # One lane per checkout: the runner's forwarded SSH port is one resource.
