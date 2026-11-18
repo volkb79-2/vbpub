@@ -15,7 +15,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # does this disk already hold a system installed by this tool (a partition with the btrfs label drroot)?
-holds_our_system() { lsblk -nr -o LABEL "$1" 2>/dev/null | grep -qx drroot; }
+# Fails CLOSED: if lsblk itself fails the answer is "yes, holds a system" (rc 0), so the runner refuses rather than wipes.
+holds_our_system() { local out; out=$(lsblk -nr -o LABEL "$1" 2>/dev/null) || return 0; grep -qx drroot <<<"$out"; }
 # test hook, handled before anything touches the system: `dr-autoinstall _holds-system /dev/X` (offline test stubs lsblk)
 if [ "${1:-}" = _holds-system ]; then holds_our_system "${2:?target}"; exit $?; fi
 

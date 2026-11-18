@@ -8,6 +8,8 @@
 - **No `debian-install-v2` post-configuration** (kept separate by decision D19), no cloud-init user-data, no SSH-key setting, no md/LVM/dm awareness beyond "mounted disks are never a target".
 - **Tested only in blank-disk guests** on v1001 (TCG, 2.5 GiB). Never on a real disk, never written to a device.
 - A medium that stays attached **reinstalls on every boot when the config says `REINSTALL=yes`**; the default is to refuse a disk that already holds our system (label `drroot`) and to power off after a finished install.
+- **Weak disk identity on virtual or serial-less disks.** The check that the target is still the same disk after the slow tool install compares size, serial, WWN and model; with no serial or WWN (QEMU's root disk) it is only size and model, so two equal disks that swap names between the two plans go undetected (a warning is printed). The refusal path itself ("target changed") has never run, not even offline.
+- **A plaintext `ROOT_PASSWORD` is still allowed** and then sits in the config on the ISO or the `CIDATA` medium; `ROOT_PASSWORD_HASH` is the alternative.
 
 ## What it is
 
@@ -26,7 +28,7 @@ Flow in the live system (`/opt/dr/dr-autoinstall`, one systemd service): DHCP â†
 
 ## Config (`dr-install.conf`, `KEY=VALUE`)
 
-Keys: `TARGET_DISK`, `HOSTNAME`, `SUITE`, `MIRROR`, `SECURITY_MIRROR`, `ROOT_PASSWORD`, `ROOT_PASSWORD_HASH` (crypt hash; use it instead of the plaintext), `REINSTALL` (`yes|no`). Unknown keys, duplicate keys and characters outside `A-Za-z0-9_./:@,+=-` (hash: `$` too) are refused. Without a password the installer generates one and prints it once on the console (`DR-AUTOINSTALL-ROOT-PASSWORD-GENERATED`).
+Keys: `TARGET_DISK`, `HOSTNAME`, `SUITE`, `MIRROR`, `SECURITY_MIRROR`, `ROOT_PASSWORD`, `ROOT_PASSWORD_HASH` (crypt hash; use it instead of the plaintext), `REINSTALL` (`yes|no`). Unknown keys, duplicate keys and characters outside `A-Za-z0-9_./:@,+=-` (hash: `$` too) are refused. Without a password the installer generates one and prints it on the console (`DR-AUTOINSTALL-ROOT-PASSWORD-GENERATED`); it is also written to the live system's journal and `/var/log/dr-autoinstall.log` (RAM only, gone at power off, but visible to anyone with a console log).
 `build-cidata.sh --config F --out IMG` makes a `CIDATA` ISO9660 image (for a USB stick write it yourself; the script refuses `/dev` paths).
 
 ## Disk rule (the wipe guard, `iso/dr-plan`)
@@ -39,7 +41,7 @@ A pure function of `lsblk` output, the config and the caller's exclusions; it ne
 
 ## Results (v1001, blank disks only, one guest at a time)
 
-Wipe-guard tests were written before `dr-plan` existed: the first run of `test-dr-plan.sh` failed all 25 cases with `dr-plan: not found` (rc 127), then passed; later rounds added cases first and showed them failing before the fix. Mutants of the rules (multi-disk allowed, exclusions ignored, unknown key allowed, nall dropped, password+hash allowed, substring label match) are killed. Offline tests: `iso/test-dr-plan.sh` (â‰ˆ45 cases), `iso/test-dr-autoinstall-guard.sh`, `poc/test-dr-qemu.sh` (config disk pinned), `poc/test-dr-pick-disk.sh`.
+Wipe-guard tests were written before `dr-plan` existed: in the session the first run of `test-dr-plan.sh` failed all 25 cases with `dr-plan: not found` (rc 127), then passed; later rounds added cases first and showed them failing before the fix. **This cannot be seen in the git history** (test and tool were committed together), and the mutants (multi-disk allowed, exclusions ignored, unknown key allowed, nall dropped, password+hash allowed, substring label match) were applied to temporary copies and are not kept in the repo; both claims rest on the session log. Offline tests in the repo: `iso/test-dr-plan.sh` (41 cases), `iso/test-dr-autoinstall-guard.sh` (the re-install guard with a stubbed `lsblk`, including lsblk failing = refuse), `poc/test-dr-qemu.sh` (config disk pinned), `poc/test-dr-pick-disk.sh`.
 
 | Guest | Setup | Result |
 |---|---|---|
@@ -55,7 +57,7 @@ Two guest runs were lost before these results to the shared host (a memory limit
 
 ## Review
 
-Independent review rounds 10 and 11 (fresh Sonnet session) were FIX-FIRST and found real holes, all fixed with tests: a medium left attached re-wiped the installed system; "only disk" counted only qualifying disks (a small boot disk beside a big data disk made the data disk look alone) and then ignored mounted disks; an unchecked `--scratch` deletion and a broken re-exec in `build-iso.sh`; no re-check of the target after the slow tool install; plaintext root password. Open, documented: console confirmation can be eaten by a getty on the same console (fails safe: refusal); no md/dm/LVM or loop-backed-medium detection; the `dr.config=https://` fetch and the `CIDATA` path are authenticated by nothing (TLS only for the URL).
+Independent review rounds 10, 11 and 12 (fresh Sonnet session) were FIX-FIRST and found real holes. **Fixed, each with an offline test:** a medium left attached re-wiped the installed system (guard on label `drroot`; fails closed when `lsblk` fails); "only disk" counted only qualifying disks (a small boot disk beside a big data disk made the data disk look alone) and then ignored mounted disks (now `--busy`); an unchecked `--scratch` deletion and a broken re-exec in `build-iso.sh`. **Fixed without a dedicated test:** the target is re-planned after the slow tool install (ran in every guest, but the refusal on a changed target never did); CRLF in the by-id spec. **Mitigated, not closed:** the plaintext root password (a hash option exists, plaintext still works); the weak identity check on serial-less disks (a warning). **Open, documented:** console confirmation can be eaten by a getty on the same console (fails safe: refusal); no md/dm/LVM or loop-backed-medium detection; the `dr.config=https://` fetch and the `CIDATA` path are authenticated by nothing (TLS only for the URL).
 
 ## Not tested
 
