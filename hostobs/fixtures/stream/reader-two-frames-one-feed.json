@@ -1,0 +1,31 @@
+{
+  "case": "reader-two-frames-one-feed",
+  "doc": "A REQ and a REP in one feed: both come out, in order, from that feed.",
+  "side": "server",
+  "max_frame": 1024,
+  "completion_ms": 5000,
+  "steps": [
+    {
+      "t_ms": 0,
+      "feed_hex": "2600000001000000010000007b2276657262223a2268656c6c6f222c2261726773223a7b7d7d1700000002000000020000007b226f6b223a747275657d"
+    }
+  ],
+  "expect": [
+    [
+      {
+        "frame": {
+          "type": "req",
+          "corr": 1,
+          "len": 38
+        }
+      },
+      {
+        "frame": {
+          "type": "rep",
+          "corr": 2,
+          "len": 23
+        }
+      }
+    ]
+  ]
+}

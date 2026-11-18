@@ -1,6 +1,6 @@
 {
   "case": "block-without-directory",
-  "doc": "Exactly the 12 header bytes of a sectioned block frame (declared length 12) and no section directory. Only the refusal kind and its context are contractual: the Rust cursor reports need 2 / have 0 and the Python reference need 16 / have 12, and neither is pinned.",
+  "doc": "Exactly the 12 header bytes of a sectioned block frame (declared length 12) and no section directory. Only the refusal kind and its context are contractual; both decoders report need 2 / have 0, which is not pinned.",
   "frame": {
     "type": "block",
     "corr": 22,

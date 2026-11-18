@@ -40,6 +40,7 @@ use crate::dictionary::Retired;
 use crate::error::StoreError;
 use crate::format::{
     check_tier_name, SegmentFileName, SegmentHeader, TierKind, HEADER_LEN, QUARANTINE_SUFFIX,
+    SEQ_NAME_MAX,
 };
 use crate::fsio::{EntryKind, StoreDir};
 use crate::queue::{FlushPolicy, Job};
@@ -48,6 +49,19 @@ use crate::segment::{OpenSegment, SegmentScan, TailState};
 /// The largest number of segments one tier will hold; a directory beyond this is a
 /// configuration that cannot be enforced (the cap is meant to bind well below it).
 pub const MAX_SEGMENTS: usize = 4096;
+
+/// The most eviction reports a tier keeps in [`TierScan::notes`] after its last rescan, and the
+/// most the store keeps for `Store::notes`. When one more arrives the **oldest** report is
+/// dropped, so a source of repeated vanished files cannot grow memory without bound. One pass's
+/// [`Evicted::notes`] is bounded by the entries that pass removes (at most [`MAX_SEGMENTS`] live
+/// segments and as many quarantined files), and the rescan's own notes by the directory listing.
+pub const MAX_EVICTION_NOTES: usize = 256;
+
+/// The highest sequence a name the scan has **not** proved to be its own may reserve: one below
+/// [`SEQ_NAME_MAX`]. A name at the bound is reserved only by a file that is adopted (its header
+/// is this tier's and agrees with the name), so a look-alike there cannot make the next
+/// `open_segment` refuse for ever (HOB-55).
+const UNPROVEN_SEQ_MAX: u64 = SEQ_NAME_MAX - 1;
 
 /// The largest byte cap the configuration accepts. The plan's proposal is 1 GiB per tier; this
 /// is the bound past which the store refuses rather than pretending to enforce.
@@ -344,6 +358,10 @@ pub struct Tier {
     /// leave it alone, so a segment name is never reused (a name that came back would make a
     /// quarantined `.corrupt` file and a live segment share an identity).
     seq_water: u64,
+    /// Where the eviction reports start in `scan.notes`: the length of the notes the last
+    /// rescan made. Reports are capped at [`MAX_EVICTION_NOTES`] from here; the rescan's own
+    /// notes are never dropped to make room.
+    reports_from: usize,
 }
 
 impl Tier {
@@ -371,6 +389,7 @@ impl Tier {
             bytes: 0,
             max_file_bytes: max_file_bytes.max(HEADER_LEN),
             seq_water: 0,
+            reports_from: 0,
         };
         tier.rescan()?;
         tier.reopen_open_segment()?;
@@ -478,7 +497,8 @@ impl Tier {
                     });
                     continue;
                 }
-                highest_seen = highest_seen.max(Some(parsed.seq));
+                // Not yet proved this tier's own: reserves at most `UNPROVEN_SEQ_MAX`.
+                highest_seen = highest_seen.max(Some(parsed.seq.min(UNPROVEN_SEQ_MAX)));
                 if entry.kind != EntryKind::File {
                     notes.push(TierNote {
                         name: entry.name.clone(),
@@ -528,8 +548,10 @@ impl Tier {
                 continue;
             };
             // Every name of this tier reserves its sequence number, whatever becomes of the
-            // file (adopted, quarantined, unreadable, foreign): a name never comes back.
-            highest_seen = highest_seen.max(Some(parsed.seq));
+            // file (adopted, quarantined, unreadable, foreign): a name never comes back. Until
+            // the file is proved this tier's own it reserves at most `UNPROVEN_SEQ_MAX`; an
+            // adopted file reserves its full sequence below.
+            highest_seen = highest_seen.max(Some(parsed.seq.min(UNPROVEN_SEQ_MAX)));
             match entry.kind {
                 EntryKind::File => {}
                 other => {
@@ -797,6 +819,13 @@ impl Tier {
         // thing for debris as for history; the name is the last tie-break, so the order of a
         // directory listing never decides which file goes first.
         quarantined_files.sort_by_key(|f| (f.parsed.start_s, f.parsed.seq, f.name.clone()));
+        // An adopted live segment is the one proof a name can have: its header is this tier's
+        // and `check_name` held it to the name's own `seq`. It reserves its full sequence,
+        // even `SEQ_NAME_MAX`; every other name (a quarantined file's key was not identity-
+        // checked, a look-alike was not read as a segment) reserved at most `UNPROVEN_SEQ_MAX`
+        // above.
+        let proven_max = segments.iter().map(|segment| segment.parsed.seq).max();
+        highest_seen = highest_seen.max(proven_max);
         self.scan = TierScan {
             segments,
             notes,
@@ -809,6 +838,7 @@ impl Tier {
             bytes,
         };
         self.bytes = self.scan.bytes;
+        self.reports_from = self.scan.notes.len();
         // The water mark only ever rises: a restart continues past every sequence the
         // directory can show, including the ones this handle already issued.
         //
@@ -881,7 +911,9 @@ impl Tier {
     /// # Errors
     ///
     /// [`StoreError::Config`] when a segment is already open (one open segment per tier is the
-    /// policy that makes the ring's "evict whole segments" possible), and every IO refusal.
+    /// policy that makes the ring's "evict whole segments" possible),
+    /// [`StoreError::LengthOverflow`] when the next sequence would exceed [`SEQ_NAME_MAX`]
+    /// (legitimate exhaustion: 136 years at one segment a second), and every IO refusal.
     pub fn open_segment(
         &mut self,
         start_s: u64,
@@ -895,6 +927,11 @@ impl Tier {
             });
         }
         let seq = self.seq_water;
+        if seq > SEQ_NAME_MAX {
+            // A name above the bound is not a segment name of this store (HOB-55), so the
+            // sequence space is exhausted rather than continued under a name no scan accepts.
+            return Err(StoreError::LengthOverflow);
+        }
         self.seq_water = seq.checked_add(1).ok_or(StoreError::LengthOverflow)?;
         let name = self.name_for(start_s, seq, true);
         let parsed = SegmentFileName {
@@ -1156,7 +1193,12 @@ impl Tier {
     /// record must not fail because of debris. The entry therefore always leaves the list and
     /// its bytes always leave the total: a file that is already gone is dropped quietly and is
     /// **not** counted as evicted (nothing was removed), and a removal that fails for another
-    /// reason is dropped and reported in [`TierScan::notes`].
+    /// reason is dropped and reported, in [`TierScan::notes`] and in [`Evicted::notes`] (the
+    /// caller of `append`/`evict` sees the second, and a later rescan resets the first,
+    /// HOB-58).
+    ///
+    /// Known limit: a file that could not be removed stays on disk, uncounted, until the next
+    /// restart's scan adopts it again.
     fn remove_quarantined(&mut self, evicted: &mut Evicted) {
         if self.scan.quarantined_files.is_empty() {
             return;
@@ -1166,10 +1208,11 @@ impl Tier {
         self.scan.bytes = self.bytes;
         let gone = matches!(self.dir.metadata(&file.name), Ok(None));
         if gone {
-            self.scan.notes.push(TierNote {
+            let note = TierNote {
                 name: file.name,
                 reason: "quarantined file already gone; dropped from the total".to_string(),
-            });
+            };
+            self.report(evicted, note);
             return;
         }
         match self.dir.remove(&file.name) {
@@ -1177,14 +1220,33 @@ impl Tier {
                 evicted.quarantined.push(file.name);
                 evicted.bytes = evicted.bytes.saturating_add(file.len);
             }
-            Err(error) => self.scan.notes.push(TierNote {
-                name: file.name,
-                reason: format!(
-                    "quarantined file could not be removed ({}); dropped from the byte total",
-                    error.kind()
-                ),
-            }),
+            Err(error) => {
+                let note = TierNote {
+                    name: file.name,
+                    reason: format!(
+                        "quarantined file could not be removed ({}); dropped from the byte total",
+                        error.kind()
+                    ),
+                };
+                self.report(evicted, note);
+            }
         }
+    }
+
+    /// Record a note about an entry an eviction dropped without removing: in the scan's own
+    /// notes and in the pass's [`Evicted::notes`], which is what the caller of `append` or
+    /// `evict` receives.
+    ///
+    /// The reports in `scan.notes` (those after the rescan's own notes) are capped at
+    /// [`MAX_EVICTION_NOTES`]: the oldest report is dropped to make room, the same policy as
+    /// the store's ring, and the rescan's notes are never dropped.
+    fn report(&mut self, evicted: &mut Evicted, note: TierNote) {
+        evicted.notes.push(note.clone());
+        let kept = self.scan.notes.len().saturating_sub(self.reports_from);
+        if kept >= MAX_EVICTION_NOTES {
+            self.scan.notes.remove(self.reports_from);
+        }
+        self.scan.notes.push(note);
     }
 
     /// Remove one segment this tier owns, updating the ring and the byte total.
@@ -1221,10 +1283,11 @@ impl Tier {
         self.bytes = self.bytes.saturating_sub(len);
         self.scan.bytes = self.bytes;
         if gone {
-            self.scan.notes.push(TierNote {
+            let note = TierNote {
                 name: name.to_string(),
                 reason: "segment already gone; dropped from the ring".to_string(),
-            });
+            };
+            self.report(evicted, note);
             return Ok(());
         }
         evicted.segments.push(name.to_string());
@@ -1490,6 +1553,11 @@ pub struct Evicted {
     pub quarantined: Vec<String>,
     /// The bytes they held, segments and quarantined files together.
     pub bytes: u64,
+    /// Reports of entries the pass dropped without removing a file: one already gone, or one
+    /// that could not be removed (a quarantined file that fails to unlink stays on disk,
+    /// uncounted, and the next restart's scan adopts it again). They are not evictions, so
+    /// they do not make [`Evicted::is_empty`] false (HOB-58).
+    pub notes: Vec<TierNote>,
 }
 
 impl Evicted {
@@ -1540,9 +1608,9 @@ impl TierRange {
 
 #[cfg(test)]
 mod tests {
-    use super::{Tier, TierConfig, MAX_CAP_BYTES};
+    use super::{Tier, TierConfig, MAX_CAP_BYTES, MAX_EVICTION_NOTES};
     use crate::error::StoreError;
-    use crate::format::{TierKind, HEADER_LEN};
+    use crate::format::{TierKind, HEADER_LEN, SEQ_NAME_MAX};
     use crate::fsio::testdir::TempDir;
     use crate::fsio::StoreDir;
     use crate::queue::Job;
@@ -2833,6 +2901,9 @@ mod tests {
             .find(|note| note.name == "hot-0-0.seg.corrupt")
             .expect("the vanished file is reported by name");
         assert!(gone_note.reason.contains("already gone"));
+        // HOB-58: the caller of `append` sees the same report, not only `scan.notes`.
+        assert_eq!(outcome.evicted.notes.len(), 1);
+        assert_eq!(outcome.evicted.notes[0], *gone_note);
         // The cap path takes the same way out: a tight cap and a debris file deleted by hand.
         let temp = TempDir::new("q-by-hand-cap");
         three_sealed(&temp);
@@ -2842,6 +2913,8 @@ mod tests {
         temp.remove("hot-0-0.seg.corrupt");
         let evicted = capped.evict(0).expect("the cap loop must make progress");
         assert!(evicted.is_empty(), "not an eviction");
+        assert_eq!(evicted.notes.len(), 1);
+        assert!(evicted.notes[0].reason.contains("already gone"));
         assert!(capped.scan().quarantined_files.is_empty());
         assert_eq!(capped.bytes(), one * 2);
     }
@@ -2855,6 +2928,9 @@ mod tests {
         temp.remove("hot-0-0.seg");
         let evicted = tier.evict(0).expect("a vanished head must not fail");
         assert!(evicted.is_empty(), "nothing was removed");
+        assert_eq!(evicted.notes.len(), 1);
+        assert_eq!(evicted.notes[0].name, "hot-0-0.seg");
+        assert!(evicted.notes[0].reason.contains("already gone"));
         assert_eq!(tier.scan().segments.len(), 2);
         assert_eq!(tier.bytes(), one * 2);
     }
@@ -2922,5 +2998,205 @@ mod tests {
         assert!(temp.exists("hot-0-1.seg.open.corrupt"));
         let last = third.append(&job(0, 16), 1, 1).expect("append works");
         assert_eq!(last.segment, "hot-0-2.seg.open");
+    }
+
+    #[test]
+    fn a_name_above_the_sequence_bound_is_a_look_alike_and_never_poisons_the_water_mark() {
+        // HOB-55: `hot-0-18446744073709551615.seg` must not set the water mark to u64::MAX
+        // before its owner is proved, or every `open_segment` would fail until the file is
+        // removed. A sequence above `SEQ_NAME_MAX` is not a name this store writes, in any of
+        // the four spellings, and is treated like every other look-alike.
+        let temp = TempDir::new("seq-lookalike");
+        three_sealed(&temp);
+        let valid = temp.read_file("hot-0-0.seg");
+        let above = SEQ_NAME_MAX + 1;
+        let mut planted: Vec<String> = Vec::new();
+        for seq in [u64::MAX, above] {
+            for suffix in [".seg", ".seg.open", ".seg.corrupt", ".seg.open.corrupt"] {
+                planted.push(format!("hot-0-{seq}{suffix}"));
+            }
+        }
+        for name in &planted {
+            temp.write_file(name, &valid);
+        }
+        let mut tier = tier_with_cap(&temp, 3600, 0);
+        assert_eq!(tier.next_seq(), 3, "only the real segments hold sequences");
+        let mut noted: Vec<&str> = tier
+            .scan()
+            .notes
+            .iter()
+            .map(|note| note.name.as_str())
+            .collect();
+        noted.sort_unstable();
+        let mut expected: Vec<&str> = planted.iter().map(String::as_str).collect();
+        expected.sort_unstable();
+        assert_eq!(
+            noted, expected,
+            "every look-alike is reported, none adopted"
+        );
+        assert!(tier.scan().quarantined_files.is_empty());
+        assert_eq!(tier.scan().segments.len(), 3);
+        let held: u64 = tier.scan().segments.iter().map(|s| s.file_len).sum();
+        assert_eq!(tier.bytes(), held, "no look-alike is counted");
+        let outcome = tier
+            .append(&job(300_000_000_000, 16), 1, 1)
+            .expect("appends still work");
+        assert_eq!(outcome.segment, "hot-300-3.seg.open");
+        let evicted = tier.evict(i64::MAX / 2).expect("evict");
+        assert!(!evicted.is_empty(), "the real history is still evicted");
+        for name in &planted {
+            assert!(temp.exists(name), "{name} is never deleted");
+        }
+    }
+
+    /// Plant `hot-0-<seq>.seg.open` holding one record, with a header that agrees with its
+    /// name: a segment this tier proves its own when it scans the directory.
+    fn plant_open_segment(temp: &TempDir, seq: u64) {
+        let dir = StoreDir::open(temp.path(), false).expect("dir");
+        let config = TierConfig::history("hot", 60, 3600, 0, false).expect("config");
+        let header = crate::format::SegmentHeader {
+            seq,
+            epoch: 7,
+            dict_generation: 3,
+            kind: TierKind::History,
+            payload: crate::format::PAYLOAD_BLOCK,
+            start_real_ns: 0,
+            max_payload: config.max_payload,
+            max_incarnations: config.max_incarnations,
+        };
+        let name = format!("hot-0-{seq}.seg.open");
+        let mut open = OpenSegment::create(&dir, &name, header).expect("create");
+        open.append(0, &[1], &block(16)).expect("append");
+    }
+
+    #[test]
+    fn an_unproven_name_at_the_sequence_bound_never_wedges_the_tier() {
+        // HOB-55: a look-alike at `SEQ_NAME_MAX` whose bytes are not this tier's segment
+        // reserves at most `SEQ_NAME_MAX - 1`, so the next `open_segment` succeeds (it mints
+        // the bound itself) and only the one after is the typed overflow error.
+        let temp = TempDir::new("seq-unproven");
+        three_sealed(&temp);
+        let at_bound = format!("hot-0-{SEQ_NAME_MAX}");
+        temp.write_file(&format!("{at_bound}.seg"), b"not a segment");
+        temp.write_file(&format!("{at_bound}.seg.corrupt"), b"not a segment");
+        temp.write_file("hot-0-9.seg", b"not a segment");
+        let mut tier = tier_with_cap(&temp, 3600, 0);
+        assert_eq!(tier.scan().segments.len(), 3);
+        // Capped at the bound minus one, so the bound itself is still free to mint.
+        assert_eq!(tier.next_seq(), SEQ_NAME_MAX);
+        let minted = tier
+            .append(&job(300_000_000_000, 16), 1, 1)
+            .expect("the tier is not wedged");
+        assert_eq!(minted.segment, format!("hot-300-{SEQ_NAME_MAX}.seg.open"));
+        let refused = tier.append(&job(360_000_000_000, 16), 1, 1);
+        assert_eq!(refused.map(|_| ()), Err(StoreError::LengthOverflow));
+        for name in [
+            format!("{at_bound}.seg"),
+            format!("{at_bound}.seg.corrupt"),
+            "hot-0-9.seg".to_string(),
+        ] {
+            assert!(temp.exists(&name), "{name} is never deleted");
+        }
+    }
+
+    #[test]
+    fn an_unproven_name_still_reserves_its_own_sequence_below_the_bound() {
+        let temp = TempDir::new("seq-reserve");
+        three_sealed(&temp);
+        temp.write_file("hot-0-9.seg", b"not a segment");
+        let tier = tier_with_cap(&temp, 3600, 0);
+        assert_eq!(tier.next_seq(), 10, "a name never comes back");
+    }
+
+    #[test]
+    fn the_bound_is_minted_once_from_a_tier_whose_scan_saw_the_bound_minus_one() {
+        // `open_segment` refuses only a sequence ABOVE `SEQ_NAME_MAX`: the bound itself is
+        // minted, then the next one is the typed overflow error.
+        let temp = TempDir::new("seq-mint");
+        plant_open_segment(&temp, SEQ_NAME_MAX - 1);
+        let mut tier = tier_with_cap(&temp, 3600, 0);
+        assert!(tier.has_open());
+        assert_eq!(tier.next_seq(), SEQ_NAME_MAX);
+        let minted = tier
+            .append(&job(65_000_000_000, 16), 1, 1)
+            .expect("the bound itself is minted");
+        assert_eq!(minted.segment, format!("hot-60-{SEQ_NAME_MAX}.seg.open"));
+        assert_eq!(tier.next_seq(), SEQ_NAME_MAX + 1);
+        let refused = tier.append(&job(125_000_000_000, 16), 1, 1);
+        assert_eq!(refused.map(|_| ()), Err(StoreError::LengthOverflow));
+    }
+
+    #[test]
+    fn eviction_reports_in_the_scan_notes_are_capped_and_drop_the_oldest() {
+        // HOB-58: more vanished files than the cap. Every report is in the pass's own
+        // `Evicted::notes`, `scan.notes` keeps the newest `MAX_EVICTION_NOTES`.
+        let temp = TempDir::new("notes-cap");
+        let vanished = u64::try_from(MAX_EVICTION_NOTES).expect("fits") + 5;
+        let mut seed = tier(&temp, 1_000_000, 0);
+        for index in 0..=vanished {
+            let at = i64::try_from(index * 60).expect("fits") * 1_000_000_000;
+            seed.append(&job(at, 16), 1, 1).expect("append");
+        }
+        drop(seed);
+        // The reopened tier holds every segment in its ring; the files vanish afterwards.
+        let mut tier = tier_with_cap(&temp, 1_000_000, 1);
+        assert!(tier.scan().notes.is_empty());
+        for index in 0..vanished {
+            temp.remove(&format!("hot-{}-{index}.seg", index * 60));
+        }
+        let evicted = tier.evict(0).expect("every vanished head is dropped");
+        // The pass reports every one of them.
+        let expected = usize::try_from(vanished).expect("fits");
+        assert_eq!(evicted.notes.len(), expected);
+        let kept = &tier.scan().notes;
+        assert_eq!(kept.len(), MAX_EVICTION_NOTES);
+        // The oldest five are dropped, the newest is kept.
+        assert_eq!(kept[0].name, "hot-300-5.seg");
+        let newest = vanished - 1;
+        let want = format!("hot-{}-{newest}.seg", newest * 60);
+        let last = kept.last().expect("a report");
+        assert_eq!(last.name, want);
+    }
+
+    #[test]
+    fn a_name_at_the_sequence_bound_is_adopted_and_the_next_segment_is_refused() {
+        // The bound itself is a sequence this store may have minted: it is adopted, and the
+        // sequence after it is legitimate exhaustion, the typed overflow error.
+        let temp = TempDir::new("seq-bound");
+        plant_open_segment(&temp, SEQ_NAME_MAX);
+        let mut tier = tier_with_cap(&temp, 3600, 0);
+        assert!(tier.has_open(), "the name at the bound is ours");
+        assert!(tier.scan().notes.is_empty());
+        assert_eq!(tier.next_seq(), SEQ_NAME_MAX + 1);
+        tier.append(&job(10_000_000_000, 16), 1, 1)
+            .expect("the open segment still takes records");
+        let refused = tier.append(&job(65_000_000_000, 16), 1, 1);
+        assert_eq!(refused.map(|_| ()), Err(StoreError::LengthOverflow));
+        assert_eq!(tier.next_seq(), SEQ_NAME_MAX + 1, "the mark does not move");
+        assert_eq!(tier.scan().segments.len(), 1);
+    }
+
+    #[test]
+    fn a_quarantined_file_that_cannot_be_removed_is_reported_to_the_caller() {
+        // HOB-58: the report reaches the caller of `evict`, not only `scan.notes`. A link in
+        // the file's place is refused by `StoreDir::remove`, so the entry is dropped from the
+        // total and reported, and the file stays on disk.
+        let temp = TempDir::new("q-unremovable");
+        three_sealed(&temp);
+        let one = u64::try_from(temp.read_file("hot-0-0.seg").len()).expect("fits");
+        damage(&temp, "hot-0-0.seg");
+        let mut capped = tier_with_cap(&temp, 3600, one * 2);
+        assert_eq!(capped.scan().quarantined_files.len(), 1);
+        temp.remove("hot-0-0.seg.corrupt");
+        temp.symlink_to("hot-0-0.seg.corrupt", temp.path());
+        let evicted = capped.evict(0).expect("the cap loop must make progress");
+        assert!(evicted.is_empty(), "nothing was removed");
+        assert_eq!(evicted.bytes, 0);
+        assert_eq!(evicted.notes.len(), 1);
+        assert_eq!(evicted.notes[0].name, "hot-0-0.seg.corrupt");
+        assert!(evicted.notes[0].reason.contains("could not be removed"));
+        assert_eq!(capped.scan().notes.last(), evicted.notes.first());
+        assert_eq!(capped.bytes(), one * 2, "dropped from the total");
+        assert!(temp.exists("hot-0-0.seg.corrupt"), "the file stays on disk");
     }
 }

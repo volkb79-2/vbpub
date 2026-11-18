@@ -1,0 +1,209 @@
+{
+  "case": "reader-dribbled-bytes",
+  "doc": "A REQ frame arrives one byte per step, 10 ms apart: nothing until the last byte, then one frame.",
+  "side": "server",
+  "max_frame": 1024,
+  "completion_ms": 5000,
+  "steps": [
+    {
+      "t_ms": 0,
+      "feed_hex": "26"
+    },
+    {
+      "t_ms": 10,
+      "feed_hex": "00"
+    },
+    {
+      "t_ms": 20,
+      "feed_hex": "00"
+    },
+    {
+      "t_ms": 30,
+      "feed_hex": "00"
+    },
+    {
+      "t_ms": 40,
+      "feed_hex": "01"
+    },
+    {
+      "t_ms": 50,
+      "feed_hex": "00"
+    },
+    {
+      "t_ms": 60,
+      "feed_hex": "00"
+    },
+    {
+      "t_ms": 70,
+      "feed_hex": "00"
+    },
+    {
+      "t_ms": 80,
+      "feed_hex": "01"
+    },
+    {
+      "t_ms": 90,
+      "feed_hex": "00"
+    },
+    {
+      "t_ms": 100,
+      "feed_hex": "00"
+    },
+    {
+      "t_ms": 110,
+      "feed_hex": "00"
+    },
+    {
+      "t_ms": 120,
+      "feed_hex": "7b"
+    },
+    {
+      "t_ms": 130,
+      "feed_hex": "22"
+    },
+    {
+      "t_ms": 140,
+      "feed_hex": "76"
+    },
+    {
+      "t_ms": 150,
+      "feed_hex": "65"
+    },
+    {
+      "t_ms": 160,
+      "feed_hex": "72"
+    },
+    {
+      "t_ms": 170,
+      "feed_hex": "62"
+    },
+    {
+      "t_ms": 180,
+      "feed_hex": "22"
+    },
+    {
+      "t_ms": 190,
+      "feed_hex": "3a"
+    },
+    {
+      "t_ms": 200,
+      "feed_hex": "22"
+    },
+    {
+      "t_ms": 210,
+      "feed_hex": "68"
+    },
+    {
+      "t_ms": 220,
+      "feed_hex": "65"
+    },
+    {
+      "t_ms": 230,
+      "feed_hex": "6c"
+    },
+    {
+      "t_ms": 240,
+      "feed_hex": "6c"
+    },
+    {
+      "t_ms": 250,
+      "feed_hex": "6f"
+    },
+    {
+      "t_ms": 260,
+      "feed_hex": "22"
+    },
+    {
+      "t_ms": 270,
+      "feed_hex": "2c"
+    },
+    {
+      "t_ms": 280,
+      "feed_hex": "22"
+    },
+    {
+      "t_ms": 290,
+      "feed_hex": "61"
+    },
+    {
+      "t_ms": 300,
+      "feed_hex": "72"
+    },
+    {
+      "t_ms": 310,
+      "feed_hex": "67"
+    },
+    {
+      "t_ms": 320,
+      "feed_hex": "73"
+    },
+    {
+      "t_ms": 330,
+      "feed_hex": "22"
+    },
+    {
+      "t_ms": 340,
+      "feed_hex": "3a"
+    },
+    {
+      "t_ms": 350,
+      "feed_hex": "7b"
+    },
+    {
+      "t_ms": 360,
+      "feed_hex": "7d"
+    },
+    {
+      "t_ms": 370,
+      "feed_hex": "7d"
+    }
+  ],
+  "expect": [
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [
+      {
+        "frame": {
+          "type": "req",
+          "corr": 1,
+          "len": 38
+        }
+      }
+    ]
+  ]
+}

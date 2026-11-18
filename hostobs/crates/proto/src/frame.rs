@@ -16,6 +16,7 @@
 //! TIMESEC  := n × i64 bucket_real_ns | n × u32 covered_ms | n × u16 samples |
 //!             n × u8 agg | pad to 8      -- replaces ROWSSEC in a history block
 //! DICTSEC  := the whole generation, see [`crate::dict`]
+//! SUBJSEC  := u32 ent | u32 0                 -- minor 1, history blocks only
 //! ```
 //!
 //! Every body length is a multiple of eight, so every body starts eight-byte aligned
@@ -56,9 +57,24 @@
 //! | 3 | columns | no | yes | `COLSEC` |
 //! | 4 | time | no | no | `TIMESEC` (history block) |
 //! | 5 | dictionary | no | no | `DICTSEC` |
+//! | 6 | subject (minor 1) | yes when present | no | `SUBJSEC` (history block) |
 //!
 //! A block carries rows **or** time buckets; both at once, or columns for a row count
-//! nobody declared, are refused.
+//! nobody declared, are refused. The canonical order is header, dictionary, subject,
+//! rows or time, then columns. The subject names the one incarnation a history block
+//! describes and needs the time section (`subject-without-time`).
+//!
+//! # Received frames
+//!
+//! `decode_block_with(bytes, held)` judges a block that carries no dictionary against the
+//! dictionary the stream holds. Beyond the encoder's layout, a received frame must have
+//! every section length a multiple of eight (`section-length`), the header at directory
+//! entry 0 (an unknown kind there is `section-order`, judged after the rank check), the
+//! directory's bytes present before storage is reserved for them, `SECTIONED` on BLOCK
+//! frames only, and every history bucket's aggregation inside every column's metric mask
+//! (`aggregation-not-permitted`). The order in which they are judged is WIRE.md §3.10.
+
+use std::collections::HashSet;
 
 use crate::dict::{Aggregation, Dictionary, Entry, MetricKind, MetricValueType};
 use crate::error::{ProtoError, MAX_FRAME_BYTES};
@@ -71,13 +87,15 @@ pub const MAGIC: [u8; 4] = *b"HOB\x01";
 /// The protocol major this codec speaks.
 pub const PROTO_MAJOR: u16 = 1;
 /// The protocol minor this codec speaks; an additive change raises it.
-pub const PROTO_MINOR: u16 = 0;
+pub const PROTO_MINOR: u16 = 1;
 /// The frame header size in bytes.
 pub const FRAME_HEADER_LEN: usize = 12;
 /// The section directory entry size in bytes.
 pub const SECTION_DIR_ENTRY_LEN: usize = 8;
 /// The header section body size (80 bytes, eight-aligned).
 pub const HEADER_BODY_LEN: usize = 80;
+/// The subject section body size (`u32 ent | u32 0`, eight-aligned).
+pub const SUBJECT_BODY_LEN: usize = 8;
 
 /// The frame types of plan v4 §B.1.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -154,6 +172,8 @@ pub enum SectionKind {
     Time = 4,
     /// A complete dictionary generation.
     Dictionary = 5,
+    /// The one incarnation a history block describes (minor 1).
+    Subject = 6,
 }
 
 /// A raw section kind code that this codec does not know.
@@ -175,6 +195,7 @@ impl SectionKind {
             SectionKind::Column => "columns",
             SectionKind::Time => "time",
             SectionKind::Dictionary => "dictionary",
+            SectionKind::Subject => "subject",
         }
     }
 
@@ -193,6 +214,7 @@ impl SectionKind {
             3 => Some(SectionKind::Column),
             4 => Some(SectionKind::Time),
             5 => Some(SectionKind::Dictionary),
+            6 => Some(SectionKind::Subject),
             _ => None,
         }
     }
@@ -206,7 +228,7 @@ impl SectionKind {
     /// True for the sections a reader cannot work without.
     #[must_use]
     pub const fn is_required(self) -> bool {
-        matches!(self, SectionKind::Header)
+        matches!(self, SectionKind::Header | SectionKind::Subject)
     }
 }
 
@@ -457,6 +479,8 @@ pub struct Block {
     pub columns: Vec<Column>,
     /// The dictionary generation carried inside the frame, if any.
     pub dictionary: Option<Dictionary>,
+    /// The dictionary index of the incarnation a history block describes (kind 6), if any.
+    pub subject: Option<u32>,
     /// Unknown **optional** section kinds that were skipped, in directory order.
     pub skipped_sections: Vec<UnknownSectionKind>,
 }
@@ -491,9 +515,9 @@ pub struct FrameHeader {
 impl FrameHeader {
     /// Parse the first [`FRAME_HEADER_LEN`] bytes of a frame.
     ///
-    /// The declared length is bounded here, not only in [`decode_block`]: a streaming
-    /// reader allocates `len` bytes straight after `parse`, so a returned header always
-    /// carries `FRAME_HEADER_LEN <= len <= MAX_FRAME_BYTES`.
+    /// The declared length is bounded here, not only in [`decode_block`]: a returned header
+    /// always carries `FRAME_HEADER_LEN <= len <= MAX_FRAME_BYTES`. A streaming reader must
+    /// not allocate from `len` alone (see `stream::FrameReader`).
     ///
     /// # Errors
     ///
@@ -507,6 +531,11 @@ impl FrameHeader {
         let frame_type = FrameType::from_code(cursor.u8()?)?;
         let flags = cursor.u8()?;
         if flags & !DEFINED_FRAME_FLAGS != 0 {
+            return Err(ProtoError::UnknownFrameFlags(flags));
+        }
+        // SECTIONED is defined for BLOCK only (WIRE.md §2.1): on any other frame it is an
+        // unknown flag, `bad-frame` on the wire.
+        if flags & FLAG_SECTIONED != 0 && frame_type != FrameType::Block {
             return Err(ProtoError::UnknownFrameFlags(flags));
         }
         let reserved = cursor.u16()?;
@@ -849,9 +878,39 @@ fn canonical_rank(kind: SectionKind) -> u8 {
     match kind {
         SectionKind::Header => 0,
         SectionKind::Dictionary => 1,
-        SectionKind::Rows | SectionKind::Time => 2,
-        SectionKind::Column => 3,
+        SectionKind::Subject => 2,
+        SectionKind::Rows | SectionKind::Time => 3,
+        SectionKind::Column => 4,
     }
+}
+
+/// Encode the subject section body: `u32 ent | u32 0`.
+#[must_use]
+pub fn encode_subject_body(ent: u32) -> Vec<u8> {
+    let mut writer = Writer::with_capacity(SUBJECT_BODY_LEN);
+    writer.u32(ent);
+    writer.u32(0);
+    writer.finish()
+}
+
+fn decode_subject_body(body: &[u8]) -> Result<u32, ProtoError> {
+    if body.len() != SUBJECT_BODY_LEN {
+        return Err(ProtoError::SectionLength {
+            kind: SectionKind::Subject.code(),
+            declared: body.len(),
+            expected: SUBJECT_BODY_LEN,
+        });
+    }
+    let mut cursor = Cursor::new(body, "subject section");
+    let ent = cursor.u32()?;
+    let reserved = cursor.u32()?;
+    if reserved != 0 {
+        return Err(ProtoError::UnknownSectionFlags {
+            kind: SectionKind::Subject.code(),
+            flags: reserved,
+        });
+    }
+    Ok(ent)
 }
 
 /// Check that every **known** section appears in the canonical order.
@@ -882,8 +941,9 @@ fn check_canonical_order(sections: &[Section]) -> Result<(), ProtoError> {
 /// [`ProtoError::NotABlock`] when `block.frame_type` is not [`FrameType::Block`],
 /// [`ProtoError::SectionOrder`], [`ProtoError::OversizedFrame`],
 /// [`ProtoError::RowsAndTime`], [`ProtoError::DuplicateSection`],
-/// [`ProtoError::SectionLength`] (a column whose row count differs from `header.n_rows`)
-/// and every dictionary-encoding refusal.
+/// [`ProtoError::SectionLength`] (a column whose row count differs from `header.n_rows`),
+/// [`ProtoError::SubjectWithoutTime`], [`ProtoError::AggregationNotPermitted`] (a bucket
+/// whose aggregation a column's kind does not permit) and every dictionary-encoding refusal.
 pub fn encode_block(block: &Block) -> Result<Vec<u8>, ProtoError> {
     // §B.1 gives each frame type one payload shape. A `REQ`/`REP`/`EVT` carries a small
     // JSON control object and a `DICT` a dictionary, so a block section list under any
@@ -922,6 +982,25 @@ pub fn encode_block(block: &Block) -> Result<Vec<u8>, ProtoError> {
             expected: n_rows,
         });
     }
+    if let Some(subject) = block.subject {
+        if block.time.is_empty() {
+            return Err(ProtoError::SubjectWithoutTime { subject });
+        }
+    }
+    // The encoder refuses what the decoder refuses (§B.5): a bucket whose aggregation a column's
+    // kind does not permit. The mask follows the column's own kind, so no dictionary is needed.
+    // A subject that does not name an entity cannot be checked here: the block may carry no
+    // dictionary, and the decoder judges it against the dictionary that is in force.
+    for bucket in &block.time {
+        for column in &block.columns {
+            if column.kind.aggregation_mask() & bucket.agg.bit() == 0 {
+                return Err(ProtoError::AggregationNotPermitted {
+                    metric: column.metric,
+                    agg: bucket.agg as u8,
+                });
+            }
+        }
+    }
     let mut sections = Vec::new();
     sections.push(Section::new(
         SectionKind::Header,
@@ -929,6 +1008,10 @@ pub fn encode_block(block: &Block) -> Result<Vec<u8>, ProtoError> {
     ));
     if let Some(dictionary) = &block.dictionary {
         sections.push(Section::new(SectionKind::Dictionary, dictionary.encode()?));
+    }
+    if let Some(ent) = block.subject {
+        let body = encode_subject_body(ent);
+        sections.push(Section::new(SectionKind::Subject, body));
     }
     if !block.rows.is_empty() {
         sections.push(Section::new(
@@ -1058,6 +1141,23 @@ pub fn encode_frame(
 /// Every malformed frame is a typed refusal; nothing is silently skipped except an
 /// unknown **optional** section, which is reported in [`Block::skipped_sections`].
 pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
+    decode_block_with(bytes, None)
+}
+
+/// Decode a whole frame into a block, judging a block without an in-frame dictionary against
+/// the dictionary generation the stream holds (WIRE.md §6.1, HOB-46).
+///
+/// With an in-frame dictionary the checks are those of [`decode_block`] and `held` is not
+/// consulted. Without one and with `held` given, the header's `dict_gen` must equal the held
+/// generation (`stale-dictionary-generation`) and every reference and column kind is checked
+/// against it. Without one and with `held` of `None` no generation or reference check is
+/// possible and none is made (the stream layer owns that judgement, HOB-54). Every bucket's
+/// aggregation is checked against its column's own kind in all three cases.
+///
+/// # Errors
+///
+/// Every malformed frame is a typed refusal, in the order of WIRE.md §3.10.
+pub fn decode_block_with(bytes: &[u8], held: Option<&Dictionary>) -> Result<Block, ProtoError> {
     let header_frame = FrameHeader::parse(bytes)?;
     // §B.1: only `BLOCK` carries block sections. A `REQ`/`REP`/`EVT` payload is a small
     // JSON control object and a `DICT` payload is a dictionary, so a block-shaped frame
@@ -1104,6 +1204,17 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
     if reserved != 0 {
         return Err(ProtoError::SectionReserved(reserved));
     }
+    // HOB-50: the directory bytes are proven present before storage is reserved for them.
+    let dir_len = usize::from(n_sec)
+        .checked_mul(SECTION_DIR_ENTRY_LEN)
+        .ok_or(ProtoError::LengthOverflow)?;
+    if cursor.remaining() < dir_len {
+        return Err(ProtoError::Truncated {
+            context: "block directory",
+            need: dir_len,
+            have: cursor.remaining(),
+        });
+    }
     let mut directory = Vec::with_capacity(usize::from(n_sec));
     for _ in 0..n_sec {
         let kind = cursor.u16()?;
@@ -1112,6 +1223,46 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
         let len = cursor.u32()?;
         directory.push((kind, version, flags, len));
     }
+    // Every section length is a multiple of 8, unknown optional kinds included (HOB-51); it is
+    // judged before the order, as WIRE.md §3.10 lists the directory checks.
+    for (kind, _version, _flags, len) in &directory {
+        if !len.is_multiple_of(8) {
+            let declared = usize::try_from(*len).map_err(|_| ProtoError::LengthOverflow)?;
+            return Err(ProtoError::SectionLength {
+                kind: *kind,
+                declared,
+                expected: crate::read::align_up(declared, 8)?,
+            });
+        }
+    }
+    // The canonical order is the encoder's, checked before any body is decoded: a
+    // directory reordering of otherwise valid sections would produce a second byte string
+    // for one value (§B.5). An unknown optional section is exempt — it is outside this
+    // version's layout and is skipped by its declared length.
+    let mut last_rank: Option<u8> = None;
+    for (index, (kind, _version, _flags, _len)) in directory.iter().enumerate() {
+        let Some(section) = SectionKind::from_code(*kind) else {
+            continue;
+        };
+        let rank = canonical_rank(section);
+        if let Some(previous) = last_rank {
+            if rank < previous {
+                return Err(ProtoError::SectionOrder { index, kind: *kind });
+            }
+        }
+        last_rank = Some(rank);
+    }
+    // Entry 0 is the header (WIRE.md §3.1). A known non-header kind there is already a rank
+    // violation (or a missing header), so only an unknown kind is left to refuse here.
+    if let Some((kind, _version, _flags, _len)) = directory.first() {
+        if SectionKind::from_code(*kind).is_none() {
+            return Err(ProtoError::SectionOrder {
+                index: 0,
+                kind: *kind,
+            });
+        }
+    }
+
     let mut body_pos = FRAME_HEADER_LEN
         .checked_add(cursor.position())
         .ok_or(ProtoError::LengthOverflow)?;
@@ -1134,24 +1285,6 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
         return Err(ProtoError::TrailingBytes {
             extra: bytes.len() - body_pos,
         });
-    }
-
-    // The canonical order is the encoder's, checked before any body is decoded: a
-    // directory reordering of otherwise valid sections would produce a second byte string
-    // for one value (§B.5). An unknown optional section is exempt — it is outside this
-    // version's layout and is skipped by its declared length.
-    let mut last_rank: Option<u8> = None;
-    for (index, (kind, _version, _flags, _len)) in directory.iter().enumerate() {
-        let Some(section) = SectionKind::from_code(*kind) else {
-            continue;
-        };
-        let rank = canonical_rank(section);
-        if let Some(previous) = last_rank {
-            if rank < previous {
-                return Err(ProtoError::SectionOrder { index, kind: *kind });
-            }
-        }
-        last_rank = Some(rank);
     }
 
     // Pass one: the header, and the directory's own validity. A block's other sections
@@ -1182,6 +1315,15 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
                         supported: section.version(),
                     });
                 }
+                // The header and the subject are required sections: their directory entry
+                // carries the required flag (WIRE.md §3.1, §3.8), and a clear flag is refused
+                // as a flags defect of that section.
+                if section.is_required() && *flags & 1 == 0 {
+                    return Err(ProtoError::UnknownSectionFlags {
+                        kind: section.code(),
+                        flags: u32::from(*flags),
+                    });
+                }
                 if section == SectionKind::Header && header_facts.is_none() {
                     // The body index matches the directory order.
                     let index = directory
@@ -1205,7 +1347,9 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
     let mut rows: Vec<Row> = Vec::new();
     let mut time: Vec<TimeBucket> = Vec::new();
     let mut columns: Vec<Column> = Vec::new();
+    let mut seen_metrics: HashSet<u32> = HashSet::new();
     let mut dictionary: Option<Dictionary> = None;
+    let mut subject: Option<u32> = None;
     let mut seen_single: Vec<UnknownSectionKind> = Vec::new();
     let mut saw_rows = false;
     let mut saw_time = false;
@@ -1234,10 +1378,7 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
             }
             SectionKind::Column => {
                 let column = decode_column_body(body, n_rows)?;
-                if columns
-                    .iter()
-                    .any(|existing| existing.metric == column.metric)
-                {
+                if !seen_metrics.insert(column.metric) {
                     return Err(ProtoError::ConflictingColumn {
                         metric: column.metric,
                     });
@@ -1247,6 +1388,7 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
             SectionKind::Dictionary => {
                 dictionary = Some(Dictionary::decode(body, crate::dict::DEFAULT_ACTIVE_MAX)?)
             }
+            SectionKind::Subject => subject = Some(decode_subject_body(body)?),
         }
     }
     // Rows and buckets are exclusive by presence, not by count: a block carrying both
@@ -1265,8 +1407,21 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
             n_rows: header.n_rows,
         });
     }
-    if let Some(table) = &dictionary {
+    // A subject names the incarnation a history block describes: it needs the time section.
+    if let Some(ent) = subject {
+        if !saw_time {
+            return Err(ProtoError::SubjectWithoutTime { subject: ent });
+        }
+    }
+    // The in-frame dictionary wins; a bare block is judged against the held one (HOB-46).
+    if let Some(table) = dictionary.as_ref().or(held) {
         table.require_generation(header.dict_gen)?;
+        if let Some(ent) = subject {
+            match table.lookup(ent)? {
+                Entry::Entity { .. } => {}
+                _ => return Err(ProtoError::RowReferenceNotEntity { index: ent }),
+            }
+        }
         // A row addresses an incarnation and a column addresses a metric. A reference of
         // the right range but the wrong entry kind would make a consumer read a label's
         // text as a cgroup id or a metric's facts as a path, so the kind is checked too.
@@ -1298,6 +1453,20 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
             }
         }
     }
+    // Every bucket's aggregation must be permitted by every column's mask (HOB-47). The mask is
+    // the column's own kind's: with a dictionary the loop above has just proven that kind equal
+    // to the metric's, and without one the column kind is all there is, so the check also runs
+    // for a bare block with nothing held.
+    for bucket in &time {
+        for column in &columns {
+            if column.kind.aggregation_mask() & bucket.agg.bit() == 0 {
+                return Err(ProtoError::AggregationNotPermitted {
+                    metric: column.metric,
+                    agg: bucket.agg as u8,
+                });
+            }
+        }
+    }
     Ok(Block {
         frame_type: header_frame.frame_type,
         corr: header_frame.corr,
@@ -1306,6 +1475,7 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
         time,
         columns,
         dictionary,
+        subject,
         skipped_sections,
     })
 }
@@ -1417,6 +1587,7 @@ mod tests {
                 .expect("column"),
             ],
             dictionary: Some(dictionary()),
+            subject: None,
             skipped_sections: Vec::new(),
         }
     }
@@ -1650,7 +1821,7 @@ mod tests {
                 real_ns: 0,
                 covered_ms: 0,
                 samples: 0,
-                agg: Aggregation::Raw,
+                agg: Aggregation::Last,
             },
             TimeBucket {
                 real_ns: 1,
@@ -1761,15 +1932,16 @@ mod tests {
                 real_ns: 1_700_000_000_000_000_000,
                 covered_ms: 1000,
                 samples: 5,
-                agg: Aggregation::Mean,
+                agg: Aggregation::Last,
             },
             TimeBucket {
                 real_ns: -1,
                 covered_ms: 0,
                 samples: 0,
-                agg: Aggregation::Raw,
+                agg: Aggregation::Last,
             },
         ];
+        // `last` is the one aggregation both columns (a counter and a gauge) permit (HOB-47).
         let bytes = encode_block(&block).expect("encode");
         let decoded = decode_block(&bytes).expect("decode");
         assert_eq!(decoded, block);
@@ -1805,6 +1977,19 @@ mod tests {
             .collect()
     }
 
+    /// `n` distinct buckets whose aggregations a counter column permits (raw, last, delta).
+    fn counter_buckets(n: usize) -> Vec<TimeBucket> {
+        let permitted = [Aggregation::Raw, Aggregation::Last, Aggregation::Delta];
+        buckets(n)
+            .into_iter()
+            .enumerate()
+            .map(|(index, bucket)| TimeBucket {
+                agg: permitted[index % permitted.len()],
+                ..bucket
+            })
+            .collect()
+    }
+
     #[test]
     fn the_time_section_is_fifteen_bytes_per_bucket_padded_to_eight() {
         // HOB-48 (length half): i64 + u32 + u16 + u8 = 15 bytes a bucket. The old factor of 14
@@ -1835,7 +2020,7 @@ mod tests {
             let mut block = live_block();
             block.rows = Vec::new();
             block.header.n_rows = u32::try_from(n).expect("small");
-            block.time = buckets(n);
+            block.time = counter_buckets(n);
             block.columns = vec![Column::new(
                 2,
                 MetricValueType::U64,
@@ -2163,11 +2348,26 @@ mod tests {
                 kind: SectionKind::Header.code()
             })
         );
+        let dir_start = FRAME_HEADER_LEN + 4;
+        // Replace the header section's declared kind with an optional unknown one: entry 0 is
+        // then not the header, which WIRE.md §3.1 reports as `section-order` at index 0 (the
+        // rank pass skips unknown kinds, so this is the entry-0 check) and not as a missing
+        // header.
         let block = live_block();
         let mut bytes = encode_block(&block).expect("encode");
-        // Replace the header section's declared kind with an optional unknown one.
-        let dir_start = FRAME_HEADER_LEN + 4;
         bytes[dir_start] = 9;
+        bytes[dir_start + 3] = 0;
+        assert_eq!(
+            decode_block(&bytes),
+            Err(ProtoError::SectionOrder { index: 0, kind: 9 })
+        );
+        // A frame whose known sections are in rank order but hold no header at all is a
+        // missing header: the header's kind is rewritten to the time section's, which shares
+        // rank 3 with the rows that follow it.
+        let mut block = live_block();
+        block.dictionary = None;
+        let mut bytes = encode_block(&block).expect("encode");
+        bytes[dir_start] = 4;
         bytes[dir_start + 3] = 0;
         assert_eq!(
             decode_block(&bytes),
@@ -2198,11 +2398,20 @@ mod tests {
                 "the encoder refuses to write a block under {frame_type:?}"
             );
         }
-        // And on the read path: the same canonical bytes with the type byte changed.
+        // And on the read path: the same canonical bytes with the type byte changed and the
+        // SECTIONED flag cleared, because SECTIONED is defined for BLOCK only (WIRE.md §2.1)
+        // and is judged first, as one of the frame header's fixed fields (§3.10).
         let bytes = encode_block(&live_block()).expect("encode");
-        for frame_type in [FrameType::Req, FrameType::Dict, FrameType::End] {
+        for frame_type in [
+            FrameType::Req,
+            FrameType::Rep,
+            FrameType::Evt,
+            FrameType::Dict,
+            FrameType::End,
+        ] {
             let mut corrupt = bytes.clone();
             corrupt[4] = frame_type.code();
+            corrupt[5] = 0;
             assert_eq!(
                 decode_block(&corrupt),
                 Err(ProtoError::NotABlock {
@@ -2211,6 +2420,44 @@ mod tests {
                 "a block-shaped payload under {frame_type:?} is refused"
             );
         }
+    }
+
+    #[test]
+    fn sectioned_is_defined_for_block_frames_only() {
+        // WIRE.md §2.1: SECTIONED is set on BLOCK and clear on every other type; on any other
+        // type it is an unknown flag, refused by the header parse before the length and the
+        // payload shape are looked at (`block-as-req`, `rep-sectioned-flag`).
+        let bytes = encode_block(&live_block()).expect("encode");
+        for frame_type in [
+            FrameType::Req,
+            FrameType::Rep,
+            FrameType::Evt,
+            FrameType::Dict,
+            FrameType::End,
+        ] {
+            let mut flagged = bytes.clone();
+            flagged[4] = frame_type.code();
+            assert_eq!(
+                FrameHeader::parse(&flagged),
+                Err(ProtoError::UnknownFrameFlags(super::FLAG_SECTIONED)),
+                "SECTIONED under {frame_type:?} is an unknown flag"
+            );
+            assert_eq!(
+                decode_block(&flagged),
+                Err(ProtoError::UnknownFrameFlags(super::FLAG_SECTIONED)),
+                "and the decoder reports it before not-a-block under {frame_type:?}"
+            );
+        }
+        let block = FrameHeader::parse(&bytes).expect("a BLOCK may carry SECTIONED");
+        assert_eq!(block.flags, super::FLAG_SECTIONED);
+        // A bare header of any other type with the flag clear parses.
+        let mut plain = header_declaring(12);
+        plain[4] = FrameType::Req.code();
+        plain[5] = 0;
+        assert_eq!(
+            FrameHeader::parse(&plain).map(|header| header.frame_type),
+            Ok(FrameType::Req)
+        );
     }
 
     #[test]
@@ -3033,10 +3280,15 @@ mod tests {
             SectionKind::Column,
             SectionKind::Time,
             SectionKind::Dictionary,
+            SectionKind::Subject,
         ] {
             assert_eq!(SectionKind::from_code(kind.code()), Some(kind));
             assert_eq!(kind.version(), 1);
-            assert_eq!(kind.is_required(), kind == SectionKind::Header);
+            assert_eq!(
+                kind.is_required(),
+                kind == SectionKind::Header || kind == SectionKind::Subject,
+                "the header and the subject are the required kinds"
+            );
             assert_eq!(kind.is_single(), kind != SectionKind::Column);
             assert!(!kind.name().is_empty());
         }
@@ -3065,6 +3317,656 @@ mod tests {
                 declared: 3,
                 expected: 8
             })
+        );
+    }
+
+    // ---- P2a1: subject, held dictionary, aggregation mask, received-frame rules ----
+
+    /// The header section of the shared facts.
+    fn header_section() -> Section {
+        Section::new(SectionKind::Header, super::encode_header_body(&facts()))
+    }
+
+    /// A history block with one bucket per aggregation in `aggs` and the given columns.
+    fn history_block(aggs: &[Aggregation], columns: Vec<Column>) -> Block {
+        let mut block = live_block();
+        block.rows = Vec::new();
+        block.header.n_rows = u32::try_from(aggs.len()).expect("small");
+        block.time = aggs
+            .iter()
+            .map(|agg| TimeBucket {
+                real_ns: 1,
+                covered_ms: 1,
+                samples: 1,
+                agg: *agg,
+            })
+            .collect();
+        block.columns = columns;
+        block
+    }
+
+    /// A `u64` column of `rows` readings of metric `metric`.
+    fn column_of(metric: u32, kind: MetricKind, rows: usize) -> Column {
+        Column::new(
+            metric,
+            MetricValueType::U64,
+            kind,
+            vec![7; rows],
+            vec![Quality::Ok.code(); rows],
+        )
+        .expect("column")
+    }
+
+    /// A history block describing incarnation 1: two `last` buckets, a counter and a gauge.
+    fn subject_block() -> Block {
+        let counter = column_of(2, MetricKind::Counter, 2);
+        let gauge = column_of(3, MetricKind::Gauge, 2);
+        let aggs = [Aggregation::Last, Aggregation::Last];
+        let mut block = history_block(&aggs, vec![counter, gauge]);
+        block.subject = Some(1);
+        block
+    }
+
+    /// The shared dictionary with metric 2 (`cpu.usage_usec`) of kind `cpu_kind`.
+    fn held_dictionary(cpu_kind: MetricKind) -> Dictionary {
+        let mut held = Dictionary::new(3);
+        for entry in dictionary().entries().iter().take(2) {
+            held.intern(entry.clone()).expect("intern");
+        }
+        held.intern(Entry::Metric {
+            facts: MetricFacts {
+                unit: MetricUnit::Microseconds,
+                kind: cpu_kind,
+                scope: MetricScope::Cgroup,
+                source: MetricSource::CgroupFs,
+            },
+            name: "cpu.usage_usec".into(),
+        })
+        .expect("intern");
+        held
+    }
+
+    fn decode_held(bytes: &[u8], held: &Dictionary) -> Result<Block, ProtoError> {
+        super::decode_block_with(bytes, Some(held))
+    }
+
+    /// Overwrite the `kind` of directory entry `index` of a frame.
+    fn set_directory_kind(bytes: &mut [u8], index: usize, kind: u16) {
+        let at = FRAME_HEADER_LEN + 4 + index * super::SECTION_DIR_ENTRY_LEN;
+        bytes[at..at + 2].copy_from_slice(&kind.to_le_bytes());
+    }
+
+    /// Overwrite the `len` of directory entry `index` of a frame.
+    fn set_directory_len(bytes: &mut [u8], index: usize, len: u32) {
+        let at = FRAME_HEADER_LEN + 4 + index * super::SECTION_DIR_ENTRY_LEN + 4;
+        bytes[at..at + 4].copy_from_slice(&len.to_le_bytes());
+    }
+
+    #[test]
+    fn decoding_with_no_held_dictionary_is_decode_block() {
+        let bytes = encode_block(&live_block()).expect("encode");
+        let plain = decode_block(&bytes);
+        assert_eq!(super::decode_block_with(&bytes, None), plain);
+        // A bare block with a dangling row is not judged without a held dictionary: there is
+        // nothing to judge it against, so `None` keeps the old behaviour exactly.
+        let mut bare = live_block();
+        bare.dictionary = None;
+        bare.rows[0].ent = 40;
+        let bytes = encode_block(&bare).expect("encode");
+        let plain = decode_block(&bytes);
+        assert_eq!(super::decode_block_with(&bytes, None), plain);
+        assert_eq!(plain.expect("no reference check").rows[0].ent, 40);
+    }
+
+    #[test]
+    fn a_bare_block_is_judged_against_the_held_dictionary() {
+        let mut bare = live_block();
+        bare.dictionary = None;
+        let bytes = encode_block(&bare).expect("encode");
+        let held = dictionary();
+        assert_eq!(decode_held(&bytes, &held), Ok(bare.clone()));
+
+        // Another generation is stale, whatever the references say.
+        let newer = Dictionary::new(4);
+        assert_eq!(
+            decode_held(&bytes, &newer),
+            Err(ProtoError::StaleDictionaryGeneration { needed: 3, held: 4 })
+        );
+
+        // A reference the held table does not hold dangles: two entries, metric 2 asked for.
+        let mut short = Dictionary::new(3);
+        for entry in dictionary().entries().iter().take(2) {
+            short.intern(entry.clone()).expect("intern");
+        }
+        assert_eq!(
+            decode_held(&bytes, &short),
+            Err(ProtoError::DanglingDictionaryRef { index: 2, len: 2 })
+        );
+
+        // A column kind that contradicts the held metric is refused.
+        let gauge_cpu = held_dictionary(MetricKind::Gauge);
+        assert_eq!(
+            decode_held(&bytes, &gauge_cpu),
+            Err(ProtoError::ColumnKindMismatch {
+                index: 2,
+                declared: MetricKind::Counter as u8,
+                dictionary: MetricKind::Gauge as u8,
+            })
+        );
+
+        // A row that names a non-entity of the held table is refused.
+        let mut other = Dictionary::new(3);
+        other
+            .intern(Entry::Free { text: "x".into() })
+            .expect("intern");
+        assert_eq!(
+            decode_held(&bytes, &other),
+            Err(ProtoError::RowReferenceNotEntity { index: 0 })
+        );
+    }
+
+    #[test]
+    fn an_in_frame_dictionary_wins_over_the_held_one() {
+        let bytes = encode_block(&live_block()).expect("encode");
+        let unrelated = Dictionary::new(9);
+        assert_eq!(decode_held(&bytes, &unrelated), Ok(live_block()));
+    }
+
+    /// The bytes of a history block built section by section, so that a bucket the encoder
+    /// refuses (`aggregation-not-permitted`) can still reach the decoder.
+    fn history_bytes(block: &Block) -> Vec<u8> {
+        let header = super::encode_header_body(&block.header);
+        let mut sections = vec![Section::new(SectionKind::Header, header)];
+        if let Some(table) = &block.dictionary {
+            let body = table.encode().expect("dict");
+            sections.push(Section::new(SectionKind::Dictionary, body));
+        }
+        let time = super::encode_time_body(&block.time).expect("time");
+        sections.push(Section::new(SectionKind::Time, time));
+        for column in &block.columns {
+            let body = super::encode_column_body(column).expect("column");
+            sections.push(Section::new(SectionKind::Column, body));
+        }
+        encode_frame(FrameType::Block, block.corr, &sections).expect("encode")
+    }
+
+    #[test]
+    fn a_bare_history_block_has_its_aggregations_judged_with_or_without_a_held_dictionary() {
+        let gauge = column_of(3, MetricKind::Gauge, 1);
+        let mut bare = history_block(&[Aggregation::Raw], vec![gauge]);
+        bare.dictionary = None;
+        let bytes = history_bytes(&bare);
+        let held = dictionary();
+        let refused = Err(ProtoError::AggregationNotPermitted { metric: 3, agg: 0 });
+        assert_eq!(decode_held(&bytes, &held), refused);
+        // With nothing held the mask is still the column's own kind's (WIRE.md 3.10).
+        assert_eq!(super::decode_block_with(&bytes, None), refused);
+        assert_eq!(decode_block(&bytes), refused);
+    }
+
+    #[test]
+    fn the_encoder_refuses_an_aggregation_a_column_does_not_permit() {
+        // Gauge and `raw`, counter and `mean`, state and `delta`: each is refused by the
+        // encoder without any dictionary, naming the column's metric and the bucket's code.
+        let cases = [
+            (3, MetricKind::Gauge, Aggregation::Raw, 0),
+            (2, MetricKind::Counter, Aggregation::Mean, 3),
+            (4, MetricKind::State, Aggregation::Delta, 2),
+        ];
+        for (metric, kind, agg, code) in cases {
+            let column = column_of(metric, kind, 1);
+            let mut block = history_block(&[agg], vec![column]);
+            block.dictionary = None;
+            assert_eq!(
+                encode_block(&block),
+                Err(ProtoError::AggregationNotPermitted { metric, agg: code }),
+                "{kind:?} does not permit {agg:?}"
+            );
+        }
+        // A permitted aggregation encodes, and the second column is judged too.
+        let counter = column_of(2, MetricKind::Counter, 1);
+        let gauge = column_of(3, MetricKind::Gauge, 1);
+        let both = history_block(&[Aggregation::Delta], vec![counter, gauge]);
+        assert_eq!(
+            encode_block(&both),
+            Err(ProtoError::AggregationNotPermitted { metric: 3, agg: 2 })
+        );
+        let last = history_block(&[Aggregation::Last], both.columns.clone());
+        assert!(encode_block(&last).is_ok(), "last suits every kind");
+    }
+
+    #[test]
+    fn every_aggregation_is_judged_against_every_columns_mask() {
+        // WIRE.md 3.6: counters permit raw, last and delta; gauges last, mean, min and max;
+        // states last. One bucket and one column, so the error names exactly that pair.
+        let mut table = dictionary();
+        table
+            .intern(Entry::Metric {
+                facts: MetricFacts {
+                    unit: MetricUnit::None,
+                    kind: MetricKind::State,
+                    scope: MetricScope::Cgroup,
+                    source: MetricSource::CgroupFs,
+                },
+                name: "state.value".into(),
+            })
+            .expect("intern");
+        // The permitted aggregations as bits in code order: raw, last, delta, mean, min, max.
+        let permitted = [
+            (2, MetricKind::Counter, 0b0111),
+            (3, MetricKind::Gauge, 0b11_1010),
+            (4, MetricKind::State, 0b0010),
+        ];
+        for (metric, kind, mask) in permitted {
+            for code in 0..6u8 {
+                let agg = Aggregation::from_code(code).expect("a defined aggregation");
+                let mut block = history_block(&[agg], vec![column_of(metric, kind, 1)]);
+                block.dictionary = Some(table.clone());
+                let decoded = decode_block(&history_bytes(&block));
+                if (mask >> code) & 1 == 1 {
+                    assert_eq!(decoded, Ok(block), "{kind:?} permits {agg:?}");
+                } else {
+                    assert_eq!(
+                        decoded,
+                        Err(ProtoError::AggregationNotPermitted { metric, agg: code }),
+                        "{kind:?} does not permit {agg:?}"
+                    );
+                }
+            }
+        }
+        // Every column is judged, not only the first: `delta` suits the counter but not the gauge.
+        let counter = column_of(2, MetricKind::Counter, 1);
+        let gauge = column_of(3, MetricKind::Gauge, 1);
+        let both = history_block(&[Aggregation::Delta], vec![counter, gauge]);
+        assert_eq!(
+            decode_block(&history_bytes(&both)),
+            Err(ProtoError::AggregationNotPermitted { metric: 3, agg: 2 })
+        );
+    }
+
+    #[test]
+    fn the_subject_body_is_the_entity_then_a_zero_word() {
+        assert_eq!(super::encode_subject_body(5), vec![5, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            super::encode_subject_body(0x0102_0304),
+            vec![4, 3, 2, 1, 0, 0, 0, 0]
+        );
+        let body = super::encode_subject_body(0);
+        assert_eq!(body.len(), super::SUBJECT_BODY_LEN);
+        assert_eq!(super::SUBJECT_BODY_LEN, 8);
+    }
+
+    #[test]
+    fn a_history_block_names_its_subject_in_a_kind_six_section() {
+        let block = subject_block();
+        let bytes = encode_block(&block).expect("encode");
+        let decoded = decode_block(&bytes).expect("decode");
+        assert_eq!(decoded, block);
+        assert_eq!(decoded.subject, Some(1));
+        assert_eq!(encode_block(&decoded).expect("again"), bytes);
+        // The directory is header, dictionary, subject, time, columns: the subject has its
+        // own rank between the dictionary and the time section, version 1, required flag set.
+        let index = section_index_of(&bytes, SectionKind::Subject.code()).expect("a subject");
+        assert_eq!(index, 2);
+        let entry = FRAME_HEADER_LEN + 4 + index * super::SECTION_DIR_ENTRY_LEN;
+        assert_eq!(&bytes[entry..entry + 4], &[6, 0, 1, 1]);
+        let body = body_at(&bytes, SectionKind::Subject.code());
+        assert_eq!(&bytes[body..body + 8], &[1, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn the_hello_announces_minor_one_and_a_minor_zero_hello_is_still_accepted() {
+        assert_eq!(PROTO_MINOR, 1);
+        assert_eq!(hello(), vec![b'H', b'O', b'B', 1, 1, 0, 1, 0]);
+        assert_eq!(
+            detect_mode(b"HOB\x01\x01\x00\x00\x00"),
+            Ok(Mode::Binary { major: 1, minor: 0 })
+        );
+    }
+
+    #[test]
+    fn a_non_zero_subject_reserved_word_is_refused() {
+        let bytes = encode_block(&subject_block()).expect("encode");
+        let body = body_at(&bytes, SectionKind::Subject.code());
+        let mut corrupt = bytes.clone();
+        corrupt[body + 4] = 1;
+        assert_eq!(
+            decode_block(&corrupt),
+            Err(ProtoError::UnknownSectionFlags { kind: 6, flags: 1 })
+        );
+    }
+
+    #[test]
+    fn a_subject_body_of_the_wrong_length_is_refused() {
+        let long = Section::raw(SectionKind::Subject.code(), 1, 1, vec![0u8; 16]);
+        let bytes = encode_frame(FrameType::Block, 1, &[header_section(), long]).expect("encode");
+        assert_eq!(
+            decode_block(&bytes),
+            Err(ProtoError::SectionLength {
+                kind: 6,
+                declared: 16,
+                expected: 8,
+            })
+        );
+    }
+
+    #[test]
+    fn a_subject_must_name_an_entity_of_the_dictionary() {
+        let mut block = subject_block();
+        block.subject = Some(2); // dictionary entry 2 is the cpu.usage_usec metric
+        assert_eq!(
+            decode_block(&encode_block(&block).expect("encode")),
+            Err(ProtoError::RowReferenceNotEntity { index: 2 })
+        );
+        block.subject = Some(40);
+        assert_eq!(
+            decode_block(&encode_block(&block).expect("encode")),
+            Err(ProtoError::DanglingDictionaryRef { index: 40, len: 4 })
+        );
+        // The held dictionary judges a bare block's subject the same way.
+        block.subject = Some(2);
+        block.dictionary = None;
+        let bytes = encode_block(&block).expect("encode");
+        let held = dictionary();
+        assert_eq!(
+            decode_held(&bytes, &held),
+            Err(ProtoError::RowReferenceNotEntity { index: 2 })
+        );
+        // And an entity is accepted.
+        block.subject = Some(0);
+        let bytes = encode_block(&block).expect("encode");
+        assert_eq!(decode_held(&bytes, &held), Ok(block));
+    }
+
+    #[test]
+    fn a_subject_needs_a_time_section_in_the_decoder_and_the_encoder() {
+        let mut live = live_block();
+        live.subject = Some(1);
+        assert_eq!(
+            encode_block(&live),
+            Err(ProtoError::SubjectWithoutTime { subject: 1 })
+        );
+        // Hand-built: rows instead of the time section, and a subject that dangles. The
+        // missing time section is reported before any reference is looked at.
+        let block = live_block();
+        let encoded = dictionary().encode().expect("dict");
+        let table = Section::new(SectionKind::Dictionary, encoded);
+        let subject = Section::new(SectionKind::Subject, super::encode_subject_body(40));
+        let rows = Section::new(SectionKind::Rows, super::encode_rows_body(&block.rows));
+        let sections = [header_section(), table, subject, rows];
+        let bytes = encode_frame(FrameType::Block, 1, &sections).expect("encode");
+        assert_eq!(
+            decode_block(&bytes),
+            Err(ProtoError::SubjectWithoutTime { subject: 40 })
+        );
+    }
+
+    #[test]
+    fn the_header_and_the_subject_must_carry_the_required_flag() {
+        let bytes = encode_block(&subject_block()).expect("encode");
+        for kind in [SectionKind::Header, SectionKind::Subject] {
+            let index = section_index_of(&bytes, kind.code()).expect("the section");
+            let flags_at = FRAME_HEADER_LEN + 4 + index * super::SECTION_DIR_ENTRY_LEN + 3;
+            assert_eq!(bytes[flags_at], 1, "{kind:?} flag is set");
+            let mut cleared = bytes.clone();
+            cleared[flags_at] = 0;
+            assert_eq!(
+                decode_block(&cleared),
+                Err(ProtoError::UnknownSectionFlags {
+                    kind: kind.code(),
+                    flags: 0,
+                }),
+                "a clear required flag on {kind:?} is refused"
+            );
+        }
+        // A section that is not required keeps its clear flag: the dictionary is written
+        // with flags 0 and decodes.
+        let index = section_index_of(&bytes, SectionKind::Dictionary.code()).expect("dictionary");
+        let dictionary_flags = FRAME_HEADER_LEN + 4 + index * super::SECTION_DIR_ENTRY_LEN + 3;
+        assert_eq!(bytes[dictionary_flags], 0);
+        assert!(decode_block(&bytes).is_ok());
+    }
+
+    #[test]
+    fn the_subject_has_its_own_place_in_the_canonical_order() {
+        let encoded = dictionary().encode().expect("dict");
+        let table = Section::new(SectionKind::Dictionary, encoded);
+        let subject = Section::new(SectionKind::Subject, super::encode_subject_body(1));
+        assert_eq!(
+            encode_frame(FrameType::Block, 1, &[header_section(), subject, table]),
+            Err(ProtoError::SectionOrder {
+                index: 2,
+                kind: SectionKind::Dictionary.code(),
+            }),
+            "a subject before the dictionary is not canonical"
+        );
+        // The decoder: the time section's and the subject's kind codes swapped in the
+        // directory (kinds 1, 5, 4, 6, 3, 3), the rank check names the subject at index 3.
+        let mut bytes = encode_block(&subject_block()).expect("encode");
+        set_directory_kind(&mut bytes, 2, SectionKind::Time.code());
+        set_directory_kind(&mut bytes, 3, SectionKind::Subject.code());
+        assert_eq!(
+            decode_block(&bytes),
+            Err(ProtoError::SectionOrder { index: 3, kind: 6 })
+        );
+    }
+
+    #[test]
+    fn every_section_length_is_a_multiple_of_eight_including_unknown_kinds() {
+        let unknown = Section::raw(9, 1, 0, vec![0u8; 8]);
+        let mut bytes =
+            encode_frame(FrameType::Block, 1, &[header_section(), unknown]).expect("encode");
+        set_directory_len(&mut bytes, 1, 5);
+        assert_eq!(
+            decode_block(&bytes),
+            Err(ProtoError::SectionLength {
+                kind: 9,
+                declared: 5,
+                expected: 8,
+            })
+        );
+        // A known kind is judged the same way, and before the order: the header and the
+        // dictionary are swapped in the directory as well, which alone is `section-order`.
+        let live = encode_block(&live_block()).expect("encode");
+        let mut known = live.clone();
+        set_directory_len(&mut known, 2, 12);
+        assert_eq!(
+            decode_block(&known),
+            Err(ProtoError::SectionLength {
+                kind: 2,
+                declared: 12,
+                expected: 16,
+            })
+        );
+        set_directory_kind(&mut known, 0, SectionKind::Dictionary.code());
+        set_directory_kind(&mut known, 1, SectionKind::Header.code());
+        assert_eq!(
+            decode_block(&known),
+            Err(ProtoError::SectionLength {
+                kind: 2,
+                declared: 12,
+                expected: 16,
+            })
+        );
+        let mut swapped = live;
+        set_directory_kind(&mut swapped, 0, SectionKind::Dictionary.code());
+        set_directory_kind(&mut swapped, 1, SectionKind::Header.code());
+        assert_eq!(
+            decode_block(&swapped),
+            Err(ProtoError::SectionOrder { index: 1, kind: 1 }),
+            "the section-order fixture shape: kinds 5, 1, 2, 3, 3 name index 1, kind 1"
+        );
+    }
+
+    #[test]
+    fn entry_zero_must_be_the_header_and_is_judged_after_the_rank_check() {
+        let live = encode_block(&live_block()).expect("encode");
+        // An unknown kind at entry 0 with the known kinds in order: the entry-0 check.
+        let mut unknown_first = live.clone();
+        set_directory_kind(&mut unknown_first, 0, 9);
+        assert_eq!(
+            decode_block(&unknown_first),
+            Err(ProtoError::SectionOrder { index: 0, kind: 9 })
+        );
+        // The same, with a rank violation further on (kinds 9, 5, 1, 3, 3): the rank check
+        // runs first and names the header's index.
+        let mut both = live;
+        set_directory_kind(&mut both, 0, 9);
+        set_directory_kind(&mut both, 2, SectionKind::Header.code());
+        assert_eq!(
+            decode_block(&both),
+            Err(ProtoError::SectionOrder { index: 2, kind: 1 })
+        );
+    }
+
+    #[test]
+    fn a_directory_the_frame_cannot_hold_is_refused_by_its_byte_count() {
+        // 16 bytes: the frame header, then n_sec = 65535 and the reserved word. The directory
+        // would be 65535 * 8 = 524_280 bytes and none is present; nothing is reserved for it.
+        let mut bytes = header_declaring(16).to_vec();
+        bytes.extend_from_slice(&u16::MAX.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        assert_eq!(
+            decode_block(&bytes),
+            Err(ProtoError::Truncated {
+                context: "block directory",
+                need: 524_280,
+                have: 0,
+            })
+        );
+        // Two entries declared and one present: the directory's own need and have.
+        let mut one = header_declaring(24).to_vec();
+        one.extend_from_slice(&2u16.to_le_bytes());
+        one.extend_from_slice(&[0u8; 10]);
+        assert_eq!(
+            decode_block(&one),
+            Err(ProtoError::Truncated {
+                context: "block directory",
+                need: 16,
+                have: 8,
+            })
+        );
+    }
+
+    #[test]
+    fn not_a_block_is_judged_before_the_buffer_length() {
+        // A REQ declaring 100 bytes and holding 12 is not-a-block, the same bytes typed BLOCK
+        // are truncated, and a REQ with trailing bytes is not-a-block as well.
+        let mut req = header_declaring(100);
+        req[4] = FrameType::Req.code();
+        req[5] = 0;
+        assert_eq!(
+            decode_block(&req),
+            Err(ProtoError::NotABlock { frame_type: 1 })
+        );
+        assert_eq!(
+            decode_block(&header_declaring(100)),
+            Err(ProtoError::Truncated {
+                context: "frame",
+                need: 100,
+                have: 12,
+            })
+        );
+        let mut long_req = header_declaring(12).to_vec();
+        long_req[4] = FrameType::Req.code();
+        long_req[5] = 0;
+        long_req.extend_from_slice(&[0u8; 8]);
+        assert_eq!(
+            decode_block(&long_req),
+            Err(ProtoError::NotABlock { frame_type: 1 })
+        );
+        // And the buffer length is judged before SECTIONED: a BLOCK without the flag and
+        // with trailing bytes is `trailing-bytes`, not `missing-section`.
+        let mut flagless = header_declaring(12).to_vec();
+        flagless[5] = 0;
+        flagless.extend_from_slice(&[0u8; 8]);
+        assert_eq!(
+            decode_block(&flagless),
+            Err(ProtoError::TrailingBytes { extra: 8 })
+        );
+    }
+
+    #[test]
+    fn a_bad_subject_is_judged_before_a_bad_column() {
+        // WIRE.md 3.10 cross-section order: generation, subject, rows, columns, mask. Both
+        // defects are present and the subject is the one named; without it the column is.
+        let mut block = subject_block();
+        block.subject = Some(40);
+        block.columns[0].kind = MetricKind::Gauge; // the dictionary says counter
+        assert_eq!(
+            decode_block(&encode_block(&block).expect("encode")),
+            Err(ProtoError::DanglingDictionaryRef { index: 40, len: 4 })
+        );
+        block.subject = Some(1);
+        assert_eq!(
+            decode_block(&encode_block(&block).expect("encode")),
+            Err(ProtoError::ColumnKindMismatch {
+                index: 2,
+                declared: MetricKind::Gauge as u8,
+                dictionary: MetricKind::Counter as u8,
+            })
+        );
+    }
+
+    #[test]
+    fn missing_rows_and_time_is_judged_before_a_subject_without_time() {
+        // A subject, a column and a declared row count, with neither rows nor time: both
+        // `no-rows-or-time` and `subject-without-time` apply, and the first is the one named.
+        let block = live_block();
+        let encoded = dictionary().encode().expect("dict");
+        let table = Section::new(SectionKind::Dictionary, encoded);
+        let subject = Section::new(SectionKind::Subject, super::encode_subject_body(0));
+        let body = super::encode_column_body(&block.columns[0]).expect("column");
+        let column = Section::new(SectionKind::Column, body);
+        let sections = [header_section(), table, subject, column];
+        let bytes = encode_frame(FrameType::Block, 1, &sections).expect("encode");
+        assert_eq!(
+            decode_block(&bytes),
+            Err(ProtoError::NoRowsOrTime { n_rows: 2 })
+        );
+    }
+
+    #[test]
+    fn the_frame_header_fixed_fields_are_judged_in_wire_order() {
+        // The type byte, then the flags, then the reserved word: each is judged as soon as it
+        // is read, so a header with several defects names the first one on the wire.
+        let mut typed = header_declaring(12);
+        typed[4] = 9;
+        typed[5] = 0x80;
+        typed[6] = 1;
+        assert_eq!(
+            FrameHeader::parse(&typed),
+            Err(ProtoError::UnknownFrameType(9))
+        );
+        let mut flagged = header_declaring(12);
+        flagged[5] = 0x80;
+        flagged[6] = 1;
+        assert_eq!(
+            FrameHeader::parse(&flagged),
+            Err(ProtoError::UnknownFrameFlags(0x80))
+        );
+        // SECTIONED on a REQ is an unknown flag, and it is judged before the reserved word.
+        let mut request = header_declaring(12);
+        request[4] = FrameType::Req.code();
+        request[6] = 1;
+        assert_eq!(
+            FrameHeader::parse(&request),
+            Err(ProtoError::UnknownFrameFlags(super::FLAG_SECTIONED))
+        );
+    }
+
+    #[test]
+    fn a_directory_that_exactly_fills_the_frame_passes_the_byte_count_check() {
+        // 12 + 4 header bytes and one 8-byte entry, no body: the directory byte count equals
+        // what is present, so the directory is read and the unknown kind at entry 0 is what
+        // is refused, not a truncation.
+        let mut bytes = header_declaring(24).to_vec();
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&[9, 0, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            decode_block(&bytes),
+            Err(ProtoError::SectionOrder { index: 0, kind: 9 })
         );
     }
 }

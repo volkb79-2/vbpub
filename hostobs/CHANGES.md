@@ -2,6 +2,137 @@
 
 ## [Unreleased]
 
+### Added (P3b: `python/hostobs_client` connection, `require_profiling`, `hostobs-mark`; the P3 part of `HOB-54` closed)
+
+- **Review round**: the envelope text checks are linear on hostile input (parse first, count depth only on parsed
+  text); `Connection.open` validates before it connects (no socket leak, `timeout_s` finite and bounded); `hello`
+  integers are exact and `epoch` is a `u64`; hostile `hello` limits are `hello-mismatch`; the query queue is also
+  bounded in bytes (64 MiB); `hostobs-mark --timeout` rejects `inf`/`nan`; exact-boundary, corr, queue and table
+  tests (`test_client_hardening.py`).
+- **`hostobs_client.conn`**: `Connection.open(path, level, *, client, timeout_s, clock)` (binary handshake at
+  minor 1), `.request()`, `.blocks()` (REP at call time, END counts checked), `.subscribe()` (dropped counters,
+  newest-8 queue), `.reconnect()` (`session` first/same/changed per §6.4), `.close()`; the §7.3 receive loop on one
+  socket and one `FrameReader`, no threads, every deadline from the injected clock; `OperationTimeout`,
+  `ProtocolError`. **`hostobs_client.envelope`**: REP/END/EVT shape checks (the byte rules of `envelope.rs`, plus
+  duplicate keys at any depth) as `EnvelopeError`.
+- **`hostobs_client.profiling`**: `require_profiling(level, required)` and the five plan D.2 states
+  (`absent`, `unconfigured`, `unreachable`, `refused`, `lost`) plus `available`. **`hostobs_client.mark`**:
+  `hostobs-mark` (`python3 -m hostobs_client.mark`), JSON mode on `HOSTOBS_OBSERVER_SOCKET`.
+- **Tests**: `python/tests/test_client_{conn,path,zipimport}.py` on a scripted fake probe (`fake_probe.py`,
+  socketpair stepped by hand, no sleeps; the one server thread is in `test_client_path.py`), a zipimport smoke
+  test, and the stdlib-only test now also forbids threads and any clock use outside a default argument.
+
+### Added (P3a: `python/hostobs_client` codec, reader, stream dictionaries and rates; `HOB-54` stays open)
+
+- **`hostobs_client.wire`** (WIRE.md §7.4): `decode_block(buf, held) -> Block`, `Dictionary`, `Column`,
+  `WireError(kind, detail)` (the 46 decoder kinds), `ServerError`, `ConnectionLost`. Explicit `<` struct
+  formats, one cached directory `Struct` per `n_sec`, memoryview casts on little-endian hosts (one swapped
+  `array.array` copy per accessed array on big-endian), quality validity by `bytes.translate`, row
+  references by `max` and a per-generation kind map, and a retained previous rows view that skips both
+  row checks on byte-identical entity references. Reproduces the 70 `fixtures/wire` cases (kinds and
+  fields) and agrees with the Python reference on a seeded byte-flip fuzz.
+- **`hostobs_client.stream`**: `FrameReader` (the §5.2 machine; §7.3 buffering through `fill()` and
+  `advance()`, `feed()` on top) replaying the 12 `reader-*` cases, `StreamDicts` (§6.2) replaying the 6
+  `client-*` cases. **`hostobs_client.rates`**: `rate(prev, cur, nominal_interval_ns)` on
+  `fixtures/rates/rates.json`, integer delta first, divide last.
+- **Tests and measurements**: `python/tests/test_client_{wire,stream,rates,stdlib_only,budgets}.py` (the
+  §7.8 gated settrace-line-count and tracemalloc bounds) and `python/bench_decode.py` (CPU, not gated; numbers
+  in `docs/SP-4-WIRE-SIZES.md`).
+
+### Added (P2c: client dictionary state and envelope checks; `HOB-54` stays open)
+
+- **`proto::stream_dicts::StreamDicts`** (WIRE.md §6.1, §6.2, §6.4, §6.5): one dictionary per stream
+  `corr`; `held`, `accept`, `close`, `reset`, `stream_count` and `on_hello(boot_id, epoch) ->
+  Session::{First, Same, Changed}`. A dictionary-bearing block must exceed the held generation (nothing
+  held is generation 0, so a first block at generation 0 is refused too) and a bare block must carry
+  exactly the held one; `accept` forgets the stream's dictionary on any error.
+  `ProtoError::GenerationRegressed { held, got }` (`generation-regressed`) is the new variant (46).
+- **`proto::envelope`** (§2.2, §4.1, §4.2, §8.2): byte-level `check_req`, `check_rep`, `check_end` and
+  `check_evt` without a JSON dependency, returning byte ranges; text rules (UTF-8, no BOM or trailing
+  byte, escapes, number grammar, depth 8), envelope-level duplicate keys, key sets and types, JSON-mode
+  `corr`. Both modules are `assay-r1` targets (36 judged files).
+- **Fixtures.** `fixtures/stream/client-*.json` (6 cases, written by
+  `python/reference/make_client_stream_fixtures.py`, replayed by `crates/proto/tests/client_stream_fixtures.rs`
+  and checked by `python/tests/test_client_stream_fixtures.py` with an independent replay); the §11.4 format
+  gains the `hello` step and the `ok` and `session` outputs.
+
+### Added (P2a2: the stream reader, mode detection and connection timers; `HOB-54` stays open)
+
+- **`proto::stream::FrameReader`** (WIRE.md §5.2): `feed(bytes, now_ns) -> Feed { frames, error }`,
+  `poll(now_ns)`, `eof()`. A frame completed before an error in the same call is returned with it; the
+  age runs from a frame's first byte and fires strictly after `completion`; a body buffer grows with
+  the received bytes (capacity at most `min(len, received + 64 KiB)`, never from `len` alone, and an
+  oversized or malformed header is refused with a 12-byte buffer); an error poisons the reader; a feed
+  after a clean `eof` is `trailing-bytes`. `ProtoError::Deadline` (`deadline`) is the new variant (45).
+- **`ModeDetect`** (§5.3, `Detect { Need, Json { at }, Binary { prefix, at }, Unknown }`) and
+  **`ConnTimers`** (§5.4, `Timer { Hello, Idle }`; `ConnTimers::new(hello_ns, idle_ns)` takes the
+  level's two durations). `SendHub`, `StreamDicts` and `envelope.rs` are not part of this change.
+- **Fixtures.** `fixtures/stream/reader-*.json` (12 cases, written by
+  `python/reference/make_stream_fixtures.py`, replayed by `crates/proto/tests/stream_fixtures.rs` and
+  checked by `python/tests/test_stream_fixtures.py` with an independent replay). The valid frames of
+  `fixtures/wire` are also fed through every split point and a fixed pseudo-random splitter.
+- **Gates.** `crates/proto/src/stream.rs` is a declared `assay-r1` target (34 judged files). A `len`
+  above the codec's 16 MiB limit is reported against the reader's own `max_frame`; `ModeDetect::feed`
+  after a decision returns `Unknown` in every build.
+
+### Added and fixed (P2a1: wire codec and Python reference)
+
+- **`HOB-48`: the `subject` section (kind 6) and `PROTO_MINOR = 1`.** A history block names the one
+  incarnation it describes (`u32 ent | u32 0`, canonical rank between the dictionary and the
+  rows/time sections); `Block::subject`, `encode_subject_body` and the Python reference carry it.
+  It needs the time section (`subject-without-time`, decoder and encoder), must name an entity
+  (`row-reference-not-entity`) and has a zero reserved word (`unknown-section-flags`).
+- **`HOB-46`: `decode_block_with(bytes, held)`.** A block without an in-frame dictionary is judged
+  against the held one (`stale-dictionary-generation`, reference, kind and mask checks); `decode_block` is
+  `held = None` and behaves as before. Fixtures carry the held dictionary as a top-level `"held"` key.
+- **`HOB-47`: `aggregation-not-permitted`.** Every history bucket's aggregation must be in every
+  column metric's mask, in both decoders. `history-buckets` and `history-five-buckets` carry `last`
+  buckets (their counter and gauge columns permit no other); the 15-byte length pin is unchanged.
+- **`HOB-50`/`HOB-51`: received frames.** `SECTIONED` on a non-BLOCK frame is `unknown-frame-flags`
+  (`block-as-req` has the flag clear), every section length is a multiple of 8
+  (`section-length`), an unknown kind at directory entry 0 is `section-order` at index 0 (after the
+  rank check), and the directory bytes are proven present before the vector is reserved.
+- **Both decoders give the same error for the same bytes.** Only the first header body is decoded (a
+  second header is `duplicate-section`); a non-zero pad byte in a column, time or dictionary body is
+  `non-zero-reserved`, and the time body's `agg` bytes are judged before its pad; the Python
+  `decode_dictionary` refuses exactly what Rust `Dictionary::decode` refuses, with the same kinds, and
+  raises nothing but `WireError`; the fixed header fields are read and judged in wire order (a short
+  buffer with an unknown type byte is `unknown-frame-type`); the header and the subject must carry the
+  directory required flag, judged after the section version; the aggregation mask needs no dictionary
+  (`held = None` included) and `encode_block` refuses `aggregation-not-permitted`; the column scan uses
+  a set.
+- **`HOB-52`/`HOB-53`: one outcome per defect.** A metric name repeated with other facts is
+  `duplicate-dictionary-entry` in Rust, judged before the text's control bytes; the Python reference
+  judges `not-a-block` before the buffer length. There are two new `ProtoError` variants (44 in all).
+- **Fixtures.** `fixtures/wire` holds 70 cases (11 valid, 59 refusals): 29 existing cases and 41 new ones.
+  Not part of this change: the stream layer (`HOB-54`), the `generation-regressed` rule, and `HOB-49`.
+
+### Fixed (P0b store follow-ups)
+
+- **`HOB-55`: a look-alike name with a huge sequence cannot poison the tier.** The store never
+  mints a segment sequence above `SEQ_NAME_MAX = u32::MAX`, so a name above it
+  (`hot-0-18446744073709551615.seg`, also `.seg.open`, `.seg.corrupt`, `.seg.open.corrupt`) is not a
+  segment name: the Rust and Python parsers refuse it, and the scan notes it and never counts,
+  adopts or deletes it or lets it raise the water mark. An unproven name never raises the mark
+  above the bound minus one; a proven one (an adopted segment whose header agrees with its name)
+  is adopted at the bound itself, and the sequence after the bound is the typed `LengthOverflow`.
+- **`HOB-56`: `StoreStats::bytes` is the tiers' own total.** It is recomputed from the history
+  tiers and the events store after every write, seal and eviction pass (error paths too), with no
+  incremental add/subtract arithmetic, so a vanished file, a new segment's header and a seal's
+  footer are always in it.
+- **`HOB-58`: eviction reports reach the caller.** `Evicted::notes` carries the reports of an
+  entry dropped because its file was already gone or could not be removed (a quarantined file that
+  cannot be removed stays on disk, uncounted, and the next restart adopts it again). A tier keeps
+  at most `MAX_EVICTION_NOTES` (256) of them in `scan.notes` after its rescan notes, and the store
+  at most 256 in its ring, the oldest dropped first; `Store::notes()` shows them once and hides
+  only one tier's "names another tier" note about another tier's file in a shared directory, so a
+  note about a tier's own garbage name stays visible.
+- **`HOB-57`: the M1d hand-mutation script has a per-run timeout.** `--timeout-s` (default 1800 s
+  for a Rust suite, 300 s for Python); a timeout is `KILLED-TIMEOUT`, counted apart (and
+  inconclusive under host load), and the container is removed by its exact name
+  `hostobs-mut-<pid>-<n>` on a timeout or any exception. 53 stored patches (`M1d-20` to `M1d-22`
+  added, `M1d-18` rewritten); the campaign has not been run.
+
 ### Fixed (P0 bug fold-in)
 
 - **`HOB-8`: `FrameHeader::parse` bounds the declared length.** It refuses a length above

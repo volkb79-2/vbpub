@@ -1,0 +1,49 @@
+{
+  "case": "reader-age-from-first-byte",
+  "doc": "60 s idle at Header{0} (polls do nothing), then a REQ whose first byte arrives at t=60000: the age counts from that byte, so a poll at +completion_ms is still fine and the frame completes at +completion_ms.",
+  "side": "client",
+  "max_frame": 16777216,
+  "completion_ms": 30000,
+  "steps": [
+    {
+      "t_ms": 1000,
+      "poll": true
+    },
+    {
+      "t_ms": 30000,
+      "poll": true
+    },
+    {
+      "t_ms": 60000,
+      "poll": true
+    },
+    {
+      "t_ms": 60000,
+      "feed_hex": "26"
+    },
+    {
+      "t_ms": 90000,
+      "poll": true
+    },
+    {
+      "t_ms": 90000,
+      "feed_hex": "00000001000000010000007b2276657262223a2268656c6c6f222c2261726773223a7b7d7d"
+    }
+  ],
+  "expect": [
+    [],
+    [],
+    [],
+    [],
+    [],
+    [
+      {
+        "frame": {
+          "type": "req",
+          "corr": 1,
+          "len": 38
+        }
+      }
+    ]
+  ]
+}

@@ -49,10 +49,188 @@ MEM_CURRENT_FACTS = {
 class WireFixtures(unittest.TestCase):
     def test_every_fixture_round_trips_in_the_reference_codec(self):
         cases = hostobs_wire_ref.load_cases(FIXTURES)
-        self.assertEqual(len(cases), 29, "the fixture case list is part of the contract")
+        self.assertEqual(len(cases), 70, "the fixture case list is part of the contract")
+        valid = [path.stem for path, spec, _data in cases if "expect_error" not in spec]
+        self.assertEqual(len(valid), 11)
         for spec_path, spec, data in cases:
             with self.subTest(case=spec_path.stem):
                 hostobs_wire_ref.check_case(spec, data)
+
+    def test_every_hostile_dictionary_body_is_a_wire_error_with_the_rust_kind(self):
+        # Each body is hostile in exactly one way. The reference names the refusal Rust
+        # `Dictionary::decode` names, and no struct.error or UnicodeDecodeError escapes.
+        import struct  # noqa: PLC0415
+
+        def body(entries: bytes = b"", count: int = 1) -> bytes:
+            raw = struct.pack("<II", 1, count) + entries
+            return raw + b"\x00" * (-len(raw) % 8)
+
+        def free(text: bytes, flags: int = 0, kind: int = 3, declared: int | None = None) -> bytes:
+            return struct.pack("<BBH", kind, flags, len(text) if declared is None else declared) + text
+
+        def entity(text: bytes, inc: int = 7) -> bytes:
+            return struct.pack("<BBHQ", 0, 0, len(text), inc) + text
+
+        def metric(unit: int, kind: int, scope: int, source: int, mask: int) -> bytes:
+            return struct.pack("<BBHBBBBH", 1, 0, 1, unit, kind, scope, source, mask) + b"m"
+
+        gauge_mask = hostobs_wire_ref.AGGREGATION_MASKS["gauge"]
+        padded_bad = struct.pack("<II", 1, 1) + free(b"abc")
+        cases = [
+            ("empty body", b"", "truncated"),
+            ("a count past the bound", body(count=65_537), "dictionary-too-large"),
+            ("no entries for the count", body(count=2), "truncated"),
+            ("a short entry header", struct.pack("<II", 1, 1) + b"\x03", "truncated"),
+            ("reserved flags", body(free(b"", flags=1)), "dictionary-entry-reserved"),
+            ("text too long", body(free(b"", declared=257)), "dictionary-entry-too-long"),
+            ("unknown kind", body(free(b"", kind=9)), "unknown-dictionary-kind"),
+            ("text past the body", body(free(b"", declared=200)), "truncated"),
+            ("a control byte", body(free(b"\x01")), "dictionary-entry-control"),
+            ("a delete byte", body(free(b"\x7f")), "dictionary-entry-control"),
+            ("invalid utf-8", body(free(b"\xff")), "dictionary-entry-not-utf8"),
+            ("a short entity", body(struct.pack("<BBH", 0, 0, 0) + b"\x00" * 4), "truncated"),
+            ("an unknown unit", body(metric(99, 0, 0, 0, gauge_mask)), "dictionary-entry-unknown-code"),
+            ("an unknown metric kind", body(metric(0, 9, 0, 0, gauge_mask)), "unknown-column-kind"),
+            ("an unknown scope", body(metric(0, 0, 99, 0, gauge_mask)), "dictionary-entry-unknown-code"),
+            ("an unknown source", body(metric(0, 0, 0, 99, gauge_mask)), "dictionary-entry-unknown-code"),
+            ("a wrong mask", body(metric(0, 0, 0, 0, 0)), "dictionary-entry-mask"),
+            ("a short metric", struct.pack("<II", 1, 1) + struct.pack("<BBHBB", 1, 0, 1, 0, 0), "truncated"),
+            ("a non-zero pad byte", padded_bad + b"\x01" + b"\x00" * 4, "non-zero-reserved"),
+            ("a missing pad", padded_bad, "truncated"),
+            ("trailing bytes", body(free(b"abc")) + b"\x00" * 8, "trailing-bytes"),
+            ("a repeated identity before its control byte", body(entity(b"a") + entity(b"b\x01"), 2), "duplicate-dictionary-entry"),
+        ]
+        for label, hostile, kind in cases:
+            with self.subTest(label):
+                self.assertEqual(self._refusal_of_dictionary(hostile)["kind"], kind)
+
+    def test_the_section_version_is_judged_before_the_required_flag(self):
+        # WIRE.md 3.10 pass 6: flags, unknown kind, version, then the required flag.
+        data = (FIXTURES / "header-version-and-required-flag-clear.bin").read_bytes()
+        self.assertEqual(
+            self._refusal(data),
+            {"kind": "unsupported-section-version", "kind_code": 1, "version": 2, "supported": 1},
+        )
+        flag_only = (FIXTURES / "header-required-flag-clear.bin").read_bytes()
+        self.assertEqual(self._refusal(flag_only)["kind"], "unknown-section-flags")
+
+    def _refusal_of_dictionary(self, body):
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_dictionary(body)
+        return caught.exception.as_dict()
+
+    def test_random_mutations_of_every_fixture_only_ever_raise_wire_errors(self):
+        # Deterministic: a fixed seed, byte overwrites and truncations. Anything but a WireError
+        # (a struct.error, an IndexError, a UnicodeDecodeError) escapes and fails the test.
+        import random  # noqa: PLC0415
+
+        rng = random.Random(20261118)
+        for spec_path, spec, data in hostobs_wire_ref.load_cases(FIXTURES):
+            held = spec.get("held")
+            for _ in range(150):
+                mutated = bytearray(data)
+                for _ in range(rng.randint(1, 4)):
+                    mutated[rng.randrange(len(mutated))] = rng.randrange(256)
+                if rng.random() < 0.2:
+                    del mutated[rng.randrange(len(mutated) + 1) :]
+                with self.subTest(case=spec_path.stem):
+                    try:
+                        hostobs_wire_ref.decode_frame(bytes(mutated), held)
+                    except hostobs_wire_ref.WireError:
+                        pass
+
+    def _spec(self, case):
+        return json.loads((FIXTURES / f"{case}.json").read_text(encoding="utf-8"))
+
+    def _refusal(self, data, held=None):
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_block(data, held)
+        return caught.exception.as_dict()
+
+    def test_a_bare_block_is_judged_against_the_held_dictionary_only_when_one_is_given(self):
+        spec = self._spec("bare-block-held-dict")
+        data = (FIXTURES / "bare-block-held-dict.bin").read_bytes()
+        self.assertEqual(hostobs_wire_ref.decode_block(data, spec["held"])["rows"], spec["frame"]["rows"])
+        self.assertEqual(hostobs_wire_ref.decode_block(data)["rows"], spec["frame"]["rows"])
+        stale = dict(spec["held"], generation=2)
+        self.assertEqual(self._refusal(data, stale)["kind"], "stale-dictionary-generation")
+        mismatch = json.loads(json.dumps(spec["held"]))
+        mismatch["entries"][2]["facts"]["kind"] = "gauge"
+        self.assertEqual(self._refusal(data, mismatch)["kind"], "column-kind-mismatch")
+        dangling = (FIXTURES / "bare-block-dangling.bin").read_bytes()
+        self.assertEqual(self._refusal(dangling, spec["held"])["kind"], "dangling-dictionary-ref")
+        # An in-frame dictionary wins over a held one: the held generation is not consulted.
+        live = (FIXTURES / "live-block.bin").read_bytes()
+        self.assertEqual(hostobs_wire_ref.decode_block(live, {"generation": 9, "entries": []})["corr"], 99)
+
+    def test_every_bucket_agg_must_be_in_every_columns_mask(self):
+        spec = self._spec("history-gauge-aggs")
+        counter = self._spec("history-agg-not-permitted")["frame"]
+        permitted = {"counter": {"raw", "last", "delta"}, "gauge": {"last", "mean", "min", "max"}}
+        for kind, frame in (("gauge", spec["frame"]), ("counter", counter)):
+            for agg in hostobs_wire_ref.AGGREGATIONS:
+                with self.subTest(kind=kind, agg=agg):
+                    mutated = json.loads(json.dumps(frame))
+                    mutated["time"] = [dict(mutated["time"][0], agg=agg)] * len(mutated["time"])
+                    data = hostobs_wire_ref.encode_frame(mutated)
+                    if agg in permitted[kind]:
+                        hostobs_wire_ref.decode_block(data)
+                    else:
+                        self.assertEqual(self._refusal(data)["kind"], "aggregation-not-permitted")
+        mixed = json.loads(json.dumps(spec["frame"]))
+        mixed["dictionary"]["entries"][1]["facts"] = dict(CPU_USAGE_FACTS)
+        mixed["columns"][0]["kind"] = "counter"
+        self.assertEqual(
+            self._refusal(hostobs_wire_ref.encode_frame(mixed))["kind"], "aggregation-not-permitted"
+        )
+
+    def test_the_subject_section_needs_time_a_whole_body_and_an_incarnation(self):
+        frame = json.loads(json.dumps(self._spec("history-subject")["frame"]))
+        self.assertEqual(hostobs_wire_ref.decode_block(hostobs_wire_ref.encode_frame(frame))["subject"], 0)
+        frame["subject"] = 99
+        self.assertEqual(self._refusal(hostobs_wire_ref.encode_frame(frame))["kind"], "dangling-dictionary-ref")
+        frame["subject"] = 1
+        self.assertEqual(self._refusal(hostobs_wire_ref.encode_frame(frame))["kind"], "row-reference-not-entity")
+        self.assertEqual(self._refusal(hostobs_wire_ref.encode_frame(
+            dict(self._spec("subject-in-live-block")["frame"])))["kind"], "subject-without-time")
+        self.assertEqual(hostobs_wire_ref.PROTO_MINOR, 1)
+        good = bytearray((FIXTURES / "history-subject.bin").read_bytes())
+        n_sec = struct.unpack_from("<H", good, 12)[0]
+        # The subject body follows the header body (80 bytes) and the dictionary body.
+        body = 16 + 8 * n_sec + 80 + struct.unpack_from("<I", good, 16 + 8 + 4)[0]
+        struct.pack_into("<I", good, body + 4, 1)
+        self.assertEqual(self._refusal(bytes(good))["kind"], "unknown-section-flags")
+
+    def test_received_frame_rules_alignment_header_first_and_flag_type(self):
+        self.assertEqual(self._refusal((FIXTURES / "unaligned-optional-section.bin").read_bytes())["kind"], "section-length")
+        self.assertEqual(
+            self._refusal((FIXTURES / "optional-section-before-header.bin").read_bytes()),
+            {"kind": "section-order", "index": 0, "kind_code": 9},
+        )
+        # The rank check still runs first: the pinned fixture keeps index 1, kind_code 1.
+        self.assertEqual(
+            self._refusal((FIXTURES / "section-order.bin").read_bytes()),
+            {"kind": "section-order", "index": 1, "kind_code": 1},
+        )
+        rep = (FIXTURES / "rep-sectioned-flag.bin").read_bytes()
+        self.assertEqual(self._refusal(rep)["kind"], "unknown-frame-flags")
+        for type_code in (1, 3, 6):
+            self.assertEqual(self._refusal(rep[:4] + bytes([type_code]) + rep[5:])["kind"], "unknown-frame-flags")
+        self.assertEqual(self._refusal(rep[:5] + b"\x00" + rep[6:])["kind"], "not-a-block")
+        # n_sec = 65535 in a 16-byte frame: the directory is judged against the bytes present.
+        short = struct.pack("<IBBHIHH", 16, 5, 1, 0, 1, 65535, 0)
+        self.assertEqual(self._refusal(short)["kind"], "truncated")
+
+    def test_check_precedence_not_a_block_before_the_buffer_length(self):
+        rep = (FIXTURES / "rep-not-sectioned-truncated.bin").read_bytes()
+        self.assertEqual(self._refusal(rep), {"kind": "not-a-block", "frame_type": 2})
+        self.assertEqual(self._refusal(rep + b"\x00" * 16)["kind"], "not-a-block")
+
+    def test_one_duplicate_outcome_for_every_repeated_dictionary_identity(self):
+        for case in ("duplicate-metric-other-facts", "duplicate-entity-other-label", "duplicate-dictionary-entry"):
+            with self.subTest(case=case):
+                refusal = self._refusal((FIXTURES / f"{case}.bin").read_bytes())
+                self.assertEqual(refusal["kind"], "duplicate-dictionary-entry")
 
     def test_a_valid_fixture_is_byte_exact_through_encode_and_decode(self):
         for spec_path, spec, data in hostobs_wire_ref.load_cases(FIXTURES):
@@ -61,7 +239,7 @@ class WireFixtures(unittest.TestCase):
             with self.subTest(case=spec_path.stem):
                 encoded = hostobs_wire_ref.encode_frame(spec["frame"])
                 self.assertEqual(encoded, data, "the reference encoder must reproduce the committed bytes")
-                decoded = hostobs_wire_ref.decode_frame(data)
+                decoded = hostobs_wire_ref.decode_frame(data, spec.get("held"))
                 self.assertEqual(
                     hostobs_wire_ref.normalise(decoded),
                     hostobs_wire_ref.normalise(spec["frame"]),
@@ -74,6 +252,10 @@ class WireFixtures(unittest.TestCase):
         hostobs_wire_ref.decode_dictionary(body)
         with self.assertRaises(hostobs_wire_ref.WireError) as caught:
             hostobs_wire_ref.decode_dictionary(body[:-1])
+        # The missing pad byte is a short read, exactly as in the Rust cursor.
+        self.assertEqual(caught.exception.refusal, "truncated")
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_dictionary(body + b"\x00" * 8)
         self.assertEqual(caught.exception.refusal, "trailing-bytes")
         with self.assertRaises(hostobs_wire_ref.WireError):
             hostobs_wire_ref.encode_dictionary(
@@ -255,7 +437,7 @@ class WireFixtures(unittest.TestCase):
             wire.decode_frame(header(wire.FRAME_HEADER_LEN))
         self.assertEqual(
             caught.exception.as_dict(),
-            {"kind": "truncated", "context": "block directory", "need": wire.FRAME_HEADER_LEN + 4, "have": wire.FRAME_HEADER_LEN},
+            {"kind": "truncated", "context": "block directory", "need": 2, "have": 0},
         )
         # Exactly the upper bound passes the length check and only then meets the buffer.
         with self.assertRaises(wire.WireError) as caught:
@@ -554,6 +736,30 @@ class SegmentNames(unittest.TestCase):
             with self.subTest(name=foreign), self.assertRaises(ref.SegmentError) as caught:
                 ref.parse_quarantine_name(foreign)
             self.assertEqual(caught.exception.refusal, "segment-name")
+
+    def test_a_sequence_above_the_name_bound_is_a_look_alike_in_every_spelling(self):
+        """HOB-55: the store never mints a sequence above ``SEQ_NAME_MAX``; the Rust parser agrees."""
+        ref = hostobs_segment_ref
+        self.assertEqual(ref.SEQ_NAME_MAX, 2**32 - 1)
+        top = ref.SEQ_NAME_MAX
+        for suffix, is_open in ((".seg", False), (".seg.open", True)):
+            ours = f"hot-0-{top}{suffix}"
+            with self.subTest(name=ours):
+                self.assertEqual(
+                    ref.parse_segment_name(ours),
+                    {"tier": "hot", "start_s": 0, "seq": top, "open": is_open},
+                )
+                self.assertEqual(ref.parse_quarantine_name(ours + ref.QUARANTINE_SUFFIX)["seq"], top)
+        for seq in (top + 1, 2**64 - 1):
+            for suffix in (".seg", ".seg.open"):
+                name = f"hot-0-{seq}{suffix}"
+                for parse, spelled in (
+                    (ref.parse_segment_name, name),
+                    (ref.parse_quarantine_name, name + ref.QUARANTINE_SUFFIX),
+                ):
+                    with self.subTest(name=spelled), self.assertRaises(ref.SegmentError) as caught:
+                        parse(spelled)
+                    self.assertEqual(caught.exception.as_dict(), {"error": "segment-name", "name": spelled})
 
     def test_a_sealed_and_an_open_segment_agree_with_their_names(self):
         ref = hostobs_segment_ref
