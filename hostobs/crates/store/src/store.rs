@@ -636,12 +636,17 @@ impl Store {
             notes.extend(state.tier.scan().notes.iter().cloned());
         }
         notes.extend(self.events.tier().scan().notes.iter().cloned());
-        notes.retain(
-            |note| match crate::format::SegmentFileName::parse(&note.name) {
+        // A quarantined name (`<segment name>.corrupt`) is a segment name of the tier it names
+        // too: hot and warm share a directory, so warm notes hot's quarantined file as "names
+        // another tier", and that is as expected as the same note about a live segment.
+        notes.retain(|note| {
+            let parsed = crate::format::SegmentFileName::parse(&note.name)
+                .or_else(|_| crate::format::SegmentFileName::parse_quarantined(&note.name));
+            match parsed {
                 Ok(parsed) => !owned.contains(&parsed.tier.as_str()),
                 Err(_) => true,
-            },
-        );
+            }
+        });
         for note in &self.eviction_notes {
             if !notes.contains(note) {
                 notes.push(note.clone());
