@@ -11,6 +11,7 @@
 
 pub mod args;
 pub mod codes;
+pub mod encode;
 pub mod limits;
 pub mod verbs;
 

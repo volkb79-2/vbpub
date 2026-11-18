@@ -661,8 +661,14 @@ mod tests {
     fn missing_wrong_typed_and_unknown_members_name_their_path() {
         assert_eq!(refused("{\"client\":\"a\"}"), "proto");
         assert_eq!(refused("{\"proto\":{\"major\":1,\"minor\":1}}"), "client");
-        assert_eq!(refused("{\"client\":\"a\",\"proto\":{\"major\":1}}"), "proto.minor");
-        assert_eq!(refused("{\"client\":\"a\",\"proto\":{\"minor\":1}}"), "proto.major");
+        assert_eq!(
+            refused("{\"client\":\"a\",\"proto\":{\"major\":1}}"),
+            "proto.minor"
+        );
+        assert_eq!(
+            refused("{\"client\":\"a\",\"proto\":{\"minor\":1}}"),
+            "proto.major"
+        );
         for bad in ["true", "null", "5", "[]", "{}"] {
             let text = format!("{{\"client\":{bad},\"proto\":{PROTO}}}");
             assert_eq!(refused(&text), "client", "{bad}");
@@ -715,7 +721,16 @@ mod tests {
     fn r16_integers_are_digits_only_and_in_range() {
         assert_eq!(minor_of("0"), Ok(0));
         assert_eq!(minor_of("65535"), Ok(65535));
-        for bad in ["65536", "-0", "-1", "1.0", "1e2", "1E2", "0.0", "18446744073709551616"] {
+        for bad in [
+            "65536",
+            "-0",
+            "-1",
+            "1.0",
+            "1e2",
+            "1E2",
+            "0.0",
+            "18446744073709551616",
+        ] {
             assert_eq!(minor_of(bad), Err(err("proto.minor")), "{bad}");
         }
         assert_eq!(minor_of("\"1\""), Err(err("proto.minor")));
@@ -775,7 +790,10 @@ mod tests {
         };
         assert!(Obj::parse(nested(7).as_bytes(), "").is_ok());
         let deep = nested(8);
-        assert_eq!(Obj::parse(deep.as_bytes(), "").map(|o| o.len()), Err(err("")));
+        assert_eq!(
+            Obj::parse(deep.as_bytes(), "").map(|o| o.len()),
+            Err(err(""))
+        );
     }
 
     #[test]
