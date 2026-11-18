@@ -53,16 +53,15 @@ class SeverityStream:
             return f"{_SEVERITIES[severity]}{rendered}{_RESET}"
         return rendered
 
-    def _write_normal(self, text: str) -> None:
-        """Write through until a newline returns us to a new prefix boundary."""
-        while text:
-            newline = text.find("\n")
-            if newline < 0:
-                self._stream.write(text)
-                return
-            self._stream.write(text[: newline + 1])
-            text = text[newline + 1 :]
-            self._line_start = True
+    def _write_normal(self, text: str) -> str:
+        """Write one ordinary line and return text following its newline."""
+        newline = text.find("\n")
+        if newline < 0:
+            self._stream.write(text)
+            return ""
+        self._stream.write(text[: newline + 1])
+        self._line_start = True
+        return text[newline + 1 :]
 
     def write(self, text: str) -> int:
         # ``print`` writes its payload and newline separately. Hold only the
@@ -75,8 +74,10 @@ class SeverityStream:
 
         while text:
             if not self._line_start:
-                self._write_normal(text)
-                return original_length
+                text = self._write_normal(text)
+                if not text:
+                    return original_length
+                continue
 
             matching = next((item for item in _SEVERITIES if text.startswith(item)), None)
             if matching is not None:
@@ -90,8 +91,9 @@ class SeverityStream:
                 return original_length
 
             self._line_start = False
-            self._write_normal(text)
-            return original_length
+            text = self._write_normal(text)
+            if not text:
+                return original_length
 
         return original_length
 
