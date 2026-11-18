@@ -593,7 +593,7 @@ def record_sdboot_selection_evidence(g, log):
     """Record, but do not grade, bootctl's selection marks and LoaderEntrySelected."""
     _, out = g.run(
         "printf 'BOOTCTL_LIST_BEGIN:1\\n'; "
-        "bootctl list 2>&1; rc=$?; "
+        "bootctl list --no-pager 2>&1 </dev/null; rc=$?; "   # a pager on the serial console would hang the guest (seen in sd-g5)
         "printf '\\nBOOTCTL_LIST_RC:%s\\nBOOTCTL_LIST_END:1\\n' \"$rc\"; "
         f"if [ -e {LOADER_ENTRY_SELECTED_EFIVAR} ]; then "
         f"printf 'LOADER_ENTRY_SELECTED_B64:%s\\n' \"$(base64 -w0 -- {LOADER_ENTRY_SELECTED_EFIVAR})\"; "

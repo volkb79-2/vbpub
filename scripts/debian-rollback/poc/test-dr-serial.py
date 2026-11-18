@@ -764,7 +764,7 @@ def main() -> int:
                 return entry_sources_output(menu_entries)
             if "SELECTION_EVIDENCE_DONE" in cmd:
                 required = (
-                    "bootctl list",
+                    "bootctl list --no-pager",   # a pager on the serial console hangs the guest (sd-g5)
                     "LoaderEntrySelected-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f",
                     "BOOTCTL_LIST_BEGIN",
                     "BOOTCTL_LIST_END",
