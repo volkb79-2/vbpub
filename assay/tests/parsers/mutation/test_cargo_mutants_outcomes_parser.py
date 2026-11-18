@@ -390,3 +390,40 @@ def test_a_report_without_project_root_skips_the_root_check():
     producer = MutationProducerIdentity(name="x", version="1", report_schema_version="y")
     report = IngestedMutationReport(producer=producer, project_root=None, mutants=(), sources={})
     assert mutation._check_report_project_root(report, run_cwd=Path("/nonexistent")) is None
+
+
+def test_bind_mutants_is_the_one_named_u3b_stub():
+    """``_bind_mutants`` is the single place U3b's binding lands. Until then it
+    raises ``NotImplementedError`` -- never a silent empty result -- so a report
+    that passed the grammar cannot be mistaken for a bound one."""
+    ctx = ParseContext(run_cwd=Path("."), repo_top=Path("."), repository=None, read_timeout=1.0)  # type: ignore[arg-type]
+    with pytest.raises(NotImplementedError, match="B245 U3b"):
+        cmo._bind_mutants((), _Artifact(b"{}"), ctx)
+
+
+def test_parse_directory_refuses_a_bad_document_before_it_reaches_the_stub():
+    ctx = ParseContext(run_cwd=Path("."), repo_top=Path("."), repository=None, read_timeout=1.0)  # type: ignore[arg-type]
+    with pytest.raises(AssayError) as caught:
+        cmo.parse_directory(_Artifact(b"[]"), ctx)
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+@pytest.mark.parametrize("bad", [["Success"], {"Success": 1}, 7, None, True])
+def test_a_non_string_summary_refuses_as_unreadable_not_a_type_error(bad):
+    """A JSON list/object is unhashable: a set-membership test on it must not
+    leak a ``TypeError`` out of the grammar check."""
+    _refuses(_mutate(lambda d: d["outcomes"][0].update(summary=bad)), "Baseline summary")
+    _refuses(_mutate(lambda d: d["outcomes"][1].update(summary=bad)), "mutant summary")
+
+
+@pytest.mark.parametrize("bad", [["x"], {"a": 1}, 3, None])
+def test_non_string_scenario_and_status_values_refuse_as_unreadable(bad):
+    _refuses(_mutate(lambda d: d["outcomes"][1].update(scenario=bad)), "scenario")
+    _refuses(
+        _mutate(lambda d: d["outcomes"][1]["phase_results"][0].update(process_status=bad)),
+        "process_status",
+    )
+    _refuses(
+        _mutate(lambda d: d["outcomes"][1]["phase_results"][0].update(phase=bad)),
+        "phases",
+    )

@@ -95,10 +95,11 @@ _MUTANT_KEYS = frozenset(
 _FUNCTION_KEYS = frozenset({"function_name", "return_type", "span"})
 _PHASE_KEYS = frozenset({"phase", "duration", "process_status", "argv"})
 _PHASES = ("Build", "Test")
-_BASELINE_SUMMARIES = frozenset({"Success", "Failure"})
-_MUTANT_SUMMARIES = frozenset(
-    {"CaughtMutant", "MissedMutant", "Unviable", "Timeout"}
-)
+#: TUPLES, not frozensets: a summary is the foreign tool's word and may be a
+#: JSON list or object, which is unhashable -- a set-membership test on it
+#: would leak a ``TypeError`` instead of the grammar refusal.
+_BASELINE_SUMMARIES = ("Failure", "Success")
+_MUTANT_SUMMARIES = ("CaughtMutant", "MissedMutant", "Timeout", "Unviable")
 
 
 def _unreadable(message: str) -> AssayError:

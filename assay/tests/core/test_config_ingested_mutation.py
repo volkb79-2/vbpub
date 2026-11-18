@@ -355,3 +355,39 @@ def test_assay_plan_names_why_an_ingested_lane_cannot_be_planned(
     assert "ingests R2 evidence" in payload["reason"]
     assert "mutation-report-json" in payload["reason"]
     assert "cannot enumerate candidates" in payload["reason"]
+
+
+# --------------------------------------------------------------------------
+# (B245 U3a) A directory-kind format is a REGISTERED format
+# --------------------------------------------------------------------------
+
+
+def test_the_missing_format_message_names_the_file_kind_format_explicitly(
+    app_project: Project,
+):
+    """The remedy names ``mutation-report-json`` literally: the registry's
+    first sorted key is now ``cargo-mutants-outcomes``, a directory-kind format
+    that is the wrong suggestion for a lane that declared only ``artifact``."""
+    text = INGESTED_LANE.replace('format = "mutation-report-json"\n', "")
+    error = _refusal(app_project, text)
+    message = str(error)
+    assert "Declare format = 'mutation-report-json', or drop this key" in message
+    assert "cargo-mutants-outcomes" not in message
+
+
+def test_a_directory_kind_format_passes_config_load_but_not_a_file_load(
+    app_project: Project,
+):
+    """Config closes ``format`` against the registry, which now holds a
+    directory-kind entry; the lane loads. Reading its artifact as ONE FILE is
+    the refusal, and it is the loader's, not the config's."""
+    from assay.mutation_parsers import load_mutation_report
+
+    text = INGESTED_LANE.replace(
+        'format = "mutation-report-json"', 'format = "cargo-mutants-outcomes"'
+    )
+    config = _load(app_project, text).lane("ui_mutation").judge.mutation
+    assert config.is_ingested and config.format == "cargo-mutants-outcomes"
+    assert MUTATION_FORMAT_REGISTRY[config.format].artifact_kind == "directory"
+    with pytest.raises(LaneConfigError, match="directory-kind artifact"):
+        load_mutation_report("{}", declared_format=config.format)
