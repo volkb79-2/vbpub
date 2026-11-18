@@ -1,0 +1,322 @@
+[
+  {
+    "diff": "--- src/lib.rs\n+++ replace uni -> usize with 0\n@@ -1,10 +1,10 @@\n pub fn uni(a: usize) -> usize {\n-    let s = \"héllo→\"; s.len() + a\n+    0 /* ~ changed by cargo-mutants ~ */\n }\n \n pub fn multi(a: u32) -> u32 {\n     let b = a + 1;\n     b * 2\n }\n \n #[cfg(test)]\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "uni",
+      "return_type": "-> usize",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:2:5: replace uni -> usize with 0",
+    "package": "r3a",
+    "replacement": "0",
+    "span": {
+      "end": {
+        "column": 34,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace uni -> usize with 1\n@@ -1,10 +1,10 @@\n pub fn uni(a: usize) -> usize {\n-    let s = \"héllo→\"; s.len() + a\n+    1 /* ~ changed by cargo-mutants ~ */\n }\n \n pub fn multi(a: u32) -> u32 {\n     let b = a + 1;\n     b * 2\n }\n \n #[cfg(test)]\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "uni",
+      "return_type": "-> usize",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:2:5: replace uni -> usize with 1",
+    "package": "r3a",
+    "replacement": "1",
+    "span": {
+      "end": {
+        "column": 34,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace + with - in uni\n@@ -1,10 +1,10 @@\n pub fn uni(a: usize) -> usize {\n-    let s = \"héllo→\"; s.len() + a\n+    let s = \"héllo→\"; s.len() - /* ~ changed by cargo-mutants ~ */ a\n }\n \n pub fn multi(a: u32) -> u32 {\n     let b = a + 1;\n     b * 2\n }\n \n #[cfg(test)]\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "uni",
+      "return_type": "-> usize",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:2:31: replace + with - in uni",
+    "package": "r3a",
+    "replacement": "-",
+    "span": {
+      "end": {
+        "column": 32,
+        "line": 2
+      },
+      "start": {
+        "column": 31,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace + with * in uni\n@@ -1,10 +1,10 @@\n pub fn uni(a: usize) -> usize {\n-    let s = \"héllo→\"; s.len() + a\n+    let s = \"héllo→\"; s.len() * /* ~ changed by cargo-mutants ~ */ a\n }\n \n pub fn multi(a: u32) -> u32 {\n     let b = a + 1;\n     b * 2\n }\n \n #[cfg(test)]\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "uni",
+      "return_type": "-> usize",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:2:31: replace + with * in uni",
+    "package": "r3a",
+    "replacement": "*",
+    "span": {
+      "end": {
+        "column": 32,
+        "line": 2
+      },
+      "start": {
+        "column": 31,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace multi -> u32 with 0\n@@ -1,15 +1,14 @@\n pub fn uni(a: usize) -> usize {\n     let s = \"héllo→\"; s.len() + a\n }\n \n pub fn multi(a: u32) -> u32 {\n-    let b = a + 1;\n-    b * 2\n+    0 /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     #[test]\n     fn t() {\n         assert_eq!(super::multi(1), 4);\n         assert_eq!(super::uni(1), 10);\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "multi",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 8
+        },
+        "start": {
+          "column": 1,
+          "line": 5
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:6:5: replace multi -> u32 with 0",
+    "package": "r3a",
+    "replacement": "0",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 7
+      },
+      "start": {
+        "column": 5,
+        "line": 6
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace multi -> u32 with 1\n@@ -1,15 +1,14 @@\n pub fn uni(a: usize) -> usize {\n     let s = \"héllo→\"; s.len() + a\n }\n \n pub fn multi(a: u32) -> u32 {\n-    let b = a + 1;\n-    b * 2\n+    1 /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     #[test]\n     fn t() {\n         assert_eq!(super::multi(1), 4);\n         assert_eq!(super::uni(1), 10);\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "multi",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 8
+        },
+        "start": {
+          "column": 1,
+          "line": 5
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:6:5: replace multi -> u32 with 1",
+    "package": "r3a",
+    "replacement": "1",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 7
+      },
+      "start": {
+        "column": 5,
+        "line": 6
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace + with - in multi\n@@ -1,14 +1,14 @@\n pub fn uni(a: usize) -> usize {\n     let s = \"héllo→\"; s.len() + a\n }\n \n pub fn multi(a: u32) -> u32 {\n-    let b = a + 1;\n+    let b = a - /* ~ changed by cargo-mutants ~ */ 1;\n     b * 2\n }\n \n #[cfg(test)]\n mod tests {\n     #[test]\n     fn t() {\n         assert_eq!(super::multi(1), 4);\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "multi",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 8
+        },
+        "start": {
+          "column": 1,
+          "line": 5
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:6:15: replace + with - in multi",
+    "package": "r3a",
+    "replacement": "-",
+    "span": {
+      "end": {
+        "column": 16,
+        "line": 6
+      },
+      "start": {
+        "column": 15,
+        "line": 6
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace + with * in multi\n@@ -1,14 +1,14 @@\n pub fn uni(a: usize) -> usize {\n     let s = \"héllo→\"; s.len() + a\n }\n \n pub fn multi(a: u32) -> u32 {\n-    let b = a + 1;\n+    let b = a * /* ~ changed by cargo-mutants ~ */ 1;\n     b * 2\n }\n \n #[cfg(test)]\n mod tests {\n     #[test]\n     fn t() {\n         assert_eq!(super::multi(1), 4);\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "multi",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 8
+        },
+        "start": {
+          "column": 1,
+          "line": 5
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:6:15: replace + with * in multi",
+    "package": "r3a",
+    "replacement": "*",
+    "span": {
+      "end": {
+        "column": 16,
+        "line": 6
+      },
+      "start": {
+        "column": 15,
+        "line": 6
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace * with + in multi\n@@ -1,15 +1,15 @@\n pub fn uni(a: usize) -> usize {\n     let s = \"héllo→\"; s.len() + a\n }\n \n pub fn multi(a: u32) -> u32 {\n     let b = a + 1;\n-    b * 2\n+    b + /* ~ changed by cargo-mutants ~ */ 2\n }\n \n #[cfg(test)]\n mod tests {\n     #[test]\n     fn t() {\n         assert_eq!(super::multi(1), 4);\n         assert_eq!(super::uni(1), 10);\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "multi",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 8
+        },
+        "start": {
+          "column": 1,
+          "line": 5
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:7:7: replace * with + in multi",
+    "package": "r3a",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 8,
+        "line": 7
+      },
+      "start": {
+        "column": 7,
+        "line": 7
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace * with / in multi\n@@ -1,15 +1,15 @@\n pub fn uni(a: usize) -> usize {\n     let s = \"héllo→\"; s.len() + a\n }\n \n pub fn multi(a: u32) -> u32 {\n     let b = a + 1;\n-    b * 2\n+    b / /* ~ changed by cargo-mutants ~ */ 2\n }\n \n #[cfg(test)]\n mod tests {\n     #[test]\n     fn t() {\n         assert_eq!(super::multi(1), 4);\n         assert_eq!(super::uni(1), 10);\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "multi",
+      "return_type": "-> u32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 8
+        },
+        "start": {
+          "column": 1,
+          "line": 5
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:7:7: replace * with / in multi",
+    "package": "r3a",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 8,
+        "line": 7
+      },
+      "start": {
+        "column": 7,
+        "line": 7
+      }
+    }
+  }
+]

@@ -68,7 +68,7 @@ from .scope import (
 )
 from .sizing import derive_sizing, sizing_input_from_plan
 from .campaign import CampaignManager
-from .transport import HxTransport, TransportError
+from .transport import HxNotConfigured, HxTransport, TransportError
 
 PROG = "fleet"
 LONG_NAME = "RAM-first fleet facts and campaign plans"
@@ -203,7 +203,11 @@ def _manager(args: argparse.Namespace) -> CampaignManager:
     # the INVOCATION's environment. A default resolved at registration time would bake
     # one machine's home directory into the exported surface, the generated SPEC region
     # and every reviewed signature, so two hosts would disagree about the same CLI.
-    return CampaignManager(args.state_dir or _default_state_dir(), HxTransport())
+    try:
+        transport = HxTransport(args.hx)
+    except HxNotConfigured as exc:
+        raise CliFailure(str(exc), exit_code=EXIT_NOT_INSTALLED) from exc
+    return CampaignManager(args.state_dir or _default_state_dir(), transport)
 
 
 def _run_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
@@ -245,7 +249,8 @@ def _scope_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
         default = repo / "r2-scope.toml"
         scope_file = default if default.is_file() else None
     declared = load_scope_file(scope_file) if scope_file is not None else {
-        "mode": None, "slice_size": None, "cursor": None, "note": None, "path": None,
+        "mode": None, "slice_size": None, "cursor": None, "note": None,
+        "reserve_percent": None, "path": None,
     }
     if args.mode is not None:
         mode, mode_source = args.mode, "--mode"
@@ -292,6 +297,7 @@ def _scope_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
         rebaseline=args.rebaseline,
         blobs=blobs,
         legacy_cursor=legacy_cursor,
+        reserve_percent=declared["reserve_percent"],
     )
     if args.write_cursor is not None:
         if document["cursor"] is None:
@@ -384,6 +390,14 @@ def _campaign_options() -> tuple[OptionSpec, ...]:
             group="TRANSPORT",
             metavar="NAME",
             parser_kwargs={"choices": ("hx",), "default": "hx"},
+        ),
+        OptionSpec(
+            ("--hx",),
+            "path of the identity-checked hx wrapper (default: $FLEETD_HX, else the source "
+            "checkout's scripts/controller/hx.sh; an installed fleetd needs one of them)",
+            group="TRANSPORT",
+            metavar="PATH",
+            parser_kwargs={"type": Path},
         ),
         OptionSpec(
             ("--state-dir",),
@@ -597,8 +611,8 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
             OptionSpec(("--per-candidate-seconds",), "declared per-candidate wall seconds", group="INPUT",
                        metavar="SECONDS", parser_kwargs={"type": float}),
             OptionSpec(("--per-candidate-memory",), "declared per-candidate memory charge", group="INPUT", metavar="SIZE"),
-            OptionSpec(("--margin",), "budget margin over the estimate (default: 1.10)", group="BUDGET",
-                       metavar="FACTOR", parser_kwargs={"type": float, "default": 1.10}),
+            OptionSpec(("--margin",), "explicit budget margin over the estimate (default: derived from the measured spread, at least 1.10)",
+                       group="BUDGET", metavar="FACTOR", parser_kwargs={"type": float, "default": None}),
             OptionSpec(("--minimum-budget",), "shortest per-instance budget (default: 15m)", group="BUDGET",
                        metavar="DURATION", parser_kwargs={"default": "15m"}),
             OptionSpec(("--startup-allowance",), "outer-bound allowance beside each instance budget (default: 15m)",

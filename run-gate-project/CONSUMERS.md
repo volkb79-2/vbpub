@@ -1007,7 +1007,9 @@ sibling cgroups. Run-Gate's launch guard takes the host Docker GID from the
 explicit `RUN_GATE_HOST_DOCKER_GID` override first, then
 `MDT_HOST_DOCKER_GID` supplied by the host launcher. Both are strict positive
 decimal values; an empty or malformed selected value is refused, and if both
-are absent the error names both variables. Run-Gate never infers the host
+are absent the error names both variables and says that the host launcher is
+the publisher and that the value cannot be derived inside the container
+(profiling then degrades to basic in-lane sampling). Run-Gate never infers the host
 Docker group from the Docker API socket's owning GID or the cockpit's group
 database: a proxy or relay can assign that API socket a different access GID.
 The control socket must use a non-root GID distinct from the host Docker GID.

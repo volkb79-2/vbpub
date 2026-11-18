@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace > with >= in pick
+@@ -26,17 +26,17 @@
+         i += 1;
+     }
+     i
+ }
+ 
+ /// Match arms and a guard.
+ pub fn pick(a: Option<u32>) -> u32 {
+     match a {
+-        Some(v) if v > 10 => v,
++        Some(v) if v >= /* ~ changed by cargo-mutants ~ */ 10 => v,
+         Some(_) => 1,
+         None => 0,
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;

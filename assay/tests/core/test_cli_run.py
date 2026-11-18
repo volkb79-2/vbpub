@@ -2013,6 +2013,83 @@ base = "main"
     assert resolved["base_resolution"] == "first-parent"
 
 
+def test_run_honours_a_delegated_request_base_on_a_merge_commit_head(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """(B552) The same merge-commit HEAD as the B008 test above, but the lane
+    DELEGATES its base (`judge.base_source = "request"`) and the gate supplies
+    `--request-base <fork point>`: the requested comparison is the exact thing
+    asked for, so it resolves to that fork point and the verdict records
+    `merge-base` -- never the first parent with the request silently dropped."""
+    fork_point = git_repo.head()
+    git_repo.write(".gitignore", "cov.json\n")
+    git_repo.git("checkout", "-q", "-b", "feature")
+    git_repo.write("src/mod.py", "def f():\n    return 1\n")
+    git_repo.commit_all("add mod.py on feature")
+
+    cov_json = json.dumps(
+        {
+            "files": {
+                "src/mod.py": {
+                    "executed_lines": [1, 2],
+                    "missing_lines": [],
+                    "excluded_lines": [],
+                }
+            }
+        }
+    )
+    write_cov = f"cat > cov.json <<'EOF'\n{cov_json}\nEOF"
+    lane = f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", {json.dumps(write_cov)}]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+coverage = {{ format = "coverage-py-json", artifact = "cov.json" }}
+base_source = "request"
+"""
+    path = git_repo.write("assay.toml", lane)
+    git_repo.commit_all("add assay.toml")
+    feature_pre_merge_tip = git_repo.head()
+
+    git_repo.git("checkout", "-q", "main")
+    git_repo.write("on_main.py", "m = 1\n")
+    git_repo.commit_all("advance main")
+
+    git_repo.git("checkout", "-q", "feature")
+    git_repo.git("merge", "-q", "--no-edit", "main")
+    assert git_repo.head() != feature_pre_merge_tip  # a real merge commit exists
+    assert fork_point != feature_pre_merge_tip  # the two policies disagree here
+
+    code, out, err = run(
+        [
+            "run", "package", "--file", str(path),
+            "--request-base", fork_point, "--verdict-json", "-",
+        ]
+    )
+
+    assert code == 0, err
+    resolved = json.loads(out)["judgment"]["resolved"]
+    assert resolved["base"] == fork_point
+    assert resolved["base"] != feature_pre_merge_tip
+    assert resolved["base_resolution"] == "merge-base"
+
+
 # --- structural failures: no verdict can even be built -----------------------
 
 

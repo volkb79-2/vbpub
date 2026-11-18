@@ -27,7 +27,13 @@ done
   exit 2
 }
 
-lock_sha256="$(sha256sum "$repo_root/hostobs/Cargo.lock" | cut -d ' ' -f 1)"
+# The image identity is the registry-set digest, computed by the verifier script's own
+# function (the one the image bakes and checks), never re-implemented here.
+lock_registry_sha256="$(python3 "$repo_root/hostobs/tools/verify-crate-cache.py" --print-registry-digest --lock "$repo_root/hostobs/Cargo.lock")"
+[[ "$lock_registry_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+  printf 'could not compute the registry-set digest of hostobs/Cargo.lock\n' >&2
+  exit 2
+}
 expected_base="$(sed -n 's/^ARG RUST_IMAGE=\(.*\)$/\1/p' "$repo_root/tester-unified-rust/Dockerfile")"
 [[ -n "$expected_base" ]] || {
   printf 'could not read the digest-pinned RUST_IMAGE from Dockerfile\n' >&2
@@ -114,15 +120,15 @@ docker buildx build \
   --cgroup-parent "$cgroup_parent" \
   --network default \
   --build-arg "RUST_IMAGE=$expected_base" \
-  --build-arg "HOSTOBS_LOCK_SHA256=$lock_sha256" \
+  --build-arg "HOSTOBS_LOCK_REGISTRY_SHA256=$lock_registry_sha256" \
   -f "$repo_root/tester-unified-rust/Dockerfile" \
   -t "$image_tag" \
   "$repo_root/hostobs"
 
-actual_lock_sha256="$(docker image inspect --format '{{index .Config.Labels "org.vbpub.tester-unified-rust.hostobs-lock-sha256"}}' "$image_tag")"
-if [[ "$actual_lock_sha256" != "$lock_sha256" ]]; then
-  printf 'loaded Rust image does not record the current hostobs Cargo.lock\n' >&2
-  printf 'expected: %s\nobserved: %s\n' "$lock_sha256" "${actual_lock_sha256:-<no label>}" >&2
+actual_lock_registry_sha256="$(docker image inspect --format '{{index .Config.Labels "org.vbpub.tester-unified-rust.hostobs-lock-registry-sha256"}}' "$image_tag")"
+if [[ "$actual_lock_registry_sha256" != "$lock_registry_sha256" ]]; then
+  printf 'loaded Rust image does not record the current hostobs Cargo.lock registry set\n' >&2
+  printf 'expected: %s\nobserved: %s\n' "$lock_registry_sha256" "${actual_lock_registry_sha256:-<no label>}" >&2
   exit 2
 fi
 
@@ -133,4 +139,4 @@ if [[ "$actual_base" != "$expected_base" ]]; then
   exit 2
 fi
 
-printf 'image=%s base=%s hostobs_lock_sha256=%s\n' "$image_tag" "$actual_base" "$actual_lock_sha256"
+printf 'image=%s base=%s hostobs_lock_registry_sha256=%s\n' "$image_tag" "$actual_base" "$actual_lock_registry_sha256"

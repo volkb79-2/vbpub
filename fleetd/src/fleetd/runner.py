@@ -15,13 +15,14 @@ from typing import Any, Mapping
 from .contracts import ContractError, is_candidate_id
 from .runner_layout import (
     ASSAY_DIR,
+    NAME_PLACEHOLDER,
     PROGRESS_PREFIX,
     PROGRESS_SUFFIX,
     candidate_ids_home_path,
     candidate_ids_relative,
     progress_home_path,
 )
-from .transport import HostUnavailable, Transport, TransportError, command_metadata, json_output
+from .transport import Transport, TransportError, command_metadata, host_unavailable, json_output
 
 
 _SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\Z")
@@ -105,26 +106,43 @@ def validate_job_spec(spec: JobSpec) -> None:
         raise ContractError("generated job name is too long or unsafe")
 
 
-def probe_script(jobs: Mapping[str, JobSpec]) -> str:
-    targets = []
+def probe_payload(jobs: Mapping[str, JobSpec]) -> str:
+    """Encode the jobs to probe as one compressed table of job names per checkout.
+
+    The remote command is ONE shell argument capped at 128 KiB, so the table
+    carries only what differs per job (its name) and one path template per
+    (campaign, host, commit, project, lane) group; the host derives each ids
+    path from the template and the name. The size therefore grows by a few
+    bytes per job, not by a full target record.
+    """
+    groups: dict[tuple[str, str, str, str, str], list[str]] = {}
     for name in sorted(jobs):
         spec = jobs[name]
         validate_job_spec(spec)
         if spec.name != name:
             raise ContractError("probe job key does not match its generated name")
-        targets.append({
-            "name": name,
-            "ids_path": spec.candidate_file_home_path,
-            "commit": spec.commit,
-            "project": spec.project,
-            "lane": spec.lane,
+        groups.setdefault((spec.campaign, spec.host, spec.commit, spec.project, spec.lane), []).append(name)
+    table = [
+        {
+            "names": names,
+            "ids_template": candidate_ids_home_path(commit, project, campaign, host, NAME_PLACEHOLDER),
+            "commit": commit,
+            "project": project,
+            "lane": lane,
             "assay_dir": ASSAY_DIR,
             "progress_prefix": PROGRESS_PREFIX,
             "progress_suffix": PROGRESS_SUFFIX,
-        })
-    metadata = command_metadata("probe", {"jobs": targets})
-    payload = json.dumps(targets, sort_keys=True, separators=(",", ":")).encode()
-    encoded = base64.b64encode(payload).decode("ascii")
+        }
+        for (campaign, host, commit, project, lane), names in sorted(groups.items())
+    ]
+    payload = json.dumps(table, sort_keys=True, separators=(",", ":")).encode()
+    return base64.b64encode(zlib.compress(payload)).decode("ascii")
+
+
+def probe_script(jobs: Mapping[str, JobSpec], *, proc_root: str = "/proc") -> str:
+    """Build the read-only probe command; ``proc_root`` lets a test point at a fixture tree."""
+    encoded = probe_payload(jobs)
+    metadata = command_metadata("probe", {})
     python_source = r'''import base64
 import hashlib
 import json
@@ -133,10 +151,17 @@ from pathlib import Path
 import re
 import sys
 import tomllib
+import zlib
 
 runner_home = Path(sys.argv[1])
-targets = json.loads(base64.b64decode(sys.argv[2], validate=True))
+groups = json.loads(zlib.decompress(base64.b64decode(sys.argv[2], validate=True)))
+proc_root = Path(sys.argv[3])
 home = Path.home()
+targets = [
+    {**{key: value for key, value in group.items() if key not in {"names", "ids_template"}},
+     "name": name, "ids_path": group["ids_template"].replace("@NAME@", name)}
+    for group in groups for name in group["names"]
+]
 rows = []
 for target in sorted(targets, key=lambda row: row["name"]):
     name = target["name"]
@@ -286,7 +311,21 @@ for target in sorted(targets, key=lambda row: row["name"]):
         "verdict_records": verdict_records,
         "baseline_seconds": baseline_seconds,
     })
-print(json.dumps({"jobs": rows}, sort_keys=True, separators=(",", ":")))
+def read_pressure(resource):
+    # "some avg10=X ..." from the kernel's PSI file; None when unreadable or malformed.
+    try:
+        for line in (proc_root / "pressure" / resource).read_text(encoding="ascii").splitlines():
+            fields = line.split()
+            if fields[:1] == ["some"]:
+                for field in fields[1:]:
+                    if field.startswith("avg10="):
+                        value = float(field[6:])
+                        return value if 0 <= value <= 100 else None
+    except (OSError, UnicodeError, ValueError):
+        pass
+    return None
+pressure = {"memory_some_avg10": read_pressure("memory"), "io_some_avg10": read_pressure("io")}
+print(json.dumps({"jobs": rows, "pressure": pressure}, sort_keys=True, separators=(",", ":")))
 '''
     compressed = base64.b64encode(zlib.compress(python_source.encode("utf-8"))).decode("ascii")
     bootstrap = (
@@ -297,7 +336,7 @@ print(json.dumps({"jobs": rows}, sort_keys=True, separators=(",", ":")))
     remote = "\n".join([
         "set -euo pipefail",
         'source "$HOME/runner-scripts/lib.sh"',
-        f"python3 -c {shlex.quote(bootstrap)} \"$RUNNER_HOME\" {shlex.quote(encoded)}",
+        f"python3 -c {shlex.quote(bootstrap)} \"$RUNNER_HOME\" {shlex.quote(encoded)} {shlex.quote(proc_root)}",
     ])
     return f"{metadata}\n{remote}"
 
@@ -429,11 +468,17 @@ class RunnerJobs:
     def __init__(self, transport: Transport, *, timeout: float = 30.0):
         self.transport = transport
         self.timeout = timeout
+        self._pressure: dict[str, dict[str, float | None] | None] = {}
+
+    def pressure(self, host: str) -> dict[str, float | None] | None:
+        """The ``some avg10`` PSI of the host's last successful probe, or ``None`` when unknown."""
+        return self._pressure.get(host)
 
     def probe(self, host: str, jobs: Mapping[str, JobSpec]) -> dict[str, dict[str, Any]]:
+        self._pressure.pop(host, None)
         rc, out, err = self.transport.run(host, probe_script(jobs), self.timeout)
         if rc in {124, 255}:
-            raise HostUnavailable(f"probe could not reach {host}: {err.strip()}")
+            raise host_unavailable(rc, f"probe could not reach {host}: {err.strip()}")
         if rc != 0:
             raise TransportError(f"probe failed on {host} with exit {rc}: {err.strip()}")
         try:
@@ -450,6 +495,7 @@ class RunnerJobs:
             result[row["name"]] = row
         if set(result) != set(jobs):
             raise TransportError(f"probe on {host} omitted a requested job")
+        self._pressure[host] = _parse_pressure(document.get("pressure"))
         return result
 
     def start(self, spec: JobSpec) -> bool:
@@ -481,7 +527,7 @@ class RunnerJobs:
     def stop(self, host: str, name: str) -> bool:
         rc, out, err = self.transport.run(host, stop_script(name), self.timeout)
         if rc in {124, 255}:
-            raise HostUnavailable(f"stop-job could not reach {host}: {err.strip()}")
+            raise host_unavailable(rc, f"stop-job could not reach {host}: {err.strip()}")
         if rc != 0:
             raise TransportError(f"stop-job failed for {name} with exit {rc}: {err.strip()}")
         return out.strip() == "STOPPED"
@@ -492,6 +538,22 @@ class RunnerJobs:
     @staticmethod
     def _digest_matches(actual: object, spec: JobSpec) -> bool:
         return isinstance(actual, str) and actual == spec.list_digest
+
+
+def _parse_pressure(value: object) -> dict[str, float | None] | None:
+    """Read the probe's ``pressure`` object; a missing or malformed one is unknown, never zero."""
+    if not isinstance(value, Mapping):
+        return None
+    result: dict[str, float | None] = {}
+    for key in ("memory_some_avg10", "io_some_avg10"):
+        reading = value.get(key)
+        valid = (
+            not isinstance(reading, bool)
+            and isinstance(reading, (int, float))
+            and 0 <= reading <= 100  # NaN and infinity fail this range test
+        )
+        result[key] = float(reading) if valid else None
+    return result
 
 
 def _progress_memory_peak(event: Mapping[str, object]) -> int | None:

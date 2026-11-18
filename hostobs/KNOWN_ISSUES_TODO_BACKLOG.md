@@ -15,12 +15,12 @@ A `FIXED` entry means code, tests, and docs landed together.
 |---|---|---|---|
 | HOB-1 | Counter wrap is never inferred: every backwards raw counter is a reset | Minor | OPEN (by design, awaiting a declared-width policy) |
 | HOB-2 | SP-4 measured bytes only: encode/decode CPU, allocations and maintenance cost unmeasured | Minor | OPEN |
-| HOB-3 | `model` and `proto` duplicate the quality/metric vocabularies because the locked image cannot take the path dependency; a shared fixture, not a shared type, binds them | Major | OPEN (needs an image rebuild decision) |
+| HOB-3 | `model` and `proto` duplicate the quality/metric vocabularies because the locked image cannot take the path dependency; a shared fixture, not a shared type, binds them | Major | OPEN (needs one image build on the registry-set identity, then workspace-only lock edits need no further rebuild) |
 | HOB-4 | No registered `conformance` lane: the independent Python fixture check is not gate-enforced | Major | OPEN |
 | HOB-5 | Section version 1 has no history min/max/mean columns; `TIME` carries one value per bucket plus the aggregation code | Minor | OPEN (decided: WIRE.md §3.6/§4.9 D-W10, no layout change; lands with P5b `series_batch`) |
 | HOB-6 | `DICT` frame type is defined but consumed nowhere: the dictionary travels inside the block frame | Minor | CLOSED (by design: reserved and unsent, WIRE.md §2.2 D-W6) |
 | HOB-7 | `IncarnationRegistry` grows without bound and `end_round` is O(all ids ever minted) | Major | OPEN (SP-3 bound) |
-| HOB-8 | `FrameHeader::parse` does not bound its declared length; only `decode_block` does | Major | OPEN (next package's streaming reader) |
+| HOB-8 | `FrameHeader::parse` does not bound its declared length; only `decode_block` does | Major | FIXED (P0 bug fold-in) |
 | HOB-9 | `derive_rate` carries no boot/epoch/incarnation context, so "no rate across a boundary" is a caller contract only | Major | OPEN (store package) |
 | HOB-10 | The metric code tables (`unit`, `scope`, `source`, `aggregation`, kind mask) are duplicated in `model` and `proto` and only the quality table is fixture-bound | Major | OPEN |
 | HOB-11 | SP-4's sampler arm is a reproduction with synthetic delta magnitudes, and the example never runs in a lane, so its numbers can drift unnoticed | Minor | OPEN |
@@ -29,7 +29,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-14 | `decode_block` accepted a block shape under any frame type, and `encode_block` would emit one | Major | FIXED (M1b) |
 | HOB-15 | The section directory's canonical order was checked on encode but not on decode | Major | FIXED (M1b) |
 | HOB-16 | A truncated section directory reached the Python decoder's `struct.unpack` and raised `struct.error` instead of a `WireError` | Minor | FIXED (M1b) |
-| HOB-17 | `kernel` carries its own `Reading`/`QualityCode` because a path dependency to `model` rewrites the locked `Cargo.lock`; a shared fixture, not a type, binds them | Major | OPEN (needs an image rebuild) |
+| HOB-17 | `kernel` carries its own `Reading`/`QualityCode` because a path dependency to `model` rewrites the locked `Cargo.lock`; a shared fixture, not a type, binds them | Major | OPEN (needs one image build on the registry-set identity, then workspace-only lock edits need no further rebuild) |
 | HOB-18 | Cgroup identity uses `st_dev` rather than `statx`'s mount id, and `starttime` ticks need a caller-supplied `CLK_TCK` | Minor | OPEN (deliberate; see the entry) |
 | HOB-19 | No package converts `kernel::Reading` into `model::Sample`, so that boundary has no test | Minor | OPEN (probe package) |
 | HOB-20 | The sampler treated an unknown device topology as a bottom device, double-counting stacked I/O; `kernel` refuses instead | Major | FIXED in `kernel`, sampler worktree unchanged |
@@ -39,7 +39,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-24 | `RealFs::read` refused a file by its *reported* length (a sysfs attribute reports one page) and `max_bytes + 1` overflowed at `usize::MAX` | Minor | FIXED (M1b fix round) |
 | HOB-25 | `io.stat`'s iocost sums used `saturating_add` (silently clamping at `u64::MAX`) where the counters use `checked_add` | Minor | FIXED (M1b fix round) |
 | HOB-26 | The SP-2 rate arithmetic is a test-local helper, not `model::derive_rate`, because the crates cannot depend on each other | Minor | OPEN (documented limit) |
-| HOB-27 | `store` cannot depend on `proto`/`model`: a path or dev dependency rewrites the locked `Cargo.lock`, so the crate re-implements four frame-header checks and carries its own quality table | Major | OPEN (needs an image rebuild) |
+| HOB-27 | `store` cannot depend on `proto`/`model`: a path or dev dependency rewrites the locked `Cargo.lock`, so the crate re-implements four frame-header checks and carries its own quality table | Major | OPEN (needs one image build on the registry-set identity, then workspace-only lock edits need no further rebuild) |
 | HOB-28 | A segment's records are found by scanning every record body, not from a footer index; a range query re-reads each candidate file from the start | Minor | OPEN (M2 query surface) |
 | HOB-29 | The `require_tmpfs` check reads `/proc/self/mounts` and matches path prefixes; it does not ask `statfs` what filesystem the directory is actually on | Major | OPEN |
 | HOB-30 | No session spools: a crashed probe's rate/span continuation (`§C.4`'s spool) has no store at all | Major | OPEN (out of this package's scope) |
@@ -51,11 +51,11 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-36 | Events are keyed by `(issuer, key)` strings rather than dictionary incarnations, so an event's cgroup identity is a label a caller supplies, not an identity the store can validate | Minor | OPEN (probe package) |
 | HOB-37 | Span abandonment is a caller call (`abandon_issuer`); nothing in the store ties it to an incarnation disappearing, so `inferred: true` closes only happen when the caller loops over them | Minor | OPEN (probe package) |
 | HOB-38 | A full writer queue always drops the oldest job; there is no blocking or sample-shedding policy, which is a product choice to revisit with the probe's own loop | Minor | OPEN (probe package) |
-| HOB-39 | A range answer is the stored payload bytes (a whole `proto` BLOCK) plus the record's time and incarnations, not decoded `model` values with quality codes: the join needs `proto`/`model`, which `HOB-27` forbids | Major | OPEN (needs an image rebuild) |
+| HOB-39 | A range answer is the stored payload bytes (a whole `proto` BLOCK) plus the record's time and incarnations, not decoded `model` values with quality codes: the join needs `proto`/`model`, which `HOB-27` forbids | Major | OPEN (needs the lanes on the registry-set-identity image, as `HOB-27`) |
 | HOB-40 | No focus tier is configured by `plan_v4`; the tier machinery accepts one, but the plan does not yet say what a focus tier keeps | Minor | OPEN (plan decision) |
 | HOB-41 | No golden fixture has a non-zero record pad, so the padding rule is pinned by unit tests on each side, not by a cross-language file | Minor | OPEN |
-| HOB-42 | A `.seg` name is trusted as sealed without a footer, and the header's `seq`/`start_real_ns` are never compared with the name | Minor | OPEN |
-| HOB-43 | Quarantined `.corrupt` files (corrupt, oversized) are kept for an operator but are never counted in `bytes`, never evicted and never bounded in number, so repeated damage can fill the directory beyond `cap_bytes` | Major | OPEN |
+| HOB-42 | A `.seg` name is trusted as sealed without a footer, and the header's `seq`/`start_real_ns` are never compared with the name | Minor | FIXED (P0 bug fold-in) |
+| HOB-43 | Quarantined `.corrupt` files (corrupt, oversized) are kept for an operator but are never counted in `bytes`, never evicted and never bounded in number, so repeated damage can fill the directory beyond `cap_bytes` | Major | FIXED (P0 bug fold-in) |
 | HOB-44 | CLOSED — `tester-unified-rust` carries no `pip`/`ensurepip`/`python3-venv`, so the original `kind = "assay"` `assay-r1` lane died at Run-Gate's editable install before judging. Fixed by re-declaring the lane as a `kind = "command"` lane that runs the judge from the worktree's own `assay/src` (`PYTHONPATH`, no install); the image is unchanged. Proven through Run-Gate: PASS with the measured totals in the lane log, and FAIL/UNCOVERED_LINES when one kernel test file is deleted | Major | CLOSED (2026-11-16) |
 | HOB-45 | Rust R2/R3 remain unregistered for hostobs: no `assay-r2` (cargo-mutants ingestion) or `assay-r3` (canary) lane exists, so test quality rests on the hand-mutation campaigns | Major | OPEN (assay R-3b/R-4) |
 | HOB-46 | A block without an in-frame dictionary cannot be validated: `decode_block` checks row/column references only against a dictionary carried in the same frame | Major | OPEN (P2) |
@@ -187,17 +187,21 @@ counts 1..4 and that no `struct.error` escapes.
 Plan v4 §A.3 says the collectors produce `model` values. A path dependency
 `hostobs-model = { path = "../model" }` — even as a *dev*-dependency — makes Cargo rewrite
 `Cargo.lock` (the kernel package gains a `dependencies` entry), and the Rust lane image bakes the
-lock digest (`/usr/local/share/hostobs-Cargo.lock.sha256`), so `cargo --locked` then fails with
-"cannot update the lock file". Hand-editing the lock is forbidden, and a new crate needs an image
+whole-lock digest (`/usr/local/share/hostobs-Cargo.lock.sha256`, the identity of the image
+currently deployed as `tester-unified-rust:local`), so `cargo --locked` then fails with
+"cannot update the lock file". Hand-editing the lock is forbidden, and the deployed image needs a
 rebuild. Measured in this package in a throwaway container: adding the dev-dependency rewrote the
-lock; removing it restored the digest.
+lock; removing it restored the digest. The image source now bakes a registry-set digest instead
+(`/usr/local/share/hostobs-Cargo.lock.registry-sha256`, which ignores workspace members), but no
+image carrying it exists until a NEW tag is built on a host; until `run-gate.root.toml` points the
+Rust lanes at that tag the paragraph above is still the truth for the lanes.
 
 The crate is therefore dependency-free and carries a three-variant `Value` and a `QualityCode`
 newtype. They are not parallel vocabularies by accident: `crates/kernel/tests/quality_table.rs`
 asserts the table byte-for-byte against `fixtures/wire/quality.json`, the same fixture `model`,
 `proto` and the Python decoder assert, so a renumbering fails in four places.
 
-**Exit criteria.** The first image rebuild that can carry a new lock: make `kernel` depend on
+**Exit criteria.** The first lane run on the registry-set-identity image that can carry a new lock (a workspace-only lock edit needs no further rebuild): make `kernel` depend on
 `model`, delete `crates/kernel/src/{value,quality}.rs`, convert `Reading` into `model::Sample` at
 that boundary, and delete the local table assertion (the shared fixture stays).
 
@@ -310,6 +314,15 @@ unchecked. The streaming reader of the next package starts with `parse` and must
 **Fix shape.** Validate `FRAME_HEADER_LEN <= len <= MAX_FRAME_BYTES` inside `parse` (and keep
 `decode_block`'s own check, so a future caller that bypasses `parse` is still bounded), plus
 a test at the bound and one past it. No wire change.
+
+**FIXED (P0 bug fold-in).** `parse` now refuses a declared length above `MAX_FRAME_BYTES`
+(`oversized-frame`) and below `FRAME_HEADER_LEN` (`truncated`, context "frame length shorter
+than the header"), after the fixed-field checks, so Rust and the Python reference name the same
+first refusal. `decode_block` keeps its own check as a second bound; through `parse` that check
+can no longer fire, so its multi-line `return Err(..)` is covered by no test (see `CHANGES.md`). Tests pin the
+bound, one past it, `u32::MAX`, one below the header, zero and the refusal order, in both
+languages, and two refusal fixtures (declared length 4, a header-only block) are decoded by
+both. Stored hand-mutation patches, not yet run: `M1d-1`, `M1d-14`.
 
 ## HOB-9 — `derive_rate` has no boot/epoch/incarnation context
 
@@ -447,7 +460,8 @@ dictionary field codes in `crates/proto/src/dict.rs`.
 `hostobs-model` holds the in-memory value vocabulary; `hostobs-proto` holds the same
 closed table for wire codes. `hostobs-proto` deliberately does **not** depend on
 `hostobs-model`: adding a path dependency changes `Cargo.lock`, and the Rust lane image
-caches exactly the committed lock, so `cargo --locked` refuses to build (`cannot update
+deployed as `tester-unified-rust:local` caches exactly the committed lock and bakes its
+whole-file digest, so `cargo --locked` refuses to build (`cannot update
 the lock file`). The two tables are therefore bound by *behavior*, not by a type: both
 assert themselves against the committed fixture `fixtures/wire/quality.json`, and the
 independent Python decoder asserts the same file. A divergence in either crate is a red
@@ -459,8 +473,8 @@ only if that crate's test runs. It is a configuration fact of the current image,
 design preference.
 
 **Exit criteria.** Decide the shared-type shape (a dependency edge, or a third
-`-vocab` crate both depend on) at the next image rebuild, when `Cargo.lock` may
-legitimately change together with the image, and record it as a decision in
+`-vocab` crate both depend on) once the Rust lanes run on an image built on the registry-set
+identity (a workspace-only `Cargo.lock` edit then needs no rebuild), and record it as a decision in
 `hostobs/docs/DESIGN-GUIDE.md`.
 
 ## HOB-4 — No registered `conformance` lane
@@ -535,8 +549,8 @@ the two are bound to shared fixtures rather than to shared types: a header fact 
 against the real `fixtures/wire/*.bin` payloads in `crates/store/tests/golden_segment.rs`, and
 the quality table against `fixtures/wire/quality.json` in `crates/store/tests/quality_table.rs`.
 
-**Exit criteria.** An image rebuild taken from a lock that admits the workspace's own crates,
-after which `store` calls `proto`'s `FrameHeader::parse` and `model`'s `Quality` and the two
+**Exit criteria.** The Rust lanes running on an image built on the registry-set identity (which
+admits a lock whose only change is the workspace's own path dependencies), after which `store` calls `proto`'s `FrameHeader::parse` and `model`'s `Quality` and the two
 duplicated modules are deleted (their tests move with them). Until then every change to the
 frame header or the quality vocabulary has to be made in two places, and the fixture tests are
 what force that.
@@ -730,7 +744,7 @@ Doing the join inside the store would mean a decoder and a value model in this c
 duplication `HOB-27` already forces on four header facts, multiplied by the whole column codec,
 which is the wrong trade while the lock is pinned.
 
-**Exit criteria.** After the image rebuild that `HOB-27` needs, `Store::range` (or a layer above
+**Exit criteria.** After the image switch that `HOB-27` needs (lanes on the registry-set-identity image), `Store::range` (or a layer above
 it) returns `model` rows with their quality codes and the payload form becomes an internal
 detail; `quality::Reading` is then replaced by `model`'s type.
 
@@ -784,6 +798,16 @@ mean "the footer that closes these records is present and agrees", not "the name
 of served, a name/header identity disagreement is a typed refusal, and both have a test and a
 mutant.
 
+**FIXED (P0 bug fold-in).** A non-`.seg.open` name without a verified footer (a lost footer, a
+truncated sealed file) is quarantined whole as `<name>.corrupt` and reported in the tier scan
+(`SealedWithoutFooter`); a header `seq` or `start_real_ns` that disagrees with the name is the
+typed refusal `SegmentIdentity` and quarantines the file, for `.seg` and `.seg.open` alike. The
+seal keeps the open name's start second so a step change cannot trip the new rule. The Python
+segment reference refuses the same files (`check_segment_name`); no golden fixture is possible
+because the name is not in the file's bytes. `docs/SEGMENT-FORMAT.md` states both rules.
+A `.seg.open` name that carries a footer is refused too (`OpenWithFooter`). Stored hand-mutation
+patches, not yet run: `M1d-6` … `M1d-9`, `M1d-17`, `M1d-19`.
+
 ## HOB-43 — Quarantined files sit outside the cap
 
 **Where:** `crates/store/src/tier.rs` (`rescan`: corrupt and oversized branches), `crates/store/src/segment.rs` (`quarantine_name`).
@@ -798,6 +822,17 @@ fix round; the first review round missed it too.
 **Exit criteria.** Either quarantined bytes count against the tier's cap (oldest `.corrupt`
 removed first, reported) or a hard count/bytes bound refuses further quarantine with a typed,
 counted report; a test fills the bound; a mutant removes it.
+
+**FIXED (P0 bug fold-in), by the first alternative.** Quarantined files count in the tier's
+byte total, `keep_s` applies to them by the `(start_s, seq)` their names keep, and under
+`cap_bytes` they are evicted first, oldest first, before any live segment. Every such removal
+is reported (`Evicted::quarantined`) and counted (`StoreStats::evicted_quarantined`). Only a
+`.corrupt` file whose name parses to this tier and whose header is this tier's corpus is
+adopted; any other look-alike is reported as a note, never counted, evicted or removed, so
+those bytes stay outside the cap. A quarantined file deleted by hand, or one that cannot be
+removed, leaves the list and the total without failing the pass, and a quarantined name keeps its
+sequence number. Tests fill the bound; stored hand-mutation patches, not yet run: `M1d-2` … `M1d-5`,
+`M1d-10`, `M1d-12` … `M1d-16`, `M1d-18`.
 
 ## HOB-44 — CLOSED: the lane needed no `pip`, because it needed no install
 

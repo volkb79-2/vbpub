@@ -120,7 +120,8 @@ timeout, unviable, success, start_time, end_time|null, cargo_mutants_version}`. 
 process_status, argv}]}`. `summary` ∈ {Success, CaughtMutant, MissedMutant, Unviable, Failure, Timeout};
 `process_status` is serde-default `"Success" | {"Failure": n} | "Timeout" | {"Signalled": n} | "Other"` [V enum,
 JSON shape K]. A mutant is `{name, package, file, function, span, replacement, genre}`, genre ∈ {FnValue,
-BinaryOperator, UnaryOperator, MatchArm, MatchArmGuard, StructField} [V]. Span column units are [U] (S3).
+BinaryOperator, UnaryOperator, MatchArm, MatchArmGuard, StructField} [V]. Span columns are measured (R-3a,
+`RUST-R3A-SPIKES.md`): 1-based, end exclusive, counted in characters, not bytes.
 
 **New format module** `mutation_parsers/cargo_mutants_outcomes.py` (keyed by format, per the registry rule [V]):
 
@@ -131,36 +132,46 @@ BinaryOperator, UnaryOperator, MatchArm, MatchArmGuard, StructField} [V]. Span c
 | `MissedMutant` | `survived` | |
 | `Timeout` | `budget_exceeded` | Stryker precedent [V `INGESTED_STATUS_BUCKETS`]: outside the score, listed for triage. |
 | `Unviable` | `discarded`, reason compile error | B070 precedent [V]. |
-| `Success`/`Failure` on a Mutant, `Timeout`/`Failure` on Baseline, unknown summary or key, `end_time` null | refuse report (`UNREADABLE_ARTIFACT`) | closed vocabulary, incomplete evidence is not evidence [V parser doctrine]. |
+| `Success`/`Failure` on a Mutant, unknown summary or key, `end_time` null | refuse report (`UNREADABLE_ARTIFACT`) | closed vocabulary, incomplete evidence is not evidence [V parser doctrine]. |
+| `Failure`/`Timeout` on Baseline | lane FAIL (exit 4), reader refuses the report with an explicit reason | measured: the report is complete but has `total_mutants` 0 and the Baseline Test status is `Failure(100)`, the same as a kill; the scenario, never the status, decides (`RUST-R3A-SPIKES.md` D4). |
 
 - **Identity**: `operator = "cargo-mutants:<Genre>"` (new namespace in `vocabulary.INGESTED_OPERATOR_NAMESPACES`
-  [V]; schema impact [U] S7), `replacement_sha256` = sha256 of `replacement`, byte span from `span` converted
+  [V]; schema impact: a verdict v20 cut, operator-approved 2026-11-18, `RUST-R3A-SPIKES.md` D6), `replacement_sha256` = sha256 of `replacement`, byte span from `span` converted
   against the committed blob.
 - **What differs from Stryker, and how it stays fail-closed.** The report embeds no `source` and no `projectRoot`
   [V]. (1) Freshness rests on the existing artifact reservation, "never accepts a report it did not watch being
   produced" [V CONSUMERS B046]. (2) The content tier is per mutant: its `diff/*.diff` minus-lines must equal the
   committed blob at those lines; any mismatch refuses. (3) `sources` for `lines_without_candidates` come from the
   committed blobs assay already reads. This needs a small ingest-path change: the reader takes the directory and a
-  blob reader, not a text. Reservation of a directory artifact (`mutants.out/`) and the dirty-tree check against
-  it are [U] S3.
+  blob reader, not a text. Measured (R-3a): the existing file reservation cannot hold `mutants.out/`, because
+  cargo-mutants renames even an empty pre-created `mutants.out` to `mutants.out.old`; a new directory-artifact
+  reservation is needed (`RUST-R3A-SPIKES.md` D2). The source tree stays untouched (`--output` is a directory
+  the tool fills), so the dirty-tree check has nothing to see.
 - **R0 of the R2 lane.** cargo-mutants exits 2/3 when mutants are missed or time out, which A-073 would turn into
   R0 `COMMAND_FAILED` before assay reads the report (Stryker needs `thresholds.break: null` for the same reason
   [V]). cargo-mutants has no such switch [K]. Fix through the existing B078 seam [V]: a `result_report` reader
   `cargo-mutants-outcomes` reading `outcomes.json`; complete = `end_time` set and a Baseline outcome present;
-  failures = Baseline summary is not `Success`. Exit 2/3 then no longer decide R0; exit 4 (baseline failed) is a
+  a Baseline summary other than `Success` is a FAIL, but the existing reader shape requires a positive
+  `total_mutants` and a baseline-failure report has 0, so that FAIL rides the exit-4 path with an explicit refusal
+  reason (`RUST-R3A-SPIKES.md` D4). Exit 2/3 then no longer decide R0; exit 4 (baseline failed) is a
   FAIL; exit 1/70 leave no complete report and fall back to the exit code (FAIL). Rejected: a per-lane `bash`
   wrapper mapping exit codes, which is hand-written fail-open territory.
 - **Diff scoping.** assay owns the base (`base_source = "request"`) and currently exports nothing about it to the
-  command [V: no `ASSAY_BASE`-like variable exists]. Add `ASSAY_CHANGED_DIFF`: a path, outside the snapshot, to
+  command [V: no `ASSAY_BASE`-like variable exists]. Measured (R-3a): lane argv has no shell and no substitution and
+  `--in-diff` has no environment spelling, so an exported `ASSAY_CHANGED_DIFF` cannot reach cargo-mutants; the
+  handoff is an assay-owned argv placeholder (`RUST-R3A-SPIKES.md` D7) for the path, outside the snapshot, to
   `git diff <resolved base>..<commit>` for ingested changed-lines lanes. The lane runs `cargo mutants --in-diff
-  "$ASSAY_CHANGED_DIFF"`, which keeps mutants that "overlap with regions changed in the diff" [V] and refuses a
+  <that path>`, which keeps mutants that "overlap with regions changed in the diff" [V] and refuses a
   diff whose new side does not match the tree (exit 5) [V]. assay still scopes by its own rule (mutant start line
   is an added line [V `ingest_mutation_report`]); overlap is a superset of start-line, so `--in-diff` is only a
   cost filter and can never shrink assay's scope. Known gap K8: an `FnValue` mutant whose span starts on an
-  unchanged line of an edited function is run but not judged (span start [U] S3).
+  unchanged line of an edited function is run but not judged (measured: `--in-diff` is a function-level superset, and
+  the `FnValue` span starts at the first body token).
 - **Flags**: `--test-tool nextest --cargo-arg=--locked --jobs 2 --timeout-multiplier 10 --minimum-test-timeout 120
-  --output <lane dir>` with `.cargo/config.toml` forcing offline. `--test-workspace=false` (test only the mutated
-  package) [K, S3]: cheaper, forces per-crate tests, and can only add survivors (the loud direction). No build
+  --output <lane dir>` with `.cargo/config.toml` forcing offline. `--test-workspace` is an explicit per-lane choice. Measured (R-3a):
+  the unset default is `--test-workspace=false` (test only the mutated package), which scores a crate whose tests
+  live in another crate as `CaughtMutant` with Test `Failure(4)` ("no tests to run"); only `Failure(100)` is a kill,
+  so those mutants land in `crashed`, not `survived` (loud, but a different verdict than "only adds survivors"). No build
   timeout (off by default [V]; build-time kills are load-dependent). `--shard k/n` is refused by assay on
   ingested lanes [V CONSUMERS], so shards exist only in the advisory whole-crate lanes (§E); every shard runs its
   own baseline [V]. No `--baseline=skip`.
@@ -297,8 +308,8 @@ S < 300 changed lines, M < 900, L more.
 | **MILESTONE 1** | **hostobs M0/M1 run on the real gate: fmt, clippy, deny, nextest, doctests, crate line+region floors.** Not yet assay-judged. | | | | R-1 |
 | R-2 | assay `RustAdapter` registered at R1; nextest/libtest first-failure recognizers; real-toolchain fixtures (`tests/fixtures/rust/`, generated in the image, A-234 discipline [V go.py header]); `tools/qualify_rust_r1_real.py` run inside the image; CONSUMERS "Rust lanes" + DESIGN-GUIDE §11 row; hostobs `assay-r1` replaces `selftest` | M | Codex / Fable once, then Sonnet | assay's own lanes + qualification in the image | R-1 |
 | **MILESTONE 2** | **100% diff-line coverage judged by assay on hostobs.** | | | | R-2 |
-| R-3a | DEFERRED until R2 adoption: S3/S4/S7 spikes (span units, zero-mutant `--in-diff`, baseline-failure report, directory artifact reservation, schema impact) | S | Codex | measurements | R-1, R2 adoption decision |
-| R-3b | DEFERRED until R2 adoption: `cargo-mutants-outcomes` format + diff content check; result_report; `ASSAY_CHANGED_DIFF`; namespace; Rust R2 registration; real-run fixtures | L | Codex / Sonnet | assay lanes + qualification | R-2, R-3a |
+| R-3a | MEASURED 2026-11-18 in `RUST-R3A-SPIKES.md` (D1-D8; D3 zero mutants and D6 schema (v20) are decided by the operator 2026-11-18; D2 directory-artifact reservation and D7 diff-path placeholder stay OPEN for B245's carve; S7 schema impact was derived from the code, not measured): S3/S4/S7 spikes (span units, zero-mutant `--in-diff`, baseline-failure report, directory artifact reservation, schema impact) | S | Codex | measurements | R-1, R2 adoption decision |
+| R-3b | DEFERRED until R2 adoption: `cargo-mutants-outcomes` format + diff content check; result_report; directory-artifact reservation (D2); argv placeholder for the diff path (D7, replaces `ASSAY_CHANGED_DIFF`); namespace + v20 cut; Rust R2 registration; real-run fixtures | L | Codex / Sonnet | assay lanes + qualification | R-2, R-3a |
 | **FUTURE MILESTONE (R2 NOT YET ADOPTED)** | **diff-scoped cargo-mutants gate (`assay-r2`) on hostobs.** | | | | R-3b |
 | R-4 | test-break/import-break canary injector and real-toolchain `COMMAND_FAILED` oracle with receipt in T2 `assay-r3`; uncovered-line injector and `UNCOVERED_LINES` oracle in a separate T3 lane | S-M | Codex / Sonnet | qualification in the image | R-2 |
 | R-5 | cmru `.crates` source, Cargo.lock writer, image cache rebuild, advisories in `check` | M-L | Codex / Sonnet (Fable once) | cmru own gate; a dry resolve against hostobs | R-1 (parallel to R-2..R-4) |

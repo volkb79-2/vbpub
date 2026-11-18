@@ -446,6 +446,77 @@ def _decode_footer(bytes_: bytes, header: dict, measured_count: int, end_offset:
     }
 
 
+QUARANTINE_SUFFIX = ".corrupt"
+
+
+def parse_segment_name(name: str) -> dict:
+    """Parse ``<tier>-<start_s>-<seq>.seg`` or ``.seg.open`` (docs/SEGMENT-FORMAT.md, "File naming").
+
+    The two numbers are parsed from the right and must be plain decimal digits; the tier is
+    the rest of the name and must be non-empty without a leading or trailing ``-``. Anything
+    else is ``segment-name``, which is also what the Rust ``SegmentFileName::parse`` refuses.
+    """
+    if name.endswith(".seg.open"):
+        body, is_open = name[: -len(".seg.open")], True
+    elif name.endswith(".seg"):
+        body, is_open = name[: -len(".seg")], False
+    else:
+        raise SegmentError("segment-name", name=name)
+    parts = body.rsplit("-", 2)
+    if len(parts) != 3:
+        raise SegmentError("segment-name", name=name)
+    tier, start_s, seq = parts
+    if not tier or tier.startswith("-") or tier.endswith("-"):
+        raise SegmentError("segment-name", name=name)
+    for number in (start_s, seq):
+        if not (number.isascii() and number.isdigit()):
+            raise SegmentError("segment-name", name=name)
+    if int(start_s) >= 1 << 64 or int(seq) >= 1 << 64:
+        raise SegmentError("segment-name", name=name)
+    return {"tier": tier, "start_s": int(start_s), "seq": int(seq), "open": is_open}
+
+
+def parse_quarantine_name(name: str) -> dict:
+    """Parse ``<segment name>.corrupt`` back to the segment name it was (HOB-43)."""
+    if not name.endswith(QUARANTINE_SUFFIX):
+        raise SegmentError("segment-name", name=name)
+    try:
+        return parse_segment_name(name[: -len(QUARANTINE_SUFFIX)])
+    except SegmentError:
+        raise SegmentError("segment-name", name=name) from None
+
+
+def check_segment_name(name: str, decoded: dict) -> None:
+    """Refuse a segment whose bytes do not back its file name (HOB-42).
+
+    ``decoded`` is :func:`decode_segment`'s result for the file named ``name``. Two rules, in
+    this order, exactly as the Rust ``SegmentScan::check_name``:
+
+    * the header's ``seq`` and ``start_real_ns`` equal the name's ``seq`` and its ``start_s``
+      in nanoseconds (saturating at the i64 maximum) -> ``segment-identity``;
+    * a name that is not ``.seg.open`` claims to be sealed, so the file needs a footer that
+      verified -> ``sealed-without-footer``. A footer that is present but wrong already
+      raised ``footer-*`` from :func:`decode_segment` or is reported as a corrupt tail;
+    * a ``.seg.open`` name must not carry a verified footer -> ``open-with-footer``.
+    """
+    parsed = parse_segment_name(name)
+    header = decoded["header"]
+    if header["seq"] != parsed["seq"]:
+        raise SegmentError("segment-identity", field="seq", name=parsed["seq"], header=header["seq"])
+    expected_ns = min(parsed["start_s"] * 1_000_000_000, (1 << 63) - 1)
+    if header["start_real_ns"] != expected_ns:
+        raise SegmentError(
+            "segment-identity", field="start_real_ns", name=expected_ns, header=header["start_real_ns"]
+        )
+    if not parsed["open"] and decoded["footer"] is None:
+        raise SegmentError("sealed-without-footer", name=name)
+    # The converse: a footer closes a file, and a ``.seg.open`` name says it is still being
+    # appended to. The seal writes the footer onto a temporary copy, so even a stale open twin
+    # beside its sealed segment has none; an open name holding one cannot be reopened.
+    if parsed["open"] and decoded["footer"] is not None:
+        raise SegmentError("open-with-footer", name=name)
+
+
 def load_cases(fixtures_dir: Path) -> list[tuple[Path, dict, bytes]]:
     """Every ``<case>.json`` beside its ``<case>.seg``, in name order."""
     cases: list[tuple[Path, dict, bytes]] = []

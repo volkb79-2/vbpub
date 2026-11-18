@@ -51,6 +51,7 @@ schema_version = 1
 [r2]
 mode = "rolling-whole-target"
 slice_size = 40
+reserve_percent = 25
 cursor = ".assay/r2-scope-cursor.json"
 note = "every release judges the next 40 candidates of the whole-target list"
 ```
@@ -91,15 +92,38 @@ The rules, which are what make rolling a sweep instead of a sample:
   document says `"new_pass": true`. A mark counts only for the pass it was
   written in, so every later pass sweeps the whole target again (a path judged
   in an earlier pass is due again, least recently judged first).
-- The changed files and the sweep share ONE budget, `slice_size`. Rolling is not
-  "all changed candidates plus a slice": a release that changes more candidates
-  than `slice_size` judges only the first `slice_size` of them (least recently
-  judged first), and the rest of a half-judged changed file continues in path
-  order with the other pending candidates, not first. A target whose files are
-  edited every release by more than `slice_size` candidates can therefore starve
-  the never-judged remainder. Size `slice_size` above the expected per-release
-  churn, or use `changed-lines` for a release gate and `rolling-whole-target` for
-  the background sweep.
+- The changed files and the sweep share ONE budget, `slice_size`, and a share of
+  it is **reserved for the sweep** (FD-038). `reserve_percent` of every slice
+  (default **25**, rounded up to whole candidates, never more than
+  `slice_size - 1`, so one slot always stays with the changed files) is kept for
+  the non-changed remainder, taken in path order (never-judged candidates and
+  the pending candidates of a half-judged file; after a finished pass, files
+  judged in an earlier pass, least recently judged first). A target whose files are edited every release by more than `slice_size`
+  candidates therefore still judges at least that share of its never-judged
+  remainder each release, instead of starving it. The changed candidates take
+  the rest, least recently judged first, and the rest of a half-judged changed
+  file continues in path order with the other pending candidates, not first. A
+  reserve the remainder cannot fill goes back to the changed candidates, so a
+  target with no churn judges exactly what it did before. Concretely: while a
+  remainder exists, a release defers changed candidates as soon as they exceed
+  75 percent of `slice_size` (the default reserve is the other 25 percent), for
+  example `slice_size = 40` with 35 changed candidates reserves 10 slots, judges
+  30 changed candidates and defers 5. `reserved_candidates` in the slice reports
+  that reserve CAPACITY (10 here, at most the size of the remainder), a
+  guaranteed minimum and not how many sweep candidates were chosen: when the
+  changed candidates do not fill their share, more sweep candidates are chosen
+  than `reserved_candidates` says. **Risk and how to
+  change it:** the reserve changes WHAT a heavy-churn release judges (a quarter
+  of the slice sweeps instead of re-judging changed files); set
+  `reserve_percent` in the `[r2]` table of `r2-scope.toml` (0 to 100; `0`
+  restores the changed-first slice, `100` gives the sweep every slot but one).
+  Nothing deferred is silent: the scope document's `slice` names
+  `reserve_percent`, `reserved_candidates`, `deferred_changed_candidates` and
+  `deferred_changed_files` (each changed file with `candidates` and
+  `deferred_candidates`), and a deferred file keeps its mark and recency so the
+  next release continues it. Size `slice_size` above the expected per-release
+  churn, or use `changed-lines` for a release gate and `rolling-whole-target`
+  for the background sweep.
 
 The cursor is versioned and digest-protected (`state_digest` covers the whole
 document), so a hand-edited cursor is refused rather than trusted, and a cursor
@@ -135,6 +159,31 @@ so sizing reads those facts and derives the rest:
 - **the outer bound** = that budget plus a launch/collection allowance, so a
   lane's declared `budget` and Run-Gate's bound are one derivation instead of
   two numbers that drift.
+
+The budget is derived from the **mean**, not the median, because a shard's wall
+time is the SUM of its candidates (FD-031). From a measurement document the
+per-candidate seconds are `summary.cost_seconds_mean`, the mean over every
+candidate that occupied a worker (killed, survived, `budget_exceeded` and
+`hung`, the last two at the bound that stopped them), and each shard's margin
+is derived from the measured spread: `max(1.10, 1 + 1.645 x cv / sqrt(n))`
+where `cv = cost_seconds_stdev / cost_seconds_mean` and `n` is the shard's
+candidate count, i.e. the shard is budgeted at about the 95th percentile of the
+sum of `n` candidates drawn like the measured ones. A lane without a measured
+spread keeps the fixed 1.10. `--margin FACTOR` is the explicit override: it
+replaces the derived margin for every shard (`margin_source` says `explicit`,
+`derived` or `default`; `seconds_statistic` says `mean`, `median` or
+`declared`, and a measurement written before the sum fields still sizes from its
+median; `margin_source` is also `derived` for such a median-only document, whose
+margin is then simply the 1.10 floor, and the top-level `margin` shows only that
+floor while the per-shard `margin` is the one applied). The derived margin has
+**no upper bound**: one outlier among 100 measured candidates inflates the
+standard deviation, and a shard of one candidate is then budgeted at
+`1 + 1.645 x cv`, which can be several times its estimate; pass `--margin` to
+set one fixed margin instead. **The budget is an estimate**: it assumes the shard's candidates are
+drawn like the measured ones, so a lane whose heavy candidates cluster in one
+shard can still reach its budget; the budget then stops that instance and the
+remainder continues in a later instance (a rerun over the candidates without a
+record), it is not lost.
 
 Every number carries its `basis`: `measured` when a finished campaign's own
 per-candidate records supplied it, `declared` when it is still the lane's
@@ -172,8 +221,13 @@ fleet measurement r2-week46
 result, from the same owner-attributed records `collect` used. Each candidate
 carries its own `elapsed_seconds` and `memory_peak_bytes`; the summary keeps
 medians over `killed` and `survived` candidates only, because those two
-buckets are the cost of judging. A candidate the observer could not measure is
-`null`, never zero: a zero would drag every median down and size the next
+buckets are the cost of judging. The same summary also carries the per-candidate
+SUM fields sizing uses (FD-031, additive optional fields of the same
+`fleet-r2-measurement/1`): `cost_candidates`, `cost_seconds_sum`,
+`cost_seconds_mean`, `cost_seconds_stdev` and `cost_seconds_max`, over killed,
+survived, `budget_exceeded` and `hung` candidates (the last two at the bound
+that stopped them), `null` when nothing was timed. A candidate the observer
+could not measure is `null`, never zero: a zero would drag every median down and size the next
 campaign's budgets too small. `memory_peak_bytes` is the cgprofile observer's
 `resource-profile/1` number (Assay 12 removed its own sampled
 `peak_rss_bytes`), so its presence depends on the observer, not on this tool.
@@ -221,9 +275,10 @@ one.
 - The per-worker demand keys still live in a separate TOML file because
   Run-Gate refuses `demand` inside its own file: see
   [FD-030](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-030-the-per-worker-demand-keys-are-not-accepted-inside-run-gatetoml).
-- Budgets are derived from medians and a fixed margin, not from a measured
-  tail, so a heavy-tailed lane can exceed its derived budget: see
-  [FD-031](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-031-sizing-budgets-use-medians-and-a-fixed-margin-not-a-measured-tail).
+- Budgets are an estimate from the measured per-candidate mean and spread (see
+  [FD-031](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-031-sizing-budgets-use-medians-and-a-fixed-margin-not-a-measured-tail)):
+  a heavy-tailed lane whose heavy candidates cluster in one shard can still hit
+  its budget, and the remainder continues in a later instance.
 - `fleet scope` refuses a checkout whose HEAD is not the named commit or whose
   tracked files have uncommitted changes (untracked files are ignored), because
   the plan describes the working tree and the diff the committed one: see

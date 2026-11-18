@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### Fixed (P0 bug fold-in)
+
+- **`HOB-8`: `FrameHeader::parse` bounds the declared length.** It refuses a length above
+  `MAX_FRAME_BYTES` (`oversized-frame`) or below `FRAME_HEADER_LEN` (`truncated`), after the
+  fixed-field checks, in Rust and in the Python reference, so a streaming reader may allocate
+  `len` straight after `parse`. `decode_block` keeps its own check; through `parse` it can no
+  longer fire, which leaves its multi-line `return Err(ProtoError::OversizedFrame { .. })`
+  uncovered (documented in `docs/HAND-MUTANTS-M1D.md`). No
+  wire change. The Python reference also stops leaking a `struct.error` for a 12 to 15 byte
+  block frame.
+- **`HOB-43`: quarantined files are inside the cap.** A `<segment>.corrupt` file whose name
+  parses to the tier and whose header is the tier's corpus is adopted: it counts in the byte
+  total, `keep_s` applies to it by its name's `(start_s, seq)`, and under `cap_bytes` it is
+  evicted before any live segment, oldest first. Evictions are reported
+  (`Evicted::quarantined`) and counted (`StoreStats::evicted_quarantined`); no new config key.
+  Look-alikes are reported and never counted, evicted or removed.
+- **`HOB-42`: a sealed name must be sealed, and a name must match its header.** A non-`.seg.open`
+  file without a verified footer, or whose header `seq`/`start_real_ns` disagrees with its
+  name, is quarantined and reported (`SealedWithoutFooter`, `SegmentIdentity`), never served.
+  The seal keeps the open name's start second. The Python segment reference refuses the same
+  files; `docs/SEGMENT-FORMAT.md` states both rules.
+- **`HOB-48` (length half only): the time section is 15 bytes per bucket, not 14.** A bucket is
+  `i64 real_ns` + `u32 covered_ms` + `u16 samples` + `u8 agg`. The encoder wrote that, but
+  `time_body_len` (Rust `frame.rs`, Python `hostobs_wire_ref.py`) computed `align8(14 * n)`,
+  which agrees only up to three buckets: for `n = 4` the encoder wrote 64 bytes and the decoder
+  demanded 56. Both sides now share one `TIME_BUCKET_BYTES = 15`. Tests pin the exact body length
+  and the frame round trip for 0 to 9 buckets in both languages, and a new golden fixture
+  `history-five-buckets` is decoded by both (with the two HOB-8 refusal fixtures
+  `frame-length-below-header` and `block-without-directory`, `fixtures/wire` grows from 26 to
+  29 cases: 8 valid, 21 refusals; the other 26 regenerate byte-identically). **No wire version
+  bump is needed**: no
+  hostobs release or tag exists, no store segment fixture carries a history block, and the only
+  history fixture before this had three buckets, so no byte stream with `n >= 4` has ever been
+  written by a shipped build. The `subject` section (kind 6) and the rest of `HOB-48` are not
+  part of this change.
+
 ### Added
 
 - **`docs/WIRE.md`: the normative `hostobs/1` specification** — connection and handshake,
@@ -24,6 +60,14 @@
   retains at most one previous frame of ≤ 1 MiB per stream and pins CPython 3.14.10. Files
   `HOB-51`..`HOB-54` (received-frame alignment rules, one outcome for a repeated dictionary
   identity, the reference's check precedence, the stream layer machines).
+- **Hand-mutation record for the P0 fold-in** (`docs/HAND-MUTANTS-M1D.md`,
+  `docs/hand-mutants/m1d-mutants.py`): thirty-five stored patches in the method of
+  `HAND-MUTANTS-M1C.md`. The campaign has not been run yet; the doc says so.
+- **Gate invocations in `docs/CONSUMERS.md` and `README.md`** now state the estate wrappers
+  (`scripts/controller/gate-run.sh <lane>` from a linked worktree's project directory;
+  `scripts/controller/remote-gate.sh v1001 hostobs <lane> <commit-or-branch>` with
+  `CONTROLLER_REMOTE_GATE_HOSTS=v1001`) instead of a bare `run-gate`, and that the Rust lanes
+  need the `tester-unified-rust` image on the executing host.
 
 - **`assay-r1`: the coverage verdict is assay's.** A new `assay-r1` lane in
   `run-gate.toml` binds to `assay.toml [lanes.assay-r1]`, which declares a Rust
@@ -174,6 +218,16 @@
 
 ### Changed
 
+- **`tools/verify-crate-cache.py`: the image lock identity is the registry-set digest.** One
+  canonicalisation function (the lock `version`, then one sorted line per package that has a
+  `source`: `name version checksum`, plus the source text when it is not crates.io) replaces
+  the whole-file sha256, so a path dependency between workspace crates (which only rewrites
+  workspace members' `dependencies` arrays) no longer needs an image rebuild; a changed,
+  added or removed registry/git package, checksum, source or lock version still does, and
+  non-crates.io sources are still refused. New mode `--print-registry-digest --lock PATH`;
+  the wrapper flag `--baked-lock-sha256` became `--baked-registry-sha256`. This is source
+  only: it takes effect for the lanes when a new image tag is built on a host and
+  `run-gate.root.toml` is switched to it (HOB-3/17/27/39 stay OPEN until then).
 - `docs/HAND-MUTANTS-M1B.md` and `docs/hand-mutants/m1b-mutants.py`: twenty-six patches
   became thirty-one (the fix round adds the `stat` mapping's three patches, the iocost
   overflow and the unbounded read).

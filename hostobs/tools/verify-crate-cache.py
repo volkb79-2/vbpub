@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Fail closed unless this Cargo.lock matches the image's exact crate cache."""
+"""Fail closed unless this Cargo.lock matches the image's exact crate cache.
+
+The image identity is the registry-set digest (see `canonical_registry_set`): the
+downloaded packages and the lock version, never the workspace members' own entries.
+`--print-registry-digest --lock PATH` prints that digest for the image build."""
 
 from __future__ import annotations
 
@@ -19,12 +23,58 @@ class CacheMismatch(ValueError):
     """The checked-out lock and the baked Cargo registry cache disagree."""
 
 
-def _lock_packages(lock_path: Path) -> dict[str, str]:
+def _read_lock(lock_path: Path) -> dict:
     try:
-        document = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+        return tomllib.loads(lock_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
         raise CacheMismatch(f"cannot read Cargo.lock {lock_path}: {exc}") from exc
 
+
+def _canonical_field(value: object, what: str, package: object) -> str:
+    # One field per space-separated column: whitespace or control characters inside a
+    # field would let two different registry sets print the same canonical text.
+    if not isinstance(value, str) or not value or any(c.isspace() or ord(c) < 0x20 for c in value):
+        raise CacheMismatch(f"Cargo.lock package has a malformed {what}: {package!r}")
+    return value
+
+
+def canonical_registry_set(document: dict) -> str:
+    """The text the image identity hashes: everything the crate cache depends on.
+
+    First line `lock-version N`, then one sorted line per package that has a `source`
+    (registry and git alike): `name version checksum`, plus ` source` when the source is
+    not the crates.io index; a missing checksum prints `-`. Workspace members have no
+    `source` and are excluded on purpose: their `dependencies` arrays change when a path
+    dependency is added, and none of that changes a downloaded crate.
+    """
+    lock_version = document.get("version")
+    if not isinstance(lock_version, int) or isinstance(lock_version, bool):
+        raise CacheMismatch("Cargo.lock has no integer top-level version")
+    lines: list[str] = []
+    for package in document.get("package", []):
+        source = package.get("source")
+        if source is None:
+            continue
+        name = _canonical_field(package.get("name"), "name", package)
+        version = _canonical_field(package.get("version"), "version", package)
+        source = _canonical_field(source, "source", package)
+        checksum = package.get("checksum")
+        checksum = "-" if checksum is None else _canonical_field(checksum, "checksum", package)
+        line = f"{name} {version} {checksum}"
+        if source != _CRATES_IO_SOURCE:
+            line += f" {source}"
+        lines.append(line)
+    lines.sort()
+    return "".join([f"lock-version {lock_version}\n", *(f"{line}\n" for line in lines)])
+
+
+def registry_set_digest(lock_path: Path) -> str:
+    """sha256 of the canonical registry set of this Cargo.lock (the image lock identity)."""
+    text = canonical_registry_set(_read_lock(lock_path))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _lock_packages(document: dict) -> dict[str, str]:
     packages: dict[str, str] = {}
     for package in document.get("package", []):
         source = package.get("source")
@@ -84,10 +134,11 @@ def _manifest_entries(manifest_path: Path, cargo_home: Path) -> dict[str, tuple[
 def verify(
     lock_path: Path,
     manifest_path: Path,
-    baked_lock_sha256_path: Path,
+    baked_registry_sha256_path: Path,
     cargo_home: Path,
 ) -> list[str]:
-    locked = _lock_packages(lock_path)
+    document = _read_lock(lock_path)
+    locked = _lock_packages(document)
     cached = _manifest_entries(manifest_path, cargo_home)
 
     missing = sorted(set(locked) - set(cached))
@@ -116,15 +167,17 @@ def verify(
             )
 
     try:
-        expected_lock_digest = baked_lock_sha256_path.read_text(encoding="ascii").strip()
+        expected_digest = baked_registry_sha256_path.read_text(encoding="ascii").strip()
     except (OSError, UnicodeError) as exc:
-        raise CacheMismatch(f"baked Cargo.lock identity is missing or unreadable: {exc}") from exc
-    if not _SHA256.fullmatch(expected_lock_digest):
-        raise CacheMismatch(f"baked Cargo.lock identity is malformed: {baked_lock_sha256_path}")
-    actual_lock_digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
-    if actual_lock_digest != expected_lock_digest:
+        raise CacheMismatch(f"baked Cargo.lock registry identity is missing or unreadable: {exc}") from exc
+    if not _SHA256.fullmatch(expected_digest):
+        raise CacheMismatch(f"baked Cargo.lock registry identity is malformed: {baked_registry_sha256_path}")
+    # Same parsed document as the package checks above: the lock is read exactly once.
+    actual_digest = hashlib.sha256(canonical_registry_set(document).encode("utf-8")).hexdigest()
+    if actual_digest != expected_digest:
         raise CacheMismatch(
-            "Cargo.lock differs from the lock baked into tester-unified-rust; "
+            "Cargo.lock registry set differs from the registry set baked into tester-unified-rust; "
+            "a registry or git package, its checksum or source, or the lock version changed: "
             "rebuild the image from this checkout's reviewed lock"
         )
     return sorted(locked)
@@ -133,16 +186,33 @@ def verify(
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lock", required=True, type=Path)
-    parser.add_argument("--manifest", required=True, type=Path)
-    parser.add_argument("--baked-lock-sha256", required=True, type=Path)
-    parser.add_argument("--cargo-home", required=True, type=Path)
-    return parser.parse_args()
+    parser.add_argument(
+        "--print-registry-digest",
+        action="store_true",
+        help="print only the registry-set digest of --lock (image build identity) and exit",
+    )
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--baked-registry-sha256", type=Path)
+    parser.add_argument("--cargo-home", type=Path)
+    args = parser.parse_args()
+    if not args.print_registry_digest:
+        for option in ("manifest", "baked_registry_sha256", "cargo_home"):
+            if getattr(args, option) is None:
+                parser.error(f"--{option.replace('_', '-')} is required")
+    return args
 
 
 def main() -> int:
     args = _arguments()
+    if args.print_registry_digest:
+        try:
+            print(registry_set_digest(args.lock))
+        except CacheMismatch as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        return 0
     try:
-        packages = verify(args.lock, args.manifest, args.baked_lock_sha256, args.cargo_home)
+        packages = verify(args.lock, args.manifest, args.baked_registry_sha256, args.cargo_home)
     except CacheMismatch as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

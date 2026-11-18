@@ -10,7 +10,7 @@ ARG CARGO_NEXTEST_VERSION=0.9.151
 ARG CARGO_LLVM_COV_VERSION=0.9.1
 ARG CARGO_MUTANTS_VERSION=27.1.0
 ARG CARGO_DENY_VERSION=0.20.2
-ARG HOSTOBS_LOCK_SHA256
+ARG HOSTOBS_LOCK_REGISTRY_SHA256
 
 ENV CARGO_HOME=/usr/local/cargo \
     CARGO_NET_OFFLINE=false
@@ -39,8 +39,8 @@ COPY . /src/hostobs
 COPY tools/verify-crate-cache.py /usr/local/lib/hostobs/verify-crate-cache.py
 
 RUN set -eux; \
-    lock_sha256="$(sha256sum Cargo.lock | cut -d ' ' -f 1)"; \
-    test "$lock_sha256" = "$HOSTOBS_LOCK_SHA256"; \
+    registry_sha256="$(python3 /usr/local/lib/hostobs/verify-crate-cache.py --print-registry-digest --lock Cargo.lock)"; \
+    test "$registry_sha256" = "$HOSTOBS_LOCK_REGISTRY_SHA256"; \
     cargo fetch --locked; \
     rm -rf /usr/local/cargo/registry/src /usr/local/cargo/git; \
     mkdir -p /usr/local/share; \
@@ -48,20 +48,20 @@ RUN set -eux; \
       | sort -z \
       | xargs -0 sha256sum > /usr/local/share/rust-crate-cache.sha256; \
     test -s /usr/local/share/rust-crate-cache.sha256; \
-    printf '%s\n' "$lock_sha256" > /usr/local/share/hostobs-Cargo.lock.sha256; \
+    printf '%s\n' "$registry_sha256" > /usr/local/share/hostobs-Cargo.lock.registry-sha256; \
     cp Cargo.lock /usr/local/share/hostobs-Cargo.lock; \
     python3 /usr/local/lib/hostobs/verify-crate-cache.py \
       --lock /usr/local/share/hostobs-Cargo.lock \
       --manifest /usr/local/share/rust-crate-cache.sha256 \
-      --baked-lock-sha256 /usr/local/share/hostobs-Cargo.lock.sha256 \
+      --baked-registry-sha256 /usr/local/share/hostobs-Cargo.lock.registry-sha256 \
       --cargo-home /usr/local/cargo
 
 FROM ${RUST_IMAGE}
 ARG RUST_IMAGE
-ARG HOSTOBS_LOCK_SHA256
+ARG HOSTOBS_LOCK_REGISTRY_SHA256
 
 LABEL org.vbpub.tester-unified-rust.base-image="${RUST_IMAGE}" \
-      org.vbpub.tester-unified-rust.hostobs-lock-sha256="${HOSTOBS_LOCK_SHA256}"
+      org.vbpub.tester-unified-rust.hostobs-lock-registry-sha256="${HOSTOBS_LOCK_REGISTRY_SHA256}"
 
 ENV CARGO_HOME=/usr/local/cargo \
     CARGO_NET_OFFLINE=true \
@@ -89,7 +89,7 @@ RUN rustup component add clippy rustfmt llvm-tools-preview \
 
 COPY --from=cargo-tools /usr/local/cargo /usr/local/cargo
 COPY --from=cargo-tools /usr/local/share/rust-crate-cache.sha256 /usr/local/share/rust-crate-cache.sha256
-COPY --from=cargo-tools /usr/local/share/hostobs-Cargo.lock.sha256 /usr/local/share/hostobs-Cargo.lock.sha256
+COPY --from=cargo-tools /usr/local/share/hostobs-Cargo.lock.registry-sha256 /usr/local/share/hostobs-Cargo.lock.registry-sha256
 COPY --from=cargo-tools /usr/local/share/hostobs-Cargo.lock /usr/local/share/hostobs-Cargo.lock
 COPY --from=cargo-tools /usr/local/lib/hostobs/verify-crate-cache.py /usr/local/lib/hostobs/verify-crate-cache.py
 COPY tools/verify-crate-cache /usr/local/bin/verify-crate-cache

@@ -16,7 +16,9 @@ from fleetd.measurement import (
     validate_measurement,
 )
 from fleetd.sizing import (
+    DEFAULT_MARGIN,
     SIZING_SCHEMA,
+    TAIL_Z,
     HostSizingInput,
     SizingInput,
     derive_sizing,
@@ -563,3 +565,244 @@ def test_sizing_cli_joins_a_measurement_and_rejects_bad_durations(tmp_path, caps
     ):
         assert main(["sizing", str(plan_path), *argv]) == 2
         assert message in capsys.readouterr().err
+
+
+# --------------------------------------------- FD-031: mean-based tail budgets
+def _dispersed_measurement(count=40):
+    """A heavy-tailed finished campaign: most candidates are quick, a few are not.
+
+    30 killed at 10 s, 4 survived at 100 s, 3 budget_exceeded and 3 hung at
+    their 600 s bound; the median over killed and survived is 10 s, the real
+    sum is 4300 s.
+    """
+    ids = [_cid(index) for index in range(count)]
+    plan = (
+        [("killed", 10.0)] * 30 + [("survived", 100.0)] * 4
+        + [("budget_exceeded", 600.0)] * 3 + [("hung", 600.0)] * 3
+    )
+    records = [
+        {"candidate_id": ids[index], "outcome_bucket": bucket, "elapsed_seconds": seconds,
+         "memory_peak_bytes": 100 * _MIB}
+        for index, (bucket, seconds) in enumerate(plan)
+    ]
+    return measurement_document(
+        campaign="c", lane="r2", commit="b" * 40, image_digest=IMAGE,
+        planned_ids=ids, records=records,
+    )
+
+
+def _one_worker_sizing(measurement, candidate_count, **overrides):
+    """One host, one instance, one worker: the shard IS the campaign."""
+    plan = _plan(
+        (("host-a", {"cpu": 1, "budget": 4096 * _MIB}),), candidate_count,
+        demand={"baseline_seconds": 0, "instance_cpu": 0, "efficient_upper_bound": 1},
+    )
+    sizing = sizing_input_from_plan(plan, measurement=measurement, **overrides)
+    assert sizing.candidate_count == candidate_count
+    return sizing
+
+
+def test_measurement_summary_adds_the_per_candidate_sum_fields_without_a_new_schema():
+    document = _dispersed_measurement()
+    assert document["schema"] == "fleet-r2-measurement/1"
+    summary = document["summary"]
+    # The existing median fields stay exactly as they were.
+    assert summary["elapsed_seconds_median"] == 10.0
+    assert summary["measured_candidates"] == 34
+    # The additive fields: every candidate that occupied a worker (killed,
+    # survived, budget_exceeded, hung), the bound counted for the last two.
+    assert summary["cost_candidates"] == 40
+    assert summary["cost_seconds_sum"] == 4300.0
+    assert summary["cost_seconds_mean"] == 107.5
+    assert summary["cost_seconds_max"] == 600.0
+    assert summary["cost_seconds_stdev"] == pytest.approx(
+        (sum((value - 107.5) ** 2 for value in [10.0] * 30 + [100.0] * 4 + [600.0] * 6) / 40) ** 0.5,
+        rel=1e-4,
+    )
+    empty = measurement_document(
+        campaign="c", lane="r2", commit="b" * 40, image_digest=None,
+        planned_ids=[_cid(0)],
+        records=[{"candidate_id": _cid(0), "outcome_bucket": "budget_exceeded", "elapsed_seconds": None}],
+    )["summary"]
+    assert empty["cost_candidates"] == 0
+    assert empty["cost_seconds_sum"] is None and empty["cost_seconds_mean"] is None
+    assert empty["cost_seconds_stdev"] is None and empty["cost_seconds_max"] is None
+
+
+def test_a_dispersed_measurement_yields_a_budget_at_or_above_the_measured_tail():
+    measurement = _dispersed_measurement()
+    sizing = _one_worker_sizing(measurement, 40)
+    assert sizing.basis == "measured"
+    assert sizing.per_candidate_seconds == 107.5
+    document = derive_sizing(sizing)
+    shard = document["shards"][0]
+    # The campaign's own measured sum is 4300 s; the median-based budget
+    # (40 x 10 s) would have been the 900 s floor and stopped the shard early.
+    assert shard["estimate_seconds"] == 4300.0
+    assert shard["budget_seconds"] >= 4300
+    assert document["seconds_statistic"] == "mean"
+    # A smaller shard of the same lane is covered at its own 95th percentile:
+    # n x mean + z x stdev x sqrt(n).
+    stdev = measurement["summary"]["cost_seconds_stdev"]
+    for count in (4, 10, 25):
+        small = derive_sizing(_one_worker_sizing(measurement, count))["shards"][0]
+        tail = count * 107.5 + TAIL_Z * stdev * count ** 0.5
+        assert small["budget_seconds"] >= tail, count
+    assert document["margin_source"] == "derived"
+    assert document["margin"] == DEFAULT_MARGIN
+    assert shard["margin"] > DEFAULT_MARGIN
+
+
+def test_the_documented_margin_override_replaces_the_derived_tail_margin():
+    measurement = _dispersed_measurement()
+    document = derive_sizing(_one_worker_sizing(measurement, 40), margin=1.0)
+    shard = document["shards"][0]
+    assert document["margin_source"] == "explicit"
+    assert document["margin"] == 1.0 and shard["margin"] == 1.0
+    assert shard["budget_seconds"] == 4320  # 4300 s rounded up to whole minutes
+    wide = derive_sizing(_one_worker_sizing(measurement, 40), margin=2.0)["shards"][0]
+    assert wide["budget_seconds"] == 8640  # 8600 s rounded up
+
+
+def test_a_measurement_without_dispersion_keeps_the_fixed_default_margin():
+    flat = measurement_document(
+        campaign="c", lane="r2", commit="b" * 40, image_digest=IMAGE,
+        planned_ids=[_cid(0), _cid(1)],
+        records=[
+            {"candidate_id": _cid(0), "outcome_bucket": "killed", "elapsed_seconds": 60.0, "memory_peak_bytes": 100 * _MIB},
+            {"candidate_id": _cid(1), "outcome_bucket": "killed", "elapsed_seconds": 60.0, "memory_peak_bytes": 100 * _MIB},
+        ],
+    )
+    assert flat["summary"]["cost_seconds_stdev"] == 0.0
+    document = derive_sizing(_one_worker_sizing(flat, 100))
+    assert document["margin_source"] == "derived"
+    assert document["shards"][0]["margin"] == DEFAULT_MARGIN
+    declared = derive_sizing(_sizing())
+    assert declared["seconds_statistic"] == "declared"
+    assert declared["margin_source"] == "default"
+    assert all(shard["margin"] == DEFAULT_MARGIN for shard in declared["shards"])
+
+
+def test_a_measurement_written_before_the_sum_fields_still_sizes_from_its_median():
+    plan = _plan((("host-a", {"cpu": 8, "budget": 4096 * _MIB}),), 2)
+    old = {
+        "schema": MEASUREMENT_SCHEMA, "campaign": "c", "lane": "r2", "commit": "b" * 40,
+        "summary": {"elapsed_seconds_median": 61.0, "memory_peak_bytes_median": 200 * _MIB},
+    }
+    assert validate_measurement(old) == old
+    sizing = sizing_input_from_plan(plan, measurement=old)
+    assert sizing.per_candidate_seconds == 61.0
+    assert sizing.seconds_statistic == "median"
+    assert derive_sizing(sizing)["seconds_statistic"] == "median"
+    # A per-candidate override is a declared number again, whatever the document says.
+    declared = sizing_input_from_plan(plan, measurement=_dispersed_measurement(), per_candidate_seconds=45.0)
+    assert declared.seconds_statistic == "declared"
+    assert declared.dispersion == 0.0
+
+
+def test_the_new_measurement_fields_are_validated_when_present():
+    base = _dispersed_measurement()
+    assert validate_measurement(base) == base
+    for key, bad in (
+        ("cost_seconds_mean", 0),
+        ("cost_seconds_mean", True),
+        ("cost_seconds_stdev", -1.0),
+        ("cost_seconds_stdev", float("inf")),
+        ("cost_seconds_sum", "x"),
+        ("cost_candidates", -1),
+        ("cost_candidates", 1.5),
+    ):
+        broken = json.loads(json.dumps(base))
+        broken["summary"][key] = bad
+        with pytest.raises(ContractError, match=key):
+            validate_measurement(broken)
+    nulls = json.loads(json.dumps(base))
+    for key in ("cost_seconds_mean", "cost_seconds_stdev", "cost_seconds_sum", "cost_seconds_max"):
+        nulls["summary"][key] = None
+    nulls["summary"]["cost_candidates"] = 0
+    assert validate_measurement(nulls) == nulls
+
+
+def test_sizing_refuses_a_bad_statistic_or_dispersion():
+    for field, value, message in (
+        ("seconds_statistic", "p95", "expected one of"),
+        ("dispersion", -0.1, "non-negative"),
+        ("dispersion", float("nan"), "non-negative"),
+        ("dispersion", True, "non-negative"),
+    ):
+        with pytest.raises(ContractError, match=message):
+            derive_sizing(_sizing(**{field: value}))
+
+
+def test_sizing_cli_derives_the_tail_margin_and_honours_an_explicit_one(tmp_path, capsys):
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(_plan((("host-a", {"cpu": 8, "budget": 4096 * _MIB}),), 4)), encoding="utf-8")
+    measurement_path = tmp_path / "measurement.json"
+    measurement_path.write_text(json.dumps(_dispersed_measurement()), encoding="utf-8")
+    assert main(["sizing", str(plan_path), "--measurement", str(measurement_path)]) == 0
+    derived = json.loads(capsys.readouterr().out)
+    assert derived["margin_source"] == "derived" and derived["seconds_statistic"] == "mean"
+    assert main(["sizing", str(plan_path), "--measurement", str(measurement_path), "--margin", "1.3"]) == 0
+    explicit = json.loads(capsys.readouterr().out)
+    assert explicit["margin_source"] == "explicit" and explicit["margin"] == 1.3
+
+
+# ------------------------------------------ WP3b: library input and cross-field checks
+def test_sizing_input_refuses_a_bad_mean_or_stdev_before_it_divides():
+    plan = _plan((("host-a", {"cpu": 8, "budget": 4096 * _MIB}),), 2)
+    flat = {"elapsed_seconds_median": 61.0, "memory_peak_bytes_median": 200 * _MIB}
+    for key, bad in (
+        ("cost_seconds_mean", 0),
+        ("cost_seconds_mean", -1.0),
+        ("cost_seconds_mean", "10"),
+        ("cost_seconds_mean", True),
+        ("cost_seconds_mean", float("inf")),
+        ("cost_seconds_mean", float("nan")),
+        ("cost_seconds_stdev", "1"),
+        ("cost_seconds_stdev", -0.5),
+        ("cost_seconds_stdev", True),
+        ("cost_seconds_stdev", float("inf")),
+    ):
+        summary = {**flat, "cost_seconds_mean": 10.0, key: bad}
+        with pytest.raises(ContractError, match=key):
+            sizing_input_from_plan(plan, measurement=summary)
+    # A zero spread and an absent spread are both fine (a flat lane).
+    ok = sizing_input_from_plan(plan, measurement={**flat, "cost_seconds_mean": 10.0, "cost_seconds_stdev": 0})
+    assert ok.dispersion == 0.0 and ok.seconds_statistic == "mean"
+    assert sizing_input_from_plan(plan, measurement={**flat, "cost_seconds_mean": 10.0}).dispersion == 0.0
+
+
+def _cost_summary(**overrides):
+    document = _dispersed_measurement()
+    document["summary"].update(overrides)
+    return document
+
+
+def test_measurement_validation_checks_the_cost_fields_against_each_other():
+    assert validate_measurement(_cost_summary())
+    cases = (
+        # mean and stdev can never exceed the maximum
+        ({"cost_seconds_mean": 700.0, "cost_seconds_sum": 28000.0}, "cost_seconds_mean.*exceeds cost_seconds_max"),
+        ({"cost_seconds_stdev": 601.0}, "cost_seconds_stdev.*exceeds cost_seconds_max"),
+        # an empty count must carry no value, a non-empty count must carry them all
+        ({"cost_candidates": 0}, "cost_candidates is 0"),
+        ({"cost_seconds_max": None}, "cost_candidates is 40"),
+        # the sum is the mean times the count, within the six-decimal rounding
+        ({"cost_seconds_sum": 4301.0}, "cost_seconds_sum.*differs from cost_seconds_mean x cost_candidates"),
+        ({"cost_seconds_sum": 4300.01}, "cost_seconds_sum.*differs from cost_seconds_mean x cost_candidates"),
+    )
+    for overrides, message in cases:
+        with pytest.raises(ContractError, match=message):
+            validate_measurement(_cost_summary(**overrides))
+    # Within the documented tolerance (1e-6 s per candidate plus 1e-6) it loads.
+    assert validate_measurement(_cost_summary(cost_seconds_sum=4300.00003))
+    # A document that records the count but none of the values is the empty shape.
+    empty = _cost_summary(
+        cost_candidates=0, cost_seconds_sum=None, cost_seconds_mean=None,
+        cost_seconds_stdev=None, cost_seconds_max=None,
+    )
+    assert validate_measurement(empty)
+    # A count that is absent is the pre-FD-031 shape: no cross check applies.
+    old = _cost_summary(cost_seconds_mean=1.0)
+    del old["summary"]["cost_candidates"]
+    assert validate_measurement(old)

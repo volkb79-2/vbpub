@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace make -> Token with Default::default()
+@@ -11,17 +11,17 @@
+ 
+ /// Missed: no test calls it.
+ pub fn is_even(n: u32) -> bool {
+     n % 2 == 0
+ }
+ 
+ /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.
+ pub fn make(id: u32) -> Token {
+-    Token { id }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Timeout: `i += 1` -> `i *= 1` never terminates.
+ pub fn spin(n: u32) -> u32 {
+     let mut i = 0;
+     while i < n {
+         i += 1;
+     }

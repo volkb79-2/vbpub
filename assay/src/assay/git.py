@@ -36,7 +36,7 @@ and verified empirically against a real git binary while writing this module:
   other ``HEAD`` resolves to ``merge-base(base, HEAD)`` (the feature branch's
   fork point). One command, ``git rev-list --parents -n 1 HEAD``, tells you
   which case you are in — its token count is 2 for a normal commit and ≥3 for
-  a merge.
+  a merge. (B552: a DELEGATED base, ``judge.base_source = "request"``, skips this.)
 * :func:`dirty_paths` — ``git status --porcelain`` **always** reports paths
   relative to the repository's top level, never to the ``-C`` directory or the
   process cwd (unlike ``git diff --relative``). A caller that forgets this and
@@ -823,7 +823,13 @@ def _resolve_revision(repo: Path, revision: str, *, remaining: Remaining | None 
     ).strip()
 
 
-def resolve_base(repo: Path, base: str, *, remaining: Remaining | None = None) -> str:
+def resolve_base(
+    repo: Path,
+    base: str,
+    *,
+    delegated: bool = False,
+    remaining: Remaining | None = None,
+) -> str:
     """Resolve *base* against the shape of ``HEAD``.
 
     A merge commit (``HEAD`` has two or more parents) resolves to its first
@@ -834,20 +840,35 @@ def resolve_base(repo: Path, base: str, *, remaining: Remaining | None = None) -
     (which may have moved since). *base* is a lane-declared string, so it is
     validated/resolved to a full OID (:func:`_resolve_revision`) before it
     reaches ``merge-base`` (A-173).
+
+    *delegated* (B552) is True exactly when the lane declared
+    ``judge.base_source = "request"``: the caller named the comparison it
+    wants, so it is not a hint to be overridden by ``HEAD``'s shape. A merge
+    ``HEAD`` then resolves ``merge-base(base, HEAD)`` like any other ``HEAD``
+    -- the requested comparison -- instead of silently answering with the
+    first parent and discarding what was asked. A lane that declares its own
+    ``judge.base`` keeps the first-parent rule above unchanged.
     """
-    tokens = run(repo, "rev-list", "--parents", "-n", "1", "HEAD", remaining=remaining).split()
-    if len(tokens) >= 3:  # HEAD sha + >=2 parent shas
-        return tokens[1]
+    if not delegated:
+        tokens = run(
+            repo, "rev-list", "--parents", "-n", "1", "HEAD", remaining=remaining
+        ).split()
+        if len(tokens) >= 3:  # HEAD sha + >=2 parent shas
+            return tokens[1]
     resolved_base = _resolve_revision(repo, base, remaining=remaining)
     return run(
         repo, "merge-base", "--end-of-options", resolved_base, "HEAD", remaining=remaining
     ).strip()
 
 
-def base_resolution_mode(repo: Path, *, remaining: Remaining | None = None) -> str:
+def base_resolution_mode(
+    repo: Path, *, delegated: bool = False, remaining: Remaining | None = None
+) -> str:
     """(B008) Which of :func:`resolve_base`'s two branches fired for the
     CURRENT ``HEAD`` -- ``"first-parent"`` on a merge commit, ``"merge-base"``
-    otherwise. A caller merging the declared base INTO a feature branch (the
+    otherwise; always ``"merge-base"`` for a *delegated* base (B552), whose
+    requested comparison is honoured on every ``HEAD`` shape. A caller
+    merging the declared base INTO a feature branch (the
     common pre-gate sync) hits ``"first-parent"``, whose resolved commit is
     the branch's OWN pre-merge tip: the changed-line floor and any R2 lane
     both silently narrow to "what did the merge itself change" -- often
@@ -855,6 +876,8 @@ def base_resolution_mode(repo: Path, *, remaining: Remaining | None = None) -> s
     makes that narrowing auditable instead of silent; it does not change
     which commit :func:`resolve_base` resolves to.
     """
+    if delegated:
+        return "merge-base"
     tokens = run(repo, "rev-list", "--parents", "-n", "1", "HEAD", remaining=remaining).split()
     return "first-parent" if len(tokens) >= 3 else "merge-base"
 

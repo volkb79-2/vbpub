@@ -171,6 +171,18 @@ than only its changed lines: that is a superset of the changed-lines scope and
 it is the price of a key that cannot drift out from under a mark. The remaining
 limit is FD-037.
 
+**Why a share of the rolling slice is reserved (FD-038).** Changed files sort
+first, and they share `slice_size` with the sweep. A target whose files are
+edited every release by more than `slice_size` candidates would fill every slice
+with changed candidates and never reach its never-judged remainder, which looks
+like coverage and is not. Exempting the changed candidates from the budget was
+rejected (an unbounded release), so a minimum share of the slice is reserved for
+the non-changed remainder instead: `reserve_percent`, default 25, rounded up,
+capped at `slice_size - 1` so changed files are never starved completely, and
+returned to the changed files when the remainder cannot fill it. The price is
+visible, not hidden: the changed candidates that did not fit are listed per file
+in `deferred_changed_files`, and a deferred file keeps its mark and recency.
+
 Three things are accounted instead of dropped, because each is a way a cursor
 could silently claim coverage:
 
@@ -241,10 +253,30 @@ a defect. Memory comes from the cgprofile observer's `resource-profile/1`
 `peak_rss_bytes`, so a lane without the observer records elapsed seconds only
 and says so.
 
-Medians are taken over `killed` and `survived` candidates only. A
-`budget_exceeded` or `hung` candidate's elapsed time is the budget that stopped
-it, not the cost of judging, and including it would inflate the next budget
-forever.
+**Why the budget uses the mean and a measured spread (FD-031).** A shard's wall
+time is the sum of its candidates, so the estimator that matches the budget is
+the per-candidate MEAN, and a right-skewed lane has a mean above its median. The
+mean is taken over every candidate that occupied a worker, including
+`budget_exceeded` and `hung` ones at their bound, because they held a worker for
+that long. The margin over that sum is derived from the measured standard
+deviation as the one-sided 95th percentile of a sum of `n` candidates
+(`1 + 1.645 x cv / sqrt(n)`, never below 1.10), so a heavy tail widens the
+smaller shards most; `--margin` is the explicit override. It is deliberately an
+ESTIMATE, not machinery to guarantee a bound, and the margin has no upper cap on
+purpose (a cap would be one more number to tune): a single outlier in 100
+measured candidates raises the standard deviation, and a one-candidate shard is
+then budgeted at `1 + 1.645 x cv` times its estimate, which can be very large;
+`--margin` sets one fixed margin instead. Beyond that, heavy candidates that cluster in
+one shard can still reach the budget, and the remainder continues in a later
+instance. The new fields are additive and optional in `fleet-r2-measurement/1`,
+and a document without them is sized from its median as before.
+
+Medians (kept for the existing fields) are taken over `killed` and `survived`
+candidates only. For THOSE fields a `budget_exceeded` or `hung` candidate's
+elapsed time is the budget that stopped it, not the cost of judging, and
+including it would inflate the next median forever; the per-candidate sum fields
+above count those candidates deliberately, at their bound, because they held a
+worker that long.
 
 ## Why the merge check compares identity, not counts
 
@@ -345,7 +377,8 @@ backward UTC step clamps elapsed time to zero and delays a detector; a forward
 UTC step counts as downtime and can advance detection after reboot. A restarted
 controller probes by job name and re-adopts existing work. There are no leases.
 On a failed probe, stall time pauses for that host. More than 30 minutes
-without contact marks the host lost; `tick`
+of continuous failed contact, counted from the first failure this controller
+observed and not from the last success, marks the host lost; `tick`
 re-plans only unfinished candidate IDs from running and queued batches on the
 reachable planned host with the largest `cap_alone_bytes`. Idle planned hosts
 are probed too, so they can receive requeued work. If the original host later
@@ -372,7 +405,10 @@ three times the p95 predicted candidate time for that batch on that host, and
 three times the p95 observed candidate time on that host. Prediction uses the
 plan's per-candidate reference time and only that host's matching Geekbench
 score and correction factor. When scores cannot be compared, the reference
-time is used. Neither prediction nor observations are pooled across hosts;
+time is used, and until the host has finished a candidate it is tripled: an
+unscaled reference is only a guess at a host's speed, and stopping a slow host in
+its first candidate fails the batch for good (FD-016), so the first window is
+`max(900 s, 9 x reference)` plus the baseline. Neither prediction nor observations are pooled across hosts;
 r1002 and v1001 therefore use independent thresholds.
 
 The first progress window also needs room for Assay's baseline. Fleetd adds a
@@ -396,6 +432,17 @@ come from that runner job's verdict.
 Transport or contract errors set only the affected host to `ERROR`. The
 scheduler records the message and continues the tick for other hosts; identity
 and guard refusals remain errors rather than being misclassified as host loss.
+A persistent `ERROR` is aged and warned about at 1800 seconds but never turned
+into `LOST` or re-queued (FD-026): such a host may have live batches, so an
+automatic re-queue would duplicate work and the operator decides. The clock is
+decided once per command from the host's final status, never by the individual
+error site: an error raised after a good probe cannot restart it.
+
+The loss clock starts at the first failed contact the controller observed. A
+timeout is reported as `SLOW` and feeds the same clock (FD-020). Any answer,
+including an `ERROR` one, ends the episode and clears the clock. When a re-queue
+target cannot take every pending candidate, the ones that fit are queued and the
+rest wait, with the planner's reason, until a larger host is online (FD-017).
 
 ## Collection and ownership
 

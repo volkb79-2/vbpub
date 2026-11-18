@@ -89,13 +89,14 @@ returns. There is no polling loop. Use repeated `tick` calls from the
 controller that owns the campaign.
 
 `tick` re-queues unfinished work when a host has been unreachable for more than
-30 minutes, measured from its last successful contact: call `tick` at least
-every few minutes, or one failed probe after a long gap marks the host lost.
-A batch becomes `STALLED` after
+30 minutes, measured from the first failed probe this controller observed
+(FD-020): one failed probe after a long gap does not mark the host lost, and a
+probe timeout shows as `SLOW`. A host that stays in `ERROR` is aged and warned
+about at 30 minutes in `status` but never lost or re-queued (FD-026). A batch becomes `STALLED` after
 `max(15 minutes, 3 × predicted p95 candidate time for the batch on that host,
 3 × observed p95 candidate time on that host)`. The prediction uses that
-host's Geekbench score and correction factor, or the reference time when
-scores cannot be compared. The first window adds the declared `baseline_seconds`
+host's Geekbench score and correction factor, or the reference time (tripled until the host has finished a candidate, FD-025)
+when scores cannot be compared. The first window adds the declared `baseline_seconds`
 or the p95 baseline measured by earlier batches on that host. Later windows
 start after a candidate finishes and do not add the baseline again. The timer
 pauses while its host is unreachable. A batch that exits, goes missing, or is
