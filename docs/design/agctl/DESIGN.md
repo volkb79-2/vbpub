@@ -1,99 +1,105 @@
-# agctl: agent control (design note, 2026-11-18, DRAFT for review)
+# agctl: agent control (design note, 2026-11-18, rev 2 after independent review)
 
-Status: DRAFT. Requirements and measured facts are in `docs/design/ctlstat/` (REQUIREMENTS.md, HARNESS-COMPACTION-CHECKLIST.md, EXPERIMENT-compaction-*.md) and `nyxloom/docs/design-context-lifecycle*.md`; this note decides the shape of the project that unifies them and records the operator's decisions of 2026-11-17/18. Where this note and the ctlstat requirements differ, this note wins and says so.
+Status: DRAFT, reviewed once (Opus, 2026-11-18; corrections folded in below and marked "rev 2"). Requirements and measured facts are in `docs/design/ctlstat/` (REQUIREMENTS.md, HARNESS-COMPACTION-CHECKLIST.md, EXPERIMENT-compaction-*.md) and `nyxloom/docs/design-context-lifecycle*.md`; this note decides the shape of the project that unifies them and records the operator's decisions of 2026-11-17/18. Where this note and the ctlstat requirements differ, this note wins and says so.
 
 ## 1. Why one project, and its name
 
-The controller work (state, wrappers, gates, host transport), the estate status tool (`ctlstat`: one mechanical call for an informed decision) and the session lifecycle service (compactor, restarter, primer, TUI) share one subject: **controlling long-lived agent sessions and their work**. They share identity (a controller or agent has a name), state (handoffs, run records, session logs), and consumers (the controller deciding what to do next). Name: **`agctl`** (operator, 2026-11-18). It is harness-neutral by contract and Claude-aware through one adapter.
+The controller work (state, wrappers, gates, host transport), the estate status tool (`ctlstat`: one mechanical call for an informed decision) and the session lifecycle service (compactor, restarter, primer, TUI) share one subject: **controlling long-lived agent sessions and their work**. They share identity (a controller or agent has a name), state (handoffs, run records, session logs) and consumers (the controller deciding what to do next). Name: **`agctl`** (operator, 2026-11-18). Harness-neutral by contract, Claude-aware through one adapter.
 
-What `agctl` does NOT own: campaigns and placement on hosts (`fleetd`), host protection (`thrashguard`), telemetry and profiling (`hostobs`), session-log extraction (`nyxloom extract`, the engine; depend or absorb is an open decision, section 9). `agctl` reads their sockets; it never probes hosts itself.
+Not owned by `agctl`: campaigns and placement on hosts (`fleetd`), host protection (`thrashguard`), telemetry and profiling (`hostobs`), session-log extraction (`nyxloom extract`, kept as a dependency: it is shipped, tested, and already has the `readback` and `--successor-brief` presets). `agctl` reads their sockets; it never probes hosts itself. Claude Code already has `idleCompaction` and `asyncRewake`/Monitor: `agctld` must not duplicate them (rev 2).
 
 ## 2. Components
 
 | Component | Role | Today |
 |---|---|---|
-| `agctl-core` | controller identity and registry, state directories, run records, the agent wrappers (pi, codex, opencode), gate and remote-gate wrappers, host transport, doctor, optional state backup | `scripts/controller/` (imported 2026-11-18, vbpub 9dc48bf13) |
-| `agctl status` (ctlstat) | one-call estate status, JSON and text, change-only output for injection | requirements only; prototype `ctl-status.sh` |
-| `agctld` | resident service: watches registered controllers and agents through their session logs, computes context pressure, performs compaction, restart and priming at semantic boundaries | not built |
-| adapters | per harness: log parser (context fill, tool calls, boundaries), optional injector (hooks), wake mechanism: claude, codex, opencode, pi | Claude hooks in `.controller-state/hooks/ctx.py`, `nyxloom extract` parsers |
-| `agctl-tui` | operator view of all registered controllers/agents; attach to a controller | not built |
-| skills | controller: `handover` (section 4); agent: `finalize` (section 5) | not built |
+| `agctl-core` | controller identity and registry, state directories, run records, agent wrappers (pi, codex, opencode), gate and remote-gate wrappers, host transport, doctor, optional state backup | `scripts/controller/` (imported 2026-11-18, vbpub 9dc48bf13) |
+| `agctl status` (ctlstat) | one-call estate status, JSON and text, change-only output; read-only | requirements only; prototype `ctl-status.sh` |
+| `agctl finalize`, `agctl prime` | agent finalization collector/validator; successor priming (section 5) | not built; **first slice** |
+| `agctld` | resident service: watches registered controllers and agents through their session logs, marker protocol, compaction/restart/priming | not built; deferred |
+| adapters | per harness: log parser, optional injector (hooks), wake: claude, codex, opencode, pi | Claude hooks (`scripts/controller/hooks/ctx-hooks.py` is the canonical, tracked hook; the live `.controller-state/hooks/ctx.py` is the controller's working copy and must be reconciled with it), `nyxloom extract` parsers |
+| `agctl-tui` | operator view of all registered controllers/agents | not built; deferred |
+| skills | controller `handover` (section 4); agent `finalize` (section 5) | not built |
 
-Migration is stepwise: `scripts/controller/` stays the home of the shell tools until a package moves a tool with its tests and mutants; nothing is rewritten for its own sake.
+Migration is stepwise: `scripts/controller/` stays the home of the shell tools until `finalize` and `prime` exist as a Python CLI; then a cmru-managed `agctl/` project is created and tools move with their tests and mutants. Nothing is rewritten for its own sake.
 
 ## 3. Identity and state
 
-- A controller has a stable **name** (default: the session's own name, for example `ciu-release-and-backlog-triage`). The session UUID is only the current **binding**, because a controller outlives its sessions (hard stop, restart, context-full successor, user-stopped session). State keyed by session UUID would be orphaned at every handover.
-- Registry `~/controller-state/registry.json`: name -> {harness, session id, transcript path, started, last seen, intended context limit, state dir}. The session-start hook records the binding (the hook sees the session id); a successor **adopts** a name; a new controller on a disjoint topic creates a new name. Several controllers per devcontainer and per repository are supported.
-- Per-controller state `~/controller-state/<name>/`: `HANDOFF.md`, `plan.yaml`, `operator-decisions.md` (verbatim operator turns), readbacks, hook state. Outside every work tree: no `git clean` hazard, so no scheduled backup (operator 2026-11-18; `ctl-state-backup.sh` stays an optional tool; `/tmp` and `~` persist in the cockpit mount).
-- Shared per devcontainer (`~/controller/`): env file, host table, gate locks, remote-gate locks and work directories, run records with per-controller name prefixes. Collisions designed out: merge numbers `merge-<name>-qNN`, worktree, run and monitor name prefixes, one plan per controller; gates are shared slots (`CONTROLLER_GATE_SLOTS`, default 2, because the devcontainer is memory capped and was OOM-killed once).
-- Env file naming follows `.env.<name>` so files group and sort: local `.env.controller` (untracked), sample `.env.controller.example`; the runner sample becomes `.env.runner.example` (today `runner.env.example`). The loader falls back to the old names for one release with a deprecation warning.
+- A controller has a stable **name**. The hook input carries no session name, so the name is **explicit**: `CONTROLLER_NAME` in the launch environment, or `agctl adopt --new <name>`; `ctl-doctor` warns when it is unset (rev 2; the earlier "default = session name" cannot be read by a hook). The session UUID is only the current **binding**, because a controller outlives its sessions (hard stop, restart, context-full successor, user-stopped session): state keyed by UUID would be orphaned at every handover.
+- Registry `~/controller-state/registry.json`: name -> {harness, session id, pid, transcript path, started, last seen, intended context limit, state dir}. Writes use flock plus atomic rename. A name is held by a **lease** (session id, pid, last seen); a successor may **adopt** a name only when the lease is stale (no live pid and last seen older than N minutes) or with an explicit `--force` (rev 2: otherwise two controllers race for one name). A dead controller is shown as `orphaned` by status and never restarted automatically. Several controllers per devcontainer and per repository are supported.
+- Per-controller state `~/controller-state/<name>/`: `HANDOFF.md`, `plan.yaml`, `operator-decisions.md` (verbatim operator turns), readbacks, hook state. Outside every work tree: no `git clean` hazard, so no scheduled backup (operator 2026-11-18; `ctl-state-backup.sh` stays an optional tool; `/tmp` and `~` persist in the cockpit mount, as stated by the operator).
+- Shared per devcontainer (`~/controller/`, not per controller): env file, host table, gate locks, remote-gate locks and work directories, run records with per-controller name prefixes. Collisions designed out: merge numbers `merge-<name>-qNN`, worktree, run and monitor name prefixes, one plan per controller; gates are shared slots (`CONTROLLER_GATE_SLOTS`, default 2, because the devcontainer is memory capped and was OOM-killed once).
+- Env naming follows `.env.<name>` so files group and sort: local `.env.controller` (untracked), sample `.env.controller.example`; the runner sample becomes `.env.runner.example` (today `runner.env.example`). Loaders fall back to the old names for one release with a deprecation warning. Cosmetic: scheduled after the first slice.
 
 ## 4. Controller context policy and compaction
 
 **Role difference (operator, 2026-11-18).** A controller's value is prose: decisions, progress, open questions, reasoning about what comes next, and pointers. Implementers and reviewers need file contents, exact paths, error strings and tool results.
 
-**When to compact: not by size alone.** An earlier draft said "compact early at a semantic boundary". That is wrong as a rule, for the reasons the operator gave: compaction loses prose context; the prompt cache makes carrying a large context cheap (cache reads are about a tenth of the input price, and a warm prefix is mostly free); restarting from a 30k readback at 100k context buys nothing. What is expensive is the **tail**: very long contexts re-billed every turn, slower turns, and the degradation of attention. So the trigger is a model, not a threshold:
+**Compaction is not "early" (rev 1 said it was; wrong).** Compaction loses prose context, and the prompt cache makes carrying context cheap but not free. Measured against this controller's own hook log (2,391 main-session tool calls, 14-18 Nov, review 2026-11-18):
+- cache reads cost **0.05x** the input price on Sonnet 5.5 and Opus 5.5 (0.025x on Fable), not 0.1x; cache **writes** cost 1.25x (5-minute TTL) or **2x (1-hour TTL, which this controller uses)**. At 465k context a call costs about $0.047 in cache reads on Sonnet 5.5, more than a typical turn's output: "mostly free" is wrong at long contexts.
+- growth per tool call: median 874 tokens, mean 1.5k, p90 4.1k; about 20 calls per active hour; auto-compaction fires at about 465k, every 220-230 calls (11-13 active hours, about 1.5 times a day).
+- the **post-compaction floor is about 115k** (six compactions left 77k-144k), not the 30k of the readback: system and tools overhead (about 20k), re-attached files and the preserved tail are part of it.
+- a steady-state model (floor F, ceiling, growth g, compaction cost about $0.55 including re-creating the floor at 2x) puts the optimum ceiling at about 245k and shows the curve flat between 250k and 350k; today's practice is about 29% above the optimum (about $2.5 a day). The **floor is the bigger lever**: cutting it from 115k to 60k saves as much per call as tuning the ceiling.
 
-- context growth rate (tokens per turn, recent window) and the expected remaining work (from `plan.yaml`);
-- the cost of staying (cache-read bill of the projected growth) against the cost of compacting (summary generation plus the first cold turns and the loss risk);
-- boundary availability (state written, nothing half-edited) and bulk (how much of the context is re-readable tool output);
-- a hard ceiling for the tail (configurable per task, requirement R12.4: the limit is the task's intended context, not the model's maximum).
+So the rule is simple, not a live model: a **fixed per-role ceiling** (about 300k for the controller, set through `autoCompactWindow`), **compact warm, never cold** (before an idle gap longer than the cache TTL, or keep the 55-minute heartbeat), **compact before a planned tool-heavy fan-out**, and a **lean floor** (no re-attached files, a short readback of 15k or less, plan pointers only, floor target 60k or less). `agctl status` reports fill, growth rate, projection and boundary availability as advice; it does not decide. Not costed and noted: compaction quality loss grows with frequency; attention and latency degrade at 400k+; a mid-turn auto-compaction is not at a semantic boundary; if usage is a subscription, the scarce resource is the usage window, not dollars (open question 1).
 
-`agctl status` reports these numbers (fill, growth rate, projection, boundary available); the controller or `agctld` decides. A slowly growing controller at 150k with a short plan should not compact; a controller at 150k that fans out tool-heavy work should pre-compact.
+**Compaction is authored by the one who knows (a) the whole past and (b) the future plan.** The controller writes its own handover as a **skill** (`handover`): (A) a prose summary of the past: decisions with reasons, the progress ledger, what was learned, what is in flight (agents, hosts, experiments) with how to check each; (B) forward-looking hints and reasoning derived from `plan.yaml`: what to do next, in which order, what to watch, which decisions are pending with the operator; (C) read-first pointers in order. It drops what is re-readable (tool outputs, logs, file contents). Delivery (rev 2): the PreCompact hook output is appended as **instructions to the summariser**, so prose passed through it is summarised again, is capped at 10,000 characters, and was only measured with a one-sentence probe on Haiku (8 of 8, E2); a multi-KB handover through PreCompact is **untested**. The robust path is therefore the handover as a **file** that the session-start hook tells the resumed session to read first (the ingest path of the existing readback), with PreCompact steering as a hint only. This is requirement R12.3 made concrete.
 
-**Compaction is authored by the one who knows (a) the whole past and (b) the future plan.** The controller writes its own handover at compaction time, as a **skill** (`handover`): (A) a prose summary of the past: decisions with reasons, the progress ledger, what was learned, what is in flight (agents, hosts, experiments) with how to check each; (B) forward-looking hints and reasoning derived from `plan.yaml`: what to do next, in which order, what to watch, which decisions are pending with the operator; (C) read-first pointers (files, in order). It drops what is re-readable (tool outputs, logs, file contents). The PreCompact hook steers the compaction prompt to use the handover (measured: handover text honoured in 8 of 8 compactions, E2) and the session-start hook ingests the readback. This is requirement R12.3 (self-compaction prompt at a semantic boundary) made concrete.
-
-**Implementers and reviewers are not compacted; they are bounded and succeeded** (section 5). Extraction presets already differ the same way: `readback` for controllers, `--successor-brief` for agents.
+**Implementers and reviewers are not compacted; they are bounded and succeeded** (section 5).
 
 ## 5. Agent return contract, finalization and priming
 
-**Observed defect (2026-11-18).** Sonnet implementers ended with "ran out of context after about two big units" as if blocked. Two bugs: the briefs allowed stopping for budget without a defined handoff, and the return value had no way to say "partially done, here is how to continue".
+**Observed defect (2026-11-18).** Sonnet implementers ended with "ran out of context after about two big units" as if blocked. Two causes: the briefs allowed stopping for budget without a defined handoff, and the return value had no way to say "partially done, here is how to continue". Partly self-inflicted (rev 2): from 200k the controller hook tells agents to stop and make their report the handoff, but agents had no status word to say it with. The hook wording changes with the contract.
 
-**Return contract (goes into every brief template).**
-- `status: DONE | PARTIAL | BLOCKED`. `BLOCKED` means an external obstacle only (a decision, a missing permission, a failing dependency). Running low on context is never BLOCKED.
-- An agent that senses its context filling continues until a **semantic boundary** (a green commit, a finished item), then returns `PARTIAL` with: done up to (commit, items), deferred (items, with reasons), tips for the successor (pitfalls found, decisions taken), the read-first list (files in order, with why), the living state file, the exact commands to resume tests, and what it would do next.
-- `DONE` still lists "not done / known limits".
+**Return contract (goes into every brief template and the 200k hook message).**
+- `status: DONE | PARTIAL | BLOCKED`. `BLOCKED` means an external obstacle only (a decision, a missing permission, a failing dependency; a red gate the agent cannot fix is `PARTIAL` with a blocked-on list). Running low on context is never BLOCKED.
+- An agent that senses its context filling continues until a **semantic boundary**, then returns `PARTIAL` with: done up to (commit, items), deferred (items, reasons), tips for the successor (pitfalls, decisions taken), the read-first list (files in order, with why), the living state file, the exact commands to resume tests, and what it would do next. `DONE` still lists "not done / known limits".
+- Format (rev 2): a YAML block at the end of the final message plus `finalization.json` in the run directory; the file is authoritative.
+- "Semantic boundary" is **mechanical** (rev 2): the last commit landed, the tree is clean, the focused tests are green; `finalize` checks it. An agent that never returns PARTIAL (hard limit, stall) gets `agctl finalize --from-log`, built from `nyxloom extract --successor-brief`, the `job-check.sh` stall vocabulary and git state, with `status: UNREPORTED`.
 
-**Finalization tool.** `agctl finalize` (agent-side skill and CLI) collects the above mechanically as far as it can (commits since base, dirty tree, state file, test commands from the session, files read most and written) and asks the agent only for the judgment parts (deferred, tips, next). Output: `finalization.json` plus a human-readable `finalization.md` in the run directory.
+**Finalization tool.** `agctl finalize` (agent-side skill and CLI) validates the boundary and collects mechanically what it can (commits since base, dirty tree, state file, test commands from the session, files read most and written), and asks the agent only for the judgment parts (deferred, tips, next). Output: `finalization.json` plus `finalization.md`.
 
 **Priming a successor: one controller call when the finalization is complete.** `agctl prime <run> --mode ...`:
-1. `fresh`: a new session whose first prompt is the successor brief generated from the finalization (task, constraints, read-first list, what is done, what remains). Default for implementers.
-2. `fork`: fork a frozen, oriented session (`claude --resume <sid> --fork-session`, nyxloom pattern (b), experiment E-003: warm forks pay about 10% cache-read) and add only the new goal plus the successor brief. For many successors on the same repository orientation.
-3. `resume`: external `/compact` of the same session with the agent's handover (nyxloom pattern (a), measured E1), for agents that must keep their warm session.
-The controller may override: edit the generated brief before priming. If the finalization is incomplete (no semantic boundary, dirty tree), `prime` refuses and says what is missing.
+1. `fresh` (default; the **first slice**): a new session whose first prompt is the successor brief generated from the finalization (task, constraints, read-first list, done, remaining). The controller may edit the brief before priming; with an incomplete finalization `prime` refuses and says what is missing; it is automatic only for `fresh` with a complete finalization (rev 2 default: the controller confirms otherwise).
+2. `fork` (deferred): `claude --resume <sid> --fork-session` of a **clean frozen orientation session**, never the implementer's bloated one (nyxloom pattern (b); the mechanism is E-003, the measurement L24: cache read about 5% on current models). Prefix invariants must hold (same dynamic-sections flag, model, effort, toolset), the orientation is pinned to a base commit so the successor needs the `X..HEAD` delta, and it is warm only within the cache TTL (a cold fork re-creates the prefix at 2x and can cost more than `fresh`). Not available for Codex luna or Agent-tool subagents (they cannot be forked this way); for Codex "resume" means app-server `thread/compact/start` with `compact_prompt` (X6).
+3. `resume`: external `/compact` of the same session with the agent's handover (nyxloom pattern (a), E1), for sessions no live process holds.
 
 ## 6. Session control without an interactive-only controller
 
-Measured (docs/design/ctlstat/EXPERIMENT-compaction-*.md): external `claude -p --resume <id> "/compact <instr>"` works (E1); a long-lived `claude -p --input-format stream-json` driver accepts `/compact` as a message, queues mid-turn messages and fires hooks (X1/X2); a TUI-held session picks up the readback on its next turn through the session-start hook; the collision of a TUI and an external writer on the same session is UNVERIFIED; `claude --bg` with `claude attach/logs/stop/respawn` is the native server-plus-TUI model and is UNTESTED (E6 stopped at a one-time workspace-trust prompt in a throwaway directory).
+Measured (docs/design/ctlstat/EXPERIMENT-compaction-*.md): external `claude -p --resume <id> "/compact <instr>"` works (E1, idle, small sizes, Haiku; a 747k compaction took about 90 s); a long-lived `claude -p --input-format stream-json` driver accepts `/compact` as a message, queues mid-turn messages and fires hooks (X1/X2); `claude --bg` with `claude attach/logs/stop` is the native server-plus-TUI model and is UNTESTED (E6 stopped at a one-time workspace-trust prompt in a throwaway directory).
 
-Options: **A** interactive TUI plus hooks plus external `/compact` while idle (works today); **B** `claude --bg` plus `attach` (closest to a controller that does not own the terminal; test E6 in the trusted repository directory with a cheap model first); **C** a supervisor over stream-json or the Agent SDK with an own TUI (heavy; only if uniform multi-harness handling needs it). The controller need not exit to be compacted: it writes its handover and a `READY-TO-COMPACT` marker in its state directory and idles; `agctld` sees the marker and idleness in the session log, performs `/compact` (or starts a successor), updates the registry binding, and wakes the controller. Running agents are independent processes (detached wrappers) and are unaffected.
+**Untested and the main risk (rev 2):** a TUI that holds an in-memory history while an outside process appends a compaction to the same JSONL could fork or clobber the chain; that the readback is picked up by a running interactive session on its next turn is also untested end to end. Until the collision test passes, **external compaction applies only to sessions no live process holds**; the interactive controller stays on harness auto-compaction plus hooks, which already meets the unattended requirement (R12.11).
+
+Options: **A** interactive TUI plus hooks plus auto-compaction (works today); **B** `claude --bg` plus `attach` (test E6 in the trusted repository directory with a cheap model; cheap, decides B); **C** a stream-json/Agent-SDK supervisor with an own TUI (heavy; only if multi-harness uniformity needs it).
+
+**Ready-marker protocol (for later, `agctld`).** The controller writes its handover and a `READY-TO-COMPACT` marker carrying session id, last message uuid and handover hash, then idles. `agctld` claims it by rename (`.claimed.<pid>`), checks preconditions (last entry `end_turn`, no pending tool_use, no queued messages, no `run_in_background` tasks: they block or die, E5), performs the compaction, and the marker is done when a `compact_boundary` appears after that uuid; on restart it reconciles a claimed marker without a boundary. 429 or an exhausted usage window: leave the marker, back off, notify. It tails JSONL incrementally (40 MB files, 8 GiB devcontainer), takes a pidfile flock, and **fails open**: if `agctld` is dead, harness auto-compaction remains the limit. Running agents are independent processes (detached wrappers) and are unaffected.
 
 ## 7. Integration with the rest of the estate
 
-- `fleetd`: work requests and campaigns carry `owner=controller:<name>`; stall and result alerts go to that controller's inbox in its state directory; `remote-gate.sh` becomes fleetd's first generic-lane client. fleetd arbitrates host capacity across controllers (the reason it is central).
-- `thrashguard` (host actuator, separate note): registrants (run-gate, assay, run-job) push a shed score per unit over its write socket; `agctl status` reads its read socket. Victim rules (newest by default, highest refault rate, smallest enough) are its own configuration. assay consumes its freeze/thaw events to correct the wall time of the interrupted candidate and re-runs only killed, timed-out or hung candidates that overlapped a freeze.
-- `hostobs`: telemetry source for `agctl status` host sections after its migration (migration only when hostobs is feature complete; all consumers listed in its plan v3 section 1.1 are adapted then).
-- Sockets follow the common design: group-gated write and read sockets, no authentication inside the tool.
+- `fleetd`: work requests and campaigns carry `owner=controller:<name>`; stall and result alerts go to that controller's inbox in its state directory; `remote-gate.sh` becomes its first generic-lane client; fleetd arbitrates host capacity across controllers (the reason it is central).
+- `thrashguard` (host actuator, separate note): registrants (run-gate, assay, run-job) push a shed score per unit over its write socket; `agctl status` reads its read socket. Victim rules (newest by default, highest refault rate, smallest enough) are its configuration; no non-starvation logic is built, only documented as known limits. assay consumes its freeze/thaw events to correct the wall time of an interrupted candidate and re-runs only killed, timed-out or hung candidates that overlapped a freeze.
+- `hostobs`: telemetry source for status host sections after its migration (only when hostobs is feature complete; all consumers of plan v3 section 1.1 are adapted then).
+- Sockets (rev 2): owner-only with an `SO_PEERCRED` check, not merely group-gated: all agent wrappers run as the controller's uid, so a prompt-injected agent could otherwise compact or prime its own controller. Agents may write only their own finalization. Agent-authored text (handover, finalization) flows into successor prompts and compaction instructions: it is data, linted, never trusted as instructions about permissions. The operator acts through the TUI.
 
-## 8. Packages, in order
+## 8. Packages, in order (rev 2)
 
-1. Controller package A (small): env naming (`.env.controller`, `.env.runner.example` rename with loader fallback), `CONTROLLER_REPORTS_DIR`, docs fix (backup optional), `CONTROLLER_NAME` plus per-controller state directory plus registry (design first, migration of the running session last).
-2. Agent return contract: brief template and finalizer prompts updated (docs), then `agctl finalize` and `agctl prime fresh`.
-3. `agctl status` (ctlstat) with the pressure model and change-only output.
-4. Experiment E6 (`claude --bg` plus attach) and the TUI-plus-external-writer collision test.
-5. `agctld` marker protocol, then fork mode and adapters beyond Claude.
-6. TUI.
-Each package ships with tests and mutants like the controller tools, and is reviewed independently.
+**First slice (needs almost no new code):**
+1. Return contract in `BRIEF-TEMPLATE.md`, `rules.md`, the finisher prompts, and the 200k wording of the controller hook.
+2. `agctl finalize` as validator plus mechanical collector (+ `--from-log` fallback).
+3. `agctl prime fresh` (thin wrapper over `nyxloom extract --successor-brief` plus the finalization).
+4. `autoCompactWindow` about 300k for the controller; trim the post-compaction floor (target 60k or less); reconcile the two ctx hook copies.
+5. E6 (`claude --bg` plus attach) and the TUI-plus-external-writer collision test, in parallel (cheap).
+**Then:** `agctl status` (read-only) with the advisory pressure numbers; controller identity (`CONTROLLER_NAME`, lease registry, per-controller state directories; migration of the running session last, with a pointer left behind); env renames (cosmetic).
+**Deferred until needed:** `agctld`, fork mode, adapters beyond Claude and Codex, the TUI, anything in the registry beyond a name and a state directory.
+Each package ships with tests and mutants like the controller tools and is reviewed independently.
 
-## 9. Open decisions (operator)
+## 9. Decisions (operator; recommended defaults after review)
 
-- Project home and layout: top-level `agctl/` project (cmru-managed) with `scripts/controller/` migrated into it, versus keeping the shell tools where they are until `agctld` exists.
-- `nyxloom extract`: dependency or absorbed.
-- Default controller name = session name, and who creates a name for a controller that has none.
-- Which compaction trigger default: model-based (section 4) with a hard ceiling; the ceiling value for a controller.
-- Whether `agctld` may compact a controller without the operator's present approval, and the wake mechanism.
+- Project home: keep `scripts/controller/` until `finalize` and `prime` exist as a Python CLI, then a cmru-managed `agctl/` project.
+- `nyxloom extract`: dependency.
+- Controller name: explicit `CONTROLLER_NAME`.
+- Compaction trigger: fixed per-role ceiling (controller about 300k) plus warm-only plus pre-fan-out; the model's numbers are advisory.
+- Compaction without approval: yes for spawned sessions that set the marker; no for the interactive controller until the collision test passes.
 
 ## 10. Known limits and unverified facts
 
-E6 (`--bg`) and the TUI-plus-external-writer collision are unmeasured. Whether hook `additionalContext` survives a compaction is unmeasured. The cost model of section 4 needs real measurements of growth rates in controller sessions (the hook log `hook-log.jsonl` has the data). Compaction of implementers is deliberately avoided, not forbidden.
+E6 (`--bg`), the TUI-plus-external-writer collision and the end-to-end ingest of a readback by a running interactive session are unmeasured. Whether hook `additionalContext` survives a compaction is unmeasured. A multi-KB handover through PreCompact is untested. How a subscription weights cache reads against its usage windows is unknown (`nyxloom usage calibrate` can tell). Compaction of implementers is deliberately avoided, not forbidden.
