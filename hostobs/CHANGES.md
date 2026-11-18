@@ -15,8 +15,10 @@
   `client_scripted ... transport_failures_are_classified` (`crates/client/tests/client_scripted.rs`), grows
   200-400 MB/s without bound under this lane (it passes in `selftest`/`assay-r1`; open item for the client crate).
   The lane now sets `CARGO_BUILD_JOBS=1`, `RUST_TEST_THREADS=1` and `NEXTEST_TEST_THREADS=1`, and
-  `run-gate.toml [lanes.assay-r2.resources] memory = "2500m"`, a hard container cap: a runaway is OOM-killed inside
-  its own container (lane ERROR) instead of taking the host and its guests down.
+  `run-gate.toml [lanes.assay-r2.resources] memory = "2500m"` with `memory_swap = "2500m"` (docker
+  `--memory`/`--memory-swap`, memory plus swap equal): a runaway is OOM-killed inside its own container and the
+  lane ends non-green (ERROR or FAIL, not yet observed) instead of spilling into the host's swap and taking
+  neighbours down; whether the baseline compile fits in 2.5 GiB is measured by the next run.
 
 ### Added (the `conformance` lane; `HOB-4` fixed)
 
