@@ -686,8 +686,9 @@ fn blocks_that_arrive_one_byte_at_a_time_are_decoded() {
 #[test]
 fn broken_streams_are_typed() {
     let reply = rep_ok(2, "{}");
-    let mut oversize = frame(2, 2, &[b' '; 1990]);
-    oversize.truncate(12);
+    // A REP header claiming 16 MiB + 1: past even the pre-hello bound that still applies to
+    // a frame only partly buffered when the hello arrives.
+    let oversize = vec![1, 0, 0, 1, 2, 0, 0, 0, 2, 0, 0, 0];
     let mut bad_type = vec![12, 0, 0, 0, 9, 0, 0, 0];
     bad_type.extend_from_slice(&2u32.to_le_bytes());
     let truncated = reply.get(..5).unwrap_or_default().to_vec();
