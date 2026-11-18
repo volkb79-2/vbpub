@@ -186,7 +186,7 @@ are deliberately two copies: the VM tool does not import vmscreen (it runs it as
 subprocess for screen text), and vmscreen keeps its own. Both tables must list the same key names. The tests
 cannot compare them mechanically: `libraries/vmscreen/docs/cli-surface.json`
 names the `--keys` option but not the key names, so the rule is stated here and
-checked by review when either table changes (VMS-BL-03).
+checked by review when either table changes (vmscreen backlog VMS-BL-03, closed by this rule).
 
 ## No process killing
 

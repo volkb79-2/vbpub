@@ -1,14 +1,19 @@
 # vmscreen backlog (VMS-BL)
 
-* **VMS-BL-01 release contract.** Not registered in release machinery yet: no `cmru.toml` (tag `vmscreen-v*` is already
-  named in `pyproject.toml`), no `assay.toml` mutation lane. Copy the iobench trio when the library is adopted.
+* **VMS-BL-01 release contract (CLOSED 2026-11-18, P-A2).** Registered in the iobench shape: `cmru.toml` (tag `vmscreen-v*`,
+  wheel only, notes in `VMSCREEN_RELEASE_NOTES`), `assay.toml` (judged lane `vmscreen`, coverage floor 95 against a measured
+  97.4 %), `run-gate.toml` (lanes `r0-r1`, `r2`, `gate`) and the `vmscreen` entry in `cmru.orchestration.toml` (before `vm-lab`;
+  `cmru status` lists it, next tag `vmscreen-v0.1.0`). Evidence: vbpub branch `vm-pa2-20261118`, commits `caf11e2c6` and
+  `beea8b8a2`. The release itself and the first R2 mutation run are the controller's; vm-lab's `vmscreen>=` floor (vm-lab
+  VML-BL-03) needs that first tag.
 * **VMS-BL-02 semantic review catalog.** `docs/cli-surface.json` and the generated region of `docs/CLI-SPEC.md` are in sync, but
   `docs/cli-review.toml` is an empty header: the per-route review cases (`cli-extended surface template`, then the
   `cli-extended-review` skill) are not authored, so `surface check` reports every case as missing.
-* **VMS-BL-03 key table duplication (updated 2026-11-12).** `keys.py` and `vm-lab/src/vm_lab/console.py` (`console type`)
-  both carry the US-layout key table. Decide which copy stays: the VM tool importing vmscreen's `keys` (stdlib-only today, so
-  it needs a wheel dependency) or the copy remaining. The stale references to the removed `console_capture.py` and
-  `launch-truenas-vm.sh` (vbpub@c46b0dfe8) in the README and the packaged skill are corrected.
+* **VMS-BL-03 key table duplication (CLOSED 2026-11-18, P-A2; decided in VML-07).** The two copies stay on purpose: `keys.py` and
+  `vm-lab/src/vm_lab/console.py` (`console type`) each carry the US-layout key table, and both must list the same key names.
+  The rule is stated in `vm-lab/docs/DESIGN-GUIDE.md` "Two key tables, one set of names" and checked by review when either
+  table changes; the README points there. No mechanical check exists (an optional vm-lab test comparing `QCODES` with the
+  console table when vmscreen imports is not scheduled).
 * **VMS-BL-04 live verification.** The `0xb8000` read through `pmemsave` on a real QEMU (std VGA, TCG) is covered only by the
   opt-in `tests/test_smoke_qemu.py`; it has not been run in the harness yet. Open risks: `screendump` while the VM is stopped
   (ocr-pair) and `pmemsave` through the legacy VGA MMIO window in odd/even text addressing.
