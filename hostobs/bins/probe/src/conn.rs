@@ -34,12 +34,25 @@
 //!   outstanding, and `hello` and `status` answer synchronously, so the outstanding count is 0
 //!   whenever the next request arrives (R3); the idle condition and `Draining` therefore look
 //!   only at the queue. Subscriptions, `client-eof` ENDs and the counters belong to P5b-2.
-//! - **Unreachable-by-design branches** close with `internal`, never a panic.
+//! - **The driver never writes the hub head after `is_closed`.** A head pinned with 0 bytes
+//!   written is not partial, so `drain_unpinned` keeps it, and when it is the server prefix the
+//!   final bytes repeat the prefix (R2); writing the hub head as well would send the prefix
+//!   twice. `Server::output` answers `None` for a closed connection and `on_written` ignores one,
+//!   so the `Server` already follows the rule; any other driver must too.
+//! - **`close_for` takes the three `closing` reasons only:** `idle` (the conn's own timer calls
+//!   it), `slow-client` and `shutting-down` (WIRE.md section 5.4). Another code would put that
+//!   code in a `closing` EVT, which a client does not expect; a fatal request or reader outcome
+//!   never goes through `close_for`.
+//! - **Impossible cases are ignored, never a panic.** A reader error that owes no reply
+//!   (`Truncated`, `TrailingBytes`) cannot reach the conn, because it feeds a reader only while
+//!   open and ends it only at a boundary; if it did, the error would be ignored and the timers
+//!   would close the connection. A `SECTIONED` REQ never reaches `classify` either: the frame
+//!   header parse refuses the flag on any frame but a BLOCK, so the reader reports `bad-frame`.
 
 use std::sync::Arc;
 
 use hostobs_proto::error::ProtoError;
-use hostobs_proto::frame::{FrameType, FLAG_SECTIONED, FRAME_HEADER_LEN, PROTO_MINOR};
+use hostobs_proto::frame::{FrameType, FRAME_HEADER_LEN, PROTO_MINOR};
 use hostobs_proto::hub::{Close, ConnId, Pools, SendHub};
 use hostobs_proto::quality;
 use hostobs_proto::stream::{ConnTimers, Detect, Feed, FrameReader, ModeDetect, RawFrame, Timer};
@@ -100,53 +113,36 @@ enum Input {
     Line(Vec<u8>),
 }
 
-/// How a reader error closes the connection.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ReadFail {
-    /// A reply with `corr` 0 and this code.
-    Reply(Code),
-    /// The peer is gone: no reply.
-    Silent,
-}
-
-/// The requests one read completed and the error that ended it.
+/// The requests one read completed and the code of the reader error that ended it (the reply
+/// is fatal, `corr` 0).
 struct Batch {
     inputs: Vec<Input>,
-    error: Option<ReadFail>,
+    error: Option<Code>,
 }
 
-/// Why a reader error closes (WIRE.md section 5.2 "Wire mapping on the server"); at EOF every
-/// error is silent.
-fn frame_fail(error: &ProtoError, at_eof: bool) -> ReadFail {
-    if at_eof {
-        return ReadFail::Silent;
-    }
+/// The code a frame reader error closes with (WIRE.md section 5.2 "Wire mapping on the
+/// server"): too large and the deadline are their own codes, every other error is `bad-frame`.
+fn frame_fail(error: &ProtoError) -> Code {
     match error {
-        ProtoError::OversizedFrame { .. } => ReadFail::Reply(Code::FrameTooLarge),
-        ProtoError::Deadline => ReadFail::Reply(Code::Deadline),
-        ProtoError::TrailingBytes { .. } => ReadFail::Silent,
-        _ => ReadFail::Reply(Code::BadFrame),
-    }
-}
-
-fn line_fail(error: LineError) -> ReadFail {
-    match error.code() {
-        Some(code) => ReadFail::Reply(code),
-        None => ReadFail::Silent,
+        ProtoError::OversizedFrame { .. } => Code::FrameTooLarge,
+        ProtoError::Deadline => Code::Deadline,
+        _ => Code::BadFrame,
     }
 }
 
 fn frame_batch(feed: Feed) -> Batch {
     Batch {
         inputs: feed.frames.into_iter().map(Input::Frame).collect(),
-        error: feed.error.map(|error| frame_fail(&error, false)),
+        error: feed.error.map(|error| frame_fail(&error)),
     }
 }
 
+/// A line reader error owes a reply only when it has a code (`LineError::code`); the others
+/// cannot occur while the conn feeds the reader (module doc) and are ignored.
 fn line_batch(feed: LineFeed) -> Batch {
     Batch {
         inputs: feed.lines.into_iter().map(Input::Line).collect(),
-        error: feed.error.map(line_fail),
+        error: feed.error.and_then(LineError::code),
     }
 }
 
@@ -407,8 +403,8 @@ impl Conn {
             self.finish_close(hub, Some(Code::Deadline), frame);
             return;
         }
-        if let Some(fail) = self.reader_deadline(now_ns) {
-            self.fail(fail, hub);
+        if let Some(code) = self.reader_deadline(now_ns) {
+            self.close_reply(hub, code, 0, &Detail::Empty);
             return;
         }
         if timer == Some(Timer::Idle) {
@@ -434,9 +430,12 @@ impl Conn {
         self.refresh_idle(now_ns, hub);
     }
 
-    /// A server-originated close (the server calls it for the hub's `slow-client` and for
-    /// `shutting-down`): the final frame is the `closing` EVT (binary) or the error line (JSON);
-    /// an `Undecided` connection has no mode and closes silently.
+    /// A server-originated close: the final frame is the `closing` EVT (binary) or the error
+    /// line (JSON); an `Undecided` connection has no mode and closes silently.
+    ///
+    /// The contract (module doc): `code` is one of the three `closing` reasons, [`Code::Idle`],
+    /// [`Code::SlowClient`] (the server calls it for the hub's `slow-client`) or
+    /// [`Code::ShuttingDown`]; the conn does not check it.
     pub fn close_for(&mut self, code: Code, hub: &mut SendHub) {
         if self.state == State::Closed {
             return;
@@ -484,21 +483,14 @@ impl Conn {
         }
     }
 
-    fn reader_deadline(&mut self, now_ns: u64) -> Option<ReadFail> {
+    fn reader_deadline(&mut self, now_ns: u64) -> Option<Code> {
         match &mut self.reader {
             Reader::Frames(reader) => {
                 let polled = reader.poll(now_ns);
-                polled.err().map(|error| frame_fail(&error, false))
+                polled.err().map(|error| frame_fail(&error))
             }
-            Reader::Lines(reader) => reader.poll(now_ns).err().map(line_fail),
+            Reader::Lines(reader) => reader.poll(now_ns).err().and_then(LineError::code),
             Reader::None => None,
-        }
-    }
-
-    fn fail(&mut self, fail: ReadFail, hub: &mut SendHub) {
-        match fail {
-            ReadFail::Reply(code) => self.close_reply(hub, code, 0, &Detail::Empty),
-            ReadFail::Silent => self.finish_close(hub, None, None),
         }
     }
 
@@ -633,8 +625,8 @@ impl Conn {
         if self.state == State::Closed {
             return;
         }
-        if let Some(fail) = batch.error {
-            self.fail(fail, hub);
+        if let Some(code) = batch.error {
+            self.close_reply(hub, code, 0, &Detail::Empty);
         }
     }
 
@@ -642,13 +634,6 @@ impl Conn {
         match input {
             Input::Frame(frame) => {
                 let header = frame.header;
-                if header.frame_type == FrameType::Req && header.flags & FLAG_SECTIONED != 0 {
-                    return Err(Refusal {
-                        code: Code::BadFrame,
-                        corr: 0,
-                        detail: Detail::Empty,
-                    });
-                }
                 let payload = frame.bytes.get(FRAME_HEADER_LEN..).unwrap_or_default();
                 classify(&Query {
                     frame_type: header.frame_type,
@@ -1249,11 +1234,15 @@ mod tests {
         line_big.send(&vec![b'a'; 40_000]);
         let expected = error_line(0, Code::FrameTooLarge, &Detail::Empty);
         assert_eq!(line_big.conn.take_final(), Some(expected));
+        // A SECTIONED REQ (flag bit 0 on a non-BLOCK frame) is refused by `FrameHeader::parse`
+        // inside the frame reader, so it takes this reader-error path (`bad-frame`); the conn
+        // has no check of its own for it.
         let mut sectioned = ready_bin(Level::Observe);
         let mut frame = req(2, "status");
         frame[5] = 1;
         sectioned.send(&frame);
         let expected = rep_error(0, Code::BadFrame, &Detail::Empty);
+        assert_eq!(sectioned.conn.close_code(), Some(Code::BadFrame));
         assert_eq!(sectioned.conn.take_final(), Some(expected));
     }
 
