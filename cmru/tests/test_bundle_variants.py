@@ -228,7 +228,7 @@ def test_cleanup_validation_rejects_unresolvable_output_root(tmp_path, monkeypat
 
     with pytest.raises(ValueError, match="dist_dir cannot be resolved safely"):
         bundle._validate_staging_paths(
-            loop, tmp_path / "bundle", tmp_path / "client",
+            loop, tmp_path / "bundle", tmp_path / "client", project_root=tmp_path,
         )
 
 

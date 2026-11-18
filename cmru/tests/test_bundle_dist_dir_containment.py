@@ -221,3 +221,26 @@ def test_removal_helper_itself_refuses_a_config_whose_dist_dir_is_outside_projec
 
     scratch.assert_untouched(before)
     assert (victim / "precious.txt").is_file()
+
+
+def test_unresolvable_project_root_is_refused_before_anything_is_removed(tmp_path, monkeypatch):
+    scratch = Scratch(tmp_path, "dist")
+    stale = scratch.project / "dist" / "stale.txt"
+    stale.parent.mkdir()
+    stale.write_text("stale\n", encoding="utf-8")
+    real_resolve = Path.resolve
+    root = scratch.project
+
+    def fail_for_project_root(path, *args, **kwargs):
+        if path == root:
+            raise OSError("injected project_root resolution failure")
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_for_project_root)
+
+    with pytest.raises(ValueError, match="project_root cannot be resolved safely"):
+        bundle._validate_staging_paths(
+            root / "dist", root / "dist" / "bundle", root / "dist" / "client", project_root=root,
+        )
+
+    assert stale.is_file()

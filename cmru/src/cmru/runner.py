@@ -603,7 +603,7 @@ def _run_command(
             _reap_process_group(process)
         raise
     finally:
-        if process is not None and process.stdout is not None:
+        if process is not None:
             process.stdout.close()
     elapsed_seconds = monotonic() - start
     if exit_code != 0:

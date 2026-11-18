@@ -364,14 +364,14 @@ def _resolve_staging_path(base: Path, raw: str, name: str) -> Path:
 
 
 def _validate_staging_paths(
-    dist_dir: Path, bundle_dir: Path, client_dir: Path, *, require_canonical: bool = False,
-    project_root: Optional[Path] = None,
+    dist_dir: Path, bundle_dir: Path, client_dir: Path, *, project_root: Path,
+    require_canonical: bool = False,
 ) -> None:
     """Keep removable staging trees disjoint and contained by the output directory.
 
-    With ``project_root`` the output directory itself must also be a strict descendant of it
-    (KI-175): the legacy build removes ``dist_dir`` whole, so one that equals the project, its
-    parent or any outside directory would delete data the build never owned.
+    The output directory itself must also be a strict descendant of ``project_root`` (KI-175):
+    the legacy build removes ``dist_dir`` whole, so one that equals the project, its parent or
+    any outside directory would delete data the build never owned.
     """
     paths = {
         "dist_dir": dist_dir,
@@ -388,15 +388,14 @@ def _validate_staging_paths(
             raise ValueError(f"{name} changed to a symlink or non-canonical path before cleanup")
 
     root = resolved["dist_dir"]
-    if project_root is not None:
-        try:
-            project = project_root.resolve()
-        except (OSError, RuntimeError) as exc:
-            raise ValueError(f"project_root cannot be resolved safely: {exc}") from exc
-        if not _is_strict_descendant(root, project):
-            raise ValueError(
-                f"dist_dir {root} must resolve to a strict descendant of project_root {project}"
-            )
+    try:
+        project = project_root.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"project_root cannot be resolved safely: {exc}") from exc
+    if not _is_strict_descendant(root, project):
+        raise ValueError(
+            f"dist_dir {root} must resolve to a strict descendant of project_root {project}"
+        )
     for name in ("bundle_dir", "client_dir"):
         if not _is_strict_descendant(resolved[name], root):
             raise ValueError(f"{name} must resolve to a strict descendant of dist_dir")

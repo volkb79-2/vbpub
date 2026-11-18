@@ -486,6 +486,50 @@ def test_signal_right_after_popen_returns_still_reaps_the_step(tmp_path, monkeyp
             _kill_quietly(pid)
 
 
+def test_command_that_cannot_start_raises_without_reaping_or_closing_anything(tmp_path):
+    log = tmp_path / "step.log"
+    with log.open("a", encoding="utf-8") as handle:
+        with pytest.raises(FileNotFoundError):
+            runner.run_command([str(tmp_path / "no-such-program")], tmp_path, handle)
+    assert log.read_text(encoding="utf-8") == ""
+
+
+def test_pipe_holder_scan_skips_processes_it_cannot_inspect(tmp_path, monkeypatch):
+    """A pid whose descriptors cannot be listed is skipped; the other holder is still named."""
+    read_end, write_end = os.pipe()
+    holder = subprocess.Popen(["sleep", "600"], pass_fds=[write_end])
+    unreadable = subprocess.Popen(["sleep", "600"], pass_fds=[write_end])
+    try:
+        inode = os.fstat(read_end).st_ino
+        # Our own pid also holds both ends and is never reported.
+        assert runner._pipe_holder_pids(inode) == sorted([holder.pid, unreadable.pid])
+
+        real_listdir = os.listdir
+
+        def listdir(path):
+            if str(path) == f"/proc/{unreadable.pid}/fd":
+                raise PermissionError("injected: not ours to inspect")
+            return real_listdir(path)
+
+        monkeypatch.setattr(runner.os, "listdir", listdir)
+        assert runner._pipe_holder_pids(inode) == [holder.pid]
+    finally:
+        os.close(read_end)
+        os.close(write_end)
+        for process in (holder, unreadable):
+            process.kill()
+            process.wait()
+
+
+def test_reap_of_an_already_finished_group_finds_nothing_to_signal(tmp_path, monkeypatch):
+    process = subprocess.Popen(["true"], start_new_session=True)
+    process.wait()
+    runner._reap_process_group(process)  # SIGTERM finds no group; the empty group ends the wait
+    monkeypatch.setattr(runner, "GROUP_TERM_GRACE_SECONDS", 0.0)
+    runner._reap_process_group(process)  # no grace: SIGKILL finds no group either, then reaps
+    assert process.returncode == 0
+
+
 def test_failed_second_handler_install_restores_the_first(tmp_path, monkeypatch, default_termination_signals):
     real_signal = signal.signal
     calls: list[int] = []
