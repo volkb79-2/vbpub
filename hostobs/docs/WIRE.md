@@ -595,8 +595,9 @@ written head still counts; `head` returns the **unwritten rest** of the entry as
 tail part]` (a control frame has an empty prefix; after `wrote(n)` the prefix part shrinks first), and
 `wrote` clamps to the entry's length, ignores a call without a pinned head and pops a zero-length
 entry on any call; a control frame is pinned like a block (`pinned_ns` and the frame-completion rule
-apply to it) but has nothing to stamp; "empty → non-empty" is judged at the moment the entry is
-inserted, so a push that sheds the queue empty and then inserts restarts `last_progress_ns`; a
+apply to it) but has nothing to stamp; "empty → non-empty" is judged before the push touches the
+queue, so a coalesce or a shed that empties the queue and then inserts never restarts
+`last_progress_ns` (a stalled socket with one tick per second is still closed); a
 coalesced tick keeps its queue position (the replaced entry's sequence number) and, when it then does
 not fit, counts two drops (the replaced and the incoming tick); the victim of the uid and global pools
 may be the pushing connection itself (it holds the most sheddable bytes); `drain_unpinned` and
