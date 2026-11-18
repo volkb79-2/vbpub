@@ -9,7 +9,7 @@
   python/tests`) on `tester-unified-rust`, `network = "none"`, budget 10 minutes, not judged by Assay.
   The image's `python3` is Debian's apt package (CPython 3.13.5 on Debian 13), so the WIRE.md §7.8
   absolute memory bound (measured on CPython 3.14.10) is skipped there and the growth and line-count
-  gates run; the docs name the image and the skip.
+  gates run. `tester-unified-rust/tests/test_image_contract.py` expects the fourth lane.
 
 ### Added (P3b: `python/hostobs_client` connection, `require_profiling`, `hostobs-mark`; the P3 part of `HOB-54` closed)
 

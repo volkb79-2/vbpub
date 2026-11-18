@@ -772,10 +772,13 @@ one addition 1.1 makes, kind 6 `subject` (§3.8), is a correctness fix, not a sp
 steady-state 8,272 / 80,240 B and dictionary-bearing 12,360 / 120,328 B frames from
 `docs/SP-4-WIRE-SIZES.md`; every measured decode alternates **two distinct rows bodies** so the `==`
 skip never fires and row validation runs), published in `docs/SP-4-WIRE-SIZES.md` with the gate
-image and `sys.version` named. **Python version rule:** the gate runs on the CPython of the P3 gate
-image, pinned to **CPython 3.14.10** (the patch level the bounds were measured on); the absolute
-memory bound below is re-measured and re-set in this table in the same change that moves the gate
-image to any other CPython version, **a patch-level change included** (3.14.10 → 3.14.11 too), and the
+image and `sys.version` named. **Python version rule:** the absolute memory bound below was measured on
+**CPython 3.14.10** (the patch level) and is enforced only where the interpreter is exactly that
+version; elsewhere that test is skipped and the growth and line-count gates, which do not depend on the
+version, still run. The registered `conformance` lane runs the CPython of the `tester-unified-rust`
+image (3.13.5), so it enforces the growth and line-count gates and not the absolute bound. The
+absolute bound is re-measured and re-set in this table in the same change that moves the lane's image
+to any other CPython version, **a patch-level change included** (3.14.10 → 3.14.11 too), and the
 growth and line-count gates are re-run in that change.
 
 Model measurements behind the thresholds (this design's decoder of §7.4 written stdlib-only as
@@ -1203,7 +1206,7 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | D-W12 | Error codes are kebab-case (`bad-request`, not `bad_request`) | every other code in plan and codec is kebab-case |
 | D-W13 | JSON mode refuses block verbs (`binary-required`) | a second JSON rendering of blocks would be a second codec to keep conformant |
 | D-W14 | Python reads each frame into its own exact-size `bytearray(len)` after the header validates against the client limit (16 MiB), the one exception to "never allocate by `len`"; the §5.2 machine is otherwise shared, with an injected clock and a deadline-based `settimeout` | decoded views stay valid as long as the caller holds the block; the only peer is the probe chosen by socket path; one allocation per frame is cheap at ≤ 120 KB/s |
-| D-W15 | Python gates are deterministic: equal `sys.settrace` line counts at 100 and 1,000 rows, and `tracemalloc` peak growth ≤ 4 KiB plus an absolute ≤ 16 KiB on pinned CPython 3.14.10 (re-measured on any version change, patch level included); CPU ratio and absolute times are published only | measured (§7.8): the ratio of the correct path (5.6-5.7) and of a per-value loop (7.5-7.9) are too close to gate; line counts (141 = 141 vs 1,733 / 16,133) and memory growth (2,088 B vs 31,136 B for `list()`) separate them without load dependence |
+| D-W15 | Python gates are deterministic: equal `sys.settrace` line counts at 100 and 1,000 rows, and `tracemalloc` peak growth ≤ 4 KiB plus an absolute ≤ 16 KiB enforced on CPython 3.14.10 only (the registered `conformance` lane runs 3.13.5 and skips it; re-measured on any version change, patch level included); CPU ratio and absolute times are published only | measured (§7.8): the ratio of the correct path (5.6-5.7) and of a per-value loop (7.5-7.9) are too close to gate; line counts (141 = 141 vs 1,733 / 16,133) and memory growth (2,088 B vs 31,136 B for `list()`) separate them without load dependence |
 | D-W16 | Client-side reader limits 16 MiB / 30 s; server limits per level as §5.1 | the probe must not be cut by its own client under host load; the probe's stall bound (5 s) protects the probe from clients, the reverse protection only needs to bound a dead probe |
 | D-W17 | Section layouts are frozen at version 1; changes take new kind codes | the implemented decoder refuses a known kind with another version even when optional |
 | D-W18 | One `SendHub` owns every connection's queue and three pools: Live (droppable, 4 MiB / connection, 8 MiB / uid, 32 MiB global), Query (backpressure, never dropped, 4 / 4 / 16 MiB) and control (2 MiB / connection, a frame into an empty control queue always admitted); a pool overflow sheds the oldest unpinned Live entry of the largest connection that has one, else the incoming tick is dropped; queries never shed ticks | a REP/END can no longer close a lagging client; history and snapshot replies never lose data and a history loop cannot churn other clients' ticks; one slow group member or one uid cannot close or starve another (finding 4, round 2 D) |

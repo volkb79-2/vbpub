@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Cross-implementation tests for the independent Python reference codec (plan v4 §B.5).
 
-Run manually (there is no registered `conformance` lane yet; see
-`KNOWN_ISSUES_TODO_BACKLOG.md` HOB-4):
+The registered `conformance` lane runs the whole suite (`run-gate.toml`; see
+`KNOWN_ISSUES_TODO_BACKLOG.md` HOB-4). By hand:
 
     python3 -m unittest discover -s python/tests -v
 

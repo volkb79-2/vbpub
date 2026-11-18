@@ -16,7 +16,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-1 | Counter wrap is never inferred: every backwards raw counter is a reset | Minor | OPEN (by design, awaiting a declared-width policy) |
 | HOB-2 | SP-4 measured bytes only: encode/decode CPU, allocations and maintenance cost unmeasured | Minor | OPEN |
 | HOB-3 | `model` and `proto` duplicate the quality/metric vocabularies because the locked image cannot take the path dependency; a shared fixture, not a shared type, binds them | Major | OPEN (needs one image build on the registry-set identity, then workspace-only lock edits need no further rebuild) |
-| HOB-4 | The independent Python fixture check had no registered `conformance` lane | Major | FIXED (the `conformance` lane) |
+| HOB-4 | The independent Python fixture check is gate-enforced by the registered `conformance` lane | Major | FIXED (the `conformance` lane) |
 | HOB-5 | Section version 1 has no history min/max/mean columns; `TIME` carries one value per bucket plus the aggregation code | Minor | OPEN (decided: WIRE.md §3.6/§4.9 D-W10, no layout change; lands with P5b `series_batch`) |
 | HOB-6 | `DICT` frame type is defined but consumed nowhere: the dictionary travels inside the block frame | Minor | CLOSED (by design: reserved and unsent, WIRE.md §2.2 D-W6) |
 | HOB-7 | `IncarnationRegistry` grows without bound and `end_round` is O(all ids ever minted) | Major | OPEN (SP-3 bound) |
@@ -487,9 +487,9 @@ design preference.
 identity (a workspace-only `Cargo.lock` edit then needs no rebuild), and record it as a decision in
 `hostobs/docs/DESIGN-GUIDE.md`.
 
-## HOB-4 — No registered `conformance` lane
+## HOB-4 — FIXED: the Python conformance run is the registered `conformance` lane
 
-**Where:** `run-gate.toml` declares `lint` and `selftest` only.
+**Where:** `run-gate.toml` declares `lint`, `selftest`, `assay-r1` and `conformance`.
 
 Plan v4 §B.5 and the Rust methodology both name a `conformance` lane for the Python
 reference decoder. The Python side exists and passes (`python3 -I -m unittest discover -s

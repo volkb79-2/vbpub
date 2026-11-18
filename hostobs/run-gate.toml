@@ -43,9 +43,7 @@ artifacts = ["lcov.info", "cov-summary.json"]
 # uses; its `python3` is Debian's apt package (CPython 3.13.5 on Debian 13, no pip), not the
 # CPython 3.14.10 the WIRE.md §7.8 absolute memory bound was measured on, so that one bound is
 # skipped here (its skip reason names the pinned version) and the growth and line-count gates
-# run. `-B` (and the variable for the zipimport smoke test's child) keeps `__pycache__` out of
-# the mounted tree, because `-I` alone ignores `PYTHONDONTWRITEBYTECODE`. This lane is not
-# judged by Assay.
+# run. `-B` keeps `__pycache__` out of the mounted tree. This lane is not judged by Assay.
 [lanes.conformance]
 kind = "command"
 environment = "tester-unified-rust"
@@ -55,7 +53,6 @@ argv = [
   "bash", "-c",
   '''set -eu
 cd {worktree}/hostobs
-export PYTHONDONTWRITEBYTECODE=1
 python3 -B -I -W error::ResourceWarning -m unittest discover -s python/tests''',
 ]
 clean_tree = true
