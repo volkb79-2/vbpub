@@ -51,8 +51,12 @@ it is not green. A patch is `killed` only by a real test failure; a docker or ru
 a compile error or a Python import/syntax error is `NOT-BUILT` and counts as unanswered. A suite
 run that exceeds `--timeout-s` (default 1800 s for a Rust suite, 300 s for a Python one; the
 baseline uses the same limits) is `KILLED-TIMEOUT`: a mutant that makes the suite hang is detected,
-as in standard mutation testing, and it is counted apart from `killed` in the summary. The
-container of a timed-out Rust run is named `hostobs-mut-<pid>-<n>` and removed by that exact name.
+as in standard mutation testing, and it is counted apart from `killed` in the summary. Under host
+load a timeout is INCONCLUSIVE: rerun each timed-out mutant with the baseline's own duration in
+mind (the limit must exceed the baseline's wall time) before counting it as a kill. The container
+of a Rust run is named `hostobs-mut-<pid>-<n>`; a stale container of that exact name is removed
+before the run, and the container is removed by that exact name on a timeout or on any other
+exception (KeyboardInterrupt included); a failed `docker rm -f` is reported on stderr.
 
 The results are recorded in [`../HAND-MUTANTS-M1D.md`](../HAND-MUTANTS-M1D.md) once the campaign
 has been run on the gate head.
@@ -171,8 +175,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "M1d-5",
         "a quarantine name of another tier is adopted",
         "crates/store/src/tier.rs",
-        "                if parsed.tier != self.config.name {\n                    notes.push(TierNote {\n                        name: entry.name.clone(),\n                        reason: \"names another tier\".to_string(),\n                    });\n                    continue;\n                }\n                highest_seen = highest_seen.max(Some(parsed.seq));\n                if entry.kind != EntryKind::File {",
-        "                if false && parsed.tier != self.config.name {\n                    notes.push(TierNote {\n                        name: entry.name.clone(),\n                        reason: \"names another tier\".to_string(),\n                    });\n                    continue;\n                }\n                highest_seen = highest_seen.max(Some(parsed.seq));\n                if entry.kind != EntryKind::File {",
+        "                if parsed.tier != self.config.name {\n                    notes.push(TierNote {\n                        name: entry.name.clone(),\n                        reason: \"names another tier\".to_string(),\n                    });\n                    continue;\n                }\n                // Not yet proved this tier's own: reserves at most `UNPROVEN_SEQ_MAX`.\n                highest_seen = highest_seen.max(Some(parsed.seq.min(UNPROVEN_SEQ_MAX)));\n                if entry.kind != EntryKind::File {",
+        "                if false && parsed.tier != self.config.name {\n                    notes.push(TierNote {\n                        name: entry.name.clone(),\n                        reason: \"names another tier\".to_string(),\n                    });\n                    continue;\n                }\n                // Not yet proved this tier's own: reserves at most `UNPROVEN_SEQ_MAX`.\n                highest_seen = highest_seen.max(Some(parsed.seq.min(UNPROVEN_SEQ_MAX)));\n                if entry.kind != EntryKind::File {",
         "store",
     ),
     Mutant(
@@ -333,9 +337,9 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "M1d-17",
-        "a live name no longer reserves its sequence number",
+        "an unproven live name no longer reserves its sequence number",
         "crates/store/src/tier.rs",
-        "            highest_seen = highest_seen.max(Some(parsed.seq));\n            match entry.kind {",
+        "            highest_seen = highest_seen.max(Some(parsed.seq.min(UNPROVEN_SEQ_MAX)));\n            match entry.kind {",
         "            match entry.kind {",
         "store",
     ),
@@ -343,7 +347,7 @@ MUTANTS: tuple[Mutant, ...] = (
         "M1d-17",
         "a quarantined name no longer reserves its sequence number",
         "crates/store/src/tier.rs",
-        "                highest_seen = highest_seen.max(Some(parsed.seq));\n                if entry.kind != EntryKind::File {",
+        "                // Not yet proved this tier's own: reserves at most `UNPROVEN_SEQ_MAX`.\n                highest_seen = highest_seen.max(Some(parsed.seq.min(UNPROVEN_SEQ_MAX)));\n                if entry.kind != EntryKind::File {",
         "                if entry.kind != EntryKind::File {",
         "store",
     ),
@@ -404,6 +408,30 @@ MUTANTS: tuple[Mutant, ...] = (
         "    if int(start_s) >= 1 << 64 or int(seq) >= 1 << 64:",
         "python",
     ),
+    Mutant(
+        "M1d-20",
+        "`open_segment` refuses the bound itself (`>` becomes `>=`)",
+        "crates/store/src/tier.rs",
+        "        if seq > SEQ_NAME_MAX {\n            // A name above the bound",
+        "        if seq >= SEQ_NAME_MAX {\n            // A name above the bound",
+        "store",
+    ),
+    Mutant(
+        "M1d-20",
+        "an unproven name reserves its full sequence (the cap at the bound minus one is gone)",
+        "crates/store/src/tier.rs",
+        "            highest_seen = highest_seen.max(Some(parsed.seq.min(UNPROVEN_SEQ_MAX)));\n            match entry.kind {",
+        "            highest_seen = highest_seen.max(Some(parsed.seq));\n            match entry.kind {",
+        "store",
+    ),
+    Mutant(
+        "M1d-20",
+        "an adopted segment at the bound does not reserve it (the proven maximum is dropped)",
+        "crates/store/src/tier.rs",
+        "        highest_seen = highest_seen.max(proven_max);",
+        "        let _ = proven_max;",
+        "store",
+    ),
     # ------------------------------ HOB-56: the byte total is the tiers' own total
     Mutant(
         "M1d-21",
@@ -434,8 +462,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "M1d-22",
         "`Tier::report` does not fill `Evicted::notes`",
         "crates/store/src/tier.rs",
-        "        evicted.notes.push(note.clone());\n        self.scan.notes.push(note);",
-        "        self.scan.notes.push(note);",
+        "        evicted.notes.push(note.clone());\n        let kept =",
+        "        let kept =",
         "store",
     ),
     Mutant(
@@ -464,7 +492,39 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "M1d-22",
-        "`Store::notes` leaves the ring's reports out",
+        "the scan notes' eviction reports have no cap",
+        "crates/store/src/tier.rs",
+        "        if kept >= MAX_EVICTION_NOTES {\n            self.scan.notes.remove(self.reports_from);\n        }\n",
+        "",
+        "store",
+    ),
+    Mutant(
+        "M1d-22",
+        "`Store::notes` hides a tier's note about its own name",
+        "crates/store/src/store.rs",
+        "        Ok(parsed) => parsed.tier == producer || !owned.contains(&parsed.tier.as_str()),",
+        "        Ok(parsed) => !owned.contains(&parsed.tier.as_str()),",
+        "store",
+    ),
+    Mutant(
+        "M1d-22",
+        "`Store::notes` shows one tier's note about another tier's file in a shared directory",
+        "crates/store/src/store.rs",
+        "        Ok(parsed) => parsed.tier == producer || !owned.contains(&parsed.tier.as_str()),",
+        "        Ok(_) => true,",
+        "store",
+    ),
+    Mutant(
+        "M1d-22",
+        "`Store::notes` shows a report twice (the ring's copy is not deduplicated)",
+        "crates/store/src/store.rs",
+        "            if !notes.contains(note) {\n                notes.push(note.clone());\n            }\n",
+        "            notes.push(note.clone());\n",
+        "store",
+    ),
+    Mutant(
+        "M1d-22",
+        "`Store::notes` leaves the ring's reports out (possibly equivalent while no store API rescans a tier)",
         "crates/store/src/store.rs",
         "        for note in &self.eviction_notes {\n            if !notes.contains(note) {\n                notes.push(note.clone());\n            }\n        }\n",
         "",
@@ -534,6 +594,23 @@ def host_namespace(path: Path) -> tuple[Path, Path, Path]:
     return host_path, source, destination
 
 
+def remove_container(name: str) -> None:
+    """Remove one container by its EXACT name (never a filter or an ancestor).
+
+    A container that does not exist is the normal case and is silent; any other failure of
+    `docker rm -f` is reported on stderr, never discarded, because a container left running
+    keeps a lane's cgroup slot and CPU.
+    """
+    run = subprocess.run(
+        ["docker", "rm", "-f", name], capture_output=True, text=True, check=False
+    )
+    if run.returncode != 0 and "No such container" not in run.stderr:
+        print(
+            f"WARNING: `docker rm -f {name}` failed (exit {run.returncode}): {run.stderr.strip()}",
+            file=sys.stderr,
+        )
+
+
 def run_rust(package: str, timeout_s: int) -> tuple[str, list[str]]:
     environment = os.environ.copy()
     host_path, host_source, cockpit_path = host_namespace(ROOT)
@@ -561,6 +638,9 @@ def run_rust(package: str, timeout_s: int) -> tuple[str, list[str]]:
         "-c",
         f"export CARGO_TARGET_DIR=/tmp/t; tools/cargo-offline.sh test -p hostobs-{package} --offline --locked",
     ]
+    # A container of this exact name left by an earlier process with the same pid (pid reuse)
+    # would make `docker run --name` refuse: remove it first, by its exact name.
+    remove_container(container)
     try:
         run = subprocess.run(
             command, capture_output=True, text=True, check=False, timeout=timeout_s
@@ -568,8 +648,12 @@ def run_rust(package: str, timeout_s: int) -> tuple[str, list[str]]:
     except subprocess.TimeoutExpired:
         # `subprocess.run` stops the docker client, not the container it started: remove that
         # one container by its exact name (never by a filter or an ancestor).
-        subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
+        remove_container(container)
         return "timeout", [f"no verdict within {timeout_s} s"]
+    except BaseException:
+        # Any other exit, KeyboardInterrupt included, must not leave the container running.
+        remove_container(container)
+        raise
     log = run.stdout + run.stderr
     if run.returncode == 0:
         return "survived", []

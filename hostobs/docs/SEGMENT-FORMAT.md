@@ -50,9 +50,14 @@ consumer reads them back. That split is why `store` needs no dependency on `prot
   The name parser refuses it in every spelling (`.seg`, `.seg.open`, `.seg.corrupt`,
   `.seg.open.corrupt`), so the scan treats it exactly like any other look-alike: reported as a
   note, never counted, never adopted, never deleted, and it never raises the water mark (a name such
-  as `hot-0-18446744073709551615.seg` used to set the mark to `u64::MAX`, so every new segment failed
-  with `LengthOverflow` until the file was removed). A name at exactly `SEQ_NAME_MAX` is still ours;
-  when the next sequence would exceed it the tier fails with the typed overflow error
+  as `hot-0-18446744073709551615.seg` would otherwise make every new segment fail with
+  `LengthOverflow`). A name at exactly `SEQ_NAME_MAX` is still a segment name, with one more
+  rule: **an unproven name never raises the mark above the bound minus one; a proven one is
+  adopted.** A file is proven by being adopted as a live segment (its header is this tier's and
+  its `seq` and start agree with the name, the identity rule below); a look-alike at the bound
+  (garbage, a foreign header, a quarantined file whose key was not identity-checked) reserves at
+  most `SEQ_NAME_MAX - 1`, so the next segment can still be minted at the bound. When the next
+  sequence would exceed `SEQ_NAME_MAX` the tier fails with the typed overflow error
   (`LengthOverflow`, legitimate exhaustion). The Python reference mirrors the bound in
   `parse_segment_name` and `parse_quarantine_name`.
 
@@ -254,9 +259,17 @@ loop nor fail an `append` after its record was written. A live segment deleted b
 from the ring the same way.
 
 These reports are not only in `TierScan::notes` (which a rescan resets and the caller of `append`
-or `evict` never sees): every pass returns them in `Evicted::notes` (HOB-58), and the store copies
-them into a bounded ring (`MAX_EVICTION_NOTES` = 256, oldest dropped first) that `Store::notes()`
-appends, after its foreign-name filter, to the tiers' scan notes. `StoreStats::bytes` is the sum
+or `evict` never sees): every pass returns them in `Evicted::notes` (HOB-58; one pass's list is
+bounded by the entries it removes). The tier keeps at most `MAX_EVICTION_NOTES` = 256 of them in
+`scan.notes`, after the rescan's own notes, and drops the **oldest** report when one more arrives
+(the rescan's notes are never dropped for it); the store keeps at most 256 in a ring with the same
+policy, and `Store::notes()` shows each report once (the ring's copy of a report already in a
+tier's scan notes is not repeated). `Store::notes()` hides exactly one kind of note: one tier's
+note about a segment name (live or `.corrupt`) of a different tier of the same store, as hot and
+warm share a directory and warm reports hot's files as "names another tier". A note a tier makes
+about its own name (garbage under `hot-0-3.seg` or `hot-0-3.seg.corrupt`, a directory, another
+tier kind's header) and a note about a name no tier claims stay visible.
+`StoreStats::bytes` is the sum
 of the tiers' own byte totals (and the events store's), recomputed after every write, seal and
 eviction pass, so a vanished file leaves it exactly when it leaves the tier (HOB-56). Known limit:
 a quarantined file that could not be removed stays on disk, uncounted, and the next restart's scan

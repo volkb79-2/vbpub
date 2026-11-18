@@ -962,12 +962,12 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 
 ### Open questions (both DECIDED)
 
-1. **Client-side completion age: DECIDED, 30 s** (D-W16: a trusted probe under load must not be cut
-   by a client; the server keeps its 5 s). Reason: operator-side recommendation accepted by the
-   controller 2026-11-18.
-2. **Who may read spans: DECIDED, every `hostobs-observe` member** (plan §I question 4): WIRE.md
-   serves `events`/`spans` at observe level. Reason: operator-side recommendation accepted by the
-   controller 2026-11-18.
+1. **Client-side completion age: DECIDED, 30 s** (D-W16; the server keeps its 5 s). Reason: a
+   trusted probe under host load must not be cut by its own client, and the probe's stall bound
+   (5 s) already protects the probe.
+2. **Who may read spans: DECIDED, every `hostobs-observe` member** (plan §I question 4). Reason:
+   this is the plan's recommendation, and WIRE.md serves `events`/`spans` at observe level on
+   that basis.
 
 ### Review round 1 (independent review of rev 1 at `7f1f17888`, verdict FIX)
 
