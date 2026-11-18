@@ -1690,8 +1690,15 @@ the operator to set a non-empty value in the selected source config or process e
 The preflight MUST inspect the selected refs on the local Docker host. The cgroup-probe image
 MUST already be local because its Docker run uses
 `--pull=never`; if absent, preflight MUST fail with exit 4 naming the reference and exact
-`docker pull <ref>` remedy. The wheel-builder Docker run does not use `--pull=never` and pulls
-an absent image by default. On an actual release, if the builder is absent locally, preflight
+`docker pull <ref>` remedy. When any `[steps.*]` command argv of the selected release config
+(read with a TOML parser, not a text search) contains `--enable-docker`, the preflight MUST add
+a third `DinD sidecar image` row for `CMRU_TESTER_DIND_IMAGE`, resolved exactly like the probe
+image and with the probe's contract: its Docker run uses `--pull=never`, so an empty value or an
+absent image MUST fail preflight (exit 4, naming the variable and reference, with the exact
+`docker pull <ref>` remedy), a present image passes, and Docker being unavailable is `SKIPPED`
+on a dry-run and a failure on an actual release. The preflight MUST NOT pull it, and MUST omit
+the row (not report it `SKIPPED`) when no step uses `--enable-docker`. The wheel-builder Docker
+run does not use `--pull=never` and pulls an absent image by default. On an actual release, if the builder is absent locally, preflight
 MUST run `docker pull <ref>` with a 600-second timeout and PASS only if that succeeds; a failed
 or timed-out pull MUST fail preflight with the exact remedy and, on timeout, name the timeout.
 A dry-run MUST NOT pull a missing builder and MUST report its pullability as `SKIPPED`, with a

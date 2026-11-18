@@ -901,14 +901,15 @@ overrides a value only where it has a genuinely different requirement). The requ
 | `CMRU_TESTER_PIDS_LIMIT` | positive integer `--pids-limit` for the gate container (no default; without it the ceiling is the host's systemd `DefaultTasksMax`, shared with production) |
 | `CMRU_TESTER_CGROUP_PROBE_IMAGE` | host-systemd slice probe image; runs privileged with host PID, so it must be digest-pinned (`repo@sha256:<64 hex>`) and present locally (`--pull=never`) |
 | `CMRU_TESTER_CGROUP_PARENT` | required host gates slice (`${CGROUP_PARENT_DEV_GATES}`) |
-| `CMRU_TESTER_DIND_IMAGE` | **only** with `--enable-docker` (nested Docker daemon); privileged, so digest-pinned and local like the probe image |
+| `CMRU_TESTER_DIND_IMAGE` | **only** with `--enable-docker` (nested Docker daemon); privileged, so digest-pinned and local like the probe image (`--pull=never`; the release dry-run's `DinD sidecar image` row verifies it) |
 | `CMRU_TESTER_DIND_MEMORY`, `CMRU_TESTER_DIND_CPUS`, `CMRU_TESTER_DIND_PIDS_LIMIT` | **only** with `--enable-docker`: the sidecar's own memory / CPU / pids limits |
 | `CMRU_WHEEL_BUILDER_IMAGE` | resolved by `wheel-build` from an explicit environment value or the selected CMRU config |
 
 **Refreshing a digest pin (KI-60).** `CMRU_TESTER_CGROUP_PROBE_IMAGE` and `CMRU_TESTER_DIND_IMAGE` are started with
 `--pull=never`, so a pin names an image that must already be on the host, and nothing warns when the pin ages (base-image
-security updates). Refresh deliberately, at least when the base image publishes a security update and always before a release
-that relies on the probe:
+security updates). The release dry-run now verifies both pins are local (`Cgroup probe image` and, when a step uses
+`--enable-docker`, `DinD sidecar image`) and refuses with the `docker pull <digest>` remedy. Refresh deliberately, at least
+when the base image publishes a security update and always before a release that relies on the probe or the sidecar:
 
 1. Choose the new tag, and apply the estate freshness rule: adopt it only when it is at least 14 days past its release.
 2. Pull it on the gate host: `docker pull <repo>:<tag>`.
@@ -1049,7 +1050,10 @@ declared values before invoking the handler. A direct handler invocation uses
 the opposite order: its process environment wins, then the enclosing config.
 An empty effective image value fails preflight. The cgroup probe uses `--pull=never`,
 so it must already be local; if missing, preflight exits 4 with the exact
-`docker pull <ref>` remedy. The wheel-builder's Docker run uses Docker's default
+`docker pull <ref>` remedy. When any `[steps.*]` command passes `--enable-docker`,
+a third `DinD sidecar image` row checks `CMRU_TESTER_DIND_IMAGE` the same way
+(`--pull=never`, never pulled by preflight; no row when no step uses the flag).
+The wheel-builder's Docker run uses Docker's default
 pull-if-missing behavior. For an actual release, preflight pulls and verifies a
 builder image that is not local, with a 600-second timeout and a refusal if
 that pull times out; for a dry-run, it reports `SKIPPED` because it does not

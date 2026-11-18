@@ -32,6 +32,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
+- feat(cmru): the release preflight also verifies the DinD sidecar image (KI-182): when any `[steps.*]` command argv of the selected release config contains `--enable-docker`, `cmru release` and `cmru release --dry-run` add a third `DinD sidecar image` row for `CMRU_TESTER_DIND_IMAGE`, with the cgroup probe's `--pull=never` contract (never pulled; Docker unavailable is `SKIPPED` on a dry-run and a failure on a release). Adoption / Migration Notes: a release of a project whose gate uses `--enable-docker` now refuses at the dry-run when its DinD image is absent; `docker pull <digest>` first. A project with no `--enable-docker` step sees no new row.
 
 <!-- cmru: pending release notes end -->
 

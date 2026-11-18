@@ -1063,7 +1063,11 @@ verifies a builder image that is not local, with a 600-second timeout; a timed
 out pull refuses before release dispatch. A dry-run does not pull it and
 reports that pullability is unverified. The cgroup probe uses `--pull=never`,
 so its image must already be local; a missing probe reports the exact
-`docker pull <ref>` remedy. This also runs for `--skip-gates`, because the
+`docker pull <ref>` remedy. When a step of the selected config passes
+`--enable-docker`, a third `DinD sidecar image` row applies the same
+`--pull=never` rule to `CMRU_TESTER_DIND_IMAGE` (never pulled; the row is absent
+when no step uses the flag), so a missing sidecar image refuses at the dry-run
+instead of minutes into the gate. This also runs for `--skip-gates`, because the
 wheel-build step still uses those images. `cmru release --dry-run` reports the
 same preflight checks; with gates enabled, an actual release and its dry-run
 also check the selected tester image's Run-Gate version and wheel digest, and
