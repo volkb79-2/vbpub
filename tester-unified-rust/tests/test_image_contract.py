@@ -183,7 +183,7 @@ class ImageContractTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(f"hostobs_lock_registry_sha256={registry_digest}", result.stdout)
-            seen =json.loads((root / "seen.json").read_text(encoding="utf-8"))
+            seen = json.loads((root / "seen.json").read_text(encoding="utf-8"))
         self.assertEqual(
             seen["argv"],
             ["tester-gate", "--cwd", "run-gate-project", "--cgroup-parent", "dev-gates.slice", "/bin/true"],
@@ -201,7 +201,11 @@ class ImageContractTests(unittest.TestCase):
             self.assertEqual(lane["environment"], "tester-unified-rust", name)
             self.assertEqual(lane["network"], "none", name)
             if name == "assay-r1":
-                # The judge lane runs the same offline, locked workspace command via assay.toml.
+                # The judge lane's command lives in assay.toml; its cargo calls must be locked and offline.
+                assay_lanes = tomllib.loads((HOSTOBS_ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
+                command = assay_lanes["assay-r1"]["argv"][-1]
+                self.assertIn("--locked", command, name)
+                self.assertIn("--offline", command, name)
                 continue
             self.assertIn("--locked", lane["argv"][-1], name)
             self.assertIn("--offline", lane["argv"][-1], name)
@@ -243,11 +247,24 @@ class ImageContractTests(unittest.TestCase):
             for path in HOSTOBS_ROOT.glob(pattern)
         }
         self.assertEqual(set(floors), package_dirs)
+        # Floors are never lowered: this is the ratchet, the real value per crate at the time of
+        # writing (bootstrap 90/85 for the scaffold crates). Raise an entry together with its floor.
+        ratchet = {
+            "bins/act": (90.0, 85.0),
+            "bins/probe": (90.0, 85.0),
+            "crates/act": (90.0, 85.0),
+            "crates/client": (90.0, 85.0),
+            "crates/eval": (90.0, 85.0),
+            "crates/kernel": (92.0, 93.0),
+            "crates/model": (97.0, 96.0),
+            "crates/proto": (98.0, 96.0),
+            "crates/store": (94.0, 93.0),
+        }
+        self.assertEqual(set(ratchet), set(floors))
         for package, floor in floors.items():
             with self.subTest(package=package):
-                # Floors are never lowered: the bootstrap value is the minimum, raised per crate.
-                self.assertGreaterEqual(floor["line"], 90.0)
-                self.assertGreaterEqual(floor["region"], 85.0)
+                self.assertGreaterEqual(floor["line"], ratchet[package][0])
+                self.assertGreaterEqual(floor["region"], ratchet[package][1])
 
     def test_deny_policy_keeps_workspace_exceptions_narrow(self) -> None:
         deny = tomllib.loads((HOSTOBS_ROOT / "deny.toml").read_text(encoding="utf-8"))

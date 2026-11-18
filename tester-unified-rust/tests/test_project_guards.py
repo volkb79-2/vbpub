@@ -154,14 +154,15 @@ class CrateFloorTests(unittest.TestCase):
         files = []
         for package in self.packages:
             source = next((HOSTOBS_ROOT / package).glob("src/*.rs"))
-            lines_covered = 80 if low_metric == f"{package}:lines" else round(floors[package]["line"])
-            regions_covered = 80 if low_metric == f"{package}:regions" else round(floors[package]["region"])
+            # count 10000 keeps a fractional floor (e.g. 92.5) exact instead of rounding it away.
+            lines_covered = 8000 if low_metric == f"{package}:lines" else round(floors[package]["line"] * 100)
+            regions_covered = 8000 if low_metric == f"{package}:regions" else round(floors[package]["region"] * 100)
             files.append(
                 {
                     "filename": str(source),
                     "summary": {
-                        "lines": {"covered": lines_covered, "count": 100, "percent": float(lines_covered)},
-                        "regions": {"covered": regions_covered, "count": 100, "percent": float(regions_covered)},
+                        "lines": {"covered": lines_covered, "count": 10000, "percent": lines_covered / 100},
+                        "regions": {"covered": regions_covered, "count": 10000, "percent": regions_covered / 100},
                     },
                 }
             )
@@ -190,7 +191,7 @@ class CrateFloorTests(unittest.TestCase):
         self.assertEqual(set(floors), set(self.packages))
         for package in self.packages:
             floor = floors[package]["line"]
-            self.assertIn(f"line {floor:.2f}% ({round(floor)}/100) >= {floor:.2f}%", result.stdout)
+            self.assertIn(f"line {floor:.2f}% ({round(floor * 100)}/10000) >= {floor:.2f}%", result.stdout)
 
     def test_line_floor_rejects_coverage_below_floor(self) -> None:
         package = self.packages[0]
