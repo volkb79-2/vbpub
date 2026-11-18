@@ -6107,6 +6107,16 @@ is recorded once in `judgment.resolved.base`, with `base_resolution` beside it
 as usual. Nothing downstream can tell — or needs to tell — which owner
 supplied it.
 
+The request-base changed-line diff is limited to the lane's judged paths: the
+resolved `source_roots`, exact file roots, and both the lexical and resolved
+spellings of any in-repository symlinked directory root. Changes outside those
+paths cannot produce candidates, so they no longer count against the bounded
+Git-output guard. Every limited diff uses `--no-renames`: a rename into a root
+is a whole-file addition at its new path, while a rename out of a root is a
+deletion that produces no added lines. If no usable path is available, assay
+keeps the historical full-repository diff rather than passing an empty
+pathspec.
+
 Three refusals bound this, and each names the one line to change:
 
 | situation | what happens |
