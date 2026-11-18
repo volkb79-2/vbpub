@@ -31,6 +31,8 @@ BASE_IMAGE_LABEL = "org.vbpub.tester-unified.base-image"
 BASE_IMAGE_ENV = "RUN_GATE_TESTER_UNIFIED_BASE_IMAGE"
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")
 _IMAGE_REFERENCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]*\Z")
+
+
 def _candidate_lane_code(lane: str) -> str:
     return "\n".join((
         "import importlib.metadata",
@@ -46,6 +48,8 @@ def _candidate_lane_code(lane: str) -> str:
         "        raise SystemExit(f'Run-Gate module loaded outside the installed wheel: {path}')",
         f"raise SystemExit(run_gate.main([{lane!r}]))",
     ))
+
+
 STABLE_SEMVER = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z"
 )

@@ -173,7 +173,7 @@ Conclusion (D6): defer RG-253.
 **B178 trust.** A baseline-as-control cannot produce a false R3 PASS. R3 PASS needs the *transformed* run to fail for the mechanism's expected cause (import receipt, floor rejection). What is given up is detecting a nondeterministic materialization; that is by design.
 
 **RG-F1 rules.**
-- **T2** = the lanes the release step invokes, expanded through sequences. Recognize `run-gate <lane>` plus the two known wrapper scripts: `assay tools/release-gate.sh <lane>` and run-gate-project `tools/release_candidate.py run-selftest`. Anything else reports **UNDERIVABLE**, a status of its own.
+- **T2** = the lanes the release step invokes, expanded through sequences. Recognize `run-gate <lane>` plus the two known wrapper scripts: `assay tools/release-gate.sh <lane>` and run-gate-project `tools/release_candidate.py` with `run-selftest` or `run-canary`. Anything else reports **UNDERIVABLE**, a status of its own.
 - **T1** = trove `phase = "implementation"` gates, or the project's `r0-r1`.
 - **T3** = Assay rigor containing R2, or a lane named `r2`/`mutation`/`fuzz*`.
 - Checks:

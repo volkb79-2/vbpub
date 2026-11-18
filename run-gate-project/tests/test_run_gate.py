@@ -7902,10 +7902,13 @@ class TestPointerLinkageEstate:
             "memory": "1g", "memory_swap": "16g",
         }
         commands = cmru_doc["steps"]["run-tests"]["commands"]
-        assert len(commands) == 2
+        assert len(commands) == 3
         assert commands[0]["argv"] == ["python", "tools/release_candidate.py", "prepare"]
         assert commands[1]["argv"] == [
             "python", "tools/release_candidate.py", "run-selftest",
+        ]
+        assert commands[2]["argv"] == [
+            "python", "tools/release_candidate.py", "run-canary",
         ]
         selftest_argv = gate_doc["lanes"]["selftest"]["argv"]
         assert selftest_argv[2].startswith(

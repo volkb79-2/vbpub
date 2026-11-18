@@ -50,14 +50,14 @@ bump = "conventional"
 git_tag = true
 build_step = "build"
 artifact_dirs = ["dist"]
-# The selftest release gate writes this commit-bound coverage report.
+# The selftest command in the release gate writes this commit-bound coverage report.
 evidence_paths = ["coverage.json"]
 
-# SSOT pointer (D-110/D-111): the release gate IS the project's own run-gate
-# lane (`run-gate selftest` -> run-gate.toml), not a duplicated pytest
-# line. The lane owns all test logic (pytest + diff-coverage floor) in exactly
-# one place. CMRU executes step commands directly; the registered Run-Gate
-# lane owns its tester-unified container, placement, init, and resource caps.
+# SSOT pointer (D-110/D-111): the release gate uses the project's own run-gate
+# lanes (`selftest` and `assay-r3` -> run-gate.toml), not duplicated pytest
+# lines. The lanes own all test logic (pytest, diff-coverage floor, and canary)
+# in exactly one place. CMRU executes step commands directly; the registered
+# Run-Gate lanes own their tester-unified containers, placement, init, and caps.
 # The suite itself is not wrapped in `cmru tester-gate`; Run-Gate owns its
 # container. The image builder separately uses CMRU's slice probe before the
 # Buildx workload starts.
@@ -67,7 +67,7 @@ evidence_paths = ["coverage.json"]
 # unreleased CMRU behavior, bootstrap from a non-editable wheel built from the
 # exact merged source (docs/RELEASE-TRANSACTIONS.md#bootstrap-when-the-release-engine-changes-in-the-same-wave).
 # Run-Gate must be installed from the exact wheel built from this candidate
-# before invoking this selftest release step.
+# before invoking these release lanes.
 #
 # The release gate is the selftest plus the R3 canary, both run in the exact
 # receipt-specific tester image prepared for this candidate. `assay-r1` and

@@ -182,6 +182,7 @@ SPEC §9.
 | RG-289 | the host-side `git config --file` reads in `git_config_overlay_flags` follow symlinks at names a runner can plant in the writable common dir (`config.worktree`, `<admin>/config.worktree`, `modules/**/config`, the `modules` root, `worktrees/*` directory links), so a host file that parses as git config is copied sanitized into a runner-visible overlay | Medium | OPEN 2026-11-18 (filed, not fixed) |
 | RG-290 | `TestExecMode::test_exec_mode_declared_name_refusal_prescribes_project_authority` asserted `"ciu" not in proc.stderr`, but the refusal quotes the lane-config path, so a checkout whose path contains `ciu` (for example a `ciu worktree` named `ciu-...`) failed the whole selftest | Minor | FIXED 2026-11-18 (test only) |
 | RG-291 | the release gate ran only `selftest`, so it did not prove R3 canary rejection in the exact receipt-specific tester image before tagging | Major | FIXED 2026-11-18 (P10c-rg) |
+| RG-292 | `tools/canary-run.sh` treats any non-zero pytest exit as the expected canary rejection, so a broken image or collection failure would be reported as a successful rejection | Minor | OPEN 2026-11-18 (P10c-rg review) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -4359,7 +4360,7 @@ verdict a hard refusal (exit 2) by default, gated behind
 `--allow-empty-diff`. That put THIS PROJECT'S OWN `selftest` lane
 permanently red on `main` (merge-base(main, HEAD) == HEAD there, so the
 diff-coverage phase is always 0/0) and would have blocked every
-`cmru release` of this project, whose release gate IS the selftest lane.
+`cmru release` of this project, whose release gate was then the selftest lane.
 RW-5 corrected the design: the false-green hazard RG-51/RG-54 describe is
 a WRONG BASE hiding real source changes, and the judge cannot tell that
 apart from "this change genuinely touches no source line under
@@ -9495,3 +9496,27 @@ refusal, CLI return and error mapping, and the parsed three-command order.
 **Close when.** Closed: the focused release-candidate tests pass, the config
 oracle parses exactly the prepare/selftest/canary sequence, and the final
 registered gate reports 100% diff coverage for the changed code.
+
+## RG-292 — the canary conflates gate rejection with pytest infrastructure failure
+
+**Status:** OPEN 2026-11-18 (filed by the P10c-rg independent review). Severity:
+Minor.
+
+**Observed.** `tools/canary-run.sh` runs the selected test under pytest and
+accepts every non-zero exit code as proof that the injected source defect was
+rejected. A broken candidate image (for example, missing pytest), a collection
+error, an invalid test path, or another infrastructure failure also exits
+non-zero and would therefore print `ok (assay-r1 would reject it)`.
+
+**Cause.** The script distinguishes only pytest's zero and non-zero process
+status. It does not inspect whether pytest collected and ran the intended test,
+whether the test failed for its assertion, or whether the environment could run
+the test at all.
+
+**Wanted.** Separate the expected assertion/gate rejection from infrastructure
+failure. The latter must make the canary fail with evidence naming the failure;
+only a test result that proves the injected defect reached the target oracle
+may count as a successful R3 rejection.
+
+**Close when.** The canary distinguishes a gate-rejection exit from an
+infrastructure failure and a controlled-wrong image fails the lane.

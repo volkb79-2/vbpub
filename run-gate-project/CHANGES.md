@@ -9,7 +9,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
-### Release verification
+### Changed
 - the release gate now also runs the R3 canary in the receipt image; no action needed for consumers
 
 ### Testing
