@@ -262,16 +262,21 @@ that long. The margin over that sum is derived from the measured standard
 deviation as the one-sided 95th percentile of a sum of `n` candidates
 (`1 + 1.645 x cv / sqrt(n)`, never below 1.10), so a heavy tail widens the
 smaller shards most; `--margin` is the explicit override. It is deliberately an
-ESTIMATE, not machinery to guarantee a bound: heavy candidates that cluster in
+ESTIMATE, not machinery to guarantee a bound, and the margin has no upper cap on
+purpose (a cap would be one more number to tune): a single outlier in 100
+measured candidates raises the standard deviation, and a one-candidate shard is
+then budgeted at `1 + 1.645 x cv` times its estimate, which can be very large;
+`--margin` sets one fixed margin instead. Beyond that, heavy candidates that cluster in
 one shard can still reach the budget, and the remainder continues in a later
 instance. The new fields are additive and optional in `fleet-r2-measurement/1`,
 and a document without them is sized from its median as before.
 
 Medians (kept for the existing fields) are taken over `killed` and `survived`
-candidates only. A
-`budget_exceeded` or `hung` candidate's elapsed time is the budget that stopped
-it, not the cost of judging, and including it would inflate the next budget
-forever.
+candidates only. For THOSE fields a `budget_exceeded` or `hung` candidate's
+elapsed time is the budget that stopped it, not the cost of judging, and
+including it would inflate the next median forever; the per-candidate sum fields
+above count those candidates deliberately, at their bound, because they held a
+worker that long.
 
 ## Why the merge check compares identity, not counts
 

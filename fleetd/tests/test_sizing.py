@@ -719,6 +719,7 @@ def test_the_new_measurement_fields_are_validated_when_present():
     nulls = json.loads(json.dumps(base))
     for key in ("cost_seconds_mean", "cost_seconds_stdev", "cost_seconds_sum", "cost_seconds_max"):
         nulls["summary"][key] = None
+    nulls["summary"]["cost_candidates"] = 0
     assert validate_measurement(nulls) == nulls
 
 
@@ -744,3 +745,64 @@ def test_sizing_cli_derives_the_tail_margin_and_honours_an_explicit_one(tmp_path
     assert main(["sizing", str(plan_path), "--measurement", str(measurement_path), "--margin", "1.3"]) == 0
     explicit = json.loads(capsys.readouterr().out)
     assert explicit["margin_source"] == "explicit" and explicit["margin"] == 1.3
+
+
+# ------------------------------------------ WP3b: library input and cross-field checks
+def test_sizing_input_refuses_a_bad_mean_or_stdev_before_it_divides():
+    plan = _plan((("host-a", {"cpu": 8, "budget": 4096 * _MIB}),), 2)
+    flat = {"elapsed_seconds_median": 61.0, "memory_peak_bytes_median": 200 * _MIB}
+    for key, bad in (
+        ("cost_seconds_mean", 0),
+        ("cost_seconds_mean", -1.0),
+        ("cost_seconds_mean", "10"),
+        ("cost_seconds_mean", True),
+        ("cost_seconds_mean", float("inf")),
+        ("cost_seconds_mean", float("nan")),
+        ("cost_seconds_stdev", "1"),
+        ("cost_seconds_stdev", -0.5),
+        ("cost_seconds_stdev", True),
+        ("cost_seconds_stdev", float("inf")),
+    ):
+        summary = {**flat, "cost_seconds_mean": 10.0, key: bad}
+        with pytest.raises(ContractError, match=key):
+            sizing_input_from_plan(plan, measurement=summary)
+    # A zero spread and an absent spread are both fine (a flat lane).
+    ok = sizing_input_from_plan(plan, measurement={**flat, "cost_seconds_mean": 10.0, "cost_seconds_stdev": 0})
+    assert ok.dispersion == 0.0 and ok.seconds_statistic == "mean"
+    assert sizing_input_from_plan(plan, measurement={**flat, "cost_seconds_mean": 10.0}).dispersion == 0.0
+
+
+def _cost_summary(**overrides):
+    document = _dispersed_measurement()
+    document["summary"].update(overrides)
+    return document
+
+
+def test_measurement_validation_checks_the_cost_fields_against_each_other():
+    assert validate_measurement(_cost_summary())
+    cases = (
+        # mean and stdev can never exceed the maximum
+        ({"cost_seconds_mean": 700.0, "cost_seconds_sum": 28000.0}, "cost_seconds_mean.*exceeds cost_seconds_max"),
+        ({"cost_seconds_stdev": 601.0}, "cost_seconds_stdev.*exceeds cost_seconds_max"),
+        # an empty count must carry no value, a non-empty count must carry them all
+        ({"cost_candidates": 0}, "cost_candidates is 0"),
+        ({"cost_seconds_max": None}, "cost_candidates is 40"),
+        # the sum is the mean times the count, within the six-decimal rounding
+        ({"cost_seconds_sum": 4301.0}, "cost_seconds_sum.*differs from cost_seconds_mean x cost_candidates"),
+        ({"cost_seconds_sum": 4300.01}, "cost_seconds_sum.*differs from cost_seconds_mean x cost_candidates"),
+    )
+    for overrides, message in cases:
+        with pytest.raises(ContractError, match=message):
+            validate_measurement(_cost_summary(**overrides))
+    # Within the documented tolerance (1e-6 s per candidate plus 1e-6) it loads.
+    assert validate_measurement(_cost_summary(cost_seconds_sum=4300.00003))
+    # A document that records the count but none of the values is the empty shape.
+    empty = _cost_summary(
+        cost_candidates=0, cost_seconds_sum=None, cost_seconds_mean=None,
+        cost_seconds_stdev=None, cost_seconds_max=None,
+    )
+    assert validate_measurement(empty)
+    # A count that is absent is the pre-FD-031 shape: no cross check applies.
+    old = _cost_summary(cost_seconds_mean=1.0)
+    del old["summary"]["cost_candidates"]
+    assert validate_measurement(old)
