@@ -4,6 +4,13 @@
 
 ### Added
 
+- **`tools/dev`: a developer container wrapper** (build, check, test, clippy, fmt, example, gdb,
+  strace, shell, status, clean) that runs in `tester-unified-rust-dev` on the gate host `v1001`
+  through the controller's `hx.sh` (HEAD as a git bundle plus uncommitted changes up to 20 MiB),
+  capped, network-less and unprivileged, with a pressure gate (exit 75) and a one-at-a-time rule
+  (exit 3). Source and stub-tested argv only: the image has not been built. See
+  `tester-unified-rust/docs/DEV.md`.
+
 - **`assay-r1`: the coverage verdict is assay's.** A new `assay-r1` lane in
   `run-gate.toml` binds to `assay.toml [lanes.assay-r1]`, which declares a Rust
   `whole_target` R1 judge over the 33 `src/*.rs` files of `model`, `proto`, `kernel` and

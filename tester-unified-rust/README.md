@@ -15,6 +15,11 @@ is the registry-set digest of the lock (downloaded packages and lock version,
 not workspace members), so a workspace-only lock edit needs no rebuild; see
 [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for which image tag runs what.
 
+For interactive development and debugging there is a separate developer layer,
+`Dockerfile.dev` / [`build-dev-image.sh`](build-dev-image.sh), driven by
+`hostobs/tools/dev` on the gate host; see [`docs/DEV.md`](docs/DEV.md). It reuses this
+image's exact toolchain and crate cache, and a green dev run is not gate evidence.
+
 The first consumer is the hostobs M0 workspace. Its registered `lint` and
 `selftest` lanes live in [`hostobs/run-gate.toml`](../hostobs/run-gate.toml).
 See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for the image and lane contract,

@@ -58,6 +58,12 @@ separate commit; the old tag stays until every Rust lane has passed on the new
 one; then `:local` is re-pointed. Nothing here claims that a new image exists
 yet.
 
+### Developer container (not a gate)
+
+`tester-unified-rust-dev` is built ON this image (`build-dev-image.sh`) and is used only through
+`hostobs/tools/dev`; no lane selects it. See [`DEV.md`](DEV.md). Its evidence value is none: a
+lane on a committed head is the only gate evidence.
+
 The `selftest` lane in this project checks the precheck, lint-boundary guard,
 crate-floor tool, and shell entrypoints. Hostobs's `lint` and `selftest` lanes
 exercise the real Cargo toolchain and cache on `network = "none"`.

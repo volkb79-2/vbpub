@@ -13,4 +13,5 @@
 
 ### Added
 
+- **Developer layer image source** `Dockerfile.dev` (`FROM tester-unified-rust:local`, adds gdb, strace, procps, less, ca-certificates, rust-src and rust-analyzer on the already installed toolchain; the build fails if `rustc -vV` changes) and `build-dev-image.sh` (`--tag`, `--base`, `--builder`, `--cgroup-parent`, `--record FILE` for the 14-day vetting). Source only: no image was built; the gate image is unchanged. Use and limits: `docs/DEV.md`; wrapper: `hostobs/tools/dev`; tests: `tests/test_dev_environment.py`; the `selftest` lane also `bash -n`s the new scripts.
 - Added the dedicated Rust gate image with a lock-bound offline crate cache, cache precheck, and registered selftest lane.
