@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -780,9 +781,9 @@ def test_source_folders_come_from_the_resolver_and_are_named_in_that_order(monke
     assert uploads.verify_download("c.img").label == "vm-images"  # default search; iso folder is missing and skipped
 
 
-def test_a_missing_vm_lab_toml_refuses_the_upload_naming_the_file(monkeypatch, tmp_path):
+def test_a_missing_repo_path_config_refuses_the_upload_naming_the_file(monkeypatch, tmp_path):
     monkeypatch.setattr(uploads._paths, "REPO_ROOT", tmp_path)
-    with pytest.raises(Refused, match=r"vm-lab\.toml not found"):
+    with pytest.raises(Refused, match=re.escape(f"{uploads._paths.config_name()} not found")):
         uploads.verify_download("a.bin")
 
 

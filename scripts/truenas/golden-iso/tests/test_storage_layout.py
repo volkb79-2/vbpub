@@ -43,7 +43,7 @@ def test_step1_source_names_no_literal_vm_folder() -> None:
         assert "artifacts/vm-lab" not in text and '"vm-lab"' not in text, name
 
 
-def test_missing_vm_lab_toml_is_a_step_refusal_naming_the_file(monkeypatch, tmp_path, capsys) -> None:
+def test_missing_repo_path_config_is_a_step_refusal_naming_the_file(monkeypatch, tmp_path, capsys) -> None:
     monkeypatch.setattr(STEP1.repo_paths_access, "REPO_ROOT", tmp_path)
     assert STEP1.main(["--api-key-expiry-days", "30"]) == 2
     err = capsys.readouterr().err

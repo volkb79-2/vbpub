@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 from pathlib import Path
 
 import pytest
@@ -261,14 +262,14 @@ def test_the_iso_cache_and_its_lock_are_in_the_resolved_iso_folder(tmp_path, mon
     assert (tmp_path / "iso" / f"{asset.filename}.sha256").is_file()
 
 
-def test_the_iso_folder_is_the_vm_lab_toml_iso_entry_in_plain_mode(monkeypatch):
+def test_the_iso_folder_is_the_repo_path_config_iso_entry_in_plain_mode(monkeypatch):
     monkeypatch.delenv("MDT_COW_ROOT", raising=False)
     monkeypatch.delenv("COWTREE_MODE", raising=False)
     repo = Path(upstream.__file__).resolve().parents[3]
     assert upstream.iso_dir() == repo / "downloads" / "iso"
 
 
-def test_a_missing_vm_lab_toml_refuses_naming_the_file(monkeypatch, tmp_path):
+def test_a_missing_repo_path_config_refuses_naming_the_file(monkeypatch, tmp_path):
     monkeypatch.setattr(upstream.repo_paths_access, "REPO_ROOT", tmp_path)
-    with pytest.raises(upstream.UpstreamError, match=r"vm-lab\.toml not found"):
+    with pytest.raises(upstream.UpstreamError, match=re.escape(f"{upstream.repo_paths_access.config_name()} not found")):
         upstream.iso_dir()

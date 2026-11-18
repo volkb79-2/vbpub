@@ -1178,7 +1178,7 @@ def test_default_state_dir_in_plain_mode_is_the_project_vm_lab_placeholder(monke
     assert (project / "vm-lab" / "README.md").is_file()
 
 
-def test_default_state_dir_refuses_one_line_when_vm_lab_toml_is_missing(monkeypatch, tmp_path, capsys):
+def test_default_state_dir_refuses_one_line_when_the_repo_path_config_is_missing(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(tcg_vm.repo_paths_access, "REPO_ROOT", tmp_path)
     with pytest.raises(tcg_vm.RunnerError, match=re.escape(f"{tcg_vm.repo_paths_access.config_name()} not found")):
         tcg_vm.default_state_dir("guest")
