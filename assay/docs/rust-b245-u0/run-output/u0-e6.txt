@@ -1,0 +1,10 @@
+== b-edit1: +++ b/b/src/lib.rs 
+   matching mutants: 0
+== b-append: +++ b/b/src/lib.rs 
+   matching mutants: 0
+== a-edit: +++ b/a/src/lib.rs 
+   matching mutants: 5
+== a-and-b: +++ b/a/src/lib.rs +++ b/b/src/lib.rs 
+   matching mutants: 5
+== which files does the mutant list name, with and without diff (a-and-b)
+      5 a/src/lib.rs

@@ -1,0 +1,36 @@
+no /tmp/wsr (fresh container)
+pub fn quad(x: i32) -> i32 {
+    a::double(a::double(x)) + 0
+}
+
+-- list (no diff), cwd ws root:
+a/src/lib.rs:2:5: replace double -> i32 with 0
+a/src/lib.rs:2:5: replace double -> i32 with 1
+a/src/lib.rs:2:5: replace double -> i32 with -1
+a/src/lib.rs:2:7: replace * with + in double
+a/src/lib.rs:2:7: replace * with / in double
+b/src/lib.rs:2:5: replace quad -> i32 with 0
+b/src/lib.rs:2:5: replace quad -> i32 with 1
+b/src/lib.rs:2:5: replace quad -> i32 with -1
+b/src/lib.rs:2:29: replace + with - in quad
+b/src/lib.rs:2:29: replace + with * in quad
+-- diff:
+diff --git a/b/src/lib.rs b/b/src/lib.rs
+index b98ec92..7503692 100644
+--- a/b/src/lib.rs
++++ b/b/src/lib.rs
+@@ -1,5 +1,5 @@
+ pub fn quad(x: i32) -> i32 {
+-    a::double(a::double(x))
++    a::double(a::double(x)) + 0
+ }
+ 
+ #[cfg(test)]
+-- list with diff:
+ INFO No mutants to filter
+-- list with diff, -d crate dir b:
+ INFO No mutants to filter
+-- ws2: single-crate-in-subdir variant (control, known to work) for comparison
+src/lib.rs:14:5: replace is_even -> bool with true
+src/lib.rs:14:5: replace is_even -> bool with false
+src/lib.rs:14:16: replace && with || in is_even

@@ -1,0 +1,671 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.302156222,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.151171992,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/lib.rs:14:5: replace is_even -> bool with true",
+          "package": "r3a",
+          "file": "src/lib.rs",
+          "function": {
+            "function_name": "is_even",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 12,
+                "column": 1
+              },
+              "end": {
+                "line": 15,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 14,
+              "column": 5
+            },
+            "end": {
+              "line": 14,
+              "column": 27
+            }
+          },
+          "replacement": "true",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__lib.rs_line_14_col_5.log",
+      "diff_path": "diff/src__lib.rs_line_14_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.202220596,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.102830152,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/lib.rs:14:5: replace is_even -> bool with false",
+          "package": "r3a",
+          "file": "src/lib.rs",
+          "function": {
+            "function_name": "is_even",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 12,
+                "column": 1
+              },
+              "end": {
+                "line": 15,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 14,
+              "column": 5
+            },
+            "end": {
+              "line": 14,
+              "column": 27
+            }
+          },
+          "replacement": "false",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__lib.rs_line_14_col_5_001.log",
+      "diff_path": "diff/src__lib.rs_line_14_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.252605418,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.151168026,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/lib.rs:14:16: replace && with || in is_even",
+          "package": "r3a",
+          "file": "src/lib.rs",
+          "function": {
+            "function_name": "is_even",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 12,
+                "column": 1
+              },
+              "end": {
+                "line": 15,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 14,
+              "column": 16
+            },
+            "end": {
+              "line": 14,
+              "column": 18
+            }
+          },
+          "replacement": "||",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__lib.rs_line_14_col_16.log",
+      "diff_path": "diff/src__lib.rs_line_14_col_16.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.202313826,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101124499,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/lib.rs:14:11: replace == with != in is_even",
+          "package": "r3a",
+          "file": "src/lib.rs",
+          "function": {
+            "function_name": "is_even",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 12,
+                "column": 1
+              },
+              "end": {
+                "line": 15,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 14,
+              "column": 11
+            },
+            "end": {
+              "line": 14,
+              "column": 13
+            }
+          },
+          "replacement": "!=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__lib.rs_line_14_col_11.log",
+      "diff_path": "diff/src__lib.rs_line_14_col_11.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.202516473,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.151955704,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/lib.rs:14:7: replace % with / in is_even",
+          "package": "r3a",
+          "file": "src/lib.rs",
+          "function": {
+            "function_name": "is_even",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 12,
+                "column": 1
+              },
+              "end": {
+                "line": 15,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 14,
+              "column": 7
+            },
+            "end": {
+              "line": 14,
+              "column": 8
+            }
+          },
+          "replacement": "/",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__lib.rs_line_14_col_7.log",
+      "diff_path": "diff/src__lib.rs_line_14_col_7.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.25144768,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.15146906,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/lib.rs:14:7: replace % with + in is_even",
+          "package": "r3a",
+          "file": "src/lib.rs",
+          "function": {
+            "function_name": "is_even",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 12,
+                "column": 1
+              },
+              "end": {
+                "line": 15,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 14,
+              "column": 7
+            },
+            "end": {
+              "line": 14,
+              "column": 8
+            }
+          },
+          "replacement": "+",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__lib.rs_line_14_col_7_001.log",
+      "diff_path": "diff/src__lib.rs_line_14_col_7_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.202454769,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.151380918,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/lib.rs:14:21: replace < with == in is_even",
+          "package": "r3a",
+          "file": "src/lib.rs",
+          "function": {
+            "function_name": "is_even",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 12,
+                "column": 1
+              },
+              "end": {
+                "line": 15,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 14,
+              "column": 21
+            },
+            "end": {
+              "line": 14,
+              "column": 22
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__lib.rs_line_14_col_21.log",
+      "diff_path": "diff/src__lib.rs_line_14_col_21.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.253633479,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.15335796,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/lib.rs:14:21: replace < with > in is_even",
+          "package": "r3a",
+          "file": "src/lib.rs",
+          "function": {
+            "function_name": "is_even",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 12,
+                "column": 1
+              },
+              "end": {
+                "line": 15,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 14,
+              "column": 21
+            },
+            "end": {
+              "line": 14,
+              "column": 22
+            }
+          },
+          "replacement": ">",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__lib.rs_line_14_col_21_001.log",
+      "diff_path": "diff/src__lib.rs_line_14_col_21_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.254479336,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.103125027,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/lib.rs:14:21: replace < with <= in is_even",
+          "package": "r3a",
+          "file": "src/lib.rs",
+          "function": {
+            "function_name": "is_even",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 12,
+                "column": 1
+              },
+              "end": {
+                "line": 15,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 14,
+              "column": 21
+            },
+            "end": {
+              "line": 14,
+              "column": 22
+            }
+          },
+          "replacement": "<=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__lib.rs_line_14_col_21_002.log",
+      "diff_path": "diff/src__lib.rs_line_14_col_21_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.251185416,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.15345607,
+          "process_status": "Success",
+          "argv": [
+            "/usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=r3a@0.1.0",
+            "--offline",
+            "--locked"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 9,
+  "missed": 9,
+  "caught": 0,
+  "timeout": 0,
+  "unviable": 0,
+  "success": 0,
+  "start_time": "2026-11-18T05:52:48.638776674Z",
+  "end_time": "2026-11-18T05:52:52.437879111Z",
+  "cargo_mutants_version": "27.1.0"
+}

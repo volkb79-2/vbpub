@@ -1,0 +1,17 @@
+== diff default: +++ b/b/src/lib.rs
+   cwd=/tmp/wsr matching mutants=0
+   cwd=/tmp/wsr/b matching mutants=0
+== diff noprefix: +++ b/src/lib.rs
+   cwd=/tmp/wsr matching mutants=0
+   cwd=/tmp/wsr/b matching mutants=0
+== diff ab2: +++ b/b/src/lib.rs
+   cwd=/tmp/wsr matching mutants=0
+   cwd=/tmp/wsr/b matching mutants=0
+== diff x: +++ y/b/src/lib.rs
+   cwd=/tmp/wsr matching mutants=0
+   cwd=/tmp/wsr/b matching mutants=0
+== diff relative-to-b: +++ b/src/lib.rs
+   cwd=/tmp/wsr matching mutants=0
+   cwd=/tmp/wsr/b matching mutants=0
+== control: single crate at /work/subject-v2 default diff
+   9

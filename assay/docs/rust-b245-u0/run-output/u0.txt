@@ -1,0 +1,111 @@
+cargo-mutants cargo-mutants 27.1.0 / rustc 1.99.1 (58cf8f9c3 2026-10-13) / cargo-nextest 0.9.151 (6b3f99457 2026-11-02)
+##### CASES (D8 flags: nextest, --locked --offline)
+=== case full
+MISSED   src/lib.rs:34:22: replace > with >= in pick in 0s build + 0s test
+25 mutants tested in 29s: 7 missed, 16 caught, 1 unviable, 1 timeouts
+exit=0
+=== case basefail-test
+
+ERROR cargo test failed in an unmutated tree, so no mutants were tested
+exit=0
+=== case zero-mutants
+ INFO No mutants to filter
+exit=0
+=== case indiff
+MISSED   src/lib.rs:14:21: replace < with <= in is_even in 0s build + 0s test
+9 mutants tested in 3s: 9 missed
+exit=0
+=== case basefail-build (--locked WITHOUT a Cargo.lock)
+*** result: Failure(102)
+
+ERROR cargo build failed in an unmutated tree, so no mutants were tested
+exit=0
+=== case rotation (two runs into one --output)
+mutants.out
+mutants.out.old
+=== cases crashed-f4 (workspace, flag unset) and w-true
+tw=unset exit=0
+tw=true exit=0
+=== case unicode (non-ASCII line)
+4 mutants tested in 1s: 4 caught
+##### (f) space and non-ASCII source paths
+MISSED   src/módulo.rs:2:7: replace * with + in dbl in 0s build + 0s test
+10 mutants tested in 4s: 1 missed, 9 caught
+exit=0
+src__módulo.rs_line_2_col_5.diff
+src__módulo.rs_line_2_col_5_001.diff
+src__módulo.rs_line_2_col_5_002.diff
+src__módulo.rs_line_2_col_7.diff
+src__módulo.rs_line_2_col_7_001.diff
+src__with_space.rs_line_2_col_5.diff
+src__with_space.rs_line_2_col_5_001.diff
+src__with_space.rs_line_2_col_5_002.diff
+src__with_space.rs_line_2_col_7.diff
+src__with_space.rs_line_2_col_7_001.diff
+##### (g) methods, trait impls, generics
+BinaryOperator '<impl T for S>::triple' src/lib.rs:17:16: replace * with + in <impl T for S>::triple
+BinaryOperator '<impl T for S>::triple' src/lib.rs:17:16: replace * with / in <impl T for S>::triple
+BinaryOperator 'S::bump' src/lib.rs:7:16: replace + with * in S::bump
+BinaryOperator 'S::bump' src/lib.rs:7:16: replace + with - in S::bump
+FnValue '<impl T for S>::triple' src/lib.rs:17:9: replace <impl T for S>::triple -> i32 with -1
+FnValue '<impl T for S>::triple' src/lib.rs:17:9: replace <impl T for S>::triple -> i32 with 0
+FnValue '<impl T for S>::triple' src/lib.rs:17:9: replace <impl T for S>::triple -> i32 with 1
+FnValue 'S::bump' src/lib.rs:7:9: replace S::bump -> i32 with -1
+FnValue 'S::bump' src/lib.rs:7:9: replace S::bump -> i32 with 0
+FnValue 'S::bump' src/lib.rs:7:9: replace S::bump -> i32 with 1
+FnValue 'pick' src/lib.rs:22:5: replace pick -> X with Default::default()
+ok       Unmutated baseline in 0s build + 0s test
+11 mutants tested in 4s: 10 caught, 1 unviable
+exit=0
+##### (a,b,c,d,h) relative in-tree --output from a crate in a SUBDIRECTORY of a git repo
+-- relative diff head:
+diff --git a/src/lib.rs b/src/lib.rs
+index 0c5c5a2..3cc2b4e 100644
+--- a/src/lib.rs
+-- toplevel diff head:
+diff --git a/sub/crate1/src/lib.rs b/sub/crate1/src/lib.rs
+index 0c5c5a2..3cc2b4e 100644
+--- a/sub/crate1/src/lib.rs
+-- (a,c,h) relative --output out-r with the --relative diff
+MISSED   src/lib.rs:14:21: replace < with <= in is_even in 0s build + 0s test
+9 mutants tested in 3s: 9 missed
+exit=0
+out-r:
+mutants.out
+
+out-r/mutants.out:
+caught.txt
+debug.log
+diff
+lock.json
+-- (h) toplevel diff from the crate dir
+ INFO No mutants to filter
+exit=0
+-- (d) NON-empty pre-created --output
+9 mutants tested in 3s: 9 missed
+exit=0
+keepme
+mutants.out
+-- (b) is the in-tree <out> copied into the mutated tree? (canary test must FAIL the baseline if copied)
+*** result: Failure(100)
+
+ERROR cargo test failed in an unmutated tree, so no mutants were tested
+exit=0
+canary baseline: Failure [('Build', 'Success'), ('Test', {'Failure': 100})] total_mutants 0
+-- does git see the in-tree out dir? (the post-run dirty check)
+ M sub/crate1/src/lib.rs
+?? sub/crate1/out-c/
+?? sub/crate1/out-d/
+?? sub/crate1/out-r/
+-- keep subdir case
+##### (e) workspace root ABOVE the run cwd
+diff --git a/src/lib.rs b/src/lib.rs
+index 371d976..5cc4e3a 100644
+--- a/src/lib.rs
+ INFO No mutants to filter
+exit=0
+ls: cannot access 'out-w': No such file or directory
+*** result: Failure(4)
+
+ERROR cargo test failed in an unmutated tree, so no mutants were tested
+exit=0

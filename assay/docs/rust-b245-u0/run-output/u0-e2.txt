@@ -1,0 +1,16 @@
+-- toplevel diff paths:
++++ b/b/src/lib.rs
+-- relative-to-b diff paths:
++++ b/src/lib.rs
+== cwd = crate b (workspace root above), diff relative to b
+ INFO No mutants to filter
+exit=0
+== cwd = crate b, diff relative to the git top (= workspace root)
+ INFO No mutants to filter
+exit=0
+== cwd = workspace root, diff relative to the workspace root
+ INFO No mutants to filter
+exit=0
+== cwd = workspace root, diff relative to b (wrong anchor)
+ INFO No mutants to filter
+exit=0
