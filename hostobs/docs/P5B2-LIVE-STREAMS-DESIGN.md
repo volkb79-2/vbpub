@@ -1,6 +1,7 @@
 # hostobs probe serving, P5b-2 (live streams): design, resolutions and package split
 
-Status: DRAFT for the controller and an independent review, 2026-11-18. Continues
+Status: reviewed 2026-11-18 by an independent Opus reviewer (verdict FIX); every finding and the
+controller's decisions are folded in (section 8 lists them). Continues
 `P5B-SERVER-DESIGN.md` (rules R1..R28; this file's rules are S1..S34) on the P5b-1b head `9ce8d228a`.
 Normative protocol: `WIRE.md` (sections quoted as §n). Where this file and WIRE.md disagree, this file
 names the WIRE.md edit (section 6) and the package that owns it. Nothing here was compiled.
@@ -13,7 +14,7 @@ lazily, one generation counter per selection, §6.2), the §5.1 subscription and
 Live and Query pools, `budget` errors with their pool, `max_outstanding` / `too-many-requests` and
 "`corr` in use" (R3: now reachable), `END` reasons `complete`, `unsubscribed`, `client-eof`, and the
 §11.4 cases that become reachable. The probe still has NO collector: the data source is the
-`Backend` trait (`Backend::current(&Selection)`), with `FixedBackend` as the test backend.
+`Backend` trait (`Backend::current(&Selection, max_rows)`), with `FixedBackend` as the test backend.
 
 The shape of P5b-1 is kept: sans-IO `Conn` / `Server`, the backend injected, every time an injected
 `now_ns`, every map a `BTreeMap` (determinism). New pieces:
@@ -33,7 +34,9 @@ WIRE; S9 makes it unnecessary), moving the serving core into a crate (backlog, d
 
 ## 2. Package cut
 
-Four blind-written packages, stacked: 2a -> 2b -> 2c -> 2d (each needs the previous one's API). Each is
+Four blind-written packages, stacked: 2a -> 2b -> 2c -> 2d (each needs the previous one's API; each
+review is bound to its own head). 2a and 2b merge on their own; **2c and 2d merge together** (2c alone
+would have no tick delivery and no retry pass; the `served` flip lives in 2d). Each is
 sized for one implementer with ~200k tokens: it reads this file, the WIRE sections it names and the
 modules it changes; nothing else. Each package adds its new files to `assay.toml` `judge.targets`
 (R26), adds one `CHANGES.md` "Added (P5b-2x ...)" entry in the P5b-1 style, updates the `HOB-54` row of
@@ -67,7 +70,8 @@ impl Selection {
 }
 pub fn is_metric_name(text: &str) -> bool;  // ^[a-z][a-z0-9_.-]{0,63}$
 // args.rs
-impl<'a> Obj<'a> { pub fn elements(&self, name: &str) -> Result<Vec<&'a [u8]>, ArgError>; } // array() as slices
+// array() as typed slices: the element's JSON kind (first byte: { [ " digit/- t f n) and its bytes
+impl<'a> Obj<'a> { pub fn elements(&self, name: &str) -> Result<Vec<(Kind, &'a [u8])>, ArgError>; }
 pub fn selection(object: &Obj<'_>, name: &str) -> Result<Selection, ArgError>;
 pub fn current(args: &[u8]) -> Result<Selection, ArgError>;
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -85,6 +89,7 @@ impl Limits { pub fn interval_rule(&self) -> IntervalRule; }
 // classify.rs
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ConnFacts { pub corr_in_use: bool, pub outstanding_full: bool, pub interval: IntervalRule }
+// outstanding_full refuses only Shape::Block verbs (current, subscribe): S5, controller decision Q6
 pub fn classify_with(query: &Query<'_>, facts: &ConnFacts) -> Result<Dispatch, Refusal>;
 pub fn classify(query: &Query<'_>) -> Result<Dispatch, Refusal>; // = classify_with(query, &ConnFacts::default())
 pub enum Call { Hello(HelloArgs), Status, Current(Selection), Subscribe(SubscribeArgs), Unsubscribe(u32) }
@@ -115,8 +120,8 @@ Modules: `backend.rs`; NEW `tick.rs`, NEW `registry.rs`; `crates/proto/src/hub.r
 `server.rs` compile-only (`StatusView` forwards `current`). Depends on 2a (`Selection`, `Pool`, `Code`).
 
 ```rust
-// backend.rs
-#[derive(Clone, Debug, PartialEq)]
+// backend.rs (Eq is required: FixedBackend derives Eq and will hold TickData)
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TickData {
     /// boot_id, epoch, seq, mono_start_ns, mono_end_ns, boot_ns, real_ns are taken as given;
     /// dict_gen, n_rows, dropped and flags are overwritten by the server (S16).
@@ -129,19 +134,25 @@ pub struct TickData {
 impl TickData {
     /// Deterministic sample for tests and the P5b-4 bring-up: one Entity per inc (label "inc-<n>"),
     /// then one Metric per name (unit/scope/source fixed, MetricKind::Gauge, U64), rows in inc order,
-    /// value = inc * 1000 + seq, quality 0, header seq = seq, other times 0, boot_id = zeros, epoch 1.
+    /// value = inc.wrapping_mul(1000).wrapping_add(seq), quality 0, header seq = seq, other times 0,
+    /// boot_id = zeros, epoch 1.
     pub fn example(seq: u64, incs: &[u64], metrics: &[&str]) -> TickData;
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BackendError { Unavailable }
+pub enum BackendError { Unavailable, TooManyRows }
 pub trait Backend {
     fn identity(&self) -> Identity;
     fn status(&self) -> StatusInfo;
-    /// The latest tick's data for `selection` (resolution is the backend's: §4.2 has none).
-    fn current(&self, selection: &Selection) -> Result<TickData, BackendError>;
+    /// The latest tick's data for `selection` (resolution is the backend's: §4.2 has none). The
+    /// backend stops resolving at `max_rows + 1` rows and answers Err(TooManyRows) (S6): a request
+    /// never costs more than max_rows + 1 rows of work.
+    fn current(&self, selection: &Selection, max_rows: u32) -> Result<TickData, BackendError>;
 }
 // FixedBackend gains `pub current: BTreeMap<Selection, Result<TickData, BackendError>>`;
-// a selection that is not a key answers Err(Unavailable).
+// a selection that is not a key answers Err(Unavailable); a stored Ok whose rows exceed max_rows
+// answers Err(TooManyRows) (the fixed backend models the contract). The server still re-checks
+// rows.len() <= max_rows (S16) so a non-conforming backend cannot pass more.
+// backend.rs module doc lines 13-16 are rewritten: dropped_blocks comes from the hub (S21).
 ```
 
 ```rust
@@ -153,12 +164,21 @@ pub enum TickError { Rows, Invalid, Exhausted, Oversize, Encode }
 impl TickError { pub fn refusal(self) -> (Code, Detail); } // Rows -> (Budget, Pool(Rows)); others -> (Internal, Empty)
 pub fn validate(data: &TickData) -> Result<(), TickError>;                       // S16
 pub fn dictionary_body(generation: u32, entries: &[Entry]) -> Result<Vec<u8>, TickError>; // S16
+/// The frame length encode_bare would produce, plus 8 + dict_body_len when Some: computed from the
+/// section lengths (12 + 4 + 8 n_sec + 80 + 8 n_rows (rows, when n_rows > 0) + align8(8 + 9 n_rows)
+/// per column), all checked; None on overflow (treated as Oversize). Pinned equal to the real
+/// encoders' lengths by test. Judged BEFORE any encode (S6, S11).
+pub fn encoded_len(data: &TickData, dict_body_len: Option<usize>) -> Option<usize>;
 pub fn encode_bare(data: &TickData, generation: u32) -> Result<Vec<u8>, TickError>;      // corr 0
 pub fn with_dictionary(bare: &[u8], dict_body: &[u8]) -> Vec<u8>;                 // S14, infallible
 pub fn query_block(data: TickData, bounds: BlockBounds) -> Result<Arc<[u8]>, TickError>; // S6
 pub struct LiveTick { /* generation: u32, bare: Option<Arc<[u8]>>, base: Arc<[u8]>,
                          dict_body: Arc<[u8]>, dict: std::cell::OnceCell<Arc<[u8]>> */ }
-impl LiveTick { pub fn generation(&self) -> u32; pub fn has_bare(&self) -> bool; pub fn dict_built(&self) -> bool; }
+impl LiveTick {
+    /// `bare` is None on a tick that sets a generation; `base` is the bare bytes in every case.
+    pub(crate) fn new(generation: u32, bare: Option<Arc<[u8]>>, base: Arc<[u8]>, dict_body: Arc<[u8]>) -> LiveTick;
+    pub fn generation(&self) -> u32; pub fn has_bare(&self) -> bool; pub fn dict_built(&self) -> bool;
+}
 impl TickForms for LiveTick { /* bare(): bare.clone(); dict_form(): dict.get_or_init(splice) */ }
 ```
 
@@ -167,7 +187,10 @@ impl TickForms for LiveTick { /* bare(): bare.clone(); dict_form(): dict.get_or_
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)] pub struct SelId(pub u64);
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)] pub struct SubKey { pub conn: ConnId, pub corr: u32 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StreamLimits { pub bounds: BlockBounds, pub max_uid_selections: u32, pub max_selections: u32 }
+pub struct StreamLimits { pub bounds: BlockBounds }        // the unified observe/operator bounds (S20)
+/// The selection caps of the REQUESTING connection's level (S19, finding 14).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SelectionCaps { pub per_uid: u32, pub per_probe: u32 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)] pub enum Admit { Joined(SelId), Created(SelId) }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)] pub enum Refused { Budget(Pool), Duplicate, Exhausted }
 pub enum Delivery {
@@ -181,7 +204,7 @@ pub struct SelectionStreams { /* limits, next_id: u64, streams: BTreeMap<SelId, 
 //   dict_body: Option<Arc<[u8]>>, subscribers: BTreeMap<SubKey, Sub> }; struct Sub { uid, every, left }
 impl SelectionStreams {
     pub fn new(limits: StreamLimits) -> SelectionStreams;
-    pub fn subscribe(&mut self, key: SubKey, uid: u32, every: u32, selection: &Selection) -> Result<Admit, Refused>; // S9, S19
+    pub fn subscribe(&mut self, key: SubKey, uid: u32, every: u32, selection: &Selection, caps: SelectionCaps) -> Result<Admit, Refused>; // S9, S19
     pub fn unsubscribe(&mut self, key: SubKey) -> bool;        // false when unknown
     pub fn release_conn(&mut self, conn: ConnId) -> usize;     // removes every key of conn; idempotent
     pub fn on_tick(&mut self, backend: &dyn Backend) -> Vec<Delivery>; // S10, S11
@@ -207,16 +230,24 @@ impl SendHub {
 ```
 
 Tests: section 5.2. WIRE edits: §2.2 END ok:false codes (S11), §4.5 `dropped_blocks` (S22), §5.3 pin
-rule and the two hub functions (S12), §6.2 generation life cycle (S10). `python/reference/make_hub_fixtures.py`:
-if its model stamps Query entries from `pending_drops`, change it identically (S12) and regenerate; the
-committed hub fixtures must stay byte-identical (no case has a Query pin on a stream with drops).
+rule and the two hub functions (S12), §6.2 generation life cycle (S10), §11.4 hub table (20 files, the
+new row). Hub fixtures (S12): no committed case mixes Query and Live on one `(c, s)`, so no existing file
+changes; 2b ADDS the case `hub-query-pin-after-corr-reuse` to `python/reference/make_hub_fixtures.py`
+(its model stamps a Query pin 0 without resetting `pending_drops`), commits the generated
+`fixtures/stream/hub-query-pin-after-corr-reuse.json`, and bumps `test_exactly_the_19_cases` (and its
+docstring, line 9) in `python/tests/test_hub_fixtures.py` to 20; `crates/proto/tests/hub_fixtures.rs`
+replays it with the others.
 
 ### P5b-2c: the connection (subscribe lifecycle, current, outstanding, Draining)
 
-Modules: `conn.rs`; `verbs.rs` (`served = true` for `current`, `subscribe`, `unsubscribe`); `server.rs`
-minimal: field `streams: SelectionStreams` built from `ServerLimits::stream_limits()` (S20), `unified()`
-also unifies `tick_ms` (S20), `drive` passes the registry, `on_eof` goes through `drive`, `finish`
-calls `streams.release_conn(id)` before `hub.remove` (S18). Depends on 2a, 2b.
+Modules: `conn.rs`; `server.rs` minimal: field `streams: SelectionStreams` built from
+`ServerLimits::stream_limits()` (S20), `unified()` also unifies `tick_ms`, `max_rows` and
+`max_block_bytes` (S20), `drive` passes the registry, `on_eof` goes through `drive`, `finish` calls
+`streams.release_conn(id)` before `hub.remove` (S18). `verbs.rs` is NOT changed here (the `served` flip
+is 2d's): 2c's Conn tests reach the new calls by building a `Dispatch` and calling the private
+`execute` from `conn.rs`'s own test module, and reach steps 2/10 through `on_bytes` (they precede the
+served check). 2c rewrites the two `status` tests (conn.rs ~1456 and ~1596) that set
+`backend.status.dropped_blocks = 5` and expect 5: the value now comes from the hub (S21). Depends on 2a, 2b.
 
 ```rust
 // conn.rs (new or changed; P5b-1b methods not listed are unchanged)
@@ -235,13 +266,14 @@ impl<B: Backend> Server<B> { pub fn streams(&self) -> &SelectionStreams; }
 ```
 
 Tests: section 5.3 (Conn-level, against a real `SendHub`, `SelectionStreams` and `FixedBackend`,
-`registry.on_tick` called directly to produce ticks). WIRE edits: §4.3 note (hello.verbs), §4.6
+`registry.on_tick` called directly to produce ticks). WIRE edits: §4.6
 (S6, S7), §4.7 (S9, S15, S23), §5.1 outstanding (S5), §5.4 rows (S23), §13 D-W29, D-W30.
 
 ### P5b-2d: the server (tick delivery, retries, reachable §11.4 cases)
 
-Modules: `server.rs`; `bins/probe/tests/serving_hostile.rs` (server-level hostile runs with the block
-verbs). Depends on 2c.
+Modules: `server.rs`; `verbs.rs` (`served = true` for `current`, `subscribe`, `unsubscribe`; hello.verbs
+at observe/operator then lists them, S32); `bins/probe/tests/serving_hostile.rs` (server-level hostile
+runs with the block verbs). Depends on 2c; merges together with 2c.
 
 ```rust
 impl<B: Backend> Server<B> {
@@ -253,22 +285,25 @@ impl<B: Backend> Server<B> {
 // ascending id, drive(id, retry_pending).
 ```
 
-Tests: section 5.4 (incl. every §11.4 case of section 5.5). WIRE edits: §11.4 (S31), §5.4 driver note
+Tests: section 5.4 (incl. every §11.4 case of section 5.5). WIRE edits: §4.3 note (hello.verbs, S32),
+§11.4 (S31), §5.4 driver note
 (S25), design R3/R21 superseded notes, `HOB-54` row; the series gets the Opus final review (design §2).
 
 ## 3. Resolutions (S1..S34)
 
 **S1 Selection parsing (§4.2).** `args::selection(obj, "selection")`: `selection` is an object with
 `only(["entities","metrics"])`; then `entities`, then `metrics` (schema order; the first defect wins).
-Arrays come from `Obj::elements` (at most 64 elements, R4). Entities: count 1..16 else
-`selection.entities`; each element is parsed in array order with `Obj::parse(element, "selection.entities")`
-(not an object -> `selection.entities`), exactly one member else `selection.entities`, `only(["inc","path",
+Arrays come from `Obj::elements` (at most 64 elements, R4), each with its `Kind`; the kind is checked
+BEFORE any decoding, because `unescape` (args.rs:349) strips the first and last byte without checking
+for quotes (`true` would decode to `ru`). Entities: count 1..16 else `selection.entities`; each element,
+in array order, must be of kind `Object` (else `selection.entities`) and is parsed with
+`Obj::parse(element, "selection.entities")`; exactly one member else `selection.entities`, `only(["inc","path",
 "prefix","all"])` (unknown key -> `selection.entities.<key>` under R14), `inc` an exact u64
 (`selection.entities.inc`), `path`/`prefix` a string decoded by `unescape(raw, 512)` (refused surrogates,
 over 512 decoded bytes, 0 bytes, any char < 0x20 or 0x7F -> `selection.entities.path` / `.prefix`), `all`
 of kind `True` (anything else -> `selection.entities.all`). Metrics: count 1..64 else `selection.metrics`;
-each element a string (`unescape(raw, 64)`) matching `is_metric_name` on the DECODED text, else
-`selection.metrics`. Then `Selection::new` sorts both vectors and refuses an adjacent duplicate with
+each element of kind `Str` (any other kind -> `selection.metrics`), decoded by `unescape(raw, 64)`, matching `is_metric_name` on the DECODED text, else
+`selection.metrics` (S1, the kind check comes first). Then `Selection::new` sorts both vectors and refuses an adjacent duplicate with
 `selection.entities` / `selection.metrics`. `Selection::new` re-checks every content rule (counts,
 lengths, controls, names, duplicates) so a test or backend cannot build a non-canonical value; its
 `SelectionError.key` uses the same paths. Duplicates compare DECODED values (`"a"` and `"a"` are
@@ -286,30 +321,41 @@ A `corr` is free again once its final REP or END is queued; reuse after that is 
 keeps it exact.
 **S5 Outstanding (§5.1, R11 step 10).** `outstanding = pending.len()`. In P5b-2 only a `current` whose
 block met `Backpressure` is outstanding. `ConnFacts.outstanding_full = pending.len() >= max_outstanding`;
-a REQ of ANY verb then answers `too-many-requests` (non-fatal, `detail {}`), after step 9 and before the
-argument schema (the WIRE precedence, applied uniformly; see Q6). JSON mode: always false.
+a REQ of a **BLK-shape verb** (`current`, `subscribe`; later `snapshot_at`, `series_batch`) then answers
+`too-many-requests` (non-fatal, `detail {}`), after step 9 and before the argument schema. JSON-shape
+verbs (`status`, `unsubscribe`, ...) are never refused by it: they never become outstanding, and a
+uniform refusal would make Python `Subscription.close()` raise while 4 `current`s are pending
+(controller decision Q6). JSON mode: always false.
 
-**S6 `current` (§4.6).** After `classify`: `backend.current(&sel)`: `Err` -> REP `internal`; then
-`tick::query_block(data, bounds)`: `Rows` -> REP `budget {"pool":"rows"}`, other errors -> REP `internal`
-(all before any REP ok, §2.4). Else push REP `current_result(tick_ms)` (`tick_ms` of the conn's level,
-unified by S20), then `push_query(id, corr, block)`: `Queued` -> `counts = end_stream(id, corr)`, push
+**S6 `current` (§4.6).** After `classify`: `backend.current(&sel, max_rows)`: `Err(TooManyRows)` -> REP
+`budget {"pool":"rows"}`, `Err(Unavailable)` -> REP `internal`; then `tick::query_block(data, bounds)`
+with the conn's own (unified, S20) `max_rows` and `max_block_bytes`: `Rows` -> REP `budget
+{"pool":"rows"}`, other errors -> REP `internal` (all before any REP ok, §2.4). Else push REP
+`current_result(tick_ms)` (`tick_ms` of the conn's level, unified by S20); if that push closed the conn,
+stop (S27); then `push_query(id, corr, block)`: `Queued` -> `counts = end_stream(id, corr)`, push
 `end_ok(corr, counts.blocks, counts.dropped, Complete)` (1 and 0). `Backpressure(_)` -> the bytes are
 dropped and `pending.insert(corr, Pending { selection, need: len })`. `query_block` = the S11 build
 with its own generation 1, always dictionary-bearing (a query stream numbers its own, §6.2), checks in
-the order rows, `validate`, dictionary body, encode, size (`len > max_block_bytes` -> `Oversize`).
+the order rows, `validate`, dictionary body, size (`encoded_len(&data, Some(body.len()))` is `None` or
+`> max_block_bytes` -> `Oversize`, judged arithmetically BEFORE any block encode), then encode.
+Invariant: `max_block_bytes <= query_queue_bytes` (S20), so a block that passes always fits an empty
+Query pool and a pending request always becomes queueable once its own connection's pool drains.
 **S7 Pending retry.** `retry_pending` (called by the server's retry pass after every `wrote` and at the
 end of every `poll`, S27) handles `pending` in ascending `corr`: when `hub.query_room(id, need)` it re-runs
-the S6 pipeline from `backend.current` (the latest tick NOW: the request holds no block bytes, D-W30):
+the S6 pipeline from `backend.current(&sel, max_rows)` (the latest tick NOW: the request holds no block
+bytes, D-W30):
 `Queued` -> END `complete`, entry removed; `Backpressure` -> `need` = the new length; a failure (backend,
 rows, invalid) -> `counts = end_stream`, push `end_error(corr, counts.blocks, counts.dropped, code,
-detail)` (the REP was already sent, §2.4), entry removed. A closed conn retries nothing. Draining keeps
-retrying.
+detail)` (the REP was already sent, §2.4), entry removed. A closed conn retries nothing, and the pass
+stops at the first push that closes it (S27). Draining keeps retrying.
 **S8 Interval (§4.7).** `IntervalRule::accepts(v)`: `tick_ms > 0 && v % tick_ms == 0 && v >= max(min_ms,
 tick_ms) && v <= 60_000`; otherwise `bad-request {"key":"interval_ms"}` (step 11). Never rounded: both
 clients require `result.interval_ms` to equal the request (Rust `confirms`, Python `subscribe`).
 `every = v / tick_ms >= 1`. `ConnFacts.interval = limits.interval_rule()`; the default rule refuses all.
 **S9 `subscribe` (§4.7).** Execution order: (1) `subs.len() >= max_subscriptions` -> REP `budget
-{"pool":"subscriptions"}`; (2) `streams.subscribe(SubKey{id, corr}, peer.uid, every, &sel)`:
+{"pool":"subscriptions"}`; (2) `streams.subscribe(SubKey{id, corr}, peer.uid, every, &sel, caps)` with
+`caps = SelectionCaps { per_uid: limits.max_uid_selections, per_probe: limits.max_selections }` of the
+conn's OWN level (finding 14):
 `Err(Budget(p))` -> REP `budget {"pool":p}`, `Err(Duplicate | Exhausted)` -> REP `internal`; (3) `Ok(admit)`
 -> `subs.insert(corr, sel_id)`, push REP `subscribe_result(corr, v)`. NO backend call, no encoding and no
 block at subscribe: the first block (creator and joiner alike) comes from the next tick (S10). If the REP
@@ -317,17 +363,19 @@ push closes the conn (`slow-client`), the registry entry stays until `finish` (S
 **S10 Schedule.** A subscriber starts with `left = 1`. Each `on_tick` first sets `left =
 left.saturating_sub(1)` for every subscriber of every stream; `left == 0` is due. A stream with no due
 subscriber is not built and the backend is not called. A due subscriber that is pushed gets `left =
-every` whatever the hub outcome (`Queued`, `Coalesced`, `DroppedIncoming`); a backend `Err` skips the
+every` whatever the hub outcome (`Queued`, `Coalesced`, `DroppedIncoming`); a backend `Err(Unavailable)` skips the
 stream and its due subscribers stay due. So the first block follows the REP within one tick, interval
 `every` ticks thereafter.
 **S11 Shared selection stream and tick build (§6.2).** Created by the first `subscribe` of a selection
 that is not live (`generation = 0`, nothing built); destroyed when its last subscriber leaves (any
 path); a recreated stream starts again at generation 1. Build of a due stream, in this order, first
-failure wins: (1) `rows.len() > max_rows` -> `TickError::Rows`; (2) `validate`; (3) change = `generation
-== 0 || data.entries != held entries` (`Vec<Entry>` equality, order included); on change the new
-generation is 1 (first) or `generation.checked_add(1)` (`None` at `u32::MAX` -> `Exhausted`), and
-`dict_body = dictionary_body(new, &entries)`; (4) `base = encode_bare(&data, gen)`; (5) `base.len() + 8 +
-dict_body.len() > max_block_bytes` (checked arithmetic; overflow = over) -> `Oversize`; (6) commit
+failure wins: (0) `backend.current(&sel, max_rows)`: `Err(TooManyRows)` -> `TickError::Rows`,
+`Err(Unavailable)` -> skip (S10); (1) `rows.len() > max_rows` -> `TickError::Rows` (re-check); (2)
+`validate`; (3) change = `generation == 0 || data.entries != held entries` (`Vec<Entry>` equality, order
+included); on change the new generation is 1 (first) or `generation.checked_add(1)` (`None` at `u32::MAX`
+-> `Exhausted`), and `dict_body = dictionary_body(new, &entries)` (else the held body); (4)
+`encoded_len(&data, Some(dict_body.len()))` `None` or `> max_block_bytes` -> `Oversize`, judged BEFORE any
+encode; (5) `base = encode_bare(&data, gen)`; (6) commit
 generation, entries and `dict_body`, then `LiveTick { generation, bare: None on change else Some(base),
 base, dict_body, dict: empty }`. A failure ends the stream: the registry removes the stream and ALL its
 subscribers (not only the due ones, with their uid refs) and returns `Delivery::End { to: every key,
@@ -347,8 +395,10 @@ rules already implemented and tested in `hub.rs`. `push_tick` does nothing when 
 Draining or `corr` is not in `subs` (a registry/conn mismatch is ignored, never a panic).
 **S14 Encodings per tick.** Bare: once per built tick (`encode_bare`, eager). Dictionary body: once per
 generation (eager, at the change). Dictionary form: `with_dictionary(base, dict_body)` lazily, at most
-once per `LiveTick` (a `OnceCell` shared by every subscriber of that tick). `with_dictionary` writes `len
-+ 8 + body.len()` at 0, copies bytes 4..12, writes `n_sec + 1` at 12, copies 14..16 and directory entry 0
+once per `LiveTick` (a `OnceCell` shared by every subscriber of that tick). `with_dictionary` computes
+`total = bare.len() + 8 + body.len()` (checked; and `n_sec.checked_add(1)`: either `None` -> return the
+input unchanged, unreachable after S11), writes `u32::try_from(total).unwrap_or(u32::MAX)` at 0, copies
+bytes 4..12, writes `n_sec + 1` at 12, copies 14..16 and directory entry 0
 (the header), inserts the entry `kind 5, ver SectionKind::Dictionary.version(), flags 0, len body.len()`,
 copies the remaining entries, the header body (80 bytes at `16 + 8 n_sec`), the dictionary body, then the
 rest; every write uses `get`/`get_mut` (no panic, a short input yields a short output, unreachable after
@@ -366,34 +416,50 @@ column `metric < entries.len()` and a `Metric` whose `facts.kind == column.kind`
 rows.len()`, metric indices pairwise distinct, every quality byte a known code (`Quality::from_code`);
 `rows.len()` fits u32. `dictionary_body`: interns `entries` in order into
 `Dictionary::with_capacity(gen, DEFAULT_ACTIVE_MAX)`, each `intern` must return its own position (a
-repeated identity returns an earlier index: `Invalid`), then `encode()`. The server writes header
+repeated identity returns an earlier index: `Invalid`), then `encode()`. Every `intern`/`encode` error
+(`DictionaryEntryTooLong`, `DictionaryEntryControl`, `DictionaryTooLarge`, `ConflictingColumn`, any
+other `ProtoError`) maps to `TickError::Invalid`, which surfaces as `internal`; an `encode_block` error
+in `encode_bare` maps to `TickError::Encode` (also `internal`). The server writes header
 `dict_gen = generation`, `n_rows = rows.len()`, `dropped = 0`, `flags = 0`, `corr = 0`; every other header
 field is the backend's (trusted; the collector package owns their truth).
-**S17 Server-ended stream.** `end_subscription(corr, code, detail)`: when `subs.remove(&corr)` is Some:
-`counts = end_stream`, push `end_error(corr, counts.blocks, counts.dropped, code, detail)`. Else
-nothing. The registry already forgot the keys.
+**S17 Server-ended stream.** `end_subscription(corr, code, detail)`: `subs.remove(&corr)`; on a closed
+conn that is all (no hub call, no push); else, when it was Some: `counts = end_stream`, push
+`end_error(corr, counts.blocks, counts.dropped, code, detail)`. Else nothing. The registry already
+forgot the keys.
 **S18 Every close path releases the registry (R22 extended).** `Server::finish(id)` calls
 `streams.release_conn(id)` (idempotent) before `hub.remove`. A closed but unfinished conn keeps its
 registry entries and selection slots until `finish`; ticks skip it (S13). Shutdown and fatal closes send
 no END (§2.2, §5.4).
 **S19 Distinct selections (§4.7, §5.1).** `uid_refs[uid][sel]` = that uid's subscriptions on `sel`; a
 uid's distinct count is the inner map's length, across levels (the registry is server-wide). Order in
-`SelectionStreams::subscribe`: key already present -> `Duplicate` (unreachable through `Conn`, S4);
-selection live -> join (no selection cap; from now on it counts for this uid too); else `uid count >=
-max_uid_selections` -> `Budget(UidSelections)`; else `live_selections >= max_selections` ->
-`Budget(Selections)`; else `next_id.checked_add(1)` (`None` -> `Exhausted`) and create. Every leave
+`SelectionStreams::subscribe(.., caps)`: key already present -> `Duplicate` (unreachable through `Conn`,
+S4); selection live and already used by this uid -> join (no cap); selection live and NOT yet used by
+this uid -> `uid count >= caps.per_uid` -> `Budget(UidSelections)`, else join (the probe cap is NOT
+judged for a join: no new stream is created; controller decision, finding 4); selection not live ->
+`uid count >= caps.per_uid` -> `Budget(UidSelections)`; else `live_selections >= caps.per_probe` ->
+`Budget(Selections)`; else `next_id.checked_add(1)` (`None` -> `Exhausted`) and create. `caps` are the
+requesting connection's level values (finding 14). Every leave
 decrements the ref, removes a 0 ref and an empty uid entry, and destroys an empty stream.
-**S20 Server-wide stream bounds.** `ServerLimits::stream_limits()`: `max_rows`, `max_block_bytes`,
-`max_uid_selections`, `max_selections` = the MINIMUM of the observe and operator values (a stream may
-serve both levels; the smaller bound holds for both). `ServerLimits::unified()` also sets `tick_ms` of
-observe and operator to the larger of the two (one sampler tick; what hello announces is what S8 uses);
-`min_interval_ms` stays per level.
+**S20 Server-wide stream bounds.** `ServerLimits::unified()` also sets, for observe and operator:
+`tick_ms` to the larger of the two (one sampler tick), `max_rows` and `max_block_bytes` to the smaller
+of the two (a stream may serve both levels), and then clamps each level's `max_block_bytes` to
+`min(max_block_bytes, query_queue_bytes, client_queue_bytes)` of that level, so the invariant
+`max_block_bytes <= query_queue_bytes` (and `<= client_queue_bytes`) holds for every built server (no
+panic: a misconfiguration is clamped, and a `Server::new` test asserts the invariant on the defaults and
+on a deliberately wrong input). What hello announces is what the server enforces.
+`ServerLimits::stream_limits()` = `StreamLimits { bounds: BlockBounds { max_rows, max_block_bytes } }`
+of the unified observe level (equal to operator's after unification). `min_interval_ms`,
+`max_uid_selections` and `max_selections` stay per level (S19 passes the requesting level's caps).
 **S21 `dropped_blocks` (§4.5).** `SendHub::dropped_blocks()` (package P5b-2b); the conn's `status` reads it from
-the hub (as it reads `global_pools()`); `StatusInfo::dropped_blocks` from the backend is ignored.
+the hub (as it reads `global_pools()`); `StatusInfo::dropped_blocks` from the backend is ignored. 2c
+rewrites the two conn.rs status tests that expect the backend's 5, and the `backend.rs` module doc
+(lines 13-16) says the value is the hub's.
 **S22 Bytes accounting.** The hub counts each connection's entry at its full length although tick bytes
-are a shared `Arc` (conservative overcount; caps are on the sum). The registry keeps no block bytes:
-per stream only `entries` and the current `dict_body`. A `LiveTick` lives only inside one `on_tick`.
-`Pending` keeps the `Selection` and a length, never block bytes, so no block is held outside the pools.
+are a shared `Arc` (conservative overcount; caps are on the sum). The registry keeps no block bytes,
+but per stream it holds, outside every pool, the current `dict_body` (at most `max_block_bytes`) and its
+`Vec<Entry>`: bounded by `max_selections x (max_block_bytes + entries)` = 8 x (4 MiB + entries) with
+the defaults (entries <= 65,536 x ~300 B by the dictionary bounds; ~1.2 MB at 4,096 rows). A `LiveTick`
+lives only inside one `on_tick`. `Pending` keeps the `Selection` and a length, never block bytes.
 **S23 Draining and idle (§1.5, §5.4).** Clean EOF in `Ready`: state `Draining`; for every `corr` in
 `subs` ascending: `streams.unsubscribe`, `counts = end_stream`, push `end_ok(corr, .., ClientEof)`; `subs`
 cleared; `pending` keeps retrying. Draining closes silently when `pending` is empty and `hub.queued(id)
@@ -411,7 +477,10 @@ saturating; generation `checked_add`; `n_rows` `u32::try_from`; lengths `checked
 `saturating_add`; `need` is a `usize` from a real length.
 **S27 The `drive` rule extended (design 1b module doc).** Every new push path goes through
 `Server::drive`: `on_eof` (client-eof ENDs), `on_tick` (Live pushes and ENDs), the retry pass (blocks and
-ENDs). `drive` runs `enforce_control` after each.
+ENDs). `drive` runs `enforce_control` after each. Every new push path (`push_tick`, `end_subscription`,
+`retry_pending`, the subscribe/unsubscribe/current arms, the Draining ENDs) returns at once when
+`is_closed()`, and stops after any push that closes the conn (S6, S7, S15, S17, S23): no later push,
+`end_stream` or registry change is made on a closed conn except S17's `subs.remove`.
 **S28 Precedence with the new verbs** (R11 numbering): (2) `corr` 0 or in use (S4); (9) served flags flip
 in 2c; (10) `too-many-requests` (S5); (11) argument schemas (S1, S8, `sub` u32); execution budgets
 (S9) come after the schema, then the backend. `forbidden` / `binary-required` keep coming from the full
@@ -420,15 +489,18 @@ table.
 `end_error`: `{"ok":false,"blocks":B,"dropped":D,"error":{"code","message","detail"}}` (the existing
 error member). Frame type END (6), flags 0, `corr` = the stream's. Both parse under `check_end`.
 **S30 2a compile rule.** In 2a `Conn::execute` handles the three new `Call`s with a REP `internal` (they
-cannot be dispatched while `served` is false); 2c replaces the arm.
+cannot be dispatched while `served` is false); 2c replaces the arm; 2d flips `served`.
 **S31 §11.4 cases reachable in P5b-2** (against the sans-IO core, R21): `conn-not-idle-with-subscription`,
 `conn-dribbling-reader`, the END half of `conn-half-close`, plus the new rows `conn-corr-in-use-sub`,
 `conn-corr-in-use-pending`, `conn-too-many-requests`. Only `conn-reply-page-truncated` stays (P5b-3).
 **S32 Levels.** Block verbs only at observe and operator (table); `hello.verbs` there becomes `hello,
 status, current, subscribe, unsubscribe`; observer unchanged (R18).
 **S33 Hostile bounds** (section 4) are rules: request parsing stays O(request bytes) (S1 caps), per tick
-at most `max_selections` builds and dictionary splices, no request-driven encode except `current`
-(bounded by Query backpressure and `max_outstanding`).
+at most `max_selections` builds and dictionary splices, no request-driven encode except `current`.
+A `current` resolves at most `max_rows + 1` rows (the backend stops there), judges `Oversize`
+arithmetically before encoding, and encodes only a block it will send; a FAILING `current` (rows,
+internal) is never outstanding, so `max_outstanding` does not bound its repetition: its cost per request
+is one bounded resolution, and the error REPs are bounded by the control queue (`slow-client`).
 **S34 Not done** — section 1 list; anything else found missing is a NEW rule in a follow-up, not an
 implementer's choice.
 
@@ -443,10 +515,15 @@ implementer's choice.
   pushes. Subscribe/unsubscribe churn costs registry map operations and two small control frames, never an
   encode (S9): no CPU amplification from a stream of small requests; the control frames are bounded by
   `control_queue_bytes` (`slow-client`).
-- **`current` amplification.** One encode per request; a non-reading client gets one block queued per
-  free Query room, then <= `max_outstanding` pending requests (holding no bytes, S22), then
-  `too-many-requests`. Retries need room, which needs reads (S7). Waste: one encode per backpressured
-  request and per retry that meets Backpressure again (rare: the room check uses the last length).
+- **`current` amplification.** A SUCCESSFUL `current` costs one resolution and one encode; a non-reading
+  client gets one block queued per free Query room, then <= `max_outstanding` pending requests (holding
+  no bytes, S22), then `too-many-requests`. Retries need room, which needs reads (S7). A FAILING
+  `current` (`budget rows`, `internal` after `Oversize`) is never outstanding, so it can repeat at line
+  rate: its cost is bounded per request by the backend stopping at `max_rows + 1` rows and by `Oversize`
+  being judged arithmetically before any encode (S6), so a failing request never encodes. Residual:
+  one bounded resolution per request (~60 B); a client that reads its error REPs can keep that up at its
+  read rate (the same order as any served request); one that does not is `slow-client` after
+  `control_queue_bytes` of REPs.
 - **Slow readers with shared encodings.** Shared `Arc` bytes, per-conn pools (§5.3); a dribbler is closed
   at `pinned_ns + frame_completion_ms` and is the shed victim before anyone else (largest Live bytes);
   `conn-dribbling-reader` pins that a second subscriber of the same stream is never shed meanwhile.
@@ -454,13 +531,16 @@ implementer's choice.
   gets the dictionary form again (`needs_dict`); the form is built once per tick (`OnceCell`) for all
   subscribers, so the CPU is per tick, not per subscriber; the bytes are bounded by the Live pools. A
   joiner forces at most one splice per tick per stream.
-- **Selection budgets.** Two uids can hold all 8 selections (4 each) for as long as they read one block
-  per interval (max 60 s); other uids can still join those selections. This is D-W20 as decided; noted,
-  not changed.
+- **Selection budgets (squatting).** A join that adds a selection the uid does not use yet is judged
+  against that uid's cap (S19), so joining cannot grow one uid past 4. Residual gap (recorded, not
+  closed): two uids can still create all 8 probe selections (4 each) and hold them for as long as they
+  read one block per interval (max 60 s); other uids can then only join those selections (within their
+  own cap of 4), never create one. This is D-W20 as decided.
 - **Memory per subscriber vs shared bytes.** Per subscriber: a `subs` entry, a registry `Sub`, a hub stream
   state (tens of bytes each) and <= 2 queue entries (one pinned, one unpinned) referencing shared ticks.
-  Per stream: `entries` + `dict_body` (<= ~1.2 MB at 4,096 entities with 256-byte labels). Physical tick
-  memory <= the Live pools (global 32 MiB) because nothing else holds tick bytes (S22).
+  Per stream, outside every pool: `entries` + `dict_body` (`dict_body` <= `max_block_bytes`), so <= 8 x
+  (4 MiB + entries) with the defaults (S22). Physical tick memory <= the Live pools (global 32 MiB)
+  because nothing else holds tick bytes.
 - **Backend misbehaviour.** Bounded by S16 (validation), S11 (rows, size) and R25 (replies); every
   failure is `internal`/`budget` and ends the stream, never a panic or an oversized frame.
 
@@ -473,14 +553,18 @@ implementer's choice.
   `control_and_del_in_path_refused`, `lone_and_misordered_surrogates_refused`, `all_must_be_true`
   (`false`, `1`, `"true"`, `null`), `element_with_two_members_refused`, `unknown_selector_key_echo_bounded`
   (a 30 KB key: `detail` <= 2 KiB), `metric_name_grammar` (`A`, `1a`, `a` x 64 / 65, `a-b.c_d`, escaped letters),
-  `new_rechecks_every_rule` (a hand-built invalid vector).
+  `new_rechecks_every_rule` (a hand-built invalid vector); `metric_name_grammar` also feeds the non-string
+  elements `true`, `null`, `false`, `1e5`, `12`, `[]`, `{}` (all `selection.metrics`), and
+  `entity_elements_of_every_non_object_kind` (`"x"`, `5`, `true`, `null`, `[]`: `selection.entities`);
+  `elements_report_kinds` for `Obj::elements`.
 - `args_current_*`, `args_subscribe_*` (`interval_ms` at `tick`-1, `tick`, `min`-tick, `min`, 60,000,
   60,001, non-multiple, 0, `-0`, `1.0`, 2^32), `args_unsubscribe_*` (0, u32::MAX, 2^32, missing, extra key),
   `args_key_order` (unknown key before a missing one; `selection` before `interval_ms`).
 - `interval_rule_*`: default refuses all; `tick_ms` 0 refuses; `min_ms` 0 still needs `>= tick_ms`.
 - `classify_step_2_corr_in_use_is_bad_frame_before_check_req` (malformed payload too),
-  `classify_step_10_too_many_requests_after_served_before_schema` (bad args + full -> too-many; unknown
-  verb + full -> unknown-verb; JSON facts ignored), `classify_new_calls_via_call_of` (each arm),
+  `classify_step_10_too_many_requests_after_served_before_schema` (BLK verb with bad args + full ->
+  too-many; unknown verb + full -> unknown-verb; JSON facts ignored),
+  `classify_step_10_spares_json_shape_verbs` (`status`, `unsubscribe` with full facts are dispatched), `classify_new_calls_via_call_of` (each arm),
   `classify_default_facts_equal_old_classify` (the P5b-1a seeds give identical results).
 - `codes_pool_names_and_detail_pool_encoding`, `encode_end_ok_and_error_parse_with_check_end` (every
   reason, max u32 counts), `encode_results_shapes` (`current_result`, `subscribe_result` parse, exact keys).
@@ -490,25 +574,33 @@ implementer's choice.
   canonical: sorted, unique).
 
 ### 5.2 P5b-2b
-- `tick_validate_*`: one test per S16 refusal; `tick_rows_over_max_is_rows_error`; `tick_size_bound_on_dict_form`
-  (bare fits, dict form does not -> `Oversize`).
+- `tick_validate_*`: one test per S16 refusal (each `intern` error -> `Invalid`); `tick_rows_over_max_is_rows_error`;
+  `tick_size_bound_on_dict_form` (bare fits, dict form does not -> `Oversize`, and `encode_bare` is not
+  called: a counting wrapper or the order of results proves it); `tick_encoded_len_equals_real_lengths`
+  (0, 1, 4,096 rows; 0, 1, 8 columns; with and without a dictionary body); `tick_encoded_len_overflow_is_none`;
+  `tick_with_dictionary_degenerate_inputs` (n_sec `u16::MAX`, short input: unchanged, no panic);
+  `backend_fixed_too_many_rows` (a stored tick above `max_rows` answers `TooManyRows`);
+  `tick_example_wraps` (`inc` `u64::MAX`).
 - `tick_dictionary_body_repeated_identity_is_invalid`, `tick_splice_equals_encode_block` (0 rows, 1 row,
   4,096 rows x 8 columns, with unknown-free entries), `tick_splice_decodes_with_decode_block`,
   `tick_bare_decodes_against_held_dictionary` (`decode_block_with`), `tick_header_fields_overwritten`,
   `tick_live_tick_dict_form_built_once` (two calls, `dict_built`), `tick_query_block_generation_1`.
-- `registry_subscribe_*`: create, join (no cap counted at join, but counts afterwards), uid cap 4/5,
-  probe cap 8/9 with two uids, cap order (uid before probe), duplicate key, `SelId` exhaustion (private
+- `registry_subscribe_*`: create, join of a selection the uid already uses (no cap), join of a NEW
+  selection for the uid at its cap -> `UidSelections` and below it -> joined with the probe at 8 (no
+  probe cap on a join), uid cap 4/5, probe cap 8/9 with two uids, cap order (uid before probe), caps
+  taken from the argument (two levels with different caps), duplicate key, `SelId` exhaustion (private
   field set in the test module).
 - `registry_leave_*`: unsubscribe last destroys and recreation restarts at generation 1;
   `release_conn` idempotent and complete (all counters 0).
 - `registry_tick_*`: schedule `every` 1/2/3 over 7 ticks; joiner due at the next tick; not-due stream not
-  built (backend call counter); backend `Err` keeps due; change -> generation + 1 and no bare; same entries
+  built (backend call counter); backend `Unavailable` keeps due, `TooManyRows` ends the stream with budget rows; change -> generation + 1 and no bare; same entries
   -> bare; reordered entries -> change; generation `u32::MAX` change -> End internal to all; rows -> End
   budget rows to ALL (also not-due) subscribers; deliveries in `SelId` order and keys ascending.
 - `hub_query_pin_leaves_pending_drops` (S12: ended query X with a queued block, new live X with a drop,
   pin of the old block stamps 0, next live pin stamps 1), `hub_dropped_blocks_counts_every_note_drop`
   (coalesce, shed, incoming, end_stream; not drain/remove), `hub_query_room_*` (each pool, unknown id).
-  The hub pool-exactness checker runs over the new functions too.
+  The hub pool-exactness checker runs over the new functions too. Fixture `hub-query-pin-after-corr-reuse`
+  (generated, replayed by `hub_fixtures.rs`; the Python count test says 20).
 - Hostile: 2,000 deterministic registry runs (random subscribe/unsubscribe/release/on_tick over 3 uids,
   6 conns, 12 selections, a backend that changes entries randomly): after each step the uid refs equal a
   recount from the subscribers, caps never exceeded, generations strictly increase per stream lifetime,
@@ -524,13 +616,18 @@ implementer's choice.
 - `conn_unsubscribe_*`: REP then END `unsubscribed`; unknown/0/query corr `not-found`; queued unpinned tick
   counted in `dropped`; pinned tick counted in `blocks`; JSON-mode `not-found`; corr reusable after.
 - `conn_corr_in_use_subscription_is_fatal`, `conn_corr_in_use_pending_is_fatal`, `conn_corr_reuse_after_end_ok`.
-- `conn_too_many_requests` (4 pending, 5th of any verb refused non-fatal, after a retry frees one the next
-  is accepted).
+- `conn_too_many_requests` (4 pending: a 5th `current` or a `subscribe` refused non-fatal, `status` and
+  `unsubscribe` still answered; after a retry frees one the next `current` is accepted).
+- `conn_closed_stops_every_push_path` (a push that closes the conn: no later push, `end_stream` or
+  registry change; `end_subscription` on a closed conn only removes `subs`).
+- `conn_current_uses_unified_bounds` and `server_limits_block_invariant` (`max_block_bytes <=
+  query_queue_bytes, client_queue_bytes` after `unified()`, defaults and a wrong input).
+- `conn_status_tests_rewritten` (the two P5b-1b status tests now expect the hub's count).
 - `conn_draining_*`: client-eof END per subscription in corr order with exact counts; pending finishes then
   silent close; close only when pending empty and queue empty.
 - `conn_idle_*`: not idle with a subscription or a pending request; idle again after unsubscribe.
 - `conn_server_end_*`: `end_subscription` budget rows / internal; unknown corr ignored.
-- `conn_status_dropped_blocks_from_hub`; `conn_hello_verbs_at_block_levels`.
+- `conn_status_dropped_blocks_from_hub` (`conn_hello_verbs_at_block_levels` moves to 2d with the flip).
 - R18/R22: counters, `uid_pools`, `global_pools`, registry counts back to zero after every close path with
   subscriptions (slow-client, shutdown, fatal request, frame-too-large, deadline, Draining done, driver
   finish) -- through `Server::finish`.
@@ -544,6 +641,8 @@ implementer's choice.
 - `server_retry_pass_*`: after `wrote` of another conn of the same uid frees the uid Query pool; at `poll`;
   id order.
 - `server_finish_releases_selections` for all close paths (S18).
+- `server_hello_verbs_at_block_levels` (after the `served` flip) and byte-level REQ -> REP/BLOCK/END
+  sequences of the three verbs in binary mode, `binary-required` / `not-found` in JSON mode.
 - The §11.4 cases of 5.5, each a named test.
 - Hostile: 2,000 deterministic server runs (random bytes plus valid subscribe/unsubscribe/current REQs,
   random `wrote`/`poll`/`on_tick`/EOF over 4 slots and 2 uids): no panic, hub and registry counters back
@@ -563,49 +662,76 @@ implementer's choice.
 
 - §2.2 (2b): `END ok:false` in M2 carries `internal` or `budget {"pool":"rows"}` (S11, S7).
 - §4.2 (2a): selection rules of S1 (decoded identity, empty path refused, `all` must be `true`, element
-  key paths); precedence: steps 2 (`corr` in use) and 10 (`too-many-requests`) are now implemented (S4, S5).
-- §4.3 (2c): `hello.verbs` at observe/operator lists the three verbs; `unsubscribe` in JSON mode answers
+  key paths); precedence: steps 2 (`corr` in use) and 10 (`too-many-requests`) are now implemented (S4,
+  S5), and step 10 refuses BLK-shape verbs only (Q6; the same one line in §5.4's `Ready` row, 2a).
+- §4.3 (2d): `hello.verbs` at observe/operator lists the three verbs; `unsubscribe` in JSON mode answers
   `not-found` (S15, S32).
 - §4.5 (2b): `queues.dropped_blocks` = the hub's counted drops since start (S21).
-- §4.6 (2c): `current` checks before the REP (S6); a backpressured `current` is re-resolved when it is
-  queued, so the block is the latest tick at queue time (S7, D-W30).
+- §4.6 (2c): `current` checks before the REP (S6; resolution stops at `max_rows + 1`, size judged
+  before encoding); a backpressured `current` is re-resolved when it is queued, so the block is the
+  latest tick at queue time (S7, D-W30).
 - §4.7 (2a + 2c): interval rule without rounding (S8); first block at the next tick, REP first (S9, S10);
   `max_rows` for a subscription is judged per tick and ends the stream with `budget rows` (S11); the
   unsubscribe race (S15); Draining (S23).
-- §5.1 (2c): outstanding = a backpressured `current` in M2 (S5); selection caps are server-wide, per uid
-  across levels, minimum of the block levels (S19, S20).
+- §4.7 and §5.1 (2b): a join that adds a selection the uid does not use yet counts against the uid cap
+  (`budget uid-selections`) but not the probe cap (S19, finding 4); the caps applied are the requesting
+  level's; a uid's selections are counted across levels.
+- §5.1 (2c): outstanding = a backpressured `current` in M2 (S5); `max_rows` and `max_block_bytes` are
+  unified to the smaller of observe/operator and `max_block_bytes <= query_queue_bytes,
+  client_queue_bytes` holds by construction (S20).
 - §5.3 (2b): Query pin stamps 0 without resetting `pending_drops` (S12); `dropped_blocks`, `query_room`.
 - §5.4 (2c): `Ready` idle row includes "no pending request"; `Draining` row closes when pending and queue
   are empty (S23); (2d) driver note: `on_tick` once per tick after `poll` (S25).
 - §6.2 (2b): generation life cycle: 0 before the first built tick, destroyed with the last subscriber,
   recreated at 1; the `u32::MAX` rule is "a change at `u32::MAX`" (S10, S11).
-- §11.4 (2d): the cases of 5.5, R21 superseded for them (S31).
+- §11.4 (2b): hub table "20 files", new row `hub-query-pin-after-corr-reuse` (S12). (2d): the
+  connection cases of 5.5, R21 superseded for them (S31).
 - §13 (2c): D-W29 (subscribe does no data work; the first block comes from the next tick, S9/S10) and
   D-W30 (a pending query holds its request, not its bytes, S7/S22).
 - `P5B-SERVER-DESIGN.md` (2d): R3 and R21 point to this file.
 
-## 7. Open questions for the controller (each with a recommendation)
+## 7. Questions (all DECIDED 2026-11-18 by the controller/coordinator)
 
-- **Q1 Rows overflow of a live subscription.** Options: END `ok:false budget {"pool":"rows"}` (S11), END
-  `internal`, or skip the tick silently. Recommend `budget rows`: the client learns why; skipping leaves it
-  to a timeout. Needs the §2.2 edit.
-- **Q2 First block at subscribe vs next tick.** Immediate (backend call + encode per subscribe) makes
-  subscribe/unsubscribe churn an encode amplifier (MBs of work per ~250 B of client traffic, the Live tick
-  can be shed unread); next tick (S9, S10) costs <= `tick_ms` latency. Recommend next tick.
-- **Q3 Backpressured `current`: hold bytes or the request.** Holding bytes keeps up to `max_outstanding x
-  max_block_bytes` (16 MiB) per conn outside every pool (384 MiB over 24 conns). Recommend holding the
-  request and re-resolving at queue time (S7); cost: the block is the newer tick, and one wasted encode per
-  Backpressure.
-- **Q4 Hub changes in `proto`** (S12 stamp fix, `dropped_blocks`, `query_room`): they touch reviewed code
-  and possibly the Python hub model. Recommend approving them in 2b with a hub delta review.
-- **Q5 Empty `path`/`prefix`.** WIRE gives no lower bound. Recommend refusing (an empty prefix aliases
-  `all`, an empty path names nothing).
-- **Q6 `too-many-requests` scope.** WIRE places the cap before the schema for every verb, so 4 pending
-  `current`s also refuse `status` and `unsubscribe`. Recommend uniform (as written; the client frees the
-  pool by reading); alternative: apply it to BLK verbs only.
-- **Q7 Selection caps server-wide** (minimum of observe/operator, per uid across levels, S19/S20).
-  Recommend yes; WIRE §5.1 lists one value per level but one probe-wide pool.
-- **Q8 Backend `Unavailable` during a tick.** Recommend skip (due subscribers stay due); revisit with the
-  collector package (e.g. END `internal` after N consecutive failures).
-- **Q9 Package cut.** Four packages (2c Conn, 2d Server) instead of three, so each fits one ~200k context
-  with conn.rs or server.rs (each ~1,700 lines with tests) as its main file. Recommend four.
+- **Q1 Rows overflow of a live subscription: END `ok:false budget {"pool":"rows"}`** (S11), with the
+  §2.2 edit. Reason: the client learns why; a skip leaves it to a timeout.
+- **Q2 First block at the next tick, not at subscribe** (S9, S10). Reason: an encode at subscribe makes
+  subscribe/unsubscribe churn an encode amplifier (the Live tick can be shed unread); the cost is <=
+  `tick_ms` latency.
+- **Q3 A backpressured `current` holds its request, not its bytes**, and is re-resolved at queue time
+  (S7, D-W30). Reason: holding bytes keeps up to 16 MiB per conn outside every pool. Invariant: a pending
+  request always becomes queueable, because `max_block_bytes <= query_queue_bytes` (S20).
+- **Q4 The three hub changes in `proto`** (S12 stamp fix, `dropped_blocks`, `query_room`) go into 2b with
+  a hub delta review, plus the new hub fixture case (finding 12).
+- **Q5 An empty `path`/`prefix` is refused** (S1).
+- **Q6 `too-many-requests` applies to BLK-shape verbs only** (`current`, `subscribe`; S5), replacing the
+  draft's "uniform", with the one-line WIRE §4.2/§5.4 edit. Reason (reviewer): `unsubscribe`/`status`
+  never become outstanding, and a uniform refusal makes Python `Subscription.close()` raise while 4
+  `current`s are pending.
+- **Q7 Selection caps:** per uid across levels, the REQUESTING level's caps passed to
+  `SelectionStreams::subscribe` (S19, finding 14); `max_rows`/`max_block_bytes` unified to the minimum (S20).
+- **Q8 Backend `Unavailable` during a tick: skip**; due subscribers stay due. Note for the collector
+  package: a long backend outage is seen by a client only as silence, which ends in the client's own
+  wait bound (Rust: timeout + interval; Python: `timeout_s` + interval), i.e. a client-side timeout, not a
+  server END; the collector package decides whether N consecutive failures end the stream (`internal`).
+- **Q9 Four packages**, 2c and 2d merged together (section 2, finding 13).
+
+## 8. Review round 1 (independent Opus review of `280efb4bf`, verdict FIX)
+
+| # | Finding (severity) | Where fixed |
+|---|---|---|
+| 1 | `Obj::elements` untyped; `unescape` strips first/last byte unchecked, so `true`/`null`/`1e5` became metric names (major) | 2a API (`Vec<(Kind, &[u8])>`), S1 kind checks first, 5.1 `metric_name_grammar` + entity kinds |
+| 2 | `current` amplification: a failing `current` is never outstanding; Oversize found after a full encode; full resolution per request (major) | `Backend::current(&sel, max_rows)` + `TooManyRows`, `tick::encoded_len`, S6 and S11 (size before encode), S33, section 4 |
+| 3 | `max_rows`/`max_block_bytes` must be unified; `query_block` uses the conn's unified limits; block <= Query pool (major) | S20 (`unified()` minimum + clamp, test), S6, 5.3 |
+| 4 | selection pool squatting through joins (major; controller decision) | S19 (a new-to-uid join is judged against the uid cap, not the probe cap), section 4 residual gap, section 6 §4.7/§5.1 |
+| 5 | `TickData` must derive `Eq` (`FixedBackend` derives `Eq`) (major) | 2b API |
+| 6 | every new push path stops when closed; S17 on a closed conn only removes `subs` | S27, S6, S7, S17, 5.3 test |
+| 7 | S21 breaks the two conn.rs status tests; backend.rs module doc | 2c module list, S21, 2b API note, 5.3 |
+| 8 | `LiveTick::new` signature | 2b API |
+| 9 | `with_dictionary` length and `n_sec` arithmetic | S14, 5.2 test |
+| 10 | `TickData::example` overflow | 2b API (`wrapping_mul`/`wrapping_add`), 5.2 test |
+| 11 | registry memory outside the pools | S22, section 4 |
+| 12 | S12 changes no fixture; add `hub-query-pin-after-corr-reuse`, bump the 19-file check | 2b edits, 5.2, section 6 §11.4 |
+| 13 | 2c alone not mergeable | section 2 (2c and 2d merge together), `served` flip moved to 2d, S30, 5.3/5.4 |
+| 14 | caps of the requesting level | `SelectionCaps`, S9, S19, S20 |
+| 15 | `intern` error mapping | S16, 5.2 |
+| Q6 | `too-many-requests` BLK-only (controller decision) | S5, 2a API comment, 5.1, 5.3, section 6 §4.2/§5.4 |
