@@ -21,7 +21,6 @@ def test_release_launcher_surfaces_workspace_creation_failure_and_stops(monkeypa
         lambda root, projects: {root: list(projects)},
     )
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
-    monkeypatch.setattr(cli, "_release_dind_image_preconditions", lambda *_a, **_k: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
     monkeypatch.setattr(cli, "_require_local_tag_inspection_support", lambda _root: None)

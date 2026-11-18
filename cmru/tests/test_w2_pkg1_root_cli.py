@@ -221,7 +221,6 @@ def test_uncommitted_paths_refuse_with_exit_4(monkeypatch, tmp_path, estate, cap
     monkeypatch.setattr(
         cli, "_uncommitted_release_paths", lambda *_a: {"alpha": ["alpha/file.txt"]},
     )
-    monkeypatch.setattr(cli, "_release_dind_image_preconditions", lambda *_a, **_k: None)
     _root, configs, order, *_rest = estate
     vargs = SimpleNamespace(
         dry_run=True, resume=None, target=None, allow_uncommitted=False,
@@ -251,7 +250,6 @@ def test_release_while_the_release_lock_is_held_is_a_refusal_exit_4(monkeypatch,
         yield
 
     monkeypatch.setattr(transaction, "release_lock", held)
-    monkeypatch.setattr(cli, "_release_dind_image_preconditions", lambda *_a, **_k: None)
     monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _p: root)
     monkeypatch.setattr(cli, "_consume_release_snapshot_handoff", lambda *_a: None)
     monkeypatch.setattr(cli, "_dispatch_independent_git_families", lambda *_a, **_k: None)

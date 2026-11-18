@@ -431,8 +431,6 @@ def release_launcher(monkeypatch, tmp_path):
     monkeypatch.setattr(transaction, "read_release_results", lambda *_args: {})
     monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _projects: root)
     monkeypatch.setattr(cli, "_configure_native_release_logging", lambda *_args, **_kwargs: None)
-    # Scripted git plumbing: the per-project DinD preflight would read a real blob.
-    monkeypatch.setattr(cli, "_release_dind_image_preconditions", lambda *_a, **_k: None)
     (tmp_path / "demo").mkdir()
     (tmp_path / "cmru.secret.toml").write_text(_secret_toml(FILE_TOKEN), encoding="utf-8")
     (tmp_path / "demo" / "cmru.secret.toml").write_text(

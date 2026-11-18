@@ -880,14 +880,6 @@ def _launcher_case(
 
 
 def _call_launcher(root, workspace, args, configs, preflight_handoff=None):
-    # These cases script the launcher's git snapshots; the per-project DinD preflight
-    # (covered in test_release_gate_preconditions.py) would read real git here.
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(cli, "_release_dind_image_preconditions", lambda *_a, **_k: None)
-        return _call_launcher_inner(root, workspace, args, configs, preflight_handoff)
-
-
-def _call_launcher_inner(root, workspace, args, configs, preflight_handoff=None):
     with pytest.raises(SystemExit) as exc:
         cli._release_launcher(
             ["demo"], args, root / "cmru.toml", root, configs,

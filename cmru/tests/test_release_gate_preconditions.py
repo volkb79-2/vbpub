@@ -10,6 +10,8 @@ import pytest
 
 from cmru import cli, release_preconditions
 
+pytestmark = pytest.mark.real_dind_release_preflight
+
 _REAL_CHECK_RELEASE_BUILD_IMAGES = release_preconditions.check_release_build_images_precondition
 
 RUN_GATE_VERSION_SEQUENCE = r'''RUN_GATE_VERSION="$(
