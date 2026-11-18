@@ -504,7 +504,10 @@ fn every_fixture_is_decoded_by_the_rust_codec() {
             refused += 1;
         }
     }
-    assert_eq!(valid, 11, "the valid fixture count is part of the case list");
+    assert_eq!(
+        valid, 11,
+        "the valid fixture count is part of the case list"
+    );
     assert_eq!(
         refused, 30,
         "the refusal fixture count is part of the case list"
