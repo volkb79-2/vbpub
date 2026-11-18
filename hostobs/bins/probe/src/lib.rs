@@ -6,14 +6,17 @@
 //! table), [`codes`] (the wire error codes and `detail`), [`args`] (the strict request-argument
 //! reader and the `hello` and `status` schemas), [`classify`] (the request precedence function,
 //! design R11), [`encode`] (the control frames, error envelope and JSON lines) and [`lines`]
-//! (the JSON line reader). The connection state machine and the drivers arrive in later
-//! packages.
+//! (the JSON line reader). Package P5b-1b adds [`backend`] (the injected identity and status
+//! source) and [`conn`] (the sans-IO connection state machine); the `Server` and the drivers
+//! arrive in later packages.
 
 #![warn(missing_docs)]
 
 pub mod args;
+pub mod backend;
 pub mod classify;
 pub mod codes;
+pub mod conn;
 pub mod encode;
 pub mod limits;
 pub mod lines;
