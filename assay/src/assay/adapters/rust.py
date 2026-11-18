@@ -1,10 +1,12 @@
-"""The pure-Python Rust R1 adapter.
+"""The pure-Python Rust R1 adapter (and the R2 ingestion seam).
 
 Rust's lane runs the Cargo tools and writes LCOV; this adapter never invokes
 the toolchain. It maps ``*.rs`` files, conservatively answers the missing-file
 NoCode question, and normalizes stable ``cargo-llvm-cov`` branch-total markers
-before the shared LCOV parser sees them. R2 ingestion and R3 canaries remain
-unregistered and unavailable in this package.
+before the shared LCOV parser sees them. R2 is registered (B245 U8a) for the
+ingested ``cargo-mutants-outcomes`` path only: ``generate_mutation_sites``
+stays unconditionally ``"UNSUPPORTED"``, so a native Rust R2 lane is refused.
+R3 canaries remain unregistered and unavailable in this package.
 """
 
 from __future__ import annotations

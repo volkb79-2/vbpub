@@ -1658,7 +1658,7 @@ def _built_in_registry() -> registry.Registry:
     ``test_run_refuses_a_language_this_registry_does_not_know_at_all``, which
     declares ``fortran`` and asserts it really is absent from the registry,
     so a future adapter registration cannot turn it into a decoy. Rust is now
-    registered at R1 and has its own R2/R3 refusal controls. The unit-level control is
+    registered at R1 and R2 (ingested) and has its own R3 refusal control. The unit-level control is
     ``test_registry.py::test_an_unregistered_language_is_refused_not_defaulted``.
 
     **P34/W6: SQL is registered at R2 ONLY** (A-242's own sentence,
@@ -1729,11 +1729,25 @@ def _built_in_registry() -> registry.Registry:
     This consumer evidence is separate from the integrated
     Assay release gate. No verdict or schema change was needed for registration.
 
-    **B243 registers Rust at R1 only.** Its adapter maps Rust sources and
-    normalizes stable ``cargo-llvm-cov`` marker-only branch totals before the
-    shared LCOV parser. Rust lanes run the declared Cargo tools; the adapter
-    itself stays pure Python. R2 ingestion and R3 canaries remain unavailable
-    and are refused by this entry.
+    **B243 registered Rust at R1; B245 U8a adds R2 -- through the INGESTED
+    path only, exactly as B046 did for ``javascript``.** The adapter maps Rust
+    sources and normalizes stable ``cargo-llvm-cov`` marker-only branch totals
+    before the shared LCOV parser. Rust lanes run the declared Cargo tools; the
+    adapter itself stays pure Python. R3 canaries remain unavailable and are
+    refused by this entry.
+
+    **Which layer refuses a NATIVE ``rust`` R2 lane** (one that declares no
+    ``judge.mutation.format``), the same two guards as for ``javascript``:
+    :mod:`assay.config` refuses it at load time -- a native lane must declare a
+    non-empty ``judge.mutation.operators`` while
+    :data:`assay.vocabulary.MUTATION_OPERATORS_BY_LANGUAGE` has no ``rust``
+    entry, so every spellable operator is FOREIGN (``BAD_LANE_CONFIG`` naming
+    the language) -- and, behind it,
+    :meth:`~assay.adapters.rust.RustAdapter.generate_mutation_sites` is
+    unconditionally ``"UNSUPPORTED"``. An INGESTED ``cargo-mutants-outcomes``
+    lane declares no operators (forbidden there), so it never meets the first
+    guard, which is why registering ``{"R1", "R2"}`` does not reopen the native
+    path.
     """
     return registry.new_registry(
         registry.RegistryEntry(
@@ -1750,7 +1764,9 @@ def _built_in_registry() -> registry.Registry:
         # landed -- see this function's docstring for why the ordering is
         # load-bearing rather than tidy.
         registry.RegistryEntry(adapter=GoAdapter(), rigor=frozenset({"R1"})),
-        registry.RegistryEntry(adapter=RustAdapter(), rigor=frozenset({"R1"})),
+        # (B243, B245 U8a) R1, plus R2 for the INGESTED cargo-mutants path
+        # only; R3 stays unregistered -- see this function's docstring.
+        registry.RegistryEntry(adapter=RustAdapter(), rigor=frozenset({"R1", "R2"})),
     )
 
 
