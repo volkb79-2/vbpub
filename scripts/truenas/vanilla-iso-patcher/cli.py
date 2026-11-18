@@ -210,7 +210,7 @@ def _releases(args: Any, runtime: Any) -> None:
 
 def _browse(args: Any, runtime: Any) -> None:
     asset = _select_asset(args, runtime)
-    suggested = args.output or upstream.DOWNLOADS_DIR / asset.filename
+    suggested = args.output or upstream.iso_dir() / asset.filename
     if args.output is None:
         entered = runtime.prompts.text("Output path for the vanilla ISO", default=str(suggested))
         output_path = Path(entered).expanduser()
@@ -333,8 +333,8 @@ def _create(args: Any, runtime: Any) -> None:
             staged_iso = work / output_iso.name
             if selected_asset is not None:
                 assert input_iso is None and upstream_checksum is not None
-                runtime.output.info(f"Upstream ISO: {selected_asset.iso_url} (cached in the repository downloads/ folder)")
-                input_iso, source_sha256 = upstream.ensure_in_downloads(
+                runtime.output.info(f"Upstream ISO: {selected_asset.iso_url} (cached in the iso folder of {upstream.repo_paths_access.config_name()})")
+                input_iso, source_sha256 = upstream.ensure_in_iso_dir(
                     selected_asset,
                     expected_sha256=upstream_checksum,
                     progress=runtime.output.info,

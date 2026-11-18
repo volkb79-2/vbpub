@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 from pathlib import Path
 
 import pytest
@@ -195,21 +196,21 @@ def test_download_sha_mismatch_leaves_no_partial_iso(tmp_path, monkeypatch, asse
     assert not list(tmp_path.glob(".*.download-*"))
 
 
-def test_ensure_in_downloads_fetches_once_then_reuses_the_verified_copy(tmp_path, monkeypatch, asset):
+def test_ensure_in_iso_dir_fetches_once_then_reuses_the_verified_copy(tmp_path, monkeypatch, asset):
     payload = b"vanilla installer ISO fixture"
     expected = hashlib.sha256(payload).hexdigest()
     calls = []
     monkeypatch.setattr(upstream, "_request", lambda *a, **k: calls.append(1) or _Response(payload))
 
-    first, digest = upstream.ensure_in_downloads(asset, expected_sha256=expected, downloads_dir=tmp_path)
-    second, _ = upstream.ensure_in_downloads(asset, expected_sha256=expected, downloads_dir=tmp_path)
+    first, digest = upstream.ensure_in_iso_dir(asset, expected_sha256=expected, iso_folder=tmp_path)
+    second, _ = upstream.ensure_in_iso_dir(asset, expected_sha256=expected, iso_folder=tmp_path)
 
     assert first == second == tmp_path / asset.filename
     assert digest == expected and len(calls) == 1
     assert (tmp_path / (asset.filename + ".sha256")).read_text().startswith(expected)
 
 
-def test_ensure_in_downloads_concurrent_runs_fetch_once_under_the_lock(tmp_path, monkeypatch, asset):
+def test_ensure_in_iso_dir_concurrent_runs_fetch_once_under_the_lock(tmp_path, monkeypatch, asset):
     import threading
     import time
 
@@ -227,7 +228,7 @@ def test_ensure_in_downloads_concurrent_runs_fetch_once_under_the_lock(tmp_path,
 
     def run():
         try:
-            results.append(upstream.ensure_in_downloads(asset, expected_sha256=expected, downloads_dir=tmp_path))
+            results.append(upstream.ensure_in_iso_dir(asset, expected_sha256=expected, iso_folder=tmp_path))
         except Exception as exc:  # pragma: no cover - failure path
             errors.append(exc)
 
@@ -242,13 +243,33 @@ def test_ensure_in_downloads_concurrent_runs_fetch_once_under_the_lock(tmp_path,
     assert (tmp_path / f".{asset.filename}.lock").exists()
 
 
-def test_ensure_in_downloads_refuses_a_file_that_differs_from_the_published_digest(tmp_path, asset):
+def test_ensure_in_iso_dir_refuses_a_file_that_differs_from_the_published_digest(tmp_path, asset):
     (tmp_path / asset.filename).write_bytes(b"tampered")
     with pytest.raises(upstream.UpstreamError, match="differs from the published"):
-        upstream.ensure_in_downloads(asset, expected_sha256="0" * 64, downloads_dir=tmp_path)
+        upstream.ensure_in_iso_dir(asset, expected_sha256="0" * 64, iso_folder=tmp_path)
     assert (tmp_path / asset.filename).read_bytes() == b"tampered"
 
 
-def test_downloads_dir_is_the_repository_downloads_folder():
-    assert upstream.DOWNLOADS_DIR.name == "downloads"
-    assert (upstream.DOWNLOADS_DIR / "README.md").is_file()
+def test_the_iso_cache_and_its_lock_are_in_the_resolved_iso_folder(tmp_path, monkeypatch, asset):
+    payload = b"vanilla installer ISO fixture"
+    expected = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(upstream.repo_paths_access, "iso_dir", lambda: tmp_path / "iso")
+    monkeypatch.setattr(upstream, "_request", lambda *a, **k: _Response(payload))
+    path, _ = upstream.ensure_in_iso_dir(asset, expected_sha256=expected)
+    assert upstream.iso_dir() == tmp_path / "iso"
+    assert path == tmp_path / "iso" / asset.filename
+    assert (tmp_path / "iso" / f".{asset.filename}.lock").exists()
+    assert (tmp_path / "iso" / f"{asset.filename}.sha256").is_file()
+
+
+def test_the_iso_folder_is_the_repo_path_config_iso_entry_in_plain_mode(monkeypatch):
+    monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+    monkeypatch.delenv("COWTREE_MODE", raising=False)
+    repo = Path(upstream.__file__).resolve().parents[3]
+    assert upstream.iso_dir() == repo / "downloads" / "iso"
+
+
+def test_a_missing_repo_path_config_refuses_naming_the_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(upstream.repo_paths_access, "REPO_ROOT", tmp_path)
+    with pytest.raises(upstream.UpstreamError, match=re.escape(f"{upstream.repo_paths_access.config_name()} not found")):
+        upstream.iso_dir()

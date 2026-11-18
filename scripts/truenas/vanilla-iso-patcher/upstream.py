@@ -9,6 +9,7 @@ import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import re
+import sys
 import tempfile
 from typing import Callable
 from urllib.error import URLError
@@ -327,10 +328,17 @@ def download_verified_iso(
         temporary.unlink(missing_ok=True)
 
 
-# Estate layout (AGENTS.md "Directory conventions"): fetched installer ISOs live
-# in <repo root>/downloads/, derived from this file's location, never from an
-# environment variable.
-DOWNLOADS_DIR = Path(__file__).resolve().parents[3] / "downloads"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import repo_paths_access  # noqa: E402  (the one place scripts/truenas asks the repo path config for its folders)
+
+
+def iso_dir() -> Path:
+    """The `iso` folder of the repo path config (estate layout, AGENTS.md "Directory conventions"): fetched installer
+    ISOs and their lock files live there. A missing repo path config is a refusal naming the file."""
+    try:
+        return repo_paths_access.iso_dir()
+    except repo_paths_access.RepoPathsError as exc:
+        raise UpstreamError(str(exc)) from None
 
 
 def _file_sha256(path: Path) -> str:
@@ -341,28 +349,28 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def ensure_in_downloads(
+def ensure_in_iso_dir(
     asset: UpstreamIso,
     *,
     expected_sha256: str,
-    downloads_dir: Path | None = None,
+    iso_folder: Path | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> tuple[Path, str]:
-    """Return a checksum-verified copy of the ISO in downloads/, fetching it once.
+    """Return a checksum-verified copy of the ISO in the `iso` folder, fetching it once.
 
     A present file is reused only when its SHA-256 equals the published digest; a
     mismatching file is refused, never overwritten. A fetch under sudo is handed
     back to the invoking user so the shared folder does not fill with root files.
-    Concurrent runs serialize on an advisory lock file (downloads/.<name>.lock),
+    Concurrent runs serialize on an advisory lock file (<iso folder>/.<name>.lock),
     so the second run waits and then reuses the first run's verified copy.
     """
-    directory = (downloads_dir or DOWNLOADS_DIR)
+    directory = iso_folder or iso_dir()
     directory.mkdir(parents=True, exist_ok=True)
     lock_path = directory / f".{asset.filename}.lock"
     try:
         with lock_path.open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            return _ensure_in_downloads_locked(
+            return _ensure_in_iso_dir_locked(
                 asset, directory, expected_sha256=expected_sha256, progress=progress
             )
     except OSError as exc:
@@ -371,7 +379,7 @@ def ensure_in_downloads(
         raise UpstreamError(f"could not lock {lock_path}: {exc}") from exc
 
 
-def _ensure_in_downloads_locked(
+def _ensure_in_iso_dir_locked(
     asset: UpstreamIso,
     directory: Path,
     *,

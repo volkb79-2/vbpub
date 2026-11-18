@@ -41,18 +41,19 @@ import credentials
 from truenas_api_client import TrueNASAPIClient, TrueNASAPIError, TrueNASSettings
 
 
-# Estate layout (AGENTS.md "Directory conventions"): the source VM's state lives
-# in scripts/truenas/artifacts/vm-lab/<vm>/, fetched inputs (installer ISO, Debian
-# live base) in <repo root>/downloads/, built outputs in this project's artifacts/.
-# All derived from this file's location; no environment variable relocates them.
-VM_DIR = HERE.parent / "artifacts" / "vm-lab" / "golden-source-27-20GiB"
-DEFAULT_VM_DISK = VM_DIR / "source.qcow2"
-DEFAULT_VM_VARS = VM_DIR / "OVMF_VARS.fd"
-DEFAULT_VM_KEY = VM_DIR / "root_ed25519"
-DEFAULT_KNOWN_HOSTS = VM_DIR / "known_hosts"
+# Estate layout (AGENTS.md "Directory conventions"): the source VM's state lives in
+# <vm-lab folder of scripts/truenas>/<vm>/, a path that the repo path config declares and
+# repo_paths_access resolves (never hardcoded here); fetched inputs (installer ISO) are
+# in the `iso` folder, built outputs in this project's artifacts/.
+import repo_paths_access
+
+SOURCE_DISK_NAME = "source.qcow2"
+SOURCE_VARS_NAME = "OVMF_VARS.fd"
+SOURCE_KEY_NAME = "root_ed25519"
+SOURCE_KNOWN_HOSTS_NAME = "known_hosts"
+SOURCE_QEMU_LOG_NAME = "step1-source-console.log"
 DEFAULT_IMAGE = HERE / "artifacts" / "truenas-27-20GiB-golden.raw"
 DEFAULT_SECRETS = HERE / "artifacts" / "truenas-27-20GiB-golden.secrets.toml"
-DEFAULT_QEMU_LOG = VM_DIR / "step1-source-console.log"
 # The installed source disk is the golden base later runs clone from: durable
 # cache mode (COW-BL-05), never cache=unsafe.
 SOURCE_DISK_CACHE = "writeback"
@@ -66,6 +67,14 @@ API_PORT = 8443
 
 class StepError(RuntimeError):
     """An expected failure in source preparation or image capture."""
+
+
+def vm_dir() -> Path:
+    """The source VM's state directory in the resolved vm-lab folder; a missing repo path config is a refusal."""
+    try:
+        return repo_paths_access.golden_source_dir()
+    except repo_paths_access.RepoPathsError as exc:
+        raise StepError(str(exc)) from None
 
 
 def log(message: str) -> None:
@@ -913,11 +922,12 @@ def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Prepare an installed TrueNAS source VM, provision its API key, and capture its boot disk."
     )
-    parser.add_argument("--vm-disk", type=Path, default=DEFAULT_VM_DISK)
-    parser.add_argument("--vm-vars", type=Path, default=DEFAULT_VM_VARS)
-    parser.add_argument("--ssh-private-key", type=Path, default=DEFAULT_VM_KEY)
-    parser.add_argument("--known-hosts", type=Path, default=DEFAULT_KNOWN_HOSTS)
-    parser.add_argument("--qemu-log", type=Path, default=DEFAULT_QEMU_LOG)
+    vm = vm_dir()
+    parser.add_argument("--vm-disk", type=Path, default=vm / SOURCE_DISK_NAME)
+    parser.add_argument("--vm-vars", type=Path, default=vm / SOURCE_VARS_NAME)
+    parser.add_argument("--ssh-private-key", type=Path, default=vm / SOURCE_KEY_NAME)
+    parser.add_argument("--known-hosts", type=Path, default=vm / SOURCE_KNOWN_HOSTS_NAME)
+    parser.add_argument("--qemu-log", type=Path, default=vm / SOURCE_QEMU_LOG_NAME)
     parser.add_argument(
         "--image", type=Path, default=DEFAULT_IMAGE,
         help="image name template; the capture writes <stem>-<8-hex capture ID><suffix> beside it",
@@ -952,8 +962,8 @@ def make_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = make_parser().parse_args(argv)
     try:
+        args = make_parser().parse_args(argv)
         args.func(args)
     except (StepError, OSError, TrueNASAPIError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

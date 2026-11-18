@@ -21,7 +21,7 @@ detail lives. A FIXED entry means code, tests and docs landed together.
 | TN-08 | Open acceptance boundaries: guest OS boot and real KVM selection, NFS/SMB client access, real second-disk cache target and import order, UI cache controls, real SLOG/special behaviour, Path B auxiliary roles | Minor | OPEN |
 | TN-09 | Legacy TrueNAS 24.10 API adapter (WebSocket/auth/job) for the shared client; moot once TN-02 lands on tnt | Minor | OPEN |
 | TN-10 | Committed docs link to ignored evidence logs under `boot-pool-patch/artifacts/` and name host-specific absolute paths (`/home/vscode/...`); move durable evidence into `docs/acceptance-results/` and make references host-agnostic | Minor | OPEN |
-| TN-11 | `vanilla-iso-patcher` upstream builds re-download the ISO into a per-run work directory; reuse the checksum-verified copy in the repo `downloads/` folder | Minor | FIXED (19f71f7ff) |
+| TN-11 | `vanilla-iso-patcher` upstream builds re-download the ISO into a per-run work directory; reuse the checksum-verified copy in the repo's ISO folder (`iso` of the path config, `downloads/iso/` in plain mode; was flat `downloads/` until RP-03) | Minor | FIXED (19f71f7ff) |
 | TN-12 | Registered gate lanes: confirm `unit` budget and the CoW/fsync-off lane switch (run-gate RG-149) once main's gate policy applies; keep live lanes manual | Minor | OPEN |
 | TN-13 | Storage layout migration (vm-lab, downloads, cache modes, requirements naming) | Minor | FIXED (finish-truenas-iso-20261104) |
 | TN-15 | `unit` and `unit-boot-pool-patch` lanes are red on main: the live-UI Playwright pin (1.64.0) no longer matches the pwmcp contract (1.64.1) | Major | OPEN |
@@ -77,10 +77,19 @@ tests are forbidden on the shared host).
 
 ### TN-13 storage layout (fixed)
 
-VM state defaults to `artifacts/vm-lab/<vm>/` (`tcg_vm.py`, golden step 1), inputs go to the
-repository `downloads/`, disposable overlays use `cache=unsafe`, golden source disks
-`cache=writeback`, `requirements-api.txt`. Tests: `tests/test_tcg_vm.py`,
+Disposable overlays use `cache=unsafe`, golden source disks `cache=writeback`, requirements
+are named `requirements-api.txt`. Tests: `tests/test_tcg_vm.py`,
 `golden-iso/tests/test_storage_layout.py`.
+
+Where the folders are (RP-03, supersedes the first TN-13 wording `artifacts/vm-lab/<vm>/` and flat
+`downloads/`): no script hardcodes a path. `repo_paths_access.py` asks the repository path config
+(through `libraries/cowtree`, `cowtree.repo_paths`) for `vm-lab` (project `scripts/truenas`; default
+state dir of `tcg_vm.py`, golden step 1 and `qmp.py --socket` is `<vm-lab folder>/<name>`), `iso`
+(`vanilla-iso-patcher` ISO cache and its `.<name>.lock` files) and `vm-images`. The answer is the CoW
+subvolume under `$MDT_COW_ROOT/<repo>/...` when it exists, else the plain folder (`vm-lab/` in this
+project, `downloads/iso/`, `downloads/vm-images/` at the repo root); outside a checkout the tools refuse
+with one line naming the missing config. `golden-iso/artifacts/` still holds the built golden outputs and
+secrets (not VM state). Existing flat files in `downloads/` are not moved here (RP-06).
 
 ### TN-15 live-UI Playwright pin behind the pwmcp contract
 

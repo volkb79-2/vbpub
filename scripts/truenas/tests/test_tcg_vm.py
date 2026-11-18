@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pty
+import re
 import select
 import socket
 import subprocess
@@ -187,7 +188,7 @@ def test_start_parser_defaults_to_three_and_can_lower_the_limit():
     required = [
         "start", "--name", "guest", "--base-disk", "disk.qcow2",
         "--ovmf-code", "OVMF_CODE_4M.fd", "--ovmf-vars", "OVMF_VARS_4M.fd",
-        "--state-dir", "artifacts/vm-lab/guest",
+        "--state-dir", "vm-lab/guest",
     ]
     assert tcg_vm.build_parser().parse_args(required).max_concurrent_guests == 3
     assert tcg_vm.build_parser().parse_args(required + ["--max-concurrent-guests", "2"]).max_concurrent_guests == 2
@@ -1099,7 +1100,7 @@ def test_rebind_media_parser_requires_the_existing_guest_identity():
     args = tcg_vm.build_parser().parse_args([
         "rebind-media",
         "--name", "tns-test",
-        "--state-dir", "artifacts/vm-lab/tns-test",
+        "--state-dir", "vm-lab/tns-test",
         "--readonly-media", "release.iso",
     ])
     assert args.command == "rebind-media"
@@ -1156,10 +1157,44 @@ def test_resume_manifest_rejects_a_different_base(tmp_path):
         tcg_vm.check_runner_manifest(manifest, {"schema": 2})
 
 
-def test_vm_lab_is_the_project_artifacts_directory_not_an_environment_value(monkeypatch):
+def test_default_state_dir_is_the_resolved_vm_lab_entry_not_an_environment_value(monkeypatch, tmp_path):
+    asked = []
+
+    def fake_resolve(name, project=None):
+        asked.append((name, project))
+        return tmp_path / "resolved-vm-lab"
+
     monkeypatch.setenv("TRUENAS_VM_LAB", "/elsewhere")
-    assert tcg_vm.VM_LAB_DIR == Path(tcg_vm.__file__).resolve().parent / "artifacts" / "vm-lab"
-    assert tcg_vm.default_state_dir("v27-path-b") == tcg_vm.VM_LAB_DIR / "v27-path-b"
+    monkeypatch.setattr(tcg_vm.repo_paths_access, "resolve", fake_resolve)
+    assert tcg_vm.default_state_dir("v27-path-b") == tmp_path / "resolved-vm-lab" / "v27-path-b"
+    assert asked == [("vm-lab", "scripts/truenas")]
+
+
+def test_default_state_dir_in_plain_mode_is_the_project_vm_lab_placeholder(monkeypatch):
+    monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+    monkeypatch.delenv("COWTREE_MODE", raising=False)
+    project = Path(tcg_vm.__file__).resolve().parent
+    assert tcg_vm.default_state_dir("v27-path-b") == project / "vm-lab" / "v27-path-b"
+    assert (project / "vm-lab" / "README.md").is_file()
+
+
+def test_default_state_dir_refuses_one_line_when_the_repo_path_config_is_missing(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(tcg_vm.repo_paths_access, "REPO_ROOT", tmp_path)
+    with pytest.raises(tcg_vm.RunnerError, match=re.escape(f"{tcg_vm.repo_paths_access.config_name()} not found")):
+        tcg_vm.default_state_dir("guest")
+    assert tcg_vm.main(["status", "--name", "guest"]) == 1
+    err = capsys.readouterr().err
+    assert str(tmp_path / tcg_vm.repo_paths_access.config_name()) in err and len(err.strip().splitlines()) == 1
+
+
+@pytest.mark.parametrize("verb", ["start", "status"])
+def test_state_dir_help_names_the_vm_lab_folder_not_artifacts(verb, capsys):
+    with pytest.raises(SystemExit):
+        tcg_vm.build_parser().parse_args([verb, "--help"])
+    # argparse may wrap the help at a hyphen of the file name, so compare without any whitespace
+    text = "".join(capsys.readouterr().out.split())
+    assert "artifacts/vm-lab" not in text
+    assert f"vm-lab/folder({tcg_vm.repo_paths_access.config_name()})" in text
 
 
 @pytest.mark.parametrize("name", ["", "../escape", "a/b", ".hidden", "x y"])
@@ -1169,7 +1204,7 @@ def test_default_state_dir_refuses_names_that_could_leave_vm_lab(name):
 
 
 def test_status_without_state_dir_uses_vm_lab_and_start_creates_it(monkeypatch, tmp_path):
-    monkeypatch.setattr(tcg_vm, "VM_LAB_DIR", tmp_path / "vm-lab")
+    monkeypatch.setattr(tcg_vm.repo_paths_access, "vm_state_root", lambda: tmp_path / "vm-lab")
     status = tcg_vm.build_parser().parse_args(["status", "--name", "guest"])
     tcg_vm.resolve_state_dir_argument(status)
     assert status.state_dir == str(tmp_path / "vm-lab" / "guest")

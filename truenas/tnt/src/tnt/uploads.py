@@ -1,8 +1,10 @@
-"""Verified uploads from the repo-level ``downloads/`` folder through the TrueNAS HTTP upload endpoint (TNT-61).
+"""Verified uploads from the repository's shared folders through the TrueNAS HTTP upload endpoint (TNT-61).
 
-The only accepted local source is a file inside ``<repo root>/downloads/``, resolved from this package's own location.
-There is no environment variable that moves it. The file is opened read-only without following links and is checked
-against the ``<name>.sha256`` file beside it before any byte leaves the machine. Remote paths are NAS paths only.
+The accepted local source is a file inside the ``iso`` or ``vm-images`` folder of the repo path config (searched
+in that order, by relative file name), or, until the files have moved there, a flat file in the old ``downloads``
+folder. The folders come from ``tnt._paths`` (the cowtree resolver); there is no other way to move them. The file is
+opened read-only without following links and is checked against the ``<name>.sha256`` file beside it before any byte
+leaves the machine. Remote paths are NAS paths only.
 """
 from __future__ import annotations
 
@@ -18,15 +20,13 @@ import time
 import urllib.parse
 import uuid
 from pathlib import Path, PurePosixPath
-from typing import Any, BinaryIO, Callable, Iterator
+from typing import Any, BinaryIO, Callable, Iterator, NamedTuple, Sequence
 
+from . import _paths
 from .errors import Refused
 from .policy import _names_boot_pool
 from .profile import Profile, Secret
 
-# <repo>/truenas/tnt/src/tnt/uploads.py -> parents[4] is the repository root. A copy of tnt outside a checkout has no
-# downloads folder and refuses with a clear message instead of guessing another location.
-DOWNLOADS_DIR = Path(__file__).resolve().parents[4] / "downloads"
 UPLOAD_MODE = 0o644
 JOB_TIMEOUT_SECONDS = 3600.0
 JOB_POLL_SECONDS = 1.0
@@ -35,37 +35,60 @@ _CHUNK = 1024 * 1024
 
 
 def validate_download_name(name: Any) -> str:
-    """A relative POSIX path inside downloads/: no absolute path, no ``..``, no empty or dot segments."""
+    """A relative POSIX path inside an upload folder: no absolute path, no ``..``, no empty or dot segments."""
     if not isinstance(name, str) or not name.strip():
-        raise Refused("upload-source", "name a file inside the repository downloads/ folder")
+        raise Refused("upload-source", f"name a file inside the iso or vm-images folder of {_paths.config_name()}")
     if name.startswith("/") or "\\" in name or "\x00" in name:
-        raise Refused("upload-source", "only a file name inside downloads/ is accepted; absolute paths are refused")
+        raise Refused("upload-source", "only a file name inside the upload folders is accepted; absolute paths are refused")
     if any(part in ("", ".", "..") for part in name.split("/")):
-        raise Refused("upload-source", "only a file name inside downloads/ is accepted; '..' and empty segments are refused")
+        raise Refused("upload-source", "only a file name inside the upload folders is accepted; '..' and empty segments are refused")
     if name.endswith(".sha256"):
         raise Refused("upload-source", "name the download itself, not its .sha256 file")
     return name
 
 
-def _downloads_root(downloads_dir: Path | None) -> Path:
-    root = DOWNLOADS_DIR if downloads_dir is None else Path(downloads_dir)
-    try:
-        resolved = root.resolve(strict=True)
-    except OSError:
-        raise Refused("upload-source", "the repository downloads/ folder was not found next to this tnt checkout") from None
-    if not resolved.is_dir():
-        raise Refused("upload-source", "the repository downloads/ folder was not found next to this tnt checkout")
-    return resolved
+class SourceFolder(NamedTuple):
+    """One folder searched for an upload source. ``flat_only`` accepts file names without a directory part."""
+
+    label: str
+    path: Path
+    flat_only: bool = False
 
 
-def _open_regular(path: Path, root: Path) -> tuple[int, int]:
+def source_folders() -> list[SourceFolder]:
+    """The folders searched, in order: ``iso``, ``vm-images``, then the old flat ``downloads`` top level."""
+    return [SourceFolder("iso", _paths.iso_dir()), SourceFolder("vm-images", _paths.vm_images_dir()),
+            SourceFolder("downloads", _paths.downloads_dir(), flat_only=True)]
+
+
+def _locate(relative: str, folders: Sequence[SourceFolder]) -> tuple[SourceFolder, Path, Path]:
+    """The first folder holding *relative*: (folder, resolved folder, path). A refusal names every folder searched."""
+    notes = []
+    for folder in folders:
+        flat = " (file names only)" if folder.flat_only else ""
+        try:
+            root = Path(folder.path).resolve(strict=True)
+        except OSError:
+            root = None
+        if root is None or not root.is_dir():
+            notes.append(f"{folder.label} ({folder.path}, missing){flat}")
+            continue
+        notes.append(f"{folder.label} ({folder.path}){flat}")
+        path = root.joinpath(*PurePosixPath(relative).parts)
+        if (folder.flat_only and "/" in relative) or not os.path.lexists(path):
+            continue
+        return folder, root, path
+    raise Refused("upload-source", f"{relative} does not exist in any searched folder: {'; '.join(notes)}")
+
+
+def _open_regular(path: Path, root: Path, label: str) -> tuple[int, int]:
     """Open read-only without following links; return (fd, size). The real path must stay inside ``root``."""
     try:
         real = path.resolve(strict=True)
     except OSError:
-        raise Refused("upload-source", f"downloads/{path.name} does not exist") from None
+        raise Refused("upload-source", f"{label}/{path.name} does not exist") from None
     if root not in real.parents:
-        raise Refused("upload-source", "the file resolves outside downloads/; refused")
+        raise Refused("upload-source", f"the file resolves outside {label}/; refused")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     try:
         fd = os.open(real, flags)
@@ -81,35 +104,36 @@ def _open_regular(path: Path, root: Path) -> tuple[int, int]:
     return fd, info.st_size
 
 
-def expected_sha256(path: Path) -> str:
+def expected_sha256(path: Path, label: str) -> str:
     """The digest from ``<name>.sha256`` beside the download (``<hex>`` or ``<hex>  <name>``)."""
     sidecar = path.with_name(path.name + ".sha256")
     try:
         text = sidecar.read_text("utf-8")
     except (OSError, UnicodeDecodeError):
-        raise Refused("upload-checksum", f"downloads/{sidecar.name} is missing or unreadable; it is required") from None
+        raise Refused("upload-checksum", f"{label}/{sidecar.name} is missing or unreadable; it is required") from None
     tokens = text.split()
     if not tokens or not _HEX64.fullmatch(tokens[0]):
-        raise Refused("upload-checksum", f"downloads/{sidecar.name} does not start with a 64-digit hex sha256")
+        raise Refused("upload-checksum", f"{label}/{sidecar.name} does not start with a 64-digit hex sha256")
     return tokens[0].lower()
 
 
 class VerifiedDownload:
-    """A download whose sha256 matched its sidecar when this object was made; ``reverify`` repeats the check."""
+    """A download whose sha256 matched its sidecar when this object was made; ``reverify`` repeats the check.
+    ``label`` names the folder it came from (``iso``, ``vm-images`` or ``downloads``)."""
 
-    def __init__(self, name: str, path: Path, root: Path, digest: str, size: int):
-        self.name, self.path, self.root, self.sha256, self.size = name, path, root, digest, size
+    def __init__(self, name: str, path: Path, root: Path, digest: str, size: int, label: str = "downloads"):
+        self.name, self.path, self.root, self.sha256, self.size, self.label = name, path, root, digest, size, label
 
     def reverify(self) -> None:
-        fd, size = _open_regular(self.path, self.root)
+        fd, size = _open_regular(self.path, self.root, self.label)
         try:
             if size != self.size or _digest_fd(fd) != self.sha256:
-                raise Refused("upload-checksum", f"downloads/{self.name} changed since it was verified; refused")
+                raise Refused("upload-checksum", f"{self.label}/{self.name} changed since it was verified; refused")
         finally:
             os.close(fd)
 
     def open(self) -> BinaryIO:
-        fd, _ = _open_regular(self.path, self.root)
+        fd, _ = _open_regular(self.path, self.root, self.label)
         return os.fdopen(fd, "rb")
 
 
@@ -121,20 +145,20 @@ def _digest_fd(fd: int) -> str:
     return digest.hexdigest()
 
 
-def verify_download(name: Any, downloads_dir: Path | None = None) -> VerifiedDownload:
+def verify_download(name: Any, folders: Sequence[SourceFolder] | None = None) -> VerifiedDownload:
+    """Find *name* in the first folder that holds it (``source_folders()`` unless *folders* is given) and verify it."""
     relative = validate_download_name(name)
-    root = _downloads_root(downloads_dir)
-    path = root.joinpath(*PurePosixPath(relative).parts)
-    fd, size = _open_regular(path, root)
+    folder, root, path = _locate(relative, source_folders() if folders is None else folders)
+    fd, size = _open_regular(path, root, folder.label)
     try:
-        wanted = expected_sha256(path)
+        wanted = expected_sha256(path, folder.label)
         actual = _digest_fd(fd)
     finally:
         os.close(fd)
     if actual != wanted:
-        raise Refused("upload-checksum", f"downloads/{relative} does not match its .sha256 (expected {wanted[:12]}..., "
+        raise Refused("upload-checksum", f"{folder.label}/{relative} does not match its .sha256 (expected {wanted[:12]}..., "
                                          f"found {actual[:12]}...); nothing was uploaded")
-    return VerifiedDownload(relative, path, root, actual, size)
+    return VerifiedDownload(relative, path, root, actual, size, folder.label)
 
 
 def validate_destination_dir(directory: Any) -> str:
