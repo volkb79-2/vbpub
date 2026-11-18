@@ -459,6 +459,11 @@ for doctor_mutant in tool-flock-severity tool-docker-severity home-missing env-m
                      hosts-nopin hosts-leak allow-unknown allow-unset remote-file-split image-absent image-exact-name image-unreachable \
                      image-no-docker image-toml pinned-warn pinned-logs pinned-scan pinned-home profile-default gate-lock-unset gate-lock-absolute gate-lock-parent gate-lock-distinct dir-missing dir-writable \
                      symlink-detect residency-ignore residency-outside residency-runs json exit-code usage-exit; do
+  # Only the non-root block of the doctor test can kill this one: as root it is reported skipped, never killed.
+  if [[ $doctor_mutant == dir-writable && $(id -u) == 0 ]]; then
+    echo "SKIPPED: ctl-doctor-$doctor_mutant (its test block needs a non-root uid)"
+    continue
+  fi
   expect_killed "ctl-doctor-$doctor_mutant" \
     env CTL_DOCTOR_SCRIPT="$ROOT/mutants/scripts/controller/ctl-doctor-$doctor_mutant.sh" bash "$SCRIPT_DIR/test-ctl-doctor.sh"
 done

@@ -326,6 +326,8 @@ if [[ $(id -u) != 0 ]]; then
   chmod 700 "$H/runs"
   expect_rc 1 'unwritable runs directory'
   line '^FAIL runs-dir: directory is not writable' 'runs not writable'
+else
+  echo 'SKIP ctl-doctor: unwritable-runs-dir check needs a non-root uid'
 fi
 
 # --- where the state lives: symlinks into a git work tree
