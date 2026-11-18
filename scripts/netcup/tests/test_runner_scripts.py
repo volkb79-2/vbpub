@@ -48,6 +48,18 @@ def test_scripts_load_the_env_through_lib_and_guard_identity():
             assert "scripts/controller/lib.sh" in text
             assert "controller_init" in text
             continue  # controller-kit queue, not a runner.env consumer
+        if script.name == "remote-gate-cache.sh":
+            # Controller-side cache publisher (CTL-12): it reads a git ref and writes a local cache, so it loads no
+            # runner.env, opens no host session and has no identity to guard. What it must satisfy instead is pinned
+            # here; its behaviour is pinned by runner/tests/test_remote_gate_cache.sh, which the controller project's
+            # suite (scripts/controller/tests/run-suite.sh) runs, not this pytest lane.
+            assert "runner.env" not in text, "the cache publisher must stay independent of the runner environment"
+            assert "lib.sh" not in text, "the cache publisher must not source the runner library"
+            assert "ssh" not in text.lower(), "the cache publisher must not open host sessions"
+            assert re.search(r"^\s*cache_dir=\$CONTROLLER_HOME/remote-gate-cache$", text, re.M), (
+                "the cache directory falls back to $CONTROLLER_HOME/remote-gate-cache in code, not only in the usage comment"
+            )
+            continue
         if script.name in {"run-job", "sync-from-devcontainer", "lib.sh", "cow-select.sh"}:
             continue  # run as the runner after provisioning (no host values), or a pure stdin-driven library sourced by provision-runner.sh
         assert "lib.sh" in text, script.name
