@@ -348,7 +348,7 @@ def test_origin_urls_selects_fetch_or_push_remote_and_filters_empty_lines(
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="https://github.com/acme/vbpub.git\n\n", stderr="")
 
-    monkeypatch.setattr(git_auth, "run_process", fake_run)
+    monkeypatch.setattr(git_auth.subprocess, "run", fake_run)
 
     assert git_auth._origin_urls(tmp_path, for_push=for_push) == [
         "https://github.com/acme/vbpub.git",
@@ -400,7 +400,7 @@ def test_run_remote_git_uses_explicit_environment_even_without_git_arguments(mon
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(git_auth.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_auth, "run_process", fake_run)
 
     result = git_auth.run_remote_git(tmp_path, auth=None, env={"SENTINEL": "provided"})
 
