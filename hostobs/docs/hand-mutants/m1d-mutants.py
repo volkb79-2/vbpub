@@ -126,8 +126,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "M1d-4",
         "quarantined files are ordered newest first, so the newest debris goes first",
         "crates/store/src/tier.rs",
-        "            (left.parsed.start_s, left.parsed.seq, &left.name).cmp(&(\n                right.parsed.start_s,\n                right.parsed.seq,\n                &right.name,\n            ))",
-        "            (right.parsed.start_s, right.parsed.seq, &right.name).cmp(&(\n                left.parsed.start_s,\n                left.parsed.seq,\n                &left.name,\n            ))",
+        "        quarantined_files.sort_by_key(|f| (f.parsed.start_s, f.parsed.seq, f.name.clone()));",
+        "        quarantined_files.sort_by_key(|f| std::cmp::Reverse((f.parsed.start_s, f.parsed.seq, f.name.clone())));",
         "store",
     ),
     Mutant(

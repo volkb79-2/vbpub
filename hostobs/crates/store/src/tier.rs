@@ -646,40 +646,40 @@ impl Tier {
             // fails either is quarantined whole, never repaired: a torn tail is a normal shape
             // for an *open* segment, and for a sealed name it is a file that is not what it
             // says. A corrupt tail has its own, more precise, refusal below.
-            if !matches!(scan.tail, TailState::Corrupt { .. }) {
-                if let Err(refusal) = scan.check_name(&parsed) {
-                    let quarantine = parsed.quarantine_file_name();
-                    match self.dir.rename(&entry.name, &quarantine) {
-                        Ok(()) => {
-                            quarantined.push(entry.name.clone());
-                            bytes = bytes.saturating_add(scan.file_len);
-                            quarantined_files.push(QuarantinedFile {
-                                name: quarantine,
-                                parsed,
-                                len: scan.file_len,
-                            });
-                            notes.push(TierNote {
-                                name: entry.name.clone(),
-                                reason: format!(
-                                    "quarantined, {}: {refusal}",
-                                    refusal.kind()
-                                ),
-                            });
-                        }
-                        Err(error) => {
-                            unreadable.push(entry.name.clone());
-                            notes.push(TierNote {
-                                name: entry.name.clone(),
-                                reason: format!(
-                                    "{} and could not be quarantined: {}",
-                                    refusal.kind(),
-                                    error.kind()
-                                ),
-                            });
-                        }
+            let name_refusal = if matches!(scan.tail, TailState::Corrupt { .. }) {
+                None
+            } else {
+                scan.check_name(&parsed).err()
+            };
+            if let Some(refusal) = name_refusal {
+                let quarantine = parsed.quarantine_file_name();
+                match self.dir.rename(&entry.name, &quarantine) {
+                    Ok(()) => {
+                        quarantined.push(entry.name.clone());
+                        bytes = bytes.saturating_add(scan.file_len);
+                        quarantined_files.push(QuarantinedFile {
+                            name: quarantine,
+                            parsed,
+                            len: scan.file_len,
+                        });
+                        notes.push(TierNote {
+                            name: entry.name.clone(),
+                            reason: format!("quarantined, {}: {refusal}", refusal.kind()),
+                        });
                     }
-                    continue;
+                    Err(error) => {
+                        unreadable.push(entry.name.clone());
+                        notes.push(TierNote {
+                            name: entry.name.clone(),
+                            reason: format!(
+                                "{} and could not be quarantined: {}",
+                                refusal.kind(),
+                                error.kind()
+                            ),
+                        });
+                    }
                 }
+                continue;
             }
             match &scan.tail {
                 TailState::Complete => {}
@@ -791,13 +791,7 @@ impl Tier {
         // The quarantined files are ordered by the same key, so "oldest first" means the same
         // thing for debris as for history; the name is the last tie-break, so the order of a
         // directory listing never decides which file goes first.
-        quarantined_files.sort_by(|left, right| {
-            (left.parsed.start_s, left.parsed.seq, &left.name).cmp(&(
-                right.parsed.start_s,
-                right.parsed.seq,
-                &right.name,
-            ))
-        });
+        quarantined_files.sort_by_key(|f| (f.parsed.start_s, f.parsed.seq, f.name.clone()));
         self.scan = TierScan {
             segments,
             notes,
@@ -2625,11 +2619,13 @@ mod tests {
         assert_eq!(reopened.scan().quarantined, vec!["hot-0-0.seg".to_string()]);
         assert!(reopened.scan().torn_repaired.is_empty());
         assert!(temp.exists("hot-0-0.seg.corrupt") && !temp.exists("hot-0-0.seg"));
-        assert!(reopened
+        let footer_note = reopened
             .scan()
             .notes
             .iter()
-            .any(|note| note.name == "hot-0-0.seg" && note.reason.contains("sealed-without-footer")));
+            .find(|note| note.name == "hot-0-0.seg")
+            .expect("the refusal is reported by name");
+        assert!(footer_note.reason.contains("sealed-without-footer"));
         assert_eq!(reopened.scan().segments.len(), 1, "only the open segment is served");
         assert!(reopened
             .range(0, 1_000_000_000, 8, 1 << 20)
