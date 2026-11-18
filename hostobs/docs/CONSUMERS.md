@@ -1,13 +1,41 @@
 # Using the hostobs Rust lanes
 
 `model`, `proto`, `kernel` and `store` are functional; the remaining three library crates and
-two binaries are still the M0 scaffold. From `hostobs/`, run the registered lanes:
+two binaries are still the M0 scaffold. The registered lanes are `lint`, `selftest` and
+`assay-r1`. The estate wraps every lane run in the controller's gate wrappers, which take the
+shared gate slots and the lane's lock (see `scripts/controller/README.md`, "Running the
+registered gate" and "Run one lane on a remote gate worker"); a bare `run-gate <lane>` skips
+that admission and `run-gate` refuses container lanes on the main checkout, so do not use it
+as the way to run these.
+
+**Locally**, from the project directory `hostobs/` of a *linked worktree* (never the main
+checkout):
 
 ```sh
-run-gate lint
-run-gate selftest
-run-gate assay-r1
+cd <linked-worktree>/hostobs
+. "$HOME/controller/controller.local.env"        # CONTROLLER_HOME's controller.local.env
+scripts_dir=<repo>/scripts/controller
+"$scripts_dir/gate-run.sh" lint
+"$scripts_dir/gate-run.sh" selftest
+"$scripts_dir/gate-run.sh" assay-r1
 ```
+
+**Remotely**, on a remote gate worker (needs `CONTROLLER_REMOTE_GATE_HOSTS=v1001`, or the
+alias set the host table defines), one lane at a time, pinned to a commit or branch:
+
+```sh
+CONTROLLER_REMOTE_GATE_HOSTS=v1001 \
+  scripts/controller/remote-gate.sh v1001 hostobs lint <commit-or-branch>
+```
+
+The lane's own exit code is returned (2 refusal, 3 identity or transport failure, 75 slots or
+PSI busy, 76 `INCONCLUSIVE-OOM`, none of which is a lane verdict). The run log is written to
+`$CONTROLLER_LOGS_DIR/<run>.log` with the binding line `run-gate.commit=<sha>`.
+
+**The Rust lanes need the `tester-unified-rust` image on the executing host** (the local
+Docker daemon, or the remote worker). If it is missing the lane stops with `verdict ERROR;
+docker run failed (exit 125)` and `Unable to find image 'tester-unified-rust:local'`; that is
+an environment fault, not a verdict on the code.
 
 All three use `tester-unified-rust` with Docker networking disabled. The image contains the
 stable Rust toolchain, the cargo tools, Python for the cache/floor helpers, and the crate
@@ -103,7 +131,13 @@ B549 records the same finding from the judge's side.
 - **Mutation (R2)** — Rust R2 needs cargo-mutants report ingestion (assay B245 / design R-3b); no
   `assay-r2` lane exists for Rust. The hand-mutation campaigns in
   [`HAND-MUTANTS-M1.md`](HAND-MUTANTS-M1.md), [`HAND-MUTANTS-M1B.md`](HAND-MUTANTS-M1B.md) and
-  [`HAND-MUTANTS-M1C.md`](HAND-MUTANTS-M1C.md) remain the test-quality evidence.
+  [`HAND-MUTANTS-M1C.md`](HAND-MUTANTS-M1C.md) remain the test-quality evidence;
+  [`HAND-MUTANTS-M1D.md`](HAND-MUTANTS-M1D.md) holds the stored patches of the P0 bug fold-in,
+  whose campaign has not been run yet.
+- **Dead second bound in `decode_block`.** Its own `declared > MAX_FRAME_BYTES` check cannot
+  fire any more, because `FrameHeader::parse` refuses the same length first. It is kept as a
+  second bound and is an uncovered line the coverage floor may count; see
+  [`HAND-MUTANTS-M1D.md`](HAND-MUTANTS-M1D.md), "Known limit".
 - **Canaries (R3)** — needs a receipt-writing test-break canary (assay B246 / R-4); not registered.
 - **Inline `#[cfg(test)] mod tests` blocks inside a judged file** are measured (LCOV has no
   per-region exclusion, assay K5). They are NOT a small effect here: counting from each file's

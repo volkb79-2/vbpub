@@ -86,11 +86,16 @@ yet), recorded in [`docs/HAND-MUTANTS-M1.md`](docs/HAND-MUTANTS-M1.md) (twenty-o
 all killed), [`docs/HAND-MUTANTS-M1B.md`](docs/HAND-MUTANTS-M1B.md) (thirty-one mutations, all
 killed) and [`docs/HAND-MUTANTS-M1C.md`](docs/HAND-MUTANTS-M1C.md) (fifteen mutations over the
 store's bounds and crash-safety guards, all killed). Each is a stored patch in a replayable
-script, and every restore is SHA-256-verified.
+script, and every restore is SHA-256-verified. The P0 bug fold-in adds
+[`docs/HAND-MUTANTS-M1D.md`](docs/HAND-MUTANTS-M1D.md) (twenty-one stored patches over the
+frame-header bound, quarantined files inside the cap, the sealed-footer and name/header rules
+and the time-section length); its campaign is to be run on the gate head and states no result
+yet.
 
 Open items found while building these packages are in
-[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-45`): the
-sharpest still-open ones are `HOB-17`/`HOB-27` (the `kernel` and `store` crates carry their
+[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-45`; `HOB-8`,
+`HOB-42` and `HOB-43` are FIXED by the P0 bug fold-in, which also fixes the length half of
+`HOB-48`, a different branch's entry): the sharpest still-open ones are `HOB-17`/`HOB-27` (the `kernel` and `store` crates carry their
 own value and quality types until the Rust lane image can be rebuilt against a new
 `Cargo.lock`), `HOB-21`/`HOB-29` (no `/sys` device-topology source, and `store`'s tmpfs check
 reads the mount table rather than `statfs`), `HOB-39` (a store range answer is the stored
@@ -102,13 +107,25 @@ kernel-side rate arithmetic is a test-local helper, because `kernel` cannot depe
 
 ## Gates
 
-Use the registered `lint`, `selftest` and `assay-r1` lanes from this directory:
+The registered lanes are `lint`, `selftest` and `assay-r1`. Run them through the estate's
+gate wrappers, not a bare `run-gate` (which skips slot admission and refuses container lanes
+on the main checkout). Locally, from this directory in a **linked worktree**:
 
 ```sh
-run-gate lint
-run-gate selftest
-run-gate assay-r1
+. "$HOME/controller/controller.local.env"
+<repo>/scripts/controller/gate-run.sh lint        # then selftest, then assay-r1
 ```
+
+Remotely, one lane at a time on a remote gate worker (`CONTROLLER_REMOTE_GATE_HOSTS=v1001`
+must be set):
+
+```sh
+scripts/controller/remote-gate.sh v1001 hostobs lint <commit-or-branch>
+```
+
+Both are described in `scripts/controller/README.md` ("Running the registered gate", "Run one
+lane on a remote gate worker"). The Rust lanes need the `tester-unified-rust` image on the
+executing host; see [`docs/CONSUMERS.md`](docs/CONSUMERS.md).
 
 Cargo is offline and locked, and each Cargo invocation checks the mounted `Cargo.lock`
 against the image's lock-specific cache manifest first. `selftest` is the workspace's own
