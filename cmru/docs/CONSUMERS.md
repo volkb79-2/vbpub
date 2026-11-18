@@ -907,8 +907,8 @@ overrides a value only where it has a genuinely different requirement). The requ
 
 **Refreshing a digest pin (KI-60).** `CMRU_TESTER_CGROUP_PROBE_IMAGE` and `CMRU_TESTER_DIND_IMAGE` are started with
 `--pull=never`, so a pin names an image that must already be on the host, and nothing warns when the pin ages (base-image
-security updates). The release dry-run now verifies both pins are local (`Cgroup probe image` and, when a step uses
-`--enable-docker`, `DinD sidecar image`) and refuses with the `docker pull <digest>` remedy. Refresh deliberately, at least
+security updates). The release dry-run now verifies both pins are local (`Cgroup probe image` for a release that includes cmru and, for any
+released project with an `--enable-docker` step, `DinD sidecar image`) and refuses with the `docker pull <digest>` remedy. Refresh deliberately, at least
 when the base image publishes a security update and always before a release that relies on the probe or the sidecar:
 
 1. Choose the new tag, and apply the estate freshness rule: adopt it only when it is at least 14 days past its release.
@@ -1050,9 +1050,11 @@ declared values before invoking the handler. A direct handler invocation uses
 the opposite order: its process environment wins, then the enclosing config.
 An empty effective image value fails preflight. The cgroup probe uses `--pull=never`,
 so it must already be local; if missing, preflight exits 4 with the exact
-`docker pull <ref>` remedy. When any `[steps.*]` command passes `--enable-docker`,
-a third `DinD sidecar image` row checks `CMRU_TESTER_DIND_IMAGE` the same way
-(`--pull=never`, never pulled by preflight; no row when no step uses the flag).
+`docker pull <ref>` remedy. Separately, for every project in the release scope
+(cmru or not; not on `--resume`) whose own config has a `[steps.*]` command passing
+`--enable-docker`, a `DinD sidecar image` row checks `CMRU_TESTER_DIND_IMAGE` the same
+way (`--pull=never`, never pulled by preflight; no row for a project without the flag).
+The wheel-builder and probe rows still run only for a release that includes cmru (KI-183).
 The wheel-builder's Docker run uses Docker's default
 pull-if-missing behavior. For an actual release, preflight pulls and verifies a
 builder image that is not local, with a 600-second timeout and a refusal if

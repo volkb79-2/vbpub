@@ -1583,6 +1583,35 @@ def test_dind_preflight_adds_a_ciu_row_next_to_unchanged_cmru_rows(
     assert "DinD sidecar image (cmru)" not in error  # cmru's own config has no docker step
 
 
+@pytest.mark.parametrize(
+    ("scope", "expected_labels"),
+    [
+        (["cmru"], ["DinD sidecar image"]),
+        (["cmru", "ciu"], ["DinD sidecar image (cmru)", "DinD sidecar image (ciu)"]),
+    ],
+    ids=["cmru-alone", "cmru-and-ciu"],
+)
+def test_dind_preflight_suffixes_labels_only_when_rows_could_be_confused(
+    tmp_path, monkeypatch, capsys, scope, expected_labels,
+):
+    configs, _ = _mock_dind_scope(
+        monkeypatch, tmp_path, {name: _CIU_TOML for name in scope},
+    )
+    _fake_docker_missing(monkeypatch, _DIND_IMAGE, [])
+
+    with pytest.raises(SystemExit):
+        cli._release_dind_image_preconditions(
+            tmp_path, tmp_path / "cmru.orchestration.toml", configs, scope,
+            _release_precondition_args(), git_auth=None, report=True,
+        )
+
+    error = capsys.readouterr().err
+    for label in expected_labels:
+        assert label in error
+    if scope == ["cmru"]:
+        assert "(cmru)" not in error
+
+
 def test_dind_preflight_has_no_rows_and_no_docker_call_without_the_flag(
     tmp_path, monkeypatch, capsys,
 ):

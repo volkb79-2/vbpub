@@ -14,7 +14,8 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-182 | FIXED 2026-11-18 (the release preflight also checks the DinD sidecar image when a step uses `--enable-docker`) | see KI-182 entry |
+| KI-183 | OPEN (the wheel-builder and probe rows and the cmru gate rows of the release preflight run only for a release that includes cmru) | — |
+| KI-182 | FIXED 2026-11-18 (the release preflight checks the DinD sidecar image of every project in the scope that has an `--enable-docker` step) | see KI-182 entry |
 | KI-181 | OPEN (`dist_dir` containment still accepts project-owned directories such as `src`, `.git` or a symlink to another project directory) | — |
 | KI-180 | OPEN (runner residuals: a signal between fork and `Popen` return can leave the child unreaped; a failing group reap skips the explicit pipe close) | — |
 | KI-179 | OPEN (`cmru abandon` withholds a superseded release candidate whose content is on main and offers no operator path) | — |
@@ -3810,9 +3811,19 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Cause.** The sidecar is started with `--pull=never`, so an absent reference surfaces only when the gate step starts it. KI-168's preflight (`check_release_build_images_precondition`) covered the wheel-builder image and the cgroup probe image but not `CMRU_TESTER_DIND_IMAGE`, which has the probe's contract.
 
-**Fix.** `check_release_build_images_precondition(..., dind_image_required=...)` adds a third `DinD sidecar image` row, resolved in release context like the probe image and checked with `pull_if_missing=False`: empty value fails, absent image fails with the exact `docker pull <ref>` remedy, Docker unavailable is `SKIPPED` on a dry-run and a failure on a release. The launcher sets `dind_image_required` from `release_config_enables_docker`, which reads the exact release-source config text with `tomllib` and looks for an exact `--enable-docker` argv element in any `[steps.*]` command; with no such argv the row is absent. `CMRU_TESTER_DIND_IMAGE` joined `BUILD_IMAGE_ENV_NAMES`, so the caller's value is snapshotted as the fallback like the other two. SPEC S-REL.7, README and CONSUMERS describe it. Tests: `tests/test_release_gate_preconditions.py` (`test_dind_image_row_*`, `test_release_config_enable_docker_detection_reads_the_toml_argv`, `test_release_precondition_helper_*dind*`).
+**Fix.** A per-project preflight, independent of the cmru-only rows (`cli._release_dind_image_preconditions`). It runs for EVERY project in the release scope (not on `--resume`, and not only when `cmru` is in the scope): it reads that project's own release-source config (`_project_snapshot_config_text`, the generalization of the cmru-only helper), and `release_config_enables_docker` looks for an exact `--enable-docker` element in the argv of any `[steps.*]` command (a TOML read; any other shape is ignored, never raised). A project with such a step gets a `DinD sidecar image` row (label suffix ` (<project>)` when the scope has several projects or the project is not cmru), resolved in release context from that project's own `[env]` over the orchestration defaults, with the caller's process value as fallback (`CMRU_TESTER_DIND_IMAGE` is in `BUILD_IMAGE_ENV_NAMES`), and checked with `pull_if_missing=False`: empty value fails, absent image fails with the exact `docker pull <ref>` remedy, Docker unavailable is `SKIPPED` on a dry-run and a failure on a release. A FAIL refuses with exit 4 before dispatch or workspace creation. A project without such a step gets no row and no docker call. An unreadable or invalid project config surfaces as the same domain error the cmru path surfaces (exit 1). The existing wheel-builder and probe rows and the Run-Gate identity and bootstrap rows are unchanged and stay cmru-release-only (KI-183). SPEC S-REL.7, README and CONSUMERS describe it. Tests: `tests/test_release_gate_preconditions.py` (`test_dind_*`, `test_release_config_enable_docker_detection_reads_the_toml_argv`, `test_release_launcher_*dind*`).
 
-**Close when.** Closed by this fix: fake-Docker tests show the row FAILs with variable, image and remedy when the image is absent, PASSes when present, is absent without `--enable-docker`, FAILs on an empty value, SKIPs or FAILs without Docker, and that the launcher refuses a dry-run and a release before any gate starts.
+**Close when.** Closed by this fix: fake-Docker tests show that a release scoped to `ciu` alone refuses a dry-run and a release with the row before any dispatch, a `cmru` + `ciu` scope adds the ciu row beside unchanged cmru rows, a scope without the flag has no rows and no docker call, a present image passes, and the row FAILs on an empty value and SKIPs or FAILs without Docker.
+
+## KI-183 the existing image rows of the release preflight do not run for non-cmru releases
+
+**Status:** OPEN (filed 2026-11-18); severity: low.
+
+**Observed.** `_release_gate_preconditions_before_dispatch` and its rows (Run-Gate image identity, Bootstrap, `Wheel-builder image`, `Cgroup probe image`) run only when `cmru` is in the release scope. A release of any other project (`cmru release ciu`) skips them, although its gate and wheel build use the same `--pull=never` probe image and the wheel builder. The DinD row (KI-182) is the only image row that already runs per project.
+
+**Wanted.** Evaluate the wheel-builder and probe rows for every project in the release scope against that project's own config, as KI-182 does for the DinD row.
+
+**Close when.** A release scoped to a project other than cmru refuses before dispatch when its probe image is absent, shown by a test.
 
 ## KI-181 `dist_dir` containment accepts project-owned directories (`src`, `.git`, a symlink to another project directory)
 
