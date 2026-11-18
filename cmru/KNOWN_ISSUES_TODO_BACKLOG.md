@@ -14,6 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-185 | OPEN (adopt the [cli-extended line-stream renderer proposal](../libraries/cli-extended/docs/DESIGN-LINE-STREAM-RENDERER.md) through CLI-EXT-35–CLI-EXT-40) | — |
 | KI-184 | FIXED 2026-11-18 (every line in one multi-line write is processed at a severity boundary) | `54b9d3b75` |
 | KI-183 | OPEN (the wheel-builder and probe rows and the cmru gate rows of the release preflight run only for a release that includes cmru) | — |
 | KI-182 | FIXED 2026-11-18 (the release preflight checks the DinD sidecar image of every project in the scope that has an `--enable-docker` step) | see KI-182 entry |
@@ -3827,6 +3828,28 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Wanted.** Evaluate the wheel-builder and probe rows for every project in the release scope against that project's own config, as KI-182 does for the DinD row.
 
 **Close when.** A release scoped to a project other than cmru refuses before dispatch when its probe image is absent, shown by a test.
+
+## KI-185 adopt the cli-extended line-stream renderer in the cmru output layer
+
+**Status:** OPEN; severity: medium.
+
+**Observed.** `cmru/src/cmru/output.py` owns a separate `SeverityStream` for
+severity parsing and terminal colour. CMRU output therefore does not share the
+line-oriented renderer proposed for `cli-extended`.
+
+**Wanted.** Adopt the shared engine as a thin CMRU output adapter, then migrate
+new and intentionally changed output call sites in small packages. Leave
+untouched call sites alone until their own migration package. The current
+multi-line `SeverityStream` defect is handled separately by P14.
+
+**Design and implementation packages.** See the
+[cli-extended line-stream renderer proposal](../libraries/cli-extended/docs/DESIGN-LINE-STREAM-RENDERER.md)
+and CLI-EXT-35–CLI-EXT-40. Preserve CMRU's output contract; decide the existing
+optional short timestamp behavior before removing its implementation.
+
+**Close when.** The CMRU adapter delegates rendering to the shared engine,
+output tests preserve plain and terminal behavior, and call sites have moved
+incrementally with no independent CMRU severity parser or ANSI renderer left.
 
 ## KI-181 `dist_dir` containment accepts project-owned directories (`src`, `.git`, a symlink to another project directory)
 
