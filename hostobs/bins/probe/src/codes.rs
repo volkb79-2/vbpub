@@ -202,9 +202,34 @@ mod tests {
     #[test]
     fn the_list_is_the_closed_set_of_section_10() {
         let names: Vec<&str> = Code::ALL.iter().map(|code| code.name()).collect();
-        assert_eq!(names.len(), 23);
-        assert_eq!(names[0], "unknown-mode");
-        assert_eq!(names[22], "internal");
+        assert_eq!(
+            names,
+            [
+                "unknown-mode",
+                "unsupported-version",
+                "hello-required",
+                "bad-frame",
+                "frame-too-large",
+                "deadline",
+                "idle",
+                "slow-client",
+                "shutting-down",
+                "bad-request",
+                "unknown-verb",
+                "forbidden",
+                "binary-required",
+                "too-many-requests",
+                "budget",
+                "rate-limited",
+                "not-found",
+                "cursor-invalid",
+                "span-unknown",
+                "unsupported-feature",
+                "session-lost",
+                "window-lost",
+                "internal",
+            ]
+        );
         for (index, name) in names.iter().enumerate() {
             assert!(!names[..index].contains(name), "duplicate {name}");
         }

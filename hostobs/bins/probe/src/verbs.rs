@@ -39,10 +39,10 @@ impl Verb {
     }
 }
 
-const OBSERVE: u8 = 1;
-const OPERATOR: u8 = 2;
-const OBSERVER: u8 = 4;
-const CONTROL: u8 = 8;
+const OBSERVE: u8 = Level::Observe.bit();
+const OPERATOR: u8 = Level::Operator.bit();
+const OBSERVER: u8 = Level::Observer.bit();
+const CONTROL: u8 = Level::Control.bit();
 const TELEMETRY: u8 = OBSERVE | OPERATOR;
 const EVERY: u8 = TELEMETRY | OBSERVER | CONTROL;
 
@@ -111,8 +111,55 @@ mod tests {
     use super::{find, served_at, Shape, VERBS, VERB_COUNT};
     use crate::limits::Level;
 
+    const OBS: u8 = Level::Observe.bit();
+    const OPR: u8 = Level::Operator.bit();
+    const OBR: u8 = Level::Observer.bit();
+    const CTL: u8 = Level::Control.bit();
+    const TEL: u8 = OBS | OPR;
+    const ALL: u8 = TEL | OBR | CTL;
+
     fn in_charset(byte: u8) -> bool {
         matches!(byte, b'a'..=b'z' | b'_' | b'.' | b'-')
+    }
+
+    #[test]
+    fn all_25_rows_are_pinned_independently_of_the_static_array() {
+        let expected: [(&str, u8, Shape, bool, bool); 25] = [
+            ("hello", ALL, Shape::Json, true, false),
+            ("status", TEL | CTL, Shape::Json, true, false),
+            ("current", TEL, Shape::Block, false, false),
+            ("subscribe", TEL, Shape::Block, false, false),
+            ("unsubscribe", TEL, Shape::Json, false, false),
+            ("snapshot_at", TEL, Shape::Block, false, false),
+            ("series_batch", TEL, Shape::Block, false, false),
+            ("events", TEL | CTL, Shape::Json, false, false),
+            ("spans", TEL | CTL, Shape::Json, false, false),
+            ("procs", TEL, Shape::Json, false, false),
+            ("annotate", OBR | CTL, Shape::Json, false, false),
+            ("export", OPR, Shape::Block, false, true),
+            ("resource-limits", OBR, Shape::Json, false, true),
+            ("window-open", OBR, Shape::Json, false, true),
+            ("window-close", OBR, Shape::Json, false, true),
+            ("version", CTL, Shape::Json, false, true),
+            ("host", CTL, Shape::Json, false, true),
+            ("session.start", CTL, Shape::Json, false, true),
+            ("session.stop", CTL, Shape::Json, false, true),
+            ("session.status", CTL, Shape::Json, false, true),
+            ("session.watch", CTL, Shape::Json, false, true),
+            ("session.list", CTL, Shape::Json, false, true),
+            ("session.spans", CTL, Shape::Json, false, true),
+            ("gc", CTL, Shape::Json, false, true),
+            ("reload", CTL, Shape::Json, false, true),
+        ];
+        assert_eq!(VERBS.len(), expected.len());
+        let rows = VERBS.iter().zip(expected.iter());
+        for (verb, &(name, levels, shape, served, reserved)) in rows {
+            assert_eq!(verb.name, name);
+            assert_eq!(verb.levels, levels, "{name}");
+            assert_eq!(verb.shape, shape, "{name}");
+            assert_eq!(verb.served, served, "{name}");
+            assert_eq!(verb.reserved, reserved, "{name}");
+        }
     }
 
     #[test]

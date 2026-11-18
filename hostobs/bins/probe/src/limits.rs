@@ -10,9 +10,10 @@
 //! replies of every outstanding request plus 256 KiB of END and EVT frames always fit one
 //! control queue. For observe and operator the largest reply is a paged `events` or `procs`
 //! reply, so the default stays 2 MiB (4 * 448 KiB + 256 KiB). The observer level serves only
-//! `hello`, `status` and `annotate`: WIRE.md section 5.1 bounds every fixed-shape reply and
-//! error envelope there below 3 KiB (`hello` < 4 KiB incl. the 25 limit keys, of which an
-//! observer reply is smaller), so `max_reply_bytes` is 16 KiB and the observer
+//! `hello` and `annotate` (`status` is forbidden there, WIRE.md section 4.3): WIRE.md section
+//! 5.1 bounds every fixed-shape reply and error envelope there below 3 KiB, and the observer
+//! `hello` reply (at most 2 verbs, at most 8 quality codes, the 19 limit keys) is below 3 KiB
+//! too, so `max_reply_bytes` is 16 KiB and the observer
 //! `control_queue_bytes` is derived: 4 * 16 KiB + 256 KiB = 320 KiB. That caps what 128 observer
 //! connections can hold at 40 MiB instead of 256 MiB, with no hub change.
 
@@ -389,20 +390,75 @@ mod tests {
         assert_eq!(control_queue_for(u32::MAX, u32::MAX), u32::MAX);
     }
 
+    /// The WIRE.md section 4.4 key names in order, pinned here independently of the code.
+    const HELLO_KEY_NAMES: [&str; 19] = [
+        "max_frame_bytes",
+        "max_request_bytes",
+        "request_deadline_ms",
+        "hello_deadline_ms",
+        "idle_ms",
+        "stall_ms",
+        "frame_completion_ms",
+        "max_outstanding",
+        "max_subscriptions",
+        "client_queue_bytes",
+        "query_queue_bytes",
+        "control_queue_bytes",
+        "max_reply_bytes",
+        "max_block_bytes",
+        "max_rows",
+        "max_block_buckets",
+        "max_page_blocks",
+        "min_interval_ms",
+        "tick_ms",
+    ];
+
+    /// The struct fields spelled out per key, in the order of [`HELLO_KEY_NAMES`].
+    fn field_values(limits: &Limits) -> [u32; 19] {
+        [
+            limits.max_frame_bytes,
+            limits.max_request_bytes,
+            limits.request_deadline_ms,
+            limits.hello_deadline_ms,
+            limits.idle_ms,
+            limits.stall_ms,
+            limits.frame_completion_ms,
+            limits.max_outstanding,
+            limits.max_subscriptions,
+            limits.client_queue_bytes,
+            limits.query_queue_bytes,
+            limits.control_queue_bytes,
+            limits.max_reply_bytes,
+            limits.max_block_bytes,
+            limits.max_rows,
+            limits.max_block_buckets,
+            limits.max_page_blocks,
+            limits.min_interval_ms,
+            limits.tick_ms,
+        ]
+    }
+
     #[test]
     fn hello_json_is_the_19_exact_integer_keys_in_order() {
         for level in Level::ALL {
             let limits = Limits::for_level(level);
+            let fields = field_values(&limits);
+            let entries = limits.hello_entries();
+            let names: Vec<&str> = entries.iter().map(|(key, _)| *key).collect();
+            assert_eq!(names, HELLO_KEY_NAMES, "{}", level.name());
+            let values: Vec<u32> = entries.iter().map(|(_, value)| *value).collect();
+            assert_eq!(values, fields, "{}", level.name());
             let json = limits.hello_json();
             let text = json.as_bytes();
             let found = members_up_to(text, 64).expect("one object");
             assert_eq!(found.len(), Limits::HELLO_KEYS);
-            let entries = limits.hello_entries();
-            for (member, (key, value)) in found.iter().zip(entries.iter()) {
+            for (index, member) in found.iter().enumerate() {
                 assert_eq!(member.kind, Kind::Number);
+                let key = HELLO_KEY_NAMES.get(index).expect("key name");
                 assert_eq!(text.get(member.key.clone()), Some(key.as_bytes()));
+                let field = fields.get(index).expect("field value");
                 let raw = text.get(member.value.clone()).expect("value");
-                assert_eq!(raw, value.to_string().as_bytes());
+                assert_eq!(raw, field.to_string().as_bytes(), "{key}");
             }
         }
     }
