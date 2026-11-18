@@ -13,6 +13,7 @@ pub mod args;
 pub mod codes;
 pub mod encode;
 pub mod limits;
+pub mod lines;
 pub mod verbs;
 
 /// The package name, `hostobs-probe` (the M0 scaffold identity).
