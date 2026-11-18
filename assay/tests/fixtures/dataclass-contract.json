@@ -800,7 +800,11 @@
       }
     },
     "assay.mutation.IngestedMutationResult": {
-      "fields": {},
+      "fields": {
+        "report_absent": {
+          "default": false
+        }
+      },
       "params": {
         "eq": true,
         "frozen": true,

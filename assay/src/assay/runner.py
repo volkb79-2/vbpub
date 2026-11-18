@@ -1354,9 +1354,11 @@ def _directory_report_error(
     ``Absent`` is also ``ERROR``/``UNREADABLE_ARTIFACT`` (unlike the file
     kind): a payload-free ``NO_MEASUREMENT``/``EMPTY_COVERAGE`` claim beside a
     PASS R0 is rejected by ``verify``, and ``verify`` accepts this refusal.
-    U5c synthesises the zero-mutant ``INCONCLUSIVE``/``NO_MUTANTS`` for an
-    exit-0 run; until then an absent report fails closed. ``NotConsumed`` is
-    an error and never the zero-mutant marker: nothing was observed.
+    The caller (U5c) overrides this refusal for the one zero-mutant shape --
+    a PASSED R0 on a changed_lines lane that was handed the placeholder diff
+    -- and synthesises ``INCONCLUSIVE``/``NO_MUTANTS`` instead; every other
+    absent report stays this refusal. ``NotConsumed`` is an error and never
+    the zero-mutant marker: nothing was observed.
     """
     if isinstance(state, _DirectoryRefused):
         return state.error
@@ -1365,9 +1367,9 @@ def _directory_report_error(
             f"the lane declared judge.mutation.artifact {artifact!r} but the "
             f"cargo-mutants run produced no outcomes.json. An ingested R2 "
             f"lane's whole evidence IS that artifact, so there is nothing to "
-            f"judge. The zero-mutant case is synthesised by work package U5c; "
-            f"until then a run that wrote no report fails closed rather than "
-            f"reporting a silent green.",
+            f"judge. Only a changed_lines lane handed the diff placeholder "
+            f"may read a missing report as zero mutants; this run fails "
+            f"closed rather than reporting a silent green.",
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.UNREADABLE_ARTIFACT,
         )
@@ -5695,11 +5697,33 @@ def _run_prepared_lane(
             # exactly as it is for coverage (A-161).
             if r2_ingested and r2_early_claim is None:
                 ingested_r2_error = unit.mutation_report_error
+                # (B245 U5c) The zero-mutant shape: R0 PASSED by exit code
+                # (this block is reached only on a PASS, and an `Absent`
+                # report cannot decide R0), the tool wrote no report, and
+                # the lane is a changed_lines lane whose placeholder diff
+                # was handed over -- the tool was told to mutate only the
+                # diff, and the diff selected nothing. Every other absent
+                # state (no handoff, i.e. whole_target) keeps its
+                # fail-closed refusal.
+                zero_mutant = (
+                    unit.directory_report is not None
+                    and isinstance(unit.directory_report.state, _DirectoryAbsent)
+                    and changed_diff_handoff is not None
+                )
+                if zero_mutant:
+                    ingested_r2_error = None
                 if ingested_r2_error is None and changed_diff_handoff is not None:
                     ingested_r2_error = _changed_diff_tamper_error(
                         changed_diff_handoff
                     )
-                if ingested_r2_error is None:
+                if ingested_r2_error is None and zero_mutant:
+                    assert relocated_lane_r2 is not None and added is not None
+                    ingested_r2 = mutation.synthesize_zero_mutant_result(
+                        added,
+                        repo_top=baseline_snapshot.root,
+                        source_root_paths=relocated_lane_r2.judge.source_root_paths,
+                    )
+                elif ingested_r2_error is None:
                     assert relocated_lane_r2 is not None
                     raw_report: bytes | safeio.DirectoryArtifact
                     if unit.directory_report is not None:
@@ -6823,6 +6847,7 @@ def _build_ingested_judgment_r2(
         survived_uncovered=ingested.survived_uncovered,
         discarded=ingested.discarded,
         lines_without_candidates=ingested.lines_without_candidates,
+        report_absent=ingested.report_absent,
         # B050/A-427 (schema v10): the floor the ingested judgment applied,
         # read from the lane rather than assumed to be 100.0 -- which is the
         # whole point of the field. It is REQUIRED under `ingested` and

@@ -16,7 +16,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from conftest import GitRepo
+from conftest import GitRepo, why_invalid
 from test_runner_cargo_mutants_r2 import (
     Fake,
     OUT,
@@ -29,8 +29,11 @@ from test_runner_cargo_mutants_r2 import (
     _stage,
 )
 
-from assay import runner
+from assay import mutation, runner
+from assay.diff import AddedLines
 from assay.errors import AssayError, Outcome, ReasonCode
+from assay.verdict import PRODUCER_VERSION_UNOBSERVED
+from assay.verify import verify_document
 from assay.vocabulary import ARGV_PLACEHOLDER_CHANGED_DIFF as PLACEHOLDER
 
 ARGV = ("cargo", "mutants", "--output", OUT, "--in-diff", PLACEHOLDER)
@@ -190,7 +193,7 @@ def test_a_deleted_file_is_in_the_diff(git_repo: GitRepo, tmp_path: Path):
 
 
 def test_a_docs_only_change_writes_an_empty_diff(
-    git_repo: GitRepo, tmp_path: Path, monkeypatch
+    git_repo: GitRepo, tmp_path: Path, monkeypatch, validator
 ):
     _seed(git_repo, "zero-mutants")
     base = git_repo.head()
@@ -215,13 +218,38 @@ def test_a_docs_only_change_writes_an_empty_diff(
     (handoff,) = produced
     assert handoff.size == 0
     assert handoff.sha256 == hashlib.sha256(b"").hexdigest()
-    # An absent report is, until U5c's `report_absent` / NO_MUTANTS terminal,
-    # the generic unreadable-artifact ERROR with no `judgment.r2` -- and that
-    # document verifies (`_run` round-trips it).
+    # (U5c) The empty diff selects nothing: the tool wrote no report, which is
+    # the zero-mutant shape, never a PASS.
+    _assert_zero_mutant(verdict, validator, lines=())
+
+
+def _assert_zero_mutant(verdict, validator, *, lines):
+    """R0 PASS by exit code, R2 INCONCLUSIVE/NO_MUTANTS with `report_absent`,
+    the `unobserved` producer, and a document the schema and `verify` accept."""
+    assert _claim(verdict, "R0").status is Outcome.PASS
     r2 = _claim(verdict, "R2")
-    assert r2.status is Outcome.ERROR
-    assert r2.reason_code is ReasonCode.UNREADABLE_ARTIFACT
-    assert verdict.judgment is None or verdict.judgment.r2 is None
+    assert r2.status is Outcome.INCONCLUSIVE
+    assert r2.reason_code is ReasonCode.NO_MUTANTS
+    assert r2.mutation is not None
+    assert (r2.mutation.total, r2.mutation.candidate_count) == (0, 0)
+    assert verdict.outcome is Outcome.INCONCLUSIVE
+    assert verdict.reason_code is ReasonCode.NO_MUTANTS
+    assert verdict.exit_code == 5
+    policy = verdict.judgment.r2
+    assert policy.report_absent is True
+    assert policy.producer == "ingested"
+    assert (
+        policy.producer_tool.name,
+        policy.producer_tool.version,
+        policy.producer_tool.report_schema_version,
+    ) == ("cargo-mutants", PRODUCER_VERSION_UNOBSERVED, "outcomes.json")
+    assert policy.survived_uncovered == () and policy.discarded == ()
+    assert policy.fail_under == 100.0
+    assert policy.changed_diff is not None
+    assert [(p.path, p.lineno) for p in policy.lines_without_candidates] == list(lines)
+    document = verdict.to_dict()
+    assert why_invalid(validator, document) == []
+    assert verify_document(document) == []
 
 
 def test_base_equal_to_head_is_the_existing_refusal(git_repo: GitRepo, tmp_path: Path):
@@ -443,3 +471,143 @@ def test_a_diff_that_cannot_be_written_is_a_lane_refusal(
     assert verdict.outcome is Outcome.ERROR
     assert verdict.reason_code is ReasonCode.UNREADABLE_ARTIFACT
     assert verdict.judgment is None or verdict.judgment.r2 is None
+
+
+# --- U5c: zero-mutant synthesis --------------------------------------------------
+
+
+def _zero_lane(git_repo: GitRepo):
+    """The zero-mutants subject committed, base = that commit; the caller then
+    commits the change under test. Returns the base revision."""
+    _seed(git_repo, "zero-mutants")
+    return git_repo.head()
+
+
+def test_a_comment_only_change_is_zero_mutants_with_its_lines_listed(
+    git_repo: GitRepo, tmp_path: Path, validator
+):
+    base = _zero_lane(git_repo)
+    path = git_repo.path / "src" / "lib.rs"
+    text = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    text[0] = "//! Synthetic cargo-mutants subject (comment edited again).\n"
+    path.write_text("".join(text), encoding="utf-8")
+    git_repo.commit_all("comment only")
+    git_repo.write("README.md", "docs too\n")
+    git_repo.commit_all("docs outside the source roots")
+    lane = _with_placeholder(_lane(git_repo, base))
+    fake = Recording(None, _exit_code("zero-mutants"))
+
+    verdict = _run(git_repo, lane, fake)
+
+    # The diff is non-empty, but the tool still found nothing to mutate; only
+    # the added line under the source root is listed (Q3), never README.md.
+    assert fake.content
+    _assert_zero_mutant(verdict, validator, lines=[("src/lib.rs", 1)])
+
+
+def test_the_zero_mutant_lines_are_those_of_a_workspace_below_the_git_top(
+    git_repo: GitRepo, tmp_path: Path, validator
+):
+    prefix = "sub/crate1"
+    _seed(git_repo, "zero-mutants", prefix=prefix)
+    base = git_repo.head()
+    path = git_repo.path / prefix / "src" / "lib.rs"
+    path.write_text("// one\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+    git_repo.commit_all("add a comment line")
+    lane = _with_placeholder(_lane(git_repo, base, prefix=prefix))
+
+    verdict = _run(git_repo, lane, Recording(None, _exit_code("zero-mutants")))
+
+    _assert_zero_mutant(verdict, validator, lines=[(f"{prefix}/src/lib.rs", 1)])
+
+
+def test_an_absent_report_without_the_handoff_stays_fail_closed(
+    git_repo: GitRepo, tmp_path: Path
+):
+    # A whole_target lane never receives the placeholder diff (config refuses
+    # it), so its absent report is still the unreadable-artifact refusal.
+    base = _zero_lane(git_repo)
+    lane = _lane(git_repo, base)
+    judge = replace(lane.judge, mode="whole_target", targets=("src/lib.rs",))
+    lane = replace(lane, judge=judge)
+
+    verdict = _run(git_repo, lane, Fake(None, 0))
+
+    r2 = _claim(verdict, "R2")
+    assert r2.status is Outcome.ERROR
+    assert r2.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert verdict.judgment is None or verdict.judgment.r2 is None
+
+
+def test_a_failed_exit_with_an_absent_report_is_decided_by_the_exit_code(
+    git_repo: GitRepo, tmp_path: Path
+):
+    base = _zero_lane(git_repo)
+    git_repo.write("README.md", "docs only\n")
+    git_repo.commit_all("docs")
+    lane = _with_placeholder(_lane(git_repo, base))
+
+    verdict = _run(git_repo, lane, Recording(None, 2))
+
+    r0 = _claim(verdict, "R0")
+    assert r0.status is Outcome.FAIL
+    assert r0.reason_code is ReasonCode.COMMAND_FAILED
+    assert verdict.outcome is Outcome.FAIL
+    # R2 is the not-reached claim, never a synthesised zero-mutant one.
+    assert _claim(verdict, "R2").reason_code is not ReasonCode.NO_MUTANTS
+    assert verdict.judgment is None or verdict.judgment.r2 is None
+
+
+def test_a_tampered_handoff_is_refused_before_any_synthesis(
+    git_repo: GitRepo, tmp_path: Path
+):
+    base = _zero_lane(git_repo)
+    git_repo.write("README.md", "docs only\n")
+    git_repo.commit_all("docs")
+    lane = _with_placeholder(_lane(git_repo, base))
+    fake = Tampering(None, _exit_code("zero-mutants"), tamper=_append)
+
+    verdict = _run(git_repo, lane, fake)
+
+    r2 = _claim(verdict, "R2")
+    assert r2.status is Outcome.ERROR
+    assert r2.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert r2.detail is not None and "changed-lines diff" in r2.detail
+    assert verdict.judgment is None or verdict.judgment.r2 is None
+
+
+def test_the_synthesised_result_keeps_only_added_lines_under_a_source_root(
+    tmp_path: Path,
+):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "only.rs").write_text("x\n", encoding="utf-8")
+    added = AddedLines(
+        by_file={
+            "src/b.rs": frozenset({7, 2}),
+            "src/a.rs": frozenset({3}),
+            "src/only.rs": frozenset({1}),
+            "tests/t.rs": frozenset({1}),
+            "srcother/x.rs": frozenset({1}),
+        }
+    )
+
+    result = mutation.synthesize_zero_mutant_result(
+        added,
+        repo_top=tmp_path,
+        source_root_paths=(tmp_path / "src",),
+    )
+    only_file_root = mutation.synthesize_zero_mutant_result(
+        added, repo_top=tmp_path, source_root_paths=(tmp_path / "src" / "only.rs",)
+    )
+
+    assert [(p.path, p.lineno) for p in result.lines_without_candidates] == [
+        ("src/a.rs", 3),
+        ("src/b.rs", 2),
+        ("src/b.rs", 7),
+        ("src/only.rs", 1),
+    ]
+    assert [(p.path, p.lineno) for p in only_file_root.lines_without_candidates] == [
+        ("src/only.rs", 1)
+    ]
+    assert result.report_absent is True
+    assert result.mutation.total == 0 and result.mutation.candidate_count == 0
