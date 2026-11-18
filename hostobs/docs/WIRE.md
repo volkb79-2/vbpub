@@ -313,6 +313,26 @@ are excluded. Worst selection: 16 × (`{"prefix":` 10 + 512·3 + 2 + `}` 1 + `,`
 64 × (64 + 3) = 4,288 B, keys and punctuation < 100 B, so ≤ 29,200 B; the other `series_batch` args
 (two i64, u32s, 4 agg names, a cursor ≤ 256 B ASCII) and the envelope add < 600 B: every legal
 observe/operator request is < 30 KiB ≤ `max_request_bytes` = 32 KiB.
+**Request precedence** (P5b design R11, implemented by `classify` in `bins/probe/src/classify.rs`; the
+first failing step answers, later steps are never inspected): (1) a frame that is not a REQ:
+`bad-frame`, `corr` 0, fatal (binary only); (2) binary `corr` 0: `bad-frame`, `corr` 0, fatal; (3) the
+envelope check of this section: `bad-request` on the frame `corr` (JSON: the recovered `corr`, §8.1),
+`detail.key` as above; (4) binary before `hello`: a verb other than `hello` is `hello-required` on its own
+`corr`, `hello` with a `corr` other than 1 is `bad-frame` `corr` 0 (both fatal); (5) a verb not in the
+table or reserved (§4.13): `unknown-verb`; (6) a verb the level does not know: `forbidden`; (7) `hello`
+when already answered, either mode: `bad-request` `{"key":"verb"}`; (8) a BLK verb in JSON mode:
+`binary-required`; (9) a verb known but not served by this build: `unknown-verb`; (10) the argument
+schema: `bad-request` with the schema path (a `hello` with a JSON-mode `proto.major` other than 1 is
+`unsupported-version`, fatal); (11) execution. So duplicate keys inside the args of an unknown verb are
+never inspected, and `forbidden` and `binary-required` are judged from the full table (a verb the build
+does not serve yet still answers `forbidden` at a level that does not know it). A `corr` already outstanding
+(`bad-frame`, fatal, joins step 2) and the outstanding-request cap (`too-many-requests`, between (9)
+and (10)) arrive with the first BLK verb; `unsupported-feature` follows (10). A `detail.key` echoes an unknown or
+duplicate key only if it is at most 64 bytes of `[A-Za-z0-9_.-]`, else the path stops at the parent,
+and the `message` is fixed text, never client text. **Integers** (the digits-only rule of §8.3, enforced
+below the envelope): only the digits `0-9`, at most 20 of them, no sign (so `-0` and a negative value
+for an unsigned field are refused; a signed field refuses `-0` too), no fraction, no exponent, and the
+value must fit the field's own type (`proto.minor` is a `u16`: 65,536 is `bad-request`).
 
 4.3 **Verbs by level** (✓ = served; JSON = REP only; BLK = REP + BLOCK* + END; JSON mode refuses
 BLK verbs with `binary-required`, §8.4):
@@ -334,8 +354,15 @@ BLK verbs with `binary-required`, §8.4):
 
 A known verb at the wrong level is `forbidden`; an unknown verb is `unknown-verb`.
 
-4.4 **hello** — args `{"client": str ≤ 64, "proto": {"major": 1, "minor": u16}}` (binary: MUST equal the
-prefix, else `bad-request`). Result:
+4.4 **hello** — args `{"client": str ≤ 64, "proto": {"major": 1, "minor": u16}}` (binary: `proto` MUST
+equal the client's own prefix, major 1 and its highest minor C, not the negotiated N, else `bad-request`
+with `detail.key` `proto.major` or `proto.minor`; JSON: a `proto.major` other than 1 is
+`unsupported-version`, fatal, the only wire place the code is reachable, and `proto.minor` is the client's
+C). The result carries `proto.minor` N = min(C, the server's minor), in both modes; a second `hello` on a
+connection, either mode, is `bad-request` `{"key":"verb"}` (JSON mode accepts `hello` only as the first
+line). `client` is 0 to 64 decoded bytes without a control character (below 0x20 or 0x7F) and without a
+lone surrogate; it is a free label, never an identity, and a request key naming a uid, pid or cgroup is
+`bad-request`. Result:
 `{"proto": {"major": 1, "minor": N}, "level": "observe|operator|observer|control", "server": str,
 "boot_id": "<uuid text>", "epoch": u64, "features": [str], "verbs": [str], "quality_codes":
 [{"code": u8, "name": str}], "limits": {"max_frame_bytes": u32, "max_request_bytes": u32,
@@ -346,7 +373,9 @@ u32, "max_block_bytes": u32, "max_rows": u32, "max_block_buckets": u32,
 "max_page_blocks": u32, "min_interval_ms": u32, "tick_ms": u32}}`, exactly these keys; values as
 §5.1, plus defaults `max_rows` 4,096, `max_block_buckets` 4,096, `max_page_blocks` 64,
 `min_interval_ms` 1,000, `tick_ms` 1,000 (levels that serve no block verb report the block keys as
-0). `features` ⊆ {`peak_reset`, `placement`, `damon`, `enrich`}. A client MUST NOT assume a limit it
+0: `max_subscriptions`, `client_queue_bytes`, `query_queue_bytes`, `max_block_bytes`, `max_rows`,
+`max_block_buckets`, `max_page_blocks`, `min_interval_ms` and `tick_ms`; `verbs` lists the verbs served
+at the level now). `features` ⊆ {`peak_reset`, `placement`, `damon`, `enrich`}. A client MUST NOT assume a limit it
 was not given.
 
 4.5 **status** — args `{}`. Result `{"server": str, "boot_id": str, "epoch": u64, "started_real_ns": i64,
@@ -850,7 +879,17 @@ the line, newline included, is bounded by `max_request_bytes` and the request de
 (`frame-too-large`/`deadline`, close); the line reader is bounded like §5.2 (no allocation beyond the
 bytes received, capacity ≤ `max_request_bytes`). Empty lines and invalid JSON text (§4.2) are
 `bad-request` with `corr: 0` when no `corr` could be read; the connection stays. Each reply is one
-line.
+line. **Line rules** (P5b design R13, `bins/probe/src/lines.rs`): a line including its `\n` is at most
+`max_request_bytes`; when that many bytes are buffered without a `\n` the reader refuses with
+`frame-too-large` (fatal); a `\r\n` ending reaches the envelope check with a trailing `\r`, which is a
+trailing byte and so `bad-request` (non-fatal); an empty line is `bad-request`; the request-deadline
+age is stamped at each line's first byte; reading is linear (a scanned offset, no rescan per feed,
+complete lines sliced out of the received bytes, only the incomplete tail buffered) and the buffer
+capacity never exceeds `min(max_request_bytes, bytes received + 4,096)`. End of stream inside a line
+closes without a reply. **`corr` recovery** (R12): the reply to a defective line carries the line's
+`corr` only if the members of the line read (no duplicate key, at most 8 keys) and `corr` is one exact
+`u32` other than 0, else `corr` 0; a `corr` of 0 is `bad-request` `{"key":"corr"}`, not fatal (a binary
+`corr` 0 is `bad-frame`, fatal).
 8.2 **Envelope.** Request `{"corr": u32 ≠ 0, "verb": str, "args": object}`; reply = §4.1 / §2.2 REP
 objects plus `"corr"`. Server-originated lines use `corr: 0`.
 8.3 **Integers.** All integers are exact JSON integers (never strings, never exponent or fraction form);
