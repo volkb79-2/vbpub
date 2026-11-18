@@ -212,10 +212,11 @@ Additive minor release of CIU 7 (the next 7.x). Primary checkouts and non-adopti
 and projects with the hand-written block keep working through the de-duplication. Follow-ups: the
 netcup-api-filter and dstdns backlogs (dstdns via its own backlog, cross-repo annotation) delete their
 blocks after adopting. v8: S6.2.4 derives the service from `exec_in` and needs no table, so the v8
-migration drops `[<stack>.linked_worktree]`. **OPEN QUESTION (v8 spec, not blocking CIU 7):** S16.4.9 and
-S6.2.4 mandate a flat `rw` on the `git worktree add` rationale, which cannot be reproduced from current
-code. Recommendation: once probe 10 passes on both lanes, amend v8 to `ro`, plus an opt-in `rw` with the
-RG-NARROW/RG-86 layout above, which Run-Gate already uses.
+migration drops `[<stack>.linked_worktree]`. **RESOLVED 2026-11-18 (v8 spec):** S16.4.9 and
+S6.2.4 mandated a flat `rw` on the `git worktree add` rationale, which could not be reproduced from current
+code. Probe 10 passed (netcup-api-filter lane PASS under `ro`; dstdns lane reached a coverage verdict under `ro` once its
+sibling runner used the invoking uid, the earlier failure having been root-owned files, not the mount), and SPEC-V8 S16.4.9/S6.2.4
+now say `ro` by default with an opt-in `rw` modelled on the RG-NARROW/RG-86 layout above, which Run-Gate already uses.
 
 ---
 
