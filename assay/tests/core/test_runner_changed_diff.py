@@ -10,7 +10,6 @@ a verdict ``verify`` rejects is a bug.
 from __future__ import annotations
 
 import hashlib
-import os
 import stat
 from dataclasses import replace
 from pathlib import Path
