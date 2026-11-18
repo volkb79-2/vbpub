@@ -335,7 +335,8 @@ def pytest_configure(config: pytest.Config) -> None:
 def _read_process_stat(pid: int) -> tuple[str, str, int, int] | None:
     """Read ``(comm, state, ppid, starttime)`` for *pid*, or None when it is gone."""
     try:
-        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
     except OSError:
         return None
     head, separator, tail = text.rpartition(")")
@@ -352,9 +353,9 @@ def _read_process_stat(pid: int) -> tuple[str, str, int, int] | None:
 
 def _direct_children() -> dict[tuple[int, int], tuple[str, str]]:
     """Return this process's direct children, zombies included, keyed by pid/starttime."""
-    task_root = Path(f"/proc/{os.getpid()}/task")
+    task_root = f"/proc/{os.getpid()}/task"
     try:
-        tasks = list(task_root.iterdir())
+        tasks = os.listdir(task_root)
     except OSError as exc:
         raise RuntimeError(
             "the leftover-child guard requires Linux /proc; "
@@ -364,7 +365,10 @@ def _direct_children() -> dict[tuple[int, int], tuple[str, str]]:
     readable = False
     for task in tasks:
         try:
-            child_pids = (task / "children").read_text(encoding="utf-8").split()
+            with open(
+                os.path.join(task_root, task, "children"), encoding="utf-8"
+            ) as handle:
+                child_pids = handle.read().split()
         except OSError:
             continue
         readable = True
@@ -386,7 +390,8 @@ def _direct_children() -> dict[tuple[int, int], tuple[str, str]]:
 def _child_cmdline(pid: int) -> str:
     """Return *pid*'s command line for a failure message, or ``<unavailable>``."""
     try:
-        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            raw = handle.read()
     except OSError:
         return "<unavailable>"
     text = raw.replace(b"\0", b" ").strip().decode("utf-8", errors="replace")

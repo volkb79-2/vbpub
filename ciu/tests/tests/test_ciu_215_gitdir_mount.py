@@ -53,7 +53,7 @@ def hermetic_git(monkeypatch):
         monkeypatch.setenv(key, value)
 
 
-def test_the_leftover_child_guard_names_a_child_and_its_cmdline():
+def test_the_leftover_child_guard_names_a_child_and_its_cmdline(monkeypatch):
     """The CIU-223 guard reports a live direct child without signalling it."""
     before = set(suite_conftest._direct_children())
     child = subprocess.Popen(
@@ -65,6 +65,13 @@ def test_the_leftover_child_guard_names_a_child_and_its_cmdline():
     try:
         assert child.stdout is not None
         assert child.stdout.readline().strip() == "ready"
+
+        def forbidden_path_use(*_args, **_kwargs):
+            raise AssertionError("the process guard must not use pathlib")
+
+        monkeypatch.setattr(Path, "iterdir", forbidden_path_use)
+        monkeypatch.setattr(Path, "read_text", forbidden_path_use)
+        monkeypatch.setattr(Path, "read_bytes", forbidden_path_use)
         leaked = suite_conftest._leftover_child_descriptions(before)
         named = [item for item in leaked if item.startswith(f"pid {child.pid} ")]
         assert len(named) == 1
