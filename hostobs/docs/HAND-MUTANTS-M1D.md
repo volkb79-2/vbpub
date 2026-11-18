@@ -57,7 +57,7 @@ from scratch.
 
 | M1d-12 | HOB-43 | the store never counts an evicted quarantined file; counts it as an evicted segment; `Evicted::is_empty` ignores quarantined files | `an_evicted_quarantined_file_is_counted_apart_from_evicted_segments` |
 | M1d-13 | HOB-43 | removing a quarantined file does not take its bytes out of the total | `quarantined_bytes_count_against_the_cap_and_go_before_any_live_segment` |
-| M1d-14 | HOB-8 | Python: the 12 to 15 byte block-frame guard is dropped | `test_the_frame_header_bounds_the_declared_length_at_both_ends`; the `block-without-directory` fixture |
+| M1d-14 | HOB-8 | Python: the 12 to 15 byte block-frame guards are dropped (two patches: the 2-byte and the 4-byte directory guard) | `test_the_frame_header_bounds_the_declared_length_at_both_ends` and the `block-without-directory` fixture (the 2-byte guard); `test_a_block_frame_of_twelve_to_fifteen_bytes_is_a_directory_truncation` (both guards) |
 | M1d-15 | HOB-43 | the `kind != File` guard on a `.corrupt` entry is dropped | none expected: **possibly an equivalent mutant**, because `read_window` fails on a directory and the name is reported anyway; if it survives, that is the explanation, not a missing test |
 | M1d-16 | HOB-43 | a quarantined / a live file deleted by hand is not recognised as gone | `a_quarantined_file_deleted_by_hand_does_not_fail_every_later_append`; `a_live_segment_deleted_by_hand_leaves_the_ring_without_failing_the_cap` |
 | M1d-17 | HOB-43 | an unproven live / a quarantined name no longer reserves its sequence number | `a_name_never_comes_back_after_a_quarantine_and_a_restart`; `an_unproven_name_still_reserves_its_own_sequence_below_the_bound` |
@@ -67,7 +67,8 @@ from scratch.
 | M1d-21 | HOB-56 | the byte total is incremental arithmetic again: the write path, `Store::evict` or `seal_all` does not recompute it | `the_store_total_is_the_tiers_own_total_after_every_operation`; `the_store_total_drops_a_quarantined_file_deleted_by_hand`; `the_store_total_drops_a_live_segment_deleted_by_hand` |
 | M1d-22 | HOB-58 | `Tier::report` does not fill `Evicted::notes`; the write path / `Store::evict` does not copy them into the store's ring; the ring has no bound; the scan notes' reports have no cap; `Store::notes` hides a tier's note about its own name, shows another tier's note about a shared-directory file, repeats a report, or leaves the ring out (the last is possibly equivalent while no store API rescans a tier) | `eviction_reports_in_the_scan_notes_are_capped_and_drop_the_oldest`; `a_note_about_a_tiers_own_quarantine_name_stays_visible_once`; `a_note_about_a_tiers_own_live_name_stays_visible_once`; `a_quarantined_file_deleted_by_hand_does_not_fail_every_later_append`; `a_quarantined_file_that_cannot_be_removed_is_reported_to_the_caller`; `eviction_reports_from_the_write_path_reach_the_store_and_are_bounded`; `the_store_total_drops_a_quarantined_file_deleted_by_hand`; `the_store_total_drops_a_live_segment_deleted_by_hand` |
 
-Fifty-three stored patches in all (`--dry-run`: 53 stored patches, 0 stale). The campaign first
+Fifty-four stored patches in all (`--dry-run`: 54 stored patches, 0 stale; `M1d-14`'s Python
+patch is two patches, one per guard of the directory header in `hostobs_wire_ref.py`). The campaign first
 runs a BASELINE per suite on the unmutated tree and stops if it is not green; a patch is `killed`
 only by a real test failure, and a docker or runner failure, a compile error or a Python import
 error is `NOT-BUILT` (unanswered).

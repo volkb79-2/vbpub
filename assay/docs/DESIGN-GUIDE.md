@@ -1341,7 +1341,11 @@ path = "vitest-report.json"
 ```
 
 `format` is closed against the shipped reader registry
-(`assay.result_reports.RESULT_REPORT_FORMATS`) — today, `vitest-json` alone.
+(`assay.result_reports.RESULT_REPORT_FORMATS`) — today, `vitest-json` and
+`cargo-mutants-outcomes`. The latter reads a DIRECTORY (cargo-mutants'
+`<out>/mutants.out`) that the runner reserves once and reads once for both R0 and
+R2, so it is declarable only beside `judge.mutation.format =
+"cargo-mutants-outcomes"` (see CONSUMERS "Rust R2 lanes (cargo-mutants)").
 `path` is relative to the directory the lane's command **runs in** (its `cwd`
 when it declares one), because that is what the runner's own `--outputFile`
 resolves against.
@@ -3416,7 +3420,7 @@ build actually wires it to (§7 — an adapter existing is not a capability):
 | `sql` | R2 only | a stdlib lexer over DDL; no coverage tool exists for it, so no R1, and A-192 forbids R3 without R1 |
 | `javascript` | R1, R2 by ingestion (B046), R3 canary (B087) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. The existing import-break and uncovered-line injectors use the shared isolated R3 runner and have local real-Vitest oracles; import-break expects a clean `COMMAND_FAILED`, while uncovered-line expects `UNCOVERED_LINES`. Both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | `go` | R1 only (A-394) | requires the real Go toolchain for source-derived statement positions (A-217); R2 and R3 have no producer path and are not registered |
-| `rust` | R1 only (B243) | changed-line LCOV judgment; the adapter normalizes stable cargo-llvm-cov's marker-only zero branch totals before the shared parser. Rust R2 and R3 are not registered |
+| `rust` | R1 (B243), R2 by ingestion (B245) | changed-line LCOV judgment; the adapter normalizes stable cargo-llvm-cov's marker-only zero branch totals before the shared parser. R2 is only the ingested `cargo-mutants-outcomes` report (mutation format and R0 result-report format; the lane runs cargo-mutants with `--test-tool nextest` and the `{assay.changed_diff}` argv placeholder), with no native `generate_mutation_sites`; no consumer has adopted it yet. R3 is not registered |
 
 ### R3 import-break receipt attribution
 
@@ -4573,7 +4577,8 @@ Rust R2 uses ingested `cargo-mutants` outcomes rather than a new Assay-owned
 mutator. D8 places its diff-scoped campaign at asynchronous T3 against the
 latest release, with the previous release tag as its base. It never gates a
 merge or release; survivors become backlog items. Rust R2 not yet adopted
-(R-3b pending) is recorded once as a known issue, with no per-release waiver.
+(Assay's ingestion, R-3b, is implemented as B245 U0-U5c; the hostobs T3 lane,
+U8, is pending) is recorded once as a known issue, with no per-release waiver.
 
 Dependencies stay out of Git because a repository vendor tree would duplicate
 the crate cache: `tester-unified-rust` carries the cache built from
