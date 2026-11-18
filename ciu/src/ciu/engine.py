@@ -2009,8 +2009,16 @@ def main_execution(
     primary_image_references: set[str] | Callable[[], set[str]] | None = None,
     derive_ciu_context: bool = False,
     _prepare_only: bool = False,
+    topology_overrides: Optional[dict] = None,
 ) -> dict:
     """Run the S8.3 pipeline for one stack. Returns a result dict with 'status'.
+
+    *topology_overrides* (CIU-208 / S7.4): the active profiles' accumulated
+    ``topology_overrides`` (``Profile.topology_overrides``), deep-merged over
+    ``topology`` of the global chain this call renders, before the selection
+    record check and the stack render. Only the overridden keys change, so
+    layers below the repo root keep every other value. ``None`` (every caller
+    that is not profile-mode ``ciu up``) leaves the chain untouched.
 
     *compose_profiles* (P10 / S7.4): compose profile names joined into the
     compose process env's ``COMPOSE_PROFILES`` (step 16, via
@@ -2085,6 +2093,10 @@ def main_execution(
             if ciu_context is not None
             else config_model.render_global_chain(working_dir, repo_root)
         )
+        if topology_overrides:
+            global_config["topology"] = config_model.deep_merge(
+                global_config.get("topology", {}), topology_overrides
+            )
 
         log_level = global_config.get("deploy", {}).get("log_level", "INFO")
         configure_logging(log_level)
@@ -2634,9 +2646,10 @@ def single_stack_ciu_context(repo_root: Path, stack_dir: Path) -> dict:
     ``ciu up`` (``deploy.resolve_profiles`` with no CLI names, which honours
     ``[ciu.instance] service_profiles``); ``deployed_stacks`` is exactly this
     stack, repo-relative, as for ``ciu dev``. Only the facts are derived: the
-    profile's env/topology overrides and compose profiles are not applied,
-    exactly as before (the profile-mode per-stack render does not apply
-    topology overrides either; it re-renders the global chain from disk).
+    profile's env/topology overrides and compose profiles are not applied on
+    this path (the ``--dir`` scope of CIU-205 is unchanged). Profile-mode
+    ``ciu up`` does apply the topology override (CIU-208,
+    ``main_execution(topology_overrides=...)``).
     """
     from . import deploy
     from .deploy_pkg import profiles as profiles_pkg

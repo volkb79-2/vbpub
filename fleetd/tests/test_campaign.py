@@ -16,7 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from fleetd.campaign import CampaignManager, LOST_AFTER_SECONDS, STALL_FLOOR_SECONDS, _atomic_write, _event_key, _system_boot_id
+from fleetd.campaign import (
+    CampaignManager, ERROR_WARN_AFTER_SECONDS, LOST_AFTER_SECONDS, NONCOMPARABLE_FIRST_WINDOW_FACTOR, STALL_FLOOR_SECONDS, _atomic_write, _event_key, _system_boot_id,
+)
 from fleetd.contracts import CONTROL_PLANE_SERVICE_UNITS, ContractError
 from fleetd.plan import plan_campaign
 from fleetd.runner import (
@@ -697,6 +699,7 @@ def test_stall_floor_and_unreachable_pause_are_progress_based(tmp_path):
     job = next(job for job in state["jobs"].values() if job["status"] == "RUNNING")
     host_id = job["host"]
     transport.set_unreachable(host_id)
+    manager.tick("campaign")
     clock.advance(1200)
     manager.tick("campaign")
     assert any(host["state"] == "UNREACHABLE" for host in manager.status("campaign")["hosts"] if host["host"] == host_id)
@@ -746,7 +749,7 @@ def test_first_stall_window_uses_batch_prediction_and_declared_baseline(tmp_path
     manager.run("slow", plan)
     state = _state(tmp_path, "slow")
     job = next(job for job in state["jobs"].values() if job["status"] == "RUNNING")
-    assert CampaignManager._stall_threshold(state, job) == 3 * 560 + 400
+    assert CampaignManager._stall_threshold(state, job) == 9 * 560 + 400
 
     clock.advance(3 * 560 + 400 - 1)
     manager.tick("slow")
@@ -839,6 +842,7 @@ def test_first_stall_window_uses_baseline_observed_on_the_same_host(tmp_path):
     observed_job = state["jobs"][job["name"]]
     assert observed_job["baseline_seconds"] == 400
     observed_job["finished_ids"] = []
+    # A candidate finished on this host: the observed time corrects the window.
     assert CampaignManager._stall_threshold(state, observed_job) == 3 * 560 + 400
 
 
@@ -1079,6 +1083,7 @@ def test_lost_host_requeues_only_unfinished_candidates_and_uses_largest_cap(tmp_
     transport.add_progress("host-a", lost_job["name"], completed, "survived", emitted_at="2026-11-13T00:00:00+00:00")
     manager.status("campaign")
     transport.set_unreachable("host-a")
+    manager.tick("campaign")  # first failed probe: starts the loss clock
     clock.advance(LOST_AFTER_SECONDS + 1)
     manager.tick("campaign")
     after = _state(tmp_path)
@@ -1111,6 +1116,7 @@ def test_returning_after_loss_can_finish_a_duplicate_without_double_counting(tmp
     transport.add_progress("host-a", job_a["name"], first_id, "killed", emitted_at="2026-11-13T00:00:02+00:00")
     transport.finish("host-a", job_a["name"])
     transport.set_unreachable("host-b")
+    manager.tick("campaign")  # first failed probe: starts the loss clock
     clock.advance(LOST_AFTER_SECONDS + 1)
     manager.tick("campaign")
     state = _state(tmp_path)
@@ -1362,6 +1368,22 @@ def test_progress_making_exit_defers_only_pending_work_when_host_is_unreachable(
     }]
 
 
+def test_an_exited_batch_on_an_error_host_is_deferred_with_an_error_reason(tmp_path):
+    plan = _plan(2)
+    transport = FakeTransport()
+    manager = CampaignManager(tmp_path, transport)
+    manager.run("campaign", plan)
+    state = _state(tmp_path)
+    job = _first_running(state, "host-a")
+    state_job = state["jobs"][job["name"]]
+    state_job.update({"status": "EXIT", "exit_code": 2, "requeued": False, "finished_ids": []})
+    state_job["records"] = []
+    state_job["started_mono"] = None  # never started: its work is re-queued, not failed
+    state["hosts"]["host-a"]["status"] = "ERROR"
+    manager._requeue_exited(state)
+    assert [item["reason"] for item in state["deferred_requeues"]] == ["job exited while its host is in ERROR"]
+
+
 def test_lost_host_with_no_unfinished_candidates_does_not_create_requeue(tmp_path):
     clock = FakeClock()
     transport = FakeTransport(clock=clock)
@@ -1373,6 +1395,7 @@ def test_lost_host_with_no_unfinished_candidates_does_not_create_requeue(tmp_pat
         transport.add_progress(job["host"], job["name"], candidate_id, "survived")
     manager.status("campaign")
     transport.set_unreachable(job["host"])
+    manager.tick("campaign")  # first failed probe: starts the loss clock
     clock.advance(LOST_AFTER_SECONDS + 1)
     manager.tick("campaign")
     state = _state(tmp_path)
@@ -1393,6 +1416,7 @@ def test_returning_running_duplicate_is_stopped_after_other_host_finishes(tmp_pa
     transport.finish("host-a", first_job["name"])
     manager.status("campaign")
     transport.set_unreachable("host-b")
+    manager.tick("campaign")  # first failed probe: starts the loss clock
     clock.advance(LOST_AFTER_SECONDS + 1)
     manager.tick("campaign")
     state = _state(tmp_path)
@@ -2074,6 +2098,7 @@ def test_lost_host_without_alternate_host_defers_and_resumes_if_it_returns(tmp_p
     manager.run("campaign", plan)
     job = _first_running(_state(tmp_path), host_id)
     transport.set_unreachable(host_id)
+    manager.tick("campaign")  # first failed probe: starts the loss clock
     clock.advance(LOST_AFTER_SECONDS + 1)
     manager.tick("campaign")
     state = _state(tmp_path)
@@ -2109,6 +2134,7 @@ def test_large_golden_plan_runs_stall_and_loss_requeue_scenario(tmp_path):
     transport.add_progress("host-b", lost_job["name"], finished, "survived")
     manager.status("large")
     transport.set_unreachable("host-b")
+    manager.tick("large")  # first failed probe: starts the loss clock
     clock.advance(LOST_AFTER_SECONDS + 1)
     manager.tick("large")
     final_state = _state(tmp_path, "large")
@@ -2203,6 +2229,7 @@ def test_lost_host_work_goes_to_the_largest_alone_capacity_of_three_hosts(tmp_pa
     manager = CampaignManager(tmp_path, transport, clock=clock)
     manager.run("campaign", plan)
     transport.set_unreachable("host-b")
+    manager.tick("campaign")  # first failed probe: starts the loss clock
     clock.advance(LOST_AFTER_SECONDS + 1)
     manager.tick("campaign")
     requeued = [job for job in _state(tmp_path)["jobs"].values() if job.get("requeue_reason") == "host-lost"]
@@ -2340,7 +2367,7 @@ def test_idle_planned_host_is_probed_and_can_receive_lost_work(tmp_path):
     manager.run("campaign", plan)
 
     transport.set_unreachable(source["id"])
-    manager.tick("campaign")
+    manager.tick("campaign")  # the first failed probe starts the loss clock
     clock.advance(LOST_AFTER_SECONDS + 1)
     manager.tick("campaign")
 
@@ -2543,7 +2570,7 @@ def test_stall_threshold_never_pools_observations_across_hosts(tmp_path):
 
 def _lose(manager: CampaignManager, transport: FakeTransport, clock: FakeClock, host: str) -> None:
     transport.set_unreachable(host)
-    manager.tick("campaign")
+    manager.tick("campaign")  # the first failed probe starts the loss clock
     clock.advance(LOST_AFTER_SECONDS + 1)
     manager.tick("campaign")
 
@@ -2636,7 +2663,7 @@ def test_refused_host_is_never_contacted_by_any_campaign_command(tmp_path):
     manager.run("campaign", plan)
     manager.status("campaign")
     transport.set_unreachable("host-a")
-    manager.tick("campaign")
+    manager.tick("campaign")  # the first failed probe starts the loss clock
     clock.advance(LOST_AFTER_SECONDS + 1)
     manager.tick("campaign")
     manager.collect("campaign")
@@ -3090,3 +3117,730 @@ def test_execution_context_carries_an_optional_image_digest(tmp_path):
     bad["execution"] = {**EXECUTION, "image_digest": "sha256:" + "c" * 63}
     with pytest.raises(ContractError, match="image_digest"):
         manager.run("other", bad)
+
+
+# FD-020: the loss clock starts at the first failed probe this controller observed.
+
+
+def test_one_failed_probe_after_a_long_tick_gap_does_not_mark_the_host_lost(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = _first_running(_state(tmp_path), "host-a")
+    clock.advance(31 * 60)
+    transport.add_progress("host-a", job["name"], job["candidate_ids"][0], "killed")
+    transport.set_unreachable("host-a")
+    status = manager.tick("campaign")
+    host = _state(tmp_path)["hosts"]["host-a"]
+    assert host["status"] == "UNREACHABLE"
+    assert host["unreachable_since_mono"] == clock()
+    assert next(row for row in status["hosts"] if row["host"] == "host-a")["state"] == "UNREACHABLE"
+
+    clock.advance(60)
+    transport.set_unreachable("host-a", False)
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    assert state["hosts"]["host-a"]["status"] == "ONLINE"
+    assert state["jobs"][job["name"]]["status"] == "RUNNING"
+    assert state["hosts"]["host-a"]["paused_seconds"] == 60
+    assert not any(row.get("requeue_reason") == "host-lost" for row in state["jobs"].values())
+
+
+def test_a_host_still_failing_past_the_clock_from_its_first_failure_is_lost(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    clock.advance(31 * 60)
+    transport.set_unreachable("host-a")
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS)
+    manager.tick("campaign")
+    assert _state(tmp_path)["hosts"]["host-a"]["status"] == "UNREACHABLE"
+    clock.advance(1)
+    manager.tick("campaign")
+    assert _state(tmp_path)["hosts"]["host-a"]["status"] == "LOST"
+
+
+def test_a_probe_timeout_is_slow_and_counts_toward_loss_only_after_the_same_clock(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    transport.set_slow("host-a")
+    status = manager.tick("campaign")
+    assert next(row for row in status["hosts"] if row["host"] == "host-a")["state"] == "SLOW"
+    clock.advance(LOST_AFTER_SECONDS)
+    status = manager.tick("campaign")
+    assert next(row for row in status["hosts"] if row["host"] == "host-a")["state"] == "SLOW"
+    assert not any(row.get("requeue_reason") == "host-lost" for row in _state(tmp_path)["jobs"].values())
+    clock.advance(1)
+    manager.tick("campaign")
+    assert _state(tmp_path)["hosts"]["host-a"]["status"] == "LOST"
+
+
+def test_a_slow_probe_that_recovers_keeps_its_batches_and_pauses_their_stall_clock(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = _first_running(_state(tmp_path), "host-a")
+    transport.set_slow("host-a")
+    manager.tick("campaign")
+    slow_for = STALL_FLOOR_SECONDS + 300  # longer than the stall floor, shorter than the loss clock
+    assert STALL_FLOOR_SECONDS < slow_for < LOST_AFTER_SECONDS
+    clock.advance(slow_for)
+    transport.set_slow("host-a", False)
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    assert state["hosts"]["host-a"]["status"] == "ONLINE"
+    assert state["jobs"][job["name"]]["status"] == "RUNNING"
+    assert state["jobs"][job["name"]]["paused_seconds"] == slow_for
+
+
+def test_every_contact_failure_site_starts_the_clock_at_now_not_at_last_contact(tmp_path):
+    clock = FakeClock()
+    manager = CampaignManager(tmp_path / "m", FakeTransport(clock=clock), clock=clock)
+    manager.run("campaign", _plan(1))
+    state = _state(tmp_path / "m")
+    host_id = next(iter(state["jobs"].values()))["host"]
+    host_state = state["hosts"][host_id]
+    assert host_state["last_contact_mono"] is not None
+
+    def fail(*_args):
+        raise HostUnavailable("down")
+
+    manager.runner.stop = fail
+    job = next(iter(state["jobs"].values()))
+    # Stall stop.
+    clock.advance(STALL_FLOOR_SECONDS + 5000)
+    manager._detect_stalls(state)
+    assert host_state["status"] == "UNREACHABLE" and host_state["unreachable_since_mono"] == clock()
+    # Superseded stop.
+    host_state.update({"status": "ONLINE", "unreachable_since_mono": None})
+    job["status"], job["stop_pending"] = "SUPERSEDED_PENDING", True
+    clock.advance(10)
+    manager._stop_superseded_host(state, host_id)
+    assert host_state["status"] == "UNREACHABLE" and host_state["unreachable_since_mono"] == clock()
+    # Returned-duplicate stop.
+    host_state.update({"status": "ONLINE", "unreachable_since_mono": None})
+    job["status"] = "RUNNING"
+    state["jobs"]["other"] = {**job, "name": "other", "host": "elsewhere", "records": [{"candidate_id": c} for c in job["candidate_ids"]]}
+    clock.advance(10)
+    manager._stop_returned_duplicates(state, host_id)
+    assert host_state["status"] == "UNREACHABLE" and host_state["unreachable_since_mono"] == clock()
+    # Start.
+    host_state.update({
+        "status": "ONLINE", "unreachable_since_mono": None,
+        "pressure": {"memory_some_avg10": 0.0, "io_some_avg10": 0.0},
+    })
+    job["status"] = "QUEUED"
+    del state["jobs"]["other"]
+
+    def fail_start(_spec):
+        raise HostUnavailable("down")
+
+    manager.runner.start = fail_start
+    clock.advance(10)
+    manager._start_available(state)
+    assert host_state["status"] == "UNREACHABLE" and host_state["unreachable_since_mono"] == clock()
+
+
+# FD-026: a host that stays in ERROR is aged and warned about, never declared lost.
+
+
+def _fail_probe_with(manager: CampaignManager, host: str, error: Exception) -> dict:
+    """Make one host's probe raise ``error``; return a switch dict (``active``) to clear it."""
+    switch = {"active": True}
+    probe = manager.runner.probe
+
+    def probe_or_fail(target, wanted):
+        if target == host and switch["active"]:
+            raise error
+        return probe(target, wanted)
+
+    manager.runner.probe = probe_or_fail
+    return switch
+
+
+def _host_row(status: dict, host: str) -> dict:
+    return next(row for row in status["hosts"] if row["host"] == host)
+
+
+def test_a_persistent_contract_error_is_aged_and_warned_but_never_lost_or_requeued(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = _first_running(_state(tmp_path), "host-a")
+    stops = []
+    real_stop = manager.runner.stop
+    manager.runner.stop = lambda host, name: stops.append((host, name)) or real_stop(host, name)
+    _corrupt_digest(transport, "host-a", job["name"])  # the real digest check fails after a good probe
+
+    status = manager.tick("campaign")
+    first = _host_row(status, "host-a")
+    assert first["state"] == "ERROR" and first["error_seconds"] == 0
+    assert first["error_since"] is not None and first["warning"] is None
+    assert _state(tmp_path)["warnings"] == []
+
+    clock.advance(1799)
+    status = manager.tick("campaign")
+    assert _host_row(status, "host-a")["error_seconds"] == 1799
+    assert _host_row(status, "host-a")["warning"] is None
+
+    for _ in range(30):
+        clock.advance(600)
+        status = manager.tick("campaign")
+    row = _host_row(status, "host-a")
+    assert row["state"] == "ERROR"
+    assert row["error_seconds"] == 1799 + 30 * 600 > 5 * 3600 - 1
+    assert "ERROR" in row["warning"] and "different candidate-list digest" in row["warning"]
+    state = _state(tmp_path)
+    assert len([w for w in state["warnings"] if "host-a" in w and "ERROR" in w]) == 1
+    assert state["hosts"]["host-a"]["error_since_mono"] == 100.0
+    assert state["hosts"]["host-a"]["status"] == "ERROR"
+    assert state["jobs"][job["name"]]["status"] == "RUNNING"
+    assert not any(row.get("requeue_reason") for row in state["jobs"].values() if row["host"] == "host-a")
+    assert [stop for stop in stops if stop[0] == "host-a"] == []
+    assert _host_row(status, "host-b")["warning"] is None and _host_row(status, "host-b")["error_since"] is None
+
+
+def test_a_contract_error_that_clears_before_the_threshold_leaves_no_warning(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    manager = CampaignManager(tmp_path, FakeTransport(clock=clock), clock=clock)
+    manager.run("campaign", plan)
+    switch = _fail_probe_with(manager, "host-a", ContractError("digest mismatch"))
+    manager.tick("campaign")
+    clock.advance(1000)
+    switch["active"] = False
+    status = manager.tick("campaign")
+    row = _host_row(status, "host-a")
+    assert row["state"] == "ONLINE" and row["error_seconds"] is None and row["error_since"] is None
+    assert _state(tmp_path)["warnings"] == []
+    # A later error starts its own clock.
+    clock.advance(5000)
+    switch["active"] = True
+    status = manager.tick("campaign")
+    assert _host_row(status, "host-a")["error_seconds"] == 0
+
+
+def test_an_error_clock_keeps_its_first_instant_across_different_messages_and_resets_on_unreachable(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    switch = _fail_probe_with(manager, "host-a", TransportError("first"))
+    manager.tick("campaign")
+    clock.advance(100)
+    switch["active"] = False
+    switch = _fail_probe_with(manager, "host-a", TransportError("second"))
+    status = manager.tick("campaign")
+    row = _host_row(status, "host-a")
+    assert row["error"] == "second" and row["error_seconds"] == 100
+    switch["active"] = False
+    transport.set_unreachable("host-a")
+    status = manager.tick("campaign")
+    row = _host_row(status, "host-a")
+    assert row["state"] == "UNREACHABLE" and row["error_seconds"] is None and row["error_since"] is None
+    assert "error_since_mono" not in _state(tmp_path)["hosts"]["host-a"]
+
+
+def test_a_start_error_and_a_successful_start_follow_the_same_error_clock(tmp_path):
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", _plan(1))
+    state = _state(tmp_path)
+    job = next(iter(state["jobs"].values()))
+    job["status"] = "QUEUED"
+    manager._write_state(state)
+    del transport.host(job["host"]).jobs[job["name"]]  # nothing runs there: the start is attempted
+
+    real_start = manager.runner.start
+
+    def refuse(_spec):
+        raise TransportError("start refused")
+
+    manager.runner.start = refuse
+    manager.tick("campaign")
+    host_state = _state(tmp_path)["hosts"][job["host"]]
+    assert host_state["status"] == "ERROR" and host_state["error_since_mono"] == clock()
+    clock.advance(50)
+    manager.tick("campaign")
+    host_state = _state(tmp_path)["hosts"][job["host"]]
+    assert host_state["status"] == "ERROR" and host_state["error_since_mono"] == clock() - 50
+
+    clock.advance(50)
+    manager.runner.start = real_start  # the host recovers by itself: no manual status reset
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    assert state["hosts"][job["host"]]["status"] == "ONLINE"
+    assert "error_since_mono" not in state["hosts"][job["host"]]
+    assert state["jobs"][job["name"]]["status"] == "RUNNING"
+
+
+# FD-025: a host without a comparable speed reference gets a widened first stall window.
+
+
+def _non_comparable_campaign(tmp_path, *, reference_seconds=560, baseline=400):
+    plan = _plan(1)
+    plan["time_reference"] = {"reason": "no comparable host scores"}
+    plan["demand"]["baseline_seconds"] = baseline
+    assigned = next(candidate for host in plan["hosts"] for candidate in host["assigned"])
+    assigned["time_ref_seconds"] = reference_seconds
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = next(job for job in _state(tmp_path)["jobs"].values() if job["status"] == "RUNNING")
+    return manager, transport, clock, job
+
+
+def test_a_non_comparable_host_is_not_stalled_in_its_first_window_when_slower_than_three_times_reference(tmp_path):
+    manager, _transport, clock, job = _non_comparable_campaign(tmp_path)
+    clock.advance(3 * 560 + 400 + 1)  # past the old threshold, and past the 900 s floor
+    manager.tick("campaign")
+    assert _state(tmp_path)["jobs"][job["name"]]["status"] == "RUNNING"
+    clock.advance(3 * 3 * 560 + 400 - (3 * 560 + 400 + 1) - 1)
+    manager.tick("campaign")
+    assert _state(tmp_path)["jobs"][job["name"]]["status"] == "RUNNING"
+    clock.advance(1)
+    manager.tick("campaign")
+    failed = _state(tmp_path)["jobs"][job["name"]]
+    assert failed["status"] == "FAILED"
+    assert failed["stall_after_seconds"] == NONCOMPARABLE_FIRST_WINDOW_FACTOR * 3 * 560 + 400
+
+
+def test_the_widened_window_applies_only_without_a_comparable_reference_and_before_any_observation(tmp_path):
+    manager, transport, clock, job = _non_comparable_campaign(tmp_path)
+    state = _state(tmp_path)
+    assert NONCOMPARABLE_FIRST_WINDOW_FACTOR == 3
+    assert CampaignManager._stall_threshold(state, state["jobs"][job["name"]]) == 9 * 560 + 400
+    # The host has now observed a candidate: the observed p95 corrects the window.
+    transport.add_progress(job["host"], job["name"], job["candidate_ids"][0], "killed", elapsed_seconds=700)
+    manager.status("campaign")
+    state = _state(tmp_path)
+    unfinished = dict(state["jobs"][job["name"]], finished_ids=[])
+    assert CampaignManager._stall_threshold(state, unfinished) == max(3 * 560, 3 * 700, STALL_FLOOR_SECONDS) + 400
+    # A comparable reference keeps the scaled prediction, not the widened one.
+    comparable = copy.deepcopy(state)
+    reference = {"baseline_score": 100, "geekbench_major": 6, "geekbench_version": "6.3.0"}
+    comparable["plan"]["time_reference"] = dict(reference)
+    plan_host = next(row for row in comparable["plan"]["hosts"] if row["id"] == job["host"])
+    plan_host["speed"] = {**reference, "single_core": 100}
+    plan_host["f_h"] = 1.0
+    comparable["jobs"] = {name: dict(row, records=[], finished_ids=[]) for name, row in comparable["jobs"].items()}
+    assert CampaignManager._stall_threshold(comparable, comparable["jobs"][job["name"]]) == 3 * 560 + 400
+
+
+# FD-017: one candidate that does not fit the re-queue target never drops the placeable others.
+
+
+def _plan_with_one_oversized_candidate() -> tuple[dict, list[str], str]:
+    plan = _plan(8)
+    candidates = [dict(item) for host in plan["hosts"] for item in host["assigned"]]
+    assert len(candidates) == 8
+    huge = candidates[0]
+    huge["memory_bytes"] = 9 * 1024**3
+    owner, other = plan["hosts"][0], plan["hosts"][1]
+    owner["assigned"] = candidates
+    owner["batches"] = [{"batch": 0, "kind": "regular", "candidate_ids": [item["id"] for item in candidates]}]
+    other["assigned"], other["batches"] = [], []
+    for host in plan["hosts"]:
+        for item in host["assigned"]:
+            if item["id"] == huge["id"]:
+                item["memory_bytes"] = 9 * 1024**3
+    return plan, [item["id"] for item in candidates[1:]], huge["id"]
+
+
+def test_a_lost_host_requeues_the_seven_placeable_candidates_and_defers_the_nine_gib_one(tmp_path):
+    plan, placeable, huge_id = _plan_with_one_oversized_candidate()
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    assert _first_running(_state(tmp_path), "host-a")
+    transport.set_unreachable("host-a")
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    requeued = [row for row in state["jobs"].values() if row.get("requeue_reason") == "host-lost"]
+    assert sorted(item for row in requeued for item in row["candidate_ids"]) == sorted(placeable)
+    assert all(row["host"] == "host-b" for row in requeued)
+    assert len(state["deferred_requeues"]) == 1
+    deferred = state["deferred_requeues"][0]
+    assert deferred["candidate_ids"] == [huge_id]
+    assert "host-b" in deferred["reason"] and "requires" in deferred["reason"]
+    assert not any("could not re-plan" in warning for warning in state["warnings"])
+    assert all(huge_id not in row["candidate_ids"] for row in requeued)
+
+    # Every later tick keeps it deferred with the reason (no growth, no loss).
+    for _ in range(3):
+        manager.tick("campaign")
+    state = _state(tmp_path)
+    assert [item["candidate_ids"] for item in state["deferred_requeues"]] == [[huge_id]]
+    assert len([row for row in state["jobs"].values() if row.get("requeue_reason") == "host-lost"]) == len(requeued)
+    result, report, _, _ = manager.collect("campaign")
+    row = next(item for item in result["candidates"] if item["candidate_id"] == huge_id)
+    assert row["outcome"] == "missing" and "requires" in row["reason"] and "host-b" in row["reason"]
+    assert row["reason"] == deferred["reason"]
+    assert row["reason"] in report
+
+
+def test_a_recovery_before_the_threshold_keeps_every_batch_and_defers_nothing(tmp_path):
+    plan, _placeable, _huge_id = _plan_with_one_oversized_candidate()
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = _first_running(_state(tmp_path), "host-a")
+    transport.set_unreachable("host-a")
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS - 1)
+    manager.tick("campaign")
+    transport.set_unreachable("host-a", False)
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    assert state["hosts"]["host-a"]["status"] == "ONLINE"
+    assert state["jobs"][job["name"]]["status"] == "RUNNING"
+    assert state["deferred_requeues"] == []
+    assert len(state["jobs"]) == 1
+
+
+def test_a_retry_that_still_does_not_fit_stays_deferred_and_the_rest_is_queued_once_a_target_returns(tmp_path):
+    plan, placeable, huge_id = _plan_with_one_oversized_candidate()
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    transport.set_unreachable("host-a")
+    transport.set_unreachable("host-b")
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    assert state["hosts"]["host-a"]["status"] == "LOST"
+    assert [item["reason"] for item in state["deferred_requeues"]] == ["lost host has no reachable planner target yet"]
+    transport.set_unreachable("host-b", False)
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    requeued = [row for row in state["jobs"].values() if row.get("requeue_reason") == "host-lost"]
+    assert sorted(item for row in requeued for item in row["candidate_ids"]) == sorted(placeable)
+    assert [item["candidate_ids"] for item in state["deferred_requeues"]] == [[huge_id]]
+
+
+# Boundary and guard pins found by the WP2 hand-mutation review.
+
+
+def test_a_slow_host_receives_no_new_batch_until_it_answers_again(tmp_path):
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", _plan(1))
+    state = _state(tmp_path)
+    job = next(iter(state["jobs"].values()))
+    host_state = state["hosts"][job["host"]]
+    host_state.update({"status": "SLOW", "pressure": {"memory_some_avg10": 0.0, "io_some_avg10": 0.0}})
+    job["status"] = "QUEUED"
+    started = []
+    manager.runner.start = lambda spec: started.append(spec.name) or True
+    manager._start_available(state)
+    assert started == [] and job["status"] == "QUEUED"
+    host_state["status"] = "ONLINE"
+    manager._start_available(state)
+    assert started == [job["name"]]
+
+
+def test_the_error_warning_starts_at_exactly_1800_seconds_in_state_and_status(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    manager = CampaignManager(tmp_path, FakeTransport(clock=clock), clock=clock)
+    manager.run("campaign", plan)
+    _fail_probe_with(manager, "host-a", ContractError("digest mismatch"))
+    manager.tick("campaign")
+    clock.advance(ERROR_WARN_AFTER_SECONDS - 1)
+    status = manager.tick("campaign")
+    assert _host_row(status, "host-a")["warning"] is None and _state(tmp_path)["warnings"] == []
+    clock.advance(1)
+    status = manager.tick("campaign")
+    assert _host_row(status, "host-a")["error_seconds"] == ERROR_WARN_AFTER_SECONDS
+    assert _host_row(status, "host-a")["warning"] is not None
+    assert len(_state(tmp_path)["warnings"]) == 1
+
+
+def test_a_recovered_host_keeps_no_error_clock_and_status_ignores_a_stale_one(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    manager = CampaignManager(tmp_path, FakeTransport(clock=clock), clock=clock)
+    manager.run("campaign", plan)
+    switch = _fail_probe_with(manager, "host-a", ContractError("digest mismatch"))
+    manager.tick("campaign")
+    assert "error_since_mono" in _state(tmp_path)["hosts"]["host-a"]
+    switch["active"] = False
+    manager.tick("campaign")
+    host_state = _state(tmp_path)["hosts"]["host-a"]
+    assert not {"error_since_mono", "error_since_utc", "error_warned"} & set(host_state)
+    state = _state(tmp_path)
+    state["hosts"]["host-a"]["error_since_mono"] = clock() - 99999  # stale, host is ONLINE
+    row = _host_row(manager.status_document(state), "host-a")
+    assert row["error_seconds"] is None and row["error_since"] is None and row["warning"] is None
+
+
+def test_a_non_comparable_host_without_usable_reference_seconds_keeps_the_floor_threshold(tmp_path):
+    manager, _transport, _clock, job = _non_comparable_campaign(tmp_path, baseline=400)
+    state = _state(tmp_path)
+    for metadata in state["candidate_metadata"].values():
+        metadata["time_ref_seconds"] = True  # unusable: no prediction exists to widen
+    assert CampaignManager._stall_threshold(state, state["jobs"][job["name"]]) == STALL_FLOOR_SECONDS + 400
+
+
+# WP2b: one loss clock and one error clock per episode, decided once per tick.
+
+
+def _corrupt_digest(transport: FakeTransport, host: str, job_name: str) -> None:
+    """Make the REAL digest check fail: the probe succeeds, the job's list digest differs."""
+    transport.host(host).files[f"jobs/{job_name}/list.sha256"] = ("f" * 64 + "\n").encode()
+
+
+def _restore_digest(transport: FakeTransport, host: str, job_name: str) -> None:
+    del transport.host(host).files[f"jobs/{job_name}/list.sha256"]
+
+
+def test_an_error_tick_ends_the_open_unreachable_episode_so_a_later_failed_probe_is_not_loss(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = _first_running(_state(tmp_path), "host-a")
+    transport.set_unreachable("host-a")
+    manager.tick("campaign")
+    assert _state(tmp_path)["hosts"]["host-a"]["unreachable_since_mono"] == 100.0
+    switch = _fail_probe_with(manager, "host-a", TransportError("garbled probe output"))
+    for _ in range(41):  # 41 minutes of probe-level errors, longer than the loss clock
+        clock.advance(60)
+        manager.tick("campaign")
+    host = _state(tmp_path)["hosts"]["host-a"]
+    assert host["status"] == "ERROR" and host["unreachable_since_mono"] is None
+    assert host["paused_seconds"] == 60
+    assert _state(tmp_path)["jobs"][job["name"]]["paused_seconds"] == 60
+
+    switch["active"] = False  # the host is still unreachable: one failed probe
+    clock.advance(60)
+    status = manager.tick("campaign")
+    state = _state(tmp_path)
+    assert _host_row(status, "host-a")["state"] == "UNREACHABLE"
+    assert state["hosts"]["host-a"]["unreachable_since_mono"] == clock()
+    assert state["jobs"][job["name"]]["status"] == "RUNNING"
+    assert [row for row in state["jobs"].values() if row.get("requeue_reason") == "host-lost"] == []
+    assert not any(row["status"] == "LOST" for row in state["jobs"].values())
+    # The fresh clock still reaches loss, exactly after the same threshold.
+    clock.advance(LOST_AFTER_SECONDS)
+    manager.tick("campaign")
+    assert _state(tmp_path)["hosts"]["host-a"]["status"] == "UNREACHABLE"
+    clock.advance(1)
+    manager.tick("campaign")
+    assert _state(tmp_path)["hosts"]["host-a"]["status"] == "LOST"
+
+
+def test_a_host_that_went_lost_then_errored_then_returned_still_stops_its_duplicate(tmp_path):
+    plan, first_id, second_id = _two_host_one_candidate_plan()
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    state = _state(tmp_path)
+    first_job = _first_running(state, "host-a")
+    lost = _first_running(state, "host-b")
+    transport.add_progress("host-a", first_job["name"], first_id, "killed")
+    transport.finish("host-a", first_job["name"])
+    manager.status("campaign")
+    transport.set_unreachable("host-b")
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    assert state["hosts"]["host-b"]["status"] == "LOST" and state["hosts"]["host-b"]["loss_requeued"] is True
+    retry = next(job for job in state["jobs"].values() if job.get("requeue_reason") == "host-lost")
+    transport.add_progress("host-a", retry["name"], second_id, "survived")
+    transport.finish("host-a", retry["name"])
+    manager.tick("campaign")
+
+    # The host comes back, but its first answer is an error: LOST -> ERROR.
+    transport.set_unreachable("host-b", False)
+    switch = _fail_probe_with(manager, "host-b", ContractError("digest mismatch"))
+    manager.tick("campaign")
+    host = _state(tmp_path)["hosts"]["host-b"]
+    assert host["status"] == "ERROR" and host["unreachable_since_mono"] is None and host["loss_requeued"] is True
+    assert _state(tmp_path)["jobs"][lost["name"]]["status"] == "LOST"
+
+    stops_before = transport.host("host-b").stops
+    switch["active"] = False
+    manager.tick("campaign")
+    final = _state(tmp_path)
+    assert final["hosts"]["host-b"]["status"] == "ONLINE"
+    assert final["hosts"]["host-b"]["returned_after_loss"] is True and final["hosts"]["host-b"]["loss_requeued"] is False
+    assert final["jobs"][lost["name"]]["status"] == "SUPERSEDED"
+    assert transport.host("host-b").stops == stops_before + 1
+
+
+def test_an_error_at_a_failed_probe_that_never_went_lost_leaves_nothing_to_stop(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = _first_running(_state(tmp_path), "host-a")
+    transport.set_unreachable("host-a")
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 100)  # past the clock, but no failed probe has declared loss yet
+    switch = _fail_probe_with(manager, "host-a", TransportError("garbled"))
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    assert state["hosts"]["host-a"]["status"] == "ERROR" and state["hosts"]["host-a"]["loss_requeued"] is False
+    assert state["hosts"]["host-a"]["paused_seconds"] == LOST_AFTER_SECONDS + 100
+    assert state["jobs"][job["name"]]["status"] == "RUNNING"
+    transport.set_unreachable("host-a", False)
+    switch["active"] = False
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    assert state["hosts"]["host-a"]["status"] == "ONLINE" and state["jobs"][job["name"]]["status"] == "RUNNING"
+    assert [row for row in state["jobs"].values() if row.get("requeue_reason")] == []
+
+
+def test_a_digest_mismatch_after_a_good_probe_ages_and_warns_exactly_once(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = _first_running(_state(tmp_path), "host-a")
+    _corrupt_digest(transport, "host-a", job["name"])
+    status = manager.tick("campaign")
+    assert _host_row(status, "host-a")["state"] == "ERROR" and _host_row(status, "host-a")["error_seconds"] == 0
+    assert _state(tmp_path)["hosts"]["host-a"]["error_since_mono"] == 100.0
+    for _ in range(40):  # 40 ticks of 60 s: past the 1800 s warning threshold
+        clock.advance(60)
+        status = manager.tick("campaign")
+    row = _host_row(status, "host-a")
+    state = _state(tmp_path)
+    assert row["error_seconds"] == 2400 and row["warning"] is not None and "digest" in row["warning"]
+    assert state["hosts"]["host-a"]["error_since_mono"] == 100.0
+    assert len([w for w in state["warnings"] if "host-a" in w and "ERROR" in w]) == 1
+    assert state["jobs"][job["name"]]["status"] == "RUNNING"
+
+    _restore_digest(transport, "host-a", job["name"])
+    status = manager.tick("campaign")
+    assert _host_row(status, "host-a")["state"] == "ONLINE" and _host_row(status, "host-a")["error_seconds"] is None
+    assert "error_since_mono" not in _state(tmp_path)["hosts"]["host-a"]
+
+
+def test_a_start_that_raises_transport_error_across_ticks_warns_exactly_once(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    state = _state(tmp_path)
+    queued = _first_running(state, "host-a")
+    queued["status"] = "QUEUED"
+    manager._write_state(state)
+    del transport.host("host-a").jobs[queued["name"]]  # nothing runs there: the start is attempted
+
+    def refuse(_spec):
+        raise TransportError("start refused")
+
+    manager.runner.start = refuse
+    for _ in range(40):
+        manager.tick("campaign")
+        clock.advance(60)
+    state = _state(tmp_path)
+    assert state["hosts"]["host-a"]["status"] == "ERROR"
+    assert state["hosts"]["host-a"]["error_since_mono"] == 100.0
+    assert len([w for w in state["warnings"] if "host-a has been in ERROR" in w]) == 1
+    row = _host_row(manager.status_document(state), "host-a")
+    assert row["error_seconds"] == 2400 and row["warning"] is not None
+
+
+def test_a_status_or_collect_probe_decides_the_error_episode_at_the_end_of_the_refresh(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = _first_running(_state(tmp_path), "host-a")
+    _corrupt_digest(transport, "host-a", job["name"])
+    status = manager.status("campaign")
+    assert _host_row(status, "host-a")["state"] == "ERROR"
+    clock.advance(ERROR_WARN_AFTER_SECONDS)
+    status = manager.status("campaign")
+    assert _host_row(status, "host-a")["error_seconds"] == ERROR_WARN_AFTER_SECONDS
+    assert len([w for w in _state(tmp_path)["warnings"] if "host-a" in w]) == 1
+    clock.advance(10)
+    manager.collect("campaign")
+    clock.advance(10)
+    manager.measurement("campaign")
+    assert _state(tmp_path)["hosts"]["host-a"]["error_since_mono"] == 100.0
+    assert len([w for w in _state(tmp_path)["warnings"] if "host-a" in w]) == 1
+
+
+def test_a_slow_host_is_never_stall_stopped_before_the_loss_clock_even_past_the_stall_threshold(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = _first_running(_state(tmp_path), "host-a")
+    stops = []
+    real_stop = manager.runner.stop
+    manager.runner.stop = lambda host, name: stops.append((host, name)) or real_stop(host, name)
+    transport.set_slow("host-a")
+    manager.tick("campaign")
+    clock.advance(STALL_FLOOR_SECONDS + 600)  # past the stall floor, under 1800 s of slowness
+    assert STALL_FLOOR_SECONDS + 600 < LOST_AFTER_SECONDS
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    assert state["hosts"]["host-a"]["status"] == "SLOW"
+    assert state["jobs"][job["name"]]["status"] == "RUNNING"
+    assert [stop for stop in stops if stop[0] == "host-a"] == []
+
+
+def test_a_host_returns_after_loss_when_the_clock_passed_or_status_says_lost_even_without_a_requeue(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    # (a) the clock passed the loss threshold but no failed probe has said LOST yet.
+    transport.set_unreachable("host-a")
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    transport.set_unreachable("host-a", False)
+    manager.tick("campaign")
+    host = _state(tmp_path)["hosts"]["host-a"]
+    assert host["status"] == "ONLINE" and host["returned_after_loss"] is True
+    # (b) LOST by a refresh-only command (status): nothing was re-queued.
+    transport.set_unreachable("host-b")
+    manager.status("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    manager.status("campaign")
+    host = _state(tmp_path)["hosts"]["host-b"]
+    assert host["status"] == "LOST" and host["loss_requeued"] is False
+    # Drop the clock by hand: only the LOST status itself carries the fact now.
+    state = _state(tmp_path)
+    state["hosts"]["host-b"]["unreachable_since_mono"] = None
+    manager._write_state(state)
+    transport.set_unreachable("host-b", False)
+    manager.status("campaign")
+    host = _state(tmp_path)["hosts"]["host-b"]
+    assert host["status"] == "ONLINE" and host["returned_after_loss"] is True

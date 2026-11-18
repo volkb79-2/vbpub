@@ -20,6 +20,17 @@ For interactive development and debugging there is a separate developer layer,
 `hostobs/tools/dev` on the gate host; see [`docs/DEV.md`](docs/DEV.md). It reuses this
 image's exact toolchain and crate cache, and a green dev run is not gate evidence.
 
+The BuildKit builder defaults to `mdt-managed` and is selectable with
+`--builder NAME` or `TESTER_UNIFIED_RUST_BUILDER` for hosts that only have the
+`default` docker-driver builder. There `--cgroup-parent` is expected, but not
+yet verified, to be passed through by the docker driver (the docker-container
+driver does not honour it); verify on first use: during a RUN step the build's
+processes must appear under the requested slice (`systemd-cgls` or
+`<slice>/cgroup.procs` on the host), and a build that does not land there is to
+be discarded. `--builder` changes nothing else; see
+[`docs/CONSUMERS.md`](docs/CONSUMERS.md), which also lists what the CMRU
+preflight needs (a git checkout among other things).
+
 The first consumer is the hostobs M0 workspace. Its registered `lint` and
 `selftest` lanes live in [`hostobs/run-gate.toml`](../hostobs/run-gate.toml).
 See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for the image and lane contract,

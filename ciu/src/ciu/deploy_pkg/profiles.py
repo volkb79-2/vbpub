@@ -39,6 +39,12 @@ class Profile:
         config:            Global config with topology_overrides from all
                            selected profiles deep-merged in (deep copy; input
                            is never mutated).
+        topology_overrides: The accumulated ``topology_overrides`` alone (CIU-208),
+                           before it is merged into ``config``. The per-stack
+                           engine render deep-merges exactly this over its own
+                           global chain, so layers below the repo root keep
+                           their values for every key the profile leaves alone.
+                           Empty when no selected profile declares one.
     """
     name: str | None = None
     phase_keys: set[str] | None = None
@@ -46,6 +52,7 @@ class Profile:
     compose_profiles: list[str] = field(default_factory=list)
     env_overrides: dict = field(default_factory=dict)
     config: dict = field(default_factory=dict)
+    topology_overrides: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +343,7 @@ def resolve_profiles(
         compose_profiles=combined_compose_profiles,
         env_overrides=combined_env,
         config=merged_config,
+        topology_overrides=copy.deepcopy(accumulated_topo),
     )
 
 

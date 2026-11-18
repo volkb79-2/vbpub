@@ -588,7 +588,10 @@ same tree at `{root}` (paths are passed project-root-relative) and the stage com
 otherwise from the staged bundle directory; `[wheel].find_links` makes the vendor step `--no-index`.
 `bundle_dir` and `client_dir` must resolve to distinct, non-overlapping subdirectories of `dist_dir`.
 CMRU rejects a path that resolves to `dist_dir`, its parent, or outside it before any output cleanup,
-and rechecks containment before removing either staging tree.
+and rechecks containment before removing either staging tree. `dist_dir` itself must resolve to a
+strict descendant of `project_root` (a value such as `"."`, `".."`, an outside absolute path or a
+symlink that leaves the project is refused at parse time) and is rechecked before every removal,
+because a legacy no-variant build removes it whole.
 If `MYPROJ_VERSION` is set, it names the archive version. When it is unset,
 `bundle-build` derives the planned release version (or the latest tag when the
 project is unchanged) from CMRU and adds `.devN+g<short-hash>` from Git, so the

@@ -38,7 +38,9 @@ use std::collections::BTreeSet;
 
 use crate::dictionary::Retired;
 use crate::error::StoreError;
-use crate::format::{check_tier_name, SegmentFileName, SegmentHeader, TierKind, HEADER_LEN};
+use crate::format::{
+    check_tier_name, SegmentFileName, SegmentHeader, TierKind, HEADER_LEN, QUARANTINE_SUFFIX,
+};
 use crate::fsio::{EntryKind, StoreDir};
 use crate::queue::{FlushPolicy, Job};
 use crate::segment::{OpenSegment, SegmentScan, TailState};
@@ -264,8 +266,13 @@ pub struct TierScan {
     pub notes: Vec<TierNote>,
     /// Segments whose tail was torn and were truncated to their last good record.
     pub torn_repaired: Vec<String>,
-    /// Segments quarantined because their tail was corrupt.
+    /// Segments quarantined by *this* scan: a corrupt tail, a file past the reader's bound, a
+    /// sealed name without a verifiable footer, or a header that disagrees with its name.
     pub quarantined: Vec<String>,
+    /// Every quarantined file this tier owns (`<segment name>.corrupt`), those this scan made
+    /// and those an earlier run left, oldest `(start_s, seq)` first. They count in
+    /// [`TierScan::bytes`] and are evicted before any live segment (HOB-43).
+    pub quarantined_files: Vec<QuarantinedFile>,
     /// Files quarantined because they grew past the reader's bound: a file bigger than this
     /// store's own segment budget is not a segment it wrote, so it is taken out of service and
     /// counted rather than silently skipped.
@@ -277,8 +284,25 @@ pub struct TierScan {
     /// Stale `.seg.open` twins removed because a sealed segment with the same (tier, start_s,
     /// seq) was verified: the crash window between a seal's rename and its unlink.
     pub stale_open_removed: Vec<String>,
-    /// The tier's total bytes in its own segments.
+    /// The tier's total bytes in its own files: its segments plus its quarantined files, so
+    /// `cap_bytes` bounds both together.
     pub bytes: u64,
+}
+
+/// One quarantined file the tier owns: a segment renamed to `<name>.corrupt`.
+///
+/// It is not served, but it is the tier's disk use, so it is in the byte total and the ring of
+/// things the bounds may remove. It is adopted only when its name parses to this tier and its
+/// header is this tier's corpus (the proof a live segment needs); the key is the `(start_s,
+/// seq)` its name keeps.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuarantinedFile {
+    /// The name on disk, with the quarantine suffix.
+    pub name: String,
+    /// The segment name it was, parsed (its `(start_s, seq)` is the ordering key).
+    pub parsed: SegmentFileName,
+    /// Its length in bytes.
+    pub len: u64,
 }
 
 impl TierScan {
@@ -430,8 +454,62 @@ impl Tier {
         let mut oversized: Vec<String> = Vec::new();
         let mut unreadable: Vec<String> = Vec::new();
         let mut stale_open_removed: Vec<String> = Vec::new();
+        let mut quarantined_files: Vec<QuarantinedFile> = Vec::new();
+        let mut highest_seen: Option<u64> = None;
         let mut bytes: u64 = 0;
         for entry in entries {
+            // HOB-43: a quarantined file (`<segment name>.corrupt`) is still this tier's disk
+            // use, so it is counted in the byte total and ordered by the (start_s, seq) its
+            // name keeps. It is adopted only on the same proof a live segment needs: a name
+            // that parses to this tier, a regular file, and a header that is this tier's
+            // corpus. Anything else is reported and never counted, evicted or removed.
+            if entry.name.ends_with(QUARANTINE_SUFFIX) {
+                let Ok(parsed) = SegmentFileName::parse_quarantined(&entry.name) else {
+                    notes.push(TierNote {
+                        name: entry.name.clone(),
+                        reason: "not a segment name this store writes".to_string(),
+                    });
+                    continue;
+                };
+                if parsed.tier != self.config.name {
+                    notes.push(TierNote {
+                        name: entry.name.clone(),
+                        reason: "names another tier".to_string(),
+                    });
+                    continue;
+                }
+                highest_seen = highest_seen.max(Some(parsed.seq));
+                if entry.kind != EntryKind::File {
+                    notes.push(TierNote {
+                        name: entry.name.clone(),
+                        reason: format!("is {}, not a regular file", entry.kind),
+                    });
+                    continue;
+                }
+                match self.header_of_window(&entry.name) {
+                    Ok(header) if header.kind == self.config.kind => {
+                        bytes = bytes.saturating_add(entry.len);
+                        quarantined_files.push(QuarantinedFile {
+                            name: entry.name.clone(),
+                            parsed,
+                            len: entry.len,
+                        });
+                    }
+                    Ok(_) => notes.push(TierNote {
+                        name: entry.name.clone(),
+                        reason: "quarantine name, but its header names another tier kind; left alone"
+                            .to_string(),
+                    }),
+                    Err(error) => notes.push(TierNote {
+                        name: entry.name.clone(),
+                        reason: format!(
+                            "quarantine name, but it holds no header this tier can read ({}); left alone",
+                            error.kind()
+                        ),
+                    }),
+                }
+                continue;
+            }
             let parsed = match SegmentFileName::parse(&entry.name) {
                 Ok(parsed) => parsed,
                 Err(_) => {
@@ -449,6 +527,9 @@ impl Tier {
                 });
                 continue;
             };
+            // Every name of this tier reserves its sequence number, whatever becomes of the
+            // file (adopted, quarantined, unreadable, foreign): a name never comes back.
+            highest_seen = highest_seen.max(Some(parsed.seq));
             match entry.kind {
                 EntryKind::File => {}
                 other => {
@@ -469,7 +550,7 @@ impl Tier {
                 // The quarantine name comes from the parsed name this scan already accepted, so
                 // it cannot refuse here: `quarantine_name` is exactly this formatting plus a
                 // parse that has already succeeded.
-                let quarantine = format!("{}.corrupt", parsed.file_name());
+                let quarantine = parsed.quarantine_file_name();
                 // Only quarantine what is provably ours: a look-alike name holding someone
                 // else's bytes is reported and left alone. The header is read as a **window**
                 // here: this branch exists because the file is past the whole-file bound, so
@@ -498,6 +579,12 @@ impl Tier {
                     Ok(()) => {
                         oversized.push(entry.name.clone());
                         quarantined.push(entry.name.clone());
+                        bytes = bytes.saturating_add(entry.len);
+                        quarantined_files.push(QuarantinedFile {
+                            name: quarantine,
+                            parsed,
+                            len: entry.len,
+                        });
                     }
                     Err(error) => notes.push(TierNote {
                         name: entry.name.clone(),
@@ -558,6 +645,47 @@ impl Tier {
                     continue;
                 }
             };
+            // HOB-42: the name makes two claims, and the bytes must back both before the file
+            // is served. The header's `seq`/`start_real_ns` are the name's numbers, and a name
+            // that is not `.seg.open` is sealed, which needs a footer that verified. A file that
+            // fails either is quarantined whole, never repaired: a torn tail is a normal shape
+            // for an *open* segment, and for a sealed name it is a file that is not what it
+            // says. A corrupt tail has its own, more precise, refusal below.
+            let name_refusal = if matches!(scan.tail, TailState::Corrupt { .. }) {
+                None
+            } else {
+                scan.check_name(&parsed).err()
+            };
+            if let Some(refusal) = name_refusal {
+                let quarantine = parsed.quarantine_file_name();
+                match self.dir.rename(&entry.name, &quarantine) {
+                    Ok(()) => {
+                        quarantined.push(entry.name.clone());
+                        bytes = bytes.saturating_add(scan.file_len);
+                        quarantined_files.push(QuarantinedFile {
+                            name: quarantine,
+                            parsed,
+                            len: scan.file_len,
+                        });
+                        notes.push(TierNote {
+                            name: entry.name.clone(),
+                            reason: format!("quarantined, {}: {refusal}", refusal.kind()),
+                        });
+                    }
+                    Err(error) => {
+                        unreadable.push(entry.name.clone());
+                        notes.push(TierNote {
+                            name: entry.name.clone(),
+                            reason: format!(
+                                "{} and could not be quarantined: {}",
+                                refusal.kind(),
+                                error.kind()
+                            ),
+                        });
+                    }
+                }
+                continue;
+            }
             match &scan.tail {
                 TailState::Complete => {}
                 TailState::Incomplete { .. } => match scan.truncate_to_good_end(&self.dir) {
@@ -575,10 +703,16 @@ impl Tier {
                     }
                 },
                 TailState::Corrupt { .. } => {
-                    let quarantine = format!("{}.corrupt", parsed.file_name());
+                    let quarantine = parsed.quarantine_file_name();
                     match scan.quarantine(&self.dir, &quarantine) {
                         Ok(()) => {
                             quarantined.push(entry.name.clone());
+                            bytes = bytes.saturating_add(scan.file_len);
+                            quarantined_files.push(QuarantinedFile {
+                                name: quarantine,
+                                parsed,
+                                len: scan.file_len,
+                            });
                         }
                         Err(error) => {
                             // A corrupt file that cannot be renamed out of the way stays in
@@ -659,11 +793,16 @@ impl Tier {
         segments.sort_by(|left, right| {
             (left.parsed.start_s, left.parsed.seq).cmp(&(right.parsed.start_s, right.parsed.seq))
         });
+        // The quarantined files are ordered by the same key, so "oldest first" means the same
+        // thing for debris as for history; the name is the last tie-break, so the order of a
+        // directory listing never decides which file goes first.
+        quarantined_files.sort_by_key(|f| (f.parsed.start_s, f.parsed.seq, f.name.clone()));
         self.scan = TierScan {
             segments,
             notes,
             torn_repaired,
             quarantined,
+            quarantined_files,
             oversized,
             unreadable,
             stale_open_removed,
@@ -672,12 +811,12 @@ impl Tier {
         self.bytes = self.scan.bytes;
         // The water mark only ever rises: a restart continues past every sequence the
         // directory can show, including the ones this handle already issued.
-        let highest = self
-            .scan
-            .segments
-            .iter()
-            .map(|segment| segment.parsed.seq)
-            .max();
+        //
+        // The mark covers every name of this tier the directory shows, not only the live
+        // segments: a quarantined file (`hot-H-0.seg.open.corrupt`) still holds its sequence,
+        // or the next segment would reuse the name, crash corrupt again, and a later
+        // quarantine would be refused by the existing destination.
+        let highest = highest_seen;
         self.seq_water = match highest {
             Some(seq) => self.seq_water.max(seq.saturating_add(1)),
             None => self.seq_water,
@@ -758,24 +897,25 @@ impl Tier {
         let seq = self.seq_water;
         self.seq_water = seq.checked_add(1).ok_or(StoreError::LengthOverflow)?;
         let name = self.name_for(start_s, seq, true);
-        let header = SegmentHeader {
-            seq,
-            epoch,
-            dict_generation,
-            kind: self.config.kind,
-            payload: self.config.kind.payload_kind(),
-            start_real_ns: i64::try_from(start_s.saturating_mul(1_000_000_000)).unwrap_or(i64::MAX),
-            max_payload: self.config.max_payload,
-            max_incarnations: self.config.max_incarnations,
-        };
-        let open = OpenSegment::create(&self.dir, &name, header)?;
-        self.bytes = self.bytes.saturating_add(open.len());
         let parsed = SegmentFileName {
             tier: self.config.name.clone(),
             start_s,
             seq,
             open: true,
         };
+        let header = SegmentHeader {
+            seq,
+            epoch,
+            dict_generation,
+            kind: self.config.kind,
+            payload: self.config.kind.payload_kind(),
+            // The header carries the number the name carries (HOB-42's identity rule).
+            start_real_ns: parsed.start_real_ns(),
+            max_payload: self.config.max_payload,
+            max_incarnations: self.config.max_incarnations,
+        };
+        let open = OpenSegment::create(&self.dir, &name, header)?;
+        self.bytes = self.bytes.saturating_add(open.len());
         // The ring is ordered at every insertion, not only by the next restart's scan: the
         // bounds loop below stops at the first segment that is still inside its window, so an
         // out-of-order entry would let an expired segment survive until a restart. A clock
@@ -964,9 +1104,32 @@ impl Tier {
             }
             self.remove_segment(&name, &mut evicted)?;
         }
-        // `cap_bytes`: the oldest whole segment leaves until the total is at or under the cap.
+        // `keep_s` also applies to quarantined files, by the (start_s, seq) their names keep:
+        // debris does not outlive the history it came from (HOB-43).
+        while let Some(file) = self.scan.quarantined_files.first() {
+            let start_ns = i64::try_from(file.parsed.start_s.saturating_mul(1_000_000_000))
+                .unwrap_or(i64::MAX);
+            let span_end_ns = start_ns.saturating_add(
+                i64::try_from(self.config.segment_s.saturating_mul(1_000_000_000))
+                    .unwrap_or(i64::MAX),
+            );
+            let keep_ns =
+                i64::try_from(self.config.keep_s.saturating_mul(1_000_000_000)).unwrap_or(i64::MAX);
+            if span_end_ns.saturating_add(keep_ns) > now_ns {
+                break;
+            }
+            self.remove_quarantined(&mut evicted);
+        }
+        // `cap_bytes`: the total counts live segments *and* quarantined files, and the debris
+        // goes first, oldest first: a source of repeated damage must exhaust its own
+        // quarantined files before it can cost the tier a single good segment. Only then does
+        // the oldest whole live segment leave, until the total is at or under the cap.
         if self.config.cap_bytes > 0 {
             while self.bytes > self.config.cap_bytes {
+                if !self.scan.quarantined_files.is_empty() {
+                    self.remove_quarantined(&mut evicted);
+                    continue;
+                }
                 let Some(name) = self
                     .scan
                     .segments
@@ -979,6 +1142,49 @@ impl Tier {
             }
         }
         Ok(evicted)
+    }
+
+    /// Remove the oldest quarantined file this tier owns, updating the byte total.
+    ///
+    /// Only a file the last scan adopted is in `quarantined_files`: a name that did not parse
+    /// to this tier, or whose header was not this tier's corpus, was reported and is never
+    /// here, so it is never removed. The scan-time proof is the whole guarantee, as for
+    /// [`Tier::remove_segment`]; [`StoreDir::remove`] still refuses a link.
+    ///
+    /// A quarantined file is kept for an operator to inspect, so an operator may delete it by
+    /// hand; one bad file must not stop the cap loop, and an `append` that already wrote its
+    /// record must not fail because of debris. The entry therefore always leaves the list and
+    /// its bytes always leave the total: a file that is already gone is dropped quietly and is
+    /// **not** counted as evicted (nothing was removed), and a removal that fails for another
+    /// reason is dropped and reported in [`TierScan::notes`].
+    fn remove_quarantined(&mut self, evicted: &mut Evicted) {
+        if self.scan.quarantined_files.is_empty() {
+            return;
+        }
+        let file = self.scan.quarantined_files.remove(0);
+        self.bytes = self.bytes.saturating_sub(file.len);
+        self.scan.bytes = self.bytes;
+        let gone = matches!(self.dir.metadata(&file.name), Ok(None));
+        if gone {
+            self.scan.notes.push(TierNote {
+                name: file.name,
+                reason: "quarantined file already gone; dropped from the total".to_string(),
+            });
+            return;
+        }
+        match self.dir.remove(&file.name) {
+            Ok(()) => {
+                evicted.quarantined.push(file.name);
+                evicted.bytes = evicted.bytes.saturating_add(file.len);
+            }
+            Err(error) => self.scan.notes.push(TierNote {
+                name: file.name,
+                reason: format!(
+                    "quarantined file could not be removed ({}); dropped from the byte total",
+                    error.kind()
+                ),
+            }),
+        }
     }
 
     /// Remove one segment this tier owns, updating the ring and the byte total.
@@ -1004,10 +1210,23 @@ impl Tier {
             // file that is no longer there.
             self.open = None;
         }
-        self.dir.remove(name)?;
+        // A segment someone already deleted by hand has nothing left to remove: its entry and
+        // bytes leave the ring (so the cap loop makes progress instead of failing on the same
+        // head every call), and it is reported, not counted as evicted.
+        let gone = self.dir.metadata(name)?.is_none();
+        if !gone {
+            self.dir.remove(name)?;
+        }
         self.scan.segments.remove(position);
         self.bytes = self.bytes.saturating_sub(len);
         self.scan.bytes = self.bytes;
+        if gone {
+            self.scan.notes.push(TierNote {
+                name: name.to_string(),
+                reason: "segment already gone; dropped from the ring".to_string(),
+            });
+            return Ok(());
+        }
         evicted.segments.push(name.to_string());
         evicted.bytes = evicted.bytes.saturating_add(len);
         Ok(())
@@ -1031,8 +1250,12 @@ impl Tier {
         let Some(open) = self.open.take() else {
             return Ok(None);
         };
-        let start_s = match self.start_for(open.header().start_real_ns.max(0)) {
-            Ok(start_s) => start_s,
+        // The sealed name keeps the start second of the open name. It is *not* re-derived from
+        // the header with the current `segment_s`: after a restart with a different step that
+        // would rename the segment to a start its header does not carry, and the identity
+        // check (HOB-42) would then quarantine good data.
+        let start_s = match SegmentFileName::parse(open.name()) {
+            Ok(parsed) => parsed.start_s,
             Err(error) => {
                 self.open = Some(open);
                 return Err(error);
@@ -1261,23 +1484,25 @@ pub struct AppendOutcome {
 /// What an eviction pass removed.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Evicted {
-    /// The segment names removed, oldest first.
+    /// The live segment names removed, oldest first.
     pub segments: Vec<String>,
-    /// The bytes they held.
+    /// The quarantined files (`*.corrupt`) removed, oldest first (HOB-43).
+    pub quarantined: Vec<String>,
+    /// The bytes they held, segments and quarantined files together.
     pub bytes: u64,
 }
 
 impl Evicted {
-    /// How many segments left.
+    /// How many live segments left (quarantined files are [`Evicted::quarantined`]).
     #[must_use]
     pub fn len(&self) -> usize {
         self.segments.len()
     }
 
-    /// True when nothing was evicted.
+    /// True when nothing was evicted: no segment and no quarantined file.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.segments.is_empty()
+        self.segments.is_empty() && self.quarantined.is_empty()
     }
 }
 
@@ -1761,8 +1986,13 @@ mod tests {
         assert!(reopened.scan().segments.is_empty());
         assert_eq!(
             reopened.bytes(),
-            0,
-            "the oversized file is out of the ring, not silently inside the directory"
+            u64::try_from(grow).expect("fits"),
+            "the oversized file is out of the ring but inside the byte total (HOB-43)"
+        );
+        assert_eq!(reopened.scan().quarantined_files.len(), 1);
+        assert_eq!(
+            reopened.scan().quarantined_files[0].name,
+            "hot-0-0.seg.corrupt"
         );
         assert!(!temp.exists("hot-0-0.seg"));
         assert!(
@@ -2134,7 +2364,11 @@ mod tests {
         .expect("tier");
         assert_eq!(reopened.scan().quarantined, vec![sealed.to_string()]);
         assert!(reopened.scan().segments.is_empty());
-        assert_eq!(reopened.bytes(), 0);
+        assert_eq!(
+            reopened.bytes(),
+            u64::try_from(before).expect("fits"),
+            "the quarantined bytes are the tier's disk use and count against its cap"
+        );
         assert!(reopened.scan().torn_repaired.is_empty());
         assert_eq!(
             temp.read_file(&format!("{sealed}.corrupt")).len(),
@@ -2250,5 +2484,443 @@ mod tests {
             tier.append(&two, 1, 1).map(|outcome| outcome.records),
             Ok(1)
         );
+    }
+
+    /// Three sealed segments `hot-0-0.seg`, `hot-60-1.seg` and `hot-120-2.seg`, one record
+    /// each, then the tier is dropped (a restart is what rescans the directory).
+    fn three_sealed(temp: &TempDir) {
+        let mut tier = tier(temp, 3600, 0);
+        for at in [0i64, 60_000_000_000, 120_000_000_000] {
+            tier.append(&job(at, 16), 1, 1).expect("append");
+        }
+        tier.seal_open_segment().expect("seal the last");
+        assert_eq!(tier.scan().segments.len(), 3);
+    }
+
+    /// Flip one body byte of the first record, so the segment's record checksum fails and a
+    /// rescan quarantines it.
+    fn damage(temp: &TempDir, name: &str) {
+        let mut bytes = temp.read_file(name);
+        bytes[HEADER_LEN + 48 + 8 + 1] ^= 0xFF;
+        temp.write_file(name, &bytes);
+    }
+
+    #[test]
+    fn quarantined_bytes_count_against_the_cap_and_go_before_any_live_segment() {
+        // HOB-43: the cap bounds segments and quarantined files together, and a damage storm
+        // must exhaust its own debris, oldest first, before it can cost one good segment.
+        let temp = TempDir::new("q-cap");
+        three_sealed(&temp);
+        let one = u64::try_from(temp.read_file("hot-0-0.seg").len()).expect("fits");
+        damage(&temp, "hot-0-0.seg");
+        damage(&temp, "hot-60-1.seg");
+        let mut tier = tier_with_cap(&temp, 3600, one * 2);
+        assert_eq!(
+            tier.scan()
+                .quarantined_files
+                .iter()
+                .map(|file| file.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["hot-0-0.seg.corrupt", "hot-60-1.seg.corrupt"],
+            "the debris is ordered by the (start_s, seq) its names keep"
+        );
+        assert_eq!(
+            tier.bytes(),
+            one * 3,
+            "two quarantined files and one live segment"
+        );
+        assert_eq!(tier.scan().bytes, one * 3);
+        assert_eq!(tier.scan().segments.len(), 1);
+        // 3 files, cap for 2: the OLDEST quarantined file goes, no live segment does.
+        let first = tier.evict(0).expect("evict");
+        assert_eq!(first.quarantined, vec!["hot-0-0.seg.corrupt".to_string()]);
+        assert!(
+            first.segments.is_empty(),
+            "good history outlives the debris"
+        );
+        assert_eq!(first.bytes, one);
+        assert!(!first.is_empty());
+        assert_eq!(first.len(), 0, "len counts live segments only");
+        assert!(!temp.exists("hot-0-0.seg.corrupt"));
+        assert!(temp.exists("hot-60-1.seg.corrupt"));
+        assert!(temp.exists("hot-120-2.seg"));
+        assert_eq!(tier.bytes(), one * 2);
+        // A tighter cap takes the remaining debris, still before the live segment.
+        let mut tighter = tier_with_cap(&temp, 3600, one);
+        let second = tighter.evict(0).expect("evict");
+        assert_eq!(second.quarantined, vec!["hot-60-1.seg.corrupt".to_string()]);
+        assert!(second.segments.is_empty());
+        assert_eq!(tighter.bytes(), one);
+        assert!(temp.exists("hot-120-2.seg"));
+        // Only when no debris is left does the cap reach the live segment.
+        let mut strict = tier_with_cap(&temp, 3600, one - 1);
+        let third = strict.evict(0).expect("evict");
+        assert_eq!(third.segments, vec!["hot-120-2.seg".to_string()]);
+        assert!(third.quarantined.is_empty());
+        assert_eq!(strict.bytes(), 0);
+    }
+
+    #[test]
+    fn debris_newer_than_live_history_is_still_evicted_first() {
+        // The order is "quarantined first", not "oldest first overall": the newest file is the
+        // debris here, and the two older live segments must survive the cap.
+        let temp = TempDir::new("q-newer");
+        three_sealed(&temp);
+        let one = u64::try_from(temp.read_file("hot-0-0.seg").len()).expect("fits");
+        damage(&temp, "hot-120-2.seg");
+        let mut tier = tier_with_cap(&temp, 3600, one * 2);
+        let evicted = tier.evict(0).expect("evict");
+        assert_eq!(
+            evicted.quarantined,
+            vec!["hot-120-2.seg.corrupt".to_string()]
+        );
+        assert!(evicted.segments.is_empty());
+        assert!(temp.exists("hot-0-0.seg") && temp.exists("hot-60-1.seg"));
+        assert_eq!(tier.scan().segments.len(), 2);
+    }
+
+    #[test]
+    fn keep_s_removes_a_quarantined_file_by_the_key_its_name_keeps() {
+        let temp = TempDir::new("q-keep");
+        three_sealed(&temp);
+        damage(&temp, "hot-0-0.seg");
+        let mut tier = tier_with_cap(&temp, 60, 0);
+        // The span of `hot-0-0` ends at 60 s and 60 s of retention closes at 120 s; the
+        // comparison is strict, as for a live segment.
+        let early = tier.evict(119_999_999_999).expect("evict");
+        assert!(early.quarantined.is_empty(), "still inside the window");
+        assert!(temp.exists("hot-0-0.seg.corrupt"));
+        let late = tier.evict(120_000_000_000).expect("evict");
+        assert_eq!(late.quarantined, vec!["hot-0-0.seg.corrupt".to_string()]);
+        assert!(!temp.exists("hot-0-0.seg.corrupt"));
+        assert!(tier.scan().quarantined_files.is_empty());
+        assert_eq!(
+            tier.bytes(),
+            tier.scan()
+                .segments
+                .iter()
+                .map(|segment| segment.file_len)
+                .sum::<u64>()
+        );
+    }
+
+    #[test]
+    fn a_quarantine_look_alike_is_reported_and_never_counted_or_removed() {
+        // The store removes only what name and header prove is its own: none of these is a
+        // quarantined file of this tier, so none is counted, evicted or deleted, even under a
+        // cap that any counted byte would exceed.
+        let temp = TempDir::new("q-foreign");
+        // A real history segment of this tier, so two look-alikes carry a header that *is* this
+        // tier's corpus: only their names disqualify them.
+        let mut seed = tier(&temp, 3600, 0);
+        seed.append(&job(0, 16), 1, 1).expect("append");
+        seed.seal_open_segment().expect("seal");
+        drop(seed);
+        let valid = temp.read_file("hot-0-0.seg");
+        temp.remove("hot-0-0.seg");
+        temp.write_file("hot-5-5.seg.corrupt", b"no header at all");
+        temp.write_file("hot-x-1.seg.corrupt", &valid);
+        temp.write_file("other-0-0.seg.corrupt", &valid);
+        temp.write_file("hot-6-6.seg.corrupt", EVENTS_FIXTURE);
+        temp.mkdir("hot-7-7.seg.corrupt");
+        let mut tier = tier_with_cap(&temp, 3600, 1);
+        assert!(tier.scan().quarantined_files.is_empty());
+        assert_eq!(tier.bytes(), 0);
+        let mut names: Vec<&str> = tier
+            .scan()
+            .notes
+            .iter()
+            .map(|note| note.name.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec![
+                "hot-5-5.seg.corrupt",
+                "hot-6-6.seg.corrupt",
+                "hot-7-7.seg.corrupt",
+                "hot-x-1.seg.corrupt",
+                "other-0-0.seg.corrupt",
+            ],
+            "every look-alike is reported"
+        );
+        let evicted = tier.evict(i64::MAX / 2).expect("evict");
+        assert!(evicted.is_empty());
+        for name in [
+            "hot-5-5.seg.corrupt",
+            "hot-x-1.seg.corrupt",
+            "other-0-0.seg.corrupt",
+            "hot-6-6.seg.corrupt",
+        ] {
+            assert!(temp.exists(name), "{name} must still be there");
+        }
+        assert!(temp.at("hot-7-7.seg.corrupt").is_dir());
+    }
+
+    #[test]
+    fn a_sealed_name_that_lost_its_footer_is_quarantined_not_served() {
+        // HOB-42 (a): the name `.seg` says sealed, so the footer that closes the records must
+        // be there and verify. Without it the file is not sealed history.
+        let temp = TempDir::new("no-footer");
+        let mut tier = tier(&temp, 3600, 0);
+        tier.append(&job(0, 16), 1, 1).expect("append");
+        tier.seal_open_segment().expect("seal");
+        tier.append(&job(60_000_000_000, 16), 1, 1).expect("append");
+        drop(tier);
+        let len = u64::try_from(temp.read_file("hot-0-0.seg").len()).expect("fits");
+        temp.truncate(
+            "hot-0-0.seg",
+            len - u64::try_from(crate::format::FOOTER_LEN).expect("fits"),
+        );
+        let reopened = tier_with_cap(&temp, 3600, 0);
+        assert_eq!(reopened.scan().quarantined, vec!["hot-0-0.seg".to_string()]);
+        assert!(reopened.scan().torn_repaired.is_empty());
+        assert!(temp.exists("hot-0-0.seg.corrupt") && !temp.exists("hot-0-0.seg"));
+        let footer_note = reopened
+            .scan()
+            .notes
+            .iter()
+            .find(|note| note.name == "hot-0-0.seg")
+            .expect("the refusal is reported by name");
+        assert!(footer_note.reason.contains("sealed-without-footer"));
+        assert_eq!(
+            reopened.scan().segments.len(),
+            1,
+            "only the open segment is served"
+        );
+        assert!(reopened
+            .range(0, 1_000_000_000, 8, 1 << 20)
+            .expect("range")
+            .is_empty());
+        assert_eq!(
+            reopened.scan().quarantined_files.len(),
+            1,
+            "and the debris is counted"
+        );
+    }
+
+    #[test]
+    fn a_truncated_sealed_file_is_quarantined_whole_not_repaired() {
+        // A torn tail is the normal shape of an *open* segment. A sealed name is written by an
+        // atomic copy, so a torn one is a file that is not what its name says.
+        let temp = TempDir::new("torn-sealed");
+        let mut tier = tier(&temp, 3600, 0);
+        tier.append(&job(0, 16), 1, 1).expect("append");
+        tier.seal_open_segment().expect("seal");
+        drop(tier);
+        let len = u64::try_from(temp.read_file("hot-0-0.seg").len()).expect("fits");
+        temp.truncate("hot-0-0.seg", len - 72);
+        let reopened = tier_with_cap(&temp, 3600, 0);
+        assert_eq!(reopened.scan().quarantined, vec!["hot-0-0.seg".to_string()]);
+        assert!(
+            reopened.scan().torn_repaired.is_empty(),
+            "never truncated into service"
+        );
+        assert!(reopened.scan().segments.is_empty());
+        assert!(temp.exists("hot-0-0.seg.corrupt"));
+    }
+
+    #[test]
+    fn a_header_that_disagrees_with_its_name_is_quarantined() {
+        // HOB-42 (b): a file renamed by hand must not keep serving its header's identity.
+        let temp = TempDir::new("identity");
+        let mut tier = tier(&temp, 3600, 0);
+        tier.append(&job(0, 16), 1, 1).expect("append");
+        tier.seal_open_segment().expect("seal");
+        tier.append(&job(60_000_000_000, 16), 1, 1).expect("append");
+        drop(tier);
+        let sealed = temp.read_file("hot-0-0.seg");
+        let open = temp.read_file("hot-60-1.seg.open");
+        // seq differs (header 0, name 7), start differs (header 0, name 120), and an open
+        // name is held to the same rule (header seq 1, name 9).
+        temp.write_file("hot-0-7.seg", &sealed);
+        temp.write_file("hot-120-0.seg", &sealed);
+        temp.write_file("hot-60-9.seg.open", &open);
+        let reopened = tier_with_cap(&temp, 3600, 0);
+        let mut quarantined = reopened.scan().quarantined.clone();
+        quarantined.sort_unstable();
+        assert_eq!(
+            quarantined,
+            vec![
+                "hot-0-7.seg".to_string(),
+                "hot-120-0.seg".to_string(),
+                "hot-60-9.seg.open".to_string(),
+            ]
+        );
+        let mut served: Vec<&str> = reopened
+            .scan()
+            .segments
+            .iter()
+            .map(|segment| segment.name.as_str())
+            .collect();
+        served.sort_unstable();
+        assert_eq!(served, vec!["hot-0-0.seg", "hot-60-1.seg.open"]);
+        for name in [
+            "hot-0-7.seg.corrupt",
+            "hot-120-0.seg.corrupt",
+            "hot-60-9.seg.open.corrupt",
+        ] {
+            assert!(temp.exists(name), "{name} is kept for an operator");
+        }
+        let reasons: Vec<&str> = reopened
+            .scan()
+            .notes
+            .iter()
+            .filter(|note| note.reason.contains("segment-identity"))
+            .map(|note| note.name.as_str())
+            .collect();
+        assert_eq!(reasons.len(), 3, "each refusal is reported with its kind");
+    }
+
+    #[test]
+    fn a_sealed_segment_keeps_the_start_of_its_open_name_across_a_step_change() {
+        // The seal must not re-derive the start from the header with the *current* step: a
+        // restart with a different `segment_s` would then name the file `hot-0-1.seg` while
+        // its header says 60 s, and the identity rule would quarantine good history.
+        let temp = TempDir::new("step-change");
+        let mut first = tier(&temp, 3600, 0);
+        first
+            .append(&job(65_000_000_000, 16), 1, 1)
+            .expect("append");
+        drop(first);
+        let mut wider = Tier::open(
+            TierConfig::history("hot", 120, 3600, 0, false).expect("config"),
+            StoreDir::open(temp.path(), false).expect("dir"),
+            1 << 22,
+        )
+        .expect("tier");
+        assert!(wider.has_open());
+        let sealed = wider.seal_open_segment().expect("seal");
+        assert_eq!(sealed.as_deref(), Some("hot-60-0.seg"));
+        drop(wider);
+        let reopened = tier_with_cap(&temp, 3600, 0);
+        assert!(reopened.scan().quarantined.is_empty());
+        assert_eq!(reopened.scan().segments.len(), 1);
+        assert_eq!(reopened.scan().segments[0].name, "hot-60-0.seg");
+    }
+
+    #[test]
+    fn a_quarantined_file_deleted_by_hand_does_not_fail_every_later_append() {
+        // The documented flow keeps a quarantined file for an operator, who may delete it. The
+        // entry must then leave the list and its bytes the total, quietly: a head entry whose
+        // unlink fails would make every `evict`, and so every `append` after its record was
+        // written, return an error, and a retry would store the record twice.
+        let temp = TempDir::new("q-by-hand");
+        three_sealed(&temp);
+        damage(&temp, "hot-0-0.seg");
+        let mut tier = tier_with_cap(&temp, 60, 0);
+        assert_eq!(tier.scan().quarantined_files.len(), 1);
+        temp.remove("hot-0-0.seg.corrupt");
+        // Sixty seconds of retention are long past at 200 s, so `keep_s` reaches the entry.
+        let outcome = tier
+            .append(&job(200_000_000_000, 16), 1, 1)
+            .expect("the append must not fail on a file that is already gone");
+        assert!(
+            outcome.evicted.quarantined.is_empty(),
+            "nothing was removed, so nothing is reported as evicted"
+        );
+        assert!(tier.scan().quarantined_files.is_empty());
+        let held: u64 = tier.scan().segments.iter().map(|s| s.file_len).sum();
+        assert_eq!(
+            tier.bytes(),
+            held,
+            "no byte of the vanished file stays in the total"
+        );
+        let gone_note = tier
+            .scan()
+            .notes
+            .iter()
+            .find(|note| note.name == "hot-0-0.seg.corrupt")
+            .expect("the vanished file is reported by name");
+        assert!(gone_note.reason.contains("already gone"));
+        // The cap path takes the same way out: a tight cap and a debris file deleted by hand.
+        let temp = TempDir::new("q-by-hand-cap");
+        three_sealed(&temp);
+        let one = u64::try_from(temp.read_file("hot-0-0.seg").len()).expect("fits");
+        damage(&temp, "hot-0-0.seg");
+        let mut capped = tier_with_cap(&temp, 3600, one * 2);
+        temp.remove("hot-0-0.seg.corrupt");
+        let evicted = capped.evict(0).expect("the cap loop must make progress");
+        assert!(evicted.is_empty(), "not an eviction");
+        assert!(capped.scan().quarantined_files.is_empty());
+        assert_eq!(capped.bytes(), one * 2);
+    }
+
+    #[test]
+    fn a_live_segment_deleted_by_hand_leaves_the_ring_without_failing_the_cap() {
+        let temp = TempDir::new("seg-by-hand");
+        three_sealed(&temp);
+        let one = u64::try_from(temp.read_file("hot-0-0.seg").len()).expect("fits");
+        let mut tier = tier_with_cap(&temp, 3600, one * 2);
+        temp.remove("hot-0-0.seg");
+        let evicted = tier.evict(0).expect("a vanished head must not fail");
+        assert!(evicted.is_empty(), "nothing was removed");
+        assert_eq!(tier.scan().segments.len(), 2);
+        assert_eq!(tier.bytes(), one * 2);
+    }
+
+    #[test]
+    fn an_open_name_that_carries_a_footer_is_quarantined_not_adopted() {
+        // A closed file under `.seg.open` cannot be reopened for appending; adopting it as the
+        // open segment would make `Tier::open` fail as a whole on `reopen_open_segment`.
+        let temp = TempDir::new("open-footer");
+        three_sealed(&temp);
+        let closed = temp.read_file("hot-60-1.seg");
+        temp.remove("hot-60-1.seg");
+        temp.write_file("hot-60-1.seg.open", &closed);
+        let reopened = tier_with_cap(&temp, 3600, 0);
+        assert_eq!(
+            reopened.scan().quarantined,
+            vec!["hot-60-1.seg.open".to_string()]
+        );
+        assert!(!reopened.has_open());
+        assert!(temp.exists("hot-60-1.seg.open.corrupt"));
+        assert_eq!(reopened.scan().segments.len(), 2);
+        let note = reopened
+            .scan()
+            .notes
+            .iter()
+            .find(|note| note.name == "hot-60-1.seg.open")
+            .expect("reported by name");
+        assert!(note.reason.contains("open-with-footer"));
+    }
+
+    #[test]
+    fn a_name_never_comes_back_after_a_quarantine_and_a_restart() {
+        // Run 1 leaves an open segment with a corrupt tail. Run 2 quarantines it; the next
+        // segment must not reuse its sequence, or it would crash corrupt under the same name
+        // and run 3's quarantine would be refused by the existing `.corrupt` destination.
+        let temp = TempDir::new("seq-water");
+        let mut first = tier(&temp, 3600, 0);
+        first.append(&job(0, 16), 1, 1).expect("append");
+        drop(first);
+        damage(&temp, "hot-0-0.seg.open");
+        let second = tier_with_cap(&temp, 3600, 0);
+        assert_eq!(
+            second.scan().quarantined,
+            vec!["hot-0-0.seg.open".to_string()]
+        );
+        assert_eq!(
+            second.next_seq(),
+            1,
+            "the quarantined name holds its sequence"
+        );
+        // With the damaged open file renamed away, the quarantined file alone holds the name.
+        drop(second);
+        let mut second = tier_with_cap(&temp, 3600, 0);
+        assert_eq!(second.next_seq(), 1, "the quarantined file alone holds it");
+        let next = second.append(&job(0, 16), 1, 1).expect("append");
+        assert_eq!(next.segment, "hot-0-1.seg.open");
+        drop(second);
+        damage(&temp, "hot-0-1.seg.open");
+        let mut third = tier_with_cap(&temp, 3600, 0);
+        assert_eq!(
+            third.scan().quarantined,
+            vec!["hot-0-1.seg.open".to_string()]
+        );
+        assert!(temp.exists("hot-0-0.seg.open.corrupt"));
+        assert!(temp.exists("hot-0-1.seg.open.corrupt"));
+        let last = third.append(&job(0, 16), 1, 1).expect("append works");
+        assert_eq!(last.segment, "hot-0-2.seg.open");
     }
 }

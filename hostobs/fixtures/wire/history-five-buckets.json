@@ -1,0 +1,131 @@
+{
+  "case": "history-five-buckets",
+  "doc": "A history block with five buckets: the time section is 15 bytes per bucket (75, padded to 80), so a body length computed with another per-bucket size is wrong from four buckets up.",
+  "frame": {
+    "type": "block",
+    "corr": 5,
+    "sections": [
+      "header",
+      "dictionary",
+      "time",
+      "columns"
+    ],
+    "header": {
+      "boot_id": "00112233-4455-6677-8899-aabbccddeeff",
+      "epoch": 8,
+      "seq": 2,
+      "mono_start_ns": 1000000000,
+      "mono_end_ns": 2000000000,
+      "boot_ns": 500,
+      "real_ns": 1700000000000000000,
+      "dict_gen": 2,
+      "n_rows": 5,
+      "dropped": 1,
+      "flags": 0
+    },
+    "dictionary": {
+      "generation": 2,
+      "entries": [
+        {
+          "kind": "entity",
+          "inc": 11,
+          "text": "/system.slice"
+        },
+        {
+          "kind": "metric",
+          "text": "mem.current",
+          "facts": {
+            "unit": "bytes",
+            "kind": "gauge",
+            "scope": "cgroup",
+            "source": "cgroupfs"
+          }
+        },
+        {
+          "kind": "metric",
+          "text": "psi.io.some.total",
+          "facts": {
+            "unit": "usec",
+            "kind": "counter",
+            "scope": "host",
+            "source": "procfs"
+          }
+        }
+      ]
+    },
+    "rows": [],
+    "time": [
+      {
+        "real_ns": 1700000000000000000,
+        "covered_ms": 1000,
+        "samples": 5,
+        "agg": "mean"
+      },
+      {
+        "real_ns": 1700000001000000000,
+        "covered_ms": 1000,
+        "samples": 4,
+        "agg": "min"
+      },
+      {
+        "real_ns": 1700000002000000000,
+        "covered_ms": 999,
+        "samples": 65535,
+        "agg": "max"
+      },
+      {
+        "real_ns": -1,
+        "covered_ms": 0,
+        "samples": 0,
+        "agg": "raw"
+      },
+      {
+        "real_ns": 1700000004000000000,
+        "covered_ms": 4294967295,
+        "samples": 1,
+        "agg": "mean"
+      }
+    ],
+    "columns": [
+      {
+        "metric": 1,
+        "type": "u64",
+        "kind": "gauge",
+        "values": [
+          "2048",
+          "0",
+          "18446744073709551615",
+          "7",
+          "1"
+        ],
+        "quality": [
+          "ok",
+          "stale",
+          "not-sampled",
+          "ok",
+          "ok"
+        ]
+      },
+      {
+        "metric": 2,
+        "type": "u64",
+        "kind": "counter",
+        "values": [
+          "9000",
+          "0",
+          "1",
+          "9001",
+          "9002"
+        ],
+        "quality": [
+          "ok",
+          "absent",
+          "reset",
+          "ok",
+          "ok"
+        ]
+      }
+    ],
+    "skipped": []
+  }
+}

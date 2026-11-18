@@ -2,18 +2,25 @@
 """Generic execution engine for the strict project-local ``cmru.toml`` grammar."""
 from __future__ import annotations
 
+import codecs
+import io
+import locale
 import os
 import re
+import selectors
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from time import monotonic
-from typing import Iterable, Mapping, Optional
+from time import monotonic, sleep
+from typing import Iterable, Iterator, Mapping, Optional
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cmru.errors import CredentialMissing, StepFailed
@@ -302,6 +309,13 @@ def maybe_login_multi(login: Optional[dict], registries: Optional[list]) -> None
 
 TAIL_LINES_ON_FAILURE = 40
 ERROR_LINES_ON_FAILURE = 20
+# KI-178: how long output is still drained after the child has exited. EOF on the pipe means
+# "every holder of the write end closed it", which a grandchild can postpone forever.
+OUTPUT_DRAIN_SECONDS = 2.0
+# KI-178: SIGTERM-to-SIGKILL grace when an interrupt reaps the step's process group.
+GROUP_TERM_GRACE_SECONDS = 5.0
+# How often a silent child is checked for exit while no output arrives.
+_OUTPUT_POLL_SECONDS = 0.2
 # Matches this codebase's own "[ERROR] ..." convention (wherever it appears in a line,
 # e.g. after a buildkit "#63 89.30 " progress prefix) and docker/buildkit's own
 # top-level "ERROR: target ... failed to solve" summary line.
@@ -367,6 +381,137 @@ def _open_aggregate_log(local_log: Path, *, quiet: bool):
     return aggregate_path.open("a", encoding="utf-8", buffering=1)
 
 
+def _pipe_holder_pids(inode: int) -> list[int]:
+    """Pids (other than ours) with the pipe ``inode`` open, found through ``/proc/<pid>/fd``."""
+    wanted = f"pipe:[{inode}]"
+    holders: list[int] = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        try:
+            descriptors = os.listdir(f"/proc/{entry}/fd")
+            for descriptor in descriptors:
+                if os.readlink(f"/proc/{entry}/fd/{descriptor}") == wanted:
+                    holders.append(int(entry))
+                    break
+        except OSError:
+            continue  # exited meanwhile, or owned by another user: not ours to inspect
+    return sorted(holders)
+
+
+def _warn_pipe_holders(process, argv: list[str], log_handle) -> None:
+    """One WARN: the child exited but something else still holds its output pipe open."""
+    try:
+        holders = _pipe_holder_pids(os.fstat(process.stdout.fileno()).st_ino)
+    except OSError:
+        holders = None
+    named = (
+        f"still held open by pid(s) {', '.join(map(str, holders))}"
+        if holders else "still held open by another process"
+    )
+    message = (
+        f"[WARN] '{argv[0]}' exited with code {process.returncode} but its output pipe is {named}; "
+        f"stopped reading after {OUTPUT_DRAIN_SECONDS:g}s and kept the exit code."
+    )
+    print(message, flush=True)
+    _write_line(log_handle, f"[cmru] {message[len('[WARN] '):]}\n")
+
+
+def _output_lines(process, argv: list[str], log_handle) -> Iterator[str]:
+    """Yield the child's combined output line by line, like ``for line in process.stdout``.
+
+    The same decoding as a text-mode pipe (locale encoding, universal newlines), but reading
+    stops ``OUTPUT_DRAIN_SECONDS`` after the child has exited instead of waiting for EOF: EOF
+    needs every holder of the write end to close it, and a grandchild that inherited the pipe
+    can keep it open forever (KI-178). The abandoned pipe is reported by ``_warn_pipe_holders``.
+    """
+    stream = process.stdout
+    encoding = "utf-8" if sys.flags.utf8_mode else locale.getencoding()
+    decoder = io.IncrementalNewlineDecoder(codecs.getincrementaldecoder(encoding)(), translate=True)
+    pending = ""
+    exited_at: Optional[float] = None
+    # epoll/poll based: the fd-set select(2) API refuses descriptors >= FD_SETSIZE (1024), which
+    # a busy release process can easily reach.
+    with selectors.DefaultSelector() as selector:
+        selector.register(stream, selectors.EVENT_READ)
+        while True:
+            wait = _OUTPUT_POLL_SECONDS
+            if exited_at is not None:
+                wait = min(wait, exited_at + OUTPUT_DRAIN_SECONDS - monotonic())
+                if wait <= 0:
+                    _warn_pipe_holders(process, argv, log_handle)
+                    break
+            if selector.select(wait):
+                chunk = stream.read(65536)
+                text = decoder.decode(chunk, final=not chunk)
+                if not chunk:
+                    pending += text
+                    break
+                pending += text
+                while "\n" in pending:
+                    line, _, pending = pending.partition("\n")
+                    yield line + "\n"
+            if exited_at is None and process.poll() is not None:
+                exited_at = monotonic()
+    if pending:
+        yield pending
+
+
+def _reap_process_group(process) -> None:
+    """SIGTERM then SIGKILL the step's whole process group and reap its leader.
+
+    The child leads its own group (``start_new_session``), so the group is exactly the step and
+    whatever it spawned; nothing the caller owns is signalled.
+    """
+    group = process.pid
+    try:
+        os.killpg(group, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    deadline = monotonic() + GROUP_TERM_GRACE_SECONDS
+    while monotonic() < deadline:
+        if process.poll() is not None:  # leader reaped: the group is done once it is empty
+            try:
+                os.killpg(group, 0)
+            except ProcessLookupError:
+                return
+        sleep(0.02)
+    try:
+        os.killpg(group, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+
+
+@contextmanager
+def _terminate_as_exit() -> Iterator[None]:
+    """Turn SIGTERM/SIGHUP into ``SystemExit`` so ``finally`` cleanup runs.
+
+    The step runs in its own session (KI-178), so a SIGTERM or SIGHUP that kills cmru by the
+    default action (ssh or terminal drop, ``timeout``, ``kill -- -pgid``) would leave it running
+    as an orphan; the ``SystemExit`` instead takes the group-reaping path. ``signal.signal`` only
+    works in the main thread: in any other thread nothing is installed and the caller's own
+    signal policy stands. A signal that is ignored when this starts (a SIGHUP set to ``SIG_IGN``
+    by ``nohup``) stays ignored, for cmru and, since the disposition survives exec, for the step.
+    Only what was installed here is restored on exit, even when a later install fails.
+    """
+    previous: dict[int, object] = {}
+
+    def _handler(signum, _frame) -> None:
+        raise SystemExit(128 + signum)
+
+    try:
+        if threading.current_thread() is threading.main_thread():
+            for signum in (signal.SIGTERM, signal.SIGHUP):
+                if signal.getsignal(signum) == signal.SIG_IGN:
+                    continue
+                previous[signum] = signal.signal(signum, _handler)
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler if handler is not None else signal.SIG_DFL)
+
+
 def run_command(
     argv: list[str],
     cwd: Path,
@@ -377,6 +522,28 @@ def run_command(
     mirror_handle=None,
 ) -> CommandResult:
     """Run argv, streaming its combined stdout/stderr into log_handle.
+
+    SIGTERM and SIGHUP delivered to this process while the command runs reap the command's
+    whole process group (see ``_terminate_as_exit``), like Ctrl-C does.
+    """
+    with _terminate_as_exit():
+        return _run_command(
+            argv, cwd, log_handle, quiet=quiet, log_path=log_path, mirror_handle=mirror_handle,
+        )
+
+
+def _run_command(
+    argv: list[str],
+    cwd: Path,
+    log_handle,
+    *,
+    quiet: bool,
+    log_path: Optional[Path],
+    mirror_handle,
+) -> CommandResult:
+    """The body of :func:`run_command`, which adds the termination-signal scope around it.
+
+    Streams the command's combined stdout/stderr into log_handle.
 
     When ``quiet`` is set (build/push steps whose subprocess is itself very
     noisy, e.g. `docker buildx bake`), individual lines are not echoed live —
@@ -394,16 +561,6 @@ def run_command(
     # case immediate; arbitrary child tools still control their own buffering.
     command_env["PYTHONUNBUFFERED"] = "1"
     start = monotonic()
-    process = subprocess.Popen(
-        argv,
-        cwd=str(cwd),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        env=command_env,
-    )
-    assert process.stdout is not None
     tail: deque[str] = deque(maxlen=TAIL_LINES_ON_FAILURE) if quiet else deque(maxlen=0)
     # First-seen, not last-seen: docker buildx bake always ends with a generic
     # "ERROR: failed to solve: ..." summary line, so a last-N policy would let
@@ -411,8 +568,23 @@ def run_command(
     # failure produces more than ERROR_LINES_ON_FAILURE matches.
     error_lines: list[str] = []
     evidence_lines: deque[str] = deque(maxlen=300)
+    process: Optional[subprocess.Popen] = None
     try:
-        for line in process.stdout:
+        # Started inside the try so a termination signal arriving right after it returns
+        # still takes the reaping path below (KI-178).
+        process = subprocess.Popen(
+            argv,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=0,
+            env=command_env,
+            # Its own session and process group: an interrupt reaps the step and everything it
+            # spawned, and a terminal Ctrl-C reaches only cmru, which does that reaping.
+            start_new_session=True,
+        )
+        assert process.stdout is not None
+        for line in _output_lines(process, argv, log_handle):
             _write_line(log_handle, line)
             if mirror_handle is not None:
                 _write_line(mirror_handle, line)
@@ -425,11 +597,14 @@ def run_command(
                 print(line, end="", flush=True)
         exit_code = process.wait()
     except BaseException:
-        # Ctrl-C / SystemExit from a SIGTERM handler: never leave the child
-        # running (or unreaped) behind us (BG-02).
-        process.kill()
-        process.wait()
+        # Ctrl-C / SystemExit from a SIGTERM handler: never leave the child, or anything
+        # in its process group, running (or unreaped) behind us (BG-02, KI-178).
+        if process is not None:
+            _reap_process_group(process)
+            process.stdout.close()
         raise
+    else:
+        process.stdout.close()
     elapsed_seconds = monotonic() - start
     if exit_code != 0:
         if quiet and error_lines:

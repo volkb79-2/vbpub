@@ -2904,6 +2904,13 @@ def action_deploy(
                 selection_record.enforce(
                     repo_root, profile.config, ciu_ctx["selected_profiles"], write=True,
                 )
+            # CIU-208: the active profile's topology override reaches the
+            # per-stack render; passed only when present so every caller
+            # without one keeps its exact call shape.
+            override_kwargs = (
+                {"topology_overrides": profile.topology_overrides}
+                if profile.topology_overrides else {}
+            )
             ok = _run_stack(
                 stack_dir,
                 env=svc_env,
@@ -2913,6 +2920,7 @@ def action_deploy(
                 shipped=shipped,
                 ciu_context=ciu_ctx,
                 primary_image_references=primary_image_references,
+                **override_kwargs,
             )
             if ok:
                 deployed.append(entry["path"])
@@ -2979,8 +2987,14 @@ def _run_stack(
     shipped: bool = False,
     ciu_context: Optional[dict] = None,
     primary_image_references: Callable[[], set[str]] | None = None,
+    topology_overrides: Optional[dict] = None,
 ) -> bool:
     """Run engine.main_execution for one stack in-process. Returns success bool.
+
+    *topology_overrides* (CIU-208): the active profile's accumulated
+    ``topology_overrides``, handed to the engine so the stack render applies
+    the same ``topology.*`` values preflight and ``ciu resolve`` report. A
+    shipped stack renders nothing and receives none.
 
     The engine restores cwd and never mutates env (S8.4). Profile env_overrides
     reach the compose process via *env*: we apply them to os.environ-derived
@@ -3009,6 +3023,9 @@ def _run_stack(
                 primary_image_references=primary_image_references,
             )
         else:
+            override_kwargs = (
+                {"topology_overrides": topology_overrides} if topology_overrides else {}
+            )
             result = engine.main_execution(
                 working_dir=stack_dir,
                 dry_run=dry_run,
@@ -3017,6 +3034,7 @@ def _run_stack(
                 compose_profiles=compose_profiles or None,
                 ciu_context=ciu_context,
                 primary_image_references=primary_image_references,
+                **override_kwargs,
             )
     except engine.ComposeError as exc:
         error(str(exc))

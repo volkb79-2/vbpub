@@ -165,7 +165,7 @@ SPEC §9.
 | RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | FIXED 2026-11-16; delegates complete `stat_result` shape |
 | RG-269 | tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage | Medium | FIXED 2026-11-16; scoped fakes plus unrelated-fd delegation oracle |
 | RG-271 | Decide whether tester-base should pin or float pytest | Medium | OPEN 2026-11-12; estate-level runner-policy question from the pytest 9.2 audit |
-| RG-272 | a valid request base on a non-tag checkout produces zero mutation candidates despite changed source | Should-fix | OPEN 2026-11-12 |
+| RG-272 | a valid request base on a merge-commit HEAD produces zero mutation candidates despite changed source | Should-fix | FIXED 2026-11-18 by assay B552 (`94809846b`, review round `5cfb6fbf6`, merged in `a429c0761`; unreleased); a lane that does not declare `base_source = "request"` keeps B008's first-parent rule |
 | RG-273 | ephemeral Run-Gate lanes opt in to the image-advertised KSM shim by default | Enhancement | IMPLEMENTED and released in Run-Gate 25.6.0; tester images rebuilt/deployed 2026-11-12; host lane smoke open |
 | RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities and RAM, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 5) |
 | RG-276 | Run-Gate has no campaign-plan client to assemble candidate and host inputs for fleetd | Enhancement | OPEN 2026-11-13; fleetd MVP-A exposes a standalone fleet plan CLI |
@@ -173,7 +173,7 @@ SPEC §9.
 | RG-278 | Run-Gate 25.6.0 KSM R2 survivor test debt | Major | CLOSED 2026-11-14; behavioral tests kill all 17 non-equivalent survivors and document the six equivalents |
 | RG-281 | the repo-level run-gate skill has no install or check path, so an installed copy silently rots | Enhancement | OPEN 2026-11-15 |
 | RG-282 | A package that adds or edits a lane declaration in another project's `run-gate.toml` merges without the run-gate-project `selftest` lane (gate-coverage gap) | Major | OPEN 2026-11-15; the instance (assay `rust-r1-qualification`) is fixed, the coverage rule is not built |
-| RG-283 | both host-blindness warnings prescribe a remedy the same message or the estate cannot satisfy (admission names an export that a private cgroup namespace makes useless; the Docker-GID warning asks for a value nothing publishes) | Minor | OPEN 2026-11-16; disclosure only, no verdict change |
+| RG-283 | both host-blindness warnings prescribe a remedy the same message or the estate cannot satisfy (admission names an export that a private cgroup namespace makes useless; the Docker-GID warning asks for a value nothing publishes) | Minor | FIXED on branch run-gate-20261118_045223-rg-bugs-20261118 (2026-11-18, not yet merged or released); disclosure only, no verdict change |
 | RG-284 | a remote run cannot keep or reuse its checkout, so a lane pair that must judge one tree (assay `tester-unified` then full `self-qualification`) cannot run through the supported runner | Major | OPEN 2026-11-16; assay B551 names the cheaper sequence-lane alternative |
 | RG-285 | a language lane image carries no Assay and no pip, so every such lane had to spell out the judge's `PYTHONPATH` incantation itself — the LANE, not the gate, decided which judge judged it | Enhancement | FIXED 2026-11-16 — lane key `judge = "assay"` (SPEC `R-08f`/`R-57`): read-only dual-mounted judge trees, PREPENDED import roots + `RUN_GATE_JUDGE_PYTHON`, an in-lane `find_spec` identity guard, judge commit/version/dirty recorded in the run record, `external-missing` refusal instead of a silent skip |
 | RG-286 | the `judge = "assay"` evidence never runs REAL Assay under a REAL image, and the fake docker executes the inner script on the host where `:ro` is an argv string, not a kernel mount | Major | OPEN 2026-11-16; required BEFORE the `hostobs` interim lane migrates — real-image smoke of `judge = "assay"` (real Assay source, real `tester-unified-rust`, Docker refusing writes into `assay/` and `libraries/cowtree`) |
@@ -8606,62 +8606,45 @@ cover refusal below Assay 12.2.0. The full registered selftest previously
 passed this documentation contract, as does the registered selftest on the
 branch head.
 
-## RG-272 — a valid request base on a non-tag checkout produces zero mutation candidates despite changed source
+## RG-272 — a valid request base on a merge-commit HEAD produces zero mutation candidates despite changed source
 
-**Status:** OPEN (filed 2026-11-12); priority should-fix for an R2 lane that
-delegates its comparison base. Source: [KSM evidence report](../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md)
+**Status:** FIXED 2026-11-18 by assay B552 (filed 2026-11-12; the title said
+"non-tag checkout" until 2026-11-18, which was misleading: the trigger is a
+MERGE-commit `HEAD`). The fix is assay's, in commit `94809846b` plus its review
+round `5cfb6fbf6`, merged to main in `a429c0761`; no assay release contains it
+yet. Priority was should-fix for an R2 lane that delegates its comparison
+base. Source: [KSM evidence report](../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md)
 sections 0.8 and 10.1. Related: RG-26 and RG-263; this is distinct from RG-263's
 empty source-diff case.
 
-**Problem.** The same CIU lane and `--base ciu-v7.22.0` produced
+**Problem (as reported).** The same CIU lane and `--base ciu-v7.22.0` produced
 `INCONCLUSIVE/NO_MUTANTS` with `planned=0` on a non-tag main checkout, in
 both single and sharded runs. On a checkout at the `ciu-v7.25.0` commit plus
 one empty commit, the same base produced 715 candidates. The report records
-4,292 insertions under `ciu/src` between the base and the main target, so
-the zero plan cannot be explained by an empty source diff alone. The cause was
-not diagnosed. Without `--base`, the lane correctly refuses because it
-delegates that fact to the request.
+4,292 insertions under `ciu/src` between the base and the main target.
 
-**Evidence.** The report records the two target shapes, the shared base,
-candidate counts, and the 4,292 source insertions
-([KSM evidence report](../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md):17, 170). Assay's
-`resolve_base_declaration()` returns the supplied request base unchanged for
-a delegated lane and refuses when it is missing
-(`assay/src/assay/runner.py:4295-4305`). RG-263 covers a base whose diff
-is empty inside the declared source scope, not a non-empty source diff that
-still plans zero candidates (`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md:8116-8128`).
+**Fix (assay B552).** For a lane that declares `judge.base_source = "request"`,
+assay's `git.resolve_base` and `git.base_resolution_mode` now take
+`delegated=True`: the requested base resolves to `merge-base(request, HEAD)` on
+every HEAD shape, and the verdict records `base_resolution = "merge-base"`.
+`assay_analysis`'s campaign reconstructs a delegated base the same way
+(`5cfb6fbf6`). No Run-Gate code changed for this entry. See assay's backlog
+entry B552 (`assay/nyxloom-trove/4-backlog.md`).
 
-**Minimal solution.** Reproduce the comparison at both Run-Gate and direct
-Assay plan boundaries using the same immutable base, target, lane declaration
-and source scope. Identify why the non-tag checkout contributes no candidates.
-If the declared source scope changes but Assay still plans zero, either
-produce the expected inventory or return a named, evidence-bearing planning
-refusal before starting an expensive baseline. Do not fall back to another
-base, assume the repository root is the source scope, or label this
-non-empty-diff case as the empty-source case from RG-263.
+**Remaining caveat.** A lane that does not declare `base_source = "request"`
+(a lane-declared `judge.base`) still takes the first parent on a merge-commit
+HEAD, by B008's deliberate rule, so a `--base` given to such a lane does not
+change the comparison there.
 
-**Where.** Run-Gate's `--base` planning and disclosure path,
-`assay/src/assay/runner.py` and candidate planning, fake-repository tests in
-both projects, and the relevant Run-Gate/Assay consumer documentation.
-
-**Acceptance test idea.** A registered-gate fixture runs one delegated lane
-against the same immutable base on a release-tag checkout and a non-tag
-checkout. It pins the resolved base, target and declared source scope. When
-the target source diff is non-empty, the plan exposes candidates or a named
-scope/planning refusal before baseline; it cannot yield an unqualified
-`NO_MUTANTS`. The release-tag control still produces its recorded nonzero
-inventory. Mutating base resolution, target selection or source-scope
-derivation makes the fixture fail at the layer that changed the result.
-
-**Priority.** Should-fix. The current result is not a mutation PASS and costs a
-baseline without explaining why the changed source generated no work.
-
-**Close when.** The release-tag and non-tag controls produce deterministic,
-explained plans for the same immutable base; focused Run-Gate and Assay
-regression tests distinguish this non-empty-scope case from RG-263's
-empty-source case and fail when base, target, or scope changes; the relevant
-registered lanes pass on the final commit; and any changed user-facing
-behavior is synchronized across README, DESIGN-GUIDE, and CONSUMERS.
+**History (diagnosis 2026-11-18, kept for the record).** The reported non-tag
+`main` HEAD (`b6a6274df`, `ciu-v7.25.0-9`) is a merge commit and the
+tag-plus-empty-commit control is not. Before B552, `resolve_base` answered a
+merge `HEAD` with its first parent and ignored the supplied base; the first
+parent of `b6a6274df` is the `ciu-v7.25.0` tag commit, where
+`git diff first-parent..HEAD -- ciu/src` is empty, while
+`git diff ciu-v7.22.0..HEAD -- ciu/src` is 14 files and 4292 insertions, the
+report's figure. The workaround until the fix is released: run the campaign
+from a non-merge HEAD (a detached commit on the tag).
 
 ## RG-273 — lane containers do not opt in to KSM (ciu does)
 
@@ -8929,13 +8912,24 @@ still passes against the packaged path; and the docs name the install step.
 
 **Instance fix.** The assay lane now declares `PYTHONPATH="src:{worktree}/libraries/cowtree/src"`, as its sibling Python lanes do. The guard was not changed: the lane imports source Assay, whose lazy copy-on-write workspace importer is a Cowtree importer, and the guard deliberately has no per-lane opt-out. The new test `test_real_rust_r1_lane_declares_its_cowtree_route` pins that lane against the real file with a hand-mutant.
 
+**Second instance (2026-11-18, package P3b).** After RP-04 gave `scripts/debian-install-v2`, `scripts/truenas` and `truenas/tnt` Cowtree importers (the VM path resolver), `selftest` was red on origin/main with 27 lanes flagged (debian-install-v2 `r0-r1`, `fake-integration`; scripts/truenas 21 lanes; tnt `r0-r1`, `ux-focused`, `live-v27`, `live-update`). Fixed by adding `{worktree}/libraries/cowtree/src` to each lane's PYTHONPATH, no guard change. Guard blind spot noted for the coverage rule: a python command whose leading assignments are not only `PYTHONPATH=` (for example `PYTHONPATH=... PYTHONDONTWRITEBYTECODE=1 nice python -m pytest`) is not seen as a Python invocation, so tnt exports `PYTHONDONTWRITEBYTECODE=1` separately.
+
 **Wanted.** A rule, enforced mechanically rather than by reviewer memory, that a change which adds or edits a lane in any tracked `run-gate.toml`, or edits the files the estate guards scan (`run-gate-project/run_gate.py`, `assay/pyproject.toml`, `assay/src/**/*.py` import statements of `cowtree`), includes the run-gate-project `selftest` lane in its gate set. The cheapest form is a path-triggered lane requirement in package-gate selection (run-gate or the nyxloom merge step) with the trigger list derived from the guards' own scan selection so the two cannot drift; the fallback is a checklist line in the package brief template.
 
 **Close when.** A change that adds a lane to `assay/run-gate.toml` is refused or auto-extended with the run-gate-project `selftest` lane, shown by a test of the selection rule, and the trigger list is derived from the guard's own file selection.
 
 ## RG-283 — both host-blindness warnings prescribe a remedy that the same message (or the estate) cannot satisfy
 
-**Status:** OPEN (filed 2026-11-16); severity: minor for each message, should-fix
+**Status:** FIXED 2026-11-18 on branch `run-gate-20261118_045223-rg-bugs-20261118`
+(pending merge and release). `admission_no_ceiling_warning()` names the profiler
+daemon and `run-gate doctor` alone under a private cgroup namespace, the
+`$RUN_GATE_CGROUPFS_ROOT` export alone when `memory.max` is absent and the
+namespace is not private, and no remedy when `memory.max` is readable but not a
+number; `host_docker_gid_unavailable_message()` names both variables, says the
+host launcher publishes `$MDT_HOST_DOCKER_GID` and that nothing in the container
+can derive it, and the profiling warning still appends what degrades. Tests:
+`TestRg283WarningsNameOneApplicableRemedy`. The publisher itself stays RG-252.
+Original filing (2026-11-16): severity: minor for each message, should-fix
 for the class (a refusal/warning whose repair instruction is wrong trains
 operators to ignore the warning). Source: the di2 KSM evidence report of
 2026-11-12 (`reports/` outside the repository; the two lines are quoted below

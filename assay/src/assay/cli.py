@@ -4093,6 +4093,7 @@ def _discover_plan_jobs(
     resolved_base = runner._resolve_declared_base(
         lane_file.project_root,
         base_declaration,
+        delegated=runner._lane_delegates_base(lane),
         remaining=deadline.remaining,
     )
 

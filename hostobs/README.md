@@ -80,17 +80,23 @@ from `docs/SEGMENT-FORMAT.md` and decoded by both implementations. The `kernel` 
 driven by committed fixture trees under `crates/kernel/tests/fixtures/` (cgroupfs and `/proc`,
 copied from the sampler's own fixtures), never by a live host. SP-4's wire-size measurement and
 the numbers that confirm decision D4 are in [`docs/SP-4-WIRE-SIZES.md`](docs/SP-4-WIRE-SIZES.md).
+The normative `hostobs/1` protocol (connection, frames, verbs, budgets, the Python access path) is
+[`docs/WIRE.md`](docs/WIRE.md).
 
 The test-quality claim for these crates is a hand mutation campaign (Rust R2 is not adopted
 yet), recorded in [`docs/HAND-MUTANTS-M1.md`](docs/HAND-MUTANTS-M1.md) (twenty-one mutations,
 all killed), [`docs/HAND-MUTANTS-M1B.md`](docs/HAND-MUTANTS-M1B.md) (thirty-one mutations, all
 killed) and [`docs/HAND-MUTANTS-M1C.md`](docs/HAND-MUTANTS-M1C.md) (fifteen mutations over the
 store's bounds and crash-safety guards, all killed). Each is a stored patch in a replayable
-script, and every restore is SHA-256-verified.
+script, and every restore is SHA-256-verified. The P0 bug fold-in adds
+[`docs/HAND-MUTANTS-M1D.md`](docs/HAND-MUTANTS-M1D.md) (thirty-five stored patches over the
+frame-header bound, quarantined files inside the cap, the sealed-footer and name/header rules
+and the time-section length); its campaign is to be run on the gate head and states no result
+yet.
 
 Open items found while building these packages are in
-[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-45`): the
-sharpest still-open ones are `HOB-17`/`HOB-27` (the `kernel` and `store` crates carry their
+[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-45`; `HOB-8`,
+`HOB-42` and `HOB-43` are FIXED by the P0 bug fold-in): the sharpest still-open ones are `HOB-17`/`HOB-27` (the `kernel` and `store` crates carry their
 own value and quality types until the Rust lane image can be rebuilt against a new
 `Cargo.lock`), `HOB-21`/`HOB-29` (no `/sys` device-topology source, and `store`'s tmpfs check
 reads the mount table rather than `statfs`), `HOB-39` (a store range answer is the stored
@@ -113,13 +119,25 @@ image is built on a host only on the controller's go and does not exist yet. See
 
 ## Gates
 
-Use the registered `lint`, `selftest` and `assay-r1` lanes from this directory:
+The registered lanes are `lint`, `selftest` and `assay-r1`. Run them through the estate's
+gate wrappers, not a bare `run-gate` (which skips slot admission and refuses container lanes
+on the main checkout). Locally, from this directory in a **linked worktree**:
 
 ```sh
-run-gate lint
-run-gate selftest
-run-gate assay-r1
+. "$HOME/controller/controller.local.env"
+<repo>/scripts/controller/gate-run.sh lint        # then selftest, then assay-r1
 ```
+
+Remotely, one lane at a time on a remote gate worker (`CONTROLLER_REMOTE_GATE_HOSTS=v1001`
+must be set):
+
+```sh
+scripts/controller/remote-gate.sh v1001 hostobs lint <commit-or-branch>
+```
+
+Both are described in `scripts/controller/README.md` ("Running the registered gate", "Run one
+lane on a remote gate worker"). The Rust lanes need the `tester-unified-rust` image on the
+executing host; see [`docs/CONSUMERS.md`](docs/CONSUMERS.md).
 
 Cargo is offline and locked, and each Cargo invocation checks the mounted `Cargo.lock`
 against the image's registry-set identity and cache manifest first (workspace-member lock

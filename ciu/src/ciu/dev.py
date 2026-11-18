@@ -25,6 +25,7 @@ from typing import Callable
 
 from . import config_model
 from . import procutil
+from . import selection_record
 from .config_constants import GLOBAL_CONFIG_DEFAULTS
 from .deploy_pkg import health as _health
 from .cli_utils import cli_error
@@ -331,20 +332,29 @@ def run_dev(
         build_run_fn = run_fn
 
     try:
+        from . import deploy as _deploy
         from .deploy_pkg import profiles as _profiles
 
         global_config = global_loader(repo_root)
         # Apply the service profile's overrides (topology/env) like the deploy path,
         # so `--profile` is honored and network/host facts match (S7.4 / Seam 4).
-        # With no name and no CIU_SERVICES_PROFILE the default profile leaves the
-        # config unchanged; a bad name raises ValueError (caught below → exit 2).
-        resolved_profile = _profiles.resolve_profiles(
+        # CIU-209: resolved through the same wrapper `ciu up` uses, so an explicit
+        # name wins, then `[ciu.instance] service_profiles`, then the legacy env
+        # list, then the default profile; a bad name or selection raises
+        # ValueError (caught below → exit 2).
+        resolved_profile = _deploy.resolve_profiles(
             global_config, [profile_name] if profile_name else None
         )
         global_config = resolved_profile.config
         # S3.12 / CIU-44: `ciu dev` selects exactly this one stack — declared
         # as such, so template guards see an honest selection.
         ciu_ctx = _profiles.render_ciu_context(resolved_profile, [{"path": stack}])
+        # CIU-209 / S3.12 clause 5: the CIU-205 selection record guards this verb
+        # before any stack render or Docker call. A dev run checks an existing
+        # record but never creates one: it does not establish a deployment type.
+        selection_record.enforce(
+            repo_root, global_config, ciu_ctx["selected_profiles"], write=False,
+        )
         stack_config = config_model.render_stack(
             stack_dir,
             global_config=global_config,

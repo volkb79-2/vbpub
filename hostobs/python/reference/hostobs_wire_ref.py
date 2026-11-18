@@ -377,8 +377,12 @@ def decode_column(body: bytes, n_rows: int) -> dict:
     return column
 
 
+#: Bytes one time bucket occupies: i64 real_ns (8) + u32 covered_ms (4) + u16 samples (2) + u8 agg (1).
+TIME_BUCKET_BYTES = 8 + 4 + 2 + 1
+
+
 def time_body_len(n_buckets: int) -> int:
-    return _align8(n_buckets * 14)
+    return _align8(n_buckets * TIME_BUCKET_BYTES)
 
 
 def encode_time(time: list[dict]) -> bytes:
@@ -479,8 +483,15 @@ def decode_frame(data: bytes) -> dict:
         raise WireError("unknown-frame-flags", flags=flags)
     if reserved != 0:
         raise WireError("non-zero-reserved", value=reserved)
+    # HOB-8: the declared length is bounded by the header parse itself (the Rust
+    # ``FrameHeader::parse`` does the same), judged after the fixed fields and before any
+    # comparison with the buffer, so a streaming reader may allocate ``length`` bytes.
     if length > MAX_FRAME_BYTES:
         raise WireError("oversized-frame", len=length, max=MAX_FRAME_BYTES)
+    if length < FRAME_HEADER_LEN:
+        raise WireError(
+            "truncated", context="frame length shorter than the header", need=FRAME_HEADER_LEN, have=length
+        )
     if len(data) < length:
         raise WireError("truncated", context="frame", need=length, have=len(data))
     if len(data) > length:
@@ -491,6 +502,10 @@ def decode_frame(data: bytes) -> dict:
     # another frame type is type/payload confusion, refused before any section is read.
     if type_code != FRAME_TYPES["block"]:
         raise WireError("not-a-block", frame_type=type_code)
+    # A block that ends inside its own directory header (the smallest legal declared
+    # length is the 12-byte frame header) is a truncation, never a struct.error.
+    if len(data) < FRAME_HEADER_LEN + 4:
+        raise WireError("truncated", context="block directory", need=FRAME_HEADER_LEN + 4, have=len(data))
     n_sec, dir_reserved = struct.unpack_from("<HH", data, FRAME_HEADER_LEN)
     if dir_reserved != 0:
         raise WireError("section-reserved", value=dir_reserved)

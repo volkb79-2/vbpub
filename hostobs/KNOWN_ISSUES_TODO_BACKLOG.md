@@ -17,10 +17,10 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-2 | SP-4 measured bytes only: encode/decode CPU, allocations and maintenance cost unmeasured | Minor | OPEN |
 | HOB-3 | `model` and `proto` duplicate the quality/metric vocabularies because the locked image cannot take the path dependency; a shared fixture, not a shared type, binds them | Major | OPEN (needs one image build on the registry-set identity, then workspace-only lock edits need no further rebuild) |
 | HOB-4 | No registered `conformance` lane: the independent Python fixture check is not gate-enforced | Major | OPEN |
-| HOB-5 | Section version 1 has no history min/max/mean columns; `TIME` carries one value per bucket plus the aggregation code | Minor | OPEN (M2 work) |
-| HOB-6 | `DICT` frame type is defined but consumed nowhere: the dictionary travels inside the block frame | Minor | OPEN (deliberate) |
+| HOB-5 | Section version 1 has no history min/max/mean columns; `TIME` carries one value per bucket plus the aggregation code | Minor | OPEN (decided: WIRE.md §3.6/§4.9 D-W10, no layout change; lands with P5b `series_batch`) |
+| HOB-6 | `DICT` frame type is defined but consumed nowhere: the dictionary travels inside the block frame | Minor | CLOSED (by design: reserved and unsent, WIRE.md §2.2 D-W6) |
 | HOB-7 | `IncarnationRegistry` grows without bound and `end_round` is O(all ids ever minted) | Major | OPEN (SP-3 bound) |
-| HOB-8 | `FrameHeader::parse` does not bound its declared length; only `decode_block` does | Major | OPEN (next package's streaming reader) |
+| HOB-8 | `FrameHeader::parse` does not bound its declared length; only `decode_block` does | Major | FIXED (P0 bug fold-in) |
 | HOB-9 | `derive_rate` carries no boot/epoch/incarnation context, so "no rate across a boundary" is a caller contract only | Major | OPEN (store package) |
 | HOB-10 | The metric code tables (`unit`, `scope`, `source`, `aggregation`, kind mask) are duplicated in `model` and `proto` and only the quality table is fixture-bound | Major | OPEN |
 | HOB-11 | SP-4's sampler arm is a reproduction with synthetic delta magnitudes, and the example never runs in a lane, so its numbers can drift unnoticed | Minor | OPEN |
@@ -54,10 +54,15 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-39 | A range answer is the stored payload bytes (a whole `proto` BLOCK) plus the record's time and incarnations, not decoded `model` values with quality codes: the join needs `proto`/`model`, which `HOB-27` forbids | Major | OPEN (needs the lanes on the registry-set-identity image, as `HOB-27`) |
 | HOB-40 | No focus tier is configured by `plan_v4`; the tier machinery accepts one, but the plan does not yet say what a focus tier keeps | Minor | OPEN (plan decision) |
 | HOB-41 | No golden fixture has a non-zero record pad, so the padding rule is pinned by unit tests on each side, not by a cross-language file | Minor | OPEN |
-| HOB-42 | A `.seg` name is trusted as sealed without a footer, and the header's `seq`/`start_real_ns` are never compared with the name | Minor | OPEN |
-| HOB-43 | Quarantined `.corrupt` files (corrupt, oversized) are kept for an operator but are never counted in `bytes`, never evicted and never bounded in number, so repeated damage can fill the directory beyond `cap_bytes` | Major | OPEN |
+| HOB-42 | A `.seg` name is trusted as sealed without a footer, and the header's `seq`/`start_real_ns` are never compared with the name | Minor | FIXED (P0 bug fold-in) |
+| HOB-43 | Quarantined `.corrupt` files (corrupt, oversized) are kept for an operator but are never counted in `bytes`, never evicted and never bounded in number, so repeated damage can fill the directory beyond `cap_bytes` | Major | FIXED (P0 bug fold-in) |
 | HOB-44 | CLOSED — `tester-unified-rust` carries no `pip`/`ensurepip`/`python3-venv`, so the original `kind = "assay"` `assay-r1` lane died at Run-Gate's editable install before judging. Fixed by re-declaring the lane as a `kind = "command"` lane that runs the judge from the worktree's own `assay/src` (`PYTHONPATH`, no install); the image is unchanged. Proven through Run-Gate: PASS with the measured totals in the lane log, and FAIL/UNCOVERED_LINES when one kernel test file is deleted | Major | CLOSED (2026-11-16) |
 | HOB-45 | Rust R2/R3 remain unregistered for hostobs: no `assay-r2` (cargo-mutants ingestion) or `assay-r3` (canary) lane exists, so test quality rests on the hand-mutation campaigns | Major | OPEN (assay R-3b/R-4) |
+| HOB-46 | A block without an in-frame dictionary cannot be validated: `decode_block` checks row/column references only against a dictionary carried in the same frame | Major | OPEN (P2) |
+| HOB-47 | A history bucket's aggregation is never checked against the column metric's permitted mask | Minor | OPEN (P2) |
+| HOB-48 | A history block cannot name its subject (kind 6 `subject`, minor 1); the time-length half is the P0 bug fold-in's (`TIME_BUCKET_BYTES = 15`, no minor) | Major | OPEN (P2) |
+| HOB-49 | `hostobs_wire_ref.py` cites a non-existent `docs/WIRE-COLUMN-CODEC.md` instead of `docs/WIRE.md` | Minor | OPEN |
+| HOB-50 | Frame header and directory checks: `SECTIONED` is accepted on every frame type, and the directory vector is allocated from `n_sec` before its bytes are proven present | Minor | OPEN (P2) |
 
 ---
 
@@ -310,6 +315,15 @@ unchecked. The streaming reader of the next package starts with `parse` and must
 `decode_block`'s own check, so a future caller that bypasses `parse` is still bounded), plus
 a test at the bound and one past it. No wire change.
 
+**FIXED (P0 bug fold-in).** `parse` now refuses a declared length above `MAX_FRAME_BYTES`
+(`oversized-frame`) and below `FRAME_HEADER_LEN` (`truncated`, context "frame length shorter
+than the header"), after the fixed-field checks, so Rust and the Python reference name the same
+first refusal. `decode_block` keeps its own check as a second bound; through `parse` that check
+can no longer fire, so its multi-line `return Err(..)` is covered by no test (see `CHANGES.md`). Tests pin the
+bound, one past it, `u32::MAX`, one below the header, zero and the refusal order, in both
+languages, and two refusal fixtures (declared length 4, a header-only block) are decoded by
+both. Stored hand-mutation patches, not yet run: `M1d-1`, `M1d-14`.
+
 ## HOB-9 — `derive_rate` has no boot/epoch/incarnation context
 
 **Where:** `crates/model/src/rate.rs`.
@@ -497,6 +511,12 @@ and history is an M2 query surface.
 value triple) or a second bucket section kind, decided with M2's history query shape, and
 a fixture case.
 
+**Decided (WIRE.md §3.6, §4.9, D-W10).** Neither: min, max and mean of a gauge are separate
+history blocks of the same subject, one aggregation per block, packed subject-major then by
+the request's agg order; the existing bucket `agg` code says which. No layout change. Closes
+when P5b's `series_batch` serves it and the P2 fixture `history-agg-not-permitted` plus a
+three-agg packing test pass.
+
 ## HOB-6 — `DICT` frame type is defined and unused
 
 **Where:** `crates/proto/src/frame.rs` `FrameType` (type code 4), crate docs decision 2.
@@ -510,6 +530,10 @@ than deleted.
 **Exit criteria.** Either the probe emits a standalone `DICT` frame before a first block
 of a generation (and the fixtures grow that case), or the type is retired with a note in
 the crate docs.
+
+**CLOSED (by design, WIRE.md §2.2, D-W6).** The type code stays reserved and is never sent in
+`hostobs/1`; a peer that receives one treats it as `bad-frame`. The in-block dictionary
+serves live, query and segment paths, so no producer needs it. P2's stream layer refuses it.
 
 ## HOB-27 — `store` cannot depend on `proto` or `model`
 
@@ -774,6 +798,16 @@ mean "the footer that closes these records is present and agrees", not "the name
 of served, a name/header identity disagreement is a typed refusal, and both have a test and a
 mutant.
 
+**FIXED (P0 bug fold-in).** A non-`.seg.open` name without a verified footer (a lost footer, a
+truncated sealed file) is quarantined whole as `<name>.corrupt` and reported in the tier scan
+(`SealedWithoutFooter`); a header `seq` or `start_real_ns` that disagrees with the name is the
+typed refusal `SegmentIdentity` and quarantines the file, for `.seg` and `.seg.open` alike. The
+seal keeps the open name's start second so a step change cannot trip the new rule. The Python
+segment reference refuses the same files (`check_segment_name`); no golden fixture is possible
+because the name is not in the file's bytes. `docs/SEGMENT-FORMAT.md` states both rules.
+A `.seg.open` name that carries a footer is refused too (`OpenWithFooter`). Stored hand-mutation
+patches, not yet run: `M1d-6` … `M1d-9`, `M1d-17`, `M1d-19`.
+
 ## HOB-43 — Quarantined files sit outside the cap
 
 **Where:** `crates/store/src/tier.rs` (`rescan`: corrupt and oversized branches), `crates/store/src/segment.rs` (`quarantine_name`).
@@ -788,6 +822,17 @@ fix round; the first review round missed it too.
 **Exit criteria.** Either quarantined bytes count against the tier's cap (oldest `.corrupt`
 removed first, reported) or a hard count/bytes bound refuses further quarantine with a typed,
 counted report; a test fills the bound; a mutant removes it.
+
+**FIXED (P0 bug fold-in), by the first alternative.** Quarantined files count in the tier's
+byte total, `keep_s` applies to them by the `(start_s, seq)` their names keep, and under
+`cap_bytes` they are evicted first, oldest first, before any live segment. Every such removal
+is reported (`Evicted::quarantined`) and counted (`StoreStats::evicted_quarantined`). Only a
+`.corrupt` file whose name parses to this tier and whose header is this tier's corpus is
+adopted; any other look-alike is reported as a note, never counted, evicted or removed, so
+those bytes stay outside the cap. A quarantined file deleted by hand, or one that cannot be
+removed, leaves the list and the total without failing the pass, and a quarantined name keeps its
+sequence number. Tests fill the bound; stored hand-mutation patches, not yet run: `M1d-2` … `M1d-5`,
+`M1d-10`, `M1d-12` … `M1d-16`, `M1d-18`.
 
 ## HOB-44 — CLOSED: the lane needed no `pip`, because it needed no install
 
@@ -891,3 +936,116 @@ reduced to the survivors those lanes cannot express.
 
 **Source.** Filed 2026-11-15 by the hostobs assay-r1 adoption; assay A-501 (Rust R2 not
 adopted is a known issue), `assay/docs/RUST-METHODOLOGY.md`.
+
+## HOB-46 — A bare block cannot be validated against the held dictionary
+
+**Where:** `crates/proto/src/frame.rs` `decode_block` (reference checks run only under
+`if let Some(table) = &dictionary`).
+
+A live stream carries its dictionary only when the generation changes (`docs/WIRE.md` §6.2), so
+most live blocks are bare. For those, `decode_block` checks neither the generation nor the
+row/column references: a dangling index or a row naming a metric is accepted, and the caller has no
+API to supply the held generation.
+
+**Exit criteria.** `decode_block_with(bytes, held: Option<&Dictionary>)` applies the in-frame checks
+against the held generation (`stale-dictionary-generation` for a mismatch, `generation-regressed`
+for a dictionary-bearing block that does not exceed it), plus the `bare-block-held-dict`,
+`bare-block-dangling`, `generation-rollover` and `generation-regressed` cases of WIRE.md §11.3/§11.4
+in Rust and Python.
+
+## HOB-47 — History aggregation is not checked against the metric mask
+
+**Where:** `crates/proto/src/frame.rs` `decode_block`, `python/reference/hostobs_wire_ref.py`.
+
+The dictionary's metric mask is derived and verified, but no decoder checks that a bucket's `agg`
+is in the mask of every column of the block, so `mean` over a counter decodes as valid.
+
+**Exit criteria.** Both decoders refuse with `aggregation-not-permitted` (WIRE.md §3.6) and the
+`history-agg-not-permitted` fixture pins it.
+
+## HOB-48 — A history block cannot name its subject
+
+**Where:** `crates/proto/src/frame.rs` `SectionKind`, `decode_block`; `python/reference/hostobs_wire_ref.py`.
+
+A history block has no entity reference, so a multi-subject `series_batch` reply cannot say which
+incarnation each block describes. (The time section's length half of this entry, `align8(14·n)`
+instead of `align8(15·n)`, is a bug fix without a version change and lands in the P0 bug fold-in:
+`TIME_BUCKET_BYTES = 15`, fixture `history-five-buckets`; WIRE.md §3.6, §13 V-1.)
+
+**Exit criteria (P2).** The `subject` section (kind 6, version 1, required, `u32 ent | u32 0`, time
+blocks only, `subject-without-time` otherwise) per WIRE.md §3.8; `PROTO_MINOR = 1`; the
+`history-subject` and `subject-in-live-block` fixtures in both languages.
+
+## HOB-49 — The Python reference cites a missing specification file
+
+**Where:** `python/reference/hostobs_wire_ref.py` line 5.
+
+The docstring names `hostobs/docs/WIRE-COLUMN-CODEC.md`, which does not exist; the normative
+specification is `docs/WIRE.md`.
+
+**Exit criteria.** The docstring points at `docs/WIRE.md` (§3 for the block layout).
+
+## HOB-50 — Frame header flag/type consistency and directory allocation
+
+**Where:** `crates/proto/src/frame.rs` `FrameHeader::parse`, `decode_block` (`Vec::with_capacity(n_sec)`).
+
+`parse` accepts `SECTIONED` on REQ/REP/EVT/END, which WIRE.md §2.1 makes `bad-frame`. `decode_block`
+reserves a directory vector of `n_sec` entries (up to 65,535) before it has proven that
+`4 + 8·n_sec` bytes exist, so a 16-byte frame causes an allocation sized by an untrusted field
+(bounded, but against WIRE.md §11.1).
+
+**Exit criteria.** `parse` (or the stream reader) enforces the flag/type rule with the
+`rep-sectioned-flag` case; the directory length is checked against the buffer before the vector is
+reserved, with a unit test for `n_sec = 65535` in a short frame.
+
+## HOB-51 — Received frames are not held to the alignment and header-first rules
+
+**Where:** `crates/proto/src/frame.rs` `decode_block` (lines 1086-1126),
+`python/reference/hostobs_wire_ref.py` `decode_frame` (lines 509-535). WIRE.md §13 V-11.
+
+Both decoders take a section body of any length and let an unknown section precede the header, so
+the "every body starts at an offset ≡ 0 (mod 8)" and "the header body sits at `16 + 8·n_sec`"
+guarantees of WIRE.md §3.1 hold only for frames this codebase encoded. Measured on the Python
+reference: an optional `len = 5` section decodes (frame `len` 357); placed first, the header body
+starts at 69.
+
+**Exit criteria (P2).** Both decoders refuse a section `len` not ≡ 0 (mod 8) with `section-length`
+and an unknown kind at directory entry 0 with `section-order`, checked after the rank check (WIRE.md
+§3.10); the `unaligned-optional-section` and `optional-section-before-header` fixtures pin them in both
+languages; the existing `section-order` fixture keeps its pinned `index: 1, kind_code: 1`.
+
+## HOB-52 — A metric repeated with other facts is `conflicting-column` in Rust
+
+**Where:** `crates/proto/src/dict.rs` `decode` (line 891 → `intern` line 596). WIRE.md §13 V-12.
+
+A dictionary that repeats a metric name with other facts is `conflicting-column` in Rust and
+`duplicate-dictionary-entry` in the Python reference (measured), so one defect has two outcomes.
+
+**Exit criteria (P2).** Every repeated dictionary identity is `duplicate-dictionary-entry` in both
+languages whatever the other fields (WIRE.md §3.7, D-W23); the `duplicate-metric-other-facts` and
+`duplicate-entity-other-label` fixtures pin it.
+
+## HOB-53 — The Python reference checks buffer length before `not-a-block`
+
+**Where:** `python/reference/hostobs_wire_ref.py` `decode_frame` (lines 484-493). WIRE.md §13 V-13.
+
+The reference checks buffer length and `SECTIONED` before the frame type, so a truncated REP is
+`truncated` in Python and `not-a-block` in Rust.
+
+**Exit criteria (P2).** The reference follows the WIRE.md §3.10 check precedence (Rust order); the
+`rep-not-sectioned-truncated` fixture pins `not-a-block` in both languages.
+
+## HOB-54 — The stream layer machines do not exist yet
+
+**Where:** `crates/proto/src/stream.rs` (new), `python/hostobs_client/stream.py` (new), the P5b serving
+loop. WIRE.md §5.2-§5.4, §12.
+
+`proto` decodes single frames only. The frame reader (WIRE.md §5.2), mode detection and send hub
+(§5.3: pin-time `dropped` stamping, coalescing, the `last_pushed_gen` form rule, Live/Query/control
+pools with per-uid caps, frame completion and stall closes) and the connection timers (§5.4) are
+specified with fake-clock tables but have no code, so no stream property of `hostobs/1` is tested.
+
+**Exit criteria.** P2: the §12 `FrameReader`, `ModeDetect`, `SendHub` and `ConnTimers` APIs in Rust
+with the 12 reader and 19 hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row; P3: the Python
+`FrameReader` passes the same 12 reader cases and the 6 client cases; P5b: the 18 connection cases
+of §11.4 against a fake clock.

@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -14,7 +15,7 @@ from pathlib import PurePosixPath
 import pytest
 from conftest import GitRepo
 
-from assay import cli, isolation, mutation, runner
+from assay import cli, git, isolation, mutation, runner
 from assay.adapters import sql as sql_adapter_module
 from assay.adapters.sql import SqlAdapter
 from assay.candidate_identity import candidate_id_from_fields
@@ -152,6 +153,43 @@ def test_o16a_i_every_row_reproduces_its_id_from_its_identity_inputs(git_repo: G
         assert candidate_id_from_fields(**identity) == row["id"]
         assert len(row["source_sha256"]) == 64 and len(row["mutated_file_sha256"]) == 64
     assert len({row["mutated_file_sha256"] for row in rows}) == 4
+
+
+def test_b552_a_delegated_plan_on_a_merge_head_plans_the_requested_comparison(
+    git_repo: GitRepo,
+):
+    """(B552) `assay plan` for a `base_source = "request"` lane on a merge-commit
+    HEAD must plan against the REQUESTED base, as `assay run` does. The merge
+    brings in an unrelated file only, so HEAD's first parent already holds the
+    source change: the old first-parent rule planned ZERO candidates (the
+    reported `NO_MUTANTS`), the requested comparison plans the 4 compare sites.
+    The same merge with a lane-declared base keeps the first-parent behaviour."""
+    path = _seed(git_repo)
+    declared_text = path.read_text(encoding="utf-8")
+    base = re.search(r'^base = "([0-9a-f]{40})"$', declared_text, re.MULTILINE).group(1)
+    path.write_text(
+        declared_text.replace(f'base = "{base}"', 'base_source = "request"'),
+        encoding="utf-8",
+    )
+    git_repo.commit_all("delegate the base")
+    git_repo.git("checkout", "-q", "-b", "side", base)
+    git_repo.write("other.txt", "unrelated\n")
+    git_repo.commit_all("unrelated side change")
+    git_repo.git("checkout", "-q", "main")
+    git_repo.git("merge", "-q", "--no-edit", "side")
+    assert len(git_repo.git("rev-list", "--parents", "-n", "1", "HEAD").split()) == 3
+
+    lane_file, lane = _load(path)
+    rows = plan_jobs(lane_file, lane, request_base=base)
+
+    assert rows != mutation.UNSUPPORTED and len(rows) == 4
+
+    # Control on the SAME merge HEAD: a base the lane declares itself keeps
+    # B008's first-parent rule (it would plan nothing here), while the delegated
+    # resolution is the requested base.
+    first_parent = git_repo.git("rev-parse", "HEAD^1").strip()
+    assert git.resolve_base(git_repo.path, base) == first_parent
+    assert git.resolve_base(git_repo.path, base, delegated=True) == base
 
 
 def test_assay_plan_does_not_read_selected_sql_targets_again_as_context(

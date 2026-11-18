@@ -5441,6 +5441,45 @@ def slice_cgroupfs_dir(slice_name: str) -> Path:
     return Path("/".join(ancestors)) / slice_name
 
 
+def admission_no_ceiling_warning(slice_name: str, sl_dir: Path,
+                                 max_raw: str | None, *,
+                                 private_namespace: bool) -> str:
+    """RG-283 (RG-55/C7): the admission WARNING for "no derivable memory
+    ceiling", naming exactly ONE remedy — the one that applies where it is
+    printed. `max_raw is None` means the slice's memory.max could not be read
+    at all:
+
+    - private cgroup namespace: no export can help, ever (the kernel shows
+      this process its own root only), so the message names the profiler
+      daemon (`run-gate doctor`'s 'profiler' check) and never mentions the
+      export variable;
+    - otherwise the cgroupfs root may simply be the wrong one, so the message
+      names `$RUN_GATE_CGROUPFS_ROOT`;
+    - `memory.max` readable but not a byte count (`max`, empty, garbled): the
+      host cgroupfs IS visible, so neither remedy fits; the message states
+      what was read and prescribes nothing.
+
+    Pure message builder: the caller decides whether to print and admits on
+    shared-infra rules only in every case (SPEC R-29: a WARNING, not a
+    refusal)."""
+    state = ("absent" if max_raw is None
+             else "= " + (max_raw or "empty"))
+    head = (f"run-gate: admission WARNING: no derivable memory ceiling for "
+            f"slice {slice_name} ({sl_dir}/memory.max {state}")
+    if max_raw is None and private_namespace:
+        remedy = (f") — /proc/self/cgroup is '0::/' and no slice directory "
+                  f"is visible: cgroupns=private; host-side slice truth is "
+                  f"only reachable through the profiler daemon (run "
+                  f"'{PROG} doctor' and read its 'profiler' check, "
+                  f"RG-55/C7)")
+    elif max_raw is None:
+        remedy = (f"; export ${CGROUPFS_ROOT_ENV_VAR} if the host cgroupfs "
+                  f"hides here)")
+    else:
+        remedy = ")"
+    return f"{head}{remedy} — admission by shared-infra rules only"
+
+
 def check_slice_memory_admission(lane: dict, lane_name: str,
                                  slice_name: str, slice_src: str) -> None:
     """RG-20 admission, memory half: the lane's declared RAM must fit in the
@@ -5473,23 +5512,11 @@ def check_slice_memory_admission(lane: dict, lane_name: str,
     # RG-117e: anything but ASCII digits (`max`, an empty or garbled file) is
     # "no derivable ceiling"; a bare int() on it raised ValueError.
     if max_raw is None or not (max_raw.isascii() and max_raw.isdigit()):
-        # RG-55/C7: name WHY when the reason is a private cgroup namespace
-        # (this devcontainer's own default) rather than leave a reader to
-        # guess between "wrong path" and "structurally unreachable from
-        # here" — the two calls for different fixes (export
-        # $RUN_GATE_CGROUPFS_ROOT vs. nothing this process can do about it
-        # at all, ever).
-        why = ""
-        if max_raw is None and cgroup_namespace_is_private():
-            why = (f" — /proc/self/cgroup is '0::/' and no slice directory "
-                   f"is visible: cgroupns=private; host-side slice truth is "
-                   f"only reachable through the profiler daemon ({PROG} "
-                   f"doctor's own 'profiler' check, RG-55/C7)")
-        print(f"run-gate: admission WARNING: no derivable memory ceiling for "
-              f"slice {slice_name} ({sl_dir}/memory.max "
-              f"{'absent' if max_raw is None else '= ' + (max_raw or 'empty')}; export "
-              f"${CGROUPFS_ROOT_ENV_VAR} if the host cgroupfs hides here)"
-              f"{why} — admission by shared-infra rules only", flush=True)
+        print(admission_no_ceiling_warning(
+            slice_name, sl_dir, max_raw,
+            private_namespace=(max_raw is None
+                               and cgroup_namespace_is_private())),
+            flush=True)
         return
     if cur_raw is None or not (cur_raw.isascii() and cur_raw.isdigit()):
         print(f"run-gate: admission WARNING: slice {slice_name} current usage "
@@ -9475,6 +9502,24 @@ def extra_mount_flags() -> list[str]:
     return flags
 
 
+def host_docker_gid_unavailable_message() -> str:
+    """RG-283: the text for "no host Docker GID source is set". It states the
+    truth about the fact: neither variable is set here, the HOST LAUNCHER is
+    the only supported publisher (as `$MDT_HOST_DOCKER_GID`; the other
+    variable is the explicit override), and the value cannot be read from
+    inside this container. It is not an instruction an operator can follow
+    from the cockpit: it prescribes nothing a reader cannot do. What degrades
+    is appended by the caller's context (the profiling warning adds
+    'basic in-lane sampling only')."""
+    return (f"host Docker GID is unavailable: neither "
+            f"${HOST_DOCKER_GID_ENV_VAR} nor ${MDT_HOST_DOCKER_GID_ENV_VAR} "
+            f"is set in this environment; the host launcher publishes the "
+            f"value as ${MDT_HOST_DOCKER_GID_ENV_VAR} (the other variable is "
+            f"an explicit override), and it cannot be derived from inside "
+            f"this container (the Docker socket's group and the group "
+            f"database are not sources)")
+
+
 def host_docker_gid() -> tuple[int, str]:
     """The host's numeric Docker GID and where it came from.
 
@@ -9496,10 +9541,7 @@ def host_docker_gid() -> tuple[int, str]:
             fail_infra(f"${variable} must be a verified non-root numeric GID, "
                        f"got {value!r}")
         return int(value), variable
-    fail_infra("host Docker GID is unavailable; set "
-               f"${HOST_DOCKER_GID_ENV_VAR} or "
-               f"${MDT_HOST_DOCKER_GID_ENV_VAR} to the host Docker group's "
-               "numeric GID")
+    fail_infra(host_docker_gid_unavailable_message())
 
 
 def preflight_control_socket_access(

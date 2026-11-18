@@ -359,11 +359,8 @@ def _lane_plan(lane_file: LaneFile, lane_name: str, request_base: str | None) ->
     from assay import runner
 
     lane = lane_file.lane(lane_name)
-    declared_request = (
-        request_base
-        if lane.judge is not None and lane.judge.base_source == "request"
-        else None
-    )
+    delegates = lane.judge is not None and lane.judge.base_source == "request"
+    declared_request = request_base if delegates else None
     rows = assay_cli.plan_jobs(lane_file, lane, request_base=declared_request)
     if rows == "UNSUPPORTED":
         return {"status": "unsupported"}
@@ -372,9 +369,14 @@ def _lane_plan(lane_file: LaneFile, lane_name: str, request_base: str | None) ->
     return {
         "status": "ok",
         "candidates": rows,
+        # (B552) The same delegated flag the plan and the run resolved with: a
+        # delegated lane's requested base is honoured on a merge-commit HEAD,
+        # so reconstructing it with the first-parent rule would disagree with
+        # the verdict's recorded base.
         "_resolved_base": runner.resolve_declared_base(
             lane_file.project_root,
             runner.resolve_base_declaration(lane, declared_request),
+            delegated=delegates,
         ),
     }
 
