@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Added (P5b-2b data side: backend seam, tick encoding, registry and hub additions; `HOB-54` stays open)
+
+- **`Backend`**: `TickData` (server-owned header fields separated from backend facts), a deterministic
+  `TickData::example`, `BackendError::{Unavailable, TooManyRows}` and
+  `Backend::current(&Selection, max_rows)`; `FixedBackend` answers from a canonical-selection map and
+  models the stop-at-`max_rows + 1` contract. `StatusView` forwards `current`.
+- **`tick.rs`**: full S16 validation, position-preserving dictionary bodies with every `intern` error
+  mapped to `internal`, a checked arithmetic frame-length preflight, canonical bare encoding, the
+  infallible dictionary splice, the generation-1 `current` block and a `LiveTick` whose dictionary form
+  is built once. Oversize is judged before `encode_bare`.
+- **`registry.rs`**: shared canonical selection streams, per-connection/subscription and per-uid
+  accounting, requesting-level uid/probe caps, `SelId` monotonicity, interval scheduling,
+  generation/form lifecycle, backend-unavailable skip, row/internal termination and deterministic
+  delivery order.
+- **`hostobs-proto` hub**: `SendHub::dropped_blocks`, `SendHub::query_room` and the Query-pin fix that
+  stamps 0 without consuming a reused Live stream's pending drops.
+- **Tests and fixtures**: every P5b-2b section 5.2 case, including S16 intern refusals, 4,096-row
+  encode equality, all registry caps/schedules/failures, a 2,000-step registry hostile run, hub
+  drop/room tests and the twentieth fixture `hub-query-pin-after-corr-reuse`. `assay.toml` judges the
+  two new source files.
+- **`WIRE.md`**: M2 END failures, hub drop accounting and Query room, Query pin behavior, join-cap
+  precedence and the generation lifecycle.
+
 ### Added (P5b-2a request side: canonical selections and the three request schemas; `HOB-54` stays open)
 
 - **`bins/probe/src/selection.rs`**: the checked canonical `Selection` stream key, with the 16-entity,

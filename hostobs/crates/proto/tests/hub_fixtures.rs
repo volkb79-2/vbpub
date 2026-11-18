@@ -23,7 +23,7 @@ use json::Json;
 
 const STREAM_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/stream");
 const NS_PER_MS: u64 = 1_000_000;
-const HUB_CASES: usize = 19;
+const HUB_CASES: usize = 20;
 const DEFAULT_TAG: u8 = 160;
 const PREFIX_LEN: usize = 112;
 

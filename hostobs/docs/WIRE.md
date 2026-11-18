@@ -79,7 +79,8 @@ are included), all of which precede the END; `dropped` = blocks of the stream dr
 streams); `next` = continuation cursor (`series_batch` `page` only, else `null`); `reason` is one of
 `complete` (`current`, `snapshot_at`, `export`, last `series_batch` page), `page` (`series_batch` with
 `next`), `unsubscribed`, `client-eof`. `END ok:false` carries any non-fatal §10 code; in M2 the server
-produces only `internal` there. A server shutdown ends no stream: it closes the connection (§5.4).
+produces `internal` or `budget {"pool":"rows"}` there. A server shutdown ends no stream: it closes the
+connection (§5.4).
 
 A frame type sent in the wrong direction is `bad-frame`. JSON payloads carry no BOM and no trailing
 bytes after the object; integers follow §8.3.
@@ -388,6 +389,9 @@ u32}, "queues": {"queued_bytes": u64, "dropped_blocks": u64}, "tiers": [{"name":
 "keep_s": u32, "bytes": u64, "cap_bytes": u64}]}`. `clients` lists the served levels (observe, operator,
 observer) with the connections of each that are not closed: a closed connection that waits for its final
 bytes is not counted, but it holds its §5.1 connection-cap slot until the server releases it.
+`queues.dropped_blocks` is the send hub's counted drop total since the server started (coalesces,
+sheds, dropped incoming Live ticks and the unpinned Live tick removed by an END); the backend's
+`StatusInfo::dropped_blocks` is ignored.
 
 4.6 **current** — args `{"selection": Selection}`. REP result `{"stream": {"tick_ms": u32}}`, one
 live-shaped BLOCK (dictionary-bearing, latest tick; a Query entry, §5.3, so never dropped), END
@@ -403,7 +407,10 @@ last pushed (also when its interval skipped the tick that changed the generation
 a dropped or replaced dictionary-bearing block are dictionary-bearing (§5.3 form rule, §6.2). The caps of §5.1 apply in this
 order: `max_subscriptions` per connection, 4 distinct selections per peer uid, 8 per probe; each is
 `budget` with its `pool`. A subscription whose canonical selection is already live joins that
-selection stream and counts against no selection cap.
+selection stream without creating one: a uid that already uses the selection joins with no selection
+cap check; a uid that does not use it yet is checked against that uid's cap but not the probe cap.
+The caps applied are the requesting connection's level, and a uid's selections are counted across
+levels.
 **unsubscribe** — args `{"sub": u32}`; REP on its own corr `{"ok": true, "result": {}}`, then END
 `reason: "unsubscribed"` on the subscription's corr. Unknown `sub`: `not-found`.
 
@@ -502,7 +509,10 @@ values are the defaults; the ones a client needs are announced in `hello.limits`
 request that obeys every field bound always fits. An **outstanding request** is one whose final REP or
 END is not yet enqueued; live subscriptions do not count. A **distinct selection** is the canonical
 form of §4.2; a uid's selections are those its connections' live subscriptions use (a selection two
-uids use counts for both). `max_block_bytes = client_queue_bytes = query_queue_bytes` and every per-uid
+uids use counts for both), across levels. Joining an already-live selection adds no probe stream; a
+uid joining a selection it did not already use is checked against the uid cap, while a stream creation
+is checked against the uid and probe caps in that order, using the requesting level's values.
+`max_block_bytes = client_queue_bytes = query_queue_bytes` and every per-uid
 pool is at least that large, so an empty connection can always take the largest block; a query block
 that waits on a shared pool waits only for other connections' bytes, which leave within
 `frame_completion_ms` + `stall_ms` or their connection is closed (§5.3 `poll`). The per-uid pools are a
@@ -599,13 +609,21 @@ stream `pending_drops: u32`, `needs_dict: bool`, `last_pushed_gen: u32` (0 = not
 **Pin.** `head(c, now)` returns the head entry as `[prefix, tail]`. The first `head` call for an entry
 **pins** it and sets `pinned_ns = now`; for a Live or Query block the hub also copies the first `16 +
 8·n_sec + 80` bytes (n_sec from offset 12; §3.1 guarantees the header is the first body), writes
-`corr` @8 and `dropped = pending_drops[stream]` (saturating) @`88 + 8·n_sec`, resets
-`pending_drops[stream] = 0` and, for a Live entry, increments `blocks[stream]`. A pinned entry is never
+`corr` @8 and the stream's `dropped` count @`88 + 8·n_sec`: a Live pin writes
+`pending_drops[stream]` (saturating), resets it to 0 and increments `blocks[stream]`; a Query pin writes
+0 and leaves `pending_drops[stream]` untouched, so an old Query block cannot consume drops of a new Live
+stream that reused its `corr`. A pinned entry is never
 dropped or replaced: it is written completely within `frame_completion_ms` of its pin or the connection
 is closed (`poll`). Stamping at pin, not at push, is what makes `dropped` exact: every drop happens to
 an unpinned entry, so it is counted in the next pinned block of its stream or in that stream's END.
 `blocks[stream]` counts a Live entry at pin and a Query entry when it is queued (it is never dropped), so
 at `end_stream` it includes Query blocks still waiting ahead of the END.
+
+**Drop total and Query room.** `SendHub::dropped_blocks()` returns every counted drop since `new`:
+each increment of any stream's `pending_drops`, while `drain_unpinned` and `remove` count none.
+`SendHub::query_room(c, len)` is true exactly when `push_query(c, _, block of len, _)` would queue now:
+the connection, uid and global Query pools all fit; an unknown connection is true because its retry is
+discarded as `Queued`.
 
 **Form.** A Live entry is pushed as `dict_form()` when `needs_dict[s]` is set, when `bare()` is absent,
 or when `tick.generation() ≠ last_pushed_gen[s]`; otherwise as `bare()`. Every queued Live entry (also
@@ -742,9 +760,12 @@ supplies the held dictionary, treats "nothing held" as `stale-dictionary-generat
 rules below (`HOB-54`).
 6.2 **Server side: a generation counter belongs to the producer of the encoded bytes.** A live
 selection stream (one per distinct selection, §4.2, shared by every subscriber, §5.3) owns one
-dictionary and one counter: it starts at 1 when the selection stream is created and increases by one on
-**any** change (append or retire); the tick that changes it carries the new generation complete (it
-has no bare form). Every subscriber receives the same bytes, so the same `dict_gen`. A query stream
+dictionary and one counter. The counter is 0 before the stream's first built tick; the first change
+sets it to 1 and each later change adds one. The stream is destroyed with its last subscriber, so a
+recreated stream starts again at 0 and its first built tick is generation 1. The tick that changes the
+counter carries the new generation complete (it has no bare form), and a change when the counter is
+already `u32::MAX` ends every subscription with `internal`. Every subscriber receives the same bytes,
+so the same `dict_gen`. A query stream
 (private bytes) numbers its own from 1. Because a subscriber may join at generation 5, the client rule
 is relative to what the stream holds, never absolute:
 - the first BLOCK of every stream is dictionary-bearing (any generation ≥ 1);
@@ -1053,7 +1074,7 @@ stream closed, so the bare block after it is stale), `client-epoch-change` (hell
 hello with a new epoch `changed`: the bare block finds nothing held; a dictionary, hello with the same
 epoch `same`: dictionaries are dropped here too; cursors and subscriptions are the caller's, §6.4).
 
-Hub cases (`fixtures/stream/hub-*.json`, 19 files written by `python/reference/make_hub_fixtures.py`,
+Hub cases (`fixtures/stream/hub-*.json`, 20 files written by `python/reference/make_hub_fixtures.py`,
 replayed by `crates/proto/tests/hub_fixtures.rs` with a fake clock, `t_ms * 1_000_000` as `now_ns`;
 a Python test pins the committed bytes to the generator). Format: `{"case", "doc", "limits", "conns",
 "steps", "expect"}`; `limits` holds the nine `QueueLimits` fields (scaled: Live 1000/2000/8000 per
@@ -1086,6 +1107,7 @@ one `dict_form` call per push:
 | `hub-interval-skips-generation` | stream pushed generation 1 (pinned and written); the change tick to 2 is not pushed to it (interval); the next tick, generation 2 with a bare form, is pushed as the dictionary form; a following generation-2 tick is bare |
 | `hub-query-backpressure` | `push_query` over the Query pool: `Backpressure`, no Query entry dropped; after `wrote` frees Query bytes `query_ready(c, s)` is true and the retry is `Queued` |
 | `hub-query-own-pool` | Live pool full of other connections' unpinned ticks: `push_query` sheds none of them; Query pool full: `push_live` unaffected |
+| `hub-query-pin-after-corr-reuse` | after a Query stream's END, a new Live stream reuses its `corr`: the old Query pin stamps `dropped = 0` without consuming the Live stream's pending drop, and the next Live pin stamps 1 |
 | `hub-control-cap` | a frame larger than `control_queue_bytes` into an empty control queue: admitted; a second control push while it is unsent: `Close(slow-client)`; blocks never block a control push |
 | `hub-frame-completion` | pinned head, `wrote(1)` at 4 s: `head_partial`, no stall close, no close at `pinned_ns + frame_completion_ms`, `slow-client` at `+1` |
 | `hub-stall` | non-empty, no `wrote`, no `head`: no close at `+stall_ms`, `slow-client` at `+stall_ms + 1` |
@@ -1463,4 +1485,4 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | H | previous-body view pins a whole frame; table provenance; CPython patch level (minor) | fixed: retention stated and bounded (one previous frame of ≤ 1 MiB per stream; a digest rejected, it adds a hash to the measured path and makes the skip probabilistic); table attributed to `bench2.py`, the `bytes()` row to `bench.py`; pinned CPython 3.14.10, re-measure on any version change, patch level included | §7.4, §7.8, D-W15 |
 | I | V-11..V-13 and the stream machines have no backlog id (minor) | fixed: `HOB-51`..`HOB-53` (V-11..V-13), `HOB-54` (stream layer, P2/P3/P5b exit criteria) | backlog, V-11..V-13, §12, CHANGES.md |
 
-Case counts after round 2 (§11.4): 12 reader, 6 client, 19 hub, 18 connection.
+Case counts after round 2 (§11.4): 12 reader, 6 client, 20 hub, 18 connection.
