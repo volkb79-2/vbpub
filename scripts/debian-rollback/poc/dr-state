@@ -102,8 +102,9 @@ EOF
   if [ -n "$default" ]; then grub-editenv "$ESP_DIR/grubenv" set saved_entry="$default"; fi
 }
 
-subvol_uuid() { btrfs subvolume show "$TOP/$1" 2>/dev/null | awk '$1=="UUID:" {print $2; exit}'; }
-subvol_parent_uuid() { btrfs subvolume show "$TOP/$1" 2>/dev/null | awk '$1=="Parent" && $2=="UUID:" {print $3; exit}'; }
+# both print nothing (and succeed) when btrfs cannot show the subvolume, so the window fails open under set -e/pipefail
+subvol_uuid() { { btrfs subvolume show "$TOP/$1" 2>/dev/null || true; } | awk '$1=="UUID:" {print $2; exit}'; }
+subvol_parent_uuid() { { btrfs subvolume show "$TOP/$1" 2>/dev/null || true; } | awk '$1=="Parent" && $2=="UUID:" {print $3; exit}'; }
 
 # window_blocks NAME INTERVAL NOW: exit 0 when the snapshot NAME (@os-pre-<YYYYmmddHHMMSS>-...) is younger than
 # INTERVAL seconds at NOW (epoch). A malformed name or a name from the future (clock jump) never blocks.

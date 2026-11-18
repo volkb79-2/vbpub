@@ -10,10 +10,11 @@ initramfs, recovery through the GRUB menu) and the strengthened s2-s3 re-run pas
 ([run 4](docs/RESULTS-M1-RUN4-S2S3-S5-2026-11-18.md)); S6, S9 and the backports kernel passed
 ([run 6](docs/RESULTS-M1-RUN6-S6-S7-S9-BACKPORTS-2026-11-18.md)); S7 found 18 snapshots per
 unattended run and passes with the dedupe window ([run 7](docs/RESULTS-M1-RUN7-FRESH-INSTALL-S7-2026-11-18.md),
-with a fresh install from the current installer). Next: S8 (many states, pruning), S9b (the
-hook's own no-space path), then the systemd-boot and ZFS variants of the M1 matrix, then the
-unattended ISO (M2; plan approved by the controller with 7 conditions, recorded in the
-session notes and to be restated in the ISO results doc).
+with a fresh install from the current installer); S8 (30 states, `dr-state prune`) passed
+([run 8](docs/RESULTS-M1-RUN8-S8-PRUNE-2026-11-18.md)). Next: S9b (the hook's own no-space
+path), the negative case of the dedupe window (apt run in a rolled-back state), then the
+systemd-boot and ZFS variants of the M1 matrix, then the unattended ISO (M2; the controller
+approved the plan with 7 conditions, which the ISO results doc will list when M2 starts).
 Decisions and reasons are in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md).
 
 **The plan for everything that remains is

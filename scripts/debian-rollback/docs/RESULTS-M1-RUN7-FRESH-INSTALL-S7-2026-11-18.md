@@ -33,9 +33,11 @@ with the final one.
 
 ## Not verified
 
-- The parent-aware part of the window (an apt run in a rolled-back state must not be suppressed by a snapshot of
-  another state) is covered by an offline test of the time decision only
-  (`poc/test-dr-state-window.sh`); the lineage check with `btrfs subvolume show` has not run in a guest.
+- The `dr-state` on the seed medium for S7 was the one of commit `7284e55f8` (parent-aware window). So the
+  **positive** lineage case ran in a guest: the snapshot of the running state, found through its `btrfs
+  subvolume show` Parent UUID, suppressed the later dpkg calls of the unattended run. The **negative** case (an apt
+  run in a rolled-back state must NOT be suppressed by a snapshot of another state) has not run in a guest; the
+  time decision alone has an offline test (`poc/test-dr-state-window.sh`).
 - S8 (30 states and pruning), the hook's own no-space path (S9b), S5 with the backports kernel, S12, snapper,
   systemd-boot, ZFS, Secure Boot, real hardware.
 - A freshly installed system still has the kernel from the base suite (6.12.107): the installer does not run an

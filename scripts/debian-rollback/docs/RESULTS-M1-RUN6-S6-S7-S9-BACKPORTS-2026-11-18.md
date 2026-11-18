@@ -55,5 +55,5 @@ initramfs) with it.
 ## Not yet verified
 
 S8 (30 states and pruning, now more relevant), the hook's own ENOSPC path (S9b), the dedupe
-window's lineage check in a guest (the window itself ran in run 7), S12 (phase 2), Secure Boot, snapper on the flat layout, systemd-boot, ZFS,
+window's negative lineage case in a guest (the window itself and its positive case ran in run 7), S12 (phase 2), Secure Boot, snapper on the flat layout, systemd-boot, ZFS,
 real hardware. `s6`, `s7`, `s9` and `backports` have had no independent review yet.
