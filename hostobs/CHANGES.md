@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added (the `conformance` lane; `HOB-4` fixed)
+
+- **`run-gate.toml` `[lanes.conformance]`**: the Python reference decoders, fixture regeneration checks
+  and `hostobs_client` tests (`python3 -B -I -W error::ResourceWarning -m unittest discover -s
+  python/tests`) on `tester-unified-rust`, `network = "none"`, budget 10 minutes, not judged by Assay.
+  The image's `python3` is Debian's apt package (CPython 3.13.5 on Debian 13), so the WIRE.md §7.8
+  absolute memory bound (measured on CPython 3.14.10) is skipped there and the growth and line-count
+  gates run. `tester-unified-rust/tests/test_image_contract.py` expects the fourth lane.
+
 ### Added (P5a: `crates/client`, the Rust client; the Rust client part of `HOB-54` closed)
 
 - **`hostobs-client`**: `Client::connect(path, Level, ClientInfo)` and `Client::from_transport` over an injected

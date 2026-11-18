@@ -36,7 +36,7 @@ land in an ungoverned root-level `/dev-gates.slice/buildkit`. Other builders
 [`docs/CONSUMERS.md`](docs/CONSUMERS.md), which also lists what the CMRU
 preflight needs (a git checkout among other things).
 
-The first consumer is the hostobs M0 workspace. Its registered `lint` and
-`selftest` lanes live in [`hostobs/run-gate.toml`](../hostobs/run-gate.toml).
+The first consumer is the hostobs workspace. Its registered `lint`, `selftest`,
+`assay-r1` and `conformance` lanes live in [`hostobs/run-gate.toml`](../hostobs/run-gate.toml).
 See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for the image and lane contract,
 and [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md) for the design choices.

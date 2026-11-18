@@ -383,8 +383,9 @@ than a join. `quality::Reading`/`QualityCode` are the store's own vocabulary, bo
 and the source lints; `selftest` runs nextest, doctests, llvm-cov and the per-crate
 line/region floors from `coverage-floors.toml`; `assay-r1` runs the same workspace command
 and lets assay's Rust R1 judge render the coverage verdict over 33 declared `src` files
-at a 95.0% line floor. All three are offline and locked, in the `tester-unified-rust`
-image, with Docker networking disabled.
+at a 95.0% line floor. `conformance` runs the standard-library-only Python tests (no cargo).
+All four run in the `tester-unified-rust` image with Docker networking disabled, and the three
+that call cargo are offline and locked.
 
 ### Why the coverage verdict comes from assay, and why from this workspace's own command
 

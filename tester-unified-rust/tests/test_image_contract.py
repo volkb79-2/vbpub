@@ -285,10 +285,15 @@ class ImageContractTests(unittest.TestCase):
 
     def test_lanes_are_network_none_and_cargo_is_locked_offline(self) -> None:
         hostobs_lanes = tomllib.loads((HOSTOBS_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]
-        self.assertEqual(set(hostobs_lanes), {"lint", "selftest", "assay-r1"})
+        self.assertEqual(set(hostobs_lanes), {"lint", "selftest", "assay-r1", "conformance"})
         for name, lane in hostobs_lanes.items():
             self.assertEqual(lane["environment"], "tester-unified-rust", name)
             self.assertEqual(lane["network"], "none", name)
+            if name == "conformance":
+                # The Python tests call no cargo: standard library only, run from the mounted tree.
+                self.assertIn("python3 -B -I", lane["argv"][-1], name)
+                self.assertNotIn("cargo", lane["argv"][-1], name)
+                continue
             if name == "assay-r1":
                 # The judge lane's command lives in assay.toml; its cargo calls must be locked and offline.
                 assay_lanes = tomllib.loads((HOSTOBS_ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]

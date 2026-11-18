@@ -67,8 +67,8 @@
 //! decoder** (`python/reference/hostobs_wire_ref.py`) decodes the same bytes and compares
 //! against the same JSON. The two implementations share the documents, not the code: the
 //! Python one is written from the layout above, so a mistake in one is not copied into
-//! the other. The Python run is a documented manual check, **not** a registered lane
-//! (`hostobs/KNOWN_ISSUES_TODO_BACKLOG.md` `HOB-4`), so it is not gate evidence yet.
+//! the other. The Python run is the registered `conformance` lane
+//! (`hostobs/KNOWN_ISSUES_TODO_BACKLOG.md` `HOB-4`), so it is gate evidence.
 //!
 //! # Decisions taken where plan v4 is open
 //!

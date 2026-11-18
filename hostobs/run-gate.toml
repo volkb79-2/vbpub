@@ -37,6 +37,27 @@ clean_tree = true
 budget = "20m"
 artifacts = ["lcov.info", "cov-summary.json"]
 
+# The Python conformance lane (plan v4 §B.5, HOB-4): the independent reference decoders, the
+# fixture regeneration checks and the `hostobs_client` tests, standard library only, no
+# network. It runs on `tester-unified-rust` because that is the image every hostobs lane
+# uses; its `python3` is Debian's apt package (CPython 3.13.5 on Debian 13, no pip), not the
+# CPython 3.14.10 the WIRE.md §7.8 absolute memory bound was measured on, so that one bound is
+# skipped here (its skip reason names the pinned version) and the growth and line-count gates
+# run. `-B` keeps `__pycache__` out of the mounted tree. This lane is not judged by Assay.
+[lanes.conformance]
+kind = "command"
+environment = "tester-unified-rust"
+network = "none"
+description = "Run the Python reference decoders, fixture checks and hostobs_client tests (standard library only)."
+argv = [
+  "bash", "-c",
+  '''set -eu
+cd {worktree}/hostobs
+python3 -B -I -W error::ResourceWarning -m unittest discover -s python/tests''',
+]
+clean_tree = true
+budget = "10m"
+
 # Assay R1 over the four functional crates (hostobs plan v4, M1 row: "+ assay-r1
 # once R-2 lands"; assay B243/B523 consumer integration).
 #
