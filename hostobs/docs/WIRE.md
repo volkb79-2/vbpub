@@ -218,8 +218,8 @@ is a measurement. Codes are append-only and announced in `hello.quality_codes`.
 
 3.10 **Decoder error kinds** are the `ProtoError::kind()` names (`ProtoError::kind`), e.g.
 `truncated`, `oversized-frame`, `section-order`, `stale-dictionary-generation`,
-`aggregation-not-permitted`, `subject-without-time` (45 kinds in all: `deadline` is the reader's
-completion-age kind; the stream layer still adds `generation-regressed`). They are local outcomes
+`aggregation-not-permitted`, `subject-without-time` (46 kinds in all: `deadline` is the reader's
+completion-age kind, `generation-regressed` the stream layer's, §6.2). They are local outcomes
 (fixtures `expect_error.kind`), never sent on the wire; §5.2 maps the reader's ones to wire codes.
 There are exactly two vocabularies: wire codes (§10, sent) and decoder kinds (local). Client APIs
 raise one of them (P3 `ServerError(code)` / `WireError(kind)`, plus `ConnectionLost` for EOF or reset);
@@ -292,6 +292,17 @@ incarnation 5 are distinct). A selection resolving to more than `limits.max_rows
 type is `bad-request`. JSON text rules (both modes): UTF-8, no duplicate key at any depth, nesting
 depth ≤ 8, exact integers (§8.3); a violation is `bad-request` (the server's JSON layer enforces them;
 `proto` has no JSON parser).
+*Implemented* (`crates/proto/src/envelope.rs`, P2c): `check_req`, `check_rep`, `check_end` and `check_evt` scan
+a payload byte-wise and return byte ranges into it (no JSON dependency). They check UTF-8, one object with
+nothing before the `{` and nothing after the `}` (whitespace between tokens is allowed), string escapes,
+the number grammar and nesting depth ≤ 8 (the envelope object is depth 1), then the envelope's key set,
+types and `ok` literal. Duplicate keys are detected at the envelope's own level and in the error object;
+duplicates in `args`, `result` and `detail` are the server's JSON layer's job, as is every schema below the
+envelope. A key spelled with escapes is an unknown key, and so is a ninth key (an envelope has at most five,
+`MAX_MEMBERS` is 8); a `verb` containing a backslash is refused; a JSON-mode REQ with `corr` 0 is refused
+(§2.3) while a REP may carry `corr` 0 (§8.2); the END counts are exact `u32`s (§8.3). An EVT needs a string
+`event`, at most 8 keys, and `closing` carries exactly `{event, reason}`. Every envelope violation is
+`bad-request` on the wire (`detail.key` `""` for a text error, else the offending key).
 **Worst-case size.** A JSON encoder may escape every non-ASCII character (`\uXXXX`, a surrogate pair
 for 4-byte UTF-8), so a string costs at most 3× its decoded length plus 2 quotes; control characters
 are excluded. Worst selection: 16 × (`{"prefix":` 10 + 512·3 + 2 + `}` 1 + `,` 1) = 24,800 B, metrics
@@ -664,6 +675,18 @@ dictionary-bearing entry is pushed for a first block, for any generation the str
 (including a change tick the subscriber's interval skipped) and after a dropped or replaced
 dictionary-bearing entry, and in each case its generation exceeds what the client holds. At `u32::MAX` the selection stream ends every
 subscription (`END ok:false`, `internal`).
+*Implemented* (`crates/proto/src/stream_dicts.rs`, P2c): `StreamDicts` holds one dictionary per `corr`.
+`held(corr)` is what to pass to `decode_block_with`; `accept(corr, &block)` applies the rules above to a
+decoded block and stores a dictionary-bearing block's dictionary; `close(corr)` forgets one stream (at its
+END, at an unsubscribe, after any decoder error); `reset()` forgets all; `on_hello(boot_id, epoch)` drops
+every dictionary and returns `Session::{First, Same, Changed}` against the previous hello, so the caller
+decides about cursors and sessions (§6.4). A stream that holds nothing holds generation 0 and generations
+start at 1, so a first dictionary-bearing block at generation 0, and any later one at an equal or lower
+generation, is `generation-regressed`. `accept` forgets the stream's dictionary on any error, and the caller
+MUST `close(corr)` after any decoder error and then close the connection (§6.5). `accept` does not compare
+`block.corr` with its argument (the caller routes by corr). There is no cap on the number of streams: the
+caller's bound is `max_outstanding` + `max_subscriptions` (§5.1). `generation-rollover` has no client-side
+rule beyond `generation-regressed`: the server ends the subscriptions at `u32::MAX`.
 6.3 Query replies carry their dictionary in their first BLOCK; a `series_batch` continuation (new
 corr) is a new stream. Exported segments carry it in every record (plan §C.5).
 6.4 **Epoch.** A probe process takes a new epoch at start (greater than every epoch it served under
@@ -895,7 +918,11 @@ case with a top-level `"held": {"generation", "entries"}` key is decoded against
 "max_frame", "completion_ms", "steps": [{"t_ms", "feed_hex"} | {"t_ms", "poll": true} | {"t_ms", "eof":
 true}], "expect": [[<outputs of step 0>], [<outputs of step 1>], ...]` with outputs `{"frame": {"type",
 "corr", "len"}}`, `{"error": kind}`, `{"closed": "clean"}`; one list per step, in order; Rust and
-Python both replay them). Reader cases (`fixtures/stream/reader-*.json`, one per §5.2 row; written by
+Python both replay them). A client case (`"side": "client"`) has the two steps `{"t_ms", "feed_hex"}`,
+one complete BLOCK frame of stream corr 5 (decode with `decode_block_with(bytes, held(5))`, then
+`accept(5, block)`; on any error `close(5)`), and `{"t_ms", "hello": {"boot_id", "epoch"}}` (`on_hello`),
+with outputs `{"ok": generation}` (the block's header `dict_gen`), `{"error": kind}` and `{"session":
+"first|same|changed"}`; one output per step. Reader cases (`fixtures/stream/reader-*.json`, one per §5.2 row; written by
 `python/reference/make_stream_fixtures.py` from the §5.2 rules, not by running a reader; Rust
 `crates/proto/tests/stream_fixtures.rs`; `python/tests/test_stream_fixtures.py` checks the files against
 the generator and replays them with an independent reader):
@@ -916,13 +943,18 @@ the generator and replays them with an independent reader):
 | `reader-feed-after-eof` | `trailing-bytes` |
 
 Client stream cases (`fixtures/stream/client-*.json`, both languages; steps feed BLOCK frames to a
-stream state with `decode_block_with`): `client-first-block-gen-5` (first block dictionary-bearing at
-generation 5: ok), `client-first-block-bare` (`stale-dictionary-generation`), `client-generation-step`
-(dict gen 2, bare 2, dict gen 3, bare 2: ok, ok, ok, `stale-dictionary-generation`),
-`client-generation-regressed` (dict gen 2 then dict gen 2: `generation-regressed`),
-`client-required-section` (unknown required kind: `unsupported-required-section`, stream closed),
-`client-epoch-change` (reconnect hello with a new epoch: dictionaries, cursors and subscriptions
-dropped).
+stream state with `decode_block_with`; written by `python/reference/make_client_stream_fixtures.py`
+from the §6 rules, not by running a client; Rust `crates/proto/tests/client_stream_fixtures.rs`;
+`python/tests/test_client_stream_fixtures.py` checks the files against the generator and replays them
+with an independent client): `client-first-block-gen-5` (first block dictionary-bearing at
+generation 5: ok, then a bare 5: ok), `client-first-block-bare` (`stale-dictionary-generation`, twice),
+`client-generation-step` (dict gen 2, bare 2, dict gen 3, bare 2: ok, ok, ok, `stale-dictionary-generation`),
+`client-generation-regressed` (dict gen 2 then dict gen 2: `generation-regressed`, the stream is closed so
+a bare 2 is stale, a fresh dict gen 4 is ok, dict gen 3 is regressed),
+`client-required-section` (unknown required kind in a dictionary-bearing block: `unsupported-required-section`,
+stream closed, so the bare block after it is stale), `client-epoch-change` (hello `first`, a dictionary,
+hello with a new epoch `changed`: the bare block finds nothing held; a dictionary, hello with the same
+epoch `same`: dictionaries are dropped here too; cursors and subscriptions are the caller's, §6.4).
 
 Hub cases (`fixtures/stream/hub-*.json`, Rust only, fake clock; a step is a §5.3 operation, `expect`
 lists the outcome, the Live/Query/control pools of the touched connections and uids and, after `head`,

@@ -45,6 +45,12 @@
 //!   `ConnTimers`; WIRE.md §5.2-§5.4). Time is injected, a frame's age runs from its first
 //!   byte, a frame completed before an error is returned with it, and a declared length is
 //!   never an allocation size.
+//! - **A client holds one dictionary per stream** ([`stream_dicts`]: `StreamDicts`; WIRE.md §6):
+//!   a dictionary-bearing block must exceed the held generation, a bare block must carry exactly
+//!   it, any error forgets the stream and a hello drops every dictionary.
+//! - **A JSON envelope is checked byte-wise** ([`envelope`]: `check_req`, `check_rep`,
+//!   `check_end`, `check_evt`; WIRE.md §2.2, §4.2): UTF-8, one object, depth 8 and the envelope's
+//!   own keys and types, returning ranges into the payload; parsing the values is the caller's.
 //! - **No panic on untrusted bytes** (this crate forbids `unsafe`; every length is
 //!   checked before it is used, every arithmetic operation is checked). A decode returns
 //!   either a complete validated value or one typed error — never a partial success and

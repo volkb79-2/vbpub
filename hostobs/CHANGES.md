@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Added (P2c: client dictionary state and envelope checks; `HOB-54` stays open)
+
+- **`proto::stream_dicts::StreamDicts`** (WIRE.md §6.1, §6.2, §6.4, §6.5): one dictionary per stream
+  `corr`; `held`, `accept`, `close`, `reset`, `stream_count` and `on_hello(boot_id, epoch) ->
+  Session::{First, Same, Changed}`. A dictionary-bearing block must exceed the held generation (nothing
+  held is generation 0, so a first block at generation 0 is refused too) and a bare block must carry
+  exactly the held one; `accept` forgets the stream's dictionary on any error.
+  `ProtoError::GenerationRegressed { held, got }` (`generation-regressed`) is the new variant (46).
+- **`proto::envelope`** (§2.2, §4.1, §4.2, §8.2): byte-level `check_req`, `check_rep`, `check_end` and
+  `check_evt` without a JSON dependency, returning byte ranges; text rules (UTF-8, no BOM or trailing
+  byte, escapes, number grammar, depth 8), envelope-level duplicate keys, key sets and types, JSON-mode
+  `corr`. Both modules are `assay-r1` targets (36 judged files).
+- **Fixtures.** `fixtures/stream/client-*.json` (6 cases, written by
+  `python/reference/make_client_stream_fixtures.py`, replayed by `crates/proto/tests/client_stream_fixtures.rs`
+  and checked by `python/tests/test_client_stream_fixtures.py` with an independent replay); the §11.4 format
+  gains the `hello` step and the `ok` and `session` outputs.
+
 ### Added (P2a2: the stream reader, mode detection and connection timers; `HOB-54` stays open)
 
 - **`proto::stream::FrameReader`** (WIRE.md §5.2): `feed(bytes, now_ns) -> Feed { frames, error }`,
