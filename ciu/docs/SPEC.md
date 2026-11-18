@@ -560,8 +560,8 @@ requirements are marked *(withdrawn)*.
      an invalid selection is the same exit-2 error it is there), and
      `deployed_stacks` is exactly that one stack, as for `ciu dev`. Only the
      facts are derived: `--dir` still applies no profile `env_overrides`,
-     `compose_profiles` or `topology_overrides` (a profile-mode per-stack
-     engine render re-renders the global chain from disk too). `--dir
+     `compose_profiles` or `topology_overrides` (profile-mode `ciu up` does
+     apply the topology override to every stack's render, S7.4). `--dir
      --shipped` renders no CIU template and gets no facts. Outside these renders the two
      fact keys are absent from the context: a template referencing them
      elsewhere fails loudly (Jinja UndefinedError) rather than silently
@@ -601,6 +601,10 @@ requirements are marked *(withdrawn)*.
      `ciu up --dir` records it at the same point of its one stack, after the
      global render and before the stack render.
      `ciu up --dir --shipped` has no selection facts and is not guarded.
+     `ciu dev` (CIU-209) is guarded READ-ONLY: it checks an existing record
+     against its selection, with the same exit-2 refusal, after resolving its
+     profile and before any stack render or Docker call, but never creates a
+     record, because a dev run does not establish a deployment type.
      When `<ciu-root>/.ciu/selection-record.json` (`{"api":
      "ciu/selection-record", "api_version": 1, "profiles": [...]}`; under the
      S1.7-ignored `.ciu/`) exists, a different subset (order-insensitive;
@@ -1011,7 +1015,12 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   published — `sh -c '<prebuild…> && exec <command>'`, so generated files land
   in the served tree and a failed prebuild never starts the server.
 - **S5a.3** `--no-prebuild` re-runs only the dev server (skips prebuild);
-  `--profile` selects the host profile for rendering; `--root-folder` overrides
+  `--profile` selects the host profile for rendering and, like `ciu up`
+  (CIU-209), wins over `[ciu.instance] service_profiles`, which wins over
+  `CIU_SERVICES_PROFILE`, so `ciu dev` renders the same
+  `ciu.selected_profiles` and topology as `ciu up` does for the checkout. An
+  existing CIU-205 selection record is checked before any render or Docker
+  call (S3.12 clause 5) and never created; `--root-folder` overrides
   the repo root. The verb is for the local dev loop only — it is **not** part of
   the `up`/`down`/`clean` lifecycle and creates no rendered/overlay artifacts.
 
@@ -1230,7 +1239,13 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `env_overrides = { K = "V" }`, and `[deploy.profiles.<name>.topology_overrides]`
   deep-merged over `topology.*` while the profile is active (cross-host
   addressing: host B's profile points `topology.services.vault` at host A's
-  external address).
+  external address). **One effective render (CIU-208):** the same overridden
+  `topology.*` values apply to every render of a profile-mode `ciu up` — the
+  preflight render, `ciu resolve`, and the per-stack render that starts each
+  workload (the stack's own global chain is rendered, then the accumulated
+  override is deep-merged over its `topology`, so keys the profile does not
+  override keep that chain's value). A shipped stack renders no CIU template
+  and is unaffected.
 - **S7.5** CLI: `ciu up --profile <name>` (repeatable; comma form also
   accepted: `--profile core,db`); default from `CIU_SERVICES_PROFILE` in
   `ciu.env` (comma-separated ordered list, e.g. `core,db,worker-io`).

@@ -920,7 +920,9 @@ def test_primary_image_map_skips_services_without_images(
 def test_action_deploy_caches_primary_image_map_for_the_compose_pipeline(
     monkeypatch, tmp_path
 ):
-    profile = SimpleNamespace(name="test", config={}, compose_profiles=[])
+    profile = SimpleNamespace(
+        name="test", config={}, compose_profiles=[], topology_overrides={}
+    )
     entry = {
         "path": "tools/app",
         "name": "app",

@@ -974,12 +974,18 @@ own `[ciu]` table — existing switches like `auto_connect_network` stay visible
 - `ciu.selected_profiles` is the ordered named profiles of THIS invocation
   (`[]` = default all-phases); `ciu.deployed_stacks` is the full stack set it
   will deploy — visible from EVERY selected stack's render, not just its own.
-- `ciu dev` declares exactly its one target stack; so does `ciu up --dir
+- `ciu dev` resolves its profile exactly as `ciu up` does (`--profile`, then
+  `[ciu.instance] service_profiles`, then `CIU_SERVICES_PROFILE`) and checks an
+  existing CIU-205 selection record before any Docker call without ever creating
+  one (CIU-209); it declares exactly its one target stack; so does `ciu up --dir
   <stack>` (CIU-205), whose `ciu.selected_profiles` is the checkout's default
   selection (`[ciu.instance] service_profiles`, then `CIU_SERVICES_PROFILE`),
   as for a plain `ciu up`. `--dir` still applies none of the profile's
   `env_overrides`/`compose_profiles`/`topology_overrides`, so derive flags from
-  the facts, not from an override.
+  the facts, not from an override. Profile-mode `ciu up` does apply an active
+  profile's `topology_overrides` to every stack's render, so a template reading
+  `topology.services.<name>.<key>` sees the same value `ciu resolve` reports
+  (CIU-208).
 - Outside a deployment render (`ciu.*` used where no selection exists) the
   render FAILS with a Jinja `UndefinedError` naming `ciu` — you will never
   silently ship an empty-selection default.

@@ -89,7 +89,9 @@ class TestPrimaryWithoutGeneratedFacts:
 
         primary = tmp_path / "primary"
         primary.mkdir()
-        profile = SimpleNamespace(name="test", config={}, compose_profiles=[])
+        profile = SimpleNamespace(
+            name="test", config={}, compose_profiles=[], topology_overrides={}
+        )
         entry = {
             "path": "tools/app", "name": "app",
             "service": {"profiles": [], "env_overrides": {}},
