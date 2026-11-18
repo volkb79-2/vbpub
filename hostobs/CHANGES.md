@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Added (P5b-1a: the probe's pure serving functions; `HOB-54` stays open)
+
+- **`bins/probe/src`** gains seven modules, none of which does I/O, reads a clock or keeps connection
+  state (design `docs/P5B-SERVER-DESIGN.md`): `limits` (levels and the WIRE.md §5.1 bounds per level; the
+  observer `control_queue_bytes` is derived from `max_reply_bytes` 16 KiB as 4 * 16 KiB + 256 KiB =
+  320 KiB, design R28), `verbs` (the §4.3 table as const data), `codes` (the §10 codes with fixed messages
+  and the bounded `detail`, R14), `args` (the strict request-argument reader on `proto::envelope`, R4 and
+  R14 to R17, with the `hello` and `status` schemas), `classify` (the request precedence function: frame
+  type, `corr` 0, `check_req`, the hello gate, table, level, a second `hello`, JSON `binary-required`,
+  served, then the argument schema and the `hello.proto` rules; R6 to R12), `encode` (the prefix, control
+  frames, error envelope and JSON error line, reply cap, `closing` EVT; R14, R25) and `lines` (the JSON
+  `LineReader`: line bound, deadline stamp per line, linear scan, bounded capacity; R13).
+  `hostobs-probe` now depends on `hostobs-proto`.
+- **Tests**: unit tests per module (one per precedence step and per tie between two steps in `classify`,
+  the JSON `corr` recovery of R12, every `detail` mapping, the §5.2-style `LineReader` table) and
+  `bins/probe/tests/serving_hostile.rs`: 2,000 random + 2,000 mutated-valid deterministic runs through
+  `classify`, `args` and the encoders (closed set of refusal codes, exactly the nine fatal codes fatal,
+  every encoder output re-parses with the `proto` checkers) and random line streams through the
+  `LineReader` (bounded capacity, linear scan, poisoning). `assay.toml` judges the nine `bins/probe/src`
+  files (53 judged files together with the 44 before); this package was written without a compiler and
+  is verified by the remote lane.
+- **`WIRE.md`**: §4.2 request precedence and the digits-only integer rule, §4.4 `hello.proto` equals the
+  client's own prefix, JSON-mode negotiation and the block keys reported as 0, §8.1 line rules and JSON
+  `corr` recovery.
+
 ### Added (the hand-run `assay-r2` lane; assay B245 U8b)
 
 - **`assay.toml` `[lanes.assay-r2]` and `run-gate.toml` `[lanes.assay-r2]`**: Rust R2 (mutation) of the changed
