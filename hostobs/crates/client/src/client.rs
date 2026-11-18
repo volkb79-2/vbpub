@@ -904,9 +904,13 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::{
-        io, Client, ClientError, Clock, Duration, FrameReader, HelloResult, Level, ProtocolKind,
-        Session, StreamDicts, Transport, VecDeque, COMPLETION_NS, PRE_HELLO_MAX_FRAME,
+        io, Client, ClientError, ClientInfo, Clock, Duration, FrameReader, HelloResult, Level,
+        ProtocolKind, Session, StreamDicts, Transport, VecDeque, COMPLETION_NS, MAX_TIMEOUT,
+        PRE_HELLO_MAX_FRAME,
     };
+    use hostobs_proto::error::ProtoError;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     struct Mute;
 
@@ -927,6 +931,14 @@ mod tests {
     impl Clock for Zero {
         fn now_ns(&self) -> u64 {
             0
+        }
+    }
+
+    struct ManualClock(Rc<Cell<u64>>);
+
+    impl Clock for ManualClock {
+        fn now_ns(&self) -> u64 {
+            self.0.get()
         }
     }
 
@@ -960,6 +972,51 @@ mod tests {
         assert!(!client.is_closed());
         let exhausted = ClientError::Protocol(ProtocolKind::CorrExhausted);
         assert_eq!(client.allocate(), Err(exhausted));
+        assert!(client.is_closed());
+    }
+
+    #[test]
+    fn client_info_accepts_the_one_year_timeout_boundary() {
+        let boundary = Duration::from_secs(31_536_000);
+        assert_eq!(MAX_TIMEOUT, boundary);
+        let nanos = u64::try_from(boundary.as_nanos()).expect("fits");
+        assert_eq!(
+            ClientInfo::new("a").with_timeout(boundary).validate(),
+            Ok(nanos)
+        );
+        let over = boundary + Duration::from_nanos(1);
+        assert_eq!(
+            ClientInfo::new("a").with_timeout(over).validate(),
+            Err(ClientError::Usage("bad-timeout"))
+        );
+        let longest_name = "n".repeat(64);
+        assert!(ClientInfo::new(longest_name).validate().is_ok());
+    }
+
+    #[test]
+    fn after_idle_enforces_operation_and_completion_deadlines() {
+        let clock = Rc::new(Cell::new(1));
+        let mut empty = bare(1);
+        empty.clock = Box::new(ManualClock(Rc::clone(&clock)));
+        assert_eq!(empty.after_idle(0), Err(ClientError::Timeout));
+        assert!(empty.is_closed());
+
+        clock.set(0);
+        let mut partial = bare(1);
+        partial.clock = Box::new(ManualClock(Rc::clone(&clock)));
+        partial.reader.feed(&[12, 0, 0, 0, 2], 0);
+        clock.set(COMPLETION_NS + 1);
+        assert_eq!(
+            partial.after_idle(u64::MAX),
+            Err(ClientError::Wire(ProtoError::Deadline))
+        );
+        assert!(partial.is_closed());
+    }
+
+    #[test]
+    fn read_some_reports_eof_as_connection_lost() {
+        let mut client = bare(1);
+        assert_eq!(client.read_some(u64::MAX), Err(ClientError::ConnectionLost));
         assert!(client.is_closed());
     }
 }

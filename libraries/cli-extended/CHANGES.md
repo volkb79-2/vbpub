@@ -240,6 +240,8 @@ Behaviour changes a consumer can see:
 
 ## [Unreleased]
 
+- Tests only, no action needed: a leftover-children guard fails any test that leaves a child process of pytest behind (assay's R0/R2 judge the tree at the leader's exit), and four `procio` tests now reap their orphaned shell grandchildren.
+
 <!-- cmru: release history -->
 
 ## [0.7.0] - 2026-11-18

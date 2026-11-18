@@ -8,19 +8,20 @@ mod support;
 
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::rc::Rc;
 use std::time::Duration;
 
 use hostobs_client::{
-    is_fatal_code, Client, ClientError, ClientInfo, Level, MonotonicClock, Redial, Session,
+    is_fatal_code, Client, ClientError, ClientInfo, Clock, Level, MonotonicClock, Redial, Session,
     Transport, ERROR_CODES,
 };
 use support::{
     end_err, end_err_dropped, end_ok, evt_closing, fixture, frame, hello_json, info, open, prefix,
-    rep_err, rep_ok, script, session, session_bytes, with_corr, with_dropped, FakeClock, Script,
-    BOOT, MAX_TRANSPORT_CALLS, MS,
+    rep_err, rep_ok, script, session, session_bytes, with_corr, with_dropped, BoundedClock,
+    FakeClock, Script, BOOT, FAIL_FAST_CLOCK_CALLS, MAX_CLOCK_CALLS, MAX_TRANSPORT_CALLS, MS,
 };
 
 const SUB_RESULT: &str = "{\"sub\":2,\"interval_ms\":1000}";
@@ -44,9 +45,55 @@ fn clock() -> Rc<Cell<u64>> {
 
 /// A client over `script` with the operation timeout `timeout`.
 fn open_slow(script: Script, timeout: Duration) -> Result<Client, ClientError> {
-    let clock = Box::new(FakeClock(Rc::clone(&script.clock)));
+    let clock = Box::new(BoundedClock::new(FakeClock(Rc::clone(&script.clock))));
     let info = ClientInfo::new("slow").with_timeout(timeout);
     Client::from_transport(Box::new(script), clock, Level::Observe, info, None)
+}
+
+struct ClockedUnixStream {
+    stream: UnixStream,
+    clock: Rc<Cell<u64>>,
+    advance_ns: u64,
+}
+
+impl Transport for ClockedUnixStream {
+    fn read(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
+        self.stream.set_read_timeout(Some(timeout))?;
+        let got = Read::read(&mut self.stream, buf);
+        self.clock
+            .set(self.clock.get().saturating_add(self.advance_ns));
+        got
+    }
+
+    fn write_all(&mut self, data: &[u8], timeout: Duration) -> io::Result<()> {
+        Transport::write_all(&mut self.stream, data, timeout)
+    }
+
+    fn close(&mut self) {
+        let _ = self.stream.shutdown(Shutdown::Both);
+    }
+}
+
+struct ErrorOnceAfterHandshake {
+    script: Script,
+    error: Rc<Cell<Option<io::ErrorKind>>>,
+}
+
+impl Transport for ErrorOnceAfterHandshake {
+    fn read(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
+        if let Some(kind) = self.error.take() {
+            return Err(kind.into());
+        }
+        self.script.read(buf, timeout)
+    }
+
+    fn write_all(&mut self, data: &[u8], timeout: Duration) -> io::Result<()> {
+        self.script.write_all(data, timeout)
+    }
+
+    fn close(&mut self) {
+        self.script.close();
+    }
 }
 
 fn with_hello(json: &str) -> Vec<u8> {
@@ -109,6 +156,21 @@ fn handshake_sends_the_prefix_alone_then_hello_with_corr_one() {
     let needle = "{\"verb\":\"hello\",\"args\":{\"client\":\"test\"";
     assert!(text.contains(needle));
     assert_eq!(written.get(16..20), Some([1, 0, 0, 0].as_slice()));
+}
+
+#[test]
+fn handshake_accepts_a_hello_exactly_at_its_own_frame_length() {
+    let payload = "{\"verb\":\"hello\",\"args\":{\"client\":\"test\",\
+                   \"proto\":{\"major\":1,\"minor\":1}}}";
+    let total = 12 + payload.len();
+    let hello_len = u32::try_from(total).expect("small");
+    let json = hello_json("observe", &[("max_request_bytes", hello_len)], BOOT, 7);
+    let mut bytes = prefix(1, 1);
+    bytes.extend(rep_ok(1, &json));
+    let clock = clock();
+    let (script, _rig) = script(&clock, bytes);
+    let client = open(script, Level::Observe, None).expect("handshake");
+    assert_eq!(client.hello().limits.max_request_bytes, hello_len);
 }
 
 #[test]
@@ -184,6 +246,21 @@ fn handshake_waits_are_bounded_by_the_operation_timeout() {
 }
 
 #[test]
+fn prefix_idle_timeouts_use_the_exact_handshake_deadline() {
+    for (extra, expected, hello_writes) in [(0, "ok", 2), (1, "timeout", 1)] {
+        let clock = clock();
+        let (mut script, rig) = script(&clock, Vec::new());
+        script.eof = false;
+        script.idle_ns = MS + extra;
+        let mut bytes = prefix(1, 1);
+        bytes.extend(rep_ok(1, &hello_json("observe", &[], BOOT, 7)));
+        script.later.push_back(bytes);
+        expect_kind(open(script, Level::Observe, None), expected);
+        assert_eq!(rig.write_waits.borrow().len(), hello_writes, "{extra}");
+    }
+}
+
+#[test]
 fn transport_failures_are_classified() {
     let clock = clock();
     let writes = [
@@ -215,6 +292,26 @@ fn transport_failures_are_classified() {
     }
 }
 
+#[test]
+fn an_error_after_the_handshake_is_not_treated_as_an_idle_read() {
+    let clock = clock();
+    let (mut script, rig) = script(&clock, session_bytes(Level::Observe, &[]));
+    script.eof = false;
+    script.later.push_back(rep_ok(2, "{}"));
+    let error = Rc::new(Cell::new(None));
+    let transport = ErrorOnceAfterHandshake {
+        script,
+        error: Rc::clone(&error),
+    };
+    let clock = Box::new(BoundedClock::new(FakeClock(Rc::clone(&clock))));
+    let mut client =
+        Client::from_transport(Box::new(transport), clock, Level::Observe, info(), None)
+            .expect("handshake");
+    error.set(Some(io::ErrorKind::PermissionDenied));
+    expect_kind(client.request("status", "{}"), "io");
+    assert!(rig.closed.get());
+}
+
 // A client that loops on its transport with the clock standing still (a hang mutant of the
 // retry path, found by the assay-r2 run) must fail the test within milliseconds, not push a
 // wait per call until the runner's timeout: the scripted transport panics at its call bound.
@@ -238,6 +335,15 @@ fn a_runaway_write_loop_panics_instead_of_growing_without_bound() {
     script.write_error = Some(io::ErrorKind::WouldBlock);
     for _ in 0..=MAX_TRANSPORT_CALLS {
         let _ = script.write_all(b"x", Duration::from_secs(1));
+    }
+}
+
+#[test]
+#[should_panic(expected = "runaway clock loop")]
+fn a_runaway_clock_loop_panics_instead_of_growing_without_bound() {
+    let clock = BoundedClock::new(FakeClock(clock()));
+    for _ in 0..=MAX_CLOCK_CALLS {
+        let _ = clock.now_ns();
     }
 }
 
@@ -281,7 +387,7 @@ fn bad_client_info_is_refused_before_anything_happens() {
     ];
     for (info, kind) in infos {
         let (script, rig) = script(&clock, session_bytes(Level::Observe, &[]));
-        let boxed = Box::new(FakeClock(Rc::clone(&clock)));
+        let boxed = Box::new(BoundedClock::new(FakeClock(Rc::clone(&clock))));
         let result = Client::from_transport(Box::new(script), boxed, Level::Observe, info, None);
         expect_kind(result, kind);
         assert!(rig.written.borrow().is_empty());
@@ -384,6 +490,33 @@ fn local_refusals_keep_the_connection_and_consume_no_corr() {
     }
     assert_eq!(rig.written.borrow().len(), sent);
     assert!(client.request("status", "{}").is_ok());
+    assert!(!client.is_closed());
+}
+
+#[test]
+fn a_request_at_the_announced_size_boundary_is_sent() {
+    let args = format!("{{\"padding\":\"{}\"}}", "x".repeat(180));
+    let payload = format!("{{\"verb\":\"status\",\"args\":{args}}}");
+    let boundary = u32::try_from(12 + payload.len()).expect("small");
+    let clock = clock();
+    let mut accepted = prefix(1, 1);
+    accepted.extend(rep_ok(
+        1,
+        &hello_json("observe", &[("max_request_bytes", boundary)], BOOT, 7),
+    ));
+    accepted.extend(rep_ok(2, "{}"));
+    let (accepted_script, _rig) = script(&clock, accepted);
+    let mut client = open(accepted_script, Level::Observe, None).expect("handshake");
+    assert!(client.request("status", &args).is_ok());
+    let below = boundary - 1;
+    let mut refused = prefix(1, 1);
+    refused.extend(rep_ok(
+        1,
+        &hello_json("observe", &[("max_request_bytes", below)], BOOT, 7),
+    ));
+    let (refused_script, _rig) = script(&clock, refused);
+    let mut client = open(refused_script, Level::Observe, None).expect("handshake");
+    expect_kind(client.request("status", &args), "request-too-large");
     assert!(!client.is_closed());
 }
 
@@ -516,6 +649,16 @@ fn closing_or_dropping_a_block_stream_discards_the_rest() {
         let _stream = client.blocks("current", SELECTION).expect("stream");
     }
     assert!(!client.is_closed());
+}
+
+#[test]
+fn dropping_a_partial_block_stream_drains_its_frames() {
+    let mut tail = query_tail();
+    tail.extend(rep_ok(3, "{}"));
+    let (mut client, rig) = session(&tail);
+    drop(client.blocks("current", SELECTION).expect("stream"));
+    assert!(!rig.closed.get());
+    assert!(client.request("status", "{}").is_ok());
 }
 
 #[test]
@@ -700,6 +843,61 @@ fn a_partial_frame_is_bounded_by_its_completion_age() {
 }
 
 #[test]
+fn a_partial_frame_keeps_the_completion_bound_after_the_call_deadline() {
+    let reply = rep_ok(2, "{}");
+    let head = reply.get(..5).unwrap_or_default();
+    let handshake = session_bytes(Level::Observe, &[]);
+    let clock = clock();
+    let (mut script, _rig) = script(&clock, session_bytes(Level::Observe, head));
+    script.chunk = handshake.len().saturating_sub(8);
+    script.eof = false;
+    script.idle_ns = 2 * MS;
+    script
+        .later
+        .push_back(reply.get(5..).unwrap_or_default().to_vec());
+    let mut client = open_slow(script, Duration::from_millis(1)).expect("open");
+    assert!(client.request("status", "{}").is_ok());
+}
+
+#[test]
+fn a_frame_started_before_the_deadline_ages_from_its_first_byte() {
+    let reply = rep_ok(2, "{}");
+    let head = reply.get(..5).unwrap_or_default();
+    let clock = clock();
+    let (mut script, rig) = script(&clock, session_bytes(Level::Observe, &[]));
+    script.eof = false;
+    script.idle_ns = 20_000 * MS;
+    script.later.push_back(head.to_vec());
+    script
+        .later
+        .push_back(reply.get(5..).unwrap_or_default().to_vec());
+    let mut client = open_slow(script, secs(100)).expect("open");
+    let before = waits(&rig).len();
+    assert!(client.request("status", "{}").is_ok());
+    let all = waits(&rig);
+    let request_waits = all.get(before..).unwrap_or_default();
+    assert_eq!(request_waits, [secs(100), secs(80), secs(30), secs(10)]);
+}
+
+#[test]
+fn a_silent_request_with_a_connected_transport_times_out() {
+    let clock = clock();
+    let (mut script, rig) = script(&clock, session_bytes(Level::Observe, &[]));
+    script.eof = false;
+    script.idle_ns = MS;
+    let mut client = open(script, Level::Observe, None).expect("handshake");
+    expect_kind(client.request("status", "{}"), "timeout");
+    assert!(rig.closed.get());
+}
+
+#[test]
+fn a_request_without_reply_bytes_reports_connection_loss() {
+    let (mut client, rig) = session(&[]);
+    expect_kind(client.request("status", "{}"), "connection-lost");
+    assert!(rig.closed.get());
+}
+
+#[test]
 fn bytes_that_arrive_one_at_a_time_are_assembled() {
     let mut tail = rep_ok(2, "{}");
     tail.extend(rep_ok(3, "{\"x\":1}"));
@@ -765,6 +963,16 @@ fn close_is_idempotent_and_a_closed_client_is_connection_lost() {
     drop(client);
 }
 
+#[test]
+fn dropping_a_client_closes_its_transport() {
+    let clock = clock();
+    let (script, rig) = script(&clock, session_bytes(Level::Observe, &[]));
+    let client = open(script, Level::Observe, None).expect("handshake");
+    assert!(!rig.closed.get());
+    drop(client);
+    assert!(rig.closed.get());
+}
+
 fn redial(scripts: Vec<Script>) -> Redial {
     let mut queue = VecDeque::from(scripts);
     Box::new(move || -> io::Result<Box<dyn Transport>> {
@@ -824,7 +1032,7 @@ fn a_real_unix_socket_pair_carries_a_session() {
     let (near, mut far) = UnixStream::pair().expect("pair");
     let bytes = session_bytes(Level::Operator, &rep_ok(2, "{\"ok\":1}"));
     Write::write_all(&mut far, &bytes).expect("script");
-    let clock = Box::new(MonotonicClock::default());
+    let clock = Box::new(BoundedClock::new(MonotonicClock::default()));
     let info = ClientInfo::new("socket").with_timeout(Duration::from_secs(5));
     let opened = Client::from_transport(Box::new(near), clock, Level::Operator, info, None);
     let mut client = opened.expect("open");
@@ -1038,15 +1246,42 @@ fn reconnect_restarts_the_corr_and_forgets_the_closing_reason() {
 }
 
 #[test]
-fn connect_dials_a_real_unix_socket_and_gives_up_after_its_timeout() {
+fn a_connected_socket_handshake_gives_up_after_its_timeout() {
+    let (near, _far) = UnixStream::pair().expect("pair");
+    let now = clock();
+    let transport = ClockedUnixStream {
+        stream: near,
+        clock: Rc::clone(&now),
+        advance_ns: 2 * MS,
+    };
+    let clock = Box::new(BoundedClock::with_limit(
+        FakeClock(now),
+        FAIL_FAST_CLOCK_CALLS,
+    ));
+    let info = ClientInfo::new("dial").with_timeout(Duration::from_millis(1));
+    let result = Client::from_transport(Box::new(transport), clock, Level::Observe, info, None);
+    assert_eq!(result.unwrap_err(), ClientError::Timeout);
+}
+
+#[test]
+fn connect_dials_a_real_unix_socket() {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.subsec_nanos());
     let name = format!("hc-{}-{nanos}.sock", std::process::id());
     let path = std::env::temp_dir().join(name);
     let listener = UnixListener::bind(&path).expect("bind");
-    let info = ClientInfo::new("dial").with_timeout(Duration::from_millis(5));
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let bytes = session_bytes(Level::Observe, &rep_ok(2, "{\"ok\":1}"));
+        Write::write_all(&mut stream, &bytes).expect("script");
+        stream
+    });
+    let info = ClientInfo::new("dial").with_timeout(Duration::from_secs(10));
     let result = Client::connect(&path, Level::Observe, info);
-    assert_eq!(result.unwrap_err(), ClientError::Timeout);
-    drop(listener);
+    let mut client = result.expect("connect");
+    let reply = client.request("status", "{}").expect("reply");
+    assert_eq!(reply.result_json(), "{\"ok\":1}");
+    drop(client);
+    drop(server.join().expect("server"));
 }

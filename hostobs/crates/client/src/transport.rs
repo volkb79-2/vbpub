@@ -124,7 +124,9 @@ mod tests {
     fn monotonic_clock_never_goes_back() {
         let clock = MonotonicClock::default();
         let first = clock.now_ns();
+        std::thread::sleep(Duration::from_millis(2));
         let second = clock.now_ns();
-        assert!(second >= first);
+        assert!(second > first);
+        assert!(second.saturating_sub(first) >= 2_000_000);
     }
 }

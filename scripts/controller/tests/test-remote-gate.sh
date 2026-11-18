@@ -3,12 +3,13 @@ set -uo pipefail
 # Every check builds its own controller root; the caller's ambient configuration must not decide anything.
 unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 unset CONTROLLER_REMOTE_GATE_HOSTS CONTROLLER_REMOTE_HOSTS_FILE CONTROLLER_REMOTE_API_CHECK CONTROLLER_REMOTE_PYTHON CONTROLLER_REMOTE_GATE_PY
-unset CONTROLLER_REMOTE_GATE_PY_REF CONTROLLER_REMOTE_REPO_NAME CONTROLLER_REMOTE_SLOTS CONTROLLER_REMOTE_BUDGET_MB CONTROLLER_REMOTE_WEIGHTS_FILE
+unset CONTROLLER_REMOTE_GATE_WORKROOT CONTROLLER_REMOTE_GATE_PY_REF CONTROLLER_REMOTE_REPO_NAME CONTROLLER_REMOTE_SLOTS CONTROLLER_REMOTE_BUDGET_MB CONTROLLER_REMOTE_WEIGHTS_FILE
 unset CONTROLLER_REMOTE_WEIGHT_MB CONTROLLER_REMOTE_SLOT_WAIT_S CONTROLLER_REMOTE_DRYRUN CONTROLLER_REMOTE_DRY_HOLD CONTROLLER_REMOTE_OUT CONTROLLER_REMOTE_WAIT_PSI
 unset REMOTE_GATE_V1001_SLOTS REMOTE_GATE_V1001_BUDGET_MB REMOTE_GATE_WEIGHT_MB REMOTE_GATE_SLOT_WAIT_S REMOTE_GATE_WAIT_PSI REMOTE_GATE_DRYRUN REMOTE_GATE_DRY_HOLD REMOTE_GATE_PY
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 RG_SCRIPT=${REMOTE_GATE_SCRIPT:-$SCRIPT_DIR/../remote-gate.sh}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-remote-gate-test.XXXXXX")
+ROOT=$(cd -- "$ROOT" && pwd -P)  # the wrapper reports physical paths; compare against the same spelling
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -281,5 +282,16 @@ FAKE_RG_RC=75 rg gate-a proj small "$SHA" > /dev/null 2>&1; rc=$?
 
 # --- no controller-local literal ships in the tool
 ! grep -nE '/home/vscode|/workspaces/|vbpub-release-program|[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$RG_SCRIPT" || fail 'remote-gate.sh carries a controller-local literal'
+
+# CONTROLLER_REMOTE_GATE_WORKROOT: an override with a space moves the worktree; a relative one is made absolute; both are removed afterwards
+reset_logs
+mkdir -p "$ROOT/work root"
+CONTROLLER_REMOTE_GATE_WORKROOT="$ROOT/work root/abs" rg gate-a proj small topic > /dev/null 2> "$ROOT/wr1.err" || { cat "$ROOT/wr1.err" >&2; fail 'workroot override (absolute, with a space) failed'; }
+[[ $(sed -n 1p "$RG_LOG.cwd") == "$ROOT/work root/abs/"* ]] || fail 'the workroot override was not used'
+[[ $(git -C "$ROOT/repo" worktree list | wc -l) == 1 ]] || fail 'override worktree was not removed'
+reset_logs
+( cd "$ROOT" && CONTROLLER_REMOTE_GATE_WORKROOT="rel-root" rg gate-a proj small topic > /dev/null 2> "$ROOT/wr2.err" ) || { cat "$ROOT/wr2.err" >&2; fail 'workroot override (relative) failed'; }
+[[ $(sed -n 1p "$RG_LOG.cwd") == "$ROOT/rel-root/"* ]] || fail 'a relative workroot must resolve against the invocation directory'
+[[ $(git -C "$ROOT/repo" worktree list | wc -l) == 1 ]] || fail 'relative-override worktree was not removed'
 
 echo 'PASS remote-gate wrapper'
