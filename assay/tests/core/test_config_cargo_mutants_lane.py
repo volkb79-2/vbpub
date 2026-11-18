@@ -1,8 +1,9 @@
 """B245 U5a -- the lane-load validation of a ``cargo-mutants-outcomes`` lane
 (design 1.5 and 2.2): the three spellings of ``<out>`` must name one
 directory, ``mutants.out`` is never the declared artifact, ``--output`` is
-named exactly once and no second spelling is accepted, and the
-``{assay.changed_diff}`` placeholder stays refused until U5b."""
+named exactly once and no second spelling is accepted. The
+``{assay.changed_diff}`` placeholder rules (U5b) live in
+test_config_changed_diff_placeholder.py."""
 
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ scope = "S1"
 rigor = ["R0", "R2"]
 enforcement = "gate"
 cwd = "crate"
-argv = ["cargo", "mutants", "--test-tool", "nextest", "--output", "target/out"]
+argv = ["cargo", "mutants", "--in-diff", "{assay.changed_diff}", "--test-tool", "nextest", "--output", "target/out"]
 env = {}
 env_passthrough = ["PATH"]
 budget = "45m"
@@ -103,7 +104,7 @@ def test_another_ingested_format_cannot_declare_the_directory_report(
     text = LANE.replace(
         '[lanes.hostobs.judge.mutation]\nformat = "cargo-mutants-outcomes"',
         '[lanes.hostobs.judge.mutation]\nformat = "mutation-report-json"',
-    )
+    ).replace('"--in-diff", "{assay.changed_diff}", ', "")
     assert "R0-only" in _refusal(crate_project, text)
 
 
@@ -124,7 +125,7 @@ def test_the_artifact_may_not_be_the_tools_own_directory(crate_project: Project)
 
 def test_the_argv_must_name_the_output_directory(crate_project: Project):
     text = LANE.replace(', "--output", "target/out"]', "]")
-    assert "exactly once" in _refusal(crate_project, text)
+    assert "output directory exactly once" in _refusal(crate_project, text)
 
 
 def test_the_argv_may_not_name_the_output_directory_twice(crate_project: Project):
@@ -156,21 +157,3 @@ def test_the_passthrough_spelling_of_output_is_refused(crate_project: Project):
         'env_passthrough = ["PATH"]', 'env_passthrough = ["PATH", "CARGO_MUTANTS_OUTPUT"]'
     )
     assert "CARGO_MUTANTS_OUTPUT" in _refusal(crate_project, text)
-
-
-@pytest.mark.parametrize(
-    "old, new",
-    [
-        ('"--test-tool"', '"--in-diff", "{assay.changed_diff}", "--test-tool"'),
-        ("env = {}", 'env = {X = "{assay.changed_diff}"}'),
-        (
-            'allow_argv_append = false',
-            'allow_argv_append = false\nenvironment_command = ["echo", "{assay.x}"]',
-        ),
-    ],
-)
-def test_the_changed_diff_placeholder_is_refused_until_u5b(
-    crate_project: Project, old: str, new: str
-):
-    message = _refusal(crate_project, LANE.replace(old, new, 1))
-    assert "U5b" in message and "{assay." in message
