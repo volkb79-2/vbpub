@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Added (P5b-2a request side: canonical selections and the three request schemas; `HOB-54` stays open)
+
+- **`bins/probe/src/selection.rs`**: the checked canonical `Selection` stream key, with the 16-entity,
+  64-metric, 512-byte path/prefix and 64-byte metric-name bounds; the derived order sorts inc before
+  path before prefix before all, then by value. `Selection::new` re-checks every decoded content rule,
+  sorts both vectors and refuses duplicates.
+- **`args`**: `Obj::elements` returns each array element's JSON `Kind` before any decoder sees its bytes;
+  `selection`, `current`, `subscribe` and `unsubscribe` implement the strict section 4.2, 4.6 and 4.7
+  schemas, including decoded-duplicate detection and non-string element refusal.
+- **`limits` and `classify`**: `IntervalRule` accepts discrete unrounded intervals; `max_uid_selections`
+  and `max_selections` are 4 and 8 at block levels and 0 elsewhere without joining `hello.limits`;
+  `ConnFacts` and `classify_with` implement `corr` in use and the BLK-only outstanding cap; `Current`,
+  `Subscribe` and `Unsubscribe` join `Call`, with compile-only `internal` arms in `Conn`.
+- **`codes` and `encode`**: budget `Pool`/`Detail::Pool`, `EndReason`, `end_ok`, `end_error`,
+  `current_result`, `subscribe_result` and `UNSUBSCRIBE_RESULT`.
+- **Tests and hostile runs**: every P5b-2a selection, argument, interval, classify, code, limit and
+  encoder case in design section 5.1, plus 2,000 random and 2,000 mutated-valid request-argument runs.
+- **`WIRE.md`**: the selection decode and canonical rules, request precedence steps 2 and 10, BLK-only
+  outstanding refusal and the no-rounding interval rule. `assay.toml` judges the new file.
+
 ### Added (P5b-1b part 2: the `Server` layer; `HOB-54` stays open)
 
 - **`bins/probe/src/server.rs`**: `Server<B: Backend>` owns ONE `SendHub`, the conns (iterated in

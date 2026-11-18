@@ -282,18 +282,20 @@ has none (`HOB-54`, §6.1).
 `agg-name` = `raw|last|delta|mean|min|max` (the §3.6 codes 0-5). String bounds are on the decoded
 UTF-8 length.
 **Selection**: `{"entities": [sel, ...] (1..16), "metrics": [metric-name, ...] (1..64)}`, `sel` is
-exactly one of `{"inc": u64}`, `{"path": str ≤ 512}`, `{"prefix": str ≤ 512}`, `{"all": true}`; paths
-contain no byte < 0x20 or 0x7F (as dictionary text, §3.7). A repeated `sel` or metric name is
-`bad-request`. **Canonical form** (the identity of "distinct selection", §5.1): `sel`s sorted by
-(variant `inc` < `path` < `prefix` < `all`, then value), metric names sorted bytewise; two selections
-are the same iff their canonical forms are equal (no resolution: `{"inc":5}` and the `path` of
-incarnation 5 are distinct). A selection resolving to more than `limits.max_rows` entities is `budget`
-`{"pool":"rows"}`. Every object below is **strict**: a missing required key, an unknown key or a wrong
-type is `bad-request`. JSON text rules (both modes): UTF-8, no duplicate key at any depth, nesting
-depth ≤ 8 (the envelope object is depth 1; the bound holds for requests and for the client's checks of
-REP, END and EVT), exact integers (§8.3); a violation is `bad-request` (the server's JSON layer enforces
-them; `proto` has no JSON parser). The JSON text excludes the JSON-mode line terminator (§8.1): the caller
-strips the `\n` before any check, and a trailing `\n` or `\r` is a trailing byte.
+exactly one of `{"inc": u64}`, `{"path": str ≤ 512}`, `{"prefix": str ≤ 512}`, `{"all": true}`; an empty
+path or prefix is refused, and paths contain no character below 0x20 or 0x7F (as dictionary text,
+§3.7). `all` must have the JSON literal `true`. A repeated `sel` or metric name, compared after JSON
+decoding, is `bad-request`; the selector object, its one member and each element's JSON type use the
+schema paths named by design S1. **Canonical form** (the identity of "distinct selection", §5.1):
+`sel`s sorted by (variant `inc` < `path` < `prefix` < `all`, then value), metric names sorted bytewise;
+two selections are the same iff their canonical forms are equal (no resolution: `{"inc":5}` and the
+`path` of incarnation 5 are distinct). A selection resolving to more than `limits.max_rows` entities is
+`budget` `{"pool":"rows"}`. Every object below is **strict**: a missing required key, an unknown key or
+a wrong type is `bad-request`. JSON text rules (both modes): UTF-8, no duplicate key at any depth,
+nesting depth ≤ 8 (the envelope object is depth 1; the bound holds for requests and for the client's
+checks of REP, END and EVT), exact integers (§8.3); a violation is `bad-request` (the server's JSON
+layer enforces them; `proto` has no JSON parser). The JSON text excludes the JSON-mode line terminator
+(§8.1): the caller strips the `\n` before any check, and a trailing `\n` or `\r` is a trailing byte.
 *Implemented* (`crates/proto/src/envelope.rs`, P2c): `check_req`, `check_rep`, `check_end` and `check_evt` scan
 a payload byte-wise and return byte ranges into it (no JSON dependency). They check UTF-8, one object with
 nothing before the `{` and nothing after the `}` (whitespace between tokens is allowed), string escapes,
@@ -315,21 +317,23 @@ are excluded. Worst selection: 16 × (`{"prefix":` 10 + 512·3 + 2 + `}` 1 + `,`
 observe/operator request is < 30 KiB ≤ `max_request_bytes` = 32 KiB.
 **Request precedence** (P5b design R11, implemented by `classify` in `bins/probe/src/classify.rs`; the
 first failing step answers, later steps are never inspected): (1) a frame that is not a REQ:
-`bad-frame`, `corr` 0, fatal (binary only); (2) binary `corr` 0: `bad-frame`, `corr` 0, fatal; (3) the
-envelope check of this section: `bad-request` on the frame `corr` (JSON: the recovered `corr`, §8.1),
-`detail.key` as above; (4) binary before `hello`: a verb other than `hello` is `hello-required` on its own
-`corr`, `hello` with a `corr` other than 1 is `bad-frame` `corr` 0 (both fatal); (5) a verb not in the
-table or reserved (§4.13): `unknown-verb`; (6) a verb the level does not know: `forbidden`; (7) `hello`
-when already answered, either mode: `bad-request` `{"key":"verb"}`; (8) a BLK verb in JSON mode:
-`binary-required`; (9) a verb known but not served by this build: `unknown-verb`; (10) the argument
-schema: `bad-request` with the schema path (a `hello` with a JSON-mode `proto.major` other than 1 is
-`unsupported-version`, fatal); (11) execution. So duplicate keys inside the args of an unknown verb are
-never inspected, and `forbidden` and `binary-required` are judged from the full table (a verb the build
-does not serve yet still answers `forbidden` at a level that does not know it). A `corr` already outstanding
-(`bad-frame`, fatal, joins step 2) and the outstanding-request cap (`too-many-requests`, between (9)
-and (10)) arrive with the first BLK verb; `unsupported-feature` follows (10). A `detail.key` echoes an unknown or
-duplicate key only if it is at most 64 bytes of `[A-Za-z0-9_.-]`, else the path stops at the parent,
-and the `message` is fixed text, never client text. **Integers** (the digits-only rule of §8.3, enforced
+`bad-frame`, `corr` 0, fatal (binary only); (2) binary `corr` 0 or already in use by a subscription or
+pending request: `bad-frame`, `corr` 0, fatal; (3) the envelope check of this section: `bad-request` on
+the frame `corr` (JSON: the recovered `corr`, §8.1), `detail.key` as above; (4) binary before `hello`: a
+verb other than `hello` is `hello-required` on its own `corr`, `hello` with a `corr` other than 1 is
+`bad-frame` `corr` 0 (both fatal); (5) a verb not in the table or reserved (§4.13): `unknown-verb`; (6) a
+verb the level does not know: `forbidden`; (7) `hello` when already answered, either mode: `bad-request`
+`{"key":"verb"}`; (8) a BLK verb in JSON mode: `binary-required`; (9) a verb known but not served by this
+build: `unknown-verb`; (10) an outstanding `current` or `subscribe` when `pending.len()` has reached
+`max_outstanding`: `too-many-requests`, non-fatal, `detail {}`; other verb shapes are never refused by
+this cap; (11) the argument schema: `bad-request` with the schema path (a `hello` with a JSON-mode
+`proto.major` other than 1 is `unsupported-version`, fatal); (12) execution. So duplicate keys inside
+the args of an unknown verb are never inspected, and `forbidden` and `binary-required` are judged from
+the full table (a verb the build does not serve yet still answers `forbidden` at a level that does not
+know it). A `corr` is free again once its final REP or END is queued. `unsupported-feature` follows
+(11). A `detail.key` echoes an unknown or duplicate key only if it is at most 64 bytes of
+`[A-Za-z0-9_.-]`, else the path stops at the parent, and the `message` is fixed text, never client text.
+**Integers** (the digits-only rule of §8.3, enforced
 below the envelope): only the digits `0-9`, at most 20 of them, no sign (so `-0` and a negative value
 for an unsigned field are refused; a signed field refuses `-0` too), no fraction, no exponent, and the
 value must fit the field's own type (`proto.minor` is a `u16`: 65,536 is `bad-request`).
@@ -389,8 +393,10 @@ bytes is not counted, but it holds its §5.1 connection-cap slot until the serve
 live-shaped BLOCK (dictionary-bearing, latest tick; a Query entry, §5.3, so never dropped), END
 `reason: "complete"`.
 
-4.7 **subscribe** — args `{"selection": Selection, "interval_ms": u32}` (multiple of `tick_ms`,
-`min_interval_ms ≤ v ≤ 60000`). REP result `{"sub": <corr>, "interval_ms": u32}`; then one live BLOCK
+4.7 **subscribe** — args `{"selection": Selection, "interval_ms": u32}`. The interval is accepted
+without rounding only when `tick_ms > 0`, it is a multiple of `tick_ms`, it is at least
+`max(min_interval_ms, tick_ms)` and it is at most 60,000 ms; the REP echoes the exact requested value.
+REP result `{"sub": <corr>, "interval_ms": u32}`; then one live BLOCK
 per interval with this corr (Live entries, §5.3: a lagging client gets the newest tick and a
 `dropped` count); the first BLOCK, the first this subscription receives at a generation it was not
 last pushed (also when its interval skipped the tick that changed the generation) and the first after
@@ -703,7 +709,7 @@ without sockets):
 | `AwaitHello` | complete REQ with `corr ≠ 0` that passes `check_req` and is not a valid first `hello`: a verb other than `hello`, or `hello` with `corr ≠ 1` | other verb: REP `corr=<its corr>` `hello-required`; `hello` with `corr ≠ 1`: REP `corr=0` `bad-frame`; then close |
 | `AwaitHello` | `corr ≠ 0` and `check_req` fails (§4.2), or a `hello` with `corr = 1` whose args are invalid | non-fatal `bad-request` REP on its own `corr` (D-W28, §4.2 first): the state stays `AwaitHello` and the hello timer keeps running |
 | `JsonNoHello` | first complete line | handled as a request ⇒ `Ready` (hello optional, §8.4) |
-| `Ready` | complete request | dispatch; `max_outstanding` exceeded ⇒ REP `too-many-requests` |
+| `Ready` | complete request | dispatch; `max_outstanding` exceeded for a BLK-shape `current` or `subscribe` ⇒ REP `too-many-requests` (other shapes are still dispatched) |
 | `Ready` | no outstanding request, no live subscription, reader at `Header{0}`, queue empty | arm `idle_deadline = now + idle_ms` (disarmed by any received byte or enqueued frame) |
 | `Ready` | `now > idle_deadline` | `Closing(idle)` |
 | `Ready` | reader `eof()` clean (`SHUT_WR`) | `Draining`: finish outstanding requests, `end_stream` every subscription with reason `client-eof`, close when the queue is empty |
@@ -931,7 +937,8 @@ unknown version is refused, `frame.rs` `decode_block`). Unknown optional section
 `idle`, `slow-client`, `shutting-down` (the §5.4 fatal set), `bad-request`, `unknown-verb`,
 `forbidden`, `binary-required`, `too-many-requests`, `budget`, `rate-limited`, `not-found`,
 `cursor-invalid`, `span-unknown`, `unsupported-feature`, `session-lost`, `window-lost`, `internal`.
-`detail` keys: `budget` → `{"pool": "subscriptions"|"uid-selections"|"selections"|"rows"|"spans"}`;
+`detail` keys: `budget` → `{"pool": "subscriptions"|"uid-selections"|"selections"|"rows"|"spans"}`
+(`spans` is reserved until P5b-3);
 `rate-limited` → `{"retry_after_ms": u32}`; `bad-request` → `{"key": str}` (dotted path of the
 offending key, `""` for a JSON text error); `unsupported-feature` → `{"feature": str}`; every other
 code `{}`. Mapping of local errors: §5.2 (reader), §4.2 (JSON text). There is no `busy`: a

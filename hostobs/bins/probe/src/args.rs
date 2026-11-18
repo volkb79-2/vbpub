@@ -1,5 +1,6 @@
-//! The strict request-argument reader (design R4, R14 to R17) and the `hello` and `status`
-//! argument schemas (WIRE.md sections 4.2, 4.4, 4.5, 8.3).
+//! The strict request-argument reader (design R4, R14 to R17) and the `hello`, `status`,
+//! `current`, `subscribe` and `unsubscribe` argument schemas (WIRE.md sections 4.2, 4.4 to 4.7,
+//! 8.3).
 //!
 //! Serde is not used for requests: it accepts duplicate keys in map-typed objects, its
 //! recursion limit is not 8 and `detail.key` would have to be scraped from error text. The
@@ -25,6 +26,11 @@ use core::ops::Range;
 use core::str::Chars;
 
 use hostobs_proto::envelope::{members_up_to, EnvelopeError, Kind, Member};
+
+use crate::limits::IntervalRule;
+use crate::selection::{
+    Selection, SelectionError, Sel, MAX_ENTITIES, MAX_METRICS, MAX_NAME_BYTES, MAX_PATH_BYTES,
+};
 
 /// Most members of any request object (the largest request object has 7).
 pub const MAX_MEMBERS: usize = 16;
@@ -259,6 +265,44 @@ impl<'a> Obj<'a> {
             None => Err(fail(&join(&self.path, name))),
         }
     }
+
+    /// The elements of the array member `name` with each element's JSON kind.
+    ///
+    /// The kind is read before any decoder touches the element bytes. In particular,
+    /// [`unescape`] assumes its input is quoted; callers must check [`Kind::Str`] first.
+    ///
+    /// # Errors
+    ///
+    /// An [`ArgError`] for a missing or non-array member, an empty element, more than
+    /// [`MAX_ELEMENTS`] elements or an element whose first byte names no JSON kind.
+    pub fn elements(&self, name: &str) -> Result<Vec<(Kind, &'a [u8])>, ArgError> {
+        let ranges = self.array(name)?;
+        let path = join(&self.path, name);
+        let mut out = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            let Some(raw) = self.text.get(range) else {
+                return Err(fail(&path));
+            };
+            let Some(kind) = element_kind(raw) else {
+                return Err(fail(&path));
+            };
+            out.push((kind, raw));
+        }
+        Ok(out)
+    }
+}
+
+fn element_kind(raw: &[u8]) -> Option<Kind> {
+    match raw.first() {
+        Some(b'{') => Some(Kind::Object),
+        Some(b'[') => Some(Kind::Array),
+        Some(b'"') => Some(Kind::Str),
+        Some(b't') => Some(Kind::True),
+        Some(b'f') => Some(Kind::False),
+        Some(b'n') => Some(Kind::Null),
+        Some(b'-' | b'0'..=b'9') => Some(Kind::Number),
+        _ => None,
+    }
 }
 
 /// An exact unsigned integer: digits only, at most 20, no leading zero, no overflow.
@@ -487,6 +531,156 @@ pub fn status(args: &[u8]) -> Result<(), ArgError> {
     Obj::parse(args, "")?.only(&[])
 }
 
+fn selection_error(error: SelectionError) -> ArgError {
+    fail(error.key)
+}
+
+fn checked_path(raw: &[u8], path: &str) -> Result<String, ArgError> {
+    match unescape(raw, MAX_PATH_BYTES) {
+        Some(text) if !text.is_empty() && !text.chars().any(is_control) => Ok(text),
+        _ => Err(fail(path)),
+    }
+}
+
+fn entity(object: &Obj<'_>) -> Result<Sel, ArgError> {
+    if object.len() != 1 {
+        return Err(fail(&object.path));
+    }
+    object.only(&["inc", "path", "prefix", "all"])?;
+    let Some(member) = object.members.first() else {
+        return Err(fail(&object.path));
+    };
+    let key = object.key_of(member);
+    match key {
+        b"inc" => object.uint("inc", u64::MAX).map(Sel::Inc),
+        b"path" => {
+            let path = join(&object.path, "path");
+            if member.kind != Kind::Str {
+                return Err(fail(&path));
+            }
+            checked_path(object.raw(member), &path).map(Sel::Path)
+        }
+        b"prefix" => {
+            let path = join(&object.path, "prefix");
+            if member.kind != Kind::Str {
+                return Err(fail(&path));
+            }
+            checked_path(object.raw(member), &path).map(Sel::Prefix)
+        }
+        b"all" => {
+            if member.kind == Kind::True {
+                Ok(Sel::All)
+            } else {
+                Err(fail(&join(&object.path, "all")))
+            }
+        }
+        _ => Err(fail(&object.path)),
+    }
+}
+
+/// Read the [`Selection`] member `name` under `object` (WIRE.md section 4.2).
+///
+/// The member object is strict; entities are read before metrics so the first schema
+/// defect wins. Each array element's kind is checked before its bytes are decoded.
+///
+/// # Errors
+///
+/// An [`ArgError`] naming the member or selector path (R14), including a decoded
+/// duplicate, an empty path, a control character, a bad metric name or a count breach.
+pub fn selection(object: &Obj<'_>, name: &str) -> Result<Selection, ArgError> {
+    let found = object.object(name)?;
+    found.only(&["entities", "metrics"])?;
+    let entity_path = join(&found.path, "entities");
+    let metric_path = join(&found.path, "metrics");
+
+    let elements = found.elements("entities")?;
+    if !(1..=MAX_ENTITIES).contains(&elements.len()) {
+        return Err(fail(&entity_path));
+    }
+    let mut entities = Vec::with_capacity(elements.len());
+    for (kind, raw) in elements {
+        if kind != Kind::Object {
+            return Err(fail(&entity_path));
+        }
+        let item = Obj::parse(raw, &entity_path)?;
+        entities.push(entity(&item)?);
+    }
+
+    let elements = found.elements("metrics")?;
+    if !(1..=MAX_METRICS).contains(&elements.len()) {
+        return Err(fail(&metric_path));
+    }
+    let mut metrics = Vec::with_capacity(elements.len());
+    for (kind, raw) in elements {
+        if kind != Kind::Str {
+            return Err(fail(&metric_path));
+        }
+        let Some(text) = unescape(raw, MAX_NAME_BYTES) else {
+            return Err(fail(&metric_path));
+        };
+        if !crate::selection::is_metric_name(&text) {
+            return Err(fail(&metric_path));
+        }
+        metrics.push(text);
+    }
+    Selection::new(entities, metrics).map_err(selection_error)
+}
+
+/// Read the `current` arguments: `{"selection": Selection}` (WIRE.md section 4.6).
+///
+/// # Errors
+///
+/// An [`ArgError`] for any member or selection defect.
+pub fn current(args: &[u8]) -> Result<Selection, ArgError> {
+    let object = Obj::parse(args, "")?;
+    object.only(&["selection"])?;
+    selection(&object, "selection")
+}
+
+/// The checked arguments of `subscribe` (WIRE.md section 4.7).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubscribeArgs {
+    /// The requested selection.
+    pub selection: Selection,
+    /// The accepted interval in milliseconds.
+    pub interval_ms: u32,
+}
+
+/// Read `{"selection": Selection, "interval_ms": u32}` and apply `rule` (WIRE.md section
+/// 4.7, design S8).
+///
+/// # Errors
+///
+/// An [`ArgError`] for any member or selection defect, or `interval_ms` when the value
+/// is not one of the discrete accepted intervals.
+pub fn subscribe(args: &[u8], rule: IntervalRule) -> Result<SubscribeArgs, ArgError> {
+    let object = Obj::parse(args, "")?;
+    object.only(&["selection", "interval_ms"])?;
+    let selection = selection(&object, "selection")?;
+    let value = object.uint("interval_ms", u64::from(u32::MAX))?;
+    let interval_ms = u32::try_from(value).map_err(|_| fail("interval_ms"))?;
+    if !rule.accepts(interval_ms) {
+        return Err(fail("interval_ms"));
+    }
+    Ok(SubscribeArgs {
+        selection,
+        interval_ms,
+    })
+}
+
+/// Read the `unsubscribe` arguments `{"sub": u32}` and return the subscription corr.
+///
+/// # Errors
+///
+/// An [`ArgError`] for a missing, extra or non-exact-`u32` member. Zero is syntactically
+/// accepted and is answered `not-found` by the server.
+pub fn unsubscribe(args: &[u8]) -> Result<u32, ArgError> {
+    let object = Obj::parse(args, "")?;
+    object.only(&["sub"])?;
+    let value = object.uint("sub", u64::from(u32::MAX))?;
+    u32::try_from(value).map_err(|_| fail("sub"))
+}
+
 /// The negotiated minor: `min(client minor C, server minor)` (WIRE.md section 1.4, R7).
 #[must_use]
 pub fn negotiate(client_minor: u16, server_minor: u16) -> u16 {
@@ -496,9 +690,10 @@ pub fn negotiate(client_minor: u16, server_minor: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_key, hello, negotiate, parse_int, parse_uint, split_array, status, unescape,
-        ArgError, HelloArgs, Obj, MAX_ELEMENTS, MAX_MEMBERS,
+        bounded_key, current, hello, negotiate, parse_int, parse_uint, split_array, status,
+        subscribe, unescape, unsubscribe, ArgError, HelloArgs, Obj, MAX_ELEMENTS, MAX_MEMBERS,
     };
+    use crate::limits::IntervalRule;
 
     const PROTO: &str = "{\"major\":1,\"minor\":1}";
 
@@ -836,6 +1031,156 @@ mod tests {
         assert_eq!(status(b""), Err(err("")));
         let escaped = bs("{\"~u0061\":1}").into_bytes();
         assert_eq!(status(&escaped), Err(err("")));
+    }
+
+    const SELECTION: &str = "{\"selection\":{\"entities\":[{\"inc\":1}],\"metrics\":[\"cpu\"]}}";
+
+    fn arg_key<T>(result: Result<T, ArgError>) -> String {
+        match result {
+            Ok(_) => panic!("accepted"),
+            Err(error) => error.key,
+        }
+    }
+
+    #[test]
+    fn args_current_accepts_only_the_selection_schema() {
+        let selection = current(SELECTION.as_bytes()).expect("current");
+        assert_eq!(selection.entities().len(), 1);
+        assert_eq!(selection.metrics(), ["cpu".to_string()]);
+        assert_eq!(arg_key(current(b"{\"selection\":{},\"x\":1}")), "x");
+        assert_eq!(arg_key(current(b"{}")), "selection");
+    }
+
+    #[test]
+    fn args_current_names_selection_errors() {
+        assert_eq!(arg_key(current(b"{\"selection\":[]}")), "selection");
+        assert_eq!(
+            arg_key(current(
+                b"{\"selection\":{\"metrics\":[\"cpu\"],\"entities\":[]}}"
+            )),
+            "selection.entities"
+        );
+        assert_eq!(
+            arg_key(current(
+                b"{\"selection\":{\"entities\":[{\"inc\":1}],\"metrics\":[\"A\"]}}"
+            )),
+            "selection.metrics"
+        );
+    }
+
+    #[test]
+    fn args_subscribe_intervals_follow_the_rule() {
+        let rule = IntervalRule {
+            min_ms: 1_000,
+            tick_ms: 250,
+        };
+        let request = |value: &str| {
+            let args = format!(
+                "{{\"selection\":{{\"entities\":[{{\"inc\":1}}],\
+                 \"metrics\":[\"cpu\"]}},\"interval_ms\":{value}}}"
+            );
+            subscribe(args.as_bytes(), rule)
+        };
+        for value in ["1000", "60000"] {
+            let parsed = request(value).expect(value);
+            assert_eq!(parsed.interval_ms, value.parse().expect("small"));
+        }
+        for value in [
+            "249",
+            "250",
+            "750",
+            "1001",
+            "60001",
+            "0",
+            "-0",
+            "1.0",
+            "4294967296",
+        ] {
+            assert_eq!(arg_key(request(value)), "interval_ms", "{value}");
+        }
+    }
+
+    #[test]
+    fn args_subscribe_schema_order() {
+        let rule = IntervalRule {
+            min_ms: 1_000,
+            tick_ms: 1_000,
+        };
+        let args = concat!(
+            "{\"selection\":{\"entities\":[{\"inc\":1}],\"metrics\":[\"cpu\"]},",
+            "\"interval_ms\":2000}"
+        );
+        let parsed = subscribe(args.as_bytes(), rule).expect("subscribe");
+        assert_eq!(parsed.interval_ms, 2_000);
+        assert_eq!(parsed.selection.entities().len(), 1);
+        let missing_interval = SELECTION.as_bytes();
+        assert_eq!(arg_key(subscribe(missing_interval, rule)), "interval_ms");
+        assert_eq!(
+            arg_key(subscribe(b"{\"interval_ms\":1000}", rule)),
+            "selection"
+        );
+    }
+
+    #[test]
+    fn args_unsubscribe_u32_edges() {
+        assert_eq!(unsubscribe(b"{\"sub\":0}"), Ok(0));
+        assert_eq!(unsubscribe(b"{\"sub\":4294967295}"), Ok(u32::MAX));
+    }
+
+    #[test]
+    fn args_unsubscribe_strict() {
+        assert_eq!(arg_key(unsubscribe(b"{\"sub\":4294967296}")), "sub");
+        assert_eq!(arg_key(unsubscribe(b"{\"sub\":-0}")), "sub");
+        assert_eq!(arg_key(unsubscribe(b"{\"sub\":1.0}")), "sub");
+        assert_eq!(arg_key(unsubscribe(b"{}")), "sub");
+        assert_eq!(arg_key(unsubscribe(b"{\"sub\":1,\"x\":0}")), "x");
+        assert_eq!(arg_key(unsubscribe(b"{\"sub\":1,\"sub\":2}")), "sub");
+    }
+
+    #[test]
+    fn args_key_order() {
+        assert_eq!(arg_key(current(b"{\"aardvark\":0}")), "aardvark");
+        let rule = IntervalRule {
+            min_ms: 1_000,
+            tick_ms: 1_000,
+        };
+        assert_eq!(arg_key(subscribe(b"{\"aardvark\":0}", rule)), "aardvark");
+        assert_eq!(arg_key(subscribe(b"{}", rule)), "selection");
+        assert_eq!(
+            arg_key(subscribe(b"{\"selection\":{\"entities\":[]}}", rule)),
+            "selection.entities"
+        );
+    }
+
+    #[test]
+    fn selection_elements_report_kinds() {
+        let text = "{\"all\":[{\"a\":1},\"s\",1,true,false,null]}";
+        let object = Obj::parse(text.as_bytes(), "").expect("object");
+        let found = object.elements("all").expect("elements");
+        let kinds: Vec<super::Kind> = found.iter().map(|(kind, _)| *kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                super::Kind::Object,
+                super::Kind::Str,
+                super::Kind::Number,
+                super::Kind::True,
+                super::Kind::False,
+                super::Kind::Null,
+            ]
+        );
+        let bytes: Vec<&[u8]> = found.iter().map(|(_, raw)| *raw).collect();
+        assert_eq!(
+            bytes,
+            [
+                b"{\"a\":1}".as_slice(),
+                b"\"s\"".as_slice(),
+                b"1".as_slice(),
+                b"true".as_slice(),
+                b"false".as_slice(),
+                b"null".as_slice(),
+            ]
+        );
     }
 
     #[test]

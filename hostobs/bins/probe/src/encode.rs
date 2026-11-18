@@ -81,6 +81,11 @@ fn push_detail(out: &mut String, detail: &Detail) {
             push_string(out, path);
             out.push('}');
         }
+        Detail::Pool(pool) => {
+            out.push_str("{\"pool\":");
+            push_string(out, pool.name());
+            out.push('}');
+        }
     }
 }
 
@@ -164,6 +169,73 @@ pub fn closing_evt(code: Code) -> Vec<u8> {
     control_frame(FrameType::Evt, 0, payload.as_bytes())
 }
 
+/// Why a successful stream ended (WIRE.md sections 4.6, 4.7 and 5.4).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EndReason {
+    /// The requested block sequence was completed.
+    Complete,
+    /// The client unsubscribed.
+    Unsubscribed,
+    /// The client half-closed after all outstanding work.
+    ClientEof,
+}
+
+impl EndReason {
+    /// The wire spelling of the reason.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            EndReason::Complete => "complete",
+            EndReason::Unsubscribed => "unsubscribed",
+            EndReason::ClientEof => "client-eof",
+        }
+    }
+}
+
+/// A successful END frame (design S29): `next` is `null` for these P5b-2 reasons.
+#[must_use]
+pub fn end_ok(corr: u32, blocks: u32, dropped: u32, reason: EndReason) -> Vec<u8> {
+    let mut payload = String::from("{\"ok\":true,\"blocks\":");
+    payload.push_str(&blocks.to_string());
+    payload.push_str(",\"dropped\":");
+    payload.push_str(&dropped.to_string());
+    payload.push_str(",\"next\":null,\"reason\":");
+    push_string(&mut payload, reason.name());
+    payload.push('}');
+    control_frame(FrameType::End, corr, payload.as_bytes())
+}
+
+/// A failed stream END frame with the existing error member (design S29).
+#[must_use]
+pub fn end_error(
+    corr: u32,
+    blocks: u32,
+    dropped: u32,
+    code: Code,
+    detail: &Detail,
+) -> Vec<u8> {
+    let member = error_member(code, detail);
+    let payload = format!(
+        "{{\"ok\":false,\"blocks\":{blocks},\"dropped\":{dropped},{member}}}"
+    );
+    control_frame(FrameType::End, corr, payload.as_bytes())
+}
+
+/// The `current` success result `{"stream":{"tick_ms":T}}`.
+#[must_use]
+pub fn current_result(tick_ms: u32) -> String {
+    format!("{{\"stream\":{{\"tick_ms\":{tick_ms}}}}}")
+}
+
+/// The `subscribe` success result `{"sub":C,"interval_ms":V}`.
+#[must_use]
+pub fn subscribe_result(sub: u32, interval_ms: u32) -> String {
+    format!("{{\"sub\":{sub},\"interval_ms\":{interval_ms}}}")
+}
+
+/// The `unsubscribe` success result.
+pub const UNSUBSCRIBE_RESULT: &str = "{}";
+
 /// The line written for a first byte that selects no mode (WIRE.md 1.3): the error line with
 /// `corr` 0 and `"detail":{}`, which the client requires.
 #[must_use]
@@ -174,12 +246,13 @@ pub fn unknown_mode_line() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        closing_evt, control_frame, error_line, error_payload, json_string, ok_payload, rep_error,
-        rep_ok, rep_ok_line, server_prefix, unknown_mode_line, PREFIX_LEN,
+        closing_evt, control_frame, current_result, end_error, end_ok, error_line, error_payload,
+        json_string, ok_payload, rep_error, rep_ok, rep_ok_line, server_prefix, subscribe_result,
+        unknown_mode_line, EndReason, PREFIX_LEN, UNSUBSCRIBE_RESULT,
     };
     use crate::args::unescape;
     use crate::codes::{Code, Detail};
-    use hostobs_proto::envelope::{check_evt, check_rep, members, Kind};
+    use hostobs_proto::envelope::{check_end, check_evt, check_rep, members, members_up_to, Kind};
     use hostobs_proto::frame::{detect_mode, FrameHeader, FrameType, Mode};
 
     fn text_of(bytes: &[u8], range: &core::ops::Range<usize>) -> String {
@@ -436,5 +509,57 @@ mod tests {
             let text = String::from_utf8(payload.to_vec()).expect("utf-8");
             assert!(text.ends_with(&format!("\"reason\":\"{}\"}}", code.name())));
         }
+    }
+
+    #[test]
+    fn encode_end_ok_and_error_parse_with_check_end() {
+        let reasons = [
+            EndReason::Complete,
+            EndReason::Unsubscribed,
+            EndReason::ClientEof,
+        ];
+        for reason in reasons {
+            for (blocks, dropped) in [(0u32, 0u32), (1, 2), (u32::MAX, u32::MAX)] {
+                let frame = end_ok(9, blocks, dropped, reason);
+                let (header, payload) = split(&frame);
+                assert_eq!((header.frame_type, header.corr), (FrameType::End, 9));
+                let end = check_end(payload).expect("END payload");
+                assert!(end.ok);
+                assert_eq!((end.blocks, end.dropped), (blocks, dropped));
+                let found = end.reason.and_then(|range| payload.get(range));
+                assert_eq!(found, Some(reason.name().as_bytes()));
+                assert_eq!(end.next, None);
+            }
+        }
+        for (code, detail) in [
+            (Code::Budget, Detail::Pool(crate::codes::Pool::Rows)),
+            (Code::Internal, Detail::Empty),
+            (Code::NotFound, Detail::Empty),
+        ] {
+            let frame = end_error(9, u32::MAX, u32::MAX, code, &detail);
+            let (header, payload) = split(&frame);
+            assert_eq!((header.frame_type, header.corr), (FrameType::End, 9));
+            let end = check_end(payload).expect("END error payload");
+            assert!(!end.ok);
+            assert_eq!((end.blocks, end.dropped), (u32::MAX, u32::MAX));
+            assert_eq!(end.reason, None);
+            assert!(text_of(payload, &(0..payload.len())).contains(code.name()));
+        }
+    }
+
+    #[test]
+    fn encode_results_shapes() {
+        assert_eq!(current_result(1_000), "{\"stream\":{\"tick_ms\":1000}}");
+        assert_eq!(
+            subscribe_result(7, 2_000),
+            "{\"sub\":7,\"interval_ms\":2000}"
+        );
+        assert_eq!(UNSUBSCRIBE_RESULT, "{}");
+        let current =
+            members_up_to(current_result(u32::MAX).as_bytes(), 8).expect("current result object");
+        assert_eq!(current.len(), 1);
+        let subscribe =
+            members_up_to(subscribe_result(0, 0).as_bytes(), 8).expect("subscribe result object");
+        assert_eq!(subscribe.len(), 2);
     }
 }

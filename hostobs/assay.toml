@@ -140,6 +140,7 @@ targets = [
   "bins/probe/src/limits.rs",
   "bins/probe/src/lines.rs",
   "bins/probe/src/main.rs",
+  "bins/probe/src/selection.rs",
   "bins/probe/src/server.rs",
   "bins/probe/src/verbs.rs",
   "crates/client/src/client.rs",
