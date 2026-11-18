@@ -1090,7 +1090,8 @@ def replan_pending(
     if "cap_bytes" not in capacity or "budget_bytes" not in capacity:
         raise ContractError(f"replan host {host_id!r} is missing planner capacity facts")
     time_reference = plan.get("time_reference", {})
-    assignments, specials, unplaced, terminal = _assign_candidates(
+    # memory_crash_retries is pinned to 0 above, so the terminal list is always empty here.
+    assignments, specials, unplaced, _terminal = _assign_candidates(
         resolved,
         [capacity],
         time_reference.get("geekbench_major"),
@@ -1098,7 +1099,7 @@ def replan_pending(
         time_reference.get("baseline_score"),
     )
     unplaceable = sorted(
-        ({"id": row["id"], "reason": row["reason"]} for row in unplaced + terminal),
+        ({"id": row["id"], "reason": row["reason"]} for row in unplaced),
         key=lambda row: row["id"],
     )
     normal = assignments[host_id]

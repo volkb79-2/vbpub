@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from fleetd.campaign import (
-    CampaignManager, LOST_AFTER_SECONDS, NONCOMPARABLE_FIRST_WINDOW_FACTOR, STALL_FLOOR_SECONDS, _atomic_write, _event_key, _system_boot_id,
+    CampaignManager, ERROR_WARN_AFTER_SECONDS, LOST_AFTER_SECONDS, NONCOMPARABLE_FIRST_WINDOW_FACTOR, STALL_FLOOR_SECONDS, _atomic_write, _event_key, _system_boot_id,
 )
 from fleetd.contracts import CONTROL_PLANE_SERVICE_UNITS, ContractError
 from fleetd.plan import plan_campaign
@@ -3512,3 +3512,68 @@ def test_a_retry_that_still_does_not_fit_stays_deferred_and_the_rest_is_queued_o
     requeued = [row for row in state["jobs"].values() if row.get("requeue_reason") == "host-lost"]
     assert sorted(item for row in requeued for item in row["candidate_ids"]) == sorted(placeable)
     assert [item["candidate_ids"] for item in state["deferred_requeues"]] == [[huge_id]]
+
+
+# Boundary and guard pins found by the WP2 hand-mutation review.
+
+
+def test_a_slow_host_receives_no_new_batch_until_it_answers_again(tmp_path):
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", _plan(1))
+    state = _state(tmp_path)
+    job = next(iter(state["jobs"].values()))
+    host_state = state["hosts"][job["host"]]
+    host_state.update({"status": "SLOW", "pressure": {"memory_some_avg10": 0.0, "io_some_avg10": 0.0}})
+    job["status"] = "QUEUED"
+    started = []
+    manager.runner.start = lambda spec: started.append(spec.name) or True
+    manager._start_available(state)
+    assert started == [] and job["status"] == "QUEUED"
+    host_state["status"] = "ONLINE"
+    manager._start_available(state)
+    assert started == [job["name"]]
+
+
+def test_the_error_warning_starts_at_exactly_1800_seconds_in_state_and_status(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    manager = CampaignManager(tmp_path, FakeTransport(clock=clock), clock=clock)
+    manager.run("campaign", plan)
+    _fail_probe_with(manager, "host-a", ContractError("digest mismatch"))
+    manager.tick("campaign")
+    clock.advance(ERROR_WARN_AFTER_SECONDS - 1)
+    status = manager.tick("campaign")
+    assert _host_row(status, "host-a")["warning"] is None and _state(tmp_path)["warnings"] == []
+    clock.advance(1)
+    status = manager.tick("campaign")
+    assert _host_row(status, "host-a")["error_seconds"] == ERROR_WARN_AFTER_SECONDS
+    assert _host_row(status, "host-a")["warning"] is not None
+    assert len(_state(tmp_path)["warnings"]) == 1
+
+
+def test_a_recovered_host_keeps_no_error_clock_and_status_ignores_a_stale_one(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    manager = CampaignManager(tmp_path, FakeTransport(clock=clock), clock=clock)
+    manager.run("campaign", plan)
+    switch = _fail_probe_with(manager, "host-a", ContractError("digest mismatch"))
+    manager.tick("campaign")
+    assert "error_since_mono" in _state(tmp_path)["hosts"]["host-a"]
+    switch["active"] = False
+    manager.tick("campaign")
+    host_state = _state(tmp_path)["hosts"]["host-a"]
+    assert not {"error_since_mono", "error_since_utc", "error_warned"} & set(host_state)
+    state = _state(tmp_path)
+    state["hosts"]["host-a"]["error_since_mono"] = clock() - 99999  # stale, host is ONLINE
+    row = _host_row(manager.status_document(state), "host-a")
+    assert row["error_seconds"] is None and row["error_since"] is None and row["warning"] is None
+
+
+def test_a_non_comparable_host_without_usable_reference_seconds_keeps_the_floor_threshold(tmp_path):
+    manager, _transport, _clock, job = _non_comparable_campaign(tmp_path, baseline=400)
+    state = _state(tmp_path)
+    for metadata in state["candidate_metadata"].values():
+        metadata["time_ref_seconds"] = True  # unusable: no prediction exists to widen
+    assert CampaignManager._stall_threshold(state, state["jobs"][job["name"]]) == STALL_FLOOR_SECONDS + 400
