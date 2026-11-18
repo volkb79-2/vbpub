@@ -304,7 +304,7 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "M1d-14",
-        "Python: a 12 to 15 byte block frame reaches `struct.unpack_from` (the 2-byte "
+        "Python: a 12 or 13 byte block frame reports the wrong `need` (the 2-byte "
         "directory guard is gone)",
         "python/reference/hostobs_wire_ref.py",
         "    if have < 2:\n",
@@ -313,7 +313,7 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "M1d-14",
-        "Python: a 12 to 15 byte block frame reaches `struct.unpack_from` (the 4-byte "
+        "Python: a 14 or 15 byte block frame reaches `struct.unpack_from` (the 4-byte "
         "directory-header guard is gone)",
         "python/reference/hostobs_wire_ref.py",
         "    if have < 4:\n",
