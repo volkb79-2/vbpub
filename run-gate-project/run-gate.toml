@@ -2,10 +2,10 @@
 # run-gate-project's own gate lanes — parsed ONLY by the installed run-gate CLI (one parser,
 # D-110). This file declares the lane only.
 #
-# The selftest lane IS the release gate: cmru.toml [steps.run-tests] runs
-# `run-gate selftest`, so a release cannot be tagged or published unless
-# this passes. Dogfooding by design — run-gate gates itself through its own
-# machinery.
+# The release gate runs the selftest and R3 canary, both in the receipt-specific
+# tester image through cmru.toml [steps.run-tests]' candidate driver.
+# `assay-r1` and `assay-r2` are not release-step members. Dogfooding by design —
+# run-gate gates itself through its own machinery.
 #
 # The lane owns its tester-unified container so Run-Gate itself enforces
 # placement, --init, and resource caps; callers do not need an outer
@@ -162,9 +162,9 @@ memory_swap = "16g"
 # deliberately NOT a member — it is invoked separately, pre-merge, per the
 # handoff (§2 C2) — a conjunction that could silently take 4+ hours is not
 # something a routine "does this change gate clean" check should have to
-# pay for. cmru.toml's own release-gate step keeps pointing at `selftest`
-# alone (see its own comment for why gate-full is not the release gate
-# either).
+# pay for. cmru.toml's own release-gate step runs `selftest` and `assay-r3`
+# in the receipt-specific tester image and includes neither `assay-r1` nor
+# `assay-r2`.
 [lanes.gate-full]
 kind = "command"
 environment = "bare-host"

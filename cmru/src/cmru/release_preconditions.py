@@ -8,13 +8,14 @@ import shutil
 import subprocess
 import tempfile
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
 from typing import Mapping
 
 from cmru.build_images import (
     CGROUP_PROBE_IMAGE_ENV,
+    DIND_IMAGE_ENV,
     EnvironmentResolutionContext,
     WHEEL_BUILDER_IMAGE_ENV,
     resolve_environment_value,
@@ -46,6 +47,14 @@ _DOCKER_UNAVAILABLE = (
     "context not found",
 )
 _BUILDER_IMAGE_PULL_TIMEOUT_SECONDS = 600
+_ENABLE_DOCKER_FLAG = "--enable-docker"
+# Images started with `--pull=never`: an absent reference cannot be fetched at gate time.
+_PULL_NEVER_NOTES = {
+    CGROUP_PROBE_IMAGE_ENV:
+        " The cgroup probe uses `--pull=never`, so this reference must already be local.",
+    DIND_IMAGE_ENV:
+        " The DinD sidecar is started with --pull=never, so this reference must already be local.",
+}
 
 
 @dataclass(frozen=True)
@@ -275,6 +284,49 @@ def check_release_build_images_precondition(
     ]
 
 
+def check_dind_image_precondition(
+    configured_env: Mapping[str, object], *, process_env: Mapping[str, object] | None = None,
+    require_docker: bool = False, project: str = "cmru", label: str = "DinD sidecar image",
+) -> GatePrecondition:
+    """Check one project's ``CMRU_TESTER_DIND_IMAGE`` (``--pull=never``, never pulled here)."""
+    dind = resolve_environment_value(
+        DIND_IMAGE_ENV,
+        context=EnvironmentResolutionContext.RELEASE,
+        configured_env=configured_env,
+        process_env=process_env,
+    )
+    return replace(
+        _check_local_image_precondition(
+            DIND_IMAGE_ENV, dind, label, require_docker=require_docker, pull_if_missing=False,
+        ),
+        project=project,
+    )
+
+
+def release_config_enables_docker(config_text: str) -> bool:
+    """Whether any ``[steps.*]`` command argv carries the ``--enable-docker`` flag.
+
+    Reads the TOML structure; any other shape (a string where a table or list is
+    expected, a non-string argv element) is ignored rather than raised.
+    """
+    steps = tomllib.loads(config_text).get("steps")
+    if not isinstance(steps, dict):
+        return False
+    for step in steps.values():
+        commands = step.get("commands") if isinstance(step, dict) else None
+        if not isinstance(commands, list):
+            continue
+        for command in commands:
+            argv = command.get("argv") if isinstance(command, dict) else None
+            if (
+                isinstance(argv, list)
+                and all(isinstance(argument, str) for argument in argv)
+                and _ENABLE_DOCKER_FLAG in argv
+            ):
+                return True
+    return False
+
+
 def _check_local_image_precondition(
     variable: str, image_value: object, label: str, *, require_docker: bool,
     pull_if_missing: bool = False,
@@ -362,10 +414,7 @@ def _check_local_image_precondition(
             f"Run `docker pull {image}` on this host, then retry the release.",
         )
     if image_missing:
-        pull_note = (
-            " The cgroup probe uses `--pull=never`, so this reference must already be local."
-            if variable == CGROUP_PROBE_IMAGE_ENV else ""
-        )
+        pull_note = _PULL_NEVER_NOTES.get(variable, "")
         return GatePrecondition(
             "cmru", label, "FAIL",
             f"{variable} image {image!r} is not present on this Docker host.{pull_note}",
