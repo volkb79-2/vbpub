@@ -14,6 +14,9 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-181 | OPEN (`dist_dir` containment still accepts project-owned directories such as `src`, `.git` or a symlink to another project directory) | — |
+| KI-180 | OPEN (runner residuals: a signal between fork and `Popen` return can leave the child unreaped; a failing group reap skips the explicit pipe close) | — |
+| KI-179 | OPEN (`cmru abandon` withholds a superseded release candidate whose content is on main and offers no operator path) | — |
 | KI-178 | OPEN (items 1 and 2 fixed 2026-11-18: bounded drain after child exit and whole-process-group reaping; item 3 no-progress watchdog and item 4 shared helper remain) | `4d9ecf912` (code; earlier changes `4b59e8740`, `d21e1921b`) |
 | KI-175 | FIXED 2026-11-18 (`dist_dir` must be a strict descendant of `project_root` at parse time and is rechecked before every recursive removal) | `f582481c4` |
 | KI-173 | FIXED 2026-11-16 (estate argv failures explain shell-expanded values for typed options and their environment fallback) | `f20d3ae566e60f591638f9bc5e66e9bfd7e38a39` |
@@ -3794,6 +3797,36 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Wanted.** A rule, enforced mechanically rather than by reviewer memory, that a change which adds or edits a `cmru ...` invocation in any tracked `*.sh`/`*.toml`/`*.py`, or edits `cmru.orchestration.toml`, `cmru.toml`, `run-gate.root.toml` or any `LEVELS` block, includes the cmru `assay-r0-r1` lane in its gate set. The cheapest form is a path-triggered lane requirement in the package-gate selection (run-gate or the nyxloom merge step), with the trigger list generated from what `test_w2_integ.py` scans so the two cannot drift; the fallback is a documented checklist line in the package brief template. Coordinate the selection mechanism with the run-gate backlog.
 
 **Close when.** A change that adds a `cmru` call to a shell script is refused or auto-extended with the cmru lane, shown by a test of the selection rule, and the trigger list is derived from the scanner's own file selection.
+
+## KI-181 `dist_dir` containment accepts project-owned directories (`src`, `.git`, a symlink to another project directory)
+
+**Status:** OPEN (filed 2026-11-18, residual of KI-175); severity: medium.
+
+**Observed.** KI-175 requires only that the resolved `dist_dir` is a strict descendant of `project_root`. `dist_dir = "src"`, `".git"` or a symlink inside the project that points at another project's directory passes that rule, and the bundle build then removes it recursively before staging.
+
+**Wanted.** A deny-list of directories the build must never remove (for example `.git`, the source directories declared by the bundle, and any path that is another project's root), or an explicit-ownership marker that a removable output directory must carry (created by the build on first use, required before any recursive removal).
+
+**Close when.** Tests show `dist_dir` set to `src`, `.git` and a symlink to a sibling project directory is refused before any file is touched, while an ordinary `dist` (new or previously built by cmru) still works.
+
+## KI-180 residuals of the KI-178 runner fix: signal between fork and `Popen` return, and a skipped pipe close when the group reap raises
+
+**Status:** OPEN (filed 2026-11-18, residuals of KI-178 items 1 and 2); severity: low.
+
+**Observed.** (1) A SIGTERM or SIGHUP that arrives in the microseconds between the fork and the return of `Popen` can leave the child unreaped, because the handler that turns the signal into `SystemExit` runs before the child handle exists. (2) If the whole-group reap itself raises, the explicit close of the output pipe is skipped; garbage collection closes it later.
+
+**Wanted.** Block SIGTERM and SIGHUP with `pthread_sigmask` around `Popen` and unblock once the child handle is recorded; close the pipe in a `finally` that cannot be skipped by a failing reap.
+
+**Close when.** A test delivers the signal inside the fork window (a patched `Popen` that signals the process before returning) and shows the child is reaped; a test makes the group reap raise and shows the pipe is closed.
+
+## KI-179 `cmru abandon` withholds a superseded release candidate and offers no operator path
+
+**Status:** OPEN (filed 2026-11-18); severity: medium (a stale candidate branch and its worktree stay behind with no supported way to retire them).
+
+**Observed.** The branch `cmru-release-20261106_123441-ciu-yh40ow` carries one commit whose CHANGES content equals main's `62d8b67c6` except for the `source-end` marker. `cmru abandon` withholds it with "origin contains selected-scope release tag refs that changed during this transaction" (the ciu-v7.24.0, ciu-v7.24.1, ciu-v7.25.0 and ciu-v7.25.1 tags), and the message offers no operator path; the only way out is raw git.
+
+**Wanted.** An explicit, evidence-checked way to retire a candidate whose content is already on main (patch or content equivalence of every changed path) or whose version has since been released, without raw git: the command prints the evidence it checked (equivalent commit on main, or the released tag that carries the version) and refuses when it cannot show either.
+
+**Close when.** Tests cover a candidate whose content equals a commit on main, a candidate whose version has a released tag, and a candidate with neither (still withheld, with the reason named), each without the operator running git.
 
 ## KI-178 a step hangs forever when its child exits but a grandchild keeps the output pipe open (estate-wide pattern)
 
