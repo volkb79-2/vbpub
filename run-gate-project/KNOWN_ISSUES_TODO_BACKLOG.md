@@ -173,7 +173,7 @@ SPEC §9.
 | RG-278 | Run-Gate 25.6.0 KSM R2 survivor test debt | Major | CLOSED 2026-11-14; behavioral tests kill all 17 non-equivalent survivors and document the six equivalents |
 | RG-281 | the repo-level run-gate skill has no install or check path, so an installed copy silently rots | Enhancement | OPEN 2026-11-15 |
 | RG-282 | A package that adds or edits a lane declaration in another project's `run-gate.toml` merges without the run-gate-project `selftest` lane (gate-coverage gap) | Major | OPEN 2026-11-15; the instance (assay `rust-r1-qualification`) is fixed, the coverage rule is not built |
-| RG-283 | both host-blindness warnings prescribe a remedy the same message or the estate cannot satisfy (admission names an export that a private cgroup namespace makes useless; the Docker-GID warning asks for a value nothing publishes) | Minor | OPEN 2026-11-16; disclosure only, no verdict change |
+| RG-283 | both host-blindness warnings prescribe a remedy the same message or the estate cannot satisfy (admission names an export that a private cgroup namespace makes useless; the Docker-GID warning asks for a value nothing publishes) | Minor | FIXED on branch run-gate-20261118_045223-rg-bugs-20261118 (2026-11-18, not yet merged or released); disclosure only, no verdict change |
 | RG-284 | a remote run cannot keep or reuse its checkout, so a lane pair that must judge one tree (assay `tester-unified` then full `self-qualification`) cannot run through the supported runner | Major | OPEN 2026-11-16; assay B551 names the cheaper sequence-lane alternative |
 | RG-285 | a language lane image carries no Assay and no pip, so every such lane had to spell out the judge's `PYTHONPATH` incantation itself — the LANE, not the gate, decided which judge judged it | Enhancement | FIXED 2026-11-16 — lane key `judge = "assay"` (SPEC `R-08f`/`R-57`): read-only dual-mounted judge trees, PREPENDED import roots + `RUN_GATE_JUDGE_PYTHON`, an in-lane `find_spec` identity guard, judge commit/version/dirty recorded in the run record, `external-missing` refusal instead of a silent skip |
 | RG-286 | the `judge = "assay"` evidence never runs REAL Assay under a REAL image, and the fake docker executes the inner script on the host where `:ro` is an argv string, not a kernel mount | Major | OPEN 2026-11-16; required BEFORE the `hostobs` interim lane migrates — real-image smoke of `judge = "assay"` (real Assay source, real `tester-unified-rust`, Docker refusing writes into `assay/` and `libraries/cowtree`) |
@@ -8935,7 +8935,16 @@ still passes against the packaged path; and the docs name the install step.
 
 ## RG-283 — both host-blindness warnings prescribe a remedy that the same message (or the estate) cannot satisfy
 
-**Status:** OPEN (filed 2026-11-16); severity: minor for each message, should-fix
+**Status:** FIXED 2026-11-18 on branch `run-gate-20261118_045223-rg-bugs-20261118`
+(pending merge and release). `admission_no_ceiling_warning()` names the profiler
+daemon and `run-gate doctor` alone under a private cgroup namespace, the
+`$RUN_GATE_CGROUPFS_ROOT` export alone when `memory.max` is absent and the
+namespace is not private, and no remedy when `memory.max` is readable but not a
+number; `host_docker_gid_unavailable_message()` names both variables, says the
+host launcher publishes `$MDT_HOST_DOCKER_GID` and that nothing in the container
+can derive it, and the profiling warning still appends what degrades. Tests:
+`TestRg283WarningsNameOneApplicableRemedy`. The publisher itself stays RG-252.
+Original filing (2026-11-16): severity: minor for each message, should-fix
 for the class (a refusal/warning whose repair instruction is wrong trains
 operators to ignore the warning). Source: the di2 KSM evidence report of
 2026-11-12 (`reports/` outside the repository; the two lines are quoted below

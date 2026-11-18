@@ -32,6 +32,18 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   at load. `kind = "assay"` lanes are byte-identical.
 
 ### Fixed
+- run-gate: the two host-blindness warnings name the remedy that applies where
+  they are printed (RG-283). The admission WARNING for "no derivable memory
+  ceiling" used to tell the reader to `export $RUN_GATE_CGROUPFS_ROOT` and,
+  in the same sentence under a private cgroup namespace, that only the
+  profiler daemon can answer; it now names the daemon and `run-gate doctor`
+  alone under a private namespace, the export alone when the cgroupfs path may
+  simply be wrong, and nothing when `memory.max` is readable but not a number.
+  The Docker-GID message no longer asks a cockpit operator to "set" a value
+  that nothing in the cockpit can read: it states that the host launcher
+  publishes `$MDT_HOST_DOCKER_GID` (the other variable is an explicit
+  override), that it cannot be derived inside the container, and the profiling
+  warning still says what degrades. Both stay warnings (no verdict change).
 - run-gate: the in-lane judge refusal no longer prints a bare `None` where a
   location belongs. It printed `spec.origin` alone, and in a REAL lane
   `find_spec('assay')` can answer `origin is None` (a directory named `assay`

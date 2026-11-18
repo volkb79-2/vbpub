@@ -8360,6 +8360,13 @@ class TestResourceAdmission:
         repo, proj = self._proj(tmp_path, 'memory = "512m"')
         monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
                            str(tmp_path / "no-such-cgfs"))
+        # RG-283: the export is only named when the namespace is NOT
+        # private, so the test injects that fact instead of inheriting the
+        # host's own cgroup namespace.
+        proc_root = tmp_path / "proc"
+        (proc_root / "self").mkdir(parents=True)
+        (proc_root / "self" / "cgroup").write_text("0::/some/path\n")
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(proc_root))
         fake_docker(tmp_path, monkeypatch)
         proc = run_tool(proj, "suite")
         assert proc.returncode == 0, proc.stderr
@@ -25554,6 +25561,112 @@ class TestCgroupNamespacePrivateWhy:
         repo = make_repo(tmp_path)
         proj = make_project(repo, self._cfg())
         return repo, proj
+
+
+class TestRg283WarningsNameOneApplicableRemedy:
+    """RG-283: a host-blindness warning names the remedy that applies where
+    it is printed, and only that one. Every environment fact is injected."""
+
+    EXPORT = f"export ${run_gate.CGROUPFS_ROOT_ENV_VAR}"
+
+    @staticmethod
+    def _proc(tmp_path, line):
+        proc_root = tmp_path / "proc"
+        (proc_root / "self").mkdir(parents=True)
+        (proc_root / "self" / "cgroup").write_text(line)
+        return proc_root
+
+    @staticmethod
+    def _lane():
+        return {"resources": {"memory": "512m"}}
+
+    def test_private_namespace_names_the_profiler_daemon_not_the_export(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
+                           str(self._proc(tmp_path, "0::/\n")))
+        monkeypatch.setenv(run_gate.CGROUPFS_ROOT_ENV_VAR,
+                           str(tmp_path / "empty-cgfs"))
+        run_gate.check_slice_memory_admission(
+            self._lane(), "unit", "dev-gates.slice", "fixture")
+        out = capsys.readouterr().out
+        assert "profiler daemon" in out
+        assert f"{run_gate.PROG} doctor" in out
+        assert self.EXPORT not in out
+        assert run_gate.CGROUPFS_ROOT_ENV_VAR not in out
+        assert "admission by shared-infra rules only" in out
+
+    def test_non_private_namespace_names_the_export_not_the_daemon(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
+                           str(self._proc(tmp_path, "0::/some/path\n")))
+        # The reader looks in a wrong root; the real slice directory exists
+        # elsewhere, which is exactly the case an export repairs.
+        wrong = tmp_path / "wrong-cgfs"
+        wrong.mkdir()
+        monkeypatch.setenv(run_gate.CGROUPFS_ROOT_ENV_VAR, str(wrong))
+        run_gate.check_slice_memory_admission(
+            self._lane(), "unit", "dev-gates.slice", "fixture")
+        out = capsys.readouterr().out
+        assert self.EXPORT in out
+        assert "cgroupns=private" not in out
+        assert "profiler daemon" not in out
+        assert f"{run_gate.PROG} doctor" not in out
+
+    def test_readable_but_unbounded_slice_prescribes_no_remedy(
+            self, tmp_path, monkeypatch, capsys):
+        # memory.max is readable ("max"): the cgroupfs is visible, so
+        # neither the export nor the daemon is a repair for this case.
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
+                           str(self._proc(tmp_path, "0::/\n")))
+        root = tmp_path / "cgfs"
+        directory = root / run_gate.slice_cgroupfs_dir("dev-gates.slice")
+        directory.mkdir(parents=True)
+        (directory / "memory.max").write_text("max")
+        monkeypatch.setenv(run_gate.CGROUPFS_ROOT_ENV_VAR, str(root))
+        run_gate.check_slice_memory_admission(
+            self._lane(), "unit", "dev-gates.slice", "fixture")
+        out = capsys.readouterr().out
+        assert "no derivable memory ceiling" in out
+        assert "= max" in out
+        assert self.EXPORT not in out
+        assert "profiler daemon" not in out
+
+    @pytest.mark.parametrize("private,max_raw", [
+        (True, None), (False, None), (False, "max"), (False, ""),
+        (False, "garbage")])
+    def test_the_contradictory_remedy_pair_never_co_occurs(
+            self, private, max_raw):
+        message = run_gate.admission_no_ceiling_warning(
+            "dev-gates.slice", Path("/x/dev-gates.slice"), max_raw,
+            private_namespace=private)
+        assert not (self.EXPORT in message and "profiler daemon" in message)
+        assert message.count("WARNING") == 1
+        assert "admission by shared-infra rules only" in message
+
+    def test_docker_gid_message_names_the_publisher_and_is_not_self_service(
+            self, monkeypatch):
+        monkeypatch.delenv(run_gate.HOST_DOCKER_GID_ENV_VAR, raising=False)
+        monkeypatch.delenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR, raising=False)
+        with pytest.raises(run_gate.GateInfraError) as caught:
+            run_gate.host_docker_gid()
+        message = str(caught.value)
+        assert message == run_gate.host_docker_gid_unavailable_message()
+        assert "$RUN_GATE_HOST_DOCKER_GID" in message
+        assert "$MDT_HOST_DOCKER_GID" in message
+        assert "host launcher publishes" in message
+        assert "cannot be derived from inside this container" in message
+        # Not presented as an instruction the operator can carry out here.
+        assert "set $" not in message
+        assert "; set " not in message
+
+    def test_docker_gid_profiling_warning_states_what_degrades(self, capsys):
+        state = {"warning": run_gate.host_docker_gid_unavailable_message(),
+                 "mode": "basic", "_warned": False}
+        run_gate.print_profile_warning(state)
+        err = capsys.readouterr().err
+        assert "host launcher publishes" in err
+        assert err.rstrip().endswith("basic in-lane sampling only")
+        assert "set $" not in err
 
 
 class TestGenerateProfileToken:
