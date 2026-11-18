@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
 from cmru import process_run
+from cmru import delegated, doctor
 
 
 _DEFAULT = object()
@@ -104,3 +106,36 @@ def test_run_process_returns_completed_process_unchanged(monkeypatch):
     result = process_run.run_process(["tool"])
 
     assert result is completed
+
+
+def test_doctor_run_uses_shared_process_wrapper(monkeypatch):
+    completed = subprocess.CompletedProcess(["tool"], 0, stdout="ok", stderr="")
+    calls = []
+    monkeypatch.setattr(
+        doctor, "run_process",
+        lambda argv, **kwargs: calls.append((argv, kwargs)) or completed,
+    )
+
+    result = doctor._run(["tool"], timeout=3)
+
+    assert result is completed
+    assert calls == [(
+        ["tool"], {"capture": True, "text": True, "timeout": 3, "check": False},
+    )]
+
+
+def test_delegated_run_inherits_streams_and_returns_returncode(monkeypatch, capsys):
+    completed = subprocess.CompletedProcess(["tool", "argument"], 7)
+    calls = []
+    monkeypatch.setattr(
+        delegated, "run_process",
+        lambda argv, **kwargs: calls.append((argv, kwargs)) or completed,
+    )
+
+    result = delegated._run(("tool", "argument"), cwd=Path("/work"))
+
+    assert result == 7
+    assert calls == [(
+        ("tool", "argument"), {"cwd": Path("/work"), "capture": False},
+    )]
+    assert "external-tool: tool argument" in capsys.readouterr().out
