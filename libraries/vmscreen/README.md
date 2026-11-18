@@ -172,7 +172,7 @@ Relationship to the VM tool `vm-lab` (`vm-lab/`): `console record` keeps changed
 screens: instant exact truth. QMP serves one client, so two clients must not talk to the socket at the same instant; the
 recorder opens one short-lived connection per poll and per queued command (`vm-lab/docs/DESIGN-GUIDE.md`, "Console QMP
 connections are short-lived"). The US-layout key table exists in both tools
-(`vm_lab/console.py` and `keys.py`); see BACKLOG VMS-BL-03.
+(`vm_lab/console.py` and `keys.py`) on purpose; the rule is in `vm-lab/docs/DESIGN-GUIDE.md`, "Two key tables, one set of names".
 
 ## Tests
 

@@ -8,9 +8,11 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tomllib
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +24,9 @@ from vm_lab import core as vm_lab
 
 PROJECT = Path(__file__).resolve().parents[1]
 REPO = PROJECT.parent
+# The image build context ships inside the package (package data), so a checkout and an installed wheel resolve it alike.
+PACKAGE_DIR = Path(vm_lab.__file__).resolve().parent
+IMAGE_CONTEXT = PACKAGE_DIR / "qemu-image"
 
 
 def completed(argv, returncode=0, stdout="", stderr=""):
@@ -49,9 +54,64 @@ def test_image_build_runs_docker_build_with_the_default_tag_on_the_project_direc
     runner = FakeRunner()
     assert vm_lab.cmd_image_build(GENERIC_PROFILE, build_args(), runner=runner) == 0
     assert runner.calls == [
-        (["docker", "build", "--tag", "vm-lab-qemu:local", str(PROJECT / "qemu-image")], {"check": False})
+        (["docker", "build", "--tag", "vm-lab-qemu:local", str(IMAGE_CONTEXT)], {"check": False})
     ]
     assert "built vm-lab-qemu:local" in capsys.readouterr().out
+
+
+# --- image build context (package data) ---------------------------------------------------------------------------------
+
+
+def test_the_default_context_is_the_qemu_image_directory_inside_the_package():
+    context = vm_lab.resolve_image_context(None)
+    assert context == IMAGE_CONTEXT
+    assert context.parent == Path(vm_lab_cli.__file__).resolve().parent
+    assert (context / "Dockerfile").is_file()
+    assert vm_lab.QEMU_IMAGE_CONTEXT == context
+
+
+def test_an_empty_context_option_counts_as_not_given():
+    assert vm_lab.resolve_image_context("") == IMAGE_CONTEXT
+
+
+def test_the_context_option_overrides_the_packaged_directory(tmp_path):
+    assert vm_lab.resolve_image_context(str(tmp_path)) == tmp_path
+    assert vm_lab.resolve_image_context(str(tmp_path)) != IMAGE_CONTEXT
+
+
+def test_image_build_without_the_option_uses_the_packaged_context_and_with_it_the_given_one(tmp_path):
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+    runner = FakeRunner()
+    vm_lab.cmd_image_build(GENERIC_PROFILE, build_args(), runner=runner)
+    vm_lab.cmd_image_build(GENERIC_PROFILE, build_args(context=str(tmp_path)), runner=runner)
+    assert [call[0][-1] for call in runner.calls] == [str(IMAGE_CONTEXT), str(tmp_path)]
+
+
+def test_pyproject_ships_the_image_directory_as_package_data():
+    config = tomllib.loads((PROJECT / "pyproject.toml").read_text())
+    assert config["tool"]["setuptools"]["package-data"]["vm_lab"] == ["qemu-image/*"]
+
+
+def test_a_built_wheel_carries_the_dockerfile_next_to_the_package(tmp_path):
+    """Build the wheel from a copy of the project and read its listing; no network, no Docker."""
+    source = tmp_path / "source"
+    (source / "src").mkdir(parents=True)
+    shutil.copytree(PROJECT / "src" / "vm_lab", source / "src" / "vm_lab", ignore=shutil.ignore_patterns("__pycache__"))
+    for name in ("pyproject.toml", "README.md"):
+        shutil.copy(PROJECT / name, source / name)
+    out = tmp_path / "wheels"
+    env = {**os.environ, "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VM_LAB": "0.0.0", "PYTHONDONTWRITEBYTECODE": "1"}
+    built = subprocess.run(
+        [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation", "--no-index", "-w", str(out), str(source)],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert built.returncode == 0, built.stdout + built.stderr
+    (wheel,) = out.glob("vm_lab-*.whl")
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+        dockerfile = archive.read("vm_lab/qemu-image/Dockerfile").decode()
+    assert "vm_lab/qemu-image/Dockerfile" in names
+    assert dockerfile == (IMAGE_CONTEXT / "Dockerfile").read_text()
 
 
 def test_image_build_takes_a_tag_and_a_context(tmp_path):
@@ -84,7 +144,7 @@ def test_the_cli_verb_image_build_reaches_docker_build_with_the_default_tag(monk
 
 
 def test_the_dockerfile_is_plain_trixie_with_qemu_and_no_ovmf_or_user_pin():
-    text = (PROJECT / "qemu-image" / "Dockerfile").read_text()
+    text = (IMAGE_CONTEXT / "Dockerfile").read_text()
     assert "FROM debian:trixie-slim" in text
     assert "qemu-system-x86" in text and "qemu-utils" in text
     instructions = [line for line in text.splitlines() if line and not line.startswith("#")]
@@ -316,7 +376,8 @@ def test_the_console_script_entry_point_imports_and_is_the_cli_main():
 
 def test_the_project_depends_on_vmscreen_and_not_on_cli_extended():
     dependencies = tomllib.loads((PROJECT / "pyproject.toml").read_text())["project"]["dependencies"]
-    assert dependencies == ["vmscreen"]
+    # Floor 0.1.0 = the first vmscreen release, the first with `--qemu-dump-dir` (VML-BL-03).
+    assert dependencies == ["vmscreen>=0.1.0"]
 
 
 def test_pillow_is_an_optional_record_extra_only():

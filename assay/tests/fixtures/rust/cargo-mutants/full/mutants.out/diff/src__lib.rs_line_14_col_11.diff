@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace == with != in is_even
+@@ -6,17 +6,17 @@
+ 
+ /// Caught: the tests pin the sum.
+ pub fn add(a: i32, b: i32) -> i32 {
+     a + b
+ }
+ 
+ /// Missed: no test calls it.
+ pub fn is_even(n: u32) -> bool {
+-    n % 2 == 0
++    n % 2 != /* ~ changed by cargo-mutants ~ */ 0
+ }
+ 
+ /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.
+ pub fn make(id: u32) -> Token {
+     Token { id }
+ }
+ 
+ /// Timeout: `i += 1` -> `i *= 1` never terminates.

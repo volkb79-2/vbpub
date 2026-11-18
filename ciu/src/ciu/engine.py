@@ -1192,6 +1192,7 @@ def reset_service(
 
     overlay_path = stack_dir / MACHINE_DIR / OVERLAY_NAME
     ownership_path = stack_dir / MACHINE_DIR / OWNERSHIP_OVERLAY_NAME
+    gitdir_path = stack_dir / MACHINE_DIR / GITDIR_OVERLAY_NAME
 
     # Step 1: docker compose down -v --remove-orphans (with overlay args when
     # present). --remove-orphans tears down one-shot init/sidecar containers
@@ -1231,6 +1232,9 @@ def reset_service(
     # compose reasoning about a different merged model than the one running).
     if ownership_path.exists():
         down_cmd += ["-f", str(ownership_path)]
+    # CIU-215: the git common-dir fragment is the last `-f` of `up`.
+    if _regular_file(gitdir_path):
+        down_cmd += ["-f", str(gitdir_path)]
     down_cmd += ["down", "-v", "--remove-orphans"]
     try:
         guard_clean_one_shots(
@@ -1296,6 +1300,11 @@ def reset_service(
             f.unlink()
             print(f"[INFO]     Removed: {f}", flush=True)
             removed += 1
+    # CIU-215: the fragment and `.ciu/gitdir/`, with the lstat discipline (a
+    # runner-planted symlink refuses instead of being followed).
+    for gone in remove_gitdir_artifacts(stack_dir):
+        print(f"[INFO]     Removed: {gone}", flush=True)
+        removed += 1
     rendered_dir = stack_dir / MACHINE_DIR / RENDERED_SUBDIR
     if rendered_dir.exists():
         shutil.rmtree(rendered_dir)
@@ -1960,6 +1969,426 @@ def write_ownership_overlay(
     return path
 
 
+# ---------------------------------------------------------------------------
+# CIU-215 — opt-in git common-dir mount for services of a LINKED worktree
+# ---------------------------------------------------------------------------
+
+# The third engine-side fragment (after the ownership fragment). One file, one
+# purpose; written only for a stack that declares `[<root>.linked_worktree]`
+# AND only in a linked worktree, so a primary checkout renders unchanged.
+GITDIR_OVERLAY_NAME = "ciu.compose.gitdir.yml"
+GITDIR_STATE_SUBDIR = "gitdir"
+_GITDIR_HOOKS_EMPTY = "hooks-empty"
+_STALE_COPY_RE = re.compile(r"[0-9]+\.config")
+
+
+def _split_short_volume(entry: str) -> list[str]:
+    """Split a short-form volume on ``:`` outside balanced ``${...}`` spans.
+
+    ``${PHYSICAL_REPO_ROOT:?msg}/../.git:/x/.git`` holds a colon inside the
+    expansion that is not a field separator.
+    """
+    fields: list[str] = []
+    current: list[str] = []
+    depth = 0
+    index = 0
+    while index < len(entry):
+        char = entry[index]
+        if char == "$" and entry[index + 1:index + 2] == "{":
+            depth += 1
+            current.append("${")
+            index += 2
+            continue
+        if char == "}" and depth:
+            depth -= 1
+        if char == ":" and not depth:
+            fields.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+        index += 1
+    fields.append("".join(current))
+    return fields
+
+
+def _service_raw_targets(service: object) -> list[str]:
+    """Every target string a rendered service declares (long and short form),
+    unnormalized and including unresolved ``${...}`` expressions."""
+    volumes = service.get("volumes") if isinstance(service, dict) else None
+    targets: list[str] = []
+    for entry in volumes if isinstance(volumes, list) else []:
+        if isinstance(entry, dict):
+            target = entry.get("target")
+        elif isinstance(entry, str):
+            fields = _split_short_volume(entry)
+            target = fields[1] if len(fields) > 1 else fields[0]
+        else:
+            continue
+        if isinstance(target, str):
+            targets.append(target)
+    return targets
+
+
+def _service_volume_targets(service: object) -> list[str]:
+    """Absolute container paths a rendered service already mounts."""
+    return [
+        os.path.normpath(target) for target in _service_raw_targets(service)
+        if target.startswith("/")
+    ]
+
+
+def _covers_checkout(target: str, top: str, repo_root: str) -> bool:
+    """A mount at (or above) the checkout path covers it; with a CIU root below
+    the git top, a mount of a descendant of the top does too."""
+    return _target_covers(target, top) or (
+        repo_root != top and target.startswith(top + "/")
+    )
+
+
+def _target_covers(existing: str, common: str) -> bool:
+    """True when *existing* equals the common dir or is an ancestor of it."""
+    return existing == common or existing == "/" or common.startswith(existing + "/")
+
+
+def _compose_escape(path: object) -> str:
+    # Compose interpolates `$` in every string of a fragment; `$$` is a literal.
+    return str(path).replace("$", "$$")
+
+
+def _gitdir_bind(source: Path, target: Path, read_only: bool) -> dict[str, Any]:
+    # create_host_path false: Docker must never invent an empty dir (CIU-14).
+    # A source outside the resolved primary root passes through the namespace
+    # translation unchanged and then fails loudly at compose time because of it.
+    return {
+        "type": "bind", "source": _compose_escape(source),
+        "target": _compose_escape(target),
+        "read_only": read_only, "bind": {"create_host_path": False},
+    }
+
+
+def _regular_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def _real_dir(path: Path) -> bool:
+    """``lstat`` says *path* is a directory (a symlink to one is not)."""
+    try:
+        return stat.S_ISDIR(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _owned_real_dir(path: Path, create: bool) -> bool:
+    """CIU-215 (F1): ``path`` is a real directory owned by this user.
+
+    The `.ciu` state lives inside the checkout the runner mounts read-write, so
+    the runner may replace it by a symlink or a foreign directory. ``lstat``
+    only, never a followed path; an anomaly refuses. Absent: created when
+    *create*, else ``False``.
+    """
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        if not create:
+            return False
+        os.mkdir(path, 0o755)
+        return True
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise ValueError(
+            f"[CIU-215] {path} must be a real directory owned by the current "
+            "user (it is a symlink, a file or foreign-owned); the checkout is "
+            "mounted read-write into the runner, so CIU will not write through it"
+        )
+    return True
+
+
+def _gitdir_state_dir(stack_dir: Path, create: bool) -> Path | None:
+    """The validated ``.ciu/gitdir`` of a stack (or ``None`` when absent)."""
+    machine = Path(stack_dir) / MACHINE_DIR
+    _owned_real_dir(machine, create)  # validates (and, if asked, creates) `.ciu`
+    state = machine / GITDIR_STATE_SUBDIR
+    return state if _owned_real_dir(state, create) else None
+
+
+def _write_private_file(path: Path, text: str, mode: int) -> None:
+    """Atomically replace *path* by a new file; never follows a planted link."""
+    try:
+        # A runner may turn the destination into a directory; replace it, but
+        # never follow a symlink (lstat says directory only for a real one).
+        if stat.S_ISDIR(os.lstat(path).st_mode):
+            shutil.rmtree(path)
+    except FileNotFoundError:
+        pass
+    tmp_path = path.with_name(path.name + ".tmp")
+    try:
+        os.unlink(tmp_path)
+    except FileNotFoundError:
+        pass
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    fd = os.open(tmp_path, flags, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
+        os.fchmod(handle.fileno(), mode)
+    os.replace(tmp_path, path)
+
+
+def _replace_empty_dir(path: Path) -> None:
+    """Make *path* a fresh empty directory without following a planted link."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        pass
+    else:
+        if stat.S_ISDIR(info.st_mode):
+            shutil.rmtree(path)
+        else:
+            os.unlink(path)
+    os.mkdir(path, 0o755)
+
+
+def remove_gitdir_artifacts(stack_dir: Path) -> list[Path]:
+    """Delete the gitdir fragment and ``.ciu/gitdir/`` with the same discipline.
+
+    Returns what was removed. A `.ciu` or `.ciu/gitdir` that is not a real
+    directory owned by this user refuses.
+    """
+    removed: list[Path] = []
+    machine = Path(stack_dir) / MACHINE_DIR
+    if not _owned_real_dir(machine, False):
+        return removed
+    fragment = machine / GITDIR_OVERLAY_NAME
+    try:
+        fragment_info = os.lstat(fragment)
+    except FileNotFoundError:
+        pass
+    else:
+        if stat.S_ISDIR(fragment_info.st_mode):
+            raise ValueError(f"[CIU-215] {fragment} must not be a directory")
+        os.unlink(fragment)
+        removed.append(fragment)
+    state = _gitdir_state_dir(stack_dir, False)
+    if state is not None:
+        shutil.rmtree(state)
+        removed.append(state)
+    return removed
+
+
+def _gitdir_mount_specs(
+    mount: "worktree.GitMountPlan", mode: str, state_dir: Path
+) -> list[tuple[Path, Path, bool]]:
+    """``(physical source, container target, read_only)`` for the common dir.
+
+    Run-Gate's RG-NARROW/RG-86 layout (see the design note's table): ``ro`` is
+    the flat read-only mount; ``rw`` keeps `worktrees/` read-only with the
+    checkout's own admin dir writable on top, an empty read-only `hooks/`,
+    read-only `info/` and pointer files. The config files get sanitized
+    copies in both modes. Local checks run on LOGICAL paths only; every bind
+    source is translated into the daemon namespace and never stat-ed.
+    """
+    from .gitconfig_sanitize import (
+        MAX_GIT_OVERLAYS, GitConfigError, require_regular_config,
+        sanitized_git_config_text, scan_modules,
+    )
+
+    common, admin = mount.common, mount.admin
+    read_only = mode == "ro"
+    # Phase 1, read-only and fail-closed: every config candidate and the
+    # `modules` tree are checked with lstat BEFORE anything is written. In `rw`
+    # the runner can write the common dir, so a symlink at any of these names is
+    # hostile or broken; skipping it would leave the unsanitized original
+    # mounted, so it refuses (N1).
+    try:
+        if not require_regular_config(common / "config"):
+            raise ValueError(
+                f"[CIU-215] git config {common / 'config'} is missing; cannot "
+                "build the credential-free overlay"
+            )
+        targets = [common / "config"] + [
+            path for path in (common / "config.worktree", admin / "config.worktree")
+            if require_regular_config(path)
+        ]
+        module_dirs, module_configs = scan_modules(common / "modules")
+        siblings = [
+            path for path in sorted((common / "worktrees").glob("*/config.worktree"))
+            if path not in targets and require_regular_config(path)
+        ]
+    except GitConfigError as exc:
+        raise ValueError(str(exc)) from exc
+    extra = module_configs + siblings
+    if len(extra) > MAX_GIT_OVERLAYS:
+        raise ValueError(
+            f"[CIU-215] {common} holds {len(extra)} submodule/sibling git config "
+            f"files; more than {MAX_GIT_OVERLAYS} cannot be sanitized safely"
+        )
+    specs: list[tuple[Path, Path, bool]] = [(mount.physical(common), common, read_only)]
+    # The checkout's gitfile sits under the checkout mount (which the runner
+    # mounts read-write), not under the common dir, so it needs its own
+    # read-only bind in BOTH modes: otherwise the runner could repoint host
+    # git at a gitdir it controls (hooks, config run on the host).
+    if not _regular_file(mount.gitfile):
+        raise ValueError(
+            f"[CIU-215] the git worktree pointer is not a regular file: {mount.gitfile}"
+        )
+    specs.append((mount.physical(mount.gitfile), mount.gitfile, True))
+    if not read_only:
+        # The own admin dir lives under `worktrees/`, which therefore exists.
+        worktrees = common / "worktrees"
+        specs.append((mount.physical(worktrees), worktrees, True))
+        specs.append((mount.physical(admin), admin, False))
+        for name in ("hooks", "info"):
+            if not _real_dir(common / name):
+                raise ValueError(
+                    f"[CIU-215] the shared git {name} directory is missing or "
+                    f"unsafe: {common / name}"
+                )
+        empty_hooks = state_dir / _GITDIR_HOOKS_EMPTY
+        _replace_empty_dir(empty_hooks)
+        specs.append((mount.physical(empty_hooks), common / "hooks", True))
+        specs.append((mount.physical(common / "info"), common / "info", True))
+        # Submodule git dirs under `modules/**` carry their own hooks and info;
+        # they get the same overlays (same enumeration as the module configs).
+        if len(module_dirs) > MAX_GIT_OVERLAYS:
+            raise ValueError(
+                f"[CIU-215] {common} holds {len(module_dirs)} submodule git "
+                f"directories; more than {MAX_GIT_OVERLAYS} cannot be protected safely"
+            )
+        for module in module_dirs:
+            for name in ("hooks", "info"):
+                inner = module / name
+                try:
+                    inner_mode = os.lstat(inner).st_mode
+                except FileNotFoundError:
+                    # Accepted limit: a submodule git dir without `hooks/`
+                    # stays runner-creatable (nothing to overlay).
+                    continue
+                if not stat.S_ISDIR(inner_mode):
+                    raise ValueError(
+                        f"[CIU-215] the submodule git {name} directory is unsafe: {inner}"
+                    )
+                source = empty_hooks if name == "hooks" else inner
+                specs.append((mount.physical(source), inner, True))
+        for pointer in (admin / "gitdir", admin / "commondir"):
+            if not _regular_file(pointer):
+                raise ValueError(
+                    f"[CIU-215] the git worktree pointer is not a regular file: {pointer}"
+                )
+            specs.append((mount.physical(pointer), pointer, True))
+
+    kept: set[str] = set()
+    for index, target in enumerate(targets + extra):
+        name = f"{index}.config"
+        kept.add(name)
+        try:
+            require_regular_config(target)  # re-lstat right before the read
+            text = sanitized_git_config_text(target)
+        except GitConfigError as exc:
+            raise ValueError(str(exc)) from exc
+        copy_path = state_dir / name
+        # 0644: the runner's user must be able to read the credential-free copy.
+        _write_private_file(copy_path, text, 0o644)
+        specs.append((mount.physical(copy_path), target, True))
+    with os.scandir(state_dir) as entries:
+        for entry in list(entries):
+            if (
+                _STALE_COPY_RE.fullmatch(entry.name)
+                and entry.name not in kept
+                and entry.is_file(follow_symlinks=False)
+            ):
+                os.unlink(entry.path)
+    return specs
+
+
+def write_gitdir_overlay(
+    stack_dir: Path,
+    compose_yaml_text: str,
+    table: "config_model.LinkedWorktreeConfig",
+    mount: "worktree.GitMountPlan",
+) -> Path | None:
+    """Write the CIU-215 git common-dir fragment; ``None`` if nothing to mount.
+
+    A sibling of :func:`write_ownership_overlay`. Selected services are the
+    ``services`` list (an unknown name refuses) or every service. A service
+    that already mounts the common dir or an ancestor of it keeps its own
+    mount: it is skipped with one INFO line.
+    """
+    import yaml as _yaml
+
+    doc = _yaml.safe_load(compose_yaml_text) or {}
+    services = doc.get("services") if isinstance(doc, dict) else None
+    if not isinstance(services, dict) or not services:
+        remove_gitdir_artifacts(stack_dir)
+        return None
+    names = [str(name) for name in services]
+    if table.services is not None:
+        unknown = [name for name in table.services if name not in names]
+        if unknown:
+            raise ValueError(
+                f"[CIU-215] linked_worktree.services names {', '.join(map(repr, unknown))}, "
+                f"which is not a service of this stack (services: {', '.join(names)})"
+            )
+        names = [name for name in names if name in table.services]
+
+    common = os.path.normpath(mount.common)
+    selected: list[str] = []
+    own_targets: dict[str, list[str]] = {}
+    for name in names:
+        own_targets[name] = _service_volume_targets(services[name])
+        covering = [
+            target for target in own_targets[name]
+            if _target_covers(target, common)
+        ]
+        if covering:
+            print(
+                f"[INFO] [CIU-215] service '{name}' already mounts {covering[0]}, "
+                f"which covers the git common dir {common}; its own mount is kept",
+                flush=True,
+            )
+        else:
+            selected.append(name)
+    if not selected:
+        remove_gitdir_artifacts(stack_dir)
+        return None
+
+    top = os.path.normpath(mount.top)
+    repo_root = os.path.normpath(mount.repo_root)
+    unknown_target = any(
+        "$" in target for name in selected for target in _service_raw_targets(services[name])
+    )
+    if not unknown_target and not any(
+        _covers_checkout(target, top, repo_root)
+        for name in selected for target in own_targets[name]
+    ):
+        logger.warning(
+            "[CIU-215] no selected service mounts the checkout at its own path %s; "
+            "the read-only gitfile bind then protects only that path, so a "
+            "service that mounts the checkout elsewhere (for example /app) can "
+            "still rewrite its .git file there",
+            top,
+        )
+
+    state_dir = _gitdir_state_dir(stack_dir, True)
+    specs = _gitdir_mount_specs(mount, table.git_common_dir, state_dir)
+    gitfile = os.path.normpath(mount.gitfile)
+    # A service that already binds the gitfile itself keeps its own bind
+    # (the project's mount wins); an ancestor mount does not count.
+    fragment = {
+        "services": {
+            name: {"volumes": [
+                _gitdir_bind(*spec) for spec in specs
+                if not (str(spec[1]) == gitfile and gitfile in own_targets[name])
+            ]}
+            for name in selected
+        }
+    }
+    path = Path(stack_dir) / MACHINE_DIR / GITDIR_OVERLAY_NAME
+    text = _yaml.safe_dump(fragment, sort_keys=False, default_flow_style=False)
+    _write_private_file(path, text, 0o644)
+    return path
+
+
 def acquire_instance_lease(repo_root: Path) -> Any:
     """S16.9 — acquire/renew this instance's ``held`` lease before `up` runs.
 
@@ -2142,6 +2571,11 @@ def main_execution(
         print("[STEP 5/17] Validating merged configuration (S11)...", flush=True)
         root_key = config_model.validate_stack_shape(stack_config)
         config_model.validate_stack_provisioning(stack_config, source=str(working_dir))
+        # CIU-215: an invalid opt-in table refuses on every checkout, before
+        # any hook or compose work, not only where the mount would be written.
+        linked_worktree = config_model.validate_linked_worktree_table(
+            merged.get(root_key, {})
+        )
         # QOL-11: declared layouts/exec-targets/vendor_images are GLOBAL-scope
         # keys under [deploy]/[ciu] — validate against global_config (never
         # stack_config/merged), so a malformed declaration is caught on every
@@ -2518,6 +2952,36 @@ def main_execution(
                 ownership_path.read_text(encoding="utf-8"), materialized
             )
 
+        # CIU-215: the opt-in git common-dir mount, in a LINKED worktree only.
+        # A primary checkout (or a stack without the table) writes nothing and
+        # its file arguments are unchanged.
+        gitdir_path = None
+        try:
+            # F4: with the table present, "git cannot answer" refuses; only a
+            # clean "not linked" is silent.
+            if linked_worktree is not None:
+                worktree.require_git_answers(repo_root)
+                if worktree.is_linked_git_worktree(repo_root):
+                    gitdir_path = write_gitdir_overlay(
+                        working_dir, rendered_compose, linked_worktree,
+                        worktree.git_common_dir_mount(repo_root),
+                    )
+        except worktree.WorktreeError as exc:
+            raise ValueError(str(exc)) from exc
+        if gitdir_path is None and os.path.lexists(
+            working_dir / MACHINE_DIR / GITDIR_OVERLAY_NAME
+        ):
+            # F5: a fragment left by an earlier run (table removed, or nothing
+            # left to mount) must never be referenced by a later `down -f`.
+            remove_gitdir_artifacts(working_dir)
+        if gitdir_path is not None:
+            print(
+                f"[INFO] [CIU-215] git common dir mounted "
+                f"({linked_worktree.git_common_dir}) via {MACHINE_DIR}/{GITDIR_OVERLAY_NAME}",
+                flush=True,
+            )
+            composefile.leak_scan(gitdir_path.read_text(encoding="utf-8"), materialized)
+
         # `up --dry-run` evaluates none of the compose inputs (it never did:
         # compose_project_name raises without deploy.project_name/
         # environment_tag). Only a real start or a prepare-only render needs them.
@@ -2528,6 +2992,8 @@ def main_execution(
             file_args = composefile.compose_file_args(working_dir, overlay_path)
             if ownership_path is not None:
                 file_args += ["-f", f"{MACHINE_DIR}/{OWNERSHIP_OVERLAY_NAME}"]
+            if gitdir_path is not None:
+                file_args += ["-f", f"{MACHINE_DIR}/{GITDIR_OVERLAY_NAME}"]
             project = compose_project_name(global_config, working_dir)
 
         # ---- Step 16: compose up (S8.1) ----
@@ -2696,6 +3162,31 @@ def prepare_stack(
     return prepared
 
 
+def _refuse_shipped_linked_worktree(working_dir: Path, global_config: dict) -> None:
+    """CIU-215: a shipped stack has no rendered template to mount into, so a
+    `linked_worktree` table next to it must refuse, never be silently ignored.
+
+    A shipped stack needs no stack config, so the config is rendered only when
+    one of its files names the table at all.
+    """
+    for name in (config_model.STACK_CONFIG_DEFAULTS, config_model.STACK_CONFIG_OVERRIDES):
+        path = working_dir / name
+        if path.is_file() and "linked_worktree" in path.read_text(encoding="utf-8"):
+            break
+    else:
+        return
+    stack_config = config_model.render_stack(
+        working_dir, global_config, preserve_state=False, write_rendered=False
+    )
+    roots = [value for key, value in stack_config.items() if key != "state"]
+    if any(isinstance(root, dict) and "linked_worktree" in root for root in roots):
+        raise ValueError(
+            "[CIU-215] [<stack>.linked_worktree] cannot apply to a --shipped stack: "
+            "CIU renders no compose template for it, so the git common-dir mount "
+            "has nothing to attach to. Remove the table or run the stack without --shipped."
+        )
+
+
 def run_shipped(
     working_dir: Path,
     *,
@@ -2760,6 +3251,8 @@ def run_shipped(
 
         # ---- DooD preflight (S1.5) before the first daemon bind use ----
         _dood_preflight(to_physical_path(working_dir, repo_root=repo_root))
+
+        _refuse_shipped_linked_worktree(working_dir, global_config)
 
         compose_path = working_dir / compose_file
         if not compose_path.is_file():

@@ -31,18 +31,20 @@ registry = ["ghcr.io"]
 #   nyxloom <- cli-extended  (declared release order)
 #   pwmcp <- cli-extended  (declared release order)
 #   iobench <- cli-extended  (declared release order)
+#   vmscreen <- cli-extended  (declared release order)
+#   vm-lab <- vmscreen  (declared release order)
 #   rigor-record <- cli-extended  (declared release order)
 #   test-policy <- none  (declared release order)
 #   tls-edge <- none  (declared release order)
 #   iogovmon <- none  (declared release order)
-#   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom, run-gate-project, cgprofile  (declared release order)
-#     consumes first-party wheels: cli-extended, ciu, cmru, topos, run-gate-project, cgprofile, nyxloom
+#   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom, run-gate-project, cgprofile, augeaswrap  (declared release order)
+#     consumes first-party wheels: cli-extended, ciu, cmru, topos, run-gate-project, cgprofile, augeaswrap, nyxloom
 #   tester-base <- none  (declared release order)
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
 #   L0: cli-extended, assay, test-policy, tls-edge, iogovmon, tester-base
-#   L1: augeaswrap, tnt, ciu, fleetd, nyxloom, pwmcp, iobench, rigor-record
-#   L2: cgprofile, topos
+#   L1: augeaswrap, tnt, ciu, fleetd, nyxloom, pwmcp, iobench, vmscreen, rigor-record
+#   L2: cgprofile, topos, vm-lab
 #   L3: run-gate-project
 #   L4: cmru
 #   L5: mdt-cockpit
@@ -55,7 +57,7 @@ registry = ["ghcr.io"]
 # CMRU requires cli-extended at runtime and a published Run-Gate release for its gate.
 # Run-Gate's full R2 qualification requires the released CGProfile observer.
 # project_order must be a topological order of every level; the preflight enforces it.
-project_order = ["cli-extended", "augeaswrap", "tnt", "cgprofile", "run-gate-project", "cmru", "ciu", "assay", "fleetd", "topos", "nyxloom", "pwmcp", "iobench", "rigor-record", "test-policy", "tls-edge", "iogovmon", "mdt-cockpit", "tester-base"]
+project_order = ["cli-extended", "augeaswrap", "tnt", "cgprofile", "run-gate-project", "cmru", "ciu", "assay", "fleetd", "topos", "nyxloom", "pwmcp", "iobench", "vmscreen", "vm-lab", "rigor-record", "test-policy", "tls-edge", "iogovmon", "mdt-cockpit", "tester-base"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -253,6 +255,20 @@ depends_on = []
 [orchestration.project.iobench]
 config = "libraries/iobench/cmru.toml"
 depends_on = ["cli-extended"]
+
+# vmscreen (libraries/vmscreen, VMS-BL-01): exact console text of QEMU guests. Its `vmscreen` CLI shell adopts the
+# cli-extended wheel (cli-extended>=0.4.0), so the preflight demands the declaration. Released before vm-lab, which needs a
+# vmscreen release for its dependency floor (vm-lab VML-BL-03).
+[orchestration.project.vmscreen]
+config = "libraries/vmscreen/cmru.toml"
+depends_on = ["cli-extended"]
+
+# vm-lab (vm-lab/, VML-BL-01): bounded QEMU/TCG guests in Docker containers. Depends on the vmscreen wheel (it runs `vmscreen`
+# for screen text); it needs no cli-extended of its own. Nothing in the estate consumes the vm-lab wheel yet (the mdt-cockpit
+# image recipe is its owner's follow-up, VML-BL-04).
+[orchestration.project.vm-lab]
+config = "vm-lab/cmru.toml"
+depends_on = ["vmscreen"]
 
 # test-policy (libraries/test-policy, TP-01): the estate_test_policy pytest plugin and flakehunt. Standard
 # library plus pytest only (the CLI is plain argparse, TP-08), so no first-party dependency: level L0.

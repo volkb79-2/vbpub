@@ -9,13 +9,14 @@ command `vm-lab` (same arguments).
 ```
 # 1. Pick one install form.
 vm-lab/vm-lab --help                                    # bare checkout: nothing to install
-/opt/mdt/venv/bin/python -m pip install -e libraries/vmscreen -e vm-lab   # editable; vmscreen first (no release yet)
+/opt/mdt/venv/bin/python -m pip install -e libraries/vmscreen -e vm-lab   # editable; vmscreen first
 python -m pip wheel --no-deps vm-lab -w /tmp/wheels     # a wheel; pip install it next to the vmscreen wheel
 export PATH="/opt/mdt/venv/bin:$PATH"                   # the venv's bin/ holds the `vm-lab` command
 
 # 2. Build the QEMU image once per Docker host (tag vm-lab-qemu:local; `start` finds it by that tag).
 vm-lab/vm-lab image build
-vm-lab/vm-lab image build --tag my-qemu:1 --context vm-lab/qemu-image   # another tag; needed as --context from a wheel
+vm-lab/vm-lab image build --tag my-qemu:1                                # another tag; the wheel carries the build context too
+vm-lab/vm-lab image build --context /path/to/dir                         # a different build context (override)
 ```
 
 `vmscreen` (screen text) is a dependency of the package and a separate wheel;

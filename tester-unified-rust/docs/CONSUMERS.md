@@ -23,11 +23,11 @@ The builder is selectable: `--builder NAME`, else the environment variable
 docker call). Hosts without the managed builder, such as the gate host v1001 and
 its cockpit container, which only have the `default` docker-driver builder, run
 `build-image.sh --builder default ...`; the script never creates a builder.
-`--cgroup-parent` is expected, but not yet verified, to be passed through by the
-docker driver (the docker-container driver does not honour it). Verify on first
-use: during a RUN step, the build's processes must appear under the requested
-slice (`systemd-cgls` or `<slice>/cgroup.procs` on the host); a build that does
-not land there is to be discarded. `--builder` changes nothing else:
+The docker driver honours `--cgroup-parent` (measured on v1001: the RUN-step
+processes ran under `dev-gates.slice/buildkit`); the docker-container driver does
+not. Check each build: during a RUN step the build's processes must appear under the
+requested slice (`systemd-cgls` or `<slice>/cgroup.procs` on the host); a build that
+does not land there is to be discarded. `--builder` changes nothing else:
 `--cgroup-parent` stays required, the CMRU preflight, build arguments and label
 checks are unchanged, and the script prints `builder=<name>` before it builds.
 
@@ -41,6 +41,20 @@ preflight also needs the `tester-unified:local` image (the default
 probe image (`CMRU_TESTER_CGROUP_PROBE_IMAGE`) present or pullable on the
 daemon, python3 >= 3.11 (`tomllib`), and `hostobs/tools/verify-crate-cache.py`
 plus `cmru.orchestration.toml` in the checkout.
+
+Prerequisites for a build on the gate host v1001, run inside its cockpit container:
+- the digest-pinned probe image is present locally by its exact digest ref (the probe
+  runs with `--pull=never`): pull it once with `docker pull <image>@sha256:<digest>`
+  on the host daemon, then check `docker image inspect <that exact ref>`;
+- the export is a git repository (`git init`, one commit) owned by uid 1003:1003, and
+  the build runs as that uid (`docker exec -u 1003:1003`): the preflight's probe
+  container runs as the image uid and creates `.cmru/` in the checkout, and git refuses
+  a repository owned by another uid;
+- `BUILDX_CONFIG` points at a private directory writable by that uid (the cockpit's
+  `~/.config/docker/buildx` is root-owned);
+- `--builder default` (or `TESTER_UNIFIED_RUST_BUILDER=default`) and
+  `--cgroup-parent dev-gates.slice`; no other gate runs on the host meanwhile, and the
+  slice's `memory.current` is watched (a build peaked at 3.3 GB).
 
 In a Rust workspace, route all Cargo calls through a checked wrapper that
 invokes `/usr/local/bin/verify-crate-cache` first, then sets
@@ -70,18 +84,17 @@ on-disk archive sha256 recheck are unchanged.
 ### Which image runs what
 
 An image is self-consistent: its baked verifier and its baked digest file
-belong together. The currently deployed `tester-unified-rust:local` was built
-before this change: it carries the old whole-lock verifier, `hostobs-Cargo.lock.sha256`
-and the old label, and it refuses any lock byte change. Lane files that only call the
-baked `/usr/local/bin/verify-crate-cache "$PWD/Cargo.lock"` work on both images
-(that call is unchanged), but a lock edit, even workspace-only, passes only on
-an image built from this source.
+belong together. `tester-unified-rust:local` carries the whole-lock verifier,
+`hostobs-Cargo.lock.sha256` and the old label, and it refuses any lock byte change.
+Lane files that only call the baked `/usr/local/bin/verify-crate-cache "$PWD/Cargo.lock"`
+work on both images (that call is unchanged), but a lock edit, even workspace-only,
+passes only on an image built from this source.
 
-Rollout: a NEW tag is built on a host later with `build-image.sh --tag
-tester-unified-rust:<new>`; `run-gate.root.toml` is switched to it by a
-separate commit; the old tag stays until every Rust lane has passed on the new
-one; then `:local` is re-pointed. Nothing here claims that a new image exists
-yet.
+The `tester-unified-rust` environment in `run-gate.root.toml` names
+`tester-unified-rust:rs-20261118` (registry-set identity). `:local` is the older
+whole-lock image; it is re-pointed to the new tag only after every Rust lane has passed
+on it. A new tag is built with `build-image.sh --tag tester-unified-rust:<new>` and
+adopted by changing that one `image` line.
 
 ### Developer container (not a gate)
 

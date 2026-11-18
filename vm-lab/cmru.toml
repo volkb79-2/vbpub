@@ -1,0 +1,59 @@
+# vm-lab release contract -- parsed ONLY by cmru (VML-BL-01). Tags `vm-lab-v*`; a wheel and its sha256 go to GitHub
+# Releases only, never PyPI. External requirements (not pip dependencies): Docker (guests run in containers of the QEMU image
+# that `vm-lab image build` makes from the packaged `vm_lab/qemu-image`), and a released vmscreen (dependency, floor VML-BL-03).
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[env]
+VM_LAB_RELEASE_NOTES = """## vm-lab wheel
+
+Bounded QEMU/TCG guests in Docker containers in the host background slice: start/stop/resume, console keys, typing, recording and screen text. See `vm-lab/CHANGES.md` for the full entry.
+
+**Read before running**
+- Nothing in vm-lab has booted a guest yet: the QEMU image was never built (VML-BL-05, VML-BL-06) and no real start ran; the unit suite uses fakes only. Treat the first live start as an acceptance test.
+- The wheel carries the QEMU image build context (`vm_lab/qemu-image`); `vm-lab image build` needs Docker and runs a plain `docker build` (BuildKit ignores `--cgroup-parent`, VML-BL-05). `--context DIR` overrides the packaged context.
+- From an installed wheel the start admission lock needs `--lock-dir DIR` or `VM_LAB_ADMISSION_LOCK_DIR` (VML-BL-04); a wheel in another place takes its own lock unless both name the repository's common Git directory.
+- Screen text runs the `vmscreen` wheel as a subprocess (`vmscreen` on PATH, else `python -m vmscreen`); install it with this wheel. Optional extra `record` brings Pillow for `console record`.
+
+**Install (wheel)**
+```bash
+python -m pip install --no-index --find-links . vm_lab-*.whl vmscreen-*.whl cli_extended-*.whl
+```"""
+
+[project]
+id = "vm-lab"
+description = "vm-lab -- bounded QEMU/TCG guests in Docker containers"
+template_revision = 4
+prefix = "vm-lab-v"
+artifacts = ["wheel"]
+scm_dist = "vm-lab"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+evidence_paths = ["coverage.json"]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "vm-lab: r0-r1 (unit + coverage floor)", argv = ["run-gate", "r0-r1"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "vm-lab: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "vm-lab: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "vm-lab", "--cwd", ".", "--notes-env", "VM_LAB_RELEASE_NOTES"], cwd = "." },
+]

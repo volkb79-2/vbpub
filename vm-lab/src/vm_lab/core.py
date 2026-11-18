@@ -80,7 +80,7 @@ RAW_BASE_INFORMATIONAL_KEYS = ("base_disk", "base_size")
 SERIAL_CONSOLE_KEY = "serial_console"
 PROMOTE_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
 PROMOTE_HASH_CHUNK_BYTES = 1024 * 1024
-# The QEMU container image of the generic profile: `vm-lab image build` makes it from <project>/qemu-image/,
+# The QEMU container image of the generic profile: `vm-lab image build` makes it from the packaged qemu-image/,
 # and `start` falls back to this tag when Docker has it (see resolve_qemu_image).
 DEFAULT_QEMU_IMAGE_TAG = "vm-lab-qemu:local"
 # Where the admission lock lives when git finds no repository next to the module (an installed wheel).
@@ -90,7 +90,9 @@ LOCK_DIR_HELP = (
     f"module (default: {LOCK_DIR_ENV}); give the repository's common Git directory to share the lock with "
     "the starts of every other profile and of a checkout"
 )
-QEMU_IMAGE_CONTEXT = Path(__file__).resolve().parents[2] / "qemu-image"
+# The image build context ships inside the package (package data `vm_lab/qemu-image`), so a checkout, an editable
+# install and an installed wheel all find the Dockerfile next to this module.
+QEMU_IMAGE_CONTEXT = Path(__file__).resolve().parent / "qemu-image"
 
 
 class RunnerError(vm_lab_console.ConsoleCallError):
@@ -1317,13 +1319,16 @@ def image_build_argv(tag: str, context: Path) -> list[str]:
     return ["docker", "build", "--tag", tag, str(context)]
 
 
+def resolve_image_context(option: str | None) -> Path:
+    """The build context: `--context DIR` when given, else the qemu-image/ directory packaged with vm_lab."""
+    return Path(option) if option else QEMU_IMAGE_CONTEXT
+
+
 def cmd_image_build(profile: VmProfile, args: argparse.Namespace, *, runner=None) -> int:
-    """Build the QEMU container image from the project's qemu-image/ directory with `docker build`."""
-    context = Path(args.context) if args.context else QEMU_IMAGE_CONTEXT
+    """Build the QEMU container image from the packaged qemu-image/ directory (or --context) with `docker build`."""
+    context = resolve_image_context(args.context)
     if not (context / "Dockerfile").is_file():
-        raise RunnerError(
-            f"no Dockerfile in {context}; run from a checkout of the vm-lab project or pass --context DIR"
-        )
+        raise RunnerError(f"no Dockerfile in {context}; pass --context DIR with a build context")
     argv = image_build_argv(args.tag, context)
     result = (runner or subprocess.run)(argv, check=False)
     if result.returncode:
@@ -2667,14 +2672,14 @@ def build_parser(
             "build",
             help=f"build the QEMU image ({DEFAULT_QEMU_IMAGE_TAG} by default) with docker build",
             description=(
-                "Run `docker build` on the project's qemu-image/ directory (Debian trixie-slim with "
+                "Run `docker build` on the qemu-image/ directory packaged with vm_lab (Debian trixie-slim with "
                 "qemu-system-x86 and qemu-utils; UEFI firmware comes from the caller's host at `start`). "
                 "`start` uses the tag when neither --image nor the image environment variable is set."
             ),
         )
         image_build.add_argument("--tag", default=DEFAULT_QEMU_IMAGE_TAG, help="image tag (default: %(default)s)")
         image_build.add_argument(
-            "--context", help="build context directory with the Dockerfile (default: <project>/qemu-image)"
+            "--context", help="build context directory with the Dockerfile (default: the qemu-image/ directory packaged with vm_lab)"
         )
         image_build.set_defaults(func=cmd_image_build)
     disk = commands.add_parser("disk", help="operations on a guest's disk image")

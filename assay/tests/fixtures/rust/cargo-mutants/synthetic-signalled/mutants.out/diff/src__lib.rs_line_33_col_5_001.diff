@@ -1,0 +1,25 @@
+--- src/lib.rs
++++ replace pick -> u32 with 1
+@@ -25,21 +25,17 @@
+     while i < n {
+         i += 1;
+     }
+     i
+ }
+ 
+ /// Match arms and a guard.
+ pub fn pick(a: Option<u32>) -> u32 {
+-    match a {
+-        Some(v) if v > 10 => v,
+-        Some(_) => 1,
+-        None => 0,
+-    }
++    1 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]
+     fn add_sums() {

@@ -2263,6 +2263,23 @@ lockfile, Go `go.mod`/`go.sum`, OCI JSON, and any configured strict Jinja2 outpu
 check` performs a fresh read-only comparison. None of these actions is coupled to build, release,
 gates, or scheduling.
 
+`cmru versions resolve` and `cmru versions init` edit `cmru.toml` as text. They change only the
+values and tables they own inside the `[versions]` region (the `resolved` tables, and the target
+tables `init` creates) and leave every other byte identical: comments above, between and below the
+version tables, blank-line runs, multi-line string values, key order and line endings. A new table
+is inserted after the last existing `[versions...]` block (at the end of the file when the file has
+none). When a target cannot be edited as text (an inline table, a dotted key, a multi-line value, a
+header written twice) the command refuses before writing, names the table and the exact edit to
+make by hand, and never falls back to rewriting the region; the edited text is parsed again and must
+equal the requested document before it replaces the file. `cmru.toml` is the only file these two
+commands write with this rule; cmru does not rewrite `package.json` to get past the manifest
+refusal: when one or more resolved targets contradict the committed manifest (typically
+`constraint = "*"` npm targets whose exact pin is older than the registry's eligible version)
+`resolve`, `resolve --dry-run` and `check` report every such target in one run (target, resolved
+version, manifest requirement and the exact `package.json` edit) and exit non-zero without writing
+a partial record. (Once the compatibility check passes, the npm lockfile step does update the
+`overrides` and the dependency fields of `package.json` for the resolved packages.)
+
 Timestamp evidence is recorded per source. PyPI uses upload time; npm uses registry version
 time; Go uses module proxy `.info` `Time`, which is VCS commit time rather than proxy publication
 time, and MUST emit a warning; OCI uses HTTP `Last-Modified` when present and may fall back to the
