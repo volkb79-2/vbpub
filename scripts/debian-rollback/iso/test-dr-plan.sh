@@ -62,7 +62,8 @@ expect explicit-target-missing-REFUSES       refuse  ""       "$ONE" "$(conf 'TA
 expect explicit-target-partition-REFUSES     refuse  ""       "$WORK/part.lsblk" "$(conf 'TARGET_DISK=/dev/vda1')"
 expect explicit-target-injection-REFUSES     refuse  ""       "$TWO" "$(conf 'TARGET_DISK=/dev/vda;reboot')"
 expect explicit-target-dotdot-REFUSES        refuse  ""       "$TWO" "$(conf 'TARGET_DISK=/dev/../etc/passwd')"
-expect explicit-target-empty-value-is-unset  refuse  ""       "$TWO" "$(conf 'TARGET_DISK=')"
+expect explicit-target-empty-value-two-disks  refuse  ""       "$TWO" "$(conf 'TARGET_DISK=')"      # empty = unset, and two disks need a target
+expect explicit-target-empty-value-is-unset  install /dev/vda "$ONE" "$(conf 'TARGET_DISK=')"      # empty = unset: the one-disk rule applies (not an error)
 # --- the config stick / mounted disks are excluded by the caller, which can leave exactly one disk
 expect config-stick-excluded-leaves-one      install /dev/vda "$USB" "$(conf 'HOSTNAME=h1')" --exclude sdb
 # review 2026-11-18: "the only disk" means the only internal disk of any kind, not the only one that qualifies
@@ -85,6 +86,26 @@ expect rom-and-loop-do-not-count             install /dev/vda "$WORK/loop.lsblk"
 expect password-hash-ok                      install /dev/vda "$ONE" "$(conf 'ROOT_PASSWORD_HASH=$y$j9T$abcdefgh$XYZ.123/abc')"
 # shellcheck disable=SC2016
 expect password-hash-bad-REFUSES             refuse  ""       "$ONE" "$(conf 'ROOT_PASSWORD_HASH=plaintext')"
+# review r13: components must be non-empty and there must be id, salt and hash
+# shellcheck disable=SC2016
+expect password-hash-empty-salt-REFUSES      refuse  ""       "$ONE" "$(conf 'ROOT_PASSWORD_HASH=$6$$abcdef')"
+# shellcheck disable=SC2016
+expect password-hash-no-hash-REFUSES         refuse  ""       "$ONE" "$(conf 'ROOT_PASSWORD_HASH=$6$salt$')"
+# shellcheck disable=SC2016
+expect password-hash-two-parts-REFUSES       refuse  ""       "$ONE" "$(conf 'ROOT_PASSWORD_HASH=$6$salthash')"
+# shellcheck disable=SC2016
+expect password-hash-rounds-form-ok          install /dev/vda "$ONE" "$(conf 'ROOT_PASSWORD_HASH=$6$rounds=5000$salt$hashvalue.A/b')"
+# review r13: storage that is not TYPE=disk (md raid, multipath, lvm, crypt) at the top level counts as another storage
+# device: with no explicit target the unattended default must refuse (it cannot tell what is behind it)
+OTHER=$WORK/other.lsblk; { disk vda 0 0 20; printf 'NAME="md0" TYPE="raid1" ROTA="0" RM="0" SIZE="%s" TRAN=""\n' "$((20 * GIB))"; } > "$OTHER"
+MPATH=$WORK/mpath.lsblk; { disk vda 0 0 20; printf 'NAME="mpatha" TYPE="mpath" ROTA="0" RM="0" SIZE="%s" TRAN=""\n' "$((20 * GIB))"; } > "$MPATH"
+LVMS=$WORK/lvm.lsblk; { disk vda 0 0 20; printf 'NAME="vg-root" TYPE="lvm" ROTA="0" RM="0" SIZE="%s" TRAN=""\n' "$((20 * GIB))"; } > "$LVMS"
+expect raid-device-present-REFUSES           refuse  ""       "$OTHER" "$(conf 'HOSTNAME=h1')"
+expect mpath-device-present-REFUSES          refuse  ""       "$MPATH" "$(conf 'HOSTNAME=h1')"
+expect lvm-device-present-REFUSES            refuse  ""       "$LVMS" "$(conf 'HOSTNAME=h1')"
+expect raid-device-present-no-config         refuse  ""       "$OTHER" none
+expect raid-device-explicit-target-ok        install /dev/vda "$OTHER" "$(conf 'TARGET_DISK=/dev/vda')"
+expect loop-and-rom-still-do-not-count       install /dev/vda "$WORK/loop.lsblk" "$(conf 'HOSTNAME=h1')"
 # shellcheck disable=SC2016
 expect password-and-hash-REFUSES             refuse  ""       "$ONE" "$(conf 'ROOT_PASSWORD=abc' 'ROOT_PASSWORD_HASH=$6$salt$hash')"
 # REINSTALL=yes is a known key (the runner reads it; dr-plan only validates it)

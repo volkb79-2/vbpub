@@ -65,7 +65,7 @@ if [ "$NOCONFIG" = 0 ]; then
     case "$KNOWN" in *" $key "*) ;; *) refuse "config line $lineno: unknown key $key" ;; esac
     [ -z "${CFG[$key]+x}" ] || refuse "config line $lineno: duplicate key $key"
     if [ "$key" = ROOT_PASSWORD_HASH ]; then   # a crypt(3) hash: $id$salt$hash, e.g. from `mkpasswd -m yescrypt`
-      hash_re='^\$[0-9a-z]+\$[A-Za-z0-9./,=$-]+$'   # in a variable: an unquoted $- in a pattern is the shell's option list
+      hash_re='^(\$[A-Za-z0-9./,=-]+){3,}$'   # $id$salt$hash, every component non-empty; in a variable (an unquoted $- is the shell's option list)
       [[ "$val" =~ $hash_re ]] || refuse "config line $lineno: ROOT_PASSWORD_HASH is not a crypt hash"
     else
       [[ "$val" =~ ^[A-Za-z0-9_./:@,+=-]*$ ]] || refuse "config line $lineno: value of $key has a character outside A-Za-z0-9_./:@,+=-"
@@ -99,11 +99,17 @@ ncand=$(printf '%s' "$candidates" | grep -c . || true)
 declare -A EXCLUDED=()
 for ((i = 1; i < ${#EXCLUDE_ARGS[@]}; i += 2)); do x=${EXCLUDE_ARGS[i]}; EXCLUDED[${x#/dev/}]=1; done
 nall=0
+nother=0   # top-level storage that is not a plain disk: md raid, multipath, lvm, crypt, ... (loop, rom and partitions do not count)
 while IFS= read -r line || [ -n "$line" ]; do
-  [[ "$line" =~ (^|[[:space:]])TYPE=\"disk\" ]] || continue
   [[ "$line" =~ (^|[[:space:]])NAME=\"([^\"]*)\" ]] || continue
-  [ -z "${EXCLUDED[${BASH_REMATCH[2]}]+x}" ] || continue
-  nall=$((nall + 1))
+  name=${BASH_REMATCH[2]}
+  [ -z "${EXCLUDED[$name]+x}" ] || continue
+  [[ "$line" =~ (^|[[:space:]])TYPE=\"([^\"]*)\" ]] || continue
+  case "${BASH_REMATCH[2]}" in
+    disk) nall=$((nall + 1)) ;;
+    loop|rom|part|"") ;;
+    *) nother=$((nother + 1)) ;;
+  esac
 done <<<"$input"
 
 emit_settings() {
@@ -116,14 +122,14 @@ emit_settings() {
 target_spec=${CFG[TARGET_DISK]:-}
 if [ "$NOCONFIG" = 1 ]; then
   [ "$ncand" -ge 1 ] || refuse "no qualifying disk"
-  [ "$ncand" -eq 1 ] && [ "$nall" -eq 1 ] || refuse "no config and $ncand qualifying of $nall internal disks: run the installer by hand with --device"
+  [ "$ncand" -eq 1 ] && [ "$nall" -eq 1 ] && [ "$nother" -eq 0 ] || refuse "no config and $ncand qualifying of $nall internal disks (+$nother other storage devices): run the installer by hand with --device"
   echo "DECISION=confirm"; echo "TARGET=$candidates"; exit 0
 fi
 
 case "$target_spec" in
   "")
     [ "$ncand" -ge 1 ] || refuse "no qualifying disk"
-    [ "$ncand" -eq 1 ] && [ "$nall" -eq 1 ] || refuse "$ncand qualifying of $nall internal disks and the config names no TARGET_DISK (set TARGET_DISK=/dev/X, or TARGET_DISK=first-ssd to take the first SSD else the first rotational disk)"
+    [ "$ncand" -eq 1 ] && [ "$nall" -eq 1 ] && [ "$nother" -eq 0 ] || refuse "$ncand qualifying of $nall internal disks (+$nother other storage devices) and the config names no TARGET_DISK (set TARGET_DISK=/dev/X, or TARGET_DISK=first-ssd to take the first SSD else the first rotational disk)"
     echo "DECISION=install"; echo "TARGET=$candidates"; emit_settings; exit 0 ;;
   first-ssd)
     [ "$ncand" -ge 1 ] || refuse "no qualifying disk"
