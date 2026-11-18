@@ -41,11 +41,11 @@ image = "tester-unified-rust:local"
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 network = "none"
 
-# The same environment on the image whose baked crate-cache identity is the digest
-# of the sorted registry-package set (tester-unified-rust:rs-20261118, built on the
-# gate host 2026-11-18 from the P4a/P4b build script). No lane names it: it is
-# declared first so the later commit that points `tester-unified-rust` at this tag
-# is a one-line image change that can be gated as the exact tree it merges.
+# Parallel declaration of `tester-unified-rust` on the image whose baked crate-cache
+# identity is the digest of the sorted registry-package set (built by
+# tester-unified-rust/build-image.sh as tester-unified-rust:rs-20261118). No lane
+# names it; remove it or fold it into `tester-unified-rust` when that environment
+# moves to this tag.
 [environments.tester-unified-rust-rs]
 mode = "ephemeral"
 image = "tester-unified-rust:rs-20261118"
