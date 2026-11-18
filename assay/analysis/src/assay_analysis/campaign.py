@@ -1066,6 +1066,13 @@ def _state_entry(record: dict, stem: str) -> dict:
             record["carry_over"]["from_judge_sha256"]
             if "carry_over" in record
             and record["judge_sha256"] == record["carry_over"]["from_judge_sha256"]
+            # A schema-2 record whose from-judge equals its into-judge moved
+            # nothing between judges: it is a current-judge replay too.
+            and not (
+                record["carry_over"].get("schema_version") == 2
+                and record["carry_over"]["from_judge_sha256"]
+                == record["carry_over"]["into_judge_sha256"]
+            )
             else None
         ),
     }

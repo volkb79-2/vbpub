@@ -163,14 +163,15 @@ def _carry_over_v2(from_judge, into_judge):
 
 
 @pytest.mark.parametrize(
-    ("record_judge", "import_count", "from_counts"),
+    ("record_judge", "from_judge", "import_count", "from_counts"),
     [
-        (J_X1, 0, {}),          # current-judge replay: judge B, from A, into B
-        (J_X, 1, {J_X: 1}),     # true import: judge A executes, into B
+        (J_X1, J_X, 0, {}),          # current-judge replay: judge B, from A, into B
+        (J_X, J_X, 1, {J_X: 1}),     # true import: judge A executes, into B
+        (J_X1, J_X1, 0, {}),         # self-replay: from == into == executing judge
     ],
 )
 def test_schema_two_carry_over_reports_the_from_judge(
-    tmp_path, monkeypatch, record_judge, import_count, from_counts
+    tmp_path, monkeypatch, record_judge, from_judge, import_count, from_counts
 ):
     root, head, rows = _synthetic(tmp_path, monkeypatch, 1)
     progress = tmp_path / "progress.jsonl"
@@ -178,7 +179,7 @@ def test_schema_two_carry_over_reports_the_from_judge(
         progress,
         support.run_records(head, rows, executed=[rows[0]["id"]], judge=J_X1),
     )
-    carry = _carry_over_v2(J_X, J_X1)
+    carry = _carry_over_v2(from_judge, J_X1)
     state = support.write_state(tmp_path / "state", [
         support.state_record(rows[0], "killed", record_judge, carry_over=carry),
     ])
