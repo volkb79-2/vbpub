@@ -147,6 +147,47 @@ def test_the_argv_output_must_equal_the_report_path(crate_project: Project):
     )
 
 
+@pytest.mark.parametrize("short", ['"-o", "target/out"', '"-otarget/out"'])
+def test_the_short_output_spelling_is_refused_as_unrecognised(
+    crate_project: Project, short: str
+):
+    text = LANE.replace('"--output", "target/out"]', f'"--output", "target/out", {short}]')
+    message = _refusal(crate_project, text)
+    assert "does not recognise" in message and "short spelling" in message
+
+
+@pytest.mark.parametrize("spelling", ['"--output", "target/out"', '"--output=target/out"'])
+def test_output_after_the_separator_is_refused(crate_project: Project, spelling: str):
+    text = LANE.replace(
+        '"--output", "target/out"]', f'"--output", "target/out", "--", {spelling}]'
+    )
+    assert "after a '--' separator" in _refusal(crate_project, text)
+
+
+def test_output_before_a_separator_is_accepted(crate_project: Project):
+    text = LANE.replace('"--output", "target/out"]', '"--output", "target/out", "--", "-q"]')
+    assert _load(crate_project, text).lane("hostobs").argv[-2:] == ("--", "-q")
+
+
+@pytest.mark.parametrize("root", ["crate/target/out", "crate/target", "crate"])
+def test_the_artifact_may_not_lie_inside_a_source_root(crate_project: Project, root: str):
+    text = LANE.replace('source_roots = ["crate/src"]', f'source_roots = ["{root}"]')
+    crate_project.dir("crate", "target", "out")
+    message = _refusal(crate_project, text)
+    assert "judge.source_roots" in message and repr(root) in message
+
+
+def test_a_sibling_source_root_is_accepted(crate_project: Project):
+    text = LANE.replace(
+        'source_roots = ["crate/src"]', 'source_roots = ["crate/src", "crate/target-src"]'
+    )
+    crate_project.dir("crate", "target-src")
+    assert _load(crate_project, text).lane("hostobs").judge.source_roots == (
+        "crate/src",
+        "crate/target-src",
+    )
+
+
 def test_the_environment_spelling_of_output_is_refused(crate_project: Project):
     text = LANE.replace("env = {}", 'env = {CARGO_MUTANTS_OUTPUT = "target/out"}')
     assert "CARGO_MUTANTS_OUTPUT" in _refusal(crate_project, text)

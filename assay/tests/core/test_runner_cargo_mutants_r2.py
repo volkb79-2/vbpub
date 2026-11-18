@@ -148,7 +148,7 @@ class Fake:
         return completed_process(argv, self.exit_code, stdout="", stderr="")
 
 
-def _run(git_repo: GitRepo, lane, fake):
+def _run(git_repo: GitRepo, lane, fake, *, clock=lambda: MOMENT):
     verdict = runner.run_lane(
         lane,
         commit=git_repo.head(),
@@ -157,7 +157,7 @@ def _run(git_repo: GitRepo, lane, fake):
         adapter=RustAdapter(),
         assay_version="0.1.0",
         process_runner=fake,
-        clock=lambda: MOMENT,
+        clock=clock,
     )
     assert verify_document(verdict.to_dict()) == []
     return verdict
@@ -358,6 +358,41 @@ def test_a_tampered_member_diff_is_refused(git_repo: GitRepo, tmp_path: Path):
     _refused(_run(git_repo, lane, Fake(staged, 0)))
 
 
+@pytest.mark.parametrize(
+    "constant, value",
+    [
+        ("DIRECTORY_ARTIFACT_MAX_TOTAL_BYTES", 200),
+        ("DIRECTORY_ARTIFACT_MEMBER_LIMIT", 10),
+        ("DIRECTORY_ARTIFACT_MAX_MEMBERS", 1),
+    ],
+)
+def test_an_oversize_directory_is_refused(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch, constant: str, value: int
+):
+    monkeypatch.setattr(runner, constant, value)
+    base = _seed(git_repo, "indiff")
+    lane = _lane(git_repo, base)
+
+    _refused(_run(git_repo, lane, Fake(_stage(tmp_path, "indiff"), 0)))
+
+
+def test_the_directory_ceilings_are_the_shipped_ones():
+    assert runner.DIRECTORY_ARTIFACT_MEMBER_LIMIT == 256 * 1024
+    assert runner.DIRECTORY_ARTIFACT_MAX_TOTAL_BYTES == 64 * 1024 * 1024
+    assert runner.DIRECTORY_ARTIFACT_MAX_MEMBERS == runner.vocabulary.MAX_INGESTED_MUTANTS
+
+
+def test_an_unknown_content_tier_is_refused():
+    from assay import mutation
+
+    with pytest.raises(ValueError, match="per-mutant-diff"):
+        mutation.ingest_mutation_report(
+            None, run_cwd=None, repo_top=None, source_root_paths=(), source_root_files=(),
+            mode="changed_lines", added=None, targets=None, repository=None,
+            read_timeout=1.0, spec=None, content_tier="whole-file",
+        )
+
+
 def test_an_absent_report_with_exit_zero_never_passes(git_repo: GitRepo, tmp_path: Path):
     base = _seed(git_repo, "indiff")
     lane = _lane(git_repo, base)
@@ -549,3 +584,182 @@ def test_a_manifest_edited_by_the_command_is_ignored(git_repo: GitRepo, tmp_path
         (root / "crate1" / "Cargo.toml").write_text(WORKSPACE, encoding="utf-8")
 
     assert _root(git_repo, tmp_path, "crate1", edit=edit) == Path(".")
+
+
+# --- the workspace root is resolved BEFORE the command runs (review finding 1) --
+#
+# A refusal found after R0 passed would leave a verdict `verify` rejects (an R2
+# ERROR/BAD_LANE_CONFIG beside a passing R0, whose mutation buckets re-derive to
+# PASS). So an unusable manifest is a lane-level refusal, like a tracked `<out>`.
+
+
+def _break_manifest(git_repo: GitRepo, how: str) -> None:
+    manifest = git_repo.path / "Cargo.toml"
+    if how == "missing":
+        git_repo.git("rm", "-q", "Cargo.toml")
+    elif how == "unparseable":
+        git_repo.write("Cargo.toml", "[package\nname = \n")
+    elif how == "non-utf8":
+        manifest.write_bytes(b"[package]\nname = \"\xff\xfe\"\n")
+    elif how == "oversized":
+        git_repo.write("Cargo.toml", "# " + "x" * (runner._MAX_CARGO_MANIFEST_BYTES + 1) + "\n")
+    else:
+        assert how == "symlink"
+        manifest.unlink()
+        manifest.symlink_to("Cargo.lock")
+    git_repo.commit_all(f"manifest: {how}")
+
+
+@pytest.mark.parametrize(
+    "how", ["missing", "unparseable", "non-utf8", "oversized", "symlink"]
+)
+def test_an_unusable_manifest_refuses_the_whole_lane_before_the_command(
+    git_repo: GitRepo, tmp_path: Path, how: str
+):
+    base = _seed(git_repo, "indiff")
+    _break_manifest(git_repo, how)
+    lane = _lane(git_repo, base)
+    fake = Fake(_stage(tmp_path, "indiff"), _exit_code("indiff"))
+
+    verdict = _run(git_repo, lane, fake)
+
+    assert verdict.outcome is Outcome.ERROR
+    assert {claim.reason_code for claim in verdict.claims} == {ReasonCode.BAD_LANE_CONFIG}
+    assert fake.calls == 0
+
+
+def test_a_top_level_workspace_key_is_not_a_workspace_table(
+    git_repo: GitRepo, tmp_path: Path
+):
+    git_repo.write("Cargo.toml", "workspace = true\n")
+    git_repo.write("crate1/Cargo.toml", PACKAGE)
+    git_repo.commit_all("a bare workspace key above the package")
+
+    assert _root(git_repo, tmp_path, "crate1") == Path("crate1")
+
+
+# --- a backward wall-clock step (review finding 2) --------------------------------
+
+
+def test_a_backward_clock_step_is_an_unusable_report_not_a_crash(
+    git_repo: GitRepo, tmp_path: Path
+):
+    # The wall clock steps back once, while the command runs: the command's
+    # `ended` is earlier than its `started`, which `ReportWindow` rejects.
+    stepped = {"back": False}
+
+    def clock():
+        if stepped["back"]:
+            stepped["back"] = False
+            return MOMENT - timedelta(seconds=2)
+        return MOMENT
+
+    lane, fake = _case(git_repo, tmp_path, "indiff")
+    fake.before = lambda _cwd: stepped.update(back=True)
+
+    verdict = _run(git_repo, lane, fake, clock=clock)
+
+    # Fail closed: no usable report, so the exit code (2, survivors) decides R0
+    # and R2 is not judged from the report.
+    assert _claim(verdict, "R0").status is Outcome.FAIL
+    assert _claim(verdict, "R2").status is Outcome.FAIL
+    assert _claim(verdict, "R2").reason_code is ReasonCode.COMMAND_FAILED
+    assert verdict.outcome is Outcome.FAIL
+
+
+def test_an_inverted_window_is_recorded_as_an_unusable_report():
+    raw = (CASES / "indiff" / "mutants.out" / "outcomes.json").read_bytes()
+    artifact = safeio.DirectoryArtifact(
+        artifact=f"{OUT}/mutants.out", identity=(1, 2), report=raw, members={}
+    )
+
+    class Reservation:
+        def consume(self, *, members):
+            return artifact
+
+    handle = runner._DirectoryReportHandle(Reservation())
+
+    state = handle.consume_once(
+        members=lambda _raw: [],
+        result_report_format=FORMAT,
+        started_at=MOMENT,
+        ended_at=MOMENT - timedelta(seconds=1),
+    )
+
+    assert isinstance(state, runner._DirectoryPresent)
+    assert state.summary is None
+    assert "wall-clock window is invalid" in (state.unusable or "")
+
+
+# --- a usable report decides R0, whatever the exit code (review finding 3) -------
+
+
+@pytest.mark.parametrize("exit_code", [1, 70, -9, 4])
+def test_a_usable_fresh_report_decides_r0_whatever_the_exit_code(
+    git_repo: GitRepo, tmp_path: Path, exit_code: int
+):
+    # `cargo mutants` exits 2 for survivors, 3 for timeouts, 4 for a failing
+    # baseline, 1 for usage errors, 70 for internal errors; a signal is
+    # negative. For this format the report is truth (B078, like vitest-json):
+    # the exit code only decides R0 when no usable report exists.
+    base = _seed(git_repo, "indiff")
+    lane = _lane(git_repo, base)
+
+    verdict = _run(git_repo, lane, Fake(_stage(tmp_path, "indiff"), exit_code))
+
+    assert _claim(verdict, "R0").status is Outcome.PASS
+    r2 = _claim(verdict, "R2")
+    assert r2.status is Outcome.FAIL
+    assert r2.reason_code is ReasonCode.MUTANTS_SURVIVED
+
+
+# --- the consumption memo never outlives a refusal (review finding 4) ------------
+
+
+def test_a_refused_consumption_leaves_no_parser_memo(tmp_path: Path):
+    parser = runner.mutation_parsers.cargo_mutants_outcomes
+    raw = (CASES / "indiff" / "mutants.out" / "outcomes.json").read_bytes()
+    refusal = AssayError(
+        "member missing", outcome=Outcome.ERROR, reason_code=ReasonCode.UNREADABLE_ARTIFACT
+    )
+
+    class Reservation:
+        def consume(self, *, members):
+            members(raw)
+            raise refusal
+
+    parser.load_document.cache_clear()
+    handle = runner._DirectoryReportHandle(Reservation())
+
+    state = handle.consume_once(
+        members=parser.diff_paths,
+        result_report_format=FORMAT,
+        started_at=MOMENT,
+        ended_at=MOMENT,
+    )
+
+    assert isinstance(state, runner._DirectoryRefused)
+    assert state.error is refusal
+    assert parser.load_document.cache_info().currsize == 0
+
+
+# --- a tracked `<out>`, end to end (review finding 5) ----------------------------
+
+
+def test_a_tracked_out_refuses_at_the_reservation_with_the_real_detail(
+    git_repo: GitRepo, tmp_path: Path
+):
+    git_repo.write(".gitignore", "")
+    git_repo.write(f"{OUT}/keep.txt", "tracked\n")
+    git_repo.commit_all("track the output directory")
+    base = git_repo.head()
+    git_repo.write("src/lib.rs", "pub fn f() {}\n")
+    git_repo.write("Cargo.toml", '[package]\nname = "x"\nversion = "0.1.0"\n')
+    git_repo.commit_all("subject")
+    fake = Fake(_stage(tmp_path, "indiff"), 0)
+
+    verdict = _run(git_repo, _lane(git_repo, base), fake)
+
+    r2 = _refused(verdict)
+    assert "not empty" in (r2.detail or "")
+    assert fake.calls == 0
