@@ -638,12 +638,7 @@ impl Client {
         Ok(corr)
     }
 
-    fn send_request(
-        &mut self,
-        corr: u32,
-        payload: &str,
-        deadline: u64,
-    ) -> Result<(), ClientError> {
+    fn send_request(&mut self, corr: u32, payload: &str, deadline: u64) -> Result<(), ClientError> {
         let total = FRAME_HEADER_LEN + payload.len();
         let sized = u32::try_from(total);
         let len = sized.map_err(|_| too_large())?;

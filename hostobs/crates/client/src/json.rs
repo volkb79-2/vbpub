@@ -187,8 +187,7 @@ pub(crate) fn request_payload(verb: &str, args_json: &str) -> Result<String, Cli
         return Err(ClientError::Usage("bad-verb"));
     }
     let payload = format!("{{\"verb\":\"{verb}\",\"args\":{args_json}}}");
-    check_req(payload.as_bytes(), false)
-        .map_err(|_| ClientError::Usage("bad-args"))?;
+    check_req(payload.as_bytes(), false).map_err(|_| ClientError::Usage("bad-args"))?;
     Ok(payload)
 }
 

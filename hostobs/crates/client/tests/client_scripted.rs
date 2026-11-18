@@ -632,7 +632,9 @@ fn a_partial_frame_is_bounded_by_its_completion_age() {
         let (mut script, rig) = script(&clock, session_bytes(Level::Observe, head));
         script.eof = false;
         script.idle_ns = 30_000 * MS + extra;
-        script.later.push_back(reply.get(5..).unwrap_or_default().to_vec());
+        script
+            .later
+            .push_back(reply.get(5..).unwrap_or_default().to_vec());
         let mut client = open_slow(script, Duration::from_secs(100)).expect("open");
         assert_eq!(kind_of(client.request("status", "{}")), expected);
         assert_eq!(rig.closed.get(), extra == 1);
