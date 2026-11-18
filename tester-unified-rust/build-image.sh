@@ -22,7 +22,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ "$builder" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+# The name check runs under LC_ALL=C: in a UTF-8 locale a bracket range like [A-Za-z0-9] is
+# collation-dependent and can accept non-ASCII letters (e.g. an accented or fullwidth one).
+valid_builder_name() {
+  local LC_ALL=C
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+}
+valid_builder_name "$builder" || {
   printf 'invalid buildx builder name: %q\n' "$builder" >&2
   usage
 }

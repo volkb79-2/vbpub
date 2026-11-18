@@ -291,12 +291,18 @@ class ImageContractTests(unittest.TestCase):
 class BuildImageBuilderOptionTests(unittest.TestCase):
     """Behavioural pins (stub `docker`/`cmru` on PATH) for the selectable BuildKit builder."""
 
-    def _run(self, args: list[str], extra_env: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    SLICE = "dev-gates.slice"
+    PREFLIGHT_MARKER = "STUB-CMRU-PREFLIGHT-RAN"
+
+    def _run(
+        self, args: list[str], extra_env: dict[str, str] | None = None
+    ) -> tuple[subprocess.CompletedProcess[str], list[list[str]], list[list[str]], Path]:
+        """Run a copy of build-image.sh; return (result, docker argvs, cmru argvs, sandbox root)."""
         dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
         base = re.search(r"(?m)^ARG RUST_IMAGE=(.+)$", dockerfile).group(1)
         lock = (HOSTOBS_ROOT / "Cargo.lock").read_bytes()
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             (root / "tester-unified-rust").mkdir()
             (root / "hostobs" / "tools").mkdir(parents=True)
             (root / "bin").mkdir()
@@ -313,10 +319,20 @@ class BuildImageBuilderOptionTests(unittest.TestCase):
             shutil.copy(PROJECT_ROOT / "Dockerfile", root / "tester-unified-rust" / "Dockerfile")
             shutil.copy(REPO_ROOT / "cmru.orchestration.toml", root / "cmru.orchestration.toml")
             (root / "hostobs" / "Cargo.lock").write_bytes(lock)
-            (root / "bin" / "cmru").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            # Each stub appends one record per call: its arguments joined by the unit separator.
+            (root / "bin" / "cmru").write_text(
+                "#!/bin/sh\n"
+                "{ printf '%s\\037' \"$@\"; echo; } >> \"$STUB_CMRU_LOG\"\n"
+                f"echo {self.PREFLIGHT_MARKER}\n",
+                encoding="utf-8",
+            )
             (root / "bin" / "docker").write_text(
                 "#!/bin/sh\n"
-                'echo "$*" >> "$STUB_DOCKER_LOG"\n'
+                "{ printf '%s\\037' \"$@\"; echo; } >> \"$STUB_DOCKER_LOG\"\n"
+                'if [ "$1 $2" = "buildx inspect" ] && [ -n "$STUB_UNKNOWN_BUILDER" ]'
+                ' && [ "$3" = "$STUB_UNKNOWN_BUILDER" ]; then\n'
+                '  echo "ERROR: no builder $3 found" >&2; exit 1\n'
+                "fi\n"
                 'case "$*" in\n'
                 f"  *hostobs-lock-registry-sha256*) echo {registry_digest} ;;\n"
                 f"  *base-image*) echo {base} ;;\n"
@@ -328,78 +344,139 @@ class BuildImageBuilderOptionTests(unittest.TestCase):
             environment = {
                 name: value for name, value in os.environ.items()
                 if not name.startswith("CMRU_TESTER_")
-                and name not in {"CGROUP_PARENT_DEV_GATES", "TESTER_UNIFIED_RUST_BUILDER"}
+                and name not in {"CGROUP_PARENT_DEV_GATES", "TESTER_UNIFIED_RUST_BUILDER", "STUB_UNKNOWN_BUILDER"}
             }
             environment["PATH"] = f"{root / 'bin'}:{environment.get('PATH', '/usr/bin:/bin')}"
             environment["STUB_DOCKER_LOG"] = str(root / "docker.log")
+            environment["STUB_CMRU_LOG"] = str(root / "cmru.log")
             environment.update(extra_env or {})
             result = subprocess.run(
                 ["bash", str(root / "tester-unified-rust" / "build-image.sh"), *args],
                 env=environment, capture_output=True, text=True, check=False,
             )
-            log = root / "docker.log"
-            calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
-        return result, calls
+            self.registry_digest = registry_digest
+            self.base = base
 
-    def _builders(self, calls: list[str]) -> tuple[list[str], list[str]]:
-        inspected = [c.split()[2] for c in calls if c.startswith("buildx inspect ")]
-        built = []
-        for call in calls:
-            if call.startswith("buildx build "):
-                words = call.split()
-                built.append(words[words.index("--builder") + 1])
+            def records(name: str) -> list[list[str]]:
+                log = root / name
+                if not log.exists():
+                    return []
+                return [line.rstrip("\x1f").split("\x1f") for line in log.read_text(encoding="utf-8").splitlines()]
+
+            return result, records("docker.log"), records("cmru.log"), root
+
+    @staticmethod
+    def _builders(calls: list[list[str]]) -> tuple[list[str], list[str]]:
+        inspected = [c[2] for c in calls if c[:2] == ["buildx", "inspect"]]
+        built = [c[c.index("--builder") + 1] for c in calls if c[:2] == ["buildx", "build"]]
         return inspected, built
 
     def test_default_builder_is_mdt_managed_in_inspect_and_build(self) -> None:
-        result, calls = self._run(["--cgroup-parent", "dev-gates.slice"])
+        result, calls, _, _ = self._run(["--cgroup-parent", self.SLICE])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self._builders(calls), (["mdt-managed"], ["mdt-managed"]))
         self.assertIn("builder=mdt-managed\n", result.stdout)
         self.assertLess(result.stdout.index("builder="), result.stdout.index("image="))
 
     def test_builder_option_is_honoured_in_inspect_and_build(self) -> None:
-        result, calls = self._run(["--builder", "default", "--cgroup-parent", "dev-gates.slice"])
+        result, calls, _, _ = self._run(["--builder", "default", "--cgroup-parent", self.SLICE])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self._builders(calls), (["default"], ["default"]))
         self.assertIn("builder=default\n", result.stdout)
-        # --builder changes nothing else: the governed cgroup parent still reaches the build.
-        build = next(c for c in calls if c.startswith("buildx build "))
-        self.assertIn("--cgroup-parent dev-gates.slice", build)
-        self.assertIn("--load", build)
+
+    def test_full_build_argv_and_preflight_order_are_unchanged_apart_from_the_builder(self) -> None:
+        result, calls, cmru_calls, root = self._run(
+            ["--builder", "default", "--tag", "x:y", "--cgroup-parent", self.SLICE]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        builds = [c for c in calls if c[:2] == ["buildx", "build"]]
+        self.assertEqual(
+            builds,
+            [[
+                "buildx", "build",
+                "--builder", "default",
+                "--load",
+                "--cgroup-parent", self.SLICE,
+                "--network", "default",
+                "--build-arg", f"RUST_IMAGE={self.base}",
+                "--build-arg", f"HOSTOBS_LOCK_REGISTRY_SHA256={self.registry_digest}",
+                "-f", str(root / "tester-unified-rust" / "Dockerfile"),
+                "-t", "x:y",
+                str(root / "hostobs"),
+            ]],
+        )
+        # The governance preflight is untouched: it ran once, with the slice, before `builder=`.
+        self.assertEqual(
+            cmru_calls,
+            [["tester-gate", "--cwd", "run-gate-project", "--cgroup-parent", self.SLICE, "/bin/true"]],
+        )
+        self.assertLess(result.stdout.index(self.PREFLIGHT_MARKER), result.stdout.index("builder=default"))
+        self.assertEqual(calls[0][:2], ["buildx", "inspect"])
+        self.assertEqual(calls[1][:2], ["buildx", "build"])
+
+    def test_an_unknown_builder_fails_the_inspect_preflight_before_the_build(self) -> None:
+        result, calls, cmru_calls, _ = self._run(
+            ["--builder", "ghost", "--cgroup-parent", self.SLICE], {"STUB_UNKNOWN_BUILDER": "ghost"}
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self._builders(calls), (["ghost"], []))
+        self.assertEqual(len(cmru_calls), 1)
+        self.assertNotIn("image=", result.stdout)
 
     def test_builder_environment_is_honoured_and_the_option_beats_it(self) -> None:
-        result, calls = self._run(
-            ["--cgroup-parent", "dev-gates.slice"], {"TESTER_UNIFIED_RUST_BUILDER": "from-env"}
+        result, calls, _, _ = self._run(
+            ["--cgroup-parent", self.SLICE], {"TESTER_UNIFIED_RUST_BUILDER": "from-env"}
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self._builders(calls), (["from-env"], ["from-env"]))
-        result, calls = self._run(
-            ["--builder", "from-option", "--cgroup-parent", "dev-gates.slice"],
+        result, calls, _, _ = self._run(
+            ["--builder", "from-option", "--cgroup-parent", self.SLICE],
             {"TESTER_UNIFIED_RUST_BUILDER": "from-env"},
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self._builders(calls), (["from-option"], ["from-option"]))
         self.assertIn("builder=from-option\n", result.stdout)
 
+    def _assert_refused_before_any_call(self, args: list[str], extra_env: dict[str, str] | None, label: str) -> None:
+        result, calls, cmru_calls, _ = self._run(args, extra_env)
+        self.assertEqual(result.returncode, 2, label)
+        self.assertIn("usage:", result.stderr, label)
+        self.assertEqual((calls, cmru_calls), ([], []), label)
+        self.assertNotIn("builder=", result.stdout, label)
+
     def test_invalid_builder_name_is_refused_with_exit_2_before_any_docker_call(self) -> None:
-        for bad in ("", "-x", ".x", "a b", "a/b", "a;b", "$(id)", "a\nb"):
-            result, calls = self._run(["--builder", bad, "--cgroup-parent", "dev-gates.slice"])
-            self.assertEqual(result.returncode, 2, repr(bad))
-            self.assertIn("usage:", result.stderr, repr(bad))
-            self.assertEqual(calls, [], repr(bad))
-            self.assertNotIn("builder=", result.stdout, repr(bad))
-        result, calls = self._run(
-            ["--cgroup-parent", "dev-gates.slice"], {"TESTER_UNIFIED_RUST_BUILDER": "bad name"}
-        )
-        self.assertEqual(result.returncode, 2)
-        self.assertEqual(calls, [])
+        for bad in ("", "-x", ".x", "a b", "a/b", "a;b", "$(id)", "a\nb", "a\n"):
+            self._assert_refused_before_any_call(["--builder", bad, "--cgroup-parent", self.SLICE], None, repr(bad))
+        for bad in ("bad name", "a\nb", "-x"):
+            self._assert_refused_before_any_call(
+                ["--cgroup-parent", self.SLICE], {"TESTER_UNIFIED_RUST_BUILDER": bad}, f"env {bad!r}"
+            )
+
+    def test_builder_option_without_a_value_or_with_equals_is_a_usage_error(self) -> None:
+        self._assert_refused_before_any_call(["--cgroup-parent", self.SLICE, "--builder"], None, "no value")
+        self._assert_refused_before_any_call(["--builder=default", "--cgroup-parent", self.SLICE], None, "equals")
+
+    def test_builder_name_check_is_locale_proof(self) -> None:
+        # In a UTF-8 locale the bracket range [A-Za-z0-9] is collation-dependent and bash accepts
+        # an accented and a fullwidth letter; the script must still refuse both.
+        listed = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=False).stdout.split()
+        utf8 = [name for name in listed if re.search(r"utf-?8", name, re.IGNORECASE)]
+        preferred = [name for name in utf8 if name.lower().startswith("en_us")] or utf8
+        if not preferred:
+            self.skipTest("no UTF-8 locale is installed (locale -a lists none)")
+        for bad in ("é", "ａ", "aé"):
+            self._assert_refused_before_any_call(
+                ["--builder", bad, "--cgroup-parent", self.SLICE],
+                {"LC_ALL": preferred[0], "LANG": preferred[0]},
+                f"{preferred[0]} {bad!r}",
+            )
 
     def test_cgroup_parent_is_still_required_whatever_the_builder(self) -> None:
         for args in ([], ["--builder", "default"]):
-            result, calls = self._run(args)
+            result, calls, cmru_calls, _ = self._run(args)
             self.assertEqual(result.returncode, 2, args)
             self.assertIn("refusing an ungoverned image build", result.stderr)
-            self.assertEqual(calls, [], args)
+            self.assertEqual((calls, cmru_calls), ([], []), args)
 
 
 if __name__ == "__main__":
