@@ -135,13 +135,15 @@ enum Kind {
 }
 
 /// One queued frame. `stream` is 0 for a control frame; `dict` marks a dictionary-bearing
-/// Live entry; `seq` orders the queue and is kept when a tick is replaced in place.
+/// Live entry with the `generation` of its tick (0 for the other kinds); `seq` orders the
+/// queue and is kept when a tick is replaced in place.
 #[derive(Debug)]
 struct Item {
     kind: Kind,
     stream: u32,
     bytes: Arc<[u8]>,
     dict: bool,
+    generation: u32,
     seq: u64,
 }
 
@@ -203,9 +205,7 @@ impl Shared {
         if kind == Kind::Control {
             return;
         }
-        if let Some(totals) = self.uids.get_mut(&uid) {
-            totals.release(kind, len);
-        }
+        self.uids.entry(uid).or_default().release(kind, len);
         self.global.release(kind, len);
     }
 
@@ -314,6 +314,36 @@ impl Conn {
         self.streams.get(&stream).copied().unwrap_or_default()
     }
 
+    /// A Live entry of `stream` was dropped: count it; a dictionary-bearing one sets `needs_dict`.
+    fn note_drop(&mut self, stream: u32, dict: bool) {
+        let state = self.streams.entry(stream).or_default();
+        state.pending_drops = state.pending_drops.saturating_add(1);
+        state.needs_dict |= dict;
+    }
+
+    /// A dictionary-bearing Live entry was removed without a count: the stream needs one again.
+    fn note_dict_lost(&mut self, stream: u32) {
+        self.streams.entry(stream).or_default().needs_dict = true;
+    }
+
+    /// A Live entry of `generation` was queued.
+    fn mark_pushed(&mut self, stream: u32, generation: u32, dict: bool) {
+        let state = self.streams.entry(stream).or_default();
+        state.last_pushed_gen = generation;
+        if dict {
+            state.needs_dict = false;
+        }
+    }
+
+    /// A Query block was refused (`wait` is `Some`) or queued (`None`, counted).
+    fn note_query(&mut self, stream: u32, wait: Option<Wait>) {
+        let state = self.streams.entry(stream).or_default();
+        state.wait = wait;
+        if wait.is_none() {
+            state.blocks = state.blocks.saturating_add(1);
+        }
+    }
+
     /// A push into an empty queue restarts the stall clock (WIRE.md §5.3).
     fn arrive(&mut self, now_ns: u64) {
         if self.queue.is_empty() {
@@ -412,6 +442,24 @@ fn stamped_prefix(bytes: &[u8], corr: u32, dropped: u32) -> Vec<u8> {
     prefix
 }
 
+/// Which Query pools refuse `len` more bytes for `conn`, each with its freed counter.
+fn query_wait(limits: &QueueLimits, shared: &Shared, conn: &Conn, len: usize) -> Wait {
+    let uid_totals = shared.uid_totals(conn.uid);
+    Wait {
+        conn: conn.totals.refusal(len, limits.query_queue_bytes),
+        uid: uid_totals.refusal(len, limits.uid_query_bytes),
+        global: shared.global.refusal(len, limits.global_query_bytes),
+    }
+}
+
+/// The id after `id`: increasing, skipping 0 on a wrap.
+fn next_conn_id(id: u32) -> u32 {
+    match id.wrapping_add(1) {
+        0 => 1,
+        next => next,
+    }
+}
+
 /// The pool a fit check looks at.
 #[derive(Clone, Copy, Debug)]
 enum Level {
@@ -443,13 +491,14 @@ impl SendHub {
         }
     }
 
-    /// Register a connection of peer `uid`; ids increase (a wrapped id in use is skipped).
+    /// Register a connection of peer `uid`; ids increase from 1 (a wrapped id is never 0, and
+    /// one still in use is skipped).
     pub fn add(&mut self, uid: u32, now_ns: u64) -> ConnId {
         while self.conns.contains_key(&ConnId(self.next_id)) {
-            self.next_id = self.next_id.wrapping_add(1);
+            self.next_id = next_conn_id(self.next_id);
         }
         let id = ConnId(self.next_id);
-        self.next_id = self.next_id.wrapping_add(1);
+        self.next_id = next_conn_id(self.next_id);
         self.conns.insert(id, Conn::new(uid, now_ns));
         self.shared.uids.entry(uid).or_default();
         id
@@ -468,15 +517,20 @@ impl SendHub {
     }
 
     /// Remove every unpinned entry of `id` (all kinds) and release its bytes; a pinned head
-    /// stays. The removed ticks are not counted: the connection is closing.
+    /// stays. The removed ticks are not counted (the connection is closing), but a removed
+    /// dictionary-bearing tick sets `needs_dict` for its stream.
     pub fn drain_unpinned(&mut self, id: ConnId) {
         if let Some(conn) = self.conns.get_mut(&id) {
             let keep = usize::from(conn.pin.is_some());
-            let removed: Vec<Item> = conn.queue.drain(keep..).collect();
+            let from = keep.min(conn.queue.len());
+            let removed: Vec<Item> = conn.queue.drain(from..).collect();
             for item in removed {
                 let len = item.bytes.len();
                 conn.totals.release(item.kind, len);
                 self.shared.release(conn.uid, item.kind, len);
+                if item.kind == Kind::Live && item.dict {
+                    conn.note_dict_lost(item.stream);
+                }
             }
         }
     }
@@ -495,6 +549,7 @@ impl SendHub {
             stream: 0,
             bytes,
             dict: false,
+            generation: 0,
             seq,
         };
         self.insert(id, item);
@@ -514,11 +569,12 @@ impl SendHub {
             Some(conn) => conn.uid,
             None => return LiveOutcome::DroppedIncoming,
         };
-        let replaced = self.drop_unpinned_live(id, stream).map(|old| old.seq);
+        let replaced = self.take_unpinned_live(id, Some(stream)).map(|old| old.seq);
         let held = self.conns.get(&id);
         let state = held.map(|c| c.stream_state(stream)).unwrap_or_default();
         let generation = tick.generation();
-        let forced = state.needs_dict || state.last_pushed_gen != generation;
+        let first = state.last_pushed_gen == 0;
+        let forced = first || state.needs_dict || state.last_pushed_gen != generation;
         let bare = if forced { None } else { tick.bare() };
         let (bytes, dict) = match bare {
             Some(bytes) => (bytes, false),
@@ -537,10 +593,10 @@ impl SendHub {
             stream,
             bytes,
             dict,
+            generation,
             seq,
         };
         self.insert(id, item);
-        self.mark_pushed(id, stream, generation, dict);
         if replaced.is_some() {
             LiveOutcome::Coalesced
         } else {
@@ -557,13 +613,12 @@ impl SendHub {
         now_ns: u64,
     ) -> QueryOutcome {
         self.arrive(id, now_ns);
-        let uid = match self.conns.get(&id) {
-            Some(conn) => conn.uid,
-            None => return QueryOutcome::Queued,
+        let Some(conn) = self.conns.get_mut(&id) else {
+            return QueryOutcome::Queued;
         };
-        let wait = self.query_wait(id, uid, block.len());
+        let wait = query_wait(&self.limits, &self.shared, conn, block.len());
         let refused = wait.is_refused();
-        self.note_query(id, stream, refused.then_some(wait));
+        conn.note_query(stream, refused.then_some(wait));
         if refused {
             return QueryOutcome::Backpressure(block);
         }
@@ -573,6 +628,7 @@ impl SendHub {
             stream,
             bytes: block,
             dict: false,
+            generation: 0,
             seq,
         };
         self.insert(id, item);
@@ -599,7 +655,7 @@ impl SendHub {
     /// End `stream`: remove its unpinned tick (counted), return the END counts, forget it.
     /// Queued Query entries of the stream stay.
     pub fn end_stream(&mut self, id: ConnId, stream: u32) -> StreamCounts {
-        self.drop_unpinned_live(id, stream);
+        self.take_unpinned_live(id, Some(stream));
         match self.take_stream(id, stream) {
             Some(state) => StreamCounts {
                 blocks: state.blocks,
@@ -686,75 +742,42 @@ impl SendHub {
         }
     }
 
-    /// Append `item` in sequence order (a replaced tick keeps its place) and charge its pools.
+    /// Append `item` in sequence order (a replaced tick keeps its place), charge its pools and,
+    /// for a Live entry, record the generation and form pushed on its stream.
     fn insert(&mut self, id: ConnId, item: Item) {
         if let Some(conn) = self.conns.get_mut(&id) {
-            let kind = item.kind;
-            let len = item.bytes.len();
+            let (kind, stream, dict) = (item.kind, item.stream, item.dict);
+            let (len, generation) = (item.bytes.len(), item.generation);
             let at = conn.queue.partition_point(|queued| queued.seq < item.seq);
             conn.queue.insert(at, item);
             conn.totals.charge(kind, len);
             self.shared.charge(conn.uid, kind, len);
+            if kind == Kind::Live {
+                conn.mark_pushed(stream, generation, dict);
+            }
         }
     }
 
     /// Remove the oldest unpinned Live entry of `id` (of `only` stream when given) from the
-    /// queue and from every pool.
+    /// queue and from every pool, counted as a drop on its stream.
     fn take_unpinned_live(&mut self, id: ConnId, only: Option<u32>) -> Option<Item> {
         let conn = self.conns.get_mut(&id)?;
         let item = conn.take_unpinned_live(only)?;
+        conn.note_drop(item.stream, item.dict);
         self.shared.release(conn.uid, item.kind, item.bytes.len());
         Some(item)
     }
 
-    /// Remove the stream's unpinned Live entry, counted as a drop on the stream.
-    fn drop_unpinned_live(&mut self, id: ConnId, stream: u32) -> Option<Item> {
-        let item = self.take_unpinned_live(id, Some(stream))?;
-        self.note_drop(id, stream, item.dict);
-        Some(item)
-    }
-
+    /// A tick of `stream` that did not fit is dropped and counted (the connection exists:
+    /// `push_live` checked it).
     fn note_drop(&mut self, id: ConnId, stream: u32, dict: bool) {
         if let Some(conn) = self.conns.get_mut(&id) {
-            let state = conn.streams.entry(stream).or_default();
-            state.pending_drops = state.pending_drops.saturating_add(1);
-            state.needs_dict |= dict;
-        }
-    }
-
-    fn mark_pushed(&mut self, id: ConnId, stream: u32, generation: u32, dict: bool) {
-        if let Some(conn) = self.conns.get_mut(&id) {
-            let state = conn.streams.entry(stream).or_default();
-            state.last_pushed_gen = generation;
-            if dict {
-                state.needs_dict = false;
-            }
+            conn.note_drop(stream, dict);
         }
     }
 
     fn take_stream(&mut self, id: ConnId, stream: u32) -> Option<Stream> {
         self.conns.get_mut(&id)?.streams.remove(&stream)
-    }
-
-    fn note_query(&mut self, id: ConnId, stream: u32, wait: Option<Wait>) {
-        if let Some(conn) = self.conns.get_mut(&id) {
-            let state = conn.streams.entry(stream).or_default();
-            state.wait = wait;
-            if wait.is_none() {
-                state.blocks = state.blocks.saturating_add(1);
-            }
-        }
-    }
-
-    fn query_wait(&self, id: ConnId, uid: u32, len: usize) -> Wait {
-        let limits = &self.limits;
-        let conn = self.conn_totals(id);
-        let uid_totals = self.shared.uid_totals(uid);
-        Wait {
-            conn: conn.refusal(len, limits.query_queue_bytes),
-            uid: uid_totals.refusal(len, limits.uid_query_bytes),
-            global: self.shared.global.refusal(len, limits.global_query_bytes),
-        }
     }
 
     fn used(&self, level: Level) -> usize {
@@ -793,19 +816,7 @@ impl SendHub {
             Level::Global => self.victim(None),
         };
         match victim {
-            Some(id) => self.shed_oldest(id),
-            None => false,
-        }
-    }
-
-    /// Shed the oldest unpinned Live entry of `id`, counted on its stream; `false` when it
-    /// holds none.
-    fn shed_oldest(&mut self, id: ConnId) -> bool {
-        match self.take_unpinned_live(id, None) {
-            Some(item) => {
-                self.note_drop(id, item.stream, item.dict);
-                true
-            }
+            Some(id) => self.take_unpinned_live(id, None).is_some(),
             None => false,
         }
     }
@@ -971,6 +982,16 @@ mod tests {
         hub.push_query(id, s, block(2, len, 0xC0), 0)
     }
 
+    /// The identity (`seq`, length) of every connection's pinned head, by ascending id.
+    fn pinned(hub: &SendHub) -> Vec<Option<(u64, usize)>> {
+        let mut out = Vec::new();
+        for conn in hub.conns.values() {
+            let head = conn.pin.as_ref().and(conn.queue.front());
+            out.push(head.map(|item| (item.seq, item.bytes.len())));
+        }
+        out
+    }
+
     /// Recompute every pool from the queues and compare with the counters.
     fn check(hub: &SendHub) {
         let mut global = pools(0, 0, 0);
@@ -1102,6 +1123,17 @@ mod tests {
         live(&mut hub, c, 1, &changing, 0);
         assert_eq!(hub.queued(c).live, 256, "absent bare: dictionary form");
         assert_eq!(changing.dict_calls.get(), 1, "dict_form called once");
+        check(&hub);
+    }
+
+    #[test]
+    fn live_row_the_first_tick_is_a_dictionary_form_even_with_generation_zero() {
+        let mut hub = SendHub::new(limits());
+        let c = hub.add(1, 0);
+        let first = tick(0, Some(200), 240);
+        live(&mut hub, c, 1, &first, 0);
+        assert_eq!(hub.queued(c).live, 240);
+        assert_eq!(first.dict_calls.get(), 1);
         check(&hub);
     }
 
@@ -1246,6 +1278,91 @@ mod tests {
         check(&hub);
     }
 
+    #[test]
+    fn fit_uid_victim_is_of_that_uid_even_when_another_uid_holds_more() {
+        let mut limits = limits();
+        limits.uid_live_bytes = 1700;
+        let mut hub = SendHub::new(limits);
+        let ids = add_all(&mut hub, &[1, 1, 2]);
+        for s in 1..=2 {
+            for id in &ids {
+                live(&mut hub, *id, s, &tick(1, None, 400), 0);
+            }
+        }
+        live(&mut hub, ids[2], 3, &tick(1, None, 200), 0);
+        assert_eq!(hub.uid_pools(1).live, 1600);
+        assert_eq!(hub.queued(ids[2]).live, 1000, "uid 2 holds the most");
+        let pushed = live(&mut hub, ids[1], 3, &tick(1, None, 200), 0);
+        assert_eq!(pushed, LiveOutcome::Queued);
+        assert_eq!(hub.queued(ids[0]).live, 400, "tie: lowest id");
+        assert_eq!(hub.queued(ids[1]).live, 1000);
+        assert_eq!(hub.queued(ids[2]).live, 1000, "uid 2 is spared");
+        check(&hub);
+    }
+
+    #[test]
+    fn fit_order_connection_before_global() {
+        let mut limits = limits();
+        limits.global_live_bytes = 1700;
+        let mut hub = SendHub::new(limits);
+        let ids = add_all(&mut hub, &[1, 2]);
+        for s in 1..=2 {
+            live(&mut hub, ids[0], s, &tick(1, None, 400), 0);
+        }
+        for (s, len) in [(1, 400), (2, 400), (3, 100)] {
+            live(&mut hub, ids[1], s, &tick(1, None, len), 0);
+        }
+        let pushed = live(&mut hub, ids[0], 3, &tick(1, None, 300), 0);
+        assert_eq!(pushed, LiveOutcome::Queued);
+        // The connection shed (400) already made room globally: the other uid is spared.
+        assert_eq!(hub.queued(ids[0]).live, 700);
+        assert_eq!(hub.queued(ids[1]).live, 900);
+        assert_eq!(hub.global_pools().live, 1600);
+        check(&hub);
+    }
+
+    #[test]
+    fn fit_order_uid_before_global() {
+        let mut limits = limits();
+        limits.uid_live_bytes = 1700;
+        limits.global_live_bytes = 2600;
+        let mut hub = SendHub::new(limits);
+        let ids = add_all(&mut hub, &[1, 1, 2]);
+        for s in 1..=2 {
+            live(&mut hub, ids[0], s, &tick(1, None, 400), 0);
+            live(&mut hub, ids[1], s, &tick(1, None, 400), 0);
+        }
+        for (s, len) in [(1, 400), (2, 400), (3, 200)] {
+            live(&mut hub, ids[2], s, &tick(1, None, len), 0);
+        }
+        let pushed = live(&mut hub, ids[1], 3, &tick(1, None, 200), 0);
+        assert_eq!(pushed, LiveOutcome::Queued);
+        assert_eq!(hub.queued(ids[0]).live, 400, "uid shed made room");
+        assert_eq!(hub.queued(ids[1]).live, 1000);
+        assert_eq!(hub.queued(ids[2]).live, 1000, "other uid spared");
+        check(&hub);
+    }
+
+    #[test]
+    fn fit_order_connection_before_uid() {
+        let mut limits = limits();
+        limits.uid_live_bytes = 1700;
+        let mut hub = SendHub::new(limits);
+        let ids = add_all(&mut hub, &[1, 1]);
+        for (s, len) in [(1, 400), (2, 400), (3, 100)] {
+            live(&mut hub, ids[0], s, &tick(1, None, len), 0);
+        }
+        for s in 1..=2 {
+            live(&mut hub, ids[1], s, &tick(1, None, 400), 0);
+        }
+        assert_eq!(hub.uid_pools(1).live, 1700);
+        let pushed = live(&mut hub, ids[1], 3, &tick(1, None, 300), 0);
+        assert_eq!(pushed, LiveOutcome::Queued);
+        assert_eq!(hub.queued(ids[0]).live, 900, "no uid shed needed");
+        assert_eq!(hub.queued(ids[1]).live, 700);
+        check(&hub);
+    }
+
     // ---- push_query, query_ready --------------------------------------------------------
 
     #[test]
@@ -1283,6 +1400,40 @@ mod tests {
         assert!(hub.query_ready(b, 2), "a's bytes were in the global pool");
         assert_eq!(query(&mut hub, b, 2, 200), QueryOutcome::Queued);
         assert_eq!(hub.uid_pools(2).query, 600);
+        check(&hub);
+    }
+
+    #[test]
+    fn query_row_the_uid_pool_refuses_alone_and_its_freed_bytes_wake_the_stream() {
+        let mut limits = limits();
+        limits.uid_query_bytes = 700;
+        let mut hub = SendHub::new(limits);
+        let ids = add_all(&mut hub, &[1, 1]);
+        assert_eq!(query(&mut hub, ids[0], 1, 400), QueryOutcome::Queued);
+        // The connection pool (400 + 400 <= 1000) and the global pool have room.
+        let refused_by_uid = query(&mut hub, ids[1], 1, 400);
+        assert!(refused(&refused_by_uid), "only the uid pool refuses");
+        assert!(!hub.query_ready(ids[1], 1));
+        pop(&mut hub, ids[0], 0);
+        assert!(hub.query_ready(ids[1], 1), "uid bytes freed");
+        assert_eq!(query(&mut hub, ids[1], 1, 400), QueryOutcome::Queued);
+        assert_eq!(hub.uid_pools(1).query, 400);
+        check(&hub);
+    }
+
+    #[test]
+    fn query_ready_counts_freed_query_bytes_only() {
+        let mut hub = SendHub::new(limits());
+        let c = hub.add(1, 0);
+        live(&mut hub, c, 2, &tick(1, None, 240), 0);
+        assert_eq!(query(&mut hub, c, 1, 600), QueryOutcome::Queued);
+        let second = query(&mut hub, c, 1, 600);
+        assert!(refused(&second));
+        pop(&mut hub, c, 0);
+        assert_eq!(hub.queued(c), pools(0, 600, 0), "the Live entry is gone");
+        assert!(!hub.query_ready(c, 1), "Live bytes do not wake");
+        pop(&mut hub, c, 0);
+        assert!(hub.query_ready(c, 1));
         check(&hub);
     }
 
@@ -1450,6 +1601,17 @@ mod tests {
     }
 
     #[test]
+    fn wrote_zero_bytes_is_no_progress() {
+        let mut hub = SendHub::new(limits());
+        let c = hub.add(1, 0);
+        live(&mut hub, c, 1, &tick(1, None, 240), 0);
+        head(&mut hub, c, 3000);
+        hub.wrote(c, 0, 4000);
+        assert!(hub.poll(5000).is_empty());
+        assert_eq!(hub.poll(5001), vec![(c, Close::SlowClient)]);
+    }
+
+    #[test]
     fn poll_results_are_by_ascending_connection_id() {
         let mut hub = SendHub::new(limits());
         let ids: Vec<ConnId> = (1..=3).map(|uid| hub.add(uid, 0)).collect();
@@ -1481,6 +1643,23 @@ mod tests {
     }
 
     #[test]
+    fn drain_unpinned_row_a_removed_dictionary_tick_sets_needs_dict_uncounted() {
+        let mut hub = SendHub::new(limits());
+        let c = hub.add(1, 0);
+        live(&mut hub, c, 1, &tick(1, Some(200), 240), 0);
+        live(&mut hub, c, 2, &tick(1, Some(200), 240), 0);
+        head(&mut hub, c, 0);
+        hub.drain_unpinned(c);
+        assert_eq!(hub.queued(c), pools(240, 0, 0));
+        let again = live(&mut hub, c, 2, &tick(1, Some(200), 240), 0);
+        assert_eq!(again, LiveOutcome::Queued);
+        assert_eq!(hub.queued(c), pools(480, 0, 0), "dict form again");
+        pop(&mut hub, c, 0);
+        assert_eq!(head(&mut hub, c, 0), (240, 2, 0), "uncounted");
+        check(&hub);
+    }
+
+    #[test]
     fn remove_row_releases_every_byte_and_forgets_the_connection() {
         let mut hub = SendHub::new(limits());
         let a = hub.add(1, 0);
@@ -1504,8 +1683,11 @@ mod tests {
         assert_eq!(hub.add(1, 0), ConnId(1));
         hub.next_id = u32::MAX;
         assert_eq!(hub.add(1, 0), ConnId(u32::MAX));
-        assert_eq!(hub.add(1, 0), ConnId(0));
-        assert_eq!(hub.add(1, 0), ConnId(2));
+        assert_eq!(hub.add(1, 0), ConnId(2), "0 is never an id, 1 is in use");
+        let mut fresh = SendHub::new(limits());
+        fresh.next_id = u32::MAX;
+        assert_eq!(fresh.add(1, 0), ConnId(u32::MAX));
+        assert_eq!(fresh.add(1, 0), ConnId(1), "a wrap skips 0");
     }
 
     #[test]
@@ -1551,7 +1733,9 @@ mod tests {
             let stream = u32::try_from(pick / 4 % 5).expect("small");
             let len = 120 + 8 * (pick / 20 % 40);
             now += 100;
-            match pick / 800 % 12 {
+            let op = pick / 800 % 12;
+            let before = pinned(&hub);
+            match op {
                 0..=3 => {
                     let generation = u32::try_from(pick / 9600 % 2).expect("small") + 1;
                     let forms = tick(generation, Some(len), len + 40);
@@ -1574,6 +1758,9 @@ mod tests {
                 _ => {
                     let _ = hub.poll(now);
                 }
+            }
+            if !(6..=8).contains(&op) {
+                assert_eq!(pinned(&hub), before, "only wrote removes a pinned head");
             }
             check(&hub);
         }

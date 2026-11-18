@@ -593,25 +593,26 @@ every pool from the queues after each operation of a pseudo-random run. Precisio
 open: bytes stay in a pool until the entry is popped, shed, coalesced, drained or removed, so a partly
 written head still counts; `head` returns the **unwritten rest** of the entry as `[prefix part,
 tail part]` (a control frame has an empty prefix; after `wrote(n)` the prefix part shrinks first), and
-`wrote` clamps to the entry's length, ignores a call without a pinned head and pops a zero-length
-entry on any call; a control frame is pinned like a block (`pinned_ns` and the frame-completion rule
+`wrote` clamps to the entry's length, ignores a call without a pinned head and pops a pinned
+zero-length entry on any call; a control frame is pinned like a block (`pinned_ns` and the frame-completion rule
 apply to it) but has nothing to stamp; "empty → non-empty" is judged before the push touches the
 queue, so a coalesce or a shed that empties the queue and then inserts never restarts
 `last_progress_ns` (a stalled socket with one tick per second is still closed); a
 coalesced tick keeps its queue position (the replaced entry's sequence number) and, when it then does
 not fit, counts two drops (the replaced and the incoming tick); the victim of the uid and global pools
 may be the pushing connection itself (it holds the most sheddable bytes); `drain_unpinned` and
-`remove` do not count the removed ticks (the connection is closing); `end_stream` of a stream with no
+`remove` do not count the removed ticks (the connection is closing), but `drain_unpinned` of a
+dictionary-bearing tick sets `needs_dict` for its stream; `end_stream` of a stream with no
 state (never pushed, or already ended) returns zeros, and a Query block of an ended stream that is
 pinned later is stamped `dropped = 0` with its own `corr`; `query_ready` compares per pool (connection,
 uid, global) the freed-Query-bytes counter at refusal with its current value, so only bytes freed in a
 pool that refused wake the stream, and it answers true for an unknown connection (the retry is then
 discarded as `Queued`); operations on an unknown connection are no-ops (`push_control` `Ok`,
 `push_live` `DroppedIncoming`, `push_query` `Queued`, `head` `None`, pools zero); `poll` is `&self`
-and keeps reporting a connection until the caller `remove`s it; `ConnId` starts at 1 and a wrapped
-id still in use is skipped; a stamped field that lies outside a block shorter than its header is not
+and keeps reporting a connection until the caller `remove`s it; `ConnId` starts at 1, a wrap skips 0
+and an id still in use; a stamped field that lies outside a block shorter than its header is not
 written (no panic). A tick's generation MUST be at least 1 (`last_pushed_gen` 0 means nothing
-pushed). The hub lives in `proto::hub`, not `proto::stream`, to keep `stream.rs` the reader and
+pushed, and the first push of a stream is the dictionary form whatever generation it carries). The hub lives in `proto::hub`, not `proto::stream`, to keep `stream.rs` the reader and
 timers only.
 
 **Mode detection** (`proto::stream::ModeDetect`, server, P2; drives §5.4's `Undecided` rows):

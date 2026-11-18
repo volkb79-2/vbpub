@@ -278,9 +278,9 @@ def build_cases() -> list[tuple[str, dict]]:
     k = Case("hub-query-own-pool", "a query sheds no tick and a tick displaces no query block", [1, 2], global_live_bytes=800, query_queue_bytes=500)
     k.live(0, 1, 1, None, 400, "queued")
     k.live(0, 1, 2, None, 400, "queued")
-    k.query(0, 0, 1, 400, "queued")
+    k.query(0, 0, 1, 500, "queued", watch={"c0": (0, 500, 0)})
     k.query(0, 0, 2, 112, "backpressure", watch={"c1": (800, 0, 0)})
-    k.live(0, 0, 3, None, 200, "queued", watch={"c0": (200, 400, 0), "c1": (400, 0, 0), "g": (600, 400, 0)})
+    k.live(0, 0, 3, None, 200, "queued", watch={"c0": (200, 500, 0), "c1": (400, 0, 0), "g": (600, 500, 0)})
     cases.append(k)
 
     k = Case("hub-control-cap", "control: an empty pool admits any length, a second frame over the cap closes, the cap itself is inclusive, blocks never compete", [1])

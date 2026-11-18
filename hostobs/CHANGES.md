@@ -15,8 +15,11 @@
   expectations, written by `python/reference/make_hub_fixtures.py`, pinned byte for byte by
   `python/tests/test_hub_fixtures.py` and replayed by `crates/proto/tests/hub_fixtures.rs`.
 - **Stall clock.** A push restarts `last_progress_ns` only when the queue was empty before the
-  push; a coalesce or a shed that empties the queue no longer restarts it, so a socket that
+  push; a coalesce or a shed that empties the queue does not restart it, so a socket that
   accepts nothing is closed after `stall_ms` however often a tick replaces the queued one.
+- **Drain, ids, first push.** `drain_unpinned` of a dictionary-bearing Live tick sets
+  `needs_dict` for its stream (the tick is still not counted); a `ConnId` is never 0; the first
+  push of a stream is the dictionary form whatever generation it carries.
 - **Gates.** `crates/proto/src/hub.rs` is a declared `assay-r1` target (35 judged files).
 
 ### Added (P2a2: the stream reader, mode detection and connection timers; `HOB-54` stays open)

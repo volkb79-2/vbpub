@@ -1121,7 +1121,9 @@ row); `ProtoError::Deadline` is the reader's completion-age error. The 12 reader
 `fixtures/stream/reader-*.json` (generator `python/reference/make_stream_fixtures.py`, replayed by
 `crates/proto/tests/stream_fixtures.rs`). **P2b:** `crates/proto/src/hub.rs` holds `SendHub` (one unit
 test per §5.3 row and consequence) and the 19 `fixtures/stream/hub-*.json` files (generator
-`python/reference/make_hub_fixtures.py`, replayed by `crates/proto/tests/hub_fixtures.rs`). Still open: `StreamDicts` and the 6 client cases, `envelope.rs`, the Python `stream.py`, and P5b's 18 connection cases.
+`python/reference/make_hub_fixtures.py`, replayed by `crates/proto/tests/hub_fixtures.rs`).
+Still open: `StreamDicts` and the 6 client cases, `envelope.rs`, the Python `stream.py`, and
+P5b's 18 connection cases.
 
 **Exit criteria.** P2: the §12 `FrameReader`, `ModeDetect`, `SendHub` and `ConnTimers` APIs in Rust
 with the 12 reader and 19 hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row; P3: the Python
