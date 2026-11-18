@@ -72,7 +72,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-57 | `docs/hand-mutants/m1d-mutants.py` had no per-mutant subprocess timeout, so a mutant that hangs the suite hangs the campaign | Minor | FIXED (P0b) |
 | HOB-58 | The reports of an eviction that dropped an already-gone or unremovable entry reach only `TierScan::notes`, so the caller of `append`/`evict` never sees them and a rescan resets them | Minor | FIXED (P0b) |
 | HOB-59 | `Tier::append` and `Store::evict` drop the partial `Evicted` (counts and notes) when an eviction fails after a partial pass | Minor | OPEN |
-| HOB-60 | `Store::notes` visibility is decided by name, not by directory, and the store's eviction-notes ring may be redundant with the tiers' `scan.notes` | Minor | OPEN |
+| HOB-60 | `Store::notes` visibility is decided by name, not by directory, and the store's eviction-notes ring is redundant with the tiers' `scan.notes` through the public API | Minor | OPEN |
 
 ---
 
@@ -332,7 +332,7 @@ first refusal. `decode_block` keeps its own check as a second bound; through `pa
 can no longer fire, so its multi-line `return Err(..)` is covered by no test (see `CHANGES.md`). Tests pin the
 bound, one past it, `u32::MAX`, one below the header, zero and the refusal order, in both
 languages, and two refusal fixtures (declared length 4, a header-only block) are decoded by
-both. Stored hand-mutation patches, not yet run: `M1d-1`, `M1d-14`.
+both. Stored hand-mutation patches `M1d-1`, `M1d-14`: all killed (campaign of 2026-11-18, 54 of 54 on `6fa50236f`).
 
 ## HOB-9 — `derive_rate` has no boot/epoch/incarnation context
 
@@ -820,7 +820,7 @@ seal keeps the open name's start second so a step change cannot trip the new rul
 segment reference refuses the same files (`check_segment_name`); no golden fixture is possible
 because the name is not in the file's bytes. `docs/SEGMENT-FORMAT.md` states both rules.
 A `.seg.open` name that carries a footer is refused too (`OpenWithFooter`). Stored hand-mutation
-patches, not yet run: `M1d-6` … `M1d-9`, `M1d-17`, `M1d-19`.
+patches `M1d-6` … `M1d-9`, `M1d-17`, `M1d-19`: all killed (campaign of 2026-11-18, 54 of 54 on `6fa50236f`).
 
 ## HOB-43 — Quarantined files sit outside the cap
 
@@ -845,8 +845,9 @@ is reported (`Evicted::quarantined`) and counted (`StoreStats::evicted_quarantin
 adopted; any other look-alike is reported as a note, never counted, evicted or removed, so
 those bytes stay outside the cap. A quarantined file deleted by hand, or one that cannot be
 removed, leaves the list and the total without failing the pass, and a quarantined name keeps its
-sequence number. Tests fill the bound; stored hand-mutation patches, not yet run: `M1d-2` … `M1d-5`,
-`M1d-10`, `M1d-12` … `M1d-16`, `M1d-18`.
+sequence number. Tests fill the bound; stored hand-mutation patches `M1d-2` … `M1d-5`,
+`M1d-10`, `M1d-12` … `M1d-16`, `M1d-18`: all killed (campaign of 2026-11-18, 54 of 54 on
+`6fa50236f`; `M1d-15` first survived and is closed by a reason assertion).
 
 ## HOB-44 — CLOSED: the lane needed no `pip`, because it needed no install
 
@@ -1175,7 +1176,7 @@ once the next sequence would exceed the bound; `docs/SEGMENT-FORMAT.md` states t
 limit: a genuinely quarantined segment at exactly `SEQ_NAME_MAX` reserves only `SEQ_NAME_MAX - 1`,
 so a mint at the bound with the same `start_s` could later be refused its quarantine rename because
 `<name>.seg.open.corrupt` exists; reaching it needs 2^32 segments. Stored
-hand-mutation patches `M1d-17` and `M1d-20`, not yet run.
+hand-mutation patches `M1d-17` and `M1d-20`: killed (campaign of 2026-11-18, 54 of 54 on `6fa50236f`).
 
 ## HOB-56 — `StoreStats::bytes` drifts from the tiers' own totals
 
@@ -1195,7 +1196,7 @@ that opens a segment, a seal and an eviction; a mutant restores the arithmetic.
 
 **FIXED (P0b).** `refresh_bytes` sums the history tiers and the events store and runs after every
 write, seal and eviction pass, on the error path as well; `StoreStats::bytes` documents that scope.
-Stored hand-mutation patches `M1d-18` (rewritten) and `M1d-21`, not yet run.
+Stored hand-mutation patches `M1d-18` (rewritten) and `M1d-21`: killed (campaign of 2026-11-18, 54 of 54 on `6fa50236f`).
 
 ## HOB-57 — The M1d hand-mutation script has no per-mutant timeout
 
@@ -1236,7 +1237,8 @@ rescan's own notes never dropped for them); the store keeps at most 256 in a rin
 `Store::notes()` appends them once after its filter. Tests cover an already-gone quarantined file,
 an already-gone live segment, an unremovable quarantined file (a link in its place), the write
 path, the cap, garbage under a tier's own live and quarantine names, and the shared-directory
-case; stored hand-mutation patches `M1d-22`, not yet run.
+case; stored hand-mutation patches `M1d-22`: all killed (campaign of 2026-11-18, 54 of 54 on
+`6fa50236f`; three first survived and are closed by the two rescan tests, see HOB-60).
 
 ## HOB-59 — A failing eviction drops the partial `Evicted`
 
@@ -1255,19 +1257,21 @@ with the error (or the counters and notes are applied before the error is propag
 counts the partial pass, and a test makes a removal fail after a successful one and checks the
 counts and the notes.
 
-## HOB-60 — `Store::notes` visibility is by name, and the notes ring may be redundant
+## HOB-60 — `Store::notes` visibility is by name, and the notes ring is redundant through the API
 
 **Where:** `crates/store/src/store.rs` (`is_visible`, `Store::notes`, `keep_notes`).
 
 `Store::notes` hides a scan note whose name parses to a tier of the store other than the tier whose
 scan made it. That decision is by name, not by directory: a foreign `warm-0-3.seg` in a directory
 warm does not scan is hidden although no tier owns it. The store's eviction-notes ring is
-redundant with the tiers' `scan.notes` for every case reachable through the store's API (the store
-has no call that rescans a tier), so the claim that the ring outlives a rescan is not tested and is
-not made; a mutant that leaves the ring out (`M1d-22`) is possibly equivalent for the same reason.
+redundant with the tiers' `scan.notes` through the public API (no store call rescans a tier). It
+is pinned at unit level by `a_write_path_report_stays_in_the_store_after_its_tier_rescans` and
+`an_evict_report_stays_in_the_store_after_its_tier_rescans`, which rescan a tier from the tests
+module and read the report from the ring; the mutants that leave the ring out or do not fill it
+(`M1d-22`) are killed by them.
 
 **Exit criteria.** `is_visible` hides a cross-tier note only when the producer's directory is also
 the directory of the tier the name belongs to (shared directory), and a test plants a foreign
-`warm-0-3.seg` in cold's directory and sees it; either a store call rescans a tier and a test shows
-the ring keeping a report across it, or the ring is removed and `Store::notes` reads `scan.notes`
-alone.
+`warm-0-3.seg` in cold's directory and sees it; either a store call rescans a tier (so the ring
+matters through the API) or the ring is removed together with the two rescan tests and
+`Store::notes` reads `scan.notes` alone.

@@ -2712,6 +2712,15 @@ mod tests {
             ],
             "every look-alike is reported"
         );
+        // A directory is refused by its kind, before any header read: a read of it would fail
+        // too and the name would still be reported, but as a file with no readable header.
+        let directory = tier
+            .scan()
+            .notes
+            .iter()
+            .find(|note| note.name == "hot-7-7.seg.corrupt")
+            .expect("the directory is reported");
+        assert_eq!(directory.reason, "is a directory, not a regular file");
         let evicted = tier.evict(i64::MAX / 2).expect("evict");
         assert!(evicted.is_empty());
         for name in [

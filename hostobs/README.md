@@ -92,10 +92,10 @@ all killed), [`docs/HAND-MUTANTS-M1B.md`](docs/HAND-MUTANTS-M1B.md) (thirty-one 
 killed) and [`docs/HAND-MUTANTS-M1C.md`](docs/HAND-MUTANTS-M1C.md) (fifteen mutations over the
 store's bounds and crash-safety guards, all killed). Each is a stored patch in a replayable
 script, and every restore is SHA-256-verified. The P0 bug fold-in adds
-[`docs/HAND-MUTANTS-M1D.md`](docs/HAND-MUTANTS-M1D.md) (thirty-five stored patches over the
+[`docs/HAND-MUTANTS-M1D.md`](docs/HAND-MUTANTS-M1D.md) (fifty-four stored patches over the
 frame-header bound, quarantined files inside the cap, the sealed-footer and name/header rules
-and the time-section length); its campaign is to be run on the gate head and states no result
-yet.
+and the time-section length); its campaign ran on 2026-11-18: 50 of 54 patches killed on the
+first run, and 54 of 54 after the 4 survivors were closed by tests (see its status paragraph).
 
 Open items found while building these packages are in
 [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-60`; `HOB-8`,

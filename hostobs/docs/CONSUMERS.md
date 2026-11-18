@@ -138,7 +138,7 @@ B549 records the same finding from the judge's side.
   [`HAND-MUTANTS-M1.md`](HAND-MUTANTS-M1.md), [`HAND-MUTANTS-M1B.md`](HAND-MUTANTS-M1B.md) and
   [`HAND-MUTANTS-M1C.md`](HAND-MUTANTS-M1C.md) remain the test-quality evidence;
   [`HAND-MUTANTS-M1D.md`](HAND-MUTANTS-M1D.md) holds the stored patches of the P0 bug fold-in,
-  whose campaign has not been run yet.
+  whose campaign ran on 2026-11-18 (54 of 54 patches killed on `6fa50236f`).
 - **Dead second bound in `decode_block`.** Its own `declared > MAX_FRAME_BYTES` check cannot
   fire any more, because `FrameHeader::parse` refuses the same length first. It is kept as a
   second bound whose multi-line `return Err(..)` is uncovered and the coverage floor may count; see
