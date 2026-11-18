@@ -32,12 +32,19 @@ assay_lane = "cli-extended"         # -> assay.toml [lanes.cli-extended]
 environment = "tester-unified"
 resource_observer = "cgprofile"
 clean_tree = true
-# Ceiling of ONE unsharded run (assay.toml [lanes.cli-extended] budget); a shard
-# runs a fraction of the candidates inside the same ceiling.
-budget = "720m"
+# Outer bound of the lane container for ONE unsharded run: the assay.toml
+# [lanes.cli-extended] budget (720m, the binding deadline) + 10m for container
+# start and the editable assay install (estate rule outer >= inner + 5m, as in
+# cmru/tests/test_gate_budgets.py). A shard runs a fraction of the candidates
+# inside the same ceiling.
+budget = "730m"
 # B157 (assay) is closed: overlapping candidate windows each attribute a limit
-# event, so concurrent workers are legal. assay.toml jobs_max = 3 is the ceiling;
-# run-gate's `auto` picks min(jobs_max, CPUs, memory / candidate RSS p95).
+# event, so concurrent workers are legal. assay.toml jobs_max = 3 is the ceiling.
+# run-gate's `auto` (select_r2_jobs) takes min(jobs_max, CPUs, memory term) where
+# the memory term is 75% (`ram_target`) of the lane memory cap / candidate_ram =
+# 1152m / 300m = 3 here, and it drops to ONE worker unless the capacity probe
+# confirms a cheap-clone (CoW) workspace. So: up to three workers per shard
+# container when the cheap-clone probe passes, otherwise one.
 jobs = "auto"
 
 [lanes.r2.resources]
@@ -72,4 +79,4 @@ argv = [
   "cd {worktree}/libraries/cli-extended && run-gate --worktree {worktree} r0-r1 && run-gate --worktree {worktree} r2 && run-gate --worktree {worktree} r3",
 ]
 clean_tree = false
-budget = "750m"
+budget = "760m"
