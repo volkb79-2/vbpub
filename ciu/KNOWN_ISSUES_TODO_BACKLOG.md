@@ -6951,7 +6951,7 @@ test.
 
 ## CIU-214 — `ciu down --dir PATH` rejects flags that `ciu down --help` lists (`--yes`, `--phases`, `--i-understand-this-is-protected`)
 
-**Status:** FIXED (2026-11-18; the `--dir` parser accepts `--yes`, `--phases` and `--i-understand-this-is-protected` with the main form's meaning, `stop_stack` takes `phases` and `protected_ack`); severity: minor, automation friction. Found migrating netcup-api-filter onto CIU 7.25 (reproduced on 7.25.1: `ciu down --dir <path> --yes` exits with `ciu down --dir: error: unrecognized arguments: --yes`).
+**Status:** FIXED (2026-11-18, `6776a1a0f` on branch `ciu-20261118_045219-wt-bugs-20261118`; the `--dir` parser accepts `--yes`, `--phases` and `--i-understand-this-is-protected` with the main form's meaning, `stop_stack` takes `phases` and `protected_ack`); severity: minor, automation friction. Found migrating netcup-api-filter onto CIU 7.25 (reproduced on 7.25.1: `ciu down --dir <path> --yes` exits with `ciu down --dir: error: unrecognized arguments: --yes`).
 
 **Cause (read from source).** The `--dir` branch of `ciu down` (`ciu/src/ciu/cli.py`, the `verb == "down"` handler, about lines 2056-2090) builds its own sub-parser that declares only `--dir` and `--profile` and calls `parse_args`. The registry adapter (`cli_registry.py`, about lines 161-162) forwards `--yes` whenever the caller gave it, and `ciu down --help` lists `--yes`, `--phases` and `--i-understand-this-is-protected`, so each of them is rejected on the `--dir` form. `down` never prompts for confirmation (`deploy.py`, `_refuse_if_protected`: `--stop`/`--clean` have never had an `input()` gate), so `--yes` is harmless there; the defect is that the parser and the help disagree, which breaks a non-interactive caller that passes the documented flag.
 
@@ -6961,7 +6961,7 @@ test.
 
 ## CIU-215 — linked-worktree exec runners rendered by CIU 7 lack the git common-dir mount, so every assay lane fails with GIT_FAILED
 
-**Status:** OPEN (filed 2026-11-13); severity: major for projects that gate from linked worktrees. Found in netcup-api-filter (per-checkout test runners, CIU 7.25.0). Related: the v8 design mounts the git common directory for exec environments of a linked checkout (`ciu/docs/SPEC-V8.md` S16.4, S16.4.9 and S16.12; dstdns D-653 Q7); CIU 7 does not.
+**Status:** OPEN (filed 2026-11-13; 2026-11-18 analysis: CIU 7 has no exec-runner concept to attach the mount to; the runner is a project stack rendered from the project's own `ciu.compose.yml.j2`, so a backport must first decide how CIU 7 identifies the runner service and where it injects the mount); severity: major for projects that gate from linked worktrees. Found in netcup-api-filter (per-checkout test runners, CIU 7.25.0). Related: the v8 design mounts the git common directory for exec environments of a linked checkout (`ciu/docs/SPEC-V8.md` S16.4, S16.4.9 and S16.12; dstdns D-653 Q7); CIU 7 does not.
 
 **Observed.** A per-checkout exec runner mounts only the worktree. A linked worktree's `.git` is a file that points at the main repository's git directory outside the mount, so inside the runner `git` fails and every assay lane (which needs a git context) ends with `GIT_FAILED`. Shared runners that mount the whole repository never showed it. netcup-api-filter works around it by adding the linked worktree's `.git` common-dir mount to its own `tooling/test-runner/ciu.compose.yml.j2`.
 
@@ -6971,7 +6971,7 @@ test.
 
 ## CIU-216 — `ciu worktree create` renders no `ciu.global.toml` when `DOCKER_HOST` is unset and the Docker socket is at a non-default path
 
-**Status:** OPEN (filed 2026-11-13); severity: minor, silent failure. Found in netcup-api-filter on CIU 7.25.0 (a clean environment with `env -i`, socket at a non-default path). Not re-reproduced on 7.25.1.
+**Status:** OPEN (filed 2026-11-13; 2026-11-18 analysis: `ciu worktree create` without `--up` is prepare-only by design and never renders `ciu.global.toml` (`test_no_rendered_artifact_is_written`); only `create --up` / `worktree up` render it, through `ciu up`. The "never exit 0 without the rendered file" contract therefore needs a decision on which create form must render it before it can be implemented); severity: minor, silent failure. Found in netcup-api-filter on CIU 7.25.0 (a clean environment with `env -i`, socket at a non-default path). Not re-reproduced on 7.25.1.
 
 **Observed.** `ciu worktree create` finished and created the checkout and its identity file, but the worktree had no `ciu.global.toml`, so run-gate lanes for it failed on infrastructure instead of on the code. Setting `DOCKER_HOST` to the socket, or copying a sibling's rendered file, restored it. The command printed no error.
 
@@ -6981,7 +6981,7 @@ test.
 
 ## CIU-217 — KSM ELF verifier accepts a zero-sized program-header entry declaration
 
-**Status:** FIXED (2026-11-18; `_dt_needed_count` refuses a program-header table with `e_phentsize` below 56 when `e_phnum` is non-zero; the xfail is removed and undersized-entry oracles added); severity: minor, fail-open artifact verification.
+**Status:** FIXED (2026-11-18, `7b9bbd337` on branch `ciu-20261118_045219-wt-bugs-20261118`; `_dt_needed_count` refuses a program-header table with `e_phentsize` below 56 when `e_phnum` is non-zero; the xfail is removed and undersized-entry oracles added); severity: minor, fail-open artifact verification.
 
 **Observed.** A dependency-free ELF64-shaped object with one program header and `e_phentsize = 0` passes `_verify`. `_dt_needed_count` uses the zero entry size for its bounds check, then reads program-header fields at their fixed offsets anyway. The verifier therefore accepts an artifact whose declared program-header table cannot be interpreted as specified. The strict xfail `test_zero_program_header_entry_size_is_refused` records this behavior without weakening the verifier or hiding the issue.
 
