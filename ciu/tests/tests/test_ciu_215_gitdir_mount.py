@@ -300,9 +300,10 @@ def test_an_ancestor_target_and_root_cover_but_a_sibling_does_not(repos, tmp_pat
     main, _l, _p = repos
     compose = yaml.safe_dump({"services": {
         "anc": {"volumes": [f"/x:{main}"]}, "root": {"volumes": ["/x:/"]},
-        "sib": {"volumes": [f"/x:{main}/.gitx"]}, "bare": {"volumes": 3}}})
+        "sib": {"volumes": [f"/x:{main}/.gitx"]}, "bare": {"volumes": 3},
+        "strprefix": {"volumes": [f"/x:{str(main)[:-1]}"]}}})
     doc = yaml.safe_load(_write(repos, tmp_path, "ro", compose=compose)[2].read_text())
-    assert sorted(doc["services"]) == ["bare", "sib"]
+    assert sorted(doc["services"]) == ["bare", "sib", "strprefix"]
 
 
 def test_every_service_covered_writes_nothing(repos, tmp_path):
@@ -334,6 +335,26 @@ def test_valid_tables_normalize():
     assert check({"linked_worktree": {"git_common_dir": "rw"}}) == _table("rw", None)
     assert check({"linked_worktree": {"git_common_dir": "ro", "services": ["a"]}}) == _table(
         "ro", ("a",))
+
+
+@pytest.mark.parametrize("name", ["hooks", "info"])
+def test_a_symlinked_hooks_or_info_dir_refuses(repos, tmp_path, name):
+    main, _l, _p = repos
+    real = main / ".git" / f"{name}.real"
+    (main / ".git" / name).rename(real)
+    (main / ".git" / name).symlink_to(real)
+    with pytest.raises(ValueError, match=f"{name} directory is missing or unsafe"):
+        _write(repos, tmp_path, "rw")
+
+
+def test_exactly_the_cap_of_sibling_configs_is_accepted(repos, tmp_path):
+    main, _l, _p = repos
+    for number in range(engine_cap()):
+        sib = main / ".git" / "worktrees" / f"s{number}"
+        sib.mkdir()
+        (sib / "config.worktree").write_text("[a]\n\tb = c\n")
+    path = _write(repos, tmp_path, "ro")[2]
+    assert len(_binds(path)) == 3 + engine_cap()
 
 
 def test_a_vanished_pointer_file_refuses(repos, tmp_path):
