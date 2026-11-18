@@ -617,13 +617,15 @@ and prints one result object on stdout.
 This project's own `run-gate.toml` declares five lanes (dogfooding — see
 "Built deltas" above):
 
-1. **`selftest`** — the release gate (`cmru.toml [steps.run-tests]`
-   points at it; a release cannot be tagged unless it passes). It owns a
+1. **`selftest`** — the release gate's R1 component (`cmru.toml
+   [steps.run-tests]` runs it; a release cannot be tagged unless it passes).
+   It owns a
    capped `tester-unified` container and runs from the selected worktree's
    project directory. When CMRU releases this package, the run-tests step first
    builds the prepared-version wheel and tester image from those exact bytes,
-   then writes a commit-bound receipt. The lane checks that image identity
-   before testing. Wheel/image preparation requires CMRU's protected
+   then writes a commit-bound receipt. The release step runs both `selftest`
+   and the R3 canary through the receipt-specific image; each lane checks that
+   image identity before testing. Wheel/image preparation requires CMRU's protected
    `CMRU_RELEASE_GATE_COMMIT` to match the selected checkout; a manual command
    cannot stamp a stable release version onto an unrelated tree. In `tester-unified`, it runs
    `/opt/tester-venv/bin/python -m pytest tests -q -rs --cov=. --cov-branch` (`-rs`:
@@ -689,9 +691,10 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
 5. **`gate-full`** — the conjunction: `selftest` + `assay-r1` + `assay-r3`
    (r2 excluded for the reason above). Its `{base}` token forwards an
    explicit `--base REF` to `assay-r1`; use that form for a linked worktree
-   without an upstream. Still not the release gate
-   (`cmru.toml`'s own comment says why): `selftest` alone remains it,
-   deliberately, for now.
+   without an upstream. It is not the release gate: `cmru.toml` directly runs
+   the receipt-image `selftest` and R3 canary. R1's changed-line floor is
+   `selftest`'s diff coverage; R2 mutation runs asynchronously on the latest
+   release (KI-141).
 
 ## Intent — what problem this solves
 
