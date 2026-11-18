@@ -538,7 +538,7 @@ now = int(time.time())
 runs = Path(sys.argv[1])
 def write(name, tool=None, tool_started=None, last_event=None, progress=None,
           command=None, steer=None, tokens=10, tokens_report=None, ahead=0,
-          commit_epoch=None):
+          commit_epoch=None, measured=None, baseline=None, reason=None):
     body = {
         "run": name, "wrapper_pid": 1, "updated_epoch": now,
         "last_event_epoch": last_event, "tool_in_flight": tool,
@@ -548,18 +548,36 @@ def write(name, tool=None, tool_started=None, last_event=None, progress=None,
         "latest_total_tokens_last_report": tokens if tokens_report is None else tokens_report,
         "tool_in_flight_command": command, "steering_children": steer,
         "progress_epoch": progress,
+        "progress_baseline_epoch": baseline,
+        "progress_reason": reason,
+        # The SIDE CAR's own licence, published by pi-live.py. A fixture that
+        # measured a progress fact says so; one that did not must never be read
+        # as having measured anything.
+        "progress_measured": measured,
         "commits_ahead": ahead, "uncommitted_files": 0,
         "last_commit_epoch": now if commit_epoch is None else commit_epoch,
     }
     (runs / f"{name}.live").write_text(json.dumps(body), encoding="utf-8")
 write("stale", last_event=now - 900)
 write("hung", tool="bash", tool_started=now - 2400, last_event=now - 10,
-      progress=now - 2400, command="sleep 600")
+      progress=now - 2400, measured=True, command="sleep 600")
 write("long-tool", tool="bash", tool_started=now - 2400, last_event=now - 10,
-      progress=now - 30, command="grep -r needle /workspace",
+      progress=now - 30, measured=True, reason="counters",
+      command="grep -r needle /workspace",
       steer=[{"pid": 4242, "command": "grep -r needle /workspace"}])
 write("progress-unknown", tool="bash", tool_started=now - 2400,
-      last_event=now - 10, progress=None)
+      last_event=now - 10, progress=None, measured=False, reason="unread")
+# What the sidecar publishes after a tick whose tool subtree it could NOT
+# locate: the counters were never re-read, so the previous epoch is carried
+# forward UNMEASURED. The tool is past its threshold and the carried epoch is
+# older than the tool, so age alone would say HUNG-TOOL - exactly the decision
+# this field exists to prevent.
+write("progress-carried-unmeasured", tool="bash", tool_started=now - 2400,
+      last_event=now - 10, progress=now - 3000, measured=False, reason="unread")
+# The same row without the flag at all: a payload written before the producer
+# published it. Absence is not a licence either.
+write("progress-flag-absent", tool="bash", tool_started=now - 2400,
+      last_event=now - 10, progress=now - 2400, reason="counters")
 write("tokens-zero-report", last_event=now - 10, tokens=258492,
       tokens_report=0)
 write("no-commits", last_event=now - 10, ahead=0, commit_epoch=now - 86400)
@@ -573,7 +591,8 @@ body["wrapper_pid"] = 2147483646
 PY
   CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
     JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
-    "$JOB_STATUS" stale hung long-tool progress-unknown tokens-zero-report \
+    "$JOB_STATUS" stale hung long-tool progress-unknown progress-carried-unmeasured \
+      progress-flag-absent tokens-zero-report \
       no-commits own-commit ahead-unknown orphan finished absent \
       > "$ROOT/job-status-states.out" 2>&1 || {
       cat "$ROOT/job-status-states.out" >&2
@@ -600,6 +619,21 @@ PY
     || { cat "$ROOT/job-status-states.out" >&2; fail 'an unreadable progress fact was read as a hung tool'; }
   grep -qE '^progress-unknown: .*progress=- ' "$ROOT/job-status-states.out" \
     || { cat "$ROOT/job-status-states.out" >&2; fail 'an unreadable progress fact is not shown as unknown'; }
+  # An epoch the sidecar CARRIED forward because it could not re-read the tool's
+  # subtree is not a measurement: the tool is past its threshold and the carried
+  # epoch is older still, so reading it as a progress age would say HUNG-TOOL on
+  # the tool's age alone - the exact defect this flag removes.
+  grep -qF 'progress-carried-unmeasured: LONG-TOOL' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a carried, unmeasured progress epoch licensed HUNG-TOOL'; }
+  grep -qE '^progress-carried-unmeasured: .*progress=- progress-why=unread' \
+    "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a carried, unmeasured epoch was printed as a progress age'; }
+  # A payload written before the producer published the flag cannot license the
+  # stronger word either: absence of a measurement is not a measurement.
+  grep -qF 'progress-flag-absent: LONG-TOOL' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a payload without the measured flag licensed HUNG-TOOL'; }
+  grep -qE '^progress-flag-absent: .*progress=- ' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a payload without the measured flag printed a progress age'; }
   # A zero usage report never masquerades as the context size.
   grep -qE '^tokens-zero-report: .*tokens=258492 .*tokens-last-report=0' \
     "$ROOT/job-status-states.out" \
@@ -642,12 +676,15 @@ import json, sys, time
 from pathlib import Path
 now = int(time.time())
 runs = Path(sys.argv[1])
-def write(name, tool=None, tool_started=None, last_event=None, progress=None):
+def write(name, tool=None, tool_started=None, last_event=None, progress=None,
+          measured=None, baseline=None):
     body = {
         "run": name, "wrapper_pid": 1, "updated_epoch": now,
         "last_event_epoch": last_event, "tool_in_flight": tool,
         "tool_in_flight_started_epoch": tool_started,
         "progress_epoch": progress,
+        "progress_baseline_epoch": baseline,
+        "progress_measured": measured,
         "assistant_turns": 1, "tool_calls": 1, "latest_total_tokens": 10,
         "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now,
     }
@@ -656,11 +693,11 @@ write("quiet500", last_event=now - 500)
 write("quiet700", last_event=now - 700)
 write("thinking", last_event=now - 100)
 write("tool1700", tool="bash", tool_started=now - 1700, last_event=now - 20,
-      progress=now - 20)
+      progress=now - 20, measured=True)
 write("tool1900fresh", tool="bash", tool_started=now - 1900, last_event=now - 20,
-      progress=now - 20)
+      progress=now - 20, measured=True)
 write("tool1900stuck", tool="bash", tool_started=now - 1900, last_event=now - 20,
-      progress=now - 1900)
+      progress=now - 1900, measured=True, baseline=now - 1900)
 PY
   env -u JOB_STATUS_STALL_SECONDS -u JOB_STATUS_HUNG_TOOL_SECONDS \
     CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
@@ -855,6 +892,7 @@ import json, sys
 body = json.load(open(sys.argv[1], encoding="utf-8"))
 assert body["progress_epoch"] is None, body
 assert body["progress_reason"] in ("none", "idle"), body
+assert body["progress_measured"] is True, body
 assert body["progress_tree_nodes"] == 2, body
 assert body["progress_tree_truncated"] is False, body
 PY
@@ -996,6 +1034,103 @@ assert all(row["progress"] is None for row in rows), rows
 assert [row["nodes"] for row in rows] == [2, 2, 2, 2], rows
 PY
 
+  # (4b) CHURN. A tool that forks and reaps workers every tick (`make -j`, a
+  # per-test subprocess) changes its process set constantly. The rule is about
+  # SURVIVORS, so a set change is neither progress nor a reset of the quiet
+  # clock: with idle survivors a silent churning tool still reads quiet, a
+  # survivor that burns CPU is progress, and a pid RECYCLED between two ticks
+  # (same number, different kernel start ticks) is not a survivor at all.
+
+  # (4b-i) Churn with idle survivors is QUIET, and the baseline never moves:
+  # the quiet clock started at the first reading of THIS tool call.
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  progress_tick 4100
+  python3 "$fixture" add "$root" 200 102 'make worker' || fail 'could not start a churn worker'
+  progress_tick 4110
+  python3 "$fixture" rm "$root" 200 || fail 'could not reap a churn worker'
+  python3 "$fixture" add "$root" 201 102 'make worker' || fail 'could not start a churn worker'
+  progress_tick 4120
+  python3 "$fixture" rm "$root" 201 || fail 'could not reap a churn worker'
+  python3 "$fixture" add "$root" 202 102 'make worker' || fail 'could not start a churn worker'
+  progress_tick 4130
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'a silent churning tool was read as progressing, or its baseline was reset by the churn'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 4, rows
+# No survivor grew, so nothing is progress - even though the set changed on
+# every tick after the first.
+assert all(row["progress"] is None for row in rows), rows
+assert all(row["measured"] is True for row in rows), rows
+# The quiet clock is NOT reset by the churn: the baseline is the tick the
+# current tool call's counters were first read, on every row.
+assert [row["baseline"] for row in rows] == [4100, 4100, 4100, 4100], rows
+PY
+  # The row that decides the word: a churning tool whose survivors never moved
+  # for 30 minutes is HUNG-TOOL, not LONG-TOOL. Without this, a `make -j` that
+  # went silent could sit at LONG-TOOL forever and the controller would never
+  # see it - the defect this clause removes.
+  mkdir -p "$ROOT/status-home"
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+body["wrapper_pid"] = 1
+body["updated_epoch"] = now
+body["last_event_epoch"] = now - 10
+body["tool_in_flight_started_epoch"] = now - 2400
+body["progress_baseline_epoch"] = now - 2400
+Path(sys.argv[1]).with_name("progress-churn.live").write_text(json.dumps(body), encoding="utf-8")
+PY
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$CONTROLLER_ROOT/runs" \
+    CONTROLLER_REPO="$WORKTREE" JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+    "$JOB_STATUS" progress-churn > "$ROOT/progress-churn.out" 2>&1 \
+    || { cat "$ROOT/progress-churn.out" >&2; fail 'job-status failed on a churning tool'; }
+  grep -qF 'progress-churn: HUNG-TOOL' "$ROOT/progress-churn.out" \
+    || { cat "$ROOT/progress-churn.out" >&2; fail 'a churning tool with idle survivors was not HUNG-TOOL'; }
+
+  # (4b-ii) Churn WITH a survivor that burns CPU is progress: the survivor's own
+  # delta counts even while the set around it changes.
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  progress_tick 4200
+  progress_tick 4210
+  python3 "$fixture" set "$root" 103 cpu=25 || fail 'could not grow the tool counter'
+  python3 "$fixture" add "$root" 210 102 'make worker' || fail 'could not start a churn worker'
+  progress_tick 4220
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'a surviving process that burned CPU was not progress'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 3, rows
+assert rows[0]["progress"] is None, rows
+assert rows[1]["progress"] is None, rows
+assert rows[2]["progress"] == 4220, rows
+assert rows[2]["reason"] == "counters", rows
+PY
+
+  # (4b-iii) A PID RECYCLE IS NOT A SURVIVOR: pid 103 stays, but its kernel
+  # start ticks change, so it is a different process and its larger counter
+  # says nothing about the one measured before.
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  progress_tick 4300
+  python3 "$fixture" set "$root" 103 cpu=90 start=9999 \
+    || fail 'could not recycle the tool pid'
+  progress_tick 4310
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'a recycled pid was counted as a survivor'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 2, rows
+assert all(row["progress"] is None for row in rows), rows
+PY
+
   # (5) AN UNREADABLE `/proc` LEAVES THE FACT UNKNOWN. An empty process table
   # cannot locate the agent's subtree, so no set is summed: no baseline, no
   # progress, and a reason that says which. The tool's start epoch is still a
@@ -1050,6 +1185,72 @@ PY
     || { cat "$ROOT/progress-unreadable.out" >&2; fail 'an unreadable progress fact licensed HUNG-TOOL'; }
   grep -qE 'progress=- progress-why=unread' "$ROOT/progress-unreadable.out" \
     || { cat "$ROOT/progress-unreadable.out" >&2; fail 'the row did not show the progress fact as unknown'; }
+
+  # (5b) THE STREAM GREW BEFORE THE TOOL STARTED, AND THE TOOL'S SUBTREE CANNOT
+  # BE LOCATED. This is the shape the earlier `progress-unknown` check could not
+  # see: its fixture's stream bytes WERE the tool's start, so the progress epoch
+  # and the tool's start were the same instant and a lifted epoch was
+  # indistinguishable. Here the run's own session bytes are progress evidence at
+  # tick 1, the tool starts at tick 3, and no `/proc` entry exists for the
+  # agent: the carried epoch (tick 1) is OLDER than the tool, so lifting it to
+  # the tool's start would make the tool's own age the progress age and
+  # HUNG-TOOL would be decided on wall-clock alone - the CTL-18 defect.
+  rm -rf "$ROOT/progress-grew" "$ROOT/progress-grew.jsonl"
+  mkdir -p "$ROOT/progress-grew"
+  printf '{"type":"session","id":"grew-before-tool"}\n' > "$ROOT/progress-grew.jsonl"
+  progress_reset_ticks
+  PROGRESS_STREAM=$ROOT/progress-grew.jsonl progress_start "$ROOT/progress-grew" "$wrapper"
+  progress_tick 6000
+  progress_tick 6010
+  printf '{"type":"tool_execution_start","toolCallId":"g1","toolName":"bash","args":{"command":"sleep 600"}}\n' \
+    >> "$ROOT/progress-grew.jsonl"
+  progress_tick 6020
+  progress_tick 6030
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'a carried epoch older than the in-flight tool was not marked unmeasured'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 4, rows
+# Tick 1: the stream grew, which IS a measurement of the run.
+assert rows[0]["progress"] == 6000, rows
+assert rows[0]["measured"] is True, rows
+# Ticks 2+: the stream's only growth is the tool's own ANNOUNCEMENT (a
+# boundary), and the tool's subtree cannot be read at all, so every one of
+# them carries the old epoch as a leftover and says so.
+assert [row["reason"] for row in rows[1:]] == ["unread", "tool-start", "unread"], rows
+assert all(row["measured"] is False for row in rows[1:]), rows
+PY
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY' || fail 'an epoch from before the tool started was published as the tool progress'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["tool_in_flight"] == "bash", body
+assert body["tool_in_flight_started_epoch"] is not None, body
+assert body["progress_epoch"] is None, body
+assert body["progress_measured"] is False, body
+assert body["progress_reason"] == "unread", body
+PY
+  # The row a controller reads, from THAT payload: the tool is past the hung
+  # threshold and nothing about it was ever measured, so the weaker word.
+  mkdir -p "$ROOT/status-home"
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+body["wrapper_pid"] = 1
+body["updated_epoch"] = now
+body["last_event_epoch"] = now - 10
+body["tool_in_flight_started_epoch"] = now - 2400
+Path(sys.argv[1]).with_name("progress-grew.live").write_text(json.dumps(body), encoding="utf-8")
+PY
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$CONTROLLER_ROOT/runs" \
+    CONTROLLER_REPO="$WORKTREE" JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+    "$JOB_STATUS" progress-grew > "$ROOT/progress-grew.out" 2>&1 \
+    || { cat "$ROOT/progress-grew.out" >&2; fail 'job-status failed on a carried, unmeasured epoch'; }
+  grep -qF 'progress-grew: LONG-TOOL' "$ROOT/progress-grew.out" \
+    || { cat "$ROOT/progress-grew.out" >&2; fail 'an epoch older than the tool licensed HUNG-TOOL'; }
+  grep -qE 'progress=- progress-why=unread' "$ROOT/progress-grew.out" \
+    || { cat "$ROOT/progress-grew.out" >&2; fail 'the carried epoch was printed as a progress age'; }
 
   # (6) A TOOL CALL'S OWN START IS A BOUNDARY, NOT EVIDENCE. The stream grows
   # because the call was announced; publishing that as the tool's progress puts
@@ -1301,6 +1502,113 @@ check_refusal_keeps_owner_record() {
   recorded=$(sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$runs/refusal-owner.lock" | head -n 1)
   [[ $recorded == "$first_pid" ]] \
     || fail "a refused invocation overwrote the owner record (was $first_pid, now ${recorded:-<none>})"
+}
+
+# CTL-23: a launch refused AFTER the claim (a bad route, blocked accounts, a
+# missing credential file or key) leaves every record of the previous run exactly
+# as it was - the owner record, the completion marker and the worktree, route and
+# thread records - and a refused launch of a fresh name leaves nothing but the
+# empty lock file the claim created. Otherwise job-check reads DIED for a name that
+# never started, and a refused first launch leaves evidence that refuses the retry.
+check_refusal_keeps_records() {
+  local runs=$CONTROLLER_ROOT/runs snap=$ROOT/keep-records-snapshot name=keep-records
+  local no_env_home=$ROOT/keep-no-env-home no_key_home=$ROOT/keep-no-key-home blocked_state=$ROOT/keep-records-blocked.json
+  local record base left
+  records_kept() {
+    # Every record of the previous run is byte-identical and none was added.
+    for record in "$snap"/*; do
+      base=${record##*/}
+      cmp -s -- "$record" "$runs/$base" || fail "a launch refused at $1 changed the previous run's $base"
+    done
+    left=$(find "$runs" -maxdepth 1 -name "$name.*" | wc -l)
+    [[ $left == "$(find "$snap" -maxdepth 1 -type f | wc -l)" ]] \
+      || fail "a launch refused at $1 left an extra record beside the previous run's ($left files)"
+  }
+  mkdir -p "$runs" "$no_env_home" "$no_key_home"
+  : > "$no_key_home/.env.ai"
+  rm -f -- "$runs/$name".*
+  printf 'EXIT=0 OUTCOME=SUCCESS AUTORESUME=0\n' > "$runs/$name.done"
+  printf '%s\n' "$WORKTREE" > "$runs/$name.wt"
+  printf 'deepseek-pi-volker\n' > "$runs/$name.route"
+  printf 'previous-session\n' > "$runs/$name.thread"
+  printf '{"type":"session","id":"previous-session"}\n' > "$runs/$name.jsonl"
+  printf 'pid=2147483646 started_epoch=1700000000 started_utc=2023-11-14T22:13:20Z pid_start_ticks=12345 boot_id=previous-owner\n' \
+    > "$runs/$name.lock"
+  rm -rf -- "$snap"
+  mkdir -p "$snap"
+  cp -a -- "$runs/$name".* "$snap/"
+  python3 - "$blocked_state" <<'PY'
+import json, sys
+json.dump({
+    "volker": {"last_used_epoch": 2, "blocked_until_epoch": 4_102_444_800},
+    "github2": {"last_used_epoch": 1, "blocked_until_epoch": 4_102_444_800},
+    "threads": {"previous-session": "volker"},
+}, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+  # Each refusal is judged on its own, earliest first, so a record written just
+  # before one refusal is caught by that refusal's case and not by a later one.
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=unknown \
+    "$SRC" "$WORKTREE" "$PROMPT" "$name" resume previous-session
+  contains "$ROOT/focused-command.out" 'unknown PI_ROUTE=unknown' 'the unknown route is what refused the resume'
+  records_kept 'unknown-route'
+  expect_rc 3 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi CONTROLLER_OD_STATE="$blocked_state" \
+    "$SRC" "$WORKTREE" "$PROMPT" "$name" resume previous-session
+  contains "$ROOT/focused-command.out" 'both Open Design accounts are blocked' 'the blocked accounts are what refused the resume'
+  records_kept 'blocked-accounts'
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$no_env_home" PI_ROUTE=deepseek-pi-volker \
+    "$SRC" "$WORKTREE" "$PROMPT" "$name" resume previous-session
+  contains "$ROOT/focused-command.out" 'requires the local' 'the missing credential file is what refused the resume'
+  records_kept 'missing-credential-file'
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$no_key_home" PI_ROUTE=deepseek-pi-github2 \
+    "$SRC" "$WORKTREE" "$PROMPT" "$name" resume previous-session
+  contains "$ROOT/focused-command.out" 'OPENDESIGN_API_KEY_GITHUB2 is not set' 'the missing key is what refused the resume'
+  records_kept 'missing-key'
+  # A FORCED new launch that is then refused keeps everything too: the retirement
+  # waits until the launch is real, so nothing moves into retired/ on a refusal.
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=unknown CONTROLLER_RUN_FORCE=1 \
+    "$SRC" "$WORKTREE" "$PROMPT" "$name"
+  contains "$ROOT/focused-command.out" 'unknown PI_ROUTE=unknown' 'the unknown route is what refused the forced launch'
+  records_kept 'forced-unknown-route'
+  [[ ! -e $runs/retired/$name ]] || fail 'a forced launch refused at the route retired the previous records'
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$no_env_home" PI_ROUTE=deepseek-pi-volker CONTROLLER_RUN_FORCE=1 \
+    "$SRC" "$WORKTREE" "$PROMPT" "$name"
+  contains "$ROOT/focused-command.out" 'requires the local' 'the missing credential file is what refused the forced launch'
+  records_kept 'forced-missing-credential-file'
+  [[ ! -e $runs/retired/$name ]] || fail 'a forced launch refused at the credentials retired the previous records'
+  # A refused launch of a name nobody ever ran: only the empty lock file remains.
+  rm -f -- "$runs/keep-fresh".*
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$no_env_home" PI_ROUTE=deepseek-pi-volker \
+    "$SRC" "$WORKTREE" "$PROMPT" keep-fresh
+  [[ -e $runs/keep-fresh.lock && ! -s $runs/keep-fresh.lock ]] \
+    || fail 'a refused launch of a fresh name wrote an owner record'
+  left=$(find "$runs" -maxdepth 1 -name 'keep-fresh.*' | wc -l)
+  [[ $left == 1 ]] || fail "a refused launch of a fresh name left evidence beside its lock ($left files)"
+}
+
+# An ACCEPTED resume is the other half of CTL-23: the records the refusals must
+# not touch are the ones a real launch DOES write. While the resumed agent works,
+# the lock names THIS wrapper (not the dead previous owner), the previous run's
+# `.done` is gone (so no reader reports the old exit as this run's) and `.thread`
+# is the session being resumed.
+check_accepted_resume_records() {
+  local runs=$CONTROLLER_ROOT/runs name=accepted-resume recorded=''
+  mkdir -p "$runs"
+  rm -f -- "$runs/$name".* "$ROOT/$name.release"
+  printf 'EXIT=0 OUTCOME=SUCCESS AUTORESUME=0\n' > "$runs/$name.done"
+  printf 'previous-session\n' > "$runs/$name.thread"
+  printf 'pid=2147483646 started_epoch=1700000000 started_utc=2023-11-14T22:13:20Z pid_start_ticks=12345 boot_id=previous-owner\n' \
+    > "$runs/$name.lock"
+  start_owned_run "$name" 6 resume "$name-session"
+  recorded=$(sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$runs/$name.lock" | head -n 1)
+  [[ $recorded == "$OWNED_PID" ]] \
+    || { stop_owned_run TERM; fail "an accepted resume did not record its own pid as the owner (lock names ${recorded:-<none>}, wrapper is $OWNED_PID)"; }
+  [[ ! -e $runs/$name.done ]] \
+    || { stop_owned_run TERM; fail 'an accepted resume left the previous run completion marker readable while its agent works'; }
+  [[ $(cat "$runs/$name.thread" 2>/dev/null) == "$name-session" ]] \
+    || { stop_owned_run TERM; fail 'an accepted resume did not record the resumed session as its thread'; }
+  release_owned_run "$name"
+  wait "$OWNED_PID" || fail 'the accepted resume failed'
+  contains "$runs/$name.done" 'OUTCOME=SUCCESS' 'the accepted resume wrote its own completion marker'
 }
 
 check_run_name_ownership() {
@@ -1697,6 +2005,8 @@ PY
       ;;
     two-wrappers-one-run) check_run_name_ownership ;;
     refusal-own-record) check_refusal_keeps_owner_record ;;
+    refusal-keeps-records) check_refusal_keeps_records ;;
+    accepted-resume-records) check_accepted_resume_records ;;
     ownership-force) check_run_name_ownership ;;
     ownership-release) check_run_name_ownership ;;
     auth-file)
@@ -1942,6 +2252,12 @@ PY
         'README states that the two words are separate'
       contains "$README_SOURCE" "\`HUNG-TOOL\` (the same age" 'README separates long-tool from hung-tool'
       contains "$README_SOURCE" 'progress evidence' 'README names the progress fact'
+      contains "$README_SOURCE" 'SURVIVOR' \
+        'README states that progress is a surviving process delta, not a set change'
+      contains "$DESIGN_SOURCE" "Why progress is a SURVIVOR's delta" \
+        'design guide explains why a set change is neither progress nor a baseline reset'
+      contains "$CONSUMER_SOURCE" 'does not reset' \
+        'consumer guide explains that churn does not reset the quiet clock'
       contains "$README_SOURCE" 'To steer a stuck tool, kill the exact child pid' \
         'README states the steering action'
       contains "$README_SOURCE" "\`steer=\` — never the wrapper" \
@@ -2241,6 +2557,8 @@ check_retry_limit_validation
 check_repo_not_a_worktree
 check_job_status_validation
 check_run_name_ownership
+check_refusal_keeps_records
+check_accepted_resume_records
 
 not_contains test-key 'run evidence contains no key material' "$CONTROLLER_ROOT/runs"
 not_contains test-key 'account state contains no key material' "$STATE"

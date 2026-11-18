@@ -11,6 +11,7 @@ unset CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_SQLITE_HOME
 unset CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
 unset OPENCODE_COMMAND OPENCODE_MODEL OPENCODE_PROVIDER
 unset FAKE_CODEX_402 FAKE_CODEX_402_UNKNOWN FAKE_CODEX_THREAD_ID FAKE_CODEX_CORRUPT_STATE CODEX_RC FAKE_CODEX_DAEMON
+unset FAKE_CODEX_HOLD_ON_CALL FAKE_CODEX_HOLD_UNTIL FAKE_CODEX_HOLD_CALL_COUNT FAKE_CODEX_HOLD_PID FAKE_CODEX_REASONING
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-wrapper-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
@@ -33,6 +34,20 @@ SH
 cat > "$ROOT/bin/codex" <<'SH'
 #!/usr/bin/env bash
 printf 'HOME=%s\nSQLITE=%s\nARGS=%s\n' "$CODEX_HOME" "$CODEX_SQLITE_HOME" "$*" >> "$CODEX_LOG"
+hold_this_call=0
+if [[ -n ${FAKE_CODEX_HOLD_UNTIL:-} ]]; then
+  hold_this_call=1
+  if [[ -n ${FAKE_CODEX_HOLD_ON_CALL:-} ]]; then
+    # A per-CALL hold: the run's earlier calls finish normally (so the automatic
+    # continuation is actually reached) and ONLY the named call keeps working
+    # until the check releases it. A duration-based hold cannot express that
+    # without a race.
+    count=$(cat "$FAKE_CODEX_HOLD_CALL_COUNT" 2>/dev/null || echo 0)
+    count=$(( count + 1 ))
+    printf '%s\n' "$count" > "$FAKE_CODEX_HOLD_CALL_COUNT"
+    (( count == FAKE_CODEX_HOLD_ON_CALL )) || hold_this_call=0
+  fi
+fi
 if [[ -n ${FAKE_CODEX_STREAM:-} ]]; then
   cat -- "$FAKE_CODEX_STREAM"
   exit 42
@@ -51,18 +66,21 @@ fi
 if [[ -n ${FAKE_CODEX_THREAD_ID:-} ]]; then
   printf '{"type":"thread.started","thread_id":"%s"}\n' "$FAKE_CODEX_THREAD_ID"
 fi
-if [[ -n ${FAKE_CODEX_DAEMON:-} ]]; then
+if [[ -n ${FAKE_CODEX_DAEMON:-} ]] && (( hold_this_call == 1 )); then
   # A process the agent LEAVES BEHIND: it inherits whatever descriptors the
   # agent had, survives the agent and the wrapper, and is exactly the shape that
   # made a killed wrapper strand its run name.
   setsid sleep 300 >/dev/null 2>&1 &
   printf '%s\n' "$!" > "$FAKE_CODEX_DAEMON"
 fi
-if [[ -n ${FAKE_CODEX_HOLD_UNTIL:-} ]]; then
+if (( hold_this_call == 1 )); then
   # A child that keeps working until the CHECK creates this file: "the agent is
   # still running" becomes a state the check chooses instead of a duration it
   # hopes the host will respect. A `sleep N` made every such case a race.
   printf '{"type":"thread.started","thread_id":"slow-thread"}\n'
+  # The agent's own pid, published once it is running: the check proves the
+  # agent is still alive after its wrapper was killed.
+  if [[ -n ${FAKE_CODEX_HOLD_PID:-} ]]; then printf '%s\n' "$BASHPID" > "$FAKE_CODEX_HOLD_PID"; fi
   waited=0
   while [[ ! -e $FAKE_CODEX_HOLD_UNTIL ]]; do
     sleep 0.05
@@ -75,6 +93,17 @@ if [[ -n ${FAKE_CODEX_SLEEP:-} ]]; then
   # A slow child, so a test can observe a run that is still working.
   printf '{"type":"thread.started","thread_id":"slow-thread"}\n'
   sleep "$FAKE_CODEX_SLEEP"
+  exit "${CODEX_RC:-0}"
+fi
+if [[ ${FAKE_CODEX_REASONING:-0} == 1 ]]; then
+  # A completed turn that ends on a reasoning item: what the automatic
+  # continuation is defined to continue. No clock involved. A thread id is
+  # printed because the continuation loop must have one to resume - without it
+  # the wrapper stops at "no thread id" and never reaches its exec site.
+  printf '{"type":"thread.started","thread_id":"%s"}\n' "${FAKE_CODEX_THREAD_ID:-autoresume-thread}"
+  printf '{"type":"turn.started"}\n'
+  printf '{"type":"item.completed","item":{"type":"reasoning","text":"thinking"}}\n'
+  printf '{"type":"turn.completed"}\n'
   exit "${CODEX_RC:-0}"
 fi
 printf '{"type":"item.completed","item":{"type":"agent_message","text":"complete"}}\n'
@@ -648,6 +677,179 @@ fi
 # The stranded agent holds until this file exists; release it so the check
 # cannot leave a process behind.
 : > "$ROOT/killed-codex-run.release"
+
+# (2) THE RESUME PATH, separately. A `codex exec resume` is the ROUTINE path:
+#     every follow-up of a long job runs it, and deleting the descriptor close
+#     from THAT line alone must fail this check. The same real SIGKILL applies.
+FAKE_CODEX_DAEMON="$ROOT/resume-daemon.pid" \
+FAKE_CODEX_HOLD_PID="$ROOT/resume-hold.pid" \
+FAKE_CODEX_HOLD_UNTIL="$ROOT/killed-resume.release" PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" \
+  CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" CODEX_ROUTE=luna \
+  CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/killed-resume.log" \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" killed-resume resume resume-thread-abc \
+  > "$ROOT/killed-resume.out" 2>&1 &
+resume_wrapper=$!
+saw_resume_agent=0
+for _ in {1..2000}; do
+  if [[ -s $ROOT/resume-hold.pid && -s $ROOT/resume-daemon.pid ]]; then saw_resume_agent=1; break; fi
+  kill -0 "$resume_wrapper" 2>/dev/null || break
+  sleep 0.05
+done
+(( saw_resume_agent == 1 )) || { cat "$ROOT/killed-resume.out" >&2; fail 'the killed resume agent never started'; }
+kill -9 "$resume_wrapper" || fail 'the resume wrapper was already gone before it was killed'
+wait "$resume_wrapper" 2>/dev/null
+resume_wait_rc=$?
+(( resume_wait_rc == 137 )) || fail "the resume wrapper was not killed by SIGKILL (wait status $resume_wait_rc)"
+# The agent and the setsid daemon it left behind both still run: the reclaim
+# below is judged against live children, not against a tidy tree.
+kill -0 "$(cat "$ROOT/resume-hold.pid")" 2>/dev/null \
+  || fail 'the killed resume check lost its agent, so the reclaim was not judged against a live one'
+kill -0 "$(cat "$ROOT/resume-daemon.pid")" 2>/dev/null \
+  || fail 'the killed resume check lost its daemon, so the reclaim was not judged against a live one'
+codex_run_is_free killed-resume \
+  || fail 'a SIGKILLed Codex RESUME wrapper stranded its run name while its agent lived'
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CONTROLLER_REPO="$ROOT/repo" CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/killed-resume-reclaim.log" \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" killed-resume resume resume-thread-abc \
+  > "$ROOT/killed-resume-reclaim.out" 2>&1 \
+  || { cat "$ROOT/killed-resume-reclaim.out" >&2; fail 'a SIGKILLed Codex resume name could not be reclaimed'; }
+# A resume of the SAME thread deliberately keeps the recording name alive (the
+# evidence preflight is a NEW-run rule), so what this asserts is that the
+# relaunch was ACCEPTED: the ownership refusal - the failure a stranded lock
+# causes - never fired, and the invocation wrote its own outcome.
+not_contains "$ROOT/killed-resume-reclaim.out" 'is already owned by pid' \
+  'a SIGKILLed resume left the run name held by the dead wrapper'
+contains "$ROOT/controller/runs/killed-resume.done" 'OUTCOME=CODE-EXIT' \
+  'the reclaimed resume wrote its own marker'
+# The held agent stops only when this file exists; the daemon is killed last.
+: > "$ROOT/killed-resume.release"
+kill -9 "$(cat "$ROOT/resume-daemon.pid")" 2>/dev/null
+
+# (3) THE AUTO-RESUME PATH, separately: the continuation loop is a THIRD exec
+#     site, and it is the one that runs when the agent stopped without acting.
+#     The fake agent holds only on its SECOND call, so the continuation is
+#     actually reached before the check kills the wrapper.
+FAKE_CODEX_REASONING=1 FAKE_CODEX_HOLD_ON_CALL=2 \
+FAKE_CODEX_DAEMON="$ROOT/autoresume-daemon.pid" FAKE_CODEX_HOLD_PID="$ROOT/autoresume-hold.pid" \
+FAKE_CODEX_HOLD_CALL_COUNT="$ROOT/autoresume-call-count" \
+FAKE_CODEX_HOLD_UNTIL="$ROOT/killed-autoresume.release" PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" \
+  CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/killed-autoresume-state.json" \
+  CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/killed-autoresume.log" CODEX_ROUTE=deepseek \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" killed-autoresume \
+  > "$ROOT/killed-autoresume.out" 2>&1 &
+autoresume_wrapper=$!
+saw_autoresume_agent=0
+for _ in {1..2000}; do
+  if [[ -s $ROOT/autoresume-hold.pid && -s $ROOT/autoresume-daemon.pid ]]; then saw_autoresume_agent=1; break; fi
+  kill -0 "$autoresume_wrapper" 2>/dev/null || break
+  sleep 0.05
+done
+(( saw_autoresume_agent == 1 )) || { cat "$ROOT/killed-autoresume.out" >&2; fail 'the killed auto-resume agent never started'; }
+kill -9 "$autoresume_wrapper" || fail 'the auto-resume wrapper was already gone before it was killed'
+wait "$autoresume_wrapper" 2>/dev/null
+autoresume_wait_rc=$?
+(( autoresume_wait_rc == 137 )) || fail "the auto-resume wrapper was not killed by SIGKILL (wait status $autoresume_wait_rc)"
+contains "$ROOT/controller/runs/killed-autoresume.autoresume.log" 'ROUTE=deepseek' \
+  'the continuation loop was reached before the wrapper was killed'
+[[ $(cat "$ROOT/autoresume-call-count") == 2 ]] \
+  || fail 'the held agent was not the automatic continuation (second codex call)'
+kill -0 "$(cat "$ROOT/autoresume-hold.pid")" 2>/dev/null \
+  || fail 'the killed auto-resume check lost its agent, so the reclaim was not judged against a live one'
+kill -0 "$(cat "$ROOT/autoresume-daemon.pid")" 2>/dev/null \
+  || fail 'the killed auto-resume check lost its daemon, so the reclaim was not judged against a live one'
+codex_run_is_free killed-autoresume \
+  || fail 'a SIGKILLed Codex AUTO-RESUME wrapper stranded its run name while its agent lived'
+CONTROLLER_RUN_FORCE=1 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CONTROLLER_REPO="$ROOT/repo" CONTROLLER_OD_STATE="$ROOT/killed-autoresume-state.json" \
+  CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/killed-autoresume-reclaim.log" CODEX_ROUTE=deepseek \
+  CODEX_AUTO_CONTINUE=0 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" killed-autoresume \
+  > "$ROOT/killed-autoresume-reclaim.out" 2>&1 \
+  || { cat "$ROOT/killed-autoresume-reclaim.out" >&2; fail 'a SIGKILLed Codex auto-resume name could not be reclaimed'; }
+contains "$ROOT/killed-autoresume-reclaim.out" 'retired' \
+  'the forced auto-resume reclaim reports what it retired'
+: > "$ROOT/killed-autoresume.release"
+kill -9 "$(cat "$ROOT/autoresume-daemon.pid")" 2>/dev/null
+
+# --- CTL-23: a REFUSED launch leaves the previous owner record untouched ------
+#
+# The claim holds the name, but the owner record is this invocation's identity
+# and belongs to a launch that really starts. A refusal that happens after the
+# claim (a bad route, a bad continuation count, both Open Design accounts
+# blocked) must not overwrite the identity of the previous owner: job-check
+# would then report DIED for a name that never started and the real previous
+# owner's evidence would be gone.
+OWNER_LINE='pid=2147483646 started_epoch=1700000000 started_utc=2023-11-14T22:13:20Z pid_start_ticks=12345 boot_id=previous-owner'
+refused_mode=()
+refused_launch() {
+  # $1 run name, $2 expected exit, $3 refusal text, remaining: `env NAME=value`
+  # words for this launch. `refused_mode` carries the optional resume arguments.
+  local name=$1 want_rc=$2 text=$3 rc=0
+  shift 3
+  PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+    CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+    CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/refused-$name.log" "$@" \
+    "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" "$name" "${refused_mode[@]}" \
+    > "$ROOT/refused-$name.out" 2>&1 && rc=0 || rc=$?
+  [[ $rc == "$want_rc" ]] || { cat "$ROOT/refused-$name.out" >&2; fail "the $name launch exited $rc, expected $want_rc"; }
+  contains "$ROOT/refused-$name.out" "$text" "the $name refusal says why"
+}
+runs_dir=$ROOT/controller/runs
+for case_name in bad-route bad-count both-blocked; do
+  printf '%s\n' "$OWNER_LINE" > "$runs_dir/keep-$case_name.lock"
+  cp -- "$runs_dir/keep-$case_name.lock" "$ROOT/keep-$case_name.expected"
+done
+refused_launch keep-bad-route 2 'unknown CODEX_ROUTE=nonsense' env CODEX_ROUTE=nonsense
+refused_launch keep-bad-count 2 'CODEX_AUTO_CONTINUE must be a non-negative integer' \
+  env CODEX_ROUTE=luna CODEX_AUTO_CONTINUE=many
+refused_launch keep-both-blocked 3 'earliest reset' \
+  env CODEX_ROUTE=deepseek CONTROLLER_OD_STATE="$ROOT/od-both-blocked.json" CODEX_AUTO_CONTINUE=0
+for case_name in bad-route bad-count both-blocked; do
+  cmp -s -- "$runs_dir/keep-$case_name.lock" "$ROOT/keep-$case_name.expected" \
+    || fail "a refused $case_name launch overwrote the previous owner record"
+  for extension in 'done' jsonl err wt route thread; do
+    [[ ! -e $runs_dir/keep-$case_name.$extension ]] \
+      || fail "a refused $case_name launch left a .$extension behind"
+  done
+done
+# A refused RESUME of a finished run keeps the run's own completion marker and
+# its owner record: nothing of the previous run is lost to a launch that never
+# started.
+printf 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=0\n' > "$runs_dir/keep-resume.done"
+printf '%s\n' "$OWNER_LINE" > "$runs_dir/keep-resume.lock"
+cp -- "$runs_dir/keep-resume.lock" "$ROOT/keep-resume.expected"
+refused_mode=(resume keep-resume-thread)
+refused_launch keep-resume 2 'unknown CODEX_ROUTE=nonsense' env CODEX_ROUTE=nonsense
+refused_mode=()
+cmp -s -- "$runs_dir/keep-resume.lock" "$ROOT/keep-resume.expected" \
+  || fail 'a refused resume overwrote the previous owner record'
+contains "$runs_dir/keep-resume.done" 'EXIT=0 OUTCOME=CODE-EXIT' 'a refused resume kept the previous completion marker'
+# A refused launch of a name nobody ever ran leaves only the empty lock file the
+# claim created: no owner identity at all, so no reader can mistake it for a
+# wrapper that lived and died.
+refused_launch keep-fresh 2 'unknown CODEX_ROUTE=nonsense' env CODEX_ROUTE=nonsense
+[[ -e $runs_dir/keep-fresh.lock && ! -s $runs_dir/keep-fresh.lock ]] \
+  || fail 'a refused launch of a fresh name wrote an owner record'
+# A FORCED launch that is then refused keeps the previous records too: the
+# retirement waits until the launch is real, so a bad route under
+# CONTROLLER_RUN_FORCE=1 moves nothing into retired/ and leaves the owner record.
+printf 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=0\n' > "$runs_dir/keep-forced.done"
+printf '{"type":"thread.started","thread_id":"forced-thread"}\n' > "$runs_dir/keep-forced.jsonl"
+printf '%s\n' "$OWNER_LINE" > "$runs_dir/keep-forced.lock"
+cp -- "$runs_dir/keep-forced.lock" "$ROOT/keep-forced.expected"
+refused_launch keep-forced 2 'unknown CODEX_ROUTE=nonsense' env CODEX_ROUTE=nonsense CONTROLLER_RUN_FORCE=1
+cmp -s -- "$runs_dir/keep-forced.lock" "$ROOT/keep-forced.expected" \
+  || fail 'a refused forced launch overwrote the previous owner record'
+contains "$runs_dir/keep-forced.done" 'EXIT=0 OUTCOME=CODE-EXIT' 'a refused forced launch kept the previous completion marker'
+[[ -e $runs_dir/keep-forced.jsonl && ! -e $runs_dir/retired/keep-forced ]] \
+  || fail 'a refused forced launch retired the previous records'
+# The same forced launch with a valid route DOES retire them and proceeds.
+refused_launch keep-forced 0 'retired' env CODEX_ROUTE=luna CONTROLLER_RUN_FORCE=1
+[[ -d $runs_dir/retired/keep-forced ]] || fail 'an accepted forced launch did not retire the previous records'
 
 if [[ ${CONTROLLER_TEST_PARALLEL_OD_STARTS:-1} == 1 ]]; then
   PARALLEL_DIR=$ROOT/parallel-codex-logs

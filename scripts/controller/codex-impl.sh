@@ -43,6 +43,7 @@ out=$CONTROLLER_RUNS_DIR
 # Ownership first: nothing below may write a name-owned record until this
 # invocation holds the name.
 controller_run_claim "$name" || exit 2
+retire_existing=0
 auto_count=0
 codex_launched=0
 # shellcheck disable=SC2329 # installed as the EXIT trap below
@@ -73,21 +74,12 @@ if [[ $mode == new ]]; then
       # A refusal must not overwrite the identity of the owner it refused on.
       exit 2
     fi
-    # Force means RETIRE, exactly as in pi-impl.sh: the previous identity moves
-    # aside and the caller is told what was retired, so a reused name never
-    # silently discards the evidence of the run it replaced.
-    if retired=$(controller_run_retire_records "$name"); then
-      printf 'codex-impl: CONTROLLER_RUN_FORCE=1 retired %s records into %s\n' "$name" "$retired" >&2
-      printf '  retired: %s\n' "${existing[@]}" >&2
-    else
-      echo "controller: could not retire the records of $name; refusing to overwrite them" >&2
-      exit 2
-    fi
+    # Force means RETIRE, exactly as in pi-impl.sh. The retirement itself waits
+    # until the launch is real (below): a forced launch that is refused later (a
+    # bad route, blocked accounts) must leave the previous records where they are.
+    retire_existing=1
   fi
 fi
-
-# Held and preflighted: only now may this invocation write its owner record.
-controller_run_record_owner
 
 route=${CODEX_ROUTE:-luna}
 route_record=$route
@@ -189,6 +181,24 @@ fi
 if [[ -n $od_start_kind ]]; then
   export CODEX_HOME=$route_home
 fi
+
+# Held, preflighted AND past every refusal (a bad route, a bad continuation
+# count, blocked accounts): only now may this invocation write its owner record.
+# A launch that refuses earlier leaves the previous owner's identity readable,
+# so job-check never reports DIED for a name that never started.
+if (( retire_existing == 1 )); then
+  # Forced reuse of a name that has evidence: the previous identity moves aside
+  # and the caller is told what was retired, so a reused name never silently
+  # discards the evidence of the run it replaced.
+  if retired=$(controller_run_retire_records "$name"); then
+    printf 'codex-impl: CONTROLLER_RUN_FORCE=1 retired %s records into %s\n' "$name" "$retired" >&2
+    printf '  retired: %s\n' "${existing[@]}" >&2
+  else
+    echo "controller: could not retire the records of $name; refusing to overwrite them" >&2
+    exit 2
+  fi
+fi
+controller_run_record_owner
 
 printf '%s\n' "$worktree" > "$out/$name.wt"
 printf '%s\n' "$route_record" > "$out/$name.route"

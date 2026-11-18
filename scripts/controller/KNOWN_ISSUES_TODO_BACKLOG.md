@@ -31,6 +31,13 @@ together.
 | CTL-17 | `stopReason=length` (the context window filled) is classified `INCOMPLETE`, so the controller cannot tell a truncated run from a broken stream | Should-fix | FIXED 2026-11-16 |
 | CTL-18 | `HUNG-TOOL` is decided on wall-clock alone: the sidecar carries no progress evidence, no tool command and no child identity, so a heavy-but-progressing tool (or one blocked by the agent's own FIFO) reads as hung | Should-fix | FIXED 2026-11-17 (2026-11-16 fix reopened in review round 1: it summed the wrapper's whole subtree) |
 | CTL-19 | A wrapper that dies without writing `.done` is indistinguishable from a running one in `job-check` (`RUNNING (no .done)`), and `codex-impl.sh ... resume` never writes a marker on a kill | Should-fix | FIXED 2026-11-16 |
+| CTL-20 | An epoch the sidecar could not re-read is lifted to the tool's start, so `HUNG-TOOL` is again decided on wall-clock alone | Should-fix | FIXED 2026-11-17 |
+| CTL-21 | The progress rule compares an exactly-equal pid set, so any churn (`make -j`, per-test subprocesses) resets the baseline and a silent churning tool reads `LONG-TOOL` indefinitely | Should-fix | FIXED 2026-11-17 |
+| CTL-22 | The Codex ownership-descriptor close on the resume and auto-resume exec lines has no individual test or mutant, so deleting it there passes the suite | Should-fix | FIXED 2026-11-17 |
+| CTL-23 | The owner record is written before the route, account and credential refusals, so a refused launch overwrites the previous owner's identity and `job-check` reports `DIED` for a name that never started | Should-fix | FIXED 2026-11-17 |
+| CTL-24 | The tool-subtree scope for the progress rule is all of the agent's descendants, so a long-lived helper the agent keeps as a child reads as progress (errs toward `LONG-TOOL`) | Known limit | BY DESIGN 2026-11-17 |
+| CTL-25 | `job-check`'s read-only lock probe holds an exclusive `flock -n` for about a millisecond, so a claim that lands in that window fails with `already owned by pid <unknown>` (exit 2) | Should-fix | OPEN |
+| CTL-26 | `pi-live.py` makes the whole progress reading `None` when one member vanishes between the process scan and its `/proc/<pid>/stat` read, and a churn-only tool under an idle parent reads `HUNG-TOOL` while the row's `steer=` points at the parent | Should-fix | OPEN |
 
 ---
 
@@ -1024,3 +1031,340 @@ entries in this file describe.
 Codex resume), `job-check` reports a dead owner without a marker as `DIED` and
 keeps a live owner and an unrecorded run distinct, the focused cases pass, and
 the documents state the lock record and the `DIED` word.
+
+## CTL-20 — an epoch the sidecar could not re-read is read as measured progress, so `HUNG-TOOL` is decided on the tool's age again
+
+**Status:** FIXED 2026-11-17 (code, fixtures, tests, mutants and the three
+documents in one change); severity Should-fix. Found by the independent review
+of the CTL-18 package (`pi-controller-burn-REVIEW.md`) and re-verified against
+the merged code: `pi-live.py`'s `payload()` lifted an epoch older than the
+in-flight tool up to the tool's start, and `job-status.sh` read that lifted
+epoch as measured progress.
+
+**Problem.** `Progress.observe` correctly refuses to treat an unread tick as
+progress, and correctly leaves `progress_epoch` null when the tool's subtree
+cannot be located (`progress_reason=unread`). But `progress_epoch` is not the
+only fact the reader uses: `payload()` bounded it with
+
+```python
+if tool_started is not None and progress_epoch is not None:
+    if progress_epoch < tool_started:
+        progress_epoch = tool_started
+```
+
+which is a bound on a MEASURED fact only in appearance. The run's own stream
+bytes (a `session` event, a turn start, a tool's own end) are progress evidence
+for the RUN, and they are appended before the next tool call starts. So the
+sequence "the stream grew, then a tool started, then the tool's subtree became
+unreadable" publishes `progress_epoch == tool_started` while nothing about the
+tool was ever read. `job-status.sh` then computes `progress = age(tool_started)`
+— the tool's own age — and the only remaining test is
+`tool_seconds > hung_limit`, so `HUNG-TOOL` is decided on wall-clock alone: the
+exact defect CTL-18 exists to remove, in its third form (the first was a null
+clamped up to the start, which the earlier fix removed; the second was the
+wrapper's whole subtree being summed).
+
+The existing `progress-unknown` case could not see it. Its fixture's stream
+bytes ARE the tool's `tool_execution_start`, so the progress epoch and the tool
+start are the same instant and a lifted epoch is indistinguishable from a
+measured one.
+
+**What separates the two facts.** *Which tick the epoch came from* is one fact;
+*whether that tick measured the CURRENT tool* is another. A reader needs both,
+so `pi-live.py` now publishes `progress_measured` beside `progress_epoch`:
+
+- true only when the current tick read the in-flight tool's own subtree, or
+  evidence was produced this tick (stream growth, the tool's own output);
+- false when the tick could not read it (`progress_reason == "unread"`, the
+  previous epoch carried forward as a leftover) or when the epoch is older than
+  the in-flight call (the epoch is then published as `null`, never lifted).
+
+`job-status.sh` takes the flag as the licence and nothing else: an unmeasured
+epoch is unknown, the row prints `progress=-` with its reason, and the word is
+`LONG-TOOL`. A payload that predates the field is unknown for the same reason —
+absence of a measurement is not a measurement.
+
+**Where.** `scripts/controller/pi-live.py` (`Progress.measured`, `payload`),
+`scripts/controller/job-status.sh` (the row and the state decision),
+`scripts/controller/tests/test-pi-impl.sh` (cases (5), (5b) and the status
+fixture), `scripts/controller/tests/mutate-sources.py` +
+`tests/test-mutations.sh` (hand mutants), `README.md`,
+`docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`.
+
+**Acceptance test idea (as landed).** A fake `/proc` with no agent subtree at
+all, driven on a tick clock, where the stream grew BEFORE the tool started:
+tick 1 is a real measurement of the run, every later tick carries the epoch
+unmeasured, the snapshot publishes `progress_epoch: null` with
+`progress_measured: false`, and the row built from that payload is `LONG-TOOL`
+with `progress=- progress-why=unread` although the tool is past the hung
+threshold. Mutants `pi-live-progress-lift-unmeasured`,
+`pi-live-progress-measured-kept`, `pi-live-progress-null-clamped`,
+`job-status-progress-unmeasured-as-measured` and
+`job-status-progress-absent-flag-as-measured` are each killed by that case.
+
+**Close when.** An epoch the sidecar could not re-read can never reach the
+`HUNG-TOOL` decision as a progress age, the producer and the reader agree on
+the two facts, the focused case fails on the old behaviour (and on each
+mutant), and the three documents state the distinction.
+
+## CTL-21 — any churn of the process set resets the progress baseline, so a silent churning tool never reads `HUNG-TOOL`
+
+**Status:** FIXED 2026-11-17 (code, tests, mutants and the three documents in one
+change); severity Should-fix. Found by the independent review of the CTL-18
+package (`pi-controller-burn-REVIEW.md`) and re-verified against the merged code.
+
+**Problem.** `Progress.observe` accepted a counter reading as comparable only
+when `previous.identity == sample.identity` — an EXACTLY EQUAL pid set — and any
+other reading replaced the stored sample and left the baseline where it was. That
+is right for a tool whose set is stable, and wrong for the tools the fact exists
+for: `make -j` forks and reaps workers continuously, `pytest -n` and per-test
+subprocesses do the same, and a shell pipeline's children come and go. Every such
+tick was a set change, so a tool that was silent but churning could hold
+`LONG-TOOL` indefinitely: the absence-of-progress evidence the word `HUNG-TOOL`
+needs was never established, and the controller waited instead of acting. The
+rule was stated over the set ("the SAME set of processes"), which cannot express
+"these members are the same process and did not move while the set around them
+churned".
+
+**The rule, stated precisely.** Compare MEMBERS, not the set:
+
+* a member is a `(pid, kernel start ticks)` identity, so a recycled pid number is
+  a different process;
+* a SURVIVOR is a member present in BOTH readings with the same identity. Only a
+  survivor's strictly positive CPU/IO delta is progress;
+* a set change alone (members added or removed) is NOT progress and does NOT
+  reset the quiet clock: the baseline is the tick the CURRENT tool call's
+  counters were first read, and it stays there for that call;
+* the consequences follow directly: churn with idle survivors is quiet (so
+  `HUNG-TOOL` at the threshold), churn with a CPU-burning survivor is progress
+  (`LONG-TOOL`), and a pid recycled between two ticks is not a survivor at all.
+
+**Where.** `scripts/controller/pi-live.py` (`Sample` per-member counters,
+`survivor_delta`, `read_counters`, `Progress.observe`),
+`scripts/controller/tests/test-pi-impl.sh` (cases 4b-i, 4b-ii, 4b-iii and the
+`progress-churn` row), `scripts/controller/tests/mutate-sources.py` +
+`tests/test-mutations.sh` (mutants), `README.md`,
+`docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, `CHANGES.md`.
+
+**Acceptance test idea (as landed).** On a fake `/proc` and a tick clock: (i)
+three ticks of churn (a worker added and reaped each tick) around two idle
+survivors produce no progress, `measured` true on every tick, and the baseline
+identical on every row — and the row built from that payload is `HUNG-TOOL` at
+the threshold; (ii) the same churn with a survivor whose CPU grew is progress at
+that tick (`reason=counters`); (iii) a pid whose start ticks changed between two
+ticks is not a survivor and its larger counter is not progress. Mutants
+`pi-live-progress-sum-delta`, `pi-live-progress-churn-resets-baseline` and
+`pi-live-progress-pid-recycle` are each killed by these cases.
+
+**Close when.** A silently churning tool reaches `HUNG-TOOL` at the threshold, a
+churning tool with a working survivor stays `LONG-TOOL`, a recycled pid is never
+a survivor, and the documents state the rule as members rather than as a set.
+
+## CTL-22 — the Codex resume and auto-resume exec sites close the ownership descriptor without an individual test or mutant
+
+**Status:** FIXED 2026-11-17 (tests, mutants and the documents in one change);
+severity Should-fix. Found by the independent review of the CTL-14/CTL-19
+package (`pi-controller-burn-REVIEW.md`) and re-verified against the merged
+code.
+
+**Problem.** `controller_close_ownership_fds` is what keeps a run name claimable
+after a wrapper is killed: the flock belongs to the wrapper's open file
+description, a forked child inherits it, and a Codex agent can outlive its
+wrapper by hours. `codex-impl.sh` calls it at THREE exec sites — the new launch,
+the manual `resume`, and the automatic continuation loop — but the evidence was
+one shared-function mutant (a `lib.sh` variant where `controller_close_ownership_fds`
+is a no-op, judged by the SIGKILL case for the NEW-LAUNCH path only). Deleting
+the call from the `resume` line, or from the auto-resume line, passed the whole
+suite: the lib mutant is still present at the other sites, so a killed resume
+never happened in the check and its close was never exercised. The resume path
+is the ROUTINE one — every follow-up of a long job is a resume — so the single
+least-used site was the only one actually judged.
+
+A shared-function mutant cannot fix this: it makes ALL sites lose the close at
+once, which one case detects. The defect is a missing INDIVIDUAL assertion per
+call site, so the fix is a per-site case plus a per-site mutant.
+
+**What landed.** `tests/test-wrappers.sh` now kills a wrapper for real (SIGKILL)
+at each site and asserts the same facts at each: the agent's own process is
+still alive, the setsid daemon it left behind is still alive, the wrapper's wait
+status is 137 (a real SIGKILL), the run name is free to an OUTSIDE `flock -n`
+reader, and the relaunch is accepted (no "already owned by pid" refusal; the
+new-launch and auto-resume cases relaunch with `CONTROLLER_RUN_FORCE=1`, the
+resume case needs none). The fake agent gained deterministic hooks:
+a per-CALL hold (`FAKE_CODEX_HOLD_ON_CALL`, so the FIRST call finishes and the
+auto-resume loop is actually reached before the wrapper is killed) and a
+reasoning-ending stream (`FAKE_CODEX_REASONING`, the stream shape the
+continuation is defined on), and the held agent publishes its own pid
+(`FAKE_CODEX_HOLD_PID`) — no sleep decides any case (the hold loop is released
+by a file the check creates and is capped so a failed check leaves no process
+for more than five minutes).
+
+Mutants `codex-newlaunch-child-close`, `codex-resume-child-close` and
+`codex-autoresume-child-close` delete the call from ONE exec line each; the
+shared-function `codex-run-name-child-close` stays as the guard for the library
+function itself. All four are killed, each by the case of its own site.
+
+**Where.** `scripts/controller/tests/test-wrappers.sh` (the three SIGKILL cases
+and the fake agent's hooks), `scripts/controller/tests/mutate-sources.py` +
+`tests/test-mutations.sh` (the three per-site mutants), `docs/DESIGN-GUIDE.md`
+("Every exec site, not just the first one"), `CHANGES.md`.
+
+**Acceptance test idea (as landed).** For the resume site: start a resume,
+wait until the fake agent's own pid and its daemon pid are published (the hold
+file is written by the held call itself), SIGKILL the wrapper, `flock -n` the
+lock from outside, then relaunch with `CONTROLLER_RUN_FORCE=1` and assert the
+refusal never fires and the relaunched invocation writes its own `.done` (no
+force is needed for a resume: the evidence preflight is a new-run rule). The
+auto-resume site is the same, with `CODEX_AUTO_CONTINUE` left at its DeepSeek
+default and the hold on call 2 so the continuation is the child that is killed.
+
+**Close when.** A killed wrapper at each of the three exec sites leaves its run
+name claimable while the agent and daemon it started still live, and a mutant
+that removes the close from that one line makes its own case fail.
+
+## CTL-23 — the owner record is written before the refusals that can still follow the claim
+
+**Status:** FIXED 2026-11-17 (code, tests, mutants and documents in one change);
+severity Should-fix. Found by the independent review of the CTL-14/CTL-19
+package and re-verified against the merged code.
+
+**Problem.** The claim takes the run name's lock and a launch then writes its
+identity into the lock file (`controller_run_record_owner`). `codex-impl.sh` and
+`pi-impl.sh` wrote it right after the evidence preflight, BEFORE the route
+validation, the continuation-count check, the Open Design account selection
+(blocked accounts exit 3) and, in `pi-impl.sh`, the local credential file and
+key checks. A launch refused at any of those points had already overwritten the
+previous owner's identity with its own pid, which then died: `job-check` read
+that record as `DIED (wrapper pid <refuser> gone, no .done)` for a name that
+never started, and the real previous owner's identity (what a forced retire
+archives, what a reader names) was lost. `pi-impl.sh` also rewrote `.wt`,
+`.route` and `.thread` and removed the previous `.done` before its credential
+checks, so a refused resume destroyed the previous completion marker, and a
+refused first launch left evidence that refused its own retry.
+
+**What landed.** The record is written only once the launch is real:
+`codex-impl.sh` writes it after the account selection, immediately before its
+first name-owned record; `pi-impl.sh` writes it after the credential and key
+checks and moves the `.wt`, `.route`, `.thread` and `.done` handling behind the
+same point, in the same relative order as before. A refused launch leaves the
+previous records byte-identical, and a refused launch of a fresh name leaves
+only the empty lock file the claim created. `job-check.sh` reads that file as
+its own state instead of the misleading `RUNNING`: an empty lock with no stream
+that nobody holds is `NOT-STARTED` (red, exit 1, tells the controller to read
+the launch's own refusal and relaunch); the same empty lock while a wrapper
+holds it is that wrapper still preflighting and stays `RUNNING`; an unparsable
+lock or an empty one beside a stream keeps the no-owner-record wording.
+
+**Tests and mutants.** `tests/test-wrappers.sh` refuses Codex launches at the
+route, the count and the blocked-accounts checks (and a resume, and a fresh
+name) and compares the lock byte for byte; `tests/test-pi-impl.sh`
+(`refusal-keeps-records`) does the same for the unknown route, blocked
+accounts, missing credential file and missing key and also checks the previous
+`.done`, `.wt`, `.route` and `.thread`; `tests/test-job-check.sh` covers the
+four lock states. Mutants write the record just before each refusal
+(`codex-record-owner-early`, `-before-count`, `-before-accounts`,
+`pi-run-name-refusal-overwrites`, `pi-record-owner-before-accounts`,
+`pi-record-owner-before-credentials`), restore the `.done` removal and the
+`.route` write ahead of the credential checks (`pi-done-removed-before-credentials`,
+`pi-route-written-before-credentials`) and weaken the `NOT-STARTED` reading
+(`job-check-not-started-off`, `-held`, `-stream`, `-content`); each dies on its
+own case.
+
+**Review follow-up (same entry, landed 2026-11-17 after the independent review).**
+Four refinements, each with its own test and mutant:
+
+- A HELD lock whose record still names a dead previous owner (a `DIED` name being
+  resumed, now in the preflight window before its own record) was read as `DIED`.
+  `job-check.sh` probes the lock whenever the recorded owner is dead and prints
+  `RUNNING (preflighting, previous owner gone)` when a wrapper holds it; the same
+  record with a free lock is still `DIED`. Mutants `job-check-died-held-lock`,
+  `job-check-died-no-probe`.
+- An ACCEPTED pi resume is pinned from the other side: while its agent works the
+  lock names the wrapper's own pid, the previous `.done` is gone and `.thread` is
+  the resumed session (`accepted-resume-records`). Mutants
+  `pi-resume-block-inverted`, `pi-record-owner-new-only`.
+- `CONTROLLER_RUN_FORCE=1` no longer retires the previous records before the
+  refusals: the evidence preflight only decides that a retirement is wanted, and
+  the retirement runs with the owner record once the launch is real, in both
+  wrappers. A forced launch refused at the route, the accounts or the
+  credentials moves nothing into `retired/` and leaves the owner record. Mutants
+  `codex-force-retire-early`, `pi-force-retire-early`,
+  `pi-force-retire-before-credentials`.
+- The `lib.sh` header says the lock file records who STARTED the name last, not
+  who claimed it.
+
+**Where.** `codex-impl.sh`, `pi-impl.sh`, `job-check.sh`, the three test files and
+`tests/mutate-sources.py` / `tests/test-mutations.sh`, `README.md`,
+`docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `CHANGES.md`.
+
+**Close when.** A launch refused after the claim leaves the previous owner
+record, completion marker and worktree/route/thread records byte-identical, a
+refused fresh name reads `NOT-STARTED` and never `DIED`, and each mutant above
+fails its case.
+
+## CTL-24 — the tool-subtree scope is every descendant of the agent
+
+**Status:** BY DESIGN 2026-11-17 (documented, no code); severity: known limit.
+
+**Note.** The progress rule counts the CPU/IO deltas of the in-flight tool's
+subtree, and the sidecar locates that subtree structurally: the agent is the
+wrapper's other direct child and ALL the agent's descendants are in the set. It
+cannot tell which descendant belongs to which tool call, so a long-lived helper
+the agent keeps as a child (a language server, a watcher, a dev server) is in the
+set and, while it works, reads as progress. That errs toward `LONG-TOOL`, the
+weaker word: the controller waits longer on a tool that is really stuck and never
+kills one that is working, which is the safe direction. Narrowing the set needs
+the agent's own call-to-pid mapping, which the stream does not carry. The scope
+is stated in `docs/DESIGN-GUIDE.md` ("Scope of the tool's subtree").
+
+**Revisit when.** The agent stream carries the pid or process group of each tool
+call, or a stuck tool behind a busy helper is seen in practice.
+
+## CTL-25 — the job-check lock probe can make a concurrent claim fail
+
+**Status:** OPEN (filed 2026-11-17 by the CTL-23 review, not fixed); severity
+Should-fix, low probability.
+
+**Problem.** `job-check.sh` decides `NOT-STARTED` versus a wrapper that is still
+preflighting (and, since the CTL-23 review follow-up, `DIED` versus a resume that
+is preflighting) by opening the run's lock file read-only and taking
+`flock -n`. A non-blocking exclusive lock held for the instant of the probe (about
+a millisecond) makes a wrapper's `controller_run_claim` that lands in that window
+fail its own `flock -n` and exit 2 with `run name '<name>' is already owned by pid
+<unknown>`: a read-only status check can refuse a real launch. The window is tiny
+and the launch can simply be repeated, but it is a reader changing what a writer
+sees.
+
+**Fix direction.** Read `/proc/locks` (a held lock appears there with the
+holder's pid and the file's inode) instead of taking the lock; a shared lock
+would not help, because a shared holder also makes an exclusive `flock -n` fail.
+If the `/proc/locks` read is not wanted, document the window as a known limit in
+the job-check section of the design guide.
+
+**Close when.** A status read cannot make a claim fail, with a test that holds the
+probe open across a claim, or the limit is documented as by design.
+
+## CTL-26 — one vanished member voids the progress reading; churn under an idle parent points steering at the parent
+
+**Status:** OPEN (filed 2026-11-17 by the CTL-23 review, not fixed); severity
+Should-fix for the first part, by-design note for the second.
+
+**Problem 1.** In `pi-live.py` (around the per-member `/proc/<pid>/stat` read
+of the progress sums) a member that exits between the process scan and its stat
+read makes the whole reading `None`. A churning tool (`make -j`, per-test
+subprocesses) makes that race common, so the reading is voided exactly when
+churn is the question, and the reader takes the weaker word for that tick. The
+fix is to skip the vanished member and keep the survivors' readings; a member
+that disappears is a set change, which the rule already says is not progress.
+
+**Problem 2 (by design, to document).** A tool that only churns children while
+its own parent is idle makes no survivor progress, so it reads `HUNG-TOOL` at the
+threshold while the row's `steer=` prints the idle parent: a working `make -j`
+can be pointed at for killing. The rule deliberately does not count churn as
+progress (CTL-21), and the sidecar cannot tell churn that works from churn that
+spins. The mitigation is the row text, which names the command and the pid so the
+controller can look before acting.
+
+**Close when.** A vanished member no longer voids the reading (test with a member
+that exits between scan and read, mutant that restores the whole-reading `None`),
+and the by-design note is in the design guide next to the CTL-24 scope note.

@@ -175,6 +175,9 @@ SPEC §9.
 | RG-282 | A package that adds or edits a lane declaration in another project's `run-gate.toml` merges without the run-gate-project `selftest` lane (gate-coverage gap) | Major | OPEN 2026-11-15; the instance (assay `rust-r1-qualification`) is fixed, the coverage rule is not built |
 | RG-283 | both host-blindness warnings prescribe a remedy the same message or the estate cannot satisfy (admission names an export that a private cgroup namespace makes useless; the Docker-GID warning asks for a value nothing publishes) | Minor | OPEN 2026-11-16; disclosure only, no verdict change |
 | RG-284 | a remote run cannot keep or reuse its checkout, so a lane pair that must judge one tree (assay `tester-unified` then full `self-qualification`) cannot run through the supported runner | Major | OPEN 2026-11-16; assay B551 names the cheaper sequence-lane alternative |
+| RG-285 | a language lane image carries no Assay and no pip, so every such lane had to spell out the judge's `PYTHONPATH` incantation itself — the LANE, not the gate, decided which judge judged it | Enhancement | FIXED 2026-11-16 — lane key `judge = "assay"` (SPEC `R-08f`/`R-57`): read-only dual-mounted judge trees, PREPENDED import roots + `RUN_GATE_JUDGE_PYTHON`, an in-lane `find_spec` identity guard, judge commit/version/dirty recorded in the run record, `external-missing` refusal instead of a silent skip |
+| RG-286 | the `judge = "assay"` evidence never runs REAL Assay under a REAL image, and the fake docker executes the inner script on the host where `:ro` is an argv string, not a kernel mount | Major | OPEN 2026-11-16; required BEFORE the `hostobs` interim lane migrates — real-image smoke of `judge = "assay"` (real Assay source, real `tester-unified-rust`, Docker refusing writes into `assay/` and `libraries/cowtree`) |
+| RG-287 | Run-Gate cannot provide the Assay judge to a checkout that has no `assay/` of its own (a standalone consumer such as `dstdns`), so such a project is refused `external-missing` | Enhancement | OPEN 2026-11-16; the external path today is `kind = "assay"` + `assay_command` + `pins`; a run-gate-owned judge source (pinned wheel or pinned checkout) is unbuilt |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9120,3 +9123,198 @@ lifetime because nothing could depend on it.
 second same-commit invocation re-attaches under the HEAD/clean-tree checks
 above, every mismatch refuses by name, the default still removes it, and the
 runner guide and `CONSUMERS.md` describe the same two lifetimes.
+
+## RG-285 — a language lane image carries no judge, so the LANE decided which Assay judged it
+
+**Status:** FIXED 2026-11-16 (rev 60), SPEC `R-08f` / `R-57`. Severity:
+enhancement for the missing capability, but the interim shape was a
+correctness hazard (see "Why it was not merely convenience").
+
+**Found by.** The operator decision of 2026-11-16 ("I recommend run-gate
+providing the judge"), taken while the `hostobs` `assay-r1` lane was being
+proven: `tester-unified-rust` ships python3 and NO pip and NO assay wheel, so
+the lane could only reach the judge by setting
+`PYTHONPATH=<worktree>/assay/src:<worktree>/assay/analysis/src:<worktree>/libraries/cowtree/src`
+inside its own `bash -c` argv. That route works — it produced a real PASS and a
+real negative-probe FAIL on the interim lane — and it was carried as an
+INTERIM, with the migration left to a later package.
+
+**Why it was not merely convenience.** Two defects, both structural rather than
+cosmetic:
+
+1. **The judge identity lived in the lane's shell text.** Nothing on disk could
+   answer "which Assay, from which commit, produced this verdict": the run
+   record carried the *lane's* commit and nothing else. Two projects could
+   (and did) reach the judge through two different spellings, and a lane that
+   forgot one path element silently ran the judge with a partially importable
+   tree — the in-lane failure surfaced as whatever the judge's own import error
+   happened to be. A declaration the loader validates replaces a heuristic the
+   reader has to audit.
+2. **The image decided the route.** A lane whose image happens to carry its own
+   `assay` would have judged with the image's copy while the argv claimed the
+   source: the interchange the operator was trying to escape, one layer down
+   (and the `kind = "assay"` source-mode guard already exists for exactly this
+   reason — `DESIGN-GUIDE.md`, "Source-backed Assay identifies code as source").
+
+**Fixed shape (SPEC `R-08f`/`R-57`, design note
+`docs/DESIGN-judge-provider-2026-11.md`).** One closed-vocabulary lane key,
+`judge = "assay"`, legal on a `kind = "command"` lane with an `ephemeral`
+environment (and refused together with `pins`). Run-Gate mounts the judged
+worktree's `assay/` and `libraries/cowtree` read-only at their own paths and
+refuses any OTHER mount whose target is at or under a judge tree (Docker orders
+binds by destination depth and rejects a same-path duplicate — measured; the
+first cut's "a later mount wins" claim was wrong), exports `PYTHONPATH` (provided
+roots PREPENDED) plus `PYTHONNOUSERSITE=1`, `PYTHONDONTWRITEBYTECODE=1` and
+`RUN_GATE_JUDGE_PYTHON` from the lane's own shell, proves the interpreter
+resolves the provided judge through a `find_spec` origin guard, and records the
+judge's `commit`, `version` (`git describe --tags --long --match assay-v*`, or
+`null` with `version_source` stating why), and `dirty` (scoped to the judge trees
+with untracked and ignored files shown, `null` + `dirty_source` when Git could
+not answer) in the run record and history. Nothing is installed and nothing is
+fetched, so `network = "none"` lanes are unaffected. A missing judge tree is
+NOT_RUN 3 `external-missing` BEFORE admission, locks or a container — or before
+a sequence's FIRST member; there is no silent-skip mode. The in-lane refusals
+end on a RESERVED code that Run-Gate maps to ERROR before `exit_map`, so a
+missing judge can never be reported as PASS or as a failed lane.
+
+**Not fixed here, deliberately.** The `hostobs` interim route is byte-identical
+until its own migration package moves it (the two routes must reproduce the same
+totals and the same negative-probe FAIL first). `kind = "assay"` lanes are
+untouched. `exec` and `host`/`bare-host` environments cannot be served — Run-Gate
+can only mount into a container it starts — and are refused at load rather than
+supported by luck of the PATH. A wheel/OCI judge artifact is out of scope: in-repo
+consumers follow `assay/docs/INTERNAL-CONSUMERS.md` (source, no pinned copy) and
+the external boundary already exists as `kind = "assay"` + `assay_command` +
+`pins`.
+
+**Evidence.** `tests/test_judge_provider.py` (117 parametrized oracles):
+declaration validation (including every ENVIRONMENT-RESOLUTION path — an
+inherited central declaration, an undeclared name, a legacy `host`/`bare-host`
+name — refused at load, the case the first cut left to the runtime preflight),
+mount flags (both namespace views, read-only, and the COLLISION refusals: a same
+path and a path under a judge tree to
+`Duplicate mount point`/`INSIDE the judge tree`, EACH with its OWNER direction
+pinned — a sibling that merely shares the prefix (`assay2`, `assay-extra`,
+`libraries/cowtree2`) must be ACCEPTED — and every documented destination
+spelling, `target=`/`dst=`/`destination=`, parsed from one tuple), identity
+derivation (no tag
+→ stated `null`, dirtiness scoped to the judge trees with IGNORED and
+untracked files reported while regenerated bytecode (`__pycache__`, `*.pyc`)
+is not, a failing `git status` → `null` + `dirty_source`, a
+lookalike tag rejected, re-derivation at container start varying EACH of the
+three compared fields, a REAL `git status`
+over a real repository for both the clean and the modified answer, and a
+non-UTF-8 path/tag name that must still be ANSWERED rather than raise),
+disclosure ORDER (every judge line flushed immediately after its own write,
+recorded as `write`/`flush` events because text alone is identical either way),
+the reserved
+refusal code's verdict mapping under three `exit_map` configurations, the
+in-lane guard's refusal NAMING the module and one of the three answers
+`find_spec` can give (origin file / shadowing namespace portions / nothing on
+`sys.path`) — run in a HERMETIC interpreter (`-S`, scrubbed environment,
+neutral cwd, both trees fixture-written) so no oracle depends on what the
+RUNNING interpreter has installed,
+the closed refusals, a SEQUENCE preflighting a judge member among NON-judge
+members (exactly one preflight line, for the judge member, and the non-judge
+member runs unchanged),
+and an END-TO-END lane whose `PATH` carries no `pip` and no console-script
+`assay` — the assembled inner script really executes and the verdict artifact
+is read back (`outcome PASS`, both claims PASS), with the negative probe turning
+the same lane red when the test it runs is removed.
+
+**What that evidence does NOT prove** (two oracles are honest about it): the
+fixture's `assay.cli` is a stand-in judge, and the fake docker executes the
+assembled script on the HOST, where `:ro` is an argv string rather than a kernel
+mount. Real Assay source under the real `tester-unified-rust` image, and Docker
+actually refusing writes into the judge trees, are filed as **RG-286** and must
+be proven by a real-image smoke before `hostobs` migrates. `run-gate-project`'s
+`selftest` lane is the release gate for this change.
+
+## RG-286 — the judge-provider evidence never runs the real judge under a real image
+
+**Status:** OPEN 2026-11-16. Severity: **Major** as a prerequisite, not as a
+defect: the shipped feature's own oracles are honest about what they do not
+prove, and this entry is the gap they name.
+
+**Found by.** The round-1 review of RG-285, which asked what the
+`tests/test_judge_provider.py` end-to-end oracle actually exercises.
+
+**The gap, stated exactly.**
+
+1. The fixture's `assay.cli` is a **stand-in judge** (`_minimal_judge` writes a
+   small package into the fixture repository). It reads a lane file, runs the
+   lane's command and writes a verdict-shaped artifact. It does not import,
+   execute or exercise Assay. So "the real Assay source imports under a real
+   `tester-unified-rust` interpreter, with `libraries/cowtree` resolving the
+   way Assay's lazy workspace importer expects" is UNTESTED here.
+2. The fixture's docker is a **shim that executes the assembled inner script on
+   the host** (`fake_docker_running_lane`). The judge trees are mounted
+   `:ro` in the argv it records, but nothing in this project's gate suite makes
+   a kernel enforce that. Docker's own refusal to write into a read-only bind
+   was verified manually while designing this feature (a write into
+   `<w>/assay` fails with `Read-only file system`, and a deeper mount inside a
+   judge tree either wins for its subtree or fails container start), but there
+   is no ORACLE for it, so a future change that dropped a `:ro` — or a daemon
+   that ignored one — would not turn this project red.
+
+**Why it must be closed before `hostobs` migrates.** `hostobs`' interim
+`assay-r1` lane is the live route this feature replaces. Moving it onto
+`judge = "assay"` on the strength of a stand-in judge and a host-executed
+script would be exactly the "green in a fixture" certification this estate
+forbids. The migration needs the real smoke first: a real container lane, the
+real assay source and the real language image, with a negative probe proving
+Docker itself refuses a write into the judge trees.
+
+**What "done" looks like.** One lane (registered so `run-gate <lane>` runs it)
+that declares `judge = "assay"` in an image carrying no pip and no assay —
+either `run-gate-project`'s own suite starting one real container, or a
+`hostobs`-side lane during the migration — proving:
+
+- the real `assay` imports and runs from the mounted source (a real verdict
+  artifact, read back, with the judge's own totals);
+- a write into `<w>/assay` or `<w>/libraries/cowtree` from inside the lane fails
+  with the kernel's read-only error (the `:ro` is REAL);
+- the same lane FAILS when the test it runs is removed (the RG-285 negative
+  probe, at the real-image boundary).
+
+**Interim answer, deliberately not a substitute.** The stand-in judge and the
+host-executed inner script are kept, and every docstring that touches them says
+what they prove and what they do not. They are the mechanism's regression
+oracle; RG-286 is the acceptance oracle.
+
+## RG-287 — Run-Gate cannot provide the judge to a checkout that has no Assay source
+
+**Status:** OPEN 2026-11-16. Severity: enhancement (a missing capability,
+with a working alternative at the external boundary).
+
+**Found by.** The round-1 review of RG-285, item 7: what does a consumer
+OUTSIDE this monorepo do with `judge = "assay"`?
+
+**The gap.** `judge = "assay"` derives its source from the JUDGED worktree
+(`<w>/assay` and `<w>/libraries/cowtree`) — the in-repo rule
+`assay/docs/INTERNAL-CONSUMERS.md` establishes for same-repository consumers.
+A standalone project (`dstdns` and anything else outside this monorepo) has no
+such tree, so the lane is refused NOT_RUN 3 `external-missing`. That refusal is
+correct (Run-Gate will not invent a judge source it cannot derive) and it is
+now stated in `CONSUMERS.md` with the alternative: `kind = "assay"` plus an
+explicit `assay_command` and `pins`, which verifies the artifact it runs.
+
+What does NOT exist, and this entry is that gap: a way for `judge = ...` to name
+a judge SOURCE that is not the judged tree's — a pinned Assay wheel, or a pinned
+Assay checkout fetchable by the gate — so that an external project could use the
+mount-and-`PYTHONPATH` shape (no pip in the lane image, `network = "none"`)
+without carrying Assay's source in its own repository.
+
+**Why it is not built here.** RG-285's operator decision, and the design note's
+rejected-alternatives table, deliberately split `judge = { source = ... }`: a
+declared path is a second spelling of a fact the in-repo boundary already
+DERIVES, and the external boundary already has a working contract. Building it
+needs a real decision about WHO pins the wheel (Run-Gate's wheel list?
+assay's?) and where it lives on a host with a no-network lane, which is not a
+detail to guess at while landing the mount mechanism.
+
+**What "done" would look like.** A closed declaration for an external judge
+source (wheel digest pinned where the estate pins artifacts), a preflight that
+verifies it before admission, and identity fields that record the compared
+digest — reusing `pins`' verification rather than inventing a second one
+(R-35's rule).

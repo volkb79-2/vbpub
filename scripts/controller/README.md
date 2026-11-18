@@ -100,8 +100,11 @@ Use this order for each implementation task.
    every wrapper when it claims the name, CTL-14): a live owner prints
    `RUNNING (no .done)` with its pid, a recorded owner that is gone (or whose
    kernel start time no longer matches, or that was recorded under a previous
-   boot) prints `DIED (wrapper pid <pid> gone, no .done)` as a red flag, and a
-   run that no wrapper ever owned prints `RUNNING (no .done)` plus
+   boot) prints `DIED (wrapper pid <pid> gone, no .done)` as a red flag, a name
+   that was claimed but never started (an empty lock file, no stream, the lock
+   free: a launch refused after the claim, CTL-23) prints `NOT-STARTED` as a red
+   flag (a held empty lock is a wrapper still preflighting and prints `RUNNING`),
+   and a run that no wrapper ever owned prints `RUNNING (no .done)` plus
    `owner record: none`, stating that a live and a dead wrapper cannot be told
    apart there. A `DIED` row is never evidence that the child completed — it is
    evidence that the wrapper is gone, so the controller can relaunch. A killed
@@ -376,7 +379,17 @@ wrapper's whole tree, which also holds the agent (a model loop) and the
 snapshotter (its own `/proc` scans and git calls) and would therefore keep any
 tool looking busy, so a slow `grep` or a long `pytest` reads as a working job
 instead of a hung one while a tool blocked on the agent's FIFO still reads as
-not progressing. To steer a stuck tool, kill the exact child pid the row
+not progressing. The growth is a SURVIVOR's: a process present in both readings
+with the same pid and the same kernel start ticks that grew. A tool that merely
+churns its process set (`make -j` starting and reaping workers, per-test
+subprocesses) is not progress, and the churn does not reset the quiet clock, so
+such a tool reads `HUNG-TOOL` at the threshold; a survivor that burns CPU is
+progress, and a recycled pid number is a different process. The sidecar also publishes whether that fact was MEASURED
+(`progress_measured`): a tick that could not read the tool's subtree carries a
+previous epoch forward as unmeasured, and an epoch from before the call started
+is published as `null`, so the row prints `progress=- progress-why=unread` with
+the weaker word — an unread fact never licenses `HUNG-TOOL`.
+To steer a stuck tool, kill the exact child pid the row
 prints as `steer=` — never the wrapper, which would discard the run's
 classification, its `.done` marker and its continuation history. A tool blocked
 by the agent's own experiment (a `git` command waiting on a FIFO the agent
