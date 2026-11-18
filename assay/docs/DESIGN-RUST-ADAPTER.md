@@ -129,11 +129,12 @@ lines under the source roots were doc comments and `#[cfg(test)]` functions, whi
 cargo-mutants never mutates, so it measured the declared lane end to end but no mutant
 verdict; the listing for base `0dd7230b1` is 345 mutants (about 2.4 h at `--jobs 1`) and
 that run is the one that closes K15. Three attempts at it (2026-11-18) were cancelled on memory before any
-mutant ran (in the baseline phase): one test process of the unmutated baseline
-(`client_scripted ... transport_failures_are_classified`) grew about 0.2 GB/s until cancelled; the
-same test passes in the hostobs `selftest`/`assay-r1` lanes and did not reproduce in the owner's
-dev container, so the cause is undetermined (details in `RUST-B245-U0-MEASUREMENTS.md`) and K15
-now also waits for that memory growth to be explained.
+mutant verdict existed: the first mutants of the hostobs client crate include a hang mutant whose test
+(`client_scripted ... transport_failures_are_classified`) loops and grows about 0.3 GB/s, outrunning
+cargo-mutants' 120 s test timeout (the unmutated test passes, as in `selftest`/`assay-r1`; evidence in
+`RUST-B245-U0-MEASUREMENTS.md`). The U8b-fix change gives the lane a hard container memory cap so such a mutant is
+OOM-killed inside its own container; how assay classifies an OOM-killed mutant is a K15 verdict-semantics
+point to read from the real run.
 
 **Contract read from upstream ([V] mutants.rs pages and `src/outcome.rs`, `src/mutant.rs`, `src/process.rs`):**
 exit 0 all caught, 1 usage, 2 missed mutants, 3 timeouts, 4 baseline failing, 5 `--in-diff` new side does not

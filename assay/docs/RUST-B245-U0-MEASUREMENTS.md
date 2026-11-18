@@ -141,16 +141,27 @@ anon memory going 0.076 GB (15:25:58) -> 2.38 GB (15:26:11) -> 4.07 GB (15:26:19
 3.5 GiB cap, and showed: not a tmpfs (`/tmp` is overlay disk, `/dev/shm` 64 MB, 0 used), no container
 memory limit (`memory.max=max`), page cache 1.2 GB separate from the anon growth. The growing process was
 read by hand with a host `ps --sort=-rss` at 15:26:13-15:26:21 (not saved in the sampler log: the in-container
-`ps` is absent from the image): ONE test process of the unmutated baseline,
+`ps` is absent from the image): ONE test process,
 `client_scripted-3cde632e... --exact transport_failures_are_classified --nocapture`
 (`hostobs/crates/client/tests/client_scripted.rs`), RSS 2.7 GB at 14 s of its life and 4.3 GB at 22 s.
 The same test passes in the hostobs `selftest` and `assay-r1` lanes, and a reproduction by the hostobs
-owner in a dev container (default nextest profile, no llvm-cov, 1 GiB cap) did NOT reproduce it (passed
-in 0.006 s). The cause is therefore undetermined (the invocation, the image or host, or the test itself);
-it is an open item with the hostobs owner and the next sampled run captures the process's
-`/proc` data. Lesson for every hand-run heavy lane: declare `[lanes.<name>.resources] memory` (docker
-`--memory`) with an equal `memory_swap` so a runaway is OOM-killed inside its own container, and sample the
-container every few seconds for the first minutes (a 60 s monitor missed the step). K15 stays open.
+owner in a dev container did NOT reproduce it (passed in 0.006 s), which pointed away from the unmutated
+test. A fourth run (the U8b-fix head `a3ff0bade`, container capped `--memory 2500m`, a sampler reading
+`/proc` inside the container at the first process above 800 MB RSS) captured it at 1.1 GB: the process is
+a child of `cargo-nextest nextest run --package=hostobs-client` (default profile, one test thread), itself
+a child of `cargo-mutants`, with its working directory in cargo-mutants' temporary copy of the
+workspace; the SHA-256 of `crates/client/tests/client_scripted.rs` and `tests/support/mod.rs` in that copy
+equal the git blobs, while `crates/client/src/client.rs` DIFFERS from git. So the runaway is a MUTANT run, not
+the baseline: a mutation of `client.rs` (in the client's write/retry path) makes the scripted-transport test
+loop on transport calls with no clock progress while the scripted transport pushes one `Duration` per call
+into a `Vec` (about 300 MB/s). cargo-mutants' only guard is the test timeout (`--minimum-test-timeout 120`
+here), at that rate tens of GB, so it outruns the memory of the host long before the timeout. The
+specific mutant was not recorded (the baseline log was not found, `find -xdev` skipped the copy-on-write
+mount holding `assay-mutants-out`). Lesson for every hand-run heavy lane: declare
+`[lanes.<name>.resources] memory` (docker `--memory`) with an equal `memory_swap` so a runaway mutant is
+OOM-killed inside its own container, sample the container every few seconds for the first minutes (a 60 s
+monitor missed the step), and keep page cache in mind when sharing a host (container `memory.current`,
+not only anon, was what tripped a neighbour guest's stop rule). K15 stays open.
 
 Known risks for the first real qualification run (B245 U7,
 `tools/qualify_rust_r2_real.py`; each is diagnosed, not a known defect; its
