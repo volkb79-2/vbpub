@@ -62,6 +62,34 @@ def main() -> int:
     if rc != 7:
         failures.append(f"split marker: rc={rc}")
 
+    # login: the first probe is discarded by login (typed too early), the second is answered
+    a, b = socket.socketpair()
+    a.setblocking(False)
+    g = drs.Guest("unused", io.StringIO())
+    g.sock = a
+
+    def recv_until(needle: bytes) -> None:
+        b.settimeout(25)
+        data = b""
+        while needle not in data:
+            data += b.recv(256)
+
+    def serve_login():
+        b.sendall(b"drpoc login: ")
+        recv_until(b"root\n")
+        b.sendall(b"Password: ")
+        recv_until(b"root\n")
+        b.sendall(b"\r\nLinux drpoc 6.12 ...\r\n")
+        recv_until(b"__DR_READY_")           # first probe: swallowed, as login(1) does
+        recv_until(b"__DR_READY_")           # second probe: answered
+        b.sendall(b"echo __DR_READY_$((20+22))__\r\n__DR_READY_42__\r\n")
+
+    threading.Thread(target=serve_login, daemon=True).start()
+    try:
+        g.login(30)
+    except Exception as exc:  # noqa: BLE001 - report any failure of the fake exchange
+        failures.append(f"login with a swallowed first probe failed: {exc!r}")
+
     # silence times out instead of hanging
     a, b = socket.socketpair()
     a.setblocking(False)

@@ -83,8 +83,18 @@ class Guest:
         self.send("root\n")
         self.expect(rb"[Pp]assword: ?", 60)
         self.send("root\n")
-        self.buf = b""
-        self.run("true", 120)  # waits for a working shell (no prompt string assumed)
+        # login(1) discards input typed while it sets the session up (slow under TCG), so probe until the
+        # shell answers. The echoed probe has `$((20+22))`, only the shell's answer has 42.
+        deadline = time.monotonic() + 400
+        while time.monotonic() < deadline:
+            self.buf = b""
+            self.send("echo __DR_READY_$((20+22))__\n")
+            try:
+                self.expect(rb"__DR_READY_42__", 10)
+                return
+            except TimeoutError:
+                continue
+        raise TimeoutError("no working shell after login")
 
     def run(self, cmd, timeout=300):
         self.buf = b""
