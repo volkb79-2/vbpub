@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
+import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -30,7 +32,7 @@ class CachePrecheckTests(unittest.TestCase):
         self.cache.mkdir(parents=True)
         self.lock = self.root / "Cargo.lock"
         self.manifest = self.root / "rust-crate-cache.sha256"
-        self.baked = self.root / "hostobs-Cargo.lock.sha256"
+        self.baked = self.root / "hostobs-Cargo.lock.registry-sha256"
         self.archive_bytes = b"crate archive bytes"
         self.archive_digest = hashlib.sha256(self.archive_bytes).hexdigest()
         self.write_lock(self.archive_digest)
@@ -57,8 +59,22 @@ class CachePrecheckTests(unittest.TestCase):
         self.manifest.write_text(f"{checksum}  {self.archive}\n", encoding="utf-8")
 
     def write_baked_lock_digest(self) -> None:
-        digest = hashlib.sha256(self.lock.read_bytes()).hexdigest()
+        digest = verify_crate_cache.registry_set_digest(self.lock)
         self.baked.write_text(digest + "\n", encoding="ascii")
+
+    def write_lock_text(self, text: str) -> None:
+        self.lock.write_text(text, encoding="utf-8")
+
+    def lock_text_with_workspace(self, *, workspace: str = "", version: int = 4) -> str:
+        return (
+            f"version = {version}\n\n"
+            f"{workspace}"
+            "[[package]]\n"
+            'name = "sample-crate"\n'
+            'version = "1.2.3"\n'
+            f'source = "{REGISTRY}"\n'
+            f'checksum = "{self.archive_digest}"\n'
+        )
 
     def verify(self) -> list[str]:
         return verify_crate_cache.verify(self.lock, self.manifest, self.baked, self.cargo_home)
@@ -93,10 +109,187 @@ class CachePrecheckTests(unittest.TestCase):
         with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "Cargo.lock checksum differs.*sample-crate"):
             self.verify()
 
-    def test_lock_bytes_must_match_image_identity(self) -> None:
-        self.lock.write_text(self.lock.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8")
-        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "differs from the lock baked"):
+    # --- registry-set identity (what the image cache really depends on) ---
+
+    def test_workspace_only_lock_edit_passes_without_a_rebuild(self) -> None:
+        # Only a workspace member's dependencies array and a new path package change.
+        self.write_lock_text(self.lock_text_with_workspace())
+        self.write_baked_lock_digest()  # the image bakes the digest of the ORIGINAL lock
+        original_digest = self.baked.read_text(encoding="ascii")
+        self.write_lock_text(
+            self.lock_text_with_workspace(
+                workspace=(
+                    "[[package]]\n"
+                    'name = "ws-app"\nversion = "0.1.0"\n'
+                    'dependencies = [\n "sample-crate",\n "ws-lib",\n]\n\n'
+                    "[[package]]\n"
+                    'name = "ws-lib"\nversion = "0.1.0"\n\n'
+                )
+            )
+        )
+        self.assertEqual(verify_crate_cache.registry_set_digest(self.lock) + "\n", original_digest)
+        self.assertEqual(self.verify(), ["sample-crate-1.2.3.crate"])
+
+    def test_changed_registry_checksum_is_refused_by_the_identity_alone(self) -> None:
+        # The archive, manifest and lock agree with each other; only the baked identity differs.
+        changed = b"a different archive"
+        self.archive.write_bytes(changed)
+        digest = hashlib.sha256(changed).hexdigest()
+        self.write_lock(digest)
+        self.write_manifest(digest)
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "registry set differs"):
             self.verify()
+
+    def test_added_crate_is_refused(self) -> None:
+        extra = self.cache / "extra-0.1.0.crate"
+        extra.write_bytes(b"extra")
+        extra_digest = hashlib.sha256(extra.read_bytes()).hexdigest()
+        self.write_lock_text(
+            self.lock_text_with_workspace()
+            + "\n[[package]]\n"
+            'name = "extra"\nversion = "0.1.0"\n'
+            f'source = "{REGISTRY}"\n'
+            f'checksum = "{extra_digest}"\n'
+        )
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "missing locked archive.*extra"):
+            self.verify()
+        # Even with a cache that holds it, the baked identity still refuses the new crate.
+        self.manifest.write_text(
+            self.manifest.read_text(encoding="utf-8") + f"{extra_digest}  {extra}\n", encoding="utf-8"
+        )
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "registry set differs"):
+            self.verify()
+
+    def test_removed_crate_is_refused(self) -> None:
+        # A lock without the crate while the cache still holds it: the archive set check names it.
+        self.write_lock_text("version = 4\n")
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "absent from Cargo.lock.*sample-crate"):
+            self.verify()
+
+        # An image baked from a two-crate lock; the checkout then drops one crate and the cache
+        # is trimmed to match, so only the baked identity can still refuse the removal.
+        second = self.cache / "zeta-0.2.0.crate"
+        second.write_bytes(b"zeta")
+        second_digest = hashlib.sha256(b"zeta").hexdigest()
+        self.write_lock_text(
+            self.lock_text_with_workspace()
+            + f'\n[[package]]\nname = "zeta"\nversion = "0.2.0"\nsource = "{REGISTRY}"\n'
+            f'checksum = "{second_digest}"\n'
+        )
+        self.write_baked_lock_digest()
+        self.write_lock_text(self.lock_text_with_workspace())
+        self.write_manifest(self.archive_digest)  # trimmed: the zeta archive is no longer listed
+        second.unlink()
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "registry set differs"):
+            self.verify()
+
+    def test_changed_source_changes_the_digest_and_is_refused(self) -> None:
+        before = verify_crate_cache.registry_set_digest(self.lock)
+        self.write_lock(self.archive_digest, source="registry+https://example.invalid/index")
+        self.assertNotEqual(verify_crate_cache.registry_set_digest(self.lock), before)
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "unsupported source"):
+            self.verify()
+
+    def test_changed_lock_version_is_refused_by_the_identity_alone(self) -> None:
+        self.write_lock_text(self.lock_text_with_workspace(version=3))
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "registry set differs"):
+            self.verify()
+
+    def test_lock_without_an_integer_version_is_refused(self) -> None:
+        self.write_lock_text(self.lock_text_with_workspace().replace("version = 4\n\n", ""))
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "integer top-level version"):
+            self.verify()
+
+    def test_package_order_does_not_change_the_digest(self) -> None:
+        second = self.cache / "zeta-0.2.0.crate"
+        second.write_bytes(b"zeta")
+        second_digest = hashlib.sha256(b"zeta").hexdigest()
+        first_block = (
+            f'[[package]]\nname = "sample-crate"\nversion = "1.2.3"\nsource = "{REGISTRY}"\n'
+            f'checksum = "{self.archive_digest}"\n\n'
+        )
+        second_block = (
+            f'[[package]]\nname = "zeta"\nversion = "0.2.0"\nsource = "{REGISTRY}"\n'
+            f'checksum = "{second_digest}"\n\n'
+        )
+        self.write_lock_text("version = 4\n\n" + first_block + second_block)
+        forward = verify_crate_cache.registry_set_digest(self.lock)
+        self.write_lock_text("version = 4\n\n" + second_block + first_block)
+        self.assertEqual(verify_crate_cache.registry_set_digest(self.lock), forward)
+
+    def test_git_source_is_in_the_digest_and_refused_by_the_verifier(self) -> None:
+        git = "git+https://example.invalid/repo.git?rev=abc#0123456789abcdef"
+        text = (
+            "version = 4\n\n"
+            '[[package]]\nname = "gitcrate"\nversion = "0.1.0"\n'
+            f'source = "{git}"\n'
+        )
+        self.write_lock_text(text)
+        canonical = verify_crate_cache.canonical_registry_set(tomllib.loads(text))
+        self.assertEqual(canonical, f"lock-version 4\ngitcrate 0.1.0 - {git}\n")
+        self.write_baked_lock_digest()
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "unsupported source"):
+            self.verify()
+
+    def test_canonical_text_has_the_agreed_shape(self) -> None:
+        text = (
+            "version = 4\n\n"
+            '[[package]]\nname = "ws"\nversion = "0.1.0"\ndependencies = ["b"]\n\n'
+            f'[[package]]\nname = "b"\nversion = "2.0.0"\nsource = "{REGISTRY}"\nchecksum = "{"1" * 64}"\n\n'
+            f'[[package]]\nname = "a"\nversion = "1.0.0"\nsource = "{REGISTRY}"\nchecksum = "{"2" * 64}"\n'
+        )
+        self.assertEqual(
+            verify_crate_cache.canonical_registry_set(tomllib.loads(text)),
+            f"lock-version 4\na 1.0.0 {'2' * 64}\nb 2.0.0 {'1' * 64}\n",
+        )
+
+    def test_whitespace_in_a_canonical_field_is_refused(self) -> None:
+        text = (
+            "version = 4\n\n"
+            f'[[package]]\nname = "a b"\nversion = "1.0.0"\nsource = "{REGISTRY}"\nchecksum = "{"2" * 64}"\n'
+        )
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "malformed name"):
+            verify_crate_cache.canonical_registry_set(tomllib.loads(text))
+
+    def test_print_registry_digest_is_stable_and_equals_the_function(self) -> None:
+        command = [
+            sys.executable, "-I", str(_CACHE_MODULE), "--print-registry-digest", "--lock", str(self.lock),
+        ]
+        first = subprocess.run(command, capture_output=True, text=True, check=True)
+        second = subprocess.run(command, capture_output=True, text=True, check=True)
+        expected = verify_crate_cache.registry_set_digest(self.lock)
+        self.assertEqual(first.stdout, expected + "\n")
+        self.assertEqual(second.stdout, first.stdout)
+        self.assertEqual(first.stderr, "")
+        self.assertRegex(first.stdout, r"^[0-9a-f]{64}\n$")
+
+    def test_print_registry_digest_needs_only_the_lock_and_fails_closed(self) -> None:
+        self.lock.write_text("not toml\n", encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-I", str(_CACHE_MODULE), "--print-registry-digest", "--lock", str(self.lock)],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("cannot read Cargo.lock", result.stderr)
+
+    def test_verify_mode_still_requires_manifest_identity_and_cargo_home(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-I", str(_CACHE_MODULE), "--lock", str(self.lock)],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--manifest is required", result.stderr)
+
+    def test_real_hostobs_lock_digest_ignores_workspace_members(self) -> None:
+        real = HOSTOBS_ROOT / "Cargo.lock"
+        document = tomllib.loads(real.read_text(encoding="utf-8"))
+        canonical = verify_crate_cache.canonical_registry_set(document)
+        members = [p["name"] for p in document["package"] if "source" not in p]
+        self.assertTrue(members)
+        for name in members:
+            self.assertNotIn(f"{name} ", canonical)
+        self.assertTrue(canonical.startswith(f"lock-version {document['version']}\n"))
 
     def test_extra_cached_archive_is_refused(self) -> None:
         extra = self.cache / "extra-0.1.0.crate"
