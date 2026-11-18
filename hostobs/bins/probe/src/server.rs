@@ -1,5 +1,5 @@
 //! The server layer of the probe's serving side (design sections 1 and 3, R20, R22, R23, R26,
-//! R27; WIRE.md sections 5.1, 5.3 and 5.4), sans-IO like [`Conn`](crate::conn::Conn): no sockets,
+//! R27; WIRE.md sections 5.1, 5.3 and 5.4), sans-IO like [`Conn`]: no sockets,
 //! no threads, no clock reads.
 //!
 //! A [`Server`] owns ONE `SendHub`, the connections keyed by `ConnId` (iterated in ascending id
