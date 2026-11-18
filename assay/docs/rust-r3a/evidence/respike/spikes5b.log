@@ -1,0 +1,14 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index 0c5c5a2..3cc2b4e 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -11,7 +11,7 @@ pub fn add(a: i32, b: i32) -> i32 {
+ 
+== design flag set on a real git diff
+MISSED   src/lib.rs:14:21: replace < with > in is_even in 0s build + 0s test
+MISSED   src/lib.rs:14:21: replace < with <= in is_even in 0s build + 0s test
+9 mutants tested in 2s: 9 missed
+exit=0
+{'total_mutants': 9, 'missed': 9, 'caught': 0} ['nextest', 'run', '--verbose', '--package=r3a@0.1.0', '--locked', '--offline']
+== env vars cargo-mutants reads
+CARGO_MUTANTS_JOBS CARGO_MUTANTS_MINIMUM_TEST_TIMEOUT CARGO_MUTANTS_OUTPUT CARGO_MUTANTS_TRACE_LEVEL 

@@ -1,0 +1,53 @@
+== help: any env var for --in-diff?
+          [env: CARGO_MUTANTS_TRACE_LEVEL=]
+          [env: CARGO_MUTANTS_JOBS=]
+          [env: CARGO_MUTANTS_MINIMUM_TEST_TIMEOUT=]
+          - auto:   Auto detect from the execution environment
+          [env: CARGO_TERM_COLOR=]
+          [env: CARGO_MUTANTS_OUTPUT=]
+183-
+184:  -D, --in-diff <IN_DIFF>
+185-          Include only mutants in code touched by this diff
+186-
+187-      --iterate
+== 1 comment-only diff, real run: does --output dir exist afterwards?
+exit=0
+ls: cannot access '/out/o-zero': No such file or directory
+== 2 empty diff, real run
+ INFO Diff file is empty
+exit=?
+ls: cannot access '/out/o-empty': No such file or directory
+== 3 diff mismatch, real run: output dir after exit 5?
+exit=5
+ls: cannot access '/out/o-mismatch': No such file or directory
+== 4 pre-created EMPTY mutants.out inside --output: rotated or reused?
+exit=2
+total 16
+drwxr-xr-x 4 gate gate 4096 Nov 18 04:47 .
+drwxrwxr-x 3 gate gate 4096 Nov 18 04:47 ..
+drwxr-xr-x 4 gate gate 4096 Nov 18 04:47 mutants.out
+drwxr-xr-x 2 gate gate 4096 Nov 18 04:47 mutants.out.old
+caught.txt
+debug.log
+diff
+== 5 pre-created empty --output dir only
+exit=2
+mutants.out
+== 6 workspace, flag UNSET vs =true vs =false (test argv of a mutant of a)
+tw=unset exit=0
+CaughtMutant {'Failure': 4} ['run', '--verbose', '--package=a@0.1.0', '--offline']
+tw=true exit=0
+CaughtMutant {'Failure': 100} ['run', '--verbose', '--workspace', '--offline']
+tw=false exit=0
+CaughtMutant {'Failure': 4} ['run', '--verbose', '--package=a@0.1.0', '--offline']
+== 7 real git diff format (index line, a/ b/ prefixes) and the design's flags
+diff --git a/src/lib.rs b/src/lib.rs
+index 0c5c5a2..3cc2b4e 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -11,7 +11,7 @@ pub fn add(a: i32, b: i32) -> i32 {
+
+ERROR cargo build failed in an unmutated tree, so no mutants were tested
+exit=0
+== 8 --in-diff via env CARGO_MUTANTS_IN_DIFF?
+29

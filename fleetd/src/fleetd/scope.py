@@ -39,6 +39,18 @@ judged keys:
 * a path that no longer has a planned candidate is recorded as **retired** with
   a reason.
 
+The changed candidates share the ``slice_size`` budget with the sweep, so a
+target edited every release by more than ``slice_size`` candidates would never
+reach the rest (FD-038). Therefore ``reserve_percent`` (default
+``DEFAULT_RESERVE_PERCENT``, 25) of every slice is RESERVED for the
+non-changed remainder (in path order: the never-judged candidates and the
+pending candidates of a half-judged file, then, after a finished pass, files
+judged in an earlier pass), rounded up and capped at ``slice_size - 1`` so one slot always stays with the
+changed candidates. A reserve the remainder cannot fill goes back to the
+changed candidates, so with no churn the slice is unchanged. Every changed
+file whose candidates did not all fit is listed in the accounting
+(``deferred_changed_files``), never silently dropped.
+
 A sweep therefore means "changed lines since the last release, plus the next
 slice of the target nobody has judged recently". ``--rebaseline`` is the
 explicit discard (start one new pass from the current content) and the
@@ -97,6 +109,13 @@ CURSOR_SCHEMA = "fleet-r2-scope-cursor/2"
 #: Cursors this producer no longer accepts; each is refused with its migration.
 LEGACY_CURSOR_SCHEMAS = ("fleet-r2-scope-cursor/1",)
 SCOPE_FILE_SCHEMA_VERSION = 1
+
+#: Rolling mode's reserved share of ``slice_size`` for the sweep (FD-038): the
+#: slots of a release that the changed candidates cannot take, so a target that
+#: is edited every release still reaches its never-judged remainder. A
+#: project's ``[r2] reserve_percent`` replaces it; ``0`` restores the old
+#: changed-candidates-first slice.
+DEFAULT_RESERVE_PERCENT = 25
 
 #: Exit statuses of ``fleet scope`` (documented in docs/CONSUMERS.md).
 EXIT_OK = 0
@@ -437,7 +456,13 @@ def select_changed_lines(
 
 # ---------------------------------------------------------------- scope file
 _SCOPE_FILE_KEYS = {"schema_version", "r2"}
-_SCOPE_R2_KEYS = {"mode", "slice_size", "cursor", "note"}
+_SCOPE_R2_KEYS = {"mode", "slice_size", "cursor", "note", "reserve_percent"}
+
+
+def _reserve_percent(value: object, where: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100:
+        raise ContractError(f"{where}: expected an integer from 0 to 100")
+    return value
 
 
 def load_scope_file(path: Path) -> dict[str, Any]:
@@ -448,7 +473,10 @@ def load_scope_file(path: Path) -> dict[str, Any]:
     """
     source = Path(path)
     if not source.is_file():
-        return {"mode": None, "slice_size": None, "cursor": None, "note": None, "path": None}
+        return {
+            "mode": None, "slice_size": None, "cursor": None, "note": None,
+            "reserve_percent": None, "path": None,
+        }
     try:
         document = tomllib.loads(source.read_text(encoding="utf-8"))
     except (OSError, UnicodeError) as exc:
@@ -482,6 +510,9 @@ def load_scope_file(path: Path) -> dict[str, Any]:
         raise ContractError(
             f"scope file {source}: r2.mode {ROLLING_MODE} requires r2.slice_size"
         )
+    reserve = table.get("reserve_percent")
+    if reserve is not None:
+        _reserve_percent(reserve, f"scope file {source}: r2.reserve_percent")
     cursor = table.get("cursor")
     if cursor is not None and (not isinstance(cursor, str) or not cursor):
         raise ContractError(f"scope file {source}: r2.cursor must be a non-empty path")
@@ -493,6 +524,7 @@ def load_scope_file(path: Path) -> dict[str, Any]:
         "slice_size": slice_size,
         "cursor": cursor,
         "note": note,
+        "reserve_percent": reserve,
         "path": str(source),
     }
 
@@ -687,6 +719,11 @@ class RollingSlice:
     retired: tuple[dict[str, Any], ...]
     files: dict[str, dict[str, Any]]
     stale_reason: str | None
+    #: FD-038: slots kept for the non-changed remainder, and the changed
+    #: candidates (with their files) that did not fit in this slice.
+    reserved_candidates: int = 0
+    deferred_changed_candidates: int = 0
+    deferred_changed_files: tuple[dict[str, Any], ...] = ()
 
 
 def _mark_is_current(
@@ -775,6 +812,7 @@ def rolling_slice(
     blobs: Mapping[str, str],
     cursor: Mapping[str, Any] | None = None,
     rebaseline: bool = False,
+    reserve_percent: int = DEFAULT_RESERVE_PERCENT,
 ) -> RollingSlice:
     """Take the next slice of the rolling whole-target sweep.
 
@@ -782,10 +820,13 @@ def rolling_slice(
     whose marks no longer describe this plan is not stale but *due again*, and
     is accounted instead of resumed (and never dropped silently). ``slice_size``
     is a budget: changing it re-slices the same sweep, so it is adopted rather
-    than refused, and the new value is recorded.
+    than refused, and the new value is recorded. ``reserve_percent`` of the
+    slice (rounded up, at most ``slice_size - 1``) is kept for the non-changed
+    remainder (FD-038); see the module docstring.
     """
     if isinstance(slice_size, bool) or not isinstance(slice_size, int) or slice_size < 1:
         raise ContractError("--slice-size: expected an integer of at least 1")
+    _reserve_percent(reserve_percent, "reserve_percent")
     by_path = assign_site_keys(candidates)
     digest = candidate_list_digest([candidate.id for candidate in candidates])
     if cursor is not None and cursor["lane"] != lane:
@@ -825,7 +866,25 @@ def rolling_slice(
         # at rank 2, least recently judged first (the accounting above keeps
         # describing the finished pass the cursor was found in).
         due = _due_entries(by_path, marks, blobs, pass_index)[0]
-    chosen = _slice_order(due)[:slice_size]
+    ordered = _slice_order(due)
+    changed = [entry for entry in ordered if entry[0] == 0]
+    remainder = [entry for entry in ordered if entry[0] != 0]
+    reserved = min(
+        -(-slice_size * reserve_percent // 100), slice_size - 1, len(remainder)
+    )
+    chosen = changed[: slice_size - reserved]
+    chosen += remainder[: slice_size - len(chosen)]
+    taken = {entry[3].id for entry in chosen}
+    deferred: dict[str, list[int]] = {}
+    for _rank, _last, path, row in changed:
+        counts = deferred.setdefault(path, [0, 0])
+        counts[0] += 1
+        counts[1] += row.id not in taken
+    deferred_files = tuple(
+        {"path": path, "candidates": total, "deferred_candidates": missing}
+        for path, (total, missing) in sorted(deferred.items())
+        if missing
+    )
     selected = tuple(row.id for _, _, _, row in chosen)
     files: dict[str, dict[str, Any]] = {}
     for path, rows in by_path.items():
@@ -865,6 +924,9 @@ def rolling_slice(
         retired,
         files,
         None,
+        reserved,
+        sum(item["deferred_candidates"] for item in deferred_files),
+        deferred_files,
     )
 
 
@@ -909,10 +971,13 @@ def scope_document(
     rebaseline: bool = False,
     blobs: Mapping[str, str] | None = None,
     legacy_cursor: str | None = None,
+    reserve_percent: int | None = None,
 ) -> dict[str, Any]:
     """Build the ``fleet-r2-scope/1`` document for one invocation."""
     if mode not in SCOPE_MODES:
         raise ContractError(f"scope mode: expected one of {', '.join(SCOPE_MODES)}")
+    reserve = DEFAULT_RESERVE_PERCENT if reserve_percent is None else reserve_percent
+    _reserve_percent(reserve, "reserve_percent")
     candidates = plan_candidates(plan, require_site_identity=mode == ROLLING_MODE)
     document: dict[str, Any] = {
         "schema": SCOPE_SCHEMA,
@@ -961,6 +1026,7 @@ def scope_document(
         blobs=blobs,
         cursor=cursor,
         rebaseline=rebaseline,
+        reserve_percent=reserve,
     )
     document.update({
         "files_changed": None,
@@ -981,6 +1047,10 @@ def scope_document(
             "never_judged_candidates": result.never_judged_candidates,
             "pending_candidates": result.pending_candidates,
             "judged_candidates": result.judged_candidates,
+            "reserve_percent": reserve,
+            "reserved_candidates": result.reserved_candidates,
+            "deferred_changed_candidates": result.deferred_changed_candidates,
+            "deferred_changed_files": list(result.deferred_changed_files),
             "retired": list(result.retired),
             "rebaselined": rebaseline,
             "legacy_cursor": legacy_cursor,

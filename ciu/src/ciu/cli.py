@@ -2071,11 +2071,26 @@ def _legacy_dispatch(raw: list[str]) -> None:
             parser = CiuArgumentParser(prog="ciu down --dir")
             parser.add_argument("--dir", metavar="PATH")
             parser.add_argument("--profile", action="append", default=None, metavar="NAME")
+            # CIU-214: the same flags the main form's help lists. `down` never
+            # prompts, so --yes changes nothing; --phases narrows the selection
+            # and the acknowledgement lifts the CIU-105 refusal, as in the main form.
+            parser.add_argument("--phases", metavar="N,M")
+            parser.add_argument("--yes", action="store_true")
+            parser.add_argument("--i-understand-this-is-protected",
+                                dest="i_understand_this_is_protected", action="store_true")
             opts = parser.parse_args(rest)
             repo_root = _resolve_repo_root_deploy(define_root)
-            from .deploy import stop_stack
+            from .deploy import _parse_phase_filter, stop_stack
             try:
-                rc = stop_stack(repo_root, opts.dir, profiles=opts.profile)
+                phases = _parse_phase_filter(opts.phases)
+            except ValueError as exc:
+                print(exc, file=sys.stderr)  # already carries its [ERROR] prefix
+                raise SystemExit(2)
+            try:
+                rc = stop_stack(
+                    repo_root, opts.dir, profiles=opts.profile, phases=phases,
+                    protected_ack=opts.i_understand_this_is_protected,
+                )
             except ValueError as exc:
                 print(f"[ERROR] {exc}", file=sys.stderr)
                 raise SystemExit(2)

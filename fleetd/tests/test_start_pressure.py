@@ -6,8 +6,9 @@ import pytest
 
 from fleetd.campaign import CampaignManager
 from fleetd.runner import RunnerJobs, _parse_pressure
-from fleetd.transport import FakeTransport, HostUnavailable
+from fleetd.transport import FakeTransport, HostUnavailable, TransportError
 
+from fleetd.campaign import STALL_FLOOR_SECONDS
 from test_campaign import FakeClock, ScriptedTransport, _jobs, _plan, _state
 
 
@@ -110,12 +111,18 @@ def test_a_failed_probe_forgets_the_previous_pressure_reading():
     with pytest.raises(HostUnavailable):
         runner.probe("host-a", {})
     assert runner.pressure("host-a") is None
-    for malformed in ("[]", '{"jobs":[],"pressure":{"memory_some_avg10":true,"io_some_avg10":120}}'):
-        runner.transport = ScriptedTransport([(0, malformed, "")] if malformed != "[]" else [])
-        if malformed == "[]":
-            continue
+    # A reachable host whose answer is not a probe document is a failed probe too.
+    runner.transport.set_unreachable("host-a", False)
+    runner.probe("host-a", {})
+    assert runner.pressure("host-a") is not None
+    runner.transport = ScriptedTransport([(0, "[]", "")])
+    with pytest.raises(TransportError, match="job table"):
         runner.probe("host-a", {})
-        assert runner.pressure("host-a") == {"memory_some_avg10": None, "io_some_avg10": None}
+    assert runner.pressure("host-a") is None
+    malformed = '{"jobs":[],"pressure":{"memory_some_avg10":true,"io_some_avg10":120}}'
+    runner.transport = ScriptedTransport([(0, malformed, "")])
+    runner.probe("host-a", {})
+    assert runner.pressure("host-a") == {"memory_some_avg10": None, "io_some_avg10": None}
 
 
 def test_rising_pressure_never_stops_a_running_batch(tmp_path):
@@ -132,21 +139,27 @@ def test_rising_pressure_never_stops_a_running_batch(tmp_path):
 
 def test_status_shows_no_reason_for_a_host_with_nothing_queued_or_not_online(tmp_path):
     manager, transport, plan, _clock = _manager(tmp_path, plan_count=1)
-    transport.set_pressure("host-a", memory=90.0)
-    transport.set_pressure("host-b", memory=90.0)
     manager.run("campaign", plan)
     state = manager._load_state("campaign")
-    for job in state["jobs"].values():
-        job["status"] = "COMPLETE"
+    (name, job), = state["jobs"].items()
+    host = job["host"]
+    transport.set_pressure(host, memory=90.0)
+    job["status"] = "COMPLETE"
     manager._write_state(state)
     document = manager.status_document(manager._load_state("campaign"))
-    assert all(row["start_deferred"] is None for row in document["hosts"])
-    transport.set_unreachable("host-a")
+    assert _host_row(document, host)["start_deferred"] is None
+    # The one job is queued again on a host that is now unreachable.
+    transport.set_unreachable(host)
     state = manager._load_state("campaign")
-    state["jobs"][next(iter(state["jobs"]))]["status"] = "QUEUED"
+    state["jobs"][name]["status"] = "QUEUED"
     manager._write_state(state)
     document = manager.tick("campaign")
-    assert all(row["start_deferred"] is None for row in document["hosts"] if row["state"] != "ONLINE")
+    row = _host_row(document, host)
+    assert row["state"] == "UNREACHABLE"
+    assert row["start_deferred"] is None
+    assert manager._load_state("campaign")["hosts"][host]["pressure"] is None
+    assert transport.host(host).starts == 1
+
 
 
 def test_the_pressure_parser_accepts_zero_through_one_hundred_and_nothing_else():
@@ -156,3 +169,52 @@ def test_the_pressure_parser_accepts_zero_through_one_hundred_and_nothing_else()
     for bad in (100.5, -0.5, float("nan"), float("inf"), True, "5", None):
         assert _parse_pressure({"memory_some_avg10": bad, "io_some_avg10": 1}) == {keys[0]: None, keys[1]: 1.0}
     assert _parse_pressure({}) == {keys[0]: None, keys[1]: None}
+
+
+def _running(tmp_path):
+    manager, transport, plan, clock = _manager(tmp_path)
+    manager.run("campaign", plan)
+    state = manager._load_state("campaign")
+    assert state["hosts"]["host-a"]["pressure"] == {"memory_some_avg10": 0.0, "io_some_avg10": 0.0}
+    return manager, transport, clock
+
+
+def _pressure_of(manager, host="host-a"):
+    return manager._load_state("campaign")["hosts"][host]["pressure"]
+
+
+def test_a_host_in_error_forgets_its_pressure_reading(tmp_path):
+    manager, _transport, _clock = _running(tmp_path)
+
+    def refuse(_host, _wanted):
+        raise TransportError("probe rejected")
+
+    manager.runner.probe = refuse
+    manager.tick("campaign")
+    assert manager._load_state("campaign")["hosts"]["host-a"]["status"] == "ERROR"
+    assert _pressure_of(manager) is None
+
+
+def test_a_stop_that_cannot_reach_the_host_forgets_its_pressure_reading(tmp_path):
+    manager, _transport, clock = _running(tmp_path)
+
+    def unreachable(_host, _name):
+        raise HostUnavailable("host timed out")
+
+    manager.runner.stop = unreachable
+    clock.advance(STALL_FLOOR_SECONDS + 1)
+    manager.tick("campaign")
+    assert manager._load_state("campaign")["hosts"]["host-a"]["status"] == "UNREACHABLE"
+    assert _pressure_of(manager) is None
+
+
+def test_a_start_that_cannot_reach_the_host_forgets_its_pressure_reading(tmp_path):
+    manager = _manager(tmp_path)[0]
+
+    def unreachable(_spec):
+        raise HostUnavailable("host timed out")
+
+    manager.runner.start = unreachable
+    manager.run("campaign", _plan(12))
+    assert manager._load_state("campaign")["hosts"]["host-a"]["status"] == "UNREACHABLE"
+    assert _pressure_of(manager) is None

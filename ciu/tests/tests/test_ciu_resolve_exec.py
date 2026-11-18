@@ -828,6 +828,58 @@ def test_stop_stack_refuses_a_stack_outside_the_deploy_selection_and_names_the_p
         deploy.stop_stack(repo, "tools/not-selected")
 
 
+def _docker_that_lists_one_container(calls):
+    def docker(argv, **kwargs):
+        calls.append(argv)
+        if argv[0] == "ps":
+            return SimpleNamespace(returncode=0, stdout="container-a\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    return docker
+
+
+def test_stop_stack_phases_selecting_the_stack_stops_it(resolvable_repo, monkeypatch):
+    """CIU-214: `--phases` on the `--dir` form narrows like the main form does."""
+    repo, _stack, _global = resolvable_repo
+    calls = []
+    monkeypatch.setattr(deploy.procutil, "docker", _docker_that_lists_one_container(calls))
+    assert deploy.stop_stack(repo, "tools/test-runner", phases={"phase_1"}) == 0
+    assert [call[0] for call in calls] == ["ps", "stop"]
+
+
+def test_stop_stack_phases_excluding_the_stack_refuses_before_docker(resolvable_repo, monkeypatch):
+    """A narrowed teardown never silently widens to the stack the phases omit."""
+    repo, _stack, _global = resolvable_repo
+    monkeypatch.setattr(
+        deploy.procutil, "docker",
+        lambda *_a, **_kw: pytest.fail("a stack outside --phases must refuse before Docker"),
+    )
+    with pytest.raises(ValueError, match=r"\[S18\].*not in the current deploy selection"):
+        deploy.stop_stack(repo, "tools/test-runner", phases={"phase_2"})
+
+
+def test_stop_stack_refuses_a_protected_instance_without_the_acknowledgement(
+    resolvable_repo, monkeypatch, capsys,
+):
+    """CIU-214: the `--dir` form honours CIU-105 exactly as `ciu down` does."""
+    repo, _stack, global_config = resolvable_repo
+    global_config["deploy"]["protected"] = True
+    monkeypatch.setattr(
+        deploy.procutil, "docker",
+        lambda *_a, **_kw: pytest.fail("a protected instance must refuse before Docker"),
+    )
+    assert deploy.stop_stack(repo, "tools/test-runner") == 1
+    assert "[CIU-105]" in capsys.readouterr().out
+
+
+def test_stop_stack_acknowledged_protected_instance_is_stopped(resolvable_repo, monkeypatch):
+    repo, _stack, global_config = resolvable_repo
+    global_config["deploy"]["protected"] = True
+    calls = []
+    monkeypatch.setattr(deploy.procutil, "docker", _docker_that_lists_one_container(calls))
+    assert deploy.stop_stack(repo, "tools/test-runner", protected_ack=True) == 0
+    assert [call[0] for call in calls] == ["ps", "stop"]
+
+
 @pytest.mark.parametrize(
     ("rows", "message"),
     [

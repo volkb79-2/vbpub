@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -116,7 +117,7 @@ class WorkspaceLintTests(unittest.TestCase):
                     path.write_text(original + f"\n// forbidden capability probe: {token}\n", encoding="utf-8")
                     result = self.run_guard()
                     self.assertNotEqual(result.returncode, 0)
-                    self.assertIn("outside crates/act or crates/store", result.stderr)
+                    self.assertIn("writes belong in", result.stderr)
                     self.assertIn(token, result.stderr)
                 finally:
                     path.write_text(original, encoding="utf-8")
@@ -147,17 +148,21 @@ class CrateFloorTests(unittest.TestCase):
         self.temp.cleanup()
 
     def write_summary(self, low_metric: str | None = None) -> None:
+        # Each package reports exactly its own registered floor (out of 100), so the guard's
+        # "exactly at the floor passes" case follows coverage-floors.toml as floors are raised.
+        floors = tomllib.loads(self.floors.read_text(encoding="utf-8"))["crates"]
         files = []
         for package in self.packages:
             source = next((HOSTOBS_ROOT / package).glob("src/*.rs"))
-            lines_covered = 8 if low_metric == f"{package}:lines" else 9
-            regions_covered = 8 if low_metric == f"{package}:regions" else 9
+            # count 10000 keeps a fractional floor (e.g. 92.5) exact instead of rounding it away.
+            lines_covered = 8000 if low_metric == f"{package}:lines" else round(floors[package]["line"] * 100)
+            regions_covered = 8000 if low_metric == f"{package}:regions" else round(floors[package]["region"] * 100)
             files.append(
                 {
                     "filename": str(source),
                     "summary": {
-                        "lines": {"covered": lines_covered, "count": 10, "percent": 90.0},
-                        "regions": {"covered": regions_covered, "count": 10, "percent": 90.0},
+                        "lines": {"covered": lines_covered, "count": 10000, "percent": lines_covered / 100},
+                        "regions": {"covered": regions_covered, "count": 10000, "percent": regions_covered / 100},
                     },
                 }
             )
@@ -182,7 +187,11 @@ class CrateFloorTests(unittest.TestCase):
     def test_exactly_at_both_floors_passes_for_every_package(self) -> None:
         result = self.run_floor_check()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.count("line 90.00%"), len(self.packages))
+        floors = tomllib.loads(self.floors.read_text(encoding="utf-8"))["crates"]
+        self.assertEqual(set(floors), set(self.packages))
+        for package in self.packages:
+            floor = floors[package]["line"]
+            self.assertIn(f"line {floor:.2f}% ({round(floor * 100)}/10000) >= {floor:.2f}%", result.stdout)
 
     def test_line_floor_rejects_coverage_below_floor(self) -> None:
         package = self.packages[0]

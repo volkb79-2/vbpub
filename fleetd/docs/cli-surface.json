@@ -963,14 +963,12 @@
       "kind": "minimum",
       "members": [
         "argument:route:entrypoint:fleet/sizing/plan",
-        "option:route:entrypoint:fleet/sizing/--margin",
         "option:route:entrypoint:fleet/sizing/--minimum-budget",
         "option:route:entrypoint:fleet/sizing/--startup-allowance"
       ],
       "route_id": "route:entrypoint:fleet/sizing",
       "shape": {
         "defaulted_options": [
-          "option:route:entrypoint:fleet/sizing/--margin",
           "option:route:entrypoint:fleet/sizing/--minimum-budget",
           "option:route:entrypoint:fleet/sizing/--startup-allowance"
         ],
@@ -983,7 +981,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:c427e8b299a08de5e72b116f4f75104670b7274afecaa526781b90669d09e7be"
+      "signature": "sha256:e84904023944c5d7e6cb01fb73f3d4847e336d182436befce050ff3c1577e8c6"
     },
     {
       "id": "case:route:entrypoint:fleet/sizing/option-spelling/option:route:entrypoint:fleet/sizing/--debug-raw/--debug-raw",
@@ -1022,7 +1020,7 @@
         "option_id": "option:route:entrypoint:fleet/sizing/--margin",
         "spelling": "--margin"
       },
-      "signature": "sha256:7058f2b86dc9b1e76c8a22bb6e55fd5f5ec1442246c0be8042c71ea6e480b05c"
+      "signature": "sha256:1c18fda89d61137a41ec51122fcd3634ecc28f73c1547b3c2dad3d3f1dbff3d2"
     },
     {
       "id": "case:route:entrypoint:fleet/sizing/option-spelling/option:route:entrypoint:fleet/sizing/--measurement/--measurement",
@@ -4306,11 +4304,11 @@
           "canonical": "--margin",
           "choices": null,
           "const": null,
-          "default": 1.1,
+          "default": null,
           "default_present": true,
-          "description": "budget margin over the estimate (default: 1.10)",
+          "description": "explicit budget margin over the estimate (default: derived from the measured spread, at least 1.10)",
           "dest": "margin",
-          "effective_default": 1.1,
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -4324,7 +4322,7 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
-            "default": 1.1,
+            "default": null,
             "type": {
               "callable": "builtins.float"
             }

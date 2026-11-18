@@ -1437,9 +1437,17 @@ def test_superseded_and_returned_duplicate_stop_failures_preserve_retry_state(tm
         raise HostUnavailable("returning host vanished during stop")
 
     manager.runner.stop = unavailable
+    quiet = {"memory_some_avg10": 0.0, "io_some_avg10": 0.0}
+    state["hosts"]["host-b"]["pressure"] = quiet
     manager._stop_returned_duplicates(state, "host-b")
     assert state["hosts"]["host-b"]["status"] == "UNREACHABLE"
+    assert state["hosts"]["host-b"]["pressure"] is None
     assert state["jobs"][job_b["name"]]["status"] == "RUNNING"
+
+    state["hosts"]["host-b"]["pressure"] = quiet
+    state["jobs"][job_b["name"]]["status"] = "SUPERSEDED_PENDING"
+    manager._stop_superseded_host(state, "host-b")
+    assert state["hosts"]["host-b"]["pressure"] is None
 
 
 def test_requeue_planner_errors_are_recorded_and_start_errors_stay_queued(tmp_path, monkeypatch):
@@ -1469,6 +1477,8 @@ def test_requeue_planner_errors_are_recorded_and_start_errors_stay_queued(tmp_pa
 
     state["hosts"][job["host"]]["status"] = "ONLINE"
     state["hosts"][job["host"]]["unreachable_since_mono"] = None
+    # An unreachable host forgot its pressure reading; a probe would set it again.
+    state["hosts"][job["host"]]["pressure"] = {"memory_some_avg10": 0.0, "io_some_avg10": 0.0}
 
     def raise_transport(_spec):
         raise TransportError("bad runner response")

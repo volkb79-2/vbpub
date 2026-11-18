@@ -1,0 +1,16 @@
+== uni list json
+exit=0
+== multi in-diff list (v2 tree, body-line-2 edit)
+src/lib.rs:6:5: replace multi -> u32 with 0
+src/lib.rs:6:5: replace multi -> u32 with 1
+src/lib.rs:6:15: replace + with - in multi
+src/lib.rs:6:15: replace + with * in multi
+src/lib.rs:7:11: replace + with - in multi
+src/lib.rs:7:11: replace + with * in multi
+src/lib.rs:7:7: replace * with + in multi
+src/lib.rs:7:7: replace * with / in multi
+exit=0
+exit=0
+== zero in-diff list json
+ INFO Diff file is empty
+exit=0

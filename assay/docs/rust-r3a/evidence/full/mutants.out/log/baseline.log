@@ -1,0 +1,30 @@
+
+*** baseline
+
+*** /usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo nextest run --no-run --verbose --package=r3a@0.1.0 --offline
+   Compiling r3a v0.1.0 (/tmp/cargo-mutants-subject-lWZHLU.tmp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+
+*** result: Success
+
+*** /usr/local/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo nextest run --verbose --package=r3a@0.1.0 --offline
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s
+────────────
+ Nextest run ID 219cf18e-5011-41ad-85ec-f7149b7d0e9b with nextest profile: default
+    Starting 4 tests across 1 binary
+       START [         ] (1/4) r3a tests::make_keeps_id
+             command: /tmp/cargo-mutants-subject-lWZHLU.tmp/target/debug/deps/r3a-f8edb014fd441bd3 --exact tests::make_keeps_id --nocapture
+       START [         ] (1/4) r3a tests::add_sums
+             command: /tmp/cargo-mutants-subject-lWZHLU.tmp/target/debug/deps/r3a-f8edb014fd441bd3 --exact tests::add_sums --nocapture
+        PASS [   0.005s] (1/4) r3a tests::add_sums
+       START [         ] (2/4) r3a tests::pick_cases
+             command: /tmp/cargo-mutants-subject-lWZHLU.tmp/target/debug/deps/r3a-f8edb014fd441bd3 --exact tests::pick_cases --nocapture
+        PASS [   0.005s] (2/4) r3a tests::make_keeps_id
+       START [         ] (3/4) r3a tests::spin_counts
+             command: /tmp/cargo-mutants-subject-lWZHLU.tmp/target/debug/deps/r3a-f8edb014fd441bd3 --exact tests::spin_counts --nocapture
+        PASS [   0.004s] (3/4) r3a tests::spin_counts
+        PASS [   0.004s] (4/4) r3a tests::pick_cases
+────────────
+     Summary [   0.009s] 4 tests run: 4 passed, 0 skipped
+
+*** result: Success

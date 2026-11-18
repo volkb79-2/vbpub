@@ -389,7 +389,8 @@ def test_under_sudo_a_created_iso_folder_and_its_parents_go_to_the_invoking_user
 
     owned = {path for path, uid, gid in chowned if (uid, gid) == (1234, 5678)}
     assert owned == {
-        tmp_path / "cow", tmp_path / "cow" / "downloads", iso, iso / asset.filename, iso / f"{asset.filename}.sha256"
+        tmp_path / "cow", tmp_path / "cow" / "downloads", iso, iso / asset.filename, iso / f"{asset.filename}.sha256",
+        iso / f".{asset.filename}.lock",
     }
 
 
@@ -403,8 +404,51 @@ def test_under_sudo_an_existing_iso_folder_is_left_alone(tmp_path, monkeypatch, 
 
     upstream.ensure_in_iso_dir(asset, expected_sha256=expected, iso_folder=iso)
 
-    # Only the fetched ISO and its sidecar are handed over; the folder (not created by this run) is never touched.
-    assert {path for path, *_ in chowned} == {iso / asset.filename, iso / f"{asset.filename}.sha256"}
+    # Only the fetched ISO, its sidecar and the lock file are handed over; the folder (not created by this run) is never
+    # touched.
+    assert {path for path, *_ in chowned} == {
+        iso / asset.filename, iso / f"{asset.filename}.sha256", iso / f".{asset.filename}.lock"
+    }
+
+
+def test_under_sudo_the_lock_file_goes_to_the_invoking_user(tmp_path, monkeypatch, asset):
+    payload = b"vanilla installer ISO fixture"
+    expected = hashlib.sha256(payload).hexdigest()
+    iso = tmp_path / "iso"
+    iso.mkdir()
+    monkeypatch.setattr(upstream, "_request", lambda *a, **k: _Response(payload))
+    chowned = _pretend_sudo(monkeypatch)
+
+    upstream.ensure_in_iso_dir(asset, expected_sha256=expected, iso_folder=iso)
+
+    # A root-owned lock would make a later non-sudo run fail with "could not lock", so it is handed over too (uid, gid
+    # in that order).
+    assert (iso / f".{asset.filename}.lock", 1234, 5678) in chowned
+
+
+@pytest.mark.parametrize(
+    "euid, sudo_uid, sudo_gid",
+    [(1000, "1234", "5678"), (0, None, None), (0, "1234", None), (0, None, "5678"), (0, "abc", "5678"), (0, "1234", "x1")],
+)
+def test_the_lock_file_is_left_alone_without_root_or_with_malformed_sudo_variables(
+    tmp_path, monkeypatch, asset, euid, sudo_uid, sudo_gid
+):
+    payload = b"vanilla installer ISO fixture"
+    expected = hashlib.sha256(payload).hexdigest()
+    iso = tmp_path / "iso"
+    iso.mkdir()
+    monkeypatch.setattr(upstream, "_request", lambda *a, **k: _Response(payload))
+    monkeypatch.setattr(upstream.os, "geteuid", lambda: euid)
+    for name, value in (("SUDO_UID", sudo_uid), ("SUDO_GID", sudo_gid)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    monkeypatch.setattr(upstream.os, "chown", lambda *a: pytest.fail("chown without a valid sudo owner"))
+
+    path, _ = upstream.ensure_in_iso_dir(asset, expected_sha256=expected, iso_folder=iso)
+
+    assert path == iso / asset.filename and (iso / f".{asset.filename}.lock").exists()
 
 
 def test_without_sudo_nothing_is_chowned_and_an_existing_folder_is_not_recreated(tmp_path, monkeypatch, asset):

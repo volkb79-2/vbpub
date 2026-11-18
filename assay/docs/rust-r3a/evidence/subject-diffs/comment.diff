@@ -1,0 +1,9 @@
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,4 +1,4 @@
+-//! Synthetic cargo-mutants subject for assay R-3a spikes (no dependencies).
++//! Synthetic cargo-mutants subject (comment edited).
+ 
+ pub struct Token {
+     pub id: u32,

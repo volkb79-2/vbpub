@@ -13,6 +13,13 @@ the recorder that ends that guess:
   ``budget_exceeded`` candidates -- and a summary of medians over KILLED and
   SURVIVED candidates only, which are the two buckets whose runtime is the
   cost of judging;
+* the summary also carries the PER-CANDIDATE SUM fields (FD-031, additive,
+  same ``/1`` document): the mean, standard deviation, sum and maximum of the
+  wall seconds of EVERY candidate that occupied a worker -- killed, survived,
+  ``budget_exceeded`` and ``hung``, the last two counted at the bound that
+  stopped them. A shard's wall time is the SUM of its candidates, so the mean
+  (not the median) is the estimator that matches a budget, and the spread is
+  what lets sizing size a heavy-tailed lane for its tail;
 * a candidate with no measurement is recorded as ``null``, never as zero: a
   zero would silently drag every median down and size the next campaign's
   budgets too small.
@@ -37,11 +44,34 @@ MEASUREMENT_SCHEMA = "fleet-r2-measurement/1"
 #: ``budget_exceeded`` or ``hung`` candidate's elapsed time is the bound that
 #: stopped it, not its runtime, and would understate the next campaign.
 MEASURED_BUCKETS = ("killed", "survived")
+#: Buckets whose elapsed seconds are the time a candidate OCCUPIED its worker,
+#: the bound included: the per-candidate sum fields count all four.
+COST_BUCKETS = ("killed", "survived", "budget_exceeded", "hung")
+#: Slack, in seconds, of the cost-field cross checks: the recorder rounds every
+#: field to six decimals, so the sum may differ from ``mean x count`` by up to
+#: this much per candidate (plus this much for the sum's own rounding).
+COST_TOLERANCE = 1e-6
 BUCKETS = ("killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent")
 
 
 def _median(values: Sequence[float]) -> float | None:
     return round(float(statistics.median(sorted(values))), 6) if values else None
+
+
+def _cost_summary(values: Sequence[float]) -> dict[str, Any]:
+    """The additive per-candidate sum fields (all ``None`` when nothing was timed)."""
+    if not values:
+        return {
+            "cost_candidates": 0, "cost_seconds_sum": None, "cost_seconds_mean": None,
+            "cost_seconds_stdev": None, "cost_seconds_max": None,
+        }
+    return {
+        "cost_candidates": len(values),
+        "cost_seconds_sum": round(math.fsum(values), 6),
+        "cost_seconds_mean": round(math.fsum(values) / len(values), 6),
+        "cost_seconds_stdev": round(float(statistics.pstdev(values)), 6),
+        "cost_seconds_max": round(max(values), 6),
+    }
 
 
 def _seconds(value: object) -> float | None:
@@ -86,6 +116,7 @@ def measurement_document(
     counts = {bucket: 0 for bucket in BUCKETS}
     measured_seconds: list[float] = []
     measured_memory: list[int] = []
+    cost_seconds: list[float] = []
     for candidate_id in planned:
         entries = by_id.get(candidate_id, [])
         if not entries:
@@ -104,6 +135,8 @@ def measurement_document(
         memory = _memory(owner.get("memory_peak_bytes"))
         if bucket in MEASURED_BUCKETS and seconds is not None:
             measured_seconds.append(seconds)
+        if bucket in COST_BUCKETS and seconds is not None:
+            cost_seconds.append(seconds)
         if bucket in MEASURED_BUCKETS and memory is not None:
             measured_memory.append(memory)
         rows.append({
@@ -134,6 +167,7 @@ def measurement_document(
             "memory_peak_bytes_max": max(measured_memory) if measured_memory else None,
             "memory_measured_candidates": len(measured_memory),
             "buckets": counts,
+            **_cost_summary(cost_seconds),
         },
     }
 
@@ -160,7 +194,52 @@ def validate_measurement(value: object) -> dict[str, Any]:
             or summary[key] <= 0
         ):
             raise ContractError(f"measurement.summary.{key}: expected a positive number or null")
+    _validate_cost_fields(summary)
     return dict(value)
+
+
+def _validate_cost_fields(summary: Mapping[str, Any]) -> None:
+    """Check the OPTIONAL per-candidate sum fields; a document without them loads."""
+    for key in ("cost_seconds_sum", "cost_seconds_mean", "cost_seconds_stdev", "cost_seconds_max"):
+        item = summary.get(key)
+        if item is None:
+            continue
+        nonnegative = key == "cost_seconds_stdev"
+        if (
+            isinstance(item, bool) or not isinstance(item, (int, float))
+            or not math.isfinite(float(item)) or item < 0 or (item == 0 and not nonnegative)
+        ):
+            raise ContractError(
+                f"measurement.summary.{key}: expected a "
+                f"{'non-negative' if nonnegative else 'positive'} number or null"
+            )
+    count = summary.get("cost_candidates")
+    if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0):
+        raise ContractError("measurement.summary.cost_candidates: expected a non-negative integer")
+    if count is None:
+        return  # the pre-FD-031 shape (or a hand-trimmed one): nothing to cross-check
+    names = ("cost_seconds_sum", "cost_seconds_mean", "cost_seconds_stdev", "cost_seconds_max")
+    present = [summary.get(name) is not None for name in names]
+    if count == 0 and any(present):
+        raise ContractError(
+            "measurement.summary: cost_candidates is 0 but a cost_seconds_* value is set"
+        )
+    if count > 0 and not all(present):
+        raise ContractError(
+            f"measurement.summary: cost_candidates is {count} but a cost_seconds_* value is null"
+        )
+    if count == 0:
+        return
+    total, mean, stdev, longest = (float(summary[name]) for name in names)
+    if mean > longest + COST_TOLERANCE:
+        raise ContractError("measurement.summary: cost_seconds_mean exceeds cost_seconds_max")
+    if stdev > longest + COST_TOLERANCE:
+        raise ContractError("measurement.summary: cost_seconds_stdev exceeds cost_seconds_max")
+    if abs(total - mean * count) > COST_TOLERANCE * (count + 1):
+        raise ContractError(
+            "measurement.summary: cost_seconds_sum differs from cost_seconds_mean x "
+            f"cost_candidates by more than {COST_TOLERANCE * (count + 1):g} s"
+        )
 
 
 def load_measurement(path: Path) -> dict[str, Any]:

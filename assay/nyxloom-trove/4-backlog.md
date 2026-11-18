@@ -14570,7 +14570,7 @@ first.
 
 ## B244 — R-3a: Rust mutation, report, and reservation spikes
 
-**Status:** OPEN — planned; depends on B242. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §D/§G R-3a and spikes S3/S4/S7.
+**Status:** DONE (2026-11-18, docs and evidence only; no `assay/src` change). Every spike ran in `tester-unified-rust:local` on v1001 against cargo-mutants 27.1.0 and is recorded with its commands, subjects and raw reports in `assay/docs/RUST-R3A-SPIKES.md` and `assay/docs/rust-r3a/evidence/`. The decisions D1-D8 there bound B245. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §D/§G R-3a and spikes S3/S4/S7.
 
 Measure and record cargo-mutants span-column units, `FnValue` span starts, zero-mutant `--in-diff` output, `--test-workspace=false`, directory-artifact reservation and dirty-tree checks, and report completeness after a baseline failure. Determine the assay schema impact of the `cargo-mutants:<Genre>` operator namespace and the `ASSAY_CHANGED_DIFF` environment handoff. The output is measured evidence and a bounded implementation decision, not an assumed upstream JSON shape.
 
@@ -14580,9 +14580,9 @@ Measure and record cargo-mutants span-column units, `FnValue` span starts, zero-
 
 ## B245 — R-3b: cargo-mutants R2 ingestion
 
-**Status:** OPEN — planned; depends on B243 and B244. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §D and §G R-3b; `assay/docs/RUST-METHODOLOGY.md`.
+**Status:** OPEN — CARVED (2026-11-18): the binding code-level design and work packages U0-U8 (fixture re-capture, safeio directory reservation, v20 cut, parser, result reader, runner/config wiring, docs, real qualification, T3 registration) are in `assay/docs/DESIGN-B245-CARGO-MUTANTS-INGESTION.md`, which also corrects parts of D1/D2/D4/D7 below; start at U0. B243 and B244 are done; the T3 queue (plan item T3-Q) is needed only for the T3 lane registration (U8), not for the parser. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §D and §G R-3b; `assay/docs/RUST-METHODOLOGY.md`; measured decisions D1-D8 in `assay/docs/RUST-R3A-SPIKES.md`. **Decided (operator, 2026-11-18):** D3 a zero-mutant `--in-diff` run leaves NO artifact and ends INCONCLUSIVE/`NO_MUTANTS`, never PASS; D6 B245 may pay a verdict v20 cut (the `cargo-mutants` operator namespace widens the schema in two places, `vocabulary.py` and `verdict.schema.json`; a major assay release); B550 is independent (a vocabulary entry, no schema change). **Carve inputs that are new work, not wiring:** D2 a directory-artifact reservation (cargo-mutants rotates even an empty pre-created `mutants.out` to `.old`, so the existing parent-fd reservation cannot hold it) and D7 an assay-owned argv placeholder for the `--in-diff` path (lane argv has no shell or substitution and `--in-diff` has no environment spelling, so the earlier `ASSAY_CHANGED_DIFF` variable below cannot work as written).
 
-Add a strict `cargo-mutants-outcomes` format parser and result-report reader beside the existing mutation-report formats. Map only the reviewed completion states to `killed`, `crashed`, `survived`, `budget_exceeded`, or `discarded`; an incomplete or contradictory report is `UNREADABLE_ARTIFACT`. Bind each mutant to committed source bytes and require the lane's nextest kill witness. Export the assay-resolved diff to the lane through `ASSAY_CHANGED_DIFF` for `cargo mutants --in-diff`. Register the ingested Rust R2 lane at a 100% diff-scoped kill floor. It runs asynchronously at T3 against the latest release, using `--base <previous release tag>`; it never gates a merge or release, and survivors become backlog items. Rust R2 not yet adopted (R-3b pending) is recorded once as a known issue, not as a per-release waiver (A-501). Fixtures must include real caught, missed, unviable, timeout, and baseline-failure reports.
+Add a strict `cargo-mutants-outcomes` format parser and result-report reader beside the existing mutation-report formats. Map only the reviewed completion states to `killed`, `crashed`, `survived`, `budget_exceeded`, or `discarded`; an incomplete or contradictory report is `UNREADABLE_ARTIFACT`. Bind each mutant to committed source bytes and require the lane's nextest kill witness. Hand the assay-resolved diff path to the lane through an assay-owned argv placeholder (D7; an exported variable cannot reach `cargo mutants --in-diff`). Register the ingested Rust R2 lane at a 100% diff-scoped kill floor. It runs asynchronously at T3 against the latest release, using `--base <previous release tag>`; it never gates a merge or release, and survivors become backlog items. Rust R2 not yet adopted (R-3b pending) is recorded once as a known issue, not as a per-release waiver (A-501). Fixtures must include real caught, missed, unviable, timeout, and baseline-failure reports.
 
 **Close when.** The parser, report reader, provenance binding, diff export, and real cargo-mutants fixtures pass their registered tests, and the lane runs at T3 with the previous release tag as its base without entering a merge or release gate.
 
@@ -15636,6 +15636,22 @@ requested comparison or refuses by name, the verdict can never record
 `first-parent` for a request that was discarded, the non-delegating behaviour
 is covered by an unchanged control, and the consumer doc tells a reader which
 rule applies to which declaration.
+
+**Fix evidence and gates (2026-11-18).** Branch `assay-b552-20261118` head
+`5cfb6fbf6` (four commits over origin/main e765d6977; also fixes
+`assay/analysis/src/assay_analysis/campaign.py`, which reconstructed a delegated
+base with the first-parent rule and would have failed its plan-versus-verdict
+base check on a merge head). Merge gate per the controller: assay `tooling-tests`
+PASS and the host `self-qualification-provisional` PASS on the exact head, plus an
+independent review MERGE bound to it. The FULL `assay tester-unified` host suite
+(5 h, also the lane for `assay/analysis`) is NOT a pre-merge requirement; as for
+the Rust R-1 package it stays a PRE-RELEASE gate: run it before the next assay
+release, as its own announced long window. Named limit:
+`measurability.check_base_is_head` resolves without `delegated`; it is reached only
+by direct library callers (the run path always passes the already-resolved base).
+Follow-up in another project: run-gate's SPEC and RG-54 text still say assay
+discards a supplied base on a merge HEAD, which is no longer true for delegated
+lanes.
 
 ## B553 — an inner `die` from the B105 driver scripts does not reach the lane log, so a precondition refusal is reported as `container exit 2`
 

@@ -187,10 +187,6 @@ class TestVerification:
             ksm._verify(truncated)
         assert "Refusing to cache an unverifiable shim" in str(exc.value)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="CIU-217: ksm parser currently accepts an ELF64 program header with e_phentsize=0",
-    )
     def test_zero_program_header_entry_size_is_refused(self, tmp_path):
         """A declared zero-sized program-header entry is not verifiable ELF."""
         malformed = bytearray(_elf64())
@@ -200,6 +196,39 @@ class TestVerification:
 
         with pytest.raises(ksm.KsmBuildError, match=r"cannot verify"):
             ksm._verify(path)
+
+    @pytest.mark.parametrize("entry_size", [1, 32, 55])
+    def test_undersized_program_header_entry_size_is_refused(self, tmp_path, entry_size):
+        """CIU-217: an entry smaller than the ELF64 program header the parser
+        reads (56 bytes) cannot be interpreted, so it is not verifiable."""
+        malformed = bytearray(_elf64())
+        malformed[54:56] = entry_size.to_bytes(2, "little")
+        path = tmp_path / f"undersized-phentsize-{entry_size}.so"
+        path.write_bytes(malformed)
+
+        assert ksm._dt_needed_count(path) is None
+        with pytest.raises(ksm.KsmBuildError, match=r"cannot verify"):
+            ksm._verify(path)
+
+    def test_exact_and_larger_program_header_entry_sizes_are_accepted(self, tmp_path):
+        """56 is the ELF64 structure size; a larger declared stride is legal."""
+        exact = bytearray(_elf64())
+        assert int.from_bytes(exact[54:56], "little") == 56
+        exact_path = tmp_path / "exact-phentsize.so"
+        exact_path.write_bytes(exact)
+        assert ksm._dt_needed_count(exact_path) == 0
+
+        larger = bytearray(_elf64())
+        larger[54:56] = (64).to_bytes(2, "little")
+        larger_path = tmp_path / "larger-phentsize.so"
+        larger_path.write_bytes(larger)
+        assert ksm._dt_needed_count(larger_path) == 0
+
+    def test_undersized_entry_size_with_no_program_headers_is_not_read(self, tmp_path):
+        """With e_phnum == 0 there is no table, so the entry size is never used."""
+        path = tmp_path / "no-program-headers.so"
+        path.write_bytes(_elf64_header(phentsize=0, phnum=0))
+        assert ksm._dt_needed_count(path) == 0
 
     def test_dt_needed_parser_refuses_unreadable_and_32_bit_inputs(self, tmp_path):
         assert ksm._dt_needed_count(tmp_path / "absent.so") is None
