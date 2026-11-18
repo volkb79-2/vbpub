@@ -215,7 +215,7 @@ blocks after adopting. v8: S6.2.4 derives the service from `exec_in` and needs n
 migration drops `[<stack>.linked_worktree]`. **RESOLVED 2026-11-18 (v8 spec):** S16.4.9 and
 S6.2.4 mandated a flat `rw` on the `git worktree add` rationale, which could not be reproduced from current
 code. Probe 10 passed (netcup-api-filter lane PASS under `ro`; dstdns lane reached a coverage verdict under `ro` once its
-sibling runner used the invoking uid, the earlier failure having been root-owned files, not the mount), and SPEC-V8 S16.4.9/S6.2.4
+sibling runner used the invoking uid; on that evidence the earlier failure was root-owned files, not the mount), and SPEC-V8 S16.4.9/S6.2.4
 now say `ro` by default with an opt-in `rw` modelled on the RG-NARROW/RG-86 layout above, which Run-Gate already uses.
 
 ---
