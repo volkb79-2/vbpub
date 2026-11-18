@@ -220,7 +220,7 @@ def test_rust_baseline_docs_match_the_available_assay_surface():
     changes = (REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8")
     unreleased = changes.split("## [Unreleased]", 1)[1].split("<!-- cmru: release history -->", 1)[0]
 
-    assert "Rust is supported at **R1 only**" in readme
+    assert "Rust is supported at **R1 natively; R2 only by ingestion**" in readme
     assert "hostobs keeps" in readme.casefold() and "90% line / 85% region" in readme
     assert "Rust lanes" in readme and "CONSUMERS.md#rust-lanes-r1" in readme
     assert "tester-unified-rust" in design and "changed-line mode" in design
@@ -230,7 +230,7 @@ def test_rust_baseline_docs_match_the_available_assay_surface():
     assert "## Rust lanes (R1)" in consumers
     assert "run-gate lint" in consumers and "run-gate selftest" in consumers
     assert "Status: R-2 registers the Assay adapter at R1." in methodology
-    assert "R2 and R3 remain unregistered" in methodology
+    assert "R3 remains unregistered; Rust R2 only by\ncargo-mutants ingestion (B245)" in methodology
     assert "R-1 `tester-unified-rust` image" in unreleased
     assert "Rust R2 is a known issue, not a per-release waiver." in unreleased
 
@@ -655,6 +655,107 @@ def test_a_malformed_lane_is_refused_by_the_loader_itself(tmp_path: Path):
     example = TomlExample(doc=Path("<synthetic>"), line=0, body=malformed, skip_reason=None)
     with pytest.raises(LaneConfigError):
         _check_example(example, tmp_path)
+
+
+def _rust_r2_template() -> TomlExample:
+    """The CONSUMERS "Rust R2 lanes (cargo-mutants)" copy-paste lane (B245 U6),
+    found by its lane name so a rename or a skip marker cannot silently drop it
+    from the live set."""
+    found = [
+        ex
+        for ex in _LIVE_EXAMPLES
+        if ex.doc == CONSUMERS and "[lanes.assay-r2]" in ex.body
+    ]
+    assert len(found) == 1, "CONSUMERS.md must carry exactly one live assay-r2 template"
+    return found[0]
+
+
+def test_the_rust_r2_consumer_template_loads_and_carries_the_documented_flags(
+    tmp_path: Path,
+):
+    example = _rust_r2_template()
+    _check_example(example, tmp_path)  # the shipped loader accepts it
+    lane = load_lane_file(tmp_path / "assay.toml").lane("assay-r2")
+
+    assert lane.judge.mutation.format == "cargo-mutants-outcomes"
+    assert lane.result_report.format == "cargo-mutants-outcomes"
+    assert lane.judge.mode == "changed_lines"
+    assert lane.judge.language == "rust"
+    argv = list(lane.argv)
+    assert argv[:2] == ["cargo", "mutants"]
+    # the decided D8 timeout set, and no fixed --timeout (measured nowhere)
+    assert argv[argv.index("--timeout-multiplier") + 1] == "10"
+    assert argv[argv.index("--minimum-test-timeout") + 1] == "120"
+    assert "--timeout" not in argv
+    assert argv[argv.index("--test-tool") + 1] == "nextest"
+    assert "--test-workspace=true" in argv
+    assert "--cargo-arg=--locked" in argv and "--cargo-arg=--offline" in argv
+    assert argv[argv.index("--in-diff") + 1] == "{assay.changed_diff}"
+    assert argv.count("{assay.changed_diff}") == 1
+    # the three spellings of <out> name one directory
+    output = argv[argv.index("--output") + 1]
+    assert output == lane.result_report.path == lane.judge.mutation.artifact
+    # the prose documents the same facts the template relies on
+    full_text = CONSUMERS.read_text(encoding="utf-8")
+    heading = "## Rust R2 lanes (cargo-mutants)"
+    assert heading in full_text
+    # only the new section's own text counts (`.gitignore` appears elsewhere)
+    text = full_text.split(heading, 1)[1].split("\n## ", 1)[0]
+    for required in (
+        "`--test-tool nextest` is REQUIRED",
+        "`.gitignore`",
+        "crashed > timeout > survivors",
+        "`mutants.out` as the artifact name",
+        "`judgment.r2.changed_diff`",
+        "`judgment.r2.report_absent`",
+        "`NO_MUTANTS`",
+        "`MUTANTS_SURVIVED`",
+        "`LANE_TIMEOUT`",
+        "`EXEC_FAILED`",
+        "`UNREADABLE_ARTIFACT`",
+        "`mutants.json`",
+    ):
+        assert required in text, f"CONSUMERS.md Rust R2 section omits {required!r}"
+
+
+@pytest.mark.parametrize(
+    ("replacements", "message"),
+    [
+        ((('"--in-diff", "{assay.changed_diff}"', '"--in-diff={assay.changed_diff}"'),), "placeholder"),
+        ((('  "--in-diff", "{assay.changed_diff}",\n', ""),), "must carry"),
+        ((('"--output", "assay-mutants-out"', '"--output", "elsewhere"'),), "'--output'"),
+        # the three spellings disagree: only `artifact` moves
+        (
+            (('artifact = "assay-mutants-out"', 'artifact = "assay-mutants-out/sub"'),),
+            "result_report.path",
+        ),
+        # `artifact` and `result_report.path` agree on a `mutants.out` name:
+        # trips the `mutants.out` rule, not the spelling-agreement rule
+        (
+            (
+                ('artifact = "assay-mutants-out"', 'artifact = "assay-mutants-out/mutants.out"'),
+                ('path = "assay-mutants-out"', 'path = "assay-mutants-out/mutants.out"'),
+            ),
+            "names the directory cargo-mutants itself creates",
+        ),
+        ((('source_roots = ["crates/core/src", "crates/io/src"]', 'source_roots = ["."]'),), "source_roots"),
+    ],
+)
+def test_a_broken_rust_r2_template_is_refused_by_the_same_check(
+    tmp_path: Path, replacements: tuple, message: str
+):
+    """Must-fail controls for the check above: each mutation of the real
+    template breaks one documented rule and is refused by the shipped loader
+    with THAT rule's message."""
+    template = _rust_r2_template()
+    broken_body = template.body
+    for old, new in replacements:
+        assert old in broken_body, f"fixture setup bug: {old!r} not in the template"
+        broken_body = broken_body.replace(old, new, 1)
+    assert broken_body != template.body, "fixture setup bug: nothing was replaced"
+    broken = template._replace(body=broken_body)
+    with pytest.raises(LaneConfigError, match=re.escape(message)):
+        _check_example(broken, tmp_path)
 
 
 def test_a_marked_fragment_is_excluded_from_the_live_set():

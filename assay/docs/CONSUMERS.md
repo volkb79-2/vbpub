@@ -2751,7 +2751,9 @@ bounded integer columns. Fixed-length
 The adapter maps `.rs` files and normalizes stable `cargo-llvm-cov`'s complete
 zero `BRF`/`BRH` markers when the artifact has no `BRDA` records. That result
 has branch capability `unavailable`; a lane that sets `require_branch = true`
-is refused as `NO_MEASUREMENT/BRANCH_UNAVAILABLE`. R2 and R3 are not registered.
+is refused as `NO_MEASUREMENT/BRANCH_UNAVAILABLE`. R3 is not registered, and
+there is no assay-native Rust mutator; Rust R2 exists only by ingesting
+cargo-mutants' report, see [Rust R2 lanes (cargo-mutants)](#rust-r2-lanes-cargo-mutants).
 
 A Rust R1 lane runs the real Cargo tools itself. A consumer's `assay.toml`
 judge section can be declared as follows:
@@ -2845,7 +2847,12 @@ run-gate selftest
 run-gate assay-r1      # command lane: no install, no pip needed (B549 / HOB-44)
 ```
 
-Rust R2 is not adopted yet; this is a known issue, not a per-release waiver. Its
+Rust R2 is not adopted yet; this is a known issue, not a per-release waiver.
+Assay's side of it (B245 U0-U5c: the `cargo-mutants-outcomes` ingestion, the
+changed-lines diff and the zero-mutant verdict) is implemented and documented
+in [Rust R2 lanes (cargo-mutants)](#rust-r2-lanes-cargo-mutants); what is still
+open is the consumer lane itself (hostobs, B245 U8) and the real-run
+qualification (U7). Its
 target is a diff-scoped, 100%-killed cargo-mutants campaign at T3, run
 asynchronously against the latest release with `--base <previous release
 tag>`. It never gates a merge or release, and survivors become backlog items.
@@ -2858,6 +2865,197 @@ a separate T3 lane.
 The detailed, binding record is
 [Rust methodology](RUST-METHODOLOGY.md). Package order and deferred work are in
 `nyxloom-trove/4-backlog.md` (B241-B250).
+
+## Rust R2 lanes (cargo-mutants)
+
+A Rust R2 lane runs `cargo mutants` itself, inside the snapshot, and assay
+judges the `outcomes.json` the tool wrote (R2 by ingestion, B245). The format
+is `cargo-mutants-outcomes`, registered twice on one lane: as the
+`judge.mutation` format (the R2 evidence) and as the `result_report` format (the
+R0 evidence, so the baseline's own test run decides R0 instead of cargo-mutants'
+exit codes 2 and 3). Assay accepts only cargo-mutants `27.x` reports. The
+lane is a `changed_lines` lane: assay produces the diff itself and hands it to
+the tool through the argv placeholder `{assay.changed_diff}`.
+
+### The lane template
+
+```toml
+schema_version = 2
+
+[lanes.assay-r2]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = [
+  "cargo", "mutants",
+  "--test-tool", "nextest",
+  "--test-workspace=true",
+  "--jobs", "1",
+  "--timeout-multiplier", "10",
+  "--minimum-test-timeout", "120",
+  "--cargo-arg=--locked",
+  "--cargo-arg=--offline",
+  "--in-diff", "{assay.changed_diff}",
+  "--output", "assay-mutants-out",
+]
+env = {}
+env_passthrough = ["PATH"]
+budget = "2h"
+allow_argv_append = false
+
+[lanes.assay-r2.isolation]
+snapshot_selection = "repository"
+
+[lanes.assay-r2.judge]
+language = "rust"
+mode = "changed_lines"
+source_roots = ["crates/core/src", "crates/io/src"]
+base_source = "request"
+
+[lanes.assay-r2.judge.mutation]
+format = "cargo-mutants-outcomes"
+artifact = "assay-mutants-out"
+fail_under = 100.0
+
+[lanes.assay-r2.result_report]
+format = "cargo-mutants-outcomes"
+path = "assay-mutants-out"
+```
+
+Commit a `.gitignore` entry for the output directory (`/assay-mutants-out/`).
+Assay creates the directory itself, empty, in the snapshot; a post-run
+`git status` that lists it as untracked ends the run `NO_MEASUREMENT/DIRTY_TREE`,
+and only a COMMITTED `.gitignore` counts. This template is loaded by the
+shipped lane loader in the documentation test suite, so every rule below that is
+checked at lane load is already satisfied by it. The paths (`crates/core/src`,
+`assay-mutants-out`) are placeholders for your workspace.
+
+Run it in `tester-unified-rust` with `network = "none"`, as for the R1 lane
+above, with the comparison base from the gate request (`base_source =
+"request"`) or a fixed `judge.base`.
+
+**The flags.**
+
+- `--test-tool nextest` is REQUIRED, and lane load does not check it. Assay reads
+  a mutant's test phase `Failure(100)` (nextest's own "a test failed" exit) as
+  KILLED. With the default `cargo test` a failing test exits 101, which assay
+  reads as `Crashed`, so every kill becomes a crash and the lane ends
+  `ERROR/EXEC_FAILED`: loud, never a false pass, but useless.
+- `--test-workspace=true` (or `=false`) should be written explicitly; this is a
+  recommendation, not a rule: the lane loads without it (the template's loading
+  test does not depend on it). The unset default tests only the mutated package,
+  so a crate whose tests live in another package has no tests of its own,
+  nextest exits 4 and every mutant is `Crashed`. With `=true`, `--jobs N`
+  multiplies the per-mutant cost by the whole workspace's test time; scale
+  `--jobs` and `budget` only after measuring your workspace.
+- `--cargo-arg=--locked --cargo-arg=--offline`: the gate has no network and the
+  lock file is the contract.
+- `--timeout-multiplier 10 --minimum-test-timeout 120` is the decided timeout
+  set (D8, `RUST-R3A-SPIKES.md`): the per-mutant limit scales with the baseline
+  test time, with a floor. Which flag sets were MEASURED: the D8 set was accepted
+  by cargo-mutants 27.1.0 in spike 5b (with `--jobs 2`); a fixed `--timeout 20
+  --jobs 1` was the set of the U0 capture (`rust-b245-u0/scripts/run-u0.sh`). A
+  fixed `--timeout 120` was measured nowhere. A fixed `--timeout <seconds>` under
+  `--test-workspace=true` is risky: if it is shorter than the workspace's test
+  time every mutant becomes a `Timeout`, and `Timeout` outranks survivors, so the
+  lane ends `BUDGET_EXCEEDED` (see the terminals below). A mutant that exceeds
+  the limit is a `Timeout`.
+- `--in-diff {assay.changed_diff}` is the changed-lines restriction.
+- `--output <out>` is the directory assay reserves and reads; see below.
+
+**`{assay.changed_diff}`.** `{assay.` is a reserved placeholder namespace with one
+known token. The token must be a WHOLE argv element (`"--in-diff",
+"{assay.changed_diff}"`; `"--in-diff={assay.changed_diff}"` is refused) and
+appear exactly once. It is required on a `changed_lines` lane that ingests
+`cargo-mutants-outcomes` (without it the tool would mutate the whole crate while
+assay judges only the changed lines), and refused on `whole_target`, on any
+lane that does not declare R2 with this format, on a lane that also declares R3
+(declare R3 on a separate lane), in `env` and in `environment_command`. A token
+appended at run time (`allow_argv_append`) is not substituted and is refused.
+Before the baseline runs, assay writes `git diff` of the declared base against
+the commit (`a/` `b/` prefixes, no renames, restricted to your `source_roots`,
+relative to the cargo workspace root) to a private file outside the snapshot and
+substitutes its path at the process boundary only: the verdict's `argv_declared`
+and `argv_effective` keep the placeholder. An empty diff is normal (a docs-only
+change) and ends `INCONCLUSIVE/NO_MUTANTS`, see below. The verdict records the
+handoff in `judgment.r2.changed_diff` (`base_rev`, `head_rev`, `relative_to`,
+`sha256`, `bytes`); `assay verify` checks its shape and revisions but, from the
+document alone, cannot recompute the hash. If the command rewrites, truncates or
+deletes the handoff file, R2 ends `ERROR/UNREADABLE_ARTIFACT`.
+
+**`--output <out>`.** The output directory is spelled three times and the three
+must name ONE directory: argv `--output`, `result_report.path` (both relative to
+the lane's `cwd`, where the command runs) and `judge.mutation.artifact`
+(relative to the project root; equal to `cwd` joined with the other two). Lane
+load refuses a lane whose spellings disagree, and also:
+
+- `-o` and `-o<dir>` (the tool's short spelling; assay does not recognise it),
+  `--output` more than once or without a directory, `--output` after a `--`
+  separator, and a `CARGO_MUTANTS_OUTPUT` entry in `env` or `env_passthrough`.
+- `mutants.out` as the artifact name. cargo-mutants itself creates
+  `<out>/mutants.out` and rotates an existing one to `mutants.out.old`; assay
+  holds `<out>`, not the child, so name your own directory.
+- an artifact equal to or inside any `judge.source_roots` entry. Use
+  `crates/core/src`, not the crate directory `crates/core`, when the output
+  directory sits beside the sources (and never put it under `src`).
+
+At run time `<out>` must be untracked at the commit and EMPTY at the start. A
+non-empty in-tree `<out>` is copied into the tree the tests run against
+(measured, `.gitignore` or not), so assay refuses it as
+`ERROR/UNREADABLE_ARTIFACT` ("not empty") and never writes into the directory.
+A tracked `<out>` ends this way end to end: the materialised tracked file makes
+the directory non-empty and that reservation refuses first. (`BAD_LANE_CONFIG` is
+only the runner's own tracked-path branch, reached at unit level.)
+
+**The workspace-root rule.** The lane's `cwd` must be inside a cargo workspace
+or be a lone package. Assay anchors the tool's `file` paths, and the diff's
+`--relative`, on the nearest `Cargo.toml` holding a `[workspace]` table, walking
+up from the lane's cwd and reading each manifest from the COMMITTED blob, never
+from the checkout the command could have edited; a lone package is its own
+root. No workspace and no package manifest is `ERROR/BAD_LANE_CONFIG` before the
+command runs. A wrong anchor silently selects nothing (exit 0), which is the
+zero-mutant case below, never a PASS. A workspace member DIRECTORY named `b` is
+unsupported: measured, it matched no mutant for an unexplained reason. Only `b`
+was run; `a` was NOT run (refused as a precaution, so it is unmeasured). The
+qualification lint (U7) will refuse such members. Rename the directory (the
+package name does not matter).
+
+### The terminals
+
+| What the report and run show | Verdict |
+|---|---|
+| A surviving mutant (below `fail_under`) | `FAIL` / `MUTANTS_SURVIVED` |
+| A mutant that timed out (`Timeout`; outranks survivors) | `BUDGET_EXCEEDED` / `LANE_TIMEOUT` |
+| A crashed mutant: the test phase ended `Failure(4)` (nextest ran no test), `Signalled` or `Other`, or any non-100 failure | `ERROR` / `EXEC_FAILED` |
+| An unreadable, tampered or stale report (outside the command's time window, `end_time` null, a mutant with no consistent diff, a rotated `mutants.out.old`, a symlink, a hard link, a missing member), or a non-empty `<out>` | `ERROR` / `UNREADABLE_ARTIFACT` |
+| The baseline test run failed (`cargo-mutants` exit 4) | R0 `FAIL`, decided by the report |
+| No report, exit 0, on a `changed_lines` lane that was handed the diff (nothing to mutate) | `INCONCLUSIVE` / `NO_MUTANTS`, with `judgment.r2.report_absent` true and producer version `unobserved` |
+| Any other absent report (no diff handoff, a failed exit, a refused directory) | fails closed: `ERROR` / `UNREADABLE_ARTIFACT`, or R0 decided by the exit code |
+| A directory that was never read (the run ended before the command's result was consumed) | `ERROR` / `EXEC_FAILED`, not `UNREADABLE_ARTIFACT` (under a timeout the run ends `BUDGET_EXCEEDED`) |
+
+The precedence is crashed > timeout > survivors. The timeout bucket outranks
+survivors, so a run with both a survivor and a timed-out mutant reports
+`BUDGET_EXCEEDED`, not `FAIL`; the survivors are still listed. A run whose report is usable and fresh decides R0 whatever the tool's
+exit code was (1, 70, -9, 4); only an absent, stale or unusable report leaves R0
+to the exit code, and R2 then fails closed. A zero-mutant run is never a PASS:
+`lines_without_candidates` lists the diff's added lines under your
+`source_roots`, so "nothing to mutate" is reviewable. An `Unviable` mutant (it
+does not compile) is a discarded mutant with a recorded reason, not a survivor.
+
+### What is not measured
+
+- Mutant name shapes other than `BinaryOperator`, `FnValue` and `MatchArmGuard`
+  (`UnaryOperator` and the rest): such a mutant is bound by its span and its
+  diff alone, not by a token its name carries.
+- A `Timeout` in the Build phase, and an `Unviable` mutant with a `Signalled` or
+  `Other` Build status: refused as `UNREADABLE_ARTIFACT` until a real run shows
+  their shape.
+- CRLF sources and `\r` in spans.
+- Scale: no real hostobs-sized campaign has run (B245 U7/U8), nor a workspace
+  root below the git top with several members, nor `--jobs` above 1.
+- The cross-check of each mutant's diff against the `mutants.json` the tool
+  also writes (design Q4) is deferred: the directory artifact carries only
+  `outcomes.json` and `diff/*.diff`, so the parser cannot read that file yet.
 
 ## JavaScript/TypeScript lanes (R1, R2 by ingestion, and R3 canary)
 
