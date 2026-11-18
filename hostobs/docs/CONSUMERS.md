@@ -1,8 +1,8 @@
 # Using the hostobs Rust lanes
 
 `model`, `proto`, `kernel` and `store` are functional; the remaining three library crates and
-two binaries are still the M0 scaffold. The registered lanes are `lint`, `selftest` and
-`assay-r1`. The estate wraps every lane run in the controller's gate wrappers, which take the
+two binaries are still the M0 scaffold. The registered lanes are `lint`, `selftest`, `assay-r1`
+and `conformance` (the Python tests). The estate wraps every lane run in the controller's gate wrappers, which take the
 shared gate slots and the lane's lock (see `scripts/controller/README.md`, "Running the
 registered gate" and "Run one lane on a remote gate worker"); a bare `run-gate <lane>` skips
 that admission and `run-gate` refuses container lanes on the main checkout, so do not use it
@@ -195,9 +195,14 @@ matching `make_*.py` and regenerate. The segment layout they implement is specif
 [`SEGMENT-FORMAT.md`](SEGMENT-FORMAT.md), and the Rust side asserts the same files in
 `crates/store/tests/golden_segment.rs`.
 
-**This run is not yet a registered lane.** It is a documented manual check
-(`HOB-4`), so its result is developer feedback, not gate evidence. Adding it as a
-`conformance` lane is the tracked follow-up.
+**This run is the registered `conformance` lane** (`HOB-4`): `run-gate.toml` runs
+`python3 -B -I -W error::ResourceWarning -m unittest discover -s python/tests` on
+`tester-unified-rust` with `network = "none"`, so a failure fails the gate. That image's `python3` is
+Debian's apt package (CPython 3.13.5 on Debian 13, no pip), not the CPython 3.14.10 the WIRE.md §7.8
+absolute memory bound was measured on: that one test is skipped there (its reason names the pinned
+version), while the growth and line-count gates and every other test run. The lane is not judged by
+Assay. Run it the same way as any lane (`scripts/controller/gate-run.sh conformance` in a linked
+worktree, or `remote-gate.sh v1001 hostobs conformance <commit>`).
 
 ## Working with the model in a probe or test
 

@@ -124,7 +124,8 @@ image is built on a host only on the controller's go and does not exist yet. See
 
 ## Gates
 
-The registered lanes are `lint`, `selftest` and `assay-r1`. Run them through the estate's
+The registered lanes are `lint`, `selftest`, `assay-r1` and `conformance` (the Python reference
+decoders, fixture checks and `hostobs_client` tests, standard library only; `HOB-4`). Run them through the estate's
 gate wrappers, not a bare `run-gate` (which skips slot admission and refuses container lanes
 on the main checkout). Locally, from this directory in a **linked worktree**:
 

@@ -16,7 +16,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-1 | Counter wrap is never inferred: every backwards raw counter is a reset | Minor | OPEN (by design, awaiting a declared-width policy) |
 | HOB-2 | SP-4 measured bytes only: encode/decode CPU, allocations and maintenance cost unmeasured | Minor | OPEN |
 | HOB-3 | `model` and `proto` duplicate the quality/metric vocabularies because the locked image cannot take the path dependency; a shared fixture, not a shared type, binds them | Major | OPEN (needs one image build on the registry-set identity, then workspace-only lock edits need no further rebuild) |
-| HOB-4 | No registered `conformance` lane: the independent Python fixture check is not gate-enforced | Major | OPEN |
+| HOB-4 | The independent Python fixture check had no registered `conformance` lane | Major | FIXED (the `conformance` lane) |
 | HOB-5 | Section version 1 has no history min/max/mean columns; `TIME` carries one value per bucket plus the aggregation code | Minor | OPEN (decided: WIRE.md §3.6/§4.9 D-W10, no layout change; lands with P5b `series_batch`) |
 | HOB-6 | `DICT` frame type is defined but consumed nowhere: the dictionary travels inside the block frame | Minor | CLOSED (by design: reserved and unsent, WIRE.md §2.2 D-W6) |
 | HOB-7 | `IncarnationRegistry` grows without bound and `end_round` is O(all ids ever minted) | Major | OPEN (SP-3 bound) |
@@ -496,19 +496,18 @@ reference decoder. The Python side exists and passes (`python3 -I -m unittest di
 python/tests`, 196 tests as of P3b: the reference decoders, the 70 wire fixtures, the stream and rate
 fixtures, the `hostobs_client` decoder, connection, profiling and mark tests on a fake probe, the §7.8 gated
 bounds and a zipimport smoke test; standard library only), and the Rust side asserts the same
-fixture files in `crates/proto/tests/golden_fixtures.rs`. What is missing is a *registered*
-lane: the Python run has no declared environment, so it is not gate evidence and cannot
-fail a merge by itself. The cross-language claim currently rests on two independent test
-suites that happen to read the same files, not on one executed lane.
+fixture files in `crates/proto/tests/golden_fixtures.rs`. The registered `conformance` lane
+runs the Python suite, so a Python failure fails the gate: the cross-language claim rests on both
+suites asserting the same fixture files, each executed by a registered lane (`selftest` for
+Rust, `conformance` for Python).
 
-**Exit notes from this package.** The lane was not added here because the brief scoped
-this slice to `model` and `proto` and any lane's environment/argv must be reviewed as
-gate change. Current state: no registered lane. The image is `tester-unified-rust`, which carries an apt
-`python3` (no pip; its CPython version is unmeasured, and the §7.8 absolute memory bound is gated on
-3.14.10 only, see the P3a note in `docs/WIRE.md` §12), with
-`python3 -I -m unittest discover -s python/tests`, no network, plus the fixture
-regeneration check (`python3 python/reference/make_fixtures.py <tmpdir>` compared with
-the committed bytes).
+**Lane.** `run-gate.toml` declares `[lanes.conformance]` (a command lane on `tester-unified-rust`,
+`network = "none"`, budget 10 minutes, not judged by Assay) running
+`python3 -B -I -W error::ResourceWarning -m unittest discover -s python/tests`. The image carries
+Debian's apt `python3` (CPython 3.13.5 on Debian 13, no pip), so the WIRE.md §7.8 absolute memory
+bound (measured on CPython 3.14.10 only) is skipped there and the growth and line-count gates run
+(P3a note in `docs/WIRE.md` §12). The fixture regeneration check (the Python generators reproduce the
+committed bytes) is part of the same suite.
 
 ## HOB-5 — No history min/max/mean columns
 
