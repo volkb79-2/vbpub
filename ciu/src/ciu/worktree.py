@@ -163,6 +163,92 @@ def _path_may_have_git_context(path: Path) -> bool:
         return True
 
 
+def is_linked_git_worktree(repo_root: Path) -> bool:
+    """True when *repo_root* is inside a linked git worktree (git-dir != common-dir)."""
+    def rev(flag: str) -> str:
+        # procutil always captures text; "" (not None) is the only "unknown" value,
+        # which the truthiness test below treats uniformly (CIU-201).
+        try:
+            done = procutil.run_cmd(
+                ["git", "-C", str(repo_root), "rev-parse", "--path-format=absolute", flag],
+            )
+        except OSError:
+            return ""
+        return done.stdout.strip() if done.returncode == 0 else ""
+
+    git_dir, common = rev("--git-dir"), rev("--git-common-dir")
+    return bool(git_dir and common and os.path.realpath(git_dir) != os.path.realpath(common))
+
+
+@dataclass(frozen=True)
+class GitMountPlan:
+    """CIU-215: where a linked checkout's git metadata lives (logical paths).
+
+    Every path is in THIS process's namespace and is exactly what the
+    checkout's gitfile names; :meth:`physical` translates one of them into the
+    daemon's namespace for a bind source (never ``stat`` the result locally).
+    """
+
+    repo_root: Path
+    top: Path
+    gitfile: Path
+    admin: Path
+    common: Path
+
+    def physical(self, path: Path) -> Path:
+        return _physical_workspace_target(self.repo_root, path)
+
+
+def _read_git_pointer(path: Path, what: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise WorktreeError(f"[CIU-215] cannot read {what} {path}: {exc}") from exc
+
+
+def git_common_dir_mount(repo_root: Path) -> GitMountPlan:
+    """Derive a linked checkout's common dir from its gitfile (CIU-215, S16.4.9).
+
+    The target is read from ``<git top>/.git`` (``gitdir: <admin>``) and
+    ``<admin>/commondir`` and joined lexically (no ``resolve``); a relative
+    gitfile is joined against the checkout's logical path. It is then
+    cross-checked against ``git rev-parse --git-common-dir``; a disagreement
+    refuses with both paths named. The git top comes from the shared library
+    because a CIU root can sit below it.
+    """
+    shared = _shared_worktree()
+    try:
+        top, _common = shared.discover_git_root(Path(repo_root))
+    except shared.WorkspaceError as exc:
+        raise WorktreeError(
+            f"[CIU-215] cannot determine the git checkout of {repo_root}: {exc}"
+        ) from exc
+    gitfile = top / ".git"
+    text = _read_git_pointer(gitfile, "gitfile")
+    match = re.fullmatch(r"gitdir:\s*(.+)", text)
+    if match is None:
+        raise WorktreeError(
+            f"[CIU-215] {gitfile} is not a linked-worktree gitfile "
+            "('gitdir: <path>'); the git common-dir mount is for a linked worktree"
+        )
+    admin = Path(os.path.normpath(top / match.group(1).strip()))
+    commondir = _read_git_pointer(admin / "commondir", "commondir file")
+    common = Path(os.path.normpath(admin / commondir))
+    done = procutil.run_cmd(
+        ["git", "-C", str(top), "rev-parse", "--path-format=absolute", "--git-common-dir"]
+    )
+    reported = done.stdout.strip() if done.returncode == 0 else ""
+    if not reported or os.path.realpath(common) != os.path.realpath(reported):
+        raise WorktreeError(
+            f"[CIU-215] the gitfile {gitfile} names the common dir {common}, but "
+            f"git reports {reported or '(no answer)'}; refusing to mount a git "
+            "directory the two sources disagree on"
+        )
+    return GitMountPlan(
+        repo_root=Path(repo_root), top=top, gitfile=gitfile, admin=admin, common=common
+    )
+
+
 def _physical_workspace_target(repo_root: Path, target: Path) -> Path:
     """Translate one logical checkout path into the daemon's path namespace."""
 

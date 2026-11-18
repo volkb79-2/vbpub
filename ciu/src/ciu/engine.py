@@ -1192,6 +1192,7 @@ def reset_service(
 
     overlay_path = stack_dir / MACHINE_DIR / OVERLAY_NAME
     ownership_path = stack_dir / MACHINE_DIR / OWNERSHIP_OVERLAY_NAME
+    gitdir_path = stack_dir / MACHINE_DIR / GITDIR_OVERLAY_NAME
 
     # Step 1: docker compose down -v --remove-orphans (with overlay args when
     # present). --remove-orphans tears down one-shot init/sidecar containers
@@ -1231,6 +1232,9 @@ def reset_service(
     # compose reasoning about a different merged model than the one running).
     if ownership_path.exists():
         down_cmd += ["-f", str(ownership_path)]
+    # CIU-215: the git common-dir fragment is the last `-f` of `up`.
+    if gitdir_path.exists():
+        down_cmd += ["-f", str(gitdir_path)]
     down_cmd += ["down", "-v", "--remove-orphans"]
     try:
         guard_clean_one_shots(
@@ -1289,6 +1293,7 @@ def reset_service(
         stack_dir / STACK_CONFIG_RENDERED,
         overlay_path,
         ownership_path,
+        gitdir_path,
     ]
     removed = 0
     for f in targets:
@@ -1296,6 +1301,11 @@ def reset_service(
             f.unlink()
             print(f"[INFO]     Removed: {f}", flush=True)
             removed += 1
+    gitdir_state = stack_dir / MACHINE_DIR / GITDIR_STATE_SUBDIR
+    if gitdir_state.exists():
+        shutil.rmtree(gitdir_state)
+        print(f"[INFO]     Removed: {gitdir_state}", flush=True)
+        removed += 1
     rendered_dir = stack_dir / MACHINE_DIR / RENDERED_SUBDIR
     if rendered_dir.exists():
         shutil.rmtree(rendered_dir)
@@ -1960,6 +1970,233 @@ def write_ownership_overlay(
     return path
 
 
+# ---------------------------------------------------------------------------
+# CIU-215 — opt-in git common-dir mount for services of a LINKED worktree
+# ---------------------------------------------------------------------------
+
+# The third engine-side fragment (after the ownership fragment). One file, one
+# purpose; written only for a stack that declares `[<root>.linked_worktree]`
+# AND only in a linked worktree, so a primary checkout renders unchanged.
+GITDIR_OVERLAY_NAME = "ciu.compose.gitdir.yml"
+GITDIR_STATE_SUBDIR = "gitdir"
+_GITDIR_HOOKS_EMPTY = "hooks-empty"
+
+
+def _split_short_volume(entry: str) -> list[str]:
+    """Split a short-form volume on ``:`` outside balanced ``${...}`` spans.
+
+    ``${PHYSICAL_REPO_ROOT:?msg}/../.git:/x/.git`` holds a colon inside the
+    expansion that is not a field separator.
+    """
+    fields: list[str] = []
+    current: list[str] = []
+    depth = 0
+    index = 0
+    while index < len(entry):
+        char = entry[index]
+        if char == "$" and entry[index + 1:index + 2] == "{":
+            depth += 1
+            current.append("${")
+            index += 2
+            continue
+        if char == "}" and depth:
+            depth -= 1
+        if char == ":" and not depth:
+            fields.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+        index += 1
+    fields.append("".join(current))
+    return fields
+
+
+def _service_volume_targets(service: object) -> list[str]:
+    """Container paths a rendered service already mounts (long and short form)."""
+    volumes = service.get("volumes") if isinstance(service, dict) else None
+    targets: list[str] = []
+    for entry in volumes if isinstance(volumes, list) else []:
+        if isinstance(entry, dict):
+            target = entry.get("target")
+        elif isinstance(entry, str):
+            fields = _split_short_volume(entry)
+            target = fields[1] if len(fields) > 1 else fields[0]
+        else:
+            continue
+        if isinstance(target, str) and target.startswith("/"):
+            targets.append(os.path.normpath(target))
+    return targets
+
+
+def _target_covers(existing: str, common: str) -> bool:
+    """True when *existing* equals the common dir or is an ancestor of it."""
+    return existing == common or existing == "/" or common.startswith(existing + "/")
+
+
+def _gitdir_bind(source: Path, target: Path, read_only: bool) -> dict[str, Any]:
+    # create_host_path false: Docker must never invent an empty dir (CIU-14).
+    return {
+        "type": "bind", "source": str(source), "target": str(target),
+        "read_only": read_only, "bind": {"create_host_path": False},
+    }
+
+
+def _regular_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def _gitdir_mount_specs(
+    mount: "worktree.GitMountPlan", mode: str, state_dir: Path
+) -> list[tuple[Path, Path, bool]]:
+    """``(physical source, container target, read_only)`` for the common dir.
+
+    Run-Gate's RG-NARROW/RG-86 layout (see the design note's table): ``ro`` is
+    the flat read-only mount; ``rw`` keeps `worktrees/` read-only with the
+    checkout's own admin dir writable on top, an empty read-only `hooks/`,
+    read-only `info/` and pointer files. The config files get sanitized
+    copies in both modes. Local checks run on LOGICAL paths only; every bind
+    source is translated into the daemon namespace and never stat-ed.
+    """
+    from .gitconfig_sanitize import (
+        MAX_GIT_OVERLAYS, GitConfigError, nested_git_config_files,
+        sanitized_git_config_text,
+    )
+
+    common, admin = mount.common, mount.admin
+    read_only = mode == "ro"
+    specs: list[tuple[Path, Path, bool]] = [(mount.physical(common), common, read_only)]
+    if not read_only:
+        worktrees = common / "worktrees"
+        if worktrees.is_dir():
+            specs.append((mount.physical(worktrees), worktrees, True))
+        specs.append((mount.physical(admin), admin, False))
+        for name in ("hooks", "info"):
+            if (common / name).is_symlink() or not (common / name).is_dir():
+                raise ValueError(
+                    f"[CIU-215] the shared git {name} directory is missing or "
+                    f"unsafe: {common / name}"
+                )
+        empty_hooks = state_dir / _GITDIR_HOOKS_EMPTY
+        if empty_hooks.exists():
+            shutil.rmtree(empty_hooks)
+        empty_hooks.mkdir(mode=0o755, parents=True)
+        specs.append((mount.physical(empty_hooks), common / "hooks", True))
+        specs.append((mount.physical(common / "info"), common / "info", True))
+        for pointer in (mount.gitfile, admin / "gitdir", admin / "commondir"):
+            if not _regular_file(pointer):
+                raise ValueError(
+                    f"[CIU-215] the git worktree pointer is not a regular file: {pointer}"
+                )
+            specs.append((mount.physical(pointer), pointer, True))
+
+    config = common / "config"
+    if not config.is_file():
+        raise ValueError(
+            f"[CIU-215] git config {config} is missing; cannot build the "
+            "credential-free overlay"
+        )
+    targets = [config] + [
+        path for path in (common / "config.worktree", admin / "config.worktree")
+        if path.is_file()
+    ]
+    extra = nested_git_config_files(common / "modules")
+    extra += [
+        path for path in sorted((common / "worktrees").glob("*/config.worktree"))
+        if path not in targets
+    ]
+    if len(extra) > MAX_GIT_OVERLAYS:
+        raise ValueError(
+            f"[CIU-215] {common} holds {len(extra)} submodule/sibling git config "
+            f"files; more than {MAX_GIT_OVERLAYS} cannot be sanitized safely"
+        )
+    state_dir.mkdir(parents=True, exist_ok=True)
+    kept: set[str] = set()
+    for index, target in enumerate(targets + extra):
+        name = f"{index}.config"
+        kept.add(name)
+        try:
+            text = sanitized_git_config_text(target)
+        except GitConfigError as exc:
+            raise ValueError(str(exc)) from exc
+        copy_path = state_dir / name
+        tmp_path = copy_path.with_name(name + ".tmp")
+        tmp_path.write_text(text, encoding="utf-8")
+        tmp_path.chmod(0o644)
+        os.replace(tmp_path, copy_path)
+        specs.append((mount.physical(copy_path), target, True))
+    for stale in state_dir.glob("*.config"):
+        if stale.name not in kept:
+            stale.unlink()
+    return specs
+
+
+def write_gitdir_overlay(
+    stack_dir: Path,
+    compose_yaml_text: str,
+    table: "config_model.LinkedWorktreeConfig",
+    mount: "worktree.GitMountPlan",
+) -> Path | None:
+    """Write the CIU-215 git common-dir fragment; ``None`` if nothing to mount.
+
+    A sibling of :func:`write_ownership_overlay`. Selected services are the
+    ``services`` list (an unknown name refuses) or every service. A service
+    that already mounts the common dir or an ancestor of it keeps its own
+    mount: it is skipped with one INFO line.
+    """
+    import yaml as _yaml
+
+    doc = _yaml.safe_load(compose_yaml_text) or {}
+    services = doc.get("services") if isinstance(doc, dict) else None
+    if not isinstance(services, dict) or not services:
+        return None
+    names = [str(name) for name in services]
+    if table.services is not None:
+        unknown = [name for name in table.services if name not in names]
+        if unknown:
+            raise ValueError(
+                f"[CIU-215] linked_worktree.services names {', '.join(map(repr, unknown))}, "
+                f"which is not a service of this stack (services: {', '.join(names)})"
+            )
+        names = [name for name in names if name in table.services]
+
+    common = os.path.normpath(mount.common)
+    selected: list[str] = []
+    for name in names:
+        covering = [
+            target for target in _service_volume_targets(services[name])
+            if _target_covers(target, common)
+        ]
+        if covering:
+            print(
+                f"[INFO] [CIU-215] service '{name}' already mounts {covering[0]}, "
+                f"which covers the git common dir {common}; its own mount is kept",
+                flush=True,
+            )
+        else:
+            selected.append(name)
+    if not selected:
+        return None
+
+    state_dir = Path(stack_dir) / MACHINE_DIR / GITDIR_STATE_SUBDIR
+    specs = _gitdir_mount_specs(mount, table.git_common_dir, state_dir)
+    fragment = {
+        "services": {
+            name: {"volumes": [_gitdir_bind(*spec) for spec in specs]}
+            for name in selected
+        }
+    }
+    path = Path(stack_dir) / MACHINE_DIR / GITDIR_OVERLAY_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = _yaml.safe_dump(fragment, sort_keys=False, default_flow_style=False)
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(text, encoding="utf-8")
+    os.replace(tmp_path, path)
+    return path
+
+
 def acquire_instance_lease(repo_root: Path) -> Any:
     """S16.9 — acquire/renew this instance's ``held`` lease before `up` runs.
 
@@ -2130,6 +2367,11 @@ def main_execution(
         print("[STEP 5/17] Validating merged configuration (S11)...", flush=True)
         root_key = config_model.validate_stack_shape(stack_config)
         config_model.validate_stack_provisioning(stack_config, source=str(working_dir))
+        # CIU-215: an invalid opt-in table refuses on every checkout, before
+        # any hook or compose work, not only where the mount would be written.
+        linked_worktree = config_model.validate_linked_worktree_table(
+            merged.get(root_key, {})
+        )
         # QOL-11: declared layouts/exec-targets/vendor_images are GLOBAL-scope
         # keys under [deploy]/[ciu] — validate against global_config (never
         # stack_config/merged), so a malformed declaration is caught on every
@@ -2506,6 +2748,26 @@ def main_execution(
                 ownership_path.read_text(encoding="utf-8"), materialized
             )
 
+        # CIU-215: the opt-in git common-dir mount, in a LINKED worktree only.
+        # A primary checkout (or a stack without the table) writes nothing and
+        # its file arguments are unchanged.
+        gitdir_path = None
+        if linked_worktree is not None and worktree.is_linked_git_worktree(repo_root):
+            try:
+                gitdir_path = write_gitdir_overlay(
+                    working_dir, rendered_compose, linked_worktree,
+                    worktree.git_common_dir_mount(repo_root),
+                )
+            except worktree.WorktreeError as exc:
+                raise ValueError(str(exc)) from exc
+        if gitdir_path is not None:
+            print(
+                f"[INFO] [CIU-215] git common dir mounted "
+                f"({linked_worktree.git_common_dir}) via {MACHINE_DIR}/{GITDIR_OVERLAY_NAME}",
+                flush=True,
+            )
+            composefile.leak_scan(gitdir_path.read_text(encoding="utf-8"), materialized)
+
         # `up --dry-run` evaluates none of the compose inputs (it never did:
         # compose_project_name raises without deploy.project_name/
         # environment_tag). Only a real start or a prepare-only render needs them.
@@ -2516,6 +2778,8 @@ def main_execution(
             file_args = composefile.compose_file_args(working_dir, overlay_path)
             if ownership_path is not None:
                 file_args += ["-f", f"{MACHINE_DIR}/{OWNERSHIP_OVERLAY_NAME}"]
+            if gitdir_path is not None:
+                file_args += ["-f", f"{MACHINE_DIR}/{GITDIR_OVERLAY_NAME}"]
             project = compose_project_name(global_config, working_dir)
 
         # ---- Step 16: compose up (S8.1) ----
@@ -2683,6 +2947,31 @@ def prepare_stack(
     return prepared
 
 
+def _refuse_shipped_linked_worktree(working_dir: Path, global_config: dict) -> None:
+    """CIU-215: a shipped stack has no rendered template to mount into, so a
+    `linked_worktree` table next to it must refuse, never be silently ignored.
+
+    A shipped stack needs no stack config, so the config is rendered only when
+    one of its files names the table at all.
+    """
+    for name in (config_model.STACK_CONFIG_DEFAULTS, config_model.STACK_CONFIG_OVERRIDES):
+        path = working_dir / name
+        if path.is_file() and "linked_worktree" in path.read_text(encoding="utf-8"):
+            break
+    else:
+        return
+    stack_config = config_model.render_stack(
+        working_dir, global_config, preserve_state=False, write_rendered=False
+    )
+    roots = [value for key, value in stack_config.items() if key != "state"]
+    if any(isinstance(root, dict) and "linked_worktree" in root for root in roots):
+        raise ValueError(
+            "[CIU-215] [<stack>.linked_worktree] cannot apply to a --shipped stack: "
+            "CIU renders no compose template for it, so the git common-dir mount "
+            "has nothing to attach to. Remove the table or run the stack without --shipped."
+        )
+
+
 def run_shipped(
     working_dir: Path,
     *,
@@ -2747,6 +3036,8 @@ def run_shipped(
 
         # ---- DooD preflight (S1.5) before the first daemon bind use ----
         _dood_preflight(to_physical_path(working_dir, repo_root=repo_root))
+
+        _refuse_shipped_linked_worktree(working_dir, global_config)
 
         compose_path = working_dir / compose_file
         if not compose_path.is_file():
