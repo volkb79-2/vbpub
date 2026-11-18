@@ -6963,7 +6963,7 @@ test.
 
 **Status:** OPEN (filed 2026-11-13; 2026-11-18 analysis: CIU 7 has no exec-runner concept to attach the mount to; the runner is a project stack rendered from the project's own `ciu.compose.yml.j2`, so a backport must first decide how CIU 7 identifies the runner service and where it injects the mount); severity: major for projects that gate from linked worktrees. Found in netcup-api-filter (per-checkout test runners, CIU 7.25.0). Related: the v8 design mounts the git common directory for exec environments of a linked checkout (`ciu/docs/SPEC-V8.md` S16.4, S16.4.9 and S16.12; dstdns D-653 Q7); CIU 7 does not.
 
-**Design:** design decided in `ciu/docs/DESIGN-NOTE-2026-11-CIU-215-CIU-220.md` (Decision 1), implementation not started.
+**Design:** design decided in `ciu/docs/DESIGN-NOTE-2026-11-CIU-215-CIU-220.md` (Decision 1). **IMPLEMENTED 2026-11-18, pending the live acceptance probe (design note test 10); NOT FIXED until the probe passes, so this stays OPEN.** The opt-in `[<root>.linked_worktree]` table and the `.ciu/ciu.compose.gitdir.yml` fragment are in `ciu/src/ciu/engine.py`/`worktree.py`/`gitconfig_sanitize.py`; documented in SPEC S16.9a, CONSUMERS 5f.
 
 **Observed.** A per-checkout exec runner mounts only the worktree. A linked worktree's `.git` is a file that points at the main repository's git directory outside the mount, so inside the runner `git` fails and every assay lane (which needs a git context) ends with `GIT_FAILED`. Shared runners that mount the whole repository never showed it. netcup-api-filter works around it by adding the linked worktree's `.git` common-dir mount to its own `tooling/test-runner/ciu.compose.yml.j2`.
 

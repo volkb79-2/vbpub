@@ -21,11 +21,15 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Added
+- CIU-215 (IMPLEMENTED, pending the live acceptance probe): an opt-in `[<root>.linked_worktree]` stack-config table (`git_common_dir = "ro" | "rw"`, optional `services`) makes `ciu up`/`ciu render` in a LINKED worktree write `.ciu/ciu.compose.gitdir.yml`, the last `-f`, which mounts the git common dir (Run-Gate's RG-NARROW/RG-86 layout, sanitized config copies under `.ciu/gitdir/`, daemon-namespace sources, `create_host_path: false`) into the selected services, so a per-checkout runner has a working git and assay lanes no longer end in `GIT_FAILED`. A service that already mounts the common dir or an ancestor keeps its own mount. Primary checkouts and stacks without the table render byte-identically. `ciu check` reports an invalid table (stage `shape`); `--shipped` stacks refuse it. Docs: SPEC S16.9a, CONFIG, CONSUMERS section 5f, DESIGN-GUIDE.
+
 ### Fixed
 - CIU-217: the KSM shim verifier now refuses an ELF64 object whose declared program-header entry size is smaller than the 56-byte ELF64 program header, with the normal `cannot verify` refusal. It previously accepted such an object as dependency-free.
 - CIU-214: `ciu down --dir PATH` accepts every flag `ciu down --help` lists (`--yes`, `--phases`, `--i-understand-this-is-protected`, `--profile`, `--root-folder`) instead of rejecting them as unrecognized. They mean what the project-wide form gives them: `--yes` is a no-op (`down` never prompts), `--phases` narrows the selection (a stack outside it is refused before Docker), and the protected-instance refusal (CIU-105) now also applies to the `--dir` form.
 
 ### Adoption / Migration Notes
+- CIU-215: additive. If you run a per-checkout exec runner in linked worktrees, add `[<root>.linked_worktree] git_common_dir = "ro"` to its stack config and delete your hand-written `.git` mount block (until then the block keeps working and keeps its mode). Everyone else: nothing to do.
 - CIU-214: callers of `ciu down --dir` against an instance with `[deploy] protected = true` must now pass `--i-understand-this-is-protected`, as the project-wide form always required; every other caller is unaffected, and a caller that passes `--yes` no longer fails.
 - CIU-217: no action needed; a shim that CIU built itself always has a valid program-header table. Only a hand-placed or corrupted artifact in the KSM cache is newly refused.
 

@@ -851,6 +851,25 @@ A stack freshly scaffolded via `ciu init` already writes the qualified
 template or `topology.services` declaration you author by hand yourself,
 including ones that predate this default.
 
+## 5f. Give a per-checkout test runner a working git in a linked worktree (CIU-215, S16.9a)
+
+A runner stack that mounts only the checkout has no usable git in a linked
+worktree (its `.git` file points outside the mount), so assay lanes end in
+`GIT_FAILED`. Add two lines to the runner stack's config and delete any
+hand-written `{% if '/.worktrees/' in ciu.repo_root %}` mount block:
+
+```toml
+[test_runner.linked_worktree]
+git_common_dir = "ro"
+```
+
+`ro` is recommended: git inside the runner can read (`status`, `diff`, `log`,
+`rev-parse`) but not commit. Use `"rw"` only when a lane must commit in the
+runner. Add `services = ["runner"]` for a mixed stack. Primary checkouts are
+unchanged. Until you delete the hand-written block, a service that already
+mounts the common dir keeps its own mount and mode. The mount applies only to
+`ciu up`/`ciu render` of a linked worktree.
+
 ## 6. Start the selected instance, exactly (S16.6)
 
 ```console

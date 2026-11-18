@@ -202,3 +202,17 @@ def test_check_reports_an_invalid_table_in_the_shape_stage(monkeypatch, tmp_path
     finding = report._stages["shape"]["findings"][0]["message"]
     assert report._stages["shape"]["status"] == "fail"
     assert finding.startswith("[CIU-215]") and "flat" in finding
+
+
+def test_the_consumers_example_parses_with_the_shipped_loader():
+    import tomllib
+    docs = Path(__file__).resolve().parents[2] / "docs"
+    consumers = (docs / "CONSUMERS.md").read_text(encoding="utf-8")
+    section = consumers.split("## 5f.", 1)[1].split("## 6.", 1)[0]
+    block = re.search(r"```toml\n(.*?)```", section, re.S).group(1)
+    parsed = tomllib.loads(block)
+    assert config_model.validate_linked_worktree_table(parsed["test_runner"]) == (
+        config_model.LinkedWorktreeConfig("ro", None))
+    for name in ("SPEC.md", "CONFIG.md"):
+        text = (docs / name).read_text(encoding="utf-8")
+        assert "linked_worktree" in text and '"ro"' in text and '"rw"' in text

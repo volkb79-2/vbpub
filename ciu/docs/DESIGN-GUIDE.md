@@ -1346,3 +1346,26 @@ consent and helper policy.
 
 The normative contract is in [SPEC S16.4 and S16.8](SPEC.md#s16--worktree-instances-ciu-worktree),
 with pasteable commands in [CONSUMERS §5 and §5b](CONSUMERS.md#5-remove-and-read-the-removal-document).
+
+## Why the git common-dir mount is opt-in and `ro` (CIU-215)
+
+A per-checkout runner in a linked worktree needs the git common dir, but CIU 7
+has no exec-runner concept: the runner is a service of the project's own
+compose template. Three shapes were weighed. Exporting the common dir as a
+fact makes every project copy the same mount block and changes every primary
+checkout's facts file. Injecting automatically for every service that binds
+the worktree root is not provably safe: it adds a mount to services that never
+asked for one, "binds the worktree root" cannot be detected reliably (the
+gitfile path is absolute, so a service may mount the checkout at another
+target and still need the common dir), and tools in the image start to see a
+working git. An opt-in stack-config table (`[<root>.linked_worktree]`) keeps
+primary checkouts and non-adopting stacks byte-identical and puts the decision
+where the project can see it. It is a stack-config table, not a compose field
+or label, because a compose field would also appear in a primary checkout's
+rendered file.
+
+`ro` is the recommended value because the known consumers (assay's snapshot
+and Run-Gate's readers) only read git; `rw` reuses Run-Gate's RG-NARROW/RG-86
+layout so a runner can still commit without being able to plant hooks, edit
+config or prune sibling worktrees. Which of the two a dstdns lane needs is
+settled by the live acceptance probe, not by this document.
