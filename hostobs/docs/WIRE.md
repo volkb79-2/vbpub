@@ -1176,6 +1176,50 @@ zipimport}.py` with the scripted fake probe `fake_probe.py`. Decisions and ambig
 **P5a — Rust `client` crate (M).** `Client::connect(path, Level, ClientInfo) -> Result<Client, ClientError>`,
 `hello() -> &HelloResult`, `request(verb, serde-free JSON text) -> Reply`, `subscribe(Selection,
 interval_ms) -> Subscription` (iterator of `Block`, held dictionary per stream), reconnect per §6.4.
+
+*P5a implemented* (`crates/client/src/{client,error,hello,json,level,streams,transport}.rs`; tests
+`crates/client/tests/client_scripted.rs` plus unit tests per module). The behavioural twin is the Python client of
+*P3b*; the decisions of that note (handshake order, `corr` from 1 with exhaustion, REP matching by `corr`, unknown
+`corr` and unexpected frames as protocol errors, errors close the connection, exact `hello` validation including
+`max_request_bytes` fitting the client's own hello and `max_frame_bytes >= 12`, `StreamDicts::on_hello` at every
+hello, the END counts and reason checks) hold. API:
+- `Client::connect(path, Level, ClientInfo)` and `Client::from_transport(Box<dyn Transport>, Box<dyn Clock>, Level,
+  ClientInfo, Option<Redial>)`; `ClientInfo { name, timeout }` (`timeout` in `(0, 1 year]`, default 10 s; the name 1-64
+  bytes without control characters; a violation is `ClientError::Usage` before any socket exists). `Transport` is
+  `read(buf, timeout)`, `write_all(data, timeout)` and `close()`, implemented for `UnixStream`; `Clock::now_ns()` has the
+  `Instant`-based `MonotonicClock`.
+- `hello() -> &HelloResult { minor, level, server, boot_id, epoch, features, verbs, limits: Limits }`; `session()` is
+  `Session::{First, Same, Changed}`; `closing_reason()` is the last `closing` EVT's reason.
+- `request(verb, args_json) -> Reply { text, result_json() }`: `verb` is 1-64 bytes of `[a-z0-9_.-]` and `args_json` one
+  JSON object; the payload goes through `check_req` (depth 8, UTF-8, only `verb` and `args`) before sending, a refusal
+  is `Usage("bad-verb" | "bad-args" | "request-too-large")` and sends nothing; an error reply is
+  `ClientError::Server { code, message, detail_json }`, and a connection-fatal code (§5.4) closes the connection.
+- `blocks(verb, args_json) -> BlockStream` and `subscribe(selection_json, interval_ms) -> Subscription`, both
+  `Iterator<Item = Result<Block, ClientError>>`; `selection_json` must be exactly one JSON object (so it cannot add a
+  key to `args`, `Usage("bad-selection")`). `Subscription::dropped()` sums the header and END `dropped` counters.
+- `reconnect() -> Result<Session, ClientError>` closes, redials, redoes the handshake and drops every dictionary;
+  `close()` is idempotent and `Drop` closes.
+- `ClientError`: `Io(kind)`, `Wire(ProtoError)`, `Envelope(EnvelopeError)`, `Server { .. }`, `Timeout`,
+  `ConnectionLost`, `Protocol(ProtocolKind)`, `Usage(&'static str)`; `kind()` is the wire kind, the §10 code or the
+  stable local name. Reset-like I/O kinds are `ConnectionLost`, `WouldBlock`/`TimedOut` on a write are `Timeout`.
+Differences from the Python client:
+- **One stream at a time.** `blocks()` and `subscribe()` return streams that borrow the `Client` mutably, so no other call
+  can interleave and the client keeps **no queue** of undelivered blocks: the kernel socket buffer and the server's §5.3
+  hub are the queues, and there is no `client_dropped` counter and no `queue-overflow`. A second concurrent subscription
+  needs a second `Client`. The Python client's newest-8 / 1,024-block / 64 MiB queue policy has no Rust counterpart.
+- **Stream end and reconnect.** Dropping or `close()`-ing an unfinished stream reads and discards the rest (blocks are
+  counted, not decoded; a subscription sends `unsubscribe` first and tolerates `not-found`). A lost connection yields one
+  `Err(ConnectionLost)` and then `None`; because streams borrow the client, none can outlive a `reconnect()`, so the
+  caller resubscribes.
+- **EOF.** Clean EOF and EOF inside a frame are both `ConnectionLost` (the Python client also reports the `truncated`
+  cause); `Wire(Truncated)` is never returned by the client itself.
+- **Timeouts.** `connect()` itself is not bounded by the injected clock (the OS bounds it); every later wait is: operation
+  deadline `now + timeout` (strict `>`), the completion age of a partial frame 30 s from its first byte, transport timeout
+  `max(1 ms, remaining)`, a subscription wait adds the interval, and a timeout closes the connection.
+- **Corr exhaustion** (`ProtocolKind::CorrExhausted`) is reached after 2^32 - 1 requests; no test reaches it.
+- The `proto` pieces reused: `FrameReader` (client limit `min(16 MiB, hello.max_frame_bytes)` once the hello is in and no
+  partial frame is buffered), `StreamDicts`, `decode_block_with`, `check_rep`/`check_end`/`check_evt`/`check_req` and
+  `members`.
 **P5b — probe serving (L).** Accept loop per level from `LISTEN_FDS`, mode detection, handshake, verb
 dispatch with strict arg checking (§4.2 JSON text rules, canonical selections), shared selection
 streams (one bare encoding per tick, the dictionary form lazily, one generation counter per selection,

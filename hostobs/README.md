@@ -4,7 +4,8 @@ The Rust host-observability daemon planned in
 [`docs/design/hostobs/PLAN-v4-2026-11-08.md`](../docs/design/hostobs/PLAN-v4-2026-11-08.md)
 as a probe plus an actuator. The workspace has the planned `proto`, `model`, `kernel`,
 `store`, `eval`, `act`, and `client` library boundaries plus the `probe` and `act`
-binary packages.
+binary packages. The `client` crate is the Rust client of `hostobs/1` (handshake, JSON requests,
+block streams, subscriptions and reconnect over an injected transport and clock; WIRE.md §12 `P5a`).
 
 **What is implemented today.** Four of the seven library crates are functional:
 
@@ -140,7 +141,7 @@ switched to it by a separate `run-gate.root.toml` commit). `selftest` is the wor
 R0/R1 baseline (nextest, doctests, llvm-cov and the per-crate line/region floors).
 
 **`assay-r1` is the estate-standard coverage verdict**: assay's Rust R1 judge reads the
-same `lcov.info` and judges 33 declared `src` files of the four functional crates against
+same `lcov.info` and judges 43 declared `src` files of the five functional crates against
 a 95.0% line floor (measured 96.04%, floored one point down — derivation in
 [`assay.toml`](assay.toml)). The verdict carries the measured totals, lists the uncovered
 lines as findings, and reports branch coverage as **unavailable** (stable Rust emits no

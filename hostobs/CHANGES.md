@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added (P5a: `crates/client`, the Rust client; the Rust client part of `HOB-54` closed)
+
+- **`hostobs-client`**: `Client::connect(path, Level, ClientInfo)` and `Client::from_transport` over an injected
+  `Transport` (a `UnixStream` by default) and `Clock`; the handshake of §1.4 (prefix alone, server prefix, `hello`
+  with `corr` 1) with the Python client's `hello` validation (`HelloResult`, `Limits`); `request(verb, args_json)`
+  with local §4.2 checks; `blocks()` (`BlockStream`, END counts checked); `subscribe()` (`Subscription`, an iterator
+  with `dropped()`); `reconnect()` per §6.4 (`Session` first/same/changed); `close()` (idempotent, also on drop).
+  `ClientError` is a closed enum with `kind()` and `Display`; no panic on any server byte.
+- **Tests**: scripted-server tests over a fake clock (`crates/client/tests/client_scripted.rs`: handshake refusals,
+  every §10 code, corr and END violations, fixtures of `fixtures/stream/client-*.json` through a live client,
+  exact-deadline and completion-age boundaries, byte-by-byte delivery, reconnect, a real `UnixStream` pair and
+  2,000 + 2,000 deterministic hostile-byte runs) and unit tests in every module. `assay.toml` judges the seven
+  `crates/client/src` files (43 judged files); `crates/client` joins the judge's `source_roots`.
+
 ### Added (P3b: `python/hostobs_client` connection, `require_profiling`, `hostobs-mark`; the P3 part of `HOB-54` closed)
 
 - **Review round**: the envelope text checks are linear on hostile input (parse first, count depth only on parsed
