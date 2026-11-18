@@ -179,6 +179,64 @@ class WireFixtures(unittest.TestCase):
                 hostobs_wire_ref.decode_frame(data)
             self.assertEqual(caught.exception.as_dict()["kind"], "truncated")
 
+    def test_the_frame_header_bounds_the_declared_length_at_both_ends(self):
+        # HOB-8: the Rust FrameHeader::parse refuses a declared length outside
+        # FRAME_HEADER_LEN..=MAX_FRAME_BYTES, and so does the reference decoder, with the
+        # same refusal, before it compares the length with the buffer.
+        wire = hostobs_wire_ref
+
+        def header(length: int, *, frame_type: int | None = None, reserved: int = 0) -> bytes:
+            return struct.pack(
+                "<IBBHI",
+                length,
+                wire.FRAME_TYPES["block"] if frame_type is None else frame_type,
+                wire.FRAME_SECTIONED,
+                reserved,
+                39,
+            )
+
+        for length in (wire.MAX_FRAME_BYTES + 1, 0xFFFFFFFF):
+            with self.subTest(length=length), self.assertRaises(wire.WireError) as caught:
+                wire.decode_frame(header(length))
+            self.assertEqual(
+                caught.exception.as_dict(),
+                {"kind": "oversized-frame", "len": length, "max": wire.MAX_FRAME_BYTES},
+            )
+        for length in (0, 4, wire.FRAME_HEADER_LEN - 1):
+            with self.subTest(length=length), self.assertRaises(wire.WireError) as caught:
+                wire.decode_frame(header(length))
+            self.assertEqual(
+                caught.exception.as_dict(),
+                {
+                    "kind": "truncated",
+                    "context": "frame length shorter than the header",
+                    "need": wire.FRAME_HEADER_LEN,
+                    "have": length,
+                },
+            )
+        # Exactly the lower bound is not a length refusal: the 12 bytes are a block with
+        # no section directory, which is refused for a different reason.
+        with self.assertRaises(wire.WireError) as caught:
+            wire.decode_frame(header(wire.FRAME_HEADER_LEN))
+        self.assertEqual(
+            caught.exception.as_dict(),
+            {"kind": "truncated", "context": "block directory", "need": wire.FRAME_HEADER_LEN + 4, "have": wire.FRAME_HEADER_LEN},
+        )
+        # Exactly the upper bound passes the length check and only then meets the buffer.
+        with self.assertRaises(wire.WireError) as caught:
+            wire.decode_frame(header(wire.MAX_FRAME_BYTES))
+        self.assertEqual(
+            caught.exception.as_dict(),
+            {"kind": "truncated", "context": "frame", "need": wire.MAX_FRAME_BYTES, "have": wire.FRAME_HEADER_LEN},
+        )
+        # The fixed fields are judged before the length, the order the Rust parse uses.
+        with self.assertRaises(wire.WireError) as caught:
+            wire.decode_frame(header(wire.MAX_FRAME_BYTES + 1, reserved=1))
+        self.assertEqual(caught.exception.as_dict(), {"kind": "non-zero-reserved", "value": 1})
+        with self.assertRaises(wire.WireError) as caught:
+            wire.decode_frame(header(0, frame_type=9))
+        self.assertEqual(caught.exception.as_dict(), {"kind": "unknown-frame-type", "code": 9})
+
     def test_the_encoder_refuses_a_block_shape_under_another_frame_type(self):
         spec = json.loads((FIXTURES / "live-block.json").read_text(encoding="utf-8"))
         for frame_type in ("req", "rep", "evt", "dict", "end"):

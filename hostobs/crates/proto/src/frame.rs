@@ -491,10 +491,16 @@ pub struct FrameHeader {
 impl FrameHeader {
     /// Parse the first [`FRAME_HEADER_LEN`] bytes of a frame.
     ///
+    /// The declared length is bounded here, not only in [`decode_block`]: a streaming
+    /// reader allocates `len` bytes straight after `parse`, so a returned header always
+    /// carries `FRAME_HEADER_LEN <= len <= MAX_FRAME_BYTES`.
+    ///
     /// # Errors
     ///
-    /// [`ProtoError::Truncated`], [`ProtoError::UnknownFrameType`],
-    /// [`ProtoError::UnknownFrameFlags`] or [`ProtoError::NonZeroReserved`].
+    /// [`ProtoError::Truncated`] (also for a declared length shorter than the header
+    /// itself), [`ProtoError::UnknownFrameType`], [`ProtoError::UnknownFrameFlags`],
+    /// [`ProtoError::NonZeroReserved`] or [`ProtoError::OversizedFrame`] for a declared
+    /// length above [`MAX_FRAME_BYTES`].
     pub fn parse(bytes: &[u8]) -> Result<FrameHeader, ProtoError> {
         let mut cursor = Cursor::new(bytes, "frame header");
         let len = cursor.u32()?;
@@ -508,6 +514,22 @@ impl FrameHeader {
             return Err(ProtoError::NonZeroReserved(reserved));
         }
         let corr = cursor.u32()?;
+        // The length is judged after the fixed fields, the order the Python reference
+        // uses, so a frame with several defects reports the same first refusal in both.
+        let declared = usize::try_from(len).map_err(|_| ProtoError::LengthOverflow)?;
+        if declared > MAX_FRAME_BYTES {
+            return Err(ProtoError::OversizedFrame {
+                len: declared,
+                max: MAX_FRAME_BYTES,
+            });
+        }
+        if declared < FRAME_HEADER_LEN {
+            return Err(ProtoError::Truncated {
+                context: "frame length shorter than the header",
+                need: FRAME_HEADER_LEN,
+                have: declared,
+            });
+        }
         Ok(FrameHeader {
             len,
             frame_type,
@@ -1475,6 +1497,102 @@ mod tests {
         );
         assert_eq!(super::encode_header_body(&facts()).len(), HEADER_BODY_LEN);
         assert_eq!(FRAME_HEADER_LEN, 12);
+    }
+
+    /// Twelve header bytes declaring `len`, a valid `BLOCK` type and sectioned flag.
+    fn header_declaring(len: u32) -> [u8; FRAME_HEADER_LEN] {
+        let mut bytes = [0u8; FRAME_HEADER_LEN];
+        bytes[0..4].copy_from_slice(&len.to_le_bytes());
+        bytes[4] = FrameType::Block.code();
+        bytes[5] = super::FLAG_SECTIONED;
+        bytes
+    }
+
+    #[test]
+    fn parse_itself_bounds_the_declared_length_at_both_ends() {
+        // HOB-8: a streaming reader allocates `len` bytes right after `parse`, so the
+        // bound must hold here, not only in `decode_block`. Both bounds are inclusive.
+        let max = u32::try_from(MAX_FRAME_BYTES).expect("bounded constant");
+        let header_len = u32::try_from(FRAME_HEADER_LEN).expect("header length");
+
+        let at_max = FrameHeader::parse(&header_declaring(max)).expect("exactly the bound");
+        assert_eq!(at_max.len, max);
+        let at_min = FrameHeader::parse(&header_declaring(header_len)).expect("header only");
+        assert_eq!(at_min.len, header_len);
+
+        assert_eq!(
+            FrameHeader::parse(&header_declaring(max + 1)),
+            Err(ProtoError::OversizedFrame {
+                len: MAX_FRAME_BYTES + 1,
+                max: MAX_FRAME_BYTES,
+            }),
+            "one past the bound"
+        );
+        assert_eq!(
+            FrameHeader::parse(&header_declaring(u32::MAX)),
+            Err(ProtoError::OversizedFrame {
+                len: usize::try_from(u32::MAX).expect("u32 fits usize"),
+                max: MAX_FRAME_BYTES,
+            }),
+            "the largest declarable length"
+        );
+        assert_eq!(
+            FrameHeader::parse(&header_declaring(header_len - 1)),
+            Err(ProtoError::Truncated {
+                context: "frame length shorter than the header",
+                need: FRAME_HEADER_LEN,
+                have: FRAME_HEADER_LEN - 1,
+            }),
+            "one below the header length"
+        );
+        assert_eq!(
+            FrameHeader::parse(&header_declaring(0)),
+            Err(ProtoError::Truncated {
+                context: "frame length shorter than the header",
+                need: FRAME_HEADER_LEN,
+                have: 0,
+            }),
+            "a zero length"
+        );
+    }
+
+    #[test]
+    fn parse_reports_the_fixed_field_refusals_before_the_length_refusal() {
+        // The Python reference checks the fixed fields first and the length last; the
+        // two decoders must name the same first refusal for a frame with several defects.
+        let max = u32::try_from(MAX_FRAME_BYTES).expect("bounded constant");
+        let mut reserved = header_declaring(max + 1);
+        reserved[6] = 1;
+        assert_eq!(
+            FrameHeader::parse(&reserved),
+            Err(ProtoError::NonZeroReserved(1))
+        );
+        let mut kind = header_declaring(0);
+        kind[4] = 9;
+        assert_eq!(
+            FrameHeader::parse(&kind),
+            Err(ProtoError::UnknownFrameType(9))
+        );
+        let mut flags = header_declaring(0);
+        flags[5] = 0x80;
+        assert_eq!(
+            FrameHeader::parse(&flags),
+            Err(ProtoError::UnknownFrameFlags(0x80))
+        );
+    }
+
+    #[test]
+    fn decode_block_refuses_a_declared_length_below_the_header_before_trailing_bytes() {
+        // Before HOB-8 a frame declaring 4 bytes but carrying 12 reported
+        // `TrailingBytes`; the declared length is nonsense, not a trailing remainder.
+        assert_eq!(
+            decode_block(&header_declaring(4)),
+            Err(ProtoError::Truncated {
+                context: "frame length shorter than the header",
+                need: FRAME_HEADER_LEN,
+                have: 4,
+            })
+        );
     }
 
     #[test]
