@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added (P5b-1b part 1: the sans-IO connection state machine; `HOB-54` stays open)
+
+- **`bins/probe/src/backend.rs`**: the `Backend` trait (`identity()`, `status()`), `Identity`,
+  `StatusInfo` (+ `TickInfo`, `TierInfo`) and `FixedBackend` for tests and the P5b-4 bring-up.
+- **`bins/probe/src/conn.rs`**: `Conn` (`Undecided`, `AwaitHello`, `JsonNoHello`, `Ready`,
+  `Draining`, `Closed`): mode detection (R24), the negotiated prefix as the first queued frame, binary
+  and JSON request reading, `classify` dispatch, `hello` and `status` replies, the final frame held
+  outside the hub (R1) with the prefix guarantee (R2), the EOF rules (R10), the timer order (R20) and
+  the idle condition; `max_outstanding` and corr-in-use stay P5b-2. Row tests `conn_row_*`, R1/R2
+  tests, byte-by-byte delivery and 2,000 deterministic hostile runs.
+
 ### Added (P5b-1a: the probe's pure serving functions; `HOB-54` stays open)
 
 - **`bins/probe/src`** gains seven modules, none of which does I/O, reads a clock or keeps connection
