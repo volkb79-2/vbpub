@@ -57,7 +57,10 @@ worktrees. Everything below is expected, shared, and either cleaned in A9/B9/Z o
 
 | where | what is written | cleaned? |
 |---|---|---|
-| each consumer's MAIN checkout `.git` (netcup-api-filter, dstdns) | `ciu worktree create`: `worktrees/<name>/` admin dir, `refs/heads/<name>`, an appended line in `info/exclude`, and the shared workspace-record dir plus allocation lock of the managed-worktree registry (`ciu/src/ciu/worktree.py` ~2321 and 6369+, `libraries/worktree/core.py`) | `ciu worktree rm ... --delete-branch` removes the admin dir, the branch and the record; the `info/exclude` line may stay (check `git diff` of nothing, read the file) |
+| each consumer's MAIN checkout `.git` (netcup-api-filter, dstdns) | `ciu worktree create`: `worktrees/<name>/` admin dir, `refs/heads/<name>`, an appended line in `info/exclude`, and the shared workspace-record dir plus allocation lock of the managed-worktree registry (`ciu/src/ciu/worktree.py` ~2321 and 6369+, `libraries/worktree/core.py`) | `ciu worktree rm ... --delete-branch` removes the admin dir, the branch and the record; the `info/exclude` line may stay (it does not show in `git status`; read `<main>/.git/info/exclude` once if the controller wants it clean). The scratch admin dir `<main>/.git/worktrees/<name>/` also receives the rw sub-check's index, logs and refs; `rm` removes it with the rest |
+| instance state of dstdns | `ciu worktree up` initialises an instance-scoped vault and volumes (core, db) for the scratch instance | removed by `ciu clean` inside `ciu worktree rm`; verify as in B9 |
+| family-wide instance budget | `[ciu.worktree].max_concurrent_instances = 5` is shared by the whole family: other live worktrees can make `create`/`up` refuse | P0 records `ciu worktree list` and the count; do not remove other worktrees to make room, ask the controller |
+| scratch logs | `/tmp/ciu215-*-up.log` are world-readable and produced under the guard environment | never paste them unreviewed (they may echo guard-derived values); read with `grep` for the named lines only; step Z deletes them after the table is filled |
 | each consumer's MAIN object store | the rw sub-check commit (A8, B8) writes loose objects into `<COMMON>/objects` through the rw bind; refs move only on the scratch branch | objects stay until git gc (unreachable once the branch is deleted); harmless |
 | vbpub main `.git` | only if section 2 step 1 creates the detached source worktree (`git worktree add --detach`): `worktrees/ciu215-probe-src` | step Z removes it |
 | Docker image TAGS | `ciu up --dir tooling/test-runner` (netcup) rebuilds the SHARED tags `netcup-api-filter/test-runner:py311` and `:py314` (the tags main's runners and the R2 ephemeral environment use; content identical, but the tag moves to a new image id); dstdns starts from the shared `dstdns/test-runner:local` and `dstdns/test-runner-ui:local` (no rebuild) | not cleaned (tags are shared); record image ids before and after: `docker image inspect --format '{{.Id}}' <tag>` |
@@ -104,6 +107,9 @@ test -f /srv/pwmcp-instance/ciu.global.toml && echo pwmcp-instance-present   # n
 test -n "$CGROUP_PARENT_DEV_BACKGROUND" && echo cgroup-parent-set            # dstdns p128 script hard-requires it (`:?`, scripts/p128-assay-schema.sh line 11) and the lane passes it through (assay.toml env_passthrough); the value must come from the venue's login environment, never typed here
 git -C /workspaces/netcup-api-filter status --short > /tmp/ciu215-naf-main.status    # baselines for the "main untouched" check in step Z
 git -C /workspaces/dstdns status --short > /tmp/ciu215-dst-main.status
+git -C /workspaces/netcup-api-filter rev-parse main > /tmp/ciu215-naf-main.sha    # step Z compares these (main must not move)
+git -C /workspaces/dstdns rev-parse main > /tmp/ciu215-dst-main.sha
+source /tmp/ciu215-probe.env 2>/dev/null || true; ciu worktree list 2>&1 | head -20   # live managed worktrees: [ciu.worktree].max_concurrent_instances = 5 is family-wide; record the count (UNVERIFIED before section 2 creates the env file: rerun after it if empty)
 ```
 
 Below, `NAF=/workspaces/netcup-api-filter` and `DST=/workspaces/dstdns` (the main checkouts; adjust to the
@@ -459,11 +465,15 @@ docker inspect --type container "$RUNNER" --format '{{range .Mounts}}{{if eq .Ty
 ciu worktree rm "$NAME" --dry-run                      # READ the output
 ```
 
-**Abort rule.** The dry-run may list ONLY: the two modified `.j2` files, `.assay/`, and rendered `.ciu`
-artifacts (`.ciu/`, `.ciu/gitdir/`, rendered `ciu.toml` / `ciu.compose.yml` / `ciu.compose.gitdir.yml`), plus
-`vol-*` protected state and the unmerged scratch branch. If it lists anything else (a path outside those, a
-second branch, a mount under the checkout, a refusal that is not a consent), STOP, capture it, and ask the
-controller; do not widen the consents.
+**Abort rule (blockers only).** The dry-run lists two kinds of lines: BLOCKERS and informational entries.
+Ignored-but-not-protected entries (regenerable or unclassified: `ciu.env`, `ciu.global.toml`, `ciu.toml`,
+rendered compose files, `.ciu/`, `__pycache__`, `.run-gate`, ...) are informational and never a reason to
+abort: only `.assay` and `vol-*` are classed protected state (`_ignored_state_group`, `worktree.py` ~3028-3050).
+STOP, capture the output and ask the controller only if a BLOCKER names anything other than: (1) the two
+modified `.j2` files; (2) `.assay` or `vol-*` paths inside the scratch worktree; or if the dry-run reports
+(3) a mount under the checkout, (4) a clean-preflight failure, (5) a refusal other than the two consents
+(`--discard-changes`, `--discard-protected-state`) and the unmerged-branch consent (`--delete-branch`), or
+(6) a branch other than `$NAME`. Do not widen the consents.
 
 ```bash
 # A9b  only after the dry-run passed the abort rule
@@ -668,12 +678,27 @@ source /tmp/ciu215-probe.env
 python3 -c 'import json; d=json.load(open("/tmp/ciu215-dst-lane.json")); print({k: d.get(k) for k in ("verdict","exit_code","reason","log_path")}); print(d)' | head -40
 LOG=<log_path>
 grep -n -i "verdict\|GIT_FAILED\|Read-only file system\|fatal:\|could not create directory\|Permission denied\|CIU-215" "$LOG"
-grep -n "schema-p128" "$LOG"          # REQUIRED evidence that scripts/p128-assay-schema.sh ran (the `<prefix>schema-p128-<pid>` container line)
+grep -n "test_p128_persister_lineage\|[0-9]\+ passed\|assay-schema: REPO_ROOT" "$LOG"   # REQUIRED evidence that scripts/p128-assay-schema.sh ran (see the evidence rule below)
 ```
 
-**Evidence rule for Run B.** A verdict counts toward `ro confirmed` only if the log also shows the script ran
-(the `schema-p128` container line). A verdict without it (for example `NO_MEASUREMENT` because the base touched
-no changed lines, or a lane that stopped before the script) is INCONCLUSIVE: choose an older `$BASE` and rerun.
+**Evidence rule for Run B.** `scripts/p128-assay-schema.sh` never prints its container names (they are created
+with `docker run -d --name ... >/dev/null`), so the proof that it ran is what it really produces (read from the
+script and `assay.toml`, 2026-11-18):
+
+1. the pytest summary of `tests/schema/test_p128_persister_lineage.py` (the script's last command:
+   `python3 -m pytest tests/schema/test_p128_persister_lineage.py -q --cov=...`): a line such as `N passed` (or
+   `N failed`, either proves the tests ran), in the lane log or in the output tail inside assay's verdict
+   artifact (UNVERIFIED which of the two carries it: read both; the verdict path is next to `log_path`);
+2. the helper's stderr line `[INFO] assay-schema: REPO_ROOT <path> is backed by <backing>; clone replicates the
+   runner's mounts` (`scripts/assay_schema_runtime.sh`), same places;
+3. the judge's coverage result for the lane: the declared artifact is `.assay/coverage-p128_persister_lineage.json`
+   (inside the assay snapshot, removed with it), so a coverage-based outcome (PASS or FAIL with line/branch
+   numbers) rather than `NO_MEASUREMENT` is evidence that the file was produced and read.
+
+One of 1-3 suffices for "the script ran". A verdict with none of them (for example `NO_MEASUREMENT` because the
+base touched no changed lines, or a lane that stopped before the script) is INCONCLUSIVE: choose an older `$BASE`
+and rerun. If none is readable anywhere even for a lane that clearly ran, the probe stays INCONCLUSIVE: capture
+the verdict artifact's output tail and report the missing evidence; do not record a pass.
 
 **What each outcome means for the open question.**
 
@@ -703,7 +728,7 @@ source /tmp/ciu215-probe.env; test -n "$NAME" && test -n "$RUNNER"
 cd /workspaces/dstdns
 docker inspect --type container "$RUNNER" --format '{{.Name}}'      # exact runner name; record also the exact ui runner name (<prefix>-test-runner-ui, from `ciu worktree inspect`/the up log; never an inventory)
 docker inspect --type container "$RUNNER" --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}'   # exact volume name(s)
-ciu worktree rm "$NAME" --dry-run                        # READ the output; same abort rule as A9 (only the two .j2 files, .assay/, .ciu artifacts, vol-*, the unmerged branch)
+ciu worktree rm "$NAME" --dry-run                        # READ the output; same blockers-only abort rule as A9a (ignored-but-not-protected entries are informational)
 ```
 
 ```bash
@@ -724,14 +749,18 @@ test -n "$VBPUB" && test -n "$CIU_SRC_ROOT"
 [ "$CIU_SRC_ROOT" != "$VBPUB" ] && git -C "$VBPUB" worktree remove --force "$VBPUB/.worktrees/ciu215-probe-src"
 git -C /workspaces/netcup-api-filter status --short | diff - /tmp/ciu215-naf-main.status && echo naf-main-unchanged
 git -C /workspaces/dstdns status --short | diff - /tmp/ciu215-dst-main.status && echo dst-main-unchanged
-git -C /workspaces/netcup-api-filter log origin/main.. --oneline | head -3      # nothing pushed or committed on main
-git -C /workspaces/dstdns log origin/main.. --oneline | head -3
-rm -f /tmp/ciu215-naf.patch /tmp/ciu215-dst.patch /tmp/ciu215-probe.env /tmp/ciu215-*-main.status
+# main must not have moved (do NOT use `git log origin/main..`: under the commit-locally-push-later policy
+# origin/main is usually behind local main and would false-alarm)
+git -C /workspaces/netcup-api-filter rev-parse main | diff - /tmp/ciu215-naf-main.sha && echo naf-main-sha-unchanged
+git -C /workspaces/dstdns rev-parse main | diff - /tmp/ciu215-dst-main.sha && echo dst-main-sha-unchanged
+git -C /workspaces/netcup-api-filter branch --list 'ciu215-probe-*'      # PASS: empty
+git -C /workspaces/dstdns branch --list 'ciu215-probe-*'                 # PASS: empty
+rm -f /tmp/ciu215-naf.patch /tmp/ciu215-dst.patch /tmp/ciu215-probe.env /tmp/ciu215-*-main.status /tmp/ciu215-*-main.sha
+# once the results table is filled: rm -f /tmp/ciu215-*-up.log /tmp/ciu215-*-lane.* (world-readable, produced under the guard env; never paste unreviewed)
 ```
 
-(`git status --short` in a consumer main checkout lists ignored-nothing; an `info/exclude` line added by `ciu
-worktree create` does not show there: read `<main>/.git/info/exclude` once if the controller wants it clean,
-section 0a.)
+(`git status --short` in a consumer main checkout does not show an `info/exclude` line added by `ciu worktree
+create`: read `<main>/.git/info/exclude` once if the controller wants it clean, section 0a.)
 
 ---
 
@@ -751,7 +780,7 @@ section 0a.)
 | c2 no probe commit on host | | |
 | mount row (common dir ro, `.git` ro, no rw common-dir bind) | | |
 | lane (run-gate name / assay lane) | `recovery_codes` | `p128_persister_lineage` (`--base $BASE`, parent of the last commit touching `libs/common/src`) |
-| script-ran evidence (`schema-p128` line in the log) | n/a | |
+| script-ran evidence (pytest summary of `test_p128_persister_lineage.py` / `assay-schema: REPO_ROOT` line / coverage outcome; where found) | n/a | |
 | image ids of the shared tags before / after `ciu up` | | n/a (no rebuild) |
 | baseline control (flat hand-written `:rw`, unedited templates): mount row, verdict line, cause | | |
 | ciu-`rw` control: INFO line `(rw)`, verdict line, cause | | |
@@ -780,9 +809,20 @@ same lane and (Run B) the same `$BASE`. Each recreate is its own detached call w
 
 **Control 1, BASELINE (the unedited templates: the flat hand-written `:rw` bind, no table).**
 
+Step 0 (only if the A8/B8 sub-check left `git_common_dir = "rw"` in the file; a reverse apply fails with
+`patch does not apply` otherwise): put the table back to the patch's own text with ONE exact replacement, using
+the Edit tool on the scratch worktree's `ciu.defaults.toml.j2` (Run A: `$WT/tooling/test-runner/`, Run B:
+`$WT/tools/test-runner/`; never `git checkout -- <file>`, never sed):
+
+```text
+old_string:  git_common_dir = "rw"
+new_string:  git_common_dir = "ro"
+```
+
 ```bash
 source /tmp/ciu215-probe.env; test -n "$WT"; cd "$WT"
-git apply -R /tmp/ciu215-naf.patch            # Run B: /tmp/ciu215-dst.patch. Restores the hand-written block, removes the table
+git apply -R --check /tmp/ciu215-naf.patch    # Run B: /tmp/ciu215-dst.patch. MUST print nothing and exit 0 before the real apply; else stop (the file is not at the patch's text)
+git apply -R /tmp/ciu215-naf.patch            # Restores the hand-written block, removes the table
 git status --short                             # PASS: clean (the two .j2 files are back to HEAD)
 ```
 
@@ -792,8 +832,9 @@ ABSENT, `.ciu/ciu.compose.gitdir.yml` is gone, and the mount row shows the flat 
 the flat bind is writable; this is the baseline, expected) and then re-run the lane (A6/A7 or B6/B7 with the
 same `$BASE`).
 
-**Control 2, ciu-`rw`.** `git apply /tmp/ciu215-*.patch`, change `"ro"` to `"rw"` in the defaults `.j2` (Edit
-tool), recreate, confirm `(rw)` in the INFO line, re-run checks a, b and the lane.
+**Control 2, ciu-`rw`** (only after Control 1 reverted the files). `git apply --check` then `git apply` the
+same patch as Control 1 (Run A `/tmp/ciu215-naf.patch`, Run B `/tmp/ciu215-dst.patch`), change `"ro"` to
+`"rw"` in the defaults `.j2` (Edit tool, exact replacement `git_common_dir = "ro"` -> `git_common_dir = "rw"`), recreate, confirm `(rw)` in the INFO line, re-run checks a, b and the lane.
 
 **Decision table** (verdict classes per section 3: "fails" = `GIT_FAILED` with a mount-type message; "passes" =
 a verdict reached with evidence the script/snapshot ran):
