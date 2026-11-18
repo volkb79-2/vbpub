@@ -2,10 +2,9 @@
 
 `hostobs/tools/dev` gives an implementer or reviewer a place to compile, test, debug and run
 user-space Rust against the offline fixtures, with a persistent incremental target directory and
-a debugger. Until now the only way to run Rust was a remote gate lane
-(`scripts/controller/remote-gate.sh v1001 hostobs <lane> <commit>`): clean checkout, batch only,
-no debugger. The dev container reuses the gate image's exact toolchain and crate cache and adds
-what a person needs and a gate does not.
+a debugger. A gate lane (`scripts/controller/remote-gate.sh v1001 hostobs <lane> <commit>`) is
+clean-checkout and batch only; the dev container is the interactive counterpart. It reuses the
+gate image's exact toolchain and crate cache and adds what a person needs and a gate does not.
 
 **A green dev run is NOT gate evidence.** Only `remote-gate.sh` / `gate-run.sh` lanes on a
 committed head are. Use `dev` to iterate, then let the lanes judge.
@@ -28,8 +27,8 @@ hostobs/tools/dev test -p hostobs-store
 ```
 
 * **REMOTE is the default and the only recommended mode.** The container runs on `v1001` (the
-  wrapper accepts no other alias). The devcontainer is capped (8 GiB, OOM-killed once) and shares a
-  production host, so nothing heavy runs here.
+  wrapper accepts no other alias). The devcontainer is memory-capped and shares a production
+  host, so nothing heavy runs here.
 * **LOCAL (`dev --local ...`) exists but is refused** unless `HOSTOBS_DEV_ALLOW_LOCAL=1`: it uses
   this machine's docker daemon (bind source resolved through `docker inspect` of this container).
   It is not recommended on the shared devcontainer.
@@ -53,9 +52,23 @@ seed ships the full history, which can be large.
 
 **The uncommitted part is capped at 20 MiB** (tracked patch bytes plus untracked file bytes).
 Past it the wrapper refuses with exit 2 before contacting the host: commit the change (a commit
-travels in the bundle) or drop it. The host checkout is its own git repository (detached at your
-`HEAD`), so git works in the container but anything done there is wiped by the next call; commit
-here, in the devcontainer.
+travels in the bundle) or drop it. An untracked directory (a nested git repository) is refused
+by name. The host checkout is its own git repository (detached at your `HEAD`); inside the
+container its `.git` is mounted **read-only**, so git offers `status`, `diff` and `log` only. Make
+commits in the devcontainer.
+
+Why read-only: the host re-uses the checkout on the next call, and a container that could write
+`.git/hooks` or `core.fsmonitor` would be running code outside its sandbox. Defence in depth, every
+host-side git call runs as `git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c
+protocol.allow=never -c protocol.file.allow=always` with `GIT_CONFIG_NOSYSTEM=1
+GIT_CONFIG_GLOBAL=/dev/null`, and `.git/hooks` is recreated empty on every sync.
+
+### What the wrapper does with your words
+
+Every argument you type is quoted with `printf %q` before it enters the script that runs on the
+host; nothing inspects it. The only literal text is built from the 12-hex worktree identity. A
+word like `$(id)`, `x;y` or `$HOME/x"; touch X; echo "` reaches the container unchanged as one
+argument and never runs on the host (tests with hostile words pin this).
 
 ### Where the build output lives
 
@@ -75,14 +88,17 @@ The controller gives the go; a controller-run implementer or the controller does
 
    ```sh
    nice -n 19 tester-unified-rust/build-dev-image.sh \
-     --cgroup-parent "$CGROUP_PARENT_DEV_GATES" --record /tmp/dev-image-versions.tsv
+     --cgroup-parent dev-gates.slice --builder default --record /tmp/dev-image-versions.tsv
    ```
 
    Options: `--tag IMAGE` (default `tester-unified-rust-dev:local`), `--base IMAGE` (default
-   `tester-unified-rust:local`), `--builder NAME` (default `mdt-managed`), `--record FILE`. The
-   build needs the network for apt and rustup only. It refuses an ungoverned build like
-   `build-image.sh`, checks the base label afterwards and prints `dpkg-query -W` version lines into
-   the build log.
+   `tester-unified-rust:local`), `--builder NAME` (default `default`; precedence option, then
+   `TESTER_UNIFIED_RUST_BUILDER`, then the default), `--record FILE`. The default builder is the
+   docker driver, the kind that can see a base image that exists only in the local daemon; a
+   docker-container builder cannot. The build needs the network for apt and rustup only. It
+   refuses an ungoverned build like `build-image.sh`, records the base image **id** next to its tag
+   (build arg and label `org.vbpub.tester-unified-rust-dev.base-image-id`, verified after the
+   build) and prints the packages the layer added or upgraded.
 3. Because the image is built on the host that runs it, no image transfer is needed. If it must be
    built elsewhere, `docker save IMAGE | docker load` from the host that holds it moves it, but it
    is a multi-GB transfer; only the controller decides that.
@@ -114,8 +130,13 @@ from the Debian package tracker:
 | ca-certificates | recorded by `--record` | to be filled by the host work |
 | rust-src, rust-analyzer | the base toolchain's own version (`rustup component list --installed`) | same as the toolchain |
 
-`--record FILE` writes `name<TAB>version<TAB>build date (UTC)` lines (plus `rust-analyzer` and
-`rustc`) for the controller to vet. A version younger than 14 days is a reason to hold the image.
+The five named packages pull in a dependency closure (the Python and debuginfod libraries of
+gdb, for example). `--record FILE` therefore records the **diff of `dpkg-query -W` between the base
+image and the dev image**: every package the layer added or upgraded, with its version, plus
+`rustc`, `rust-analyzer` and the installed components, as `name<TAB>version<TAB>build date (UTC)`
+lines, and a header with the base tag and the base image id. The date column is the **build** date:
+a release date cannot be checked offline and is filled in by the host work. A version younger than
+14 days is a reason to hold the image.
 
 ## Daily use
 
@@ -135,7 +156,8 @@ hostobs/tools/dev clippy -p hostobs-kernel --all-targets -- -D warnings
 hostobs/tools/dev fmt --check                   # cargo fmt --all --check; `dev fmt` formats in the host checkout only
 hostobs/tools/dev example hostobs-proto sp4_wire_size           # the SP-4 wire-size example
 hostobs/tools/dev run -- ls /work/hostobs/fixtures
-hostobs/tools/dev status                        # container name, running?, volume, checkout, other dev containers
+hostobs/tools/dev status                        # container name, running? and its age, volume, checkout, other dev containers
+hostobs/tools/dev stop                          # remove THIS worktree's container by exact name (e.g. after a dropped ssh)
 hostobs/tools/dev --dry-run test -p hostobs-store               # print the whole plan and the exact docker argv, call nothing
 ```
 
@@ -150,8 +172,9 @@ for `/proc` and `/sys`.
 
 ### Interactive use over ssh
 
-`-t` is passed to docker (and a pty is allocated on the host with `script`) **only when stdin is a
-terminal**; otherwise the call is batch. The host table's ssh command has no `-t`, so interactive
+`-t` is passed to docker (and a pty is allocated on the host with `script`, started explicitly
+through `bash -c`) **only when both stdin and stdout are terminals**; otherwise the call is batch.
+The host table's ssh command has no `-t`, so interactive
 `shell` and `gdb` are best-effort and **unmeasured**: line editing and Ctrl-C go through a
 host-side pty with the local terminal in no-echo mode. The dependable way to use the debugger is
 batch: `dev gdb -batch -ex ...`.
@@ -169,39 +192,47 @@ hostobs/tools/dev gdb --args /home/gate/.cache/hostobs-target/debug/deps/hostobs
 hostobs/tools/dev gdb -batch -ex run -ex bt --args /home/gate/.cache/hostobs-target/debug/deps/hostobs_store-<hash> my_test
 ```
 
-* **Core files.** Only `gdb` gets an unlimited core limit (`--ulimit core=-1:-1`; every other
-  subcommand gets `core=0:0`). The kernel's `core_pattern` is host-wide and cannot be set from
-  the container, so the dependable way is `gcore` from inside gdb:
-  `(gdb) gcore /home/gate/.cache/hostobs-target/core.my_test`. Open it later with
+* **Core files.** Automatic core dumps are off in every subcommand (`--ulimit core=0:0`): the
+  kernel's `core_pattern` is host-wide, and a piped pattern would send up to several GiB to a host
+  handler outside the container's cgroup. Get a core on purpose with `gcore` from inside gdb, into
+  the target volume: `(gdb) gcore /home/gate/.cache/hostobs-target/core.my_test`. Open it later with
   `dev gdb /home/gate/.cache/hostobs-target/debug/deps/hostobs_store-<hash> /home/gate/.cache/hostobs-target/core.my_test`.
-  The inferior's cwd defaults to the target volume (`set cwd`), so a plain-file `core_pattern`
-  lands the core there too. Core files can be large: remove them with `dev run -- rm ...`.
+  Core files can be large: remove them with `dev run -- rm ...`.
 * **rust-analyzer** and `rust-src` are installed for the toolchain. An editor language server over
   this sync model is not supported (unmeasured). Batch use works:
   `dev run -- rust-analyzer diagnostics /work/hostobs`.
 * **Profiling without `perf`:** `dev strace -c -f -o /home/gate/.cache/hostobs-target/strace.sum <bin> <args>`
   for a syscall summary, `dev strace -T -f -e trace=file -o ... <bin>` for per-call time, then
   `dev run -- cat /home/gate/.cache/hostobs-target/strace.sum`.
-* `SYS_PTRACE` is granted to `gdb` and `strace` only. The container runs as the unprivileged
-  `gate` user (1003:1003) with all other capabilities dropped; tracing your own children works
-  without the capability, and the capability does not widen what an unprivileged user can attach
-  to. Attaching to an arbitrary pid is therefore not expected to work.
+* `SYS_PTRACE` is added for `gdb` and `strace` only, as the least that could matter for tracing.
+  The container runs as the unprivileged `gate` user (1003:1003); the capability is added to the
+  bounding set, not to the permitted set of a non-root process, so it is **not expected to make a
+  difference**: debugging your own children (`gdb --args`, `strace <cmd>`) works because they are
+  your children, and attaching to other pids is not expected to work. Under Docker's default
+  seccomp profile gdb may warn that it cannot disable address-space randomization; the wrapper
+  passes `set disable-randomization off` to avoid the warning. All of this is unmeasured until the
+  first real run.
 
 ## Limits and how to raise them
 
 | limit | value | override |
 |---|---|---|
-| memory | 3g, swap equal (no swap) | `HOSTOBS_DEV_MEMORY=4g` |
-| cpus | 2 | `HOSTOBS_DEV_CPUS=3` |
-| pids | 1024 | fixed |
+| memory | 3g, swap equal (no swap) | `HOSTOBS_DEV_MEMORY` `512m`..`4g` |
+| cpus | 2 | `HOSTOBS_DEV_CPUS` above 0, at most 3 |
+| pids | 1024 | `HOSTOBS_DEV_PIDS` may only be lowered |
+| runtime | 3600 s | `HOSTOBS_DEV_MAX_S` 1..14400 |
 | priority | `nice -n 10 ionice -c3` | fixed |
 | network | none | fixed |
+| core dumps | off | fixed |
 | capabilities | none (`SYS_PTRACE` for `gdb`/`strace`) | fixed |
 
-Do not raise memory or cpus casually. `v1001` has 4 cores and 8 GiB and runs the gate slice; the
-host is shared with production load. A higher limit makes the OOM killer pick the wrong victim and
-makes your neighbours' lanes inconclusive. The container is placed in `$CGROUP_PARENT_DEV_GATES`
-(required; the wrapper refuses without it), the same slice the gate lanes use.
+Values outside the bounds (zero, unlimited, a unit-less number, anything with extra words) are
+refused with exit 2; they are never passed on. Do not raise memory or cpus casually. As of
+2026-11-18, per the controller, `v1001` has 4 cores and 8 GiB and runs the gate slice; the host is
+shared with production load. A higher limit makes the OOM killer pick the wrong victim and makes
+your neighbours' lanes inconclusive. The container is placed in `dev-gates.slice`;
+`CGROUP_PARENT_DEV_GATES` must be exactly that value (anything else, including an unset variable,
+is refused with exit 2) and the pressure gate reads that same slice.
 
 ### Pressure gate and one at a time
 
@@ -212,22 +243,46 @@ Before every start the host-side preflight refuses (exit **75**, the same meanin
   about 3.5 GiB; the file is `/sys/fs/cgroup/dev.slice/dev-gates.slice/memory.current`, the
   slice `remote-gate.sh` already reads for its OOM counter) or cannot be read, or
 * memory PSI `some avg10` or io PSI `full avg10` is above 25 (the limit and the rule of
-  `scripts/netcup/runner/remote-gate.py`; CPU PSI is not a signal).
+  `scripts/netcup/runner/remote-gate.py`; CPU PSI is not a signal) **or a PSI file is missing,
+  unreadable or unparsable** (the gate fails closed).
+
+`memory.current` includes page cache, so it can stay high on a slice that just compiled or read a
+lot even though little is in use; that is why the threshold exists. The check refuses instead of
+waiting: retry in a few minutes, or look at `status` of the host's gate slice.
 
 It refuses with exit **3** when any `hostobs-dev-*` container already runs on the host
-(`HOSTOBS_DEV_ALLOW_PARALLEL=1` overrides; only for different worktrees, one worktree has one
-container name). Exit 3 also covers identity-check, guard or ssh failures. The wrapper also takes
-**one admission slot** (weight 1) of the same flock slots `remote-gate.sh` uses
-(`$CONTROLLER_HOME/remote-gate-locks/<host>.slotN`, `CONTROLLER_REMOTE_SLOTS` default 4, wait
-`CONTROLLER_REMOTE_SLOT_WAIT_S` default 7200 then exit 75), so a dev run and gate lanes queue
-together; the slot is released when the wrapper exits. The memory/PSI/one-at-a-time checks run
-again inside the final run step.
+(`HOSTOBS_DEV_ALLOW_PARALLEL=1` overrides; only for different worktrees), when the container name
+of this worktree exists (a previous run is still up: `dev stop`), and when **another dev call for
+the same worktree is in progress**: a host-side `flock` on `~/hostobs-dev/<12-hex>/lock` is held
+from before the sync through the end of the container run, non-blocking, and
+`HOSTOBS_DEV_ALLOW_PARALLEL` never bypasses it. Exit 3 also covers identity-check, guard or ssh
+failures. The wrapper also takes **one admission slot** (weight 1) of the same flock slots
+`remote-gate.sh` uses (`$CONTROLLER_HOME/remote-gate-locks/<host>.slotN`, `CONTROLLER_REMOTE_SLOTS`
+default 4, wait `CONTROLLER_REMOTE_SLOT_WAIT_S` default 7200 then exit 75), so a dev run and gate
+lanes queue together. That slot is a local flock: it is released when the wrapper exits, and the
+container may outlive the wrapper (below). The memory/PSI/one-at-a-time checks run again inside
+the final run step, under the lock.
+
+### Runtime limit, `stop`, and what is not covered
+
+The container is started as `timeout --foreground -s TERM -k 15 <HOSTOBS_DEV_MAX_S> docker run
+--stop-timeout 10 --cidfile ...` (default 3600 s, ceiling 14400 s). When the limit hits, the
+client is stopped and a cleanup removes the container by the id recorded in the cidfile of **our
+own** run, so a run that failed on a name conflict never removes someone else's container.
+`dev stop` removes this worktree's container by exact name and prints what it did; `dev status`
+shows a running container and its age.
+
+**Not covered:** there is no watchdog on your terminal. ssh without a tty gives the container no
+hangup, so a Ctrl-C, a killed wrapper or a dropped ssh session may leave the container running
+until the runtime limit or until `dev stop`, while the local admission slot is already released.
+Run `dev status` after an interrupted call and `dev stop` when it is still up.
 
 ## What is on the host and how to clean it
 
 * checkout `~/hostobs-dev/<12-hex>/work` (git, one per worktree),
 * volume `hostobs-dev-target-<12-hex>` (build output, cores, strace files),
-* the container `hostobs-dev-<12-hex>` while a call runs (removed by exact name on exit).
+* the container `hostobs-dev-<12-hex>` while a call runs (removed on exit by the id of our own run),
+* `~/hostobs-dev/<12-hex>/lock`, `cid` and short-lived `up-*` upload directories (swept after 2 h).
 
 ```sh
 hostobs/tools/dev status                  # shows all of the above
@@ -273,10 +328,10 @@ Test-only seams (never set them in use): `HOSTOBS_DEV_HX`, `HOSTOBS_DEV_TEST_SLI
   `selftest` lane together with `bash -n` of the scripts), plus the structure of `Dockerfile.dev`
   and `build-dev-image.sh`.
 * **Not verified:** no image was built, so the wrapper has never run against a real image, a real
-  host, `hx.sh` or ssh; the Dockerfile has never been built (the `rust-analyzer` proxy, the
-  `mdt-managed` builder's ability to see a local-only base image, gdb under the default seccomp
-  profile are all open until the first build); interactive ttys over ssh and latency are
-  unmeasured.
+  host, the real `hx.sh` or ssh (the tests use a stub transport with the same quoting layers); the
+  Dockerfile has never been built (the `rust-analyzer` proxy and gdb under the default seccomp
+  profile are open until the first build); interactive ttys over ssh, the runtime limit against a
+  real container and latency are unmeasured.
 * **First-run checks for a human** once the image exists on `v1001`:
   `hostobs/tools/dev run -- cargo --version`, `hostobs/tools/dev test -p hostobs-proto`,
   `hostobs/tools/dev gdb --version`, then `hostobs/tools/dev status` and
