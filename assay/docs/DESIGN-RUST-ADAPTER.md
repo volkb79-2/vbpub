@@ -123,6 +123,15 @@ and that CONSUMERS section win. What stays open is the real-toolchain
 qualification on the U0 subjects (U7) and the hostobs T3 registration (U8);
 K15 stays open until U8. U8a registered Rust at R2 in the CLI registry
 (ingested cargo-mutants lanes only; native Rust R2 and Rust R3 stay refused).
+The first hand run of hostobs `assay-r2` (2026-11-18, v1001, base `7835ec25a`) ended
+`R0 PASS` / `R2 INCONCLUSIVE NO_MUTANTS` (assay exit 5, the lane fails closed): all changed
+lines under the source roots were doc comments and `#[cfg(test)]` functions, which
+cargo-mutants never mutates, so it measured the declared lane end to end but no mutant
+verdict; the listing for base `0dd7230b1` is 345 mutants (about 2.4 h at `--jobs 1`) and
+that run is the one that closes K15. Three attempts at it (2026-11-18) were cancelled on memory before any
+mutant ran: a single unmutated-baseline test of the hostobs client crate
+(`transport_failures_are_classified`) grows without bound under the lane (details in
+`RUST-B245-U0-MEASUREMENTS.md`), so K15 now also waits for that test to be fixed.
 
 **Contract read from upstream ([V] mutants.rs pages and `src/outcome.rs`, `src/mutant.rs`, `src/process.rs`):**
 exit 0 all caught, 1 usage, 2 missed mutants, 3 timeouts, 4 baseline failing, 5 `--in-diff` new side does not

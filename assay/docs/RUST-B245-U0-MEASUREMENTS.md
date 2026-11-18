@@ -111,6 +111,38 @@ top), roughly 1 s per mutant over the 142 mutants on these tiny synthetic crates
 hostobs cost is the mutants in the diff times its per-mutant compile and test time). The
 risks below were the pre-run expectations; none produced a deviation.
 
+First hostobs run (B245 U8b `assay-r2`, hand-run 2026-11-18, v1001, commit `30762a2a5`,
+`--base 7835ec25a`, run `rgw-assay-r2-20261118T150203-v1001`): `R0 PASS`, `R2
+INCONCLUSIVE NO_MUTANTS`, assay exit 5 (run-gate lane `FAIL` exit 5 by the fail-closed
+`exit_map`), whole judge 13.5 s (snapshot 12.5 s, the `cargo mutants` baseline command
+0.43 s, return code 0, report absent), dev-gates slice peak 275 MB anon+shmem. The
+handed-over diff was 4924 bytes (`changed_diff` base `7835ec25a`, relative to `hostobs`).
+Zero mutants is correct here: the changed lines under `crates/*/src` are doc comments
+(`proto/src/lib.rs`) and test functions in `mod tests` (`store/src/store.rs` +58,
+`tier/src` +9), which cargo-mutants skips; `cargo mutants --list --in-diff` agrees
+(0 for bases `7835ec25a` and `05305ed17`). For a diff with production changes the
+listing for base `0dd7230b1` (HEAD `30762a2a5`) is 345 mutants in 8 files (`client.rs`
+182, `json.rs` 80, `hello.rs` 27, `streams.rs` 27, `error.rs` 10, `proto/envelope.rs` 8,
+`transport.rs` 6, `level.rs` 5; genres FnValue 187, BinaryOperator 130, UnaryOperator 12,
+MatchArmGuard 10, MatchArm 4, StructField 2); at an assumed 25 s per mutant (`--jobs 1`,
+compile-dominated, not measured) that is about 2.4 h, inside the lane budget. Per-mutant
+cost on hostobs is therefore still unmeasured until that run.
+
+The base `0dd7230b1` attempts (2026-11-18, v1001, commit `30762a2a5`, then the U8b-fix head
+`2dd8be574`) were cancelled by the shared-host memory rule (abort at slice anon+shmem 5.0 GB, own cap 3.5 GiB) before a
+single mutant ran: container 6.4 GiB at ~100 s (default cargo parallelism), then 3.6 GiB at ~100 s
+with `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS` set to 1. A third,
+sampled run (2 s samples of the container cgroup, host `ps --sort=-rss`) named the cause: not
+rustc, not a tmpfs (`/tmp` is overlay disk, `/dev/shm` 64 MB, no container memory limit), but ONE test
+process of the unmutated baseline, `client_scripted ... --exact transport_failures_are_classified`
+(`hostobs/crates/client/tests/client_scripted.rs`), whose RSS grew 0.07 GB -> 4.07 GB in about
+20 s (2.7 GB at 14 s, 4.3 GB at 22 s) until the sampler cancelled the job. The same test passes in
+hostobs `selftest` and `assay-r1`, so it depends on the assay-r2 invocation (plain environment,
+default nextest profile, no llvm-cov); the fix belongs to the client crate (open with its owner). Lesson for
+every hand-run heavy lane: declare `[lanes.<name>.resources] memory` (docker `--memory`) so a runaway
+is OOM-killed inside its own container, and sample the container every few seconds for the first
+minutes (a 60 s monitor missed the step). K15 stays open.
+
 Known risks for the first real qualification run (B245 U7,
 `tools/qualify_rust_r2_real.py`; each is diagnosed, not a known defect; its
 `--preflight` mode lists the real mutants of every case in seconds first):
