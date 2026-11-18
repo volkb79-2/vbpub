@@ -674,4 +674,17 @@ campaign has not been run for it; the owner runs the `r2` lane before release.
 Adoption in cmru, mdt-cockpit `build-push.py`, ciu and nyxloom follows the release,
 one package each, with the floor raised to the first release that ships `procio`.
 
+**Finding (2026-11-18, fixed):** the gate lane failed once on
+`test_pipe_holder_scan_names_holders_and_skips_what_it_cannot_inspect` (`[228] == [228, 229]`).
+Root cause was a library defect, not a test race: `pipe_holder_pids` caught `OSError` around
+the whole per-process descriptor loop, so one descriptor closing between the `/proc/<pid>/fd`
+listing and its `readlink` (ENOENT) dropped the process even though the pipe end was still
+open. A child inside `execve` does exactly that: `Popen` returns when the errpipe closes, while
+the child still drops its other close-on-exec descriptors. Measured in the gate image:
+31-36 of 200 loops lost a holder before the fix (about 5 of 200 with three CPU burners),
+0 of 2000 after, and every observed miss was ENOENT on `readlink` of fd 3, never EACCES on
+the listing. The scan now skips only the vanished descriptor. Regression test:
+`test_pipe_holder_scan_survives_a_descriptor_closing_mid_scan`. Report:
+`artifacts/release-program-20261027/reports/procio-flake-REPORT.md`.
+
 **Provenance:** `ciu/docs/DESIGN-NOTE-2026-11-CIU-215-CIU-220.md`, Decision 2.

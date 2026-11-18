@@ -161,12 +161,20 @@ def pipe_holder_pids(inode: int) -> list[int]:
         if not entry.isdigit() or int(entry) == os.getpid():
             continue
         try:
-            for descriptor in os.listdir(f"{_PROC_ROOT}/{entry}/fd"):
-                if os.readlink(f"{_PROC_ROOT}/{entry}/fd/{descriptor}") == wanted:
-                    holders.append(int(entry))
-                    break
+            descriptors = os.listdir(f"{_PROC_ROOT}/{entry}/fd")
         except OSError:
             continue  # exited meanwhile, or owned by another user: not ours to inspect
+        for descriptor in descriptors:
+            try:
+                target = os.readlink(f"{_PROC_ROOT}/{entry}/fd/{descriptor}")
+            except OSError:
+                # Closed since the listing (a child inside execve drops its close-on-exec
+                # descriptors after Popen returns): skip that descriptor only. Giving up on the
+                # whole process here would hide a holder whose pipe end is still open.
+                continue
+            if target == wanted:
+                holders.append(int(entry))
+                break
     return sorted(holders)
 
 
