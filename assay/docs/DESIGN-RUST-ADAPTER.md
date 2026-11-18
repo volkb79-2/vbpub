@@ -121,7 +121,8 @@ and the v20 verdict cut. The copy-paste lane and its rules are in
 differs from the table and bullets below, `DESIGN-B245-CARGO-MUTANTS-INGESTION.md`
 and that CONSUMERS section win. What stays open is the real-toolchain
 qualification on the U0 subjects (U7) and the hostobs T3 registration (U8);
-K15 stays open until U8.
+K15 stays open until U8. U8a registered Rust at R2 in the CLI registry
+(ingested cargo-mutants lanes only; native Rust R2 and Rust R3 stay refused).
 
 **Contract read from upstream ([V] mutants.rs pages and `src/outcome.rs`, `src/mutant.rs`, `src/process.rs`):**
 exit 0 all caught, 1 usage, 2 missed mutants, 3 timeouts, 4 baseline failing, 5 `--in-diff` new side does not
@@ -353,7 +354,7 @@ the README/DESIGN-GUIDE/CONSUMERS of the tool it touches in the same change.
 | K12 | cargo-mutants output format has no stability promise [V] | upstream choice | strict parser + qualification test on every bump |
 | K13 | full instrumented build per lane run (fresh snapshot) | correctness over cache reuse | measured cost, ~minutes |
 | K14 | `unsafe` allowed in `kernel`/`act` without miri/sanitizers | operator decision 5 | review; VM lanes; BL-RUST-MIRI |
-| K15 | Rust R2 is not adopted yet | record the status once as a known issue, not a per-release waiver | assay's ingestion shipped (B245 U0-U5c, docs U6); K15 stays open until the hostobs T3 lane is registered (U8) |
+| K15 | Rust R2 is not adopted yet | record the status once as a known issue, not a per-release waiver | assay's ingestion shipped (B245 U0-U5c, docs U6); registry lifted (U8a); K15 stays open until a hostobs T3 run exists (U8) |
 
 Assay work packages are already filed as B241–B250 in
 `assay/nyxloom-trove/4-backlog.md`; B251 is the next new sequential id (B522 is

@@ -11,6 +11,27 @@
   absolute memory bound (measured on CPython 3.14.10) is skipped there and the growth and line-count
   gates run. `tester-unified-rust/tests/test_image_contract.py` expects the fourth lane.
 
+### Added (P5a: `crates/client`, the Rust client; the Rust client part of `HOB-54` closed)
+
+- **`hostobs-client`**: `Client::connect(path, Level, ClientInfo)` and `Client::from_transport` over an injected
+  `Transport` (a `UnixStream` by default) and `Clock`; the handshake of §1.4 (prefix alone, server prefix, `hello`
+  with `corr` 1) with the Python client's `hello` validation (`HelloResult`, `Limits`); `request(verb, args_json)`
+  with local §4.2 checks; `blocks()` (`BlockStream`, END counts checked); `subscribe()` (`Subscription`, an iterator
+  with `dropped()`); `reconnect()` per §6.4 (`Session` first/same/changed); `close()` (idempotent, also on drop).
+  `ClientError` is a closed enum with `kind()` and `Display`; no panic on any server byte.
+- **`proto`**: `envelope::members_up_to(bytes, max)` is `members` with the key bound chosen by the caller (`members`
+  is `members_up_to(bytes, MAX_MEMBERS)`; every envelope check is unchanged): the client reads the 9-key `hello` result
+  and its 19-key `limits` object with a bound of 64.
+- **Review round**: a stream's frames are re-checked against the announced `max_frame_bytes` after the hello; an
+  `END ok:false` counts its `dropped`; socket timeouts, the frame-age stamp, reconnect state and transport error
+  classes are asserted in tests; the hostile-bytes test asserts a closed set of error kinds.
+- **Tests**: scripted-server tests over a fake clock (`crates/client/tests/client_scripted.rs`: handshake refusals,
+  every §10 code, corr and END violations, fixtures of `fixtures/stream/client-*.json` through a live client,
+  exact-deadline and completion-age boundaries, byte-by-byte delivery, reconnect, a real `UnixStream` pair and
+  2,000 + 2,000 deterministic hostile-byte runs) and unit tests in every module. `assay.toml` judges the seven
+  `crates/client/src` files (44 judged files together with the 37 of P2b); `crates/client` joins the judge's
+  `source_roots`.
+
 ### Added (P2b: the send hub; `HOB-54` stays open)
 
 - **`proto::hub::SendHub`** (WIRE.md §5.3, §12): `QueueLimits`, `ConnId`, `add`/`remove`/
@@ -33,6 +54,12 @@
   with `envelope.rs` and `stream_dicts.rs`).
 - **Hand mutants.** `M1d-14`'s Python patch follows the directory guards `hostobs_wire_ref.py`
   has since the P2a1 codec (two patches, one per guard): 54 stored patches, `--dry-run` 0 stale.
+- **Hand-mutant survivors closed** (`M1d-22`, `M1d-15`; the first 2026-11-18 run, on
+  `0dd7230b1`, killed 50 of 54; the re-run on `6fa50236f` killed 54 of 54): two store tests
+  rescan a tier and read the eviction report from the store's ring after a write-path eviction
+  and after `Store::evict` (also kills the `Store::notes` ring patch), and the quarantine
+  look-alike test asserts the reason of a `.corrupt` directory. None of the four was an
+  equivalent mutant at the unit level (through the public API the ring is redundant, `HOB-60`).
 
 ### Added (P3b: `python/hostobs_client` connection, `require_profiling`, `hostobs-mark`; the P3 part of `HOB-54` closed)
 
@@ -163,7 +190,8 @@
   for a Rust suite, 300 s for Python); a timeout is `KILLED-TIMEOUT`, counted apart (and
   inconclusive under host load), and the container is removed by its exact name
   `hostobs-mut-<pid>-<n>` on a timeout or any exception. 53 stored patches (`M1d-20` to `M1d-22`
-  added, `M1d-18` rewritten); the campaign has not been run.
+  added, `M1d-18` rewritten); when this entry was written the campaign had not been run (it ran
+  on 2026-11-18, see the survivors entry above).
 
 ### Fixed (P0 bug fold-in)
 
@@ -231,7 +259,8 @@
   identity, the reference's check precedence, the stream layer machines).
 - **Hand-mutation record for the P0 fold-in** (`docs/HAND-MUTANTS-M1D.md`,
   `docs/hand-mutants/m1d-mutants.py`): thirty-five stored patches in the method of
-  `HAND-MUTANTS-M1C.md`. The campaign has not been run yet; the doc says so.
+  `HAND-MUTANTS-M1C.md`. When this entry was written the campaign had not been run (it ran on
+  2026-11-18; the doc states the result).
 - **Gate invocations in `docs/CONSUMERS.md` and `README.md`** now state the estate wrappers
   (`scripts/controller/gate-run.sh <lane>` from a linked worktree's project directory;
   `scripts/controller/remote-gate.sh v1001 hostobs <lane> <commit-or-branch>` with
