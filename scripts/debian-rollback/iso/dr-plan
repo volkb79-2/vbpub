@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# dr-plan: decide, WITHOUT touching any disk, whether the unattended installer may wipe a disk and which one.
+# A pure function of: lsblk output, the install config, and the names the caller excludes.
+#
+#   dr-plan --lsblk FILE (--config FILE | --no-config) [--exclude NAME]... [--min-gib N]
+#
+#   FILE is `lsblk -dnbP -o NAME,TYPE,ROTA,RM,SIZE,TRAN` output (use "-" for stdin).
+#   --exclude: the disk the ISO booted from, the disk of the config stick, anything mounted (repeatable).
+#
+# Prints, on stdout:  DECISION=install|confirm|refuse  TARGET=/dev/NAME  and the validated config settings (KEY=VALUE).
+# Exit 0 for install and confirm, 3 for refuse (reason on stderr), 2 for a usage error.
+#   install : the config allows an unattended wipe of TARGET.
+#   confirm : there is no config; TARGET may only be wiped after the operator types a confirmation at the console.
+#   refuse  : nothing is touched.
+#
+# Rules (controller conditions 2026-11-18, operator rule 2026-11-18):
+#   * TARGET_DISK=/dev/X (or X): exactly that disk, if it is a qualifying disk (whole disk, not removable, not USB,
+#     >= min size, not excluded). Anything else: refuse. Never falls back to another disk.
+#   * TARGET_DISK=first-ssd: the operator's rule (first non-rotational disk, else first rotational), explicit opt-in.
+#   * TARGET_DISK unset: the only qualifying disk. Two or more qualifying disks: refuse (a multi-disk host must name
+#     its target).
+#   * no config at all: never unattended; `confirm` for the only qualifying disk, refuse with several.
+#   * config hygiene: only known KEYs, KEY=VALUE with a restricted character set, no duplicates, no unknown keys.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PICK=${DR_PICK_DISK:-}
+if [ -z "$PICK" ]; then
+  for c in "$HERE/dr-pick-disk" "$HERE/../poc/dr-pick-disk"; do [ -x "$c" ] && { PICK=$c; break; }; done
+fi
+[ -x "$PICK" ] || { echo "dr-plan: dr-pick-disk not found" >&2; exit 2; }
+
+LSBLK="" CONFIG="" NOCONFIG=0 MINGIB=8
+declare -a EXCLUDE_ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --lsblk) LSBLK=${2:?}; shift 2 ;;
+    --config) CONFIG=${2:?}; shift 2 ;;
+    --no-config) NOCONFIG=1; shift ;;
+    --exclude) EXCLUDE_ARGS+=(--exclude "${2:?}"); shift 2 ;;
+    --min-gib) MINGIB=${2:?}; shift 2 ;;
+    *) echo "dr-plan: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$LSBLK" ] || { echo "dr-plan: --lsblk is required" >&2; exit 2; }
+if [ "$NOCONFIG" = 1 ] && [ -n "$CONFIG" ]; then echo "dr-plan: --config and --no-config are exclusive" >&2; exit 2; fi
+if [ "$NOCONFIG" = 0 ] && [ -z "$CONFIG" ]; then echo "dr-plan: give --config FILE or --no-config" >&2; exit 2; fi
+
+refuse() { echo "DECISION=refuse"; echo "dr-plan: refusing: $*" >&2; exit 3; }
+
+KNOWN=" TARGET_DISK HOSTNAME SUITE MIRROR SECURITY_MIRROR ROOT_PASSWORD "
+declare -A CFG=()
+if [ "$NOCONFIG" = 0 ]; then
+  [ -r "$CONFIG" ] || refuse "config file $CONFIG is not readable"
+  lineno=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno + 1))
+    line=${line%$'\r'}
+    case "$line" in ''|'#'*) continue ;; esac
+    [[ "$line" =~ ^([A-Z_]+)=(.*)$ ]] || refuse "config line $lineno is not KEY=VALUE"
+    key=${BASH_REMATCH[1]}; val=${BASH_REMATCH[2]}
+    case "$KNOWN" in *" $key "*) ;; *) refuse "config line $lineno: unknown key $key" ;; esac
+    [ -z "${CFG[$key]+x}" ] || refuse "config line $lineno: duplicate key $key"
+    [[ "$val" =~ ^[A-Za-z0-9_./:@,+=-]*$ ]] || refuse "config line $lineno: value of $key has a character outside A-Za-z0-9_./:@,+=-"
+    CFG[$key]=$val
+  done <"$CONFIG"
+fi
+
+# every qualifying disk, in preference order (dr-pick-disk owns the qualification rules)
+if [ "$LSBLK" = - ]; then input=$(cat); else [ -r "$LSBLK" ] || refuse "lsblk file $LSBLK is not readable"; input=$(cat "$LSBLK"); fi
+candidates=$(printf '%s\n' "$input" | "$PICK" --list --min-gib "$MINGIB" "${EXCLUDE_ARGS[@]}" 2>/dev/null) || candidates=""
+ncand=$(printf '%s' "$candidates" | grep -c . || true)
+
+emit_settings() {
+  local k
+  for k in HOSTNAME SUITE MIRROR SECURITY_MIRROR ROOT_PASSWORD; do
+    [ -z "${CFG[$k]:-}" ] || echo "$k=${CFG[$k]}"
+  done
+}
+
+target_spec=${CFG[TARGET_DISK]:-}
+if [ "$NOCONFIG" = 1 ]; then
+  [ "$ncand" -ge 1 ] || refuse "no qualifying disk"
+  [ "$ncand" -eq 1 ] || refuse "no config and $ncand qualifying disks: run the installer by hand with --device"
+  echo "DECISION=confirm"; echo "TARGET=$candidates"; exit 0
+fi
+
+case "$target_spec" in
+  "")
+    [ "$ncand" -ge 1 ] || refuse "no qualifying disk"
+    [ "$ncand" -eq 1 ] || refuse "$ncand qualifying disks and the config names no TARGET_DISK (set TARGET_DISK=/dev/X, or TARGET_DISK=first-ssd to take the first SSD else the first rotational disk)"
+    echo "DECISION=install"; echo "TARGET=$candidates"; emit_settings; exit 0 ;;
+  first-ssd)
+    [ "$ncand" -ge 1 ] || refuse "no qualifying disk"
+    echo "DECISION=install"; echo "TARGET=$(printf '%s\n' "$candidates" | sed -n 1p)"; emit_settings; exit 0 ;;
+  *)
+    name=${target_spec#/dev/}
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || refuse "TARGET_DISK '$target_spec' is not a disk name"
+    case "$name" in *..*) refuse "TARGET_DISK '$target_spec' is not a disk name" ;; esac
+    if printf '%s\n' "$candidates" | grep -qx "/dev/$name"; then
+      echo "DECISION=install"; echo "TARGET=/dev/$name"; emit_settings; exit 0
+    fi
+    refuse "TARGET_DISK /dev/$name is not a qualifying disk (missing, partition, removable, USB, too small, or the install medium)" ;;
+esac
