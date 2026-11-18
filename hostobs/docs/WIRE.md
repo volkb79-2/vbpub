@@ -510,10 +510,13 @@ not an event (it stamps nothing; a poisoned reader still returns its error); `fe
 age, only `poll` does, so a frame that completes late inside one `feed` is delivered; a second `eof`
 after a clean one stays `Ok`; the effective maximum is `min(max_frame, 16 MiB)` because
 `FrameHeader::parse` already refuses a longer `len`; the fixed header fields are judged before `len`
-(the first refusal of the codec and of the Python reference); the age error is
+(the first refusal of the codec and of the Python reference); a `len` above the codec's own 16 MiB
+limit is `oversized-frame` naming the reader's `max_frame` as the bound; the age error is
 `ProtoError::Deadline` (`deadline`), and `truncated` at EOF names its context (`frame header at end
 of stream`, `frame body at end of stream`). `buffered_len()` and `buffered_capacity()` expose the
-buffer for the allocation tests; a poisoned reader holds no buffer.
+buffer for the allocation tests; a poisoned reader holds no buffer. The 64 KiB growth step costs up
+to `len / 64 KiB` reallocations for the largest frame (256 at 16 MiB); this is accepted, because the
+capacity bound forbids geometric growth.
 
 5.3 **Send hub** (`proto::stream::SendHub`, server side, one per serving process that owns every
 connection's outgoing queue; P5b wraps it in one mutex). It owns the per-uid and global pools, so the
@@ -590,13 +593,13 @@ bytes seen; the caller applies §1.4 to the prefix fields), `Detect::Unknown`. `
 `bytes` of the first byte not consumed by the detector (`{` itself for JSON: it is the line's first
 byte); the caller passes `&bytes[at..]` to the `FrameReader` (binary) or the JSON line reader in the
 same call, so surplus bytes after the prefix are never lost. A detector that returned anything but
-`Need` is finished; further `feed` calls are a caller bug (panic in debug).
+`Need` is finished; further `feed` calls are a caller bug and return `Detect::Unknown` in every build.
 
 **Implemented.** The detector decides at the earliest byte: `{` at prefix offset 0 is `Json { at }`
 (`at` is that byte's index, not consumed); a byte among the first four that differs from `HOB\x01`
 (a `{` after the first byte included) is `Unknown`; bytes 5 to 8 may be any value; the eighth byte
 gives `Binary { prefix, at: index + 1 }`. An empty `feed` is `Need`. After a decision, `feed`
-panics in debug builds and returns `Unknown` in release builds. Tests: `detect_row_*`.
+returns `Unknown` in every build. Tests: `detect_row_*`.
 
 5.4 **Connection state machine** (server, P5b; `proto::stream::ConnTimers` holds the hello and idle
 deadlines, the request deadline is the reader's completion age (§5.2), so the table is unit-testable
@@ -902,8 +905,8 @@ the generator and replays them with an independent reader):
 | `reader-dribbled-bytes` (one byte per step, within the age) | one frame at the last step |
 | `reader-split-every-offset` (frame cut at each offset 1..len−1) | one frame each |
 | `reader-two-frames-one-feed` | two frames from one feed |
-| `reader-frame-then-bad-header` (one feed: a good frame, then a header with type 9) | `[frame, error unknown-frame-type]` in that step |
-| `reader-oversized-len` (`max_frame + 1`) | `oversized-frame`, poisoned, buffer capacity 12 |
+| `reader-frame-then-bad-header` (one feed: a good frame, then a header with type 9; then a second feed) | `[frame, error unknown-frame-type]` in the first step, the same error and no frame in the second |
+| `reader-oversized-len` (`max_frame + 1`) | `oversized-frame`, poisoned, buffer capacity 12 (the fixture format has no capacity key: the unit tests `an_oversized_len_never_allocates_beyond_the_header_buffer` and `body_row_buffer_grows_with_received_bytes_never_with_len` pin it) |
 | `reader-len-below-header` (`len = 11`) | `truncated`, poisoned |
 | `reader-completion-age` (half a frame at t=0, poll at `completion_ms`, then `+1`) | nothing, then `deadline` |
 | `reader-age-from-first-byte` (idle 60 s at `Header{0}`, then a frame dribbled within the age) | one frame (idle time does not count) |

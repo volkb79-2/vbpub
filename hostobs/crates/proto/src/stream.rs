@@ -38,8 +38,22 @@ const GROWTH_STEP: usize = 64 * 1024;
 /// The length of the binary prefix `HOB\x01` + `u16 major` + `u16 minor` (WIRE.md §1.3).
 const PREFIX_LEN: usize = 8;
 
-fn to_usize(value: u32) -> Result<usize, ProtoError> {
-    usize::try_from(value).map_err(|_| ProtoError::LengthOverflow)
+/// `value` as a `usize`; `usize` is at least 32 bits wide on every supported target, so the
+/// saturation is a formality, not a path.
+fn to_usize(value: u32) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+/// A refusal of the codec's own length limit names the reader's limit instead, so the
+/// diagnostic states the bound the caller configured.
+fn with_reader_limit(error: ProtoError, max_frame: u32) -> ProtoError {
+    match error {
+        ProtoError::OversizedFrame { len, .. } => ProtoError::OversizedFrame {
+            len,
+            max: to_usize(max_frame),
+        },
+        other => other,
+    }
 }
 
 /// One complete frame: the parsed header and every byte of the frame, header included.
@@ -62,16 +76,16 @@ pub struct Feed {
 }
 
 /// The reader's states (WIRE.md §5.2). The body bytes held so far are `buf.len()`.
-#[derive(Clone, Debug)]
+///
+/// `Poisoned(e)` and `Closed` of the table are the reader's `poisoned` and `closed` fields:
+/// both are terminal and independent of where the frame machine stopped (a clean close is
+/// only possible at `Header{0}`).
+#[derive(Clone, Copy, Debug)]
 enum State {
     /// Collecting the 12-byte header; `have` bytes are in `buf`.
     Header { have: usize },
     /// Header validated; collecting the rest of the frame.
     Body { header: FrameHeader },
-    /// An error ended the stream; it is returned from now on.
-    Poisoned(ProtoError),
-    /// The peer's clean end of stream was seen at a frame boundary.
-    Closed,
 }
 
 /// The §5.2 frame reader, shared by both sides (the server's request reader and the
@@ -83,6 +97,8 @@ pub struct FrameReader {
     state: State,
     buf: Vec<u8>,
     started_ns: u64,
+    poisoned: Option<ProtoError>,
+    closed: bool,
 }
 
 impl FrameReader {
@@ -99,6 +115,8 @@ impl FrameReader {
             state: State::Header { have: 0 },
             buf: Vec::with_capacity(FRAME_HEADER_LEN),
             started_ns: 0,
+            poisoned: None,
+            closed: false,
         }
     }
 
@@ -110,10 +128,18 @@ impl FrameReader {
     /// `trailing-bytes`.
     pub fn feed(&mut self, bytes: &[u8], now_ns: u64) -> Feed {
         let mut frames = Vec::new();
-        if let State::Poisoned(error) = &self.state {
+        if let Some(error) = &self.poisoned {
             return Feed {
                 frames,
                 error: Some(error.clone()),
+            };
+        }
+        if self.closed && !bytes.is_empty() {
+            let extra = bytes.len();
+            let error = self.poison(ProtoError::TrailingBytes { extra });
+            return Feed {
+                frames,
+                error: Some(error),
             };
         }
         let mut rest = bytes;
@@ -144,9 +170,11 @@ impl FrameReader {
     /// boundary (`Header{0}`) there is nothing to time: an idle connection is §5.4's
     /// business.
     pub fn poll(&mut self, now_ns: u64) -> Result<(), ProtoError> {
-        match self.state.clone() {
-            State::Poisoned(error) => Err(error),
-            State::Closed | State::Header { have: 0 } => Ok(()),
+        if let Some(error) = &self.poisoned {
+            return Err(error.clone());
+        }
+        match self.state {
+            State::Header { have: 0 } => Ok(()),
             State::Header { .. } | State::Body { .. } => {
                 if now_ns > self.started_ns.saturating_add(self.completion_ns) {
                     return Err(self.poison(ProtoError::Deadline));
@@ -164,11 +192,12 @@ impl FrameReader {
     /// poisoned), or the poisoning error again. At a frame boundary the reader becomes
     /// `Closed` and the result is `Ok`; a second `eof` stays `Ok`.
     pub fn eof(&mut self) -> Result<(), ProtoError> {
-        match self.state.clone() {
-            State::Poisoned(error) => Err(error),
-            State::Closed => Ok(()),
+        if let Some(error) = &self.poisoned {
+            return Err(error.clone());
+        }
+        match self.state {
             State::Header { have: 0 } => {
-                self.state = State::Closed;
+                self.closed = true;
                 Ok(())
             }
             State::Header { have } => Err(self.poison(ProtoError::Truncated {
@@ -177,7 +206,7 @@ impl FrameReader {
                 have,
             })),
             State::Body { header } => {
-                let need = to_usize(header.len).unwrap_or(usize::MAX);
+                let need = to_usize(header.len);
                 let have = self.buf.len();
                 Err(self.poison(ProtoError::Truncated {
                     context: "frame body at end of stream",
@@ -203,7 +232,7 @@ impl FrameReader {
 
     fn poison(&mut self, error: ProtoError) -> ProtoError {
         self.buf = Vec::new();
-        self.state = State::Poisoned(error.clone());
+        self.poisoned = Some(error.clone());
         error
     }
 
@@ -213,11 +242,9 @@ impl FrameReader {
         now_ns: u64,
         frames: &mut Vec<RawFrame>,
     ) -> Result<usize, ProtoError> {
-        match self.state.clone() {
+        match self.state {
             State::Header { have } => self.advance_header(have, rest, now_ns, frames),
-            State::Body { header } => self.advance_body(header, rest, frames),
-            State::Poisoned(error) => Err(error),
-            State::Closed => Err(ProtoError::TrailingBytes { extra: rest.len() }),
+            State::Body { header } => Ok(self.advance_body(header, rest, frames)),
         }
     }
 
@@ -239,9 +266,11 @@ impl FrameReader {
             self.state = State::Header { have };
             return Ok(take);
         }
-        let header = FrameHeader::parse(&self.buf)?;
-        let len = to_usize(header.len)?;
-        let max = to_usize(self.max_frame)?;
+        let max_frame = self.max_frame;
+        let parsed = FrameHeader::parse(&self.buf);
+        let header = parsed.map_err(|e| with_reader_limit(e, max_frame))?;
+        let len = to_usize(header.len);
+        let max = to_usize(max_frame);
         if len > max {
             return Err(ProtoError::OversizedFrame { len, max });
         }
@@ -258,8 +287,8 @@ impl FrameReader {
         header: FrameHeader,
         rest: &[u8],
         frames: &mut Vec<RawFrame>,
-    ) -> Result<usize, ProtoError> {
-        let total = to_usize(header.len)?;
+    ) -> usize {
+        let total = to_usize(header.len);
         let have = self.buf.len();
         let take = rest.len().min(total.saturating_sub(have));
         let target = have + take;
@@ -272,7 +301,7 @@ impl FrameReader {
         if self.buf.len() >= total {
             self.emit(header, frames);
         }
-        Ok(take)
+        take
     }
 
     fn emit(&mut self, header: FrameHeader, frames: &mut Vec<RawFrame>) {
@@ -312,7 +341,7 @@ pub enum Detect {
 /// It decides at the earliest byte it can: `{` at offset 0 is JSON; a byte of the first
 /// four that differs from `HOB\x01` is `Unknown`; bytes 5 to 8 (the version) may be any
 /// value. A detector that returned anything but [`Detect::Need`] is finished, and a further
-/// [`feed`](Self::feed) is a caller bug (a panic in debug builds, `Unknown` in release).
+/// [`feed`](Self::feed) is a caller bug that answers `Unknown` in every build.
 #[derive(Debug, Default)]
 pub struct ModeDetect {
     have: usize,
@@ -329,7 +358,6 @@ impl ModeDetect {
 
     /// Feed the next received bytes and report the decision so far.
     pub fn feed(&mut self, bytes: &[u8]) -> Detect {
-        debug_assert!(!self.finished, "ModeDetect::feed after a decision");
         if self.finished {
             return Detect::Unknown;
         }
@@ -644,6 +672,14 @@ mod tests {
         assert_eq!(feed.frames.len(), 1);
         expect_frame(&feed.frames[0], 1, 1, 30);
         assert_eq!(error_kind(&feed), Some("unknown-frame-type"));
+        // The reader is poisoned: later calls return the same error and no frame.
+        let again = reader.feed(&frame(1, 4, 30), 1);
+        assert!(again.frames.is_empty());
+        assert_eq!(error_kind(&again), Some("unknown-frame-type"));
+        let polled = reader.poll(2).expect_err("poisoned");
+        let closed = reader.eof().expect_err("poisoned");
+        assert_eq!(polled.kind(), "unknown-frame-type");
+        assert_eq!(closed.kind(), "unknown-frame-type");
     }
 
     #[test]
@@ -822,6 +858,64 @@ mod tests {
         assert_eq!(reader.buffered_len(), 0);
     }
 
+    #[test]
+    fn a_len_above_the_codec_limit_names_the_readers_own_limit() {
+        let mut reader = reader();
+        let mut header = frame(1, 1, 12);
+        header[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let error = reader.feed(&header, 0).error.expect("oversized");
+        assert_eq!(error.kind(), "oversized-frame");
+        assert_eq!(
+            error.to_string(),
+            "frame of 4294967295 bytes exceeds the 1024-byte maximum"
+        );
+    }
+
+    #[test]
+    fn capacity_is_back_at_the_header_size_after_a_completed_frame() {
+        let mut reader = FrameReader::new(1 << 20, COMPLETION);
+        let bytes = frame(1, 1, 5000);
+        let feed = reader.feed(&bytes, 0);
+        assert_eq!(feed.frames.len(), 1);
+        assert_eq!(reader.buffered_len(), 0);
+        assert_eq!(reader.buffered_capacity(), FRAME_HEADER_LEN);
+    }
+
+    #[test]
+    fn growth_is_bounded_above_and_below_for_a_long_frame_fed_in_small_chunks() {
+        let total = 200_000;
+        let mut reader = FrameReader::new(1 << 20, COMPLETION);
+        let bytes = frame(1, 1, total);
+        let mut chunks = bytes.chunks(1000);
+        let first = chunks.next().expect("first chunk");
+        assert!(reader.feed(first, 0).frames.is_empty());
+        // 12 header bytes were held; the 988 body bytes of the first chunk reserve exactly
+        // received + 64 KiB.
+        assert_eq!(reader.buffered_capacity(), 1000 + 64 * 1024);
+        for chunk in chunks {
+            let feed = reader.feed(chunk, 0);
+            assert_eq!(feed.error, None);
+            let received = reader.buffered_len();
+            let capacity = reader.buffered_capacity();
+            if feed.frames.is_empty() {
+                assert!(capacity <= total.min(received + 64 * 1024), "{capacity}");
+                assert!(capacity >= received, "{capacity} < {received}");
+                assert!(capacity > 0);
+            } else {
+                assert_eq!(received, 0);
+            }
+        }
+        assert_eq!(reader.buffered_len(), 0);
+    }
+
+    #[test]
+    fn saturating_clock_arithmetic_never_wraps_at_the_end_of_time() {
+        let mut reader = reader();
+        let _ = reader.feed(&[1], u64::MAX - 1);
+        // started + completion saturates at u64::MAX: nothing is strictly after it.
+        assert_eq!(reader.poll(u64::MAX), Ok(()));
+    }
+
     // ---- split invariance ---------------------------------------------------------------
 
     const SPEC: [(u8, u32, usize); 4] = [(1, 1, 30), (2, 2, 12), (5, 3, 61), (6, 4, 12)];
@@ -969,13 +1063,17 @@ mod tests {
         assert_eq!(detect.feed(b"Bz"), Detect::Unknown);
     }
 
-    #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "after a decision")]
-    fn detect_row_a_feed_after_a_decision_panics_in_debug() {
-        let mut detect = ModeDetect::new();
-        assert_eq!(detect.feed(b"{"), Detect::Json { at: 0 });
-        let _ = detect.feed(b"{");
+    fn detect_row_a_feed_after_a_decision_is_unknown_in_every_build() {
+        let mut json = ModeDetect::new();
+        assert_eq!(json.feed(b"{"), Detect::Json { at: 0 });
+        assert_eq!(json.feed(b"{"), Detect::Unknown);
+        let mut binary = ModeDetect::new();
+        assert!(matches!(binary.feed(b"HOB\x01abcd"), Detect::Binary { .. }));
+        assert_eq!(binary.feed(b"{"), Detect::Unknown);
+        let mut unknown = ModeDetect::new();
+        assert_eq!(unknown.feed(b"X"), Detect::Unknown);
+        assert_eq!(unknown.feed(b"HOB\x01"), Detect::Unknown);
     }
 
     // ---- §5.4 ConnTimers rows -----------------------------------------------------------
@@ -1084,6 +1182,14 @@ mod tests {
         let mut timers = timers();
         timers.on_accept(u64::MAX - 1);
         assert_eq!(timers.hello_deadline_ns, Some(u64::MAX));
+        assert_eq!(timers.expired(u64::MAX), None);
+    }
+
+    #[test]
+    fn timers_row_an_idle_deadline_past_the_clock_range_saturates_too() {
+        let mut timers = timers();
+        timers.on_idle_condition(true, u64::MAX - 1);
+        assert_eq!(timers.idle_deadline_ns, Some(u64::MAX));
         assert_eq!(timers.expired(u64::MAX), None);
     }
 }

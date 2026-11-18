@@ -153,10 +153,13 @@ def build_cases() -> list[tuple[str, dict]]:
     cases.append(
         case(
             "reader-frame-then-bad-header",
-            "One feed: a good REQ, then a 12-byte header with type 9. The frame completed before the error is returned with it.",
+            "One feed: a good REQ, then a 12-byte header with type 9. The frame completed before the error is returned with it; a later feed returns the same error and no frame (poisoned).",
             SERVER,
-            [feed(0, req + bad_type)],
-            [[frame_out("req", 1, req), error_out("unknown-frame-type")]],
+            [feed(0, req + bad_type), feed(1, rep)],
+            [
+                [frame_out("req", 1, req), error_out("unknown-frame-type")],
+                [error_out("unknown-frame-type")],
+            ],
         )
     )
 

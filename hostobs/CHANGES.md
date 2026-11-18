@@ -17,6 +17,9 @@
   `python/reference/make_stream_fixtures.py`, replayed by `crates/proto/tests/stream_fixtures.rs` and
   checked by `python/tests/test_stream_fixtures.py` with an independent replay). The valid frames of
   `fixtures/wire` are also fed through every split point and a fixed pseudo-random splitter.
+- **Gates.** `crates/proto/src/stream.rs` is a declared `assay-r1` target (34 judged files). A `len`
+  above the codec's 16 MiB limit is reported against the reader's own `max_frame`; `ModeDetect::feed`
+  after a decision returns `Unknown` in every build.
 
 ### Added and fixed (P2a1: wire codec and Python reference)
 

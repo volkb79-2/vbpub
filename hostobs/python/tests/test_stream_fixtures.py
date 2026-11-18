@@ -193,6 +193,10 @@ class ReaderStreamFixtures(unittest.TestCase):
         frame_len = specs["reader-split-every-offset"]["expect"][1][0]["frame"]["len"]
         self.assertEqual(len(split["steps"]), 2 * (frame_len - 1))
         self.assertEqual(sum(len(out) for out in split["expect"]), frame_len - 1)
+        bad = specs["reader-frame-then-bad-header"]
+        self.assertEqual(len(bad["steps"]), 2)
+        self.assertEqual([out.get("error") for out in bad["expect"][0]], [None, "unknown-frame-type"])
+        self.assertEqual(bad["expect"][1], [{"error": "unknown-frame-type"}], "poisoned: no frame, same error")
         oversized = specs["reader-oversized-len"]
         declared = struct.unpack("<I", bytes.fromhex(oversized["steps"][0]["feed_hex"] + oversized["steps"][1]["feed_hex"])[:4])[0]
         self.assertEqual(declared, oversized["max_frame"] + 1)
