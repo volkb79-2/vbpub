@@ -100,9 +100,10 @@ Known risks for the first real qualification run (B245 U7,
 `tools/qualify_rust_r2_real.py`; each is diagnosed, not a known defect; its
 `--preflight` mode lists the real mutants of every case in seconds first):
 
-- Descendants of the `full` timeout mutant may outlive it: assay then reports
-  `outliving_descendants` and `ERROR`/`EXEC_FAILED` for `full` only. Diagnose from
-  `process_tree_evidence` in the saved `verdicts/full.json`.
+- Descendants of the `full` timeout mutant may outlive it. For an ingested lane assay
+  installs no process-tree runner (it SIGKILLs the leader's session group only), so a
+  child that left that group survives silently as a stray CPU burner, not as an
+  `outliving_descendants` verdict: check `ps` in the container after the run.
 - `ws-sub` (workspace root below the git top, several members) is unmeasured and
   member `a` of the original `ws` input was never matrixed (the tool renames the
   members `crate_a`/`crate_b`): a `ws-sub` deviation is information about that

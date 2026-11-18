@@ -39,10 +39,12 @@ in total).
 
 Known risks for the first real run (diagnose; none is a known defect):
 
-* The ``full`` case's timeout mutant may leave descendant processes that outlive
-  it: assay then reports ``outliving_descendants`` and ``ERROR``/``EXEC_FAILED``
-  for ``full`` only. Read ``process_tree_evidence`` in the saved verdict
-  (``verdicts/full.json``); the other cases are unaffected.
+* The ``full`` case's timeout mutant may leave descendant processes behind. For an
+  ingested lane assay installs no process-tree runner (it only SIGKILLs the leader's
+  session group), so a child that left that group survives silently as a stray CPU
+  burner in the container rather than as a deviation: check ``ps`` after the run. A
+  failed ``--preflight`` listing aborts all cases; re-run with ``--no-preflight`` (or
+  ``--case``) to see the rest.
 * ``ws-sub`` (a workspace root BELOW the git top with several members) and the
   workspace member ``a`` of the original ``ws`` input were never measured by U0;
   the ``ws`` inputs are renamed ``crate_a``/``crate_b`` here because a member
@@ -534,7 +536,19 @@ def _list_mutants(case: Case, workspace: Path, diff: Path) -> tuple[int | None, 
     try:
         listed = json.loads(text) if text else []
     except json.JSONDecodeError as exc:
-        return None, f"`--list --json` printed no JSON ({exc}): {text[:200]!r}"
+        # cargo-mutants may print an INFO line ("No mutants to filter") on stdout beside the
+        # JSON; accept the last stdout line that is itself a JSON array, and a bare
+        # "No mutants" notice as an empty listing, instead of aborting all cases on a quirk.
+        lines = [line.strip() for line in text.splitlines() if line.strip().startswith("[")]
+        try:
+            listed = json.loads(lines[-1]) if lines else None
+        except json.JSONDecodeError:
+            listed = None
+        if listed is None:
+            if "No mutants" in text or "No mutants" in done.stderr:
+                listed = []
+            else:
+                return None, f"`--list --json` printed no JSON ({exc}): {text[:200]!r}"
     if not isinstance(listed, list):
         return None, f"`--list --json` printed {type(listed).__name__}, expected a list"
     return len(listed), ""
@@ -582,7 +596,7 @@ def preflight(selected: list[Case], scratch: Path, *, listing: bool = True) -> d
         return report
     try:
         _assay()
-    except ImportError as exc:
+    except Exception as exc:  # an old image python can raise SyntaxError/AttributeError, not only ImportError
         report["deviations"].append(f"cannot import assay ({exc}); check PYTHONPATH")
     if missing:
         return report

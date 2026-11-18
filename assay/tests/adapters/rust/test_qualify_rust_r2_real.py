@@ -447,6 +447,23 @@ def test_preflight_deviations_exit_one_and_abort_the_main_run_with_two(tmp_path:
     assert not (aborted / "summary.json").exists()
 
 
+@pytest.mark.parametrize("text", [
+    'INFO No mutants to filter\n[{"name": "a"}, {"name": "b"}, {"name": "c"}, {"name": "d"}, {"name": "e"}, '
+    '{"name": "f"}, {"name": "g"}, {"name": "h"}, {"name": "i"}]',
+])
+def test_preflight_accepts_a_json_array_after_noise_on_stdout(tmp_path: Path, monkeypatch, text):
+    _bin(tmp_path, monkeypatch, _by_name("indiff"), list_text=text)
+
+    assert tool.main(["--preflight", "--case", "indiff", "--evidence-dir", str(tmp_path / "e")]) == 0
+
+
+def test_preflight_reads_a_bare_no_mutants_notice_as_an_empty_listing(tmp_path: Path, monkeypatch, capsys):
+    _bin(tmp_path, monkeypatch, _by_name("zero-mutants"), list_text="INFO No mutants to filter")
+
+    assert tool.main(["--preflight", "--case", "zero-mutants", "--evidence-dir", str(tmp_path / "e")]) == 0
+    assert "printed no JSON" not in capsys.readouterr().err
+
+
 def test_no_preflight_skips_the_listing_checks(tmp_path: Path, monkeypatch):
     _bin(tmp_path, monkeypatch, _by_name("indiff"), list_count=3)
     evidence = tmp_path / "evidence"
