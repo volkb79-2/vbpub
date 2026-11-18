@@ -59,6 +59,7 @@ CASE_NAMES = [
     "hub-interval-skips-generation",
     "hub-query-backpressure",
     "hub-query-own-pool",
+    "hub-query-pin-after-corr-reuse",
     "hub-control-cap",
     "hub-frame-completion",
     "hub-stall",
@@ -281,6 +282,16 @@ def build_cases() -> list[tuple[str, dict]]:
     k.query(0, 0, 1, 500, "queued", watch={"c0": (0, 500, 0)})
     k.query(0, 0, 2, 112, "backpressure", watch={"c1": (800, 0, 0)})
     k.live(0, 0, 3, None, 200, "queued", watch={"c0": (200, 500, 0), "c1": (400, 0, 0), "g": (600, 500, 0)})
+    cases.append(k)
+
+    k = Case("hub-query-pin-after-corr-reuse", "after a Query stream's END, a new Live stream reuses its corr; the old Query pin stamps 0 and leaves the Live stream's pending drop for the next Live pin", [1])
+    k.query(0, 0, 3, 200, "queued")
+    k.end(0, 0, 3, 1, 0)
+    k.live(0, 0, 3, 200, 240, "queued")
+    k.live(0, 0, 3, 200, 240, "coalesced")
+    k.head(0, 0, 200, 3, 0)
+    k.wrote(0, 0, 200)
+    k.head(0, 0, 240, 3, 1)
     cases.append(k)
 
     k = Case("hub-control-cap", "control: an empty pool admits any length, a second frame over the cap closes, the cap itself is inclusive, blocks never compete", [1])
