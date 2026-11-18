@@ -1,0 +1,130 @@
+[
+  {
+    "diff": "--- src/lib.rs\n+++ replace uni -> usize with 0\n@@ -1,10 +1,10 @@\n pub fn uni(a: usize) -> usize {\n-    let s = \"héllo→\"; s.len() + a\n+    0 /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     #[test]\n     fn t() {\n         assert_eq!(super::uni(1), 10);\n     }\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "uni",
+      "return_type": "-> usize",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:2:5: replace uni -> usize with 0",
+    "package": "r3a",
+    "replacement": "0",
+    "span": {
+      "end": {
+        "column": 34,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace uni -> usize with 1\n@@ -1,10 +1,10 @@\n pub fn uni(a: usize) -> usize {\n-    let s = \"héllo→\"; s.len() + a\n+    1 /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     #[test]\n     fn t() {\n         assert_eq!(super::uni(1), 10);\n     }\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "uni",
+      "return_type": "-> usize",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/lib.rs:2:5: replace uni -> usize with 1",
+    "package": "r3a",
+    "replacement": "1",
+    "span": {
+      "end": {
+        "column": 34,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace + with - in uni\n@@ -1,10 +1,10 @@\n pub fn uni(a: usize) -> usize {\n-    let s = \"héllo→\"; s.len() + a\n+    let s = \"héllo→\"; s.len() - /* ~ changed by cargo-mutants ~ */ a\n }\n \n #[cfg(test)]\n mod tests {\n     #[test]\n     fn t() {\n         assert_eq!(super::uni(1), 10);\n     }\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "uni",
+      "return_type": "-> usize",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:2:31: replace + with - in uni",
+    "package": "r3a",
+    "replacement": "-",
+    "span": {
+      "end": {
+        "column": 32,
+        "line": 2
+      },
+      "start": {
+        "column": 31,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace + with * in uni\n@@ -1,10 +1,10 @@\n pub fn uni(a: usize) -> usize {\n-    let s = \"héllo→\"; s.len() + a\n+    let s = \"héllo→\"; s.len() * /* ~ changed by cargo-mutants ~ */ a\n }\n \n #[cfg(test)]\n mod tests {\n     #[test]\n     fn t() {\n         assert_eq!(super::uni(1), 10);\n     }\n",
+    "file": "src/lib.rs",
+    "function": {
+      "function_name": "uni",
+      "return_type": "-> usize",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:2:31: replace + with * in uni",
+    "package": "r3a",
+    "replacement": "*",
+    "span": {
+      "end": {
+        "column": 32,
+        "line": 2
+      },
+      "start": {
+        "column": 31,
+        "line": 2
+      }
+    }
+  }
+]
