@@ -21,8 +21,10 @@ import pytest
 from conftest import VERDICT_FIXTURE_DIR, why_invalid
 
 from assay import verify as raw_verify
+from assay.errors import Outcome, ReasonCode
 from assay.verdict import (
     ChangedDiff,
+    claim_for,
     JudgmentR2,
     PRODUCER_VERSION_UNOBSERVED,
     VERDICT_SCHEMA_VERSION,
@@ -40,6 +42,7 @@ from test_verify_ingested_r2 import (
     _r2_claim,
     as_cargo_mutants,
     as_report_absent,
+    as_whole_target,
     build_ingested_document,
 )
 
@@ -179,7 +182,11 @@ def _flag_only(document: dict) -> dict:
     can only be `report_absent`'s own."""
     document = copy.deepcopy(document)
     r2 = document["judgment"]["r2"]
-    r2["producer_tool"]["version"] = "unobserved"
+    r2["producer_tool"] = {
+        "name": "cargo-mutants",
+        "version": "unobserved",
+        "report_schema_version": "outcomes.json",
+    }
     r2["report_absent"] = True
     return document
 
@@ -191,6 +198,66 @@ def test_report_absent_on_a_measured_payload_is_refused_by_the_model(
     mutants, so it cannot have a verdict on 109 of them."""
     document = _flag_only(ingested_document)
     _model_refuses(document, "the R2 claim is not INCONCLUSIVE/NO_MUTANTS")
+
+
+def test_report_absent_needs_each_clause_of_its_claim_guard_in_the_model(
+    ingested_document: dict,
+):
+    """Every clause of the report_absent guard is independently needed: a zero
+    payload with a wrong status, a wrong reason, or a non-zero candidate count
+    is each refused with the guard's OWN wording."""
+    guard = "the R2 claim is not INCONCLUSIVE/NO_MUTANTS"
+    verdict = _model(as_report_absent(ingested_document))
+    claim = claim_for(verdict.claims, "R2")
+    policy = verdict.judgment.r2
+    verdict._check_v20_ingested_r2(claim, policy)  # the legal shape passes
+    # The claim record's own status/reason/payload pairing refuses most wrong
+    # shapes before this guard is reached, so each clause is exercised on the
+    # guard directly, flipping exactly ONE field of an otherwise legal claim.
+    for field, wrong in (
+        ("reason_code", ReasonCode.MUTATION_UNSUPPORTED),
+        ("status", Outcome.FAIL),
+    ):
+        original = getattr(claim, field)
+        object.__setattr__(claim, field, wrong)
+        try:
+            with pytest.raises(ValueError) as caught:
+                verdict._check_v20_ingested_r2(claim, policy)
+            assert guard in str(caught.value), (field, str(caught.value))
+        finally:
+            object.__setattr__(claim, field, original)
+    object.__setattr__(claim, "mutation", None)
+    with pytest.raises(ValueError) as caught:
+        verdict._check_v20_ingested_r2(claim, policy)
+    assert guard in str(caught.value)
+    with pytest.raises(ValueError) as caught:
+        verdict._check_v20_ingested_r2(None, policy)
+    assert guard in str(caught.value)
+
+    candidates_only = as_report_absent(ingested_document)
+    _r2_claim(candidates_only)["mutation"]["candidate_count"] = 3
+    _model_refuses(candidates_only, "records total 0 and candidate_count 3")
+
+    # `total` alone: the payload's own total-equals-identities rule refuses a
+    # non-zero total on a whole document, so the guard's total clause is hit
+    # directly on an otherwise legal payload.
+    legal = _model(as_report_absent(ingested_document))
+    legal_claim = claim_for(legal.claims, "R2")
+    object.__setattr__(legal_claim.mutation, "total", 2)
+    with pytest.raises(ValueError) as caught:
+        legal._check_v20_ingested_r2(legal_claim, legal.judgment.r2)
+    assert "records total 2 and candidate_count 0" in str(caught.value)
+
+
+def test_report_absent_needs_the_cargo_mutants_producer_in_the_model(
+    ingested_document: dict,
+):
+    wrong_name = as_report_absent(ingested_document)
+    wrong_name["judgment"]["r2"]["producer_tool"]["name"] = "StrykerJS"
+    _model_refuses(wrong_name, "is true but producer_tool is 'StrykerJS'")
+    wrong_schema = as_report_absent(ingested_document)
+    wrong_schema["judgment"]["r2"]["producer_tool"]["report_schema_version"] = "1.0"
+    _model_refuses(wrong_schema, "is true but producer_tool is 'cargo-mutants' / '1.0'")
 
 
 def test_report_absent_with_a_nonzero_total_is_refused_by_the_model(
@@ -353,16 +420,89 @@ def test_with_no_resolved_base_only_head_rev_is_checked_by_the_model(
     del resolved["base"]
     del resolved["base_resolution"]
     document["judgment"]["r2"]["changed_diff"]["base_rev"] = "c" * 40
-    try:
-        _model(document)
-    except ValueError as error:
-        # another model rule may legitimately object to a base-less
-        # changed-lines run; it must not be the changed_diff comparison.
-        assert "changed_diff.base_rev" not in str(error), str(error)
-    document["judgment"]["r2"]["changed_diff"]["head_rev"] = "d" * 40
+    # The whole-model construction refuses a base-less changed-lines judgment
+    # for its OWN reason (a changed-line judgment is scoped to a resolved
+    # base), so the base_rev comparison is exercised on the check directly.
+    _model_refuses(document, "records no base")
+    full = as_cargo_mutants(ingested_document)
+    verdict = _model(full)
+    object.__setattr__(verdict.judgment.resolved, "base", None)
+    claim = claim_for(verdict.claims, "R2")
+    policy = verdict.judgment.r2
+    object.__setattr__(policy.changed_diff, "base_rev", "c" * 40)
+    verdict._check_v20_ingested_r2(claim, policy)  # nothing to compare base_rev with
+    object.__setattr__(policy.changed_diff, "head_rev", "d" * 40)
     with pytest.raises(ValueError) as caught:
-        _model(document)
-    assert "changed_diff" in str(caught.value) or "base" in str(caught.value)
+        verdict._check_v20_ingested_r2(claim, policy)
+    assert str(caught.value) == (
+        f"judgment.r2.changed_diff.head_rev {'d' * 40!r} differs from the verdict "
+        f"commit {full['commit']!r}"
+    )
+
+
+def test_changed_diff_is_a_changed_lines_field_in_the_model(
+    ingested_document: dict,
+):
+    """Under `whole_target` assay hands the tool no diff: the placeholder alone
+    is legal, and a recorded `changed_diff` is refused."""
+    document = as_whole_target(ingested_document)
+    _model(document)
+    document["judgment"]["r2"]["changed_diff"] = as_cargo_mutants(ingested_document)[
+        "judgment"
+    ]["r2"]["changed_diff"]
+    _model_refuses(
+        document, "judgment.r2.changed_diff is forbidden unless"
+    )
+
+
+def test_the_schema_forbids_changed_diff_under_whole_target(
+    ingested_document: dict, validator
+):
+    document = as_whole_target(ingested_document)
+    assert why_invalid(validator, document) == []
+    document["judgment"]["r2"]["changed_diff"] = as_cargo_mutants(ingested_document)[
+        "judgment"
+    ]["r2"]["changed_diff"]
+    assert why_invalid(validator, document), "changed_diff under whole_target"
+
+
+def test_the_schema_pins_the_report_absent_producer(
+    ingested_document: dict, validator
+):
+    absent = as_report_absent(ingested_document)
+    assert why_invalid(validator, absent) == []
+    wrong_name = copy.deepcopy(absent)
+    wrong_name["judgment"]["r2"]["producer_tool"]["name"] = "StrykerJS"
+    assert why_invalid(validator, wrong_name)
+    wrong_schema = copy.deepcopy(absent)
+    wrong_schema["judgment"]["r2"]["producer_tool"]["report_schema_version"] = "1.0"
+    assert why_invalid(validator, wrong_schema)
+
+
+def test_the_new_schema_patterns_refuse_a_trailing_newline(
+    ingested_document: dict, validator, schema: dict
+):
+    """The new patterns end in `(?![\\s\\S])`, so Python's `re.search` (what
+    `jsonschema` uses) does not let `$` match before a trailing newline, and
+    the schema agrees with the model and the raw verifier. The patterns are the
+    SAME source strings the vocabulary module compiles."""
+    changed = schema["$defs"]["changed_diff"]["properties"]
+    assert changed["base_rev"]["pattern"] == COMMIT_OID_RE.pattern
+    assert changed["head_rev"]["pattern"] == COMMIT_OID_RE.pattern
+    good = as_cargo_mutants(ingested_document)
+    assert why_invalid(validator, good) == []
+    for field, value in (
+        ("base_rev", good["judgment"]["r2"]["changed_diff"]["base_rev"] + "\n"),
+        ("head_rev", good["judgment"]["r2"]["changed_diff"]["head_rev"] + "\n"),
+        ("sha256", "ab" * 32 + "\n"),
+    ):
+        document = copy.deepcopy(good)
+        document["judgment"]["r2"]["changed_diff"][field] = value
+        assert why_invalid(validator, document), f"{field} with a trailing newline"
+    operator = copy.deepcopy(good)
+    mutant = _r2_claim(operator)["mutation"]["survived"][0]
+    mutant["operator"] = "cargo-mutants:FnValue\n"
+    assert why_invalid(validator, operator), "operator with a trailing newline"
 
 
 def test_the_schema_checks_the_changed_diff_shape(ingested_document: dict, validator):

@@ -1257,6 +1257,8 @@ def _check_ingested_r2_agrees_with_its_payload(
 #: cargo-mutants producer name, the argv placeholder and the full-OID grammar.
 _UNOBSERVED_PRODUCER_VERSION = "unobserved"
 _CARGO_MUTANTS_TOOL = "cargo-mutants"
+_CARGO_MUTANTS_REPORT_SCHEMA = "outcomes.json"
+_CHANGED_LINES_MODE = "changed_lines"
 _CHANGED_DIFF_PLACEHOLDER = "{assay.changed_diff}"
 _COMMIT_OID_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _CHANGED_DIFF_KEYS = {"base_rev", "head_rev", "relative_to", "sha256", "bytes"}
@@ -1268,12 +1270,13 @@ def _check_v20_r2_fields(document: dict, failures: list[str]) -> None:
 
     * Both keys are ingested-only.
     * `report_absent` is the boolean `true` (omitted, never false), pairs with
-      the producer version literal `unobserved` in both directions, and needs
+      the producer version literal `unobserved` in both directions, needs the
+      producer `cargo-mutants` / report schema `outcomes.json` (Q1), and needs
       an `INCONCLUSIVE/NO_MUTANTS` R2 claim whose payload has `total == 0` and
       `candidate_count == 0`.
     * `changed_diff` is required iff `argv_declared` holds the whole
-      placeholder token and the ingested producer is cargo-mutants, forbidden
-      otherwise; when present its shapes are checked, `base_rev` equals
+      placeholder token, the ingested producer is cargo-mutants and the R2
+      scope is `changed_lines`, forbidden otherwise; when present its shapes are checked, `base_rev` equals
       `judgment.resolved.base` and `head_rev` equals the verdict commit. The
       digest cannot be recomputed from the document alone.
     """
@@ -1310,6 +1313,16 @@ def _check_v20_r2_fields(document: dict, failures: list[str]) -> None:
             "is legal only with report_absent true"
         )
     if absent is True:
+        if (
+            tool.get("name") != _CARGO_MUTANTS_TOOL
+            or tool.get("report_schema_version") != _CARGO_MUTANTS_REPORT_SCHEMA
+        ):
+            failures.append(
+                "judgment.r2.report_absent is true but producer_tool is not "
+                f"{_CARGO_MUTANTS_TOOL} with report_schema_version "
+                f"{_CARGO_MUTANTS_REPORT_SCHEMA!r}: only a cargo-mutants run "
+                "writes no report for an empty diff"
+            )
         claims = document.get("claims")
         claim = _raw_claim(claims, "R2") if isinstance(claims, list) else None
         payload = _mutation_of(claim)
@@ -1335,21 +1348,22 @@ def _check_v20_r2_fields(document: dict, failures: list[str]) -> None:
         isinstance(argv, list)
         and _CHANGED_DIFF_PLACEHOLDER in argv
         and tool.get("name") == _CARGO_MUTANTS_TOOL
+        and r2.get("mode", _CHANGED_LINES_MODE) == _CHANGED_LINES_MODE
     )
     diff = r2.get("changed_diff")
     if expected and "changed_diff" not in r2:
         failures.append(
             "judgment.r2.changed_diff is required: argv_declared holds "
-            f"{_CHANGED_DIFF_PLACEHOLDER} and the ingested producer is "
-            f"{_CARGO_MUTANTS_TOOL}"
+            f"{_CHANGED_DIFF_PLACEHOLDER}, the ingested producer is "
+            f"{_CARGO_MUTANTS_TOOL} and the lane is in {_CHANGED_LINES_MODE} mode"
         )
     if "changed_diff" not in r2:
         return
     if not expected:
         failures.append(
             "judgment.r2.changed_diff is forbidden unless argv_declared holds "
-            f"{_CHANGED_DIFF_PLACEHOLDER} and the ingested producer is "
-            f"{_CARGO_MUTANTS_TOOL}"
+            f"{_CHANGED_DIFF_PLACEHOLDER}, the ingested producer is "
+            f"{_CARGO_MUTANTS_TOOL} and the lane is in {_CHANGED_LINES_MODE} mode"
         )
     if not isinstance(diff, dict) or set(diff) != _CHANGED_DIFF_KEYS:
         failures.append(

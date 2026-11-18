@@ -61,6 +61,9 @@ from . import procutil
 from . import selection_record
 from . import warn_policy
 from . import worktree as worktree_pkg
+# CIU-215: the helper moved to worktree.py so the engine need not import deploy;
+# the module-level name stays patchable for `_is_worktree_instance`'s callers.
+from .worktree import is_linked_git_worktree as _is_linked_git_worktree
 from .cli_utils import get_cli_version
 from .config_constants import (
     GLOBAL_CONFIG_DEFAULTS,
@@ -3909,6 +3912,13 @@ def _check_stack_config(
     except (ValueError, TypeError) as exc:
         report.fail("governance", f"[S15.2] governance shape invalid: {exc}", stack=rel)
 
+    # CIU-215: the opt-in git common-dir table's shape (the engine refuses the
+    # same values at render; `ciu check` reports it without rendering).
+    try:
+        config_model.validate_linked_worktree_table(merged.get(root_key, {}))
+    except ValueError as exc:
+        report.fail("shape", str(exc), stack=rel)
+
     if not on_disk:
         # Every remaining stage reads files under the stack directory. Report
         # that plainly rather than inventing failures for a stack that is not
@@ -4911,23 +4921,6 @@ def _is_worktree_instance(repo_root: Path) -> bool:
     # sibling root may not carry one. A LINKED git worktree is never the main
     # checkout, so it takes the strict (instance) ownership rule either way.
     return _is_linked_git_worktree(repo_root)
-
-
-def _is_linked_git_worktree(repo_root: Path) -> bool:
-    """True when *repo_root* is inside a linked git worktree (git-dir != common-dir)."""
-    def rev(flag: str) -> str:
-        # procutil always captures text; "" (not None) is the only "unknown" value,
-        # which the truthiness test below treats uniformly (CIU-201).
-        try:
-            done = procutil.run_cmd(
-                ["git", "-C", str(repo_root), "rev-parse", "--path-format=absolute", flag],
-            )
-        except OSError:
-            return ""
-        return done.stdout.strip() if done.returncode == 0 else ""
-
-    git_dir, common = rev("--git-dir"), rev("--git-common-dir")
-    return bool(git_dir and common and os.path.realpath(git_dir) != os.path.realpath(common))
 
 
 def _stack_compose_project(repo_root: Path, config: dict, stack_dir: Path) -> str:

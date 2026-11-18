@@ -34,18 +34,19 @@ PSI busy, 76 `INCONCLUSIVE-OOM`, none of which is a lane verdict). The run log i
 
 **The Rust lanes need the `tester-unified-rust` image on the executing host** (the local
 Docker daemon, or the remote worker). If it is missing the lane stops with `verdict ERROR;
-docker run failed (exit 125)` and `Unable to find image 'tester-unified-rust:local'`; that is
+docker run failed (exit 125)` and `Unable to find image 'tester-unified-rust:rs-20261118'`
+(the image named by the `tester-unified-rust` environment in `run-gate.root.toml`); that is
 an environment fault, not a verdict on the code.
 
 All three use `tester-unified-rust` with Docker networking disabled. The image contains the
 stable Rust toolchain, the cargo tools, Python for the cache/floor helpers, and the crate
 archive closure for this exact `Cargo.lock`. Do not run Cargo from the cockpit or use a
-network fallback. An image BUILT FROM THIS SOURCE has a Cargo wrapper that refuses before
+network fallback. The lane image (`tester-unified-rust:rs-20261118`) has a Cargo wrapper that refuses before
 invoking Cargo if the mounted lock's registry-set digest, crate set, lock checksums, or cached
 archive bytes disagree with the image (the registry set is the downloaded packages plus the
-lock version; workspace members' own entries are not part of it). The currently deployed
-`tester-unified-rust:local` is older: it still checks the sha256 of the whole `Cargo.lock`
-file, so on it any lock byte change is refused until the lanes move to a newly built tag.
+lock version; workspace members' own entries are not part of it). `tester-unified-rust:local`
+is the older whole-lock image: it checks the sha256 of the whole `Cargo.lock` file and no lane
+uses it.
 
 ## What `assay-r1` judges, and what it says
 
@@ -353,9 +354,8 @@ the later R-5 work package. Do not edit `Cargo.lock` by hand to satisfy a lane: 
 registry-set digest is the authority, and a mismatch is a signal to rebuild the image, not
 to hand-edit the lock.
 
-Which image runs what: the registry-set identity exists only in an image built from this
-source (a NEW tag, built on a host later). The currently deployed `tester-unified-rust:local`
-still carries the whole-lock identity and rejects ANY lock byte change, workspace-only edits
-included, so a path dependency cannot land until the Rust lanes are switched to the new tag
-(a separate `run-gate.root.toml` commit, after the new tag exists). The old tag stays until
-every Rust lane has passed on the new one; only then is `:local` re-pointed.
+Which image runs what: the Rust lanes run on `tester-unified-rust:rs-20261118`, which carries
+the registry-set identity, so a workspace-only lock edit (a path dependency between members)
+needs no image rebuild. `tester-unified-rust:local` carries the older whole-lock identity and
+rejects ANY lock byte change; it is re-pointed to the new tag only after every Rust lane has
+passed on it.

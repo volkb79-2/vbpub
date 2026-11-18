@@ -684,6 +684,20 @@ def as_cargo_mutants(document: dict, *, changed_diff: bool = True) -> dict:
     return document
 
 
+def as_whole_target(document: dict) -> dict:
+    """A cargo-mutants document whose R2 scope is `whole_target`: the tool is
+    handed no diff, so the placeholder may sit in argv while no `changed_diff`
+    is recorded (and no resolved base exists)."""
+    document = as_cargo_mutants(document, changed_diff=False)
+    r2 = document["judgment"]["r2"]
+    r2["mode"] = "whole_target"
+    r2["targets"] = ["src/a.js"]
+    resolved = document["judgment"]["resolved"]
+    del resolved["base"]
+    del resolved["base_resolution"]
+    return document
+
+
 def _v20_failures(document: dict) -> list[str]:
     failures: list[str] = []
     raw_verify._check_v20_r2_fields(document, failures)
@@ -786,6 +800,44 @@ def test_the_changed_diff_is_required_when_the_placeholder_is_present(
     _v20_named(document, "judgment.r2.changed_diff is required")
 
 
+def test_a_whole_target_lane_with_the_placeholder_needs_no_changed_diff(
+    ingested_document: dict,
+):
+    """Section 7 item 5: `changed_diff` is a `changed_lines`-mode field."""
+    document = as_whole_target(ingested_document)
+    assert _v20_failures(document) == []
+    assert _failures(document) == []
+
+
+def test_a_changed_diff_under_whole_target_is_forbidden(ingested_document: dict):
+    document = as_whole_target(ingested_document)
+    document["judgment"]["r2"]["changed_diff"] = as_cargo_mutants(ingested_document)[
+        "judgment"
+    ]["r2"]["changed_diff"]
+    _v20_named(document, "judgment.r2.changed_diff is forbidden")
+
+
+def test_a_missing_mode_reads_as_changed_lines_so_the_diff_is_required(
+    ingested_document: dict,
+):
+    """The model defaults an absent `mode` to `changed_lines`; the raw layer
+    states the same default."""
+    document = as_cargo_mutants(ingested_document, changed_diff=False)
+    del document["judgment"]["r2"]["mode"]
+    _v20_named(document, "judgment.r2.changed_diff is required")
+
+
+def test_report_absent_needs_the_cargo_mutants_producer_and_report_schema(
+    ingested_document: dict,
+):
+    wrong_name = as_report_absent(ingested_document)
+    wrong_name["judgment"]["r2"]["producer_tool"]["name"] = "StrykerJS"
+    _v20_named(wrong_name, "is true but producer_tool is not cargo-mutants")
+    wrong_schema = as_report_absent(ingested_document)
+    wrong_schema["judgment"]["r2"]["producer_tool"]["report_schema_version"] = "1.0"
+    _v20_named(wrong_schema, "is true but producer_tool is not cargo-mutants")
+
+
 def test_a_placeholder_with_a_non_cargo_mutants_producer_needs_no_changed_diff(
     ingested_document: dict,
 ):
@@ -859,6 +911,12 @@ def test_with_no_resolved_base_the_base_rev_is_unchecked_and_head_rev_still_is(
         ("relative_to", "/abs", "relative_to must be '.' or a normalized"),
         ("relative_to", "a/../b", "relative_to must be '.' or a normalized"),
         ("relative_to", "a\\b", "relative_to must be '.' or a normalized"),
+        ("relative_to", "a\x00b", "relative_to must be '.' or a normalized"),
+        ("relative_to", "./a", "relative_to must be '.' or a normalized"),
+        ("relative_to", "a/./b", "relative_to must be '.' or a normalized"),
+        ("relative_to", "a//b", "relative_to must be '.' or a normalized"),
+        ("relative_to", "a/", "relative_to must be '.' or a normalized"),
+        ("relative_to", "", "relative_to must be '.' or a normalized"),
         ("relative_to", 5, "relative_to must be '.' or a normalized"),
         ("sha256", "XYZ", "changed_diff.sha256 must be 64 lowercase hex"),
         ("sha256", "AB" * 32, "changed_diff.sha256 must be 64 lowercase hex"),
@@ -882,6 +940,13 @@ def test_a_dot_relative_to_and_a_nested_relative_to_are_accepted(
     for value in (".", "crates/core", "a"):
         document["judgment"]["r2"]["changed_diff"]["relative_to"] = value
         assert _v20_failures(document) == []
+
+
+def test_a_zero_byte_changed_diff_is_accepted(ingested_document: dict):
+    """`bytes` is a NON-negative integer: an empty diff is 0, not refused."""
+    document = as_cargo_mutants(ingested_document)
+    document["judgment"]["r2"]["changed_diff"]["bytes"] = 0
+    assert _v20_failures(document) == []
 
 
 @pytest.mark.parametrize("change", ["extra", "missing", "not-an-object"])

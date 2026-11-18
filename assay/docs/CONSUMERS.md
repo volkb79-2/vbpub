@@ -4694,9 +4694,11 @@ assay run worker_lane \
 This option does not carry forward an old outcome. New candidates and prior
 survivors, crashes, hangs, timeouts, equivalents, or kills without a usable
 witness run the full current suite. `--rejudge <id>` also forces a full run for
-that candidate. A v12 through v19 verdict is a cold start under v20:
+that candidate. A v12 through v15 verdict is a cold start under v20:
 `assay plan` marks its evidence unproven and `assay run` runs every candidate
-fully after the baseline; `assay verify` refuses older versions. Wrapped commands, xdist,
+fully after the baseline. A v16 through v19 verdict is refused by
+`--reuse-from` as an unsupported schema version; regenerate it with a v20 run.
+`assay verify` refuses all older versions. Wrapped commands, xdist,
 nonempty `PYTEST_ADDOPTS`, custom test loops, or uncertain pytest hooks also use
 full runs. `--reuse-from` cannot be combined with `--shard`, because the
 feature returns a complete unsharded campaign.
@@ -5013,7 +5015,8 @@ written under the current identity remains a state error.
 
 Verdict schema v20 is a **hard cut** from v19 and a MAJOR assay release.
 `assay verify` accepts only v20; keep v19 artifacts as historical evidence or
-regenerate them. A v19 verdict is a cold start for `--reuse-from`. There is no
+regenerate them. A v19 verdict is refused by `--reuse-from` as an unsupported
+schema version (only v12 through v15 start cold). There is no
 dual-version verifier, compatibility shim or in-place upgrade. `assay lanes
 --json` advertises `verdict-v20` in place of `verdict-v19`.
 
@@ -5035,7 +5038,9 @@ Three changes, all on an INGESTED R2 judgment (`judgment.r2.producer =
   copy) and the reverse: `"unobserved"` is legal only with `report_absent`.
   The R2 claim must be `INCONCLUSIVE` / `NO_MUTANTS` with an empty mutation
   payload (`total` and `candidate_count` 0), so a consumer never reads "the
-  tool crashed silently" as "no mutants were needed". Forbidden under `native`.
+  tool crashed silently" as "no mutants were needed". The producer must be
+  `cargo-mutants` with `report_schema_version` `"outcomes.json"`. Forbidden
+  under `native`.
 - **`judgment.r2.changed_diff`.** An object `{base_rev, head_rev, relative_to,
   sha256, bytes}` naming the changed-lines diff assay handed to an ingested
   cargo-mutants run through the argv token `{assay.changed_diff}`. The verdict
@@ -5044,13 +5049,19 @@ Three changes, all on an INGESTED R2 judgment (`judgment.r2.producer =
   <head_rev>` relative to `relative_to` (`"."` at the repository top, else a
   normalized forward-slash path). It is **required** exactly when the
   judgment exists, `argv_declared` holds the whole token `{assay.changed_diff}`
-  and `producer_tool.name` is `cargo-mutants`, and forbidden otherwise,
-  including under `native`. `base_rev` equals `judgment.resolved.base` (when
+  `producer_tool.name` is `cargo-mutants` and `judgment.r2.mode` is
+  `changed_lines`, and forbidden otherwise (so under `whole_target` and under
+  `native`). `base_rev` equals `judgment.resolved.base` (when
   one is recorded), `head_rev` equals the verdict `commit`, both full lowercase
   hex object names (40 or 64 characters). `sha256` and `bytes` are declared
   by the artifact: `assay verify` checks their shape, not the digest, because
   recomputing it needs the repository. A lane that ends before an R2 claim
   exists has no `judgment.r2` and may carry the placeholder alone.
+
+  The new schema patterns (`base_rev`, `head_rev`, `sha256`, and the ingested
+  operator name) end with `(?![\s\S])` instead of `$`, so a schema validator
+  built on Python's `re.search` refuses a trailing newline exactly as the model
+  and `assay verify` do.
 
 An ingested document may also carry a crashed mutant (`mutation.crashed`
 non-empty, R2 `ERROR` / `EXEC_FAILED`); that was always legal and is now pinned

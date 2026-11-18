@@ -61,6 +61,7 @@ __all__ = [
     "ARGV_PLACEHOLDER_CHANGED_DIFF",
     "COMMIT_OID_RE",
     "DISCARD_REASONS",
+    "CARGO_MUTANTS_REPORT_SCHEMA",
     "is_ingested_operator",
     "MAX_INGESTED_MUTANTS",
     "MUTATION_OPERATORS",
@@ -446,7 +447,7 @@ INGESTED_OPERATOR_NAMESPACES: tuple[str, ...] = (
 #: here so the schema, the model and the parser cannot drift -- the same
 #: single-owner discipline `MUTATION_OPERATORS` already gets.
 INGESTED_OPERATOR_RE = re.compile(
-    r"^(?:" + "|".join(INGESTED_OPERATOR_NAMESPACES) + r"):[A-Za-z0-9]+$"
+    r"^(?:" + "|".join(INGESTED_OPERATOR_NAMESPACES) + r"):[A-Za-z0-9]+(?![\s\S])"
 )
 
 
@@ -460,8 +461,17 @@ ARGV_PLACEHOLDER_CHANGED_DIFF = "{assay.changed_diff}"
 
 #: (B245/schema v20) A full git commit object name: 40 lowercase hex (SHA-1) or
 #: 64 (SHA-256 object format). Used for `judgment.r2.changed_diff.base_rev` and
-#: `head_rev`; the packaged schema carries the same string.
-COMMIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+#: `head_rev`; the packaged schema carries the same string. The end anchor is
+#: `(?![\s\S])`, not `$`: Python's `re.search` (which `jsonschema` uses for
+#: `pattern`) lets `$` match before a trailing newline, so a `$`-anchored
+#: schema pattern would accept `"<oid>\n"` that the model refuses. The
+#: lookahead means "end of input" identically in Python and ECMA-262.
+COMMIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\s\S])")
+
+#: (B245/schema v20, Q1) The assay-owned `report_schema_version` of an ingested
+#: cargo-mutants run: the tool has no schema version of its own, so assay names
+#: the report file it parses.
+CARGO_MUTANTS_REPORT_SCHEMA = "outcomes.json"
 
 
 def is_ingested_operator(operator: str) -> bool:

@@ -365,7 +365,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="VERDICT",
         help=(
             "reuse only current pytest kill witnesses from a verified complete "
-            "native v20 verdict; v12-v19 start cold, and every uncertain candidate "
+            "native v20 verdict; v12-v15 start cold, v16-v19 are refused as "
+            "unsupported, and every uncertain candidate "
             "runs fully. Cannot be combined with --shard."
         ),
     )

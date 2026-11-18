@@ -165,7 +165,7 @@ SPEC §9.
 | RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | FIXED 2026-11-16; delegates complete `stat_result` shape |
 | RG-269 | tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage | Medium | FIXED 2026-11-16; scoped fakes plus unrelated-fd delegation oracle |
 | RG-271 | Decide whether tester-base should pin or float pytest | Medium | OPEN 2026-11-12; estate-level runner-policy question from the pytest 9.2 audit |
-| RG-272 | a valid request base on a non-tag checkout produces zero mutation candidates despite changed source | Should-fix | OPEN 2026-11-12; DIAGNOSED 2026-11-18: merge-commit HEAD resolves to its first parent in assay `resolve_base`, fix lies in assay |
+| RG-272 | a valid request base on a merge-commit HEAD produces zero mutation candidates despite changed source | Should-fix | FIXED 2026-11-18 by assay B552 (`94809846b`, review round `5cfb6fbf6`, merged in `a429c0761`; unreleased); a lane that does not declare `base_source = "request"` keeps B008's first-parent rule |
 | RG-273 | ephemeral Run-Gate lanes opt in to the image-advertised KSM shim by default | Enhancement | IMPLEMENTED and released in Run-Gate 25.6.0; tester images rebuilt/deployed 2026-11-12; host lane smoke open |
 | RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities and RAM, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 5) |
 | RG-276 | Run-Gate has no campaign-plan client to assemble candidate and host inputs for fleetd | Enhancement | OPEN 2026-11-13; fleetd MVP-A exposes a standalone fleet plan CLI |
@@ -178,6 +178,8 @@ SPEC §9.
 | RG-285 | a language lane image carries no Assay and no pip, so every such lane had to spell out the judge's `PYTHONPATH` incantation itself — the LANE, not the gate, decided which judge judged it | Enhancement | FIXED 2026-11-16 — lane key `judge = "assay"` (SPEC `R-08f`/`R-57`): read-only dual-mounted judge trees, PREPENDED import roots + `RUN_GATE_JUDGE_PYTHON`, an in-lane `find_spec` identity guard, judge commit/version/dirty recorded in the run record, `external-missing` refusal instead of a silent skip |
 | RG-286 | the `judge = "assay"` evidence never runs REAL Assay under a REAL image, and the fake docker executes the inner script on the host where `:ro` is an argv string, not a kernel mount | Major | OPEN 2026-11-16; required BEFORE the `hostobs` interim lane migrates — real-image smoke of `judge = "assay"` (real Assay source, real `tester-unified-rust`, Docker refusing writes into `assay/` and `libraries/cowtree`) |
 | RG-287 | Run-Gate cannot provide the Assay judge to a checkout that has no `assay/` of its own (a standalone consumer such as `dstdns`), so such a project is refused `external-missing` | Enhancement | OPEN 2026-11-16; the external path today is `kind = "assay"` + `assay_command` + `pins`; a run-gate-owned judge source (pinned wheel or pinned checkout) is unbuilt |
+| RG-288 | `git_hook_info_mount_flags` overlays only `<common>/hooks` and `<common>/info`; `<common>/modules/**/hooks` and `modules/**/info` stay writable by the runner, so a runner can plant a submodule hook; whether and when host git runs it is UNVERIFIED (run-gate's own host git readers disable hooks, so the exposure is other host git use on the checkout) | Medium (unverified exposure) | OPEN 2026-11-18 (filed, not fixed); ciu's CIU-215 branch overlays them in its rw mode only (branch `ciu-20261118_055457-ciu215-gitdir-mount-20261118`, not on `origin/main` at filing) |
+| RG-289 | the host-side `git config --file` reads in `git_config_overlay_flags` follow symlinks at names a runner can plant in the writable common dir (`config.worktree`, `<admin>/config.worktree`, `modules/**/config`, the `modules` root, `worktrees/*` directory links), so a host file that parses as git config is copied sanitized into a runner-visible overlay | Medium | OPEN 2026-11-18 (filed, not fixed) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8606,91 +8608,45 @@ cover refusal below Assay 12.2.0. The full registered selftest previously
 passed this documentation contract, as does the registered selftest on the
 branch head.
 
-## RG-272 — a valid request base on a non-tag checkout produces zero mutation candidates despite changed source
+## RG-272 — a valid request base on a merge-commit HEAD produces zero mutation candidates despite changed source
 
-**Status:** OPEN (filed 2026-11-12; cause diagnosed 2026-11-18, see Diagnosis
-below: the cause is a MERGE-commit `HEAD`, not a non-tag one, and lies in
-assay's `resolve_base`); priority should-fix for an R2 lane that
-delegates its comparison base. Source: [KSM evidence report](../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md)
+**Status:** FIXED 2026-11-18 by assay B552 (filed 2026-11-12; the title said
+"non-tag checkout" until 2026-11-18, which was misleading: the trigger is a
+MERGE-commit `HEAD`). The fix is assay's, in commit `94809846b` plus its review
+round `5cfb6fbf6`, merged to main in `a429c0761`; no assay release contains it
+yet. Priority was should-fix for an R2 lane that delegates its comparison
+base. Source: [KSM evidence report](../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md)
 sections 0.8 and 10.1. Related: RG-26 and RG-263; this is distinct from RG-263's
 empty source-diff case.
 
-**Diagnosis (2026-11-18, cause found; fix NOT in Run-Gate).** The reported
-non-tag `main` HEAD (`b6a6274df`, `ciu-v7.25.0-9`) is a MERGE commit, and the
-tag-plus-empty-commit control is not. Assay's `resolve_base`
-(`assay/src/assay/git.py:826-846`) answers a merge `HEAD` with its FIRST
-PARENT and ignores the supplied base entirely (B008's "what did the merge
-itself change" rule, meant for a feature branch that merged its base in); only a
-non-merge HEAD resolves to `merge-base(base, HEAD)`. Measured on the real
-history: first parent of `b6a6274df` is the `ciu-v7.25.0` tag commit, and
-`git diff first-parent..HEAD -- ciu/src` is EMPTY, while
-`git diff ciu-v7.22.0..HEAD -- ciu/src` is 14 files, 4292 insertions, the exact
-figure in the report. So the plan is correctly empty for the wrong comparison:
-the request base `ciu-v7.22.0` was never the diff base. Assay records the mode
-(`base_resolution_mode`, `assay/src/assay/runner.py:6654`) but nothing refuses
-or discloses before the baseline when the mode is `first-parent` and the base
-was explicitly delegated. Hermetic fixture (3 shapes: plain commit past the
-tag, tag + empty commit, merge commit with a non-`src` payload) reproduces it:
-only the merge shape resolves to the first parent and sees no `src` change.
-The exact seam is `assay.git.resolve_base` (and its caller for a delegated
-request base in `runner.py` near `:4343`/`:6644`); the design choice (for an
-explicit `--request-base`, use `merge-base(base, HEAD)` for a merge HEAD, or
-keep first-parent and refuse/disclose it before baseline) belongs to the assay
-owner, so no Run-Gate code was changed. Run-Gate-only mitigation, if wanted
-before assay changes: a preflight that names "HEAD is a merge commit; assay will
-judge only its payload, not `--base`" when `--base` is given. Workaround today:
-run the campaign from a non-merge HEAD (a detached commit on the tag, or a
-checkout whose HEAD is not a merge).
-
-**Problem.** The same CIU lane and `--base ciu-v7.22.0` produced
+**Problem (as reported).** The same CIU lane and `--base ciu-v7.22.0` produced
 `INCONCLUSIVE/NO_MUTANTS` with `planned=0` on a non-tag main checkout, in
 both single and sharded runs. On a checkout at the `ciu-v7.25.0` commit plus
 one empty commit, the same base produced 715 candidates. The report records
-4,292 insertions under `ciu/src` between the base and the main target, so
-the zero plan cannot be explained by an empty source diff alone. The cause was
-not diagnosed. Without `--base`, the lane correctly refuses because it
-delegates that fact to the request.
+4,292 insertions under `ciu/src` between the base and the main target.
 
-**Evidence.** The report records the two target shapes, the shared base,
-candidate counts, and the 4,292 source insertions
-([KSM evidence report](../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md):17, 170). Assay's
-`resolve_base_declaration()` returns the supplied request base unchanged for
-a delegated lane and refuses when it is missing
-(`assay/src/assay/runner.py:4295-4305`). RG-263 covers a base whose diff
-is empty inside the declared source scope, not a non-empty source diff that
-still plans zero candidates (`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md:8116-8128`).
+**Fix (assay B552).** For a lane that declares `judge.base_source = "request"`,
+assay's `git.resolve_base` and `git.base_resolution_mode` now take
+`delegated=True`: the requested base resolves to `merge-base(request, HEAD)` on
+every HEAD shape, and the verdict records `base_resolution = "merge-base"`.
+`assay_analysis`'s campaign reconstructs a delegated base the same way
+(`5cfb6fbf6`). No Run-Gate code changed for this entry. See assay's backlog
+entry B552 (`assay/nyxloom-trove/4-backlog.md`).
 
-**Minimal solution.** Reproduce the comparison at both Run-Gate and direct
-Assay plan boundaries using the same immutable base, target, lane declaration
-and source scope. Identify why the non-tag checkout contributes no candidates.
-If the declared source scope changes but Assay still plans zero, either
-produce the expected inventory or return a named, evidence-bearing planning
-refusal before starting an expensive baseline. Do not fall back to another
-base, assume the repository root is the source scope, or label this
-non-empty-diff case as the empty-source case from RG-263.
+**Remaining caveat.** A lane that does not declare `base_source = "request"`
+(a lane-declared `judge.base`) still takes the first parent on a merge-commit
+HEAD, by B008's deliberate rule, so a `--base` given to such a lane does not
+change the comparison there.
 
-**Where.** Run-Gate's `--base` planning and disclosure path,
-`assay/src/assay/runner.py` and candidate planning, fake-repository tests in
-both projects, and the relevant Run-Gate/Assay consumer documentation.
-
-**Acceptance test idea.** A registered-gate fixture runs one delegated lane
-against the same immutable base on a release-tag checkout and a non-tag
-checkout. It pins the resolved base, target and declared source scope. When
-the target source diff is non-empty, the plan exposes candidates or a named
-scope/planning refusal before baseline; it cannot yield an unqualified
-`NO_MUTANTS`. The release-tag control still produces its recorded nonzero
-inventory. Mutating base resolution, target selection or source-scope
-derivation makes the fixture fail at the layer that changed the result.
-
-**Priority.** Should-fix. The current result is not a mutation PASS and costs a
-baseline without explaining why the changed source generated no work.
-
-**Close when.** The release-tag and non-tag controls produce deterministic,
-explained plans for the same immutable base; focused Run-Gate and Assay
-regression tests distinguish this non-empty-scope case from RG-263's
-empty-source case and fail when base, target, or scope changes; the relevant
-registered lanes pass on the final commit; and any changed user-facing
-behavior is synchronized across README, DESIGN-GUIDE, and CONSUMERS.
+**History (diagnosis 2026-11-18, kept for the record).** The reported non-tag
+`main` HEAD (`b6a6274df`, `ciu-v7.25.0-9`) is a merge commit and the
+tag-plus-empty-commit control is not. Before B552, `resolve_base` answered a
+merge `HEAD` with its first parent and ignored the supplied base; the first
+parent of `b6a6274df` is the `ciu-v7.25.0` tag commit, where
+`git diff first-parent..HEAD -- ciu/src` is empty, while
+`git diff ciu-v7.22.0..HEAD -- ciu/src` is 14 files and 4292 insertions, the
+report's figure. The workaround until the fix is released: run the campaign
+from a non-merge HEAD (a detached commit on the tag).
 
 ## RG-273 — lane containers do not opt in to KSM (ciu does)
 
@@ -9358,3 +9314,122 @@ source (wheel digest pinned where the estate pins artifacts), a preflight that
 verifies it before admission, and identity fields that record the compared
 digest — reusing `pins`' verification rather than inventing a second one
 (R-35's rule).
+
+## RG-288 — the container mount layout leaves submodule `hooks` and `info` writable by the runner
+
+**Status:** OPEN 2026-11-18 (filed, not fixed). Severity: Medium, with the
+exposure UNVERIFIED (a lane runner can plant a hook file in a submodule git
+dir; that host git executes it was not demonstrated, see Mitigation).
+
+**Found by.** Comparing Run-Gate's layout with ciu's CIU-215 implementation,
+which overlays submodule `hooks` and `info` (in its rw mode); Run-Gate's layout
+does not.
+
+**Current behaviour (read from `run-gate-project/run_gate.py`).**
+`container_mount_flags` mounts the judged worktree and the shared git common
+directory read-write (`_dual(plan["common"], repo)`), then layers
+`git_worktrees_mount_flags` (`<common>/worktrees` read-only, the judged admin
+dir read-write on top), `git_config_overlay_flags`, `git_hook_info_mount_flags`
+and `git_worktree_pointer_mount_flags`. `git_hook_info_mount_flags` overlays
+exactly two paths, `<common>/hooks` (an empty read-only private directory) and
+`<common>/info` (read-only, real contents), and refuses the lane when either is
+a symlink or missing. Nothing overlays `<common>/modules/<path>/hooks` or
+`<common>/modules/<path>/info`: a submodule's git dir lives under
+`<common>/modules`, which is inside the read-write common mount, so the runner
+can create `modules/x/hooks/<hook>` (and edit `modules/x/info/exclude` or
+`info/attributes`). `git_config_overlay_flags` already walks `modules` for
+`config` files (`_nested_git_config_files`), so the layout knows these git dirs
+exist; only the hooks and info overlay is missing.
+
+**Mitigation and what is unverified.** `host_git_environment`
+(`run_gate.py`) sets `core.hooksPath=/dev/null` (and `core.fsmonitor=false`)
+for the host git calls that pass through it (four read-only host git calls in
+`run_gate.py` do not pass it: two `rev-parse` calls, `diff --quiet` and
+`merge-base --is-ancestor`; none of those commands runs hooks), so Run-Gate's own host git calls do not run a planted
+submodule hook. The remaining exposure is OTHER host git use
+on the checkout after a lane (for example an operator running
+`git submodule update` or a checkout inside the submodule, where a
+`post-checkout` hook would be looked up in the submodule git dir). That a
+planted hook is run there was read from the layout and git's hook lookup and
+was not demonstrated by a run; the severity is filed as Medium on that
+unverified basis.
+
+**Partly handled elsewhere.** ciu's CIU-215 `_gitdir_mount_specs`
+(`ciu/src/ciu/engine.py`) overlays an empty read-only `hooks/` and read-only
+`info/` for every git dir found by `scan_modules` under `modules/**`, but only
+in its own rw mode, and its code treats a submodule git dir without `hooks/`
+or `info/` as an accepted limit (the `FileNotFoundError` branch `continue`s, so
+a directory the runner may create stays writable). At filing that code is on
+branch `ciu-20261118_055457-ciu215-gitdir-mount-20261118` (merge `bbe6da1e4`),
+not on `origin/main` (`git grep _gitdir_mount_specs origin/main -- ciu` finds
+nothing). Run-Gate's own layout was not changed; the Wanted overlay below
+should decide the missing-directory case explicitly rather than copy that
+limit.
+
+**Wanted.** The same overlay: for every git dir under `<common>/modules` (the
+directories that hold a `HEAD`), an empty read-only `hooks` mount and a
+read-only `info` mount, dual-mounted like the common ones, with an lstat check
+that refuses the lane when `hooks` or `info` is a symlink or the walk meets a
+non-directory where a directory is required; subject to the existing
+`_MAX_GIT_OVERLAYS` bound.
+
+**Close when.** A test plants `<common>/modules/x/hooks/` and
+`<common>/modules/x/info/` in a linked worktree's common dir and shows, in the
+lane's mount set, that the submodule `hooks` is an empty read-only directory and
+`info` is read-only; and that a symlinked `hooks` or `info` under `modules/**`
+refuses the lane with the path named.
+
+## RG-289 — host-side git config reads follow symlinks a runner can plant
+
+**Status:** OPEN 2026-11-18 (filed, not fixed). Severity: Medium (host file
+content that parses as git config reaches a runner-visible copy; the lane can
+also be refused by a planted name).
+
+**Current behaviour (read from `run-gate-project/run_gate.py`).**
+`git_config_overlay_flags` builds its target list from `<common>/config`,
+`<common>/config.worktree`, the judged `<admin>/config.worktree`,
+`_nested_git_config_files(<common>/modules)` and
+`<common>/worktrees/*/config.worktree`. The `config.worktree` names are tested
+with `Path.is_file()`, which follows symlinks; the sibling names come from
+`Path.glob`, which also matches a symlinked `worktrees/<name>` directory; the
+module names come from `os.walk(modules)`, which lists a symlink to a file in
+`files` (not descended, but read) and, because `modules` itself is the walk top,
+walks through it when the runner replaced the `modules` directory by a symlink.
+Each target is then read by `read_git_config_entries`, which runs host
+`git config --file <path> --list -z`; git follows the link. The sanitized text
+is written to a private per-run copy that is bind-mounted into the container at
+the target's own path. Run-Gate always mounts the common dir read-write, so
+every one of these names can be created or replaced by a lane and is read on
+the host at the next lane start (whether a file that is already bind mounted
+resists replacement during the same lane was not tested).
+
+**Reach.** Any host file the run-gate user can read that parses as git config:
+git rejects key names with an underscore, so `~/.aws/credentials` fails with
+"bad config line" and the lane is refused (`fail_infra`); a file with dashed or
+plain keys, such as a `.pypirc` (checked: `git config --file` parses it and
+follows a symlink to it) or another user's `.gitconfig`, is read, passed through
+`sanitize_git_config_entries` and its copy mounted into the lane. The sanitizer
+drops only the credential-looking keys it recognises (a last segment ending in
+`pass`, `passwd`, `password`, `token`, `secret`, `apikey`, `api-key` or
+`api_key`, `credential.*`, `include.*`, `includeif.*`, `sendemail.*`, `imap.*`,
+`*.extraheader`, `*.cookiefile`, `core.askpass`, `core.sshcommand`) and strips
+URL userinfo; every other value passes through unchanged, so a key such as
+`authorization = Bearer ...` or `private-key = ...` in a planted-link target
+would reach the copy (confirmed in a scratch test against
+`sanitize_git_config_entries`: both keys pass through unchanged). A
+replaced `modules` root can also make the walk read and refuse on any
+`config` file below the link target. Where Docker places a bind mount whose
+destination is a symlink was not exercised.
+
+**Wanted.** lstat-based checks (`S_ISREG` for each config file, `S_ISDIR` for
+`modules`, `worktrees` and each sibling directory), `os.walk(followlinks=False)`
+with the top itself lstat-checked, no `is_file()`/`glob` on planted names, and a
+refusal that names the path when a candidate is a symlink or another non-regular
+file. This is the same fail-closed lstat discipline ciu's CIU-215 branch applies
+to these candidates.
+
+**Close when.** Planted-symlink tests, one per name (`<common>/config`,
+`<common>/config.worktree`, `<admin>/config.worktree`, `modules/x/config`,
+`modules/x/config.worktree`, the `modules` root, a `worktrees/<name>` directory
+link), each pointing at a readable file that parses as git config, show the lane
+refused with the path named and no read of the link target.

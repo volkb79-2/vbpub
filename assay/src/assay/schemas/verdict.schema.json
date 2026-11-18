@@ -1339,11 +1339,11 @@
       "properties": {
         "base_rev": {
           "type": "string",
-          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])"
         },
         "head_rev": {
           "type": "string",
-          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])"
         },
         "relative_to": {
           "oneOf": [
@@ -1357,7 +1357,7 @@
         },
         "sha256": {
           "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
         },
         "bytes": {
           "type": "integer",
@@ -1422,7 +1422,7 @@
         {
           "description": "B046 (schema v9): an operator name copied verbatim from an ingested mutation-testing-report-schema report, namespaced under the tool assay read it from. Open by construction; the three enum branches above stay closed. The pattern is the SAME SOURCE STRING assay.vocabulary.INGESTED_OPERATOR_RE compiles, character for character, and test_verdict_schema_is_packaged asserts that equality -- which is why the alternation group is spelled out with the hyphen unescaped (outside a character class it is a literal): adding another ingested namespace must be one edit that fails loudly here until it is made in both places, not a simplification that quietly lets the two drift. B245/schema v20 added the cargo-mutants namespace: its operator genres (FnValue, BinaryOperator, UnaryOperator, MatchArm, MatchArmGuard, StructField) are data the tool's own report carries, so the suffix stays the same OPEN [A-Za-z0-9]+ pattern as for stryker.",
           "type": "string",
-          "pattern": "^(?:stryker|cargo-mutants):[A-Za-z0-9]+$"
+          "pattern": "^(?:stryker|cargo-mutants):[A-Za-z0-9]+(?![\\s\\S])"
         }
       ]
     },
@@ -2441,11 +2441,11 @@
           "$ref": "#/$defs/mutation_producer_tool"
         },
         "report_absent": {
-          "description": "B245 (schema v20): true means the ingested tool produced NO report at all because it ran zero mutants (cargo-mutants writes no mutants.out for an empty --in-diff). Present only when true -- omitted, never false. Legal ONLY on an ingested judgment whose R2 claim is INCONCLUSIVE/NO_MUTANTS with mutation.total == 0 and mutation.candidate_count == 0, and then producer_tool.version is the literal 'unobserved' (assay read no report to copy a version from); conversely a producer_tool.version of 'unobserved' is legal only with report_absent true. The cross-object conditions (claim terminal, mutation counts) live in the model and the raw verifier; this schema owns the report_absent / producer_tool.version pairing and forbids the key under producer = 'native'.",
+          "description": "B245 (schema v20): true means the ingested tool produced NO report at all because it ran zero mutants (cargo-mutants writes no mutants.out for an empty --in-diff). Present only when true -- omitted, never false. Legal ONLY on an ingested judgment whose R2 claim is INCONCLUSIVE/NO_MUTANTS with mutation.total == 0 and mutation.candidate_count == 0, and then producer_tool is cargo-mutants with report_schema_version 'outcomes.json' and version the literal 'unobserved' (assay read no report to copy a version from); conversely a producer_tool.version of 'unobserved' is legal only with report_absent true. The cross-object conditions (claim terminal, mutation counts) live in the model and the raw verifier; this schema owns the report_absent / producer_tool.version pairing and forbids the key under producer = 'native'.",
           "const": true
         },
         "changed_diff": {
-          "description": "B245 (schema v20): the changed-lines diff handed to an ingested cargo-mutants run. Required exactly when judgment.r2 exists AND argv_declared contains the whole token {assay.changed_diff} AND the ingested producer is cargo-mutants (producer_tool.name); forbidden otherwise, and forbidden under producer = 'native'. A verdict that ends before an R2 claim exists carries the placeholder in argv_declared and no judgment.r2, and is valid without this field. The argv, producer and judgment cross-object requirement is owned by the model and the raw verifier. A document-only verifier cannot recompute sha256 (it needs the repository); see the changed_diff definition.",
+          "description": "B245 (schema v20): the changed-lines diff handed to an ingested cargo-mutants run. Required exactly when judgment.r2 exists AND argv_declared contains the whole token {assay.changed_diff} AND the ingested producer is cargo-mutants (producer_tool.name) AND judgment.r2.mode is 'changed_lines'; forbidden otherwise (so forbidden under mode 'whole_target', which this schema also states directly), and forbidden under producer = 'native'. A verdict that ends before an R2 claim exists carries the placeholder in argv_declared and no judgment.r2, and is valid without this field. The argv, producer and judgment cross-object requirement is owned by the model and the raw verifier. A document-only verifier cannot recompute sha256 (it needs the repository); see the changed_diff definition.",
           "$ref": "#/$defs/changed_diff"
         },
         "fail_under": {
@@ -2896,7 +2896,7 @@
       "additionalProperties": false,
       "allOf": [
         {
-          "description": "B245 (schema v20): report_absent true is legal only beside producer_tool.version 'unobserved' (assay read no report, so there is no version to copy).",
+          "description": "B245 (schema v20): report_absent true is legal only beside producer_tool.version 'unobserved' (assay read no report, so there is no version to copy) and only for the cargo-mutants producer with the assay-owned report_schema_version 'outcomes.json' (design Q1).",
           "if": {
             "required": [
               "report_absent"
@@ -2909,11 +2909,37 @@
             "properties": {
               "producer_tool": {
                 "properties": {
+                  "name": {
+                    "const": "cargo-mutants"
+                  },
                   "version": {
                     "const": "unobserved"
+                  },
+                  "report_schema_version": {
+                    "const": "outcomes.json"
                   }
                 }
               }
+            }
+          }
+        },
+        {
+          "description": "B245 (schema v20): changed_diff is a changed_lines-mode field. Under mode 'whole_target' assay hands the tool no diff, so the key is forbidden. (The remaining half -- required iff argv_declared holds {assay.changed_diff} and the producer is cargo-mutants -- is cross-object and lives in the model and the raw verifier.)",
+          "if": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "whole_target"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "changed_diff"
+              ]
             }
           }
         },
