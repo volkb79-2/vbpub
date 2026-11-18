@@ -1,5 +1,5 @@
-//! The server layer of the probe's serving side (design sections 1 and 3, R20, R22, R23, R26,
-//! R27; WIRE.md sections 5.1, 5.3 and 5.4), sans-IO like [`Conn`]: no sockets,
+//! The server layer of the probe's serving side (design sections 1 and 3, R20, R22, R23, R27,
+//! R28; WIRE.md sections 4.5, 5.1, 5.3 and 5.4), sans-IO like [`Conn`]: no sockets,
 //! no threads, no clock reads.
 //!
 //! A [`Server`] owns ONE `SendHub`, the connections keyed by `ConnId` (iterated in ascending id
@@ -10,8 +10,9 @@
 //!
 //! # Contracts
 //!
-//! - **`accept` (WIRE.md section 5.4 `refuse`).** `Control` is never served by the probe, a
-//!   missing peer has no identity, a level at its `max_connections` or a uid at its
+//! - **`accept` (WIRE.md section 5.4 `refuse`).** `Control` is never served by the probe (design
+//!   section 1: it belongs to `act`), a missing peer has no identity, a level at its
+//!   `max_connections` or a uid at its
 //!   `max_connections_per_uid` on that level is full: all four answer [`Accept::Refused`] with
 //!   no hub entry, no counter and no byte. Otherwise the connection is added to the hub with the
 //!   peer's uid, a [`Conn`] is created and the counters grow (accept when `count < cap`). The peer
@@ -32,19 +33,34 @@
 //! - **Timer order (R20), per [`Server::poll`].** Connections are polled in `ConnId` order
 //!   (the hello deadline, the reader's age, idle); then the hub's `poll` closes the stalled or
 //!   dribbled ones with `slow-client` (again in id order); the first fatal outcome of a
-//!   connection wins, so the one tie (the hello deadline against the writer stall on the unread
-//!   server prefix) is settled by the order.
+//!   connection wins, so a tie is settled by the order: the hello deadline against the writer
+//!   stall on the unread server prefix, and the reader's age (`deadline`) against a stall due in
+//!   the same `poll` (the reader's age wins, the hub's `slow-client` finds a closed connection).
 //! - **One hub, per-level caps.** The hub's caps are the widest of the served levels
 //!   ([`ServerLimits::queue_limits`]). The observer's smaller `control_queue_bytes` (design
 //!   R28) is enforced by the server after every `on_bytes`: a connection whose queued control
 //!   bytes exceed its own level's cap is closed with `slow-client`. A frame is at most
 //!   `max_reply_bytes`, below the cap, so this equals the hub's rule (a frame into an empty
 //!   control queue is always admitted).
+//! - **Every push path ends in `enforce_control`.** The server hands a connection the hub and
+//!   the backend through one private method (`drive`), which runs the control-cap check right
+//!   after the connection returns. Every path that can queue a frame of a connection (today
+//!   `on_bytes`; P5b-2 adds the EVT, END, live and query pushes) MUST go through it and never
+//!   call into a `Conn` directly, so a new push cannot forget the per-level cap.
+//! - **One stall, one frame-completion value.** The hub has a single value of each, so
+//!   [`Server::new`] sets `stall_ms` and `frame_completion_ms` of every served level to the
+//!   widest of the three ([`ServerLimits::unified`]): what `hello.limits` announces is what the
+//!   hub enforces, and a mismatched [`ServerLimits`] cannot be silently half-applied.
+//!   [`Server::limits`] returns the unified bounds.
 //! - **`status` (WIRE.md section 4.5).** The backend handed to the connections is wrapped so that
-//!   `clients` carries the live connection count of each served level (observe, operator,
-//!   observer, in that order, 0 included).
-//! - **Shutdown has no clock.** [`Server::shutdown`] closes every connection with
-//!   `shutting-down` ([`Conn::close_for`] reads no time).
+//!   `clients` carries the number of connections of each served level that are not closed
+//!   (observe, operator, observer, in that order, 0 included). A closed connection that waits
+//!   for its final bytes is no longer a client, but it keeps its slot toward the caps
+//!   (`accept`) until [`Server::finish`] released it.
+//! - **Shutdown has no clock and no flag.** [`Server::shutdown`] closes every connection with
+//!   `shutting-down` ([`Conn::close_for`] reads no time). The server keeps no stopping flag: the
+//!   driver stops calling [`Server::accept`] after `shutdown` (an `accept` after it would
+//!   register a connection that nothing closes).
 
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
@@ -71,7 +87,9 @@ pub struct ServerLimits {
 }
 
 impl ServerLimits {
-    /// The WIRE.md section 5.1 defaults of every served level.
+    /// The WIRE.md section 5.1 defaults of every served level. The fields are public, but the
+    /// two timers `stall_ms` and `frame_completion_ms` are one value for the whole server:
+    /// [`Server::new`] unifies them ([`ServerLimits::unified`]).
     #[must_use]
     pub fn new() -> ServerLimits {
         ServerLimits {
@@ -90,6 +108,23 @@ impl ServerLimits {
             Level::Observer => Some(&self.observer),
             Level::Control => None,
         }
+    }
+
+    /// These bounds with `stall_ms` and `frame_completion_ms` of every level set to the widest
+    /// of the three: the hub has one value of each (module docs). [`Server::new`] applies it.
+    #[must_use]
+    pub fn unified(&self) -> ServerLimits {
+        let first = self.observe.stall_ms.max(self.operator.stall_ms);
+        let stall_ms = first.max(self.observer.stall_ms);
+        let first = self.observe.frame_completion_ms;
+        let first = first.max(self.operator.frame_completion_ms);
+        let frame_completion_ms = first.max(self.observer.frame_completion_ms);
+        let mut out = *self;
+        for limits in [&mut out.observe, &mut out.operator, &mut out.observer] {
+            limits.stall_ms = stall_ms;
+            limits.frame_completion_ms = frame_completion_ms;
+        }
+        out
     }
 
     /// The caps of the one hub: every field is the widest value of the three levels (the
@@ -183,10 +218,27 @@ impl Counts {
     }
 }
 
-/// The backend the connections see: the injected one, with `clients` filled from the counters.
+/// The backend the connections see: the injected one, with `clients` filled from the
+/// connections that are not closed. The connection being driven is not in `others` (the server
+/// took it out of the map for the call, see `Server::drive`); it is open and counts as one of
+/// level `mine`.
 struct StatusView<'a, B> {
     backend: &'a B,
-    counts: &'a Counts,
+    others: &'a BTreeMap<ConnId, Conn>,
+    mine: Level,
+}
+
+impl<B> StatusView<'_, B> {
+    /// The connections of `level` that are not closed.
+    fn open(&self, level: Level) -> u32 {
+        let others = self
+            .others
+            .values()
+            .filter(|conn| conn.level() == level && !conn.is_closed())
+            .count();
+        let own = usize::from(self.mine == level);
+        u32::try_from(others.saturating_add(own)).unwrap_or(u32::MAX)
+    }
 }
 
 impl<B: Backend> Backend for StatusView<'_, B> {
@@ -198,7 +250,7 @@ impl<B: Backend> Backend for StatusView<'_, B> {
         let mut status = self.backend.status();
         let mut clients = Vec::new();
         for level in SERVED {
-            clients.push((level, self.counts.level(level)));
+            clients.push((level, self.open(level)));
         }
         status.clients = clients;
         status
@@ -218,6 +270,7 @@ impl<B: Backend> Server<B> {
     /// A server with no connection.
     #[must_use]
     pub fn new(limits: ServerLimits, backend: B) -> Server<B> {
+        let limits = limits.unified();
         let hub = SendHub::new(limits.queue_limits());
         Server {
             limits,
@@ -229,7 +282,8 @@ impl<B: Backend> Server<B> {
     }
 
     /// A connection of `level` arrived at `now_ns`. `peer` is the credentials the driver read
-    /// from the socket (`None`: unreadable, refused).
+    /// from the socket (`None`: unreadable, refused). The server has no stopping flag: after
+    /// [`Server::shutdown`] the driver stops calling `accept`.
     pub fn accept(&mut self, level: Level, peer: Option<Peer>, now_ns: u64) -> Accept {
         let Some(peer) = peer else {
             return Accept::Refused;
@@ -252,14 +306,7 @@ impl<B: Backend> Server<B> {
 
     /// Bytes arrived on `id` at `now_ns` (an unknown id is ignored).
     pub fn on_bytes(&mut self, id: ConnId, bytes: &[u8], now_ns: u64) {
-        let view = StatusView {
-            backend: &self.backend,
-            counts: &self.counts,
-        };
-        if let Some(conn) = self.conns.get_mut(&id) {
-            conn.on_bytes(bytes, now_ns, &mut self.hub, &view);
-        }
-        self.enforce_control(id);
+        self.drive(id, |c, hub, back| c.on_bytes(bytes, now_ns, hub, back));
     }
 
     /// The peer of `id` ended its stream.
@@ -315,6 +362,7 @@ impl<B: Backend> Server<B> {
     }
 
     /// Release `id`: counters, uid entry, hub entry, the connection. Idempotent (module docs).
+    /// Until then a closed connection holds its slot toward the caps.
     pub fn finish(&mut self, id: ConnId) {
         let Some(conn) = self.conns.remove(&id) else {
             return;
@@ -375,6 +423,13 @@ impl<B: Backend> Server<B> {
         &self.hub
     }
 
+    /// The bounds the server runs with: the ones given to [`Server::new`], unified
+    /// ([`ServerLimits::unified`]).
+    #[must_use]
+    pub fn limits(&self) -> &ServerLimits {
+        &self.limits
+    }
+
     /// The backend.
     #[must_use]
     pub fn backend(&self) -> &B {
@@ -384,6 +439,29 @@ impl<B: Backend> Server<B> {
     /// The backend, mutable (tests and the bring-up change what it answers).
     pub fn backend_mut(&mut self) -> &mut B {
         &mut self.backend
+    }
+
+    /// Run `act` on connection `id` with the hub and the status-filling backend, then enforce
+    /// the control cap. The ONE path through which a connection is handed the hub: every push
+    /// path of the server goes through it (module docs), so none can skip `enforce_control`.
+    /// The connection is out of the map during `act`, which lets the backend view read the
+    /// others; an unknown id does nothing.
+    fn drive<F>(&mut self, id: ConnId, act: F)
+    where
+        F: FnOnce(&mut Conn, &mut SendHub, &dyn Backend),
+    {
+        let Some(mut conn) = self.conns.remove(&id) else {
+            return;
+        };
+        let view = StatusView {
+            backend: &self.backend,
+            others: &self.conns,
+            mine: conn.level(),
+        };
+        let backend: &dyn Backend = &view;
+        act(&mut conn, &mut self.hub, backend);
+        self.conns.insert(id, conn);
+        self.enforce_control(id);
     }
 
     /// Close `id` with `slow-client` when its queued control bytes exceed its level's cap.
@@ -421,16 +499,17 @@ impl<B: Backend> Server<B> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     use hostobs_proto::frame::FrameType;
-    use hostobs_proto::hub::{ConnId, Pools};
+    use hostobs_proto::hub::{ConnId, LiveOutcome, Pools, QueryOutcome, TickForms};
 
     use super::{Accept, Server, ServerLimits, SERVED};
-    use crate::backend::FixedBackend;
+    use crate::backend::{FixedBackend, TickInfo, TierInfo};
     use crate::codes::Code;
     use crate::conn::{Peer, State, SERVER_MINOR};
     use crate::encode::{control_frame, server_prefix};
-    use crate::limits::Level;
+    use crate::limits::{Level, Limits};
 
     const MS: u64 = 1_000_000;
     const HELLO_ARGS: &str = r#"{"client":"t","proto":{"major":1,"minor":1}}"#;
@@ -476,6 +555,38 @@ mod tests {
         x
     }
 
+    /// A block frame of `len` zero bytes: no section (`n_sec` 0), enough for the hub to pin.
+    fn block(len: usize) -> Arc<[u8]> {
+        Arc::from(vec![0u8; len])
+    }
+
+    /// A subscription tick whose two forms are the same bytes, at generation 1.
+    struct Tick {
+        bytes: Arc<[u8]>,
+    }
+
+    impl TickForms for Tick {
+        fn generation(&self) -> u32 {
+            1
+        }
+
+        fn bare(&self) -> Option<Arc<[u8]>> {
+            Some(Arc::clone(&self.bytes))
+        }
+
+        fn dict_form(&self) -> Arc<[u8]> {
+            Arc::clone(&self.bytes)
+        }
+    }
+
+    fn pools(live: usize, query: usize) -> Pools {
+        Pools {
+            live,
+            query,
+            control: 0,
+        }
+    }
+
     /// The driver the server expects: it writes what `output` offers, takes the final bytes
     /// and finishes closed connections.
     struct Driver {
@@ -483,6 +594,7 @@ mod tests {
         now: u64,
         out: BTreeMap<ConnId, Vec<u8>>,
         opened: Vec<ConnId>,
+        uids: Vec<u32>,
     }
 
     impl Driver {
@@ -496,6 +608,14 @@ mod tests {
                 now: 0,
                 out: BTreeMap::new(),
                 opened: Vec::new(),
+                uids: Vec::new(),
+            }
+        }
+
+        /// Remember a uid the run used: `assert_clean` checks its pools.
+        fn note_uid(&mut self, uid: u32) {
+            if !self.uids.contains(&uid) {
+                self.uids.push(uid);
             }
         }
 
@@ -504,8 +624,21 @@ mod tests {
             let accept = self.server.accept(level, Some(peer), self.now);
             if let Accept::Accepted(id) = accept {
                 self.opened.push(id);
+                self.note_uid(uid);
             }
             accept
+        }
+
+        /// Push a Live tick of `len` bytes into the hub queue of `id`, as P5b-2 will.
+        fn push_live(&mut self, id: ConnId, stream: u32, len: usize) -> LiveOutcome {
+            let tick = Tick { bytes: block(len) };
+            self.server.hub.push_live(id, stream, &tick, self.now)
+        }
+
+        /// Push a Query block of `len` bytes into the hub queue of `id`.
+        fn push_query(&mut self, id: ConnId, stream: u32, len: usize) -> QueryOutcome {
+            let bytes = block(len);
+            self.server.hub.push_query(id, stream, bytes, self.now)
         }
 
         fn open(&mut self, level: Level, uid: u32) -> ConnId {
@@ -594,8 +727,9 @@ mod tests {
             assert_eq!(d.server.count(level), 0, "{what}: level counter {level:?}");
         }
         assert_eq!(d.server.uid_entries(), 0, "{what}: uid entries left");
-        for uid in 0..4u32 {
-            assert_eq!(d.server.hub().uid_pools(uid), Pools::default(), "{what}");
+        for uid in &d.uids {
+            let held = d.server.hub().uid_pools(*uid);
+            assert_eq!(held, Pools::default(), "{what}: pools of uid {uid}");
         }
         assert_eq!(d.server.hub().global_pools(), Pools::default(), "{what}");
         for id in &d.opened {
@@ -849,6 +983,140 @@ mod tests {
         assert_clean(&d, "after shutdown");
     }
 
+    // ---- R22 with real Live and Query frames in the hub ----
+
+    const LIVE_LEN: usize = 200;
+    const QUERY_LEN: usize = 300;
+
+    /// A ready connection of uid 1000 whose hub queue holds a Live tick, a Query block, a second
+    /// Live tick and a status reply. The head is pinned (`query_first` puts the Query block
+    /// there) and `written` bytes of it are reported written (0: pinned, not partial).
+    fn loaded(d: &mut Driver, level: Level, query_first: bool, written: usize) -> ConnId {
+        let id = d.open(level, 1000);
+        d.ready(id);
+        if query_first {
+            assert_eq!(d.push_query(id, 2, QUERY_LEN), QueryOutcome::Queued);
+            assert_eq!(d.push_live(id, 1, LIVE_LEN), LiveOutcome::Queued);
+        } else {
+            assert_eq!(d.push_live(id, 1, LIVE_LEN), LiveOutcome::Queued);
+            assert_eq!(d.push_query(id, 2, QUERY_LEN), QueryOutcome::Queued);
+        }
+        assert_eq!(d.push_live(id, 3, LIVE_LEN), LiveOutcome::Queued);
+        d.send(id, &req(2, "status"));
+        let held = pools(2 * LIVE_LEN, QUERY_LEN);
+        let queued = d.server.hub().queued(id);
+        assert_eq!((queued.live, queued.query), (held.live, held.query));
+        assert!(queued.control > 0);
+        assert_eq!(d.server.hub().uid_pools(1000), held);
+        assert_eq!(d.server.hub().global_pools(), held);
+        let head = if query_first { QUERY_LEN } else { LIVE_LEN };
+        let offered = d.server.output(id, d.now).map(|[a, b]| a.len() + b.len());
+        assert_eq!(offered, Some(head));
+        if written > 0 {
+            d.server.wrote(id, written, d.now);
+            assert!(d.server.hub().head_partial(id));
+        }
+        id
+    }
+
+    type LoadedPath = fn(&mut Driver, ConnId);
+
+    fn loaded_finish(d: &mut Driver, id: ConnId) {
+        d.server.finish(id);
+    }
+
+    fn loaded_shutdown(d: &mut Driver, _id: ConnId) {
+        d.server.shutdown();
+    }
+
+    fn loaded_slow_client(d: &mut Driver, id: ConnId) {
+        d.tick(5_001 * MS);
+        assert_eq!(d.close_code(id), Some(Code::SlowClient));
+    }
+
+    fn loaded_eof_then_slow_client(d: &mut Driver, id: ConnId) {
+        d.eof(id);
+        assert_eq!(d.state(id), Some(State::Draining));
+        d.tick(5_001 * MS);
+        assert_eq!(d.close_code(id), Some(Code::SlowClient));
+    }
+
+    fn loaded_bad_frame(d: &mut Driver, id: ConnId) {
+        d.send(id, &req(0, "status"));
+        assert_eq!(d.close_code(id), Some(Code::BadFrame));
+    }
+
+    fn loaded_eof_inside_a_frame(d: &mut Driver, id: ConnId) {
+        d.send(id, &req(3, "status")[..5]);
+        d.eof(id);
+        assert!(d.server.is_closed(id));
+        assert_eq!(d.close_code(id), None);
+    }
+
+    #[test]
+    fn r22_pools_return_to_zero_with_real_frames_queued_on_every_close_path() {
+        let paths: [(&str, LoadedPath); 6] = [
+            ("driver finish mid-stream", loaded_finish),
+            ("shutdown", loaded_shutdown),
+            ("slow client from the hub", loaded_slow_client),
+            ("eof then slow client", loaded_eof_then_slow_client),
+            ("bad frame", loaded_bad_frame),
+            ("eof inside a frame", loaded_eof_inside_a_frame),
+        ];
+        for level in SERVED {
+            for query_first in [false, true] {
+                for written in [0usize, 10] {
+                    for &(name, path) in &paths {
+                        let mut d = Driver::new();
+                        let id = loaded(&mut d, level, query_first, written);
+                        path(&mut d, id);
+                        d.settle_all();
+                        assert_clean(&d, name);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn r22_a_closed_connection_keeps_only_its_pinned_head_in_the_pools_until_finish() {
+        for written in [0usize, 10] {
+            let mut d = Driver::new();
+            let id = loaded(&mut d, Level::Observe, false, written);
+            loaded_bad_frame(&mut d, id);
+            let head = pools(LIVE_LEN, 0);
+            assert_eq!(d.server.hub().queued(id), head);
+            assert_eq!(d.server.hub().uid_pools(1000), head);
+            assert_eq!(d.server.hub().global_pools(), head);
+            let has_final = d.server.conn(id).is_some_and(|conn| conn.has_final());
+            assert_eq!(has_final, written == 0);
+            d.settle_all();
+            assert_clean(&d, "bad frame with a pinned head");
+        }
+    }
+
+    #[test]
+    fn the_hub_uid_is_the_peers_stored_uid() {
+        let mut d = Driver::new();
+        let a = d.open(Level::Observe, 1000);
+        let b = d.open(Level::Observe, 1001);
+        assert_eq!(d.push_live(a, 1, 200), LiveOutcome::Queued);
+        assert_eq!(d.push_query(a, 2, 300), QueryOutcome::Queued);
+        assert_eq!(d.push_live(b, 1, 500), LiveOutcome::Queued);
+        assert_eq!(d.push_query(b, 2, 700), QueryOutcome::Queued);
+        assert_eq!(d.server.hub().uid_pools(1000), pools(200, 300));
+        assert_eq!(d.server.hub().uid_pools(1001), pools(500, 700));
+        assert_eq!(d.server.hub().uid_pools(0), Pools::default());
+        assert_eq!(d.server.hub().global_pools(), pools(700, 1_000));
+        assert_eq!(d.server.hub().queued(a), pools(200, 300));
+        d.server.finish(a);
+        assert_eq!(d.server.hub().uid_pools(1000), Pools::default());
+        assert_eq!(d.server.hub().uid_pools(1001), pools(500, 700));
+        assert_eq!(d.server.hub().global_pools(), pools(500, 700));
+        d.server.finish(b);
+        assert_clean(&d, "both finished");
+    }
+
     // ---- R20: timer order ----
 
     #[test]
@@ -890,6 +1158,40 @@ mod tests {
         assert!(a < c && c < e);
         assert_eq!(d.tick(5_001 * MS), vec![a, c, e]);
         assert_clean(&d, "ordered sweep");
+    }
+
+    /// A ready connection with a status reply queued and pinned at t=0 (nothing written): its
+    /// stall is due 5 s later.
+    fn ready_with_pinned_reply(d: &mut Driver) -> ConnId {
+        let id = ready_with_reply(d, Level::Observe);
+        let offered = d.server.output(id, d.now).map(|[a, b]| a.len() + b.len());
+        assert!(offered.is_some_and(|len| len > 0));
+        id
+    }
+
+    #[test]
+    fn r20_the_request_age_wins_over_a_stall_due_in_the_same_poll() {
+        let mut d = Driver::new();
+        let id = ready_with_pinned_reply(&mut d);
+        d.send(id, &req(3, "status")[..5]);
+        d.tick(5_001 * MS);
+        assert!(!d.server.hub().poll(5_001 * MS).is_empty());
+        assert_eq!(d.close_code(id), Some(Code::Deadline));
+        let last = d.server.take_final(id).expect("final");
+        assert!(text(&last).contains("deadline"));
+        assert!(!text(&last).contains("slow-client"));
+    }
+
+    #[test]
+    fn r20_the_stall_wins_when_the_request_age_is_not_yet_due() {
+        let mut d = Driver::new();
+        let id = ready_with_pinned_reply(&mut d);
+        d.now = 1_000 * MS;
+        d.send(id, &req(3, "status")[..5]);
+        d.tick(4_001 * MS);
+        assert_eq!(d.close_code(id), Some(Code::SlowClient));
+        let last = d.server.take_final(id).expect("final");
+        assert!(text(&last).contains("slow-client"));
     }
 
     // ---- shutdown ----
@@ -1025,8 +1327,241 @@ mod tests {
         assert_eq!(hub.global_live_bytes, 32 * 1024 * 1024);
         assert_eq!(hub.uid_query_bytes, 4 * 1024 * 1024);
         assert_eq!(hub.global_query_bytes, 16 * 1024 * 1024);
+        assert_eq!(hub.query_queue_bytes, 4 * 1024 * 1024);
         assert_eq!(hub.stall_ns, 5_000 * MS);
+        assert_eq!(hub.frame_completion_ns, 5_000 * MS);
         assert_eq!(limits.get(Level::Control), None);
+    }
+
+    #[test]
+    fn the_hub_caps_take_every_field_from_its_widest_level() {
+        let mut limits = ServerLimits::new();
+        limits.observe.client_queue_bytes = 100_000;
+        limits.operator.client_queue_bytes = 300_000;
+        limits.observer.client_queue_bytes = 200_000;
+        limits.observe.query_queue_bytes = 300_000;
+        limits.operator.query_queue_bytes = 100_000;
+        limits.observer.query_queue_bytes = 200_000;
+        limits.observe.control_queue_bytes = 100_000;
+        limits.operator.control_queue_bytes = 200_000;
+        limits.observer.control_queue_bytes = 300_000;
+        limits.observe.stall_ms = 8_000;
+        limits.operator.stall_ms = 7_000;
+        limits.observer.stall_ms = 9_000;
+        limits.observe.frame_completion_ms = 6_000;
+        limits.operator.frame_completion_ms = 8_000;
+        limits.observer.frame_completion_ms = 7_000;
+        let hub = limits.queue_limits();
+        assert_eq!(hub.client_queue_bytes, 300_000);
+        assert_eq!(hub.uid_live_bytes, 600_000);
+        assert_eq!(hub.global_live_bytes, 2_400_000);
+        assert_eq!(hub.query_queue_bytes, 300_000);
+        assert_eq!(hub.uid_query_bytes, 300_000);
+        assert_eq!(hub.global_query_bytes, 1_200_000);
+        assert_eq!(hub.control_queue_bytes, 300_000);
+        assert_eq!(hub.stall_ns, 9_000 * MS);
+        assert_eq!(hub.frame_completion_ns, 8_000 * MS);
+    }
+
+    #[test]
+    fn server_new_unifies_the_two_timers_because_the_hub_has_one_value() {
+        let mut limits = ServerLimits::new();
+        limits.observe.stall_ms = 4_000;
+        limits.operator.stall_ms = 6_000;
+        limits.observer.stall_ms = 5_000;
+        limits.observe.frame_completion_ms = 3_000;
+        limits.operator.frame_completion_ms = 2_000;
+        limits.observer.frame_completion_ms = 9_000;
+        let unified = limits.unified();
+        for level in SERVED {
+            let each = unified.get(level).expect("served");
+            assert_eq!(each.stall_ms, 6_000);
+            assert_eq!(each.frame_completion_ms, 9_000);
+            let mut given = *limits.get(level).expect("served");
+            given.stall_ms = 6_000;
+            given.frame_completion_ms = 9_000;
+            assert_eq!(*each, given);
+        }
+        let mut d = Driver::with(limits);
+        assert_eq!(d.server.limits(), &unified);
+        let id = d.open(Level::Observe, 1);
+        let mut input = client_prefix(1);
+        input.extend_from_slice(&req(1, "hello"));
+        d.send(id, &input);
+        d.pump(id, usize::MAX);
+        let hello = text(&d.take_out(id));
+        assert!(hello.contains(r#""stall_ms":6000"#));
+        assert!(hello.contains(r#""frame_completion_ms":9000"#));
+        d.send(id, &req(2, "status"));
+        d.tick(5_001 * MS);
+        assert_eq!(d.close_code(id), None);
+        d.tick(1_000 * MS);
+        assert_eq!(d.close_code(id), Some(Code::SlowClient));
+    }
+
+    // ---- R28: the control cap boundary ----
+
+    const BURST: u32 = 5;
+
+    fn burst() -> Vec<u8> {
+        let mut input = Vec::new();
+        for corr in 2..2 + BURST {
+            input.extend_from_slice(&req(corr, "status"));
+        }
+        input
+    }
+
+    fn set_control_cap(d: &mut Driver, level: Level, cap: u32) {
+        let limits = &mut d.server.limits;
+        match level {
+            Level::Observe => limits.observe.control_queue_bytes = cap,
+            Level::Operator => limits.operator.control_queue_bytes = cap,
+            Level::Observer => limits.observer.control_queue_bytes = cap,
+            Level::Control => {}
+        }
+    }
+
+    /// A ready connection of `level` with a control cap of `cap` (set after the hello reply
+    /// went out) that then receives the burst.
+    fn burst_at_cap(level: Level, cap: usize) -> (Driver, ConnId) {
+        let mut d = Driver::new();
+        let id = d.open(level, 1);
+        d.ready(id);
+        set_control_cap(&mut d, level, u32::try_from(cap).expect("cap"));
+        d.send(id, &burst());
+        (d, id)
+    }
+
+    #[test]
+    fn r28_the_control_cap_boundary_is_exact_at_every_level() {
+        for level in SERVED {
+            let (probe, probe_id) = burst_at_cap(level, 1 << 20);
+            let total = probe.server.hub().queued(probe_id).control;
+            let replies = usize::try_from(BURST).expect("burst");
+            assert!(total >= 12 * replies, "{level:?}: {total}");
+            assert_eq!(probe.close_code(probe_id), None);
+            let (mut at, id) = burst_at_cap(level, total);
+            assert_eq!(at.close_code(id), None, "{level:?}: at the cap");
+            assert_eq!(at.state(id), Some(State::Ready));
+            assert_eq!(at.server.hub().queued(id).control, total);
+            at.send(id, &req(2 + BURST, "status"));
+            let code = at.close_code(id);
+            assert_eq!(code, Some(Code::SlowClient), "{level:?}: one reply over");
+            at.settle_all();
+            assert_clean(&at, "over the cap");
+            let (mut under, id) = burst_at_cap(level, total - 1);
+            let code = under.close_code(id);
+            assert_eq!(code, Some(Code::SlowClient), "{level:?}: one byte under");
+            under.settle_all();
+            assert_clean(&under, "one byte under the cap");
+        }
+    }
+
+    // ---- hello and status pass the backend through ----
+
+    fn other_backend() -> FixedBackend {
+        let mut backend = FixedBackend::new();
+        backend.identity.server = String::from("other-probe-9");
+        backend.identity.boot_id = String::from("boot-xyz");
+        backend.identity.epoch = 42;
+        backend.identity.features = vec![String::from("peak_reset")];
+        backend.status.started_real_ns = 1_700_000_000_123;
+        backend.status.uptime_ms = 61_000;
+        backend.status.tick = TickInfo {
+            seq: 9,
+            last_mono_ns: 777,
+            scan_ms: 3,
+        };
+        backend.status.tiers = vec![TierInfo {
+            name: String::from("hot"),
+            step_ms: 1_000,
+            keep_s: 60,
+            bytes: 10,
+            cap_bytes: 20,
+        }];
+        backend
+    }
+
+    #[test]
+    fn hello_and_status_carry_the_backends_identity_and_status() {
+        let mut d = Driver::new();
+        *d.server.backend_mut() = other_backend();
+        let id = d.open(Level::Observe, 1);
+        d.send(id, &binary_script());
+        d.pump(id, usize::MAX);
+        let out = d.take_out(id);
+        let list = frames(&out[8..]);
+        assert_eq!(list.len(), 2);
+        let identity = r#""server":"other-probe-9","boot_id":"boot-xyz","epoch":42"#;
+        let hello = &list[0].2;
+        assert!(hello.contains(identity));
+        assert!(hello.contains(r#""features":["peak_reset"]"#));
+        let status = &list[1].2;
+        assert!(status.contains(identity));
+        let times = r#""started_real_ns":1700000000123,"uptime_ms":61000"#;
+        assert!(status.contains(times));
+        let tick = r#""tick":{"seq":9,"last_mono_ns":777,"scan_ms":3}"#;
+        assert!(status.contains(tick));
+        let name = r#""tiers":[{"name":"hot","step_ms":1000,"#;
+        let rest = r#""keep_s":60,"bytes":10,"cap_bytes":20}]"#;
+        assert!(status.contains(&format!("{name}{rest}")));
+    }
+
+    #[test]
+    fn status_counts_open_connections_while_a_closed_one_holds_its_slot_until_finish() {
+        let mut limits = ServerLimits::new();
+        limits.observe.max_connections = 2;
+        let mut d = Driver::with(limits);
+        let closing = d.open(Level::Observe, 1);
+        d.open(Level::Observe, 2);
+        let closed_operator = d.open(Level::Operator, 5);
+        let closed_observer = d.open(Level::Observer, 6);
+        let asker = d.open(Level::Operator, 1);
+        d.ready(asker);
+        for id in [closing, closed_operator, closed_observer] {
+            d.send(id, b"X");
+            assert!(d.server.is_closed(id));
+            assert!(d.server.conn(id).is_some_and(|conn| conn.has_final()));
+        }
+        d.send(asker, &req(2, "status"));
+        d.pump(asker, usize::MAX);
+        let out = d.take_out(asker);
+        let reply = frames(&out).pop().expect("reply").2;
+        let want = r#""clients":{"observe":1,"operator":1,"observer":0}"#;
+        assert!(reply.contains(want));
+        assert_eq!(d.server.count(Level::Observe), 2);
+        assert_eq!(d.server.count(Level::Operator), 2);
+        assert_eq!(d.server.count(Level::Observer), 1);
+        assert_eq!(d.try_open(Level::Observe, 3), Accept::Refused);
+        d.close_out(closing);
+        assert_eq!(d.server.count(Level::Observe), 1);
+        assert!(matches!(d.try_open(Level::Observe, 3), Accept::Accepted(_)));
+    }
+
+    #[test]
+    fn accessors_report_what_the_server_holds() {
+        assert_eq!(Accept::Accepted(ConnId(3)).id(), Some(ConnId(3)));
+        assert_eq!(Accept::Refused.id(), None);
+        let defaults = ServerLimits::default();
+        assert_eq!(defaults, ServerLimits::new());
+        assert_eq!(defaults.observe, Limits::for_level(Level::Observe));
+        assert_eq!(defaults.operator, Limits::for_level(Level::Operator));
+        assert_eq!(defaults.observer, Limits::for_level(Level::Observer));
+        assert_eq!(defaults.get(Level::Operator), Some(&defaults.operator));
+        let mut d = Driver::new();
+        assert_eq!(d.server.limits(), &defaults);
+        assert_eq!(d.server.backend().identity.epoch, 1);
+        d.server.backend_mut().identity.epoch = 5;
+        assert_eq!(d.server.backend().identity.epoch, 5);
+        let a = d.open(Level::Observe, 1);
+        let b = d.open(Level::Operator, 2);
+        assert_eq!(d.server.ids(), vec![a, b]);
+        assert_eq!(d.server.conn_count(), 2);
+        assert_eq!(d.server.conn(b).map(|conn| conn.id()), Some(b));
+        assert_eq!(d.server.conn(ConnId(99)).map(|conn| conn.id()), None);
+        assert_eq!(d.server.hub().queued(a), Pools::default());
+        assert_eq!(d.server.uid_entries(), 2);
+        assert_eq!(d.server.uid_count(Level::Operator, 2), 1);
     }
 
     // ---- hostile runs ----
@@ -1107,6 +1642,7 @@ mod tests {
                     }
                     if let Accept::Accepted(id) = d.server.accept(level, peer, d.now) {
                         d.opened.push(id);
+                        d.note_uid(uid);
                         slots[slot] = Some(id);
                     }
                 }
