@@ -3885,4 +3885,88 @@ mod tests {
             Err(ProtoError::TrailingBytes { extra: 8 })
         );
     }
+
+    #[test]
+    fn a_bad_subject_is_judged_before_a_bad_column() {
+        // WIRE.md 3.10 cross-section order: generation, subject, rows, columns, mask. Both
+        // defects are present and the subject is the one named; without it the column is.
+        let mut block = subject_block();
+        block.subject = Some(40);
+        block.columns[0].kind = MetricKind::Gauge; // the dictionary says counter
+        assert_eq!(
+            decode_block(&encode_block(&block).expect("encode")),
+            Err(ProtoError::DanglingDictionaryRef { index: 40, len: 4 })
+        );
+        block.subject = Some(1);
+        assert_eq!(
+            decode_block(&encode_block(&block).expect("encode")),
+            Err(ProtoError::ColumnKindMismatch {
+                index: 2,
+                declared: MetricKind::Gauge as u8,
+                dictionary: MetricKind::Counter as u8,
+            })
+        );
+    }
+
+    #[test]
+    fn missing_rows_and_time_is_judged_before_a_subject_without_time() {
+        // A subject, a column and a declared row count, with neither rows nor time: both
+        // `no-rows-or-time` and `subject-without-time` apply, and the first is the one named.
+        let block = live_block();
+        let encoded = dictionary().encode().expect("dict");
+        let table = Section::new(SectionKind::Dictionary, encoded);
+        let subject = Section::new(SectionKind::Subject, super::encode_subject_body(0));
+        let body = super::encode_column_body(&block.columns[0]).expect("column");
+        let column = Section::new(SectionKind::Column, body);
+        let sections = [header_section(), table, subject, column];
+        let bytes = encode_frame(FrameType::Block, 1, &sections).expect("encode");
+        assert_eq!(
+            decode_block(&bytes),
+            Err(ProtoError::NoRowsOrTime { n_rows: 2 })
+        );
+    }
+
+    #[test]
+    fn the_frame_header_fixed_fields_are_judged_in_wire_order() {
+        // The type byte, then the flags, then the reserved word: each is judged as soon as it
+        // is read, so a header with several defects names the first one on the wire.
+        let mut typed = header_declaring(12);
+        typed[4] = 9;
+        typed[5] = 0x80;
+        typed[6] = 1;
+        assert_eq!(
+            FrameHeader::parse(&typed),
+            Err(ProtoError::UnknownFrameType(9))
+        );
+        let mut flagged = header_declaring(12);
+        flagged[5] = 0x80;
+        flagged[6] = 1;
+        assert_eq!(
+            FrameHeader::parse(&flagged),
+            Err(ProtoError::UnknownFrameFlags(0x80))
+        );
+        // SECTIONED on a REQ is an unknown flag, and it is judged before the reserved word.
+        let mut request = header_declaring(12);
+        request[4] = FrameType::Req.code();
+        request[6] = 1;
+        assert_eq!(
+            FrameHeader::parse(&request),
+            Err(ProtoError::UnknownFrameFlags(super::FLAG_SECTIONED))
+        );
+    }
+
+    #[test]
+    fn a_directory_that_exactly_fills_the_frame_passes_the_byte_count_check() {
+        // 12 + 4 header bytes and one 8-byte entry, no body: the directory byte count equals
+        // what is present, so the directory is read and the unknown kind at entry 0 is what
+        // is refused, not a truncation.
+        let mut bytes = header_declaring(24).to_vec();
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&[9, 0, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            decode_block(&bytes),
+            Err(ProtoError::SectionOrder { index: 0, kind: 9 })
+        );
+    }
 }

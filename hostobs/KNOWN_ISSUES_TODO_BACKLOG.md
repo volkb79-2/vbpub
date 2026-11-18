@@ -981,9 +981,10 @@ is in the mask of every column of the block, so `mean` over a counter decodes as
 **FIXED (P2a1).** After the reference checks, both decoders refuse a history block with an
 `agg` outside the permitted mask of any of its columns as `aggregation-not-permitted` (the error
 names the metric's dictionary index and the aggregation code); counters permit raw, last and
-delta, gauges last, mean, min and max, states last. The check runs for an in-frame dictionary and
-for a held one. The fixtures `history-agg-not-permitted` (`mean` over a counter) and
-`history-gauge-aggs` (every gauge aggregation) pin it, and `history-buckets`, `history-five-buckets`
+delta, gauges last, mean, min and max, states last. The mask is the column's own kind's, so the check
+runs for an in-frame dictionary, a held one and none at all, and `encode_block` refuses it too. The
+fixtures `history-agg-not-permitted` (`mean` over a counter), `history-gauge-raw`, `history-state-delta`,
+`aggregation-not-permitted-held` and `history-gauge-aggs` (every gauge aggregation) pin it, and `history-buckets`, `history-five-buckets`
 were regenerated with `last` buckets, because their mixed counter and gauge columns permit no other
 aggregation (the n-bucket length pin is unchanged). Rust tests cover all six aggregations against
 a counter, a gauge and a state column.
@@ -1002,7 +1003,8 @@ blocks only, `subject-without-time` otherwise) per WIRE.md §3.8; `PROTO_MINOR =
 `history-subject` and `subject-in-live-block` fixtures in both languages.
 
 **FIXED (P2a1; the time-length half landed in the P0 bug fold-in).** `SectionKind::Subject`
-(kind 6, version 1, directory required flag written and not enforced on decode, body
+(kind 6, version 1, directory required flag written and enforced on decode (a clear flag on the
+subject or the header is `unknown-section-flags`), body
 `u32 ent | u32 0`, canonical rank between the dictionary and the rows/time sections),
 `Block::subject`, `encode_subject_body` and `PROTO_MINOR = 1` exist in Rust, and the Python
 reference does the same. A non-zero reserved word is `unknown-section-flags` (section 6), a subject

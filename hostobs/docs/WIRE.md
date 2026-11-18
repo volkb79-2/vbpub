@@ -117,9 +117,14 @@ Two decoder rules make the layout guarantees hold for **received** frames, not o
 Hence **every body starts at a frame offset ≡ 0 (mod 8)**, a BLOCK's `len` is a multiple of 8, the
 header body sits at `16 + 8·n_sec`, and the frame ends exactly after the last body (`trailing-bytes`
 otherwise). Both decoders enforce the two rules (`HOB-51`, §13 V-11; fixtures
-`unaligned-optional-section` and `optional-section-before-header`). A third decoder rule: the
-directory's `8·n_sec` bytes must be present before storage is reserved for them (`truncated`, context
-"block directory"; `HOB-50`). In `fixtures/wire/live-block.bin` (344 B, 5
+`unaligned-optional-section` and `optional-section-before-header`). Three more decoder rules:
+the directory's `8·n_sec` bytes must be present before storage is reserved for them (`truncated`,
+context "block directory"; `HOB-50`); the header and the subject directory entries MUST carry the
+required flag (bit 0), and a clear flag is `unknown-section-flags` with `kind_code` the section's kind
+and `flags` the entry's flag byte (fixtures `header-required-flag-clear`,
+`subject-required-flag-clear`); only the first header section's body is decoded, so a second header is
+`duplicate-section` whatever its body holds (fixture `duplicate-header-bad-second-body`). In
+`fixtures/wire/live-block.bin` (344 B, 5
 sections: header, dictionary, rows, 2 columns) the bodies start at offset 56 and `dropped` sits at 128.
 
 3.2 **Sections** (version 1 each; a known kind with another version is refused even when optional,
@@ -152,17 +157,21 @@ this client since its previous pinned block (saturating, §5.3). History blocks:
 3.5 **Column body (kind 3)**: u32 `metric`@0 (MUST name a Metric), u8 `type`@4 (1 u64, 2 i64, 3 f64),
 u8 `kind`@5 (0 gauge, 1 counter, 2 state; MUST equal the dictionary's kind, `column-kind-mismatch`),
 u16 reserved@6 = 0 (`column-reserved`), `n_rows × 8 B` values @8, `n_rows × u8` quality @`8 + 8·n_rows`,
-zero pad. Length exactly `align8(8 + 9·n_rows)`. A row whose quality is not `ok` keeps its 8 bytes
-(any content, e.g. NaN bits) and they MUST NOT be read as a measurement.
+zero pad (a non-zero pad byte is `non-zero-reserved`, `value` the first such byte; the same holds for
+the pad of the time body and the dictionary body). Length exactly `align8(8 + 9·n_rows)`. A row whose
+quality is not `ok` keeps its 8 bytes (any content, e.g. NaN bits) and they MUST NOT be read as a
+measurement.
 
 3.6 **Time body (kind 4, history)**: `n × i64 bucket_real_ns` @0, `n × u32 covered_ms` @8n,
 `n × u16 samples` @12n, `n × u8 agg` @14n (0 raw, 1 last, 2 delta, 3 mean, 4 min, 5 max), zero pad;
-`n = n_rows`. Length exactly **`align8(15·n)`** (`TIME_BUCKET_BYTES = 15`). This was always the
-section's layout: the encoder wrote 15 bytes per bucket while `time_body_len` computed `align8(14·n)`,
-so no frame with `n ≥ 4` could ever round-trip; the P0 bug fold-in fixes the length in both languages
-with fixture `history-five-buckets` and no minor bump (§13 V-1). Every bucket's `agg` MUST be permitted
+`n = n_rows`. Length exactly **`align8(15·n)`** (`TIME_BUCKET_BYTES = 15`; five buckets are 80
+bytes, fixture `history-five-buckets`, §13 V-1; layout version 1, no minor). The `agg` bytes are
+judged (`unknown-aggregation`) before the pad (`non-zero-reserved`), so a body with both defects is
+`unknown-aggregation` (fixture `time-bad-agg-and-pad`). Every bucket's `agg` MUST be permitted
 by every column's metric mask (§3.7) — counters raw/last/delta, gauges last/mean/min/max, state last
-(`aggregation-not-permitted`, `HOB-47`). Gauge min/max/mean are separate history blocks of the same
+(`aggregation-not-permitted`, `HOB-47`). The mask is the column's own kind's, so the check needs no
+dictionary: it runs for an in-frame dictionary, a held one and none at all, and the encoders refuse
+it too. Gauge min/max/mean are separate history blocks of the same
 subject, one aggregation per block, packed by §4.9 (this is how `HOB-5` is served, no wire change).
 
 3.7 **Dictionary body (kind 5)** (`dict.rs` `encode`/`decode`): u32 `generation`@0, u32 `count`@4
@@ -173,26 +182,41 @@ derived mask; label: u8 kind, u8 source; free: none), then `text_len` bytes of U
 < 0x20 or 0x7F. Entries are unaligned. Entry *i* is index *i*. Identity is the entity's `inc`, the
 metric's name, the label's `(kind, source, text)`, the free entry's text; a repeated identity is
 `duplicate-dictionary-entry` **whatever the other fields hold** (a metric name repeated with other
-facts, an `inc` repeated with another label, an exact repeat). Both decoders do exactly this: the
-Python reference always did, and Rust `Dictionary::decode` now maps the `conflicting-column` that
-`intern` reports for a metric name repeated with other facts to `duplicate-dictionary-entry` at that
-entry's index (`HOB-52`, §13 V-12; `intern` itself keeps `conflicting-column` for a live table).
-Code tables: `dict.rs` lines 48-155.
+facts, an `inc` repeated with another label, an exact repeat; `HOB-52`, §13 V-12); Rust
+`Dictionary::decode` maps the `conflicting-column` that `intern` reports for a metric name repeated
+with other facts to `duplicate-dictionary-entry` at that entry's index (`intern` itself keeps
+`conflicting-column` for a live table). Both decoders judge one entry in this order, the Rust cursor's:
+`dictionary-entry-reserved`, `dictionary-entry-too-long`, `unknown-dictionary-kind`, the metric's
+unit, kind (`unknown-column-kind`), scope and source codes (`dictionary-entry-unknown-code`), the mask
+(`dictionary-entry-mask`), the text (`truncated` when the body ends first, `dictionary-entry-not-utf8`),
+a repeated identity (`duplicate-dictionary-entry`), then control bytes in the text
+(`dictionary-entry-control`, `index` and byte `offset`); the pad is `non-zero-reserved` and a longer body
+`trailing-bytes`. A count above 65,536 is `dictionary-too-large` before any entry is read, and every
+short read is `truncated` with context "dictionary section": no hostile body raises anything but a
+typed refusal in either language (fixtures `dictionary-count-too-large`, `dictionary-entry-control`,
+`dictionary-text-past-body`, `dictionary-invalid-utf8`, `dictionary-short-entry-header`,
+`dictionary-nonzero-pad`). Code tables: `dict.rs` lines 48-155.
 
 3.8 **Subject body (kind 6, ver 1, minor ≥ 1, required flag set)**: u32 `ent`@0 (dictionary index,
 MUST name an Entity), u32 reserved@4 = 0. Allowed only with a time section (`subject-without-time`);
 it names the one incarnation a history block describes. A minor-0 reader refuses it, which is correct:
-a history block it cannot attribute must not be read. (Both codecs implement it since P2a1, `HOB-48`.)
-The directory's required flag is written by the encoders and is not enforced on decode.
+a history block it cannot attribute must not be read. Both codecs implement it (`HOB-48`). The
+directory's required flag is written by the encoders and enforced on decode: a clear flag is
+`unknown-section-flags` (`kind_code` 6, `flags` the entry's flag byte, fixture
+`subject-required-flag-clear`). A body that is not 8 bytes is `section-length`, a non-zero reserved
+word `unknown-section-flags` (`flags` the word), a subject past the dictionary `dangling-dictionary-ref`,
+one that is not an entity `row-reference-not-entity` (fixtures `subject-wrong-length`,
+`subject-reserved-word`, `subject-dangling`, `subject-not-entity`). The encoder cannot check that the
+subject names an entity when the block carries no dictionary, so only the decoder does.
 
 3.9 **Quality** (`quality.rs`, `fixtures/wire/quality.json`): 0 ok, 1 absent, 2 unreadable, 3 stale,
 4 reset, 5 not-sampled, 6 unsupported, 7 unknown-topology; any other byte is `unknown-quality`. Only 0
 is a measurement. Codes are append-only and announced in `hello.quality_codes`.
 
 3.10 **Decoder error kinds** are the `ProtoError::kind()` names (`error.rs` lines 478-530), e.g.
-`truncated`, `oversized-frame`, `section-order`, `stale-dictionary-generation`; P2a1 added
-`aggregation-not-permitted` and `subject-without-time` (44 kinds in all) and the stream layer adds
-`generation-regressed`. They are local outcomes
+`truncated`, `oversized-frame`, `section-order`, `stale-dictionary-generation`,
+`aggregation-not-permitted`, `subject-without-time` (44 kinds in all; the stream layer adds
+`generation-regressed`). They are local outcomes
 (fixtures `expect_error.kind`), never sent on the wire; §5.2 maps the reader's ones to wire codes.
 There are exactly two vocabularies: wire codes (§10, sent) and decoder kinds (local). Client APIs
 raise one of them (P3 `ServerError(code)` / `WireError(kind)`, plus `ConnectionLost` for EOF or reset);
@@ -210,13 +234,40 @@ unknown kind at entry 0 is reported (`index` 0, its `kind_code`). `fixtures/wire
 kinds `[5, 1, 2, 3, 3]`, read from the `.bin`) therefore keeps its pinned `index: 1, kind_code: 1`.
 `SECTIONED` on a frame type other than BLOCK is one of the fixed fields (`unknown-frame-flags`,
 `bad-frame` on the wire), so it is judged before `not-a-block`. Both decoders follow this order
-(`HOB-53`, §13 V-13). Three existing fixtures changed with P2a1, and only for the reasons below:
-`block-as-req` was regenerated with `SECTIONED` cleared (byte 5 only; with the flag set the same
-bytes are now `unknown-frame-flags`), and `history-buckets` and `history-five-buckets` were
-regenerated with every bucket `last`, because their counter and gauge columns together permit no
-other aggregation (§3.6, `HOB-47`). The 15-byte-per-bucket length pin of `history-five-buckets` (80
-bytes for five buckets, §13 V-1) is unchanged; the other 26 of the 29 pre-existing fixtures
-regenerate byte-identically.
+(`HOB-53`, §13 V-13).
+
+**Fixed fields are read in wire order** (length word, type byte, flags byte, reserved word, `corr`) and
+each is judged as soon as its bytes exist: a 5 to 11 byte buffer whose type byte is unknown is
+`unknown-frame-type`, not `truncated`; a buffer too short for the next field is `truncated`, context
+"frame header" (fixture `truncated-unknown-type`). A header with an unknown type, bad flags and a
+reserved word names the type; bad flags and a reserved word name the flags.
+
+**Pass structure** (one pass is finished before the next starts, and the first failure ends the decode):
+1. frame header fixed fields, `len` bounds;
+2. `not-a-block`, buffer length (`truncated`, `trailing-bytes`), `SECTIONED` (`missing-section`);
+3. directory header (`truncated`, `section-reserved`), the directory's byte count (`truncated`, context
+   "block directory", need `8·n_sec`, have the bytes left; an exact fit passes), then the entries;
+4. every entry's `len` multiple of 8 (`section-length`), the rank rule and then entry 0
+   (`section-order`);
+5. body bounds: bodies laid end to end (`truncated`, context "section body"), then `trailing-bytes`;
+6. directory entries in order: flags (`unknown-section-flags` for a bit other than bit 0), unknown kind
+   (`unsupported-required-section` or skipped), version (`unsupported-section-version`), the required
+   flag of the header and the subject (`unknown-section-flags`), and the **first** header's body
+   (`section-length`, `unknown-section-flags` for its flags word); no header is `missing-section`;
+7. bodies in directory order: a repeated single section (`duplicate-section`) before its body, then the
+   body's own refusals (rows, time, column, dictionary, subject), `conflicting-column`;
+8. cross-section checks: `rows-and-time`, `no-rows-or-time`, `subject-without-time`;
+9. with a dictionary in force (in the frame, else the held one): generation
+   (`stale-dictionary-generation`), the subject (`dangling-dictionary-ref`,
+   `row-reference-not-entity`), each row, each column (`dangling-dictionary-ref`,
+   `column-reference-not-metric`, `column-kind-mismatch`);
+10. every bucket against every column's mask (`aggregation-not-permitted`), with or without a
+    dictionary.
+
+**A bare block with nothing held** (no in-frame dictionary and `held = None`) is judged by the frame
+rules (passes 1 to 8) and by pass 10, whose mask is the column's own kind's. It has no generation or
+reference judgement: that belongs to the stream layer, which always has a held dictionary or knows it
+has none (`HOB-54`, §6.1).
 
 ## 4. Requests and replies
 
@@ -557,7 +608,11 @@ unknown before the first byte, so no reply could be framed.
 
 6.1 **Client side: a dictionary is held per stream** = `(connection, corr)`. A BLOCK without a
 dictionary section is decoded against the stream's held dictionary and its rows/columns are checked
-against it exactly as against an in-frame one (`HOB-46`).
+against it exactly as against an in-frame one (`HOB-46`; `decode_block_with(bytes, held)` and Python
+`decode_frame(data, held)`). The codec judges only what it is given: with `held = None` and no
+in-frame dictionary it makes no generation or reference check (§3.10), and the stream layer is what
+supplies the held dictionary, treats "nothing held" as `stale-dictionary-generation` and enforces the
+rules below (`HOB-54`).
 6.2 **Server side: a generation counter belongs to the producer of the encoded bytes.** A live
 selection stream (one per distinct selection, §4.2, shared by every subscriber, §5.3) owns one
 dictionary and one counter: it starts at 1 when the selection stream is created and increases by one on
@@ -721,9 +776,8 @@ peer that negotiated `< m`.
 unknown version is refused, `frame.rs` `decode_block`). Unknown optional sections are skipped by
 `len`; unknown required ones are refused, surfaced to the client caller as `unsupported-section`.
 9.3 A major change changes the frame grammar; only the 8-byte prefix survives it.
-9.4 Minor 1 = kind 6 `subject` (and `series_batch`, which needs it). `PROTO_MINOR` is 1 since
-`HOB-48`'s subject half (P2a1). The §3.6 time length is not a minor: it is the layout version 1 always
-had, fixed as a bug in P0 (§13 V-1).
+9.4 Minor 1 = kind 6 `subject` (and `series_batch`, which needs it); `PROTO_MINOR` is 1 (`HOB-48`). The
+§3.6 time length is not a minor: it is layout version 1 (§13 V-1).
 
 ## 10. Wire error codes (closed list, minor 0 + 1)
 
@@ -749,24 +803,47 @@ are parsed only after the frame is complete and bounded; JSON nesting depth ≤ 
 Python `python/reference/hostobs_wire_ref.py`; both must reproduce `.json` or `expect_error`):
 `live-block`, `history-buckets`, `empty-selection`, `all-quality-codes`, `u64-boundaries`,
 `unicode-dictionary`, `unknown-optional-section` (decode ok); `bad-metric-mask`, `bad-quality-code`,
-`block-as-req`, `column-kind-mismatch`, `column-references-entity`, `column-reserved`,
-`dangling-dictionary-ref`, `duplicate-dictionary-entry`, `empty-rows-and-time`,
-`future-section-version`, `generation-mismatch`, `no-rows-or-time`, `non-zero-reserved`,
-`oversized-frame`, `required-section-refused`, `row-references-metric`, `section-order`,
-`truncated-directory`, `truncated-frame` (named error). The P3 client must pass all of them too.
+`block-as-req`, `block-without-directory`, `column-kind-mismatch`, `column-references-entity`,
+`column-reserved`, `dangling-dictionary-ref`, `duplicate-dictionary-entry`, `empty-rows-and-time`,
+`frame-length-below-header`, `future-section-version`, `generation-mismatch`, `no-rows-or-time`,
+`non-zero-reserved`, `oversized-frame`, `required-section-refused`, `row-references-metric`,
+`section-order`, `truncated-directory`, `truncated-frame` (named error). The P3 client must pass all of
+them too.
 
-11.3 **New block cases** (P2a1 added the 12 cases below, except `history-five-buckets`, from the
-Python reference encoder; Rust and Python agree, `fixtures/wire` holds 41 cases: 11 valid, 30
-refusals). A case with a top-level `"held": {"generation", "entries"}` key is decoded against that
-held dictionary (`decode_block_with(bytes, Some(held))`, Python `decode_frame(data, held)`), in the
-same entry form as `frame.dictionary`; every other case is decoded with `held = None`. P2a1
-regenerated `history-buckets`, `history-five-buckets` (every bucket `last`, §3.6) and `block-as-req`
-(`SECTIONED` cleared), see §3.10.
+11.3 **New block cases** (bytes from the Python reference encoder, Rust and Python agree;
+`fixtures/wire` holds 68 cases: 11 valid, 57 refusals, the lists of §11.2 and below).
+`history-buckets` and `history-five-buckets` carry `last` buckets only, because their counter and gauge
+columns together permit no other aggregation (§3.6); `block-as-req` has `SECTIONED` clear (§3.10). A
+case with a top-level `"held": {"generation", "entries"}` key is decoded against that held dictionary
+(`decode_block_with(bytes, Some(held))`, Python `decode_frame(data, held)`), in the same entry form as
+`frame.dictionary`; every other case is decoded with `held = None`.
 
 | Case | Purpose | Expected |
 |---|---|---|
-| `history-five-buckets` | §3.6 length `align8(15·5) = 80`; **added by P0**, P2 does not re-add it; regenerated by P2a1 with `last` buckets | ok |
-| `history-gauge-aggs` | gauge-only history block, `mean`, `min`, `max` and `last` buckets, no subject (added by P2a1) | ok |
+| `history-five-buckets` | §3.6 length `align8(15·5) = 80` | ok |
+| `history-gauge-aggs` | gauge-only history block, `mean`, `min`, `max` and `last` buckets, no subject | ok |
+| `duplicate-header-bad-second-body` | a second header whose flags word is 1 | `duplicate-section` (kind 1) |
+| `column-nonzero-pad`, `time-nonzero-pad`, `dictionary-nonzero-pad` | pad byte 1 | `non-zero-reserved` (value 1) |
+| `time-bad-agg-and-pad` | agg byte 9 and a pad byte 1 | `unknown-aggregation` (code 9) |
+| `dictionary-count-too-large` | count 65,537 | `dictionary-too-large` |
+| `dictionary-entry-control` | text byte 0x01 | `dictionary-entry-control` (index 0, offset 0) |
+| `dictionary-text-past-body` | text length 200 past the body | `truncated` (dictionary section) |
+| `dictionary-invalid-utf8` | text byte 0xFF | `dictionary-entry-not-utf8` |
+| `dictionary-short-entry-header` | count 5, four entries, body ends in the fifth header | `truncated` (dictionary section) |
+| `truncated-unknown-type` | 5 bytes, type byte 9 | `unknown-frame-type` |
+| `header-required-flag-clear`, `subject-required-flag-clear` | entry flags 0 | `unknown-section-flags` (kind 1, kind 6) |
+| `unknown-section-flags-directory` | a column entry with flags 2 | `unknown-section-flags` (kind 3) |
+| `unknown-section-flags-header` | header flags word 1 | `unknown-section-flags` (kind 1, flags 1) |
+| `section-reserved` | directory reserved word 1 | `section-reserved` |
+| `missing-header` | no header in the directory | `missing-section` |
+| `duplicate-section` | two dictionary sections | `duplicate-section` (kind 5) |
+| `conflicting-column` | metric 2 twice | `conflicting-column` |
+| `subject-wrong-length` | subject body 16 bytes | `section-length` (declared 16, expected 8) |
+| `subject-reserved-word` | subject reserved word 1 | `unknown-section-flags` (kind 6, flags 1) |
+| `subject-dangling`, `subject-not-entity` | subject 99, subject 1 (a metric) | `dangling-dictionary-ref`, `row-reference-not-entity` |
+| `subject-stale-generation-held` | bare history block, `dict_gen` 2, `held` generation 3 | `stale-dictionary-generation` |
+| `aggregation-not-permitted-held` | bare block, `raw` over a gauge, `held` generation 2 | `aggregation-not-permitted` |
+| `history-gauge-raw`, `history-state-delta` | `raw` over a gauge, `delta` over a state | `aggregation-not-permitted` |
 | `history-subject` | kind 6 with time, counter column with `raw`, `last`, `delta` buckets | ok |
 | `unaligned-optional-section` | unknown optional kind, `len = 5`, last | `section-length` |
 | `optional-section-before-header` | unknown optional kind, `len = 8`, directory entry 0 | `section-order` |

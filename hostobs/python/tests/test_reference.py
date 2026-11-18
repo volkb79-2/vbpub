@@ -49,12 +49,85 @@ MEM_CURRENT_FACTS = {
 class WireFixtures(unittest.TestCase):
     def test_every_fixture_round_trips_in_the_reference_codec(self):
         cases = hostobs_wire_ref.load_cases(FIXTURES)
-        self.assertEqual(len(cases), 41, "the fixture case list is part of the contract")
+        self.assertEqual(len(cases), 68, "the fixture case list is part of the contract")
         valid = [path.stem for path, spec, _data in cases if "expect_error" not in spec]
         self.assertEqual(len(valid), 11)
         for spec_path, spec, data in cases:
             with self.subTest(case=spec_path.stem):
                 hostobs_wire_ref.check_case(spec, data)
+
+    def test_every_hostile_dictionary_body_is_a_wire_error_with_the_rust_kind(self):
+        # Each body is hostile in exactly one way. The reference names the refusal Rust
+        # `Dictionary::decode` names, and no struct.error or UnicodeDecodeError escapes.
+        import struct  # noqa: PLC0415
+
+        def body(entries: bytes = b"", count: int = 1) -> bytes:
+            raw = struct.pack("<II", 1, count) + entries
+            return raw + b"\x00" * (-len(raw) % 8)
+
+        def free(text: bytes, flags: int = 0, kind: int = 3, declared: int | None = None) -> bytes:
+            return struct.pack("<BBH", kind, flags, len(text) if declared is None else declared) + text
+
+        def entity(text: bytes, inc: int = 7) -> bytes:
+            return struct.pack("<BBHQ", 0, 0, len(text), inc) + text
+
+        def metric(unit: int, kind: int, scope: int, source: int, mask: int) -> bytes:
+            return struct.pack("<BBHBBBBH", 1, 0, 1, unit, kind, scope, source, mask) + b"m"
+
+        gauge_mask = hostobs_wire_ref.AGGREGATION_MASKS["gauge"]
+        padded_bad = struct.pack("<II", 1, 1) + free(b"abc")
+        cases = [
+            ("empty body", b"", "truncated"),
+            ("a count past the bound", body(count=65_537), "dictionary-too-large"),
+            ("no entries for the count", body(count=2), "truncated"),
+            ("a short entry header", struct.pack("<II", 1, 1) + b"\x03", "truncated"),
+            ("reserved flags", body(free(b"", flags=1)), "dictionary-entry-reserved"),
+            ("text too long", body(free(b"", declared=257)), "dictionary-entry-too-long"),
+            ("unknown kind", body(free(b"", kind=9)), "unknown-dictionary-kind"),
+            ("text past the body", body(free(b"", declared=200)), "truncated"),
+            ("a control byte", body(free(b"\x01")), "dictionary-entry-control"),
+            ("a delete byte", body(free(b"\x7f")), "dictionary-entry-control"),
+            ("invalid utf-8", body(free(b"\xff")), "dictionary-entry-not-utf8"),
+            ("a short entity", body(struct.pack("<BBH", 0, 0, 0) + b"\x00" * 4), "truncated"),
+            ("an unknown unit", body(metric(99, 0, 0, 0, gauge_mask)), "dictionary-entry-unknown-code"),
+            ("an unknown metric kind", body(metric(0, 9, 0, 0, gauge_mask)), "unknown-column-kind"),
+            ("an unknown scope", body(metric(0, 0, 99, 0, gauge_mask)), "dictionary-entry-unknown-code"),
+            ("an unknown source", body(metric(0, 0, 0, 99, gauge_mask)), "dictionary-entry-unknown-code"),
+            ("a wrong mask", body(metric(0, 0, 0, 0, 0)), "dictionary-entry-mask"),
+            ("a short metric", struct.pack("<II", 1, 1) + struct.pack("<BBHBB", 1, 0, 1, 0, 0), "truncated"),
+            ("a non-zero pad byte", padded_bad + b"\x01" + b"\x00" * 4, "non-zero-reserved"),
+            ("a missing pad", padded_bad, "truncated"),
+            ("trailing bytes", body(free(b"abc")) + b"\x00" * 8, "trailing-bytes"),
+            ("a repeated identity before its control byte", body(entity(b"a") + entity(b"b\x01"), 2), "duplicate-dictionary-entry"),
+        ]
+        for label, hostile, kind in cases:
+            with self.subTest(label):
+                self.assertEqual(self._refusal_of_dictionary(hostile)["kind"], kind)
+
+    def _refusal_of_dictionary(self, body):
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_dictionary(body)
+        return caught.exception.as_dict()
+
+    def test_random_mutations_of_every_fixture_only_ever_raise_wire_errors(self):
+        # Deterministic: a fixed seed, byte overwrites and truncations. Anything but a WireError
+        # (a struct.error, an IndexError, a UnicodeDecodeError) escapes and fails the test.
+        import random  # noqa: PLC0415
+
+        rng = random.Random(20261118)
+        for spec_path, spec, data in hostobs_wire_ref.load_cases(FIXTURES):
+            held = spec.get("held")
+            for _ in range(150):
+                mutated = bytearray(data)
+                for _ in range(rng.randint(1, 4)):
+                    mutated[rng.randrange(len(mutated))] = rng.randrange(256)
+                if rng.random() < 0.2:
+                    del mutated[rng.randrange(len(mutated) + 1) :]
+                with self.subTest(case=spec_path.stem):
+                    try:
+                        hostobs_wire_ref.decode_frame(bytes(mutated), held)
+                    except hostobs_wire_ref.WireError:
+                        pass
 
     def _spec(self, case):
         return json.loads((FIXTURES / f"{case}.json").read_text(encoding="utf-8"))
