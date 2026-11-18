@@ -2562,9 +2562,17 @@ mod tests {
         // quarantined file of this tier, so none is counted, evicted or deleted, even under a
         // cap that any counted byte would exceed.
         let temp = TempDir::new("q-foreign");
+        // A real history segment of this tier, so two look-alikes carry a header that *is* this
+        // tier's corpus: only their names disqualify them.
+        let mut seed = tier(&temp, 3600, 0);
+        seed.append(&job(0, 16), 1, 1).expect("append");
+        seed.seal_open_segment().expect("seal");
+        drop(seed);
+        let valid = temp.read_file("hot-0-0.seg");
+        temp.remove("hot-0-0.seg");
         temp.write_file("hot-5-5.seg.corrupt", b"no header at all");
-        temp.write_file("hot-x-1.seg.corrupt", b"not a segment name");
-        temp.write_file("other-0-0.seg.corrupt", b"names another tier");
+        temp.write_file("hot-x-1.seg.corrupt", &valid);
+        temp.write_file("other-0-0.seg.corrupt", &valid);
         temp.write_file("hot-6-6.seg.corrupt", EVENTS_FIXTURE);
         temp.mkdir("hot-7-7.seg.corrupt");
         let mut tier = tier_with_cap(&temp, 3600, 1);
