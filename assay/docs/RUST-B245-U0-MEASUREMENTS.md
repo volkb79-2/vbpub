@@ -115,7 +115,8 @@ First hostobs run (B245 U8b `assay-r2`, hand-run 2026-11-18, v1001, commit `3076
 `--base 7835ec25a`, run `rgw-assay-r2-20261118T150203-v1001`): `R0 PASS`, `R2
 INCONCLUSIVE NO_MUTANTS`, assay exit 5 (run-gate lane `FAIL` exit 5 by the fail-closed
 `exit_map`), whole judge 13.5 s (snapshot 12.5 s, the `cargo mutants` baseline command
-0.43 s, return code 0, report absent), dev-gates slice peak 275 MB anon+shmem. The
+0.43 s, return code 0, report absent), one dev-gates slice sample of 275 MB anon+shmem
+(15:02:35, about 3 s into the run). The
 handed-over diff was 4924 bytes (`changed_diff` base `7835ec25a`, relative to `hostobs`).
 Zero mutants is correct here: the changed lines under `crates/*/src` are doc comments
 (`proto/src/lib.rs`) and test functions in `mod tests` (`store/src/store.rs` +58,
@@ -129,19 +130,27 @@ compile-dominated, not measured) that is about 2.4 h, inside the lane budget. Pe
 cost on hostobs is therefore still unmeasured until that run.
 
 The base `0dd7230b1` attempts (2026-11-18, v1001, commit `30762a2a5`, then the U8b-fix head
-`2dd8be574`) were cancelled by the shared-host memory rule (abort at slice anon+shmem 5.0 GB, own cap 3.5 GiB) before a
-single mutant ran: container 6.4 GiB at ~100 s (default cargo parallelism), then 3.6 GiB at ~100 s
-with `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS` set to 1. A third,
-sampled run (2 s samples of the container cgroup, host `ps --sort=-rss`) named the cause: not
-rustc, not a tmpfs (`/tmp` is overlay disk, `/dev/shm` 64 MB, no container memory limit), but ONE test
-process of the unmutated baseline, `client_scripted ... --exact transport_failures_are_classified`
-(`hostobs/crates/client/tests/client_scripted.rs`), whose RSS grew 0.07 GB -> 4.07 GB in about
-20 s (2.7 GB at 14 s, 4.3 GB at 22 s) until the sampler cancelled the job. The same test passes in
-hostobs `selftest` and `assay-r1`, so it depends on the assay-r2 invocation (plain environment,
-default nextest profile, no llvm-cov); the fix belongs to the client crate (open with its owner). Lesson for
-every hand-run heavy lane: declare `[lanes.<name>.resources] memory` (docker `--memory`) so a runaway
-is OOM-killed inside its own container, and sample the container every few seconds for the first
-minutes (a 60 s monitor missed the step). K15 stays open.
+`2dd8be574`) were cancelled by the shared-host memory rule (abort at slice anon+shmem 5.0 GB, own cap
+3.5 GiB), in the baseline phase (no progress stream survived, so "before a single mutant ran" is inferred
+from cargo-mutants running its unmutated baseline first). Run 1 was cancelled at 15:17:30 about 100 s after
+its start with the container at 6.36 GiB and the slice at 6.70 GB (default cargo parallelism; read from the
+monitor output, only the 4.96 GB sample of 15:17:01 is on disk); run 2 (`CARGO_BUILD_JOBS`,
+`RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS` set to 1) at 15:22:56, about 77 s after its start, at
+3.62 GiB. A third, sampled run (2 s samples of the container cgroup) measured the container's
+anon memory going 0.076 GB (15:25:58) -> 2.38 GB (15:26:11) -> 4.07 GB (15:26:19), cancelled at the
+3.5 GiB cap, and showed: not a tmpfs (`/tmp` is overlay disk, `/dev/shm` 64 MB, 0 used), no container
+memory limit (`memory.max=max`), page cache 1.2 GB separate from the anon growth. The growing process was
+read by hand with a host `ps --sort=-rss` at 15:26:13-15:26:21 (not saved in the sampler log: the in-container
+`ps` is absent from the image): ONE test process of the unmutated baseline,
+`client_scripted-3cde632e... --exact transport_failures_are_classified --nocapture`
+(`hostobs/crates/client/tests/client_scripted.rs`), RSS 2.7 GB at 14 s of its life and 4.3 GB at 22 s.
+The same test passes in the hostobs `selftest` and `assay-r1` lanes, and a reproduction by the hostobs
+owner in a dev container (default nextest profile, no llvm-cov, 1 GiB cap) did NOT reproduce it (passed
+in 0.006 s). The cause is therefore undetermined (the invocation, the image or host, or the test itself);
+it is an open item with the hostobs owner and the next sampled run captures the process's
+`/proc` data. Lesson for every hand-run heavy lane: declare `[lanes.<name>.resources] memory` (docker
+`--memory`) with an equal `memory_swap` so a runaway is OOM-killed inside its own container, and sample the
+container every few seconds for the first minutes (a 60 s monitor missed the step). K15 stays open.
 
 Known risks for the first real qualification run (B245 U7,
 `tools/qualify_rust_r2_real.py`; each is diagnosed, not a known defect; its
