@@ -1792,6 +1792,48 @@ def test_dind_preflight_fetches_one_revision_per_git_family_and_honours_from_wor
     )
 
 
+def test_dind_preflight_reads_the_fetched_origin_revision_and_the_moved_config_path(
+    tmp_path, monkeypatch,
+):
+    """Local main may be behind and the config may have moved: use the fetched origin snapshot."""
+    configs = {"ciu": SimpleNamespace(name="ciu", project_root=tmp_path / "old" / "ciu")}
+    fetched = []
+    monkeypatch.setattr(
+        cli.transaction, "project_git_family_groups",
+        lambda _root, projects: {tmp_path: list(projects)},
+    )
+    monkeypatch.setattr(
+        cli.transaction, "fetch_origin_main", lambda root, **_kwargs: fetched.append(root) or "f" * 40,
+    )
+    monkeypatch.setattr(
+        cli, "_orchestration_env_for_release_snapshot", lambda *_args: {},
+    )
+    paths_asked = []
+    monkeypatch.setattr(
+        cli, "_project_config_paths_at_snapshot",
+        lambda root, revision, config, _configs, names: paths_asked.append((root, revision, list(names)))
+        or {"ciu": Path("new/ciu/cmru.toml")},
+    )
+    reads = []
+    monkeypatch.setattr(
+        cli, "_read_git_path_at_commit",
+        lambda root, revision, path, *, source_label: reads.append((root, revision, path)) or _PLAIN_TOML,
+    )
+    monkeypatch.setattr(
+        release_preconditions.subprocess, "run",
+        lambda *_a, **_k: pytest.fail("no docker call for a config without the flag"),
+    )
+
+    cli._release_dind_image_preconditions(
+        tmp_path, tmp_path / "cmru.orchestration.toml", configs, ["ciu"],
+        _release_precondition_args(), git_auth=None, report=True,
+    )
+
+    assert fetched == [tmp_path]
+    assert paths_asked == [(tmp_path, "f" * 40, ["ciu"])]
+    assert reads == [(tmp_path, "f" * 40, Path("new/ciu/cmru.toml"))]
+
+
 def test_dind_preflight_surfaces_an_unreadable_config_like_the_cmru_path(
     tmp_path, monkeypatch,
 ):

@@ -33,6 +33,11 @@ def fake_release_preflight(monkeypatch):
         },
     )
     monkeypatch.setattr(cli.transaction, "clear_plan_refused", lambda *_args: None)
+    # These tests script the launcher's origin/config-path snapshots with no git
+    # repository behind them; the per-project DinD preflight would read a real blob.
+    # Its revision and moved-path handling is pinned in test_release_gate_preconditions.py
+    # (test_dind_preflight_reads_the_fetched_origin_revision_and_the_moved_config_path).
+    monkeypatch.setattr(cli, "_release_dind_image_preconditions", lambda *_a, **_k: None)
 
 
 def test_release_uses_fetched_origin_and_moved_config_path_when_local_main_is_behind(
