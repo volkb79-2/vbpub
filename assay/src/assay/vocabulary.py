@@ -401,6 +401,16 @@ REFUSED_COVERAGE_PRODUCERS: Mapping[str, str] = MappingProxyType(
     }
 )
 
+#: (B079/schema v12; moved here by B245 U3a) Why an ingested mutant was not
+#: attempted. These are assay's own wire vocabulary, not a foreign tool's open
+#: status namespace; each parser maps the upstream statuses it accepts onto
+#: these stable names. It lives in this leaf because `assay.verdict` imports
+#: `assay.config`, which imports the parser registry, whose parsers need the
+#: names: keeping it in `assay.verdict` would close a `verdict -> config ->
+#: mutation_parsers -> verdict` cycle. `assay.verdict.DISCARD_REASONS` is the
+#: same object, re-exported.
+DISCARD_REASONS: tuple[str, ...] = ("compile_error", "runtime_error")
+
 #: (B046, schema v9) Namespaces under which an INGESTED R2 producer's own
 #: mutator names are admitted as operator identities. A foreign tool's
 #: mutator taxonomy is DATA, not assay's closed catalogue: Stryker alone
@@ -426,16 +436,6 @@ REFUSED_COVERAGE_PRODUCERS: Mapping[str, str] = MappingProxyType(
 #: outside a character class is a literal, and the packaged schema's pattern is
 #: pinned equal to `INGESTED_OPERATOR_RE.pattern` character for character
 #: (`re.escape` would emit `cargo\-mutants` and break that equality).
-#: (B079/schema v12; moved here by B245 U3a) Why an ingested mutant was not
-#: attempted. These are assay's own wire vocabulary, not a foreign tool's open
-#: status namespace; each parser maps the upstream statuses it accepts onto
-#: these stable names. It lives in this leaf because `assay.verdict` imports
-#: `assay.config`, which imports the parser registry, whose parsers need the
-#: names: keeping it in `assay.verdict` would close a `verdict -> config ->
-#: mutation_parsers -> verdict` cycle. `assay.verdict.DISCARD_REASONS` is the
-#: same object, re-exported.
-DISCARD_REASONS: tuple[str, ...] = ("compile_error", "runtime_error")
-
 STRYKER_OPERATOR_NAMESPACE = "stryker"
 CARGO_MUTANTS_OPERATOR_NAMESPACE = "cargo-mutants"
 INGESTED_OPERATOR_NAMESPACES: tuple[str, ...] = (

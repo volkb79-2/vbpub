@@ -25,8 +25,11 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import math
 import re
+from collections import Counter
 from pathlib import PurePosixPath
+from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 from ..errors import AssayError, Outcome, ReasonCode
@@ -68,17 +71,38 @@ SUPPORTED_MAJORS: frozenset[str] = frozenset({"27"})
 
 #: Normalised status -> assay bucket. ``Timeout`` is the per-mutant budget
 #: (never a kill); ``Crashed`` is its own bucket (design 7.10: loud, ERROR).
-STATUS_BUCKETS: Mapping[str, str] = {
+_STATUS_BUCKETS: dict[str, str] = {
     "Killed": "killed",
     "Crashed": "crashed",
     "Survived": "survived",
     "Timeout": "budget_exceeded",
 }
+STATUS_BUCKETS: Mapping[str, str] = MappingProxyType(_STATUS_BUCKETS)
 #: Normalised status -> discard reason. An unviable mutant did not build.
-DISCARDED_STATUSES: Mapping[str, str] = {"Unviable": DISCARD_REASONS[0]}
+_DISCARDED_STATUSES: dict[str, str] = {"Unviable": DISCARD_REASONS[0]}
+DISCARDED_STATUSES: Mapping[str, str] = MappingProxyType(_DISCARDED_STATUSES)
 
-#: The one exit status cargo-nextest/`cargo test` uses for "a test failed".
+#: The exit status of a failing test run under cargo-nextest (``--test-tool
+#: nextest``). Plain ``cargo test`` exits 101 for the same fact, which this
+#: normaliser deliberately does NOT treat as a kill: a 101 is also a panic in
+#: a build script or the harness, so it is ``Crashed``. The lane (U5) must
+#: therefore pass ``--test-tool nextest`` (design D8, RUST-R3A-SPIKES.md).
 _TEST_FAILURE_EXIT = 100
+#: Exit/signal numbers are small OS values; bound them well inside int32.
+_MAX_STATUS_NUMBER = 2**31
+_VERSION_RE = re.compile(
+    "(?:" + "|".join(sorted(SUPPORTED_MAJORS)) + r")\.[0-9]+\.[0-9]+"
+)
+#: Top-level count key -> the mutant summary it counts. ``success`` counts
+#: mutant ``Success`` summaries, which the grammar never admits (measured 0
+#: on every fixture, baseline excluded).
+_COUNT_SUMMARIES = {
+    "caught": "CaughtMutant",
+    "missed": "MissedMutant",
+    "timeout": "Timeout",
+    "unviable": "Unviable",
+    "success": "Success",
+}
 
 _TOP_KEYS = frozenset(
     {
@@ -143,7 +167,7 @@ def sniff(raw: Any) -> bool:
     ``cargo_mutants_version``. Never validates, never raises."""
     try:
         document = json.loads(raw)
-    except (json.JSONDecodeError, RecursionError, ValueError):
+    except (json.JSONDecodeError, RecursionError, ValueError, TypeError):
         return False
     return (
         isinstance(document, dict)
@@ -168,7 +192,10 @@ def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def load_document(raw: bytes) -> Mapping[str, Any]:
     """Parse and grammar-check ``outcomes.json`` ONCE per distinct bytes.
 
-    Returns the validated document; callers must treat it as read-only.
+    Returns the validated document FROZEN (mappings are read-only proxies,
+    arrays are tuples): the memo shares one tree between callers, so a caller
+    must not be able to change what the next one sees. :func:`parse_directory`
+    releases the memo when it finishes.
     """
     if len(raw) > MAX_MUTATION_REPORT_BYTES:
         raise _unreadable(
@@ -180,11 +207,19 @@ def load_document(raw: bytes) -> Mapping[str, Any]:
     except (json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise _unreadable(f"outcomes.json is not valid JSON: {exc}") from exc
     _check_document(document)
-    return document  # type: ignore[no-any-return]
+    return _freeze(document)  # type: ignore[no-any-return]
 
 
-def _closed(value: Any, keys: frozenset[str], where: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
+def _freeze(value: Any) -> Any:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
+def _closed(value: Any, keys: frozenset[str], where: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
         raise _unreadable(
             f"outcomes.json {where} must be an object, got {type(value).__name__}"
         )
@@ -200,11 +235,12 @@ def _closed(value: Any, keys: frozenset[str], where: str) -> dict[str, Any]:
 def _check_document(document: Any) -> None:
     top = _closed(document, _TOP_KEYS, "document")
     version = top["cargo_mutants_version"]
-    if not is_nonempty_str(version) or version.split(".")[0] not in SUPPORTED_MAJORS:
+    if not isinstance(version, str) or _VERSION_RE.fullmatch(version) is None:
         raise _unreadable(
             f"outcomes.json cargo_mutants_version {version!r} is not in the "
-            f"qualified major(s) {sorted(SUPPORTED_MAJORS)}; a different "
-            f"major may have changed the document"
+            f"qualified major(s) {sorted(SUPPORTED_MAJORS)} (a full "
+            f"<major>.<minor>.<patch> version); a different major may have "
+            f"changed the document"
         )
     for key in _COUNT_KEYS:
         if not is_strict_int(top[key]) or top[key] < 0:
@@ -227,14 +263,17 @@ def _check_document(document: Any) -> None:
         )
     baselines = 0
     mutants = 0
+    failed_baseline = False
     seen_diffs: set[str] = set()
     for index, outcome in enumerate(outcomes):
         where = f"outcomes[{index}]"
         record_ = _closed(outcome, _OUTCOME_KEYS, where)
+        if not isinstance(record_["log_path"], str):
+            raise _unreadable(f"outcomes.json {where} log_path must be a string")
         _check_phases(record_["phase_results"], where)
         if record_["scenario"] == "Baseline":
             baselines += 1
-            _check_baseline(record_, where)
+            failed_baseline = _check_baseline(record_, where) == "Failure"
             continue
         mutants += 1
         _check_mutant(record_, where)
@@ -249,21 +288,48 @@ def _check_document(document: Any) -> None:
             f"outcomes.json must carry exactly one Baseline outcome, found "
             f"{baselines}"
         )
+    if outcomes[0]["scenario"] != "Baseline":
+        raise _unreadable("outcomes.json must carry the Baseline as its first outcome")
+    if failed_baseline and mutants:
+        raise _unreadable(
+            f"outcomes.json carries a failed Baseline and {mutants} mutant "
+            f"outcome(s); a failed Baseline stops the run before any mutant"
+        )
     if mutants != top["total_mutants"]:
         raise _unreadable(
             f"outcomes.json total_mutants is {top['total_mutants']} but "
             f"{mutants} mutant outcome(s) are present"
         )
+    derived = Counter(
+        outcome["summary"] for outcome in outcomes[1:]
+    )
+    for key, summary in _COUNT_SUMMARIES.items():
+        if top[key] != derived[summary]:
+            raise _unreadable(
+                f"outcomes.json counts disagree with the outcomes: {key} is "
+                f"{top[key]} but {derived[summary]} {summary} outcome(s) are "
+                f"present"
+            )
 
 
-def _check_baseline(outcome: dict[str, Any], where: str) -> None:
+def _check_baseline(outcome: Mapping[str, Any], where: str) -> str:
+    """Returns the Baseline summary. It must agree with its phases: Success
+    iff every phase succeeded (a failed Baseline with zero mutants is the
+    report U4 decides R0 FAIL from, so it must still parse)."""
     if outcome["summary"] not in _BASELINE_SUMMARIES:
         raise _unreadable(
             f"outcomes.json {where} Baseline summary {outcome['summary']!r} "
             f"must be one of {sorted(_BASELINE_SUMMARIES)}"
         )
+    clean = all(phase["process_status"] == "Success" for phase in outcome["phase_results"])
+    if (outcome["summary"] == "Success") != clean:
+        raise _unreadable(
+            f"outcomes.json {where} Baseline summary {outcome['summary']!r} "
+            f"disagrees with its phase statuses"
+        )
     if outcome["diff_path"] is not None:
         raise _unreadable(f"outcomes.json {where} Baseline must have diff_path null")
+    return outcome["summary"]  # type: ignore[no-any-return]
 
 
 def _position(value: Any, where: str) -> tuple[int, int]:
@@ -279,6 +345,8 @@ def _span(value: Any, where: str) -> tuple[int, int, int, int]:
     span = _closed(value, frozenset({"start", "end"}), where)
     start = _position(span["start"], f"{where}.start")
     end = _position(span["end"], f"{where}.end")
+    if end < start:
+        raise _unreadable(f"outcomes.json {where} span is reversed (end before start)")
     return (*start, *end)
 
 
@@ -319,9 +387,13 @@ def _check_status(status: Any, where: str) -> None:
     ``{"Signalled": n}``; anything else (and a bool or non-positive n) refuses."""
     if status in ("Success", "Timeout", "Other") and isinstance(status, str):
         return
-    if isinstance(status, dict) and len(status) == 1:
+    if isinstance(status, Mapping) and len(status) == 1:
         (key, number), = status.items()
-        if key in ("Failure", "Signalled") and is_strict_int(number) and number > 0:
+        if (
+            key in ("Failure", "Signalled")
+            and is_strict_int(number)
+            and 0 < number < _MAX_STATUS_NUMBER
+        ):
             return
     raise _unreadable(f"outcomes.json {where} process_status {status!r} is not known")
 
@@ -335,8 +407,16 @@ def _check_phases(phases: Any, where: str) -> None:
         phase = _closed(phase, _PHASE_KEYS, here)
         names.append(phase["phase"])
         duration = phase["duration"]
-        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
-            raise _unreadable(f"outcomes.json {here} duration must be a number")
+        if (
+            isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or duration < 0
+            or (isinstance(duration, float) and not math.isfinite(duration))
+        ):
+            raise _unreadable(
+                f"outcomes.json {here} duration must be a finite number >= 0"
+            )
+
         if not isinstance(phase["argv"], list) or not all(
             isinstance(item, str) for item in phase["argv"]
         ):
@@ -347,6 +427,13 @@ def _check_phases(phases: Any, where: str) -> None:
             f"outcomes.json {where} phases {names} must be [Build] or "
             f"[Build, Test]"
         )
+
+
+def _exit_code(status: Any) -> int | None:
+    """The ``Failure`` exit number of a process status, else ``None``."""
+    if isinstance(status, Mapping):
+        return status.get("Failure")  # type: ignore[no-any-return]
+    return None
 
 
 def _status_of(outcome: dict[str, Any], where: str) -> str:
@@ -367,10 +454,18 @@ def _status_of(outcome: dict[str, Any], where: str) -> str:
                 f"outcomes.json {where} Unviable mutant must have a Build-only "
                 f"phase list"
             )
+        if _exit_code(statuses[0]) is None:
+            raise _unreadable(
+                f"outcomes.json {where} Unviable mutant needs a Build Failure"
+            )
         return "Unviable"
     if summary == "Timeout":
-        if "Timeout" not in statuses:
-            raise _unreadable(f"outcomes.json {where} Timeout without a timed-out phase")
+        # Measured shape: the build succeeded and the test run timed out.
+        if statuses != ["Success", "Timeout"]:
+            raise _unreadable(
+                f"outcomes.json {where} Timeout needs a Success Build and a "
+                f"timed-out Test phase"
+            )
         return "Timeout"
     if len(phases) != 2:
         raise _unreadable(
@@ -381,7 +476,11 @@ def _status_of(outcome: dict[str, Any], where: str) -> str:
         if statuses != ["Success", "Success"]:
             raise _unreadable(f"outcomes.json {where} MissedMutant with a failing phase")
         return "Survived"
-    if test == {"Failure": _TEST_FAILURE_EXIT}:
+    if statuses[0] != "Success":
+        raise _unreadable(
+            f"outcomes.json {where} a CaughtMutant needs a successful Build phase"
+        )
+    if _exit_code(test) == _TEST_FAILURE_EXIT:
         return "Killed"
     if test in ("Success", "Timeout"):
         raise _unreadable(
@@ -724,9 +823,14 @@ def parse_directory(
     ``project_root`` is ``None``: the document carries none, and the report is
     bound to the commit by content (the diff tier) instead.
     """
-    document = load_document(artifact.report)
-    producer = _producer(document)
-    mutants, sources = _bind_mutants(normalise_outcomes(document), artifact, ctx)
+    try:
+        document = load_document(artifact.report)
+        producer = _producer(document)
+        mutants, sources = _bind_mutants(normalise_outcomes(document), artifact, ctx)
+    finally:
+        # The memo shares one parsed tree between the pre-parse readers and
+        # this call; it must not outlive the report (up to 16 MiB).
+        load_document.cache_clear()
     return IngestedMutationReport(
         producer=producer, project_root=None, mutants=tuple(mutants), sources=sources
     )

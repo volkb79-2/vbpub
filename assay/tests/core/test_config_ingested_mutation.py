@@ -375,19 +375,22 @@ def test_the_missing_format_message_names_the_file_kind_format_explicitly(
     assert "cargo-mutants-outcomes" not in message
 
 
-def test_a_directory_kind_format_passes_config_load_but_not_a_file_load(
-    app_project: Project,
-):
-    """Config closes ``format`` against the registry, which now holds a
-    directory-kind entry; the lane loads. Reading its artifact as ONE FILE is
-    the refusal, and it is the loader's, not the config's."""
-    from assay.mutation_parsers import load_mutation_report
+def test_the_registry_knows_the_directory_kind_format():
+    spec = MUTATION_FORMAT_REGISTRY["cargo-mutants-outcomes"]
+    assert spec.artifact_kind == "directory"
+    assert spec.parse is None and spec.parse_directory is not None
 
+
+def test_a_directory_kind_format_is_refused_at_config_load(app_project: Project):
+    """The runner reads a lane's artifact as ONE FILE until U5a, so a lane
+    declaring a directory-kind format would run its whole command and then
+    fail the read with a verdict ``assay verify`` rejects. It is refused
+    before it can run, naming U5a and the formats that do work."""
     text = INGESTED_LANE.replace(
         'format = "mutation-report-json"', 'format = "cargo-mutants-outcomes"'
     )
-    config = _load(app_project, text).lane("ui_mutation").judge.mutation
-    assert config.is_ingested and config.format == "cargo-mutants-outcomes"
-    assert MUTATION_FORMAT_REGISTRY[config.format].artifact_kind == "directory"
-    with pytest.raises(LaneConfigError, match="directory-kind artifact"):
-        load_mutation_report("{}", declared_format=config.format)
+    error = _refusal(app_project, text)
+    message = str(error)
+    assert "directory-kind format" in message
+    assert "U5a" in message
+    assert "['mutation-report-json']" in message

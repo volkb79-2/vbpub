@@ -3676,6 +3676,22 @@ def _load_ingested_mutation(
             f"mutation-report format the parser registry knows; declared "
             f"formats: {sorted(MUTATION_FORMAT_REGISTRY)}"
         )
+    if MUTATION_FORMAT_REGISTRY[declared_format].artifact_kind != "file":
+        file_kinds = sorted(
+            name
+            for name, spec in MUTATION_FORMAT_REGISTRY.items()
+            if spec.artifact_kind == "file"
+        )
+        # The runner reads a lane's artifact as ONE FILE until work package
+        # U5a wires directory-kind artifacts. Accepting the lane here would
+        # run its whole command and only then fail the read, leaving a
+        # verdict `assay verify` itself rejects (R2 ERROR/BAD_LANE_CONFIG).
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.format' {declared_format!r} is a "
+            f"directory-kind format, and directory-kind formats are not wired "
+            f"into the runner until work package U5a; declare one of the "
+            f"file-kind formats {file_kinds}"
+        )
 
     native_only = sorted(
         set(value)

@@ -106,10 +106,8 @@ MUTATION_FORMAT_REGISTRY: Mapping[str, MutationFormatSpec] = MappingProxyType(
             sniff=mutation_report_json.sniff,
             artifact_kind="file",
             parse_directory=None,
-            status_buckets=MappingProxyType(mutation_report_json.STATUS_BUCKETS),
-            discarded_statuses=MappingProxyType(
-                mutation_report_json.DISCARDED_STATUSES
-            ),
+            status_buckets=mutation_report_json.STATUS_BUCKETS,
+            discarded_statuses=mutation_report_json.DISCARDED_STATUSES,
             accepts_changed_diff=False,
         ),
         "cargo-mutants-outcomes": MutationFormatSpec(
@@ -117,10 +115,8 @@ MUTATION_FORMAT_REGISTRY: Mapping[str, MutationFormatSpec] = MappingProxyType(
             sniff=cargo_mutants_outcomes.sniff,
             artifact_kind="directory",
             parse_directory=cargo_mutants_outcomes.parse_directory,
-            status_buckets=MappingProxyType(cargo_mutants_outcomes.STATUS_BUCKETS),
-            discarded_statuses=MappingProxyType(
-                cargo_mutants_outcomes.DISCARDED_STATUSES
-            ),
+            status_buckets=cargo_mutants_outcomes.STATUS_BUCKETS,
+            discarded_statuses=cargo_mutants_outcomes.DISCARDED_STATUSES,
             accepts_changed_diff=True,
         ),
     }

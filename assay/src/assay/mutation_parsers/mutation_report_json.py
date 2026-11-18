@@ -45,6 +45,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from ..errors import AssayError, Outcome, ReasonCode
@@ -83,22 +84,24 @@ __all__ = [
 #:
 #: `CompileError`/`RuntimeError` and `Ignored` are deliberately ABSENT: neither
 #: is a bucket. See `DISCARDED_STATUSES` and A-377.
-STATUS_BUCKETS: Mapping[str, str] = {
+_STATUS_BUCKETS: dict[str, str] = {
     "Killed": "killed",
     "Survived": "survived",
     "NoCoverage": "survived",
     "Timeout": "budget_exceeded",
 }
+STATUS_BUCKETS: Mapping[str, str] = MappingProxyType(_STATUS_BUCKETS)
 
 #: (B046, RESHAPED by B070 at schema v11; moved here by B245 U3a, UNCHANGED)
 #: Statuses whose mutants are LISTED on `judgment.r2.discarded` -- by identity
 #: -- and excluded from the `pct` denominator, mapped to their wire reason.
 #: `CompileError` (never built) and `RuntimeError` (crashed the runner) are
 #: distinct facts (filed as B079).
-DISCARDED_STATUSES: Mapping[str, str] = {
+_DISCARDED_STATUSES: dict[str, str] = {
     "CompileError": DISCARD_REASONS[0],
     "RuntimeError": DISCARD_REASONS[1],
 }
+DISCARDED_STATUSES: Mapping[str, str] = MappingProxyType(_DISCARDED_STATUSES)
 
 #: The `mutation-testing-report-schema` majors this build reads. Pinned to the
 #: major the committed real fixture carries (B046's own non-repudiation item

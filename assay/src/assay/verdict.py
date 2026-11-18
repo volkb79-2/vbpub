@@ -1046,12 +1046,12 @@ MAX_SHARD_COUNT = 10_000
 #: `hung` (B091/RW-33) a sixth -- a `LivenessRunner`-classified idle stall,
 #: scored like `budget_exceeded` (excluded from `killed/(killed+survived)`)
 #: but reported as its own bucket, NATIVE-ONLY (an ingested report never
-#: produces one; `INGESTED_STATUS_BUCKETS` in `mutation.py` has no entry that
-#: maps to it). Named once rather than transcribed at each of the sites that
-#: iterate them: A-228's own root cause was a new bucket reaching some of the
-#: layers that constrain the others and not the rest, and a literal list
-#: repeated per call site is exactly how that happens again. **Additive under
-#: schema v11 (no v12 cut)**: a document produced before `hung` existed omits
+#: produces one; no parser's `STATUS_BUCKETS` in `assay.mutation_parsers`
+#: has an entry that maps to it). Named once rather than transcribed at each
+#: of the sites that iterate them: A-228's own root cause was a new bucket
+#: reaching some of the layers that constrain the others and not the rest, and
+#: a literal list repeated per call site is exactly how that happens again.
+#: **Additive under schema v11 (no v12 cut)**: a document produced before `hung` existed omits
 #: the key entirely -- `verify.py`'s `_mutation_of`/`_reconstruct_mutation`
 #: both default a missing `hung` to empty, matching how `budget_per_
 #: candidate_derived_s` (A1) was read back additively.

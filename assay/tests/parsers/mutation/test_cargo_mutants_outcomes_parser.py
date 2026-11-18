@@ -275,6 +275,24 @@ def test_phase_list_grammar():
     )
 
 
+_SUMMARY_KEYS = {
+    "CaughtMutant": "caught",
+    "MissedMutant": "missed",
+    "Timeout": "timeout",
+    "Unviable": "unviable",
+}
+
+
+def _recount(doc):
+    """Make the top-level counts agree with the (edited) outcomes, so a test
+    reaches the check it is about instead of the count refusal."""
+    for key in _SUMMARY_KEYS.values():
+        doc[key] = 0
+    for outcome in doc["outcomes"][1:]:
+        if outcome["summary"] in _SUMMARY_KEYS:
+            doc[_SUMMARY_KEYS[outcome["summary"]]] += 1
+
+
 def _unviable_index(doc):
     return next(i for i, o in enumerate(doc["outcomes"]) if o["summary"] == "Unviable")
 
@@ -284,6 +302,7 @@ def test_d5_status_consistency_refusals():
         d["outcomes"][i]["summary"] = summary
         if phases is not None:
             d["outcomes"][i]["phase_results"] = d["outcomes"][i]["phase_results"][:phases]
+        _recount(d)
 
     def refuses(i_of, summary, phases, match):
         doc = _doc()
@@ -295,6 +314,7 @@ def test_d5_status_consistency_refusals():
 
     first = lambda d: 1  # noqa: E731 - a CaughtMutant in `full`
     refuses(first, "Unviable", None, "Build-only")
+    refuses(first, "Unviable", 1, "Build Failure")
     refuses(first, "Timeout", None, "timed-out")
     refuses(first, "CaughtMutant", 1, "Build and Test")
     refuses(first, "MissedMutant", None, "failing phase")
@@ -418,3 +438,227 @@ def test_non_string_scenario_and_status_values_refuse_as_unreadable(bad):
         _mutate(lambda d: d["outcomes"][1]["phase_results"][0].update(phase=bad)),
         "phases",
     )
+
+
+# --------------------------------------------------------------------------
+# U3c review fixes
+# --------------------------------------------------------------------------
+
+
+def test_every_fixture_has_top_level_counts_equal_to_its_outcomes():
+    """Measured first (finding 4): the refusal below must not reject a real
+    report."""
+    for case in REAL_WITH_OUTCOMES + list(SYNTHETIC):
+        doc = _doc(case)
+        again = copy.deepcopy(doc)
+        _recount(again)
+        for key in (*_SUMMARY_KEYS.values(), "success"):
+            assert doc[key] == again.get(key, 0), (case, key)
+
+
+@pytest.mark.parametrize("key", ["caught", "missed", "timeout", "unviable", "success"])
+def test_a_top_level_count_that_disagrees_with_the_outcomes_refuses(key):
+    _refuses(_mutate(lambda d: d.update({key: d[key] + 1})), "counts")
+
+
+def test_baseline_summary_must_agree_with_its_phases():
+    for case, summary in (("full", "Failure"), ("basefail-test", "Success"),
+                          ("basefail-build", "Success")):
+        doc = _doc(case)
+        doc["outcomes"][0]["summary"] = summary
+        _refuses(_dump(doc), "Baseline summary")
+
+
+def test_a_failed_baseline_with_mutants_is_contradictory():
+    doc = _doc("full")
+    doc["outcomes"][0]["summary"] = "Failure"
+    doc["outcomes"][0]["phase_results"][1]["process_status"] = {"Failure": 100}
+    _refuses(_dump(doc), "failed Baseline")
+    doc = _doc("basefail-test")
+    doc["total_mutants"] = 1
+    mutant = _doc("full")["outcomes"][1]
+    doc["outcomes"].append(mutant)
+    doc["caught"] = 1
+    _refuses(_dump(doc), "failed Baseline")
+
+
+@pytest.mark.parametrize("case", ["basefail-build", "basefail-test"])
+def test_a_failed_baseline_with_zero_mutants_still_parses(case):
+    doc = cmo.load_document(_raw(case))
+    assert doc["total_mutants"] == 0 and cmo.normalise_outcomes(doc) == ()
+
+
+def test_the_baseline_must_be_the_first_outcome():
+    def move(d):
+        d["outcomes"].append(d["outcomes"].pop(0))
+
+    _refuses(_mutate(move), "first")
+
+
+def test_unviable_requires_a_failed_build_only_phase_list():
+    def edit(d):
+        index = _unviable_index(d)
+        d["outcomes"][index]["phase_results"][0]["process_status"] = "Success"
+
+    _refuses_normalise(_mutate(edit), "Build Failure")
+
+
+def _refuses_normalise(raw, match):
+    loaded = cmo.load_document(raw)
+    with pytest.raises(AssayError, match=match):
+        cmo.normalise_outcomes(loaded)
+
+
+def test_caught_requires_a_successful_build():
+    def edit(d):
+        d["outcomes"][1]["phase_results"][0]["process_status"] = {"Failure": 101}
+
+    _refuses_normalise(_mutate(edit), "Build phase")
+
+
+def test_missed_requires_both_phases_to_succeed():
+    def edit(d):
+        index = next(i for i, o in enumerate(d["outcomes"]) if o["summary"] == "MissedMutant")
+        d["outcomes"][index]["phase_results"][0]["process_status"] = {"Failure": 101}
+
+    _refuses_normalise(_mutate(edit), "failing phase")
+
+
+def test_timeout_requires_the_measured_shape():
+    def build_timeout(d):
+        index = next(i for i, o in enumerate(d["outcomes"]) if o["summary"] == "Timeout")
+        d["outcomes"][index]["phase_results"][0]["process_status"] = "Timeout"
+        d["outcomes"][index]["phase_results"][1]["process_status"] = "Success"
+
+    def one_phase(d):
+        index = next(i for i, o in enumerate(d["outcomes"]) if o["summary"] == "Timeout")
+        d["outcomes"][index]["phase_results"] = d["outcomes"][index]["phase_results"][:1]
+
+    _refuses_normalise(_mutate(build_timeout), "timed-out")
+    _refuses_normalise(_mutate(one_phase), "timed-out")
+
+
+@pytest.mark.parametrize("bad", [-1, -0.5, float("nan"), float("inf"), 10**400 * -1])
+def test_a_phase_duration_must_be_finite_and_non_negative(bad):
+    doc = _doc()
+    doc["outcomes"][1]["phase_results"][0]["duration"] = bad
+    _refuses(json.dumps(doc).encode(), "duration")
+
+
+def test_a_huge_integer_duration_is_accepted_without_overflow():
+    doc = _doc()
+    doc["outcomes"][1]["phase_results"][0]["duration"] = 10**400
+    cmo.load_document(_dump(doc))
+
+
+@pytest.mark.parametrize("bad", [None, 5, ["x"]])
+def test_log_path_must_be_a_string(bad):
+    _refuses(_mutate(lambda d: d["outcomes"][1].update(log_path=bad)), "log_path")
+
+
+def test_a_reversed_span_refuses():
+    def edit(d):
+        span = _mutant(d)["span"]
+        span["start"], span["end"] = span["end"], span["start"]
+        span["start"] = {"line": span["end"]["line"] + 1, "column": 1}
+
+    _refuses(_mutate(edit), "reversed")
+
+
+def test_a_reversed_function_span_refuses():
+    def edit(d):
+        span = _mutant(d)["function"]["span"]
+        span["start"] = {"line": span["end"]["line"] + 1, "column": 1}
+
+    _refuses(_mutate(edit), "reversed")
+
+
+@pytest.mark.parametrize("bad", [2**31, 2**40])
+@pytest.mark.parametrize("kind", ["Failure", "Signalled"])
+def test_an_exit_or_signal_number_is_bounded(kind, bad):
+    def edit(d):
+        d["outcomes"][1]["phase_results"][1]["process_status"] = {kind: bad}
+
+    _refuses(_mutate(edit), "process_status")
+
+
+def test_the_largest_legal_exit_number_is_accepted():
+    def edit(d):
+        d["outcomes"][1]["phase_results"][1]["process_status"] = {"Failure": 2**31 - 1}
+
+    cmo.load_document(_mutate(edit))
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["27", "27.", "27.1", "27.1.0.1", "27.1.x", "270.1.0", "27.1.0\n", "27.1.0 ",
+     "27.\u0661.0", "28.0.0", "2.7.1", ""],
+)
+def test_the_version_must_be_a_full_27_triple(version):
+    _refuses(_mutate(lambda d: d.update(cargo_mutants_version=version)), "qualified")
+
+
+def test_a_27_triple_is_accepted():
+    cmo.load_document(_mutate(lambda d: d.update(cargo_mutants_version="27.12.3")))
+
+
+def test_the_test_failure_exit_comment_names_nextest_and_the_design():
+    import inspect
+
+    source = inspect.getsource(cmo)
+    assert "cargo test" in source and "101" in source and "--test-tool nextest" in source
+    assert "D8" in source
+
+
+def test_a_cached_document_cannot_be_mutated_into_the_next_caller():
+    raw = _raw("full") + b"  "
+    first = cmo.load_document(raw)
+    with pytest.raises(TypeError):
+        first["total_mutants"] = 0  # type: ignore[index]
+    with pytest.raises(TypeError):
+        first["outcomes"][0]["summary"] = "x"  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        first["outcomes"].append(1)  # type: ignore[attr-defined]
+    again = cmo.load_document(raw)
+    assert again is first or again == first
+    assert again["total_mutants"] == 25 and again["outcomes"][0]["summary"] == "Success"
+    assert cmo.diff_paths(raw)[0].startswith("diff/")
+
+
+def test_parse_directory_releases_the_cache_when_it_finishes(monkeypatch):
+    ctx = ParseContext(run_cwd=Path("."), repo_top=Path("."), repository=None, read_timeout=1.0)  # type: ignore[arg-type]
+    raw = _raw("full") + b"   "
+    cmo.diff_paths(raw)
+    assert cmo.load_document.cache_info().currsize == 1
+    monkeypatch.setattr(cmo, "_bind_mutants", lambda mutants, artifact, context: ((), {}))
+    cmo.parse_directory(_Artifact(raw), ctx)
+    assert cmo.load_document.cache_info().currsize == 0
+    # ... and also when parsing refuses.
+    monkeypatch.undo()
+    cmo.diff_paths(raw)
+    with pytest.raises(AssayError):
+        cmo.parse_directory(_Artifact(raw), ctx)
+    assert cmo.load_document.cache_info().currsize == 0
+
+
+@pytest.mark.parametrize("bad", [5, None, 1.5, ["x"], object()])
+def test_sniff_of_a_non_bytes_non_str_is_false_not_a_type_error(bad):
+    assert cmo.sniff(bad) is False
+
+
+def test_sniff_accepts_text_too():
+    assert cmo.sniff(_raw("full").decode())
+
+
+def test_the_exported_status_tables_are_immutable_views_of_both_parsers():
+    from types import MappingProxyType
+
+    from assay.mutation_parsers import mutation_report_json as stryker
+
+    for module in (cmo, stryker):
+        assert isinstance(module.STATUS_BUCKETS, MappingProxyType)
+        assert isinstance(module.DISCARDED_STATUSES, MappingProxyType)
+        with pytest.raises(TypeError):
+            module.STATUS_BUCKETS["x"] = "y"  # type: ignore[index]
+        with pytest.raises(TypeError):
+            module.DISCARDED_STATUSES["x"] = "y"  # type: ignore[index]
