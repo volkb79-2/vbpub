@@ -442,20 +442,21 @@ def test_hostile_byte_input_never_raises():
     sources = random_sources + truncated_sources
 
     assert len(sources) <= 200
-    for source in sources:
-        if len(source) > 1:
-            start = rng.randrange(len(source) - 1)
-            end = rng.randrange(start + 1, len(source) + 1)
-        else:
-            start, end = 0, 1
-        locus = locus_for_site(
-            "pkg/mod.py", source, start, end, OPERATOR, REPLACEMENT
-        )
-        window = window_key_for_site(
-            "pkg/mod.py", source, start, end, OPERATOR, REPLACEMENT
-        )
-        assert locus is None or isinstance(locus, Locus)
-        assert window is None or isinstance(window, str)
+    for path in ("pkg/mod.py", "pkg/\ud800mod.py"):
+        for source in sources:
+            if len(source) > 1:
+                start = rng.randrange(len(source) - 1)
+                end = rng.randrange(start + 1, len(source) + 1)
+            else:
+                start, end = 0, 1
+            locus = locus_for_site(
+                path, source, start, end, OPERATOR, REPLACEMENT
+            )
+            window = window_key_for_site(
+                path, source, start, end, OPERATOR, REPLACEMENT
+            )
+            assert locus is None or isinstance(locus, Locus)
+            assert window is None or isinstance(window, str)
 
 
 def test_duplicate_qualname_and_segment_sha_makes_both_sites_fall_back():
@@ -538,6 +539,10 @@ def _without(key: str) -> dict[str, object]:
         {**GOOD_RECORD, "qualname": None},
         {**GOOD_RECORD, "qualname": ""},
         {**GOOD_RECORD, "qualname": "Outer\0method"},
+        {**GOOD_RECORD, "schema": "\ud800"},
+        {**GOOD_RECORD, "key": "\ud800"},
+        {**GOOD_RECORD, "qualname": "\ud800"},
+        {**GOOD_RECORD, "segment_sha256": "\ud800"},
         {**GOOD_RECORD, "segment_sha256": None},
         {**GOOD_RECORD, "segment_sha256": "c" * 63},
         {**GOOD_RECORD, "segment_sha256": "C" * 64},
@@ -560,8 +565,10 @@ def test_every_malformed_record_shape_is_refused(value: object):
     [
         {"path": ""},
         {"path": "pkg/\0mod.py"},
+        {"path": "\ud800"},
         {"operator": ""},
         {"operator": "op\0"},
+        {"operator": "\ud800"},
         {"replacement_sha256": "B" * 64},
         {"replacement_sha256": "b" * 63},
         {"replacement_sha256": None},

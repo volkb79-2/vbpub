@@ -47,7 +47,13 @@ def _is_sha256(value: object) -> bool:
 
 
 def _valid_path_or_operator(value: object) -> bool:
-    return isinstance(value, str) and bool(value) and "\0" not in value
+    if not isinstance(value, str) or not value or "\0" in value:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _valid_span(source: object, start_byte: object, end_byte: object) -> bool:
@@ -96,9 +102,7 @@ def from_record(obj: object) -> Locus | None:
     if (
         schema != LOCUS_SCHEMA
         or not _is_sha256(key)
-        or not isinstance(qualname, str)
-        or not qualname
-        or "\0" in qualname
+        or not _valid_path_or_operator(qualname)
         or not _is_sha256(segment_sha256)
         or not isinstance(rel_start, int)
         or isinstance(rel_start, bool)
