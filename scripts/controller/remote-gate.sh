@@ -197,8 +197,12 @@ logs=$CONTROLLER_LOGS_DIR
 ts=$(date -u +%Y%m%dT%H%M%S)
 safe=$(printf '%s' "$lane" | tr -c 'A-Za-z0-9\n' -)
 name="rgw-${safe}-${ts}-${host}"; name=${name:0:60}
-workroot=$CONTROLLER_HOME/remote-gate-work
+# The scratch worktree is created and removed per run. Keep it OUTSIDE every editor workspace folder (the default sits under
+# $CONTROLLER_HOME, which an IDE may have open): extensions that scan folders adopt it as a repository or index it.
+workroot=${CONTROLLER_REMOTE_GATE_WORKROOT:-$CONTROLLER_HOME/remote-gate-work}
 mkdir -p -- "$workroot" "$CONTROLLER_HOME/tools" "$out"
+# A relative workroot would resolve differently for `git -C "$repo"` and for the later `cd`: use one absolute physical path.
+workroot=$(cd -- "$workroot" && pwd -P) || die "cannot enter the workroot $workroot" 3
 wt=$workroot/rgw-$ts-$$
 git -C "$repo" worktree add -q --detach "$wt" "$sha" || die 'worktree add failed' 3
 # shellcheck disable=SC2329 # installed as the EXIT trap below
