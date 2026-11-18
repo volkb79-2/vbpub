@@ -104,8 +104,21 @@ v8 port, because ciu cannot import run-gate. A parity test feeds both implementa
 
 The sanitized copies and the empty hooks dir live under `.ciu/gitdir/` beside the fragment. Every
 `ciu up` rewrites them with `os.replace`; `reset_service` removes them. A running container keeps the copy
-it was created with. A change to `<common>/config` (a new remote, for example) reaches the runner at its
-next `ciu up`. This is a documented limit.
+it was created with: a rewritten source file under the same bind path keeps the same compose config hash,
+so the container keeps the old inode until it is recreated. A change to `<common>/config` (a new remote,
+for example) reaches the runner at the runner's next recreate. This is a documented limit.
+
+Two properties of that placement, both stated rather than hidden:
+
+- **Location.** The copies and the empty hooks dir live under `.ciu/gitdir/` inside the checkout, which the
+  runner mounts. Run-Gate instead uses a per-run 0700 private dir outside every mount
+  (`_make_private_dir`, `run_gate.py` ~15655). A runner can therefore rewrite those source files through
+  the checkout mount. This is accepted: the copies are tokenless (sanitized), and host git reads the real
+  hooks and config, never these copies, so a rewritten copy affects only the runner's own view.
+- **Namespace.** The bind sources need the same daemon-namespace translation as the common dir. The config
+  copies and the hooks dir are paths under the logical checkout, so each source is translated to its
+  physical path (`worktree._physical_workspace_target`) before it goes into the fragment, exactly like
+  `<common>` itself, and is never `stat`ed locally as a physical path.
 
 **What each mode exposes.** A flat mount, even `ro`, would expose `<common>/config` and submodule
 configs. Remote URLs there can carry tokens, which is why both modes get the sanitized overlay. Both modes
@@ -143,11 +156,19 @@ reviewer verified this with bwrap, 2026-11-18).
 `git worktree add` (the snapshot then used `clone --no-local`) and asks for the S16.4.9 premise to be
 re-checked.
 
-The measurement is **unproven against current assay, not shown superseded**. P22 predates it, but dstdns
-consumes a pinned assay release, the snapshot mechanism changed at least twice (clone, then pack-stream),
-and neither mechanism writes to the source. The failure therefore had a cause nobody recorded. So `ro`
-stays the recommendation only once the live probe (test 10) passes on that dstdns lane. If it fails,
-record the cause and recommend `rw`.
+Assay history does not corroborate either account of the snapshot. `git log -G` over `assay/src` finds no
+clone-based lane snapshot and no `worktree add`; the only `--no-local` hits are the P24 self-hosting build
+(`c7ff15a1c`, `c16a74367`), which is not the lane snapshot. The P22 pack-stream snapshot (`487deaf14`,
+2026-08-10) already existed at the 2026-09-03 measurement. The RG-NARROW report's `clone --no-local`
+remark is that report's own assertion and is not corroborated by assay history.
+
+The measurement is therefore **unproven against current assay, not shown superseded**, and its cause was
+never recorded. Which assay version produced the failure is unknown: dstdns today vendors a pinned judge
+(`tools/assay/assay-12.0.0.pyz`, floor `assay>=12.0.0` in `requirements-legacy.txt`), but the pin in force
+on 2026-09-03 was not checked. The `git worktree add` explanation in the dstdns comment fits neither the
+pack-stream code in this repo nor anything in its history. Live probe 10, on both the netcup-api-filter
+lane and the dstdns `p128_persister_lineage` lane, has to settle it. `ro` stays the recommendation only
+once probe 10 passes on that dstdns lane. If it fails, record the cause and recommend `rw`.
 
 ### Cost to consumers
 
@@ -250,7 +271,7 @@ helpers, buildkit clients, ssh masters, user hooks).
 |---|---|
 | `engine.py:1599` `execute_docker_compose_with_logs` (`Popen`, `for line in proc.stdout`) | `procio.run_streaming` with the watchdog; the KeyboardInterrupt branch becomes the group reap |
 | `procutil.run_cmd` (`procutil.py:75`, `subprocess.run(capture_output=capture, timeout=None)` by default) | the capture body becomes `procio.run_capture`, so every caller inherits the drain: 84 real call sites (30 `procutil.run_cmd(` + 54 `procutil.docker(`) plus `procutil.docker`'s own internal call. The signature is unchanged; add `text=False` support for bytes callers |
-| `procutil.run_cmd(capture=False)` (`deploy.py:910`, `worktree.py:5063`, both through `procutil.docker`) | no pipe, so no drain is needed; this path stays a plain `subprocess.run` with inherited stdio. `run_cmd` gains `start_new_session=True` and `procio.terminate_as_exit()` for it, so an interrupt reaps the group just as on the capture path |
+| `procutil.run_cmd(capture=False)` (`deploy.py:910`, `worktree.py:5063`, both through `procutil.docker`) | both are `docker exec` callers, and `deploy.py:910` is the interactive path (it adds `-it` when stdin and stdout are ttys). No pipe, so no drain is needed, and a child on the terminal must stay in the terminal's session and process group: a new session would stop a terminal Ctrl-C from reaching it and change job control. **Decision (closed):** this branch stays a plain `subprocess.run` with inherited stdio, with no `start_new_session`, no drain and no watchdog. `run_cmd` is unchanged for `capture=False` |
 | 17 direct unbounded `subprocess.run(capture_output=True)`: `workspace_env.py` 746, 808, 942, 997, 1011, 1058, 1109, 1119, 1153 (docker; 1153 is `docker run`, which can pull through a credential helper); `cli.py:909` (`buildx bake --print`); `diagnose.py:32`; `host_enroll.py:115`; `worktree.py` 1218 (git) and 2074 (child `ciu env generate`); `workspace.py` 204, 228, 251 (git, 251 is bytes) | move to `procutil.run_cmd` |
 | bounded captures (`doctor.py:22`, `ksm.py` 256/364/403 (403 has `timeout=30`), `deploy_pkg/health.py` 419/438, `governance.py` 719/847/941/1417/1637/1769) | move to `procutil.run_cmd(timeout=...)`: today a held pipe turns a finished child into a false `TimeoutExpired` |
 
@@ -264,7 +285,11 @@ wait is on the child itself.
 The guard test greps `ciu/src` for `subprocess.run(`, `subprocess.Popen(`, `subprocess.call(`,
 `check_call(`, `check_output(` and `communicate(` outside `procutil.py`. It fails on any hit that is not
 in an exemption list, and each list entry carries a reason string. The list holds exactly the nine
-out-of-scope sites above.
+out-of-scope sites above. The two `capture=False` callers add no entry of their own: both reach
+`subprocess.run` through `procutil.docker` and `run_cmd`, inside `procutil.py`, which the grep skips. That
+branch is nevertheless a recorded exemption with the reason "interactive or inherited-stdio child, kept in
+the terminal's session". The rewritten `procutil.py` docstring states it, and a test pins that
+`run_cmd(capture=False)` passes no `start_new_session` and uses no `procio` call.
 
 The change list adds the rewrite of `procutil.py`'s module docstring. It says "Subprocess discipline for
 CIU v2" and claims (line 8) that `run_cmd` and `popen` are the only places CIU spawns children, which the
