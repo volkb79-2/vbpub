@@ -651,7 +651,12 @@ grep -c "worktrees/' in ciu.repo_root" tools/test-runner/ciu.compose.yml.j2     
 # B3  start the declared environment (core, db, runner, and the ui runner) from the EDITED templates; detached, it is long.
 #     ALWAYS through `ciu worktree up` (dstdns GUIDE 3.4 forbids hand-run `ciu render` / `ciu up --dir tools/test-runner --dry-run`
 #     in a not-yet-rendered worktree); no guard env is needed or allowed here.
-source /tmp/ciu215-probe.env; test -n "$NAME"
+#     Unset an inherited PHYSICAL_REPO_ROOT (and do not source the main checkout's ciu.env) in the shell that runs this: with a
+#     value left over from another checkout, ciu prints `ciu: ignoring pre-set PHYSICAL_REPO_ROOT=... inconsistent with the
+#     mountinfo-derived physical root` and then uses the mountinfo-derived value. That message is the designed protection
+#     against inherited shell state (SPEC S2.7, `_detect_physical_repo_root`), not a defect, and the rendered mounts stay right;
+#     unsetting the variable only removes the noise.
+source /tmp/ciu215-probe.env; test -n "$NAME"; unset PHYSICAL_REPO_ROOT
 setsid nohup bash -c 'python3 -m ciu worktree up "$0"; echo "rc=$?"' "$NAME" > /tmp/ciu215-dst-up.log 2>&1 < /dev/null &
 echo $! > /tmp/ciu215-dst-up.pid
 #     UNVERIFIED: `ciu worktree up` renders from the checkout's working files (uncommitted edits). The proof is B4's INFO line.
