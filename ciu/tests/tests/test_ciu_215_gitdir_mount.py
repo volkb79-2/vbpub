@@ -18,6 +18,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+import conftest as suite_conftest  # noqa: E402
 from ciu import config_model, deploy, engine, workspace_env, worktree  # noqa: E402
 
 COMPOSE = """\
@@ -40,13 +41,47 @@ def _git(args, cwd):
 
 @pytest.fixture(autouse=True)
 def hermetic_git(monkeypatch):
-    """No host git configuration reaches any git call of these tests (N4)."""
+    """Keep git hermetic and its automatic maintenance synchronous-free (N4, CIU-223)."""
     for key, value in (
         ("GIT_CONFIG_GLOBAL", "/dev/null"), ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("GIT_CONFIG_COUNT", "2"),
+        ("GIT_CONFIG_KEY_0", "gc.auto"), ("GIT_CONFIG_VALUE_0", "0"),
+        ("GIT_CONFIG_KEY_1", "maintenance.auto"), ("GIT_CONFIG_VALUE_1", "false"),
         ("GIT_AUTHOR_NAME", "T"), ("GIT_AUTHOR_EMAIL", "t@e.x"),
         ("GIT_COMMITTER_NAME", "T"), ("GIT_COMMITTER_EMAIL", "t@e.x"),
     ):
         monkeypatch.setenv(key, value)
+
+
+def test_the_leftover_child_guard_names_a_child_and_its_cmdline():
+    """The CIU-223 guard reports a live direct child without signalling it."""
+    before = set(suite_conftest._direct_children())
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         "import sys; print('ready', flush=True); sys.stdin.readline()"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "ready"
+        leaked = suite_conftest._leftover_child_descriptions(before)
+        named = [item for item in leaked if item.startswith(f"pid {child.pid} ")]
+        assert len(named) == 1
+        assert "sys.stdin.readline()" in named[0]
+    finally:
+        assert child.stdin is not None
+        try:
+            child.stdin.write("\n")
+        except BrokenPipeError:
+            pass
+        finally:
+            child.stdin.close()
+        child.wait(timeout=60)
+        if child.stdout is not None:
+            child.stdout.close()
+        if child.stderr is not None:
+            child.stderr.close()
 
 
 @pytest.fixture

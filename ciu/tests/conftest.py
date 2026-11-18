@@ -332,6 +332,102 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
+def _read_process_stat(pid: int) -> tuple[str, str, int, int] | None:
+    """Read ``(comm, state, ppid, starttime)`` for *pid*, or None when it is gone."""
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    head, separator, tail = text.rpartition(")")
+    if not separator:
+        return None
+    fields = tail.split()
+    if len(fields) <= 19:
+        return None
+    try:
+        return head.partition("(")[2], fields[0], int(fields[1]), int(fields[19])
+    except ValueError:
+        return None
+
+
+def _direct_children() -> dict[tuple[int, int], tuple[str, str]]:
+    """Return this process's direct children, zombies included, keyed by pid/starttime."""
+    task_root = Path(f"/proc/{os.getpid()}/task")
+    try:
+        tasks = list(task_root.iterdir())
+    except OSError as exc:
+        raise RuntimeError(
+            "the leftover-child guard requires Linux /proc; "
+            f"cannot enumerate {task_root}: {exc}"
+        ) from exc
+    found: dict[tuple[int, int], tuple[str, str]] = {}
+    readable = False
+    for task in tasks:
+        try:
+            child_pids = (task / "children").read_text(encoding="utf-8").split()
+        except OSError:
+            continue
+        readable = True
+        for child_pid in child_pids:
+            try:
+                pid = int(child_pid)
+            except ValueError:
+                continue
+            stat = _read_process_stat(pid)
+            if stat is not None and stat[2] == os.getpid():
+                found[(pid, stat[3])] = (stat[0], stat[1])
+    if not readable:
+        raise RuntimeError(
+            f"the leftover-child guard cannot read any {task_root}/*/children file"
+        )
+    return found
+
+
+def _child_cmdline(pid: int) -> str:
+    """Return *pid*'s command line for a failure message, or ``<unavailable>``."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return "<unavailable>"
+    text = raw.replace(b"\0", b" ").strip().decode("utf-8", errors="replace")
+    return text or "<empty; zombie or kernel process>"
+
+
+def _leftover_child_descriptions(
+    before: set[tuple[int, int]],
+) -> list[str]:
+    """Describe direct children not present in *before*, without signalling them."""
+    leaked = []
+    for (pid, starttime), (comm, state) in _direct_children().items():
+        if (pid, starttime) in before:
+            continue
+        leaked.append(
+            f"pid {pid} state {state} comm {comm!r} "
+            f"cmdline {_child_cmdline(pid)!r}"
+        )
+    return leaked
+
+
+@pytest.fixture(autouse=True)
+def _no_leftover_direct_children() -> Iterator[None]:
+    """Fail a test that leaves a new direct child of pytest behind (CIU-223).
+
+    Assay makes the pytest leader its child subreaper, so a daemonised git
+    maintenance child becomes direct when pytest is judged. This guard
+    deliberately only reports and never signals: the test must wait for
+    whatever it starts.
+    """
+    before = set(_direct_children())
+    yield
+    leaked = _leftover_child_descriptions(before)
+    if leaked:
+        pytest.fail(
+            "the test left direct child process(es) of pytest behind: "
+            + "; ".join(leaked),
+            pytrace=False,
+        )
+
+
 @pytest.fixture(autouse=True)
 def _no_real_docker_in_clean_one_shot_guard(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
