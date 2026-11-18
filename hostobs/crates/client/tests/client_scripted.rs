@@ -867,7 +867,10 @@ const KNOWN_KINDS: &str = "truncated oversized-frame non-zero-reserved unknown-f
 
 fn assert_closed_kind(kind: &str) {
     let known = KNOWN_KINDS.split_whitespace().any(|name| name == kind);
-    assert!(known || ERROR_CODES.contains(&kind), "unexpected kind {kind}");
+    assert!(
+        known || ERROR_CODES.contains(&kind),
+        "unexpected kind {kind}"
+    );
 }
 
 fn secs(count: u64) -> Duration {
@@ -893,7 +896,9 @@ fn every_transport_wait_is_the_remaining_time_to_the_nearer_bound() {
     let (mut partial, rig) = script(&clock, session_bytes(Level::Observe, head));
     partial.eof = false;
     partial.idle_ns = 10_000 * MS;
-    partial.later.push_back(reply.get(5..).unwrap_or_default().to_vec());
+    partial
+        .later
+        .push_back(reply.get(5..).unwrap_or_default().to_vec());
     let mut client = open_slow(partial, secs(100)).expect("open");
     assert!(client.request("status", "{}").is_ok());
     assert_eq!(waits(&rig), [secs(100), secs(100), secs(30), secs(20)]);
@@ -925,7 +930,9 @@ fn a_frame_that_starts_inside_a_read_ages_from_that_read() {
     script.eof = false;
     script.idle_ns = 10_000 * MS;
     script.later.push_back(release);
-    script.later.push_back(second.get(5..).unwrap_or_default().to_vec());
+    script
+        .later
+        .push_back(second.get(5..).unwrap_or_default().to_vec());
     let mut client = open_slow(script, secs(100)).expect("open");
     assert!(client.request("status", "{}").is_ok());
     assert!(client.request("status", "{}").is_ok());
@@ -964,7 +971,10 @@ fn an_end_with_an_error_still_counts_its_dropped_blocks() {
     let mut sub = client.subscribe(SELECTION, 1000).expect("subscription");
     let items: Vec<_> = sub.by_ref().collect();
     assert_eq!(items.len(), 2);
-    assert_eq!(kind_of(items.into_iter().nth(1).expect("error")), "internal");
+    assert_eq!(
+        kind_of(items.into_iter().nth(1).expect("error")),
+        "internal"
+    );
     assert_eq!(sub.dropped(), 5);
 }
 
