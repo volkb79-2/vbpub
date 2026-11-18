@@ -214,7 +214,9 @@ def test_a_recorded_child_that_is_gone_or_replaced_is_never_signalled(monkeypatc
     finally:
         os.kill(grandchild, 9)  # a process this test started
         parent.stdout.close()
-        _end(parent)
+        # Let the shell reap its own killed child and exit by itself: killing the shell first
+        # would orphan the zombie onto this (subreaper) process and the guard would flag it.
+        parent.wait(timeout=60)
         _end(own)
 
 
