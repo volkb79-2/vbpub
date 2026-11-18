@@ -54,7 +54,7 @@ not know the file. The table shows the plain locations it declares.
 - Warning: `git clean -x` (or `-xdf`) deletes every ignored `artifacts/` directory and every `vm-lab/` directory, including all VM disks, and `downloads/`. Never run it in a checkout that holds VM files.
 - Relaxed fsync is the default for disposable VM run disks (`cache=unsafe`); durable only where a test judges storage durability, and for installed-base images while they are being built (cowtree COW-BL-05). A host crash may corrupt an unsafe run disk; killing QEMU does not, because the host page cache survives it.
 - Compression: `<project>/vm-lab/` is compressed (`zstd`) because storage is scarce; `downloads/iso/` is not. The concerns about random guest writes into compressed extents stay recorded in `mdt-cockpit/docs/BTRFS-COW-OPTIONS.md` 4.6 until a benchmark settles them.
-- Projects that still keep VM files in `<project>/artifacts/vm-lab/` (truenas, tnt, debian-install-v2 and others) move to `<project>/vm-lab/` and onto the resolver under the follow-up of mdt-cockpit MDT-044 (packages RP-02..RP-06); until then their own docs name the location they use.
+- Path standard status (COW-BL-11 in `libraries/cowtree/BACKLOG.md` holds the table): the resolver, the `vm-lab/` project, truenas/tnt, the debian-install-v2 harness and the other consumers are on it (RP-01, RP-01b, RP-02, RP-03, RP-04, RP-06 merged; RP-05 was folded into RP-04). Still open: the RP-02 leftovers (release registration of vm-lab and vmscreen, the vmscreen floor, image and wheel never built) and RP-07 (design only).
 
 ## Writing a handoff / dispatch prompt — honor AUTHORING.md
 When you are asked to **start an agent for a task**, or to **write a prompt or a

@@ -35,7 +35,7 @@ def _demand(tmp_path: Path) -> Path:
 def _run(argv, monkeypatch=None, transport=None):
     app = build_cli(identity())
     if transport is not None:
-        (monkeypatch or pytest.MonkeyPatch()).setattr("fleetd.cli.HxTransport", lambda: transport)
+        (monkeypatch or pytest.MonkeyPatch()).setattr("fleetd.cli.HxTransport", lambda *_args, **_kwargs: transport)
     stdout, stderr = io.StringIO(), io.StringIO()
     status = app.run(argv=list(argv), stdout=stdout, stderr=stderr)
     return status, stdout.getvalue(), stderr.getvalue()
@@ -112,7 +112,7 @@ def test_a_campaign_command_prints_one_document_in_both_modes(tmp_path, monkeypa
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps(_plan(2)), encoding="utf-8")
     transport = FakeTransport()
-    monkeypatch.setattr("fleetd.cli.HxTransport", lambda: transport)
+    monkeypatch.setattr("fleetd.cli.HxTransport", lambda *_args, **_kwargs: transport)
     state_dir = tmp_path / "state"
     base = ["run", str(plan_path), "--transport", "hx", "--campaign", "output-campaign",
             "--state-dir", str(state_dir)]

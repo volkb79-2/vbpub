@@ -1,0 +1,258 @@
+[
+  {
+    "diff": "--- a/src/lib.rs\n+++ replace double -> i32 with 0\n@@ -1,3 +1,3 @@\n pub fn double(x: i32) -> i32 {\n-    x * 2\n+    0 /* ~ changed by cargo-mutants ~ */\n }\n",
+    "file": "a/src/lib.rs",
+    "function": {
+      "function_name": "double",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "a/src/lib.rs:2:5: replace double -> i32 with 0",
+    "package": "a",
+    "replacement": "0",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- a/src/lib.rs\n+++ replace double -> i32 with 1\n@@ -1,3 +1,3 @@\n pub fn double(x: i32) -> i32 {\n-    x * 2\n+    1 /* ~ changed by cargo-mutants ~ */\n }\n",
+    "file": "a/src/lib.rs",
+    "function": {
+      "function_name": "double",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "a/src/lib.rs:2:5: replace double -> i32 with 1",
+    "package": "a",
+    "replacement": "1",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- a/src/lib.rs\n+++ replace double -> i32 with -1\n@@ -1,3 +1,3 @@\n pub fn double(x: i32) -> i32 {\n-    x * 2\n+    -1 /* ~ changed by cargo-mutants ~ */\n }\n",
+    "file": "a/src/lib.rs",
+    "function": {
+      "function_name": "double",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "a/src/lib.rs:2:5: replace double -> i32 with -1",
+    "package": "a",
+    "replacement": "-1",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- a/src/lib.rs\n+++ replace * with + in double\n@@ -1,3 +1,3 @@\n pub fn double(x: i32) -> i32 {\n-    x * 2\n+    x + /* ~ changed by cargo-mutants ~ */ 2\n }\n",
+    "file": "a/src/lib.rs",
+    "function": {
+      "function_name": "double",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "a/src/lib.rs:2:7: replace * with + in double",
+    "package": "a",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 8,
+        "line": 2
+      },
+      "start": {
+        "column": 7,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- a/src/lib.rs\n+++ replace * with / in double\n@@ -1,3 +1,3 @@\n pub fn double(x: i32) -> i32 {\n-    x * 2\n+    x / /* ~ changed by cargo-mutants ~ */ 2\n }\n",
+    "file": "a/src/lib.rs",
+    "function": {
+      "function_name": "double",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "a/src/lib.rs:2:7: replace * with / in double",
+    "package": "a",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 8,
+        "line": 2
+      },
+      "start": {
+        "column": 7,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- b/src/lib.rs\n+++ replace quad -> i32 with 0\n@@ -1,10 +1,10 @@\n pub fn quad(x: i32) -> i32 {\n-    a::double(a::double(x))\n+    0 /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     #[test]\n     fn quad_is_four_times() {\n         assert_eq!(super::quad(3), 12);\n     }\n",
+    "file": "b/src/lib.rs",
+    "function": {
+      "function_name": "quad",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "b/src/lib.rs:2:5: replace quad -> i32 with 0",
+    "package": "b",
+    "replacement": "0",
+    "span": {
+      "end": {
+        "column": 28,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- b/src/lib.rs\n+++ replace quad -> i32 with 1\n@@ -1,10 +1,10 @@\n pub fn quad(x: i32) -> i32 {\n-    a::double(a::double(x))\n+    1 /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     #[test]\n     fn quad_is_four_times() {\n         assert_eq!(super::quad(3), 12);\n     }\n",
+    "file": "b/src/lib.rs",
+    "function": {
+      "function_name": "quad",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "b/src/lib.rs:2:5: replace quad -> i32 with 1",
+    "package": "b",
+    "replacement": "1",
+    "span": {
+      "end": {
+        "column": 28,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- b/src/lib.rs\n+++ replace quad -> i32 with -1\n@@ -1,10 +1,10 @@\n pub fn quad(x: i32) -> i32 {\n-    a::double(a::double(x))\n+    -1 /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     #[test]\n     fn quad_is_four_times() {\n         assert_eq!(super::quad(3), 12);\n     }\n",
+    "file": "b/src/lib.rs",
+    "function": {
+      "function_name": "quad",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "b/src/lib.rs:2:5: replace quad -> i32 with -1",
+    "package": "b",
+    "replacement": "-1",
+    "span": {
+      "end": {
+        "column": 28,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  }
+]

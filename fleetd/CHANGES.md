@@ -4,6 +4,56 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Size R2 shard budgets from the per-candidate mean and a measured tail margin
+  (FD-031). `fleet-r2-measurement/1` stays `/1` and its `summary` gains
+  additive optional fields `cost_candidates`, `cost_seconds_sum`,
+  `cost_seconds_mean`, `cost_seconds_stdev` and `cost_seconds_max` over killed,
+  survived, `budget_exceeded` and `hung` candidates (the last two at their
+  bound); the median fields are unchanged and a document written before them
+  still loads and sizes from its median. `fleet sizing --measurement` now uses
+  the mean and derives each shard's margin as `max(1.10, 1 + 1.645 x cv /
+  sqrt(n))`; `--margin` (no longer defaulting to 1.10 on the command line) is
+  the explicit override. Sizing documents gain `seconds_statistic`,
+  `margin_source`, `dispersion` and a per-shard `margin` (additive to
+  `fleet-r2-sizing/1`). The budget is an estimate: a remainder continues in a
+  later instance. Effect: a measured heavy-tailed lane now gets a larger budget
+  than before.
+- Reserve a share of the rolling slice for the never-judged remainder (FD-038).
+  `[r2] reserve_percent` in `r2-scope.toml` (integer 0 to 100, default **25**,
+  rounded up, capped at `slice_size - 1`) keeps that share of every slice for
+  never-judged and pending candidates, so a target edited every release by more
+  than `slice_size` candidates still sweeps; a reserve the remainder cannot fill
+  returns to the changed files, `0` restores the changed-first slice. The
+  scope document's `slice` gains `reserve_percent`, `reserved_candidates`,
+  `deferred_changed_candidates` and `deferred_changed_files` (every changed file
+  that did not fit). The cursor document is unchanged, so every
+  `fleet-r2-scope-cursor/2` file still loads. RISK: a heavy-churn release now
+  judges fewer changed candidates and more sweep candidates than before.
+- Probe follow-ups to FD-014/FD-022/FD-023 (WP1b). A job is now settled for
+  probing only when a probe row reported it `EXIT` with its progress window
+  closed (`probe_settled`), so a stall stop in the gap between the launcher's
+  end-offset write and EXIT no longer leaves a job without its verdict records;
+  states written before the flag keep the earlier rule. A host that becomes
+  unreachable or errors drops its stored PSI reading. The tests no longer depend
+  on the checkout's `scripts/controller/hx.sh`.
+- The probe no longer grows with the batch count (FD-014). It sends one
+  compressed job-name table per (campaign, host, commit, project, lane) group
+  with an ID-file path template, keeps a single copy of the payload, and skips
+  jobs that ended with a closed progress window; a 150-batch host probes with
+  about 6 KB instead of failing at the 128 KiB argument cap near 100 batches.
+- Name the hx wrapper with `--hx PATH` or `FLEETD_HX`; an installed fleetd with
+  neither exits 3 with one actionable line instead of "could not launch hx
+  transport" (FD-023). Precedence: `--hx`, then `FLEETD_HX`, then the source
+  checkout default; `PATH` is never searched.
+- Defer new batch starts on a host whose memory or IO PSI `some avg10` is above
+  the plan's `psi_refuse_some_avg10`, whose PSI cannot be read, or whose plan
+  records no threshold (FD-022). `status` names the reason in `start_deferred`;
+  running batches are never stopped. Plan host rows carry
+  `psi_refuse_some_avg10` (additive to `fleet-plan/1`; a campaign started from an
+  older plan needs a re-plan before it starts new batches).
+
 ### Changed
 
 - Rewrite the rolling whole-target sweep so an edit no longer restarts it

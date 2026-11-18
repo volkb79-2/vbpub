@@ -309,6 +309,20 @@ def _reset_the_process_wide_unproven_cleanup_latch():
 
 
 @pytest.fixture(autouse=True)
+def _no_ambient_cow_area(monkeypatch):
+    """The host's copy-on-write area is a host fact, never a test input.
+
+    A host that exports ``MDT_COW_ROOT`` (the cockpit devcontainer does) made
+    every lane run take CoW clones, which bypass the snapshot ``_verify`` hook
+    the history-cut tests count, so those tests passed or failed with the
+    machine they ran on. Tests that exercise the CoW path set the variables
+    themselves, after this fixture.
+    """
+    monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+    monkeypatch.delenv("COWTREE_MODE", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_ambient_color(monkeypatch):
     """Help and CLI output must not depend on the caller's terminal colour settings (Python 3.14 argparse colours --help under FORCE_COLOR)."""
     monkeypatch.delenv("FORCE_COLOR", raising=False)

@@ -19,7 +19,7 @@
 | FD-011 | Optional persistent campaign scheduler after the one-shot loop is proven | P2 | OPEN | 2026-11-13 |
 | FD-012 | Export campaign progress for cgprofile guard policy and evidence | P2 | OPEN | 2026-11-13 |
 | FD-013 | Serialize concurrent campaign state updates | P2 | DONE | 2026-11-14 |
-| FD-014 | Probe command grows with the number of batches and hits the 128 KiB argument limit near 100 batches per host | P2 | OPEN | 2026-11-14 |
+| FD-014 | Probe command grows with the number of batches and hits the 128 KiB argument limit near 100 batches per host | P2 | DONE | 2026-11-14 |
 | FD-015 | Cold-start stall threshold ignores the predicted candidate time, so slow lanes stall and re-queue without end | P1 | DONE | 2026-11-14 |
 | FD-016 | A batch that exits without progress is re-queued on every exit, without limit | P1 | DONE | 2026-11-14 |
 | FD-017 | One candidate that does not fit the re-queue target drops every other pending candidate of its batch | P2 | OPEN | 2026-11-14 |
@@ -27,20 +27,20 @@
 | FD-019 | Stale records in the append-only progress file count as finished for a later campaign on the same commit | P2 | DONE | 2026-11-14 |
 | FD-020 | Host loss is measured from the last contact, and a slow probe counts as unreachable | P2 | OPEN | 2026-11-14 |
 | FD-021 | A transport or contract error on one host aborts the scheduling step for every host | P2 | DONE | 2026-11-14 |
-| FD-022 | Dispatch does not re-check memory/IO PSI before starting the next batch | P2 | OPEN | 2026-11-14 |
-| FD-023 | The hx wrapper path is derived from the source checkout and fails from an installed wheel | P3 | OPEN | 2026-11-14 |
+| FD-022 | Dispatch does not re-check memory/IO PSI before starting the next batch | P2 | DONE | 2026-11-14 |
+| FD-023 | The hx wrapper path is derived from the source checkout and fails from an installed wheel | P3 | DONE | 2026-11-14 |
 | FD-024 | Deferred re-queue de-duplication is not pinned for three or more hosts | P3 | DONE | 2026-11-14 |
 | FD-025 | The first stall window uses unscaled reference seconds when no comparable host speed reference exists | P3 | OPEN | 2026-11-14 |
 | FD-026 | A host that stays in ERROR has no loss timer | P3 | OPEN | 2026-11-14 |
 | FD-029 | Nothing wires `fleet scope`/`fleet sizing`/`fleet merge-check` into a release or campaign workflow | P2 | OPEN | 2026-11-15 |
 | FD-030 | The new per-worker demand keys are not accepted inside `run-gate.toml` | P2 | OPEN | 2026-11-15 |
-| FD-031 | Sizing budgets come from medians and a fixed margin, not a measured tail | P2 | OPEN | 2026-11-15 |
+| FD-031 | Sizing budgets come from medians and a fixed margin, not a measured tail | P2 | DONE | 2026-11-15 |
 | FD-032 | `fleet scope` reads a checkout it never checks for uncommitted or untracked work | P3 | DONE | 2026-11-15 |
 | FD-033 | The rolling cursor goes stale on every release that changes a target file | P2 | DONE | 2026-11-15 |
 | FD-034 | No host-install script for fleetd; the docs prescribed a system-Python pip install that Debian 13 refuses | P2 | DONE | 2026-11-15 |
-| FD-035 | `host-facts/1` validation does not bound a service `MemoryMin`, so an implausible fact is first refused at plan time, not at collect or validate time | P3 | OPEN | 2026-11-15 |
+| FD-035 | `host-facts/1` validation does not bound a service `MemoryMin`, so an implausible fact is first refused at plan time, not at collect or validate time | P3 | DONE (by design) | 2026-11-15 |
 | FD-037 | Rolling mode keys a candidate by its file's content, so a partial edit re-judges the whole file | P3 | OPEN | 2026-11-15 |
-| FD-038 | Rolling mode's changed candidates share the `slice_size` budget, so heavy per-release churn can defer them and starve the never-judged remainder | P3 | OPEN | 2026-11-15 |
+| FD-038 | Rolling mode's changed candidates share the `slice_size` budget, so heavy per-release churn can defer them and starve the never-judged remainder | P3 | DONE | 2026-11-15 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -212,7 +212,11 @@ with fleetd's copy.
 
 ## FD-035 `host-facts/1` does not bound a service `MemoryMin`
 
-**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-15.
+**State:** DONE, closed as BY DESIGN (fleetd WP3, 2026-11-18; fleetd@e5e97ac78).
+**Priority:** P3. **Filed:** 2026-11-15. The contract validates type only and
+planning refuses implausible values; `docs/SPEC.md` says so in one sentence
+("By design (FD-035)"). No code change, per the document-limits-instead-of-
+machinery rule.
 
 The contract validator checks the TYPE of `control_plane.service_memory_min.<unit>.memory_min_bytes` (a nullable
 non-negative integer) but not its magnitude, because `host-facts/1` is a
@@ -325,7 +329,9 @@ add leases, host-side locks, or a daemon.
 
 ## FD-014 Probe size is bounded by batches per host
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-14.
+**State:** DONE (fleetd-wp1-20261118, 729b3671e). **Priority:** P2. **Filed:** 2026-11-14.
+
+Residual (WP1b): the name table still grows by about 11 bytes per non-settled job, so one host's probe reaches the 128 KiB argument cap at about 11 000 non-settled jobs; `probe_settled` closes the stall-in-the-end-offset-gap race.
 
 `probe_script` carries one JSON target per job (name, ID-file path, commit,
 project, lane) twice: once as the base64 payload argument and once in the
@@ -497,7 +503,7 @@ the message as host `ERROR`, and continue refreshing the other hosts.
 
 ## FD-022 Dispatch does not re-check PSI
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-14 (Opus series review).
+**State:** DONE (fleetd-wp1-20261118, 7411617f3). **Priority:** P2. **Filed:** 2026-11-14 (Opus series review).
 
 Design §4.3 says fleetd starts nothing new on a host whose memory or IO PSI
 `some avg10` exceeds 25. `fleet plan` applies that once, from the facts
@@ -511,7 +517,7 @@ and defer starts on that host above the plan's `psi_refuse_some_avg10`
 
 ## FD-023 hx wrapper path only valid in a source checkout
 
-**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-14 (Opus series review).
+**State:** DONE (fleetd-wp1-20261118, 3258259fa). **Priority:** P3. **Filed:** 2026-11-14 (Opus series review).
 
 `HxTransport()` defaults to `Path(__file__).resolve().parents[3] /
 "scripts/controller/hx.sh"`, which exists only when fleetd runs from the
@@ -628,7 +634,20 @@ sizes the campaign with no separate TOML file, and Run-Gate refuses a
 
 ## FD-031 Sizing budgets use medians and a fixed margin, not a measured tail
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-15.
+**State:** DONE (fleetd WP3, 2026-11-18; fleetd@63568d5d3, docs fleetd@e5e97ac78).
+**Priority:** P2. **Filed:** 2026-11-15.
+
+**Resolution.** `fleet-r2-measurement/1` keeps its median fields and gains
+additive optional summary fields (`cost_candidates`, `cost_seconds_sum`,
+`cost_seconds_mean`, `cost_seconds_stdev`, `cost_seconds_max`) over killed,
+survived, `budget_exceeded` and `hung` candidates at their bounds. Sizing uses
+the mean and derives each shard's margin as `max(1.10, 1 + 1.645 x cv /
+sqrt(n))` (the one-sided 95th percentile of a sum of `n` candidates); `--margin`
+is the explicit override; a document without the new fields sizes from its
+median. The budget is documented as an estimate whose remainder continues in a
+later instance. Tests: `tests/test_sizing.py` (a dispersed measurement yields a
+budget at or above its measured tail, the override still works, older documents
+load). Original finding below.
 
 `fleet sizing` computes each shard's budget from `candidates x
 per_candidate_seconds / workers + baseline`, multiplied by a fixed `--margin`
@@ -751,7 +770,18 @@ the cursor's, because the cursor keys on content rather than on ids.
 
 ## FD-038 Rolling mode's changed candidates share the `slice_size` budget
 
-**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-15 (review of FD-033).
+**State:** DONE (fleetd WP3, 2026-11-18; fleetd@a6beb0b5a, docs fleetd@e5e97ac78).
+**Priority:** P3. **Filed:** 2026-11-15 (review of FD-033).
+
+**Resolution.** A separate cap for the sweep share: `[r2] reserve_percent`
+(default 25, 0 to 100, rounded up, capped at `slice_size - 1`) of every slice is
+reserved for the non-changed remainder, and the scope document's `slice` reports
+`reserve_percent`, `reserved_candidates`, `deferred_changed_candidates` and
+`deferred_changed_files` (every deferred changed file). `0` restores the
+changed-first slice. `fleet-r2-scope-cursor/2` is unchanged. Tests:
+`tests/test_scope.py` (a target edited every release still judges the reserved
+share and no deferred file is absent from the accounting). Original finding
+below.
 
 The rolling slice is a prefix of one order: files whose content changed since
 their mark first, then never-/not-yet-judged candidates. A release that changes

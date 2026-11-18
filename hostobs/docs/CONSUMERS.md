@@ -40,8 +40,12 @@ an environment fault, not a verdict on the code.
 All three use `tester-unified-rust` with Docker networking disabled. The image contains the
 stable Rust toolchain, the cargo tools, Python for the cache/floor helpers, and the crate
 archive closure for this exact `Cargo.lock`. Do not run Cargo from the cockpit or use a
-network fallback. The Cargo wrapper refuses before invoking Cargo if the mounted lock,
-baked lock digest, crate set, lock checksums, or cached archive bytes disagree.
+network fallback. An image BUILT FROM THIS SOURCE has a Cargo wrapper that refuses before
+invoking Cargo if the mounted lock's registry-set digest, crate set, lock checksums, or cached
+archive bytes disagree with the image (the registry set is the downloaded packages plus the
+lock version; workspace members' own entries are not part of it). The currently deployed
+`tester-unified-rust:local` is older: it still checks the sha256 of the whole `Cargo.lock`
+file, so on it any lock byte change is refused until the lanes move to a newly built tag.
 
 ## What `assay-r1` judges, and what it says
 
@@ -339,9 +343,19 @@ and keeping it would count its bytes twice and reopen a file whose records alrea
 
 ## Changing a Rust dependency
 
-Changing a Rust dependency or `Cargo.lock` requires rebuilding `tester-unified-rust`
-from the reviewed lock before the lanes can pass. This initial image build is a local
-bootstrap; CMRU-owned version resolution and image refresh belong to the later R-5 work
-package. Do not edit `Cargo.lock` by hand to satisfy a lane: the baked lock digest is
-the authority, and a mismatch is a signal to rebuild the image, not to hand-edit the
-lock.
+Adding, removing or changing a registry or git package (name, version, checksum, source)
+or the top-level lock `version` requires rebuilding `tester-unified-rust` from the reviewed
+lock before the lanes can pass. An edit that only touches workspace members (a path
+dependency between workspace crates rewrites their `dependencies` arrays and adds no
+downloaded crate) does not change the image identity and needs no rebuild. This initial
+image build is a local bootstrap; CMRU-owned version resolution and image refresh belong to
+the later R-5 work package. Do not edit `Cargo.lock` by hand to satisfy a lane: the baked
+registry-set digest is the authority, and a mismatch is a signal to rebuild the image, not
+to hand-edit the lock.
+
+Which image runs what: the registry-set identity exists only in an image built from this
+source (a NEW tag, built on a host later). The currently deployed `tester-unified-rust:local`
+still carries the whole-lock identity and rejects ANY lock byte change, workspace-only edits
+included, so a path dependency cannot land until the Rust lanes are switched to the new tag
+(a separate `run-gate.root.toml` commit, after the new tag exists). The old tag stays until
+every Rust lane has passed on the new one; only then is `:local` re-pointed.

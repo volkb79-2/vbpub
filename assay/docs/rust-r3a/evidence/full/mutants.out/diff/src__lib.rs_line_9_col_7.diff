@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace + with - in add
+@@ -1,17 +1,17 @@
+ //! Synthetic cargo-mutants subject for assay R-3a spikes (no dependencies).
+ 
+ pub struct Token {
+     pub id: u32,
+ }
+ 
+ /// Caught: the tests pin the sum.
+ pub fn add(a: i32, b: i32) -> i32 {
+-    a + b
++    a - /* ~ changed by cargo-mutants ~ */ b
+ }
+ 
+ /// Missed: no test calls it.
+ pub fn is_even(n: u32) -> bool {
+     n % 2 == 0
+ }
+ 
+ /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.

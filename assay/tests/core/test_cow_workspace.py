@@ -14,6 +14,15 @@ from assay.errors import AssayError, Outcome, ReasonCode
 from assay.workspace import WorkspaceCleanupError, WorkspaceEstimate
 
 
+def test_the_suite_never_inherits_the_hosts_cow_area():
+    """Regression: the cockpit exports MDT_COW_ROOT; a lane test run there took
+    CoW clones and the history-cut canary test counted 2 snapshots, not 3."""
+    import os
+
+    assert "MDT_COW_ROOT" not in os.environ
+    assert "COWTREE_MODE" not in os.environ
+
+
 class FakeCowError(Exception):
     pass
 
