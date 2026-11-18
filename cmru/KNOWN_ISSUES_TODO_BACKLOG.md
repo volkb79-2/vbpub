@@ -3229,15 +3229,15 @@ not implementable as the brief's "small" follow-on.
 
 The 2026-11-12 T3 rehearsal of `r2` remained PARTIAL: its preflight had six failing process-tree fixture tests, Assay's declared `../libraries/cowtree/src` package root was rejected, and the campaign crashed when `ResourceLimitEvidence.between` returned its current tuple contract. KI-153 through KI-155 fix these lane blockers in source and tests; the rehearsal is not an R2 campaign result and this entry remains open. The measured controls took 368, 752, and 825 seconds with other lanes running. The registered control ceiling is now 1800 seconds (2.18 times the longest measurement), and candidate timeouts retain the existing twice-control scaling.
 
-**Constraint.** The 2026-11-12 operator decision extends KI-79 through `>= 7.3.0`, `< 7.4.0`, so 7.3.0 may use `gate-provisional` without an earlier R2 run. The full R2 obligation is still open and follows the standing T3 schedule: run it asynchronously after the latest provisional release, before KI-79's current upper bound 7.4.0 unless the operator records another decision.
+**Constraint.** Under the standing release rule (operator decision 2026-11-18: a release needs R1 full branch coverage, R3 canary and an independent review, and R2 runs asynchronously), R2 is owed on the latest release at all times; no version window or upper bound exists any more. The release step runs `release-gate`, whose retained marker `.assay/mutation-postponed-cmru.json` and snapshot `deferred_lanes` entry are the record that R2 is owed for that release; this entry is the ledger of what is owed.
 
 **Fix.** Finish the owed whole-source R2 as the T3 lane `r2` on the latest release tag, using the controller-selected base (currently `cmru-v6.1.0` when no newer R2 PASS row exists); the copyable lane command is `run-gate --base cmru-v6.1.0 r2` when that base is selected. Kill the survivors of KI-129/133/134/135/138; an unkillable (equivalent) survivor leaves the existing operator-decision branch of Close when.
 
-**Close when.** A T3 ledger PASS row records cmru `r2` at the latest 7.3.x release tag, with a base at or before the last R2-covered tag (`cmru-v6.1.0`) and every candidate killed with no survivors; the campaign judges the latest released source and closes the accumulated 7.2.x/7.3.x R2 debt.
+**Close when.** A T3 ledger PASS row records cmru `r2` at the latest release tag, with a base at or before the last R2-covered tag (`cmru-v6.1.0`) and every candidate killed with no survivors; the campaign judges the latest released source and closes the accumulated R2 debt of every provisional release up to it.
 
 **Remaining WP-CMRU parts 6, 7, and 9.** Part 6 follows a successful part-5 T3 rehearsal: make CMRU's `gate` a mutation-free release orchestrator and always write the R2-owed marker with `follow_up_lane = "r2"`. Part 7 follows parts 6 and 1 (`whole_target`): retire `cmru-first-release`, `assay-first-release`, and the `_plan_gate` first-release branch. Part 9 still needs the `TMPDIR`/`PYTHONPYCACHEPREFIX` A/B and a duration survey on a quiet host, including an explanation of the control variance in an isolated run; the current `io_sync = "relaxed"` setting remains in place.
 
-**After KI-141 closes.** KI-159 tracks whether to replace per-minor window edits with a rolling rule or a declared release-policy field. Until that design is selected and implemented, KI-79 remains a bounded allowlist.
+**Window policy.** KI-159 (FIXED 2026-11-18) removed the per-minor window allowlist: the standing release rule above replaced KI-79's bounded windows, so this entry no longer waits on any window design.
 
 **Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md); KI-79 above; cmru-v7.2.4 release (2026-11-08).
 

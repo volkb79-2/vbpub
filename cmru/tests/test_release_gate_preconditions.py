@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import subprocess
 import tomllib
 from contextlib import nullcontext
@@ -11,7 +10,6 @@ import pytest
 
 from cmru import cli, release_preconditions
 
-_REAL_LOAD_GATE = release_preconditions._load_release_gate  # captured before any test patches it
 _REAL_CHECK_RELEASE_BUILD_IMAGES = release_preconditions.check_release_build_images_precondition
 
 RUN_GATE_VERSION_SEQUENCE = r'''RUN_GATE_VERSION="$(
@@ -37,18 +35,9 @@ def _gate_preconditions(tmp_path: Path, monkeypatch, *, image_status="PASS", ima
         release_preconditions, "_git_blob_text",
         lambda _root, _revision, path: blobs[path],
     )
-    def validate_postponement(project_root, tracking_id):
-        assert tracking_id == "KI-79"
-        prepared = (project_root / "CHANGES.md").read_text(encoding="utf-8")
-        if "[7.2.0]" in prepared:
-            raise RuntimeError("version 7.2.0 is outside the KI-79 window")
-        return "7.1.4"
-
     monkeypatch.setattr(
         release_preconditions, "_load_release_gate",
-        lambda _root, _revision: SimpleNamespace(
-            _validate_postponement=validate_postponement,
-        ),
+        lambda *_args: pytest.fail("the standing release rule consults no per-version gate policy"),
     )
     monkeypatch.setattr(
         release_preconditions,
@@ -61,29 +50,26 @@ def _gate_preconditions(tmp_path: Path, monkeypatch, *, image_status="PASS", ima
     return repo_root
 
 
-def test_minor_release_outside_ki79_window_is_a_failed_precondition(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "version", ["5.9.9", "6.1.9", "7.1.4", "7.2.0", "7.4.0", "7.5.0", "8.0.0"],
+)
+def test_gate_preconditions_hold_no_waiver_window_row_for_any_version(
+    tmp_path, monkeypatch, version,
+):
     repo_root = _gate_preconditions(tmp_path, monkeypatch)
 
     rows = release_preconditions.evaluate_release_gate_preconditions(
-        repo_root, repo_root, "HEAD", {"cmru": "7.2.0"},
+        repo_root, repo_root, "HEAD", {"cmru": version},
     )
 
-    waiver = next(row for row in rows if row.check == "KI-79 waiver window")
-    assert waiver.status == "FAIL"
-    assert "7.2.0" in waiver.detail
-    assert "to `run-gate gate`" in waiver.remedy
+    assert [row.check for row in rows] == ["Run-Gate image identity", "Bootstrap Run-Gate version"]
+    assert [row.status for row in rows] == ["PASS", "PASS"]
+    assert not any("window" in f"{row.check} {row.detail} {row.remedy}".lower() for row in rows)
 
 
-def test_minor_release_inside_ki79_window_passes_the_gate_validator(tmp_path, monkeypatch):
-    repo_root = _gate_preconditions(tmp_path, monkeypatch)
-
-    rows = release_preconditions.evaluate_release_gate_preconditions(
-        repo_root, repo_root, "HEAD", {"cmru": "7.1.4"},
-    )
-
-    waiver = next(row for row in rows if row.check == "KI-79 waiver window")
-    assert waiver.status == "PASS"
-    assert "7.1.4" in waiver.detail
+def test_the_waiver_window_precondition_helpers_no_longer_exist():
+    assert not hasattr(release_preconditions, "run_tests_uses_provisional_gate")
+    assert not hasattr(release_preconditions, "_prepared_version_error")
 
 
 def test_tester_image_mismatch_is_a_failed_precondition(tmp_path, monkeypatch):
@@ -210,63 +196,6 @@ def test_git_blob_reader_returns_content_or_names_the_failure(
         with pytest.raises(RuntimeError, match="cannot read docs/file.md") as caught:
             release_preconditions._git_blob_text(tmp_path, "a" * 40, "docs/file.md")
         assert expected in str(caught.value)
-
-
-def test_prepared_version_reader_uses_gate_validator(tmp_path):
-    observed = {}
-
-    def validate(project_root, tracking_id):
-        observed["tracking_id"] = tracking_id
-        observed["changes"] = (project_root / "CHANGES.md").read_text("utf-8")
-        raise RuntimeError("outside the authorized window")
-
-    error = release_preconditions._prepared_version_error(
-        SimpleNamespace(_validate_postponement=validate), "7.2.0",
-    )
-
-    assert error == "outside the authorized window"
-    assert observed["tracking_id"] == "KI-79"
-    assert "[7.2.0]" in observed["changes"]
-
-
-def test_prepared_version_reader_returns_none_for_an_authorized_version():
-    error = release_preconditions._prepared_version_error(
-        SimpleNamespace(_validate_postponement=lambda _root, _tracking_id: "7.1.4"),
-        "7.1.4",
-    )
-
-    assert error is None
-
-
-def test_prepared_version_reader_matches_the_release_gate_policy_at_head(tmp_path):
-    # Hermetic: the test tree may be an extracted source copy without .git, so
-    # commit the real gate driver into a throwaway repository and load it from
-    # that repository's HEAD.
-    gate_source = Path(__file__).resolve().parents[1] / "tools" / "run_release_gate.py"
-    source_root = tmp_path / "source"
-    (source_root / "cmru" / "tools").mkdir(parents=True)
-    (source_root / "cmru" / "tools" / "run_release_gate.py").write_text(
-        gate_source.read_text("utf-8"), encoding="utf-8",
-    )
-    identity = ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-                "-c", "commit.gpgsign=false"]
-    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
-    for args in (
-        ["init", "-q"],
-        ["add", "cmru/tools/run_release_gate.py"],
-        [*identity, "commit", "-q", "-m", "gate"],
-    ):
-        subprocess.run(["git", *args], cwd=source_root, env=env, check=True,
-                       capture_output=True)
-    gate = release_preconditions._load_release_gate(source_root, "HEAD")
-
-    assert release_preconditions._prepared_version_error(gate, "7.1.4") is None
-    assert release_preconditions._prepared_version_error(gate, "7.2.0") is None
-    assert release_preconditions._prepared_version_error(gate, "7.3.0") is None
-    assert release_preconditions._prepared_version_error(gate, "7.3.9") is None
-    error = release_preconditions._prepared_version_error(gate, "7.4.0")
-    assert error is not None
-    assert "authorized only for CMRU" in error
 
 
 @pytest.mark.parametrize(
@@ -714,23 +643,6 @@ def test_bootstrap_version_precondition_returns_actionable_literal_version_remed
     assert "replace every literal Run-Gate release version" in row.remedy
 
 
-def test_release_gate_source_failure_becomes_a_failed_waiver_row(tmp_path, monkeypatch):
-    repo_root = _gate_preconditions(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        release_preconditions, "_load_release_gate",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("gate source is unreadable")),
-    )
-
-    rows = release_preconditions.evaluate_release_gate_preconditions(
-        repo_root, repo_root, "HEAD", {"cmru": "7.1.4"},
-    )
-
-    waiver = next(row for row in rows if row.check == "KI-79 waiver window")
-    assert waiver.status == "FAIL"
-    assert "gate source is unreadable" in waiver.detail
-    assert "Repair the release gate source" in waiver.remedy
-
-
 def test_bootstrap_version_precondition_reports_file_read_failures(monkeypatch, tmp_path):
     monkeypatch.setattr(
         release_preconditions, "_git_blob_text",
@@ -772,11 +684,11 @@ def _release_precondition_args(**updates):
     return SimpleNamespace(**values)
 
 
-_CMRU_TOML_PROVISIONAL = (
+_CMRU_TOML_RELEASE_GATE = (
     '[steps.run-tests]\n'
-    'commands = [{ label = "gate", argv = ["run-gate", "gate-provisional"], cwd = "." }]\n'
+    'commands = [{ label = "gate", argv = ["run-gate", "release-gate"], cwd = "." }]\n'
 )
-_CMRU_TOML_FULL = _CMRU_TOML_PROVISIONAL.replace("gate-provisional", "gate")
+_CMRU_TOML_FULL = _CMRU_TOML_RELEASE_GATE.replace("release-gate", "gate")
 
 
 def _mock_cli_release_preconditions(monkeypatch, tmp_path, *, changed=True):
@@ -802,10 +714,6 @@ def _mock_cli_release_preconditions(monkeypatch, tmp_path, *, changed=True):
     )
     monkeypatch.setattr(
         cli, "_orchestration_env_for_release_snapshot", lambda *_args: {},
-    )
-    monkeypatch.setattr(
-        cli, "_cmru_snapshot_config_text",
-        lambda *_args: (Path("cmru/cmru.toml"), _CMRU_TOML_PROVISIONAL),
     )
     monkeypatch.setattr(
         cli, "_known_project_scope_names", lambda _configs: frozenset({"cmru"}),
@@ -1379,8 +1287,8 @@ def test_release_precondition_helper_reports_one_pass_line_and_uses_planned_vers
     observed = {}
 
     def evaluate(repo_root, source_root, revision, versions, **kwargs):
-        observed.update(gate_provisional=kwargs["gate_provisional"],
-            repo_root=repo_root, source_root=source_root, revision=revision,
+        observed.update(
+            kwargs=kwargs, repo_root=repo_root, source_root=source_root, revision=revision,
             versions=versions,
         )
         return rows
@@ -1395,7 +1303,7 @@ def test_release_precondition_helper_reports_one_pass_line_and_uses_planned_vers
 
     assert revision == "b" * 40
     assert observed["versions"] == {"cmru": "7.1.4"}
-    assert observed["gate_provisional"] is True
+    assert observed["kwargs"] == {"require_docker": False}
     assert "Release gate preconditions: PASS (cmru 7.1.4)." in capsys.readouterr().out
 
 
@@ -1460,7 +1368,7 @@ def test_release_precondition_helper_fails_with_policy_exit_and_remedy(
     monkeypatch.setattr(
         release_preconditions, "evaluate_release_gate_preconditions",
         lambda *_args, **_kwargs: [release_preconditions.GatePrecondition(
-            "cmru", "KI-79", "FAIL", "planned 7.2.0 is outside the window", "run full gate",
+            "cmru", "Run-Gate image identity", "FAIL", "labels differ", "rebuild the image",
         )],
     )
 
@@ -1473,8 +1381,8 @@ def test_release_precondition_helper_fails_with_policy_exit_and_remedy(
 
     assert caught.value.code == 4
     output = capsys.readouterr()
-    assert "planned 7.2.0 is outside the window" in output.err
-    assert "Remedy: run full gate" in output.err
+    assert "labels differ" in output.err
+    assert "Remedy: rebuild the image" in output.err
 
 
 def test_release_precondition_helper_uses_feature_source_revision(
@@ -1793,111 +1701,29 @@ def test_release_launcher_preserves_precondition_error_exit_codes(
     assert caught.value.code == exit_code
 
 
-def test_non_provisional_gate_skips_the_ki79_window_even_for_a_minor_release(
-    tmp_path, monkeypatch,
+@pytest.mark.parametrize(
+    "config_text", [_CMRU_TOML_RELEASE_GATE, _CMRU_TOML_FULL], ids=["release-gate", "gate"],
+)
+def test_dry_run_accepts_a_run_tests_step_with_either_release_lane(
+    tmp_path, monkeypatch, capsys, config_text,
 ):
-    repo_root = _gate_preconditions(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        release_preconditions, "_load_release_gate",
-        lambda *_args: pytest.fail("no waiver is used, so the KI-79 validator must not run"),
-    )
-
-    rows = release_preconditions.evaluate_release_gate_preconditions(
-        repo_root, repo_root, "HEAD", {"cmru": "7.2.0"}, gate_provisional=False,
-    )
-
-    waiver = next(row for row in rows if row.check == "KI-79 waiver window")
-    assert waiver.status == "SKIPPED"
-    assert "gate-provisional" in waiver.detail
-    assert [row.check for row in rows][1:] == [
-        "Run-Gate image identity", "Bootstrap Run-Gate version",
-    ]
-    assert not any(row.status == "FAIL" for row in rows)
-
-
-def test_ki79_failure_advice_leads_to_a_passing_or_skipped_row(tmp_path, monkeypatch):
-    repo_root = _gate_preconditions(tmp_path, monkeypatch)
-    failed = release_preconditions.evaluate_release_gate_preconditions(
-        repo_root, repo_root, "HEAD", {"cmru": "7.2.0"},
-        gate_provisional=release_preconditions.run_tests_uses_provisional_gate(
-            _CMRU_TOML_PROVISIONAL,
-        ),
-    )[0]
-    assert failed.status == "FAIL"
-    assert "run-gate gate-provisional" in failed.remedy and "run-gate gate`" in failed.remedy
-
-    # Follow the remedy: the run-tests command becomes the full gate.
-    followed = release_preconditions.evaluate_release_gate_preconditions(
-        repo_root, repo_root, "HEAD", {"cmru": "7.2.0"},
-        gate_provisional=release_preconditions.run_tests_uses_provisional_gate(
-            _CMRU_TOML_FULL,
-        ),
-    )[0]
-    assert followed.status == "SKIPPED"
-
-
-def test_run_tests_provisional_detection_reads_the_configured_argv():
-    assert release_preconditions.run_tests_uses_provisional_gate(_CMRU_TOML_PROVISIONAL)
-    assert not release_preconditions.run_tests_uses_provisional_gate(_CMRU_TOML_FULL)
-    assert not release_preconditions.run_tests_uses_provisional_gate("[project]\nname = 'x'\n")
-    real = (Path(__file__).resolve().parents[1] / "cmru.toml").read_text("utf-8")
-    assert release_preconditions.run_tests_uses_provisional_gate(real)
-
-
-def test_release_precondition_helper_passes_the_full_gate_choice_through(
-    tmp_path, monkeypatch,
-):
+    """The dry-run needs no window check, whichever lane the run-tests step names."""
     configs = _mock_cli_release_preconditions(monkeypatch, tmp_path)
+    read_configs = []
     monkeypatch.setattr(
         cli, "_cmru_snapshot_config_text",
-        lambda *_args: (Path("cmru/cmru.toml"), _CMRU_TOML_FULL),
+        lambda *_args: read_configs.append(True) or (Path("cmru/cmru.toml"), config_text),
     )
-    observed = {}
+    _gate_preconditions(tmp_path, monkeypatch)
 
-    def evaluate(*_args, **kwargs):
-        observed.update(kwargs)
-        return [release_preconditions.GatePrecondition("cmru", "waiver", "SKIPPED", "full gate")]
-
-    monkeypatch.setattr(release_preconditions, "evaluate_release_gate_preconditions", evaluate)
-
-    cli._release_gate_preconditions_before_dispatch(
+    revision = cli._release_gate_preconditions_before_dispatch(
         tmp_path, tmp_path / "cmru.orchestration.toml", configs, ["cmru"],
-        _release_precondition_args(), git_auth=None, report=False,
+        _release_precondition_args(minor=True), git_auth=None, report=True,
     )
 
-    assert observed == {"gate_provisional": False, "require_docker": False}
+    assert revision == "b" * 40
+    assert read_configs == []  # nothing about the run-tests step is consulted any more
+    output = capsys.readouterr()
+    assert "Release gate preconditions: PASS (cmru 7.1.4)." in output.out
+    assert "window" not in (output.out + output.err).lower()
 
-
-@pytest.mark.parametrize(
-    "version",
-    [
-        "6.1.9", "6.2.0", "6.3.0", "7.0.0", "7.1.9",
-        "7.2.0", "7.2.1", "7.2.9", "7.3.0", "7.3.9", "7.4.0", "8.0.0",
-    ],
-)
-def test_dry_run_precondition_agrees_with_the_real_gate_window_table(tmp_path, monkeypatch, version):
-    """KI-79/KI-109: the dry-run row and the gate table are one source and cannot diverge."""
-    from tests.test_release_gate import run_release_gate
-
-    repo_root = _gate_preconditions(tmp_path, monkeypatch)
-    gate_source = Path(run_release_gate.__file__).read_text(encoding="utf-8")
-    real_blobs = release_preconditions._git_blob_text
-    monkeypatch.setattr(
-        release_preconditions, "_git_blob_text",
-        lambda root, revision, path: (
-            gate_source if path == "cmru/tools/run_release_gate.py" else real_blobs(root, revision, path)
-        ),
-    )
-    monkeypatch.setattr(release_preconditions, "_load_release_gate", _REAL_LOAD_GATE)
-
-    rows = release_preconditions.evaluate_release_gate_preconditions(
-        repo_root, repo_root, "HEAD", {"cmru": version},
-    )
-
-    waiver = next(row for row in rows if row.check == "KI-79 waiver window")
-    major_minor_patch = tuple(int(part) for part in version.split("."))
-    in_table = any(
-        low <= major_minor_patch < below
-        for low, below in run_release_gate.POSTPONEMENT_RELEASE_VERSIONS["KI-79"]
-    )
-    assert (waiver.status == "PASS") is in_table
