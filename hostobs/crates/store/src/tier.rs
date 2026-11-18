@@ -1949,7 +1949,10 @@ mod tests {
             "the oversized file is out of the ring but inside the byte total (HOB-43)"
         );
         assert_eq!(reopened.scan().quarantined_files.len(), 1);
-        assert_eq!(reopened.scan().quarantined_files[0].name, "hot-0-0.seg.corrupt");
+        assert_eq!(
+            reopened.scan().quarantined_files[0].name,
+            "hot-0-0.seg.corrupt"
+        );
         assert!(!temp.exists("hot-0-0.seg"));
         assert!(
             temp.exists("hot-0-0.seg.corrupt"),
@@ -2480,13 +2483,20 @@ mod tests {
             vec!["hot-0-0.seg.corrupt", "hot-60-1.seg.corrupt"],
             "the debris is ordered by the (start_s, seq) its names keep"
         );
-        assert_eq!(tier.bytes(), one * 3, "two quarantined files and one live segment");
+        assert_eq!(
+            tier.bytes(),
+            one * 3,
+            "two quarantined files and one live segment"
+        );
         assert_eq!(tier.scan().bytes, one * 3);
         assert_eq!(tier.scan().segments.len(), 1);
         // 3 files, cap for 2: the OLDEST quarantined file goes, no live segment does.
         let first = tier.evict(0).expect("evict");
         assert_eq!(first.quarantined, vec!["hot-0-0.seg.corrupt".to_string()]);
-        assert!(first.segments.is_empty(), "good history outlives the debris");
+        assert!(
+            first.segments.is_empty(),
+            "good history outlives the debris"
+        );
         assert_eq!(first.bytes, one);
         assert!(!first.is_empty());
         assert_eq!(first.len(), 0, "len counts live segments only");
@@ -2519,7 +2529,10 @@ mod tests {
         damage(&temp, "hot-120-2.seg");
         let mut tier = tier_with_cap(&temp, 3600, one * 2);
         let evicted = tier.evict(0).expect("evict");
-        assert_eq!(evicted.quarantined, vec!["hot-120-2.seg.corrupt".to_string()]);
+        assert_eq!(
+            evicted.quarantined,
+            vec!["hot-120-2.seg.corrupt".to_string()]
+        );
         assert!(evicted.segments.is_empty());
         assert!(temp.exists("hot-0-0.seg") && temp.exists("hot-60-1.seg"));
         assert_eq!(tier.scan().segments.len(), 2);
@@ -2614,7 +2627,10 @@ mod tests {
         tier.append(&job(60_000_000_000, 16), 1, 1).expect("append");
         drop(tier);
         let len = u64::try_from(temp.read_file("hot-0-0.seg").len()).expect("fits");
-        temp.truncate("hot-0-0.seg", len - u64::try_from(crate::format::FOOTER_LEN).expect("fits"));
+        temp.truncate(
+            "hot-0-0.seg",
+            len - u64::try_from(crate::format::FOOTER_LEN).expect("fits"),
+        );
         let reopened = tier_with_cap(&temp, 3600, 0);
         assert_eq!(reopened.scan().quarantined, vec!["hot-0-0.seg".to_string()]);
         assert!(reopened.scan().torn_repaired.is_empty());
@@ -2626,7 +2642,11 @@ mod tests {
             .find(|note| note.name == "hot-0-0.seg")
             .expect("the refusal is reported by name");
         assert!(footer_note.reason.contains("sealed-without-footer"));
-        assert_eq!(reopened.scan().segments.len(), 1, "only the open segment is served");
+        assert_eq!(
+            reopened.scan().segments.len(),
+            1,
+            "only the open segment is served"
+        );
         assert!(reopened
             .range(0, 1_000_000_000, 8, 1 << 20)
             .expect("range")
@@ -2651,7 +2671,10 @@ mod tests {
         temp.truncate("hot-0-0.seg", len - 72);
         let reopened = tier_with_cap(&temp, 3600, 0);
         assert_eq!(reopened.scan().quarantined, vec!["hot-0-0.seg".to_string()]);
-        assert!(reopened.scan().torn_repaired.is_empty(), "never truncated into service");
+        assert!(
+            reopened.scan().torn_repaired.is_empty(),
+            "never truncated into service"
+        );
         assert!(reopened.scan().segments.is_empty());
         assert!(temp.exists("hot-0-0.seg.corrupt"));
     }
@@ -2691,7 +2714,11 @@ mod tests {
             .collect();
         served.sort_unstable();
         assert_eq!(served, vec!["hot-0-0.seg", "hot-60-1.seg.open"]);
-        for name in ["hot-0-7.seg.corrupt", "hot-120-0.seg.corrupt", "hot-60-9.seg.open.corrupt"] {
+        for name in [
+            "hot-0-7.seg.corrupt",
+            "hot-120-0.seg.corrupt",
+            "hot-60-9.seg.open.corrupt",
+        ] {
             assert!(temp.exists(name), "{name} is kept for an operator");
         }
         let reasons: Vec<&str> = reopened
@@ -2711,7 +2738,9 @@ mod tests {
         // its header says 60 s, and the identity rule would quarantine good history.
         let temp = TempDir::new("step-change");
         let mut first = tier(&temp, 3600, 0);
-        first.append(&job(65_000_000_000, 16), 1, 1).expect("append");
+        first
+            .append(&job(65_000_000_000, 16), 1, 1)
+            .expect("append");
         drop(first);
         let mut wider = Tier::open(
             TierConfig::history("hot", 120, 3600, 0, false).expect("config"),
