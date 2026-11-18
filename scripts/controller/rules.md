@@ -2,7 +2,8 @@
 
 - The devcontainer is a cockpit. Tests and gates run only through the
   registered `run-gate` lane in `tester-unified`; never run a test suite in the
-  cockpit. Acquire the shared gate lock and run one lane at a time.
+  cockpit. Take a gate slot through the gate wrapper (below) and run one lane
+  at a time per job.
 - Keep run logs, run streams, host config, queue state, release archives, and
   reports outside the repository (the controller's own `plan.yaml` and
   `.controller-state/` are the one gitignored in-checkout exception, see the root
@@ -36,11 +37,28 @@
 - Pi's favored Open Design route is `deepseek-pi` (automatic account
   selection), with `deepseek-pi-volker` and `deepseek-pi-github2` as pinned
   forms. They use the same DeepSeek trailer above.
-- Run each registered lane under the shared lock, one lane at a time:
+- Run each registered lane through the gate wrapper, from the project
+  directory, never more than two lane containers at once:
 
   ```bash
-  flock "$CONTROLLER_HOME/gate.lock" nice -n 10 run-gate <lane>
+  scripts/controller/gate-run.sh <lane>
   ```
+
+  It takes `CONTROLLER_GATE_LOCK`, else `CONTROLLER_GATE2_LOCK`, else polls both
+  and takes whichever frees first; the arguments and the working directory are
+  exactly `run-gate`'s. Wait for a lane in the FOREGROUND of a tool call
+  (a bounded poll loop) and never end a run while a lane is queued. Read the
+  verdict in a separate step. A stale in-flight record left by a dead client is
+  reported, never deleted by hand without saying so.
+- Do not launch other agent sessions (Claude, Codex, OpenCode or any reviewer)
+  from inside a job: reviews are arranged only by the controller. A job that
+  needs a second opinion says so in its report; a self-arranged review is not
+  independent and is ignored for merge purposes.
+- Every Bash call carries a `description` that states its intent in plain
+  words; successor extracts and audits depend on it.
+- Do not ship unrun code: if a gate cannot run yet, still run the focused test
+  files of your change serially and report exactly what ran. Coverage gates
+  hide never-run branches, so keep the static undefined-name test green.
 - Make the final required `origin/main` merge the last content change, then
   run gates on a clean tree and confirm every gate log names the final head.
 - Keep the task branch isolated. Never push, tag, release, or merge it into

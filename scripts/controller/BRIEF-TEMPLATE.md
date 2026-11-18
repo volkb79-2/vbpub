@@ -45,6 +45,16 @@ any survivor.
 - Use project-owned workflows. Run tests only through a registered
   `tester-unified` `run-gate` lane, under the shared gate lock. Run one lane at
   a time.
+- Optional test dependencies FAIL, never skip; no `--skip-gates`; no
+  screenshots or binaries in the repository; docs stay agnostic of host, server
+  and container names. Third-party dependencies must be at least 14 days past
+  release; our own tools use the latest release.
+- Docker only by exact container name; never touch a container the brief does
+  not name.
+- Code reads like its surroundings (comment density, naming, idiom), and docs
+  and code agree: update CHANGES `[Unreleased]` and the tool's backlog.
+- Every Bash call carries a `description` that states its intent in plain
+  words.
 - Update user-facing README, DESIGN-GUIDE, and CONSUMERS docs together for a
   changed capability, config key, vocabulary, or compatibility fact.
 - Use `git commit --only -- <paths>`. Each commit, including an origin/main
@@ -76,5 +86,7 @@ hand-mutation results, and the exact commit-trailer audit.
 
 Give mechanical conditions for pausing and escalating: an unavailable
 precondition, a failing gate that cannot be run in the supported environment,
-or a behavior not defined by the contract. Product decisions should be
+a behavior not defined by the contract or an ambiguous specification, tests
+that disagree with the contract, or a change that grows beyond the listed
+files. Stop and report instead of improvising. Product decisions should be
 recorded as explicit decisions with consequences, not vague escalation.

@@ -18,7 +18,19 @@ no separate version number, so entries are grouped by the work that landed.
   forwarded once, instead of reaching the host's `run-gate` alone. A base given
   twice is refused. Two hand mutants.
 
+- Rules and templates reconciled with the program-directory copies (the repo
+  copies were the newer ones; only missing content was folded in): `rules.md`
+  names `gate-run.sh` instead of a bare `flock` on one lock, forbids launching
+  other agent sessions from inside a job, reports stale in-flight records
+  instead of deleting them silently and requires a `description` on every Bash
+  call; `BRIEF-TEMPLATE.md` section 6/8 gain the dependency, Docker, style and
+  stop-condition lines; the two finisher prompts gain the "call tools for real"
+  and incremental-report wording.
+
 ### Added
+- `sonnet-continuation-preamble.md` and `backlog-burn-generic.md`: the two
+  reusable prompt blocks that only existed in the program directory, sanitised
+  (no absolute paths, addresses, pinned image tag).
 - `chain-run.sh`: ONE generic chain runner replacing the 38 per-package
   `chain-*.sh` wrappers of the unversioned program directory. Arguments:
   worktree, project subdir, log prefix, lanes; `--head <sha>` pins the commit

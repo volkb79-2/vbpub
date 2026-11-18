@@ -408,7 +408,11 @@ choose a provider and model with `opencode run -m <provider>/<model>`.
 
 The reusable brief format is [`BRIEF-TEMPLATE.md`](BRIEF-TEMPLATE.md), and
 implementation-job constraints are in [`rules.md`](rules.md). The two
-finisher prompts live beside them. Read the [design guide](docs/DESIGN-GUIDE.md)
+finisher prompts live beside them, together with two reusable prompt blocks:
+[`sonnet-continuation-preamble.md`](sonnet-continuation-preamble.md) (overrides
+for a Sonnet implementer that takes over a task whose Codex run hit the usage
+limit) and [`backlog-burn-generic.md`](backlog-burn-generic.md) (the generic
+backlog burn-down package a per-project wrapper brief points at). Read the [design guide](docs/DESIGN-GUIDE.md)
 for the reasons behind the boundaries, and the [consumer guide](docs/CONSUMERS.md)
 for copyable setup and run examples.
 
