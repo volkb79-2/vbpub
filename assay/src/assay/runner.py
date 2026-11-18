@@ -1360,31 +1360,43 @@ class _DirectoryReportHandle:
         stored state unchanged (the reservation raises on a second consume)."""
         if not isinstance(self._state, _DirectoryNotConsumed):
             return self._state
+        # `members` (diff_paths) and the report read both go through the
+        # parser's one-entry `load_document` memo, which must not outlive this
+        # consumption on ANY path (a refusal after `diff_paths` ran included).
         try:
-            consumed = self._reservation.consume(members=members)
-        except AssayError as exc:
-            self._state = _DirectoryRefused(error=exc)
-            return self._state
-        if consumed is safeio.ABSENT:
-            self._state = _DirectoryAbsent()
-            return self._state
-        try:
-            summary: result_reports.ReportSummary | None = result_reports.read_verified(
-                result_report_format,
-                consumed.report,
-                context=result_reports.cargo_mutants_outcomes.ReportWindow(
+            try:
+                consumed = self._reservation.consume(members=members)
+            except AssayError as exc:
+                self._state = _DirectoryRefused(error=exc)
+                return self._state
+            if consumed is safeio.ABSENT:
+                self._state = _DirectoryAbsent()
+                return self._state
+            summary: result_reports.ReportSummary | None = None
+            unusable: str | None
+            try:
+                # Built inside the guard: a backward wall-clock step makes the
+                # window invalid, and an unusable window is an unusable report
+                # (fail closed: the exit code then decides R0, R2 refuses).
+                window = result_reports.cargo_mutants_outcomes.ReportWindow(
                     started=started_at, ended=ended_at
-                ),
+                )
+            except ValueError as exc:
+                unusable = f"the command's wall-clock window is invalid: {exc}"
+            else:
+                try:
+                    summary = result_reports.read_verified(
+                        result_report_format, consumed.report, context=window
+                    )
+                    unusable = None
+                except result_reports.ReportUnusable as exc:
+                    unusable = str(exc)
+            self._state = _DirectoryPresent(
+                artifact=consumed, summary=summary, unusable=unusable
             )
-            unusable = None
-        except result_reports.ReportUnusable as exc:
-            summary, unusable = None, str(exc)
+            return self._state
         finally:
             mutation_parsers.cargo_mutants_outcomes.load_document.cache_clear()
-        self._state = _DirectoryPresent(
-            artifact=consumed, summary=summary, unusable=unusable
-        )
-        return self._state
 
     def close(self) -> None:
         self._reservation.close()
@@ -4843,6 +4855,25 @@ def _run_prepared_lane(
             ),
         )
     with prepared.materialize(timeout=deadline.remaining()) as baseline_snapshot:
+        # (B245 U5a review) A directory-kind ingested lane anchors the tool's
+        # own file paths on the cargo workspace root, which is read from the
+        # committed manifests. It is resolved HERE, before the command runs,
+        # so an unusable manifest is a lane-level BAD_LANE_CONFIG refusal
+        # (like a tracked `<out>`) and never an R2 error beside a passing R0.
+        cargo_workspace_root: Path | None = None
+        if (
+            r2_ingested
+            and mutation_parsers.MUTATION_FORMAT_REGISTRY[
+                lane.judge.mutation.format
+            ].artifact_kind
+            == "directory"
+        ):
+            cargo_workspace_root = _cargo_workspace_root(
+                resolve_run_cwd(baseline_snapshot.project_root, plan),
+                baseline_snapshot.root,
+                prepared,
+                timeout=deadline.remaining(),
+            )
         if cold_witness:
             assert r2_plan is not None
             r2_cwd = resolve_run_cwd(baseline_snapshot.project_root, r2_plan)
@@ -5479,6 +5510,7 @@ def _run_prepared_lane(
                             deadline=deadline,
                             added=added,
                             project_prefix=project_prefix,
+                            workspace_root=cargo_workspace_root,
                         )
                     except AssayError as exc:
                         ingested_r2_error = exc
@@ -6361,6 +6393,12 @@ def _build_judgment_resolved(
     )
 
 
+#: (B245 U5a review) Upper bound on one committed ``Cargo.toml`` read to find
+#: the workspace root. A real manifest is a few KiB; the bound keeps a
+#: pathological committed blob out of the TOML parser.
+_MAX_CARGO_MANIFEST_BYTES: Final = 1024 * 1024
+
+
 def _cargo_workspace_root(
     run_cwd: Path,
     repo_top: Path,
@@ -6377,9 +6415,15 @@ def _cargo_workspace_root(
     Every manifest is read from the COMMITTED blob through *repository*, the
     same API the parser binds mutants with, and never from the materialised
     snapshot: the lane's own command could have edited a file there, and the
-    anchor must not move with it. ``BAD_LANE_CONFIG`` when no manifest names a
-    workspace and *run_cwd* has no package manifest of its own, or when a
-    manifest cannot be parsed."""
+    anchor must not move with it. Only a ``[workspace]`` TABLE names a
+    workspace (a bare ``workspace = true`` key does not).
+
+    ``BAD_LANE_CONFIG`` when no manifest names a workspace and *run_cwd* has no
+    package manifest of its own, when a manifest is not a regular tracked file
+    (a symlink), is larger than :data:`_MAX_CARGO_MANIFEST_BYTES` or cannot be
+    parsed. :func:`_run_prepared_lane` calls this BEFORE the lane's command
+    runs: a refusal found after R0 passed would leave a verdict whose R2
+    ``BAD_LANE_CONFIG`` beside a passing R0 is not one ``verify`` accepts."""
     start = PurePosixPath(run_cwd.relative_to(repo_top).as_posix())
     own_package = False
     for directory in (start, *start.parents):
@@ -6387,18 +6431,27 @@ def _cargo_workspace_root(
         if not repository.paths_under(manifest):
             continue
         own_package = own_package or directory == start
-        try:
-            parsed = tomllib.loads(
-                repository.read_regular_file(manifest, timeout=timeout).decode(
-                    "utf-8"
-                )
+        if not repository.has_regular_file(manifest):
+            raise LaneConfigError(
+                f"the committed cargo manifest {manifest} is not a regular "
+                f"tracked file (a symlink?); the workspace root cannot be read "
+                f"from it"
             )
+        blob = repository.read_regular_file(manifest, timeout=timeout)
+        if len(blob) > _MAX_CARGO_MANIFEST_BYTES:
+            raise LaneConfigError(
+                f"the committed cargo manifest {manifest} is {len(blob)} "
+                f"bytes, over the {_MAX_CARGO_MANIFEST_BYTES}-byte bound for "
+                f"finding the workspace root"
+            )
+        try:
+            parsed = tomllib.loads(blob.decode("utf-8"))
         except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
             raise LaneConfigError(
                 f"cannot parse the committed cargo manifest {manifest} to "
                 f"find the workspace root: {exc}"
             ) from exc
-        if "workspace" in parsed:
+        if isinstance(parsed.get("workspace"), dict):
             return repo_top / directory
     if own_package:
         return run_cwd
@@ -6420,6 +6473,7 @@ def _ingest_r2_report(
     deadline: LaneDeadline,
     added: diff.AddedLines | None,
     project_prefix: PurePosixPath,
+    workspace_root: Path | None = None,
 ) -> "mutation.IngestedMutationResult":
     """(B046) Decode, parse and INGEST the report the lane's own command
     wrote, entirely against *snapshot*.
@@ -6468,9 +6522,10 @@ def _ingest_r2_report(
     # root instead (design 8 item 2), above or equal to that directory.
     run_cwd = resolve_run_cwd(snapshot.project_root, plan)
     if directory_kind:
-        run_cwd = _cargo_workspace_root(
-            run_cwd, snapshot.root, prepared, timeout=deadline.remaining()
-        )
+        # Resolved by `_run_prepared_lane` BEFORE the command ran (a refusal
+        # found here would come after R0 passed and could not verify).
+        assert workspace_root is not None
+        run_cwd = workspace_root
         # (B245 U5a) No UTF-8 decode: the artifact is a directory read. The
         # parser anchors on the cargo WORKSPACE root, not the lane cwd
         # (design 8 item 2), and binds each mutant's content to the committed
