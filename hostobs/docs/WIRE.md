@@ -938,7 +938,7 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 
 | ID | Where | Code / plan says | WIRE.md says | Work |
 |---|---|---|---|---|
-| V-1 | `frame.rs` `time_body_len` (line 741), `hostobs_wire_ref.py` `time_body_len` (line 380) on this branch's base | `align8(14·n)` | `align8(15·n)` | fixed by the P0 bug fold-in (branch `hostobs-20261118_045645-p0-bugs-20261118`, commit `e13027cfe`: `TIME_BUCKET_BYTES = 15`, fixture `history-five-buckets`, no minor bump); this row closes when it merges |
+| V-1 | `frame.rs` `time_body_len` (line 741), `hostobs_wire_ref.py` `time_body_len` (line 380) on this branch's base | `align8(14·n)` | `align8(15·n)` | fixed by the P0 bug fold-in (merged to main; commit `e13027cfe`: `TIME_BUCKET_BYTES = 15`, fixture `history-five-buckets`, no minor bump) |
 | V-2 | `frame.rs` `decode_block` | references checked only against an in-frame dictionary | also against the held generation | `HOB-46` |
 | V-3 | `frame.rs` `decode_block` | bucket `agg` not checked against the metric mask | `aggregation-not-permitted` | `HOB-47` |
 | V-4 | plan §B.2 `TIME` | no subject; `series_batch` returns several entities | kind 6 `subject` | `HOB-48` |
