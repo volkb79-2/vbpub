@@ -18,7 +18,7 @@ Not owned by `agctl`: campaigns and placement on hosts (`fleetd`), host protecti
 | `agctld` | resident service: watches registered controllers and agents through their session logs, marker protocol, compaction/restart/priming | not built; deferred |
 | adapters | per harness: log parser, optional injector (hooks), wake: claude, codex, opencode, pi | Claude hooks (`scripts/controller/hooks/ctx-hooks.py` is the canonical, tracked hook; the live `.controller-state/hooks/ctx.py` is the controller's working copy and must be reconciled with it), `nyxloom extract` parsers |
 | `agctl-tui` | operator view of all registered controllers/agents | not built; deferred |
-| skills | controller `controller-handover` (section 4; written 2026-11-18, `.claude/skills/controller-handover/`); agent `finalize` (section 5) | handover skill written; finalize not built |
+| skills | controller `controller-handover` (section 4); agent `finalize` (section 5). Decision (operator 2026-11-18): a skill lives with its tool, as package data of the `agctl` distribution, registered through cli-extended `register_skills_verbs` and installed with `agctl skills install|check|list|uninstall` (the way ciu, cmru, cgprofile, fleetd and the pwmcp client ship theirs; the frontmatter must pass the cli-extended source schema) | handover skill written; the interim copy lives in `.claude/skills/controller-handover/` and moves into the package when it exists; finalize not built |
 
 Migration is stepwise: `scripts/controller/` stays the home of the shell tools until `finalize` and `prime` exist as a Python CLI; then a cmru-managed `agctl/` project is created and tools move with their tests and mutants. Nothing is rewritten for its own sake.
 
@@ -103,3 +103,13 @@ Each package ships with tests and mutants like the controller tools and is revie
 ## 10. Known limits and unverified facts
 
 E6 (`--bg`), the TUI-plus-external-writer collision and the end-to-end ingest of a readback by a running interactive session are unmeasured. Whether hook `additionalContext` survives a compaction is unmeasured. A multi-KB handover through PreCompact is untested. How a subscription weights cache reads against its usage windows is unknown (`nyxloom usage calibrate` can tell). Compaction of implementers is deliberately avoided, not forbidden.
+
+## 11. Interview decisions (operator, 2026-11-18)
+
+- **Cost basis:** subscription usage windows; API-equivalent prices are only the proxy (`nyxloom usage calibrate` measures how cache reads count).
+- **Ceiling:** about 300k with a lean floor (target 60k or less), plus **soft steering**: the controller and every agent are told their current context fill and its growth per turn, and decide for themselves to finish a task to reach a clean semantic boundary before the hard ceiling. Growth speed is part of the advice (what is efficient to start depends on the projected turns to the ceiling). Configuration lives in `agctl.toml` (soft ceiling, hard ceiling, note step, growth window, floor target); the hook is Python and reads it with `tomllib`. The hard ceiling is the harness's per-model auto-compaction window (a Claude Code setting that a hook cannot change; applied through the settings with the operator's permission).
+- **External `/compact` of the interactive controller:** no, for now. The E6 test (`claude --bg` plus attach) and the TUI-versus-external-writer collision test run after the resume in the new devcontainer (plan item AG-2).
+- **First slice:** return contract, `agctl finalize`, `agctl prime fresh`.
+- **Priming approval:** the controller confirms; automatic only for `fresh` with a complete finalization. Plus a **debug/learning mode** at the start: every steering action and its outcome is logged, and the controller reviews the results carefully (or hands the log to another agent that gives feedback) before the automation is trusted.
+- **Project home:** keep `scripts/controller/` until `finalize` and `prime` exist as a CLI, then a cmru-managed `agctl/` project. `nyxloom extract` stays a separate project as it is; parts may be re-implemented in Rust for `agctl` because the Python session extraction is slow.
+- **Skills:** with the tool (section 2, skills row).
