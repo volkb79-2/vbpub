@@ -49,7 +49,8 @@ valid_builder_name "$builder" || {
 # the NAME goes to every `docker run` (the systemd cgroup driver refuses a path there), the cgroup PATH
 # (systemd dash expansion: a-b-c.slice -> a.slice/a-b.slice/a-b-c.slice) goes to `docker buildx build
 # --cgroup-parent` ONLY. This function is duplicated in build-image.sh; tests/test_image_contract.py
-# pins both copies identical.
+# pins both copies identical. The regex does not enforce systemd's 255-character unit-name limit: an
+# over-long name is refused later by systemd/docker, not here.
 # BEGIN slice_cgroup_path
 slice_cgroup_path() {
   local LC_ALL=C name=$1 base prefix="" path="" part
@@ -91,13 +92,17 @@ trap 'rmdir "$context" 2>/dev/null || true' EXIT
 
 printf 'builder=%s\n' "$builder"
 # Two spellings of the one slice input (measured on v1001, 2026-11-18, docker cgroup driver systemd,
-# docker-driver BuildKit): `docker run --cgroup-parent dev-gates.slice` (the NAME) lands the container in
+# ONLY with the docker-driver builder `default`; any other builder was not measured): `docker run --cgroup-parent dev-gates.slice` (the NAME) lands the container in
 # the governed /sys/fs/cgroup/dev.slice/dev-gates.slice. For the build, the NAME makes BuildKit put the
 # RUN-step processes in a root-level, UNGOVERNED /dev-gates.slice/buildkit/<id> (memory.max = max), while
 # the PATH form (dev.slice/dev-gates.slice, derived above) puts them in
 # /dev.slice/dev-gates.slice/buildkit/<id>, INSIDE the governed slice. The daemon refuses the path form for
 # `docker run` (invalid slice name), so buildx gets the path and every probe below gets the name.
-printf 'NOTE: --cgroup-parent for the build is the cgroup PATH %s (derived from the slice name %s): the BuildKit RUN steps run inside the governed slice (v1001, 2026-11-18); the plain slice name would put them in an ungoverned root-level cgroup. Probes use the slice name.\n' "$cgroup_path" "$cgroup_parent" >&2
+if [[ "$builder" == "default" ]]; then
+  printf 'NOTE: --cgroup-parent for the build is the cgroup PATH %s (derived from the slice name %s): measured on v1001 (2026-11-18) with the docker-driver builder `default`, the BuildKit RUN steps run inside the governed slice; the plain slice name would put them in an ungoverned root-level cgroup. Probes use the slice name.\n' "$cgroup_path" "$cgroup_parent" >&2
+else
+  printf 'NOTE: --cgroup-parent for the build is the cgroup PATH %s (derived from the slice name %s); placement of builder %s was not measured (only the docker-driver builder `default` on v1001, 2026-11-18): check /proc/<pid>/cgroup of a RUN-step process. Probes use the slice name.\n' "$cgroup_path" "$cgroup_parent" "$builder" >&2
+fi
 docker buildx inspect "$builder" >/dev/null
 # The build starts FROM a content-named tag of the exact base image id: a moved tag cannot change it,
 # and it is a plain reference every builder accepts (a bare `sha256:<id>` in FROM is not, on every

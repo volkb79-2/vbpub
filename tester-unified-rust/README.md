@@ -27,11 +27,12 @@ slice name (`--cgroup-parent dev-gates.slice` or `CGROUP_PARENT_DEV_GATES`), and
 derive the cgroup path for `docker buildx build --cgroup-parent` themselves
 (`dev-gates.slice` becomes `dev.slice/dev-gates.slice`; every `docker run` and the
 CMRU preflight keep the plain name, because the systemd cgroup driver refuses a
-path there). Measured on v1001 (2026-11-18, docker-driver BuildKit): with the path
-form the BuildKit RUN steps run inside the governed slice
+path there). Measured on v1001 (2026-11-18) with the docker-driver builder `default`
+only: with the path form the BuildKit RUN steps run inside the governed slice
 (`/dev.slice/dev-gates.slice/buildkit/<id>`); with the plain slice name they would
-land in an ungoverned root-level `/dev-gates.slice/buildkit`. The docker-container
-driver is not covered by that measurement. `--builder` changes nothing else; see
+land in an ungoverned root-level `/dev-gates.slice/buildkit`. Other builders
+(`mdt-managed`, the docker-container driver): not measured, verify the placement
+(`/proc/<pid>/cgroup` of a RUN-step process). `--builder` changes nothing else; see
 [`docs/CONSUMERS.md`](docs/CONSUMERS.md), which also lists what the CMRU
 preflight needs (a git checkout among other things).
 

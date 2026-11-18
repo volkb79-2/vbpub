@@ -40,8 +40,12 @@ valid_builder_name "$builder" || {
 # the NAME goes to every `docker run`-style consumer (cmru tester-gate below; the systemd cgroup driver
 # refuses a path there), the cgroup PATH (systemd dash expansion: a-b-c.slice -> a.slice/a-b.slice/a-b-c.slice)
 # goes to `docker buildx build --cgroup-parent` ONLY: with the plain name BuildKit puts the RUN steps in an
-# ungoverned root-level /<name>/buildkit, with the path they run inside the governed slice (v1001, 2026-11-18).
+# ungoverned root-level /<name>/buildkit, with the path they run inside the governed slice (measured on v1001,
+# 2026-11-18, ONLY with the docker-driver builder `default`; the default builder here, mdt-managed, was not
+# measured: check /proc/<pid>/cgroup of a RUN-step process).
 # This function is duplicated in build-dev-image.sh; tests/test_image_contract.py pins both copies identical.
+# The regex does not enforce systemd's 255-character unit-name limit: an over-long name is refused later
+# by systemd/docker, not here.
 # BEGIN slice_cgroup_path
 slice_cgroup_path() {
   local LC_ALL=C name=$1 base prefix="" path="" part

@@ -1110,15 +1110,31 @@ class BuildDevImageTests(unittest.TestCase):
         note = [line for line in proc.stderr.splitlines() if line.startswith("NOTE:")]
         self.assertEqual(len(note), 1, proc.stderr)
         self.assertIn("cgroup PATH dev.slice/dev-gates.slice (derived from the slice name dev-gates.slice)", note[0])
-        self.assertIn("RUN steps run inside the governed slice (v1001, 2026-11-18)", note[0])
+        self.assertIn("measured on v1001 (2026-11-18) with the docker-driver builder `default`, the BuildKit RUN steps run inside the governed slice", note[0])
         self.assertIn("plain slice name would put them in an ungoverned root-level cgroup", note[0])
         self.assertIn("Probes use the slice name", note[0])
+        self.assertNotIn("was not measured", note[0])
         for stale in ("does NOT place", "watch its memory", "/sys/fs/cgroup/dev-gates.slice/buildkit"):
             self.assertNotIn(stale, proc.stderr)
         # buildx gets the PATH form, exactly once
         build = [c for c in calls if c[:2] == ["buildx", "build"]][0]
         self.assertEqual(build.count("--cgroup-parent"), 1)
         self.assertEqual(build[build.index("--cgroup-parent") + 1], self.SLICE_PATH)
+
+    def test_the_note_claims_governed_placement_only_for_the_measured_builder(self) -> None:
+        for builder in ("mdt-managed", "other"):
+            with self.subTest(builder=builder):
+                proc, calls = self.run_build("--cgroup-parent", self.SLICE, "--builder", builder)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                note = [line for line in proc.stderr.splitlines() if line.startswith("NOTE:")]
+                self.assertEqual(len(note), 1, proc.stderr)
+                self.assertIn(f"placement of builder {builder} was not measured", note[0])
+                self.assertIn("only the docker-driver builder `default` on v1001, 2026-11-18", note[0])
+                self.assertIn("check /proc/<pid>/cgroup of a RUN-step process", note[0])
+                self.assertIn("cgroup PATH dev.slice/dev-gates.slice", note[0])
+                self.assertNotIn("run inside the governed slice", note[0])
+                build = [c for c in calls if c[:2] == ["buildx", "build"]][0]
+                self.assertEqual(build[build.index("--cgroup-parent") + 1], self.SLICE_PATH)
 
     def test_buildx_gets_the_path_and_probes_the_name_for_every_slice_shape(self) -> None:
         for name, path in (
@@ -1164,14 +1180,14 @@ class BuildDevImageTests(unittest.TestCase):
         self.assertIn("invalid --cgroup-parent / CGROUP_PARENT_DEV_GATES", proc.stderr)
         self.assertIn("systemd slice name", proc.stderr)
 
-    def test_the_ungoverned_claims_are_gone_from_the_scripts_and_docs(self) -> None:
+    def test_the_old_claims_are_gone_from_the_scripts_and_the_docs_state_both_spellings(self) -> None:
+        # Negative greps cover the two scripts only (their NOTE and comments); prose docs may quote history.
         stale = (
             "does NOT place", "does not place", "NOT in a governed", "not in the governed slice",
             "untested path form", "watch its memory", "not because it governs this build",
             "passed because the estate requires it", "(unlike the build above)",
         )
-        for relative in ("build-dev-image.sh", "build-image.sh", "README.md", "CHANGES.md",
-                         "docs/DEV.md", "docs/CONSUMERS.md", "docs/DESIGN-GUIDE.md"):
+        for relative in ("build-dev-image.sh", "build-image.sh"):
             text = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
             for phrase in stale:
                 self.assertNotIn(phrase, text, f"{relative}: {phrase}")
@@ -1179,6 +1195,13 @@ class BuildDevImageTests(unittest.TestCase):
             text = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
             self.assertIn("dev.slice/dev-gates.slice", text, relative)
             self.assertIn("/dev-gates.slice/buildkit", text, relative)
+        # the governed claim is scoped to the measured builder everywhere it is made
+        for relative in ("docs/DEV.md", "docs/CONSUMERS.md", "README.md"):
+            text = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn("docker-driver builder `default`", text, relative)
+            self.assertIn("/proc/<pid>/cgroup", text, relative)
+        self.assertIn("1,533,550,592", (PROJECT_ROOT / "docs/DEV.md").read_text(encoding="utf-8"))
+        self.assertIn("docker-driver builder `default`", (PROJECT_ROOT / "CHANGES.md").read_text(encoding="utf-8"))
 
     def test_probe_containers_are_governed_and_networkless(self) -> None:
         _, calls = self.run_build("--cgroup-parent", self.SLICE)

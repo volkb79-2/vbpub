@@ -72,13 +72,36 @@ class SliceCgroupPathTests(unittest.TestCase):
 
     def test_non_ascii_letters_are_refused_in_a_utf8_locale_too(self) -> None:
         listed = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=False).stdout.split()
+        # C.utf8 is codepoint-ordered, so [A-Za-z] already rejects non-ASCII there and cannot catch a dropped
+        # `local LC_ALL=C`; a collation-ordered locale such as en_US.UTF-8 is what exposes it. Run EVERY one.
         utf8 = [name for name in listed if re.search(r"utf-?8", name, re.IGNORECASE)]
-        if not utf8:
-            self.skipTest("no UTF-8 locale is installed (locale -a lists none)")
-        for script in SCRIPTS_WITH_SLICE_HELPER:
-            for name in ("é.slice", "a-é.slice", "ａ.slice"):
-                with self.subTest(script=script, name=name):
-                    self.assertEqual(derive_slice_path(script, name, utf8[0]).returncode, 1)
+        collating = [name for name in utf8 if not name.lower().startswith("c.")]
+        if not collating:
+            self.skipTest(f"no UTF-8 locale beyond C.utf8 is installed (locale -a lists: {utf8 or 'none'}); "
+                          "the LC_ALL=C guard cannot be exercised here")
+        for locale in utf8:
+            for script in SCRIPTS_WITH_SLICE_HELPER:
+                for name in ("é-b.slice", "a-１.slice", "٣-a.slice", "é.slice", "a-é.slice", "ａ.slice"):
+                    with self.subTest(locale=locale, script=script, name=name):
+                        self.assertEqual(derive_slice_path(script, name, locale).returncode, 1)
+
+    def test_the_utf8_locale_test_has_teeth_without_the_lc_all_guard(self) -> None:
+        # Mutation check on the real helper text: with `local LC_ALL=C` removed, a collation-ordered UTF-8
+        # locale accepts non-ASCII letters, which is what the test above must catch.
+        listed = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=False).stdout.split()
+        collating = [n for n in listed if re.search(r"utf-?8", n, re.IGNORECASE) and not n.lower().startswith("c.")]
+        if not collating:
+            self.skipTest("no collation-ordered UTF-8 locale installed")
+        mutated = slice_helper_source("build-image.sh").replace("local LC_ALL=C name=$1", "local name=$1")
+        self.assertNotEqual(mutated, slice_helper_source("build-image.sh"))
+        accepted = [
+            name for name in ("é-b.slice", "a-１.slice", "٣-a.slice")
+            if subprocess.run(
+                ["bash", "-c", mutated + '\nslice_cgroup_path "$1"', "_", name], capture_output=True, text=True,
+                check=False, env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": collating[0]},
+            ).returncode == 0
+        ]
+        self.assertTrue(accepted, f"{collating[0]} rejects non-ASCII even without LC_ALL=C: the guard is untested")
 
 
 class ImageContractTests(unittest.TestCase):

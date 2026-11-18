@@ -28,11 +28,13 @@ The scripts take one slice-name input (`--cgroup-parent dev-gates.slice` or
 --cgroup-parent` themselves (systemd dash expansion: `dev-gates.slice` becomes
 `dev.slice/dev-gates.slice`); the CMRU preflight and every `docker run` get the plain
 name, which the systemd cgroup driver requires there. Measured on v1001 (2026-11-18,
-docker cgroup driver systemd, docker-driver BuildKit): with the path form the
-BuildKit RUN-step processes run in `/dev.slice/dev-gates.slice/buildkit/<id>`, inside
-the governed slice; with the plain slice name they land in the ungoverned root-level
-`/dev-gates.slice/buildkit` (`memory.max` is `max`). The docker-container driver is
-not covered by that measurement. `--builder` changes nothing else:
+docker cgroup driver systemd) with the docker-driver builder `default` only: with the
+path form the BuildKit RUN-step processes run in
+`/dev.slice/dev-gates.slice/buildkit/<id>`, inside the governed slice; with the plain
+slice name they land in the ungoverned root-level `/dev-gates.slice/buildkit`
+(`memory.max` is `max`). Other builders (`mdt-managed`, the docker-container driver):
+not measured, verify the placement (`/proc/<pid>/cgroup` of a RUN-step process).
+`--builder` changes nothing else:
 `--cgroup-parent` stays required, the CMRU preflight, build arguments and label
 checks are unchanged, and the script prints `builder=<name>` before it builds.
 
@@ -59,7 +61,8 @@ Prerequisites for a build on the gate host v1001, run inside its cockpit contain
   `~/.config/docker/buildx` is root-owned);
 - `--builder default` (or `TESTER_UNIFIED_RUST_BUILDER=default`) and
   `--cgroup-parent dev-gates.slice` (the slice name; the script derives the buildx path
-  form); the build is governed by the slice, and no other gate runs on the host meanwhile.
+  form); with this builder the build is governed by the slice (measured), and no other gate
+  runs on the host meanwhile.
   Still watch the governed slice's `memory.current` (a build peaked at 3.3 GB).
 
 In a Rust workspace, route all Cargo calls through a checked wrapper that
