@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -89,6 +90,107 @@ def test_the_leftover_child_guard_names_a_child_and_its_cmdline(monkeypatch):
             child.stdout.close()
         if child.stderr is not None:
             child.stderr.close()
+
+
+def _wait_for_completion(path: Path, timeout: float = 60.0) -> None:
+    """Wait without signalling for the inner test's self-terminating child."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.is_file():
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"inner child did not terminate by its own lifetime: {path}")
+
+
+def test_the_real_guard_is_autouse(request):
+    """The fixture manager registers the actual guard with autouse enabled."""
+    name = "_no_leftover_direct_children"
+    fixturedefs = request._fixturemanager.getfixturedefs(name, request.node)
+    assert fixturedefs
+    fixturedef = fixturedefs[-1]
+    guard_definition = getattr(suite_conftest, name)
+    assert fixturedef.func is guard_definition._get_wrapped_function()
+    assert name in request._fixturemanager._getautousenames(request.node)
+
+
+def test_the_real_guard_fails_an_unmarked_leak_and_honors_its_marker(pytester):
+    """Run the real autouse fixture against leaking and opted-out inner tests."""
+    conftest_path = Path(suite_conftest.__file__).resolve()
+    pytester.makeconftest(
+        f"""\
+import importlib.util
+from pathlib import Path
+
+_spec = importlib.util.spec_from_file_location("ciu_suite_conftest", {str(conftest_path)!r})
+_suite = importlib.util.module_from_spec(_spec)
+assert _spec.loader is not None
+_spec.loader.exec_module(_suite)
+
+pytest_configure = _suite.pytest_configure
+_no_leftover_direct_children = _suite._no_leftover_direct_children
+
+
+def pytest_sessionfinish():
+    Path(__file__).with_name("inner-run-finished").write_text("finished", encoding="utf-8")
+"""
+    )
+    pytester.makepyfile(
+        test_direct_children=f"""\
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+_CHILD = '''\\
+import sys
+import time
+from pathlib import Path
+
+token, release, finished = sys.argv[1:]
+print("ready", flush=True)
+deadline = time.monotonic() + 30.0
+while not Path(release).exists() and time.monotonic() < deadline:
+    time.sleep(0.05)
+Path(finished).write_text(token, encoding="utf-8")
+'''
+
+
+def _spawn(token):
+    release = Path(__file__).with_name("inner-run-finished")
+    finished = Path(__file__).with_name(token + ".finished")
+    child = subprocess.Popen(
+        [sys.executable, "-c", _CHILD, token, str(release), str(finished)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert child.stdout is not None
+    assert child.stdout.readline().strip() == "ready"
+    return finished
+
+
+def test_unmarked_leak_fails_in_fixture_teardown():
+    _spawn("leaky-child-CIU-223")
+
+
+@pytest.mark.allow_direct_children
+def test_marked_leak_is_allowed():
+    _spawn("allowed-child-CIU-223")
+"""
+    )
+    result = pytester.runpytest_subprocess("-q", "--strict-markers")
+    assert result.ret != 0
+    result.assert_outcomes(errors=1, passed=2)
+    teardown_error = (
+        "ERROR at teardown of "
+        "test_unmarked_leak_fails_in_fixture_teardown"
+    )
+    assert teardown_error in result.stdout.str()
+    assert "leaky-child-CIU-223" in result.stdout.str()
+    assert "allowed-child-CIU-223" not in result.stdout.str()
+    _wait_for_completion(pytester.path / "leaky-child-CIU-223.finished")
+    _wait_for_completion(pytester.path / "allowed-child-CIU-223.finished")
 
 
 @pytest.fixture

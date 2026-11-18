@@ -60,6 +60,16 @@ one test file renders into in place while three others copy out of. The
 ``_serialize_shared_test_repo_access`` fixture below close that cross-worker
 TOCTOU with an ``fcntl`` writer/reader lock; see that section's own comment
 for why ``pytest.mark.xdist_group`` cannot be used here.
+
+Direct-child guard opt-out (CIU-223)
+------------------------------------
+The autouse ``_no_leftover_direct_children`` guard fails any test that leaves
+a new direct child of pytest behind. A test whose contract legitimately
+requires a child to outlive its body declares
+``@pytest.mark.allow_direct_children``; the marker is registered in
+``pytest_configure`` below and documented on the fixture itself. The guard
+never signals or reaps a child, and the opted-out child must end within its
+own bounded lifetime.
 """
 from __future__ import annotations
 
@@ -85,7 +95,7 @@ _REAL_SUBPROCESS_RUN = subprocess.run
 # fails the session unless every active catalog row links a collected test through
 # ``@pytest.mark.cli_case``. A focused run of a few test files must pass ``--cli-case-partial``
 # (the full gate and the full suite need no flag).
-pytest_plugins = ["cli_extended.pytest_plugin"]
+pytest_plugins = ["cli_extended.pytest_plugin", "pytester"]
 
 CIU_TEST_SUITE_ENV = "CIU_TEST_SUITE"
 _CIU_PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -226,6 +236,7 @@ _TEST_REPO_DIR = Path(__file__).resolve().parent.parent / "test-repo"
 _TEST_REPO_INPLACE_MARK = "ciu_test_repo_inplace"
 _TEST_REPO_READER_MARK = "ciu_test_repo_reader"
 _NO_AUTO_CIU_ROOT_MARK = "ciu_no_auto_root"
+_ALLOW_DIRECT_CHILDREN_MARK = "allow_direct_children"
 
 # Most older engine/CLI tests build a temporary checkout by writing ciu.env
 # and setting REPO_ROOT.  S1.1 deliberately stopped treating either as a root
@@ -323,6 +334,12 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
+        f"{_ALLOW_DIRECT_CHILDREN_MARK}: this test intentionally leaves a "
+        "direct child of pytest behind (CIU-223); the child must have its "
+        "own bounded lifetime and must never be signalled.",
+    )
+    config.addinivalue_line(
+        "markers",
         "os_integration: requires the registered tester-unified lane and its isolated Docker daemon.",
     )
     config.addinivalue_line(
@@ -414,14 +431,21 @@ def _leftover_child_descriptions(
 
 
 @pytest.fixture(autouse=True)
-def _no_leftover_direct_children() -> Iterator[None]:
+def _no_leftover_direct_children(
+    request: pytest.FixtureRequest,
+) -> Iterator[None]:
     """Fail a test that leaves a new direct child of pytest behind (CIU-223).
 
     Assay makes the pytest leader its child subreaper, so a daemonised git
     maintenance child becomes direct when pytest is judged. This guard
     deliberately only reports and never signals: the test must wait for
-    whatever it starts.
+    whatever it starts. A test that intentionally leaves a child outlives the
+    test body declares ``@pytest.mark.allow_direct_children``; the marker is
+    registered in ``pytest_configure``.
     """
+    if request.node.get_closest_marker(_ALLOW_DIRECT_CHILDREN_MARK) is not None:
+        yield
+        return
     before = set(_direct_children())
     yield
     leaked = _leftover_child_descriptions(before)
