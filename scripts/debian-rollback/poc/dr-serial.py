@@ -309,10 +309,32 @@ def scenario_s2_s3(g, log):
           str(running_state(tag(out, "CMDLINE"))))
 
 
+UPDATES_SOURCES = ("echo 'deb http://deb.debian.org/debian trixie-updates main' > /etc/apt/sources.list.d/dr-updates.list; "
+                   "echo 'deb http://deb.debian.org/debian-security trixie-security main' >> /etc/apt/sources.list.d/dr-updates.list")
+BACKPORTS_SOURCES = UPDATES_SOURCES + ("; echo 'deb http://deb.debian.org/debian trixie-backports main' "
+                                       ">> /etc/apt/sources.list.d/dr-updates.list")
+DIST_UPGRADE = ("DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Options::=--force-confold "
+                "-o Dpkg::Options::=--force-confdef dist-upgrade >/var/log/dr-upgrade.log 2>&1")
+OFFER_UPGRADABLE = "apt list --upgradable 2>/dev/null | grep -c '^linux-image'"
+BACKPORTS_INSTALL = ("DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Options::=--force-confold "
+                     "-o Dpkg::Options::=--force-confdef install -t trixie-backports linux-image-amd64 "
+                     ">/var/log/dr-upgrade.log 2>&1")
+OFFER_BACKPORTS = "apt-get -s -t trixie-backports install linux-image-amd64 2>/dev/null | grep -c '^Inst linux-image'"
+
+
 def scenario_kernel_upgrade(g, log):
     """A kernel change: apt dist-upgrade brings a newer kernel into the running state. The menu must show it for
     that state and keep the old kernel for the snapshot; boot new, boot the earlier state once (old kernel, its
     modules), and check that the one-shot returns to the default on the next reboot."""
+    _kernel_flow(g, log, UPDATES_SOURCES, OFFER_UPGRADABLE, DIST_UPGRADE)
+
+
+def scenario_kernel_backports(g, log):
+    """S11: the same flow with the kernel from trixie-backports instead of the stable update."""
+    _kernel_flow(g, log, BACKPORTS_SOURCES, OFFER_BACKPORTS, BACKPORTS_INSTALL)
+
+
+def _kernel_flow(g, log, sources_cmd, offer_cmd, install_cmd):
     g.login()
     _, out = g.run("echo CMDLINE:$(cat /proc/cmdline); echo KERNEL:$(uname -r)")
     state0 = running_state(tag(out, "CMDLINE"))
@@ -328,17 +350,14 @@ def scenario_kernel_upgrade(g, log):
     _, out = g.run(efi_probe)
     efi_before = tag(out, "EFIFILES")
     # the disk of run 2a was installed without the updates and security suites (the installer now adds them)
-    g.run("echo 'deb http://deb.debian.org/debian trixie-updates main' > /etc/apt/sources.list.d/dr-updates.list; "
-          "echo 'deb http://deb.debian.org/debian-security trixie-security main' >> /etc/apt/sources.list.d/dr-updates.list")
-    _, out = g.run("apt-get update -qq >/dev/null 2>&1; echo UPDRC:$?; "
-                   "echo OFFER:$(apt list --upgradable 2>/dev/null | grep -c '^linux-image')", 900)
+    g.run(sources_cmd)
+    _, out = g.run(f"apt-get update -qq >/dev/null 2>&1; echo UPDRC:$?; echo OFFER:$({offer_cmd})", 900)
     offer = tag(out, "OFFER")
     if not check(log, "a newer kernel package is on offer", offer is not None and offer.isdigit() and int(offer) > 0,
                  f"updrc={tag(out, 'UPDRC')} offer={offer}"):
         return
     before = state_list(g)
-    _, out = g.run("DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Options::=--force-confold "
-                   "-o Dpkg::Options::=--force-confdef dist-upgrade >/var/log/dr-upgrade.log 2>&1; echo UPGRC:$?; "
+    _, out = g.run(f"{install_cmd}; echo UPGRC:$?; "
                    "echo ARCHKB:$(du -sk /var/cache/apt/archives | cut -f1); echo KNEW:$(readlink /vmlinuz); "
                    "echo BOOTFILES:$(ls -1 /boot | grep -E '^(vmlinuz|initrd.img)-' | tr '\\n' ,); "
                    "echo MENU:$(grep -o 'Debian @os-[^ ]* (kernel [^)]*)' /boot/efi/EFI/dr/grub.cfg | tr ' ' _ | tr -d '()' | tr '\\n' ,)", 5400)
@@ -393,15 +412,137 @@ def scenario_kernel_upgrade(g, log):
           tag(out, "KERNEL") == new and running_state(tag(out, "CMDLINE")) == state0, f"{tag(out, 'KERNEL')} {running_state(tag(out, 'CMDLINE'))}")
 
 
-def scenario_s5(g, log):
-    """S5: the running state's initramfs is broken. The default entry cannot boot; the earlier state, chosen in the
-    GRUB menu with keys over the serial line, can. Then the earlier state is made the default (recovery)."""
+def _precondition(g, log):
+    """(state0, kernel) of a guest whose running state is the default, else None (a check was recorded)."""
     g.login()
     _, out = g.run("echo CMDLINE:$(cat /proc/cmdline); echo KERNEL:$(uname -r)")
     state0 = running_state(tag(out, "CMDLINE"))
-    kver = tag(out, "KERNEL")
-    if not (state0 and kver) or not check(log, "the running state is the default (precondition)", default_state(g) == state0, f"{state0}"):
+    kernel = tag(out, "KERNEL")
+    if not (state0 and kernel):
+        check(log, "running state and kernel recorded", False, f"{state0} {kernel}")
+        return None
+    if not check(log, "the running state is the default (precondition: a plain reboot returns here)",
+                 default_state(g) == state0, f"running={state0}"):
+        return None
+    return state0, kernel
+
+
+def scenario_s6(g, log):
+    """S6: the kernel package an earlier state needs is removed in the running state (what an apt autoremove of old
+    kernels does). Kernels live inside each state, so the earlier state must still boot its own kernel."""
+    pc = _precondition(g, log)
+    if not pc:
         return
+    state0, old = pc
+    g.run(UPDATES_SOURCES)
+    g.run("apt-get update -qq >/dev/null 2>&1")
+    before = state_list(g)
+    _, out = g.run(f"{DIST_UPGRADE}; echo UPGRC:$?; echo KNEW:$(readlink /vmlinuz)", 5400)
+    knew = tag(out, "KNEW") or ""
+    new = knew.rsplit("vmlinuz-", 1)[-1] if "vmlinuz-" in knew else ""
+    check(log, "dist-upgrade brought a newer kernel", tag(out, "UPGRC") == "0" and bool(new) and new != old, f"old={old} new={new}")
+    pre = [s for s in state_list(g) if s not in before and s.startswith("@os-pre-")]
+    if not (new and check(log, "the upgrade made exactly one snapshot (it holds the old kernel)", len(pre) == 1, str(pre))):
+        return
+    pre = pre[0]
+    try:
+        g.reboot()
+    except Exception as exc:  # noqa: BLE001
+        check(log, "reboot into the new kernel", False, repr(exc))
+        return
+    _, out = g.run("echo KERNEL:$(uname -r)")
+    check(log, "running the new kernel before removing the old one", tag(out, "KERNEL") == new, str(tag(out, "KERNEL")))
+    _, out = g.run(f"DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq linux-image-{old} >/var/log/dr-s6.log 2>&1; echo RMRC:$?; "
+                   f"echo OLDFILES:$(ls -1 /boot | grep -c -- '-{old}$'); "
+                   "echo MENU:$(grep -o 'Debian @os-[^ ]* (kernel [^)]*)' /boot/efi/EFI/dr/grub.cfg | tr ' ' _ | tr -d '()' | tr '\\n' ,)", 900)
+    check(log, "the old kernel package was removed in the running state", tag(out, "RMRC") == "0" and tag(out, "OLDFILES") == "0",
+          f"rc={tag(out, 'RMRC')} oldfiles={tag(out, 'OLDFILES')}")
+    menu = dict(re.findall(r"Debian_(@os-[^_,]+(?:-[^_,]+)*)_kernel_([^_,]+)", tag(out, "MENU") or ""))
+    check(log, "menu: the running state names the new kernel, the earlier state still names the old one",
+          menu.get(state0) == new and menu.get(pre) == old, str(menu))
+    _, out = g.run(f"dr-state boot-once {pre}; echo BORC:$?")
+    check(log, "boot-once accepted", tag(out, "BORC") == "0")
+    try:
+        g.reboot()
+    except Exception as exc:  # noqa: BLE001
+        check(log, "reboot into the earlier state", False, repr(exc))
+        return
+    _, out = g.run("echo KERNEL:$(uname -r); echo CMDLINE:$(cat /proc/cmdline); modprobe loop; echo MODRC:$?")
+    check(log, "the earlier state still boots its old kernel after the package was removed elsewhere",
+          tag(out, "KERNEL") == old and running_state(tag(out, "CMDLINE")) == pre, f"{tag(out, 'KERNEL')} {running_state(tag(out, 'CMDLINE'))}")
+    check(log, "and its modules load", tag(out, "MODRC") == "0")
+
+
+def scenario_s7(g, log):
+    """S7: an unattended upgrade takes a snapshot too. unattended-upgrade drives dpkg through libapt, which runs the
+    DPkg::Pre-Invoke hook; this checks it instead of assuming it."""
+    pc = _precondition(g, log)
+    if not pc:
+        return
+    g.run(UPDATES_SOURCES)
+    g.run("apt-get update -qq >/dev/null 2>&1")
+    _, out = g.run("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq unattended-upgrades >/var/log/dr-s7-install.log 2>&1; echo INSRC:$?", 900)
+    check(log, "unattended-upgrades installed", tag(out, "INSRC") == "0", str(tag(out, "INSRC")))
+    before = state_list(g)
+    _, out = g.run("unattended-upgrade -v >/var/log/dr-s7.log 2>&1; echo UURC:$?; "
+                   "echo UPGRADED:$(grep -c 'Packages that will be upgraded' /var/log/unattended-upgrades/unattended-upgrades.log); "
+                   "echo NOTHING:$(grep -c 'No packages found that can be upgraded unattended' /var/log/unattended-upgrades/unattended-upgrades.log)", 5400)
+    after = state_list(g)
+    new = [s for s in after if s not in before and s.startswith("@os-pre-")]
+    check(log, "the unattended run upgraded something (otherwise this scenario proves nothing)",
+          tag(out, "UURC") == "0" and (tag(out, "UPGRADED") or "0") != "0", f"rc={tag(out, 'UURC')} upgraded={tag(out, 'UPGRADED')} nothing={tag(out, 'NOTHING')}")
+    check(log, "the unattended run took a snapshot first", len(new) == 1, str(new))
+
+
+def scenario_s9(g, log):
+    """S9: the root filesystem is full before an apt run. Either the snapshot step fails clearly and apt changes
+    nothing, or the install completes; never a half state. Afterwards the space is freed and apt works again."""
+    pc = _precondition(g, log)
+    if not pc:
+        return
+    state0, _ = pc
+    before = state_list(g)
+    _, out = g.run("i=0; while fallocate -l 256M /srv/fill.$i 2>/dev/null; do i=$((i+1)); done; "
+                   "j=0; while fallocate -l 4M /srv/fillb.$j 2>/dev/null; do j=$((j+1)); done; "
+                   "echo FILLED:big$i-small$j; echo AVAILKB:$(df -k --output=avail /srv | tail -1 | tr -d ' ')", 1800)
+    check(log, "the filesystem is full", (tag(out, "AVAILKB") or "999999999").isdigit() and int(tag(out, "AVAILKB") or "999999999") < 4096,
+          f"filled={tag(out, 'FILLED')} availkb={tag(out, 'AVAILKB')}")
+    _, out = g.run("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq hello >/var/log/dr-s9.log 2>&1; echo APTRC:$?; "
+                   "echo DPKGAUDIT:$(dpkg --audit | wc -l); "
+                   "echo HELLO:$(dpkg-query -W -f='${Status}' hello 2>/dev/null | tr ' ' _ || true); "
+                   "echo LASTLINES:$(tail -n 3 /var/log/dr-s9.log | tr -d '()$`' | tr '\\n' '|' | tr ' ' _)")
+    rc = tag(out, "APTRC")
+    hello = tag(out, "HELLO") or ""
+    installed = hello.endswith("installed") and "not-installed" not in hello
+    check(log, "no half state: dpkg has nothing to repair", tag(out, "DPKGAUDIT") == "0", str(tag(out, "DPKGAUDIT")))
+    check(log, "outcome is all-or-nothing (apt rc 0 and installed, or apt rc != 0 and not installed)",
+          (rc == "0" and installed) or (rc not in (None, "0") and not installed), f"rc={rc} hello={hello} last={tag(out, 'LASTLINES')}")
+    say(log, f"S9 outcome: {'install completed' if rc == '0' else 'apt refused or failed'} (rc={rc})")
+    _, out = g.run("rm -f /srv/fill.* /srv/fillb.*; sync; btrfs filesystem sync /; sleep 5; echo AVAILKB:$(df -k --output=avail /srv | tail -1 | tr -d ' ')")
+    check(log, "space is free again", (tag(out, "AVAILKB") or "0").isdigit() and int(tag(out, "AVAILKB") or "0") > 1000000, str(tag(out, "AVAILKB")))
+    _, out = g.run("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq hello >/var/log/dr-s9b.log 2>&1; echo APTRC:$?; echo HELLO:$(command -v hello || echo none)", 600)
+    check(log, "apt works again after the space is back", tag(out, "APTRC") == "0" and tag(out, "HELLO") == "/usr/bin/hello", f"{tag(out, 'APTRC')} {tag(out, 'HELLO')}")
+    after = state_list(g)
+    check(log, "every state has a bootable kernel in the menu (no leftover partial snapshot)",
+          all(s in after for s in before), str(after))
+    _, out = g.run("echo MENU:$(grep -c '^menuentry' /boot/efi/EFI/dr/grub.cfg); echo SUBVOLS:$(ls -1d /.top/@os-* | wc -l)")
+    check(log, "menu entries match the state subvolumes", tag(out, "MENU") == tag(out, "SUBVOLS"), f"menu={tag(out, 'MENU')} subvols={tag(out, 'SUBVOLS')}")
+    try:
+        g.reboot()
+    except Exception as exc:  # noqa: BLE001
+        check(log, "reboot after the full-disk episode", False, repr(exc))
+        return
+    _, out = g.run("echo CMDLINE:$(cat /proc/cmdline)")
+    check(log, "the system still boots its state after the episode", running_state(tag(out, "CMDLINE")) == state0, str(running_state(tag(out, "CMDLINE"))))
+
+
+def scenario_s5(g, log):
+    """S5: the running state's initramfs is broken. The default entry cannot boot; the earlier state, chosen in the
+    GRUB menu with keys over the serial line, can. Then the earlier state is made the default (recovery)."""
+    pc = _precondition(g, log)
+    if not pc:
+        return
+    state0, kver = pc
     before = state_list(g)
     _, out = g.run("dr-state snapshot --reason s5; echo SNAPRC:$?")
     check(log, "manual snapshot taken", tag(out, "SNAPRC") == "0", str(tag(out, "SNAPRC")))
@@ -413,16 +554,28 @@ def scenario_s5(g, log):
     # corrupt (not remove) the initramfs of the RUNNING state, so its menu entry stays but cannot boot
     _, out = g.run(f"echo broken > /boot/initrd.img-{kver}; echo BRK:$(wc -c < /boot/initrd.img-{kver})")
     check(log, "initramfs of the running state is broken", tag(out, "BRK") == "7", str(tag(out, "BRK")))
+    # menu order decides how many keys reach the good entry: the menu opens on the saved default (state0)
+    _, out = g.run("echo ORDER:$(grep '^menuentry' /boot/efi/EFI/dr/grub.cfg | sed 's/.*--id \\(@os-[^ ]*\\).*/\\1/' | tr '\\n' ,)")
+    order = [s for s in (tag(out, "ORDER") or "").split(",") if s]
+    if not check(log, "both states are in the menu", state0 in order and good in order, str(order)):
+        return
+    downs = order.index(good) - order.index(state0)
     g.send("reboot\n")
     g.buf = b""
     try:
-        g.expect(rb"Kernel panic|not syncing|Unable to mount root|Gave up waiting for root", 900)
-        check(log, "the default entry fails to boot (panic seen, no login prompt)", True)
+        seen, _ = g.expect(rb"Kernel panic|not syncing|Unable to mount root|Gave up waiting for root", 900)
     except TimeoutError as exc:
-        check(log, "the default entry fails to boot (panic seen, no login prompt)", False, str(exc)[-160:])
+        check(log, "the default entry fails to boot because of the broken initramfs", False, str(exc)[-160:])
         return
-    # the guest hangs in the panic; reset it from outside (QMP) and pick the earlier entry in the menu
-    reply = qmp_command(g.qmp_path, "system_reset")
+    check(log, "the default entry fails to boot because of the broken initramfs (unpack failure then panic, no login prompt)",
+          b"Initramfs unpacking failed" in seen and b"login: " not in seen, seen[-160:].decode("utf-8", "replace"))
+    # the guest hangs in the panic (assumed from the kernel default panic=0, not waited out); reset it from
+    # outside (QMP) and pick the earlier entry in the menu
+    try:
+        reply = qmp_command(g.qmp_path, "system_reset")
+    except Exception as exc:  # noqa: BLE001 - a QMP failure is a failed check, not a traceback
+        check(log, "guest reset through QMP", False, repr(exc))
+        return
     check(log, "guest reset through QMP", "return" in reply, str(reply))
     g.buf = b""
     try:
@@ -432,8 +585,9 @@ def scenario_s5(g, log):
         return
     check(log, "the GRUB menu appears again", True)
     time.sleep(1.5)
-    g.send("\x1b[B")  # Down: the second entry (states are listed in name order, @os-0001 before @os-pre-...)
-    time.sleep(1)
+    for _ in range(abs(downs)):  # Down (or Up) from the saved default to the good entry
+        g.send("\x1b[B" if downs > 0 else "\x1b[A")
+        time.sleep(0.7)
     g.send("\r")
     g.buf = b""
     g.expect(rb"login: ?", 900)
@@ -460,7 +614,8 @@ def main():
     sock, name = sys.argv[1], sys.argv[2]
     logpath = sys.argv[sys.argv.index("--log") + 1] if "--log" in sys.argv else f"/tmp/dr-serial-{name}.log"
     scenarios = {"boot-check": scenario_boot_check, "s2-s3": scenario_s2_s3, "kernel-upgrade": scenario_kernel_upgrade,
-                 "s5": scenario_s5}
+                 "s5": scenario_s5, "s6": scenario_s6, "s7": scenario_s7, "s9": scenario_s9,
+                 "backports": scenario_kernel_backports}
     if name not in scenarios:
         print(f"unknown scenario {name}; one of {sorted(scenarios)}")
         return 2

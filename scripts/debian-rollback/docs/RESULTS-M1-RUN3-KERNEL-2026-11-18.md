@@ -26,7 +26,7 @@ transcript is the evidence (`artifacts/debian-rollback/m1-run3k/`, local).
 | the new kernel is installed next to the old one | `/vmlinuz` -> 6.12.117+deb13-amd64; `/boot` has `vmlinuz-` and `initrd.img-` for 6.12.107 and 6.12.117 |
 | the apt hook snapshotted before the upgrade | exactly one new state, `@os-pre-20261118122229-655-apt` |
 | the menu was refreshed by the hooks | `@os-0001` -> kernel 6.12.117; the snapshot -> kernel 6.12.107 |
-| the ESP boot files are untouched by the upgrade | `EFI/BOOT`, `EFI/dr` contents and a hash of `BOOTX64.EFI` equal before and after (no `grub-install` side effect from the `grub-efi` postinst) |
+| the ESP boot files are untouched by the upgrade | `EFI/BOOT`, `EFI/dr` contents and a hash of `BOOTX64.EFI` equal before and after (whether `grub-efi` was among the upgraded packages, so whether its postinst ran at all, is not recorded) |
 | default boot runs the new kernel in the running state | `uname -r` 6.12.117, rootflags `@os-0001` |
 | `boot-once` the snapshot, reboot | `uname -r` 6.12.107, rootflags the snapshot, `/lib/modules` has only 6.12.107, `modprobe loop` works |
 | the one-shot is consumed | next plain reboot: kernel 6.12.117 in `@os-0001` again |

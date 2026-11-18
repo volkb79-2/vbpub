@@ -4,7 +4,7 @@ Result: **both pass in fresh guests.** The strengthened driver re-confirms S2, S
 S10 of [run 2](RESULTS-M1-RUN2-2026-11-18.md) with a boot-id proof for every reboot, and S5
 shows that a state whose initramfs is broken does not boot, that the earlier state can be
 chosen in the GRUB menu with keys over the serial line, and that making it the default
-repairs the system.
+gets the system booting again (the broken state is left as it is, with its menu entry).
 
 Same variant (btrfs, own snapshots, ESP GRUB menu; snapper not used), same guest setup
 and limits as run 2 (v1001, `poc/dr-qemu.sh`, vm-lab not used, TCG, 2 vCPUs, 2 GiB),
@@ -46,8 +46,14 @@ changed `boot_id` and a fresh `login:` prompt.
 
 - Settled in the guest, for this variant: the earlier state is a working way out of a
   broken new state, by a manual menu choice (decision D5, phase 1).
-- The panic does not reboot the guest by itself; a real host needs a watchdog or the
-  phase 2 fallback (automatic fallback after a failed boot is not built).
+- The panic is assumed not to reboot the guest by itself (kernel default `panic=0`); the
+  driver reset the guest through QMP right after the panic and did not wait it out. A
+  real host needs a watchdog or the phase 2 fallback either way (automatic fallback
+  after a failed boot is not built).
+- The run 5 driver did not assert `Initramfs unpacking failed` or the absence of a login
+  prompt (it checked only the panic text); that evidence is in the transcript. The
+  scenario now asserts both, and computes the number of key presses from the menu order
+  instead of assuming one `Down`; these changes have not run in a guest yet.
 - **Not yet verified:** S6 (removing the kernel an earlier state needs), S7 (unattended
   upgrades), S8 (30 states and pruning), S9 (full disk before an upgrade), S11
   (backports kernel), S12 (phase 2 probation), Secure Boot, snapper on the flat layout,
