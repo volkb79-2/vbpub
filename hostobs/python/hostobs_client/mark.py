@@ -127,12 +127,13 @@ def send_mark(
 def mark(kind: str, name: str, *, environ: Mapping[str, str] | None = None, **options: Any) -> dict:
     """Annotate through the socket named by ``HOSTOBS_OBSERVER_SOCKET``; raises :class:`MarkError` if unset."""
     env = os.environ if environ is None else environ
+    send_options = {k: options.pop(k) for k in ("timeout_s", "clock") if k in options}
+    options.setdefault("ctx", context_from_environment(env))
+    args = build_args(kind, name, **options)  # a usage error (ValueError) is judged before the socket
     path = env.get(SOCKET_VARIABLE)
     if not path:
         raise MarkError(f"{SOCKET_VARIABLE} is unset")
-    send_options = {k: options.pop(k) for k in ("timeout_s", "clock") if k in options}
-    options.setdefault("ctx", context_from_environment(env))
-    return send_mark(path, build_args(kind, name, **options), **send_options)
+    return send_mark(path, args, **send_options)
 
 
 def _parser() -> argparse.ArgumentParser:
