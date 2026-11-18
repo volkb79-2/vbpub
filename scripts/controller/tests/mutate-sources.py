@@ -1160,6 +1160,10 @@ mutant("scripts/controller/chain-run.sh", "chain-run-export-socket.sh",
        chain_gate_run, 'export CGPROFILE_CONTROL_SOCKET=/run/profiler.sock\n' + chain_gate_run)
 mutant("scripts/controller/chain-run.sh", "chain-run-profile-default.sh",
        chain_gate_run, 'export RUN_GATE_PROFILE=off\n' + chain_gate_run)
+mutant("scripts/controller/chain-run.sh", "chain-run-unset-env.sh",
+       'for name in ${unset_names[@]+"${unset_names[@]}"}; do unset "$name"; done', ':')
+mutant("scripts/controller/chain-run.sh", "chain-run-unset-env-name.sh",
+       '--unset-env) [[ $# -ge 2 && $2 =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || usage;', '--unset-env) [[ $# -ge 2 ]] || usage;')
 
 
 # ctl-doctor.sh: one hand mutant per check; the lib.sh read-only/configured-path mutants ship beside their own doctor copy.
@@ -1205,6 +1209,10 @@ for _name, _before, _after in (
     ("pinned-scan", '[[ ${#scan_dirs[@]} -eq 0 ]] || scan_roots+=("${scan_dirs[@]}")', ":"),
     ("pinned-home", 'scan_roots=("$CONTROLLER_HOME")', "scan_roots=()"),
     ("profile-default", "${RUN_GATE_PROFILE:-off} (gate-run.sh", "${RUN_GATE_PROFILE:-on} (gate-run.sh"),
+    ("gate-lock-unset", "path=${!1:-} parent\n  if [[ -z $path ]]; then", "path=${!1:-} parent\n  if false; then"),
+    ("gate-lock-absolute", "elif [[ $path != /* ]]; then", "elif false; then"),
+    ("gate-lock-parent", "if [[ -d $parent && -w $parent ]]; then record OK", "if true; then record OK"),
+    ("gate-lock-distinct", 'if [[ -n ${CONTROLLER_GATE_LOCK:-} && ${CONTROLLER_GATE_LOCK:-} == "${CONTROLLER_GATE2_LOCK:-}" ]]; then', "if false; then"),
     ("dir-missing", "if [[ ! -d $2 ]]; then", "if false; then"),
     ("dir-writable", "elif [[ ! -w $2 ]]; then", "elif false; then"),
     ("symlink-detect", "[[ -L $p ]] && return 0", "false && return 0"),

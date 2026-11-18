@@ -299,6 +299,30 @@ dir_check() {
 dir_check runs-dir "$CONTROLLER_RUNS_DIR"
 dir_check logs-dir "$CONTROLLER_LOGS_DIR"
 
+# ---- local gate slots: gate-run.sh REQUIRES both lock paths --------------------------------------------------------------
+gate_lock_check() {
+  # $1 variable name; nothing is created: a lock file that does not exist yet needs a writable directory
+  local name=$1 path=${!1:-} parent
+  if [[ -z $path ]]; then
+    record FAIL "$name" "$name is not set: gate-run.sh exits 2 for every local lane (a chain over such lanes still ends with CHAIN-DONE)" \
+      "set $name=<absolute lock file path> in '$env_file'; CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK are both required and must differ"
+  elif [[ $path != /* ]]; then
+    record FAIL "$name" "$name is not an absolute path: $path" "set $name to an absolute lock file path in '$env_file'"
+  elif [[ -e $path ]]; then
+    if [[ -w $path ]]; then record OK "$name" "lock file exists and is writable: $(disp "$path")"
+    else record FAIL "$name" "lock file is not writable: $(disp "$path")" "chmod u+w '$path' (or fix its owner)"; fi
+  else
+    parent=$(dirname -- "$path")
+    if [[ -d $parent && -w $parent ]]; then record OK "$name" "lock file will be created in a writable directory: $(disp "$path")"
+    else record FAIL "$name" "the directory for the lock file is missing or not writable: $(disp "$parent")" "mkdir -p '$parent' and make it writable, or point $name at another path"; fi
+  fi
+}
+gate_lock_check CONTROLLER_GATE_LOCK
+gate_lock_check CONTROLLER_GATE2_LOCK
+if [[ -n ${CONTROLLER_GATE_LOCK:-} && ${CONTROLLER_GATE_LOCK:-} == "${CONTROLLER_GATE2_LOCK:-}" ]]; then
+  record FAIL gate-locks 'CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK are the same path: gate-run.sh refuses it' "give CONTROLLER_GATE2_LOCK its own path in '$env_file'"
+fi
+
 # ---- where the state lives: symlinks and git work trees ----------------------------------------------------------------
 behind_symlink() {
   local p=$1

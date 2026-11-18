@@ -43,7 +43,9 @@ host table; `flock`, `git`, `python3`, `jq` (failures) and `docker`, `shellcheck
 (`docker image inspect`; an unreachable daemon only warns); any file under
 `$CONTROLLER_HOME` (and each `--scan` directory) that still names the removed
 `run-gate-2560` image tag; the effective `RUN_GATE_PROFILE`; writable runs and logs
-directories; and where `$CONTROLLER_HOME` and `CONTROLLER_RUNS_DIR` really live (a
+directories; that `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK` (required by
+`gate-run.sh`) are set, absolute, distinct and in a writable directory (a failure
+otherwise); and where `$CONTROLLER_HOME` and `CONTROLLER_RUNS_DIR` really live (a
 symlink target inside a git work tree is a warning: `git clean -fdx` would delete it,
 see [`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md)). It prints names and paths only,
 never a value from the env file, the host table or a key. Limit: the env file is
@@ -526,7 +528,7 @@ Differences from the program-directory `remote-gate.sh` this replaces:
 ## Run several lanes in a row (`chain-run.sh`)
 
 ```bash
-(setsid nohup scripts/controller/chain-run.sh [--head <sha>] [--remote-host <alias>] [--stop-on-fail] \
+(setsid nohup scripts/controller/chain-run.sh [--head <sha>] [--remote-host <alias>] [--stop-on-fail] [--unset-env <NAME>]... \
   <worktree> <project-subdir> <log-prefix> <lane>... >/dev/null 2>&1 </dev/null & disown)
 ```
 
@@ -548,9 +550,18 @@ still running or was killed.
 - `--head <sha>` (full or abbreviated) pins the commit: the chain refuses with
   `HEAD moved: ...` when the worktree HEAD differs and with `tree dirty` when
   the tree has any change, before the first lane starts.
-- The environment is passed on untouched. The chain exports no image tag and no
-  profiler socket; profiling is `gate-run.sh`'s default (off unless the caller
-  sets `RUN_GATE_PROFILE`), and the repository's default tester image is used.
+- The environment is passed on untouched, except the names given with
+  `--unset-env NAME` (repeatable; for example `--unset-env RUN_GATE_TESTER_UNIFIED_IMAGE`
+  for an old chain that began with `unset RUN_GATE_TESTER_UNIFIED_IMAGE`). The
+  chain exports no image tag and no profiler socket; profiling is `gate-run.sh`'s
+  default (off unless the caller sets `RUN_GATE_PROFILE`), and the repository's
+  default tester image is used.
+- `gate-run.sh` REQUIRES `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK` (two
+  distinct absolute paths, normally set in `controller.local.env`): when one is
+  unset it exits 2 for every local lane, and because the chain never reads a
+  verdict it still ends with `CHAIN-DONE`, by design. Read the lane logs, and run
+  `ctl-doctor.sh`, which FAILs when either lock is unset, relative, equal to the
+  other or in an unwritable directory.
 - Tests inject stub launchers through `CONTROLLER_GATE_RUN_SCRIPT` and
   `CONTROLLER_REMOTE_GATE_SCRIPT` (default: the siblings of `chain-run.sh`).
 
@@ -565,7 +576,7 @@ lane arguments; a `HEAD_WANT` check plus the `status --short` check becomes
 `remote:<lane>` (host in `--remote-host`; a pass-through `-- --base <sha>`
 becomes `:--base=<sha>`). Drop every `export RUN_GATE_TESTER_UNIFIED_IMAGE=...`
 (that image tag no longer exists), `export CGPROFILE_CONTROL_SOCKET=...` and
-`RUN_GATE_PROFILE` line. Two real examples:
+`RUN_GATE_PROFILE` line; an `unset NAME` line becomes `--unset-env NAME`. Two real examples:
 
 ```bash
 # local lanes with a head pin (old: three lanes from run-gate-project, HEAD_WANT + clean-tree check,

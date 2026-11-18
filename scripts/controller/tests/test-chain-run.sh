@@ -89,6 +89,18 @@ RUN_GATE_PROFILE=on RUN_GATE_TESTER_UNIFIED_IMAGE=caller-image chain "$W" proj p
 contains "$STUB_LOG" 'env profile=on image=caller-image socket=UNSET marker=absent' "the caller's profile and image settings reach the lane, the stale marker was gone"
 [[ $(marker pfx) == CHAIN-DONE ]] || fail 'the marker was not rewritten'
 
+# --- --unset-env removes exactly the named variables (repeatable) from what the lanes inherit
+reset
+RUN_GATE_PROFILE=on RUN_GATE_TESTER_UNIFIED_IMAGE=caller-image chain --unset-env RUN_GATE_TESTER_UNIFIED_IMAGE "$W" proj pfx alpha > /dev/null 2>&1 || fail 'chain with --unset-env failed'
+contains "$STUB_LOG" 'env profile=on image=UNSET socket=UNSET marker=absent' '--unset-env drops the named variable and keeps the others'
+reset
+RUN_GATE_PROFILE=on RUN_GATE_TESTER_UNIFIED_IMAGE=caller-image chain --unset-env RUN_GATE_TESTER_UNIFIED_IMAGE --unset-env RUN_GATE_PROFILE "$W" proj pfx alpha beta > /dev/null 2>&1 || fail 'chain with two --unset-env failed'
+[[ $(grep -c 'env profile=UNSET image=UNSET socket=UNSET' "$STUB_LOG") == 2 ]] || fail '--unset-env is repeatable and applies to every lane'
+reset
+if chain --unset-env 'BAD NAME' "$W" proj pfx alpha > /dev/null 2>&1; then fail 'an invalid --unset-env name was accepted'; else rc=$?; [[ $rc == 2 ]] || fail "invalid --unset-env name exited $rc, expected 2"; fi
+if chain --unset-env > /dev/null 2>&1; then fail '--unset-env without a name was accepted'; fi
+[[ ! -e $STUB_LOG ]] || fail 'a refused --unset-env still launched a lane'
+
 # --- a failing lane never stops the chain unless asked; the chain does not read verdicts
 reset
 STUB_FAIL=alpha chain "$W" proj pfx alpha beta > /dev/null 2>&1 || fail 'a failed lane must not fail the chain'

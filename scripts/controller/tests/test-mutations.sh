@@ -450,14 +450,14 @@ for remote_gate_mutant in identity allow-list project-dir-guard slot-roundup wei
 done
 for chain_run_mutant in log-name remote-log-name marker-text stale-marker head-pin dirty-tree stop-on-fail stop-without-flag \
                         remote-base remote-commit remote-head-lookup remote-host-ambiguity launcher-check subdir-guard \
-                        lane-name-guard lane-cwd default-launcher export-image export-socket profile-default; do
+                        lane-name-guard lane-cwd default-launcher export-image export-socket profile-default unset-env unset-env-name; do
   expect_killed "chain-run-$chain_run_mutant" \
     env CHAIN_RUN_SCRIPT="$ROOT/mutants/scripts/controller/chain-run-$chain_run_mutant.sh" bash "$SCRIPT_DIR/test-chain-run.sh"
 done
 for doctor_mutant in tool-flock-severity tool-docker-severity home-missing env-missing env-syntax env-stray hosts-missing hosts-ssh-shape \
                      hosts-guard hosts-lanes-shape hosts-lanes-warn hosts-api-exec hosts-key-missing hosts-key-mode hosts-pin hosts-pin-devnull hosts-pin-devnull-ok hosts-strict \
                      hosts-nopin hosts-leak allow-unknown allow-unset remote-file-split image-absent image-exact-name image-unreachable \
-                     image-no-docker image-toml pinned-warn pinned-logs pinned-scan pinned-home profile-default dir-missing dir-writable \
+                     image-no-docker image-toml pinned-warn pinned-logs pinned-scan pinned-home profile-default gate-lock-unset gate-lock-absolute gate-lock-parent gate-lock-distinct dir-missing dir-writable \
                      symlink-detect residency-ignore residency-outside residency-runs json exit-code usage-exit; do
   expect_killed "ctl-doctor-$doctor_mutant" \
     env CTL_DOCTOR_SCRIPT="$ROOT/mutants/scripts/controller/ctl-doctor-$doctor_mutant.sh" bash "$SCRIPT_DIR/test-ctl-doctor.sh"

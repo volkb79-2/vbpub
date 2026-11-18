@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Run a fixed list of gate lanes one after another, detached-friendly, and leave a marker file for the controller.
 #
-# usage: chain-run.sh [--head <sha>] [--remote-host <alias>] [--stop-on-fail] <worktree> <project-subdir> <log-prefix> <lane>...
-#   lane              a plain lane name: runs through gate-run.sh from <worktree>/<project-subdir>, log <prefix>-<lane>.log
+# usage: chain-run.sh [--head <sha>] [--remote-host <alias>] [--stop-on-fail] [--unset-env <NAME>]... <worktree> <project-subdir> <log-prefix> <lane>...
+#   --unset-env NAME  (repeatable) removes NAME from the environment every lane inherits, for example the inherited
+#                     RUN_GATE_TESTER_UNIFIED_IMAGE of an old chain that began with `unset RUN_GATE_TESTER_UNIFIED_IMAGE`
+#   lane            a plain lane name: runs through gate-run.sh from <worktree>/<project-subdir>, log <prefix>-<lane>.log
 #   remote:<lane>     the lane on a remote gate worker through remote-gate.sh (host from --remote-host, or the only alias in
 #                     CONTROLLER_REMOTE_GATE_HOSTS), commit = the worktree HEAD, log <prefix>-remote-<lane>.log
 #   remote:<lane>:--base=<sha>   the same with a comparison base that travels to the host with the commit
@@ -12,8 +14,11 @@
 #   HEAD moved: ... / tree dirty / <other reason>   a refusal before the first lane (also on stderr, exit 1)
 # No marker means the chain is still running or was killed. Detached launch:
 #   (setsid nohup chain-run.sh ... >/dev/null 2>&1 </dev/null & disown)
-# Profiling follows gate-run.sh (off unless the caller sets RUN_GATE_PROFILE). The environment is passed on untouched: no
-# image tag and no profiler socket are exported here.
+# Profiling follows gate-run.sh (off unless the caller sets RUN_GATE_PROFILE). The environment is passed on untouched (except
+# the names given with --unset-env): no image tag and no profiler socket are exported here.
+# gate-run.sh REQUIRES CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK (it exits 2 for every local lane when one is unset). The chain
+# does not read verdicts, so it still ends with CHAIN-DONE in that case, by design: read the lane logs, and run ctl-doctor.sh,
+# which FAILs when the two locks are not configured.
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=lib.sh
@@ -21,14 +26,15 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 controller_init
 
 usage() {
-  echo 'usage: chain-run.sh [--head <sha>] [--remote-host <alias>] [--stop-on-fail] <worktree> <project-subdir> <log-prefix> <lane>...' >&2
+  echo 'usage: chain-run.sh [--head <sha>] [--remote-host <alias>] [--stop-on-fail] [--unset-env <NAME>]... <worktree> <project-subdir> <log-prefix> <lane>...' >&2
   exit 2
 }
 
-head_pin='' remote_host='' stop_on_fail=0
+head_pin='' remote_host='' stop_on_fail=0 unset_names=()
 while [[ $# -gt 0 ]]; do
   case $1 in
     --head) [[ $# -ge 2 && -n $2 ]] || usage; head_pin=$2; shift 2 ;;
+    --unset-env) [[ $# -ge 2 && $2 =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || usage; unset_names+=("$2"); shift 2 ;;
     --remote-host) [[ $# -ge 2 && -n $2 ]] || usage; remote_host=$2; shift 2 ;;
     --stop-on-fail) stop_on_fail=1; shift ;;
     --) shift; break ;;
@@ -92,6 +98,7 @@ if [[ -n $head_pin ]]; then
   [[ -z $dirty ]] || refuse 'tree dirty'
 fi
 
+for name in ${unset_names[@]+"${unset_names[@]}"}; do unset "$name"; done
 lane_rc=0
 for spec in "${lanes[@]}"; do
   if [[ $spec == remote:* ]]; then

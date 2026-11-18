@@ -49,7 +49,7 @@ printf '[environments.tester-unified]\nmode = "ephemeral"\nimage = "fixture-imag
 write_env() {
   # $1 home; remaining arguments are the lines of controller.local.env
   local home=$1; shift
-  printf '%s\n' '# test fixture' 'NETCUP_TOKEN=TOPSECRET-envvalue-123' "$@" > "$home/controller.local.env"
+  printf '%s\n' '# test fixture' 'NETCUP_TOKEN=TOPSECRET-envvalue-123' "CONTROLLER_GATE_LOCK=\"$home/gate.lock\"" "CONTROLLER_GATE2_LOCK=\"$home/gate2.lock\"" "$@" > "$home/controller.local.env"
 }
 fixture() {
   # $1 name; sets H to a complete, passing controller home
@@ -102,7 +102,7 @@ before=$(find "$H" -printf '%p %T@ %s\n' | sort)
 run_doctor --
 expect_rc 0 'a complete controller home must pass'
 for ok in 'OK home' 'OK env-file' 'OK tool:flock' 'OK tool:git' 'OK tool:python3' 'OK tool:jq' 'OK tool:docker' 'OK tool:shellcheck' \
-          'OK hosts:main:alpha' 'OK remote-allow-list' 'OK image' 'OK pinned-image' 'OK runs-dir' 'OK logs-dir' 'OK residency:home'; do
+          'OK hosts:main:alpha' 'OK remote-allow-list' 'OK image' 'OK pinned-image' 'OK runs-dir' 'OK logs-dir' 'OK CONTROLLER_GATE_LOCK' 'OK CONTROLLER_GATE2_LOCK' 'OK residency:home'; do
   line "^$ok" "baseline check $ok"
 done
 line '^INFO run-gate-profile: effective RUN_GATE_PROFILE=off ' 'the default profile is printed as off'
@@ -234,6 +234,31 @@ expect_rc 0 'UserKnownHostsFile=/dev/null is a warning'
 line '^WARN hosts:main:alpha:pin: UserKnownHostsFile=/dev/null is not a pin' '/dev/null is not a pin'
 line '^  fix: point -o UserKnownHostsFile at a pinned known_hosts file' '/dev/null pin fix text'
 ! grep -q '^OK hosts:main:alpha:' "$ROOT/out" || fail 'an alias with a /dev/null pin must not be reported OK'
+
+# --- the local gate slots: gate-run.sh needs both lock paths (absolute, distinct, in a writable directory)
+fixture locks-unset; grep -vE '^CONTROLLER_GATE2?_LOCK=' "$H/controller.local.env" > "$H/env.tmp"; mv -- "$H/env.tmp" "$H/controller.local.env"
+run_doctor --
+expect_rc 1 'both gate locks unset'
+line '^FAIL CONTROLLER_GATE_LOCK: CONTROLLER_GATE_LOCK is not set: gate-run.sh exits 2' 'the first lock is required'
+line '^FAIL CONTROLLER_GATE2_LOCK: CONTROLLER_GATE2_LOCK is not set' 'the second lock is required'
+line '^  fix: set CONTROLLER_GATE_LOCK=<absolute lock file path>' 'the lock fix names the file'
+fixture locks-relative; write_env "$H" 'CONTROLLER_GATE2_LOCK=relative/gate2.lock'
+run_doctor --
+expect_rc 1 'a relative gate lock path'
+line '^FAIL CONTROLLER_GATE2_LOCK: CONTROLLER_GATE2_LOCK is not an absolute path' 'a relative lock path is refused'
+fixture locks-parent; write_env "$H" "CONTROLLER_GATE_LOCK=$H/no-such-dir/gate.lock"
+run_doctor --
+expect_rc 1 'a gate lock in a missing directory'
+line '^FAIL CONTROLLER_GATE_LOCK: the directory for the lock file is missing or not writable' 'the lock directory must be writable'
+fixture locks-same; write_env "$H" "CONTROLLER_GATE2_LOCK=$H/gate.lock"
+run_doctor --
+expect_rc 1 'both gate locks are one path'
+line '^FAIL gate-locks: CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK are the same path' 'the two locks must differ'
+fixture locks-existing; : > "$H/gate.lock"
+run_doctor --
+expect_rc 0 'an existing writable lock file'
+line '^OK CONTROLLER_GATE_LOCK: lock file exists and is writable' 'an existing lock file is accepted'
+[[ ! -e $H/gate2.lock ]] || fail 'the doctor must not create a lock file'
 
 # --- the remote-gate allow-list
 fixture allow-unknown; write_env "$H" 'CONTROLLER_REMOTE_GATE_HOSTS="alpha ghost"'
