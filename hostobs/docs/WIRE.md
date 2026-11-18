@@ -381,7 +381,9 @@ was not given.
 4.5 **status** — args `{}`. Result `{"server": str, "boot_id": str, "epoch": u64, "started_real_ns": i64,
 "uptime_ms": u64, "tick": {"seq": u64, "last_mono_ns": u64, "scan_ms": u32}, "clients": {"<level>":
 u32}, "queues": {"queued_bytes": u64, "dropped_blocks": u64}, "tiers": [{"name": str, "step_ms": u32,
-"keep_s": u32, "bytes": u64, "cap_bytes": u64}]}`.
+"keep_s": u32, "bytes": u64, "cap_bytes": u64}]}`. `clients` lists the served levels (observe, operator,
+observer) with the connections of each that are not closed: a closed connection that waits for its final
+bytes is not counted, but it holds its §5.1 connection-cap slot until the server releases it.
 
 4.6 **current** — args `{"selection": Selection}`. REP result `{"stream": {"tick_ms": u32}}`, one
 live-shaped BLOCK (dictionary-bearing, latest tick; a Query entry, §5.3, so never dropped), END
