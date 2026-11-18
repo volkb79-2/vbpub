@@ -111,7 +111,9 @@ run-gate assay-r1
 ```
 
 Cargo is offline and locked, and each Cargo invocation checks the mounted `Cargo.lock`
-against the image's lock-specific cache manifest first. `selftest` is the workspace's own
+against the image's registry-set identity and cache manifest first (workspace-member lock
+edits do not change that identity; a new tag carrying it is built on a host and the lanes are
+switched to it by a separate `run-gate.root.toml` commit). `selftest` is the workspace's own
 R0/R1 baseline (nextest, doctests, llvm-cov and the per-crate line/region floors).
 
 **`assay-r1` is the estate-standard coverage verdict**: assay's Rust R1 judge reads the

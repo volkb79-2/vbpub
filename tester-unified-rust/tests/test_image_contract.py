@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -54,13 +53,25 @@ class ImageContractTests(unittest.TestCase):
     def test_image_fetches_exact_lock_and_prechecks_baked_archives(self) -> None:
         dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
         build = (PROJECT_ROOT / "build-image.sh").read_text(encoding="utf-8")
-        self.assertIn('test "$lock_sha256" = "$HOSTOBS_LOCK_SHA256"', dockerfile)
+        self.assertIn('test "$registry_sha256" = "$HOSTOBS_LOCK_REGISTRY_SHA256"', dockerfile)
         self.assertIn("cargo fetch --locked", dockerfile)
         self.assertIn("rust-crate-cache.sha256", dockerfile)
         self.assertIn("verify-crate-cache.py", dockerfile)
         self.assertIn("verify-crate-cache /usr/local/share/hostobs-Cargo.lock", dockerfile)
-        self.assertIn('sha256sum "$repo_root/hostobs/Cargo.lock"', build)
-        self.assertIn('--build-arg "HOSTOBS_LOCK_SHA256=$lock_sha256"', build)
+        # The digest comes from THE verifier function in both places, never from sha256sum of the file.
+        self.assertIn(
+            'registry_sha256="$(python3 /usr/local/lib/hostobs/verify-crate-cache.py '
+            '--print-registry-digest --lock Cargo.lock)"',
+            dockerfile,
+        )
+        self.assertIn(
+            'python3 "$repo_root/hostobs/tools/verify-crate-cache.py" --print-registry-digest '
+            '--lock "$repo_root/hostobs/Cargo.lock"',
+            build,
+        )
+        self.assertNotIn("sha256sum Cargo.lock", dockerfile)
+        self.assertNotIn("sha256sum", build)
+        self.assertIn('--build-arg "HOSTOBS_LOCK_REGISTRY_SHA256=$lock_registry_sha256"', build)
         self.assertIn('[[ -n "$cgroup_parent" ]] || {', build)
         self.assertIn('refusing an ungoverned image build', build)
         self.assertIn('[[ -f "$repo_root/hostobs/Cargo.lock" ]] || {', build)
@@ -78,12 +89,36 @@ class ImageContractTests(unittest.TestCase):
         self.assertIn('document["orchestration"]["defaults"]["env"]', build)
         self.assertIn('--cgroup-parent "$cgroup_parent"', build)
         self.assertEqual(build.count('--cgroup-parent "$cgroup_parent"'), 2)
-        self.assertIn('if [[ "$actual_lock_sha256" != "$lock_sha256" ]]; then', build)
+        self.assertIn('if [[ "$actual_lock_registry_sha256" != "$lock_registry_sha256" ]]; then', build)
         self.assertIn('if [[ "$actual_base" != "$expected_base" ]]; then', build)
         self.assertNotIn('--resource memory=', build)
         self.assertNotIn('--resource cpu-quota=', build)
         self.assertIn('--build-arg "RUST_IMAGE=$expected_base"', build)
         self.assertNotIn('    --build-arg)\n', build)
+
+    def test_registry_identity_names_are_consistent_and_no_whole_lock_name_survives(self) -> None:
+        dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        build = (PROJECT_ROOT / "build-image.sh").read_text(encoding="utf-8")
+        wrapper = (HOSTOBS_ROOT / "tools/verify-crate-cache").read_text(encoding="utf-8")
+        label = "org.vbpub.tester-unified-rust.hostobs-lock-registry-sha256"
+        baked = "/usr/local/share/hostobs-Cargo.lock.registry-sha256"
+        # ARG is declared in both stages (build stage checks it, final stage labels it).
+        self.assertEqual(dockerfile.count("ARG HOSTOBS_LOCK_REGISTRY_SHA256"), 2)
+        self.assertIn(f'{label}="${{HOSTOBS_LOCK_REGISTRY_SHA256}}"', dockerfile)
+        self.assertIn(f'"{label}"', build)
+        # The baked file is written, copied into the final image and read by the wrapper by one name.
+        self.assertIn(f"> {baked};", dockerfile)
+        self.assertIn(f"--baked-registry-sha256 {baked}", dockerfile)
+        self.assertIn(f"COPY --from=cargo-tools {baked} {baked}", dockerfile)
+        self.assertIn(f"--baked-registry-sha256 {baked}", wrapper)
+        for text in (dockerfile, build, wrapper):
+            for stale in (
+                "HOSTOBS_LOCK_SHA256",
+                "hostobs-lock-sha256",
+                "hostobs-Cargo.lock.sha256",
+                "--baked-lock-sha256",
+            ):
+                self.assertNotIn(stale, text)
 
     def test_build_image_hands_exactly_the_six_tester_bounds_to_tester_gate_by_environment(self) -> None:
         # Behavioural pin with stub `cmru`/`docker` on PATH: the bounds must arrive as the
@@ -102,8 +137,17 @@ class ImageContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "tester-unified-rust").mkdir()
-            (root / "hostobs").mkdir()
+            (root / "hostobs" / "tools").mkdir(parents=True)
             (root / "bin").mkdir()
+            shutil.copy(
+                HOSTOBS_ROOT / "tools" / "verify-crate-cache.py",
+                root / "hostobs" / "tools" / "verify-crate-cache.py",
+            )
+            registry_digest = subprocess.run(
+                ["python3", "-I", str(HOSTOBS_ROOT / "tools" / "verify-crate-cache.py"),
+                 "--print-registry-digest", "--lock", str(HOSTOBS_ROOT / "Cargo.lock")],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
             shutil.copy(PROJECT_ROOT / "build-image.sh", root / "tester-unified-rust" / "build-image.sh")
             shutil.copy(PROJECT_ROOT / "Dockerfile", root / "tester-unified-rust" / "Dockerfile")
             shutil.copy(REPO_ROOT / "cmru.orchestration.toml", root / "cmru.orchestration.toml")
@@ -119,7 +163,7 @@ class ImageContractTests(unittest.TestCase):
             (root / "bin" / "docker").write_text(
                 "#!/bin/sh\n"
                 'case "$*" in\n'
-                f"  *hostobs-lock-sha256*) echo {hashlib.sha256(lock).hexdigest()} ;;\n"
+                f"  *hostobs-lock-registry-sha256*) echo {registry_digest} ;;\n"
                 f"  *base-image*) echo {base} ;;\n"
                 "esac\n",
                 encoding="utf-8",
@@ -138,6 +182,7 @@ class ImageContractTests(unittest.TestCase):
                 env=environment, capture_output=True, text=True, check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"hostobs_lock_registry_sha256={registry_digest}", result.stdout)
             seen = json.loads((root / "seen.json").read_text(encoding="utf-8"))
         self.assertEqual(
             seen["argv"],
@@ -151,10 +196,17 @@ class ImageContractTests(unittest.TestCase):
 
     def test_lanes_are_network_none_and_cargo_is_locked_offline(self) -> None:
         hostobs_lanes = tomllib.loads((HOSTOBS_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]
-        self.assertEqual(set(hostobs_lanes), {"lint", "selftest"})
+        self.assertEqual(set(hostobs_lanes), {"lint", "selftest", "assay-r1"})
         for name, lane in hostobs_lanes.items():
             self.assertEqual(lane["environment"], "tester-unified-rust", name)
             self.assertEqual(lane["network"], "none", name)
+            if name == "assay-r1":
+                # The judge lane's command lives in assay.toml; its cargo calls must be locked and offline.
+                assay_lanes = tomllib.loads((HOSTOBS_ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
+                command = assay_lanes["assay-r1"]["argv"][-1]
+                self.assertIn("--locked", command, name)
+                self.assertIn("--offline", command, name)
+                continue
             self.assertIn("--locked", lane["argv"][-1], name)
             self.assertIn("--offline", lane["argv"][-1], name)
         self.assertIn(
@@ -178,7 +230,10 @@ class ImageContractTests(unittest.TestCase):
         self.assertIn('exec cargo "$@"', cargo_wrapper)
         cache_wrapper = (HOSTOBS_ROOT / "tools/verify-crate-cache").read_text(encoding="utf-8")
         self.assertIn("--manifest /usr/local/share/rust-crate-cache.sha256", cache_wrapper)
-        self.assertIn("--baked-lock-sha256 /usr/local/share/hostobs-Cargo.lock.sha256", cache_wrapper)
+        self.assertIn(
+            "--baked-registry-sha256 /usr/local/share/hostobs-Cargo.lock.registry-sha256", cache_wrapper
+        )
+        self.assertNotIn("--baked-lock-sha256", cache_wrapper)
         self.assertIn("--cargo-home /usr/local/cargo", cache_wrapper)
         self.assertIn("offline = true", (HOSTOBS_ROOT / ".cargo/config.toml").read_text(encoding="utf-8"))
 
@@ -192,10 +247,24 @@ class ImageContractTests(unittest.TestCase):
             for path in HOSTOBS_ROOT.glob(pattern)
         }
         self.assertEqual(set(floors), package_dirs)
+        # Floors are never lowered: this is the ratchet, the real value per crate at the time of
+        # writing (bootstrap 90/85 for the scaffold crates). Raise an entry together with its floor.
+        ratchet = {
+            "bins/act": (90.0, 85.0),
+            "bins/probe": (90.0, 85.0),
+            "crates/act": (90.0, 85.0),
+            "crates/client": (90.0, 85.0),
+            "crates/eval": (90.0, 85.0),
+            "crates/kernel": (92.0, 93.0),
+            "crates/model": (97.0, 96.0),
+            "crates/proto": (98.0, 96.0),
+            "crates/store": (94.0, 93.0),
+        }
+        self.assertEqual(set(ratchet), set(floors))
         for package, floor in floors.items():
             with self.subTest(package=package):
-                self.assertEqual(floor["line"], 90.0)
-                self.assertEqual(floor["region"], 85.0)
+                self.assertGreaterEqual(floor["line"], ratchet[package][0])
+                self.assertGreaterEqual(floor["region"], ratchet[package][1])
 
     def test_deny_policy_keeps_workspace_exceptions_narrow(self) -> None:
         deny = tomllib.loads((HOSTOBS_ROOT / "deny.toml").read_text(encoding="utf-8"))

@@ -20,6 +20,10 @@ All notable changes to debian-install-v2 are recorded here.
   their "folder is missing" refusals now say it is the committed placeholder (recreate with `mkdir -p` or
   `git checkout -- downloads/vm-images`) and name `repo-path vm-images --provision` for the CoW subvolume.
 
+### Fixed (run-gate lanes)
+- `run-gate.toml` lanes `r0-r1` and `fake-integration` put `{worktree}/libraries/cowtree/src` on their
+  PYTHONPATH (the VM path resolver imports `cowtree`; the run-gate-project estate guard was red on `main`).
+
 ### Added (div2-docker-builder-gc)
 - `docker_builder_gc_max_used_gb` (default 50) and `docker_builder_gc_reserved_gb` (default 10)
   config keys, rendered as `builder.gc` (`enabled`, `defaultMaxUsedSpace`, `defaultReservedSpace`)

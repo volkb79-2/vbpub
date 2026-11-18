@@ -4328,8 +4328,20 @@ def resolve_base_declaration(lane: Lane, request_base: str | None) -> str | None
     return declared
 
 
+def _lane_delegates_base(lane: Lane) -> bool:
+    """(B552) True exactly when the lane declared ``judge.base_source =
+    "request"``: its comparison base is the exact ref the invoking gate named
+    (``--request-base``), which a merge-commit ``HEAD`` must not override."""
+    judge = lane.judge
+    return judge is not None and judge.base_source == "request"
+
+
 def _resolve_declared_base(
-    repo: Path, base: str | None, *, remaining: git.Remaining | None = None
+    repo: Path,
+    base: str | None,
+    *,
+    delegated: bool = False,
+    remaining: git.Remaining | None = None,
 ) -> str | None:
     """*base* resolved all the way to its MERGE-BASE commit against the
     CONSUMER's real repository (:func:`assay.git.resolve_base`), or ``None``
@@ -4347,13 +4359,14 @@ def _resolve_declared_base(
     consume this OID directly through
     :func:`~assay.measurability.check_resolved_base_is_head` (B101 P1); the
     declaration is never re-resolved after P22 has removed symbolic refs,
-    and the first-parent rule for a merge ``HEAD`` is decided HERE, where
+    and the first-parent rule for a merge ``HEAD`` (not applied to a
+    *delegated* base, B552) is decided HERE, where
     ``HEAD``'s parents are certainly visible, never inside a snapshot whose
     seed may cut them off.
     """
     if base is None:
         return None
-    return git.resolve_base(repo, base, remaining=remaining)
+    return git.resolve_base(repo, base, delegated=delegated, remaining=remaining)
 
 
 # CD18: public for assay_analysis.
@@ -6645,13 +6658,20 @@ def _run_higher_rigor_lane(
         # always went through -- a request-supplied ref is not a second code
         # path, it is a second source for the same argument.
         resolved_base = _resolve_declared_base(
-            repo, base_declaration, remaining=deadline.remaining,
+            repo,
+            base_declaration,
+            delegated=_lane_delegates_base(lane),
+            remaining=deadline.remaining,
         )
         # (B008) Sibling to resolved_base, not derived from it -- a lane
         # declaring no base has nothing to classify, and this must reflect
         # HEAD's shape at the SAME pre-snapshot point resolved_base did.
         base_resolution = (
-            git.base_resolution_mode(repo, remaining=deadline.remaining)
+            git.base_resolution_mode(
+                repo,
+                delegated=_lane_delegates_base(lane),
+                remaining=deadline.remaining,
+            )
             if base_declaration is not None
             else None
         )

@@ -9,8 +9,11 @@ cargo-deny, Python, and the crate archive cache for the reviewed hostobs lock.
 Build from the repository checkout with
 [`build-image.sh`](build-image.sh). The image build uses network access only
 to install the toolchain tools and run `cargo fetch --locked`. Registered Rust
-lanes run with Docker networking disabled and verify the lock and cached
-archive checksums before every Cargo invocation.
+lanes run with Docker networking disabled and verify the lock's registry set
+and cached archive checksums before every Cargo invocation. The image identity
+is the registry-set digest of the lock (downloaded packages and lock version,
+not workspace members), so a workspace-only lock edit needs no rebuild; see
+[`docs/CONSUMERS.md`](docs/CONSUMERS.md) for which image tag runs what.
 
 The first consumer is the hostobs M0 workspace. Its registered `lint` and
 `selftest` lanes live in [`hostobs/run-gate.toml`](../hostobs/run-gate.toml).

@@ -350,8 +350,20 @@ def sizing_input_from_plan(
         # its median.
         mean = summary.get("cost_seconds_mean")
         if mean is not None:
+            # Validated BEFORE the division: a flat summary dict never went
+            # through validate_measurement, and a zero or text mean must be a
+            # contract refusal, not a ZeroDivisionError or ValueError.
+            _positive(mean, "measurement.summary.cost_seconds_mean")
+            stdev = summary.get("cost_seconds_stdev")
+            if stdev is not None and (
+                isinstance(stdev, bool) or not isinstance(stdev, (int, float))
+                or not math.isfinite(float(stdev)) or stdev < 0
+            ):
+                raise ContractError(
+                    "measurement.summary.cost_seconds_stdev: expected a non-negative finite number"
+                )
             seconds, statistic = mean, "mean"
-            dispersion = float(summary.get("cost_seconds_stdev") or 0.0) / float(mean)
+            dispersion = float(stdev or 0.0) / float(mean)
     if per_candidate_seconds is not None:
         seconds, basis = per_candidate_seconds, "declared"
         statistic, dispersion = "declared", 0.0

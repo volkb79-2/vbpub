@@ -43,8 +43,9 @@ The changed candidates share the ``slice_size`` budget with the sweep, so a
 target edited every release by more than ``slice_size`` candidates would never
 reach the rest (FD-038). Therefore ``reserve_percent`` (default
 ``DEFAULT_RESERVE_PERCENT``, 25) of every slice is RESERVED for the
-non-changed remainder (never-judged candidates first, then the pending ones),
-rounded up and capped at ``slice_size - 1`` so one slot always stays with the
+non-changed remainder (in path order: the never-judged candidates and the
+pending candidates of a half-judged file, then, after a finished pass, files
+judged in an earlier pass), rounded up and capped at ``slice_size - 1`` so one slot always stays with the
 changed candidates. A reserve the remainder cannot fill goes back to the
 changed candidates, so with no churn the slice is unchanged. Every changed
 file whose candidates did not all fit is listed in the accounting

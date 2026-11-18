@@ -6,6 +6,28 @@ All notable changes to this project are recorded here.
 
 ### Fixed
 
+- Campaign supervision (WP2). The host-loss clock starts at the first failed
+  contact the controller observed instead of the last successful contact, so one
+  failed probe after a long gap no longer marks a healthy host `LOST`; a probe
+  timeout (rc 124) is reported `SLOW` (`HostSlow`, a `HostUnavailable` subclass)
+  and counts toward the same 1800 s clock (FD-020). A host that stays in `ERROR`
+  reports `error_since`, `error_seconds` and a `warning` from 1800 s in `status`
+  and the campaign state; it is never declared lost or re-queued automatically
+  (FD-026). A host without a comparable Geekbench reference gets its first stall
+  window widened to 3 x the unscaled reference until it has observed a finished
+  candidate (`NONCOMPARABLE_FIRST_WINDOW_FACTOR`, FD-025). `replan_pending`
+  now returns `(batches, unplaceable)`: one candidate that does not fit the
+  re-queue target no longer drops the placeable others, and the unplaceable ids
+  wait in `deferred_requeues` with the planner's reason until a larger host is
+  online, else `collect` reports them missing with that reason (FD-017).
+- Campaign supervision follow-up (WP2b). An `ERROR` answer (a garbled probe, a
+  digest mismatch) now ends an open unreachable episode like a good probe, so a
+  later failed probe starts a fresh loss clock instead of declaring the host
+  `LOST` at once and re-queueing work that still runs there (FD-020). The error
+  clock is decided once per command from the host's final status, so an error
+  raised after a good probe or a refused start no longer restarts it and the
+  1800 s warning fires once (FD-026). A batch that exits on an `ERROR` host is
+  deferred with an ERROR reason instead of "unreachable".
 - Size R2 shard budgets from the per-candidate mean and a measured tail margin
   (FD-031). `fleet-r2-measurement/1` stays `/1` and its `summary` gains
   additive optional fields `cost_candidates`, `cost_seconds_sum`,
@@ -23,7 +45,8 @@ All notable changes to this project are recorded here.
 - Reserve a share of the rolling slice for the never-judged remainder (FD-038).
   `[r2] reserve_percent` in `r2-scope.toml` (integer 0 to 100, default **25**,
   rounded up, capped at `slice_size - 1`) keeps that share of every slice for
-  never-judged and pending candidates, so a target edited every release by more
+  non-changed candidates (never-judged and the pending candidates of a
+  half-judged file, in path order), so a target edited every release by more
   than `slice_size` candidates still sweeps; a reserve the remainder cannot fill
   returns to the changed files, `0` restores the changed-first slice. The
   scope document's `slice` gains `reserve_percent`, `reserved_candidates`,

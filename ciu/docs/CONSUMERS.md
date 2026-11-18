@@ -243,6 +243,11 @@ $ ROOT="$(git rev-parse --show-toplevel)"
 $ ciu down --dir tools/admin-debug --profile admin --root-folder "$ROOT"
 ```
 
+`--dir` accepts every flag `ciu down --help` lists, so a non-interactive caller
+may pass `--yes` (a no-op: `down` never prompts), `--phases N,M` (a stack outside
+those phases is refused) and `--i-understand-this-is-protected` (required, as on
+the project-wide form, when the instance declares `[deploy] protected = true`).
+
 `--profile` is required when the stack is optional. CIU uses the exact Compose
 project label from that selected stack and refuses a failed Docker query rather
 than treating it as an empty stack. When the deploy tags are shared with other

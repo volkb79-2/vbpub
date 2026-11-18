@@ -47,6 +47,10 @@ MEASURED_BUCKETS = ("killed", "survived")
 #: Buckets whose elapsed seconds are the time a candidate OCCUPIED its worker,
 #: the bound included: the per-candidate sum fields count all four.
 COST_BUCKETS = ("killed", "survived", "budget_exceeded", "hung")
+#: Slack, in seconds, of the cost-field cross checks: the recorder rounds every
+#: field to six decimals, so the sum may differ from ``mean x count`` by up to
+#: this much per candidate (plus this much for the sum's own rounding).
+COST_TOLERANCE = 1e-6
 BUCKETS = ("killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent")
 
 
@@ -212,6 +216,30 @@ def _validate_cost_fields(summary: Mapping[str, Any]) -> None:
     count = summary.get("cost_candidates")
     if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0):
         raise ContractError("measurement.summary.cost_candidates: expected a non-negative integer")
+    if count is None:
+        return  # the pre-FD-031 shape (or a hand-trimmed one): nothing to cross-check
+    names = ("cost_seconds_sum", "cost_seconds_mean", "cost_seconds_stdev", "cost_seconds_max")
+    present = [summary.get(name) is not None for name in names]
+    if count == 0 and any(present):
+        raise ContractError(
+            "measurement.summary: cost_candidates is 0 but a cost_seconds_* value is set"
+        )
+    if count > 0 and not all(present):
+        raise ContractError(
+            f"measurement.summary: cost_candidates is {count} but a cost_seconds_* value is null"
+        )
+    if count == 0:
+        return
+    total, mean, stdev, longest = (float(summary[name]) for name in names)
+    if mean > longest + COST_TOLERANCE:
+        raise ContractError("measurement.summary: cost_seconds_mean exceeds cost_seconds_max")
+    if stdev > longest + COST_TOLERANCE:
+        raise ContractError("measurement.summary: cost_seconds_stdev exceeds cost_seconds_max")
+    if abs(total - mean * count) > COST_TOLERANCE * (count + 1):
+        raise ContractError(
+            "measurement.summary: cost_seconds_sum differs from cost_seconds_mean x "
+            f"cost_candidates by more than {COST_TOLERANCE * (count + 1):g} s"
+        )
 
 
 def load_measurement(path: Path) -> dict[str, Any]:

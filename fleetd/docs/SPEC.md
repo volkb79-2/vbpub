@@ -316,24 +316,43 @@ The stall threshold is `max(900 seconds, 3 × p95 predicted candidate time for
 this batch on this host, 3 × p95 observed candidate time on this host)`. The
 prediction uses each candidate's `time_ref_seconds`, the host's matching
 Geekbench baseline and single-core score, and that host's `f_h`; when scores
-cannot be compared, fleetd uses the candidate's reference time. Observations
+cannot be compared, fleetd uses the candidate's reference time, widened (FD-025):
+while such a host has observed no finished candidate its predicted candidate
+time is 3 × the unscaled reference (`NONCOMPARABLE_FIRST_WINDOW_FACTOR`), so the
+first stall window is `max(900 seconds, 9 × reference)` plus the baseline; the
+first observed candidate time on the host replaces the widening. Observations
 and predictions are never pooled across hosts. The declared `baseline_seconds`
 or p95 of completed baseline measurements on this host is added to the first
 window, before any candidate has finished in the batch. Later windows measure
 silence since the last candidate finished without adding the baseline again.
 The threshold never acts as a campaign wall budget. The stall clock pauses
-while the host is unreachable. More than 1800 seconds without host contact marks the host lost.
+while the host is unreachable or slow. The loss clock starts at the first failed
+contact this controller observed (`unreachable_since`, persisted), not at the last
+successful contact (FD-020): more than 1800 seconds of continuous failed contact
+marks the host lost, and one failed probe after a long gap does not. A probe that
+times out (exit 124) is reported as `SLOW` instead of `UNREACHABLE`; it feeds the
+same clock and counts toward `LOST` only after the same 1800 seconds. ssh exit 255
+is `UNREACHABLE`. A recovery before the threshold keeps every batch. Any answer
+from the host ends the episode, including an `ERROR` one (a garbled probe, a
+digest mismatch): the silent time is added to the stall pause and the clock is
+cleared, so the next failed contact starts a fresh one and never inherits an old
+instant. A host that is already `UNREACHABLE` when this clock takes over a
+campaign state keeps its old `last_contact`-based clock and may go `LOST` on the
+first new tick, as before.
 All work owned by the lost host, including batches that were queued but never
 started, is marked lost and considered for re-planning. Only unfinished
 candidate IDs are sent to the reachable planned host with the largest
 `cap_alone_bytes`, using the existing planner placement functions. If no
-target is available the work is deferred. Idle planned hosts are probed even
+target is available the work is deferred. A candidate that does not fit the
+target (larger than its alone cap or sum budget) never drops the others (FD-017):
+the placeable ones are queued and the unplaceable ids stay in the campaign's
+`deferred_requeues` with the planner's reason and a state warning until a larger
+host is online; `collect` reports them `missing` with that reason otherwise.
+`replan_pending` returns `(batches, unplaceable)` with `{id, reason}` rows. Idle planned hosts are probed even
 when they had no initial batch, so they can become requeue targets. A host
 the planner refused (shared-prod, unknown role, PSI, missing facts) that owns
 no job of the campaign is never contacted by `run`, `status`, `tick`, or
-`collect`. Host loss is measured from the last successful contact, so call
-`tick` at least every few minutes: after a longer gap a single failed probe
-marks the host lost at once (FD-020). Dispatch re-checks PSI on every probe
+`collect`. Dispatch re-checks PSI on every probe
 (FD-022): a host whose memory or IO `some avg10` is above the plan host row's
 `psi_refuse_some_avg10` (strictly greater, as in the planner), whose PSI cannot
 be read, or whose plan records no threshold starts no new batch; `status` names
@@ -345,8 +364,26 @@ or stalled batch with no finished candidate from its own start becomes
 failure reason and exit code when available. Re-queue remains unlimited for batches that made progress. A stalled
 batch that made progress keeps its `STALLED` marker and creates one replacement
 batch. A returning host may finish a duplicate; no lease or renewal is used.
+Known limit: if the lost source host returns and re-adopts a deferred candidate
+(FD-017), and a third, larger host then comes online, the retry excludes only the
+source host's in-flight jobs and may start the candidate there as well; the
+returning host may finish it too. The collector counts the second result as an
+ignored duplicate; no logic prevents the second start.
 Transport or contract errors mark only the affected host `ERROR`; a tick still
-supervises the other hosts and reports the error in status.
+supervises the other hosts and reports the error in status. A host that stays
+in `ERROR` is aged, never lost (FD-026): the host row carries `error_since` (UTC
+seconds), `error_seconds` and, from 1800 seconds, a `warning`; the campaign state
+records one warning per episode. There is no automatic `LOST` and no re-queue,
+because an `ERROR` host (contract or identity refusal) may have live batches and
+re-queueing would duplicate work: the operator decides. The clock is decided once
+per command from the host's final status: `run` and `tick` after the start step
+(so an error raised after a good probe, such as a digest mismatch, an invalid
+record or a refused start, cannot restart it), `status`, `collect` and
+`measurement` at the end of their refresh. An `ERROR` host without a clock gets
+one, an `ERROR` host keeps its first instant, any other status clears it. Known
+limit: a refused start is only detected by `run` and `tick`; a `status` between
+two ticks probes the host successfully and so ends that episode, and the next
+refused start begins a new clock.
 
 Before uploading a batch's ID file, start reads the probe's `checkout_ready`
 flag for the missing job: the persistent checkout must be a non-symlink
@@ -401,7 +438,8 @@ content). A project declares its mode in a committed
 `r2-scope.toml` (`schema_version = 1`, `[r2]` with `mode`, optional
 `slice_size`, `cursor`, `note`, `reserve_percent`). `reserve_percent` (an
 integer 0 to 100, default 25) reserves that share of every slice, rounded up and
-capped at `slice_size - 1`, for the never-judged and pending candidates, so a
+capped at `slice_size - 1`, for the non-changed remainder in path order
+(never-judged and the pending candidates of a half-judged file), so a
 target edited every release by more than `slice_size` candidates still reaches
 its remainder; `0` restores the changed-first slice. The scope document's
 `slice` object reports `reserve_percent`, `reserved_candidates`,
@@ -426,7 +464,10 @@ is derived from the per-candidate MEAN (a shard's wall time is the sum of its
 candidates) and a per-shard margin `max(1.10, 1 + 1.645 x cv / sqrt(n))` from
 the measured spread; `--margin` is the explicit override, and the document
 states `seconds_statistic` (`mean`, `median` or `declared`) and `margin_source`
-(`explicit`, `derived` or `default`). The budget is an ESTIMATE: an instance that
+(`explicit`, `derived` or `default`; `derived` is also set for an older
+median-only measurement, whose margin is then just the 1.10 floor). The derived
+margin has no upper bound, and the top-level `margin` reports only the floor,
+the per-shard `margin` is what applied. The budget is an ESTIMATE: an instance that
 reaches it stops, and its remainder continues in a later instance (FD-031).
 
 `fleet measurement ID` writes `fleet-r2-measurement/1` from the same
@@ -437,7 +478,12 @@ per-candidate sum fields (`cost_candidates`, `cost_seconds_sum`,
 `cost_seconds_mean`, `cost_seconds_stdev`, `cost_seconds_max`, over killed,
 survived, `budget_exceeded` and `hung` candidates; the document stays
 `fleet-r2-measurement/1` and an older document without them still loads and
-sizes from its median). A missing number is `null`, never zero. `memory_peak_bytes` is the cgprofile observer's
+sizes from its median). The validator cross-checks the fields when
+`cost_candidates` is present: `cost_candidates` is 0 exactly when the four
+values are `null`, the mean and the standard deviation do not exceed the
+maximum, and the sum equals the mean times `cost_candidates` within 1e-6 s per
+candidate plus 1e-6 s (the recorder's six-decimal rounding). A missing number is
+`null`, never zero. `memory_peak_bytes` is the cgprofile observer's
 `resource-profile/1` metric; Assay 12 removed its own sampled
 `peak_rss_bytes`.
 
