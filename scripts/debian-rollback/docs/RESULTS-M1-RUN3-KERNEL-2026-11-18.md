@@ -35,8 +35,9 @@ transcript is the evidence (`artifacts/debian-rollback/m1-run3k/`, local).
 
 - Settled for this variant: finding 1 of the first review (menu not refreshed after
   a kernel change) is fixed in practice; each state keeps its own kernel and
-  modules (design guide section 3); the menu never offers a kernel the state does
-  not have.
+  modules (design guide section 3); in this run the menu entry of each state named
+  that state's own kernel. (That `gen-menu` skips a kernel without an initrd, and
+  refuses an empty menu, is covered by reading and a dry run only, not by a guest run.)
 - A kernel upgrade changes the running state only. Rolling back to the snapshot
   therefore also rolls back the kernel, as designed (D6, D18).
 - **Not yet verified:** S5 (an initramfs that does not boot, recovery by choosing the
