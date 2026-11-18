@@ -44,7 +44,17 @@ consumer reads them back. That split is why `store` needs no dependency on `prot
   `segment_s`: a record at 119 s belongs to the segment aligned at 60 s when `segment_s = 60`.
 * `<seq>` is a per-tier high-water mark, monotone for the life of the tier directory. It is **not**
   reused after an eviction or a quarantine: a name that came back would give a new segment the
-  identity of a file an operator may still hold.
+  identity of a file an operator may still hold. The store never mints a sequence above
+  **`SEQ_NAME_MAX` = `u32::MAX` (4294967295)** (one segment per `segment_s >= 1` second makes that
+  136 years), and a name whose `<seq>` is above it is **not a segment name of this store** (HOB-55).
+  The name parser refuses it in every spelling (`.seg`, `.seg.open`, `.seg.corrupt`,
+  `.seg.open.corrupt`), so the scan treats it exactly like any other look-alike: reported as a
+  note, never counted, never adopted, never deleted, and it never raises the water mark (a name such
+  as `hot-0-18446744073709551615.seg` used to set the mark to `u64::MAX`, so every new segment failed
+  with `LengthOverflow` until the file was removed). A name at exactly `SEQ_NAME_MAX` is still ours;
+  when the next sequence would exceed it the tier fails with the typed overflow error
+  (`LengthOverflow`, legitimate exhaustion). The Python reference mirrors the bound in
+  `parse_segment_name` and `parse_quarantine_name`.
 
 Only a name that parses *and* whose first 64 bytes are this store's header for this tier is a
 segment the store may delete. Anything else in the directory — a foreign file, a symbolic link, a
@@ -241,7 +251,16 @@ and the byte total quietly the next time a bound reaches it; it is reported in
 `TierScan::notes` and is **not** counted as evicted. A removal that fails for another reason is
 dropped from the list and the total and reported too, so one bad file can neither stop the cap
 loop nor fail an `append` after its record was written. A live segment deleted by hand is dropped
-from the ring the same way. A quarantined name also keeps its sequence number: the tier's
+from the ring the same way.
+
+These reports are not only in `TierScan::notes` (which a rescan resets and the caller of `append`
+or `evict` never sees): every pass returns them in `Evicted::notes` (HOB-58), and the store copies
+them into a bounded ring (`MAX_EVICTION_NOTES` = 256, oldest dropped first) that `Store::notes()`
+appends, after its foreign-name filter, to the tiers' scan notes. `StoreStats::bytes` is the sum
+of the tiers' own byte totals (and the events store's), recomputed after every write, seal and
+eviction pass, so a vanished file leaves it exactly when it leaves the tier (HOB-56). Known limit:
+a quarantined file that could not be removed stays on disk, uncounted, and the next restart's scan
+adopts it again. A quarantined name also keeps its sequence number: the tier's
 `seq` water mark covers every name of the tier the directory shows, so a quarantined open
 segment's name is never reused.
 

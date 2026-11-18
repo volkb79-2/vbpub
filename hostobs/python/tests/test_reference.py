@@ -555,6 +555,30 @@ class SegmentNames(unittest.TestCase):
                 ref.parse_quarantine_name(foreign)
             self.assertEqual(caught.exception.refusal, "segment-name")
 
+    def test_a_sequence_above_the_name_bound_is_a_look_alike_in_every_spelling(self):
+        """HOB-55: the store never mints a sequence above ``SEQ_NAME_MAX``; the Rust parser agrees."""
+        ref = hostobs_segment_ref
+        self.assertEqual(ref.SEQ_NAME_MAX, 2**32 - 1)
+        top = ref.SEQ_NAME_MAX
+        for suffix, is_open in ((".seg", False), (".seg.open", True)):
+            ours = f"hot-0-{top}{suffix}"
+            with self.subTest(name=ours):
+                self.assertEqual(
+                    ref.parse_segment_name(ours),
+                    {"tier": "hot", "start_s": 0, "seq": top, "open": is_open},
+                )
+                self.assertEqual(ref.parse_quarantine_name(ours + ref.QUARANTINE_SUFFIX)["seq"], top)
+        for seq in (top + 1, 2**64 - 1):
+            for suffix in (".seg", ".seg.open"):
+                name = f"hot-0-{seq}{suffix}"
+                for parse, spelled in (
+                    (ref.parse_segment_name, name),
+                    (ref.parse_quarantine_name, name + ref.QUARANTINE_SUFFIX),
+                ):
+                    with self.subTest(name=spelled), self.assertRaises(ref.SegmentError) as caught:
+                        parse(spelled)
+                    self.assertEqual(caught.exception.as_dict(), {"error": "segment-name", "name": spelled})
+
     def test_a_sealed_and_an_open_segment_agree_with_their_names(self):
         ref = hostobs_segment_ref
         for case, sealed in (("sealed-history", True), ("sealed-empty", True), ("open-history", False)):
