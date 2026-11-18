@@ -1635,3 +1635,12 @@ def test_scope_cli_passes_the_scope_files_reserve_percent_to_the_rolling_slice(t
     document = json.loads(capsys.readouterr().out)
     assert document["slice"]["reserve_percent"] == 50
     assert document["slice"]["reserved_candidates"] == 2
+
+
+def test_the_reserve_is_rounded_up_to_whole_candidates():
+    cursor = _seed_cursor_over_the_edited_files()
+    rows, blobs = _churn_target(1)
+    # 25 percent of 10 is 2.5: three slots are reserved, never two.
+    result = rolling_slice(rows, slice_size=10, lane="r2", blobs=blobs, cursor=cursor)
+    assert result.reserved_candidates == 3
+    assert sum(1 for row in rows if row.id in result.selected and row.path.startswith("src/n")) == 3

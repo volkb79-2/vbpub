@@ -115,6 +115,14 @@ other four are mandatory. The total therefore never falls below the sum of the
 values actually reported, and a missing mandatory fact is replaced by that
 service's documented floor rather than by zero.
 
+By design (FD-035), `host-facts/1` validates the TYPE of a service's
+`memory_min_bytes` and not its magnitude, because the contract describes what a
+host reported and the sanity bound is planning policy: planning refuses an
+implausible value (above 4 x that service's documented default, or a total above
+twice the documented floors) with `reserve_reason`, so `fleet facts collect` on a
+misconfigured host can still emit a valid-looking document that `fleet plan`
+then refuses.
+
 `reserve_source` is `service-memory-min` when every term was reported and
 `per-service-default` otherwise (with `reserve_missing_services` naming the
 units that were not reported). The fixed profile constant
@@ -391,7 +399,15 @@ cursor fails its `state_digest`, and a `fleet-r2-scope-cursor/1` cursor is
 refused with its migration (`--rebaseline`, one new pass from the current
 content). A project declares its mode in a committed
 `r2-scope.toml` (`schema_version = 1`, `[r2]` with `mode`, optional
-`slice_size`, `cursor`, `note`). No scope file means the default, so an
+`slice_size`, `cursor`, `note`, `reserve_percent`). `reserve_percent` (an
+integer 0 to 100, default 25) reserves that share of every slice, rounded up and
+capped at `slice_size - 1`, for the never-judged and pending candidates, so a
+target edited every release by more than `slice_size` candidates still reaches
+its remainder; `0` restores the changed-first slice. The scope document's
+`slice` object reports `reserve_percent`, `reserved_candidates`,
+`deferred_changed_candidates` and `deferred_changed_files` (every changed file
+whose candidates did not all fit, with `candidates` and `deferred_candidates`)
+so nothing deferred is silent (FD-038). No scope file means the default, so an
 uncommitted project keeps its current behaviour. The producer refuses (exit 2)
 a checkout whose HEAD is not the named commit or whose tracked files carry
 uncommitted changes, because the plan describes the working tree and the diff
@@ -405,13 +421,23 @@ unit (`worker_memory`, `worker_cpu`) and fixed per-instance charge
 (`instance_cpu`, `instance_memory`), and the per-candidate seconds and memory.
 Those units are optional in the demand contract so existing files keep
 validating; sizing refuses a plan that does not declare them, by name. Every
-number records its `basis` (`measured` or `declared`).
+number records its `basis` (`measured` or `declared`). A measured shard budget
+is derived from the per-candidate MEAN (a shard's wall time is the sum of its
+candidates) and a per-shard margin `max(1.10, 1 + 1.645 x cv / sqrt(n))` from
+the measured spread; `--margin` is the explicit override, and the document
+states `seconds_statistic` (`mean`, `median` or `declared`) and `margin_source`
+(`explicit`, `derived` or `default`). The budget is an ESTIMATE: an instance that
+reaches it stops, and its remainder continues in a later instance (FD-031).
 
 `fleet measurement ID` writes `fleet-r2-measurement/1` from the same
 owner-attributed records `collect` selected: one row per planned candidate with
 its `outcome_bucket`, `elapsed_seconds` and `memory_peak_bytes`, and a summary
-of medians over `killed` and `survived` candidates. A missing number is `null`,
-never zero. `memory_peak_bytes` is the cgprofile observer's
+of medians over `killed` and `survived` candidates plus the additive
+per-candidate sum fields (`cost_candidates`, `cost_seconds_sum`,
+`cost_seconds_mean`, `cost_seconds_stdev`, `cost_seconds_max`, over killed,
+survived, `budget_exceeded` and `hung` candidates; the document stays
+`fleet-r2-measurement/1` and an older document without them still loads and
+sizes from its median). A missing number is `null`, never zero. `memory_peak_bytes` is the cgprofile observer's
 `resource-profile/1` metric; Assay 12 removed its own sampled
 `peak_rss_bytes`.
 

@@ -171,6 +171,18 @@ than only its changed lines: that is a superset of the changed-lines scope and
 it is the price of a key that cannot drift out from under a mark. The remaining
 limit is FD-037.
 
+**Why a share of the rolling slice is reserved (FD-038).** Changed files sort
+first, and they share `slice_size` with the sweep. A target whose files are
+edited every release by more than `slice_size` candidates would fill every slice
+with changed candidates and never reach its never-judged remainder, which looks
+like coverage and is not. Exempting the changed candidates from the budget was
+rejected (an unbounded release), so a minimum share of the slice is reserved for
+the non-changed remainder instead: `reserve_percent`, default 25, rounded up,
+capped at `slice_size - 1` so changed files are never starved completely, and
+returned to the changed files when the remainder cannot fill it. The price is
+visible, not hidden: the changed candidates that did not fit are listed per file
+in `deferred_changed_files`, and a deferred file keeps its mark and recency.
+
 Three things are accounted instead of dropped, because each is a way a cursor
 could silently claim coverage:
 
@@ -241,7 +253,22 @@ a defect. Memory comes from the cgprofile observer's `resource-profile/1`
 `peak_rss_bytes`, so a lane without the observer records elapsed seconds only
 and says so.
 
-Medians are taken over `killed` and `survived` candidates only. A
+**Why the budget uses the mean and a measured spread (FD-031).** A shard's wall
+time is the sum of its candidates, so the estimator that matches the budget is
+the per-candidate MEAN, and a right-skewed lane has a mean above its median. The
+mean is taken over every candidate that occupied a worker, including
+`budget_exceeded` and `hung` ones at their bound, because they held a worker for
+that long. The margin over that sum is derived from the measured standard
+deviation as the one-sided 95th percentile of a sum of `n` candidates
+(`1 + 1.645 x cv / sqrt(n)`, never below 1.10), so a heavy tail widens the
+smaller shards most; `--margin` is the explicit override. It is deliberately an
+ESTIMATE, not machinery to guarantee a bound: heavy candidates that cluster in
+one shard can still reach the budget, and the remainder continues in a later
+instance. The new fields are additive and optional in `fleet-r2-measurement/1`,
+and a document without them is sized from its median as before.
+
+Medians (kept for the existing fields) are taken over `killed` and `survived`
+candidates only. A
 `budget_exceeded` or `hung` candidate's elapsed time is the budget that stopped
 it, not the cost of judging, and including it would inflate the next budget
 forever.
