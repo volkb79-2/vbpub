@@ -9,8 +9,10 @@ All process checks are by pid, never by name.
 from __future__ import annotations
 
 import os
+import resource
 import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -234,4 +236,123 @@ def test_interrupt_escalates_to_sigkill_for_a_group_that_ignores_sigterm(tmp_pat
             time.sleep(0.05)
         assert not _alive(shell), "a child that ignores SIGTERM must still be killed"
     finally:
+        _kill_quietly(shell)
+
+
+def test_pipe_descriptor_above_the_select_limit_still_streams_output_and_exit_code(tmp_path):
+    """``select.select`` rejects descriptors >= 1024; the pipe of a busy process can be that high."""
+    wanted = 1300
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    held: list[int] = []
+    raised = False
+    try:
+        if soft != resource.RLIM_INFINITY and soft < wanted + 64:
+            assert hard == resource.RLIM_INFINITY or hard >= wanted + 64, "RLIMIT_NOFILE hard limit too low"
+            resource.setrlimit(resource.RLIMIT_NOFILE, (wanted + 64, hard))
+            raised = True
+        while len(held) < 1100:
+            held.append(os.open(os.devnull, os.O_RDONLY))
+        assert held[-1] >= 1024
+        log = tmp_path / "step.log"
+        with log.open("a", encoding="utf-8") as handle:
+            with pytest.raises(subprocess.CalledProcessError) as caught:
+                runner.run_command(["bash", "-c", "echo hi; echo there; exit 3"], tmp_path, handle)
+        assert caught.value.returncode == 3
+        assert log.read_text(encoding="utf-8") == "hi\nthere\n"
+    finally:
+        for descriptor in held:
+            os.close(descriptor)
+        if raised:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
+def test_runner_module_does_not_use_select_select():
+    source = Path(runner.__file__).read_text(encoding="utf-8")
+    assert "select.select" not in source
+
+
+TERMINATION_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+
+
+class _HandlerSpy:
+    """A log handle recording which signal handlers are installed while the command streams."""
+
+    def __init__(self):
+        self.seen: dict[int, object] = {}
+
+    def write(self, text: str) -> int:
+        self.seen = {signum: signal.getsignal(signum) for signum in TERMINATION_SIGNALS}
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+
+def test_run_command_installs_termination_handlers_and_restores_the_previous_ones(tmp_path):
+    before = {signum: signal.getsignal(signum) for signum in TERMINATION_SIGNALS}
+    spy = _HandlerSpy()
+
+    runner.run_command(["echo", "hi"], tmp_path, spy)
+    assert spy.seen and all(
+        callable(spy.seen[signum]) and spy.seen[signum] is not before[signum]
+        for signum in TERMINATION_SIGNALS
+    )
+    assert {signum: signal.getsignal(signum) for signum in TERMINATION_SIGNALS} == before
+
+    with pytest.raises(subprocess.CalledProcessError):
+        runner.run_command(["false"], tmp_path, spy)
+    assert {signum: signal.getsignal(signum) for signum in TERMINATION_SIGNALS} == before
+
+
+def test_run_command_off_the_main_thread_installs_no_handlers_and_still_runs(tmp_path):
+    before = {signum: signal.getsignal(signum) for signum in TERMINATION_SIGNALS}
+    spy = _HandlerSpy()
+    thread, outcome = _run_in_thread(["echo", "hi"], tmp_path, spy)
+    thread.join(JOIN_LIMIT)
+    assert not thread.is_alive() and "error" not in outcome
+    assert spy.seen == {signum: before[signum] for signum in TERMINATION_SIGNALS}
+    assert {signum: signal.getsignal(signum) for signum in TERMINATION_SIGNALS} == before
+
+
+DRIVER = """\
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from cmru import runner
+
+with open(sys.argv[2], "a", encoding="utf-8") as log:
+    runner.run_command(["bash", "-c", sys.argv[3]], Path(sys.argv[4]), log, quiet=True)
+"""
+
+
+@pytest.mark.parametrize("signum", TERMINATION_SIGNALS, ids=["SIGTERM", "SIGHUP"])
+def test_termination_signal_to_cmru_reaps_the_whole_step_tree(tmp_path, signum):
+    """cmru dying of SIGTERM/SIGHUP must not leave the step running as an orphan in its own session."""
+    driver_file = tmp_path / "driver.py"
+    driver_file.write_text(DRIVER, encoding="utf-8")
+    pidfile = tmp_path / "holder.pid"
+    shell_pidfile = tmp_path / "shell.pid"
+    script = f"echo $$ > {shell_pidfile}; sleep 600 & echo $! > {pidfile}; wait"
+    source_root = str(Path(runner.__file__).resolve().parent.parent)
+    driver = subprocess.Popen(
+        [sys.executable, str(driver_file), source_root, str(tmp_path / "step.log"), script, str(tmp_path)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    holder = shell = None
+    try:
+        holder = _wait_pidfile(pidfile)
+        shell = _wait_pidfile(shell_pidfile)
+        os.kill(driver.pid, signum)
+        assert driver.wait(timeout=JOIN_LIMIT) == 128 + signum
+        deadline = time.monotonic() + JOIN_LIMIT
+        while time.monotonic() < deadline and (_alive(holder) or _alive(shell)):
+            time.sleep(0.05)
+        assert not _alive(shell), "the step's shell survived the signal sent to cmru"
+        assert not _alive(holder), "a grandchild of the step survived the signal sent to cmru"
+    finally:
+        if driver.poll() is None:
+            driver.kill()
+            driver.wait()
+        _kill_quietly(holder)
         _kill_quietly(shell)

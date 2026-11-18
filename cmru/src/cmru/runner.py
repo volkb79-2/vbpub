@@ -7,13 +7,15 @@ import io
 import locale
 import os
 import re
-import select
+import selectors
 import shlex
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -428,26 +430,29 @@ def _output_lines(process, argv: list[str], log_handle) -> Iterator[str]:
     decoder = io.IncrementalNewlineDecoder(codecs.getincrementaldecoder(encoding)(), translate=True)
     pending = ""
     exited_at: Optional[float] = None
-    while True:
-        wait = _OUTPUT_POLL_SECONDS
-        if exited_at is not None:
-            wait = min(wait, exited_at + OUTPUT_DRAIN_SECONDS - monotonic())
-            if wait <= 0:
-                _warn_pipe_holders(process, argv, log_handle)
-                break
-        ready, _, _ = select.select([stream], [], [], wait)
-        if ready:
-            chunk = stream.read(65536)
-            text = decoder.decode(chunk, final=not chunk)
-            if not chunk:
+    # epoll/poll based: the fd-set select(2) API refuses descriptors >= FD_SETSIZE (1024), which
+    # a busy release process can easily reach.
+    with selectors.DefaultSelector() as selector:
+        selector.register(stream, selectors.EVENT_READ)
+        while True:
+            wait = _OUTPUT_POLL_SECONDS
+            if exited_at is not None:
+                wait = min(wait, exited_at + OUTPUT_DRAIN_SECONDS - monotonic())
+                if wait <= 0:
+                    _warn_pipe_holders(process, argv, log_handle)
+                    break
+            if selector.select(wait):
+                chunk = stream.read(65536)
+                text = decoder.decode(chunk, final=not chunk)
+                if not chunk:
+                    pending += text
+                    break
                 pending += text
-                break
-            pending += text
-            while "\n" in pending:
-                line, _, pending = pending.partition("\n")
-                yield line + "\n"
-        if exited_at is None and process.poll() is not None:
-            exited_at = monotonic()
+                while "\n" in pending:
+                    line, _, pending = pending.partition("\n")
+                    yield line + "\n"
+            if exited_at is None and process.poll() is not None:
+                exited_at = monotonic()
     if pending:
         yield pending
 
@@ -478,6 +483,31 @@ def _reap_process_group(process) -> None:
     process.wait()
 
 
+@contextmanager
+def _terminate_as_exit() -> Iterator[None]:
+    """Turn SIGTERM/SIGHUP into ``SystemExit`` so ``finally`` cleanup runs.
+
+    The step runs in its own session (KI-178), so a SIGTERM or SIGHUP that kills cmru by the
+    default action (ssh or terminal drop, ``timeout``, ``kill -- -pgid``) would leave it running
+    as an orphan; the ``SystemExit`` instead takes the group-reaping path. ``signal.signal`` only
+    works in the main thread: in any other thread nothing is installed and the caller's own
+    signal policy stands. The previous handlers are restored on exit.
+    """
+    previous: dict[int, object] = {}
+
+    def _handler(signum, _frame) -> None:
+        raise SystemExit(128 + signum)
+
+    if threading.current_thread() is threading.main_thread():
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            previous[signum] = signal.signal(signum, _handler)
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler if handler is not None else signal.SIG_DFL)
+
+
 def run_command(
     argv: list[str],
     cwd: Path,
@@ -488,6 +518,28 @@ def run_command(
     mirror_handle=None,
 ) -> CommandResult:
     """Run argv, streaming its combined stdout/stderr into log_handle.
+
+    SIGTERM and SIGHUP delivered to this process while the command runs reap the command's
+    whole process group (see ``_terminate_as_exit``), like Ctrl-C does.
+    """
+    with _terminate_as_exit():
+        return _run_command(
+            argv, cwd, log_handle, quiet=quiet, log_path=log_path, mirror_handle=mirror_handle,
+        )
+
+
+def _run_command(
+    argv: list[str],
+    cwd: Path,
+    log_handle,
+    *,
+    quiet: bool,
+    log_path: Optional[Path],
+    mirror_handle,
+) -> CommandResult:
+    """The body of :func:`run_command`, which adds the termination-signal scope around it.
+
+    Streams the command's combined stdout/stderr into log_handle.
 
     When ``quiet`` is set (build/push steps whose subprocess is itself very
     noisy, e.g. `docker buildx bake`), individual lines are not echoed live —
