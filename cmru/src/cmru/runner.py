@@ -601,10 +601,10 @@ def _run_command(
         # in its process group, running (or unreaped) behind us (BG-02, KI-178).
         if process is not None:
             _reap_process_group(process)
-        raise
-    finally:
-        if process is not None:
             process.stdout.close()
+        raise
+    else:
+        process.stdout.close()
     elapsed_seconds = monotonic() - start
     if exit_code != 0:
         if quiet and error_lines:
