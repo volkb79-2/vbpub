@@ -6,6 +6,10 @@ and offline checks: no VM, Docker container, SSH connection, network access, hos
 was used by the offline tooling job. The real-guest observations quoted below were supplied as evidence from the
 separate guest workstream.
 
+> **Guest verification rule:** Loader and firmware contracts (entry ids, one-shot variables, ESP layout, boot order)
+> are verified only by guest scenarios, never by offline tests or review rounds. The guest `sd-g3`/diagnostic runs
+> showed that 6 review rounds and 123 offline cases missed that systemd-boot entry ids carry `.conf`.
+
 ## Entry points
 
 The installer selects the backend explicitly:
@@ -76,6 +80,11 @@ Accepted state names are `@os-` followed by an alphanumeric first character and 
 underscore, period, and hyphen. Entry ids are capped at 240 bytes (240 is accepted and writes its entry, 241 is refused before any kernel is copied; entry temp files use a short fixed name, so the id length does not matter for them). `latest_kernel` only returns a version whose `vmlinuz` AND initrd are both non-empty, so a newer incomplete pair is skipped for the older complete one. Names with an unsafe character, an embedded `@`,
 `..`, or a trailing period are rejected before any menu file or copied kernel is changed. This is conservative and
 reversible; whether systemd-boot itself accepts `@` remains unverified because no guest or bootloader binary was run.
+
+State names ending in `.conf` are invalid under fix 8a: snapshot creation sanitizes that suffix and `gen-menu` skips
+such existing state names when building the menu. This avoids ambiguity between an internal state such as
+`@os-0001.conf` and the entry file name `os-0001.conf`; the correctly namespaced entry would be `os-0001.conf.conf`.
+The fix 8a code change is owned by another job; this documentation change neither implements nor verifies it.
 
 `/loader/entries` is on case-insensitive vfat, so all desired entry ids are additionally required to be
 case-insensitively unique. For example, `@os-lower` and `@os-LOWER` map to distinct strings in software but the same
@@ -206,7 +215,7 @@ revision after only renaming the function; its GRUB text and operations are byte
 The failing-first suite for the new pure decisions is `poc/test-dr-state-sdboot.sh`. It covers the BLS entry text,
 content-addressed kernel ids, entry-id mapping and rejection, backend selection, byte accounting decisions,
 `loader.conf` rewriting, empty backend sources, multi-path reference extraction, FAT case collisions, interrupted-copy
-cleanup, parent-directory allocation, CRLF references, and orphan-directory selection. It currently passes 105 cases.
+cleanup, parent-directory allocation, CRLF references, and orphan-directory selection. It currently passes 156 cases.
 
 The suite also runs workflow fixtures through the real `gen-menu`, `set-default`, and `prune` paths against disposable
 ESP trees. `DR_STATE_TEST_MODE=1` with `DR_STATE_TEST_ROOT` selects a temporary root and optional deterministic ESP
@@ -238,14 +247,16 @@ fail a suffix-less default and require the suffixed name to resolve to an existi
 emits backend, selection-evidence, one-shot and scratch results only when the real command contains the exact required
 paths or globs. The scenario tests require the exact `ESP_FILE_OK` set per entry, fail on omitted or foreign tags,
 nonzero file/scratch scan status, and missing completion tags, and cover every generated scratch name. The new
-`sdboot-oneshot-consumed` scenario test requires the EFI one-shot probe's completion tag, rejects a present variable,
-and rejects a nonzero probe. `s2-s3` records `bootctl list` selection/default lines and the `LoaderEntrySelected`
-efivar as informational transcript evidence without making them pass conditions; the set-default reboot remains its
-final pass condition. A full config-only systemd-boot kernel flow proves that the baseline hashes the systemd-boot
-binary independently and only the backend source files that exist. Canonical BLS checks require the exact dr-state
-marker and title lines, a valid entry id, reversible `@os-X` to `os-X` mapping, and a title kernel matching the
-kernel-id directory. Fabricated, swapped-id, wrong-title and wrong-marker entries are rejected in both `sdboot-esp`
-and the systemd-boot `s2-s3` state-set check.
+`sdboot-oneshot-consumed` scenario test requires running state == default, selects a target different from both, and
+then requires the EFI one-shot probe's completion tag, rejects a present variable, and rejects a nonzero probe. Its
+scripted regression makes the running state non-default and confirms the scenario fails before attempting a no-op
+one-shot. `s2-s3` records `bootctl list` selection/default lines and the `LoaderEntrySelected` efivar as informational
+transcript evidence without making them pass conditions; the set-default reboot remains its final pass condition. A
+full config-only systemd-boot kernel flow proves that the baseline hashes the systemd-boot binary independently and
+only the backend source files that exist. Canonical BLS checks require the exact dr-state marker and title lines, a
+valid entry id, reversible `@os-X` to `os-X` mapping, and a title kernel matching the kernel-id directory. Fabricated,
+swapped-id, wrong-title and wrong-marker entries are rejected in both `sdboot-esp` and the systemd-boot `s2-s3`
+state-set check.
 
 The pre-existing offline suites remain green: `test-dr-state-window.sh`, `test-dr-state-prune.sh`,
 `iso/test-dr-plan.sh`, `iso/test-dr-autoinstall-guard.sh`, `poc/test-dr-pick-disk.sh`, and `poc/test-dr-qemu.sh`.
@@ -282,7 +293,7 @@ The supported run matrix for the systemd-boot variant is:
 | `boot-check` | May share a fresh overlay with `sdboot-esp`; must be first boot after install. | The installed state is the running root, systemd and networking work, D18 paths are split correctly, and the systemd-boot ESP contains `loader/loader.conf`, at least one BLS entry, `EFI/systemd/systemd-bootx64.efi`, and non-empty kernel copies. | **sd-g2 PASS with OLD checks**. Current strict suite has not been rerun. |
 | `sdboot-esp` | May share a fresh overlay with `boot-check`. | Every BLS entry is canonical: exact dr-state marker/title, valid `@os-X` to `os-X` entry mapping, and exactly `/EFI/dr/kernels/<valid-id>/vmlinuz` with the matching `initrd.img`; the exact non-empty files reported by the guest equal that entry's expected set. `loader.conf` has exactly one suffix-form `<entry-id>.conf` default that resolves to an existing entry file; its state matches `dr-state list`; no generated scratch remains; and ESP free space is reported. | **sd-g2 PASS with OLD checks**. Current `.conf` assertions are **NOT RUN**. |
 | `s2-s3` | Fresh overlay; do not reuse after another snapshot-producing scenario. | Apt takes one snapshot; canonical marked systemd-boot entry states, not merely `.conf` count, equal `dr-state list`; the suffixed default exists; boot-once boots the earlier package state with `/etc` rolled back while service data survives; `bootctl list` and `LoaderEntrySelected` are recorded as evidence; the one-shot is consumed; and set-default changes the next plain boot. | **sd-g3 FAILED** the boot-once and set-default outcomes because of the suffix-less entry-id finding. Corrected flow is **NOT RUN**. |
-| `sdboot-oneshot-consumed` | Fresh overlay; requires a non-default state. | `dr-state boot-once` selects a non-default state; that reboot reaches its userspace; the exact `LoaderEntryOneShot` efivar is absent there; omission or a failed probe fails the scenario. | **NOT RUN** as a scenario. The diagnostic guest separately proved suffixed one-shot selection and clearing. |
+| `sdboot-oneshot-consumed` | Fresh overlay; requires running state == default and another state available. | `dr-state boot-once` selects a state different from both running and default; that reboot reaches its userspace; the exact `LoaderEntryOneShot` efivar is absent there; omission or a failed probe fails the scenario. A non-default running state fails the precondition before any one-shot is attempted. | **NOT RUN** as a scenario. The diagnostic guest separately proved suffixed one-shot selection and clearing. |
 | `kernel-upgrade` | Fresh overlay; do not reuse after another snapshot-producing scenario. | A kernel upgrade snapshots the old state, gives the running state the new kernel and the snapshot the old kernel in BLS entries, boots both kernels, loads the old state's modules, and consumes the systemd-boot one-shot. | **NOT RUN**: the attempt timed out in `dist-upgrade` at 55 minutes; rerun pending. |
 
 For the next systemd-boot guest pass, run `boot-check`, `sdboot-esp`, `s2-s3`, `sdboot-oneshot-consumed`, and
@@ -294,7 +305,8 @@ GRUB-specific menu assumptions have been made backend-aware and reviewed. `backp
 For `s2-s3` and `kernel-upgrade`, use a new overlay on the same installed systemd-boot base for each scenario. Their
 initial precondition is that the running state is the default, and their snapshot counts depend on an empty dedupe
 window. `boot-check` and `sdboot-esp` are read-only and may share the first guest. `sdboot-oneshot-consumed` needs a
-guest with a non-default target state and consumes that one-shot while proving the variable is gone.
+guest whose running state is the default and which has another non-default state available; it consumes that one-shot
+while proving the variable is gone.
 
 Before any scenario runs, the backend is resolved from both `/etc/dr-state.conf` and
 `/boot/efi/EFI/dr/bootloader` using the same presence, empty-value, conflict and unknown-value rules as `dr-state`;

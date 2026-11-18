@@ -965,12 +965,17 @@ def scenario_sdboot_oneshot_consumed(g, log):
         return
     _, out = g.run("echo CMDLINE:$(cat /proc/cmdline)")
     state0 = running_state(tag(out, "CMDLINE"))
+    default = default_state(g)
     states = state_list(g)
-    check(log, "running state and dr-state list are readable", state0 is not None and bool(states),
-          f"running={state0} states={states}")
-    targets = [state for state in states if state != state0]
-    check(log, "a non-default target state exists", bool(targets), str(targets))
-    if not state0 or not targets:
+    check(log, "running state, default state, and dr-state list are readable",
+          state0 is not None and default is not None and bool(states),
+          f"running={state0} default={default} states={states}")
+    if not check(log, "the running state is the default (precondition for a non-default one-shot)",
+                 state0 is not None and state0 == default, f"running={state0} default={default}"):
+        return
+    targets = [state for state in states if state != state0 and state != default]
+    check(log, "a target state different from the running/default state exists", bool(targets), str(targets))
+    if not targets:
         return
     target = targets[0]
     _, out = g.run(f"dr-state boot-once {target}; echo BORC:$?")

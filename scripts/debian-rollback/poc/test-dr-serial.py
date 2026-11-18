@@ -852,9 +852,15 @@ def main() -> int:
     if not hasattr(drs, "scenario_sdboot_oneshot_consumed"):
         failures.append("sdboot-oneshot-consumed scenario is missing")
     else:
-        def oneshot_guest(absent=True, done=True, rc=0):
+        def oneshot_guest(
+            absent=True,
+            done=True,
+            rc=0,
+            running="@os-0001",
+            default="@os-0001",
+            target="@os-0002",
+        ):
             boots = 0
-            target = "@os-0002"
 
             def responder(cmd):
                 if "BACKEND_SOURCES_DONE" in cmd:
@@ -862,7 +868,7 @@ def main() -> int:
                 if "dr-state list" in cmd and "STATES:" in cmd:
                     return 0, "STATES:@os-0001,@os-0002\n"
                 if "DEF:" in cmd:
-                    return 0, "DEF:@os-0001\n"
+                    return 0, f"DEF:{default}\n"
                 if "dr-state boot-once" in cmd:
                     return 0, "BORC:0\n"
                 if "ONESHOT_SCAN_DONE" in cmd:
@@ -883,7 +889,7 @@ def main() -> int:
                         lines.append("ONESHOT_SCAN_DONE:1")
                     return rc, "\n".join(lines) + "\n"
                 if "CMDLINE:" in cmd:
-                    state = target if boots else "@os-0001"
+                    state = target if boots else running
                     return 0, f"CMDLINE:rootflags=subvol={state} ro\n"
                 raise AssertionError(f"unexpected one-shot command: {cmd}")
 
@@ -897,12 +903,29 @@ def main() -> int:
             guest.reboot = reboot
             return guest
 
+        one_good_guest = oneshot_guest()
         _, one_good_fails, one_good_raised = capture_scenario(
-            lambda: drs.scenario_sdboot_oneshot_consumed(oneshot_guest(), io.StringIO())
+            lambda: drs.scenario_sdboot_oneshot_consumed(one_good_guest, io.StringIO())
         )
         if one_good_raised is not None or one_good_fails:
             failures.append(
                 f"sdboot-oneshot-consumed good guest: fails={one_good_fails!r} raised={one_good_raised!r}"
+            )
+        if not any("dr-state boot-once @os-0002" in cmd for cmd in one_good_guest.commands):
+            failures.append("sdboot-oneshot-consumed did not select a state distinct from the default")
+
+        _, reused_fails, reused_raised = capture_scenario(
+            lambda: drs.scenario_sdboot_oneshot_consumed(
+                oneshot_guest(running="@os-0002", default="@os-0001", target="@os-0001"),
+                io.StringIO(),
+            )
+        )
+        if reused_raised is not None or not reused_fails or not any(
+            "running state is the default" in failure for failure in reused_fails
+        ):
+            failures.append(
+                "sdboot-oneshot-consumed non-default running state was accepted: "
+                f"fails={reused_fails!r} raised={reused_raised!r}"
             )
         for label, guest in (
             ("variable still present", oneshot_guest(absent=False)),

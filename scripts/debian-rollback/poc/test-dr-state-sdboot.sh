@@ -18,6 +18,7 @@
 #   _sdboot-dir-alloc ROOT CLUSTER RELDIR...
 #   _sdboot-alloc-sum CLUSTER SIZE...
 #   _sdboot-clean-scratch KERNEL_DIR ENTRY_DIR LOADER_CONF MARKER
+#   _snapshot-name TIMESTAMP PID REASON
 #
 # Workflow fixtures run the real gen-menu/set-default/prune commands with DR_STATE_TEST_MODE=1 and a disposable
 # temporary root. They never mount or touch /boot/efi or /.top.
@@ -151,6 +152,20 @@ write_sdboot_oneshot() { # ROOT VALUE -> efivarfs content with a four-byte attri
   } >"$root/sys/firmware/efi/efivars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 }
 
+install_fake_snapshot_btrfs() { # ROOT -> btrfs stub that creates the requested snapshot directory
+  local root=$1
+  mkdir -p "$root/btrfs-bin"
+  # shellcheck disable=SC2016  # the single-quoted strings are the literal body of the generated stub
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -eu' \
+    '[ "${1:-}" = subvolume ] && [ "${2:-}" = snapshot ]' \
+    'dest=${!#}' \
+    'mkdir -p -- "$dest"' \
+    >"$root/btrfs-bin/btrfs"
+  chmod 755 "$root/btrfs-bin/btrfs"
+}
+
 workflow_prune_form() { # ROOT DEFAULT_ID ONESHOT_ID LABEL: dry-run prune must protect both entries
   local root=$1 default_id=$2 oneshot_id=$3 label=$4 id bare rc got
   local doomed=@os-pre-20261118120000-100-spare
@@ -192,6 +207,33 @@ workflow_gen_preserves_oneshot() { # ROOT ONESHOT_VALUE LABEL: stale one-shot en
   elif [ ! -s "$root/esp/loader/entries/os-0002.conf" ]; then
     bad "workflow-oneshot-$label: gen-menu deleted the entry named by LoaderEntryOneShot"
   fi
+}
+
+workflow_snapshot_reason() { # ROOT REASON WANT_SUFFIX: real snapshot path with a fake btrfs operation
+  local root=$1 reason=$2 want=$3 created forbidden rc
+  workflow_fixture "$root" full
+  workflow_state "$root" @os-0001
+  install_fake_snapshot_btrfs "$root"
+  case_count=$((case_count + 1))
+  DR_STATE=@os-0001 PATH="$root/btrfs-bin:$PATH" \
+    workflow_run "$root" 999999999 4096 snapshot --reason "$reason" \
+    >"$WORK/out" 2>"$WORK/err"; rc=$?
+  created=$(find "$root/top" -mindepth 1 -maxdepth 1 -name "@os-pre-*-$want" -print -quit)
+  forbidden=$(find "$root/top" -mindepth 1 -maxdepth 1 -name '@os-*.conf' -print -quit)
+  if [ "$rc" != 0 ]; then
+    bad "workflow-snapshot-reason-$want: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+  elif [ -z "$created" ]; then
+    bad "workflow-snapshot-reason-$want: no snapshot ending in -$want"
+  elif [ -n "$forbidden" ]; then
+    bad "workflow-snapshot-reason-$want: created invalid .conf state $forbidden"
+  fi
+}
+
+workflow_invalid_conf_fixture() { # ROOT: one invalid selectable-name state and one valid state
+  local root=$1
+  workflow_fixture "$root" full
+  workflow_state "$root" @os-0001.conf
+  workflow_state "$root" @os-0002
 }
 
 state_with_entry_id_length() { # state_with_entry_id_length N -> @os- followed by id padding
@@ -338,18 +380,31 @@ expect_exit entry-id-rejects-slash 1 "$DR" _sdboot-entry-id '@os-pre-2026/evil'
 expect_exit entry-id-rejects-space 1 "$DR" _sdboot-entry-id '@os-pre-2026 evil'
 expect_exit entry-id-rejects-dotdot 1 "$DR" _sdboot-entry-id '@os-pre-2026..evil'
 expect_exit entry-id-rejects-embedded-at 1 "$DR" _sdboot-entry-id '@os-pre-2026@evil'
+expect_exit entry-id-rejects-conf-suffix 1 "$DR" _sdboot-entry-id '@os-0001.conf'
 expect_exit state-from-id-rejects-at 1 "$DR" _sdboot-state-from-id '@os-0001'
-expect_text state-from-id-state-ending-conf @os-0001.conf "$DR" _sdboot-state-from-id os-0001.conf.conf
+expect_exit state-from-id-rejects-conf-suffix 1 "$DR" _sdboot-state-from-id os-0001.conf.conf
 expect_exit state-from-id-rejects-slash 1 "$DR" _sdboot-state-from-id 'os-pre/evil'
 expect_exit state-from-id-rejects-empty-tail 1 "$DR" _sdboot-state-from-id 'os-'
 expect_text entry-ids-distinct "os-0001
 os-pre-20261118131158-605-s5" "$DR" _sdboot-entry-ids @os-0001 @os-pre-20261118131158-605-s5
 expect_exit entry-ids-case-collision 1 "$DR" _sdboot-entry-ids @os-lower @os-LOWER
+expect_exit entry-ids-conf-suffix 1 "$DR" _sdboot-entry-ids @os-0001.conf
 expect_exit entry-ids-unsafe-state 1 "$DR" _sdboot-entry-ids @os-ok '@os-bad/name'
 case_count=$((case_count + 1))
 "$DR" _sdboot-entry-ids @os-lower @os-LOWER >"$WORK/out" 2>"$WORK/err" || true
 grep -Fq 'case-insensitively collide' "$WORK/err" \
   || bad "entry-ids-case-message: collision refusal does not explain the collision"
+
+# Snapshot reasons ending in .conf are sanitized to -conf before becoming part of the immutable state name.
+expect_text snapshot-name-ordinary @os-pre-20261118120000-123-rollback \
+  "$DR" _snapshot-name 20261118120000 123 rollback
+expect_text snapshot-name-conf-suffix @os-pre-20261118120000-123-rollback-conf \
+  "$DR" _snapshot-name 20261118120000 123 rollback.conf
+
+# The same sanitizer protects all snapshot callers, including arbitrary hook-composed reasons.
+workflow_snapshot_reason "$WORK/snapshot-reason-rollback" rollback.conf rollback-conf
+workflow_snapshot_reason "$WORK/snapshot-reason-apt" apt.conf apt-conf
+workflow_snapshot_reason "$WORK/snapshot-reason-kernel" kernel.conf kernel-conf
 
 # (d) ESP space check: needed bytes versus free bytes.
 expect_exit space-needed-less 0 "$DR" _sdboot-space-check 1000 2000
@@ -772,6 +827,107 @@ elif [ "$(awk '$1 == "default" {print $2}' "$WF_DEFAULT/esp/loader/loader.conf")
   bad "workflow-set-default: loader.conf did not select os-0002"
 fi
 
+# A pre-existing state whose STATE name ends in .conf is not selectable. gen-menu warns and keeps every valid state.
+WF_CONF_STATE="$WORK/wf-conf-state"
+workflow_invalid_conf_fixture "$WF_CONF_STATE"
+case_count=$((case_count + 1))
+workflow_run "$WF_CONF_STATE" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 0 ]; then
+  bad "workflow-conf-state-gen-menu: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+elif ! grep -Fq -- '@os-0001.conf' "$WORK/err" || ! grep -Fq -- 'ends in .conf' "$WORK/err"; then
+  bad "workflow-conf-state-gen-menu: invalid state was not skipped with a clear warning"
+elif [ -e "$WF_CONF_STATE/esp/loader/entries/os-0001.conf.conf" ]; then
+  bad "workflow-conf-state-gen-menu: wrote a BLS entry for the invalid state"
+elif [ ! -s "$WF_CONF_STATE/esp/loader/entries/os-0002.conf" ]; then
+  bad "workflow-conf-state-gen-menu: valid entry was not written"
+elif [ "$(awk '$1 == "default" {print $2}' "$WF_CONF_STATE/esp/loader/loader.conf")" != os-0002.conf ]; then
+  bad "workflow-conf-state-gen-menu: default did not select the valid state"
+else
+  assert_loader_default_exists "$WF_CONF_STATE" "workflow-conf-state-gen-menu"
+fi
+
+case_count=$((case_count + 1))
+workflow_run "$WF_CONF_STATE" 999999999 4096 list >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 0 ]; then
+  bad "workflow-conf-state-list: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+elif ! grep -Fq -- 'ends in .conf' "$WORK/err"; then
+  bad "workflow-conf-state-list: invalid state was not skipped with a clear warning"
+elif grep -Fq -- '@os-0001.conf' "$WORK/out"; then
+  bad "workflow-conf-state-list: invalid state was listed as selectable"
+elif ! grep -Fqx -- "@os-0002 (default) kernel=$KVER" "$WORK/out"; then
+  bad "workflow-conf-state-list: valid default state was not listed"
+fi
+
+case_count=$((case_count + 1))
+workflow_run "$WF_CONF_STATE" 999999999 4096 set-default @os-0001.conf \
+  >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 1 ]; then
+  bad "workflow-conf-state-set-default: want refusal exit 1, got $rc"
+elif ! grep -Fq -- 'ends in .conf' "$WORK/err"; then
+  bad "workflow-conf-state-set-default: refusal did not explain the invalid state name"
+fi
+
+WF_CONF_DEFAULT="$WORK/wf-conf-default"
+workflow_invalid_conf_fixture "$WF_CONF_DEFAULT"
+case_count=$((case_count + 1))
+workflow_run "$WF_CONF_DEFAULT" 999999999 4096 gen-menu --default @os-0001.conf \
+  >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 1 ]; then
+  bad "workflow-conf-state-default: want refusal exit 1, got $rc"
+elif ! grep -Fq -- 'ends in .conf' "$WORK/err"; then
+  bad "workflow-conf-state-default: refusal did not explain the invalid state name"
+elif [ -e "$WF_CONF_DEFAULT/esp/loader/loader.conf" ]; then
+  bad "workflow-conf-state-default: loader.conf was written despite refusal"
+fi
+
+WF_CONF_BOOT="$WORK/wf-conf-boot"
+workflow_invalid_conf_fixture "$WF_CONF_BOOT"
+install_recording_bootctl "$WF_CONF_BOOT"
+case_count=$((case_count + 1))
+BOOTCTL_LOG="$WF_CONF_BOOT/bootctl-invalid.log" PATH="$WF_CONF_BOOT/boot-bin:$PATH" \
+  workflow_run "$WF_CONF_BOOT" 999999999 4096 boot-once @os-0001.conf \
+  >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 1 ]; then
+  bad "workflow-conf-state-boot-once-invalid: want refusal exit 1, got $rc"
+elif ! grep -Fq -- 'ends in .conf' "$WORK/err"; then
+  bad "workflow-conf-state-boot-once-invalid: refusal did not explain the invalid state name"
+elif [ -e "$WF_CONF_BOOT/bootctl-invalid.log" ]; then
+  bad "workflow-conf-state-boot-once-invalid: bootctl received a selector for the invalid state"
+fi
+
+case_count=$((case_count + 1))
+BOOTCTL_LOG="$WF_CONF_BOOT/bootctl-valid.log" PATH="$WF_CONF_BOOT/boot-bin:$PATH" \
+  workflow_run "$WF_CONF_BOOT" 999999999 4096 boot-once @os-0002 \
+  >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 0 ]; then
+  bad "workflow-conf-state-boot-once-valid: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+elif ! grep -Fqx -- 'set-oneshot os-0002.conf' "$WF_CONF_BOOT/bootctl-valid.log"; then
+  bad "workflow-conf-state-boot-once-valid: one-shot did not name the valid entry file"
+elif [ "$(awk '$1 == "default" {print $2}' "$WF_CONF_BOOT/esp/loader/loader.conf")" != os-0002.conf ]; then
+  bad "workflow-conf-state-boot-once-valid: loader.conf did not name the valid entry file"
+elif [ -e "$WF_CONF_BOOT/esp/loader/entries/os-0001.conf.conf" ]; then
+  bad "workflow-conf-state-boot-once-valid: invalid state gained a BLS entry"
+fi
+
+# Stale loader/one-shot selectors for the invalid state are ignored; the rewritten menu and stale cleanup stay safe.
+case_count=$((case_count + 1))
+printf '# generated by dr-state sdboot; do not edit\ntitle stale invalid state\n' \
+  >"$WF_CONF_BOOT/esp/loader/entries/os-0001.conf.conf"
+printf 'default os-0001.conf.conf\ntimeout 5\n' >"$WF_CONF_BOOT/esp/loader/loader.conf"
+write_sdboot_oneshot "$WF_CONF_BOOT" os-0001.conf.conf
+workflow_run "$WF_CONF_BOOT" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 0 ]; then
+  bad "workflow-conf-state-stale-selectors: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+elif ! grep -Fq -- 'loader.conf default' "$WORK/err" || ! grep -Fq -- 'LoaderEntryOneShot' "$WORK/err"; then
+  bad "workflow-conf-state-stale-selectors: invalid selectors were not reported"
+elif [ -e "$WF_CONF_BOOT/esp/loader/entries/os-0001.conf.conf" ]; then
+  bad "workflow-conf-state-stale-selectors: stale invalid entry survived"
+elif [ "$(awk '$1 == "default" {print $2}' "$WF_CONF_BOOT/esp/loader/loader.conf")" != os-0002.conf ]; then
+  bad "workflow-conf-state-stale-selectors: loader.conf did not resolve to the valid entry file"
+else
+  assert_loader_default_exists "$WF_CONF_BOOT" "workflow-conf-state-stale-selectors"
+fi
+
 # Existing suffix-less defaults are accepted and migrated to the canonical systemd-boot spelling.
 WF_MIGRATE="$WORK/wf-migrate"
 workflow_fixture "$WF_MIGRATE" full
@@ -832,6 +988,49 @@ done
 # A one-shot pending state remains independently of whether its EFI variable carries .conf or the legacy spelling.
 workflow_gen_preserves_oneshot "$WORK/wf-oneshot-suffixed" os-0002.conf suffixed
 workflow_gen_preserves_oneshot "$WORK/wf-oneshot-suffixless" os-0002 suffixless
+
+# An invalid .conf state cannot be a default or one-shot. Prune warns, ignores the stale selector, and may delete it.
+WF_CONF_PRUNE="$WORK/wf-conf-prune"
+workflow_fixture "$WF_CONF_PRUNE" full
+mkdir -p "$WF_CONF_PRUNE/top/@os-0001" \
+  "$WF_CONF_PRUNE/top/@os-pre-20261118120000-100-rollback.conf"
+printf 'default os-pre-20261118120000-100-rollback.conf.conf\ntimeout 5\n' \
+  >"$WF_CONF_PRUNE/esp/loader/loader.conf"
+case_count=$((case_count + 1))
+DR_STATE=@os-0001 workflow_run "$WF_CONF_PRUNE" 999999999 4096 prune --keep 0 --dry-run \
+  >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 0 ]; then
+  bad "workflow-conf-state-prune: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+elif ! grep -Fq -- 'ends in .conf' "$WORK/err"; then
+  bad "workflow-conf-state-prune: stale invalid selector was not reported"
+elif ! grep -Fqx -- 'would delete @os-pre-20261118120000-100-rollback.conf' "$WORK/out"; then
+  bad "workflow-conf-state-prune: unprotected invalid state was not eligible for deletion"
+fi
+
+case_count=$((case_count + 1))
+DR_STATE=@os-0001.conf workflow_run "$WF_CONF_PRUNE" 999999999 4096 prune --keep 10 --dry-run \
+  >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 1 ]; then
+  bad "workflow-conf-running-prune: want refusal exit 1, got $rc"
+elif ! grep -Fq -- 'ends in .conf' "$WORK/err"; then
+  bad "workflow-conf-running-prune: refusal did not explain the invalid running state"
+fi
+
+WF_CONF_SNAPSHOT="$WORK/wf-conf-snapshot-source"
+workflow_fixture "$WF_CONF_SNAPSHOT" full
+mkdir -p "$WF_CONF_SNAPSHOT/top/@os-0001.conf/boot"
+printf 'kernel\n' >"$WF_CONF_SNAPSHOT/top/@os-0001.conf/boot/vmlinuz-$KVER"
+printf 'initrd\n' >"$WF_CONF_SNAPSHOT/top/@os-0001.conf/boot/initrd.img-$KVER"
+install_fake_snapshot_btrfs "$WF_CONF_SNAPSHOT"
+case_count=$((case_count + 1))
+DR_STATE=@os-0001.conf PATH="$WF_CONF_SNAPSHOT/btrfs-bin:$PATH" \
+  workflow_run "$WF_CONF_SNAPSHOT" 999999999 4096 snapshot --reason manual \
+  >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 1 ]; then
+  bad "workflow-conf-running-snapshot: want refusal exit 1, got $rc"
+elif ! grep -Fq -- 'ends in .conf' "$WORK/err"; then
+  bad "workflow-conf-running-snapshot: refusal did not explain the invalid running state"
+fi
 
 # Interruption ordering: an old default names a stale entry that the next menu would remove. Failure before
 # loader.conf publication must leave that old default entry present; failure after publication must leave the new

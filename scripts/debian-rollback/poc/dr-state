@@ -155,10 +155,31 @@ current_state() {
   s=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^rootflags=.*subvol=\([^,]*\).*/\1/p' | head -n1)
   [ -n "$s" ] || s=${DR_STATE:-}
   [ -n "$s" ] || die "cannot tell the running state (no rootflags=subvol= on the command line; set DR_STATE=<state>, or DR_STATE=none to skip the snapshot)"
+  state_has_conf_suffix "$s" \
+    && die "running state $s ends in .conf and is not selectable; use a state name that does not end in .conf"
   echo "$s"
 }
 
-states() { find "$TOP" -maxdepth 1 -name '@os-*' -printf '%f\n' | sort; }
+state_has_conf_suffix() {
+  case "${1-}" in *.conf) return 0 ;; *) return 1 ;; esac
+}
+
+warn_conf_suffix_state() {
+  echo "dr-state: skipping state $1: a state name that ends in .conf is not selectable" >&2
+}
+
+states_raw() { find "$TOP" -maxdepth 1 -name '@os-*' -printf '%f\n' | sort; }
+
+states() {
+  local state
+  while IFS= read -r state; do
+    if state_has_conf_suffix "$state"; then
+      warn_conf_suffix_state "$state"
+      continue
+    fi
+    printf '%s\n' "$state"
+  done < <(states_raw)
+}
 
 latest_kernel() { # latest_kernel STATE -> newest version that has BOTH vmlinuz and initrd, empty if none
   local v
@@ -176,6 +197,7 @@ latest_kernel() { # latest_kernel STATE -> newest version that has BOTH vmlinuz 
 # embedded '@' are rejected even though FAT would allow most of them.
 entry_id_for_state() {
   local state=$1 id
+  case "$state" in *.conf) return 1 ;; esac
   [[ "$state" =~ ^@os-[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
   case "$state" in *..*|*.) return 1 ;; esac
   id=${state#@}
@@ -186,6 +208,7 @@ entry_id_for_state() {
 sdboot_bare_entry_id() { # ENTRY_ID[.conf] -> suffix-less basename used by dr-state state mapping
   local id=${1-}
   if [[ "$id" == *.conf ]]; then id=${id%.conf}; fi
+  case "$id" in *.conf) return 1 ;; esac
   [[ "$id" =~ ^os-[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
   case "$id" in *..*|*.) return 1 ;; esac
   [ "${#id}" -le 240 ] || return 1
@@ -324,6 +347,10 @@ sdboot_loader_conf() { # DEFAULT_ID; existing loader.conf on stdin -> one defaul
   ' || return 1
 }
 
+sdboot_selector_names_conf_state() { # selector value for the now-invalid state "@os-X.conf"
+  [[ "${1-}" =~ ^os-[A-Za-z0-9][A-Za-z0-9._-]*\.conf\.conf$ ]]
+}
+
 loader_default_id() {
   local id bare
   [ -e "$SDBOOT_LOADER_CONF" ] || return 0
@@ -332,6 +359,8 @@ loader_default_id() {
   [ -n "$id" ] || return 0
   if bare=$(sdboot_bare_entry_id "$id"); then
     printf '%s\n' "$bare"
+  elif sdboot_selector_names_conf_state "$id"; then
+    echo "dr-state: ignoring loader.conf default '$id': the named state name ends in .conf and is not selectable" >&2
   else
     printf '%s\n' "$id"
   fi
@@ -354,9 +383,13 @@ sdboot_oneshot_id() {
     | iconv -f UTF-16LE -t UTF-8 2>/dev/null | tr -d '\000\r\n') \
     || die "cannot decode LoaderEntryOneShot; refusing without knowing the pending one-shot state"
   [ -n "$raw" ] || die "LoaderEntryOneShot is empty; refusing without knowing the pending one-shot state"
-  id=$(sdboot_bare_entry_id "$raw") \
-    || die "LoaderEntryOneShot names an unknown entry id '$raw'; refusing"
-  printf '%s\n' "$id"
+  if id=$(sdboot_bare_entry_id "$raw"); then
+    printf '%s\n' "$id"
+  elif sdboot_selector_names_conf_state "$raw"; then
+    echo "dr-state: ignoring LoaderEntryOneShot '$raw': the named state name ends in .conf and is not selectable" >&2
+  else
+    die "LoaderEntryOneShot names an unknown entry id '$raw'; refusing"
+  fi
 }
 
 cleanup_sdboot_scratch() { # KERNEL_DIR ENTRY_DIR LOADER_CONF MARKER; remove only interrupted dr-state temporaries
@@ -829,7 +862,15 @@ EOF
 }
 
 cmd_gen_menu() {
-  local backend
+  local backend i default_state
+  local -a gen_args=("$@")
+  for ((i = 0; i < ${#gen_args[@]}; i++)); do
+    if [ "${gen_args[i]}" = --default ] && [ $((i + 1)) -lt "${#gen_args[@]}" ]; then
+      default_state=${gen_args[i + 1]}
+      state_has_conf_suffix "$default_state" \
+        && die "state $default_state ends in .conf and is not selectable; refusing the requested default"
+    fi
+  done
   backend=$(bootloader) || die "cannot determine the bootloader backend"
   case "$backend" in
     grub) cmd_gen_menu_grub "$@" ;;
@@ -851,6 +892,20 @@ window_blocks() {
   [ $((now - made)) -ge 0 ] && [ $((now - made)) -lt "$interval" ]
 }
 
+snapshot_reason_for_name() { # REASON -> REASON-conf when a trailing .conf would make the state non-selectable
+  local reason=${1-}
+  if [[ "$reason" == *.conf ]]; then reason="${reason%.conf}-conf"; fi
+  printf '%s\n' "$reason"
+}
+
+snapshot_name() { # TIMESTAMP PID REASON -> canonical @os-pre-* state name
+  local timestamp=${1-} pid=${2-} reason
+  [[ "$timestamp" =~ ^[0-9]{14}$ ]] || return 1
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  reason=$(snapshot_reason_for_name "${3-}")
+  printf '@os-pre-%s-%s-%s\n' "$timestamp" "$pid" "$reason"
+}
+
 cmd_snapshot() {
   local reason=manual
   while [ $# -gt 0 ]; do
@@ -858,7 +913,7 @@ cmd_snapshot() {
   done
   if [ "${DR_STATE:-}" = none ]; then echo "dr-state: DR_STATE=none, snapshot skipped" >&2; return 0; fi
   ensure_top
-  local cur name; cur=$(current_state)
+  local cur name timestamp; cur=$(current_state)
   # Dedupe window for the apt hook (found by S7: one unattended-upgrade run called dpkg 18 times and took 18
   # snapshots). While an APT snapshot of THIS running state younger than DR_SNAPSHOT_MIN_INTERVAL seconds exists
   # (default 900), another apt run takes none: the rollback target stays the state from before the whole upgrade.
@@ -877,7 +932,9 @@ cmd_snapshot() {
       return 0
     fi
   fi
-  name="@os-pre-$(date -u +%Y%m%d%H%M%S)-$$-$reason"   # pid keeps two runs in one second apart
+  timestamp=$(date -u +%Y%m%d%H%M%S)
+  # The pid keeps two runs in one second apart. Sanitize the reason before it becomes an immutable state name.
+  name=$(snapshot_name "$timestamp" "$$" "$reason") || die "cannot construct a snapshot state name"
   btrfs subvolume snapshot "$TOP/$cur" "$TOP/$name" >/dev/null
   cmd_gen_menu
   echo "dr-state: wrote $name (copy of $cur)"
@@ -903,6 +960,8 @@ cmd_list() {
 
 cmd_set_default() {
   ensure_top
+  state_has_conf_suffix "${1:-}" \
+    && die "state $1 ends in .conf and is not selectable; refusing set-default"
   [ -d "$TOP/${1:?state}" ] || die "no such state: $1"
   local backend
   backend=$(bootloader) || die "cannot determine the bootloader backend"
@@ -956,7 +1015,7 @@ cmd_prune() {
         || die "LoaderEntryOneShot has an unknown entry id: $entry_id" ;;
   esac
   # shellcheck disable=SC2046  # state names have no spaces
-  doomed=$(select_prune "$keep" "$cur,$def,$next" $(states))
+  doomed=$(select_prune "$keep" "$cur,$def,$next" $(states_raw))
   for s in $doomed; do
     if [ "$dry" = 1 ]; then echo "would delete $s"
     elif btrfs subvolume delete "$TOP/$s" >/dev/null; then echo "deleted $s"
@@ -973,6 +1032,8 @@ cmd_prune() {
 
 cmd_boot_once() {
   ensure_top
+  state_has_conf_suffix "${1:-}" \
+    && die "state $1 ends in .conf and is not selectable; refusing boot-once"
   [ -d "$TOP/${1:?state}" ] || die "no such state: $1"
   local backend entry_id
   backend=$(bootloader) || die "cannot determine the bootloader backend"
@@ -990,6 +1051,10 @@ cmd_boot_once() {
 
 if [ "${1:-}" = _window-blocks ]; then   # test hook: dr-state _window-blocks NAME INTERVAL NOW; exit 0 = blocks
   window_blocks "${2:?name}" "${3:?interval}" "${4:?now}"; exit $?
+fi
+
+if [ "${1:-}" = _snapshot-name ]; then   # test hook: dr-state _snapshot-name TIMESTAMP PID REASON
+  snapshot_name "${2:?timestamp}" "${3:?pid}" "${4-}"; exit $?
 fi
 
 if [ "${1:-}" = _prune-select ]; then   # test hook: dr-state _prune-select KEEP PROTECTED_CSV NAME...
