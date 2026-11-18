@@ -376,7 +376,8 @@ def test_the_console_script_entry_point_imports_and_is_the_cli_main():
 
 def test_the_project_depends_on_vmscreen_and_not_on_cli_extended():
     dependencies = tomllib.loads((PROJECT / "pyproject.toml").read_text())["project"]["dependencies"]
-    assert dependencies == ["vmscreen"]
+    # Floor 0.1.0 = the first vmscreen release, the first with `--qemu-dump-dir` (VML-BL-03).
+    assert dependencies == ["vmscreen>=0.1.0"]
 
 
 def test_pillow_is_an_optional_record_extra_only():
