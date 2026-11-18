@@ -96,6 +96,19 @@ Test `Failure(4)`), `w-true` 0, `unicode` 0, `methods` 0.
   or `Other`: the parser refuses both as an unmeasured cargo-mutants phase shape.
 - hostobs-scale cost, `--shard`, CRLF, a real `Signalled`/`Other` Test status.
 
+First real qualification run (B245 U7, 2026-11-18, v1001, image
+`tester-unified-rust:rs-20261118`, offline cargo-mutants 27 with nextest, bound to
+`5a83e3b17`): the `--preflight` listing matched every case's expected mutant count
+(25, 9, 9, 0, 25, 25, 8, 8, 8, 11, 10, 4) including the new-file (`--- /dev/null`,
+TAB-suffixed `+++`), paths, unicode and `ws-sub` diff shapes, and the full lane PASSED:
+all 12 cases met their expected outcome and exit code with no deviation (the `full`
+timeout mutant left no stray descendant). Wall time: `full` (25 mutants) 30.6 s,
+`methods` 9.8 s, `w-true` 8.1 s, `crashed-f4` 6.8 s, `subdir` 6.7 s, `ws-sub` 6.5 s,
+`paths` 6.4 s, `indiff` 5.7 s, `unicode` 2.4 s, `basefail-*` 1-2 s, `zero-mutants`
+0.7 s; about 2 minutes in all, roughly 1.2 s per mutant on these tiny synthetic crates
+(the hostobs cost is the mutants in the diff times its suite time per mutant). The
+risks below were the pre-run expectations; none materialised.
+
 Known risks for the first real qualification run (B245 U7,
 `tools/qualify_rust_r2_real.py`; each is diagnosed, not a known defect; its
 `--preflight` mode lists the real mutants of every case in seconds first):
