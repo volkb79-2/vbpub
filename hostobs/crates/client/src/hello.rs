@@ -185,9 +185,7 @@ pub(crate) fn parse_hello(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        parse_hello, HelloResult, Limits, PRE_HELLO_MAX_FRAME, PRE_HELLO_MAX_REQUEST,
-    };
+    use super::{parse_hello, HelloResult, Limits, PRE_HELLO_MAX_FRAME, PRE_HELLO_MAX_REQUEST};
     use crate::error::{ClientError, ProtocolKind};
     use crate::level::Level;
 

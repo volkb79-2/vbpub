@@ -305,12 +305,13 @@ mod tests {
             let error = request_payload(verb, "{}");
             assert_eq!(error, Err(ClientError::Usage("bad-verb")));
         }
+        assert_eq!(MAX_VERB_BYTES, 64);
         let long = "a".repeat(65);
         assert_eq!(
             request_payload(&long, "{}"),
             Err(ClientError::Usage("bad-verb"))
         );
-        let longest = "a".repeat(MAX_VERB_BYTES);
+        let longest = "a".repeat(64);
         assert!(request_payload(&longest, "{}").is_ok());
         let bad_args = ["[]", "{", "{} x", "{},\"x\":1", "{\"a\":nul}", ""];
         for args in bad_args {

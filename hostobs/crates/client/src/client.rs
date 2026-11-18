@@ -1012,4 +1012,11 @@ mod tests {
         );
         assert!(partial.is_closed());
     }
+
+    #[test]
+    fn read_some_reports_eof_as_connection_lost() {
+        let mut client = bare(1);
+        assert_eq!(client.read_some(u64::MAX), Err(ClientError::ConnectionLost));
+        assert!(client.is_closed());
+    }
 }
