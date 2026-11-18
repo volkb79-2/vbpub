@@ -67,7 +67,23 @@
   lines of the five judged crates by ingesting cargo-mutants' report (`cargo-mutants-outcomes`, `--in-diff`
   from `{assay.changed_diff}`, `--jobs 1`, nextest, output `assay-mutants-out`, git-ignored). Hand-run only
   (`run-gate assay-r2 --base <ref>`), `budget = "4h"` is an estimate, never part of a default gate; assay K15
-  stays open until the first hostobs run.
+  was open until the first real hostobs run (2026-11-18, 345 mutants in 17 minutes: 271 caught, 21 missed, 47
+  unviable, 6 timeouts; closed by that evidence).
+- **`assay-r2` memory cap**: the first real run (2026-11-18) reached 6.4 GiB in the container within 90 s
+  on the shared 8 GiB host and was cancelled, and a second attempt (cargo and test threads capped at 1) reached
+  4 GiB (both figures are from the controller's monitoring, not recorded in files); a sampled diagnostic run
+  named the cause: ONE test process of a cargo-mutants MUTANT run of the client crate (`client.rs` differs from
+  git; a hang mutant), `client_scripted ... transport_failures_are_classified`
+  (`crates/client/tests/client_scripted.rs`), grew 200-400 MB/s (the unmutated test passes in
+  `selftest`/`assay-r1`). The client crate's test double now panics after one million scripted calls
+  (`e2efb1c55`), which bounds such a runaway (in the real run the two client-crate hang mutants,
+  `client.rs:623` `read_prefix` and `client.rs:706` `read_some`, still ended as 120 s timeouts, but without
+  growing memory beyond the cap). The lane now sets `CARGO_BUILD_JOBS=1`, `RUST_TEST_THREADS=1` and `NEXTEST_TEST_THREADS=1`, and
+  `run-gate.toml [lanes.assay-r2.resources] memory = "2500m"` with `memory_swap = "2500m"` (docker
+  `--memory`/`--memory-swap`, memory plus swap equal): a runaway is OOM-killed inside its own container and the
+  lane ends non-green (ERROR or FAIL, not yet observed) instead of spilling into the host's swap and taking
+  neighbours down. The next run measured it: the full lane (baseline plus 345 mutants, 17 minutes) completed
+  inside the cap with no OOM kill (`crashed 0`, normal exit); no memory peak was recorded.
 
 ### Added (the `conformance` lane; `HOB-4` fixed)
 
