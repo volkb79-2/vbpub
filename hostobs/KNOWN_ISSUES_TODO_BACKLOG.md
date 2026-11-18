@@ -314,9 +314,10 @@ a test at the bound and one past it. No wire change.
 (`oversized-frame`) and below `FRAME_HEADER_LEN` (`truncated`, context "frame length shorter
 than the header"), after the fixed-field checks, so Rust and the Python reference name the same
 first refusal. `decode_block` keeps its own check as a second bound; through `parse` that check
-can no longer fire, so its branch is not covered by any test (see `CHANGES.md`). Tests pin the
+can no longer fire, so its multi-line `return Err(..)` is covered by no test (see `CHANGES.md`). Tests pin the
 bound, one past it, `u32::MAX`, one below the header, zero and the refusal order, in both
-languages; fixtures are byte-identical. Hand-mutants: `M1d-1`.
+languages, and two refusal fixtures (declared length 4, a header-only block) are decoded by
+both. Stored hand-mutation patches, not yet run: `M1d-1`, `M1d-14`.
 
 ## HOB-9 — `derive_rate` has no boot/epoch/incarnation context
 
@@ -789,7 +790,8 @@ typed refusal `SegmentIdentity` and quarantines the file, for `.seg` and `.seg.o
 seal keeps the open name's start second so a step change cannot trip the new rule. The Python
 segment reference refuses the same files (`check_segment_name`); no golden fixture is possible
 because the name is not in the file's bytes. `docs/SEGMENT-FORMAT.md` states both rules.
-Hand-mutants: `M1d-6`, `M1d-7`, `M1d-8`, `M1d-9`.
+A `.seg.open` name that carries a footer is refused too (`OpenWithFooter`). Stored hand-mutation
+patches, not yet run: `M1d-6` … `M1d-9`, `M1d-17`, `M1d-19`.
 
 ## HOB-43 — Quarantined files sit outside the cap
 
@@ -812,8 +814,10 @@ byte total, `keep_s` applies to them by the `(start_s, seq)` their names keep, a
 is reported (`Evicted::quarantined`) and counted (`StoreStats::evicted_quarantined`). Only a
 `.corrupt` file whose name parses to this tier and whose header is this tier's corpus is
 adopted; any other look-alike is reported as a note, never counted, evicted or removed, so
-those bytes stay outside the cap. Tests fill the bound; hand-mutants: `M1d-2` … `M1d-5`,
-`M1d-10`.
+those bytes stay outside the cap. A quarantined file deleted by hand, or one that cannot be
+removed, leaves the list and the total without failing the pass, and a quarantined name keeps its
+sequence number. Tests fill the bound; stored hand-mutation patches, not yet run: `M1d-2` … `M1d-5`,
+`M1d-10`, `M1d-12` … `M1d-16`, `M1d-18`.
 
 ## HOB-44 — CLOSED: the lane needed no `pip`, because it needed no install
 

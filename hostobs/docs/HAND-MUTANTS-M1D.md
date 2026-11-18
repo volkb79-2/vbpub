@@ -52,7 +52,19 @@ from scratch.
 | M1d-10 | HOB-43 | `keep_s` is not applied to quarantined files | `keep_s_removes_a_quarantined_file_by_the_key_its_name_keeps` |
 | M1d-11 | HOB-48 (length) | the time section is sized at 14 bytes a bucket again (Rust and Python) | `the_time_section_is_fifteen_bytes_per_bucket_padded_to_eight`; `a_history_block_of_zero_to_nine_buckets_round_trips_through_the_frame`; the `history-five-buckets` golden fixture; `test_the_time_section_is_fifteen_bytes_per_bucket_padded_to_eight` |
 
-Twenty-one stored patches in all (`--dry-run`: 21 stored patches, 0 stale).
+| M1d-12 | HOB-43 | the store never counts an evicted quarantined file; counts it as an evicted segment; `Evicted::is_empty` ignores quarantined files | `an_evicted_quarantined_file_is_counted_apart_from_evicted_segments` |
+| M1d-13 | HOB-43 | removing a quarantined file does not take its bytes out of the total | `quarantined_bytes_count_against_the_cap_and_go_before_any_live_segment` |
+| M1d-14 | HOB-8 | Python: the 12 to 15 byte block-frame guard is dropped | `test_the_frame_header_bounds_the_declared_length_at_both_ends`; the `block-without-directory` fixture |
+| M1d-15 | HOB-43 | the `kind != File` guard on a `.corrupt` entry is dropped | none expected: **possibly an equivalent mutant**, because `read_window` fails on a directory and the name is reported anyway; if it survives, that is the explanation, not a missing test |
+| M1d-16 | HOB-43 | a quarantined / a live file deleted by hand is not recognised as gone | `a_quarantined_file_deleted_by_hand_does_not_fail_every_later_append`; `a_live_segment_deleted_by_hand_leaves_the_ring_without_failing_the_cap` |
+| M1d-17 | HOB-43 | a live / a quarantined name no longer reserves its sequence number | `a_name_never_comes_back_after_a_quarantine_and_a_restart` |
+| M1d-18 | HOB-43 | the segment / the event write path does not subtract its own eviction | `the_write_paths_subtract_what_their_own_eviction_removed`; `the_event_write_path_subtracts_what_its_own_eviction_removed` |
+| M1d-19 | HOB-42 | an open name that carries a footer is adopted (Rust and Python) | `an_open_name_that_carries_a_footer_is_quarantined_not_adopted`; `test_an_open_name_that_carries_a_footer_is_refused` |
+
+Thirty-five stored patches in all (`--dry-run`: 35 stored patches, 0 stale). The campaign first
+runs a BASELINE per suite on the unmutated tree and stops if it is not green; a patch is `killed`
+only by a real test failure, and a docker or runner failure, a compile error or a Python import
+error is `NOT-BUILT` (unanswered).
 
 ## Results
 
@@ -68,8 +80,10 @@ output once it has run on the gate head; until then this file states no kill cou
 `decode_block` keeps its own `declared > MAX_FRAME_BYTES` check (belt and braces: a future caller
 that bypasses `parse` is still bounded). Through `FrameHeader::parse` that branch can no longer
 be reached, because `parse` already refuses the same length first and `decode_block` calls it
-before anything else. No test can drive the branch, so it is an uncovered line for
-`selftest`/`assay-r1` and a mutant that deletes it would survive as an equivalent mutant. It is
+before anything else. No test can drive the branch, so its body, the multi-line
+`return Err(ProtoError::OversizedFrame { len: declared, max: MAX_FRAME_BYTES });` (six lines in
+`frame.rs`), is uncovered for `selftest`/`assay-r1` and a mutant that deletes it would survive
+as an equivalent mutant. It is
 deliberately not among the patches above. If the coverage floor
 (`assay.toml`, `coverage-floors.toml`) is judged on it, the answer is to remove the dead check or
 to accept the line as the documented exception, never to lower a floor.

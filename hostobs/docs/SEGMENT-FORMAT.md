@@ -236,6 +236,24 @@ reported as a note, never counted, never evicted and never removed, because the 
 what its name and its header prove is its own. Those bytes are therefore outside the cap, which
 bounds what the store provably wrote.
 
+A quarantined file an operator deleted by hand (the file is kept *for* inspection) leaves the list
+and the byte total quietly the next time a bound reaches it; it is reported in
+`TierScan::notes` and is **not** counted as evicted. A removal that fails for another reason is
+dropped from the list and the total and reported too, so one bad file can neither stop the cap
+loop nor fail an `append` after its record was written. A live segment deleted by hand is dropped
+from the ring the same way. A quarantined name also keeps its sequence number: the tier's
+`seq` water mark covers every name of the tier the directory shows, so a quarantined open
+segment's name is never reused.
+
+Two limits to know. With `cap_bytes = 0` ("no byte cap", for a tier on a bounded medium)
+quarantined files are bounded only by `keep_s`, so enough debris inside one retention window
+can grow past the number of entries a directory listing may return (`MAX_SEGMENTS`) and make the
+tier refuse to open (`entry-limit`) until some of it is removed. And a segment sealed by an
+earlier build after `segment_s` had been changed (that build re-derived the sealed name's start
+second from the header with the new step) is quarantined whole on the first rescan, because its
+name's start second then disagrees with its header; no release has ever shipped such a file, so
+this has no practical effect today, but it is the rule.
+
 `keep_s` compares a segment's **end** to the window: a segment whose end is exactly `now - keep_s`
 is still inside it. `cap_bytes` is strict, and if the only remaining segment is the open one and it
 alone exceeds the cap, it goes too — with its handle closed first, so nothing is ever appended

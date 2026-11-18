@@ -8,7 +8,8 @@
   `MAX_FRAME_BYTES` (`oversized-frame`) or below `FRAME_HEADER_LEN` (`truncated`), after the
   fixed-field checks, in Rust and in the Python reference, so a streaming reader may allocate
   `len` straight after `parse`. `decode_block` keeps its own check; through `parse` it can no
-  longer fire, which leaves one uncovered line (documented in `docs/HAND-MUTANTS-M1D.md`). No
+  longer fire, which leaves its multi-line `return Err(ProtoError::OversizedFrame { .. })`
+  uncovered (documented in `docs/HAND-MUTANTS-M1D.md`). No
   wire change. The Python reference also stops leaking a `struct.error` for a 12 to 15 byte
   block frame.
 - **`HOB-43`: quarantined files are inside the cap.** A `<segment>.corrupt` file whose name
@@ -28,8 +29,10 @@
   which agrees only up to three buckets: for `n = 4` the encoder wrote 64 bytes and the decoder
   demanded 56. Both sides now share one `TIME_BUCKET_BYTES = 15`. Tests pin the exact body length
   and the frame round trip for 0 to 9 buckets in both languages, and a new golden fixture
-  `history-five-buckets` is decoded by both (`fixtures/wire` grows from 26 to 27 cases: 8 valid,
-  19 refusals; the other 26 regenerate byte-identically). **No wire version bump is needed**: no
+  `history-five-buckets` is decoded by both (with the two HOB-8 refusal fixtures
+  `frame-length-below-header` and `block-without-directory`, `fixtures/wire` grows from 26 to
+  29 cases: 8 valid, 21 refusals; the other 26 regenerate byte-identically). **No wire version
+  bump is needed**: no
   hostobs release or tag exists, no store segment fixture carries a history block, and the only
   history fixture before this had three buckets, so no byte stream with `n >= 4` has ever been
   written by a shipped build. The `subject` section (kind 6) and the rest of `HOB-48` are not
@@ -38,7 +41,7 @@
 ### Added
 
 - **Hand-mutation record for the P0 fold-in** (`docs/HAND-MUTANTS-M1D.md`,
-  `docs/hand-mutants/m1d-mutants.py`): twenty-one stored patches in the method of
+  `docs/hand-mutants/m1d-mutants.py`): thirty-five stored patches in the method of
   `HAND-MUTANTS-M1C.md`. The campaign has not been run yet; the doc says so.
 - **Gate invocations in `docs/CONSUMERS.md` and `README.md`** now state the estate wrappers
   (`scripts/controller/gate-run.sh <lane>` from a linked worktree's project directory;

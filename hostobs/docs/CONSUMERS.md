@@ -140,7 +140,7 @@ B549 records the same finding from the judge's side.
   whose campaign has not been run yet.
 - **Dead second bound in `decode_block`.** Its own `declared > MAX_FRAME_BYTES` check cannot
   fire any more, because `FrameHeader::parse` refuses the same length first. It is kept as a
-  second bound and is an uncovered line the coverage floor may count; see
+  second bound whose multi-line `return Err(..)` is uncovered and the coverage floor may count; see
   [`HAND-MUTANTS-M1D.md`](HAND-MUTANTS-M1D.md), "Known limit".
 - **Canaries (R3)** — needs a receipt-writing test-break canary (assay B246 / R-4); not registered.
 - **Inline `#[cfg(test)] mod tests` blocks inside a judged file** are measured (LCOV has no

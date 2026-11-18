@@ -87,15 +87,14 @@ all killed), [`docs/HAND-MUTANTS-M1B.md`](docs/HAND-MUTANTS-M1B.md) (thirty-one 
 killed) and [`docs/HAND-MUTANTS-M1C.md`](docs/HAND-MUTANTS-M1C.md) (fifteen mutations over the
 store's bounds and crash-safety guards, all killed). Each is a stored patch in a replayable
 script, and every restore is SHA-256-verified. The P0 bug fold-in adds
-[`docs/HAND-MUTANTS-M1D.md`](docs/HAND-MUTANTS-M1D.md) (twenty-one stored patches over the
+[`docs/HAND-MUTANTS-M1D.md`](docs/HAND-MUTANTS-M1D.md) (thirty-five stored patches over the
 frame-header bound, quarantined files inside the cap, the sealed-footer and name/header rules
 and the time-section length); its campaign is to be run on the gate head and states no result
 yet.
 
 Open items found while building these packages are in
 [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-45`; `HOB-8`,
-`HOB-42` and `HOB-43` are FIXED by the P0 bug fold-in, which also fixes the length half of
-`HOB-48`, a different branch's entry): the sharpest still-open ones are `HOB-17`/`HOB-27` (the `kernel` and `store` crates carry their
+`HOB-42` and `HOB-43` are FIXED by the P0 bug fold-in): the sharpest still-open ones are `HOB-17`/`HOB-27` (the `kernel` and `store` crates carry their
 own value and quality types until the Rust lane image can be rebuilt against a new
 `Cargo.lock`), `HOB-21`/`HOB-29` (no `/sys` device-topology source, and `store`'s tmpfs check
 reads the mount table rather than `statfs`), `HOB-39` (a store range answer is the stored
