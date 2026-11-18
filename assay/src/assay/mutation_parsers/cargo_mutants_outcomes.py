@@ -471,10 +471,8 @@ def _diff_member_name(diff_path: Any) -> str:
     if not isinstance(diff_path, str) or not diff_path.startswith(_MEMBER_DIR):
         raise _unreadable(f"diff_path {diff_path!r} is not of the form diff/<name>")
     name = diff_path[len(_MEMBER_DIR) :]
-    if (
-        not name.endswith(_MEMBER_SUFFIX)
-        or any(char in name for char in ("\0", "/", "\\"))
-        or name in (".", "..")
+    if not name.endswith(_MEMBER_SUFFIX) or any(
+        char in name for char in ("\0", "/", "\\")
     ):
         raise _unreadable(
             f"diff_path {diff_path!r} must be diff/<one path component ending "
@@ -666,6 +664,10 @@ def _bind_mutants(
     carries only the ``diff/*.diff`` members named by ``outcomes.json`` (the
     ``safeio`` member grammar), so ``mutants.json`` is not available to a
     parser; see the design note in CHANGES.md.
+
+    ``UnaryOperator`` and every other genre not listed in ``_TOKEN_HEADS`` are
+    bound by the diff tier and the span alone: the shape of their ``name`` is
+    unmeasured, so it is never guessed at.
     """
     members = artifact.members
     names = [_diff_member_name(mutant.diff_path) for mutant in mutants]

@@ -889,6 +889,21 @@
         "weakref_slot": false
       }
     },
+    "assay.mutation_parsers.cargo_mutants_outcomes._Blob": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.mutation_parsers.cargo_mutants_outcomes.NormalisedMutant": {
       "fields": {},
       "params": {

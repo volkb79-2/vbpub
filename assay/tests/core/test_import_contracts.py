@@ -224,6 +224,7 @@ def expected_dir(name: str) -> str:
         "test_mutation_format_registry.py",
         "test_mutation_report_json_parser.py",
         "test_cargo_mutants_outcomes_parser.py",
+        "test_cargo_mutants_outcomes_binding.py",
     ):
         return "parsers/mutation"
     if words[:2] in (["result", "report"], ["result", "reports"]):
