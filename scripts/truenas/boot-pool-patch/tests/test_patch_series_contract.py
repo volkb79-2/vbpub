@@ -137,6 +137,30 @@ def test_registered_install_bundle_digests_are_recomputed_from_archives() -> Non
     assert sum(line.startswith("PASS ") for line in result.stdout.splitlines()) == len(registry())
 
 
+def test_install_bundle_digest_mismatch_names_every_member_digest(tmp_path, monkeypatch, capsys) -> None:
+    """A digest mismatch lists each bundle member's SHA-256 so the changed member is findable."""
+    script = PATCH_ROOT / "scripts" / "check_install_bundle_digests.py"
+    spec = importlib.util.spec_from_file_location("truenas_check_install_bundle_digests", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(PATCH_ROOT / "acceptance"))
+    wrong = {"supported_builds": {"27.0.0-RC.1": dict(registry()["27.0.0-RC.1"], install_bundle_sha256="0" * 64)}}
+    (tmp_path / "supported-builds.json").write_text(json.dumps(wrong), encoding="utf-8")
+    monkeypatch.setattr(module, "PATCH_ROOT", tmp_path)
+
+    assert module.main() == 1
+
+    out = capsys.readouterr().out
+    assert "FAIL 27.0.0-RC.1" in out
+    readme = (PATCH_ROOT / "v27" / "README.md").read_bytes()
+    assert f"  member {hashlib.sha256(readme).hexdigest()} v27/README.md" in out
+    assert sum(line.startswith("  member ") for line in out.splitlines()) == 20
+
+
 def test_generated_series_outline_and_legacy_hunk_bridge_are_current() -> None:
     script = PATCH_ROOT / "scripts" / "generate_series_views.py"
     result = subprocess.run(
