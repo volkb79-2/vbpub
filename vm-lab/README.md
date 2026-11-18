@@ -39,9 +39,10 @@ design are in the [design guide](docs/DESIGN-GUIDE.md).
 `pip install` puts the `vm-lab` command in the venv's `bin/`; that directory
 must be on `PATH` (the estate venv's `/opt/mdt/venv/bin` is). The dependency
 `vmscreen` (exact screen text) is a separate wheel of this repository: install
-`libraries/vmscreen` first (it has no release yet, so a plain `pip install
-vm-lab` cannot find it; use `--no-deps` for the wheel and install vmscreen from
-its checkout). The wrapper does not add vmscreen: it must be installed where
+`libraries/vmscreen` first (released as `vmscreen-v0.1.0` on GitHub Releases, not
+on a public index, so a plain `pip install vm-lab` cannot find it; install the
+vmscreen wheel first, or use `--no-deps` for the vm-lab wheel and install
+vmscreen from its checkout). The wrapper does not add vmscreen: it must be installed where
 `python3` runs, or on `PATH`.
 
 The QEMU image is built once per Docker host with `vm-lab image build` (see

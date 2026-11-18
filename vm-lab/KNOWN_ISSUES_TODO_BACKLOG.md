@@ -14,13 +14,13 @@ The mdt-cockpit image recipe can rely on the wheel carrying the build context (s
 
 ## VML-BL-03 vmscreen floor or pin
 
-`pyproject.toml` depends on `vmscreen` without a version: vmscreen has no release yet. The functional floor is the `--qemu-dump-dir` option (checked at run time, `VMSCREEN_REQUIRED_OPTION`). The dependency also has no index to resolve from; install it from `libraries/vmscreen` or use `--no-deps`.
+`pyproject.toml` depends on `vmscreen>=0.1.0`. The functional floor is the `--qemu-dump-dir` option (also checked at run time, `VMSCREEN_REQUIRED_OPTION`). The dependency has no public index to resolve from: install the vmscreen wheel from its GitHub Release (or from `libraries/vmscreen`) or use `--no-deps` for the vm-lab wheel.
 
-**Open question (review RP-02 finding 6):** what floor, and from which release? Until then the bare name has a dependency-confusion risk: an installer pointed at a public index could resolve a foreign `vmscreen`, and `pip install vm-lab` cannot resolve it from the estate's own wheels. Install vmscreen from `libraries/vmscreen` (or the estate wheel list) first, and use `--no-deps` for the vm-lab wheel, until the floor exists. It must be resolved before any vm-lab release.
+**Resolved question (review RP-02 finding 6):** the floor is 0.1.0, the first vmscreen release. The dependency-confusion risk of the bare name (an installer pointed at a public index could resolve a foreign `vmscreen`) is reduced by the floor but not removed.
 
 **Floor set (controller, 2026-11-18):** `pyproject.toml` now declares `vmscreen>=0.1.0` with its reason (the `--qemu-dump-dir` option); `vmscreen-v0.1.0` is released as a GitHub Release wheel. The dependency-confusion risk of the bare name remains in one respect: no public index carries the estate's vmscreen, so install the vmscreen wheel first (or use `--no-deps` for the vm-lab wheel) until the estate has a resolver for first-party wheels. Close this entry when vm-lab's first release notes state that install order.
 
-**Close-when:** vmscreen is released and this line carries a `>=` floor with its reason.
+**Close-when:** vm-lab's first release notes state the install order (vmscreen wheel first, or `--no-deps`). The floor itself is done.
 
 ## VML-BL-04 Start admission lock path in an installed wheel (FIXED in RP-02 fix round 1; shared-lock caveat open)
 
