@@ -6,7 +6,7 @@
 //! decodes the committed bytes with the Rust codec and asserts the values the JSON
 //! declares, and for a refusal case asserts the same refusal identity the Python side
 //! asserts. The Python reference codec (`python/reference/`) asserts the same files; that
-//! run is a manual check until the registered `conformance` lane exists (`HOB-4`).
+//! run is the registered `conformance` lane (`HOB-4`).
 //!
 //! A case with a top-level `"held": {"generation", "entries"}` key (the same entry form as
 //! `frame.dictionary`) is decoded with `decode_block_with` against that held dictionary; every

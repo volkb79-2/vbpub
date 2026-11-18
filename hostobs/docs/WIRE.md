@@ -1216,7 +1216,7 @@ zipimport}.py` with the scripted fake probe `fake_probe.py`. Decisions and ambig
   in `0..2**64-1`, every limit a `u32`), and a hello whose `max_request_bytes` cannot carry the client's own hello or
   whose `max_frame_bytes` is below 12 is `hello-mismatch`. `hostobs-mark --timeout` outside `(0, 1 year]` is a usage
   error (exit 2). Args nested deeper than the interpreter's recursion limit are a `ValueError` like any other deep args.
-- **Not covered here:** the Python conformance lane (`HOB-4`) and a run against a live probe (P5b).
+- **Not covered here:** a run against a live probe (P5b); the Python tests run in the registered `conformance` lane (`HOB-4`).
 
 **P5a — Rust `client` crate (M).** `Client::connect(path, Level, ClientInfo) -> Result<Client, ClientError>`,
 `hello() -> &HelloResult`, `request(verb, serde-free JSON text) -> Reply`, `subscribe(Selection,
