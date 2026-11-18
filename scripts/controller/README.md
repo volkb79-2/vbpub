@@ -583,6 +583,9 @@ still running or was killed.
 - The environment is passed on untouched, except the names given with
   `--unset-env NAME` (repeatable; for example `--unset-env RUN_GATE_TESTER_UNIFIED_IMAGE`
   for an old chain that began with `unset RUN_GATE_TESTER_UNIFIED_IMAGE`). The
+  A name that `controller.local.env` itself assigns is re-exported by `gate-run.sh`
+  and `remote-gate.sh` (they load that file again through `lib.sh`), so `--unset-env`
+  cannot remove it: remove the assignment from `controller.local.env` instead. The
   chain exports no image tag and no profiler socket; profiling is `gate-run.sh`'s
   default (off unless the caller sets `RUN_GATE_PROFILE`), and the repository's
   default tester image is used.
