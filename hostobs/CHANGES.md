@@ -24,6 +24,11 @@
   with `envelope.rs` and `stream_dicts.rs`).
 - **Hand mutants.** `M1d-14`'s Python patch follows the directory guards `hostobs_wire_ref.py`
   has since the P2a1 codec (two patches, one per guard): 54 stored patches, `--dry-run` 0 stale.
+- **Hand-mutant survivors closed** (`M1d-22`, `M1d-15`; the 2026-11-18 run on `0dd7230b1` killed
+  50 of 54): two store tests rescan a tier and read the eviction report from the store's ring
+  after a write-path eviction and after `Store::evict` (also kills the `Store::notes` ring
+  patch), and the quarantine look-alike test asserts the reason of a `.corrupt` directory.
+  None of the four was an equivalent mutant.
 
 ### Added (P3b: `python/hostobs_client` connection, `require_profiling`, `hostobs-mark`; the P3 part of `HOB-54` closed)
 

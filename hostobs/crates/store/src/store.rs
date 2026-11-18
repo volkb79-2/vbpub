@@ -1871,6 +1871,64 @@ mod tests {
         assert_eq!(ring.front().map(|note| note.name.as_str()), Some("n5"));
     }
 
+    /// Rescan one tier, which resets its own `scan.notes`: afterwards only the store's ring of
+    /// eviction reports can still show a report (HOB-58).
+    fn rescan_tier(store: &mut Store, name: &str) {
+        let state = store.tiers.get_mut(name).expect("tier");
+        state.tier.rescan().expect("rescan");
+    }
+
+    #[test]
+    fn a_write_path_report_stays_in_the_store_after_its_tier_rescans() {
+        // HOB-58: the tier's own `scan.notes` has the report too, and `Store::notes` shows a
+        // report once, so only a rescan, which resets `scan.notes`, tells the store's ring
+        // from the tier's copy. The write path must have copied the report into the ring.
+        let temp = TempDir::new("notes-ring-write");
+        let now = 1_000_000_000i64;
+        let name = sealed_hot_name(&temp, now);
+        let mut tight = config(&temp);
+        tight.tiers[0].cap_bytes = 1;
+        let mut store = Store::open_with_mounts(tight, Some(tmpfs_everywhere())).expect("reopen");
+        temp.remove(&format!("tiers/{name}"));
+        let written = store
+            .write_one(&Job::new(block(24), now, Vec::new()), now)
+            .expect("the append must not fail on a file that is already gone");
+        assert_eq!(written.outcome.evicted.notes.len(), 1);
+        rescan_tier(&mut store, HOT);
+        assert!(store.tier(HOT).expect("hot").scan().notes.is_empty());
+        let notes = store.notes();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].name, name);
+        assert_eq!(
+            notes[0].reason,
+            "segment already gone; dropped from the ring"
+        );
+    }
+
+    #[test]
+    fn an_evict_report_stays_in_the_store_after_its_tier_rescans() {
+        // The same for `Store::evict`: a pass that removed nothing but reported a vanished
+        // file is not in the returned map, so the ring is the only place it survives a rescan.
+        let temp = TempDir::new("notes-ring-evict");
+        let now = 1_000_000_000i64;
+        let name = sealed_hot_name(&temp, now);
+        let mut tight = config(&temp);
+        tight.tiers[0].cap_bytes = 1;
+        let mut store = Store::open_with_mounts(tight, Some(tmpfs_everywhere())).expect("reopen");
+        temp.remove(&format!("tiers/{name}"));
+        let done = store.evict(now).expect("a vanished head must not fail");
+        assert!(done.is_empty(), "nothing was removed");
+        rescan_tier(&mut store, HOT);
+        assert!(store.tier(HOT).expect("hot").scan().notes.is_empty());
+        let notes = store.notes();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].name, name);
+        assert_eq!(
+            notes[0].reason,
+            "segment already gone; dropped from the ring"
+        );
+    }
+
     fn open_store(temp: &TempDir) -> Store {
         Store::open_with_mounts(config(temp), Some(tmpfs_everywhere())).expect("open")
     }
