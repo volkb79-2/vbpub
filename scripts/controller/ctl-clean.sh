@@ -261,7 +261,14 @@ scan_processes() {
   local base=$1 pid link target rest name rc=0
   local -a links=()
   shopt -s nullglob
+  FOREIGN_PROCS=0
   for pid in /proc/[0-9]*; do
+    # A process of another user cannot be inspected from here (EACCES is not a failure of the scan): count it; the age
+    # rule (budget + 1 h) is what covers it, exactly as it covers processes in other PID namespaces.
+    if ((EUID != 0)) && [[ $(stat -c %u -- "$pid" 2>/dev/null) != "$EUID" ]]; then
+      [[ -e $pid ]] && FOREIGN_PROCS=$((FOREIGN_PROCS + 1))
+      continue
+    fi
     for link in "$pid/cwd" "$pid/root"; do
       [[ -e $link || -L $link ]] || continue
       if ! target=$(readlink -- "$link" 2>/dev/null); then
@@ -367,6 +374,7 @@ if ((APPLY == 0)); then
   if ((${#CANDIDATE[@]} > 0)); then
     scan_processes "$RG" ||
       inspect_fail 'cannot inspect live process references under .run-gate'
+    ((FOREIGN_PROCS == 0)) || printf 'ctl-clean: note: %s process(es) of other users are not inspectable; covered by the age rule only\n' "$FOREIGN_PROCS" >&2
   fi
   for name in "${!CANDIDATE[@]}"; do
     if [[ -z ${ACTIVE[$name]+x} && -z ${MOUNTED[$name]+x} && -z ${PROC_ACTIVE[$name]+x} ]]; then
