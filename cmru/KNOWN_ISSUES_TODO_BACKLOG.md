@@ -14,7 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-186 | OPEN (migrate the remaining `subprocess.run` sites to `run_process`; 59 occurrences in 16 non-template modules after P6a; candidate effect not measured) | — |
+| KI-186 | OPEN (migrate the remaining `subprocess.run` sites to `run_process`; 40 occurrences in 12 non-template modules after P6b; candidate effect not measured) | — |
 | KI-185 | OPEN (adopt the [cli-extended line-stream renderer proposal](../libraries/cli-extended/docs/DESIGN-LINE-STREAM-RENDERER.md) through CLI-EXT-35–CLI-EXT-40) | — |
 | KI-184 | FIXED 2026-11-18 (every line in one multi-line write is processed at a severity boundary) | `54b9d3b75` |
 | KI-183 | OPEN (the wheel-builder and probe rows and the cmru gate rows of the release preflight run only for a release that includes cmru) | — |
@@ -3958,28 +3958,26 @@ incrementally with no independent CMRU severity parser or ANSI renderer left.
 
 **Status:** OPEN (filed 2026-11-18); severity: low (scattered subprocess keyword plumbing creates low-value mutation candidates).
 
-**Remaining sites.** `grep -c 'subprocess.run'` after P6a, excluding templates and the `process_run.py` wrapper:
+**Remaining sites.** `grep -c 'subprocess.run'` after P6b, excluding templates and the `process_run.py` wrapper:
 
 | Module | Count |
 | --- | ---: |
 | `bundle.py` | 2 |
-| `changelog.py` | 3 |
 | `cli.py` | 8 |
-| `config.py` | 2 |
+| `config.py` | 1 |
 | `delegated.py` | 1 |
 | `gate_snapshot.py` | 3 |
 | `git_auth.py` | 1 |
 | `handlers.py` | 6 |
-| `release_notes.py` | 2 |
 | `release_preconditions.py` | 3 |
 | `runner.py` | 3 |
 | `scaffold.py` | 1 |
 | `tester_gate.py` | 7 |
 | `transaction.py` | 4 |
-| `version.py` | 8 |
-| `versions.py` | 5 |
 
 **Candidate effect.** Not measured from existing campaign evidence.
+
+**P6b slice (2026-11-19).** Migrated 19 of the 20 sites in `version.py` (8), `versions.py` (5), `changelog.py` (3), `release_notes.py` (2), and `config.py` (1). The remaining `config.py` GitHub token lookup passes `stdin=subprocess.DEVNULL`; `run_process` does not accept `stdin`, and this slice does not widen the wrapper.
 
 **Wanted.** Migrate the remaining production `subprocess.run` sites to the shared `run_process` wrapper without changing command behavior.
 
