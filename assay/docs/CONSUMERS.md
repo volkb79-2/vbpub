@@ -2040,30 +2040,42 @@ judge in both the imported and replay shapes.
 
 ### Carry forward sub-file matches (B561/WP3a)
 
-Use `--carry-forward` when a same-judge store has a record under a different
-candidate id but the function locus still matches:
+Use `--carry-forward` to search earlier-judge stores after the judged tree or
+another part of the judge changes. The judge hashes the whole judged tree, so
+cross-judge records are the normal input to this feature:
 
 ```sh
 assay run <lane> --resume --state-dir <current-store> \
   --carry-forward <checkout>/.assay/prior-state
 ```
 
-The source directory must be inside the checkout and may be repeated. This
-phase accepts only records whose raw `judge_sha256` equals the current judge.
-Lookup order is exact candidate id, unique A' function locus, then B line
-window for kills only. Same-judge exact-id kills keep today's carry-over
-behavior. Survivors are imported pessimistically as `survived` with schema-2
-`carry_over` provenance (`reason: "carry-forward"`, `locus_match` set to
-`exact-id` or `locus`); the R2 claim therefore remains FAIL. A
-locus/window KILL is not imported: the candidate remains pending and runs in
-full. Ambiguous locus keys and non-final buckets are ignored. Records of a
-different judge are ignored at every lookup level.
+The source directory must be inside the checkout and may be repeated. Records
+are checked against the current project path and operator family and their
+candidate identity and locus metadata are validated before use. Lookup order is
+exact candidate id, unique A' function locus, then B line window for kills
+only. Same-effective-judge exact-id records remain the responsibility of
+`--resume` or `--merge-state` and are never copied a second time.
+
+A prior survivor matched by exact id or A' is imported pessimistically as
+`survived` with schema-2 `carry_over` provenance (`reason: "carry-forward"`,
+`from_judge_sha256` from the source record, `into_judge_sha256` from the current
+run, and `locus_match` set to `exact-id` or `locus`); the R2 claim therefore
+remains FAIL. A prior KILL matched by exact id, A' or B is not imported: the
+candidate remains pending and runs in full. If both a prior survivor and KILL
+claim a candidate, the KILL queues the full run. Ambiguous locus keys, invalid
+or stale-locus records, and records from another project path or operator are
+ignored. Invalid records are counted in `invalid_records`. Known nonterminal
+buckets (`hung` for a timeout, `budget_exceeded`, `crashed`, and other known
+buckets) are ignored and run in full. A literal unknown bucket such as
+`timeout` is invalid under the current bucket set, so it is skipped, counted,
+and run in full.
 
 The run emits one `carry_forward` event before candidate dispatch. It reports
 `exact_id`, `locus` and `window` match counts, `survivors_carried`,
-`kills_requeued`, `ambiguous_loci_ignored`, `unmatched`, the source list and
-`reason: "carry-forward"`. The exact-id `carry_over` event and behavior are
-unchanged.
+`kills_requeued`, `ambiguous_loci_ignored`, `unmatched`, `from_judges` (the
+number of distinct prior source judges), `same_judge_resume`, `invalid_records`,
+the source list and `reason: "carry-forward"`. The exact-id `carry_over` event
+and behavior are unchanged.
 
 `assay plan <lane> --list-pending --state-dir <store> --judge <sha> \
   --carry-forward <checkout>/.assay/prior-state` appends
@@ -4749,7 +4761,7 @@ never says `coverage_parsed`.
 | `test` | one BASELINE test's own outcome, forwarded verbatim, right after `plan` and before any `candidate` line (B091 A4) — **never emitted for a candidate**, and never emitted at all unless liveness is active for this lane | `phase: "baseline"`, `nodeid`, `outcome`, `duration_s`, `setup_s`, `teardown_s` (the test's own setup and teardown durations; `None` when the test reported none) |
 | `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total`, `judge_sha256` (the digest of the judge that runs the sweep; additive, B108) |
 | `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5 — records dropped by `--rejudge`/`--rejudge-outcome` so they re-execute; `0` on every run that passed neither flag) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`) |
-| `carry_forward` | all same-judge carry-forward sources were checked, once before candidate dispatch | `exact_id`, `locus`, `window`, `survivors_carried`, `kills_requeued`, `ambiguous_loci_ignored`, `unmatched`, `sources`, `reason` |
+| `carry_forward` | all earlier-judge carry-forward sources were checked, once before candidate dispatch | `exact_id`, `locus`, `window`, `survivors_carried`, `kills_requeued`, `ambiguous_loci_ignored`, `unmatched`, `from_judges`, `same_judge_resume`, `invalid_records`, `sources`, `reason` |
 | `baseline` | the sweep's baseline record | `candidate_total` |
 | `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (including `hung`, B091/RW-33 — see below), `elapsed_seconds`, and `tests_completed` (B091 A4/B097 — owner-process `test` count; `None` when liveness never ran, `0` when it ran and saw no owner event). B561 adds optional `locus` and `window_key`, both absent for the exact-id fallback. `phase_seconds` (`materialize`/`command`/`integrity`/`teardown`) and `startup_seconds` (`to_session_start`/`to_first_test`) are Assay's own clock. Assay 12 (B206) removed the sampled `cpu_seconds`, `peak_rss_bytes`, `write_bytes`, `judge_rss_bytes` and the `resources` object: every resource number now comes from the cgprofile observer as `profile` (a `resource-profile/1` object: `status` `MEASURED`/`PARTIAL`/`NO_MEASUREMENT`, one `reason` when there is no measurement, `wall_seconds` from Assay's clock, `metrics`, `missing`, `observer`; see [the v17-to-v18 migration notes](#migration-notes-v17-to-v18)). `worker_count` is the workers of the invocation that ran the candidate (B203), and a `killed` candidate carries `first_failing_test` (B205; null when unknown). Profiles are diagnostic and never classify a candidate; they are also stored in the candidate state record and as one line in `profile-<lane>.jsonl` beside the progress file. A witness replay that did not kill counts only in `elapsed_seconds`. Liveness lanes also write a `<events>.resources.json` sidecar next to each candidate's events file (`format`, `spawned_at`) |
 | `end` | the mutation sweep ended, on every path out | `buckets` (per-bucket counts, now including `hung`), `reason`, `budget_exceeded_dispatched`, `budget_exceeded_unstarted` (B524 — see below; both additive, and both `0` on the three early-return `reason`s, where nothing was attempted) |

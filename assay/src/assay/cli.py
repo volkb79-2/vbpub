@@ -421,9 +421,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="DIR",
         help=(
-            "(B561/WP3a) with --resume: find same-judge records by exact id, "
+            "(B561/WP3a) with --resume: find earlier-judge records by exact id, "
             "function locus, then kill-only line window. Survivors are carried "
-            "pessimistically; locus/window kills run in full. DIR must be "
+            "pessimistically; kills run in full. Same-judge exact-id records "
+            "are left to resume/merge-state. DIR must be "
             "inside the checkout. Repeatable; cannot be combined with "
             "--carry-over, --carry-over-reason, --shard, "
             "--merge-shard-store, --reuse-from or --candidates-file."
@@ -550,7 +551,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "(B561/WP3a) with --list-pending and --judge: append "
             "carry_forward=<exact-id|locus|window|none> to each pending ID "
-            "and report match counts. DIR must be inside the checkout; repeatable."
+            "for eligible earlier-judge records and report match counts. DIR "
+            "must be inside the checkout; repeatable."
         ),
     )
     plan.add_argument(
