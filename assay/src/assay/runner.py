@@ -228,9 +228,12 @@ __all__ = [
 ]
 
 
-#: The phase of the higher-rigor lane block currently executing. A ContextVar
-#: keeps this local to the lane's synchronous call stack (including the shared
+#: The last higher-rigor lane stage entered, best effort. A ContextVar keeps
+#: this local to the lane's synchronous call stack (including the shared
 #: `_execute_snapshot_unit` engine) without widening that engine's API.
+#: Cleanup during exception unwinding can report the stage that raised first.
+#: R2 candidate and R3 canary snapshot materialization report the enclosing
+#: `lane command` stage.
 _LANE_PHASE: ContextVar[str] = ContextVar(
     "assay_lane_phase", default="seed/snapshot"
 )
@@ -7500,6 +7503,7 @@ def _run_higher_rigor_lane(
                 timeout=deadline.remaining(),
                 workspace=workspace_factory,
             ) as prepared:
+                _mark_lane_phase("baseline setup")
                 mutation_config = (
                     lane.judge.mutation
                     if lane.judge is not None

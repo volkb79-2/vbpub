@@ -332,6 +332,12 @@ def _bounded_os_error_fallback(exc: OSError, *, phase: str) -> str:
 def describe_os_error(exc: OSError, *, phase: str) -> str:
     """Render a non-git ``OSError`` with the facts needed to diagnose it.
 
+    ``phase`` names the last higher-rigor lane stage entered, best effort; it
+    does not always attribute the failing operation. Cleanup during exception
+    unwinding can report the stage that raised first. R2 candidate and R3
+    canary snapshot materialization report the enclosing ``lane command``
+    stage.
+
     ``str(OSError)`` often ends at an integer file descriptor for failures
     raised by fd-based calls such as ``os.chmod``. An integer filename is
     resolved best-effort through ``/proc/self/fd`` at REPORT time; this

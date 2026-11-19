@@ -265,6 +265,31 @@ def test_workspace_oserror_names_its_phase(git_repo: GitRepo, monkeypatch):
     assert "workspace" in detail
 
 
+def test_liveness_tempdir_oserror_names_baseline_setup(
+    git_repo: GitRepo, monkeypatch
+):
+    _head, lane = _seed_r1_lane(git_repo)
+    cause = PermissionError(
+        errno.EACCES,
+        os.strerror(errno.EACCES),
+        git_repo.path / "assay-liveness",
+    )
+    real_temporary_directory = runner.tempfile.TemporaryDirectory
+
+    def fail_liveness_tempdir(*args, **kwargs):
+        if kwargs.get("prefix") == "assay-liveness-":
+            raise cause
+        return real_temporary_directory(*args, **kwargs)
+
+    monkeypatch.setattr(runner.tempfile, "TemporaryDirectory", fail_liveness_tempdir)
+    verdict = _run_lane(git_repo, lane)
+
+    detail = _failing_detail(verdict)
+    assert "phase 'baseline setup'" in detail
+    assert "[Errno 13 EACCES]" in detail
+    assert "assay-liveness" in detail
+
+
 def test_lane_command_oserror_names_its_phase(git_repo: GitRepo, monkeypatch):
     _head, lane = _seed_r1_lane(git_repo)
     cause = FileNotFoundError(
