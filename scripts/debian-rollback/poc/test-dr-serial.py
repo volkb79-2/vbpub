@@ -9,6 +9,7 @@ import contextlib
 import io
 import re
 import socket
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -1058,6 +1059,17 @@ def main() -> int:
     )
     if kernel_raised is not None or kernel_fails:
         failures.append(f"kernel-upgrade config-only systemd-boot: fails={kernel_fails!r} raised={kernel_raised!r}")
+
+    for index, command in enumerate(kernel_guest.commands, start=1):
+        if command.rstrip().endswith(";"):
+            failures.append(f"kernel-upgrade command {index} ends in a semicolon: {command[-160:]!r}")
+        wrapped = f"{command}; echo __DR_END_$?__\n"
+        syntax = subprocess.run(["bash", "-n"], input=wrapped, text=True, capture_output=True, check=False)
+        if syntax.returncode != 0:
+            failures.append(
+                f"kernel-upgrade command {index} is not bash -n clean after marker wrapping: "
+                f"{syntax.stderr.strip()!r}; command tail={command[-160:]!r}"
+            )
 
     # reboot proof: the boot id must change, and the prompt must come from the NEW boot
     def reboot_guest(first_id, second_id):

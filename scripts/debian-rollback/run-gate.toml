@@ -1,0 +1,13 @@
+schema_version = 1
+
+[lanes.offline]
+kind = "command"
+environment = "tester-unified"
+network = "none"
+argv = [
+    "bash", "-c",
+    "set -euo pipefail; cd {worktree}/scripts/debian-rollback; shellcheck poc/dr-state poc/*.sh iso/*.sh; bash -n poc/dr-state; for shell_file in poc/*.sh iso/*.sh; do bash -n \"$shell_file\"; done; git diff --check; for test_file in poc/test-*.sh iso/test-*.sh; do bash \"$test_file\"; done; exec /opt/tester-venv/bin/python -I poc/test-dr-serial.py",
+]
+clean_tree = false
+budget = "10m"
+description = "Run the Debian rollback offline shell and serial-scenario suites in tester-unified"

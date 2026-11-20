@@ -355,6 +355,24 @@ loader_default_raw() {
   awk '{sub(/\r$/, ""); if ($1 == "default") {print $2; exit}}' "$SDBOOT_LOADER_CONF"
 }
 
+sdboot_loader_default_values() { # validate every default/timeout directive and print every default value
+  [ -e "$SDBOOT_LOADER_CONF" ] || return 0
+  [ -r "$SDBOOT_LOADER_CONF" ] || return 1
+  awk '
+    { sub(/\r$/, "") }
+    $1 == "default" {
+      if (NF != 2 || $2 !~ /^os-[A-Za-z0-9][A-Za-z0-9._-]*(\.conf)?$/) bad = 1
+      else print $2
+      next
+    }
+    $1 == "timeout" {
+      if (NF != 2 || $2 !~ /^[0-9]+$/) bad = 1
+      next
+    }
+    END { if (bad) exit 2 }
+  ' "$SDBOOT_LOADER_CONF"
+}
+
 loader_default_id() {
   local id bare
   id=$(loader_default_raw)
@@ -932,14 +950,19 @@ snapshot_reason_for_name() { # REASON -> ASCII/fat-safe component; every invalid
   printf '%s\n' "$reason"
 }
 
-snapshot_name() { # TIMESTAMP PID REASON -> canonical @os-pre-* state name
-  local timestamp=${1-} pid=${2-} reason prefix max_reason name
+snapshot_name() { # TIMESTAMP PID REASON [BACKEND] -> @os-pre-* state name
+  local timestamp=${1-} pid=${2-} reason=${3-} backend=${4:-systemd-boot} prefix max_reason name
   [[ "$timestamp" =~ ^[0-9]{14}$ ]] || return 1
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  if [ "$backend" = grub ]; then
+    printf '@os-pre-%s-%s-%s\n' "$timestamp" "$pid" "$reason"
+    return 0
+  fi
+  [ "$backend" = systemd-boot ] || return 1
   prefix="os-pre-$timestamp-$pid-"
   max_reason=$((240 - ${#prefix}))
   [ "$max_reason" -ge 0 ] || return 1
-  reason=$(snapshot_reason_for_name "${3-}")
+  reason=$(snapshot_reason_for_name "$reason")
   reason=${reason:0:max_reason}
   name="@$prefix$reason"
   entry_id_for_state "$name" >/dev/null || return 1
@@ -978,8 +1001,9 @@ cmd_snapshot() {
     fi
   fi
   timestamp=$(date -u +%Y%m%d%H%M%S)
-  # The pid keeps two runs in one second apart. Sanitize the reason before it becomes an immutable state name.
-  name=$(snapshot_name "$timestamp" "$$" "$reason") || die "cannot construct a snapshot state name"
+  # The pid keeps two runs in one second apart. systemd-boot needs a reversible safe entry id; GRUB keeps its
+  # historical reason bytes unchanged.
+  name=$(snapshot_name "$timestamp" "$$" "$reason" "$backend") || die "cannot construct a snapshot state name"
   btrfs subvolume snapshot "$TOP/$cur" "$TOP/$name" >/dev/null
   cmd_gen_menu
   echo "dr-state: wrote $name (copy of $cur)"
@@ -1046,7 +1070,7 @@ cmd_prune() {
   ensure_top
   ensure_esp
   [ "${DR_STATE:-}" != none ] || die "prune: refusing with DR_STATE=none (the running state would not be protected)"
-  local backend cur def next s doomed rc=0 raw protected
+  local backend cur def next s doomed rc=0 raw protected defaults selector
   cur=$(current_state)
   backend=$(bootloader) || die "cannot determine the bootloader backend"
   case "$backend" in
@@ -1060,10 +1084,17 @@ cmd_prune() {
         cleanup_sdboot_scratch "$SDBOOT_KERNEL_DIR" "$SDBOOT_ENTRY_DIR" "$SDBOOT_LOADER_CONF" "$SDBOOT_MARKER"
       fi
       def=""; next=""
-      raw=$(loader_default_raw) || die "cannot read the systemd-boot default"
-      protected=$(sdboot_prune_selector_states "$raw" default) \
-        || die "loader.conf has an unknown default entry id: $raw"
-      def=$(printf '%s' "$protected" | tr '\n' ',')
+      defaults=$(sdboot_loader_default_values) \
+        || die "loader.conf has a malformed default or timeout directive; refusing prune"
+      while IFS= read -r selector; do
+        [ -n "$selector" ] || continue
+        protected=$(sdboot_prune_selector_states "$selector" default) \
+          || die "loader.conf has an unknown default entry id: $selector"
+        while IFS= read -r s; do
+          [ -n "$s" ] || continue
+          def="${def:+$def,}$s"
+        done <<<"$protected"
+      done <<<"$defaults"
       raw=$(sdboot_oneshot_raw) || die "cannot read the systemd-boot one-shot entry"
       protected=$(sdboot_prune_selector_states "$raw" one-shot) \
         || die "LoaderEntryOneShot has an unknown entry id: $raw"
@@ -1108,8 +1139,8 @@ if [ "${1:-}" = _window-blocks ]; then   # test hook: dr-state _window-blocks NA
   window_blocks "${2:?name}" "${3:?interval}" "${4:?now}"; exit $?
 fi
 
-if [ "${1:-}" = _snapshot-name ]; then   # test hook: dr-state _snapshot-name TIMESTAMP PID REASON
-  snapshot_name "${2:?timestamp}" "${3:?pid}" "${4-}"; exit $?
+if [ "${1:-}" = _snapshot-name ]; then   # test hook: dr-state _snapshot-name TIMESTAMP PID REASON [BACKEND]
+  snapshot_name "${2:?timestamp}" "${3:?pid}" "${4-}" "${5:-systemd-boot}"; exit $?
 fi
 
 if [ "${1:-}" = _prune-select ]; then   # test hook: dr-state _prune-select KEEP PROTECTED_CSV NAME...

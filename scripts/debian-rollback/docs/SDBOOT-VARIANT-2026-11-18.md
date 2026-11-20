@@ -1,10 +1,9 @@
 # systemd-boot variant: offline implementation (2026-11-18)
 
 Status: **offline tooling updated from real-guest findings; broader guest behaviour remains unverified.** This note
-records the systemd-boot PoC as built. Offline implementation and test work was constrained to the worktree, `/tmp`,
-and offline checks: no VM, Docker container, SSH connection, network access, host contact, or signal-sending operation
-was used by the offline tooling job. The real-guest observations quoted below were supplied as evidence from the
-separate guest workstream.
+records the systemd-boot PoC as built. The initial offline implementation job stayed in the worktree and `/tmp`; the
+offline regression suite is now run by the `offline` lane in `tester-unified`. Real-guest observations below are
+separate guest-workstream evidence.
 
 > **Guest verification rule:** Loader and firmware contracts (entry ids, one-shot variables, ESP layout, boot order)
 > are verified only by guest scenarios, never by offline tests or review rounds. The guest `sd-g3`/diagnostic runs
@@ -79,12 +78,13 @@ The BLS entry id is the file name without `.conf`. The implementation does not a
 Accepted state names are `@os-` followed by an alphanumeric first character and then only ASCII alphanumerics,
 underscore, period, and hyphen. Entry ids are capped at 240 bytes (240 is accepted and writes its entry, 241 is refused before any kernel is copied; entry temp files use a short fixed name, so the id length does not matter for them). `latest_kernel` only returns a version whose `vmlinuz` AND initrd are both non-empty, so a newer incomplete pair is skipped for the older complete one. Names with an unsafe character, an embedded `@`,
 `..`, or a trailing period are rejected before any menu file or copied kernel is changed. This is conservative and
-reversible; whether systemd-boot itself accepts `@` remains unverified because no guest or bootloader binary was run.
+reversible. The implementation strips `@` before writing BLS entry names, so the guest loader sees only the
+reversible `os-...conf` ids.
 
-State names ending in `.conf` are invalid under fix 8a: snapshot creation sanitizes that suffix and `gen-menu` skips
-such existing state names when building the menu. This avoids ambiguity between an internal state such as
-`@os-0001.conf` and the entry file name `os-0001.conf`; the correctly namespaced entry would be `os-0001.conf.conf`.
-The fix 8a code change is owned by another job; this documentation change neither implements nor verifies it.
+State names ending in `.conf` are invalid on the systemd-boot backend: snapshot creation sanitizes that suffix and
+`gen-menu` skips such existing state names when building the menu. This avoids ambiguity between an internal state
+such as `@os-0001.conf` and the entry file name `os-0001.conf`; the correctly namespaced entry would be
+`os-0001.conf.conf`. GRUB keeps accepting its historical `.conf` state names and preserves its snapshot reasons.
 
 `/loader/entries` is on case-insensitive vfat, so all desired entry ids are additionally required to be
 case-insensitively unique. For example, `@os-lower` and `@os-LOWER` map to distinct strings in software but the same
@@ -141,7 +141,13 @@ Real-guest provenance:
 - `sd-g3`: `s2-s3` failed the `boot-once` and `set-default` boot outcomes because suffix-less selectors were ignored.
 - The diagnostic guest proved that a suffixed `bootctl set-oneshot` boots the intended snapshot and that systemd-boot
   clears the one-shot variable when consumed.
-- `kernel-upgrade` is **NOT RUN**: its first attempt timed out in `dist-upgrade` at 55 minutes; the rerun is pending.
+- `sd-g5`, built from the corrected `b94af9533` source, passed `boot-check` (12/0) and `sdboot-esp` (16/0) using
+  the older checks; the stricter `.conf` assertions were not run there.
+- `sd-g7`, using a disk built from `b94af9533`, passed `s2-s3` (18/0) and `sdboot-oneshot-consumed` (8/0). The
+  rollback, `/etc` restoration, persistent service data, default selection, and one-shot consumption all worked.
+- `kernel-upgrade` remains **UNPROVEN**. Runs `sd-g4` and `sd-g8` sent a command ending in `; ;` before the serial
+  completion marker; bash reported a syntax error and the scenario waited for its marker until the 5400-second
+  timeout. This is a scenario-command construction defect; it did not exercise or disprove the loader path.
 
 ## Default and one-shot
 
@@ -215,7 +221,8 @@ revision after only renaming the function; its GRUB text and operations are byte
 The failing-first suite for the new pure decisions is `poc/test-dr-state-sdboot.sh`. It covers the BLS entry text,
 content-addressed kernel ids, entry-id mapping and rejection, backend selection, byte accounting decisions,
 `loader.conf` rewriting, empty backend sources, multi-path reference extraction, FAT case collisions, interrupted-copy
-cleanup, parent-directory allocation, CRLF references, and orphan-directory selection. It currently passes 156 cases.
+cleanup, parent-directory allocation, CRLF references, and orphan-directory selection. The baseline at `316d78451`
+passed 174 cases; the r9 regression cases bring the current worktree to 179, passing through `run-gate offline`.
 
 The suite also runs workflow fixtures through the real `gen-menu`, `set-default`, and `prune` paths against disposable
 ESP trees. `DR_STATE_TEST_MODE=1` with `DR_STATE_TEST_ROOT` selects a temporary root and optional deterministic ESP
@@ -253,14 +260,16 @@ scripted regression makes the running state non-default and confirms the scenari
 one-shot. `s2-s3` records `bootctl list` selection/default lines and the `LoaderEntrySelected` efivar as informational
 transcript evidence without making them pass conditions; the set-default reboot remains its final pass condition. A
 full config-only systemd-boot kernel flow proves that the baseline hashes the systemd-boot binary independently and
-only the backend source files that exist. Canonical BLS checks require the exact dr-state marker and title lines, a
-valid entry id, reversible `@os-X` to `os-X` mapping, and a title kernel matching the kernel-id directory. Fabricated,
-swapped-id, wrong-title and wrong-marker entries are rejected in both `sdboot-esp` and the systemd-boot `s2-s3`
-state-set check.
+only the backend source files that exist. The fake kernel-upgrade guest runs every generated command through
+`bash -n` after the serial marker is appended and rejects a command that already ends in `;`. Canonical BLS checks
+require the exact dr-state marker and title lines, a valid entry id, reversible `@os-X` to `os-X` mapping, and a
+title kernel matching the kernel-id directory. Fabricated, swapped-id, wrong-title and wrong-marker entries are
+rejected in both `sdboot-esp` and the systemd-boot `s2-s3` state-set check.
 
 The pre-existing offline suites remain green: `test-dr-state-window.sh`, `test-dr-state-prune.sh`,
 `iso/test-dr-plan.sh`, `iso/test-dr-autoinstall-guard.sh`, `poc/test-dr-pick-disk.sh`, and `poc/test-dr-qemu.sh`.
-All touched shell files pass `shellcheck`.
+The `offline` lane runs those suites with the systemd-boot coverage in `tester-unified`, after `shellcheck`, `bash -n`,
+and `git diff --check` pass.
 
 ## How to run the guests
 
@@ -290,11 +299,11 @@ The supported run matrix for the systemd-boot variant is:
 
 | Scenario | Guest run | What it proves | Status |
 |---|---|---|---|
-| `boot-check` | May share a fresh overlay with `sdboot-esp`; must be first boot after install. | The installed state is the running root, systemd and networking work, D18 paths are split correctly, and the systemd-boot ESP contains `loader/loader.conf`, at least one BLS entry, `EFI/systemd/systemd-bootx64.efi`, and non-empty kernel copies. | **sd-g2 PASS with OLD checks**. Current strict suite has not been rerun. |
-| `sdboot-esp` | May share a fresh overlay with `boot-check`. | Every BLS entry is canonical: exact dr-state marker/title, valid `@os-X` to `os-X` entry mapping, and exactly `/EFI/dr/kernels/<valid-id>/vmlinuz` with the matching `initrd.img`; the exact non-empty files reported by the guest equal that entry's expected set. `loader.conf` has exactly one suffix-form `<entry-id>.conf` default that resolves to an existing entry file; its state matches `dr-state list`; no generated scratch remains; and ESP free space is reported. | **sd-g2 PASS with OLD checks**. Current `.conf` assertions are **NOT RUN**. |
-| `s2-s3` | Fresh overlay; do not reuse after another snapshot-producing scenario. | Apt takes one snapshot; canonical marked systemd-boot entry states, not merely `.conf` count, equal `dr-state list`; the suffixed default exists; boot-once boots the earlier package state with `/etc` rolled back while service data survives; `bootctl list` and `LoaderEntrySelected` are recorded as evidence; the one-shot is consumed; and set-default changes the next plain boot. | **sd-g3 FAILED** the boot-once and set-default outcomes because of the suffix-less entry-id finding. Corrected flow is **NOT RUN**. |
-| `sdboot-oneshot-consumed` | Fresh overlay; requires running state == default and another state available. | `dr-state boot-once` selects a state different from both running and default; that reboot reaches its userspace; the exact `LoaderEntryOneShot` efivar is absent there; omission or a failed probe fails the scenario. A non-default running state fails the precondition before any one-shot is attempted. | **NOT RUN** as a scenario. The diagnostic guest separately proved suffixed one-shot selection and clearing. |
-| `kernel-upgrade` | Fresh overlay; do not reuse after another snapshot-producing scenario. | A kernel upgrade snapshots the old state, gives the running state the new kernel and the snapshot the old kernel in BLS entries, boots both kernels, loads the old state's modules, and consumes the systemd-boot one-shot. | **NOT RUN**: the attempt timed out in `dist-upgrade` at 55 minutes; rerun pending. |
+| `boot-check` | May share a fresh overlay with `sdboot-esp`; must be first boot after install. | The installed state is the running root, systemd and networking work, D18 paths are split correctly, and the systemd-boot ESP contains `loader/loader.conf`, at least one BLS entry, `EFI/systemd/systemd-bootx64.efi`, and non-empty kernel copies. | **sd-g5 PASS (12/0)** on a disk built from `b94af9533`, using older checks. |
+| `sdboot-esp` | May share a fresh overlay with `boot-check`. | Every BLS entry is canonical: exact dr-state marker/title, valid `@os-X` to `os-X` entry mapping, and exactly `/EFI/dr/kernels/<valid-id>/vmlinuz` with the matching `initrd.img`; the exact non-empty files reported by the guest equal that entry's expected set. `loader.conf` has exactly one suffix-form `<entry-id>.conf` default that resolves to an existing entry file; its state matches `dr-state list`; no generated scratch remains; and ESP free space is reported. | **sd-g5 PASS (16/0)** on a disk built from `b94af9533`, using older checks; strict `.conf` assertions were not run. |
+| `s2-s3` | Fresh overlay; do not reuse after another snapshot-producing scenario. | Apt takes one snapshot; canonical marked systemd-boot entry states, not merely `.conf` count, equal `dr-state list`; the suffixed default exists; boot-once boots the earlier package state with `/etc` rolled back while service data survives; `bootctl list` and `LoaderEntrySelected` are recorded as evidence; the one-shot is consumed; and set-default changes the next plain boot. | **sd-g7 PASS (18/0)** on a disk built from `b94af9533`. The earlier `sd-g3` failed before the `.conf` selector fix. |
+| `sdboot-oneshot-consumed` | Fresh overlay; requires running state == default and another state available. | `dr-state boot-once` selects a state different from both running and default; that reboot reaches its userspace; the exact `LoaderEntryOneShot` efivar is absent there; omission or a failed probe fails the scenario. A non-default running state fails the precondition before any one-shot is attempted. | **sd-g7 PASS (8/0)** on a disk built from `b94af9533`. |
+| `kernel-upgrade` | Fresh overlay; do not reuse after another snapshot-producing scenario. | A kernel upgrade snapshots the old state, gives the running state the new kernel and the snapshot the old kernel in BLS entries, boots both kernels, loads the old state's modules, and consumes the systemd-boot one-shot. | **UNPROVEN**: `sd-g4` and `sd-g8` hit a tooling syntax error from a command ending in `; ;`, then waited for the missing marker until the 5400-second timeout. |
 
 For the next systemd-boot guest pass, run `boot-check`, `sdboot-esp`, `s2-s3`, `sdboot-oneshot-consumed`, and
 `kernel-upgrade` as separate fresh-overlay runs where required. Do **not** run `s5` against systemd-boot: it sends
@@ -320,16 +329,15 @@ completion tag is absent or its scan command returns nonzero. The kernel-upgrade
 
 ## Not verified
 
-Only the quoted `sd-g2` checks, the failed `sd-g3` boot outcomes, and the separate one-shot diagnostic are real-guest
-evidence. The corrected strict tooling has not been run end to end in a guest. In particular, this note does **not**
+Guest evidence so far is bound to a disk built from `b94af9533`, not the current feature head. The corrected strict
+`boot-check` and `sdboot-esp` tooling has not been run end to end in a guest. In particular, this note does **not**
 claim:
 
 - that Debian's `systemd-boot` and `systemd-boot-efi` packages install under the debootstrap flow;
 - that `bootctl install --no-variables` succeeds inside the chroot and produces an OVMF-bootable loader;
 - that systemd-boot parses the generated BLS entries, accepts the mapped ids, shows the title, or boots each state;
 - that kernels copied from btrfs execute with the expected state's modules and root subvolume;
-- that the current `boot-check`, `sdboot-esp`, `s2-s3`, or `sdboot-oneshot-consumed` scenarios pass after the `.conf`
-  fix;
+- that the final feature head's `boot-check`, `sdboot-esp`, `s2-s3`, or `sdboot-oneshot-consumed` scenarios pass;
 - that `kernel-upgrade` completes, or that prune can read a corrected pending one-shot value from efivarfs;
 - that `set-default`, snapshots from apt/kernel hooks, kernel upgrades/removals, prune, and ESP-full behaviour work
   end to end;

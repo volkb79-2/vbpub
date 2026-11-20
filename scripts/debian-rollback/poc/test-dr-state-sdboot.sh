@@ -503,6 +503,22 @@ workflow_snapshot_reason "$WORK/snapshot-reason-control" $'bad\tname' bad-name
 workflow_snapshot_reason "$WORK/snapshot-reason-empty" '' ''
 workflow_snapshot_overlong_reason "$WORK/snapshot-reason-overlong" "$_LONG_REASON" overlong
 
+# GRUB keeps its historical snapshot reason bytes; a dot accepted by GRUB must not be rewritten.
+WF_GRUB_REASON="$WORK/wf-grub-reason"
+workflow_grub_conf_state_fixture "$WF_GRUB_REASON"
+install_fake_snapshot_btrfs "$WF_GRUB_REASON"
+case_count=$((case_count + 1))
+GRUBEDITENV_LOG="$WF_GRUB_REASON/grub-editenv.log" GRUBEDITENV_STATE="$WF_GRUB_REASON/grub-editenv.state" \
+  DR_STATE=@os-0002 PATH="$WF_GRUB_REASON/btrfs-bin:$WF_GRUB_REASON/grub-bin:$PATH" \
+  workflow_run "$WF_GRUB_REASON" 999999999 4096 snapshot --reason v1.2 \
+  >"$WORK/out" 2>"$WORK/err"; rc=$?
+created=$(find "$WF_GRUB_REASON/top" -mindepth 1 -maxdepth 1 -name '@os-pre-*' -printf '%f\n' | head -n1)
+if [ "$rc" != 0 ]; then
+  bad "workflow-snapshot-grub-reason: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+elif [[ "$created" != *-v1.2 ]]; then
+  bad "workflow-snapshot-grub-reason: want the historical . in the state name, got '$created'"
+fi
+
 # The legacy-name restriction is systemd-boot-only: GRUB keeps enumerating and selecting a .conf-named state.
 WF_GRUB_CONF="$WORK/wf-grub-conf"
 workflow_grub_conf_state_fixture "$WF_GRUB_CONF"
@@ -536,6 +552,16 @@ if [ "$rc" != 0 ]; then
   bad "workflow-grub-conf-set-default: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
 elif ! grep -Fqx -- 'set saved_entry=@os-0001.conf' "$WF_GRUB_CONF/grub-editenv.log"; then
   bad "workflow-grub-conf-set-default: grub-editenv did not receive the legacy state"
+fi
+
+case_count=$((case_count + 1))
+GRUBEDITENV_LOG="$WF_GRUB_CONF/grub-editenv.log" GRUBEDITENV_STATE="$WF_GRUB_CONF/grub-editenv.state" \
+  PATH="$WF_GRUB_CONF/grub-bin:$PATH" workflow_run "$WF_GRUB_CONF" 999999999 4096 \
+  gen-menu --default @os-0001.conf >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 0 ]; then
+  bad "workflow-grub-conf-gen-menu-default: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+elif ! grep -Fqx -- 'set saved_entry=@os-0001.conf' "$WF_GRUB_CONF/grub-editenv.log"; then
+  bad "workflow-grub-conf-gen-menu-default: gen-menu did not save the legacy state"
 fi
 
 case_count=$((case_count + 1))
@@ -1123,6 +1149,56 @@ for form in suffixed suffixless; do
   else
     workflow_prune_form "$WF_PRUNE_FORM" os-pre-20261118120000-100-default \
       os-pre-20261118120000-100-next "$form"
+  fi
+done
+
+# Prune protects every valid default selector and validates every default/timeout directive before deletion.
+WF_MULTI_DEFAULT="$WORK/wf-prune-multiple-defaults"
+workflow_fixture "$WF_MULTI_DEFAULT" full
+workflow_two_states "$WF_MULTI_DEFAULT"
+workflow_state "$WF_MULTI_DEFAULT" @os-pre-20261118120000-100-default-a
+workflow_state "$WF_MULTI_DEFAULT" @os-pre-20261118120000-101-default-b
+workflow_state "$WF_MULTI_DEFAULT" @os-pre-20261118120000-102-doomed
+printf '%s\n' \
+  'default os-pre-20261118120000-100-default-a.conf' \
+  'default os-pre-20261118120000-101-default-b.conf' \
+  'timeout 5' >"$WF_MULTI_DEFAULT/esp/loader/loader.conf"
+install_fake_maintenance_btrfs "$WF_MULTI_DEFAULT"
+case_count=$((case_count + 1))
+DR_STATE=@os-0001 PATH="$WF_MULTI_DEFAULT/btrfs-bin:$PATH" \
+  workflow_run "$WF_MULTI_DEFAULT" 999999999 4096 prune --keep 0 \
+  >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 0 ]; then
+  bad "workflow-prune-multiple-defaults: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+elif [ ! -d "$WF_MULTI_DEFAULT/top/@os-pre-20261118120000-100-default-a" ] \
+  || [ ! -d "$WF_MULTI_DEFAULT/top/@os-pre-20261118120000-101-default-b" ]; then
+  bad "workflow-prune-multiple-defaults: deleted a state named by a valid default"
+elif [ -d "$WF_MULTI_DEFAULT/top/@os-pre-20261118120000-102-doomed" ]; then
+  bad "workflow-prune-multiple-defaults: did not delete the unprotected state"
+fi
+
+for malformed in second-default timeout; do
+  WF_BAD_LOADER="$WORK/wf-prune-malformed-$malformed"
+  workflow_fixture "$WF_BAD_LOADER" full
+  workflow_two_states "$WF_BAD_LOADER"
+  workflow_state "$WF_BAD_LOADER" @os-pre-20261118120000-100-protected
+  workflow_state "$WF_BAD_LOADER" @os-pre-20261118120000-101-doomed
+  if [ "$malformed" = second-default ]; then
+    printf '%s\n' 'default os-pre-20261118120000-100-protected.conf' 'default' 'timeout 5' \
+      >"$WF_BAD_LOADER/esp/loader/loader.conf"
+  else
+    printf '%s\n' 'default os-pre-20261118120000-100-protected.conf' 'timeout later' \
+      >"$WF_BAD_LOADER/esp/loader/loader.conf"
+  fi
+  install_fake_maintenance_btrfs "$WF_BAD_LOADER"
+  case_count=$((case_count + 1))
+  DR_STATE=@os-0001 PATH="$WF_BAD_LOADER/btrfs-bin:$PATH" \
+    workflow_run "$WF_BAD_LOADER" 999999999 4096 prune --keep 0 \
+    >"$WORK/out" 2>"$WORK/err"; rc=$?
+  if [ "$rc" = 0 ]; then
+    bad "workflow-prune-malformed-$malformed: malformed loader.conf was accepted"
+  elif [ ! -d "$WF_BAD_LOADER/top/@os-pre-20261118120000-101-doomed" ]; then
+    bad "workflow-prune-malformed-$malformed: deleted a state before validating loader.conf"
   fi
 done
 

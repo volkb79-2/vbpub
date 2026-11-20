@@ -1049,12 +1049,16 @@ def _kernel_flow(g, log, sources_cmd, offer_cmd, install_cmd):
         ""
         if backend == "systemd-boot"
         else "echo MENU:$(grep -o 'Debian @os-[^ ]* (kernel [^)]*)' /boot/efi/EFI/dr/grub.cfg "
-             "| tr ' ' _ | tr -d '()' | tr '\\n' ,); "
+             "| tr ' ' _ | tr -d '()' | tr '\\n' ,)"
     )
-    _, out = g.run(f"{install_cmd}; echo UPGRC:$?; "
-                   "echo ARCHKB:$(du -sk /var/cache/apt/archives | cut -f1); echo KNEW:$(readlink /vmlinuz); "
-                   "echo BOOTFILES:$(ls -1 /boot | grep -E '^(vmlinuz|initrd.img)-' | tr '\\n' ,); "
-                   f"{menu_probe}", 5400)
+    upgrade_commands = [
+        f"{install_cmd}; echo UPGRC:$?",
+        "echo ARCHKB:$(du -sk /var/cache/apt/archives | cut -f1); echo KNEW:$(readlink /vmlinuz); "
+        "echo BOOTFILES:$(ls -1 /boot | grep -E '^(vmlinuz|initrd.img)-' | tr '\\n' ,)",
+    ]
+    if menu_probe:
+        upgrade_commands.append(menu_probe)
+    _, out = g.run("; ".join(upgrade_commands), 5400)
     check(log, "dist-upgrade succeeded", tag(out, "UPGRC") == "0", f"rc={tag(out, 'UPGRC')} downloaded_kb={tag(out, 'ARCHKB')}")
     _, efi_out = g.run(efi_probe)
     if backend == "grub":
