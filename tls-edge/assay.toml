@@ -15,7 +15,7 @@ argv = [
   "--cov=src/tls_edge_cli", "--cov-branch", "--cov-report=json:coverage.json",
   "-rs",
 ]
-env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1", TLS_EDGE_REQUIRE_TOOLS = "1" }
+env = { PYTHONDONTWRITEBYTECODE = "1", TLS_EDGE_REQUIRE_TOOLS = "1" }
 env_passthrough = ["PATH"]
 budget = "20m"
 allow_argv_append = false

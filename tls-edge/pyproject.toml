@@ -15,12 +15,12 @@ interactive = ["questionary>=2.1.1"]
 # manifest where tests exercise runtime behavior; tester-unified derives only
 # from pyproject metadata and does not read requirements-*.txt files.
 test = [
-  "pytest>=8",
-  "pytest-cov>=6",
-  "tomlkit>=0.13.3",
-  "Jinja2>=3.1.6",
-  "PyYAML>=6.0",
-  "tomli_w>=1.0",
+  "pytest>=8", # test suite uses parametrization and temporary paths
+  "pytest-cov>=6", # R1 release gate emits line and branch coverage JSON
+  "tomlkit>=0.13.3", # CLI tests import the runtime TOML editor
+  "Jinja2>=3.1.6", # template rendering in the installer and compose tests
+  "PyYAML>=6.0", # rendered Compose fixture checks
+  "tomli_w>=1.0", # CIU's TOML writer is exercised in tests
 ]
 
 [project.scripts]
@@ -32,3 +32,6 @@ dependencies = {file = ["requirements-runtime.txt"]}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

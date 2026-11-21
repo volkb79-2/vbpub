@@ -291,7 +291,7 @@ def test_configure_wraps_answer_and_partial_write_errors(tmp_path: Path, monkeyp
         cli.configure(SimpleNamespace(root=root, answers=answers, dry_run=False), Runtime())
 
 
-def test_show_and_validate_valid_empty_and_invalid_instances(tmp_path: Path, monkeypatch):
+def test_show_and_validate_valid_empty_and_invalid_instances(tmp_path: Path):
     root = make_root(tmp_path / "instance")
     runtime = Runtime()
     assert cli.show(SimpleNamespace(root=root), runtime) == 0
@@ -305,22 +305,22 @@ def test_show_and_validate_valid_empty_and_invalid_instances(tmp_path: Path, mon
     assert any("Site override: present" in line for line in shown.output.lines)
     assert any("HTTP/3: enabled" in line for line in shown.output.lines)
 
-    unconfigured_root = make_root(tmp_path / "unconfigured")
-    unconfigured_override = unconfigured_root / "stack/ciu-stack/ciu.toml.j2"
-    unconfigured_override.write_text('[tls_edge]\ndomain = ""\n', encoding="utf-8")
-    real_validate_config = cli.validate_config
-    monkeypatch.setattr(cli, "validate_config", lambda *_args, **_kwargs: [])
-    unconfigured = Runtime()
-    assert cli.show(SimpleNamespace(root=unconfigured_root), unconfigured) == 0
-    assert "Inbound ports:" not in unconfigured.output.lines
-    assert any("Run `tls-edge configure`" in line for line in unconfigured.output.lines)
-    monkeypatch.setattr(cli, "validate_config", real_validate_config)
-
     override.write_text("[tls_edge]\n[tls_edge.tls]\nmode = \"wrong\"\n", encoding="utf-8")
     with pytest.raises(CliFailure, match="tls.mode"):
         cli.show(SimpleNamespace(root=root), Runtime())
     with pytest.raises(CliFailure, match="tls.mode"):
         cli.validate(SimpleNamespace(root=root), Runtime())
+
+
+def test_show_unconfigured_domain_without_inbound_ports(tmp_path: Path, monkeypatch):
+    root = make_root(tmp_path / "unconfigured")
+    override = root / "stack/ciu-stack/ciu.toml.j2"
+    override.write_text('[tls_edge]\ndomain = ""\n', encoding="utf-8")
+    monkeypatch.setattr(cli, "validate_config", lambda *_args, **_kwargs: [])
+    runtime = Runtime()
+    assert cli.show(SimpleNamespace(root=root), runtime) == 0
+    assert "Inbound ports:" not in runtime.output.lines
+    assert any("Run `tls-edge configure`" in line for line in runtime.output.lines)
 
 
 def test_cli_builder_main_and_version_failure(monkeypatch, capsys):

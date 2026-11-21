@@ -5,6 +5,7 @@
 # Floors carry a reason each (estate version policy: >= floors, one documented reason per floor).
 pytest>=8            # test runner (parametrize, tmp_path, monkeypatch)
 pytest-cov>=6        # Assay release gate's line and branch coverage artifact
-Jinja2>=3.1          # render_standalone.py and the ciu-stack templates
+tomlkit>=0.13.3      # CLI tests exercise the runtime TOML editor
+Jinja2>=3.1.6        # render_standalone.py and the ciu-stack templates
 PyYAML>=6.0          # consumer-examples / compose lint tests
 tomli_w>=1.0         # runtime TOML writer used by the bundled CIU wheel
