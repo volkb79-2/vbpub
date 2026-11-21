@@ -2556,12 +2556,13 @@ mod tests {
         rig.send(&raw_req(10, &current));
         rig.pump(usize::MAX);
         let classified = raw_frames(&rig.out);
-        let accepted = classified
+        let accepted: Vec<_> = classified
             .iter()
-            .find(|frame| frame.1 == 10 && frame.0 == FrameType::Rep.code())
-            .expect("current accepted after retry freed one request");
+            .filter(|frame| frame.1 == 10 && frame.0 == FrameType::Rep.code())
+            .collect();
+        assert_eq!(accepted.len(), 1, "one current REP after retry frees a slot");
         assert!(
-            check_rep(text(payload(&accepted.2)).as_bytes(), false)
+            check_rep(text(payload(&accepted[0].2)).as_bytes(), false)
                 .expect("current reply")
                 .ok
         );

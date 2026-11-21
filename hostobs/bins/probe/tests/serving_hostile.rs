@@ -7,7 +7,7 @@
 //! key is bounded and made of schema characters, every encoder output parses back with the
 //! protocol crate's own checkers, and the line reader never holds more than its bound.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hostobs_probe::args;
 use hostobs_probe::backend::{FixedBackend, TickData};
@@ -749,8 +749,11 @@ struct ObservedConnection {
     binary: Option<bool>,
     dicts: StreamDicts,
     blocks: BTreeMap<u32, u32>,
+    ended_corrs: BTreeSet<u32>,
     blocks_seen: usize,
     ends_seen: usize,
+    corr_reuses: usize,
+    partial_frames: usize,
 }
 
 impl ObservedConnection {
@@ -760,8 +763,11 @@ impl ObservedConnection {
             binary: None,
             dicts: StreamDicts::new(),
             blocks: BTreeMap::new(),
+            ended_corrs: BTreeSet::new(),
             blocks_seen: 0,
             ends_seen: 0,
+            corr_reuses: 0,
+            partial_frames: 0,
         }
     }
 
@@ -796,11 +802,15 @@ impl ObservedConnection {
         }
         loop {
             let Some(declared) = u32_at(&self.buffered, 0) else {
+                if !self.buffered.is_empty() {
+                    self.partial_frames = self.partial_frames.saturating_add(1);
+                }
                 return;
             };
             let declared = usize::try_from(declared).expect("frame length");
             assert!(declared >= 12, "frame has its header");
             if declared > self.buffered.len() {
+                self.partial_frames = self.partial_frames.saturating_add(1);
                 return;
             }
             let rest = self.buffered.split_off(declared);
@@ -815,6 +825,9 @@ impl ObservedConnection {
                 self.dicts
                     .accept(corr, &block)
                     .expect("every BLOCK follows the stream dictionary rules");
+                if self.ended_corrs.remove(&corr) {
+                    self.corr_reuses = self.corr_reuses.saturating_add(1);
+                }
                 let count = self.blocks.entry(corr).or_insert(0);
                 *count = count.saturating_add(1);
                 self.blocks_seen = self.blocks_seen.saturating_add(1);
@@ -823,6 +836,7 @@ impl ObservedConnection {
                 let delivered = self.blocks.remove(&corr).unwrap_or(0);
                 assert_eq!(end.blocks, delivered, "END corr {corr} counts its BLOCKs");
                 self.dicts.close(corr);
+                self.ended_corrs.insert(corr);
                 self.ends_seen = self.ends_seen.saturating_add(1);
             } else if kind == FrameType::Rep.code() {
                 check_rep(payload, false).expect("every binary REP parses");
@@ -918,6 +932,7 @@ fn server_hostile_2000_steps_with_block_verbs() {
         drain_server(&mut server, &mut model, *id, usize::MAX, now);
     }
 
+    let mut eof_actions = 0usize;
     for _step in 0..2_000 {
         let slot = rng.below(slots.len());
         if let Some(id) = slots[slot] {
@@ -981,6 +996,7 @@ fn server_hostile_2000_steps_with_block_verbs() {
                 server.poll(now);
             }
             10 => {
+                eof_actions = eof_actions.saturating_add(1);
                 server.on_eof(id, now);
             }
             _ => {
@@ -1002,8 +1018,13 @@ fn server_hostile_2000_steps_with_block_verbs() {
 
     let blocks: usize = model.values().map(|held| held.blocks_seen).sum();
     let ends: usize = model.values().map(|held| held.ends_seen).sum();
+    let partial_frames: usize = model.values().map(|held| held.partial_frames).sum();
+    let corr_reuses: usize = model.values().map(|held| held.corr_reuses).sum();
     assert!(blocks > 0);
     assert!(ends > 0);
+    assert!(partial_frames > 0, "run writes at least one partial frame");
+    assert!(eof_actions > 0, "run sends at least one EOF");
+    assert!(corr_reuses > 0, "run reuses a correlation after END");
     assert_eq!(server.conn_count(), 0);
     assert_eq!(server.uid_entries(), 0);
     assert_eq!(server.hub().global_pools(), Pools::default());
