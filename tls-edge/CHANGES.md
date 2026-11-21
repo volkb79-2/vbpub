@@ -6,6 +6,25 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [3.1.0] - 2026-11-21
+<!-- cmru: generated -->
+<!-- cmru: source-end=b5984c7f0d4e3b2ff2d16ec44e67d88d84ce02c1 -->
+
+### Added
+- feat(tls-edge): add instance configuration CLI and HTTP/3 (5794004bc)
+
+### Fixed
+- fix(tls-edge): filter fresh bundle wheels at resolution (b5984c7f0)
+- fix(tls-edge): share pytest source import config (60366f564)
+- fix(tls-edge): keep ACME data outside config mounts (2d8a0b825)
+
+### Testing
+- test(tls-edge): restore validator after show branch (c2fbf2a59)
+- test(tls-edge): cover config CLI edge cases (7e5ea473e)
+- test(tls-edge): include CLI dependencies in tester image (febc2c16b)
+- test(tls-edge): add release rigor gate for configuration CLI (ec4f857ef)
+
+
 ## [3.0.0] - 2026-11-04
 <!-- cmru: generated -->
 <!-- cmru: source-end=9278e19d2cb75ff664bae4074722548af555c74b -->
