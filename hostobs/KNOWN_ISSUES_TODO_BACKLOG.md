@@ -1154,9 +1154,9 @@ the socketpair runs) remain.
 
 **Exit criteria.** P2: the §12 `FrameReader`, `ModeDetect`, `SendHub` and `ConnTimers` APIs in Rust
 with the reader and hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row; P3: the Python
-`FrameReader` passes the same reader cases and the client cases; P5b: the 18 connection cases
-of §11.4 against a fake clock, with P5b-3 and P5b-4 still required for the remaining page and
-socketpair cases.
+`FrameReader` passes the same reader cases and the client cases; P5b: the 21 connection cases
+now listed in §11.4 against a fake clock, with P5b-3 and P5b-4 still required for the remaining
+page and socketpair cases.
 
 ## HOB-55 — A look-alike name with a huge sequence poisons the tier's water mark
 

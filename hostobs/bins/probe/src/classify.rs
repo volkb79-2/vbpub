@@ -293,8 +293,8 @@ fn call_of(
     }
 }
 
-/// Steps 10 and 11 after the verb table has accepted a served verb. Block requests are
-/// refused by the outstanding cap; JSON-shape requests remain answerable (design S5, Q6).
+/// Step 10 after the served check. Block requests are refused by the outstanding cap;
+/// JSON-shape requests remain answerable (design S5, Q6).
 fn call_after_served(
     query: &Query<'_>,
     corr: u32,
@@ -306,18 +306,6 @@ fn call_after_served(
         return Err(refuse(Code::TooManyRequests, corr));
     }
     call_of(query, corr, verb, text, facts)
-}
-
-/// Step 10 in P5b-2c: the cap is observable through `Conn::on_bytes` while the final
-/// `served` flip belongs to P5b-2d. Once 2d serves the verbs this remains the same order.
-fn outstanding_refusal(
-    query: &Query<'_>,
-    corr: u32,
-    verb: &Verb,
-    facts: &ConnFacts,
-) -> Option<Refusal> {
-    (query.mode == Mode::Binary && facts.outstanding_full && verb.shape == Shape::Block)
-        .then(|| refuse(Code::TooManyRequests, corr))
 }
 
 /// Classify one request (module doc: the precedence list).
@@ -358,9 +346,6 @@ pub fn classify_with(query: &Query<'_>, facts: &ConnFacts) -> Result<Dispatch, R
     };
     let name = query.payload.get(req.verb.clone()).unwrap_or_default();
     let verb = verb_gate(query, corr, name)?;
-    if let Some(refusal) = outstanding_refusal(query, corr, verb, facts) {
-        return Err(refusal);
-    }
     if !verb.served {
         return Err(refuse(Code::UnknownVerb, corr));
     }
@@ -905,6 +890,12 @@ mod tests {
     fn step_9_beats_step_10() {
         let text = req("events", "{\"a\":1,\"a\":2}");
         assert_plain(&binary(text.as_bytes()), Code::UnknownVerb, 5);
+        for verb in ["snapshot_at", "series_batch"] {
+            let text = req(verb, "{}");
+            let query = binary(text.as_bytes());
+            let refusal = classify_with(&query, &full_facts()).expect_err("served check wins");
+            assert_eq!((refusal.code, refusal.corr), (Code::UnknownVerb, 5));
+        }
     }
 
     // ---- step 10: the argument schemas

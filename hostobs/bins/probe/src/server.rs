@@ -2199,9 +2199,19 @@ mod tests {
         );
         d.pump(id, usize::MAX);
         let out = d.take_out(id);
-        let text = text(&out);
-        assert!(text.contains("\"corr\":2"));
-        assert!(text.contains("\"code\":\"binary-required\""));
+        let current_text = text(&out);
+        assert!(current_text.contains("\"corr\":2"));
+        assert!(current_text.contains("\"code\":\"binary-required\""));
+        let subscribe_args = subscribe_args(1, 1_000);
+        d.send(
+            id,
+            &line(3, "subscribe", subscribe_args.as_str()),
+        );
+        d.pump(id, usize::MAX);
+        let subscribe_text = text(&d.take_out(id));
+        assert!(subscribe_text.contains("\"corr\":3"));
+        assert!(subscribe_text.contains("\"code\":\"binary-required\""));
+        assert_eq!(d.server.streams().subscribers(), 0);
         d.server.finish(id);
         assert_clean(&d, "JSON block refusal");
     }
