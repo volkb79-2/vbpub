@@ -805,10 +805,10 @@ impl ObservedConnection {
             }
             let rest = self.buffered.split_off(declared);
             let frame = std::mem::replace(&mut self.buffered, rest);
-            let kind = u32_at(&frame, 4).expect("frame type");
+            let kind = frame.get(4).copied().expect("frame type");
             let corr = u32_at(&frame, 8).expect("frame corr");
             let payload = frame.get(12..).expect("frame payload");
-            if kind == u32::from(FrameType::Block.code()) {
+            if kind == FrameType::Block.code() {
                 let block = decode_block_with(&frame, self.dicts.held(corr))
                     .expect("every delivered BLOCK decodes");
                 assert_eq!(block.corr, corr);
@@ -818,15 +818,15 @@ impl ObservedConnection {
                 let count = self.blocks.entry(corr).or_insert(0);
                 *count = count.saturating_add(1);
                 self.blocks_seen = self.blocks_seen.saturating_add(1);
-            } else if kind == u32::from(FrameType::End.code()) {
+            } else if kind == FrameType::End.code() {
                 let end = check_end(payload).expect("every END parses");
                 let delivered = self.blocks.remove(&corr).unwrap_or(0);
                 assert_eq!(end.blocks, delivered, "END corr {corr} counts its BLOCKs");
                 self.dicts.close(corr);
                 self.ends_seen = self.ends_seen.saturating_add(1);
-            } else if kind == u32::from(FrameType::Rep.code()) {
+            } else if kind == FrameType::Rep.code() {
                 check_rep(payload, false).expect("every binary REP parses");
-            } else if kind == u32::from(FrameType::Evt.code()) {
+            } else if kind == FrameType::Evt.code() {
                 check_evt(payload).expect("every binary EVT parses");
             }
         }
