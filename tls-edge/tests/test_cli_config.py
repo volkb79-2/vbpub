@@ -64,6 +64,9 @@ def test_locate_installed_root_from_current_symlink(tmp_path: Path, monkeypatch)
     (root / "current").symlink_to(release)
     monkeypatch.setattr(config.sys, "prefix", str(release / "venv"))
     assert config.locate_instance_root() == root
+    monkeypatch.setattr(config.sys, "prefix", str(tmp_path / "unmanaged" / "venv"))
+    with pytest.raises(config.ConfigError, match="pass --root PATH"):
+        config.locate_instance_root()
 
 
 def test_plain_and_deep_merge_convert_nested_structures():
@@ -186,6 +189,7 @@ def test_validate_config_builds_default_and_optional_port_plans():
     (lambda c: c["calls"].update(enabled=0), "calls.enabled"),
     (lambda c: c["ports"].update(http=443), "cannot publish the same TCP port"),
     (lambda c: c["ports"].update(https=444), "acme-tls requires"),
+    (lambda c: c["ports"].update(bind_ip=123), "ports.bind_ip must be an IP address or an empty string"),
     (lambda c: (c["tls"].update(mode="acme-http"), c["ports"].update(expose_http=False)), "acme-http requires"),
     (lambda c: c["ports"].update(bind_ip="not-an-ip"), "ports.bind_ip must be a valid"),
     (lambda c: c["acme"].update(volume_name="bad/name"), "acme.volume_name"),
@@ -198,6 +202,7 @@ def test_validate_config_builds_default_and_optional_port_plans():
     (lambda c: (c["http3"].update(enabled=True), c["calls"].update(enabled=True), c["calls"].update(public_port=443)), "Calls TCP conflicts"),
     (lambda c: (c["tls"].update(mode="acme-dns"), c.update(acme={"dns": {"provider": "bad/name"}})), "acme.dns.provider"),
     (lambda c: (c["tls"].update(mode="acme-dns"), c.update(acme={"dns": {"provider": "cloudflare", "wildcard_main": "bad domain"}})), "wildcard_main"),
+    (lambda c: (c["tls"].update(mode="acme-dns"), c.update(acme={"dns": {"provider": "cloudflare", "wildcard_main": 3}})), "wildcard_main must be a DNS name or empty"),
     (lambda c: c["acme"].update(email="not-email"), "acme.email"),
 ])
 def test_validate_config_rejects_invalid_combinations(mutate, message):
@@ -221,12 +226,19 @@ def test_validate_config_http3_calls_dns_static_and_port_constraints():
     value["tls"]["mode"] = "acme-dns"
     value["acme"] = {"dns": {"provider": "cloudflare", "wildcard_main": "example.com"}}
     assert config.validate_config(value)
+    value["acme"]["dns"]["wildcard_main"] = ""
+    assert config.validate_config(value)
 
     for mode in ("static", "dev"):
         value = valid_config()
         value["tls"]["mode"] = mode
         value["static"]["domains"] = ["edge.example.com"]
         assert config.validate_config(value)
+
+    value = valid_config()
+    value["tls"]["mode"] = "static"
+    with pytest.raises(config.ConfigError, match="requires at least one static certificate lineage"):
+        config.validate_config(value)
 
     value = valid_config()
     value["calls"].update(enabled=True, public_port=443)
@@ -242,6 +254,8 @@ def test_set_path_creates_nested_tables_and_rejects_non_mutable_parents():
         config._set_path({"tls_edge": 4}, ("tls_edge", "domain"), "x.example")
     with pytest.raises(config.ConfigError, match="parent is not a TOML table"):
         config._set_path(MappingProxyType({}), ("tls_edge", "domain"), "x.example")
+    with pytest.raises(config.ConfigError, match="parent is not a TOML table"):
+        config._set_path(MappingProxyType({}), ("domain",), "x.example")
 
 
 def test_updated_override_creates_preserves_and_rejects_invalid_paths(tmp_path: Path):
@@ -283,6 +297,10 @@ def test_updated_consumer_env_creates_and_replaces_only_domain_entries(tmp_path:
     _, text, mode = config.updated_consumer_env(root, "two.example")
     assert text == "OTHER=value\nTLS_EDGE_DOMAIN=two.example\n"
     assert mode == 0o600
+    path.write_text("OTHER=value\n", encoding="utf-8")
+    _, text, mode = config.updated_consumer_env(root, "three.example")
+    assert text == "OTHER=value\nTLS_EDGE_DOMAIN=three.example\n"
+    assert mode == 0o600
     path.unlink()
     path.mkdir()
     with pytest.raises(config.ConfigError, match="consumer environment must be a regular file"):
@@ -301,4 +319,13 @@ def test_atomic_write_sets_mode_and_cleans_temporary_file_on_replace_failure(tmp
     monkeypatch.setattr(config.os, "replace", fail_replace)
     with pytest.raises(OSError, match="replace failed"):
         config.atomic_write(path, "new\n", 0o600)
+    assert sorted(item.name for item in path.parent.iterdir()) == ["override.toml"]
+
+    def remove_temp_then_fail(source, _target):
+        Path(source).unlink()
+        raise OSError("replace failed after temporary file disappeared")
+
+    monkeypatch.setattr(config.os, "replace", remove_temp_then_fail)
+    with pytest.raises(OSError, match="temporary file disappeared"):
+        config.atomic_write(path, "again\n", 0o600)
     assert sorted(item.name for item in path.parent.iterdir()) == ["override.toml"]
