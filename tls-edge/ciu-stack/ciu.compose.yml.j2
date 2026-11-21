@@ -63,17 +63,25 @@ services:
     depends_on:
       dockerproxy:
         condition: service_healthy
+{% if ':' in tls_edge.ports.bind_ip %}
+{% set bind = '[' ~ tls_edge.ports.bind_ip ~ ']:' %}
+{% else %}
 {% set bind = tls_edge.ports.bind_ip ~ ':' if tls_edge.ports.bind_ip else '' %}
+{% endif %}
     ports:
 {% if tls_edge.ports.expose_http %}
       # HTTP: received and immediately redirected to HTTPS by Traefik.
-      - "{{ bind }}{{ tls_edge.ports.http }}:80"
+      - "{{ bind }}{{ tls_edge.ports.http }}:80/tcp"
 {% else %}
       # Port 80 is OFF ([tls_edge.ports] expose_http = false: TLS-only edge,
       # no HTTP->HTTPS redirect).  Default is ON.
 {% endif %}
       # HTTPS: host-name routing, one certificate per service host name.
-      - "{{ bind }}{{ tls_edge.ports.https }}:443"
+      - "{{ bind }}{{ tls_edge.ports.https }}:443/tcp"
+{% if tls_edge.http3.enabled %}
+      # HTTP/3 over QUIC shares the public HTTPS port on UDP.
+      - "{{ bind }}{{ tls_edge.ports.https }}:443/udp"
+{% endif %}
 {% if tls_edge.calls.enabled %}
       # Mattermost Calls: the same public port over TCP and UDP.
       - "{{ bind }}{{ tls_edge.calls.public_port }}:{{ tls_edge.calls.tcp_internal_port }}/tcp"

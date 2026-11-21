@@ -54,7 +54,7 @@ example's own README for escaping rules and why WebSocket clients should not be 
 ## pattern-e: web UI plus TCP and UDP media
 
 The HTTPS part is pattern-a. The media part uses the two extra entrypoints that exist while the edge has
-`[tls_edge.calls] enabled = true` (the default): `mattermost-calls-tcp` and `mattermost-calls-udp`, both
+`[tls_edge.calls] enabled = true`: `mattermost-calls-tcp` and `mattermost-calls-udp`, both
 published on 8443.
 
 | Label | What it does |

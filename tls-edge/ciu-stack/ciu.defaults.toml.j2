@@ -18,9 +18,9 @@ stack_name = "edge-proxy"
 # host name under it (app.<domain>) and its OWN certificate; the edge itself
 # does not need it for routing (routers carry their own Host() rule), so it is
 # informational for the edge and the single input consumers read as
-# TLS_EDGE_DOMAIN (see docs/INSTALL.md, consumer-examples/).  Never commit a
-# real domain: it lives in the instance's ciu.toml.j2 (written by the get.py
-# wizard), not in tracked files.
+# TLS_EDGE_DOMAIN (see docs/INSTALL.md, consumer-examples/). Never commit a
+# real domain: it lives in the instance's ciu.toml.j2 (written by
+# tls-edge configure), not in tracked files.
 domain = ""
 # Forced to true by scripts/render_standalone.py; ciu leaves it false.
 standalone = false
@@ -73,25 +73,29 @@ image = "tecnativa/docker-socket-proxy:v0.5.0"
 bind_ip = ""
 http = 80
 https = 443
-# The edge publishes exactly three public ports: 80/tcp (HTTP -> HTTPS
-# redirect and the HTTP-01 challenge), 443/tcp (HTTPS, host-name routing: one
-# host name and one certificate per service) and 8443 tcp+udp (the Calls media
-# pair, see [tls_edge.calls]).  There is NO alternate HTTPS port.
+# The edge publishes 80/tcp (HTTP redirect and optionally HTTP-01) and 443/tcp
+# (HTTPS, host-name routing: one host name and one certificate per service).
+# HTTP/3 adds UDP on the configured public HTTPS port when enabled. The
+# optional Calls media preset adds one TCP+UDP pair when enabled.
 # false drops the :80 listener (TLS-only edge; then tls.mode "acme-http" is
 # refused).
 expose_http = true
 
 [tls_edge.calls]
-# Raw media listeners for Mattermost Calls: ON by default, in agreement with
-# the Mattermost project's own default ([mattermost.calls] port/public_port =
-# 8443). TCP and UDP share the number 8443 publicly and inside the container
-# (a TCP and a UDP socket do not collide). Agreement is pinned by
-# tests/test_calls_defaults_agree.py.
-# Set enabled = false for an edge that must not open a media port.
-enabled = true
+# Optional raw TCP+UDP media listeners, currently wired for Mattermost Calls.
+# Disabled by default so a generic edge opens only the web ports it needs.
+# Enable this preset for a Calls consumer and allow the pair through both
+# firewalls. TCP and UDP may share one numeric port; each is a separate socket.
+enabled = false
 public_port = 8443
 tcp_internal_port = 8443
 udp_internal_port = 8443
+
+[tls_edge.http3]
+# HTTP/3 over QUIC on UDP, sharing the public HTTPS port. Traefik keeps its TCP
+# listener for HTTP/1.1 and HTTP/2 fallback. The UDP publication and Alt-Svc
+# advertised port are derived from [tls_edge.ports].https.
+enabled = false
 
 [tls_edge.runtime]
 # systemd slice (cgroup parent) for both containers, e.g. "edge.slice".
@@ -178,8 +182,8 @@ max_file = "3"
 
 [tls_edge.secrets]
 # Empty by default — the standalone renderer rejects entries here (secrets
-# directives need ciu).  Under ciu, acme-dns declares the DNS credential here
-# (the get.py adapter writes this into the instance's ciu.toml.j2):
+# directives need ciu). Under ciu, acme-dns declares the DNS credential here
+# (configure this advanced section in the instance's ciu.toml.j2):
 #   [tls_edge.secrets]
 #   dns_api_token = { directive = "ASK_EXTERNAL:CF_DNS_API_TOKEN", mode = "0444" }
 # mode 0444: Traefik runs as root with every capability but NET_BIND_SERVICE

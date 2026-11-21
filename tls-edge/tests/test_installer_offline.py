@@ -91,7 +91,11 @@ def make_bundle(workdir: Path, tag: str, variant: str, marker: str) -> None:
     (stage / ".gitignore").write_bytes((ROOT / "installer" / "instance.gitignore").read_bytes())
     wheels = stage / "wheels"
     make_wheel(wheels, "ciu", "7.0.0", console="ciu")
-    for dist in ("jinja2", "markupsafe", "pyyaml", "tomli_w"):
+    make_wheel(wheels, "tls_edge_cli", "1.0.0", console="tls-edge")
+    for dist in (
+        "jinja2", "markupsafe", "pyyaml", "tomli_w", "cli_extended", "tomlkit",
+        "questionary", "prompt_toolkit", "wcwidth",
+    ):
         make_wheel(wheels, dist, "1.0.0")
     (stage / "ciu.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     os.chmod(stage / "ciu.sh", 0o755)
@@ -137,9 +141,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", refuse)
 
     answers = tmp_path / "answers.toml"
-    answers.write_text(
-        'domain = "example.test"\nacme_email = "ops@example.test"\n'
-        'tls_mode = "acme-tls"\ncalls = true\n', encoding="utf-8")
+    answers.write_text("", encoding="utf-8")
     return ns, root, answers
 
 
@@ -175,17 +177,15 @@ def test_install_update_rollback_offline(env):
 
     run(ns, "do_install", answers, version=TAG)
 
-    # layout: stable stack root with the shipped files, the seeded override, the stub, git
+    # get.py bootstraps the CIU root; site settings are collected by the installed CLI.
     assert (stack / "ciu-stack" / "ciu.defaults.toml.j2").is_file()
     assert (stack / "ciu.global.defaults.toml.j2").is_file()
     assert (stack / "marker.txt").read_text() == "one"
     assert not list(stack.glob("wheels")), "wheels are not synced into the stack"
-    override = (stack / "ciu-stack" / "ciu.toml.j2").read_text()
-    assert 'domain = "example.test"' in override
-    assert 'mode = "acme-tls"' in override
-    assert 'email = "ops@example.test"' in override
-    assert "enabled = true" in override
-    assert (stack / "consumer.env").read_text() == "TLS_EDGE_DOMAIN=example.test\n"
+    override_path = stack / "ciu-stack" / "ciu.toml.j2"
+    consumer_env = stack / "consumer.env"
+    assert not override_path.exists()
+    assert not consumer_env.exists()
     assert "**/.ciu/" in (stack / ".gitignore").read_text()
     assert git_count(stack) == 1
 
@@ -195,32 +195,33 @@ def test_install_update_rollback_offline(env):
     assert "current/venv/bin/ciu" in stub.read_text()
     assert subprocess.run([str(stub)], capture_output=True, text=True).stdout.strip() == "ciu 7.0.0"
     assert os.readlink(root / "bin" / "ciu") == "../current/venv/bin/ciu"
+    assert os.readlink(root / "bin" / "tls-edge") == "../current/venv/bin/tls-edge"
     assert (root / "bin" / "tls-edge-installer").is_file()
 
-    # operator state: an edited override and ciu's runtime state survive an update
-    (stack / "ciu-stack" / "ciu.toml.j2").write_text(override + "\n# operator edit\n")
+    # Operator config and ciu runtime state survive an update unchanged.
+    override_path.write_text('[tls_edge]\ndomain = "example.test"\n\n# operator edit\n')
+    consumer_env.write_text("TLS_EDGE_DOMAIN=example.test\nCONSUMER_FLAG=keep\n")
     (stack / ".ciu").mkdir()
     (stack / ".ciu" / "state").write_text("keep")
     run(ns, "do_update", None, version=TAG2)
     assert (stack / "marker.txt").read_text() == "two"
-    assert "# operator edit" in (stack / "ciu-stack" / "ciu.toml.j2").read_text()
+    assert "# operator edit" in override_path.read_text()
+    assert "CONSUMER_FLAG=keep" in consumer_env.read_text()
     assert (stack / ".ciu" / "state").read_text() == "keep"
     assert git_count(stack) == 1
 
     run(ns, "do_rollback", None)
     assert (stack / "marker.txt").read_text() == "one"
-    assert "# operator edit" in (stack / "ciu-stack" / "ciu.toml.j2").read_text()
+    assert "# operator edit" in override_path.read_text()
     assert (stack / ".ciu" / "state").read_text() == "keep"
 
 
-def test_unattended_without_domain_is_refused_before_any_change(env, tmp_path):
+def test_unconfigured_install_bootstraps_without_site_answers(env):
     ns, root, _ = env
-    empty = tmp_path / "empty.toml"
-    empty.write_text('tls_mode = "dev"\n', encoding="utf-8")
-    with pytest.raises(SystemExit) as caught:
-        run(ns, "do_install", empty, version=TAG)
-    assert caught.value.code == 2
-    assert not (root / "stack").exists()
+    run(ns, "do_install", None, version=TAG)
+    assert (root / "stack" / ".git").is_dir()
+    assert not (root / "stack" / "ciu-stack" / "ciu.toml.j2").exists()
+    assert not (root / "stack" / "consumer.env").exists()
 
 
 def test_wrong_variant_is_refused(env):
@@ -230,23 +231,11 @@ def test_wrong_variant_is_refused(env):
     assert not (root / "stack").exists()
 
 
-@pytest.mark.parametrize("bad", ['x"; rm', "a b", "{{ 7*7 }}", "-lead.test", ""])
-def test_adapter_rejects_unsafe_domain(bad):
-    with pytest.raises(ValueError):
-        ADAPTER.seed_text({"domain": bad})
-
-
-def test_adapter_seed_modes():
-    text = ADAPTER.seed_text({"domain": "example.test", "tls_mode": "acme-dns",
-                              "dns_provider": "route53", "calls": False})
-    assert 'provider = "route53"' in text
-    assert "dns_api_token" in text and text.count("# [tls_edge.secrets]") == 1
-    assert "enabled = false" in text
-    assert "[tls_edge.acme.dns]" not in ADAPTER.seed_text({"domain": "example.test"})
-    with pytest.raises(ValueError):
-        ADAPTER.seed_text({"domain": "example.test", "tls_mode": "bogus"})
-    with pytest.raises(ValueError):
-        ADAPTER.seed_text({"domain": "example.test", "acme_email": 'a"b@example.test'})
+def test_adapter_bootstraps_only_the_git_root(tmp_path):
+    ADAPTER.prepare(tmp_path)
+    assert (tmp_path / "stack" / ".git").is_dir()
+    assert not (tmp_path / "stack" / "ciu-stack" / "ciu.toml.j2").exists()
+    assert not (tmp_path / "stack" / "consumer.env").exists()
 
 
 def _repack(served: Path, tag: str, mutate) -> None:

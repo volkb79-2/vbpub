@@ -102,11 +102,12 @@ harmless if present, but omitting them keeps labels clean.
 
 ### One host name per service (no port-based routing)
 
-Every service gets its own host name on port 443; the edge has no alternate
-HTTPS port.  The public ports are exactly 80/tcp (optional redirect and
-ACME HTTP-01), 443/tcp (all HTTPS), and 8443 tcp+udp (Mattermost Calls media).
-Point one DNS name per service at the host (a wildcard record is fine) and
-route by `Host()`.
+Every service gets its own host name on the shared HTTPS port; the edge has no
+alternate HTTPS entrypoint. Generic defaults publish 80/tcp (optional redirect
+and ACME HTTP-01) and 443/tcp (all HTTPS). HTTP/3 can add UDP on the public
+HTTPS port, and the optional Mattermost Calls preset adds 8443/tcp+udp. Point
+one DNS name per service at the host (a wildcard record is fine) and route by
+`Host()`.
 
 > Only one service can own the combination of hostname + entrypoint.  To
 > share one host name between two services add a path matcher:
