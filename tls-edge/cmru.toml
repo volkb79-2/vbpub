@@ -94,8 +94,7 @@ distribution = "wcwidth"
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "tls-edge: standalone render validation", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "scripts/render_standalone.py", "--check", "--defaults-only"], cwd = "." },
-  { label = "tls-edge: Calls defaults agreement", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider"], cwd = "." },
+  { label = "tls-edge: R0/R1/R3 release gate", argv = ["run-gate", "release-gate"], cwd = "." },
 ]
 
 [steps.build]

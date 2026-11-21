@@ -24,3 +24,15 @@ budget = "15m"
 [lanes.tests.resources]
 cpus = "1"
 memory = "1g"
+
+# T1/T2 release qualification. Assay owns the R0/R1/R3 claims; the ordinary
+# `tests` lane above remains the fast R0-only developer gate.
+[lanes.release-gate]
+kind = "assay"
+assay_lane = "release-gate"
+environment = "tester-unified"
+budget = "30m"
+
+[lanes.release-gate.resources]
+cpus = "1"
+memory = "1g"
