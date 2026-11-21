@@ -546,8 +546,11 @@ implementer's choice.
 - **Memory per subscriber vs shared bytes.** Per subscriber: a `subs` entry, a registry `Sub`, a hub stream
   state (tens of bytes each) and <= 2 queue entries (one pinned, one unpinned) referencing shared ticks.
   Per stream, outside every pool: `entries` + `dict_body` (`dict_body` <= `max_block_bytes`), so <= 8 x
-  (4 MiB + entries) with the defaults (S22). Physical tick memory <= the Live pools (global 32 MiB)
-  because nothing else holds tick bytes.
+  (4 MiB + entries) with the defaults (S22). `on_tick` first builds a delivery batch; while the server
+  consumes it, up to `max_selections` base frames can be held outside the Live pool, each <=
+  `max_block_bytes`. With defaults, these frames add at most 8 x 4 MiB (32 MiB) to the 32 MiB global
+  Live queue bound. Physical tick memory is therefore <= 64 MiB plus the separately bounded registry
+  entries and dictionary bodies.
 - **Backend misbehaviour.** Bounded by S16 (validation), S11 (rows, size) and R25 (replies); every
   failure is `internal`/`budget` and ends the stream, never a panic or an oversized frame.
 
