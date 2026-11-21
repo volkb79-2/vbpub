@@ -857,25 +857,48 @@ mod tests {
     }
 
     #[test]
-    fn step_8_beats_step_9_and_step_10() {
+    fn step_8_beats_step_10_for_a_block_verb() {
         let text = line("current", "{\"a\":1,\"a\":2}", 3);
         assert_plain(&json(text.as_bytes()), Code::BinaryRequired, 3);
         let text = req("current", "{}");
-        assert_plain(&binary(text.as_bytes()), Code::UnknownVerb, 5);
+        let refusal = refused(&binary(text.as_bytes()));
+        assert_eq!(
+            (refusal.code, refusal.corr, refusal.detail),
+            (Code::BadRequest, 5, key("selection"))
+        );
     }
 
     // ---- step 9: known but not served
 
     #[test]
     fn step_9_a_known_verb_that_is_not_served_is_unknown_verb() {
-        for verb in ["events", "spans", "procs", "unsubscribe", "current"] {
+        for verb in ["events", "spans", "procs", "snapshot_at"] {
             let text = req(verb, "{}");
             assert_plain(&binary(text.as_bytes()), Code::UnknownVerb, 5);
         }
-        for verb in ["events", "spans", "procs", "unsubscribe"] {
+        for verb in ["events", "spans", "procs"] {
             let text = line(verb, "{}", 5);
             assert_refusal(&json(text.as_bytes()), Code::UnknownVerb, 5, &Detail::Empty);
         }
+    }
+
+    #[test]
+    fn step_9_unsubscribe_and_current_are_served() {
+        let text = req("current", CURRENT_ARGS);
+        assert!(matches!(
+            dispatched(&binary(text.as_bytes())).call,
+            Call::Current(_)
+        ));
+        let text = req("unsubscribe", "{\"sub\":2}");
+        assert_eq!(
+            dispatched(&binary(text.as_bytes())).call,
+            Call::Unsubscribe(2)
+        );
+        let text = line("unsubscribe", "{\"sub\":2}", 4);
+        assert_eq!(
+            dispatched(&json(text.as_bytes())).call,
+            Call::Unsubscribe(2)
+        );
     }
 
     #[test]

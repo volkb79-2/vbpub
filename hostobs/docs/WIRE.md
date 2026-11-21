@@ -342,6 +342,12 @@ value must fit the field's own type (`proto.minor` is a `u16`: 65,536 is `bad-re
 4.3 **Verbs by level** (✓ = served; JSON = REP only; BLK = REP + BLOCK* + END; JSON mode refuses
 BLK verbs with `binary-required`, §8.4):
 
+P5b-2d serves `current`, `subscribe` and `unsubscribe` at observe and operator. The `hello.verbs`
+array at those levels lists exactly `hello`, `status`, `current`, `subscribe`, `unsubscribe`;
+observer remains `hello`. In JSON mode `current` and `subscribe` stay `binary-required`, while
+`unsubscribe` is a served JSON verb and answers `not-found` when the named subscription is not
+held (§4.7).
+
 | Verb | observe | operator | observer | control | Shape | Since |
 |---|---|---|---|---|---|---|
 | hello | ✓ | ✓ | ✓ | ✓ | JSON | M2 |
@@ -755,6 +761,12 @@ without sockets):
 | `Closing(code)` | — | `drain_unpinned(c)`; if `head_partial(c)` is false the connection holds ONE final frame outside the hub (D-W28): the REP (or error line) of the outcome for a request or reader error, `EVT corr=0 {"event":"closing","reason":code}` (binary) or the error line (JSON) for `idle`, `slow-client`, `shutting-down`; the driver makes one non-blocking write of it and abandons a short write; `remove(c)`; close. When no byte was written yet and the server prefix is queued, the final bytes start with the 8 prefix bytes (prefix guarantee); a major mismatch writes the prefix alone. The driver never writes the hub head after the close (a head pinned with 0 bytes written is not partial and stays in the hub; the final bytes already repeat the prefix). A client MUST NOT depend on receiving it. |
 | `Undecided` or `AwaitHello` or `JsonNoHello` or `Ready` | stream end (EOF) other than the clean one of the `Ready` row above: before `Ready` (also mid-line or mid-frame), or in `Ready` inside a frame or line, or bytes after the end | close without a reply (no request is owed; design R10) |
 
+**Driver cadence (P5b-2d).** A P5b-2 driver calls `poll(now)` first and then `on_tick(now)` once
+per sampler tick in the same loop iteration. `on_tick` asks the registry for at most one shared
+block per due selection stream and delivers it to each subscriber; the first block follows a
+`subscribe` REP. `wrote` and `poll` end with the pending-`current` retry pass, in connection-id
+and correlation-id order (design S7, S24, S25).
+
 **Implemented (`ConnTimers`).** `ConnTimers::new(hello_ns, idle_ns)` holds the level's two
 durations; nothing is armed until `on_accept(now)` (a refused connection never calls it).
 `on_hello_complete()` disarms the hello deadline (the first complete line in JSON mode counts),
@@ -1150,6 +1162,12 @@ page limit with a `cmdline` of 4,096 B per item: REP ≤ `max_reply_bytes`, fewe
 connection stays; the original `events` form, `limit` 1,000 with 8 attrs of 256 B each, returns with M3), `conn-closing-evt` (`Closing` with an
 unwritten head: EVT `closing` written; with a partially written head: no EVT, closed).
 
+P5b-2c and P5b-2d make `conn-not-idle-with-subscription`, `conn-dribbling-reader`, the END half
+of `conn-half-close`, `conn-corr-in-use-sub`, `conn-corr-in-use-pending` and
+`conn-too-many-requests` reachable against the in-memory `Conn`/`Server`; R21's P5b-1 exclusion is
+superseded for those cases. `conn-reply-page-truncated` remains P5b-3, and the socketpair form
+remains P5b-4.
+
 ## 12. Work breakdown
 
 **P2 — `proto` stream layer and codec additions (L).** Modules `crates/proto/src/stream.rs` (`FrameReader`,
@@ -1507,4 +1525,4 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | H | previous-body view pins a whole frame; table provenance; CPython patch level (minor) | fixed: retention stated and bounded (one previous frame of ≤ 1 MiB per stream; a digest rejected, it adds a hash to the measured path and makes the skip probabilistic); table attributed to `bench2.py`, the `bytes()` row to `bench.py`; pinned CPython 3.14.10, re-measure on any version change, patch level included | §7.4, §7.8, D-W15 |
 | I | V-11..V-13 and the stream machines have no backlog id (minor) | fixed: `HOB-51`..`HOB-53` (V-11..V-13), `HOB-54` (stream layer, P2/P3/P5b exit criteria) | backlog, V-11..V-13, §12, CHANGES.md |
 
-Case counts after round 2 (§11.4): 12 reader, 6 client, 20 hub, 18 connection.
+Case counts after P5b-2d (§11.4): 12 reader, 6 client, 20 hub, 21 connection.

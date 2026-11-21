@@ -66,7 +66,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-51 | Received frames are held to the alignment and header-first rules: every section `len` is a multiple of 8 (`section-length`) and an unknown kind at directory entry 0 is `section-order` at index 0, after the rank check | Minor | FIXED (P2a1) |
 | HOB-52 | A repeated dictionary identity is `duplicate-dictionary-entry` in Rust whatever the other fields hold, as in the Python reference | Minor | FIXED (P2a1) |
 | HOB-53 | The Python reference follows the WIRE.md §3.10 precedence: `not-a-block` before the buffer length and `SECTIONED` checks | Minor | FIXED (P2a1) |
-| HOB-54 | The probe's serving loop does not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `SendHub`, the envelope checks, the Rust client (`crates/client`) and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | OPEN (P2: `FrameReader`, `ModeDetect`, `ConnTimers`, `SendHub`, `StreamDicts`, `envelope.rs` exist; P3a: the Python reader, `StreamDicts`, decoder and `rate()` exist, P3b: `conn.py`, `profiling.py`, `mark.py` exist, the P3 part is closed; P5a: `crates/client` exists and the Rust client part is closed; P5b-1a (code complete, awaiting its first lane): `bins/probe/src` `limits`, `verbs`, `codes`, `args`, `classify`, `encode` and `lines` exist; P5b-1b (code complete, awaiting its lanes): `backend`, `conn` (the sans-IO state machine) and `server` (the `Server`: accept caps, `finish` as the single release path, the timer order, `status.clients`) exist; P5b-2a: the canonical selection, request schemas, interval rule, BLK-only outstanding precedence, new `Call` arms, budget pools and stream END/result encoders exist, with the three verbs still unserved; P5b-2b (code complete, awaiting its lanes): `Backend::current`/`TickData`, tick validation/encoding, the shared `SelectionStreams` registry and hub `dropped_blocks`/`query_room` exist; then P5b-2c/2d (live streams) and later, see `docs/P5B2-LIVE-STREAMS-DESIGN.md`) |
+| HOB-54 | The probe's serving loop does not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `SendHub`, the envelope checks, the Rust client (`crates/client`) and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | OPEN (P2: `FrameReader`, `ModeDetect`, `ConnTimers`, `SendHub`, `StreamDicts`, `envelope.rs` exist; P3a: the Python reader, `StreamDicts`, decoder and `rate()` exist, P3b: `conn.py`, `profiling.py`, `mark.py` exist, the P3 part is closed; P5a: `crates/client` exists and the Rust client part is closed; P5b-1a: `limits`, `verbs`, `codes`, `args`, `classify`, `encode` and `lines` exist; P5b-1b: `backend`, the sans-IO `conn` and `server` exist; P5b-2a: canonical selections, request schemas, interval and outstanding precedence, budget pools and stream END/result encoders exist; P5b-2b: `Backend::current`/`TickData`, tick encoding, `SelectionStreams` and the hub additions exist; P5b-2c delivered current/subscribe/unsubscribe, outstanding requests and Draining; P5b-2d delivered tick delivery, retry passes, the served flip and the reachable §11.4 connection cases. P5b-3 and P5b-4 remain, see `docs/P5B2-LIVE-STREAMS-DESIGN.md`) |
 | HOB-55 | A look-alike name such as `hot-0-18446744073709551615.seg` (or `.seg.corrupt`) sets the tier's sequence water mark to `u64::MAX` before its owner is proven, so every `open_segment` fails with `LengthOverflow` until the file is removed | Minor | FIXED (P0b) |
 | HOB-56 | `StoreStats::bytes` maintained by incremental arithmetic drifts from the tiers' own byte totals when a file vanishes or a new segment's header is written | Minor | FIXED (P0b) |
 | HOB-57 | `docs/hand-mutants/m1d-mutants.py` had no per-mutant subprocess timeout, so a mutant that hangs the suite hangs the campaign | Minor | FIXED (P0b) |
@@ -1143,12 +1143,20 @@ with the §7.3 `fill()`/`advance()` buffering, replaying the 12 reader cases) an
 tested on a scripted fake probe and by a zipimport smoke test: the P3 part is closed.
 **What exists (P5a).** `crates/client` (`Client`, `Level`, `ClientInfo`, `HelloResult`, `BlockStream`,
 `Subscription`, `ClientError`; the injected `Transport` and `Clock`), tested against scripted servers over a fake
-clock: the P5a part is closed. Still open: P5b's connection cases.
+clock: the P5a part is closed.
+**What exists (P5b-2c + P5b-2d).** The probe's `Conn` now executes `current`, `subscribe` and
+`unsubscribe`, tracks outstanding requests and Draining, and the `Server` owns shared selection
+streams, `on_tick` delivery and the retry pass after `wrote` and `poll`. The three verbs are served
+at observe/operator with the matching `hello.verbs`, and the block-verb cases of WIRE.md §11.4 run
+against the in-memory `Conn`/`Server`. The P5b-2c and P5b-2d parts are code complete; P5b-3
+(`snapshot_at`/history and `conn-reply-page-truncated`) and P5b-4 (the actual socket drivers and
+the socketpair runs) remain.
 
 **Exit criteria.** P2: the §12 `FrameReader`, `ModeDetect`, `SendHub` and `ConnTimers` APIs in Rust
-with the 12 reader and 19 hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row; P3: the Python
-`FrameReader` passes the same 12 reader cases and the 6 client cases; P5b: the 18 connection cases
-of §11.4 against a fake clock.
+with the reader and hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row; P3: the Python
+`FrameReader` passes the same reader cases and the client cases; P5b: the 18 connection cases
+of §11.4 against a fake clock, with P5b-3 and P5b-4 still required for the remaining page and
+socketpair cases.
 
 ## HOB-55 — A look-alike name with a huge sequence poisons the tier's water mark
 

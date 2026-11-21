@@ -7,20 +7,31 @@
 //! key is bounded and made of schema characters, every encoder output parses back with the
 //! protocol crate's own checkers, and the line reader never holds more than its bound.
 
+use std::collections::BTreeMap;
+
 use hostobs_probe::args;
+use hostobs_probe::backend::{FixedBackend, TickData};
 use hostobs_probe::classify::{classify, Call, Dispatch, Mode, Phase, Prefix, Query, Refusal};
 use hostobs_probe::codes::{Code, Detail};
-use hostobs_probe::encode::{closing_evt, error_line, rep_error, rep_ok, rep_ok_line};
+use hostobs_probe::conn::Peer;
+use hostobs_probe::encode::{
+    closing_evt, control_frame, error_line, rep_error, rep_ok, rep_ok_line, server_prefix,
+};
 use hostobs_probe::limits::{IntervalRule, Level};
 use hostobs_probe::lines::{LineError, LineReader};
-use hostobs_probe::selection::Selection;
-use hostobs_proto::envelope::{check_evt, check_rep};
-use hostobs_proto::frame::FrameType;
+use hostobs_probe::selection::{Sel, Selection};
+use hostobs_probe::server::{Accept, Server, ServerLimits};
+use hostobs_proto::envelope::{check_end, check_evt, check_rep};
+use hostobs_proto::frame::{decode_block_with, FrameType};
+use hostobs_proto::hub::{ConnId, Pools};
+use hostobs_proto::stream_dicts::StreamDicts;
 
 const RUNS: usize = 2_000;
 const MS: u64 = 1_000_000;
 const LINE_MAX: u32 = 64;
 const HELLO_ARGS: &str = "{\"client\":\"c\",\"proto\":{\"major\":1,\"minor\":1}}";
+const CURRENT_ARGS: &str =
+    "{\"selection\":{\"entities\":[{\"inc\":1}],\"metrics\":[\"m\"]}}";
 const VERBS: [&str; 5] = ["hello", "status", "current", "events", "annotate"];
 
 /// The codes `classify` may refuse with.
@@ -97,7 +108,11 @@ impl Xorshift {
 fn seeds() -> Vec<(Mode, String)> {
     let mut out = Vec::new();
     for verb in VERBS {
-        let args = if verb == "hello" { HELLO_ARGS } else { "{}" };
+        let args = match verb {
+            "hello" => HELLO_ARGS,
+            "current" => CURRENT_ARGS,
+            _ => "{}",
+        };
         let binary = format!("{{\"verb\":\"{verb}\",\"args\":{args}}}");
         let line = format!("{{\"verb\":\"{verb}\",\"args\":{args},\"corr\":7}}");
         out.push((Mode::Binary, binary));
@@ -614,17 +629,17 @@ fn expected(case: &Case) -> (Option<Code>, u32) {
     if !binary && matches!(case.verb, "current" | "snapshot_at") {
         return (Some(Code::BinaryRequired), corr);
     }
-    if !matches!(case.verb, "hello" | "status") {
+    if !matches!(case.verb, "hello" | "status" | "current") {
         return (Some(Code::UnknownVerb), corr);
     }
     (None, corr)
 }
 
 fn payload_of(case: &Case) -> String {
-    let args = if case.verb == "hello" {
-        HELLO_ARGS
-    } else {
-        "{}"
+    let args = match case.verb {
+        "hello" => HELLO_ARGS,
+        "current" => CURRENT_ARGS,
+        _ => "{}",
     };
     let verb = case.verb;
     if case.mode == Mode::Binary {
@@ -696,4 +711,314 @@ fn a_line_reader_run_that_jumps_past_the_completion_deadline_is_deadline() {
     assert_eq!(reader.poll(0), Err(LineError::Deadline));
     let after = reader.feed(b"x", 61_000 * MS);
     assert_eq!(after.error, Some(LineError::Deadline));
+}
+
+const SUBSCRIBE_ARGS: &str =
+    "{\"selection\":{\"entities\":[{\"inc\":1}],\"metrics\":[\"m\"]},\
+     \"interval_ms\":1000}";
+
+fn server_selection() -> Selection {
+    Selection::new(vec![Sel::Inc(1)], vec!["m".to_string()]).expect("selection")
+}
+
+fn server_request(corr: u32, verb: &str, args: &str) -> Vec<u8> {
+    let payload = format!("{{\"verb\":\"{verb}\",\"args\":{args}}}");
+    control_frame(FrameType::Req, corr, payload.as_bytes())
+}
+
+fn server_current(corr: u32) -> Vec<u8> {
+    server_request(corr, "current", CURRENT_ARGS)
+}
+
+fn server_subscribe(corr: u32) -> Vec<u8> {
+    server_request(corr, "subscribe", SUBSCRIBE_ARGS)
+}
+
+fn server_unsubscribe(corr: u32, sub: u32) -> Vec<u8> {
+    server_request(corr, "unsubscribe", &format!("{{\"sub\":{sub}}}"))
+}
+
+fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
+    let held = bytes.get(at..at.checked_add(4)?)?;
+    let exact: [u8; 4] = held.try_into().ok()?;
+    Some(u32::from_le_bytes(exact))
+}
+
+/// One connection's modelled client: complete BLOCKs decode under its held dictionaries and
+/// every END equals the number of BLOCKs that preceded it on that stream.
+struct ObservedConnection {
+    buffered: Vec<u8>,
+    binary: Option<bool>,
+    dicts: StreamDicts,
+    blocks: BTreeMap<u32, u32>,
+    blocks_seen: usize,
+    ends_seen: usize,
+}
+
+impl ObservedConnection {
+    fn new() -> ObservedConnection {
+        ObservedConnection {
+            buffered: Vec::new(),
+            binary: None,
+            dicts: StreamDicts::new(),
+            blocks: BTreeMap::new(),
+            blocks_seen: 0,
+            ends_seen: 0,
+        }
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        self.buffered.extend_from_slice(bytes);
+        if self.binary.is_none() {
+            let Some(first) = self.buffered.first().copied() else {
+                return;
+            };
+            if first == b'{' {
+                self.binary = Some(false);
+            } else {
+                if self.buffered.len() < 8 {
+                    return;
+                }
+                let magic = server_prefix(1, 0);
+                assert!(
+                    self.buffered.starts_with(&magic[..4]),
+                    "binary output begins with the server prefix"
+                );
+                self.binary = Some(true);
+                self.buffered = self.buffered.split_off(8);
+            }
+        }
+        if self.binary == Some(false) {
+            while let Some(end) = self.buffered.iter().position(|byte| *byte == b'\n') {
+                let rest = self.buffered.split_off(end.saturating_add(1));
+                let line = std::mem::replace(&mut self.buffered, rest);
+                assert!(line.ends_with(b"\n"));
+            }
+            return;
+        }
+        loop {
+            let Some(declared) = u32_at(&self.buffered, 0) else {
+                return;
+            };
+            let declared = usize::try_from(declared).expect("frame length");
+            assert!(declared >= 12, "frame has its header");
+            if declared > self.buffered.len() {
+                return;
+            }
+            let rest = self.buffered.split_off(declared);
+            let frame = std::mem::replace(&mut self.buffered, rest);
+            let kind = u32_at(&frame, 4).expect("frame type");
+            let corr = u32_at(&frame, 8).expect("frame corr");
+            let payload = frame.get(12..).expect("frame payload");
+            if kind == u32::from(FrameType::Block.code()) {
+                let block = decode_block_with(&frame, self.dicts.held(corr))
+                    .expect("every delivered BLOCK decodes");
+                assert_eq!(block.corr, corr);
+                self.dicts
+                    .accept(corr, &block)
+                    .expect("every BLOCK follows the stream dictionary rules");
+                let count = self.blocks.entry(corr).or_insert(0);
+                *count = count.saturating_add(1);
+                self.blocks_seen = self.blocks_seen.saturating_add(1);
+            } else if kind == u32::from(FrameType::End.code()) {
+                let end = check_end(payload).expect("every END parses");
+                let delivered = self.blocks.remove(&corr).unwrap_or(0);
+                assert_eq!(end.blocks, delivered, "END corr {corr} counts its BLOCKs");
+                self.dicts.close(corr);
+                self.ends_seen = self.ends_seen.saturating_add(1);
+            } else if kind == u32::from(FrameType::Rep.code()) {
+                check_rep(payload, false).expect("every binary REP parses");
+            } else if kind == u32::from(FrameType::Evt.code()) {
+                check_evt(payload).expect("every binary EVT parses");
+            }
+        }
+    }
+}
+
+fn observed_feed(model: &mut BTreeMap<ConnId, ObservedConnection>, id: ConnId, bytes: &[u8]) {
+    let held = model
+        .entry(id)
+        .or_insert_with(ObservedConnection::new);
+    held.feed(bytes);
+}
+
+fn drain_server(
+    server: &mut Server<FixedBackend>,
+    model: &mut BTreeMap<ConnId, ObservedConnection>,
+    id: ConnId,
+    max: usize,
+    now: u64,
+) -> usize {
+    let mut total = 0usize;
+    while total < max {
+        let chunk: Vec<u8> = match server.output(id, now) {
+            Some([prefix, tail]) => [prefix, tail].concat(),
+            None => break,
+        };
+        if chunk.is_empty() {
+            break;
+        }
+        let take = chunk.len().min(max.saturating_sub(total));
+        observed_feed(model, id, chunk.get(..take).unwrap_or_default());
+        server.wrote(id, take, now);
+        total = total.saturating_add(take);
+    }
+    total
+}
+
+fn run_final(
+    server: &mut Server<FixedBackend>,
+    model: &mut BTreeMap<ConnId, ObservedConnection>,
+    id: ConnId,
+) {
+    if let Some(last) = server.take_final(id) {
+        observed_feed(model, id, &last);
+    }
+    server.finish(id);
+}
+
+/// P5b-2d hostile run: 2,000 fixed-seed server turns over four slots and two uids. Valid
+/// binary `current`, `subscribe` and `unsubscribe` requests mix with random bytes, partial
+/// writes, polls, sampler ticks and EOF. The model client decodes every complete BLOCK under its
+/// held dictionary and checks that each END's count is exactly what it received.
+#[test]
+fn server_hostile_2000_steps_with_block_verbs() {
+    let selected = server_selection();
+    let data = TickData::example(7, &[1], &["m"]);
+    let mut server = Server::new(ServerLimits::new(), FixedBackend::new());
+    server
+        .backend_mut()
+        .current
+        .insert(selected, Ok(data));
+    let mut rng = Xorshift(0x6A09_E667_F3BC_C909);
+    let mut now = 0u64;
+    let mut slots: [Option<ConnId>; 4] = [None; 4];
+    let mut subscriptions: [Vec<u32>; 4] = std::array::from_fn(|_| Vec::new());
+    let mut model = BTreeMap::new();
+
+    for slot in 0..slots.len() {
+        let level = if slot % 2 == 0 {
+            Level::Observe
+        } else {
+            Level::Operator
+        };
+        let uid = 1 + u32::try_from(slot % 2).expect("uid");
+        let peer = Peer { uid, pid: 7 };
+        let Accept::Accepted(id) = server.accept(level, Some(peer), now) else {
+            panic!("prelude accept");
+        };
+        slots[slot] = Some(id);
+        model.insert(id, ObservedConnection::new());
+        let mut hello = server_prefix(1, 1).to_vec();
+        hello.extend(server_request(1, "hello", HELLO_ARGS));
+        server.on_bytes(id, &hello, now);
+        drain_server(&mut server, &mut model, id, usize::MAX, now);
+        server.on_bytes(id, &server_current(2), now);
+        drain_server(&mut server, &mut model, id, usize::MAX, now);
+        let sub = 10 + u32::try_from(slot).expect("slot");
+        server.on_bytes(id, &server_subscribe(sub), now);
+        subscriptions[slot].push(sub);
+        drain_server(&mut server, &mut model, id, usize::MAX, now);
+    }
+    server.on_tick(now);
+    for id in slots.iter().flatten() {
+        drain_server(&mut server, &mut model, *id, usize::MAX, now);
+    }
+
+    for _step in 0..2_000 {
+        let slot = rng.below(slots.len());
+        if let Some(id) = slots[slot] {
+            if server.conn(id).is_none() {
+                slots[slot] = None;
+                subscriptions[slot].clear();
+            } else if server.is_closed(id) {
+                run_final(&mut server, &mut model, id);
+                slots[slot] = None;
+                subscriptions[slot].clear();
+            }
+        }
+        let Some(id) = slots[slot] else {
+            let level = if rng.below(2) == 0 {
+                Level::Observe
+            } else {
+                Level::Operator
+            };
+            let uid = 1 + u32::try_from(slot % 2).expect("uid");
+            let peer = Peer { uid, pid: 7 };
+            if let Accept::Accepted(id) = server.accept(level, Some(peer), now) {
+                slots[slot] = Some(id);
+                subscriptions[slot].clear();
+                model.insert(id, ObservedConnection::new());
+                let mut hello = server_prefix(1, 1).to_vec();
+                hello.extend(server_request(1, "hello", HELLO_ARGS));
+                server.on_bytes(id, &hello, now);
+            }
+            continue;
+        };
+        match rng.below(12) {
+            0 => {
+                let bytes = payload(&mut rng);
+                server.on_bytes(id, &bytes, now);
+            }
+            1 | 2 => {
+                let corr = 2 + u32::try_from(rng.below(8)).expect("corr");
+                server.on_bytes(id, &server_current(corr), now);
+            }
+            3 | 4 => {
+                let corr = 10 + u32::try_from(rng.below(4)).expect("corr");
+                if subscriptions[slot].contains(&corr) {
+                    server.on_bytes(id, &server_unsubscribe(20 + corr, corr), now);
+                    subscriptions[slot].retain(|held| *held != corr);
+                } else {
+                    subscriptions[slot].push(corr);
+                    server.on_bytes(id, &server_subscribe(corr), now);
+                }
+            }
+            5 => {
+                let corr = 10 + u32::try_from(rng.below(4)).expect("corr");
+                server.on_bytes(id, &server_unsubscribe(20 + corr, corr), now);
+                subscriptions[slot].retain(|held| *held != corr);
+            }
+            6 | 7 => {
+                server.on_tick(now);
+            }
+            8 | 9 => {
+                let advance = u64::try_from(rng.below(100_000)).expect("ns");
+                now = now.saturating_add(advance);
+                server.poll(now);
+            }
+            10 => {
+                server.on_eof(id, now);
+            }
+            _ => {
+                let max = rng.below(2_048);
+                drain_server(&mut server, &mut model, id, max, now);
+            }
+        }
+    }
+
+    for _ in 0..3 {
+        now = now.saturating_add(1_000 * MS);
+        server.poll(now);
+    }
+    server.shutdown();
+    let remaining = server.ids();
+    for id in remaining {
+        run_final(&mut server, &mut model, id);
+    }
+
+    let blocks: usize = model.values().map(|held| held.blocks_seen).sum();
+    let ends: usize = model.values().map(|held| held.ends_seen).sum();
+    assert!(blocks > 0);
+    assert!(ends > 0);
+    assert_eq!(server.conn_count(), 0);
+    assert_eq!(server.uid_entries(), 0);
+    assert_eq!(server.hub().global_pools(), Pools::default());
+    assert_eq!(server.streams().live_selections(), 0);
+    assert_eq!(server.streams().subscribers(), 0);
+    for uid in [1u32, 2] {
+        assert_eq!(server.hub().uid_pools(uid), Pools::default());
+        assert_eq!(server.streams().uid_selections(uid), 0);
+    }
+    assert!(server.hub().poll(u64::MAX).is_empty());
 }

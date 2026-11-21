@@ -289,6 +289,11 @@ Tests: section 5.4 (incl. every §11.4 case of section 5.5). WIRE edits: §4.3 n
 §11.4 (S31), §5.4 driver note
 (S25), design R3/R21 superseded notes, `HOB-54` row; the series gets the Opus final review (design §2).
 
+**Implemented with P5b-2c + P5b-2d.** The merged package delivers shared ticks through
+`Server::on_tick`, runs the pending-`current` retry pass after `wrote` and `poll`, serves the three
+block verbs and updates `hello.verbs`, and adds the server-level section 5.4/5.5 tests including
+the block-verb hostile run. P5b-3 and P5b-4 remain, so `HOB-54` stays open.
+
 ## 3. Resolutions (S1..S34)
 
 **S1 Selection parsing (§4.2).** `args::selection(obj, "selection")`: `selection` is an object with

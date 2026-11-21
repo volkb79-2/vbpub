@@ -1501,7 +1501,8 @@ mod tests {
         let body = &parsed[0].2;
         assert!(body.contains("\"level\":\"observe\""));
         assert!(body.contains("\"epoch\":1"));
-        assert!(body.contains("\"verbs\":[\"hello\",\"status\"]"));
+        let verbs = "\"verbs\":[\"hello\",\"status\",\"current\",\"subscribe\",\"unsubscribe\"]";
+        assert!(body.contains(verbs));
         let codes = "\"quality_codes\":[{\"code\":0,\"name\":\"ok\"}";
         assert!(body.contains(codes));
         assert!(body.contains("\"limits\":{\"max_frame_bytes\":16777216,"));
@@ -2555,26 +2556,21 @@ mod tests {
         rig.send(&raw_req(10, &current));
         rig.pump(usize::MAX);
         let classified = raw_frames(&rig.out);
-        assert!(classified
+        let accepted = classified
             .iter()
-            .any(|frame| frame.1 == 10 && is_error(&frame.2, Code::UnknownVerb)));
-        assert!(!classified
-            .iter()
-            .any(|frame| frame.1 == 10 && is_error(&frame.2, Code::TooManyRequests)));
-        rig.out.clear();
-        rig.current(10, sel);
-        assert_eq!(rig.conn.outstanding(), 3);
-        assert_eq!(rig.hub.queued(rig.conn.id()).query, need);
-        let retried = raw_frames(&rig.finish());
-        let current_rep = retried
-            .iter()
-            .find(|frame| frame.0 == FrameType::Rep.code() && frame.1 == 10)
+            .find(|frame| frame.1 == 10 && frame.0 == FrameType::Rep.code())
             .expect("current accepted after retry freed one request");
         assert!(
-            check_rep(text(payload(&current_rep.2)).as_bytes(), false)
+            check_rep(text(payload(&accepted.2)).as_bytes(), false)
                 .expect("current reply")
                 .ok
         );
+        assert!(!classified
+            .iter()
+            .any(|frame| frame.1 == 10 && is_error(&frame.2, Code::TooManyRequests)));
+        assert_eq!(rig.conn.outstanding(), 4);
+        assert_eq!(rig.pending_need(10), Some(need));
+        assert_eq!(rig.hub.queued(rig.conn.id()).query, 0);
     }
 
     #[test]
@@ -2791,7 +2787,10 @@ mod tests {
             ("boot_id", r#""11111111-2222-4333-8444-555555555555""#),
             ("epoch", "42"),
             ("features", r#"["peak_reset","damon"]"#),
-            ("verbs", r#"["hello","status"]"#),
+            (
+                "verbs",
+                r#"["hello","status","current","subscribe","unsubscribe"]"#,
+            ),
             ("quality_codes", codes.as_str()),
         ];
         for (key, value) in expected {
