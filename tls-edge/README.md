@@ -13,7 +13,10 @@ shields the Docker API from Traefik. See the
 [Calls design guide](docs/DESIGN-GUIDE.md) and
 [consumer instructions](docs/CONSUMERS.md), plus the [transport and instance
 configuration guide](docs/TRANSPORTS-AND-CONFIGURATION.md) for HTTP/2, HTTP/3,
-QUIC, server events, and where operators configure the shared endpoint.
+QUIC, server events, and where operators configure the shared endpoint. The
+repository's [Jitsi Meet deployment](https://github.com/volkb79-2/vbpub/blob/main/voice-screen-share/jitsi-server/README.md)
+uses this same default `websecure` route; its consumer suite checks it against
+the tls-edge renderer.
 
 ---
 

@@ -128,7 +128,7 @@ conflict, and Traefik will drop or misroute one of them.
 
 ### Jitsi Meet in this repository
 
-The default [jitsi-server deployment](../voice-screen-share/jitsi-server/)
+The repository's [jitsi-server deployment](https://github.com/volkb79-2/vbpub/tree/main/voice-screen-share/jitsi-server/)
 uses the shared edge for the web UI and signaling. Its `jitsi-web` container
 joins `ingress_public` and declares a host router on `websecure`; Traefik
 terminates TLS and obtains a certificate for the configured
@@ -152,8 +152,11 @@ labels:
 ```
 
 Keep Prosody, Jicofo, and JVB on Jitsi's private network; only `jitsi-web`
-needs edge-network membership. The Jitsi project tests this label/network
-contract and the direct UDP media publication.
+needs edge-network membership. The Jitsi project tests its label/network
+contract and direct UDP media publication. Its integration test renders
+tls-edge's defaults and checks that the `websecure` route has the HTTPS
+listener, certificate resolver, and optional HTTP/3 configuration the
+consumer uses.
 
 ### Pattern A – Public-only service
 
