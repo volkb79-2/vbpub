@@ -30,10 +30,11 @@
 //!   deadline), then idle. The hub's `slow-client` is the server's: it calls
 //!   [`Conn::close_for`] with [`Code::SlowClient`]. The idle condition (only `Ready`, reader at a
 //!   frame boundary, nothing queued) is recomputed at the end of every entry point.
-//! - **Not in this package:** `max_outstanding` and "`corr` in use" need a request that stays
-//!   outstanding, and `hello` and `status` answer synchronously, so the outstanding count is 0
-//!   whenever the next request arrives (R3); the idle condition and `Draining` therefore look
-//!   only at the queue. Subscriptions, `client-eof` ENDs and the counters belong to P5b-2.
+//! - **Outstanding requests and `Draining` (P5b-2).** `pending` holds only backpressured
+//!   `current` requests; they participate in `corr`-in-use and `max_outstanding`. A clean EOF ends
+//!   subscriptions but leaves pending requests retryable. The server's retry pass must keep
+//!   running while `Draining`, which closes silently only after pending work and queued output are
+//!   both empty.
 //! - **The driver never writes the hub head after `is_closed`.** A head pinned with 0 bytes
 //!   written is not partial, so `drain_unpinned` keeps it, and when it is the server prefix the
 //!   final bytes repeat the prefix (R2); writing the hub head as well would send the prefix
@@ -102,7 +103,7 @@ pub enum State {
     JsonNoHello,
     /// Requests are dispatched.
     Ready,
-    /// The client half-closed: finish the queue, then close.
+    /// The client half-closed: finish pending requests and queued output, then close silently.
     Draining,
     /// Finished: the driver takes [`Conn::take_final`] and calls `finish`.
     Closed,
@@ -384,7 +385,8 @@ impl Conn {
     }
 
     /// The peer ended its stream (R10): silent close before `Ready` or inside a frame or line;
-    /// in `Ready` a clean end is `Draining`, which closes when the queue is empty.
+    /// in `Ready` a clean end is `Draining`, which closes only when pending requests and the
+    /// queue are empty. The server keeps retrying pending requests while the connection drains.
     pub fn on_eof(&mut self, now_ns: u64, hub: &mut SendHub, streams: &mut SelectionStreams) {
         match self.state {
             State::Closed | State::Draining => {}
@@ -982,6 +984,32 @@ impl Conn {
         }
     }
 
+    /// Dispatch a subscription directly in server tests before P5b-2d enables its wire verb.
+    #[cfg(test)]
+    pub(crate) fn subscribe_for_server_test(
+        &mut self,
+        corr: u32,
+        selection: Selection,
+        now_ns: u64,
+        hub: &mut SendHub,
+        backend: &dyn Backend,
+        streams: &mut SelectionStreams,
+    ) {
+        self.execute(
+            &Dispatch {
+                corr,
+                call: Call::Subscribe(crate::args::SubscribeArgs {
+                    selection,
+                    interval_ms: self.limits.tick_ms,
+                }),
+            },
+            now_ns,
+            hub,
+            backend,
+            streams,
+        );
+    }
+
     fn budget(&mut self, corr: u32, pool: Pool, now_ns: u64, hub: &mut SendHub) {
         let bytes = self.error_bytes(corr, Code::Budget, &Detail::Pool(pool));
         self.push(hub, bytes, now_ns);
@@ -1011,6 +1039,7 @@ impl Conn {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::sync::Arc;
 
     use hostobs_proto::envelope::{check_end, check_rep, members_up_to};
@@ -1021,7 +1050,9 @@ mod tests {
 
     use super::{Call, Conn, Dispatch, Peer, Pools, Reader, State, SERVER_MINOR};
     use crate::args::SubscribeArgs;
-    use crate::backend::{BackendError, FixedBackend, TickData, TickInfo, TierInfo};
+    use crate::backend::{
+        Backend, BackendError, FixedBackend, Identity, StatusInfo, TickData, TickInfo, TierInfo,
+    };
     use crate::codes::{Code, Detail};
     use crate::encode::{
         closing_evt, control_frame, error_line, rep_error, server_prefix, unknown_mode_line,
@@ -1141,6 +1172,51 @@ mod tests {
             control_queue_bytes: size(limits.control_queue_bytes),
             stall_ns: u64::from(limits.stall_ms) * MS,
             frame_completion_ns: u64::from(limits.frame_completion_ms) * MS,
+        }
+    }
+
+    fn drain_hub(hub: &mut SendHub, id: ConnId, now_ns: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        while let Some([first, second]) = hub.head(id, now_ns) {
+            let len = first.len().saturating_add(second.len());
+            out.extend_from_slice(first);
+            out.extend_from_slice(second);
+            hub.wrote(id, len, now_ns);
+        }
+        out
+    }
+
+    struct CountingBackend {
+        inner: FixedBackend,
+        current_calls: Cell<usize>,
+    }
+
+    impl CountingBackend {
+        fn new() -> CountingBackend {
+            CountingBackend {
+                inner: FixedBackend::new(),
+                current_calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl Backend for CountingBackend {
+        fn identity(&self) -> Identity {
+            self.inner.identity()
+        }
+
+        fn status(&self) -> StatusInfo {
+            self.inner.status()
+        }
+
+        fn current(
+            &self,
+            selection: &Selection,
+            max_rows: u32,
+        ) -> Result<TickData, BackendError> {
+            self.current_calls
+                .set(self.current_calls.get().saturating_add(1));
+            self.inner.current(selection, max_rows)
         }
     }
 
@@ -2227,13 +2303,48 @@ mod tests {
 
     #[test]
     fn conn_subscribe_does_no_block_or_backend_work_before_the_next_tick() {
-        let mut rig = ready_bin(Level::Observe);
-        rig.subscribe(2, selection(1), 1_000);
-        rig.pump(usize::MAX);
-        rig.out.clear();
-        assert!(rig.backend.current.is_empty());
-        assert_eq!(rig.hub.queued(rig.conn.id()), Pools::default());
-        assert_eq!(rig.streams.generation(crate::registry::SelId(1)), Some(0));
+        let limits = Limits::for_level(Level::Observe);
+        let mut hub = SendHub::new(queue_limits(&limits));
+        let id = hub.add(1000, 0);
+        let peer = Peer { uid: 1000, pid: 7 };
+        let mut conn = Conn::new(id, Level::Observe, peer, &limits, 0);
+        let backend = CountingBackend::new();
+        let mut streams = SelectionStreams::new(StreamLimits {
+            bounds: BlockBounds {
+                max_rows: limits.max_rows,
+                max_block_bytes: limits.max_block_bytes,
+            },
+        });
+        let mut input = client_prefix(1);
+        input.extend_from_slice(&req(1, "hello"));
+        conn.on_bytes(&input, 0, &mut hub, &backend, &mut streams);
+        let _ = drain_hub(&mut hub, id, 0);
+        assert_eq!(conn.state(), State::Ready);
+
+        conn.execute(
+            &Dispatch {
+                corr: 2,
+                call: Call::Subscribe(SubscribeArgs {
+                    selection: selection(1),
+                    interval_ms: 1_000,
+                }),
+            },
+            0,
+            &mut hub,
+            &backend,
+            &mut streams,
+        );
+        assert_eq!(backend.current_calls.get(), 0);
+        assert_eq!(conn.subscriptions(), 1);
+        assert_eq!(streams.subscribers(), 1);
+        assert_eq!(hub.queued(id).live, 0);
+        assert_eq!(hub.queued(id).query, 0);
+        let raw = raw_frames(&drain_hub(&mut hub, id, 0));
+        assert_eq!(raw.len(), 1);
+        assert_eq!((raw[0].0, raw[0].1), (FrameType::Rep.code(), 2));
+        assert!(check_rep(text(payload(&raw[0].2)).as_bytes(), false)
+            .expect("subscribe reply")
+            .ok);
     }
 
     #[test]
@@ -2323,12 +2434,24 @@ mod tests {
 
     #[test]
     fn conn_unsubscribe_pinned_tick_is_counted_in_blocks() {
-        let mut rig = subscribe_then_tick(true);
+        let mut rig = subscribe_then_tick(false);
+        assert!(rig.hub.head(rig.conn.id(), rig.now).is_some());
         rig.execute(3, Call::Unsubscribe(2));
         let raw = raw_frames(&rig.finish());
-        assert_eq!(raw[0].0, FrameType::Rep.code());
-        assert_eq!(raw[1].0, FrameType::End.code());
-        assert_end_ok(&raw[1].2, 1, 0, "unsubscribed");
+        let block = raw
+            .iter()
+            .position(|frame| frame.0 == FrameType::Block.code() && frame.1 == 2)
+            .expect("pinned block remains before unsubscribe replies");
+        let rep = raw
+            .iter()
+            .position(|frame| frame.0 == FrameType::Rep.code() && frame.1 == 3)
+            .expect("unsubscribe reply");
+        let end = raw
+            .iter()
+            .position(|frame| frame.0 == FrameType::End.code() && frame.1 == 2)
+            .expect("unsubscribe end");
+        assert!(block < rep && rep < end);
+        assert_end_ok(&raw[end].2, 1, 0, "unsubscribed");
     }
 
     #[test]
@@ -2397,49 +2520,78 @@ mod tests {
             "{\"verb\":\"current\",\"args\":{\"selection\":{\"entities\":[{\"inc\":1}],\
              \"metrics\":[\"m\"]}}}",
         );
-        let before = rig.conn.outstanding();
         rig.send(&raw_req(6, &current));
+        let subscribe = String::from(
+            "{\"verb\":\"subscribe\",\"args\":{\"selection\":{\"entities\":[{\"inc\":1}],\
+             \"metrics\":[\"m\"]},\"interval_ms\":1000}}",
+        );
+        rig.send(&raw_req(7, &subscribe));
+        rig.send(&req(8, "status"));
+        rig.execute(9, Call::Unsubscribe(99));
         let raw = raw_frames(&rig.finish());
-        assert_eq!(before, 4);
+        assert_eq!(rig.conn.outstanding(), 4);
         assert_eq!(rig.conn.state(), State::Ready);
         assert!(raw
             .iter()
-            .any(|frame| is_error(&frame.2, Code::TooManyRequests)));
-
-        rig.out.clear();
-        rig.send(&req(7, "status"));
-        let raw = raw_frames(&rig.finish());
-        assert_eq!(raw.len(), 1);
-        let body = text(payload(&raw[0].2));
-        assert!(check_rep(body.as_bytes(), false).expect("status").ok);
-
-        rig.out.clear();
-        rig.execute(8, Call::Unsubscribe(99));
-        let raw = raw_frames(&rig.finish());
-        assert_eq!(raw.len(), 1);
-        assert!(is_error(&raw[0].2, Code::NotFound));
-        assert_eq!(rig.conn.state(), State::Ready);
-
-        let one = rig.conn.pending.keys().next().copied().expect("pending");
-        rig.conn.pending.remove(&one);
-        rig.pump(usize::MAX);
-        rig.out.clear();
-        rig.send(&raw_req(6, &current));
-        let raw = raw_frames(&rig.finish());
+            .any(|frame| frame.1 == 6 && is_error(&frame.2, Code::TooManyRequests)));
         assert!(raw
             .iter()
-            .any(|frame| is_error(&frame.2, Code::UnknownVerb)));
+            .any(|frame| frame.1 == 7 && is_error(&frame.2, Code::TooManyRequests)));
+        let status = raw
+            .iter()
+            .find(|frame| frame.1 == 8 && frame.0 == FrameType::Rep.code())
+            .expect("status reply");
+        assert!(check_rep(text(payload(&status.2)).as_bytes(), false)
+            .expect("status")
+            .ok);
+        assert!(raw
+            .iter()
+            .any(|frame| frame.1 == 9 && is_error(&frame.2, Code::NotFound)));
+
+        rig.conn.retry_pending(rig.now, &mut rig.hub, &rig.backend);
+        assert_eq!(rig.conn.outstanding(), 3);
+        rig.current(10, sel);
+        assert_eq!(rig.conn.outstanding(), 4);
+        let retried = raw_frames(&rig.finish());
+        let current_rep = retried
+            .iter()
+            .find(|frame| frame.0 == FrameType::Rep.code() && frame.1 == 10)
+            .expect("current accepted after retry freed one request");
+        assert!(check_rep(text(payload(&current_rep.2)).as_bytes(), false)
+            .expect("current reply")
+            .ok);
     }
 
     #[test]
     fn conn_closed_stops_every_push_path() {
-        let mut rig = ready_bin(Level::Observe);
+        let mut limits = Limits::for_level(Level::Observe);
+        limits.control_queue_bytes = 1;
+        let mut rig = Rig::with(Level::Observe, limits);
+        rig.send(&client_prefix(1));
+        rig.pump(usize::MAX);
+        rig.out.clear();
+        rig.send(&req(1, "hello"));
+        rig.pump(usize::MAX);
+        rig.out.clear();
         rig.subscribe(2, selection(1), 1_000);
         rig.pump(usize::MAX);
         rig.out.clear();
-        rig.conn.close_for(Code::SlowClient, &mut rig.hub);
-        let subscribers = rig.streams.subscribers();
+        let current_selection = selection(3);
+        rig.backend
+            .current
+            .insert(current_selection.clone(), Ok(current_data(6)));
+        assert!(rig
+            .hub
+            .push_control(rig.conn.id(), Arc::from(vec![0u8]), rig.now)
+            .is_ok());
+        rig.current(3, current_selection);
+        assert_eq!(rig.conn.close_code(), Some(Code::SlowClient));
+        assert_eq!(rig.hub.queued(rig.conn.id()).query, 0);
+        assert_eq!(rig.conn.outstanding(), 0);
+        assert_eq!(rig.conn.subscriptions(), 1);
+        assert_eq!(rig.streams.subscribers(), 1);
         let before = rig.hub.queued(rig.conn.id());
+        let subscribers = rig.streams.subscribers();
         rig.conn
             .end_subscription(2, Code::Internal, &Detail::Empty, rig.now, &mut rig.hub);
         assert_eq!(rig.conn.subscriptions(), 0);
@@ -2450,7 +2602,6 @@ mod tests {
         rig.subscribe(5, selection(3), 1_000);
         rig.execute(6, Call::Unsubscribe(2));
         rig.conn.retry_pending(rig.now, &mut rig.hub, &rig.backend);
-        let sel = selection(1);
         let tick = crate::tick::LiveTick::new(
             1,
             None,
@@ -2460,7 +2611,6 @@ mod tests {
         rig.conn.push_tick(2, &tick, rig.now, &mut rig.hub);
         assert_eq!(rig.hub.queued(rig.conn.id()), before);
         assert_eq!(rig.streams.subscribers(), subscribers);
-        let _ = sel;
     }
 
     #[test]

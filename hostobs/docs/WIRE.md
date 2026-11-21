@@ -533,9 +533,11 @@ quarter of the global ones, so one uid (up to 8 observe connections, D-W20) can 
 quarter of either pool, however slowly it reads.
 
 The server unifies `tick_ms`, `max_rows` and `max_block_bytes` across observe and operator
-(`tick_ms` the larger, row and byte bounds the smaller), then clamps every level's
-`max_block_bytes` to that level's `query_queue_bytes` and `client_queue_bytes`. Thus a block that
-passes the bound always fits an empty Query pool, and `max_block_bytes <= query_queue_bytes`.
+(`tick_ms` the larger; row and configured byte bounds the smaller). It clamps the shared byte bound
+to the smallest `query_queue_bytes` and `client_queue_bytes` of both levels, then announces and
+enforces that same value for both. Thus a block that passes the bound always fits an empty Query
+pool for either level, and `max_block_bytes <= query_queue_bytes` and `client_queue_bytes` hold for
+both.
 
 **Reply sizes.** `max_reply_bytes = (control_queue_bytes − 256 KiB) / max_outstanding` = 448 KiB, so the
 replies of every outstanding request plus 256 KiB of END/EVT frames always fit one control queue; a

@@ -115,8 +115,8 @@ impl ServerLimits {
 
     /// These bounds with the server-wide facts unified (design S20): `stall_ms` and
     /// `frame_completion_ms` are widest, `tick_ms` is the larger observe/operator value, and
-    /// `max_rows`/`max_block_bytes` are their smaller values. Each level's `max_block_bytes`
-    /// is then clamped to its own Query and Live connection pools. [`Server::new`] applies it.
+    /// `max_rows`/`max_block_bytes` are their smaller values. The shared block limit is also clamped
+    /// to both levels' Query and Live connection pools. [`Server::new`] applies it.
     #[must_use]
     pub fn unified(&self) -> ServerLimits {
         let first = self.observe.stall_ms.max(self.operator.stall_ms);
@@ -129,15 +129,24 @@ impl ServerLimits {
         let max_block_bytes = self
             .observe
             .max_block_bytes
-            .min(self.operator.max_block_bytes);
+            .min(self.operator.max_block_bytes)
+            .min(self.observe.query_queue_bytes)
+            .min(self.observe.client_queue_bytes)
+            .min(self.operator.query_queue_bytes)
+            .min(self.operator.client_queue_bytes);
         let mut out = *self;
         for limits in [&mut out.observe, &mut out.operator, &mut out.observer] {
             limits.stall_ms = stall_ms;
             limits.frame_completion_ms = frame_completion_ms;
-            limits.max_block_bytes = max_block_bytes
-                .min(limits.query_queue_bytes)
-                .min(limits.client_queue_bytes);
         }
+        for limits in [&mut out.observe, &mut out.operator] {
+            limits.max_block_bytes = max_block_bytes;
+        }
+        out.observer.max_block_bytes = self
+            .observer
+            .max_block_bytes
+            .min(self.observer.query_queue_bytes)
+            .min(self.observer.client_queue_bytes);
         for limits in [&mut out.observe, &mut out.operator] {
             limits.tick_ms = tick_ms;
             limits.max_rows = max_rows;
@@ -548,12 +557,12 @@ mod tests {
     use hostobs_proto::hub::{ConnId, LiveOutcome, Pools, QueryOutcome, TickForms};
 
     use super::{Accept, Server, ServerLimits, SERVED};
-    use crate::backend::{FixedBackend, TickInfo, TierInfo};
+    use crate::backend::{FixedBackend, TickData, TickInfo, TierInfo};
     use crate::codes::Code;
     use crate::conn::{Peer, State, SERVER_MINOR};
     use crate::encode::{control_frame, server_prefix};
     use crate::limits::{Level, Limits};
-    use crate::registry::{SelectionCaps, SubKey};
+    use crate::registry::{Delivery, SelectionCaps, SubKey};
     use crate::selection::{Sel, Selection};
     use crate::tick::BlockBounds;
 
@@ -798,13 +807,15 @@ mod tests {
         Selection::new(vec![Sel::Inc(inc)], vec![String::from("m")]).expect("selection")
     }
 
-    /// Register a subscription directly: the 2c verbs are not announced until 2d.
+    /// Register a real Conn and registry subscription before 2d serves the wire verb.
     fn register(d: &mut Driver, id: ConnId, corr: u32, inc: u64) {
         let Some(conn) = d.server.conn(id) else {
             return;
         };
         let level = conn.level();
-        let uid = conn.peer().uid;
+        if !level.serves_blocks() {
+            return;
+        }
         let limits = d.server.limits.get(level).expect("served level");
         let caps = SelectionCaps {
             per_uid: limits.max_uid_selections,
@@ -813,11 +824,15 @@ mod tests {
         if caps.per_uid == 0 || caps.per_probe == 0 {
             return;
         }
-        let outcome =
-            d.server
-                .streams
-                .subscribe(SubKey { conn: id, corr }, uid, 1, &selection(inc), caps);
-        assert!(outcome.is_ok());
+        let now_ns = d.now;
+        let selected = selection(inc);
+        d.server.drive(id, |conn, hub, backend, streams| {
+            conn.subscribe_for_server_test(corr, selected, now_ns, hub, backend, streams);
+        });
+        assert_eq!(
+            d.server.conn(id).map(|conn| conn.subscriptions()),
+            Some(1)
+        );
     }
 
     // ---- accept rows (WIRE.md 5.1 and 5.4 `refuse`) ----
@@ -988,22 +1003,50 @@ mod tests {
     fn path_idle(d: &mut Driver, level: Level) {
         let id = d.open(level, 1000);
         d.ready(id);
-        register(d, id, 2, 1);
         d.tick(300_001 * MS);
         assert!(d.server.is_closed(id));
+    }
+
+    fn path_frame_too_large(d: &mut Driver, level: Level) {
+        let id = d.open(level, 1000);
+        register(d, id, 2, 1);
+        d.send(id, &client_prefix(1));
+        d.send(id, &[0x40, 0x9C, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0]);
+        assert_eq!(d.close_code(id), Some(Code::FrameTooLarge));
+    }
+
+    fn path_request_deadline(d: &mut Driver, level: Level) {
+        let id = d.open(level, 1000);
+        register(d, id, 2, 1);
+        d.send(id, &client_prefix(1));
+        d.send(id, &[0x0C]);
+        let deadline_ms = d
+            .server
+            .limits()
+            .get(level)
+            .expect("served level")
+            .request_deadline_ms;
+        d.tick(u64::from(deadline_ms).saturating_mul(MS).saturating_add(1));
+        assert_eq!(d.close_code(id), Some(Code::Deadline));
     }
 
     fn path_hello_timer(d: &mut Driver, level: Level) {
         let id = d.open(level, 1000);
         register(d, id, 2, 1);
         d.send(id, &client_prefix(1));
-        d.tick(5_001 * MS);
+        let deadline_ms = d
+            .server
+            .limits()
+            .get(level)
+            .expect("served level")
+            .hello_deadline_ms;
+        d.tick(u64::from(deadline_ms).saturating_mul(MS).saturating_add(1));
         assert!(d.server.is_closed(id));
     }
 
     #[test]
     fn r22_every_close_path_returns_counters_pools_and_hub_to_zero() {
-        let paths: [(&str, Path); 10] = [
+        let paths: [(&str, Path); 12] = [
             ("silent eof", path_silent_eof),
             ("unknown mode", path_unknown_mode),
             ("major mismatch", path_major_mismatch),
@@ -1013,11 +1056,17 @@ mod tests {
             ("shutdown", path_shutdown),
             ("slow client from the hub", path_slow_client_from_the_hub),
             ("idle", path_idle),
+            ("frame too large", path_frame_too_large),
+            ("request deadline", path_request_deadline),
             ("hello timer", path_hello_timer),
         ];
+        let mut limits = ServerLimits::new();
+        limits.observe.hello_deadline_ms = 10_000;
+        limits.operator.hello_deadline_ms = 10_000;
+        limits.observer.hello_deadline_ms = 10_000;
         for level in SERVED {
             for &(name, path) in &paths {
-                let mut d = Driver::new();
+                let mut d = Driver::with(limits);
                 path(&mut d, level);
                 d.settle_all();
                 assert_clean(&d, name);
@@ -1503,11 +1552,118 @@ mod tests {
             assert!(limits.max_block_bytes <= limits.client_queue_bytes);
         }
         assert_eq!(unified.observe.max_block_bytes, 500);
-        assert_eq!(unified.operator.max_block_bytes, 1_500);
+        assert_eq!(unified.operator.max_block_bytes, 500);
         let server = Server::new(wrong, FixedBackend::new());
         assert_eq!(server.streams().live_selections(), 0);
         assert_eq!(server.limits(), &unified);
         assert_eq!(server.limits().stream_limits(), unified.stream_limits());
+    }
+
+    #[test]
+    fn server_shared_stream_uses_both_levels_smallest_block_pool() {
+        let mut limits = ServerLimits::new();
+        limits.observe.max_block_bytes = 4_000;
+        limits.operator.max_block_bytes = 4_000;
+        limits.observe.query_queue_bytes = 4_000;
+        limits.observe.client_queue_bytes = 4_000;
+        limits.operator.query_queue_bytes = 2_000;
+        limits.operator.client_queue_bytes = 500;
+
+        let selection = selection(1);
+        let incarnations: Vec<u64> = (1..=20).collect();
+        let data = TickData::example(1, &incarnations, &["m"]);
+        let encoded = crate::tick::query_block(
+            data.clone(),
+            BlockBounds {
+                max_rows: 4_096,
+                max_block_bytes: u32::MAX,
+            },
+        )
+        .expect("fixture fits the large bound");
+        assert!(encoded.len() > 500 && encoded.len() <= 1_500);
+        let mut backend = FixedBackend::new();
+        backend.current.insert(selection.clone(), Ok(data));
+        let mut server = Server::new(limits, backend);
+        let uid = 42;
+        let Accept::Accepted(observe) =
+            server.accept(Level::Observe, Some(Peer { uid, pid: 7 }), 0)
+        else {
+            panic!("observe accepted");
+        };
+        let Accept::Accepted(operator) =
+            server.accept(Level::Operator, Some(Peer { uid, pid: 8 }), 0)
+        else {
+            panic!("operator accepted");
+        };
+
+        for level in [Level::Observe, Level::Operator] {
+            assert_eq!(
+                server.limits().get(level).expect("served").max_block_bytes,
+                500
+            );
+        }
+        assert_eq!(server.limits().stream_limits().bounds.max_block_bytes, 500);
+
+        let observe_limits = server.limits().get(Level::Observe).expect("observe");
+        let operator_limits = server.limits().get(Level::Operator).expect("operator");
+        server
+            .streams
+            .subscribe(
+                SubKey {
+                    conn: observe,
+                    corr: 2,
+                },
+                uid,
+                1,
+                &selection,
+                SelectionCaps {
+                    per_uid: observe_limits.max_uid_selections,
+                    per_probe: observe_limits.max_selections,
+                },
+            )
+            .expect("observe joins the stream");
+        server
+            .streams
+            .subscribe(
+                SubKey {
+                    conn: operator,
+                    corr: 3,
+                },
+                uid,
+                1,
+                &selection,
+                SelectionCaps {
+                    per_uid: operator_limits.max_uid_selections,
+                    per_probe: operator_limits.max_selections,
+                },
+            )
+            .expect("operator joins the same stream");
+
+        let deliveries = server.streams.on_tick(&server.backend);
+        assert_eq!(deliveries.len(), 1);
+        match &deliveries[0] {
+            Delivery::End { to, code, .. } => {
+                assert_eq!(
+                    to,
+                    &[
+                        SubKey {
+                            conn: observe,
+                            corr: 2,
+                        },
+                        SubKey {
+                            conn: operator,
+                            corr: 3,
+                        },
+                    ]
+                );
+                assert_eq!(*code, Code::Internal);
+            }
+            Delivery::Push { .. } => panic!("oversize shared tick was delivered"),
+        }
+        assert_eq!(server.streams.live_selections(), 0);
+        assert_eq!(server.streams.subscribers(), 0);
+        server.finish(observe);
+        server.finish(operator);
     }
 
     #[test]

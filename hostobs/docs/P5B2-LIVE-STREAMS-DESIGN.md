@@ -441,12 +441,12 @@ judged for a join: no new stream is created; controller decision, finding 4); se
 requesting connection's level values (finding 14). Every leave
 decrements the ref, removes a 0 ref and an empty uid entry, and destroys an empty stream.
 **S20 Server-wide stream bounds.** `ServerLimits::unified()` also sets, for observe and operator:
-`tick_ms` to the larger of the two (one sampler tick), `max_rows` and `max_block_bytes` to the smaller
-of the two (a stream may serve both levels), and then clamps each level's `max_block_bytes` to
-`min(max_block_bytes, query_queue_bytes, client_queue_bytes)` of that level, so the invariant
-`max_block_bytes <= query_queue_bytes` (and `<= client_queue_bytes`) holds for every built server (no
-panic: a misconfiguration is clamped, and a `Server::new` test asserts the invariant on the defaults and
-on a deliberately wrong input). What hello announces is what the server enforces.
+`tick_ms` to the larger of the two (one sampler tick), `max_rows` to the smaller row limit, and one
+shared `max_block_bytes` to the smaller configured byte limit, clamped again by the query and client
+queue caps of both levels. Thus the same block bound is announced and enforced for either level and
+`max_block_bytes <= query_queue_bytes` (and `<= client_queue_bytes`) holds for both levels in every
+built server (no panic: a misconfiguration is clamped; a `Server::new` test covers defaults, unequal
+pool caps and a deliberately wrong input). What hello announces is what the server enforces.
 `ServerLimits::stream_limits()` = `StreamLimits { bounds: BlockBounds { max_rows, max_block_bytes } }`
 of the unified observe level (equal to operator's after unification). `min_interval_ms`,
 `max_uid_selections` and `max_selections` stay per level (S19 passes the requesting level's caps).
@@ -482,7 +482,7 @@ ENDs). `drive` runs `enforce_control` after each. Every new push path (`push_tic
 `is_closed()`, and stops after any push that closes the conn (S6, S7, S15, S17, S23): no later push,
 `end_stream` or registry change is made on a closed conn except S17's `subs.remove`.
 **S28 Precedence with the new verbs** (R11 numbering): (2) `corr` 0 or in use (S4); (9) served flags flip
-in 2c; (10) `too-many-requests` (S5); (11) argument schemas (S1, S8, `sub` u32); execution budgets
+in 2d; (10) `too-many-requests` (S5); (11) argument schemas (S1, S8, `sub` u32); execution budgets
 (S9) come after the schema, then the backend. `forbidden` / `binary-required` keep coming from the full
 table.
 **S29 END payload.** `end_ok`: `{"ok":true,"blocks":B,"dropped":D,"next":null,"reason":"<r>"}`;
@@ -628,9 +628,9 @@ implementer's choice.
 - `conn_idle_*`: not idle with a subscription or a pending request; idle again after unsubscribe.
 - `conn_server_end_*`: `end_subscription` budget rows / internal; unknown corr ignored.
 - `conn_status_dropped_blocks_from_hub` (`conn_hello_verbs_at_block_levels` moves to 2d with the flip).
-- R18/R22: counters, `uid_pools`, `global_pools`, registry counts back to zero after every close path with
-  subscriptions (slow-client, shutdown, fatal request, frame-too-large, deadline, Draining done, driver
-  finish) -- through `Server::finish`.
+- R18/R22: counters, `uid_pools`, `global_pools`, and registry counts return to zero after every close
+  path with a real connection-side subscription (slow-client, shutdown, fatal request, frame-too-large,
+  request deadline, Draining done, driver finish) -- through `Server::finish`.
 - Every client-visible sequence is replayed through the Rust client's checks where possible:
   `check_rep`/`check_end`, `decode_block_with` + `StreamDicts::accept`, END `blocks == received`.
 

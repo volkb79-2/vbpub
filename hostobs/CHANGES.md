@@ -16,15 +16,16 @@
   connection closes; `end_subscription` on a closed connection only removes the connection-side key,
   leaving registry release to `Server::finish`.
 - **`bins/probe/src/server.rs`**: the server owns `SelectionStreams` built from unified stream bounds;
-  observe/operator now share `tick_ms`, `max_rows` and the smaller `max_block_bytes`, each clamped to
-  its Query and Live pools. `drive` passes the registry, `on_eof` uses `drive`, `finish` releases the
-  connection's registry entries before removing its hub state, and `Server::streams()` exposes the
-  counters. `status` takes `dropped_blocks` from the hub and ignores the backend's field.
-- **Tests**: every P5b-2c section 5.3 case, including all `current`, subscribe, unsubscribe,
-  outstanding, corr-in-use, Draining, idle, server-ended stream and status cases; every close path
-  verifies registry, hub and connection counters return to zero. `Conn` sequences are parsed by the
-  Rust client's REP/END checks and block dictionary state. The 2,000-step stream-operation hostile run
-  checks registry and hub exactness after termination.
+  observe/operator now share `tick_ms`, `max_rows` and one `max_block_bytes`, clamped to the smallest
+  Query and Live pool cap of both levels. `drive` passes the registry, `on_eof` uses `drive`, `finish`
+  releases the connection's registry entries before removing its hub state, and `Server::streams()`
+  exposes the counters. `status` takes `dropped_blocks` from the hub and ignores the backend's field.
+- **Tests**: the P5b-2c section 5.3 cases cover `current`, subscribe, unsubscribe, outstanding,
+  corr-in-use, Draining, idle, server-ended stream and status behavior. The close-path matrix includes
+  real connection-side subscriptions for slow-client, shutdown, fatal request, frame-too-large, request
+  deadline, Draining completion and driver finish, then checks registry, hub and connection counters.
+  `Conn` sequences are parsed by the Rust client's REP/END checks and block dictionary state. The
+  2,000-step stream-operation hostile run checks registry and hub exactness after termination.
 - **`WIRE.md`**: the `current` pre-REP resolution/size rule and pending retry, subscription ownership
   and next-tick delivery, unsubscribe counts, Draining completion, outstanding accounting, unified
   block bounds, idle/Draining rows and decisions D-W29/D-W30.
