@@ -35,15 +35,15 @@ registry = ["ghcr.io"]
 #   vm-lab <- vmscreen  (declared release order)
 #   rigor-record <- cli-extended  (declared release order)
 #   test-policy <- none  (declared release order)
-#   tls-edge <- none  (declared release order)
+#   tls-edge <- cli-extended  (declared release order)
 #   iogovmon <- none  (declared release order)
 #   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom, run-gate-project, cgprofile, augeaswrap  (declared release order)
 #     consumes first-party wheels: cli-extended, ciu, cmru, topos, run-gate-project, cgprofile, augeaswrap, nyxloom
 #   tester-base <- none  (declared release order)
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
-#   L0: cli-extended, assay, test-policy, tls-edge, iogovmon, tester-base
-#   L1: augeaswrap, tnt, ciu, fleetd, nyxloom, pwmcp, iobench, vmscreen, rigor-record
+#   L0: cli-extended, assay, test-policy, iogovmon, tester-base
+#   L1: augeaswrap, tnt, ciu, fleetd, nyxloom, pwmcp, iobench, vmscreen, rigor-record, tls-edge
 #   L2: cgprofile, topos, vm-lab
 #   L3: run-gate-project
 #   L4: cmru
@@ -246,7 +246,7 @@ depends_on = ["cli-extended"]
 
 [orchestration.project.tls-edge]
 config = "tls-edge/cmru.toml"
-depends_on = []
+depends_on = ["cli-extended"]
 
 # iobench (libraries/iobench, IOB-REL-01): a stdlib measurement core whose `iobench` CLI shell
 # adopts cli-extended (the wheel requires cli-extended>=0.4.0, CX-D1), so the release preflight

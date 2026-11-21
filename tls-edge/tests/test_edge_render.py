@@ -35,27 +35,28 @@ def test_no_alternate_entrypoint_in_any_mode(tmp_path, mode):
     cfg = merge(defaults_config(), {"tls": {"mode": mode}, **MODES[mode]})
     out = render_to(tmp_path, cfg)
     static = yaml.safe_load((out / "traefik.yml").read_text())
-    assert set(static["entryPoints"]) == {
-        "ping", "web", "websecure", "mattermost-calls-tcp", "mattermost-calls-udp"
-    }
+    assert set(static["entryPoints"]) == {"ping", "web", "websecure"}
 
 
-def test_published_ports_are_80_443_8443_pair(tmp_path):
+def test_generic_defaults_publish_only_http_and_https_tcp(tmp_path):
     out = render_to(tmp_path, defaults_config())
     compose = yaml.safe_load((out / "docker-compose.yml").read_text())
     assert sorted(compose["services"]["traefik"]["ports"]) == [
-        "443:443", "80:80", "8443:8443/tcp", "8443:8443/udp",
+        "443:443/tcp", "80:80/tcp",
     ]
     assert "ports" not in compose["services"]["dockerproxy"]
 
 
-def test_calls_off_publishes_only_80_and_443(tmp_path):
-    cfg = merge(defaults_config(), {"calls": {"enabled": False}})
+def test_http3_publishes_udp_on_https_port_and_keeps_tcp(tmp_path):
+    cfg = merge(defaults_config(), {"http3": {"enabled": True}, "calls": {"enabled": False}})
     out = render_to(tmp_path, cfg)
     compose = yaml.safe_load((out / "docker-compose.yml").read_text())
-    assert sorted(compose["services"]["traefik"]["ports"]) == ["443:443", "80:80"]
+    assert sorted(compose["services"]["traefik"]["ports"]) == [
+        "443:443/tcp", "443:443/udp", "80:80/tcp",
+    ]
     static = yaml.safe_load((out / "traefik.yml").read_text())
     assert "mattermost-calls-tcp" not in static["entryPoints"]
+    assert static["entryPoints"]["websecure"]["http3"] == {"advertisedPort": 443}
 
 
 def test_http_off_drops_port_80(tmp_path):

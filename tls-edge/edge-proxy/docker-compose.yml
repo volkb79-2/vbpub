@@ -61,14 +61,10 @@ services:
     ports:
 
       # HTTP: received and immediately redirected to HTTPS by Traefik.
-      - "80:80"
+      - "80:80/tcp"
 
       # HTTPS: host-name routing, one certificate per service host name.
-      - "443:443"
-
-      # Mattermost Calls: the same public port over TCP and UDP.
-      - "8443:8443/tcp"
-      - "8443:8443/udp"
+      - "443:443/tcp"
 
     volumes:
 

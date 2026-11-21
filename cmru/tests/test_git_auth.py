@@ -138,7 +138,7 @@ def test_run_remote_git_uses_secret_only_for_matching_origin(monkeypatch, tmp_pa
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(git_auth.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_auth, "run_process", fake_run)
     result = git_auth.run_remote_git(
         tmp_path, "push", "origin", "HEAD:refs/heads/main", auth=auth,
         capture_output=True, text=True,
@@ -170,7 +170,7 @@ def test_run_local_git_strips_publisher_tokens_from_hook_environment(monkeypatch
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(git_auth.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_auth, "run_process", fake_run)
 
     result = git_auth.run_local_git(tmp_path, "commit", "-m", "prepare", check=True)
 
@@ -194,7 +194,7 @@ def test_run_local_git_scrubs_caller_supplied_environment_without_mutating_it(
     }
     calls = []
     monkeypatch.setattr(
-        git_auth.subprocess, "run",
+        git_auth, "run_process",
         lambda argv, **kwargs: calls.append((argv, kwargs))
         or subprocess.CompletedProcess(argv, 0, stdout="", stderr=""),
     )
@@ -203,6 +203,29 @@ def test_run_local_git_scrubs_caller_supplied_environment_without_mutating_it(
 
     assert calls[0][1]["env"] == {"KEEP": "value"}
     assert supplied["GITHUB_PUSH_PAT"] == "publisher-secret"
+
+
+@pytest.mark.parametrize("remote", [False, True])
+@pytest.mark.parametrize("capture_output,expected", [(None, False), (True, True)])
+def test_git_helpers_map_capture_output_to_shared_capture(
+    monkeypatch, tmp_path, remote, capture_output, expected,
+):
+    calls = []
+    monkeypatch.setattr(
+        git_auth, "run_process",
+        lambda argv, **kwargs: calls.append((argv, kwargs))
+        or subprocess.CompletedProcess(argv, 0),
+    )
+    options = {} if capture_output is None else {"capture_output": capture_output}
+
+    if remote:
+        git_auth.run_remote_git(tmp_path, "status", auth=None, **options)
+    else:
+        git_auth.run_local_git(tmp_path, "status", **options)
+
+    assert calls[0][1]["capture"] is expected
+    assert calls[0][1]["cwd"] == tmp_path
+    assert "capture_output" not in calls[0][1]
 
 
 def test_without_publisher_tokens_temporarily_clears_and_restores_only_present_keys(
@@ -293,7 +316,7 @@ def test_run_remote_git_fetch_uses_fetch_origin_auth_scope(monkeypatch, tmp_path
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(git_auth.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_auth, "run_process", fake_run)
 
     result = git_auth.run_remote_git(tmp_path, "fetch", "--prune", "origin", auth=auth)
 
@@ -383,7 +406,7 @@ def test_run_remote_git_does_not_forward_tokens_to_a_different_remote(monkeypatc
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(git_auth.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_auth, "run_process", fake_run)
     git_auth.run_remote_git(tmp_path, "push", "origin", "HEAD:main", auth=auth)
 
     argv, kwargs = calls[0]
@@ -400,7 +423,7 @@ def test_run_remote_git_uses_explicit_environment_even_without_git_arguments(mon
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(git_auth.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_auth, "run_process", fake_run)
 
     result = git_auth.run_remote_git(tmp_path, auth=None, env={"SENTINEL": "provided"})
 

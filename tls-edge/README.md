@@ -2,15 +2,18 @@
 
 tls-edge provides TLS termination as a shared host service: one hardened
 Traefik v3 container handles HTTPS (port 443, one host name per service; port 80
-for the redirect and ACME HTTP-01) for Docker Compose stacks on a host. Mattermost Calls support
-is on by default and adds raw TCP and UDP media forwarding on public port 8443
-(`[tls_edge.calls] enabled = false` turns it off).
+for the redirect and ACME HTTP-01) for Docker Compose stacks on a host. HTTP/2
+and HTTP/1.1 use the shared TCP listener; HTTP/3 over QUIC/UDP is an optional
+instance-wide feature. The Mattermost Calls TCP+UDP media preset is also
+optional and disabled by default.
 Consumers join the shared `ingress_public` network and declare labels — TLS
 certificates are handled by the edge, including automatic issuance and
 zero-downtime renewal via Let's Encrypt. A docker-socket-proxy (POST denied)
 shields the Docker API from Traefik. See the
 [Calls design guide](docs/DESIGN-GUIDE.md) and
-[consumer instructions](docs/CONSUMERS.md).
+[consumer instructions](docs/CONSUMERS.md), plus the [transport and instance
+configuration guide](docs/TRANSPORTS-AND-CONFIGURATION.md) for HTTP/2, HTTP/3,
+QUIC, server events, and where operators configure the shared endpoint.
 
 ---
 
@@ -19,14 +22,18 @@ shields the Docker API from Traefik. See the
 On a Linux host with Docker, `git`, and `python3` 3.13 or 3.14 (x86_64):
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.py
-sudo python3 get.py install --variant py313      # py314 on a 3.14 host
-cd /srv/tls-edge-instance/stack && sudo ./ciu up
+TAG='tls-edge-vX.Y.Z' # replace with the CLI-enabled release tag
+curl -fsSLO "https://raw.githubusercontent.com/volkb79-2/vbpub/${TAG}/tls-edge/get.py"
+sudo python3 get.py install --version "$TAG" --variant py313 # py314 on a 3.14 host
+sudo /srv/tls-edge-instance/bin/tls-edge configure
+cd /srv/tls-edge-instance/stack
+sudo ./ciu check && sudo ./ciu up --dry-run && sudo ./ciu up
 ```
 
 `get.py` downloads the release bundle, **verifies its SHA256 and manifest**, builds
-a private venv from the **bundled** `ciu` and dependency wheels (offline, hash
-locked), and asks for the domain and certificate mode.  The instance lives in
+a private venv from the bundled `ciu`, the `tls-edge` CLI and dependency wheels
+(offline, hash locked). Configure the site after installation with
+`tls-edge configure`, which can also read a TOML answers file. The instance lives in
 `/srv/tls-edge-instance/stack`, a stable path that keeps the same ciu identity
 across updates.  Install, certificate configuration, adding a consumer, update,
 rollback and migrating a hand-made deployment are all in
@@ -60,6 +67,9 @@ highest semver — no separate "latest" release is used as the source of truth.
 
 ```
 tls-edge/
+  src/tls_edge_cli/            ← installed `tls-edge configure/show/validate` CLI
+  pyproject.toml                ← CLI wheel and optional interactive extra
+  requirements-runtime.txt      ← CLI runtime dependency set
   ciu-stack/                  ← templates + source of truth + ciu v2 deploy package
     ciu.defaults.toml.j2      ← full configuration contract with commentary
     ciu.compose.yml.j2        ← Compose template (Traefik + docker-socket-proxy)
@@ -327,8 +337,9 @@ when certbot prompts.  No DNS API key needed.  Requires manual action every
 ~60 days.  See Quickstart C above.
 
 **Port 80 note**: port 80 is on by default (HTTP→HTTPS redirect, required for
-`acme-http`).  Turn it off with `tls_edge.ports.expose_http = false` in your
-override and re-rendering.
+`acme-http`). Use `tls-edge configure` to turn it off for an installed CIU
+instance; for a standalone checkout, set `tls_edge.ports.expose_http = false`
+in the site override and re-render.
 
 **Static mode note**: both `live/<domain>/` and `archive/<domain>/` must be
 mounted.  Certbot uses relative symlinks between these two directories; mounting
@@ -343,7 +354,7 @@ only `live/` causes silent TLS failure inside the container.
 | Check | What it verifies |
 |---|---|
 | Stack health | Both containers report healthy (`docker inspect`) |
-| Port binding | 80, 443 and (Calls) TCP+UDP 8443 are bound on the expected interface |
+| Port binding | Configured HTTP/HTTPS ports and any enabled HTTP/3 or Calls sockets are bound on the expected interface |
 | TLS handshake | `openssl s_client` against the host FQDN; cert loaded (not the Traefik default self-signed) |
 | ACME volume | `acme.json` exists, is non-empty, and has mode 0600 |
 | Network | `ingress_public` network exists and Traefik is attached |

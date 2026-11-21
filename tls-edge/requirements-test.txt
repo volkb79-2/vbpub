@@ -6,4 +6,4 @@
 pytest>=8            # test runner (parametrize, tmp_path, monkeypatch)
 Jinja2>=3.1          # render_standalone.py and the ciu-stack templates
 PyYAML>=6.0          # consumer-examples / compose lint tests
-tomli_w>=1.0         # installer adapter seed + wizard answers
+tomli_w>=1.0         # runtime TOML writer used by the bundled CIU wheel
