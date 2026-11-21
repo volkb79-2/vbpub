@@ -5,11 +5,26 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 <!-- cmru: pending release notes begin -->
-### Added
-- Jitsi's registered consumer suite checks its real `websecure` route against tls-edge's rendered HTTPS/TLS defaults and optional HTTP/3 listener. JVB media stays direct on UDP 10000.
+
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
+
+## [3.1.1] - 2026-11-21
+<!-- cmru: generated -->
+<!-- cmru: source-end=5e6a00842ddfc7c02c4b8333eb4919566c01d81e -->
+
+### Fixed
+- fix(tls-edge): correct release notes and port contract (6b15d0c3e)
+
+### Testing
+- test(vss): check Jitsi against tls-edge defaults (47022cffc)
+- test(tls-edge): cover the repository Jitsi consumer (27a65b73b)
+
+<!-- cmru: pending release notes begin -->
+### Added
+- Jitsi's registered consumer suite checks its real `websecure` route against tls-edge's rendered HTTPS/TLS defaults and optional HTTP/3 listener. JVB media stays direct on UDP 10000.
+<!-- cmru: pending release notes end -->
 
 ## [3.1.0] - 2026-11-21
 <!-- cmru: generated -->
