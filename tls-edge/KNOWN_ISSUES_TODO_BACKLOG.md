@@ -191,7 +191,6 @@ sufficient for a searchable, persistent audit trail.
 - Drop the installer adapter's `git init` once ciu runs in a non-git standalone root (ciu CIU-163).
 - Multi-variant publication goes through `cmru handler tarball-publish --variant` (cmru KI-115); `scripts/publish-variants.py` is gone and
   a retained build-output record publishes like any other release.
-- Wheel freshness: `scripts/stage-wheels.py` refuses PyPI wheels younger than 14 days; a pinned older version needs a constraint file (not yet added).
 - Live migration of the hand-made deployment: planned in `docs/INSTALL.md`, not executed.
 
 ### ciu dev-mode integration: generate dev certs via a pre-compose hook
