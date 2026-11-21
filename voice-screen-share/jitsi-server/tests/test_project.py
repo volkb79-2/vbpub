@@ -240,9 +240,12 @@ def test_default_tls_edge_contract_accepts_jitsi_router_and_optional_http3(tmp_p
     entrypoint_name = labels[f"traefik.http.routers.{router}.entrypoints"]
     entrypoint = static_h2["entryPoints"][entrypoint_name]
     assert entrypoint["address"] == ":443"
+    assert "http3" not in entrypoint
     assert entrypoint["http"]["tls"]["certResolver"] == edge_h2["acme"]["resolver_name"]
     https_port = edge_h2["ports"]["https"]
-    assert f"{https_port}:443/tcp" in compose_h2["services"]["traefik"]["ports"]
+    h2_ports = compose_h2["services"]["traefik"]["ports"]
+    assert f"{https_port}:443/tcp" in h2_ports
+    assert f"{https_port}:443/udp" not in h2_ports
 
     edge_h3, static_h3, compose_h3 = _tls_edge_default(tmp_path / "edge-h3", http3=True)
     h3_entrypoint = static_h3["entryPoints"][entrypoint_name]

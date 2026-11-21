@@ -33,7 +33,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - BREAKING: the Calls media preset is disabled by default in 3.1.0; it was enabled on 8443/tcp+udp in 3.0.0. Existing Calls deployments must set `[tls_edge.calls] enabled = true` to retain those listeners.
 - HTTP/3 over QUIC/UDP is new in 3.1.0 and remains opt-in. It shares the HTTPS port and keeps the TCP listener for HTTP/1.1 and HTTP/2.
 - `get.py install` installs the offline bundle and CLI without site answers; run `tls-edge configure` afterward to write the instance's site config and `consumer.env`.
-- The CIU ACME startup fix mounts state outside the read-only configfile parents. The existing ACME volume name and `/var/lib/traefik/acme.json` path are preserved, so upgrades reuse certificates.
+- The CIU ACME startup fix mounts state outside the read-only configfile parents. The volume name and `acme.json` file at its root are preserved, so upgrades reuse certificates. Inside the container the file moved from `/etc/traefik/acme/acme.json` to `/var/lib/traefik/acme.json`.
 
 ## [3.0.0] - 2026-11-04
 <!-- cmru: generated -->
