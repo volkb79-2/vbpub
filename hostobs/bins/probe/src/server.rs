@@ -829,10 +829,7 @@ mod tests {
         d.server.drive(id, |conn, hub, backend, streams| {
             conn.subscribe_for_server_test(corr, selected, now_ns, hub, backend, streams);
         });
-        assert_eq!(
-            d.server.conn(id).map(|conn| conn.subscriptions()),
-            Some(1)
-        );
+        assert_eq!(d.server.conn(id).map(|conn| conn.subscriptions()), Some(1));
     }
 
     // ---- accept rows (WIRE.md 5.1 and 5.4 `refuse`) ----

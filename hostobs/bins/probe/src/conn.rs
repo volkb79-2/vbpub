@@ -1209,11 +1209,7 @@ mod tests {
             self.inner.status()
         }
 
-        fn current(
-            &self,
-            selection: &Selection,
-            max_rows: u32,
-        ) -> Result<TickData, BackendError> {
+        fn current(&self, selection: &Selection, max_rows: u32) -> Result<TickData, BackendError> {
             self.current_calls
                 .set(self.current_calls.get().saturating_add(1));
             self.inner.current(selection, max_rows)
@@ -2342,9 +2338,11 @@ mod tests {
         let raw = raw_frames(&drain_hub(&mut hub, id, 0));
         assert_eq!(raw.len(), 1);
         assert_eq!((raw[0].0, raw[0].1), (FrameType::Rep.code(), 2));
-        assert!(check_rep(text(payload(&raw[0].2)).as_bytes(), false)
-            .expect("subscribe reply")
-            .ok);
+        assert!(
+            check_rep(text(payload(&raw[0].2)).as_bytes(), false)
+                .expect("subscribe reply")
+                .ok
+        );
     }
 
     #[test]
@@ -2541,9 +2539,11 @@ mod tests {
             .iter()
             .find(|frame| frame.1 == 8 && frame.0 == FrameType::Rep.code())
             .expect("status reply");
-        assert!(check_rep(text(payload(&status.2)).as_bytes(), false)
-            .expect("status")
-            .ok);
+        assert!(
+            check_rep(text(payload(&status.2)).as_bytes(), false)
+                .expect("status")
+                .ok
+        );
         assert!(raw
             .iter()
             .any(|frame| frame.1 == 9 && is_error(&frame.2, Code::NotFound)));
@@ -2557,9 +2557,11 @@ mod tests {
             .iter()
             .find(|frame| frame.0 == FrameType::Rep.code() && frame.1 == 10)
             .expect("current accepted after retry freed one request");
-        assert!(check_rep(text(payload(&current_rep.2)).as_bytes(), false)
-            .expect("current reply")
-            .ok);
+        assert!(
+            check_rep(text(payload(&current_rep.2)).as_bytes(), false)
+                .expect("current reply")
+                .ok
+        );
     }
 
     #[test]
