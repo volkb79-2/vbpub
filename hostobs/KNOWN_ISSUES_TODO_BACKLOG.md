@@ -74,6 +74,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-59 | `Tier::append` and `Store::evict` drop the partial `Evicted` (counts and notes) when an eviction fails after a partial pass | Minor | OPEN |
 | HOB-60 | `Store::notes` visibility is decided by name, not by directory, and the store's eviction-notes ring is redundant with the tiers' `scan.notes` through the public API | Minor | OPEN |
 | HOB-61 | `json.rs` `skip_ws` / `string_end` `+=` to `*=` are pure infinite loops: suite-level TIMEOUT under `assay-r2` by nature (accepted known limit; expected 0 MISSED + 2 TIMEOUT) | Minor | OPEN (accepted) |
+| HOB-62 | P5b-3/P5b-4 serve typed history and process data but do not provide production store, `/proc`, cgroup-membership or provenance readers; M2 must not claim a live exit demo until those bounded sources exist | Major | OPEN (P5c source package required before M2 live-exit claim) |
 
 ---
 
@@ -1302,3 +1303,32 @@ expected `assay-r2` result for `hostobs/crates/client` is 0 MISSED and 2 TIMEOUT
 **Exit criteria.** Either a child-process probe harness kills both loops with a fast FAIL, or the
 two mutants are listed as accepted timeouts in the lane's mutation policy so that the lane
 verdict does not count them.
+
+## HOB-62 — The serving core has no production history, process or provenance sources
+
+**Where:** `crates/kernel/src/procfs.rs`, `crates/model/src/identity.rs`, `crates/store/src/store.rs`,
+and the production backend in `bins/probe/`.
+
+P5b-3 defines a typed injected backend for `snapshot_at`, `series_batch`, and `procs`; P5b-4 connects
+the sans-IO server to Unix sockets. These packages prove serving and transport behavior only. The
+existing process reader does not provide the full P5b scan contract (parent incarnation, per-process
+cgroup membership and I/O, bounded full-directory PID selection with partial-listing coverage, and
+stable immutable scan views), and the store API does not provide the history query view's committed
+watermark, source-assigned clock-segment coverage union, eviction generation, and per-cell
+raw-input/provenance facts. Until this package lands, the M2 live
+exit demo has no production data source and must not be claimed.
+
+**Exit criteria.** A production backend supplies immutable typed process scans with `(boot_id,pid,
+start_ticks)` identity, verified cgroup membership, parent-incarnation traversal, bounded fields and
+cmdline privacy, exact `scanned`/`total`/`complete`/age reporting, and the WIRE §4.11 scan/cache bounds.
+It supplies `snapshot_at` and `series_batch` views with the WIRE tier selection, committed watermark,
+conservative clock-segment bucket assignment, source-side interval-union coverage, gap and eviction
+semantics, plus the exact §4.8 provenance and raw-input / constraint schema. PID listing completes
+before inspection and uses a bounded max-heap to select the lowest 50,000 observed candidates; a
+mid-listing failure publishes a lower-bound partial scan only after at least one candidate was
+observed. Tests use fake proc/store roots and assert replacement-PID, membership race, lowest-PID
+ordering, partial-listing totals, malformed digit-only PID names, clock-step/bucket-boundary interval
+discard, union/floor coverage, eviction, quality, arithmetic overflow, provenance, and configured
+`u16` sample-count bounds through registered HostObs gates. The
+production backend does no socket I/O and leaves cursor tokens and Query admission to `Server`;
+integration tests prove the real source path end to end before the M2 live exit demo.

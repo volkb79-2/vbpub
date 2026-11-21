@@ -345,14 +345,17 @@ the order rows, `validate`, dictionary body, size (`encoded_len(&data, Some(body
 `> max_block_bytes` -> `Oversize`, judged arithmetically BEFORE any block encode), then encode.
 Invariant: `max_block_bytes <= query_queue_bytes` (S20), so a block that passes always fits an empty
 Query pool and a pending request always becomes queueable once its own connection's pool drains.
-**S7 Pending retry.** `retry_pending` (called by the server's retry pass after every `wrote` and at the
+**S7 Pending retry.** In P5b-2, `retry_pending` (called by the server's retry pass after every `wrote` and at the
 end of every `poll`, S27) handles `pending` in ascending `corr`: when `hub.query_room(id, need)` it re-runs
 the S6 pipeline from `backend.current(&sel, max_rows)` (the latest tick NOW: the request holds no block
 bytes, D-W30):
 `Queued` -> END `complete`, entry removed; `Backpressure` -> `need` = the new length; a failure (backend,
 rows, invalid) -> `counts = end_stream`, push `end_error(corr, counts.blocks, counts.dropped, code,
 detail)` (the REP was already sent, §2.4), entry removed. A closed conn retries nothing, and the pass
-stops at the first push that closes it (S27). Draining keeps retrying.
+stops at the first push that closes it (S27). Draining keeps retrying. P5b-3 extends only the retry-pass
+schedule: WIRE §5.3/D-W37 rotates peer uids and each uid's `(ConnId,corr)` requests, includes pending
+`current`, and skips a request without room so another uid can progress. D-W30's first attempt, discarded
+backpressured bytes, and latest-tick re-resolution remain unchanged.
 **S8 Interval (§4.7).** `IntervalRule::accepts(v)`: `tick_ms > 0 && v % tick_ms == 0 && v >= max(min_ms,
 tick_ms) && v <= 60_000`; otherwise `bad-request {"key":"interval_ms"}` (step 11). Never rounded: both
 clients require `result.interval_ms` to equal the request (Rust `confirms`, Python `subscribe`).
@@ -474,7 +477,8 @@ cleared; `pending` keeps retrying. Draining closes silently when `pending` is em
 `Ready && reader at a boundary && queue empty && subs empty && pending empty`.
 **S24 Determinism.** `BTreeMap` everywhere; `SelId` from 1, monotonic, never reused; subscribers in
 `SubKey` order (`ConnId`, then `corr`); `on_tick` deliveries in `SelId` order; the retry pass in `ConnId`
-then `corr` order.
+then `corr` order in P5b-2. P5b-3 supersedes only the retry pass ordering with WIRE §5.3/D-W37's
+peer-uid then request round-robin.
 **S25 Tick delivery API: backend pull.** `Server::on_tick(now_ns)` asks the registry, which asks
 `backend.current` for each due stream; the driver (P5b-4) calls it once per sampler tick, after `poll`
 in the same loop iteration. Rejected: `deliver_tick(selection_id, bytes)` (the driver would have to know

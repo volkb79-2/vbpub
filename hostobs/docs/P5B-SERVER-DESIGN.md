@@ -199,3 +199,248 @@ outcome discarded; no unbounded buffer growth (`buffered_capacity` bounds) under
 (R1, R2, R6, R9, R10) with a decision D-W28; §8.1 line rules (R13), JSON `corr` recovery (R12); §11.4
 `events` -> `procs` retarget and socketpair -> P5b-4 (R21); §5.3 "no mutex" note (R27); §5.1 control-queue
 memory per R28 once decided.
+
+## 7. P5b-3 and P5b-4 boundary
+
+The P5b package split is: **P5b-3 implements bounded, injected query serving; P5b-4 supplies the
+real socket driver and proves it over socketpairs.** Neither package supplies the real history store
+reader or the `/proc` process scanner. WIRE §4.8–§4.11 is normative for both the fixed backend tests
+and the later production source. P5c/HOB-62 owns the production source path and must land before the
+M2 live-exit claim.
+
+Keep responsibilities single-sourced:
+
+- `Conn` owns parsed request state, correlation ordering, REP/BLOCK/END transitions, and the typed
+  state needed to resume a request after Query backpressure or while Draining.
+- `Server` owns cursor tokens and their bounded canonical-argument bindings, source-view identifiers,
+  expiry, and the fair Query admission scheduler. There is one cursor authority; a backend does not
+  mint or interpret wire cursor strings.
+- `Backend` exposes narrow typed operations for one snapshot result, an immutable history view with
+  one bounded next candidate at a time, and an immutable process scan/page. It does not encode JSON or
+  wire BLOCKs and does not decide protocol errors. A source-view eviction/expiry is an explicit typed
+  outcome, not an empty page.
+- `SendHub` owns encoded queued bytes and the Query byte pools. P5b-3 stores only typed view/arguments/
+  position while blocked. It preflights `query_room(c, max_block_bytes)`, builds at most one candidate
+  BLOCK at a time, and queues that BLOCK directly. Retry turns rotate by peer uid and request; one
+  request cannot monopolize all producer progress. The existing D-W30 rule for `current` remains.
+- The P5b-4 driver owns `LISTEN_FDS`, nonblocking socket reads/writes, mode detection plumbing,
+  `SO_PEERCRED`/`SO_PEERPIDFD` capture at accept, and configuration. It passes immutable peer facts
+  into `Server`; it never supplies identity from REQ JSON and never re-reads a peer by numeric PID
+  after accept. The core remains sans-IO and fake-clock testable.
+
+P5b-3's fixed backend proves decoded wire results and refusal precedence, not production `/proc` or
+store behavior. Its behavioral oracles belong to `hostobs:selftest` and `hostobs:assay-r1`; the
+Python-only `hostobs:conformance` lane is not evidence for Rust serving behavior. P5b-4 may claim
+socket transport acceptance only for the rows and verbs its socketpair fixtures actually execute.
+Register every new Rust source module in `hostobs/assay.toml` and maintain the declared crate coverage
+floor; do not use `conformance` as a proxy for those tests.
+
+### P5b-3 typed backend contract
+
+The P5b-3 implementation extends the existing `Backend` seam with these exact view, position, data,
+and failure types. The fields below are Rust types; the response behavior and field bounds remain
+those in `WIRE.md`.
+
+```rust
+struct SnapshotViewId(u64);
+struct SeriesViewId(u64);
+struct ProcScanId(u64);
+struct SeriesPosition(u64); // opaque to Server; identifies the next committed block
+enum Tier { Hot, Warm, Cold } // wire names: "hot", "warm", "cold"
+enum TierChoice { Auto, Explicit(Tier) } // "auto" or an explicit wire tier
+enum QueryFeature { Provenance } // wire name: "provenance"
+enum ProcField { Comm, Ppid, State, CpuUsec, RssBytes, IoRbytes, IoWbytes, Threads, Cmdline }
+struct QueryBounds {
+    max_rows: u32,
+    max_block_buckets: u32,
+    max_block_bytes: u32,
+}
+struct SnapshotRequest {
+    selection: Selection,
+    real_ns: i64,
+    tier: TierChoice,
+    provenance: bool,
+}
+struct SeriesRequest {
+    selection: Selection,
+    from_real_ns: i64,
+    to_real_ns: i64,
+    step_ms: u32,
+    aggs: Vec<Aggregation>,
+}
+struct ProcsRequest {
+    subject_inc: u64,
+    descendants: bool,
+    fields: Vec<ProcField>,
+}
+enum RawNumber { U64(u64), I64(i64), F64(f64) }
+struct MonoInterval { start: u64, end: u64 }
+struct CellProvenance {
+    inc: u64,
+    metric: String,
+    quality: Quality,
+    source: MetricSource,
+    source_ref: Option<String>,
+    observed_mono_ns: Option<u64>,
+    interval_mono_ns: Option<MonoInterval>,
+    raw_inputs: Option<Vec<RawInput>>,
+    constraints: Option<Vec<ConstraintFact>>,
+}
+struct RawInput {
+    metric: String,
+    value_type: MetricValueType,
+    value: Option<RawNumber>,
+    quality: Quality,
+    source: MetricSource,
+    unit: MetricUnit,
+    source_ref: Option<String>,
+    observed_mono_ns: Option<u64>,
+    interval_mono_ns: Option<MonoInterval>,
+}
+enum ConstraintValue { U64(u64), I64(i64), F64(f64), String(String) }
+struct ConstraintFact {
+    name: String,
+    value: ConstraintValue,
+    unit: Option<MetricUnit>,
+    source_ref: Option<String>,
+    observed_mono_ns: Option<u64>,
+}
+
+enum QuerySourceError {
+    NotFound,
+    DataGap,
+    BucketOutOfRange,
+    Unsupported(QueryFeature),
+    Budget(Pool),
+    ViewInvalid,
+    Internal,
+}
+
+struct SnapshotView {
+    id: SnapshotViewId,
+    meta: SnapshotMeta,
+}
+struct SnapshotMeta {
+    tier: Tier,
+    bucket_real_ns: i64,
+    step_ms: u32,
+    covered_ms: u32,
+    provenance: Option<Vec<CellProvenance>>,
+}
+struct SeriesView {
+    id: SeriesViewId,
+    tier: Tier,
+    step_ms: u32,
+    omitted: Vec<String>,
+    first: Option<SeriesPosition>,
+}
+struct HistoryBlockData {
+    subject_inc: u64,
+    agg: Aggregation,
+    buckets: Vec<HistoryBucket>, // ≤ max_block_buckets
+    columns: Vec<HistoryColumn>, // ≤ 64; one value and quality per bucket
+}
+struct HistoryBucket {
+    bucket_real_ns: i64,
+    covered_ms: u32,
+    samples: u16,
+}
+struct HistoryColumn {
+    metric: String,
+    facts: MetricFacts,
+    value_type: MetricValueType,
+    values: Vec<u64>,
+    quality: Vec<u8>,
+}
+struct ProcScanView {
+    id: ProcScanId,
+    published_mono_ns: u64,
+    row_count: u32, // 0..=max_rows
+    scanned: u32,
+    total: u32,
+    complete: bool,
+}
+struct ProcRow {
+    pid: u32,
+    start_ticks: u64,
+    inc: u64,
+    comm: Option<String>,
+    ppid: Option<u32>,
+    state: Option<u8>,
+    cpu_usec: Option<u64>,
+    rss_bytes: Option<u64>,
+    io_rbytes: Option<u64>,
+    io_wbytes: Option<u64>,
+    threads: Option<u64>,
+    cmdline: Option<String>,
+}
+
+trait QueryBackend {
+    fn snapshot_open(&self, request: &SnapshotRequest, now_ns: u64, bounds: QueryBounds)
+        -> Result<SnapshotView, QuerySourceError>;
+    fn snapshot_read(&self, view: SnapshotViewId)
+        -> Result<TickData, QuerySourceError>;
+    fn series_open(&self, request: &SeriesRequest, now_ns: u64, bounds: QueryBounds)
+        -> Result<SeriesView, QuerySourceError>;
+    fn series_next(&self, view: SeriesViewId, after: SeriesPosition)
+        -> Result<Option<SeriesPosition>, QuerySourceError>;
+    fn series_read(&self, view: SeriesViewId, at: SeriesPosition)
+        -> Result<HistoryBlockData, QuerySourceError>;
+    fn procs_open(&self, request: &ProcsRequest, now_ns: u64, max_rows: u32)
+        -> Result<ProcScanView, QuerySourceError>;
+    fn procs_read(&self, view: ProcScanId, index: u32, fields: &[ProcField])
+        -> Result<Option<ProcRow>, QuerySourceError>;
+}
+trait Backend: QueryBackend {
+    // Existing identity(), status(), and current() operations remain here.
+}
+```
+
+`SnapshotMeta` and `SeriesView` contain no block values. `Tier`, `TierChoice`, `QueryFeature`, and
+`ProcField` are closed enums owned by `backend.rs`; `Quality`, `MetricSource`, `MetricUnit`,
+`MetricValueType`, `MetricFacts`, and `Aggregation` are the existing `hostobs_proto` types. `Peer`
+adds only the captured `cgroup_inc: Option<u64>` fact in P5b-3, alongside its existing uid and pid;
+the observer issuer is derived from those captured fields without a lookup. `CellProvenance` and its
+children map one-for-one to the exact WIRE §4.8 schema. `Server` computes each JSON `age_ms` from
+`observed_mono_ns` at REP construction and validates types, limits, finite f64 values, references,
+array null-versus-empty meaning, ordering, and the encoded object/reply bounds. `RawInput.value` must
+match `value_type` when present; `ConstraintFact.value`'s enum variant is the serialized `type`.
+`ProcField` serializes to the exact snake-case WIRE field names and the order passed to `procs_open`
+is canonical by those names.
+
+`SnapshotMeta.covered_ms` and each
+`HistoryBucket.covered_ms` are source-computed facts under WIRE §3.6; P5b validates their range and
+copies them into the result, and never receives interval lists. `HistoryBucket.samples` is the
+source's exact `u16` count and the server copies it unchanged. For `snapshot_at`, the server checks
+the returned tick's boot and epoch against the serving identity, preserves its source tick `seq` and
+monotonic/boot times, sets header `real_ns` from the validated `SnapshotMeta.bucket_real_ns`, and
+forces every row's `t_off_us` to zero. `series_next` is metadata-only and
+returns only an opaque fixed-size position; `SeriesView.first` is the first candidate or `None`, and
+`series_next(view, after)` returns the next position or `None`. It skips gaps and follows the
+deterministic subject/aggregation/time packing order. `series_open` uses `QueryBounds` to define each
+candidate's largest consecutive bucket prefix that fits both limits from WIRE §4.9. `Server` examines at most
+`max_page_blocks + 1` positions before REP to find a page continuation, then discards the lookahead.
+`series_read` reads exactly one candidate after Query room is available; its columns and bucket
+metadata have no more than 64 × 4,096 values and the matching quality bytes. `Server` verifies the
+candidate's bounds and encoded size before pushing it. `procs_read` reads one row from the immutable
+scan at the requested index; the server serializes only requested fields and stops before
+`max_reply_bytes`. The process view's `row_count` and coverage facts are frozen at `procs_open`; only
+`scan_age_ms` is computed by the server at REP construction. `ProcScanView.row_count` is the row count
+after the source has applied the requested subject and descendant filter, while `scanned`, `total`,
+and `complete` describe coverage of the whole pinned source scan. A `ProcRow` index is stable in
+ascending `(pid,start_ticks)` order for the life of the view. The server rejects inconsistent typed
+coverage (`scanned > min(total, 50,000)`, `row_count > max_rows`, or `complete=true` with
+`total > 50,000` or `scanned != total`), duplicate/out-of-order row identities, malformed state,
+`comm`/`cmdline` beyond the WIRE field bounds, or any reply over `max_reply_bytes` as `internal`.
+The backend request structs deliberately omit wire cursors and page sizes (`max_blocks`, `limit`):
+those belong to the Server's one cursor and reply-page authority.
+
+The server maps `QuerySourceError` to protocol codes and fixed details. `BucketOutOfRange` maps to
+`bad-request {"key":"real_ns"}`; snapshot tier resolution is metadata-only and no bucket values are
+read before this refusal. The server independently checks a successful `SnapshotMeta`'s tier, step,
+Euclidean bucket start and `covered_ms` range; any mismatch is `internal`. `ViewInvalid` on an incoming
+cursor is `cursor-invalid` before REP; after REP it is `END ok:false cursor-invalid`. An unexpected
+source error or malformed typed fact is `internal`. The backend never receives a wire cursor string,
+peer uid, or protocol error object; the server binds its own cursor table to the returned opaque view
+id and position. This keeps the source API usable with both deterministic P5b fakes and the later
+P5c implementation without duplicating wire state in the source.

@@ -79,8 +79,8 @@ are included), all of which precede the END; `dropped` = blocks of the stream dr
 streams); `next` = continuation cursor (`series_batch` `page` only, else `null`); `reason` is one of
 `complete` (`current`, `snapshot_at`, `export`, last `series_batch` page), `page` (`series_batch` with
 `next`), `unsubscribed`, `client-eof`. `END ok:false` carries any non-fatal §10 code; in M2 the server
-produces `internal` or `budget {"pool":"rows"}` there. A server shutdown ends no stream: it closes the
-connection (§5.4).
+produces `internal`, `budget {"pool":"rows"}`, or `cursor-invalid` when a cursor's source view expires
+after REP. A server shutdown ends no stream: it closes the connection (§5.4).
 
 A frame type sent in the wrong direction is `bad-frame`. JSON payloads carry no BOM and no trailing
 bytes after the object; integers follow §8.3.
@@ -174,6 +174,33 @@ by every column's metric mask (§3.7) — counters raw/last/delta, gauges last/m
 dictionary: it runs for an in-frame dictionary, a held one and none at all, and the encoders refuse
 it too. Gauge min/max/mean are separate history blocks of the same
 subject, one aggregation per block, packed by §4.9 (this is how `HOB-5` is served, no wire change).
+`covered_ms` is the floor of the duration in milliseconds of the union of observation intervals for
+the cells represented by that history block whose quality is `ok`. For `snapshot_at`, this is every
+selected cell; for `series_batch`, it is the block's one subject and its columns. Each interval is
+between consecutive observations of one cell
+in the same `(boot, epoch, clock_segment)` and is eligible only when both paired wall-clock readings
+fall inside the same bucket and monotonic time advances. An interval crossing a wall bucket boundary
+or a `clock_segment` boundary contributes no coverage; it is discarded whole, never interpolated or
+split. This conservative rule avoids converting wall boundaries into monotonic time. A discontinuous
+`CLOCK_REALTIME` step starts a new segment; the P5c clock adapter detects it with an absolute
+`CLOCK_REALTIME` timerfd armed with `TFD_TIMER_CANCEL_ON_SET`, increments the segment, discards any
+sample pair racing the cancellation, and rearms before accepting another pair. A source that cannot
+arm or read that watcher contributes no intervals until it has established a new segment.
+
+The source merges eligible monotonic intervals across those cells and exposes only the resulting
+union duration in the immutable typed bucket view; P5b serving code neither retains nor unions
+interval lists. `covered_ms` is that union duration floored to milliseconds and is in
+`0..=step_ms`. Gaps and nominal bucket width do not add coverage. A non-`ok` cell contributes no
+interval and its value remains unusable. P5b tests transfer and range validation of the typed
+coverage fact; P5c/HOB-62 tests bucket assignment, segment changes, interval union, and floor
+conversion against fake clock/source fixtures.
+
+`samples` is the exact count of source observations represented by the bucket, independent of
+`covered_ms` and of per-cell quality. A bucket may have samples but zero covered time, or zero samples
+and zero coverage. Tier rollups preserve the source sample count used for sample-weighted aggregates;
+the source never saturates or wraps this count. P5c must prove the configured sampling and tier bounds
+keep each bucket's count within `u16`; if that invariant cannot be established, the source refuses
+the affected view as `internal` rather than publishing a false count.
 
 3.7 **Dictionary body (kind 5)** (`dict.rs` `encode`/`decode`): u32 `generation`@0, u32 `count`@4
 (≤ 65,536, `dictionary-too-large`), then `count` packed entries, then zero pad to 8. Entry: u8 `kind`
@@ -279,7 +306,38 @@ has none (`HOB-54`, §6.1).
 `detail` is always present (`{}` when empty). In JSON mode both envelopes also carry `"corr"`.
 
 4.2 **Common types.** `u64`/`i64`/`u32` = JSON integers in range; `name` = `^[a-z][a-z0-9_.-]{0,63}$`;
-`cursor` = opaque string ≤ 256 B issued by the server, bound to `(boot_id, epoch, verb, args-hash)`.
+`cursor` = opaque ASCII string ≤ 256 B issued by the server. For P5b-3 `series_batch` and `procs`,
+the server binds a cursor to `(boot_id, epoch, level, peer uid, verb, canonical args, source view,
+position)` and expires it 60 s after its first issuance. A next position has its own token. Replaying
+the same token with the same request, including the page-size argument, returns the same ordered data
+and same `next` token; `procs.scan_age_ms` is recomputed at each REP. `limit` on `procs` and
+`max_blocks` on `series_batch` may change between requests using a token; this may change the page
+boundary, but never the ordered position from which that page starts. All other arguments are bound.
+Tokens may be reused on another connection only at the same level and peer uid. Closing a connection
+does not release its tokens. Expiry is fixed at first issuance and is not extended by replay. A source
+view eviction or expiry invalidates every token bound to that view.
+
+The server keeps at most 256 cursor entries. Each entry accounts for at most 16,384 B of canonical
+binding and 512 B of fixed state, for at most 4,325,376 B (4.125 MiB) of cursor payload. The binding
+budget uses canonical internal binary form with decoded path bytes, not JSON-escaped text; it covers
+the maximum `Selection` (16 entities × (tag + length + 512 B path) = 8,240 B; 64 metrics × (length +
+64 B name) = 4,160 B), plus fixed query fields and a source-view position; the maximum is below
+16,384 B. The 256 entries cover the 96 simultaneously outstanding requests allowed
+by 24 observe/operator connections × 4, plus bounded replay positions; at capacity, new continuations
+are refused with `budget {"pool":"cursors"}`. This accounts for stored binding/state bytes; the
+fixed-capacity table's allocator and index overhead is a separate bounded implementation cost.
+
+Before a successful REP, the server determines whether the page has a continuation. If not, it needs
+no cursor slot and succeeds even when the table is full. If a continuation exists, it reserves a slot
+before REP. A successor position already issued for the same binding reuses its token; otherwise a
+full table returns the cursor-budget error before REP. Using a token does not consume it: the entry
+remains available for replay until its original expiry or source-view invalidation. If a response
+errors after REP but before returning its reserved successor, that unexposed reservation is released;
+the input token remains replayable unless its source view was invalidated. A bad, expired, evicted,
+cross-epoch, cross-level, cross-uid, or argument-mismatched token is `cursor-invalid` before a
+successful REP. If the bound source view becomes invalid after REP, END is `ok:false` with
+`cursor-invalid`; queued BLOCKs stay before END. Other cursor-bearing verbs must specify any
+additional binding before they are served.
 `agg-name` = `raw|last|delta|mean|min|max` (the §3.6 codes 0-5). String bounds are on the decoded
 UTF-8 length.
 **Selection**: `{"entities": [sel, ...] (1..16), "metrics": [metric-name, ...] (1..64)}`, `sel` is
@@ -325,28 +383,32 @@ verb other than `hello` is `hello-required` on its own `corr`, `hello` with a `c
 `bad-frame` `corr` 0 (both fatal); (5) a verb not in the table or reserved (§4.13): `unknown-verb`; (6) a
 verb the level does not know: `forbidden`; (7) `hello` when already answered, either mode: `bad-request`
 `{"key":"verb"}`; (8) a BLK verb in JSON mode: `binary-required`; (9) a verb known but not served by this
-build: `unknown-verb`; (10) an outstanding `current` or `subscribe` when `pending.len()` has reached
-`max_outstanding`: `too-many-requests`, non-fatal, `detail {}`; other verb shapes are never refused by
-this cap; (11) the argument schema: `bad-request` with the schema path (a `hello` with a JSON-mode
+build: `unknown-verb`; (10) a BLK query (`current`, `snapshot_at`, `series_batch`, or `subscribe`)
+when `pending.len()` has reached `max_outstanding`: `too-many-requests`, non-fatal, `detail {}`;
+other verb shapes are never refused by this cap; (11) the argument schema: `bad-request` with the schema path (a `hello` with a JSON-mode
 `proto.major` other than 1 is `unsupported-version`, fatal); (12) execution. So duplicate keys inside
 the args of an unknown verb are never inspected, and `forbidden` and `binary-required` are judged from
 the full table (a verb the build does not serve yet still answers `forbidden` at a level that does not
 know it). A `corr` is free again once its final REP or END is queued. `unsupported-feature` follows
 (11). A `detail.key` echoes an unknown or duplicate key only if it is at most 64 bytes of
 `[A-Za-z0-9_.-]`, else the path stops at the parent, and the `message` is fixed text, never client text.
-**Integers** (the digits-only rule of §8.3, enforced
-below the envelope): only the digits `0-9`, at most 20 of them, no sign (so `-0` and a negative value
-for an unsigned field are refused; a signed field refuses `-0` too), no fraction, no exponent, and the
-value must fit the field's own type (`proto.minor` is a `u16`: 65,536 is `bad-request`).
+**Integers** (the exact-integer rule of §8.3, enforced below the envelope): unsigned fields use 1..20
+digits `0-9`; signed fields use those digits with an optional leading `-`. Neither form permits a
+leading zero except `0`; `+`, `-0`, a negative unsigned value, fractions, and exponents are refused.
+The value must fit the field's own type (`proto.minor` is a `u16`: 65,536 is `bad-request`). A
+`snapshot_at` bucket start is calculated in checked `i128` arithmetic for the selected tier and must
+fit `i64`; if it does not, answer `bad-request` with `detail.key = "real_ns"` before reading bucket
+values or producing a Query BLOCK. A metadata-only tier resolution may run first to establish the
+selected tier and step; it must not read bucket values.
 
 4.3 **Verbs by level** (✓ = served; JSON = REP only; BLK = REP + BLOCK* + END; JSON mode refuses
 BLK verbs with `binary-required`, §8.4):
 
-P5b-2d serves `current`, `subscribe` and `unsubscribe` at observe and operator. The `hello.verbs`
-array at those levels lists exactly `hello`, `status`, `current`, `subscribe`, `unsubscribe`;
-observer remains `hello`. In JSON mode `current` and `subscribe` stay `binary-required`, while
-`unsubscribe` is a served JSON verb and answers `not-found` when the named subscription is not
-held (§4.7).
+P5b-2d serves `current`, `subscribe` and `unsubscribe`; P5b-3 adds `snapshot_at`, `series_batch` and
+`procs`, all at observe and operator. The `hello.verbs` array at those levels lists exactly `hello`,
+`status`, `current`, `subscribe`, `unsubscribe`, `snapshot_at`, `series_batch`, `procs`; observer
+remains `hello`. In JSON mode `current`, `subscribe`, `snapshot_at` and `series_batch` answer
+`binary-required`; `unsubscribe` and `procs` are JSON verbs (§§4.7–4.11).
 
 | Verb | observe | operator | observer | control | Shape | Since |
 |---|---|---|---|---|---|---|
@@ -432,32 +494,123 @@ per-stream counts, outstanding `current` requests finish, and the connection clo
 when both `pending` and the queue are empty.
 
 4.8 **snapshot_at** — args `{"selection": Selection, "real_ns": i64, "tier": "auto|hot|warm|cold",
-"provenance": bool}`. REP result `{"resolved": {"tier": str, "bucket_real_ns": i64, "step_ms": u32,
-"covered_ms": u32}, "provenance": [object] (≤ 64 objects, each ≤ 1 KiB encoded) | null}`; one live-shaped BLOCK (rows + columns,
-`t_off_us = 0`, header `real_ns = bucket_real_ns`); END `complete`. Outside retention: `not-found`.
+"provenance": bool}`. The bucket is `floor(real_ns / step_ns) × step_ns`, using Euclidean floor and
+checked signed arithmetic; `step_ns = step_ms × 1,000,000`. A tier's retained window is the half-open
+range from its oldest retained bucket boundary through the end of its newest committed bucket; a
+bucket is in that window only when its entire half-open interval is contained in it. `auto` chooses the
+finest eligible tier (smallest `step_ms`; ties: `hot`, `warm`, `cold`) whose retained window contains
+the bucket. An explicit tier uses only that tier. It does not fall back to another tier to hide a gap.
+No tier window contains the bucket: REP `not-found`, no BLOCK. The selected tier window contains the bucket but has no committed
+bucket there: REP `data-gap`, no BLOCK. A committed bucket with no selected entities returns a zero-row
+BLOCK. REP result `{"resolved":{"tier":str,"bucket_real_ns":i64,"step_ms":u32,"covered_ms":u32},
+"provenance":[object] (0..64; each ≤ 4,096 encoded B) | null}`; `provenance` is `null` when not
+requested. The BLOCK is live-shaped (rows + columns, `t_off_us = 0`, header `real_ns = bucket_real_ns`);
+END `complete`. `covered_ms` follows §3.6. When `provenance=true`, emit one object per selected
+`(inc, metric)` cell, including missing cells, sorted by ascending `inc` then canonical metric name.
+More than 64 selected cells is `budget` `{"pool":"provenance"}` before REP. If the backend has no
+provenance capability, return `unsupported-feature` `{"feature":"provenance"}` before REP. The exact
+schema is:
+
+```text
+provenance object (exact keys):
+  inc: u64
+  metric: name
+  quality: u8, one of the §3.9 codes 0..7
+  source: cgroupfs|procfs|sysfs|probe|derived
+  source_ref: null | 1..96 ASCII bytes matching [A-Za-z0-9_.:-]
+  observed_mono_ns: u64 | null
+  interval_mono_ns: null | {start: u64, end: u64}, with start < end
+  raw_inputs: null | [] | array of 1..4 raw-input objects
+  constraints: null | [] | array of 1..4 constraint objects
+  age_ms: u32 | null
+  missing_reason: quality-name | null
+
+raw-input object (exact keys):
+  metric: name
+  type: u64|i64|f64
+  value: a JSON number of exactly that type, or null when the raw input is absent or cannot be
+         represented; f64 must be finite
+  quality: u8, one of the §3.9 codes 0..7
+  source: cgroupfs|procfs|sysfs|probe|derived
+  unit: none|usec|msec|nsec|bytes|count|ratio|volts|celsius (listed order is code 0..8)
+  source_ref: null | 1..96 ASCII bytes matching [A-Za-z0-9_.:-]
+  observed_mono_ns: u64 | null
+  interval_mono_ns: null | {start: u64, end: u64}, with start < end
+
+constraint object (exact keys):
+  name: name
+  type: u64|i64|f64|string
+  value: a JSON value of exactly that type; f64 must be finite; string is 1..64 ASCII bytes
+         matching [A-Za-z0-9_,:/-]
+  unit: none|usec|msec|nsec|bytes|count|ratio|volts|celsius | null
+  source_ref: null | 1..96 ASCII bytes matching [A-Za-z0-9_.:-]
+  observed_mono_ns: u64 | null
+```
+
+`source_ref` is a stable, non-secret symbolic key and cannot contain `/`, `\\`, or a host path. For a
+raw input, `quality = ok` requires a non-null value. A non-`ok` raw input carries its parsed,
+representable value when one exists (for example a stale or reset counter); it uses `null` when the
+source is absent, unreadable, unsupported, malformed, negative for an unsigned type, or overflowing.
+The expected `type` remains present in either case. `age_ms` is the monotonic age of
+`observed_mono_ns` at REP construction, floored to milliseconds and
+saturated at `u32::MAX`; it is `null` when there is no observation. A timestamp later than the injected
+current monotonic time is `internal`. `missing_reason` is the §3.9 name for `quality` when quality is
+not `ok`, otherwise `null`. For `raw_inputs` and `constraints`, `null` means the source has no record,
+`[]` means it knows none were needed, and a non-empty array contains the complete recorded facts up to
+four; the server never truncates these arrays or invents entries. The maximum single object is 4,096
+encoded bytes. Applying every field maximum simultaneously (four raw inputs, four constraints,
+64-byte names/values, 96-byte references, 20-byte integer text, 24-byte finite-f64 text and the
+16-byte `unknown-topology` reason) produces at most 3,404 encoded bytes, leaving 692 B of object
+headroom. At most 64 objects are emitted, so the worst-case object payload is 64 × 4,096 = 262,144 B,
+below the 448 KiB `max_reply_bytes` with over 190 KiB left for the envelope and punctuation. If any
+selected cell cannot be represented completely within these bounds, return
+`budget` `{"pool":"provenance"}` before REP.
 
 4.9 **series_batch** — args `{"selection": Selection, "from_real_ns": i64, "to_real_ns": i64,
 "step_ms": u32 (0 = coarsest tier covering the range), "aggs": [agg-name] (1..4), "cursor": str|null,
-"max_blocks": u32 (1..max_page_blocks)}`; a repeated agg is `bad-request`. Requires negotiated minor
-≥ 1 (kind 6); at minor 0 it is refused `unsupported-feature` `{"feature":"subject"}`. REP result
-`{"tier": str, "step_ms": u32, "omitted": [metric-name]}`; then history BLOCKs (Query entries); END
-reason `complete` or `page` with `next`. **Packing (deterministic):**
+"max_blocks": u32 (1..max_page_blocks)}`; require `from_real_ns < to_real_ns` (else `bad-request`,
+key `to_real_ns`); a repeated agg is `bad-request`. A nonzero `step_ms` must exactly match a configured
+standard tier (otherwise `bad-request`, key `step_ms`); when more than one tier has that step, choose
+`hot`, then `warm`, then `cold`, and require its retained window to contain the full range. For zero,
+choose the coarsest tier whose retained window contains all of `[from_real_ns,to_real_ns)`, using the
+same retained-window definition as §4.8; gaps inside that window do not make it ineligible. No one tier
+covers the full range: `not-found`; tiers are never spliced. Interior committed-bucket gaps are skipped
+and never filled from another tier. Requires negotiated minor ≥ 1 (kind 6); at minor 0 it is refused
+`unsupported-feature` `{"feature":"subject"}`. REP result
+`{"tier":str,"step_ms":u32,"omitted":[metric-name]}`; then history BLOCKs (Query entries); END reason
+`complete` or `page` with `next`. **Packing (deterministic):**
 1. Subjects = the selection's resolved incarnations, ascending `inc`. For each subject, for each agg in
    request order: the columns are the selection's metrics, in canonical (bytewise) order, whose mask
    permits that agg; if none, no block. Metrics that no requested agg permits are listed in `omitted`.
 2. Buckets: step boundaries `b` with `from_real_ns ≤ b < to_real_ns` (`b` a multiple of `step_ms`
    since the Unix epoch) for which the tier holds data of that subject; buckets without data are
-   absent (a gap is visible in `bucket_real_ns`). A (subject, agg) whose buckets exceed
+   omitted, including every bucket in an otherwise retained empty range. A range with no blocks still
+   returns REP then END `complete` with `blocks:0`. A (subject, agg) whose buckets exceed
    `max_block_buckets`, or whose block would exceed `max_block_bytes`, is split into consecutive blocks
    in time order, each the largest prefix that fits both.
 3. Block order = subject, then agg, then time. `max_blocks` counts BLOCK frames of this page; when it
    is reached and blocks remain, END is `page` with `next` naming the next (subject, agg, bucket).
+   Each `covered_ms` in the block's TIME section uses the same interval-union rule as `snapshot_at`.
 4. History header: `boot_id`/`epoch` of the serving probe, `seq = 0`, `mono_start_ns = mono_end_ns =
    boot_ns = 0`, `real_ns` = first `bucket_real_ns` of the block, `dict_gen` of the query stream,
    `n_rows` = buckets, `dropped = 0`.
-A client continues with the same args and `cursor = next`; the cursor is bound to every arg except
-`cursor` and `max_blocks` (a continuation may change its page size); a cursor from another epoch or
-other args is `cursor-invalid`.
+A query view freezes the resolved subjects, selected metric facts, tier and committed source-write
+watermark when the first request is accepted; later writes are invisible. A continuation refers to the
+same view and the next `(subject, agg, bucket_real_ns)` position. The source records an eviction
+generation for the selected tier when the view opens; any later eviction in that tier invalidates the
+view, even if that eviction was outside this range. A client continues with `cursor = next`; its token
+binds every argument except `cursor` and `max_blocks`. Replaying the same token with the same
+`max_blocks` returns the same blocks and `next`; changing `max_blocks` changes only the page boundary,
+not the ordered position from which that page starts.
+
+Before REP, the server performs metadata-only lookahead to determine whether the page has a
+continuation. The backend returns the first and next opaque `SeriesPosition` values without reading
+bucket values; at most `max_blocks + 1` positions are examined (`max_page_blocks` is 64). If a
+continuation exists, its cursor slot is reserved before REP. If there is none, no slot is needed even
+when the cursor table is full. While Query room is unavailable, the server retains only the immutable
+view id, request arguments, current `SeriesPosition`, block count and any reserved cursor token; it
+does not retain block values or encoded bytes. After room appears it reads, encodes and queues one
+block at a time. Missing buckets are skipped in the frozen view; they are never filled by later writes.
 
 4.10 **events / spans** — args `{"from_real_ns": i64, "to_real_ns": i64, "names": [name] (0..16, empty =
 all), "ctx": {"run"|"lane"|"candidate"|"txn"|"session": str ≤ 128} (spans only, 0..5 keys), "limit":
@@ -466,14 +619,87 @@ u32 (1..1000), "cursor": str|null}`. Result `{"events"|"spans": [object], "next"
 real_ns, issuer, inferred`). A page holds at most `limit` items and ends earlier, with `next`, before
 the item that would push the REP over `max_reply_bytes` (§5.1 reply sizes).
 
-4.11 **procs** — args `{"subject": {"inc": u64}, "descendants": bool, "fields": [str], "limit": u32
-(1..256), "cursor": str|null}`; `fields` ⊆ {`comm`, `ppid`, `state`, `cpu_usec`, `rss_bytes`,
-`io_rbytes`, `io_wbytes`, `threads`, `cmdline`}; `cmdline` below operator level is `forbidden`. Result
-`{"procs": [{"pid": u32, "start_ticks": u64, "inc": u64, <field>: value|null}], "coverage":
-{"scanned": u32, "total": u32, "scan_age_ms": u32, "complete": bool}, "next": cursor|null}`.
-`cmdline` is the first 4,096 B of `/proc/<pid>/cmdline` (NUL separators as spaces, cut at a UTF-8
-boundary). A page holds at most `limit` items and ends earlier, with `next`, before the item that would
-push the REP over `max_reply_bytes` (§5.1 reply sizes).
+4.11 **procs** — args `{"subject":{"inc":u64},"descendants":bool,"fields":[str],"limit":u32
+(1..256),"cursor":str|null}`; `fields` is a duplicate-free subset of {`comm`,`ppid`,`state`,
+`cpu_usec`,`rss_bytes`,`io_rbytes`,`io_wbytes`,`threads`,`cmdline`}; `cmdline` below operator level is
+`forbidden`. An empty `fields` list is valid and returns only `pid`, `start_ticks`, and `inc`. A missing
+subject incarnation is `not-found`; a registered subject with no matching processes returns an empty
+page. `descendants=false` includes only processes directly in `subject.inc`; `descendants=true`
+includes it and every registered descendant incarnation reachable through parent-incarnation links in
+the pinned scan, never by path prefixes. Result
+`{"procs":[{"pid":u32,"start_ticks":u64,"inc":u64,<field>:value|null}],"coverage":
+{"scanned":u32,"total":u32,"scan_age_ms":u32,"complete":bool},"next":cursor|null}`.
+`coverage.complete` describes the pinned scan's coverage, not whether this response has another page.
+`comm` and `cmdline` are strings; `ppid` is `u32`; `state` is a one-byte ASCII string; `cpu_usec`,
+`rss_bytes`, `io_rbytes`, `io_wbytes`, and `threads` are `u64`. Every requested field may be `null`.
+
+The source view is one immutable process scan. Rows require identity `(boot_id,pid,start_ticks)` and
+verified membership in the scan; `pid` alone is never identity. `inc` is the cgroup incarnation
+containing that process. Rows are sorted by `(pid,start_ticks)`. A `cursor:null` request uses the newest
+published scan; a continuation uses that scan until the token expires or the source evicts the scan.
+A newer scan cannot change an in-progress page. The cursor binds boot, epoch, level, peer uid, verb,
+canonical `subject`, `descendants`, the sorted `fields` set, scan id, and the first row after the last
+emitted `(pid,start_ticks)`; `limit` may change. For the same token and same `limit`, replay returns the
+same rows, coverage counts, and `next`; `scan_age_ms` is recomputed at REP construction. Changing
+`limit` changes only the page boundary. Pages neither repeat nor skip a row relative to their bound
+position.
+
+Process field sources and conversions are fixed: `start_ticks` is `/proc/<pid>/stat` field 22;
+`comm` is the stat command field, at most its first 15 raw bytes and decoded lossily as UTF-8; `ppid`
+is stat field 4; `state` is its one ASCII state byte; `threads` is stat field 20; `cpu_usec` is
+checked `floor((utime + stime) × 1,000,000 / CLK_TCK)` from stat fields 14 and 15 and a read, nonzero
+`CLK_TCK`; `rss_bytes` is checked stat field 24 times a read page-size fact; `io_rbytes` and
+`io_wbytes` are `/proc/<pid>/io` `read_bytes` and `write_bytes`. Never invent clock ticks or page size.
+Missing, unsupported, unreadable, malformed, negative where the wire type is unsigned, or overflowing
+fields are JSON `null`, never zero. A failed optional field read does not make scan coverage
+incomplete; a vanished candidate, changed start time, or failed membership check does.
+
+`coverage.scanned` counts numeric PID candidates whose inspection was started, including candidates
+that vanished or failed identity/membership checks. `total` counts numeric PID candidates in the
+directory listing. Non-numeric directory entries are ignored. A digit-only name that is not a
+canonical nonzero decimal `u32` at or below `pid_max` is not inspected or counted and makes the scan
+incomplete. The source reads `/proc/sys/kernel/pid_max` as the authoritative numeric ceiling; it must
+parse as a positive `u32`, and an unavailable or invalid value yields `budget {"pool":"procs"}`.
+Candidate names are nonzero decimal `u32` values at or below that ceiling. It then completes directory
+enumeration before inspecting any candidate. It keeps a
+max-heap of the lowest 50,000 parsed PID values seen (at most 200,000 B of PID payload), plus a checked `total` count;
+after enumeration it sorts those selected PIDs ascending and inspects at most those 50,000. A completed
+listing gives an exact `total`; if enumeration fails after observing at least one candidate, the source
+uses the lowest 50,000 among the candidates seen so far, reports `total` as that observed lower bound,
+and publishes `complete=false`. If listing fails before any numeric candidate is observed, it answers
+`budget {"pool":"procs"}` because it cannot distinguish a partial listing from a known-empty one.
+If the directory is successfully listed and has no candidates, it publishes a known-empty scan with
+`total:0`, `scanned:0`, and `complete:true`.
+
+The source retains at most `max_rows` process rows from the selected candidates (4,096 by default), in
+ascending `(pid,start_ticks)` order; further rows are omitted and make `complete=false`. A listing
+failure, more than 50,000 numeric candidates, an identity or membership failure, or a row-cap omission
+makes `complete=false`. The full listing, all candidates within the 50,000 inspection cap, every
+identity/membership check, and no row-cap omission are required for `complete=true`. Optional field
+read failures do not change `complete`. `scan_age_ms` is monotonic age at REP construction, floored to
+milliseconds and saturated at `u32::MAX`; a clock earlier than scan publication is `internal`.
+
+The source keeps at most two immutable process scans, each at most 24 MiB of retained typed allocation
+capacity (48 MiB total). The 4,096-row response cap × 4,096 B rendered cmdline is 16 MiB; the other
+8 MiB per scan bounds row fields, membership/parent links, and indexes. This is a logical allocation
+budget, not a process RSS claim. A scan expires no later than 60 seconds after publication; publishing
+a third scan may evict the oldest sooner, so 60 seconds is a maximum lifetime, not a minimum. Every
+cursor for an evicted scan becomes invalid. If a scan cannot be produced or retained within the stated
+bounds, answer `budget` `{"pool":"procs"}`; if candidate or row limits omit data, publish the bounded
+scan with `complete=false`. These source requirements are not claimed by P5b-3: it serves injected
+typed views. P5c/HOB-62 supplies and gates the production readers before the M2 live-exit claim.
+
+`cmdline` is operator-only and never includes `environ`. Read at most 4,096 raw content bytes plus two
+lookahead bytes through the existing `kernel::cmdline` privacy path. Keep only complete NUL-delimited
+raw arguments that end within the 4,096-byte content cap; discard an incomplete final argument, redact
+whole arguments with the existing rules, and render them separated by one ASCII space. The returned
+UTF-8 string is at most 4,096 bytes. If either the raw read or rendered string is cut, keep the longest
+prefix of whole redacted arguments that fits with exactly one `<truncated>` marker; never split a
+redacted argument or expose any bytes from a raw partial argument. A page holds at most `limit` items
+and ends earlier, with `next` after the last emitted row, before the next whole item would push the REP
+over `max_reply_bytes` (§5.1). Every legal item fits alone within that bound. A bad, expired, evicted,
+cross-epoch, cross-level, cross-uid, or mismatched cursor is `cursor-invalid` before any successful REP
+or BLOCK.
 
 4.12 **annotate** — args `{"kind": "begin|end|point", "name": name, "key": str ≤ 64 | null, "ctx": {...}
 (as 4.10), "outcome": str|null (end only), "code": str ≤ 64 | null, "attrs": {key: str} (≤ 8 pairs,
@@ -524,9 +750,10 @@ values are the defaults; the ones a client needs are announced in `hello.limits`
 
 `max_request_bytes` is derived from the worst legal request (§4.2, §4.12 give the arithmetic), so a
 request that obeys every field bound always fits. An **outstanding request** is one whose final REP or
-END is not yet enqueued; live subscriptions do not count. In M2 the only outstanding request is a
-`current` whose block met Query backpressure at queue time. A rows, validation, size or backend
-refusal never creates an outstanding request. A **distinct selection** is the canonical
+END is not yet enqueued; live subscriptions do not count. In P5b-2 it is a `current` whose block met
+Query backpressure. P5b-3 also counts a `snapshot_at` or `series_batch` request while its Query producer
+is waiting for room; `procs` is a synchronous JSON REP and is not outstanding. A rows, validation, size
+or backend refusal never creates an outstanding request. A **distinct selection** is the canonical
 form of §4.2; a uid's selections are those its connections' live subscriptions use (a selection two
 uids use counts for both), across levels. Joining an already-live selection adds no probe stream; a
 uid joining a selection it did not already use is checked against the uid cap, while a stream creation
@@ -571,12 +798,14 @@ below the bound. Worst cases at 3× per client-supplied string (§4.2) and 6× p
   6,720 (the §4.12 bounds), two i64 + issuer + `kind` + `inferred` + 11 keys < 400: < 9,800 B, so a
   page holds ≥ 46 items; a full 1,000-item page fits when items average ≤ 450 B (typical events have
   no attrs: ~250 B).
-- `procs` item: `cmdline` ≤ 4,096 B decoded (§4.11) × 6 = 24,576, `comm` 15 × 6 = 90, eight integer
-  fields and `pid`/`start_ticks`/`inc` with keys < 500: < 25,200 B, so a page holds ≥ 18 items; without
+- `procs` item: `cmdline` ≤ 4,096 B decoded (§4.11) × 6 = 24,576, lossy UTF-8 `comm` from 15 raw
+  bytes ≤ 45 decoded B × 6 = 270, eight integer fields and `pid`/`start_ticks`/`inc` with keys < 500:
+  < 25,400 B, so a page holds ≥ 17 items; without
   `cmdline` < 600 B, so a full 256-item page (< 154 KB) always fits.
 - fixed-shape replies: `hello` < 4 KiB (≤ 32 verbs, ≤ 8 quality codes, 19 limit keys), `status` <
   2 KiB (≤ 8 tiers), `series_batch` REP ≤ 64 omitted names × 67 + 100 < 4.5 KB, `snapshot_at` with
-  `provenance` ≤ 64 objects × 1 KiB < 66 KiB, every other REP and every error envelope (message ≤ 256 B,
+  `provenance` ≤ 64 objects × 4 KiB < 256 KiB plus < 2 KiB of envelope and punctuation, every other
+  REP and every error envelope (message ≤ 256 B,
   detail < 2 KiB) < 3 KiB; END < 1 KiB (a cursor is ≤ 256 B).
 EVT streams (`session.watch`, M5/M6, §4.13) MUST define their own bound before they land; in M2 the only
 EVT is `closing`.
@@ -656,6 +885,34 @@ each increment of any stream's `pending_drops`, while `drain_unpinned` and `remo
 the connection, uid and global Query pools all fit; an unknown connection is true because its retry is
 discarded as `Queued`.
 
+**Query producer admission (P5b-3).** Before reading snapshot or history candidate values, or encoding
+their Query BLOCK, the serving core requires `query_room(c, max_block_bytes)`. Series page planning may
+call metadata-only `series_first`/`series_next` to determine the next position and reserve a cursor
+before REP; those calls return only a fixed-size `SeriesPosition`, never bucket values. Lookahead is
+bounded by `max_page_blocks + 1` positions, and a range with no candidate can finish without waiting
+for Query room. Every legal Query BLOCK is at most `max_block_bytes`; the single-threaded `Server` owns
+the hub mutably during admission, so no hub mutation can occur between this check and `push_query`. If
+there is no room, the request retains only its typed source-view handle, arguments, current position,
+block count and any reserved cursor token; it builds no candidate values or encoded BLOCK bytes.
+After room appears, it reads and encodes at most one candidate BLOCK, which moves directly into the
+hub's Query pool.
+
+A history candidate is bounded by 64 columns × 4,096 buckets × 9 B per value/quality = 2,359,296 B,
+plus at most 61,440 B of TIME entries and fixed row/column/header facts; the typed candidate payload
+is capped at 3 MiB. The encoded BLOCK is capped at 4 MiB. A single-threaded turn holds at most one
+candidate and its encoded result, under 7 MiB of accounted payload before encoder scratch; this is not
+a total RSS claim. The Query pools separately bound queued encoded bytes.
+
+The retry scheduler runs at most once after a `feed` that admits a Query producer, `wrote`, or `poll`.
+Each pass visits eligible peer uids in sorted order, starting after the last uid visited; within each
+uid it rotates among pending `(ConnId,corr)` requests, skipping requests without room until one can be
+served or the uid has no eligible request. It queues at most one BLOCK for each uid and each request
+per pass, then advances to the next uid. A series request remains pending for later passes. Pending
+`current` retries join this rotation but keep D-W30's first attempt and latest-tick re-resolution
+semantics. A request that cannot fit is skipped, so another uid may use available global room. A
+`Backpressure` result after a true preflight is a hub invariant failure: finish that query with END
+`ok:false`, `internal`, and preserve any BLOCKs already queued.
+
 **Form.** A Live entry is pushed as `dict_form()` when `needs_dict[s]` is set, when `bare()` is absent,
 or when `tick.generation() ≠ last_pushed_gen[s]`; otherwise as `bare()`. Every queued Live entry (also
 a coalesced one) sets `last_pushed_gen[s] = tick.generation()`; a dictionary-bearing one clears
@@ -677,7 +934,7 @@ control pools never shed anything.
 |---|---|
 | `push_control(c, f, now)` | control pool of `c` empty ⇒ append, whatever the length (a frame is ≤ `max_frame_bytes` by construction; every legal REP is ≤ `max_reply_bytes` anyway, §5.1); else `control + len > control_queue_bytes` ⇒ return `Close(slow-client)`; else append. Never counts toward a block pool, never dropped. |
 | `push_live(c, s, tick, now)` | 1. **Coalesce**: if stream `s` has an unpinned Live entry, it is replaced in place by the new tick (`pending_drops[s] += 1`; if the old one was dictionary-bearing, `needs_dict[s] = true`); its bytes leave the pools. 2. The form rule picks the form, `L` = its length. 3. **Fit** `L` into the Live pool (the entry being pushed is not yet inserted, so it is never its own victim). 4. Fit failed ⇒ the new entry is dropped (`pending_drops[s] += 1`, `needs_dict[s] = true` if its form was dictionary-bearing; entries already shed stay shed) ⇒ `DroppedIncoming`; else insert (in place when coalesced) ⇒ `Queued`/`Coalesced`. |
-| `push_query(c, s, block, now)` | Query pool of `c`, of its uid and global all fit `len` ⇒ append, `blocks[s] += 1` ⇒ `Queued`; else `query_waiting[s] = true` ⇒ `Backpressure(block)`. A producer that owns an encoded block keeps it and pauses until `query_ready(c, s)`; `current` follows S6/S7 instead, discarding the bytes and re-resolving its saved request when `query_room` permits (D-W30). Nothing is shed: a query never displaces a Live tick and a tick never displaces a query block. |
+| `push_query(c, s, block, now)` | Query pool of `c`, of its uid and global all fit `len` ⇒ append, `blocks[s] += 1` ⇒ `Queued`; else `query_waiting[s] = true` ⇒ `Backpressure(block)`. `current` follows D-W30. P5b-3 history producers preflight `max_block_bytes` and therefore do not build encoded bytes without room (§4.9/D-W37); a refusal after a true preflight ends that query with `internal`. Nothing is shed: a query never displaces a Live tick and a tick never displaces a query block. |
 | `end_stream(c, s)` | Removes every unpinned Live entry of `s` (counted), returns `{blocks: blocks[s], dropped: pending_drops[s]}` for the END payload (§2.2) and forgets the stream; queued Query entries of `s` stay (already counted, they precede the END); the caller then `push_control`s the END. |
 | empty → non-empty (any push) | `last_progress_ns = now` |
 | `head(c, now)` | the head entry, pinning it on the first call (above). |
@@ -758,19 +1015,22 @@ without sockets):
 | `AwaitHello` | complete REQ with `corr ≠ 0` that passes `check_req` and is not a valid first `hello`: a verb other than `hello`, or `hello` with `corr ≠ 1` | other verb: REP `corr=<its corr>` `hello-required`; `hello` with `corr ≠ 1`: REP `corr=0` `bad-frame`; then close |
 | `AwaitHello` | `corr ≠ 0` and `check_req` fails (§4.2), or a `hello` with `corr = 1` whose args are invalid | non-fatal `bad-request` REP on its own `corr` (D-W28, §4.2 first): the state stays `AwaitHello` and the hello timer keeps running |
 | `JsonNoHello` | first complete line | handled as a request ⇒ `Ready` (hello optional, §8.4) |
-| `Ready` | complete request | dispatch; `max_outstanding` exceeded for a BLK-shape `current` or `subscribe` ⇒ REP `too-many-requests` (other shapes are still dispatched) |
+| `Ready` | complete request | dispatch; `max_outstanding` reached for a BLK query or `subscribe` ⇒ REP `too-many-requests` (other shapes are still dispatched) |
 | `Ready` | no pending request, no live subscription, reader at `Header{0}`, queue empty | arm `idle_deadline = now + idle_ms` (disarmed by any received byte or enqueued frame) |
 | `Ready` | `now > idle_deadline` | `Closing(idle)` |
-| `Ready` | reader `eof()` clean (`SHUT_WR`) | `Draining`: finish outstanding requests, `end_stream` every subscription with reason `client-eof`, close when `pending` and the queue are empty |
+| `Ready` | reader `eof()` clean (`SHUT_WR`) | `Draining`: finish outstanding `current`, `snapshot_at` and `series_batch` producers; `end_stream` every subscription with reason `client-eof`; close when `pending` and the queue are empty |
 | any | reader error, hub `Close(slow-client)`, server shutdown | `Closing(code)` |
 | `Closing(code)` | — | `drain_unpinned(c)`; if `head_partial(c)` is false the connection holds ONE final frame outside the hub (D-W28): the REP (or error line) of the outcome for a request or reader error, `EVT corr=0 {"event":"closing","reason":code}` (binary) or the error line (JSON) for `idle`, `slow-client`, `shutting-down`; the driver makes one non-blocking write of it and abandons a short write; `remove(c)`; close. When no byte was written yet and the server prefix is queued, the final bytes start with the 8 prefix bytes (prefix guarantee); a major mismatch writes the prefix alone. The driver never writes the hub head after the close (a head pinned with 0 bytes written is not partial and stays in the hub; the final bytes already repeat the prefix). A client MUST NOT depend on receiving it. |
 | `Undecided` or `AwaitHello` or `JsonNoHello` or `Ready` | stream end (EOF) other than the clean one of the `Ready` row above: before `Ready` (also mid-line or mid-frame), or in `Ready` inside a frame or line, or bytes after the end | close without a reply (no request is owed; design R10) |
 
-**Driver cadence (P5b-2d).** A P5b-2 driver calls `poll(now)` first and then `on_tick(now)` once
-per sampler tick in the same loop iteration. `on_tick` asks the registry for at most one shared
-block per due selection stream and delivers it to each subscriber; the first block follows a
-`subscribe` REP. `wrote` and `poll` end with the pending-`current` retry pass, in connection-id
-and correlation-id order (design S7, S24, S25).
+**Driver cadence (P5b-2d, extended by P5b-3).** A P5b-2 driver calls `poll(now)` first and then
+`on_tick(now)` once per sampler tick in the same loop iteration. `on_tick` asks the registry for at
+most one shared block per due selection stream and delivers it to each subscriber; the first block
+follows a `subscribe` REP. A `feed` that admits a Query producer, `wrote`, and `poll` each run at most
+one Query retry pass. A pass rotates among peer uids and their pending `(ConnId,corr)` requests; it
+queues at most one BLOCK per uid and per request, skips requests that cannot fit, and keeps running
+while Draining. Pending `current` retries join that rotation but keep D-W30's first-attempt and
+re-resolve-latest behavior.
 
 **Implemented (`ConnTimers`).** `ConnTimers::new(hello_ns, idle_ns)` holds the level's two
 durations; nothing is armed until `on_accept(now)` (a refused connection never calls it).
@@ -834,8 +1094,11 @@ corr) is a new stream. Exported segments carry it in every record (plan §C.5).
 the same `boot_id`, persisted beside the store) and keeps it until it exits; epoch and boot therefore
 never change within a connection. On reconnect a client MUST drop every dictionary and live
 subscription; if `hello.epoch` or `hello.boot_id` differs it MUST also drop cursors and open span keys
-and report `session-lost`/`window-lost` for any session or window it held (plan §D.2); with the same
-epoch its cursors stay valid.
+and report `session-lost`/`window-lost` for any session or window it held (plan §D.2). With the same
+epoch a cursor still matches the process identity, but it may independently expire or lose its source
+view through bounded-source eviction (§4.2, §4.9, §4.11). On `cursor-invalid`, a client must discard
+that token and restart the query with `cursor:null`; it must not treat the restarted result as a
+continuation of the old page.
 6.5 A client that sees any decoder error on a BLOCK MUST close the connection and reconnect (the
 server is the only producer, so the stream is no longer trustworthy).
 
@@ -993,13 +1256,12 @@ unknown version is refused, `frame.rs` `decode_block`). Unknown optional section
 
 `unknown-mode`, `unsupported-version`, `hello-required`, `bad-frame`, `frame-too-large`, `deadline`,
 `idle`, `slow-client`, `shutting-down` (the §5.4 fatal set), `bad-request`, `unknown-verb`,
-`forbidden`, `binary-required`, `too-many-requests`, `budget`, `rate-limited`, `not-found`,
+`forbidden`, `binary-required`, `too-many-requests`, `budget`, `rate-limited`, `not-found`, `data-gap`,
 `cursor-invalid`, `span-unknown`, `unsupported-feature`, `session-lost`, `window-lost`, `internal`.
-`detail` keys: `budget` → `{"pool": "subscriptions"|"uid-selections"|"selections"|"rows"|"spans"}`
-(`spans` is reserved until P5b-3);
+`detail` keys: `budget` → `{"pool":"subscriptions"|"uid-selections"|"selections"|"rows"|"spans"|"cursors"|"procs"|"provenance"}`;
 `rate-limited` → `{"retry_after_ms": u32}`; `bad-request` → `{"key": str}` (dotted path of the
 offending key, `""` for a JSON text error); `unsupported-feature` → `{"feature": str}`; every other
-code `{}`. Mapping of local errors: §5.2 (reader), §4.2 (JSON text). There is no `busy`: a
+code, including `data-gap`, uses `{}`. Mapping of local errors: §5.2 (reader), §4.2 (JSON text). There is no `busy`: a
 connection over a cap is refused without a byte (§5.4).
 
 ## 11. Robustness and conformance
@@ -1452,6 +1714,16 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | D-W28 | A connection-fatal outcome yields exactly one final frame held outside the hub (`Conn::take_final`), written once by the driver and abandoned on a short write, only when no head is partly written; if nothing was written and the server prefix is queued it is prefixed by the prefix; a malformed REQ in `AwaitHello` is a non-fatal `bad-request` on its own `corr` | §5.2 and §5.4 disagreed (hub frame vs direct write; `hello-required` vs `bad-request`); a bad request in the same read as the prefix must not leave the client without a handshake (P5b design R1, R2, R6) |
 | D-W29 | `subscribe` performs no backend resolution or block encoding; its first BLOCK comes from the next due sampler tick, creator and joiner alike | encoding at subscribe made subscribe/unsubscribe churn a CPU amplifier; the cost is at most one `tick_ms` of latency (P5b-2 S9/S10) |
 | D-W30 | A backpressured `current` holds its request and selection, never its block bytes, and re-resolves the latest tick when Query room appears | holding pending blocks would put up to `max_outstanding` blocks per connection outside every pool; `max_block_bytes <= query_queue_bytes` guarantees a retry fits an empty own pool (P5b-2 S7/S22) |
+| D-W31 | `procs` pages read one immutable typed scan; process identity is `(boot_id,pid,start_ticks)` and cgroup membership is verified in that scan; descendants follow parent-incarnation links; unknown subjects are `not-found`, known empty subjects return no rows | PID alone and path-prefix tests can name a replacement or the wrong cgroup; a fixed source boundary lets P5b test serving behavior without claiming a live collector |
+| D-W32 | Process fields use the sources, checked conversions, null rules, and whole-argument `cmdline` policy in §4.11; `cmdline` is operator-only, reads at most 4,096 content B plus 2 lookahead B, and returns at most 4,096 UTF-8 B after redaction | field provenance is explicit; truncation cannot reveal an unredacted fragment or split a redacted argument |
+| D-W33 | `procs` cursors pin a scan id and last `(pid,start_ticks)` key, excluding only `limit`; `total` is exact after full listing and a lower bound after partial listing; a bounded max-heap selects the lowest 50,000 observed PIDs before ascending inspection; scans retain at most `max_rows` rows and two 24 MiB allocation-capacity views, each for at most 60 s but evictable sooner; malformed digit-only PID names make coverage incomplete | a moving scan can skip or repeat processes; directory order cannot prove lowest-PID selection; coverage makes partial scans visible; structural and byte bounds replace an unbounded cache |
+| D-W34 | `snapshot_at` uses checked Euclidean bucket floor; metadata-only tier resolution supplies the step before bucket-value access; a bucket start outside `i64` is `bad-request` key `real_ns`; retained windows cover oldest retained bucket through the end of the newest committed bucket; `auto` selects the finest eligible tier, then `hot/warm/cold`; an in-window missing bucket is `data-gap`, outside-retention is `not-found`; coverage includes only same-segment monotonic intervals with endpoints in one wall bucket, discards boundary-crossing intervals, and is unioned by the source before serving | a coarser fallback hides an interior hole; no wall/monotonic conversion or guessed interpolation is needed; nominal step is not evidence of observation |
+| D-W35 | Provenance is one fixed-shape object per selected `(inc,metric)` cell; `raw_inputs.value` is null only when unavailable/unrepresentable and required when quality is `ok`; symbolic `source_ref` has no slash; at most 64 cells and 4,096 encoded B per object | missing evidence is explicit without inventing zero; a source key cannot leak a host path; field arithmetic fits the 448 KiB REP cap |
+| D-W36 | `series_batch` resolves one retained tier for the full half-open range, freezes subjects/data at a committed watermark, omits gaps, and invalidates continuation after any eviction in the selected tier; `step_ms=0` chooses the coarsest tier covering the whole range; cursor slots are reserved only when bounded lookahead proves a continuation and tokens remain replayable until fixed expiry/view invalidation | tiers are never spliced, later writes cannot alter a cursor page, and an eviction cannot silently shorten a result; terminal pages work even at cursor capacity |
+| D-W37 | `snapshot_at`/`series_batch` values require `query_room(max_block_bytes)` before read/encode; only fixed-size position lookahead occurs before room; one bounded typed candidate and one encoded block are built at a time; a uid/request round-robin queues at most one block per uid per pass, includes pending `current`, and skips non-fitting requests; `current` keeps D-W30's first-attempt/re-resolve behavior | Query pools bound queued bytes, transient candidates stay bounded, and one busy uid cannot starve another |
+| D-W38 | `Server` owns all wire cursors, expiry and peer binding; `Backend` exposes typed immutable snapshot/history/process views and positions, and typed source failures; `Conn` owns REP/BLOCK/END state; `SendHub` alone owns encoded queues | each layer has one state authority; the source can be replaced/tested without moving protocol, JSON or queue policy into it |
+| D-W39 | TIME `samples` is the exact count of source observations represented by a bucket, independent of coverage and per-cell quality; tier rollups preserve exact sample counts used by sample-weighted aggregates, and the source proves the configured maximum fits `u16` rather than saturating or wrapping | a displayed count or weighted aggregate cannot silently become false at the wire-width boundary |
+| D-W40 | Snapshot metadata resolution may establish the selected tier and step without reading bucket values; an unrepresentable Euclidean bucket start returns a typed `BucketOutOfRange` that the server maps to `bad-request {"key":"real_ns"}` before values or a Query BLOCK are read | tier-dependent arithmetic has one defined owner and invalid time cannot produce a partial data result |
 
 ### Divergences (code or plan vs this document)
 
