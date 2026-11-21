@@ -28,7 +28,7 @@ transport label. WebSocket signaling uses the same HTTPS router.
 Jitsi Videobridge media is separate: the JVB publishes UDP 10000 directly on
 the host, so it does not use Traefik or the optional Mattermost Calls preset.
 Only `jitsi-web` joins the public ingress network. See the
-[Jitsi deployment guide](https://github.com/volkb79-2/vbpub/tree/main/voice-screen-share/jitsi-server/README.md)
+[Jitsi deployment guide](https://github.com/volkb79-2/vbpub/blob/main/voice-screen-share/jitsi-server/README.md)
 for DNS, firewall, and media details. The Jitsi consumer suite renders its
 actual Compose template and checks the route against tls-edge's rendered
 default entrypoint, including the optional HTTP/3 setting.

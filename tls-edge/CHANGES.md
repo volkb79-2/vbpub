@@ -6,11 +6,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 ### Added
-- The repository's Jitsi Meet deployment is checked against tls-edge's rendered default HTTPS/TLS endpoint and optional HTTP/3 configuration. Web signaling uses the shared HTTPS route; JVB media remains direct on UDP 10000.
-
-### Changed
-- Compatibility note for 3.1.0: the Calls media preset changed from enabled by default in 3.0.0 to disabled by default. Existing Calls deployments must set `[tls_edge.calls] enabled = true` to retain its 8443/tcp+udp listeners. The alternate HTTPS listener on 9443 was removed; HTTP/3 remains opt-in and adds UDP on the HTTPS port while preserving the TCP fallback.
-- CIU-managed container names are now `tls-edge-<id>-traefik` and `tls-edge-<id>-dockerproxy`. When adopting an existing edge, configure the existing ingress network and ACME volume so consumers and certificates remain attached to their current state.
+- Jitsi's registered consumer suite checks its real `websecure` route against tls-edge's rendered HTTPS/TLS defaults and optional HTTP/3 listener. JVB media stays direct on UDP 10000.
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
@@ -33,6 +29,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - test(tls-edge): include CLI dependencies in tester image (febc2c16b)
 - test(tls-edge): add release rigor gate for configuration CLI (ec4f857ef)
 
+### Operator notes
+- BREAKING: the Calls media preset is disabled by default in 3.1.0; it was enabled on 8443/tcp+udp in 3.0.0. Existing Calls deployments must set `[tls_edge.calls] enabled = true` to retain those listeners.
+- HTTP/3 over QUIC/UDP is new in 3.1.0 and remains opt-in. It shares the HTTPS port and keeps the TCP listener for HTTP/1.1 and HTTP/2.
+- `get.py install` installs the offline bundle and CLI without site answers; run `tls-edge configure` afterward to write the instance's site config and `consumer.env`.
+- The CIU ACME startup fix mounts state outside the read-only configfile parents. The existing ACME volume name and `/var/lib/traefik/acme.json` path are preserved, so upgrades reuse certificates.
 
 ## [3.0.0] - 2026-11-04
 <!-- cmru: generated -->
@@ -79,6 +80,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Testing
 - test(tls-edge): installer test fails instead of skipping; tamper and --overwrite-local cases (85c700e66)
 - test(tls-edge): offline installer test - install, update, rollback, adapter validation against the committed get.py (58b8a8b89)
+
+### Release details
+- chore(deps): pinned `tecnativa/docker-socket-proxy` v0.4.2 -> v0.5.0 (haproxy 3.2.4 -> 3.4.2 base, optional `ALLOW_PAUSE`/`ALLOW_UNPAUSE` and `BIND_CONFIG` override; no default or env-name changes, tls-edge config unaffected). Multi-arch index digest sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459; images stay tag-pinned like traefik.
+- Calls media defaults to enabled on 8443/tcp+udp, agreeing with Mattermost's default media port.
+- BREAKING: the alternate HTTPS port (9443, entrypoint `websecure-alt`, `https_alt`) is removed. Routing is by host name only; the public ports are exactly 80/tcp, 443/tcp and 8443 tcp+udp (Calls TCP and UDP both on 8443). Port 80 defaults on.
+- The offline installer creates `/srv/tls-edge-instance/stack` with the bundled ciu, stable root, and `consumer.env`; it publishes one bundle per interpreter. See `docs/INSTALL.md`.
+- BREAKING (CIU deployments): container names are `tls-edge-<id>-traefik` and `tls-edge-<id>-dockerproxy` (alias `traefik` kept); plain Compose keeps `edge-traefik`. Site switches `ingress_external` and `tls_edge.acme.volume_name` adopt an existing network and ACME volume.
+- Releases are unsigned (SHA-256 plus an in-bundle manifest); the trust model and tag-pinned `get.py` guidance are documented in `docs/INSTALL.md`.
+- The installer test fails rather than skips when cmru is unavailable unless `TLS_EDGE_ALLOW_INSTALLER_SKIP=1`; it covers bundle tampering and `--overwrite-local`.
+- `run-gate.toml` adds the `tests` lane in tester-unified; wheel staging can pin the bundled ciu with `TLS_EDGE_CIU_VERSION`.
+- The per-interpreter bundles publish through `cmru handler tarball-publish --variant` as one all-or-none release; standalone `get.py` ships beside the bundles (CMRU KI-115).
+- Consumer examples cover public-only web, guarded web, and TCP+UDP media routes.
 
 ## [2.0.0] - 2026-09-13
 <!-- cmru: generated -->
