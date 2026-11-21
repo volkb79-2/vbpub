@@ -606,7 +606,10 @@ impl Conn {
     }
 
     fn complete_draining(&mut self, hub: &mut SendHub) {
-        if self.pending.is_empty() && hub.queued(self.id) == Pools::default() {
+        if self.state == State::Draining
+            && self.pending.is_empty()
+            && hub.queued(self.id) == Pools::default()
+        {
             self.finish_close(hub, None, None);
         }
     }
@@ -2107,6 +2110,13 @@ mod tests {
         assert_eq!((raw[0].0, raw[0].1), (FrameType::Block.code(), 2));
         assert_eq!((raw[1].0, raw[1].1), (FrameType::End.code(), 2));
         assert_end_ok(&raw[1].2, 1, 0, "complete");
+    }
+
+    #[test]
+    fn conn_retry_pending_keeps_ready_connection_open_without_pending_work() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.conn.retry_pending(rig.now, &mut rig.hub, &rig.backend);
+        assert_eq!(rig.conn.state(), State::Ready);
     }
 
     #[test]
