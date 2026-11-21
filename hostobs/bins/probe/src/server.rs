@@ -366,7 +366,7 @@ impl<B: Backend> Server<B> {
     }
 
     /// One sampler tick (design S11 and S25): build the due selection streams, then deliver
-    /// every push or stream-ending delivery through [`Server::drive`] in registry order.
+    /// every push or stream-ending delivery through the per-connection drive path in registry order.
     pub fn on_tick(&mut self, now_ns: u64) {
         let deliveries = self.streams.on_tick(&self.backend);
         for delivery in deliveries {
