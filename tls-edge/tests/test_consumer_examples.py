@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import tomllib
 
 import pytest
 import yaml
@@ -88,6 +89,55 @@ def test_router_names_are_unique_across_examples():
         for name in set(re.findall(r"traefik\.(?:http|tcp|udp)\.routers\.([\w-]+)\.", text)):
             assert name not in seen, f"{name} in {example.name} and {seen[name]}"
             seen[name] = example.name
+
+
+@needs_jinja
+def test_repository_jitsi_deployment_uses_the_default_edge_contract(tmp_path):
+    """The real Jitsi project must remain routable through tls-edge's websecure entrypoint."""
+    project = ROOT.parent / "voice-screen-share" / "jitsi-server"
+    defaults_path = project / "ciu.defaults.toml.j2"
+    compose_path = project / "ciu.compose.yml.j2"
+    if not defaults_path.is_file() or not compose_path.is_file():
+        pytest.skip("the vbpub voice-screen-share/jitsi-server sibling is not present")
+
+    import jinja2
+
+    jinja = jinja2.Environment(undefined=jinja2.StrictUndefined, keep_trailing_newline=True)
+    defaults_text = jinja.from_string(defaults_path.read_text(encoding="utf-8")).render(
+        env={"PUBLIC_FQDN": "example.test", "PUBLIC_IP": "203.0.113.7"},
+    )
+    cfg = tomllib.loads(defaults_text)["jitsi"]
+    # CIU injects these resolved host paths before rendering the real project template.
+    for service in ("prosody", "jicofo", "jvb"):
+        cfg[service]["hostdir"] = {"config": f"/tmp/vol-{service}-config"}
+        if service == "prosody":
+            cfg[service]["hostdir"]["data"] = "/tmp/vol-prosody-data"
+    cfg["container_prefix"] = "jitsi-test"
+    compose_text = jinja.from_string(compose_path.read_text(encoding="utf-8")).render(jitsi=cfg)
+    compose = yaml.safe_load(compose_text)
+
+    web = compose["services"]["jitsi-web"]
+    labels = web["labels"]
+    router = cfg["router_name"]
+    assert labels["traefik.enable"] == "true"
+    assert labels["traefik.docker.network"] == "ingress_public"
+    assert labels[f"traefik.http.routers.{router}.rule"] == "Host(`jitsi.example.test`)"
+    assert labels[f"traefik.http.routers.{router}.entrypoints"] == "websecure"
+    assert labels[f"traefik.http.services.{router}.loadbalancer.server.port"] == str(cfg["web"]["port"])
+    assert "ports" not in web
+    assert "ingress" in web["networks"]
+    assert all("ingress" not in compose["services"][name]["networks"]
+               for name in ("prosody", "jicofo", "jvb"))
+    assert compose["networks"]["ingress"]["name"] == "ingress_public"
+    assert cfg["jvb"]["port"] == 10000
+    assert compose["services"]["jvb"]["ports"] == ["10000:10000/udp"]
+    assert not any(key.startswith(("traefik.tcp.", "traefik.udp.")) for key in labels)
+
+    edge_dir = render_to(tmp_path / "edge", defaults_config())
+    edge_entrypoints = yaml.safe_load(
+        (edge_dir / "traefik.yml").read_text(encoding="utf-8")
+    )["entryPoints"]
+    assert labels[f"traefik.http.routers.{router}.entrypoints"] in edge_entrypoints
 
 
 @needs_docker

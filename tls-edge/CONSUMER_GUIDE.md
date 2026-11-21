@@ -152,8 +152,10 @@ labels:
 ```
 
 Keep Prosody, Jicofo, and JVB on Jitsi's private network; only `jitsi-web`
-needs edge-network membership. The Jitsi project tests this label/network
-contract and the direct UDP media publication.
+needs edge-network membership. The Jitsi project tests its label/network
+contract and direct UDP media publication. tls-edge's consumer suite also
+renders the Jitsi project's actual CIU templates and checks that their
+`websecure` route matches the edge's default entrypoint.
 
 ### Pattern A – Public-only service
 
