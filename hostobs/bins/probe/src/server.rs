@@ -40,12 +40,13 @@
 //!   connection wins, so a tie is settled by the order: the hello deadline against the writer
 //!   stall on the unread server prefix, and the reader's age (`deadline`) against a stall due in
 //!   the same `poll` (the reader's age wins, the hub's `slow-client` finds a closed connection).
-//! - **One hub, per-level caps.** The hub's caps are the widest of the served levels
-//!   ([`ServerLimits::queue_limits`]). The observer's smaller `control_queue_bytes` (design
-//!   R28) is enforced by the server after every `on_bytes`: a connection whose queued control
-//!   bytes exceed its own level's cap is closed with `slow-client`. A frame is at most
-//!   `max_reply_bytes`, below the cap, so this equals the hub's rule (a frame into an empty
-//!   control queue is always admitted).
+//! - **One hub, server-wide block-pool caps.** The Live and Query pool caps are the smaller
+//!   observe/operator values and are unified in both levels' hello limits
+//!   ([`ServerLimits::queue_limits`], S20). The hub's control cap and timers are the widest of the
+//!   served levels. The observer's smaller `control_queue_bytes` (design R28) is enforced by the
+//!   server after every `on_bytes`: a connection whose queued control bytes exceed its own level's
+//!   cap is closed with `slow-client`. A frame is at most `max_reply_bytes`, below the cap, so this
+//!   equals the hub's rule (a frame into an empty control queue is always admitted).
 //! - **Every push path ends in `enforce_control`.** The server hands a connection the hub and
 //!   the backend through one private method (`drive`), which runs the control-cap check right
 //!   after the connection returns. Every path that can queue a frame of a connection (today
@@ -118,11 +119,20 @@ impl ServerLimits {
     }
 
     /// These bounds with the server-wide facts unified (design S20): `stall_ms` and
-    /// `frame_completion_ms` are widest, `tick_ms` is the larger observe/operator value, and
-    /// `max_rows`/`max_block_bytes` are their smaller values. The shared block limit is also clamped
-    /// to both levels' Query and Live connection pools. [`Server::new`] applies it.
+    /// `frame_completion_ms` are widest; `tick_ms` is the larger observe/operator value; and
+    /// `max_rows`, `max_block_bytes`, and the per-connection Live and Query pool caps are the
+    /// smaller observe/operator values. This gives the one hub a server-wide block-pool bound and
+    /// announces that same bound at both block-serving levels. [`Server::new`] applies it.
     #[must_use]
     pub fn unified(&self) -> ServerLimits {
+        let client_queue_bytes = self
+            .observe
+            .client_queue_bytes
+            .min(self.operator.client_queue_bytes);
+        let query_queue_bytes = self
+            .observe
+            .query_queue_bytes
+            .min(self.operator.query_queue_bytes);
         let first = self.observe.stall_ms.max(self.operator.stall_ms);
         let stall_ms = first.max(self.observer.stall_ms);
         let first = self.observe.frame_completion_ms;
@@ -134,16 +144,16 @@ impl ServerLimits {
             .observe
             .max_block_bytes
             .min(self.operator.max_block_bytes)
-            .min(self.observe.query_queue_bytes)
-            .min(self.observe.client_queue_bytes)
-            .min(self.operator.query_queue_bytes)
-            .min(self.operator.client_queue_bytes);
+            .min(query_queue_bytes)
+            .min(client_queue_bytes);
         let mut out = *self;
         for limits in [&mut out.observe, &mut out.operator, &mut out.observer] {
             limits.stall_ms = stall_ms;
             limits.frame_completion_ms = frame_completion_ms;
         }
         for limits in [&mut out.observe, &mut out.operator] {
+            limits.client_queue_bytes = client_queue_bytes;
+            limits.query_queue_bytes = query_queue_bytes;
             limits.max_block_bytes = max_block_bytes;
         }
         out.observer.max_block_bytes = self
@@ -169,32 +179,40 @@ impl ServerLimits {
         }
     }
 
-    /// The caps of the one hub: every field is the widest value of the three levels (the
-    /// observer's smaller control queue is enforced by the server, see the module docs).
+    /// The caps of the one hub: Live and Query pools use the smaller observe/operator values;
+    /// the control queue and timers use the widest value of all served levels (the observer's
+    /// smaller control queue is enforced by the server, see the module docs).
     #[must_use]
     pub fn queue_limits(&self) -> QueueLimits {
-        let first = widest(self.observe.queue_limits(), self.operator.queue_limits());
-        widest(first, self.observer.queue_limits())
+        let observe = self.observe.queue_limits();
+        let operator = self.operator.queue_limits();
+        let observer = self.observer.queue_limits();
+        QueueLimits {
+            client_queue_bytes: observe.client_queue_bytes.min(operator.client_queue_bytes),
+            uid_live_bytes: observe.uid_live_bytes.min(operator.uid_live_bytes),
+            global_live_bytes: observe.global_live_bytes.min(operator.global_live_bytes),
+            query_queue_bytes: observe.query_queue_bytes.min(operator.query_queue_bytes),
+            uid_query_bytes: observe.uid_query_bytes.min(operator.uid_query_bytes),
+            global_query_bytes: observe.global_query_bytes.min(operator.global_query_bytes),
+            control_queue_bytes: observe
+                .control_queue_bytes
+                .max(operator.control_queue_bytes)
+                .max(observer.control_queue_bytes),
+            stall_ns: observe
+                .stall_ns
+                .max(operator.stall_ns)
+                .max(observer.stall_ns),
+            frame_completion_ns: observe
+                .frame_completion_ns
+                .max(operator.frame_completion_ns)
+                .max(observer.frame_completion_ns),
+        }
     }
 }
 
 impl Default for ServerLimits {
     fn default() -> ServerLimits {
         ServerLimits::new()
-    }
-}
-
-fn widest(a: QueueLimits, b: QueueLimits) -> QueueLimits {
-    QueueLimits {
-        client_queue_bytes: a.client_queue_bytes.max(b.client_queue_bytes),
-        uid_live_bytes: a.uid_live_bytes.max(b.uid_live_bytes),
-        global_live_bytes: a.global_live_bytes.max(b.global_live_bytes),
-        query_queue_bytes: a.query_queue_bytes.max(b.query_queue_bytes),
-        uid_query_bytes: a.uid_query_bytes.max(b.uid_query_bytes),
-        global_query_bytes: a.global_query_bytes.max(b.global_query_bytes),
-        control_queue_bytes: a.control_queue_bytes.max(b.control_queue_bytes),
-        stall_ns: a.stall_ns.max(b.stall_ns),
-        frame_completion_ns: a.frame_completion_ns.max(b.frame_completion_ns),
     }
 }
 
@@ -1667,7 +1685,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hub_caps_are_the_widest_of_the_levels() {
+    fn the_default_hub_caps_match_shared_pools_and_widest_controls() {
         let limits = ServerLimits::new();
         let hub = limits.queue_limits();
         assert_eq!(hub.control_queue_bytes, 2 * 1024 * 1024);
@@ -1683,7 +1701,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hub_caps_take_every_field_from_its_widest_level() {
+    fn the_hub_caps_use_minimum_block_pools_and_widest_controls_and_timers() {
         let mut limits = ServerLimits::new();
         limits.observe.client_queue_bytes = 100_000;
         limits.operator.client_queue_bytes = 300_000;
@@ -1701,12 +1719,12 @@ mod tests {
         limits.operator.frame_completion_ms = 8_000;
         limits.observer.frame_completion_ms = 7_000;
         let hub = limits.queue_limits();
-        assert_eq!(hub.client_queue_bytes, 300_000);
-        assert_eq!(hub.uid_live_bytes, 600_000);
-        assert_eq!(hub.global_live_bytes, 2_400_000);
-        assert_eq!(hub.query_queue_bytes, 300_000);
-        assert_eq!(hub.uid_query_bytes, 300_000);
-        assert_eq!(hub.global_query_bytes, 1_200_000);
+        assert_eq!(hub.client_queue_bytes, 100_000);
+        assert_eq!(hub.uid_live_bytes, 200_000);
+        assert_eq!(hub.global_live_bytes, 800_000);
+        assert_eq!(hub.query_queue_bytes, 100_000);
+        assert_eq!(hub.uid_query_bytes, 100_000);
+        assert_eq!(hub.global_query_bytes, 400_000);
         assert_eq!(hub.control_queue_bytes, 300_000);
         assert_eq!(hub.stall_ns, 9_000 * MS);
         assert_eq!(hub.frame_completion_ns, 8_000 * MS);
@@ -1747,6 +1765,8 @@ mod tests {
             let limits = unified.get(level).expect("served");
             assert_eq!(limits.tick_ms, 900);
             assert_eq!(limits.max_rows, 100);
+            assert_eq!(limits.client_queue_bytes, 500);
+            assert_eq!(limits.query_queue_bytes, 1_000);
             assert!(limits.max_block_bytes <= limits.query_queue_bytes);
             assert!(limits.max_block_bytes <= limits.client_queue_bytes);
         }
@@ -1869,6 +1889,49 @@ mod tests {
         assert_eq!(server.streams.subscribers(), 0);
         server.finish(observe);
         server.finish(operator);
+    }
+
+    #[test]
+    fn server_current_uses_smallest_shared_query_pool() {
+        let incarnations: Vec<u64> = (1..=20).collect();
+        let data = TickData::example(1, &incarnations, &["m"]);
+        let encoded = crate::tick::query_block(
+            data.clone(),
+            BlockBounds {
+                max_rows: 4_096,
+                max_block_bytes: u32::MAX,
+            },
+        )
+        .expect("query block");
+        assert!(encoded.len() > 500 && encoded.len() <= 1_500);
+        let query_cap = u32::try_from(encoded.len()).expect("query cap");
+
+        let mut limits = ServerLimits::new();
+        limits.observe.query_queue_bytes = query_cap;
+        limits.operator.query_queue_bytes = query_cap.saturating_mul(4);
+        limits.observe.client_queue_bytes = query_cap.saturating_mul(4);
+        limits.operator.client_queue_bytes = query_cap.saturating_mul(4);
+        let mut d = Driver::with(limits);
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        for level in [Level::Observe, Level::Operator] {
+            let advertised = d.server.limits().get(level).expect("served level");
+            assert_eq!(advertised.query_queue_bytes, query_cap);
+            assert_eq!(advertised.max_block_bytes, query_cap);
+        }
+
+        put_current(&mut d, &selection(1), data);
+        d.send(id, &request(2, "current", CURRENT_ARGS));
+        assert_eq!(d.server.hub().queued(id).query, encoded.len());
+        assert!(!d.server.hub().query_room(id, encoded.len()));
+
+        d.send(id, &request(3, "current", CURRENT_ARGS));
+        assert_eq!(d.server.hub().queued(id).query, encoded.len());
+        assert_eq!(d.server.hub().uid_pools(1).query, encoded.len());
+        assert_eq!(d.server.hub().global_pools().query, encoded.len());
+
+        d.server.finish(id);
+        assert_clean(&d, "shared Query cap");
     }
 
     #[test]
@@ -2296,46 +2359,57 @@ mod tests {
     #[test]
     fn server_on_tick_interval_skips_a_generation_change() {
         let mut d = Driver::new();
-        let id = d.open(Level::Observe, 1);
-        d.ready(id);
+        let fast = d.open(Level::Observe, 1);
+        let slow = d.open(Level::Observe, 2);
+        d.ready(fast);
+        d.ready(slow);
         let selected = selection(1);
-        wire_subscribe(&mut d, id, 2, 1, 2_000);
-        let mut dicts = StreamDicts::new();
+        wire_subscribe(&mut d, fast, 2, 1, 1_000);
+        wire_subscribe(&mut d, slow, 3, 1, 2_000);
+        let mut fast_dicts = StreamDicts::new();
+        let mut slow_dicts = StreamDicts::new();
 
         put_current(&mut d, &selected, live_data(1, "one"));
         d.server_tick();
-        d.pump(id, usize::MAX);
-        let first = raw_frames(&d.take_out(id));
-        let block = accept_block(&mut dicts, 2, &first[0].2);
+        d.pump(fast, usize::MAX);
+        d.pump(slow, usize::MAX);
+        let fast_first = raw_frames(&d.take_out(fast));
+        let slow_first = raw_frames(&d.take_out(slow));
+        assert_eq!(fast_first.len(), 1);
+        assert_eq!(slow_first.len(), 1);
+        let block = accept_block(&mut fast_dicts, 2, &fast_first[0].2);
+        assert_eq!(block.header.dict_gen, 1);
+        assert!(block.dictionary.is_some());
+        let block = accept_block(&mut slow_dicts, 3, &slow_first[0].2);
         assert_eq!(block.header.dict_gen, 1);
         assert!(block.dictionary.is_some());
 
         put_current(&mut d, &selected, live_data(2, "two"));
         d.server_tick();
-        d.pump(id, usize::MAX);
-        assert!(d.take_out(id).is_empty());
-
-        d.server_tick();
-        d.pump(id, usize::MAX);
-        let changed = raw_frames(&d.take_out(id));
-        assert_eq!(changed.len(), 1);
-        let block = accept_block(&mut dicts, 2, &changed[0].2);
+        d.pump(fast, usize::MAX);
+        d.pump(slow, usize::MAX);
+        let fast_changed = raw_frames(&d.take_out(fast));
+        assert_eq!(fast_changed.len(), 1);
+        let block = accept_block(&mut fast_dicts, 2, &fast_changed[0].2);
         assert_eq!(block.header.dict_gen, 2);
         assert!(block.dictionary.is_some());
+        assert!(d.take_out(slow).is_empty());
 
         d.server_tick();
-        d.pump(id, usize::MAX);
-        let bare = raw_frames(&d.take_out(id));
-        assert!(bare.is_empty());
-
-        d.server_tick();
-        d.pump(id, usize::MAX);
-        let bare = raw_frames(&d.take_out(id));
-        assert_eq!(bare.len(), 1);
-        let block = accept_block(&mut dicts, 2, &bare[0].2);
+        d.pump(fast, usize::MAX);
+        d.pump(slow, usize::MAX);
+        let fast_bare = raw_frames(&d.take_out(fast));
+        let slow_changed = raw_frames(&d.take_out(slow));
+        assert_eq!(fast_bare.len(), 1);
+        assert_eq!(slow_changed.len(), 1);
+        let block = accept_block(&mut fast_dicts, 2, &fast_bare[0].2);
         assert_eq!(block.header.dict_gen, 2);
         assert!(block.dictionary.is_none());
-        d.server.finish(id);
+        let block = accept_block(&mut slow_dicts, 3, &slow_changed[0].2);
+        assert_eq!(block.header.dict_gen, 2);
+        assert!(block.dictionary.is_some());
+        d.server.finish(fast);
+        d.server.finish(slow);
         assert_clean(&d, "interval generation");
     }
 

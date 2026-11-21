@@ -446,12 +446,14 @@ judged for a join: no new stream is created; controller decision, finding 4); se
 requesting connection's level values (finding 14). Every leave
 decrements the ref, removes a 0 ref and an empty uid entry, and destroys an empty stream.
 **S20 Server-wide stream bounds.** `ServerLimits::unified()` also sets, for observe and operator:
-`tick_ms` to the larger of the two (one sampler tick), `max_rows` to the smaller row limit, and one
-shared `max_block_bytes` to the smaller configured byte limit, clamped again by the query and client
-queue caps of both levels. Thus the same block bound is announced and enforced for either level and
-`max_block_bytes <= query_queue_bytes` (and `<= client_queue_bytes`) holds for both levels in every
-built server (no panic: a misconfiguration is clamped; a `Server::new` test covers defaults, unequal
-pool caps and a deliberately wrong input). What hello announces is what the server enforces.
+`tick_ms` to the larger of the two (one sampler tick); `max_rows`, `client_queue_bytes`, and
+`query_queue_bytes` to their smaller values; and one shared `max_block_bytes` to the smaller
+configured byte limit, clamped again by those shared queue caps. The per-uid and global Live and
+Query pool limits are derived from the shared per-connection caps. Thus the same queue and block
+bounds are announced and enforced for either level and `max_block_bytes <= query_queue_bytes` (and
+`<= client_queue_bytes`) holds for both levels in every built server (no panic: a misconfiguration
+is clamped; a `Server::new` test covers defaults, unequal pool caps and a deliberately wrong input).
+What hello announces is what the server enforces.
 `ServerLimits::stream_limits()` = `StreamLimits { bounds: BlockBounds { max_rows, max_block_bytes } }`
 of the unified observe level (equal to operator's after unification). `min_interval_ms`,
 `max_uid_selections` and `max_selections` stay per level (S19 passes the requesting level's caps).
@@ -626,7 +628,9 @@ implementer's choice.
 - `conn_closed_stops_every_push_path` (a push that closes the conn: no later push, `end_stream` or
   registry change; `end_subscription` on a closed conn only removes `subs`).
 - `conn_current_uses_unified_bounds` and `server_limits_block_invariant` (`max_block_bytes <=
-  query_queue_bytes, client_queue_bytes` after `unified()`, defaults and a wrong input).
+  query_queue_bytes, client_queue_bytes` after `unified()`, defaults and a wrong input), plus
+  `server_current_uses_smallest_shared_query_pool` (a second valid BLOCK waits when the smaller
+  observe/operator Query pool is full).
 - `conn_status_tests_rewritten` (the two P5b-1b status tests now expect the hub's count).
 - `conn_draining_*`: client-eof END per subscription in corr order with exact counts; pending finishes then
   silent close; close only when pending empty and queue empty.
@@ -641,8 +645,9 @@ implementer's choice.
 
 ### 5.4 P5b-2d
 - `server_on_tick_*`: shared bytes (two conns, one `Arc`, distinct `corr`/`dropped` prefixes), joiner on
-  generation 5 gets the dictionary form then bare, interval skipping a change tick (§5.3 D-W27 at server
-  level), Push skipped for a closed-unfinished conn, End delivered to every subscriber.
+  generation 5 gets the dictionary form then bare, and a faster subscriber changes the generation on
+  a tick skipped by a slower subscriber that then gets the dictionary form on its next due tick (§5.3
+  D-W27 at server level); Push skipped for a closed-unfinished conn; End delivered to every subscriber.
 - `server_retry_pass_*`: after `wrote` of another conn of the same uid frees the uid Query pool; at `poll`;
   id order.
 - `server_finish_releases_selections` for all close paths (S18).
@@ -681,9 +686,9 @@ implementer's choice.
 - §4.7 and §5.1 (2b): a join that adds a selection the uid does not use yet counts against the uid cap
   (`budget uid-selections`) but not the probe cap (S19, finding 4); the caps applied are the requesting
   level's; a uid's selections are counted across levels.
-- §5.1 (2c): outstanding = a backpressured `current` in M2 (S5); `max_rows` and `max_block_bytes` are
-  unified to the smaller of observe/operator and `max_block_bytes <= query_queue_bytes,
-  client_queue_bytes` holds by construction (S20).
+- §5.1 (2c): outstanding = a backpressured `current` in M2 (S5); `max_rows`, `client_queue_bytes`,
+  `query_queue_bytes`, and `max_block_bytes` are unified to the smaller of observe/operator;
+  `max_block_bytes <= query_queue_bytes, client_queue_bytes` holds by construction (S20).
 - §5.3 (2b): Query pin stamps 0 without resetting `pending_drops` (S12); `dropped_blocks`, `query_room`.
 - §5.4 (2c): `Ready` idle row includes "no pending request"; `Draining` row closes when pending and queue
   are empty (S23); (2d) driver note: `on_tick` once per tick after `poll` (S25).

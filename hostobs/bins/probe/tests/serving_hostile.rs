@@ -750,6 +750,8 @@ struct ObservedConnection {
     dicts: StreamDicts,
     blocks: BTreeMap<u32, u32>,
     ended_corrs: BTreeSet<u32>,
+    reopen_requests: BTreeSet<u32>,
+    accepted_reopens: BTreeSet<u32>,
     blocks_seen: usize,
     ends_seen: usize,
     corr_reuses: usize,
@@ -764,10 +766,19 @@ impl ObservedConnection {
             dicts: StreamDicts::new(),
             blocks: BTreeMap::new(),
             ended_corrs: BTreeSet::new(),
+            reopen_requests: BTreeSet::new(),
+            accepted_reopens: BTreeSet::new(),
             blocks_seen: 0,
             ends_seen: 0,
             corr_reuses: 0,
             partial_frames: 0,
+        }
+    }
+
+    fn data_request(&mut self, corr: u32) {
+        if self.ended_corrs.contains(&corr) {
+            self.reopen_requests.insert(corr);
+            self.accepted_reopens.remove(&corr);
         }
     }
 
@@ -826,6 +837,10 @@ impl ObservedConnection {
                     .accept(corr, &block)
                     .expect("every BLOCK follows the stream dictionary rules");
                 if self.ended_corrs.remove(&corr) {
+                    assert!(
+                        self.accepted_reopens.remove(&corr),
+                        "BLOCK corr {corr} follows END without a successful current or subscribe REP"
+                    );
                     self.corr_reuses = self.corr_reuses.saturating_add(1);
                 }
                 let count = self.blocks.entry(corr).or_insert(0);
@@ -836,10 +851,15 @@ impl ObservedConnection {
                 let delivered = self.blocks.remove(&corr).unwrap_or(0);
                 assert_eq!(end.blocks, delivered, "END corr {corr} counts its BLOCKs");
                 self.dicts.close(corr);
+                self.reopen_requests.remove(&corr);
+                self.accepted_reopens.remove(&corr);
                 self.ended_corrs.insert(corr);
                 self.ends_seen = self.ends_seen.saturating_add(1);
             } else if kind == FrameType::Rep.code() {
-                check_rep(payload, false).expect("every binary REP parses");
+                let rep = check_rep(payload, false).expect("every binary REP parses");
+                if self.reopen_requests.remove(&corr) && rep.ok {
+                    self.accepted_reopens.insert(corr);
+                }
             } else if kind == FrameType::Evt.code() {
                 check_evt(payload).expect("every binary EVT parses");
             }
@@ -850,6 +870,21 @@ impl ObservedConnection {
 fn observed_feed(model: &mut BTreeMap<ConnId, ObservedConnection>, id: ConnId, bytes: &[u8]) {
     let held = model.entry(id).or_insert_with(ObservedConnection::new);
     held.feed(bytes);
+}
+
+fn send_data_request(
+    server: &mut Server<FixedBackend>,
+    model: &mut BTreeMap<ConnId, ObservedConnection>,
+    id: ConnId,
+    corr: u32,
+    bytes: &[u8],
+    now: u64,
+) {
+    model
+        .get_mut(&id)
+        .expect("connection has an output model")
+        .data_request(corr);
+    server.on_bytes(id, bytes, now);
 }
 
 fn drain_server(
@@ -920,10 +955,17 @@ fn server_hostile_2000_steps_with_block_verbs() {
         hello.extend(server_request(1, "hello", HELLO_ARGS));
         server.on_bytes(id, &hello, now);
         drain_server(&mut server, &mut model, id, usize::MAX, now);
-        server.on_bytes(id, &server_current(2), now);
+        send_data_request(&mut server, &mut model, id, 2, &server_current(2), now);
         drain_server(&mut server, &mut model, id, usize::MAX, now);
         let sub = 10 + u32::try_from(slot).expect("slot");
-        server.on_bytes(id, &server_subscribe(sub), now);
+        send_data_request(
+            &mut server,
+            &mut model,
+            id,
+            sub,
+            &server_subscribe(sub),
+            now,
+        );
         subscriptions[slot].push(sub);
         drain_server(&mut server, &mut model, id, usize::MAX, now);
     }
@@ -970,7 +1012,14 @@ fn server_hostile_2000_steps_with_block_verbs() {
             }
             1 | 2 => {
                 let corr = 2 + u32::try_from(rng.below(8)).expect("corr");
-                server.on_bytes(id, &server_current(corr), now);
+                send_data_request(
+                    &mut server,
+                    &mut model,
+                    id,
+                    corr,
+                    &server_current(corr),
+                    now,
+                );
             }
             3 | 4 => {
                 let corr = 10 + u32::try_from(rng.below(4)).expect("corr");
@@ -979,7 +1028,14 @@ fn server_hostile_2000_steps_with_block_verbs() {
                     subscriptions[slot].retain(|held| *held != corr);
                 } else {
                     subscriptions[slot].push(corr);
-                    server.on_bytes(id, &server_subscribe(corr), now);
+                    send_data_request(
+                        &mut server,
+                        &mut model,
+                        id,
+                        corr,
+                        &server_subscribe(corr),
+                        now,
+                    );
                 }
             }
             5 => {

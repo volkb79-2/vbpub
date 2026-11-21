@@ -531,19 +531,24 @@ form of §4.2; a uid's selections are those its connections' live subscriptions 
 uids use counts for both), across levels. Joining an already-live selection adds no probe stream; a
 uid joining a selection it did not already use is checked against the uid cap, while a stream creation
 is checked against the uid and probe caps in that order, using the requesting level's values.
-`max_block_bytes = client_queue_bytes = query_queue_bytes` and every per-uid
-pool is at least that large, so an empty connection can always take the largest block; a query block
-that waits on a shared pool waits only for other connections' bytes, which leave within
-`frame_completion_ms` + `stall_ms` or their connection is closed (§5.3 `poll`). The per-uid pools are a
-quarter of the global ones, so one uid (up to 8 observe connections, D-W20) can never hold more than a
-quarter of either pool, however slowly it reads.
+For block-serving levels, the server uses and announces one shared set of `client_queue_bytes` and
+`query_queue_bytes`: each is the smaller configured value of observe and operator. The per-uid and
+global Live and Query pool caps are derived from those effective values (Live ×2 and ×8; Query ×1
+and ×4), so hello and hub enforcement agree. `max_block_bytes` is the smaller configured block
+bound, clamped to the shared Query and Live connection caps. With the defaults,
+`max_block_bytes = client_queue_bytes = query_queue_bytes`; therefore a block that passes its bound
+always fits an empty per-connection pool. A Query push that waits on a pool is waiting for bytes
+already queued by that connection, its uid, or the server; those bytes leave within
+`frame_completion_ms` + `stall_ms` or their connection is closed (§5.3 `poll`). The per-uid pools are
+a quarter of the global ones, so one uid (up to 8 observe connections, D-W20) can never hold more
+than a quarter of either pool, however slowly it reads.
 
-The server unifies `tick_ms`, `max_rows` and `max_block_bytes` across observe and operator
-(`tick_ms` the larger; row and configured byte bounds the smaller). It clamps the shared byte bound
-to the smallest `query_queue_bytes` and `client_queue_bytes` of both levels, then announces and
-enforces that same value for both. Thus a block that passes the bound always fits an empty Query
-pool for either level, and `max_block_bytes <= query_queue_bytes` and `client_queue_bytes` hold for
-both.
+The server unifies `tick_ms`, `max_rows`, `max_block_bytes`, `client_queue_bytes` and
+`query_queue_bytes` across observe and operator (`tick_ms` the larger; the other values the
+smaller). The per-uid and global Live and Query caps are derived from those shared connection caps.
+Thus both hellos announce the exact block-pool limits enforced by the hub, and
+`max_block_bytes <= query_queue_bytes` and `client_queue_bytes` hold for both. A block that passes
+its bound always fits an empty per-connection Query pool.
 
 **Reply sizes.** `max_reply_bytes = (control_queue_bytes − 256 KiB) / max_outstanding` = 448 KiB, so the
 replies of every outstanding request plus 256 KiB of END/EVT frames always fit one control queue; a
@@ -672,7 +677,7 @@ control pools never shed anything.
 |---|---|
 | `push_control(c, f, now)` | control pool of `c` empty ⇒ append, whatever the length (a frame is ≤ `max_frame_bytes` by construction; every legal REP is ≤ `max_reply_bytes` anyway, §5.1); else `control + len > control_queue_bytes` ⇒ return `Close(slow-client)`; else append. Never counts toward a block pool, never dropped. |
 | `push_live(c, s, tick, now)` | 1. **Coalesce**: if stream `s` has an unpinned Live entry, it is replaced in place by the new tick (`pending_drops[s] += 1`; if the old one was dictionary-bearing, `needs_dict[s] = true`); its bytes leave the pools. 2. The form rule picks the form, `L` = its length. 3. **Fit** `L` into the Live pool (the entry being pushed is not yet inserted, so it is never its own victim). 4. Fit failed ⇒ the new entry is dropped (`pending_drops[s] += 1`, `needs_dict[s] = true` if its form was dictionary-bearing; entries already shed stay shed) ⇒ `DroppedIncoming`; else insert (in place when coalesced) ⇒ `Queued`/`Coalesced`. |
-| `push_query(c, s, block, now)` | Query pool of `c`, of its uid and global all fit `len` ⇒ append, `blocks[s] += 1` ⇒ `Queued`; else `query_waiting[s] = true` ⇒ `Backpressure(block)`: the producer keeps the block and pauses that stream until `query_ready(c, s)`. Nothing is shed: a query never displaces a Live tick and a tick never displaces a query block. |
+| `push_query(c, s, block, now)` | Query pool of `c`, of its uid and global all fit `len` ⇒ append, `blocks[s] += 1` ⇒ `Queued`; else `query_waiting[s] = true` ⇒ `Backpressure(block)`. A producer that owns an encoded block keeps it and pauses until `query_ready(c, s)`; `current` follows S6/S7 instead, discarding the bytes and re-resolving its saved request when `query_room` permits (D-W30). Nothing is shed: a query never displaces a Live tick and a tick never displaces a query block. |
 | `end_stream(c, s)` | Removes every unpinned Live entry of `s` (counted), returns `{blocks: blocks[s], dropped: pending_drops[s]}` for the END payload (§2.2) and forgets the stream; queued Query entries of `s` stay (already counted, they precede the END); the caller then `push_control`s the END. |
 | empty → non-empty (any push) | `last_progress_ns = now` |
 | `head(c, now)` | the head entry, pinning it on the first call (above). |
