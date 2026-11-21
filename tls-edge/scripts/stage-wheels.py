@@ -76,17 +76,39 @@ def requirements_of(wheel: Path) -> list[str]:
     ]
 
 
-def download_command(requirements: list[str], tag: str, dest: Path) -> list[str]:
-    """pip invocation for one variant: binary-only, target interpreter and platform."""
+def download_command(
+    requirements: list[str], tag: str, dest: Path,
+    *, allow_fresh: bool = False,
+) -> list[str]:
+    """pip invocation for one variant with the estate upload-age cutoff by default."""
     command = [
         sys.executable, "-m", "pip", "download", "--disable-pip-version-check",
         "--only-binary=:all:", "--index-url", "https://pypi.org/simple",
         "--python-version", f"{tag[2]}.{tag[3:]}", "--implementation", "cp", "--abi", tag,
         "--dest", str(dest),
     ]
+    if not allow_fresh:
+        command += ["--uploaded-prior-to", f"P{MIN_AGE_DAYS}D"]
     for platform in PLATFORMS:
         command += ["--platform", platform]
     return [*command, *requirements]
+
+
+def require_upload_cutoff_support() -> None:
+    """Refuse an old selected pip before deleting staged output."""
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "download", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    help_text = result.stdout + result.stderr
+    if result.returncode != 0 or "--uploaded-prior-to" not in help_text or "P<n>D" not in help_text:
+        _fail(
+            f"selected pip must support `--uploaded-prior-to P{MIN_AGE_DAYS}D` for the "
+            "14-day bundle age rule; upgrade the build pip or pass --allow-fresh with a "
+            "release-note justification"
+        )
 
 
 def _wheel_name_version(wheel: Path) -> tuple[str, str]:
@@ -107,7 +129,8 @@ def check_freshness(wheel: Path, now: datetime.datetime | None = None) -> None:
     age = (now or datetime.datetime.now(datetime.timezone.utc)) - uploaded
     if age < datetime.timedelta(days=MIN_AGE_DAYS):
         _fail(f"{wheel.name} is only {age.days} day(s) old; policy needs {MIN_AGE_DAYS} "
-              "(pin an older version in the requirements or pass --allow-fresh)")
+              "(PyPI upload-time metadata disagrees with pip's resolver cutoff; inspect the index "
+              "data, or pass --allow-fresh only with a release-note justification)")
 
 
 def check_ciu_pin(resolved: str, pinned: str | None) -> None:
@@ -270,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-fresh", action="store_true", help="waive the 14-day rule")
     args = parser.parse_args(argv)
 
+    if not args.allow_fresh:
+        require_upload_cutoff_support()
     if VENDOR.is_symlink():
         _fail(f"refusing to replace wheel staging symlink {VENDOR}")
     if VENDOR.exists():
@@ -314,9 +339,21 @@ def main(argv: list[str] | None = None) -> int:
         shutil.copy2(ciu, target / ciu.name)
         shutil.copy2(cli_extended, target / cli_extended.name)
         shutil.copy2(tls_edge_cli, target / tls_edge_cli.name)
-        result = subprocess.run(download_command(combined_requirements, tag, target), check=False)
+        result = subprocess.run(
+            download_command(combined_requirements, tag, target, allow_fresh=args.allow_fresh),
+            check=False,
+        )
         if result.returncode:
-            _fail(f"pip download for {name} ({tag}) failed with exit {result.returncode}")
+            if args.allow_fresh:
+                _fail(
+                    f"pip download for {name} ({tag}) failed with exit {result.returncode}; "
+                    "check that the selected index has compatible wheels for this variant"
+                )
+            _fail(
+                f"pip download for {name} ({tag}) failed with exit {result.returncode}; the "
+                f"{MIN_AGE_DAYS}-day cutoff can exclude a just-released minimum version. Wait for "
+                "an eligible release or pass --allow-fresh with a release-note justification"
+            )
         if not args.allow_fresh:
             for wheel in sorted(target.glob("*.whl")):
                 if wheel.name not in {ciu.name, cli_extended.name, tls_edge_cli.name}:

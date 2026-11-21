@@ -53,6 +53,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - test(tls-edge): offline installer test - install, update, rollback, adapter validation against the committed get.py (58b8a8b89)
 
 <!-- cmru: pending release notes begin -->
+### Fixed
+- fix: CIU-managed ACME startup failures in 3.0.0. ACME state now mounts outside CIU's read-only configfile parents, and non-secret Traefik configfiles are readable with `CAP_DAC_OVERRIDE` dropped. The `acme-data` volume name and `acme.json` path inside it are preserved, so upgrades retain existing certificates.
+
 ### Changed
 - chore(deps): pinned `tecnativa/docker-socket-proxy` v0.4.2 -> v0.5.0 (haproxy 3.2.4 -> 3.4.2 base, optional `ALLOW_PAUSE`/`ALLOW_UNPAUSE` and `BIND_CONFIG` override; no default or env-name changes, tls-edge config unaffected). Multi-arch index digest sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459; images stay tag-pinned like traefik.
 - BREAKING: the alternate HTTPS port (9443, entrypoint `websecure-alt`, `https_alt`) is removed; routing uses host names. Generic defaults publish 80/tcp and 443/tcp only. Calls media on 8443/tcp+udp is opt-in, and optional HTTP/3 adds UDP on the configured HTTPS port while keeping TCP for HTTP/1.1 and HTTP/2.

@@ -187,12 +187,19 @@ def test_edge_consumer_labels_and_networks() -> None:
     text = _compose_text()
     cfg = _cfg()
     r = cfg["router_name"]
-    assert f"traefik.http.routers.{r}.entrypoints" in text and '"websecure"' in text
+    public_host = cfg["public_host"]
+    web_port = cfg["web"]["port"]
+    host_rule = f"Host({chr(96)}{public_host}{chr(96)})"
+    services = text.split("services:\n", 1)[1].split("\nnetworks:\n", 1)[0]
+    web = services.split("\n  jitsi-web:\n", 1)[1]
+    assert f'traefik.http.routers.{r}.rule: "{host_rule}"' in web
+    assert f'traefik.http.routers.{r}.entrypoints: "websecure"' in web
+    assert f'traefik.http.services.{r}.loadbalancer.server.port: "{web_port}"' in web
+    assert 'traefik.docker.network: "ingress_public"' in web
     assert "ingress_public" in text
     # only the web service joins the edge network
-    web = text.split("  jitsi-web:")[1]
     assert "- ingress" in web
-    assert text.split("  jitsi-web:")[0].count("- ingress") == 0
+    assert services.split("\n  jitsi-web:\n", 1)[0].count("- ingress") == 0
     # service key must not be a generic alias on the shared network
     assert re.search(r"^  web:", text, re.MULTILINE) is None
     assert "no-new-privileges:true" in text and "cap_drop:" in text

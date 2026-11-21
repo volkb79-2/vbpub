@@ -190,6 +190,7 @@ COPY augeaswrap/pyproject.toml /src/augeaswrap/pyproject.toml
 COPY pwmcp/client/pyproject.toml /src/pwmcp/client/pyproject.toml
 COPY run-gate-project/pyproject.toml /src/run-gate-project/pyproject.toml
 COPY libraries/patchseries/pyproject.toml /src/libraries/patchseries/pyproject.toml
+COPY tls-edge/pyproject.toml /src/tls-edge/pyproject.toml
 # ZERO-RELEASE INPUT: empty (a .gitkeep) unless the operator dropped a locally
 # built cli_extended-*.whl here for CLI_EXTENDED_RESOLVE=local (see below).
 COPY tester-unified/local-wheel/ /tmp/cli-extended-local/
@@ -365,7 +366,7 @@ RUN rm -rf /tmp/internal-wheels \
       -w /tmp/internal-wheels /src/cmru
 RUN /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/internal-wheels/*.whl \
  && rm -rf /tmp/internal-build-venv /tmp/internal-wheels /tmp/internal-build-requirements.txt /tmp/cli-extended-release \
- && /opt/tester-venv/bin/python -c "import build, cmru, run_gate, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog, markdown_it, linkify_it; print('tester-unified closure OK')" \
+ && /opt/tester-venv/bin/python -c "import build, cmru, run_gate, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, tomlkit, textual, zstandard, mcp, paramiko, coverage, structlog, markdown_it, linkify_it; print('tester-unified closure OK')" \
  && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, scipy, numpy, ruptures; print('cgprofile report tier OK')"
 
 # Build-time assertion (BG-05): `worktree` and cmru resolve from THIS image's

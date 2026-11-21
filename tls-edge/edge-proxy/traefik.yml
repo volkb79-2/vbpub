@@ -59,7 +59,7 @@ certificatesResolvers:
   letsencrypt:
     acme:
 
-      storage: /etc/traefik/acme/acme.json
+      storage: /var/lib/traefik/acme.json
       caServer: "https://acme-v02.api.letsencrypt.org/directory"
 
       # TLS-ALPN-01: the whole challenge happens on :443 — no port 80 needed.

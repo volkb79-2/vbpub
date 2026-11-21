@@ -262,7 +262,10 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
   versioning can identify them.
 - Stage the bundled ciu reproducibly: `TLS_EDGE_CIU_VERSION=<x.y.z>` (or `scripts/stage-wheels.py --ciu-version`)
   refuses any other ciu release; without it the newest stable ciu is bundled. The staged ciu version and sha256 are
-  printed: copy them into the release notes. `--allow-fresh` waives the 14-day rule and must be justified there.
+  printed: copy them into the release notes. PyPI wheels are resolved with pip's `--uploaded-prior-to P14D` cutoff,
+  then checked against PyPI upload timestamps. Staging fails before replacing existing wheels if its selected pip
+  lacks the cutoff option. If a new minimum dependency is not yet old enough, wait for an eligible release or use
+  `--allow-fresh`, which omits the cutoff and age check; justify it in the release notes.
 - Tests: `run-gate tls-edge tests` (lane `tests` in `run-gate.toml`, tester-unified). A missing cmru/jinja2/docker
   fails the lane; only `TLS_EDGE_ALLOW_INSTALLER_SKIP=1` skips the installer test, deliberately, outside the lane.
 

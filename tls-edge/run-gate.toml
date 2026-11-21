@@ -2,10 +2,9 @@
 # tls-edge project gate lanes — parsed ONLY by the installed Run-Gate CLI (one parser, D-110).
 # Environment facts come from the CENTRAL vbpub-root run-gate.root.toml (nearest ancestor).
 #
-# The lane runs tls-edge's whole test suite in tester-unified. That image already ships
-# everything the tests need in /opt/tester-venv (pytest, Jinja2, PyYAML, tomli_w, cmru) plus
-# git and the docker CLI; the declared contract is requirements-test.txt. No coverage or
-# mutation judgment yet (no assay lane): this is a plain pass/fail gate.
+# The ordinary lane runs tls-edge's whole test suite in tester-unified. Its dependency
+# closure includes the project's pyproject test extra, plus git and the docker CLI.
+# The release-gate lane adds Assay R0/R1/R3 qualification for the CLI package.
 #
 # TLS_EDGE_REQUIRE_TOOLS=1 is the loud-failure switch: tests/conftest.py turns a missing
 # jinja2 / cmru into a FAILURE under the lane instead of a green skip, and -rs prints every
@@ -22,5 +21,17 @@ argv = ["bash", "-c", "cd {worktree}/tls-edge && exec env TLS_EDGE_REQUIRE_TOOLS
 budget = "15m"
 
 [lanes.tests.resources]
+cpus = "1"
+memory = "1g"
+
+# T1/T2 release qualification. Assay owns the R0/R1/R3 claims; the ordinary
+# `tests` lane above remains the fast R0-only developer gate.
+[lanes.release-gate]
+kind = "assay"
+assay_lane = "release-gate"
+environment = "tester-unified"
+budget = "30m"
+
+[lanes.release-gate.resources]
 cpus = "1"
 memory = "1g"

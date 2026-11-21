@@ -76,9 +76,12 @@ services:
       - ./conf.d:/etc/traefik/conf.d:ro
 
       # ACME account + issued certificates (acme.json, created 0600 by traefik).
+      # Keep this outside /etc/traefik: CIU mounts configfile parent directories
+      # there read-only. Docker creates the mountpoint if the image lacks it.
+      # The Traefik container root filesystem remains read-only.
       # NOTE: `docker compose down -v` / `ciu --reset` destroys this volume and
       # forces re-issuance on next start (mind Let's Encrypt rate limits).
-      - acme-data:/etc/traefik/acme
+      - acme-data:/var/lib/traefik
 
     networks:
       - ingress

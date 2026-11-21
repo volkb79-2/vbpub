@@ -126,6 +126,35 @@ conflict, and Traefik will drop or misroute one of them.
 
 ## Consumer patterns
 
+### Jitsi Meet in this repository
+
+The default [jitsi-server deployment](../voice-screen-share/jitsi-server/)
+uses the shared edge for the web UI and signaling. Its `jitsi-web` container
+joins `ingress_public` and declares a host router on `websecure`; Traefik
+terminates TLS and obtains a certificate for the configured
+`jitsi.<PUBLIC_FQDN>`. HTTP WebSocket upgrades use the same router.
+
+The Jitsi Videobridge media path is separate: the `jvb` service publishes UDP
+10000 directly on the host, and advertises the host's public IP to clients.
+Open UDP 10000 in both host and provider firewalls. This traffic does not pass
+through Traefik, and Jitsi does not require the optional Mattermost Calls
+8443/tcp+udp preset.
+
+The relevant consumer labels are:
+
+```yaml
+labels:
+  traefik.enable: "true"
+  traefik.docker.network: "ingress_public"
+  traefik.http.routers.vss-jitsi-web.rule: "Host(`jitsi.example.test`)"
+  traefik.http.routers.vss-jitsi-web.entrypoints: "websecure"
+  traefik.http.services.vss-jitsi-web.loadbalancer.server.port: "8000"
+```
+
+Keep Prosody, Jicofo, and JVB on Jitsi's private network; only `jitsi-web`
+needs edge-network membership. The Jitsi project tests this label/network
+contract and the direct UDP media publication.
+
 ### Pattern A – Public-only service
 
 **File**: `consumer-examples/pattern-a-public-only/docker-compose.yml`
@@ -369,8 +398,9 @@ curl --cacert /path/to/local-ca.crt https://svc.my.domain/
 curl -k https://svc.my.domain/        # insecure; dev only
 ```
 
-Note: port 80 is off by default.  `curl http://svc.my.domain/` will be
-refused or time out — there is no redirect.
+Note: port 80 is on by default and redirects HTTP to HTTPS (and serves ACME
+HTTP-01 challenges when configured). Set `tls_edge.ports.expose_http = false`
+to disable it; then `curl http://svc.my.domain/` will be refused or time out.
 
 ### 5. Access log audit trail
 
@@ -395,6 +425,20 @@ docker run --rm --network <your-stack>_private alpine \
 # Expected: Connection refused or no route to host
 # (only succeeds if ops listener is incorrectly bound to 0.0.0.0)
 ```
+
+### 7. Probe an external HTTPS endpoint over HTTP/2 and HTTP/3
+
+Run this from a separate client network with a curl build that supports HTTP/3.
+The edge must have `tls_edge.http3.enabled = true` and allow public UDP/443:
+
+```sh
+tls-edge/scripts/verify-external.sh svc.my.domain "known response text"
+```
+
+It verifies the public certificate chain, the HTTP/2 response over TCP, the
+HTTP/3 Alt-Svc announcement, a direct HTTP/3 response over QUIC/UDP, and an
+expected response marker. It is an opt-in live acceptance probe; it is not in
+the offline run-gate lane because it needs public DNS, ACME, and UDP/443 access.
 
 ---
 
