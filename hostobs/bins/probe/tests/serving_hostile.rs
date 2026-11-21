@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use hostobs_probe::args;
-use hostobs_probe::backend::{FixedBackend, TickData};
+use hostobs_probe::backend::{BackendError, FixedBackend, TickData};
 use hostobs_probe::classify::{classify, Call, Dispatch, Mode, Phase, Prefix, Query, Refusal};
 use hostobs_probe::codes::{Code, Detail};
 use hostobs_probe::conn::Peer;
@@ -753,8 +753,15 @@ enum DataVerb {
 
 #[derive(Clone, Copy)]
 struct ActiveEpisode {
+    id: usize,
     reused_corr: bool,
     saw_block: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ReplyExpectation {
+    Plain,
+    Data(DataVerb),
 }
 
 struct ObservedConnection {
@@ -763,8 +770,10 @@ struct ObservedConnection {
     dicts: StreamDicts,
     blocks: BTreeMap<u32, u32>,
     ended_corrs: BTreeSet<u32>,
-    requests: BTreeMap<u32, VecDeque<DataVerb>>,
+    requests: BTreeMap<u32, VecDeque<ReplyExpectation>>,
     active_episodes: BTreeMap<u32, ActiveEpisode>,
+    next_episode_id: usize,
+    reused_episodes_with_block: BTreeSet<usize>,
     blocks_seen: usize,
     ends_seen: usize,
     corr_reuses: usize,
@@ -781,6 +790,8 @@ impl ObservedConnection {
             ended_corrs: BTreeSet::new(),
             requests: BTreeMap::new(),
             active_episodes: BTreeMap::new(),
+            next_episode_id: 0,
+            reused_episodes_with_block: BTreeSet::new(),
             blocks_seen: 0,
             ends_seen: 0,
             corr_reuses: 0,
@@ -789,7 +800,17 @@ impl ObservedConnection {
     }
 
     fn data_request(&mut self, corr: u32, verb: DataVerb) {
-        self.requests.entry(corr).or_default().push_back(verb);
+        self.requests
+            .entry(corr)
+            .or_default()
+            .push_back(ReplyExpectation::Data(verb));
+    }
+
+    fn plain_request(&mut self, corr: u32) {
+        self.requests
+            .entry(corr)
+            .or_default()
+            .push_back(ReplyExpectation::Plain);
     }
 
     fn request_reply(&mut self, corr: u32, payload: &[u8], rep: &Rep) {
@@ -797,7 +818,7 @@ impl ObservedConnection {
         if self.requests.get(&corr).is_some_and(VecDeque::is_empty) {
             self.requests.remove(&corr);
         }
-        let Some(verb) = request else {
+        let Some(ReplyExpectation::Data(verb)) = request else {
             return;
         };
         if !rep.ok {
@@ -817,9 +838,15 @@ impl ObservedConnection {
             "successful REP corr {corr} does not overlap an active episode"
         );
         let reused_corr = self.ended_corrs.remove(&corr);
+        let id = self.next_episode_id;
+        self.next_episode_id = self
+            .next_episode_id
+            .checked_add(1)
+            .expect("bounded request episode count");
         self.active_episodes.insert(
             corr,
             ActiveEpisode {
+                id,
                 reused_corr,
                 saw_block: false,
             },
@@ -884,9 +911,12 @@ impl ObservedConnection {
                     .active_episodes
                     .get_mut(&corr)
                     .expect("BLOCK follows a successful current or subscribe REP");
-                if active.reused_corr && !active.saw_block {
-                    self.corr_reuses = self.corr_reuses.saturating_add(1);
-                    active.saw_block = true;
+                if active.reused_corr {
+                    self.reused_episodes_with_block.insert(active.id);
+                    if !active.saw_block {
+                        self.corr_reuses = self.corr_reuses.saturating_add(1);
+                        active.saw_block = true;
+                    }
                 }
                 let count = self.blocks.entry(corr).or_insert(0);
                 *count = count.saturating_add(1);
@@ -930,6 +960,21 @@ fn send_data_request(
         .get_mut(&id)
         .expect("connection has an output model")
         .data_request(corr, verb);
+    server.on_bytes(id, bytes, now);
+}
+
+fn send_plain_request(
+    server: &mut Server<FixedBackend>,
+    model: &mut BTreeMap<ConnId, ObservedConnection>,
+    id: ConnId,
+    corr: u32,
+    bytes: &[u8],
+    now: u64,
+) {
+    model
+        .get_mut(&id)
+        .expect("connection has an output model")
+        .plain_request(corr);
     server.on_bytes(id, bytes, now);
 }
 
@@ -977,7 +1022,10 @@ fn server_hostile_2000_steps_with_block_verbs() {
     let selected = server_selection();
     let data = TickData::example(7, &[1], &["m"]);
     let mut server = Server::new(ServerLimits::new(), FixedBackend::new());
-    server.backend_mut().current.insert(selected, Ok(data));
+    server
+        .backend_mut()
+        .current
+        .insert(selected.clone(), Ok(data.clone()));
     let mut rng = Xorshift(0x6A09_E667_F3BC_C909);
     let mut now = 0u64;
     let mut slots: [Option<ConnId>; 4] = [None; 4];
@@ -999,8 +1047,36 @@ fn server_hostile_2000_steps_with_block_verbs() {
         model.insert(id, ObservedConnection::new());
         let mut hello = server_prefix(1, 1).to_vec();
         hello.extend(server_request(1, "hello", HELLO_ARGS));
-        server.on_bytes(id, &hello, now);
+        send_plain_request(&mut server, &mut model, id, 1, &hello, now);
         drain_server(&mut server, &mut model, id, usize::MAX, now);
+        if slot == 0 {
+            server
+                .backend_mut()
+                .current
+                .insert(selected.clone(), Err(BackendError::Unavailable));
+            send_data_request(
+                &mut server,
+                &mut model,
+                id,
+                2,
+                DataVerb::Current,
+                &server_current(2),
+                now,
+            );
+            drain_server(&mut server, &mut model, id, usize::MAX, now);
+            server
+                .backend_mut()
+                .current
+                .insert(selected.clone(), Ok(data.clone()));
+        }
+        send_plain_request(
+            &mut server,
+            &mut model,
+            id,
+            2,
+            &server_request(2, "status", "{}"),
+            now,
+        );
         send_data_request(
             &mut server,
             &mut model,
@@ -1066,7 +1142,7 @@ fn server_hostile_2000_steps_with_block_verbs() {
                 model.insert(id, ObservedConnection::new());
                 let mut hello = server_prefix(1, 1).to_vec();
                 hello.extend(server_request(1, "hello", HELLO_ARGS));
-                server.on_bytes(id, &hello, now);
+                send_plain_request(&mut server, &mut model, id, 1, &hello, now);
             }
             continue;
         };
@@ -1090,7 +1166,14 @@ fn server_hostile_2000_steps_with_block_verbs() {
             3 | 4 => {
                 let corr = 10 + u32::try_from(rng.below(4)).expect("corr");
                 if subscriptions[slot].contains(&corr) {
-                    server.on_bytes(id, &server_unsubscribe(20 + corr, corr), now);
+                    send_plain_request(
+                        &mut server,
+                        &mut model,
+                        id,
+                        20 + corr,
+                        &server_unsubscribe(20 + corr, corr),
+                        now,
+                    );
                     subscriptions[slot].retain(|held| *held != corr);
                 } else {
                     subscriptions[slot].push(corr);
@@ -1107,7 +1190,14 @@ fn server_hostile_2000_steps_with_block_verbs() {
             }
             5 => {
                 let corr = 10 + u32::try_from(rng.below(4)).expect("corr");
-                server.on_bytes(id, &server_unsubscribe(20 + corr, corr), now);
+                send_plain_request(
+                    &mut server,
+                    &mut model,
+                    id,
+                    20 + corr,
+                    &server_unsubscribe(20 + corr, corr),
+                    now,
+                );
                 subscriptions[slot].retain(|held| *held != corr);
             }
             6 | 7 => {
@@ -1143,11 +1233,22 @@ fn server_hostile_2000_steps_with_block_verbs() {
     let ends: usize = model.values().map(|held| held.ends_seen).sum();
     let partial_frames: usize = model.values().map(|held| held.partial_frames).sum();
     let corr_reuses: usize = model.values().map(|held| held.corr_reuses).sum();
+    let expected_corr_reuses: usize = model
+        .values()
+        .map(|held| held.reused_episodes_with_block.len())
+        .sum();
     assert!(blocks > 0);
     assert!(ends > 0);
     assert!(partial_frames > 0, "run writes at least one partial frame");
     assert!(eof_actions > 0, "run sends at least one EOF");
-    assert!(corr_reuses > 0, "run reuses a correlation after END");
+    assert!(
+        expected_corr_reuses > 0,
+        "run reuses a correlation after END"
+    );
+    assert_eq!(
+        corr_reuses, expected_corr_reuses,
+        "one correlation reuse per accepted episode with a BLOCK"
+    );
     assert_eq!(server.conn_count(), 0);
     assert_eq!(server.uid_entries(), 0);
     assert_eq!(server.hub().global_pools(), Pools::default());
