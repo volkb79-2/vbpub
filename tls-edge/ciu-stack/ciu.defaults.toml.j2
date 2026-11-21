@@ -193,18 +193,25 @@ max_file = "3"
 
 # ─── ciu configfile mounts (S5; ignored by the standalone renderer, which
 #     bind-mounts ./traefik.yml and ./conf.d instead) ──────────────────────────
+# CIU owns rendered files as the installer UID. Traefik drops DAC_OVERRIDE,
+# so its container root cannot read owner-only/group-only 0440 files. These
+# configfiles contain no credentials; DNS provider credentials stay in env.
 [tls_edge.traefik.configfile.static]
 template = "traefik.yml.j2"
 target = "/etc/traefik/traefik.yml"
+mode = "0444"
 
 [tls_edge.traefik.configfile.options]
 template = "conf.d/options.yml"
 target = "/etc/traefik/conf.d/options.yml"
+mode = "0444"
 
 [tls_edge.traefik.configfile.middlewares]
 template = "conf.d/middlewares.yml"
 target = "/etc/traefik/conf.d/middlewares.yml"
+mode = "0444"
 
 [tls_edge.traefik.configfile.certs]
 template = "conf.d/certs.yml.j2"
 target = "/etc/traefik/conf.d/certs.yml"
+mode = "0444"

@@ -94,7 +94,7 @@ certificatesResolvers:
 {% if tls_edge.acme.email %}
       email: "{{ tls_edge.acme.email }}"
 {% endif %}
-      storage: /etc/traefik/acme/acme.json
+      storage: /var/lib/traefik/acme.json
       caServer: "{{ tls_edge.acme.ca_server }}"
 {% if tls_edge.tls.mode == 'acme-http' %}
       # HTTP-01: requires ports.expose_http = true (challenge arrives on :80).

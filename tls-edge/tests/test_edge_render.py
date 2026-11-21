@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import re
+import tomllib
+from pathlib import PurePosixPath
 
 import pytest
 import yaml
@@ -74,6 +77,38 @@ def test_acme_tls_issues_one_certificate_per_host(tmp_path):
     tls = static["entryPoints"]["websecure"]["http"]["tls"]
     assert tls == {"certResolver": "letsencrypt"}          # no `domains`: per router Host()
     assert "tlsChallenge" in static["certificatesResolvers"]["letsencrypt"]["acme"]
+
+
+def test_acme_storage_mount_avoids_ciu_configfile_mount_parents(tmp_path):
+    out = render_to(tmp_path, defaults_config())
+    compose = yaml.safe_load((out / "docker-compose.yml").read_text())
+    traefik_service = compose["services"]["traefik"]
+    acme_volume = next(v for v in traefik_service["volumes"] if v.startswith("acme-data:"))
+    _, mount_target = acme_volume.split(":", 1)
+    mount_target = PurePosixPath(mount_target)
+    assert traefik_service["read_only"] is True
+    assert "/tmp" in traefik_service["tmpfs"]
+
+    static = yaml.safe_load((out / "traefik.yml").read_text())
+    acme = static["certificatesResolvers"]["letsencrypt"]["acme"]
+    assert PurePosixPath(acme["storage"]).parent == mount_target
+
+    defaults = tomllib.loads((ROOT / "ciu-stack" / "ciu.defaults.toml.j2").read_text())
+    configfiles = list(defaults["tls_edge"]["traefik"]["configfile"].values())
+    configfile_parents = [PurePosixPath(item["target"]).parent for item in configfiles]
+    for item in configfiles:
+        assert item["mode"] == "0444"
+        template_text = (ROOT / "ciu-stack" / item["template"]).read_text()
+        assert re.search(r"\bsecret\s*\(", template_text) is None
+    assert all(
+        not (mount_target == parent or mount_target.is_relative_to(parent)
+             or parent.is_relative_to(mount_target))
+        for parent in configfile_parents
+    )
+    # The former /etc/traefik/acme layout overlapped the static configfile's
+    # parent directory and failed when CIU mounted that directory read-only.
+    assert any(PurePosixPath("/etc/traefik/acme").is_relative_to(parent)
+               for parent in configfile_parents)
 
 
 def test_acme_dns_per_host_unless_wildcard_requested(tmp_path):

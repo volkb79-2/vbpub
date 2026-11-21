@@ -187,7 +187,13 @@ def test_edge_consumer_labels_and_networks() -> None:
     text = _compose_text()
     cfg = _cfg()
     r = cfg["router_name"]
-    assert f"traefik.http.routers.{r}.entrypoints" in text and '"websecure"' in text
+    public_host = cfg["public_host"]
+    web_port = cfg["web"]["port"]
+    host_rule = f"Host({chr(96)}{public_host}{chr(96)})"
+    assert f'traefik.http.routers.{r}.rule: "{host_rule}"' in text
+    assert f'traefik.http.routers.{r}.entrypoints: "websecure"' in text
+    assert f'traefik.http.services.{r}.loadbalancer.server.port: "{web_port}"' in text
+    assert 'traefik.docker.network: "ingress_public"' in text
     assert "ingress_public" in text
     # only the web service joins the edge network
     web = text.split("  jitsi-web:")[1]

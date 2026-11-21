@@ -221,8 +221,11 @@ TLS mode is selected via `[tls_edge.tls] mode` in `ciu-stack/ciu.defaults.toml.j
 Traefik's built-in Let's Encrypt via TLS-ALPN-01.  The entire challenge
 exchange happens on port 443; no port 80 is needed.  Traefik automatically
 issues a certificate for every `Host()` name declared in a consumer router,
-provided that DNS name resolves to this host.  Certificates are stored in the
-`acme-data` named volume (`acme.json`, created at `0600` by Traefik).
+provided that DNS name resolves to this host. Certificates are stored in the
+`acme-data` named volume at `/var/lib/traefik/acme.json` (`0600`, created by
+Traefik). The volume is mounted outside `/etc/traefik`, because CIU mounts the
+parent directories of configured Traefik config files read-only. Docker creates
+the mountpoint when needed, so the container root filesystem can stay read-only.
 
 Renewal is automatic and zero-downtime.
 
