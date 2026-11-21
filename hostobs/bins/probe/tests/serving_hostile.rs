@@ -950,7 +950,7 @@ fn server_hostile_2000_steps_with_block_verbs() {
         };
         match rng.below(12) {
             0 => {
-                let bytes = payload(&mut rng);
+                let bytes = random_payload(&mut rng);
                 server.on_bytes(id, &bytes, now);
             }
             1 | 2 => {
