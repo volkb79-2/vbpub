@@ -1601,8 +1601,20 @@ mod tests {
         }
         assert_eq!(server.limits().stream_limits().bounds.max_block_bytes, 500);
 
-        let observe_limits = server.limits().get(Level::Observe).expect("observe");
-        let operator_limits = server.limits().get(Level::Operator).expect("operator");
+        let observe_caps = {
+            let limits = server.limits().get(Level::Observe).expect("observe");
+            SelectionCaps {
+                per_uid: limits.max_uid_selections,
+                per_probe: limits.max_selections,
+            }
+        };
+        let operator_caps = {
+            let limits = server.limits().get(Level::Operator).expect("operator");
+            SelectionCaps {
+                per_uid: limits.max_uid_selections,
+                per_probe: limits.max_selections,
+            }
+        };
         server
             .streams
             .subscribe(
@@ -1613,10 +1625,7 @@ mod tests {
                 uid,
                 1,
                 &selection,
-                SelectionCaps {
-                    per_uid: observe_limits.max_uid_selections,
-                    per_probe: observe_limits.max_selections,
-                },
+                observe_caps,
             )
             .expect("observe joins the stream");
         server
@@ -1629,10 +1638,7 @@ mod tests {
                 uid,
                 1,
                 &selection,
-                SelectionCaps {
-                    per_uid: operator_limits.max_uid_selections,
-                    per_probe: operator_limits.max_selections,
-                },
+                operator_caps,
             )
             .expect("operator joins the same stream");
 
