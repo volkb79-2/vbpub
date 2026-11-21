@@ -4,6 +4,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: pending release notes begin -->
+### Added
+- The repository's Jitsi Meet deployment is checked against tls-edge's rendered default HTTPS/TLS endpoint and optional HTTP/3 configuration. Web signaling uses the shared HTTPS route; JVB media remains direct on UDP 10000.
+
+### Changed
+- Compatibility note for 3.1.0: the Calls media preset changed from enabled by default in 3.0.0 to disabled by default. Existing Calls deployments must set `[tls_edge.calls] enabled = true` to retain its 8443/tcp+udp listeners. The alternate HTTPS listener on 9443 was removed; HTTP/3 remains opt-in and adds UDP on the HTTPS port while preserving the TCP fallback.
+- CIU-managed container names are now `tls-edge-<id>-traefik` and `tls-edge-<id>-dockerproxy`. When adopting an existing edge, configure the existing ingress network and ACME volume so consumers and certificates remain attached to their current state.
+<!-- cmru: pending release notes end -->
+
 <!-- cmru: release history -->
 
 ## [3.1.0] - 2026-11-21
@@ -70,22 +79,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Testing
 - test(tls-edge): installer test fails instead of skipping; tamper and --overwrite-local cases (85c700e66)
 - test(tls-edge): offline installer test - install, update, rollback, adapter validation against the committed get.py (58b8a8b89)
-
-<!-- cmru: pending release notes begin -->
-### Fixed
-- fix: CIU-managed ACME startup failures in 3.0.0. ACME state now mounts outside CIU's read-only configfile parents, and non-secret Traefik configfiles are readable with `CAP_DAC_OVERRIDE` dropped. The `acme-data` volume name and `acme.json` path inside it are preserved, so upgrades retain existing certificates.
-
-### Changed
-- chore(deps): pinned `tecnativa/docker-socket-proxy` v0.4.2 -> v0.5.0 (haproxy 3.2.4 -> 3.4.2 base, optional `ALLOW_PAUSE`/`ALLOW_UNPAUSE` and `BIND_CONFIG` override; no default or env-name changes, tls-edge config unaffected). Multi-arch index digest sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459; images stay tag-pinned like traefik.
-- BREAKING: the alternate HTTPS port (9443, entrypoint `websecure-alt`, `https_alt`) is removed; routing uses host names. Generic defaults publish 80/tcp and 443/tcp only. Calls media on 8443/tcp+udp is opt-in, and optional HTTP/3 adds UDP on the configured HTTPS port while keeping TCP for HTTP/1.1 and HTTP/2.
-- feat: `get.py install --variant py313|py314` installs the offline CIU bundle and the `tls-edge` configuration CLI without collecting site answers. Run `tls-edge configure` after install to set the domain, certificate mode, listeners, network/volume adoption, and runtime placement. The CLI previews and validates the site override and `consumer.env` changes before writing them.
-- BREAKING (ciu deployments): container names are `tls-edge-<id>-traefik` and `tls-edge-<id>-dockerproxy` (alias `traefik` kept); the plain-compose render keeps `edge-traefik`. New site switches `ingress_external` and `tls_edge.acme.volume_name` adopt an existing network and ACME volume (migration without re-issuance).
-- docs: releases are unsigned (SHA-256 + in-bundle manifest only); the trust model and tag-pinned `get.py` guidance are documented in `docs/INSTALL.md`.
-- test: the installer test fails (not skips) when cmru is not importable (`TLS_EDGE_ALLOW_INSTALLER_SKIP=1` opts out); new tamper cases (bad sidecar, modified/unlisted file, replaced wheel) and the `--overwrite-local` case.
-- feat: `run-gate.toml` with lane `tests` (tester-unified) and `requirements-test.txt`; `scripts/stage-wheels.py --ciu-version` / `TLS_EDGE_CIU_VERSION` pins the bundled ciu.
-- fix(release): the per-interpreter bundles publish through `cmru handler tarball-publish --variant` (all variants under one tag, or none) instead of the project script `scripts/publish-variants.py`, which refused every retained build-output release; the standalone `get.py` is now a release asset beside the bundles (cmru KI-115).
-- Consumer examples reduced to A (web), D (guarded) and E (media TCP+UDP) with `consumer-examples/README.md`; tests render and lint every example offline.
-<!-- cmru: pending release notes end -->
 
 ## [2.0.0] - 2026-09-13
 <!-- cmru: generated -->

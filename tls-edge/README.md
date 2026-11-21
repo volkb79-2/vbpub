@@ -14,9 +14,9 @@ shields the Docker API from Traefik. See the
 [consumer instructions](docs/CONSUMERS.md), plus the [transport and instance
 configuration guide](docs/TRANSPORTS-AND-CONFIGURATION.md) for HTTP/2, HTTP/3,
 QUIC, server events, and where operators configure the shared endpoint. The
-repository's [Jitsi Meet deployment](../voice-screen-share/jitsi-server/)
-uses this same default `websecure` route; its CIU template is covered by a
-cross-project consumer regression test.
+repository's [Jitsi Meet deployment](https://github.com/volkb79-2/vbpub/tree/main/voice-screen-share/jitsi-server)
+uses this same default `websecure` route; its consumer suite checks it against
+the tls-edge renderer.
 
 ---
 

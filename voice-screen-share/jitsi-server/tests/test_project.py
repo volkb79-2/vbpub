@@ -6,14 +6,17 @@ shape, pinned images. No network; docker is used only for `compose config`
 from __future__ import annotations
 
 import datetime as dt
+import importlib.util
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
 import pytest
+import yaml
 
 PROJECT = Path(__file__).resolve().parents[1]
 AREA = PROJECT.parent
@@ -203,6 +206,47 @@ def test_edge_consumer_labels_and_networks() -> None:
     # service key must not be a generic alias on the shared network
     assert re.search(r"^  web:", text, re.MULTILINE) is None
     assert "no-new-privileges:true" in text and "cap_drop:" in text
+
+
+def _tls_edge_default(output_dir: Path, *, http3: bool) -> tuple[dict, dict]:
+    edge_root = PROJECT.parents[1] / "tls-edge"
+    renderer_path = edge_root / "scripts" / "render_standalone.py"
+    spec = importlib.util.spec_from_file_location("jitsi_tls_edge_renderer", renderer_path)
+    assert spec is not None and spec.loader is not None, f"cannot load {renderer_path}"
+    renderer = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = renderer
+    spec.loader.exec_module(renderer)
+
+    stack_dir = edge_root / "ciu-stack"
+    edge_cfg = renderer.load_config(stack_dir, defaults_only=True)
+    edge_cfg["http3"]["enabled"] = http3
+    renderer.validate(edge_cfg)
+    renderer.render_outputs(stack_dir, output_dir, edge_cfg, certs_only=False)
+    static = yaml.safe_load((output_dir / "traefik.yml").read_text(encoding="utf-8"))
+    return edge_cfg, static
+
+
+def test_default_tls_edge_contract_accepts_jitsi_router_and_optional_http3(tmp_path: Path) -> None:
+    edge_h2, static_h2 = _tls_edge_default(tmp_path / "edge-h2", http3=False)
+    jitsi = _cfg()
+    compose = yaml.safe_load(_compose_text())
+    web = compose["services"]["jitsi-web"]
+    labels = web["labels"]
+    router = jitsi["router_name"]
+
+    assert jitsi["ingress_network"] == edge_h2["ingress_network"]
+    assert labels["traefik.docker.network"] == edge_h2["ingress_network"]
+    entrypoint_name = labels[f"traefik.http.routers.{router}.entrypoints"]
+    entrypoint = static_h2["entryPoints"][entrypoint_name]
+    https_port = edge_h2["ports"]["https"]
+    assert entrypoint["address"] == f":{https_port}"
+    assert entrypoint["http"]["tls"]["certResolver"] == edge_h2["acme"]["resolver_name"]
+
+    edge_h3, static_h3 = _tls_edge_default(tmp_path / "edge-h3", http3=True)
+    h3_entrypoint = static_h3["entryPoints"][entrypoint_name]
+    h3_port = edge_h3["ports"]["https"]
+    assert h3_entrypoint["address"] == f":{h3_port}"
+    assert h3_entrypoint["http3"]["advertisedPort"] == h3_port
 
 
 def test_own_names_and_governance() -> None:

@@ -14,12 +14,12 @@ Check any example offline before starting it: `docker compose --env-file ../.env
 | `pattern-a-public-only` | one web app on its own host name | enable, router rule + entrypoint, service port |
 | `pattern-d-guarded` | the same plus a basicAuth guard | + a middleware and its attachment |
 | `pattern-e-media-udp` | HTTPS UI plus a raw TCP/UDP media port (Mattermost Calls) | + a TCP router and a UDP router |
-| `voice-screen-share/jitsi-server` | in-repository Jitsi Meet deployment | standard `websecure` host router; JVB media stays direct on UDP 10000 |
+| [Jitsi Meet deployment](https://github.com/volkb79-2/vbpub/tree/main/voice-screen-share/jitsi-server) | in-repository consumer | standard `websecure` host router; JVB media stays direct on UDP 10000 |
 
 ## In-repository Jitsi deployment
 
-The real [`voice-screen-share/jitsi-server`](../../voice-screen-share/jitsi-server/)
-is a tested consumer of the default tls-edge HTTP endpoint. Its `jitsi-web`
+The repository's real Jitsi Meet deployment is a tested consumer of the
+default tls-edge HTTP endpoint. Its `jitsi-web`
 service joins `ingress_public`, routes `jitsi.<domain>` through `websecure`, and
 serves plain HTTP on container port 8000. TLS termination, HTTP/2, and optional
 HTTP/3 are edge-wide; Jitsi needs no special tls-edge setting or per-router
@@ -28,10 +28,10 @@ transport label. WebSocket signaling uses the same HTTPS router.
 Jitsi Videobridge media is separate: the JVB publishes UDP 10000 directly on
 the host, so it does not use Traefik or the optional Mattermost Calls preset.
 Only `jitsi-web` joins the public ingress network. See the
-[Jitsi deployment guide](../../voice-screen-share/jitsi-server/README.md) for
-DNS, firewall, and media details. The tls-edge regression suite renders that
-project's actual CIU defaults and Compose template against its default
-`websecure` contract.
+[Jitsi deployment guide](https://github.com/volkb79-2/vbpub/tree/main/voice-screen-share/jitsi-server/README.md)
+for DNS, firewall, and media details. The Jitsi consumer suite renders its
+actual Compose template and checks the route against tls-edge's rendered
+default entrypoint, including the optional HTTP/3 setting.
 
 ## Rules that hold for every example
 
