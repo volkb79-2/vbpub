@@ -378,20 +378,10 @@ impl<B: Backend> Server<B> {
                         });
                     }
                 }
-                Delivery::End {
-                    to,
-                    code,
-                    detail,
-                } => {
+                Delivery::End { to, code, detail } => {
                     for key in to {
                         self.drive(key.conn, |conn, hub, _backend, _streams| {
-                            conn.end_subscription(
-                                key.corr,
-                                code,
-                                &detail,
-                                now_ns,
-                                hub,
-                            );
+                            conn.end_subscription(key.corr, code, &detail, now_ns, hub);
                         });
                     }
                 }
@@ -626,8 +616,7 @@ mod tests {
 
     const MS: u64 = 1_000_000;
     const HELLO_ARGS: &str = r#"{"client":"t","proto":{"major":1,"minor":1}}"#;
-    const CURRENT_ARGS: &str =
-        r#"{"selection":{"entities":[{"inc":1}],"metrics":["m"]}}"#;
+    const CURRENT_ARGS: &str = r#"{"selection":{"entities":[{"inc":1}],"metrics":["m"]}}"#;
 
     fn req(corr: u32, verb: &str) -> Vec<u8> {
         request(corr, verb, "{}")
@@ -695,8 +684,7 @@ mod tests {
         let body = frame_payload(frame);
         let end = check_end(body).expect("END");
         let reason = end.reason.map(|range| {
-            String::from_utf8(body.get(range).expect("reason range").to_vec())
-                .expect("utf-8")
+            String::from_utf8(body.get(range).expect("reason range").to_vec()).expect("utf-8")
         });
         (end.ok, end.blocks, end.dropped, reason)
     }
@@ -972,13 +960,7 @@ mod tests {
     }
 
     /// Queue the subscribe REQ and drain its REP; the first block waits for an explicit tick.
-    fn wire_subscribe(
-        d: &mut Driver,
-        id: ConnId,
-        corr: u32,
-        inc: u64,
-        interval_ms: u32,
-    ) {
+    fn wire_subscribe(d: &mut Driver, id: ConnId, corr: u32, inc: u64, interval_ms: u32) {
         let args = subscribe_args(inc, interval_ms);
         d.send(id, &request(corr, "subscribe", &args));
         d.pump(id, usize::MAX);
@@ -988,10 +970,7 @@ mod tests {
         assert_eq!((raw[0].0, raw[0].1), (FrameType::Rep.code(), corr));
         let body = raw[0].2.get(12..).unwrap_or_default();
         assert!(check_rep(body, false).expect("subscribe REP").ok);
-        assert_eq!(
-            d.server.conn(id).map(|conn| conn.subscriptions()),
-            Some(1)
-        );
+        assert_eq!(d.server.conn(id).map(|conn| conn.subscriptions()), Some(1));
     }
 
     fn stream_block_len(d: &ServerLimits, data: &TickData) -> usize {
@@ -2175,9 +2154,11 @@ mod tests {
             let raw = raw_frames(&d.take_out(id));
             assert_eq!(raw.len(), 2);
             assert_eq!((raw[0].0, raw[0].1), (FrameType::Rep.code(), 3));
-            assert!(check_rep(frame_payload(&raw[0].2), false)
-                .expect("unsubscribe REP")
-                .ok);
+            assert!(
+                check_rep(frame_payload(&raw[0].2), false)
+                    .expect("unsubscribe REP")
+                    .ok
+            );
             assert_eq!((raw[1].0, raw[1].1), (FrameType::End.code(), 2));
             assert_end_ok(&raw[1].2, 0, 0, "unsubscribed");
             assert_eq!(d.server.streams().subscribers(), 0);
@@ -2193,20 +2174,14 @@ mod tests {
         d.send(id, &line(1, "hello", HELLO_ARGS));
         d.pump(id, usize::MAX);
         d.take_out(id);
-        d.send(
-            id,
-            &line(2, "current", CURRENT_ARGS),
-        );
+        d.send(id, &line(2, "current", CURRENT_ARGS));
         d.pump(id, usize::MAX);
         let out = d.take_out(id);
         let current_text = text(&out);
         assert!(current_text.contains("\"corr\":2"));
         assert!(current_text.contains("\"code\":\"binary-required\""));
         let subscribe_args = subscribe_args(1, 1_000);
-        d.send(
-            id,
-            &line(3, "subscribe", subscribe_args.as_str()),
-        );
+        d.send(id, &line(3, "subscribe", subscribe_args.as_str()));
         d.pump(id, usize::MAX);
         let subscribe_text = text(&d.take_out(id));
         assert!(subscribe_text.contains("\"corr\":3"));
@@ -2371,10 +2346,7 @@ mod tests {
         wire_subscribe(&mut d, id, 2, 1, 1_000);
         d.send(id, &req(0, "status"));
         assert_eq!(d.close_code(id), Some(Code::BadFrame));
-        assert_eq!(
-            d.server.conn(id).map(|conn| conn.subscriptions()),
-            Some(1)
-        );
+        assert_eq!(d.server.conn(id).map(|conn| conn.subscriptions()), Some(1));
         let selected = selection(1);
         put_current(&mut d, &selected, live_data(3, "three"));
         d.server_tick();
@@ -2416,10 +2388,7 @@ mod tests {
             assert!(!ok);
             assert_eq!(blocks, 1);
             assert!(text(frame_payload(&raw[0].2)).contains("\"code\":\"budget\""));
-            assert_eq!(
-                d.server.conn(id).map(|conn| conn.subscriptions()),
-                Some(0)
-            );
+            assert_eq!(d.server.conn(id).map(|conn| conn.subscriptions()), Some(0));
         }
         assert_eq!(d.server.streams().live_selections(), 0);
         d.server.finish(fast);
@@ -2531,10 +2500,7 @@ mod tests {
             d.pump(id, usize::MAX);
             d.take_out(id);
         }
-        assert_eq!(
-            d.server.conn(first).map(|conn| conn.outstanding()),
-            Some(1)
-        );
+        assert_eq!(d.server.conn(first).map(|conn| conn.outstanding()), Some(1));
         assert_eq!(
             d.server.conn(second).map(|conn| conn.outstanding()),
             Some(1)
@@ -2542,10 +2508,7 @@ mod tests {
 
         d.server.finish(blocker_a);
         d.tick(MS);
-        assert_eq!(
-            d.server.conn(first).map(|conn| conn.outstanding()),
-            Some(0)
-        );
+        assert_eq!(d.server.conn(first).map(|conn| conn.outstanding()), Some(0));
         assert_eq!(
             d.server.conn(second).map(|conn| conn.outstanding()),
             Some(1)
@@ -2693,10 +2656,7 @@ mod tests {
             d.pump(id, usize::MAX);
             d.take_out(id);
         }
-        assert_eq!(
-            d.server.conn(id).map(|conn| conn.subscriptions()),
-            Some(1)
-        );
+        assert_eq!(d.server.conn(id).map(|conn| conn.subscriptions()), Some(1));
         d.eof(id);
         assert_eq!(d.state(id), Some(State::Draining));
         d.pump(id, usize::MAX);
@@ -2715,10 +2675,7 @@ mod tests {
         let id = subscription.open(Level::Observe, 1);
         subscription.ready(id);
         wire_subscribe(&mut subscription, id, 2, 1, 1_000);
-        subscription.send(
-            id,
-            &control_frame(FrameType::Req, 2, b"{"),
-        );
+        subscription.send(id, &control_frame(FrameType::Req, 2, b"{"));
         assert_eq!(subscription.close_code(id), Some(Code::BadFrame));
         assert!(subscription.server.is_closed(id));
         subscription.settle_all();
@@ -2768,10 +2725,7 @@ mod tests {
         d.send(id, &request(7, "current", CURRENT_ARGS));
         d.pump(id, usize::MAX);
         let raw = raw_frames(&d.take_out(id));
-        assert_eq!(
-            d.server.conn(id).map(|conn| conn.outstanding()),
-            Some(4)
-        );
+        assert_eq!(d.server.conn(id).map(|conn| conn.outstanding()), Some(4));
         let refused = raw
             .iter()
             .find(|(kind, corr, _)| *kind == FrameType::Rep.code() && *corr == 7)
@@ -2782,9 +2736,11 @@ mod tests {
             .iter()
             .find(|(kind, corr, _)| *kind == FrameType::Rep.code() && *corr == 6)
             .expect("status reply");
-        assert!(check_rep(frame_payload(&status.2), false)
-            .expect("status")
-            .ok);
+        assert!(
+            check_rep(frame_payload(&status.2), false)
+                .expect("status")
+                .ok
+        );
         assert_eq!(d.state(id), Some(State::Ready));
         d.server.finish(blocker);
         d.server.finish(id);

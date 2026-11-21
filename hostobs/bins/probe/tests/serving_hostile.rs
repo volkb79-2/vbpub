@@ -30,8 +30,7 @@ const RUNS: usize = 2_000;
 const MS: u64 = 1_000_000;
 const LINE_MAX: u32 = 64;
 const HELLO_ARGS: &str = "{\"client\":\"c\",\"proto\":{\"major\":1,\"minor\":1}}";
-const CURRENT_ARGS: &str =
-    "{\"selection\":{\"entities\":[{\"inc\":1}],\"metrics\":[\"m\"]}}";
+const CURRENT_ARGS: &str = "{\"selection\":{\"entities\":[{\"inc\":1}],\"metrics\":[\"m\"]}}";
 const VERBS: [&str; 5] = ["hello", "status", "current", "events", "annotate"];
 
 /// The codes `classify` may refuse with.
@@ -713,8 +712,7 @@ fn a_line_reader_run_that_jumps_past_the_completion_deadline_is_deadline() {
     assert_eq!(after.error, Some(LineError::Deadline));
 }
 
-const SUBSCRIBE_ARGS: &str =
-    "{\"selection\":{\"entities\":[{\"inc\":1}],\"metrics\":[\"m\"]},\
+const SUBSCRIBE_ARGS: &str = "{\"selection\":{\"entities\":[{\"inc\":1}],\"metrics\":[\"m\"]},\
      \"interval_ms\":1000}";
 
 fn server_selection() -> Selection {
@@ -836,9 +834,7 @@ impl ObservedConnection {
 }
 
 fn observed_feed(model: &mut BTreeMap<ConnId, ObservedConnection>, id: ConnId, bytes: &[u8]) {
-    let held = model
-        .entry(id)
-        .or_insert_with(ObservedConnection::new);
+    let held = model.entry(id).or_insert_with(ObservedConnection::new);
     held.feed(bytes);
 }
 
@@ -886,10 +882,7 @@ fn server_hostile_2000_steps_with_block_verbs() {
     let selected = server_selection();
     let data = TickData::example(7, &[1], &["m"]);
     let mut server = Server::new(ServerLimits::new(), FixedBackend::new());
-    server
-        .backend_mut()
-        .current
-        .insert(selected, Ok(data));
+    server.backend_mut().current.insert(selected, Ok(data));
     let mut rng = Xorshift(0x6A09_E667_F3BC_C909);
     let mut now = 0u64;
     let mut slots: [Option<ConnId>; 4] = [None; 4];
