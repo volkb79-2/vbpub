@@ -18,6 +18,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+import conftest as suite_conftest  # noqa: E402
 from ciu import config_model, deploy, engine, workspace_env, worktree  # noqa: E402
 
 COMPOSE = """\
@@ -40,13 +41,251 @@ def _git(args, cwd):
 
 @pytest.fixture(autouse=True)
 def hermetic_git(monkeypatch):
-    """No host git configuration reaches any git call of these tests (N4)."""
+    """Keep git hermetic and its automatic maintenance synchronous-free (N4, CIU-223)."""
     for key, value in (
         ("GIT_CONFIG_GLOBAL", "/dev/null"), ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("GIT_CONFIG_COUNT", "2"),
+        ("GIT_CONFIG_KEY_0", "gc.auto"), ("GIT_CONFIG_VALUE_0", "0"),
+        ("GIT_CONFIG_KEY_1", "maintenance.auto"), ("GIT_CONFIG_VALUE_1", "false"),
         ("GIT_AUTHOR_NAME", "T"), ("GIT_AUTHOR_EMAIL", "t@e.x"),
         ("GIT_COMMITTER_NAME", "T"), ("GIT_COMMITTER_EMAIL", "t@e.x"),
     ):
         monkeypatch.setenv(key, value)
+
+
+def test_the_leftover_child_guard_names_a_child_and_its_cmdline(monkeypatch):
+    """The CIU-223 guard reports a live direct child without signalling it."""
+    before = set(suite_conftest._direct_children())
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         "import sys; print('ready', flush=True); sys.stdin.readline()"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "ready"
+
+        def forbidden_path_use(*_args, **_kwargs):
+            raise AssertionError("the process guard must not use pathlib")
+
+        monkeypatch.setattr(Path, "iterdir", forbidden_path_use)
+        monkeypatch.setattr(Path, "read_text", forbidden_path_use)
+        monkeypatch.setattr(Path, "read_bytes", forbidden_path_use)
+        leaked = suite_conftest._leftover_child_descriptions(before)
+        named = [item for item in leaked if item.startswith(f"pid {child.pid} ")]
+        assert len(named) == 1
+        assert "sys.stdin.readline()" in named[0]
+    finally:
+        assert child.stdin is not None
+        try:
+            child.stdin.write("\n")
+        except BrokenPipeError:
+            pass
+        finally:
+            child.stdin.close()
+        child.wait()
+        if child.stdout is not None:
+            child.stdout.close()
+        if child.stderr is not None:
+            child.stderr.close()
+
+
+def test_the_real_guard_is_autouse(request):
+    """The fixture manager registers the actual guard with autouse enabled."""
+    name = "_no_leftover_direct_children"
+    fixturedefs = request._fixturemanager.getfixturedefs(name, request.node)
+    assert fixturedefs
+    fixturedef = fixturedefs[-1]
+    guard_definition = getattr(suite_conftest, name)
+    assert fixturedef.func is guard_definition._get_wrapped_function()
+    assert name in request._fixturemanager._getautousenames(request.node)
+
+
+def test_the_real_guard_fails_an_unmarked_leak_and_honors_its_marker(
+    pytester, monkeypatch,
+):
+    """Run the real autouse fixture against leaking and opted-out inner tests."""
+    conftest_path = Path(suite_conftest.__file__).resolve()
+    pytester.makeconftest(
+        f"""\
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+_spec = importlib.util.spec_from_file_location("ciu_suite_conftest", {str(conftest_path)!r})
+_suite = importlib.util.module_from_spec(_spec)
+assert _spec.loader is not None
+_spec.loader.exec_module(_suite)
+
+pytest_configure = _suite.pytest_configure
+_no_leftover_direct_children = _suite._no_leftover_direct_children
+
+_PID_NAMES = (
+    "leaky-child-CIU-223.pid",
+    "allowed-child-CIU-223.pid",
+)
+
+
+def pytest_runtest_logreport(report):
+    if (
+        report.when == "teardown"
+        and report.failed
+        and report.nodeid.endswith("test_unmarked_leak_fails_in_fixture_teardown")
+    ):
+        Path(__file__).with_name("inner-failure.txt").write_text(
+            str(report.longrepr), encoding="utf-8"
+        )
+
+
+def pytest_sessionfinish(session, exitstatus):
+    pid_paths = [Path(__file__).with_name(name) for name in _PID_NAMES]
+    pids = [int(path.read_text(encoding="utf-8")) for path in pid_paths]
+    ready_fd = int(os.environ["CIU_P13_READY_FD"])
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        os.write(ready_fd, b"F" if int(exitstatus) else b"P")
+    finally:
+        os.close(ready_fd)
+
+    release_fd = int(os.environ["CIU_P13_CHILD_READ_FD"])
+    try:
+        os.read(release_fd, 1)
+    finally:
+        os.close(release_fd)
+
+    reaped = []
+    for pid in pids:
+        waited, _status = os.waitpid(pid, 0)
+        if waited != pid:
+            raise RuntimeError(
+                f"waitpid returned {{waited}} while reaping recorded pid {{pid}}"
+            )
+        reaped.append(pid)
+    Path(__file__).with_name("inner-reaped.txt").write_text(
+        "".join(f"{{pid}}\\n" for pid in reaped), encoding="utf-8"
+    )
+"""
+    )
+    pytester.makepyfile(
+        test_direct_children=f"""\
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+_CHILD = '''\\
+import sys
+
+print("ready", flush=True)
+sys.stdin.buffer.read()
+'''
+
+
+def _spawn(token):
+    import os
+
+    pid_path = Path(__file__).with_name(token + ".pid")
+    child = subprocess.Popen(
+        [sys.executable, "-c", _CHILD, token],
+        stdin=int(os.environ["CIU_P13_CHILD_READ_FD"]),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert child.stdout is not None
+    assert child.stdout.readline().strip() == "ready"
+    pid_path.write_text(str(child.pid), encoding="utf-8")
+    return pid_path
+
+
+def test_unmarked_leak_fails_in_fixture_teardown():
+    _spawn("leaky-child-CIU-223")
+
+
+@pytest.mark.allow_direct_children
+def test_marked_leak_is_allowed():
+    _spawn("allowed-child-CIU-223")
+"""
+    )
+    child_read_fd, child_write_fd = os.pipe()
+    ready_read_fd, ready_write_fd = os.pipe()
+    monkeypatch.setenv("CIU_P13_CHILD_READ_FD", str(child_read_fd))
+    monkeypatch.setenv("CIU_P13_READY_FD", str(ready_write_fd))
+    stdout_path = pytester.path / "inner.stdout"
+    stderr_path = pytester.path / "inner.stderr"
+    failure_path = pytester.path / "inner-failure.txt"
+    reap_path = pytester.path / "inner-reaped.txt"
+    proc = None
+    try:
+        with (
+            stdout_path.open("w", encoding="utf-8") as stdout,
+            stderr_path.open("w", encoding="utf-8") as stderr,
+        ):
+            proc = pytester.popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "-q",
+                    "--strict-markers",
+                    f"--basetemp={pytester.path / 'runpytest-pipe'}",
+                ],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=subprocess.DEVNULL,
+                pass_fds=(child_read_fd, ready_write_fd),
+            )
+        os.close(child_read_fd)
+        child_read_fd = -1
+        os.close(ready_write_fd)
+        ready_write_fd = -1
+
+        readiness = os.read(ready_read_fd, 1)
+        os.close(ready_read_fd)
+        ready_read_fd = -1
+        assert readiness == b"F"
+        failure = failure_path.read_text(encoding="utf-8")
+        assert "the test left direct child process(es) of pytest behind" in failure
+        assert "leaky-child-CIU-223" in failure
+        assert "allowed-child-CIU-223" not in failure
+
+        # The inner session-finish hook is now waiting in waitpid for its own
+        # direct children.  Closing the outer write end gives them EOF; pytest
+        # then reaps them before it exits, so an ancestor subreaper cannot
+        # retain zombies.  This is the only release action, and it is not a
+        # signal.
+        os.close(child_write_fd)
+        child_write_fd = -1
+        rc = proc.wait()
+        assert rc != 0
+        output = stdout_path.read_text(encoding="utf-8")
+        teardown_error = (
+            "ERROR at teardown of "
+            "test_unmarked_leak_fails_in_fixture_teardown"
+        )
+        assert teardown_error in output
+        assert "leaky-child-CIU-223" in output
+        assert "allowed-child-CIU-223" not in output
+        assert "2 passed, 1 error" in output
+        reaped = reap_path.read_text(encoding="utf-8").splitlines()
+        assert len(reaped) == 2
+    finally:
+        for fd_name in (
+            "child_read_fd",
+            "child_write_fd",
+            "ready_read_fd",
+            "ready_write_fd",
+        ):
+            fd = locals()[fd_name]
+            if fd >= 0:
+                os.close(fd)
+        if proc is not None and proc.poll() is None:
+            proc.wait()
+    assert not suite_conftest._direct_children()
 
 
 @pytest.fixture

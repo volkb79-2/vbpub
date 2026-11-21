@@ -41,12 +41,12 @@ evidence_paths = [".assay"]
 quiet = true
 commands = [
   # SSOT pointer (D-110/D-111): every test definition lives in
-  # cmru/run-gate.toml. This release uses the operator-approved provisional
-  # gate: all lanes run except the long R2 mutation campaign, whose deferral is
-  # retained as .assay/mutation-postponed-cmru.json under KI-79. The full
-  # `gate` lane remains available for the post-release R2 run. Steps execute
-  # with project_root as cwd.
-  { label = "cmru: provisional release gate (R2 deferred, KI-79)", argv = ["run-gate", "gate-provisional"], cwd = "." },
+  # cmru/run-gate.toml. This release uses the release gate of the standing
+  # release rule (KI-79/KI-159): R0/R1 and R3 and every other lane run except
+  # the long R2 mutation campaign, whose owed run is retained as
+  # .assay/mutation-postponed-cmru.json. The full `gate` lane remains
+  # available for the asynchronous R2 run. Steps execute with project_root as cwd.
+  { label = "cmru: release gate (R0/R1 + R3; R2 owed asynchronously)", argv = ["run-gate", "release-gate"], cwd = "." },
 ]
 
 # Initial standalone build (before cmru is installed):

@@ -36,15 +36,15 @@ The patches, each with the test that must go red:
 | M1d-11 | the time section is sized at 14 bytes a bucket again (Rust and Python; HOB-48, length half) | `the_time_section_is_fifteen_bytes_per_bucket_padded_to_eight`, `a_history_block_of_zero_to_nine_buckets_round_trips_through_the_frame`, the `history-five-buckets` fixture, `test_the_time_section_is_fifteen_bytes_per_bucket_padded_to_eight` |
 | M1d-12 | the store never counts an evicted quarantined file; counts it as an evicted segment; `Evicted::is_empty` ignores quarantined files | `an_evicted_quarantined_file_is_counted_apart_from_evicted_segments` |
 | M1d-13 | removing a quarantined file does not take its bytes out of the total | `quarantined_bytes_count_against_the_cap_and_go_before_any_live_segment` |
-| M1d-14 | Python: the 12 to 15 byte block-frame guard is dropped | `test_the_frame_header_bounds_the_declared_length_at_both_ends`, the `block-without-directory` fixture |
-| M1d-15 | the `kind != File` guard for a `.corrupt` entry is dropped (possibly an equivalent mutant) | none expected: see the doc |
+| M1d-14 | Python: the 12 to 15 byte block-frame guards are dropped (two patches) | `test_the_frame_header_bounds_the_declared_length_at_both_ends`, the `block-without-directory` fixture, `test_a_block_frame_of_twelve_to_fifteen_bytes_is_a_directory_truncation` |
+| M1d-15 | the `kind != File` guard for a `.corrupt` entry is dropped | `a_quarantine_look_alike_is_reported_and_never_counted_or_removed` (the directory's note reads `is a directory, not a regular file`, not a header-read failure) |
 | M1d-16 | a quarantined / a live file deleted by hand is not recognised as gone | `a_quarantined_file_deleted_by_hand_does_not_fail_every_later_append`, `a_live_segment_deleted_by_hand_leaves_the_ring_without_failing_the_cap` |
 | M1d-17 | a live / a quarantined name no longer reserves its sequence number | `a_name_never_comes_back_after_a_quarantine_and_a_restart` |
 | M1d-18 | the segment / the event write path does not recompute the byte total from the tiers (HOB-56) | `the_store_total_is_the_tiers_own_total_after_every_operation`, `the_write_paths_subtract_what_their_own_eviction_removed`, `the_event_write_path_subtracts_what_its_own_eviction_removed` |
 | M1d-19 | an open name that carries a footer is adopted (Rust and Python) | `an_open_name_that_carries_a_footer_is_quarantined_not_adopted`, `test_an_open_name_that_carries_a_footer_is_refused` |
 | M1d-20 | a sequence above `SEQ_NAME_MAX` is accepted by the name parser / minted by `open_segment` / accepted by the Python parser (HOB-55) | `a_sequence_above_the_name_bound_is_not_a_segment_name`, `a_name_above_the_sequence_bound_is_a_look_alike_and_never_poisons_the_water_mark`, `a_name_at_the_sequence_bound_is_adopted_and_the_next_segment_is_refused`, `test_a_sequence_above_the_name_bound_is_a_look_alike_in_every_spelling` |
 | M1d-21 | the byte total is incremental arithmetic again: the write path, `Store::evict`, or `seal_all` does not recompute it (HOB-56) | `the_store_total_is_the_tiers_own_total_after_every_operation`, `the_store_total_drops_a_quarantined_file_deleted_by_hand`, `the_store_total_drops_a_live_segment_deleted_by_hand` |
-| M1d-22 | the eviction reports are not filled / not copied into the store's ring (write path and `evict`) / the ring has no bound / `Store::notes` leaves them out (HOB-58) | `a_quarantined_file_deleted_by_hand_does_not_fail_every_later_append`, `a_quarantined_file_that_cannot_be_removed_is_reported_to_the_caller`, `eviction_reports_from_the_write_path_reach_the_store_and_are_bounded`, `the_store_total_drops_a_quarantined_file_deleted_by_hand`, `the_store_total_drops_a_live_segment_deleted_by_hand` |
+| M1d-22 | the eviction reports are not filled / not copied into the store's ring (write path and `evict`) / the ring has no bound / `Store::notes` leaves them out (HOB-58) | `a_quarantined_file_deleted_by_hand_does_not_fail_every_later_append`, `a_quarantined_file_that_cannot_be_removed_is_reported_to_the_caller`, `eviction_reports_from_the_write_path_reach_the_store_and_are_bounded`, `a_write_path_report_stays_in_the_store_after_its_tier_rescans`, `an_evict_report_stays_in_the_store_after_its_tier_rescans`, `the_store_total_drops_a_quarantined_file_deleted_by_hand`, `the_store_total_drops_a_live_segment_deleted_by_hand` |
 
 The campaign first runs a BASELINE on the unmutated tree for each suite it will use and stops if
 it is not green. A patch is `killed` only by a real test failure; a docker or runner failure,
@@ -304,16 +304,26 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "M1d-14",
-        "Python: a 12 to 15 byte block frame reaches `struct.unpack_from` (no directory guard)",
+        "Python: a 12 or 13 byte block frame reports the wrong `need` (the 2-byte "
+        "directory guard is gone)",
         "python/reference/hostobs_wire_ref.py",
-        "    if len(data) < FRAME_HEADER_LEN + 4:",
-        "    if False:",
+        "    if have < 2:\n",
+        "    if False:\n",
+        "python",
+    ),
+    Mutant(
+        "M1d-14",
+        "Python: a 14 or 15 byte block frame reaches `struct.unpack_from` (the 4-byte "
+        "directory-header guard is gone)",
+        "python/reference/hostobs_wire_ref.py",
+        "    if have < 4:\n",
+        "    if False:\n",
         "python",
     ),
     Mutant(
         "M1d-15",
-        "a `.corrupt` entry that is not a regular file is not refused by kind (possibly an "
-        "equivalent mutant: `read_window` fails on a directory and the name is reported anyway)",
+        "a `.corrupt` entry that is not a regular file is not refused by kind (the note then "
+        "names a header-read failure instead of the kind)",
         "crates/store/src/tier.rs",
         "                if entry.kind != EntryKind::File {",
         "                if false && entry.kind != EntryKind::File {",
@@ -524,7 +534,7 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "M1d-22",
-        "`Store::notes` leaves the ring's reports out (possibly equivalent while no store API rescans a tier)",
+        "`Store::notes` leaves the ring's reports out (seen only after the tier's own scan notes are reset by a rescan)",
         "crates/store/src/store.rs",
         "        for note in &self.eviction_notes {\n            if !notes.contains(note) {\n                notes.push(note.clone());\n            }\n        }\n",
         "",

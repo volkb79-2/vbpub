@@ -2,10 +2,13 @@
 # dr-plan: decide, WITHOUT touching any disk, whether the unattended installer may wipe a disk and which one.
 # A pure function of: lsblk output, the install config, and the names the caller excludes.
 #
-#   dr-plan --lsblk FILE (--config FILE | --no-config) [--exclude NAME]... [--min-gib N]
+#   dr-plan --lsblk FILE [--lsblk-full FILE] (--config FILE | --no-config) [--exclude NAME]... [--busy NAME]... [--min-gib N]
 #
 #   FILE is `lsblk -dnbP -o NAME,TYPE,ROTA,RM,SIZE,TRAN` output (use "-" for stdin).
-#   --exclude: the disk the ISO booted from, the disk of the config stick, anything mounted (repeatable).
+#   --lsblk-full: the same WITHOUT -d and with PKNAME added (`lsblk -nbP -o NAME,TYPE,ROTA,RM,SIZE,TRAN,PKNAME`): the only listing
+#     in which raid/lvm/crypt/mpath devices stacked on disks appear; without it the main listing is searched.
+#   --exclude: the disk the ISO booted from and the disk of the config stick (not counted, never a target; repeatable).
+#   --busy: disks with something mounted or in use as swap (never a target, but they COUNT as internal disks).
 #
 # Prints, on stdout:  DECISION=install|confirm|refuse  TARGET=/dev/NAME  and the validated config settings (KEY=VALUE).
 # Exit 0 for install and confirm, 3 for refuse (reason on stderr), 2 for a usage error.
@@ -30,11 +33,12 @@ if [ -z "$PICK" ]; then
 fi
 [ -x "$PICK" ] || { echo "dr-plan: dr-pick-disk not found" >&2; exit 2; }
 
-LSBLK="" CONFIG="" NOCONFIG=0 MINGIB=8 CHECK=0
+LSBLK="" LSBLK_FULL="" CONFIG="" NOCONFIG=0 MINGIB=8 CHECK=0
 declare -a EXCLUDE_ARGS=() BUSY_NAMES=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --lsblk) LSBLK=${2:?}; shift 2 ;;
+    --lsblk-full) LSBLK_FULL=${2:?}; shift 2 ;;   # `lsblk -nbP -o NAME,TYPE,...` WITHOUT -d: also lists raid/lvm/crypt/mpath devices stacked on disks
     --config) CONFIG=${2:?}; shift 2 ;;
     --no-config) NOCONFIG=1; shift ;;
     --exclude) EXCLUDE_ARGS+=(--exclude "${2:?}"); shift 2 ;;
@@ -65,7 +69,7 @@ if [ "$NOCONFIG" = 0 ]; then
     case "$KNOWN" in *" $key "*) ;; *) refuse "config line $lineno: unknown key $key" ;; esac
     [ -z "${CFG[$key]+x}" ] || refuse "config line $lineno: duplicate key $key"
     if [ "$key" = ROOT_PASSWORD_HASH ]; then   # a crypt(3) hash: $id$salt$hash, e.g. from `mkpasswd -m yescrypt`
-      hash_re='^\$[0-9a-z]+\$[A-Za-z0-9./,=$-]+$'   # in a variable: an unquoted $- in a pattern is the shell's option list
+      hash_re='^(\$[A-Za-z0-9./,=-]+){3,}$'   # $id$salt$hash, every component non-empty; in a variable (an unquoted $- is the shell's option list)
       [[ "$val" =~ $hash_re ]] || refuse "config line $lineno: ROOT_PASSWORD_HASH is not a crypt hash"
     else
       [[ "$val" =~ ^[A-Za-z0-9_./:@,+=-]*$ ]] || refuse "config line $lineno: value of $key has a character outside A-Za-z0-9_./:@,+=-"
@@ -99,12 +103,52 @@ ncand=$(printf '%s' "$candidates" | grep -c . || true)
 declare -A EXCLUDED=()
 for ((i = 1; i < ${#EXCLUDE_ARGS[@]}; i += 2)); do x=${EXCLUDE_ARGS[i]}; EXCLUDED[${x#/dev/}]=1; done
 nall=0
+nother=0   # storage stacked on disks that is not a plain disk: md raid, multipath, lvm, crypt, ... (loop, rom and partitions do not count)
+# The main listing is `lsblk -d` (top-level devices only): raid/lvm/crypt/mpath devices built on a disk are invisible in it.
+# With --lsblk-full the caller gives a listing WITHOUT -d, and only that one is searched for such devices; without it the
+# main listing is used (fixtures, hand use).
+if [ -n "$LSBLK_FULL" ]; then
+  # fail closed: a listing that cannot be read or has no rows must not read as "no other storage"
+  [ -f "$LSBLK_FULL" ] && [ -r "$LSBLK_FULL" ] || refuse "full lsblk file $LSBLK_FULL is not a readable regular file"
+  full_input=$(cat "$LSBLK_FULL") || refuse "cannot read the full lsblk file $LSBLK_FULL"
+  grep -q 'NAME="' <<<"$full_input" || refuse "the full lsblk listing has no device rows"
+else
+  full_input=$input
+fi
 while IFS= read -r line || [ -n "$line" ]; do
-  [[ "$line" =~ (^|[[:space:]])TYPE=\"disk\" ]] || continue
   [[ "$line" =~ (^|[[:space:]])NAME=\"([^\"]*)\" ]] || continue
-  [ -z "${EXCLUDED[${BASH_REMATCH[2]}]+x}" ] || continue
-  nall=$((nall + 1))
+  name=${BASH_REMATCH[2]}
+  [ -z "${EXCLUDED[$name]+x}" ] || continue
+  [[ "$line" =~ (^|[[:space:]])TYPE=\"disk\" ]] && nall=$((nall + 1))
 done <<<"$input"
+# Devices stacked ONLY on an excluded disk (a crypt/lvm device on the config stick) are not storage of the host: the full
+# listing carries PKNAME (the parent), and a row whose parent is an excluded device or a descendant of one is ignored.
+# A device with two parents (a raid across the stick and another disk) has two rows; the one under the other disk counts.
+declare -A UNDER_EXCLUDED=()
+for k in "${!EXCLUDED[@]}"; do UNDER_EXCLUDED[$k]=1; done
+changed=1
+while [ "$changed" = 1 ]; do
+  changed=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ (^|[[:space:]])NAME=\"([^\"]*)\" ]] || continue
+    name=${BASH_REMATCH[2]}
+    [[ "$line" =~ (^|[[:space:]])PKNAME=\"([^\"]+)\" ]] || continue
+    [ -n "${UNDER_EXCLUDED[${BASH_REMATCH[2]}]+x}" ] || continue
+    [ -z "${UNDER_EXCLUDED[$name]+x}" ] || continue
+    UNDER_EXCLUDED[$name]=1; changed=1
+  done <<<"$full_input"
+done
+while IFS= read -r line || [ -n "$line" ]; do
+  [[ "$line" =~ (^|[[:space:]])NAME=\"([^\"]*)\" ]] || continue
+  name=${BASH_REMATCH[2]}
+  [ -z "${EXCLUDED[$name]+x}" ] || continue
+  if [[ "$line" =~ (^|[[:space:]])PKNAME=\"([^\"]+)\" ]] && [ -n "${UNDER_EXCLUDED[${BASH_REMATCH[2]}]+x}" ]; then continue; fi
+  [[ "$line" =~ (^|[[:space:]])TYPE=\"([^\"]*)\" ]] || continue
+  case "${BASH_REMATCH[2]}" in
+    disk|loop|rom|part|"") ;;
+    *) nother=$((nother + 1)) ;;
+  esac
+done <<<"$full_input"
 
 emit_settings() {
   local k
@@ -116,17 +160,18 @@ emit_settings() {
 target_spec=${CFG[TARGET_DISK]:-}
 if [ "$NOCONFIG" = 1 ]; then
   [ "$ncand" -ge 1 ] || refuse "no qualifying disk"
-  [ "$ncand" -eq 1 ] && [ "$nall" -eq 1 ] || refuse "no config and $ncand qualifying of $nall internal disks: run the installer by hand with --device"
+  [ "$ncand" -eq 1 ] && [ "$nall" -eq 1 ] && [ "$nother" -eq 0 ] || refuse "no config and $ncand qualifying of $nall internal disks (+$nother other storage devices): run the installer by hand with --device"
   echo "DECISION=confirm"; echo "TARGET=$candidates"; exit 0
 fi
 
 case "$target_spec" in
   "")
     [ "$ncand" -ge 1 ] || refuse "no qualifying disk"
-    [ "$ncand" -eq 1 ] && [ "$nall" -eq 1 ] || refuse "$ncand qualifying of $nall internal disks and the config names no TARGET_DISK (set TARGET_DISK=/dev/X, or TARGET_DISK=first-ssd to take the first SSD else the first rotational disk)"
+    [ "$ncand" -eq 1 ] && [ "$nall" -eq 1 ] && [ "$nother" -eq 0 ] || refuse "$ncand qualifying of $nall internal disks (+$nother other storage devices) and the config names no TARGET_DISK (set TARGET_DISK=/dev/X, or TARGET_DISK=first-ssd to take the first SSD else the first rotational disk)"
     echo "DECISION=install"; echo "TARGET=$candidates"; emit_settings; exit 0 ;;
   first-ssd)
     [ "$ncand" -ge 1 ] || refuse "no qualifying disk"
+    [ "$nother" -eq 0 ] || refuse "first-ssd is a rule, not a named disk: $nother other storage devices (md/lvm/crypt/mpath) are present; name the disk with TARGET_DISK=/dev/X"
     echo "DECISION=install"; echo "TARGET=$(printf '%s\n' "$candidates" | sed -n 1p)"; emit_settings; exit 0 ;;
   *)
     name=${target_spec#/dev/}

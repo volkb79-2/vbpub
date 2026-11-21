@@ -71,14 +71,22 @@ dhcpcd -4 -w -t 60 >/dev/null 2>&1 || say "dhcpcd returned non-zero (continuing;
 # --- config ----------------------------------------------------------------------------------------------------
 CONFIG=""; CONFIG_SRC=none; CONFIG_DISK=""
 # several sticks labelled CIDATA: take the first by device name, and say so (the order must not depend on probe timing)
-stick=$(lsblk -nrp -o NAME,LABEL 2>/dev/null | awk '$2=="CIDATA" {print $1}' | sort | sed -n 1p || true)
-[ "$(lsblk -nr -o LABEL 2>/dev/null | grep -cx CIDATA || true)" -le 1 ] || say "WARNING: more than one CIDATA medium; using $stick"
+# Fail closed: a stick that cannot be seen or placed on its disk would not be excluded and could be planned as the target.
+devlist=$(lsblk -nrp -o NAME,LABEL 2>/dev/null) || refuse "cannot list block devices (lsblk failed): the config stick could not be told apart from a target"
+stick=$(awk '$2=="CIDATA" {print $1}' <<<"$devlist" | sort | sed -n 1p)
+[ "$(awk '$2=="CIDATA"' <<<"$devlist" | wc -l)" -le 1 ] || say "WARNING: more than one CIDATA medium; using $stick"
 if [ -n "$stick" ]; then
   mkdir -p "$RUN/cidata"
   if mount -o ro "$stick" "$RUN/cidata" 2>/dev/null; then
     if [ -f "$RUN/cidata/dr-install.conf" ]; then
-      cp "$RUN/cidata/dr-install.conf" "$RUN/config"; CONFIG=$RUN/config; CONFIG_SRC="cidata:$stick"
-      CONFIG_DISK=$(lsblk -no PKNAME "$stick" 2>/dev/null | head -n1); [ -n "$CONFIG_DISK" ] || CONFIG_DISK=${stick#/dev/}
+      stype=$(lsblk -dno TYPE "$stick" 2>/dev/null) || stype=""
+      case "$stype" in
+        part) CONFIG_DISK=$(lsblk -no PKNAME "$stick" 2>/dev/null | head -n1) ;;   # the stick's whole disk, not the partition
+        disk|rom) CONFIG_DISK=${stick#/dev/} ;;
+      esac
+      [ -n "$CONFIG_DISK" ] || refuse "cannot tell which disk the CIDATA medium $stick is on"
+      cp "$RUN/cidata/dr-install.conf" "$RUN/config" || refuse "cannot copy the config from $stick"
+      CONFIG=$RUN/config; CONFIG_SRC="cidata:$stick"
     fi
     umount "$RUN/cidata" 2>/dev/null || true
   fi
@@ -108,7 +116,7 @@ resolve_target() {
       [[ "$spec" =~ ^/dev/disk/by-[a-z]+/[A-Za-z0-9_.:@+=-]+$ ]] || refuse "TARGET_DISK '$spec' is not a plain /dev/disk/by-*/NAME path"
       real=$(readlink -f -- "$spec" 2>/dev/null || true)
       [ -b "$real" ] || refuse "TARGET_DISK $spec does not resolve to a block device"
-      sed "s|^TARGET_DISK=.*|TARGET_DISK=$real|" "$CONFIG_ORIG" >"$RUN/config.resolved"
+      sed "0,/^TARGET_DISK=/s|^TARGET_DISK=.*|TARGET_DISK=$real|" "$CONFIG_ORIG" >"$RUN/config.resolved"   # first line only: a duplicate stays visible and dr-plan refuses it
       CONFIG=$RUN/config.resolved
       marker "TARGET-RESOLVED $spec -> $real" ;;
   esac
@@ -132,9 +140,11 @@ make_plan() {
   for n in $(lsblk -dnr -o NAME,TYPE | awk '$2=="disk" {print $1}'); do
     if lsblk -nr -o MOUNTPOINTS "/dev/$n" 2>/dev/null | grep -q . ; then busy+=(--busy "$n"); fi
   done
-  lsblk -dnbP -o NAME,TYPE,ROTA,RM,SIZE,TRAN >"$RUN/lsblk"
+  lsblk -dnbP -o NAME,TYPE,ROTA,RM,SIZE,TRAN >"$RUN/lsblk" || refuse "lsblk failed"
+  # the same without -d: raid/lvm/crypt/mpath devices stacked on disks only show up here (dr-plan --lsblk-full)
+  lsblk -nbP -o NAME,TYPE,ROTA,RM,SIZE,TRAN,PKNAME >"$RUN/lsblk-full" || refuse "lsblk (full listing) failed"
   if [ -n "$CONFIG" ]; then cfgarg=(--config "$CONFIG"); else cfgarg=(--no-config); fi
-  PLAN=$("$HERE/dr-plan" --lsblk "$RUN/lsblk" "${cfgarg[@]}" "${excl[@]}" "${busy[@]}") && rc=0 || rc=$?
+  PLAN=$("$HERE/dr-plan" --lsblk "$RUN/lsblk" --lsblk-full "$RUN/lsblk-full" "${cfgarg[@]}" "${excl[@]}" "${busy[@]}") && rc=0 || rc=$?
   [ "$rc" = 0 ] || refuse "dr-plan refused (reason in the line above)"
   decision=$(sed -n 's/^DECISION=//p' <<<"$PLAN"); target=$(sed -n 's/^TARGET=//p' <<<"$PLAN")
   [[ "$target" =~ ^/dev/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || refuse "dr-plan returned a malformed target"

@@ -32,6 +32,74 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
+- refactor(cmru): route four process seams through `run_process` (internal change; no action needed).
+- feat(cmru): the release preflight also verifies the DinD sidecar image (KI-182): for every project in the release scope whose own release config has a `[steps.*]` command with `--enable-docker` in its argv (cmru or not), `cmru release` and `cmru release --dry-run` add a `DinD sidecar image` row for `CMRU_TESTER_DIND_IMAGE` (label suffixed ` (<project>)` when the scope has several projects or the project is not cmru), with the cgroup probe's `--pull=never` contract (never pulled; Docker unavailable is `SKIPPED` on a dry-run and a failure on a release). The wheel-builder and probe rows stay cmru-release-only (KI-183). Adoption / Migration Notes: a release of a project whose gate uses `--enable-docker` now refuses at the dry-run when its DinD image is absent; `docker pull <digest>` first. A project with no `--enable-docker` step sees no new row and no docker call.
+- fix(cmru): process every severity boundary in a multi-line `SeverityStream.write` call (KI-184).
+
+### Changed
+- cmru R2 (`cmru-first-release-r2`): `candidate_fail_fast = true` removes per-candidate coverage and stops at the first failing test; measured 2026-11-18 on v1001 (21 candidates, two workers): mean 304 s per candidate against ~570 s without it (assay P1 of the R2 time-reduction program).
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [7.4.0] - 2026-11-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=56e29eda850a12699e530b23b1e16e227c104b97 -->
+
+### Added
+- feat(cmru): replace the KI-79 per-minor R2 waiver window by the standing release rule (KI-159) (2b2c38928)
+- feat(fleetd): complete the cli-extended adoption (surface, skills, docs, release edge) (843628ed9)
+
+### Fixed
+- fix(cmru): drop the stale version-window requirement from SPEC, trim the superseded KI-159 text, remove a stray blank line (274dc4581)
+- fix(cmru): versions resolve/init edit cmru.toml surgically and report every stale manifest pin in one run (KI-161, KI-176, KI-177) (7b3364a7b)
+- fix(cmru): KI-178 keep an ignored SIGHUP ignored and start the step inside the reaping scope (4d9ecf912)
+- fix(cmru): KI-178 poll-based output wait and SIGTERM/SIGHUP reaping of the step group (4b59e8740)
+- fix(cmru): KI-178 bound the output drain after child exit and reap the step's process group (d21e1921b)
+- fix(cmru): KI-175 refuse a dist_dir outside project_root at parse and before every removal (f582481c4)
+- fix(cmru): align release image preflight with build env (953e3668e)
+- fix(cmru): include image resolver in coverage targets (e7017dc74)
+- fix(cmru): align release image preflight with build behavior (9a5d4ab93)
+- fix(cmru): keep batch notes in unreleased changelog (629e478bb)
+- fix(cmru): contain bundle staging directories (KI-169) (493ecc6a2)
+- fix(cmru): preflight release build images before dispatch (KI-168) (848c83560)
+- fix(cmru): identify the main worktree sync remedy (KI-157) (4d36980b8)
+- fix(cmru): preserve exit code for large bootstrap refusal lists (KI-137) (54fe9d4cb)
+
+### Changed
+- refactor(cmru): close the step pipe in the except and else paths so no unreachable branch remains (3cace7977)
+- backlog: subprocess readers that wait for pipe EOF can hang after the child exits (cmru KI-178, mdt-cockpit MDT-104, ciu CIU-220, nyxloom NL-83) (60709acce)
+- mdt-cockpit: restore the ADVISORY labels cmru versions resolve dropped; test pins follow the refreshed record; pin 'now' in the cutoff test (d6ee98d5e)
+- cmru backlog: KI-176 versions resolve cannot refresh '*' npm targets without a hand-edited package.json (bbc695ee0)
+- cmru, tester-unified-rust: make the estate scan git-tracked and pass tester-gate bounds by environment (KI-172, KI-173, KI-174) (26d60e2cc)
+- skills: refresh agent skills, drop fleetd-cli (fleetd ships its own), add skills-sync.sh with tests and mutants (squash of pi-skills-refresh-20261115 at b7354f626, rebuilt on current main because the branch carried an untrailered merge commit; content equals the reviewed three-dot diff) (6eeceb398)
+- review(cmru backlog): KI-168 names the existing image checks and what they miss, KI-169 reproduced (bundle_dir only; gztar and client_dir fail earlier), KI-157 note wording (ec2a653a7)
+- backlog(cmru): KI-168 release base-image preflight, KI-169 bundle_dir/client_dir '.' cleanup, KI-157 reproduced on 7.3.1 (842e94c15)
+
+### Documentation
+- docs: record the P9 merge hash (0e6e28f8b) for KI-79/KI-159; rename gate-provisional to release-gate in the bootstrap and testing-methodology docs (795324987)
+- docs(cmru): RELEASE-TRANSACTIONS resource-observation table row names the standing rule and release-gate (9a5e1aba9)
+- docs(cmru): KI-79 and KI-159 FIXED by the standing release rule, status rows, KI-179 second instance; changelog entry (52745f767)
+- docs(cmru): standing release rule (R1+R3+review, R2 async) replaces the KI-79 window in SPEC, README, CONSUMERS, DESIGN-GUIDE, RELEASE-TRANSACTIONS, CHANGES (ffeb47c5f)
+- docs(cmru): fix hashes and wording in the P4 backlog entries (KI-161/176/177/179/180); manifest refusal message says cmru does not rewrite them to get past it (2c0fb5935)
+- docs(cmru): file KI-179 (abandon of a superseded candidate), KI-180 (KI-178 runner residuals), KI-181 (dist_dir ownership) (baf1cbee0)
+- docs(cmru): KI-178 a SIGHUP ignored at start stays ignored; fix-commit hash (5e2a2bacc)
+- docs(cmru): KI-178 correct the terminal and signal wording, fill fix-commit hashes, note KI-175 scope (ca0182e86)
+- docs(cmru): record KI-168 review correction hash (779df3d9a)
+- docs(cmru): correct KI-168 implementation hash (a3fa2ac81)
+- docs(cmru): file dist directory escape finding (126b2170b)
+- docs(cmru): close KI-150 by design on measured suite cost (76da63657)
+- docs(cmru): close KI-126 and KI-162 on the naf equivalence build (3bc2c0b88)
+
+### Testing
+- test(cmru): cover the KI-175/KI-178 guards the gate found unexecuted; require project_root in the validator (7df77b732)
+- test(cmru): KI-175 pin the removal helper's own project_root recheck (bf9abbbe8)
+- test(cmru): cover invalid image resolver context (2e8c40afc)
+- test(cmru): explain shell-expanded typed argv failures (KI-173) (f20d3ae56)
+- test(cmru): pin bundle keep entry contract (b5ea0b0d5)
+
+<!-- cmru: pending release notes begin -->
+- feat(cmru): replace the KI-79 per-minor R2 waiver window by the standing release rule (KI-79, KI-159; operator decision 2026-11-18: a release needs R1 full branch coverage, R3 canary and an independent review, and R2 runs asynchronously). The gate lane `gate-provisional` is renamed `release-gate` (no alias), no release version is refused for its number any more, and the `KI-79 waiver window` row of `cmru release --dry-run` is gone. Adoption / Migration Notes: change a consumer `cmru.toml` `[steps.run-tests]` command from `run-gate gate-provisional` to `run-gate release-gate` and rename the lane in its `run-gate.toml`; the `--postpone-mutation KI-79` flag, the tracking id `KI-79`, the marker `.assay/mutation-postponed-cmru.json` and the snapshot manifest (`schema_version` 4, `state: "provisional"`, `deferred_lanes`) keep their names and shapes, so retained evidence stays readable; the marker's `reason` text changed. R2 stays owed on the latest release (ledger KI-141).
 - fix(cmru): make `cmru versions resolve` and `cmru versions init` edit `cmru.toml` as text, changing only the `resolved` values and the target tables they own (KI-161, KI-177), and report every manifest-contradicting target in one run with the exact `package.json` edit (KI-176). Adoption / Migration Notes: comments, blank-line runs, multi-line values, key order and line endings of `cmru.toml` now survive a resolve or init byte for byte, and a new table is inserted after the last `[versions...]` block instead of being hoisted; a target written as an inline table, a dotted key, a multi-line value or a duplicated header makes the command refuse before writing, naming the table and the edit to make by hand. `resolve`, `resolve --dry-run` and `check` now list all targets whose resolved version the committed manifest does not allow (target, resolved version, manifest requirement, `package.json` edit) and exit non-zero without writing; cmru does not rewrite `package.json` to get past this refusal.
 - fix(cmru): refuse a bundle `dist_dir` that is not a strict descendant of `project_root` at parse time and again before every recursive removal (KI-175). Adoption / Migration Notes: a `bundle.toml` whose `dist_dir` is `"."`, `".."`, an absolute path outside the project, or a symlink leaving it now fails with an error naming `dist_dir`, the resolved path and `project_root` instead of deleting that directory; keep the default `dist` or any subdirectory of the project.
 - fix(cmru): stop a release step hanging when its child exits but a grandchild keeps the output pipe open, and reap the whole process group on interrupt (KI-178 items 1 and 2; the no-progress watchdog and the shared helper stay open). Adoption / Migration Notes: after a child exits, cmru drains its output for at most 2 s, then continues with the child's own exit code and prints one `[WARN]` naming the pids still holding the pipe; steps now run in their own session and process group, so they have no controlling terminal (plain reads on the inherited standard input still work, but anything that opens `/dev/tty`, such as sudo, ssh or git prompts, now fails with ENXIO), and Ctrl-C, SIGTERM or SIGHUP on cmru ends the whole step tree (SIGKILL of cmru itself cannot be caught and still orphans it; a SIGHUP that was ignored when cmru started, e.g. by `nohup`, stays ignored and the step runs on). The output wait is poll-based, so it works for descriptors numbered 1024 and above.
@@ -42,10 +110,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(cmru): identify the linked worktree that owns local main and give its fast-forward command (KI-157).
 - docs(cmru): close the temporary-repository optimization by design on measured suite cost (KI-150).
 - fix(cmru): keep large bootstrap source-refusal lists from masking exit 2 with SIGPIPE (KI-137).
-
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [7.3.1] - 2026-11-14
 <!-- cmru: generated -->

@@ -4,27 +4,17 @@
 
 ## Known limitations
 
-### Mattermost Calls: tls-edge and mattermost-server defaults disagree (INT-01 A-06, filed 2026-10-19)
+### Mattermost Calls media requires explicit edge opt-in
 
-**RESOLVED 2026-11-04 (operator decision: Calls on by default, both sides):** tls-edge now defaults
-`[tls_edge.calls] enabled = true, public_port = 8443` and no alternate HTTPS port; a test pins agreement
-(`tests/test_calls_defaults_agree.py`). `edge-proxy/` already matched. Still open: the `mmctl plugin list`
-acceptance probe and the plugin-env-name verification. Original analysis:
+**Resolved 2026-11-21:** the generic tls-edge template keeps raw TCP/UDP media
+ports closed by default. When hosting a Mattermost Calls consumer, configure
+the edge with `calls_enabled = true` and `calls_port = 8443`; the Mattermost
+project's own default media port remains 8443. This is an intentional split
+between safe generic edge defaults and an application-specific listener.
 
-Introduced by `93c6a39aa` (no review recorded, no test or lane). tls-edge defaults
-`[tls_edge.calls] enabled = false, public_port = 8444`; mattermost-server defaults
-`[mattermost.calls] enabled = true, port = 8443, public_port = 8443` and advertises
-`MM_CALLS_ICE_HOST_PORT_OVERRIDE=8443`. A tls-edge install that enables Calls without a host override
-publishes 8444 while Mattermost advertises 8443; with Calls off in tls-edge the Mattermost labels name
-entrypoints (`mattermost-calls-tcp/udp`) that do not exist. `edge-proxy/docker-compose.yml` and
-`traefik.yml` publish `8443:8444/tcp` and `8443:8443/udp` unconditionally, while the DESIGN-GUIDE says no
-media port opens unless the override enables it (true only for the CIU template; whether `edge-proxy/`
-is the host-only live copy is unverified). Unverified: that the Calls plugin honours the `MM_CALLS_*`
-environment names and that `MM_PLUGINSETTINGS_PLUGINSTATES` is parsed as an environment JSON map; the
-plugin-id deny-list is not an allow-list. Options (operator's choice, report D-008): default Mattermost
-`calls.enabled` to false and let the host override turn it on; or default tls-edge Calls on at 8443; or
-add a test that renders both stacks' defaults and asserts port and entrypoint names agree. Add an
-acceptance probe (`mmctl plugin list`) to the live-deploy checklist either way.
+`tests/test_calls_defaults_agree.py` pins the shared port numbers while allowing
+the edge listener to remain disabled until an operator opts in. A live Calls
+acceptance check still belongs in the migration checklist.
 
 ### acme-data volume loss triggers certificate re-issuance
 
@@ -69,8 +59,9 @@ share the public port.  There is no alternate HTTPS port; every HTTPS service ne
 
 ### Port 80 is on by default
 
-Port 80 carries the permanent HTTP→HTTPS redirect and ACME HTTP-01.  A host that must not serve it sets
-`tls_edge.ports.expose_http = false` (installer `--disable-port-80`); `acme-http` mode then cannot work.
+Port 80 carries the permanent HTTP→HTTPS redirect and ACME HTTP-01. A host
+that must not serve it sets `tls_edge.ports.expose_http = false` with
+`tls-edge configure`; `acme-http` mode then cannot work.
 
 ---
 
@@ -200,7 +191,6 @@ sufficient for a searchable, persistent audit trail.
 - Drop the installer adapter's `git init` once ciu runs in a non-git standalone root (ciu CIU-163).
 - Multi-variant publication goes through `cmru handler tarball-publish --variant` (cmru KI-115); `scripts/publish-variants.py` is gone and
   a retained build-output record publishes like any other release.
-- Wheel freshness: `scripts/stage-wheels.py` refuses PyPI wheels younger than 14 days; a pinned older version needs a constraint file (not yet added).
 - Live migration of the hand-made deployment: planned in `docs/INSTALL.md`, not executed.
 
 ### ciu dev-mode integration: generate dev certs via a pre-compose hook

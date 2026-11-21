@@ -111,17 +111,27 @@ The controller gives the go; a controller-run implementer or the controller does
    every layer of the base image, in order. The script then prints the packages the layer added or
    upgraded.
 
-   **The build itself is NOT in a governed cgroup.** Measured on `v1001` (docker cgroup driver
-   systemd): containers started with `docker run --cgroup-parent dev-gates.slice` land in
-   `/sys/fs/cgroup/dev.slice/dev-gates.slice` (MemoryMax 6.5 GiB), but the RUN-step processes of a
-   docker-driver BuildKit build with `--cgroup-parent dev-gates.slice` land in a root-level,
-   **ungoverned** `/sys/fs/cgroup/dev-gates.slice/buildkit` (`memory.max` is `max`). The flag is
-   passed because the estate requires it; the script prints a NOTE saying so on every build. The
-   probe containers it starts afterwards (package list, versions) are governed. So the first build
-   must be **watched**: the memory of that cgroup (the observer should abort above 3.5 GB), and it
-   is started only with the controller's go. A path form such as `--cgroup-parent
-   dev.slice/dev-gates.slice` might place a build under the governed slice; it is **untested** and
-   the script does not use it.
+   **One input, two spellings; with the builder `default` on v1001 the build is governed
+   (measured).** The input is the systemd slice NAME
+   (`--cgroup-parent dev-gates.slice` / `CGROUP_PARENT_DEV_GATES`); the script derives the cgroup
+   PATH itself (systemd dash expansion: `a-b-c.slice` becomes `a.slice/a-b.slice/a-b-c.slice`,
+   `dev-gates.slice` becomes `dev.slice/dev-gates.slice`) and refuses a malformed name with exit 2
+   before any docker call. Measured on `v1001` (2026-11-18, docker cgroup driver systemd) with the
+   docker-driver builder `default` ONLY: `docker buildx build --cgroup-parent
+   dev.slice/dev-gates.slice` (the path form, which the script passes) puts the RUN-step processes in
+   `/sys/fs/cgroup/dev.slice/dev-gates.slice/buildkit/<id>`, inside the governed slice (MemoryMax
+   6.5 GiB). The governed slice's `memory.current` rose with the build: with probe builds, during a
+   `sleep` RUN step, 1,298,403,328 -> 1,299,955,712 B; with the real dev-image build, 1,329,975,296 B
+   -> a peak of 1,533,550,592 B, while the stray root-level cgroup stayed at 300,556,288 B. Any other
+   builder was not measured: verify its placement (`/proc/<pid>/cgroup` of a RUN-step process). With the plain name
+   `--cgroup-parent dev-gates.slice` BuildKit would put them in a root-level, **ungoverned**
+   `/sys/fs/cgroup/dev-gates.slice/buildkit/<id>` (`memory.max` is `max`). Conversely `docker run`
+   takes only the slice NAME (the daemon refuses the path form: `invalid slice name`), so the
+   probe containers the script starts afterwards (package list, versions) and the CMRU preflight get
+   the name. The script prints a NOTE with both spellings on every build (the measured sentence only
+   for the builder `default`; for any other builder it says the placement was not measured). The build is started only
+   with the controller's go; still watch the governed slice's `memory.current` (the observer should
+   abort above 3.5 GB).
 3. Because the image is built on the host that runs it, no image transfer is needed. If it must be
    built elsewhere, `docker save IMAGE | docker load` from the host that holds it moves it, but it
    is a multi-GB transfer; only the controller decides that.

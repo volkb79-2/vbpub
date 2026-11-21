@@ -18,10 +18,10 @@ entrypoint listens on container TCP 8443 and the Calls UDP entrypoint on
 container UDP 8443. There is no alternate HTTPS port, so nothing else uses 8443
 and there is no TCP/UDP collision.
 
-The listener is on in tls-edge defaults (`[tls_edge.calls] enabled = true,
-public_port = 8443`), matching the Mattermost project's default media port. An
-edge that must not open a media port sets `enabled = false`. The agreement
-between the two defaults is pinned by `tests/test_calls_defaults_agree.py`.
+The listener is an optional tls-edge feature (`[tls_edge.calls] enabled =
+true, public_port = 8443`) and is disabled in generic defaults. Enable it with
+`tls-edge configure` when the edge serves this Mattermost Calls consumer; the
+consumer's app settings and the edge's TCP+UDP port must agree.
 
 ## Privacy and operating boundary
 

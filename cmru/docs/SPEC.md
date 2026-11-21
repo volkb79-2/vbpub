@@ -1690,15 +1690,27 @@ the operator to set a non-empty value in the selected source config or process e
 The preflight MUST inspect the selected refs on the local Docker host. The cgroup-probe image
 MUST already be local because its Docker run uses
 `--pull=never`; if absent, preflight MUST fail with exit 4 naming the reference and exact
-`docker pull <ref>` remedy. The wheel-builder Docker run does not use `--pull=never` and pulls
-an absent image by default. On an actual release, if the builder is absent locally, preflight
+`docker pull <ref>` remedy. Independently of the rows above (which run only when cmru is in the
+release scope), for EVERY project in the release scope, except on `--resume`, the preflight MUST
+read that project's own release-source config and, when any `[steps.*]` command argv in it
+(read with a TOML parser, not a text search; any other shape is ignored) contains the element
+`--enable-docker`, add a `DinD sidecar image` row (labelled `DinD sidecar image (<project>)` when
+the scope has several projects or the project is not cmru) for `CMRU_TESTER_DIND_IMAGE`, resolved
+like the probe image from that project's own config with the caller's captured environment as
+fallback, and with the probe's contract: its Docker run uses `--pull=never`, so an empty value or an
+absent image MUST fail preflight before dispatch (exit 4, naming the variable and reference, with
+the exact `docker pull <ref>` remedy), a present image passes, and Docker being unavailable is
+`SKIPPED` on a dry-run and a failure on an actual release. The preflight MUST NOT pull it, MUST
+omit the row (not report it `SKIPPED`) for a project with no such step, and an unreadable project
+config MUST surface the same domain error as the cmru path. The wheel-builder Docker
+run does not use `--pull=never` and pulls an absent image by default. On an actual release, if the builder is absent locally, preflight
 MUST run `docker pull <ref>` with a 600-second timeout and PASS only if that succeeds; a failed
 or timed-out pull MUST fail preflight with the exact remedy and, on timeout, name the timeout.
 A dry-run MUST NOT pull a missing builder and MUST report its pullability as `SKIPPED`, with a
 message that registry availability was not verified. The image checks
 MUST also run when `--skip-gates` is selected because the wheel-build step still uses these
-images. When gates are enabled, the preflight MUST run the declared version-window, selected
-tester-image identity, and bootstrap-version checks against the exact source revision. The
+images. When gates are enabled, the preflight MUST run the selected
+tester-image identity and bootstrap-version checks against the exact source revision. The
 selected tester-image identity check MUST report a non-empty Run-Gate version and a valid
 64-digit lowercase SHA-256 for the published wheel. An omitted or malformed identity field is
 a failed precondition; CMRU MUST NOT substitute `unknown` or another invented value. A
@@ -2005,7 +2017,7 @@ and `CMRU_TESTER_CGROUP_PARENT` so it can prove its build slice before launching
 
 #### Release-gate controller interpreter (KI-81)
 
-The registered `gate` and `gate-provisional` lanes are `bare-host` and start
+The registered `gate` and `release-gate` lanes are `bare-host` and start
 `python3 -I -B {worktree}/cmru/tools/run_release_gate.py`. The controller MUST import only the
 standard library before it has decided its interpreter, MUST derive the third-party modules it
 requires from `[project].dependencies` of CMRU's own `pyproject.toml` (never a name list in the
@@ -2031,15 +2043,20 @@ otherwise unchanged.
 
 #### Release-gate provisional evidence
 
-A deferral tracking id is bound to explicit release-version windows: `KI-79` authorizes only CMRU
-`>= 6.2.0` and `< 6.3.0` (the 6.2 patch line), `>= 7.0.0` and `< 7.1.0` (the 7.0 patch line),
-`>= 7.1.0` and `< 7.2.0` (the 7.1 patch line), `>= 7.2.0` and `< 7.3.0` (the 7.2 patch line),
-or `>= 7.3.0` and `< 7.4.0` (the 7.3 patch line; operator decisions 2026-10-14, 2026-10-21,
-2026-10-23, 2026-10-27, 2026-11-04, and 2026-11-12), read from
-the prepared changelog, and `FIRST-RELEASE-R2` only a first release with no published
-stable tag. Any other id or prepared version refuses before a lane runs.
+The standing release rule (operator decision 2026-11-18; KI-79 and KI-159) is: a release
+needs R0/R1 (full line and branch coverage) and R3 (canary) as the `run-tests` step, plus an
+independent review of the change for hollow tests and defects (a hand-off requirement of the
+release controller, not enforced by CMRU code); the long R2 mutation lane runs asynchronously
+and is owed on the latest release. The registered `release-gate` lane implements the gate half:
+it runs every lane of the full `gate` conjunction except `mutation`. No release version is
+compared against a window and none is refused for its number. The recognised deferral tracking
+id is `KI-79` (the id value is kept because retained markers and manifests record it), and
+`FIRST-RELEASE-R2` is recognised only for a first release with no published stable tag. Both
+require a dated prepared changelog heading, whose version is recorded as the marker's
+`target_version`. Any other id, or a missing or undated prepared heading, refuses before a lane
+runs.
 
-A gate that deliberately defers the mutation lane (`--postpone-mutation`, `gate-provisional`)
+A gate that deliberately defers the mutation lane (`--postpone-mutation`, `release-gate`)
 exits 0 after every required non-mutation lane and the final canary pass, and records:
 
 - `cmru/.assay/release-gate-snapshot.json` (`schema_version` 4): `state` is `"provisional"`
@@ -3719,7 +3736,7 @@ newest release with a recorded R2 PASS, or `cmru-v6.1.0` when no R2 PASS row
 exists.
 
 **S16.4 — Publisher credential boundary (exact-HEAD snapshot, KI-74).** The registered
-host `gate` and `gate-provisional` lanes MUST run from a linked Git worktree with no tracked
+host `gate` and `release-gate` lanes MUST run from a linked Git worktree with no tracked
 changes and MUST refuse a main checkout before launching any lane. Before allocation they MUST
 refuse a tracked `cmru.secret.toml`, a configured Git filter that could execute during checkout,
 and tracked files at the paths reserved for gate evidence. Every tester lane then runs from an

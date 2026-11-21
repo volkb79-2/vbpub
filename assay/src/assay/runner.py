@@ -1354,9 +1354,11 @@ def _directory_report_error(
     ``Absent`` is also ``ERROR``/``UNREADABLE_ARTIFACT`` (unlike the file
     kind): a payload-free ``NO_MEASUREMENT``/``EMPTY_COVERAGE`` claim beside a
     PASS R0 is rejected by ``verify``, and ``verify`` accepts this refusal.
-    U5c synthesises the zero-mutant ``INCONCLUSIVE``/``NO_MUTANTS`` for an
-    exit-0 run; until then an absent report fails closed. ``NotConsumed`` is
-    an error and never the zero-mutant marker: nothing was observed.
+    The caller (U5c) overrides this refusal for the one zero-mutant shape --
+    a PASSED R0 on a changed_lines lane that was handed the placeholder diff
+    -- and synthesises ``INCONCLUSIVE``/``NO_MUTANTS`` instead; every other
+    absent report stays this refusal. ``NotConsumed`` is an error and never
+    the zero-mutant marker: nothing was observed.
     """
     if isinstance(state, _DirectoryRefused):
         return state.error
@@ -1365,9 +1367,9 @@ def _directory_report_error(
             f"the lane declared judge.mutation.artifact {artifact!r} but the "
             f"cargo-mutants run produced no outcomes.json. An ingested R2 "
             f"lane's whole evidence IS that artifact, so there is nothing to "
-            f"judge. The zero-mutant case is synthesised by work package U5c; "
-            f"until then a run that wrote no report fails closed rather than "
-            f"reporting a silent green.",
+            f"judge. Only a changed_lines lane handed the diff placeholder "
+            f"may read a missing report as zero mutants; this run fails "
+            f"closed rather than reporting a silent green.",
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.UNREADABLE_ARTIFACT,
         )
@@ -2608,6 +2610,114 @@ def _source_root_file_keys(
     return tuple(file_keys)
 
 
+def _request_base_diff_pathspecs(
+    lane: Lane,
+    *,
+    repo_top: Path,
+    project_root: Path,
+) -> tuple[str, ...]:
+    """Repository-top-relative pathspecs for the paths a changed-line lane
+    can actually judge (B558).
+
+    The resolved ``source_root_paths`` and the exact ``source_root_files``
+    derivation are the same inputs :func:`assay.evaluate._is_considered`
+    consumes. A resolved root outside *repo_top* contributes nothing and is
+    skipped rather than crashing the diff. For every resolved root inside
+    the repository, its resolved spelling is included; its declared lexical
+    spelling is included too when it is also inside the repository, so a
+    directory root reached through an in-repo symlink contributes both names
+    git can use.
+
+    Callers use ``--no-renames`` whenever this returns paths. A rename from
+    outside a judged root into one is then a whole-file addition under the
+    new path -- exactly the path-limited diff's shape -- while a rename out
+    of a root is a deletion, which :func:`assay.diff.parse_added_lines`
+    ignores. An empty tuple means there is no usable path declaration: the
+    caller keeps the historical full diff and never emits an empty
+    ``--``-terminated pathspec.
+    """
+    judge = lane.judge
+    assert judge is not None
+    resolved_roots = judge.source_root_paths or ()
+    declared_roots = judge.source_roots or ()
+    try:
+        project_root.relative_to(repo_top)
+    except ValueError:
+        # Exact-file spellings are derived through the project prefix. A
+        # project is normally inside its repository; a synthetic lane whose
+        # anchors disagree contributes no such spelling instead of crashing.
+        file_keys: tuple[str, ...] = ()
+    else:
+        file_keys = _source_root_file_keys(
+            judge.source_roots,
+            repo_top=repo_top,
+            project_root=project_root,
+        )
+    pathspecs: set[str] = set()
+
+    def add_inside(path: Path) -> None:
+        try:
+            relative = path.relative_to(repo_top)
+        except ValueError:
+            return
+        pathspecs.add(relative.as_posix() or ".")
+
+    for index, resolved_root in enumerate(resolved_roots):
+        try:
+            resolved_root.relative_to(repo_top)
+        except ValueError:
+            # A synthetic/free-constructed lane can carry a root outside the
+            # repository even though the loader refuses one. It selects
+            # nothing in a repository-top diff, so it adds no pathspec.
+            continue
+        add_inside(resolved_root)
+        if index < len(declared_roots):
+            add_inside(
+                Path(os.path.normpath(project_root / declared_roots[index]))
+            )
+
+    inside_roots = tuple(
+        root for root in resolved_roots if root.is_relative_to(repo_top)
+    )
+    for key in file_keys:
+        lexical = repo_top / key
+        try:
+            resolved = lexical.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if any(resolved.is_relative_to(root) for root in inside_roots):
+            add_inside(lexical)
+
+    return tuple(sorted(pathspecs))
+
+
+def _request_base_diff_args(
+    lane: Lane,
+    *,
+    repo_top: Path,
+    project_root: Path,
+    base_rev: str,
+    head_rev: str,
+) -> tuple[str, ...]:
+    """The request-base ``git diff`` argv shared by every judged-path
+    call site (B558); see :func:`_request_base_diff_pathspecs` for the
+    rename rule and the empty-pathspec fallback."""
+    pathspecs = _request_base_diff_pathspecs(
+        lane, repo_top=repo_top, project_root=project_root
+    )
+    if not pathspecs:
+        return ("diff", "--unified=0", base_rev, head_rev)
+    return (
+        "diff",
+        "--unified=0",
+        "--no-renames",
+        base_rev,
+        head_rev,
+        "--",
+        *pathspecs,
+    )
+
+
 def _record_statement_position_helper(
     sink: list[Helper],
 ) -> Callable[[HelperInvocation], None]:
@@ -2863,7 +2973,14 @@ def evaluate_r1(
             )
         else:
             diff_text = git.run(
-                repo, "diff", "--unified=0", resolved.base_rev, resolved.head_rev,
+                repo,
+                *_request_base_diff_args(
+                    lane,
+                    repo_top=repo_top,
+                    project_root=project_root,
+                    base_rev=resolved.base_rev,
+                    head_rev=resolved.head_rev,
+                ),
                 remaining=remaining,
             )
             added = diff.parse_added_lines(diff_text)
@@ -4732,10 +4849,11 @@ def _produce_changed_diff(
     assert relocated.judge is not None
     # Repository-top-relative, as git's pathspecs are with ``--relative``
     # (measured); ``git.py`` runs every command with literal pathspecs.
-    pathspecs = [
-        root.relative_to(snapshot.root).as_posix()
-        for root in relocated.judge.source_root_paths
-    ]
+    pathspecs = _request_base_diff_pathspecs(
+        relocated,
+        repo_top=snapshot.root,
+        project_root=snapshot.project_root,
+    )
     patch = git.run_bytes(
         snapshot.root,
         "diff",
@@ -4748,8 +4866,7 @@ def _produce_changed_diff(
         *([f"--relative={relative_to}"] if relative_to != "." else []),
         resolved.base_rev,
         resolved.head_rev,
-        "--",
-        *pathspecs,
+        *(("--", *pathspecs) if pathspecs else ()),
         remaining=deadline.remaining,
     )
     directory = scratch_root / "changed-diff"
@@ -5533,6 +5650,11 @@ def _run_prepared_lane(
                 lane.judge.mode == "whole_target"
                 and lane.judge.targets is not None
             )
+            relocated_lane_r2 = _relocate_source_roots(
+                lane,
+                project_root=project_root,
+                scratch_project_root=baseline_snapshot.project_root,
+            )
             if added is None and not whole_file_r2:
                 try:
                     # B101 P1: consume the carried pre-snapshot resolution;
@@ -5544,10 +5666,13 @@ def _run_prepared_lane(
                     )
                     diff_text = git.run(
                         baseline_snapshot.root,
-                        "diff",
-                        "--unified=0",
-                        resolved.base_rev,
-                        resolved.head_rev,
+                        *_request_base_diff_args(
+                            relocated_lane_r2,
+                            repo_top=baseline_snapshot.root,
+                            project_root=baseline_snapshot.project_root,
+                            base_rev=resolved.base_rev,
+                            head_rev=resolved.head_rev,
+                        ),
                         remaining=deadline.remaining,
                     )
                     added = diff.parse_added_lines(diff_text)
@@ -5575,17 +5700,8 @@ def _run_prepared_lane(
                 # would reach `generate_mutation_sites`, which is
                 # `UNSUPPORTED` by design -- that is what makes this the
                 # ingested path).
-                relocated_lane_r2 = _relocate_source_roots(
-                    lane,
-                    project_root=project_root,
-                    scratch_project_root=baseline_snapshot.project_root,
-                )
+                pass
             elif whole_file_r2:
-                relocated_lane_r2 = _relocate_source_roots(
-                    lane,
-                    project_root=project_root,
-                    scratch_project_root=baseline_snapshot.project_root,
-                )
                 try:
                     targets = _mutation_targets_whole(
                         prepared=prepared,
@@ -5695,11 +5811,33 @@ def _run_prepared_lane(
             # exactly as it is for coverage (A-161).
             if r2_ingested and r2_early_claim is None:
                 ingested_r2_error = unit.mutation_report_error
+                # (B245 U5c) The zero-mutant shape: R0 PASSED by exit code
+                # (this block is reached only on a PASS, and an `Absent`
+                # report cannot decide R0), the tool wrote no report, and
+                # the lane is a changed_lines lane whose placeholder diff
+                # was handed over -- the tool was told to mutate only the
+                # diff, and the diff selected nothing. Every other absent
+                # state (no handoff, i.e. whole_target) keeps its
+                # fail-closed refusal.
+                zero_mutant = (
+                    unit.directory_report is not None
+                    and isinstance(unit.directory_report.state, _DirectoryAbsent)
+                    and changed_diff_handoff is not None
+                )
+                if zero_mutant:
+                    ingested_r2_error = None
                 if ingested_r2_error is None and changed_diff_handoff is not None:
                     ingested_r2_error = _changed_diff_tamper_error(
                         changed_diff_handoff
                     )
-                if ingested_r2_error is None:
+                if ingested_r2_error is None and zero_mutant:
+                    assert relocated_lane_r2 is not None and added is not None
+                    ingested_r2 = mutation.synthesize_zero_mutant_result(
+                        added,
+                        repo_top=baseline_snapshot.root,
+                        source_root_paths=relocated_lane_r2.judge.source_root_paths,
+                    )
+                elif ingested_r2_error is None:
                     assert relocated_lane_r2 is not None
                     raw_report: bytes | safeio.DirectoryArtifact
                     if unit.directory_report is not None:
@@ -6823,6 +6961,7 @@ def _build_ingested_judgment_r2(
         survived_uncovered=ingested.survived_uncovered,
         discarded=ingested.discarded,
         lines_without_candidates=ingested.lines_without_candidates,
+        report_absent=ingested.report_absent,
         # B050/A-427 (schema v10): the floor the ingested judgment applied,
         # read from the lane rather than assumed to be 100.0 -- which is the
         # whole point of the field. It is REQUIRED under `ingested` and

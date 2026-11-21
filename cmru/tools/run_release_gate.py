@@ -256,7 +256,7 @@ def _authoritative_interpreter() -> tuple[list[str], str]:
     stale variable in an operator's shell cannot choose the interpreter of a manual run.
     An unusable protected value is a refusal, never a reason to look elsewhere.
 
-    Anywhere else (a direct ``run-gate gate-provisional``) the installed ``cmru``
+    Anywhere else (a direct ``run-gate release-gate``) the installed ``cmru``
     console script's shebang names the environment it was installed into; a launcher
     that is not a Python console script is refused with that explanation.
     """
@@ -346,7 +346,7 @@ def _ensure_gate_environment(argv: list[str]) -> None:
         f"({', '.join(requirement for requirement, _module in absent)}) into the estate "
         "Python environment (`pip install --no-index --find-links <wheelhouse> cmru`, see "
         "the CMRU README 'Install') and put that environment's bin directory on PATH "
-        "before running `run-gate gate` or `run-gate gate-provisional`"
+        "before running `run-gate gate` or `run-gate release-gate`"
     )
     if already_switched:
         raise RuntimeError(
@@ -1028,52 +1028,21 @@ def _report_lane_failure(project_root: Path, lane: str, since_ns: int) -> None:
 
 POSTPONED_MARKER = Path(".assay") / "mutation-postponed-cmru.json"
 POSTPONE_REASON = (
-    "operator-approved provisional CMRU release (KI-79; the marker's target_version names "
-    "which): the R2 mutation lane was skipped and must be run afterwards against the "
-    "released tag"
+    "standing release rule (KI-79; the marker's target_version names the release): R0/R1 and R3 "
+    "ran, the long R2 mutation lane was skipped, and R2 runs asynchronously on the latest "
+    "release against the released tag"
 )
 FIRST_RELEASE_POSTPONE_REASON = (
     "first CMRU release has no earlier published source baseline; whole-source R0/R1/R3 ran, "
     "and whole-source R2 must be run afterwards with "
     f"`run-gate {FIRST_RELEASE_R2_FOLLOW_UP_LANE}`"
 )
-#: Version window each postponement id may defer R2 for: ``(lowest, below)``, i.e.
-#: ``lowest <= version < below``; an id may list several windows. KI-79: the whole 6.2 patch
-#: line (6.2.0 by the 2026-10-14 operator decision; widened 2026-10-21 -- "release more cmru
-#: also without prior R2" -- to every 6.2.x) and, by the 2026-10-23 operator decision, the 7.0
-#: line (the 7.0.0 release carrying the mandatory `[github] token_source`) and, by the 2026-10-27
-#: operator decision (R2 waived for every release of the current release wave), the 7.1 line.
-#: 2026-11-04, operator decision: R2 mutation campaigns stay waived for releases and run later with
-#: `--jobs` on the scratch host (decision standing since 2026-10-27), so cmru 7.2.0 (a minor release
-#: refused by the gate, KI-109) may defer R2 too: the 7.2 line. It closes with one full R2 run
-#: (`--jobs auto` on r1002) over the 7.2 content.
-#: 2026-11-12, operator decision: the 7.3.0 release also uses the provisional gate; its whole-source
-#: R2 campaign is owed asynchronously through the T3 `r2` lane after the latest provisional release.
-#: Every other version still refuses; moving a window needs a new operator decision
-#: and a reviewed change here.
-#: `cmru release --dry-run` (release_preconditions.py) reads this same table via the gate's validator.
-POSTPONEMENT_RELEASE_VERSIONS = {
-    "KI-79": (
-        ((6, 2, 0), (6, 3, 0)),
-        ((7, 0, 0), (7, 1, 0)),
-        ((7, 1, 0), (7, 2, 0)),
-        ((7, 2, 0), (7, 3, 0)),
-        ((7, 3, 0), (7, 4, 0)),
-    )
-}
-
-
-def _version_tuple(version: str) -> tuple[int, int, int]:
-    major, minor, patch = (int(part) for part in version.split("."))
-    return major, minor, patch
-
-
-def _postponement_window_text(windows: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...]) -> str:
-    return " or ".join(
-        f">= {'.'.join(map(str, low))} and < {'.'.join(map(str, below))} "
-        f"(the {low[0]}.{low[1]} patch line)"
-        for low, below in windows
-    )
+#: The one recognised tracking id of the standing release rule (operator decision 2026-11-18:
+#: a release needs R0/R1 full branch coverage and R3 canary plus an independent review, and R2
+#: runs asynchronously on the latest release). It replaced the per-minor version windows of
+#: KI-79; no release version is enumerated or compared any more. The id value stays `KI-79`
+#: because retained markers and snapshot manifests record it and must stay readable.
+STANDING_POSTPONEMENT_ID = "KI-79"
 #: What a later whole-source/full mutation follow-up needs before it can run.
 #: The marker and the snapshot manifest carry these verbatim so a reader never
 #: has to infer them from prose. ``d4-capacity-evidence`` is named, not defined,
@@ -1144,7 +1113,11 @@ def _prepared_release_version(project_root: Path) -> str | None:
 def _validate_postponement(
     project_root: Path, tracking_id: str, *, first_release: bool = False,
 ) -> str:
-    """Allow a documented first-release or KI-79 R2 deferral."""
+    """Allow a documented first-release or the standing-rule (KI-79) R2 deferral.
+
+    Both paths require a dated prepared changelog heading, whose version the marker records
+    as ``target_version``. No release version is refused: the standing rule has no window.
+    """
     if first_release:
         if tracking_id != FIRST_RELEASE_POSTPONEMENT_ID:
             raise RuntimeError(
@@ -1157,19 +1130,14 @@ def _validate_postponement(
                 "first-release R2 deferral requires a dated, prepared CMRU release heading"
             )
         return observed_version
-    windows = POSTPONEMENT_RELEASE_VERSIONS.get(tracking_id)
-    if windows is None:
+    if tracking_id != STANDING_POSTPONEMENT_ID:
         raise RuntimeError(
             f"mutation postponement {tracking_id!r} is not authorized for a release"
         )
     observed_version = _prepared_release_version(project_root)
-    if observed_version is None or not any(
-        low <= _version_tuple(observed_version) < below for low, below in windows
-    ):
-        observed = observed_version or "no prepared release version"
+    if observed_version is None:
         raise RuntimeError(
-            f"mutation postponement {tracking_id} is authorized only for CMRU "
-            f"{_postponement_window_text(windows)}; prepared changelog identifies {observed}"
+            f"mutation postponement {tracking_id} requires a dated, prepared CMRU release heading"
         )
     return observed_version
 
@@ -1461,10 +1429,10 @@ def _plan_gate(repo_root: Path, project_root: Path, baseline, postpone_mutation:
         if postpone_mutation is None:
             raise RuntimeError(
                 "origin has no published stable CMRU release tag, so the changed-source "
-                "mutation baseline does not exist; release through `gate-provisional` to "
+                "mutation baseline does not exist; release through `release-gate` to "
                 "run whole-source R0/R1/R3 and record the required whole-source R2 follow-up"
             )
-        if postpone_mutation != "KI-79":
+        if postpone_mutation != STANDING_POSTPONEMENT_ID:
             raise RuntimeError(
                 "origin has no published stable CMRU release tag; only the release workflow's "
                 "provisional R2 deferral can select the whole-source first-release gate"

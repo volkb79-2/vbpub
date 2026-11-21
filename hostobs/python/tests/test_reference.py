@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Cross-implementation tests for the independent Python reference codec (plan v4 §B.5).
 
-Run manually (there is no registered `conformance` lane yet; see
-`KNOWN_ISSUES_TODO_BACKLOG.md` HOB-4):
+The registered `conformance` lane runs the whole suite (`run-gate.toml`; see
+`KNOWN_ISSUES_TODO_BACKLOG.md` HOB-4). By hand:
 
     python3 -m unittest discover -s python/tests -v
 
@@ -395,6 +395,34 @@ class WireFixtures(unittest.TestCase):
         self.assertEqual(len(spec["frame"]["time"]), 5)
         decoded = wire.decode_frame((FIXTURES / "history-five-buckets.bin").read_bytes())
         self.assertEqual(len(decoded["time"]), 5)
+
+    def test_a_block_frame_of_twelve_to_fifteen_bytes_is_a_directory_truncation(self):
+        # A block frame that ends inside its own directory header is a typed truncation,
+        # never a struct.error: 12 and 13 bytes lack the 2-byte section count, 14 and 15
+        # lack the rest of the 4-byte directory header. Each buffer is exactly its declared
+        # length, so only the two directory guards can refuse it (M1d-14).
+        wire = hostobs_wire_ref
+        for length, need in ((12, 2), (13, 2), (14, 4), (15, 4)):
+            data = struct.pack(
+                "<IBBHI",
+                length,
+                wire.FRAME_TYPES["block"],
+                wire.FRAME_SECTIONED,
+                0,
+                39,
+            ) + bytes(length - wire.FRAME_HEADER_LEN)
+            self.assertEqual(len(data), length)
+            with self.subTest(length=length), self.assertRaises(wire.WireError) as caught:
+                wire.decode_frame(data)
+            self.assertEqual(
+                caught.exception.as_dict(),
+                {
+                    "kind": "truncated",
+                    "context": "block directory",
+                    "need": need,
+                    "have": length - wire.FRAME_HEADER_LEN,
+                },
+            )
 
     def test_the_frame_header_bounds_the_declared_length_at_both_ends(self):
         # HOB-8: the Rust FrameHeader::parse refuses a declared length outside

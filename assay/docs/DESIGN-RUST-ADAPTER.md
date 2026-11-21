@@ -106,11 +106,40 @@ needs a Rust AST; tree-sitter adds a native dependency to a stdlib-only tool [V 
 | Workspaces | one lane per workspace; `cwd` = workspace root; `source_roots = ["crates", "bins"]`. Absolute `SF:` keys resolve through the core [V]. |
 | Platform `cfg` | code compiled out on the gate target has no `DA:` records and is invisible to R1 (K7). Mitigation is R2: cargo-mutants mutates syntactically, so a mutant in cfg'd-out code compiles, nothing catches it, and it survives loudly [K]. hostobs is Linux-only. |
 
-## D. R2 target design: cargo-mutants by ingestion (not yet adopted)
+## D. R2 target design: cargo-mutants by ingestion (assay side shipped, not yet adopted)
 
 R2 is not yet adopted for Rust. Record that status once as a known issue in the
 project methodology; it is not a per-release waiver. This section is the frozen
 target design, not a current release gate. R1-R3 remains the target.
+
+**Status (2026-11-18).** Assay's side of this section is implemented by B245
+units U0-U5c: the `cargo-mutants-outcomes` mutation format and R0 result-report
+format, the directory-artifact reservation of `<out>`, the
+`{assay.changed_diff}` argv placeholder, the zero-mutant `NO_MUTANTS` verdict
+and the v20 verdict cut. The copy-paste lane and its rules are in
+`CONSUMERS.md` "Rust R2 lanes (cargo-mutants)" (U6). Where the shipped code
+differs from the table and bullets below, `DESIGN-B245-CARGO-MUTANTS-INGESTION.md`
+and that CONSUMERS section win. What stayed open until later on 2026-11-18 was the real-toolchain
+qualification on the U0 subjects (U7) and the hostobs T3 registration (U8), both now done;
+K15 was open until U8 and is CLOSED by the real hostobs run (see the last paragraph below). U8a registered Rust at R2 in the CLI registry
+(ingested cargo-mutants lanes only; native Rust R2 and Rust R3 stay refused).
+The first hand run of hostobs `assay-r2` (2026-11-18, v1001, base `7835ec25a`) ended
+`R0 PASS` / `R2 INCONCLUSIVE NO_MUTANTS` (assay exit 5, the lane fails closed): all changed
+lines under the source roots were doc comments and `#[cfg(test)]` functions, which
+cargo-mutants never mutates, so it measured the declared lane end to end but no mutant
+verdict; the listing for base `0dd7230b1` is 345 mutants (about 2.4 h at `--jobs 1`) and
+that run is the one that closes K15. Three attempts at it (2026-11-18) were cancelled on memory before any
+mutant verdict existed: a captured run showed the growing process is a cargo-mutants MUTANT run
+(client.rs differs from git) of the hostobs client crate whose test
+(`client_scripted ... transport_failures_are_classified`) grows about 0.2 GB/s, which is inferred to outrun
+cargo-mutants' 120 s test timeout (the unmutated test passes, as in `selftest`/`assay-r1`; evidence and
+what is inferred in `RUST-B245-U0-MEASUREMENTS.md`). The unmerged U8b-fix branch gives the lane a hard
+container memory cap intended to OOM-kill such a mutant inside its own container; that is untested, and how
+assay classifies an OOM-killed mutant is a K15 verdict-semantics point to read from the real run.
+The real run then happened (2026-11-18, base `0dd7230b1`, 345 mutants, 17 minutes): 271 caught, 47
+unviable, 21 missed, 6 timeouts; the lane's R2 claim is `BUDGET_EXCEEDED / LANE_TIMEOUT` (exit 4, the
+timeouts outrank the survivors), the container was not OOM-killed. K15 is closed by that evidence for the ingested
+Rust R2 path; the verdict-semantics and timeout-cost follow-ups are B559 and B560.
 
 **Contract read from upstream ([V] mutants.rs pages and `src/outcome.rs`, `src/mutant.rs`, `src/process.rs`):**
 exit 0 all caught, 1 usage, 2 missed mutants, 3 timeouts, 4 baseline failing, 5 `--in-diff` new side does not
@@ -206,7 +235,7 @@ BinaryOperator, UnaryOperator, MatchArm, MatchArmGuard, StructField} [V]. Span c
 | `lint` | command | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked --offline -- -D warnings`; `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --locked --offline`; `cargo deny --offline check licenses bans sources`; `tools/check-lints.sh` (every crate has `[lints] workspace = true` with `unsafe_code = "forbid"` except allowlisted `kernel`/`act`, no `#[mutants::skip]`, every `exclude_re` has a reason). |
 | `selftest` | command | M0 only, before the adapter: R0+R1 command of §B plus crate floors. Retired into `assay-r1` once R-2 lands. |
 | `assay-r1` | assay → `[lanes.r1]` | rigor `["R0","R1"]`, `language = "rust"`, lcov, `fail_under = 100.0`, base from request. |
-| `assay-r2` | assay → `[lanes.r2]` | target end-state rigor `["R0","R2"]`, ingested `cargo-mutants-outcomes`, `fail_under = 100.0`, `result_report` of §D. Not yet adopted or registered; requires a later adoption decision and work package. |
+| `assay-r2` | assay → `[lanes.r2]` | target end-state rigor `["R0","R2"]`, ingested `cargo-mutants-outcomes`, `fail_under = 100.0`, `result_report` of §D. Not yet adopted or registered by hostobs (B245 U8); assay's ingestion of it is shipped (U0-U5c) and the lane template is in `CONSUMERS.md`. |
 | `assay-r3` | assay → `[lanes.r3]` | rigor `["R0","R1","R3"]`, one test-break/import-break receipt-writing canary mechanism per lane. Its release-time whole-project R1 floor is enforced here. |
 | `mutants-<crate>-<k>of<n>` | command, advisory | whole-crate `cargo mutants --package <c> --shard k/n --sharding round-robin`; release-time, on designated mutation hosts later; humans read `missed.txt`. |
 | `conformance` | command | existing BuildKit multi-stage pattern (release binary vs Python goldens) [V sampler Dockerfile], built from the lock's image-cached crates. |
@@ -309,7 +338,7 @@ S < 300 changed lines, M < 900, L more.
 | R-2 | assay `RustAdapter` registered at R1; nextest/libtest first-failure recognizers; real-toolchain fixtures (`tests/fixtures/rust/`, generated in the image, A-234 discipline [V go.py header]); `tools/qualify_rust_r1_real.py` run inside the image; CONSUMERS "Rust lanes" + DESIGN-GUIDE §11 row; hostobs `assay-r1` replaces `selftest` | M | Codex / Fable once, then Sonnet | assay's own lanes + qualification in the image | R-1 |
 | **MILESTONE 2** | **100% diff-line coverage judged by assay on hostobs.** | | | | R-2 |
 | R-3a | MEASURED 2026-11-18 in `RUST-R3A-SPIKES.md` (D1-D8; D3 zero mutants and D6 schema (v20) are decided by the operator 2026-11-18; D2 directory-artifact reservation and D7 diff-path placeholder stay OPEN for B245's carve; S7 schema impact was derived from the code, not measured): S3/S4/S7 spikes (span units, zero-mutant `--in-diff`, baseline-failure report, directory artifact reservation, schema impact) | S | Codex | measurements | R-1, R2 adoption decision |
-| R-3b | DEFERRED until R2 adoption: `cargo-mutants-outcomes` format + diff content check; result_report; directory-artifact reservation (D2); argv placeholder for the diff path (D7, replaces `ASSAY_CHANGED_DIFF`); namespace + v20 cut; Rust R2 registration; real-run fixtures | L | Codex / Sonnet | assay lanes + qualification | R-2, R-3a |
+| R-3b | IMPLEMENTED as B245 U0-U5c (docs U6; real-run qualification U7 and the hostobs lane U8 are open; the lane template is `CONSUMERS.md` "Rust R2 lanes (cargo-mutants)"): `cargo-mutants-outcomes` format + diff content check; result_report; directory-artifact reservation (D2); argv placeholder for the diff path (D7, replaces `ASSAY_CHANGED_DIFF`); namespace + v20 cut; Rust R2 registration; real-run fixtures | L | Codex / Sonnet | assay lanes + qualification | R-2, R-3a |
 | **FUTURE MILESTONE (R2 NOT YET ADOPTED)** | **diff-scoped cargo-mutants gate (`assay-r2`) on hostobs.** | | | | R-3b |
 | R-4 | test-break/import-break canary injector and real-toolchain `COMMAND_FAILED` oracle with receipt in T2 `assay-r3`; uncovered-line injector and `UNCOVERED_LINES` oracle in a separate T3 lane | S-M | Codex / Sonnet | qualification in the image | R-2 |
 | R-5 | cmru `.crates` source, Cargo.lock writer, image cache rebuild, advisories in `check` | M-L | Codex / Sonnet (Fable once) | cmru own gate; a dry resolve against hostobs | R-1 (parallel to R-2..R-4) |
@@ -342,7 +371,7 @@ the README/DESIGN-GUIDE/CONSUMERS of the tool it touches in the same change.
 | K12 | cargo-mutants output format has no stability promise [V] | upstream choice | strict parser + qualification test on every bump |
 | K13 | full instrumented build per lane run (fresh snapshot) | correctness over cache reuse | measured cost, ~minutes |
 | K14 | `unsafe` allowed in `kernel`/`act` without miri/sanitizers | operator decision 5 | review; VM lanes; BL-RUST-MIRI |
-| K15 | Rust R2 is not adopted yet | record the status once as a known issue, not a per-release waiver | future R2 adoption decision and work package |
+| K15 | Rust R2 is not adopted yet | record the status once as a known issue, not a per-release waiver | assay's ingestion shipped (B245 U0-U5c, docs U6); registry lifted (U8a); K15 CLOSED by the real hostobs run of 2026-11-18 (345 mutants, 17 min, R2 BUDGET_EXCEEDED/LANE_TIMEOUT exit 4; B559/B560 follow) |
 
 Assay work packages are already filed as B241–B250 in
 `assay/nyxloom-trove/4-backlog.md`; B251 is the next new sequential id (B522 is

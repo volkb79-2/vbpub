@@ -1,0 +1,127 @@
+{
+  "case": "hub-query-own-pool",
+  "doc": "a query sheds no tick and a tick displaces no query block",
+  "limits": {
+    "client_queue_bytes": 1000,
+    "uid_live_bytes": 2000,
+    "global_live_bytes": 800,
+    "query_queue_bytes": 500,
+    "uid_query_bytes": 1000,
+    "global_query_bytes": 4000,
+    "control_queue_bytes": 500,
+    "stall_ms": 5000,
+    "frame_completion_ms": 5000
+  },
+  "conns": [
+    1,
+    2
+  ],
+  "steps": [
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 1,
+      "s": 1,
+      "gen": 1,
+      "bare": null,
+      "dict": 400
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 1,
+      "s": 2,
+      "gen": 1,
+      "bare": null,
+      "dict": 400
+    },
+    {
+      "t_ms": 0,
+      "op": "push_query",
+      "c": 0,
+      "s": 1,
+      "len": 500,
+      "watch": [
+        "c0"
+      ]
+    },
+    {
+      "t_ms": 0,
+      "op": "push_query",
+      "c": 0,
+      "s": 2,
+      "len": 112,
+      "watch": [
+        "c1"
+      ]
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 0,
+      "s": 3,
+      "gen": 1,
+      "bare": null,
+      "dict": 200,
+      "watch": [
+        "c0",
+        "c1",
+        "g"
+      ]
+    }
+  ],
+  "expect": [
+    [
+      "queued"
+    ],
+    [
+      "queued"
+    ],
+    [
+      "queued",
+      {
+        "pools": {
+          "c0": [
+            0,
+            500,
+            0
+          ]
+        }
+      }
+    ],
+    [
+      "backpressure",
+      {
+        "pools": {
+          "c1": [
+            800,
+            0,
+            0
+          ]
+        }
+      }
+    ],
+    [
+      "queued",
+      {
+        "pools": {
+          "c0": [
+            200,
+            500,
+            0
+          ],
+          "c1": [
+            400,
+            0,
+            0
+          ],
+          "g": [
+            600,
+            500,
+            0
+          ]
+        }
+      }
+    ]
+  ]
+}

@@ -145,14 +145,15 @@ for re-running the lane when correctness itself is in question.
 
 ## What this build evaluates
 
-R0, Python R1, Python R2, Python R3, JavaScript R1, JavaScript R2 (ingested Stryker report; B046), JavaScript R3, Go R1, Rust R1, SQL R2.
+R0, Python R1, Python R2, Python R3, JavaScript R1, JavaScript R2 (ingested Stryker report; B046), JavaScript R3, Go R1, Rust R1, Rust R2 (ingested cargo-mutants report; B245), SQL R2.
 
 If a lane's declared rigor tier isn't in this list for its language, that is a
 real capability gap to check `assay lanes --json` for, not something to route
-around silently. **Rust is R1 only:** the `RustAdapter` judges line coverage
+around silently. **Rust is R1, plus R2 by ingestion only:** the `RustAdapter` judges line coverage
 (`cargo llvm-cov` LCOV, branch totals unavailable on stable Rust, so a lane that
-requires branches refuses with `BRANCH_UNAVAILABLE`); there is no Rust R2
-(mutation) or R3 canary yet (B243 is PARTIAL). See `docs/RUST-METHODOLOGY.md`
+requires branches refuses with `BRANCH_UNAVAILABLE`); R2 judges a
+`cargo-mutants-outcomes` report your lane's argv produced (B245; a native Rust
+R2 lane is refused at load), and there is no R3 canary yet. See `docs/RUST-METHODOLOGY.md`
 and "Rust adapter status and tier design" in `docs/DESIGN-GUIDE.md`; the
 per-language matrix is in `docs/CONSUMERS.md`.
 

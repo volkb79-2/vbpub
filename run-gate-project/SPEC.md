@@ -1599,11 +1599,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   bare integer, not semver, cmru's auto-bump cannot parse it and `cmru
   status`/`cmru release` CRASH for this project's first release without an
   explicit `--set-version 23.0.0` override (verified live) — every release
-  after that resolves normally. The release gate IS the project's own
-  dogfooded lane (`cmru.toml [steps.run-tests]` runs `run-gate selftest` —
-  SSOT, D-110/D-111: one parser, no duplicated pytest
-  invocation), run in the `tester-unified` environment (an ephemeral
-  container the lane owns, `run-gate.toml [lanes.selftest]`; the suite is
+  after that resolves normally. The release gate runs the project's own
+  dogfooded selftest and R3 canary through
+  `tools/release_candidate.py` (`cmru.toml [steps.run-tests]`; SSOT,
+  D-110/D-111: one parser, no duplicated pytest invocation), both in the
+  receipt-specific `tester-unified` environment (ephemeral containers the
+  lanes own, `run-gate.toml [lanes.selftest]` and `[lanes.assay-r3]`; the suite is
   self-referential — it exercises `physical_path()`'s real
   `/proc/self/mountinfo` lookup against its own pytest fixtures — so pytest's
   basetemp is kept under the bind-mounted checkout, where the real mountinfo

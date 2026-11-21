@@ -1,8 +1,8 @@
 # Using the hostobs Rust lanes
 
 `model`, `proto`, `kernel` and `store` are functional; the remaining three library crates and
-two binaries are still the M0 scaffold. The registered lanes are `lint`, `selftest` and
-`assay-r1`. The estate wraps every lane run in the controller's gate wrappers, which take the
+two binaries are still the M0 scaffold. The registered lanes are `lint`, `selftest`, `assay-r1`
+and `conformance` (the Python tests). The estate wraps every lane run in the controller's gate wrappers, which take the
 shared gate slots and the lane's lock (see `scripts/controller/README.md`, "Running the
 registered gate" and "Run one lane on a remote gate worker"); a bare `run-gate <lane>` skips
 that admission and `run-gate` refuses container lanes on the main checkout, so do not use it
@@ -44,9 +44,9 @@ archive closure for this exact `Cargo.lock`. Do not run Cargo from the cockpit o
 network fallback. The lane image (`tester-unified-rust:rs-20261118`) has a Cargo wrapper that refuses before
 invoking Cargo if the mounted lock's registry-set digest, crate set, lock checksums, or cached
 archive bytes disagree with the image (the registry set is the downloaded packages plus the
-lock version; workspace members' own entries are not part of it). `tester-unified-rust:local`
-is the older whole-lock image: it checks the sha256 of the whole `Cargo.lock` file and no lane
-uses it.
+lock version; workspace members' own entries are not part of it). An image built before this
+identity checks the sha256 of the whole `Cargo.lock` file instead; no lane runs on one (which
+tag a host carries is a fact of that host, not recorded here).
 
 ## What `assay-r1` judges, and what it says
 
@@ -138,7 +138,7 @@ B549 records the same finding from the judge's side.
   [`HAND-MUTANTS-M1.md`](HAND-MUTANTS-M1.md), [`HAND-MUTANTS-M1B.md`](HAND-MUTANTS-M1B.md) and
   [`HAND-MUTANTS-M1C.md`](HAND-MUTANTS-M1C.md) remain the test-quality evidence;
   [`HAND-MUTANTS-M1D.md`](HAND-MUTANTS-M1D.md) holds the stored patches of the P0 bug fold-in,
-  whose campaign has not been run yet.
+  whose campaign ran on 2026-11-18 (54 of 54 patches killed on `6fa50236f`).
 - **Dead second bound in `decode_block`.** Its own `declared > MAX_FRAME_BYTES` check cannot
   fire any more, because `FrameHeader::parse` refuses the same length first. It is kept as a
   second bound whose multi-line `return Err(..)` is uncovered and the coverage floor may count; see
@@ -195,9 +195,14 @@ matching `make_*.py` and regenerate. The segment layout they implement is specif
 [`SEGMENT-FORMAT.md`](SEGMENT-FORMAT.md), and the Rust side asserts the same files in
 `crates/store/tests/golden_segment.rs`.
 
-**This run is not yet a registered lane.** It is a documented manual check
-(`HOB-4`), so its result is developer feedback, not gate evidence. Adding it as a
-`conformance` lane is the tracked follow-up.
+**This run is the registered `conformance` lane** (`HOB-4`): `run-gate.toml` runs
+`python3 -B -I -W error::ResourceWarning -m unittest discover -s python/tests` on
+`tester-unified-rust` with `network = "none"`, so a failure fails the gate. That image's `python3` is
+Debian's apt package (CPython 3.13.5 on Debian 13, no pip), not the CPython 3.14.10 the WIRE.md §7.8
+absolute memory bound was measured on: that one test is skipped there (its reason names the pinned
+version), while the growth and line-count gates and every other test run. The lane is not judged by
+Assay. Run it the same way as any lane (`scripts/controller/gate-run.sh conformance` in a linked
+worktree, or `remote-gate.sh v1001 hostobs conformance <commit>`).
 
 ## Working with the model in a probe or test
 
@@ -372,6 +377,5 @@ to hand-edit the lock.
 
 Which image runs what: the Rust lanes run on `tester-unified-rust:rs-20261118`, which carries
 the registry-set identity, so a workspace-only lock edit (a path dependency between members)
-needs no image rebuild. `tester-unified-rust:local` carries the older whole-lock identity and
-rejects ANY lock byte change; it is re-pointed to the new tag only after every Rust lane has
-passed on it.
+needs no image rebuild. An image with the older whole-lock identity rejects ANY lock byte
+change. Which tag a host carries is a fact of that host and is not recorded in this repository.

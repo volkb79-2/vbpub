@@ -4,7 +4,8 @@ The Rust host-observability daemon planned in
 [`docs/design/hostobs/PLAN-v4-2026-11-08.md`](../docs/design/hostobs/PLAN-v4-2026-11-08.md)
 as a probe plus an actuator. The workspace has the planned `proto`, `model`, `kernel`,
 `store`, `eval`, `act`, and `client` library boundaries plus the `probe` and `act`
-binary packages.
+binary packages. The `client` crate is the Rust client of `hostobs/1` (handshake, JSON requests,
+block streams, subscriptions and reconnect over an injected transport and clock; WIRE.md §12 `P5a`).
 
 **What is implemented today.** Four of the seven library crates are functional:
 
@@ -65,7 +66,11 @@ depend on `proto`/`model` (a path dependency would rewrite the locked `Cargo.loc
 it validates the four payload frame-header facts itself and binds its quality table to
 `fixtures/wire/quality.json` instead of to a type.
 
-The `probe` binary is the next package and is still the M0 scaffold. The proven topos sampler (`topos-sampler-poc-20261105`, `topos/sampler/`) is the
+The `probe` binary's `main` is still the M0 scaffold; its library (`bins/probe/src`) now holds the
+pure serving functions of P5b-1a (`limits`, `verbs`, `codes`, `args`, `classify`, `encode`, `lines`)
+and the sans-IO serving core of P5b-1b (`backend`, `conn` the connection state machine, `server` the
+`Server` that owns the one send hub, the connections and the per-level and per-uid counters); the
+drivers are the next packages (`docs/P5B-SERVER-DESIGN.md`). The proven topos sampler (`topos-sampler-poc-20261105`, `topos/sampler/`) is the
 behavioural source the `kernel` collectors were ported from: its scheduling around a stalled
 `/proc/<pid>/cmdline` read is deliberately not ported, and the parts plan v4 requires to
 change were changed (crate docs, `docs/DESIGN-GUIDE.md` §"Collecting the host", and
@@ -91,10 +96,10 @@ all killed), [`docs/HAND-MUTANTS-M1B.md`](docs/HAND-MUTANTS-M1B.md) (thirty-one 
 killed) and [`docs/HAND-MUTANTS-M1C.md`](docs/HAND-MUTANTS-M1C.md) (fifteen mutations over the
 store's bounds and crash-safety guards, all killed). Each is a stored patch in a replayable
 script, and every restore is SHA-256-verified. The P0 bug fold-in adds
-[`docs/HAND-MUTANTS-M1D.md`](docs/HAND-MUTANTS-M1D.md) (thirty-five stored patches over the
+[`docs/HAND-MUTANTS-M1D.md`](docs/HAND-MUTANTS-M1D.md) (fifty-four stored patches over the
 frame-header bound, quarantined files inside the cap, the sealed-footer and name/header rules
-and the time-section length); its campaign is to be run on the gate head and states no result
-yet.
+and the time-section length); its campaign ran on 2026-11-18: 50 of 54 patches killed on the
+first run, and 54 of 54 after the 4 survivors were closed by tests (see its status paragraph).
 
 Open items found while building these packages are in
 [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-60`; `HOB-8`,
@@ -102,11 +107,10 @@ Open items found while building these packages are in
 follow-ups, `HOB-46` … `HOB-48` and `HOB-50` … `HOB-53` by the P2a1 wire codec; `HOB-54` is the
 open stream-layer work for P2, P3 and P5b, specified in [`docs/WIRE.md`](docs/WIRE.md), and
 `HOB-49` is a citation fix in the Python reference): the sharpest still-open ones are `HOB-17`/`HOB-27` (the `kernel` and `store` crates carry their
-own value and quality types until the Rust lane image can be rebuilt against a new
-`Cargo.lock`), `HOB-21`/`HOB-29` (no `/sys` device-topology source, and `store`'s tmpfs check
+own value and quality types until the path-dependency refactor lands; the lane image's
+registry-set identity now allows it), `HOB-21`/`HOB-29` (no `/sys` device-topology source, and `store`'s tmpfs check
 reads the mount table rather than `statfs`), `HOB-39` (a store range answer is the stored
-payload, not decoded `model` rows — the join waits for the same rebuild), `HOB-4` (the Python
-conformance run is still a manual check, not a registered lane), `HOB-45` (Rust R2/R3 are
+payload, not decoded `model` rows — the join waits for the `HOB-27` refactor), `HOB-45` (Rust R2/R3 are
 unregistered) and `HOB-30` (no session spools, which are out of this package's scope). `HOB-26` states the SP-2 limit plainly: the
 kernel-side rate arithmetic is a test-local helper, because `kernel` cannot depend on `model`
 (`HOB-17`).
@@ -124,13 +128,14 @@ image is built on a host only on the controller's go and does not exist yet. See
 
 ## Gates
 
-The registered lanes are `lint`, `selftest` and `assay-r1`. Run them through the estate's
+The registered default lanes are `lint`, `selftest`, `assay-r1` and `conformance` (the hand-run `assay-r2` is registered too, see below; the Python reference
+decoders, fixture checks and `hostobs_client` tests, standard library only; `HOB-4`). Run them through the estate's
 gate wrappers, not a bare `run-gate` (which skips slot admission and refuses container lanes
 on the main checkout). Locally, from this directory in a **linked worktree**:
 
 ```sh
 . "$HOME/controller/controller.local.env"
-<repo>/scripts/controller/gate-run.sh lint        # then selftest, then assay-r1
+<repo>/scripts/controller/gate-run.sh lint        # then selftest, assay-r1, conformance
 ```
 
 Remotely, one lane at a time on a remote gate worker (`CONTROLLER_REMOTE_GATE_HOSTS=v1001`
@@ -146,17 +151,19 @@ executing host; see [`docs/CONSUMERS.md`](docs/CONSUMERS.md).
 
 Cargo is offline and locked, and each Cargo invocation checks the mounted `Cargo.lock`
 against the image's registry-set identity and cache manifest first (workspace-member lock
-edits do not change that identity; a new tag carrying it is built on a host and the lanes are
-switched to it by a separate `run-gate.root.toml` commit). `selftest` is the workspace's own
+edits do not change that identity; the Rust lanes run on `tester-unified-rust:rs-20261118`,
+which carries it). `selftest` is the workspace's own
 R0/R1 baseline (nextest, doctests, llvm-cov and the per-crate line/region floors).
 
 **`assay-r1` is the estate-standard coverage verdict**: assay's Rust R1 judge reads the
-same `lcov.info` and judges 33 declared `src` files of the four functional crates against
-a 95.0% line floor (measured 96.04%, floored one point down — derivation in
+same `lcov.info` and judges the 56 declared `src` files of the six functional packages (the five crates and
+`bins/probe`) against
+a 95.0% line floor (the floor was derived from 96.04% measured over the first 33 files and
+floored one point down; the later lanes measure 96.7% to 96.9% — derivation in
 [`assay.toml`](assay.toml)). The verdict carries the measured totals, lists the uncovered
 lines as findings, and reports branch coverage as **unavailable** (stable Rust emits no
-branch arcs; assay B523), never as zero-of-zero. R2 (mutation) and R3 (canary) are not
-registered for Rust yet. See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for the lane
+branch arcs; assay B523), never as zero-of-zero. R3 (canary) is not registered for Rust yet.
+R2 (mutation) is declared as a separate, **hand-run** lane, `assay-r2` (below). See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for the lane
 commands, what the verdict says, the floor derivation and the Python conformance run, and
 [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md) §"Gates and coverage" for why the numbers
 are pinned this way. The lane is a **command lane**, not `kind = "assay"`: it runs the judge
@@ -166,3 +173,21 @@ that re-declaration). `selftest` stays as the enforced baseline alongside it. Th
 proven through Run-Gate in this branch: `PASS` 15100/15723 = 96.0377 % in the lane's own log,
 and `FAIL/UNCOVERED_LINES` 14777/15723 = 93.9833 % when one kernel test file is deleted and
 that deletion is committed in a temporary worktree.
+
+**`assay-r2` is hand-run, never a default gate (assay B245 U8b).** It judges mutation (R2) of
+the lines a change touches in the five judged crates by ingesting cargo-mutants' report
+(`cargo-mutants-outcomes`; flags and reasons in the comment block of [`assay.toml`](assay.toml)).
+It is not in the lane list above and no sequence chains it. Run it by hand, one run at a time, on a
+host that can spend hours (about 20-35 s per mutant is an estimate, not a measurement):
+
+```sh
+run-gate assay-r2 --base <ref> --worktree <worktree>   # through the estate gate wrappers, like the other lanes
+```
+
+Choose a `<ref>` that yields about 100-300 mutants: count them first with
+`cargo mutants --list --in-diff <diff>` (there are no hostobs release tags yet, so the base is any
+earlier commit). Only `0` is a pass: a surviving mutant is `FAIL`, a timed-out mutant is
+`BUDGET_EXCEEDED` (lane `FAIL`), a crashed mutant is `ERROR`, and a diff with nothing to mutate is
+`INCONCLUSIVE/NO_MUTANTS` (lane `FAIL`, never a pass). Assay known issue K15 (no real hostobs-sized
+cargo-mutants run yet) stays open until such a run exists; the T3 queue that will run this lane
+automatically is later work.

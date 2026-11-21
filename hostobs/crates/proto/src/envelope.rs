@@ -295,15 +295,33 @@ impl Scan<'_> {
 /// [`EnvelopeError::Json`] for any text defect, [`EnvelopeError::DuplicateKey`] for a repeated
 /// key and [`EnvelopeError::UnknownKey`] when more than [`MAX_MEMBERS`] keys are present.
 pub fn members(bytes: &[u8]) -> Result<Vec<Member>, EnvelopeError> {
+    members_up_to(bytes, MAX_MEMBERS)
+}
+
+/// The top-level members of a payload that is exactly one JSON object with at most `max`
+/// keys: [`members`] with the key bound chosen by the caller, for a reply object that
+/// legitimately carries more than an envelope's [`MAX_MEMBERS`] (the `hello` result has 9 keys
+/// and its `limits` object 19). The bound keeps the duplicate-key check (quadratic in the key
+/// count) finite, so a caller passes a small constant.
+///
+/// # Errors
+///
+/// As [`members`], with `max` in place of [`MAX_MEMBERS`]: the first key beyond `max` is
+/// [`EnvelopeError::UnknownKey`].
+pub fn members_up_to(bytes: &[u8], max: usize) -> Result<Vec<Member>, EnvelopeError> {
     if core::str::from_utf8(bytes).is_err() {
         return Err(EnvelopeError::Json);
     }
-    object_members(bytes, 0..bytes.len())
+    object_members(bytes, 0..bytes.len(), max)
 }
 
 /// The members of the object that is exactly `span` of `bytes` (valid UTF-8 already), with
-/// ranges relative to `bytes`.
-fn object_members(bytes: &[u8], span: Range<usize>) -> Result<Vec<Member>, EnvelopeError> {
+/// ranges relative to `bytes`, at most `max` of them.
+fn object_members(
+    bytes: &[u8],
+    span: Range<usize>,
+    max: usize,
+) -> Result<Vec<Member>, EnvelopeError> {
     let mut scan = Scan {
         bytes,
         at: span.start,
@@ -326,7 +344,7 @@ fn object_members(bytes: &[u8], span: Range<usize>) -> Result<Vec<Member>, Envel
             if out.iter().any(|seen| bytes.get(seen.key.clone()) == name) {
                 return Err(EnvelopeError::DuplicateKey { key });
             }
-            if out.len() >= MAX_MEMBERS {
+            if out.len() >= max {
                 return Err(EnvelopeError::UnknownKey { key });
             }
             out.push(Member { key, kind, value });
@@ -477,7 +495,7 @@ pub fn check_req(bytes: &[u8], json_mode: bool) -> Result<Req, EnvelopeError> {
 
 /// The error envelope's inner object `{"code": str, "message": str, "detail": object}`.
 fn check_error_object(bytes: &[u8], range: &Range<usize>) -> Result<(), EnvelopeError> {
-    let found = object_members(bytes, range.clone())?;
+    let found = object_members(bytes, range.clone(), MAX_MEMBERS)?;
     only_keys(bytes, &found, &["code", "message", "detail"])?;
     field(bytes, &found, "code", STR)?;
     field(bytes, &found, "message", STR)?;
@@ -604,7 +622,9 @@ pub fn check_evt(bytes: &[u8]) -> Result<Evt, EnvelopeError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_end, check_evt, check_rep, check_req, members, EnvelopeError, Kind};
+    use super::{
+        check_end, check_evt, check_rep, check_req, members, members_up_to, EnvelopeError, Kind,
+    };
 
     fn kind<T>(result: Result<T, EnvelopeError>) -> &'static str {
         match result {
@@ -726,6 +746,29 @@ mod tests {
         let found = members(br#"{ "a" : [ ] , "b":{ } }"#).expect("whitespace is allowed");
         assert_eq!(found.len(), 2);
         assert_eq!(found.first().map(|member| member.kind), Some(Kind::Array));
+    }
+
+    #[test]
+    fn members_up_to_moves_the_key_bound_and_nothing_else() {
+        fn up_to(bytes: &[u8], max: usize) -> &'static str {
+            kind(members_up_to(bytes, max).map(|_| ()))
+        }
+        let nine = br#"{"a":1,"b":1,"c":1,"d":1,"e":1,"f":1,"g":1,"h":1,"i":1}"#;
+        let found = members_up_to(nine, 9).expect("nine keys");
+        assert_eq!(found.len(), 9);
+        let last = found.last().expect("ninth member");
+        assert_eq!(text(nine, &last.key), "i");
+        let refused = members_up_to(nine, 8).expect_err("refused");
+        assert_eq!(refused, members(nine).expect_err("same as members"));
+        assert_eq!(refused.kind(), "unknown-key");
+        let mut eight = nine[..nine.len() - 7].to_vec();
+        eight.push(b'}');
+        assert_eq!(members_up_to(&eight, 8).expect("eight keys").len(), 8);
+        assert_eq!(up_to(&eight, 7), "unknown-key");
+        assert_eq!(up_to(br#"{"a":1,"a":2}"#, 64), "duplicate-key");
+        assert_eq!(up_to(b"{}", 0), "ok");
+        assert_eq!(up_to(br#"{"a":1}"#, 0), "unknown-key");
+        assert_eq!(up_to(b"\xff", 9), "json-text");
     }
 
     #[test]

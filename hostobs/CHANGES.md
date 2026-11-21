@@ -2,6 +2,237 @@
 
 ## [Unreleased]
 
+### Added (P5b-2d server: tick delivery, retries, served verbs and reachable §11.4 cases; `HOB-54` stays open)
+
+- **`bins/probe/src/server.rs`**: `Server::on_tick(now_ns)` pulls one shared delivery set from the
+  registry and sends every push or stream-ending delivery through `Server::drive`. `wrote` and
+  `poll` now finish with the pending-`current` retry pass over connections and correlations in
+  ascending id order.
+- **`bins/probe/src/verbs.rs`**: `current`, `subscribe` and `unsubscribe` are served at observe and
+  operator, so `hello.verbs` lists `hello,status,current,subscribe,unsubscribe` there. JSON mode
+  keeps `current` and `subscribe` at `binary-required`; `unsubscribe` is served and answers
+  `not-found` for an unknown subscription.
+- **Tests**: server-level shared-tick, joiner-generation, interval, failed-stream and retry-order
+  cases; REQ/BLOCK/END sequences for all three verbs; the reachable §11.4 connection cases for
+  subscription idle, dribbling readers, half-close, corr reuse and `too-many-requests`; and a
+  2,000-turn hostile run over four slots and two uids whose modelled client decodes every BLOCK,
+  applies `StreamDicts`, and checks every END count.
+- **Docs and backlog**: WIRE §4.3/§5.4/§11.4, the live-stream and server design notes, and
+  `HOB-54`; the backlog row remains OPEN because P5b-3 and P5b-4 remain.
+
+### Added (P5b-2c connection: subscribe lifecycle, current, outstanding requests and Draining; `HOB-54` stays open)
+
+- **`bins/probe/src/conn.rs`**: `current` now resolves, bounds, encodes and queues a dictionary-bearing
+  Query block in REP/BLOCK/END order; Query backpressure records only the selection and needed length,
+  and `retry_pending` re-resolves the latest tick when room appears. `subscribe` applies the
+  per-connection, uid and probe budgets, returns its REP without resolving a tick and waits for the
+  first due stream block. `unsubscribe` removes the registry entry and ends the stream with exact
+  pinned-block/unpinned-drop counts. Clean client EOF enters Draining, ends every subscription in
+  `corr` order with `client-eof`, then finishes outstanding requests before closing silently.
+- **State guards**: `subs` and `pending` participate in `corr`-in-use, `max_outstanding`,
+  `subscriptions()`, idle suppression and every push path. All new pushes stop immediately after the
+  connection closes; `end_subscription` on a closed connection only removes the connection-side key,
+  leaving registry release to `Server::finish`.
+- **`bins/probe/src/server.rs`**: the server owns `SelectionStreams` built from unified stream bounds;
+  observe/operator now share `tick_ms`, `max_rows` and one `max_block_bytes`, clamped to the smallest
+  Query and Live pool cap of both levels. `drive` passes the registry, `on_eof` uses `drive`, `finish`
+  releases the connection's registry entries before removing its hub state, and `Server::streams()`
+  exposes the counters. `status` takes `dropped_blocks` from the hub and ignores the backend's field.
+- **Tests**: the P5b-2c section 5.3 cases cover `current`, subscribe, unsubscribe, outstanding,
+  corr-in-use, Draining, idle, server-ended stream and status behavior. The close-path matrix includes
+  real connection-side subscriptions for slow-client, shutdown, fatal request, frame-too-large, request
+  deadline, Draining completion and driver finish, then checks registry, hub and connection counters.
+  `Conn` sequences are parsed by the Rust client's REP/END checks and block dictionary state. The
+  2,000-step stream-operation hostile run checks registry and hub exactness after termination.
+- **`WIRE.md`**: the `current` pre-REP resolution/size rule and pending retry, subscription ownership
+  and next-tick delivery, unsubscribe counts, Draining completion, outstanding accounting, unified
+  block bounds, idle/Draining rows and decisions D-W29/D-W30.
+
+### Added (P5b-2b data side: backend seam, tick encoding, registry and hub additions; `HOB-54` stays open)
+
+- **`Backend`**: `TickData` (server-owned header fields separated from backend facts), a deterministic
+  `TickData::example`, `BackendError::{Unavailable, TooManyRows}` and
+  `Backend::current(&Selection, max_rows)`; `FixedBackend` answers from a canonical-selection map and
+  models the stop-at-`max_rows + 1` contract. `StatusView` forwards `current`.
+- **`tick.rs`**: full S16 validation, position-preserving dictionary bodies with every `intern` error
+  mapped to `internal`, a checked arithmetic frame-length preflight, canonical bare encoding, the
+  infallible dictionary splice, the generation-1 `current` block and a `LiveTick` whose dictionary form
+  is built once. Oversize is judged before `encode_bare`.
+- **`registry.rs`**: shared canonical selection streams, per-connection/subscription and per-uid
+  accounting, requesting-level uid/probe caps, `SelId` monotonicity, interval scheduling,
+  generation/form lifecycle, backend-unavailable skip, row/internal termination and deterministic
+  delivery order.
+- **`hostobs-proto` hub**: `SendHub::dropped_blocks`, `SendHub::query_room` and the Query-pin fix that
+  stamps 0 without consuming a reused Live stream's pending drops.
+- **Tests and fixtures**: every P5b-2b section 5.2 case, including S16 intern refusals, 4,096-row
+  encode equality, all registry caps/schedules/failures, a 2,000-step registry hostile run, hub
+  drop/room tests and the twentieth fixture `hub-query-pin-after-corr-reuse`. `assay.toml` judges the
+  two new source files.
+- **`WIRE.md`**: M2 END failures, hub drop accounting and Query room, Query pin behavior, join-cap
+  precedence and the generation lifecycle.
+
+### Added (P5b-2a request side: canonical selections and the three request schemas; `HOB-54` stays open)
+
+- **`bins/probe/src/selection.rs`**: the checked canonical `Selection` stream key, with the 16-entity,
+  64-metric, 512-byte path/prefix and 64-byte metric-name bounds; the derived order sorts inc before
+  path before prefix before all, then by value. `Selection::new` re-checks every decoded content rule,
+  sorts both vectors and refuses duplicates.
+- **`args`**: `Obj::elements` returns each array element's JSON `Kind` before any decoder sees its bytes;
+  `selection`, `current`, `subscribe` and `unsubscribe` implement the strict section 4.2, 4.6 and 4.7
+  schemas, including decoded-duplicate detection and non-string element refusal.
+- **`limits` and `classify`**: `IntervalRule` accepts discrete unrounded intervals; `max_uid_selections`
+  and `max_selections` are 4 and 8 at block levels and 0 elsewhere without joining `hello.limits`;
+  `ConnFacts` and `classify_with` implement `corr` in use and the BLK-only outstanding cap; `Current`,
+  `Subscribe` and `Unsubscribe` join `Call`, with compile-only `internal` arms in `Conn`.
+- **`codes` and `encode`**: budget `Pool`/`Detail::Pool`, `EndReason`, `end_ok`, `end_error`,
+  `current_result`, `subscribe_result` and `UNSUBSCRIBE_RESULT`.
+- **Tests and hostile runs**: every P5b-2a selection, argument, interval, classify, code, limit and
+  encoder case in design section 5.1, plus 2,000 random and 2,000 mutated-valid request-argument runs.
+- **`WIRE.md`**: the selection decode and canonical rules, request precedence steps 2 and 10, BLK-only
+  outstanding refusal and the no-rounding interval rule. `assay.toml` judges the new file.
+
+### Added (P5b-1b part 2: the `Server` layer; `HOB-54` stays open)
+
+- **`bins/probe/src/server.rs`**: `Server<B: Backend>` owns ONE `SendHub`, the conns (iterated in
+  `ConnId` order), the per-level and per-(level, uid) counters, the per-level `Limits`
+  (`ServerLimits`) and the backend. `accept(level, peer, now)` answers `Accept::Accepted(id)` or
+  `Accept::Refused` (Control, a missing peer, a full level or a full uid: nothing counted, no hub
+  entry, no byte; accept when `count < cap`); `on_bytes`, `on_eof`, `poll` (R20: every conn's timers
+  in id order, then the hub's `slow-client` closes, then a sweep), `output`, `wrote` (delegates to
+  `Conn::on_written`), `take_final`, `is_closed` (true for a gone id), `shutdown` and `finish`, the
+  single idempotent release path (R22): level and uid counters, a zero uid entry, the hub entry, the
+  conn. `poll` and `shutdown` finish the closed conns that hold no final bytes. The backend handed to
+  the conns fills `status.clients` per level (`observe`, `operator`, `observer`, zeros included). The
+  hub's caps are the widest of the levels (`ServerLimits::queue_limits`); the observer's 320 KiB
+  control queue is enforced by the server after every `on_bytes` (`slow-client`), because the hub has
+  one `control_queue_bytes` for all levels.
+- **`Limits::queue_limits`** (the hub caps of one level: per-uid pools a quarter of the global ones)
+  and **`Conn::has_final`**.
+- Tests: one per §5.1 accept row, R22 counters, `uid_pools`, `global_pools` and hub back to zero after
+  each of ten close paths at every level, `finish` idempotence, R20 ties (hello deadline against the
+  stall on the unread prefix) and id order, shutdown with several conns, byte-by-byte interleaving of a
+  binary and a JSON conn against a one-shot feed, `status` clients per level, the observer control cap
+  and 2,000 deterministic hostile steps over three slots.
+
+### Added (P5b-1b part 1: the sans-IO connection state machine; `HOB-54` stays open)
+
+- **`bins/probe/src/backend.rs`**: the `Backend` trait (`identity()`, `status()`), `Identity`,
+  `StatusInfo` (+ `TickInfo`, `TierInfo`) and `FixedBackend` for tests and the P5b-4 bring-up.
+- **`bins/probe/src/conn.rs`**: `Conn` (`Undecided`, `AwaitHello`, `JsonNoHello`, `Ready`,
+  `Draining`, `Closed`): mode detection (R24), the negotiated prefix as the first queued frame, binary
+  and JSON request reading, `classify` dispatch, `hello` and `status` replies, the final frame held
+  outside the hub (R1) with the prefix guarantee (R2), the EOF rules (R10), the timer order (R20) and
+  the idle condition; `max_outstanding` and corr-in-use stay P5b-2. Row tests `conn_row_*`, R1/R2
+  tests, byte-by-byte delivery and 2,000 deterministic hostile runs.
+
+### Added (P5b-1a: the probe's pure serving functions; `HOB-54` stays open)
+
+- **`bins/probe/src`** gains seven modules, none of which does I/O, reads a clock or keeps connection
+  state (design `docs/P5B-SERVER-DESIGN.md`): `limits` (levels and the WIRE.md §5.1 bounds per level; the
+  observer `control_queue_bytes` is derived from `max_reply_bytes` 16 KiB as 4 * 16 KiB + 256 KiB =
+  320 KiB, design R28), `verbs` (the §4.3 table as const data), `codes` (the §10 codes with fixed messages
+  and the bounded `detail`, R14), `args` (the strict request-argument reader on `proto::envelope`, R4 and
+  R14 to R17, with the `hello` and `status` schemas), `classify` (the request precedence function: frame
+  type, `corr` 0, `check_req`, the hello gate, table, level, a second `hello`, JSON `binary-required`,
+  served, then the argument schema and the `hello.proto` rules; R6 to R12), `encode` (the prefix, control
+  frames, error envelope and JSON error line, reply cap, `closing` EVT; R14, R25) and `lines` (the JSON
+  `LineReader`: line bound, deadline stamp per line, linear scan, bounded capacity; R13).
+  `hostobs-probe` now depends on `hostobs-proto`.
+- **Tests**: unit tests per module (one per precedence step and per tie between two steps in `classify`,
+  the JSON `corr` recovery of R12, every `detail` mapping, the §5.2-style `LineReader` table) and
+  `bins/probe/tests/serving_hostile.rs`: 2,000 random + 2,000 mutated-valid deterministic runs through
+  `classify`, `args` and the encoders (closed set of refusal codes, exactly the nine fatal codes fatal,
+  every encoder output re-parses with the `proto` checkers) and random line streams through the
+  `LineReader` (bounded capacity, linear scan, poisoning). `assay.toml` judges the nine `bins/probe/src`
+  files (53 judged files together with the 44 before); this package was written without a compiler and
+  is verified by the remote lane.
+- **`WIRE.md`**: §4.2 request precedence and the digits-only integer rule, §4.4 `hello.proto` equals the
+  client's own prefix, JSON-mode negotiation and the block keys reported as 0, §8.1 line rules and JSON
+  `corr` recovery.
+
+### Added (the hand-run `assay-r2` lane; assay B245 U8b)
+
+- **`assay.toml` `[lanes.assay-r2]` and `run-gate.toml` `[lanes.assay-r2]`**: Rust R2 (mutation) of the changed
+  lines of the five judged crates by ingesting cargo-mutants' report (`cargo-mutants-outcomes`, `--in-diff`
+  from `{assay.changed_diff}`, `--jobs 1`, nextest, output `assay-mutants-out`, git-ignored). Hand-run only
+  (`run-gate assay-r2 --base <ref>`), `budget = "4h"` is an estimate, never part of a default gate; assay K15
+  was open until the first real hostobs run (2026-11-18, 345 mutants in 17 minutes: 271 caught, 21 missed, 47
+  unviable, 6 timeouts; closed by that evidence).
+- **`assay-r2` memory cap**: the first real run (2026-11-18) reached 6.4 GiB in the container within 90 s
+  on the shared 8 GiB host and was cancelled, and a second attempt (cargo and test threads capped at 1) reached
+  4 GiB (both figures are from the controller's monitoring, not recorded in files); a sampled diagnostic run
+  named the cause: ONE test process of a cargo-mutants MUTANT run of the client crate (`client.rs` differs from
+  git; a hang mutant), `client_scripted ... transport_failures_are_classified`
+  (`crates/client/tests/client_scripted.rs`), grew 200-400 MB/s (the unmutated test passes in
+  `selftest`/`assay-r1`). The client crate's test double now panics after one million scripted calls
+  (`e2efb1c55`), which bounds such a runaway (in the real run the two client-crate hang mutants,
+  `client.rs:623` `read_prefix` and `client.rs:706` `read_some`, still ended as 120 s timeouts, but without
+  growing memory beyond the cap). The lane now sets `CARGO_BUILD_JOBS=1`, `RUST_TEST_THREADS=1` and `NEXTEST_TEST_THREADS=1`, and
+  `run-gate.toml [lanes.assay-r2.resources] memory = "2500m"` with `memory_swap = "2500m"` (docker
+  `--memory`/`--memory-swap`, memory plus swap equal): a runaway is OOM-killed inside its own container and the
+  lane ends non-green (ERROR or FAIL, not yet observed) instead of spilling into the host's swap and taking
+  neighbours down. The next run measured it: the full lane (baseline plus 345 mutants, 17 minutes) completed
+  inside the cap with no OOM kill (`crashed 0`, normal exit); no memory peak was recorded.
+
+### Added (the `conformance` lane; `HOB-4` fixed)
+
+- **`run-gate.toml` `[lanes.conformance]`**: the Python reference decoders, fixture regeneration checks
+  and `hostobs_client` tests (`python3 -B -I -W error::ResourceWarning -m unittest discover -s
+  python/tests`) on `tester-unified-rust`, `network = "none"`, budget 10 minutes, not judged by Assay.
+  The image's `python3` is Debian's apt package (CPython 3.13.5 on Debian 13), so the WIRE.md §7.8
+  absolute memory bound (measured on CPython 3.14.10) is skipped there and the growth and line-count
+  gates run. `tester-unified-rust/tests/test_image_contract.py` expects the fourth lane.
+
+### Added (P5a: `crates/client`, the Rust client; the Rust client part of `HOB-54` closed)
+
+- **`hostobs-client`**: `Client::connect(path, Level, ClientInfo)` and `Client::from_transport` over an injected
+  `Transport` (a `UnixStream` by default) and `Clock`; the handshake of §1.4 (prefix alone, server prefix, `hello`
+  with `corr` 1) with the Python client's `hello` validation (`HelloResult`, `Limits`); `request(verb, args_json)`
+  with local §4.2 checks; `blocks()` (`BlockStream`, END counts checked); `subscribe()` (`Subscription`, an iterator
+  with `dropped()`); `reconnect()` per §6.4 (`Session` first/same/changed); `close()` (idempotent, also on drop).
+  `ClientError` is a closed enum with `kind()` and `Display`; no panic on any server byte.
+- **`proto`**: `envelope::members_up_to(bytes, max)` is `members` with the key bound chosen by the caller (`members`
+  is `members_up_to(bytes, MAX_MEMBERS)`; every envelope check is unchanged): the client reads the 9-key `hello` result
+  and its 19-key `limits` object with a bound of 64.
+- **Review round**: a stream's frames are re-checked against the announced `max_frame_bytes` after the hello; an
+  `END ok:false` counts its `dropped`; socket timeouts, the frame-age stamp, reconnect state and transport error
+  classes are asserted in tests; the hostile-bytes test asserts a closed set of error kinds.
+- **Tests**: scripted-server tests over a fake clock (`crates/client/tests/client_scripted.rs`: handshake refusals,
+  every §10 code, corr and END violations, fixtures of `fixtures/stream/client-*.json` through a live client,
+  exact-deadline and completion-age boundaries, byte-by-byte delivery, reconnect, a real `UnixStream` pair and
+  2,000 + 2,000 deterministic hostile-byte runs) and unit tests in every module. `assay.toml` judges the seven
+  `crates/client/src` files (44 judged files together with the 37 of P2b); `crates/client` joins the judge's
+  `source_roots`.
+
+### Added (P2b: the send hub; `HOB-54` stays open)
+
+- **`proto::hub::SendHub`** (WIRE.md §5.3, §12): `QueueLimits`, `ConnId`, `add`/`remove`/
+  `drain_unpinned`, `push_control`/`push_live`/`push_query`, `query_ready`, `end_stream`, `head`
+  (pins and stamps `corr` and `dropped` into a private prefix)/`head_partial`/`wrote`, `poll`,
+  `queued`/`uid_pools`/`global_pools`, `TickForms`, `Close`, `LiveOutcome`, `QueryOutcome`,
+  `StreamCounts`, `Pools`. Std-only; one unit test per §5.3 operation row and consequence and a
+  pool-exactness checker over a pseudo-random run. The decisions the tables leave open are the
+  `Implemented` paragraph of §5.3.
+- **Hub fixtures** (WIRE.md §11.4): 19 `fixtures/stream/hub-*.json` with hand-derived
+  expectations, written by `python/reference/make_hub_fixtures.py`, pinned byte for byte by
+  `python/tests/test_hub_fixtures.py` and replayed by `crates/proto/tests/hub_fixtures.rs`.
+- **Stall clock.** A push restarts `last_progress_ns` only when the queue was empty before the
+  push; a coalesce or a shed that empties the queue does not restart it, so a socket that
+  accepts nothing is closed after `stall_ms` however often a tick replaces the queued one.
+- **Drain, ids, first push.** `drain_unpinned` of a dictionary-bearing Live tick sets
+  `needs_dict` for its stream (the tick is still not counted); a `ConnId` is never 0; the first
+  push of a stream is the dictionary form whatever generation it carries.
+- **Gates.** `crates/proto/src/hub.rs` is a declared `assay-r1` target (37 judged files together
+  with `envelope.rs` and `stream_dicts.rs`).
+- **Hand mutants.** `M1d-14`'s Python patch follows the directory guards `hostobs_wire_ref.py`
+  has since the P2a1 codec (two patches, one per guard): 54 stored patches, `--dry-run` 0 stale.
+- **Hand-mutant survivors closed** (`M1d-22`, `M1d-15`; the first 2026-11-18 run, on
+  `0dd7230b1`, killed 50 of 54; the re-run on `6fa50236f` killed 54 of 54): two store tests
+  rescan a tier and read the eviction report from the store's ring after a write-path eviction
+  and after `Store::evict` (also kills the `Store::notes` ring patch), and the quarantine
+  look-alike test asserts the reason of a `.corrupt` directory. None of the four was an
+  equivalent mutant at the unit level (through the public API the ring is redundant, `HOB-60`).
+
 ### Added (P3b: `python/hostobs_client` connection, `require_profiling`, `hostobs-mark`; the P3 part of `HOB-54` closed)
 
 - **Review round**: the envelope text checks are linear on hostile input (parse first, count depth only on parsed
@@ -131,7 +362,8 @@
   for a Rust suite, 300 s for Python); a timeout is `KILLED-TIMEOUT`, counted apart (and
   inconclusive under host load), and the container is removed by its exact name
   `hostobs-mut-<pid>-<n>` on a timeout or any exception. 53 stored patches (`M1d-20` to `M1d-22`
-  added, `M1d-18` rewritten); the campaign has not been run.
+  added, `M1d-18` rewritten); when this entry was written the campaign had not been run (it ran
+  on 2026-11-18, see the survivors entry above).
 
 ### Fixed (P0 bug fold-in)
 
@@ -199,7 +431,8 @@
   identity, the reference's check precedence, the stream layer machines).
 - **Hand-mutation record for the P0 fold-in** (`docs/HAND-MUTANTS-M1D.md`,
   `docs/hand-mutants/m1d-mutants.py`): thirty-five stored patches in the method of
-  `HAND-MUTANTS-M1C.md`. The campaign has not been run yet; the doc says so.
+  `HAND-MUTANTS-M1C.md`. When this entry was written the campaign had not been run (it ran on
+  2026-11-18; the doc states the result).
 - **Gate invocations in `docs/CONSUMERS.md` and `README.md`** now state the estate wrappers
   (`scripts/controller/gate-run.sh <lane>` from a linked worktree's project directory;
   `scripts/controller/remote-gate.sh v1001 hostobs <lane> <commit-or-branch>` with
@@ -362,9 +595,9 @@
   workspace members' `dependencies` arrays) no longer needs an image rebuild; a changed,
   added or removed registry/git package, checksum, source or lock version still does, and
   non-crates.io sources are still refused. New mode `--print-registry-digest --lock PATH`;
-  the wrapper flag `--baked-lock-sha256` became `--baked-registry-sha256`. This is source
-  only: it takes effect for the lanes when a new image tag is built on a host and
-  `run-gate.root.toml` is switched to it (HOB-3/17/27/39 stay OPEN until then).
+  the wrapper flag `--baked-lock-sha256` became `--baked-registry-sha256`. The Rust lanes
+  run on the image built from this source (`tester-unified-rust:rs-20261118`, named by
+  `run-gate.root.toml`); HOB-3/17/27/39 stay OPEN until their refactors land.
 - `docs/HAND-MUTANTS-M1B.md` and `docs/hand-mutants/m1b-mutants.py`: twenty-six patches
   became thirty-one (the fix round adds the `stat` mapping's three patches, the iocost
   overflow and the unbounded read).

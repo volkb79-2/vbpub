@@ -15,8 +15,8 @@ A `FIXED` entry means code, tests, and docs landed together.
 |---|---|---|---|
 | HOB-1 | Counter wrap is never inferred: every backwards raw counter is a reset | Minor | OPEN (by design, awaiting a declared-width policy) |
 | HOB-2 | SP-4 measured bytes only: encode/decode CPU, allocations and maintenance cost unmeasured | Minor | OPEN |
-| HOB-3 | `model` and `proto` duplicate the quality/metric vocabularies because the locked image cannot take the path dependency; a shared fixture, not a shared type, binds them | Major | OPEN (needs one image build on the registry-set identity, then workspace-only lock edits need no further rebuild) |
-| HOB-4 | No registered `conformance` lane: the independent Python fixture check is not gate-enforced | Major | OPEN |
+| HOB-3 | `model` and `proto` duplicate the quality/metric vocabularies because the locked image cannot take the path dependency; a shared fixture, not a shared type, binds them | Major | OPEN (the lanes run on the registry-set-identity image, so workspace-only lock edits need no rebuild; the refactor itself is pending) |
+| HOB-4 | The independent Python fixture check is gate-enforced by the registered `conformance` lane | Major | FIXED (the `conformance` lane) |
 | HOB-5 | Section version 1 has no history min/max/mean columns; `TIME` carries one value per bucket plus the aggregation code | Minor | OPEN (decided: WIRE.md §3.6/§4.9 D-W10, no layout change; lands with P5b `series_batch`) |
 | HOB-6 | `DICT` frame type is defined but consumed nowhere: the dictionary travels inside the block frame | Minor | CLOSED (by design: reserved and unsent, WIRE.md §2.2 D-W6) |
 | HOB-7 | `IncarnationRegistry` grows without bound and `end_round` is O(all ids ever minted) | Major | OPEN (SP-3 bound) |
@@ -29,7 +29,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-14 | `decode_block` accepted a block shape under any frame type, and `encode_block` would emit one | Major | FIXED (M1b) |
 | HOB-15 | The section directory's canonical order was checked on encode but not on decode | Major | FIXED (M1b) |
 | HOB-16 | A truncated section directory reached the Python decoder's `struct.unpack` and raised `struct.error` instead of a `WireError` | Minor | FIXED (M1b) |
-| HOB-17 | `kernel` carries its own `Reading`/`QualityCode` because a path dependency to `model` rewrites the locked `Cargo.lock`; a shared fixture, not a type, binds them | Major | OPEN (needs one image build on the registry-set identity, then workspace-only lock edits need no further rebuild) |
+| HOB-17 | `kernel` carries its own `Reading`/`QualityCode` because a path dependency to `model` rewrites the locked `Cargo.lock`; a shared fixture, not a type, binds them | Major | OPEN (the lanes run on the registry-set-identity image, so workspace-only lock edits need no rebuild; the refactor itself is pending) |
 | HOB-18 | Cgroup identity uses `st_dev` rather than `statx`'s mount id, and `starttime` ticks need a caller-supplied `CLK_TCK` | Minor | OPEN (deliberate; see the entry) |
 | HOB-19 | No package converts `kernel::Reading` into `model::Sample`, so that boundary has no test | Minor | OPEN (probe package) |
 | HOB-20 | The sampler treated an unknown device topology as a bottom device, double-counting stacked I/O; `kernel` refuses instead | Major | FIXED in `kernel`, sampler worktree unchanged |
@@ -39,11 +39,11 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-24 | `RealFs::read` refused a file by its *reported* length (a sysfs attribute reports one page) and `max_bytes + 1` overflowed at `usize::MAX` | Minor | FIXED (M1b fix round) |
 | HOB-25 | `io.stat`'s iocost sums used `saturating_add` (silently clamping at `u64::MAX`) where the counters use `checked_add` | Minor | FIXED (M1b fix round) |
 | HOB-26 | The SP-2 rate arithmetic is a test-local helper, not `model::derive_rate`, because the crates cannot depend on each other | Minor | OPEN (documented limit) |
-| HOB-27 | `store` cannot depend on `proto`/`model`: a path or dev dependency rewrites the locked `Cargo.lock`, so the crate re-implements four frame-header checks and carries its own quality table | Major | OPEN (needs one image build on the registry-set identity, then workspace-only lock edits need no further rebuild) |
+| HOB-27 | `store` cannot depend on `proto`/`model`: a path or dev dependency rewrites the locked `Cargo.lock`, so the crate re-implements four frame-header checks and carries its own quality table | Major | OPEN (the lanes run on the registry-set-identity image, so workspace-only lock edits need no rebuild; the refactor itself is pending) |
 | HOB-28 | A segment's records are found by scanning every record body, not from a footer index; a range query re-reads each candidate file from the start | Minor | OPEN (M2 query surface) |
 | HOB-29 | The `require_tmpfs` check reads `/proc/self/mounts` and matches path prefixes; it does not ask `statfs` what filesystem the directory is actually on | Major | OPEN |
 | HOB-30 | No session spools: a crashed probe's rate/span continuation (`§C.4`'s spool) has no store at all | Major | OPEN (out of this package's scope) |
-| HOB-31 | `StoreDir`'s symlink refusal is a `symlink_metadata` check followed by a separately-named open, so a swap between the two is not prevented (`O_NOFOLLOW`/`openat` need `unsafe` or a dependency) | Minor | OPEN (needs `HOB-27`'s image rebuild or an `unsafe` decision) |
+| HOB-31 | `StoreDir`'s symlink refusal is a `symlink_metadata` check followed by a separately-named open, so a swap between the two is not prevented (`O_NOFOLLOW`/`openat` need `unsafe` or a dependency) | Minor | OPEN (needs the `HOB-27` refactor or an `unsafe` decision) |
 | HOB-32 | No fault injection: a partial `write`, a failed `fsync` or `ENOSPC` mid-seal is exercised only as the typed `no-space` mapping, not as a real short write | Minor | OPEN |
 | HOB-33 | The single writer is a design property (one `Store` owns the queue), not something a test can observe: no lane starts two writers on one directory | Minor | OPEN (daemon package) |
 | HOB-34 | Retirement only knows the incarnations this store's own segments name, so a consumer holding an incarnation outside the store (a spool, a reply in flight) cannot prevent `retire` from freeing it | Minor | OPEN (documented limit) |
@@ -51,7 +51,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-36 | Events are keyed by `(issuer, key)` strings rather than dictionary incarnations, so an event's cgroup identity is a label a caller supplies, not an identity the store can validate | Minor | OPEN (probe package) |
 | HOB-37 | Span abandonment is a caller call (`abandon_issuer`); nothing in the store ties it to an incarnation disappearing, so `inferred: true` closes only happen when the caller loops over them | Minor | OPEN (probe package) |
 | HOB-38 | A full writer queue always drops the oldest job; there is no blocking or sample-shedding policy, which is a product choice to revisit with the probe's own loop | Minor | OPEN (probe package) |
-| HOB-39 | A range answer is the stored payload bytes (a whole `proto` BLOCK) plus the record's time and incarnations, not decoded `model` values with quality codes: the join needs `proto`/`model`, which `HOB-27` forbids | Major | OPEN (needs the lanes on the registry-set-identity image, as `HOB-27`) |
+| HOB-39 | A range answer is the stored payload bytes (a whole `proto` BLOCK) plus the record's time and incarnations, not decoded `model` values with quality codes: the join needs `proto`/`model`, which `HOB-27` forbids | Major | OPEN (the lanes run on the registry-set-identity image; the change itself is pending, as `HOB-27`) |
 | HOB-40 | No focus tier is configured by `plan_v4`; the tier machinery accepts one, but the plan does not yet say what a focus tier keeps | Minor | OPEN (plan decision) |
 | HOB-41 | No golden fixture has a non-zero record pad, so the padding rule is pinned by unit tests on each side, not by a cross-language file | Minor | OPEN |
 | HOB-42 | A `.seg` name is trusted as sealed without a footer, and the header's `seq`/`start_real_ns` are never compared with the name | Minor | FIXED (P0 bug fold-in) |
@@ -66,13 +66,14 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-51 | Received frames are held to the alignment and header-first rules: every section `len` is a multiple of 8 (`section-length`) and an unknown kind at directory entry 0 is `section-order` at index 0, after the rank check | Minor | FIXED (P2a1) |
 | HOB-52 | A repeated dictionary identity is `duplicate-dictionary-entry` in Rust whatever the other fields hold, as in the Python reference | Minor | FIXED (P2a1) |
 | HOB-53 | The Python reference follows the WIRE.md §3.10 precedence: `not-a-block` before the buffer length and `SECTIONED` checks | Minor | FIXED (P2a1) |
-| HOB-54 | The `SendHub`, the Rust client and the probe's serving loop do not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, the envelope checks and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | OPEN (P2: `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `envelope.rs` exist; P3a: the Python reader, `StreamDicts`, decoder and `rate()` exist, P3b: `conn.py`, `profiling.py`, `mark.py` exist, the P3 part is closed; the Rust client, the send hub and P5b remain) |
+| HOB-54 | The probe's serving loop does not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `SendHub`, the envelope checks, the Rust client (`crates/client`) and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | OPEN (P2: `FrameReader`, `ModeDetect`, `ConnTimers`, `SendHub`, `StreamDicts`, `envelope.rs` exist; P3a: the Python reader, `StreamDicts`, decoder and `rate()` exist, P3b: `conn.py`, `profiling.py`, `mark.py` exist, the P3 part is closed; P5a: `crates/client` exists and the Rust client part is closed; P5b-1a: `limits`, `verbs`, `codes`, `args`, `classify`, `encode` and `lines` exist; P5b-1b: `backend`, the sans-IO `conn` and `server` exist; P5b-2a: canonical selections, request schemas, interval and outstanding precedence, budget pools and stream END/result encoders exist; P5b-2b: `Backend::current`/`TickData`, tick encoding, `SelectionStreams` and the hub additions exist; P5b-2c delivered current/subscribe/unsubscribe, outstanding requests and Draining; P5b-2d delivered tick delivery, retry passes, the served flip and the reachable §11.4 connection cases. P5b-3 and P5b-4 remain, see `docs/P5B2-LIVE-STREAMS-DESIGN.md`) |
 | HOB-55 | A look-alike name such as `hot-0-18446744073709551615.seg` (or `.seg.corrupt`) sets the tier's sequence water mark to `u64::MAX` before its owner is proven, so every `open_segment` fails with `LengthOverflow` until the file is removed | Minor | FIXED (P0b) |
 | HOB-56 | `StoreStats::bytes` maintained by incremental arithmetic drifts from the tiers' own byte totals when a file vanishes or a new segment's header is written | Minor | FIXED (P0b) |
 | HOB-57 | `docs/hand-mutants/m1d-mutants.py` had no per-mutant subprocess timeout, so a mutant that hangs the suite hangs the campaign | Minor | FIXED (P0b) |
 | HOB-58 | The reports of an eviction that dropped an already-gone or unremovable entry reach only `TierScan::notes`, so the caller of `append`/`evict` never sees them and a rescan resets them | Minor | FIXED (P0b) |
 | HOB-59 | `Tier::append` and `Store::evict` drop the partial `Evicted` (counts and notes) when an eviction fails after a partial pass | Minor | OPEN |
-| HOB-60 | `Store::notes` visibility is decided by name, not by directory, and the store's eviction-notes ring may be redundant with the tiers' `scan.notes` | Minor | OPEN |
+| HOB-60 | `Store::notes` visibility is decided by name, not by directory, and the store's eviction-notes ring is redundant with the tiers' `scan.notes` through the public API | Minor | OPEN |
+| HOB-61 | `json.rs` `skip_ws` / `string_end` `+=` to `*=` are pure infinite loops: suite-level TIMEOUT under `assay-r2` by nature (accepted known limit; expected 0 MISSED + 2 TIMEOUT) | Minor | OPEN (accepted) |
 
 ---
 
@@ -132,8 +133,8 @@ and an iocost overflow) and the mutant `D2` replays the clamping.
 **Where:** `crates/kernel/tests/sp2_evidence.rs` (`rate`), `docs/DESIGN-GUIDE.md`.
 
 The SP-2 tests compute a rate as `delta / (mono_ns / 1e9)` in a local helper. They cannot call
-`model::derive_rate`: `kernel` has no dependency on `model` (and cannot gain one while the lane
-image's `Cargo.lock` is pinned, `HOB-17`), and a dev-dependency would rewrite the lock. So SP-2's
+`model::derive_rate`: `kernel` has no dependency on `model` (the `HOB-17` refactor is pending; the registry-set image
+now tolerates the lock edit a path dependency causes). So SP-2's
 identity and clock claims are evidenced against the kernel's own types and hand-computed
 arithmetic, while `model`'s classifier keeps its own `fixtures/rates/rates.json` cases; the two
 sides are not joined by a test. The limit is stated in the SP-2 record rather than papered over.
@@ -197,21 +198,21 @@ counts 1..4 and that no `struct.error` escapes.
 Plan v4 §A.3 says the collectors produce `model` values. A path dependency
 `hostobs-model = { path = "../model" }` — even as a *dev*-dependency — makes Cargo rewrite
 `Cargo.lock` (the kernel package gains a `dependencies` entry), and the Rust lane image bakes the
-whole-lock digest (`/usr/local/share/hostobs-Cargo.lock.sha256`, the identity of the image
-currently deployed as `tester-unified-rust:local`), so `cargo --locked` then fails with
-"cannot update the lock file". Hand-editing the lock is forbidden, and the deployed image needs a
-rebuild. Measured in this package in a throwaway container: adding the dev-dependency rewrote the
+whole-lock digest (`/usr/local/share/hostobs-Cargo.lock.sha256`, the identity of an image built
+before the registry-set identity), so `cargo --locked` then fails with
+"cannot update the lock file". Hand-editing the lock is forbidden, and an image built before the
+registry-set identity needs a rebuild. Measured in this package in a throwaway container: adding the dev-dependency rewrote the
 lock; removing it restored the digest. The image source now bakes a registry-set digest instead
-(`/usr/local/share/hostobs-Cargo.lock.registry-sha256`, which ignores workspace members), but no
-image carrying it exists until a NEW tag is built on a host; until `run-gate.root.toml` points the
-Rust lanes at that tag the paragraph above is still the truth for the lanes.
+(`/usr/local/share/hostobs-Cargo.lock.registry-sha256`, which ignores workspace members); the Rust
+lanes run on `tester-unified-rust:rs-20261118`, which carries it, so a workspace-only lock edit needs
+no rebuild. An image built before the registry-set identity still has the failure described above.
 
 The crate is therefore dependency-free and carries a three-variant `Value` and a `QualityCode`
 newtype. They are not parallel vocabularies by accident: `crates/kernel/tests/quality_table.rs`
 asserts the table byte-for-byte against `fixtures/wire/quality.json`, the same fixture `model`,
 `proto` and the Python decoder assert, so a renumbering fails in four places.
 
-**Exit criteria.** The first lane run on the registry-set-identity image that can carry a new lock (a workspace-only lock edit needs no further rebuild): make `kernel` depend on
+**Exit criteria.** The lanes already run on the registry-set-identity image, which carries a new lock (a workspace-only lock edit needs no rebuild); remaining: make `kernel` depend on
 `model`, delete `crates/kernel/src/{value,quality}.rs`, convert `Reading` into `model::Sample` at
 that boundary, and delete the local table assertion (the shared fixture stays).
 
@@ -332,7 +333,7 @@ first refusal. `decode_block` keeps its own check as a second bound; through `pa
 can no longer fire, so its multi-line `return Err(..)` is covered by no test (see `CHANGES.md`). Tests pin the
 bound, one past it, `u32::MAX`, one below the header, zero and the refusal order, in both
 languages, and two refusal fixtures (declared length 4, a header-only block) are decoded by
-both. Stored hand-mutation patches, not yet run: `M1d-1`, `M1d-14`.
+both. Stored hand-mutation patches `M1d-1`, `M1d-14`: all killed (campaign of 2026-11-18, 54 of 54 on `6fa50236f`).
 
 ## HOB-9 — `derive_rate` has no boot/epoch/incarnation context
 
@@ -362,7 +363,7 @@ The quality vocabulary is bound across the two crates (and the Python decoder) b
 `fixtures/wire/quality.json`. The metric tables are not: a unit code added in `proto` and not
 in `model` (or a renamed scope) drifts silently, caught only if the corresponding crate's
 own tests happen to name the value. This is the same root cause as HOB-3 (no dependency edge
-possible under the locked image) but a different consequence: HOB-3 is about the quality
+was possible under the old whole-lock image; the refactor is pending) but a different consequence: HOB-3 is about the quality
 table, this is about every other code table.
 
 **Fix shape.** A `fixtures/wire/metric-vocabulary.json` listing every `unit`/`scope`/
@@ -470,7 +471,7 @@ dictionary field codes in `crates/proto/src/dict.rs`.
 `hostobs-model` holds the in-memory value vocabulary; `hostobs-proto` holds the same
 closed table for wire codes. `hostobs-proto` deliberately does **not** depend on
 `hostobs-model`: adding a path dependency changes `Cargo.lock`, and the Rust lane image
-deployed as `tester-unified-rust:local` caches exactly the committed lock and bakes its
+built before the registry-set identity caches exactly the committed lock and bakes its
 whole-file digest, so `cargo --locked` refuses to build (`cannot update
 the lock file`). The two tables are therefore bound by *behavior*, not by a type: both
 assert themselves against the committed fixture `fixtures/wire/quality.json`, and the
@@ -483,32 +484,31 @@ only if that crate's test runs. It is a configuration fact of the current image,
 design preference.
 
 **Exit criteria.** Decide the shared-type shape (a dependency edge, or a third
-`-vocab` crate both depend on) once the Rust lanes run on an image built on the registry-set
-identity (a workspace-only `Cargo.lock` edit then needs no rebuild), and record it as a decision in
+`-vocab` crate both depend on); the Rust lanes already run on an image built on the registry-set
+identity (a workspace-only `Cargo.lock` edit needs no rebuild). Record it as a decision in
 `hostobs/docs/DESIGN-GUIDE.md`.
 
-## HOB-4 — No registered `conformance` lane
+## HOB-4 — FIXED: the Python conformance run is the registered `conformance` lane
 
-**Where:** `run-gate.toml` declares `lint` and `selftest` only.
+**Where:** `run-gate.toml` declares `lint`, `selftest`, `assay-r1` and `conformance`.
 
 Plan v4 §B.5 and the Rust methodology both name a `conformance` lane for the Python
 reference decoder. The Python side exists and passes (`python3 -I -m unittest discover -s
 python/tests`, 196 tests as of P3b: the reference decoders, the 70 wire fixtures, the stream and rate
 fixtures, the `hostobs_client` decoder, connection, profiling and mark tests on a fake probe, the §7.8 gated
 bounds and a zipimport smoke test; standard library only), and the Rust side asserts the same
-fixture files in `crates/proto/tests/golden_fixtures.rs`. What is missing is a *registered*
-lane: the Python run has no declared environment, so it is not gate evidence and cannot
-fail a merge by itself. The cross-language claim currently rests on two independent test
-suites that happen to read the same files, not on one executed lane.
+fixture files in `crates/proto/tests/golden_fixtures.rs`. The registered `conformance` lane
+runs the Python suite, so a Python failure fails the gate: the cross-language claim rests on both
+suites asserting the same fixture files, each executed by a registered lane (`selftest` for
+Rust, `conformance` for Python).
 
-**Exit notes from this package.** The lane was not added here because the brief scoped
-this slice to `model` and `proto` and any lane's environment/argv must be reviewed as
-gate change. Current state: no registered lane. The image is `tester-unified-rust`, which carries an apt
-`python3` (no pip; its CPython version is unmeasured, and the §7.8 absolute memory bound is gated on
-3.14.10 only, see the P3a note in `docs/WIRE.md` §12), with
-`python3 -I -m unittest discover -s python/tests`, no network, plus the fixture
-regeneration check (`python3 python/reference/make_fixtures.py <tmpdir>` compared with
-the committed bytes).
+**Lane.** `run-gate.toml` declares `[lanes.conformance]` (a command lane on `tester-unified-rust`,
+`network = "none"`, budget 10 minutes, not judged by Assay) running
+`python3 -B -I -W error::ResourceWarning -m unittest discover -s python/tests`. The image carries
+Debian's apt `python3` (CPython 3.13.5 on Debian 13, no pip), so the WIRE.md §7.8 absolute memory
+bound (measured on CPython 3.14.10 only) is skipped there and the growth and line-count gates run
+(P3a note in `docs/WIRE.md` §12). The fixture regeneration check (the Python generators reproduce the
+committed bytes) is part of the same suite.
 
 ## HOB-5 — No history min/max/mean columns
 
@@ -563,8 +563,8 @@ the two are bound to shared fixtures rather than to shared types: a header fact 
 against the real `fixtures/wire/*.bin` payloads in `crates/store/tests/golden_segment.rs`, and
 the quality table against `fixtures/wire/quality.json` in `crates/store/tests/quality_table.rs`.
 
-**Exit criteria.** The Rust lanes running on an image built on the registry-set identity (which
-admits a lock whose only change is the workspace's own path dependencies), after which `store` calls `proto`'s `FrameHeader::parse` and `model`'s `Quality` and the two
+**Exit criteria.** The Rust lanes already run on an image built on the registry-set identity (which
+admits a lock whose only change is the workspace's own path dependencies); remaining: `store` calls `proto`'s `FrameHeader::parse` and `model`'s `Quality` and the two
 duplicated modules are deleted (their tests move with them). Until then every change to the
 frame header or the quality vocabulary has to be made in two places, and the fixture tests are
 what force that.
@@ -598,7 +598,7 @@ name (`ramfs`, an overlay on tmpfs). The reader also refuses to guess: a mount w
 be found is `mount-not-found`, not "therefore not tmpfs".
 
 **Exit criteria.** A `statfs`-based check (`f_type == TMPFS_MAGIC`) behind the same decision
-point, chosen together with whatever `unsafe`/dependency policy `HOB-27`'s rebuild settles, and a
+point, chosen together with whatever `unsafe`/dependency policy the `HOB-27` refactor settles, and a
 test tree with a bind-mounted directory.
 
 ## HOB-30 — No session spools
@@ -756,9 +756,9 @@ join to land on top of them.
 
 Doing the join inside the store would mean a decoder and a value model in this crate — the
 duplication `HOB-27` already forces on four header facts, multiplied by the whole column codec,
-which is the wrong trade while the lock is pinned.
+which is the wrong trade while the `HOB-27` refactor is pending.
 
-**Exit criteria.** After the image switch that `HOB-27` needs (lanes on the registry-set-identity image), `Store::range` (or a layer above
+**Exit criteria.** After the `HOB-27` refactor (the lanes already run on the registry-set-identity image), `Store::range` (or a layer above
 it) returns `model` rows with their quality codes and the payload form becomes an internal
 detail; `quality::Reading` is then replaced by `model`'s type.
 
@@ -820,7 +820,7 @@ seal keeps the open name's start second so a step change cannot trip the new rul
 segment reference refuses the same files (`check_segment_name`); no golden fixture is possible
 because the name is not in the file's bytes. `docs/SEGMENT-FORMAT.md` states both rules.
 A `.seg.open` name that carries a footer is refused too (`OpenWithFooter`). Stored hand-mutation
-patches, not yet run: `M1d-6` … `M1d-9`, `M1d-17`, `M1d-19`.
+patches `M1d-6` … `M1d-9`, `M1d-17`, `M1d-19`: all killed (campaign of 2026-11-18, 54 of 54 on `6fa50236f`).
 
 ## HOB-43 — Quarantined files sit outside the cap
 
@@ -845,8 +845,9 @@ is reported (`Evicted::quarantined`) and counted (`StoreStats::evicted_quarantin
 adopted; any other look-alike is reported as a note, never counted, evicted or removed, so
 those bytes stay outside the cap. A quarantined file deleted by hand, or one that cannot be
 removed, leaves the list and the total without failing the pass, and a quarantined name keeps its
-sequence number. Tests fill the bound; stored hand-mutation patches, not yet run: `M1d-2` … `M1d-5`,
-`M1d-10`, `M1d-12` … `M1d-16`, `M1d-18`.
+sequence number. Tests fill the bound; stored hand-mutation patches `M1d-2` … `M1d-5`,
+`M1d-10`, `M1d-12` … `M1d-16`, `M1d-18`: all killed (campaign of 2026-11-18, 54 of 54 on
+`6fa50236f`; `M1d-15` first survived and is closed by a reason assertion).
 
 ## HOB-44 — CLOSED: the lane needed no `pip`, because it needed no install
 
@@ -1109,7 +1110,7 @@ The reference checks buffer length and `SECTIONED` before the frame type, so a t
 `rep-not-sectioned-truncated` fixture (a REP of declared length 32 holding 24 bytes, flag clear)
 pins `not-a-block` in both languages.
 
-## HOB-54 — The send hub, stream dictionaries, envelope checks and clients do not exist yet
+## HOB-54 — The Rust client and the probe's serving loop do not exist yet
 
 **Where:** `crates/proto/src/stream.rs` (new), `python/hostobs_client/stream.py` (new), the P5b serving
 loop. WIRE.md §5.2-§5.4, §12.
@@ -1125,24 +1126,37 @@ row); `ProtoError::Deadline` is the reader's completion-age error. The 12 reader
 `fixtures/stream/reader-*.json` (generator `python/reference/make_stream_fixtures.py`, replayed by
 `crates/proto/tests/stream_fixtures.rs`).
 
+**What exists (P2b).** `crates/proto/src/hub.rs` holds `SendHub` (one unit test per §5.3 row and
+consequence) and the 19 `fixtures/stream/hub-*.json` files (generator
+`python/reference/make_hub_fixtures.py`, replayed by `crates/proto/tests/hub_fixtures.rs`).
+
 **What exists (P2c).** `crates/proto/src/stream_dicts.rs` holds `StreamDicts` (the §6.2 per-stream rules and
 `on_hello`; the 6 client cases are `fixtures/stream/client-*.json`, generator
 `python/reference/make_client_stream_fixtures.py`, replayed by `crates/proto/tests/client_stream_fixtures.rs`)
-and `crates/proto/src/envelope.rs` the REQ/REP/END/EVT shape checks. `SendHub` and its 19 hub cases are on a
-sibling branch. Still open: the Rust client and P5b's 18 connection cases.
+and `crates/proto/src/envelope.rs` the REQ/REP/END/EVT shape checks.
 
 **What exists (P3a).** `python/hostobs_client/stream.py` holds the Python `FrameReader` (the §5.2 machine
 with the §7.3 `fill()`/`advance()` buffering, replaying the 12 reader cases) and `StreamDicts` (§6.2,
 `on_hello`, replaying the 6 client cases); `wire.py` and `rates.py` carry the efficient decoder and `rate()`.
 **What exists (P3b).** `conn.py` (`Connection`, the §7.3 receive loop, block streams, subscriptions, reconnect),
 `envelope.py`, `profiling.py` (`require_profiling`, the five plan D.2 states) and `mark.py` (`hostobs-mark`),
-tested on a scripted fake probe and by a zipimport smoke test: the P3 part is closed. Still open: the Rust
-client (P5a), the send hub on its branch, and P5b's connection cases.
+tested on a scripted fake probe and by a zipimport smoke test: the P3 part is closed.
+**What exists (P5a).** `crates/client` (`Client`, `Level`, `ClientInfo`, `HelloResult`, `BlockStream`,
+`Subscription`, `ClientError`; the injected `Transport` and `Clock`), tested against scripted servers over a fake
+clock: the P5a part is closed.
+**What exists (P5b-2c + P5b-2d).** The probe's `Conn` now executes `current`, `subscribe` and
+`unsubscribe`, tracks outstanding requests and Draining, and the `Server` owns shared selection
+streams, `on_tick` delivery and the retry pass after `wrote` and `poll`. The three verbs are served
+at observe/operator with the matching `hello.verbs`, and the block-verb cases of WIRE.md §11.4 run
+against the in-memory `Conn`/`Server`. The P5b-2c and P5b-2d parts are code complete; P5b-3
+(`snapshot_at`/history and `conn-reply-page-truncated`) and P5b-4 (the actual socket drivers and
+the socketpair runs) remain.
 
 **Exit criteria.** P2: the §12 `FrameReader`, `ModeDetect`, `SendHub` and `ConnTimers` APIs in Rust
-with the 12 reader and 19 hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row; P3: the Python
-`FrameReader` passes the same 12 reader cases and the 6 client cases; P5b: the 18 connection cases
-of §11.4 against a fake clock.
+with the reader and hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row; P3: the Python
+`FrameReader` passes the same reader cases and the client cases; P5b: the 21 connection cases
+now listed in §11.4 against a fake clock, with P5b-3 and P5b-4 still required for the remaining
+page and socketpair cases.
 
 ## HOB-55 — A look-alike name with a huge sequence poisons the tier's water mark
 
@@ -1170,7 +1184,7 @@ once the next sequence would exceed the bound; `docs/SEGMENT-FORMAT.md` states t
 limit: a genuinely quarantined segment at exactly `SEQ_NAME_MAX` reserves only `SEQ_NAME_MAX - 1`,
 so a mint at the bound with the same `start_s` could later be refused its quarantine rename because
 `<name>.seg.open.corrupt` exists; reaching it needs 2^32 segments. Stored
-hand-mutation patches `M1d-17` and `M1d-20`, not yet run.
+hand-mutation patches `M1d-17` and `M1d-20`: killed (campaign of 2026-11-18, 54 of 54 on `6fa50236f`).
 
 ## HOB-56 — `StoreStats::bytes` drifts from the tiers' own totals
 
@@ -1190,7 +1204,7 @@ that opens a segment, a seal and an eviction; a mutant restores the arithmetic.
 
 **FIXED (P0b).** `refresh_bytes` sums the history tiers and the events store and runs after every
 write, seal and eviction pass, on the error path as well; `StoreStats::bytes` documents that scope.
-Stored hand-mutation patches `M1d-18` (rewritten) and `M1d-21`, not yet run.
+Stored hand-mutation patches `M1d-18` (rewritten) and `M1d-21`: killed (campaign of 2026-11-18, 54 of 54 on `6fa50236f`).
 
 ## HOB-57 — The M1d hand-mutation script has no per-mutant timeout
 
@@ -1208,7 +1222,7 @@ removed by its exact name; the patch count and the `--dry-run` result stay consi
 container of that exact name first, and `docker rm -f` takes that exact name on a timeout or any
 other exception (a failed removal is reported); the method section of `docs/HAND-MUTANTS-M1D.md`
 documents the classification and that a timeout under host load is inconclusive. The stored patch
-count is 53 (`--dry-run`: 0 stale).
+count is 54 (`--dry-run`: 0 stale).
 
 ## HOB-58 — Eviction reports never reach the caller
 
@@ -1231,7 +1245,8 @@ rescan's own notes never dropped for them); the store keeps at most 256 in a rin
 `Store::notes()` appends them once after its filter. Tests cover an already-gone quarantined file,
 an already-gone live segment, an unremovable quarantined file (a link in its place), the write
 path, the cap, garbage under a tier's own live and quarantine names, and the shared-directory
-case; stored hand-mutation patches `M1d-22`, not yet run.
+case; stored hand-mutation patches `M1d-22`: all killed (campaign of 2026-11-18, 54 of 54 on
+`6fa50236f`; three first survived and are closed by the two rescan tests, see HOB-60).
 
 ## HOB-59 — A failing eviction drops the partial `Evicted`
 
@@ -1250,19 +1265,40 @@ with the error (or the counters and notes are applied before the error is propag
 counts the partial pass, and a test makes a removal fail after a successful one and checks the
 counts and the notes.
 
-## HOB-60 — `Store::notes` visibility is by name, and the notes ring may be redundant
+## HOB-60 — `Store::notes` visibility is by name, and the notes ring is redundant through the API
 
 **Where:** `crates/store/src/store.rs` (`is_visible`, `Store::notes`, `keep_notes`).
 
 `Store::notes` hides a scan note whose name parses to a tier of the store other than the tier whose
 scan made it. That decision is by name, not by directory: a foreign `warm-0-3.seg` in a directory
 warm does not scan is hidden although no tier owns it. The store's eviction-notes ring is
-redundant with the tiers' `scan.notes` for every case reachable through the store's API (the store
-has no call that rescans a tier), so the claim that the ring outlives a rescan is not tested and is
-not made; a mutant that leaves the ring out (`M1d-22`) is possibly equivalent for the same reason.
+redundant with the tiers' `scan.notes` through the public API (no store call rescans a tier). It
+is pinned at unit level by `a_write_path_report_stays_in_the_store_after_its_tier_rescans` and
+`an_evict_report_stays_in_the_store_after_its_tier_rescans`, which rescan a tier from the tests
+module and read the report from the ring; the mutants that leave the ring out or do not fill it
+(`M1d-22`) are killed by them.
 
 **Exit criteria.** `is_visible` hides a cross-tier note only when the producer's directory is also
 the directory of the tier the name belongs to (shared directory), and a test plants a foreign
-`warm-0-3.seg` in cold's directory and sees it; either a store call rescans a tier and a test shows
-the ring keeping a report across it, or the ring is removed and `Store::notes` reads `scan.notes`
-alone.
+`warm-0-3.seg` in cold's directory and sees it; either a store call rescans a tier (so the ring
+matters through the API) or the ring is removed together with the two rescan tests and
+`Store::notes` reads `scan.notes` alone.
+
+## HOB-61 — Two client mutants are suite-level timeouts under `assay-r2` by nature
+
+**Where:** `crates/client/src/json.rs` (`skip_ws` line 140, `string_end` line 152).
+
+The mutants `+=` to `*=` at those two lines turn a pure scanning loop into an infinite loop that
+no in-process test can stop: the dedicated tests (`skip_ws_always_makes_progress`,
+`string_end_always_makes_progress`) run the helper on a worker thread and fail after two seconds,
+but existing callers in the same test process (for example `array_strings_accepts_strings_only`
+and the hello parsing tests) spin on the mutated helper, so the whole suite ends only at the
+lane's timeout. Killing them would need a killable child-process harness per probe. Decision
+(controller, 2026-11-18): keep it simple, a documented known limit. The lane's timeout classifies
+both as TIMEOUT; today each costs the full 120-second floor (assay.toml), and assay B560 (timeout
+floor derived from the baseline, still OPEN) would make them cheap once implemented. The
+expected `assay-r2` result for `hostobs/crates/client` is 0 MISSED and 2 TIMEOUT.
+
+**Exit criteria.** Either a child-process probe harness kills both loops with a fast FAIL, or the
+two mutants are listed as accepted timeouts in the lane's mutation policy so that the lane
+verdict does not count them.

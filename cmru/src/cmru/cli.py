@@ -7168,7 +7168,6 @@ def _release_gate_preconditions_before_dispatch(
         check_release_build_images_precondition,
         evaluate_release_gate_preconditions,
         format_gate_precondition_report,
-        run_tests_uses_provisional_gate,
     )
     from cmru.version import status_records
 
@@ -7234,12 +7233,8 @@ def _release_gate_preconditions_before_dispatch(
             "cmru has no CMRU-derived tagged release version in this plan.",
         )]
     else:
-        _config_rel, config_text = _cmru_snapshot_config_text(
-            source_git_root, revision, config_path, configs,
-        )
         rows = evaluate_release_gate_preconditions(
             repo_root, source_git_root, revision, {"cmru": planned_version},
-            gate_provisional=run_tests_uses_provisional_gate(config_text),
             require_docker=not dry_run,
         )
     rows.extend(build_image_rows)
@@ -7308,19 +7303,103 @@ def _release_source_changed_retry_message(*, dry_run: bool) -> str:
     )
 
 
-def _cmru_snapshot_config_text(
+def _project_snapshot_config_text(
     source_git_root: Path, revision: str, config_path: Path,
-    configs: Mapping[str, ProjectConfig],
+    configs: Mapping[str, ProjectConfig], name: str,
 ) -> tuple[Path, str]:
-    """Return CMRU's project config path and text at the exact source commit."""
+    """Return one project's config path and text at the exact source commit."""
     config_rel = _project_config_paths_at_snapshot(
-        source_git_root, revision, config_path, configs, ["cmru"],
-    )["cmru"]
+        source_git_root, revision, config_path, configs, [name],
+    )[name]
     content = _read_git_path_at_commit(
         source_git_root, revision, config_rel,
         source_label=f"release source ({revision[:12]}:{config_rel.as_posix()})",
     )
     return config_rel, content
+
+
+def _cmru_snapshot_config_text(
+    source_git_root: Path, revision: str, config_path: Path,
+    configs: Mapping[str, ProjectConfig],
+) -> tuple[Path, str]:
+    """Return CMRU's project config path and text at the exact source commit."""
+    return _project_snapshot_config_text(
+        source_git_root, revision, config_path, configs, "cmru",
+    )
+
+
+def _release_dind_image_preconditions(
+    repo_root: Path, config_path: Path, configs, project_names: Sequence[str], vargs, *,
+    git_auth: GitHubGitAuth | None, report: bool | None = None,
+) -> None:
+    """Refuse a release whose gate needs a DinD sidecar image that is not on this host.
+
+    Evaluated independently for EVERY project in the release scope: each project's own
+    release-source config is read, and only a project with an ``--enable-docker`` step gets a
+    ``DinD sidecar image`` row (the sidecar runs ``--pull=never``). Nothing is pulled.
+    *report* defaults to reporting only when the scope is one Git family (the parent of
+    several family dispatches stays quiet).
+    """
+    if report is None:
+        report = len(transaction.project_git_family_groups(
+            repo_root, [configs[name] for name in project_names],
+        )) <= 1
+    from cmru.config import _scalar_env
+    from cmru.release_preconditions import (
+        check_dind_image_precondition,
+        format_gate_precondition_report,
+        release_config_enables_docker,
+    )
+
+    dry_run = bool(getattr(vargs, "dry_run", False))
+    revisions: dict[Path, str] = {}
+    rows = []
+    for name in project_names:
+        source_git_root = next(iter(
+            transaction.project_git_family_groups(repo_root, [configs[name]])
+        ))
+        if source_git_root not in revisions:
+            if getattr(vargs, "from_worktree", False):
+                _branch, revisions[source_git_root] = _preflight_feature_worktree_source(
+                    source_git_root, repo_root, git_auth=git_auth,
+                )
+            else:
+                revisions[source_git_root] = transaction.fetch_origin_main(
+                    source_git_root, git_auth=git_auth,
+                )
+        revision = revisions[source_git_root]
+        _config_rel, config_text = _project_snapshot_config_text(
+            source_git_root, revision, config_path, configs, name,
+        )
+        if not release_config_enables_docker(config_text):
+            continue
+        configured_env = _orchestration_env_for_release_snapshot(
+            source_git_root, revision, config_path,
+        )
+        configured_env.update(_scalar_env(
+            tomllib.loads(config_text).get("env", {}), "env", reject_credentials=True,
+        ))
+        distinguish = name != "cmru" or len(project_names) > 1
+        rows.append(check_dind_image_precondition(
+            configured_env,
+            process_env=getattr(vargs, "_cmru_process_build_image_env", None),
+            require_docker=not dry_run,
+            project=name,
+            label=f"DinD sidecar image ({name})" if distinguish else "DinD sidecar image",
+        ))
+
+    if any(row.status == "FAIL" for row in rows):
+        print(format_gate_precondition_report(rows), file=sys.stderr)
+        log_error("release image preconditions failed; no release workspace was created")
+        raise SystemExit(exit_codes.REFUSED)
+    if report and rows:
+        if all(row.status == "PASS" for row in rows):
+            log_info(
+                "DinD sidecar image preconditions: PASS ("
+                + ", ".join(row.project for row in rows) + ")."
+            )
+        else:
+            print(format_gate_precondition_report(rows))
 
 
 def _project_config_for_release_snapshot(
@@ -7416,6 +7495,17 @@ def _release_launcher(
             cmru_precondition_base = _release_gate_preconditions_before_dispatch(
                 repo_root, cfg_path, configs, release_scope, vargs, git_auth=git_auth,
                 report=len(selected_families) <= 1,
+            )
+        except CmruError as exc:
+            _exit_for_domain_error(exc)
+        except _DOMAIN_ERRORS as exc:
+            log_error(str(exc))
+            sys.exit(1)
+
+    if not getattr(vargs, "resume", None):
+        try:
+            _release_dind_image_preconditions(
+                repo_root, cfg_path, configs, release_scope, vargs, git_auth=git_auth,
             )
         except CmruError as exc:
             _exit_for_domain_error(exc)

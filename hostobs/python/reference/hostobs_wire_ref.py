@@ -13,7 +13,7 @@ The fixtures under ``hostobs/fixtures/wire/`` are the shared contract:
 ``<case>.json`` is the decoded typed content of ``<case>.bin``. This module
 encodes the JSON into canonical bytes and decodes the bytes back into the JSON,
 and the Rust codec must agree on both directions; a divergence in either
-implementation fails the Python conformance run (manual until HOB-4 lands).
+implementation fails the Python conformance run (the registered `conformance` lane, HOB-4).
 """
 
 from __future__ import annotations

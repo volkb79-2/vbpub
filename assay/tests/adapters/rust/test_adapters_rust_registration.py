@@ -1,4 +1,5 @@
-"""The built-in registry reaches only the Rust R1 path (B243)."""
+"""The built-in registry reaches the Rust R1 path (B243) and, since B245 U8a, R2
+for the INGESTED cargo-mutants path only; R3 stays unregistered."""
 
 from __future__ import annotations
 
@@ -12,12 +13,13 @@ from assay.errors import AssayError, Outcome, ReasonCode
 from assay.registry import get_adapter
 
 
-def test_the_built_in_registry_returns_the_rust_adapter_at_r1_only():
+def test_the_built_in_registry_returns_the_rust_adapter_at_r1_and_r2():
     registry = _built_in_registry()
     adapter = get_adapter(registry, "rust", "R1")
 
     assert type(adapter) is RustAdapter
-    assert registry.entries["rust"].rigor == frozenset({"R1"})
+    assert get_adapter(registry, "rust", "R2") is adapter
+    assert registry.entries["rust"].rigor == frozenset({"R1", "R2"})
     assert adapter.name == "rust"
     assert adapter.source_globs == ("*.rs",)
     assert adapter.excluded_dir_names == frozenset({"vendor", "target"})
@@ -27,15 +29,23 @@ def test_the_built_in_registry_returns_the_rust_adapter_at_r1_only():
     assert adapter.for_project(repo_top=Path("/repo"), project_root=Path("/repo")) is adapter
 
 
-@pytest.mark.parametrize("rigor", ["R2", "R3"])
-def test_the_registry_refuses_rust_rigors_without_a_producer_path(rigor: str):
+def test_the_registry_refuses_rust_r3_without_a_producer_path():
     with pytest.raises(AssayError) as excinfo:
-        get_adapter(_built_in_registry(), "rust", rigor)
+        get_adapter(_built_in_registry(), "rust", "R3")
 
     assert excinfo.value.outcome is Outcome.ERROR
     assert excinfo.value.reason_code is ReasonCode.BAD_LANE_CONFIG
     assert "rust" in str(excinfo.value)
-    assert rigor in str(excinfo.value)
+    assert "R3" in str(excinfo.value)
+
+
+def test_the_other_languages_registrations_are_unchanged_by_rust_r2():
+    entries = _built_in_registry().entries
+
+    assert entries["python"].rigor == frozenset({"R1", "R2", "R3"})
+    assert entries["javascript"].rigor == frozenset({"R1", "R2", "R3"})
+    assert entries["sql"].rigor == frozenset({"R2"})
+    assert entries["go"].rigor == frozenset({"R1"})
 
 
 def test_rust_adapter_exposes_only_the_declared_r1_text_hooks():

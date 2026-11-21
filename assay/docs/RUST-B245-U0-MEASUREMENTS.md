@@ -95,3 +95,114 @@ Test `Failure(4)`), `w-true` 0, `unicode` 0, `methods` 0.
   `--build-timeout`) and an `Unviable` mutant whose Build status is `Signalled`
   or `Other`: the parser refuses both as an unmeasured cargo-mutants phase shape.
 - hostobs-scale cost, `--shard`, CRLF, a real `Signalled`/`Other` Test status.
+
+First real qualification run (B245 U7, 2026-11-18, v1001, image
+`tester-unified-rust:rs-20261118`, offline cargo-mutants 27 with nextest, bound to
+`5a83e3b17`): the `--preflight` listing matched every case's expected mutant count
+(25, 9, 9, 0, 25, 25, 8, 8, 8, 11, 10, 4) including the new-file (`--- /dev/null`,
+TAB-suffixed `+++`), paths, unicode and `ws-sub` diff shapes, and the full lane PASSED:
+all 12 cases met their expected outcome and exit code with no deviation (no post-run
+process check was made, so a silently surviving descendant of the `full` timeout
+mutant is not excluded; see the risks below). Wall time: `full` (25 mutants) 30.6 s,
+`methods` 9.8 s, `w-true` 8.1 s, `crashed-f4` 6.8 s, `subdir` 6.7 s, `ws-sub` 6.5 s,
+`paths` 6.4 s, `indiff` 5.7 s, `unicode` 2.4 s, `basefail-*` 1-2 s, `zero-mutants`
+0.7 s; about 1.5 minutes of case time in all (container start and preflight come on
+top), roughly 1 s per mutant over the 142 mutants on these tiny synthetic crates (the
+hostobs cost is the mutants in the diff times its per-mutant compile and test time). The
+risks below were the pre-run expectations; none produced a deviation.
+
+First hostobs run (B245 U8b `assay-r2`, hand-run 2026-11-18, v1001, commit `30762a2a5`,
+`--base 7835ec25a`, run `rgw-assay-r2-20261118T150203-v1001`): `R0 PASS`, `R2
+INCONCLUSIVE NO_MUTANTS`, assay exit 5 (run-gate lane `FAIL` exit 5 by the fail-closed
+`exit_map`), whole judge 13.5 s (snapshot 12.5 s, the `cargo mutants` baseline command
+0.43 s, return code 0, report absent), one dev-gates slice sample of 275 MB anon+shmem
+(15:02:35, about 3 s into the run). The
+handed-over diff was 4924 bytes (`changed_diff` base `7835ec25a`, relative to `hostobs`).
+Zero mutants is correct here: the changed lines under `crates/*/src` are doc comments
+(`proto/src/lib.rs`) and test functions in `mod tests` (`store/src/store.rs` +58,
+`tier/src` +9), which cargo-mutants skips; `cargo mutants --list --in-diff` agrees
+(0 for bases `7835ec25a` and `05305ed17`). For a diff with production changes the
+listing for base `0dd7230b1` (HEAD `30762a2a5`) is 345 mutants in 8 files (`client.rs`
+182, `json.rs` 80, `hello.rs` 27, `streams.rs` 27, `error.rs` 10, `proto/envelope.rs` 8,
+`transport.rs` 6, `level.rs` 5; genres FnValue 187, BinaryOperator 130, UnaryOperator 12,
+MatchArmGuard 10, MatchArm 4, StructField 2); at an assumed 25 s per mutant (`--jobs 1`,
+compile-dominated, not measured) that is about 2.4 h, inside the lane budget. Per-mutant
+cost on hostobs is therefore still unmeasured until that run.
+
+The base `0dd7230b1` attempts (2026-11-18, v1001, commit `30762a2a5`, then the branch head
+`2dd8be574`) were cancelled by the shared-host memory rule (abort at slice anon+shmem 5.0 GB, own cap
+3.5 GiB) before any mutant verdict existed (no progress stream survived). Run 1 was cancelled at 15:17:30 about 100 s after
+its start with the container at 6.36 GiB and the slice at 6.70 GB (default cargo parallelism; read from the
+monitor output, only the 4.96 GB sample of 15:17:01 is on disk); run 2 (`CARGO_BUILD_JOBS`,
+`RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS` set to 1) at 15:22:56, about 77 s after its start, at
+3.62 GiB. A third, sampled run (2 s samples of the container cgroup) measured the container's
+anon memory going 0.076 GB (15:25:58) -> 2.38 GB (15:26:11) -> 4.07 GB (15:26:19), cancelled at the
+3.5 GiB cap, and showed: not a tmpfs (`/tmp` is overlay disk, `/dev/shm` 64 MB, 0 used), no container
+memory limit (`memory.max=max`), page cache 1.2 GB separate from the anon growth. The growing process was
+read by hand with a host `ps --sort=-rss` at 15:26:13-15:26:21 (not saved in the sampler log: the in-container
+`ps` is absent from the image): ONE test process,
+`client_scripted-3cde632e... --exact transport_failures_are_classified --nocapture`
+(`hostobs/crates/client/tests/client_scripted.rs`), RSS 2.7 GB at 14 s of its life and 4.3 GB at 22 s.
+The same test passes in the hostobs `selftest` and `assay-r1` lanes, and a reproduction by the hostobs
+owner in a dev container did NOT reproduce it (passed in 0.006 s), which pointed away from the unmutated
+test. A fourth run (branch head `a3ff0bade`, container capped `--memory 2500m`, a sampler reading
+`/proc` inside the container at the first process above 800 MB RSS) captured it at 1.1 GB: the process is
+a child of `cargo-nextest nextest run --package=hostobs-client` (default profile, one test thread), itself
+a child of `cargo-mutants`, with its working directory in cargo-mutants' temporary copy of the
+workspace; the SHA-256 of `crates/client/tests/client_scripted.rs` and `tests/support/mod.rs` in that copy
+equal the git blobs, while `crates/client/src/client.rs` DIFFERS from git (copy `28cea719bf4fc25c`, git
+`1278c3c6ed04a816`). So that process (proven for this fourth run only; the earlier three are presumed the
+same, same test and same growth, without a capture) is a MUTANT run, not the baseline: some mutation of
+`client.rs` is applied. Measured growth is about 0.2 GB/s (anon 0.77 -> 1.22 -> 1.75 -> 2.19 -> 2.58 GB at
+2 s steps). Inferred, not shown: the mutation makes the scripted-transport test loop without clock
+progress while the scripted transport pushes one `Duration` per call into the `read_waits`/`write_waits`
+`Vec`s of `tests/support/mod.rs`; and cargo-mutants' only guard, the test timeout
+(`--minimum-test-timeout 120` here), would at 0.2 GB/s allow about 24 GB. The specific mutant was not
+recorded (the baseline log was not found: `find -xdev` skipped the copy-on-write mount holding
+`assay-mutants-out`). The memory cap (`--memory 2500m --memory-swap 2500m`) lives on the unmerged U8b-fix
+branch and its OOM-kill behaviour is untested (the sampler cancelled at 2.3 GB, before the cap). Lessons
+for every hand-run heavy lane: declare `[lanes.<name>.resources] memory` (docker `--memory`) with an equal
+`memory_swap`, sample the container every few seconds for the first minutes (a 60 s monitor missed the
+step), and keep page cache in mind when sharing a host (the vbpub-debian-rollback session reported that
+its stop rule on container `memory.current`, not only anon, tripped; no log of that is kept here).
+
+The real hostobs run (2026-11-18, v1001, run `rgw-assay-r2-20261118T162138-v1001`, head `87d2d6e39` =
+the U8b-fix branch merged with origin/main including the hostobs client crate's transport-call guard, base
+`0dd7230b1`, container `--memory 2500m --memory-swap 2500m`, `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` and
+`NEXTEST_TEST_THREADS` = 1): the cockpit's remote-gate wrapper was killed with its devcontainer at about
+16:23Z but the job lives on the host and finished: `345 mutants tested in 17m: 21 missed, 271 caught, 47
+unviable, 6 timeouts` (unmutated baseline 4 s build + 2 s test on a warm cache; the assay command ran
+about 16:22:20 -> 16:39:31, 1031 s by the progress stream). Assay verdict (exit 4, run-gate lane FAIL by the fail-closed `exit_map`): `R0 PASS`,
+`R2 BUDGET_EXCEEDED / LANE_TIMEOUT`, mutation block `candidate_count 341, killed 269, survived 21,
+budget_exceeded 6, crashed 0, hung 0`. The container was not OOM-killed and the lane ended normally;
+the memory sampler covers only the first minute (peak about 236 MiB of 2.44 GiB), so the later peak is
+not measured, and a mutant test process killed by the cgroup would most likely have been counted as caught
+(not separately visible), so "no mutant OOM-killed" is supported by `crashed 0`, the absence of signal lines
+in the lane log and the normal exit, not by a memory trace. The six timeout mutants spin, for example
+`Clock::now_ns -> 0`/`1` in `crates/client/src/transport.rs:83` (inferred not to allocate). The counts
+are not fully reconciled: cargo-mutants reports 271 caught and 47 unviable, assay's verdict 269 killed
+and 45 discarded (candidate_count 341 = 296 judged + 45 discarded), so four of the 345 are not in
+assay's accounting and the reason is not yet traced. The 21 survivors are real test gaps in the client crate (BinaryOperator 15, FnValue 3,
+UnaryOperator 1, MatchArmGuard 1, StructField 1; `client.rs` 13, `hello.rs` 6, `json.rs` 1, `streams.rs` 1).
+Cost: the 6 timeout mutants took 6 x 120 s (`--minimum-test-timeout 120`) = 12 of the 17 minutes; the other
+339 took about 5 minutes (about 0.9 s each on a warm cache). Two verdict-semantics points are filed as
+B559 (timeouts outrank survivors, so a lane with even one timeout reports no survivor verdict) and B560 (the
+timeout floor does not follow the measured baseline). The evidence (lane log, verdict, progress, survivor
+list) is kept in the sub-controller's state directory, not in the repository. K15 is closed by this
+evidence for the ingested Rust R2 path.
+
+Known risks for the first real qualification run (B245 U7,
+`tools/qualify_rust_r2_real.py`; each is diagnosed, not a known defect; its
+`--preflight` mode lists the real mutants of every case in seconds first):
+
+- Descendants of the `full` timeout mutant may outlive it. For an ingested lane assay
+  installs no process-tree runner (it SIGKILLs the leader's session group only), so a
+  child that left that group survives silently as a stray CPU burner, not as an
+  `outliving_descendants` verdict: check `ps` in the container after the run.
+- `ws-sub` (workspace root below the git top, several members) is unmeasured and
+  member `a` of the original `ws` input was never matrixed (the tool renames the
+  members `crate_a`/`crate_b`): a `ws-sub` deviation is information about that
+  shape. The real tool output of a deviating case is kept in
+  `deviations/<case>/`.
+- `--timeout 20` is wall-clock per mutant and flaky under host load: re-run on a
+  quiet host before reading a timing-dependent deviation as a defect.

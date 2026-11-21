@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests of the client stream fixtures (WIRE.md section 11.4, `fixtures/stream/client-*.json`).
 
-Run manually, like the other reference tests (HOB-4):
+Part of the registered `conformance` lane (HOB-4); by hand:
 
     python3 -I -m unittest discover -s python/tests -p 'test_client_stream_fixtures.py' -v
 

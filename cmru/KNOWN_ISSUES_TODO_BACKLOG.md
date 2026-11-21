@@ -14,6 +14,11 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-186 | OPEN (migrate the remaining `subprocess.run` sites to `run_process`; 59 occurrences in 16 non-template modules after P6a; candidate effect not measured) | — |
+| KI-185 | OPEN (adopt the [cli-extended line-stream renderer proposal](../libraries/cli-extended/docs/DESIGN-LINE-STREAM-RENDERER.md) through CLI-EXT-35–CLI-EXT-40) | — |
+| KI-184 | FIXED 2026-11-18 (every line in one multi-line write is processed at a severity boundary) | `54b9d3b75` |
+| KI-183 | OPEN (the wheel-builder and probe rows and the cmru gate rows of the release preflight run only for a release that includes cmru) | — |
+| KI-182 | FIXED 2026-11-18 (the release preflight checks the DinD sidecar image of every project in the scope that has an `--enable-docker` step) | see KI-182 entry |
 | KI-181 | OPEN (`dist_dir` containment still accepts project-owned directories such as `src`, `.git` or a symlink to another project directory) | — |
 | KI-180 | OPEN (runner residuals: a signal between fork and `Popen` return can leave the child unreaped; a failing group reap skips the explicit pipe close) | — |
 | KI-179 | OPEN (`cmru abandon` withholds a superseded release candidate whose content is on main and offers no operator path) | — |
@@ -34,6 +39,9 @@
 | KI-176 | FIXED 2026-11-18 (every manifest-contradicting target is reported in one run with the exact `package.json` edit; nothing is written) | `7b3364a7b` (merged into main by `5f862034b`) |
 | KI-177 | FIXED 2026-11-18 (same mechanism as KI-161; the mdt-cockpit ADVISORY comment shape is a regression test) | `7b3364a7b` (merged into main by `5f862034b`) |
 | KI-160 | OPEN (post-promotion evidence retention can exit 1 after a successful release) | — |
+| KI-159 | FIXED 2026-11-18 (the per-minor KI-79 window is removed; standing release rule, operator decision 2026-11-18) | `0e6e28f8b` |
+| KI-141 | OPEN (R2 owed on the latest release at all times; ledger entry, no version upper bound after KI-159) | — |
+| KI-79 | FIXED 2026-11-18 (`gate-provisional` renamed `release-gate`; no version window; R2 owed asynchronously, recorded by marker, manifest and KI-141) | `0e6e28f8b` |
 | KI-158 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
 | KI-157 | FIXED 2026-11-16 (checked-out main worktree is derived and given its owner-scoped remedy) | `4d36980b8d6f3ed7533da2f900b955c06075cb1f` |
 | KI-155 | FIXED (2026-11-12; tuple resource evidence) | `152ba5c9a5181b128ebf1364a9d57d2524ce4415` |
@@ -1973,7 +1981,7 @@ one-command UX without shell-specific pipe-status traps.
 
 ### KI-79 — CMRU provisional releases defer the long R2 campaign
 
-**Status:** OPEN (R2 debt); the deferral mechanism remains IN FORCE for the 6.2 patch line (`>= 6.2.0`, `< 6.3.0`) and the 7.0 through 7.3 patch lines (`>= 7.0.0`, `< 7.1.0`; `>= 7.1.0`, `< 7.2.0`; `>= 7.2.0`, `< 7.3.0`; `>= 7.3.0`, `< 7.4.0`; `POSTPONEMENT_RELEASE_VERSIONS` holds a tuple of (low, below) windows per id): first applied to the 2026-10-14 6.2.0 release candidate, widened by operator decisions through 2026-11-12; R2 remains owed (see Follow-up); severity: major (mutation evidence gap).
+**Status:** FIXED 2026-11-18 in `0e6e28f8b` (the mechanism is now the standing release rule, with no version window); R2 remains owed on the latest release (ledger KI-141); severity: major (mutation evidence gap). **Operator decision 2026-11-18 (verbatim):** "change/remove rule. like we agreed for any release: need R1,R3 (full branch coverage and canary) and review for no hollow tests and no issues, then release. R2 runs async." The release gate is R0/R1 (full branch coverage) plus R3 (canary) as the `run-tests` step; the independent review is a hand-off requirement of the release controller, not code; R2 mutation is owed asynchronously on the latest release. `POSTPONEMENT_RELEASE_VERSIONS`, the `KI-79 waiver window` dry-run precondition and `run_tests_uses_provisional_gate` are removed, the lane `gate-provisional` is renamed `release-gate` with no alias, and the tracking id value `KI-79` and the marker and manifest shapes are kept so retained evidence stays readable. The text below is the history of the window mechanism; where it names a window, an upper bound or `gate-provisional`, read `release-gate` and "no window". Moving the window once per minor had blocked the cmru 7.4.0 release on 2026-11-18.
 
 **Reason:** the full CMRU mutation lane is a multi-hour R2 campaign. The operator's release objective explicitly permits long R2 to run asynchronously or be postponed so short correctness, coverage, and integration gates can unblock the tool release wave.
 
@@ -3229,15 +3237,17 @@ not implementable as the brief's "small" follow-on.
 
 The 2026-11-12 T3 rehearsal of `r2` remained PARTIAL: its preflight had six failing process-tree fixture tests, Assay's declared `../libraries/cowtree/src` package root was rejected, and the campaign crashed when `ResourceLimitEvidence.between` returned its current tuple contract. KI-153 through KI-155 fix these lane blockers in source and tests; the rehearsal is not an R2 campaign result and this entry remains open. The measured controls took 368, 752, and 825 seconds with other lanes running. The registered control ceiling is now 1800 seconds (2.18 times the longest measurement), and candidate timeouts retain the existing twice-control scaling.
 
-**Constraint.** The 2026-11-12 operator decision extends KI-79 through `>= 7.3.0`, `< 7.4.0`, so 7.3.0 may use `gate-provisional` without an earlier R2 run. The full R2 obligation is still open and follows the standing T3 schedule: run it asynchronously after the latest provisional release, before KI-79's current upper bound 7.4.0 unless the operator records another decision.
+**Constraint.** Under the standing release rule (operator decision 2026-11-18: a release needs R1 full branch coverage, R3 canary and an independent review, and R2 runs asynchronously), R2 is owed on the latest release at all times; no version window or upper bound exists any more. The release step runs `release-gate`, whose retained marker `.assay/mutation-postponed-cmru.json` and snapshot `deferred_lanes` entry are the record that R2 is owed for that release; this entry is the ledger of what is owed.
 
 **Fix.** Finish the owed whole-source R2 as the T3 lane `r2` on the latest release tag, using the controller-selected base (currently `cmru-v6.1.0` when no newer R2 PASS row exists); the copyable lane command is `run-gate --base cmru-v6.1.0 r2` when that base is selected. Kill the survivors of KI-129/133/134/135/138; an unkillable (equivalent) survivor leaves the existing operator-decision branch of Close when.
 
-**Close when.** A T3 ledger PASS row records cmru `r2` at the latest 7.3.x release tag, with a base at or before the last R2-covered tag (`cmru-v6.1.0`) and every candidate killed with no survivors; the campaign judges the latest released source and closes the accumulated 7.2.x/7.3.x R2 debt.
+**Close when.** A T3 ledger PASS row records cmru `r2` at the latest release tag, with a base at or before the last R2-covered tag (`cmru-v6.1.0`) and every candidate killed with no survivors; the campaign judges the latest released source and closes the accumulated R2 debt of every provisional release up to it.
 
 **Remaining WP-CMRU parts 6, 7, and 9.** Part 6 follows a successful part-5 T3 rehearsal: make CMRU's `gate` a mutation-free release orchestrator and always write the R2-owed marker with `follow_up_lane = "r2"`. Part 7 follows parts 6 and 1 (`whole_target`): retire `cmru-first-release`, `assay-first-release`, and the `_plan_gate` first-release branch. Part 9 still needs the `TMPDIR`/`PYTHONPYCACHEPREFIX` A/B and a duration survey on a quiet host, including an explanation of the control variance in an isolated run; the current `io_sync = "relaxed"` setting remains in place.
 
-**After KI-141 closes.** KI-159 tracks whether to replace per-minor window edits with a rolling rule or a declared release-policy field. Until that design is selected and implemented, KI-79 remains a bounded allowlist.
+**Window policy.** KI-159 (FIXED 2026-11-18) removed the per-minor window allowlist: the standing release rule above replaced KI-79's bounded windows, so this entry no longer waits on any window design.
+
+**Claim shape (operator decision 2026-11-18).** The R2 claim is the WHOLE source, assembled from carried and re-verified results: an earlier tested candidate whose tested code locus and tests are unchanged stays the same candidate (identity-valid), so earlier work is reused instead of repeated; it is not a delta-only claim, and a delta run alone never closes this entry. What may be reused is bounded by `assay/docs/DESIGN-SUBFILE-CANDIDATE-IDENTITY.md` (section 2.2): a carried SURVIVOR may be carried pessimistically, with disclosure; a carried KILL is only a lookup hit and is re-proved by the current judge before it counts (strict mode, mandatory for release claims). Unchanged tests never authorize carrying a kill without that re-proof.
 
 **Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md); KI-79 above; cmru-v7.2.4 release (2026-11-08).
 
@@ -3521,13 +3531,13 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 ## KI-159 - KI-79 release windows need a policy that does not require a new edit for each minor
 
-**Status:** OPEN (filed 2026-11-12); severity: minor (release-window maintenance).
+**Status:** FIXED 2026-11-18 in `0e6e28f8b`; severity: minor (release-window maintenance). Operator decision 2026-11-18 (verbatim): "change/remove rule. like we agreed for any release: need R1,R3 (full branch coverage and canary) and review for no hollow tests and no issues, then release. R2 runs async." The window allowlist was removed instead of rolled or declared: a release of any version passes the gate path identically (`tools/run_release_gate.py` `_validate_postponement`; tests `tests/test_release_gate.py`, `tests/test_release_gate_provisional.py`, `tests/test_release_gate_preconditions.py`).
 
-**Problem.** KI-79's explicit bounded windows have been extended one minor line at a time. Each extension needs synchronized gate, test, changelog, and user-documentation edits; a missed bound can refuse the next provisional release before its gates run.
+**Problem (resolved; kept as history).** KI-79's explicit bounded windows were extended one minor line at a time. Each extension needed synchronized gate, test, changelog, and user-documentation edits; a missed bound could refuse the next release before its gates ran (it blocked cmru 7.4.0 on 2026-11-18).
 
-**Proposal.** Decide whether the allowed window should roll across the latest minor line plus its predecessor, or come from a declared release-policy field. Keep refusal behavior explicit and tested at both edges. No implementation is part of this backlog item.
+**Resolution.** The operator removed the window instead of choosing a rolling policy: the release gate is R0/R1 plus R3 for every version, the independent review is a controller hand-off requirement, and R2 is owed asynchronously on the latest release (see Status; the owed R2 stays tracked in KI-141).
 
-**Close when.** The operator selects one policy, its edge behavior and compatibility are documented, and a separate reviewed change implements and tests it across the gate and dry-run precondition.
+**Close when (met).** The version-window allowlist, its precondition and its tests are removed and the lane is named `release-gate`.
 
 ## KI-160 - successful promotion can exit 1 before retaining artifacts when declared gate evidence is missing
 
@@ -3742,7 +3752,7 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Keep-entry grammar.** SPEC S9.4 requires an exact bundle-relative POSIX file path and explicitly rejects glob syntax, absolute paths, and traversal, but it does not spell out backslashes, drive-style prefixes, control characters, empty values, or trailing separators. The public config path rejects those forms and accepts spaces (the list reader rejects empty strings before the validator sees them); the regression table pins those current results and exact error text. Clarify the remaining grammar explicitly in S9.4 when the next SPEC edit is made.
 
-**Assay lane cost.** The `assay-first-release-r2` Run-Gate lane does not set `candidate_fail_fast`; each candidate runs the full 6,678-test suite, measured at about 500 seconds on one host flavor and 575 seconds on the other. The measured 4,890-candidate target projects to about 202 hours across two hosts; the campaign report projects about 60–70 hours with candidate fail-fast. Recommend enabling `candidate_fail_fast` after confirming test ordering preserves the required evidence, and update the stale `assay.toml` comment that currently says candidates fail fast. This entry records the decision and performance follow-up; no lane policy was changed here.
+**Assay lane cost.** Before 2026-11-18 the `assay-first-release-r2` Run-Gate lane did not set `candidate_fail_fast`; each candidate ran the full 6,678-test suite, measured at about 500 seconds on one host flavor and 575 seconds on the other, so the measured 4,890-candidate target projected to about 202 hours across two hosts. The lane now sets `candidate_fail_fast = true` (comment in `assay.toml` corrected). Measured 2026-11-18 on the v1001 host (one shard of the lane, two workers, 21 candidates, all `full` execution mode): mean 304 s per candidate (15 kills: mean 182 s, median 76 s; 6 survivors: mean 608 s, which is 57% of the total time), peak container memory 1.24 GiB of 4 GiB, peak CPU 201%. A whole-source run of about 5,000 candidates at this rate still needs about 9 days of two-worker wall time; the remaining reductions are test ordering (heavy end-to-end files last), reusing earlier results for unchanged code (assay B561) and the delta lane.
 
 **Close when.** S9.4 explicitly defines the tested keep-entry grammar, and the lane's fail-fast policy is either enabled with its comment and acceptance evidence updated or recorded as an intentional cost with a reason. The selected-subset verdict follow-up is tracked in KI-134; the missing-tag sync failure is tracked by netcup NC-56.
 
@@ -3798,6 +3808,50 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Close when.** A change that adds a `cmru` call to a shell script is refused or auto-extended with the cmru lane, shown by a test of the selection rule, and the trigger list is derived from the scanner's own file selection.
 
+## KI-182 `cmru release` fails minutes into the gate when the digest-pinned DinD sidecar image is missing on the Docker host
+
+**Status:** FIXED 2026-11-18; severity: medium (a multi-minute test step was spent before the failure, and the failed candidate had to be retired by hand, see KI-179).
+
+**Observed.** A ciu 7.26.0 release attempt (attempt 2) pinned `CMRU_TESTER_DIND_IMAGE = "docker@sha256:..."` in `ciu/cmru.toml` for its `--enable-docker` enrollment gate. The image was absent from the Docker host, and `cmru tester-gate` failed with a bare `CalledProcessError ... exit status 125` four minutes into the release, after the 6681-test step.
+
+**Cause.** The sidecar is started with `--pull=never`, so an absent reference surfaces only when the gate step starts it. KI-168's preflight (`check_release_build_images_precondition`) covered the wheel-builder image and the cgroup probe image but not `CMRU_TESTER_DIND_IMAGE`, which has the probe's contract.
+
+**Fix.** A per-project preflight, independent of the cmru-only rows (`cli._release_dind_image_preconditions`). It runs for EVERY project in the release scope (not on `--resume`, and not only when `cmru` is in the scope): it reads that project's own release-source config (`_project_snapshot_config_text`, the generalization of the cmru-only helper), and `release_config_enables_docker` looks for an exact `--enable-docker` element in the argv of any `[steps.*]` command (a TOML read; any other shape is ignored, never raised). A project with such a step gets a `DinD sidecar image` row (label suffix ` (<project>)` when the scope has several projects or the project is not cmru), resolved in release context from that project's own `[env]` over the orchestration defaults, with the caller's process value as fallback (`CMRU_TESTER_DIND_IMAGE` is in `BUILD_IMAGE_ENV_NAMES`), and checked with `pull_if_missing=False`: empty value fails, absent image fails with the exact `docker pull <ref>` remedy, Docker unavailable is `SKIPPED` on a dry-run and a failure on a release. A FAIL refuses with exit 4 before dispatch or workspace creation. A project without such a step gets no row and no docker call. An unreadable or invalid project config surfaces as the same domain error the cmru path surfaces (exit 1). The existing wheel-builder and probe rows and the Run-Gate identity and bootstrap rows are unchanged and stay cmru-release-only (KI-183). SPEC S-REL.7, README and CONSUMERS describe it. Tests: `tests/test_release_gate_preconditions.py` (`test_dind_*`, `test_release_config_enable_docker_detection_reads_the_toml_argv`, `test_release_launcher_*dind*`).
+
+**Close when.** Closed by this fix: fake-Docker tests show that a release scoped to `ciu` alone refuses a dry-run and a release with the row before any dispatch, a `cmru` + `ciu` scope adds the ciu row beside unchanged cmru rows, a scope without the flag has no rows and no docker call, a present image passes, and the row FAILs on an empty value and SKIPs or FAILs without Docker.
+
+## KI-183 the existing image rows of the release preflight do not run for non-cmru releases
+
+**Status:** OPEN (filed 2026-11-18); severity: low.
+
+**Observed.** `_release_gate_preconditions_before_dispatch` and its rows (Run-Gate image identity, Bootstrap, `Wheel-builder image`, `Cgroup probe image`) run only when `cmru` is in the release scope. A release of any other project (`cmru release ciu`) skips them, although its gate and wheel build use the same `--pull=never` probe image and the wheel builder. The DinD row (KI-182) is the only image row that already runs per project.
+
+**Wanted.** Evaluate the wheel-builder and probe rows for every project in the release scope against that project's own config, as KI-182 does for the DinD row.
+
+**Close when.** A release scoped to a project other than cmru refuses before dispatch when its probe image is absent, shown by a test.
+
+## KI-185 adopt the cli-extended line-stream renderer in the cmru output layer
+
+**Status:** OPEN; severity: medium.
+
+**Observed.** `cmru/src/cmru/output.py` owns a separate `SeverityStream` for
+severity parsing and terminal colour. CMRU output therefore does not share the
+line-oriented renderer proposed for `cli-extended`.
+
+**Wanted.** Adopt the shared engine as a thin CMRU output adapter, then migrate
+new and intentionally changed output call sites in small packages. Leave
+untouched call sites alone until their own migration package. The current
+multi-line `SeverityStream` defect is handled separately by P14.
+
+**Design and implementation packages.** See the
+[cli-extended line-stream renderer proposal](../libraries/cli-extended/docs/DESIGN-LINE-STREAM-RENDERER.md)
+and CLI-EXT-35–CLI-EXT-40. Preserve CMRU's output contract; decide the existing
+optional short timestamp behavior before removing its implementation.
+
+**Close when.** The CMRU adapter delegates rendering to the shared engine,
+output tests preserve plain and terminal behavior, and call sites have moved
+incrementally with no independent CMRU severity parser or ANSI renderer left.
+
 ## KI-181 `dist_dir` containment accepts project-owned directories (`src`, `.git`, a symlink to another project directory)
 
 **Status:** OPEN (filed 2026-11-18, residual of KI-175); severity: medium.
@@ -3825,6 +3879,10 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Status:** OPEN (filed 2026-11-18); severity: medium (a stale candidate branch and its worktree stay behind with no supported way to retire them).
 
 **Observed.** The branch `cmru-release-20261106_123441-ciu-yh40ow` carries one commit (`cf063357a`, `chore(ciu): prepare release inputs`, 32 added lines in `ciu/CHANGES.md`) whose CHANGES content equals main's `62d8b67c6` (the same subject, 33 added lines) except for two differences: the `source-end` marker (`ae894f93b0083af9c13a47e8962785ca02cd2e2d` on the candidate, `13cff77c1c7f5a3de59a74af8791a01a8723cd6b` on main) and one extra bullet on main under `### Testing`, `test(ciu): close the 100% coverage gap on the CIU-141/138/202 refusal paths ... (4bbf8d49a)`. So the content is a strict subset of main's, not identical. `cmru abandon` withholds it with "origin contains selected-scope release tag refs that changed during this transaction" (the ciu-v7.24.0, ciu-v7.24.1, ciu-v7.25.0 and ciu-v7.25.1 tags), and the message offers no operator path; the only way out is raw git.
+
+**Second instance (2026-11-18, cli-extended 0.7.0).** A release attempt failed in its gate before any promotion and left the candidate `cmru-release-20261118_070201-cli-extended-h1uxqk` (head `50ae0429d`, not an ancestor of main, no tag pointing at it). The fresh retry then released `cli-extended-v0.7.0`; `cmru abandon --dry-run` on the failed candidate answered `Withheld ... origin contains selected-scope release tag refs that changed during this transaction: cli-extended-v0.7.0`. So a clean failed-attempt candidate becomes unretirable the moment its own retry succeeds. The operator retired it by hand after checking that the head is not an ancestor of main and no tag points at it (worktree removal, local branch delete, remote branch delete of that exact name). Wanted for this case: retire a candidate whose head is not reachable from main and not tagged, when the only changed tag ref is the one the superseding successful release created, printing those two checks as evidence.
+
+**Third and fourth instances (2026-11-18, ciu 7.26.0).** Two failed attempts of one release each left a candidate: `cmru-release-20261118_143909-ciu-jskygu` (attempt 1; the gate refused because the tester image carried an older run-gate wheel; head `e8c45461f`, not an ancestor of main, no tag points at it) and `cmru-release-20261118_144606-ciu-agfllr` (attempt 2; the DinD sidecar image was absent, see KI-182; head `7370f13ba`, same facts). Both were retired by hand after the checks `not an ancestor of main` and `no tag points at it`. So `cmru abandon` still withholds a failed-attempt candidate once a later attempt has created the tag; the wanted behaviour is the one stated under the second instance above.
 
 **Wanted.** An explicit, evidence-checked way to retire a candidate whose content is already on main (patch or content equivalence of every changed path) or whose version has since been released, without raw git: the command prints the evidence it checked (equivalent commit on main, or the released tag that carries the version) and refuses when it cannot show either.
 
@@ -3885,3 +3943,44 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Close when.** The path constraints and cleanup recheck are documented in SPEC; the acceptance cases prove every escaping path fails before any file is touched and the ordinary in-project path remains supported.
 
 **Remaining note (2026-11-18).** The rule is containment only: a `dist_dir` such as `src`, `.git`, or a symlink to another project's directory inside the project is a strict descendant and is accepted. The rule was deliberately not widened.
+
+## KI-184 - `SeverityStream` decorates only the first line of a multi-line write
+
+**Status:** FIXED 2026-11-18; severity: low (subsequent severity prefixes in a single write lose their terminal colour and prefix decoration).
+
+**Problem.** `SeverityStream._write_normal` previously consumed every newline in the current text in one loop. Although it reset `_line_start`, `write` did not revisit the severity matcher for the remainder of that same write, so lines after the first were emitted raw.
+
+**Resolution/evidence (2026-11-18).** `_write_normal` now writes one ordinary line and returns the text after its newline. `write` loops over that remainder from line-start state, preserving the existing candidate carry-over and return length. Tests compare multiline writes with newline-separated and mid-token chunks, exhaustively check all chunkings of a small multiline sample, cover a plain line followed by a severity prefix, and pin the original input length when a held candidate precedes multiline text. Against the pre-fix code, the focused suite failed 6 tests (4 passed). Four hand mutations were killed: omitting the line-start reset (6 failures), stopping after the first newline (5), dropping the held candidate (3), and counting the held candidate in the return value (1). The focused suite passes 10 tests on the fix.
+
+**Close when.** Closed by the multiline severity boundary fix and its chunking, candidate and return-length regressions.
+
+## KI-186 - migrate the remaining `subprocess.run` sites to `run_process`
+
+**Status:** OPEN (filed 2026-11-18); severity: low (scattered subprocess keyword plumbing creates low-value mutation candidates).
+
+**Remaining sites.** `grep -c 'subprocess.run'` after P6a, excluding templates and the `process_run.py` wrapper:
+
+| Module | Count |
+| --- | ---: |
+| `bundle.py` | 2 |
+| `changelog.py` | 3 |
+| `cli.py` | 8 |
+| `config.py` | 2 |
+| `delegated.py` | 1 |
+| `gate_snapshot.py` | 3 |
+| `git_auth.py` | 1 |
+| `handlers.py` | 6 |
+| `release_notes.py` | 2 |
+| `release_preconditions.py` | 3 |
+| `runner.py` | 3 |
+| `scaffold.py` | 1 |
+| `tester_gate.py` | 7 |
+| `transaction.py` | 4 |
+| `version.py` | 8 |
+| `versions.py` | 5 |
+
+**Candidate effect.** Not measured from existing campaign evidence.
+
+**Wanted.** Migrate the remaining production `subprocess.run` sites to the shared `run_process` wrapper without changing command behavior.
+
+**Close when.** The remaining modules use `run_process`, their behavior contracts pass, and the wrapper owns the shared subprocess keyword semantics.

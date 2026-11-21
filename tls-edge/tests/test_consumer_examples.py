@@ -8,12 +8,16 @@ import subprocess
 import pytest
 import yaml
 
-from conftest import ROOT, defaults_config, needs_docker, needs_jinja, render_to
+from conftest import ROOT, defaults_config, merge, needs_docker, needs_jinja, render_to
 
 EXAMPLES = sorted(p.parent for p in (ROOT / "consumer-examples").glob("*/docker-compose.yml"))
 ENV = {"TLS_EDGE_DOMAIN": "example.test",
        "GUARD_HASH": "user:$2y$12$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ0123456"}
 EXPECTED = {"pattern-a-public-only", "pattern-d-guarded", "pattern-e-media-udp"}
+EDGE_OVERRIDES = {
+    # The compose example documents that it needs tls-edge's optional Calls L4 entrypoints.
+    "pattern-e-media-udp": {"calls": {"enabled": True}},
+}
 
 
 def _config(example) -> dict:
@@ -46,7 +50,8 @@ def test_example_compose_config_is_valid_offline(example):
 @needs_jinja
 @pytest.mark.parametrize("example", EXAMPLES, ids=lambda p: p.name)
 def test_labels_target_entrypoints_the_edge_defines(example, tmp_path):
-    out = render_to(tmp_path, defaults_config())
+    cfg = merge(defaults_config(), EDGE_OVERRIDES.get(example.name, {}))
+    out = render_to(tmp_path, cfg)
     entrypoints = set(yaml.safe_load((out / "traefik.yml").read_text())["entryPoints"])
     labels = {}
     for service in _config(example)["services"].values():

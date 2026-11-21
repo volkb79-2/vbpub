@@ -22,15 +22,21 @@ image's exact toolchain and crate cache, and a green dev run is not gate evidenc
 
 The BuildKit builder defaults to `mdt-managed` and is selectable with
 `--builder NAME` or `TESTER_UNIFIED_RUST_BUILDER` for hosts that only have the
-`default` docker-driver builder. The docker driver passes `--cgroup-parent`
-through (measured on v1001; the docker-container driver does not honour it):
-during a RUN step the build's processes must appear under the requested slice
-(`systemd-cgls` or `<slice>/cgroup.procs` on the host), and a build that does
-not land there is to be discarded. `--builder` changes nothing else; see
+`default` docker-driver builder. Both build scripts take ONE input, the systemd
+slice name (`--cgroup-parent dev-gates.slice` or `CGROUP_PARENT_DEV_GATES`), and
+derive the cgroup path for `docker buildx build --cgroup-parent` themselves
+(`dev-gates.slice` becomes `dev.slice/dev-gates.slice`; every `docker run` and the
+CMRU preflight keep the plain name, because the systemd cgroup driver refuses a
+path there). Measured on v1001 (2026-11-18) with the docker-driver builder `default`
+only: with the path form the BuildKit RUN steps run inside the governed slice
+(`/dev.slice/dev-gates.slice/buildkit/<id>`); with the plain slice name they would
+land in an ungoverned root-level `/dev-gates.slice/buildkit`. Other builders
+(`mdt-managed`, the docker-container driver): not measured, verify the placement
+(`/proc/<pid>/cgroup` of a RUN-step process). `--builder` changes nothing else; see
 [`docs/CONSUMERS.md`](docs/CONSUMERS.md), which also lists what the CMRU
 preflight needs (a git checkout among other things).
 
-The first consumer is the hostobs M0 workspace. Its registered `lint` and
-`selftest` lanes live in [`hostobs/run-gate.toml`](../hostobs/run-gate.toml).
+The first consumer is the hostobs workspace. Its registered `lint`, `selftest`,
+`assay-r1` and `conformance` lanes live in [`hostobs/run-gate.toml`](../hostobs/run-gate.toml).
 See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for the image and lane contract,
 and [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md) for the design choices.

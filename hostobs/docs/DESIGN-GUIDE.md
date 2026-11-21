@@ -152,8 +152,8 @@ refuses to build ("cannot update the lock file"). Rather than hand-edit the lock
 (forbidden: the image's baked digest is the authority), the two crates are bound by
 behavior: both assert their vocabulary against `fixtures/wire/quality.json`, and the
 Python decoder asserts the same file. The cost of this choice is recorded as `HOB-3`
-together with the decision point that would remove it (the lanes' switch to an image
-built on the registry-set identity, which ignores workspace-member lock edits).
+together with what now allows removing it (the lanes run on an image built on the
+registry-set identity, which ignores workspace-member lock edits).
 
 The same constraint is why the tiny test-only JSON reader lives in `test-support/json.rs`
 (outside the workspace members) instead of pulling `serde_json` in as a dev-dependency.
@@ -375,7 +375,7 @@ incarnation list. The quality bytes are inside that payload, so nothing is lost,
 is the caller's step: the store cannot carry a column codec while `HOB-27` bans the dependency,
 and copying the entire wire decoder here would be a second implementation of the format rather
 than a join. `quality::Reading`/`QualityCode` are the store's own vocabulary, bound to
-`fixtures/wire/quality.json`, and ready for the join that `HOB-27`'s rebuild will allow.
+`fixtures/wire/quality.json`, and ready for the join that the registry-set-identity image now allows.
 
 ## Gates and coverage
 
@@ -383,8 +383,9 @@ than a join. `quality::Reading`/`QualityCode` are the store's own vocabulary, bo
 and the source lints; `selftest` runs nextest, doctests, llvm-cov and the per-crate
 line/region floors from `coverage-floors.toml`; `assay-r1` runs the same workspace command
 and lets assay's Rust R1 judge render the coverage verdict over 33 declared `src` files
-at a 95.0% line floor. All three are offline and locked, in the `tester-unified-rust`
-image, with Docker networking disabled.
+at a 95.0% line floor. `conformance` runs the standard-library-only Python tests (no cargo).
+All four run in the `tester-unified-rust` image with Docker networking disabled, and the three
+that call cargo are offline and locked.
 
 ### Why the coverage verdict comes from assay, and why from this workspace's own command
 

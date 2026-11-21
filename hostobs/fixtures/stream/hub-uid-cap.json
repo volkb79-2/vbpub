@@ -1,0 +1,178 @@
+{
+  "case": "hub-uid-cap",
+  "doc": "one uid at its Live cap: the next push sheds that uid's largest connection, the other uid is untouched",
+  "limits": {
+    "client_queue_bytes": 1000,
+    "uid_live_bytes": 2000,
+    "global_live_bytes": 8000,
+    "query_queue_bytes": 1000,
+    "uid_query_bytes": 1000,
+    "global_query_bytes": 4000,
+    "control_queue_bytes": 500,
+    "stall_ms": 5000,
+    "frame_completion_ms": 5000
+  },
+  "conns": [
+    1,
+    1,
+    1,
+    1,
+    2
+  ],
+  "steps": [
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 0,
+      "s": 1,
+      "gen": 1,
+      "bare": null,
+      "dict": 400
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 0,
+      "s": 2,
+      "gen": 1,
+      "bare": null,
+      "dict": 400
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 1,
+      "s": 1,
+      "gen": 1,
+      "bare": null,
+      "dict": 400
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 2,
+      "s": 1,
+      "gen": 1,
+      "bare": null,
+      "dict": 400
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 3,
+      "s": 1,
+      "gen": 1,
+      "bare": null,
+      "dict": 400
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 4,
+      "s": 1,
+      "gen": 1,
+      "bare": null,
+      "dict": 400,
+      "watch": [
+        "u1"
+      ]
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 3,
+      "s": 2,
+      "gen": 1,
+      "bare": null,
+      "dict": 400,
+      "watch": [
+        "c0",
+        "c3",
+        "c4",
+        "u1",
+        "u2",
+        "g"
+      ]
+    },
+    {
+      "t_ms": 0,
+      "op": "end_stream",
+      "c": 0,
+      "s": 1
+    }
+  ],
+  "expect": [
+    [
+      "queued"
+    ],
+    [
+      "queued"
+    ],
+    [
+      "queued"
+    ],
+    [
+      "queued"
+    ],
+    [
+      "queued"
+    ],
+    [
+      "queued",
+      {
+        "pools": {
+          "u1": [
+            2000,
+            0,
+            0
+          ]
+        }
+      }
+    ],
+    [
+      "queued",
+      {
+        "pools": {
+          "c0": [
+            400,
+            0,
+            0
+          ],
+          "c3": [
+            800,
+            0,
+            0
+          ],
+          "c4": [
+            400,
+            0,
+            0
+          ],
+          "u1": [
+            2000,
+            0,
+            0
+          ],
+          "u2": [
+            400,
+            0,
+            0
+          ],
+          "g": [
+            2400,
+            0,
+            0
+          ]
+        }
+      }
+    ],
+    [
+      {
+        "counts": {
+          "blocks": 0,
+          "dropped": 1
+        }
+      }
+    ]
+  ]
+}

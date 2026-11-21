@@ -41,3 +41,24 @@ def test_asset_suffix_matches_the_installer_asset_suffix():
     argv = _publish_argv()
     suffix = argv[argv.index("--asset-suffix") + 1] if "--asset-suffix" in argv else ".tar.xz"
     assert suffix == CONFIG["project"]["installer"]["asset_suffix"]
+
+
+def test_cmru_release_runs_the_registered_r0_r1_r3_gate():
+    commands = CONFIG["steps"]["run-tests"]["commands"]
+    assert commands == [{
+        "label": "tls-edge: R0/R1/R3 release gate",
+        "argv": ["run-gate", "release-gate"],
+        "cwd": ".",
+    }]
+
+    gate = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))
+    assert gate["lanes"]["release-gate"]["kind"] == "assay"
+    assert gate["lanes"]["release-gate"]["assay_lane"] == "release-gate"
+
+    assay = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))
+    lane = assay["lanes"]["release-gate"]
+    assert lane["rigor"] == ["R0", "R1", "R3"]
+    assert lane["judge"]["mode"] == "whole_target"
+    assert lane["judge"]["fail_under"] == 100.0
+    assert lane["judge"]["require_branch"] is True
+    assert lane["judge"]["canary"]["mechanism"] == "import-break"
