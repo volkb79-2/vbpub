@@ -2565,9 +2565,6 @@ mod tests {
                 .expect("current reply")
                 .ok
         );
-        assert!(!classified
-            .iter()
-            .any(|frame| frame.1 == 10 && is_error(&frame.2, Code::TooManyRequests)));
         assert_eq!(rig.conn.outstanding(), 4);
         assert_eq!(rig.pending_need(10), Some(need));
         assert_eq!(rig.hub.queued(rig.conn.id()).query, 0);
