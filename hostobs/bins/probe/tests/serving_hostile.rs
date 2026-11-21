@@ -760,8 +760,21 @@ struct ActiveEpisode {
 
 #[derive(Clone, Copy)]
 enum ReplyExpectation {
-    Plain,
-    Data(DataVerb),
+    Plain(ExpectedReply),
+    Data(DataVerb, ExpectedReply),
+}
+
+#[derive(Clone, Copy)]
+enum ExpectedReply {
+    Either,
+    Success,
+    Error,
+}
+
+#[derive(Clone, Copy)]
+struct DataRequestExpectation {
+    verb: DataVerb,
+    reply: ExpectedReply,
 }
 
 struct ObservedConnection {
@@ -799,18 +812,18 @@ impl ObservedConnection {
         }
     }
 
-    fn data_request(&mut self, corr: u32, verb: DataVerb) {
+    fn data_request_with_expected_reply(&mut self, corr: u32, expected: DataRequestExpectation) {
         self.requests
             .entry(corr)
             .or_default()
-            .push_back(ReplyExpectation::Data(verb));
+            .push_back(ReplyExpectation::Data(expected.verb, expected.reply));
     }
 
-    fn plain_request(&mut self, corr: u32) {
+    fn plain_request_with_expected_reply(&mut self, corr: u32, expected: ExpectedReply) {
         self.requests
             .entry(corr)
             .or_default()
-            .push_back(ReplyExpectation::Plain);
+            .push_back(ReplyExpectation::Plain(expected));
     }
 
     fn request_reply(&mut self, corr: u32, payload: &[u8], rep: &Rep) {
@@ -818,7 +831,19 @@ impl ObservedConnection {
         if self.requests.get(&corr).is_some_and(VecDeque::is_empty) {
             self.requests.remove(&corr);
         }
-        let Some(ReplyExpectation::Data(verb)) = request else {
+        let Some(request) = request else {
+            return;
+        };
+        let (verb, expected) = match request {
+            ReplyExpectation::Plain(expected) => (None, expected),
+            ReplyExpectation::Data(verb, expected) => (Some(verb), expected),
+        };
+        match expected {
+            ExpectedReply::Either => {}
+            ExpectedReply::Success => assert!(rep.ok, "expected successful REP corr {corr}"),
+            ExpectedReply::Error => assert!(!rep.ok, "expected failed REP corr {corr}"),
+        }
+        let Some(verb) = verb else {
             return;
         };
         if !rep.ok {
@@ -956,10 +981,33 @@ fn send_data_request(
     bytes: &[u8],
     now: u64,
 ) {
+    send_data_request_with_expected_reply(
+        server,
+        model,
+        id,
+        corr,
+        DataRequestExpectation {
+            verb,
+            reply: ExpectedReply::Either,
+        },
+        bytes,
+        now,
+    );
+}
+
+fn send_data_request_with_expected_reply(
+    server: &mut Server<FixedBackend>,
+    model: &mut BTreeMap<ConnId, ObservedConnection>,
+    id: ConnId,
+    corr: u32,
+    expected: DataRequestExpectation,
+    bytes: &[u8],
+    now: u64,
+) {
     model
         .get_mut(&id)
         .expect("connection has an output model")
-        .data_request(corr, verb);
+        .data_request_with_expected_reply(corr, expected);
     server.on_bytes(id, bytes, now);
 }
 
@@ -971,10 +1019,30 @@ fn send_plain_request(
     bytes: &[u8],
     now: u64,
 ) {
+    send_plain_request_with_expected_reply(
+        server,
+        model,
+        id,
+        corr,
+        ExpectedReply::Either,
+        bytes,
+        now,
+    );
+}
+
+fn send_plain_request_with_expected_reply(
+    server: &mut Server<FixedBackend>,
+    model: &mut BTreeMap<ConnId, ObservedConnection>,
+    id: ConnId,
+    corr: u32,
+    expected: ExpectedReply,
+    bytes: &[u8],
+    now: u64,
+) {
     model
         .get_mut(&id)
         .expect("connection has an output model")
-        .plain_request(corr);
+        .plain_request_with_expected_reply(corr, expected);
     server.on_bytes(id, bytes, now);
 }
 
@@ -1047,19 +1115,30 @@ fn server_hostile_2000_steps_with_block_verbs() {
         model.insert(id, ObservedConnection::new());
         let mut hello = server_prefix(1, 1).to_vec();
         hello.extend(server_request(1, "hello", HELLO_ARGS));
-        send_plain_request(&mut server, &mut model, id, 1, &hello, now);
+        send_plain_request_with_expected_reply(
+            &mut server,
+            &mut model,
+            id,
+            1,
+            ExpectedReply::Success,
+            &hello,
+            now,
+        );
         drain_server(&mut server, &mut model, id, usize::MAX, now);
         if slot == 0 {
             server
                 .backend_mut()
                 .current
                 .insert(selected.clone(), Err(BackendError::Unavailable));
-            send_data_request(
+            send_data_request_with_expected_reply(
                 &mut server,
                 &mut model,
                 id,
                 2,
-                DataVerb::Current,
+                DataRequestExpectation {
+                    verb: DataVerb::Current,
+                    reply: ExpectedReply::Error,
+                },
                 &server_current(2),
                 now,
             );
@@ -1069,11 +1148,12 @@ fn server_hostile_2000_steps_with_block_verbs() {
                 .current
                 .insert(selected.clone(), Ok(data.clone()));
         }
-        send_plain_request(
+        send_plain_request_with_expected_reply(
             &mut server,
             &mut model,
             id,
             2,
+            ExpectedReply::Success,
             &server_request(2, "status", "{}"),
             now,
         );
@@ -1142,7 +1222,15 @@ fn server_hostile_2000_steps_with_block_verbs() {
                 model.insert(id, ObservedConnection::new());
                 let mut hello = server_prefix(1, 1).to_vec();
                 hello.extend(server_request(1, "hello", HELLO_ARGS));
-                send_plain_request(&mut server, &mut model, id, 1, &hello, now);
+                send_plain_request_with_expected_reply(
+                    &mut server,
+                    &mut model,
+                    id,
+                    1,
+                    ExpectedReply::Success,
+                    &hello,
+                    now,
+                );
             }
             continue;
         };
