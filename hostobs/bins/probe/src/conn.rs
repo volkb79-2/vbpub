@@ -2509,7 +2509,7 @@ mod tests {
 
     #[test]
     fn conn_too_many_requests_refuses_block_verbs_but_spares_status() {
-        let (mut rig, sel, _need) = blocked_current_rig(current_data(5));
+        let (mut rig, sel, need) = blocked_current_rig(current_data(5));
         for corr in 2..6 {
             rig.current(corr, sel.clone());
         }
@@ -2551,6 +2551,7 @@ mod tests {
 
         rig.conn.retry_pending(rig.now, &mut rig.hub, &rig.backend);
         assert_eq!(rig.conn.outstanding(), 3);
+        assert_eq!(rig.hub.queued(rig.conn.id()).query, need);
         rig.send(&raw_req(10, &current));
         rig.pump(usize::MAX);
         let classified = raw_frames(&rig.out);
@@ -2562,7 +2563,8 @@ mod tests {
             .any(|frame| frame.1 == 10 && is_error(&frame.2, Code::TooManyRequests)));
         rig.out.clear();
         rig.current(10, sel);
-        assert_eq!(rig.conn.outstanding(), 4);
+        assert_eq!(rig.conn.outstanding(), 3);
+        assert_eq!(rig.hub.queued(rig.conn.id()).query, need);
         let retried = raw_frames(&rig.finish());
         let current_rep = retried
             .iter()
