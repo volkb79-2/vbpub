@@ -283,6 +283,10 @@
   "customizations": {
     "vscode": {
       "settings": {
+        "git.autoRepositoryDetection": "subFolders",
+        "git.openRepositoryInParentFolders": "never",
+        "git.detectWorktrees": false,
+        "git.repositoryScanMaxDepth": 1,
         "python.defaultInterpreterPath": "python3",
         // Each VS Code terminal starts its own tmux session, with zsh inside. The timestamp and
         // launcher PID make session names unique; tmux sessions survive a VS Code server restart
