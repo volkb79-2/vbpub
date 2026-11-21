@@ -1,12 +1,10 @@
 # Work packages to finish the project
 
-Written 2026-11-12 by the controller session (Fable) as the hand-over plan.
-It covers everything from today's state to a released product. Read
-[DESIGN-GUIDE.md](DESIGN-GUIDE.md) first for decisions D1 to D16 and questions
-Q1 to Q9, and [EXPERIMENTS.md](EXPERIMENTS.md) for scenarios S1 to S12 and
-variants V0 to V4. [../TODO.md](../TODO.md) keeps the live state table; this
-file is the plan behind it. When a package is done, update the table in
-`TODO.md`, not this file, unless the plan itself changes.
+Historical work-package plan written 2026-11-12. Its route, controller,
+worktree, and host-lease instructions are superseded by the current operator
+direction. Use [`../TODO.md`](../TODO.md) for the active work order and
+[INSTALLATION-ARCHITECTURE.md](INSTALLATION-ARCHITECTURE.md) for current
+installation status. Retained below as background planning material only.
 
 Contents: 1 state, 2 who does what (model routing), 3 frontier decisions,
 4 operator prerequisites, 5 process per package, 6 to 13 the packages by

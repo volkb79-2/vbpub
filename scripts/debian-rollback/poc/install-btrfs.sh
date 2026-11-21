@@ -9,7 +9,7 @@
 #
 # Layout (flat, default subvolume stays the top level, id 5):
 #   p1 ESP (vfat) at /boot/efi      p2 btrfs "drroot"
-#   @os-0001                     the first OS state (root, /boot, /etc, /opt, ...)
+#   @os-000001-YYYYMMDD-HHMMSSZ-install  the initial OS state (root, /boot, /etc, /opt, ...)
 #   @home @root @srv @www @log   outside the state (D18)
 #   @docker @containers @postgresql @mysql @usr-local
 # Kernels live inside each state. GRUB (the default) reads them directly from a
@@ -72,7 +72,9 @@ cleanup() { # a failed run must not leave the target mounted (the next run's gua
   umount "$TOP" 2>/dev/null || true
 }
 trap cleanup EXIT
-STATE=@os-0001
+STATE_TIMESTAMP=$(date -u +%Y%m%d%H%M%S)
+STATE=$("$HERE/dr-state" _state-name 000001 "$STATE_TIMESTAMP" install) \
+  || die "cannot construct the timestamped initial state ID"
 DATA_SUBVOLS="@home:/home @root:/root @srv:/srv @www:/var/www @log:/var/log @docker:/var/lib/docker @containers:/var/lib/containers @postgresql:/var/lib/postgresql @mysql:/var/lib/mysql @usr-local:/usr/local"
 # the database and container directories must not be copy-on-write
 NOCOW="@docker @containers @postgresql @mysql"
@@ -159,10 +161,24 @@ else
   # Do not depend on writable EFI variables while installing. The state-carrying config and the ESP marker both
   # select systemd-boot; dr-state fails loudly if they later disagree.
   chroot_run bootctl install --esp-path=/boot/efi --no-variables
+  # Debian's systemd-boot kernel hooks call kernel-install, which creates an extra machine-id BLS entry and kernel
+  # copy outside dr-state's per-state ESP layout. Divert those hooks; the zz-dr-state hooks below own kernel updates.
+  # Keep diverted files outside the run-parts directories: --lsbsysinit accepts the usual .distrib suffix.
+  chroot_run mkdir -p /etc/kernel/dr-disabled
+  for d in postinst.d postrm.d; do
+    hook="/etc/kernel/$d/zz-systemd-boot"
+    target="/etc/kernel/dr-disabled/${d%.d}-zz-systemd-boot"
+    chroot_run dpkg-divert --local --add --rename --divert "$target" "$hook"
+  done
+  # The systemd-boot package postinst calls kernel-install directly, bypassing the hooks above. Disable only its
+  # stock BLS writer through systemd's supported /etc override; dr-state owns the per-state ESP entries.
+  chroot_run mkdir -p /etc/kernel/install.d
+  chroot_run ln -s /dev/null /etc/kernel/install.d/90-loaderentry.install
   run mkdir -p "$T/boot/efi/EFI/dr"
   printf 'systemd-boot\n' | write_file "$T/boot/efi/EFI/dr/bootloader"
   printf 'BOOTLOADER=systemd-boot\n' | write_file "$T/etc/dr-state.conf"
 fi
+chroot_run /usr/local/sbin/dr-state initialize-state "$STATE" "$STATE_TIMESTAMP"
 chroot_run /usr/local/sbin/dr-state gen-menu --default "$STATE"
 
 # Hooks. apt: one writable copy of the running state before every dpkg run, menu refreshed after it.
@@ -170,6 +186,9 @@ chroot_run /usr/local/sbin/dr-state gen-menu --default "$STATE"
 # DR_STATE=none in the environment skips the snapshot (recovery chroots have no rootflags= on the command line).
 if [ "$DRY" != 1 ]; then
   cat >"$T/etc/apt/apt.conf.d/80dr-state" <<'EOF'
+DPkg::Tools::Options::/usr/local/sbin/dr-state::Version "2";
+DPkg::Tools::Options::/usr/local/sbin/dr-state::InfoFD "3";
+DPkg::Pre-Install-Pkgs { "/usr/local/sbin/dr-state apt-pre-install-pkgs"; };
 DPkg::Pre-Invoke { "[ ! -x /usr/local/sbin/dr-state ] || /usr/local/sbin/dr-state snapshot --reason apt || exit 100"; };
 DPkg::Post-Invoke { "[ ! -x /usr/local/sbin/dr-state ] || /usr/local/sbin/dr-state gen-menu || true"; };
 EOF

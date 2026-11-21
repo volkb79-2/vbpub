@@ -6,7 +6,9 @@
 import importlib.util
 import base64
 import contextlib
+import hashlib
 import io
+import inspect
 import re
 import socket
 import subprocess
@@ -139,13 +141,13 @@ def entry_sources_output(entries):
     return 0, "\n".join(lines) + "\n"
 
 
-def scenario_guest(*, backend=None, states=("@os-0001", "@os-0002"), default="@os-0001",
+def scenario_guest(*, backend=None, states=("@os-000001-20261118-120000Z-install", "@os-000002-20261118-120100Z-apt"), default="@os-000001-20261118-120000Z-install",
                    entries=None, file_paths=None, file_extra=(), file_done=True, file_rc=0,
-                   loader="default os-0001.conf\ntimeout 5\n", scratch=(), scratch_done=True, scratch_rc=0,
+                   loader="default os-000001-20261118-120000Z-install.conf\ntimeout 5\n", scratch=(), scratch_done=True, scratch_rc=0,
                    free="12345"):
     entries = entries if entries is not None else [
-        ("/boot/efi/loader/entries/os-0001.conf", bls_text("@os-0001", KID_A, KVER_A)),
-        ("/boot/efi/loader/entries/os-0002.conf", bls_text("@os-0002", KID_B, KVER_B)),
+        ("/boot/efi/loader/entries/os-000001-20261118-120000Z-install.conf", bls_text("@os-000001-20261118-120000Z-install", KID_A, KVER_A)),
+        ("/boot/efi/loader/entries/os-000002-20261118-120100Z-apt.conf", bls_text("@os-000002-20261118-120100Z-apt", KID_B, KVER_B)),
     ]
     if file_paths is None:
         file_paths = {
@@ -207,17 +209,48 @@ def scenario_guest(*, backend=None, states=("@os-0001", "@os-0002"), default="@o
 def main() -> int:
     failures = []
 
-    # the echoed command line contains `$?`, the real marker contains digits: only the latter ends the command
-    g = fake_guest(b"ls; echo __DR_END_$?__\r\nfile1\r\nfile2\r\n__DR_END_0__\r\n")
+    default_state_cases = (
+        ("running-default", "@os-000001-20261118-120000Z-install (running, default) kernel=6.12.107\n", "@os-000001-20261118-120000Z-install"),
+        ("default-only", "@os-000001-20261121-041941Z-apt (default) kernel=6.12.107\n",
+         "@os-000001-20261121-041941Z-apt"),
+        ("running-only", "@os-000001-20261118-120000Z-install (running) kernel=6.12.107\n", ""),
+    )
+    for label, listing, expected in default_state_cases:
+        parsed = subprocess.run(
+            ["awk", drs.DEFAULT_STATE_AWK], input=listing, text=True, capture_output=True, check=False
+        )
+        if parsed.returncode != 0 or parsed.stdout.strip() != expected:
+            failures.append(
+                f"default-state parser {label}: rc={parsed.returncode} got={parsed.stdout.strip()!r} want={expected!r}"
+            )
+
+    # The echoed wrapper does not contain a numeric marker; the real marker ends the command.
+    g = fake_guest(b"eval 'ls'; __dr_serial_rc=$?; printf '__DR_END_%s__\\n' \"$__dr_serial_rc\"\r\nfile1\r\nfile2\r\n__DR_END_0__\r\n")
     rc, text = g.run("ls", 5)
     if rc != 0 or "file2" not in text or re.search(r"__DR_END_\d+__", text):
         failures.append(f"plain command: rc={rc} text={text!r}")
 
     # a failing command reports its exit status
-    g = fake_guest(b"false; echo __DR_END_$?__\r\n__DR_END_1__\r\n")
+    g = fake_guest(b"eval 'false'; __dr_serial_rc=$?; printf '__DR_END_%s__\\n' \"$__dr_serial_rc\"\r\n__DR_END_1__\r\n")
     rc, _ = g.run("false", 5)
     if rc != 1:
         failures.append(f"exit status not carried: {rc}")
+
+    # The wrapper isolates the input command in eval, so syntax-breaking trailing operators and comments
+    # cannot absorb the marker command or turn the guest run into a timeout.
+    for command, want_status in (("false;", 1), ("false &&", 2), ("true ||", 2), ("# comment", 0)):
+        wrapped = drs.marker_wrapped_command(command)
+        syntax = subprocess.run(["bash", "-n"], input=wrapped, text=True, capture_output=True, check=False)
+        if syntax.returncode != 0:
+            failures.append(f"marker wrapper is not syntactically complete for {command!r}: {syntax.stderr.strip()!r}")
+            continue
+        result = subprocess.run(["bash"], input=wrapped, text=True, capture_output=True, check=False)
+        marker = re.search(r"__DR_END_(\d+)__", result.stdout)
+        if marker is None or int(marker.group(1)) != want_status:
+            failures.append(
+                f"marker wrapper did not report {want_status} for {command!r}: "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
 
     # a marker split across two reads is still found
     a, b = socket.socketpair()
@@ -236,41 +269,68 @@ def main() -> int:
     if rc != 7:
         failures.append(f"split marker: rc={rc}")
 
-    # login: the first probe is discarded by login (typed too early), the second is answered
+    # login: startup sends only a newline until it has observed a login or root-shell prompt.
     a, b = socket.socketpair()
     a.setblocking(False)
     g = drs.Guest("unused", io.StringIO())
     g.sock = a
+    login_errors = []
 
-    def recv_until(needle: bytes) -> None:
+    def recv_until(needle: bytes) -> bytes:
         b.settimeout(25)
         data = b""
         while needle not in data:
             data += b.recv(256)
+        return data
 
     def serve_login():
-        recv_until(b"__DR_READY_")           # the up-front "already logged in?" probe: no shell yet, no answer
-        b.sendall(b"drpoc login: ")
-        recv_until(b"root\n")
-        b.sendall(b"Password: ")
-        recv_until(b"root\n")
-        b.sendall(b"\r\nLinux drpoc 6.12 ...\r\n")
-        recv_until(b"__DR_READY_")           # first probe: swallowed, as login(1) does
-        recv_until(b"__DR_READY_")           # second probe: answered
-        b.sendall(b"echo __DR_READY_$((20+22))__\r\n__DR_READY_42__\r\n")
+        try:
+            first = b.recv(256)
+            if first != b"\n":
+                login_errors.append(f"unsafe pre-login input: {first!r}")
+                return
+            b.sendall(b"drpoc login: ")
+            recv_until(b"root\n")
+            b.sendall(b"Password: ")
+            recv_until(b"root\n")
+            b.sendall(b"\r\nLinux drpoc 6.12 ...\r\n")
+            recv_until(b"__DR_READY_")
+            b.sendall(b"echo __DR_READY_$((20+22))__\r\n__DR_READY_42__\r\n")
+        except Exception as exc:  # noqa: BLE001 - report fake serial exchange failures
+            login_errors.append(repr(exc))
 
     threading.Thread(target=serve_login, daemon=True).start()
     try:
         g.login(30)
     except Exception as exc:  # noqa: BLE001 - report any failure of the fake exchange
-        failures.append(f"login with a swallowed first probe failed: {exc!r}")
+        failures.append(f"safe login handshake failed: {exc!r}")
+    if login_errors or not g.shell_ready:
+        failures.append(f"safe login handshake: errors={login_errors!r}, shell_ready={g.shell_ready}")
 
-    # already logged in: the first probe is answered, no login prompt is needed
-    g = fake_guest(b"echo __DR_READY_$((20+22))__\r\n__DR_READY_42__\r\n")
+    # An existing root shell answers a newline with its prompt; no shell command is sent.
+    a, b = socket.socketpair()
+    a.setblocking(False)
+    g = drs.Guest("unused", io.StringIO())
+    g.sock = a
+    existing_shell_errors = []
+
+    def serve_existing_shell():
+        try:
+            first = b.recv(256)
+            if first != b"\n":
+                existing_shell_errors.append(f"unsafe existing-shell input: {first!r}")
+                return
+            b.sendall(b"\r\n\x1b[?2004hroot@drpoc:~# ")
+        except Exception as exc:  # noqa: BLE001 - report fake serial exchange failures
+            existing_shell_errors.append(repr(exc))
+
+    threading.Thread(target=serve_existing_shell, daemon=True).start()
     try:
         g.login(30)
     except Exception as exc:  # noqa: BLE001
         failures.append(f"login on an already logged-in shell failed: {exc!r}")
+    if existing_shell_errors or not g.shell_ready:
+        failures.append(f"existing-shell handshake: errors={existing_shell_errors!r}, shell_ready={g.shell_ready}")
 
     # tags: the echoed command line, also wrapped by the tty at 80 columns, never satisfies a check
     echoed = ("root@drpoc:~# echo OFFER:$(apt list --upgradable 2>/dev/null | grep -c '^linux-image'); echo KVER:$(uname\n"
@@ -282,8 +342,20 @@ def main() -> int:
         failures.append("tag() matched the echoed command line (vacuous check)")
     if drs.tags("MP:/home\nMP:/srv\nNOTMP:/opt\nNOTMP:$m\nMP:$m\n", "MP") != ["/home", "/srv"]:
         failures.append("tags() with a loop variable echo")
-    if drs.running_state("BOOT_IMAGE=/@os-pre-20261118072759-647-apt/boot/vmlinuz-6 rootflags=subvol=@os-pre-20261118072759-647-apt ro") != "@os-pre-20261118072759-647-apt":
+    if drs.running_state("BOOT_IMAGE=/@os-000647-20261118-072759Z-apt/boot/vmlinuz-6 rootflags=subvol=@os-000647-20261118-072759Z-apt ro") != "@os-000647-20261118-072759Z-apt":
         failures.append("running_state() on a snapshot state")
+    for state, want in (
+        ("@os-000001-20261121-120000Z-install", False),
+        ("@os-000002-20261121-120100Z-apt", True),
+        ("@os-000003-20261121-120200Z-manual-before-upgrade", True),
+        ("@os-pre-20261118131158-605-apt", False),
+        ("@os-000004-20261340-120000Z-apt", False),
+    ):
+        got = drs.is_snapshot_state(state)
+        if got != want:
+            failures.append(f"is_snapshot_state({state!r}): want {want} got {got}")
+    if drs.snapshot_state_slug("@os-000003-20261121-120200Z-manual-before-upgrade") != "manual-before-upgrade":
+        failures.append("snapshot_state_slug() did not return the normalized manual reason")
 
     # Backend selection follows dr-state: both sources are presence-aware, either may select GRUB,
     # the sources may agree, and empty/conflicting/unknown values never fall back.
@@ -329,18 +401,18 @@ def main() -> int:
     loader_conf = (
         "# generated by dr-state sdboot\n"
         "timeout 5\n"
-        "default os-pre-20261118131158-605-s5.conf\n"
+        "default os-000605-20261118-131158Z-manual-s5-conf.conf\n"
     )
-    if drs.parse_loader_default(loader_conf) != "os-pre-20261118131158-605-s5.conf":
+    if drs.parse_loader_default(loader_conf) != "os-000605-20261118-131158Z-manual-s5-conf.conf":
         failures.append("parse_loader_default() read the wrong entry file")
-    if drs.parse_loader_default(loader_conf.replace("\n", "\r\n")) != "os-pre-20261118131158-605-s5.conf":
+    if drs.parse_loader_default(loader_conf.replace("\n", "\r\n")) != "os-000605-20261118-131158Z-manual-s5-conf.conf":
         failures.append("parse_loader_default() did not accept CRLF")
     for label, text in (
         ("zero defaults", "timeout 5\n"),
         ("two defaults", "default one\ndefault two\n"),
         ("missing value", "default\n"),
         ("too many fields", "default one two\n"),
-        ("suffix-less old guest value", "default os-0001\ntimeout 5\n"),
+        ("suffix-less old guest value", "default os-000001-20261118-120000Z-install\ntimeout 5\n"),
         ("unsafe shell value", "default '$missing.conf'\n"),
     ):
         try:
@@ -350,7 +422,7 @@ def main() -> int:
         else:
             failures.append(f"parse_loader_default(): {label} accepted")
     try:
-        drs.parse_loader_default("default os-0001\ntimeout 5\n")
+        drs.parse_loader_default("default os-000001-20261118-120000Z-install\ntimeout 5\n")
     except ValueError as exc:
         if ".conf" not in str(exc) or "guest finding" not in str(exc):
             failures.append(f"parse_loader_default(): suffix-less value lacks the guest-finding message: {exc}")
@@ -359,24 +431,24 @@ def main() -> int:
 
     sample_selected = (
         b"\x07\x00\x00\x00"
-        + "os-pre-20261118224917-622-apt.conf".encode("utf-16-le")
+        + "os-000622-20261118-224917Z-manual-apt-conf.conf".encode("utf-16-le")
         + b"\x00\x00"
     )
     try:
-        if drs.parse_efivar_string(sample_selected) != "os-pre-20261118224917-622-apt.conf":
+        if drs.parse_efivar_string(sample_selected) != "os-000622-20261118-224917Z-manual-apt-conf.conf":
             failures.append("parse_efivar_string() read the wrong LoaderEntrySelected value")
     except Exception as exc:  # noqa: BLE001
         failures.append(f"parse_efivar_string() raised on sample efivar content: {exc!r}")
     if drs.parse_bootctl_list_evidence(
         "BOOTCTL_LIST_BEGIN:1\n"
-        "id: os-0001.conf\nselected: no\ndefault: yes\n"
-        "id: os-pre-20261118224917-622-apt.conf\nselected: yes\ndefault: no\n"
+        "id: os-000001-20261118-120000Z-install.conf\nselected: no\ndefault: yes\n"
+        "id: os-000622-20261118-224917Z-manual-apt-conf.conf\nselected: yes\ndefault: no\n"
         "BOOTCTL_LIST_RC:0\nBOOTCTL_LIST_END:1\n"
     ) != [
-        "id: os-0001.conf",
+        "id: os-000001-20261118-120000Z-install.conf",
         "selected: no",
         "default: yes",
-        "id: os-pre-20261118224917-622-apt.conf",
+        "id: os-000622-20261118-224917Z-manual-apt-conf.conf",
         "selected: yes",
         "default: no",
     ]:
@@ -385,12 +457,12 @@ def main() -> int:
     # BLS entries: exactly one kernel and one matching initrd, and the state from rootflags=subvol=
     bls_entry = (
         "# generated by dr-state sdboot; do not edit\n"
-        "title Debian @os-0001 (kernel 6.12.117+deb13-amd64)\n"
+        "title Debian @os-000001-20261118-120000Z-install (kernel 6.12.117+deb13-amd64)\n"
         "linux /EFI/dr/kernels/6.12.117+deb13-amd64-0123456789ab/vmlinuz\n"
         "initrd /EFI/dr/kernels/6.12.117+deb13-amd64-0123456789ab/initrd.img\n"
         "options root=UUID=11111111-2222-3333-4444-555555555555 "
-        "rootflags=subvol=@os-0001 ro console=ttyS0,115200\n"
-        "sort-key os-0001\n"
+        "rootflags=subvol=@os-000001-20261118-120000Z-install ro console=ttyS0,115200\n"
+        "sort-key os-000001-20261118-120000Z-install\n"
     )
     try:
         parsed = drs.parse_bls_entry(bls_entry)
@@ -401,16 +473,16 @@ def main() -> int:
             failures.append(f"parse_bls_entry() read linux={parsed['linux']!r}")
         if parsed["initrd"] != ["/EFI/dr/kernels/6.12.117+deb13-amd64-0123456789ab/initrd.img"]:
             failures.append(f"parse_bls_entry() read initrd={parsed['initrd']!r}")
-        if parsed["state"] != "@os-0001":
+        if parsed["state"] != "@os-000001-20261118-120000Z-install":
             failures.append(f"parse_bls_entry() read state={parsed['state']!r}")
 
     parsed_crlf = drs.parse_bls_entry(bls_entry.replace("\n", "\r\n"))
-    if parsed_crlf["state"] != "@os-0001":
+    if parsed_crlf["state"] != "@os-000001-20261118-120000Z-install":
         failures.append("parse_bls_entry() did not accept CRLF")
     for label, text in (
         ("missing linux", bls_entry.replace("linux /EFI/dr/kernels/", "# linux /EFI/dr/kernels/")),
         ("missing initrd", bls_entry.replace("initrd /EFI/dr/kernels/", "# initrd /EFI/dr/kernels/")),
-        ("missing state", bls_entry.replace("rootflags=subvol=@os-0001 ", "")),
+        ("missing state", bls_entry.replace("rootflags=subvol=@os-000001-20261118-120000Z-install ", "")),
         ("parent traversal", bls_entry.replace(
             "/EFI/dr/kernels/6.12.117+deb13-amd64-0123456789ab/vmlinuz",
             "/EFI/dr/kernels/../vmlinuz",
@@ -429,39 +501,39 @@ def main() -> int:
             f"initrd /EFI/dr/kernels/{KID_A}/initrd.img\n",
         )),
         ("fallback initrd name", bls_text(
-            "@os-0001", KID_A, KVER_A,
+            "@os-000001-20261118-120000Z-install", KID_A, KVER_A,
             initrd=f"/EFI/dr/kernels/{KID_A}/initrd-fallback.img",
         )),
         ("kernel with shell variable", bls_text(
-            "@os-0001", KID_A, KVER_A,
+            "@os-000001-20261118-120000Z-install", KID_A, KVER_A,
             linux="/EFI/dr/kernels/$missing/vmlinuz",
         )),
         ("kernel with backtick", bls_text(
-            "@os-0001", KID_A, KVER_A,
+            "@os-000001-20261118-120000Z-install", KID_A, KVER_A,
             linux="/EFI/dr/kernels/`id`/vmlinuz",
         )),
         ("kernel with parentheses", bls_text(
-            "@os-0001", KID_A, KVER_A,
+            "@os-000001-20261118-120000Z-install", KID_A, KVER_A,
             linux="/EFI/dr/kernels/(bad)/vmlinuz",
         )),
         ("invalid kernel id hash", bls_text(
-            "@os-0001", KID_A, KVER_A,
+            "@os-000001-20261118-120000Z-install", KID_A, KVER_A,
             linux="/EFI/dr/kernels/6.12.117+deb13-amd64-0123456789a/vmlinuz",
         )),
         ("uppercase kernel id hash", bls_text(
-            "@os-0001", KID_A, KVER_A,
+            "@os-000001-20261118-120000Z-install", KID_A, KVER_A,
             linux="/EFI/dr/kernels/6.12.117+deb13-amd64-0123456789AB/vmlinuz",
         )),
         ("kernel id parent traversal", bls_text(
-            "@os-0001", KID_A, KVER_A,
+            "@os-000001-20261118-120000Z-install", KID_A, KVER_A,
             linux="/EFI/dr/kernels/6.12.117..evil-0123456789ab/vmlinuz",
         )),
         ("wrong kernel filename", bls_text(
-            "@os-0001", KID_A, KVER_A,
+            "@os-000001-20261118-120000Z-install", KID_A, KVER_A,
             linux=f"/EFI/dr/kernels/{KID_A}/vmlinuz.old",
         )),
         ("initrd names another kernel id", bls_text(
-            "@os-0001", KID_A, KVER_A,
+            "@os-000001-20261118-120000Z-install", KID_A, KVER_A,
             initrd=f"/EFI/dr/kernels/{KID_B}/initrd.img",
             linux=f"/EFI/dr/kernels/{KID_A}/vmlinuz",
         )),
@@ -474,11 +546,11 @@ def main() -> int:
             failures.append(f"parse_bls_entry(): {label} accepted")
 
     # The kernel-upgrade scenario compares the state/kernel pairs in BLS titles.
-    if drs.parse_bls_title("title Debian @os-0001 (kernel 6.12.117+deb13-amd64)") != (
-        "@os-0001", "6.12.117+deb13-amd64"
+    if drs.parse_bls_title("title Debian @os-000001-20261118-120000Z-install (kernel 6.12.117+deb13-amd64)") != (
+        "@os-000001-20261118-120000Z-install", "6.12.117+deb13-amd64"
     ):
         failures.append("parse_bls_title() read the wrong state/kernel pair")
-    for text in ("title Debian (kernel 6.12)", "title other @os-0001 (kernel 6.12)", "title Debian @os-0001"):
+    for text in ("title Debian (kernel 6.12)", "title other @os-000001-20261118-120000Z-install (kernel 6.12)", "title Debian @os-000001-20261118-120000Z-install"):
         try:
             drs.parse_bls_title(text)
         except ValueError:
@@ -492,7 +564,7 @@ def main() -> int:
         f"/boot/efi/EFI/dr/kernels/{KID_A}/.vmlinuz.tmp.123",
         f"/boot/efi/EFI/dr/kernels/{KID_A}/.initrd.img.tmp.123",
         "/boot/efi/loader/entries/.dr-state-entry.new.123",
-        "/boot/efi/loader/entries/.os-0001.conf.new.123",
+        "/boot/efi/loader/entries/.os-000001-20261118-120000Z-install.conf.new.123",
         "/boot/efi/loader/loader.conf.new.123",
         "/boot/efi/EFI/dr/bootloader.new.123",
     )
@@ -507,8 +579,8 @@ def main() -> int:
         f"/boot/efi/EFI/dr/kernels/{KID_A}/.vmlinuz.tmp.123.bak",
         f"/boot/efi/EFI/dr/kernels/{KID_A}/.initrd.img.tmp.123.bak",
         "/boot/efi/loader/entries/.dr-state-entry.new.backup",
-        "/boot/efi/loader/entries/.os-0001.conf.new.backup",
-        "/boot/efi/loader/entries/.os-0001..evil.conf.new.123",
+        "/boot/efi/loader/entries/.os-000001-20261118-120000Z-install.conf.new.backup",
+        "/boot/efi/loader/entries/.os-000001-20261118-120000Z-install..evil.conf.new.123",
         "/boot/efi/loader/loader.conf.new.backup",
         "/boot/efi/EFI/dr/bootloader.new.backup",
     ):
@@ -582,8 +654,8 @@ def main() -> int:
     # Execute sdboot-esp against scripted guests: the good config-only backend passes, while each
     # omission/malformed value/foreign entry/scratch shape records a failed check.
     good_entries = [
-        ("/boot/efi/loader/entries/os-0001.conf", bls_text("@os-0001", KID_A, KVER_A)),
-        ("/boot/efi/loader/entries/os-0002.conf", bls_text("@os-0002", KID_B, KVER_B)),
+        ("/boot/efi/loader/entries/os-000001-20261118-120000Z-install.conf", bls_text("@os-000001-20261118-120000Z-install", KID_A, KVER_A)),
+        ("/boot/efi/loader/entries/os-000002-20261118-120100Z-apt.conf", bls_text("@os-000002-20261118-120100Z-apt", KID_B, KVER_B)),
     ]
 
     def sdboot_result(guest):
@@ -595,7 +667,7 @@ def main() -> int:
 
     _, old_default_fails, old_default_raised = sdboot_result(scenario_guest(
         entries=good_entries,
-        loader="default os-0001\ntimeout 5\n",
+        loader="default os-000001-20261118-120000Z-install\ntimeout 5\n",
     ))
     if old_default_raised is not None or not old_default_fails:
         failures.append(
@@ -615,7 +687,7 @@ def main() -> int:
 
     fabricated_entries = [
         good_entries[0],
-        ("/boot/efi/loader/entries/foreign.conf", bls_text("@os-0002", KID_B, KVER_B)),
+        ("/boot/efi/loader/entries/foreign.conf", bls_text("@os-000002-20261118-120100Z-apt", KID_B, KVER_B)),
     ]
     _, fabricated_fails, fabricated_raised = sdboot_result(
         scenario_guest(entries=fabricated_entries)
@@ -626,12 +698,12 @@ def main() -> int:
         )
 
     swapped_entries = [
-        ("/boot/efi/loader/entries/os-0001.conf", bls_text("@os-0002", KID_B, KVER_B)),
-        ("/boot/efi/loader/entries/os-0002.conf", bls_text("@os-0001", KID_A, KVER_A)),
+        ("/boot/efi/loader/entries/os-000001-20261118-120000Z-install.conf", bls_text("@os-000002-20261118-120100Z-apt", KID_B, KVER_B)),
+        ("/boot/efi/loader/entries/os-000002-20261118-120100Z-apt.conf", bls_text("@os-000001-20261118-120000Z-install", KID_A, KVER_A)),
     ]
     _, swapped_fails, swapped_raised = sdboot_result(scenario_guest(
-        states=("@os-0002", "@os-0001"),
-        default="@os-0002",
+        states=("@os-000002-20261118-120100Z-apt", "@os-000001-20261118-120000Z-install"),
+        default="@os-000002-20261118-120100Z-apt",
         entries=swapped_entries,
     ))
     if swapped_raised is not None or not swapped_fails:
@@ -642,10 +714,10 @@ def main() -> int:
     wrong_title_entries = [
         good_entries[0],
         (
-            "/boot/efi/loader/entries/os-0002.conf",
+            "/boot/efi/loader/entries/os-000002-20261118-120100Z-apt.conf",
             good_entries[1][1].replace(
-                "title Debian @os-0002",
-                "title Debian @os-0001",
+                "title Debian @os-000002-20261118-120100Z-apt",
+                "title Debian @os-000001-20261118-120000Z-install",
                 1,
             ),
         ),
@@ -657,7 +729,7 @@ def main() -> int:
     wrong_marker_entries = [
         good_entries[0],
         (
-            "/boot/efi/loader/entries/os-0002.conf",
+            "/boot/efi/loader/entries/os-000002-20261118-120100Z-apt.conf",
             good_entries[1][1].replace(
                 "# generated by dr-state sdboot; do not edit",
                 "# generated by another bootloader",
@@ -701,9 +773,9 @@ def main() -> int:
     if file_rc_raised is not None or not file_rc_fails:
         failures.append(f"sdboot-esp nonzero file scan rc: fails={file_rc_fails!r} raised={file_rc_raised!r}")
 
-    empty_entries = [("/boot/efi/loader/entries/os-0001.conf", "")]
-    _, empty_fails, empty_raised = sdboot_result(scenario_guest(entries=empty_entries, states=("@os-0001",),
-                                                               default="@os-0001"))
+    empty_entries = [("/boot/efi/loader/entries/os-000001-20261118-120000Z-install.conf", "")]
+    _, empty_fails, empty_raised = sdboot_result(scenario_guest(entries=empty_entries, states=("@os-000001-20261118-120000Z-install",),
+                                                               default="@os-000001-20261118-120000Z-install"))
     if empty_raised is not None or not empty_fails:
         failures.append(f"sdboot-esp empty entry: fails={empty_fails!r} raised={empty_raised!r}")
 
@@ -715,8 +787,8 @@ def main() -> int:
         failures.append(f"sdboot-esp foreign entry: fails={foreign_fails!r} raised={foreign_raised!r}")
 
     bad_path_entries = [
-        ("/boot/efi/loader/entries/os-0001.conf", bls_text(
-            "@os-0001", KID_A, KVER_A, linux="/EFI/dr/kernels/$missing/vmlinuz",
+        ("/boot/efi/loader/entries/os-000001-20261118-120000Z-install.conf", bls_text(
+            "@os-000001-20261118-120000Z-install", KID_A, KVER_A, linux="/EFI/dr/kernels/$missing/vmlinuz",
         )),
         good_entries[1],
     ]
@@ -736,14 +808,18 @@ def main() -> int:
         failures.append(f"sdboot-esp nonzero scratch scan rc: fails={scan_rc_fails!r} raised={scan_rc_raised!r}")
 
     # s2-s3 must derive menu states from canonical marked entries, not merely count *.conf files.
-    s2_state0 = "@os-0001"
-    s2_pre = "@os-pre-20261118131158-605-s2s3"
+    s2_state0 = "@os-000001-20261118-120000Z-install"
+    s2_pre = "@os-000605-20261118-131158Z-apt"
+    dr_state_source = Path(drs.__file__).with_name("dr-state").read_bytes()
+    dr_state_sha = hashlib.sha256(dr_state_source).hexdigest()
+    apt_hook_source = drs.current_apt_hook_config()
+    apt_hook_sha = hashlib.sha256(apt_hook_source).hexdigest()
     s2_reboots = 0
     s2_list_calls = 0
 
     def s2_s3_guest(
         menu_entries,
-        loader="default os-0001.conf\ntimeout 5\n",
+        loader="default os-000001-20261118-120000Z-install.conf\ntimeout 5\n",
     ):
         nonlocal s2_reboots, s2_list_calls
         s2_reboots = 0
@@ -753,6 +829,27 @@ def main() -> int:
             nonlocal s2_reboots, s2_list_calls
             if "BACKEND_SOURCES_DONE" in cmd:
                 return backend_output(config="BOOTLOADER=systemd-boot\n")
+            if "DR_STATE_B64" in cmd:
+                match = re.search(r"<<'DR_STATE_B64'\n(.*?)DR_STATE_B64\n", cmd, re.S)
+                if match is None or base64.b64decode("".join(match.group(1).split()), validate=True) != dr_state_source:
+                    raise AssertionError("s2-s3 did not upload the exact current dr-state source")
+                return 0, f"DRSTATE_SHA:{dr_state_sha}\nDRSTATE_INSTALL_RC:0\n"
+            if "APT_HOOK_B64" in cmd:
+                match = re.search(r"<<'APT_HOOK_B64'\n(.*?)APT_HOOK_B64\n", cmd, re.S)
+                if match is None or base64.b64decode("".join(match.group(1).split()), validate=True) != apt_hook_source:
+                    raise AssertionError("s2-s3 did not upload the exact current APT hook config")
+                return 0, f"APTHOOK_SHA:{apt_hook_sha}\nAPTHOOK_INSTALL_RC:0\n"
+            if cmd == "dr-state list":
+                return 0, f"@os-000001-20261118-120000Z-install (default) kernel={KVER_A}\n{s2_pre} kernel={KVER_B} created=2026-11-18T13:11:58Z reason=apt os=Debian GNU/Linux 13 changes=install hello - -> 2.10-3\n"
+            if cmd == f"dr-state show {s2_pre}":
+                return 0, (
+                    f"state: {s2_pre}\nsequence: 000605\norigin-slug: apt\nsource: apt\nreason: apt\n"
+                    "created-utc: 2026-11-18T13:11:58Z\n"
+                    "os-at-snapshot: Debian GNU/Linux 13 (fixture)\n"
+                    f"running-kernel-at-snapshot: {KVER_A}\n"
+                    "key-package-versions:\napt\t3.0\ndpkg\t1.22\n"
+                    "apt-package-actions:\ninstall hello - -> 2.10-3\n"
+                )
             if "dr-state list" in cmd and "STATES:" in cmd:
                 s2_list_calls += 1
                 states = (s2_state0,) if s2_list_calls == 1 else (s2_state0, s2_pre)
@@ -777,7 +874,7 @@ def main() -> int:
                     raise AssertionError(f"selection evidence command missing {missing}: {cmd}")
                 return 0, (
                     "BOOTCTL_LIST_BEGIN:1\n"
-                    "id: os-0001.conf\n"
+                    "id: os-000001-20261118-120000Z-install.conf\n"
                     "selected: no\n"
                     "default: yes\n"
                     f"id: {s2_pre.removeprefix('@')}.conf\n"
@@ -796,6 +893,8 @@ def main() -> int:
                 return 0, "BORC:0\n"
             if "SDRC:" in cmd:
                 return 0, "SDRC:0\n"
+            if "KERNEL:" in cmd:
+                return 0, f"KERNEL:{KVER_A}\n"
             if "MK:" in cmd:
                 return 0, "MK:m1_m2_m3_etc1\n"
             if "HOME:" in cmd and "SRV:" in cmd:
@@ -821,8 +920,8 @@ def main() -> int:
         return guest
 
     s2_good_entries = [
-        ("/boot/efi/loader/entries/os-0001.conf", bls_text(s2_state0, KID_A, KVER_A)),
-        ("/boot/efi/loader/entries/os-pre-20261118131158-605-s2s3.conf",
+        ("/boot/efi/loader/entries/os-000001-20261118-120000Z-install.conf", bls_text(s2_state0, KID_A, KVER_A)),
+        (f"/boot/efi/loader/entries/{s2_pre.removeprefix('@')}.conf",
          bls_text(s2_pre, KID_B, KVER_B)),
     ]
     s2_good_guest = s2_s3_guest(s2_good_entries)
@@ -839,7 +938,7 @@ def main() -> int:
 
     _, s2_old_default_fails, s2_old_default_raised = capture_scenario(
         lambda: drs.scenario_s2_s3(
-            s2_s3_guest(s2_good_entries, loader="default os-0001\ntimeout 5\n"),
+            s2_s3_guest(s2_good_entries, loader="default os-000001-20261118-120000Z-install\ntimeout 5\n"),
             io.StringIO(),
         )
     )
@@ -857,9 +956,9 @@ def main() -> int:
             absent=True,
             done=True,
             rc=0,
-            running="@os-0001",
-            default="@os-0001",
-            target="@os-0002",
+            running="@os-000001-20261118-120000Z-install",
+            default="@os-000001-20261118-120000Z-install",
+            target="@os-000002-20261118-120100Z-apt",
         ):
             boots = 0
 
@@ -867,7 +966,7 @@ def main() -> int:
                 if "BACKEND_SOURCES_DONE" in cmd:
                     return backend_output(config="BOOTLOADER=systemd-boot\n")
                 if "dr-state list" in cmd and "STATES:" in cmd:
-                    return 0, "STATES:@os-0001,@os-0002\n"
+                    return 0, "STATES:@os-000001-20261118-120000Z-install,@os-000002-20261118-120100Z-apt\n"
                 if "DEF:" in cmd:
                     return 0, f"DEF:{default}\n"
                 if "dr-state boot-once" in cmd:
@@ -912,12 +1011,12 @@ def main() -> int:
             failures.append(
                 f"sdboot-oneshot-consumed good guest: fails={one_good_fails!r} raised={one_good_raised!r}"
             )
-        if not any("dr-state boot-once @os-0002" in cmd for cmd in one_good_guest.commands):
+        if not any("dr-state boot-once @os-000002-20261118-120100Z-apt" in cmd for cmd in one_good_guest.commands):
             failures.append("sdboot-oneshot-consumed did not select a state distinct from the default")
 
         _, reused_fails, reused_raised = capture_scenario(
             lambda: drs.scenario_sdboot_oneshot_consumed(
-                oneshot_guest(running="@os-0002", default="@os-0001", target="@os-0001"),
+                oneshot_guest(running="@os-000002-20261118-120100Z-apt", default="@os-000001-20261118-120000Z-install", target="@os-000001-20261118-120000Z-install"),
                 io.StringIO(),
             )
         )
@@ -967,8 +1066,8 @@ def main() -> int:
 
     # A config-only systemd-boot install has no ESP marker. The kernel flow must baseline the
     # independently required systemd-boot binary and hash only the backend source that exists.
-    state0 = "@os-0001"
-    pre = "@os-pre-20261118131158-605-kernel"
+    state0 = "@os-000001-20261118-120000Z-install"
+    pre = "@os-000605-20261118-131158Z-manual-kernel"
     reboots = 0
     list_calls = 0
     baseline = (
@@ -977,9 +1076,9 @@ def main() -> int:
         "EFI_BASELINE_DONE:1\n"
     )
     upgraded_entries = [
-        ("/boot/efi/loader/entries/os-0001.conf", bls_text(state0, KID_B, KVER_B)),
+        ("/boot/efi/loader/entries/os-000001-20261118-120000Z-install.conf", bls_text(state0, KID_B, KVER_B)),
         (
-            "/boot/efi/loader/entries/os-pre-20261118131158-605-kernel.conf",
+            "/boot/efi/loader/entries/os-000605-20261118-131158Z-manual-kernel.conf",
             bls_text(pre, KID_A, KVER_A),
         ),
     ]
@@ -988,6 +1087,9 @@ def main() -> int:
         nonlocal reboots, list_calls
         if "BACKEND_SOURCES_DONE" in cmd:
             return backend_output(config="BOOTLOADER=systemd-boot\n")
+        if "DRSTATE_SHA:" in cmd:
+            digest = hashlib.sha256(Path(drs.__file__).with_name("dr-state").read_bytes()).hexdigest()
+            return 0, f"DRSTATE_SHA:{digest}\n"
         if "EFI_BASELINE_DONE" in cmd:
             required = (
                 "/boot/efi/EFI/systemd/systemd-bootx64.efi",
@@ -1017,6 +1119,23 @@ def main() -> int:
             return 0, "STATES:" + ",".join(states) + "\n"
         if "DEF:" in cmd:
             return 0, f"DEF:{state0}\n"
+        if "SDBOOT_HOOKS_OK" in cmd:
+            return 0, (
+                "SDBOOT_HOOK:postinst:diverted\n"
+                "SDBOOT_HOOK:postrm:diverted\n"
+                "SDBOOT_HOOKS_OK:1\n"
+            )
+        if "SDBOOT_ENTRY_PLUGIN_OK" in cmd:
+            required = (
+                "/usr/lib/kernel/install.d/90-loaderentry.install",
+                "/etc/kernel/install.d/90-loaderentry.install",
+                '"$(readlink "$override")" = /dev/null',
+                "SDBOOT_ENTRY_PLUGIN_OK",
+            )
+            missing = [fragment for fragment in required if fragment not in cmd]
+            if missing:
+                raise AssertionError(f"kernel-install plugin probe missing {missing}: {cmd}")
+            return 0, "SDBOOT_ENTRY_PLUGIN:disabled\nSDBOOT_ENTRY_PLUGIN_OK:1\n"
         if "BLS_B64" in cmd:
             return entry_sources_output(upgraded_entries)
         if "dr-updates.list" in cmd:
@@ -1060,10 +1179,17 @@ def main() -> int:
     if kernel_raised is not None or kernel_fails:
         failures.append(f"kernel-upgrade config-only systemd-boot: fails={kernel_fails!r} raised={kernel_raised!r}")
 
+    if not any("SDBOOT_HOOKS_OK" in command for command in kernel_guest.commands):
+        failures.append("kernel-upgrade did not verify the systemd-boot kernel-hook diversions before upgrading")
+    if not any("SDBOOT_ENTRY_PLUGIN_OK" in command for command in kernel_guest.commands):
+        failures.append("kernel-upgrade did not verify the systemd kernel-install BLS override before upgrading")
+    if not any("DRSTATE_SHA:" in command for command in kernel_guest.commands):
+        failures.append("kernel-upgrade did not verify the guest's dr-state source before upgrading")
+
     for index, command in enumerate(kernel_guest.commands, start=1):
         if command.rstrip().endswith(";"):
             failures.append(f"kernel-upgrade command {index} ends in a semicolon: {command[-160:]!r}")
-        wrapped = f"{command}; echo __DR_END_$?__\n"
+        wrapped = drs.marker_wrapped_command(command)
         syntax = subprocess.run(["bash", "-n"], input=wrapped, text=True, capture_output=True, check=False)
         if syntax.returncode != 0:
             failures.append(
@@ -1140,6 +1266,89 @@ def main() -> int:
         if reply != {"return": {}} or seen != ["qmp_capabilities", "system_reset"]:
             failures.append(f"qmp_command: reply={reply!r} seen={seen!r}")
         srv.close()
+
+    # QMP command arguments survive the protocol round trip for virtual-keyboard menu selection.
+    with tempfile.TemporaryDirectory() as tmp:
+        qpath = os.path.join(tmp, "qmp.sock")
+        srv = socket.socket(socket.AF_UNIX)
+        srv.bind(qpath)
+        srv.listen(1)
+        seen = []
+
+        def qmp_key_server():
+            conn, _ = srv.accept()
+            f = conn.makefile("rw")
+            f.write(json.dumps({"QMP": {"version": {}, "capabilities": []}}) + "\n")
+            f.flush()
+            for expected in ("qmp_capabilities", "send-key"):
+                req = json.loads(f.readline())
+                seen.append(req)
+                if req["execute"] != expected:
+                    break
+                f.write(json.dumps({"return": {}}) + "\n")
+                f.flush()
+            conn.close()
+
+        threading.Thread(target=qmp_key_server, daemon=True).start()
+        key_args = {"keys": [{"type": "qcode", "data": "down"}], "hold-time": 100}
+        reply = drs.qmp_command(qpath, "send-key", arguments=key_args, timeout=10)
+        if reply != {"return": {}} or len(seen) != 2 or seen[-1] != {"execute": "send-key", "arguments": key_args}:
+            failures.append(f"qmp_command send-key: reply={reply!r} seen={seen!r}")
+        srv.close()
+
+    # Recovery scenarios must exercise a human boot-menu selection. A boot-once staged before damage would not
+    # cover the operator path requested for an unusable default environment.
+    for scenario_name in ("scenario_recovery_kernel", "scenario_recovery_library"):
+        scenario = getattr(drs, scenario_name, None)
+        if scenario is None:
+            failures.append(f"{scenario_name} is missing")
+            continue
+        source = inspect.getsource(scenario)
+        if "select_older_entry_from_boot_menu" not in source or "boot-once" in source:
+            failures.append(f"{scenario_name} does not use a manual boot-menu recovery path")
+        if "delete_recovery_state" not in source:
+            failures.append(f"{scenario_name} does not exercise cleanup of the failed state")
+
+    move_source = inspect.getsource(drs.move_package_file_command)
+    if "rename($path, $backup)" not in move_source or "$dir->sync" not in move_source:
+        failures.append("package damage helper must rename one exact file and fsync its parent directory")
+    with tempfile.TemporaryDirectory() as temp_root:
+        root = Path(temp_root) / "package path with spaces"
+        root.mkdir()
+        path = root / "ld-linux-x86-64.so.2"
+        path.write_bytes(b"known-good loader payload\n")
+        command = drs.move_package_file_command(path)
+        argv = drs.shlex.split(command)
+        if (argv[:4] != ["perl", "-MIO::Handle", "-MFcntl=O_RDONLY,O_DIRECTORY", "-e"]
+                or "rename($path, $backup)" not in argv[4] or "$dir->sync" not in argv[4]
+                or argv[-3:] != [str(path), f"{path}.dr-acceptance-original", str(root)]):
+            failures.append(f"package damage command lost its exact paths or fsync contract: {argv!r}")
+        syntax = subprocess.run(
+            ["bash", "-n"], input=drs.marker_wrapped_command(command), text=True, capture_output=True, check=False
+        )
+        if syntax.returncode != 0:
+            failures.append(f"package damage command is not safely marker-wrapped: {syntax.stderr.strip()!r}")
+
+    dr_state_source = Path(drs.__file__).with_name("dr-state").read_bytes()
+    dr_state_sha = hashlib.sha256(dr_state_source).hexdigest()
+
+    def dr_state_install_responder(command):
+        match = re.search(r"<<'DR_STATE_B64'\n(.*?)DR_STATE_B64\n", command, re.S)
+        if not match:
+            raise AssertionError("recovery guest did not receive dr-state through a delimited payload")
+        decoded = base64.b64decode("".join(match.group(1).split()), validate=True)
+        if decoded != dr_state_source:
+            raise AssertionError("recovery guest payload differs from the current dr-state source")
+        return 0, f"DRSTATE_SHA:{dr_state_sha}\nDRSTATE_INSTALL_RC:0\n"
+
+    dr_state_installer = ScriptedGuest(dr_state_install_responder)
+    _, install_fails, install_raised = capture_scenario(
+        lambda: drs.install_current_dr_state(dr_state_installer, io.StringIO())
+    )
+    if install_raised is not None or install_fails or len(dr_state_installer.commands) != 1:
+        failures.append(
+            f"recovery guest dr-state install: fails={install_fails!r} raised={install_raised!r}"
+        )
 
     # silence times out instead of hanging
     a, b = socket.socketpair()

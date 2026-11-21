@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Offline test of build-seed.sh's backend marker and staging. The staging function is
-# tested directly; when xorriso is installed, the two complete CLI paths are also
-# packed and their /bootloader files are extracted again.
+# Offline test of build-seed.sh's backend marker, staging, real ISO packing and marker extraction.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 USER_DATA=${DR_BUILD_USER_DATA:-$HERE/seed/user-data}
@@ -164,7 +162,9 @@ grep -Fq 'grub|systemd-boot' "$WORK/unknown.err" \
   || bad "unknown bootloader refusal does not name the accepted values"
 [ ! -e "$WORK/unknown.iso" ] || bad "unknown bootloader created an ISO"
 
-if command -v xorriso >/dev/null 2>&1; then
+if ! command -v xorriso >/dev/null 2>&1; then
+  bad "xorriso is required in tester-unified for real seed ISO packing and extraction"
+else
   for backend in grub systemd-boot; do
     iso=$WORK/$backend.iso
     "$HERE/build-seed.sh" --bootloader "$backend" "$iso" >"$WORK/$backend.pack.out" 2>"$WORK/$backend.pack.err"
@@ -185,8 +185,6 @@ if command -v xorriso >/dev/null 2>&1; then
       || bad "$backend ISO: extracted marker differs"
   done
   covered="staging, isolated success/failure cleanup, executed user-data marker selection, installer pass-through, invalid-value refusal, ISO packing and extracted markers"
-else
-  covered="staging, isolated success/failure cleanup, executed user-data marker selection, installer pass-through and invalid-value refusal; xorriso absent, so real ISO packing and extracted markers are NOT covered"
 fi
 
 [ "$fail" = 0 ] && echo "test-build-seed: OK ($covered)"

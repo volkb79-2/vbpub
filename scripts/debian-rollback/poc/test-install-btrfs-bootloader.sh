@@ -51,18 +51,42 @@ contains sdboot-packages "$WORK/sdboot.err" \
   '--include=linux-image-amd64,systemd-boot,systemd-boot-efi,btrfs-progs'
 contains sdboot-bootctl "$WORK/sdboot.err" \
   'chroot /mnt/drtarget bootctl install --esp-path=/boot/efi --no-variables'
+contains sdboot-divert-dir "$WORK/sdboot.err" \
+  'chroot /mnt/drtarget mkdir -p /etc/kernel/dr-disabled'
+contains sdboot-divert-postinst "$WORK/sdboot.err" \
+  'chroot /mnt/drtarget dpkg-divert --local --add --rename --divert /etc/kernel/dr-disabled/postinst-zz-systemd-boot /etc/kernel/postinst.d/zz-systemd-boot'
+contains sdboot-divert-postrm "$WORK/sdboot.err" \
+  'chroot /mnt/drtarget dpkg-divert --local --add --rename --divert /etc/kernel/dr-disabled/postrm-zz-systemd-boot /etc/kernel/postrm.d/zz-systemd-boot'
+contains sdboot-disable-kernel-install-bls "$WORK/sdboot.err" \
+  'chroot /mnt/drtarget ln -s /dev/null /etc/kernel/install.d/90-loaderentry.install'
 contains sdboot-config "$WORK/sdboot.out" 'BOOTLOADER=systemd-boot'
 exact_line sdboot-marker "$WORK/sdboot.out" 'systemd-boot'
 absent sdboot-no-grub-package "$WORK/sdboot.err" 'linux-image-amd64,grub-efi-amd64'
 absent sdboot-no-grub-installer "$WORK/sdboot.err" 'dr-state install-grub'
 contains sdboot-menu-lesson "$WORK/sdboot.err" \
-  'chroot /mnt/drtarget /usr/local/sbin/dr-state gen-menu --default @os-0001'
+  'chroot /mnt/drtarget /usr/local/sbin/dr-state gen-menu --default @os-'
+contains initial-state-captured "$WORK/sdboot.err" \
+  'chroot /mnt/drtarget /usr/local/sbin/dr-state initialize-state @os-000001-'
+absent grub-no-systemd-hook-diversion "$WORK/grub-default.err" 'dpkg-divert --local --add --rename'
+contains apt-preinstall-hook "$INSTALL" 'DPkg::Pre-Install-Pkgs { "/usr/local/sbin/dr-state apt-pre-install-pkgs"; };'
+contains apt-plan-version "$INSTALL" 'DPkg::Tools::Options::/usr/local/sbin/dr-state::Version "2";'
+contains apt-plan-fd "$INSTALL" 'DPkg::Tools::Options::/usr/local/sbin/dr-state::InfoFD "3";'
+contains apt-preinvoke-fallback "$INSTALL" 'dr-state snapshot --reason apt || exit 100'
 
-# bootctl must run after initramfs generation and before the menu is generated from the copied kernels.
+# bootctl, hook diversions and the kernel-install BLS override must precede the menu generated from copied kernels.
 cases=$((cases + 1))
 bc=$(grep -nF 'bootctl install --esp-path=/boot/efi --no-variables' "$WORK/sdboot.err" | cut -d: -f1)
-gm=$(grep -nF 'gen-menu --default @os-0001' "$WORK/sdboot.err" | cut -d: -f1)
-[ -n "$bc" ] && [ -n "$gm" ] && [ "$bc" -lt "$gm" ] || bad "sdboot bootctl must precede gen-menu"
+si=$(grep -nF 'initialize-state @os-000001-' "$WORK/sdboot.err" | cut -d: -f1)
+dd=$(grep -nF 'mkdir -p /etc/kernel/dr-disabled' "$WORK/sdboot.err" | cut -d: -f1)
+pi=$(grep -nF 'dpkg-divert --local --add --rename --divert /etc/kernel/dr-disabled/postinst-zz-systemd-boot' "$WORK/sdboot.err" | cut -d: -f1)
+pr=$(grep -nF 'dpkg-divert --local --add --rename --divert /etc/kernel/dr-disabled/postrm-zz-systemd-boot' "$WORK/sdboot.err" | cut -d: -f1)
+kd=$(grep -nF 'mkdir -p /etc/kernel/install.d' "$WORK/sdboot.err" | cut -d: -f1)
+kp=$(grep -nF 'ln -s /dev/null /etc/kernel/install.d/90-loaderentry.install' "$WORK/sdboot.err" | cut -d: -f1)
+gm=$(grep -nF 'gen-menu --default @os-000001-' "$WORK/sdboot.err" | cut -d: -f1)
+[ -n "$bc" ] && [ -n "$dd" ] && [ -n "$pi" ] && [ -n "$pr" ] && [ -n "$kd" ] && [ -n "$kp" ] && [ -n "$si" ] && [ -n "$gm" ] \
+  && [ "$bc" -lt "$dd" ] && [ "$dd" -lt "$pi" ] && [ "$pi" -lt "$kd" ] && [ "$kd" -lt "$kp" ] && [ "$kp" -lt "$si" ] && [ "$si" -lt "$gm" ] \
+  && [ "$dd" -lt "$pr" ] && [ "$pr" -lt "$si" ] \
+  || bad "sdboot bootloader setup and state capture must precede gen-menu"
 
 cases=$((cases + 1))
 if "$INSTALL" --dry-run --yes --device /dev/dr-not-used --bootloader grub2 >/dev/null 2>&1; then

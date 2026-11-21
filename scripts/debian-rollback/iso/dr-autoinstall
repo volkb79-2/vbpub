@@ -3,6 +3,7 @@
 # snapshot/rollback (poc/install-btrfs.sh) on ONE disk chosen by dr-plan. Started by the live-config hook when the
 # kernel command line has dr.mode=auto; it can also be run by hand (`/run/live/medium/dr/dr-autoinstall`).
 #
+# The ISO build fixes the target bootloader in /dr/target-bootloader. Install configuration cannot override it.
 # Order: network (DHCP) -> config (CIDATA stick, else ISO-embedded /dr/dr-install.conf, else dr.config=https://URL)
 #        -> disk decision (dr-plan: refuses when unsure) -> tools via apt -> install-btrfs.sh -> poweroff|reboot|none.
 # Console markers for test drivers: DR-AUTOINSTALL-START, -CONFIG, -PLAN, -REFUSED, -CONFIRM, -INSTALL, -DONE rc=N.
@@ -19,6 +20,18 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 holds_our_system() { local out; out=$(lsblk -nr -o LABEL "$1" 2>/dev/null) || return 0; grep -qx drroot <<<"$out"; }
 # test hook, handled before anything touches the system: `dr-autoinstall _holds-system /dev/X` (offline test stubs lsblk)
 if [ "${1:-}" = _holds-system ]; then holds_our_system "${2:?target}"; exit $?; fi
+
+target_bootloader_from_file() { # FILE -> build-time target choice; never consult install config or a fallback
+  local file=$1 value
+  [ -f "$file" ] && [ -r "$file" ] || return 1
+  value=$(cat -- "$file") || return 1
+  case "$value" in grub|systemd-boot) printf '%s\n' "$value" ;; *) return 1 ;; esac
+}
+# Pure test hook. A missing or malformed build-time choice must fail closed.
+if [ "${1:-}" = _target-bootloader ]; then
+  target_bootloader_from_file "${2:?marker file}" || { echo "dr-autoinstall: missing or invalid ISO target-bootloader marker" >&2; exit 1; }
+  exit 0
+fi
 
 RUN=/run/dr
 LOG=/var/log/dr-autoinstall.log
@@ -42,6 +55,9 @@ finish() { # finish RC ; honours dr.after
 refuse() { marker "REFUSED $*"; say "REFUSED: $*; nothing was written to any disk"; finish 3; }
 
 marker START
+TARGET_BOOTLOADER=$(target_bootloader_from_file "$HERE/target-bootloader") \
+  || refuse "ISO payload has no valid build-time target-bootloader selection"
+marker "BOOTLOADER target=$TARGET_BOOTLOADER"
 mode=$(cmdline_param dr.mode || echo manual)
 say "mode=$mode payload=$HERE (the mode only decides whether the hook starts this script; once it runs, the config and dr-plan decide)"
 
@@ -170,7 +186,7 @@ guard_reinstall   # again: the first check is minutes old
 ! lsblk -nr -o MOUNTPOINTS "$target" | grep -q . || refuse "$target has mounted partitions"
 marker "TARGET-CONFIRMED $target"
 
-args=(--device "$target" --yes)
+args=(--device "$target" --yes --bootloader "$TARGET_BOOTLOADER")
 [ -z "${S[HOSTNAME]:-}" ] || args+=(--hostname "${S[HOSTNAME]}")
 [ -z "${S[SUITE]:-}" ] || args+=(--suite "${S[SUITE]}")
 [ -z "${S[MIRROR]:-}" ] || args+=(--mirror "${S[MIRROR]}")

@@ -1,48 +1,68 @@
 # debian-rollback (working name)
 
-**Status: planning. No code, no installer, nothing tested yet.** Started
-2026-11-12. This directory holds the research, the operator's decisions and the
-plan, written so the work can be resumed without the original conversation.
+Debian rollback is a safety layer for a normal Debian system managed with
+`apt`: it snapshots OS state before package changes and lets an operator boot
+an earlier state while keeping user and service data outside that rollback.
+It is built from Debian's installer components and existing bootloaders; it is
+not a separate Debian distribution or an image-based update system.
 
-## What this project is for
+## Current status — 2026-11-21
 
-`apt upgrade` changes files, configuration and services on a running host, and
-a new kernel makes a failed reboot more likely. Stock Debian has no way to get
-back to the state before the upgrade. This project gives a Debian install a
-safety belt:
+- The btrfs/GRUB M2 unattended Debian Live installer is merged to `main`.
+- Systemd-boot is the active PoC. Its target installer and `dr-state` backend
+  are implemented in the current unmerged worktree. The registered offline
+  lane passes. Current-source v1001 guests verified apt snapshot metadata and
+  rollback, recovery after kernel damage, and recovery after removing the
+  dynamic loader so init cannot start. Both recovery runs selected the older
+  entry from the boot menu, checked the note and captured OS/kernel/package
+  facts, preserved later `/home` writes, set the recovered state as default,
+  and deleted the failed state. A kernel-upgrade guest installed a newer kernel
+  and passed 21 checks after the installer disabled the stock
+  `90-loaderentry.install` plugin. The guest found exactly the canonical
+  per-state BLS entries, booted both the new and older kernels, verified the
+  older kernel's modules, and returned to the new default after a one-shot.
+  Automatic failed-boot fallback is out of scope for this PoC.
+- Fresh installs use state IDs with a six-digit creation sequence, UTC
+  timestamp, and origin/reason slug, beginning with
+  `@os-000001-YYYYMMDD-HHMMSSZ-install`. The sequence high-water mark lives
+  outside rollback states; deletion never renumbers or reuses an ID. This
+  change does not migrate historical `@os-0001` PoC disks. Manual snapshots
+  accept `--reason` and an optional free-text `--note`; apt snapshots record
+  the package plan. `dr-state list`, `list --long`, and `show STATE` provide
+  compact and detailed state reports. Metadata is stored outside OS states
+  and is removed when its state is deleted or pruned.
+- M2 currently installs GRUB on the target disk. The selected next M2 design
+  is two separate build-time Live ISO variants, one installing GRUB and one
+  installing systemd-boot. The builder and target-bootloader marker are
+  implemented; fresh guest validation of both variants is the next
+  integration check. Both Live media continue to boot the Debian Live
+  environment via its GRUB menu.
+- ZFS work is deferred until the systemd-boot PoC and its installer flow are
+  complete.
 
-- a snapshot of the operating system is taken automatically before every
-  package change;
-- an earlier state can be chosen in the boot menu and booted;
-- user files and the data of installed services are not rolled back.
+The systemd-boot guest runs used uncommitted changes based on feature revision
+`c749db1`; they do not certify a final merged source head. See the
+[current work order](TODO.md) and [systemd-boot evidence](docs/SDBOOT-VARIANT-2026-11-18.md).
 
-It is a product built from existing parts (Debian, an existing bootloader, an
-existing snapshot tool), not a new distribution. Where Debian has a gap, this
-project closes the gap and packages the result as an installer and an image.
+For the exact current layers, media, and consumer/install flows, see the
+[installation architecture](docs/INSTALLATION-ARCHITECTURE.md). It answers
+which ISO is bootable, which media are optional, and how each path installs
+the target system. The [recovery contract](docs/ROLLBACK-RECOVERY.md) defines
+manual boot-menu recovery, state deletion and pruning, persistent-data limits,
+and the destructive acceptance scenarios.
 
 ## Documents
 
-| Document | Holds |
+| Document | Purpose |
 |---|---|
-| [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Goals, the operator's decisions, the two candidate designs, what is rejected and why, open questions |
-| [docs/RESEARCH-2026-11.md](docs/RESEARCH-2026-11.md) | Everything found in the November 2026 research, with sources and how far each claim was verified |
-| [docs/WORK-PACKAGES.md](docs/WORK-PACKAGES.md) | The plan to finish: every remaining work package with its dependencies, which model tier does what, the decisions reserved for the frontier model, what the operator must decide first, risks, definition of done |
-| [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) | Planned experiments: the VM lab scenarios and the real-host filesystem comparison, with the host lease terms |
-| [TODO.md](TODO.md) | Ordered next steps |
+| [docs/INSTALLATION-ARCHITECTURE.md](docs/INSTALLATION-ARCHITECTURE.md) | Canonical current architecture, ISO variants, Debian changes, and install flows |
+| [docs/ROLLBACK-RECOVERY.md](docs/ROLLBACK-RECOVERY.md) | Recovery boundary, boot-menu operator flow, state management, and destructive acceptance |
+| [TODO.md](TODO.md) | Current work order: finish systemd-boot, then defer to ZFS PoC |
+| [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Product goals, design decisions, research questions, and design rationale; its original planning status is historical |
+| [docs/RESULTS-M2-UNATTENDED-ISO-2026-11-18.md](docs/RESULTS-M2-UNATTENDED-ISO-2026-11-18.md) | Dated guest evidence and known limits for the M2 GRUB-target ISO |
+| [docs/SDBOOT-VARIANT-2026-11-18.md](docs/SDBOOT-VARIANT-2026-11-18.md) | systemd-boot backend details, guest finding, and offline coverage |
+| [docs/RESEARCH-2026-11.md](docs/RESEARCH-2026-11.md) | November 2026 research sources and verification notes |
+| [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) | Scenario definitions and historic filesystem comparison plan |
 
-## How to resume
-
-1. Read the "Decisions" and "Open questions" sections of the design guide.
-2. Read `TODO.md` for the next step.
-3. Before touching a host, read the lease terms in `docs/EXPERIMENTS.md`.
-   Hosts r1002 and v1001 are coordinated by the Claude session
-   `vbpub-controller-joint-release`; nothing may be done on r1002 before that
-   session sends "lease start", and v1001 is never touched.
-
-## Name and location
-
-`scripts/debian-rollback/` is a working home next to `scripts/debian-install-v2`
-(the existing installer) and `scripts/truenas` (whose VM launcher and
-unattended-ISO builder this project reuses). The name is not decided; renaming
-is one `git mv`. The planned general VM tool gets its own home,
-the top-level project `vm-lab/`, see the design guide.
+The dated results are evidence records for the builds they name. Use the
+architecture and TODO documents for current design/status.

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # build-iso.sh: remaster the official Debian live ISO into the debian-rollback unattended installer ISO.
 #
-#   build-iso.sh --base BASE.iso --out OUT.iso [--config dr-install.conf] [--scratch PARENT_DIR] [--allow-unverified]
+#   build-iso.sh --base BASE.iso --out OUT.iso --bootloader grub|systemd-boot
+#                [--config dr-install.conf] [--scratch PARENT_DIR] [--allow-unverified]
 #
 # No squashfs or initrd is rebuilt. The overlay is plain files added to the ISO9660 tree:
 #   /dr/*                          the installer payload (dr-autoinstall, dr-plan, dr-pick-disk, install-btrfs.sh, dr-state)
+#   /dr/target-bootloader         immutable target choice selected at ISO build time
 #   /dr/dr-install.conf            optional ISO-embedded config (--config); a CIDATA stick takes precedence
 #   /live/config-hooks/10-dr-autoinstall   run by live-config when the command line has live-config.hooks=file:///run/live/medium/live/config-hooks/10-dr-autoinstall
 #   /boot/grub/grub.cfg            two new first entries (unattended, and live with the payload), the rest unchanged
@@ -17,7 +19,7 @@
 # read-only and its sha256 is checked against BASE.iso.sha256 when that file exists.
 set -euo pipefail
 
-BASE="" OUT="" CONF="" SCRATCH="" SCRATCH_PARENT="" ALLOW_UNVERIFIED=0
+BASE="" OUT="" CONF="" SCRATCH="" SCRATCH_PARENT="" BOOTLOADER="" ALLOW_UNVERIFIED=0
 ORIG_ARGS=("$@")   # the option loop shifts $@ away; the nice re-exec below needs the original list
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { echo "build-iso: $*" >&2; exit 1; }
@@ -25,6 +27,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE=${2:?}; shift 2 ;;
     --out) OUT=${2:?}; shift 2 ;;
+    --bootloader) BOOTLOADER=${2:?}; shift 2 ;;
     --config) CONF=${2:?}; shift 2 ;;
     --scratch) SCRATCH_PARENT=${2:?}; shift 2 ;;   # a directory to work in; only a fresh subdirectory of it is created and removed
     --allow-unverified) ALLOW_UNVERIFIED=1; shift ;;
@@ -33,6 +36,8 @@ while [ $# -gt 0 ]; do
 done
 [ -f "$BASE" ] || die "--base ISO not found"
 [ -n "$OUT" ] || die "--out is required"
+[ -n "$BOOTLOADER" ] || die "--bootloader is required; build a separate ISO for each target bootloader"
+case "$BOOTLOADER" in grub|systemd-boot) ;; *) die "--bootloader must be grub or systemd-boot" ;; esac
 case "$OUT" in /dev/*) die "refusing to write to a device path: $OUT" ;; esac
 [ ! -e "$OUT" ] || [ -f "$OUT" ] || die "$OUT exists and is not a regular file"
 [ -z "$CONF" ] || [ -f "$CONF" ] || die "--config file not found"
@@ -56,6 +61,7 @@ SCRATCH=$(mktemp -d "$SCRATCH_PARENT/dr-build.XXXXXX")
 trap 'rm -rf "$SCRATCH"' EXIT
 STAGE=$SCRATCH/stage
 mkdir -p "$STAGE/dr" "$STAGE/hooks"
+printf '%s\n' "$BOOTLOADER" >"$STAGE/dr/target-bootloader"
 
 for f in dr-autoinstall dr-plan; do install -m 0755 "$HERE/$f" "$STAGE/dr/$f"; done
 install -m 0755 "$HERE/../poc/dr-pick-disk" "$STAGE/dr/dr-pick-disk"
@@ -104,4 +110,4 @@ xorriso -indev "$BASE" -outdev "$OUT.part" -boot_image any replay \
   -map "$SCRATCH/grub.cfg" /boot/grub/grub.cfg \
   -commit >"$SCRATCH/xorriso.log" 2>&1 || { tail -n 20 "$SCRATCH/xorriso.log" >&2; rm -f "$OUT.part"; die "xorriso failed"; }
 mv "$OUT.part" "$OUT"
-echo "$OUT $(stat -c %s "$OUT") bytes"
+echo "$OUT $(stat -c %s "$OUT") bytes (target bootloader: $BOOTLOADER)"
