@@ -2560,7 +2560,11 @@ mod tests {
             .iter()
             .filter(|frame| frame.1 == 10 && frame.0 == FrameType::Rep.code())
             .collect();
-        assert_eq!(accepted.len(), 1, "one current REP after retry frees a slot");
+        assert_eq!(
+            accepted.len(),
+            1,
+            "one current REP after retry frees a slot"
+        );
         assert!(
             check_rep(text(payload(&accepted[0].2)).as_bytes(), false)
                 .expect("current reply")
