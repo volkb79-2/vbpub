@@ -2091,6 +2091,7 @@ mod tests {
             };
             assert!(out.contains(expected), "{level:?}: {out}");
         }
+        assert!(d.server.shutdown().is_empty());
         d.settle_all();
         assert_clean(&d, "hello verbs");
     }
