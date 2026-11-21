@@ -824,12 +824,22 @@ mod tests {
         if caps.per_uid == 0 || caps.per_probe == 0 {
             return;
         }
+        let uid = d.server.conn(id).expect("conn").peer().uid;
         let now_ns = d.now;
         let selected = selection(inc);
+        let expected_selection = selected.clone();
+        let key = SubKey { conn: id, corr };
         d.server.drive(id, |conn, hub, backend, streams| {
             conn.subscribe_for_server_test(corr, selected, now_ns, hub, backend, streams);
         });
         assert_eq!(d.server.conn(id).map(|conn| conn.subscriptions()), Some(1));
+        assert_eq!(d.server.streams.subscribers(), 1);
+        assert_eq!(d.server.streams.live_selections(), 1);
+        assert_eq!(d.server.streams.uid_selections(uid), 1);
+        assert_eq!(
+            d.server.streams.selection_of(key),
+            Some(&expected_selection)
+        );
     }
 
     // ---- accept rows (WIRE.md 5.1 and 5.4 `refuse`) ----
@@ -960,10 +970,9 @@ mod tests {
 
     fn path_closing_with_final(d: &mut Driver, level: Level) {
         let id = d.open(level, 1000);
+        d.ready(id);
         register(d, id, 2, 1);
-        let mut input = client_prefix(1);
-        input.extend_from_slice(&req(0, "status"));
-        d.send(id, &input);
+        d.send(id, &req(0, "status"));
         assert_eq!(d.close_code(id), Some(Code::BadFrame));
         assert!(d.server.conn(id).is_some_and(|conn| conn.has_final()));
     }
@@ -1006,16 +1015,16 @@ mod tests {
 
     fn path_frame_too_large(d: &mut Driver, level: Level) {
         let id = d.open(level, 1000);
+        d.ready(id);
         register(d, id, 2, 1);
-        d.send(id, &client_prefix(1));
         d.send(id, &[0x40, 0x9C, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0]);
         assert_eq!(d.close_code(id), Some(Code::FrameTooLarge));
     }
 
     fn path_request_deadline(d: &mut Driver, level: Level) {
         let id = d.open(level, 1000);
+        d.ready(id);
         register(d, id, 2, 1);
-        d.send(id, &client_prefix(1));
         d.send(id, &[0x0C]);
         let deadline_ms = d
             .server

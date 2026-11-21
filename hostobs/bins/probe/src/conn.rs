@@ -543,7 +543,8 @@ impl Conn {
     }
 
     /// The driver wrote `n` bytes of the head it was offered. This calls `SendHub::wrote`, counts
-    /// the bytes (R2), completes `Draining` when the queue is empty and re-arms idle.
+    /// the bytes (R2), completes `Draining` when pending requests and the queue are empty, and
+    /// re-arms idle.
     pub fn on_written(&mut self, n: usize, now_ns: u64, hub: &mut SendHub) {
         if self.state == State::Closed {
             return;
@@ -2550,6 +2551,16 @@ mod tests {
 
         rig.conn.retry_pending(rig.now, &mut rig.hub, &rig.backend);
         assert_eq!(rig.conn.outstanding(), 3);
+        rig.send(&raw_req(10, &current));
+        rig.pump(usize::MAX);
+        let classified = raw_frames(&rig.out);
+        assert!(classified
+            .iter()
+            .any(|frame| frame.1 == 10 && is_error(&frame.2, Code::UnknownVerb)));
+        assert!(!classified
+            .iter()
+            .any(|frame| frame.1 == 10 && is_error(&frame.2, Code::TooManyRequests)));
+        rig.out.clear();
         rig.current(10, sel);
         assert_eq!(rig.conn.outstanding(), 4);
         let retried = raw_frames(&rig.finish());
@@ -2569,13 +2580,14 @@ mod tests {
         let mut limits = Limits::for_level(Level::Observe);
         limits.control_queue_bytes = 1;
         let mut rig = Rig::with(Level::Observe, limits);
+        let sub_selection = selection(1);
         rig.send(&client_prefix(1));
         rig.pump(usize::MAX);
         rig.out.clear();
         rig.send(&req(1, "hello"));
         rig.pump(usize::MAX);
         rig.out.clear();
-        rig.subscribe(2, selection(1), 1_000);
+        rig.subscribe(2, sub_selection.clone(), 1_000);
         rig.pump(usize::MAX);
         rig.out.clear();
         let current_selection = selection(3);
@@ -2592,12 +2604,26 @@ mod tests {
         assert_eq!(rig.conn.outstanding(), 0);
         assert_eq!(rig.conn.subscriptions(), 1);
         assert_eq!(rig.streams.subscribers(), 1);
+        let key = crate::registry::SubKey {
+            conn: rig.conn.id(),
+            corr: 2,
+        };
+        let uid = rig.conn.peer().uid;
+        assert_eq!(rig.streams.live_selections(), 1);
+        assert_eq!(rig.streams.uid_selections(uid), 1);
+        assert_eq!(rig.streams.selection_of(key), Some(&sub_selection));
         let before = rig.hub.queued(rig.conn.id());
         let subscribers = rig.streams.subscribers();
+        let live_selections = rig.streams.live_selections();
+        let uid_selections = rig.streams.uid_selections(uid);
+        let registry_selection = rig.streams.selection_of(key).cloned();
         rig.conn
             .end_subscription(2, Code::Internal, &Detail::Empty, rig.now, &mut rig.hub);
         assert_eq!(rig.conn.subscriptions(), 0);
         assert_eq!(rig.streams.subscribers(), subscribers);
+        assert_eq!(rig.streams.live_selections(), live_selections);
+        assert_eq!(rig.streams.uid_selections(uid), uid_selections);
+        assert_eq!(rig.streams.selection_of(key), registry_selection.as_ref());
         assert_eq!(rig.hub.queued(rig.conn.id()), before);
         rig.execute(3, Call::Status);
         rig.current(4, selection(2));
@@ -2613,6 +2639,9 @@ mod tests {
         rig.conn.push_tick(2, &tick, rig.now, &mut rig.hub);
         assert_eq!(rig.hub.queued(rig.conn.id()), before);
         assert_eq!(rig.streams.subscribers(), subscribers);
+        assert_eq!(rig.streams.live_selections(), live_selections);
+        assert_eq!(rig.streams.uid_selections(uid), uid_selections);
+        assert_eq!(rig.streams.selection_of(key), registry_selection.as_ref());
     }
 
     #[test]
