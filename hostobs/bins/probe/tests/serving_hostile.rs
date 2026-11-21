@@ -7,7 +7,7 @@
 //! key is bounded and made of schema characters, every encoder output parses back with the
 //! protocol crate's own checkers, and the line reader never holds more than its bound.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use hostobs_probe::args;
 use hostobs_probe::backend::{FixedBackend, TickData};
@@ -21,7 +21,7 @@ use hostobs_probe::limits::{IntervalRule, Level};
 use hostobs_probe::lines::{LineError, LineReader};
 use hostobs_probe::selection::{Sel, Selection};
 use hostobs_probe::server::{Accept, Server, ServerLimits};
-use hostobs_proto::envelope::{check_end, check_evt, check_rep};
+use hostobs_proto::envelope::{check_end, check_evt, check_rep, Rep};
 use hostobs_proto::frame::{decode_block_with, FrameType};
 use hostobs_proto::hub::{ConnId, Pools};
 use hostobs_proto::stream_dicts::StreamDicts;
@@ -743,15 +743,28 @@ fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
 }
 
 /// One connection's modelled client: complete BLOCKs decode under its held dictionaries and
-/// every END equals the number of BLOCKs that preceded it on that stream.
+/// every END equals the number of BLOCKs that preceded it on that stream. Request episodes stay
+/// in send order so reuse after a queued END remains valid before the client drains that END.
+#[derive(Clone, Copy, Debug)]
+enum DataVerb {
+    Current,
+    Subscribe,
+}
+
+#[derive(Clone, Copy)]
+struct ActiveEpisode {
+    reused_corr: bool,
+    saw_block: bool,
+}
+
 struct ObservedConnection {
     buffered: Vec<u8>,
     binary: Option<bool>,
     dicts: StreamDicts,
     blocks: BTreeMap<u32, u32>,
     ended_corrs: BTreeSet<u32>,
-    reopen_requests: BTreeSet<u32>,
-    accepted_reopens: BTreeSet<u32>,
+    requests: BTreeMap<u32, VecDeque<DataVerb>>,
+    active_episodes: BTreeMap<u32, ActiveEpisode>,
     blocks_seen: usize,
     ends_seen: usize,
     corr_reuses: usize,
@@ -766,8 +779,8 @@ impl ObservedConnection {
             dicts: StreamDicts::new(),
             blocks: BTreeMap::new(),
             ended_corrs: BTreeSet::new(),
-            reopen_requests: BTreeSet::new(),
-            accepted_reopens: BTreeSet::new(),
+            requests: BTreeMap::new(),
+            active_episodes: BTreeMap::new(),
             blocks_seen: 0,
             ends_seen: 0,
             corr_reuses: 0,
@@ -775,11 +788,42 @@ impl ObservedConnection {
         }
     }
 
-    fn data_request(&mut self, corr: u32) {
-        if self.ended_corrs.contains(&corr) {
-            self.reopen_requests.insert(corr);
-            self.accepted_reopens.remove(&corr);
+    fn data_request(&mut self, corr: u32, verb: DataVerb) {
+        self.requests.entry(corr).or_default().push_back(verb);
+    }
+
+    fn request_reply(&mut self, corr: u32, payload: &[u8], rep: &Rep) {
+        let request = self.requests.get_mut(&corr).and_then(VecDeque::pop_front);
+        if self.requests.get(&corr).is_some_and(VecDeque::is_empty) {
+            self.requests.remove(&corr);
         }
+        let Some(verb) = request else {
+            return;
+        };
+        if !rep.ok {
+            return;
+        }
+        let expected = match verb {
+            DataVerb::Current => String::from("{\"stream\":{\"tick_ms\":1000}}"),
+            DataVerb::Subscribe => format!("{{\"sub\":{corr},\"interval_ms\":1000}}"),
+        };
+        assert_eq!(
+            payload.get(rep.body.clone()).expect("REP result range"),
+            expected.as_bytes(),
+            "successful {verb:?} REP matches its request episode"
+        );
+        assert!(
+            !self.active_episodes.contains_key(&corr),
+            "successful REP corr {corr} does not overlap an active episode"
+        );
+        let reused_corr = self.ended_corrs.remove(&corr);
+        self.active_episodes.insert(
+            corr,
+            ActiveEpisode {
+                reused_corr,
+                saw_block: false,
+            },
+        );
     }
 
     fn feed(&mut self, bytes: &[u8]) {
@@ -836,12 +880,13 @@ impl ObservedConnection {
                 self.dicts
                     .accept(corr, &block)
                     .expect("every BLOCK follows the stream dictionary rules");
-                if self.ended_corrs.remove(&corr) {
-                    assert!(
-                        self.accepted_reopens.remove(&corr),
-                        "BLOCK corr {corr} follows END without a successful current or subscribe REP"
-                    );
+                let active = self
+                    .active_episodes
+                    .get_mut(&corr)
+                    .expect("BLOCK follows a successful current or subscribe REP");
+                if active.reused_corr && !active.saw_block {
                     self.corr_reuses = self.corr_reuses.saturating_add(1);
+                    active.saw_block = true;
                 }
                 let count = self.blocks.entry(corr).or_insert(0);
                 *count = count.saturating_add(1);
@@ -851,15 +896,15 @@ impl ObservedConnection {
                 let delivered = self.blocks.remove(&corr).unwrap_or(0);
                 assert_eq!(end.blocks, delivered, "END corr {corr} counts its BLOCKs");
                 self.dicts.close(corr);
-                self.reopen_requests.remove(&corr);
-                self.accepted_reopens.remove(&corr);
+                assert!(
+                    self.active_episodes.remove(&corr).is_some(),
+                    "END corr {corr} closes a successful request episode"
+                );
                 self.ended_corrs.insert(corr);
                 self.ends_seen = self.ends_seen.saturating_add(1);
             } else if kind == FrameType::Rep.code() {
                 let rep = check_rep(payload, false).expect("every binary REP parses");
-                if self.reopen_requests.remove(&corr) && rep.ok {
-                    self.accepted_reopens.insert(corr);
-                }
+                self.request_reply(corr, payload, &rep);
             } else if kind == FrameType::Evt.code() {
                 check_evt(payload).expect("every binary EVT parses");
             }
@@ -877,13 +922,14 @@ fn send_data_request(
     model: &mut BTreeMap<ConnId, ObservedConnection>,
     id: ConnId,
     corr: u32,
+    verb: DataVerb,
     bytes: &[u8],
     now: u64,
 ) {
     model
         .get_mut(&id)
         .expect("connection has an output model")
-        .data_request(corr);
+        .data_request(corr, verb);
     server.on_bytes(id, bytes, now);
 }
 
@@ -955,7 +1001,25 @@ fn server_hostile_2000_steps_with_block_verbs() {
         hello.extend(server_request(1, "hello", HELLO_ARGS));
         server.on_bytes(id, &hello, now);
         drain_server(&mut server, &mut model, id, usize::MAX, now);
-        send_data_request(&mut server, &mut model, id, 2, &server_current(2), now);
+        send_data_request(
+            &mut server,
+            &mut model,
+            id,
+            2,
+            DataVerb::Current,
+            &server_current(2),
+            now,
+        );
+        // The first END is queued already, but the client model has not read it yet.
+        send_data_request(
+            &mut server,
+            &mut model,
+            id,
+            2,
+            DataVerb::Current,
+            &server_current(2),
+            now,
+        );
         drain_server(&mut server, &mut model, id, usize::MAX, now);
         let sub = 10 + u32::try_from(slot).expect("slot");
         send_data_request(
@@ -963,6 +1027,7 @@ fn server_hostile_2000_steps_with_block_verbs() {
             &mut model,
             id,
             sub,
+            DataVerb::Subscribe,
             &server_subscribe(sub),
             now,
         );
@@ -1017,6 +1082,7 @@ fn server_hostile_2000_steps_with_block_verbs() {
                     &mut model,
                     id,
                     corr,
+                    DataVerb::Current,
                     &server_current(corr),
                     now,
                 );
@@ -1033,6 +1099,7 @@ fn server_hostile_2000_steps_with_block_verbs() {
                         &mut model,
                         id,
                         corr,
+                        DataVerb::Subscribe,
                         &server_subscribe(corr),
                         now,
                     );
