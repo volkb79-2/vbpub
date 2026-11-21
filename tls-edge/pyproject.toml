@@ -11,6 +11,17 @@ license = "MIT"
 
 [project.optional-dependencies]
 interactive = ["questionary>=2.1.1"]
+# Keep the tester-unified closure self-contained. These overlap with the runtime
+# manifest where tests exercise runtime behavior; tester-unified derives only
+# from pyproject metadata and does not read requirements-*.txt files.
+test = [
+  "pytest>=8",
+  "pytest-cov>=6",
+  "tomlkit>=0.13.3",
+  "Jinja2>=3.1.6",
+  "PyYAML>=6.0",
+  "tomli_w>=1.0",
+]
 
 [project.scripts]
 tls-edge = "tls_edge_cli.cli:main"
