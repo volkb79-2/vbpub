@@ -1,30 +1,33 @@
 # Current work order — 2026-11-22
 
-Finish the systemd-boot target path first, integrate it into the M2 Live ISO as
-a separate build-time variant, then continue with the ZFS PoC. The layers and
-media distinction are documented in the
+Complete the systemd-boot target path first, then continue with the ZFS PoC.
+The separate M2 Live ISO variant and guest evidence are complete; the final
+offline gate and exact-commit review remain before merge. The layers and media
+distinction are documented in the
 [installation architecture](docs/INSTALLATION-ARCHITECTURE.md).
 
 ## 1. Finish systemd-boot PoC
 
-- Earlier v1001 runs proved the builder, boot check, ESP entries, rollback,
-  default selection, and one-shot consumption on a disk built from
-  `b94af9533`. They are historical evidence, not certification of the current
-  candidate. The current guest matrix must be rebuilt from committed source
-  and rerun. Two kernel-upgrade guest attempts timed out on a generated
-  command ending in `; ;`; a later guest run against the `c749db1` source
-  passed 21 checks. Rerun it against the integrated current candidate.
-- Guest transcripts also record apt metadata/rollback and recovery after
-  kernel and dynamic-loader damage. Their injected source hashes are not
-  available in Git, so treat those results as historical until repeated on
-  the exact candidate. The acceptance contract must cover a real dpkg
-  dependency break from a harmful manual package operation. Every recovery
-  run must select the older entry manually, verify post-snapshot persistent
-  data, make the recovered state the default, and delete the failed state.
-  Automatic failed-boot fallback is not part of this PoC.
-- The current `origin/main` M2 changes are integrated in this worktree. Finish
-  the review fixes, rerun the registered offline lane, then rebuild the seed
-  and both M2 ISO variants from the exact candidate.
+- The current systemd-boot M2 ISO guest matrix passed on v1001. ISO payload
+  source: `fe2a9afe4`; guest driver: `f9f55e1aa`. Boot-check, ESP, apt
+  rollback, one-shot consumption, dependency-break recovery, kernel-damage
+  recovery, dynamic-loader recovery, and backports kernel-upgrade results are
+  in [the 2026-11-22 report](docs/RESULTS-SDBOOT-M2-2026-11-22.md). Each
+  recovery selected an older boot-menu entry after the default became unusable,
+  preserved post-snapshot persistent data, set the recovered state default,
+  proved a plain reboot, and deleted the damaged state.
+- The routine Trixie/security repository had no newer kernel than the installed
+  `6.12.117-1`; the scenario stopped before changing the guest. With Trixie
+  backports, the upgrade and both new/old kernel boot paths passed 21 checks.
+- The fresh GRUB-target M2 comparison passed first-boot checks (9) and
+  apt-rollback/default-selection checks (21). The separate NoCloud
+  systemd-boot builder also completed from current source; its installed disk
+  booted without the seed or cloud image and passed boot-check (12) and
+  sdboot-esp (16). This builder path is not required by the M2 product install.
+- Run the registered offline lane on the final documented candidate and obtain
+  an independent DeepSeek review of that exact commit before merging. Use only
+  the approved `deepseek-v4.1-flash-eco` route.
+- Automatic failed-boot fallback is not part of this PoC.
 - New state IDs use a monotonic six-digit sequence, UTC timestamp, and
   origin/reason slug (install, apt, or manual reason). The high-water counter
   is outside all OS states; deletion does not reuse numbers, and a missing or
@@ -34,12 +37,10 @@ media distinction are documented in the
   not copy the new runtime onto them, because its APT snapshot hook correctly
   refuses to make package changes without the required counter. This schema
   applies to fresh installs and snapshots on both bootloaders.
-- Use a fresh installed systemd-boot target for the current-source matrix:
-  builder, boot check, canonical ESP ownership, apt snapshot/rollback,
-  one-shot consumption, kernel upgrade, package-inconsistency recovery, and
-  destructive recovery after kernel/init/userspace damage. Then boot both M2
-  target ISO variants in clean UEFI guests and verify disk layout, first boot,
-  rollback, and boot-menu behavior.
+- The systemd-boot M2 ISO has fresh install, first boot, rollback and
+  destructive-recovery evidence. The fresh GRUB-target comparison also passed
+  install, first boot and rollback/default-selection checks. Merge only after
+  the final gate and exact-commit review.
 
 ## 2. Validate both M2 target ISO variants
 
@@ -49,18 +50,16 @@ media distinction are documented in the
   install configuration and optional config media cannot override it.
 - Keep both Live environments booting through Debian Live's GRUB path; only
   the target disk's bootloader changes.
-- Build both artifacts from the verified Debian Live base and test both in
-  clean UEFI guests on r1002 or v1001: disk layout, first boot, boot-menu
-  behavior, and rollback. Preserve the existing GRUB-target behavior, and
-  document hashes, source revisions, scenarios, and limits.
-- Run an independent DeepSeek review against the exact candidate commit after
-  gates and guest evidence are complete. Resolve findings and obtain a clean
-  final review before merging the feature into `main`.
+- Both artifacts were built from the verified Debian Live base. The
+  systemd-boot target passed clean UEFI install and rollback scenarios; the
+  GRUB-target comparison passed disk layout, first boot, boot-menu and
+  rollback/default-selection checks. Results and hashes are in the dated
+  report.
 
 ## 3. ZFS PoC — deferred
 
-Start the ZFS work only after systemd-boot and the M2 target-bootloader
-variants are proven. Use the existing experiment definitions as a starting
+Start the ZFS PoC after the systemd-boot branch passes its final gate and
+review and is merged. Use the existing experiment definitions as a starting
 point, update their old controller and host-scheduling assumptions, then
 evaluate the chosen ZFS boot environment in disposable guests. The old
 comparison plan is not itself evidence or current authorization.

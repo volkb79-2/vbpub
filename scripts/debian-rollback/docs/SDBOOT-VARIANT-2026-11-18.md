@@ -1,17 +1,21 @@
 # systemd-boot variant: implementation and guest evidence (2026-11-18 onward)
 
-Status, 2026-11-22: **the integrated current candidate still needs a fresh
-systemd-boot guest matrix.** Earlier v1001 runs on a disk built from
-`b94af9533` proved the builder, boot check, ESP entries, rollback/default
-selection, and one-shot consumption. Later guest transcripts against the
-`c749db1` source record APT metadata/rollback, kernel and dynamic-loader
-recovery, and a 21-check kernel-upgrade pass. Those runs used legacy `@os-0001`
-state names and source hashes that do not match the integrated timestamped-ID
-candidate. Treat them as historical evidence, not current-candidate
-certification. Two earlier kernel-upgrade attempts timed out on the generated
-`; ;` command before the corrected guest run. See the [canonical installation
-architecture](INSTALLATION-ARCHITECTURE.md) and [recovery contract](ROLLBACK-RECOVERY.md)
-for the current product layers and acceptance boundary.
+Status, 2026-11-22: **the current systemd-boot M2 Live ISO install and guest
+matrix passed on v1001.** The ISO payload was built from `fe2a9afe4`; the guest
+scenario driver was from `f9f55e1aa`. It created the timestamped initial state
+and passed boot, ESP, apt rollback, one-shot, dependency-break, kernel-damage,
+dynamic-loader, and backports kernel-upgrade scenarios. Exact hashes, counts,
+and retained logs are in
+[RESULTS-SDBOOT-M2-2026-11-22.md](RESULTS-SDBOOT-M2-2026-11-22.md). A separate
+fresh GRUB-target comparison install and rollback/default-selection run also
+passed. The current-source NoCloud builder guest also installed a
+systemd-boot target that passed boot-check (12) and sdboot-esp (16) when
+booted without its seed or cloud image. The exact-candidate offline gate and
+independent review remain before merge. Earlier
+`b94af9533` and `c749db1`
+guest reports below are historical; do not mix them with the current matrix.
+See the [canonical installation architecture](INSTALLATION-ARCHITECTURE.md)
+and [recovery contract](ROLLBACK-RECOVERY.md) for product flows and limits.
 
 > **Guest verification rule:** Loader and firmware contracts (entry ids, one-shot variables, ESP layout, boot order)
 > are verified only by guest scenarios, never by offline tests or review rounds. The guest `sd-g3`/diagnostic runs
@@ -160,7 +164,7 @@ Real-guest provenance:
   fixes that scenario-command construction defect. The fresh r10 run below now reaches the post-upgrade BLS checks
   and reveals a separate unresolved entry-handling issue.
 
-## Fresh r10 guest round
+## Historical r10 guest round (legacy state IDs)
 
 The builder and installed target disk were created from the in-progress worktree based on `c749db1`, with the
 uncommitted r10 changes included. The builder exited successfully and installed systemd-boot 257.13. The target
@@ -354,8 +358,11 @@ and `git diff --check` pass.
 
 ## How to run the guests
 
-This section records the systemd-boot run matrix and historical guest status. None of these guest results certify
-the integrated timestamped-ID candidate.
+This section records the supported systemd-boot run matrix and current guest
+status. The M2 systemd-boot ISO matrix uses the timestamped-ID runtime; detailed
+provenance and retained log paths are in the
+[2026-11-22 results report](RESULTS-SDBOOT-M2-2026-11-22.md). The builder row
+below is a separate cloud-image automation path, not the product M2 installer.
 
 Build a systemd-boot builder seed, then let the builder guest install the base disk:
 
@@ -380,15 +387,15 @@ The supported run matrix for the systemd-boot variant is:
 
 | Scenario | Guest run | What it proves | Status |
 |---|---|---|---|
-| Builder install | Disposable cloud-image guest with blank target disk and the systemd-boot seed attached. | The seed selects the target backend and the common installer creates the systemd-boot target. | **Historical guest pass** on v1001; injected source hashes are listed below and do not match the current candidate. |
-| `boot-check` | First boot after install; may share a fresh overlay with `sdboot-esp`. | Running root, systemd/networking, split data paths, ESP loader/BLS entry/binary/kernel copies. | **Historical PASS (12 checks)** on a disk built from `b94af9533`. |
-| `sdboot-esp` | May share a fresh overlay with `boot-check`. | Canonical entries, safe state mapping, kernel/initrd paths, suffixed default, and no scratch files. | **Historical PASS (16 checks)** on a disk built from `b94af9533`. |
-| `s2-s3` | Fresh overlay; do not reuse after another snapshot-producing scenario. | APT pre-change snapshot, metadata/package plan, rollback, persistent data, boot-once, and set-default. | **Historical PASS (23 checks)**; guest used legacy `@os-0001` and earlier source hashes. |
-| `sdboot-oneshot-consumed` | Running state equals default and another state is available. | One-shot state boots and `LoaderEntryOneShot` is absent after consumption. | **Historical PASS (8 checks)** on an earlier guest. |
-| `kernel-upgrade` | Fresh overlay; do not reuse after another snapshot-producing scenario. | APT snapshots the old state, the new and old kernels have correct entries, and one-shot returns to the new default. | **Historical PASS (21 checks)** against `c749db1` source; earlier attempts timed out on a generated `; ;` command. |
-| `recovery-kernel` | Fresh overlay; destructive. | Manual selection of an older entry after kernel/initrd damage; modules, persistent data, default reset, and failed-state deletion. | **Historical PASS (27 checks)**; not current-candidate evidence. |
-| `recovery-library` | Fresh overlay; destructive. | Manual selection of an older entry after dynamic-loader damage; persistent data, default reset, and failed-state deletion. | **Historical PASS (25 checks)**; not current-candidate evidence. |
-| `recovery-dependency` | Fresh overlay; destructive. | Manual selection after forcing a dpkg dependency break; consistency and dependent service restored, then default reset and failed-state deletion. | **Pending current-candidate guest run.** |
+| Builder install | Disposable cloud-image guest with blank target disk and the systemd-boot seed attached; then boot the target disk alone. | The seed selects the target backend, the common installer creates the systemd-boot target, and the installed target boots without builder inputs. | **PASS:** installer rc 0; standalone `boot-check` (12) and `sdboot-esp` (16), current source. |
+| `boot-check` | First boot after install; may share a fresh overlay with `sdboot-esp`. | Running root, systemd/networking, split data paths, ESP loader/BLS entry/binary/kernel copies. | **PASS (12 checks)** from the current M2 systemd-boot ISO install. |
+| `sdboot-esp` | May share a fresh overlay with `boot-check`. | Canonical entries, safe state mapping, kernel/initrd paths, suffixed default, and no scratch files. | **PASS (16 checks)** from the current M2 systemd-boot ISO install. |
+| `s2-s3` | Fresh guest; do not reuse after another snapshot-producing scenario. | APT pre-change snapshot, metadata/package plan, rollback, persistent data, boot-once, and set-default. | **PASS (23 checks)** with timestamped states. |
+| `sdboot-oneshot-consumed` | Running state equals default and another state is available. | One-shot state boots and `LoaderEntryOneShot` is absent after consumption. | **PASS (8 checks)** on the current candidate. |
+| `kernel-upgrade` | Fresh guest; do not reuse after another snapshot-producing scenario. | APT snapshots the old state, the new and old kernels have correct entries, and one-shot returns to the new default. | **PASS (21 checks)** with Trixie backports; normal Trixie/security offered no newer kernel and stopped before mutation (6 pass, 1 availability check unmet). |
+| `recovery-kernel` | Fresh guest; destructive. | Manual selection of an older entry after kernel/initrd damage; modules, persistent data, default reset, and failed-state deletion. | **PASS (27 checks)** on the current candidate. |
+| `recovery-library` | Fresh guest; destructive. | Manual selection of an older entry after dynamic-loader damage; persistent data, default reset, and failed-state deletion. | **PASS (25 checks)** after correcting the serial driver's false shell-prompt match. |
+| `recovery-dependency` | Fresh guest; destructive. | Manual selection after forcing a dpkg dependency break; consistency and dependent service restored, then default reset and failed-state deletion. | **PASS (23 checks)** on the current candidate. |
 
 Do **not** run `s5` against systemd-boot: it sends GRUB menu key presses over the serial line. Do **not** run `s6`,
 `s7`, `s8`, `s9`, or `s9b` until their remaining GRUB-specific menu assumptions have been made backend-aware and
@@ -415,7 +422,7 @@ completion tag is absent or its scan command returns nonzero. The kernel-upgrade
 `EFI/systemd/systemd-bootx64.efi` hash independently and hashes whichever of `/etc/dr-state.conf` and
 `/boot/efi/EFI/dr/bootloader` exist, so a valid config-only systemd-boot install needs no ESP marker.
 
-## Fresh install and kernel-upgrade proof for the plugin override
+## Historical fresh install and kernel-upgrade proof for the plugin override
 
 The historical seed ISO was built from an earlier worktree and copied to v1001:
 
@@ -460,17 +467,19 @@ The guest/container was stopped after the run. The source remains uncommitted
 on this worktree, so this evidence proves the named artifacts and injected
 files, not an integrated or released revision.
 
-## Not verified
+## Remaining guest coverage and limits
 
-The historical builder, `boot-check`, kernel-upgrade, and r10 guest runs establish initial systemd-boot boot, ESP layout,
-rollback, default selection, one-shot paths, and manual recovery from a damaged kernel and unusable dynamic loader on
-unmerged source artifacts. The c749-based kernel-upgrade guest also verified the kernel-install plugin override and both
-kernel boot paths. These results do not certify the integrated timestamped-ID candidate. This note does **not** claim:
+The current M2 guest matrix establishes initial systemd-boot boot, ESP layout,
+rollback, default selection, one-shot consumption, current-schema state
+deletion, and manual recovery from a dependency break, damaged kernel, and
+unusable dynamic loader. The backports kernel-upgrade guest establishes the
+kernel-install plugin override and both kernel boot paths. This note does not
+claim:
 
 - that systemd-boot `delete`, `prune`, kernel removals, or ESP-full behavior work end to end in a guest;
+- that live pruning and ESP cleanup have been guest-tested;
 - automatic fallback after a failed default boot; it is outside the current recovery contract;
-- that the current final source after integration with `origin/main` passes the guest matrix;
 - anything about Secure Boot, real hardware, or backend conversion of an existing GRUB install.
 
-These are guest-test questions. The offline work deliberately goes no further than deterministic file construction
-and guarded local operations.
+The items above are outside the scenarios in the current guest matrix and need
+their own acceptance work before they are claimed.

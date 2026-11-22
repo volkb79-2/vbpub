@@ -1,12 +1,13 @@
 # Rollback recovery and state management
 
-**Scope:** systemd-boot target on the current btrfs layout. The current
-candidate includes the destructive acceptance scenarios. The registered
-`run-gate offline` lane passes in the current worktree; fresh guest results are
-pending. Retained v1001 transcripts are historical:
-they used legacy `@os-0001` states and injected files whose hashes differ from
-the integrated timestamped-ID candidate. See [Evidence](#evidence-and-implementation)
-for the exact historical reports and current test entry points.
+**Scope:** systemd-boot target on the current btrfs layout. The M2
+systemd-boot-target ISO and timestamped-ID runtime were installed in fresh
+v1001 UEFI guests. The current candidate passed the dependency-break, kernel,
+and dynamic-loader recovery scenarios. Exact artifact/source hashes, counts,
+and log paths are in the
+[2026-11-22 results report](RESULTS-SDBOOT-M2-2026-11-22.md). The GRUB-target
+comparison install is complete; the final offline gate and exact-commit review
+remain before merge.
 
 ## Recovery contract
 
@@ -183,11 +184,12 @@ checks that the witness remains and the failed BLS entry is gone.
 | `recovery-library` | Remove the target of the package-owned `/lib64/ld-linux-x86-64.so.2` symlink with an atomic rename and parent-directory fsync. The damaged root cannot start init. | The serial log records the kernel's `No working init found` failure. After a reset, the operator selects the older BLS entry; the exact loader symlink and target are restored and the `/home` witness survives. The repaired default boots normally and the unusable OS state can be deleted. |
 | `recovery-dependency` | Install a local app package that depends on an exact version of a local library package, start its systemd service, create the recovery snapshot, then manually remove the library with `dpkg --force-depends`. | `apt-get check` names the broken dependency, the app and its service fail, and the app remains installed. The operator selects the older BLS entry; dpkg consistency, the library, app, and service return, post-snapshot `/home` data survives, the recovered state boots as the default, and the damaged state can be deleted. |
 
-Run each on a fresh disposable VM overlay. Do not reuse a damaged guest. These
+Run each on a fresh disposable VM. Do not reuse a damaged guest. These
 scenarios deliberately do not stage `dr-state boot-once`: they test selection
-after the default has become unusable. Pruning older snapshots is covered by
-the offline `dr-state prune` workflow suite; a separate live prune scenario is
-still useful before calling ESP cleanup fully guest-proven.
+after the default has become unusable. All three recovery scenarios passed on
+the current systemd-boot M2 guest source. State deletion was exercised after
+recovery in each. Pruning older snapshots is covered by the offline
+`dr-state prune` workflow suite; live prune and ESP cleanup remain unverified.
 
 ## Evidence and implementation
 
@@ -198,6 +200,15 @@ still useful before calling ESP cleanup fully guest-proven.
 | Offline deletion and selector safety coverage | `poc/test-dr-state-sdboot.sh` |
 | Serial/QMP and scenario contract coverage | `poc/test-dr-serial.py` |
 | Registered gate | `run-gate offline` from `scripts/debian-rollback/` |
+
+Current systemd-boot M2 guest evidence is in
+[RESULTS-SDBOOT-M2-2026-11-22.md](RESULTS-SDBOOT-M2-2026-11-22.md). The
+dependency-break scenario passed 23 checks, kernel damage 27, and loader
+damage 25. Each selected the older boot-menu entry after the default became
+unusable, restored service and/or boot capability, preserved post-snapshot
+`/home` data, made the recovered state the default, proved a plain reboot, and
+deleted the failed state. These runs use the timestamped ID schema and current
+source hashes, unlike the historical runs below.
 
 Historical v1001 guest evidence (not certification of the current candidate),
 all run on disposable overlays of `installed-sdboot-c749-r10.qcow2` (SHA-256
@@ -210,16 +221,15 @@ all run on disposable overlays of `installed-sdboot-c749-r10.qcow2` (SHA-256
   `/home/runner/jobs/dr-poc/logs/recovery-kernel-current-20261121-001.transcript`.
 - `recovery-library`: 25 checks passed; transcript:
   `/home/runner/jobs/dr-poc/logs/recovery-library-current-20261121-001.transcript`.
-- A later `kernel-upgrade` run against the `c749db1` source passed 21 checks;
-  two preceding attempts timed out after the generated command contained `; ;`.
-  These reports used legacy `@os-0001` state names and do not validate the
-  current sequence-ID schema. The current candidate still needs these scenarios
-  rerun.
+- A later historical `kernel-upgrade` run against the `c749db1` source passed
+  21 checks; two preceding attempts timed out after the generated command
+  contained `; ;`. These reports used legacy `@os-0001` state names and do not
+  validate the current sequence-ID schema. See the current-candidate matrix
+  above and the dated results report.
 
-The retained reports recorded `dr-state` hash
+The historical reports recorded `dr-state` hash
 `ab7cf555eba00c96de24edb7afdba8437b83b506ee0f9c14fe4fc17a6bac3e52`, driver
 hash `5f8988855a3eadbf6d2e54b7e2a55a3e79867a2643ff82d9d4ffd92c2d5bef74`, and
 installer hash `ca8848f773392aaf5eac8e90e2b89885849dbd8fac4372a58cf2ad3312e3f0a0`.
-The current worktree hashes differ. The new dependency-break scenario has not
-yet run in a guest. Preserve prior evidence; keep each new scenario on its own
-fresh guest overlay.
+The current candidate hashes and new log locations are in the dated results
+report. Preserve these historical reports alongside the current evidence.

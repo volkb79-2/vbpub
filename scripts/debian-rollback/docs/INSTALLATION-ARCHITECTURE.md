@@ -10,13 +10,26 @@ particular source and guest they name.
 - The product is a normal Debian installation managed with `apt`. It adds OS
   snapshots and bootable rollback states while keeping user and service data
   outside the OS-state rollback.
-- btrfs is the current filesystem implementation. ZFS work is deferred until
-  the systemd-boot path and its installer integration are complete.
+- btrfs is the current filesystem implementation. ZFS is the next PoC after
+  the systemd-boot branch passes its final gate and review and is merged.
 - The merged M2 Debian Live installer installs GRUB on the target disk. The
   builder now produces separate GRUB-target and systemd-boot-target ISO
   variants from the same Debian Live base. Both Live environments continue to
   boot through Debian Live's GRUB menu; the build-time target choice is fixed
   in `/dr/target-bootloader` and passed to the shared target installer.
+- The systemd-boot-target M2 ISO was installed and exercised on v1001 from
+  the embedded configuration. It initialized
+  `@os-000001-20261122-024158Z-install`; boot, ESP, rollback, one-shot,
+  destructive recovery, and a backports kernel upgrade passed. The fresh
+  GRUB-target comparison also passed boot-check and apt rollback/default
+  selection. See the
+  [dated results](RESULTS-SDBOOT-M2-2026-11-22.md) for artifact hashes and
+  scenario counts.
+- The optional NoCloud cloud-image builder route was also exercised from the
+  current branch source: it installed a separate systemd-boot target disk,
+  which then booted and passed `boot-check` (12) and `sdboot-esp` (16) without
+  either the seed ISO or cloud image attached. The NoCloud seed belongs to
+  this automated builder path; it is not required for the M2 product install.
 - New installations of either target variant start at
   `@os-000001-YYYYMMDD-HHMMSSZ-install`. Later states use a never-reused
   creation sequence, UTC timestamp, and origin/reason slug. The counter is
@@ -26,18 +39,14 @@ particular source and guest they name.
   command is planned. The timestamped runtime is for fresh installs and must
   not be copied onto those old disks because its APT hook requires the new
   counter.
-- Earlier v1001 guests proved builder installation, boot check, canonical ESP
-  entries, rollback/default selection, and one-shot consumption on a disk built
-  from `b94af9533`. Later transcripts record apt metadata and destructive
-  recovery runs, but their injected source hashes are not represented by a Git
-  revision. They are historical evidence, not certification of the candidate.
-- Two kernel-upgrade guest attempts timed out after the scenario generated a
-  shell command ending in `; ;`; a later guest run against the `c749db1`
-  source passed 21 checks. Offline coverage now checks generated command
-  syntax, and the integrated current candidate still needs a fresh guest run.
-- The current systemd-boot backend and M2 target-bootloader variants are in
-  this unmerged worktree. Fresh current-source systemd-boot and clean UEFI M2
-  guest validation is pending.
+- Earlier guests on `b94af9533` and `c749db1` remain historical. Current M2
+  systemd-boot ISO results and injected script hashes are recorded separately
+  in the 2026-11-22 report. The ordinary Trixie/security repositories had no
+  newer kernel candidate; enabling Trixie backports yielded a current guest
+  kernel-upgrade pass (21 checks).
+- The systemd-boot M2 guest matrix, fresh GRUB-target comparison, and optional
+  NoCloud builder guest are complete. The exact-candidate offline gate and
+  independent review remain before merging this worktree.
 
 ## The layers
 
@@ -59,8 +68,10 @@ flowchart TB
     CLOUD[Debian generic cloud image]
     BUILDER[Cloud-image builder guest<br/>cloud-init]
     SEED[NoCloud seed ISO<br/>user-data + installer payload]
+    BLANK[Blank target data disk]
     CLOUD --> BUILDER
     SEED --> BUILDER
+    BLANK --> BUILDER
   end
 
   LIVECTRL --> INSTALL[Shared target installer<br/>install-btrfs.sh + debootstrap]
@@ -95,13 +106,14 @@ directory, not in Git.
 | Artifact | Boots by itself? | Role and contents | Status |
 |---|---|---|---|
 | Official Debian Live ISO | Yes | Upstream Live installer and GRUB boot path; read-only input to the M2 remaster | Input |
-| M2 Debian rollback Live ISO, GRUB target | Yes | Debian Live plus `/dr` installer payload, live-config hook, and added GRUB entries; installs GRUB on the target | Implemented and merged |
-| M2 Debian rollback Live ISO, systemd-boot target | Yes | Same Live install experience, with the build-time choice passed to the target installer | Builder implemented; fresh guest validation pending |
-| NoCloud seed ISO | No; attach to the cloud-image guest | `user-data`, `meta-data`, installer scripts, and a `bootloader` marker | Implemented for GRUB and systemd-boot PoC builds |
+| M2 Debian rollback Live ISO, GRUB target | Yes | Debian Live plus `/dr` installer payload, live-config hook, and added GRUB entries; installs GRUB on the target | Implemented and merged; fresh comparison boot-check and rollback passed |
+| M2 Debian rollback Live ISO, systemd-boot target | Yes | Same Live install experience, with the build-time choice passed to the target installer | Fresh install and guest matrix passed; branch unmerged pending gate/review |
+| M2 `CIDATA` configuration ISO | No; attach to the M2 Live guest | A `dr-install.conf` volume for `dr-autoinstall`; not a cloud-init seed | Optional; current systemd-boot M2 install used embedded config instead |
+| NoCloud seed ISO | No; attach to the cloud-image builder guest | `user-data`, `meta-data`, installer scripts, and a `bootloader` marker | Required when using this automated builder route; optional to the separate M2 product-install flow |
 | Debian generic cloud image | Yes | Boots the automated builder guest; it is not the rollback product image | PoC input |
-| Installed target disk | Yes, after installation | UEFI ESP, btrfs OS state and separate persistent-data subvolumes, plus the selected target bootloader | GRUB covered by M2; systemd-boot under PoC validation |
+| Installed target disk | Yes, after installation | UEFI ESP, btrfs OS state and separate persistent-data subvolumes, plus the selected target bootloader | GRUB covered by merged M2; systemd-boot guest matrix passed on the current branch |
 
-The two planned M2 Live ISO variants differ in the **bootloader installed on
+The two M2 Live ISO variants differ in the **bootloader installed on
 the target disk**. Both Live media continue to boot the Debian Live
 environment through GRUB. The systemd-boot variant does not need a separate
 systemd-boot live environment.
@@ -216,8 +228,9 @@ The target bootloader changes how each OS state is made bootable:
 ### Product installation: M2 Debian Live ISO
 
 1. Build or obtain the chosen UEFI Live ISO variant and boot it on the machine
-   that will receive Debian. The GRUB-target artifact is merged; the
-   systemd-boot-target artifact is under fresh guest validation.
+   that will receive Debian. The GRUB-target artifact is merged; the separate
+   systemd-boot-target variant has passed a fresh UEFI install and guest matrix
+   on the current unmerged branch.
 2. Choose the unattended-install menu entry, or boot the Live system entry for
    manual work. The unattended entry starts `dr-autoinstall` through
    `live-config`.
