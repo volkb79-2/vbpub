@@ -1,6 +1,6 @@
 # Debian rollback: installation architecture
 
-**Canonical architecture and current status, 2026-11-21.** This page describes
+**Canonical architecture and current status, 2026-11-22.** This page describes
 the media we build, the layers they contain, how they install a target, and
 what Debian changes. Dated result reports remain the evidence record for the
 particular source and guest they name.
@@ -21,30 +21,23 @@ particular source and guest they name.
   `@os-000001-YYYYMMDD-HHMMSSZ-install`. Later states use a never-reused
   creation sequence, UTC timestamp, and origin/reason slug. The counter is
   stored at `/.top/.dr-state/last-sequence`, outside the OS-state subvolumes.
-  This schema applies to fresh installs and new snapshots; historic `@os-0001`
-  PoC disks are not migrated by this change.
-- The systemd-boot installer/backend is in the unmerged feature worktree.
-  Fresh v1001 guests have passed the builder, `boot-check` (12/12),
-  `sdboot-esp` (16/16 on r10), `s2-s3` (18/18 on r10; 23 current-source checks), and
-  `sdboot-oneshot-consumed` (8/8). The current-source apt run also verified the
-  readable timestamp, pre-change package/kernel report, apt action summary, and
-  rollback of an installed package. Current-source destructive guest tests
-  pass for a non-booting kernel and an unusable dynamic loader; both restore a
-  known-good state, preserve post-snapshot `/home` data, set the recovered
-  state as default, and delete the failed state.
-- `kernel-upgrade` passes on a fresh-source v1001 guest (21 checks). An earlier
-  run exposed an extra machine-ID BLS entry from the `systemd-boot` package's
-  direct `kernel-install` call. The installer now diverts Debian's
-  `zz-systemd-boot` hooks and disables the stock `90-loaderentry.install`
-  writer with systemd's `/etc/kernel/install.d/` override. The fresh guest
-  confirmed only canonical per-state entries remained, both kernels booted,
-  the older kernel's modules worked, and one-shot boot returned to the new
-  default.
-- These guest results exercise uncommitted changes in the worktree based on
-  feature revision `c749db1`; they are not evidence for a merged or integrated
-  source head. Guest scenarios injected and verified the exact current
-  `dr-state` hash recorded in
-  [ROLLBACK-RECOVERY.md](ROLLBACK-RECOVERY.md).
+  This schema applies to fresh installs and new snapshots. Historical
+  `@os-0001` PoC disks remain untouched and are not migrated; no adoption
+  command is planned. The timestamped runtime is for fresh installs and must
+  not be copied onto those old disks because its APT hook requires the new
+  counter.
+- Earlier v1001 guests proved builder installation, boot check, canonical ESP
+  entries, rollback/default selection, and one-shot consumption on a disk built
+  from `b94af9533`. Later transcripts record apt metadata and destructive
+  recovery runs, but their injected source hashes are not represented by a Git
+  revision. They are historical evidence, not certification of the candidate.
+- Two kernel-upgrade guest attempts timed out after the scenario generated a
+  shell command ending in `; ;`; a later guest run against the `c749db1`
+  source passed 21 checks. Offline coverage now checks generated command
+  syntax, and the integrated current candidate still needs a fresh guest run.
+- The current systemd-boot backend and M2 target-bootloader variants are in
+  this unmerged worktree. Fresh current-source systemd-boot and clean UEFI M2
+  guest validation is pending.
 
 ## The layers
 
@@ -130,7 +123,8 @@ to add or replace files in its ISO filesystem:
 
 - `/dr/` contains `dr-autoinstall`, `dr-plan`, `dr-pick-disk`,
   `install-btrfs.sh`, `dr-state`, and optionally an embedded
-  `dr-install.conf`.
+  `dr-install.conf`; `/dr/target-bootloader` fixes the target bootloader for
+  this ISO build.
 - `/live/config-hooks/10-dr-autoinstall` starts the installer service in the
   Live environment when the selected GRUB entry includes `dr.mode=auto`.
 - `/boot/grub/grub.cfg` gains an unattended-install entry and a Live entry
@@ -176,7 +170,8 @@ expected and IDs are never reused. If the counter is missing or malformed,
 snapshot creation fails closed instead of guessing. It must remain outside the
 OS-state subvolumes and must not be deleted as cleanup. This fresh-install
 schema does not migrate historical `@os-0001` disks; their state names remain
-as they were.
+as they were, and they must keep using their matching existing runtime. There
+is no migration or counter-adoption command.
 
 A manual snapshot can include a concise reason and an optional note, for
 example:

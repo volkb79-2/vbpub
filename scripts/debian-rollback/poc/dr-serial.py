@@ -4,8 +4,8 @@
   dr-serial.py SOCKET SCENARIO [--log FILE]
 
 SCENARIO is one of: boot-check, s2-s3, kernel-upgrade, sdboot-esp, sdboot-oneshot-consumed, recovery-kernel,
-recovery-library, s5, plus the other named scenarios below. boot-check, s2-s3, kernel-upgrade, sdboot-esp,
-sdboot-oneshot-consumed and both recovery scenarios are backend-aware (GRUB or systemd-boot; the one-shot and
+recovery-library, recovery-dependency, s5, plus the other named scenarios below. boot-check, s2-s3, kernel-upgrade, sdboot-esp,
+sdboot-oneshot-consumed and all recovery scenarios are backend-aware (GRUB or systemd-boot; the one-shot and
 recovery scenarios require systemd-boot). Scenarios are NOT idempotent: s2-s3 ends with the earlier state as the
 default, kernel-upgrade changes boot state, and each recovery scenario damages and then deletes its failed guest state.
 Run each in its own fresh guest (new overlay on the installed base); boot-check may share a guest with either. The
@@ -1539,6 +1539,153 @@ def scenario_recovery_library(g, log):
     delete_recovery_state(g, log, state0)
 
 
+def package_dependency_fixture_setup_command():
+    """Build and install a local package pair plus a service that depends on the library package."""
+    return r'''set -eu
+base=/var/tmp/dr-rollback-dependency-fixture
+test ! -e "$base" || { echo 'fixture directory already exists'; exit 1; }
+mkdir -p "$base/library/DEBIAN" "$base/library/usr/lib/dr-rollback-fixture"
+mkdir -p "$base/app/DEBIAN" "$base/app/usr/bin"
+cat >"$base/library/DEBIAN/control" <<'CONTROL'
+Package: dr-rollback-fixture-library
+Version: 1.0
+Architecture: all
+Maintainer: Debian rollback PoC <noreply@example.invalid>
+Description: Local dependency for destructive rollback acceptance
+CONTROL
+printf '%s\n' known-good-v1 >"$base/library/usr/lib/dr-rollback-fixture/library-version"
+cat >"$base/app/DEBIAN/control" <<'CONTROL'
+Package: dr-rollback-fixture-app
+Version: 1.0
+Architecture: all
+Depends: dr-rollback-fixture-library (= 1.0)
+Maintainer: Debian rollback PoC <noreply@example.invalid>
+Description: Local consumer for destructive rollback acceptance
+CONTROL
+cat >"$base/app/usr/bin/dr-rollback-fixture-app" <<'APP'
+#!/bin/sh
+set -eu
+test "$(cat /usr/lib/dr-rollback-fixture/library-version)" = known-good-v1
+APP
+chmod 0755 "$base/app/usr/bin/dr-rollback-fixture-app"
+dpkg-deb --build --root-owner-group "$base/library" "$base/dr-rollback-fixture-library.deb" >/dev/null
+dpkg-deb --build --root-owner-group "$base/app" "$base/dr-rollback-fixture-app.deb" >/dev/null
+dpkg -i "$base/dr-rollback-fixture-library.deb" >/dev/null
+dpkg -i "$base/dr-rollback-fixture-app.deb" >/dev/null
+cat >/etc/systemd/system/dr-rollback-fixture.service <<'UNIT'
+[Unit]
+Description=Rollback dependency acceptance fixture
+After=local-fs.target
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/dr-rollback-fixture-app
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now dr-rollback-fixture.service >/dev/null
+apt-get check >"$base/apt-check-before.log" 2>&1
+echo LIB_STATUS:$(dpkg-query -W -f='${Status}' dr-rollback-fixture-library)
+echo APP_STATUS:$(dpkg-query -W -f='${Status}' dr-rollback-fixture-app)
+echo APP_RC:$(/usr/bin/dr-rollback-fixture-app >/dev/null 2>&1; echo $?)
+echo SERVICE_STATE:$(systemctl is-active dr-rollback-fixture.service)
+echo FIXTURE_SETUP:ready'''
+
+
+def package_dependency_damage_command():
+    """Break dpkg's dependency graph without APT so only the explicit recovery snapshot can repair it."""
+    return r'''base=/var/tmp/dr-rollback-dependency-fixture
+if dpkg --force-depends --remove dr-rollback-fixture-library >"$base/dpkg-remove.log" 2>&1; then
+  echo REMOVE_RC:0
+else rc=$?; echo REMOVE_RC:$rc; fi
+if apt-get check >"$base/apt-check-broken.log" 2>&1; then
+  echo APT_CHECK_RC:0
+else rc=$?; echo APT_CHECK_RC:$rc; fi
+if grep -Fq 'dr-rollback-fixture-library' "$base/apt-check-broken.log"; then
+  echo APT_BROKEN_DEP:1
+else echo APT_BROKEN_DEP:0; fi
+if /usr/bin/dr-rollback-fixture-app >"$base/app-broken.log" 2>&1; then
+  echo APP_RC:0
+else rc=$?; echo APP_RC:$rc; fi
+systemctl reset-failed dr-rollback-fixture.service >/dev/null 2>&1 || true
+if systemctl restart dr-rollback-fixture.service >"$base/service-broken.log" 2>&1; then
+  echo SERVICE_RC:0
+else rc=$?; echo SERVICE_RC:$rc; fi
+echo LIB_STATUS:$(dpkg-query -W -f='${Status}' dr-rollback-fixture-library 2>/dev/null || echo missing)
+echo APP_STATUS:$(dpkg-query -W -f='${Status}' dr-rollback-fixture-app 2>/dev/null || echo missing)
+echo SERVICE_STATE:$(systemctl is-failed dr-rollback-fixture.service 2>/dev/null || true)'''
+
+
+def scenario_recovery_dependency(g, log):
+    """Break a real dpkg dependency and recover the package plus its failed service from the older state."""
+    pre = recovery_precondition(g, log)
+    if pre is None:
+        return
+    if not install_current_dr_state(g, log):
+        return
+    state0, _kernel = pre
+    _, out = g.run(package_dependency_fixture_setup_command(), 300)
+    if not check(log, "fixture library/app dependency and service start in the known-good state",
+                 tag(out, "FIXTURE_SETUP") == "ready"
+                 and tag(out, "LIB_STATUS") == "install ok installed"
+                 and tag(out, "APP_STATUS") == "install ok installed"
+                 and tag(out, "APP_RC") == "0" and tag(out, "SERVICE_STATE") == "active",
+                 str(out[-1200:])):
+        return
+    snapshot = recovery_snapshot(g, log)
+    if snapshot is None:
+        return
+    marker = "/home/.dr-recovery-dependency-witness"
+    if not recovery_persistent_marker(g, log, marker):
+        return
+    _, out = g.run(package_dependency_damage_command(), 300)
+    if not check(log, "manual dpkg removal creates a real dependency break and failed consumer service",
+                 tag(out, "REMOVE_RC") == "0" and tag(out, "APT_CHECK_RC") != "0"
+                 and tag(out, "APT_BROKEN_DEP") == "1"
+                 and tag(out, "APP_RC") != "0" and tag(out, "SERVICE_RC") != "0"
+                 and tag(out, "LIB_STATUS") != "install ok installed"
+                 and tag(out, "APP_STATUS") == "install ok installed"
+                 and tag(out, "SERVICE_STATE") == "failed",
+                 str(out[-1200:])):
+        return
+    if not recovery_menu_timeout(g, log, state0):
+        return
+    try:
+        old_boot_id = g.boot_id()
+        g.send("reboot\n")
+        g.select_older_entry_from_boot_menu(old_boot_id, timeout=1800)
+    except Exception as exc:  # noqa: BLE001 - this is the package recovery assertion
+        check(log, "operator can choose the older environment after a package dependency break", False, repr(exc))
+        return
+    check(log, "QMP boot-menu selection completed a new boot", True, snapshot)
+    _, out = g.run(
+        "base=/var/tmp/dr-rollback-dependency-fixture; "
+        "if apt-get check >\"$base/apt-check-recovered.log\" 2>&1; then echo APT_CHECK_RC:0; "
+        "else rc=$?; echo APT_CHECK_RC:$rc; fi; "
+        "if /usr/bin/dr-rollback-fixture-app >\"$base/app-recovered.log\" 2>&1; then echo APP_RC:0; "
+        "else rc=$?; echo APP_RC:$rc; fi; "
+        "echo LIB_STATUS:$(dpkg-query -W -f='${Status}' dr-rollback-fixture-library 2>/dev/null || echo missing); "
+        "echo APP_STATUS:$(dpkg-query -W -f='${Status}' dr-rollback-fixture-app 2>/dev/null || echo missing); "
+        "echo SERVICE_STATE:$(systemctl is-active dr-rollback-fixture.service 2>/dev/null || true); "
+        f"echo CMDLINE:$(cat /proc/cmdline); echo WITNESS:$(cat {shlex.quote(marker)})"
+    )
+    check(log, "dependency snapshot booted after the package break", running_state(tag(out, "CMDLINE")) == snapshot,
+          str(running_state(tag(out, "CMDLINE"))))
+    check(log, "rollback restores dpkg consistency and the dependent service",
+          tag(out, "APT_CHECK_RC") == "0" and tag(out, "APP_RC") == "0"
+          and tag(out, "LIB_STATUS") == "install ok installed"
+          and tag(out, "APP_STATUS") == "install ok installed"
+          and tag(out, "SERVICE_STATE") == "active",
+          f"apt={tag(out, 'APT_CHECK_RC')} app={tag(out, 'APP_RC')} lib={tag(out, 'LIB_STATUS')} "
+          f"app-status={tag(out, 'APP_STATUS')} service={tag(out, 'SERVICE_STATE')}")
+    check(log, "data written after the package snapshot survives OS rollback",
+          tag(out, "WITNESS") == "recovery-data-survives", str(tag(out, "WITNESS")))
+    if not set_recovery_default(g, log, snapshot):
+        return
+    delete_recovery_state(g, log, state0)
+
+
 UPDATES_SOURCES = ("echo 'deb http://deb.debian.org/debian trixie-updates main' > /etc/apt/sources.list.d/dr-updates.list; "
                    "echo 'deb http://deb.debian.org/debian-security trixie-security main' >> /etc/apt/sources.list.d/dr-updates.list")
 BACKPORTS_SOURCES = UPDATES_SOURCES + ("; echo 'deb http://deb.debian.org/debian trixie-backports main' "
@@ -2074,6 +2221,7 @@ def main():
     scenarios = {"boot-check": scenario_boot_check, "s2-s3": scenario_s2_s3, "sdboot-esp": scenario_sdboot_esp,
                  "sdboot-oneshot-consumed": scenario_sdboot_oneshot_consumed,
                  "recovery-kernel": scenario_recovery_kernel, "recovery-library": scenario_recovery_library,
+                 "recovery-dependency": scenario_recovery_dependency,
                  "kernel-upgrade": scenario_kernel_upgrade,
                  "s5": scenario_s5, "s6": scenario_s6, "s7": scenario_s7, "s9": scenario_s9,
                  "backports": scenario_kernel_backports, "s8": scenario_s8,

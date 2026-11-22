@@ -1298,7 +1298,9 @@ def main() -> int:
 
     # Recovery scenarios must exercise a human boot-menu selection. A boot-once staged before damage would not
     # cover the operator path requested for an unusable default environment.
-    for scenario_name in ("scenario_recovery_kernel", "scenario_recovery_library"):
+    for scenario_name in (
+        "scenario_recovery_kernel", "scenario_recovery_library", "scenario_recovery_dependency"
+    ):
         scenario = getattr(drs, scenario_name, None)
         if scenario is None:
             failures.append(f"{scenario_name} is missing")
@@ -1308,6 +1310,43 @@ def main() -> int:
             failures.append(f"{scenario_name} does not use a manual boot-menu recovery path")
         if "delete_recovery_state" not in source:
             failures.append(f"{scenario_name} does not exercise cleanup of the failed state")
+
+    dependency_source = inspect.getsource(drs.scenario_recovery_dependency)
+    for required in (
+        "package_dependency_fixture_setup_command",
+        "package_dependency_damage_command",
+        "recovery_persistent_marker",
+        "set_recovery_default",
+    ):
+        if required not in dependency_source:
+            failures.append(f"recovery-dependency omits required acceptance step {required!r}")
+    setup_command = drs.package_dependency_fixture_setup_command()
+    damage_command = drs.package_dependency_damage_command()
+    for label, command in (("dependency fixture setup", setup_command), ("dependency damage", damage_command)):
+        if command.rstrip().endswith(";"):
+            failures.append(f"{label} ends in a semicolon before the serial completion marker")
+        syntax = subprocess.run(
+            ["bash", "-n"], input=drs.marker_wrapped_command(command), text=True, capture_output=True, check=False
+        )
+        if syntax.returncode != 0:
+            failures.append(f"{label} is not valid after serial marker wrapping: {syntax.stderr.strip()!r}")
+    for required in (
+        "dr-rollback-fixture-library",
+        "Depends: dr-rollback-fixture-library (= 1.0)",
+        "systemctl enable --now dr-rollback-fixture.service",
+        "apt-get check",
+    ):
+        if required not in setup_command:
+            failures.append(f"dependency fixture setup omits {required!r}")
+    for required in (
+        "dpkg --force-depends --remove dr-rollback-fixture-library",
+        "apt-get check",
+        "APT_BROKEN_DEP:1",
+        "dr-rollback-fixture-app",
+        "systemctl restart dr-rollback-fixture.service",
+    ):
+        if required not in damage_command:
+            failures.append(f"dependency damage command omits {required!r}")
 
     move_source = inspect.getsource(drs.move_package_file_command)
     if "rename($path, $backup)" not in move_source or "$dir->sync" not in move_source:

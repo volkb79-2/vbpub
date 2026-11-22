@@ -4,6 +4,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL="$HERE/install-btrfs.sh"
+DR="$HERE/dr-state"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 fail=0
@@ -29,11 +30,6 @@ absent() {
   if grep -Fq -- "$3" "$2"; then bad "$1: '$2' unexpectedly contains '$3'"; fi
 }
 
-exact_line() { # exact_line LABEL FILE LINE
-  cases=$((cases + 1))
-  grep -Fqx -- "$3" "$2" || bad "$1: '$2' lacks exact line '$3'"
-}
-
 run_dry grub-default
 contains grub-default-package "$WORK/grub-default.err" \
   '--include=linux-image-amd64,grub-efi-amd64,btrfs-progs'
@@ -49,8 +45,8 @@ contains grub-explicit-package "$WORK/grub-explicit.err" \
 run_dry sdboot --bootloader systemd-boot
 contains sdboot-packages "$WORK/sdboot.err" \
   '--include=linux-image-amd64,systemd-boot,systemd-boot-efi,btrfs-progs'
-contains sdboot-bootctl "$WORK/sdboot.err" \
-  'chroot /mnt/drtarget bootctl install --esp-path=/boot/efi --no-variables'
+contains sdboot-bootloader-install "$WORK/sdboot.err" \
+  'chroot /mnt/drtarget /usr/local/sbin/dr-state install-systemd-boot'
 contains sdboot-divert-dir "$WORK/sdboot.err" \
   'chroot /mnt/drtarget mkdir -p /etc/kernel/dr-disabled'
 contains sdboot-divert-postinst "$WORK/sdboot.err" \
@@ -59,8 +55,8 @@ contains sdboot-divert-postrm "$WORK/sdboot.err" \
   'chroot /mnt/drtarget dpkg-divert --local --add --rename --divert /etc/kernel/dr-disabled/postrm-zz-systemd-boot /etc/kernel/postrm.d/zz-systemd-boot'
 contains sdboot-disable-kernel-install-bls "$WORK/sdboot.err" \
   'chroot /mnt/drtarget ln -s /dev/null /etc/kernel/install.d/90-loaderentry.install'
-contains sdboot-config "$WORK/sdboot.out" 'BOOTLOADER=systemd-boot'
-exact_line sdboot-marker "$WORK/sdboot.out" 'systemd-boot'
+contains sdboot-config "$DR" "printf 'BOOTLOADER=systemd-boot\\n' >\"\$DR_STATE_CONF.new.\$\$\""
+contains sdboot-marker "$DR" "printf 'systemd-boot\\n' >\"\$SDBOOT_MARKER.new.\$\$\""
 absent sdboot-no-grub-package "$WORK/sdboot.err" 'linux-image-amd64,grub-efi-amd64'
 absent sdboot-no-grub-installer "$WORK/sdboot.err" 'dr-state install-grub'
 contains sdboot-menu-lesson "$WORK/sdboot.err" \
@@ -73,9 +69,9 @@ contains apt-plan-version "$INSTALL" 'DPkg::Tools::Options::/usr/local/sbin/dr-s
 contains apt-plan-fd "$INSTALL" 'DPkg::Tools::Options::/usr/local/sbin/dr-state::InfoFD "3";'
 contains apt-preinvoke-fallback "$INSTALL" 'dr-state snapshot --reason apt || exit 100'
 
-# bootctl, hook diversions and the kernel-install BLS override must precede the menu generated from copied kernels.
+# systemd-boot installation, hook diversions and the kernel-install BLS override must precede the generated menu.
 cases=$((cases + 1))
-bc=$(grep -nF 'bootctl install --esp-path=/boot/efi --no-variables' "$WORK/sdboot.err" | cut -d: -f1)
+bc=$(grep -nF 'install-systemd-boot' "$WORK/sdboot.err" | cut -d: -f1)
 si=$(grep -nF 'initialize-state @os-000001-' "$WORK/sdboot.err" | cut -d: -f1)
 dd=$(grep -nF 'mkdir -p /etc/kernel/dr-disabled' "$WORK/sdboot.err" | cut -d: -f1)
 pi=$(grep -nF 'dpkg-divert --local --add --rename --divert /etc/kernel/dr-disabled/postinst-zz-systemd-boot' "$WORK/sdboot.err" | cut -d: -f1)

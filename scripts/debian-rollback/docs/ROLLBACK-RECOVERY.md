@@ -1,11 +1,12 @@
 # Rollback recovery and state management
 
-**Scope:** systemd-boot target on the current btrfs layout. The acceptance
-scenarios are destructive and each uses a fresh disposable guest overlay. The
-registered offline lane passes, and v1001 guest runs have passed the apt
-rollback, broken-kernel, and unusable-userspace flows using the exact current
-`dr-state` file. See [Evidence](#evidence-and-implementation) for hashes and
-retained transcripts.
+**Scope:** systemd-boot target on the current btrfs layout. The current
+candidate includes the destructive acceptance scenarios. The registered
+`run-gate offline` lane passes in the current worktree; fresh guest results are
+pending. Retained v1001 transcripts are historical:
+they used legacy `@os-0001` states and injected files whose hashes differ from
+the integrated timestamped-ID candidate. See [Evidence](#evidence-and-implementation)
+for the exact historical reports and current test entry points.
 
 ## Recovery contract
 
@@ -167,7 +168,7 @@ service-specific procedures.
 
 ## Destructive acceptance scenarios
 
-Both scenarios require a fresh installed systemd-boot guest whose running
+Each scenario requires a fresh installed systemd-boot guest whose running
 state is its configured default. The driver creates a recovery snapshot, writes
 a witness to the persistent `/home` subvolume after the snapshot, makes the
 default unusable, then drives the systemd-boot menu using QEMU's virtual
@@ -180,6 +181,7 @@ checks that the witness remains and the failed BLS entry is gone.
 |---|---|---|
 | `recovery-kernel` | Replace the running state's kernel and initrd with invalid payloads, then regenerate the ESP entries. The older snapshot keeps a different, intact ESP kernel pair. | The operator selects the older BLS entry from the boot menu; it reaches userspace with its kernel modules working. The post-snapshot `/home` witness survives. The repaired default boots normally and the unusable OS state can be deleted. |
 | `recovery-library` | Remove the target of the package-owned `/lib64/ld-linux-x86-64.so.2` symlink with an atomic rename and parent-directory fsync. The damaged root cannot start init. | The serial log records the kernel's `No working init found` failure. After a reset, the operator selects the older BLS entry; the exact loader symlink and target are restored and the `/home` witness survives. The repaired default boots normally and the unusable OS state can be deleted. |
+| `recovery-dependency` | Install a local app package that depends on an exact version of a local library package, start its systemd service, create the recovery snapshot, then manually remove the library with `dpkg --force-depends`. | `apt-get check` names the broken dependency, the app and its service fail, and the app remains installed. The operator selects the older BLS entry; dpkg consistency, the library, app, and service return, post-snapshot `/home` data survives, the recovered state boots as the default, and the damaged state can be deleted. |
 
 Run each on a fresh disposable VM overlay. Do not reuse a damaged guest. These
 scenarios deliberately do not stage `dr-state boot-once`: they test selection
@@ -191,32 +193,33 @@ still useful before calling ESP cleanup fully guest-proven.
 
 | Item | Location |
 |---|---|
-| Guest acceptance driver | `poc/dr-serial.py`, scenarios `s2-s3`, `recovery-kernel`, and `recovery-library` |
+| Guest acceptance driver | `poc/dr-serial.py`, scenarios `s2-s3`, `recovery-kernel`, `recovery-library`, and `recovery-dependency` |
 | State deletion, pruning, and boot-menu generation | `poc/dr-state` |
 | Offline deletion and selector safety coverage | `poc/test-dr-state-sdboot.sh` |
 | Serial/QMP and scenario contract coverage | `poc/test-dr-serial.py` |
 | Registered gate | `run-gate offline` from `scripts/debian-rollback/` |
 
-Latest current-source guest evidence, all on v1001 using a disposable overlay
-of base `installed-sdboot-c749-r10.qcow2` (SHA-256
+Historical v1001 guest evidence (not certification of the current candidate),
+all run on disposable overlays of `installed-sdboot-c749-r10.qcow2` (SHA-256
 `3b13b57d6d8f8a918e5cd9dbae548e48f2acd9d4505cc67df97e7bbc7d7d284c`):
 
-- `s2-s3`: 23 checks passed. The guest installed `dr-state`
-  (`ab7cf555eba00c96de24edb7afdba8437b83b506ee0f9c14fe4fc17a6bac3e52`)
-  and the APT hook from the current installer, captured `install hello - ->
-  2.10-5`, and booted the pre-install snapshot with `hello` absent. Transcript:
+- `s2-s3`: 23 checks passed; the guest captured the APT plan for
+  `install hello - -> 2.10-5` and booted the pre-install state. Transcript:
   `/home/runner/jobs/dr-poc/logs/snapshot-metadata-20261121-apt-001.transcript`.
-- `recovery-kernel`: 27 checks passed on that same exact `dr-state` hash. The
-  recovery snapshot's name, note, and detailed report were checked before the
-  kernel files were damaged. Transcript:
+- `recovery-kernel`: 27 checks passed; transcript:
   `/home/runner/jobs/dr-poc/logs/recovery-kernel-current-20261121-001.transcript`.
-- `recovery-library`: 25 checks passed on that same exact `dr-state` hash.
-  Transcript:
+- `recovery-library`: 25 checks passed; transcript:
   `/home/runner/jobs/dr-poc/logs/recovery-library-current-20261121-001.transcript`.
+- A later `kernel-upgrade` run against the `c749db1` source passed 21 checks;
+  two preceding attempts timed out after the generated command contained `; ;`.
+  These reports used legacy `@os-0001` state names and do not validate the
+  current sequence-ID schema. The current candidate still needs these scenarios
+  rerun.
 
-The three QEMU containers were stopped after each run. Their overlays and
-serial logs remain under `/home/runner/jobs/dr-poc/vm-lab/debian-rollback/`.
-The driver hash for these runs was
-`5f8988855a3eadbf6d2e54b7e2a55a3e79867a2643ff82d9d4ffd92c2d5bef74`; the
-installer hash was
-`ca8848f773392aaf5eac8e90e2b89885849dbd8fac4372a58cf2ad3312e3f0a0`.
+The retained reports recorded `dr-state` hash
+`ab7cf555eba00c96de24edb7afdba8437b83b506ee0f9c14fe4fc17a6bac3e52`, driver
+hash `5f8988855a3eadbf6d2e54b7e2a55a3e79867a2643ff82d9d4ffd92c2d5bef74`, and
+installer hash `ca8848f773392aaf5eac8e90e2b89885849dbd8fac4372a58cf2ad3312e3f0a0`.
+The current worktree hashes differ. The new dependency-break scenario has not
+yet run in a guest. Preserve prior evidence; keep each new scenario on its own
+fresh guest overlay.

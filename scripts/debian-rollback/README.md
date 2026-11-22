@@ -6,22 +6,19 @@ an earlier state while keeping user and service data outside that rollback.
 It is built from Debian's installer components and existing bootloaders; it is
 not a separate Debian distribution or an image-based update system.
 
-## Current status — 2026-11-21
+## Current status — 2026-11-22
 
 - The btrfs/GRUB M2 unattended Debian Live installer is merged to `main`.
 - Systemd-boot is the active PoC. Its target installer and `dr-state` backend
-  are implemented in the current unmerged worktree. The registered offline
-  lane passes. Current-source v1001 guests verified apt snapshot metadata and
-  rollback, recovery after kernel damage, and recovery after removing the
-  dynamic loader so init cannot start. Both recovery runs selected the older
-  entry from the boot menu, checked the note and captured OS/kernel/package
-  facts, preserved later `/home` writes, set the recovered state as default,
-  and deleted the failed state. A kernel-upgrade guest installed a newer kernel
-  and passed 21 checks after the installer disabled the stock
-  `90-loaderentry.install` plugin. The guest found exactly the canonical
-  per-state BLS entries, booted both the new and older kernels, verified the
-  older kernel's modules, and returned to the new default after a one-shot.
-  Automatic failed-boot fallback is out of scope for this PoC.
+  are implemented in the current unmerged worktree. Earlier v1001 guests
+  proved the builder, boot check, ESP entries, rollback/default selection,
+  and one-shot consumption on a disk built from `b94af9533`. They do not
+  certify the timestamped-ID, metadata, delete/prune, kernel-upgrade, or M2
+  ISO-variant changes on the current candidate. Two earlier kernel-upgrade
+  attempts timed out after a generated command ended in `; ;`; a later guest
+  run against the `c749db1` source passed 21 checks. The integrated current
+  candidate still needs a fresh guest run. Automatic failed-boot fallback is
+  out of scope for this PoC.
 - Fresh installs use state IDs with a six-digit creation sequence, UTC
   timestamp, and origin/reason slug, beginning with
   `@os-000001-YYYYMMDD-HHMMSSZ-install`. The sequence high-water mark lives
@@ -31,17 +28,17 @@ not a separate Debian distribution or an image-based update system.
   the package plan. `dr-state list`, `list --long`, and `show STATE` provide
   compact and detailed state reports. Metadata is stored outside OS states
   and is removed when its state is deleted or pruned.
-- M2 currently installs GRUB on the target disk. The selected next M2 design
-  is two separate build-time Live ISO variants, one installing GRUB and one
-  installing systemd-boot. The builder and target-bootloader marker are
-  implemented; fresh guest validation of both variants is the next
-  integration check. Both Live media continue to boot the Debian Live
-  environment via its GRUB menu.
+- M2 currently installs GRUB on the target disk. The builder produces two
+  separate build-time Live ISO variants, one installing GRUB and one
+  installing systemd-boot. The target-bootloader marker and installer
+  enforcement are implemented; fresh UEFI guest validation of both variants
+  is pending. Both Live media continue to boot the Debian Live environment
+  through its GRUB menu.
 - ZFS work is deferred until the systemd-boot PoC and its installer flow are
   complete.
 
-The systemd-boot guest runs used uncommitted changes based on feature revision
-`c749db1`; they do not certify a final merged source head. See the
+The earlier systemd-boot guest runs used a disk built from `b94af9533` and do
+not certify the current candidate. See the
 [current work order](TODO.md) and [systemd-boot evidence](docs/SDBOOT-VARIANT-2026-11-18.md).
 
 For the exact current layers, media, and consumer/install flows, see the

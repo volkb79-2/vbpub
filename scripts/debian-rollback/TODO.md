@@ -1,4 +1,4 @@
-# Current work order — 2026-11-21
+# Current work order — 2026-11-22
 
 Finish the systemd-boot target path first, integrate it into the M2 Live ISO as
 a separate build-time variant, then continue with the ZFS PoC. The layers and
@@ -7,39 +7,39 @@ media distinction are documented in the
 
 ## 1. Finish systemd-boot PoC
 
-- A fresh-source v1001 kernel-upgrade guest passed 21 checks after an earlier
-  run exposed the systemd-boot package post-install script's direct
-  `kernel-install add` call. The installer diverts Debian's
-  `zz-systemd-boot` hooks and masks systemd's stock `90-loaderentry.install`
-  writer. The passing guest found only canonical per-state entries, booted
-  both the new kernel and the older snapshot kernel with its modules, and
-  returned to the new default after a one-shot. See the exact ISO/base hashes
-  and transcript in [SDBOOT-VARIANT-2026-11-18.md](docs/SDBOOT-VARIANT-2026-11-18.md).
-- Current-source v1001 acceptance has passed for apt metadata and rollback,
-  kernel/initrd damage, and dynamic-loader damage that prevents init from
-  starting. Each recovery run selected the older entry manually, verified the
-  post-snapshot persistent-data witness, made the recovered state the default,
-  and deleted the failed state. The manual runs also verified timestamped
-  state IDs and snapshot notes/reports. Evidence and retained transcripts are
-  in [ROLLBACK-RECOVERY.md](docs/ROLLBACK-RECOVERY.md). Continue to protect
-  the running/default/pending-one-shot states in `delete` and `prune`.
+- Earlier v1001 runs proved the builder, boot check, ESP entries, rollback,
+  default selection, and one-shot consumption on a disk built from
+  `b94af9533`. They are historical evidence, not certification of the current
+  candidate. The current guest matrix must be rebuilt from committed source
+  and rerun. Two kernel-upgrade guest attempts timed out on a generated
+  command ending in `; ;`; a later guest run against the `c749db1` source
+  passed 21 checks. Rerun it against the integrated current candidate.
+- Guest transcripts also record apt metadata/rollback and recovery after
+  kernel and dynamic-loader damage. Their injected source hashes are not
+  available in Git, so treat those results as historical until repeated on
+  the exact candidate. The acceptance contract must cover a real dpkg
+  dependency break from a harmful manual package operation. Every recovery
+  run must select the older entry manually, verify post-snapshot persistent
+  data, make the recovered state the default, and delete the failed state.
   Automatic failed-boot fallback is not part of this PoC.
-- Integrate the current `origin/main` M2 changes into this worktree, resolve
-  conflicts, and rerun the registered offline lane after the state-ID work.
+- The current `origin/main` M2 changes are integrated in this worktree. Finish
+  the review fixes, rerun the registered offline lane, then rebuild the seed
+  and both M2 ISO variants from the exact candidate.
 - New state IDs use a monotonic six-digit sequence, UTC timestamp, and
   origin/reason slug (install, apt, or manual reason). The high-water counter
   is outside all OS states; deletion does not reuse numbers, and a missing or
   corrupt counter refuses new snapshots. Fresh installs initialize
-  `000001-install`; historical `@os-0001` PoC disks are not migrated. This
-  design applies to both GRUB and systemd-boot state names per the operator's
-  naming decision.
-- Rebuild the NoCloud seed and fresh installed target after integration, then
-  repeat the systemd-boot guest matrix against the exact integrated source:
-  builder, boot check, ESP entry ownership, apt snapshot and rollback,
-  boot-once consumption, kernel upgrade, and destructive recovery after kernel
-  and userspace damage. Evidence already on file uses the older state-name
-  schema and source based on `c749db1`; retain it as historical evidence, not
-  certification of the new schema.
+  `000001-install`; historical `@os-0001` PoC disks are not migrated and no
+  adoption command is planned. Keep those disks on their existing runtime; do
+  not copy the new runtime onto them, because its APT snapshot hook correctly
+  refuses to make package changes without the required counter. This schema
+  applies to fresh installs and snapshots on both bootloaders.
+- Use a fresh installed systemd-boot target for the current-source matrix:
+  builder, boot check, canonical ESP ownership, apt snapshot/rollback,
+  one-shot consumption, kernel upgrade, package-inconsistency recovery, and
+  destructive recovery after kernel/init/userspace damage. Then boot both M2
+  target ISO variants in clean UEFI guests and verify disk layout, first boot,
+  rollback, and boot-menu behavior.
 
 ## 2. Validate both M2 target ISO variants
 

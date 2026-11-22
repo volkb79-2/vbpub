@@ -412,29 +412,46 @@ bootctl_set_oneshot() { # the only place that writes the systemd-boot one-shot v
 }
 
 sdboot_oneshot_raw() {
+  local raw
   [ -d "$SDBOOT_EFIVARS_DIR" ] \
-    || die "efivarfs is unavailable; refusing to inspect LoaderEntryOneShot"
+    || { echo "dr-state: efivarfs is unavailable; the pending one-shot is unknown" >&2; return 2; }
   [ -e "$SDBOOT_ONESHOT_EFIVAR" ] || return 0
   [ -r "$SDBOOT_ONESHOT_EFIVAR" ] \
-    || die "cannot read LoaderEntryOneShot; refusing without knowing the pending one-shot state"
-  raw=$(dd if="$SDBOOT_ONESHOT_EFIVAR" bs=1 skip=4 status=none 2>/dev/null \
-    | iconv -f UTF-16LE -t UTF-8 2>/dev/null | tr -d '\000\r\n') \
-    || die "cannot decode LoaderEntryOneShot; refusing without knowing the pending one-shot state"
-  [ -n "$raw" ] || die "LoaderEntryOneShot is empty; refusing without knowing the pending one-shot state"
+    || { echo "dr-state: cannot read LoaderEntryOneShot; the pending one-shot is unknown" >&2; return 2; }
+  if ! raw=$(dd if="$SDBOOT_ONESHOT_EFIVAR" bs=1 skip=4 status=none 2>/dev/null \
+    | iconv -f UTF-16LE -t UTF-8 2>/dev/null | tr -d '\000\r\n'); then
+    echo "dr-state: cannot decode LoaderEntryOneShot; the pending one-shot is unknown" >&2
+    return 2
+  fi
+  [ -n "$raw" ] || { echo "dr-state: LoaderEntryOneShot is empty; the pending one-shot is unknown" >&2; return 2; }
   printf '%s\n' "$raw"
 }
 
 sdboot_oneshot_id() {
   local id raw
-  raw=$(sdboot_oneshot_raw)
+  if ! raw=$(sdboot_oneshot_raw); then return 2; fi
   [ -n "$raw" ] || return 0
   if id=$(sdboot_bare_entry_id "$raw"); then
     printf '%s\n' "$id"
   elif sdboot_selector_names_conf_state "$raw"; then
-    echo "dr-state: ignoring LoaderEntryOneShot '$raw': the named state name ends in .conf and is not selectable" >&2
+    echo "dr-state: LoaderEntryOneShot '$raw' cannot be mapped safely; the pending one-shot is unknown" >&2
+    return 2
   else
-    die "LoaderEntryOneShot names an unknown entry id '$raw'; refusing"
+    echo "dr-state: LoaderEntryOneShot '$raw' is not a dr-state entry id; the pending one-shot is unknown" >&2
+    return 2
   fi
+}
+
+sdboot_inventory_default_state() { # report only a selector that names an existing state; inventory remains usable otherwise
+  local id state
+  id=$(loader_default_id) || return 1
+  [ -n "$id" ] || return 0
+  state=$(state_for_entry_id "$id" 2>/dev/null) || state=""
+  if [ -z "$state" ] || ! state_exists "$state"; then
+    echo "dr-state: loader.conf default '$id' does not name an existing OS state; inventory continues without a default label" >&2
+    return 0
+  fi
+  printf '%s\n' "$state"
 }
 
 sdboot_prune_selector_states() { # RAW_SELECTOR LABEL -> legacy states to protect, accepting suffix-less and suffixed forms
@@ -571,10 +588,12 @@ cmd_install_grub() {
 
 cmd_install_systemd_boot() {
   ensure_esp
-  bootctl install --esp-path=/boot/efi --no-variables
+  bootctl install --esp-path="$BOOT_ESP" --no-variables
   mkdir -p "$ESP_DIR" "$SDBOOT_KERNEL_DIR" "$SDBOOT_ENTRY_DIR"
   printf 'systemd-boot\n' >"$SDBOOT_MARKER.new.$$"
   mv "$SDBOOT_MARKER.new.$$" "$SDBOOT_MARKER"
+  printf 'BOOTLOADER=systemd-boot\n' >"$DR_STATE_CONF.new.$$"
+  mv "$DR_STATE_CONF.new.$$" "$DR_STATE_CONF"
 }
 
 sdboot_allocated_bytes() { # SIZE CLUSTER -> bytes after FAT allocation
@@ -660,6 +679,14 @@ esp_free_bytes() {
   printf '%s\n' "$free"
 }
 
+sdboot_kernel_pair_matches() { # STATE KVER TARGET_DIR -> success only when both staged files match the state
+  local state=$1 kver=$2 target=$3
+  [ -s "$TOP/$state/boot/vmlinuz-$kver" ] && [ -s "$TOP/$state/boot/initrd.img-$kver" ] \
+    && [ -s "$target/vmlinuz" ] && [ -s "$target/initrd.img" ] \
+    && cmp -s -- "$TOP/$state/boot/vmlinuz-$kver" "$target/vmlinuz" \
+    && cmp -s -- "$TOP/$state/boot/initrd.img-$kver" "$target/initrd.img"
+}
+
 copy_sdboot_kernel() { # STATE KVER KERNEL_ID INITRD_SHA256
   local state=$1 kver=$2 kid=$3 sha256=$4
   local src_kernel="$TOP/$state/boot/vmlinuz-$kver"
@@ -667,7 +694,7 @@ copy_sdboot_kernel() { # STATE KVER KERNEL_ID INITRD_SHA256
   local target="$SDBOOT_KERNEL_DIR/$kid" tmp copied_sha
   [ -s "$src_kernel" ] && [ -s "$src_initrd" ] || die "state $state lost its kernel or initrd while generating the menu"
   [ ! -e "$target" ] || [ -d "$target" ] || die "$target exists but is not a kernel directory"
-  if [ -s "$target/vmlinuz" ] && [ -s "$target/initrd.img" ]; then return 0; fi
+  if sdboot_kernel_pair_matches "$state" "$kver" "$target"; then return 0; fi
   tmp=$(mktemp -d "$SDBOOT_KERNEL_DIR/.tmp.XXXXXX") || die "cannot create a temporary kernel directory on the ESP"
   if ! cp -L -- "$src_kernel" "$tmp/vmlinuz" || ! cp -L -- "$src_initrd" "$tmp/initrd.img"; then
     rm -rf -- "$tmp"
@@ -714,6 +741,7 @@ cmd_gen_menu_systemd_boot() {
   local dir_bytes loader_bytes text_bytes entry_path base folded found_existing expected
   local missing_dirs record_children=0 record_parents=0 record_bytes
   local target entry_tmp loader_in="" loader_out default_id="" default_requested=0 default_entry_id oneshot_id=""
+  local oneshot_unknown=0 existing_default_id="" existing_default_state="" running_state=""
   local -a all_states=() states_list=() kvers=() hashes=() kids=() eids=()
   local -A wanted_states=()
   while [ $# -gt 0 ]; do
@@ -722,7 +750,7 @@ cmd_gen_menu_systemd_boot() {
   ensure_top
   ensure_esp
   cleanup_sdboot_scratch "$SDBOOT_KERNEL_DIR" "$SDBOOT_ENTRY_DIR" "$SDBOOT_LOADER_CONF" "$SDBOOT_MARKER"
-  oneshot_id=$(sdboot_oneshot_id) || die "cannot read the systemd-boot one-shot entry"
+  if oneshot_id=$(sdboot_oneshot_id); then :; else oneshot_unknown=1; fi
   ruuid=$(root_uuid); [ -n "$ruuid" ] || die "no btrfs root UUID in /etc/fstab"
   if [ -n "$default" ]; then
     default_entry_id=$(entry_id_for_state "$default") || die "unsafe state name for a systemd-boot entry id: $default"
@@ -776,16 +804,36 @@ cmd_gen_menu_systemd_boot() {
     default_id=$default_entry_id
   else
     default_id=$(loader_default_id) || die "cannot read the existing loader.conf default"
-    if [ -n "$default_id" ] && ! state_for_entry_id "$default_id" >/dev/null; then
-      die "existing loader.conf default '$default_id' is not a dr-state entry id; refusing to overwrite it"
+    existing_default_id=$default_id
+    if [ -n "$default_id" ]; then
+      existing_default_state=$(state_for_entry_id "$default_id" 2>/dev/null || true)
+      if [ -z "$existing_default_state" ] || ! state_exists "$existing_default_state"; then
+        echo "dr-state: existing loader.conf default '$default_id' is not an existing OS state" >&2
+        default_id=""
+      fi
     fi
     found_existing=0
     for eid in "${eids[@]}"; do
       if [ "$default_id" = "$eid" ]; then found_existing=1; break; fi
     done
     if [ "$found_existing" = 0 ]; then
-      # Preserve a valid existing default only while its entry remains. Otherwise select the first sorted entry.
-      default_id=${eids[0]}
+      # Keep the currently running state as default when the old selection cannot be generated. If that state
+      # cannot be identified, use the first available entry and tell the operator what changed.
+      running_state=${DR_STATE:-}
+      if [ "$running_state" = none ]; then running_state=""; fi
+      if [ -z "$running_state" ]; then
+        running_state=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^rootflags=.*subvol=\([^,]*\).*/\1/p' | head -n 1)
+      fi
+      default_id=""
+      for ((i = 0; i < entries; i++)); do
+        if [ "${states_list[i]}" = "$running_state" ]; then default_id=${eids[i]}; break; fi
+      done
+      if [ -n "$default_id" ]; then
+        echo "dr-state: configured default '${existing_default_id:-none}' is unavailable; keeping running state $running_state as default" >&2
+      else
+        default_id=${eids[0]}
+        echo "dr-state: configured default '${existing_default_id:-none}' and running state '${running_state:-unknown}' are unavailable; selecting $default_id" >&2
+      fi
     fi
   fi
   [ -n "$default_id" ] || die "cannot select a default systemd-boot entry; keeping the existing menu"
@@ -806,7 +854,7 @@ cmd_gen_menu_systemd_boot() {
   needed=$((needed + dir_bytes))
   for ((i = 0; i < entries; i++)); do
     target="$SDBOOT_KERNEL_DIR/${kids[i]}"
-    if [ ! -s "$target/vmlinuz" ] || [ ! -s "$target/initrd.img" ]; then
+    if ! sdboot_kernel_pair_matches "${states_list[i]}" "${kvers[i]}" "$target"; then
       # Staging dir + two staged files + target directory record + repair/temp names. This is an estimate, not an
       # attempt to model a particular FAT implementation's directory packing.
       record_children=$((record_children + 6))
@@ -862,22 +910,24 @@ cmd_gen_menu_systemd_boot() {
   # Remove only entries that carry our marker and are neither the new default nor a pending one-shot. Foreign BLS
   # entries are left alone.
   local entry_path entry_base entry_id entry_state
-  while IFS= read -r entry_path; do
-    [ "$(head -n 1 "$entry_path")" = "$SDBOOT_ENTRY_MARKER" ] || continue
-    entry_base=${entry_path##*/}
-    entry_id=${entry_base%.conf}
-    [ "$entry_id" != "$default_id" ] || continue
-    [ -z "$oneshot_id" ] || [ "$entry_id" != "$oneshot_id" ] || continue
-    entry_state=$(state_for_entry_id "$entry_id") || {
-      sdboot_test_failure stale-delete
-      rm -f -- "$entry_path"
-      continue
-    }
-    if [ -z "${wanted_states[$entry_state]+x}" ]; then
-      sdboot_test_failure stale-delete
-      rm -f -- "$entry_path"
-    fi
-  done < <(find "$SDBOOT_ENTRY_DIR" -maxdepth 1 -name '*.conf' -print)
+  if [ "$oneshot_unknown" != 1 ]; then
+    while IFS= read -r entry_path; do
+      [ "$(head -n 1 "$entry_path")" = "$SDBOOT_ENTRY_MARKER" ] || continue
+      entry_base=${entry_path##*/}
+      entry_id=${entry_base%.conf}
+      [ "$entry_id" != "$default_id" ] || continue
+      [ -z "$oneshot_id" ] || [ "$entry_id" != "$oneshot_id" ] || continue
+      entry_state=$(state_for_entry_id "$entry_id") || {
+        sdboot_test_failure stale-delete
+        rm -f -- "$entry_path"
+        continue
+      }
+      if [ -z "${wanted_states[$entry_state]+x}" ]; then
+        sdboot_test_failure stale-delete
+        rm -f -- "$entry_path"
+      fi
+    done < <(find "$SDBOOT_ENTRY_DIR" -maxdepth 1 -name '*.conf' -print)
+  fi
 }
 
 cmd_gen_menu_grub() {
@@ -1073,7 +1123,7 @@ sequence_write() { # SEQUENCE -> durable atomic high-water update
 sequence_allocate() { # reserve and return the next sequence; caller holds DR_STATE_LOCK
   local previous number next
   previous=$(sequence_read) \
-    || die "sequence counter $(sequence_file) is missing or invalid; refusing to guess an ID (install a fresh system or restore the counter)"
+    || die "sequence counter $(sequence_file) is missing or invalid; refusing to guess or reuse an ID. This runtime requires a fresh install initialized by dr-state; no migration from historical @os-0001 installs is provided, and its APT snapshot hook will refuse package changes if this runtime is copied there."
   number=$((10#$previous))
   [ "$number" -lt 999999 ] || die "state sequence exhausted at $previous"
   next=$(printf '%06d' "$((number + 1))")
@@ -1365,15 +1415,12 @@ cmd_list() {
     case "$1" in --long|--verbose) long=1; shift ;; *) die "list: unknown option $1" ;; esac
   done
   ensure_top
-  local backend def="" def_id
+  local backend def=""
   backend=$(bootloader) || die "cannot determine the bootloader backend"
   case "$backend" in
     grub) def=$(grub-editenv "$ESP_DIR/grubenv" list 2>/dev/null | sed -n 's/^saved_entry=//p') ;;
     systemd-boot)
-      def_id=$(loader_default_id) || die "cannot read the systemd-boot default"
-      if [ -n "$def_id" ]; then
-        def=$(state_for_entry_id "$def_id") || die "loader.conf has an unknown default entry id: $def_id"
-      fi ;;
+      def=$(sdboot_inventory_default_state) || die "cannot read the systemd-boot default" ;;
   esac
   local s meta kernel created reason os note actions running status
   running=${DR_STATE:-}
@@ -1426,8 +1473,7 @@ cmd_show() {
   case "$backend" in
     grub) def=$(grub-editenv "$ESP_DIR/grubenv" list 2>/dev/null | sed -n 's/^saved_entry=//p') ;;
     systemd-boot)
-      id=$(loader_default_id) || die "cannot read the systemd-boot default"
-      if [ -n "$id" ]; then def=$(state_for_entry_id "$id") || die "loader.conf has an unknown default entry id: $id"; fi ;;
+      def=$(sdboot_inventory_default_state) || die "cannot read the systemd-boot default" ;;
   esac
   kernel=$(latest_kernel "$state")
   printf 'state: %s\n' "$state"
@@ -1476,8 +1522,9 @@ cmd_show() {
 }
 
 cmd_set_default() {
+  [ $# -eq 1 ] || die "usage: dr-state set-default STATE"
   ensure_top
-  [ -d "$TOP/${1:?state}" ] || die "no such state: $1"
+  state_exists "$1" || die "no such state: $1"
   local backend
   backend=$(bootloader) || die "cannot determine the bootloader backend"
   case "$backend" in
@@ -1491,9 +1538,20 @@ cmd_set_default() {
 
 # select_prune KEEP PROTECTED_CSV NAME...: prints, oldest first, all but the KEEP newest snapshots by sequence,
 # never a protected one (the running, default and one-shot states). Initial install states are not pruned.
+decimal_normalize() { # DECIMAL -> canonical base-10 digits without leading zeroes
+  local value=${1-}
+  [[ "$value" =~ ^[0-9]+$ ]] || return 1
+  while [ "${#value}" -gt 1 ] && [[ "$value" == 0* ]]; do value=${value#0}; done
+  printf '%s\n' "$value"
+}
+
 select_prune() {
   local keep=$1 protected=",$2," n i state sequence slug
   shift 2
+  keep=$(decimal_normalize "$keep") || return 1
+  # State IDs have at most 999999 distinct six-digit sequences. A larger retention count cannot prune any of them.
+  [ "${#keep}" -le 6 ] || return 0
+  keep=$((10#$keep))
   local -a names
   local ordered=""
   for state in "$@"; do
@@ -1515,7 +1573,7 @@ cmd_prune() {
   while [ $# -gt 0 ]; do
     case "$1" in --keep) keep=${2:?}; shift 2 ;; --dry-run) dry=1; shift ;; *) die "prune: $1" ;; esac
   done
-  [[ "$keep" =~ ^[0-9]+$ ]] || die "prune: --keep must be a number"
+  keep=$(decimal_normalize "$keep") || die "prune: --keep must be a number"
   ensure_top
   ensure_esp
   [ "${DR_STATE:-}" != none ] || die "prune: refusing with DR_STATE=none (the running state would not be protected)"
@@ -1682,8 +1740,9 @@ cmd_delete() {
 }
 
 cmd_boot_once() {
+  [ $# -eq 1 ] || die "usage: dr-state boot-once STATE"
   ensure_top
-  [ -d "$TOP/${1:?state}" ] || die "no such state: $1"
+  state_exists "$1" || die "no such state: $1"
   local backend entry_id
   backend=$(bootloader) || die "cannot determine the bootloader backend"
   case "$backend" in
