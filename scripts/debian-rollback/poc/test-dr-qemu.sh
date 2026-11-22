@@ -57,6 +57,7 @@ done
 for flag in --publish -p --privileged --cap-add --pid --ipc --device; do absent "$flag"; done
 # the QEMU side: no monitor, no display, qmp only on a unix socket in the state dir, TCG without nested virt
 for needle in '-machine q35,accel=tcg' '-cpu max,-vmx,-svm' '-monitor none -display none' \
+              'cp --sparse=always /base/disk.raw /state/disk.raw' 'chmod u+w /state/disk.raw' \
               '-qmp unix:/state/qmp.sock,server=on,wait=off' 'cache=unsafe'; do
   printf '%s\n' "$OUT" | grep -qF -- "$needle" || bad "guest script lacks '$needle'"
 done

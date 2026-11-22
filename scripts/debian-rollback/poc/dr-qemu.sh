@@ -137,6 +137,7 @@ if [ "$VM_MODE" = "create" ]; then
   if [ "$VM_DISK_FORMAT" = "raw" ]; then
     test ! -e /state/disk.raw
     cp --sparse=always /base/disk.raw /state/disk.raw
+    chmod u+w /state/disk.raw  # the immutable base may itself be read-only
   else
     test ! -e /state/disk-overlay.qcow2
     qemu-img create -q -f qcow2 -F qcow2 -b /base/disk.qcow2 /state/disk-overlay.qcow2
