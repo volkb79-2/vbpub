@@ -1,48 +1,136 @@
 # Design: CMRU adopts `cli_extended.procio`
 
-Status: closed design for implementation packages P7.1–P7.3. This note covers KI-178 items 3 and 4 in CMRU only. It does not implement the change or assign adoption work in CIU, mdt-cockpit, or nyxloom.
+Status: **closed implementation plan** after the Codex Sol xhigh review of
+`c36f25cddccf6c417eee48763fa0f3bd003836e0`. This note covers KI-178 items 3 and 4 in CMRU
+only. It does not implement P7.0-P7.3, and it does not assign adoption work in CIU,
+mdt-cockpit, or nyxloom.
 
 ## Decision
 
-CMRU will route every declared project-step command through `cli_extended.procio.run_streaming`. CMRU will retain its own logging, quiet-mode, error excerpt, and step-failure contracts in the `on_line` adapter. The adapter will log the helper's bounded-drain warning and watchdog report as CMRU output. Every command receives a finite no-progress limit resolved from project configuration; the default is 1,800 seconds. A watchdog expiry is a runtime step failure (exit 1).
+CMRU will route every declared project-step command through
+`cli_extended.procio.run_streaming`. CMRU retains its logging, quiet-mode, error-excerpt,
+evidence, and step-failure contracts in the `on_line` adapter. The adapter reports procio's
+bounded-drain warning and watchdog report through CMRU's existing output and log paths.
+Every command receives a finite no-progress limit resolved from project configuration; the
+default is 1,800 seconds. Watchdog expiry is a runtime step failure with exit 1.
 
-CMRU will not move short captured probes, interactive commands, registry login, or other non-step subprocess calls in this package. The other KI-178 consumers stay in their owners' packages: `mdt-cockpit/build-push.py` (MDT-104), `ciu/src/ciu/engine.py` (CIU-220), and nyxloom (NL-83). They adopt the same published helper independently.
+CMRU will not migrate short captured probes, interactive commands, registry login, or other
+non-step subprocess calls in this package. The other KI-178 consumers remain with their
+owners: `mdt-cockpit/build-push.py` (MDT-104), `ciu/src/ciu/engine.py` (CIU-220), and nyxloom
+(NL-83). They adopt the same released helper independently.
 
-The CMRU dependency floor becomes `cli-extended>=0.7.0`, the first version identified by this brief as shipping `procio`. `cli-extended` is a real wheel dependency, not vendored source, so the wheel containing `procio` must be available in the supported wheel source before a CMRU release with this floor is released. The checked-in `cli-extended/CHANGES.md` labels the feature Unreleased while its 0.7.0 section lists it, and `BACKLOG.md` still says unreleased; reconcile that release record against the actual wheel before the CMRU release. The floor decision remains 0.7.0; CMRU must not release against a missing wheel.
+## Review closure
 
-## Current runner and `procio`
+All ten confirmed findings from the design review have a settled disposition:
 
-The source comparison is `cmru/src/cmru/runner.py` against `libraries/cli-extended/src/cli_extended/procio.py` and cli-extended SPEC section 16. `procio` does not print or log. CMRU remains responsible for mapping its result objects to its existing console and step-log contract.
-
-| CMRU behavior today | `cli_extended.procio` behavior | Adoption effect |
+| # | Confirmed finding | Closure in this plan |
 |---|---|---|
-| `run_command` logs the command label, elapsed time and known success evidence; it delegates to `_run_command`. | `run_streaming` returns `StreamResult`; it does not print, calculate CMRU evidence, or raise for a nonzero child status. | Keep `run_command` as the compatibility adapter. It calls `_run_command`, which calls `run_streaming`, then keeps CMRU's elapsed/evidence and `CalledProcessError` behavior. |
-| `_run_command` starts `Popen` with combined stdout/stderr, `PYTHONUNBUFFERED=1`, inherited stdin, a copied environment, and a new session/group. | `run_streaming` uses combined stdout/stderr, inherited stdin, and `start_new_session=True`; it accepts the environment supplied by the caller. | Same process boundary. Pass CMRU's constructed `command_env` and `cwd` explicitly. Procio children, like CMRU children now, have no controlling terminal. |
-| `_output_lines` decodes with the locale encoding (UTF-8 in UTF-8 mode), universal newlines, and a selector that supports descriptors >=1024. | `run_streaming` uses a selector, universal newlines, and the same encoding selection; malformed bytes become U+FFFD instead of raising a strict decoding error. | Normal output ordering and line endings stay the same. Invalid child bytes become replacement characters in the log/console, an observable improvement from today's decoding exception. |
-| After the child exits, `_output_lines` drains at most `OUTPUT_DRAIN_SECONDS = 2.0`, then `_warn_pipe_holders` scans `/proc/<pid>/fd`. | `run_streaming` defaults to `DEFAULT_DRAIN_SECONDS = 2.0`, returns the child's exit code, and reports open-pipe holders through `warning` and `abandoned_holders`. Its per-descriptor `/proc` scan skips a descriptor that disappears during `readlink`, rather than losing that process from the scan. | Pass `drain_seconds=OUTPUT_DRAIN_SECONDS` to pin the S3.4a contract. CMRU prints `[WARN] {warning}` and writes `[cmru] {warning}` to the step log. Text remains the same apart from CMRU's existing prefixes; holder discovery is more robust under descriptor-close races. Holders are named, never killed. |
-| `_reap_process_group` sends SIGTERM, waits up to `GROUP_TERM_GRACE_SECONDS = 5.0`, then sends SIGKILL and waits for the leader. | `reap_process_group` does the same with a caller-supplied grace, returning early when the group is empty and guarding against signalling a reused process-group id after the leader was reaped. | Pass `term_grace_seconds=GROUP_TERM_GRACE_SECONDS`. The normal grace is unchanged; the stale-group guard is safer. |
-| `_terminate_as_exit` installs SIGTERM/SIGHUP handlers on the main thread, leaves ignored SIGHUP ignored, and restores handlers. Default SIGINT raises `KeyboardInterrupt`; `_run_command` catches it and reaps the group. | `run_streaming` handles SIGTERM, SIGHUP, and default SIGINT in one signal scope, restores partial installs safely, defers signals during spawn, and reaps on signal or callback error. Ignored signals remain ignored. | Observable exit mapping remains SIGTERM/SIGHUP `128 + signum` and SIGINT `KeyboardInterrupt`. Spawn-time delivery is closed more reliably; CMRU no longer owns a parallel signal/reaping implementation. |
-| `_warn_pipe_holders` writes one warning to stdout and the step log; quiet mode still receives that warning. | Procio returns raw warning text and never logs it. | The adapter preserves CMRU prefixes and destinations. Do not print the library text unadorned. |
-| `quiet=True` buffers console output, keeps a 40-line tail and first 20 error-looking lines, then prints excerpts on nonzero exit. `mirror_handle` copies quiet details to the aggregate release log. | Procio has no `quiet`, tail/error filtering, or mirror handle. | Keep those rules entirely in CMRU's `on_line` callback: write to the step log and optional mirror, collect evidence/tail/error lines, and print live only when not quiet. Watchdog diagnostics always surface even for quiet steps. |
-| There is no no-progress watchdog. A silent live child can run indefinitely. | `run_streaming` requires a finite positive `no_progress_seconds`; output bytes or changes to `progress_paths` reset the monotonic idle timer. On expiry it snapshots the process tree before group termination and returns a `WatchdogReport`. | Resolve and pass a finite setting for every command. Use the step log as a progress path as well as pipe bytes. The report's last nonblank output line and pre-signal tree are surfaced by CMRU. |
+| 1 | `steps.clean` is a direct `execute_step` path outside `run_project_step`. | P7.1 includes `cli.py`, parses clean through the shared `[runner]` grammar, and explicitly builds D-178's cleanup-specific execution config below. |
+| 2 | P7.2 could import procio while cmru metadata still allowed an older cli-extended wheel. | The first procio import and the floor increase to `cli-extended>=0.7.0` ship in the same P7.2 package, after P7.0b's selected-image proof. |
+| 3 | `tester_gate.py` still imports CMRU's private `runner._terminate_as_exit`. | P7.2 imports public `cli_extended.procio.terminate_as_exit`; no parallel CMRU signal implementation remains. |
+| 4 | A template revision bump has several owners and an estate-wide migration cost. | Revision 5 stays. No marker, scaffold, template, or `standards.py` revision change is needed for optional controls. |
+| 5 | Dependency-floor assertions exist beyond the two package requirements. | P7.2 updates both requirements and every floor-specific smoke/test oracle named below; only deliberately old generic-parser fixtures may retain 0.3.0. |
+| 6 | The fake-clock watchdog choreography did not account for procio reporting progress on the next pump tick. | The deterministic sequence below arms on the ready line, consumes `progressed=True` on the next tick, and advances past the limit on the following tick. |
+| 7 | `capped_container` was proposed without collection-time enforcement. | P7.2 registers it and validates the exact Run-Gate fact, allowed lane/environment pair, interpreter, and effective finite cgroup-v2 limits before setup or spawn. |
+| 8 | `reap_process_group` cannot promise PGID-reuse safety across its check and `killpg`. | The claim is narrowed to skipping a known-empty group after the leader is reaped; the check-to-signal reuse race remains documented. |
+| 9 | The selected tester image source pins cli-extended 0.5.0 and its old digest. | P7.0b updates the wheel URL, digest, minimum version, CMRU pin oracle, image selection, and installed-image proof for 0.7.0. |
+| 10 | Direct `run_command` callers do not provide the optional `log_path`. | `run_command` uses the finite 1,800-second CMRU policy default; `_execute_step` passes the resolved parsed value and source. Progress paths are `()` without a log and `(log_path,)` with one. |
 
-The values `OUTPUT_DRAIN_SECONDS=2.0`, `GROUP_TERM_GRACE_SECONDS=5.0`, and the 0.2-second output poll match procio's defaults. The adapter passes the first two explicitly, so later helper-default changes cannot silently alter CMRU's S3.4a timing. CMRU removes its local selector, `/proc` scanner, and group-reaper implementation after migration; the constants may remain as the CMRU-owned values passed to the helper.
+## D-178: preserve cleanup's existing behavior
 
-## Call paths and boundary
+`steps.clean` historically receives only a cleanup-specific execution contract. Adopting its
+full parsed step would newly honor controls that cleanup has ignored, changing existing
+projects. D-178 therefore decides that cleanup preserves its existing environment,
+quiet-output policy, command/cwd mapping, and `repo_root/logs` behavior while gaining only the
+shared watchdog timeout.
 
-The product grep finds exactly one call of `run_command`: `runner._execute_step` at the command loop. `run_command` is the only caller of `_run_command`. `execute_step`/`_execute_step` are reached from `cli.run_project_step`; this makes the change cover all project-step commands regardless of the higher-level verb:
+In P7.1, `load_config` parses `steps.clean` with the same project `[runner]` default and step
+override as every other step. `cleanup_project_step` then copies
+`project.runner_steps["clean"]` and explicitly replaces all cleanup-owned fields:
 
-- `cmru run` and `cmru build`, through `_run_project_steps` and the isolated-build step path;
-- release gate, prepare, build, push, record, and retry-push steps, including project-first and step-first orchestration and family builds;
-- direct `run_project_step` calls for required release gates, external-version preparation, and publishing.
+- the command list and original absolute command cwd mapping from
+  `project.steps["clean"]`;
+- `bake_set_prefix=None`, `bake_set_vars=[]`, `no_cache_env=None`, `clean_dirs=[]`,
+  `required_env=[]`, `login=None`, `step_env={}`, `env_command=None`, and `registries=None`;
+- `quiet=True`; and
+- the parsed finite no-progress timeout and its winning source key.
 
-The `run_command` grep also finds test callers in `test_runner_pipe_holders.py`, `test_runner_quiet_output.py`, `test_cli_runner_boundaries.py`, `test_version_runner_contracts.py`, and `test_w0_tester_hardening.py`. Those tests are updated in P7.2 to preserve the adapter's caller contract; no product call site is left on the local stream reader.
+The execution environment remains the existing cleanup environment: `CMRU_VERSION`, the
+selected publisher token, project environment, the protected cleanup environment
+(`CMRU_RELEASE_COMMIT` and `CMRU_RELEASE_TAG` cleared, selected `GITHUB_PUSH_PAT` applied),
+the original absolute command cwd, and `repo_root/logs` as the log root. The full parsed
+clean config must not be passed through, because that would accidentally activate ignored
+step controls.
 
-Other CMRU subprocess captures found by the subprocess-reader grep (`_git_out`, `apply_env_command`, doctor/version/configuration probes, and the `run_process` consumers) stay as they are. They are not KI-178's step output loop, and CMRU does not need to broaden this package into a general subprocess migration. Interactive commands with inherited stdio also stay outside procio because its child has no controlling terminal. `run_capture` is available to future targeted migrations, but this design does not migrate those captures.
+Behavioral oracle: stub the remote cleanup inputs and invoke `cmru cleanup --policy` with a
+project `[runner]` default plus a `steps.clean` override. Assert that the override reaches
+the watchdog and its diagnostic names
+`steps.clean.no_progress_timeout_seconds`; prove `CMRU_VERSION`, the selected token, command
+cwd, log root, and quiet output are preserved; and prove `env_command` and `login` do not run.
+The process-spawning cleanup case has the `capped_container` marker.
 
-## Watchdog configuration and failure contract
+## P7.0 prerequisites
 
-Add an optional top-level `[runner]` default and an optional per-step override:
+Neither prerequisite is code in this documentation-only branch. P7.0a and P7.0b must both be
+complete before P7.2's registered CMRU gate.
+
+### P7.0a: Run-Gate publishes the lane-cap fact
+
+Run-Gate owns and publishes exactly one reserved fact for an ephemeral container lane with a
+positive declared memory cap and positive declared PID cap:
+
+```text
+RUN_GATE_LANE_CAPS_V1={"environment":"tester-unified","lane":"assay-r0-r1","memory_max_bytes":2147483648,"pids_max":8192}
+```
+
+The value is compact JSON with exactly four keys and no extras:
+
+- `environment`: the parsed Run-Gate environment declaration name;
+- `lane`: the parsed Run-Gate lane name;
+- `memory_max_bytes`: a positive JSON integer derived through Run-Gate's existing size
+  parser and passed as the same memory cap to Docker; and
+- `pids_max`: the positive declared JSON integer PID cap.
+
+Run-Gate constructs the fact after processing caller-forwarded values. It reserves the name
+and refuses a collision with `forward_env`, `required_env`, `image_env`, `cgroup_slice_env`,
+or any other caller-controlled environment input. A caller-supplied value is never promoted
+to a lane fact. Bare-host and ineligible paths clear an inherited value; ineligible
+container lanes explicitly shadow an ambient or image value so no usable fact survives.
+
+P7.0a includes the producer, collision/refusal tests, bare-host and ineligible-path tests,
+the documented contract in `run-gate-project/SPEC.md`, and release/install of the new
+Run-Gate wheel. For the CMRU-assay path it also proves that the outer lane container receives
+the derived value and that Assay can forward it only when the lane declares both
+`env_required` and `env_passthrough`.
+
+### P7.0b: select a tester-unified image containing 0.7.0
+
+The release-availability question is resolved: cli-extended 0.7.0 is published as
+[`cli_extended-0.7.0-py3-none-any.whl`](https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.7.0/cli_extended-0.7.0-py3-none-any.whl)
+with SHA-256
+`39d330e3501da48eba7fc51359e26c02b3dc0340f6389b82afefe774cb76560d`.
+The [GitHub release](https://github.com/volkb79-2/vbpub/releases/tag/cli-extended-v0.7.0) is
+the release coordinate.
+
+The selected tester-unified source still pins
+`cli_extended-0.5.0-py3-none-any.whl` with SHA-256
+`755c6f4919b587bbada9f9988a7bd677428513e93a040b4d3561fd76316ac951`, and its CMRU pin oracle
+fixes that digest. P7.0b must:
+
+1. update `tester-unified/Dockerfile`'s wheel URL, digest, and minimum version;
+2. update CMRU's tester-image pin oracle;
+3. rebuild and select the image; and
+4. verify the selected immutable image ID itself, not a local tag, release page, Git tag, or
+   source checkout: read `/opt/tester-venv`'s installed cli-extended metadata, verify the
+   installed wheel digest, and import `cli_extended.procio` from that image.
+
+The local Git tag `cli-extended-v0.7.0` and the presence of `procio.py` in source do not prove
+the published wheel or selected image contains those bytes. Only the published-wheel digest
+and selected-image inspection satisfy this prerequisite.
+
+## P7.1: configuration and cleanup propagation
+
+Add an optional project-level `[runner]` default and the same optional per-step key:
 
 ```toml
 [runner]
@@ -50,43 +138,203 @@ no_progress_timeout_seconds = 1800
 
 [steps.build]
 quiet = true
-no_progress_timeout_seconds = 3600 # overrides the project default for each command in this step
+no_progress_timeout_seconds = 3600
 ```
 
-`no_progress_timeout_seconds` is a duration in seconds. The `[runner]` table is optional; if the project default is absent, CMRU resolves 1,800 seconds. A missing step override inherits the resolved project default. A step override wins. There is no disable value: `0`, negative values, booleans, NaN, and infinity are invalid. The default is finite and generous for long quiet build/test work; 1,800 seconds is also the cli-extended consumer guide's example. Projects with legitimately longer silent work set a longer finite value.
+`no_progress_timeout_seconds` is a duration in seconds. The `[runner]` table is optional; an
+absent project default resolves to the finite 1,800-second default. A step override inherits
+the resolved project default when absent and wins when present. There is no disable value:
+unknown runner keys, booleans, zero, negative values, NaN, and infinity are invalid because
+the helper requires a finite positive duration.
 
-Extend the strict project grammar in `config.py` to accept `[runner]` and the step key. Reject unknown runner keys. Both values must be `int` or `float`, not `bool`, finite, and greater than zero. Configuration errors use exit 2 and these exact messages, with the invalid value rendered using `repr`:
+Extend `config.py`'s strict project grammar to accept the top-level `runner` table and the
+step key, and reject unknowns. Both configured values must be numeric, not bool, finite, and
+greater than zero. Configuration errors exit 2 with the exact messages below, rendering the
+invalid value with `repr`:
 
 - `runner.no_progress_timeout_seconds must be a finite number of seconds greater than 0; got <value>`
 - `steps.<step>.no_progress_timeout_seconds must be a finite number of seconds greater than 0; got <value>`
 
-Store the resolved value and its source key in `StepConfig`. Pass the value as `no_progress_seconds` to each `run_streaming` invocation for that step, `progress_paths=(log_path,)`, and `term_grace_seconds=GROUP_TERM_GRACE_SECONDS`. Pipe bytes reset the timer even when they do not yet complete a line; a changed step-log size or mtime also counts as progress. Each command starts a fresh idle timer. The watchdog is not a total execution timeout: continuous output can run indefinitely, and the current step grammar has no wall-clock timeout.
+Thread the validated `[runner]` table into the `parse_step` source used by
+`load_config` when it builds `ProjectConfig.runner_steps`. Store both the resolved finite
+timeout and the winning source key in `StepConfig`. Include `cli.py` in P7.1 because
+`cleanup_project_step` is the direct execution path that D-178 covers.
 
-When `no_progress_seconds` expires, procio snapshots the live tree, sends SIGTERM to the step group, and escalates to SIGKILL after the configured 5-second grace if needed. CMRU handles the returned `outcome == "watchdog"` by printing and logging:
+The diagnostic source keys are exactly:
 
-1. `[ERROR] ` plus `result.watchdog.render(setting=<winning configuration key>)`; use `steps.<step>.no_progress_timeout_seconds`, `runner.no_progress_timeout_seconds`, or `default runner.no_progress_timeout_seconds` to identify the actual source;
-2. one `[ERROR] ` line per `result.watchdog.tree_lines` entry (`pid ppid state argv`), captured before signals; include escaped process ids when `escaped_pids` is nonempty.
+- `steps.<step>.no_progress_timeout_seconds`;
+- `runner.no_progress_timeout_seconds`; or
+- `default runner.no_progress_timeout_seconds`.
 
-The diagnostic is emitted even in quiet mode and is written to the step log. Then raise `subprocess.CalledProcessError(exit_codes.FAILURE, argv)`; `_execute_step` converts that to the existing `StepFailed` contract, and S8 classifies it as “operation failed after it started.” Do not expose procio's negative signal return code as the CLI status. Ordinary child nonzero statuses continue to propagate unchanged. If a future independent hard step timeout is added, it remains a separate total-runtime limit; whichever failure occurs first ends the command, and the watchdog never resets or extends that hard limit.
+The P7.1 oracles cover the default, inheritance, override, unknown keys, bool/zero/negative/
+NaN/infinite rejection, exit-2 wording, and D-178. Every parsed step must receive the same
+resolved finite value independent of the higher-level CMRU verb.
 
-## Implementation packages
+## P7.2: adapter, dependency, signals, and capped process oracles
 
-Mark the process-spawning and signal-delivery acceptance tests `capped_container`; run them only in the registered capped `tester-unified` gate. The devcontainer is a cockpit. Tests use ready/output pipes and pidfds for synchronization, plus a fake monotonic clock injected at the `cli_extended.procio` module boundary for drain/watchdog boundaries. The fixture also sets procio's selector poll interval to zero while the fake clock is frozen; no elapsed-time threshold decides a result. They do not use fixed sleeps. The gate's outer cancellation is containment, not the test's correctness oracle.
+The first `cli_extended.procio` import and the dependency-floor increase ship in P7.2. Update
+both cmru requirements in `cmru/pyproject.toml` to `cli-extended>=0.7.0`, including the
+`interactive` extra, and update every floor-specific oracle with the same package:
 
-| Order / package | Files and closed behavior | Failing-first tests and hand-mutation targets | Acceptance |
-|---|---|---|---|
-| **P7.1 — config contract** | `cmru/src/cmru/config.py`, `runner.py` (`StepConfig`/`parse_step`), `cmru/tests/test_cli_runner_boundaries.py` or a focused `test_runner_procio_config.py`. Add `[runner]` default and per-step override; resolve step > project > 1,800; reject every invalid/non-finite/zero value with the exact exit-2 errors above. | Add tests for default, inheritance, override, and invalid type/value first. Hand-mutation targets: accepting bool/zero/infinity; reversing precedence; treating absent as unbounded; accepting an unknown runner key. | Every `run_command` reached from a parsed step receives the same resolved finite value independent of its caller verb. |
-| **P7.2 — streaming adapter and supervision** | `cmru/src/cmru/runner.py`, `cmru/tests/test_runner_pipe_holders.py`, `cmru/tests/test_runner_quiet_output.py`, and focused watchdog tests. Replace local stream/reap/signal code with `procio.run_streaming`; preserve callback logging, mirrors, quiet excerpts, evidence, warnings, and normal exit codes; render watchdog report/tree and fail with code 1. Use the existing `StepFailed` mapping; do not add a new exit code or error type. | Add adapter-result tests first, then mark the process cases `capped_container` and add live acceptance. Hand-mutation targets: omit warning logging; drop mirror/tail/evidence callback effects; mishandle unterminated lines; skip watchdog outcome; log tree after killing; use `result.returncode` as CLI status; alter drain/grace values; install a second signal policy. | (a) A child spawns a stdout-inheriting holder and exits 3: return 3 after the bounded drain, log the holder pid, and leave the holder alive. (b) A silent live child after a ready line: watchdog diagnostic names the last line and pre-signal process tree, then the command fails with code 1. (c) SIGINT and SIGTERM driver cases: the whole process group is gone when the driver exits. |
-| **P7.3 — adoption docs and dependency floor** | `cmru/pyproject.toml`, `cmru/docs/SPEC.md` (S2.2/S2.3 and S3.4a), `cmru/README.md`, `cmru/docs/DESIGN-GUIDE.md`, `cmru/docs/CONSUMERS.md`, `cmru/templates/cmru.toml.tmpl`, `cmru/cmru.toml`, and docs/config tests including `cmru/tests/test_docs_config_examples.py`. Raise the real wheel floor to `cli-extended>=0.7.0`; document the resolution, diagnostics, and release ordering. Advance the scaffold template revision to 6 and update CMRU's own example. | Add assertions that the template, example, README, SPEC, and dependency floor describe the same keys/default and that docs do not claim the watchdog can be disabled. Hand-mutation targets: floor left at 0.3.0; template omitted; incorrect default/source precedence; S3.4a still claims no watchdog. | Verify the published cli-extended wheel is available before releasing CMRU. Then the cmru release gate covers config, adapter, docs, and the three KI-178 acceptance cases. |
+- `cmru/tools/installed_wheel_smoke.py`;
+- `cmru/tests/test_packaging_cli_extended.py`;
+- `cmru/tests/test_release_gate_interpreter.py`; and
+- the interactive-extra assertion in `cmru/tests/test_w2_integ.py`.
 
-All process-spawning and signal-delivery cases in P7.2 run only in the capped gate. For drain, the test receives the child's pid over the output pipe, opens a pidfd, blocks until that pidfd reports exit, then advances the injected clock past the drain interval; it asserts the child's exit code and holder warning, not an elapsed duration. For watchdog, the child emits a ready line and blocks silently; the callback arms the fake clock, which advances past the idle threshold while selector polling remains nonblocking. The report therefore captures a live tree before termination without sleeping for the configured period. For signal cases, the child reports its shell/grandchild pids over a ready pipe; the test sends the selected signal only after that handshake and blocks on pidfds until both are gone. This removes scheduler speed and host load from the pass/fail assertion. The watchdog acceptance child uses the default SIGTERM action so it exits at the threshold; a SIGTERM-ignoring escalation case can assert the 5-second grace through the same fake-clock and pidfd approach.
+Older generic-parser fixtures may retain 0.3.0 only where they intentionally test the old
+literal; they must not remain a declaration of CMRU's supported floor.
+
+`run_command` remains the compatibility adapter around `_run_command`, which calls
+`procio.run_streaming` and preserves CMRU's elapsed/evidence, quiet excerpts, mirror handle,
+warning text, and `CalledProcessError` behavior. Pass
+`drain_seconds=OUTPUT_DRAIN_SECONDS`, `term_grace_seconds=GROUP_TERM_GRACE_SECONDS`, and the
+resolved `no_progress_seconds`.
+
+Direct `run_command` calls without parsed step configuration use one exported CMRU policy
+constant, 1,800 seconds. `_execute_step` always passes the parsed finite value and its source
+key explicitly. Pass `progress_paths=()` when `log_path is None`; otherwise pass
+`(log_path,)`. Never pass `None` as a path element. Oracles prove that a direct no-log call
+uses the finite policy default, a parsed step passes its override, and neither path sends
+`None` to `run_streaming`.
+
+The normal adapter keeps CMRU's logging protocol: every returned line is written to the step
+log and optional aggregate mirror, success evidence and quiet tails are retained, and
+watchdog diagnostics are printed and logged even in quiet mode. Watchdog expiry renders the
+winning source key and the pre-signal process tree, then maps to the existing
+`StepFailed(returncode=1)` path; a negative signal return code from procio is never exposed as
+the CMRU CLI status.
+
+`tester_gate.py` switches from `runner._terminate_as_exit` to public
+`cli_extended.procio.terminate_as_exit`. Keep its existing exact-container cleanup behavior
+and tests; do not add a second local signal implementation.
+
+### Capped test contract
+
+Register the `capped_container` pytest marker in `cmru/tests/conftest.py`. Apply it to every
+process-spawning or signal-delivery case whose correctness requires containment. At
+collection, before fixture setup or child spawn, the guard validates:
+
+1. `RUN_GATE_LANE_CAPS_V1` parses as a JSON object with exactly `environment`, `lane`,
+   `memory_max_bytes`, and `pids_max`; both names are non-empty strings, and both caps are
+   positive JSON integers, not booleans.
+2. The `(Run-Gate lane, environment)` pair is on an explicit allowlist for a full-suite CMRU
+   test path.
+3. The test interpreter is `/opt/tester-venv/bin/python` (the selected tester-unified
+   interpreter).
+4. The process's effective cgroup-v2 `memory.max` and `pids.max`, derived through the readable
+   visible cgroup ancestry, are finite and positive and do not exceed `memory_max_bytes` and
+   `pids_max`. Missing identity, malformed schema, a wrong pair, an unreadable component, no
+   finite effective cap, or an observed over-cap value refuses before setup/spawn.
+
+The current allowed full-suite mapping is:
+
+| Run-Gate path | Assay lane | Environment |
+|---|---|---|
+| `assay` | `cmru` | `tester-unified` |
+| `assay-r0-r1` | `cmru-r0-r1` | `tester-unified` |
+| `assay-first-release` | `cmru-first-release` | `tester-unified` |
+| `assay-first-release-r2` | `cmru-first-release-r2` | `tester-unified` |
+| `mutation` | command lane `mutation` | `cmru-mutation` |
+| `r2` | command lane `r2` | `cmru-mutation` |
+
+Add `RUN_GATE_LANE_CAPS_V1` to both `env_required` and `env_passthrough` on the four full-suite
+Assay declarations in `cmru/assay.toml`: `cmru`, `cmru-r0-r1`, `cmru-first-release`, and
+`cmru-first-release-r2`. Assay copies only declared passthrough names into pytest's
+environment, and its `env_required` check refuses an absent fact instead of silently running
+the marked tests without one. Run-Gate injects the fact directly into the two command lanes,
+`mutation` and `r2`, whose environment is the separately declared `cmru-mutation`. The
+Capped guard's allowlist includes those current paths, especially R2, and fails closed for
+everything else. `release-preconditions` needs inclusion only if its command collects a
+marked test.
+
+The guard test matrix covers direct cockpit refusal, malformed/extra/wrong-type facts, an
+unlisted lane, a wrong interpreter, unreadable or unbounded effective limits, observed limits
+above the declared facts, and acceptance in a registered capped full-suite lane. This fact is
+operational containment evidence, not an authentication credential against a caller that
+deliberately forges its own environment and process state.
+
+### Deterministic process and clock oracles
+
+All process and signal tests use pipes/pidfds for synchronization, never fixed sleeps or
+wall-clock verdicts. Selector polling is set to zero while the fake clock is frozen.
+
+- Drain: the child sends its pid over an output pipe and exits while a holder retains the
+  output pipe; the test opens the pidfd, waits for readiness, advances the fake clock past the
+  drain interval, and asserts the child's exit code, holder warning, and holder survival.
+- Watchdog: the child emits a ready line and then stays silent. The `on_line` callback only
+  arms the fake clock. On the next pump iteration the guard receives `progressed=True` and
+  returns baseline time, so the guard consumes the ready line and resets `last_progress`.
+  The following pump tick advances past the idle threshold, causing the pre-signal tree
+  snapshot and watchdog result.
+- TERM-ignoring escalation: the child's TERM handler acknowledges through a control pipe.
+  Advance the fake clock past the grace period only after the reaper has read its deadline;
+  pidfd readiness occurs after SIGKILL and is therefore too late to be the trigger. Assert
+  the pre-signal tree, exit-1 mapping, and eventual SIGKILL.
+- SIGINT/SIGTERM driver cases: the child reports the shell and grandchild pids over a ready
+  pipe; deliver the signal only after that handshake and block on pidfds until both are gone.
+
+`reap_process_group` skips a **known-empty** process group after its leader is reaped. It does
+not pin group identity between the emptiness check and `killpg`, so this design promises no
+protection against a PGID-reuse race.
+
+## P7.3: user documentation at revision 5
+
+Keep the project template revision at 5. The new settings are optional and existing
+revision-5 projects remain valid. A revision bump would impose an unnecessary estate-wide
+migration because `cmru standards` checks the marker globally. Do not change `standards.py`,
+either scaffold template, `scaffold.py`'s revision replacement, or existing project markers.
+Do not add the optional `[runner]` block to scaffold templates in this plan.
+
+Update the normative runner grammar, including SPEC S3.2 and the S2/S3.4a behavior, plus
+`README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, and user-facing examples/tests for:
+the 1,800-second finite default; project/step precedence and source-naming diagnostics;
+finite-only validation; cleanup's preserved D-178 behavior; and revision-5 compatibility.
+
+The compatibility oracle is that an unchanged revision-5 project still loads, passes
+`cmru standards`, and resolves the finite 1,800-second default.
+
+## Package order
+
+1. **P7.0a** - Run-Gate lane-fact producer, collision refusal, tests/spec, and release/install.
+2. **P7.0b** - tester-unified 0.7.0 wheel pin/digest, image build/selection, and exact
+   installed-image proof.
+3. **P7.1** - configuration parsing, resolved step metadata, cleanup propagation, and
+   D-178 oracles.
+4. **P7.2** - procio adapter, dependency floor/oracles, public signal import, capped guard,
+   and deterministic process tests.
+5. **P7.3** - normative/user documentation and examples, without a revision bump.
+
+P7.0a and P7.0b must both be complete before P7.2's registered CMRU gate. If the installed
+Run-Gate wheel or selected tester-unified image cannot prove the exact producer/image
+contract, pause P7.2's procio import, dependency-floor, and capped-gate work; P7.1 may
+proceed independently. The 0.7.0 wheel itself is already published and verified, so wheel
+availability alone is not a pause trigger.
 
 ## Risks and source limits
 
-- The helper is Linux-specific because `/proc` is part of its contract; CMRU already relies on Linux in its supported gate environment, but this change does not make the runner portable to non-Linux hosts.
-- A command that is active but silent for more than 30 minutes will now fail unless its project or step sets a larger finite threshold. This is the intended finite default; there is deliberately no infinite/off setting.
-- Procio snapshots descendants by parent links. A process that escapes with `setsid` and is reparented away before the snapshot may not appear in `process_tree`; an escaped process is named when still discoverable but is not killed. The runner must print the returned report as-is and not claim it can reap an escaped group.
-- The brief says cli-extended 0.7.0 shipped, but the checked-in changelog/backlog release labels conflict as described above. Source alone does not establish whether the wheel is present in the supported release source; the release owner must verify it before packaging CMRU.
-- This design could not determine an authoritative inventory of consumer projects' longest legitimate silent command from the repo. The 1,800-second default follows the task brief and cli-extended consumer example; each project retains an explicit finite override.
+- Procio is Linux-specific because `/proc` is part of its contract. CMRU already relies on
+  Linux in its supported gate environment; this change does not add non-Linux portability.
+- A command that is active but silent for more than 1,800 seconds now fails unless its
+  project or step declares a larger finite threshold. There is deliberately no off/infinite
+  setting. The watchdog is an inactivity bound, not a total-runtime timeout.
+- Procio snapshots descendants through parent links. A process that escapes with `setsid` and
+  is reparented before the snapshot may not appear in the tree; escaped pids are reported
+  when discoverable but are not killed. CMRU must print the report as returned and make no
+  stronger reaping claim.
+- The PGID check narrows only the known-empty case after leader reaping. A reuse race between
+  checking and `killpg` remains possible and is not claimed to be prevented.
+- The capped guard establishes the current operational lane envelope. It is not an
+  authentication boundary against deliberate environment or process-state forgery.
 
-Source inventory: `cmru/src/cmru/runner.py`, `cmru/src/cmru/config.py`, `cmru/src/cmru/exit_codes.py`, `cmru/src/cmru/errors.py`, `cmru/docs/SPEC.md` S2/S3/S8, `cmru/docs/DESIGN-GUIDE.md`, `cmru/KNOWN_ISSUES_TODO_BACKLOG.md` KI-178, `cmru/tests/test_runner_pipe_holders.py`, `libraries/cli-extended/src/cli_extended/procio.py`, `libraries/cli-extended/SPEC.md` section 16, `libraries/cli-extended/docs/CONSUMERS.md` “Bound a child-process read with procio”, `libraries/cli-extended/BACKLOG.md` CLI-EXT-34, `cmru/pyproject.toml`, `cmru/cmru.toml`, `cmru/templates/cmru.toml.tmpl`, `/workspaces/vbpub/AGENTS.md`, and `scripts/controller/rules.md`. `libraries/cli-extended/docs/DESIGN-GUIDE.md` has no procio-specific section; the API design and adoption contract are in the module, SPEC, and CONSUMERS guide.
+Source inventory: `cmru/src/cmru/runner.py`, `cmru/src/cmru/config.py`,
+`cmru/src/cmru/cli.py`, `cmru/src/cmru/tester_gate.py`, `cmru/tests/conftest.py`,
+`cmru/assay.toml`, `cmru/run-gate.toml`, `cmru/pyproject.toml`,
+`cmru/tools/installed_wheel_smoke.py`,
+`cmru/tests/test_packaging_cli_extended.py`,
+`cmru/tests/test_release_gate_interpreter.py`, `cmru/tests/test_w2_integ.py`,
+`cmru/tests/test_tester_unified_image.py`, `tester-unified/Dockerfile`,
+`run-gate-project/run_gate.py`, `run-gate-project/SPEC.md`,
+`assay/src/assay/runner.py`, `cmru/src/cmru/standards.py`,
+`cmru/src/cmru/templates/project-wheel.toml`, `cmru/templates/cmru.toml.tmpl`,
+`cmru/docs/SPEC.md`, `libraries/cli-extended/src/cli_extended/procio.py`,
+`/workspaces/vbpub/AGENTS.md`, and `scripts/controller/rules.md`.

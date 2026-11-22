@@ -3905,7 +3905,7 @@ incrementally with no independent CMRU severity parser or ANSI renderer left.
 3. An optional no-progress watchdog per step (no output and no growth of the step's log for a declared period) that fails the step with the last output line and the live process tree. The operator names the period in `cmru.toml`; the default is generous, never infinite.
 4. The shared helper lives in one place (cli-extended or cmru's runner) and the other tools reuse it: CIU-220, MDT-104 and NL-83 track the call sites.
 
-Design for items 3 and 4: [cmru/docs/DESIGN-RUNNER-PROCIO-ADOPTION.md](docs/DESIGN-RUNNER-PROCIO-ADOPTION.md).
+Closed implementation plan for items 3 and 4: [cmru/docs/DESIGN-RUNNER-PROCIO-ADOPTION.md](docs/DESIGN-RUNNER-PROCIO-ADOPTION.md).
 
 **Acceptance.** A test child spawns `sleep 600` with inherited stdout, then exits 3: the runner returns exit 3 within the drain period and logs the holder pid; a second test with a silent live child fails at the watchdog period with the process tree; a SIGINT test shows the whole group gone.
 
