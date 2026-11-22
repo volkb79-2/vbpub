@@ -14,7 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-187 | FIXED 2026-11-22 (deterministic synthetic `/proc` observation replaces the load-sensitive pipe-holder permission-skip test) | `b779f2b6a` |
+| KI-187 | CODE FIXED 2026-11-22 (deterministic synthetic `/proc` observation replaces the load-sensitive pipe-holder permission-skip test); final integrated-head `cmru-r0-r1` evidence pending controller receipt | `afd992c6d` |
 | KI-186 | OPEN (migrate the remaining `subprocess.run` sites to `run_process`; 40 occurrences in 12 non-template modules after P6b; candidate effect not measured) | — |
 | KI-185 | OPEN (adopt the [cli-extended line-stream renderer proposal](../libraries/cli-extended/docs/DESIGN-LINE-STREAM-RENDERER.md) through CLI-EXT-35–CLI-EXT-40) | — |
 | KI-184 | FIXED 2026-11-18 (every line in one multi-line write is processed at a severity boundary) | `54b9d3b75` |
@@ -3986,8 +3986,8 @@ incrementally with no independent CMRU severity parser or ANSI renderer left.
 
 ## KI-187 - pipe-holder permission-skip test depends on real process scheduling
 
-**Status:** FIXED (filed 2026-11-22; fixed 2026-11-22; fix commit `b779f2b6a46b1df5e8963f46797df5f0c25f5584`);
-severity: test strength. The P6a r0-r1 gate at `9cf2a0733` failed once on
+**Status:** CODE FIXED (filed 2026-11-22; fixed 2026-11-22; fix commit
+`afd992c6db63635fb88a05655bd5586db47dd69d`); severity: test strength. The P6a r0-r1 gate at `9cf2a0733` failed once on
 `tests/test_runner_pipe_holders.py::test_pipe_holder_scan_skips_processes_it_cannot_inspect` while another
 gate ran, then passed on an identical-head rerun. The P6b r0-r1 gate at `015bdb7bb` failed on the same test
 while gates again ran concurrently. The test started two real `sleep 600` processes and relied on their
@@ -3997,12 +3997,19 @@ scheduling and host load.
 **Wanted.** Replace the real processes, pipe descriptors, fixed waits, and signal cleanup with a deterministic
 synthetic `/proc` observation. Monkeypatch the scanner's `os.listdir`, `os.readlink`, and `getpid` boundaries
 through pytest's `monkeypatch` fixture, and assert in one scan that a visible matching holder is returned, an
-inaccessible PID is skipped, the current PID is excluded, and non-PID `/proc` entries are ignored.
+inaccessible PID is skipped, the current PID is excluded, and non-PID `/proc` entries are ignored. That
+deterministic synthetic oracle is present in the test fix.
 
-**Registered gate evidence.** `cmru-r0-r1` at gate head
-`b779f2b6a46b1df5e8963f46797df5f0c25f5584`: R0 `PASS`, R1 `PASS`; outcome `PASS`, exit code `0`.
+**Interim gate evidence.** The `cmru-r0-r1` result at
+`b779f2b6a46b1df5e8963f46797df5f0c25f5584` (R0 `PASS`, R1 `PASS`; outcome `PASS`, exit code `0`) is
+historical/interim evidence from the pre-integration commit, not final evidence for the integrated P6b head.
 
-**Close when.** The focused oracle has no real child process, pipe, fixed wait, signal, or scheduler
+**Final closure evidence.** Final P6b closure requires the integrated final head to pass the registered
+`cmru-r0-r1` lane. After that gate, the controller will record the final-head receipt in
+`artifacts/release-program-20261027/reports/p6b-cmru-finalization.json`. No final integrated head or passing
+gate result is claimed here.
+
+**Close condition.** The focused oracle has no real child process, pipe, fixed wait, signal, or scheduler
 dependency; a scanner that reports the inaccessible PID, drops the visible holder, includes the current PID,
-or treats a non-PID entry as a process fails it; and the registered cmru `r0-r1` lane passes on the final
-commit with green controller evidence.
+or treats a non-PID entry as a process fails it; and the integrated final P6b head passes the registered
+`cmru-r0-r1` lane with green controller evidence.
