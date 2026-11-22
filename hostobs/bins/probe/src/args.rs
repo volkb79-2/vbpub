@@ -1,6 +1,6 @@
 //! The strict request-argument reader (design R4, R14 to R17) and the `hello`, `status`,
-//! `current`, `subscribe` and `unsubscribe` argument schemas (WIRE.md sections 4.2, 4.4 to 4.7,
-//! 8.3).
+//! `current`, `subscribe`, `unsubscribe`, snapshot, history and process argument entry points
+//! (WIRE.md sections 4.2, 4.4 to 4.11, 8.3).
 //!
 //! Serde is not used for requests: it accepts duplicate keys in map-typed objects, its
 //! recursion limit is not 8 and `detail.key` would have to be scraped from error text. The
@@ -147,6 +147,12 @@ impl<'a> Obj<'a> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.members.is_empty()
+    }
+
+    /// The schema path of this object.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
     }
 
     fn key_of(&self, member: &Member) -> &'a [u8] {
@@ -1083,7 +1089,7 @@ mod tests {
         };
         for value in ["1000", "60000"] {
             let parsed = request(value).expect(value);
-            assert_eq!(parsed.interval_ms, value.parse().expect("small"));
+            assert_eq!(parsed.interval_ms, value.parse::<u32>().expect("small"));
         }
         for value in [
             "249",

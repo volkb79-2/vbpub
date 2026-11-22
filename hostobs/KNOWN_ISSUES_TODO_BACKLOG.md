@@ -66,7 +66,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-51 | Received frames are held to the alignment and header-first rules: every section `len` is a multiple of 8 (`section-length`) and an unknown kind at directory entry 0 is `section-order` at index 0, after the rank check | Minor | FIXED (P2a1) |
 | HOB-52 | A repeated dictionary identity is `duplicate-dictionary-entry` in Rust whatever the other fields hold, as in the Python reference | Minor | FIXED (P2a1) |
 | HOB-53 | The Python reference follows the WIRE.md §3.10 precedence: `not-a-block` before the buffer length and `SECTIONED` checks | Minor | FIXED (P2a1) |
-| HOB-54 | The probe's serving loop does not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `SendHub`, the envelope checks, the Rust client (`crates/client`) and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | OPEN (P2: `FrameReader`, `ModeDetect`, `ConnTimers`, `SendHub`, `StreamDicts`, `envelope.rs` exist; P3a: the Python reader, `StreamDicts`, decoder and `rate()` exist, P3b: `conn.py`, `profiling.py`, `mark.py` exist, the P3 part is closed; P5a: `crates/client` exists and the Rust client part is closed; P5b-1a: `limits`, `verbs`, `codes`, `args`, `classify`, `encode` and `lines` exist; P5b-1b: `backend`, the sans-IO `conn` and `server` exist; P5b-2a: canonical selections, request schemas, interval and outstanding precedence, budget pools and stream END/result encoders exist; P5b-2b: `Backend::current`/`TickData`, tick encoding, `SelectionStreams` and the hub additions exist; P5b-2c delivered current/subscribe/unsubscribe, outstanding requests and Draining; P5b-2d delivered tick delivery, retry passes, the served flip and the reachable §11.4 connection cases. P5b-3 and P5b-4 remain, see `docs/P5B2-LIVE-STREAMS-DESIGN.md`) |
+| HOB-54 | The probe's serving loop does not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `SendHub`, the envelope checks, the Rust client (`crates/client`) and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | OPEN (P2: `FrameReader`, `ModeDetect`, `ConnTimers`, `SendHub`, `StreamDicts`, `envelope.rs` exist; P3a: the Python reader, `StreamDicts`, decoder and `rate()` exist, P3b: `conn.py`, `profiling.py`, `mark.py` exist, the P3 part is closed; P5a: `crates/client` exists and the Rust client part is closed; P5b-1a: `limits`, `verbs`, `codes`, `args`, `classify`, `encode` and `lines` exist; P5b-1b: `backend`, the sans-IO `conn` and `server` exist; P5b-2a: canonical selections, request schemas, interval and outstanding precedence, budget pools and stream END/result encoders exist; P5b-2b: `Backend::current`/`TickData`, tick encoding, `SelectionStreams` and the hub additions exist; P5b-2c delivered current/subscribe/unsubscribe, outstanding requests and Draining; P5b-2d delivered tick delivery, retry passes, the served flip and the reachable §11.4 connection cases; P5b-3 delivered the sans-IO snapshot/history/process `QueryBackend`, exact admission/packing, cursor lifecycle and injected serving tests. P5b-4 remains for the Unix-socket driver and accepted-peer pidfd/cgroup-incarnation resolution, see `docs/P5B2-LIVE-STREAMS-DESIGN.md`) |
 | HOB-55 | A look-alike name such as `hot-0-18446744073709551615.seg` (or `.seg.corrupt`) sets the tier's sequence water mark to `u64::MAX` before its owner is proven, so every `open_segment` fails with `LengthOverflow` until the file is removed | Minor | FIXED (P0b) |
 | HOB-56 | `StoreStats::bytes` maintained by incremental arithmetic drifts from the tiers' own byte totals when a file vanishes or a new segment's header is written | Minor | FIXED (P0b) |
 | HOB-57 | `docs/hand-mutants/m1d-mutants.py` had no per-mutant subprocess timeout, so a mutant that hangs the suite hangs the campaign | Minor | FIXED (P0b) |
@@ -74,7 +74,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-59 | `Tier::append` and `Store::evict` drop the partial `Evicted` (counts and notes) when an eviction fails after a partial pass | Minor | OPEN |
 | HOB-60 | `Store::notes` visibility is decided by name, not by directory, and the store's eviction-notes ring is redundant with the tiers' `scan.notes` through the public API | Minor | OPEN |
 | HOB-61 | `json.rs` `skip_ws` / `string_end` `+=` to `*=` are pure infinite loops: suite-level TIMEOUT under `assay-r2` by nature (accepted known limit; expected 0 MISSED + 2 TIMEOUT) | Minor | OPEN (accepted) |
-| HOB-62 | P5b-3/P5b-4 serve typed history and process data but do not provide production store, `/proc`, cgroup-membership or provenance readers; P5c must also pin and bound snapshot label facts and immutable history views; M2 must not claim a live exit demo until those bounded sources exist | Major | OPEN (P5c source package required before M2 live-exit claim) |
+| HOB-62 | P5b-3 supplies typed injected history/process serving and P5b-4 will transport it, but neither provides production store, `/proc`, cgroup-membership or provenance readers; P5c must also pin and bound snapshot label facts and immutable history views; M2 must not claim a live exit demo until those bounded sources exist | Major | OPEN (P5b-3 typed serving exists; P5c production source package required before M2 live-exit claim) |
 
 ---
 
@@ -1149,15 +1149,22 @@ clock: the P5a part is closed.
 `unsubscribe`, tracks outstanding requests and Draining, and the `Server` owns shared selection
 streams, `on_tick` delivery and the retry pass after `wrote` and `poll`. The three verbs are served
 at observe/operator with the matching `hello.verbs`, and the block-verb cases of WIRE.md §11.4 run
-against the in-memory `Conn`/`Server`. The P5b-2c and P5b-2d parts are code complete; P5b-3
-(`snapshot_at`/history and `conn-reply-page-truncated`) and P5b-4 (the actual socket drivers and
-the socketpair runs) remain.
+against the in-memory `Conn`/`Server`.
+
+**What exists (P5b-3).** The probe's `Conn` also executes the three injected query verbs through an
+independent `QueryBackend`; the `Server` owns the immutable tier catalog, typed view/cursor lifecycle,
+exact Query admission and deterministic page packing, while `Peer` captures uid/pid/`cgroup_inc`
+and derives the typed issuer once. The frozen series-plan artifact and fixed-backend tests prove
+the sans-IO serving contract with a fake clock. P5b-3 does not supply production history or `/proc`
+data and is not M2 live-exit evidence.
+
+P5b-4 remains: the Unix-socket/LISTEN_FDS driver, socketpair acceptance, and resolution of the
+WIRE §4.12 cgroup incarnation from the accepted `SO_PEERPIDFD` (including exit/replacement races).
 
 **Exit criteria.** P2: the §12 `FrameReader`, `ModeDetect`, `SendHub` and `ConnTimers` APIs in Rust
 with the reader and hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row; P3: the Python
 `FrameReader` passes the same reader cases and the client cases; P5b: the 21 connection cases
-now listed in §11.4 against a fake clock, with P5b-3 and P5b-4 still required for the remaining
-page and socketpair cases.
+now listed in §11.4 against a fake clock, with P5b-4 still required for the socketpair runs.
 
 ## HOB-55 — A look-alike name with a huge sequence poisons the tier's water mark
 
@@ -1309,7 +1316,7 @@ verdict does not count them.
 **Where:** `crates/kernel/src/procfs.rs`, `crates/model/src/identity.rs`, `crates/store/src/store.rs`,
 and the production backend in `bins/probe/`.
 
-P5b-3 defines a typed injected backend for `snapshot_at`, `series_batch`, and `procs`; P5b-4 connects
+P5b-3 implements a typed injected backend for `snapshot_at`, `series_batch`, and `procs`; P5b-4 connects
 the sans-IO server to Unix sockets. These packages prove serving and transport behavior only. The
 existing process reader does not provide the full P5b scan contract (parent incarnation, per-process
 cgroup membership and I/O, bounded full-directory PID selection with partial-listing coverage, and

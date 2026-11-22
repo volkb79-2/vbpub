@@ -11,7 +11,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use hostobs_probe::args;
 use hostobs_probe::backend::{BackendError, FixedBackend, TickData};
-use hostobs_probe::classify::{classify, Call, Dispatch, Mode, Phase, Prefix, Query, Refusal};
+use hostobs_probe::classify::{
+    classify, classify_with, Call, ConnFacts, Dispatch, Mode, Phase, Prefix, Query, Refusal,
+};
 use hostobs_probe::codes::{Code, Detail};
 use hostobs_probe::conn::Peer;
 use hostobs_probe::encode::{
@@ -271,6 +273,10 @@ fn check_refusal(query: &Query<'_>, refusal: &Refusal) {
             assert!(key_is_schema_text(path), "{path:?}");
         }
         Detail::Pool(_) => assert_eq!(refusal.code, Code::Budget),
+        Detail::Feature(feature) => {
+            assert_eq!(refusal.code, Code::UnsupportedFeature);
+            assert_eq!(*feature, "subject");
+        }
     }
     check_error_encodings(refusal.code, refusal.corr, &refusal.detail);
 }
@@ -1081,6 +1087,96 @@ fn run_final(
     server.finish(id);
 }
 
+#[test]
+fn p5b3_query_refusals_keep_the_wire_precedence() {
+    let series = "{\"verb\":\"series_batch\",\"args\":{\"selection\":\
+        {\"entities\":[{\"inc\":7}],\"metrics\":[\"m\"]},\"from_real_ns\":0,\
+        \"to_real_ns\":1000000000,\"step_ms\":1000,\"aggs\":[\"last\"],\
+        \"cursor\":null,\"max_blocks\":1}}";
+
+    let wrong_level = Query {
+        frame_type: FrameType::Req,
+        corr: 2,
+        mode: Mode::Binary,
+        phase: Phase::Ready,
+        level: Level::Observer,
+        prefix: Prefix { major: 1, minor: 1 },
+        payload: b"{\"verb\":\"snapshot_at\",\"args\":{}}",
+    };
+    assert_eq!(
+        classify(&wrong_level).expect_err("wrong level").code,
+        Code::Forbidden
+    );
+
+    let json_block = Query {
+        frame_type: FrameType::Req,
+        corr: 2,
+        mode: Mode::Json,
+        phase: Phase::Ready,
+        level: Level::Observe,
+        prefix: Prefix { major: 1, minor: 1 },
+        payload: b"{\"corr\":2,\"verb\":\"series_batch\",\"args\":{}}",
+    };
+    assert_eq!(
+        classify(&json_block).expect_err("JSON block verb").code,
+        Code::BinaryRequired
+    );
+
+    let minor_zero = Query {
+        frame_type: FrameType::Req,
+        corr: 3,
+        mode: Mode::Binary,
+        phase: Phase::Ready,
+        level: Level::Observe,
+        prefix: Prefix { major: 1, minor: 0 },
+        payload: series.as_bytes(),
+    };
+    let refusal = classify(&minor_zero).expect_err("minor zero");
+    assert_eq!(refusal.code, Code::UnsupportedFeature);
+    assert_eq!(refusal.detail, Detail::Feature("subject"));
+
+    let observe_cmdline = Query {
+        frame_type: FrameType::Req,
+        corr: 4,
+        mode: Mode::Binary,
+        phase: Phase::Ready,
+        level: Level::Observe,
+        prefix: Prefix { major: 1, minor: 1 },
+        payload: b"{\"verb\":\"procs\",\"args\":{\"subject\":{\"inc\":7},\
+            \"descendants\":true,\"fields\":[\"cmdline\"],\"limit\":1,\"cursor\":null}}",
+    };
+    assert_eq!(
+        classify(&observe_cmdline)
+            .expect_err("observe cannot request cmdline")
+            .code,
+        Code::Forbidden
+    );
+
+    let operator = Query {
+        frame_type: FrameType::Req,
+        corr: 5,
+        mode: Mode::Binary,
+        phase: Phase::Ready,
+        level: Level::Operator,
+        prefix: Prefix { major: 1, minor: 1 },
+        payload: b"{\"verb\":\"procs\",\"args\":{\"subject\":{\"inc\":7},\
+            \"descendants\":true,\"fields\":[\"comm\",\"cmdline\"],\"limit\":1,\
+            \"cursor\":null}}",
+    };
+    let facts = ConnFacts {
+        minor: 1,
+        operator: true,
+        ..ConnFacts::default()
+    };
+    assert!(matches!(
+        classify_with(&operator, &facts).expect("operator procs"),
+        Dispatch {
+            call: Call::Procs(_),
+            ..
+        }
+    ));
+}
+
 /// P5b-2d hostile run: 2,000 fixed-seed server turns over four slots and two uids. Valid
 /// binary `current`, `subscribe` and `unsubscribe` requests mix with random bytes, partial
 /// writes, polls, sampler ticks and EOF. The model client decodes every complete BLOCK under its
@@ -1107,7 +1203,11 @@ fn server_hostile_2000_steps_with_block_verbs() {
             Level::Operator
         };
         let uid = 1 + u32::try_from(slot % 2).expect("uid");
-        let peer = Peer { uid, pid: 7 };
+        let peer = Peer {
+            uid,
+            pid: 7,
+            cgroup_inc: Some(7),
+        };
         let Accept::Accepted(id) = server.accept(level, Some(peer), now) else {
             panic!("prelude accept");
         };
@@ -1215,7 +1315,11 @@ fn server_hostile_2000_steps_with_block_verbs() {
                 Level::Operator
             };
             let uid = 1 + u32::try_from(slot % 2).expect("uid");
-            let peer = Peer { uid, pid: 7 };
+            let peer = Peer {
+                uid,
+                pid: 7,
+                cgroup_inc: Some(7),
+            };
             if let Accept::Accepted(id) = server.accept(level, Some(peer), now) {
                 slots[slot] = Some(id);
                 subscriptions[slot].clear();

@@ -86,6 +86,11 @@ fn push_detail(out: &mut String, detail: &Detail) {
             push_string(out, pool.name());
             out.push('}');
         }
+        Detail::Feature(feature) => {
+            out.push_str("{\"feature\":");
+            push_string(out, feature);
+            out.push('}');
+        }
     }
 }
 
@@ -178,6 +183,8 @@ pub enum EndReason {
     Unsubscribed,
     /// The client half-closed after all outstanding work.
     ClientEof,
+    /// More blocks remain under a continuation cursor.
+    Page,
 }
 
 impl EndReason {
@@ -188,6 +195,7 @@ impl EndReason {
             EndReason::Complete => "complete",
             EndReason::Unsubscribed => "unsubscribed",
             EndReason::ClientEof => "client-eof",
+            EndReason::Page => "page",
         }
     }
 }
@@ -202,6 +210,19 @@ pub fn end_ok(corr: u32, blocks: u32, dropped: u32, reason: EndReason) -> Vec<u8
     payload.push_str(",\"next\":null,\"reason\":");
     push_string(&mut payload, reason.name());
     payload.push('}');
+    control_frame(FrameType::End, corr, payload.as_bytes())
+}
+
+/// A successful paged END, with an exposed successor token.
+#[must_use]
+pub fn end_ok_next(corr: u32, blocks: u32, dropped: u32, next: &str) -> Vec<u8> {
+    let mut payload = String::from("{\"ok\":true,\"blocks\":");
+    payload.push_str(&blocks.to_string());
+    payload.push_str(",\"dropped\":");
+    payload.push_str(&dropped.to_string());
+    payload.push_str(",\"next\":");
+    push_string(&mut payload, next);
+    payload.push_str(",\"reason\":\"page\"}");
     control_frame(FrameType::End, corr, payload.as_bytes())
 }
 

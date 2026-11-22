@@ -30,8 +30,10 @@
 //!   deadline), then idle. The hub's `slow-client` is the server's: it calls
 //!   [`Conn::close_for`] with [`Code::SlowClient`]. The idle condition (only `Ready`, reader at a
 //!   frame boundary, nothing queued) is recomputed at the end of every entry point.
-//! - **Outstanding requests and `Draining` (P5b-2).** `pending` holds only backpressured
-//!   `current` requests; they participate in `corr`-in-use and `max_outstanding`. A clean EOF ends
+//! - **Outstanding requests and `Draining` (P5b-2/P5b-3).** `pending` is the single
+//!   connection-owned request record: a backpressured `current`, snapshot/history producer or
+//!   synchronous process query. `current`, snapshot and history participate in `corr`-in-use and
+//!   `max_outstanding`; `procs` is one synchronous REP. A clean EOF ends
 //!   subscriptions but leaves pending requests retryable. The server's retry pass must keep
 //!   running while `Draining`, which closes silently only after pending work and queued output are
 //!   both empty.
@@ -49,10 +51,10 @@
 //!   by [`Conn::on_eof`] as the silent-close branch, so it never reaches dispatch. A `SECTIONED`
 //!   REQ never reaches `classify`: the frame-header parse refuses the flag on every non-BLOCK
 //!   frame and reports `bad-frame` through that same reader path.
-//! - **P5b-2 stream state.** `subs` maps a live subscription `corr` to its registry selection id;
-//!   `pending` holds only a backpressured `current` request's selection and length, never block
-//!   bytes. The registry itself belongs to [`Server`](crate::server::Server), which releases every
-//!   entry at `finish` even when the connection closed before it could be finished.
+//! - **P5b-2/P5b-3 state.** `subs` maps a live subscription `corr` to its registry selection id.
+//!   `pending` holds bounded request metadata and never encoded query bytes. The registry, query
+//!   views and cursor references belong to [`Server`](crate::server::Server), which releases
+//!   every entry at `finish` even when the connection closed before it could be finished.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -89,6 +91,28 @@ pub struct Peer {
     pub uid: u32,
     /// The peer's pid.
     pub pid: u32,
+    /// The cgroup incarnation resolved from the accepted peer pidfd.
+    pub cgroup_inc: Option<u64>,
+}
+
+/// The immutable typed issuer derived once from accept-time peer facts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Issuer {
+    /// The peer uid.
+    pub uid: u32,
+    /// The resolved cgroup incarnation.
+    pub cgroup_inc: u64,
+}
+
+impl Peer {
+    /// Derive the typed issuer from the captured facts. No lookup is performed here.
+    #[must_use]
+    pub fn issuer(self) -> Option<Issuer> {
+        self.cgroup_inc.map(|cgroup_inc| Issuer {
+            uid: self.uid,
+            cgroup_inc,
+        })
+    }
 }
 
 /// The connection states of WIRE.md section 5.4. `Closing` is not a state: it is the moment
@@ -243,9 +267,29 @@ fn status_json(identity: &Identity, status: &StatusInfo, queued: Pools, dropped:
     out
 }
 
-/// One `current` request waiting for Query room (design S7 and D-W30).
+/// A parsed query request held by `Conn` until the Server query pass handles it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum QueryPending {
+    /// A new snapshot request awaiting metadata resolution.
+    Snapshot(crate::query::SnapshotArgs),
+    /// Snapshot metadata state while it awaits exact Query room.
+    SnapshotPending(Box<crate::query::PendingSnapshot>),
+    /// A new history request awaiting view resolution and planning.
+    Series(crate::query::SeriesArgs),
+    /// History page state.
+    SeriesPage(Box<crate::query::PendingSeries>),
+    /// Synchronous process page construction.
+    Procs(crate::query::ProcsArgs),
+}
+
 #[derive(Debug)]
-struct Pending {
+pub(crate) enum Pending {
+    Current(PendingCurrent),
+    Query(QueryPending),
+}
+
+#[derive(Debug)]
+pub(crate) struct PendingCurrent {
     selection: Selection,
     need: usize,
 }
@@ -309,6 +353,12 @@ impl Conn {
     #[must_use]
     pub fn level(&self) -> Level {
         self.level
+    }
+
+    /// The immutable per-level limits copied at accept.
+    #[must_use]
+    pub(crate) fn limits(&self) -> Limits {
+        self.limits
     }
 
     /// The peer credentials captured at accept.
@@ -454,48 +504,186 @@ impl Conn {
         self.push(hub, bytes, now_ns);
     }
 
-    /// Retry backpressured `current` requests in ascending `corr` (design S7). Each retry
-    /// re-resolves the latest tick, so pending state holds no block bytes (D-W30).
+    /// Retry every backpressured `current` request in ascending `corr` (design S7).
     pub fn retry_pending(&mut self, now_ns: u64, hub: &mut SendHub, backend: &dyn Backend) {
         if self.is_closed() {
             return;
         }
-        let corrs: Vec<u32> = self.pending.keys().copied().collect();
+        let corrs = self.current_corrs();
         for corr in corrs {
             if self.is_closed() {
                 return;
             }
-            let Some(pending) = self.pending.get(&corr) else {
-                continue;
-            };
-            if !hub.query_room(self.id, pending.need) {
-                continue;
-            }
-            let resolved = self.current_block(&pending.selection, backend);
-            match resolved {
-                Ok(block) => match hub.push_query(self.id, corr, block, now_ns) {
-                    QueryOutcome::Queued => {
-                        self.pending.remove(&corr);
-                        let counts = hub.end_stream(self.id, corr);
-                        let bytes =
-                            end_ok(corr, counts.blocks, counts.dropped, EndReason::Complete);
-                        self.push(hub, bytes, now_ns);
-                    }
-                    QueryOutcome::Backpressure(block) => {
-                        if let Some(pending) = self.pending.get_mut(&corr) {
-                            pending.need = block.len();
-                        }
-                    }
-                },
-                Err((code, detail)) => {
+            self.retry_current(corr, now_ns, hub, backend);
+        }
+        self.complete_draining(hub);
+    }
+
+    /// One scheduler step for a backpressured `current`. It re-resolves the latest tick only
+    /// after exact Query room exists, so pending state never owns block bytes (D-W30).
+    pub(crate) fn retry_current(
+        &mut self,
+        corr: u32,
+        now_ns: u64,
+        hub: &mut SendHub,
+        backend: &dyn Backend,
+    ) {
+        if self.is_closed() {
+            return;
+        }
+        let Some(Pending::Current(pending)) = self.pending.get(&corr) else {
+            return;
+        };
+        if !hub.query_room(self.id, pending.need) {
+            return;
+        }
+        let resolved = self.current_block(&pending.selection, backend);
+        match resolved {
+            Ok(block) => match hub.push_query(self.id, corr, block, now_ns) {
+                QueryOutcome::Queued => {
                     self.pending.remove(&corr);
                     let counts = hub.end_stream(self.id, corr);
-                    let bytes = end_error(corr, counts.blocks, counts.dropped, code, &detail);
+                    let bytes = end_ok(corr, counts.blocks, counts.dropped, EndReason::Complete);
                     self.push(hub, bytes, now_ns);
                 }
+                QueryOutcome::Backpressure(block) => {
+                    if let Some(Pending::Current(pending)) = self.pending.get_mut(&corr) {
+                        pending.need = block.len();
+                    }
+                }
+            },
+            Err((code, detail)) => {
+                self.pending.remove(&corr);
+                let counts = hub.end_stream(self.id, corr);
+                let bytes = end_error(corr, counts.blocks, counts.dropped, code, &detail);
+                self.push(hub, bytes, now_ns);
             }
         }
         self.complete_draining(hub);
+    }
+
+    /// Pending `current` correlations in ascending order.
+    #[must_use]
+    pub(crate) fn current_corrs(&self) -> Vec<u32> {
+        self.pending
+            .iter()
+            .filter_map(|(corr, pending)| matches!(pending, Pending::Current(_)).then_some(*corr))
+            .collect()
+    }
+
+    /// Query request correlations in the single Conn-owned pending map.
+    #[must_use]
+    pub(crate) fn query_corrs(&self) -> Vec<u32> {
+        self.pending
+            .iter()
+            .filter_map(|(corr, pending)| matches!(pending, Pending::Query(_)).then_some(*corr))
+            .collect()
+    }
+
+    /// Remove one query record for one bounded processing step.
+    pub(crate) fn take_query(&mut self, corr: u32) -> Option<QueryPending> {
+        match self.pending.remove(&corr) {
+            Some(Pending::Query(query)) => Some(query),
+            Some(other) => {
+                self.pending.insert(corr, other);
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// Return a still-pending query record under the same correlation.
+    pub(crate) fn put_query(&mut self, corr: u32, query: QueryPending) {
+        self.pending.insert(corr, Pending::Query(query));
+    }
+
+    /// Finish one query request.
+    pub(crate) fn complete_query(&mut self, corr: u32, hub: &mut SendHub) {
+        self.pending.remove(&corr);
+        self.complete_draining(hub);
+    }
+
+    /// Queue one query success or error REP.
+    pub(crate) fn push_query_rep(
+        &mut self,
+        corr: u32,
+        result: &str,
+        now_ns: u64,
+        hub: &mut SendHub,
+    ) {
+        let bytes = self.reply_bytes(corr, result);
+        self.push(hub, bytes, now_ns);
+    }
+
+    /// Queue one query error REP.
+    pub(crate) fn push_query_error(
+        &mut self,
+        corr: u32,
+        code: Code,
+        detail: &Detail,
+        now_ns: u64,
+        hub: &mut SendHub,
+    ) {
+        let bytes = self.error_bytes(corr, code, detail);
+        self.push(hub, bytes, now_ns);
+    }
+
+    /// Push one already exact-preflighted Query BLOCK.
+    pub(crate) fn push_query_block(
+        &mut self,
+        corr: u32,
+        block: Arc<[u8]>,
+        now_ns: u64,
+        hub: &mut SendHub,
+    ) -> QueryOutcome {
+        self.timers.on_enqueue();
+        hub.push_query(self.id, corr, block, now_ns)
+    }
+
+    /// Queue the terminal `complete` END.
+    pub(crate) fn push_query_end(
+        &mut self,
+        corr: u32,
+        reason: EndReason,
+        next: Option<&str>,
+        now_ns: u64,
+        hub: &mut SendHub,
+    ) {
+        let counts = hub.end_stream(self.id, corr);
+        let bytes = if let Some(next) = next {
+            crate::encode::end_ok_next(corr, counts.blocks, counts.dropped, next)
+        } else {
+            end_ok(corr, counts.blocks, counts.dropped, reason)
+        };
+        self.push(hub, bytes, now_ns);
+        self.complete_draining(hub);
+    }
+
+    /// Queue a post-REP query error END, preserving queued BLOCKs.
+    pub(crate) fn push_query_end_error(
+        &mut self,
+        corr: u32,
+        code: Code,
+        detail: &Detail,
+        now_ns: u64,
+        hub: &mut SendHub,
+    ) {
+        let counts = hub.end_stream(self.id, corr);
+        let bytes = end_error(corr, counts.blocks, counts.dropped, code, detail);
+        self.push(hub, bytes, now_ns);
+        self.complete_draining(hub);
+    }
+
+    /// Whether this connection uses the JSON line mode.
+    #[must_use]
+    pub(crate) fn json_mode(&self) -> bool {
+        self.is_json()
+    }
+
+    /// The reply byte cap of this level.
+    #[must_use]
+    pub(crate) fn reply_cap(&self) -> u32 {
+        self.limits.max_reply_bytes
     }
 
     /// The number of live subscriptions of this connection.
@@ -504,10 +692,13 @@ impl Conn {
         self.subs.len()
     }
 
-    /// The number of backpressured `current` requests.
+    /// The number of outstanding block-query requests.
     #[must_use]
     pub fn outstanding(&self) -> usize {
-        self.pending.len()
+        self.pending
+            .values()
+            .filter(|pending| !matches!(pending, Pending::Query(QueryPending::Procs(_))))
+            .count()
     }
 
     /// Whether any `current` request is backpressured.
@@ -608,7 +799,7 @@ impl Conn {
         self.timers.on_idle_condition(idle, now_ns);
     }
 
-    fn complete_draining(&mut self, hub: &mut SendHub) {
+    pub(crate) fn complete_draining(&mut self, hub: &mut SendHub) {
         if self.state == State::Draining
             && self.pending.is_empty()
             && hub.queued(self.id) == Pools::default()
@@ -781,12 +972,15 @@ impl Conn {
             }
             Input::Line(_) => false,
         };
-        let outstanding_full = self.pending.len()
+        let outstanding_full = self.outstanding()
             >= usize::try_from(self.limits.max_outstanding).unwrap_or(usize::MAX);
         let facts = ConnFacts {
             corr_in_use,
             outstanding_full,
             interval: self.limits.interval_rule(),
+            minor: self.minor,
+            max_page_blocks: self.limits.max_page_blocks,
+            operator: self.level == Level::Operator,
         };
         match input {
             Input::Frame(frame) => {
@@ -899,13 +1093,34 @@ impl Conn {
                     QueryOutcome::Backpressure(block) => {
                         self.pending.insert(
                             dispatch.corr,
-                            Pending {
+                            Pending::Current(PendingCurrent {
                                 selection: selection.clone(),
                                 need: block.len(),
-                            },
+                            }),
                         );
                     }
                 }
+                return;
+            }
+            Call::Snapshot(args) => {
+                self.pending.insert(
+                    dispatch.corr,
+                    Pending::Query(QueryPending::Snapshot(args.clone())),
+                );
+                return;
+            }
+            Call::Series(args) => {
+                self.pending.insert(
+                    dispatch.corr,
+                    Pending::Query(QueryPending::Series(args.clone())),
+                );
+                return;
+            }
+            Call::Procs(args) => {
+                self.pending.insert(
+                    dispatch.corr,
+                    Pending::Query(QueryPending::Procs(args.clone())),
+                );
                 return;
             }
             Call::Subscribe(args) => {
@@ -1049,7 +1264,7 @@ mod tests {
     use hostobs_proto::quality;
     use hostobs_proto::stream_dicts::StreamDicts;
 
-    use super::{Call, Conn, Dispatch, Peer, Pools, Reader, State, SERVER_MINOR};
+    use super::{Call, Conn, Dispatch, Peer, Pending, Pools, Reader, State, SERVER_MINOR};
     use crate::args::SubscribeArgs;
     use crate::backend::{
         Backend, BackendError, FixedBackend, Identity, StatusInfo, TickData, TickInfo, TierInfo,
@@ -1235,7 +1450,11 @@ mod tests {
         fn with(level: Level, limits: Limits) -> Rig {
             let mut hub = SendHub::new(queue_limits(&limits));
             let id = hub.add(1000, 0);
-            let peer = Peer { uid: 1000, pid: 7 };
+            let peer = Peer {
+                uid: 1000,
+                pid: 7,
+                cgroup_inc: None,
+            };
             let conn = Conn::new(id, level, peer, &limits, 0);
             let streams = SelectionStreams::new(StreamLimits {
                 bounds: BlockBounds {
@@ -1369,7 +1588,10 @@ mod tests {
         }
 
         fn pending_need(&self, corr: u32) -> Option<usize> {
-            self.conn.pending.get(&corr).map(|pending| pending.need)
+            match self.conn.pending.get(&corr) {
+                Some(Pending::Current(pending)) => Some(pending.need),
+                _ => None,
+            }
         }
     }
 
@@ -1406,7 +1628,14 @@ mod tests {
     fn conn_row_1_accept_arms_the_hello_deadline_and_starts_undecided() {
         let rig = Rig::new(Level::Observe);
         assert_eq!(rig.conn.state(), State::Undecided);
-        assert_eq!(rig.conn.peer(), Peer { uid: 1000, pid: 7 });
+        assert_eq!(
+            rig.conn.peer(),
+            Peer {
+                uid: 1000,
+                pid: 7,
+                cgroup_inc: None
+            }
+        );
         assert_eq!(rig.conn.level(), Level::Observe);
         assert_eq!(rig.conn.id(), ConnId(1));
         assert_eq!(rig.conn.bytes_written(), 0);
@@ -1501,7 +1730,8 @@ mod tests {
         let body = &parsed[0].2;
         assert!(body.contains("\"level\":\"observe\""));
         assert!(body.contains("\"epoch\":1"));
-        let verbs = "\"verbs\":[\"hello\",\"status\",\"current\",\"subscribe\",\"unsubscribe\"]";
+        let verbs = "\"verbs\":[\"hello\",\"status\",\"current\",\"subscribe\",\"unsubscribe\",\
+                     \"snapshot_at\",\"series_batch\",\"procs\"]";
         assert!(body.contains(verbs));
         let codes = "\"quality_codes\":[{\"code\":0,\"name\":\"ok\"}";
         assert!(body.contains(codes));
@@ -2304,7 +2534,11 @@ mod tests {
         let limits = Limits::for_level(Level::Observe);
         let mut hub = SendHub::new(queue_limits(&limits));
         let id = hub.add(1000, 0);
-        let peer = Peer { uid: 1000, pid: 7 };
+        let peer = Peer {
+            uid: 1000,
+            pid: 7,
+            cgroup_inc: None,
+        };
         let mut conn = Conn::new(id, Level::Observe, peer, &limits, 0);
         let backend = CountingBackend::new();
         let mut streams = SelectionStreams::new(StreamLimits {
@@ -2791,7 +3025,7 @@ mod tests {
             ("features", r#"["peak_reset","damon"]"#),
             (
                 "verbs",
-                r#"["hello","status","current","subscribe","unsubscribe"]"#,
+                r#"["hello","status","current","subscribe","unsubscribe","snapshot_at","series_batch","procs"]"#,
             ),
             ("quality_codes", codes.as_str()),
         ];

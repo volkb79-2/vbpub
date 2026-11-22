@@ -292,7 +292,16 @@ Tests: section 5.4 (incl. every §11.4 case of section 5.5). WIRE edits: §4.3 n
 **Implemented with P5b-2c + P5b-2d.** The merged package delivers shared ticks through
 `Server::on_tick`, runs the pending-`current` retry pass after `wrote` and `poll`, serves the three
 block verbs and updates `hello.verbs`, and adds the server-level section 5.4/5.5 tests including
-the block-verb hostile run. P5b-3 and P5b-4 remain, so `HOB-54` stays open.
+the block-verb hostile run.
+
+**P5b-3 implemented (2026-11-22).** `query.rs` adds the independent typed `QueryBackend` and the
+snapshot/history/process serving state; `Server` extends the retry/poll pass to every Conn-owned
+query request, adds selected-tier checks, exact Query admission, deterministic REP/BLOCK/END
+packing and cursor/view release; `Conn` adds captured uid/pid/cgroup-incarnation peer facts and
+the typed issuer. Tests use injected immutable views and a fake clock. P5b-4 remains the only
+remaining implementation package: the actual socket driver and socketpair acceptance still own
+`LISTEN_FDS`, mode plumbing and pidfd-to-cgroup-incarnation resolution. `HOB-54` therefore
+remains open, while production history/process/provenance readers remain P5c/`HOB-62`.
 
 ## 3. Resolutions (S1..S34)
 

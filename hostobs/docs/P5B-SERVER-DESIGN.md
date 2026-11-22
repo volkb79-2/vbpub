@@ -6,6 +6,14 @@ findings are folded in below as rules R1..R28). Author: session vbpub-cb. Normat
 packages, and how it RESOLVES the places where WIRE.md is silent or contradicts itself. A rule here
 that needs a WIRE.md edit lists that edit in §6; the package that implements the rule makes the edit.
 
+P5b-3 implementation status (2026-11-22): the sans-IO cut is implemented by
+`bins/probe/src/query.rs` plus the query paths in `server.rs`, `conn.rs`, `classify.rs` and `args.rs`.
+The fixed backend is test/bring-up data only. It proves typed serving, admission, packing, refusal
+precedence, cursor replay/lifecycle and process page bounds; it does not prove production store,
+`/proc`, cgroup-membership, cmdline privacy or provenance acquisition, which remain P5c/`HOB-62`.
+P5b-4 remains responsible for socket transport and accepted-peer incarnation resolution, so
+`HOB-54` stays open.
+
 ## 1. Shape: a sans-IO core, injected backend, thin drivers
 
 `bins/probe/src/` library modules (no new crate; `main.rs` stays a thin entry until P5b-4; the

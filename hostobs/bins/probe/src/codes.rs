@@ -42,6 +42,8 @@ pub enum Code {
     RateLimited,
     /// The named object does not exist.
     NotFound,
+    /// The retained history has no committed bucket at this position.
+    DataGap,
     /// The cursor is not valid for this request.
     CursorInvalid,
     /// The span is not open.
@@ -69,6 +71,14 @@ pub enum Pool {
     Rows,
     /// History spans, reserved for P5b-3.
     Spans,
+    /// The 256-entry query cursor table.
+    Cursors,
+    /// Published process scans and projections.
+    Procs,
+    /// Provenance cells in one snapshot response.
+    Provenance,
+    /// One encoded query BLOCK.
+    Block,
 }
 
 impl Pool {
@@ -81,13 +91,17 @@ impl Pool {
             Pool::Selections => "selections",
             Pool::Rows => "rows",
             Pool::Spans => "spans",
+            Pool::Cursors => "cursors",
+            Pool::Procs => "procs",
+            Pool::Provenance => "provenance",
+            Pool::Block => "block",
         }
     }
 }
 
 impl Code {
     /// Every code, in the order of WIRE.md section 10.
-    pub const ALL: [Code; 23] = [
+    pub const ALL: [Code; 24] = [
         Code::UnknownMode,
         Code::UnsupportedVersion,
         Code::HelloRequired,
@@ -105,6 +119,7 @@ impl Code {
         Code::Budget,
         Code::RateLimited,
         Code::NotFound,
+        Code::DataGap,
         Code::CursorInvalid,
         Code::SpanUnknown,
         Code::UnsupportedFeature,
@@ -134,6 +149,7 @@ impl Code {
             Code::Budget => "budget",
             Code::RateLimited => "rate-limited",
             Code::NotFound => "not-found",
+            Code::DataGap => "data-gap",
             Code::CursorInvalid => "cursor-invalid",
             Code::SpanUnknown => "span-unknown",
             Code::UnsupportedFeature => "unsupported-feature",
@@ -188,6 +204,7 @@ impl Code {
             Code::Budget => "a budget is exhausted",
             Code::RateLimited => "the request rate is limited",
             Code::NotFound => "the object was not found",
+            Code::DataGap => "the retained history has no committed bucket at this position",
             Code::CursorInvalid => "the cursor is not valid",
             Code::SpanUnknown => "the span is not open",
             Code::UnsupportedFeature => "the negotiated version lacks the feature",
@@ -208,6 +225,8 @@ pub enum Detail {
     Key(String),
     /// `{"pool": <name>}`: the exhausted budget pool.
     Pool(Pool),
+    /// `{"feature": <str>}`: the negotiated feature is unavailable.
+    Feature(&'static str),
 }
 
 impl Detail {
@@ -255,6 +274,7 @@ mod tests {
                 "budget",
                 "rate-limited",
                 "not-found",
+                "data-gap",
                 "cursor-invalid",
                 "span-unknown",
                 "unsupported-feature",
@@ -332,6 +352,10 @@ mod tests {
             (Pool::Selections, "selections"),
             (Pool::Rows, "rows"),
             (Pool::Spans, "spans"),
+            (Pool::Cursors, "cursors"),
+            (Pool::Procs, "procs"),
+            (Pool::Provenance, "provenance"),
+            (Pool::Block, "block"),
         ];
         for (pool, name) in names {
             assert_eq!(pool.name(), name);

@@ -23,7 +23,8 @@
 #   `encode.rs`, `lib.rs`, `limits.rs`, `lines.rs`, `main.rs` and `verbs.rs`, 55 since P5b-1b
 #   added and declared `bins/probe/src/backend.rs` and `conn.rs`, 56 since P5b-1b part 2
 #   added and declared `bins/probe/src/server.rs`, 58 since P5b-2b added and declared
-#   `bins/probe/src/registry.rs` and `tick.rs`; the
+#   `bins/probe/src/registry.rs` and `tick.rs`, 59 since P5b-3 added
+#   `bins/probe/src/query.rs`; the
 #   measurements below are of the 33)
 #   coverage:   15100 / 15723 executable lines = 96.0377 %
 #               model 98.09 % (2004/2043), proto 99.71 % (3454/3464),
@@ -141,6 +142,7 @@ targets = [
   "bins/probe/src/limits.rs",
   "bins/probe/src/lines.rs",
   "bins/probe/src/main.rs",
+  "bins/probe/src/query.rs",
   "bins/probe/src/registry.rs",
   "bins/probe/src/selection.rs",
   "bins/probe/src/server.rs",

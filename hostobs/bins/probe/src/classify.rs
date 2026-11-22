@@ -17,7 +17,8 @@
 //! 9. the verb is known but not served by this package: `unknown-verb`;
 //! 10. an outstanding `current` or `subscribe`: `too-many-requests` (other verb shapes are
 //!     never refused by it);
-//! 11. the argument schema (`hello`, `status`, `current`, `subscribe`, `unsubscribe`):
+//! 11. the argument schema (`hello`, `status`, `current`, `subscribe`, `unsubscribe`,
+//!     `snapshot_at`, `series_batch`, `procs`):
 //!     `bad-request` with the schema path, or, for a JSON-mode `hello` with a `proto.major`
 //!     other than 1, `unsupported-version` (fatal, R8); a binary `hello.proto` must equal the
 //!     client's own prefix (R7).
@@ -72,7 +73,7 @@ pub struct Prefix {
 }
 
 /// The connection facts that join the pure precedence after the verb table.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConnFacts {
     /// The binary frame `corr` is a live subscription or pending request.
     pub corr_in_use: bool,
@@ -80,6 +81,25 @@ pub struct ConnFacts {
     pub outstanding_full: bool,
     /// The intervals accepted by the connection's level.
     pub interval: IntervalRule,
+    /// The negotiated protocol minor.
+    pub minor: u16,
+    /// The configured per-page block bound.
+    pub max_page_blocks: u32,
+    /// Whether this connection serves the operator level (the `cmdline` gate).
+    pub operator: bool,
+}
+
+impl Default for ConnFacts {
+    fn default() -> Self {
+        ConnFacts {
+            corr_in_use: false,
+            outstanding_full: false,
+            interval: IntervalRule::default(),
+            minor: 0,
+            max_page_blocks: 64,
+            operator: false,
+        }
+    }
 }
 
 /// One request to classify.
@@ -114,6 +134,12 @@ pub enum Call {
     Subscribe(SubscribeArgs),
     /// `unsubscribe` with its checked subscription corr.
     Unsubscribe(u32),
+    /// `snapshot_at` with its checked typed request.
+    Snapshot(crate::query::SnapshotArgs),
+    /// `series_batch` with its checked page arguments.
+    Series(crate::query::SeriesArgs),
+    /// `procs` with its checked page arguments.
+    Procs(crate::query::ProcsArgs),
 }
 
 /// A request that passed every check.
@@ -286,6 +312,26 @@ fn call_of(
         "unsubscribe" => match args::unsubscribe(text) {
             Ok(sub) => Ok(Call::Unsubscribe(sub)),
             Err(error) => Err(bad_args(corr, &error)),
+        },
+        "snapshot_at" => match crate::query::parse_snapshot(text) {
+            Ok(snapshot) => Ok(Call::Snapshot(snapshot)),
+            Err(error) => Err(bad_args(corr, &error)),
+        },
+        "series_batch" => match crate::query::parse_series(text, facts.max_page_blocks) {
+            Ok(_series) if query.mode == Mode::Binary && facts.minor == 0 => Err(Refusal {
+                code: Code::UnsupportedFeature,
+                corr,
+                detail: Detail::Feature("subject"),
+            }),
+            Ok(series) => Ok(Call::Series(series)),
+            Err(error) => Err(bad_args(corr, &error)),
+        },
+        "procs" => match crate::query::parse_procs(text, facts.operator) {
+            Ok(procs) => Ok(Call::Procs(procs)),
+            Err(crate::query::ProcsArgError::Bad(error)) => Err(bad_args(corr, &error)),
+            Err(crate::query::ProcsArgError::ForbiddenCmdline) => {
+                Err(refuse(Code::Forbidden, corr))
+            }
         },
         // Unreachable while `verb_gate` passes only served verbs with a schema here: a served
         // verb without one is a server defect, never the client's `unknown-verb`.
@@ -857,14 +903,20 @@ mod tests {
 
     #[test]
     fn step_9_a_known_verb_that_is_not_served_is_unknown_verb() {
-        for verb in ["events", "spans", "procs", "snapshot_at"] {
+        for verb in ["events", "spans"] {
             let text = req(verb, "{}");
             assert_plain(&binary(text.as_bytes()), Code::UnknownVerb, 5);
         }
-        for verb in ["events", "spans", "procs"] {
+        for verb in ["events", "spans"] {
             let text = line(verb, "{}", 5);
             assert_refusal(&json(text.as_bytes()), Code::UnknownVerb, 5, &Detail::Empty);
         }
+        for verb in ["procs", "snapshot_at"] {
+            let text = req(verb, "{}");
+            assert_plain(&binary(text.as_bytes()), Code::BadRequest, 5);
+        }
+        let text = line("procs", "{}", 5);
+        assert_plain(&json(text.as_bytes()), Code::BadRequest, 5);
     }
 
     #[test]
@@ -1061,6 +1113,9 @@ mod tests {
                 min_ms: 1_000,
                 tick_ms: 1_000,
             },
+            minor: crate::conn::SERVER_MINOR,
+            max_page_blocks: 64,
+            operator: true,
         }
     }
 
@@ -1537,6 +1592,7 @@ mod tests {
                 Detail::Key(path) => assert!(path.len() <= Detail::MAX_KEY_BYTES),
                 Detail::Empty => panic!("an error detail is a key"),
                 Detail::Pool(pool) => panic!("unexpected pool {pool:?}"),
+                Detail::Feature(feature) => panic!("unexpected feature {feature}"),
             }
             let refusal = refused(&json(&payload));
             assert_eq!(refusal.code, Code::BadRequest);

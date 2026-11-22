@@ -15,6 +15,7 @@
 //! - `queues.dropped_blocks` comes from the server's send hub, not from
 //!   [`StatusInfo::dropped_blocks`]; the connection reads the hub's count.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use hostobs_proto::dict::{
@@ -24,6 +25,11 @@ use hostobs_proto::frame::{BlockHeaderFacts, Column, Row};
 use hostobs_proto::quality::Quality;
 
 use crate::limits::Level;
+use crate::query::{
+    HistoryBlockData, ProcProjectionId, ProcRow, ProcScanView, ProcsRequest, QueryBackend,
+    QueryBounds, QuerySourceError, QueryViewId, SeriesGroup, SeriesPosition, SeriesRequest,
+    SeriesView, SeriesViewId, SnapshotData, SnapshotRequest, SnapshotView, SnapshotViewId,
+};
 use crate::selection::Selection;
 
 /// What `hello` announces about the server (WIRE.md section 4.4).
@@ -199,6 +205,24 @@ pub struct FixedBackend {
     pub status: StatusInfo,
     /// The answer of [`Backend::current`], keyed by the canonical selection.
     pub current: BTreeMap<Selection, Result<TickData, BackendError>>,
+    /// `snapshot_open` answers.
+    pub snapshot_open: BTreeMap<SnapshotRequest, Result<SnapshotView, QuerySourceError>>,
+    /// `snapshot_read` answers.
+    pub snapshot_read: BTreeMap<SnapshotViewId, Result<SnapshotData, QuerySourceError>>,
+    /// `series_open` answers.
+    pub series_open: BTreeMap<SeriesRequest, Result<SeriesView, QuerySourceError>>,
+    /// `series_group` answers.
+    pub series_group:
+        BTreeMap<(SeriesViewId, SeriesPosition), Result<Option<SeriesGroup>, QuerySourceError>>,
+    /// `series_read` answers.
+    pub series_read:
+        BTreeMap<(SeriesViewId, SeriesPosition, u32), Result<HistoryBlockData, QuerySourceError>>,
+    /// `procs_open` answers.
+    pub procs_open: BTreeMap<ProcsRequest, Result<ProcScanView, QuerySourceError>>,
+    /// `procs_read` answers.
+    pub procs_read: BTreeMap<(ProcProjectionId, u32), Result<Option<ProcRow>, QuerySourceError>>,
+    /// Every `release_view` call, for lifecycle assertions.
+    pub released: RefCell<Vec<QueryViewId>>,
 }
 
 impl FixedBackend {
@@ -214,6 +238,14 @@ impl FixedBackend {
             },
             status: StatusInfo::default(),
             current: BTreeMap::new(),
+            snapshot_open: BTreeMap::new(),
+            snapshot_read: BTreeMap::new(),
+            series_open: BTreeMap::new(),
+            series_group: BTreeMap::new(),
+            series_read: BTreeMap::new(),
+            procs_open: BTreeMap::new(),
+            procs_read: BTreeMap::new(),
+            released: RefCell::new(Vec::new()),
         }
     }
 }
@@ -246,6 +278,90 @@ impl Backend for FixedBackend {
                 }
             }
         }
+    }
+}
+
+impl QueryBackend for FixedBackend {
+    fn snapshot_open(
+        &self,
+        request: &SnapshotRequest,
+        _now_ns: u64,
+        _bounds: QueryBounds,
+    ) -> Result<SnapshotView, QuerySourceError> {
+        self.snapshot_open
+            .get(request)
+            .cloned()
+            .unwrap_or(Err(QuerySourceError::NotFound))
+    }
+
+    fn snapshot_read(&self, view: SnapshotViewId) -> Result<SnapshotData, QuerySourceError> {
+        self.snapshot_read
+            .get(&view)
+            .cloned()
+            .unwrap_or(Err(QuerySourceError::ViewInvalid))
+    }
+
+    fn series_open(
+        &self,
+        request: &SeriesRequest,
+        _now_ns: u64,
+        _bounds: QueryBounds,
+    ) -> Result<SeriesView, QuerySourceError> {
+        self.series_open
+            .get(request)
+            .cloned()
+            .unwrap_or(Err(QuerySourceError::NotFound))
+    }
+
+    fn series_group(
+        &self,
+        view: SeriesViewId,
+        at: SeriesPosition,
+    ) -> Result<Option<SeriesGroup>, QuerySourceError> {
+        self.series_group
+            .get(&(view, at))
+            .cloned()
+            .unwrap_or(Err(QuerySourceError::ViewInvalid))
+    }
+
+    fn series_read(
+        &self,
+        view: SeriesViewId,
+        at: SeriesPosition,
+        buckets: u32,
+    ) -> Result<HistoryBlockData, QuerySourceError> {
+        self.series_read
+            .get(&(view, at, buckets))
+            .cloned()
+            .unwrap_or(Err(QuerySourceError::ViewInvalid))
+    }
+
+    fn procs_open(
+        &self,
+        request: &ProcsRequest,
+        _now_ns: u64,
+        _max_rows: u32,
+    ) -> Result<ProcScanView, QuerySourceError> {
+        self.procs_open
+            .get(request)
+            .cloned()
+            .unwrap_or(Err(QuerySourceError::Budget(crate::codes::Pool::Procs)))
+    }
+
+    fn procs_read(
+        &self,
+        view: ProcProjectionId,
+        index: u32,
+        _fields: &[crate::query::ProcField],
+    ) -> Result<Option<ProcRow>, QuerySourceError> {
+        self.procs_read
+            .get(&(view, index))
+            .cloned()
+            .unwrap_or(Err(QuerySourceError::ViewInvalid))
+    }
+
+    fn release_view(&self, view: QueryViewId) {
+        self.released.borrow_mut().push(view);
     }
 }
 

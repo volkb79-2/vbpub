@@ -1823,6 +1823,16 @@ streams (one bare encoding per tick, the dictionary form lazily, one generation 
 §11.4 and a socketpair conformance test per row of §5.1 and per verb of §4.3 marked M2, against a fake
 clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 
+P5b-3 is implemented in the sans-IO core: `bins/probe/src/query.rs` owns the independent
+`QueryBackend`, typed snapshot/history/process views, the immutable tier catalog, exact checked frame
+sizing, deterministic history packing and bounded cursor/view accounting; `server.rs` owns admission,
+REP/BLOCK/END serving and uid/request rotation; `conn.rs` owns the single pending-request authority
+and typed issuer facts. The fixed backend proves only this injected serving contract. It does not
+read the production store or `/proc` and is not M2 live-exit evidence. P5b-4 still owns the Unix-socket
+driver, accepted-peer pidfd/cgroup-incarnation resolution and socketpair acceptance, so `HOB-54`
+remains open until P5b-4. Production history, process, membership, cmdline/privacy and provenance
+sources remain P5c/`HOB-62`.
+
 ## 13. Decisions taken, divergences, open questions
 
 ### Decisions taken

@@ -23,6 +23,7 @@ pub mod conn;
 pub mod encode;
 pub mod limits;
 pub mod lines;
+pub mod query;
 pub mod registry;
 pub mod selection;
 pub mod server;

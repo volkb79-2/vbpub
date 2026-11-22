@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### Added (P5b-3 bounded history and process query serving; `HOB-54` stays open)
+
+- **`bins/probe/src/query.rs`**: the independent `QueryBackend` and normative typed views
+  (`TierCatalog`, snapshot subjects/columns/data, series groups/plans/blocks, process projections/rows,
+  closed source outcomes and `QueryViewId`). The module owns checked Euclidean bucket floors,
+  metadata-only frame sizing, canonical history dictionaries, deterministic largest-prefix packing,
+  provenance/process REP rendering, canonical cursor bindings and the bounded 256-entry view/cursor
+  reference table. Planning and final encoding use the same checked history frame-length helper.
+- **`bins/probe/src/server.rs`**: `snapshot_at`, `series_batch` and `procs` now serve through REP,
+  zero or more BLOCKs and the exact END. The Server validates configured tiers and source metadata,
+  derives `omitted` from aggregation masks, derives provenance cardinality from checked subject×column
+  counts, preflights exact Query room before every value read, reserves only a proven continuation,
+  rotates every Conn-owned pending query, and releases active views/unexposed reservations on success,
+  failure, close and finish. History continuations repeat the dictionary form and replan their own cap.
+- **`bins/probe/src/conn.rs` and request path**: `Peer` captures uid, pid and optional resolved
+  `cgroup_inc`; `Issuer` is derived once without a later lookup. The single Conn pending-request map
+  owns snapshot/series/process state, while `QueryBackend` remains separate from `Backend`.
+  `snapshot_at`, `series_batch` and `procs` are announced at observe/operator; minor-0 history,
+  observer `cmdline`, malformed schemas, unknown tier steps and wrong-level/JSON block requests retain
+  their WIRE precedence before backend work.
+- **Tests and fixture**: the frozen `p5b3-series-plans.json` artifact pins 328/368/280/264/240-byte
+  dictionary/bare frames, gap omission, `omitted`, page boundaries and replay. Unit/server tests add
+  Euclidean/overflow precedence, snapshot provenance and admission, pinned multibyte labels,
+  malformed metadata/candidates/group structure, post-REP budget and cursor-invalid END behavior,
+  cursor-slot/reuse/expiry accounting, process whole-row reply paging and coverage forwarding,
+  background scan/projection identity, close cleanup and hostile request precedence.
+- **Docs and policy**: WIRE §12, this design cut and the P5b-2 design now state the actual boundary.
+  The Python-only `conformance` lane is not evidence for this Rust path. `assay.toml` registers
+  `query.rs` under the R1 target set. `HOB-54` remains open for P5b-4's socket driver and peer
+  incarnation resolver; `HOB-62` remains open for P5c's production store, `/proc`, membership,
+  cmdline/privacy and provenance sources. P5b-3 is not M2 live-exit evidence.
+
 ### Added (P5b-2d server: tick delivery, retries, served verbs and reachable §11.4 cases; `HOB-54` stays open)
 
 - **`bins/probe/src/server.rs`**: `Server::on_tick(now_ns)` pulls one shared delivery set from the

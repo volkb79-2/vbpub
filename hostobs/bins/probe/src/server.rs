@@ -11,14 +11,15 @@
 //! # Contracts
 //!
 //! - **`accept` (WIRE.md section 5.4 `refuse`).** `Control` is never served by the probe (design
-//!   section 1: it belongs to `act`), a missing peer has no identity, a level at its
-//!   `max_connections` or a uid at its
+//!   section 1: it belongs to `act`), a missing peer has no identity, an observer without the
+//!   accept-time cgroup issuer is refused, a level at its `max_connections` or a uid at its
 //!   `max_connections_per_uid` on that level is full: all four answer [`Accept::Refused`] with
 //!   no hub entry, no counter and no byte. Otherwise the connection is added to the hub with the
 //!   peer's uid, a [`Conn`] is created and the counters grow (accept when `count < cap`). The peer
 //!   is captured once: every later decrement and hub call uses the stored uid (R23).
 //! - **`finish` is the single release path (R22).** It decrements the level and uid counters,
-//!   deletes a uid entry that reaches 0, removes the connection from the hub and drops it. It is
+//!   releases every query view, unexposed reservation and cursor it owns, deletes a uid entry
+//!   that reaches 0, removes the connection from the hub and drops it. It is
 //!   idempotent and is the only place that does so; every close path ends in it: the driver
 //!   calls it after taking the final bytes (and for an I/O error or a mid-stream drop), and
 //!   [`Server::poll`] and [`Server::shutdown`] call it for a closed connection that holds no
@@ -33,7 +34,8 @@
 //! - **Tick delivery and retries (design S7, S25 and S27).** [`Server::on_tick`] asks the
 //!   registry for at most one shared tick per due stream, then drives each subscriber through
 //!   [`Conn::push_tick`] or [`Conn::end_subscription`]. [`Server::wrote`] and [`Server::poll`]
-//!   finish with a retry pass over every backpressured query, in `ConnId` then `corr` order.
+//!   finish with a fair pass over every Conn-owned pending query, rotating peer uids and then
+//!   requests within each uid. Each eligible request gets at most one BLOCK per pass.
 //! - **Timer order (R20), per [`Server::poll`].** Connections are polled in `ConnId` order
 //!   (the hello deadline, the reader's age, idle); then the hub's `poll` closes the stalled or
 //!   dribbled ones with `slow-client` (again in id order); the first fatal outcome of a
@@ -49,8 +51,8 @@
 //!   equals the hub's rule (a frame into an empty control queue is always admitted).
 //! - **Every push path ends in `enforce_control`.** The server hands a connection the hub and
 //!   the backend through one private method (`drive`), which runs the control-cap check right
-//!   after the connection returns. Every path that can queue a frame of a connection (today
-//!   `on_bytes`; P5b-2 adds the EVT, END, live and query pushes) MUST go through it and never
+//!   after the connection returns. Every path that can queue a frame of a connection (input,
+//!   EVT, END, live and query pushes) MUST go through it and never
 //!   call into a `Conn` directly, so a new push cannot forget the per-level cap.
 //! - **One stall, one frame-completion value.** The hub has a single value of each, so
 //!   [`Server::new`] sets `stall_ms` and `frame_completion_ms` of every served level to the
@@ -70,12 +72,17 @@
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 
-use hostobs_proto::hub::{ConnId, QueueLimits, SendHub};
+use hostobs_proto::hub::{ConnId, QueryOutcome, QueueLimits, SendHub};
 
 use crate::backend::{Backend, BackendError, Identity, StatusInfo, TickData};
-use crate::codes::Code;
+use crate::codes::{Code, Detail, Pool};
 use crate::conn::{Conn, Peer};
 use crate::limits::{Level, Limits};
+use crate::query::{
+    self, CursorBinding, CursorTable, CursorTarget, PendingSeries, PendingSnapshot, ProcsArgs,
+    QueryBackend, QueryBounds, QuerySourceError, QueryViewId, SeriesArgs, SeriesPosition,
+    SnapshotArgs, TierCatalog, TierChoice,
+};
 use crate::registry::{Delivery, SelectionStreams, StreamLimits};
 use crate::selection::Selection;
 use crate::tick::BlockBounds;
@@ -256,6 +263,22 @@ fn decrement<K: Eq + Hash>(map: &mut HashMap<K, u32>, key: K) {
     }
 }
 
+fn scan_age_ms(published_mono_ns: u64, now_ns: u64) -> u32 {
+    let age = now_ns.saturating_sub(published_mono_ns) / 1_000_000;
+    u32::try_from(age).unwrap_or(u32::MAX)
+}
+
+fn reply_fits(conn: &Conn, corr: u32, result: &str) -> bool {
+    let cap = usize::try_from(conn.reply_cap()).unwrap_or(usize::MAX);
+    if conn.json_mode() {
+        let line = format!("{{\"ok\":true,\"corr\":{corr},\"result\":{result}}}");
+        line.len() <= cap
+    } else {
+        let payload = crate::encode::ok_payload(result);
+        payload.len() <= cap
+    }
+}
+
 impl Counts {
     fn level(&self, level: Level) -> u32 {
         self.levels.get(&level).copied().unwrap_or(0)
@@ -322,28 +345,37 @@ impl<B: Backend> Backend for StatusView<'_, B> {
 }
 
 /// The serving core: one hub, the connections, the counters and the backend (module docs).
-pub struct Server<B: Backend> {
+pub struct Server<B: Backend + QueryBackend> {
     limits: ServerLimits,
     hub: SendHub,
     conns: BTreeMap<ConnId, Conn>,
     counts: Counts,
     streams: SelectionStreams,
+    catalog: TierCatalog,
+    cursors: CursorTable,
+    uid_rotation: usize,
+    request_rotation: BTreeMap<u32, usize>,
     backend: B,
 }
 
-impl<B: Backend> Server<B> {
+impl<B: Backend + QueryBackend> Server<B> {
     /// A server with no connection.
     #[must_use]
     pub fn new(limits: ServerLimits, backend: B) -> Server<B> {
         let limits = limits.unified();
         let hub = SendHub::new(limits.queue_limits());
         let streams = SelectionStreams::new(limits.stream_limits());
+        let catalog = TierCatalog::from_status(&backend.status());
         Server {
             limits,
             hub,
             conns: BTreeMap::new(),
             counts: Counts::default(),
             streams,
+            catalog,
+            cursors: CursorTable::default(),
+            uid_rotation: 0,
+            request_rotation: BTreeMap::new(),
             backend,
         }
     }
@@ -355,6 +387,9 @@ impl<B: Backend> Server<B> {
         let Some(peer) = peer else {
             return Accept::Refused;
         };
+        if level == Level::Observer && peer.issuer().is_none() {
+            return Accept::Refused;
+        }
         let Some(limits) = self.limits.get(level).copied() else {
             return Accept::Refused;
         };
@@ -376,11 +411,13 @@ impl<B: Backend> Server<B> {
         self.drive(id, |c, hub, back, streams| {
             c.on_bytes(bytes, now_ns, hub, back, streams);
         });
+        self.query_pass(now_ns);
     }
 
     /// The peer of `id` ended its stream.
     pub fn on_eof(&mut self, id: ConnId, now_ns: u64) {
         self.drive(id, |c, hub, _back, streams| c.on_eof(now_ns, hub, streams));
+        self.query_pass(now_ns);
     }
 
     /// One sampler tick (design S11 and S25): build the due selection streams, then deliver
@@ -419,7 +456,7 @@ impl<B: Backend> Server<B> {
                 conn.close_for(Code::SlowClient, &mut self.hub);
             }
         }
-        self.retry_pass(now_ns);
+        self.query_pass(now_ns);
         self.sweep()
     }
 
@@ -438,7 +475,7 @@ impl<B: Backend> Server<B> {
         if let Some(conn) = self.conns.get_mut(&id) {
             conn.on_written(n, now_ns, &mut self.hub);
         }
-        self.retry_pass(now_ns);
+        self.query_pass(now_ns);
     }
 
     /// The final bytes of a closed connection (module docs): taken once.
@@ -458,9 +495,27 @@ impl<B: Backend> Server<B> {
     /// Release `id`: counters, uid entry, hub entry, the connection. Idempotent (module docs).
     /// Until then a closed connection holds its slot toward the caps.
     pub fn finish(&mut self, id: ConnId) {
-        let Some(conn) = self.conns.remove(&id) else {
+        let Some(mut conn) = self.conns.remove(&id) else {
+            for view in self.cursors.abort_conn(id) {
+                self.backend.release_view(view);
+            }
             return;
         };
+        let corrs = conn.query_corrs();
+        for corr in corrs {
+            match conn.take_query(corr) {
+                Some(crate::conn::QueryPending::SnapshotPending(state)) => {
+                    self.release_view(state.view_id());
+                }
+                Some(crate::conn::QueryPending::SeriesPage(mut state)) => {
+                    self.abort_series_state(&mut state);
+                }
+                _ => {}
+            }
+        }
+        for view in self.cursors.abort_conn(id) {
+            self.backend.release_view(view);
+        }
         self.counts.release(conn.level(), conn.peer().uid);
         self.streams.release_conn(id);
         self.hub.remove(id);
@@ -542,6 +597,36 @@ impl<B: Backend> Server<B> {
         &mut self.backend
     }
 
+    /// The immutable tier catalog captured at construction.
+    #[must_use]
+    pub fn tiers(&self) -> &TierCatalog {
+        &self.catalog
+    }
+
+    /// The live cursor count.
+    #[must_use]
+    pub fn cursor_count(&self) -> usize {
+        self.cursors.len()
+    }
+
+    /// The current reference count of a query view.
+    #[must_use]
+    pub fn view_references(&self, view: QueryViewId) -> u32 {
+        self.cursors.references(view)
+    }
+
+    /// Invalidate a source view and every cursor bound to it.
+    pub fn invalidate_query_view(&mut self, view: QueryViewId) {
+        self.abort_view(view);
+    }
+
+    fn abort_view(&mut self, view: QueryViewId) {
+        let release = self.cursors.invalidate(view);
+        for view in release {
+            self.backend.release_view(view);
+        }
+    }
+
     /// Run `act` on connection `id` with the hub and the status-filling backend, then enforce
     /// the control cap. The ONE path through which a connection is handed the hub: every push
     /// path of the server goes through it (module docs), so none can skip `enforce_control`.
@@ -582,18 +667,783 @@ impl<B: Backend> Server<B> {
         }
     }
 
-    /// Retry every backpressured `current` in `ConnId` then `corr` order (design S7 and S24).
-    fn retry_pass(&mut self, now_ns: u64) {
-        let pending: Vec<ConnId> = self
-            .conns
-            .iter()
-            .filter_map(|(id, conn)| conn.has_pending().then_some(*id))
-            .collect();
-        for id in pending {
-            self.drive(id, |conn, hub, backend, _streams| {
-                conn.retry_pending(now_ns, hub, backend);
-            });
+    fn query_bounds(&self, conn: &Conn) -> QueryBounds {
+        let limits = conn.limits();
+        QueryBounds {
+            max_rows: limits.max_rows,
+            max_block_buckets: limits.max_block_buckets,
+            max_block_bytes: limits.max_block_bytes,
         }
+    }
+
+    fn cursor_binding(&self, conn: &Conn, verb: &'static str, arguments: Vec<u8>) -> CursorBinding {
+        let identity = self.backend.identity();
+        CursorBinding {
+            boot_id: identity.boot_id,
+            epoch: identity.epoch,
+            level: conn.level(),
+            uid: conn.peer().uid,
+            verb,
+            arguments,
+        }
+    }
+
+    fn release_view(&mut self, view: QueryViewId) {
+        if self.cursors.release_view(view) {
+            self.backend.release_view(view);
+        }
+    }
+
+    fn invalidate_view(&mut self, view: QueryViewId) {
+        self.abort_view(view);
+    }
+
+    /// One fair query scheduling pass. Peer uids rotate, and within each uid its requests
+    /// rotate independently; every request receives at most one scheduler step per pass.
+    fn query_pass(&mut self, now_ns: u64) {
+        let expired = self.cursors.expire(now_ns);
+        for view in expired {
+            self.backend.release_view(view);
+        }
+        let mut work: BTreeMap<u32, Vec<(ConnId, u32, bool)>> = BTreeMap::new();
+        for (id, conn) in &self.conns {
+            let requests = work.entry(conn.peer().uid).or_default();
+            for corr in conn.query_corrs() {
+                requests.push((*id, corr, false));
+            }
+            for corr in conn.current_corrs() {
+                requests.push((*id, corr, true));
+            }
+        }
+        if work.is_empty() {
+            self.uid_rotation = 0;
+            self.request_rotation.clear();
+            return;
+        }
+        let mut uids: Vec<u32> = work.keys().copied().collect();
+        let start = self.uid_rotation % uids.len();
+        uids.rotate_left(start);
+        self.uid_rotation = (start + 1) % work.len();
+        for uid in uids {
+            let requests = work.get_mut(&uid).expect("the uid key came from this map");
+            requests.sort_unstable_by_key(|(id, corr, current)| (*id, *corr, *current));
+            let start = self.request_rotation.get(&uid).copied().unwrap_or(0) % requests.len();
+            requests.rotate_left(start);
+            self.request_rotation
+                .insert(uid, (start + 1) % requests.len());
+            let ready = requests.clone();
+            for (id, corr, current) in ready {
+                if current {
+                    self.drive(id, |conn, hub, backend, _streams| {
+                        conn.retry_current(corr, now_ns, hub, backend);
+                    });
+                } else {
+                    let Some(mut conn) = self.conns.remove(&id) else {
+                        continue;
+                    };
+                    self.step_conn_query(&mut conn, corr, now_ns);
+                    self.conns.insert(id, conn);
+                    self.enforce_control(id);
+                }
+                if self.is_closed(id) && !self.conns.get(&id).is_some_and(Conn::has_final) {
+                    self.finish(id);
+                }
+            }
+        }
+    }
+
+    fn step_conn_query(&mut self, conn: &mut Conn, corr: u32, now_ns: u64) {
+        if conn.is_closed() {
+            return;
+        }
+        let Some(query) = conn.take_query(corr) else {
+            return;
+        };
+        match query {
+            crate::conn::QueryPending::Snapshot(args) => {
+                self.start_snapshot(conn, corr, args, now_ns);
+            }
+            crate::conn::QueryPending::SnapshotPending(state) => {
+                self.step_snapshot(conn, corr, *state, now_ns);
+            }
+            crate::conn::QueryPending::Series(args) => {
+                self.start_series(conn, corr, args, now_ns);
+            }
+            crate::conn::QueryPending::SeriesPage(state) => {
+                self.step_series(conn, corr, *state, now_ns);
+            }
+            crate::conn::QueryPending::Procs(args) => {
+                self.serve_procs(conn, corr, args, now_ns);
+            }
+        }
+        conn.complete_draining(&mut self.hub);
+    }
+
+    fn start_snapshot(&mut self, conn: &mut Conn, corr: u32, args: SnapshotArgs, now_ns: u64) {
+        if let TierChoice::Explicit(tier) = args.request.tier {
+            if self.catalog.explicit(tier).is_none() {
+                conn.push_query_error(corr, Code::NotFound, &Detail::Empty, now_ns, &mut self.hub);
+                return;
+            }
+        }
+        let bounds = self.query_bounds(conn);
+        let view = match self.backend.snapshot_open(&args.request, now_ns, bounds) {
+            Ok(view) => view,
+            Err(error) => {
+                let (code, detail) = query::snapshot_open_error(error);
+                conn.push_query_error(corr, code, &detail, now_ns, &mut self.hub);
+                return;
+            }
+        };
+        self.cursors.add_view(QueryViewId::Snapshot(view.id));
+        if let Err(error) =
+            query::validate_snapshot_meta(&view.meta, &args.request, &self.catalog, bounds.max_rows)
+        {
+            self.release_view(QueryViewId::Snapshot(view.id));
+            let (code, detail) = match error {
+                QuerySourceError::Budget(Pool::Rows) => (Code::Budget, Detail::Pool(Pool::Rows)),
+                _ => (Code::Internal, Detail::Empty),
+            };
+            conn.push_query_error(corr, code, &detail, now_ns, &mut self.hub);
+            return;
+        }
+        if args.request.provenance {
+            let Some(cells) = query::provenance_cells(&view.meta) else {
+                self.release_view(QueryViewId::Snapshot(view.id));
+                conn.push_query_error(corr, Code::Internal, &Detail::Empty, now_ns, &mut self.hub);
+                return;
+            };
+            if cells > query::MAX_PROVENANCE_CELLS {
+                self.release_view(QueryViewId::Snapshot(view.id));
+                conn.push_query_error(
+                    corr,
+                    Code::Budget,
+                    &Detail::Pool(Pool::Provenance),
+                    now_ns,
+                    &mut self.hub,
+                );
+                return;
+            }
+        }
+        let Some(frame_bytes) = query::snapshot_frame_len(&view.meta) else {
+            self.release_view(QueryViewId::Snapshot(view.id));
+            conn.push_query_error(corr, Code::Internal, &Detail::Empty, now_ns, &mut self.hub);
+            return;
+        };
+        if frame_bytes > usize::try_from(bounds.max_block_bytes).unwrap_or(usize::MAX) {
+            self.release_view(QueryViewId::Snapshot(view.id));
+            conn.push_query_error(
+                corr,
+                Code::Budget,
+                &Detail::Pool(Pool::Block),
+                now_ns,
+                &mut self.hub,
+            );
+            return;
+        }
+        let state = PendingSnapshot {
+            args,
+            view,
+            frame_bytes,
+        };
+        self.step_snapshot(conn, corr, state, now_ns);
+    }
+
+    fn step_snapshot(&mut self, conn: &mut Conn, corr: u32, state: PendingSnapshot, now_ns: u64) {
+        let frame_len = state.frame_bytes;
+        if !self.hub.query_room(conn.id(), frame_len) {
+            conn.put_query(
+                corr,
+                crate::conn::QueryPending::SnapshotPending(Box::new(state)),
+            );
+            return;
+        }
+        let data = match self.backend.snapshot_read(state.view.id) {
+            Ok(data) => data,
+            Err(error) => {
+                self.release_view(QueryViewId::Snapshot(state.view.id));
+                let (code, detail) = query::snapshot_read_error(error);
+                conn.push_query_error(corr, code, &detail, now_ns, &mut self.hub);
+                return;
+            }
+        };
+        if query::validate_snapshot_data(&state.view.meta, &data, &state.args.request, now_ns)
+            .is_err()
+        {
+            self.release_view(QueryViewId::Snapshot(state.view.id));
+            conn.push_query_error(corr, Code::Internal, &Detail::Empty, now_ns, &mut self.hub);
+            return;
+        }
+        let provenance = data.provenance.clone();
+        let result = query::snapshot_result(&state.view.meta, provenance.as_deref(), now_ns);
+        let bounds = BlockBounds {
+            max_rows: conn.limits().max_rows,
+            max_block_bytes: conn.limits().max_block_bytes,
+        };
+        let block = match crate::tick::query_block(data.tick, bounds) {
+            Ok(block) => block,
+            Err(error) => {
+                self.release_view(QueryViewId::Snapshot(state.view.id));
+                let (code, detail) = error.refusal();
+                conn.push_query_error(corr, code, &detail, now_ns, &mut self.hub);
+                return;
+            }
+        };
+        if block.len() != frame_len {
+            self.release_view(QueryViewId::Snapshot(state.view.id));
+            conn.push_query_error(corr, Code::Internal, &Detail::Empty, now_ns, &mut self.hub);
+            return;
+        }
+        conn.push_query_rep(corr, &result, now_ns, &mut self.hub);
+        if conn.is_closed() {
+            self.release_view(QueryViewId::Snapshot(state.view.id));
+            return;
+        }
+        match conn.push_query_block(corr, block, now_ns, &mut self.hub) {
+            QueryOutcome::Queued => {
+                self.release_view(QueryViewId::Snapshot(state.view.id));
+                conn.push_query_end(
+                    corr,
+                    crate::encode::EndReason::Complete,
+                    None,
+                    now_ns,
+                    &mut self.hub,
+                );
+                conn.complete_query(corr, &mut self.hub);
+            }
+            QueryOutcome::Backpressure(_) => {
+                self.release_view(QueryViewId::Snapshot(state.view.id));
+                conn.push_query_end_error(
+                    corr,
+                    Code::Internal,
+                    &Detail::Empty,
+                    now_ns,
+                    &mut self.hub,
+                );
+                conn.complete_query(corr, &mut self.hub);
+            }
+        }
+    }
+
+    fn start_series(&mut self, conn: &mut Conn, corr: u32, args: SeriesArgs, now_ns: u64) {
+        if args.request.step_ms != 0 && !self.catalog.has_step(args.request.step_ms) {
+            conn.push_query_error(
+                corr,
+                Code::BadRequest,
+                &Detail::key("step_ms"),
+                now_ns,
+                &mut self.hub,
+            );
+            return;
+        }
+        let Some(arguments) = query::canonical_series_arguments(&args.request) else {
+            conn.push_query_error(corr, Code::Internal, &Detail::Empty, now_ns, &mut self.hub);
+            return;
+        };
+        let binding = self.cursor_binding(conn, "series_batch", arguments);
+        let (view, start, owns_active_ref) = if let Some(token) = args.cursor.as_deref() {
+            match self.cursors.lookup(token, &binding, now_ns) {
+                Ok(CursorTarget::Series { view, position }) => (view, position, false),
+                Ok(_) | Err(_) => {
+                    conn.push_query_error(
+                        corr,
+                        Code::CursorInvalid,
+                        &Detail::Empty,
+                        now_ns,
+                        &mut self.hub,
+                    );
+                    return;
+                }
+            }
+        } else {
+            let bounds = self.query_bounds(conn);
+            let view = match self.backend.series_open(&args.request, now_ns, bounds) {
+                Ok(view) => view,
+                Err(error) => {
+                    let (code, detail) = query::series_open_error(error, false);
+                    conn.push_query_error(corr, code, &detail, now_ns, &mut self.hub);
+                    return;
+                }
+            };
+            self.cursors.add_view(QueryViewId::Series(view.id));
+            let start = view.first.unwrap_or(SeriesPosition(0));
+            (std::sync::Arc::new(view), start, true)
+        };
+        if let Err(error) =
+            query::validate_series_view(&view, &args.request, &self.catalog, conn.limits().max_rows)
+        {
+            if owns_active_ref {
+                self.release_view(QueryViewId::Series(view.id));
+            }
+            let (code, detail) = query::series_open_error(error, args.cursor.is_some());
+            conn.push_query_error(corr, code, &detail, now_ns, &mut self.hub);
+            return;
+        }
+        let (dictionary, omitted, permitted) = match query::series_dictionary(&view, &args.request)
+        {
+            Ok(parts) => parts,
+            Err(_) => {
+                if owns_active_ref {
+                    self.release_view(QueryViewId::Series(view.id));
+                }
+                conn.push_query_error(corr, Code::Internal, &Detail::Empty, now_ns, &mut self.hub);
+                return;
+            }
+        };
+        let page = if view.first.is_none() {
+            query::PagePlan {
+                blocks: Vec::new(),
+                continuation: None,
+            }
+        } else {
+            match query::plan_series_page(
+                &self.backend,
+                &view,
+                &args.request,
+                &permitted,
+                dictionary.len(),
+                self.query_bounds(conn),
+                args.max_blocks,
+                start,
+            ) {
+                Ok(page) => page,
+                Err(error) => {
+                    if owns_active_ref {
+                        self.release_view(QueryViewId::Series(view.id));
+                    }
+                    if error == QuerySourceError::ViewInvalid {
+                        self.invalidate_view(QueryViewId::Series(view.id));
+                    }
+                    let (code, detail) = match error {
+                        QuerySourceError::Budget(Pool::Block) => {
+                            (Code::Budget, Detail::Pool(Pool::Block))
+                        }
+                        other => query::series_group_error(other, args.cursor.is_some()),
+                    };
+                    conn.push_query_error(corr, code, &detail, now_ns, &mut self.hub);
+                    return;
+                }
+            }
+        };
+        let (next_token, next_token_owned) = if let Some(position) = page.continuation {
+            match self.cursors.reserve(
+                &binding,
+                CursorTarget::Series {
+                    view: view.clone(),
+                    position,
+                },
+                Some((conn.id(), corr)),
+                now_ns,
+            ) {
+                Ok(reservation) => (Some(reservation.token), reservation.created),
+                Err(_) => {
+                    if owns_active_ref {
+                        self.release_view(QueryViewId::Series(view.id));
+                    }
+                    conn.push_query_error(
+                        corr,
+                        Code::Budget,
+                        &Detail::Pool(Pool::Cursors),
+                        now_ns,
+                        &mut self.hub,
+                    );
+                    return;
+                }
+            }
+        } else {
+            (None, false)
+        };
+        let result = query::series_result(&view, &omitted);
+        conn.push_query_rep(corr, &result, now_ns, &mut self.hub);
+        if conn.is_closed() {
+            if owns_active_ref {
+                self.release_view(QueryViewId::Series(view.id));
+            }
+            if next_token_owned {
+                let token = next_token
+                    .as_deref()
+                    .expect("a created reservation has a token");
+                if let Some(view) = self.cursors.abort_reservation(token) {
+                    self.backend.release_view(view);
+                }
+            }
+            return;
+        }
+        let state = PendingSeries {
+            args,
+            view,
+            permitted,
+            omitted,
+            dictionary,
+            page,
+            next_block: 0,
+            next_token,
+            next_token_owned,
+            rep_sent: true,
+            owns_active_ref,
+        };
+        self.step_series(conn, corr, state, now_ns);
+    }
+
+    fn step_series(&mut self, conn: &mut Conn, corr: u32, mut state: PendingSeries, now_ns: u64) {
+        if state.next_block >= state.page.blocks.len() {
+            self.finish_series_page(conn, corr, &mut state, now_ns);
+            return;
+        }
+        let plan = state.page.blocks[state.next_block];
+        let dictionary = (state.next_block == 0).then_some(state.dictionary.clone());
+        let exact = match query::series_plan_frame_len(
+            plan.buckets,
+            &state.permitted,
+            plan.agg,
+            dictionary.as_ref().map(Vec::len),
+        ) {
+            Some(exact) => exact,
+            None => {
+                self.fail_series(conn, corr, &mut state, QuerySourceError::Internal, now_ns);
+                return;
+            }
+        };
+        if !self.hub.query_room(conn.id(), exact) {
+            conn.put_query(corr, crate::conn::QueryPending::SeriesPage(Box::new(state)));
+            return;
+        }
+        let data = match self
+            .backend
+            .series_read(state.view.id, plan.start, plan.buckets)
+        {
+            Ok(data) => data,
+            Err(error) => {
+                self.fail_series(conn, corr, &mut state, error, now_ns);
+                return;
+            }
+        };
+        let identity = self.backend.identity();
+        let block = match query::series_block(
+            &identity,
+            &state.view,
+            &state.args.request,
+            &state.permitted,
+            dictionary,
+            plan,
+            data,
+        ) {
+            Ok(block) => block,
+            Err(error) => {
+                self.fail_series(conn, corr, &mut state, error, now_ns);
+                return;
+            }
+        };
+        if block.len() != exact {
+            self.fail_series(conn, corr, &mut state, QuerySourceError::Internal, now_ns);
+            return;
+        }
+        match conn.push_query_block(corr, block, now_ns, &mut self.hub) {
+            QueryOutcome::Queued => {
+                state.next_block += 1;
+                if state.next_block >= state.page.blocks.len() {
+                    self.finish_series_page(conn, corr, &mut state, now_ns);
+                } else {
+                    conn.put_query(corr, crate::conn::QueryPending::SeriesPage(Box::new(state)));
+                }
+            }
+            QueryOutcome::Backpressure(_) => {
+                conn.push_query_end_error(
+                    corr,
+                    Code::Internal,
+                    &Detail::Empty,
+                    now_ns,
+                    &mut self.hub,
+                );
+                self.abort_series_state(&mut state);
+                conn.complete_query(corr, &mut self.hub);
+            }
+        }
+    }
+
+    fn finish_series_page(
+        &mut self,
+        conn: &mut Conn,
+        corr: u32,
+        state: &mut PendingSeries,
+        now_ns: u64,
+    ) {
+        if state
+            .next_token
+            .as_deref()
+            .is_some_and(|token| !self.cursors.expose(token))
+        {
+            self.abort_series_state(state);
+            conn.push_query_end_error(
+                corr,
+                Code::CursorInvalid,
+                &Detail::Empty,
+                now_ns,
+                &mut self.hub,
+            );
+            conn.complete_query(corr, &mut self.hub);
+            return;
+        }
+        conn.push_query_end(
+            corr,
+            if state.page.continuation.is_some() {
+                crate::encode::EndReason::Page
+            } else {
+                crate::encode::EndReason::Complete
+            },
+            state.next_token.as_deref(),
+            now_ns,
+            &mut self.hub,
+        );
+        if conn.is_closed() && state.next_token_owned {
+            if let Some(token) = state.next_token.as_deref() {
+                if let Some(view) = self.cursors.abort_reservation(token) {
+                    self.backend.release_view(view);
+                }
+            }
+        }
+        if state.owns_active_ref {
+            self.release_view(state.view_id());
+            state.owns_active_ref = false;
+        }
+        conn.complete_query(corr, &mut self.hub);
+    }
+
+    fn fail_series(
+        &mut self,
+        conn: &mut Conn,
+        corr: u32,
+        state: &mut PendingSeries,
+        error: QuerySourceError,
+        now_ns: u64,
+    ) {
+        let (code, detail) = if state.rep_sent {
+            query::series_read_end_error(error)
+        } else {
+            query::series_open_error(error, state.args.cursor.is_some())
+        };
+        if error == QuerySourceError::ViewInvalid {
+            self.abort_series_state(state);
+            self.invalidate_view(state.view_id());
+        } else {
+            self.abort_series_state(state);
+        }
+        if state.rep_sent {
+            conn.push_query_end_error(corr, code, &detail, now_ns, &mut self.hub);
+        } else {
+            conn.push_query_error(corr, code, &detail, now_ns, &mut self.hub);
+        }
+        conn.complete_query(corr, &mut self.hub);
+    }
+
+    fn abort_series_state(&mut self, state: &mut PendingSeries) {
+        if state.owns_active_ref {
+            self.release_view(state.view_id());
+            state.owns_active_ref = false;
+        }
+        if state.next_token_owned {
+            let token = state.next_token.take();
+            let token = token.as_deref().unwrap_or_default();
+            if let Some(view) = self.cursors.abort_reservation(token) {
+                self.backend.release_view(view);
+            }
+        } else {
+            state.next_token = None;
+        }
+        state.next_token_owned = false;
+    }
+
+    fn serve_procs(&mut self, conn: &mut Conn, corr: u32, args: ProcsArgs, now_ns: u64) {
+        let Some(arguments) = query::canonical_procs_arguments(&args.request) else {
+            conn.push_query_error(corr, Code::Internal, &Detail::Empty, now_ns, &mut self.hub);
+            return;
+        };
+        let binding = self.cursor_binding(conn, "procs", arguments);
+        let (view, mut index, mut last, owns_active_ref) =
+            if let Some(token) = args.cursor.as_deref() {
+                match self.cursors.lookup(token, &binding, now_ns) {
+                    Ok(CursorTarget::Procs { view, index, last }) => (view, index, last, false),
+                    Ok(_) | Err(_) => {
+                        conn.push_query_error(
+                            corr,
+                            Code::CursorInvalid,
+                            &Detail::Empty,
+                            now_ns,
+                            &mut self.hub,
+                        );
+                        return;
+                    }
+                }
+            } else {
+                match self
+                    .backend
+                    .procs_open(&args.request, now_ns, conn.limits().max_rows)
+                {
+                    Ok(view) => {
+                        self.cursors.add_view(QueryViewId::Procs(view.id));
+                        (view, 0, None, true)
+                    }
+                    Err(error) => {
+                        let (code, detail) = query::procs_open_error(error);
+                        conn.push_query_error(corr, code, &detail, now_ns, &mut self.hub);
+                        return;
+                    }
+                }
+            };
+        if view.row_count > conn.limits().max_rows
+            || view.scanned > view.total
+            || view.published_mono_ns > now_ns
+        {
+            if owns_active_ref {
+                self.release_view(QueryViewId::Procs(view.id));
+            }
+            conn.push_query_error(corr, Code::Internal, &Detail::Empty, now_ns, &mut self.hub);
+            return;
+        }
+        let mut rows = Vec::new();
+        let mut terminal = index >= view.row_count;
+        while index < view.row_count
+            && rows.len() < usize::try_from(args.limit).unwrap_or(usize::MAX)
+        {
+            let row = match self
+                .backend
+                .procs_read(view.id, index, &args.request.fields)
+            {
+                Ok(Some(row)) => row,
+                Ok(None) => {
+                    if owns_active_ref {
+                        self.release_view(QueryViewId::Procs(view.id));
+                    }
+                    conn.push_query_error(
+                        corr,
+                        Code::Internal,
+                        &Detail::Empty,
+                        now_ns,
+                        &mut self.hub,
+                    );
+                    return;
+                }
+                Err(error) => {
+                    let (code, detail) = query::procs_read_error(error, args.cursor.is_some());
+                    if error == QuerySourceError::ViewInvalid {
+                        if owns_active_ref {
+                            self.release_view(QueryViewId::Procs(view.id));
+                        }
+                        self.invalidate_view(QueryViewId::Procs(view.id));
+                    } else if owns_active_ref {
+                        self.release_view(QueryViewId::Procs(view.id));
+                    }
+                    conn.push_query_error(corr, code, &detail, now_ns, &mut self.hub);
+                    return;
+                }
+            };
+            if !query::validate_proc_row(&row, &args.request.fields, last) {
+                if owns_active_ref {
+                    self.release_view(QueryViewId::Procs(view.id));
+                }
+                conn.push_query_error(corr, Code::Internal, &Detail::Empty, now_ns, &mut self.hub);
+                return;
+            }
+            last = Some((row.pid, row.start_ticks));
+            rows.push(row);
+            index = index.saturating_add(1);
+            terminal = index >= view.row_count;
+            let probe_next = (!terminal).then_some("c0000000000000000");
+            let candidate = query::procs_result(
+                &rows,
+                &args.request.fields,
+                scan_age_ms(view.published_mono_ns, now_ns),
+                &view,
+                probe_next,
+            );
+            if !reply_fits(conn, corr, &candidate) {
+                if rows.len() == 1 {
+                    if owns_active_ref {
+                        self.release_view(QueryViewId::Procs(view.id));
+                    }
+                    conn.push_query_error(
+                        corr,
+                        Code::Internal,
+                        &Detail::Empty,
+                        now_ns,
+                        &mut self.hub,
+                    );
+                    return;
+                }
+                rows.pop();
+                index = index.saturating_sub(1);
+                last = rows.last().map(|row| (row.pid, row.start_ticks));
+                terminal = index >= view.row_count;
+                break;
+            }
+        }
+        let (next_token, next_token_owned) = if !terminal {
+            match self.cursors.reserve(
+                &binding,
+                CursorTarget::Procs {
+                    view: view.clone(),
+                    index,
+                    last,
+                },
+                Some((conn.id(), corr)),
+                now_ns,
+            ) {
+                Ok(reservation) => (Some(reservation.token), reservation.created),
+                Err(_) => {
+                    if owns_active_ref {
+                        self.release_view(QueryViewId::Procs(view.id));
+                    }
+                    conn.push_query_error(
+                        corr,
+                        Code::Budget,
+                        &Detail::Pool(Pool::Cursors),
+                        now_ns,
+                        &mut self.hub,
+                    );
+                    return;
+                }
+            }
+        } else {
+            (None, false)
+        };
+        let result = query::procs_result(
+            &rows,
+            &args.request.fields,
+            scan_age_ms(view.published_mono_ns, now_ns),
+            &view,
+            next_token.as_deref(),
+        );
+        if !reply_fits(conn, corr, &result) {
+            if next_token_owned {
+                let token = next_token
+                    .as_deref()
+                    .expect("a created reservation has a token");
+                if let Some(view) = self.cursors.abort_reservation(token) {
+                    self.backend.release_view(view);
+                }
+            }
+            if owns_active_ref {
+                self.release_view(QueryViewId::Procs(view.id));
+            }
+            conn.push_query_error(corr, Code::Internal, &Detail::Empty, now_ns, &mut self.hub);
+            return;
+        }
+        conn.push_query_rep(corr, &result, now_ns, &mut self.hub);
+        if let Some(token) = next_token.as_deref() {
+            if conn.is_closed() {
+                if next_token_owned {
+                    if let Some(view) = self.cursors.abort_reservation(token) {
+                        self.backend.release_view(view);
+                    }
+                }
+            } else {
+                self.cursors.expose(token);
+            }
+        }
+        if owns_active_ref {
+            self.release_view(QueryViewId::Procs(view.id));
+        }
+        conn.complete_query(corr, &mut self.hub);
     }
 
     /// Finish every closed connection that holds no final bytes; the ids, ascending.
@@ -613,21 +1463,32 @@ impl<B: Backend> Server<B> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
-    use hostobs_proto::dict::Entry;
+    use hostobs_proto::dict::{
+        Aggregation, Entry, MetricFacts, MetricKind, MetricScope, MetricSource, MetricUnit,
+        MetricValueType,
+    };
     use hostobs_proto::envelope::{check_end, check_rep};
     use hostobs_proto::frame::{decode_block_with, Block, FrameType};
     use hostobs_proto::hub::{Close, ConnId, LiveOutcome, Pools, QueryOutcome, TickForms};
     use hostobs_proto::stream_dicts::StreamDicts;
+    use serde_json::Value;
 
     use super::{Accept, Server, ServerLimits, SERVED};
-    use crate::backend::{BackendError, FixedBackend, TickData, TickInfo, TierInfo};
-    use crate::codes::Code;
+    use crate::backend::{Backend, BackendError, FixedBackend, TickData, TickInfo, TierInfo};
+    use crate::codes::{Code, Pool};
     use crate::conn::{Peer, State, SERVER_MINOR};
     use crate::encode::{control_frame, server_prefix};
     use crate::limits::{Level, Limits};
+    use crate::query::{
+        CursorBinding, CursorTarget, HistoryBlockData, HistoryBucket, HistoryColumn, ProcField,
+        ProcProjectionId, ProcRow, ProcScanId, ProcScanView, ProcsRequest, QueryBackend,
+        QueryColumnMeta, QuerySourceError, QueryViewId, SeriesGroup, SeriesPosition, SeriesRequest,
+        SeriesView, SeriesViewId, SnapshotData, SnapshotMeta, SnapshotRequest, SnapshotSubjectMeta,
+        SnapshotView, SnapshotViewId, Tier, TierChoice, CURSOR_LIFETIME_NS, MAX_CURSOR_ENTRIES,
+    };
     use crate::registry::{Delivery, SelectionCaps, SubKey};
     use crate::selection::{Sel, Selection};
     use crate::tick::BlockBounds;
@@ -716,6 +1577,14 @@ mod tests {
         let decoded = decode_block_with(frame, dicts.held(corr)).expect("stream block");
         dicts.accept(corr, &decoded).expect("dictionary transition");
         decoded
+    }
+
+    fn end_next(frame: &[u8]) -> Option<String> {
+        let body = frame_payload(frame);
+        let end = check_end(body).expect("END");
+        end.next.map(|range| {
+            String::from_utf8(body.get(range).expect("next range").to_vec()).expect("next UTF-8")
+        })
     }
 
     fn stamped_fields(frame: &[u8]) -> (u32, u32) {
@@ -824,7 +1693,12 @@ mod tests {
         }
 
         fn try_open(&mut self, level: Level, uid: u32) -> Accept {
-            let peer = Peer { uid, pid: 7 };
+            let cgroup_inc = (level == Level::Observer).then_some(7);
+            let peer = Peer {
+                uid,
+                pid: 7,
+                cgroup_inc,
+            };
             let accept = self.server.accept(level, Some(peer), self.now);
             if let Accept::Accepted(id) = accept {
                 self.opened.push(id);
@@ -1126,7 +2000,11 @@ mod tests {
     #[test]
     fn accept_row_control_level_and_missing_peer_are_refused_uncounted() {
         let mut d = Driver::new();
-        let peer = Peer { uid: 1, pid: 7 };
+        let peer = Peer {
+            uid: 1,
+            pid: 7,
+            cgroup_inc: None,
+        };
         let control = d.server.accept(Level::Control, Some(peer), 0);
         assert_eq!(control, Accept::Refused);
         assert_eq!(d.server.accept(Level::Observe, None, 0), Accept::Refused);
@@ -1140,7 +2018,14 @@ mod tests {
         let mut d = Driver::new();
         let id = d.open(Level::Observer, 42);
         let conn = d.server.conn(id).expect("conn");
-        assert_eq!(conn.peer(), Peer { uid: 42, pid: 7 });
+        assert_eq!(
+            conn.peer(),
+            Peer {
+                uid: 42,
+                pid: 7,
+                cgroup_inc: Some(7),
+            }
+        );
         assert_eq!(conn.state(), State::Undecided);
         assert_eq!(d.server.uid_count(Level::Observer, 42), 1);
         d.tick(5_001 * MS);
@@ -1804,14 +2689,26 @@ mod tests {
         backend.current.insert(selection.clone(), Ok(data));
         let mut server = Server::new(limits, backend);
         let uid = 42;
-        let Accept::Accepted(observe) =
-            server.accept(Level::Observe, Some(Peer { uid, pid: 7 }), 0)
-        else {
+        let Accept::Accepted(observe) = server.accept(
+            Level::Observe,
+            Some(Peer {
+                uid,
+                pid: 7,
+                cgroup_inc: None,
+            }),
+            0,
+        ) else {
             panic!("observe accepted");
         };
-        let Accept::Accepted(operator) =
-            server.accept(Level::Operator, Some(Peer { uid, pid: 8 }), 0)
-        else {
+        let Accept::Accepted(operator) = server.accept(
+            Level::Operator,
+            Some(Peer {
+                uid,
+                pid: 8,
+                cgroup_inc: None,
+            }),
+            0,
+        ) else {
             panic!("operator accepted");
         };
 
@@ -2135,6 +3032,36 @@ mod tests {
         assert_eq!(d.server.uid_count(Level::Operator, 2), 1);
     }
 
+    #[test]
+    fn observer_accept_requires_the_captured_cgroup_issuer() {
+        let mut d = Driver::new();
+        assert_eq!(
+            d.server.accept(
+                Level::Observer,
+                Some(Peer {
+                    uid: 7,
+                    pid: 8,
+                    cgroup_inc: None,
+                }),
+                0,
+            ),
+            Accept::Refused
+        );
+        let accepted = d.server.accept(
+            Level::Observer,
+            Some(Peer {
+                uid: 7,
+                pid: 8,
+                cgroup_inc: Some(42),
+            }),
+            0,
+        );
+        let Accept::Accepted(id) = accepted else {
+            panic!("observer with an issuer was refused");
+        };
+        d.server.finish(id);
+    }
+
     // ---- P5b-2d: served verbs, tick delivery and retries ----
 
     #[test]
@@ -2148,7 +3075,8 @@ mod tests {
             d.pump(id, usize::MAX);
             let out = text(&d.take_out(id));
             let expected = if level.serves_blocks() {
-                "\"verbs\":[\"hello\",\"status\",\"current\",\"subscribe\",\"unsubscribe\"]"
+                "\"verbs\":[\"hello\",\"status\",\"current\",\"subscribe\",\"unsubscribe\",\
+                 \"snapshot_at\",\"series_batch\",\"procs\"]"
             } else {
                 "\"verbs\":[\"hello\"]"
             };
@@ -2555,15 +3483,15 @@ mod tests {
     }
 
     #[test]
-    fn server_retry_pass_runs_in_connection_id_order() {
+    fn server_retry_pass_rotates_peer_uids_before_revisiting_a_busy_uid() {
         let data = live_data(5, "one");
         let selected = selection(1);
         let need = stream_block_len(&ServerLimits::new(), &data);
         let mut d = Driver::with(query_bound_limits(need.saturating_mul(2)));
         let first = d.open(Level::Observe, 1);
-        let second = d.open(Level::Observe, 1);
+        let second = d.open(Level::Observe, 2);
         let blocker_a = d.open(Level::Observe, 1);
-        let blocker_b = d.open(Level::Observe, 1);
+        let blocker_b = d.open(Level::Observe, 2);
         for id in [first, second, blocker_a, blocker_b] {
             d.ready(id);
         }
@@ -2583,24 +3511,129 @@ mod tests {
 
         d.server.finish(blocker_a);
         d.tick(MS);
-        assert_eq!(d.server.conn(first).map(|conn| conn.outstanding()), Some(0));
-        assert_eq!(
-            d.server.conn(second).map(|conn| conn.outstanding()),
-            Some(1)
-        );
-        assert_eq!(d.server.hub().queued(first).query, need);
-        assert_eq!(d.server.hub().queued(second).query, 0);
-
-        d.server.finish(blocker_b);
-        d.tick(MS);
+        assert_eq!(d.server.conn(first).map(|conn| conn.outstanding()), Some(1));
         assert_eq!(
             d.server.conn(second).map(|conn| conn.outstanding()),
             Some(0)
         );
+        assert_eq!(d.server.hub().queued(first).query, 0);
         assert_eq!(d.server.hub().queued(second).query, need);
+
+        d.server.finish(blocker_b);
+        d.tick(MS);
+        assert_eq!(d.server.conn(first).map(|conn| conn.outstanding()), Some(0));
+        assert_eq!(
+            d.server.conn(second).map(|conn| conn.outstanding()),
+            Some(0)
+        );
+        assert_eq!(d.server.hub().queued(first).query, need);
         d.server.finish(first);
         d.server.finish(second);
-        assert_clean(&d, "retry id order");
+        assert_clean(&d, "uid rotation");
+    }
+
+    #[test]
+    fn query_pass_rotates_uids_mixes_current_and_series_and_rechecks_latest_tick() {
+        let cap = 700usize;
+        let mut d = Driver::with(query_bound_limits(cap));
+        let selected = selection(1);
+        put_current(&mut d, &selected, live_data(5, "v1"));
+        d.server.backend_mut().status.tiers.push(TierInfo {
+            name: "hot".to_string(),
+            step_ms: 1_000,
+            keep_s: 3_600,
+            bytes: 0,
+            cap_bytes: 0,
+        });
+        install_series(&mut d);
+
+        let a_current = d.open(Level::Observe, 1);
+        let a_series = d.open(Level::Observe, 1);
+        let a_blocker = d.open(Level::Observe, 1);
+        let b_current = d.open(Level::Observe, 2);
+        let b_series = d.open(Level::Observe, 2);
+        for id in [a_current, a_series, a_blocker, b_current, b_series] {
+            d.ready(id);
+        }
+        fill_query(&mut d, a_blocker, cap);
+
+        d.send(a_current, &request(2, "current", CURRENT_ARGS));
+        d.send(a_series, &request(3, "series_batch", &series_args(None, 2)));
+        d.send(b_current, &request(2, "current", CURRENT_ARGS));
+        d.send(b_series, &request(3, "series_batch", &series_args(None, 2)));
+        assert_eq!(
+            d.server.conn(a_current).map(|conn| conn.outstanding()),
+            Some(1)
+        );
+        assert_eq!(
+            d.server.conn(a_series).map(|conn| conn.outstanding()),
+            Some(1)
+        );
+        assert_eq!(d.server.hub().queued(a_current).query, 0);
+        assert_eq!(d.server.hub().queued(a_series).query, 0);
+        assert!(d.server.hub().queued(b_current).query > 0);
+        assert!(d.server.hub().queued(b_series).query > 0);
+
+        put_current(&mut d, &selected, live_data(6, "v2"));
+        d.eof(a_current);
+        d.eof(a_series);
+        assert_eq!(d.state(a_current), Some(State::Draining));
+        assert_eq!(d.state(a_series), Some(State::Draining));
+        assert!(!d.server.is_closed(a_current) && !d.server.is_closed(a_series));
+
+        d.server.finish(a_blocker);
+        d.tick(MS);
+        assert_eq!(
+            d.server.conn(a_current).map(|conn| conn.outstanding()),
+            Some(0)
+        );
+        assert_eq!(
+            d.server.conn(a_series).map(|conn| conn.outstanding()),
+            Some(0)
+        );
+
+        d.pump(a_current, usize::MAX);
+        let current_raw = raw_frames(&d.take_out(a_current));
+        assert_eq!(
+            (current_raw[0].0, current_raw[1].0),
+            (FrameType::Block.code(), FrameType::End.code())
+        );
+        let mut dicts = StreamDicts::new();
+        let current = accept_block(&mut dicts, 2, &current_raw[0].2);
+        assert_eq!(current.header.seq, 6);
+        assert!(matches!(
+            &current.dictionary.as_ref().expect("dictionary").entries()[0],
+            Entry::Entity { label, .. } if label == "v2"
+        ));
+        assert_end_ok(&current_raw[1].2, 1, 0, "complete");
+
+        d.pump(a_series, usize::MAX);
+        let series_raw = raw_frames(&d.take_out(a_series));
+        assert_eq!(series_raw[0].0, FrameType::Rep.code());
+        assert_eq!(
+            series_raw.last().map(|frame| frame.0),
+            Some(FrameType::End.code())
+        );
+        d.close_out(a_current);
+        d.close_out(a_series);
+
+        d.pump(b_current, usize::MAX);
+        let current_raw = raw_frames(&d.take_out(b_current));
+        assert_eq!(
+            (current_raw[0].0, current_raw[1].0),
+            (FrameType::Block.code(), FrameType::End.code())
+        );
+        d.pump(b_series, usize::MAX);
+        let series_raw = raw_frames(&d.take_out(b_series));
+        assert_eq!(series_raw[0].0, FrameType::Rep.code());
+        assert_eq!(
+            series_raw.last().map(|frame| frame.0),
+            Some(FrameType::End.code())
+        );
+        clear_cursor_slots(&mut d);
+        d.server.finish(b_current);
+        d.server.finish(b_series);
+        assert_clean(&d, "mixed fair query pass");
     }
 
     #[test]
@@ -2894,7 +3927,11 @@ mod tests {
                     let pick = usize::try_from(xorshift(&mut seed) % 4).unwrap_or(0);
                     let level = Level::ALL[pick];
                     let uid = 1 + u32::try_from(xorshift(&mut seed) % 3).unwrap_or(0);
-                    let mut peer = Some(Peer { uid, pid: 7 });
+                    let mut peer = Some(Peer {
+                        uid,
+                        pid: 7,
+                        cgroup_inc: (level == Level::Observer).then_some(7),
+                    });
                     if xorshift(&mut seed).is_multiple_of(8) {
                         peer = None;
                     }
@@ -2948,5 +3985,1590 @@ mod tests {
         }
         d.settle_all();
         assert_clean(&d, "after the run");
+    }
+
+    fn query_limits() -> ServerLimits {
+        let mut limits = ServerLimits::new();
+        for level in [&mut limits.observe, &mut limits.operator] {
+            level.query_queue_bytes = 1_000;
+            level.client_queue_bytes = 1_000;
+            level.max_block_bytes = 328;
+            level.max_page_blocks = 64;
+        }
+        limits
+    }
+
+    fn query_metric(name: &str, kind: MetricKind) -> QueryColumnMeta {
+        QueryColumnMeta {
+            metric: name.to_string(),
+            facts: MetricFacts {
+                unit: MetricUnit::None,
+                kind,
+                scope: MetricScope::Cgroup,
+                source: MetricSource::CgroupFs,
+            },
+            value_type: MetricValueType::U64,
+        }
+    }
+
+    fn series_request() -> SeriesRequest {
+        SeriesRequest {
+            selection: Selection::new(
+                vec![Sel::Inc(7), Sel::Inc(9)],
+                vec!["m_a".to_string(), "m_b".to_string(), "m_never".to_string()],
+            )
+            .expect("selection"),
+            from_real_ns: 0,
+            to_real_ns: 4_000_000_000,
+            step_ms: 1_000,
+            aggs: vec![Aggregation::Last, Aggregation::Mean],
+        }
+    }
+
+    fn series_view() -> SeriesView {
+        SeriesView {
+            id: SeriesViewId(11),
+            tier: crate::query::Tier::Hot,
+            step_ms: 1_000,
+            subjects: vec![7, 9],
+            columns: vec![
+                query_metric("m_a", MetricKind::Gauge),
+                query_metric("m_b", MetricKind::State),
+                query_metric("m_never", MetricKind::Counter),
+            ],
+            first: Some(SeriesPosition(0)),
+        }
+    }
+
+    fn series_groups() -> Vec<SeriesGroup> {
+        vec![
+            SeriesGroup {
+                subject_inc: 7,
+                agg: Aggregation::Last,
+                first: SeriesPosition(0),
+                bucket_count: 3,
+            },
+            SeriesGroup {
+                subject_inc: 7,
+                agg: Aggregation::Mean,
+                first: SeriesPosition(3),
+                bucket_count: 1,
+            },
+            SeriesGroup {
+                subject_inc: 9,
+                agg: Aggregation::Last,
+                first: SeriesPosition(4),
+                bucket_count: 1,
+            },
+            SeriesGroup {
+                subject_inc: 9,
+                agg: Aggregation::Mean,
+                first: SeriesPosition(5),
+                bucket_count: 1,
+            },
+        ]
+    }
+
+    fn history_column(meta: &QueryColumnMeta, values: Vec<u64>) -> HistoryColumn {
+        HistoryColumn {
+            metric: meta.metric.clone(),
+            facts: meta.facts,
+            value_type: meta.value_type,
+            quality: vec![0; values.len()],
+            values,
+        }
+    }
+
+    fn history_data(
+        view: &SeriesView,
+        subject_inc: u64,
+        agg: Aggregation,
+        times: &[i64],
+    ) -> HistoryBlockData {
+        let permitted: Vec<&QueryColumnMeta> = view
+            .columns
+            .iter()
+            .filter(|column| column.facts.aggregation_mask() & agg.bit() != 0)
+            .collect();
+        let columns = permitted
+            .into_iter()
+            .enumerate()
+            .map(|(index, meta)| {
+                history_column(
+                    meta,
+                    (0..times.len())
+                        .map(|row| u64::try_from(row + index).expect("small"))
+                        .collect(),
+                )
+            })
+            .collect();
+        HistoryBlockData {
+            subject_inc,
+            agg,
+            buckets: times
+                .iter()
+                .map(|time| HistoryBucket {
+                    bucket_real_ns: *time,
+                    covered_ms: 1_000,
+                    samples: 1,
+                })
+                .collect(),
+            columns,
+        }
+    }
+
+    fn install_series(driver: &mut Driver) {
+        let source_request = series_request();
+        let view = series_view();
+        let backend = driver.server.backend_mut();
+        backend.series_open.insert(source_request, Ok(view.clone()));
+        for at in 0..=5u64 {
+            let group = series_groups()
+                .into_iter()
+                .find(|group| group.first.0 <= at && at < group.first.0 + group.bucket_count)
+                .expect("group");
+            backend
+                .series_group
+                .insert((view.id, SeriesPosition(at)), Ok(Some(group)));
+        }
+        backend
+            .series_group
+            .insert((view.id, SeriesPosition(6)), Ok(None));
+        backend.series_read.insert(
+            (view.id, SeriesPosition(0), 1),
+            Ok(history_data(&view, 7, Aggregation::Last, &[0])),
+        );
+        backend.series_read.insert(
+            (view.id, SeriesPosition(1), 2),
+            Ok(history_data(
+                &view,
+                7,
+                Aggregation::Last,
+                &[2_000_000_000, 3_000_000_000],
+            )),
+        );
+        backend.series_read.insert(
+            (view.id, SeriesPosition(3), 1),
+            Ok(history_data(&view, 7, Aggregation::Mean, &[0])),
+        );
+        backend.series_read.insert(
+            (view.id, SeriesPosition(4), 1),
+            Ok(history_data(&view, 9, Aggregation::Last, &[1_000_000_000])),
+        );
+        backend.series_read.insert(
+            (view.id, SeriesPosition(5), 1),
+            Ok(history_data(&view, 9, Aggregation::Mean, &[1_000_000_000])),
+        );
+    }
+
+    fn series_args(cursor: Option<&str>, max_blocks: u32) -> String {
+        let cursor = match cursor {
+            Some(cursor) => format!("\"{cursor}\""),
+            None => "null".to_string(),
+        };
+        format!(
+            "{{\"selection\":{{\"entities\":[{{\"inc\":7}},{{\"inc\":9}}],\
+             \"metrics\":[\"m_a\",\"m_b\",\"m_never\"]}},\
+             \"from_real_ns\":0,\"to_real_ns\":4000000000,\"step_ms\":1000,\
+             \"aggs\":[\"last\",\"mean\"],\"cursor\":{cursor},\"max_blocks\":{max_blocks}}}"
+        )
+    }
+
+    fn fill_cursor_slots(d: &mut Driver, used: usize) {
+        let identity = d.server.backend().identity();
+        for index in 0..MAX_CURSOR_ENTRIES.saturating_sub(used) {
+            let view = Arc::new(SeriesView {
+                id: SeriesViewId(10_000 + u64::try_from(index).expect("index")),
+                ..series_view()
+            });
+            let binding = CursorBinding {
+                boot_id: identity.boot_id.clone(),
+                epoch: identity.epoch,
+                level: Level::Observe,
+                uid: 1,
+                verb: "series_batch",
+                arguments: vec![u8::try_from(index % 251).expect("small")],
+            };
+            d.server
+                .cursors
+                .reserve(
+                    &binding,
+                    CursorTarget::Series {
+                        view,
+                        position: SeriesPosition(u64::try_from(index).expect("index")),
+                    },
+                    None,
+                    d.now,
+                )
+                .expect("filler cursor slot");
+        }
+        assert_eq!(d.server.cursor_count(), MAX_CURSOR_ENTRIES);
+    }
+
+    fn clear_cursor_slots(d: &mut Driver) {
+        let released = d.server.cursors.expire(CURSOR_LIFETIME_NS);
+        for view in released {
+            d.server.backend.release_view(view);
+        }
+        assert_eq!(d.server.cursor_count(), 0);
+    }
+
+    #[test]
+    fn server_series_uses_the_frozen_largest_prefix_and_replays_a_pinned_view() {
+        let mut backend = FixedBackend::new();
+        backend.status.tiers.push(TierInfo {
+            name: "hot".to_string(),
+            step_ms: 1_000,
+            keep_s: 3_600,
+            bytes: 0,
+            cap_bytes: 0,
+        });
+        let mut d = Driver {
+            server: Server::new(query_limits(), backend),
+            now: 0,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        install_series(&mut d);
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        d.send(id, &request(3, "series_batch", &series_args(None, 2)));
+        d.pump(id, usize::MAX);
+        let out = d.take_out(id);
+        let raw = raw_frames(&out);
+        assert_eq!(raw.len(), 4);
+        assert_eq!(raw[0].0, FrameType::Rep.code());
+        assert_eq!(raw[1].0, FrameType::Block.code());
+        assert_eq!(raw[2].0, FrameType::Block.code());
+        assert_eq!(raw[3].0, FrameType::End.code());
+        assert_eq!((raw[1].2.len(), raw[2].2.len()), (328, 280));
+        let token = end_next(&raw[3].2).expect("page continuation");
+
+        let mut dicts = StreamDicts::new();
+        let first = accept_block(&mut dicts, 3, &raw[1].2);
+        let second = decode_block_with(&raw[2].2, dicts.held(3)).expect("bare continuation");
+        dicts.accept(3, &second).expect("bare accepts");
+        assert_eq!(first.subject, Some(0));
+        assert_eq!(first.header.n_rows, 1);
+        assert_eq!(first.time[0].real_ns, 0);
+        assert_eq!(second.subject, Some(0));
+        assert_eq!(second.header.n_rows, 2);
+        assert_eq!(second.time[0].real_ns, 2_000_000_000);
+        assert_eq!(first.columns.len(), 3);
+        assert_eq!(second.columns.len(), 3);
+
+        let view = crate::query::QueryViewId::Series(SeriesViewId(11));
+        assert_eq!(d.server.view_references(view), 1);
+        d.eof(id);
+        d.close_out(id);
+        assert_eq!(d.server.view_references(view), 1);
+
+        let replay = d.open(Level::Observe, 1);
+        d.ready(replay);
+        d.send(
+            replay,
+            &request(4, "series_batch", &series_args(Some(&token), 1)),
+        );
+        d.pump(replay, usize::MAX);
+        let out = d.take_out(replay);
+        let raw = raw_frames(&out);
+        assert_eq!(raw.len(), 3);
+        assert_eq!((raw[1].2.len(), end_next(&raw[2].2).is_some()), (264, true));
+        let first = accept_block(&mut dicts, 4, &raw[1].2);
+        assert_eq!(first.subject, Some(0));
+        assert_eq!(first.time[0].real_ns, 0);
+        assert_eq!(first.columns.len(), 1);
+
+        let replay_two = d.open(Level::Observe, 2);
+        d.ready(replay_two);
+        d.send(
+            replay_two,
+            &request(5, "series_batch", &series_args(Some(&token), 2)),
+        );
+        d.pump(replay_two, usize::MAX);
+        let out = d.take_out(replay_two);
+        let raw = raw_frames(&out);
+        assert_eq!(raw.len(), 4);
+        assert_eq!((raw[1].2.len(), raw[2].2.len()), (264, 240));
+        assert_eq!(end_next(&raw[3].2), Some("c0000000000000003".to_string()));
+    }
+
+    #[test]
+    fn series_terminal_page_succeeds_at_cursor_capacity_while_continuation_refuses() {
+        let mut backend = FixedBackend::new();
+        backend.status.tiers.push(TierInfo {
+            name: "hot".to_string(),
+            step_ms: 1_000,
+            keep_s: 3_600,
+            bytes: 0,
+            cap_bytes: 0,
+        });
+        let mut d = Driver {
+            server: Server::new(query_limits(), backend),
+            now: 0,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        install_series(&mut d);
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        d.send(id, &request(3, "series_batch", &series_args(None, 1)));
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        let token = end_next(&raw[2].2).expect("first page token");
+        assert_eq!(d.server.cursor_count(), 1);
+        fill_cursor_slots(&mut d, 1);
+
+        d.send(
+            id,
+            &request(4, "series_batch", &series_args(Some(&token), 64)),
+        );
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        assert_eq!(raw[0].0, FrameType::Rep.code());
+        assert_eq!(raw.last().map(|frame| frame.0), Some(FrameType::End.code()));
+        assert_end_ok(
+            &raw.last().expect("end").2,
+            u32::try_from(raw.len() - 2).expect("blocks"),
+            0,
+            "complete",
+        );
+
+        d.send(
+            id,
+            &request(5, "series_batch", &series_args(Some(&token), 1)),
+        );
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        assert_eq!(raw.len(), 1);
+        assert!(text(&raw[0].2)
+            .contains("\"code\":\"budget\",\"message\":\"a budget is exhausted\",\"detail\":{\"pool\":\"cursors\"}"));
+
+        clear_cursor_slots(&mut d);
+        d.server.finish(id);
+        assert_clean(&d, "full cursor table");
+    }
+
+    fn snapshot_request() -> SnapshotRequest {
+        SnapshotRequest {
+            selection: Selection::new(vec![Sel::Inc(7)], vec!["cpu".to_string()])
+                .expect("selection"),
+            real_ns: -1,
+            tier: TierChoice::Explicit(crate::query::Tier::Hot),
+            provenance: false,
+        }
+    }
+
+    fn snapshot_args(provenance: bool) -> String {
+        format!(
+            "{{\"selection\":{{\"entities\":[{{\"inc\":7}}],\"metrics\":[\"cpu\"]}},\
+             \"real_ns\":-1,\"tier\":\"hot\",\"provenance\":{provenance}}}"
+        )
+    }
+
+    fn snapshot_meta() -> SnapshotMeta {
+        SnapshotMeta {
+            tier: crate::query::Tier::Hot,
+            bucket_real_ns: -1_000_000_000,
+            step_ms: 1_000,
+            covered_ms: 1_000,
+            subjects: vec![SnapshotSubjectMeta {
+                inc: 7,
+                label_len: 2,
+            }],
+            columns: vec![query_metric("cpu", MetricKind::Gauge)],
+        }
+    }
+
+    fn snapshot_candidate(meta: &SnapshotMeta) -> SnapshotData {
+        let mut data = TickData::example(1, &[7], &["cpu"]);
+        data.header.real_ns = meta.bucket_real_ns;
+        data.entries[0] = Entry::Entity {
+            inc: 7,
+            label: "é".to_string(),
+        };
+        data.entries[1] = Entry::Metric {
+            facts: meta.columns[0].facts,
+            name: "cpu".to_string(),
+        };
+        data.columns[0].metric = 1;
+        data.columns[0].kind = MetricKind::Gauge;
+        data.columns[0].value_type = MetricValueType::U64;
+        data.columns[0].values = vec![41];
+        SnapshotData {
+            tick: data,
+            provenance: None,
+        }
+    }
+
+    #[test]
+    fn server_snapshot_waits_for_exact_room_and_pins_multibyte_source_labels() {
+        let mut backend = FixedBackend::new();
+        backend.status.tiers.push(TierInfo {
+            name: "hot".to_string(),
+            step_ms: 1_000,
+            keep_s: 3_600,
+            bytes: 0,
+            cap_bytes: 0,
+        });
+        let source_request = snapshot_request();
+        let meta = snapshot_meta();
+        let view = SnapshotView {
+            id: SnapshotViewId(21),
+            meta: meta.clone(),
+        };
+        backend
+            .snapshot_open
+            .insert(source_request.clone(), Ok(view.clone()));
+        backend
+            .snapshot_read
+            .insert(view.id, Ok(snapshot_candidate(&meta)));
+        let mut d = Driver {
+            server: Server::new(query_limits(), backend),
+            now: 0,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        assert_eq!(d.push_query(id, 1, 800), QueryOutcome::Queued);
+        d.send(id, &request(3, "snapshot_at", &snapshot_args(false)));
+        assert!(d.take_out(id).is_empty());
+        assert_eq!(d.server.conn(id).map(|conn| conn.outstanding()), Some(1));
+        let released = d.server.backend().released.borrow().len();
+        assert_eq!(released, 0);
+        let mut newer = snapshot_candidate(&meta);
+        newer.tick.entries[0] = Entry::Entity {
+            inc: 7,
+            label: "à".to_string(),
+        };
+        d.server
+            .backend_mut()
+            .current
+            .insert(source_request.selection.clone(), Ok(newer.tick));
+
+        // Drain exactly the blocker; this frees query room and starts the admitted read.
+        assert_eq!(d.pump(id, 800), 800);
+        d.take_out(id);
+        d.pump(id, usize::MAX);
+        let out = d.take_out(id);
+        let raw = raw_frames(&out);
+        assert_eq!(raw.len(), 3);
+        assert_eq!(
+            (raw[0].0, raw[1].0, raw[2].0),
+            (
+                FrameType::Rep.code(),
+                FrameType::Block.code(),
+                FrameType::End.code(),
+            )
+        );
+        assert!(text(&raw[0].2).contains(
+            "\"resolved\":{\"tier\":\"hot\",\"bucket_real_ns\":-1000000000,\"step_ms\":1000,\"covered_ms\":1000},\"provenance\":null"
+        ));
+        assert_eq!(
+            Some(raw[1].2.len()),
+            crate::query::snapshot_frame_len(&meta)
+        );
+        let mut dicts = StreamDicts::new();
+        let block = accept_block(&mut dicts, 3, &raw[1].2);
+        assert_eq!(block.header.real_ns, -1_000_000_000);
+        assert_eq!(block.rows.len(), 1);
+        let dictionary = block.dictionary.as_ref().expect("snapshot dictionary");
+        assert_eq!(dictionary.entries().len(), 2);
+        assert!(matches!(
+            &dictionary.entries()[0],
+            Entry::Entity {
+                inc: 7,
+                label
+            } if label == "é"
+        ));
+        assert_eq!(block.columns[0].values, vec![41]);
+        assert_end_ok(&raw[2].2, 1, 0, "complete");
+        assert_eq!(
+            d.server
+                .view_references(QueryViewId::Snapshot(SnapshotViewId(21))),
+            0
+        );
+        assert_eq!(
+            d.server.backend().released.borrow().as_slice(),
+            &[QueryViewId::Snapshot(SnapshotViewId(21))]
+        );
+    }
+
+    #[test]
+    fn snapshot_provenance_budget_wins_before_block_sizing_and_value_reads() {
+        let mut backend = FixedBackend::new();
+        backend.status.tiers.push(TierInfo {
+            name: "hot".to_string(),
+            step_ms: 1_000,
+            keep_s: 3_600,
+            bytes: 0,
+            cap_bytes: 0,
+        });
+        let metrics: Vec<String> = (0..13).map(|index| format!("m{index}")).collect();
+        let selection = Selection::new(vec![Sel::Inc(1)], metrics.clone()).expect("selection");
+        let source_request = SnapshotRequest {
+            selection,
+            real_ns: 0,
+            tier: TierChoice::Explicit(crate::query::Tier::Hot),
+            provenance: true,
+        };
+        let columns: Vec<QueryColumnMeta> = source_request
+            .selection
+            .metrics()
+            .iter()
+            .map(|metric| query_metric(metric, MetricKind::Gauge))
+            .collect();
+        let meta = SnapshotMeta {
+            tier: crate::query::Tier::Hot,
+            bucket_real_ns: 0,
+            step_ms: 1_000,
+            covered_ms: 1_000,
+            subjects: (1..=5)
+                .map(|inc| SnapshotSubjectMeta { inc, label_len: 0 })
+                .collect(),
+            columns,
+        };
+        let view = SnapshotView {
+            id: SnapshotViewId(22),
+            meta,
+        };
+        backend.snapshot_open.insert(source_request, Ok(view));
+        let mut d = Driver {
+            server: Server::new(query_limits(), backend),
+            now: 0,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        let args = format!(
+            "{{\"selection\":{{\"entities\":[{{\"inc\":1}}],\"metrics\":{}}},\
+             \"real_ns\":0,\"tier\":\"hot\",\"provenance\":true}}",
+            serde_json::to_string(&metrics).expect("metrics")
+        );
+        d.send(id, &request(3, "snapshot_at", &args));
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0].0, FrameType::Rep.code());
+        assert!(text(&raw[0].2).contains(
+            "\"code\":\"budget\",\"message\":\"a budget is exhausted\",\"detail\":{\"pool\":\"provenance\"}"
+        ));
+        assert_eq!(
+            d.server.backend().released.borrow().as_slice(),
+            &[QueryViewId::Snapshot(SnapshotViewId(22))]
+        );
+    }
+
+    #[test]
+    fn snapshot_bucket_overflow_precedes_unknown_subject_resolution() {
+        let mut backend = FixedBackend::new();
+        backend.status.tiers.push(TierInfo {
+            name: "hot".to_string(),
+            step_ms: 1_000,
+            keep_s: 3_600,
+            bytes: 0,
+            cap_bytes: 0,
+        });
+        let source_request = SnapshotRequest {
+            selection: Selection::new(vec![Sel::Inc(u64::MAX)], vec!["cpu".to_string()])
+                .expect("selection"),
+            real_ns: i64::MIN,
+            tier: TierChoice::Explicit(crate::query::Tier::Hot),
+            provenance: false,
+        };
+        backend
+            .snapshot_open
+            .insert(source_request, Err(QuerySourceError::BucketOutOfRange));
+        let mut d = Driver {
+            server: Server::new(query_limits(), backend),
+            now: 0,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        d.send(
+            id,
+            &request(
+                3,
+                "snapshot_at",
+                "{\"selection\":{\"entities\":[{\"inc\":18446744073709551615}],\
+                 \"metrics\":[\"cpu\"]},\"real_ns\":-9223372036854775808,\
+                 \"tier\":\"hot\",\"provenance\":false}",
+            ),
+        );
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        assert_eq!(raw.len(), 1);
+        assert!(text(&raw[0].2).contains(
+            "\"code\":\"bad-request\",\"message\":\"the request is malformed\",\"detail\":{\"key\":\"real_ns\"}"
+        ));
+    }
+
+    #[test]
+    fn catalog_refusals_precede_query_backend_resolution() {
+        let mut d = Driver::with(query_limits());
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        d.send(
+            id,
+            &request(
+                3,
+                "series_batch",
+                "{\"selection\":{\"entities\":[{\"inc\":7}],\"metrics\":[\"m\"]},\
+                 \"from_real_ns\":0,\"to_real_ns\":1000000000,\"step_ms\":2000,\
+                 \"aggs\":[\"last\"],\"cursor\":null,\"max_blocks\":1}",
+            ),
+        );
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        assert_eq!(raw.len(), 1);
+        assert!(text(&raw[0].2).contains(
+            "\"code\":\"bad-request\",\"message\":\"the request is malformed\",\"detail\":{\"key\":\"step_ms\"}"
+        ));
+
+        d.send(id, &request(4, "snapshot_at", &snapshot_args(false)));
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        assert_eq!(raw.len(), 1);
+        assert!(text(&raw[0].2).contains("\"code\":\"not-found\""));
+        d.server.finish(id);
+        assert_clean(&d, "catalog refusal");
+    }
+
+    #[test]
+    fn snapshot_present_zero_row_bucket_serves_an_empty_dictionary_block() {
+        let mut backend = FixedBackend::new();
+        backend.status.tiers.push(TierInfo {
+            name: "hot".to_string(),
+            step_ms: 1_000,
+            keep_s: 3_600,
+            bytes: 0,
+            cap_bytes: 0,
+        });
+        let source_request = snapshot_request();
+        let meta = SnapshotMeta {
+            tier: Tier::Hot,
+            bucket_real_ns: -1_000_000_000,
+            step_ms: 1_000,
+            covered_ms: 0,
+            subjects: Vec::new(),
+            columns: vec![query_metric("cpu", MetricKind::Gauge)],
+        };
+        let view = SnapshotView {
+            id: SnapshotViewId(23),
+            meta: meta.clone(),
+        };
+        let mut data = TickData::example(1, &[], &["cpu"]);
+        data.header.real_ns = meta.bucket_real_ns;
+        data.entries[0] = Entry::Metric {
+            facts: meta.columns[0].facts,
+            name: "cpu".to_string(),
+        };
+        data.columns[0].metric = 0;
+        data.columns[0].kind = MetricKind::Gauge;
+        data.columns[0].value_type = MetricValueType::U64;
+        data.columns[0].values.clear();
+        data.columns[0].quality.clear();
+        backend
+            .snapshot_open
+            .insert(source_request, Ok(view.clone()));
+        backend.snapshot_read.insert(
+            view.id,
+            Ok(SnapshotData {
+                tick: data,
+                provenance: None,
+            }),
+        );
+        let mut d = Driver {
+            server: Server::new(query_limits(), backend),
+            now: 0,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        d.send(id, &request(3, "snapshot_at", &snapshot_args(false)));
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        assert_eq!(
+            (raw[0].0, raw[1].0, raw[2].0),
+            (
+                FrameType::Rep.code(),
+                FrameType::Block.code(),
+                FrameType::End.code(),
+            )
+        );
+        assert!(text(&raw[0].2).contains("\"covered_ms\":0"));
+        let mut dicts = StreamDicts::new();
+        let block = accept_block(&mut dicts, 3, &raw[1].2);
+        assert!(block.rows.is_empty());
+        assert_eq!(block.columns.len(), 1);
+        assert!(block.columns[0].values.is_empty());
+        assert_end_ok(&raw[2].2, 1, 0, "complete");
+        d.server.finish(id);
+        assert_clean(&d, "zero-row snapshot");
+    }
+
+    fn proc_args(cursor: Option<&str>) -> String {
+        proc_args_page(cursor, 256, 1, true, &["cmdline"])
+    }
+
+    fn proc_args_page(
+        cursor: Option<&str>,
+        limit: u32,
+        subject_inc: u64,
+        descendants: bool,
+        fields: &[&str],
+    ) -> String {
+        let cursor = match cursor {
+            Some(cursor) => format!("\"{cursor}\""),
+            None => "null".to_string(),
+        };
+        let fields = fields
+            .iter()
+            .map(|field| format!("\"{field}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{{\"subject\":{{\"inc\":{subject_inc}}},\"descendants\":{descendants},\
+             \"fields\":[{fields}],\"limit\":{limit},\"cursor\":{cursor}}}"
+        )
+    }
+
+    fn proc_row(pid: u32, start_ticks: u64, inc: u64) -> ProcRow {
+        ProcRow {
+            pid,
+            start_ticks,
+            inc,
+            comm: None,
+            ppid: None,
+            state: None,
+            cpu_usec: None,
+            rss_bytes: None,
+            io_rbytes: None,
+            io_wbytes: None,
+            threads: None,
+            cmdline: None,
+        }
+    }
+
+    fn procs_reply(raw: &[(u8, u32, Vec<u8>)]) -> Value {
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0].0, FrameType::Rep.code());
+        let body = frame_payload(&raw[0].2);
+        check_rep(body, false).expect("procs REP");
+        serde_json::from_slice(body).expect("procs JSON")
+    }
+
+    fn procs_reply_once(backend: FixedBackend, args: &str) -> Vec<(u8, u32, Vec<u8>)> {
+        let mut d = Driver {
+            server: Server::new(ServerLimits::new(), backend),
+            now: 0,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        d.send(id, &request(3, "procs", args));
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        d.server.finish(id);
+        raw
+    }
+
+    #[test]
+    fn server_procs_pages_whole_rows_at_the_reply_cap_and_replays_coverage() {
+        let mut backend = FixedBackend::new();
+        let source_request = ProcsRequest {
+            subject_inc: 1,
+            descendants: true,
+            fields: vec![ProcField::Cmdline],
+        };
+        let view = ProcScanView {
+            id: ProcProjectionId(31),
+            scan_id: ProcScanId(9),
+            published_mono_ns: 0,
+            row_count: 60,
+            scanned: 60,
+            total: 61,
+            complete: false,
+        };
+        backend.procs_open.insert(source_request, Ok(view.clone()));
+        let escaped = "\\".repeat(crate::query::MAX_CMDLINE_BYTES);
+        for index in 0..60u32 {
+            backend.procs_read.insert(
+                (view.id, index),
+                Ok(Some(ProcRow {
+                    pid: index + 1,
+                    start_ticks: u64::from(index),
+                    inc: if index < 2 { 1 } else { 2 },
+                    comm: None,
+                    ppid: None,
+                    state: None,
+                    cpu_usec: None,
+                    rss_bytes: None,
+                    io_rbytes: None,
+                    io_wbytes: None,
+                    threads: None,
+                    cmdline: Some(escaped.clone()),
+                })),
+            );
+        }
+        let mut d = Driver {
+            server: Server::new(ServerLimits::new(), backend),
+            now: 0,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        let id = d.open(Level::Operator, 1);
+        d.ready(id);
+        d.send(id, &request(3, "procs", &proc_args(None)));
+        d.pump(id, usize::MAX);
+        let first = procs_reply(&raw_frames(&d.take_out(id)));
+        let first_rows = first["result"]["procs"].as_array().expect("procs array");
+        assert!(!first_rows.is_empty() && first_rows.len() < 60);
+        assert_eq!(first["result"]["coverage"]["complete"], Value::Bool(false));
+        assert_eq!(first["result"]["coverage"]["scanned"], Value::from(60));
+        assert_eq!(first["result"]["coverage"]["total"], Value::from(61));
+        let token = first["result"]["next"]
+            .as_str()
+            .expect("page continuation")
+            .to_string();
+        let mut pids = BTreeSet::new();
+        for row in first_rows {
+            pids.insert(row["pid"].as_u64().expect("pid"));
+            assert_eq!(
+                row["cmdline"].as_str().expect("cmdline").len(),
+                crate::query::MAX_CMDLINE_BYTES
+            );
+        }
+        let first_count = pids.len();
+
+        d.send(id, &request(4, "procs", &proc_args(Some(&token))));
+        d.pump(id, usize::MAX);
+        let second = procs_reply(&raw_frames(&d.take_out(id)));
+        assert_eq!(second["result"]["next"], Value::Null);
+        assert_eq!(second["result"]["coverage"]["complete"], Value::Bool(false));
+        for row in second["result"]["procs"].as_array().expect("procs array") {
+            assert!(pids.insert(row["pid"].as_u64().expect("pid")));
+        }
+        assert_eq!(
+            first_count + second["result"]["procs"].as_array().unwrap().len(),
+            60
+        );
+        assert_eq!(pids.len(), 60);
+    }
+
+    #[test]
+    fn procs_terminal_page_succeeds_at_cursor_capacity_while_continuation_refuses() {
+        let source_request = ProcsRequest {
+            subject_inc: 1,
+            descendants: true,
+            fields: vec![ProcField::Comm],
+        };
+        let view = ProcScanView {
+            id: ProcProjectionId(51),
+            scan_id: ProcScanId(10),
+            published_mono_ns: 0,
+            row_count: 3,
+            scanned: 3,
+            total: 3,
+            complete: true,
+        };
+        let mut backend = FixedBackend::new();
+        backend.procs_open.insert(source_request, Ok(view.clone()));
+        for index in 0..3 {
+            let mut row = proc_row(index + 1, u64::from(index), 1);
+            row.comm = Some(format!("p{index}"));
+            backend.procs_read.insert((view.id, index), Ok(Some(row)));
+        }
+        let mut d = Driver {
+            server: Server::new(ServerLimits::new(), backend),
+            now: 2 * MS,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        d.send(
+            id,
+            &request(3, "procs", &proc_args_page(None, 1, 1, true, &["comm"])),
+        );
+        d.pump(id, usize::MAX);
+        let first = procs_reply(&raw_frames(&d.take_out(id)));
+        let token = first["result"]["next"]
+            .as_str()
+            .expect("process page token")
+            .to_string();
+        assert_eq!(d.server.cursor_count(), 1);
+        fill_cursor_slots(&mut d, 1);
+
+        d.send(
+            id,
+            &request(
+                4,
+                "procs",
+                &proc_args_page(Some(&token), 2, 1, true, &["comm"]),
+            ),
+        );
+        d.pump(id, usize::MAX);
+        let terminal = procs_reply(&raw_frames(&d.take_out(id)));
+        assert_eq!(terminal["result"]["next"], Value::Null);
+        assert_eq!(terminal["result"]["procs"].as_array().unwrap().len(), 2);
+
+        d.send(
+            id,
+            &request(
+                5,
+                "procs",
+                &proc_args_page(Some(&token), 1, 1, true, &["comm"]),
+            ),
+        );
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        assert_eq!(raw.len(), 1);
+        assert!(text(&raw[0].2)
+            .contains("\"code\":\"budget\",\"message\":\"a budget is exhausted\",\"detail\":{\"pool\":\"cursors\"}"));
+
+        clear_cursor_slots(&mut d);
+        d.server.finish(id);
+        assert_clean(&d, "full process cursor table");
+    }
+
+    #[test]
+    fn procs_filters_have_distinct_pinned_projections_and_limit_only_changes_boundary() {
+        let filter_a = ProcsRequest {
+            subject_inc: 1,
+            descendants: true,
+            fields: vec![ProcField::Comm],
+        };
+        let filter_b = ProcsRequest {
+            subject_inc: 2,
+            descendants: false,
+            fields: vec![ProcField::State],
+        };
+        let view_a = ProcScanView {
+            id: ProcProjectionId(61),
+            scan_id: ProcScanId(5),
+            published_mono_ns: 0,
+            row_count: 3,
+            scanned: 3,
+            total: 4,
+            complete: true,
+        };
+        let view_b = ProcScanView {
+            id: ProcProjectionId(62),
+            scan_id: ProcScanId(5),
+            published_mono_ns: 0,
+            row_count: 2,
+            scanned: 2,
+            total: 3,
+            complete: false,
+        };
+        let newer_a = ProcScanView {
+            id: ProcProjectionId(63),
+            scan_id: ProcScanId(6),
+            published_mono_ns: 0,
+            row_count: 1,
+            scanned: 1,
+            total: 1,
+            complete: true,
+        };
+        let mut backend = FixedBackend::new();
+        backend
+            .procs_open
+            .insert(filter_a.clone(), Ok(view_a.clone()));
+        backend
+            .procs_open
+            .insert(filter_b.clone(), Ok(view_b.clone()));
+        let mut alpha = proc_row(10, 1, 1);
+        alpha.comm = Some("alpha".to_string());
+        let mut absent = proc_row(20, 2, 2);
+        absent.comm = None;
+        let mut gamma = proc_row(30, 3, 1);
+        gamma.comm = Some("gamma".to_string());
+        for (index, row) in [alpha, absent, gamma].into_iter().enumerate() {
+            backend.procs_read.insert(
+                (view_a.id, u32::try_from(index).expect("index")),
+                Ok(Some(row)),
+            );
+        }
+        let mut running = proc_row(11, 1, 1);
+        running.state = Some(b'S');
+        let mut sleeping = proc_row(22, 2, 2);
+        sleeping.state = Some(b'Z');
+        for (index, row) in [running, sleeping].into_iter().enumerate() {
+            backend.procs_read.insert(
+                (view_b.id, u32::try_from(index).expect("index")),
+                Ok(Some(row)),
+            );
+        }
+        let mut d = Driver {
+            server: Server::new(ServerLimits::new(), backend),
+            now: 2 * MS,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        d.send(
+            id,
+            &request(3, "procs", &proc_args_page(None, 1, 1, true, &["comm"])),
+        );
+        d.pump(id, usize::MAX);
+        let a_first = procs_reply(&raw_frames(&d.take_out(id)));
+        let a_token = a_first["result"]["next"]
+            .as_str()
+            .expect("filter A token")
+            .to_string();
+        assert_eq!(a_first["result"]["coverage"]["complete"], Value::Bool(true));
+
+        d.send(
+            id,
+            &request(4, "procs", &proc_args_page(None, 1, 2, false, &["state"])),
+        );
+        d.pump(id, usize::MAX);
+        let b_first = procs_reply(&raw_frames(&d.take_out(id)));
+        let b_token = b_first["result"]["next"]
+            .as_str()
+            .expect("filter B token")
+            .to_string();
+        assert_eq!(
+            b_first["result"]["coverage"]["complete"],
+            Value::Bool(false)
+        );
+        assert_eq!(d.server.cursor_count(), 2);
+
+        let mut newer = proc_row(99, 9, 1);
+        newer.comm = Some("newer".to_string());
+        d.server
+            .backend_mut()
+            .procs_open
+            .insert(filter_a, Ok(newer_a.clone()));
+        d.server
+            .backend_mut()
+            .procs_read
+            .insert((newer_a.id, 0), Ok(Some(newer)));
+
+        d.send(
+            id,
+            &request(
+                5,
+                "procs",
+                &proc_args_page(Some(&a_token), 1, 1, true, &["comm"]),
+            ),
+        );
+        d.pump(id, usize::MAX);
+        let replay_one = raw_frames(&d.take_out(id));
+        let replay_one_value = procs_reply(&replay_one);
+        let replay_one_body = frame_payload(&replay_one[0].2).to_vec();
+        assert_eq!(replay_one_value["result"]["procs"][0]["pid"], 20);
+        assert_eq!(replay_one_value["result"]["procs"][0]["comm"], Value::Null);
+
+        d.send(
+            id,
+            &request(
+                6,
+                "procs",
+                &proc_args_page(Some(&a_token), 1, 1, true, &["comm"]),
+            ),
+        );
+        d.pump(id, usize::MAX);
+        let replay_again = raw_frames(&d.take_out(id));
+        assert_eq!(
+            frame_payload(&replay_again[0].2),
+            replay_one_body.as_slice()
+        );
+
+        d.send(
+            id,
+            &request(
+                7,
+                "procs",
+                &proc_args_page(Some(&a_token), 2, 1, true, &["comm"]),
+            ),
+        );
+        d.pump(id, usize::MAX);
+        let replay_two = procs_reply(&raw_frames(&d.take_out(id)));
+        assert_eq!(replay_two["result"]["procs"].as_array().unwrap().len(), 2);
+        assert_eq!(replay_two["result"]["procs"][0]["pid"], 20);
+        assert_eq!(replay_two["result"]["next"], Value::Null);
+
+        d.send(
+            id,
+            &request(
+                8,
+                "procs",
+                &proc_args_page(Some(&b_token), 2, 2, false, &["state"]),
+            ),
+        );
+        d.pump(id, usize::MAX);
+        let b_replay = procs_reply(&raw_frames(&d.take_out(id)));
+        assert_eq!(b_replay["result"]["procs"][0]["pid"], 22);
+        assert_eq!(b_replay["result"]["procs"][0]["state"], "Z");
+        assert_eq!(b_replay["result"]["next"], Value::Null);
+
+        d.send(
+            id,
+            &request(
+                9,
+                "procs",
+                &proc_args_page(Some(&a_token), 1, 2, false, &["state"]),
+            ),
+        );
+        d.pump(id, usize::MAX);
+        let mismatch = raw_frames(&d.take_out(id));
+        assert_eq!(mismatch.len(), 1);
+        assert!(text(&mismatch[0].2)
+            .contains("\"code\":\"cursor-invalid\",\"message\":\"the cursor is not valid\""));
+
+        clear_cursor_slots(&mut d);
+        d.server.finish(id);
+        assert_clean(&d, "pinned process filters");
+    }
+
+    #[test]
+    fn procs_open_budget_precedes_subject_lookup_and_not_found_is_within_a_scan() {
+        let source_request = ProcsRequest {
+            subject_inc: u64::MAX,
+            descendants: true,
+            fields: Vec::new(),
+        };
+        let mut backend = FixedBackend::new();
+        backend
+            .procs_open
+            .insert(source_request, Err(QuerySourceError::Budget(Pool::Procs)));
+        let mut d = Driver {
+            server: Server::new(ServerLimits::new(), backend),
+            now: 0,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        d.send(
+            id,
+            &request(
+                3,
+                "procs",
+                "{\"subject\":{\"inc\":18446744073709551615},\"descendants\":true,\
+                 \"fields\":[],\"limit\":1,\"cursor\":null}",
+            ),
+        );
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        assert!(text(&raw[0].2).contains("\"pool\":\"procs\""));
+
+        let mut backend = FixedBackend::new();
+        let source_request = ProcsRequest {
+            subject_inc: 2,
+            descendants: true,
+            fields: Vec::new(),
+        };
+        backend
+            .procs_open
+            .insert(source_request, Err(QuerySourceError::NotFound));
+        let mut d = Driver {
+            server: Server::new(ServerLimits::new(), backend),
+            now: 0,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        d.send(
+            id,
+            &request(
+                3,
+                "procs",
+                "{\"subject\":{\"inc\":2},\"descendants\":true,\
+                 \"fields\":[],\"limit\":1,\"cursor\":null}",
+            ),
+        );
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        assert!(text(&raw[0].2).contains("\"code\":\"not-found\""));
+    }
+
+    #[test]
+    fn procs_metadata_and_read_failures_are_internal_before_any_partial_rep() {
+        let source_request = ProcsRequest {
+            subject_inc: 7,
+            descendants: true,
+            fields: vec![ProcField::Comm],
+        };
+        let args = proc_args_page(None, 1, 7, true, &["comm"]);
+        let valid = ProcScanView {
+            id: ProcProjectionId(71),
+            scan_id: ProcScanId(20),
+            published_mono_ns: 0,
+            row_count: 1,
+            scanned: 1,
+            total: 1,
+            complete: true,
+        };
+        for bad in [
+            ProcScanView {
+                row_count: 4_097,
+                ..valid.clone()
+            },
+            ProcScanView {
+                scanned: 2,
+                total: 1,
+                ..valid.clone()
+            },
+            ProcScanView {
+                published_mono_ns: 1,
+                ..valid.clone()
+            },
+        ] {
+            let mut backend = FixedBackend::new();
+            backend.procs_open.insert(source_request.clone(), Ok(bad));
+            let raw = procs_reply_once(backend, &args);
+            assert_eq!(raw.len(), 1);
+            assert!(text(&raw[0].2).contains("\"code\":\"internal\""));
+        }
+
+        let mut backend = FixedBackend::new();
+        backend
+            .procs_open
+            .insert(source_request.clone(), Ok(valid.clone()));
+        backend
+            .procs_read
+            .insert((valid.id, 0), Err(QuerySourceError::ViewInvalid));
+        let raw = procs_reply_once(backend, &args);
+        assert_eq!(raw.len(), 1);
+        assert!(text(&raw[0].2).contains("\"code\":\"internal\""));
+
+        for (comm, ok) in [
+            (format!("{}x", "é".repeat(22)), true),
+            (format!("{}xy", "é".repeat(22)), false),
+        ] {
+            let mut row = proc_row(1, 1, 7);
+            row.comm = Some(comm);
+            let mut backend = FixedBackend::new();
+            backend
+                .procs_open
+                .insert(source_request.clone(), Ok(valid.clone()));
+            backend.procs_read.insert((valid.id, 0), Ok(Some(row)));
+            let raw = procs_reply_once(backend, &args);
+            if ok {
+                let value = procs_reply(&raw);
+                assert_eq!(
+                    value["result"]["procs"][0]["comm"].as_str().unwrap().len(),
+                    45
+                );
+            } else {
+                assert_eq!(raw.len(), 1);
+                assert!(text(&raw[0].2).contains("\"code\":\"internal\""));
+            }
+        }
+    }
+
+    #[test]
+    fn series_read_budget_after_rep_preserves_the_block_prefix() {
+        let mut backend = FixedBackend::new();
+        backend.status.tiers.push(TierInfo {
+            name: "hot".to_string(),
+            step_ms: 1_000,
+            keep_s: 3_600,
+            bytes: 0,
+            cap_bytes: 0,
+        });
+        let mut d = Driver {
+            server: Server::new(query_limits(), backend),
+            now: 0,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        install_series(&mut d);
+        d.server.backend_mut().series_read.insert(
+            (SeriesViewId(11), SeriesPosition(1), 2),
+            Err(QuerySourceError::Budget(Pool::Rows)),
+        );
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        d.send(id, &request(3, "series_batch", &series_args(None, 2)));
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        assert_eq!(raw.len(), 3);
+        assert_eq!(
+            (raw[0].0, raw[1].0, raw[2].0),
+            (
+                FrameType::Rep.code(),
+                FrameType::Block.code(),
+                FrameType::End.code(),
+            )
+        );
+        assert_eq!(raw[1].2.len(), 328);
+        let (ok, blocks, _dropped, reason) = end_info(&raw[2].2);
+        assert!(!ok);
+        assert_eq!((blocks, reason), (1, None));
+        assert!(text(&raw[2].2)
+            .contains("\"code\":\"budget\",\"message\":\"a budget is exhausted\",\"detail\":{\"pool\":\"rows\"}"));
+    }
+
+    #[test]
+    fn series_read_view_invalid_after_rep_preserves_the_queue_and_invalidates_cursors() {
+        let mut backend = FixedBackend::new();
+        backend.status.tiers.push(TierInfo {
+            name: "hot".to_string(),
+            step_ms: 1_000,
+            keep_s: 3_600,
+            bytes: 0,
+            cap_bytes: 0,
+        });
+        let mut d = Driver {
+            server: Server::new(query_limits(), backend),
+            now: 0,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        install_series(&mut d);
+        d.server.backend_mut().series_read.insert(
+            (SeriesViewId(11), SeriesPosition(1), 2),
+            Err(QuerySourceError::ViewInvalid),
+        );
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        d.send(id, &request(3, "series_batch", &series_args(None, 2)));
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        assert_eq!(raw.len(), 3);
+        assert_eq!(raw[0].0, FrameType::Rep.code());
+        assert_eq!(raw[1].0, FrameType::Block.code());
+        assert_eq!(raw[1].2.len(), 328);
+        assert_eq!(raw[2].0, FrameType::End.code());
+        assert!(!check_end(frame_payload(&raw[2].2)).expect("END").ok);
+        assert_eq!(d.server.cursor_count(), 0);
+        assert_eq!(
+            d.server
+                .view_references(QueryViewId::Series(SeriesViewId(11))),
+            0
+        );
+        assert_eq!(
+            d.server.backend().released.borrow().as_slice(),
+            &[QueryViewId::Series(SeriesViewId(11))]
+        );
+        d.server.finish(id);
+        assert_clean(&d, "view invalid after REP");
+    }
+
+    #[test]
+    fn reused_successor_is_not_aborted_by_an_unexposed_replay_failure() {
+        let mut backend = FixedBackend::new();
+        backend.status.tiers.push(TierInfo {
+            name: "hot".to_string(),
+            step_ms: 1_000,
+            keep_s: 3_600,
+            bytes: 0,
+            cap_bytes: 0,
+        });
+        let mut d = Driver {
+            server: Server::new(query_limits(), backend),
+            now: 0,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        install_series(&mut d);
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        d.send(id, &request(3, "series_batch", &series_args(None, 2)));
+        d.pump(id, usize::MAX);
+        let first = raw_frames(&d.take_out(id));
+        let token = end_next(&first[3].2).expect("continuation");
+        let view = QueryViewId::Series(SeriesViewId(11));
+        assert_eq!(d.server.view_references(view), 1);
+
+        d.server.backend_mut().series_read.insert(
+            (SeriesViewId(11), SeriesPosition(0), 1),
+            Err(QuerySourceError::Budget(Pool::Rows)),
+        );
+        d.send(id, &request(4, "series_batch", &series_args(None, 2)));
+        d.pump(id, usize::MAX);
+        let repeated = raw_frames(&d.take_out(id));
+        assert_eq!(
+            (repeated[0].0, repeated[1].0),
+            (FrameType::Rep.code(), FrameType::End.code())
+        );
+        assert!(text(&repeated[1].2).contains("\"pool\":\"rows\""));
+        assert_eq!(d.server.view_references(view), 1);
+
+        let replay = d.open(Level::Observe, 1);
+        d.ready(replay);
+        d.send(
+            replay,
+            &request(5, "series_batch", &series_args(Some(&token), 1)),
+        );
+        d.pump(replay, usize::MAX);
+        let replayed = raw_frames(&d.take_out(replay));
+        assert_eq!(
+            (replayed[0].0, replayed[1].0, replayed[2].0),
+            (
+                FrameType::Rep.code(),
+                FrameType::Block.code(),
+                FrameType::End.code(),
+            )
+        );
+    }
+
+    #[test]
+    fn close_while_waiting_releases_snapshot_and_series_state_once() {
+        let mut backend = FixedBackend::new();
+        backend.status.tiers.push(TierInfo {
+            name: "hot".to_string(),
+            step_ms: 1_000,
+            keep_s: 3_600,
+            bytes: 0,
+            cap_bytes: 0,
+        });
+        let source_request = snapshot_request();
+        let meta = snapshot_meta();
+        let view = SnapshotView {
+            id: SnapshotViewId(41),
+            meta: meta.clone(),
+        };
+        backend
+            .snapshot_open
+            .insert(source_request, Ok(view.clone()));
+        backend
+            .snapshot_read
+            .insert(view.id, Ok(snapshot_candidate(&meta)));
+        let series_source = series_request();
+        let series = series_view();
+        backend.series_open.insert(series_source, Ok(series));
+        let mut d = Driver {
+            server: Server::new(query_limits(), backend),
+            now: 0,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+
+        let snapshot = d.open(Level::Observe, 1);
+        d.ready(snapshot);
+        assert_eq!(d.push_query(snapshot, 1, 800), QueryOutcome::Queued);
+        d.send(snapshot, &request(2, "snapshot_at", &snapshot_args(false)));
+        let snapshot_view = QueryViewId::Snapshot(SnapshotViewId(41));
+        assert_eq!(d.server.view_references(snapshot_view), 1);
+        d.server.shutdown();
+        d.close_out(snapshot);
+        assert_eq!(d.server.view_references(snapshot_view), 0);
+        assert_eq!(
+            d.server
+                .backend()
+                .released
+                .borrow()
+                .iter()
+                .filter(|view| **view == snapshot_view)
+                .count(),
+            1
+        );
+
+        let series_conn = d.open(Level::Observe, 1);
+        d.ready(series_conn);
+        assert_eq!(d.push_query(series_conn, 1, 800), QueryOutcome::Queued);
+        d.send(
+            series_conn,
+            &request(2, "series_batch", &series_args(None, 2)),
+        );
+        let series_view = QueryViewId::Series(SeriesViewId(11));
+        assert_eq!(d.server.view_references(series_view), 2);
+        d.server.shutdown();
+        d.close_out(series_conn);
+        assert_eq!(d.server.view_references(series_view), 0);
+        assert_eq!(
+            d.server
+                .backend()
+                .released
+                .borrow()
+                .iter()
+                .filter(|view| **view == series_view)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn fatal_close_and_direct_finish_release_waiting_series_once() {
+        for fatal in [false, true] {
+            let mut backend = FixedBackend::new();
+            backend.status.tiers.push(TierInfo {
+                name: "hot".to_string(),
+                step_ms: 1_000,
+                keep_s: 3_600,
+                bytes: 0,
+                cap_bytes: 0,
+            });
+            let series_source = series_request();
+            let series = series_view();
+            backend.series_open.insert(series_source, Ok(series));
+            let mut d = Driver {
+                server: Server::new(query_bound_limits(328), backend),
+                now: 0,
+                out: BTreeMap::new(),
+                opened: Vec::new(),
+                uids: Vec::new(),
+            };
+            install_series(&mut d);
+            let id = d.open(Level::Observe, 1);
+            let blocker = d.open(Level::Observe, 1);
+            d.ready(id);
+            d.ready(blocker);
+            fill_query(&mut d, blocker, 328);
+            d.send(id, &request(3, "series_batch", &series_args(None, 2)));
+            let series_view = QueryViewId::Series(SeriesViewId(11));
+            assert_eq!(d.server.view_references(series_view), 2);
+            assert_eq!(d.server.conn(id).map(|conn| conn.outstanding()), Some(1));
+
+            if fatal {
+                d.send(id, &[0, 0, 0, 0]);
+                d.tick(5_000_000_001);
+                assert_eq!(d.close_code(id), Some(Code::Deadline));
+            } else {
+                d.server.finish(id);
+            }
+            assert_eq!(d.server.view_references(series_view), 0);
+            assert_eq!(
+                d.server
+                    .backend()
+                    .released
+                    .borrow()
+                    .iter()
+                    .filter(|view| **view == series_view)
+                    .count(),
+                1
+            );
+            if fatal {
+                d.close_out(id);
+            }
+            d.server.finish(blocker);
+            assert_clean(
+                &d,
+                if fatal {
+                    "fatal close"
+                } else {
+                    "direct finish"
+                },
+            );
+        }
     }
 }
