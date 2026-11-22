@@ -42,7 +42,28 @@ FAILS = []
 INIT_FAILURE_RE = re.compile(
     rb"Kernel panic - not syncing: (?:No working init found|Attempted to kill init!)", re.I
 )
-SHELL_PROMPT_RE = re.compile(rb"[A-Za-z_][A-Za-z0-9_.-]*@[^\r\n]*[#$] ?")
+ANSI_CSI_RE = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
+LOGIN_PROMPT_RE = re.compile(rb"(?im)^[^\n]*\blogin:[ \t]*$")
+SHELL_PROMPT_RE = re.compile(
+    rb"(?m)^[A-Za-z_][A-Za-z0-9_.-]*@[A-Za-z0-9_.-]+(?::[^\n]*)?[#$][ \t]*$"
+)
+
+
+def console_prompt_kind(data):
+    """Identify the latest complete login or shell prompt, ignoring terminal control codes.
+
+    Prompts must occupy a line. The kernel build banner contains an address such as
+    ``debian-kernel@lists.debian.org`` and ends with ``#1``; an unanchored shell-prompt
+    expression mistakes that for an already logged-in shell when the driver attaches early.
+    """
+    text = ANSI_CSI_RE.sub(b"", data).replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    login = LOGIN_PROMPT_RE.search(text)
+    shell = SHELL_PROMPT_RE.search(text)
+    if login is not None and (shell is None or login.start() > shell.start()):
+        return "login"
+    if shell is not None:
+        return "shell"
+    return None
 
 
 def marker_wrapped_command(cmd):
@@ -153,11 +174,17 @@ class Guest:
         # shell print its prompt, allowing this method to attach to an already logged-in guest.
         self.buf = b""
         self.send("\n")
-        _, match = self.expect(re.compile(rb"login: ?|" + SHELL_PROMPT_RE.pattern, re.I), timeout)
-        if match.group(0).lower().startswith(b"login:"):
-            self._do_login()
-        else:
-            self.shell_ready = True
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            prompt = console_prompt_kind(self.buf)
+            if prompt == "login":
+                self._do_login()
+                return
+            if prompt == "shell":
+                self.shell_ready = True
+                return
+            self._pump(min(0.5, max(0.0, deadline - time.monotonic())))
+        raise TimeoutError(f"timeout {timeout}s waiting for a login or shell prompt; serial tail: {self.buf[-300:]!r}")
 
     def run(self, cmd, timeout=300):
         self.buf = b""

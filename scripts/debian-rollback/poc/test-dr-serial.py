@@ -327,6 +327,12 @@ def main() -> int:
         failures.append(f"transient serial-socket error was not retried once: attempts={len(transient_attempts)}")
 
     # login: startup sends only a newline until it has observed a login or root-shell prompt.
+    kernel_banner = (
+        b"Linux version 6.12.117+deb13-amd64 "
+        b"(debian-kernel@lists.debian.org) (gcc-14) #1 SMP PREEMPT_DYNAMIC\r\n"
+    )
+    if drs.console_prompt_kind(kernel_banner) is not None:
+        failures.append("kernel build banner was mistaken for a console prompt")
     a, b = socket.socketpair()
     a.setblocking(False)
     g = drs.Guest("unused", io.StringIO())
@@ -346,7 +352,7 @@ def main() -> int:
             if first != b"\n":
                 login_errors.append(f"unsafe pre-login input: {first!r}")
                 return
-            b.sendall(b"drpoc login: ")
+            b.sendall(kernel_banner + b"drpoc login: ")
             recv_until(b"root\n")
             b.sendall(b"Password: ")
             recv_until(b"root\n")
@@ -390,25 +396,39 @@ def main() -> int:
         failures.append(f"existing-shell handshake: errors={existing_shell_errors!r}, shell_ready={g.shell_ready}")
 
     # Reattaching to the Debian Live user's already-open shell must not wait for a root-only prompt.
-    live_prompt = b"user@debian:~$ "
+    a, b = socket.socketpair()
+    a.setblocking(False)
     g = drs.Guest("unused", io.StringIO())
+    g.sock = a
     sent = []
-    g.send = sent.append
+    original_send = g.send
 
-    def expect_live_prompt(pattern, _timeout):
-        rx = pattern if isinstance(pattern, re.Pattern) else re.compile(pattern)
-        match = rx.search(live_prompt)
-        if match is None:
-            raise AssertionError(f"login prompt detector missed an existing live-user shell: {rx.pattern!r}")
-        return live_prompt, match
+    def record_live_send(text):
+        sent.append(text)
+        original_send(text)
 
-    g.expect = expect_live_prompt
+    g.send = record_live_send
+    live_shell_errors = []
+
+    def serve_live_shell():
+        try:
+            first = b.recv(256)
+            if first != b"\n":
+                live_shell_errors.append(f"unsafe live-shell input: {first!r}")
+                return
+            b.sendall(b"\r\n\x1b[?2004huser@debian:~$ ")
+        except Exception as exc:  # noqa: BLE001 - report fake serial exchange failures
+            live_shell_errors.append(repr(exc))
+
+    threading.Thread(target=serve_live_shell, daemon=True).start()
     try:
-        g.login()
+        g.login(30)
     except Exception as exc:  # noqa: BLE001
         failures.append(f"login on an already logged-in live-user shell failed: {exc!r}")
-    if sent != ["\n"] or not g.shell_ready:
-        failures.append(f"live-user-shell handshake sent={sent!r}, shell_ready={g.shell_ready}")
+    if live_shell_errors or sent != ["\n"] or not g.shell_ready:
+        failures.append(
+            f"live-user-shell handshake errors={live_shell_errors!r}, sent={sent!r}, shell_ready={g.shell_ready}"
+        )
 
     # tags: the echoed command line, also wrapped by the tty at 80 columns, never satisfies a check
     echoed = ("root@drpoc:~# echo OFFER:$(apt list --upgradable 2>/dev/null | grep -c '^linux-image'); echo KVER:$(uname\n"
