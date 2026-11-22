@@ -521,8 +521,9 @@ BLOCK. REP result `{"resolved":{"tier":str,"bucket_real_ns":i64,"step_ms":u32,"c
 "provenance":[object] (0..64; each ≤ 4,096 encoded B) | null}`; `provenance` is `null` when not
 requested. Metadata-only `snapshot_open` returns the complete resolved subjects as sorted
 `(inc, label_len)` facts
-(`label_len` is UTF-8 bytes, at most 256), the selected `QueryColumnMeta` list, and the exact selected-cell
-count when provenance is requested. It returns no bucket values or provenance objects. The view pins the
+(`label_len` is UTF-8 bytes, at most 256), exactly one `QueryColumnMeta` for each requested metric in
+canonical order, and the exact selected-cell count when provenance is requested. Missing, extra or
+repeated requested metrics make the source view invalid. It returns no bucket values or provenance objects. The view pins the
 exact source label bytes until it is released; `snapshot_read` returns those same bytes. The Server derives
 the exact dictionary-bearing frame length from IDs, label lengths, columns and resolved row count, using
 the same checked length helper as the encoder; a
@@ -552,14 +553,17 @@ the backend has no provenance capability, return `unsupported-feature`
 A query stream's first BLOCK carries one canonical dictionary generation for that request. For
 `snapshot_at`, use the `TickData` dictionary returned with the snapshot candidate and validate entity
 incarnations/label byte lengths and metric facts against the independently resolved metadata in canonical
-order. The pinned source view guarantees the label bytes themselves are unchanged for that view. For
-`series_batch`, Server builds
-the dictionary from the immutable view metadata: resolved subject incarnations ascending, with empty
-entity labels, followed by selected metric entries in canonical bytewise name order whose aggregation
-masks permit at least one requested aggregation. Metrics that permit none are listed in `omitted` and
-excluded from the dictionary. Metric facts and value types come from `QueryColumnMeta`; entity labels
-are deliberately empty for series. The dictionary has no unrelated entries, and its indices remain
-fixed for every bare BLOCK in that query stream. Its exact encoded form is part of the block-size
+order. Build the dictionary only after Query room admits the candidate; metadata contains label lengths,
+not label contents, so the pinned source view guarantees exact label-byte stability. For `series_batch`,
+Server builds the dictionary from the immutable view metadata: resolved subject incarnations ascending,
+with empty entity labels, followed by selected metric entries in canonical bytewise name order whose
+aggregation masks permit at least one requested aggregation. The source supplies exactly one canonical
+`QueryColumnMeta` for every requested metric, including metrics that permit none of the requested
+aggregations. Server validates that exact set and derives `omitted` from the masks; the source does not
+return a second omitted list. Metrics that permit none are excluded from the dictionary. Metric facts
+and value types come from `QueryColumnMeta`; entity labels are deliberately empty for series. The
+dictionary has no unrelated entries, and its indices remain fixed for every bare BLOCK in that query
+stream. Its exact encoded form is part of the block-size
 calculation. The exact provenance schema is:
 
 ```text
@@ -637,7 +641,9 @@ another tier. Requires negotiated minor ≥ 1 (kind 6); at minor 0 it is refused
 1. Subjects = the selection's resolved incarnations, ascending `inc`. For each subject, for each agg in
    request order: the columns are the selection's metrics, in canonical (bytewise) order, whose mask
    permits that agg; if none, no block. `omitted` contains exactly selected metrics whose aggregation
-   mask permits none of the requested aggs. A metric with no data in the range is not thereby omitted.
+   mask permits none of the requested aggs; Server derives this list from the requested aggs and the
+   complete canonical `QueryColumnMeta` set, rather than accepting a second source-provided list. A metric
+   with no data in the range is not thereby omitted.
 2. Buckets: step boundaries `b` with `from_real_ns ≤ b < to_real_ns` (`b` a multiple of `step_ms`
    since the Unix epoch) for which the tier holds data of that subject; buckets without data are
    omitted, including every bucket in an otherwise retained empty range. A range with no blocks still
@@ -646,8 +652,9 @@ another tier. Requires negotiated minor ≥ 1 (kind 6); at minor 0 it is refused
    in time order, each the largest prefix that fits both. If one legal dictionary-bearing bucket cannot
    fit `max_block_bytes`, return `budget {"pool":"block"}` before success REP or value read. The Server
    owns this partition. The immutable
-   source view exposes the complete resolved subject list (at most `max_rows`), `QueryColumnMeta`
-   for selected metrics, and ordered metadata-only groups `(subject, agg, first_position, bucket_count)`;
+   source view exposes the complete resolved subject list (at most `max_rows`), exactly one canonical
+   `QueryColumnMeta` per requested metric, and ordered metadata-only groups
+   `(subject, agg, first_position, bucket_count)`;
    exceeding `max_rows` is `budget {"pool":"rows"}` before REP. The Server uses the shared checked
    history-frame size calculation used by the encoder to find the exact largest prefix without
    reading values or duplicating wire-size arithmetic. The first BLOCK of each
@@ -702,8 +709,10 @@ the pinned scan, never by path prefixes. Result
 `{"procs":[{"pid":u32,"start_ticks":u64,"inc":u64,<field>:value|null}],"coverage":
 {"scanned":u32,"total":u32,"scan_age_ms":u32,"complete":bool},"next":cursor|null}`.
 `coverage.complete` describes the pinned scan's coverage, not whether this response has another page.
-`comm` and `cmdline` are strings; `ppid` is `u32`; `state` is a one-byte ASCII string; `cpu_usec`,
-`rss_bytes`, `io_rbytes`, `io_wbytes`, and `threads` are `u64`. Every requested field may be `null`.
+`comm` and `cmdline` are strings; `comm` is at most the first 15 raw bytes of stat's command field,
+decoded lossily, and therefore at most 45 UTF-8 bytes; `ppid` is `u32`; `state` is a one-byte ASCII
+string; `cpu_usec`, `rss_bytes`, `io_rbytes`, `io_wbytes`, and `threads` are `u64`. Every requested
+field may be `null`. The Server rejects an injected `comm` longer than 45 UTF-8 bytes before REP.
 
 The production source view is one immutable process scan. Rows require identity
 `(boot_id,pid,start_ticks)` and verified membership in the scan; `pid` alone is never identity. `inc` is
@@ -718,8 +727,10 @@ continuation uses its pinned scan until the token expires or the source evicts i
 change an in-progress page. Scans are weakly consistent while acquired: listing and per-process
 inspection are not an atomic host snapshot, and a process created after listing may be absent. Once
 published, membership, identity, optional field values and coverage facts are immutable for that scan.
-The cursor binds boot, epoch, level, peer uid, verb,
-canonical `subject`, `descendants`, the sorted `fields` set, scan id, and the first row after the last
+Each `procs_open` creates a distinct immutable filtered projection identified by a `ProcProjectionId`
+and pinned to its published `ProcScanId`; concurrent filters over one scan have distinct projection
+IDs. The cursor binds boot, epoch, level, peer uid, verb, canonical `subject`, `descendants`, the sorted
+`fields` set, scan id and projection id, and the first row after the last
 emitted `(pid,start_ticks)`; `limit` may change. For the same token and same `limit`, replay returns the
 same rows, coverage counts, and `next`; `scan_age_ms` is recomputed at REP construction. Changing
 `limit` changes only the page boundary. Pages neither repeat nor skip a row relative to their bound
@@ -1837,8 +1848,8 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | D-W29 | `subscribe` performs no backend resolution or block encoding; its first BLOCK comes from the next due sampler tick, creator and joiner alike | encoding at subscribe made subscribe/unsubscribe churn a CPU amplifier; the cost is at most one `tick_ms` of latency (P5b-2 S9/S10) |
 | D-W30 | A backpressured `current` holds its request and selection, never its block bytes, and re-resolves the latest tick when Query room appears | holding pending blocks would put up to `max_outstanding` blocks per connection outside every pool; `max_block_bytes <= query_queue_bytes` guarantees a retry fits an empty own pool (P5b-2 S7/S22) |
 | D-W31 | `procs` serves the newest published immutable scan; acquisition is weakly consistent, while rows, membership, fields and coverage are stable after publication. Process identity is `(boot_id,pid,start_ticks)`; descendants follow parent-incarnation links; unknown subjects are `not-found`, known empty subjects return no rows | atomicity across a host-wide procfs scan would require freeze/event infrastructure or retries that can fail under normal churn; scoped completeness is explicit and replay remains stable |
-| D-W32 | Process fields use the sources, checked conversions, null rules, and whole-argument `cmdline` policy in §4.11; all optional fields are captured before publication; `cmdline` is operator-only, reads at most 4,096 content B plus 2 lookahead B, and returns at most 4,096 UTF-8 B after redaction | replay cannot change a field value or block the serving loop; P5c bounds potentially blocking cmdline reads |
-| D-W33 | `procs` cursors pin a scan id and last `(pid,start_ticks)` key, excluding only `limit`; no or expired published scan is `budget {"pool":"procs"}`; `total` is exact after full listing and a lower bound after partial listing; a bounded max-heap selects the lowest 50,000 observed PIDs before ascending inspection; scans retain at most `max_rows` rows and two 24 MiB allocation-capacity views, each for at most 60 s but evictable sooner; malformed digit-only PID names make coverage incomplete | a moving scan can skip or repeat processes; directory order cannot prove lowest-PID selection; coverage makes partial scans visible and does not promise all processes coexisted instantaneously; structural and byte bounds replace an unbounded cache |
+| D-W32 | Process fields use the sources, checked conversions, null rules, and whole-argument `cmdline` policy in §4.11; all optional fields are captured before publication; `comm` is at most 15 raw bytes and at most 45 lossy UTF-8 bytes; `cmdline` is operator-only, reads at most 4,096 content B plus 2 lookahead B, and returns at most 4,096 UTF-8 B after redaction; Server rejects an injected overlong value before REP | replay cannot change a field value or block the serving loop, and malformed source facts cannot escape validation; P5c bounds potentially blocking cmdline reads |
+| D-W33 | `procs` cursors pin a scan id, filtered projection id and last `(pid,start_ticks)` key, excluding only `limit`; no or expired published scan is `budget {"pool":"procs"}`; `total` is exact after full listing and a lower bound after partial listing; a bounded max-heap selects the lowest 50,000 observed PIDs before ascending inspection; scans retain at most `max_rows` rows and two 24 MiB allocation-capacity views, each for at most 60 s but evictable sooner; malformed digit-only PID names make coverage incomplete | a moving scan can skip or repeat processes; concurrent filters cannot alias a cursor view; directory order cannot prove lowest-PID selection; coverage makes partial scans visible and does not promise all processes coexisted instantaneously; structural and byte bounds replace an unbounded cache |
 | D-W34 | `snapshot_at` uses checked Euclidean bucket floor; metadata-only tier resolution supplies the step before bucket-value access; a bucket start outside `i64` is `bad-request` key `real_ns`; retained windows cover oldest retained bucket through the end of the newest committed bucket; `auto` selects the finest eligible tier, then `hot/warm/cold`; an in-window missing bucket is `data-gap`, outside-retention is `not-found`; coverage includes only same-segment monotonic intervals with endpoints in one wall bucket, discards boundary-crossing intervals, and is unioned by the source before serving | a coarser fallback hides an interior hole; no wall/monotonic conversion or guessed interpolation is needed; nominal step is not evidence of observation |
 | D-W35 | Provenance is one fixed-shape object per represented `(inc,metric)` cell; `raw_inputs.value` is null only when unavailable/unrepresentable and required when quality is `ok`; symbolic `source_ref` has no slash; at most 64 cells; the 4,096 B object cap is defensive because legal fields max at 3,404 B | missing evidence is explicit without inventing zero; a source key cannot leak a host path; the reachable cell-count budget fits the 448 KiB REP cap |
 | D-W36 | `series_batch` resolves one retained tier for the full half-open range, freezes subjects and all returned facts for the view lifetime, omits gaps, and invalidates continuation after any eviction in the selected tier; step-zero chooses the coarsest eligible tier, explicit steps choose hot/warm/cold only among tiers covering the full range; omitted is defined by aggregation masks; cursor slots are reserved only when bounded metadata planning proves a continuation | tiers are never spliced, page replay is stable across same-bucket writes, and an eviction cannot silently shorten a result; terminal pages work even at cursor capacity, with early invalidation preferred over client-controlled retention |
@@ -1847,10 +1858,10 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | D-W39 | TIME `samples` is the exact count of source observations represented by a bucket, independent of coverage and per-cell quality; tier rollups preserve exact sample counts used by sample-weighted aggregates, and the source proves the configured maximum fits `u16` rather than saturating or wrapping | a displayed count or weighted aggregate cannot silently become false at the wire-width boundary |
 | D-W40 | Snapshot metadata resolution may establish the selected tier and step without reading bucket values; for an explicit configured tier an unrepresentable Euclidean bucket start returns typed `BucketOutOfRange` before retention lookup and maps to `bad-request {"key":"real_ns"}`; auto skips an ineligible overflowing candidate, and returns `not-found` only if no tier is eligible | tier-dependent arithmetic has one defined owner and invalid time cannot produce a partial data result |
 | D-W41 | The Server owns exact history-block packing; source views return ordered `(subject, agg)` group counts and bucket ordinals without values; one shared checked encoded-length function is used by planner and encoder; P5c separately proves source completeness/order | the P5b serving gate can prove largest-prefix packing without trusting a source-chosen boundary or duplicating frame-size math |
-| D-W42 | Cursor payload, active query state, metadata for all 352 live history views, 16 B-per-subject metadata for 96 active snapshot views, query dictionaries, source-view descriptors and the one Query candidate/encoded frame pair have separate explicit ceilings; process views reference shared scans; pinned snapshot label bytes are source-owned and bounded by P5c; views expire within 60 s and release when no request or cursor references them | cursor-entry arithmetic is not mistaken for a whole-query memory bound; retained state has one explicit owner and cannot accumulate |
+| D-W42 | Cursor payload, active query state, metadata for all 352 live history views, 16 B-per-subject metadata for 96 active snapshot views, query dictionaries, source-view descriptors and the one Query candidate/encoded frame pair have separate explicit ceilings; process projections reference shared scans, and P5c separately bounds projection-specific index metadata; pinned snapshot label bytes are source-owned and bounded by `96 × max_rows × 256 B` (96 MiB at default `max_rows=4096`), or a tighter shared/versioned representation; views expire within 60 s and release when no request or cursor references them | cursor-entry arithmetic is not mistaken for a whole-query memory bound; the Server's <56 MiB logical query payload excludes source-owned label pins and projection indexes, which must have their own explicit P5c bounds |
 | D-W43 | P5b process tests prove forwarding and serving of an already filtered immutable typed view; P5c proves PID selection, identity/membership recheck, parent-incarnation traversal, source coverage and cmdline privacy | injected serving fixtures cannot be mistaken for production `/proc` evidence |
-| D-W44 | `SnapshotMeta` independently resolves sorted `(inc, label_len)` subjects and selected `QueryColumnMeta` facts; the returned `TickData` dictionary, rows and columns must match IDs, label byte lengths and columns. The source view pins the exact label bytes through read/replay. A series BLOCK uses a query-local dictionary built from sorted resolved subjects (empty labels) and shared `QueryColumnMeta` entries permitted by at least one requested agg; exact dictionary bytes participate in shared frame sizing. Series dictionary body ≤ `align8(8 + 12×max_rows + 74×64)` B, with at most 352 live query dictionaries | independent subject metadata prevents a source from making an omitted subject appear complete; byte lengths make exact preflight possible without per-request label references, while the source view owns byte stability; one shared column type supports snapshot validation and history packing |
-| D-W45 | `cursor:null` uses the newest published process scan; absence/expiry is `budget {"pool":"procs"}`. Scan acquisition may observe churn, but published rows and optional fields are immutable; `complete` describes the bounded listing/inspection procedure, not an atomic host instant | no fabricated empty result, replay remains stable, and clients can interpret partial coverage honestly |
+| D-W44 | `SnapshotMeta` independently resolves sorted `(inc, label_len)` subjects and exactly one canonical `QueryColumnMeta` for every requested metric; after exact Query admission, the returned `TickData` dictionary, rows and columns must match IDs, label byte lengths and columns. The source view pins the exact label bytes through read/replay. A series BLOCK uses a query-local dictionary built from sorted resolved subjects (empty labels) and `QueryColumnMeta` entries permitted by at least one requested agg; Server validates the complete requested metric set and derives `omitted`; exact dictionary bytes participate in shared frame sizing. Series dictionary body ≤ `align8(8 + 12×max_rows + 74×64)` B, with at most 352 live query dictionaries | independent subject/metric metadata prevents a source from making an omitted subject or requested metric appear complete; byte lengths make exact preflight possible without per-request label references, while the source view owns byte stability; Server derives wire presentation from one canonical typed metric set |
+| D-W45 | `cursor:null` selects the newest published process scan and creates a distinct filtered projection id pinned to that scan; concurrent filters over the same scan receive distinct ids, and cursors bind both scan and projection. Absence/expiry is `budget {"pool":"procs"}`. Scan acquisition may observe churn, but published rows and optional fields are immutable; `complete` describes the bounded listing/inspection procedure, not an atomic host instant | no fabricated empty result, cursors for different filters cannot alias, replay remains stable across refresh, and clients can interpret partial coverage honestly |
 | D-W46 | If one legal dictionary-bearing snapshot or history BLOCK exceeds configured `max_block_bytes`, refuse before value reads and success REP with `budget {"pool":"block"}` | the client sees a capacity refusal rather than `internal`; no arbitrary minimum configuration is invented |
 | D-W47 | Connection close, fatal close, shutdown and `Server::finish` discard pending query state and unexposed reservations and release active view references exactly once; already exposed cursor tokens remain independently valid until expiry or view invalidation | abandoned work cannot retain bounded slots or views, while connection lifetime does not silently change the token contract |
 

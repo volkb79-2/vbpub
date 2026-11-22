@@ -1331,10 +1331,13 @@ at most 352 live (256 cursor-backed plus 96 active requests without cursors), re
 unreferenced, and expire within 60 s; they do not copy history rows or process scan data. The serving
 layer separately bounds retained series-view metadata and query dictionaries by WIRE D-W42/D-W44.
 For `snapshot_at`, each view pins the exact entity-label bytes selected at open while the Server retains
-only `(inc, label_len)` for exact preflight. P5c must use shared/versioned source metadata or another
-bounded representation, account any retained label bytes separately from the <56 MiB Server query
-payload, and prove that a same-length label update cannot change an already-open view. Release must
-unpin those facts with the source view. Until this package lands, the M2 live-exit demo has no production
+only `(inc, label_len)` for exact preflight. Across at most 96 active snapshot views, the conservative
+source-owned ceiling is `96 × max_rows × 256 B` (96 MiB at default `max_rows=4096`); P5c may use a
+tighter shared/versioned representation but must publish and test an explicit bound. Account these bytes
+separately from the <56 MiB Server query payload and prove that a same-length label update cannot change
+an already-open view. Release must unpin those facts with the source view. Process projections likewise
+reference shared published scan rows; P5c must separately bound any projection-specific index/descriptor
+storage, while shared rows remain within the WIRE scan-cache bound. Until this package lands, the M2 live-exit demo has no production
 data source and must not be claimed.
 
 **Exit criteria.** A production backend supplies immutable typed process scans with `(boot_id,pid,
