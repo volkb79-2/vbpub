@@ -42,7 +42,7 @@ FAILS = []
 INIT_FAILURE_RE = re.compile(
     rb"Kernel panic - not syncing: (?:No working init found|Attempted to kill init!)", re.I
 )
-ROOT_PROMPT_RE = re.compile(rb"root@[^\r\n]*[#$] ?")
+SHELL_PROMPT_RE = re.compile(rb"[A-Za-z_][A-Za-z0-9_.-]*@[^\r\n]*[#$] ?")
 
 
 def marker_wrapped_command(cmd):
@@ -153,7 +153,7 @@ class Guest:
         # shell print its prompt, allowing this method to attach to an already logged-in guest.
         self.buf = b""
         self.send("\n")
-        _, match = self.expect(re.compile(rb"login: ?|" + ROOT_PROMPT_RE.pattern, re.I), timeout)
+        _, match = self.expect(re.compile(rb"login: ?|" + SHELL_PROMPT_RE.pattern, re.I), timeout)
         if match.group(0).lower().startswith(b"login:"):
             self._do_login()
         else:

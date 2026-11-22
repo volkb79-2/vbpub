@@ -389,6 +389,27 @@ def main() -> int:
     if existing_shell_errors or not g.shell_ready:
         failures.append(f"existing-shell handshake: errors={existing_shell_errors!r}, shell_ready={g.shell_ready}")
 
+    # Reattaching to the Debian Live user's already-open shell must not wait for a root-only prompt.
+    live_prompt = b"user@debian:~$ "
+    g = drs.Guest("unused", io.StringIO())
+    sent = []
+    g.send = sent.append
+
+    def expect_live_prompt(pattern, _timeout):
+        rx = pattern if isinstance(pattern, re.Pattern) else re.compile(pattern)
+        match = rx.search(live_prompt)
+        if match is None:
+            raise AssertionError(f"login prompt detector missed an existing live-user shell: {rx.pattern!r}")
+        return live_prompt, match
+
+    g.expect = expect_live_prompt
+    try:
+        g.login()
+    except Exception as exc:  # noqa: BLE001
+        failures.append(f"login on an already logged-in live-user shell failed: {exc!r}")
+    if sent != ["\n"] or not g.shell_ready:
+        failures.append(f"live-user-shell handshake sent={sent!r}, shell_ready={g.shell_ready}")
+
     # tags: the echoed command line, also wrapped by the tty at 80 columns, never satisfies a check
     echoed = ("root@drpoc:~# echo OFFER:$(apt list --upgradable 2>/dev/null | grep -c '^linux-image'); echo KVER:$(uname\n"
               " -r); echo MODRC:$?\nOFFER:2\nKVER:6.12.115+deb13-amd64\nMODRC:0\n")
