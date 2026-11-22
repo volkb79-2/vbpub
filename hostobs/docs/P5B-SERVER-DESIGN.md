@@ -208,26 +208,100 @@ reader or the `/proc` process scanner. WIRE §4.8–§4.11 is normative for both
 and the later production source. P5c/HOB-62 owns the production source path and must land before the
 M2 live-exit claim.
 
+### Design rationale and alternatives
+
+- **Keep the serving seam separate from production readers.** `QueryBackend` serves typed, immutable
+  source facts; P5c owns real store, procfs, membership and provenance adapters. The current Store
+  range API returns bounded records and truncation state, not the committed history view and stable
+  replay index this contract needs. The process reader reads individual procfs files and does not
+  implement bounded lowest-PID enumeration, scan coverage or membership rechecks. Folding those
+  sources into P5b would couple a large serving/state change to two independent data-source designs
+  and their fake-root/fake-store race evidence. The tradeoff is that fixed-backend tests can pass before
+  live M2 data exists; P5b is therefore not M2 live-exit evidence. P5c plus an integrated VM query
+  against real sources is required. The strongest alternative is an end-to-end P5b package; it removes
+  the interim gap but makes source races, storage semantics and cursor behavior one much larger review.
+- **Publish the newest weakly consistent process scan.** Procfs does not offer an atomic host-wide
+  snapshot. A bounded listing followed by identity and membership checks reports what was observed;
+  `complete` describes that procedure and does not claim every returned process coexisted at one
+  instant. Once published, rows, optional fields and coverage are immutable so page replay is stable.
+  Two matching scans add work and can fail indefinitely under churn without making fields atomic;
+  pidfds add up to 50,000 descriptors but do not freeze fields; event-fed inventory needs overflow and
+  resync state; freezing workloads is privileged and changes what is measured; rejecting every changed
+  scan would turn normal churn into routine refusal. The selected design uses bounded scans and makes
+  the consistency limit visible.
+- **Preflight the exact BLOCK and keep one encoded queue.** Snapshot and history metadata determine
+  row/column counts and dictionary bytes, so the Server computes the exact frame length before value
+  reads. In the single-threaded Server turn, `query_room` and `push_query` use the same unchanged pool
+  authority; an encoded staging slot is redundant. One staged BLOCK would add up to 4 MiB outside all
+  Query pools, global head-of-line blocking, and close/expiry cleanup. A future concurrent producer
+  would need a charged hub reservation with explicit release, not a hidden staging buffer. Pending
+  `current` remains the D-W30 exception because it re-resolves a potentially larger tick after its first
+  attempt. The accepted progress limit is that per-uid rotation does not guarantee eventual service for
+  every request within one busy uid; an oldest-waiter drain rule could provide that guarantee but would
+  head-of-line block smaller requests from the same uid. Query progress also requires the peer to drain
+  queued bytes.
+- **Make history resolution deterministic and views byte-stable.** One tier must cover the full
+  half-open range; step zero chooses the coarsest eligible tier and an explicit shared step chooses
+  among full-range eligible tiers by hot/warm/cold. Gaps are omitted; tiers are never spliced. A valid
+  range with no bucket starts emits an empty complete page. A metric is omitted only when its mask
+  excludes every requested aggregation. The view freezes values, quality, coverage, samples, group
+  ordinals and dictionary facts; a committed watermark alone cannot guarantee this when a later append
+  changes the same bucket. Any eviction in the selected tier invalidates the view, even outside the
+  requested range. This may end a cursor before 60 seconds, but avoids retention that grows with client
+  pins. Tier splicing, fallback, gap markers, or retained evicted segments would return more data but
+  mix resolutions, add wire state, or make client activity control storage lifetime. P5c must prove a
+  bounded immutable/versioned read index; if the store cannot supply it, the source design must change
+  before M2 exit.
+- **Preflight labels with lengths and pin the source facts once.** Snapshot metadata carries the
+  resolved incarnation and UTF-8 label byte length, which is all the shared frame-size helper needs;
+  the immutable source view pins the corresponding label bytes until the candidate is read. This keeps
+  each pending request's row record to 16 B and avoids copying label text into request state. A per-row
+  `Arc<str>` in `SnapshotMeta` would make the exact label directly comparable in Server, but adds one
+  fat reference per row (about 3 MiB across the 96-request bound) and still needs shared source strings.
+  Preflighting with the protocol maximum of 256 B would avoid pins but can refuse a query whose actual
+  frame fits. The selected representation is smaller and exact; its cost is a source-view stability
+  guarantee, which P5c must implement and bound. If the source cannot pin the exact bytes cheaply, use
+  shared label references rather than weaken that guarantee.
+- **Report source unavailability and capture fields once.** No or expired process scan is
+  `budget {"pool":"procs"}`, not an empty result that falsely means “no processes.” Optional fields,
+  including redacted cmdline, are captured into the published scan; serving or replay never rereads
+  procfs. A bounded worker policy is required for potentially blocking cmdline reads. Re-reading on
+  demand reduces retained bytes but makes pages unstable and can stall the server loop.
+- **Use a budget refusal for a legal BLOCK that cannot fit.** If the configured frame cap cannot hold
+  one legal dictionary-bearing snapshot or history bucket, return `budget {"pool":"block"}` before
+  values or REP. Requiring a global minimum `max_block_bytes` would constrain deployments even when
+  those deployments never issue the large query; returning `internal` would mislabel known capacity.
+
+These choices are wire and lifecycle contract, not implementation suggestions. The following typed
+interfaces and tables make each observable consequence testable; P5c owns source facts the P5b fixed
+backend cannot prove.
+
 Keep responsibilities single-sourced:
 
 - `Conn` owns parsed request state, correlation ordering, REP/BLOCK/END transitions, and the typed
   state needed to resume a request after Query backpressure or while Draining.
 - `Server` owns cursor tokens and their bounded canonical-argument bindings, source-view identifiers,
-  expiry, and the fair Query admission scheduler. There is one cursor authority; a backend does not
-  mint or interpret wire cursor strings.
+  expiry, and Query rotation position. It derives pending requests from the one `Conn` request-record
+  authority; it does not keep a duplicate pending-request map. There is one cursor authority; a backend
+  does not mint or interpret wire cursor strings.
 - The existing `Backend` stays narrow for identity, status and `current`; the independent `QueryBackend`
   exposes a metadata-only snapshot view, ordered history-group metadata and one-bounded-block reads,
   plus an immutable process scan/page. Neither interface encodes JSON or decides protocol errors. A
   source-view eviction/expiry is an explicit typed outcome, not an empty page.
-- `Server` owns the exact series block partition using the one checked frame-size function shared with
-  `encode.rs`. `SendHub` owns encoded queued bytes and the Query byte pools. The Server preflights
-  `query_room(c, max_block_bytes)` before every value read, builds at most one candidate BLOCK at a
-  time, and queues it directly. Retry turns rotate by peer uid and request; one request cannot
-  monopolize all producer progress. The existing D-W30 rule for `current` remains.
+- `Server` owns exact snapshot/history frame sizing and the series block partition, using one checked
+  frame-length helper shared with encoding. `SendHub` owns encoded queued bytes and Query byte pools.
+  The Server preflights `query_room(c, exact_frame_bytes)` before every value read, builds at most one
+  candidate BLOCK at a time, and queues it directly without a staged encoded block. Retry turns rotate
+  by peer uid and request; this limits scheduler preference across uids but does not guarantee
+  starvation-free service within one uid. The existing D-W30 rule for `current` remains.
 - The P5b-4 driver owns `LISTEN_FDS`, nonblocking socket reads/writes, mode detection plumbing,
   `SO_PEERCRED`/`SO_PEERPIDFD` capture at accept, and configuration. It passes immutable peer facts
   into `Server`; it never supplies identity from REQ JSON and never re-reads a peer by numeric PID
-  after accept. The core remains sans-IO and fake-clock testable.
+  after accept. WIRE §4.12 also requires the accepted peer's cgroup incarnation. The P5b-4 contract
+  must name how the pidfd-backed peer maps to that incarnation and how exit/replacement races refuse;
+  P5b-3 only consumes the optional resolved fact, and P5c's process membership scan remains separate.
+  Review this resolver boundary before P5b-4 implementation. The core remains sans-IO and fake-clock
+  testable.
 
 P5b-3's fixed backend proves decoded wire results and refusal precedence, not production `/proc` or
 store behavior. Its behavioral oracles belong to `hostobs:selftest` and `hostobs:assay-r1`; the
@@ -295,16 +369,18 @@ enum QuerySourceError {
     ViewInvalid, Internal,
 }
 struct SnapshotView { id: SnapshotViewId, meta: SnapshotMeta }
+struct SnapshotSubjectMeta { inc: u64, label_len: u16 }
 struct SnapshotMeta {
     tier: Tier, bucket_real_ns: i64, step_ms: u32, covered_ms: u32,
+    subjects: Vec<SnapshotSubjectMeta>, columns: Vec<QueryColumnMeta>,
     provenance_cell_count: Option<u32>, // metadata only; None unless requested
 }
 struct SnapshotData { tick: TickData, provenance: Option<Vec<CellProvenance>> }
 struct SeriesView {
     id: SeriesViewId, tier: Tier, step_ms: u32, omitted: Vec<String>,
-    subjects: Vec<u64>, columns: Vec<HistoryColumnMeta>, first: Option<SeriesPosition>,
+    subjects: Vec<u64>, columns: Vec<QueryColumnMeta>, first: Option<SeriesPosition>,
 }
-struct HistoryColumnMeta { metric: String, facts: MetricFacts, value_type: MetricValueType }
+struct QueryColumnMeta { metric: String, facts: MetricFacts, value_type: MetricValueType }
 struct SeriesGroup { subject_inc: u64, agg: Aggregation, first: SeriesPosition, bucket_count: u64 }
 struct BlockPlan { subject_inc: u64, agg: Aggregation, start: SeriesPosition, buckets: u32 }
 struct HistoryBlockData {
@@ -360,26 +436,42 @@ exact step. The Server checks the returned tier and step, computes checked Eucli
 the returned step, verifies the returned bucket, and validates `covered_ms`. For auto, overflow in an
 ineligible candidate tier does not mask another eligible tier; no eligible tier is `not-found`.
 
-`SnapshotMeta` contains no provenance values. When `provenance=true`, `snapshot_open` returns the exact
-metadata-only `provenance_cell_count`; above 64 the Server returns `budget {"pool":"provenance"}`
-before `snapshot_read` or success REP. `snapshot_read` is called only after Query room is available and
-returns the bounded TickData plus all requested provenance. The Server checks that the count equals the
-number of represented cells and that the records are complete, unique, ordered, type-correct, finite,
-within field bounds and age-valid before it queues the success REP and then the BLOCK. `provenance=false`
-requires no provenance values and emits JSON `null`; `true` emits an array, including `[]` for zero
-represented cells. One legal object is at most 3,404 encoded bytes; the 4,096-byte cap is defensive,
-not an independently reachable budget condition.
+`SnapshotMeta` contains the independently resolved subjects, selected columns and no bucket values or
+provenance objects. Subjects are complete and sorted by `inc`, bounded by `max_rows`, and carry each
+source label's UTF-8 byte length (`label_len`, at most 256) so the Server can preflight the exact
+snapshot dictionary without retaining a label handle per active request. `snapshot_open` pins the
+source label facts in its immutable view; `snapshot_read` must return those exact label bytes. The
+Server checks each candidate subject id and label byte length against `SnapshotMeta`; content stability
+within the view is the backend's source-view guarantee. The source owns and bounds any retained label
+storage, while the Server retains only ids and lengths. Columns are complete, sorted `QueryColumnMeta`
+facts for the selected metrics. When `provenance=true`, `snapshot_open` also returns exact metadata-only
+`provenance_cell_count`; above 64 the Server returns `budget {"pool":"provenance"}` before
+`snapshot_read` or success REP. The Server computes exact dictionary-bearing frame length from row
+count, columns, subject label byte lengths and the shared checked frame-length helper. If one legal
+BLOCK exceeds
+`max_block_bytes`, it returns `budget {"pool":"block"}` before values or success REP. It calls
+`query_room(c, exact_frame_bytes)` before `snapshot_read`; while waiting it retains only the view and
+bounded metadata, with no success REP and no candidate values. Once admitted, `snapshot_read` returns
+the bounded TickData plus requested provenance. The Server requires exact subject-id/label-byte-length/column/value-type agreement with
+`SnapshotMeta` (the source view guarantees the corresponding exact label bytes), exactly one row per
+resolved subject in ascending `inc` order,
+and no missing/duplicate/foreign row before queuing success REP then BLOCK.
+For requested provenance it checks the count against represented cells and requires complete, unique,
+ordered, type-correct, finite, field-bounded and age-valid facts. `provenance=false` requires no
+provenance values and emits JSON `null`; `true` emits an array, including `[]` for zero represented
+cells. One legal object is at most 3,404 encoded bytes; the 4,096-byte cap is defensive, not an
+independently reachable budget condition.
 
-Each query stream uses the canonical dictionary from WIRE D-W44. For `snapshot_at`, validate the
-dictionary in `SnapshotData.tick.entries` against the resolved selection and use it for the one BLOCK.
-For `series_batch`, `SeriesView.subjects` is the complete resolved subject list (≤ `max_rows`), in
-ascending incarnation order; the Server builds entity entries with empty labels followed by the
-selected `HistoryColumnMeta` entries, in canonical metric order, whose aggregation masks permit at
-least one requested aggregation. `omitted` contains the selected metrics that permit none. The
-dictionary stays fixed for the query and its exact encoded bytes are retained as bounded metadata for
-planning/replay; the shared frame-size helper includes those bytes on the first BLOCK and excludes them
-on later BLOCKs. The source view holds references to shared catalog/index facts rather than copying
-history rows.
+Each query stream uses the canonical dictionary from WIRE D-W44. For `snapshot_at`, the Server builds
+the expected dictionary from `SnapshotMeta`, verifies `SnapshotData.tick.entries` against it, and uses
+that validated dictionary for the one BLOCK. For `series_batch`, `SeriesView.subjects` is the complete
+resolved subject list (≤ `max_rows`), in ascending incarnation order; the Server builds entity entries
+with empty labels followed by the selected `QueryColumnMeta` entries, in canonical metric order, whose
+aggregation masks permit at least one requested aggregation. `omitted` contains exactly the selected
+metrics that permit none of the requested aggregations. The dictionary stays fixed for the query and
+its exact encoded bytes are retained as bounded metadata for planning/replay; the shared frame-length
+helper includes those bytes on the first BLOCK and excludes them on later BLOCKs. The source view holds
+references to shared catalog/index facts rather than copying history rows.
 
 For `series_batch`, `SeriesPosition` is a stable zero-based ordinal over data-bearing buckets in the
 immutable view, ordered by subject incarnation, request aggregation order, then bucket time. A
@@ -394,36 +486,53 @@ checks these structural claims as it reads the bounded page plan; P5c proves the
 group index is complete against committed store facts. `series_read(view, at, count)` accepts only a
 nonzero planned range contained in that one group and returns exactly those buckets in ordinal order.
 It never crosses a group boundary or returns a shortened result as success. The Server validates
-the group order and contiguous positions as it creates `BlockPlan`s: for
-each group it selects the largest prefix bounded by `max_block_buckets` whose exact encoded frame size
-fits `max_block_bytes`. The one checked size function in `encode.rs` is used by both planning and
-encoding; because column values and TIME entries are fixed width, exact size depends on the dictionary
-form, column count and bucket count, not on values. First BLOCK uses the dictionary-bearing form and
-later BLOCKs in that request use the bare form. `series_read(view, start, count)` returns exactly one
-planned block; the Server validates its subject, aggregation, bucket count/order, metric columns,
-coverage, samples and encoded size before queueing it. P5b fixtures prove this server partition and
-transfer logic. P5c/HOB-62 proves the production view reports every eligible committed bucket exactly
-once, freezes the watermark, applies tier retention, omits only gaps, and invalidates on tier eviction.
+the group order and contiguous positions as it creates `BlockPlan`s: for each group it selects the
+largest prefix bounded by `max_block_buckets` whose exact encoded frame size fits `max_block_bytes`.
+The same checked frame-length helper is used by metadata planning and final encoding; because column
+values and TIME entries are fixed width, exact size depends on dictionary form, column count and
+bucket count, not on values. First BLOCK uses the dictionary-bearing form and later BLOCKs in that
+request use the bare form. `series_read(view, start, count)` returns exactly one planned block; the
+Server validates its subject, aggregation, bucket count/order, metric columns, coverage, samples and
+encoded size before queueing it. If a legal dictionary-bearing one-bucket plan exceeds
+`max_block_bytes`, return `budget {"pool":"block"}` before success REP or value read. P5b fixtures
+prove this server partition and transfer logic. P5c/HOB-62 proves the production view reports every
+eligible committed bucket exactly once, freezes the watermark and all bucket facts across later
+same-bucket writes, applies the deterministic tier rule, omits only gaps, and invalidates on any
+selected-tier eviction.
 
 Before success REP, the Server performs metadata-only lookahead for at most `max_blocks + 1` block plans
 (65 maximum), retaining at most the first 64 fixed-size plans. It reserves a cursor only if the extra
 plan proves continuation. Terminal pages need no cursor slot and succeed when the cursor table is full.
-While Query room is unavailable, the request retains only the immutable view handle, bounded canonical
-args, block plans, current position and any reserved cursor; no values or encoded BLOCK bytes are held.
-After REP, each `series_read` requires Query room and produces at most one typed candidate and one
-encoded BLOCK before handing it directly to SendHub.
+Before success REP, the Server uses metadata and the shared checked frame-length helper to establish
+the exact dictionary-bearing size of the first planned block and returns `budget {"pool":"block"}` if
+it cannot fit the configured maximum. While Query room is unavailable, the request retains only the
+immutable view handle, bounded canonical args, block plans, current position and any reserved cursor;
+no values or encoded BLOCK bytes are held. After REP, each `series_read` preflights the exact planned
+frame length, then produces at most one typed candidate and one encoded BLOCK before handing it
+directly to SendHub. Preflight and push happen in the same single-threaded Server turn. A returned
+`Backpressure` after exact preflight is `internal`; D-W30's current-tick re-resolution remains the
+explicit exception. The planner and encoder call the same checked frame-length helper; code review or
+a structural check proves helper reuse, while behavior oracles prove the calculated lengths.
 
 `HistoryBucket.covered_ms` and `samples` are source facts. P5b validates `covered_ms <= step_ms`
 and transfers the exact `u16` sample count. The source owns same-segment clock mapping, conservative
 bucket assignment, interval union, and proof that sample counts fit `u16`; P5c tests those against fake
 clock/store inputs. P5b does not claim those source properties.
 
-`procs_open` returns an immutable view whose `row_count` is already filtered for the requested subject
-and descendant mode. P5b does not rederive membership or descendant closure. `procs_read` returns one
-row in ascending `(pid,start_ticks)` order; the Server validates coverage bounds, row identity/order,
-requested fields, cmdline output bounds and reply size, then serializes only requested fields one row at
-a time. The source owns PID listing/selection, identity recheck, cgroup membership verification,
-parent-incarnation traversal, field reads and cmdline redaction/truncation. Those are P5c/HOB-62 oracles.
+`procs_open` selects the newest published immutable scan and returns a view whose `row_count` is
+already filtered for the requested subject and descendant mode. If no scan exists or the newest scan
+has expired, it returns `Budget(Procs)`; it never fabricates an empty scan. Acquisition is weakly
+consistent because procfs listing and per-process reads are not atomic. `complete` means the bounded
+listing and inspection procedure finished without omitted candidates or failed identity/membership
+checks; it does not mean all rows coexisted at one instant. Once published, rows, membership, optional
+field values and coverage facts are stable for replay. P5b does not rederive membership or descendant
+closure. `procs_read` returns one row in ascending `(pid,start_ticks)` order; the Server validates
+coverage bounds, row identity/order, requested fields, cmdline output bounds and reply size, then
+serializes only requested fields one row at a time. The source captures optional fields into the scan;
+it never rereads them while serving a page. P5c bounds potentially blocking cmdline reads with its
+worker policy, and owns PID listing/selection, identity recheck, cgroup membership verification,
+parent-incarnation traversal, field reads and cmdline redaction/truncation. Those are P5c/HOB-62
+oracles.
 
 ### Source error and phase mapping
 
@@ -438,9 +547,11 @@ current phase. A metadata gap is represented by an omitted position, never by `D
 | `snapshot_open` | before success REP | `BucketOutOfRange` | REP `bad-request`, `{"key":"real_ns"}` |
 | `snapshot_open` | before success REP | `Unsupported(Provenance)` | REP `unsupported-feature`, `{"feature":"provenance"}` |
 | `snapshot_open` / `snapshot_read` | before success REP | `Budget(Rows)` | REP `budget`, `{"pool":"rows"}` |
+| Server snapshot sizing | before success REP | minimum legal dictionary-bearing frame exceeds `max_block_bytes` | REP `budget`, `{"pool":"block"}` |
 | `snapshot_read` | before success REP | `ViewInvalid` | REP `internal`, `{}`; no client cursor exists |
 | `series_open` | before success REP | `NotFound` | REP `not-found`, `{}` |
 | `series_open` / `series_group` | before success REP | `Budget(Rows)` | REP `budget`, `{"pool":"rows"}` |
+| Server series sizing | before success REP | one legal dictionary-bearing bucket exceeds `max_block_bytes` | REP `budget`, `{"pool":"block"}` |
 | `series_group` | before success REP | `ViewInvalid` | REP `cursor-invalid` if input had a cursor; otherwise REP `internal` |
 | `series_read` | after success REP | `ViewInvalid` | END `ok:false cursor-invalid` |
 | `series_read` | after success REP | `Budget(Rows)` | END `ok:false budget {"pool":"rows"}` |
@@ -450,7 +561,9 @@ current phase. A metadata gap is represented by an omitted position, never by `D
 | `procs_read` | before success REP | `ViewInvalid` | REP `cursor-invalid` if input had a cursor; otherwise REP `internal` |
 | any method | either phase | `Internal`, or a method-inapplicable result above | REP `internal` before success REP; END `ok:false internal` after it |
 
-`Unsupported`, `DataGap` and `BucketOutOfRange` are valid only from `snapshot_open`; `NotFound` is
+The two `Budget(Block)` outcomes are generated by Server metadata sizing, not by the backend. The
+backend's `Budget` outcomes are restricted to the method-specific pools above. `Unsupported`,
+`DataGap` and `BucketOutOfRange` are valid only from `snapshot_open`; `NotFound` is
 valid only from the three open methods; `ViewInvalid` is valid only from a read/group on a previously
 opened view. A series `Budget(Rows)` after REP preserves already queued BLOCKs. `procs_read` failures
 occur while building the single REP; no partial result is emitted.
@@ -461,6 +574,10 @@ unexposed-successor failure unless the source view was invalidated. After succes
 END after the queued BLOCK prefix; an unexposed successor reservation is released. If the source view
 is invalid, all tokens bound to it are invalidated and its last reference is released. Every terminal
 path calls `release_view` exactly once after the last active request/token reference is gone.
+Connection close, fatal close, shutdown and `Server::finish` discard pending request state and any
+unexposed cursor reservation, then release active view references exactly once. A previously exposed
+cursor remains valid across connection close while its token and source view remain valid; close never
+silently revokes an independently issued token.
 
 ### Query state and memory accounting
 
@@ -469,17 +586,23 @@ maximum outstanding observe/operator requests are 24 connections × 4 = 96. Each
 request is at most 16,384 B; each pending series plan is at most 64 × 24 B plus 512 B fixed state (2
 KiB). Source descriptors are capped at 352 live views (256 cursor-backed plus 96 active requests
 without cursors), at no more than 512 B logical state each (176 KiB); they reference shared immutable
-store or scan rows and do not copy them. A live series request retains metadata for at most
-`max_rows` resolved subjects and 64 metric/omitted entries: at most `8 × max_rows + 12 KiB` logical
-view metadata. Its canonical series dictionary body is at most
-`align8(8 + 12 × max_rows + 74 × 64)` bytes (dictionary header, empty-label entity entries, and
-64-byte metric names). At most 352 unique query views can be live, so their dictionary bodies are
-bounded by 352 times that expression; active `SeriesView` metadata exists for at most 96 requests.
-For the default `max_rows=4096`, this is 18.1 MiB of dictionary bodies and 4.125 MiB of active view
-metadata. The cursor payload, unbound canonical request payload (≤1.5 MiB), active plans/state
-(≤192 KiB), source descriptors (≤176 KiB), one typed candidate (≤3 MiB), and one encoded frame
-(≤4 MiB) have separate bounds. Together with the default dictionary bounds the logical query payload
-stays below 36 MiB before encoder scratch. If `max_rows` is configured differently, the two formulas
-above are the bound; they are not silently replaced with the default. This excludes the independently
-bounded 48 MiB process-scan cache, shared store/tier data and existing control/Query queue caps. These
-are logical payload bounds, not total RSS claims.
+store or scan rows and do not copy them. Every live series view retains its complete resolved subject
+ids and up to 64 metric/omitted facts: at most `8 × max_rows + 12 KiB` per view. This is charged for
+all 352 live views, including cursor-backed views. A live snapshot request retains up to `max_rows`
+`SnapshotSubjectMeta` records (at most 16 B per subject: `inc`, `label_len` and alignment) and 64
+`QueryColumnMeta` facts (up to 12 KiB), for at most `16 × max_rows + 12 KiB` per request. Label bytes
+remain pinned by the bounded source view and are not copied or reference-counted per request; P5c
+accounts that source-owned storage separately. At most 352 live history dictionaries
+are charged at `align8(8 + 12 × max_rows + 74 × 64)` bytes each (dictionary header, empty-label entity
+entries and 64-byte metric names). Snapshot dictionary bytes are transient and covered by the one
+candidate/encoded-frame pair; they are not retained while waiting for Query room.
+
+For the default `max_rows=4096`, the conservative components are 4.125 MiB of cursor payload, 1.5 MiB
+of active request args, 192 KiB of active plans/state, 176 KiB of source descriptors, 15.125 MiB of
+series-view metadata for all 352 views, 7.125 MiB of active snapshot metadata for 96 requests, 18.1
+MiB of history dictionary bodies, one typed candidate up to 5 MiB (including bounded snapshot data
+and at most 64 provenance objects) and one encoded frame up to 4 MiB. Their sum is below 56 MiB
+before encoder scratch. If `max_rows` differs, the stated formulas replace
+the default calculation. This excludes the independently bounded 48 MiB process-scan cache, shared
+store/tier data and existing control/Query queue caps. These are logical payload bounds, not total RSS
+claims.

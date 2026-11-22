@@ -76,5 +76,12 @@
       {"subject_inc": 9, "agg": "last", "start": 4, "buckets": 1, "dictionary": false, "frame_bytes": 240}
     ],
     "next_position": {"subject_inc": 9, "agg": "mean", "bucket_ordinal": 5}
+  },
+  "omitted_metric_case": {
+    "request": {"metrics": ["m_never"], "aggs": ["mean"]},
+    "expected_omitted": ["m_never"],
+    "expected_dictionary_metrics": [],
+    "expected_blocks": [],
+    "end_reason": "complete"
   }
 }

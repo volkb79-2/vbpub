@@ -158,6 +158,16 @@ registry-set identity, which ignores workspace-member lock edits).
 The same constraint is why the tiny test-only JSON reader lives in `test-support/json.rs`
 (outside the workspace members) instead of pulling `serde_json` in as a dev-dependency.
 
+## Query views and snapshot labels
+
+The probe's serving core consumes typed immutable query views through `QueryBackend`; production
+collection and store/procfs adapters live behind that seam. A snapshot view pins the exact entity-label
+bytes selected at open so a delayed read cannot silently change its dictionary. The serving request
+retains only the incarnation and UTF-8 label byte length needed for exact frame preflight. P5c owns the
+source-side pinning and must bound any retained label generations along with its other view state.
+P5b serving tests prove the typed boundary, not the production pinning or collection path; M2 live-data
+exit needs the integrated P5c source.
+
 ## Collecting the host: what was ported from the sampler, and what was changed
 
 The `kernel` crate is the port of the topos sampler's collectors
@@ -214,6 +224,14 @@ contract (`cut_to_word` + `redact`, with the sampler's own test cases), and the 
 wants a pool implements one. What *was* ported is the part that can leak a password: a long
 line is cut at a word boundary so redaction never sees half a secret, and a vanished
 process is a typed `Missing` rather than an empty string.
+
+The production query contract publishes the newest bounded process scan. Acquisition is weakly
+consistent: procfs listing and per-process reads cannot promise that every returned process coexisted
+at one instant. `coverage.complete` describes a complete bounded listing/inspection procedure, not an
+atomic host snapshot. After publication, membership, optional fields and coverage are immutable so
+cursor replay is stable. No or expired scan is a `budget` refusal, not an empty process list. Optional
+fields are captured before publication; the source must keep potentially blocking cmdline reads behind
+a bounded worker policy so one task cannot stall scan publication without bound.
 
 **Clock injection instead of the host clock.** `ManualClock` makes every assertion about a
 wall jump, a monotonic interval or a reboot deterministic; `SystemClock` is the only

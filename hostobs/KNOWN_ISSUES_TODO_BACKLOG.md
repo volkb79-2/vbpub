@@ -74,7 +74,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-59 | `Tier::append` and `Store::evict` drop the partial `Evicted` (counts and notes) when an eviction fails after a partial pass | Minor | OPEN |
 | HOB-60 | `Store::notes` visibility is decided by name, not by directory, and the store's eviction-notes ring is redundant with the tiers' `scan.notes` through the public API | Minor | OPEN |
 | HOB-61 | `json.rs` `skip_ws` / `string_end` `+=` to `*=` are pure infinite loops: suite-level TIMEOUT under `assay-r2` by nature (accepted known limit; expected 0 MISSED + 2 TIMEOUT) | Minor | OPEN (accepted) |
-| HOB-62 | P5b-3/P5b-4 serve typed history and process data but do not provide production store, `/proc`, cgroup-membership or provenance readers; M2 must not claim a live exit demo until those bounded sources exist | Major | OPEN (P5c source package required before M2 live-exit claim) |
+| HOB-62 | P5b-3/P5b-4 serve typed history and process data but do not provide production store, `/proc`, cgroup-membership or provenance readers; P5c must also pin and bound snapshot label facts and immutable history views; M2 must not claim a live exit demo until those bounded sources exist | Major | OPEN (P5c source package required before M2 live-exit claim) |
 
 ---
 
@@ -1313,24 +1313,42 @@ P5b-3 defines a typed injected backend for `snapshot_at`, `series_batch`, and `p
 the sans-IO server to Unix sockets. These packages prove serving and transport behavior only. The
 existing process reader does not provide the full P5b scan contract (parent incarnation, per-process
 cgroup membership and I/O, bounded full-directory PID selection with partial-listing coverage, and
-stable immutable scan views), and the store API does not provide the history query view's committed
-watermark, source-assigned clock-segment coverage union, eviction generation, and per-cell
-raw-input/provenance facts. The serving layer owns exact BLOCK packing through one shared encoder-size
+stable immutable scan views). Process scans intentionally have weak consistency during acquisition:
+the listing plus per-PID identity/membership checks do not claim every returned process coexisted at
+one instant. After publication, rows, optional fields and coverage are immutable; no or expired scan
+is a `budget {"pool":"procs"}` refusal. Potentially blocking cmdline reads need a bounded source
+worker policy. The store API does not provide the history query view's committed watermark, source-
+assigned clock-segment coverage union, eviction generation, and per-cell raw-input/provenance facts.
+The serving layer owns exact BLOCK packing through one shared encoder-size
 function; the production source must provide immutable, ordered `(subject,agg)` group metadata, stable
 bucket-ordinal reads, the resolved subject list and metric facts needed for the canonical query
-dictionary, not prepacked wire blocks. Query-view descriptors are reference-only, at most 512 B each,
+dictionary, not prepacked wire blocks. A committed watermark alone does not make a series cursor
+immutable: values, quality, coverage, samples, group ordinals, subjects, columns and dictionary facts
+must remain byte-stable across later writes to the same bucket. The P5c source must provide an
+immutable/versioned read index or equivalent bounded view and prove that behavior. Query-view
+descriptors are reference-only, at most 512 B each,
 at most 352 live (256 cursor-backed plus 96 active requests without cursors), released when
 unreferenced, and expire within 60 s; they do not copy history rows or process scan data. The serving
 layer separately bounds retained series-view metadata and query dictionaries by WIRE D-W42/D-W44.
-Until this package lands, the M2 live-exit demo has no production data source and must not be claimed.
+For `snapshot_at`, each view pins the exact entity-label bytes selected at open while the Server retains
+only `(inc, label_len)` for exact preflight. P5c must use shared/versioned source metadata or another
+bounded representation, account any retained label bytes separately from the <56 MiB Server query
+payload, and prove that a same-length label update cannot change an already-open view. Release must
+unpin those facts with the source view. Until this package lands, the M2 live-exit demo has no production
+data source and must not be claimed.
 
 **Exit criteria.** A production backend supplies immutable typed process scans with `(boot_id,pid,
 start_ticks)` identity, verified cgroup membership, parent-incarnation traversal, bounded fields and
 cmdline privacy, exact `scanned`/`total`/`complete`/age reporting, and the WIRE §4.11 scan/cache bounds.
+It documents weak acquisition consistency, proves that `complete` means the bounded listing and
+inspection checks passed rather than claiming an atomic host instant, captures optional fields before
+publication, and bounds potentially blocking cmdline reads with a worker policy. A missing/expired
+published scan returns the documented `procs` budget refusal.
 It supplies `snapshot_at` and `series_batch` views with the WIRE tier selection, committed watermark,
 conservative clock-segment bucket assignment, source-side interval-union coverage, complete ordered
 group metadata, the resolved subject/column metadata, stable bucket-ordinal reads, gap and eviction
-semantics, plus the exact §4.8
+semantics, including byte-stable replay after a later append to a bucket and invalidation on selected-
+tier eviction, plus the exact §4.8
 provenance and raw-input / constraint schema. It proves every committed in-range bucket appears once in
 the typed source view; P5b Server tests separately prove largest-prefix frame packing with the shared
 encoder-size function. View release/expiry, the 352 × 512 B descriptor bound, and no-copy references are
