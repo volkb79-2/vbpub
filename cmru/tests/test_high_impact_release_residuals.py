@@ -56,7 +56,7 @@ def test_release_latest_candidates_select_highest_semver_and_ignore_drafts():
 
 
 def test_changelog_previous_tag_returns_none_when_git_describe_fails(monkeypatch, tmp_path):
-    monkeypatch.setattr(changelog.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=128, stdout="", stderr="no tag"))
+    monkeypatch.setattr(changelog, "run_process", lambda *a, **k: SimpleNamespace(returncode=128, stdout="", stderr="no tag"))
     assert changelog._previous_project_tag(tmp_path, "demo-v", "demo-v1.0.0") is None
 
 

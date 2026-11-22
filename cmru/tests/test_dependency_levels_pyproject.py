@@ -246,9 +246,10 @@ class TestRealEstate:
         assert report.levels["cmru"] == 4
         assert report.levels["nyxloom"] == 1
         assert report.levels["mdt-cockpit"] == max(report.levels.values()) == 5
-        assert all(report.levels[name] == 0 for name in (
-            "assay", "tls-edge", "tester-base",
-        ))
+        # TLS Edge's current orchestration declaration depends on cli-extended, making it L1.
+        assert {name: report.levels[name] for name in ("assay", "tls-edge", "tester-base")} == {
+            "assay": 0, "tls-edge": 1, "tester-base": 0,
+        }
         assert set(self._forge().orchestration.dependencies["fleetd"]) == {"cli-extended"}
         # topos requires both shared CLI and endpoint wheels, so it follows the L1 providers at L2.
         assert report.levels["topos"] == 2
