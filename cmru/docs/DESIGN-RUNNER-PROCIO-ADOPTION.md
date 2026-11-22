@@ -1,8 +1,9 @@
 # Design: CMRU adopts `cli_extended.procio`
 
 Status: **closed implementation plan** after the Codex Sol xhigh exact-head review of
-`36992832cd36d07698a2788ec488ad5159f6fbcc`. This note covers KI-178 items 3 and 4 in CMRU
-only. It supersedes the prior closure at
+`47e11f872751299056a4f1b854f62c6e81ec60ca`. This note covers KI-178 items 3 and 4 in CMRU
+only. It supersedes the prior closures through
+`36992832cd36d07698a2788ec488ad5159f6fbcc` and the original closure at
 `c36f25cddccf6c417eee48763fa0f3bd003836e0`. It does not implement P7.0-P7.3, and it does
 not assign adoption work in CIU, mdt-cockpit, or nyxloom.
 
@@ -10,10 +11,12 @@ not assign adoption work in CIU, mdt-cockpit, or nyxloom.
 
 CMRU will route every declared project-step command through
 `cli_extended.procio.run_streaming`. CMRU retains its logging, quiet-mode, error-excerpt,
-evidence, and ordinary step-failure contracts in the `on_line` adapter. The adapter reports
-procio's bounded-drain warning and watchdog report through CMRU's existing output and log
-paths. Every command receives a finite no-progress limit resolved from project configuration;
-the default is 1,800 seconds. Watchdog expiry is a runtime step failure with exit 1.
+evidence, and ordinary step-failure contracts in the `on_line` adapter. For an abandoned
+output pipe, CMRU keeps its exact presentation: procio's unprefixed warning body is printed
+once to stdout as `[WARN] {body}\n`, written once to the step log as `[cmru] {body}\n`, never
+written to the aggregate mirror, and printed even when `quiet=True`. Every command receives a
+finite no-progress limit resolved from project configuration; the default is 1,800 seconds.
+Watchdog expiry is a runtime step failure with exit 1.
 
 There is one deliberate output change under D-179: streamed step output uses
 `run_streaming`'s locale-based universal-newline decoding with replacement characters for
@@ -56,6 +59,13 @@ The exact-head review then produced six findings. Each has one closure below:
 | 5 | D-178 was cited but absent from the formal decision ledger. | `cmru/nyxloom-trove/decisions.md` records D-178 and D-179 with authority, rationale, binding scope, and oracles. D-001 remains unchanged. |
 | 6 | The final image cannot be probed for a wheel archive that the Dockerfile deletes. | P7.0b defines a build-time-wheel-hash to selected-immutable-image proof chain based on installed metadata and module bytes compared with the pinned archive's contents. |
 
+The subsequent exact-head review of
+`47e11f872751299056a4f1b854f62c6e81ec60ca` found one remaining presentation issue:
+
+| Finding | Closure in this plan |
+|---|---|
+| Procio returns an unprefixed holder-warning body while CMRU renders it differently on stdout and in the step log. | P7.2 owns one explicit warning formatter and a holder-warning presentation oracle covering both prefixes, one occurrence per abandoned pipe, quiet mode, the visible holder PID, and an unchanged aggregate mirror. |
+
 ## Required behavior comparison
 
 The implementation preserves the behavior marked "preserved" and deliberately changes only
@@ -65,7 +75,7 @@ migration.
 | Behavior | Current CMRU | `cli_extended.procio` | P7 target | Owner | Observable oracle |
 |---|---|---|---|---|---|
 | argv, cwd, environment | Builds the effective argv (including configured bake arguments), resolves an explicit per-command cwd, and runs under CMRU's scoped project/step/protected environment and `PYTHONUNBUFFERED=1`. | Accepts caller-supplied argv, cwd, and environment; it neither derives configuration nor mutates the caller's process environment. | Preserved: CMRU continues to derive those inputs; the adapter passes them unchanged to `run_streaming`. | P7.2 | Adapter fixtures capture the exact effective argv/cwd/env; cleanup's live case proves `CMRU_VERSION`, the selected token, original absolute cwd, and protected environment reach the child while ignored cleanup controls do not. |
-| Output streams and logging | Merges stdout/stderr, writes every line to the step log and optional aggregate mirror, applies quiet-mode suppression/error excerpts/tails, and emits bounded-drain holder warnings. | Merges stdout/stderr and calls `on_line`; exposes abandoned holders and warning text in `StreamResult`, but does not own CMRU's files or display policy. | Preserved: CMRU's `on_line` and result adapter retain both logs, mirroring, quiet output, evidence, and warning text. | P7.2 | Existing output/quiet/evidence tests plus a registered drained-pipe fixture assert holder WARN text, mirror bytes, nonzero mapping, and holder survival. |
+| Output streams and logging | Merges stdout/stderr and writes ordinary lines to the step log and optional aggregate mirror. When an output pipe remains open after bounded drain, `_warn_pipe_holders` prints one unprefixed-body warning to stdout as `[WARN] {body}\n` and writes it to the step log as `[cmru] {body}\n`; the warning is printed in quiet mode and is not written to the aggregate mirror. | Merges stdout/stderr and calls `on_line`; `StreamResult.warning` carries the unprefixed one-line body and reports the visible holder PID when available, but procio does not render prefixes or own CMRU's files. | Preserved: ordinary lines keep their existing step-log/aggregate-mirror behavior; the P7.2 formatter renders procio's body exactly once as CMRU's stdout and step-log lines, never mirrors it, and never suppresses it in quiet mode. | P7.2 | The holder-warning presentation oracle runs one abandoned pipe with a visible holder PID and asserts exactly one `[WARN] {body}\n` on stdout, exactly one `[cmru] {body}\n` in the step log, the PID in both, an unchanged aggregate mirror, and the same warning under `quiet=True`. |
 | Decoding and newlines | Locale incremental decoding with universal newlines and strict error handling: malformed bytes raise `UnicodeDecodeError`. | Locale incremental decoding with universal newlines and `errors="replace"`: malformed bytes become `U+FFFD`; `run_capture(text=True)` remains strict. | Deliberately changed by D-179 for streamed step output only; captured probes are not migrated. | P7.2 | In the registered capped lane with UTF-8, a child writing `b"ok \xff end\n"` and exiting 0 succeeds; both the step log and aggregate mirror contain `ok \ufffd end\n`, and no `UnicodeDecodeError` escapes. A nonzero child exit remains a step failure. |
 | Exit and error mapping | Nonzero child status becomes `CalledProcessError` and then the existing `StepFailed`; failure excerpts are written before raising. Missing executables propagate the spawn error. | Returns `StreamResult(returncode, outcome, warning, watchdog)` or raises the spawn/termination/on-line exception. | Preserved for ordinary exits: the adapter maps nonzero to the existing failure path and never turns replacement decoding into success/failure. Watchdog expiry is the new exit-1 runtime failure. | P7.2 | Child exits 0, 7, and signal-terminated cases retain their existing observable failure semantics; a missing executable retains the plain spawn exception; watchdog maps to `StepFailed(returncode=1)`, never a negative signal status. |
 | Watchdog and progress | Has no inactivity watchdog. | Requires a finite positive `no_progress_seconds`; bytes or configured path size/mtime changes count as progress, and expiry captures the tree before TERM/KILL. | Added: finite 1,800-second CMRU default, `[runner]` default, per-step override, source diagnostic, and path-sensitive progress. | P7.1/P7.2 | Config precedence and invalid-value tests in P7.1; fake-clock cases in P7.2 prove progress consumption, expiry diagnostic/source, pre-signal tree, and exit 1. |
@@ -266,9 +276,33 @@ and aggregate mirror under the existing output policy. The child's exit status r
 authoritative for ordinary success and failure. Captured probes are not migrated and retain
 their existing strict behavior.
 
+### Holder-warning presentation
+
+`procio.StreamResult.warning` is an unprefixed one-line body. When non-`None`, it represents
+exactly one abandoned-pipe event; `StreamResult.abandoned_holders` carries the visible holder
+PIDs or `None` when the `/proc` scan failed. The P7.2 adapter owns one explicit formatter and
+must preserve CMRU's current observable presentation exactly:
+
+- stdout receives exactly one `[WARN] {body}\n`, regardless of `quiet`;
+- the step log receives exactly one `[cmru] {body}\n`;
+- the aggregate mirror receives no warning bytes and remains otherwise unchanged; and
+- when a holder PID is visible, its decimal value appears in the body and therefore in both
+  prefixed renderings.
+
+The formatter consumes the unprefixed body as-is: it must not add a second prefix, emit both
+renderings more than once, suppress either rendering in quiet mode, omit the holder PID, or
+route the warning through the ordinary streamed-line path that also writes the aggregate
+mirror. Ordinary streamed output retains its existing step-log and aggregate-mirror behavior.
+
+The P7.2 holder-warning presentation oracle, named
+`cmru/tests/test_runner_pipe_holders.py::test_abandoned_pipe_warning_preserves_cmru_renderings`,
+uses one abandoned pipe whose holder is visible and parameterizes `quiet` while asserting the
+exact stdout text, step-log text, occurrence counts, holder PID, and unchanged aggregate mirror
+above.
+
 `run_command` remains the compatibility adapter around `_run_command`, which calls
 `procio.run_streaming` and preserves CMRU's elapsed/evidence, quiet excerpts, mirror handle,
-warning text, and `CalledProcessError` behavior. Pass
+holder-warning body ownership and formatting, and `CalledProcessError` behavior. Pass
 `drain_seconds=OUTPUT_DRAIN_SECONDS`, `term_grace_seconds=GROUP_TERM_GRACE_SECONDS`, and the
 resolved `no_progress_seconds`.
 
@@ -420,8 +454,20 @@ score targets. Each must be restored after its named check proves it red.
 | P7.0a | Omit the lane fact, add a fifth key, emit a malformed/boolean cap, accept a caller collision, or persist it on a bare-host/ineligible path. | Run-Gate producer, exact-schema, collision-refusal, bare-host, ineligible-path, and Assay-forwarding tests. |
 | P7.0b | Change the wheel URL/digest/minimum, or replace the evidence chain with a mutable tag alone, an installed-version-only check, or no installed-module-byte comparison. | Tester-unified Dockerfile/pin tests and the selected-image evidence check must fail. |
 | P7.1 | Let `[runner]` beat a step override, drop the winning source, accept bool/zero/negative/NaN/infinity, or let cleanup inherit ignored step controls from the full parsed config. | Config precedence/validation tests and the D-178 cleanup `StepConfig` stub test. |
-| P7.2 | Ignore `U+FFFD` replacement, turn malformed output into failure over exit 0, lose nonzero/signal failure mapping, forward `None` or a bare path instead of the required progress-path shapes, skip watchdog exit-1/tree reporting, or omit whole-group cleanup. | D-179 malformed-byte/exit tests, direct-call/log-path adapter tests, fake-clock watchdog tests, and pipe/pidfd process-group tests. |
+| P7.2 | Ignore `U+FFFD` replacement, turn malformed output into failure over exit 0, lose nonzero/signal failure mapping, forward `None` or a bare path instead of the required progress-path shapes, skip watchdog exit-1/tree reporting, omit whole-group cleanup, or regress holder-warning presentation. | D-179 malformed-byte/exit tests, direct-call/log-path adapter tests, fake-clock watchdog tests, pipe/pidfd process-group tests, and `cmru/tests/test_runner_pipe_holders.py::test_abandoned_pipe_warning_preserves_cmru_renderings`. |
 | P7.3 | Remove or invalidate a public config example, omit the runner key/default/precedence/oracle, break a cross-document anchor, or restore the old strict-decoding claim in S3.4a/user docs. | Shipped-loader example parsing, public-key vocabulary checks, anchor checks, and documentation regression tests. |
+
+The exact killer for each P7.2 holder-warning mutation is
+`cmru/tests/test_runner_pipe_holders.py::test_abandoned_pipe_warning_preserves_cmru_renderings`:
+
+| Controlled mutation | Required rejection |
+|---|---|
+| Drop the stdout `[WARN] ` prefix. | The stdout exact-text and occurrence assertion fails. |
+| Drop the step-log `[cmru] ` prefix. | The step-log exact-text and occurrence assertion fails. |
+| Duplicate the warning or retain/add a second prefix. | The exactly-one stdout/step-log assertions fail. |
+| Suppress the warning when `quiet=True`. | The parameterized quiet case sees no required warning and fails. |
+| Omit the visible holder PID from either rendering. | The body/PID assertions on stdout and in the step log fail. |
+| Invent an aggregate-mirror copy of the warning. | The unchanged-mirror assertion fails while ordinary streamed output remains separately checked. |
 
 ## Risks and source limits
 
