@@ -521,8 +521,8 @@ BLOCK. REP result `{"resolved":{"tier":str,"bucket_real_ns":i64,"step_ms":u32,"c
 "provenance":[object] (0..64; each ≤ 4,096 encoded B) | null}`; `provenance` is `null` when not
 requested. Metadata-only `snapshot_open` returns the complete resolved subjects as sorted
 `(inc, label_len)` facts
-(`label_len` is UTF-8 bytes, at most 256), exactly one `QueryColumnMeta` for each requested metric in
-canonical order, and the exact selected-cell count when provenance is requested. Missing, extra or
+(`label_len` is UTF-8 bytes, at most 256) and exactly one `QueryColumnMeta` for each requested metric in
+canonical order. Missing, extra or
 repeated requested metrics make the source view invalid. It returns no bucket values or provenance objects. The view pins the
 exact source label bytes until it is released; `snapshot_read` returns those same bytes. The Server derives
 the exact dictionary-bearing frame length from IDs, label lengths, columns and resolved row count, using
@@ -650,8 +650,11 @@ another tier. Requires negotiated minor ≥ 1 (kind 6); at minor 0 it is refused
    omitted, including every bucket in an otherwise retained empty range. A range with no blocks still
    returns REP then END `complete` with `blocks:0`. A (subject, agg) whose buckets exceed
    `max_block_buckets`, or whose block would exceed `max_block_bytes`, is split into consecutive blocks
-   in time order, each the largest prefix that fits both. If one legal dictionary-bearing bucket cannot
-   fit `max_block_bytes`, return `budget {"pool":"block"}` before success REP or value read. The Server
+   in time order, each the largest prefix that fits both. Each request preflights its first BLOCK in
+   dictionary-bearing form; if that one-bucket BLOCK cannot fit `max_block_bytes`, return
+   `budget {"pool":"block"}` before that request's success REP or value read. Thus a page can return
+   `next` for a bare-form continuation that its later request must refuse when the continuation's
+   dictionary-bearing first BLOCK does not fit. The Server
    owns this partition. The immutable
    source view exposes the complete resolved subject list (at most `max_rows`), exactly one canonical
    `QueryColumnMeta` per requested metric, and ordered metadata-only groups
@@ -1868,7 +1871,7 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | D-W43 | P5b process tests prove forwarding and serving of an already filtered immutable typed view; P5c proves PID selection, identity/membership recheck, parent-incarnation traversal, source coverage and cmdline privacy | injected serving fixtures cannot be mistaken for production `/proc` evidence |
 | D-W44 | `SnapshotMeta` independently resolves sorted `(inc, label_len)` subjects and exactly one canonical `QueryColumnMeta` for every requested metric; after exact Query admission, the returned `TickData` dictionary, rows and columns must match IDs, label byte lengths and columns. The source view pins the exact label bytes through read/replay. A series BLOCK uses a query-local dictionary built from sorted resolved subjects (empty labels) and `QueryColumnMeta` entries permitted by at least one requested agg; Server validates the complete requested metric set and derives `omitted`; exact dictionary bytes participate in shared frame sizing. Series dictionary body ≤ `align8(8 + 12×max_rows + 74×64)` B, with at most 352 live query dictionaries | independent subject/metric metadata prevents a source from making an omitted subject or requested metric appear complete; byte lengths make exact preflight possible without per-request label references, while the source view owns byte stability; Server derives wire presentation from one canonical typed metric set |
 | D-W45 | `cursor:null` selects the newest published process scan and creates a distinct filtered projection id pinned to that scan; concurrent filters over the same scan receive distinct ids, and cursors bind both scan and projection. Scan absence/expiry is `budget {"pool":"procs"}` before subject lookup; with a usable scan, an unknown subject is `not-found`. Scan acquisition may observe churn, but published rows and optional fields are immutable; `complete` describes the bounded listing/inspection procedure, not an atomic host instant | no fabricated empty result, cursors for different filters cannot alias, replay remains stable across refresh, and error precedence is deterministic |
-| D-W46 | If one legal dictionary-bearing snapshot or history BLOCK exceeds configured `max_block_bytes`, refuse before value reads and success REP with `budget {"pool":"block"}` | the client sees a capacity refusal rather than `internal`; no arbitrary minimum configuration is invented |
+| D-W46 | If the first dictionary-bearing BLOCK of a snapshot or history request exceeds configured `max_block_bytes`, refuse that request before value reads and success REP with `budget {"pool":"block"}` | the client sees a capacity refusal rather than `internal`; no arbitrary minimum configuration is invented; a history continuation is checked independently as a new request stream |
 | D-W47 | Connection close, fatal close, shutdown and `Server::finish` discard pending query state and unexposed reservations and release active view references exactly once; already exposed cursor tokens remain independently valid until expiry or view invalidation | abandoned work cannot retain bounded slots or views, while connection lifetime does not silently change the token contract |
 | D-W48 | For a configured explicit snapshot tier, checked bucket arithmetic precedes subject resolution; overflow is `bad-request real_ns` even for an unknown subject. For `procs`, absence/expiry of the newest scan precedes subject resolution and is `budget procs`; with a usable scan, unknown subject is `not-found` | invalid time is rejected independently of stored data; when no process scan exists, the source cannot provide a complete process answer, so a data-unavailable budget refusal is more accurate than subject lookup against an absent view |
 

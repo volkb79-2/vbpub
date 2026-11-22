@@ -288,9 +288,11 @@ M2 live-exit claim.
   procfs. A bounded worker policy is required for potentially blocking cmdline reads. Re-reading on
   demand reduces retained bytes but makes pages unstable and can stall the server loop.
 - **Use a budget refusal for a legal BLOCK that cannot fit.** If the configured frame cap cannot hold
-  one legal dictionary-bearing snapshot or history bucket, return `budget {"pool":"block"}` before
-  values or REP. Requiring a global minimum `max_block_bytes` would constrain deployments even when
-  those deployments never issue the large query; returning `internal` would mislabel known capacity.
+  the first dictionary-bearing BLOCK of a snapshot or history request, return `budget {"pool":"block"}`
+  for that request before values or REP. A history continuation is a new request stream, so its first
+  BLOCK is checked with the dictionary even if the previous page's bare-form continuation fit. Requiring
+  a global minimum `max_block_bytes` would constrain deployments even when those deployments never issue
+  the large query; returning `internal` would mislabel known capacity.
 
 These choices are wire and lifecycle contract, not implementation suggestions. The following typed
 interfaces and tables make each observable consequence testable; P5c owns source facts the P5b fixed
@@ -529,9 +531,11 @@ values and TIME entries are fixed width, exact size depends on dictionary form, 
 bucket count, not on values. First BLOCK uses the dictionary-bearing form and later BLOCKs in that
 request use the bare form. `series_read(view, start, count)` returns exactly one planned block; the
 Server validates its subject, aggregation, bucket count/order, metric columns, coverage, samples and
-encoded size before queueing it. If a legal dictionary-bearing one-bucket plan exceeds
-`max_block_bytes`, return `budget {"pool":"block"}` before success REP or value read. P5b fixtures
-prove this server partition and transfer logic. P5c/HOB-62 proves the production view reports every
+encoded size before queueing it. If the first dictionary-bearing one-bucket plan of this request exceeds
+`max_block_bytes`, return `budget {"pool":"block"}` before this request's success REP or value read.
+For example, a page may fit a bare-form continuation and return `next`; if that continuation's
+dictionary-bearing first BLOCK exceeds the cap, the request using that cursor returns the budget refusal.
+P5b fixtures prove this server partition and transfer logic. P5c/HOB-62 proves the production view reports every
 eligible committed bucket exactly once, freezes the watermark and all bucket facts across later
 same-bucket writes, applies the deterministic tier rule, omits only gaps, and invalidates on any
 selected-tier eviction.
@@ -598,7 +602,7 @@ current phase. A metadata gap is represented by an omitted position, never by `D
 | `snapshot_read` | before success REP | `ViewInvalid` | REP `internal`, `{}`; no client cursor exists |
 | `series_open` | before success REP | `NotFound` | REP `not-found`, `{}` |
 | `series_open` / `series_group` | before success REP | `Budget(Rows)` | REP `budget`, `{"pool":"rows"}` |
-| Server series sizing | before success REP | one legal dictionary-bearing bucket exceeds `max_block_bytes` | REP `budget`, `{"pool":"block"}` |
+| Server series sizing | before success REP | this request's first dictionary-bearing bucket exceeds `max_block_bytes` | REP `budget`, `{"pool":"block"}` |
 | `series_group` | before success REP | `ViewInvalid` | REP `cursor-invalid` if input had a cursor; otherwise REP `internal` |
 | `series_read` | after success REP | `ViewInvalid` | END `ok:false cursor-invalid` |
 | `series_read` | after success REP | `Budget(Rows)` | END `ok:false budget {"pool":"rows"}` |
