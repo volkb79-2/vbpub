@@ -73,6 +73,7 @@ PROJECTS = (
     ("cgprofile/pyproject.toml", ("test",)),
     ("libraries/patchseries/pyproject.toml", ("test",)),
     ("pwmcp/client/pyproject.toml", ("test",)),
+    ("tls-edge/pyproject.toml", ("test",)),
 )
 
 #: Projects whose ``[project].dependencies`` are NOT part of the tester closure: the gate needs only

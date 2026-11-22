@@ -3,7 +3,8 @@
 //!
 //! A verb that is reserved (M5/M6) or known but not served yet answers `unknown-verb` and is
 //! absent from `hello.verbs`; `forbidden` and `binary-required` are still judged from the full
-//! table (design R11), so the table carries every verb, served or not.
+//! table (design R11), so the table carries every verb, served or not. P5b-2d serves `current`,
+//! `subscribe` and `unsubscribe` at observe and operator.
 
 use crate::limits::Level;
 
@@ -25,7 +26,7 @@ pub struct Verb {
     pub levels: u8,
     /// The reply shape.
     pub shape: Shape,
-    /// Whether this package serves it (`hello` and `status` in P5b-1).
+    /// Whether this package serves it.
     pub served: bool,
     /// Whether the verb is reserved by an M5/M6 package (WIRE.md section 4.13).
     pub reserved: bool,
@@ -63,9 +64,9 @@ pub const VERB_COUNT: usize = 25;
 pub static VERBS: [Verb; VERB_COUNT] = [
     row("hello", EVERY, Shape::Json, true, false),
     row("status", TELEMETRY | CONTROL, Shape::Json, true, false),
-    row("current", TELEMETRY, Shape::Block, false, false),
-    row("subscribe", TELEMETRY, Shape::Block, false, false),
-    row("unsubscribe", TELEMETRY, Shape::Json, false, false),
+    row("current", TELEMETRY, Shape::Block, true, false),
+    row("subscribe", TELEMETRY, Shape::Block, true, false),
+    row("unsubscribe", TELEMETRY, Shape::Json, true, false),
     row("snapshot_at", TELEMETRY, Shape::Block, false, false),
     row("series_batch", TELEMETRY, Shape::Block, false, false),
     row("events", TELEMETRY | CONTROL, Shape::Json, false, false),
@@ -127,9 +128,9 @@ mod tests {
         let expected: [(&str, u8, Shape, bool, bool); 25] = [
             ("hello", ALL, Shape::Json, true, false),
             ("status", TEL | CTL, Shape::Json, true, false),
-            ("current", TEL, Shape::Block, false, false),
-            ("subscribe", TEL, Shape::Block, false, false),
-            ("unsubscribe", TEL, Shape::Json, false, false),
+            ("current", TEL, Shape::Block, true, false),
+            ("subscribe", TEL, Shape::Block, true, false),
+            ("unsubscribe", TEL, Shape::Json, true, false),
             ("snapshot_at", TEL, Shape::Block, false, false),
             ("series_batch", TEL, Shape::Block, false, false),
             ("events", TEL | CTL, Shape::Json, false, false),
@@ -227,7 +228,10 @@ mod tests {
                 Shape::Json
             };
             assert_eq!(verb.shape, expect, "{}", verb.name);
-            let served = verb.name == "hello" || verb.name == "status";
+            let served = matches!(
+                verb.name,
+                "hello" | "status" | "current" | "subscribe" | "unsubscribe"
+            );
             assert_eq!(verb.served, served, "{}", verb.name);
             assert!(!(verb.served && verb.reserved));
         }
@@ -236,9 +240,10 @@ mod tests {
     }
 
     #[test]
-    fn served_at_lists_hello_and_status_where_known() {
-        assert_eq!(served_at(Level::Observe), ["hello", "status"]);
-        assert_eq!(served_at(Level::Operator), ["hello", "status"]);
+    fn served_at_lists_the_five_p5b_verbs_where_known() {
+        let block = ["hello", "status", "current", "subscribe", "unsubscribe"];
+        assert_eq!(served_at(Level::Observe), block);
+        assert_eq!(served_at(Level::Operator), block);
         assert_eq!(served_at(Level::Observer), ["hello"]);
         assert_eq!(served_at(Level::Control), ["hello", "status"]);
     }

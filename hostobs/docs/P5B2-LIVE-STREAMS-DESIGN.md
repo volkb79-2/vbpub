@@ -289,6 +289,11 @@ Tests: section 5.4 (incl. every §11.4 case of section 5.5). WIRE edits: §4.3 n
 §11.4 (S31), §5.4 driver note
 (S25), design R3/R21 superseded notes, `HOB-54` row; the series gets the Opus final review (design §2).
 
+**Implemented with P5b-2c + P5b-2d.** The merged package delivers shared ticks through
+`Server::on_tick`, runs the pending-`current` retry pass after `wrote` and `poll`, serves the three
+block verbs and updates `hello.verbs`, and adds the server-level section 5.4/5.5 tests including
+the block-verb hostile run. P5b-3 and P5b-4 remain, so `HOB-54` stays open.
+
 ## 3. Resolutions (S1..S34)
 
 **S1 Selection parsing (§4.2).** `args::selection(obj, "selection")`: `selection` is an object with
@@ -441,12 +446,14 @@ judged for a join: no new stream is created; controller decision, finding 4); se
 requesting connection's level values (finding 14). Every leave
 decrements the ref, removes a 0 ref and an empty uid entry, and destroys an empty stream.
 **S20 Server-wide stream bounds.** `ServerLimits::unified()` also sets, for observe and operator:
-`tick_ms` to the larger of the two (one sampler tick), `max_rows` and `max_block_bytes` to the smaller
-of the two (a stream may serve both levels), and then clamps each level's `max_block_bytes` to
-`min(max_block_bytes, query_queue_bytes, client_queue_bytes)` of that level, so the invariant
-`max_block_bytes <= query_queue_bytes` (and `<= client_queue_bytes`) holds for every built server (no
-panic: a misconfiguration is clamped, and a `Server::new` test asserts the invariant on the defaults and
-on a deliberately wrong input). What hello announces is what the server enforces.
+`tick_ms` to the larger of the two (one sampler tick); `max_rows`, `client_queue_bytes`, and
+`query_queue_bytes` to their smaller values; and one shared `max_block_bytes` to the smaller
+configured byte limit, clamped again by those shared queue caps. The per-uid and global Live and
+Query pool limits are derived from the shared per-connection caps. Thus the same queue and block
+bounds are announced and enforced for either level and `max_block_bytes <= query_queue_bytes` (and
+`<= client_queue_bytes`) holds for both levels in every built server (no panic: a misconfiguration
+is clamped; a `Server::new` test covers defaults, unequal pool caps and a deliberately wrong input).
+What hello announces is what the server enforces.
 `ServerLimits::stream_limits()` = `StreamLimits { bounds: BlockBounds { max_rows, max_block_bytes } }`
 of the unified observe level (equal to operator's after unification). `min_interval_ms`,
 `max_uid_selections` and `max_selections` stay per level (S19 passes the requesting level's caps).
@@ -482,7 +489,7 @@ ENDs). `drive` runs `enforce_control` after each. Every new push path (`push_tic
 `is_closed()`, and stops after any push that closes the conn (S6, S7, S15, S17, S23): no later push,
 `end_stream` or registry change is made on a closed conn except S17's `subs.remove`.
 **S28 Precedence with the new verbs** (R11 numbering): (2) `corr` 0 or in use (S4); (9) served flags flip
-in 2c; (10) `too-many-requests` (S5); (11) argument schemas (S1, S8, `sub` u32); execution budgets
+in 2d; (10) `too-many-requests` (S5); (11) argument schemas (S1, S8, `sub` u32); execution budgets
 (S9) come after the schema, then the backend. `forbidden` / `binary-required` keep coming from the full
 table.
 **S29 END payload.** `end_ok`: `{"ok":true,"blocks":B,"dropped":D,"next":null,"reason":"<r>"}`;
@@ -539,8 +546,14 @@ implementer's choice.
 - **Memory per subscriber vs shared bytes.** Per subscriber: a `subs` entry, a registry `Sub`, a hub stream
   state (tens of bytes each) and <= 2 queue entries (one pinned, one unpinned) referencing shared ticks.
   Per stream, outside every pool: `entries` + `dict_body` (`dict_body` <= `max_block_bytes`), so <= 8 x
-  (4 MiB + entries) with the defaults (S22). Physical tick memory <= the Live pools (global 32 MiB)
-  because nothing else holds tick bytes.
+  (4 MiB + entries) with the defaults (S22). The global Live cap (32 MiB by default) bounds queued
+  live-frame lengths only. `on_tick` first builds a delivery batch that can retain up to
+  `max_selections` base frames outside that pool, each <= `max_block_bytes` (8 x 4 MiB by defaults).
+  While pushing one delivery, `LiveTick` may also cache its dictionary frame (<= `max_block_bytes`),
+  even when the hub rejects it. Building that frame allocates a `Vec` and may reallocate; those logical
+  frame lengths are bounded by `max_block_bytes`, but their allocation capacity is outside hub
+  accounting. These are component bounds, not a total physical peak-memory bound; allocator overhead
+  is not included.
 - **Backend misbehaviour.** Bounded by S16 (validation), S11 (rows, size) and R25 (replies); every
   failure is `internal`/`budget` and ends the stream, never a panic or an oversized frame.
 
@@ -621,23 +634,26 @@ implementer's choice.
 - `conn_closed_stops_every_push_path` (a push that closes the conn: no later push, `end_stream` or
   registry change; `end_subscription` on a closed conn only removes `subs`).
 - `conn_current_uses_unified_bounds` and `server_limits_block_invariant` (`max_block_bytes <=
-  query_queue_bytes, client_queue_bytes` after `unified()`, defaults and a wrong input).
+  query_queue_bytes, client_queue_bytes` after `unified()`, defaults and a wrong input), plus
+  `server_current_uses_smallest_shared_query_pool` (a second valid BLOCK waits when the smaller
+  observe/operator Query pool is full).
 - `conn_status_tests_rewritten` (the two P5b-1b status tests now expect the hub's count).
 - `conn_draining_*`: client-eof END per subscription in corr order with exact counts; pending finishes then
   silent close; close only when pending empty and queue empty.
 - `conn_idle_*`: not idle with a subscription or a pending request; idle again after unsubscribe.
 - `conn_server_end_*`: `end_subscription` budget rows / internal; unknown corr ignored.
 - `conn_status_dropped_blocks_from_hub` (`conn_hello_verbs_at_block_levels` moves to 2d with the flip).
-- R18/R22: counters, `uid_pools`, `global_pools`, registry counts back to zero after every close path with
-  subscriptions (slow-client, shutdown, fatal request, frame-too-large, deadline, Draining done, driver
-  finish) -- through `Server::finish`.
+- R18/R22: counters, `uid_pools`, `global_pools`, and registry counts return to zero after every close
+  path with a real connection-side subscription (slow-client, shutdown, fatal request, frame-too-large,
+  request deadline, Draining done, driver finish) -- through `Server::finish`.
 - Every client-visible sequence is replayed through the Rust client's checks where possible:
   `check_rep`/`check_end`, `decode_block_with` + `StreamDicts::accept`, END `blocks == received`.
 
 ### 5.4 P5b-2d
 - `server_on_tick_*`: shared bytes (two conns, one `Arc`, distinct `corr`/`dropped` prefixes), joiner on
-  generation 5 gets the dictionary form then bare, interval skipping a change tick (§5.3 D-W27 at server
-  level), Push skipped for a closed-unfinished conn, End delivered to every subscriber.
+  generation 5 gets the dictionary form then bare, and a faster subscriber changes the generation on
+  a tick skipped by a slower subscriber that then gets the dictionary form on its next due tick (§5.3
+  D-W27 at server level); Push skipped for a closed-unfinished conn; End delivered to every subscriber.
 - `server_retry_pass_*`: after `wrote` of another conn of the same uid frees the uid Query pool; at `poll`;
   id order.
 - `server_finish_releases_selections` for all close paths (S18).
@@ -676,9 +692,9 @@ implementer's choice.
 - §4.7 and §5.1 (2b): a join that adds a selection the uid does not use yet counts against the uid cap
   (`budget uid-selections`) but not the probe cap (S19, finding 4); the caps applied are the requesting
   level's; a uid's selections are counted across levels.
-- §5.1 (2c): outstanding = a backpressured `current` in M2 (S5); `max_rows` and `max_block_bytes` are
-  unified to the smaller of observe/operator and `max_block_bytes <= query_queue_bytes,
-  client_queue_bytes` holds by construction (S20).
+- §5.1 (2c): outstanding = a backpressured `current` in M2 (S5); `max_rows`, `client_queue_bytes`,
+  `query_queue_bytes`, and `max_block_bytes` are unified to the smaller of observe/operator;
+  `max_block_bytes <= query_queue_bytes, client_queue_bytes` holds by construction (S20).
 - §5.3 (2b): Query pin stamps 0 without resetting `pending_drops` (S12); `dropped_blocks`, `query_room`.
 - §5.4 (2c): `Ready` idle row includes "no pending request"; `Draining` row closes when pending and queue
   are empty (S23); (2d) driver note: `on_tick` once per tick after `poll` (S25).

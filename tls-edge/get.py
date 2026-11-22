@@ -80,9 +80,9 @@ MANIFEST_PUBKEY  = ""
 REQUIRED_COMMANDS: List[str] = ["python3", "docker", "git"]
 PRESERVE_PATHS: List[str]    = []
 # [(glob, distribution), ...] in install order (cli-extended is hoisted first at install).
-WHEEL_SPECS: List[Tuple[str, str]] = [["wheels/ciu-*.whl", "ciu"], ["wheels/jinja2-*.whl", "Jinja2"], ["wheels/markupsafe-*.whl", "MarkupSafe"], ["wheels/pyyaml-*.whl", "PyYAML"], ["wheels/tomli_w-*.whl", "tomli_w"]]
+WHEEL_SPECS: List[Tuple[str, str]] = [["wheels/ciu-*.whl", "ciu"], ["wheels/jinja2-*.whl", "Jinja2"], ["wheels/markupsafe-*.whl", "MarkupSafe"], ["wheels/pyyaml-*.whl", "PyYAML"], ["wheels/tomli_w-*.whl", "tomli_w"], ["wheels/tls_edge_cli-*.whl", "tls-edge-cli"], ["wheels/cli_extended-*.whl", "cli-extended"], ["wheels/tomlkit-*.whl", "tomlkit"], ["wheels/questionary-*.whl", "questionary"], ["wheels/prompt_toolkit-*.whl", "prompt-toolkit"], ["wheels/wcwidth-*.whl", "wcwidth"]]
 # Commands exposed as <root>/bin/<cmd> -> ../current/venv/bin/<cmd>.
-LAUNCHERS: List[str] = ["ciu"]
+LAUNCHERS: List[str] = ["ciu", "tls-edge"]
 # Stable stack folder: "" = none; else <root>/<STABLE_DIR>/ mirrors the ACTIVE release's
 # manifest `files` (wheels excluded) after every install/update/rollback, so a tool that
 # derives identity from its physical path sees one path across releases.
@@ -91,7 +91,7 @@ STABLE_DIR = "stack"
 STUB_LAUNCHERS: List[str] = ["ciu"]
 # Wizard questions: [{id, prompt, type, default, choices, required}, ...]; answers live in
 # <root>/shared/answers.toml (0600) and are exported as CMRU_INSTALLER_ANSWERS.
-QUESTIONS: List[dict] = [{"id": "domain", "prompt": "Public domain served through the edge (TLS_EDGE_DOMAIN, e.g. example.test)", "type": "string", "default": None, "choices": [], "required": True}, {"id": "acme_email", "prompt": "ACME account email (Let's Encrypt notices; empty = none)", "type": "string", "default": None, "choices": [], "required": False}, {"id": "tls_mode", "prompt": "Certificate mode", "type": "choice", "default": "acme-tls", "choices": ["acme-tls", "acme-http", "acme-dns", "static", "dev"], "required": True}, {"id": "dns_provider", "prompt": "DNS provider (lego name, only for acme-dns; empty = cloudflare)", "type": "string", "default": None, "choices": [], "required": False}, {"id": "calls", "prompt": "Publish the Mattermost Calls pair on 8443 (tcp and udp)?", "type": "bool", "default": True, "choices": [], "required": True}]
+QUESTIONS: List[dict] = []
 # Per-interpreter variants (S-REL.6). [] ⇒ one unambiguous single-asset release.
 # When non-empty the release carries one asset per variant, named <tag>-<name><suffix>,
 # and the operator MUST select one at install time with --variant NAME (no silent default).
