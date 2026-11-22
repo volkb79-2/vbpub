@@ -1315,15 +1315,26 @@ existing process reader does not provide the full P5b scan contract (parent inca
 cgroup membership and I/O, bounded full-directory PID selection with partial-listing coverage, and
 stable immutable scan views), and the store API does not provide the history query view's committed
 watermark, source-assigned clock-segment coverage union, eviction generation, and per-cell
-raw-input/provenance facts. Until this package lands, the M2 live
-exit demo has no production data source and must not be claimed.
+raw-input/provenance facts. The serving layer owns exact BLOCK packing through one shared encoder-size
+function; the production source must provide immutable, ordered `(subject,agg)` group metadata, stable
+bucket-ordinal reads, the resolved subject list and metric facts needed for the canonical query
+dictionary, not prepacked wire blocks. Query-view descriptors are reference-only, at most 512 B each,
+at most 352 live (256 cursor-backed plus 96 active requests without cursors), released when
+unreferenced, and expire within 60 s; they do not copy history rows or process scan data. The serving
+layer separately bounds retained series-view metadata and query dictionaries by WIRE D-W42/D-W44.
+Until this package lands, the M2 live-exit demo has no production data source and must not be claimed.
 
 **Exit criteria.** A production backend supplies immutable typed process scans with `(boot_id,pid,
 start_ticks)` identity, verified cgroup membership, parent-incarnation traversal, bounded fields and
 cmdline privacy, exact `scanned`/`total`/`complete`/age reporting, and the WIRE §4.11 scan/cache bounds.
 It supplies `snapshot_at` and `series_batch` views with the WIRE tier selection, committed watermark,
-conservative clock-segment bucket assignment, source-side interval-union coverage, gap and eviction
-semantics, plus the exact §4.8 provenance and raw-input / constraint schema. PID listing completes
+conservative clock-segment bucket assignment, source-side interval-union coverage, complete ordered
+group metadata, the resolved subject/column metadata, stable bucket-ordinal reads, gap and eviction
+semantics, plus the exact §4.8
+provenance and raw-input / constraint schema. It proves every committed in-range bucket appears once in
+the typed source view; P5b Server tests separately prove largest-prefix frame packing with the shared
+encoder-size function. View release/expiry, the 352 × 512 B descriptor bound, and no-copy references are
+part of the source oracle. PID listing completes
 before inspection and uses a bounded max-heap to select the lowest 50,000 observed candidates; a
 mid-listing failure publishes a lower-bound partial scan only after at least one candidate was
 observed. Tests use fake proc/store roots and assert replacement-PID, membership race, lowest-PID

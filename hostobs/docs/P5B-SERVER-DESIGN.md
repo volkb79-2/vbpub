@@ -215,14 +215,15 @@ Keep responsibilities single-sourced:
 - `Server` owns cursor tokens and their bounded canonical-argument bindings, source-view identifiers,
   expiry, and the fair Query admission scheduler. There is one cursor authority; a backend does not
   mint or interpret wire cursor strings.
-- `Backend` exposes narrow typed operations for one snapshot result, an immutable history view with
-  one bounded next candidate at a time, and an immutable process scan/page. It does not encode JSON or
-  wire BLOCKs and does not decide protocol errors. A source-view eviction/expiry is an explicit typed
-  outcome, not an empty page.
-- `SendHub` owns encoded queued bytes and the Query byte pools. P5b-3 stores only typed view/arguments/
-  position while blocked. It preflights `query_room(c, max_block_bytes)`, builds at most one candidate
-  BLOCK at a time, and queues that BLOCK directly. Retry turns rotate by peer uid and request; one
-  request cannot monopolize all producer progress. The existing D-W30 rule for `current` remains.
+- The existing `Backend` stays narrow for identity, status and `current`; the independent `QueryBackend`
+  exposes a metadata-only snapshot view, ordered history-group metadata and one-bounded-block reads,
+  plus an immutable process scan/page. Neither interface encodes JSON or decides protocol errors. A
+  source-view eviction/expiry is an explicit typed outcome, not an empty page.
+- `Server` owns the exact series block partition using the one checked frame-size function shared with
+  `encode.rs`. `SendHub` owns encoded queued bytes and the Query byte pools. The Server preflights
+  `query_room(c, max_block_bytes)` before every value read, builds at most one candidate BLOCK at a
+  time, and queues it directly. Retry turns rotate by peer uid and request; one request cannot
+  monopolize all producer progress. The existing D-W30 rule for `current` remains.
 - The P5b-4 driver owns `LISTEN_FDS`, nonblocking socket reads/writes, mode detection plumbing,
   `SO_PEERCRED`/`SO_PEERPIDFD` capture at accept, and configuration. It passes immutable peer facts
   into `Server`; it never supplies identity from REQ JSON and never re-reads a peer by numeric PID
@@ -237,210 +238,248 @@ floor; do not use `conformance` as a proxy for those tests.
 
 ### P5b-3 typed backend contract
 
-The P5b-3 implementation extends the existing `Backend` seam with these exact view, position, data,
-and failure types. The fields below are Rust types; the response behavior and field bounds remain
-those in `WIRE.md`.
+P5b-3 adds an independent query seam. The existing `Backend` stays narrow for identity, status and
+`current`; `QueryBackend` is called by `Server` for the three new query verbs. Do not make
+`Backend: QueryBackend`: the existing `StatusView` adapter forwards core methods and must not become a
+blanket forwarding adapter for every query method. `Server` is the sole cursor and retry-scheduler
+authority; `Conn` owns wire reply order; `SendHub` owns encoded queue bytes. `query_ready` is a wakeup
+hint, not a second producer queue.
+
+The Server's immutable `TierCatalog` is derived from the parsed configuration facts that also produce
+`StatusInfo.tiers`. Do not copy tier-step literals into `Limits` or `Server`. Each query validates
+configured tier names and nonzero steps against this catalog before a query-view/value call. A config
+reload, if later added, replaces the status facts and catalog atomically. The source owns retained
+windows, committed watermarks and auto-tier eligibility; P5b checks the returned choice against the
+catalog, and P5c proves retention selection against fake store metadata.
 
 ```rust
 struct SnapshotViewId(u64);
 struct SeriesViewId(u64);
 struct ProcScanId(u64);
-struct SeriesPosition(u64); // opaque to Server; identifies the next committed block
+enum QueryViewId { Snapshot(SnapshotViewId), Series(SeriesViewId), Procs(ProcScanId) }
+struct SeriesPosition(u64); // ordinal of the next bucket in one immutable, ordered view
+struct TierCatalogEntry { tier: Tier, step_ms: u32 }
 enum Tier { Hot, Warm, Cold } // wire names: "hot", "warm", "cold"
-enum TierChoice { Auto, Explicit(Tier) } // "auto" or an explicit wire tier
-enum QueryFeature { Provenance } // wire name: "provenance"
+enum TierChoice { Auto, Explicit(Tier) }
+enum QueryFeature { Provenance }
 enum ProcField { Comm, Ppid, State, CpuUsec, RssBytes, IoRbytes, IoWbytes, Threads, Cmdline }
-struct QueryBounds {
-    max_rows: u32,
-    max_block_buckets: u32,
-    max_block_bytes: u32,
-}
-struct SnapshotRequest {
-    selection: Selection,
-    real_ns: i64,
-    tier: TierChoice,
-    provenance: bool,
-}
+struct QueryBounds { max_rows: u32, max_block_buckets: u32, max_block_bytes: u32 }
+struct SnapshotRequest { selection: Selection, real_ns: i64, tier: TierChoice, provenance: bool }
 struct SeriesRequest {
-    selection: Selection,
-    from_real_ns: i64,
-    to_real_ns: i64,
-    step_ms: u32,
+    selection: Selection, from_real_ns: i64, to_real_ns: i64, step_ms: u32,
     aggs: Vec<Aggregation>,
 }
-struct ProcsRequest {
-    subject_inc: u64,
-    descendants: bool,
-    fields: Vec<ProcField>,
-}
+struct ProcsRequest { subject_inc: u64, descendants: bool, fields: Vec<ProcField> }
+
 enum RawNumber { U64(u64), I64(i64), F64(f64) }
 struct MonoInterval { start: u64, end: u64 }
 struct CellProvenance {
-    inc: u64,
-    metric: String,
-    quality: Quality,
-    source: MetricSource,
-    source_ref: Option<String>,
-    observed_mono_ns: Option<u64>,
-    interval_mono_ns: Option<MonoInterval>,
-    raw_inputs: Option<Vec<RawInput>>,
+    inc: u64, metric: String, quality: Quality, source: MetricSource,
+    source_ref: Option<String>, observed_mono_ns: Option<u64>,
+    interval_mono_ns: Option<MonoInterval>, raw_inputs: Option<Vec<RawInput>>,
     constraints: Option<Vec<ConstraintFact>>,
 }
 struct RawInput {
-    metric: String,
-    value_type: MetricValueType,
-    value: Option<RawNumber>,
-    quality: Quality,
-    source: MetricSource,
-    unit: MetricUnit,
-    source_ref: Option<String>,
-    observed_mono_ns: Option<u64>,
-    interval_mono_ns: Option<MonoInterval>,
+    metric: String, value_type: MetricValueType, value: Option<RawNumber>, quality: Quality,
+    source: MetricSource, unit: MetricUnit, source_ref: Option<String>,
+    observed_mono_ns: Option<u64>, interval_mono_ns: Option<MonoInterval>,
 }
 enum ConstraintValue { U64(u64), I64(i64), F64(f64), String(String) }
 struct ConstraintFact {
-    name: String,
-    value: ConstraintValue,
-    unit: Option<MetricUnit>,
-    source_ref: Option<String>,
-    observed_mono_ns: Option<u64>,
+    name: String, value: ConstraintValue, unit: Option<MetricUnit>,
+    source_ref: Option<String>, observed_mono_ns: Option<u64>,
 }
 
 enum QuerySourceError {
-    NotFound,
-    DataGap,
-    BucketOutOfRange,
-    Unsupported(QueryFeature),
-    Budget(Pool),
-    ViewInvalid,
-    Internal,
+    NotFound, DataGap, BucketOutOfRange, Unsupported(QueryFeature), Budget(Pool),
+    ViewInvalid, Internal,
 }
-
-struct SnapshotView {
-    id: SnapshotViewId,
-    meta: SnapshotMeta,
-}
+struct SnapshotView { id: SnapshotViewId, meta: SnapshotMeta }
 struct SnapshotMeta {
-    tier: Tier,
-    bucket_real_ns: i64,
-    step_ms: u32,
-    covered_ms: u32,
-    provenance: Option<Vec<CellProvenance>>,
+    tier: Tier, bucket_real_ns: i64, step_ms: u32, covered_ms: u32,
+    provenance_cell_count: Option<u32>, // metadata only; None unless requested
 }
+struct SnapshotData { tick: TickData, provenance: Option<Vec<CellProvenance>> }
 struct SeriesView {
-    id: SeriesViewId,
-    tier: Tier,
-    step_ms: u32,
-    omitted: Vec<String>,
-    first: Option<SeriesPosition>,
+    id: SeriesViewId, tier: Tier, step_ms: u32, omitted: Vec<String>,
+    subjects: Vec<u64>, columns: Vec<HistoryColumnMeta>, first: Option<SeriesPosition>,
 }
+struct HistoryColumnMeta { metric: String, facts: MetricFacts, value_type: MetricValueType }
+struct SeriesGroup { subject_inc: u64, agg: Aggregation, first: SeriesPosition, bucket_count: u64 }
+struct BlockPlan { subject_inc: u64, agg: Aggregation, start: SeriesPosition, buckets: u32 }
 struct HistoryBlockData {
-    subject_inc: u64,
-    agg: Aggregation,
-    buckets: Vec<HistoryBucket>, // ≤ max_block_buckets
-    columns: Vec<HistoryColumn>, // ≤ 64; one value and quality per bucket
+    subject_inc: u64, agg: Aggregation, buckets: Vec<HistoryBucket>,
+    columns: Vec<HistoryColumn>,
 }
-struct HistoryBucket {
-    bucket_real_ns: i64,
-    covered_ms: u32,
-    samples: u16,
-}
+struct HistoryBucket { bucket_real_ns: i64, covered_ms: u32, samples: u16 }
 struct HistoryColumn {
-    metric: String,
-    facts: MetricFacts,
-    value_type: MetricValueType,
-    values: Vec<u64>,
-    quality: Vec<u8>,
+    metric: String, facts: MetricFacts, value_type: MetricValueType,
+    values: Vec<u64>, quality: Vec<u8>,
 }
 struct ProcScanView {
-    id: ProcScanId,
-    published_mono_ns: u64,
-    row_count: u32, // 0..=max_rows
-    scanned: u32,
-    total: u32,
-    complete: bool,
+    id: ProcScanId, published_mono_ns: u64, row_count: u32,
+    scanned: u32, total: u32, complete: bool,
 }
 struct ProcRow {
-    pid: u32,
-    start_ticks: u64,
-    inc: u64,
-    comm: Option<String>,
-    ppid: Option<u32>,
-    state: Option<u8>,
-    cpu_usec: Option<u64>,
-    rss_bytes: Option<u64>,
-    io_rbytes: Option<u64>,
-    io_wbytes: Option<u64>,
-    threads: Option<u64>,
+    pid: u32, start_ticks: u64, inc: u64, comm: Option<String>, ppid: Option<u32>,
+    state: Option<u8>, cpu_usec: Option<u64>, rss_bytes: Option<u64>,
+    io_rbytes: Option<u64>, io_wbytes: Option<u64>, threads: Option<u64>,
     cmdline: Option<String>,
 }
 
 trait QueryBackend {
     fn snapshot_open(&self, request: &SnapshotRequest, now_ns: u64, bounds: QueryBounds)
         -> Result<SnapshotView, QuerySourceError>;
-    fn snapshot_read(&self, view: SnapshotViewId)
-        -> Result<TickData, QuerySourceError>;
+    fn snapshot_read(&self, view: SnapshotViewId) -> Result<SnapshotData, QuerySourceError>;
     fn series_open(&self, request: &SeriesRequest, now_ns: u64, bounds: QueryBounds)
         -> Result<SeriesView, QuerySourceError>;
-    fn series_next(&self, view: SeriesViewId, after: SeriesPosition)
-        -> Result<Option<SeriesPosition>, QuerySourceError>;
-    fn series_read(&self, view: SeriesViewId, at: SeriesPosition)
+    fn series_group(&self, view: SeriesViewId, at: SeriesPosition)
+        -> Result<Option<SeriesGroup>, QuerySourceError>;
+    fn series_read(&self, view: SeriesViewId, at: SeriesPosition, buckets: u32)
         -> Result<HistoryBlockData, QuerySourceError>;
     fn procs_open(&self, request: &ProcsRequest, now_ns: u64, max_rows: u32)
         -> Result<ProcScanView, QuerySourceError>;
     fn procs_read(&self, view: ProcScanId, index: u32, fields: &[ProcField])
         -> Result<Option<ProcRow>, QuerySourceError>;
+    fn release_view(&self, view: QueryViewId);
 }
-trait Backend: QueryBackend {
-    // Existing identity(), status(), and current() operations remain here.
+
+trait Backend {
+    // Existing identity(), status() and current() operations remain here, unchanged.
 }
 ```
 
-`SnapshotMeta` and `SeriesView` contain no block values. `Tier`, `TierChoice`, `QueryFeature`, and
-`ProcField` are closed enums owned by `backend.rs`; `Quality`, `MetricSource`, `MetricUnit`,
-`MetricValueType`, `MetricFacts`, and `Aggregation` are the existing `hostobs_proto` types. `Peer`
-adds only the captured `cgroup_inc: Option<u64>` fact in P5b-3, alongside its existing uid and pid;
-the observer issuer is derived from those captured fields without a lookup. `CellProvenance` and its
-children map one-for-one to the exact WIRE §4.8 schema. `Server` computes each JSON `age_ms` from
-`observed_mono_ns` at REP construction and validates types, limits, finite f64 values, references,
-array null-versus-empty meaning, ordering, and the encoded object/reply bounds. `RawInput.value` must
-match `value_type` when present; `ConstraintFact.value`'s enum variant is the serialized `type`.
-`ProcField` serializes to the exact snake-case WIRE field names and the order passed to `procs_open`
-is canonical by those names.
+`TierCatalog` uses only the configured `hot`, `warm`, and `cold` entries from `StatusInfo.tiers`; an
+unconfigured explicit snapshot tier is `not-found` in Server before `QueryBackend`; a nonzero
+`series_batch.step_ms` absent from the catalog is `bad-request` `{"key":"step_ms"}` before
+`QueryBackend` is called. For a configured explicit snapshot tier, `snapshot_open` performs only
+metadata resolution and returns `BucketOutOfRange` before retention lookup if the checked bucket start
+cannot fit `i64`; Server maps it to `bad-request` `{"key":"real_ns"}`. `snapshot_open` may resolve an
+`auto` choice from retention metadata but reads no bucket values. It returns a configured tier and
+exact step. The Server checks the returned tier and step, computes checked Euclidean bucket floor from
+the returned step, verifies the returned bucket, and validates `covered_ms`. For auto, overflow in an
+ineligible candidate tier does not mask another eligible tier; no eligible tier is `not-found`.
 
-`SnapshotMeta.covered_ms` and each
-`HistoryBucket.covered_ms` are source-computed facts under WIRE §3.6; P5b validates their range and
-copies them into the result, and never receives interval lists. `HistoryBucket.samples` is the
-source's exact `u16` count and the server copies it unchanged. For `snapshot_at`, the server checks
-the returned tick's boot and epoch against the serving identity, preserves its source tick `seq` and
-monotonic/boot times, sets header `real_ns` from the validated `SnapshotMeta.bucket_real_ns`, and
-forces every row's `t_off_us` to zero. `series_next` is metadata-only and
-returns only an opaque fixed-size position; `SeriesView.first` is the first candidate or `None`, and
-`series_next(view, after)` returns the next position or `None`. It skips gaps and follows the
-deterministic subject/aggregation/time packing order. `series_open` uses `QueryBounds` to define each
-candidate's largest consecutive bucket prefix that fits both limits from WIRE §4.9. `Server` examines at most
-`max_page_blocks + 1` positions before REP to find a page continuation, then discards the lookahead.
-`series_read` reads exactly one candidate after Query room is available; its columns and bucket
-metadata have no more than 64 × 4,096 values and the matching quality bytes. `Server` verifies the
-candidate's bounds and encoded size before pushing it. `procs_read` reads one row from the immutable
-scan at the requested index; the server serializes only requested fields and stops before
-`max_reply_bytes`. The process view's `row_count` and coverage facts are frozen at `procs_open`; only
-`scan_age_ms` is computed by the server at REP construction. `ProcScanView.row_count` is the row count
-after the source has applied the requested subject and descendant filter, while `scanned`, `total`,
-and `complete` describe coverage of the whole pinned source scan. A `ProcRow` index is stable in
-ascending `(pid,start_ticks)` order for the life of the view. The server rejects inconsistent typed
-coverage (`scanned > min(total, 50,000)`, `row_count > max_rows`, or `complete=true` with
-`total > 50,000` or `scanned != total`), duplicate/out-of-order row identities, malformed state,
-`comm`/`cmdline` beyond the WIRE field bounds, or any reply over `max_reply_bytes` as `internal`.
-The backend request structs deliberately omit wire cursors and page sizes (`max_blocks`, `limit`):
-those belong to the Server's one cursor and reply-page authority.
+`SnapshotMeta` contains no provenance values. When `provenance=true`, `snapshot_open` returns the exact
+metadata-only `provenance_cell_count`; above 64 the Server returns `budget {"pool":"provenance"}`
+before `snapshot_read` or success REP. `snapshot_read` is called only after Query room is available and
+returns the bounded TickData plus all requested provenance. The Server checks that the count equals the
+number of represented cells and that the records are complete, unique, ordered, type-correct, finite,
+within field bounds and age-valid before it queues the success REP and then the BLOCK. `provenance=false`
+requires no provenance values and emits JSON `null`; `true` emits an array, including `[]` for zero
+represented cells. One legal object is at most 3,404 encoded bytes; the 4,096-byte cap is defensive,
+not an independently reachable budget condition.
 
-The server maps `QuerySourceError` to protocol codes and fixed details. `BucketOutOfRange` maps to
-`bad-request {"key":"real_ns"}`; snapshot tier resolution is metadata-only and no bucket values are
-read before this refusal. The server independently checks a successful `SnapshotMeta`'s tier, step,
-Euclidean bucket start and `covered_ms` range; any mismatch is `internal`. `ViewInvalid` on an incoming
-cursor is `cursor-invalid` before REP; after REP it is `END ok:false cursor-invalid`. An unexpected
-source error or malformed typed fact is `internal`. The backend never receives a wire cursor string,
-peer uid, or protocol error object; the server binds its own cursor table to the returned opaque view
-id and position. This keeps the source API usable with both deterministic P5b fakes and the later
-P5c implementation without duplicating wire state in the source.
+Each query stream uses the canonical dictionary from WIRE D-W44. For `snapshot_at`, validate the
+dictionary in `SnapshotData.tick.entries` against the resolved selection and use it for the one BLOCK.
+For `series_batch`, `SeriesView.subjects` is the complete resolved subject list (≤ `max_rows`), in
+ascending incarnation order; the Server builds entity entries with empty labels followed by the
+selected `HistoryColumnMeta` entries, in canonical metric order, whose aggregation masks permit at
+least one requested aggregation. `omitted` contains the selected metrics that permit none. The
+dictionary stays fixed for the query and its exact encoded bytes are retained as bounded metadata for
+planning/replay; the shared frame-size helper includes those bytes on the first BLOCK and excludes them
+on later BLOCKs. The source view holds references to shared catalog/index facts rather than copying
+history rows.
+
+For `series_batch`, `SeriesPosition` is a stable zero-based ordinal over data-bearing buckets in the
+immutable view, ordered by subject incarnation, request aggregation order, then bucket time. A
+`SeriesGroup` describes one `(subject, agg)` run, its first ordinal and its exact bucket count. The
+source's group index omits gaps, includes no value arrays, and remains immutable for the view lifetime.
+`series_group(view, at)` returns the unique group containing ordinal `at`, including when `at` is in the
+middle of a group; it returns `None` only when `at` is the exact terminal ordinal. A position beyond
+the terminal ordinal, a zero-length group, or inconsistent group metadata is `Internal`. Within one
+view there is at most one group per `(subject, agg)`, groups are ordered by ascending subject and the
+request's aggregation order, and the group positions form one contiguous ordinal sequence. The Server
+checks these structural claims as it reads the bounded page plan; P5c proves the production source's
+group index is complete against committed store facts. `series_read(view, at, count)` accepts only a
+nonzero planned range contained in that one group and returns exactly those buckets in ordinal order.
+It never crosses a group boundary or returns a shortened result as success. The Server validates
+the group order and contiguous positions as it creates `BlockPlan`s: for
+each group it selects the largest prefix bounded by `max_block_buckets` whose exact encoded frame size
+fits `max_block_bytes`. The one checked size function in `encode.rs` is used by both planning and
+encoding; because column values and TIME entries are fixed width, exact size depends on the dictionary
+form, column count and bucket count, not on values. First BLOCK uses the dictionary-bearing form and
+later BLOCKs in that request use the bare form. `series_read(view, start, count)` returns exactly one
+planned block; the Server validates its subject, aggregation, bucket count/order, metric columns,
+coverage, samples and encoded size before queueing it. P5b fixtures prove this server partition and
+transfer logic. P5c/HOB-62 proves the production view reports every eligible committed bucket exactly
+once, freezes the watermark, applies tier retention, omits only gaps, and invalidates on tier eviction.
+
+Before success REP, the Server performs metadata-only lookahead for at most `max_blocks + 1` block plans
+(65 maximum), retaining at most the first 64 fixed-size plans. It reserves a cursor only if the extra
+plan proves continuation. Terminal pages need no cursor slot and succeed when the cursor table is full.
+While Query room is unavailable, the request retains only the immutable view handle, bounded canonical
+args, block plans, current position and any reserved cursor; no values or encoded BLOCK bytes are held.
+After REP, each `series_read` requires Query room and produces at most one typed candidate and one
+encoded BLOCK before handing it directly to SendHub.
+
+`HistoryBucket.covered_ms` and `samples` are source facts. P5b validates `covered_ms <= step_ms`
+and transfers the exact `u16` sample count. The source owns same-segment clock mapping, conservative
+bucket assignment, interval union, and proof that sample counts fit `u16`; P5c tests those against fake
+clock/store inputs. P5b does not claim those source properties.
+
+`procs_open` returns an immutable view whose `row_count` is already filtered for the requested subject
+and descendant mode. P5b does not rederive membership or descendant closure. `procs_read` returns one
+row in ascending `(pid,start_ticks)` order; the Server validates coverage bounds, row identity/order,
+requested fields, cmdline output bounds and reply size, then serializes only requested fields one row at
+a time. The source owns PID listing/selection, identity recheck, cgroup membership verification,
+parent-incarnation traversal, field reads and cmdline redaction/truncation. Those are P5c/HOB-62 oracles.
+
+### Source error and phase mapping
+
+The interface uses a closed common error enum to avoid duplicate vocabularies. Each method has the
+following allowed outcomes; any other enum variant or budget pool from that method is `Internal` at the
+current phase. A metadata gap is represented by an omitted position, never by `DataGap` from series.
+
+| Method | Phase | Allowed source result | Wire mapping |
+|---|---|---|---|
+| `snapshot_open` | before success REP | `NotFound` | REP `not-found`, `{}` |
+| `snapshot_open` | before success REP | `DataGap` | REP `data-gap`, `{}` |
+| `snapshot_open` | before success REP | `BucketOutOfRange` | REP `bad-request`, `{"key":"real_ns"}` |
+| `snapshot_open` | before success REP | `Unsupported(Provenance)` | REP `unsupported-feature`, `{"feature":"provenance"}` |
+| `snapshot_open` / `snapshot_read` | before success REP | `Budget(Rows)` | REP `budget`, `{"pool":"rows"}` |
+| `snapshot_read` | before success REP | `ViewInvalid` | REP `internal`, `{}`; no client cursor exists |
+| `series_open` | before success REP | `NotFound` | REP `not-found`, `{}` |
+| `series_open` / `series_group` | before success REP | `Budget(Rows)` | REP `budget`, `{"pool":"rows"}` |
+| `series_group` | before success REP | `ViewInvalid` | REP `cursor-invalid` if input had a cursor; otherwise REP `internal` |
+| `series_read` | after success REP | `ViewInvalid` | END `ok:false cursor-invalid` |
+| `series_read` | after success REP | `Budget(Rows)` | END `ok:false budget {"pool":"rows"}` |
+| `series_read` | after success REP | `Internal` | END `ok:false internal` |
+| `procs_open` | before success REP | `NotFound` | REP `not-found`, `{}` |
+| `procs_open` | before success REP | `Budget(Procs)` | REP `budget`, `{"pool":"procs"}` |
+| `procs_read` | before success REP | `ViewInvalid` | REP `cursor-invalid` if input had a cursor; otherwise REP `internal` |
+| any method | either phase | `Internal`, or a method-inapplicable result above | REP `internal` before success REP; END `ok:false internal` after it |
+
+`Unsupported`, `DataGap` and `BucketOutOfRange` are valid only from `snapshot_open`; `NotFound` is
+valid only from the three open methods; `ViewInvalid` is valid only from a read/group on a previously
+opened view. A series `Budget(Rows)` after REP preserves already queued BLOCKs. `procs_read` failures
+occur while building the single REP; no partial result is emitted.
+
+Before success REP, any new cursor reservation is released if the request fails. A newly opened source
+view is released when no existing token references it. An incoming token remains replayable after an
+unexposed-successor failure unless the source view was invalidated. After success REP, errors end with
+END after the queued BLOCK prefix; an unexposed successor reservation is released. If the source view
+is invalid, all tokens bound to it are invalidated and its last reference is released. Every terminal
+path calls `release_view` exactly once after the last active request/token reference is gone.
+
+### Query state and memory accounting
+
+There are at most 256 cursor entries, with the exact 4,325,376 B cursor-payload cap in WIRE §4.2. The
+maximum outstanding observe/operator requests are 24 connections × 4 = 96. Each unbound canonical
+request is at most 16,384 B; each pending series plan is at most 64 × 24 B plus 512 B fixed state (2
+KiB). Source descriptors are capped at 352 live views (256 cursor-backed plus 96 active requests
+without cursors), at no more than 512 B logical state each (176 KiB); they reference shared immutable
+store or scan rows and do not copy them. A live series request retains metadata for at most
+`max_rows` resolved subjects and 64 metric/omitted entries: at most `8 × max_rows + 12 KiB` logical
+view metadata. Its canonical series dictionary body is at most
+`align8(8 + 12 × max_rows + 74 × 64)` bytes (dictionary header, empty-label entity entries, and
+64-byte metric names). At most 352 unique query views can be live, so their dictionary bodies are
+bounded by 352 times that expression; active `SeriesView` metadata exists for at most 96 requests.
+For the default `max_rows=4096`, this is 18.1 MiB of dictionary bodies and 4.125 MiB of active view
+metadata. The cursor payload, unbound canonical request payload (≤1.5 MiB), active plans/state
+(≤192 KiB), source descriptors (≤176 KiB), one typed candidate (≤3 MiB), and one encoded frame
+(≤4 MiB) have separate bounds. Together with the default dictionary bounds the logical query payload
+stays below 36 MiB before encoder scratch. If `max_rows` is configured differently, the two formulas
+above are the bound; they are not silently replaced with the default. This excludes the independently
+bounded 48 MiB process-scan cache, shared store/tier data and existing control/Query queue caps. These
+are logical payload bounds, not total RSS claims.

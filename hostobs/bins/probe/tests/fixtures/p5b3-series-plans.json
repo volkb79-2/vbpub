@@ -1,0 +1,80 @@
+{
+  "case": "p5b3-series-largest-prefix",
+  "request": {
+    "entities": [7, 9],
+    "metrics": ["m_a", "m_b", "m_never"],
+    "aggs": ["last", "mean"],
+    "from_real_ns": 0,
+    "to_real_ns": 4000000000,
+    "step_ms": 1000,
+    "max_blocks": 2,
+    "max_block_buckets": 4,
+    "max_block_bytes": 328
+  },
+  "dictionary": {
+    "entity_labels": {"7": "", "9": ""},
+    "metric_facts": {
+      "m_a": {"kind": "gauge", "unit": "none", "scope": "cgroup", "source": "cgroupfs"},
+      "m_b": {"kind": "state", "unit": "none", "scope": "cgroup", "source": "cgroupfs"},
+      "m_never": {"kind": "counter", "unit": "none", "scope": "cgroup", "source": "cgroupfs"}
+    },
+    "encoded_body_bytes": 80
+  },
+  "groups": [
+    {
+      "subject_inc": 7,
+      "agg": "last",
+      "first": 0,
+      "bucket_real_ns": [0, 2000000000, 3000000000],
+      "columns": ["m_a", "m_b", "m_never"]
+    },
+    {
+      "subject_inc": 7,
+      "agg": "mean",
+      "first": 3,
+      "bucket_real_ns": [0],
+      "columns": ["m_a"]
+    },
+    {
+      "subject_inc": 9,
+      "agg": "last",
+      "first": 4,
+      "bucket_real_ns": [1000000000],
+      "columns": ["m_a", "m_b", "m_never"]
+    },
+    {
+      "subject_inc": 9,
+      "agg": "mean",
+      "first": 5,
+      "bucket_real_ns": [1000000000],
+      "columns": ["m_a"]
+    }
+  ],
+  "independent_frame_sizes": {
+    "dictionary_first_one_bucket_three_columns": 328,
+    "dictionary_first_two_buckets_three_columns": 368,
+    "bare_two_buckets_three_columns": 280,
+    "formula": "16 + 8*section_count + sum(aligned section body lengths)"
+  },
+  "expected_first_page": {
+    "blocks": [
+      {"subject_inc": 7, "agg": "last", "start": 0, "buckets": 1, "dictionary": true, "frame_bytes": 328},
+      {"subject_inc": 7, "agg": "last", "start": 1, "buckets": 2, "dictionary": false, "frame_bytes": 280}
+    ],
+    "end_reason": "page",
+    "next_position": {"subject_inc": 7, "agg": "mean", "bucket_ordinal": 3}
+  },
+  "expected_replay_with_max_blocks_1": {
+    "blocks": [
+      {"subject_inc": 7, "agg": "mean", "start": 3, "buckets": 1, "dictionary": true, "frame_bytes": 264}
+    ],
+    "next_position": {"subject_inc": 9, "agg": "last", "bucket_ordinal": 4}
+  },
+  "expected_replay_with_max_blocks_2": {
+    "blocks": [
+      {"subject_inc": 7, "agg": "mean", "start": 3, "buckets": 1, "dictionary": true, "frame_bytes": 264},
+      {"subject_inc": 9, "agg": "last", "start": 4, "buckets": 1, "dictionary": false, "frame_bytes": 240}
+    ],
+    "next_position": {"subject_inc": 9, "agg": "mean", "bucket_ordinal": 5}
+  }
+}
