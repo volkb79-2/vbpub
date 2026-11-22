@@ -1,9 +1,9 @@
 # Current work order — 2026-11-22
 
 Complete the systemd-boot target path first, then continue with the ZFS PoC.
-The separate M2 Live ISO variant and guest evidence are complete; the final
-offline gate and exact-commit review remain before merge. The layers and media
-distinction are documented in the
+The separate M2 Live ISO variant and guest evidence are complete; the offline
+gate passed, and the exact-commit review remains before merge. The layers and
+media distinction are documented in the
 [installation architecture](docs/INSTALLATION-ARCHITECTURE.md).
 
 ## 1. Finish systemd-boot PoC

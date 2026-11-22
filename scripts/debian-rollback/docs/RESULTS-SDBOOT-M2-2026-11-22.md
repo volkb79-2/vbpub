@@ -7,8 +7,8 @@ recovery matrix; the GRUB-target comparison received a fresh install, first
 boot, and APT rollback/default-selection run. The separate NoCloud
 cloud-image builder route also installed a systemd-boot target disk, which
 then booted without its seed or cloud image. This report is not a release
-claim; the final registered offline gate and independent exact-commit review
-remain before merge.
+claim; the registered offline gate passed and independent exact-commit review
+remains before merge.
 
 ## Artifacts and provenance
 
@@ -131,11 +131,18 @@ VM disks and OVMF state remain on v1001 under
 the installed target disk is read-only after capture and is not tracked in
 Git.
 
+## Registered offline gate
+
+The project `offline` lane passed through `run-gate offline` with
+`tester-unified:debian-rollback-xorriso`. It ran ShellCheck, Bash syntax
+checks, the ISO and installer suites, 211 systemd-boot state cases, and the
+serial-driver suite. The gate's final-candidate result was exit 0. The
+independent DeepSeek review of the exact merge candidate remains outstanding.
+
 ## Limits and remaining work
 
 - Live pruning, ESP-full behavior, kernel removal, Secure Boot, physical
   hardware, and GRUB-to-systemd-boot conversion are not established here.
 - Automatic failed-boot fallback remains out of scope. Recovery requires an
   operator to select a known-good state from the systemd-boot menu.
-- Run the final registered `offline` gate on the documented commit and obtain
-  independent review of that exact commit before merge.
+- Obtain an independent review of the exact merge candidate before merge.

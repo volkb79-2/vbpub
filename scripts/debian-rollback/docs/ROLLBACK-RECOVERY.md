@@ -6,8 +6,8 @@ v1001 UEFI guests. The current candidate passed the dependency-break, kernel,
 and dynamic-loader recovery scenarios. Exact artifact/source hashes, counts,
 and log paths are in the
 [2026-11-22 results report](RESULTS-SDBOOT-M2-2026-11-22.md). The GRUB-target
-comparison install is complete; the final offline gate and exact-commit review
-remain before merge.
+comparison install is complete. The offline gate passed; the exact-commit
+review remains before merge.
 
 ## Recovery contract
 

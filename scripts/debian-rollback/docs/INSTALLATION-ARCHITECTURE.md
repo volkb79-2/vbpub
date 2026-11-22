@@ -45,8 +45,8 @@ particular source and guest they name.
   newer kernel candidate; enabling Trixie backports yielded a current guest
   kernel-upgrade pass (21 checks).
 - The systemd-boot M2 guest matrix, fresh GRUB-target comparison, and optional
-  NoCloud builder guest are complete. The exact-candidate offline gate and
-  independent review remain before merging this worktree.
+  NoCloud builder guest are complete. The offline gate passed; the
+  exact-commit independent review remains before merging this worktree.
 
 ## The layers
 

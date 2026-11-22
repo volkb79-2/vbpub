@@ -10,8 +10,8 @@ and retained logs are in
 fresh GRUB-target comparison install and rollback/default-selection run also
 passed. The current-source NoCloud builder guest also installed a
 systemd-boot target that passed boot-check (12) and sdboot-esp (16) when
-booted without its seed or cloud image. The exact-candidate offline gate and
-independent review remain before merge. Earlier
+booted without its seed or cloud image. The offline gate passed; the
+exact-commit independent review remains before merge. Earlier
 `b94af9533` and `c749db1`
 guest reports below are historical; do not mix them with the current matrix.
 See the [canonical installation architecture](INSTALLATION-ARCHITECTURE.md)

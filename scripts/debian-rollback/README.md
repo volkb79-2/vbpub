@@ -40,7 +40,8 @@ not a separate Debian distribution or an image-based update system.
   systemd-boot target variant has fresh install and rollback evidence. Both
   Live media continue to boot the Debian Live environment through GRUB; the
   ISO's fixed target-bootloader marker chooses the installed backend. The
-  systemd-boot branch remains unmerged pending its final gate and review.
+  systemd-boot branch remains unmerged; its offline gate passed, and the
+  exact-commit review remains before merge.
 - The separate NoCloud builder route completed from current branch source:
   cloud-init installed a systemd-boot target disk, which booted on its own
   and passed `boot-check` (12) and `sdboot-esp` (16). Its seed is required by
