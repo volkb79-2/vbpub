@@ -459,9 +459,12 @@ the returned step, verifies the returned bucket, and validates `covered_ms`. For
 ineligible candidate tier does not mask another eligible tier; no eligible tier is `not-found`.
 
 `SnapshotMeta` contains the independently resolved subjects, the exact requested metric columns and no
-bucket values or provenance objects. Subjects are complete and sorted by `inc`, bounded by `max_rows`,
+bucket values or provenance objects. Subjects are complete and strictly increasing by `inc` (therefore
+unique), bounded by `max_rows`,
 and carry each source label's UTF-8 byte length (`label_len`, at most 256) so the Server can preflight
-the exact snapshot dictionary without retaining a label handle per active request. `snapshot_open` pins
+the exact snapshot dictionary without retaining a label handle per active request. A duplicate or
+out-of-order subject id, or `label_len > 256`, is an invalid source view and maps to `Internal` before
+`snapshot_read` or success REP. `snapshot_open` pins
 the source label facts in its immutable view; `snapshot_read` must return those exact label bytes. The
 Server checks each candidate subject id and label byte length against `SnapshotMeta`; content stability
 within the view is the backend's source-view guarantee. The source owns and bounds any retained label
@@ -571,6 +574,8 @@ separately states and tests a bound for any projection-specific index or members
 `procs_open` first selects the newest published scan: if no scan exists or it has expired, it returns
 `Budget(Procs)` before resolving the subject; it never fabricates an empty scan. With a usable scan, an
 unknown subject is `NotFound`, while a known subject with no matching rows is an empty projection.
+Before `procs_read` or success REP, Server validates `row_count <= max_rows`, `scanned <= total`, and
+`published_mono_ns <= now_ns`; a violation is `Internal`.
 Acquisition is weakly
 consistent because procfs listing and per-process reads are not atomic. `complete` means the bounded
 listing and inspection procedure finished without omitted candidates or failed identity/membership
@@ -598,6 +603,7 @@ current phase. A metadata gap is represented by an omitted position, never by `D
 | `snapshot_open` | before success REP | `BucketOutOfRange` | REP `bad-request`, `{"key":"real_ns"}` |
 | `snapshot_open` | before success REP | `Unsupported(Provenance)` | REP `unsupported-feature`, `{"feature":"provenance"}` |
 | `snapshot_open` / `snapshot_read` | before success REP | `Budget(Rows)` | REP `budget`, `{"pool":"rows"}` |
+| Server snapshot metadata validation | before success REP | duplicate/out-of-order subject id or `label_len > 256` | REP `internal`, `{}`; no `snapshot_read` |
 | Server snapshot sizing | before success REP | minimum legal dictionary-bearing frame exceeds `max_block_bytes` | REP `budget`, `{"pool":"block"}` |
 | `snapshot_read` | before success REP | `ViewInvalid` | REP `internal`, `{}`; no client cursor exists |
 | `series_open` | before success REP | `NotFound` | REP `not-found`, `{}` |
@@ -609,6 +615,7 @@ current phase. A metadata gap is represented by an omitted position, never by `D
 | `series_read` | after success REP | `Internal` | END `ok:false internal` |
 | `procs_open` | before success REP | `NotFound` | REP `not-found`, `{}` |
 | `procs_open` | before success REP | `Budget(Procs)` | REP `budget`, `{"pool":"procs"}` |
+| Server process metadata validation | before success REP | `row_count > max_rows`, `scanned > total`, or publication time later than `now_ns` | REP `internal`, `{}`; no `procs_read` |
 | `procs_read` | before success REP | `ViewInvalid` | REP `cursor-invalid` if input had a cursor; otherwise REP `internal` |
 | any method | either phase | `Internal`, or a method-inapplicable result above | REP `internal` before success REP; END `ok:false internal` after it |
 

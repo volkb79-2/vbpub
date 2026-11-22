@@ -519,11 +519,12 @@ REP `not-found`, no BLOCK. The selected tier window contains the bucket but has 
 there: REP `data-gap`, no BLOCK. A committed bucket with no selected entities returns a zero-row
 BLOCK. REP result `{"resolved":{"tier":str,"bucket_real_ns":i64,"step_ms":u32,"covered_ms":u32},
 "provenance":[object] (0..64; each ≤ 4,096 encoded B) | null}`; `provenance` is `null` when not
-requested. Metadata-only `snapshot_open` returns the complete resolved subjects as sorted
+requested. Metadata-only `snapshot_open` returns the complete resolved subjects as strictly increasing
 `(inc, label_len)` facts
 (`label_len` is UTF-8 bytes, at most 256) and exactly one `QueryColumnMeta` for each requested metric in
-canonical order. Missing, extra or
-repeated requested metrics make the source view invalid. It returns no bucket values or provenance objects. The view pins the
+canonical order. Missing, extra or repeated requested metrics, duplicate or out-of-order subject IDs, or
+`label_len > 256` make the source view invalid; Server returns `internal` before `snapshot_read` or
+success REP. It returns no bucket values or provenance objects. The view pins the
 exact source label bytes until it is released; `snapshot_read` returns those same bytes. The Server derives
 the exact dictionary-bearing frame length from IDs, label lengths, columns and resolved row count, using
 the same checked length helper as the encoder; a
@@ -719,6 +720,8 @@ the pinned scan, never by path prefixes. Result
 decoded lossily, and therefore at most 45 UTF-8 bytes; `ppid` is `u32`; `state` is a one-byte ASCII
 string; `cpu_usec`, `rss_bytes`, `io_rbytes`, `io_wbytes`, and `threads` are `u64`. Every requested
 field may be `null`. The Server rejects an injected `comm` longer than 45 UTF-8 bytes before REP.
+For the metadata-only `ProcScanView`, Server requires `row_count <= max_rows`, `scanned <= total`, and
+`published_mono_ns <= now_ns`; a violation is `internal` before `procs_read` or success REP.
 
 The production source view is one immutable process scan. Rows require identity
 `(boot_id,pid,start_ticks)` and verified membership in the scan; `pid` alone is never identity. `inc` is
