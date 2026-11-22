@@ -6,6 +6,7 @@
 import importlib.util
 import base64
 import contextlib
+import errno
 import hashlib
 import io
 import inspect
@@ -268,6 +269,62 @@ def main() -> int:
     rc, _ = g.run("x", 5)
     if rc != 7:
         failures.append(f"split marker: rc={rc}")
+
+    # A permanent AF_UNIX address error must fail immediately instead of being
+    # retried until the guest startup timeout (e.g. an overlong host path).
+    connect_attempts = []
+
+    class PermanentSocketError:
+        def connect(self, _path):
+            connect_attempts.append(True)
+            raise OSError(errno.ENAMETOOLONG, "AF_UNIX path too long")
+
+        def close(self):
+            pass
+
+    old_socket = drs.socket.socket
+    drs.socket.socket = lambda _family: PermanentSocketError()
+    try:
+        try:
+            drs.Guest("/long/path", io.StringIO()).connect(timeout=600)
+            failures.append("permanent serial-socket address error unexpectedly connected")
+        except OSError as exc:
+            if exc.errno != errno.ENAMETOOLONG:
+                failures.append(f"permanent serial-socket error changed: {exc!r}")
+    finally:
+        drs.socket.socket = old_socket
+    if len(connect_attempts) != 1:
+        failures.append(f"permanent serial-socket error retried {len(connect_attempts)} times")
+
+    # Missing/refusing sockets are transient during QEMU startup and still retry.
+    transient_attempts = []
+
+    class TransientSocketError:
+        def connect(self, _path):
+            transient_attempts.append(True)
+            if len(transient_attempts) == 1:
+                raise OSError(errno.ENOENT, "socket not created yet")
+
+        def setblocking(self, _enabled):
+            pass
+
+        def close(self):
+            pass
+
+    old_socket = drs.socket.socket
+    old_sleep = drs.time.sleep
+    drs.socket.socket = lambda _family: TransientSocketError()
+    drs.time.sleep = lambda _seconds: None
+    g = drs.Guest("/socket-not-created-yet", io.StringIO())
+    try:
+        g.connect(timeout=600)
+    except Exception as exc:  # noqa: BLE001 - report unexpected fake socket failures
+        failures.append(f"transient serial-socket retry failed: {exc!r}")
+    finally:
+        drs.socket.socket = old_socket
+        drs.time.sleep = old_sleep
+    if len(transient_attempts) != 2 or not isinstance(g.sock, TransientSocketError):
+        failures.append(f"transient serial-socket error was not retried once: attempts={len(transient_attempts)}")
 
     # login: startup sends only a newline until it has observed a login or root-shell prompt.
     a, b = socket.socketpair()

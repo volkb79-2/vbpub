@@ -25,6 +25,7 @@ against it):
 Standard library only. Host-side: it touches nothing but the socket.
 """
 import base64
+import errno
 import hashlib
 import os
 import re
@@ -60,13 +61,23 @@ class Guest:
     def connect(self, timeout=600):
         deadline = time.monotonic() + timeout
         while True:
+            s = None
             try:
                 s = socket.socket(socket.AF_UNIX)
                 s.connect(self.path)
                 s.setblocking(False)
                 self.sock = s
                 return
-            except OSError:
+            except OSError as exc:
+                if s is not None:
+                    s.close()
+                # QEMU may not have created its socket yet, or may be in the
+                # middle of restarting the chardev. Those are transient. A
+                # path that's too long, a permission failure, or another
+                # permanent address error must fail immediately instead of
+                # looking like a guest that never reaches its login prompt.
+                if exc.errno not in (errno.ENOENT, errno.ECONNREFUSED):
+                    raise
                 if time.monotonic() > deadline:
                     raise
                 time.sleep(2)

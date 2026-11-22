@@ -57,6 +57,7 @@ contains sdboot-disable-kernel-install-bls "$WORK/sdboot.err" \
   'chroot /mnt/drtarget ln -s /dev/null /etc/kernel/install.d/90-loaderentry.install'
 contains sdboot-config "$DR" "printf 'BOOTLOADER=systemd-boot\\n' >\"\$DR_STATE_CONF.new.\$\$\""
 contains sdboot-marker "$DR" "printf 'systemd-boot\\n' >\"\$SDBOOT_MARKER.new.\$\$\""
+contains restricted-esp-install-mount "$WORK/sdboot.err" 'mount -o umask=0077'
 absent sdboot-no-grub-package "$WORK/sdboot.err" 'linux-image-amd64,grub-efi-amd64'
 absent sdboot-no-grub-installer "$WORK/sdboot.err" 'dr-state install-grub'
 contains sdboot-menu-lesson "$WORK/sdboot.err" \

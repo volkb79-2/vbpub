@@ -103,7 +103,7 @@ for sv in $DATA_SUBVOLS; do
   run mount -o "subvol=$name" "$ROOT" "$T$path"
 done
 run mkdir -p "$T/boot/efi" "$T/.top"
-run mount "$ESP" "$T/boot/efi"
+run mount -o umask=0077 "$ESP" "$T/boot/efi"
 
 BOOT_PACKAGES=grub-efi-amd64
 [ "$BOOTLOADER" = systemd-boot ] && BOOT_PACKAGES=systemd-boot,systemd-boot-efi
