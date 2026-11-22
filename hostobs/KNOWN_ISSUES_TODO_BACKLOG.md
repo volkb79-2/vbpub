@@ -1326,10 +1326,12 @@ dictionary, not prepacked wire blocks. A committed watermark alone does not make
 immutable: values, quality, coverage, samples, group ordinals, subjects, columns and dictionary facts
 must remain byte-stable across later writes to the same bucket. The P5c source must provide an
 immutable/versioned read index or equivalent bounded view and prove that behavior. Query-view
-descriptors are reference-only, at most 512 B each,
-at most 352 live (256 cursor-backed plus 96 active requests without cursors), released when
-unreferenced, and expire within 60 s; they do not copy history rows or process scan data. The serving
-layer separately bounds retained series-view metadata and query dictionaries by WIRE D-W42/D-W44.
+descriptors are reference-only and at most 512 B each: at most 353 may be live (256 cursor-backed plus
+96 active requests without cursors plus one synchronous `procs_open`). Process projections are capped
+at 257 live handles (256 cursor-backed plus one synchronous open). They are released when unreferenced,
+expire within 60 s, and do not copy history rows or process scan data. P5c separately bounds any
+projection-specific index or membership metadata. The serving layer separately bounds retained
+series-view metadata and query dictionaries by WIRE D-W42/D-W44.
 For `snapshot_at`, each view pins the exact entity-label bytes selected at open while the Server retains
 only `(inc, label_len)` for exact preflight. Across at most 96 active snapshot views, the conservative
 source-owned ceiling is `96 × max_rows × 256 B` (96 MiB at default `max_rows=4096`); P5c may use a
@@ -1354,8 +1356,8 @@ semantics, including byte-stable replay after a later append to a bucket and inv
 tier eviction, plus the exact §4.8
 provenance and raw-input / constraint schema. It proves every committed in-range bucket appears once in
 the typed source view; P5b Server tests separately prove largest-prefix frame packing with the shared
-encoder-size function. View release/expiry, the 352 × 512 B descriptor bound, and no-copy references are
-part of the source oracle. PID listing completes
+encoder-size function. View release/expiry, the 353 × 512 B descriptor bound, the 257-handle process
+projection bound and no-copy references are part of the source oracle. PID listing completes
 before inspection and uses a bounded max-heap to select the lowest 50,000 observed candidates; a
 mid-listing failure publishes a lower-bound partial scan only after at least one candidate was
 observed. Tests use fake proc/store roots and assert replacement-PID, membership race, lowest-PID

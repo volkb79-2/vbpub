@@ -210,8 +210,10 @@ M2 live-exit claim.
 
 ### Design rationale and alternatives
 
-- **Keep the serving seam separate from production readers.** `QueryBackend` serves typed, immutable
-  source facts; P5c owns real store, procfs, membership and provenance adapters. The current Store
+- **Keep the serving seam separate from production readers.** `QueryBackend` is the long-term boundary:
+  `Server` owns protocol policy, admission, cursors and page packing over typed immutable facts;
+  production adapters own store/procfs acquisition and implement that same seam. P5c owns real store,
+  procfs, membership and provenance adapters. The current Store
   range API returns bounded records and truncation state, not the committed history view and stable
   replay index this contract needs. The process reader reads individual procfs files and does not
   implement bounded lowest-PID enumeration, scan coverage or membership rechecks. Folding those
@@ -251,7 +253,12 @@ M2 live-exit claim.
   pins. Tier splicing, fallback, gap markers, or retained evicted segments would return more data but
   mix resolutions, add wire state, or make client activity control storage lifetime. P5c must prove a
   bounded immutable/versioned read index; if the store cannot supply it, the source design must change
-  before M2 exit.
+  before M2 exit. Packing is deterministic for a fixed cursor start and page size. Every continuation is
+  a new query stream, so its first BLOCK repeats the dictionary and can be smaller than the bare-form
+  plan that would have followed on the prior page; this keeps pages independently decodable and replayable
+  across connections. Carrying dictionary-generation state across cursor requests would require more
+  cursor state and tie replay to protocol history beyond the source position, so the per-stream rule is
+  simpler and safer.
 - **Preflight labels with lengths and pin the source facts once.** Snapshot metadata carries the
   resolved incarnation and UTF-8 label byte length, which is all the shared frame-size helper needs;
   the immutable source view pins the corresponding label bytes until the candidate is read. This keeps
@@ -262,6 +269,19 @@ M2 live-exit claim.
   frame fits. The selected representation is smaller and exact; its cost is a source-view stability
   guarantee, which P5c must implement and bound. If the source cannot pin the exact bytes cheaply, use
   shared label references rather than weaken that guarantee.
+- **Derive provenance cardinality from canonical metadata.** WIRE §4.8 requires exactly one object for
+  every selected `(inc, metric)` pair, and `SnapshotMeta` already contains the complete subject and
+  requested-column sets. A checked product is therefore the exact cell count; a second source-reported
+  count duplicates the fact, expands the interface, and can itself be false-low. The production source
+  still proves that the resolved sets are complete and that emitted provenance matches them. If the
+  protocol ever permits sparse provenance cells, change that contract and then add an independent
+  source count; the current all-cells rule has no such need.
+- **Choose refusal precedence from facts available at the boundary.** For a configured explicit
+  snapshot tier, checked bucket arithmetic is a pure request check, so an out-of-range time wins before
+  subject or retention lookup. For `procs`, absence of a published scan wins before subject lookup
+  because no complete answer can be produced; once a scan exists, an unknown subject is `not-found`.
+  The alternative is to check subject first in both verbs, but that either requires querying incomplete
+  or absent source state or returns misleading `not-found` when the process source is unavailable.
 - **Report source unavailability and capture fields once.** No or expired process scan is
   `budget {"pool":"procs"}`, not an empty result that falsely means “no processes.” Optional fields,
   including redacted cmdline, are captured into the published scan; serving or replay never rereads
@@ -374,7 +394,6 @@ struct SnapshotSubjectMeta { inc: u64, label_len: u16 }
 struct SnapshotMeta {
     tier: Tier, bucket_real_ns: i64, step_ms: u32, covered_ms: u32,
     subjects: Vec<SnapshotSubjectMeta>, columns: Vec<QueryColumnMeta>,
-    provenance_cell_count: Option<u32>, // metadata only; None unless requested
 }
 struct SnapshotData { tick: TickData, provenance: Option<Vec<CellProvenance>> }
 struct SeriesView {
@@ -450,9 +469,12 @@ conservative source-owned label ceiling is `96 × max_rows × 256 B` (96 MiB at 
 explicit bound. These bytes are outside the Server's <56 MiB query-payload bound. The column names
 must equal the complete
 canonical set of requested metrics; missing, extra or repeated columns are an invalid source view and
-map to `Internal` before REP. Columns are sorted `QueryColumnMeta` facts for those selected metrics. When `provenance=true`, `snapshot_open` also returns exact metadata-only
-`provenance_cell_count`; above 64 the Server returns `budget {"pool":"provenance"}` before
-`snapshot_read` or success REP. The Server computes exact dictionary-bearing frame length from row
+map to `Internal` before REP. Columns are sorted `QueryColumnMeta` facts for those selected metrics.
+When `provenance=true`, the Server checked-multiplies the independently validated subject and requested
+column counts before query admission or value reads. That product is the exact number of required
+provenance cells under WIRE §4.8; the backend supplies no duplicate count. If the product exceeds 64,
+the Server returns `budget {"pool":"provenance"}` before `snapshot_read` or success REP. The Server computes exact
+dictionary-bearing frame length from row
 count, columns, subject label byte lengths and the shared checked frame-length helper. If one legal
 BLOCK exceeds
 `max_block_bytes`, it returns `budget {"pool":"block"}` before values or success REP. It calls
@@ -481,9 +503,11 @@ rejects missing, extra or repeated columns as `Internal`. Server derives `omitte
 aggregation masks and the requested aggs; the source does not supply a second omitted list. It builds
 entity entries with empty labels, followed by only metrics permitted by at least one requested agg.
 The dictionary stays fixed for the query and its exact encoded bytes are retained as bounded metadata
-for planning/replay; the shared frame-length helper includes those bytes on the first BLOCK and excludes
-them on later BLOCKs. The source view holds references to shared catalog/index facts rather than copying
-history rows.
+for planning/replay; the shared frame-length helper includes those bytes on the first BLOCK of each
+request stream and excludes them on later BLOCKs. Packing is deterministic for a fixed cursor start and
+`max_blocks`. A continuation starts a new stream and replans its first BLOCK with the dictionary, so its
+first block may be smaller than the bare-form plan that would have followed in the previous page. The
+source view holds references to shared catalog/index facts rather than copying history rows.
 
 For `series_batch`, `SeriesPosition` is a stable zero-based ordinal over data-bearing buckets in the
 immutable view, ordered by subject incarnation, request aggregation order, then bucket time. A
@@ -537,10 +561,13 @@ returns `ProcProjectionId` for `procs_read` and the underlying `scan_id`. The Se
 retains both IDs, so a continuation is tied to this exact filter projection and published scan. Concurrent
 filters over the same published scan receive distinct projection IDs; each projection pins its scan
 until `release_view`. Publishing a newer scan cannot change an existing projection. Projection handles
-reference shared scan rows and do not copy them; each source descriptor remains at most 512 B, and P5c
+reference shared scan rows and do not copy them; each source descriptor remains at most 512 B. At most
+257 process projection handles are live (256 cursor-backed plus one synchronous `procs_open`); P5c
 separately states and tests a bound for any projection-specific index or membership metadata.
-If no scan exists or the newest scan has expired, it returns `Budget(Procs)`; it never fabricates an
-empty scan. Acquisition is weakly
+`procs_open` first selects the newest published scan: if no scan exists or it has expired, it returns
+`Budget(Procs)` before resolving the subject; it never fabricates an empty scan. With a usable scan, an
+unknown subject is `NotFound`, while a known subject with no matching rows is an empty projection.
+Acquisition is weakly
 consistent because procfs listing and per-process reads are not atomic. `complete` means the bounded
 listing and inspection procedure finished without omitted candidates or failed identity/membership
 checks; it does not mean all rows coexisted at one instant. Once published, rows, membership, optional
@@ -604,9 +631,11 @@ silently revokes an independently issued token.
 There are at most 256 cursor entries, with the exact 4,325,376 B cursor-payload cap in WIRE §4.2. The
 maximum outstanding observe/operator requests are 24 connections × 4 = 96. Each unbound canonical
 request is at most 16,384 B; each pending series plan is at most 64 × 24 B plus 512 B fixed state (2
-KiB). Server-visible source descriptors are capped at 352 live views (256 cursor-backed plus 96 active
-requests without cursors), at no more than 512 B logical state each (176 KiB); they reference shared
-immutable store or scan rows and do not copy them. P5c separately bounds source-owned projection indexes
+KiB). Server-visible source descriptors are capped at 353 live views (256 cursor-backed plus 96 active
+requests without cursors plus one synchronous `procs_open`), at no more than 512 B logical state each
+(176.5 KiB); they reference shared immutable store or scan rows and do not copy them. At most 257
+process projection handles are live (256 cursor-backed plus one synchronous open). P5c separately
+bounds source-owned projection indexes
 or membership metadata; those bytes are outside the Server query-payload sum. Every live series view
 retains its complete resolved subject
 ids and up to 64 metric/omitted facts: at most `8 × max_rows + 12 KiB` per view. This is charged for
@@ -620,11 +649,12 @@ entries and 64-byte metric names). Snapshot dictionary bytes are transient and c
 candidate/encoded-frame pair; they are not retained while waiting for Query room.
 
 For the default `max_rows=4096`, the conservative components are 4.125 MiB of cursor payload, 1.5 MiB
-of active request args, 192 KiB of active plans/state, 176 KiB of source descriptors, 15.125 MiB of
+of active request args, 192 KiB of active plans/state, 176.5 KiB of source descriptors, 15.125 MiB of
 series-view metadata for all 352 views, 7.125 MiB of active snapshot metadata for 96 requests, 18.1
 MiB of history dictionary bodies, one typed candidate up to 5 MiB (including bounded snapshot data
-and at most 64 provenance objects) and one encoded frame up to 4 MiB. Their sum is below 56 MiB
-before encoder scratch. If `max_rows` differs, the stated formulas replace
+and at most 64 provenance objects), one encoded Query frame up to 4 MiB and one synchronous process REP
+up to 448 KiB plus its 12-byte frame header. Their sum is below 56 MiB before encoder scratch. If
+`max_rows` differs, the stated formulas replace
 the default calculation. This excludes the independently bounded 48 MiB process-scan cache, shared
 store/tier data and existing control/Query queue caps. These are logical payload bounds, not total RSS
 claims.
