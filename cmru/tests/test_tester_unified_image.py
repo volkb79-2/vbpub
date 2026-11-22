@@ -145,7 +145,7 @@ CMRU_WHEEL_INSTALL_RUN_BODY = (
     + " && rm -rf /tmp/internal-build-venv /tmp/internal-wheels "
     "/tmp/internal-build-requirements.txt /tmp/cli-extended-release"
     + ' && /opt/tester-venv/bin/python -c "import build, cmru, run_gate, pytest, pytest_cov, '
-    "xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, "
+    "xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, tomlkit, textual, zstandard, mcp, "
     "paramiko, coverage, structlog, markdown_it, linkify_it; "
     "print('tester-unified closure OK')\""
     + ' && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, '
@@ -332,6 +332,8 @@ def _all_projects(root: Path, **overrides: str) -> Path:
                                   '[project.optional-dependencies]\ntest = ["pytest>=8", "pytest-cov>=6"]\n',
         "pwmcp__client": '[project]\nname = "pwmcp-client"\ndependencies = ["playwright==1"]\n'
                          '[project.optional-dependencies]\ntest = ["pillow>=10"]\n',
+        "tls-edge": '[project]\nname = "tls-edge-cli"\ndependencies = ["Jinja2>=3", "tomlkit>=0.13.3"]\n'
+                    '[project.optional-dependencies]\ntest = ["pytest>=8", "pytest-cov>=6"]\n',
         "libraries__cli-extended": '[project]\nname = "cli-extended"\ndependencies = []\n'
                                    '[build-system]\nrequires = ["setuptools==1", "wheel==3"]\n',
     }
@@ -450,7 +452,7 @@ def test_generator_deduplicates_and_prints_one_requirement_per_line(tmp_path, ca
 
 def _real_estate_layout(tmp_path):
     """The REAL pyprojects laid out as the Dockerfile COPYs them."""
-    for name in ("ciu", "cmru", "assay", "topos", "nyxloom"):
+    for name in ("ciu", "cmru", "assay", "topos", "nyxloom", "tls-edge"):
         (tmp_path / name).symlink_to(REPO_ROOT / name)
     (tmp_path / "cgprofile").symlink_to(REPO_ROOT / "cgprofile")
     (tmp_path / "augeaswrap").symlink_to(REPO_ROOT / "augeaswrap")
