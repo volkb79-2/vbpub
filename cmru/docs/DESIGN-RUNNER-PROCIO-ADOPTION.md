@@ -1,18 +1,26 @@
 # Design: CMRU adopts `cli_extended.procio`
 
-Status: **closed implementation plan** after the Codex Sol xhigh review of
-`c36f25cddccf6c417eee48763fa0f3bd003836e0`. This note covers KI-178 items 3 and 4 in CMRU
-only. It does not implement P7.0-P7.3, and it does not assign adoption work in CIU,
-mdt-cockpit, or nyxloom.
+Status: **closed implementation plan** after the Codex Sol xhigh exact-head review of
+`36992832cd36d07698a2788ec488ad5159f6fbcc`. This note covers KI-178 items 3 and 4 in CMRU
+only. It supersedes the prior closure at
+`c36f25cddccf6c417eee48763fa0f3bd003836e0`. It does not implement P7.0-P7.3, and it does
+not assign adoption work in CIU, mdt-cockpit, or nyxloom.
 
 ## Decision
 
 CMRU will route every declared project-step command through
 `cli_extended.procio.run_streaming`. CMRU retains its logging, quiet-mode, error-excerpt,
-evidence, and step-failure contracts in the `on_line` adapter. The adapter reports procio's
-bounded-drain warning and watchdog report through CMRU's existing output and log paths.
-Every command receives a finite no-progress limit resolved from project configuration; the
-default is 1,800 seconds. Watchdog expiry is a runtime step failure with exit 1.
+evidence, and ordinary step-failure contracts in the `on_line` adapter. The adapter reports
+procio's bounded-drain warning and watchdog report through CMRU's existing output and log
+paths. Every command receives a finite no-progress limit resolved from project configuration;
+the default is 1,800 seconds. Watchdog expiry is a runtime step failure with exit 1.
+
+There is one deliberate output change under D-179: streamed step output uses
+`run_streaming`'s locale-based universal-newline decoding with replacement characters for
+undecodable bytes. Malformed output therefore no longer raises `UnicodeDecodeError` or
+overrides an ordinarily completed child's exit status. A nonzero child exit remains the
+existing step failure, and captured probes keep their strict decoding because they are
+outside this migration.
 
 CMRU will not migrate short captured probes, interactive commands, registry login, or other
 non-step subprocess calls in this package. The other KI-178 consumers remain with their
@@ -21,7 +29,8 @@ owners: `mdt-cockpit/build-push.py` (MDT-104), `ciu/src/ciu/engine.py` (CIU-220)
 
 ## Review closure
 
-All ten confirmed findings from the design review have a settled disposition:
+All ten confirmed findings from the original design review retain their settled
+disposition:
 
 | # | Confirmed finding | Closure in this plan |
 |---|---|---|
@@ -36,6 +45,34 @@ All ten confirmed findings from the design review have a settled disposition:
 | 9 | The selected tester image source pins cli-extended 0.5.0 and its old digest. | P7.0b updates the wheel URL, digest, minimum version, CMRU pin oracle, image selection, and installed-image proof for 0.7.0. |
 | 10 | Direct `run_command` callers do not provide the optional `log_path`. | `run_command` uses the finite 1,800-second CMRU policy default; `_execute_step` passes the resolved parsed value and source. Progress paths are `()` without a log and `(log_path,)` with one. |
 
+The exact-head review then produced six findings. Each has one closure below:
+
+| # | Exact-head finding | Closure in this plan |
+|---|---|---|
+| 1 | The preservation promise conflicts with CMRU's strict streamed decoder. | D-179 accepts replacement decoding, its malformed-byte oracle is assigned to P7.2, and P7.3 documents the intentional change, including SPEC S3.4a. |
+| 2 | P7.1 owns a live cleanup watchdog/process-spawning oracle before the P7.2 adapter and marker exist. | P7.1 owns only parsed-value/source and cleanup-field propagation with stubs; P7.2 owns the live capped `cmru cleanup --policy` oracle. |
+| 3 | A public `[runner]` key could land without its required public documentation. | P7.1-P7.3 are one atomic merge unit with no intermediate main merge or release; P7.3 owns the parseable public examples, docs, and anchor checks. |
+| 4 | The brief requires a behavior comparison and hand-mutation targets. | "Required behavior comparison" and "Controlled hand-mutation targets" below cover every behavior and every implementation package. |
+| 5 | D-178 was cited but absent from the formal decision ledger. | `cmru/nyxloom-trove/decisions.md` records D-178 and D-179 with authority, rationale, binding scope, and oracles. D-001 remains unchanged. |
+| 6 | The final image cannot be probed for a wheel archive that the Dockerfile deletes. | P7.0b defines a build-time-wheel-hash to selected-immutable-image proof chain based on installed metadata and module bytes compared with the pinned archive's contents. |
+
+## Required behavior comparison
+
+The implementation preserves the behavior marked "preserved" and deliberately changes only
+the decoding row under D-179. Captured probes remain outside this table's streamed-step
+migration.
+
+| Behavior | Current CMRU | `cli_extended.procio` | P7 target | Owner | Observable oracle |
+|---|---|---|---|---|---|
+| argv, cwd, environment | Builds the effective argv (including configured bake arguments), resolves an explicit per-command cwd, and runs under CMRU's scoped project/step/protected environment and `PYTHONUNBUFFERED=1`. | Accepts caller-supplied argv, cwd, and environment; it neither derives configuration nor mutates the caller's process environment. | Preserved: CMRU continues to derive those inputs; the adapter passes them unchanged to `run_streaming`. | P7.2 | Adapter fixtures capture the exact effective argv/cwd/env; cleanup's live case proves `CMRU_VERSION`, the selected token, original absolute cwd, and protected environment reach the child while ignored cleanup controls do not. |
+| Output streams and logging | Merges stdout/stderr, writes every line to the step log and optional aggregate mirror, applies quiet-mode suppression/error excerpts/tails, and emits bounded-drain holder warnings. | Merges stdout/stderr and calls `on_line`; exposes abandoned holders and warning text in `StreamResult`, but does not own CMRU's files or display policy. | Preserved: CMRU's `on_line` and result adapter retain both logs, mirroring, quiet output, evidence, and warning text. | P7.2 | Existing output/quiet/evidence tests plus a registered drained-pipe fixture assert holder WARN text, mirror bytes, nonzero mapping, and holder survival. |
+| Decoding and newlines | Locale incremental decoding with universal newlines and strict error handling: malformed bytes raise `UnicodeDecodeError`. | Locale incremental decoding with universal newlines and `errors="replace"`: malformed bytes become `U+FFFD`; `run_capture(text=True)` remains strict. | Deliberately changed by D-179 for streamed step output only; captured probes are not migrated. | P7.2 | In the registered capped lane with UTF-8, a child writing `b"ok \xff end\n"` and exiting 0 succeeds; both the step log and aggregate mirror contain `ok \ufffd end\n`, and no `UnicodeDecodeError` escapes. A nonzero child exit remains a step failure. |
+| Exit and error mapping | Nonzero child status becomes `CalledProcessError` and then the existing `StepFailed`; failure excerpts are written before raising. Missing executables propagate the spawn error. | Returns `StreamResult(returncode, outcome, warning, watchdog)` or raises the spawn/termination/on-line exception. | Preserved for ordinary exits: the adapter maps nonzero to the existing failure path and never turns replacement decoding into success/failure. Watchdog expiry is the new exit-1 runtime failure. | P7.2 | Child exits 0, 7, and signal-terminated cases retain their existing observable failure semantics; a missing executable retains the plain spawn exception; watchdog maps to `StepFailed(returncode=1)`, never a negative signal status. |
+| Watchdog and progress | Has no inactivity watchdog. | Requires a finite positive `no_progress_seconds`; bytes or configured path size/mtime changes count as progress, and expiry captures the tree before TERM/KILL. | Added: finite 1,800-second CMRU default, `[runner]` default, per-step override, source diagnostic, and path-sensitive progress. | P7.1/P7.2 | Config precedence and invalid-value tests in P7.1; fake-clock cases in P7.2 prove progress consumption, expiry diagnostic/source, pre-signal tree, and exit 1. |
+| Process groups and signals | Starts each child in a new session, turns caller SIGTERM/SIGHUP into cleanup, and TERM-then-KILLs the child's group. | Provides the same supervision scope and group reaping, including explicit grace handling; it skips only a known-empty group after leader reaping. | Preserved; `tester_gate.py` moves to the public `procio.terminate_as_exit` rather than retaining the private runner helper as the control layer. | P7.2 | Pipe/pidfd handshakes prove whole-group cleanup and SIGINT/SIGTERM behavior without sleeps; the PGID oracle asserts only the known-empty case and documents the reuse race. |
+| Cleanup | `cleanup_project_step` uses a cleanup-specific config and ignores ordinary step controls; it forces quiet output and uses absolute command cwd plus `repo_root/logs`. | Executes any supplied `StepConfig` under the generic supervision contract. | Preserved by D-178 except that cleanup gains the shared finite watchdog. Construct the existing cleanup config first, then copy only timeout/source metadata. | P7.1/P7.2 | P7.1 stub tests prove parsed timeout/source and field preservation; P7.2's live capped test proves the override reaches the watchdog, its diagnostic names `steps.clean.no_progress_timeout_seconds`, and ignored controls stay inert. |
+| Direct calls | `run_command` accepts calls without parsed step metadata and with `log_path=None`. | Requires a positive no-progress limit and rejects `None` path elements; no path means `progress_paths=()`. | Explicit policy: direct calls use one CMRU 1,800-second constant; parsed execution always passes its resolved value/source; no log passes `()`, a log passes `(log_path,)`. | P7.2 | Adapter tests prove the finite direct default, parsed override, and exact progress-path shapes; neither path forwards `None`. |
+
 ## D-178: preserve cleanup's existing behavior
 
 `steps.clean` historically receives only a cleanup-specific execution contract. Adopting its
@@ -45,8 +82,11 @@ quiet-output policy, command/cwd mapping, and `repo_root/logs` behavior while ga
 shared watchdog timeout.
 
 In P7.1, `load_config` parses `steps.clean` with the same project `[runner]` default and step
-override as every other step. `cleanup_project_step` then copies
-`project.runner_steps["clean"]` and explicitly replaces all cleanup-owned fields:
+override as every other step. `cleanup_project_step` starts from the existing
+`_build_step_config("clean", project.steps["clean"])`, then copies only the resolved finite
+timeout and its winning source key from `project.runner_steps["clean"]`. This preserves
+D-178 by construction and avoids accidentally activating controls as `StepConfig` grows.
+The resulting cleanup-owned fields remain:
 
 - the command list and original absolute command cwd mapping from
   `project.steps["clean"]`;
@@ -62,12 +102,33 @@ the original absolute command cwd, and `repo_root/logs` as the log root. The ful
 clean config must not be passed through, because that would accidentally activate ignored
 step controls.
 
-Behavioral oracle: stub the remote cleanup inputs and invoke `cmru cleanup --policy` with a
-project `[runner]` default plus a `steps.clean` override. Assert that the override reaches
-the watchdog and its diagnostic names
-`steps.clean.no_progress_timeout_seconds`; prove `CMRU_VERSION`, the selected token, command
-cwd, log root, and quiet output are preserved; and prove `env_command` and `login` do not run.
-The process-spawning cleanup case has the `capped_container` marker.
+P7.1's stub oracle captures the `StepConfig`, `extra_env`, `protected_env`, log root, and
+quiet output that `cleanup_project_step` would send to `execute_step`. It uses a project
+`[runner]` default and a `steps.clean` override and asserts that the override/source win, all
+cleanup-owned fields above survive, and inert controls remain inert. It spawns no process.
+
+P7.2 owns the live behavioral oracle, marked `capped_container`: with stubbed remote cleanup
+inputs, invoke `cmru cleanup --policy` in the registered capped lane using the real adapter.
+Assert that the override reaches the watchdog, its diagnostic names
+`steps.clean.no_progress_timeout_seconds`, `CMRU_VERSION` and the selected token reach the
+child, the original command cwd and `repo_root/logs` are used, output stays quiet, and
+`env_command` and login do not run.
+
+## D-179: replacement decoding for streamed output
+
+D-179 accepts procio's current decoding contract for streamed step output. Output is
+diagnostic text: CMRU logs it, mirrors it, extracts quiet-mode context/evidence, and leaves
+ordinary step success to the child's exit status. Failing a completed child merely because
+its diagnostic bytes are malformed is less reliable than rendering undecodable bytes as
+`U+FFFD`. This intentionally changes CMRU's prior strict decoder and requires no new procio
+API or release. Captured probes, including `run_capture(text=True)`, stay strict and outside
+this migration.
+
+P7.2 must prove in the registered capped lane with UTF-8 selected that a step child writing
+`b"ok \xff end\n"` and exiting zero succeeds, writes `ok \ufffd end\n` to both the step log
+and aggregate mirror, and raises no `UnicodeDecodeError`. A nonzero child exit must still
+produce the existing step failure. Watchdog expiry remains the separate exit-1 runtime
+failure.
 
 ## P7.0 prerequisites
 
@@ -119,16 +180,27 @@ fixes that digest. P7.0b must:
 
 1. update `tester-unified/Dockerfile`'s wheel URL, digest, and minimum version;
 2. update CMRU's tester-image pin oracle;
-3. rebuild and select the image; and
-4. verify the selected immutable image ID itself, not a local tag, release page, Git tag, or
-   source checkout: read `/opt/tester-venv`'s installed cli-extended metadata, verify the
-   installed wheel digest, and import `cli_extended.procio` from that image.
+3. hash the fetched wheel during the build and refuse bytes that do not match the pinned
+   0.7.0 SHA-256;
+4. bind the pinned wheel hash and the installed `cli_extended/procio.py` digest into image
+   build evidence and OCI labels (the wheel archive itself is deleted after installation
+   and need not remain in the final image);
+5. rebuild and select the immutable image ID; and
+6. prove that selected image, not a mutable local tag, release page, Git tag, or source
+   checkout: read `/opt/tester-venv`'s installed cli-extended version, read the installed
+   `cli_extended/procio.py` bytes and compare them with the corresponding path inside the
+   pinned 0.7.0 wheel archive, and import `cli_extended.procio` from that image.
 
 The local Git tag `cli-extended-v0.7.0` and the presence of `procio.py` in source do not prove
 the published wheel or selected image contains those bytes. Only the published-wheel digest
-and selected-image inspection satisfy this prerequisite.
+and selected-image evidence chain satisfy this prerequisite.
 
 ## P7.1: configuration and cleanup propagation
+
+P7.1, P7.2, and P7.3 are one atomic merge unit. No package in this unit may merge to `main`
+or be released between packages. The branch may carry sequential package commits and use
+their package gates, but the public `[runner]` key becomes mergeable only in the same main
+merge that ships P7.2's implementation and P7.3's complete public documentation.
 
 Add an optional project-level `[runner]` default and the same optional per-step key:
 
@@ -167,8 +239,9 @@ The diagnostic source keys are exactly:
 - `default runner.no_progress_timeout_seconds`.
 
 The P7.1 oracles cover the default, inheritance, override, unknown keys, bool/zero/negative/
-NaN/infinite rejection, exit-2 wording, and D-178. Every parsed step must receive the same
-resolved finite value independent of the higher-level CMRU verb.
+NaN/infinite rejection, and exit-2 wording. Its D-178 stub oracle proves timeout/source
+propagation and cleanup-field preservation without executing `cmru cleanup`. Every parsed
+step must receive the same resolved finite value independent of the higher-level CMRU verb.
 
 ## P7.2: adapter, dependency, signals, and capped process oracles
 
@@ -183,6 +256,15 @@ both cmru requirements in `cmru/pyproject.toml` to `cli-extended>=0.7.0`, includ
 
 Older generic-parser fixtures may retain 0.3.0 only where they intentionally test the old
 literal; they must not remain a declaration of CMRU's supported floor.
+
+### D-179 streamed decoding
+
+The adapter accepts procio's replacement decoding for streamed step diagnostics. It must not
+add a strict streaming mode or infer failure from malformed text. Every returned line,
+including replacement characters and an unterminated final tail, is written to the step log
+and aggregate mirror under the existing output policy. The child's exit status remains
+authoritative for ordinary success and failure. Captured probes are not migrated and retain
+their existing strict behavior.
 
 `run_command` remains the compatibility adapter around `_run_command`, which calls
 `procio.run_streaming` and preserves CMRU's elapsed/evidence, quiet excerpts, mirror handle,
@@ -288,7 +370,21 @@ Do not add the optional `[runner]` block to scaffold templates in this plan.
 Update the normative runner grammar, including SPEC S3.2 and the S2/S3.4a behavior, plus
 `README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, and user-facing examples/tests for:
 the 1,800-second finite default; project/step precedence and source-naming diagnostics;
-finite-only validation; cleanup's preserved D-178 behavior; and revision-5 compatibility.
+finite-only validation; cleanup's preserved D-178 behavior; revision-5 compatibility; and
+D-179's replacement-decoding change for streamed output while captured probes remain strict.
+
+P7.3 must include every public example and its checks in this same work item:
+
+- every config example in README, DESIGN-GUIDE, and CONSUMERS parses with the shipped loader
+  and declares the applicable current schema/version marker (including the current template
+  revision in CMRU project configs);
+- the repository's own `cmru.toml` carries the brief-required example of the public
+  `[runner]` default;
+- every public runner key, finite-only rule, precedence outcome, source diagnostic, and
+  cleanup compatibility fact appears in at least one public document;
+- cross-document links and section anchors resolve; and
+- SPEC S3.4a and user documentation describe replacement decoding rather than the retired
+  strict streamed-decoder claim.
 
 The compatibility oracle is that an unchanged revision-5 project still loads, passes
 `cmru standards`, and resolves the finite 1,800-second default.
@@ -299,9 +395,9 @@ The compatibility oracle is that an unchanged revision-5 project still loads, pa
 2. **P7.0b** - tester-unified 0.7.0 wheel pin/digest, image build/selection, and exact
    installed-image proof.
 3. **P7.1** - configuration parsing, resolved step metadata, cleanup propagation, and
-   D-178 oracles.
+   D-178 stub oracles.
 4. **P7.2** - procio adapter, dependency floor/oracles, public signal import, capped guard,
-   and deterministic process tests.
+   D-179 decoding, deterministic process tests, and the live cleanup oracle.
 5. **P7.3** - normative/user documentation and examples, without a revision bump.
 
 P7.0a and P7.0b must both be complete before P7.2's registered CMRU gate. If the installed
@@ -309,6 +405,23 @@ Run-Gate wheel or selected tester-unified image cannot prove the exact producer/
 contract, pause P7.2's procio import, dependency-floor, and capped-gate work; P7.1 may
 proceed independently. The 0.7.0 wheel itself is already published and verified, so wheel
 availability alone is not a pause trigger.
+
+P7.1 may be implemented on the branch before the prerequisites, but P7.1-P7.3 do not merge
+separately: P7.2's dependency/adapter release work and P7.3's public docs remain in the same
+atomic merge unit, so P7.2's pause also pauses that merge.
+
+## Controlled hand-mutation targets
+
+These are deliberate hand edits used during implementation review, not predicted mutation
+score targets. Each must be restored after its named check proves it red.
+
+| Package | Controlled mutation | Required killer |
+|---|---|---|
+| P7.0a | Omit the lane fact, add a fifth key, emit a malformed/boolean cap, accept a caller collision, or persist it on a bare-host/ineligible path. | Run-Gate producer, exact-schema, collision-refusal, bare-host, ineligible-path, and Assay-forwarding tests. |
+| P7.0b | Change the wheel URL/digest/minimum, or replace the evidence chain with a mutable tag alone, an installed-version-only check, or no installed-module-byte comparison. | Tester-unified Dockerfile/pin tests and the selected-image evidence check must fail. |
+| P7.1 | Let `[runner]` beat a step override, drop the winning source, accept bool/zero/negative/NaN/infinity, or let cleanup inherit ignored step controls from the full parsed config. | Config precedence/validation tests and the D-178 cleanup `StepConfig` stub test. |
+| P7.2 | Ignore `U+FFFD` replacement, turn malformed output into failure over exit 0, lose nonzero/signal failure mapping, forward `None` or a bare path instead of the required progress-path shapes, skip watchdog exit-1/tree reporting, or omit whole-group cleanup. | D-179 malformed-byte/exit tests, direct-call/log-path adapter tests, fake-clock watchdog tests, and pipe/pidfd process-group tests. |
+| P7.3 | Remove or invalidate a public config example, omit the runner key/default/precedence/oracle, break a cross-document anchor, or restore the old strict-decoding claim in S3.4a/user docs. | Shipped-loader example parsing, public-key vocabulary checks, anchor checks, and documentation regression tests. |
 
 ## Risks and source limits
 
