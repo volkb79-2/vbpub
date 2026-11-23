@@ -28,7 +28,7 @@ explained in [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md).
 | [`build-push.py`](build-push.py), [`cmru.toml`](cmru.toml) | Release entry point and its complete project contract |
 | [`scripts/`](scripts/) | Release-time machinery: base resolver, bake/repack lanes, tool staging, OCI validation, benchmarks |
 | [`requirements/`](requirements/), [`apt/`](apt/), [`pip/`](pip/), [`ai-cli-tools.list`](ai-cli-tools.list) | What goes *into* the image: venv toolkit, Debian packages, first-party wheels, AI CLIs |
-| [`customization/`](customization/README.md) | Shipped shell/profile/editor assets (`zshrc`, `aliases.sh`, `ai.env.example`, `htoprc`, …) |
+| [`customization/`](customization/README.md) | Shipped shell/profile/editor assets (`zshrc`, `aliases.sh`, `.env.ai.example`, `htoprc`, …) |
 | [`templates/`](templates/README.md) | The consumer-facing `devcontainer.json` + bootstrap script, per-repo and [host-side-folder](templates/host-folder/README.md) variants |
 | [`host-setup/`](host-setup/README.md) | **Host-side** companion: cgroup v2 tiers that govern devcontainers and the containers they spawn |
 | [`docs/`](#documentation) | Architecture and doctrine documents — see the index below |
@@ -238,6 +238,9 @@ Enabled by default, each controlled by an `INSTALL_*` build arg:
   `PATH`, because `codex update` rewrites the package and a copy would drift. The installer
   verifies the tree in place, and the image build fails when `codex --version` fails or prints
   nothing ([why](docs/DESIGN-GUIDE.md#how-the-ai-clis-update-themselves)).
+- Codex, OpenCode, and Pi can use the OpenDesign routes for `deepseek-v4.1-flash-eco`. Their
+  model-specific default is `max`; each harness supports per-call `low` or `high` overrides.
+  See the [OpenDesign harness configuration guide](docs/AI-HARNESSES.md).
 - `claude` — the official `@anthropic-ai/claude-code` npm package under `/opt/mdt/npm` (staged as the exact registry `latest`, or an explicit pin, and recorded in the manifest; user-updatable tools follow upstream and the image pins what it shipped); `claude update` and its background updater run `npm install -g` into that prefix, so an update is the `claude` on `PATH`. `antigravity` (`agy`) — an image-owned binary in `/opt/mdt/bin`.
 
 Image-managed tools live in the `mdt` group tree (`/opt/mdt`, `/srv`): group-writable, so the
@@ -454,16 +457,20 @@ See the [Codex profile and container-lifetime notes](docs/CONSUMERS.md#codex-pro
 Image defaults, user config, and secrets have distinct roles:
 
 - `/usr/local/share/mdt-cockpit/` — image-owned profile files, default shell/editor config,
-  examples (`ai.env.example`, `aliases.sh.example`) and manifest support files. Nothing copies
+  examples (`.env.ai.example`, `aliases.sh.example`) and manifest support files. Nothing copies
   these into the home.
-- `<home>/.config/mdt-cockpit/` — **yours, created by you**: `ai.env` (keys), plus
-  optional `shell.env` and `aliases.sh` that are sourced after the image's own and can override
-  them. The image never writes this directory.
+- `<home>/.config/mdt-cockpit/shell-start.d/` — **yours, created by you**: sourceable files loaded
+  in lexical order by the shared shell profile. Each file is treated the same way; the loader does
+  not recognize secret-file names. The image never writes this directory.
+- `<home>/.config/mdt-cockpit/` — optional `shell.env` and `aliases.sh` overrides, sourced after the
+  image's own defaults.
 
-The shell profile sources `ai.env` once per session, which makes it the single source of truth
-for Aider, Claude Code, Codex, Reasonix, OpenClaw, and OpenCode: the keys are exported into
-every shell, so tools need no per-tool secret file. Supported keys: `ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`.
+The conventional home-level API key file is `~/.env.ai`. It is not discovered by filename: to
+export its values on shell startup, register it in the general source directory, for example with
+`ln -s ~/.env.ai ~/.config/mdt-cockpit/shell-start.d/.env.ai`. The loader exports variables from
+each registered file, so tools launched from those shells can share the same keys. Supported
+example keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`,
+`OPENDESIGN_API_KEY_GITHUB2`, `OPENDESIGN_API_KEY_VOLKER`.
 
 Consuming repos can add file mounts with any filename. Existing sources use their actual host type;
 missing sources follow the configured policy and source spelling. See the
@@ -905,6 +912,7 @@ production-quality. Support windows as of June 2026:
 | [host-setup/CGROUP-NOTES.md](host-setup/CGROUP-NOTES.md) | What slice units can't express; BFQ caveats |
 | [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md) | Which concerns belong to the image, the orchestration, and the host |
 | [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) | What to put in a consumer repo's AI instruction files |
+| [docs/AI-HARNESSES.md](docs/AI-HARNESSES.md) | Configure Codex, OpenCode, and Pi for the OpenDesign DeepSeek Eco routes; defaults and per-call effort overrides |
 | [docs/AI-AGENT-TOOL-DISCOVERY.md](docs/AI-AGENT-TOOL-DISCOVERY.md) | Cross-CLI adapter pattern; why exact versions stay in the generated inventory |
 | [docs/BUILD-ARCHITECTURE.md](docs/BUILD-ARCHITECTURE.md) | Build/repack/publication flow, cgroup boundaries, load attribution |
 | [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Why the Python, tester-unified, and QEMU lanes are separate; terminal session boundaries; managed socket access and host namespace access |

@@ -11,8 +11,13 @@ directory for you):
 
 - `shell.env` — exported shell defaults (pager, editor, less); `shell.env` in
   `~/.config/mdt-cockpit/` is sourced after the image's, so it can override.
+- `shell-start.d/` — sourceable files for shell startup. Files are sourced in
+  lexical order by `profile.sh` in both bash and zsh, with variable assignments
+  exported to child processes.
 - `aliases.sh` — aliases and helper functions; yours is sourced after the image's.
-- `ai.env` — your central API keys (no image default; copy `ai.env.example`).
+- `.env.ai` — a conventional home-level API key file. Register it in
+  `shell-start.d/` when shells should export its variables; it is not loaded by
+  filename. The example is `/usr/local/share/mdt-cockpit/.env.ai.example`.
 
 What ships here and where it is wired:
 
@@ -21,7 +26,7 @@ What ships here and where it is wired:
 | `profile.sh` | sourced by `/etc/profile.d/50-mdt-cockpit.sh`, the `/etc/bash.bashrc` hook and the `/etc/zsh/zshrc` hook | env + aliases + cgroup/KSM banner (below); never edits `PATH` |
 | `bashrc` | hook appended to `/etc/bash.bashrc` | history, colours, completion; your `~/.bashrc` runs after it |
 | `zshrc` | hook appended to `/etc/zsh/zshrc` | fzf, autosuggestions, syntax highlighting, Oh My Zsh on the VS Code image family |
-| `shell.env`, `aliases.sh` | `/usr/local/share/mdt-cockpit/` | image layer of the two user files above |
+| `shell.env`, `aliases.sh`, `.env.ai.example` | `/usr/local/share/mdt-cockpit/` | image defaults and examples; user startup files are registered in `shell-start.d/` |
 | `htoprc` | `/etc/htoprc` | htop reads it when the user has no `~/.config/htop/htoprc` |
 | `mc.ini` | `/etc/mc/mc.ini` | mc reads it when the user has no `~/.config/mc/ini` |
 | `nanorc` | appended to `/etc/nanorc` (an `include` would be refused: nano rejects `set` in included files) | nano reads `~/.nanorc` after it |
