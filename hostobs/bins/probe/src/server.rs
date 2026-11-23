@@ -3727,10 +3727,8 @@ mod tests {
             .server
             .conn(a_series)
             .is_some_and(|conn| conn.has_pending_series_page(3)));
-        assert_eq!(
-            d.server.hub().queued(b_series).query,
-            current_frame + first_series_frame
-        );
+        assert_eq!(d.server.hub().queued(b_series).query, first_series_frame);
+        assert_eq!(d.server.hub().uid_pools(2).query, current_and_first);
         assert!(d
             .server
             .conn(b_series)
