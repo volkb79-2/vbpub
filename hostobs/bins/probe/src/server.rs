@@ -3736,18 +3736,32 @@ mod tests {
 
         d.pump(a_current, usize::MAX);
         let current_raw = raw_frames(&d.take_out(a_current));
+        assert_eq!(current_raw.len(), 3);
         assert_eq!(
-            (current_raw[0].0, current_raw[1].0),
-            (FrameType::Block.code(), FrameType::End.code())
+            (current_raw[0].0, current_raw[0].1),
+            (FrameType::Rep.code(), 2)
+        );
+        assert!(
+            check_rep(frame_payload(&current_raw[0].2), false)
+                .expect("current REP")
+                .ok
+        );
+        assert_eq!(
+            (current_raw[1].0, current_raw[1].1),
+            (FrameType::Block.code(), 2)
         );
         let mut dicts = StreamDicts::new();
-        let current = accept_block(&mut dicts, 2, &current_raw[0].2);
+        let current = accept_block(&mut dicts, 2, &current_raw[1].2);
         assert_eq!(current.header.seq, 6);
         assert!(matches!(
             &current.dictionary.as_ref().expect("dictionary").entries()[0],
             Entry::Entity { label, .. } if label == "v2"
         ));
-        assert_end_ok(&current_raw[1].2, 1, 0, "complete");
+        assert_eq!(
+            (current_raw[2].0, current_raw[2].1),
+            (FrameType::End.code(), 2)
+        );
+        assert_end_ok(&current_raw[2].2, 1, 0, "complete");
 
         assert_eq!(
             d.server.conn(a_series).map(|conn| conn.outstanding()),
@@ -3765,10 +3779,28 @@ mod tests {
 
         d.pump(b_current, usize::MAX);
         let current_raw = raw_frames(&d.take_out(b_current));
+        assert_eq!(current_raw.len(), 3);
         assert_eq!(
-            (current_raw[0].0, current_raw[1].0),
-            (FrameType::Block.code(), FrameType::End.code())
+            (current_raw[0].0, current_raw[0].1),
+            (FrameType::Rep.code(), 2)
         );
+        assert!(
+            check_rep(frame_payload(&current_raw[0].2), false)
+                .expect("current REP")
+                .ok
+        );
+        assert_eq!(
+            (current_raw[1].0, current_raw[1].1),
+            (FrameType::Block.code(), 2)
+        );
+        let mut dicts = StreamDicts::new();
+        let current = accept_block(&mut dicts, 2, &current_raw[1].2);
+        assert!(current.dictionary.is_some());
+        assert_eq!(
+            (current_raw[2].0, current_raw[2].1),
+            (FrameType::End.code(), 2)
+        );
+        assert_end_ok(&current_raw[2].2, 1, 0, "complete");
         assert_eq!(
             d.server.conn(b_series).map(|conn| conn.outstanding()),
             Some(0)
