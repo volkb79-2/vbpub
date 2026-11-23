@@ -3524,7 +3524,12 @@ mod tests {
         let data = live_data(5, "one");
         let selected = selection(1);
         let need = stream_block_len(&ServerLimits::new(), &data);
-        let mut d = Driver::with(query_bound_limits(need.saturating_mul(2)));
+        let cap = need
+            .checked_mul(2)
+            .and_then(|twice| twice.checked_sub(1))
+            .expect("nonzero UID Query cap");
+        assert!(need <= cap, "one current BLOCK must fit its UID Query pool");
+        let mut d = Driver::with(query_bound_limits(cap));
         let first = d.open(Level::Observe, 1);
         let second = d.open(Level::Observe, 2);
         let blocker_a = d.open(Level::Observe, 1);
@@ -4486,7 +4491,7 @@ mod tests {
         assert_eq!(first.time[0].real_ns, 0);
         assert_eq!(first.columns.len(), 1);
 
-        let replay_two = d.open(Level::Observe, 2);
+        let replay_two = d.open(Level::Observe, 1);
         d.ready(replay_two);
         d.send(
             replay_two,
