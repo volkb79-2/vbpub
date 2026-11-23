@@ -112,6 +112,11 @@ console command and its wheel SemVer are the only supported CLI identity;
 copied scripts and consumer symlinks are retired. Project discovery is from
 the current working directory, and persisted `revision` values remain only
 record-format provenance, never an upgrade floor.
+Rev 25 (P7.0a candidate): `R-58` publishes the selected ephemeral memory/PID
+cap fact, binds it to schema-2 inflight provenance and all Docker/host child
+environment boundaries, refuses unknown-schema records under `--fresh`, and
+requires an all-selected-member read-only launch barrier for native sequences.
+`R-24` now maps absent/empty required inputs to `NOT_RUN`/3 `env-missing`.
 Rev 24 (Run-Gate 25.6.x, this wave): documentation reconciliation with no
 behaviour change except two refusals — RG-150 refuses an ephemeral lane before
 it starts when the lane user, the checkout owner and the CoW-root owner are not
@@ -988,8 +993,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 - `R-24` **Declared inputs (RG-17/RG-19):** a lane's `required_env` names
   are verified by the GATE, never discovered by test failure. Before any
   execution (every lane kind): each name must be present and non-empty in
-  the invoking environment — else refusal (exit 2) naming the lane and
-  variable. For container lanes additionally: every required name MUST be
+  the invoking environment — otherwise the lane is `NOT_RUN` (exit 3) with
+  reason `env-missing`, naming the lane and variable exactly as `R-04a`
+  defines; a dry run discloses the same would-be terminal. For container
+  lanes additionally: every required name MUST be
   on the environment's `forward_env` allowlist (else it can never reach the
   lane — refused on the run path before anything executes, NOT at load:
   listing/inspection verbs stay usable). Every container-lane start prints WHICH
@@ -1988,7 +1995,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     by (project dir, lane), so the writer must be distinguishable; see
     `R-39f`), container name and id, `started_at` (UTC ISO) and
     `started_epoch`, the judged commit, worktree, project dir, the lane's
-    verdict and progress paths (`null` for a command lane), and
+    verdict and progress paths (`null` for a command lane), `lane_caps_v1`
+    (the exact selected fact string or actual JSON `null` under `R-58`), and
     `__revision__`. Scope is (judged worktree x project x lane) BY
     CONSTRUCTION — `R-21` already relocates the effective project dir into
     the judged tree, so two worktrees' gates address two different files and
@@ -1998,18 +2006,18 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     write-temp-then-`os.replace`; that lock spans the write and nothing
     else, and it is NOT what arbitrates two live clients — `R-39e` is. The
     record's `schema` is CHECKED on read, not merely written, and a record of
-    another schema is **REFUSED (exit 2)**, never degraded: an old client
+    another schema is **REFUSED (exit 2), including under `--fresh`**, never
+    degraded: an old client
     reading a future record under today's rules is the silent misread a
     version field exists to prevent, and *treating it as absent* is worse
     still — this client then starts a SECOND container for the lane and
     writes its own record over the newer one, which is the loss `R-39` exists
-    to end, performed by the tool. The refusal names both schema numbers and
-    every way out: upgrade run-gate to the revision that wrote it; `--fresh`
-    where the record's container NAME is readable; else the record's path to
-    delete. `--fresh` therefore has to work against such a record, so under
-    it exactly two fields are read out of a grammar this client does not
-    know — the container name (what to remove) and `started_at` (display) —
-    and never the commit, the owner or the artifacts. A record carrying no
+    to end, performed by the tool. The refusal names the observed schema and
+    record path and directs the operator to a client that understands that
+    schema, or to the lifecycle owner, who verifies the old run and container
+    identity, handles any container through the owning lifecycle tooling, and
+    removes the record only after verification. This Run-Gate does not
+    prescribe `--fresh` for unknown-schema recovery. A record carrying no
     `schema` key at all is not a versioned record but a corrupt one, and
     falls under the no-container rule below. The
     record therefore also names its OWNER: `owner_pid`, `owner_start` (the
@@ -2042,12 +2050,17 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     commit** → collect
     (`run-gate: collected <name> (exited <code> at <t>)`) and finish exactly
     as an attached run would; **gone** → say so, record that run as
-    `aborted`, clear the record, run fresh; **a different commit** → refuse,
-    exit 2, naming both commits, the container, and `--fresh`; **`--fresh`**
-    → remove the named container (by name, disclosed), clear the record, run
-    anew. An `inspect` answer that parses as NEITHER a state nor a gone
-    signal refuses (ERROR, exit 2) rather than guessing — guessing "gone" would
-    start the duplicate this requirement exists to prevent.
+    `aborted`, clear the record, and run fresh only when the recorded owner
+    is positively dead; an Alive or Unknown owner refuses; **a different
+    commit** → refuse, exit 2, naming both commits and the container, and
+    name `--fresh` only when owner death and exact container identity make
+    that recovery safe; **`--fresh`** → require a positively dead owner,
+    inspect the named container when present, and remove only the inspected
+    ID when it exactly equals the recorded ID; missing or unreadable identity
+    refuses; then clear the record and run anew. An `inspect` answer that
+    parses as NEITHER a state nor a gone signal refuses (ERROR, exit 2)
+    rather than guessing — guessing "gone" would start the duplicate this
+    requirement exists to prevent.
     - **What "gone" is, exactly.** ONLY `No such object` / `No such
       container` on `docker inspect`'s stderr. Every other inspect failure —
       an unreachable daemon above all — is INFRASTRUCTURE: ERROR exit 2, the
@@ -2058,15 +2071,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     - **The name is not the identity.** Container names are deterministic
       per (environment, repo, lane), so a record that outlives its container
       can name a DIFFERENT container that later took the same name. `{{.Id}}`
-      rides along in the same `inspect` format (no extra call) and a
-      mismatch is treated as GONE, disclosed by name: `a different container
-      now wears this name; run-gate will not touch it`. The record is
-      cleared and the lane runs fresh — run-gate never re-attaches to, and
-      never removes, a container it cannot identify as its own. Automatic re-attach with `--fresh` as the
-    escape, rather than a refusal requiring an `--attach` flag, is decision
-    D4 of the post-v10 plan: a restart is the COMMON case after a client
-    death, and a manual step is exactly what the host's one-container rule
-    was written to avoid.
+      rides along in the same `inspect` format (no extra call). A missing
+      recorded ID, a missing inspected ID, or different IDs refuses before
+      follow, adopt, collect, remove, or mutation; it is never read as GONE.
+      The record and whatever container wears that name remain untouched.
+      Run-gate never re-attaches to, removes, clears over, or records a run
+      against a container it cannot identify as its own. A positively dead
+      owner with a genuinely absent container is the separate lost-run path;
+      only that path records the old run `aborted` and clears its record.
   - **`R-39c` One finish, one history record.** The fresh, re-attached and
     collected paths share ONE tail (`await_container`): logs, `docker wait`,
     evidence on failure, `docker rm -f`, record cleared in the SAME `finally`
@@ -2121,9 +2133,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     decision's order, so it names the refusal, the follow or the `--fresh`
     removal where those are what would happen; announcing "re-attach or
     collect" for a record the live run refuses is worse than saying nothing,
-    because a dry run's whole audience is someone about to act on it. Host lanes and exec lanes start no
-    container of run-gate's own, so they have no record and refuse `--fresh`
-    by name (`R-25`/`R-35`'s rule), as do `doctor`, `history`,
+    because a dry run's whole audience is someone about to act on it. Host
+    lanes start no inflight container record and refuse `--fresh` by name;
+    exec lanes write a schema-2 recovery record with `lane_caps_v1` JSON null,
+    but `--fresh` cannot remove their externally owned persistent runner and
+    therefore refuses too (`R-25`/`R-35`'s rule), as do `doctor`, `history`,
     `validate-pointers` and a bare invocation. A conjunction lane carries the
     behaviour to each SUB-lane it invokes; the conjunction itself is a
     command lane with no container of its own and no record. `--fresh` is
@@ -3153,6 +3167,101 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `ERROR` (reason `judge-not-provided`) BEFORE consulting the lane's
   `exit_map`, so a refusal can never be reported as PASS or as a lane failure,
   and a judge lane that tries to remap that code is refused at load.
+- `R-58` **Selected lane caps are one exact launch and reattachment fact
+  (P7.0a / D-001).** `RUN_GATE_LANE_CAPS_V1` is Run-Gate-owned. Its source is
+  only the selected parsed Run-Gate lane and selected parsed Run-Gate
+  environment. Eligibility is the selected environment mode `ephemeral` plus
+  a positive memory parsed by the existing size grammar and a positive
+  `type(resources.pids) is int`. Effective memory is `resources.memory`, else
+  legacy lane `memory`. Missing or zero means no fact; malformed declarations
+  remain configuration refusals. `memory_swap`, `memory_max`, host capacity,
+  image metadata, inventory, and ambient state never supply a value.
+
+  For an eligible fact the one serialization is a compact JSON object with
+  exactly ordered keys `environment`, `lane`, `memory_max_bytes`, `pids_max`,
+  `ensure_ascii=True`, separators `(",", ":")`, UTF-8 bytes, and no trailing
+  newline. This same string is used for child delivery, the inflight record,
+  and exact reattachment comparison; no consumer parses and normalizes a
+  stored copy. Selected Unicode environment and lane names remain supported.
+
+  Reserve the variable against the selected effective caller declarations in
+  environment `forward_env`, `image_env`, `cgroup_slice_env`, and lane
+  `required_env`. One centralized field list owns the check. A collision
+  names the variable, selected lane, and declaration, and refuses `ERROR`/2
+  before inflight access, image-override resolution, required-input
+  inspection, imported inventory, admission, Docker, or child work. The
+  check covers every selected sequence leaf occurrence. Project entries
+  shadow central entries whole; a shadowed central collision does not
+  refuse. An ambient value alone is neither a collision nor a fact. Assay
+  `env_required` and `env_passthrough` are downstream declarations.
+
+  Delivery uses a private environment for every Docker client and host child;
+  the controller process's `os.environ` is never mutated. Eligible ephemeral
+  runs put the exact string in that private Docker-client mapping and pass
+  `-e RUN_GATE_LANE_CAPS_V1` by name only. Ineligible ephemeral and exec runs
+  remove the client key and pass `-e RUN_GATE_LANE_CAPS_V1=`. Bare-host runs
+  and every host child omit the key; ephemeral/exec inventory, fitness,
+  capacity, state-root, doctor and environment probes remove the client copy
+  and explicitly empty the container assignment. The JSON never appears in
+  Docker argv or a dry-run plan.
+
+  Schema-2 container records store the exact eligible string and actual JSON
+  `null` for ineligible ephemeral runs; exec records store actual JSON null.
+  Missing is distinct from null. Non-fresh reattachment checks recognized
+  schema, foreign runner, the applicable Assay artifact contract, then exact
+  cap provenance before Docker inspection, following, adoption, collection,
+  verdict/progress access, or record mutation. A stored value has exactly the
+  required JSON type and byte string; missing, number, boolean, object, list,
+  string `"null"`, unequal string, malformed JSON string, alternate spacing,
+  or alternate key order refuses. Legacy schema-2 records remain visible in
+  `status` without making a cap or reattachability claim.
+
+  A direct `resolve_inflight` caller passes the selected expected string or
+  explicit null and therefore cannot claim to have checked CLI selection,
+  collisions, image override, required inputs, or imported inventory. The
+  resolver re-reads and revalidates the record after its shared pure
+  preflight and before action. A CLI sequence captures each selected record's
+  exact present/absent bytes during planning and performs one final
+  all-member snapshot reread immediately before member dispatch. A record
+  created, deleted, or changed at that seam refuses rather than becoming a
+  fresh launch. For a present stale container, missing recorded or inspected
+  ID, or unequal IDs, refuses without following, adopting, collecting,
+  removing, clearing, or overwriting. Fresh removal occurs only for a
+  positively dead owner and uses the inspected ID that equals the recorded
+  ID; missing or unreadable identity is `unknown`, never death.
+
+  Unknown-schema inflight records refuse `ERROR`/2 under normal execution,
+  `--fresh`, and dry-run, before Docker or mutation, even when a foreign
+  runner, owner, container name, or ID is recognizable. The diagnostic
+  names the record and observed schema and directs the operator to a
+  schema-aware client, or to lifecycle-owner verification followed by
+  container handling through owning tooling and record removal after
+  verification. It does not prescribe `--fresh` for unknown-schema recovery.
+  Unknown-schema and foreign-runner refusal priority remains before the
+  changed-kind sequence-node refusal. A recognized non-foreign record under
+  a selected node now configured as `sequence` is stale and refuses in
+  normal, `--fresh`, and dry-run before inventory, admission, Docker, or
+  member execution.
+
+  A native sequence uses one private root planner over ordered leaf
+  occurrences. It flattens nested sequences depth first without deduplicating
+  repeated names, retains occurrence paths and `stop_on` grouping, checks
+  caller collisions for all leaves, derives each fact from the same snapshot,
+  purely preflights every selected sequence-node and leaf record, resolves
+  every selected image override/required-input/reachability terminal, then
+  runs imported inventory and verifies materialization without reselecting.
+  Only after those checks does it acquire one admission ticket, re-read every
+  selected record, inspect every pending container ID without following or
+  mutation, and repeat the all-member record-snapshot comparison. An already
+  invalid later container refuses before the first member. Plans freeze the
+  selected lane/environment/source, image, resources, expected fact/null,
+  required/forwarded inputs, worktree/project, options, occurrence path,
+  grouping, and initial record bytes; nested children consume the root plan
+  and still perform their own final record reread before action. This is a
+  prelaunch barrier, not an atomic transaction: a writer racing after the
+  final parent pass can still leave an earlier member's effects before the
+  later child refuses, and no stronger claim is made without a shared lock
+  protocol for every writer.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

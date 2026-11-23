@@ -183,6 +183,7 @@ SPEC §9.
 | RG-290 | `TestExecMode::test_exec_mode_declared_name_refusal_prescribes_project_authority` asserted `"ciu" not in proc.stderr`, but the refusal quotes the lane-config path, so a checkout whose path contains `ciu` (for example a `ciu worktree` named `ciu-...`) failed the whole selftest | Minor | FIXED 2026-11-18 (test only) |
 | RG-291 | the release gate ran only `selftest`, so it did not prove R3 canary rejection in the exact receipt-specific tester image before tagging | Major | FIXED 2026-11-18 (P10c-rg) |
 | RG-292 | `tools/canary-run.sh` treats any non-zero pytest exit as the expected canary rejection, so a broken image or collection failure would be reported as a successful rejection | Minor | OPEN 2026-11-18 (P10c-rg review) |
+| RG-293 | Run-Gate lacks an authoritative selected memory/PID cap identity for child delivery and inflight reattachment | Major | FIXED IN P7.0a CANDIDATE 2026-11-23 — exact candidate HEAD is recorded in the controller implementation report; not publicly released |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9520,3 +9521,58 @@ may count as a successful R3 rejection.
 
 **Close when.** The canary distinguishes a gate-rejection exit from an
 infrastructure failure and a controlled-wrong image fails the lane.
+
+## RG-293 — selected memory/PID caps have no authoritative child-delivery and reattachment identity
+
+**Status:** FIXED IN P7.0a CANDIDATE 2026-11-23. Severity: Major. The exact
+candidate commit, candidate wheel identity, and gate receipts remain controller
+evidence and are recorded in
+`/home/vscode/controller/reports/run-gate-p70a-implementation.md`; this entry
+does not claim a public release.
+
+**Observed.** Run-Gate applied Docker memory and PID limits from the selected
+lane, but gave a child no Run-Gate-owned fact describing those selected caps.
+A child could therefore mistake ambient or image-baked values for its actual
+limits, and a schema-2 reattaching client had no exact way to prove that a
+later invocation selected the same cap contract as the recorded launch.
+
+**Cause.** Resource values existed in config and Docker argv construction, but
+there was no single serialized launch fact shared by child delivery, the
+inflight record, and reattachment comparison. Recovery also allowed a
+name-only `--fresh` interpretation of unknown-schema records.
+
+**Fix.** D-001 derives `RUN_GATE_LANE_CAPS_V1` only from the selected parsed
+lane and environment. Eligibility is ephemeral mode plus positive effective
+memory and positive integer `resources.pids`; effective memory is
+`resources.memory`, otherwise legacy lane `memory`. Eligible values are one
+compact, ASCII-escaped, newline-free four-field JSON string. Eligible
+ephemeral containers receive it through a name-only Docker `-e`; ineligible
+ephemeral and exec containers receive an explicit empty assignment; host and
+probe paths remove the name. Schema-2 records store the exact string or actual
+JSON null, and non-fresh reattachment requires exact equality before Docker,
+verdict, follow/adopt/collect, or mutation.
+
+Collision checks cover selected environment `forward_env`, `image_env`,
+`cgroup_slice_env`, and lane `required_env` before image-override resolution,
+records, inventory, admission, Docker, or child work. A private all-selected-
+member sequence planner checks every leaf and selected sequence-node record,
+materializes imports without reselecting them, inspects pending container
+identity after admission, and performs a final record-snapshot barrier.
+Unknown-schema records now refuse under `--fresh`; the diagnostic names a
+schema-aware client or lifecycle-owner verification instead of prescribing a
+name-only recovery.
+
+The deterministic test suite covers builder bytes and Unicode, effective
+resource precedence, all collision fields and ordering, hostile stored cap
+types and unequal JSON strings, owner three-state classification, exact
+container-ID checks, unknown-schema recovery, final-boundary mutation,
+sequence prelaunch barriers, delivery masking at Docker and host subprocess
+boundaries, receiver negative controls, and documentation/Assay example
+loading. Controller-owned live acceptance still must bind the exact candidate
+wheel and frozen derivative image while observing the three registered p7a
+lanes and the separate persistent exec fixture.
+
+**Close when.** The exact candidate wheel passes `selftest`, `assay-r1`,
+`assay-r3`, the three registered p7a product lanes, and the separately reviewed
+persistent exec fixture, with every receipt bound to the candidate commit and
+image identities. Public release remains a later operator decision.

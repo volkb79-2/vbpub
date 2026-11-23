@@ -871,6 +871,56 @@ member, a cycle, an empty member list or an environment-less member is a named
 `[FAIL]`, because a preflight that raises `KeyError` hides every other finding
 and one that silently skips a lane certifies something it did not check.
 
+## Selected lane caps are an exact launch and reattachment fact
+
+Run-Gate D-001 makes `RUN_GATE_LANE_CAPS_V1` a derived launch fact rather than
+an observed hint. Its only sources are the selected parsed Run-Gate lane and
+the selected parsed Run-Gate environment. The fact exists for an ephemeral
+lane with a positive parsed effective memory string and a positive TOML
+integer `resources.pids`. Effective memory follows Docker's existing
+precedence: `resources.memory`, otherwise legacy lane `memory`. Swap limits,
+`memory_max`, host capacity, image metadata, process environment, Assay
+inventory, and a guessed default cannot create or change the fact.
+
+That source rule is what makes the value safe to compare. Eligible delivery is
+one compact four-field JSON string, serialized once with a fixed key order,
+ASCII escaping, and no newline. The identical string is placed in the Docker
+client's private environment, stored in the schema-2 inflight record, and used
+for the exact current-lane comparison. Docker receives only the variable name
+through `-e`, so the JSON is not exposed in readable argv. Ineligible
+ephemeral, exec, bare-host, and all probe paths clear the host copy and
+explicitly empty a container assignment where Docker could otherwise preserve
+an ambient or image-baked value.
+
+Exact provenance is deliberately narrower than “some caps were recorded.”
+Every eligible run stores the string; ineligible ephemeral and exec runs store
+actual JSON null. Missing is not null. A non-fresh reattachment compares the
+field's JSON type and exact bytes before following, adopting, collecting,
+inspecting the named container, reading verdict or progress, or mutating the
+record. A malformed JSON string and a semantically equivalent but differently
+ordered or spaced string are unequal strings. This prevents a restart from
+continuing under a memory or PID contract that differs from the recorded
+launch.
+
+D-001 also changes recovery compatibility. A record whose `schema` this client
+does not understand refuses under normal execution and under `--fresh`; a
+familiar-looking container name, owner, or container ID does not make unknown
+fields trustworthy. A schema-aware client, or the lifecycle owner after
+verifying the old run and container identity, owns that recovery. This client
+does not prescribe `--fresh` for an unknown schema. Fresh recovery of a
+recognized record still requires a positively dead owner and an inspected
+container ID exactly equal to the recorded ID; unknown identity refuses.
+
+Native sequences use one root planner to apply these collision, record,
+image, required-input, materialization, admission, container-identity, and
+final all-member snapshot barriers before the first member. The barrier covers
+state observable before launch; it is not a cross-process transaction, so a
+writer racing after the last parent check can still make an earlier member's
+effects visible before the later child's own final check refuses.
+
+See the [feature summary](../README.md#selected-lane-caps-are-an-exact-launch-and-reattachment-fact)
+and [consumer recipe](../CONSUMERS.md#publish-selected-lane-caps-to-a-child).
+
 ## Selective requests stay with the selected lane
 
 Assay's `--reuse-from`, `--rejudge`, and `--rejudge-outcome` describe one

@@ -17,7 +17,7 @@ See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 # Public CLI distribution: the installed wheel's metadata supplies its version.
 # __revision__ is retained only for persisted-record provenance.
 # rev 65: send single-line JSON over the newline-framed cgprofile control socket
-__revision__ = 70  # rev 70: RG-150 one-uid preflight (R-56); rev 69 refused a written-null ciu schema_version and documented the usage text
+__revision__ = 71  # rev 71: P7.0a selected lane caps, exact reattachment provenance, and sequence prelaunch barrier; rev 70: RG-150 one-uid preflight (R-56); rev 69 refused a written-null ciu schema_version and documented the usage text
 # rev 66: preflight observer contract before private R2 lanes
 # rev 64: refuse failed ctl carriers and foreign watch verdicts
 # Rev 63 holds requested exec/bare-host children behind a ready/continue
@@ -680,6 +680,19 @@ FOOTPRINT_SCHEMA = 1
 INFLIGHT_DIR_NAME = "inflight"
 INFLIGHT_LOCK_NAME = "inflight.lock"
 INFLIGHT_SCHEMA = 2
+LANE_CAPS_ENV = "RUN_GATE_LANE_CAPS_V1"
+LANE_CAPS_RECORD_FIELD = "lane_caps_v1"
+# Every caller-controlled field that can name an environment variable. Keep
+# this list in one place so a future field cannot join the caller's
+# configuration surface without also joining the reserved-name collision
+# barrier.
+LANE_CAPS_CALLER_ENV_FIELDS = (
+    ("environment", "forward_env", True),
+    ("environment", "image_env", False),
+    ("environment", "cgroup_slice_env", False),
+    ("lane", "required_env", True),
+)
+_MISSING = object()
 
 # RW-20: the ONE state a live owner and a gone container can both be true in
 # is the owner's own `docker rm -f` -> `clear_inflight_record` window, which
@@ -2261,7 +2274,8 @@ def container_mount_destinations(docker: str, container: str) -> list[str]:
     result = subprocess.run(
         [docker, "inspect", "--type", "container", "--format",
          "{{range .Mounts}}{{println .Destination}}{{end}}", container],
-        capture_output=True, text=True)
+        capture_output=True, text=True,
+        env=lane_caps_private_environ())
     if result.returncode != 0:
         detail = result.stderr.strip().splitlines()[-1:] or \
             [f"exit {result.returncode}"]
@@ -2348,7 +2362,8 @@ def inspect_eatmydata_library(docker: str, image: str) -> str:
     result = subprocess.run(
         [docker, "image", "inspect", "--format",
          f'{{{{index .Config.Labels "{EATMYDATA_LABEL}"}}}}', image],
-        capture_output=True, text=True)
+        capture_output=True, text=True,
+        env=lane_caps_private_environ())
     if result.returncode != 0:
         detail = result.stderr.strip() or f"exit {result.returncode}"
         fail_infra(f"cannot inspect image {image!r} for {EATMYDATA_LABEL}: {detail}")
@@ -2374,7 +2389,8 @@ def inspect_ksm_optin_library(docker: str, image: str) -> str | None:
     result = subprocess.run(
         [docker, "image", "inspect", "--format",
          f'{{{{index .Config.Labels "{KSM_OPTIN_LABEL}"}}}}', image],
-        capture_output=True, text=True)
+        capture_output=True, text=True,
+        env=lane_caps_private_environ())
     if result.returncode != 0:
         detail = result.stderr.strip() or f"exit {result.returncode}"
         if re.search(r"\bno such image\b", detail, re.IGNORECASE):
@@ -2685,7 +2701,8 @@ def _git_toplevel_if_available(project_dir: Path) -> Path | None:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"], cwd=project_dir,
-            capture_output=True, text=True, check=False)
+            capture_output=True, text=True, check=False,
+            env=lane_caps_private_environ())
     except (OSError, UnicodeError):
         return None
     if result.returncode or not result.stdout.strip():
@@ -2761,7 +2778,8 @@ def _validate_effective_judge_lanes(project: dict, central: dict,
         # `host`/`bare-host` name (with its migration remedy), and host mode
         # (which it reports as an EMPTY dict, no mounts).
         environment, source = resolve_environment(
-            lane, name, project, central, project_path, central_path)
+            lane, name, project, central, project_path, central_path,
+            read_image_override=False)
         if not environment or environment.get("mode") != "ephemeral":
             resolved = ("host mode, which starts no container"
                         if not environment
@@ -2936,9 +2954,14 @@ def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
 
 
 def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict,
-                        project_path: Path, central_path: Path | None
+                        project_path: Path, central_path: Path | None,
+                        *, read_image_override: bool = True
                         ) -> tuple[dict, str]:
-    """Resolve an explicitly declared environment and its execution mode."""
+    """Resolve an explicitly declared environment and its execution mode.
+
+    Planner calls set ``read_image_override=False`` so selected caller-name
+    collisions and records are checked before any selector value is read.
+    """
     name = lane["environment"]
     resolved = None
     source = None
@@ -2958,11 +2981,13 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
             return {}, source
         if resolved.get("user") == ENV_USER_INVOKER:
             resolved["user"] = f"{os.getuid()}:{os.getgid()}"
-        image_env = resolved.pop("image_env", None)
+        image_env = resolved.get("image_env")
         if image_env is not None:
+            resolved.pop("image_env")
             declared_image = resolved["image"]
-            image_override_applied = image_env in os.environ
-            if image_override_applied:
+            image_override_applied = False
+            if read_image_override and image_env in os.environ:
+                image_override_applied = True
                 image_override = os.environ[image_env]
                 if not image_override.strip():
                     fail(f"{source}: selected image override ${image_env} is empty")
@@ -2976,7 +3001,8 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
         # Preserve the repository's existing override for its explicitly
         # declared `host` container environment. The name alone selects no
         # behavior; its required `mode` does.
-        if name == HOST_ENV and os.environ.get(HOST_IMAGE_ENV_VAR):
+        if (read_image_override and name == HOST_ENV
+                and os.environ.get(HOST_IMAGE_ENV_VAR)):
             resolved["image"] = os.environ[HOST_IMAGE_ENV_VAR]
             resolved.setdefault("user", f"{os.getuid()}:{os.getgid()}")
             if "_image_selection" in resolved:
@@ -3048,6 +3074,7 @@ def inspect_container_image_id(docker: str, container: str) -> tuple[str | None,
         result = subprocess.run(
             [docker, "inspect", "--format", "{{.Image}}", container],
             capture_output=True, text=True, check=False, timeout=10,
+            env=lane_caps_private_environ(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return None, f"{type(exc).__name__}: {exc}"
@@ -3132,7 +3159,8 @@ def lane_container_uid(env: dict, docker: str | None) -> tuple[int | None, str]:
         result = subprocess.run(
             [docker, "image", "inspect", "--format", "{{.Config.User}}",
              image],
-            capture_output=True, text=True)
+            capture_output=True, text=True,
+            env=lane_caps_private_environ())
     except OSError as exc:
         return None, f"docker could not be run ({exc})"
     if result.returncode != 0:
@@ -3242,6 +3270,7 @@ def refuse_unpulled_shard_image(docker: str, image: str) -> None:
         result = subprocess.run(
             [docker, "image", "inspect", "--format", "{{.Id}}", image],
             capture_output=True, text=True, check=False, timeout=30,
+            env=lane_caps_private_environ(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         fail_infra(f"--shard: cannot inspect image {image!r}: {exc}")
@@ -4114,14 +4143,16 @@ class BasicSampler:
     def _read_container(self) -> dict:
         script = ("for f in " + " ".join(PROFILE_BASIC_FILES) + "; do "
                  'echo "== $f"; cat /sys/fs/cgroup/$f 2>/dev/null; done')
-        argv = [self.docker, "exec", self.container, "sh", "-c", script]
+        argv = [self.docker, "exec", "-e",
+                f"{LANE_CAPS_ENV}=", self.container, "sh", "-c", script]
         try:
             # errors="replace" (B1a): the lane container's own stdout can
             # legitimately carry non-UTF-8 bytes (it is arbitrary test/build
             # output on the same fd `cat` writes to) -- same discipline as
             # ProfilerClient._ctl and the pre-existing `docker logs` guard.
             proc = subprocess.run(argv, capture_output=True, text=True,
-                                  errors="replace", timeout=30)
+                                  errors="replace", timeout=30,
+                                  env=lane_caps_private_environ())
             dump = _split_basic_dump(proc.stdout, PROFILE_BASIC_FILES)
         except (subprocess.TimeoutExpired, OSError):
             dump = {name: None for name in PROFILE_BASIC_FILES}
@@ -4359,7 +4390,8 @@ def resolve_self_container_id(docker: str) -> tuple[str | None, str | None]:
         probe = subprocess.run([docker, "inspect", "-f", "{{.Id}}", hostname],
                                capture_output=True, text=True,
                                errors="replace",
-                               timeout=PROFILE_IDENTITY_TIMEOUT_SECONDS)
+                               timeout=PROFILE_IDENTITY_TIMEOUT_SECONDS,
+                               env=lane_caps_private_environ())
     except Exception as exc:
         return None, ("could not verify current container identity "
                       f"(docker inspect failed: {exc})")
@@ -4382,9 +4414,11 @@ def resolve_self_container_id(docker: str) -> tuple[str | None, str | None]:
                       f"{container_id!r})")
     try:
         namespace_probe = subprocess.run(
-            [docker, "exec", container_id, "/usr/bin/readlink",
+            [docker, "exec", "-e", f"{LANE_CAPS_ENV}=", container_id,
+             "/usr/bin/readlink",
              "/proc/self/ns/mnt"], capture_output=True, text=True,
-            errors="replace", timeout=PROFILE_IDENTITY_TIMEOUT_SECONDS)
+            errors="replace", timeout=PROFILE_IDENTITY_TIMEOUT_SECONDS,
+            env=lane_caps_private_environ())
     except Exception as exc:
         return None, ("could not verify current container identity "
                       f"(mount-namespace probe failed: {exc})")
@@ -5141,6 +5175,7 @@ def host_git_environment() -> dict[str, str]:
     config file created through some other path cannot run code on the host.
     """
     environment = os.environ.copy()
+    environment.pop(LANE_CAPS_ENV, None)
     raw_count = environment.get("GIT_CONFIG_COUNT", "0")
     if not raw_count.isdecimal():
         fail_infra("GIT_CONFIG_COUNT is malformed; cannot harden host Git")
@@ -5286,7 +5321,8 @@ def verify_slice_loaded(slice_name: str) -> None:
         proc = subprocess.run(["systemctl", "show", slice_name,
                                "--property=LoadState,FragmentPath",
                                "--no-pager"],
-                              capture_output=True, text=True, timeout=5)
+                              capture_output=True, text=True, timeout=5,
+                              env=lane_caps_private_environ())
     except (OSError, subprocess.SubprocessError) as exc:
         fail(f"cannot verify gate slice {slice_name}: systemctl is unavailable: "
              f"{exc}")
@@ -5314,9 +5350,179 @@ _SIZE_RE = re.compile(r"(\d+)([bkmg]?)", re.IGNORECASE)
 
 
 def parse_size_bytes(value: str) -> int:
-    """'4g' -> bytes. Callers validate the \\d+[bkmg]? shape first."""
+    """'4g' -> bytes; refuse a value outside the existing size grammar."""
     m = _SIZE_RE.fullmatch(value)
+    if m is None:
+        raise ValueError(f"not a size: {value!r}")
     return int(m.group(1)) * _SIZE_MULT[m.group(2).lower()]
+
+
+def lane_caps_v1(environment_name: str, lane_name: str, mode: object,
+                 memory: object, pids: object) -> str | None:
+    """Build the one selected-lane cap fact, or explicit ineligibility.
+
+    Missing and zero caps are ordinary ineligibility for this public fact.
+    Malformed declarations are rejected by config validation before this
+    builder is reached; it never consults host capacity, image metadata,
+    swap, or the process environment.
+    """
+    if mode != "ephemeral" or not isinstance(memory, str) or not memory:
+        return None
+    parsed_memory = parse_size_bytes(memory)
+    if parsed_memory <= 0 or type(pids) is not int or pids <= 0:
+        return None
+    return json.dumps(
+        {
+            "environment": environment_name,
+            "lane": lane_name,
+            "memory_max_bytes": parsed_memory,
+            "pids_max": pids,
+        },
+        ensure_ascii=True, separators=(",", ":"))
+
+
+def expected_lane_caps_v1(lane_name: str, lane: dict,
+                          environment_name: str, environment_mode: object
+                          ) -> str | None:
+    """The selected lane's expected fact from the Docker-cap source itself."""
+    resources = lane.get("resources")
+    if not isinstance(resources, dict):
+        resources = {}
+    memory = (resources["memory"] if "memory" in resources
+              else lane.get("memory"))
+    pids = resources.get("pids")
+    return lane_caps_v1(environment_name, lane_name, environment_mode,
+                        memory, pids)
+
+
+def check_lane_caps_caller_collisions(lane_name: str, lane: dict,
+                                     environment: dict,
+                                     environment_source: str) -> None:
+    """Refuse a caller-controlled declaration of the reserved cap variable."""
+    for scope, key, many in LANE_CAPS_CALLER_ENV_FIELDS:
+        table = lane if scope == "lane" else environment
+        if not isinstance(table, dict) or key not in table:
+            continue
+        value = table.get(key)
+        values = value if many and isinstance(value, list) else [value]
+        if LANE_CAPS_ENV not in values:
+            continue
+        source = (f"lane {lane_name!r} field {key!r}" if scope == "lane"
+                  else f"selected environment for lane {lane_name!r} "
+                       f"({environment_source}) field {key!r}")
+        fail(f"{LANE_CAPS_ENV} is Run-Gate-owned and may not be declared in "
+             f"the caller configuration: {source} names it. Remove "
+             f"{LANE_CAPS_ENV} from that declaration; an ambient value alone "
+             "is not a fact and is never promoted")
+
+
+def lane_caps_docker_args(docker_env_values: dict[str, str],
+                          expected: str | None, *, allow_fact: bool
+                          ) -> list[str]:
+    """Apply the one delivery rule to a private Docker client mapping."""
+    docker_env_values.pop(LANE_CAPS_ENV, None)
+    if allow_fact and expected is not None:
+        docker_env_values[LANE_CAPS_ENV] = expected
+        return ["-e", LANE_CAPS_ENV]
+    return ["-e", f"{LANE_CAPS_ENV}="]
+
+
+def lane_caps_private_environ(base: dict[str, str] | None = None
+                              ) -> dict[str, str]:
+    """A child environment copy with the reserved fact removed."""
+    result = dict(os.environ if base is None else base)
+    result.pop(LANE_CAPS_ENV, None)
+    return result
+
+
+def lane_caps_admission_run(argv: list[str], **kwargs
+                            ) -> subprocess.CompletedProcess:
+    """Run one Docker admission-layer child without the reserved fact."""
+    child_env = kwargs.pop("env", None)
+    kwargs["env"] = lane_caps_private_environ(child_env)
+    return subprocess.run(argv, **kwargs)
+
+
+def lane_caps_local_docker_endpoint() -> tuple[bool, str]:
+    """Ask the admission endpoint resolver through sealed Docker children."""
+    return local_docker_endpoint(
+        run=lane_caps_admission_run,
+        environ=lane_caps_private_environ())
+
+
+def lane_caps_probe_flags(env: dict) -> list[str]:
+    """Docker probe flags: probes never claim a selected-lane fact."""
+    if not env or env.get("mode") not in ("ephemeral", "exec"):
+        return []
+    return ["-e", f"{LANE_CAPS_ENV}="]
+
+
+def inflight_record_snapshot(path: Path) -> bytes | None:
+    """The exact present bytes / absent marker used by the launch barriers."""
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        fail(f"cannot read inflight record {path} for the selected launch "
+             f"barrier: {exc}; refusing rather than treating unreadable "
+             "state as absence")
+
+
+def require_record_snapshot(path: Path, actual: bytes | None,
+                            expected: object, lane_name: str) -> None:
+    """Refuse when a launch plan's exact present/absent record fact drifted."""
+    if expected is not _MISSING and actual != expected:
+        fail(f"the inflight record at {path} for lane {lane_name!r} no longer "
+             "matches the immutable launch plan; refusing before Docker "
+             "inspection, follow/adopt/collect/remove, verdict access, or "
+             "record mutation")
+
+
+def require_planned_record_snapshot(project_dir: Path, lane_name: str,
+                                    planned_leaf: "PlannedLeaf | None") -> None:
+    """Apply the frozen plan's record snapshot at a non-container launch."""
+    if planned_leaf is None:
+        return
+    record_path = inflight_path(project_dir, lane_name)
+    require_record_snapshot(
+        record_path, inflight_record_snapshot(record_path),
+        planned_leaf.record_snapshot, lane_name)
+
+
+def validate_inflight_lane_caps(pending: dict, lane_name: str,
+                                expected: str | None) -> None:
+    """Validate the stored field without parsing or normalizing it."""
+    if LANE_CAPS_RECORD_FIELD not in pending:
+        fail(f"the inflight record for lane {lane_name!r} is missing "
+             f"{LANE_CAPS_RECORD_FIELD}; refusing to re-attach without the "
+             "selected lane-cap provenance. Use --fresh only after the "
+             "lifecycle owner verifies the old run is dead and its container "
+             "identity matches")
+    stored = pending[LANE_CAPS_RECORD_FIELD]
+    if expected is None:
+        if stored is not None:
+            fail(f"the inflight record for lane {lane_name!r} has "
+                 f"{LANE_CAPS_RECORD_FIELD}={stored!r}, but the selected lane "
+                 "is ineligible for a cap fact and requires JSON null; "
+                 "refusing before Docker, verdict, or record access")
+        return
+    if not isinstance(stored, str):
+        fail(f"the inflight record for lane {lane_name!r} has wrong-type "
+             f"{LANE_CAPS_RECORD_FIELD}={stored!r}; the selected eligible "
+             "lane requires the exact stored JSON string and refuses before "
+             "Docker, verdict, or record access")
+    if stored != expected:
+        fail(f"the inflight record for lane {lane_name!r} has unequal "
+             f"{LANE_CAPS_RECORD_FIELD} provenance: stored {stored!r}, "
+             f"selected {expected!r}; refusing before Docker, verdict, or "
+             "record access")
+
+
+def inflight_owner_state(pending: dict) -> str:
+    """Three-state owner classification, fail-closed toward Unknown."""
+    return _status_inflight_owner_liveness(
+        pending, Path(os.environ.get(PROC_ROOT_ENV_VAR, "/proc")))
 
 
 def parse_r2_jobs_cli(value: str | None) -> int | str | None:
@@ -7011,20 +7217,11 @@ def load_inflight_record(path: Path, fresh: bool = False,
     a gate that died because its hint was malformed would be a worse tool
     than one that starts the container.
 
-    A record of ANOTHER SCHEMA is the one exception, and it REFUSES (RW-25).
-    Rev 34's first cut disclosed the mismatch and then treated it as no
-    record — which means this client starts a second container for a lane
-    that already has one and writes its own record OVER the newer one. That
-    is exactly the loss `R-39` exists to end, performed by the tool, and a
-    warning printed before the damage does not undo it. The refusal names
-    both schema numbers and every way out; `fresh` is one of them on a lane
-    with an ephemeral container environment, so under `--fresh` a record
-    whose container NAME is readable degrades to that name (plus
-    `started_at`, for the disclosure) and nothing else — never its commit,
-    its owner or its artifacts, whose meaning under an unknown grammar is
-    unknown. The stable `runner` marker is checked only as a refusal guard:
-    a non-container value is never removed as though it were this lane's
-    disposable container."""
+    A record of ANOTHER SCHEMA always REFUSES, including under ``--fresh``.
+    Unknown fields have no trustworthy meaning; a client that understands the
+    schema, or the lifecycle owner after verification, must handle the run.
+    ``fresh`` and ``fresh_supported`` remain in the signature for callers and
+    compatibility, but no longer weaken schema recognition."""
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -7045,53 +7242,14 @@ def load_inflight_record(path: Path, fresh: bool = False,
     schema = data["schema"]
     if isinstance(schema, bool) or not isinstance(schema, int) \
             or schema != INFLIGHT_SCHEMA:
-        container = data.get("container")
-        named = container if isinstance(container, str) and container else None
-        runner = data.get("runner")
-        foreign_runner = ("runner" in data
-                          and runner not in (None, "container"))
-        if fresh and named:
-            if foreign_runner:
-                fail(f"the inflight record at {path} declares schema "
-                     f"{schema!r} and names runner {runner!r}; --fresh will "
-                     f"not remove a container from a foreign or unknown "
-                     f"runner. The record and named runner are untouched. "
-                     f"Use the runner's lifecycle owner to verify that run "
-                     f"has ended before removing this recovery record")
-            started = data.get("started_at")
-            print(f"{PROG}: WARNING: the inflight record at {path} declares "
-                  f"schema {schema!r} and this run-gate ({installed_version()}) "
-                  f"reads schema {INFLIGHT_SCHEMA}; --fresh is reading only "
-                  f"its container name ({named}) out of it — no commit, no "
-                  f"owner, no artifacts — and will remove that container and "
-                  f"delete the record", file=sys.stderr, flush=True)
-            return {"schema": schema, "container": named,
-                    "started_at": started if isinstance(started, str) else None}
-        if named and foreign_runner:
-            escape = (f"--fresh is refused because this record names runner "
-                      f"{runner!r}; let that runner's lifecycle owner verify "
-                      f"the run has ended before removing {path}")
-        elif named and fresh_supported:
-            escape = (f"once the old run is no longer live, re-run with "
-                      f"--fresh, which removes the container this record "
-                      f"names ({named}) and starts anew")
-        elif named:
-            escape = (f"the current lane environment cannot use --fresh; "
-                      f"keep this record until container {named!r} is "
-                      f"confirmed stopped by its lifecycle owner, then "
-                      f"remove the recovery record at {path}")
-        else:
-            escape = (f"ask the lane's lifecycle owner to confirm the run is "
-                      f"over, then delete {path} — this record does not even "
-                      f"name a container, so there is nothing run-gate can "
-                      f"remove for you")
         fail(f"the inflight record for this lane declares schema {schema!r} "
              f"and this run-gate ({installed_version()}) reads schema "
              f"{INFLIGHT_SCHEMA} — refusing to act on a record whose grammar "
-             f"it does not know. Treating it as absent would start a SECOND "
-             f"container for this lane and overwrite a newer client's "
-             f"record, which is the loss the record exists to prevent. "
-             f"Upgrade or install a compatible Run-Gate version, or {escape}. "
+             "it does not know. Use a schema-aware Run-Gate client to read "
+             "it, or have the lifecycle owner verify the old run and container "
+             "identity, handle any container through the owning lifecycle "
+             "tooling, and remove the record only after verification. This "
+             f"Run-Gate does not prescribe --fresh for unknown schemas. "
              f"The record is at {path}")
     if not data.get("container"):
         return None
@@ -7609,7 +7767,8 @@ def container_state(docker: str, name: str) -> dict | None:
          "{{.State.Status}}|{{.State.ExitCode}}|{{.State.FinishedAt}}"
          "|{{.State.StartedAt}}|{{.Id}}",
          name],
-        capture_output=True, text=True)
+        capture_output=True, text=True,
+        env=lane_caps_private_environ())
     if probe.returncode != 0:
         stderr = (probe.stderr or "").strip()
         # RG-44: case-fold the match. `GONE_SIGNALS` was written against one
@@ -8938,7 +9097,8 @@ def save_container_logs(docker: str, name: str,
     try:
         grabbed = subprocess.run([docker, "logs", name], capture_output=True,
                                  text=True,
-                                 timeout=CONTAINER_LOG_CAPTURE_TIMEOUT_SECONDS)
+                                 timeout=CONTAINER_LOG_CAPTURE_TIMEOUT_SECONDS,
+                                 env=lane_caps_private_environ())
         combined = grabbed.stdout + grabbed.stderr
         if grabbed.returncode != 0 and not combined.strip():
             return None
@@ -9758,6 +9918,7 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
                          if inspect_mounts else None))
         env_flags = [arg for key, value in forwarded.items()
                      for arg in ("-e", f"{key}={value}")]
+        env_flags += lane_caps_probe_flags(env)
         return [docker, "exec", *env_flags, "--workdir", str(repo), name,
                 "bash", "-c", script]
     argv = [docker, "run", "--rm", "--init", "--cgroup-parent", slice_name,
@@ -9772,6 +9933,7 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
                                        env.get("mode", "host"))
     for key, value in forwarded.items():
         argv += ["-e", f"{key}={value}"]
+    argv += lane_caps_probe_flags(env)
     argv += [env["image"], "bash", "-c", script]
     return argv
 
@@ -9808,7 +9970,8 @@ def assay_inventory(docker: str | None, lane: dict, env: dict, env_name: str,
         _probe_slice(env, env_source), probe,
         resolved_container_name=resolved_container_name)
     try:
-        out = subprocess.run(argv, capture_output=True, text=True)
+        out = subprocess.run(argv, capture_output=True, text=True,
+                             env=lane_caps_private_environ())
     except OSError as exc:
         return None, (f"`assay lanes --json` probe could not start in "
                       f"environment {env_name!r}: {exc}")
@@ -9905,7 +10068,8 @@ def discover_imported_assay_lanes(settings: dict, cfg: dict, central: dict,
 
 
 def unresolved_import_placeholders(settings: dict,
-                                   declared_lanes: dict) -> dict:
+                                   declared_lanes: dict,
+                                   requested_lane: str | None = None) -> dict:
     """Build name-only rows when listing does not need a live judge query.
 
     Explicit imports give known lane names. An `all` import can contribute
@@ -9921,6 +10085,8 @@ def unresolved_import_placeholders(settings: dict,
         names = set(wanted)
     elif wanted == "all":
         names = set()
+        if isinstance(requested_lane, str) and requested_lane not in declared_lanes:
+            names.add(requested_lane)
         for lane in declared_lanes.values():
             if isinstance(lane, dict) and lane.get("kind") == "sequence":
                 names.update(member for member in lane.get("lanes", [])
@@ -10043,7 +10209,8 @@ def probe_missing_tools(docker: str, tools: list[str], env: dict,
     argv = build_env_probe_argv(docker, env, env_name, repo, worktree,
                                 env_source, _probe_slice(env, env_source),
                                 script)
-    out = subprocess.run(argv, capture_output=True, text=True)
+    out = subprocess.run(argv, capture_output=True, text=True,
+                         env=lane_caps_private_environ())
     if out.returncode != 0:
         tail = (out.stderr.strip().splitlines() or ["(no stderr)"])[-1]
         return None, (f"could not run `command -v` in environment "
@@ -10351,7 +10518,8 @@ def local_branch_ref_name(worktree: Path, ref: str) -> str | None:
         proc = subprocess.run(
             ["git", "rev-parse", "--symbolic-full-name", "--verify",
              "--quiet", "--end-of-options", ref],
-            cwd=str(worktree), capture_output=True, text=True)
+            cwd=str(worktree), capture_output=True, text=True,
+            env=lane_caps_private_environ())
     except (OSError, ValueError):
         return None
     full = proc.stdout.strip()
@@ -10383,7 +10551,8 @@ def judged_diff_is_empty(worktree: Path, base: str) -> bool:
     try:
         proc = subprocess.run(
             ["git", "diff", "--quiet", "--end-of-options", base, "HEAD"],
-            cwd=str(worktree), capture_output=True, text=True)
+            cwd=str(worktree), capture_output=True, text=True,
+            env=lane_caps_private_environ())
     except (OSError, ValueError):
         return True
     if proc.returncode == 1:          # differences exist — there IS work
@@ -10423,7 +10592,8 @@ def base_already_contains_head(worktree: Path, ref: str) -> bool:
     try:
         proc = subprocess.run(
             ["git", "merge-base", "--is-ancestor", "HEAD", "--", ref],
-            cwd=str(worktree), capture_output=True, text=True)
+            cwd=str(worktree), capture_output=True, text=True,
+            env=lane_caps_private_environ())
     except (OSError, ValueError):
         return True
     if proc.returncode == 0:
@@ -11091,13 +11261,15 @@ def cmd_status(project_dir: Path, cfg: dict, cfg_path: Path,
     if not docker:
         errors.append("Docker CLI not found on PATH; admission state is unknown")
     else:
-        local, reason = local_docker_endpoint()
+        local, reason = lane_caps_local_docker_endpoint()
         endpoint = "local Docker Unix endpoint" if local else reason
         if not local:
             errors.append("cannot inspect RG-80 state safely: " + reason)
         else:
             try:
-                manager = DockerAdmission(docker=docker, proc_root=proc_root)
+                manager = DockerAdmission(
+                    docker=docker, proc_root=proc_root,
+                    run=lane_caps_admission_run)
                 admission.update(manager.status_snapshot())
             except AdmissionDockerUnavailable as exc:
                 errors.append(f"Docker admission state unavailable: {exc}")
@@ -11249,7 +11421,8 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
             record("SKIP", "admission published count",
                    "could not read the published object or max-concurrent without Docker")
         else:
-            local_endpoint, endpoint_reason = local_docker_endpoint()
+            local_endpoint, endpoint_reason = \
+                lane_caps_local_docker_endpoint()
             if not local_endpoint:
                 remedy = ("select a Docker context backed by a local Unix socket; "
                           "unset remote DOCKER_HOST/DOCKER_CONTEXT overrides if set")
@@ -11261,7 +11434,8 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                 record("SKIP", "admission published count",
                        "cannot verify the shared object or max-concurrent until a local endpoint is selected")
             else:
-                admission_manager = DockerAdmission(docker=docker)
+                admission_manager = DockerAdmission(
+                    docker=docker, run=lane_caps_admission_run)
                 if not isinstance(ticket_image, str) or not ticket_image.strip():
                     record("FAIL", "admission ticket image",
                            f"[admission] enabled = true in {cfg_path} requires "
@@ -11636,8 +11810,10 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
             image = env.get("image")
             if not image:
                 continue
-            probe = subprocess.run([docker, "image", "inspect", image],
-                                   capture_output=True, text=True)
+            probe = subprocess.run(
+                [docker, "image", "inspect", image],
+                capture_output=True, text=True,
+                env=lane_caps_private_environ())
             if probe.returncode == 0:
                 record("OK", f"image {env_name}", f"{image} present locally")
             else:
@@ -12355,7 +12531,8 @@ def r2_capacity_probe(docker: str | None, lane: dict, env: dict,
             docker or "", env, env_name, repo, worktree, env_source,
             _probe_slice(env, env_source), script,
             resource_settings=resource_settings)
-        result = subprocess.run(argv, capture_output=True, text=True)
+        result = subprocess.run(argv, capture_output=True, text=True,
+                                env=lane_caps_private_environ())
     except (GateError, OSError):
         return None
     if result.returncode != 0:
@@ -14045,7 +14222,8 @@ def probe_assay_state_root(docker: str | None, env: dict, env_name: str,
         resolved_container_name=resolved_container_name,
         resource_settings=resource_settings)
     try:
-        result = subprocess.run(argv, capture_output=True, text=True)
+        result = subprocess.run(argv, capture_output=True, text=True,
+                                env=lane_caps_private_environ())
     except OSError as exc:
         return None, f"probe could not start: {exc}"
     if result.returncode != 0:
@@ -14242,158 +14420,55 @@ def validate_inflight_assay_contract(pending: dict, lane_name: str,
                  f"evidence; {recovery}. The record is at {record_path}")
 
 
-def lane_supports_fresh(lane: dict, cfg: dict, central: dict,
-                        assay_settings: dict) -> bool:
-    """Whether this configured leaf can use run-gate's container --fresh."""
-    environment = lane.get("environment")
-    if environment is None and lane.get("kind") == "assay":
-        environment = assay_settings.get("environment")
-    if not isinstance(environment, str):
-        return False
-    resolved = cfg.get("environments", {}).get(environment)
-    if resolved is None:
-        resolved = central.get("environments", {}).get(environment)
-    return isinstance(resolved, dict) and resolved.get("mode") == "ephemeral"
+def preflight_inflight_record(pending: dict, lane_name: str, project_dir: Path,
+                              lane: dict, expected_lane_caps_v1_value: str | None,
+                              *, fresh: bool, dry_run: bool,
+                              fresh_supported: bool = True) -> str:
+    """Pure record preflight shared by CLI and direct resolution.
 
-
-def preflight_inflight_assay_contract(args: argparse.Namespace,
-                                      cfg: dict, central: dict,
-                                      assay_settings: dict,
-                                      project_dir: Path) -> None:
-    """Validate requested recovery records before inventory/admission.
-
-    Imported Assay lane inventory and sequence admission can both contact
-    Docker before a lane is dispatched. Resolve local, inherited and imported
-    lane policy here and walk a requested sequence, checking its own record
-    and every member record before either operation.
+    Ordered refusals: recognized schema, foreign runner, non-fresh Assay
+    contract, non-fresh exact cap provenance, then fresh owner classification.
+    The returned owner state is ``alive``, ``dead``, ``unknown``, or
+    ``foreign-preview``; this function performs no Docker or mutation.
     """
-    lane_name = args.lane
-    if (args.help or args.list or args.check_env
-            or lane_name in (None, "admission", "doctor", "history",
-                             "footprint", "validate-pointers",
-                             "migrate-modes")
-            or not isinstance(lane_name, str)
-            or not re.fullmatch(r"[A-Za-z0-9_.-]+", lane_name)):
-        return
-
-    project_lanes = cfg.get("lanes", {})
-    central_lanes = central.get("lanes", {})
-    import_spec = assay_settings.get("import")
-    imported = import_spec.get("lanes") if isinstance(import_spec, dict) else None
-
-    def declared_lane(name: str) -> dict | None:
-        lane = project_lanes.get(name)
-        if lane is None:
-            lane = central_lanes.get(name)
-        if lane is not None:
-            return lane
-        if imported == "all" or (isinstance(imported, list)
-                                  and name in imported):
-            import_environment = (import_spec.get("environment")
-                                  if isinstance(import_spec, dict) else None)
-            return {"kind": "assay", "assay_lane": name,
-                    "environment": import_environment}
-        return None
-
-    requested_lane = declared_lane(lane_name)
-    sequence_request = (isinstance(requested_lane, dict)
-                        and requested_lane.get("kind") == "sequence")
-    checked: dict[str, bool] = {}
-
-    def refuse_foreign_record(name: str, pending: dict) -> None:
-        runner = pending.get("runner")
-        if runner is None or runner == "container":
-            return
-        fail(f"the inflight record for lane {name!r} names container "
-             f"{pending.get('container')!r}, written by runner {runner!r} — "
-             f"foreign record — refusing to continue to Assay inventory, "
-             f"sequence admission, or lane execution; --fresh cannot remove "
-             f"it. Ask that runner's lifecycle owner to confirm the run has "
-             f"ended, then remove {inflight_path(project_dir, name)}")
-
-    def visit(name: str, ancestors: frozenset[str]) -> bool:
-        if name in ancestors:
-            return False
-        if name in checked:
-            return checked[name]
-        lane = declared_lane(name)
-        if not isinstance(lane, dict):
-            checked[name] = False
-            return False
-        if lane.get("kind") == "sequence":
-            pending = load_inflight_record(
-                inflight_path(project_dir, name), fresh_supported=False)
-            if pending is not None:
-                refuse_foreign_record(name, pending)
-                identity_mode = pending.get("assay_identity_mode")
-                if identity_mode is None:
-                    prior = "belongs to a previous container lane"
-                elif (isinstance(identity_mode, str)
-                      and identity_mode in ASSAY_IDENTITY_MODES):
-                    prior = f"describes an Assay run in {identity_mode!r} mode"
-                else:
-                    fail(f"the inflight record for sequence lane {name!r} has "
-                         f"an invalid assay_identity_mode; refusing to "
-                         f"interpret its result or start its members. Ask the "
-                         f"prior runner's lifecycle owner to confirm the run "
-                         f"has ended, then remove "
-                         f"{inflight_path(project_dir, name)}")
-                fail(f"the inflight record for lane {name!r} names container "
-                     f"{pending['container']!r} and {prior}, but the current "
-                     f"lane kind is 'sequence'; refusing to interpret its "
-                     f"result under the changed lane config or start its "
-                     f"members. Ask the prior runner's lifecycle owner to "
-                     f"confirm the run has ended, then remove "
-                     f"{inflight_path(project_dir, name)}")
-            members = lane.get("lanes", [])
-            has_ephemeral_member = False
-            if isinstance(members, list):
-                next_ancestors = ancestors | {name}
-                for member in members:
-                    if isinstance(member, str):
-                        has_ephemeral_member = (
-                            visit(member, next_ancestors)
-                            or has_ephemeral_member)
-            checked[name] = has_ephemeral_member
-            return has_ephemeral_member
-        if lane.get("kind") not in ("assay", "command"):
-            checked[name] = False
-            return False
-        fresh_supported = lane_supports_fresh(
-            lane, cfg, central, assay_settings)
-        if args.fresh and not sequence_request and not fresh_supported:
-            fail(f"--fresh applies only to an ephemeral-container lane; "
-                 f"lane {name!r} does not use one")
-        fresh_for_lane = args.fresh and fresh_supported
-        pending = load_inflight_record(
-            inflight_path(project_dir, name),
-            fresh=fresh_for_lane, fresh_supported=fresh_supported)
-        if pending is None:
-            checked[name] = fresh_supported
-            return fresh_supported
-        refuse_foreign_record(name, pending)
-        # `--fresh` discards only an owned ephemeral container record. Every
-        # other path validates its saved contract before inventory/admission.
-        if not fresh_supported and pending.get("runner") in (None, "container"):
-            fail(f"the inflight record for lane {name!r} names container "
-                 f"{pending.get('container')!r}, written by the container "
-                 f"runner, but the current lane environment is not "
-                 f"ephemeral-container mode; "
-                 f"run-gate cannot re-attach to it or replace it here. Ask "
-                 f"the prior container's lifecycle owner to confirm the run "
-                 f"has ended, then remove {inflight_path(project_dir, name)} "
-                 f"and retry. --fresh applies only to ephemeral-container lanes")
-        if not fresh_for_lane:
-            validate_inflight_assay_contract(
-                pending, name, project_dir, lane,
-                fresh_supported=fresh_supported)
-        checked[name] = fresh_supported
-        return fresh_supported
-
-    has_ephemeral_member = visit(lane_name, frozenset())
-    if args.fresh and sequence_request and not has_ephemeral_member:
-        fail(f"--fresh on sequence {lane_name!r} has no ephemeral member "
-             f"container to replace")
+    record_path = inflight_path(project_dir, lane_name)
+    if "schema" in pending and pending.get("schema") != INFLIGHT_SCHEMA:
+        fail(f"the inflight record for lane {lane_name!r} does not declare "
+             f"schema {INFLIGHT_SCHEMA}; refusing before Docker or mutation "
+             f"(record: {record_path})")
+    runner = pending.get("runner")
+    if runner is not None and runner != "container":
+        message = (f"the inflight record for lane {lane_name!r} names "
+                   f"container {pending.get('container')!r}, written by "
+                   f"runner {runner!r} — foreign record — refusing to "
+                   f"attach, follow, collect, inspect, remove, or overwrite "
+                   f"it. Ask that runner's lifecycle owner to verify the run "
+                   f"has ended, then remove {record_path}")
+        if dry_run:
+            print(f"run-gate: DRY RUN: {message}; a live run would REFUSE "
+                  "(exit 2)", flush=True)
+            return "foreign-preview"
+        fail(message)
+    if not fresh:
+        validate_inflight_assay_contract(
+            pending, lane_name, project_dir, lane,
+            fresh_supported=fresh_supported)
+        validate_inflight_lane_caps(
+            pending, lane_name, expected_lane_caps_v1_value)
+    owner_state = inflight_owner_state(pending)
+    if fresh:
+        if owner_state == "dead":
+            return owner_state
+        message = (f"--fresh for lane {lane_name!r} requires the recorded "
+                   f"owner to be positively dead; owner state is "
+                   f"{owner_state.upper()}. The record and named container "
+                   "are untouched")
+        if dry_run:
+            print(f"run-gate: DRY RUN: {message}; a live run would REFUSE "
+                  "(exit 2)", flush=True)
+            return owner_state
+        fail(message)
+    return owner_state
 
 
 def clear_previous_assay_verdict(lane: dict, project_dir: Path, repo: Path,
@@ -16929,11 +17004,13 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
             proc = subprocess.Popen(
                 [docker, "logs", "-f", "--timestamps", name],
                 stdout=subprocess.PIPE, text=True, bufsize=1,
-                errors="replace")
+                errors="replace", env=lane_caps_private_environ())
             log_watch = LogStreamWatch(
                 proc, budget_seconds(lane["stall_timeout"]), lane_name)
         else:
-            proc = subprocess.Popen([docker, "logs", "-f", name])
+            proc = subprocess.Popen(
+                [docker, "logs", "-f", name],
+                env=lane_caps_private_environ())
         while True:
             try:
                 wait_for = tick
@@ -16943,7 +17020,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     if remaining == 0:
                         budget_expired = True
                         subprocess.run([docker, "kill", name],
-                                       capture_output=True, text=True)
+                                       capture_output=True, text=True,
+                                       env=lane_caps_private_environ())
                         # `docker logs -f` terminates when the container does;
                         # wait below reads the container's actual raw status.
                         wait_for = tick
@@ -16955,7 +17033,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                 if budget_deadline is not None and clock() >= budget_deadline:
                     budget_expired = True
                     subprocess.run([docker, "kill", name],
-                                   capture_output=True, text=True)
+                                   capture_output=True, text=True,
+                                   env=lane_caps_private_environ())
                     continue
                 if daemon_watch is not None:
                     watch_stall = consume_profiler_watch(
@@ -17059,7 +17138,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                       f"line; a trailing line or two may still be in "
                       f"flight", file=sys.stderr, flush=True)
             waited = subprocess.run([docker, "wait", name],
-                                    capture_output=True, text=True)
+                                    capture_output=True, text=True,
+                                    env=lane_caps_private_environ())
             out = waited.stdout.strip()
             code = int(out) if waited.returncode == 0 \
                 and re.fullmatch(r"-?\d+", out) else None
@@ -17119,7 +17199,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     run_record.setdefault("profile_ref", None)
         if ksm_monitor is not None:
             report_ksm_measurement(ksm_monitor, run_record)
-        subprocess.run([docker, "rm", "-f", name], capture_output=True)
+        subprocess.run([docker, "rm", "-f", name], capture_output=True,
+                       env=lane_caps_private_environ())
         if proc is not None:
             proc.terminate()   # no-op once it has exited; ends a stalled stream
             proc.wait()
@@ -17244,7 +17325,8 @@ def promote_follower(docker: str, name: str, lane_name: str,
                                            "does not survive the owning "
                                            "client's death)")
             run_record["profile_ref"] = None
-    subprocess.run([docker, "rm", "-f", name], capture_output=True)
+    subprocess.run([docker, "rm", "-f", name], capture_output=True,
+                   env=lane_caps_private_environ())
     clear_inflight_record(project_dir, lane_name)
     if run_record is not None:
         # RE-CLAIM the run record this client disowned when it began
@@ -17280,8 +17362,10 @@ def follow_container(docker: str, name: str, lane: dict, lane_name: str,
     try:
         waiter = subprocess.Popen([docker, "wait", name],
                                   stdout=subprocess.PIPE,
-                                  stderr=subprocess.DEVNULL, text=True)
-        logs = subprocess.Popen([docker, "logs", "-f", name])
+                                  stderr=subprocess.DEVNULL, text=True,
+                                  env=lane_caps_private_environ())
+        logs = subprocess.Popen([docker, "logs", "-f", name],
+                                env=lane_caps_private_environ())
         while True:
             try:
                 logs.wait(timeout=PROGRESS_POLL_SECONDS)
@@ -17336,7 +17420,9 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
                      project_dir: Path, repo: Path, worktree: Path,
                      fresh: bool, dry_run: bool,
                      run_record: dict | None,
-                     ksm_monitor: KsmPageSharingMonitor | None = None
+                     ksm_monitor: KsmPageSharingMonitor | None = None,
+                     *, expected_lane_caps_v1_value: object = _MISSING,
+                     expected_record_snapshot: object = _MISSING
                      ) -> int | None:
     """RG-35 / R-39. Decide what to do about a container this lane left
     behind, BEFORE anything is built or started. Returns the lane's exit code
@@ -17345,51 +17431,60 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
 
     Every branch is disclosed by name (R-05): silence here is what turns a
     surviving container into a duplicate."""
-    pending = load_inflight_record(inflight_path(project_dir, lane_name),
-                                   fresh=fresh)
+    if expected_lane_caps_v1_value is _MISSING:
+        fail("resolve_inflight requires an explicit selected "
+             "lane_caps_v1 value (JSON string or null); omission is a "
+             "programming error, not selected ineligibility")
+    record_path = inflight_path(project_dir, lane_name)
+    snapshot = inflight_record_snapshot(record_path)
+    pending = load_inflight_record(record_path, fresh=fresh)
     if pending is None:
+        current = inflight_record_snapshot(record_path)
+        if current != snapshot:
+            fail(f"the inflight record for lane {lane_name!r} changed at "
+                 "the final resolver boundary; refusing instead of treating "
+                 "the change as no inflight run")
+        require_record_snapshot(record_path, current,
+                                expected_record_snapshot, lane_name)
         if fresh:
             print(f"run-gate: --fresh: no inflight record for lane "
                   f"{lane_name!r} — nothing to remove", flush=True)
         return None
+    owner_state = preflight_inflight_record(
+        pending, lane_name, project_dir, lane,
+        expected_lane_caps_v1_value, fresh=fresh, dry_run=dry_run)
+    reread_snapshot = inflight_record_snapshot(record_path)
+    if reread_snapshot != snapshot:
+        fail(f"the inflight record for lane {lane_name!r} changed between "
+             "preflight and the final resolver reread; refusing before Docker "
+             "inspection, follow/adopt/collect/remove, verdict access, or "
+             "record mutation")
+    require_record_snapshot(record_path, snapshot, expected_record_snapshot,
+                            lane_name)
+    pending = load_inflight_record(record_path, fresh=fresh)
+    if pending is None:
+        fail(f"the inflight record for lane {lane_name!r} disappeared at the "
+             "final resolver boundary; refusing instead of treating deletion "
+             "as no inflight run")
+    post_parse_snapshot = inflight_record_snapshot(record_path)
+    if post_parse_snapshot != reread_snapshot:
+        fail(f"the inflight record for lane {lane_name!r} changed between "
+             "preflight and the final resolver reread; refusing before Docker "
+             "inspection, follow/adopt/collect/remove, verdict access, or "
+             "record mutation")
+    owner_state = preflight_inflight_record(
+        pending, lane_name, project_dir, lane,
+        expected_lane_caps_v1_value, fresh=fresh, dry_run=dry_run)
     name = pending["container"]
     started = pending.get("started_at")
-    # B3 (round-1 review, RW-43; CIU-104 class): checked BEFORE any of
-    # RW-14's own questions and before any `docker` call at all -- a
-    # record whose `runner` names something other than this path
-    # ("container") was written by a DIFFERENT lane kind (RG-60's exec
-    # path stamps "exec") and may name a persistent CIU runner this
-    # invocation never created. A lane's `environment` can flip from exec
-    # to an ephemeral-container one between a crashed run and the next
-    # (an ordinary estate config move -- RG-43's own host/bare-host swap
-    # is precedent), and re-attaching to (or `--fresh`-removing) a
-    # container this lane never started is exactly the loss `R-39` exists
-    # to prevent, one level worse: a SHARED runner, not merely a
-    # duplicate. A record with no `runner` key at all predates this field
-    # (every record this run-gate revision itself ever wrote carries it)
-    # and is treated as "container" for backward compatibility -- the
-    # container path is the only writer that existed before RG-60.
-    runner = pending.get("runner")
-    if runner is not None and runner != "container":
-        message = (f"the inflight record for lane {lane_name!r} names "
-                   f"container {name!r}, written by runner {runner!r} — "
-                   f"foreign record — refusing to attach, follow, collect, "
-                   f"or remove it; refusing to overwrite it or start a "
-                   f"replacement. If this "
-                   f"lane's environment changed since that record was "
-                   f"written, delete {inflight_path(project_dir, lane_name)} "
-                   f"once you know the run it describes is over")
+    if owner_state == "foreign-preview":
+        return 0
+    if fresh and owner_state != "dead":
         if dry_run:
-            print(f"run-gate: DRY RUN: {message}; a live run would REFUSE "
-                  f"(exit 2)", flush=True)
             return 0
-        fail(message)
-    # Schema 2 carries one closed artifact contract. Validate it before any
-    # Docker access so a damaged record cannot turn an Assay result into a
-    # command PASS or redirect verdict/progress reads to unrelated evidence.
-    # `--fresh` deliberately discards the old result and uses current config.
-    if not fresh:
-        validate_inflight_assay_contract(pending, lane_name, project_dir, lane)
+        fail(f"--fresh for lane {lane_name!r} requires positive death; owner "
+             f"state is {owner_state.upper()}. The record and named container "
+             "are untouched")
     # RW-14: the FIRST question, before any of RW-1's five, is whether the
     # client that started this container is still alive. If it is, this
     # invocation is a second terminal on someone else's run and may only
@@ -17413,19 +17508,28 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
     gone_because = (f"no such container exists — the daemon or the host lost "
                     f"it")
     recorded_id = pending.get("container_id")
-    if state is not None and recorded_id and state["id"] \
-            and recorded_id != state["id"]:
-        # S2: container NAMES are deterministic per (env, repo, lane), so a
-        # record that outlives its container can point at a DIFFERENT
-        # container that later took the same name. Inspecting by name alone
-        # would re-attach to it and `rm -f` it. The id costs nothing to read
-        # (same inspect call) and is the only thing that says "same
-        # container".
-        gone_because = (f"the container wearing that name now has id "
-                        f"{state['id']}, not the recorded {recorded_id} — a "
-                        f"different container now wears this name; run-gate "
-                        f"will not touch it")
-        state = None
+    if state is not None:
+        if not isinstance(recorded_id, str) or not recorded_id \
+                or not isinstance(state.get("id"), str) or not state["id"]:
+            message = (f"the inflight record for lane {lane_name!r} and the "
+                       f"inspected container {name!r} do not both carry a "
+                       "readable ID; a live run would refuse to follow, adopt, "
+                       "collect, remove, or overwrite either")
+            if dry_run:
+                print(f"run-gate: DRY RUN: {message}; a live run would REFUSE "
+                      "(exit 2)", flush=True)
+                return None
+            fail(message)
+        if recorded_id != state["id"]:
+            message = (f"the container wearing inflight name {name!r} has id "
+                       f"{state['id']}, not the recorded {recorded_id}; a live "
+                       "run would refuse to follow, adopt, collect, remove, or "
+                       "overwrite a different container")
+            if dry_run:
+                print(f"run-gate: DRY RUN: {message}; a live run would REFUSE "
+                      "(exit 2)", flush=True)
+                return None
+            fail(message)
     status = state["status"] if state else None
     exit_code = state["exit_code"] if state else None
     finished = state["finished_at"] if state else ""
@@ -17448,7 +17552,13 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
                      f"because that client is clearing up) and then either "
                      f"run fresh or refuse (exit 2) naming pid {owner}")
         elif status is None:
-            would = "report it lost, clear the record and start a new container"
+            if owner_state == "dead":
+                would = ("report it lost, clear the record and start a new "
+                         "container")
+            else:
+                would = (f"REFUSE (exit 2): the recorded owner state is "
+                         f"{owner_state.upper()}, so owner uncertainty never "
+                         "permits the lost-run mutation")
         elif fresh and owner is not None:
             would = (f"REFUSE (exit 2): --fresh never removes a LIVE client's "
                      f"container, and pid {owner} owns this one")
@@ -17483,6 +17593,8 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
             # run has already finished. Re-read first, bounded.
             pending, owner = repoll_owner_race(project_dir, lane_name, pending)
             if pending is None:
+                require_record_snapshot(record_path, None,
+                                        expected_record_snapshot, lane_name)
                 print(f"run-gate: the inflight record for lane {lane_name!r} "
                       f"named container {name}, whose live owner cleared the "
                       f"record while this client was deciding — that run is "
@@ -17492,11 +17604,29 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
                     print(f"run-gate: --fresh: no inflight record for lane "
                           f"{lane_name!r} — nothing to remove", flush=True)
                 return None
+            repolled_snapshot = inflight_record_snapshot(record_path)
+            require_record_snapshot(record_path, repolled_snapshot,
+                                    expected_record_snapshot, lane_name)
+            preflight_inflight_record(
+                pending, lane_name, project_dir, lane,
+                expected_lane_caps_v1_value, fresh=fresh, dry_run=dry_run)
+            # The owner can die between the initial preflight and RW-20's
+            # bounded re-poll. Reclassify the record actually returned by
+            # that re-poll before the lost-run mutation; carrying the stale
+            # initial `alive` state refuses the ordinary dead-client case.
+            owner_state = inflight_owner_state(pending)
         if owner is not None:
             fail(f"lane {lane_name!r} is owned by a live client (pid {owner}, "
                  f"container {name} started {started}) whose container is "
                  f"already gone — that client reports the lane's result and "
                  f"clears the record. Wait for pid {owner}")
+        if owner_state != "dead":
+            fail(f"lane {lane_name!r} has an inflight record whose owner "
+                 f"liveness is {owner_state.upper()} and whose named container "
+                 f"{name!r} is absent; owner uncertainty never permits the "
+                 "lost-run mutation. Leave the record and container identity "
+                 "untouched until the lifecycle owner or a schema-aware client "
+                 "can verify them")
         print(f"run-gate: inflight record names {name} (started {started}) "
               f"but {gone_because}; recording that run as aborted, clearing "
               f"the record and running fresh", flush=True)
@@ -17517,17 +17647,26 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
                  f"--fresh once it has")
         print(f"run-gate: --fresh: removing inflight container {name} "
               f"(started {started}, {status}) and running anew", flush=True)
-        subprocess.run([docker, "rm", "-f", name], capture_output=True)
+        subprocess.run([docker, "rm", "-f", state["id"]],
+                       capture_output=True,
+                       env=lane_caps_private_environ())
         clear_inflight_record(project_dir, lane_name)
         return None
     if not commit_matches:
         # Neither attaching nor starting a second container is defensible
         # here: one would credit this commit with another commit's run, the
         # other would break the one-gate rule. Refuse and name the escape.
-        remedy = (f"Wait for pid {owner} to finish — --fresh will not remove "
-                  f"another live client's container" if owner is not None else
-                  f"Wait for it to finish, or re-run with --fresh (which "
-                  f"removes {name} first)")
+        if owner is not None:
+            remedy = (f"Wait for pid {owner} to finish — --fresh will not "
+                      f"remove another live client's container")
+        elif owner_state == "dead":
+            remedy = (f"Wait for it to finish, or re-run with --fresh (which "
+                      f"removes {name} first)")
+        else:
+            remedy = (
+                f"Wait for it to finish, or have the lifecycle owner verify "
+                f"the old run and container identity; owner state is "
+                f"{owner_state.upper()}, so --fresh is not a safe remedy")
         fail(f"lane {lane_name!r} has an inflight container {name} (started "
              f"{started}, {status}) judging commit {pending.get('commit')}, "
              f"but {worktree} is now at {head} — run-gate will not attach "
@@ -17769,7 +17908,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                        budget_started_epoch: float | None = None,
                        admission_group: str | None = None,
                        resource_settings: dict | None = None,
-                       ksm_settings: dict | None = None) -> int:
+                       ksm_settings: dict | None = None,
+                       planned_leaf: "PlannedLeaf | None" = None) -> int:
     # project_dir arrives already relocated into the judged worktree (RG-15):
     # pin verification, assay config, and artifacts all resolve there.
     resource_settings = resource_settings or {}
@@ -17778,6 +17918,13 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     docker = shutil.which("docker")
     if not docker:
         fail_infra("docker not found on PATH — container lanes need it")
+    expected_cap = (planned_leaf.expected_lane_caps_v1
+                    if planned_leaf is not None else
+                    expected_lane_caps_v1(
+                        lane_name, lane, lane_environment_name(lane),
+                        env.get("mode", "host")))
+    planned_snapshot = (planned_leaf.record_snapshot
+                        if planned_leaf is not None else _MISSING)
     ksm_monitor = (KsmPageSharingMonitor(path=KSM_PAGES_SHARING_PATH)
                    if ksm_settings is not None and not dry_run else None)
     # RG-35: before ANYTHING is built — the re-attach line is the first thing
@@ -17786,11 +17933,15 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # going to start.
     if ksm_monitor is None:
         attached = resolve_inflight(docker, lane, lane_name, project_dir, repo,
-                                    worktree, fresh, dry_run, run_record)
+                                    worktree, fresh, dry_run, run_record,
+                                    expected_lane_caps_v1_value=expected_cap,
+                                    expected_record_snapshot=planned_snapshot)
     else:
         attached = resolve_inflight(
             docker, lane, lane_name, project_dir, repo, worktree, fresh,
-            dry_run, run_record, ksm_monitor)
+            dry_run, run_record, ksm_monitor,
+            expected_lane_caps_v1_value=expected_cap,
+            expected_record_snapshot=planned_snapshot)
     if attached is not None:
         disclose_r2_jobs(
             lane_name,
@@ -17900,14 +18051,20 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if profiling:
         argv += env_flags_by_name(
             {PROFILE_TOKEN_ENV: profile_plan["token"]}, docker_env_values)
-    mem_cap = lane.get("resources", {}).get("memory") or lane.get("memory")
+    argv += lane_caps_docker_args(
+        docker_env_values, expected_cap, allow_fact=True)
+    resources = lane.get("resources")
+    if not isinstance(resources, dict):
+        resources = {}
+    mem_cap = (resources["memory"] if "memory" in resources
+               else lane.get("memory"))
     if mem_cap:
         argv += ["--memory", mem_cap]
-    if lane.get("resources", {}).get("memory_swap"):
+    if resources.get("memory_swap"):
         # cmru pattern (RG-20): tight RAM cap + ample swap absorbs bursts
         # without OOM-killing the lane mid-campaign.
-        argv += ["--memory-swap", lane["resources"]["memory_swap"]]
-    pids_cap = lane.get("resources", {}).get("pids")
+        argv += ["--memory-swap", resources["memory_swap"]]
+    pids_cap = resources.get("pids")
     if pids_cap is not None:
         argv += ["--pids-limit", str(pids_cap)]
     # RG-48/R-29: lane wins over environment (the same precedence
@@ -17974,8 +18131,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         lane, lane_name, project_dir, worktree, docker, profile_plan,
         "container") if profiling else None)
     try:
-        started = subprocess.run(argv, capture_output=True, text=True,
-                                 env={**os.environ, **docker_env_values})
+        started = subprocess.run(
+            argv, capture_output=True, text=True,
+            env={**lane_caps_private_environ(), **docker_env_values})
     except BaseException:
         if ksm_monitor is not None:
             report_ksm_measurement(ksm_monitor, run_record)
@@ -17992,7 +18150,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         saved = save_container_logs(docker, name)
         lines = started.stderr.strip().splitlines() or ["(no stderr)"]
         tail = "\n".join(f"    {line}" for line in lines[-EVIDENCE_TAIL_LINES:])
-        subprocess.run([docker, "rm", "-f", name], capture_output=True)
+        subprocess.run([docker, "rm", "-f", name], capture_output=True,
+                       env=lane_caps_private_environ())
         where = f"\nrun-gate: partial container logs: {saved}" if saved else ""
         fail_infra(f"docker run failed (exit {started.returncode}); last "
                    f"stderr line(s):\n{tail}{where}")
@@ -18049,6 +18208,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         "progress": progress_path,
         "state_dir": state_dir,
         "assay_identity_mode": assay_identity_mode(lane),
+        LANE_CAPS_RECORD_FIELD: expected_cap,
         "r2_jobs": (run_record.get("r2_jobs")
                     if run_record is not None else None),
         "ksm": (copy.deepcopy(run_record.get("ksm"))
@@ -18254,7 +18414,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                   profile_plan: dict | None = None,
                   budget_deadline: float | None = None,
                   budget_started_epoch: float | None = None,
-                  resource_settings: dict | None = None) -> int:
+                  resource_settings: dict | None = None,
+                  planned_leaf: "PlannedLeaf | None" = None) -> int:
     """Exec into a PERSISTENT runner (started externally by CIU).
 
     project_dir arrives already relocated into the judged worktree (RG-15).
@@ -18275,10 +18436,13 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     docker = shutil.which("docker")
     if not docker:
         fail_infra("docker not found on PATH — exec-mode lanes need it")
+    require_planned_record_snapshot(project_dir, lane_name, planned_leaf)
     name, name_src, start_remedy = \
         container_name, container_name_src, container_start_remedy
-    running = subprocess.run([docker, "ps", "--format", "{{.Names}}"],
-                             capture_output=True, text=True)
+    running = subprocess.run(
+        [docker, "ps", "--format", "{{.Names}}"],
+        capture_output=True, text=True,
+        env=lane_caps_private_environ())
     if running.returncode != 0:
         detail = running.stderr.strip().splitlines()[-1:] or [f"exit {running.returncode}"]
         fail_infra(f"docker ps failed for exec-mode preflight: {detail[0]}")
@@ -18317,6 +18481,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     if profiling:
         argv += env_flags_by_name(
             {PROFILE_TOKEN_ENV: profile_plan["token"]}, docker_env_values)
+    argv += lane_caps_docker_args(
+        docker_env_values, None, allow_fact=False)
     if lane.get("budget"):
         # `docker exec` disconnecting does not reliably stop the in-container
         # child, so the bound must be enforced inside the persistent runner.
@@ -18436,7 +18602,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             barrier_argv.insert(2, "-i")
             proc = spawn_placement_barrier(
                 barrier_argv, barrier_nonce,
-                env={**os.environ, **docker_env_values})
+                env={**lane_caps_private_environ(), **docker_env_values})
         try:
             profiler_state = start_lane_profiling(
                 lane, lane_name, project_dir, worktree, docker, profile_plan,
@@ -18497,6 +18663,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         "progress": progress_path,
         "state_dir": state_dir,
         "assay_identity_mode": assay_identity_mode(lane),
+        LANE_CAPS_RECORD_FIELD: None,
         "r2_jobs": (run_record.get("r2_jobs")
                     if run_record is not None else None),
         "revision": __revision__,
@@ -18516,6 +18683,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     if run_record is not None:
         run_record["_inflight"] = inflight_payload
         run_record["placement"] = profiler_state.get("placement")
+    require_planned_record_snapshot(project_dir, lane_name, planned_leaf)
     try:
         write_inflight_record(project_dir, worktree, lane_name, inflight_payload)
     except BaseException:
@@ -18588,7 +18756,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         if proc is None:
             proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, bufsize=0,
-                                    env={**os.environ, **docker_env_values})
+                                    env={**lane_caps_private_environ(),
+                                         **docker_env_values})
         else:
             # This process exists only when the placement path already set
             # its nonce and held the wrapper at the ready barrier.
@@ -18779,7 +18948,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                   profile_plan: dict | None = None,
                   budget_deadline: float | None = None,
                   env_source: str = "host (mode host)",
-                  resource_settings: dict | None = None) -> int:
+                  resource_settings: dict | None = None,
+                  planned_leaf: "PlannedLeaf | None" = None) -> int:
     # cwd is the project dir RELOCATED into the judged worktree (RG-15) — a
     # bare-host lane must not quietly operate on the invocation checkout
     # either.
@@ -18876,7 +19046,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # Do not let that outer invocation's private session token leak into this
     # child; the current lane adds its own token below only when its profiler
     # actually starts a daemon session.
-    run_env = dict(os.environ)
+    run_env = lane_caps_private_environ()
     run_env.pop(PROFILE_TOKEN_ENV, None)
     run_env.update(resource_env)
     if not profiling:
@@ -18891,7 +19061,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                               "disabled_reason", "disabled")}
     else:
         if placement_requested:
-            run_env = run_env or dict(os.environ)
+            run_env = lane_caps_private_environ(run_env)
             run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
             barrier_nonce = secrets.token_hex(16)
             proc = spawn_bare_host_placement_barrier(
@@ -18961,8 +19131,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # the rusage path starts no session for the token to identify, and
     # nothing would ever read it there.
     if profiler_state["mode"] == "daemon":
-        if run_env is None:
-            run_env = dict(os.environ)
+        run_env = lane_caps_private_environ(run_env)
         run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
     # R-36h/RW-43 (round-1 review B1): the rusage path now launches its OWN
     # child via `Popen` + `os.wait4(pid, 0)` rather than bracketing a
@@ -19036,6 +19205,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             return None
     try:
         if proc is None:
+            require_planned_record_snapshot(project_dir, lane_name,
+                                            planned_leaf)
             proc = subprocess.Popen(argv, cwd=str(project_dir), env=run_env,
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, bufsize=0,
@@ -19737,6 +19908,431 @@ def sequence_leaf_names(name: str, lanes: dict) -> list[str]:
             for leaf in sequence_leaf_names(member, lanes)]
 
 
+@dataclass
+class PlannedSequenceNode:
+    path: tuple[int, ...]
+    lane_name: str
+    lane: dict
+    snapshot: bytes | None
+    preflight_state: str | None = None
+
+
+@dataclass
+class PlannedLeaf:
+    path: tuple[int, ...]
+    lane_name: str
+    lane: dict
+    lane_origin: str
+    environment_name: str
+    environment_mode: str
+    environment_declaration: dict
+    environment: dict
+    environment_source: str
+    expected_lane_caps_v1: str | None
+    record_snapshot: bytes | None
+    owner_state: str | None
+    required_present: tuple[str, ...]
+    forwarded_present: tuple[str, ...]
+    image_selection: dict | None
+
+
+@dataclass
+class RootSelectionPlan:
+    requested_lane_name: str
+    selected_lane: dict
+    selected_kind: str
+    lanes: dict
+    leaves: list[PlannedLeaf]
+    sequence_nodes: list[PlannedSequenceNode]
+    repo: Path
+    worktree: Path
+    effective_project: Path
+    cfg_path: Path
+    central_path: Path | None
+    cfg_sha256: str
+    central_cfg_sha256: str | None
+    fresh: bool
+    dry_run: bool
+    preview_terminal: bool = False
+    request_base: str | None = None
+    base_source: str | None = None
+    delegates: set[str] = field(default_factory=set)
+    ksm_by_member: dict[str, dict] = field(default_factory=dict)
+    ephemeral_members: set[str] = field(default_factory=set)
+    io_sync_by_member: dict[str, str] = field(default_factory=dict)
+
+    def leaf_at(self, path: tuple[int, ...]) -> PlannedLeaf | None:
+        return next((leaf for leaf in self.leaves if leaf.path == path), None)
+
+    def node_at(self, path: tuple[int, ...]) -> PlannedSequenceNode | None:
+        return next((node for node in self.sequence_nodes
+                     if node.path == path), None)
+
+
+def _sequence_occurrences(name: str, lanes: dict,
+                          path: tuple[int, ...] = (),
+                          ancestors: tuple[str, ...] = ()
+                          ) -> tuple[list[PlannedSequenceNode],
+                                     list[tuple[tuple[int, ...], str]],
+                                     list[tuple[str, tuple[int, ...], str]]]:
+    """Flatten one selected sequence without deduplicating lane names."""
+    lane = lanes[name]
+    nodes: list[PlannedSequenceNode] = []
+    leaves: list[tuple[tuple[int, ...], str]] = []
+    traversal: list[tuple[str, tuple[int, ...], str]] = []
+    if lane.get("kind") != "sequence":
+        return nodes, [(path, name)], [("leaf", path, name)]
+    if name in ancestors:
+        fail(f"sequence cycle at lane {name!r}")
+    current_path = path
+    nodes.append(PlannedSequenceNode(current_path, name, lane, None))
+    traversal.append(("node", current_path, name))
+    for index, member in enumerate(lane.get("lanes", [])):
+        child = current_path + (index,)
+        child_nodes, child_leaves, child_traversal = _sequence_occurrences(
+            member, lanes, child, ancestors + (name,))
+        nodes.extend(child_nodes)
+        leaves.extend(child_leaves)
+        traversal.extend(child_traversal)
+    return nodes, leaves, traversal
+
+
+def _sequence_node_record_from_snapshot(path: Path, snapshot: bytes
+                                        ) -> dict | None:
+    """Classify a node record without losing container-less schema-2 records.
+
+    The loader remains the authority for unknown-schema refusal. Parsing the
+    captured bytes only recovers a recognized record its historical
+    ``not container`` test would otherwise reduce to no inflight run.
+    """
+    pending = load_inflight_record(path, fresh=False, fresh_supported=False)
+    if pending is not None:
+        return pending
+    try:
+        data = json.loads(snapshot)
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    schema = data.get("schema")
+    if type(schema) is not int or schema != INFLIGHT_SCHEMA:
+        return None
+    return data
+
+
+def _preflight_sequence_node_record(node: PlannedSequenceNode,
+                                    project_dir: Path, *,
+                                    dry_run: bool) -> None:
+    """Unknown schema -> foreign runner -> stale changed-kind refusal."""
+    path = inflight_path(project_dir, node.lane_name)
+    snapshot = inflight_record_snapshot(path)
+    node.snapshot = snapshot
+    if snapshot is None:
+        return
+    pending = _sequence_node_record_from_snapshot(path, snapshot)
+    if pending is None:
+        return
+    runner = pending.get("runner")
+    if runner is not None and runner != "container":
+        message = (f"the inflight record for sequence lane "
+                   f"{node.lane_name!r} names container "
+                   f"{pending.get('container')!r}, written by runner "
+                   f"{runner!r} — foreign record — refusing before sequence "
+                   f"members; ask that runner's lifecycle owner to verify the "
+                   f"run has ended, then remove {path}")
+        if dry_run:
+            print(f"run-gate: DRY RUN: {message}; a live run would REFUSE "
+                  "(exit 2)", flush=True)
+            node.preflight_state = "foreign-preview"
+            return
+        fail(message)
+    identity_mode = pending.get("assay_identity_mode")
+    if identity_mode is not None and (
+            not isinstance(identity_mode, str)
+            or identity_mode not in ASSAY_IDENTITY_MODES):
+        fail(f"the inflight record for sequence lane {node.lane_name!r} has "
+             "an invalid assay_identity_mode; refusing to interpret its "
+             f"result or start members. Remove {path} only after its lifecycle "
+             "owner verifies the prior run has ended")
+    fail(f"the inflight record for lane {node.lane_name!r} names container "
+         f"{pending.get('container')!r}, but the current kind is 'sequence'; "
+         "a recognized non-foreign record is stale for that node kind. "
+         f"Refusing under normal, --fresh, and dry-run before inventory, "
+         f"admission, Docker, or member execution. Remove {path} only after "
+         "its lifecycle owner verifies the prior run has ended")
+
+
+def _selected_leaf_identity(path: tuple[int, ...], lane_name: str, lane: dict,
+                            cfg: dict, central: dict, cfg_path: Path,
+                            central_path: Path | None
+                            ) -> tuple[dict, dict, str, str, str, str | None]:
+    """Collision and fact phase; does not read the image selector."""
+    lane = copy.deepcopy(lane)
+    env_name = lane_environment_name(lane)
+    environment, source = resolve_environment(
+        lane, lane_name, cfg, central, cfg_path, central_path,
+        read_image_override=False)
+    declaration = declared_environment(lane, cfg, central)
+    check_lane_caps_caller_collisions(lane_name, lane, declaration, source)
+    mode = environment.get("mode", declaration.get("mode", "host"))
+    expected = expected_lane_caps_v1(lane_name, lane, env_name, mode)
+    return lane, environment, env_name, mode, source, expected
+
+
+def _finalize_selected_leaf(path: tuple[int, ...], lane_name: str, lane: dict,
+                            cfg: dict, central: dict, cfg_path: Path,
+                            central_path: Path | None, project_dir: Path,
+                            args: argparse.Namespace, *,
+                            env_name: str, mode: str, source: str,
+                            expected: str | None, snapshot: bytes | None,
+                            owner_state: str | None) -> PlannedLeaf:
+    """Record, image-selector, and declared-input phase for one leaf."""
+    # Step 5 order: every image override, then required-input presence, then
+    # forwarding reachability. The image selector is read only after all
+    # selected collisions and record preflights have completed.
+    environment, source = resolve_environment(
+        lane, lane_name, cfg, central, cfg_path, central_path)
+    required_present = []
+    for key in lane.get("required_env", []):
+        value = os.environ.get(key)
+        if value is None or value == "":
+            if args.dry_run:
+                print(f"run-gate: DRY RUN: lane {lane_name!r} required input "
+                      f"${key} is unset or empty; a live run would return "
+                      "NOT_RUN (exit 3), reason env-missing", flush=True)
+            raise GateNotRunError(
+                "env-missing",
+                f"lane '{lane_name}' requires ${key} but it is unset or empty "
+                "— export it before invoking this gate (run-gate refuses to "
+                "start a lane whose declared inputs are missing)")
+        required_present.append(key)
+    if environment:
+        check_required_reaches_container(
+            lane, lane_name, environment, env_name, source)
+    forwarded_present = tuple(
+        key for key in environment.get("forward_env", [])
+        if os.environ.get(key))
+    selection = (environment.get("_image_selection")
+                 if isinstance(environment, dict) else None)
+    declaration = copy.deepcopy(declared_environment(lane, cfg, central))
+    origin = ("imported" if lane.get("_imported")
+              else "project" if lane_name in cfg.get("lanes", {})
+              else "central")
+    return PlannedLeaf(
+        path=path, lane_name=lane_name, lane=lane, lane_origin=origin,
+        environment_name=env_name, environment_mode=mode,
+        environment_declaration=declaration,
+        environment=environment, environment_source=source,
+        expected_lane_caps_v1=expected, record_snapshot=snapshot,
+        owner_state=owner_state, required_present=tuple(required_present),
+        forwarded_present=forwarded_present, image_selection=selection)
+
+
+def build_root_selection_plan(name: str, lanes: dict, cfg: dict, central: dict,
+                              cfg_path: Path, central_path: Path | None,
+                              cfg_sha256: str,
+                              central_cfg_sha256: str | None,
+                              project_dir: Path, args: argparse.Namespace
+                              ) -> RootSelectionPlan | None:
+    """Build the all-selected-member barrier before imported inventory."""
+    lane = lanes.get(name)
+    if not isinstance(lane, dict):
+        return None
+    selected_kind = lane.get("kind")
+    repo, worktree, toplevel = resolve_repo_and_worktree(
+        project_dir, args.worktree)
+    effective_project = effective_project_dir(project_dir, toplevel, worktree)
+    nodes, occurrences, traversal = _sequence_occurrences(name, lanes)
+    identities = [
+        (path, leaf_name, *_selected_leaf_identity(
+            path, leaf_name, lanes[leaf_name], cfg, central, cfg_path,
+            central_path))
+        for path, leaf_name in occurrences]
+    snapshots: dict[tuple[int, ...], bytes | None] = {}
+    owner_states: dict[tuple[int, ...], str | None] = {}
+    identities_by_path = {
+        path: (path, leaf_name, lane, environment, env_name, mode, source,
+               expected)
+        for (path, leaf_name, lane, environment, env_name, mode, source,
+             expected) in identities}
+    preview_terminal = False
+    for kind, path, lane_name in traversal:
+        if kind == "node":
+            node = next(node for node in nodes if node.path == path)
+            _preflight_sequence_node_record(
+                node, effective_project, dry_run=bool(args.dry_run))
+            if node.preflight_state == "foreign-preview":
+                preview_terminal = True
+            continue
+        (_, leaf_name, lane, _environment, _env_name, mode, _source,
+         expected) = identities_by_path[path]
+        record_file = inflight_path(effective_project, leaf_name)
+        snapshot = inflight_record_snapshot(record_file)
+        snapshots[path] = snapshot
+        fresh_supported = mode == "ephemeral"
+        pending = load_inflight_record(
+            record_file, fresh=bool(args.fresh and fresh_supported),
+            fresh_supported=fresh_supported)
+        owner_state = None
+        if pending is not None:
+            if (not fresh_supported
+                    and pending.get("runner") in (None, "container")):
+                fail(f"the inflight record for lane {leaf_name!r} names "
+                     f"container {pending.get('container')!r}, written by the "
+                     "container runner, but the selected lane environment "
+                     f"mode is {mode!r}, not 'ephemeral'; run-gate cannot "
+                     "re-attach to or replace it here. Ask the prior "
+                     "container's lifecycle owner to confirm the run has "
+                     f"ended, then remove {record_file} and retry")
+            owner_state = preflight_inflight_record(
+                pending, leaf_name, effective_project, lane,
+                expected, fresh=bool(args.fresh and fresh_supported),
+                dry_run=bool(args.dry_run), fresh_supported=fresh_supported)
+            if bool(args.dry_run) and (
+                    owner_state == "foreign-preview"
+                    or (fresh_supported and bool(args.fresh)
+                        and owner_state in ("alive", "unknown"))):
+                preview_terminal = True
+        elif (args.fresh and not args.dry_run and not fresh_supported
+              and selected_kind != "sequence"):
+            fail(f"--fresh applies only to an ephemeral-container lane; lane "
+                 f"{leaf_name!r} does not use one")
+        owner_states[path] = owner_state
+    leaves = []
+    for kind, path, lane_name in traversal:
+        if kind != "leaf":
+            continue
+        (path, leaf_name, lane, environment, env_name, mode, source,
+         expected) = identities_by_path[path]
+        owner_state = owner_states[path]
+        if bool(args.dry_run) and (
+                owner_state == "foreign-preview"
+                or (mode == "ephemeral" and bool(args.fresh)
+                    and owner_state in ("alive", "unknown"))):
+            leaves.append(PlannedLeaf(
+                path=path, lane_name=leaf_name, lane=lane,
+                lane_origin=("imported" if lane.get("_imported")
+                             else "project"
+                             if leaf_name in cfg.get("lanes", {})
+                             else "central"),
+                environment_name=env_name, environment_mode=mode,
+                environment_declaration=copy.deepcopy(
+                    declared_environment(lane, cfg, central)),
+                environment=copy.deepcopy(environment),
+                environment_source=source,
+                expected_lane_caps_v1=expected,
+                record_snapshot=snapshots[path], owner_state=owner_state,
+                required_present=(), forwarded_present=(),
+                image_selection=None))
+            continue
+        leaves.append(_finalize_selected_leaf(
+            path, leaf_name, lane, cfg, central, cfg_path, central_path,
+            effective_project, args, env_name=env_name, mode=mode,
+            source=source, expected=expected, snapshot=snapshots[path],
+            owner_state=owner_state))
+    return RootSelectionPlan(
+        requested_lane_name=name, selected_lane=lane,
+        selected_kind=lane.get("kind"), lanes=lanes, leaves=leaves,
+        sequence_nodes=nodes, repo=repo, worktree=worktree,
+        effective_project=effective_project, cfg_path=cfg_path,
+        central_path=central_path, cfg_sha256=cfg_sha256,
+        central_cfg_sha256=central_cfg_sha256, fresh=bool(args.fresh),
+        dry_run=bool(args.dry_run), preview_terminal=preview_terminal)
+
+
+def verify_materialized_selection(plan: RootSelectionPlan, lanes: dict,
+                                  cfg: dict, central: dict,
+                                  cfg_path: Path, central_path: Path | None
+                                  ) -> None:
+    """Reject inventory materialization that differs from the frozen plan.
+
+    This is the last boundary before admission. A comparison of only the
+    fact's inputs would certify the fact while silently accepting a changed
+    image, user, network, forwarding declaration, state root, lane body, or
+    provenance. Compare the complete public lane and environment snapshots
+    instead; private inventory markers are the only fields excluded.
+    """
+    def public_lane(value: dict) -> dict:
+        return {key: copy.deepcopy(item) for key, item in value.items()
+                if not key.startswith("_")}
+
+    def lane_origin(name: str, value: dict) -> str:
+        return ("imported" if value.get("_imported")
+                else "project" if name in cfg.get("lanes", {})
+                else "central")
+
+    def refuse_drift(name: str, field: str) -> None:
+        fail(f"materialized selected lane {name!r} changed {field} after "
+             "planning; refusing rather than reselecting, re-deriving a "
+             "cap fact, or launching a different declared contract before "
+             "admission")
+
+    selected = lanes.get(plan.requested_lane_name)
+    if not isinstance(selected, dict):
+        fail(f"materialized selected lane {plan.requested_lane_name!r} "
+             "disappeared; refusing before admission")
+    if selected.get("kind") != plan.selected_kind:
+        fail(f"materialized lane {plan.requested_lane_name!r} changed kind "
+             f"from {plan.selected_kind!r}; refusing before admission")
+    if public_lane(selected) != public_lane(plan.selected_lane):
+        refuse_drift(plan.requested_lane_name, "its selected public fields")
+    if (lane_origin(plan.requested_lane_name, selected)
+            != lane_origin(plan.requested_lane_name, plan.selected_lane)):
+        refuse_drift(plan.requested_lane_name, "its declaration origin")
+
+    for node in plan.sequence_nodes:
+        materialized_node = lanes.get(node.lane_name)
+        if not isinstance(materialized_node, dict):
+            fail(f"materialized selected sequence node {node.lane_name!r} "
+                 "disappeared; refusing before admission")
+        if public_lane(materialized_node) != public_lane(node.lane):
+            refuse_drift(node.lane_name, "its selected sequence-node fields")
+        if (lane_origin(node.lane_name, materialized_node)
+                != lane_origin(node.lane_name, node.lane)):
+            refuse_drift(node.lane_name, "its sequence-node origin")
+
+    for leaf in plan.leaves:
+        # Repeated names are separate occurrences, but they must each still
+        # materialize to the same exact selected lane.
+        materialized = lanes.get(leaf.lane_name)
+        if not isinstance(materialized, dict):
+            fail(f"materialized selected lane {leaf.lane_name!r} disappeared; "
+                 "refusing before admission")
+        if public_lane(materialized) != public_lane(leaf.lane):
+            refuse_drift(leaf.lane_name, "its selected public lane fields")
+        if (lane_origin(leaf.lane_name, materialized) != leaf.lane_origin):
+            refuse_drift(leaf.lane_name, "its declaration origin")
+
+        # Re-read the SAME selected environment after inventory materializes.
+        # This deliberately includes image selectors: the planned effective
+        # image and selection provenance are part of the launch fact. An
+        # ambient image override that changed during inventory is drift and
+        # must refuse, not disappear behind a declaration-only comparison.
+        environment, source = resolve_environment(
+            materialized, leaf.lane_name, cfg, central, cfg_path, central_path)
+        declaration = declared_environment(materialized, cfg, central)
+        if declaration != leaf.environment_declaration:
+            refuse_drift(leaf.lane_name,
+                         "its selected environment declaration")
+        if source != leaf.environment_source:
+            refuse_drift(leaf.lane_name,
+                         "its selected environment source")
+        if environment != leaf.environment:
+            refuse_drift(leaf.lane_name,
+                         "its effective selected environment")
+        env_name = materialized.get("environment")
+        mode = environment.get("mode", declaration.get("mode", "host"))
+        actual_fact = expected_lane_caps_v1(
+            leaf.lane_name, materialized, str(env_name), mode)
+        if actual_fact != leaf.expected_lane_caps_v1:
+            refuse_drift(leaf.lane_name, "its expected cap fact")
+        check_lane_caps_caller_collisions(
+            leaf.lane_name, materialized, declaration, source)
+        leaf.lane = copy.deepcopy(materialized)
+        leaf.environment_declaration = copy.deepcopy(declaration)
+        leaf.environment = copy.deepcopy(environment)
+
+
 def sequence_io_sync_modes(name: str, lanes: dict, cfg: dict,
                            cfg_path: Path, central: dict,
                            central_path: Path | None,
@@ -19786,7 +20382,7 @@ def _sequence_delegates(name: str, lanes: dict, cfg: dict, central: dict,
 
 def _require_local_admission_endpoint(operation: str) -> None:
     """Keep v7 count admission on the host Docker daemon shared with CIU."""
-    endpoint_local, endpoint_reason = local_docker_endpoint()
+    endpoint_local, endpoint_reason = lane_caps_local_docker_endpoint()
     if not endpoint_local:
         fail(f"run-gate admission {operation} needs the local Docker daemon: "
              f"{endpoint_reason}")
@@ -19806,6 +20402,7 @@ def _admission_manager(policy: dict, *, verify_image: bool = True
     verify_slice_loaded(slice_name)
     manager = DockerAdmission(
         cgroup_parent=slice_name,
+        run=lane_caps_admission_run,
         notice=lambda message: print(message, file=sys.stderr, flush=True))
     if verify_image:
         try:
@@ -19831,6 +20428,7 @@ def _dispatch_admission(args: argparse.Namespace, cfg: dict,
             fail("run-gate admission show does not accept set options")
         _require_local_admission_endpoint("show")
         manager = DockerAdmission(
+            run=lane_caps_admission_run,
             notice=lambda message: print(message, file=sys.stderr, flush=True))
         try:
             published = manager.show()
@@ -19993,101 +20591,190 @@ def sequence_judge_preflight(name: str, lanes: dict, cfg: dict,
               flush=True)
 
 
+def _planned_record_matches(
+        plan: RootSelectionPlan
+        ) -> dict[tuple[int, ...], dict | None]:
+    """Re-read every selected record and require its planned exact bytes."""
+    pending_by_path: dict[tuple[int, ...], dict | None] = {}
+    for node in plan.sequence_nodes:
+        current = inflight_record_snapshot(
+            inflight_path(plan.effective_project, node.lane_name))
+        if current != node.snapshot:
+            fail(f"the inflight record for selected sequence node "
+                 f"{node.lane_name!r} changed after planning; refusing before "
+                 "the first member")
+        if current is not None:
+            pending = _sequence_node_record_from_snapshot(
+                inflight_path(plan.effective_project, node.lane_name),
+                current)
+            if pending is not None:
+                if plan.dry_run and node.preflight_state == "foreign-preview":
+                    continue
+                fail(f"the inflight record for selected sequence node "
+                     f"{node.lane_name!r} is a recognized non-foreign record "
+                     "at the launch barrier; refusing before the first member")
+    for leaf in plan.leaves:
+        record_path = inflight_path(plan.effective_project, leaf.lane_name)
+        current = inflight_record_snapshot(record_path)
+        if current != leaf.record_snapshot:
+            fail(f"the inflight record for selected lane {leaf.lane_name!r} "
+                 "changed after planning; refusing before the first member")
+        leaf_fresh = plan.fresh and leaf.environment_mode == "ephemeral"
+        pending = load_inflight_record(record_path, fresh=leaf_fresh)
+        if pending is not None:
+            preflight_inflight_record(
+                pending, leaf.lane_name, plan.effective_project, leaf.lane,
+                leaf.expected_lane_caps_v1,
+                fresh=leaf_fresh, dry_run=plan.dry_run)
+        pending_by_path[leaf.path] = pending
+    return pending_by_path
+
+
+def sequence_launch_barrier(plan: RootSelectionPlan) -> None:
+    """One all-member record and container-state barrier before member one."""
+    pending_by_path = _planned_record_matches(plan)
+    needs_docker = any(
+        pending is not None
+        and not (plan.dry_run and leaf.owner_state == "foreign-preview")
+        for leaf in plan.leaves
+        for pending in [pending_by_path.get(leaf.path)])
+    docker = shutil.which("docker") if needs_docker else None
+    if needs_docker and not docker:
+        fail_infra("docker not found on PATH — the sequence barrier must "
+                   "inspect pending lane containers")
+    head = head_commit(plan.worktree)
+    for leaf in plan.leaves:
+        pending = pending_by_path.get(leaf.path)
+        if pending is None or (plan.dry_run
+                               and leaf.owner_state == "foreign-preview"):
+            continue
+        name = pending.get("container")
+        if not isinstance(name, str) or not name:
+            fail(f"the inflight record for selected lane {leaf.lane_name!r} "
+                 "does not name a container; refusing before the first member")
+        state = container_state(docker or "", name)
+        if state is None:
+            if leaf.owner_state != "dead":
+                fail(f"selected lane {leaf.lane_name!r} names container "
+                     f"{name!r}, but inspection found it absent and the "
+                     f"recorded owner is {leaf.owner_state or 'unknown'}; "
+                     "owner uncertainty never permits the lost-run recovery "
+                     "before the first member")
+            message = (f"the inflight record for selected lane "
+                       f"{leaf.lane_name!r} names container {name!r}, but "
+                       "inspection found it absent; the recorded owner is "
+                       "dead, so its own child will record the old run as "
+                       "aborted and clear the record")
+            if plan.dry_run:
+                print(f"run-gate: DRY RUN: {message} and then start anew",
+                      flush=True)
+                continue
+            continue
+        recorded_id = pending.get("container_id")
+        if not isinstance(recorded_id, str) or not recorded_id \
+                or not isinstance(state.get("id"), str) or not state["id"]:
+            message = (f"selected lane {leaf.lane_name!r} has an unreadable "
+                       "recorded or inspected container ID")
+            if plan.dry_run:
+                print(f"run-gate: DRY RUN: {message}; a live sequence would "
+                      "REFUSE (exit 2)", flush=True)
+                continue
+            fail(message + "; refusing before the first member")
+        if recorded_id != state["id"]:
+            message = (f"selected lane {leaf.lane_name!r} recorded container "
+                       f"id {recorded_id}, but inspection returned "
+                       f"{state['id']}")
+            if plan.dry_run:
+                print(f"run-gate: DRY RUN: {message}; a live sequence would "
+                      "REFUSE (exit 2)", flush=True)
+                continue
+            fail(message + "; refusing before the first member")
+        if not plan.fresh and (head is None or pending.get("commit") != head):
+            message = (f"selected lane {leaf.lane_name!r} judged commit "
+                       f"{pending.get('commit')!r}, but the selected worktree "
+                       f"HEAD is {head!r}")
+            if plan.dry_run:
+                print(f"run-gate: DRY RUN: {message}; a live sequence would "
+                      "REFUSE (exit 2)", flush=True)
+                continue
+            fail(message + "; refusing before the first member")
+    # This is deliberately the LAST all-member record read. A mutation at this
+    # seam refuses without treating a disappearance as "no inflight run".
+    _planned_record_matches(plan)
+
+
 def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
                        lanes: dict, cfg: dict, cfg_path: Path,
                        central: dict, central_path: Path | None,
                        cfg_sha256: str, central_cfg_sha256: str | None,
                        project_dir: Path, *, admission_ticket=None,
-                       admission_managed: bool = False) -> LaneResult:
+                       admission_managed: bool = False,
+                       root_plan: RootSelectionPlan | None = None,
+                       occurrence_path: tuple[int, ...] = ()) -> LaneResult:
     """Run one native sequence in process and preserve each member result."""
     repo, worktree, toplevel = resolve_repo_and_worktree(
         project_dir, args.worktree)
     effective_project = effective_project_dir(project_dir, toplevel, worktree)
+    if root_plan is None:
+        root_plan = build_root_selection_plan(
+            name, lanes, cfg, central, cfg_path, central_path, cfg_sha256,
+            central_cfg_sha256, project_dir, args)
+    if root_plan is None:
+        fail(f"sequence lane {name!r} has no selection plan")
+    is_root = occurrence_path == () and root_plan.requested_lane_name == name
     trunk_policy = cfg.get("project", central.get("project", {}))
     trunk = trunk_policy.get("trunk") if isinstance(trunk_policy, dict) else None
-    delegates = _sequence_delegates(
-        name, lanes, cfg, central, cfg_path, central_path, repo, worktree,
-        effective_project, args.worktree, bool(args.base))
-    request_base = None
-    base_source = None
-    if args.base and not delegates:
-        fail(f"--base {args.base!r} was given but sequence {name!r} has no "
-             "member that delegates a comparison base")
-    if delegates:
-        request_base, base_source = resolve_comparison_base(
-            name, args.base, worktree, effective_project, trunk)
-        print(f"run-gate: sequence {name!r} comparison base {request_base} "
-              f"(from {base_source}); members: "
-              f"{', '.join(sorted(delegates))}", flush=True)
+    cli_ksm_override = getattr(args, "ksm_override", None)
 
-    # RG-285 (round-1 review): a judge member's own precondition is checked
-    # BEFORE the first member runs, so a sequence cannot report NOT_RUN after
-    # having spent every member ahead of it. Same refusal, same reason, one
-    # level up; the member still preflights itself when run alone.
-    sequence_judge_preflight(name, lanes, cfg, central, cfg_path,
-                             central_path, worktree)
-
-    if args.fresh:
-        ephemeral = False
-        for member_name in sequence_leaf_names(name, lanes):
-            member = lanes[member_name]
-            env, _source = resolve_environment(member, member_name, cfg,
-                                               central, cfg_path, central_path)
-            ephemeral |= bool(env and env.get("mode") == "ephemeral")
-        if not ephemeral:
+    if is_root:
+        delegates = _sequence_delegates(
+            name, lanes, cfg, central, cfg_path, central_path, repo, worktree,
+            effective_project, args.worktree, bool(args.base))
+        if args.base and not delegates:
+            fail(f"--base {args.base!r} was given but sequence {name!r} has no "
+                 "member that delegates a comparison base")
+        if delegates:
+            root_plan.request_base, root_plan.base_source = \
+                resolve_comparison_base(
+                    name, args.base, worktree, effective_project, trunk)
+            print(f"run-gate: sequence {name!r} comparison base "
+                  f"{root_plan.request_base} (from {root_plan.base_source}); "
+                  f"members: {', '.join(sorted(delegates))}", flush=True)
+        root_plan.delegates = delegates
+        sequence_judge_preflight(name, lanes, cfg, central, cfg_path,
+                                 central_path, worktree)
+        if args.fresh and not any(
+                leaf.environment_mode == "ephemeral"
+                for leaf in root_plan.leaves):
             fail(f"--fresh on sequence {name!r} has no ephemeral member "
                  "container to replace")
-
-    ksm_by_member = {}
-    ephemeral_members = set()
-    cli_ksm_override = getattr(args, "ksm_override", None)
-    for leaf_name in sequence_leaf_names(name, lanes):
-        leaf = lanes[leaf_name]
-        member_env, _member_source = resolve_environment(
-            leaf, leaf_name, cfg, central, cfg_path, central_path)
-        if member_env and member_env.get("mode") == "ephemeral":
+        for leaf in root_plan.leaves:
+            if leaf.environment_mode != "ephemeral":
+                continue
             enabled, source = resolve_ksm_setting(
-                leaf, cfg, central, cli_override=cli_ksm_override)
-            ksm_by_member[leaf_name] = {"enabled": enabled, "source": source}
-            ephemeral_members.add(leaf_name)
-    if cli_ksm_override is not None and not ephemeral_members:
-        fail("--ksm and --no-ksm apply only to sequences with an ephemeral "
-             "container member")
+                leaf.lane, cfg, central, cli_override=cli_ksm_override)
+            root_plan.ksm_by_member[leaf.lane_name] = {
+                "enabled": enabled, "source": source}
+            root_plan.ephemeral_members.add(leaf.lane_name)
+        if cli_ksm_override is not None and not root_plan.ephemeral_members:
+            fail("--ksm and --no-ksm apply only to sequences with an "
+                 "ephemeral container member")
+        root_plan.io_sync_by_member = sequence_io_sync_modes(
+            name, lanes, cfg, cfg_path, central, central_path, args)
+    delegates = root_plan.delegates
+    request_base = root_plan.request_base
+    base_source = root_plan.base_source
+    ksm_by_member = root_plan.ksm_by_member
+    ephemeral_members = root_plan.ephemeral_members
+    io_sync_by_member = root_plan.io_sync_by_member
     ambient_ksm = os.environ.get(KSM_AMBIENT_ENV_VAR, "").strip()
     ksm_one_run_override = bool(ephemeral_members) and (
         cli_ksm_override is not None or ambient_ksm in ("0", "1"))
-
-    io_sync_by_member = sequence_io_sync_modes(
-        name, lanes, cfg, cfg_path, central, central_path, args)
     io_sync_modes = set(io_sync_by_member.values())
     sequence_io_sync = next(iter(io_sync_modes)) if len(io_sync_modes) == 1 \
         else None
 
     record = None
-    if not args.dry_run:
-        record = start_run_record(
-            name, worktree, repo, config_path=cfg_path,
-            config_sha256=cfg_sha256,
-            central_config_path=central_path,
-            central_config_sha256=central_cfg_sha256,
-            io_sync=sequence_io_sync,
-            io_sync_override=args.io_sync is not None,
-            cow_override=args.cow is not None,
-            ksm_override=ksm_one_run_override)
-        record["_project_dir"] = effective_project
-        record["_keep"] = resolve_history_keep(
-            cfg, cfg_path, central, central_path)[0]
-        record["resource_settings"] = {
-            "io_sync_by_member": io_sync_by_member}
-        record["ksm"] = {"by_member": ksm_by_member}
-        if sequence_io_sync is None:
-            record["excluded_reason"] = (
-                "sequence members use different io_sync modes; history is "
-                "recorded per member")
-        record["sequence"] = {"stop_on": lane.get("stop_on", "FAIL"),
-                              "request_base": request_base,
-                              "base_source": base_source}
-
     member_results: list[dict] = []
     first_nonpass: LaneResult | None = None
     stop_on = lane.get("stop_on", "FAIL")
@@ -20098,22 +20785,47 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
     release_ticket = False
     release_error = None
     try:
-        if owns_ticket:
-            leaves = sequence_leaf_names(name, lanes)
+        if owns_ticket and is_root:
             total_budget = sum(
-                budget_seconds(lanes[leaf]["budget"])
-                if lanes[leaf].get("budget") else DEFAULT_LANE_DEADLINE_SECONDS
-                for leaf in leaves)
+                budget_seconds(leaf.lane["budget"])
+                if leaf.lane.get("budget") else DEFAULT_LANE_DEADLINE_SECONDS
+                for leaf in root_plan.leaves)
             (ticket_manager, ticket, admission_result,
              _admission_epoch, _admission_monotonic,
              release_ticket) = _admit_lane(
-                name, lane, cfg, args, record,
+                name, lane, cfg, args, None,
                 run_budget_seconds=total_budget)
+        if is_root:
+            sequence_launch_barrier(root_plan)
+        if not args.dry_run:
+            record = start_run_record(
+                name, worktree, repo, config_path=cfg_path,
+                config_sha256=cfg_sha256,
+                central_config_path=central_path,
+                central_config_sha256=central_cfg_sha256,
+                io_sync=sequence_io_sync,
+                io_sync_override=args.io_sync is not None,
+                cow_override=args.cow is not None,
+                ksm_override=ksm_one_run_override)
+            record["_project_dir"] = effective_project
+            record["_keep"] = resolve_history_keep(
+                cfg, cfg_path, central, central_path)[0]
+            record["resource_settings"] = {
+                "io_sync_by_member": io_sync_by_member}
+            record["ksm"] = {"by_member": ksm_by_member}
+            if sequence_io_sync is None:
+                record["excluded_reason"] = (
+                    "sequence members use different io_sync modes; history is "
+                    "recorded per member")
+            record["sequence"] = {"stop_on": lane.get("stop_on", "FAIL"),
+                                  "request_base": request_base,
+                                  "base_source": base_source}
         if record is not None:
             record["admission"] = admission_result
             if ticket is not None:
                 record["admission_deadline"] = ticket.run_deadline
-        for member_name in lane["lanes"]:
+        for member_index, member_name in enumerate(lane["lanes"]):
+            member_path = occurrence_path + (member_index,)
             member = lanes[member_name]
             member_argv: list[str] = [member_name]
             if args.worktree:
@@ -20126,9 +20838,10 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
                 member_argv += ["--io-sync", args.io_sync]
             if args.cow is not None:
                 member_argv += ["--cow", args.cow]
-            member_leaves = (sequence_leaf_names(member_name, lanes)
-                             if member.get("kind") == "sequence"
-                             else [member_name])
+            member_plan_leaves = [
+                leaf for leaf in root_plan.leaves
+                if leaf.path[:len(member_path)] == member_path]
+            member_leaves = [leaf.lane_name for leaf in member_plan_leaves]
             if cli_ksm_override is not None and any(
                     leaf in ephemeral_members for leaf in member_leaves):
                 member_argv.append("--ksm" if cli_ksm_override else
@@ -20136,25 +20849,18 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
             if args.lock_wait is not None:
                 member_argv += ["--lock-wait", args.lock_wait]
             if args.fresh:
-                if member.get("kind") == "sequence":
-                    has_ephemeral = any(
-                        resolve_environment(lanes[leaf], leaf, cfg, central,
-                                            cfg_path, central_path)[0].get("mode")
-                        == "ephemeral"
-                        for leaf in sequence_leaf_names(member_name, lanes))
-                else:
-                    member_env, _source = resolve_environment(
-                        member, member_name, cfg, central, cfg_path,
-                        central_path)
-                    has_ephemeral = bool(member_env and
-                                         member_env.get("mode") == "ephemeral")
+                has_ephemeral = any(
+                    leaf.environment_mode == "ephemeral"
+                    for leaf in member_plan_leaves)
                 if has_ephemeral:
                     member_argv.append("--fresh")
             if request_base and any(leaf in delegates for leaf in member_leaves):
                 member_argv += ["--base", request_base]
             result = _dispatch(member_argv,
                                _admission_ticket=ticket,
-                               _admission_managed=True)
+                               _admission_managed=True,
+                               _root_plan=root_plan,
+                               _occurrence_path=member_path)
             # Persist each member's independent history result now; a later
             # failure in the sequence must not discard earlier measurements.
             finish(result)
@@ -20204,7 +20910,9 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
 def _dispatch(argv: list[str] | None = None, *,
               _admission_ticket=None,
               _admission_managed: bool = False,
-              _workers_options: dict | None = None) -> LaneResult:
+              _workers_options: dict | None = None,
+              _root_plan: RootSelectionPlan | None = None,
+              _occurrence_path: tuple[int, ...] = ()) -> LaneResult:
     parser = RunGateArgumentParser(add_help=False, prog=PROG)
     parser.add_argument("lane", nargs="?")
     parser.add_argument("target", nargs="?")
@@ -20559,6 +21267,14 @@ def _dispatch(argv: list[str] | None = None, *,
                      f"the invoking checkout's config")
         (cfg, cfg_path, central, central_path,
          cfg_sha256, central_cfg_sha256) = load_config_snapshot(project_dir)
+        if _root_plan is not None and (
+                cfg_path != _root_plan.cfg_path
+                or central_path != _root_plan.central_path
+                or cfg_sha256 != _root_plan.cfg_sha256
+                or central_cfg_sha256 != _root_plan.central_cfg_sha256):
+            fail("selected config changed after the sequence planner froze "
+                 "its snapshot; refusing rather than reselecting a lane or "
+                 "cap fact")
         if args.lane == "status":
             if (args.target is not None or args.list or args.check_env
                     or args.root is not None or args.base is not None
@@ -20576,15 +21292,38 @@ def _dispatch(argv: list[str] | None = None, *,
                 project_dir, cfg, cfg_path, args.json,
                 worktree_override=args.worktree), "status-query-failed")
         assay_defaults = cfg.get("assay", central.get("assay", {}))
-        preflight_inflight_assay_contract(args, cfg, central, assay_defaults,
-                                          project_dir)
         declared_lanes = dict(central.get("lanes", {}))
         declared_lanes.update(cfg.get("lanes", {}))
+        run_lane_requested = (
+            isinstance(args.lane, str)
+            and not args.help and not args.list and not args.check_env
+            and args.lane not in {
+                "doctor", "history", "footprint", "validate-pointers",
+                "migrate-modes", "admission", "status"})
         imported_lanes = unresolved_import_placeholders(
-            assay_defaults, declared_lanes)
+            assay_defaults, declared_lanes,
+            requested_lane=args.lane if run_lane_requested else None)
+        provisional_lanes = merge_lanes(
+            cfg.get("lanes", {}), central, project_dir, cfg_path, central_path,
+            assay_defaults, imported_lanes)
+        root_selection_plan = None
+        if _root_plan is not None:
+            root_selection_plan = _root_plan
+            imported_lanes = {
+                name: copy.deepcopy(lane)
+                for name, lane in _root_plan.lanes.items()
+                if name not in declared_lanes
+            }
+        elif run_lane_requested:
+            root_selection_plan = build_root_selection_plan(
+                args.lane, provisional_lanes, cfg, central, cfg_path,
+                central_path, cfg_sha256, central_cfg_sha256, project_dir, args)
+        if root_selection_plan is not None \
+                and root_selection_plan.preview_terminal:
+            return LaneResult("PASS")
         import_unresolved_reason = None
         import_spec = assay_defaults.get("import")
-        if isinstance(import_spec, dict):
+        if isinstance(import_spec, dict) and _root_plan is None:
             if assay_import_resolution_required(args, declared_lanes,
                                                 import_spec):
                 # Resolution failure is never softened here (RG-100): a
@@ -20615,6 +21354,16 @@ def _dispatch(argv: list[str] | None = None, *,
         lanes = merge_lanes(cfg.get("lanes", {}), central, project_dir,
                             cfg_path, central_path, assay_defaults,
                             imported_lanes)
+        if (root_selection_plan is None and run_lane_requested
+                and args.lane in lanes):
+            root_selection_plan = build_root_selection_plan(
+                args.lane, lanes, cfg, central, cfg_path, central_path,
+                cfg_sha256, central_cfg_sha256, project_dir, args)
+        if root_selection_plan is not None:
+            verify_materialized_selection(
+                root_selection_plan, lanes, cfg, central, cfg_path,
+                central_path)
+            root_selection_plan.lanes = lanes
         if args.help or (args.lane is None and not args.list
                          and not args.check_env):
             print(usage(lanes, (set(central.get("lanes", {}))
@@ -20724,6 +21473,17 @@ def _dispatch(argv: list[str] | None = None, *,
             if shard_lane_name != args.lane:
                 lanes[shard_lane_name] = lane
                 args.lane = shard_lane_name
+        planned_leaf = (root_selection_plan.leaf_at(_occurrence_path)
+                        if root_selection_plan is not None else None)
+        if planned_leaf is not None and lane.get("kind") != "sequence":
+            if planned_leaf.lane_name != args.lane and r2_flex_requested:
+                planned_leaf = None
+            elif planned_leaf.lane_name != args.lane:
+                fail(f"sequence occurrence {_occurrence_path!r} no longer "
+                     f"matches selected lane {args.lane!r}; refusing rather "
+                     "than reselecting or deriving another cap fact")
+            if planned_leaf is not None:
+                lane = copy.deepcopy(planned_leaf.lane)
         if args.rejudge_contaminated:
             if lane.get("kind") != "assay":
                 fail(f"--rejudge-contaminated applies only to an assay R2 "
@@ -20756,7 +21516,9 @@ def _dispatch(argv: list[str] | None = None, *,
                 args.lane, lane, args, lanes, cfg, cfg_path, central,
                 central_path, cfg_sha256, central_cfg_sha256, project_dir,
                 admission_ticket=_admission_ticket,
-                admission_managed=_admission_managed)
+                admission_managed=_admission_managed,
+                root_plan=root_selection_plan,
+                occurrence_path=_occurrence_path)
         if lane_args:
             if lane["kind"] != "command":
                 fail(f"lane {args.lane!r} is an assay lane and does not accept "
@@ -20775,8 +21537,12 @@ def _dispatch(argv: list[str] | None = None, *,
                 "rejudge": list(args.rejudge),
                 "rejudge_outcome": args.rejudge_outcome,
             }
-        env, env_source = resolve_environment(lane, args.lane, cfg, central,
-                                              cfg_path, central_path)
+        if planned_leaf is not None:
+            env = copy.deepcopy(planned_leaf.environment)
+            env_source = planned_leaf.environment_source
+        else:
+            env, env_source = resolve_environment(
+                lane, args.lane, cfg, central, cfg_path, central_path)
         ksm_settings = None
         if env and env.get("mode") == "ephemeral":
             enabled, ksm_source = resolve_ksm_setting(
@@ -20796,7 +21562,8 @@ def _dispatch(argv: list[str] | None = None, *,
         # RG-17/19: declared inputs verified BEFORE anything runs — presence
         # in the invoking environment for every kind; for container lanes
         # also that the names are on the forward_env allowlist at all.
-        preflight_required_env(lane, args.lane)
+        if planned_leaf is None:
+            preflight_required_env(lane, args.lane)
         if env:
             check_required_reaches_container(lane, args.lane, env,
                                              lane_environment_name(lane),
@@ -21111,7 +21878,8 @@ def _dispatch(argv: list[str] | None = None, *,
                         profile_plan=profile_plan,
                         budget_deadline=budget_deadline,
                         env_source=f"{env_source} (mode host)",
-                        resource_settings=resource_settings),
+                        resource_settings=resource_settings,
+                        planned_leaf=planned_leaf),
                     enabled=not args.dry_run)
             elif env.get("mode") == "exec":
                 disclose_r2_jobs(args.lane, r2_jobs_selection)
@@ -21150,7 +21918,8 @@ def _dispatch(argv: list[str] | None = None, *,
                         profile_plan=profile_plan,
                         budget_deadline=budget_deadline,
                         budget_started_epoch=budget_started_epoch,
-                        resource_settings=resource_settings),
+                        resource_settings=resource_settings,
+                        planned_leaf=planned_leaf),
                     enabled=not args.dry_run)
             else:
                 budget_started_epoch, budget_started_monotonic = admit_now()
@@ -21176,7 +21945,8 @@ def _dispatch(argv: list[str] | None = None, *,
                         admission_group=(admission_ticket.name
                                          if admission_ticket else None),
                         resource_settings=resource_settings,
-                        ksm_settings=ksm_settings),
+                        ksm_settings=ksm_settings,
+                        planned_leaf=planned_leaf),
                     enabled=not args.dry_run)
         finally:
             active_exception = sys.exc_info()[0] is not None

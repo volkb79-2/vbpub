@@ -508,6 +508,35 @@ mode, so re-attachment does not reinterpret an old verdict after config
 changes or pass it as a command result if the lane kind changed. See the [source identity rationale](docs/DESIGN-GUIDE.md#source-backed-assay-identifies-code-as-source)
 and [Assay adoption and recovery](CONSUMERS.md#assay-lanes-projects-that-adopt-assay-the-quality-partnership).
 
+### Selected lane caps are an exact launch and reattachment fact
+
+An eligible lane publishes `RUN_GATE_LANE_CAPS_V1`. Eligibility requires the
+selected environment to be `ephemeral`, a positive effective memory cap, and a
+positive integer `resources.pids` cap. Effective memory is `resources.memory`
+when present, otherwise the legacy lane-level `memory`; `memory_swap`,
+`memory_max`, host capacity, image configuration, and ambient values are not
+substitutes. The value is one compact four-field JSON object with
+`environment`, `lane`, `memory_max_bytes`, and `pids_max`, in that order, with
+ASCII escaping and no trailing newline.
+
+An eligible ephemeral container receives that exact value through a name-only
+Docker `-e RUN_GATE_LANE_CAPS_V1` assignment. An ineligible ephemeral lane and
+an exec lane receive the variable present and exactly empty. Bare-host lanes
+and Run-Gate probes do not receive it. Native sequences preflight every
+selected member and deliver each member's own fact; a sequence cannot launch
+the first member while a later selected member is invalid.
+
+Schema-2 inflight records store the exact string for eligible ephemeral runs
+and JSON null for ineligible ephemeral and exec runs. Non-fresh reattachment
+requires exact equality, so missing, a different string, or a wrong JSON type
+refuses before Docker or verdict access. Legacy schema-2 records remain visible
+in status but cannot be reattached. A record of an unknown schema always
+refuses, including under `--fresh`; use a schema-aware client or the lifecycle
+owner after verifying the old run and container identity.
+
+See the [design rationale](docs/DESIGN-GUIDE.md#selected-lane-caps-are-an-exact-launch-and-reattachment-fact)
+and the [consumer recipe](CONSUMERS.md#publish-selected-lane-caps-to-a-child).
+
 ### Run-Gate provides the Assay judge (RG-285)
 
 A language lane image deliberately ships neither pip nor Assay

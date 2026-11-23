@@ -1992,6 +1992,81 @@ argv = ["pytest", "tests/", "-q"]
 clean_tree = true
 ```
 
+## Publish selected lane caps to a child
+
+Declare the memory and PID limits Run-Gate already applies. Do not echo them
+in the lane's `argv`, set them as a fixed container value, or forward an
+ambient image-baked value. Run-Gate derives the fact from these declarations:
+
+<!-- run-gate-config -->
+```toml
+schema_version = 1
+
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
+
+[lanes.caps-consumer]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "test -n \"$RUN_GATE_LANE_CAPS_V1\""]
+clean_tree = true
+
+[lanes.caps-consumer.resources]
+memory = "2g"
+pids = 8192
+```
+
+The child observes
+`{"environment":"tester-unified","lane":"caps-consumer","memory_max_bytes":2147483648,"pids_max":8192}`
+without a trailing newline. `resources.memory` wins over legacy lane
+`memory`; missing or zero memory and missing or zero `resources.pids` mean no
+fact, not a fallback. A sequence applies the same rule separately to every
+member after all selected members pass the launch barrier.
+
+For an Assay child, require and pass through the variable. Assay itself is a
+downstream consumer: its declarations do not create a Run-Gate caller
+collision.
+
+<!-- assay-config -->
+```toml
+schema_version = 2
+
+[lanes.caps-consumer]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/opt/tester-venv/bin/python", "tests/check_lane_caps.py"]
+env = {}
+env_required = ["RUN_GATE_LANE_CAPS_V1"]
+env_passthrough = ["RUN_GATE_LANE_CAPS_V1"]
+budget = "10m"
+allow_argv_append = false
+```
+
+Delivery depends on execution mode. An eligible ephemeral container receives
+the exact JSON string through the Docker client environment and a name-only
+`-e RUN_GATE_LANE_CAPS_V1`. An ineligible ephemeral container and an exec
+container receive `RUN_GATE_LANE_CAPS_V1=` and therefore observe a present,
+exactly empty string. A bare-host child and every Run-Gate inventory,
+fitness, state-root, doctor, or environment probe has the name removed from
+its private environment; Docker probes that must enter an ephemeral or exec
+environment also use the explicit empty assignment. These observer paths
+cannot inherit either the caller's ambient value or the image's baked value.
+
+Schema-2 inflight records store the exact eligible JSON string or actual JSON
+null. A legacy schema-2 record without `lane_caps_v1` remains visible in
+`status`, but non-fresh reattachment refuses before Docker or verdict access;
+it has no trustworthy reattachment provenance. Do not satisfy the missing
+field by copying a current value into the record.
+
+Unknown-schema records are not recoverable through this client's `--fresh`.
+Use a schema-aware Run-Gate client, or have the lifecycle owner verify the run
+and container identity and handle the container through its owning tooling
+before removing the record. Re-running `--fresh` is not a schema-recovery
+instruction. See the [feature summary](README.md#selected-lane-caps-are-an-exact-launch-and-reattachment-fact)
+and [design rationale](docs/DESIGN-GUIDE.md#selected-lane-caps-are-an-exact-launch-and-reattachment-fact).
+
 ### Run-Gate provided Assay judge (RG-285)
 
 A language image that ships no pip and no Assay (`tester-unified-rust` is the

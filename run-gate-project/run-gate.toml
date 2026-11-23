@@ -174,3 +174,46 @@ environment = "bare-host"
 argv = ["bash", "-c", "run-gate selftest && run-gate --base {base} assay-r1 && run-gate assay-r3"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
 budget = "1h"
+
+# P7.0a acceptance receivers. The controller supplies one frozen derivative
+# image with a deliberately wrong baked RUN_GATE_LANE_CAPS_V1 value and holds
+# the short Unix socket until an independent image observer sends PASS. The
+# eligible command observes the name-only Docker delivery; the ineligible
+# command has no PID cap and therefore must observe the explicit empty
+# assignment. The Assay lane proves the same fact reaches a real Assay child
+# through env_required/env_passthrough.
+[lanes.p7a-lane-caps-smoke]
+kind = "assay"
+assay_lane = "p7a-lane-caps-smoke"
+environment = "tester-unified"
+clean_tree = true
+budget = "15m"
+artifacts = [".run-gate/p7a-lane-caps-smoke.observed"]
+
+[lanes.p7a-lane-caps-smoke.resources]
+memory = "2g"
+pids = 8192
+
+[lanes.p7a-lane-caps-outer-smoke]
+kind = "command"
+environment = "tester-unified"
+argv = ["/opt/tester-venv/bin/python", "{worktree}/run-gate-project/tests/fixtures/lane_caps_probe.py", "eligible", "p7a-lane-caps-outer-smoke", "{worktree}/run-gate-project/.run-gate/p7a-lane-caps-outer-smoke.observed", "{worktree}/run-gate-project/.run-gate/i.sock"]
+clean_tree = true
+budget = "15m"
+artifacts = [".run-gate/p7a-lane-caps-outer-smoke.observed"]
+
+[lanes.p7a-lane-caps-outer-smoke.resources]
+memory = "2g"
+pids = 8192
+
+[lanes.p7a-lane-caps-ineligible-smoke]
+kind = "command"
+environment = "tester-unified"
+argv = ["/opt/tester-venv/bin/python", "{worktree}/run-gate-project/tests/fixtures/lane_caps_probe.py", "empty", "p7a-lane-caps-ineligible-smoke", "{worktree}/run-gate-project/.run-gate/p7a-lane-caps-ineligible-smoke.observed", "{worktree}/run-gate-project/.run-gate/i.sock"]
+clean_tree = true
+budget = "15m"
+artifacts = [".run-gate/p7a-lane-caps-ineligible-smoke.observed"]
+
+[lanes.p7a-lane-caps-ineligible-smoke.resources]
+memory = "2g"
+# Deliberately no pids cap.

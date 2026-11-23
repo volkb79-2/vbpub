@@ -883,8 +883,10 @@ class TestEarlyMutationSentinels:
 
         monkeypatch.setattr(run_gate, "physical_path",
                             fresh_preflight_must_not_run)
-        assert run_gate.main(["suite", "--dry-run"]) == 2
-        assert "foreign record" in capsys.readouterr().err
+        assert run_gate.main(["suite", "--dry-run"]) == 0
+        output = capsys.readouterr()
+        assert "foreign record" in output.out
+        assert "would REFUSE" in output.out
         assert record.read_bytes() == before
 
     def test_foreign_record_refusal_is_visible_before_the_process_exits(
@@ -913,7 +915,8 @@ class TestEarlyMutationSentinels:
             result = module.resolve_inflight(
                 "docker", {{}}, "suite", Path({str(proj)!r}),
                 Path({str(repo)!r}), Path({str(repo)!r}),
-                fresh=False, dry_run=True, run_record=None)
+                fresh=False, dry_run=True, run_record=None,
+                expected_lane_caps_v1_value=None)
             Path({str(returned)!r}).write_text(str(result))
             while not Path({str(release)!r}).exists():
                 time.sleep(0.01)
@@ -11143,8 +11146,11 @@ class TestShippedGateFullDeclaration:
         lanes = cfg["lanes"]
 
         assert cfg["schema_version"] == run_gate.SCHEMA_VERSION
-        assert set(lanes) == {"selftest", "assay-r1", "assay-r2",
-                              "assay-r3", "gate-full"}
+        assert set(lanes) == {
+            "selftest", "assay-r1", "assay-r2", "assay-r3", "gate-full",
+            "p7a-lane-caps-smoke", "p7a-lane-caps-outer-smoke",
+            "p7a-lane-caps-ineligible-smoke",
+        }
 
         gate_full = lanes["gate-full"]
         assert gate_full["kind"] == "command"
@@ -14891,9 +14897,8 @@ class TestRG76AssayLaneImports:
         result = run_gate._dispatch(argv)
 
         assert result.verdict == "ERROR"
-        assert "current lane kind is 'sequence'" in result.reason
-        assert "refusing to interpret its result under the changed lane config" \
-            in result.reason
+        assert "current kind is 'sequence'" in result.reason
+        assert "stale for that node kind" in result.reason
         assert record_path.exists()
 
     def test_import_all_listing_does_not_probe_and_says_so(
@@ -19721,6 +19726,17 @@ def plant_inflight(proj: Path, repo: Path, state: Path | None, *,
         assay_lane = lane_config["assay_lane"]
         payload["verdict"] = str(proj / run_gate.assay_verdict_rel(assay_lane))
         payload["progress"] = str(proj / run_gate.assay_progress_rel(assay_lane))
+    environment_name = lane_config.get("environment")
+    environment = config.get("environments", {}).get(environment_name, {})
+    payload.setdefault(
+        run_gate.LANE_CAPS_RECORD_FIELD,
+        run_gate.lane_caps_v1(
+            str(environment_name),
+            lane,
+            environment.get("mode"),
+            (lane_config.get("resources") or {}).get("memory")
+            or lane_config.get("memory"),
+            (lane_config.get("resources") or {}).get("pids")))
     payload.update(over)
     path.write_text(json.dumps(payload))
     # A running assay has already written its verdict before run-gate can
@@ -19765,6 +19781,14 @@ def live_owner_fields() -> dict:
     honest "the owner is alive" a test can plant."""
     return {"owner_pid": os.getpid(),
             "owner_start": run_gate.process_start_ticks(os.getpid()),
+            "boot_id": run_gate.boot_id(),
+            "pid_ns": run_gate.pid_ns_inode()}
+
+
+def dead_owner_fields() -> dict:
+    """A matching boot/namespace with a provably absent process."""
+    return {"owner_pid": 2 ** 22 + 1,
+            "owner_start": 987654321,
             "boot_id": run_gate.boot_id(),
             "pid_ns": run_gate.pid_ns_inode()}
 
@@ -20148,7 +20172,7 @@ class TestInflightRecordDecisions:
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         record = plant_inflight(proj, repo, state, **foreign_owner_fields())
         assert run_gate.main(["suite", "--fresh"]) == 2
-        assert f"LIVE client (pid {2 ** 22 + 1}" in capsys.readouterr().err
+        assert "owner state is UNKNOWN" in capsys.readouterr().err
         assert [c for c in _docker_calls(log) if c[0] == "rm"] == []
         assert record.exists() and (state / "run-gate-planted").exists()
 
@@ -20158,8 +20182,7 @@ class TestInflightRecordDecisions:
         record = plant_inflight(proj, repo, state, **live_owner_fields())
         assert run_gate.main(["suite", "--fresh"]) == 2
         err = capsys.readouterr().err
-        assert f"LIVE client (pid {os.getpid()}" in err
-        assert "never removes another client's container" in err
+        assert "owner state is ALIVE" in err
         assert [c for c in _docker_calls(log) if c[0] == "rm"] == []
         assert record.exists() and (state / "run-gate-planted").exists()
 
@@ -20186,31 +20209,29 @@ class TestInflightRecordDecisions:
         assert len(sleeps) == run_gate.OWNER_RACE_REPOLLS - 1
         assert sleeps == [run_gate.OWNER_RACE_PAUSE_SECONDS] * len(sleeps)
 
-    def test_a_live_owner_whose_record_clears_mid_decision_runs_fresh(
+    def test_live_owner_clearing_a_planned_record_mid_decision_refuses(
             self, tmp_path, monkeypatch, capsys):
-        """RW-20. A live owner AND a gone container can only both be true
-        inside the owner's own `docker rm -f` -> `clear_inflight_record`
-        window. Refusing there names a pid whose run is already finished, so
-        the decision is re-read first; the second read finds no record."""
+        """RW-20 keeps re-reading, but a frozen present record cannot become
+        absent authority to launch: D-001's final plan snapshot refuses the
+        deletion explicitly."""
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         record = plant_inflight(proj, repo, state, status=None,
                                 **live_owner_fields())
         _no_op_sleep(monkeypatch, then=lambda: record.unlink(missing_ok=True))
-        assert run_gate.main(["suite"]) == 0
-        out = capsys.readouterr().out
-        assert ("whose live owner cleared the record while this client was "
-                "deciding") in out
-        assert "owned by a live client" not in out
-        # Nothing was recorded FOR the owner's run: it reported its own.
+        assert run_gate.main(["suite"]) == 2
+        err = capsys.readouterr().err
+        assert "immutable launch plan" in err
+        assert "owned by a live client" not in err
+        # Nothing was recorded for the owner's run, and no replacement ran.
         assert "aborted" not in json.dumps(read_store(proj))
-        assert len(lane_runs(log)) == 1        # ran fresh, exactly once
+        assert lane_runs(log) == []
+        assert not record.exists()
 
-    def test_an_owner_that_dies_mid_decision_takes_the_lost_container_path(
+    def test_record_change_while_owner_dies_mid_decision_refuses(
             self, tmp_path, monkeypatch, capsys):
-        """The other way the race resolves: the record is still there but its
-        owner is gone, i.e. a client that died between `rm -f` and clearing.
-        That is the ordinary lost-container case and must be recorded as
-        `aborted`, not refused by a pid that no longer exists."""
+        """RW-20's surviving record is revalidated against the frozen plan.
+        A byte change during the race is not adopted as new authority for the
+        lost-container mutation, even when its owner fields now look dead."""
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         record = plant_inflight(proj, repo, state, status=None,
                                 **live_owner_fields())
@@ -20221,12 +20242,14 @@ class TestInflightRecordDecisions:
             record.write_text(json.dumps(payload))
 
         _no_op_sleep(monkeypatch, then=_owner_dies)
-        assert run_gate.main(["suite"]) == 0
-        out = capsys.readouterr().out
-        assert "recording that run as aborted" in out
-        assert "owned by a live client" not in out
-        assert len(lane_runs(log)) == 1
-        assert not record.exists()
+        assert run_gate.main(["suite"]) == 2
+        err = capsys.readouterr().err
+        assert "immutable launch plan" in err
+        assert "recording that run as aborted" not in err
+        assert "owned by a live client" not in err
+        assert lane_runs(log) == []
+        assert "aborted" not in json.dumps(read_store(proj))
+        assert record.exists()
 
     @pytest.mark.parametrize("over, why", [
         ({"owner_start": 1}, "the pid was recycled onto another process"),
@@ -20367,7 +20390,8 @@ class TestInflightRecordDecisions:
         fresh run's own outcome. A run that vanished must never look like a
         run that never happened (RW-3)."""
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
-        record = plant_inflight(proj, repo, state, status=None)
+        record = plant_inflight(proj, repo, state, status=None,
+                                **dead_owner_fields())
         written: list[tuple[str, object]] = []
         real = run_gate.record_invocation
 
@@ -20400,7 +20424,8 @@ class TestInflightRecordDecisions:
         cleared, reported, and the lane runs fresh — not merely that the
         case-folded comparison returns true in isolation."""
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
-        record = plant_inflight(proj, repo, state, status=None)
+        record = plant_inflight(proj, repo, state, status=None,
+                                **dead_owner_fields())
         shim = shim_dir_of(monkeypatch) / "docker"
         original = shim.read_text()
         # Only the `inspect` branch's "gone" wording changes -- every other
@@ -20424,12 +20449,29 @@ class TestInflightRecordDecisions:
     def test_a_record_for_another_commit_refuses_and_names_both(
             self, tmp_path, monkeypatch, capsys):
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
-        plant_inflight(proj, repo, state, commit="dead" * 10)
+        plant_inflight(proj, repo, state, commit="dead" * 10,
+                       **dead_owner_fields())
         assert run_gate.main(["suite"]) == 2
         err = capsys.readouterr().err
         assert "deaddeaddead" in err and "--fresh" in err
         assert "will not start a second container" in err
         assert lane_runs(log) == []
+
+    def test_a_commit_mismatch_with_unknown_owner_does_not_prescribe_fresh(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, commit="dead" * 10)
+        before = record.read_bytes()
+        assert run_gate.main(["suite"]) == 2
+        err = capsys.readouterr().err
+        assert "deaddeaddead" in err
+        assert "owner state is UNKNOWN" in err
+        assert "--fresh is not a safe remedy" in err
+        assert lane_runs(log) == []
+        assert [c for c in _docker_calls(log)
+                if c[0] not in ("inspect",)] == []
+        assert record.read_bytes() == before
+        assert (state / "run-gate-planted").exists()
 
     def test_an_unresolvable_head_refuses_too(self, tmp_path, monkeypatch,
                                               capsys):
@@ -20446,7 +20488,7 @@ class TestInflightRecordDecisions:
     def test_fresh_removes_the_recorded_container_and_runs_anew(
             self, tmp_path, monkeypatch, capsys):
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
-        plant_inflight(proj, repo, state)
+        plant_inflight(proj, repo, state, **dead_owner_fields())
         assert run_gate.main(["suite", "--fresh"]) == 0
         assert ("run-gate: --fresh: removing inflight container "
                 "run-gate-planted (started 2026-09-02T11:00:00Z, running)"
@@ -20623,25 +20665,32 @@ class TestInflightRecordDecisions:
         plant_inflight(proj, repo, state, **live_owner_fields())
         assert run_gate.main(["suite", "--fresh", "--dry-run"]) == 0
         out = capsys.readouterr().out
-        assert ("--fresh never removes a LIVE client's container, and pid "
-                f"{os.getpid()} owns this one") in out
+        assert ("requires the recorded owner to be positively dead; owner "
+                "state is ALIVE") in out
+        assert "would REFUSE (exit 2)" in out
         assert [c for c in _docker_calls(log) if c[0] == "rm"] == []
 
-    def test_fresh_says_nothing_to_remove_when_the_owner_clears_first(
+    def test_fresh_refuses_a_planned_present_record_that_clears_before_resolver(
             self, tmp_path, monkeypatch, capsys):
-        """`--fresh` always says what it did, including when RW-20's re-poll
-        finds the record already gone — silence there would leave an operator
-        who typed `--fresh` unsure whether anything was removed."""
+        """A present record that disappears between planning and resolver
+        entry is plan drift, not proof that there was nothing to remove."""
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         record = plant_inflight(proj, repo, state, status=None,
-                                **live_owner_fields())
-        _no_op_sleep(monkeypatch, then=lambda: record.unlink(missing_ok=True))
-        assert run_gate.main(["suite", "--fresh"]) == 0
-        out = capsys.readouterr().out
-        assert "whose live owner cleared the record" in out
-        assert ("run-gate: --fresh: no inflight record for lane 'suite' — "
-                "nothing to remove") in out
-        assert len(lane_runs(log)) == 1
+                                **dead_owner_fields())
+        real_run_container_lane = run_gate.run_container_lane
+
+        def clear_then_resolve(*args, **kwargs):
+            record.unlink(missing_ok=True)
+            return real_run_container_lane(*args, **kwargs)
+
+        monkeypatch.setattr(run_gate, "run_container_lane",
+                            clear_then_resolve)
+        assert run_gate.main(["suite", "--fresh"]) == 2
+        err = capsys.readouterr().err
+        assert "immutable launch plan" in err
+        assert "nothing to remove" not in err
+        assert lane_runs(log) == []
+        assert not record.exists()
 
     def test_dry_run_names_the_follow_a_live_owner_would_get(
             self, tmp_path, monkeypatch, capsys):
@@ -20662,7 +20711,7 @@ class TestInflightRecordDecisions:
         run removes — the S5 shape a third time, since the dry-run branch
         preceded the `--fresh` branch too."""
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
-        record = plant_inflight(proj, repo, state)
+        record = plant_inflight(proj, repo, state, **dead_owner_fields())
         assert run_gate.main(["suite", "--fresh", "--dry-run"]) == 0
         out = capsys.readouterr().out
         assert "a live run would remove run-gate-planted and run anew" in out
@@ -20673,34 +20722,39 @@ class TestInflightRecordDecisions:
     def test_dry_run_discloses_a_lost_record_too(self, tmp_path, monkeypatch,
                                                  capsys):
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
-        record = plant_inflight(proj, repo, state, status=None)
+        record = plant_inflight(proj, repo, state, status=None,
+                                **dead_owner_fields())
         assert run_gate.main(["suite", "--dry-run"]) == 0
         assert ("state gone) — a live run would report it lost"
                 in capsys.readouterr().out)
         assert record.exists()
 
-    def test_a_name_worn_by_a_different_container_is_gone_by_name(
+    def test_a_name_worn_by_a_different_container_refuses_without_mutation(
             self, tmp_path, monkeypatch, capsys):
-        """RW-16 (review S2). Container names are deterministic per (env,
-        repo, lane), so a record that outlives its container can name a
-        DIFFERENT container that later took the same name. Inspecting by name
-        alone re-attached to that stranger and `rm -f`'d it."""
+        """D-001 keeps identity strict when a container name was reused.
+
+        Container names are deterministic per (env, repo, lane), so a record
+        that outlives its container can name a DIFFERENT container that later
+        took the same name. Reading that mismatch as "gone" and starting a
+        fresh run would leave both the stranger and its record untouched only
+        by luck; refuse instead and mutate neither.
+        """
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         record = plant_inflight(proj, repo, state, status="running",
                                 state_id="sha256:A-DIFFERENT-CONTAINER")
-        assert run_gate.main(["suite"]) == 0
-        out = capsys.readouterr().out
-        assert ("a different container now wears this name; run-gate will "
-                "not touch it") in out
-        assert "sha256:A-DIFFERENT-CONTAINER" in out
+        before = record.read_bytes()
+
+        assert run_gate.main(["suite"]) == 2
+        err = capsys.readouterr().err
+        assert "sha256:A-DIFFERENT-CONTAINER" in err
+        assert "not the recorded sha256:fakeid-run-gate-planted" in err
         # The stranger is neither followed, re-attached, nor removed: the
-        # only docker call that ever names it is the inspect that found it.
-        assert [c for c in _docker_calls(log)
-                if "run-gate-planted" in c and c[0] != "inspect"] == []
+        # only Docker operation that ever names it is the identity inspection.
+        assert [c[0] for c in _docker_calls(log)
+                if "run-gate-planted" in c] == ["inspect"]
         assert (state / "run-gate-planted").exists()
-        # …and the lane runs fresh with its own new container.
-        assert len(lane_runs(log)) == 1
-        assert not record.exists()
+        assert record.read_bytes() == before
+        assert lane_runs(log) == []
 
     def test_a_record_of_another_schema_is_REFUSED_not_overwritten(
             self, tmp_path, monkeypatch, capsys):
@@ -20721,10 +20775,9 @@ class TestInflightRecordDecisions:
         assert "declares schema 99" in err
         assert f"this run-gate ({_TEST_VERSION}) reads schema " \
             f"{run_gate.INFLIGHT_SCHEMA}" in err
-        # Every remedy, named: upgrade; --fresh (the container name IS
-        # readable here); or the path to delete.
-        assert "Upgrade or install a compatible Run-Gate version" in err
-        assert "--fresh" in err and "run-gate-planted" in err
+        assert "schema-aware Run-Gate client" in err
+        assert "lifecycle owner verify" in err
+        assert "does not prescribe --fresh" in err
         assert str(record) in err
         # Nothing was started, nothing was inspected, and neither the record
         # nor the container it names was touched.
@@ -20733,11 +20786,10 @@ class TestInflightRecordDecisions:
         assert (state / "run-gate-planted").exists()
         assert record.read_text() == before
 
-    def test_an_unreadable_schema_with_no_container_name_names_the_path(
+    def test_unknown_schema_without_container_name_uses_generic_refusal(
             self, tmp_path, monkeypatch, capsys):
-        """`--fresh` is only a remedy when there IS a container name to
-        remove. A schema whose record does not even carry one leaves exactly
-        one way out, and the refusal must say which."""
+        """A familiar-looking container name is not enough to infer meaning;
+        its absence does not create a different recovery contract."""
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         record = proj / ".run-gate" / "inflight" / "suite.json"
         record.parent.mkdir(parents=True, exist_ok=True)
@@ -20745,8 +20797,9 @@ class TestInflightRecordDecisions:
         assert run_gate.main(["suite"]) == 2
         err = capsys.readouterr().err
         assert "declares schema 99" in err
-        assert "--fresh" not in err
-        assert f"delete {record}" in err
+        assert "schema-aware Run-Gate client" in err
+        assert "does not prescribe --fresh" in err
+        assert str(record) in err
         assert lane_runs(log) == []
 
     @pytest.mark.parametrize("schema", [None, 2.0])
@@ -20763,27 +20816,25 @@ class TestInflightRecordDecisions:
         assert (state / "run-gate-planted").exists()
         assert record.read_text() == before
 
-    def test_fresh_reads_only_the_container_name_out_of_a_foreign_record(
+    def test_fresh_refuses_unknown_schema_without_docker_or_mutation(
             self, tmp_path, monkeypatch, capsys):
-        """The escape the refusal offers has to WORK. Under `--fresh` the
-        only values used from a record whose grammar this client does not
-        know are the container NAME (what to remove) and, for display,
-        `started_at`; the stable `runner` marker can only block removal of a
-        foreign runner."""
+        """Unknown fields have no trustworthy meaning, including a familiar
+        container name. --fresh must not turn them into a removal instruction.
+        """
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         record = plant_inflight(proj, repo, state, schema=99)
-        assert run_gate.main(["suite", "--fresh"]) == 0
-        outerr = capsys.readouterr()
-        assert "declares schema 99" in outerr.err
-        assert "only its container name" in outerr.err
-        assert ("run-gate: --fresh: removing inflight container "
-                "run-gate-planted (started 2026-09-02T11:00:00Z, running)"
-                ) in outerr.out
-        assert ["rm", "-f", "run-gate-planted"] in _docker_calls(log)
-        assert len(lane_runs(log)) == 1        # ran anew
-        assert not record.exists()
+        before = record.read_text()
+        assert run_gate.main(["suite", "--fresh"]) == 2
+        err = capsys.readouterr().err
+        assert "declares schema 99" in err
+        assert "schema-aware" in err
+        assert "--fresh" in err and "does not prescribe" in err
+        assert _docker_calls(log) == []
+        assert lane_runs(log) == []
+        assert (state / "run-gate-planted").exists()
+        assert record.read_text() == before
 
-    def test_fresh_refuses_an_old_schema_record_for_exec_runner(
+    def test_fresh_refuses_unknown_schema_before_foreign_runner(
             self, tmp_path, monkeypatch, capsys):
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         record = plant_inflight(proj, repo, state, schema=1, runner="exec")
@@ -20791,8 +20842,8 @@ class TestInflightRecordDecisions:
 
         assert run_gate.main(["suite", "--fresh"]) == 2
         err = capsys.readouterr().err
-        assert "declares schema 1 and names runner 'exec'" in err
-        assert "--fresh will not remove" in err
+        assert "declares schema 1" in err
+        assert "does not prescribe --fresh" in err
         assert _docker_calls(log) == []
         assert lane_runs(log) == []
         assert (state / "run-gate-planted").exists()
@@ -29462,8 +29513,9 @@ class TestResolveSelfContainerIdDirectBranches:
         assert all(kwargs["capture_output"] is True for _, kwargs in seen)
         assert all(kwargs["text"] is True for _, kwargs in seen)
         assert seen[1][0] == [
-            "docker", "exec", RG55_CONTAINER_ID, "/usr/bin/readlink",
-            "/proc/self/ns/mnt"]
+            "docker", "exec", "-e",
+            f"{run_gate.LANE_CAPS_ENV}=", RG55_CONTAINER_ID,
+            "/usr/bin/readlink", "/proc/self/ns/mnt"]
 
     def test_docker_inspect_success_returns_the_real_id(self, monkeypatch):
         monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
@@ -34676,10 +34728,9 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
 
         assert result.verdict == "ERROR"
         assert "declares schema 99" in result.reason
-        assert "current lane environment cannot use --fresh" in result.reason
-        assert "confirmed stopped by its lifecycle owner" in result.reason
-        assert f"remove the recovery record at {record_path}" in result.reason
-        assert "re-run with --fresh" not in result.reason
+        assert "schema-aware Run-Gate client" in result.reason
+        assert "lifecycle owner verify" in result.reason
+        assert "does not prescribe --fresh" in result.reason
         assert record_path.exists()
 
     def test_assay_failure_routes_digest_and_archive_from_dispatch(
@@ -35371,11 +35422,15 @@ class TestUserDocumentationOracles:
             assert end is not None, f"{path}:{index + 1}: unclosed TOML fence"
             tagged = (index > 0 and
                       lines[index - 1].strip() == "<!-- run-gate-config -->")
+            assay_tagged = (index > 0 and
+                            lines[index - 1].strip() ==
+                            "<!-- assay-config -->")
             context = "\n".join(lines[max(0, index - 5):index])
             source = "\n".join(lines[index + 1:end])
-            is_run_gate = (tagged or "schema_version = 1" in source or
-                           "run-gate.toml" in context + "\n" + source or
-                           "run-gate.root.toml" in context + "\n" + source)
+            is_run_gate = (not assay_tagged and
+                           (tagged or "schema_version = 1" in source or
+                            "run-gate.toml" in context + "\n" + source or
+                            "run-gate.root.toml" in context + "\n" + source))
             if is_run_gate:
                 yield index + 1, tagged, source
 
@@ -36196,6 +36251,8 @@ class TestFinalChangedLineCoverageOracles:
         progress_path = str(tmp_path / run_gate.assay_progress_rel("unit"))
         common = {
             "container": "runner", "container_id": "id-1",
+            "schema": run_gate.INFLIGHT_SCHEMA, "runner": "container",
+            run_gate.LANE_CAPS_RECORD_FIELD: None,
             "started_at": "2026-10-04T00:00:00Z", "started_epoch": 1,
             "commit": "commit-1", "status": "running",
             "log_path": str(tmp_path / "lane.log"),
@@ -36223,7 +36280,8 @@ class TestFinalChangedLineCoverageOracles:
         record = {}
         assert run_gate.resolve_inflight(
             "docker", {"kind": "assay", "assay_lane": "unit"}, "unit", tmp_path, tmp_path,
-            tmp_path, False, False, record) == 0
+            tmp_path, False, False, record,
+            expected_lane_caps_v1_value=None) == 0
         assert record["log_path"] == common["log_path"]
         assert record["_verdict_path"] == common["verdict"]
         assert record["_progress_path"] == common["progress"]
@@ -36232,7 +36290,8 @@ class TestFinalChangedLineCoverageOracles:
         follow.clear()
         assert run_gate.resolve_inflight(
             "docker", {"kind": "assay", "assay_lane": "unit"}, "unit", tmp_path, tmp_path,
-            tmp_path, False, False, None) == 0
+            tmp_path, False, False, None,
+            expected_lane_caps_v1_value=None) == 0
         assert follow["record"] is None
 
         monkeypatch.setattr(run_gate, "live_owner_pid", lambda _pending: None)
@@ -36244,20 +36303,24 @@ class TestFinalChangedLineCoverageOracles:
                                                pending=kwargs.get("recorded")) or 0))
         assert run_gate.resolve_inflight(
             "docker", {"kind": "assay", "assay_lane": "unit"}, "unit", tmp_path, tmp_path,
-            tmp_path, False, False, record) == 0
+            tmp_path, False, False, record,
+            expected_lane_caps_v1_value=None) == 0
         assert adopted["record"] is record
         assert record["_verdict_path"] == common["verdict"]
         assert record["_progress_path"] == common["progress"]
 
         assert run_gate.resolve_inflight(
             "docker", {"kind": "assay", "assay_lane": "unit"}, "unit", tmp_path, tmp_path,
-            tmp_path, False, False, None) == 0
+            tmp_path, False, False, None,
+            expected_lane_caps_v1_value=None) == 0
         assert adopted["record"] is None
 
     def test_assay_reattach_uses_the_recorded_identity_mode(
             self, tmp_path, monkeypatch):
         pending = {
             "container": "runner", "container_id": "id-1",
+            "schema": run_gate.INFLIGHT_SCHEMA,
+            run_gate.LANE_CAPS_RECORD_FIELD: None,
             "started_at": "2026-10-04T00:00:00Z", "started_epoch": 1,
             "commit": "commit-1", "status": "running",
             "runner": "container", "assay_identity_mode": "artifact",
@@ -36282,12 +36345,14 @@ class TestFinalChangedLineCoverageOracles:
 
         assert run_gate.resolve_inflight(
             "docker", {"kind": "assay", "assay_lane": "unit"}, "unit",
-            tmp_path, tmp_path, tmp_path, False, False, record) == 0
+            tmp_path, tmp_path, tmp_path, False, False, record,
+            expected_lane_caps_v1_value=None) == 0
         assert record["_assay_identity_mode"] == "artifact"
 
     def test_assay_reattach_without_identity_mode_refuses_before_docker(
             self, tmp_path, monkeypatch):
-        pending = {"container": "runner", "runner": "container"}
+        pending = {"container": "runner", "runner": "container",
+                   run_gate.LANE_CAPS_RECORD_FIELD: None}
         monkeypatch.setattr(run_gate, "load_inflight_record",
                             lambda *_args, **_kwargs: dict(pending))
         monkeypatch.setattr(
@@ -36297,13 +36362,15 @@ class TestFinalChangedLineCoverageOracles:
                            match="does not contain a valid assay_identity_mode"):
             run_gate.resolve_inflight(
                 "docker", {"kind": "assay", "assay_lane": "unit"}, "unit",
-                tmp_path, tmp_path, tmp_path, False, False, {})
+                tmp_path, tmp_path, tmp_path, False, False, {},
+                expected_lane_caps_v1_value=None)
 
     @pytest.mark.parametrize("identity_mode", [["source"], {"mode": "source"}])
     def test_assay_reattach_refuses_unhashable_identity_mode(
             self, tmp_path, monkeypatch, identity_mode):
         pending = {"container": "runner", "runner": "container",
-                   "assay_identity_mode": identity_mode}
+                   "assay_identity_mode": identity_mode,
+                   run_gate.LANE_CAPS_RECORD_FIELD: None}
         monkeypatch.setattr(run_gate, "load_inflight_record",
                             lambda *_args, **_kwargs: dict(pending))
         monkeypatch.setattr(
@@ -36313,12 +36380,14 @@ class TestFinalChangedLineCoverageOracles:
                            match="does not contain a valid assay_identity_mode"):
             run_gate.resolve_inflight(
                 "docker", {"kind": "assay", "assay_lane": "unit"}, "unit",
-                tmp_path, tmp_path, tmp_path, False, False, {})
+                tmp_path, tmp_path, tmp_path, False, False, {},
+                expected_lane_caps_v1_value=None)
 
     def test_assay_reattach_refuses_if_current_lane_is_not_assay(
             self, tmp_path, monkeypatch):
         pending = {"container": "runner", "runner": "container",
                    "assay_identity_mode": "source",
+                   run_gate.LANE_CAPS_RECORD_FIELD: None,
                    "verdict": str(tmp_path / run_gate.assay_verdict_rel("unit")),
                    "progress": str(tmp_path / run_gate.assay_progress_rel("unit"))}
         monkeypatch.setattr(run_gate, "load_inflight_record",
@@ -36330,12 +36399,14 @@ class TestFinalChangedLineCoverageOracles:
                            match="describes an Assay run"):
             run_gate.resolve_inflight(
                 "docker", {"kind": "command"}, "unit", tmp_path, tmp_path,
-                tmp_path, False, False, {})
+                tmp_path, False, False, {},
+                expected_lane_caps_v1_value=None)
 
     def test_non_assay_record_with_assay_verdict_path_refuses_before_docker(
             self, tmp_path, monkeypatch):
         pending = {"container": "runner", "runner": "container",
                    "assay_identity_mode": None,
+                   run_gate.LANE_CAPS_RECORD_FIELD: None,
                    "verdict": str(tmp_path / "verdict.json"),
                    "progress": None}
         monkeypatch.setattr(run_gate, "load_inflight_record",
@@ -36347,11 +36418,13 @@ class TestFinalChangedLineCoverageOracles:
                            match="contains an Assay verdict path"):
             run_gate.resolve_inflight(
                 "docker", {"kind": "command"}, "unit", tmp_path,
-                tmp_path, tmp_path, False, False, {})
+                tmp_path, tmp_path, False, False, {},
+                expected_lane_caps_v1_value=None)
 
     def test_schema_two_command_record_requires_identity_mode_key(
             self, tmp_path, monkeypatch):
-        pending = {"container": "runner", "runner": "container"}
+        pending = {"container": "runner", "runner": "container",
+                   run_gate.LANE_CAPS_RECORD_FIELD: None}
         monkeypatch.setattr(run_gate, "load_inflight_record",
                             lambda *_args, **_kwargs: dict(pending))
         monkeypatch.setattr(
@@ -36361,13 +36434,15 @@ class TestFinalChangedLineCoverageOracles:
                            match="does not contain a valid assay_identity_mode"):
             run_gate.resolve_inflight(
                 "docker", {"kind": "command"}, "unit", tmp_path,
-                tmp_path, tmp_path, False, False, {})
+                tmp_path, tmp_path, False, False, {},
+                expected_lane_caps_v1_value=None)
 
     @pytest.mark.parametrize("artifact", ["verdict", "progress"])
     def test_assay_reattach_refuses_missing_artifact_path_before_docker(
             self, tmp_path, monkeypatch, artifact):
         pending = {"container": "runner", "runner": "container",
                    "assay_identity_mode": "source",
+                   run_gate.LANE_CAPS_RECORD_FIELD: None,
                    "verdict": str(tmp_path / run_gate.assay_verdict_rel("unit")),
                    "progress": str(tmp_path / run_gate.assay_progress_rel("unit"))}
         pending[artifact] = " "
@@ -36380,7 +36455,8 @@ class TestFinalChangedLineCoverageOracles:
                            match=f"valid {artifact} path"):
             run_gate.resolve_inflight(
                 "docker", {"kind": "assay", "assay_lane": "unit"},
-                "unit", tmp_path, tmp_path, tmp_path, False, False, {})
+                "unit", tmp_path, tmp_path, tmp_path, False, False, {},
+                expected_lane_caps_v1_value=None)
 
     @pytest.mark.parametrize("artifact,value", [
         ("verdict", "old-pass-verdict.json"),
@@ -36392,6 +36468,7 @@ class TestFinalChangedLineCoverageOracles:
             self, tmp_path, monkeypatch, artifact, value):
         pending = {"container": "runner", "runner": "container",
                    "assay_identity_mode": "artifact",
+                   run_gate.LANE_CAPS_RECORD_FIELD: None,
                    "verdict": str(tmp_path / run_gate.assay_verdict_rel("unit")),
                    "progress": str(tmp_path / run_gate.assay_progress_rel("unit"))}
         pending[artifact] = (value if value == "\0"
@@ -36406,13 +36483,15 @@ class TestFinalChangedLineCoverageOracles:
         with pytest.raises(run_gate.GateError, match=expected):
             run_gate.resolve_inflight(
                 "docker", {"kind": "assay", "assay_lane": "unit"},
-                "unit", tmp_path, tmp_path, tmp_path, False, False, {})
+                "unit", tmp_path, tmp_path, tmp_path, False, False, {},
+                expected_lane_caps_v1_value=None)
 
     def test_lost_artifact_container_does_not_replace_fresh_source_mode(
             self, tmp_path, monkeypatch):
         pending = {"container": "runner", "runner": "container",
                    "commit": "old-commit", "status": "running",
                    "assay_identity_mode": "artifact",
+                   run_gate.LANE_CAPS_RECORD_FIELD: None,
                    "verdict": str(tmp_path / run_gate.assay_verdict_rel("unit")),
                    "progress": str(tmp_path / run_gate.assay_progress_rel("unit"))}
         monkeypatch.setattr(run_gate, "load_inflight_record",
@@ -36426,7 +36505,8 @@ class TestFinalChangedLineCoverageOracles:
 
         assert run_gate.resolve_inflight(
             "docker", {"kind": "assay", "assay_lane": "unit"}, "unit",
-            tmp_path, tmp_path, tmp_path, False, False, record) is None
+            tmp_path, tmp_path, tmp_path, False, False, record,
+            expected_lane_caps_v1_value=None) is None
         assert record["_assay_identity_mode"] == "source"
 
     def test_container_dry_run_labels_admission_ticket_when_present(
@@ -36961,7 +37041,7 @@ def test_unknown_schema_foreign_runner_names_its_lifecycle_owner(
                                 "runner": "exec"}))
 
     with pytest.raises(run_gate.GateError,
-                       match="names runner 'exec'.*lifecycle owner"):
+                       match="declares schema 99.*lifecycle owner"):
         run_gate.load_inflight_record(path)
 
     assert path.exists()
@@ -36978,21 +37058,22 @@ def test_unknown_schema_is_not_fresh_by_default(tmp_path):
     assert json.loads(path.read_text()) == record
 
 
-def test_unknown_schema_default_names_supported_fresh_remedy(tmp_path):
+def test_unknown_schema_never_prescribes_fresh_recovery(tmp_path):
     path = tmp_path / "inflight.json"
     path.write_text(json.dumps({
         "schema": 99, "container": "runner", "runner": "container",
     }))
 
     with pytest.raises(run_gate.GateError) as exc:
-        run_gate.load_inflight_record(path, fresh=False)
+        run_gate.load_inflight_record(path, fresh=True)
 
-    assert "re-run with --fresh" in str(exc.value)
+    assert "does not prescribe --fresh" in str(exc.value)
+    assert "schema-aware" in str(exc.value)
     assert path.exists()
 
 
 @pytest.mark.parametrize("runner", [None, "container"])
-def test_unknown_schema_fresh_can_read_its_own_container_runner(
+def test_unknown_schema_fresh_refuses_its_own_container_runner(
         tmp_path, runner):
     path = tmp_path / "inflight.json"
     path.write_text(json.dumps({
@@ -37000,12 +37081,8 @@ def test_unknown_schema_fresh_can_read_its_own_container_runner(
         "started_at": "2026-10-05T00:00:00Z",
     }))
 
-    pending = run_gate.load_inflight_record(path, fresh=True)
-
-    assert pending == {
-        "schema": 99, "container": "runner",
-        "started_at": "2026-10-05T00:00:00Z",
-    }
+    with pytest.raises(run_gate.GateError, match="declares schema 99"):
+        run_gate.load_inflight_record(path, fresh=True)
     assert path.exists()
 
 
@@ -37032,74 +37109,6 @@ def test_inflight_assay_contract_rejects_unsafe_assay_lane_identity(
         run_gate.validate_inflight_assay_contract(
             pending, "unit", tmp_path,
             {"kind": "assay", "assay_lane": "../other"})
-
-
-def test_lane_supports_fresh_uses_assay_defaults_and_central_environments():
-    assert run_gate.lane_supports_fresh(
-        {"kind": "assay"}, {},
-        {"environments": {"runner": {"mode": "ephemeral"}}},
-        {"environment": "runner"})
-    assert run_gate.lane_supports_fresh(
-        {"kind": "command", "environment": "runner"}, {},
-        {"environments": {"runner": {"mode": "ephemeral"}}}, {})
-    assert not run_gate.lane_supports_fresh(
-        {"kind": "command"}, {}, {}, {})
-
-
-def test_inflight_preflight_walks_cycles_and_reuses_checked_members(
-        tmp_path, monkeypatch):
-    cfg = {
-        "environments": {"local": {"mode": "ephemeral"}},
-        "lanes": {
-            "suite": {"kind": "sequence",
-                      "lanes": ["child", "child", "suite"]},
-            "child": {"kind": "sequence", "lanes": ["leaf"]},
-            "leaf": {"kind": "command", "environment": "local"},
-        },
-    }
-    monkeypatch.setattr(run_gate, "load_inflight_record",
-                        lambda *_args, **_kwargs: None)
-
-    run_gate.preflight_inflight_assay_contract(
-        SimpleNamespace(help=False, list=False, check_env=False,
-                        lane="suite", fresh=False),
-        cfg, {}, {}, tmp_path)
-
-
-def test_sequence_inflight_record_with_null_identity_is_previous_container(
-        tmp_path, monkeypatch):
-    cfg = {"lanes": {"suite": {"kind": "sequence", "lanes": []}}}
-    monkeypatch.setattr(
-        run_gate, "load_inflight_record",
-        lambda *_args, **_kwargs: {"container": "runner",
-                                   "assay_identity_mode": None})
-
-    with pytest.raises(run_gate.GateError,
-                       match="belongs to a previous container lane"):
-        run_gate.preflight_inflight_assay_contract(
-            SimpleNamespace(help=False, list=False, check_env=False,
-                            lane="suite", fresh=False),
-            cfg, {}, {}, tmp_path)
-
-
-@pytest.mark.parametrize("members,extra_lanes", [
-    (("unknown",), {}),
-    ([None], {}),
-    (["unsupported"], {"unsupported": {"kind": "custom"}}),
-])
-def test_sequence_fresh_refuses_when_members_are_not_ephemeral(
-        tmp_path, monkeypatch, members, extra_lanes):
-    lanes = {"suite": {"kind": "sequence", "lanes": members},
-             **extra_lanes}
-    monkeypatch.setattr(run_gate, "load_inflight_record",
-                        lambda *_args, **_kwargs: None)
-
-    with pytest.raises(run_gate.GateError,
-                       match="has no ephemeral member container"):
-        run_gate.preflight_inflight_assay_contract(
-            SimpleNamespace(help=False, list=False, check_env=False,
-                            lane="suite", fresh=True),
-            {"lanes": lanes}, {}, {}, tmp_path)
 
 
 def _cgroup_event_fixture(tmp_path, *, cgroup_path="/worker"):
@@ -38465,7 +38474,8 @@ class TestRunGateR1DirectCoverage:
                   tmp_path, tmp_path, False)
 
         result = run_gate.resolve_inflight(
-            *common, True, None)  # dry-run describes the refusal
+            *common, True, None,
+            expected_lane_caps_v1_value=None)  # dry-run describes the refusal
         output = capsys.readouterr().out
         assert result == 0 and "would REFUSE" in output
         assert "foreign record" in output
@@ -38473,7 +38483,8 @@ class TestRunGateR1DirectCoverage:
         assert calls == []
 
         with pytest.raises(run_gate.GateError, match="foreign record"):
-            run_gate.resolve_inflight(*common, False, None)
+            run_gate.resolve_inflight(
+                *common, False, None, expected_lane_caps_v1_value=None)
         assert calls == []
 
     def test_container_dry_run_discloses_user_forwarding_and_swap(
@@ -39108,7 +39119,8 @@ class TestKsmOptin:
             assert run_gate.resolve_inflight(
                 "docker", {"kind": "command"}, "suite", tmp_path,
                 tmp_path, tmp_path, False, False, record,
-                ksm_monitor=monitor) == 0
+                ksm_monitor=monitor,
+                expected_lane_caps_v1_value=None) == 0
 
         reconcile({"enabled": False, "source": "owner"})
         assert observed[-1] == ({"enabled": False, "source": "owner"}, monitor)

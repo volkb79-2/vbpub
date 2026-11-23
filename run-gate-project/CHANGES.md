@@ -11,9 +11,11 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Changed
 - the release gate now also runs the R3 canary in the receipt image; no action needed for consumers
+- Run-Gate publishes `RUN_GATE_LANE_CAPS_V1` from the selected ephemeral lane and environment, delivers it through Docker without ambient/image override, and records exact schema-2 provenance for reattachment (RG-293; P7.0a candidate only, not released)
+- unknown-schema inflight records now refuse under `--fresh` and direct operators to a schema-aware client or lifecycle-owner verification instead of a name-only recovery (RG-293; P7.0a candidate only, not released)
 
 ### Testing
-- no action needed: tests and documentation only (RG-290 and the image rebuild rule)
+- added deterministic builder, delivery, collision, reattachment, sequence-barrier, receiver, and documentation oracles for the P7.0a candidate (RG-293)
 
 <!-- cmru: release history -->
 
