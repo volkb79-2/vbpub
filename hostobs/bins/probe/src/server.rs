@@ -3611,7 +3611,15 @@ mod tests {
         assert_eq!(d.server.hub().queued(a_current).query, 0);
         assert_eq!(d.server.hub().queued(a_series).query, 0);
         assert!(d.server.hub().queued(b_current).query > 0);
-        assert!(d.server.hub().queued(b_series).query > 0);
+        assert_eq!(d.server.hub().queued(b_series).query, 0);
+        assert_eq!(
+            d.server.conn(b_series).map(|conn| conn.outstanding()),
+            Some(1)
+        );
+        assert!(d
+            .server
+            .conn(b_series)
+            .is_some_and(|conn| conn.has_pending_series_page(3)));
 
         put_current(&mut d, &selected, live_data(6, "v2"));
         d.eof(a_current);
