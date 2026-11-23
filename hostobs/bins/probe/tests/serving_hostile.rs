@@ -579,11 +579,12 @@ struct Case {
     corr: u32,
 }
 
-const GRID_VERBS: [&str; 7] = [
+const GRID_VERBS: [&str; 8] = [
     "hello",
     "status",
     "current",
     "snapshot_at",
+    "series_batch",
     "procs",
     "events",
     "bogus",
@@ -597,13 +598,13 @@ fn knows(level: Level, verb: &str) -> bool {
     match verb {
         "hello" => true,
         "status" | "events" => WITH_CONTROL.contains(&level),
-        "current" | "snapshot_at" | "procs" => TELEMETRY.contains(&level),
+        "current" | "snapshot_at" | "series_batch" | "procs" => TELEMETRY.contains(&level),
         _ => false,
     }
 }
 
-/// The expected `(refusal code or None for a dispatch, corr)` of a valid-args request, derived
-/// by hand from the R11 table (not by calling `classify`).
+/// The expected `(refusal code or None for a dispatch, corr)` of the grid's fixed payloads,
+/// derived by hand from the current P5b-3 R11 table (not by calling `classify`).
 fn expected(case: &Case) -> (Option<Code>, u32) {
     let corr = case.corr;
     let binary = case.mode == Mode::Binary;
@@ -631,13 +632,16 @@ fn expected(case: &Case) -> (Option<Code>, u32) {
     if hello && case.phase == Phase::Ready {
         return (Some(Code::BadRequest), corr);
     }
-    if !binary && matches!(case.verb, "current" | "snapshot_at") {
+    // Block verbs are refused by mode before their `{}` arguments are parsed.
+    if !binary && matches!(case.verb, "current" | "snapshot_at" | "series_batch") {
         return (Some(Code::BinaryRequired), corr);
     }
-    if !matches!(case.verb, "hello" | "status" | "current") {
-        return (Some(Code::UnknownVerb), corr);
+    // These served verbs use intentionally invalid `{}` args; `events` is known but unserved.
+    match case.verb {
+        "hello" | "status" | "current" => (None, corr),
+        "snapshot_at" | "series_batch" | "procs" => (Some(Code::BadRequest), corr),
+        _ => (Some(Code::UnknownVerb), corr),
     }
-    (None, corr)
 }
 
 fn payload_of(case: &Case) -> String {
@@ -656,7 +660,7 @@ fn payload_of(case: &Case) -> String {
 }
 
 #[test]
-fn the_grid_of_valid_requests_matches_the_hand_derived_r11_table() {
+fn the_grid_of_valid_requests_matches_the_current_p5b3_table() {
     let mut runs = 0;
     for mode in [Mode::Binary, Mode::Json] {
         for phase in [Phase::BeforeHello, Phase::Ready] {
@@ -700,7 +704,7 @@ fn the_grid_of_valid_requests_matches_the_hand_derived_r11_table() {
             }
         }
     }
-    assert_eq!(runs, 336);
+    assert_eq!(runs, 384);
 }
 
 #[test]
