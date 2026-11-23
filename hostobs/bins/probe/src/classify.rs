@@ -911,12 +911,33 @@ mod tests {
             let text = line(verb, "{}", 5);
             assert_refusal(&json(text.as_bytes()), Code::UnknownVerb, 5, &Detail::Empty);
         }
-        for verb in ["procs", "snapshot_at"] {
-            let text = req(verb, "{}");
-            assert_plain(&binary(text.as_bytes()), Code::BadRequest, 5);
-        }
+    }
+
+    #[test]
+    fn p5b3_served_verbs_reach_their_shape_gates() {
+        let text = req("procs", "{}");
+        assert_refusal(
+            &binary(text.as_bytes()),
+            Code::BadRequest,
+            5,
+            &key("subject"),
+        );
+        let text = req("snapshot_at", "{}");
+        assert_refusal(
+            &binary(text.as_bytes()),
+            Code::BadRequest,
+            5,
+            &key("selection"),
+        );
         let text = line("procs", "{}", 5);
-        assert_plain(&json(text.as_bytes()), Code::BadRequest, 5);
+        assert_refusal(
+            &json(text.as_bytes()),
+            Code::BadRequest,
+            5,
+            &key("subject"),
+        );
+        let text = line("snapshot_at", "{}", 5);
+        assert_plain(&json(text.as_bytes()), Code::BinaryRequired, 5);
     }
 
     #[test]
@@ -940,13 +961,14 @@ mod tests {
 
     #[test]
     fn step_9_beats_step_10() {
-        let text = req("events", "{\"a\":1,\"a\":2}");
-        assert_plain(&binary(text.as_bytes()), Code::UnknownVerb, 5);
-        for verb in ["snapshot_at", "series_batch"] {
-            let text = req(verb, "{}");
+        for verb in ["events", "spans"] {
+            let text = req(verb, "{\"a\":1,\"a\":2}");
             let query = binary(text.as_bytes());
-            let refusal = classify_with(&query, &full_facts()).expect_err("served check wins");
-            assert_eq!((refusal.code, refusal.corr), (Code::UnknownVerb, 5));
+            let refusal = classify_with(&query, &full_facts()).expect_err("step 9 wins");
+            assert_eq!(
+                (refusal.code, refusal.corr, refusal.detail),
+                (Code::UnknownVerb, 5, Detail::Empty)
+            );
         }
     }
 
@@ -1168,19 +1190,27 @@ mod tests {
 
     #[test]
     fn classify_step_10_too_many_requests_after_served_before_schema() {
-        let current = find(b"current").expect("current row");
-        let query = binary(b"{}");
-        let refusal = call_after_served(&query, 5, current, b"{}", &full_facts())
-            .expect_err("the outstanding cap wins");
-        assert_eq!(
-            (refusal.code, refusal.corr, refusal.detail),
-            (Code::TooManyRequests, 5, Detail::Empty)
-        );
+        for (verb, malformed) in [
+            ("current", "{}"),
+            ("snapshot_at", "{\"selection\":1}"),
+            ("series_batch", "{\"selection\":1}"),
+        ] {
+            let text = req(verb, malformed);
+            let query = binary(text.as_bytes());
+            let refusal = classify_with(&query, &full_facts())
+                .expect_err("the outstanding cap wins");
+            assert_eq!(
+                (refusal.code, refusal.corr, refusal.detail),
+                (Code::TooManyRequests, 5, Detail::Empty),
+                "{verb}"
+            );
+            let row = find(verb.as_bytes()).expect("served verb row");
+            assert_eq!(row.shape, Shape::Block, "{verb}");
+        }
         let unknown = req("nope", "{}");
         assert_plain(&binary(unknown.as_bytes()), Code::UnknownVerb, 5);
         let line = line("current", "{}", 6);
         assert_plain(&json(line.as_bytes()), Code::BinaryRequired, 6);
-        assert_eq!(current.shape, Shape::Block);
     }
 
     #[test]
