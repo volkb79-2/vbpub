@@ -1904,7 +1904,10 @@ mod tests {
         let limits = d.server.limits().observe;
         let pool = usize::try_from(limits.query_queue_bytes).expect("query pool");
         let max_block = usize::try_from(limits.max_block_bytes).expect("block bound");
-        assert!(frame > 0 && frame <= max_block, "frame must fit its block bound");
+        assert!(
+            frame > 0 && frame <= max_block,
+            "frame must fit its block bound"
+        );
         let occupied = pool
             .checked_sub(frame)
             .and_then(|remaining| remaining.checked_add(1))
