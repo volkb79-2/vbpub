@@ -1,17 +1,16 @@
 # systemd-boot variant: implementation and guest evidence (2026-11-18 onward)
 
-Status, 2026-11-22: **the current systemd-boot M2 Live ISO install and guest
-matrix passed on v1001.** The ISO payload was built from `fe2a9afe4`; the guest
-scenario driver was from `f9f55e1aa`. It created the timestamped initial state
-and passed boot, ESP, apt rollback, one-shot, dependency-break, kernel-damage,
-dynamic-loader, and backports kernel-upgrade scenarios. Exact hashes, counts,
-and retained logs are in
-[RESULTS-SDBOOT-M2-2026-11-22.md](RESULTS-SDBOOT-M2-2026-11-22.md). A separate
-fresh GRUB-target comparison install and rollback/default-selection run also
-passed. The current-source NoCloud builder guest also installed a
-systemd-boot target that passed boot-check (12) and sdboot-esp (16) when
-booted without its seed or cloud image. The offline gate passed; the
-exact-commit independent review remains before merge. Earlier
+Status, 2026-11-23: **the systemd-boot M2 Live ISO matrix and a separate
+current-source NoCloud builder matrix passed.** The M2 ISO report remains
+specific to its 2026-11-22 artifact and driver. The NoCloud run installed the
+current target runtime and passed nine fresh-overlay scenarios (177
+assertions), including manual recovery from dependency, kernel/initrd, and
+dynamic-loader failures and both stable/backports kernel updates. Its exact
+hashes, counts, harness corrections, and retained logs are in
+[RESULTS-SDBOOT-NOCLOUD-2026-11-23.md](RESULTS-SDBOOT-NOCLOUD-2026-11-23.md).
+The fresh GRUB-target comparison install and rollback/default-selection run
+also passed. The final offline gate and exact-commit independent review remain
+before merge. Earlier
 `b94af9533` and `c749db1`
 guest reports below are historical; do not mix them with the current matrix.
 See the [canonical installation architecture](INSTALLATION-ARCHITECTURE.md)
@@ -406,28 +405,28 @@ The supported run matrix for the systemd-boot variant is:
 
 | Scenario | Guest run | What it proves | Status |
 |---|---|---|---|
-| Builder install | Disposable cloud-image guest with blank target disk and the systemd-boot seed attached; then boot the target disk alone. | The seed selects the target backend, the common installer creates the systemd-boot target, and the installed target boots without builder inputs. | **PASS:** installer rc 0; standalone `boot-check` (12) and `sdboot-esp` (16), current source. |
-| `boot-check` | First boot after install; may share a fresh overlay with `sdboot-esp`. | Running root, systemd/networking, split data paths, ESP loader/BLS entry/binary/kernel copies. | **PASS (12 checks)** from the current M2 systemd-boot ISO install. |
-| `sdboot-esp` | May share a fresh overlay with `boot-check`. | Canonical entries, safe state mapping, kernel/initrd paths, suffixed default, and no scratch files. | **PASS (16 checks)** from the current M2 systemd-boot ISO install. |
+| Builder install | Disposable cloud-image guest with blank target disk and the systemd-boot seed attached; then boot the target disk alone. | The seed selects the target backend, the common installer creates the systemd-boot target, and the installed target boots without builder inputs. | **PASS:** installer rc 0; current-source `boot-check` (12) and `sdboot-esp` (16). |
+| `boot-check` | Fresh overlay on the installed target. | Running root, systemd/networking, split data paths, ESP loader/BLS entry/binary/kernel copies. | **PASS (12 checks)** in the 2026-11-23 NoCloud builder run. |
+| `sdboot-esp` | Fresh overlay on the installed target. | Canonical entries, safe state mapping, kernel/initrd paths, suffixed default, and no scratch files. | **PASS (16 checks)** in the 2026-11-23 NoCloud builder run. |
 | `s2-s3` | Fresh guest; do not reuse after another snapshot-producing scenario. | APT pre-change snapshot, metadata/package plan, rollback, persistent data, boot-once, and set-default. | **PASS (23 checks)** with timestamped states. |
-| `sdboot-oneshot-consumed` | Running state equals default and another state is available. | One-shot state boots and `LoaderEntryOneShot` is absent after consumption. | **PASS (8 checks)** on the current candidate. |
-| `kernel-upgrade` | Fresh guest; do not reuse after another snapshot-producing scenario. | APT snapshots the old state, the new and old kernels have correct entries, and one-shot returns to the new default. | **PASS (21 checks)** with Trixie backports; normal Trixie/security offered no newer kernel and stopped before mutation (6 pass, 1 availability check unmet). |
-| `recovery-kernel` | Fresh guest; destructive. | Manual selection of an older entry after kernel/initrd damage; modules, persistent data, default reset, and failed-state deletion. | **PASS (27 checks)** on the current candidate. |
-| `recovery-library` | Fresh guest; destructive. | Manual selection of an older entry after dynamic-loader damage; persistent data, default reset, and failed-state deletion. | **PASS (25 checks)** after correcting the serial driver's false shell-prompt match. |
-| `recovery-dependency` | Fresh guest; destructive. | Manual selection after forcing a dpkg dependency break; consistency and dependent service restored, then default reset and failed-state deletion. | **PASS (23 checks)** on the current candidate. |
+| `sdboot-oneshot-consumed` | Fresh guest; the driver creates a manual test snapshot if no non-default state exists. | One-shot state boots and `LoaderEntryOneShot` is absent after consumption. | **PASS (9 checks)**; fresh-guest fixture creation is also covered offline. |
+| `kernel-upgrade` | Fresh guest; do not reuse after another snapshot-producing scenario. | APT snapshots the old state, the new and old kernels have correct entries, and one-shot returns to the new default. | **PASS (21 checks)**; Trixie updates installed `6.12.118` over `6.12.117`. |
+| `backports` | Fresh guest; do not reuse after another snapshot-producing scenario. | Same kernel-state contract using Trixie backports. | **PASS (21 checks)**; `7.3.4` boots and one-shot rollback returns to the new default. |
+| `recovery-kernel` | Fresh guest; destructive. | Manual selection of the pre-change snapshot after kernel/initrd damage; modules, persistent data, default reset, and failed-state deletion. | **PASS (27 checks)** in the current-source NoCloud run. |
+| `recovery-library` | Fresh guest; destructive. | Manual selection of the pre-change snapshot after dynamic-loader damage; persistent data, default reset, and failed-state deletion. | **PASS (25 checks)** in the current-source NoCloud run. |
+| `recovery-dependency` | Fresh guest; destructive. | Manual selection after forcing a dpkg dependency break; consistency and dependent service restored, then default reset and failed-state deletion. | **PASS (23 checks)** in the current-source NoCloud run. |
 
 Do **not** run `s5` against systemd-boot: it sends GRUB menu key presses over the serial line. Do **not** run `s6`,
 `s7`, `s8`, `s9`, or `s9b` until their remaining GRUB-specific menu assumptions have been made backend-aware and
-reviewed. `backports`, `window-negative`, and `live-inspect` are not part of this run matrix.
+reviewed. `window-negative` and `live-inspect` are not part of this run matrix.
 
 For `s2-s3` and `kernel-upgrade`, use a new overlay on the same installed systemd-boot base for each scenario. Their
 initial precondition is that the running state is the default, and their snapshot counts depend on an empty dedupe
-window. `boot-check` and `sdboot-esp` are read-only and may share the first guest. `sdboot-oneshot-consumed` needs a
-guest whose running state is the default and which has another non-default state available; it consumes that one-shot
-while proving the variable is gone.
+window. `boot-check` and `sdboot-esp` are read-only. `sdboot-oneshot-consumed` creates a manual test snapshot on a
+fresh disk when necessary, then proves that the one-shot state boots and the variable is gone.
 
 Each recovery scenario requires a running default and a fresh recovery snapshot. They do not stage a one-shot. They
-select the older entry with QMP virtual-keyboard input, and after recovery verify `set-default`, an ordinary reboot,
+select the known-good pre-change snapshot with QMP virtual-keyboard input, and after recovery verify `set-default`, an ordinary reboot,
 and exact deletion of the now-inactive failed state. `dr-state prune --keep N` is covered offline; live systemd-boot
 pruning and ESP-space behavior remain separate guest proof.
 
@@ -488,7 +487,7 @@ files, not an integrated or released revision.
 
 ## Remaining guest coverage and limits
 
-The current M2 guest matrix establishes initial systemd-boot boot, ESP layout,
+The current-source builder guest matrix establishes initial systemd-boot boot, ESP layout,
 rollback, default selection, one-shot consumption, current-schema state
 deletion, and manual recovery from a dependency break, damaged kernel, and
 unusable dynamic loader. The backports kernel-upgrade guest establishes the

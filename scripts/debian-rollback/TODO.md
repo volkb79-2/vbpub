@@ -1,29 +1,32 @@
-# Current work order — 2026-11-22
+# Current work order — 2026-11-23
 
 Complete the systemd-boot target path first, then continue with the ZFS PoC.
-The separate M2 Live ISO variant and guest evidence are complete; the offline
-gate passed, and the exact-commit review remains before merge. The layers and
-media distinction are documented in the
+The separate M2 Live ISO variants and guest evidence are complete. The latest
+NoCloud builder matrix also passed; run the offline gate on this final
+documented candidate, then obtain an exact-commit DeepSeek ECO review before
+merge. The layers and media distinction are documented in the
 [installation architecture](docs/INSTALLATION-ARCHITECTURE.md).
 
 ## 1. Finish systemd-boot PoC
 
-- The current systemd-boot M2 ISO guest matrix passed on v1001. ISO payload
-  source: `fe2a9afe4`; guest driver: `f9f55e1aa`. Boot-check, ESP, apt
-  rollback, one-shot consumption, dependency-break recovery, kernel-damage
-  recovery, dynamic-loader recovery, and backports kernel-upgrade results are
-  in [the 2026-11-22 report](docs/RESULTS-SDBOOT-M2-2026-11-22.md). Each
-  recovery selected an older boot-menu entry after the default became unusable,
-  preserved post-snapshot persistent data, set the recovered state default,
-  proved a plain reboot, and deleted the damaged state.
-- The routine Trixie/security repository had no newer kernel than the installed
-  `6.12.117-1`; the scenario stopped before changing the guest. With Trixie
-  backports, the upgrade and both new/old kernel boot paths passed 21 checks.
+- The systemd-boot M2 Live ISO guest matrix remains recorded against its named
+  artifact in [the 2026-11-22 report](docs/RESULTS-SDBOOT-M2-2026-11-22.md).
+  A separate current-source NoCloud builder run passed nine fresh-overlay
+  scenarios: boot-check (12), ESP (16), apt rollback (23), one-shot (9),
+  dependency recovery (23), kernel recovery (27), loader recovery (25), stable
+  kernel update (21), and backports update (21). The full report is
+  [here](docs/RESULTS-SDBOOT-NOCLOUD-2026-11-23.md).
+- The stable run upgraded from `6.12.117` to `6.12.118`; the backports run
+  upgraded from `6.12.117` to `7.3.4`. Both old and new kernel states booted
+  with matching modules, and one-shot rollback returned to the new default.
+  Each destructive recovery selected the recovery entry, preserved data
+  written after its snapshot, set the recovered state as default, proved a
+  plain reboot, and deleted the failed state.
 - The fresh GRUB-target M2 comparison passed first-boot checks (9) and
   apt-rollback/default-selection checks (21). The separate NoCloud
-  systemd-boot builder also completed from current source; its installed disk
-  booted without the seed or cloud image and passed boot-check (12) and
-  sdboot-esp (16). This builder path is not required by the M2 product install.
+  systemd-boot builder matrix is recorded in the linked report. The installed
+  disk booted without its seed or cloud image; this builder path is not
+  required by the M2 product install.
 - Run the registered offline lane on the final documented candidate and obtain
   an independent DeepSeek review of that exact commit before merging. Use only
   the approved `deepseek-v4.1-flash-eco` route.

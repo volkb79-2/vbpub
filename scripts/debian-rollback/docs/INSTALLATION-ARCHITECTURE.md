@@ -1,6 +1,6 @@
 # Debian rollback: installation architecture
 
-**Canonical architecture and current status, 2026-11-22.** This page describes
+**Canonical architecture and current status, 2026-11-23.** This page describes
 the media we build, the layers they contain, how they install a target, and
 what Debian changes. Dated result reports remain the evidence record for the
 particular source and guest they name.
@@ -25,11 +25,14 @@ particular source and guest they name.
   selection. See the
   [dated results](RESULTS-SDBOOT-M2-2026-11-22.md) for artifact hashes and
   scenario counts.
-- The optional NoCloud cloud-image builder route was also exercised from the
-  current branch source: it installed a separate systemd-boot target disk,
-  which then booted and passed `boot-check` (12) and `sdboot-esp` (16) without
-  either the seed ISO or cloud image attached. The NoCloud seed belongs to
-  this automated builder path; it is not required for the M2 product install.
+- The optional NoCloud cloud-image builder route was exercised from current
+  source. Its separate systemd-boot target disk booted without the seed ISO or
+  cloud image and passed nine guest scenarios (177 assertions), including
+  dependency, kernel, dynamic-loader recovery and stable/backports kernel
+  updates.
+  See the [2026-11-23 builder results](RESULTS-SDBOOT-NOCLOUD-2026-11-23.md).
+  The NoCloud seed belongs to this automated builder path; it is not required
+  for the M2 product install.
 - New installations of either target variant start at
   `@os-000001-YYYYMMDD-HHMMSSZ-install`. Later states use a never-reused
   creation sequence, UTC timestamp, and origin/reason slug. The counter is
@@ -39,14 +42,13 @@ particular source and guest they name.
   command is planned. The timestamped runtime is for fresh installs and must
   not be copied onto those old disks because its APT hook requires the new
   counter.
-- Earlier guests on `b94af9533` and `c749db1` remain historical. Current M2
-  systemd-boot ISO results and injected script hashes are recorded separately
-  in the 2026-11-22 report. The ordinary Trixie/security repositories had no
-  newer kernel candidate; enabling Trixie backports yielded a current guest
-  kernel-upgrade pass (21 checks).
-- The systemd-boot M2 guest matrix, fresh GRUB-target comparison, and optional
-  NoCloud builder guest are complete. The offline gate passed; the
-  exact-commit independent review remains before merging this worktree.
+- Earlier guests on `b94af9533` and `c749db1` remain historical. The M2
+  systemd-boot ISO report remains specific to its 2026-11-22 artifact. The
+  current NoCloud builder run upgraded stable kernel `6.12.117` to `6.12.118`
+  and backports kernel `6.12.117` to `7.3.4`; both old/new boot paths passed.
+- The M2 systemd-boot guest matrix, fresh GRUB-target comparison, and optional
+  NoCloud builder matrix are complete. The offline gate and exact-commit
+  independent review remain before merging this worktree.
 
 ## The layers
 

@@ -1065,14 +1065,23 @@ def main() -> int:
             running="@os-000001-20261118-120000Z-install",
             default="@os-000001-20261118-120000Z-install",
             target="@os-000002-20261118-120100Z-apt",
+            initial_states=None,
+            snapshot_rc=0,
         ):
             boots = 0
+            states = list(initial_states) if initial_states is not None else [
+                "@os-000001-20261118-120000Z-install", target,
+            ]
 
             def responder(cmd):
                 if "BACKEND_SOURCES_DONE" in cmd:
                     return backend_output(config="BOOTLOADER=systemd-boot\n")
                 if "dr-state list" in cmd and "STATES:" in cmd:
-                    return 0, "STATES:@os-000001-20261118-120000Z-install,@os-000002-20261118-120100Z-apt\n"
+                    return 0, "STATES:" + ",".join(states) + "\n"
+                if "dr-state snapshot --note" in cmd:
+                    if snapshot_rc == 0 and target not in states:
+                        states.append(target)
+                    return 0, f"SNAPRC:{snapshot_rc}\n"
                 if "DEF:" in cmd:
                     return 0, f"DEF:{default}\n"
                 if "dr-state boot-once" in cmd:
@@ -1119,6 +1128,30 @@ def main() -> int:
             )
         if not any("dr-state boot-once @os-000002-20261118-120100Z-apt" in cmd for cmd in one_good_guest.commands):
             failures.append("sdboot-oneshot-consumed did not select a state distinct from the default")
+
+        fresh_guest = oneshot_guest(initial_states=("@os-000001-20261118-120000Z-install",))
+        _, fresh_fails, fresh_raised = capture_scenario(
+            lambda: drs.scenario_sdboot_oneshot_consumed(fresh_guest, io.StringIO())
+        )
+        if fresh_raised is not None or fresh_fails:
+            failures.append(
+                f"sdboot-oneshot-consumed fresh guest: fails={fresh_fails!r} raised={fresh_raised!r}"
+            )
+        if not any("dr-state snapshot --note 'one-shot consumption acceptance fixture'" in cmd
+                   for cmd in fresh_guest.commands):
+            failures.append("sdboot-oneshot-consumed did not create a fixture snapshot on a fresh guest")
+
+        snapshot_failure_guest = oneshot_guest(
+            initial_states=("@os-000001-20261118-120000Z-install",), snapshot_rc=1,
+        )
+        _, snapshot_fails, snapshot_raised = capture_scenario(
+            lambda: drs.scenario_sdboot_oneshot_consumed(snapshot_failure_guest, io.StringIO())
+        )
+        if snapshot_raised is not None or not snapshot_fails:
+            failures.append(
+                "sdboot-oneshot-consumed accepted a failed fixture snapshot: "
+                f"fails={snapshot_fails!r} raised={snapshot_raised!r}"
+            )
 
         _, reused_fails, reused_raised = capture_scenario(
             lambda: drs.scenario_sdboot_oneshot_consumed(

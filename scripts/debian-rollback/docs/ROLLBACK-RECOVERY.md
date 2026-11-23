@@ -2,25 +2,27 @@
 
 **Scope:** systemd-boot target on the current btrfs layout. The M2
 systemd-boot-target ISO and timestamped-ID runtime were installed in fresh
-v1001 UEFI guests. The current candidate passed the dependency-break, kernel,
-and dynamic-loader recovery scenarios. Exact artifact/source hashes, counts,
-and log paths are in the
-[2026-11-22 results report](RESULTS-SDBOOT-M2-2026-11-22.md). The GRUB-target
-comparison install is complete. The offline gate passed; the exact-commit
-review remains before merge.
+UEFI guests. A separate current-source NoCloud builder run passed the
+dependency-break, kernel, and dynamic-loader recovery scenarios. Exact hashes,
+counts, and logs are in the
+[2026-11-23 builder report](RESULTS-SDBOOT-NOCLOUD-2026-11-23.md); evidence
+for the named M2 ISO artifact remains in the
+[2026-11-22 report](RESULTS-SDBOOT-M2-2026-11-22.md). The GRUB-target
+comparison install is complete. The final offline gate and exact-commit
+review remain before merge.
 
 ## Recovery contract
 
 For this PoC, recovery means the operator can open the systemd-boot menu and
-choose a known-good older OS state. Automatic fallback after a failed boot is
-not implemented or required by this acceptance.
+choose a known-good OS state captured before the damaging change. Automatic
+fallback after a failed boot is not implemented or required by this acceptance.
 
-The operator selects the older entry before the damaged default boots. If a
-broken kernel or userspace has already failed, reset or power-cycle the guest,
-then select the older entry at the next boot. The systemd-boot menu can be
-opened during its configured timeout; when the timeout is hidden or zero,
-systemd documents holding Space before the boot manager starts. The menu uses
-the arrow keys to choose an entry and Enter to boot it. See the
+The operator selects the recovery snapshot entry before the damaged default
+boots. If a broken kernel or userspace has already failed, reset or power-cycle
+the guest, then select that snapshot at the next boot. The systemd-boot menu
+can be opened during its configured timeout; when the timeout is hidden or
+zero, systemd documents holding Space before the boot manager starts. The menu
+uses the arrow keys to choose an entry and Enter to boot it. See the
 [systemd-boot key bindings and menu behavior](https://www.freedesktop.org/software/systemd/man/latest/systemd-boot.html).
 
 After reaching the known-good state, make it the permanent default, verify a
@@ -180,14 +182,14 @@ checks that the witness remains and the failed BLS entry is gone.
 
 | Scenario | Damage | Required result |
 |---|---|---|
-| `recovery-kernel` | Replace the running state's kernel and initrd with invalid payloads, then regenerate the ESP entries. The older snapshot keeps a different, intact ESP kernel pair. | The operator selects the older BLS entry from the boot menu; it reaches userspace with its kernel modules working. The post-snapshot `/home` witness survives. The repaired default boots normally and the unusable OS state can be deleted. |
-| `recovery-library` | Remove the target of the package-owned `/lib64/ld-linux-x86-64.so.2` symlink with an atomic rename and parent-directory fsync. The damaged root cannot start init. | The serial log records the kernel's `No working init found` failure. After a reset, the operator selects the older BLS entry; the exact loader symlink and target are restored and the `/home` witness survives. The repaired default boots normally and the unusable OS state can be deleted. |
-| `recovery-dependency` | Install a local app package that depends on an exact version of a local library package, start its systemd service, create the recovery snapshot, then manually remove the library with `dpkg --force-depends`. | `apt-get check` names the broken dependency, the app and its service fail, and the app remains installed. The operator selects the older BLS entry; dpkg consistency, the library, app, and service return, post-snapshot `/home` data survives, the recovered state boots as the default, and the damaged state can be deleted. |
+| `recovery-kernel` | Replace the running state's kernel and initrd with invalid payloads, then regenerate the ESP entries. The pre-change snapshot keeps a different, intact ESP kernel pair. | The operator selects the recovery snapshot BLS entry from the boot menu; it reaches userspace with its kernel modules working. The post-snapshot `/home` witness survives. The repaired default boots normally and the unusable OS state can be deleted. |
+| `recovery-library` | Remove the target of the package-owned `/lib64/ld-linux-x86-64.so.2` symlink with an atomic rename and parent-directory fsync. The damaged root cannot start init. | The serial log records the kernel's `No working init found` failure. After a reset, the operator selects the recovery snapshot BLS entry; the exact loader symlink and target are restored and the `/home` witness survives. The repaired default boots normally and the unusable OS state can be deleted. |
+| `recovery-dependency` | Install a local app package that depends on an exact version of a local library package, start its systemd service, create the recovery snapshot, then manually remove the library with `dpkg --force-depends`. | `apt-get check` names the broken dependency, the app and its service fail, and the app remains installed. The operator selects the recovery snapshot BLS entry; dpkg consistency, the library, app, and service return, post-snapshot `/home` data survives, the recovered state boots as the default, and the damaged state can be deleted. |
 
 Run each on a fresh disposable VM. Do not reuse a damaged guest. These
 scenarios deliberately do not stage `dr-state boot-once`: they test selection
-after the default has become unusable. All three recovery scenarios passed on
-the current systemd-boot M2 guest source. State deletion was exercised after
+after the default has become unusable. All three recovery scenarios passed in
+the current-source NoCloud builder guest run. State deletion was exercised after
 recovery in each. Pruning older snapshots is covered by the offline
 `dr-state prune` workflow suite; live prune and ESP cleanup remain unverified.
 
@@ -201,11 +203,11 @@ recovery in each. Pruning older snapshots is covered by the offline
 | Serial/QMP and scenario contract coverage | `poc/test-dr-serial.py` |
 | Registered gate | `run-gate offline` from `scripts/debian-rollback/` |
 
-Current systemd-boot M2 guest evidence is in
-[RESULTS-SDBOOT-M2-2026-11-22.md](RESULTS-SDBOOT-M2-2026-11-22.md). The
-dependency-break scenario passed 23 checks, kernel damage 27, and loader
-damage 25. Each selected the older boot-menu entry after the default became
-unusable, restored service and/or boot capability, preserved post-snapshot
+Current-source systemd-boot builder evidence is in
+[RESULTS-SDBOOT-NOCLOUD-2026-11-23.md](RESULTS-SDBOOT-NOCLOUD-2026-11-23.md).
+The dependency-break scenario passed 23 checks, kernel damage 27, and loader
+damage 25. Each selected the known-good pre-change snapshot after the default
+became unusable, restored service and/or boot capability, preserved post-snapshot
 `/home` data, made the recovered state the default, proved a plain reboot, and
 deleted the failed state. These runs use the timestamped ID schema and current
 source hashes, unlike the historical runs below.

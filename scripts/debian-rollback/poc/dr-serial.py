@@ -1172,9 +1172,16 @@ def scenario_sdboot_oneshot_consumed(g, log):
                  state0 is not None and state0 == default, f"running={state0} default={default}"):
         return
     targets = [state for state in states if state != state0 and state != default]
-    check(log, "a target state different from the running/default state exists", bool(targets), str(targets))
     if not targets:
-        return
+        rc, out = g.run("dr-state snapshot --note 'one-shot consumption acceptance fixture'; echo SNAPRC:$?")
+        after = state_list(g)
+        targets = [state for state in after if state != state0 and state != default]
+        check(log, "a fresh guest created a non-default snapshot for the one-shot test",
+              rc == 0 and tag(out, "SNAPRC") == "0" and bool(targets),
+              f"rc={rc} snapshot_rc={tag(out, 'SNAPRC')} targets={targets}")
+        if not targets:
+            return
+    check(log, "a target state different from the running/default state exists", bool(targets), str(targets))
     target = targets[0]
     _, out = g.run(f"dr-state boot-once {target}; echo BORC:$?")
     if not check(log, "boot-once accepted", tag(out, "BORC") == "0", str(tag(out, "BORC"))):
