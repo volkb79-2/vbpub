@@ -175,13 +175,12 @@ argv = ["bash", "-c", "run-gate selftest && run-gate --base {base} assay-r1 && r
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
 budget = "1h"
 
-# P7.0a acceptance receivers. The controller supplies one frozen derivative
-# image with a deliberately wrong baked RUN_GATE_LANE_CAPS_V1 value and holds
-# the short Unix socket until an independent image observer sends PASS. The
-# eligible command observes the name-only Docker delivery; the ineligible
-# command has no PID cap and therefore must observe the explicit empty
-# assignment. The Assay lane proves the same fact reaches a real Assay child
-# through env_required/env_passthrough.
+# P7.0a acceptance receivers. The controller supplies a frozen derivative
+# image with a deliberately wrong baked RUN_GATE_LANE_CAPS_V1 value. The two
+# direct command lanes use live READY/PASS to observe name-only and
+# explicit-empty Docker delivery. Assay captures child stdout until completion,
+# so its lane uses post-completion artifact proof after env_required and
+# env_passthrough deliver the same fact.
 [lanes.p7a-lane-caps-smoke]
 kind = "assay"
 assay_lane = "p7a-lane-caps-smoke"

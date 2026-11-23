@@ -153,12 +153,14 @@ operators = [
 
 # P7.0a Run-Gate-to-Assay receiver. Run-Gate supplies the selected fact by
 # name-only `docker run -e`; Assay requires its presence and forwards its exact
-# bytes to this direct R0 command. No fixed Assay env value may synthesize it.
+# bytes to this R0 command. Assay captures child stdout until completion, so
+# this lane uses explicit post-completion artifact proof; direct command lanes
+# use live READY/PASS. No fixed Assay env value may synthesize the fact.
 [lanes.p7a-lane-caps-smoke]
 scope = "S1"
 rigor = ["R0"]
 enforcement = "gate"
-argv = ["/opt/tester-venv/bin/python", "tests/fixtures/lane_caps_probe.py", "eligible", "p7a-lane-caps-smoke", ".run-gate/p7a-lane-caps-smoke.observed", ".run-gate/i.sock"]
+argv = ["/opt/tester-venv/bin/python", "tests/fixtures/lane_caps_probe.py", "eligible", "p7a-lane-caps-smoke", ".run-gate/p7a-lane-caps-smoke.observed", "--posthoc"]
 env = {}
 env_required = ["RUN_GATE_LANE_CAPS_V1"]
 env_passthrough = ["RUN_GATE_LANE_CAPS_V1"]

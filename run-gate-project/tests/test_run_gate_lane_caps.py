@@ -54,6 +54,11 @@ OBSERVER_CONTROL_NAMES = (
     "P7A_EXPECTED_IMAGE_ID",
     "P7A_RECEIPT_PATH",
     "P7A_REAL_DOCKER",
+    "P7A_EXPECTED_EXEC_CONTAINER_ID",
+    "P7A_EXPECTED_EXEC_CONTAINER_NAME",
+    "P7A_EXPECTED_EXEC_CIU_INSTANCE",
+    "P7A_EXPECTED_EXEC_CIU_REPO_ROOT",
+    "P7A_EXPECTED_EXEC_COMPOSE_SERVICE",
 )
 AMBIENT_SENTINEL = "AMBIENT_P7A_UNIT_SENTINEL"
 BAKED_SENTINEL = "BAKED_P7A_UNIT_SENTINEL"
@@ -2520,109 +2525,341 @@ class TestProbeAndAuxiliaryBoundaries:
 
 class TestReceiverFixture:
     FIXTURE = RUN_GATE_DIR / "tests" / "fixtures" / "lane_caps_probe.py"
+    ELIGIBLE_LANE = "p7a-lane-caps-outer-smoke"
+    EMPTY_LANE = "p7a-lane-caps-ineligible-smoke"
+    EXPECTED_ELIGIBLE = (
+        b'{"environment":"tester-unified","lane":"p7a-lane-caps-outer-smoke",'
+        b'"memory_max_bytes":2147483648,"pids_max":8192}'
+    )
+    HANG_FAILSAFE_SECONDS = 60.0
+
+    @staticmethod
+    def _env(lane: str, mode: str) -> dict[str, str]:
+        env = dict(os.environ)
+        for name in OBSERVER_CONTROL_NAMES:
+            env.pop(name, None)
+        if mode == "eligible":
+            env[CAP] = _expected(lane)
+        else:
+            env[CAP] = ""
+        return env
+
+    def _start_direct(self, socket_path: Path, artifact: Path, *,
+                      lane: str | None = None, mode: str = "eligible",
+                      env: dict[str, str] | None = None):
+        lane = lane or self.ELIGIBLE_LANE
+        process = subprocess.Popen(
+            [sys.executable, str(self.FIXTURE), mode, lane,
+             str(artifact), str(socket_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env or self._env(lane, mode))
+        readable, _, _ = select.select(
+            [process.stdout], [], [], self.HANG_FAILSAFE_SECONDS)
+        if not readable:
+            process.kill()
+            stdout, stderr = process.communicate()
+            pytest.fail(
+                f"receiver readiness pipe timed out as a hang failsafe: "
+                f"stdout={stdout!r} stderr={stderr!r}")
+        ready = process.stdout.readline()
+        match = re.fullmatch(rb"P7A_CAPS_READY ([0-9a-f]{32}) (.+)\n", ready)
+        if match is None or match.group(2).decode() != str(socket_path):
+            process.kill()
+            stdout, stderr = process.communicate()
+            pytest.fail(
+                f"receiver did not emit its exact READY line: "
+                f"ready={ready!r} stdout={stdout!r} stderr={stderr!r}")
+        return process, match.group(1).decode("ascii")
+
+    def _finish(self, process: subprocess.Popen) -> tuple[bytes, bytes]:
+        try:
+            return process.communicate(timeout=self.HANG_FAILSAFE_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+            pytest.fail(
+                f"receiver did not finish before the test hang failsafe: "
+                f"stdout={stdout!r} stderr={stderr!r}")
+
+    def _send(self, socket_path: Path, chunks: tuple[bytes, ...]) -> None:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(self.HANG_FAILSAFE_SECONDS)
+            client.connect(str(socket_path))
+            for chunk in chunks:
+                if chunk:
+                    client.sendall(chunk)
+            client.shutdown(socket.SHUT_WR)
 
     @pytest.mark.parametrize("state", ["absent", "wrong", "empty"])
-    def test_eligible_receiver_negative_controls_fail_without_artifact(
+    def test_eligible_environment_rejections_create_no_artifact(
             self, tmp_path, state):
         artifact = tmp_path / f"{state}.observed"
-        env = dict(os.environ)
-        env.pop(CAP, None)
-        if state == "wrong":
+        env = self._env(self.ELIGIBLE_LANE, "eligible")
+        if state == "absent":
+            env.pop(CAP)
+        elif state == "wrong":
             env[CAP] = "WRONG_RECEIVER_SENTINEL"
-        elif state == "empty":
+        else:
             env[CAP] = ""
         proc = subprocess.run(
             [sys.executable, str(self.FIXTURE), "eligible",
-             "receiver-lane", str(artifact)],
-            capture_output=True, text=True, env=env)
+             self.ELIGIBLE_LANE, str(artifact), "--posthoc"],
+            capture_output=True, env=env)
         assert proc.returncode != 0
-        assert "refused" in proc.stderr
-        assert not artifact.exists()
+        assert b"refused" in proc.stderr
+        assert not os.path.lexists(artifact)
+
+    @pytest.mark.skipif(not hasattr(os, "environb"),
+                        reason="byte-valued environments require POSIX")
+    def test_invalid_utf8_cap_bytes_refuse_cleanly_without_artifact(
+            self, tmp_path):
+        artifact = tmp_path / "invalid-utf8.observed"
+        env = os.environb.copy()
+        for name in OBSERVER_CONTROL_NAMES:
+            env.pop(name.encode("ascii"), None)
+        env[CAP.encode("ascii")] = b"\xff\xfe"
+        proc = subprocess.run(
+            [sys.executable, str(self.FIXTURE), "eligible",
+             self.ELIGIBLE_LANE, str(artifact), "--posthoc"],
+            capture_output=True, env=env)
+        assert proc.returncode != 0
+        assert b"refused" in proc.stderr
+        assert not os.path.lexists(artifact)
 
     @pytest.mark.parametrize("observer_name", OBSERVER_CONTROL_NAMES)
-    def test_observer_control_name_refuses_even_with_the_exact_value(
+    def test_every_observer_control_name_refuses_even_when_empty(
             self, tmp_path, observer_name):
         artifact = tmp_path / "leak.observed"
-        env = dict(os.environ)
-        env[CAP] = _expected("receiver-lane")
-        env[observer_name] = "P7A_CONTROL_SENTINEL"
+        env = self._env(self.ELIGIBLE_LANE, "eligible")
+        env[observer_name] = ""
         proc = subprocess.run(
             [sys.executable, str(self.FIXTURE), "eligible",
-             "receiver-lane", str(artifact)],
-            capture_output=True, text=True, env=env)
+             self.ELIGIBLE_LANE, str(artifact), "--posthoc"],
+            capture_output=True, env=env)
         assert proc.returncode != 0
-        assert "observer-control variables" in proc.stderr
-        assert not artifact.exists()
+        assert b"observer-control variables" in proc.stderr
+        assert not os.path.lexists(artifact)
 
-    @pytest.mark.parametrize("decision,artifact_expected", [
-        (b"PASS", True),
-        (b"REJECT", False),
-        (b"", False),
-    ])
-    def test_real_unix_socket_requires_explicit_pass_before_writing(
-            self, short_socket_root, tmp_path, decision, artifact_expected):
+    def test_successful_eligible_command_uses_split_pass_and_eof(
+            self, short_socket_root, tmp_path):
         socket_path = short_socket_root / "i.sock"
-        artifact = tmp_path / "socket.observed"
-        env = dict(os.environ)
-        env[CAP] = _expected("receiver-lane")
-        process = subprocess.Popen(
-            [sys.executable, str(self.FIXTURE), "eligible",
-             "receiver-lane", str(artifact), str(socket_path)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            env=env)
-        client = None
-        try:
-            # The receiver's stdout marker is emitted only after listen().
-            # This blocking pipe read is the readiness synchronization point;
-            # no sleep or elapsed-time budget participates in the result.
-            readable, _, _ = select.select([process.stdout], [], [], 60.0)
-            ready = process.stdout.readline() if readable else ""
-            if not ready.startswith("P7A_CAPS_READY "):
-                process.kill()
-                stdout, stderr = process.communicate()
-                pytest.fail(
-                    f"receiver did not announce a bound listener: "
-                    f"stdout={stdout!r} stderr={stderr!r}")
-            if ready.startswith("P7A_CAPS_READY "):
-                client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                client.settimeout(60.0)
-                client.connect(str(socket_path))
-                if decision:
-                    client.sendall(decision)
-                client.close()
-                client = None
-            stdout, stderr = process.communicate(timeout=60.0)
-        finally:
-            if client is not None:
-                client.close()
-            if process.poll() is None:
-                process.kill()
-                process.wait()
+        artifact = tmp_path / "eligible.observed"
+        process, nonce = self._start_direct(socket_path, artifact)
+        assert re.fullmatch(r"[0-9a-f]{32}", nonce)
+        assert not os.path.lexists(artifact)
+        encoded = f"PASS {nonce}\n".encode()
+        self._send(socket_path, (encoded[:13], encoded[13:]))
+        stdout, stderr = self._finish(process)
+        assert process.returncode == 0, stderr
+        assert stdout == f"P7A_CAPS_OK eligible {self.ELIGIBLE_LANE}\n".encode()
+        assert artifact.read_bytes() == self.EXPECTED_ELIGIBLE
         assert not os.path.lexists(socket_path)
-        if artifact_expected:
-            assert process.returncode == 0, stderr
-            assert artifact.read_text() == _expected("receiver-lane")
-            assert "P7A_CAPS_OK eligible receiver-lane" in stdout
-        else:
-            assert process.returncode != 0
-            assert not artifact.exists()
-            assert "explicit PASS" in stderr or "opening output before" not in stderr
 
-    def test_pre_existing_socket_path_is_never_removed(self, tmp_path,
-                                                       short_socket_root):
+    def test_successful_empty_command_writes_exactly_zero_bytes(
+            self, short_socket_root, tmp_path):
         socket_path = short_socket_root / "i.sock"
-        socket_path.write_text("another owner\n")
-        artifact = tmp_path / "stale.observed"
-        env = dict(os.environ)
-        env[CAP] = _expected("receiver-lane")
+        artifact = tmp_path / "empty.observed"
+        process, nonce = self._start_direct(
+            socket_path, artifact, lane=self.EMPTY_LANE, mode="empty")
+        self._send(socket_path, (f"PASS {nonce}\n".encode(),))
+        stdout, stderr = self._finish(process)
+        assert process.returncode == 0, stderr
+        assert stdout == f"P7A_CAPS_OK empty {self.EMPTY_LANE}\n".encode()
+        assert artifact.read_bytes() == b""
+        assert not os.path.lexists(socket_path)
+
+    def test_assay_posthoc_is_explicit_and_needs_no_socket_or_ready(
+            self, tmp_path):
+        lane = "p7a-lane-caps-smoke"
+        artifact = tmp_path / "assay.observed"
+        proc = subprocess.run(
+            [sys.executable, str(self.FIXTURE), "eligible", lane,
+             str(artifact), "--posthoc"], capture_output=True,
+            env=self._env(lane, "eligible"))
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == f"P7A_CAPS_OK eligible {lane}\n".encode()
+        assert b"P7A_CAPS_READY" not in proc.stdout
+        assert artifact.read_bytes() == (
+            b'{"environment":"tester-unified","lane":"p7a-lane-caps-smoke",'
+            b'"memory_max_bytes":2147483648,"pids_max":8192}')
+
+    def test_legacy_three_argument_call_is_validation_only(self, tmp_path):
+        artifact = tmp_path / "implicit-posthoc.observed"
+        lane = self.ELIGIBLE_LANE
+        proc = subprocess.run(
+            [sys.executable, str(self.FIXTURE), "eligible", lane,
+             str(artifact)], capture_output=True,
+            env=self._env(lane, "eligible"))
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == (
+            f"P7A_CAPS_VALIDATION_ONLY eligible {lane}\n".encode())
+        assert b"P7A_CAPS_READY" not in proc.stdout
+        assert not os.path.lexists(artifact)
+
+    @pytest.mark.parametrize("proof", ["--posthocX", "--unknown", "relative.sock"])
+    def test_unknown_or_relative_fourth_argument_refuses_before_receiving(
+            self, tmp_path, proof):
+        artifact = tmp_path / "invalid-proof.observed"
+        lane = self.ELIGIBLE_LANE
+        proc = subprocess.run(
+            [sys.executable, str(self.FIXTURE), "eligible", lane,
+             str(artifact), proof], capture_output=True,
+            env=self._env(lane, "eligible"))
+        assert proc.returncode != 0
+        assert b"fourth argument" in proc.stderr
+        assert not os.path.lexists(artifact)
+
+    @pytest.mark.parametrize("case", [
+        "literal-pass", "wrong-nonce", "missing-newline", "malformed",
+        "truncated", "early-eof", "extra-after-valid", "oversized",
+    ])
+    def test_invalid_or_incomplete_decisions_refuse_without_artifact(
+            self, short_socket_root, tmp_path, case):
+        socket_path = short_socket_root / "i.sock"
+        artifact = tmp_path / f"{case}.observed"
+        process, nonce = self._start_direct(socket_path, artifact)
+        valid = f"PASS {nonce}\n".encode()
+        wrong_nonce = "1" * 32 if nonce != "1" * 32 else "2" * 32
+        chunks = {
+            "literal-pass": (b"PASS",),
+            "wrong-nonce": (f"PASS {wrong_nonce}\n".encode(),),
+            "missing-newline": (f"PASS {nonce}".encode(),),
+            "malformed": (b"REJECT\n",),
+            "truncated": (f"PASS {nonce[:11]}".encode(),),
+            "early-eof": (),
+            "extra-after-valid": (valid, b"X"),
+            "oversized": (b"X" * 65,),
+        }[case]
+        self._send(socket_path, chunks)
+        stdout, _stderr = self._finish(process)
+        assert process.returncode != 0
+        assert b"P7A_CAPS_OK" not in stdout
+        assert not os.path.lexists(artifact)
+        assert not os.path.lexists(socket_path)
+
+    def test_previous_attempt_nonce_is_not_replayable(
+            self, short_socket_root, tmp_path):
+        socket_path = short_socket_root / "i.sock"
+        first_artifact = tmp_path / "first.observed"
+        first, previous_nonce = self._start_direct(socket_path, first_artifact)
+        wrong_nonce = "1" * 32 if previous_nonce != "1" * 32 else "2" * 32
+        self._send(socket_path, (f"PASS {wrong_nonce}\n".encode(),))
+        first_stdout, _ = self._finish(first)
+        assert first.returncode != 0
+        assert not os.path.lexists(first_artifact)
+
+        second_artifact = tmp_path / "second.observed"
+        second, current_nonce = self._start_direct(socket_path, second_artifact)
+        assert current_nonce != previous_nonce
+        self._send(socket_path, (f"PASS {previous_nonce}\n".encode(),))
+        second_stdout, _ = self._finish(second)
+        assert second.returncode != 0
+        assert b"P7A_CAPS_OK" not in first_stdout + second_stdout
+        assert not os.path.lexists(second_artifact)
+
+    def test_replaced_socket_and_stale_nonce_with_extra_bytes_fail_together(
+            self, short_socket_root, tmp_path):
+        socket_path = short_socket_root / "i.sock"
+        old_artifact = tmp_path / "old.observed"
+        old_process, stale_nonce = self._start_direct(socket_path, old_artifact)
+        self._send(socket_path, (b"not a decision",))
+        self._finish(old_process)
+        assert old_process.returncode != 0
+
+        artifact = tmp_path / "combined.observed"
+        process, nonce = self._start_direct(socket_path, artifact)
+        assert nonce != stale_nonce
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        replacement = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            client.settimeout(self.HANG_FAILSAFE_SECONDS)
+            client.connect(str(socket_path))
+            os.unlink(socket_path)
+            replacement.bind(str(socket_path))
+            replacement.listen(1)
+            replacement_stat = os.lstat(socket_path)
+            assert stat.S_ISSOCK(replacement_stat.st_mode)
+            client.sendall(f"PASS {stale_nonce}\n".encode())
+            client.sendall(b"EXTRA")
+            client.shutdown(socket.SHUT_WR)
+            stdout, _stderr = self._finish(process)
+        finally:
+            client.close()
+        assert process.returncode != 0
+        assert b"P7A_CAPS_OK" not in stdout
+        assert not os.path.lexists(artifact)
+        current = os.lstat(socket_path)
+        assert (current.st_dev, current.st_ino) == (
+            replacement_stat.st_dev, replacement_stat.st_ino)
+        replacement.close()
+        os.unlink(socket_path)
+
+    def test_preexisting_socket_path_is_refused_and_preserved(
+            self, short_socket_root, tmp_path):
+        socket_path = short_socket_root / "i.sock"
+        owner = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        owner.bind(str(socket_path))
+        owner.listen(1)
+        before = os.lstat(socket_path)
+        artifact = tmp_path / "preexisting-socket.observed"
         proc = subprocess.run(
             [sys.executable, str(self.FIXTURE), "eligible",
-             "receiver-lane", str(artifact), str(socket_path)],
-            capture_output=True, text=True, env=env)
+             self.ELIGIBLE_LANE, str(artifact), str(socket_path)],
+            capture_output=True, env=self._env(self.ELIGIBLE_LANE, "eligible"))
+        after = os.lstat(socket_path)
+        owner.close()
         assert proc.returncode != 0
-        assert "already exists" in proc.stderr
-        assert socket_path.read_text() == "another owner\n"
-        assert not artifact.exists()
+        assert b"already exists" in proc.stderr
+        assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+        assert not os.path.lexists(artifact)
+        os.unlink(socket_path)
+
+    @pytest.mark.parametrize("proof", ["command", "posthoc"])
+    def test_preexisting_artifact_is_refused_and_left_unchanged(
+            self, short_socket_root, tmp_path, proof):
+        lane = self.ELIGIBLE_LANE if proof == "command" else "p7a-lane-caps-smoke"
+        artifact = tmp_path / f"existing-{proof}.observed"
+        original = b"another owner's artifact\x00\xff"
+        artifact.write_bytes(original)
+        if proof == "posthoc":
+            proc = subprocess.run(
+                [sys.executable, str(self.FIXTURE), "eligible", lane,
+                 str(artifact), "--posthoc"], capture_output=True,
+                env=self._env(lane, "eligible"))
+        else:
+            socket_path = short_socket_root / "i.sock"
+            process, nonce = self._start_direct(socket_path, artifact)
+            self._send(socket_path, (f"PASS {nonce}\n".encode(),))
+            stdout, stderr = self._finish(process)
+            proc = SimpleNamespace(returncode=process.returncode,
+                                   stdout=stdout, stderr=stderr)
+        assert proc.returncode != 0
+        assert artifact.read_bytes() == original
+
+    @pytest.mark.parametrize("proof", ["command", "posthoc"])
+    def test_preexisting_artifact_symlink_is_refused_without_following(
+            self, short_socket_root, tmp_path, proof):
+        lane = self.ELIGIBLE_LANE if proof == "command" else "p7a-lane-caps-smoke"
+        artifact = tmp_path / f"existing-link-{proof}.observed"
+        target = tmp_path / f"target-{proof}.observed"
+        original = b"symlink target remains byte-for-byte unchanged\x00\xff"
+        target.write_bytes(original)
+        artifact.symlink_to(target)
+        if proof == "posthoc":
+            proc = subprocess.run(
+                [sys.executable, str(self.FIXTURE), "eligible", lane,
+                 str(artifact), "--posthoc"], capture_output=True,
+                env=self._env(lane, "eligible"))
+        else:
+            socket_path = short_socket_root / "i.sock"
+            process, nonce = self._start_direct(socket_path, artifact)
+            self._send(socket_path, (f"PASS {nonce}\n".encode(),))
+            stdout, stderr = self._finish(process)
+            proc = SimpleNamespace(returncode=process.returncode,
+                                   stdout=stdout, stderr=stderr)
+        assert proc.returncode != 0
+        assert artifact.is_symlink()
+        assert target.read_bytes() == original
 
     def test_registered_product_lanes_and_assay_receiver_match_contract(self):
         run_gate_config = tomllib.loads(
@@ -2640,11 +2877,23 @@ class TestReceiverFixture:
         for lane in (outer, ineligible):
             assert lane["kind"] == "command"
             assert "tests/fixtures/lane_caps_probe.py" in lane["argv"][1]
-            assert lane["argv"][-1] == "{worktree}/run-gate-project/.run-gate/i.sock"
+            assert lane["argv"][-1] == \
+                "{worktree}/run-gate-project/.run-gate/i.sock"
         assert receiver["env"] == {}
         assert receiver["env_required"] == [CAP]
         assert receiver["env_passthrough"] == [CAP]
-        assert receiver["argv"][3] == "p7a-lane-caps-smoke"
+        assert receiver["argv"][:5] == [
+            "/opt/tester-venv/bin/python", "tests/fixtures/lane_caps_probe.py",
+            "eligible", "p7a-lane-caps-smoke",
+            ".run-gate/p7a-lane-caps-smoke.observed",
+        ]
+        assert receiver["argv"][-1] == "--posthoc"
+
+        comments = (RUN_GATE_DIR / "run-gate.toml").read_text()
+        assay_comments = (RUN_GATE_DIR / "assay.toml").read_text()
+        assert "Assay captures child stdout until completion" in comments
+        assert "direct command lanes use live READY/PASS" in comments
+        assert "Assay captures child stdout until completion" in assay_comments
 
     def test_fixture_literal_bytes_are_independent_of_the_builder(self):
         sys.path.insert(0, str(RUN_GATE_DIR / "tests" / "fixtures"))
@@ -2653,10 +2902,7 @@ class TestReceiverFixture:
         finally:
             sys.path.pop(0)
         assert lane_caps_probe.expected_eligible_bytes(
-            "p7a-lane-caps-outer-smoke") == (
-                b'{"environment":"tester-unified",'
-                b'"lane":"p7a-lane-caps-outer-smoke",'
-                b'"memory_max_bytes":2147483648,"pids_max":8192}')
+            "p7a-lane-caps-outer-smoke") == self.EXPECTED_ELIGIBLE
 
 
 class TestDocumentationAndLedger:
