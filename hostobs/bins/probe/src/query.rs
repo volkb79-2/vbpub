@@ -2753,7 +2753,11 @@ mod tests {
     #[test]
     fn checked_euclidean_floor_and_catalog_are_fact_driven() {
         assert_eq!(bucket_floor(-1, 1_000), Some(-1_000_000_000));
-        assert_eq!(bucket_floor(i64::MAX, 1_000), None);
+        assert_eq!(
+            bucket_floor(i64::MAX, 1_000),
+            Some(9_223_372_036_000_000_000)
+        );
+        assert_eq!(bucket_floor(i64::MIN, 1_000), None);
         assert_eq!(catalog().step(Tier::Hot), Some(1_000));
         assert!(catalog().has_step(1_000));
         assert!(!catalog().has_step(0));
