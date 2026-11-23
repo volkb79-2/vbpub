@@ -501,12 +501,13 @@ impl<B: Backend + QueryBackend> Server<B> {
             }
             return;
         };
-        for query in conn.take_queries() {
-            match query {
-                crate::conn::QueryPending::SnapshotPending(state) => {
+        let corrs = conn.query_corrs();
+        for corr in corrs {
+            match conn.take_query(corr) {
+                Some(crate::conn::QueryPending::SnapshotPending(state)) => {
                     self.release_view(state.view_id());
                 }
-                crate::conn::QueryPending::SeriesPage(mut state) => {
+                Some(crate::conn::QueryPending::SeriesPage(mut state)) => {
                     self.abort_series_state(&mut state);
                 }
                 _ => {}
@@ -4238,7 +4239,8 @@ mod tests {
     }
 
     fn clear_cursor_slots(d: &mut Driver) {
-        let released = d.server.cursors.expire(CURSOR_LIFETIME_NS);
+        d.now = d.now.saturating_add(CURSOR_LIFETIME_NS);
+        let released = d.server.cursors.expire(d.now);
         for view in released {
             d.server.backend.release_view(view);
         }
@@ -5582,78 +5584,91 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fatal_close_and_direct_finish_release_waiting_series_once() {
-        for fatal in [false, true] {
-            let mut backend = FixedBackend::new();
-            backend.status.tiers.push(TierInfo {
-                name: "hot".to_string(),
-                step_ms: 1_000,
-                keep_s: 3_600,
-                bytes: 0,
-                cap_bytes: 0,
-            });
-            let series_source = series_request();
-            let series = series_view();
-            backend.series_open.insert(series_source, Ok(series));
-            let mut d = Driver {
-                server: Server::new(query_bound_limits(328), backend),
-                now: 0,
-                out: BTreeMap::new(),
-                opened: Vec::new(),
-                uids: Vec::new(),
-            };
-            install_series(&mut d);
-            let id = d.open(Level::Observe, 1);
-            let blocker = d.open(Level::Observe, 1);
-            d.ready(id);
-            d.ready(blocker);
-            fill_query(&mut d, blocker, 328);
-            assert_eq!(d.server.hub().queued(blocker).query, 328);
-            assert_eq!(d.server.hub().uid_pools(1).query, 328);
-            assert_eq!(d.server.hub().queued(id).query, 0);
-            assert!(!d.server.hub().query_room(id, 1));
-            d.send(id, &request(3, "series_batch", &series_args(None, 2)));
-            let series_view = QueryViewId::Series(SeriesViewId(11));
-            assert_eq!(d.server.view_references(series_view), 2);
-            assert_eq!(d.server.conn(id).map(|conn| conn.outstanding()), Some(1));
-            assert!(d
-                .server
-                .conn(id)
-                .is_some_and(|conn| conn.has_pending_series_page(3)));
-            assert_eq!(d.server.cursor_count(), 1);
+    fn waiting_series(d: &mut Driver, id: ConnId, blocker: ConnId, series_view: QueryViewId) {
+        assert_eq!(d.server.hub().queued(blocker).query, 328);
+        assert_eq!(d.server.hub().uid_pools(1).query, 328);
+        assert_eq!(d.server.hub().queued(id).query, 0);
+        assert!(!d.server.hub().query_room(id, 1));
+        d.send(id, &request(3, "series_batch", &series_args(None, 2)));
+        assert_eq!(d.server.view_references(series_view), 2);
+        assert_eq!(d.server.conn(id).map(|conn| conn.outstanding()), Some(1));
+        assert!(d
+            .server
+            .conn(id)
+            .is_some_and(|conn| conn.has_pending_series_page(3)));
+        assert_eq!(d.server.cursor_count(), 1);
+    }
 
-            if fatal {
-                d.send(id, &[0, 0, 0, 0]);
-                d.tick(5_000_000_001);
-                assert_eq!(d.close_code(id), Some(Code::Deadline));
-            } else {
-                d.server.finish(id);
-            }
-            assert_eq!(d.server.view_references(series_view), 0);
-            assert_eq!(d.server.cursor_count(), 0);
-            assert_eq!(
-                d.server
-                    .backend()
-                    .released
-                    .borrow()
-                    .iter()
-                    .filter(|view| **view == series_view)
-                    .count(),
-                1
-            );
-            if fatal {
-                d.close_out(id);
-            }
-            d.server.finish(blocker);
-            assert_clean(
-                &d,
-                if fatal {
-                    "fatal close"
-                } else {
-                    "direct finish"
-                },
-            );
-        }
+    fn waiting_series_fixture() -> (Driver, ConnId, ConnId, QueryViewId) {
+        let mut backend = FixedBackend::new();
+        backend.status.tiers.push(TierInfo {
+            name: "hot".to_string(),
+            step_ms: 1_000,
+            keep_s: 3_600,
+            bytes: 0,
+            cap_bytes: 0,
+        });
+        let series_source = series_request();
+        let series = series_view();
+        backend.series_open.insert(series_source, Ok(series));
+        let mut d = Driver {
+            server: Server::new(query_bound_limits(328), backend),
+            now: 0,
+            out: BTreeMap::new(),
+            opened: Vec::new(),
+            uids: Vec::new(),
+        };
+        install_series(&mut d);
+        let id = d.open(Level::Observe, 1);
+        let blocker = d.open(Level::Observe, 1);
+        d.ready(id);
+        d.ready(blocker);
+        fill_query(&mut d, blocker, 328);
+        let series_view = QueryViewId::Series(SeriesViewId(11));
+        waiting_series(&mut d, id, blocker, series_view);
+        (d, id, blocker, series_view)
+    }
+
+    fn assert_series_release_count(d: &Driver, series_view: QueryViewId, expected: usize) {
+        assert_eq!(
+            d.server
+                .backend()
+                .released
+                .borrow()
+                .iter()
+                .filter(|view| **view == series_view)
+                .count(),
+            expected
+        );
+    }
+
+    #[test]
+    fn direct_finish_releases_waiting_series_once() {
+        let (mut d, id, blocker, series_view) = waiting_series_fixture();
+        d.server.finish(id);
+        assert_eq!(d.server.view_references(series_view), 0);
+        assert_eq!(d.server.cursor_count(), 0);
+        assert_series_release_count(&d, series_view, 1);
+        d.server.finish(blocker);
+        assert_clean(&d, "direct finish");
+    }
+
+    #[test]
+    fn fatal_close_keeps_waiting_series_until_close_out_finishes_once() {
+        let (mut d, id, blocker, series_view) = waiting_series_fixture();
+        d.send(id, &[0, 0, 0, 0]);
+        d.tick(5_000_000_001);
+        assert_eq!(d.close_code(id), Some(Code::Deadline));
+        assert!(d.server.conn(id).is_some_and(|conn| conn.has_final()));
+        assert_eq!(d.server.view_references(series_view), 2);
+        assert_eq!(d.server.cursor_count(), 1);
+        assert_series_release_count(&d, series_view, 0);
+
+        d.close_out(id);
+        assert_eq!(d.server.view_references(series_view), 0);
+        assert_eq!(d.server.cursor_count(), 0);
+        assert_series_release_count(&d, series_view, 1);
+        d.server.finish(blocker);
+        assert_clean(&d, "fatal close");
     }
 }

@@ -592,18 +592,6 @@ impl Conn {
         }
     }
 
-    /// Drain every Conn-owned pending record for terminal connection cleanup, returning the
-    /// query records whose Server-owned views must be released.
-    pub(crate) fn take_queries(&mut self) -> Vec<QueryPending> {
-        std::mem::take(&mut self.pending)
-            .into_values()
-            .filter_map(|pending| match pending {
-                Pending::Query(query) => Some(query),
-                Pending::Current(_) => None,
-            })
-            .collect()
-    }
-
     /// Return a still-pending query record under the same correlation.
     pub(crate) fn put_query(&mut self, corr: u32, query: QueryPending) {
         self.pending.insert(corr, Pending::Query(query));
