@@ -1067,8 +1067,10 @@ def main() -> int:
             target="@os-000002-20261118-120100Z-apt",
             initial_states=None,
             snapshot_rc=0,
+            snapshot_target="@os-000002-20261118-120100Z-manual",
         ):
             boots = 0
+            selected_target = [target]
             states = list(initial_states) if initial_states is not None else [
                 "@os-000001-20261118-120000Z-install", target,
             ]
@@ -1079,12 +1081,13 @@ def main() -> int:
                 if "dr-state list" in cmd and "STATES:" in cmd:
                     return 0, "STATES:" + ",".join(states) + "\n"
                 if "dr-state snapshot --note" in cmd:
-                    if snapshot_rc == 0 and target not in states:
-                        states.append(target)
+                    if snapshot_rc == 0 and snapshot_target not in states:
+                        states.append(snapshot_target)
                     return 0, f"SNAPRC:{snapshot_rc}\n"
                 if "DEF:" in cmd:
                     return 0, f"DEF:{default}\n"
                 if "dr-state boot-once" in cmd:
+                    selected_target[0] = cmd.split("dr-state boot-once ", 1)[1].split(";", 1)[0].strip()
                     return 0, "BORC:0\n"
                 if "ONESHOT_SCAN_DONE" in cmd:
                     required = (
@@ -1104,7 +1107,7 @@ def main() -> int:
                         lines.append("ONESHOT_SCAN_DONE:1")
                     return rc, "\n".join(lines) + "\n"
                 if "CMDLINE:" in cmd:
-                    state = target if boots else running
+                    state = selected_target[0] if boots else running
                     return 0, f"CMDLINE:rootflags=subvol={state} ro\n"
                 raise AssertionError(f"unexpected one-shot command: {cmd}")
 
@@ -1152,6 +1155,21 @@ def main() -> int:
                 "sdboot-oneshot-consumed accepted a failed fixture snapshot: "
                 f"fails={snapshot_fails!r} raised={snapshot_raised!r}"
             )
+
+        non_manual_snapshot_guest = oneshot_guest(
+            initial_states=("@os-000001-20261118-120000Z-install",),
+            snapshot_target="@os-000002-20261118-120100Z-apt",
+        )
+        _, non_manual_fails, non_manual_raised = capture_scenario(
+            lambda: drs.scenario_sdboot_oneshot_consumed(non_manual_snapshot_guest, io.StringIO())
+        )
+        if non_manual_raised is not None or not non_manual_fails:
+            failures.append(
+                "sdboot-oneshot-consumed accepted a non-manual fixture snapshot: "
+                f"fails={non_manual_fails!r} raised={non_manual_raised!r}"
+            )
+        if any("dr-state boot-once " in cmd for cmd in non_manual_snapshot_guest.commands):
+            failures.append("sdboot-oneshot-consumed selected a fixture with a non-manual reason slug")
 
         _, reused_fails, reused_raised = capture_scenario(
             lambda: drs.scenario_sdboot_oneshot_consumed(

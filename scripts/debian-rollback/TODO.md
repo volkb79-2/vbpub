@@ -2,9 +2,9 @@
 
 Complete the systemd-boot target path first, then continue with the ZFS PoC.
 The separate M2 Live ISO variants and guest evidence are complete. The latest
-NoCloud builder matrix also passed; run the offline gate on this final
-documented candidate, then obtain an exact-commit DeepSeek ECO review before
-merge. The layers and media distinction are documented in the
+NoCloud builder matrix also passed. Each merge candidate must pass the
+registered offline lane and an exact-commit DeepSeek ECO review. The layers
+and media distinction are documented in the
 [installation architecture](docs/INSTALLATION-ARCHITECTURE.md).
 
 ## 1. Finish systemd-boot PoC
@@ -27,9 +27,9 @@ merge. The layers and media distinction are documented in the
   systemd-boot builder matrix is recorded in the linked report. The installed
   disk booted without its seed or cloud image; this builder path is not
   required by the M2 product install.
-- Run the registered offline lane on the final documented candidate and obtain
-  an independent DeepSeek review of that exact commit before merging. Use only
-  the approved `deepseek-v4.1-flash-eco` route.
+- Before merging, run the registered offline lane and obtain an independent
+  DeepSeek review of the exact candidate commit. Use only the approved
+  `deepseek-v4.1-flash-eco` route.
 - Automatic failed-boot fallback is not part of this PoC.
 - New state IDs use a monotonic six-digit sequence, UTC timestamp, and
   origin/reason slug (install, apt, or manual reason). The high-water counter

@@ -1175,8 +1175,12 @@ def scenario_sdboot_oneshot_consumed(g, log):
     if not targets:
         rc, out = g.run("dr-state snapshot --note 'one-shot consumption acceptance fixture'; echo SNAPRC:$?")
         after = state_list(g)
-        targets = [state for state in after if state != state0 and state != default]
-        check(log, "a fresh guest created a non-default snapshot for the one-shot test",
+        targets = [
+            state for state in after
+            if state != state0 and state != default
+            and is_snapshot_state(state) and snapshot_state_slug(state) == "manual"
+        ]
+        check(log, "a fresh guest created a schema-valid manual snapshot for the one-shot test",
               rc == 0 and tag(out, "SNAPRC") == "0" and bool(targets),
               f"rc={rc} snapshot_rc={tag(out, 'SNAPRC')} targets={targets}")
         if not targets:

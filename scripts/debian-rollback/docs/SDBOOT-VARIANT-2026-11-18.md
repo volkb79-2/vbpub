@@ -9,8 +9,8 @@ dynamic-loader failures and both stable/backports kernel updates. Its exact
 hashes, counts, harness corrections, and retained logs are in
 [RESULTS-SDBOOT-NOCLOUD-2026-11-23.md](RESULTS-SDBOOT-NOCLOUD-2026-11-23.md).
 The fresh GRUB-target comparison install and rollback/default-selection run
-also passed. The final offline gate and exact-commit independent review remain
-before merge. Earlier
+also passed. The registered offline gate and exact-commit independent review
+are the merge criteria for this variant. Earlier
 `b94af9533` and `c749db1`
 guest reports below are historical; do not mix them with the current matrix.
 See the [canonical installation architecture](INSTALLATION-ARCHITECTURE.md)
@@ -68,11 +68,12 @@ The apt and kernel hooks continue to call `dr-state gen-menu`; they are not back
 GRUB remains the smaller implementation because it reads kernels inside Btrfs states directly. The systemd-boot
 PoC keeps a separate ESP kernel pool and BLS entry per state, so it must still coordinate snapshot creation/deletion,
 default and one-shot selectors, kernel-pair identity, ESP capacity, and foreign-entry protection. A
-`kernel-install` plugin could replace some kernel package-hook wiring, but it would not observe Btrfs snapshots or
-own those cross-state menu and cleanup rules; using it would move part of the lifecycle without removing the core
-state manager. The PoC keeps that manager explicit to test systemd-boot as a build-time variant. A plugin migration
-is only useful if a focused implementation proves it removes code while preserving these state and recovery
-contracts.
+`kernel-install` plugin could own package-driven kernel staging and entry writing, reducing the current hook
+diversions, stock BLS-writer mask, and per-state copy glue. It would not own snapshot ordering, default and one-shot
+selection, retention, or cleanup of kernel pairs no state references; those remain `dr-state` responsibilities.
+This PoC keeps the current explicit path to test systemd-boot as a build-time variant. Revisit a plugin if the
+package-to-ESP integration becomes the maintenance burden; it would simplify that boundary without replacing the
+state manager.
 
 ## ESP layout
 
@@ -112,7 +113,8 @@ reversible `os-...conf` ids.
 State names ending in `.conf` are invalid on the systemd-boot backend: snapshot creation sanitizes that suffix and
 `gen-menu` skips such existing state names when building the menu. This avoids ambiguity between an internal state
 such as `@os-0001.conf` and the entry file name `os-0001.conf`; the correctly namespaced entry would be
-`os-0001.conf.conf`. GRUB keeps accepting its historical `.conf` state names and preserves its snapshot reasons.
+`os-0001.conf.conf`. GRUB keeps accepting its historical `.conf` state names. Both backends use the shared readable
+slug for new snapshot names; the verbatim reason is retained in metadata, and existing legacy names are unchanged.
 
 `/loader/entries` is on case-insensitive vfat, so all desired entry ids are additionally required to be
 case-insensitively unique. For example, `@os-lower` and `@os-LOWER` map to distinct strings in software but the same
@@ -302,8 +304,8 @@ migrate or adopt legacy `@os-0001` installations. The GRUB menu writer and selec
 The failing-first suite for the new pure decisions is `poc/test-dr-state-sdboot.sh`. It covers the BLS entry text,
 content-addressed kernel ids, entry-id mapping and rejection, backend selection, byte accounting decisions,
 `loader.conf` rewriting, empty backend sources, multi-path reference extraction, FAT case collisions, interrupted-copy
-cleanup, parent-directory allocation, CRLF references, and orphan-directory selection. The baseline at `316d78451` passed 174 cases, and r9/r10 coverage raised that to 186. The current suite has 211
-systemd-boot cases and passed in the registered offline lane on 2026-11-22. The latest coverage includes refusal-before-delete
+cleanup, parent-directory allocation, CRLF references, and orphan-directory selection. The baseline at `316d78451` passed 174 cases, and r9/r10 coverage raised that to 186. The 2026-11-22 run had 211
+systemd-boot cases; the current suite has 220 and passed in the registered offline lane on 2026-11-23. The latest coverage includes refusal-before-delete
 checks for missing, empty, and malformed `loader.conf` defaults; the all-backend sequence/reason schema; and serial
 guest command wrapping so trailing shell control syntax cannot swallow the completion marker.
 
@@ -321,24 +323,23 @@ deletion, `--yes` confirmation, protection of running/default/one-shot states, r
 loader selectors, refusal before deletion when menu publication fails, removal of only the requested state, cleanup of
 its now-unreferenced kernel pair, and removal of the matching metadata sidecar. They also check `snapshot --reason`
 and `--note`, UTC timestamp names, pre-change OS/kernel/core-package capture, APT package-plan recording, and the
-`list`, `list --long`, and `show` reports. The current `test-dr-state-sdboot.sh` passes 211 cases through the
+`list`, `list --long`, and `show` reports. The current `test-dr-state-sdboot.sh` passes 220 cases through the
 registered offline lane.
 
 `poc/test-install-btrfs-bootloader.sh` dry-runs the installer and checks the default and explicit GRUB package path,
 the systemd-boot package path, delegated systemd-boot installer call, backend config/marker writes, command ordering, refusal of an invalid
-backend, the kernel-install BLS plugin override, and the APT pre-install hook configuration. It currently passes 27
+backend, the kernel-install BLS plugin override, and the APT pre-install hook configuration. It currently passes 29
 cases.
 
 `poc/test-build-seed.sh` calls the staging function directly, then requires `xorriso` to pack both seed variants
-and extract `/bootloader` from each ISO. The `tester-unified/Dockerfile` now installs the shared `xorriso` package;
-the already-built `tester-unified:local` image on this host was stale and lacked it, so the passing registered lane
-used `RUN_GATE_TESTER_UNIFIED_IMAGE=tester-unified:debian-rollback-xorriso run-gate offline`. The standard `tester-unified:local` image on this host is stale; the registered lane used the existing
-`tester-unified:debian-rollback-xorriso` image. The gate fails if `xorriso` is absent, so ISO packing cannot silently
+and extract `/bootloader` from each ISO. The `tester-unified/Dockerfile` installs the shared `xorriso` package. The
+2026-11-23 registered lane used `tester-unified:debian-rollback-xorriso` because the host's `tester-unified:local`
+image did not yet include xorriso. The gate fails if `xorriso` is absent, so ISO packing cannot silently
 go untested. It executes the
 marker-selection block extracted from the
 guest's `user-data` through a fake `poc/install-btrfs.sh` against a disposable seed directory. The fake records the
-installer argv, proving absent/grub/systemd-boot selection reaches the real invocation as
-`--bootloader <selected>` while empty/unknown values are refused. Disposable mutants with the validation case removed,
+installer argv, proving explicit `grub` and `systemd-boot` markers reach the invocation as `--bootloader <selected>`.
+A missing marker fails closed, and empty/unknown values are refused. Disposable mutants with the validation case removed,
 or with the argument removed from the invocation while its text remains in a comment, are killed. Isolated `TMPDIR`
 cases verify that the staging directory is removed after both a successful pack and a packing failure. With
 `xorriso` absent it reports that real ISO packing and extraction are not covered.

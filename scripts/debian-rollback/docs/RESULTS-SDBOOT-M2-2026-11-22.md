@@ -1,14 +1,16 @@
 # Systemd-boot M2 ISO guest results — 2026-11-22
 
-This is the current-candidate guest evidence for both build-time target
+This is the 2026-11-22 candidate's guest evidence for both build-time target
 variants of the M2 Debian Live installer. The candidate uses the timestamped
 state-ID schema. The systemd-boot M2 ISO received the full rollback and
 recovery matrix; the GRUB-target comparison received a fresh install, first
 boot, and APT rollback/default-selection run. The separate NoCloud
 cloud-image builder route also installed a systemd-boot target disk, which
 then booted without its seed or cloud image. This report is not a release
-claim; the registered offline gate passed and independent exact-commit review
-remains before merge.
+claim. At the time of this report, the registered offline gate had passed and
+the exact-commit review remained outstanding; current branch criteria are
+described in the
+[systemd-boot implementation note](SDBOOT-VARIANT-2026-11-18.md).
 
 ## Artifacts and provenance
 
@@ -133,11 +135,12 @@ Git.
 
 ## Registered offline gate
 
-The project `offline` lane passed through `run-gate offline` with
-`tester-unified:debian-rollback-xorriso`. It ran ShellCheck, Bash syntax
+The 2026-11-22 project `offline` lane run used
+`tester-unified:debian-rollback-xorriso` and passed ShellCheck, Bash syntax
 checks, the ISO and installer suites, 211 systemd-boot state cases, and the
-serial-driver suite. The gate's final-candidate result was exit 0. The
-independent DeepSeek review of the exact merge candidate remains outstanding.
+serial-driver suite. Those counts describe that dated run; the current suite
+count is recorded in the
+[systemd-boot implementation note](SDBOOT-VARIANT-2026-11-18.md).
 
 ## Limits and remaining work
 

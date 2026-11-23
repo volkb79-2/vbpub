@@ -47,8 +47,8 @@ particular source and guest they name.
   current NoCloud builder run upgraded stable kernel `6.12.117` to `6.12.118`
   and backports kernel `6.12.117` to `7.3.4`; both old/new boot paths passed.
 - The M2 systemd-boot guest matrix, fresh GRUB-target comparison, and optional
-  NoCloud builder matrix are complete. The offline gate and exact-commit
-  independent review remain before merging this worktree.
+  NoCloud builder matrix are complete. The registered offline lane and an
+  independent review of the exact candidate commit are the merge criteria.
 
 ## The layers
 
@@ -109,7 +109,7 @@ directory, not in Git.
 |---|---|---|---|
 | Official Debian Live ISO | Yes | Upstream Live installer and GRUB boot path; read-only input to the M2 remaster | Input |
 | M2 Debian rollback Live ISO, GRUB target | Yes | Debian Live plus `/dr` installer payload, live-config hook, and added GRUB entries; installs GRUB on the target | Implemented and merged; fresh comparison boot-check and rollback passed |
-| M2 Debian rollback Live ISO, systemd-boot target | Yes | Same Live install experience, with the build-time choice passed to the target installer | Fresh install and guest matrix passed; branch unmerged pending gate/review |
+| M2 Debian rollback Live ISO, systemd-boot target | Yes | Same Live install experience, with the build-time choice passed to the target installer | Fresh install and guest matrix passed; merge requires the registered gate and exact-candidate review |
 | M2 `CIDATA` configuration ISO | No; attach to the M2 Live guest | A `dr-install.conf` volume for `dr-autoinstall`; not a cloud-init seed | Optional; current systemd-boot M2 install used embedded config instead |
 | NoCloud seed ISO | No; attach to the cloud-image builder guest | `user-data`, `meta-data`, installer scripts, and a `bootloader` marker | Required when using this automated builder route; optional to the separate M2 product-install flow |
 | Debian generic cloud image | Yes | Boots the automated builder guest; it is not the rollback product image | PoC input |
@@ -232,7 +232,7 @@ The target bootloader changes how each OS state is made bootable:
 1. Build or obtain the chosen UEFI Live ISO variant and boot it on the machine
    that will receive Debian. The GRUB-target artifact is merged; the separate
    systemd-boot-target variant has passed a fresh UEFI install and guest matrix
-   on the current unmerged branch.
+   on the current implementation branch.
 2. Choose the unattended-install menu entry, or boot the Live system entry for
    manual work. The unattended entry starts `dr-autoinstall` through
    `live-config`.

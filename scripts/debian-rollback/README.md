@@ -41,8 +41,8 @@ not a separate Debian distribution or an image-based update system.
   systemd-boot target variant has fresh install and rollback evidence. Both
   Live media continue to boot the Debian Live environment through GRUB; the
   ISO's fixed target-bootloader marker chooses the installed backend. The
-  systemd-boot branch remains unmerged. The offline gate and exact-commit
-  DeepSeek ECO review are the remaining steps before merge.
+  systemd-boot variant's merge criteria are the registered offline lane and
+  an independent review of the exact candidate commit.
 - The NoCloud seed is required only when using the cloud-image builder recipe;
   it is optional for the M2 product install. The full builder result is linked
   above.

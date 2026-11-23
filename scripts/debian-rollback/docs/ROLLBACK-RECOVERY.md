@@ -8,8 +8,8 @@ counts, and logs are in the
 [2026-11-23 builder report](RESULTS-SDBOOT-NOCLOUD-2026-11-23.md); evidence
 for the named M2 ISO artifact remains in the
 [2026-11-22 report](RESULTS-SDBOOT-M2-2026-11-22.md). The GRUB-target
-comparison install is complete. The final offline gate and exact-commit
-review remain before merge.
+comparison install is complete. The registered offline gate and exact-commit
+independent review are the merge criteria for this variant.
 
 ## Recovery contract
 
