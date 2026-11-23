@@ -31,6 +31,7 @@ from test_run_gate import (
     TestUserDocumentationOracles,
     _docker_calls,
     commit_all,
+    dead_owner_fields,
     docker_execs,
     docker_runs,
     fake_docker_stateful,
@@ -1233,6 +1234,8 @@ class TestChildEnvironmentDelivery:
         artifact = repo / ".run-gate" / "host-observed.json"
         config = f"""\
             schema_version = 1
+            [environments.bare-host]
+            mode = "host"
             [lanes.caps]
             kind = "command"
             environment = "bare-host"
@@ -1321,6 +1324,467 @@ class TestChildEnvironmentDelivery:
         assert "planted inflight write failure" in outerr.err
         assert not run_gate.inflight_path(project, "caps").exists()
         monkeypatch.setattr(run_gate, "_write_json_atomic", real_write)
+
+
+class TestFinalInflightActionBoundary:
+    def test_direct_container_entry_snapshot_refuses_during_preparation(
+            self, tmp_path, monkeypatch):
+        repo, project, _script, artifact = _make_single_project(tmp_path)
+        document = tomllib.loads(
+            (project / "run-gate.toml").read_text(encoding="utf-8"))
+        lane = document["lanes"]["caps"]
+        environment = document["environments"]["tester-unified"]
+        record = run_gate.inflight_path(project, "caps")
+        real_disclose = run_gate.disclose_r2_jobs
+
+        def plant_then_disclose(*args, **kwargs):
+            if not record.exists():
+                plant_inflight(
+                    project, repo, None, lane="caps",
+                    container="direct-late-container")
+            return real_disclose(*args, **kwargs)
+
+        monkeypatch.setattr(run_gate, "disclose_r2_jobs",
+                            plant_then_disclose)
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(run_gate, "head_commit",
+                            lambda *_args, **_kwargs: "a" * 40)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda _repo, **_kwargs: Path("/phys"))
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded",
+                            lambda *_args: None)
+        monkeypatch.setattr(run_gate, "subprocess",
+                            SimpleNamespace(
+                                run=lambda *_args, **_kwargs: pytest.fail(
+                                    "a changed record must refuse before "
+                                    "docker run")))
+        with pytest.raises(run_gate.GateError,
+                           match="immutable launch plan"):
+            run_gate.run_container_lane(
+                lane, "caps", project, repo, repo, environment, "fixture",
+                "dev-gates.slice", "fixture",
+                profile_plan={"enabled": False,
+                              "disabled_reason": "direct boundary test"})
+        late = record.read_bytes()
+        assert json.loads(late)["container"] == "direct-late-container"
+        assert not artifact.exists()
+        assert _history_lane_names(project) == set()
+
+    def test_direct_exec_entry_snapshot_refuses_late_record(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        script = _observer_script(repo)
+        artifact = repo / ".run-gate" / "direct-exec-boundary.json"
+        config = f"""\
+            schema_version = 1
+            [environments.runner]
+            mode = "exec"
+            image = "tester-unified:local"
+            container_name = "persistent-runner"
+            [lanes.caps]
+            kind = "command"
+            environment = "runner"
+            argv = [{json.dumps(sys.executable)}, {json.dumps(str(script))}, {json.dumps(str(artifact))}]
+            clean_tree = false
+            """
+        project = repo / "proj"
+        project.mkdir()
+        (project / "run-gate.toml").write_text(textwrap.dedent(config))
+        commit_all(repo, "direct exec final-record boundary")
+        record = run_gate.inflight_path(project, "caps")
+        real_snapshot = run_gate.inflight_record_snapshot
+        planted = False
+
+        def snapshot_then_plant(path):
+            nonlocal planted
+            snapshot = real_snapshot(path)
+            if not planted and path == record:
+                plant_inflight(
+                    project, repo, None, lane="caps",
+                    container="direct-exec-late-container")
+                planted = True
+            return snapshot
+
+        monkeypatch.setattr(run_gate, "inflight_record_snapshot",
+                            snapshot_then_plant)
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(
+            run_gate, "subprocess",
+            SimpleNamespace(
+                run=lambda *_args, **_kwargs: pytest.fail(
+                    "a changed record must refuse before docker ps")))
+        with pytest.raises(run_gate.GateError,
+                           match="immutable launch plan"):
+            run_gate.run_exec_lane(
+                {"kind": "command", "argv": ["true"]}, "caps", project,
+                repo, repo, {"mode": "exec",
+                             "image": "tester-unified:local"}, "fixture",
+                "persistent-runner", "fixture", "fixture", None, "no-slice",
+                run_record={}, profile_plan={
+                    "enabled": False,
+                    "disabled_reason": "direct boundary test"})
+        late = record.read_bytes()
+        assert json.loads(late)["container"] == "direct-exec-late-container"
+        assert not artifact.exists()
+        assert _history_lane_names(project) == set()
+
+    @pytest.mark.parametrize(("runner", "mode"), [
+        ("container", "ephemeral"),
+        ("exec", "exec"),
+        ("bare-host", "host"),
+    ])
+    def test_assay_verdict_cleanup_requires_unchanged_record(
+            self, tmp_path, monkeypatch, runner, mode):
+        repo = make_repo(tmp_path)
+        image = ('image = "tester-unified:local"\n'
+                 if mode != "host" else "")
+        container_name = ('container_name = "persistent-runner"\n'
+                          if runner == "exec" else "")
+        config = f"""\
+            schema_version = 1
+            [environments.runner]
+            mode = "{mode}"
+            {image}
+            {container_name}
+            [lanes.caps]
+            kind = "assay"
+            assay_lane = "caps"
+            assay_command = ["measure-assay"]
+            environment = "runner"
+            clean_tree = false
+            artifacts = [".run-gate/verdict-cleanup-child.observed"]
+            [lanes.caps.resources]
+            memory = "2g"
+            pids = 8192
+            """
+        project = repo / "proj"
+        project.mkdir()
+        (project / "run-gate.toml").write_text(textwrap.dedent(config))
+        commit_all(repo, f"assay verdict cleanup {runner}")
+        child_artifact = (project / ".run-gate"
+                          / "verdict-cleanup-child.observed")
+        document = tomllib.loads(textwrap.dedent(config))
+        lane = document["lanes"]["caps"]
+        environment = document["environments"]["runner"]
+        record = run_gate.inflight_path(project, "caps")
+        observed = {"seam": False, "external_record": None,
+                    "external_verdict": None}
+
+        def plant_before_cleanup(*_args, **_kwargs):
+            external_record = plant_inflight(
+                project, repo, None, lane="caps", code=0)
+            external_verdict = Path(
+                json.loads(external_record.read_text(encoding="utf-8"))[
+                    "verdict"])
+            external_verdict.write_bytes(
+                b'{"foreign_verdict":"P7A_VERDICT_MUST_SURVIVE"}\n')
+            observed.update(
+                seam=True,
+                external_record=external_record.read_bytes(),
+                external_verdict=external_verdict.read_bytes())
+
+        monkeypatch.setattr(run_gate, "assure_assay_state_root",
+                            plant_before_cleanup)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda _repo, **_kwargs: Path("/phys"))
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded",
+                            lambda *_args: None)
+        common_profile = {"enabled": False,
+                          "disabled_reason": "verdict cleanup boundary test"}
+        if runner == "container":
+            log, _state = fake_docker_stateful(tmp_path, monkeypatch)
+        elif runner == "exec":
+            trace, _state, _shim = _executing_docker(
+                tmp_path, monkeypatch, target_container="persistent-runner")
+        bare_host_popen_attempts: list[tuple[tuple[object, ...],
+                                             dict[str, object]]] = []
+        with pytest.raises(run_gate.GateError,
+                           match="immutable launch plan"):
+            if runner == "container":
+                run_gate.run_container_lane(
+                    lane, "caps", project, repo, repo, environment, "fixture",
+                    "dev-gates.slice", "fixture", run_record={},
+                    profile_plan=common_profile)
+            elif runner == "exec":
+                run_gate.run_exec_lane(
+                    lane, "caps", project, repo, repo, environment, "fixture",
+                    "persistent-runner", "fixture", "fixture", None,
+                    "no-slice", run_record={}, profile_plan=common_profile)
+            else:
+                def forbid_bare_host_popen(*args, **kwargs):
+                    bare_host_popen_attempts.append((args, kwargs))
+                    pytest.fail(
+                        "bare-host Assay child launch was attempted after "
+                        "the inflight record changed")
+
+                monkeypatch.setattr(
+                    run_gate.subprocess, "Popen", forbid_bare_host_popen)
+                run_gate.run_bare_host_lane(
+                    lane, "caps", project, repo, repo, run_record={},
+                    profile_plan=common_profile, env_source="fixture")
+        assert observed["seam"] is True
+        assert record.read_bytes() == observed["external_record"]
+        verdict = Path(json.loads(record.read_text(encoding="utf-8"))["verdict"])
+        assert verdict.read_bytes() == observed["external_verdict"]
+        assert not child_artifact.exists()
+        assert _history_lane_names(project) == set()
+        if runner == "container":
+            assert lane_runs(log) == []
+        elif runner == "exec":
+            assert docker_execs(trace) == []
+        else:
+            assert bare_host_popen_attempts == []
+
+    def test_record_created_during_container_launch_preparation_refuses(
+            self, tmp_path, monkeypatch):
+        repo, project, _script, artifact = _make_single_project(tmp_path)
+        log, _state = fake_docker_stateful(tmp_path, monkeypatch)
+        record = run_gate.inflight_path(project, "caps")
+        real_clear = run_gate.clear_previous_assay_verdict
+
+        def plant_then_prepare(*args, **kwargs):
+            if not record.exists():
+                plant_inflight(
+                    project, repo, None, lane="caps",
+                    container="run-gate-late-external")
+            return real_clear(*args, **kwargs)
+
+        monkeypatch.setattr(
+            run_gate, "clear_previous_assay_verdict", plant_then_prepare)
+        result = _dispatch(monkeypatch, project, "caps")
+        late = record.read_bytes()
+        assert result.verdict == "ERROR" and result.exit_code == 2
+        assert "immutable launch plan" in result.reason
+        assert record.read_bytes() == late
+        assert lane_runs(log) == []
+        assert _docker_calls(log) == []
+        assert not artifact.exists()
+        assert _history_lane_names(project) == set()
+
+    def test_exec_record_replaced_after_record_write_refuses_before_exec(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        script = _observer_script(repo)
+        artifact = repo / ".run-gate" / "exec-boundary.json"
+        config = f"""\
+            schema_version = 1
+            [environments.runner]
+            mode = "exec"
+            image = "tester-unified:local"
+            container_name = "persistent-runner"
+            [lanes.caps]
+            kind = "command"
+            environment = "runner"
+            argv = [{json.dumps(sys.executable)}, {json.dumps(str(script))}, {json.dumps(str(artifact))}]
+            clean_tree = false
+            """
+        project = repo / "proj"
+        project.mkdir()
+        (project / "run-gate.toml").write_text(textwrap.dedent(config))
+        commit_all(repo, "exec final-record boundary")
+        trace, _state, _shim = _executing_docker(
+            tmp_path, monkeypatch, target_container="persistent-runner")
+        record = run_gate.inflight_path(project, "caps")
+        real_write = run_gate.write_inflight_record
+
+        def replace_after_write(*args, **kwargs):
+            written = real_write(*args, **kwargs)
+            document = json.loads(record.read_text(encoding="utf-8"))
+            document["owner_pid"] = 2 ** 22 + 1
+            document["owner_start"] = 987654321
+            record.write_text(json.dumps(document), encoding="utf-8")
+            return written
+
+        monkeypatch.setattr(run_gate, "write_inflight_record",
+                            replace_after_write)
+        result = _dispatch(monkeypatch, project, "caps")
+        replaced = record.read_bytes()
+        assert result.verdict == "ERROR" and result.exit_code == 2
+        assert "immutable launch plan" in result.reason
+        assert record.read_bytes() == replaced
+        assert docker_execs(trace) == []
+        assert not artifact.exists()
+        assert _history_lane_names(project) == set()
+
+    def test_record_created_during_bare_host_launch_preparation_refuses(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        script = _observer_script(repo)
+        artifact = repo / ".run-gate" / "host-boundary.json"
+        config = f"""\
+            schema_version = 1
+            [environments.bare-host]
+            mode = "host"
+            [lanes.caps]
+            kind = "command"
+            environment = "bare-host"
+            argv = [{json.dumps(sys.executable)}, {json.dumps(str(script))}, {json.dumps(str(artifact))}]
+            clean_tree = false
+            """
+        project = repo / "proj"
+        project.mkdir()
+        (project / "run-gate.toml").write_text(textwrap.dedent(config))
+        commit_all(repo, "bare-host final-record boundary")
+        record = run_gate.inflight_path(project, "caps")
+        real_watch = run_gate.make_progress_watch
+        hook_ran = False
+
+        def plant_then_watch(*args, **kwargs):
+            nonlocal hook_ran
+            if not record.exists():
+                plant_inflight(
+                    project, repo, None, lane="caps",
+                    container="late-host-authority")
+                hook_ran = True
+            return real_watch(*args, **kwargs)
+
+        monkeypatch.setattr(run_gate, "make_progress_watch", plant_then_watch)
+        result = _dispatch(monkeypatch, project, "caps")
+        late = record.read_bytes()
+        assert result.verdict == "ERROR" and result.exit_code == 2
+        assert "immutable launch plan" in result.reason
+        assert hook_ran
+        assert record.read_bytes() == late
+        assert not artifact.exists()
+        assert _history_lane_names(project) == set()
+
+    @pytest.mark.parametrize("mutation", [
+        "container_id", "owner", "caps",
+    ])
+    def test_fresh_removal_rereads_after_real_inspection(
+            self, tmp_path, monkeypatch, mutation):
+        repo, project, _script, artifact = _make_single_project(tmp_path)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        record = plant_inflight(
+            project, repo, state, lane="caps", status="running",
+            **dead_owner_fields())
+        before = record.read_bytes()
+        real_state = run_gate.container_state
+
+        def inspect_then_mutate(docker, name):
+            inspected = real_state(docker, name)
+            document = json.loads(record.read_text(encoding="utf-8"))
+            if mutation == "container_id":
+                document["container_id"] = "sha256:replacement"
+            elif mutation == "owner":
+                document.update(live_owner_fields())
+            else:
+                document[RECORD] = _expected("caps", pids=7)
+            record.write_text(json.dumps(document), encoding="utf-8")
+            return inspected
+
+        monkeypatch.setattr(run_gate, "container_state",
+                            inspect_then_mutate)
+        with pytest.raises(run_gate.GateError,
+                           match="immutable launch plan"):
+            run_gate.resolve_inflight(
+                "docker",
+                {"kind": "command", "environment": "caps"},
+                "caps", project, repo, repo, True, False, {},
+                expected_lane_caps_v1_value=_expected("caps"),
+                expected_record_snapshot=before)
+        mutated = record.read_bytes()
+        assert mutated != before
+        assert not any(call[1:3] == ["rm", "-f"] for call in _docker_calls(log))
+        assert (state / "run-gate-planted").exists()
+        assert not artifact.exists()
+        assert _history_lane_names(project) == set()
+
+    @pytest.mark.parametrize("branch", ["follow", "adopt", "collect"])
+    def test_record_change_after_inspection_refuses_before_result_action(
+            self, tmp_path, monkeypatch, branch):
+        repo, project, _script, artifact = _make_single_project(tmp_path)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        owner = live_owner_fields() if branch == "follow" else dead_owner_fields()
+        status = "exited" if branch == "collect" else "running"
+        record = plant_inflight(
+            project, repo, state, lane="caps", status=status, code=7,
+            **owner)
+        before = record.read_bytes()
+        real_state = run_gate.container_state
+
+        def inspect_then_mutate(docker, name):
+            inspected = real_state(docker, name)
+            document = json.loads(record.read_text(encoding="utf-8"))
+            document["container_id"] = "sha256:replacement"
+            record.write_text(json.dumps(document), encoding="utf-8")
+            return inspected
+
+        monkeypatch.setattr(run_gate, "container_state",
+                            inspect_then_mutate)
+        monkeypatch.setattr(
+            run_gate, "follow_container",
+            lambda *_args, **_kwargs: pytest.fail(
+                "a changed record must refuse before follow"))
+        monkeypatch.setattr(
+            run_gate, "await_container",
+            lambda *_args, **_kwargs: pytest.fail(
+                "a changed record must refuse before result access"))
+        with pytest.raises(run_gate.GateError,
+                           match="immutable launch plan"):
+            run_gate.resolve_inflight(
+                "docker",
+                {"kind": "command", "environment": "caps"},
+                "caps", project, repo, repo, False, False, {},
+                expected_lane_caps_v1_value=_expected("caps"),
+                expected_record_snapshot=before)
+        mutated = record.read_bytes()
+        assert mutated != before
+        assert not any(call[1:3] == ["rm", "-f"] for call in _docker_calls(log))
+        assert not any(call[1:3] in (["wait", "run-gate-planted"],
+                                     ["logs", "-f", "run-gate-planted"])
+                       for call in _docker_calls(log))
+        assert (state / "run-gate-planted").exists()
+        assert not artifact.exists()
+        assert _history_lane_names(project) == set()
+
+    @pytest.mark.parametrize("branch", ["adopt", "collect"])
+    def test_record_change_after_adoption_refuses_before_result_access(
+            self, tmp_path, monkeypatch, branch):
+        repo, project, _script, artifact = _make_single_project(tmp_path)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        status = "running" if branch == "adopt" else "exited"
+        record = plant_inflight(
+            project, repo, state, lane="caps", status=status, code=7,
+            **dead_owner_fields())
+        before = record.read_bytes()
+        real_adopt = run_gate.adopt_inflight_start
+
+        def adopt_then_mutate(run_record, pending):
+            real_adopt(run_record, pending)
+            document = json.loads(record.read_text(encoding="utf-8"))
+            document["container_id"] = "sha256:replacement"
+            record.write_text(json.dumps(document), encoding="utf-8")
+
+        monkeypatch.setattr(run_gate, "adopt_inflight_start",
+                            adopt_then_mutate)
+        monkeypatch.setattr(
+            run_gate, "await_container",
+            lambda *_args, **_kwargs: pytest.fail(
+                "a changed record must refuse before result access"))
+        with pytest.raises(run_gate.GateError,
+                           match="immutable launch plan"):
+            run_gate.resolve_inflight(
+                "docker",
+                {"kind": "command", "environment": "caps"},
+                "caps", project, repo, repo, False, False, {},
+                expected_lane_caps_v1_value=_expected("caps"),
+                expected_record_snapshot=before)
+        mutated = record.read_bytes()
+        assert mutated != before
+        assert not any(call[1:3] == ["rm", "-f"] for call in _docker_calls(log))
+        assert not any(call[1:3] in (["wait", "run-gate-planted"],
+                                     ["logs", "-f", "run-gate-planted"])
+                       for call in _docker_calls(log))
+        assert (state / "run-gate-planted").exists()
+        assert not artifact.exists()
+        assert _history_lane_names(project) == set()
 
 
 class TestSequencePrelaunchBarrier:
@@ -1447,6 +1911,7 @@ class TestSequencePrelaunchBarrier:
         bad_fields = ""
         bad_environment = "caps"
         extra_environments = ""
+        environment_fields = ""
         if failure == "collision":
             bad_fields = f'required_env = ["{CAP}"]'
         elif failure == "blank_image":
@@ -1457,12 +1922,14 @@ class TestSequencePrelaunchBarrier:
                 'image_env = "RUN_GATE_TEST_IMAGE"\n')
             bad_environment = "override"
         elif failure in ("required_absent", "required_empty"):
-            bad_fields = 'required_env = ["REQUIRED_P7A"]\nforward_env = ["REQUIRED_P7A"]'
+            environment_fields = 'forward_env = ["REQUIRED_P7A"]'
+            bad_fields = 'required_env = ["REQUIRED_P7A"]'
         elif failure == "required_unreachable":
             bad_fields = 'required_env = ["REQUIRED_P7A"]'
         repo, project, first_artifact, bad_artifact = _make_sequence_project(
             tmp_path, bad_fields, bad_environment=bad_environment,
-            extra_environments=extra_environments)
+            extra_environments=extra_environments,
+            environment_fields=environment_fields)
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         record = None
         if failure == "foreign_record":
@@ -1493,7 +1960,7 @@ class TestSequencePrelaunchBarrier:
         if failure in ("required_absent", "required_empty"):
             assert result.verdict == "NOT_RUN" and result.exit_code == 3
             assert result.reason == "env-missing"
-            assert "REQUIRED_P7A" in output.out
+            assert "REQUIRED_P7A" in (output.out + output.err)
         else:
             assert result.verdict == "ERROR" and result.exit_code == 2
         if failure == "collision":
@@ -1526,6 +1993,29 @@ class TestSequencePrelaunchBarrier:
             assert reconciled == ["admit", "release"] \
                 if failure == "container_id_mismatch" else reconciled == []
         assert os.environ[CAP] == AMBIENT_SENTINEL
+
+    @pytest.mark.parametrize("required_state", ["absent", "empty"])
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_required_input_env_missing_terminal_live_and_dry_run(
+            self, tmp_path, monkeypatch, capsys, required_state, dry_run):
+        if required_state == "empty":
+            monkeypatch.setenv("REQUIRED_P7A", "")
+        repo, project, first_artifact, bad_artifact = _make_sequence_project(
+            tmp_path, 'required_env = ["REQUIRED_P7A"]',
+            environment_fields='forward_env = ["REQUIRED_P7A"]')
+        log, _state = fake_docker_stateful(tmp_path, monkeypatch)
+        argv = ["gate", "--dry-run"] if dry_run else ["gate"]
+        result = _dispatch(monkeypatch, project, *argv)
+        output = capsys.readouterr()
+        assert result.verdict == "NOT_RUN" and result.exit_code == 3
+        assert result.reason == "env-missing"
+        assert "REQUIRED_P7A" in (output.out + output.err)
+        assert lane_runs(log) == []
+        assert not first_artifact.exists()
+        assert not bad_artifact.exists()
+        assert _history_lane_names(project) == set()
+        assert not run_gate.inflight_path(project, "first").exists()
+        assert not run_gate.inflight_path(project, "bad").exists()
 
     def test_combined_later_collision_wins_over_earlier_record_and_override(
             self, tmp_path, monkeypatch):

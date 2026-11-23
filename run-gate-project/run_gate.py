@@ -5490,6 +5490,64 @@ def require_planned_record_snapshot(project_dir: Path, lane_name: str,
         planned_leaf.record_snapshot, lane_name)
 
 
+def require_final_inflight_action_record(
+        project_dir: Path, lane_name: str, lane: dict,
+        expected_lane_caps_v1_value: str | None,
+        expected_record_snapshot: object, *, fresh: bool, dry_run: bool,
+        fresh_supported: bool, action: str,
+        inspected_container_id: str | None = None,
+        allowed_owned_runner: str | None = None
+        ) -> tuple[dict | None, str | None, int | None]:
+    """Require the frozen record and pure checks immediately before action.
+
+    Preparation and container inspection precede this read. It narrows the
+    authorization to the exact planned bytes and reruns the schema,
+    foreign-runner, Assay-artifact, cap-provenance, and owner checks.
+    ``allowed_owned_runner`` is reserved for the one post-write exec launch
+    seam: the exact frozen bytes must name that owned runner, while every
+    normal container/foreign-runner decision remains unchanged.
+    Inspected-container actions also require the current recorded ID. A
+    writer racing after this call is outside the atomicity boundary;
+    run-gate claims only this final pre-action pass.
+    """
+    record_path = inflight_path(project_dir, lane_name)
+    snapshot = inflight_record_snapshot(record_path)
+    require_record_snapshot(
+        record_path, snapshot, expected_record_snapshot, lane_name)
+    pending = load_inflight_record(
+        record_path, fresh=fresh, fresh_supported=fresh_supported)
+    post_parse_snapshot = inflight_record_snapshot(record_path)
+    if post_parse_snapshot != snapshot:
+        fail(f"the inflight record for lane {lane_name!r} changed while "
+             f"run-gate was revalidating it before {action}; refusing that "
+             "action rather than using stale authority")
+    if pending is None:
+        return None, None, None
+    if allowed_owned_runner is not None \
+            and pending.get("runner") != allowed_owned_runner:
+        fail(f"the inflight record for lane {lane_name!r} no longer names "
+             f"this invocation's owned {allowed_owned_runner!r} runner before "
+             f"{action}; refusing that action rather than using foreign "
+             "authority")
+    owner_state = preflight_inflight_record(
+        pending, lane_name, project_dir, lane,
+        expected_lane_caps_v1_value, fresh=fresh, dry_run=dry_run,
+        fresh_supported=fresh_supported,
+        allowed_owned_runner=allowed_owned_runner)
+    post_preflight_snapshot = inflight_record_snapshot(record_path)
+    if post_preflight_snapshot != snapshot:
+        fail(f"the inflight record for lane {lane_name!r} changed while "
+             f"run-gate was revalidating it before {action}; refusing that "
+             "action rather than using stale authority")
+    if inspected_container_id is not None \
+            and pending.get("container_id") != inspected_container_id:
+        fail(f"the inflight record for lane {lane_name!r} has container id "
+             f"{pending.get('container_id')!r}, not the inspected "
+             f"{inspected_container_id!r}; refusing {action} using stale "
+             "container authority")
+    return pending, owner_state, live_owner_pid(pending)
+
+
 def validate_inflight_lane_caps(pending: dict, lane_name: str,
                                 expected: str | None) -> None:
     """Validate the stored field without parsing or normalizing it."""
@@ -7053,13 +7111,18 @@ def _apply_record(store: dict, record: dict, keep: int) -> dict:
     return store
 
 
+def _json_store_bytes(data: dict) -> bytes:
+    """The exact bytes `_write_json_atomic` installs for a store document."""
+    return (json.dumps(data, indent=2, sort_keys=True) + "\n").encode()
+
+
 def _write_json_atomic(data: dict, path: Path) -> None:
     """Atomic replace. This is what lets READERS take no lock at all: a
     reader either sees the whole old file or the whole new one, never a
     half-written middle. Shared by the history store and RG-35's inflight
     record — same store, same discipline."""
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    tmp.write_bytes(_json_store_bytes(data))
     os.replace(tmp, path)
 
 
@@ -7544,6 +7607,54 @@ def clear_inflight_record(project_dir: Path, lane_name: str) -> None:
         print(f"{PROG}: WARNING: could not clear "
               f"{inflight_path(project_dir, lane_name)}: {exc}",
               file=sys.stderr, flush=True)
+
+
+def clear_inflight_record_if_snapshot(
+        project_dir: Path, lane_name: str, expected_snapshot: bytes | None,
+        *, action: str) -> None:
+    """Clear only the record whose exact pre-action bytes are still current."""
+    record_path = inflight_path(project_dir, lane_name)
+    current = inflight_record_snapshot(record_path)
+    if current is not None and current != expected_snapshot:
+        print(f"{PROG}: WARNING: inflight record {record_path} changed before "
+              f"{action}; leaving it untouched", file=sys.stderr, flush=True)
+        return
+    clear_inflight_record(project_dir, lane_name)
+
+
+def clear_owned_exec_inflight_record(
+        project_dir: Path, lane_name: str, container: str,
+        expected_snapshot: bytes | None) -> None:
+    """Clear an unchanged exec record owned by this client."""
+    record_path = inflight_path(project_dir, lane_name)
+    current = inflight_record_snapshot(record_path)
+    if current != expected_snapshot:
+        print(f"{PROG}: WARNING: inflight record {record_path} changed before "
+              "the exec cleanup; leaving it untouched",
+              file=sys.stderr, flush=True)
+        return
+    try:
+        pending = load_inflight_record(record_path)
+    except GateError as exc:
+        print(f"{PROG}: WARNING: not clearing inflight record {record_path}: "
+              f"{exc}", file=sys.stderr, flush=True)
+        return
+    if pending is None:
+        return
+    owned = (
+        pending.get("runner") == "exec"
+        and pending.get("container") == container
+        and pending.get("owner_pid") == os.getpid()
+        and pending.get("owner_start") == process_start_ticks(os.getpid())
+        and pending.get("boot_id") == boot_id()
+        and pending.get("pid_ns") == pid_ns_inode()
+    )
+    if not owned:
+        print(f"{PROG}: WARNING: inflight record {record_path} no longer names "
+              "this exec client's runner; leaving it untouched",
+              file=sys.stderr, flush=True)
+        return
+    clear_inflight_record(project_dir, lane_name)
 
 
 def boot_id() -> str | None:
@@ -14423,11 +14534,14 @@ def validate_inflight_assay_contract(pending: dict, lane_name: str,
 def preflight_inflight_record(pending: dict, lane_name: str, project_dir: Path,
                               lane: dict, expected_lane_caps_v1_value: str | None,
                               *, fresh: bool, dry_run: bool,
-                              fresh_supported: bool = True) -> str:
+                              fresh_supported: bool = True,
+                              allowed_owned_runner: str | None = None) -> str:
     """Pure record preflight shared by CLI and direct resolution.
 
     Ordered refusals: recognized schema, foreign runner, non-fresh Assay
     contract, non-fresh exact cap provenance, then fresh owner classification.
+    ``allowed_owned_runner`` bypasses only the foreign-runner refusal for the
+    exact runner a caller just wrote and snapshotted; all other checks remain.
     The returned owner state is ``alive``, ``dead``, ``unknown``, or
     ``foreign-preview``; this function performs no Docker or mutation.
     """
@@ -14437,7 +14551,8 @@ def preflight_inflight_record(pending: dict, lane_name: str, project_dir: Path,
              f"schema {INFLIGHT_SCHEMA}; refusing before Docker or mutation "
              f"(record: {record_path})")
     runner = pending.get("runner")
-    if runner is not None and runner != "container":
+    if runner is not None and runner != "container" \
+            and runner != allowed_owned_runner:
         message = (f"the inflight record for lane {lane_name!r} names "
                    f"container {pending.get('container')!r}, written by "
                    f"runner {runner!r} — foreign record — refusing to "
@@ -17475,6 +17590,9 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
     owner_state = preflight_inflight_record(
         pending, lane_name, project_dir, lane,
         expected_lane_caps_v1_value, fresh=fresh, dry_run=dry_run)
+    action_snapshot = (expected_record_snapshot
+                       if expected_record_snapshot is not _MISSING
+                       else snapshot)
     name = pending["container"]
     started = pending.get("started_at")
     if owner_state == "foreign-preview":
@@ -17607,6 +17725,7 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
             repolled_snapshot = inflight_record_snapshot(record_path)
             require_record_snapshot(record_path, repolled_snapshot,
                                     expected_record_snapshot, lane_name)
+            action_snapshot = repolled_snapshot
             preflight_inflight_record(
                 pending, lane_name, project_dir, lane,
                 expected_lane_caps_v1_value, fresh=fresh, dry_run=dry_run)
@@ -17630,9 +17749,20 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
         print(f"run-gate: inflight record names {name} (started {started}) "
               f"but {gone_because}; recording that run as aborted, clearing "
               f"the record and running fresh", flush=True)
+        pending, final_owner_state, final_owner = \
+            require_final_inflight_action_record(
+                project_dir, lane_name, lane, expected_lane_caps_v1_value,
+                action_snapshot, fresh=fresh, dry_run=False,
+                fresh_supported=True,
+                action="the lost-run history/record write")
+        if final_owner_state != "dead" or final_owner is not None:
+            fail(f"lane {lane_name!r} owner state changed before the "
+                 "lost-run history/record write; refusing stale authority")
         record_lost_run(project_dir, worktree, repo, lane_name, pending,
                         (run_record or {}).get("_keep") or HISTORY_KEEP_DEFAULT)
-        clear_inflight_record(project_dir, lane_name)
+        clear_inflight_record_if_snapshot(
+            project_dir, lane_name, action_snapshot,
+            action="the lost-run record clear")
         return None
     if fresh:
         if owner is not None:
@@ -17647,10 +17777,21 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
                  f"--fresh once it has")
         print(f"run-gate: --fresh: removing inflight container {name} "
               f"(started {started}, {status}) and running anew", flush=True)
+        pending, _final_owner_state, final_owner = \
+            require_final_inflight_action_record(
+                project_dir, lane_name, lane, expected_lane_caps_v1_value,
+                action_snapshot, fresh=fresh, dry_run=False,
+                fresh_supported=True, action=f"removing container {name}",
+                inspected_container_id=state["id"])
+        if final_owner is not None:
+            fail(f"lane {lane_name!r} gained a live owner before fresh "
+                 f"removal of {name}; refusing removal using stale authority")
         subprocess.run([docker, "rm", "-f", state["id"]],
                        capture_output=True,
                        env=lane_caps_private_environ())
-        clear_inflight_record(project_dir, lane_name)
+        clear_inflight_record_if_snapshot(
+            project_dir, lane_name, action_snapshot,
+            action=f"the record clear after removing {name}")
         return None
     if not commit_matches:
         # Neither attaching nor starting a second container is defensible
@@ -17705,10 +17846,32 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
                 value = pending.get(artifact)
                 if isinstance(value, str) and value:
                     run_record[f"_{artifact}_path"] = value
+        pending, _final_owner_state, final_owner = \
+            require_final_inflight_action_record(
+                project_dir, lane_name, lane, expected_lane_caps_v1_value,
+                action_snapshot, fresh=fresh, dry_run=False,
+                fresh_supported=True, action=f"following container {name}",
+                inspected_container_id=state["id"])
+        if final_owner is None:
+            fail(f"lane {lane_name!r} owner disappeared before follow of "
+                 f"{name}; refusing to act on the stale follow decision")
+        owner = final_owner
         return follow_container(docker, name, lane, lane_name, project_dir,
                                 repo, worktree, recorded=pending,
                                 run_record=run_record,
                                 ksm_monitor=ksm_monitor)
+    action = (f"re-attaching to container {name}"
+              if status == "running" else
+              f"collecting result from container {name}")
+    pending, owner_state, final_owner = \
+        require_final_inflight_action_record(
+            project_dir, lane_name, lane, expected_lane_caps_v1_value,
+            action_snapshot, fresh=fresh, dry_run=False,
+            fresh_supported=True, action=action,
+            inspected_container_id=state["id"])
+    if final_owner is not None:
+        fail(f"lane {lane_name!r} gained a live owner before {action}; "
+             "refusing to adopt or read the stale result")
     if run_record is not None:
         # The artifact paths belong to the container's invocation. Preserve
         # them across re-attach so result parsing and RG-72 archival do not
@@ -17783,6 +17946,15 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
     # config would construct — a lane retargeted between the two invocations
     # would otherwise watch a file nothing is appending to and point the
     # operator at a verdict nothing wrote.
+    pending, _final_owner_state, final_owner = \
+        require_final_inflight_action_record(
+            project_dir, lane_name, lane, expected_lane_caps_v1_value,
+            action_snapshot, fresh=fresh, dry_run=False,
+            fresh_supported=True, action=f"reading the result of {name}",
+            inspected_container_id=state["id"])
+    if final_owner is not None:
+        fail(f"lane {lane_name!r} gained a live owner before reading the "
+             f"result of {name}; refusing stale result access")
     return await_container(docker, name, lane, lane_name, project_dir,
                            repo, worktree, recorded=pending,
                            profiler=profiler_state, run_record=run_record,
@@ -17923,8 +18095,12 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                     expected_lane_caps_v1(
                         lane_name, lane, lane_environment_name(lane),
                         env.get("mode", "host")))
+    record_path = inflight_path(project_dir, lane_name)
     planned_snapshot = (planned_leaf.record_snapshot
                         if planned_leaf is not None else _MISSING)
+    initial_record_snapshot = (
+        planned_snapshot if planned_snapshot is not _MISSING
+        else inflight_record_snapshot(record_path))
     ksm_monitor = (KsmPageSharingMonitor(path=KSM_PAGES_SHARING_PATH)
                    if ksm_settings is not None and not dry_run else None)
     # RG-35: before ANYTHING is built — the re-attach line is the first thing
@@ -17935,13 +18111,13 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         attached = resolve_inflight(docker, lane, lane_name, project_dir, repo,
                                     worktree, fresh, dry_run, run_record,
                                     expected_lane_caps_v1_value=expected_cap,
-                                    expected_record_snapshot=planned_snapshot)
+                                    expected_record_snapshot=initial_record_snapshot)
     else:
         attached = resolve_inflight(
             docker, lane, lane_name, project_dir, repo, worktree, fresh,
             dry_run, run_record, ksm_monitor,
             expected_lane_caps_v1_value=expected_cap,
-            expected_record_snapshot=planned_snapshot)
+            expected_record_snapshot=initial_record_snapshot)
     if attached is not None:
         disclose_r2_jobs(
             lane_name,
@@ -17950,6 +18126,13 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             run_record.get("image_selection") if run_record else None,
         )
         return attached
+    launch_snapshot = initial_record_snapshot
+    if initial_record_snapshot is not None \
+            and inflight_record_snapshot(record_path) is None:
+        # A successful fresh removal or lost-run recovery was the planned
+        # action that authorizes this replacement container. Its launch now
+        # starts from an absent record.
+        launch_snapshot = None
     disclose_r2_jobs(
         lane_name,
         run_record.get("r2_jobs") if run_record is not None
@@ -18104,6 +18287,10 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             repo, project_dir, worktree, slice_name, dry_run=dry_run,
             resource_settings=resource_settings)
     if not dry_run:
+        require_final_inflight_action_record(
+            project_dir, lane_name, lane, expected_cap, launch_snapshot,
+            fresh=fresh, dry_run=False, fresh_supported=True,
+            action=f"Assay verdict cleanup before lane {lane_name!r}")
         clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     if dry_run:
         if profiling:
@@ -18131,6 +18318,10 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         lane, lane_name, project_dir, worktree, docker, profile_plan,
         "container") if profiling else None)
     try:
+        require_final_inflight_action_record(
+            project_dir, lane_name, lane, expected_cap, launch_snapshot,
+            fresh=fresh, dry_run=False, fresh_supported=True,
+            action=f"docker run launch of lane {lane_name!r}")
         started = subprocess.run(
             argv, capture_output=True, text=True,
             env={**lane_caps_private_environ(), **docker_env_values})
@@ -18436,7 +18627,19 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     docker = shutil.which("docker")
     if not docker:
         fail_infra("docker not found on PATH — exec-mode lanes need it")
-    require_planned_record_snapshot(project_dir, lane_name, planned_leaf)
+    expected_cap = (planned_leaf.expected_lane_caps_v1
+                    if planned_leaf is not None else
+                    expected_lane_caps_v1(
+                        lane_name, lane, lane_environment_name(lane),
+                        env.get("mode", "host")))
+    record_path = inflight_path(project_dir, lane_name)
+    planned_snapshot = (planned_leaf.record_snapshot
+                        if planned_leaf is not None else
+                        inflight_record_snapshot(record_path))
+    require_final_inflight_action_record(
+        project_dir, lane_name, lane, expected_cap, planned_snapshot,
+        fresh=False, dry_run=False, fresh_supported=False,
+        action=f"exec preflight for lane {lane_name!r}")
     name, name_src, start_remedy = \
         container_name, container_name_src, container_start_remedy
     running = subprocess.run(
@@ -18518,6 +18721,10 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             resolved_container_name=name, dry_run=dry_run,
             resource_settings=resource_settings)
     if not dry_run:
+        require_final_inflight_action_record(
+            project_dir, lane_name, lane, expected_cap, planned_snapshot,
+            fresh=False, dry_run=False, fresh_supported=False,
+            action=f"Assay verdict cleanup before lane {lane_name!r}")
         clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     if dry_run:
         if profiling:
@@ -18683,13 +18890,26 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     if run_record is not None:
         run_record["_inflight"] = inflight_payload
         run_record["placement"] = profiler_state.get("placement")
-    require_planned_record_snapshot(project_dir, lane_name, planned_leaf)
+    require_final_inflight_action_record(
+        project_dir, lane_name, lane, expected_cap, planned_snapshot,
+        fresh=False, dry_run=False, fresh_supported=False,
+        action=f"writing the exec inflight record for lane {lane_name!r}")
+    record_guard_snapshot: bytes | None = planned_snapshot \
+        if planned_snapshot is not _MISSING else None
+    record_written = False
+    launch_started = False
+    serialized_record = _json_store_bytes(inflight_payload)
     try:
-        write_inflight_record(project_dir, worktree, lane_name, inflight_payload)
+        record_written = write_inflight_record(
+            project_dir, worktree, lane_name, inflight_payload)
+        if record_written:
+            record_guard_snapshot = serialized_record
     except BaseException:
         if barrier_nonce is not None:
             abandon_placement_launch(proc, barrier_nonce, profiler_state)
-        clear_inflight_record(project_dir, lane_name)
+        clear_inflight_record_if_snapshot(
+            project_dir, lane_name, record_guard_snapshot,
+            action="the failed exec record write")
         raise
     if barrier_nonce is not None and profiler_state.get("mode") == "daemon":
         refusal = placement_refusal_reason(profiler_state,
@@ -18705,7 +18925,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                 run_record["resources"] = profile_result["resources"]
                 run_record["profile_error"] = profile_result["profile_error"]
                 run_record["profile_ref"] = profile_result["profile_ref"]
-            clear_inflight_record(project_dir, lane_name)
+            clear_inflight_record_if_snapshot(
+                project_dir, lane_name, record_guard_snapshot,
+                action="the refused exec launch")
             fail_infra(f"lane {lane_name!r} placement refused: {refusal}; "
                        "lane body was not started")
     # RG-55: use Popen + OutputTee so basic sampling and daemon/in-process
@@ -18749,6 +18971,12 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     stdin_forwarder = None
     budget_expired = False
     try:
+        require_final_inflight_action_record(
+            project_dir, lane_name, lane, expected_cap,
+            record_guard_snapshot, fresh=False, dry_run=False,
+            fresh_supported=False,
+            action=f"docker exec launch of lane {lane_name!r}",
+            allowed_owned_runner="exec")
         basic_active = profiler_state["mode"] == "basic"
         tick = (PROFILE_SAMPLE_SECONDS if basic_active else
                 PROGRESS_POLL_SECONDS if daemon_watch is not None or
@@ -18758,12 +18986,14 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                                     stderr=subprocess.STDOUT, bufsize=0,
                                     env={**lane_caps_private_environ(),
                                          **docker_env_values})
+            launch_started = True
         else:
             # This process exists only when the placement path already set
             # its nonce and held the wrapper at the ready barrier.
             signal_placement_barrier(
                 proc, barrier_nonce, release=True,
                 profile_active=profiler_state.get("mode") == "daemon")
+            launch_started = True
             stdin_forwarder = StdinForwarder(sys.stdin, proc.stdin)
         output_tee = OutputTee(
             proc, Path(run_record["log_path"])
@@ -18929,7 +19159,15 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             # raises synchronously or profiling cleanup itself fails. When a
             # child exists and this client is killed externally, this finally
             # is never entered, so the record remains for reconciliation.
-            clear_inflight_record(project_dir, lane_name)
+            if record_written:
+                if launch_started:
+                    clear_owned_exec_inflight_record(
+                        project_dir, lane_name, name,
+                        record_guard_snapshot)
+                else:
+                    clear_inflight_record_if_snapshot(
+                        project_dir, lane_name, record_guard_snapshot,
+                        action="the failed exec launch")
     print_lane_artifacts(lane, lane_name, project_dir, repo, worktree,
                          state_root=env.get("state_root"))
     if budget_deadline is not None \
@@ -18960,6 +19198,14 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # lane["argv"] unconditionally — a KeyError traceback for a legal
     # config, which R-04 calls a defect. The assay inner is built exactly
     # as it is for the two container runners.
+    expected_cap = (planned_leaf.expected_lane_caps_v1
+                    if planned_leaf is not None else
+                    expected_lane_caps_v1(
+                        lane_name, lane, lane_environment_name(lane), "host"))
+    record_path = inflight_path(project_dir, lane_name)
+    planned_snapshot = (planned_leaf.record_snapshot
+                        if planned_leaf is not None else
+                        inflight_record_snapshot(record_path))
     argv = (["bash", "-c", build_assay_inner(
                 lane, project_dir, repo, request_base, worktree=worktree,
                 closeout_commit=head_commit(worktree))]
@@ -19009,6 +19255,10 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         print(f"run-gate: DRY RUN — would run in {project_dir}: "
               f"{shlex.join(argv)}", flush=True)
         return 0
+    require_final_inflight_action_record(
+        project_dir, lane_name, lane, expected_cap, planned_snapshot,
+        fresh=False, dry_run=False, fresh_supported=False,
+        action=f"Assay verdict cleanup before lane {lane_name!r}")
     clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     # RG-55/RG-57 (RW-27b): a bare-host lane IS profiled once profiling is
     # enabled — there is no fresh container/cgroup of run-gate's own to
@@ -19204,9 +19454,11 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                   f"unexpectedly: {exc}", file=sys.stderr, flush=True)
             return None
     try:
+        require_final_inflight_action_record(
+            project_dir, lane_name, lane, expected_cap, planned_snapshot,
+            fresh=False, dry_run=False, fresh_supported=False,
+            action=f"bare-host launch of lane {lane_name!r}")
         if proc is None:
-            require_planned_record_snapshot(project_dir, lane_name,
-                                            planned_leaf)
             proc = subprocess.Popen(argv, cwd=str(project_dir), env=run_env,
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, bufsize=0,

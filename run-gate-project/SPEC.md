@@ -3257,11 +3257,23 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   selected lane/environment/source, image, resources, expected fact/null,
   required/forwarded inputs, worktree/project, options, occurrence path,
   grouping, and initial record bytes; nested children consume the root plan
-  and still perform their own final record reread before action. This is a
-  prelaunch barrier, not an atomic transaction: a writer racing after the
-  final parent pass can still leave an earlier member's effects before the
-  later child refuses, and no stronger claim is made without a shared lock
-  protocol for every writer.
+  and still perform their own final record reread immediately before every
+  action boundary: following, adopting/re-attaching and result access,
+  lost-run history and record clearing, fresh removal, Assay verdict
+  cleanup, and every child launch (container, exec, or bare-host, including
+  placement-barrier release). Those checks compare the frozen present/absent
+  snapshot, repeat the applicable pure schema/foreign/Assay-artifact/cap/
+  owner checks, and for fresh removal require the current record and exact
+  inspected container ID. The Assay cleanup check is independent of and
+  earlier than the retained launch/release check, so a record change
+  observed at cleanup cannot authorize removal of its verdict. A direct
+  runner call without a root plan captures its own initial record snapshot
+  at entry and applies the same boundaries. This is a prelaunch barrier,
+  not an atomic transaction: a writer racing after the final parent pass can
+  still leave an earlier member's effects before a later child refuses;
+  likewise, a writer racing after a child's final action check (including
+  the Assay cleanup check) is outside that check's authority. No stronger
+  claim is made without a shared lock protocol for every writer.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 
