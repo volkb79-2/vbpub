@@ -1,48 +1,79 @@
 # debian-rollback (working name)
 
-**Status: planning. No code, no installer, nothing tested yet.** Started
-2026-11-12. This directory holds the research, the operator's decisions and the
-plan, written so the work can be resumed without the original conversation.
+Debian rollback is a safety layer for a normal Debian system managed with
+`apt`: it snapshots OS state before package changes and lets an operator boot
+an earlier state while keeping user and service data outside that rollback.
+It is built from Debian's installer components and existing bootloaders; it is
+not a separate Debian distribution or an image-based update system.
 
-## What this project is for
+## Current status — 2026-11-23
 
-`apt upgrade` changes files, configuration and services on a running host, and
-a new kernel makes a failed reboot more likely. Stock Debian has no way to get
-back to the state before the upgrade. This project gives a Debian install a
-safety belt:
+- The btrfs/GRUB M2 unattended Debian Live installer is merged to `main`.
+- The systemd-boot target variant was installed from a fresh M2 Live ISO in a
+  UEFI guest. That named artifact's evidence remains in
+  [the 2026-11-22 results](docs/RESULTS-SDBOOT-M2-2026-11-22.md).
+- A separate current-source NoCloud builder run installed a systemd-boot
+  target disk and passed nine guest scenarios: boot-check 12, ESP 16, apt
+  rollback 23, one-shot consumption 9, dependency recovery 23, kernel damage
+  27, loader damage 25, stable kernel update 21, and backports update 21.
+  Full hashes and retained evidence are in
+  [the 2026-11-23 results](docs/RESULTS-SDBOOT-NOCLOUD-2026-11-23.md).
+- Each destructive recovery guest manually selected the known-good pre-change
+  snapshot, preserved `/home` data written after the recovery snapshot, made the
+  recovered state default, proved a plain reboot, and deleted the damaged
+  state. Automatic failed-boot fallback remains outside this PoC.
+- The current builder guest upgraded from kernel `6.12.117` to stable
+  `6.12.118`, then separately to backports `7.3.4`. Both paths booted the old
+  and new kernels with matching modules and returned one-shot rollback to the
+  new default.
+- Fresh installs use state IDs with a six-digit creation sequence, UTC
+  timestamp, and origin/reason slug, beginning with
+  `@os-000001-YYYYMMDD-HHMMSSZ-install`. The sequence high-water mark lives
+  outside rollback states; deletion never renumbers or reuses an ID. This
+  change does not migrate historical `@os-0001` PoC disks. Manual snapshots
+  accept `--reason` and an optional free-text `--note`; apt snapshots record
+  the package plan. `dr-state list`, `list --long`, and `show STATE` provide
+  compact and detailed state reports. Metadata is stored outside OS states
+  and is removed when its state is deleted or pruned.
+- M2 has separate build-time Live ISO variants. The GRUB-target installer is
+  merged to `main`; its fresh comparison install passed boot-check (9) and
+  s2-s3 (21). The
+  systemd-boot target variant has fresh install and rollback evidence. Both
+  Live media continue to boot the Debian Live environment through GRUB; the
+  ISO's fixed target-bootloader marker chooses the installed backend. The
+  systemd-boot variant's merge criteria are the registered offline lane and
+  an independent review of the exact candidate commit.
+- The NoCloud seed is required only when using the cloud-image builder recipe;
+  it is optional for the M2 product install. The full builder result is linked
+  above.
+- ZFS is the next PoC after the systemd-boot branch passes its final gate and
+  review and is merged.
 
-- a snapshot of the operating system is taken automatically before every
-  package change;
-- an earlier state can be chosen in the boot menu and booted;
-- user files and the data of installed services are not rolled back.
+Earlier guest runs used older source and remain historical evidence. See the
+[current work order](TODO.md), [systemd-boot implementation note](docs/SDBOOT-VARIANT-2026-11-18.md),
+and [fresh guest results](docs/RESULTS-SDBOOT-M2-2026-11-22.md).
 
-It is a product built from existing parts (Debian, an existing bootloader, an
-existing snapshot tool), not a new distribution. Where Debian has a gap, this
-project closes the gap and packages the result as an installer and an image.
+For the exact current layers, media, and consumer/install flows, see the
+[installation architecture](docs/INSTALLATION-ARCHITECTURE.md). It answers
+which ISO is bootable, which media are optional, and how each path installs
+the target system. The [recovery contract](docs/ROLLBACK-RECOVERY.md) defines
+manual boot-menu recovery, state deletion and pruning, persistent-data limits,
+and the destructive acceptance scenarios.
 
 ## Documents
 
-| Document | Holds |
+| Document | Purpose |
 |---|---|
-| [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Goals, the operator's decisions, the two candidate designs, what is rejected and why, open questions |
-| [docs/RESEARCH-2026-11.md](docs/RESEARCH-2026-11.md) | Everything found in the November 2026 research, with sources and how far each claim was verified |
-| [docs/WORK-PACKAGES.md](docs/WORK-PACKAGES.md) | The plan to finish: every remaining work package with its dependencies, which model tier does what, the decisions reserved for the frontier model, what the operator must decide first, risks, definition of done |
-| [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) | Planned experiments: the VM lab scenarios and the real-host filesystem comparison, with the host lease terms |
-| [TODO.md](TODO.md) | Ordered next steps |
+| [docs/INSTALLATION-ARCHITECTURE.md](docs/INSTALLATION-ARCHITECTURE.md) | Canonical current architecture, ISO variants, Debian changes, and install flows |
+| [docs/ROLLBACK-RECOVERY.md](docs/ROLLBACK-RECOVERY.md) | Recovery boundary, boot-menu operator flow, state management, and destructive acceptance |
+| [TODO.md](TODO.md) | Current work order: finish systemd-boot, then defer to ZFS PoC |
+| [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Product goals, design decisions, research questions, and design rationale; its original planning status is historical |
+| [docs/RESULTS-M2-UNATTENDED-ISO-2026-11-18.md](docs/RESULTS-M2-UNATTENDED-ISO-2026-11-18.md) | Dated guest evidence and known limits for the M2 GRUB-target ISO |
+| [docs/SDBOOT-VARIANT-2026-11-18.md](docs/SDBOOT-VARIANT-2026-11-18.md) | systemd-boot backend details, guest finding, and offline coverage |
+| [docs/RESULTS-SDBOOT-M2-2026-11-22.md](docs/RESULTS-SDBOOT-M2-2026-11-22.md) | Evidence for the named systemd-boot M2 Live ISO build |
+| [docs/RESULTS-SDBOOT-NOCLOUD-2026-11-23.md](docs/RESULTS-SDBOOT-NOCLOUD-2026-11-23.md) | Current-source NoCloud builder install and systemd-boot guest matrix |
+| [docs/RESEARCH-2026-11.md](docs/RESEARCH-2026-11.md) | November 2026 research sources and verification notes |
+| [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) | Scenario definitions and historic filesystem comparison plan |
 
-## How to resume
-
-1. Read the "Decisions" and "Open questions" sections of the design guide.
-2. Read `TODO.md` for the next step.
-3. Before touching a host, read the lease terms in `docs/EXPERIMENTS.md`.
-   Hosts r1002 and v1001 are coordinated by the Claude session
-   `vbpub-controller-joint-release`; nothing may be done on r1002 before that
-   session sends "lease start", and v1001 is never touched.
-
-## Name and location
-
-`scripts/debian-rollback/` is a working home next to `scripts/debian-install-v2`
-(the existing installer) and `scripts/truenas` (whose VM launcher and
-unattended-ISO builder this project reuses). The name is not decided; renaming
-is one `git mv`. The planned general VM tool gets its own home,
-the top-level project `vm-lab/`, see the design guide.
+The dated results are evidence records for the builds they name. Use the
+architecture and TODO documents for current design/status.

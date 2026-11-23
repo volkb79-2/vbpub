@@ -150,6 +150,15 @@ RUN apt-get update \
  && test -x /usr/bin/augparse \
  && test "$(dpkg -S /usr/bin/augparse | cut -d: -f1)" = augeas-tools \
  && rm -rf /var/lib/apt/lists/*
+#  * xorriso (TU-XORR): debian-rollback's registered offline lane packs NoCloud seed ISOs
+#    and extracts their backend marker. Keep real ISO tooling in the shared tester image so
+#    the lane proves its packing path without a second derivative test image.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends xorriso \
+ && test -x /usr/bin/xorriso \
+ && test "$(dpkg -S /usr/bin/xorriso | cut -d: -f1)" = xorriso \
+ && /usr/bin/xorriso -version \
+ && rm -rf /var/lib/apt/lists/*
 #  * Node.js + npm + npx (D-004) from the official node image (stage `node-source` above,
 #    digest-pinned and age-checked by `cmru versions`), not Debian's nodejs, which is too old.
 #    pwmcp's runtime-gateway tests execute the node binary. The links mirror the official image's.

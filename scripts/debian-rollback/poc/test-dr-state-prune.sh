@@ -5,8 +5,9 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DR="$HERE/dr-state"
 fail=0
-A=@os-pre-20261118100000-1-apt; B=@os-pre-20261118100100-2-apt; C=@os-pre-20261118100200-3-apt
-D=@os-pre-20261118100300-4-apt; E=@os-pre-20261118100400-5-s8
+A=@os-000002-20261118-100000Z-apt; B=@os-000003-20261118-100100Z-apt; C=@os-000004-20261118-100200Z-apt
+D=@os-000005-20261118-100300Z-apt; E=@os-000006-20261118-100400Z-manual-s8
+F=@os-000007-20261118-100500Z-apt
 
 expect() { # expect LABEL "WANT (space separated, oldest first)" KEEP PROTECTED NAME...
   local label=$1 want=$2; shift 2
@@ -23,10 +24,11 @@ expect protected-in-the-middle "$A $C" 2 "$B" $A $B $C $D $E
 expect protected-newest-is-irrelevant "$A $B $C" 2 "$E" $A $B $C $D $E
 expect several-protected "$C" 2 "$A,$B" $A $B $C $D $E
 expect keep-zero-deletes-unprotected "$B $C $D $E" 0 "$A" $A $B $C $D $E
-expect main-state-ignored "$A" 2 "" @os-0001 $A $B $C
-expect only-main-state "" 2 "" @os-0001
+expect main-state-ignored "$A" 2 "" @os-000001-20261118-120000Z-install $A $B $C
+expect only-main-state "" 2 "" @os-000001-20261118-120000Z-install
 expect empty-protected-field "$A" 1 "" $A $B
 expect no-names "" 3 ""
+expect creation-sequence-beats-clock-order "$A" 2 "" "$A" "$F" "$B"
 
 [ "$fail" = 0 ] && echo "test-dr-state-prune: OK"
 exit "$fail"
