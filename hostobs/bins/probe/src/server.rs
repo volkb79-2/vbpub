@@ -3532,8 +3532,8 @@ mod tests {
         let mut d = Driver::with(query_bound_limits(cap));
         let first = d.open(Level::Observe, 1);
         let second = d.open(Level::Observe, 2);
-        let blocker_a = d.open(Level::Observe, 1);
-        let blocker_b = d.open(Level::Observe, 2);
+        let blocker_a = d.open(Level::Observe, 2);
+        let blocker_b = d.open(Level::Observe, 1);
         for id in [first, second, blocker_a, blocker_b] {
             d.ready(id);
         }
