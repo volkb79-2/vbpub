@@ -3586,9 +3586,9 @@ mod tests {
         let first_current = live_data(5, "v1");
         let current_frame = stream_block_len(d.server.limits(), &first_current);
         assert_eq!(current_frame, 208);
-        let dictionary =
-            query::series_dictionary(&series_view(), &series_request()).expect("series dictionary");
-        let first_series_frame = query::series_plan_frame_len(
+        let dictionary = crate::query::series_dictionary(&series_view(), &series_request())
+            .expect("series dictionary");
+        let first_series_frame = crate::query::series_plan_frame_len(
             3,
             &dictionary.permitted,
             Aggregation::Last,
@@ -3596,10 +3596,10 @@ mod tests {
         )
         .expect("first series BLOCK frame");
         let second_series_frame =
-            query::series_plan_frame_len(1, &dictionary.permitted, Aggregation::Mean, None)
+            crate::query::series_plan_frame_len(1, &dictionary.permitted, Aggregation::Mean, None)
                 .expect("second series BLOCK frame");
         assert_eq!((first_series_frame, second_series_frame), (408, 176));
-        let validate_series_page = |raw: &[(u8, u32, Vec<u8>)], corr: u32| -> Option<String> {
+        let validate_series_page = |raw: &[(u8, u32, Vec<u8>)], corr: u32| -> String {
             assert_eq!(raw.len(), 4);
             assert_eq!(
                 (raw[0].0, raw[1].0, raw[2].0, raw[3].0),
@@ -3609,6 +3609,10 @@ mod tests {
                     FrameType::Block.code(),
                     FrameType::End.code(),
                 )
+            );
+            assert_eq!(
+                (raw[0].1, raw[1].1, raw[2].1, raw[3].1),
+                (corr, corr, corr, corr)
             );
             assert!(
                 check_rep(frame_payload(&raw[0].2), false)
@@ -3643,7 +3647,7 @@ mod tests {
             assert_eq!(second.columns.len(), 1);
             assert!(second.dictionary.is_none());
             assert_end_ok(&raw[3].2, 2, 0, "page");
-            end_next(&raw[3].2)
+            end_next(&raw[3].2).expect("series continuation")
         };
         put_current(&mut d, &selected, first_current);
         install_series(&mut d);
@@ -3744,7 +3748,7 @@ mod tests {
         );
         d.pump(a_series, usize::MAX);
         let series_raw = raw_frames(&d.take_out(a_series));
-        let a_token = validate_series_page(&series_raw, 3).expect("series continuation");
+        let a_token = validate_series_page(&series_raw, 3);
         d.close_out(a_current);
         d.close_out(a_series);
 
@@ -3764,7 +3768,7 @@ mod tests {
         );
         d.pump(b_series, usize::MAX);
         let series_raw = raw_frames(&d.take_out(b_series));
-        let b_token = validate_series_page(&series_raw, 3).expect("series continuation");
+        let b_token = validate_series_page(&series_raw, 3);
         assert_ne!(a_token, b_token);
         let view = QueryViewId::Series(SeriesViewId(11));
         assert_eq!(d.server.view_references(view), 2);
