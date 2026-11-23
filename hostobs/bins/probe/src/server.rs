@@ -3586,8 +3586,8 @@ mod tests {
         let first_current = live_data(5, "v1");
         let current_frame = stream_block_len(d.server.limits(), &first_current);
         assert_eq!(current_frame, 208);
-        let dictionary = query::series_dictionary(&series_view(), &series_request())
-            .expect("series dictionary");
+        let dictionary =
+            query::series_dictionary(&series_view(), &series_request()).expect("series dictionary");
         let first_series_frame = query::series_plan_frame_len(
             3,
             &dictionary.permitted,
@@ -3595,62 +3595,56 @@ mod tests {
             Some(dictionary.body.len()),
         )
         .expect("first series BLOCK frame");
-        let second_series_frame = query::series_plan_frame_len(
-            1,
-            &dictionary.permitted,
-            Aggregation::Mean,
-            None,
-        )
-        .expect("second series BLOCK frame");
+        let second_series_frame =
+            query::series_plan_frame_len(1, &dictionary.permitted, Aggregation::Mean, None)
+                .expect("second series BLOCK frame");
         assert_eq!((first_series_frame, second_series_frame), (408, 176));
-        let validate_series_page =
-            |raw: &[(u8, u32, Vec<u8>)], corr: u32| -> Option<String> {
-                assert_eq!(raw.len(), 4);
-                assert_eq!(
-                    (raw[0].0, raw[1].0, raw[2].0, raw[3].0),
-                    (
-                        FrameType::Rep.code(),
-                        FrameType::Block.code(),
-                        FrameType::Block.code(),
-                        FrameType::End.code(),
-                    )
-                );
-                assert!(
-                    check_rep(frame_payload(&raw[0].2), false)
-                        .expect("series REP")
-                        .ok
-                );
-                assert_eq!(
-                    (raw[1].2.len(), raw[2].2.len()),
-                    (first_series_frame, second_series_frame)
-                );
-                let mut dicts = StreamDicts::new();
-                let first = accept_block(&mut dicts, corr, &raw[1].2);
-                let second =
-                    decode_block_with(&raw[2].2, dicts.held(corr)).expect("bare series BLOCK");
-                dicts
-                    .accept(corr, &second)
-                    .expect("bare series BLOCK accepts");
-                assert_eq!(first.subject, Some(0));
-                assert_eq!(first.header.n_rows, 3);
-                assert_eq!(
-                    first
-                        .time
-                        .iter()
-                        .map(|bucket| bucket.real_ns)
-                        .collect::<Vec<_>>(),
-                    vec![0, 2_000_000_000, 3_000_000_000]
-                );
-                assert_eq!(first.columns.len(), 3);
-                assert!(first.dictionary.is_some());
-                assert_eq!(second.subject, Some(0));
-                assert_eq!(second.header.n_rows, 1);
-                assert_eq!(second.time[0].real_ns, 0);
-                assert_eq!(second.columns.len(), 1);
-                assert!(second.dictionary.is_none());
-                assert_end_ok(&raw[3].2, 2, 0, "page");
-                end_next(&raw[3].2)
-            };
+        let validate_series_page = |raw: &[(u8, u32, Vec<u8>)], corr: u32| -> Option<String> {
+            assert_eq!(raw.len(), 4);
+            assert_eq!(
+                (raw[0].0, raw[1].0, raw[2].0, raw[3].0),
+                (
+                    FrameType::Rep.code(),
+                    FrameType::Block.code(),
+                    FrameType::Block.code(),
+                    FrameType::End.code(),
+                )
+            );
+            assert!(
+                check_rep(frame_payload(&raw[0].2), false)
+                    .expect("series REP")
+                    .ok
+            );
+            assert_eq!(
+                (raw[1].2.len(), raw[2].2.len()),
+                (first_series_frame, second_series_frame)
+            );
+            let mut dicts = StreamDicts::new();
+            let first = accept_block(&mut dicts, corr, &raw[1].2);
+            let second = decode_block_with(&raw[2].2, dicts.held(corr)).expect("bare series BLOCK");
+            dicts
+                .accept(corr, &second)
+                .expect("bare series BLOCK accepts");
+            assert_eq!(first.subject, Some(0));
+            assert_eq!(first.header.n_rows, 3);
+            assert_eq!(
+                first
+                    .time
+                    .iter()
+                    .map(|bucket| bucket.real_ns)
+                    .collect::<Vec<_>>(),
+                vec![0, 2_000_000_000, 3_000_000_000]
+            );
+            assert_eq!(first.columns.len(), 3);
+            assert!(first.dictionary.is_some());
+            assert_eq!(second.subject, Some(0));
+            assert_eq!(second.header.n_rows, 1);
+            assert_eq!(second.time[0].real_ns, 0);
+            assert_eq!(second.columns.len(), 1);
+            assert!(second.dictionary.is_none());
+            assert_end_ok(&raw[3].2, 2, 0, "page");
+            end_next(&raw[3].2)
+        };
         put_current(&mut d, &selected, first_current);
         install_series(&mut d);
 
