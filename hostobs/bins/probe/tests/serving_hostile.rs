@@ -660,7 +660,7 @@ fn payload_of(case: &Case) -> String {
 }
 
 #[test]
-fn the_grid_of_valid_requests_matches_the_current_p5b3_table() {
+fn the_grid_of_requests_matches_the_current_p5b3_table() {
     let mut runs = 0;
     for mode in [Mode::Binary, Mode::Json] {
         for phase in [Phase::BeforeHello, Phase::Ready] {
