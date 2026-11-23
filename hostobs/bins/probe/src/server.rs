@@ -501,13 +501,12 @@ impl<B: Backend + QueryBackend> Server<B> {
             }
             return;
         };
-        let corrs = conn.query_corrs();
-        for corr in corrs {
-            match conn.take_query(corr) {
-                Some(crate::conn::QueryPending::SnapshotPending(state)) => {
+        for query in conn.take_queries() {
+            match query {
+                crate::conn::QueryPending::SnapshotPending(state) => {
                     self.release_view(state.view_id());
                 }
-                Some(crate::conn::QueryPending::SeriesPage(mut state)) => {
+                crate::conn::QueryPending::SeriesPage(mut state) => {
                     self.abort_series_state(&mut state);
                 }
                 _ => {}
@@ -5610,10 +5609,19 @@ mod tests {
             d.ready(id);
             d.ready(blocker);
             fill_query(&mut d, blocker, 328);
+            assert_eq!(d.server.hub().queued(blocker).query, 328);
+            assert_eq!(d.server.hub().uid_pools(1).query, 328);
+            assert_eq!(d.server.hub().queued(id).query, 0);
+            assert!(!d.server.hub().query_room(id, 1));
             d.send(id, &request(3, "series_batch", &series_args(None, 2)));
             let series_view = QueryViewId::Series(SeriesViewId(11));
             assert_eq!(d.server.view_references(series_view), 2);
             assert_eq!(d.server.conn(id).map(|conn| conn.outstanding()), Some(1));
+            assert!(d
+                .server
+                .conn(id)
+                .is_some_and(|conn| conn.has_pending_series_page(3)));
+            assert_eq!(d.server.cursor_count(), 1);
 
             if fatal {
                 d.send(id, &[0, 0, 0, 0]);
@@ -5623,6 +5631,7 @@ mod tests {
                 d.server.finish(id);
             }
             assert_eq!(d.server.view_references(series_view), 0);
+            assert_eq!(d.server.cursor_count(), 0);
             assert_eq!(
                 d.server
                     .backend()
