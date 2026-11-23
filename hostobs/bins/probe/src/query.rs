@@ -1130,7 +1130,7 @@ pub fn validate_snapshot_meta(
         }
         previous = Some(subject.inc);
     }
-    validate_columns(&meta.columns, &request.selection.metrics())?;
+    validate_columns(&meta.columns, request.selection.metrics())?;
     Ok(())
 }
 
@@ -1318,13 +1318,13 @@ trait RawTypeCheck {
 
 impl RawTypeCheck for RawInput {
     fn value_type_mismatch(&self) -> bool {
-        match (self.value_type, self.value) {
-            (_, None) => false,
-            (MetricValueType::U64, Some(RawNumber::U64(_)))
-            | (MetricValueType::I64, Some(RawNumber::I64(_)))
-            | (MetricValueType::F64, Some(RawNumber::F64(_))) => false,
-            _ => true,
-        }
+        !matches!(
+            (self.value_type, self.value),
+            (_, None)
+                | (MetricValueType::U64, Some(RawNumber::U64(_)))
+                | (MetricValueType::I64, Some(RawNumber::I64(_)))
+                | (MetricValueType::F64, Some(RawNumber::F64(_)))
+        )
     }
 }
 
@@ -1457,14 +1457,24 @@ pub fn validate_series_view(
     {
         return Err(QuerySourceError::Internal);
     }
-    validate_columns(&view.columns, &request.selection.metrics())
+    validate_columns(&view.columns, request.selection.metrics())
+}
+
+/// The derived dictionary and column facts for a history request.
+pub(crate) struct SeriesDictionary {
+    /// The exact encoded dictionary body.
+    pub(crate) body: Vec<u8>,
+    /// Selected metrics permitted by none of the requested aggregations.
+    pub(crate) omitted: Vec<String>,
+    /// Selected metrics permitted by at least one requested aggregation.
+    pub(crate) permitted: Vec<QueryColumnMeta>,
 }
 
 /// The derived omitted set and dictionary metadata for a history request.
-pub fn series_dictionary(
+pub(crate) fn series_dictionary(
     view: &SeriesView,
     request: &SeriesRequest,
-) -> Result<(Vec<u8>, Vec<String>, Vec<QueryColumnMeta>), QuerySourceError> {
+) -> Result<SeriesDictionary, QuerySourceError> {
     let mut permitted = Vec::new();
     let mut omitted = Vec::new();
     for column in &view.columns {
@@ -1487,17 +1497,18 @@ pub fn series_dictionary(
     }
     entries.extend(permitted.iter().map(metric_entry));
     let body = tick::dictionary_body(1, &entries).map_err(|_| QuerySourceError::Internal)?;
-    Ok((body, omitted, permitted))
+    Ok(SeriesDictionary {
+        body,
+        omitted,
+        permitted,
+    })
 }
 
 fn align8(value: usize) -> Option<usize> {
     value.checked_add(7)?.checked_div(8)?.checked_mul(8)
 }
 
-fn columns_for_agg<'a>(
-    permitted: &'a [QueryColumnMeta],
-    agg: Aggregation,
-) -> Vec<&'a QueryColumnMeta> {
+fn columns_for_agg(permitted: &[QueryColumnMeta], agg: Aggregation) -> Vec<&QueryColumnMeta> {
     permitted
         .iter()
         .filter(|column| column.facts.aggregation_mask() & agg.bit() != 0)
@@ -1655,17 +1666,39 @@ fn source_series_group<Q: QueryBackend + ?Sized>(
     })
 }
 
+/// Metadata inputs for one deterministic history page plan.
+#[derive(Clone, Copy)]
+pub(crate) struct SeriesPlanInput<'a> {
+    /// The immutable source view.
+    pub(crate) view: &'a SeriesView,
+    /// The canonical request.
+    pub(crate) request: &'a SeriesRequest,
+    /// The complete requested columns.
+    pub(crate) permitted_columns: &'a [QueryColumnMeta],
+    /// Exact dictionary body length, present on the first BLOCK.
+    pub(crate) dictionary_len: usize,
+    /// The source and block bounds.
+    pub(crate) bounds: QueryBounds,
+    /// The maximum BLOCK count for this page.
+    pub(crate) max_blocks: u32,
+    /// The first data-bearing ordinal to plan.
+    pub(crate) start: SeriesPosition,
+}
+
 /// Plan the largest deterministic page from `start`.
-pub fn plan_series_page<Q: QueryBackend + ?Sized>(
+pub(crate) fn plan_series_page<Q: QueryBackend + ?Sized>(
     backend: &Q,
-    view: &SeriesView,
-    request: &SeriesRequest,
-    permitted_columns: &[QueryColumnMeta],
-    dictionary_len: usize,
-    bounds: QueryBounds,
-    max_blocks: u32,
-    start: SeriesPosition,
+    input: SeriesPlanInput<'_>,
 ) -> Result<PagePlan, QuerySourceError> {
+    let SeriesPlanInput {
+        view,
+        request,
+        permitted_columns,
+        dictionary_len,
+        bounds,
+        max_blocks,
+        start,
+    } = input;
     let mut blocks = Vec::new();
     let mut at = start;
     let mut first_in_request = true;
@@ -2595,9 +2628,9 @@ mod tests {
         ConstraintValue, CursorBinding, CursorTable, CursorTarget, HistoryBlockData, HistoryBucket,
         HistoryColumn, ProcField, ProcProjectionId, ProcRow, ProcScanId, ProcScanView,
         ProcsRequest, QueryColumnMeta, QuerySourceError, QueryViewId, RawInput, RawNumber,
-        SeriesArgs, SeriesGroup, SeriesPosition, SeriesRequest, SeriesView, SeriesViewId,
-        SnapshotData, SnapshotMeta, SnapshotRequest, SnapshotSubjectMeta, Tier, TierCatalog,
-        TierCatalogEntry, TierChoice, MAX_CURSOR_ENTRIES,
+        SeriesArgs, SeriesGroup, SeriesPlanInput, SeriesPosition, SeriesRequest, SeriesView,
+        SeriesViewId, SnapshotData, SnapshotMeta, SnapshotRequest, SnapshotSubjectMeta, Tier,
+        TierCatalog, TierCatalogEntry, TierChoice, MAX_CURSOR_ENTRIES,
     };
     use crate::backend::{FixedBackend, Identity, TickData};
     use crate::codes::{Code, Detail, Pool};
@@ -2842,32 +2875,30 @@ mod tests {
         let request = request();
         let view = view(1);
         let backend = planning_backend(&view);
-        let (dictionary, omitted, permitted) =
-            series_dictionary(&view, &request).expect("dictionary");
+        let dictionary = series_dictionary(&view, &request).expect("dictionary");
         assert_eq!(
             fixture["dictionary"]["encoded_body_bytes"]
                 .as_u64()
                 .map(|value| usize::try_from(value).expect("usize")),
-            Some(dictionary.len())
+            Some(dictionary.body.len())
         );
-        assert!(omitted.is_empty());
+        assert!(dictionary.omitted.is_empty());
 
         let bounds = super::QueryBounds {
             max_rows: 4_096,
             max_block_buckets: 4,
             max_block_bytes: 328,
         };
-        let page = plan_series_page(
-            &backend,
-            &view,
-            &request,
-            &permitted,
-            dictionary.len(),
+        let input = SeriesPlanInput {
+            view: &view,
+            request: &request,
+            permitted_columns: &dictionary.permitted,
+            dictionary_len: dictionary.body.len(),
             bounds,
-            2,
-            SeriesPosition(0),
-        )
-        .expect("page");
+            max_blocks: 2,
+            start: SeriesPosition(0),
+        };
+        let page = plan_series_page(&backend, input).expect("page");
         assert_eq!(page.continuation, Some(SeriesPosition(3)));
         assert_eq!(
             page.blocks,
@@ -2889,13 +2920,11 @@ mod tests {
 
         let replay_one = plan_series_page(
             &backend,
-            &view,
-            &request,
-            &permitted,
-            dictionary.len(),
-            bounds,
-            1,
-            SeriesPosition(3),
+            SeriesPlanInput {
+                max_blocks: 1,
+                start: SeriesPosition(3),
+                ..input
+            },
         )
         .expect("one-block replay");
         assert_eq!(replay_one.blocks.len(), 1);
@@ -2904,13 +2933,10 @@ mod tests {
 
         let replay_two = plan_series_page(
             &backend,
-            &view,
-            &request,
-            &permitted,
-            dictionary.len(),
-            bounds,
-            2,
-            SeriesPosition(3),
+            SeriesPlanInput {
+                start: SeriesPosition(3),
+                ..input
+            },
         )
         .expect("two-block replay");
         assert_eq!(replay_two.blocks.len(), 2);
@@ -2938,16 +2964,15 @@ mod tests {
         let mut view = view(2);
         view.subjects = vec![7];
         view.columns = vec![column("m_never", MetricKind::Counter)];
-        let (dictionary, omitted, permitted) =
-            series_dictionary(&view, &request).expect("dictionary");
-        assert_eq!(omitted, vec!["m_never".to_string()]);
-        assert!(permitted.is_empty());
+        let dictionary = series_dictionary(&view, &request).expect("dictionary");
+        assert_eq!(dictionary.omitted, vec!["m_never".to_string()]);
+        assert!(dictionary.permitted.is_empty());
         let entries = Entry::Entity {
             inc: 7,
             label: String::new(),
         };
         let expected = crate::tick::dictionary_body(1, &[entries]).expect("entity-only");
-        assert_eq!(dictionary, expected);
+        assert_eq!(dictionary.body, expected);
     }
 
     #[test]
@@ -2972,13 +2997,15 @@ mod tests {
         assert_eq!(
             plan_series_page(
                 &backend,
-                &view,
-                &request,
-                &view.columns,
-                80,
-                bounds,
-                2,
-                SeriesPosition(0),
+                SeriesPlanInput {
+                    view: &view,
+                    request: &request,
+                    permitted_columns: &view.columns,
+                    dictionary_len: 80,
+                    bounds,
+                    max_blocks: 2,
+                    start: SeriesPosition(0),
+                },
             ),
             Err(QuerySourceError::Internal)
         );
@@ -3001,13 +3028,15 @@ mod tests {
         assert_eq!(
             plan_series_page(
                 &backend,
-                &empty,
-                &request,
-                &empty.columns,
-                80,
-                bounds,
-                2,
-                SeriesPosition(0),
+                SeriesPlanInput {
+                    view: &empty,
+                    request: &request,
+                    permitted_columns: &empty.columns,
+                    dictionary_len: 80,
+                    bounds,
+                    max_blocks: 2,
+                    start: SeriesPosition(0),
+                },
             ),
             Err(QuerySourceError::Internal)
         );
@@ -3017,13 +3046,15 @@ mod tests {
         assert_eq!(
             plan_series_page(
                 &backend,
-                &empty,
-                &request,
-                &empty.columns,
-                80,
-                bounds,
-                2,
-                SeriesPosition(0),
+                SeriesPlanInput {
+                    view: &empty,
+                    request: &request,
+                    permitted_columns: &empty.columns,
+                    dictionary_len: 80,
+                    bounds,
+                    max_blocks: 2,
+                    start: SeriesPosition(0),
+                },
             ),
             Ok(super::PagePlan {
                 blocks: Vec::new(),
@@ -3046,13 +3077,15 @@ mod tests {
         assert_eq!(
             plan_series_page(
                 &backend,
-                &later,
-                &request,
-                &later.columns,
-                80,
-                bounds,
-                2,
-                SeriesPosition(1),
+                SeriesPlanInput {
+                    view: &later,
+                    request: &request,
+                    permitted_columns: &later.columns,
+                    dictionary_len: 80,
+                    bounds,
+                    max_blocks: 2,
+                    start: SeriesPosition(1),
+                },
             ),
             Err(QuerySourceError::Internal)
         );
@@ -3391,7 +3424,7 @@ mod tests {
             }]),
         };
         assert_eq!(
-            validate_provenance(&meta, Some(&[good.clone()]), 10),
+            validate_provenance(&meta, Some(std::slice::from_ref(&good)), 10),
             Ok(())
         );
 
@@ -3762,47 +3795,43 @@ mod tests {
         backend
             .series_group
             .insert((history.id, SeriesPosition(2)), Ok(None));
-        let (dictionary, _, permitted) = series_dictionary(&history, &request).expect("dictionary");
+        let dictionary = series_dictionary(&history, &request).expect("dictionary");
         let one_column_cap =
-            series_frame_len(1, 1, Some(dictionary.len())).expect("one-column frame");
+            series_frame_len(1, 1, Some(dictionary.body.len())).expect("one-column frame");
         let bounds = super::QueryBounds {
             max_rows: 4_096,
             max_block_buckets: 4,
             max_block_bytes: u32::try_from(one_column_cap).expect("small frame"),
         };
-        let first = plan_series_page(
-            &backend,
-            &history,
-            &request,
-            &permitted,
-            dictionary.len(),
+        let input = SeriesPlanInput {
+            view: &history,
+            request: &request,
+            permitted_columns: &dictionary.permitted,
+            dictionary_len: dictionary.body.len(),
             bounds,
-            1,
-            SeriesPosition(0),
-        )
-        .expect("first page");
+            max_blocks: 1,
+            start: SeriesPosition(0),
+        };
+        let first = plan_series_page(&backend, input).expect("first page");
         assert_eq!(first.blocks.len(), 1);
         assert_eq!(first.blocks[0].agg, hostobs_proto::dict::Aggregation::Mean);
         assert_eq!(first.continuation, Some(SeriesPosition(1)));
         assert_eq!(
             series_plan_frame_len(
                 first.blocks[0].buckets,
-                &permitted,
+                &dictionary.permitted,
                 first.blocks[0].agg,
-                Some(dictionary.len())
+                Some(dictionary.body.len())
             ),
             Some(one_column_cap)
         );
         assert_eq!(
             plan_series_page(
                 &backend,
-                &history,
-                &request,
-                &permitted,
-                dictionary.len(),
-                bounds,
-                1,
-                SeriesPosition(1),
+                SeriesPlanInput {
+                    start: SeriesPosition(1),
+                    ..input
+                },
             ),
             Err(QuerySourceError::Budget(Pool::Block))
         );
@@ -3888,13 +3917,13 @@ mod tests {
                 quality: vec![hostobs_proto::quality::Quality::Absent.code()],
             }],
         };
-        let (dictionary, _, _) = series_dictionary(&view, &request).expect("dictionary");
+        let dictionary = series_dictionary(&view, &request).expect("dictionary");
         assert!(series_block(
             &identity,
             &view,
             &request,
             &permitted,
-            Some(dictionary),
+            Some(dictionary.body),
             plan,
             data,
         )

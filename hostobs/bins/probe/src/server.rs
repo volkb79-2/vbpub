@@ -979,9 +979,8 @@ impl<B: Backend + QueryBackend> Server<B> {
             conn.push_query_error(corr, code, &detail, now_ns, &mut self.hub);
             return;
         }
-        let (dictionary, omitted, permitted) = match query::series_dictionary(&view, &args.request)
-        {
-            Ok(parts) => parts,
+        let dictionary = match query::series_dictionary(&view, &args.request) {
+            Ok(dictionary) => dictionary,
             Err(_) => {
                 if owns_active_ref {
                     self.release_view(QueryViewId::Series(view.id));
@@ -998,13 +997,15 @@ impl<B: Backend + QueryBackend> Server<B> {
         } else {
             match query::plan_series_page(
                 &self.backend,
-                &view,
-                &args.request,
-                &permitted,
-                dictionary.len(),
-                self.query_bounds(conn),
-                args.max_blocks,
-                start,
+                query::SeriesPlanInput {
+                    view: &view,
+                    request: &args.request,
+                    permitted_columns: &dictionary.permitted,
+                    dictionary_len: dictionary.body.len(),
+                    bounds: self.query_bounds(conn),
+                    max_blocks: args.max_blocks,
+                    start,
+                },
             ) {
                 Ok(page) => page,
                 Err(error) => {
@@ -1053,7 +1054,7 @@ impl<B: Backend + QueryBackend> Server<B> {
         } else {
             (None, false)
         };
-        let result = query::series_result(&view, &omitted);
+        let result = query::series_result(&view, &dictionary.omitted);
         conn.push_query_rep(corr, &result, now_ns, &mut self.hub);
         if conn.is_closed() {
             if owns_active_ref {
@@ -1072,9 +1073,9 @@ impl<B: Backend + QueryBackend> Server<B> {
         let state = PendingSeries {
             args,
             view,
-            permitted,
-            omitted,
-            dictionary,
+            permitted: dictionary.permitted,
+            omitted: dictionary.omitted,
+            dictionary: dictionary.body,
             page,
             next_block: 0,
             next_token,
