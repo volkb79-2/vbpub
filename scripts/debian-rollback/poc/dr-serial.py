@@ -392,7 +392,7 @@ LOADER_ENTRY_SELECTED_EFIVAR = (
 LOADER_ENTRY_ONESHOT_EFIVAR = (
     "/sys/firmware/efi/efivars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 )
-KERNEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*-[0-9a-f]{12}")
+KERNEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*-(?:[0-9a-f]{12}|[0-9a-f]{64})")
 ENTRY_ID_RE = re.compile(r"os-[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
@@ -472,7 +472,8 @@ def parse_loader_default(text):
 
 
 def valid_kernel_id(kernel_id):
-    return bool(KERNEL_ID_RE.fullmatch(kernel_id)) and ".." not in kernel_id
+    return (bool(KERNEL_ID_RE.fullmatch(kernel_id)) and ".." not in kernel_id
+            and len(kernel_id) <= 255)
 
 
 def valid_entry_id(entry_id):
@@ -608,7 +609,8 @@ def parse_sdboot_entry(path, text):
     title_state, title_kernel = parse_bls_title(entry["title"])
     if title_state != state:
         raise ValueError(f"BLS title names state {title_state!r}, options name {state!r}")
-    if entry["kernel_id"][:-13] != title_kernel:
+    id_kernel_version = re.sub(r"-(?:[0-9a-f]{12}|[0-9a-f]{64})$", "", entry["kernel_id"])
+    if id_kernel_version != title_kernel:
         raise ValueError(
             f"BLS title names kernel {title_kernel!r}, linux path names {entry['kernel_id']!r}"
         )
@@ -1415,8 +1417,8 @@ def scenario_recovery_kernel(g, log):
     if not recovery_persistent_marker(g, log, marker):
         return
 
-    # Both files are replaced with non-empty invalid payloads. dr-state keys the ESP copy by initrd hash, so this
-    # gives the damaged default a separate kernel directory while the snapshot keeps its original known-good pair.
+    # Both files are replaced with non-empty invalid payloads. dr-state keys the ESP copy by the kernel/initrd pair,
+    # so this gives the damaged default a separate kernel directory while the snapshot keeps its known-good pair.
     source_kernel = f"/boot/vmlinuz-{kernel}"
     source_initrd = f"/boot/initrd.img-{kernel}"
     _, out = g.run(

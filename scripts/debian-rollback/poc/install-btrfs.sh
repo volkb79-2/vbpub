@@ -105,9 +105,22 @@ done
 run mkdir -p "$T/boot/efi" "$T/.top"
 run mount -o umask=0077 "$ESP" "$T/boot/efi"
 
+# Disable systemd's stock BLS writer before debootstrap configures systemd-boot and the kernel. Its package
+# postinst can call kernel-install during debootstrap, before the dr-state hooks are installed below.
+if [ "$BOOTLOADER" = systemd-boot ]; then
+  run mkdir -p "$T/etc/kernel/install.d"
+  run ln -s /dev/null "$T/etc/kernel/install.d/90-loaderentry.install"
+fi
+
 BOOT_PACKAGES=grub-efi-amd64
 [ "$BOOTLOADER" = systemd-boot ] && BOOT_PACKAGES=systemd-boot,systemd-boot-efi
 run debootstrap --include=linux-image-amd64,"$BOOT_PACKAGES",btrfs-progs,snapper,initramfs-tools,systemd-sysv,openssh-server,sudo,locales,ifupdown,isc-dhcp-client,dosfstools,ca-certificates "$SUITE" "$T" "$MIRROR"
+
+if [ "$BOOTLOADER" = systemd-boot ] && [ "$DRY" != 1 ]; then
+  bls_override="$T/etc/kernel/install.d/90-loaderentry.install"
+  [ -L "$bls_override" ] && [ "$(readlink "$bls_override")" = /dev/null ] \
+    || die "the systemd-boot BLS writer override did not survive debootstrap"
+fi
 
 if [ "$DRY" != 1 ]; then
   RUUID=$(blkid -s UUID -o value "$ROOT")
@@ -163,7 +176,8 @@ else
   # select systemd-boot; dr-state fails loudly if they later disagree.
   chroot_run /usr/local/sbin/dr-state install-systemd-boot
   # Debian's systemd-boot kernel hooks call kernel-install, which creates an extra machine-id BLS entry and kernel
-  # copy outside dr-state's per-state ESP layout. Divert those hooks; the zz-dr-state hooks below own kernel updates.
+  # copy outside dr-state's per-state ESP layout. The earlier BLS writer override suppresses that output; divert the
+  # package hooks too, and let zz-dr-state own kernel updates.
   # Keep diverted files outside the run-parts directories: --lsbsysinit accepts the usual .distrib suffix.
   chroot_run mkdir -p /etc/kernel/dr-disabled
   for d in postinst.d postrm.d; do
@@ -171,16 +185,12 @@ else
     target="/etc/kernel/dr-disabled/${d%.d}-zz-systemd-boot"
     chroot_run dpkg-divert --local --add --rename --divert "$target" "$hook"
   done
-  # The systemd-boot package postinst calls kernel-install directly, bypassing the hooks above. Disable only its
-  # stock BLS writer through systemd's supported /etc override; dr-state owns the per-state ESP entries.
-  chroot_run mkdir -p /etc/kernel/install.d
-  chroot_run ln -s /dev/null /etc/kernel/install.d/90-loaderentry.install
 fi
 chroot_run /usr/local/sbin/dr-state initialize-state "$STATE" "$STATE_TIMESTAMP"
 chroot_run /usr/local/sbin/dr-state gen-menu --default "$STATE"
 
-# A stock kernel-install writer may have run during debootstrap before our hook diversion was installed. Never finish
-# an install with an unowned BLS entry: it can point at the top-level subvolume and cannot be repaired by dr-state.
+# The BLS writer override is installed before debootstrap. Still refuse to finish if any package hook bypassed it and
+# left an unowned entry that could point at the top-level subvolume.
 if [ "$BOOTLOADER" = systemd-boot ] && [ "$DRY" != 1 ]; then
   BLS_ENTRY_DIR="$T/boot/efi/loader/entries"
   if [ -d "$BLS_ENTRY_DIR" ]; then

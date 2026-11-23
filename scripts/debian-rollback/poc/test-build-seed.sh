@@ -81,12 +81,9 @@ rc=$?
 [ "$rc" != 0 ] || bad "isolated failure: failed xorriso stub was reported as success"
 assert_tmpdir_empty "isolated failure" "$WORK/tmp-failure"
 
-# The guest must read the marker, keep grub as the absent-file fallback, and pass the
-# selected backend to the installer.
-grep -Fq '/mnt/seed/bootloader' "$USER_DATA" \
-  || bad "user-data does not read /mnt/seed/bootloader"
-grep -Fq 'BL=grub' "$USER_DATA" \
-  || bad "user-data has no grub fallback"
+# The guest must require the generated marker and pass its selected backend to the installer.
+grep -Fq '[ -f /mnt/seed/bootloader ]' "$USER_DATA" \
+  || bad "user-data does not require /mnt/seed/bootloader"
 
 # Execute the marker-selection block through its real installer invocation, with /mnt/seed
 # redirected to a disposable fake seed. The mount, apt and disk commands are deliberately
@@ -99,7 +96,7 @@ run_marker_block() { # run_marker_block LABEL SEED -> sets MARKER_RC and MARKER_
   printf '%s\n' '#!/bin/bash' 'printf "%s\n" "$@" > "$ARGV_OUT"' >"$seed/poc/install-btrfs.sh"
   chmod +x "$seed/poc/install-btrfs.sh"
   MARKER_OUT=$(awk -v seed="$seed" '
-    /^      BL=grub$/ { block=1 }
+    /^      \[ -f \/mnt\/seed\/bootloader \]/ { block=1 }
     block {
       sub(/^      /, "")
       gsub("/mnt/seed", seed)
@@ -134,9 +131,10 @@ printf 'systemd-boot\n' >"$WORK/seed-systemd/bootloader"
 printf 'grub2\n' >"$WORK/seed-unknown/bootloader"
 
 run_marker_block absent "$WORK/seed-absent"
-[ "$MARKER_RC" = 0 ] && [ "$MARKER_OUT" = "BL:grub" ] \
-  || bad "marker-block-absent: rc=$MARKER_RC output='$MARKER_OUT'"
-assert_installer_argv absent grub
+if [ "$MARKER_RC" = 0 ] || ! grep -Fq 'DR-BUILD-FAIL missing-bootloader-marker' <<<"$MARKER_OUT"; then
+  bad "marker-block-absent: rc=$MARKER_RC output='$MARKER_OUT'"
+fi
+[ ! -e "$WORK/absent.argv" ] || bad "marker-block-absent: installer ran without a bootloader marker"
 run_marker_block explicit-grub "$WORK/seed-grub"
 [ "$MARKER_RC" = 0 ] && [ "$MARKER_OUT" = "BL:grub" ] \
   || bad "marker-block-grub: rc=$MARKER_RC output='$MARKER_OUT'"

@@ -68,7 +68,7 @@ unusable running system.
 | `dr-state delete STATE --dry-run` | Inspect one exact deletion target | Does not change the menu or Btrfs state |
 | `dr-state delete STATE --yes` | Remove one exact inactive `@os-*` state | Refuses the running, configured-default, and pending one-shot states; validates selectors and publishes a menu without the target before deleting its Btrfs subvolume |
 | `dr-state prune --keep N --dry-run` | Preview retention cleanup | Reports excess timestamped snapshot states without deleting |
-| `dr-state prune --keep N` | Keep the newest N snapshots | Uses the sequence, protects the running, configured-default, and pending one-shot states, and leaves the `install` state alone |
+| `dr-state prune --keep N` | Keep the newest N snapshots | Uses the sequence, protects the running, configured-default, and pending one-shot states, leaves the `install` state alone, and removes every doomed state from the boot menu before deleting any subvolume |
 
 Deletion requires one exact state name and `--yes`; it is never a wildcard
 operation. The menu must still have at least one bootable `dr-state` entry

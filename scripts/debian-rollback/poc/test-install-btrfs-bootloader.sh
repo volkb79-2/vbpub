@@ -53,8 +53,10 @@ contains sdboot-divert-postinst "$WORK/sdboot.err" \
   'chroot /mnt/drtarget dpkg-divert --local --add --rename --divert /etc/kernel/dr-disabled/postinst-zz-systemd-boot /etc/kernel/postinst.d/zz-systemd-boot'
 contains sdboot-divert-postrm "$WORK/sdboot.err" \
   'chroot /mnt/drtarget dpkg-divert --local --add --rename --divert /etc/kernel/dr-disabled/postrm-zz-systemd-boot /etc/kernel/postrm.d/zz-systemd-boot'
+contains sdboot-disable-kernel-install-bls-dir "$WORK/sdboot.err" \
+  '+ mkdir -p /mnt/drtarget/etc/kernel/install.d'
 contains sdboot-disable-kernel-install-bls "$WORK/sdboot.err" \
-  'chroot /mnt/drtarget ln -s /dev/null /etc/kernel/install.d/90-loaderentry.install'
+  '+ ln -s /dev/null /mnt/drtarget/etc/kernel/install.d/90-loaderentry.install'
 contains sdboot-config "$DR" "printf 'BOOTLOADER=systemd-boot\\n' >\"\$DR_STATE_CONF.new.\$\$\""
 contains sdboot-marker "$DR" "printf 'systemd-boot\\n' >\"\$SDBOOT_MARKER.new.\$\$\""
 contains restricted-esp-install-mount "$WORK/sdboot.err" 'mount -o umask=0077'
@@ -70,20 +72,23 @@ contains apt-plan-version "$INSTALL" 'DPkg::Tools::Options::/usr/local/sbin/dr-s
 contains apt-plan-fd "$INSTALL" 'DPkg::Tools::Options::/usr/local/sbin/dr-state::InfoFD "3";'
 contains apt-preinvoke-fallback "$INSTALL" 'dr-state snapshot --reason apt || exit 100'
 
-# systemd-boot installation, hook diversions and the kernel-install BLS override must precede the generated menu.
+# The BLS override must precede debootstrap's systemd-boot/kernel package configuration; hook diversions and
+# dr-state installation follow package installation but precede state capture and menu generation.
 cases=$((cases + 1))
+kd=$(grep -nF 'mkdir -p /mnt/drtarget/etc/kernel/install.d' "$WORK/sdboot.err" | cut -d: -f1)
+kp=$(grep -nF 'ln -s /dev/null /mnt/drtarget/etc/kernel/install.d/90-loaderentry.install' "$WORK/sdboot.err" | cut -d: -f1)
+dp=$(grep -nF 'debootstrap --include=linux-image-amd64,systemd-boot,systemd-boot-efi' "$WORK/sdboot.err" | cut -d: -f1)
 bc=$(grep -nF 'install-systemd-boot' "$WORK/sdboot.err" | cut -d: -f1)
 si=$(grep -nF 'initialize-state @os-000001-' "$WORK/sdboot.err" | cut -d: -f1)
 dd=$(grep -nF 'mkdir -p /etc/kernel/dr-disabled' "$WORK/sdboot.err" | cut -d: -f1)
 pi=$(grep -nF 'dpkg-divert --local --add --rename --divert /etc/kernel/dr-disabled/postinst-zz-systemd-boot' "$WORK/sdboot.err" | cut -d: -f1)
 pr=$(grep -nF 'dpkg-divert --local --add --rename --divert /etc/kernel/dr-disabled/postrm-zz-systemd-boot' "$WORK/sdboot.err" | cut -d: -f1)
-kd=$(grep -nF 'mkdir -p /etc/kernel/install.d' "$WORK/sdboot.err" | cut -d: -f1)
-kp=$(grep -nF 'ln -s /dev/null /etc/kernel/install.d/90-loaderentry.install' "$WORK/sdboot.err" | cut -d: -f1)
 gm=$(grep -nF 'gen-menu --default @os-000001-' "$WORK/sdboot.err" | cut -d: -f1)
-[ -n "$bc" ] && [ -n "$dd" ] && [ -n "$pi" ] && [ -n "$pr" ] && [ -n "$kd" ] && [ -n "$kp" ] && [ -n "$si" ] && [ -n "$gm" ] \
-  && [ "$bc" -lt "$dd" ] && [ "$dd" -lt "$pi" ] && [ "$pi" -lt "$kd" ] && [ "$kd" -lt "$kp" ] && [ "$kp" -lt "$si" ] && [ "$si" -lt "$gm" ] \
-  && [ "$dd" -lt "$pr" ] && [ "$pr" -lt "$si" ] \
-  || bad "sdboot bootloader setup and state capture must precede gen-menu"
+[ -n "$kd" ] && [ -n "$kp" ] && [ -n "$dp" ] && [ -n "$bc" ] && [ -n "$dd" ] && [ -n "$pi" ] && [ -n "$pr" ] && [ -n "$si" ] && [ -n "$gm" ] \
+  && [ "$kd" -lt "$kp" ] && [ "$kp" -lt "$dp" ] && [ "$dp" -lt "$bc" ] \
+  && [ "$bc" -lt "$dd" ] && [ "$dd" -lt "$pi" ] && [ "$pi" -lt "$pr" ] \
+  && [ "$pr" -lt "$si" ] && [ "$si" -lt "$gm" ] \
+  || bad "sdboot BLS override must precede debootstrap, and bootloader setup/state capture must precede gen-menu"
 
 cases=$((cases + 1))
 if "$INSTALL" --dry-run --yes --device /dev/dr-not-used --bootloader grub2 >/dev/null 2>&1; then
