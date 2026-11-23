@@ -4336,6 +4336,14 @@ mod tests {
             )),
         );
         backend.series_read.insert(
+            (view.id, SeriesPosition(1), 1),
+            Ok(history_data(&view, 7, Aggregation::Last, &[2_000_000_000])),
+        );
+        backend.series_read.insert(
+            (view.id, SeriesPosition(2), 1),
+            Ok(history_data(&view, 7, Aggregation::Last, &[3_000_000_000])),
+        );
+        backend.series_read.insert(
             (view.id, SeriesPosition(1), 2),
             Ok(history_data(
                 &view,
