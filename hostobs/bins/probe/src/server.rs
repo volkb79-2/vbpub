@@ -707,11 +707,16 @@ impl<B: Backend + QueryBackend> Server<B> {
         }
         let mut work: BTreeMap<u32, Vec<(ConnId, u32, bool)>> = BTreeMap::new();
         for (id, conn) in &self.conns {
+            let query_corrs = conn.query_corrs();
+            let current_corrs = conn.current_corrs();
+            if query_corrs.is_empty() && current_corrs.is_empty() {
+                continue;
+            }
             let requests = work.entry(conn.peer().uid).or_default();
-            for corr in conn.query_corrs() {
+            for corr in query_corrs {
                 requests.push((*id, corr, false));
             }
-            for corr in conn.current_corrs() {
+            for corr in current_corrs {
                 requests.push((*id, corr, true));
             }
         }
