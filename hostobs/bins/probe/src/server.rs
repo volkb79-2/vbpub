@@ -1898,6 +1898,30 @@ mod tests {
         assert_eq!(d.push_query(blocker, 99, len), QueryOutcome::Queued);
     }
 
+    /// Fill `id`'s Query pool until an exact `frame` cannot fit. The occupancy is derived from
+    /// the declared pool and frame bounds, and every synthetic block obeys `max_block_bytes`.
+    fn fill_query_short_of_frame(d: &mut Driver, id: ConnId, frame: usize) -> usize {
+        let limits = d.server.limits().observe;
+        let pool = usize::try_from(limits.query_queue_bytes).expect("query pool");
+        let max_block = usize::try_from(limits.max_block_bytes).expect("block bound");
+        assert!(frame > 0 && frame <= max_block, "frame must fit its block bound");
+        let occupied = pool
+            .checked_sub(frame)
+            .and_then(|remaining| remaining.checked_add(1))
+            .expect("frame fits the query pool");
+
+        let mut pushed = 0;
+        let mut stream = 99;
+        while pushed < occupied {
+            let len = (occupied - pushed).min(max_block);
+            assert_eq!(d.push_query(id, stream, len), QueryOutcome::Queued);
+            pushed += len;
+            stream += 1;
+        }
+        assert_eq!(d.server.hub().queued(id).query, occupied);
+        occupied
+    }
+
     /// Register a real Conn and registry subscription before 2d serves the wire verb.
     fn register(d: &mut Driver, id: ConnId, corr: u32, inc: u64) {
         let Some(conn) = d.server.conn(id) else {
@@ -4440,10 +4464,13 @@ mod tests {
         };
         let id = d.open(Level::Observe, 1);
         d.ready(id);
-        assert_eq!(d.push_query(id, 1, 800), QueryOutcome::Queued);
+        let snapshot_frame =
+            crate::query::snapshot_frame_len(&meta).expect("snapshot frame length");
+        let snapshot_fill = fill_query_short_of_frame(&mut d, id, snapshot_frame);
         d.send(id, &request(3, "snapshot_at", &snapshot_args(false)));
         assert!(d.take_out(id).is_empty());
         assert_eq!(d.server.conn(id).map(|conn| conn.outstanding()), Some(1));
+        assert_eq!(d.server.hub().queued(id).query, snapshot_fill);
         let released = d.server.backend().released.borrow().len();
         assert_eq!(released, 0);
         let mut newer = snapshot_candidate(&meta);
@@ -4457,7 +4484,7 @@ mod tests {
             .insert(source_request.selection.clone(), Ok(newer.tick));
 
         // Drain exactly the blocker; this frees query room and starts the admitted read.
-        assert_eq!(d.pump(id, 800), 800);
+        assert_eq!(d.pump(id, snapshot_fill), snapshot_fill);
         d.take_out(id);
         d.pump(id, usize::MAX);
         let out = d.take_out(id);
@@ -4474,10 +4501,7 @@ mod tests {
         assert!(text(&raw[0].2).contains(
             "\"resolved\":{\"tier\":\"hot\",\"bucket_real_ns\":-1000000000,\"step_ms\":1000,\"covered_ms\":1000},\"provenance\":null"
         ));
-        assert_eq!(
-            Some(raw[1].2.len()),
-            crate::query::snapshot_frame_len(&meta)
-        );
+        assert_eq!(raw[1].2.len(), snapshot_frame);
         let mut dicts = StreamDicts::new();
         let block = accept_block(&mut dicts, 3, &raw[1].2);
         assert_eq!(block.header.real_ns, -1_000_000_000);
@@ -5460,7 +5484,6 @@ mod tests {
             .insert(view.id, Ok(snapshot_candidate(&meta)));
         let series_source = series_request();
         let series = series_view();
-        backend.series_open.insert(series_source, Ok(series));
         let mut d = Driver {
             server: Server::new(query_limits(), backend),
             now: 0,
@@ -5471,10 +5494,16 @@ mod tests {
 
         let snapshot = d.open(Level::Observe, 1);
         d.ready(snapshot);
-        assert_eq!(d.push_query(snapshot, 1, 800), QueryOutcome::Queued);
+        let snapshot_frame = crate::query::snapshot_frame_len(&meta).expect("snapshot frame");
+        let snapshot_fill = fill_query_short_of_frame(&mut d, snapshot, snapshot_frame);
         d.send(snapshot, &request(2, "snapshot_at", &snapshot_args(false)));
         let snapshot_view = QueryViewId::Snapshot(SnapshotViewId(41));
         assert_eq!(d.server.view_references(snapshot_view), 1);
+        assert_eq!(
+            d.server.conn(snapshot).map(|conn| conn.outstanding()),
+            Some(1)
+        );
+        assert_eq!(d.server.hub().queued(snapshot).query, snapshot_fill);
         d.server.shutdown();
         d.close_out(snapshot);
         assert_eq!(d.server.view_references(snapshot_view), 0);
@@ -5489,15 +5518,53 @@ mod tests {
             1
         );
 
+        install_series(&mut d);
+        let series_dictionary =
+            crate::query::series_dictionary(&series, &series_source).expect("series dictionary");
+        let series_bounds = {
+            let limits = d.server.limits().observe;
+            crate::query::QueryBounds {
+                max_rows: limits.max_rows,
+                max_block_buckets: limits.max_block_buckets,
+                max_block_bytes: limits.max_block_bytes,
+            }
+        };
+        let series_page = crate::query::plan_series_page(
+            d.server.backend(),
+            crate::query::SeriesPlanInput {
+                view: &series,
+                request: &series_source,
+                permitted_columns: &series_dictionary.permitted,
+                dictionary_len: series_dictionary.body.len(),
+                bounds: series_bounds,
+                max_blocks: 2,
+                start: series.first.expect("series start"),
+            },
+        )
+        .expect("series page");
+        let first_series_block = *series_page.blocks.first().expect("first series block");
+        let series_frame = crate::query::series_plan_frame_len(
+            first_series_block.buckets,
+            &series_dictionary.permitted,
+            first_series_block.agg,
+            Some(series_dictionary.body.len()),
+        )
+        .expect("series frame");
+
         let series_conn = d.open(Level::Observe, 1);
         d.ready(series_conn);
-        assert_eq!(d.push_query(series_conn, 1, 800), QueryOutcome::Queued);
+        let series_fill = fill_query_short_of_frame(&mut d, series_conn, series_frame);
         d.send(
             series_conn,
             &request(2, "series_batch", &series_args(None, 2)),
         );
         let series_view = QueryViewId::Series(SeriesViewId(11));
         assert_eq!(d.server.view_references(series_view), 2);
+        assert_eq!(
+            d.server.conn(series_conn).map(|conn| conn.outstanding()),
+            Some(1)
+        );
+        assert_eq!(d.server.hub().queued(series_conn).query, series_fill);
         d.server.shutdown();
         d.close_out(series_conn);
         assert_eq!(d.server.view_references(series_view), 0);
