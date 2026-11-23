@@ -930,12 +930,7 @@ mod tests {
             &key("selection"),
         );
         let text = line("procs", "{}", 5);
-        assert_refusal(
-            &json(text.as_bytes()),
-            Code::BadRequest,
-            5,
-            &key("subject"),
-        );
+        assert_refusal(&json(text.as_bytes()), Code::BadRequest, 5, &key("subject"));
         let text = line("snapshot_at", "{}", 5);
         assert_plain(&json(text.as_bytes()), Code::BinaryRequired, 5);
     }
@@ -1197,8 +1192,8 @@ mod tests {
         ] {
             let text = req(verb, malformed);
             let query = binary(text.as_bytes());
-            let refusal = classify_with(&query, &full_facts())
-                .expect_err("the outstanding cap wins");
+            let refusal =
+                classify_with(&query, &full_facts()).expect_err("the outstanding cap wins");
             assert_eq!(
                 (refusal.code, refusal.corr, refusal.detail),
                 (Code::TooManyRequests, 5, Detail::Empty),
