@@ -1682,8 +1682,12 @@ mod tests {
         }
 
         fn with(limits: ServerLimits) -> Driver {
+            Driver::with_backend(limits, FixedBackend::new())
+        }
+
+        fn with_backend(limits: ServerLimits, backend: FixedBackend) -> Driver {
             Driver {
-                server: Server::new(limits, FixedBackend::new()),
+                server: Server::new(limits, backend),
                 now: 0,
                 out: BTreeMap::new(),
                 opened: Vec::new(),
@@ -3568,16 +3572,18 @@ mod tests {
     #[test]
     fn query_pass_rotates_uids_mixes_current_and_series_and_rechecks_latest_tick() {
         let cap = 700usize;
-        let mut d = Driver::with(query_bound_limits(cap));
-        let selected = selection(1);
-        put_current(&mut d, &selected, live_data(5, "v1"));
-        d.server.backend_mut().status.tiers.push(TierInfo {
+        let mut backend = FixedBackend::new();
+        backend.status.tiers.push(TierInfo {
             name: "hot".to_string(),
             step_ms: 1_000,
             keep_s: 3_600,
             bytes: 0,
             cap_bytes: 0,
         });
+        let mut d = Driver::with_backend(query_bound_limits(cap), backend);
+        assert!(d.server.tiers().has_step(1_000));
+        let selected = selection(1);
+        put_current(&mut d, &selected, live_data(5, "v1"));
         install_series(&mut d);
 
         let a_current = d.open(Level::Observe, 1);
