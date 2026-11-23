@@ -3583,7 +3583,75 @@ mod tests {
         let mut d = Driver::with_backend(query_bound_limits(cap), backend);
         assert!(d.server.tiers().has_step(1_000));
         let selected = selection(1);
-        put_current(&mut d, &selected, live_data(5, "v1"));
+        let first_current = live_data(5, "v1");
+        let current_frame = stream_block_len(d.server.limits(), &first_current);
+        assert_eq!(current_frame, 208);
+        let dictionary = query::series_dictionary(&series_view(), &series_request())
+            .expect("series dictionary");
+        let first_series_frame = query::series_plan_frame_len(
+            3,
+            &dictionary.permitted,
+            Aggregation::Last,
+            Some(dictionary.body.len()),
+        )
+        .expect("first series BLOCK frame");
+        let second_series_frame = query::series_plan_frame_len(
+            1,
+            &dictionary.permitted,
+            Aggregation::Mean,
+            None,
+        )
+        .expect("second series BLOCK frame");
+        assert_eq!((first_series_frame, second_series_frame), (408, 176));
+        let validate_series_page =
+            |raw: &[(u8, u32, Vec<u8>)], corr: u32| -> Option<String> {
+                assert_eq!(raw.len(), 4);
+                assert_eq!(
+                    (raw[0].0, raw[1].0, raw[2].0, raw[3].0),
+                    (
+                        FrameType::Rep.code(),
+                        FrameType::Block.code(),
+                        FrameType::Block.code(),
+                        FrameType::End.code(),
+                    )
+                );
+                assert!(
+                    check_rep(frame_payload(&raw[0].2), false)
+                        .expect("series REP")
+                        .ok
+                );
+                assert_eq!(
+                    (raw[1].2.len(), raw[2].2.len()),
+                    (first_series_frame, second_series_frame)
+                );
+                let mut dicts = StreamDicts::new();
+                let first = accept_block(&mut dicts, corr, &raw[1].2);
+                let second =
+                    decode_block_with(&raw[2].2, dicts.held(corr)).expect("bare series BLOCK");
+                dicts
+                    .accept(corr, &second)
+                    .expect("bare series BLOCK accepts");
+                assert_eq!(first.subject, Some(0));
+                assert_eq!(first.header.n_rows, 3);
+                assert_eq!(
+                    first
+                        .time
+                        .iter()
+                        .map(|bucket| bucket.real_ns)
+                        .collect::<Vec<_>>(),
+                    vec![0, 2_000_000_000, 3_000_000_000]
+                );
+                assert_eq!(first.columns.len(), 3);
+                assert!(first.dictionary.is_some());
+                assert_eq!(second.subject, Some(0));
+                assert_eq!(second.header.n_rows, 1);
+                assert_eq!(second.time[0].real_ns, 0);
+                assert_eq!(second.columns.len(), 1);
+                assert!(second.dictionary.is_none());
+                assert_end_ok(&raw[3].2, 2, 0, "page");
+                end_next(&raw[3].2)
+            };
+        put_current(&mut d, &selected, first_current);
         install_series(&mut d);
 
         let a_current = d.open(Level::Observe, 1);
@@ -3610,8 +3678,12 @@ mod tests {
         );
         assert_eq!(d.server.hub().queued(a_current).query, 0);
         assert_eq!(d.server.hub().queued(a_series).query, 0);
-        assert!(d.server.hub().queued(b_current).query > 0);
-        assert_eq!(d.server.hub().queued(b_series).query, 0);
+        assert_eq!(d.server.hub().queued(b_current).query, current_frame);
+        assert_eq!(d.server.hub().queued(b_series).query, first_series_frame);
+        assert_eq!(
+            d.server.conn(b_current).map(|conn| conn.outstanding()),
+            Some(0)
+        );
         assert_eq!(
             d.server.conn(b_series).map(|conn| conn.outstanding()),
             Some(1)
@@ -3636,8 +3708,22 @@ mod tests {
         );
         assert_eq!(
             d.server.conn(a_series).map(|conn| conn.outstanding()),
-            Some(0)
+            Some(1)
         );
+        assert_eq!(d.server.hub().queued(a_current).query, current_frame);
+        assert_eq!(d.server.hub().queued(a_series).query, first_series_frame);
+        assert!(d
+            .server
+            .conn(a_series)
+            .is_some_and(|conn| conn.has_pending_series_page(3)));
+        assert_eq!(
+            d.server.hub().queued(b_series).query,
+            current_frame + first_series_frame
+        );
+        assert!(d
+            .server
+            .conn(b_series)
+            .is_some_and(|conn| conn.has_pending_series_page(3)));
 
         d.pump(a_current, usize::MAX);
         let current_raw = raw_frames(&d.take_out(a_current));
@@ -3654,13 +3740,17 @@ mod tests {
         ));
         assert_end_ok(&current_raw[1].2, 1, 0, "complete");
 
+        assert_eq!(
+            d.server.conn(a_series).map(|conn| conn.outstanding()),
+            Some(0)
+        );
+        assert_eq!(
+            d.server.hub().queued(a_series).query,
+            first_series_frame + second_series_frame
+        );
         d.pump(a_series, usize::MAX);
         let series_raw = raw_frames(&d.take_out(a_series));
-        assert_eq!(series_raw[0].0, FrameType::Rep.code());
-        assert_eq!(
-            series_raw.last().map(|frame| frame.0),
-            Some(FrameType::End.code())
-        );
+        let a_token = validate_series_page(&series_raw, 3).expect("series continuation");
         d.close_out(a_current);
         d.close_out(a_series);
 
@@ -3670,14 +3760,24 @@ mod tests {
             (current_raw[0].0, current_raw[1].0),
             (FrameType::Block.code(), FrameType::End.code())
         );
+        assert_eq!(
+            d.server.conn(b_series).map(|conn| conn.outstanding()),
+            Some(0)
+        );
+        assert_eq!(
+            d.server.hub().queued(b_series).query,
+            first_series_frame + second_series_frame
+        );
         d.pump(b_series, usize::MAX);
         let series_raw = raw_frames(&d.take_out(b_series));
-        assert_eq!(series_raw[0].0, FrameType::Rep.code());
-        assert_eq!(
-            series_raw.last().map(|frame| frame.0),
-            Some(FrameType::End.code())
-        );
+        let b_token = validate_series_page(&series_raw, 3).expect("series continuation");
+        assert_ne!(a_token, b_token);
+        let view = QueryViewId::Series(SeriesViewId(11));
+        assert_eq!(d.server.view_references(view), 2);
+        assert_eq!(d.server.cursor_count(), 2);
         clear_cursor_slots(&mut d);
+        assert_eq!(d.server.view_references(view), 0);
+        assert_eq!(d.server.backend().released.borrow().as_slice(), &[view]);
         d.server.finish(b_current);
         d.server.finish(b_series);
         assert_clean(&d, "mixed fair query pass");
@@ -4184,6 +4284,15 @@ mod tests {
         backend.series_read.insert(
             (view.id, SeriesPosition(0), 1),
             Ok(history_data(&view, 7, Aggregation::Last, &[0])),
+        );
+        backend.series_read.insert(
+            (view.id, SeriesPosition(0), 3),
+            Ok(history_data(
+                &view,
+                7,
+                Aggregation::Last,
+                &[0, 2_000_000_000, 3_000_000_000],
+            )),
         );
         backend.series_read.insert(
             (view.id, SeriesPosition(1), 2),
