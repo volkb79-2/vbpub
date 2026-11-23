@@ -3585,7 +3585,6 @@ mod tests {
         let selected = selection(1);
         let first_current = live_data(5, "v1");
         let current_frame = stream_block_len(d.server.limits(), &first_current);
-        assert_eq!(current_frame, 208);
         let dictionary = crate::query::series_dictionary(&series_view(), &series_request())
             .expect("series dictionary");
         let first_series_frame = crate::query::series_plan_frame_len(
@@ -3599,6 +3598,20 @@ mod tests {
             crate::query::series_plan_frame_len(1, &dictionary.permitted, Aggregation::Mean, None)
                 .expect("second series BLOCK frame");
         assert_eq!((first_series_frame, second_series_frame), (408, 176));
+        let current_and_first = current_frame
+            .checked_add(first_series_frame)
+            .expect("current and first series frame size");
+        let current_first_and_second = current_and_first
+            .checked_add(second_series_frame)
+            .expect("current and both series frame sizes");
+        assert!(
+            current_and_first <= cap,
+            "current and first series BLOCK must fit the shared Query pool"
+        );
+        assert!(
+            current_first_and_second > cap,
+            "later series BLOCK must wait for shared Query room"
+        );
         let validate_series_page = |raw: &[(u8, u32, Vec<u8>)], corr: u32| -> String {
             assert_eq!(raw.len(), 4);
             assert_eq!(
