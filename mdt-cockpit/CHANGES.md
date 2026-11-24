@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Changed
+- host-setup `HOST_ROLE=dedicated-dev` (P-plat-19h, operator ruling 2026-11-24): the `dev-gates` / `dev-background` tier `MemoryMax` now equals dev.slice's own `MemoryMax`; the "minus P" subtraction (P = the protected tiers' `MemoryLow` sum) and its 1G floor are gone. The interactive `MemoryLow` protection, the swap ceilings (still dev swap minus P) and the `DEV_{GATES,BACKGROUND}_MEMORY_MAX` pin (at most dev's Max) are unchanged. r1002 design inputs: tier Max 4507009024 -> 7191363584 B; at the live 6375M dev.slice (`DEV_HOST_MEMORY_KEEP=1560M`) 6684901376 B. Admission's gates memory term floor(Max / 2G) is 3 on both. Code `mdt_capacity.dedicated_memory`; README, `host-setup.env.example`, DESIGN-DEDICATED-DEV-MEMORY, CGROUP-NOTES and the check.sh messages follow; tests pin the new value and fail if the subtraction returns. Apply: re-run `install.sh` (the converge raises `memory.max` directly).
+- host-setup accept kit (P-plat-19h): `accept-eval.py`'s FAIL header names the K the evaluation measured (`pin DEV_HOST_MEMORY_KEEP=<K>M`), not a fixed 1280M (run 2 on r1002 measured K 1507M -> 1560M); the README run order now starts with the checkout set (`mdt-cockpit/` AND `scripts/debian-install-v2/tools/`: without the second `install.sh` exits 2).
+
 ### Added
 - host-setup acceptance and measurement kit for the dedicated-dev memory model (P-plat-19g, `host-setup/tools/accept/`): `accept-run.sh`, `accept-eval.py` and `daemon-reload-check.sh`; run order in `host-setup/README.md`.
 

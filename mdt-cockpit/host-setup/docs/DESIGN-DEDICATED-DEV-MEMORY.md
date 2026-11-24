@@ -150,10 +150,11 @@ chosen ceiling): K is measured host need, so a kernel reserving more lowers dev 
 
 ## 5. Cockpit protection, load OOM domain, per-container caps (Q1)
 
-**5.1 Load tiers.** dev-gates and dev-background: `MemoryMax = max(1G, dev MemoryMax − P)`, no `MemoryHigh`, with
-`P = Σ DEV_{INTERACTIVE,BUILDKITD,CACHE}_MEMORY_LOW` (the existing `_PROTECTED_LOW_KEYS`); swap ceiling AD2-0
-unchanged (dev swap − P). This is r1 3 option (a), the old MDT-TESTHOST-MEM-2 shape without the throttle: one load
-tier cannot reclaim the cockpit's Low; a tier at its Max pages its own pages and OOMs only inside itself. Gates +
+**5.1 Load tiers.** dev-gates and dev-background: `MemoryMax = dev MemoryMax` (operator ruling 2026-11-24, P-plat-19h;
+it was `max(1G, dev MemoryMax − P)`), no `MemoryHigh`, with
+`P = Σ DEV_{INTERACTIVE,BUILDKITD,CACHE}_MEMORY_LOW` (the existing `_PROTECTED_LOW_KEYS`) now sizing only the swap
+ceiling AD2-0 (dev swap − P) and the Low protection, which stay. The cockpit's protection is its Min/Low, the −900
+score and `OOMPolicy=kill`, not a smaller tier ceiling; a tier at its Max pages its own pages and OOMs only inside itself. Gates +
 background together can still fill dev.slice; dev.slice reclaim then takes the unprotected load first, and a
 dev.slice OOM ranks the −900 cockpit last (2.7).
 
@@ -187,9 +188,9 @@ declare a tighter cap (r2 E6). If someone enables the watcher, its runtime `Memo
 the scope's 16G.
 
 **Effective cap (r2 E5).** A container's RAM bound is the smallest `memory.max` on its ancestor chain:
-- gates/background container on r1002 (and v1001 with host-setup): min(8G, tier 4298.22 MiB, dev 6858.22 MiB) =
-  the tier Max; cockpit and buildkitd: min(8G, dev Max) = dev Max. On both 8 GiB hosts the 8G line never binds RAM;
-  it binds only where dev Max − P > 8G (MemTotal above about 11.6 GiB at today's K and P).
+- gates/background container on r1002 (and v1001 with host-setup): min(8G, tier 6858.22 MiB, dev 6858.22 MiB) =
+  dev Max (the tier Max equals it); cockpit and buildkitd: min(8G, dev Max) = dev Max. On both 8 GiB hosts the 8G line never binds RAM;
+  it binds only where dev Max > 8G (MemTotal above about 9.1 GiB at today's K).
 - The swap line binds: an undeclared runaway fills its tier's RAM and pages its tier neighbours; at 16G of its own
   swap it can no longer be reclaimed; the tier OOMs, the victim is the runaway (largest rss + swap), and `oom.group`
   kills its container. Other tiers, the cockpit (Low 2.5G, Min 512M, −900) and the host floors are untouched.
@@ -215,10 +216,13 @@ no High); its column shows what host-setup would render with the same defaults.
 1. F = 373 + 128 + 64 = 565M; K = 565 + 512 = 1077M = 1129316352 B.
 2. dev `MemoryMax` = 8320679936 − 1129316352 = **7191363584 B = 6858.22 MiB** (203 MiB more for the load than
    KEEP=1280M, 6655.22 MiB).
-3. P = 2560M = 2684354560 B. Tier `MemoryMax` = 7191363584 − 2684354560 = **4507009024 B = 4298.22 MiB** (≥ 1G).
+3. Tier `MemoryMax` = dev `MemoryMax` = **7191363584 B = 6858.22 MiB** (P-plat-19h; the former value was 7191363584 −
+   P, P = 2560M = 2684354560 B, = 4507009024 B; P now sizes only the swap ceiling). The live r1002 dev.slice is
+   pinned at `DEV_HOST_MEMORY_KEEP=1560M`: 8320679936 − 1635778560 = 6684901376 B = 6375 MiB, and so is the tier.
 4. dev `MemoryMin` = 0 + 512M = 536870912 B ≤ 6858.22 − 1024 MiB.
 5. Bounds: F 565M ≤ 793.52 MiB (10 %); system.slice 373M ≤ 460M; K 1077M ≥ F + 128M = 693M.
-6. Admission memory term = ⌊4507009024 / 2 GiB⌋ = **2**, the same as today's 4G-High / 2G term.
+6. Admission memory term = ⌊7191363584 / 2 GiB⌋ = **3** (⌊6684901376 / 2 GiB⌋ = 3 at the pinned 6375M), one more than
+   the 4G-High / 2G term and the old minus-P term; the CPU term (4 vCPU / 2 = 2 on these hosts) still binds there.
 
 | unit | property | r1002 live today | new r1002 | new v1001 (if host-setup) | rule |
 |---|---|---|---|---|---|
@@ -227,7 +231,7 @@ no High); its column shows what host-setup would render with the same defaults.
 | dev.slice | MemoryMin / Low | 0 / 2.5G | 512M / 2.5G | 512M / Σ Lows | Σ every child Min key / Σ tier Low |
 | dev.slice | MemorySwapMax | SWAP_MDT | ≈ 62.5 GiB | 65023M | SwapTotal − MDT_HOST_SWAP_MARGIN |
 | dev-gates, dev-background | MemoryHigh | 4 GiB | none | none | HIGH pins ignored, NOTICE |
-| dev-gates, dev-background | MemoryMax | 5.5 GiB | 4507009024 | ≈ 4298M | dev Max − P, ≥ 1G; MAX pin ≤ dev Max |
+| dev-gates, dev-background | MemoryMax | 5.5 GiB | 7191363584 | ≈ 6858M | = dev Max (P-plat-19h); MAX pin ≤ dev Max |
 | dev-gates, dev-background | MemorySwapMax | dev − P | ≈ 60 GiB | 62463M | AD2-0 unchanged |
 | dev-interactive | Min / Low / High / Max | 0 / 2.5G / – / – | 512M / 2.5G / – / – | same | 5.2; no tier ceiling (19d) |
 | dev-buildkitd | High / Max | none | none | none | 19d; bounded by dev Max + 16G scope swap |
@@ -307,11 +311,11 @@ formula reads "gates MemoryMax (dedicated-dev) or MemoryHigh", so the memory ter
   "Do not hand-set memory properties"; the acceptance run (section 8, step 6).
 - **The three devcontainer.json files:** `"--oom-score-adj", "${localEnv:MDT_COCKPIT_OOM_SCORE_ADJ:0}"` (5.2).
 - **tests** (`test_testhost_mem.py` unless named): derivation on 8320679936 B / 63 GiB (dev max 7191363584, tier
-  max 4507009024, dev min 536870912, no High anywhere, swap per AD2-0); KEEP pin wins with NOTICE, refused below
+  max 7191363584 (= dev max, P-plat-19h), dev min 536870912, no High anywhere, swap per AD2-0); KEEP pin wins with NOTICE, refused below
   F + 128M; ignored HIGH pins named; shared-prod and empty role unchanged (identity test); 19d's
-  `test_dedicated_dev_keeps_a_finite_memory_max_on_gates_and_background…` (`:407`) becomes "tier Max = dev Max − P,
-  no tier High". `test_tree_cache.py:104-116`: `gates_high` None, `gates_max` drops by the cache Low.
-  `test_admission.py`: dedicated-dev term from `gates_max` (r1002 → 2). `test_host_floor_table_parity.py`: DI2
+  `test_dedicated_dev_keeps_a_finite_memory_max_on_gates_and_background…` (`:407`) becomes "tier Max = dev Max,
+  no tier High". `test_tree_cache.py:104-116`: `gates_high` None, `gates_max` equals dev max whatever the cache Low (P-plat-19h).
+  `test_admission.py`: dedicated-dev term from `gates_max` (r1002 → 3 after P-plat-19h). `test_host_floor_table_parity.py`: DI2
   `templates.py` (ast) + markdown table vs the mirror. Floors: ssh floored and never `OOMScoreAdjust`, absent unit
   skipped, raise-only against a higher and a lower `90-vbpub` fake, **a raised docker raises the system.slice sum**,
   role change removes every owned file. Refusals: each section 4 bound, bad `DEV_HOST_MEMORY_MIN` entries, margin

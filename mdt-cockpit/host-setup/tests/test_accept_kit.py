@@ -101,7 +101,20 @@ class EvalTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("docker.service=+4950", out)
         self.assertIn("# DEV_HOST_MEMORY_MARGIN=", out)
-        self.assertIn("DEV_HOST_MEMORY_KEEP=1280M", out)
+        self.assertIn("DEV_HOST_MEMORY_KEEP=", out)
+
+    def test_the_fail_pin_advice_names_the_measured_k_never_a_fixed_1280m(self) -> None:
+        # P-plat-19h: run 2 of r1002 measured K 1507M -> 1560M and the old text still said 1280M
+        rc, out = self.ev(write_run(self.tmp / "r1", refault=5000, u_scale=10))  # measured margin 1134M: K well above 1280M
+        self.assertEqual(rc, 1, out)
+        k = int(re.search(r"# K \d+M tested -> (\d+)M proposed", out).group(1))
+        self.assertGreater(k, 1280)
+        self.assertIn(f"pin DEV_HOST_MEMORY_KEEP={k}M, the measured K", out)
+        self.assertNotIn("1280M", out)
+        with mock.patch.object(ev, "cap", None):  # K not derivable: no number rather than a made-up one
+            _, out = self.ev(write_run(self.tmp / "r2", refault=5000))
+        self.assertIn("DEV_HOST_MEMORY_KEEP at the measured K (not derivable here", out)
+        self.assertNotIn("1280M", out)
 
     def test_oom_kill_fails(self) -> None:
         rc, out = self.ev(write_run(self.tmp / "r1", oom=1))

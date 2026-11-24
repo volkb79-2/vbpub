@@ -135,12 +135,13 @@ def size(n: float) -> str:
     return f"{math.ceil(n / MIB)}M"
 
 
-def proposal(runs: list[dict], rows: list[str], margin: float, inter: float | None) -> tuple[list[str], str | None]:
-    """The env lines and a refusal text when mdt_capacity (install.sh's own derivation) would refuse them."""
+def proposal(runs: list[dict], rows: list[str], margin: float, inter: float | None) -> tuple[list[str], str | None, int | None]:
+    """The env lines, a refusal text when mdt_capacity (install.sh's own derivation) would refuse them, and the
+    proposed (= measured) host keep K in bytes (None when it could not be derived)."""
     base, man = runs[0]["base"], runs[0]["man"]
     notes: list[str] = []
     if cap is None or "mem_total" not in man:
-        return ["# note: mdt_capacity or mem_total missing: the install.sh limits were NOT checked"], None
+        return ["# note: mdt_capacity or mem_total missing: the install.sh limits were NOT checked"], None, None
     mt, st = int(man["mem_total"]), int(man.get("swap_total", 0))
     try:
         tested = cap.dedicated_memory(base, mem_total=mt, swap_total=st)
@@ -151,11 +152,11 @@ def proposal(runs: list[dict], rows: list[str], margin: float, inter: float | No
             new["DEV_INTERACTIVE_MEMORY_MIN"] = size(inter)
         got = cap.dedicated_memory(new, mem_total=mt, swap_total=st)
     except cap.CapacityError as exc:
-        return notes, str(exc)
+        return notes, str(exc), None
     notes.append(f"# K {tested.keep / MIB:.0f}M tested -> {got.keep / MIB:.0f}M proposed, dev.slice MemoryMax {tested.maximum / MIB:.0f}M -> {got.maximum / MIB:.0f}M")
     if got.keep > tested.keep:
         notes.append("# K rose: re-run once at the new K (raise and repeat, design note 4.1)")
-    return notes, None
+    return notes, None, got.keep
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -215,7 +216,7 @@ def _main(argv: list[str] | None) -> int:
     if "dev-interactive.slice" in hot:
         want, floor = 1.25 * hot["dev-interactive.slice"], 512 * MIB
         inter = min(max(want, floor), low) if low else max(want, floor)
-    notes, refused = proposal(runs, rows, margin, inter)
+    notes, refused, keep = proposal(runs, rows, margin, inter)
     if refused:
         print(f"INCONCLUSIVE proposal: install.sh's derivation would refuse these values: {refused}")
         verdict = "FAIL" if verdict == "FAIL" else "INCONCLUSIVE"
@@ -223,7 +224,9 @@ def _main(argv: list[str] | None) -> int:
         print("INCONCLUSIVE proposal: mdt_capacity is not importable (kit copied out of the checkout); the env lines are NOT checked against install.sh")
         verdict = "FAIL" if verdict == "FAIL" else "INCONCLUSIVE"
     pre = "" if verdict == "PASS" else "# "
-    print("== host-setup.env" + ("" if verdict == "PASS" else f" (NOT to be applied: {verdict}; on FAIL pin DEV_HOST_MEMORY_KEEP=1280M per design note 8)"))
+    # P-plat-19h: the pin advice names the K this evaluation measured (floors + measured margin), never a fixed 1280M
+    pin = f"DEV_HOST_MEMORY_KEEP={size(keep)}, the measured K" if keep else "DEV_HOST_MEMORY_KEEP at the measured K (not derivable here: see the notes above)"
+    print("== host-setup.env" + ("" if verdict == "PASS" else f" (NOT to be applied: {verdict}; on FAIL pin {pin}, design note 8)"))
     for u, h in sorted(hot.items()):
         print(f"# hot set {u}: {h / MIB:.1f}M -> floor {size(1.25 * h)}" + (f" (table {table[u] // MIB}M)" if u in table else ""))
     for note in notes:

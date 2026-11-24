@@ -489,8 +489,8 @@ class DedicatedMemory:
     max_source: str
     low: int | None = None
     low_source: str = "none"
-    # dev-gates / dev-background MemoryHigh and MemoryMax (MDT-TESTHOST-MEM-2): dev.slice's own value minus the
-    # protected tiers' MemoryLow, so a running cockpit/BuildKit keeps its Low while the load tiers yield first.
+    # dev-gates / dev-background MemoryMax = dev.slice's own MemoryMax (P-plat-19h); `protected` (the tiers'
+    # MemoryLow sum, P) now only sizes the load tiers' MemorySwapMax (AD2-0), never their MemoryMax.
     protected: int = 0
     load_high: int | None = None
     load_max: int | None = None
@@ -522,8 +522,6 @@ def load_tier_swap(dev_swap: int, protected: int) -> int:
     tiers' MemoryLow sum, so the cockpit's above-Low pages can always be swapped out; floor 256M, never above
     dev.slice's own. A load leak then ends in a memcg OOM inside the tier once its swap is spent."""
     return min(dev_swap, max(DEDICATED_LOAD_SWAP_FLOOR, dev_swap - protected))
-# Floor of a derived load-tier ceiling (a smaller value would stall every lane).
-DEDICATED_LOAD_FLOOR = 1024 ** 3
 
 
 _TIER_LOW_KEYS = (
@@ -538,7 +536,8 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int,
 
     MemoryMax = MemTotal - MDT_EXCLUDED_RAM - K, K = the host floors F + a margin M (or the DEV_HOST_MEMORY_KEEP
     pin). The dev tree carries NO MemoryHigh (a High throttles even while RAM is free): above MemoryMax it pages.
-    dev-gates / dev-background MemoryMax = dev MemoryMax - the protected tiers' MemoryLow (the load OOM domain).
+    dev-gates / dev-background MemoryMax = dev MemoryMax (P-plat-19h; the load OOM domain; the cockpit's
+    protection is its MemoryLow/Min and OOM score, not a smaller tier ceiling).
     dev.slice MemoryMin = the sum of every child Min key (the cockpit's floor holds against gate load).
     A DEV_MEMORY_MAX / tier MAX pin wins per value (at most dev's own ceiling); `-` omits it.
     DEV_MEMORY_HIGH and the tier HIGH pins are ignored and reported in `ignored`.
@@ -607,9 +606,9 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int,
             parsed = parse_size_bytes(raw) if raw not in ("", "-") else None
             total += parsed or 0
         low, low_source = (total, "sum of the tier MemoryLow values") if total else (None, "none")
-    # Load tiers (gates, background): MemoryMax = dev.slice's minus the protected tiers' MemoryLow, never below 1G
-    # and never above dev.slice's own; no MemoryHigh. A tier at its Max pages its own pages and OOMs only inside
-    # itself. memory.swap.max stays equal to dev.slice's minus the protected sum (AD2-0, load_tier_swap).
+    # Load tiers (gates, background): MemoryMax = dev.slice's own MemoryMax (P-plat-19h: no minus-P subtraction;
+    # the interactive MemoryLow protection stays); no MemoryHigh. A tier at its Max pages its own pages and OOMs
+    # only inside itself. memory.swap.max stays dev.slice's minus the protected sum (AD2-0, load_tier_swap).
     # A DEV_{GATES,BACKGROUND}_MEMORY_MAX pin wins (at most dev's own ceiling); `-`/0 omit.
     protected = 0
     for key in _PROTECTED_LOW_KEYS:
@@ -618,12 +617,7 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int,
             raise CapacityError(f"{key}={raw!r} is not a size (use a size such as 512M, `-` or empty for none)")
         protected += (parse_size_bytes(raw) or 0) if raw not in ("", "-") else 0
 
-    def derive_load(dev_value: int | None) -> int | None:
-        if dev_value is None:
-            return None
-        return min(dev_value, max(DEDICATED_LOAD_FLOOR, dev_value - protected))
-
-    load_max = derive_load(maximum)
+    load_max = maximum
     resolved: dict[str, tuple[int | None, str]] = {}
     for tier in ("GATES", "BACKGROUND"):
         m, ms = pick(f"DEV_{tier}_MEMORY_MAX", load_max or 0)

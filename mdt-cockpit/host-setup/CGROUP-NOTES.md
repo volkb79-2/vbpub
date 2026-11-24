@@ -38,8 +38,7 @@ Operator decision 2026-11-24 (documented, no code cap): on a dedicated-dev host
 `dev-interactive.slice` and `dev-buildkitd.slice` are intentionally bounded only
 by dev.slice's `MemoryMax` (P-plat-19e: the tree carries no `MemoryHigh`; above the
 Max it pages into swap) and have no `MemoryMax` of their own. `dev-gates.slice` and
-`dev-background.slice` get a finite `MemoryMax` = dev Max minus the protected tiers'
-`MemoryLow`, the load OOM domain. `memory.max` is reachable now: it bounds
+`dev-background.slice` get a finite `MemoryMax` = dev Max (P-plat-19h: no minus-P), the load OOM domain. `memory.max` is reachable now: it bounds
 `memory.current` (RAM plus the zswap pool); a charging task reclaims synchronously
 at it and only an OOM follows when reclaim makes no progress (swap.max reached,
 protected or unreclaimable memory, pages in writeback). Writing `memory.max` below
