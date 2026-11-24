@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -193,7 +194,27 @@ def test_standalone_trial_render_has_full_tree_and_stamp(tmp_path: Path) -> None
         path.relative_to(out).as_posix() for path in out.rglob("*") if path.is_file()
     } == TRIAL_FILES
     certs = (out / "conf.d" / "certs.yml").read_text(encoding="utf-8")
-    assert re.search(r"^# rendered: \S+$", certs, re.MULTILINE)
+    stamp = re.search(r"^# rendered: (\S+)$", certs, re.MULTILINE)
+    assert stamp is not None
+    assert stamp.group(1) != "-"
+    datetime.fromisoformat(stamp.group(1))
+
+    plain = tmp_path / "plain"
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "render_standalone.py"),
+            "--stack-dir",
+            str(ROOT / "ciu-stack"),
+            "--out",
+            str(plain),
+            "--defaults-only",
+        ],
+        cwd=ROOT,
+        check=True,
+    )
+    plain_certs = (plain / "conf.d" / "certs.yml").read_text(encoding="utf-8")
+    assert "# rendered: -\n" in plain_certs
 
 
 def test_checkout_validate_works_without_consumer_env(
