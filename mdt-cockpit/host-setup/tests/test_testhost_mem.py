@@ -404,6 +404,17 @@ echo "CASCADE=$DEV_SWAP_CASCADE_PCT"
         env = "HOST_ROLE=dedicated-dev\nDEV_MEMORY_MAX=7.5G\nDEV_INTERACTIVE_MEMORY_MAX=4.5G\n"
         self.assertNotEqual(self.render_all(env, with_block=False), self.render_all(env, with_block=True))
 
+    def test_dedicated_dev_keeps_a_finite_memory_max_on_gates_and_background_and_none_on_the_other_tiers(self) -> None:
+        out = self.render_all("HOST_ROLE=dedicated-dev\nDEV_INTERACTIVE_MEMORY_LOW=512M\n", with_block=True)
+        for name in ("dev-gates.slice.in", "dev-background.slice.in"):
+            self.assertRegex(out[name], r"(?m)^MemoryMax=[0-9]", name)  # an omitted or infinite cap would be the oomd-era hole
+        # operator decision 2026-11-24: interactive and buildkitd are bounded only by dev.slice MemoryHigh (no own MemoryMax)
+        for name in ("dev-interactive.slice.in", "dev-buildkitd.slice.in"):
+            self.assertNotRegex(out[name], r"(?m)^MemoryMax=", name)
+        for name, text in out.items():
+            self.assertNotRegex(text, r"(?m)^ManagedOOM", name)
+            self.assertNotRegex(text, r"(?m)^Memory(Swap)?Max=infinity", name)
+
     def run_dropins(self, dedicated: bool, units: str = "docker.service containerd.service ghost.service") -> tuple[subprocess.CompletedProcess, Path]:
         sysdir = self.tmp / "systemd"
         sysdir.mkdir(exist_ok=True)
