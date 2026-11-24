@@ -40,7 +40,9 @@ targets = [
   "src/tls_edge_cli/config.py",
 ]
 fail_under = 100.0
-allow_excluded = false
+# D10.2-3: tests/test_coverage_policy.py requires classified, reasoned pragmas
+# and a 12-line whole-package budget before exclusions may affect this floor.
+allow_excluded = true
 require_branch = true
 
 [lanes.release-gate.judge.coverage]
