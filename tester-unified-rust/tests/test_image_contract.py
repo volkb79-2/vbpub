@@ -376,15 +376,8 @@ class ImageContractTests(unittest.TestCase):
         self.assertEqual(bans["multiple-versions"], "deny")
         self.assertEqual(bans["wildcards"], "deny")
         self.assertTrue(bans["allow-wildcard-paths"])
-        self.assertEqual(
-            [(item["crate"], item["reason"]) for item in bans["skip"]],
-            [
-                (
-                    "winnow@0.7.15",
-                    "toml 0.9.8 and toml_parser 1.1.5 resolve separate winnow lines in the imported sampler lock",
-                )
-            ],
-        )
+        # The lock has one version per crate since P-hostobs-08 dropped toml, so no skip is needed.
+        self.assertEqual(bans.get("skip", []), [])
 
     def test_bootstrap_does_not_vendor_crates(self) -> None:
         self.assertFalse((HOSTOBS_ROOT / "vendor").exists())
