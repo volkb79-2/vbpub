@@ -215,7 +215,7 @@ self-qualification launcher tests plus
 `tests/core/test_docs_examples_and_vocabulary.py`. Selectors after `--` are
 passed to pytest. It is the path-triggered pre-merge set for
 `assay/tools/**`, `assay/gate/**`, `assay/assay.toml`, and the public documents
-carrying the R2 waiver window. A focused pass is diagnostic only; it does not
+carrying the provisional R2 policy. A focused pass is diagnostic only; it does not
 replace `run-gate tester-unified` or produce a qualification receipt. To check the
 contention independence of the hung-Docker fixture, use:
 
@@ -229,8 +229,7 @@ release receipt.
 
 ### Provisional release qualification B169 B170
 
-For a release inside the operator-authorized B169 window, CMRU's isolated
-`run-tests` step runs `tester-unified` first and then
+For any release, CMRU's isolated `run-tests` step runs `tester-unified` first and then
 `self-qualification-provisional` before it creates the release tag. Both
 commands run through `tools/release-gate.sh`.
 The lane runs R0, R1 over all of `src/assay` with 100% whole-target line and
@@ -241,25 +240,15 @@ verified, records `.assay/mutation-postponed-assay.json` with
 transaction version was received and matched, and false when no transaction
 binding was applied. That marker says R2 is owed; it is not an R2 pass. Use
 `run-gate self-qualification` when full R0-R3 evidence is required.
+Any release is R0/R1 plus R3 and an independent review; R2 runs asynchronously
+on the latest release. There is no per-version waiver window.
 
 The gate reads the first H2 release heading after `## [Unreleased]` in
 `CHANGES.md`, because CMRU runs the release gate before the tag exists. It
 refuses that heading if it is malformed or unsupported, even when an older
 heading is valid. CMRU passes the transaction's planned version as a protected
-gate input; the heading must match it. The currently authorized target
-interval is `10.0.0 <= version < 12.3.0`; at least one stable `assay-vX.Y.Z`
-tag must be listable, and its latest version must be below 12.3.0. The
-2026-11-08 operator decision extended the waiver for the release carrying the
-E4 env-only launchers and delegated release-gate changes; the 2026-11-12
-operator decision (A-507) extends it to the flexible-R2 release 12.2.0, gated
-by R0, R1 and the R3 canary, with assay's own R2 run afterwards as the T3 check
-owed under B535 (until a PASS is recorded for the latest eligible release).
-The superseded 12.2.0 release is not retro-run. A release at
-9.9.9, 12.3.0 or later, an unreadable tag
-list, or no visible stable tag refuses the waiver. Any further extension
-requires a new operator R2-waiver decision. The refusal names this decision
-and recommends the full self-qualification lane when the waiver no longer
-applies.
+gate input; the heading must match it. Release tags are not consulted; R2
+postponement is available for every supported stable release.
 
 #### T3 changed-line R2 campaign (B535)
 
