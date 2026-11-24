@@ -19,6 +19,18 @@ read from) nyxloom's Mattermost instance — `scripts/netcup` /
   `nyxloom-admin` (those are human/bootstrap accounts and are never handed
   out).
 
+## Calls cut-over
+
+From this revision, Mattermost publishes Calls media on host TCP+UDP 8443
+itself. Do not run `ciu up` for Mattermost from this revision while the live
+hand-made edge still holds 8443. Remove the edge's 8443 listeners in the same
+maintenance window as the tls-edge live cut-over.
+
+Order in that window:
+
+1. Stop or reconfigure the edge so it no longer binds 8443.
+2. Run `ciu up` for Mattermost, which publishes the Calls media pair directly.
+
 ## Current producer accounts
 
 | Account | Channel | Credentials provisioned | Used by |

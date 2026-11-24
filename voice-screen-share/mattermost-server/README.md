@@ -23,11 +23,11 @@ renders.
   provisioning, run by ciu on every `ciu up` (S9.1 `post_compose`).
 - `docker-compose.yml` — legacy plain-compose fallback, carrying ABSOLUTE
   PHYSICAL host paths (DooD) and hand-inlined governance caps. It does not
-  include the live shared ingress or Calls media routing; CIU is the supported
+  include the live shared ingress or direct Calls host publication; CIU is the supported
   deployment path for this instance.
 - `docs/DESIGN-GUIDE.md` — why this endpoint is public with managed users,
-  which data leaves the instance, and how Calls media is routed.
-- `docs/CONSUMERS.md` — how members use Calls and what the edge firewall needs.
+  which data leaves the instance, and how Calls media is published.
+- `docs/CONSUMERS.md` — how members use Calls and what the host/provider firewalls need.
 
 ## Deploy (ciu-managed — the ONLY supported path)
 
@@ -51,7 +51,8 @@ area (`<vbpub>/voice-screen-share/mattermost-server`). ciu derives the instance 
 from the physical checkout path, so the id, compose project, container names and
 network change with the move; the gitignored state (`vol-*`, `.ciu/`) is carried
 by `MIGRATION.md` / `migrate-to-voice-screen-share.sh`. Calls is ON by default and
-agrees with tls-edge (public TCP+UDP 8443; see `tests/test_calls_defaults_agree.py`).
+the rendered stack publishes TCP+UDP 8443 directly on the host when public exposure is
+enabled (see `tests/test_calls_media_contract.py`).
 
 **Folder name (MM-RENAME, 2026-10-07).** The folder was renamed `mattermost/` to
 `mattermost-server/` for clarity. Only the project FOLDER changed: the ciu
@@ -415,9 +416,9 @@ greyed out, and *verifying* hardening means reading the running config
   are disabled. Outgoing webhooks, slash commands, diagnostics reporting,
   security-fix alerts, email (no SMTP is configured), and the OAuth2
   authorization server are disabled.
-- Calls uses Mattermost's integrated media service. The public edge forwards
-  TCP and UDP on port 8443 to the Calls listener in this Mattermost container;
-  it does not use an external media provider. See the
+- Calls uses Mattermost's integrated media service. The host publishes TCP and
+  UDP on port 8443 directly to the Calls listener in the Mattermost container;
+  it does not use an external media provider or an edge L4 hop. See the
   [Calls design](docs/DESIGN-GUIDE.md#calls-media-path).
 - **File attachments: ON as of nyxloom-P111** (`enable_file_attachments`,
   its own declared flag, same shape as `enable_user_access_tokens` below).
@@ -448,8 +449,8 @@ service private again, change that value to `false` and run the supported
 `ciu up --dir voice-screen-share/mattermost-server --yes` workflow. That removes the edge route and
 restores the internal `SiteURL`; it also makes the service unavailable to
 clients outside the host. Account provisioning is independent of this network
-switch. Calls additionally needs the edge's TCP and UDP media route; see the
-[consumer guide](docs/CONSUMERS.md) before changing that topology.
+switch. Calls host ports and `MM_CALLS_*` environment settings are gated by the
+same flag and disappear with it; see the [consumer guide](docs/CONSUMERS.md).
 
 ## Outbound requests and diagnostics
 

@@ -9,7 +9,7 @@ never take a port of a live project.
 
 | Project | Status | What |
 |---|---|---|
-| [`mattermost-server/`](mattermost-server/README.md) | live stack (moved into this area; phase 1 of `MIGRATION.md` applied in the main checkout, named-volume copy is phase 2) | Mattermost Team Edition + Calls (on by default), provisioned for nyxloom; media via tls-edge |
+| [`mattermost-server/`](mattermost-server/README.md) | live stack (moved into this area; phase 1 of `MIGRATION.md` applied in the main checkout, named-volume copy is phase 2) | Mattermost Team Edition + Calls (on by default), provisioned for nyxloom; Calls media TCP+UDP 8443 is published directly on the host |
 | [`mattermore/`](mattermore/README.md) | tryout, rendered/validated only, never started | Mattermost fork with group calls and other paywalled features enabled; isolated, no published ports |
 | [`jitsi-server/`](jitsi-server/README.md) | rendered/validated, smoke-tested up 2026-11-04 (host-side only; the worktree start used compose directly, `ciu up` needs the project in the main checkout) | docker-jitsi-meet (web, prosody, jicofo, jvb): group calls, screen share, noise suppression, remote control via Jitsi Meet Electron (`CLIENT.md`); secure-domain auth with generated users (`USERS.md`); HTTPS at `jitsi.<domain>` via tls-edge, JVB UDP 10000 on the host |
 | [`fluxer-server/`](fluxer-server/README.md) | tryout, running on its own network; web route via tls-edge needs a DNS name and `expose_public` | Fluxer (Discord-style chat, persistent voice channels, screen share, client-side RNNoise noise suppression); 21 containers, capped; media TCP 7891 / UDP 7892 |
@@ -24,14 +24,14 @@ isolation test.
 ## Port plan
 
 Public ports are claimed in one place so projects cannot collide. The edge (tls-edge) owns
-80 (HTTP redirect / HTTP-01) and 443, and forwards exactly one raw media pair today. There
-is no alternate HTTPS port (removed from tls-edge).
+80 (HTTP redirect / HTTP-01) and 443 for web traffic. Raw media is published directly by its
+owning application. There is no alternate HTTPS port.
 
 | Port | Proto | Owner | Purpose |
 |---|---|---|---|
 | 80 | TCP | tls-edge | HTTP redirect and ACME HTTP-01 challenge |
 | 443 | TCP | tls-edge | HTTPS for every web UI (subdomain routing) |
-| 8443 | TCP+UDP | tls-edge -> Mattermost Calls | media pair (UDP preferred, TCP fallback); same number 8443 inside the edge container for both protocols |
+| 8443 | TCP+UDP | Mattermost (`mattermost-server`) | Calls media, published directly on the host (UDP preferred, TCP fallback); open both protocols in the host and provider firewalls |
 | none (default) | - | mattermore tryout | optional `media_host_port`, never one of the above |
 | 10000 | UDP | Jitsi (`jitsi-server`) | JVB media (single port), published directly on the host (not via the edge); open it in host and provider firewall. No TCP fallback in the stable-11031 image |
 | 64738 | TCP+UDP | Mumble (planned) | control + voice |
@@ -48,11 +48,10 @@ Security note: Jitsi's service secrets and the Mattermost/Mattermore database pa
 through the container environment (the images take no `*_FILE` form), so anyone with docker access
 (`docker inspect`) can read them; the `0444` secret file relies on `.ciu/` being 0700.
 
-Rules: prefer single UDP ports over ranges; a second raw media service needs either new
-Traefik TCP/UDP entrypoints in tls-edge (a tls-edge change and release, one backend per UDP
-entrypoint) or a directly published host port plus a host/provider firewall rule (check
-both layers; Docker-published traffic follows forwarding rules, not host OUTPUT rules). Never
-use host networking as a fix for a container that will not start.
+Rules: prefer single UDP ports over ranges; raw media is published directly by its
+application and needs a host/provider firewall rule (check both layers; Docker-published
+traffic follows forwarding rules, not host OUTPUT rules). HTTPS-only routing remains with
+tls-edge. Never use host networking as a fix for a container that will not start.
 
 ## Options summary (research, 2026-11-03/04)
 
@@ -81,8 +80,10 @@ The full report is kept with the release-program reports
 
 ## Calls defaults
 
-Calls is ON by default in both places and they agree: `mattermost-server`
-(`[mattermost.calls] enabled = true, port = 8443, public_port = 8443`) and tls-edge
-(`[tls_edge.calls] enabled = true, public_port = 8443`, TCP and UDP; no alternate HTTPS port). Tests in
-`mattermost-server/tests/test_calls_defaults_agree.py` and
-`tls-edge/tests/test_calls_defaults_agree.py` pin the agreement.
+Calls is ON by default in `mattermost-server` (`[mattermost.calls] enabled = true,
+port = 8443, public_port = 8443`). When Calls and `mattermost.expose_public` are both
+true, the rendered compose publishes host TCP and UDP 8443 directly to the Mattermost
+container and advertises that host port to clients. With either flag false, neither
+ports nor `MM_CALLS_*` environment settings are emitted. The rendered-compose contract
+in `mattermost-server/tests/test_calls_media_contract.py` also pins the absence of L4
+Traefik labels and disjointness from tls-edge's non-Calls inbound ports.
