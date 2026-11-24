@@ -363,6 +363,75 @@ def test_carry_forward_kill_hint_names_the_prior_candidate(
     )
 
 
+def test_carry_forward_kill_hint_keeps_a_chained_prior_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    current_source = "def flag():\n    return True\n"
+    current = _job(current_source)
+    prior = _job(current_source + "\nOTHER = 1\n")
+    origin = _job(current_source + "\nORIGIN = 1\n")
+    candidate = mutation.candidate_id(current)
+    witness = {
+        "node_id": _NODE,
+        "when": "call",
+        "outcome": "failed",
+        "session_exit_status": 1,
+        "process_exit_status": 1,
+    }
+    source = tmp_path / "prior"
+    source.mkdir()
+    payload = {
+        "candidate_id": mutation.candidate_id(prior),
+        "judge_sha256": _EARLIER,
+        "outcome_bucket": "killed",
+        "provenance": {
+            "kind": "carried",
+            "from_candidate_id": mutation.candidate_id(origin),
+            "from_judge_sha256": _EARLIER,
+            "match": "locus",
+            "reason": mutation_store.CARRY_FORWARD_REASON,
+        },
+    }
+    match = mutation_store._CarryForwardMatch(
+        kind="locus",
+        source=source,
+        payload=payload,
+        effective_judge=_EARLIER,
+    )
+    checked = {
+        **payload,
+        "candidate_id": candidate,
+        "execution": {"mode": "full", "witness": witness},
+    }
+    monkeypatch.setattr(
+        mutation_store,
+        "_carry_forward_match_candidates",
+        lambda *_args, **_kwargs: ({candidate: (match,)}, 0, 0, 1),
+    )
+    monkeypatch.setattr(
+        mutation_store,
+        "_validate_carry_forward_match",
+        lambda *_args, **_kwargs: checked,
+    )
+
+    result = mutation_store.combine(
+        (mutation_store.StoreSource(path=source, policy="carry-forward"),),
+        _request((current,), tmp_path / "target"),
+    )
+
+    assert result.hints == (
+        mutation_store.Hint(
+            candidate_id=candidate,
+            node_id=_NODE,
+            source="store",
+            source_ref=str(source),
+            from_candidate_id=mutation.candidate_id(origin),
+            from_judge_sha256=_EARLIER,
+            match="locus",
+        ),
+    )
+
+
 def test_policy_precedence_keeps_own_then_merge_then_shard_then_import(
     tmp_path: Path,
 ) -> None:
