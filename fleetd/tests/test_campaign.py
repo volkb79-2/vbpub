@@ -1485,7 +1485,8 @@ def test_returning_while_retry_runs_stops_the_duplicate_when_it_finishes(tmp_pat
     manager.tick("campaign")
     waiting = _state(tmp_path)
     assert waiting["hosts"]["host-b"]["returned_after_loss"] is True
-    assert waiting["hosts"]["host-b"]["loss_requeued"] is True
+    assert waiting["hosts"]["host-b"]["loss_requeued"] is False
+    assert waiting["hosts"]["host-b"]["returned_duplicates_pending"] is True
     assert waiting["jobs"][lost["name"]]["status"] == "RUNNING"
     assert transport.host("host-b").stops == stops_before
 
@@ -1493,7 +1494,7 @@ def test_returning_while_retry_runs_stops_the_duplicate_when_it_finishes(tmp_pat
     transport.finish("host-a", retry["name"])
     manager.tick("campaign")
     final = _state(tmp_path)
-    assert final["hosts"]["host-b"]["loss_requeued"] is False
+    assert final["hosts"]["host-b"]["returned_duplicates_pending"] is False
     assert final["hosts"]["host-b"]["returned_after_loss"] is True
     assert final["jobs"][lost["name"]]["status"] == "SUPERSEDED"
     assert transport.host("host-b").stops == stops_before + 1
@@ -1539,14 +1540,14 @@ def test_a_failed_returned_duplicate_stop_is_retried_on_the_next_refresh(tmp_pat
     failed = _state(tmp_path)
     assert failed["hosts"]["host-b"]["status"] == "ERROR"
     assert failed["hosts"]["host-b"]["returned_after_loss"] is True
-    assert failed["hosts"]["host-b"]["loss_requeued"] is True
+    assert failed["hosts"]["host-b"]["returned_duplicates_pending"] is True
     assert failed["jobs"][lost["name"]]["status"] == "RUNNING"
     assert transport.host("host-b").stops == stops_before
 
     manager.tick("campaign")
     final = _state(tmp_path)
     assert final["hosts"]["host-b"]["status"] == "ONLINE"
-    assert final["hosts"]["host-b"]["loss_requeued"] is False
+    assert final["hosts"]["host-b"]["returned_duplicates_pending"] is False
     assert final["jobs"][lost["name"]]["status"] == "SUPERSEDED"
     assert transport.host("host-b").stops == stops_before + 1
     assert attempts == 2

@@ -39,7 +39,7 @@ def test_the_shipped_probe_equals_the_direct_hostside_answer(tmp_path, monkeypat
     (job_dir / "list.sha256").write_text(f"{spec.list_digest}\n", encoding="ascii")
     (job_dir / "progress-offset").write_text("0\n", encoding="ascii")
     progress = home / progress_home_path(spec.commit, spec.project, "contract-assay")
-    progress.parent.mkdir(parents=True)
+    progress.parent.mkdir(parents=True, exist_ok=True)
     progress.write_text(json.dumps({
         "event": "candidate",
         "candidate_id": spec.candidate_ids[0],

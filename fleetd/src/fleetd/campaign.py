@@ -304,6 +304,7 @@ class CampaignManager:
                 "last_contact_mono": None,
                 "unreachable_since_mono": None,
                 "loss_requeued": False,
+                "returned_duplicates_pending": False,
                 "paused_seconds": 0.0,
                 "last_progress_mono": now,
             }
@@ -599,7 +600,9 @@ class CampaignManager:
         returned_lost = (
             host_state["unreachable_since_mono"] is not None
             and now - host_state["unreachable_since_mono"] > LOST_AFTER_SECONDS
-        ) or host_state["status"] == "LOST" or bool(host_state["loss_requeued"])
+        ) or host_state["status"] == "LOST" or bool(host_state["loss_requeued"]) or bool(
+            host_state.get("returned_duplicates_pending")
+        )
         self._end_unreachable_episode(host_state, job_rows, now)
         host_state["last_contact_mono"] = now
         host_state["status"] = "ONLINE"
@@ -752,7 +755,8 @@ class CampaignManager:
                     job["status"] = "SUPERSEDED_PENDING"
         if returned_lost:
             host_state["returned_after_loss"] = True
-            host_state["loss_requeued"] = self._stop_returned_duplicates(state, host_id)
+            host_state["loss_requeued"] = False
+            host_state["returned_duplicates_pending"] = self._stop_returned_duplicates(state, host_id)
         self._stop_superseded_host(state, host_id)
 
     @staticmethod
