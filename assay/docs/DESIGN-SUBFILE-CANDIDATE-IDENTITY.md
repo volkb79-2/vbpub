@@ -185,6 +185,33 @@ locus_key = sha256( "assay-locus/1" \0 path \0 qualname \0 segment_sha256 \0
   - `assay verify` re-derives the counts and enforces the mode/bucket rules. A v20 verdict is accepted by `--reuse-from` as today.
 - **Old file-granular stores remain valid** for exact resume and exact carry. Mixing is never silent: every non-fresh outcome carries its mode and origin.
 
+#### 3.3.1 Provenance and advisory locus: the contract (AMENDED 2026-11-24, B563; supersedes the `carry_over` schema-2 and "stale locus" bullets above where they differ)
+
+**One object.** A state record names how it came to stand for its candidate in ONE optional top-level field `provenance`. It is defined and validated in one place (one constructor, one shape validator, one reader `record_provenance(payload)`), and verdict v21 (B567) projects it unchanged per candidate.
+
+| Field | Type | Rule |
+|---|---|---|
+| `kind` | string | closed set. In a state record: `imported`, `carried`, `replayed`. `fresh` is never written (absent `provenance` = fresh). `resumed` is never written: it is assigned when a run takes a record from its store, at projection time (v21). |
+| `from_candidate_id` | 64-hex | the candidate id of the prior record (equals the record's own `candidate_id` for `match = exact-id`) |
+| `from_judge_sha256` | 64-hex | the judge that executed the prior evidence |
+| `match` | string | closed set `exact-id`, `locus`, `window`, `hint` |
+| `replay_node_id` | string, optional | only with `kind = replayed` (WP4) |
+| `reason` | string, optional | operator text (`--carry-over-reason`, ≤ 1024 bytes) or a fixed machine value |
+
+**Which writer sets which kind.**
+- Fresh judge run: no `provenance`, no `carry_over` (unchanged bytes).
+- `--carry-over` (operator import, B530): `carry_over` schema 2 plus `provenance {kind: imported, from_candidate_id, from_judge_sha256, match: exact-id, reason}`. The record keeps its executing judge in `judge_sha256`.
+- `--carry-forward` survivors (WP3a): `carry_over` schema 2 plus `provenance {kind: carried, …, match: exact-id|locus|window}`.
+- Replayed kill (WP4): a FRESH current-judge record with `provenance {kind: replayed, …, replay_node_id}` and NO `carry_over` block. So an executing judge equal to the into-judge never appears beside a `carry_over` block, and the `from == into` ambiguity cannot occur.
+
+**`carry_over` schema 2 (redefined in place; it never shipped, so there is no schema 3).** Key set: `schema_version, into_judge_sha256, source, reason, imported_at, importer_version` (prior-evidence facts and the match live in `provenance` only; no `locus_match`, no `from_judge_sha256`). It is valid only beside a valid `provenance` of kind `imported` or `carried` whose `from_judge_sha256` equals the record's `judge_sha256`. `record_effective_judge` returns `into_judge_sha256` for such a record and the executing judge for a record without `carry_over`. Schema 1 blocks are READ (resume, merge, analysis) and never written again; `record_provenance` derives `{kind: imported, from_candidate_id: <own id>, from_judge_sha256: carry_over.from_judge_sha256, match: exact-id}` for them.
+
+**Validation is shape only, and never raises.** A `provenance` or schema-2 `carry_over` that fails the shape rules (unknown kind or match, wrong types, extra keys, kind/`carry_over` mismatch) makes the record unusable exactly as a malformed `carry_over` is today (`record_effective_judge` is `None`; the record is not resumed or carried, it is re-judged and counted); it never raises `MutationStateError`.
+
+**Advisory locus.** The stored `locus` (and the window key) are lookup metadata only. On load the locus is recomputed for the job; a stored value of an unknown schema or one that differs from the recomputed value is dropped and counted as `locus_unavailable` in the run's progress and summary, and the record still resumes by exact id. In a carry source, records whose locus is of an unknown schema are not found by locus (they remain findable by exact id). No locus defect raises.
+
+**Campaign analysis** (`assay/analysis`) classifies import, carry and replay from `provenance.kind` (schema-1 blocks by the derivation above) and no longer infers them from judge equality.
+
 ### 3.4 Resume, merge and shards
 
 | Mechanism | Behaviour |
