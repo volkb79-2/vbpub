@@ -1162,6 +1162,7 @@ tier, minus what the host keeps (`DEV_HOST_MEMORY_KEEP`, default 1G, minimum 256
 | tier MemoryLow / MemoryMin | as configured | as configured: this is the protection between tiers (e.g. the IDE, BuildKit) |
 | interactive / buildkitd MemorySwapMax | `DEV_SWAP_CASCADE_PCT`% of dev.slice's | equal to dev.slice's |
 | `system.slice` | untouched | MemoryLow = `DEV_HOST_MEMORY_KEEP` |
+| `MDT_MEMORY_POLICY` | empty = configured caps | `overcommit` = `MemoryMax`/`MemorySwapMax` `infinity` on dev.slice, dev-gates and dev-background, and the same pair on the system.slice drop-in; all dev-tier `ManagedOOM*=kill` lines are omitted; MemoryHigh/MemoryLow stay as rendered and explicit pins win |
 | host services (`DEV_HOST_PROTECTED_UNITS`: docker, containerd, cgpd, mdt-psi-guard, journald, oomd; never ssh) | untouched | OOMScoreAdjust=-900 drop-in (never weakening a unit that already has a lower value, e.g. containerd -999); a unit that leaves the list loses its drop-in on the next install |
 | mdt-psi-guard signals | `MDT_PROTECTED_UNITS` + host memory `full` | the same plus the host services above |
 

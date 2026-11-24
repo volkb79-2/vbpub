@@ -614,6 +614,12 @@ def validate_watcher_memory_policy(value: str) -> str | None:
     return None
 
 
+def validate_memory_policy(value: str) -> str | None:
+    if value in ("", "overcommit"):
+        return None
+    return "choose empty (role default) or exactly 'overcommit'"
+
+
 def confirm_guard_termination(policy: str) -> str:
     """Require an explicit yes before the host guard may remove workers."""
     if policy != "terminate":
@@ -872,6 +878,7 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_TIER_EXCLUDED_CPU_CORES": mdt_capacity.validate_cores,
         "MDT_PROTECTED_UNITS": mdt_capacity.validate_units,
         "MDT_PSI_GUARD": validate_psi_guard_mode,
+        "MDT_MEMORY_POLICY": validate_memory_policy,
         "DEV_CPU_QUOTA": validate_cpu_quota,
         "DEV_SWAP_CASCADE_PCT": validate_pct_1_100,
         "DEV_SWAP_MAX": validate_size_or_auto,
@@ -1043,6 +1050,11 @@ def validate_host_setup_values(
             field_errors.append(f"{key}: {error}")
     if field_errors:
         raise TemplateError("invalid host-setup.env values: " + "; ".join(field_errors))
+    if values.get("MDT_MEMORY_POLICY") == "overcommit" and values.get("HOST_ROLE") != "dedicated-dev":
+        raise TemplateError(
+            "MDT_MEMORY_POLICY=overcommit requires HOST_ROLE=dedicated-dev "
+            f"(found {values.get('HOST_ROLE') or 'empty'}); no units were rendered"
+        )
     total_kib = meminfo.get("MemTotal", 0)
     if total_kib <= 0:
         raise TemplateError(

@@ -43,6 +43,9 @@
 #      correct byte count, and returns "?" -- never a bash syntax error,
 #      never a silent mis-compare -- for anything not byte-comparable
 #      (a percentage, garbage) (round-2 review B7).
+#  10. the default render (MDT_MEMORY_POLICY empty) matches the checked-in
+#      checksum fixture byte-for-byte, and the overcommit policy renders the
+#      unlimited maxima while dropping every ManagedOOM line.
 #
 # Extracts install.sh's OWN render() function + RENDER_VARS list, and
 # check.sh's OWN _bytes_of function, verbatim (byte range, not a
@@ -130,6 +133,7 @@ OWNED_TEMPLATES="$("$MDT_TEST_PYTHON" "$HERE/mdt_tree_cache.py" templates)" \
   || fail "mdt_tree_cache.py templates failed"
 [ -n "$OWNED_TEMPLATES" ] || fail "mdt_tree_cache.py reports no owned templates"
 rendered_any=0
+rendered_names=()
 for tmpl in "$HERE"/units/*.in; do
   [ -e "$tmpl" ] || continue
   if printf '%s\n' "$OWNED_TEMPLATES" | grep -qxF "$(basename "$tmpl")"; then
@@ -137,6 +141,7 @@ for tmpl in "$HERE"/units/*.in; do
   fi
   rendered_any=1
   dst="$TMP/$(basename "${tmpl%.in}")"
+  rendered_names+=("$(basename "$dst")")
   render "$tmpl" "$dst"
   # (1) no unresolved @VAR@ tokens survive rendering, in ANY unit.
   if grep -qE '@[A-Za-z_][A-Za-z0-9_]*@' "$dst"; then
@@ -144,7 +149,11 @@ for tmpl in "$HERE"/units/*.in; do
   fi
 done
 [ "$rendered_any" = 1 ] || fail "no units/*.in templates found under $HERE/units"
+(cd "$TMP" && sha256sum "${rendered_names[@]}" | sort -k2) > "$TMP/render-default.sha256"
+diff -u "$HERE/tests/fixtures/render-default.sha256" "$TMP/render-default.sha256" \
+  || fail "the no-policy render changed; update the golden only for an intentional default-policy change"
 pass "every rendered unit is free of unresolved @VAR@ placeholders"
+pass "the default render matches the checked-in golden checksums byte-for-byte"
 
 # The tree-cache-owned templates, rendered by the exact code the installer runs
 # (mdt_tree_cache.py render), from the shipped example, as dedicated-dev. No host
@@ -303,6 +312,32 @@ fi
 grep -qx 'ManagedOOMSwap=kill' "$GATES_OUT" \
   && fail "dev-gates.slice has ManagedOOMSwap=kill -- withdrawn by RW-32/D2 (contradicts D-19/D-6, see units/dev-gates.slice.in's own comment)"
 pass "dev-gates.slice renders required DEV_GATES_* values and drops auto-detected MemorySwapMax until install time; ManagedOOMSwap=kill stays withdrawn"
+
+# --- (2b) overcommit renders unlimited maxima and no oomd kills ------------
+POLICY_DIR="$TMP/policy"
+mkdir -p "$POLICY_DIR"
+POLICY_LOG="$TMP/policy-render.log"
+(
+  export MDT_MEMORY_POLICY=overcommit HOST_ROLE=dedicated-dev
+  export DEV_MEMORY_MAX=infinity DEV_GATES_MEMORY_MAX=infinity DEV_BACKGROUND_MEMORY_MAX=infinity
+  export DEV_SWAP_MAX=infinity DEV_GATES_MEMORY_SWAP_MAX=infinity DEV_BACKGROUND_MEMORY_SWAP_MAX=infinity
+  for base in dev.slice dev-gates.slice dev-background.slice; do
+    render "$HERE/units/$base.in" "$POLICY_DIR/$base"
+  done
+) >"$POLICY_LOG" 2>&1
+for base in dev.slice dev-gates.slice dev-background.slice; do
+  grep -qxF 'MemoryMax=infinity' "$POLICY_DIR/$base" \
+    || fail "$base did not render MemoryMax=infinity under MDT_MEMORY_POLICY=overcommit"
+  grep -qxF 'MemorySwapMax=infinity' "$POLICY_DIR/$base" \
+    || fail "$base did not render MemorySwapMax=infinity under MDT_MEMORY_POLICY=overcommit"
+  grep -q '^ManagedOOM' "$POLICY_DIR/$base" \
+    && fail "$base retained a ManagedOOM line under MDT_MEMORY_POLICY=overcommit"
+  diff -u <(grep -E '^Memory(High|Low)=' "$TMP/$base") <(grep -E '^Memory(High|Low)=' "$POLICY_DIR/$base") \
+    || fail "$base changed MemoryHigh/MemoryLow under MDT_MEMORY_POLICY=overcommit"
+done
+grep -q 'MDT_MEMORY_POLICY=overcommit: removed ManagedOOMMemoryPressure ManagedOOMMemoryPressureLimit from' "$POLICY_LOG" \
+  || fail "overcommit render did not log the oomd lines it removed from dev-gates.slice"
+pass "MDT_MEMORY_POLICY=overcommit renders unlimited maxima, preserves soft points, and removes ManagedOOM kills"
 
 # --- (3) dev.slice / dev-memory_min_guaranteed.slice: no MemoryMin line -----
 # (DEV_MEMORY_MIN_GUARANTEED_CEILING ships unset in the example -- evidence

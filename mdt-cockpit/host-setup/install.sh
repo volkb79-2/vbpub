@@ -165,6 +165,42 @@ Safety and result
 EOF
 }
 
+# Apply the dedicated runner-host overcommit opt-in after all role-specific
+# derivations have run. Only values the operator did not pin are replaced.
+_mdt_apply_memory_policy() {
+  local policy="${1:-}" role="${2:-}" var pin old label
+  case "$policy" in
+    "") return 0 ;;
+    overcommit) ;;
+    *) echo "ERROR: MDT_MEMORY_POLICY must be empty or exactly overcommit" >&2; return 2 ;;
+  esac
+  if [ "$role" != dedicated-dev ]; then
+    echo "ERROR: MDT_MEMORY_POLICY=overcommit is valid only with HOST_ROLE=dedicated-dev (found ${role:-unset}); no units were rendered" >&2
+    return 2
+  fi
+  for var in DEV_MEMORY_MAX DEV_GATES_MEMORY_MAX DEV_BACKGROUND_MEMORY_MAX \
+    DEV_SWAP_MAX DEV_GATES_MEMORY_SWAP_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX; do
+    case "$var" in
+      DEV_MEMORY_MAX) label="dev.slice MemoryMax" ;;
+      DEV_GATES_MEMORY_MAX) label="dev-gates.slice MemoryMax" ;;
+      DEV_BACKGROUND_MEMORY_MAX) label="dev-background.slice MemoryMax" ;;
+      DEV_SWAP_MAX) label="dev.slice MemorySwapMax" ;;
+      DEV_GATES_MEMORY_SWAP_MAX) label="dev-gates.slice MemorySwapMax" ;;
+      DEV_BACKGROUND_MEMORY_SWAP_MAX) label="dev-background.slice MemorySwapMax" ;;
+    esac
+    pin="${var}_POLICY_PIN"
+    if [ "${!pin:-0}" = 1 ]; then
+      echo "MDT_MEMORY_POLICY=overcommit: $label=${!var:-omitted} kept (explicit pin wins)"
+      continue
+    fi
+    old="${!var:-<unset>}"
+    printf -v "$var" '%s' infinity
+    echo "MDT_MEMORY_POLICY=overcommit: $label $old -> infinity"
+  done
+  echo "MDT_MEMORY_POLICY=overcommit: system.slice MemoryMax <unset> -> infinity, MemorySwapMax <unset> -> infinity"
+  echo "MDT_MEMORY_POLICY=overcommit: ManagedOOM kills removed from every rendered dev tier"
+}
+
 # HB-3: install the per-host CPU benchmark helper. The measuring tool is the ONE shared
 # scripts/debian-install-v2/tools/cpu_benchmark.py, pinned by its .sha256 (verified here against the
 # checkout BEFORE it is copied, and again by the wrapper before every run); the pins file carries the
@@ -787,6 +823,13 @@ if value < 0:
 print(value)
 PY
 }
+for _memory_policy_var in DEV_MEMORY_MAX DEV_GATES_MEMORY_MAX DEV_BACKGROUND_MEMORY_MAX \
+  DEV_SWAP_MAX DEV_GATES_MEMORY_SWAP_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX; do
+  case "${!_memory_policy_var:-}" in
+    ""|auto) printf -v "${_memory_policy_var}_POLICY_PIN" '%s' 0 ;;
+    *) printf -v "${_memory_policy_var}_POLICY_PIN" '%s' 1 ;;
+  esac
+done
 for _swap_var in DEV_SWAP_MAX DEV_INTERACTIVE_MEMORY_SWAP_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX DEV_GATES_MEMORY_SWAP_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX; do
   _swap_value="${!_swap_var:-}"
   _unset_var="${_swap_var}_UNSET"
@@ -909,6 +952,9 @@ elif [ "${_host_swap_bytes:-}" = 0 ]; then
 else
   echo "WARN: could not read /proc/meminfo's SwapTotal — MemorySwapMax auto-detect skipped; set DEV_SWAP_MAX and the *_MEMORY_SWAP_MAX values explicitly if this host has swap"
 fi
+if ! _mdt_apply_memory_policy "${MDT_MEMORY_POLICY:-}" "$(_mdt_host_role)"; then
+  exit 2
+fi
 
 # Tree cache plan (AD2-2, MDT-074): gid lookup, the half-of-RAM bound and path rules live in make_plan, not in
 # the wizard validators, so they are evaluated here, before the commit point (a refusal changes nothing).
@@ -996,7 +1042,7 @@ DEV_STATIC_RBW DEV_STATIC_WBW DEV_STATIC_RIOPS DEV_STATIC_WIOPS \
 DOCKER_SCOPE_BACKSTOP_MEMORY_MAX DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX \
 IO_DEV_PATH IO_SD_DEV WATCHER_INTERVAL"
 render() { # render <template> <dest>
-  local src="$1" dst="$2" v args=()
+  local src="$1" dst="$2" v args=() oom_removed
   for v in $RENDER_VARS; do args+=(-e "s|@$v@|${!v:-}|g"); done
   sed "${args[@]}" "$src" > "$dst"
   # Optional settings: a directive whose value resolves to empty (the var
@@ -1005,6 +1051,17 @@ render() { # render <template> <dest>
   # applied," systemd's own default for that property then governs (see
   # host-setup.env.example, dev-buildkitd.slice section).
   sed -i '/^[A-Za-z][A-Za-z0-9]*=$/d' "$dst"
+  if [ "${MDT_MEMORY_POLICY:-}" = overcommit ]; then
+    case "$(basename "$dst")" in
+      dev*.slice)
+        oom_removed="$(grep '^ManagedOOM' "$dst" | cut -d= -f1 | tr '\n' ' ' || true)"
+        if [ -n "$oom_removed" ]; then
+          sed -i '/^ManagedOOM/d' "$dst"
+          echo "MDT_MEMORY_POLICY=overcommit: removed ${oom_removed% } from $dst"
+        fi
+        ;;
+    esac
+  fi
   echo "rendered $dst"
 }
 render "$HERE/units/dev.slice.in"              /etc/systemd/system/dev.slice
@@ -1048,10 +1105,21 @@ MDT_DED_LIVE_UNITS=""
 MDT_SYSTEMD_DIR="${MDT_SYSTEMD_DIR:-/etc/systemd/system}"
 if [ "$MDT_DEDICATED_MEM" = 1 ]; then
   mkdir -p "$MDT_SYSTEMD_DIR/system.slice.d"
-  printf '%s\n' "# RENDERED by host-setup/install.sh (HOST_ROLE=dedicated-dev) - do not edit." "[Slice]" "MemoryLow=${MDT_DEDICATED_KEEP}" \
-    > "$MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN"
+  if [ "${MDT_MEMORY_POLICY:-}" = overcommit ]; then
+    printf '%s\n' "# RENDERED by host-setup/install.sh (HOST_ROLE=dedicated-dev) - do not edit." \
+      "[Slice]" "MemoryLow=${MDT_DEDICATED_KEEP}" "MemoryMax=infinity" "MemorySwapMax=infinity" \
+      > "$MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN"
+  else
+    printf '%s\n' "# RENDERED by host-setup/install.sh (HOST_ROLE=dedicated-dev) - do not edit." \
+      "[Slice]" "MemoryLow=${MDT_DEDICATED_KEEP}" \
+      > "$MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN"
+  fi
   chmod 0644 "$MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN"
-  echo "host protection: system.slice MemoryLow=${MDT_DEDICATED_KEEP}B ($MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN)"
+  if [ "${MDT_MEMORY_POLICY:-}" = overcommit ]; then
+    echo "host protection: system.slice MemoryLow=${MDT_DEDICATED_KEEP}B MemoryMax=infinity MemorySwapMax=infinity ($MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN)"
+  else
+    echo "host protection: system.slice MemoryLow=${MDT_DEDICATED_KEEP}B ($MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN)"
+  fi
   for _ded_unit in $MDT_DEDICATED_PROTECTED_UNITS; do
     _ded_file="$MDT_SYSTEMD_DIR/$_ded_unit.d/$MDT_DED_DROPIN"
     if [ ! -f "$_ded_file" ]; then
