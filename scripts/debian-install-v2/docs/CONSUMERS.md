@@ -321,17 +321,23 @@ swap. Unsupported combinations name their code rather than falling back:
 `btrfs_reserve_unsupported`, `btrfs_data_kind_unsupported`,
 `btrfs_iobench_raw_unavailable`, and `btrfs_swap_needs_p3`.
 
-v2 creates only top-level `@...` children under `/.top` (subvolid 5). Per-volume
-`nocow` is applied with `chattr +C` on the empty subvolume before any file is
-written. A re-run accepts an existing subvolume only when its NOCOW property
-matches; another filesystem object or a different property is
+v2 creates only top-level `@...` children under `/.top` (subvolid 5) on the
+same btrfs backing partition as `/`. Per-volume `nocow` is applied with
+`chattr +C` on the empty subvolume before any file is written. A re-run accepts
+an existing subvolume when its NOCOW property matches, and reapplies `+C` to
+an empty existing subvolume that lacks it. Another filesystem object, or a
+non-empty subvolume with a different property, is
 `btrfs_subvolume_properties_differ`. The fstab row reuses the root source and
 option set plus `user_subvol_rm_allowed` and `subvol=<name>`. A mount at or
 above an ISO-excluded path is refused, while `/srv/cow` (below `/srv`) is the
-supported example. The existing protected system-path set (including `/boot`,
-`/etc`, `/usr`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, and the
-package-manager/cloud state below `/var`) uses the same at-or-above rule;
-descendants are eligible.
+supported example. v2's existing protected-tree and live-service checks still
+apply: at/below/above `/boot`, `/etc`, `/usr`, `/proc`, `/var/lib/dpkg`, and
+the other protected trees is refused; `/var/lib/docker` and
+`/var/lib/containerd` cannot be covered at any depth.
+
+IC-M1a keeps `user_subvol_rm_allowed` on each data-subvolume row. The effective
+root-filesystem option set is IC-M1b's `install-btrfs.sh` `OPTS` change, with
+the live mount check in IC-M1c.
 
 The operator decision recorded for WP-10 supersedes the old C6 `@swap`
 swapfile design and the C9 swap row: this package creates no swapfile and no
@@ -340,11 +346,12 @@ raw-benchmark import also remains pending, so a btrfs installer reports the
 benchmark and io.cost as skipped rather than pretending they ran.
 
 With the rollback layer present and a managed running state, a completing
-stage two ends with one `dr-state snapshot --reason host-setup`; snapshot
-failure fails the install. Layer absence/unmanaged roots are recorded as
-named skips. The v2 stage environments set `DR_STATE=none`; the snapshot call
-clears it only for that command. A re-run after `stage2_done` takes no second
-snapshot.
+stage two writes `phase=done` and `stage2_done` before one
+`dr-state snapshot --reason host-setup`; the snapshot therefore records a
+completed stage two. Snapshot failure removes the marker and fails the install.
+Layer absence/unmanaged roots are recorded as named skips. The v2 stage
+environments set `DR_STATE=none`; the snapshot call clears it only for that
+command. A re-run after `stage2_done` takes no second snapshot.
 
 The dr first-boot hook/bundle handoff, ISO netcup console option, `/.top` mode
 0700, and the runner's btrfs CoW mount are IC-M1b/c, not this package. Until

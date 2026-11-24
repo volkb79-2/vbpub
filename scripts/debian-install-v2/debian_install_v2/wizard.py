@@ -322,7 +322,7 @@ def _summary(config: Config) -> str:
     values = asdict(config)
     lines = [
         "Configuration to write (secret values are not shown):",
-        "  schema_version: 1",
+        f"  schema_version: {config.schema_version}",
         "  fresh_install: true (required by this v2 release)",
     ]
     for section in WIZARD_SECTIONS:
@@ -338,7 +338,10 @@ def _summary(config: Config) -> str:
             else:
                 shown = str(value)
             lines.append(f"    {field.name}: {shown}")
-    spec = layout_policy.disk_spec(config.partitioning)
+    spec = layout_policy.disk_spec(
+        config.partitioning,
+        schema_version=config.schema_version,
+    )
     lines.append(
         "  Resolved disk table: disk size is not supplied to the wizard; "
         f"iobench-raw={'disabled' if spec.iobench_raw_gb is None else f'{spec.iobench_raw_gb} GiB'}; "

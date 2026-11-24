@@ -12,6 +12,23 @@ from debian_install_v2.layout_policy import GPT_LAST_USABLE_OFFSET, IOBENCH_PART
 from debian_install_v2.plan_preview import PlanPreviewError, disk_size_bytes, format_table, resolve_plan
 
 
+BTRFS_SUBVOLUME_CONFIG = Config(
+    schema_version=2,
+    partitioning={
+        "root": "*",
+        "reserve_gb": 0,
+        "iobench_raw_gb": False,
+        "data": {
+            "kind": "subvolumes",
+            "volumes": [{"name": "@cow", "mount": "/srv/cow", "nocow": False}],
+        },
+    },
+    swap_policy="off",
+    swap_partition_count=0,
+    run_io_benchmark=False,
+)
+
+
 def test_disk_size_parser_accepts_binary_gib_and_tib_units():
     assert disk_size_bytes("20GiB") == 20 * 1024**3
     assert disk_size_bytes("512G") == 512 * 1024**3
@@ -144,6 +161,53 @@ def test_disabling_raw_partition_removes_it_from_the_resolved_table():
     config = Config(partitioning={"root": "*", "iobench_raw_gb": False}, swap_policy="off")
     result = resolve_plan(config, disk_size="512GiB")
     assert [row["entry"] for row in result["plan_table"]] == ["root"]
+
+
+def test_offline_preview_accepts_schema_two_subvolumes():
+    result = resolve_plan(BTRFS_SUBVOLUME_CONFIG, disk_size="512GiB")
+
+    assert result["partitioning"] == BTRFS_SUBVOLUME_CONFIG.partitioning
+    assert [row["entry"] for row in result["plan_table"]] == ["root"]
+
+
+def test_btrfs_plan_and_install_intro_do_not_describe_disk_or_swap_changes():
+    plan = {
+        "release": "trixie",
+        "root_fs": "btrfs",
+        "root_device": "/dev/vda2",
+        "new_root_size_sectors": 0,
+        "data_subvolumes": [
+            {"name": "@cow", "mount": "/srv/cow", "nocow": False},
+        ],
+    }
+
+    rendered = bootstrap._render_plan(plan)
+    intro = bootstrap._install_intro(plan)
+
+    assert "New root size: 0 sectors" not in rendered
+    assert "modify the root disk and create the configured swap layout" not in intro
+    assert "existing btrfs root" in intro
+    assert "no partition table, root growth or root shrink" in intro
+
+
+def test_cli_resume_reports_a_completed_stage_two_noop(monkeypatch):
+    class Output:
+        def __init__(self):
+            self.messages = []
+
+        def info(self, message):
+            self.messages.append(message)
+
+    runtime = SimpleNamespace(output=Output())
+    completed = SimpleNamespace(stage2_complete=True)
+    monkeypatch.setattr(
+        bootstrap, "_make_resume_installer", lambda _runtime: completed,
+    )
+
+    assert bootstrap._resume(SimpleNamespace(), runtime) == 0
+    assert runtime.output.messages == [
+        "Stage two already complete (stage2_done); nothing to do."
+    ]
 
 
 def test_offline_resolver_accepts_partition_128_and_refuses_129():

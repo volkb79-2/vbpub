@@ -345,10 +345,14 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
   and nested planned mounts are refused. See
   [Data mount safety](docs/DESIGN-GUIDE.md#data-mount-safety) for the rationale.
 
-  The btrfs-root `subvolumes` mode uses the narrower ISO exclusion rule: a new
-  data mount at or above an excluded path is refused, while a descendant is
-  allowed. Thus `/srv/cow` is the supported CoW-area mount; `/srv` itself is
-  not.
+  The btrfs-root `subvolumes` mode keeps this complete mount policy and adds
+  C9's ISO exclusion rule on top. A subvolume mount at, inside, or above a
+  protected OS-state tree remains refused; a path intersecting the live
+  Docker/containerd stores remains refused; and a path at or above
+  `/var`, `/var/lib`, `/srv`, or `/home` remains refused. C9 additionally
+  refuses a mount at or above any ISO-excluded path. Descendants of an
+  excluded path are accepted unless another mount rule protects them, so
+  `/srv/cow` is the supported CoW-area mount and `/srv` itself is not.
 
   With `/var/log/journal` selected, the install-time journal remains on the
   root filesystem and is hidden when stage two mounts the new filesystem over
@@ -464,26 +468,35 @@ Example for the r1002 CoW area, `@cow` at `/srv/cow`:
 }
 ```
 
-`/.top` must be the mounted top-level subvolume (`subvolid=5`). v2 creates
-each direct child, verifies `/.top` first, refuses a same-path object with
-different properties, and sets NOCOW with `chattr +C` immediately after
-creation, before any file can be written. The fstab entry uses the root
+`/.top` must be the mounted top-level subvolume (`subvolid=5`) on the same
+btrfs backing partition as `/`. v2 creates each direct child, verifies
+`/.top` first, refuses a same-path object with different properties, and sets
+NOCOW with `chattr +C` immediately after creation, before any file can be
+written. When an existing empty subvolume lacks `+C`, v2 reapplies it; a
+non-empty one keeps the named property refusal. The fstab entry uses the root
 entry's source and option set plus `user_subvol_rm_allowed` and
 `subvol=<name>`. The ISO already owns the excluded data subvolumes
 (`@home`, `@root`, `@srv`, `@www`, `@log`, `@docker`, `@containers`,
 `@postgresql`, `@mysql`, `@usr-local`) and every `@os-*` state; those names
 and the rollback-layer names are reserved. Data mounts at or above one of the
 excluded paths are refused, while mounts below them (for example
-`/srv/cow`) are allowed. The existing protected system-path set (`/boot`,
-`/etc`, `/usr`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`,
-`/sbin`, `/lib*`, the package-manager/cloud state below `/var`, and
-`/var`, `/var/lib`) is checked with the same direction: the exact path or an
-ancestor is refused; a descendant is allowed.
+`/srv/cow`) are allowed. v2's existing mount policy still applies on top:
+mounts at, below, or above `/boot`, `/etc`, `/usr`, `/proc`, `/var/lib/dpkg`
+and the other protected trees are refused, and `/var/lib/containerd` and
+`/var/lib/docker` cannot be covered at any depth.
+
+IC-M1a keeps `user_subvol_rm_allowed` on each data-subvolume fstab row as the
+package contract requires. Btrfs applies most options per filesystem, so
+putting the effective option on the root mount's option set belongs to
+IC-M1b (`install-btrfs.sh` `OPTS`), with the live mount-option check in
+IC-M1c. The data row remains harmless and continues to document the intent.
 
 When the cloud-init package is absent, a requested cleanup is a named no-op,
 not an error. When `/usr/local/sbin/dr-state` exists and reports a managed
-running `@os-*` state, stage two ends with exactly one
-`dr-state snapshot --reason host-setup`; a snapshot failure fails stage two.
+running `@os-*` state, stage two writes `phase=done` and `stage2_done` before
+exactly one `dr-state snapshot --reason host-setup`; the snapshot is the last
+host-changing step and captures a completed stage two. A snapshot failure
+removes `stage2_done` and fails stage two.
 If the layer is absent or reports an unmanaged root, no snapshot is taken and
 the summary says why. A stage-two re-run after the completion marker exists
 plans nothing and takes no second snapshot. Both v2 stage paths export
@@ -500,6 +513,12 @@ The placeholder above is the configured absolute state directory in the
 rendered unit; the two bundle paths are literal and no glob or symlink
 following is used. v2's existing install guard is unchanged and still refuses
 replay when the marker or a done/success state exists.
+
+That guard cannot protect a rollback to the pre-v2 initial state: its marker
+and done/success state live under `/var/lib` inside the OS state and roll back
+with it. C4's deletion of `/root/.vbpub/firstboot.json` and
+`/root/.vbpub/firstboot.started`, which live in `@root` outside every state,
+is what prevents v2's install from replaying on that rollback.
 
 Not in IC-M1a: swapping on btrfs (`btrfs_swap_needs_p3`), raw-benchmark import
 for io.cost (`iobench_raw_unavailable_on_btrfs`), and IC-M1b/c items (the dr

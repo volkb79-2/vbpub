@@ -171,6 +171,17 @@ def test_without_nofsroot_a_btrfs_subvolume_suffix_is_rejected(tmp_path):
         installer._discover_root()
 
 
+def test_extra_findmnt_columns_are_malformed_not_multi_device(tmp_path):
+    findmnt_argv = ("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")
+    actions = BoundaryActions(outputs={
+        findmnt_argv: "/dev/vda2 /dev/vdb2 btrfs\n",
+    })
+    installer = Installer(Config(state_dir=str(tmp_path / "state")), actions, inspect_host=False)
+
+    with pytest.raises(HostIdentityRefusal, match="root mount discovery is malformed"):
+        installer._discover_root()
+
+
 @pytest.mark.parametrize("devids", [(), ("1", "2")])
 def test_btrfs_requires_exactly_one_backing_device(tmp_path, devids):
     findmnt_argv = ("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")

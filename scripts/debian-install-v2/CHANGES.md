@@ -17,14 +17,17 @@ All notable changes to debian-install-v2 are recorded here.
   with `swap_partition_count: 0` are accepted; each unsupported shape has a
   named refusal.
 - `data.kind: "subvolumes"` creates top-level `@...` children under `/.top`,
-  verifies idempotent NOCOW properties before writing the setting, writes fstab
+  verifies idempotent NOCOW properties before writing the setting, reapplies
+  `chattr +C` to an empty subvolume after an interrupted create, writes fstab
   rows from the root's source/options plus `user_subvol_rm_allowed` and
   `subvol=<name>`, and verifies an already-mounted target is the configured
   subvolume. The r1002 `@cow` at `/srv/cow` example is documented.
 - v2 stage environments export `DR_STATE=none`. A completing btrfs stage two
-  ends with one checked `dr-state snapshot --reason host-setup` when the layer
-  manages the running root; layer absence/unmanaged roots are named skips.
-  Failures propagate, and a rerun after the stage-two marker takes no snapshot.
+  writes the done marker first, then ends with one checked
+  `dr-state snapshot --reason host-setup` when the layer manages the running
+  root; layer absence/unmanaged roots are named skips. A snapshot failure
+  removes the marker and propagates, and a rerun after the marker takes no
+  snapshot.
 - The stage-two unit removes only `/root/.vbpub/firstboot.json` and
   `/root/.vbpub/firstboot.started` after the completion marker exists, using
   one literal `ExecStartPost` command. v2's existing install guard is unchanged.

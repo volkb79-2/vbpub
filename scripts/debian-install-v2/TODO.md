@@ -21,6 +21,10 @@
   their milestone evidence.
 - IC-M6 owns ZFS-root support; IC-M1a detects it and refuses with
   `root_fs_unsupported`.
+- `plan --dry-run` still hard-codes an ext4 root, so it cannot preview a btrfs-root configuration; make dry-run obtain or explicitly refuse the missing root fact rather than print an ext4 partition plan.
+- At config load, schema 2 with `swap_policy: "on"` and `swap_partition_count: 0` gets a generic swap error before root discovery; surface the named `btrfs_swap_needs_p3` refusal for a known btrfs configuration.
+- Open design decision: data-subvolume fstab rows currently have no `nofail`, so a missing subvolume can send boot to emergency mode; decide whether that stricter boot dependency is intended.
+- IC-M1b must add `user_subvol_rm_allowed` to the root btrfs option set in dr's `install-btrfs.sh` `OPTS`, and IC-M1c must verify the live `/srv/cow` mount reports it; v2 keeps the harmless data-row option meanwhile.
 
 ## IMPLEMENTED (DIV2-BL-06, unreleased): bound KSM advisor work and scanner wakeups
 
