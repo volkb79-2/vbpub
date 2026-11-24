@@ -2,8 +2,10 @@
 #
 # This is a local workaround for a cmru gap: bundle-build's generic manifest
 # does not carry the Seam-3 per-distribution entries that cmru's own installer
-# core verifies for declared [[project.installer.wheels]]. The same gap is why a
-# 3.x instance cannot use its retained installer to adopt a 4.0 bundle.
+# core verifies for declared [[project.installer.wheels]]. Without this shim a
+# fresh 4.0 install and every 4.x update would fail wheel verification, because
+# `_install_wheels` reaches this project's rendered wheel allowlist through the
+# core per-distribution verifier.
 #
 # The extension validates the rendered wheel allowlist against cmru's generic
 # files map and retains the installer's extra-wheel refusal. When cmru owns the
