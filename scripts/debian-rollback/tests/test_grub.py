@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import unittest
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -71,6 +72,9 @@ class FakeStorage:
 
     def list(self) -> list[Stored]:
         return [Stored(state.name, None, None) for state in self._states]
+
+    def running(self) -> str | None:
+        return None
 
     def kernels(self, state: str) -> list[KernelPair]:
         _ = state
@@ -323,6 +327,34 @@ class MarkerTest(_support.TemporaryRootTest):
         self.paths.esp_marker.mkdir()
         with self.assertRaisesRegex(Refused, "not a regular file"):
             marker_value(self.paths)
+
+    def test_nonpublication_verbs_do_not_read_a_symlinked_marker(self) -> None:
+        from dr_state.core import execute, make_context
+
+        self.paths.top.mkdir()
+        installed = state(1, 12, "install")
+        self.storage = FakeStorage((installed,))
+        (self.paths.top / installed.name).mkdir()
+        marker_target = self.root / "marker-target"
+        marker_target.write_text("grub\n", encoding="utf-8")
+        self.paths.esp_marker.symlink_to(marker_target)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        context = make_context(
+            self.paths,
+            storage=self.storage,
+            runner=FakeRunner(),
+            clock=lambda: datetime(2026, 11, 18, 12, 0, tzinfo=UTC),
+            env={},
+            stdout=stdout,
+            stderr=stderr,
+        )
+        self.assertEqual(execute(context, ("list",)), 0)
+        self.assertIn(installed.name, stdout.getvalue())
+        self.assertEqual(execute(context, ("show", installed.name)), 0)
+        self.assertIn(f"state: {installed.name}", stdout.getvalue())
+        with self.assertRaisesRegex(Refused, "not a regular file"):
+            execute(context, ("gen-menu",))
 
 
 if __name__ == "__main__":

@@ -8,23 +8,56 @@ import unittest
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
 import _support
 from dr_state import ids, metadata
 from dr_state.boot import Inspection, Selector
-from dr_state.core import Completed, Context, execute
-from dr_state.errors import BootConfigError, Refused, StorageError
+from dr_state.boot.grub import GrubBoot
+from dr_state.core import Completed, Context, Runner, execute, make_context
+from dr_state.errors import (
+    BootConfigError,
+    FormatError,
+    Refused,
+    StorageError,
+)
 from dr_state.storage import KernelPair, Space, Stored
 
 
 class FakeRunner:
     def __init__(self, packages: str = "apt\t3.0\n") -> None:
         self.packages = packages
+        self.environment = ""
+        self.fail_grubenv = False
 
     def run(self, argv: list[str], *, input: str | None = None) -> Completed:
         _ = input
         if argv[0] == "dpkg-query":
             return Completed(0, self.packages, "")
+        if argv[0] == "grub-editenv":
+            operation = argv[2]
+            if operation == "create":
+                Path(argv[1]).touch()
+                self.environment = ""
+                return Completed()
+            if operation == "list":
+                if self.fail_grubenv:
+                    return Completed(1, "", "simulated unreadable grubenv")
+                return Completed(0, self.environment, "")
+            if operation == "set":
+                if "=" not in argv[3]:
+                    return Completed(64, "", "invalid grubenv assignment")
+                key, _, value = argv[3].partition("=")
+                current: dict[str, str] = {}
+                for line in self.environment.splitlines():
+                    name, separator, old_value = line.partition("=")
+                    if separator:
+                        current[name] = old_value
+                current[key] = value
+                self.environment = "".join(
+                    f"{name}={current[name]}\n" for name in sorted(current)
+                )
+                return Completed()
         return Completed(64, "", f"unsupported fake program: {argv}")
 
 
@@ -41,6 +74,7 @@ class FakeStorage:
     states: tuple[ids.StateId, ...]
     running_name: str | None
     events: list[str]
+    boot: FakeBoot | None = None
 
     name = "btrfs"
 
@@ -82,6 +116,10 @@ class FakeStorage:
         self.events.append("activate")
 
     def delete(self, state: ids.StateId) -> None:
+        if self.boot is not None and state.name in self.boot.published:
+            raise AssertionError(
+                f"{state.name} was still published when storage.delete was called"
+            )
         self.events.append("delete")
         shutil.rmtree(self.paths.top / state.name)
 
@@ -183,11 +221,12 @@ class CoreTest(_support.TemporaryRootTest):
             (boot / "initrd.img-6.12.117+deb13-amd64").write_text("initrd\n")
         self.storage = FakeStorage(self.paths, (self.install, self.apt), self.install.name, self.events)
         self.boot = FakeBoot(default=self.install.name, events=self.events)
+        self.storage.boot = self.boot
 
     def context(
         self,
         *,
-        boot: FakeBoot | None = None,
+        boot: FakeBoot | GrubBoot | None = None,
         runner: object | None = None,
         env: dict[str, str] | None = None,
         now: datetime | None = None,
@@ -201,6 +240,39 @@ class CoreTest(_support.TemporaryRootTest):
             stdout=io.StringIO(),
             stderr=io.StringIO(),
             boot=boot or self.boot,
+        )
+
+    def grub_context(self, environment: str) -> Context:
+        self.paths.esp_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.esp_marker.write_text("grub\n", encoding="utf-8")
+        self.paths.esp_grubenv.touch()
+        runner = FakeRunner()
+        runner.environment = environment
+        boot = GrubBoot(self.paths, self.storage, runner)
+        return self.context(runner=runner, boot=boot)
+
+    def assert_snapshot_survives_publication_failure(
+        self,
+        error: Exception,
+    ) -> None:
+        self.boot.publish_error = error
+        context = self.context()
+        self.assertEqual(
+            execute(context, ("snapshot", "--reason", "before-upgrade")),
+            0,
+        )
+        target = make_state(3, 14, "manual-before-upgrade")
+        self.assertTrue((self.paths.top / target.name).is_dir())
+        sidecar = metadata.load_sidecar(metadata.sidecar_path(self.paths, target))
+        self.assertIsNotNone(sidecar)
+        self.assertIn(
+            f"warning: checkpoint {target.name} was written but "
+            "the boot menu was not updated",
+            context.stderr.getvalue(),
+        )
+        self.assertIn(
+            f"dr-state: wrote {target.name} (copy of {self.install.name})",
+            context.stdout.getvalue(),
         )
 
     def add_state(self, sequence: int, hour: int, slug: str = "apt") -> ids.StateId:
@@ -224,6 +296,44 @@ class CoreTest(_support.TemporaryRootTest):
         self.assertEqual(sidecar.parent_state, self.install.name)
         self.assertEqual(sidecar.source, "manual")
         self.assertIn("was written but the boot menu was not updated", context.stderr.getvalue())
+
+    def test_snapshot_survives_oserror_publication_failure(self) -> None:
+        self.assert_snapshot_survives_publication_failure(OSError("full ESP"))
+
+    def test_snapshot_survives_format_publication_failure(self) -> None:
+        self.assert_snapshot_survives_publication_failure(
+            FormatError("format 2 is newer than supported format 1")
+        )
+
+    def test_runner_turns_an_exec_oserror_into_exit_127(self) -> None:
+        with mock.patch(
+            "dr_state.core.subprocess.run",
+            side_effect=FileNotFoundError("missing program"),
+        ):
+            completed = Runner().run(["missing-program"])
+        self.assertEqual(completed.returncode, 127)
+        self.assertEqual(completed.stdout, "")
+        self.assertIn("missing program", completed.stderr)
+
+    def test_snapshot_records_unavailable_when_dpkg_query_exec_fails(self) -> None:
+        self.boot.publish_error = OSError("full ESP")
+        with mock.patch(
+            "dr_state.core.subprocess.run",
+            side_effect=FileNotFoundError("dpkg-query"),
+        ):
+            context = self.context(runner=Runner())
+            result = execute(context, ("snapshot", "--reason", "before-upgrade"))
+        self.assertEqual(result, 0)
+        target = make_state(3, 14, "manual-before-upgrade")
+        sidecar = metadata.load_sidecar(metadata.sidecar_path(self.paths, target))
+        self.assertIsNotNone(sidecar)
+        self.assertEqual(sidecar.packages_status, "unavailable")
+        self.assertEqual(sidecar.packages, "")
+        self.assertIn(
+            f"warning: checkpoint {target.name} was written but "
+            "the boot menu was not updated",
+            context.stderr.getvalue(),
+        )
 
     def test_snapshot_metadata_failure_removes_the_object(self) -> None:
         context = self.context()
@@ -254,6 +364,34 @@ class CoreTest(_support.TemporaryRootTest):
         self.assertFalse(self.paths.counter_file.exists())
         self.assertNotIn("snapshot", self.events)
 
+    def test_dr_state_none_wins_over_a_detected_running_state(self) -> None:
+        context = self.context(env={"DR_STATE": "none"})
+        self.assertEqual(
+            execute(context, ("snapshot", "--reason", "before-upgrade")),
+            0,
+        )
+        self.assertEqual(
+            context.stderr.getvalue(),
+            "dr-state: DR_STATE=none, snapshot skipped\n",
+        )
+        self.assertNotIn("snapshot", self.events)
+        self.assertFalse(self.paths.counter_file.exists())
+
+        with self.assertRaisesRegex(
+            Refused,
+            "prune: refusing with DR_STATE=none",
+        ):
+            execute(self.context(env={"DR_STATE": "none"}), ("prune", "--keep", "0"))
+        with self.assertRaisesRegex(
+            Refused,
+            "delete: refusing with DR_STATE=none",
+        ):
+            execute(
+                self.context(env={"DR_STATE": "none"}),
+                ("delete", self.apt.name, "--yes"),
+            )
+        self.assertEqual(self.events, [])
+
     def test_delete_publishes_the_shrunken_menu_before_storage_delete(self) -> None:
         self.storage.running_name = self.apt.name
         self.boot.default_name = self.apt.name
@@ -262,6 +400,22 @@ class CoreTest(_support.TemporaryRootTest):
         self.assertEqual(self.events, ["publish", "delete"])
         self.assertFalse((self.paths.top / self.install.name).exists())
         self.assertIn(f"deleted {self.install.name}", context.stdout.getvalue())
+
+    def test_delete_proceeds_when_next_entry_is_empty(self) -> None:
+        third = self.add_state(3, 14)
+        context = self.grub_context(
+            f"saved_entry={self.apt.name}\n"
+            "next_entry=\n"
+        )
+        self.assertEqual(
+            execute(context, ("delete", third.name, "--yes")),
+            0,
+        )
+        self.assertFalse((self.paths.top / third.name).exists())
+        published = context.boot.inspect().published
+        self.assertNotIn(third.name, published)
+        self.assertIn(self.apt.name, published)
+        self.assertIn(f"deleted {third.name}", context.stdout.getvalue())
 
     def test_delete_refuses_the_configured_default_before_any_change(self) -> None:
         self.storage.running_name = self.apt.name
@@ -306,6 +460,33 @@ class CoreTest(_support.TemporaryRootTest):
         )
         self.assertTrue((self.paths.top / self.apt.name).is_dir())
         self.assertFalse((self.paths.top / third.name).exists())
+        self.assertFalse((self.paths.top / fourth.name).exists())
+
+    def test_prune_proceeds_when_next_entry_is_empty(self) -> None:
+        third = self.add_state(3, 14)
+        fourth = self.add_state(4, 15)
+        context = self.grub_context(
+            f"saved_entry={self.apt.name}\n"
+            "next_entry=\n"
+        )
+        self.assertEqual(execute(context, ("prune", "--keep", "0")), 0)
+        self.assertTrue((self.paths.top / self.install.name).is_dir())
+        self.assertTrue((self.paths.top / self.apt.name).is_dir())
+        self.assertFalse((self.paths.top / third.name).exists())
+        self.assertFalse((self.paths.top / fourth.name).exists())
+
+    def test_prune_protects_running_default_and_oneshot_separately(self) -> None:
+        third = self.add_state(3, 14)
+        fourth = self.add_state(4, 15)
+        self.boot.default_name = self.apt.name
+        self.boot.oneshot_name = third.name
+        self.assertEqual(
+            execute(self.context(), ("prune", "--keep", "0")),
+            0,
+        )
+        self.assertTrue((self.paths.top / self.install.name).is_dir())
+        self.assertTrue((self.paths.top / self.apt.name).is_dir())
+        self.assertTrue((self.paths.top / third.name).is_dir())
         self.assertFalse((self.paths.top / fourth.name).exists())
 
     def test_prune_fails_closed_when_the_default_is_unreadable(self) -> None:

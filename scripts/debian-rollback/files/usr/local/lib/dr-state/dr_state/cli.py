@@ -12,7 +12,7 @@ from io import TextIOBase
 from typing import NoReturn
 
 from .core import execute, make_context
-from .errors import UsageError, exit_code
+from .errors import Unsupported, UsageError, exit_code
 from .paths import Paths
 
 
@@ -76,6 +76,8 @@ def run(
         debug = os.environ.get("DR_STATE_DEBUG") == "1"
     try:
         invocation = parse_invocation(argv)
+        if invocation.json or "--json" in invocation.command:
+            raise Unsupported("JSON output is not supported in this runtime")
         if not invocation.command:
             raise UsageError("a command is required")
         return dispatch(invocation)

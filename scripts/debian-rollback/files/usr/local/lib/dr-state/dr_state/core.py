@@ -51,13 +51,16 @@ class Runner:
     """The only production path to external programs."""
 
     def run(self, argv: list[str], *, input: str | None = None) -> Completed:
-        completed = subprocess.run(
-            argv,
-            input=input,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                argv,
+                input=input,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as error:
+            return Completed(127, "", str(error))
         return Completed(
             returncode=completed.returncode,
             stdout=completed.stdout,
@@ -138,11 +141,6 @@ def make_context(
 
     process_runner = runner or Runner()
     backend = storage or detect_storage(paths, process_runner)
-    selected_boot = boot
-    if selected_boot is None:
-        marker = marker_value(paths)
-        if marker == "grub":
-            selected_boot = GrubBoot(paths, backend, process_runner)
     return Context(
         paths=paths,
         storage=backend,
@@ -151,7 +149,7 @@ def make_context(
         env=os.environ if env is None else env,
         stdout=stdout,
         stderr=stderr,
-        boot=selected_boot,
+        boot=boot,
     )
 
 
@@ -168,6 +166,8 @@ def _require_boot(context: Context) -> Boot:
         raise Refused(
             f"bootloader marker {context.paths.esp_marker} is present but empty"
         )
+    if marker == "grub":
+        return GrubBoot(context.paths, context.storage, context.runner)
     raise Unsupported(f"boot backend {marker!r} is not installed in this runtime")
 
 
@@ -225,11 +225,11 @@ def _pinned(context: Context, states: Iterable[ids.StateId]) -> frozenset[str]:
 
 
 def _running(context: Context) -> tuple[str | None, bool]:
+    if context.env.get("DR_STATE", "") == "none":
+        return None, True
     value = context.storage.running()
     if value is None:
         value = context.env.get("DR_STATE", "")
-    if value == "none":
-        return None, True
     return value or None, False
 
 
@@ -279,13 +279,16 @@ def _kernel_at_snapshot(context: Context) -> str:
 
 
 def _packages(context: Context) -> tuple[str, str]:
-    completed = context.runner.run(
-        [
-            "dpkg-query",
-            "-W",
-            "-f=${binary:Package}\t${Version}\n",
-        ]
-    )
+    try:
+        completed = context.runner.run(
+            [
+                "dpkg-query",
+                "-W",
+                "-f=${binary:Package}\t${Version}\n",
+            ]
+        )
+    except OSError:
+        return "unavailable", ""
     if completed.returncode != 0:
         return "unavailable", ""
     rows = [
@@ -683,7 +686,15 @@ def _snapshot(
 
     try:
         _publish(context)
-    except (StorageError, BootError, CapacityError, BootConfigError, Refused) as error:
+    except (
+        StorageError,
+        BootError,
+        CapacityError,
+        BootConfigError,
+        Refused,
+        FormatError,
+        OSError,
+    ) as error:
         context.err(
             f"dr-state: warning: checkpoint {target.name} was written but "
             f"the boot menu was not updated: {error}"
