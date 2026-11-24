@@ -4,6 +4,137 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [0.1.0] - 2026-11-24
+<!-- cmru: generated -->
+<!-- cmru: source-end=71adc3ab141df54e7e88d6b6638c981e2d800908 -->
+
+### Added
+- feat(fleetd): the default R2 producers — scope, sizing, measurement, merge check (d8e9cb325)
+- feat(fleetd): complete the cli-extended adoption (surface, skills, docs, release edge) (843628ed9)
+- feat(fleetd): register the fleet CLI on cli-extended (dependency boundary + grammar) (db286757e)
+- feat(fleetd): add named-job campaign client (61feb2224)
+- feat(fleetd): add deterministic RAM-first planner (4dabc733e)
+- feat(fleetd): collect rooted host facts (7c07ddd70)
+- feat(fleetd): add strict versioned contracts (adee9c10c)
+- feat(fleetd): scaffold the stdlib campaign planner project (0ac933d68)
+
+### Fixed
+- fix(fleetd): returned-duplicate stop only touches jobs that were lost (P-fd-01 r2 A) (37dda0ab6)
+- fix(fleetd): end the unreachable episode on an ERROR answer and decide the error episode once per tick (WP2b B1, B2) (28c91bbda)
+- fix(fleetd): validate the cost fields before dividing and cross-check them in the measurement validator (WP3b review 3, 4) (0eed38192)
+- fix(fleetd): re-plan the placeable candidates and defer only the unplaceable ones (FD-017) (4157958d3)
+- fix(fleetd): widen the first stall window of a host without a comparable speed reference (FD-025) (3fc04670b)
+- fix(fleetd): age a host that stays in ERROR and warn at 1800 s, never lose or re-queue it (FD-026) (18c8b30dc)
+- fix(fleetd): reserve a share of the rolling slice for the never-judged remainder and report every deferred changed file (FD-038) (a6beb0b5a)
+- fix(fleetd): start the host-loss clock at the first failed probe, report a timeout as SLOW (FD-020) (cb7a00b33)
+- fix(fleetd): size R2 shard budgets from the per-candidate mean and a measured tail margin (FD-031) (63568d5d3)
+- fix(fleetd): settle a job for probing only from its EXIT row; tests no longer need the checkout's hx.sh (WP1b) (1243f4f71)
+- fix(fleetd): defer new batch starts on a host above the PSI threshold (FD-022) (7411617f3)
+- fix(fleetd): name the hx wrapper with --hx or FLEETD_HX; refuse cleanly when installed (FD-023) (3258259fa)
+- fix(fleetd): the probe no longer grows with the batch count (FD-014) (729b3671e)
+- fix(fleetd): review fixes for the cli-extended adoption (entry guard, skill accuracy, CHANGES honesty) (47403a8a0)
+- fix(fleetd): derive --state-dir at run time instead of baking a home into the surface (f07f51d6d)
+- fix(fleetd): run the campaign-contract lane in the review plugin's partial mode (6f893059d)
+- fix(fleetd): never fail a batch that never started (aa1adb69c)
+- fix(fleetd): preserve progress probes within argv budget (40b9ad5c7)
+- fix(fleetd): make campaign supervision progress-aware (9197fbce0)
+- fix(fleetd): restore start clocks on a refused start; test the lock under real contention (8f654f22b)
+- fix(fleetd): never contact refused hosts, refuse unsynced checkouts, lock state (68b828e73)
+- fix(fleetd): align campaigns with runner layout and restart recovery (1016c9651)
+- fix(fleetd): require full job digests and close recovery edges (2663be716)
+- fix(fleetd): harden campaign recovery and collection (fc97b40f2)
+- fix(fleetd): complete superseded-job scheduling (c806981e3)
+- fix(fleetd): correct campaign starts and pin execution output (8883089d2)
+- fix(fleetd): apply the control-plane reserve default (41d78c66b)
+- fix(fleetd): declare the monorepo's unsafe-symlink omissions in assay.toml (587d10c0e)
+- fix(fleetd): clarify selected-run closeout and exercise commands (ee81ac47d)
+- fix(fleetd): clarify manual plans and empty ETA reference (d0cb1744b)
+- fix(fleetd): unpack role validation and keep config oracle current (5de289adf)
+- fix(fleetd): trust host role and eligible ETA inputs (2a49f23ee)
+- fix(fleetd): track ignored fixtures, refuse oversized input, correct demand docs (9abd51d66)
+- fix(fleetd): correct planner demand parsing and oracles (ff9220c0a)
+- fix(fleetd): preserve unavailable cgroup facts (58f524447)
+- fix(fleetd): validate collector failure states (dbfa1bca2)
+- fix(fleetd): correct contract edge-case oracles (5ed5798c9)
+
+### Changed
+- P-fd-02: remove fleet-owned merge and guard surfaces (e56e281b9)
+- Separate returned duplicate pending state from loss requeue (0ae83d029)
+- File remaining hostside review findings (ca3fea82c)
+- Keep returned duplicate handling pending until stopped (cc4c87fa5)
+- Exercise the full shipped probe answer and restore group checks (31c330658)
+- Harden hostside readers against non-string candidate ids (815dd3b3e)
+- fleetd: document shared host-side evidence (cc22a68e6)
+- fleetd: share hostside probe and fix campaign evidence (6226a08a1)
+- fleetd: ship probe logic as stdlib hostside module (cc554ca80)
+- fleetd: every later rolling pass sweeps the whole target again; shared-budget limit documented (FD-033 review, FD-038) (f10b5d228)
+- fleetd: account retired paths from the discarded cursor under --rebaseline (FD-033 review round) (55667b902)
+- fleetd: key the rolling whole-target sweep by file content, so an edit resumes it (FD-033) (410d21255)
+- fleetd: failed-collection tables keep the profile constant; installer refuses an empty --root (3235584f2)
+- fleetd tests: pin a partial per-service reserve table, and the host install docs (463d36b34)
+- fleetd: per-service control-plane reserve fallback with provenance (FD-007c) (6c8bc700d)
+- fleetd: record the sizing estimator gap in FD-031; drop an unused import (076994537)
+- fleetd: review fixes for the R2-default producers (4cf2b306b)
+- fleetd: retire parent slice memory min probe (415166445)
+- fleetd: isolate reserve placement capacity assertion (df73bef78)
+- fleetd: align plan tests with reserve capacity (280916687)
+- fleetd: align service fact validation expectations (5fcc5244f)
+- fleetd: derive control-plane reserve from facts (e04ba2d86)
+- review(fleetd backlog): FD-025 states the real threshold formula and fallback, FD-026 traced and confirmed with the fake transport (25082c722)
+- backlog(fleetd): FD-026 wording (code path not yet traced) (725994f45)
+- backlog(fleetd): FD-025 first stall window without a comparable speed reference, FD-026 host in ERROR has no loss timer (67bbbecad)
+- Exercise campaign safety edge branches (8a75af3f6)
+- Record three-host deferred retry coverage (eff20232a)
+- Cover deferred retries across three hosts (bee29cf0c)
+- Prove progress windows exclude earlier Assay events (614a913c2)
+- Resolve Assay artifact lane when starting jobs (c4b8a1e23)
+- Close reviewer coverage gaps (673c6b8e8)
+- Cover remaining planner and contract branches (580fac053)
+- Place planner candidate above shared cap (df24bd749)
+- Use feasible planner test candidates (402566cf9)
+- Correct planner batch expectations (44e4db903)
+- fleetd: repair selected batch execution (677deaa21)
+
+### Documentation
+- docs(fleetd): P-fd-02 r1 fix-forward: drop the remaining merge-check prose (ec9a5596a)
+- docs: review r1 fixes for P-plat-00/03 (house rules consistency, interim exit 3, FD-041/043) (4dfd1fee0)
+- docs(backlog): file CTL-37..54, MDT-106/107, FD-039..046 (P-plat-00) (696310699)
+- docs(fleetd): document the WP2b episode rules and known limits, pin the returned-after-loss keys (51da9596b)
+- docs(fleetd): document the WP2 supervision rulings and close FD-017, FD-020, FD-025, FD-026 (aadd58721)
+- docs(fleetd): reword the sweep remainder order, state the 75 percent deferral and the uncapped margin (WP3b review 1, 2, 5, 6, 7, 8) (4c57ae8f0)
+- docs(fleetd): mark FD-031, FD-035 and FD-038 done in the backlog with their commits (6e16775c0)
+- docs(fleetd): document the mean-based budget, the sweep reserve and the FD-035 by-design limit (FD-031, FD-038, FD-035) (e5e97ac78)
+- docs(fleetd): record the probe, hx wrapper and PSI start gate (FD-014, FD-022, FD-023) (c53d8f942)
+- docs(fleetd): close five campaign review findings (a39dbdf19)
+- docs(fleetd): record series-review findings FD-015..FD-024 and reserve decision (9b2130e34)
+- docs(fleetd): state the probe size limit and file FD-014 (e9f5b7e3c)
+- docs(fleetd): record campaign fix round and deferred state lock (04aa1c6ad)
+- docs(fleetd): document campaign workflow and MVP-C backlog (ffd55cd4c)
+- docs(fleetd): correct closeout paths and record host slice gap (114122d02)
+- docs(fleetd): name public campaign schemas (36c839076)
+
+### Testing
+- test(fleetd): pin the boundaries and guards the WP2 hand-mutation review found unpinned (436153e70)
+- test(fleetd): pin help completeness, the catalog check, and the domain precedence (4db3f2dd4)
+- test(fleetd): characterize the fleet CLI before the cli-extended migration (feb6dc1d3)
+- test(fleetd): pin the planner's not-reported rule without relying on the validator (be0e1681f)
+- test(fleetd): pin the per-job candidate filter in refresh and collect (8b1d5aa24)
+- test(fleetd): drop trailing blank line (09781ccfa)
+- test(fleetd): cover restart and runner refusal branches (4fad6c582)
+- test(fleetd): pin stall/loss constants and close surviving mutants (9e9e9c83f)
+- test(fleetd): cover plans without execution context (5133b523f)
+- test(fleetd): register campaign contract lane (f679b20aa)
+- test(fleetd): cover runner state and deterministic collection edges (373a80870)
+- test(fleetd): derive planner budgets from inputs and pin determinism, batch size and CLI overflow (78d25f281)
+- test(fleetd): include SPEC in public doc checks (ca59ced65)
+- test(fleetd): cover incomparable timing fallbacks (15faba780)
+- test(fleetd): expect unavailable eligible ETA reference (eb0d776ea)
+- test(fleetd): assert eligible ETA reference shape (6413b81bb)
+- test(fleetd): pin large-candidate physical routing (92251270c)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 
 - Host-side progress and verdict readers now skip non-string candidate ids
@@ -331,3 +462,4 @@ All notable changes to this project are recorded here.
   host, or a start interrupted while STARTING) is no longer failed as
   zero-progress when its host returns or the job is absent; it is re-queued or
   retried with fresh clocks, so a single-host campaign keeps its unstarted work.
+<!-- cmru: pending release notes end -->
