@@ -91,14 +91,18 @@ and reads the loaded systemd slice and cgroup from the host.
 Prerequisites:
 
 - run the command below from the repository checkout, whose `libraries/cowtree`
-  resolver and `vm-lab/vm-lab` wrapper the recipe uses;
+  resolver and `vm-lab/vm-lab` wrapper the recipe uses (a git checkout: the
+  shared admission lock lives in its Git directory; from a plain source copy, add
+  `--lock-dir DIR` with one directory that every guest on the host shares);
 - Python 3.11 or newer, as required by vm-lab;
 - a reachable local Docker daemon;
 - run vm-lab as an unprivileged user in the `docker` group, never as root:
   as root the guest's QEMU runs as container UID 0 (VML-BL-14);
 - the QEMU guest image, either built as the local `vm-lab-qemu:local` tag with
   `vm-lab/vm-lab image build` or named by `VM_LAB_QEMU_IMAGE`;
-- the host OVMF code and variable template at
+- the host OVMF code and variable template (Debian package `ovmf`; the guest
+  image does not ship them; without root, `apt-get download ovmf` and
+  `dpkg-deb -x` into a job directory work) at
   `/usr/share/OVMF/OVMF_CODE_4M.fd` and `/usr/share/OVMF/OVMF_VARS_4M.fd`.
 
 Choose one exact guest token and reuse it unchanged in the container name, state
@@ -191,7 +195,7 @@ and ownership-label-guarded forced path (VML-BL-12), then remove the stopped
 container:
 
 ```sh
-[ "$(docker inspect --format '{{.Name}} {{index .Config.Labels "org.vbpub.vm-lab"}}' "$GUEST" 2>/dev/null)" = "/$GUEST true" ] && docker kill "$GUEST"
+[ "$(docker inspect --format '{{.Name}} {{index .Config.Labels "org.vbpub.vm-lab.vm"}}' "$GUEST" 2>/dev/null)" = "/$GUEST true" ] && docker kill "$GUEST"
 vm-lab/vm-lab destroy --name "$GUEST"
 ```
 
