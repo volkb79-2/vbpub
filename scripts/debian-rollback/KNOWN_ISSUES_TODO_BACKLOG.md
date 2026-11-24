@@ -3,13 +3,12 @@
 
 Normative behaviour is in [README.md](README.md) and [docs/](docs/). The current status page and work order are [TODO.md](TODO.md).
 Closed items are one line each in [archive/](archive/). The format is [docs/BACKLOG-FORMAT.md](../../docs/BACKLOG-FORMAT.md).
-Parked, no ID: E2; phase 2 fallback; Secure Boot on systemd-boot; D25 RAM experiment; restore-image ISO and licence audit; ZFS restricted-GRUB comparison.
 
 ## DR-82 — F11: stdlib Python, runtime outside the states, versioned formats
 
-**State:** open · **Severity:** high · **Owner:** rollback · **Links:** P-rollback-10, H2, M2, scripts/debian-rollback/docs/DESIGN-CORE-SPLIT.md
+**State:** open · **Severity:** high · **Owner:** rollback · **Links:** P-rollback-20, P-rollback-21, H2, M2, scripts/debian-rollback/docs/DESIGN-CORE-SPLIT.md
 
-**Problem.** The tool form (F11) was undecided, and `dr-state` on `/usr/local` manages global formats (ESP layout, counter) that carry no version. **Wanted.** Implement the decision in DESIGN-CORE-SPLIT (stdlib Python, runtime outside every state, `format` files per global format) in P-rollback-20/21.
+**Problem.** F11 is decided by DESIGN-CORE-SPLIT (stdlib Python, runtime outside every state, a `format` file per global format), but the code is still the bash `dr-state`. **Wanted.** Implement the decision in P-rollback-20 and P-rollback-21.
 
 ## DR-83 — One state-ID grammar; foreign `@os-*` unmanaged; legacy code removed
 
@@ -27,7 +26,7 @@ Parked, no ID: E2; phase 2 fallback; Secure Boot on systemd-boot; D25 RAM experi
 
 **State:** open · **Severity:** high · **Owner:** rollback · **Links:** P-rollback-22, P-rollback-40, H5, F13
 
-**Problem.** A full ESP makes `gen-menu` fail after the snapshot exists, apt aborts, and a retry inside the dedupe window slips through. **Wanted.** Snapshot success means subvolume plus sidecar, the menu degrades (default and running entries first), retention is capacity-aware, and a guest scenario exhausts the ESP.
+**Problem.** A full ESP makes `gen-menu` fail after the snapshot exists, apt aborts, and a retry inside the dedupe window slips through. **Wanted.** Snapshot success means subvolume plus sidecar, the menu degrades (default and running entries first), `prune` is capacity-aware (DESIGN-CORE-SPLIT D20) with no automatic retention (DESIGN-CORE-SPLIT D34, operator 2026-11-24), and a guest scenario exhausts the ESP.
 
 ## DR-86 — Bootloader from the ESP marker only
 
@@ -51,7 +50,7 @@ Parked, no ID: E2; phase 2 fallback; Secure Boot on systemd-boot; D25 RAM experi
 
 **State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-22, M3, scripts/debian-rollback/docs/DESIGN-CORE-SPLIT.md
 
-**Problem.** Pre-Invoke and Pre-Install-Pkgs both snapshot, and only the dedupe window keeps it to one. **Wanted.** `DPkg::Pre-Install-Pkgs` alone (D18), proven on removal-only runs.
+**Problem.** Pre-Invoke and Pre-Install-Pkgs both snapshot, and only the dedupe window keeps it to one. **Wanted.** `DPkg::Pre-Install-Pkgs` alone (DESIGN-CORE-SPLIT D18), proven on removal-only runs.
 
 ## DR-90 — Metadata `kind` and `pinned`
 
@@ -63,7 +62,7 @@ Parked, no ID: E2; phase 2 fallback; Secure Boot on systemd-boot; D25 RAM experi
 
 **State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-23, M5
 
-**Problem.** `gen-menu` re-hashes every kernel and initrd on each call, up to 1 GB of reads per apt upgrade. **Wanted.** A hash cache keyed by device, inode, size and mtime in the control directory.
+**Problem.** `gen-menu` re-hashes every kernel and initrd on each call, roughly 0.5-1 GB read several times per apt upgrade. **Wanted.** A hash cache keyed by device, inode, size and mtime in the control directory.
 
 ## DR-92 — Counter floor from names and sidecars
 
@@ -73,9 +72,9 @@ Parked, no ID: E2; phase 2 fallback; Secure Boot on systemd-boot; D25 RAM experi
 
 ## DR-93 — Boot-counting suffix rule
 
-**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-10, M8, scripts/debian-rollback/docs/DESIGN-CORE-SPLIT.md
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-21, M8, scripts/debian-rollback/docs/DESIGN-CORE-SPLIT.md
 
-**Problem.** systemd-boot boot assessment renames entries to `os-X+3.conf`, which the current ownership rules would treat as foreign. **Wanted.** Implement the D12 rule (ownership by marker line, counter suffix stripped when mapping to an ID) in the core; phase 2 itself stays unbuilt.
+**Problem.** The boot-counting suffix rule is decided by DESIGN-CORE-SPLIT D12, but the bash `dr-state` still treats a renamed `os-X+3.conf` as foreign. **Wanted.** Implement the rule in the systemd-boot backend (ownership by marker line, counter suffix stripped when mapping to an ID) in P-rollback-21; phase 2 itself stays unbuilt.
 
 ## DR-94 — Payload as files; hot-patch dev-only; snapper removed
 
@@ -87,13 +86,13 @@ Parked, no ID: E2; phase 2 fallback; Secure Boot on systemd-boot; D25 RAM experi
 
 **State:** open · **Severity:** high · **Owner:** rollback · **Links:** P-rollback-30, P-rollback-33, H6, VML-BL-07, VML-BL-08
 
-**Problem.** The runner scripts and evidence bundles live only on a test host that may be reinstalled, and `poc/dr-qemu.sh` copies vm-lab's argv. **Wanted.** The matrix runner (manifest, admission, fresh overlay per scenario, SHA256SUMS) is committed, `dr-qemu.sh` is deleted, and evidence is archived durably.
+**Problem.** The runner scripts and evidence are archived only in controller state outside git; the runner is not committed and evidence is not durably archived. `poc/dr-qemu.sh` also copies vm-lab's argv. **Wanted.** The matrix runner (manifest, admission, fresh overlay per scenario, SHA256SUMS) is committed, `dr-qemu.sh` is deleted, and evidence is archived durably.
 
 ## DR-96 — ZFS snapshot checkpoints with clone/promote rollback
 
-**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-12, P-rollback-42, M7
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** scripts/debian-rollback/docs/ZFS-POC-PLAN.md, P-rollback-42, M7
 
-**Problem.** The planned ZFS checkpoint copies the whole boot environment by send/receive, which needs a registry, tokens and orphan verbs. **Wanted.** A checkpoint is `zfs snapshot <live>@<ID>`, a boot environment is created by clone and promote on rollback, and the dataset name equals the state ID.
+**Problem.** The ZFS storage and ZBM boot backends described in ZFS-POC-PLAN are unbuilt. **Wanted.** Build them in P-rollback-42 on the core: a checkpoint is `zfs snapshot <live>@<ID>`, a boot environment is created by clone and promote on rollback, and the dataset name equals the state ID.
 
 ## DR-97 — Release matrix on an ISO-built disk
 
@@ -106,3 +105,89 @@ Parked, no ID: E2; phase 2 fallback; Secure Boot on systemd-boot; D25 RAM experi
 **State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-41
 
 **Problem.** The `dpkg-divert` of `zz-systemd-boot` and the masking of `90-loaderentry` are fragile across systemd updates. **Wanted.** A kernel-install plugin, the supported extension point.
+
+## DR-99 — The seed `user-data` embeds an unlinted disk-wiping script
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-25, L3, scripts/debian-rollback/poc/seed/user-data
+
+**Problem.** `poc/seed/user-data` embeds `dr-build.sh`, which picks the disk by size and runs `install-btrfs.sh --yes`, and nothing lints it (found in the P-rollback-04 review). **Wanted.** Extract the script to a file, or lint the embedded text, in the offline lane.
+
+## DR-100 — The APT hook wrapper must drain fd 3 and warn on a missing runtime
+
+**State:** open · **Severity:** high · **Owner:** rollback · **Links:** P-rollback-22, P-rollback-25, DESIGN-CORE-SPLIT D18, scripts/debian-rollback/docs/DESIGN-CORE-SPLIT.md
+
+**Problem.** The wrapper's early exits (`DR_STATE=none`, missing runtime) leave fd 3 unread, which can break apt with a plan larger than 64 KiB, and a missing or unmounted `/usr/local` skips the snapshot silently (found in the P-rollback-10 review). **Wanted.** Every early exit drains fd 3, the DESIGN-CORE-SPLIT D18 proof uses a plan above 64 KiB, and a missing runtime warns on stderr.
+
+## DR-101 — Installer cases that follow the wrapper
+
+**State:** open · **Severity:** low · **Owner:** rollback · **Links:** P-rollback-22, P-rollback-25, scripts/debian-rollback/poc/test-install-btrfs-bootloader.sh, scripts/debian-rollback/docs/DESIGN-CORE-SPLIT.md
+
+**Problem.** The cases `apt-preinstall-hook`, `apt-plan-version` and `apt-plan-fd` in `test-install-btrfs-bootloader.sh` assert the old hook text (found in the P-rollback-10 review). **Wanted.** Adapt them to the wrapper and the `files/` payload in the same packages, and list them in DESIGN-CORE-SPLIT D29/D31.
+
+## DR-102 — Capacity shrink step: remaining references and CapacityError
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-21, DESIGN-CORE-SPLIT D19, scripts/debian-rollback/docs/DESIGN-CORE-SPLIT.md
+
+**Problem.** In the shrink step of DESIGN-CORE-SPLIT D19, a pair may go only when no remaining entry and no target references it, and a `CapacityError` after the shrink leaves the already-shrunk menu (found in the P-rollback-10 review). **Wanted.** Define and test both: the reference rule, and the menu left after a failed copy check.
+
+## DR-103 — ZFS naming for duplicate checkpoint names, and related leaks
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-42, DESIGN-GUIDE D28, scripts/debian-rollback/docs/ZFS-POC-PLAN.md
+
+**Problem.** Objects that repeat a checkpoint name without a clone or holder relation can pass as managed, and the received `<dup>@<bare>` snapshot of an ENTER duplicate collides with the checkpoint (found in the P-rollback-12 review). **Wanted.**
+- Report such objects under a name that fails `parse()`, `running()` included.
+- Verify whether the `org.dr-state:parent` source is local or received under `send -p`.
+- Fix the `X@X` origin-snapshot leak after the dependent boot environment is deleted.
+- Make S3 and U4 list non-OS boot environments the same way.
+- Read the command line from the holder's current value.
+
+## DR-104 — ZFS install hardening leftovers
+
+**State:** open · **Severity:** low · **Owner:** rollback · **Links:** P-rollback-43, scripts/debian-rollback/docs/ZFS-POC-PLAN.md
+
+**Problem.** Small ZFS install items are unfiled (found in the P-rollback-12 review). **Wanted.**
+- Keep the `zpool.cache` copy and the `umask=0077` option on the ESP fstab line.
+- Move the `iso/zfs-config-hook` heredoc unit into files.
+- `fetch-zbm-efi.sh` pins no mutable URL and records the key SHA-256.
+
+## DR-105 — Stale lease status and unhomed operating rules
+
+**State:** open · **Severity:** low · **Owner:** rollback · **Links:** scripts/debian-rollback/docs/WORK-PACKAGES.md, scripts/debian-rollback/README.md
+
+**Problem.** `WORK-PACKAGES.md` line 31 and the OP6 row carry a stale test-host lease status, and the old operating rules (cowtree for shared ISO and VM paths, tests only through registered lanes) have no home in the README (found in the P-rollback-02 review). **Wanted.** Correct both lines and add the rules to the README.
+
+## DR-106 — E2: filesystem comparison on a real host
+
+**State:** parked · **Severity:** low · **Owner:** rollback · **Links:** scripts/debian-rollback/docs/EXPERIMENTS.md
+
+**Problem.** The filesystem comparison (E2) needs a real host, and every reinstall wipes that host's other installs and journals. **Wanted.** Revive it when the core is built on btrfs and ZFS and the operator offers a host for one reinstall per variant.
+
+## DR-107 — Phase 2: automatic fallback after a failed boot
+
+**State:** parked · **Severity:** low · **Owner:** rollback · **Links:** scripts/debian-rollback/docs/DESIGN-GUIDE.md
+
+**Problem.** A state that fails its health check is not the default at the next boot only if phase 2 builds the probation and fallback; today a real host needs a watchdog. **Wanted.** Revive it after DR-93 (boot-counting rule) is implemented and the operator answers design question Q7 (what counts as "booted well").
+
+## DR-108 — Secure Boot on systemd-boot
+
+**State:** parked · **Severity:** low · **Owner:** rollback · **Links:** scripts/debian-rollback/docs/DESIGN-GUIDE.md
+
+**Problem.** The GRUB target is non-Secure-Boot and systemd-boot is the Secure Boot path (DESIGN-GUIDE D27), but no signed boot chain is built or tested. **Wanted.** Revive it when a desktop target needs Secure Boot (DESIGN-GUIDE D10).
+
+## DR-109 — Low-memory install and swap experiment (DESIGN-GUIDE D25)
+
+**State:** parked · **Severity:** low · **Owner:** rollback · **Links:** scripts/debian-rollback/docs/DESIGN-GUIDE.md
+
+**Problem.** DESIGN-GUIDE D25 asks for installed-system boot and recovery at 2048 MiB, then a 1-2 GiB usefulness experiment (no swap, ZRAM, Zswap on a swap partition outside the ZFS pool). **Wanted.** Revive it when the ZFS guest acceptance has reported and the operator wants the memory floor measured.
+
+## DR-110 — Restore-image ISO and licence audit
+
+**State:** parked · **Severity:** low · **Owner:** rollback · **Links:** scripts/debian-rollback/docs/ZFS-POC-PLAN.md
+
+**Problem.** A prebuilt restore-image ISO (ZFS-POC-PLAN) is unbuilt, and shipping one needs a licence audit of its contents. **Wanted.** Revive it when the ZFS install path works end to end and the operator wants a distributable image.
+
+## DR-111 — ZFS with restricted GRUB as a comparison
+
+**State:** parked · **Severity:** low · **Owner:** rollback · **Links:** scripts/debian-rollback/docs/ZFS-POC-PLAN.md
+
+**Problem.** DESIGN-GUIDE D23 keeps ZFS with a restricted GRUB as a later comparison only. **Wanted.** Revive it only if the ZFSBootMenu guest report leaves a specific question that the comparison answers.

@@ -24,14 +24,26 @@ state. The install and runtime history remains in the
 
 ## Work order
 
-- Wave 0: finish these status documents and lint every disk-wiping guard.
-- Wave 1: write the core-split design.
-- Wave 2: build the stdlib Python core with btrfs and GRUB, then the
-  systemd-boot, apt, and retention work.
-- Wave 2 tooling: build the loader-contract tier and move guest tooling into
-  `vm-lab`.
-- Wave 3: run the release matrix on ISO-built disks, then rebuild ZFS on the
-  core.
+- Done:
+  - Status documents (P-rollback-02).
+  - vm-lab inspector (P-rollback-03).
+  - Lint of the disk-wiping guards (P-rollback-04).
+  - Core-split design (P-rollback-10, [DESIGN-CORE-SPLIT.md](docs/DESIGN-CORE-SPLIT.md)).
+  - bootctl spike (P-rollback-11, [SPIKE-BOOTCTL-ORACLE.md](docs/SPIKE-BOOTCTL-ORACLE.md)).
+  - ZFS plan rewrite (P-rollback-12, [ZFS-POC-PLAN.md](docs/ZFS-POC-PLAN.md)).
+- In progress:
+  - Stdlib Python core, first part (P-rollback-20a).
+  - vm-lab start on a plain Docker host (P-rollback-30).
+  - Backlog migration (P-rollback-05).
+- Next:
+  - Python core with the btrfs and GRUB backends (P-rollback-20b), then
+    systemd-boot (P-rollback-21) and the apt hook and retention work
+    (P-rollback-22).
+  - Guest session in `vm-lab` (P-rollback-31).
+- Later:
+  - Loader-contract tier.
+  - Release matrix on ISO-built disks.
+  - ZFS rebuilt on the core.
 
 ## Open items
 
