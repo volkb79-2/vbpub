@@ -18,7 +18,9 @@ CIU_SOURCE = REPO_ROOT / "ciu" / "src"
 if str(CIU_SOURCE) not in sys.path:
     sys.path.insert(0, str(CIU_SOURCE))
 
-from ciu import deploy, profiles as profiles_pkg
+from ciu import config_model, deploy
+from ciu.deploy_pkg import profiles as profiles_pkg
+from cli_extended import identity as identity_module
 from cli_extended import prompts as prompts_module
 from tls_edge_cli import cli, config
 
@@ -91,9 +93,17 @@ def _run_ciu_check(root: Path) -> int:
     profile = deploy.resolve_profiles(global_config, None, environ=environ)
     selection = deploy.build_selection(profile)
     context = profiles_pkg.render_ciu_context(profile, selection)
-    rendered = deploy.render_selected_stacks(
-        root / "stack", profile, selection, ciu_context=context
-    )
+    rendered = {}
+    for entry in selection:
+        stack_dir = root / "stack" / entry["path"]
+        rendered[entry["path"]] = config_model.render_stack(
+            stack_dir,
+            global_config=profile.config,
+            preserve_state=False,
+            ciu_context=context,
+            write_rendered=False,
+            environ=environ,
+        )
     return deploy.action_check(
         root / "stack", profile, selection, rendered,
         live=False, json_output=False,
@@ -125,6 +135,7 @@ def _run_cli_with_prompts(
         context.setattr(sys, "stdin", stdin)
         context.setattr(sys, "stdout", stdout)
         context.setattr(sys, "stderr", stderr)
+        context.setattr(identity_module, "installed_version", lambda _name: "0.0.0")
         context.setattr(
             prompts_module,
             "_load_questionary_driver",
