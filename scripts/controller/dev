@@ -1,0 +1,529 @@
+#!/usr/bin/env bash
+# Generic remote dev container: compile, test, lint and run a project's code in the capped, network-less
+# container of its run-gate environment, on a gate host, from this cockpit. Contract:
+# docs/design/agent-dev/DESIGN.md (details: scripts/controller/docs/DEV.md). NOT GATE EVIDENCE: only a
+# registered lane on the exact committed head is.
+#
+# usage: dev [--dry-run] [--local] -p PROJECT VERB [ARGS...]      dev [--dry-run|--this] gc
+#   Python: test [-- ARGS] | lint | run -- CMD... | shell        Rust: build|check|clippy|fmt|test [--no-nextest]
+#   | example CRATE NAME [ARGS] | gdb ARGS | strace ARGS | run -- CMD... | shell      All: status | stop
+#   gc [--dry-run|--this]   remove stale agent-dev state on the host (volumes and ~/agent-dev/<hex>)
+# PROJECT is a key of dev-profiles.toml (a project directory). --local is refused (exit 2).
+#
+# Exit codes: the command's own propagates; the tool's own are printed as `dev: exit N` before the closing banner:
+# 2 usage/refusal/image, 3 transport/identity/busy, 75 host memory PSI too high or unreadable (nothing ran), 124 time limit.
+# Environment (optional): AGENT_DEV_HOST (v1001; r1002 only if listed in CONTROLLER_REMOTE_GATE_HOSTS), AGENT_DEV_MEMORY
+# (the soft memory reservation, 512m..8g), AGENT_DEV_CPUS (>0..3), AGENT_DEV_PIDS (<=1024), AGENT_DEV_MAX_S (<=14400),
+# AGENT_DEV_WAIT_S (900). Container properties come from dev-profiles.toml. Seams: AGENT_DEV_HX, AGENT_DEV_TEST_{PSI_DIR,CLOCK,PROFILES}. HOSTOBS_DEV_* exits 2.
+set -euo pipefail
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+worktree=$(cd "$script_dir/../.." && pwd -P)
+readonly SYNC_CAP_BYTES=$((20 * 1024 * 1024))
+readonly SLICE=dev-gates.slice
+
+dry_run=0 this=0 mode=remote own_exit=0 banner='' stage='' stty_saved='' ctl_env_file='' project='' gc_dry=0
+tmpdirs=()
+
+now() { if [[ -n ${AGENT_DEV_TEST_CLOCK:-} ]]; then cat "$AGENT_DEV_TEST_CLOCK"; else date +%s; fi; }
+nap() { if [[ -n ${AGENT_DEV_TEST_CLOCK:-} ]]; then echo $(($(cat "$AGENT_DEV_TEST_CLOCK") + $1)) > "$AGENT_DEV_TEST_CLOCK"; else sleep "$1"; fi; }
+die() { local code=$1; shift; printf 'dev: %s\n' "$*" >&2; own_exit=1; exit "$code"; }
+cleanup() {
+  local rc=$? d
+  for d in "${tmpdirs[@]}"; do [[ -z $d ]] || rm -rf -- "$d"; done
+  if [[ -n $stty_saved ]]; then stty "$stty_saved" 2>/dev/null || true; fi
+  if (( own_exit )); then printf 'dev: exit %s\n' "$rc" >&2; fi
+  if [[ -n $banner ]]; then printf '%s\n' "$banner" >&2; fi
+  return "$rc"
+}
+trap cleanup EXIT
+usage() { sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' >&2; exit "${1:-2}"; }
+
+# ---- arguments ----------------------------------------------------------------------------------------
+for v in $(compgen -v HOSTOBS_DEV_ || true); do die 2 "$v is no longer read (renamed AGENT_DEV_*; the image is no override): unset it"; done
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) dry_run=1; shift ;;
+    --local) mode=local; shift ;;
+    -p|--project) [[ $# -ge 2 ]] || die 2 "$1 needs a project"; project=$2; shift 2 ;;
+    -h|--help) usage 0 ;;
+    --) break ;;
+    -*) die 2 "unknown global option: $1 (see --help)" ;;
+    *) break ;;
+  esac
+done
+[[ $# -ge 1 ]] || usage 2
+sub=$1; shift
+[[ $mode == remote ]] || die 2 'there is no local mode: the cockpit docker daemon is the production daemon (AGENT_DEV_ALLOW_LOCAL does not apply). Dev runs on a gate host.'
+
+stage=$(mktemp -d); tmpdirs+=("$stage"); ctl_env_file=$stage/ctl.env
+load_controller_env() {
+  # the host list remote-gate.sh reads (controller.local.env)
+  local lib=$script_dir/lib.sh
+  [[ -f $lib && -z ${AGENT_DEV_HX:-} ]] || return 0
+  set +e
+  # shellcheck disable=SC1090
+  ( export CONTROLLER_INIT_READONLY=1; . "$lib"; controller_init; declare -p CONTROLLER_REMOTE_GATE_HOSTS 2>/dev/null ) >"$ctl_env_file" 2>/dev/null
+  set -e
+  return 0
+}
+
+load_controller_env
+# shellcheck disable=SC1090
+[[ -s $ctl_env_file ]] && . "$ctl_env_file"
+# ---- identity of this worktree and the host -----------------------------------------------------------
+worktree_hex=$(printf '%s' "$worktree" | sha256sum | cut -c1-12)
+[[ $worktree_hex =~ ^[0-9a-f]{12}$ ]] || die 2 'cannot derive the worktree identity'
+host=${AGENT_DEV_HOST:-v1001}
+[[ $host == v1001 || $host == r1002 ]] || die 2 "dev runs on v1001 (default) or r1002 only, not '$host'"
+if [[ $host == r1002 ]]; then
+  case " ${CONTROLLER_REMOTE_GATE_HOSTS:-} " in *" r1002 "*) ;; *) die 2 'r1002 needs r1002 in CONTROLLER_REMOTE_GATE_HOSTS (set per lease)' ;; esac
+fi
+if [[ $host == v1001 && -n ${CONTROLLER_REMOTE_GATE_HOSTS:-} ]]; then
+  case " $CONTROLLER_REMOTE_GATE_HOSTS " in *" v1001 "*) ;; *) die 2 'host v1001 is not in CONTROLLER_REMOTE_GATE_HOSTS' ;; esac
+fi
+hx=${AGENT_DEV_HX:-$script_dir/hx.sh}
+
+# ---- profile -> container facts and command -----------------------------------------------------------
+image='' dev_image='' workdir='' memory='' memory_max='' cpus='' pids='' max_s='' user='' stop_timeout='' ulimits=() mounts=() prefix=() caps=() envs=() cmd=()
+if [[ $sub == gc ]]; then
+  for a in "$@"; do
+    case $a in --dry-run) gc_dry=1 ;; --this) this=1 ;; *) die 2 'usage: dev gc [--dry-run|--this]' ;; esac
+  done
+  (( ! dry_run )) || gc_dry=1
+else
+  [[ -n $project ]] || die 2 'usage: dev -p PROJECT VERB [ARGS...] (see --help)'
+  rc=0; python3 "$script_dir/dev_profile.py" "$worktree" "$project" "$sub" "$@" > "$stage/profile" || rc=$?
+  (( rc == 0 )) || { own_exit=1; exit "$rc"; }
+  while IFS= read -r -d '' rec; do
+    case $rec in
+      image=*) image=${rec#image=} ;; dev_image=*) dev_image=${rec#dev_image=} ;; workdir=*) workdir=${rec#workdir=} ;;
+      memory=*) memory=${rec#memory=} ;; memory_max=*) memory_max=${rec#memory_max=} ;; cpus=*) cpus=${rec#cpus=} ;;
+      pids=*) pids=${rec#pids=} ;; max_s=*) max_s=${rec#max_s=} ;; user=*) user=${rec#user=} ;; stop_timeout=*) stop_timeout=${rec#stop_timeout=} ;;
+      ulimit=*) ulimits+=("${rec#ulimit=}") ;; mount=*) mounts+=("${rec#mount=}") ;; prefix=*) prefix+=("${rec#prefix=}") ;;
+      cap=*) caps+=("${rec#cap=}") ;; env=*) envs+=("${rec#env=}") ;; cmd=*) cmd+=("${rec#cmd=}") ;;
+    esac
+  done < "$stage/profile"
+  proj=${project//\//-}; proj=${proj#libraries-}
+  cname=agent-dev-$proj-$worktree_hex
+  vname=agent-dev-cache-$proj-$worktree_hex
+  run_image=${dev_image:-$image}
+fi
+
+# limits cannot be lifted: profile values and AGENT_DEV_* overrides are both parsed and bounded
+wait_s=${AGENT_DEV_WAIT_S-900}
+[[ $wait_s =~ ^[0-9]{1,6}$ ]] && (( 10#$wait_s <= 86400 )) || die 2 "AGENT_DEV_WAIT_S must be 0..86400, got '$wait_s'"
+wait_s=$((10#$wait_s))
+mem_mib() { [[ $2 =~ ^([0-9]{1,6})([mg])$ ]] || die 2 "$1 must look like 3g or 2048m, got '$2'"; local m=$((10#${BASH_REMATCH[1]})); [[ ${BASH_REMATCH[2]} == g ]] && m=$((m * 1024)); echo "$m"; }
+if [[ $sub != gc && $sub != status && $sub != stop ]]; then
+  memory=${AGENT_DEV_MEMORY-$memory}; cpus=${AGENT_DEV_CPUS-$cpus}; pids=${AGENT_DEV_PIDS-$pids}; max_s=${AGENT_DEV_MAX_S-$max_s}
+  r=$(mem_mib AGENT_DEV_MEMORY "$memory"); x=$(mem_mib memory_max "$memory_max")
+  (( r >= 512 && r <= 8192 )) || die 2 "the memory reservation must be between 512m and 8g, got '$memory'"
+  (( x >= 1024 && x <= 16384 && x >= r )) || die 2 "memory_max must be between 1g and 16g and not below the reservation, got '$memory_max'"
+  [[ $cpus =~ ^[0-9]{1,3}(\.[0-9]{1,3})?$ ]] && awk -v c="$cpus" 'BEGIN { exit !(c + 0 > 0 && c + 0 <= 3) }' || die 2 "cpus must be above 0 and at most 3, got '$cpus'"
+  [[ $pids =~ ^[0-9]{1,5}$ ]] && (( 10#$pids >= 1 && 10#$pids <= 1024 )) || die 2 "pids must be 1..1024, got '$pids'"
+  [[ $max_s =~ ^[0-9]{1,6}$ ]] && (( 10#$max_s >= 1 && 10#$max_s <= 14400 )) || die 2 "max time must be 1..14400 s, got '$max_s'"
+  pids=$((10#$pids)); max_s=$((10#$max_s))
+  [[ $user =~ ^[1-9][0-9]*:[0-9]+$ ]] || die 2 "the container user must not be root, got '$user'"
+  [[ $stop_timeout =~ ^[0-9]{1,3}$ ]] || die 2 "stop_timeout must be a number, got '$stop_timeout'"
+  for c in "${caps[@]}"; do [[ $c == SYS_PTRACE ]] || die 2 "capability '$c' cannot be added (only SYS_PTRACE, for gdb/strace)"; done
+  for u in "${ulimits[@]}"; do [[ $u =~ ^[a-z]+=[0-9]+(:[0-9]+)?$ ]] || die 2 "bad ulimit '$u'"; done
+  for w in "${prefix[@]}"; do [[ $w =~ ^[A-Za-z0-9._-]+$ ]] || die 2 "bad command prefix word '$w'"; done
+fi
+tty=0
+if [[ -t 0 && -t 1 ]]; then tty=1; fi
+
+# ---- docker run argv: dpre (flags), dmount (worktree), dpost (cache, workdir, env, image, limits), then the words
+# $1 = host directory bind-mounted at /work (the host-side literal), $2 = cidfile path
+build_docker_argv() {
+  local src=$1 cid=$2 e m u
+  dpre=(docker run --rm --init --pull never --stop-timeout "$stop_timeout" --name "$cname")
+  if (( tty )); then dpre+=(-it -e "TERM=${TERM:-xterm}"); fi
+  dpre+=(--network none --cap-drop ALL)
+  for e in "${caps[@]}"; do dpre+=(--cap-add "$e"); done
+  dpre+=(--security-opt no-new-privileges --pids-limit "$pids" "--memory-reservation=$memory" "--memory=$memory_max" --memory-swap=-1
+    --cpus "$cpus" --cgroup-parent "$SLICE" --user "$user")
+  for u in "${ulimits[@]}"; do dpre+=(--ulimit "$u"); done
+  dmount=(--cidfile "$cid")
+  for m in "${mounts[@]}"; do m=${m//\{work\}/$src}; dmount+=(-v "${m//\{cache\}/$vname}"); done
+  dpost=(-w "$workdir")
+  for e in "${envs[@]}"; do dpost+=(-e "$e"); done
+  dpost+=("$run_image" "${prefix[@]}" timeout --foreground -k 5 "$max_s")
+  dargv=("${dpre[@]}" "${dmount[@]}" "${dpost[@]}" "${cmd[@]}")
+}
+# EVERY word is quoted with printf %q, whatever it contains; nothing inspects user text.
+shell_words() { local first=1 a; for a in "$@"; do if (( first )); then first=0; else printf ' '; fi; printf '%q' "$a"; done; }
+
+# ---- scripts that run ON THE HOST. Every interpolated value is validated: hex digits, names, small integers.
+remote_prelude() {
+  cat <<EOF
+set -u
+HEX=$worktree_hex
+SHA=${sync_sha:-0}
+SEED=${sync_seed:-}
+UPID=${upload_id:-0}
+D=\$HOME/agent-dev/\$HEX
+W=\$D/work
+UP=\$D/up-\$UPID
+NAME=${cname:-}
+VOL=${vname:-}
+WAIT_S=$wait_s
+PSI_DIR=$(printf '%q' "${AGENT_DEV_TEST_PSI_DIR:-/proc/pressure}")
+CLOCK=$(printf '%q' "${AGENT_DEV_TEST_CLOCK:-}")
+IMAGES="${image} ${dev_image}"
+DEV_IMAGE=${dev_image}
+EOF
+  cat <<'EOF'
+now() { if [ -n "$CLOCK" ]; then cat "$CLOCK"; else date +%s; fi; }
+nap() { if [ -n "$CLOCK" ]; then echo $(( $(cat "$CLOCK") + $1 )) > "$CLOCK"; else sleep "$1"; fi; }
+own() { local n=$1; shift; echo "dev: $*" >&2; echo "dev: exit $n" >&2; exit "$n"; }
+EOF
+}
+
+preflight_script() {
+  remote_prelude
+  cat <<'EOF'
+if [ "$(id -u):$(id -g)" != 1003:1003 ]; then
+  own 3 "the user here is $(id -u):$(id -g) but the image bakes 1003:1003 and the checkout must be owned by it; refusing"
+fi
+for t in $IMAGES; do echo "IMG=$t=$(docker image inspect --format '{{.Id}}' "$t" 2>/dev/null || true)"; done
+if [ -n "$DEV_IMAGE" ]; then
+  echo "LABEL=$(docker image inspect --format '{{index .Config.Labels "org.vbpub.tester-unified-rust-dev.base-image-id"}}' "$DEV_IMAGE" 2>/dev/null || true)"
+fi
+mkdir -p "$D" 2>/dev/null || true
+if [ -d "$W/.git" ]; then
+  if git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$W" cat-file -e "$SHA^{commit}" 2>/dev/null; then echo HASSHA=1; else echo HASSHA=0; fi
+  echo "HAVE=$(git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$W" rev-parse HEAD 2>/dev/null || true)"
+else
+  echo HASSHA=0
+  echo HAVE=
+  for s in "$HOME"/checkouts/*; do
+    b=${s##*/}
+    case $b in *[!0-9a-f]*|'') continue ;; esac
+    if [ ${#b} -ge 40 ]; then echo "SEED=$b"; fi
+  done
+fi
+exit 0
+EOF
+}
+
+# the upload step: only unpacks the overlay into a private directory; takes no lock, changes no checkout
+upload_text() {
+  cat <<'EOF'
+mkdir -p -m 0700 "$D"
+find "$D" -maxdepth 1 -name 'up-*' -mmin +120 -exec rm -rf {} + 2>/dev/null || true
+mkdir -m 0700 "$UP"
+tar -xf - -C "$UP"
+EOF
+}
+upload_script() { remote_prelude; printf 'set -e\n'; upload_text; printf 'echo "uploaded $UPID"\n'; }
+
+# the sync, run under the per-worktree lock; every host-side git call is hardened (no hooks, no fsmonitor, only the
+# file transport, no system or global config) because the checkout is shared with a container
+sync_text() {
+  cat <<'EOF'
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+# no auto gc/maintenance (it daemonizes) and no lock descriptor may leak into a helper: it would hold the lock
+g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c gc.auto=0 -c maintenance.auto=false -c protocol.allow=never -c protocol.file.allow=always "$@" 7>&- 8>&- 9>&-; }
+if [ ! -d "$W/.git" ]; then
+  rm -rf "$W"
+  if [ -n "$SEED" ]; then g clone -q --no-checkout "$HOME/checkouts/$SEED" "$W"; else g init -q "$W"; fi
+fi
+rm -rf "$W/.git/hooks"
+mkdir -m 0755 "$W/.git/hooks"
+if [ -f "$UP/in.bundle" ]; then g -C "$W" fetch -q "$UP/in.bundle" HEAD; fi
+g -C "$W" checkout -q -f --detach "$SHA"
+g -C "$W" reset -q --hard "$SHA"
+g -C "$W" clean -q -ffdx
+if [ -s "$UP/tracked.patch" ]; then g -C "$W" apply --binary --whitespace=nowarn "$UP/tracked.patch"; fi
+if [ -s "$UP/untracked.tar" ]; then tar -xf "$UP/untracked.tar" -C "$W" 7>&- 8>&- 9>&-; fi
+rm -rf "$UP"
+EOF
+}
+
+# host-admission/1 (scripts/netcup/runner/README.md): wait while memory PSI full avg10 >= 3 (CPU, io and RAM never block),
+# one start at a time through the ticket, which stays held 20 s past the start so the next start sees this container
+admission_text() {
+  cat <<'EOF'
+pressure() {   # 0 quiet, 1 unreadable, 2 busy (PRESS_WHY)
+  local full
+  full=$(awk '/^full/ { sub("avg10=", "", $2); print $2; exit }' "$PSI_DIR/memory" 2>/dev/null) || full=
+  case $full in ""|*[!0-9.]*|.*|*.|*.*.*) PRESS_WHY="cannot read memory PSI full avg10 from $PSI_DIR/memory"; return 1 ;; esac
+  if awk -v m="$full" 'BEGIN { exit !(m + 0 >= 3) }'; then PRESS_WHY="memory PSI full avg10 $full >= 3"; return 2; fi
+  return 0
+}
+PRESS_WHY=; prc=0; pressure || prc=$?
+[ "$prc" != 1 ] || own 75 "$PRESS_WHY; refusing to start"
+mkdir -p "$HOME/host-admission"
+start=$(now); last=$start
+exec {TFD}>"$HOME/host-admission/ticket"
+flock -w "$WAIT_S" "$TFD" || own 75 "no start ticket within ${WAIT_S}s"
+while :; do
+  prc=0; pressure || prc=$?
+  [ "$prc" != 1 ] || own 75 "$PRESS_WHY; refusing to start"
+  [ "$prc" != 0 ] || break
+  t=$(now)
+  [ $((t - start)) -lt "$WAIT_S" ] || own 75 "host busy: $PRESS_WHY after $((t - start))s (AGENT_DEV_WAIT_S)"
+  if [ $((t - last)) -ge 60 ]; then echo "dev: waiting for host admission: $PRESS_WHY, $((t - start))s of ${WAIT_S}s" >&2; last=$t; fi
+  nap 10
+done
+( exec 9>&-; sleep 20 ) >/dev/null 2>&1 </dev/null &
+exec {TFD}>&-
+EOF
+}
+
+# the command text that starts the container. Quoting: every user word through %q; the worktree mounts are emitted
+# literally from $W, which the prelude builds from the validated hex only.
+container_command_text() {
+  local m mnt=
+  # mount templates are validated ([A-Za-z0-9_./:{}-]); {work} is the host checkout, expanded on the host
+  for m in "${mounts[@]}"; do m=${m//\{work\}/\$W}; mnt+=" -v \"${m//\{cache\}/$vname}\""; done
+  printf 'timeout --foreground -s TERM -k 15 %s %s --cidfile "$D/cid"%s %s\n' "$max_s" "$(shell_words "${dpre[@]}")" "$mnt" "$(shell_words "${dpost[@]}" "${cmd[@]}")"
+}
+
+# $1 = 1: the tar stream is on stdin (batch); 0: it was uploaded by an earlier call (tty)
+run_script() {
+  local text; text=$(container_command_text)
+  remote_prelude
+  printf 'set -e\nmkdir -p -m 0700 "$D"\n'
+  if [[ $1 == 1 ]]; then upload_text; fi
+  cat <<'EOF'
+exec 9>"$D/lock"
+flock -n 9 || { rm -rf "$UP"; own 3 "another dev call for this worktree is in progress (lock $D/lock)"; }
+# a cidfile left by an earlier call names a container that is not ours: forget it BEFORE the cleanup can see it
+rm -f "$D/cid"
+touch "$D/last-use"
+# the container is removed by cid FIRST; the start ticket and lock fds are released only when this shell exits, after the trap
+cleanup() {
+  if [ -s "$D/cid" ]; then docker rm -f "$(cat "$D/cid")" >/dev/null 2>&1 7>&- 8>&- 9>&- || true; fi
+  rm -f "$D/cid"
+  rm -rf "$UP"
+}
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 141' PIPE; trap 'exit 143' TERM
+trap cleanup EXIT
+if docker inspect --format '{{.Id}}' "$NAME" >/dev/null 2>&1; then
+  own 3 "container $NAME exists (an earlier run still up? use: dev stop); refusing to sync under it"
+fi
+EOF
+  sync_text
+  admission_text
+  printf 'rm -f "$D/cid"\nrc=0\n'
+  if (( tty )); then
+    printf 'SHELL=/bin/bash script -qefc %s /dev/null || rc=$?\n' "$(printf '%q' "bash -c $(printf '%q' "$text")")"
+  else
+    printf '%s </dev/null || rc=$?\n' "$text"
+  fi
+  cat <<'EOF'
+if [ "$rc" = 124 ]; then echo "dev: exit 124: the in-container or the host runtime limit, or the command itself returned 124; the container is removed" >&2; fi
+exit $rc
+EOF
+}
+
+status_script() {
+  remote_prelude
+  cat <<'EOF'
+echo "container: $NAME"
+state=$(docker inspect --format '{{.State.Running}}' "$NAME" 2>/dev/null) || state=absent
+echo "running:   $state"
+if [ "$state" = true ]; then
+  started=$(docker inspect --format '{{.State.StartedAt}}' "$NAME" 2>/dev/null || true)
+  start_s=$(date -d "$started" +%s 2>/dev/null || true)
+  if [ -n "$start_s" ]; then echo "age:       $(( $(date +%s) - start_s )) s (started $started); stop it with: dev stop"; else echo "age:       unknown (started '$started')"; fi
+fi
+if docker volume inspect --format '{{.Name}}' "$VOL" >/dev/null 2>&1; then echo "volume:    $VOL (present)"; else echo "volume:    $VOL (absent)"; fi
+echo "checkout:  $W $(if [ -d "$W/.git" ]; then echo "(present, at $(git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$W" rev-parse --short HEAD 2>/dev/null))"; else echo '(absent)'; fi)"
+echo "agent-dev containers: $(docker ps --filter 'name=^agent-dev-' --format '{{.Names}}' | tr '\n' ' ')"
+EOF
+}
+
+stop_script() {
+  remote_prelude
+  cat <<'EOF'
+# a call holds the per-worktree lock from before the sync through the end of the run; hold it ourselves while we act
+LOCKED=0
+if [ -d "$D" ]; then exec 7>"$D/lock"; flock -n 7 || LOCKED=1; fi
+if docker inspect --format '{{.Id}}' "$NAME" >/dev/null 2>&1; then
+  docker rm -f "$NAME" >/dev/null
+  echo "stopped and removed container $NAME"
+elif [ "$LOCKED" = 1 ]; then
+  own 3 "a call for this worktree is in progress (syncing); retry in a moment"
+else
+  echo "container $NAME does not exist, nothing to stop"
+fi
+EOF
+}
+
+# $1 = hex set live in the cockpit's worktree list; every removal is by exact name, skipping held locks and live containers
+gc_script() {
+  remote_prelude
+  printf 'LIVE=" %s "\nTHIS=%s\nDRY=%s\n' "$1" "$this" "$gc_dry"
+  cat <<'EOF'
+age_s() { local t; t=$(stat -c %Y "$1" 2>/dev/null) || return 1; echo $(( $(date +%s) - t )); }
+for base in "$HOME/agent-dev" "$HOME/hostobs-dev"; do
+  [ -d "$base" ] || continue
+  for d in "$base"/*/; do
+    h=${d%/}; h=${h##*/}
+    case $h in *[!0-9a-f]*|'') continue ;; esac
+    [ ${#h} = 12 ] || continue
+    if [ "$THIS" = 1 ]; then [ "$h" = "$HEX" ] || continue
+    else
+      if [ -e "${d}last-use" ]; then age=$(age_s "${d}last-use"); else age=$(age_s "$d"); fi || continue
+      case $LIVE in *" $h "*) [ "$age" -gt 2592000 ] || continue ;; *) [ "$age" -gt 259200 ] || continue ;; esac
+    fi
+    live=$({ docker ps -a --filter 'name=^agent-dev-' --format '{{.Names}}'; docker ps -a --filter 'name=^hostobs-dev-' --format '{{.Names}}'; } 2>/dev/null | grep -c -- "-$h\$" || true)
+    if [ "$live" != 0 ]; then echo "skip $h: a container exists"; continue; fi
+    exec 7>"${d}lock"
+    if ! flock -n 7; then echo "skip $h: lock held"; exec 7>&-; continue; fi
+    for v in $(docker volume ls --format '{{.Name}}' 2>/dev/null); do
+      case $v in agent-dev-cache-*-"$h"|hostobs-dev-target-"$h")
+        if [ "$DRY" = 1 ]; then echo "would remove volume $v"; else docker volume rm "$v" >/dev/null && echo "removed volume $v"; fi ;;
+      esac
+    done
+    if [ "$DRY" = 1 ]; then echo "would remove ${d%/}"; else rm -rf -- "${d%/}"; echo "removed ${d%/}"; fi
+    exec 7>&-
+  done
+done
+EOF
+}
+
+# ---- transport ----------------------------------------------------------------------------------------
+hx_call() {   # $1 = script; stdin is passed through. hx.sh exit codes 97 (identity), 98 (guard), 255 (ssh) are transport failures
+  local rc=0
+  "$hx" "$host" "$1" || rc=$?
+  case $rc in
+    97|98|255) printf 'dev: transport or identity failure talking to %s (exit %s)\n' "$host" "$rc" >&2; own_exit=1; return 3 ;;
+  esac
+  return "$rc"
+}
+
+# ---- tree shipping --------------------------------------------------------------------------------------
+sync_sha='' sync_seed='' upload_id='' dirty=0
+stage_overlay() {   # tracked.patch (git diff HEAD --binary), untracked.list (NUL) and untracked.tar; refuses past the cap
+  local total f size
+  git -C "$worktree" rev-parse --verify --quiet 'HEAD^{commit}' >/dev/null || die 2 'the worktree has no HEAD commit'
+  sync_sha=$(git -C "$worktree" rev-parse HEAD)
+  [[ $sync_sha =~ ^[0-9a-f]{40,64}$ ]] || die 2 "unexpected HEAD id '$sync_sha'"
+  git -C "$worktree" diff HEAD --binary > "$stage/tracked.patch"
+  git -C "$worktree" ls-files -o --exclude-standard -z > "$stage/untracked.list"
+  total=$(stat -c %s "$stage/tracked.patch")
+  while IFS= read -r -d '' f; do
+    if [[ $f == */ || ( -d $worktree/$f && ! -L $worktree/$f ) ]]; then
+      die 2 "untracked directory '$f' (a nested git repository?) cannot be synced: add it to .gitignore, commit it or remove it"
+    fi
+    size=$(stat -c %s -- "$worktree/$f" 2>/dev/null || echo 0)
+    total=$((total + size))
+  done < "$stage/untracked.list"
+  if (( total > SYNC_CAP_BYTES )); then
+    die 2 "the uncommitted changes are $((total / 1048576)) MiB (tracked patch plus untracked files), above the $((SYNC_CAP_BYTES / 1048576)) MiB sync cap; commit them (a commit travels in the bundle) or drop them"
+  fi
+  if [[ -s $stage/untracked.list ]]; then tar -cf "$stage/untracked.tar" --no-recursion --null -C "$worktree" -T "$stage/untracked.list"; fi
+  if [[ -s $stage/tracked.patch || -s $stage/untracked.list ]]; then dirty=1; fi
+}
+
+pick_seed_and_bundle() {   # $1 = HASSHA, $2 = HAVE (the host's last head), then SEED shas. Creates stage/in.bundle when objects are missing.
+  local hassha=$1 have=$2 c n best='' best_n='' base=''; shift 2
+  sync_seed=''
+  if [[ $hassha == 1 ]]; then return 0; fi
+  if [[ -n $have ]] && git -C "$worktree" cat-file -e "$have^{commit}" 2>/dev/null; then
+    base=$have
+  else
+    for c in "$@"; do
+      git -C "$worktree" cat-file -e "$c^{commit}" 2>/dev/null || continue
+      n=$(git -C "$worktree" rev-list --count HEAD "^$c")
+      if [[ -z $best_n ]] || (( n < best_n )); then best=$c; best_n=$n; fi
+    done
+    if [[ -z $have && -n $best ]]; then sync_seed=$best; fi
+    base=$best
+  fi
+  if [[ -n $base ]]; then
+    git -C "$worktree" bundle create "$stage/in.bundle" HEAD "^$base" >/dev/null 2>&1 || rm -f "$stage/in.bundle"
+  else
+    git -C "$worktree" bundle create "$stage/in.bundle" HEAD >/dev/null 2>&1 || die 2 'git bundle failed'
+  fi
+}
+
+# image check (design 6k): the host's image ids must equal the cockpit's; never pulls or builds
+check_images() {   # $1 = the preflight output
+  local out=$1 t hid lid label envid='' line
+  for t in $image $dev_image; do
+    hid=''
+    while IFS= read -r line; do case $line in "IMG=$t="*) hid=${line#"IMG=$t="} ;; esac; done <<< "$out"
+    [[ $hid =~ ^sha256:[0-9a-f]{64}$ ]] || die 2 "image $t is missing on $host: ask the main controller for a push grant, then run scripts/controller/push-image.sh $host $t"
+    lid=$(docker image inspect --format '{{.Id}}' "$t" 2>/dev/null || true)
+    if [[ -z $lid ]]; then
+      printf 'dev: the cockpit has no %s; checked its presence on %s only (host id %s)\n' "$t" "$host" "$hid" >&2
+    elif [[ $lid != "$hid" ]]; then
+      die 2 "image $t differs: $host has $hid, the cockpit has $lid; after the rebuild merged, run scripts/controller/push-image.sh $host $t (needs the main controller's grant)"
+    fi
+    [[ $t != "$image" ]] || envid=$hid
+  done
+  if [[ -n $dev_image ]]; then
+    label=''
+    while IFS= read -r line; do case $line in LABEL=*) label=${line#LABEL=} ;; esac; done <<< "$out"
+    [[ $label == "$envid" ]] || die 2 "$dev_image on $host was built on ${label:-no recorded base} but $image there is $envid: rebuild the dev image, then push both with scripts/controller/push-image.sh $host (needs the main controller's grant)"
+  fi
+}
+
+# ---- main -----------------------------------------------------------------------------------------------
+simple_run() {   # status, stop, gc
+  local script live=''
+  case $sub in
+    status) script=$(status_script) ;;
+    stop) script=$(stop_script) ;;
+    gc)
+      if (( ! this )); then
+        live=$(git -C "$worktree" worktree list --porcelain | sed -n 's/^worktree //p' \
+          | while IFS= read -r p; do pp=$(cd "$p" 2>/dev/null && pwd -P) || continue; printf '%s' "$pp" | sha256sum | cut -c1-12; done | tr '\n' ' ')
+      fi
+      script=$(gc_script "$live") ;;
+  esac
+  if (( dry_run )) && [[ $sub != gc ]]; then printf 'SCRIPT-BEGIN %s\n%s\nSCRIPT-END %s\n' "$sub" "$script" "$sub"; return 0; fi
+  if (( dry_run )); then printf 'SCRIPT-BEGIN gc\n%s\nSCRIPT-END gc\n' "$script"; return 0; fi
+  hx_call "$script" </dev/null || exit $?
+}
+
+run_remote() {
+  local rc=0 out hassha=0 have='' seeds=() valid=() line f s files=() run mounted_src
+  # shellcheck disable=SC2016 # $HOME is expanded on the host, not here
+  mounted_src='$HOME/agent-dev/'"$worktree_hex"'/work'
+  upload_id=$(printf '%s%s%s' "$$" "$(date +%s%N)" "$RANDOM" | sha256sum | cut -c1-16)
+  stage_overlay
+  # shellcheck disable=SC2016
+  build_docker_argv "$mounted_src" '$HOME/agent-dev/'"$worktree_hex"'/cid'
+  if (( dry_run )); then
+    printf 'STEP 1: preflight: %s %s <remote script> (identity, image ids, host checkout state)\n' "$hx" "$host"
+    printf 'SCRIPT-BEGIN preflight\n%s\nSCRIPT-END preflight\n' "$(preflight_script)"
+    printf 'STEP 2: bundle, patch (%s), untracked tar; one call uploads and runs\n' "$([[ $dirty == 1 ]] && echo dirty || echo clean)"
+    printf 'SCRIPT-BEGIN run\n%s\nSCRIPT-END run\n' "$(run_script $((1 - tty)))"
+    printf 'DOCKER-ARGV-BEGIN\n'; printf '%s\n' "${dargv[@]}"; printf 'DOCKER-ARGV-END\n'
+    return 0
+  fi
+  banner="AGENT-DEV $project $host ${sync_sha:0:12}$([[ $dirty == 1 ]] && echo +dirty): NOT GATE EVIDENCE"
+  printf '%s\n' "$banner" >&2
+  out=$(hx_call "$(preflight_script)" </dev/null) || exit $?
+  check_images "$out"
+  while IFS= read -r line; do
+    case $line in HASSHA=1) hassha=1 ;; HAVE=*) have=${line#HAVE=} ;; SEED=*) seeds+=("${line#SEED=}") ;; esac
+  done <<< "$out"
+  # what the host printed is data: only full commit ids may reach the next remote script
+  [[ $have =~ ^[0-9a-f]{40,64}$ ]] || have=''
+  for s in "${seeds[@]}"; do if [[ $s =~ ^[0-9a-f]{40,64}$ ]]; then valid+=("$s"); fi; done
+  pick_seed_and_bundle "$hassha" "$have" "${valid[@]}"
+  for f in in.bundle tracked.patch untracked.tar; do [[ ! -e $stage/$f ]] || files+=("$f"); done
+  if (( tty )); then
+    run=$(run_script 0)
+    tar -cf - -C "$stage" "${files[@]}" | hx_call "$(upload_script)" >&2 || exit $?
+    stty_saved=$(stty -g); stty -echo -icanon -isig
+    if hx_call "$run"; then rc=0; else rc=$?; fi
+    stty "$stty_saved"; stty_saved=''
+  else
+    run=$(run_script 1)
+    if tar -cf - -C "$stage" "${files[@]}" | hx_call "$run"; then rc=0; else rc=$?; fi
+  fi
+  exit "$rc"
+}
+
+case $sub in
+  status|stop|gc) simple_run ;;
+  *) run_remote ;;
+esac
