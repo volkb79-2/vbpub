@@ -1,32 +1,10 @@
 #!/usr/bin/env bash
-# Offline tests for the systemd-boot backend's pure decisions (no btrfs, ESP, guest or root).
-# Hidden hooks in dr-state:
-#   _sdboot-kernel-id KVER KERNEL_SHA256 INITRD_SHA256
-#   _sdboot-entry-id STATE
-#   _sdboot-state-from-id ENTRY_ID
-#   _sdboot-entry-text STATE KVER UUID KERNEL_ID
-#   _sdboot-entry-refs              (BLS entry text on stdin; kernel ids on stdout)
-#   _sdboot-orphan-kernels EXISTING_CSV REFERENCED_CSV
-#   _sdboot-space-check NEEDED FREE
-#   _sdboot-loader-conf DEFAULT_ID[.conf]  (existing loader.conf on stdin; rewritten on stdout)
-#   _sdboot-select-backend CONF_VALUE MARKER_VALUE
-#   _sdboot-conf-backend FILE
-#   _sdboot-marker-backend FILE
-#   _sdboot-source-value LABEL PRESENT VALUE
-#   _sdboot-entry-ids STATE...
-#   _sdboot-byte-length TEXT
-#   _sdboot-dir-alloc ROOT CLUSTER RELDIR...
-#   _sdboot-alloc-sum CLUSTER SIZE...
-#   _sdboot-clean-scratch KERNEL_DIR ENTRY_DIR LOADER_CONF MARKER
-#   _snapshot-name SEQUENCE TIMESTAMP SOURCE REASON
-#
-# Workflow fixtures run the real gen-menu/set-default/prune commands with DR_STATE_TEST_MODE=1 and a disposable
-# temporary root. They never mount or touch /boot/efi or /.top.
+# Offline black-box workflows. Every case runs the Python launcher with --sysroot;
+# pure selectors, fit accounting, and fault ordering are Python unit tests.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DR_BASH="$HERE/dr-state"
 DR_PY="$HERE/../files/usr/local/sbin/dr-state"
-DR="$DR_BASH"
+DR="$DR_PY"
 FIXTURE_BOOT=${FIXTURE_BOOT:-systemd-boot}
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -40,27 +18,12 @@ pair_id() { # KVER KERNEL_SHA256 INITRD_SHA256
     "$(printf '%s%s' "$2" "$3" | sha256sum | awk '{print $1}')"
 }
 
-expect_exit() { # expect_exit LABEL WANT_RC COMMAND...
-  local label=$1 want=$2; shift 2
-  "$@" >"$WORK/out" 2>"$WORK/err"; local got=$?
-  case_count=$((case_count + 1))
-  [ "$got" = "$want" ] || bad "$label: want exit $want, got $got ($(tr '\n' ' ' <"$WORK/err"))"
-}
-
-expect_text() { # expect_text LABEL WANT COMMAND...
-  local label=$1 want=$2; shift 2
-  "$@" >"$WORK/out" 2>"$WORK/err"; local rc=$?
-  case_count=$((case_count + 1))
-  local got; got=$(cat "$WORK/out")
-  if [ "$rc" != 0 ] || [ "$got" != "$want" ]; then
-    echo "FAIL $label: want rc=0 text='$want'; got rc=$rc text='$got' ($(tr '\n' ' ' <"$WORK/err"))"
-    fail=1
-  fi
-}
-
 workflow_run() { # workflow_run ROOT FREE CLUSTER COMMAND...
   local root=$1 free=$2 cluster=$3
   shift 3
+  # FREE and CLUSTER remain in the call shape used by the historical harness,
+  # but --sysroot fixtures observe real filesystem space instead.
+  : "$free" "$cluster"
   if [ -n "${DR_STATE_TEST_OS_RELEASE+x}" ]; then
     printf 'PRETTY_NAME="%s"\nID=%s\nVERSION_ID=%s\n' \
       "${DR_STATE_TEST_OS_RELEASE:-}" "${DR_STATE_TEST_OS_ID:-debian}" \
@@ -72,30 +35,15 @@ workflow_run() { # workflow_run ROOT FREE CLUSTER COMMAND...
   if [ -n "${DR_STATE_TEST_PACKAGES+x}" ]; then
     printf '%s\n' "${DR_STATE_TEST_PACKAGES:-}" >"$root/test-bin/packages"
   fi
-  if [ "$DR" = "$DR_BASH" ]; then
-    env DR_STATE_TEST_MODE=1 DR_STATE_TEST_ROOT="$root" \
-      DR_STATE_TEST_ESP_FREE="$free" DR_STATE_TEST_ESP_CLUSTER="$cluster" \
-      GRUBEDITENV_LOG="${GRUBEDITENV_LOG:-$root/grub-editenv.log}" \
-      GRUBEDITENV_STATE="${GRUBEDITENV_STATE:-$root/grub-editenv.state}" \
-      PATH="$root/test-bin:$PATH" "$DR" "$@"
-  else
-    env -u DR_STATE_TEST_MODE -u DR_STATE_TEST_ROOT \
-      -u DR_STATE_TEST_ESP_FREE -u DR_STATE_TEST_ESP_CLUSTER \
-      -u DR_STATE_TEST_FAIL_STEP -u DR_STATE_TEST_OS_RELEASE \
-      -u DR_STATE_TEST_OS_ID -u DR_STATE_TEST_OS_VERSION_ID \
-      -u DR_STATE_TEST_KERNEL -u DR_STATE_TEST_PACKAGES \
-      GRUBEDITENV_LOG="${GRUBEDITENV_LOG:-$root/grub-editenv.log}" \
-      GRUBEDITENV_STATE="${GRUBEDITENV_STATE:-$root/grub-editenv.state}" \
-      PATH="$root/test-bin:$PATH" "$DR" --sysroot "$root" "$@"
-  fi
-}
-
-workflow_run_fail() { # workflow_run_fail ROOT STEP COMMAND...
-  local root=$1 step=$2
-  shift 2
-  env DR_STATE_TEST_MODE=1 DR_STATE_TEST_ROOT="$root" \
-    DR_STATE_TEST_ESP_FREE=999999999 DR_STATE_TEST_ESP_CLUSTER=4096 \
-    DR_STATE_TEST_FAIL_STEP="$step" "$DR" "$@"
+  env -u DR_STATE_TEST_MODE -u DR_STATE_TEST_ROOT \
+    -u DR_STATE_TEST_ESP_FREE -u DR_STATE_TEST_ESP_CLUSTER \
+    -u DR_STATE_TEST_FAIL_STEP -u DR_STATE_TEST_OS_RELEASE \
+    -u DR_STATE_TEST_OS_ID -u DR_STATE_TEST_OS_VERSION_ID \
+    -u DR_STATE_TEST_KERNEL -u DR_STATE_TEST_PACKAGES \
+    GRUBEDITENV_LOG="${GRUBEDITENV_LOG:-$root/grub-editenv.log}" \
+    GRUBEDITENV_STATE="${GRUBEDITENV_STATE:-$root/grub-editenv.state}" \
+    PATH="$root/test-bin:$PATH" PYTHONDONTWRITEBYTECODE=1 \
+    /usr/bin/python3 -B -I "$DR" --sysroot "$root" "$@"
 }
 
 workflow_fixture() { # workflow_fixture ROOT full|sparse
@@ -165,6 +113,14 @@ workflow_two_states() { # workflow_two_states ROOT
   workflow_state "$root" @os-000002-20261118-120100Z-apt
 }
 
+workflow_grub_fixture() { # ROOT: GRUB backend with two ordinary managed states
+  local root=$1
+  workflow_fixture "$root" full
+  printf 'grub\n' >"$root/esp/EFI/dr/bootloader"
+  workflow_state "$root" @os-000001-20261118-120000Z-install
+  workflow_state "$root" @os-000002-20261118-120100Z-apt
+}
+
 workflow_prune_delete_fixture() { # ROOT: four states, newest default, with two removable states
   local root=$1
   workflow_fixture "$root" full
@@ -176,18 +132,6 @@ workflow_prune_delete_fixture() { # ROOT: four states, newest default, with two 
     >"$WORK/out" 2>"$WORK/err" \
     || { bad "workflow-prune-delete-setup: gen-menu failed"; return 1; }
   install_fake_maintenance_btrfs "$root"
-}
-
-workflow_stale_default_fixture() { # ROOT: old default @os-000002-20261118-120100Z-apt exists, then its state disappears from TOP
-  local root=$1
-  workflow_fixture "$root" full
-  workflow_two_states "$root"
-  workflow_run "$root" 999999999 4096 gen-menu --default @os-000002-20261118-120100Z-apt \
-    >"$WORK/out" 2>"$WORK/err" \
-    || { bad "workflow-stale-setup: gen-menu failed"; return 1; }
-  [ -s "$root/esp/loader/entries/os-000002-20261118-120100Z-apt.conf" ] \
-    || { bad "workflow-stale-setup: missing old default entry"; return 1; }
-  mv "$root/top/@os-000002-20261118-120100Z-apt" "$root/removed-state-0002"
 }
 
 assert_loader_default_exists() { # assert_loader_default_exists ROOT LABEL
@@ -204,20 +148,6 @@ assert_loader_default_exists() { # assert_loader_default_exists ROOT LABEL
   esac
   [ -s "$default_entry" ] \
     || bad "$label: default $default_id has no entry file"
-}
-
-install_failing_loader_mv() { # ROOT -> PATH stub that fails only the loader.conf publication rename
-  local root=$1
-  mkdir -p "$root/fail-bin"
-  # shellcheck disable=SC2016  # the single-quoted strings are the literal body of the generated stub
-  printf '%s\n' \
-    '#!/usr/bin/env bash' \
-    'set -u' \
-    'dest=${!#}' \
-    'if [ "$dest" = "$FAIL_LOADER_CONF" ]; then exit 73; fi' \
-    'exec /bin/mv "$@"' \
-    >"$root/fail-bin/mv"
-  chmod 755 "$root/fail-bin/mv"
 }
 
 install_recording_bootctl() { # ROOT -> PATH stub that records the exact argv
@@ -363,29 +293,6 @@ workflow_snapshot_overlong_reason() { # ROOT REASON LABEL: the constructed name 
   fi
 }
 
-workflow_grub_fixture() { # ROOT: GRUB backend with two ordinary managed states
-  local root=$1
-  workflow_fixture "$root" full
-  printf 'grub\n' >"$root/esp/EFI/dr/bootloader"
-  workflow_state "$root" @os-000001-20261118-120000Z-install
-  workflow_state "$root" @os-000002-20261118-120100Z-apt
-}
-
-workflow_invalid_conf_fixture() { # ROOT: one invalid selectable-name state and one valid state
-  local root=$1
-  workflow_fixture "$root" full
-  workflow_state "$root" @os-000001-20261118-120000Z-install.conf
-  workflow_state "$root" @os-000002-20261118-120100Z-apt
-}
-
-state_with_entry_id_length() { # state_with_entry_id_length N -> @os- followed by id padding
-  local length=$1 prefix=@os- padding suffix
-  padding=$((length - 3))
-  [ "$padding" -ge 0 ] || return 1
-  suffix=$(printf '%*s' "$padding" '' | tr ' ' a)
-  printf '%s%s\n' "$prefix" "$suffix"
-}
-
 workflow_assert_entry() { # workflow_assert_entry ROOT STATE KVER
   local root=$1 state=$2 kver=$3 entry_id source_kernel source_initrd kernel_sha256 initrd_sha256 kid
   local entry linux_path initrd_path options_line
@@ -425,147 +332,9 @@ workflow_assert_entry() { # workflow_assert_entry ROOT STATE KVER
     || bad "workflow-entry-copy-hash: initrd differs for $state"
 }
 
-HASH_A=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-HASH_B=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
 KVER=6.12.117+deb13-amd64
-PAIR_HASH_A=$(printf '%s%s' "$HASH_A" "$HASH_B" | sha256sum | awk '{print $1}')
-ID_A=$KVER-$PAIR_HASH_A
 UUID=11111111-2222-3333-4444-555555555555
-
-# Backend marker reads fail loudly; the P-20b removal set pins config/conflict decisions in unit tests.
-expect_text backend-marker-systemd systemd-boot "$DR" _sdboot-select-backend '' systemd-boot
-expect_exit backend-unknown 1 "$DR" _sdboot-select-backend grub2 ''
-expect_exit backend-source-empty-marker 1 "$DR" _sdboot-source-value '/boot/efi/EFI/dr/bootloader' 1 ''
-printf '' >"$WORK/marker-empty"
-expect_exit backend-empty-marker-file 1 "$DR" _sdboot-marker-backend "$WORK/marker-empty"
-case_count=$((case_count + 1))
-"$DR" _sdboot-marker-backend "$WORK/marker-empty" >"$WORK/out" 2>"$WORK/err" || true
-grep -Fq 'bootloader marker is present but empty' "$WORK/err" \
-  || bad "backend-empty-marker-message: missing clear empty-marker refusal"
-
-# (a) BLS entry text.
-ENTRY_A=$(cat <<EOF
-# generated by dr-state sdboot; do not edit
-title Debian @os-000001-20261118-120000Z-install (kernel 6.12.117+deb13-amd64)
-linux /EFI/dr/kernels/$ID_A/vmlinuz
-initrd /EFI/dr/kernels/$ID_A/initrd.img
-options root=UUID=11111111-2222-3333-4444-555555555555 rootflags=subvol=@os-000001-20261118-120000Z-install ro net.ifnames=0 console=tty0 console=ttyS0,115200
-sort-key os-000001-20261118-120000Z-install
-EOF
-)
-expect_text entry-text-main "$ENTRY_A" "$DR" _sdboot-entry-text @os-000001-20261118-120000Z-install "$KVER" "$UUID" "$ID_A"
-
-ENTRY_SNAP=$(cat <<EOF
-# generated by dr-state sdboot; do not edit
-title Debian @os-000605-20261118-131158Z-manual-s5 (kernel 6.12.107+deb13-amd64)
-linux /EFI/dr/kernels/6.12.107+deb13-amd64-fedcba987654/vmlinuz
-initrd /EFI/dr/kernels/6.12.107+deb13-amd64-fedcba987654/initrd.img
-options root=UUID=11111111-2222-3333-4444-555555555555 rootflags=subvol=@os-000605-20261118-131158Z-manual-s5 ro net.ifnames=0 console=tty0 console=ttyS0,115200
-sort-key os-000605-20261118-131158Z-manual-s5
-EOF
-)
-expect_text entry-text-snapshot "$ENTRY_SNAP" "$DR" _sdboot-entry-text @os-000605-20261118-131158Z-manual-s5 \
-  6.12.107+deb13-amd64 "$UUID" 6.12.107+deb13-amd64-fedcba987654
-ENTRY_BACKPORTS=$(cat <<EOF
-# generated by dr-state sdboot; do not edit
-title Debian @os-000001-20261118-120000Z-install (kernel 7.2.12+deb13-amd64)
-linux /EFI/dr/kernels/7.2.12+deb13-amd64-fedcba987654/vmlinuz
-initrd /EFI/dr/kernels/7.2.12+deb13-amd64-fedcba987654/initrd.img
-options root=UUID=11111111-2222-3333-4444-555555555555 rootflags=subvol=@os-000001-20261118-120000Z-install ro net.ifnames=0 console=tty0 console=ttyS0,115200
-sort-key os-000001-20261118-120000Z-install
-EOF
-)
-expect_text entry-text-backports "$ENTRY_BACKPORTS" "$DR" _sdboot-entry-text @os-000001-20261118-120000Z-install \
-  7.2.12+deb13-amd64 "$UUID" 7.2.12+deb13-amd64-fedcba987654
-expect_exit entry-text-rejects-bad-uuid 1 "$DR" _sdboot-entry-text @os-000001-20261118-120000Z-install "$KVER" 'not/a-uuid' "$ID_A"
-expect_exit entry-text-rejects-kver-id-mismatch 1 "$DR" _sdboot-entry-text @os-000001-20261118-120000Z-install "$KVER" "$UUID" \
-  6.12.107+deb13-amd64-fedcba987654
-
-# (b) content-addressed kernel id.
-expect_text kernel-id-a "$ID_A" "$DR" _sdboot-kernel-id "$KVER" "$HASH_A" "$HASH_B"
-expect_text kernel-id-b "6.12.107+deb13-amd64-$(printf '%s%s' "$HASH_B" "$HASH_A" | sha256sum | awk '{print $1}')" \
-  "$DR" _sdboot-kernel-id 6.12.107+deb13-amd64 "$HASH_B" "$HASH_A"
-expect_text kernel-id-different-kernel "6.12.117+deb13-amd64-$(printf '%s%s' "$HASH_B" "$HASH_B" | sha256sum | awk '{print $1}')" \
-  "$DR" _sdboot-kernel-id "$KVER" "$HASH_B" "$HASH_B"
-expect_exit kernel-id-missing-initrd-hash 1 "$DR" _sdboot-kernel-id "$KVER" "$HASH_A"
-expect_exit kernel-id-bad-kernel-hash 1 "$DR" _sdboot-kernel-id "$KVER" \
-  0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg "$HASH_B"
-expect_exit kernel-id-bad-initrd-hash 1 "$DR" _sdboot-kernel-id "$KVER" "$HASH_A" \
-  0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg
-expect_exit kernel-id-uppercase-hash 1 "$DR" _sdboot-kernel-id "$KVER" \
-  0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef "$HASH_B"
-expect_exit kernel-id-bad-kver 1 "$DR" _sdboot-kernel-id '6.12/evil' "$HASH_A" "$HASH_B"
-expect_exit kernel-id-empty-kver 1 "$DR" _sdboot-kernel-id '' "$HASH_A" "$HASH_B"
-expect_exit kernel-id-vfat-component-too-long 1 "$DR" _sdboot-kernel-id \
-  "$(printf '%*s' 191 '' | tr ' ' a)" "$HASH_A" "$HASH_B"
-
-# (f) reversible state <-> entry-id mapping. `@os-*` maps to `os-*`; the mapping rejects unsafe names.
-expect_text entry-id-main os-000001-20261118-120000Z-install "$DR" _sdboot-entry-id @os-000001-20261118-120000Z-install
-expect_text entry-id-snapshot os-000605-20261118-131158Z-manual-s5 "$DR" _sdboot-entry-id @os-000605-20261118-131158Z-manual-s5
-expect_text entry-id-punctuation os-000001-20261118-100000Z-manual-s5_test-v2 "$DR" _sdboot-entry-id @os-000001-20261118-100000Z-manual-s5_test-v2
-expect_text state-from-id-main @os-000001-20261118-120000Z-install "$DR" _sdboot-state-from-id os-000001-20261118-120000Z-install
-expect_text state-from-id-main-conf @os-000001-20261118-120000Z-install "$DR" _sdboot-state-from-id os-000001-20261118-120000Z-install.conf
-expect_text state-from-id-snapshot @os-000605-20261118-131158Z-manual-s5 "$DR" _sdboot-state-from-id os-000605-20261118-131158Z-manual-s5
-# shellcheck disable=SC2016  # the child bash expands its positional parameters
-expect_exit entry-id-roundtrip 0 bash -c 's=$("$1" _sdboot-entry-id "$2") || exit; t=$("$1" _sdboot-state-from-id "$s") || exit; [ "$t" = "$2" ]' \
-  _ "$DR" @os-000001-20261118-100000Z-manual-a_b-c-d
-# shellcheck disable=SC2016  # the child bash expands its positional parameters
-expect_exit entry-id-roundtrip-conf 0 bash -c 's=$("$1" _sdboot-entry-id "$2") || exit; t=$("$1" _sdboot-state-from-id "$s.conf") || exit; [ "$t" = "$2" ]' \
-  _ "$DR" @os-000001-20261118-100000Z-manual-a_b-c-d
-expect_exit entry-id-rejects-no-prefix 1 "$DR" _sdboot-entry-id os-000001-20261118-120000Z-install
-expect_exit entry-id-rejects-slash 1 "$DR" _sdboot-entry-id '@os-pre-2026/evil'
-expect_exit entry-id-rejects-space 1 "$DR" _sdboot-entry-id '@os-pre-2026 evil'
-expect_exit entry-id-rejects-dotdot 1 "$DR" _sdboot-entry-id '@os-pre-2026..evil'
-expect_exit entry-id-rejects-embedded-at 1 "$DR" _sdboot-entry-id '@os-pre-2026@evil'
-expect_exit entry-id-rejects-conf-suffix 1 "$DR" _sdboot-entry-id '@os-000001-20261118-120000Z-install.conf'
-expect_exit state-from-id-rejects-at 1 "$DR" _sdboot-state-from-id '@os-000001-20261118-120000Z-install'
-expect_exit state-from-id-rejects-conf-suffix 1 "$DR" _sdboot-state-from-id os-000001-20261118-120000Z-install.conf.conf
-expect_exit state-from-id-rejects-slash 1 "$DR" _sdboot-state-from-id 'os-pre/evil'
-expect_exit state-from-id-rejects-empty-tail 1 "$DR" _sdboot-state-from-id 'os-'
-expect_text entry-ids-distinct "os-000001-20261118-120000Z-install
-os-000605-20261118-131158Z-manual-s5" "$DR" _sdboot-entry-ids @os-000001-20261118-120000Z-install @os-000605-20261118-131158Z-manual-s5
-expect_exit entry-ids-case-collision 1 "$DR" _sdboot-entry-ids @os-lower @os-LOWER
-expect_exit entry-ids-conf-suffix 1 "$DR" _sdboot-entry-ids @os-000001-20261118-120000Z-install.conf
-expect_exit entry-ids-unsafe-state 1 "$DR" _sdboot-entry-ids @os-ok '@os-bad/name'
-case_count=$((case_count + 1))
-"$DR" _sdboot-entry-ids @os-lower @os-LOWER >"$WORK/out" 2>"$WORK/err" || true
-grep -Fq 'case-insensitively collide' "$WORK/err" \
-  || bad "entry-ids-case-message: collision refusal does not explain the collision"
-
-# Snapshot IDs use one origin/reason slug on both bootloaders; notes retain the full description.
-expect_text snapshot-name-ordinary @os-000123-20261118-120000Z-manual-rollback \
-  "$DR" _snapshot-name 000123 20261118120000 manual rollback
-expect_text snapshot-name-conf-suffix @os-000123-20261118-120000Z-manual-rollback-conf \
-  "$DR" _snapshot-name 000123 20261118120000 manual rollback.conf
-expect_text snapshot-name-space @os-000123-20261118-120000Z-manual-bad-name \
-  "$DR" _snapshot-name 000123 20261118120000 manual 'bad name'
-expect_text snapshot-name-slash @os-000123-20261118-120000Z-manual-bad-name \
-  "$DR" _snapshot-name 000123 20261118120000 manual 'bad/name'
-expect_text snapshot-name-embedded-at @os-000123-20261118-120000Z-manual-bad-name \
-  "$DR" _snapshot-name 000123 20261118120000 manual 'bad@name'
-expect_text snapshot-name-control @os-000123-20261118-120000Z-manual-bad-name \
-  "$DR" _snapshot-name 000123 20261118120000 manual $'bad\tname'
-expect_text snapshot-name-grub-dot @os-000123-20261118-120000Z-manual-v1-2 \
-  "$DR" _snapshot-name 000123 20261118120000 manual v1.2
-expect_text snapshot-name-apt @os-000123-20261118-120000Z-apt \
-  "$DR" _snapshot-name 000123 20261118120000 apt apt
-expect_text initial-state-name @os-000001-20261118-120000Z-install \
-  "$DR" _state-name 000001 20261118120000 install
-expect_exit state-name-zero-sequence 1 "$DR" _state-name 000000 20261118120000 install
-expect_exit state-name-invalid-date 1 "$DR" _state-name 000002 20261340120000 apt
-expect_exit state-name-invalid-slug 1 "$DR" _state-name 000002 20261118120000 'manual/unsafe'
-expect_exit snapshot-name-empty 1 "$DR" _snapshot-name 000123 20261118120000 manual ''
 _LONG_REASON=$(printf '%*s' 400 '' | tr ' ' a)
-# shellcheck disable=SC2016  # the child bash expands its positional parameters
-expect_exit snapshot-name-overlong-valid 0 bash -c \
-  'n=$("$1" _snapshot-name "$2" "$3" manual "$4") || exit; i=$("$1" _sdboot-entry-id "$n") || exit; [ "${#i}" -le 240 ]' \
-  _ "$DR" 000123 20261118120000 "$_LONG_REASON"
-# A bounded slug keeps the ID portable on either backend.
-_LONG_CONF_REASON="$(printf '%*s' 207 '' | tr ' ' a).confxxxxxxxxxxxxxxxxxxxx"
-# shellcheck disable=SC2016  # the child bash expands its positional parameters
-expect_exit snapshot-name-overlong-conf-boundary 0 bash -c \
-  'n=$("$1" _snapshot-name "$2" "$3" manual "$4") || exit; "$1" _sdboot-entry-id "$n" >/dev/null || exit; case "$n" in *.conf) exit 1 ;; esac' \
-  _ "$DR" 000123 20261118120000 "$_LONG_CONF_REASON"
 APT_PLAN_V2="$WORK/apt-plan-v2"
 cat >"$APT_PLAN_V2" <<'EOF'
 VERSION 2
@@ -576,25 +345,8 @@ libc6:amd64 2.36-9 < 2.37-1 /var/cache/apt/archives/libc6.deb
 oldpkg 1.0 > - **REMOVE**
 manualpkg 1.0 = 1.0 **CONFIGURE**
 EOF
-# shellcheck disable=SC2016  # the child bash expands its positional parameters
-expect_text apt-plan-version2 $'install hello - -> 2.10-3\nupgrade libc6:amd64 2.36-9 -> 2.37-1\nremove oldpkg 1.0 -> -\nconfigure manualpkg 1.0 -> 1.0' \
-  bash -c '"$1" _apt-plan-summary <"$2"' _ "$DR" "$APT_PLAN_V2"
-APT_PLAN_V3="$WORK/apt-plan-v3"
-cat >"$APT_PLAN_V3" <<'EOF'
-VERSION 3
-
-foo - - none < 1.0 amd64 same /var/cache/apt/archives/foo.deb
-EOF
-# shellcheck disable=SC2016  # the child bash expands its positional parameters
-expect_text apt-plan-version3 'install foo - -> 1.0' \
-  bash -c '"$1" _apt-plan-summary <"$2"' _ "$DR" "$APT_PLAN_V3"
-APT_PLAN_BAD="$WORK/apt-plan-bad"
-printf 'VERSION 2\n\nnot-an-action\n' >"$APT_PLAN_BAD"
-# shellcheck disable=SC2016  # the child bash expands its positional parameters
-expect_exit apt-plan-malformed-refused 1 bash -c '"$1" _apt-plan-summary <"$2"' _ "$DR" "$APT_PLAN_BAD"
 
 # Both backends use the same safe short slug and enumerate the result.
-DR="$DR_PY"
 FIXTURE_BOOT=grub
 WF_GRUB_REASON="$WORK/wf-grub-reason"
 workflow_grub_fixture "$WF_GRUB_REASON"
@@ -639,326 +391,41 @@ else
   fi
 fi
 
-DR="$DR_BASH"
 FIXTURE_BOOT=systemd-boot
-
-# (d) ESP space check: needed bytes versus free bytes.
-expect_exit space-needed-less 0 "$DR" _sdboot-space-check 1000 2000
-expect_exit space-needed-equal 0 "$DR" _sdboot-space-check 2000 2000
-expect_exit space-needed-wins 1 "$DR" _sdboot-space-check 2001 2000
-expect_exit space-zero-needed 0 "$DR" _sdboot-space-check 0 0
-expect_exit space-no-free 1 "$DR" _sdboot-space-check 1 0
-expect_exit space-bad-needed 2 "$DR" _sdboot-space-check nope 2000
-expect_exit space-negative-needed 2 "$DR" _sdboot-space-check -1 2000
-expect_exit space-bad-free 2 "$DR" _sdboot-space-check 1000 nope
-expect_text byte-length-ascii 3 "$DR" _sdboot-byte-length abc
-expect_text byte-length-utf8 3 "$DR" _sdboot-byte-length 'aé'
-expect_text alloc-sum-rounds 16 "$DR" _sdboot-alloc-sum 4 1 3 5
-expect_text alloc-sum-zero 0 "$DR" _sdboot-alloc-sum 4 0
-expect_exit alloc-sum-bad-size 1 "$DR" _sdboot-alloc-sum 4 3 nope
-mkdir -p "$WORK/alloc-root"
-expect_text dir-alloc-empty-tree 12 "$DR" _sdboot-dir-alloc "$WORK/alloc-root" 4 EFI/dr/kernels
-expect_text dir-alloc-shared-parent 16 "$DR" _sdboot-dir-alloc "$WORK/alloc-root" 4 \
-  EFI/dr/kernels EFI/dr/other
-mkdir -p "$WORK/alloc-root/EFI"
-expect_text dir-alloc-existing-parent 8 "$DR" _sdboot-dir-alloc "$WORK/alloc-root" 4 EFI/dr/kernels
-mkdir -p "$WORK/alloc-root/EFI/dr/kernels"
-expect_text dir-alloc-all-existing 0 "$DR" _sdboot-dir-alloc "$WORK/alloc-root" 4 EFI/dr/kernels
-expect_text dir-alloc-loader 8 "$DR" _sdboot-dir-alloc "$WORK/alloc-root" 4 loader/entries
-mkdir -p "$WORK/alloc-root/not-a-dir-parent"
-printf x >"$WORK/alloc-root/not-a-dir-parent/file"
-expect_exit dir-alloc-nondirectory 1 "$DR" _sdboot-dir-alloc "$WORK/alloc-root" 4 \
-  not-a-dir-parent/file/child
-case_count=$((case_count + 1))
-"$DR" _sdboot-space-check 2001 2000 >"$WORK/out" 2>"$WORK/err" || true
-grep -Fq 'need 2001 bytes, only 2000 bytes free' "$WORK/err" \
-  || bad "space-refusal-message: missing need/free explanation"
-case_count=$((case_count + 1))
-"$DR" _sdboot-space-check nope 2000 >"$WORK/out" 2>"$WORK/err" || true
-grep -Fq 'invalid needed-byte count' "$WORK/err" || bad "space-malformed-message: missing field name"
-
-# (e) loader.conf rewrite: one default and timeout 5; every unrelated line survives verbatim.
-LOADER_IN=$(cat <<'EOF'
-# local settings
-default os-old.conf
-timeout 10
-auto-entries yes
-auto-firmware no
-EOF
-)
-LOADER_WANT=$(cat <<'EOF'
-# local settings
-auto-entries yes
-auto-firmware no
-default os-000001-20261118-120000Z-install.conf
-timeout 5
-EOF
-)
-got=$(printf '%s\n' "$LOADER_IN" | "$DR" _sdboot-loader-conf os-000001-20261118-120000Z-install 2>"$WORK/err"); rc=$?
-case_count=$((case_count + 1))
-if [ "$rc" != 0 ] || [ "$got" != "$LOADER_WANT" ]; then
-  echo "FAIL loader-replace: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"; echo "$got"; fail=1
-fi
-
-LOADER_WANT_ADD=$(cat <<'EOF'
-default os-000001-20261118-120000Z-install.conf
-timeout 5
-EOF
-)
-got=$(printf 'timeout 10\n' | "$DR" _sdboot-loader-conf os-000001-20261118-120000Z-install 2>"$WORK/err"); rc=$?
-case_count=$((case_count + 1))
-if [ "$rc" != 0 ] || [ "$got" != "$LOADER_WANT_ADD" ]; then
-  echo "FAIL loader-add-default: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"; echo "$got"; fail=1
-fi
-
-LOADER_WANT_NEW=$(cat <<'EOF'
-default os-000001-20261118-120000Z-install.conf
-timeout 5
-EOF
-)
-got=$(printf '' | "$DR" _sdboot-loader-conf os-000001-20261118-120000Z-install 2>"$WORK/err"); rc=$?
-case_count=$((case_count + 1))
-if [ "$rc" != 0 ] || [ "$got" != "$LOADER_WANT_NEW" ]; then
-  echo "FAIL loader-new: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"; echo "$got"; fail=1
-fi
-
-LOADER_DUP_IN=$(cat <<'EOF'
-default os-a
-keep=first
-default os-b.conf
-timeout 1
-keep=second
-timeout 9
-EOF
-)
-LOADER_DUP_WANT=$(cat <<'EOF'
-keep=first
-keep=second
-default os-new.conf
-timeout 5
-EOF
-)
-got=$(printf '%s\n' "$LOADER_DUP_IN" | "$DR" _sdboot-loader-conf os-new 2>"$WORK/err"); rc=$?
-case_count=$((case_count + 1))
-if [ "$rc" != 0 ] || [ "$got" != "$LOADER_DUP_WANT" ]; then
-  echo "FAIL loader-duplicates: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"; echo "$got"; fail=1
-fi
-
-LOADER_WANT_SUFFIX_ARG=$(cat <<'EOF'
-default os-000001-20261118-120000Z-install.conf
-timeout 5
-EOF
-)
-got=$(printf 'timeout 10\n' | "$DR" _sdboot-loader-conf os-000001-20261118-120000Z-install.conf 2>"$WORK/err"); rc=$?
-case_count=$((case_count + 1))
-if [ "$rc" != 0 ] || [ "$got" != "$LOADER_WANT_SUFFIX_ARG" ]; then
-  echo "FAIL loader-suffix-arg: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"; echo "$got"; fail=1
-fi
-
-LOADER_MIGRATE_IN=$(cat <<'EOF'
-default os-old
-timeout 10
-EOF
-)
-LOADER_MIGRATE_WANT=$(cat <<'EOF'
-default os-000001-20261118-120000Z-install.conf
-timeout 5
-EOF
-)
-got=$(printf '%s\n' "$LOADER_MIGRATE_IN" | "$DR" _sdboot-loader-conf os-000001-20261118-120000Z-install 2>"$WORK/err"); rc=$?
-case_count=$((case_count + 1))
-if [ "$rc" != 0 ] || [ "$got" != "$LOADER_MIGRATE_WANT" ]; then
-  echo "FAIL loader-migrate-suffixless: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"; echo "$got"; fail=1
-fi
-expect_exit loader-bad-default-id 1 bash -c "printf '' | \"\$1\" _sdboot-loader-conf '@os-000001-20261118-120000Z-install'" _ "$DR"
-expect_exit loader-empty-without-default 1 bash -c "printf '' | \"\$1\" _sdboot-loader-conf ''" _ "$DR"
-expect_exit loader-malformed-default-line 1 bash -c "printf 'default\\n' | \"\$1\" _sdboot-loader-conf 'os-000001-20261118-120000Z-install'" _ "$DR"
-expect_exit loader-malformed-timeout-line 1 bash -c "printf 'timeout later\\n' | \"\$1\" _sdboot-loader-conf 'os-000001-20261118-120000Z-install'" _ "$DR"
-
-# (c) only unreferenced ESP kernel directories are pruned; any entry reference protects one.
-REFS_IN=$(cat <<EOF
-$ENTRY_A
-linux /EFI/dr/kernels/initrd-only-i-0123456789ab/initrd.img
-initrd /EFI/dr/kernels/linux-only-l-fedcba987654/vmlinuz
-linux /boot/vmlinuz-foreign
-linux /EFI/dr/kernels/path/extra/vmlinuz
-EOF
-)
-REFS_WANT=$(cat <<EOF
-$ID_A
-initrd-only-i-0123456789ab
-linux-only-l-fedcba987654
-EOF
-)
-got=$(printf '%s\n' "$REFS_IN" | "$DR" _sdboot-entry-refs 2>"$WORK/err"); rc=$?
-case_count=$((case_count + 1))
-if [ "$rc" != 0 ] || [ "$got" != "$REFS_WANT" ]; then
-  echo "FAIL entry-refs: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"; echo "$got"; fail=1
-fi
-
-MULTI_REFS_IN=$(cat <<'EOF'
-linux /EFI/dr/kernels/multi-a-111111111111/vmlinuz /EFI/dr/kernels/multi-b-222222222222/vmlinuz
-initrd /EFI/dr/kernels/multi-b-222222222222/initrd.img /EFI/dr/kernels/multi-c-333333333333/initrd.img
-EOF
-)
-MULTI_REFS_WANT=$(cat <<'EOF'
-multi-a-111111111111
-multi-b-222222222222
-multi-c-333333333333
-EOF
-)
-got=$(printf '%s\n' "$MULTI_REFS_IN" | "$DR" _sdboot-entry-refs 2>"$WORK/err"); rc=$?
-case_count=$((case_count + 1))
-if [ "$rc" != 0 ] || [ "$got" != "$MULTI_REFS_WANT" ]; then
-  echo "FAIL entry-refs-multi-path: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"; echo "$got"; fail=1
-fi
-
-expect_text orphan-basic old-a-aaaaaaaaaaaa "$DR" _sdboot-orphan-kernels \
-  'old-a-aaaaaaaaaaaa,keep-b-bbbbbbbbbbbb' 'old-c-cccccccccccc,keep-b-bbbbbbbbbbbb'
-expect_text orphan-none "" "$DR" _sdboot-orphan-kernels \
-  'keep-a-aaaaaaaaaaaa,keep-b-bbbbbbbbbbbb' 'keep-a-aaaaaaaaaaaa,keep-b-bbbbbbbbbbbb'
-expect_text orphan-all "delete-a-aaaaaaaaaaaa
-delete-b-bbbbbbbbbbbb" "$DR" _sdboot-orphan-kernels \
-  'delete-a-aaaaaaaaaaaa,delete-b-bbbbbbbbbbbb' ''
-expect_text orphan-order "z-old-dddddddddddd
-a-old-eeeeeeeeeeee" "$DR" _sdboot-orphan-kernels \
-  'z-old-dddddddddddd,keep-f-ffffffffffff,a-old-eeeeeeeeeeee' 'keep-f-ffffffffffff'
-expect_exit orphan-bad-existing 1 "$DR" _sdboot-orphan-kernels '../escape' ''
-expect_exit orphan-bad-reference 1 "$DR" _sdboot-orphan-kernels 'safe' '../escape'
-expect_exit entry-refs-empty 0 bash -c "printf 'title only\\n' | \"\$1\" _sdboot-entry-refs" _ "$DR"
-expect_text entry-refs-dedupe "$ID_A" bash -c "printf 'linux /EFI/dr/kernels/$ID_A/vmlinuz\\ninitrd /EFI/dr/kernels/$ID_A/initrd.img\\n' | \"\$1\" _sdboot-entry-refs" _ "$DR"
-
-MIXED_CASE_REF=$(cat <<'EOF'
-LINUX /eFi/DR/KeRnElS/Mixed-Kernel-ABCDEF012345/VMLINUZ
-INITRD /EFI/dr/kernels/mixed-kernel-abcdef012345/INITRD.IMG
-EOF
-)
-MIXED_CASE_REF_WANT=mixed-kernel-abcdef012345
-got=$(printf '%s\n' "$MIXED_CASE_REF" | "$DR" _sdboot-entry-refs 2>"$WORK/err"); rc=$?
-case_count=$((case_count + 1))
-if [ "$rc" != 0 ] || [ "$got" != "$MIXED_CASE_REF_WANT" ]; then
-  echo "FAIL entry-refs-vfat-case: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"; echo "$got"; fail=1
-fi
-expect_text orphan-vfat-case-preserved "Other-b-BBBBBBBBBBBB" "$DR" _sdboot-orphan-kernels \
-  'Keep-A-AAAAAAAAAAAA,Other-b-BBBBBBBBBBBB' 'keep-a-aaaaaaaaaaaa'
-
-# CRLF is legal in BLS text arriving from foreign editors; a retained CR must not hide a referenced kernel.
-printf 'linux /EFI/dr/kernels/crlf-a-111111111111/vmlinuz\r\ninitrd /EFI/dr/kernels/crlf-b-222222222222/initrd.img\r\n' \
-  >"$WORK/crlf-single"
-got=$("$DR" _sdboot-entry-refs <"$WORK/crlf-single" 2>"$WORK/err"); rc=$?
-case_count=$((case_count + 1))
-if [ "$rc" != 0 ] || [ "$got" != $'crlf-a-111111111111\ncrlf-b-222222222222' ]; then
-  echo "FAIL entry-refs-crlf-single: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"; echo "$got"; fail=1
-fi
-
-printf 'linux /EFI/dr/kernels/crlf-a-111111111111/vmlinuz\r\ninitrd /EFI/dr/kernels/crlf-a-111111111111/initrd.img /EFI/dr/kernels/crlf-b-222222222222/initrd.img\r\n' \
-  >"$WORK/crlf-multi"
-got=$("$DR" _sdboot-entry-refs <"$WORK/crlf-multi" 2>"$WORK/err"); rc=$?
-case_count=$((case_count + 1))
-if [ "$rc" != 0 ] || [ "$got" != $'crlf-a-111111111111\ncrlf-b-222222222222' ]; then
-  echo "FAIL entry-refs-crlf-multi: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"; echo "$got"; fail=1
-fi
-
-# Interrupted copies use known dr-state scratch names; cleanup removes those and leaves every unrelated file alone.
-SCRATCH="$WORK/scratch"
-mkdir -p "$SCRATCH/kernels/.tmp.Ab12Cd" "$SCRATCH/kernels/.tmp.not-ours" \
-  "$SCRATCH/kernels/.tmp.Ab12Cd.extra" "$SCRATCH/kernels/os-keep-111111111111" \
-  "$SCRATCH/entries" "$SCRATCH/loader" "$SCRATCH/efi-dr"
-printf x >"$SCRATCH/kernels/.tmp.Ab12Cd/vmlinuz"
-printf x >"$SCRATCH/kernels/.tmp.not-ours/vmlinuz"
-printf x >"$SCRATCH/kernels/.tmp.Ab12Cd.extra/vmlinuz"
-printf x >"$SCRATCH/kernels/.foreign-hidden"
-printf x >"$SCRATCH/kernels/os-keep-111111111111/vmlinuz"
-printf x >"$SCRATCH/kernels/os-keep-111111111111/initrd.img"
-printf x >"$SCRATCH/kernels/os-keep-111111111111/.vmlinuz.tmp.123"
-printf x >"$SCRATCH/kernels/os-keep-111111111111/.vmlinuz.tmp.123.bak"
-printf x >"$SCRATCH/kernels/os-keep-111111111111/.initrd.img.tmp.123"
-printf x >"$SCRATCH/kernels/os-keep-111111111111/.other.tmp.123"
-printf x >"$SCRATCH/entries/.os-old.conf.new.123"
-printf x >"$SCRATCH/entries/.dr-state-entry.new.123"
-printf x >"$SCRATCH/entries/.os-old.conf.new.backup"
-printf x >"$SCRATCH/entries/.dr-state-entry.new.backup"
-printf x >"$SCRATCH/entries/.os-old.tmp.123"
-printf x >"$SCRATCH/entries/.notes"
-printf x >"$SCRATCH/entries/os-old.conf"
-printf x >"$SCRATCH/loader/loader.conf.new.123"
-printf x >"$SCRATCH/loader/loader.conf.new.backup"
-printf x >"$SCRATCH/loader/other.new.123"
-printf x >"$SCRATCH/loader/loader.conf"
-printf x >"$SCRATCH/efi-dr/bootloader.new.123"
-printf x >"$SCRATCH/efi-dr/bootloader.new.backup"
-printf x >"$SCRATCH/efi-dr/bootloader"
-
-expect_exit clean-scratch-requires-test-mode 1 env -u DR_STATE_TEST_MODE "$DR" _sdboot-clean-scratch \
-  "$SCRATCH/kernels" "$SCRATCH/entries" "$SCRATCH/loader/loader.conf" "$SCRATCH/efi-dr/bootloader"
-expect_exit fail-step-requires-test-mode 1 env -u DR_STATE_TEST_MODE DR_STATE_TEST_FAIL_STEP=loader-write \
-  "$DR" gen-menu
-case_count=$((case_count + 1))
-DR_STATE_TEST_MODE=1 DR_STATE_TEST_ROOT="$SCRATCH" "$DR" _sdboot-clean-scratch "$SCRATCH/kernels" "$SCRATCH/entries" \
-  "$SCRATCH/loader/loader.conf" "$SCRATCH/efi-dr/bootloader" >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ]; then
-  bad "clean-scratch: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-else
-  for path in \
-    "$SCRATCH/kernels/.tmp.Ab12Cd" \
-    "$SCRATCH/kernels/os-keep-111111111111/.vmlinuz.tmp.123" \
-    "$SCRATCH/kernels/os-keep-111111111111/.initrd.img.tmp.123" \
-    "$SCRATCH/entries/.os-old.conf.new.123" \
-    "$SCRATCH/entries/.dr-state-entry.new.123" \
-    "$SCRATCH/loader/loader.conf.new.123" \
-    "$SCRATCH/efi-dr/bootloader.new.123"; do
-    [ ! -e "$path" ] || bad "clean-scratch: known scratch survived: $path"
-  done
-  for path in \
-    "$SCRATCH/kernels/.tmp.not-ours" \
-    "$SCRATCH/kernels/.tmp.Ab12Cd.extra" \
-    "$SCRATCH/kernels/.foreign-hidden" \
-    "$SCRATCH/kernels/os-keep-111111111111/vmlinuz" \
-    "$SCRATCH/kernels/os-keep-111111111111/initrd.img" \
-    "$SCRATCH/kernels/os-keep-111111111111/.vmlinuz.tmp.123.bak" \
-    "$SCRATCH/kernels/os-keep-111111111111/.other.tmp.123" \
-    "$SCRATCH/entries/.os-old.conf.new.backup" \
-    "$SCRATCH/entries/.dr-state-entry.new.backup" \
-    "$SCRATCH/entries/.os-old.tmp.123" \
-    "$SCRATCH/entries/.notes" \
-    "$SCRATCH/entries/os-old.conf" \
-    "$SCRATCH/loader/loader.conf.new.backup" \
-    "$SCRATCH/loader/other.new.123" \
-    "$SCRATCH/loader/loader.conf" \
-    "$SCRATCH/efi-dr/bootloader.new.backup" \
-    "$SCRATCH/efi-dr/bootloader"; do
-    [ -e "$path" ] || bad "clean-scratch: unrelated file was removed: $path"
-  done
-fi
 
 # Production workflow: cleanup is called before generation, and foreign look-alikes survive the real command.
 WF_CLEAN="$WORK/wf-clean"
 workflow_fixture "$WF_CLEAN" full
 workflow_two_states "$WF_CLEAN"
-mkdir -p "$WF_CLEAN/esp/EFI/dr/kernels/.tmp.Ab12Cd" "$WF_CLEAN/esp/EFI/dr/kernels/.tmp.not-ours"
-printf x >"$WF_CLEAN/esp/EFI/dr/kernels/.tmp.Ab12Cd/vmlinuz"
+mkdir -p "$WF_CLEAN/esp/EFI/dr/kernels/.dr-state.tmp.copied" \
+  "$WF_CLEAN/esp/EFI/dr/kernels/.tmp.not-ours"
+printf x >"$WF_CLEAN/esp/EFI/dr/kernels/.dr-state.tmp.copied/vmlinuz"
 printf x >"$WF_CLEAN/esp/EFI/dr/kernels/.tmp.not-ours/vmlinuz"
-printf x >"$WF_CLEAN/esp/loader/loader.conf.new.123"
+printf x >"$WF_CLEAN/esp/loader/.dr-state.tmp.loader"
 printf x >"$WF_CLEAN/esp/loader/loader.conf.new.backup"
-printf x >"$WF_CLEAN/esp/loader/entries/.dr-state-entry.new.123"
+printf x >"$WF_CLEAN/esp/loader/entries/.dr-state.tmp.entry"
 printf x >"$WF_CLEAN/esp/loader/entries/.dr-state-entry.new.backup"
-printf x >"$WF_CLEAN/esp/EFI/dr/bootloader.new.123"
+printf x >"$WF_CLEAN/esp/EFI/dr/.dr-state.tmp.marker"
 printf x >"$WF_CLEAN/esp/EFI/dr/bootloader.new.backup"
+printf x >"$WF_CLEAN/top/.dr-state/.dr-state.tmp.control"
+printf x >"$WF_CLEAN/top/.dr-state/.dr-state-entry.new.backup"
 case_count=$((case_count + 1))
 workflow_run "$WF_CLEAN" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
 if [ "$rc" != 0 ]; then
   bad "workflow-cleanup: gen-menu rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
 else
-  for path in "$WF_CLEAN/esp/EFI/dr/kernels/.tmp.Ab12Cd" \
-    "$WF_CLEAN/esp/loader/loader.conf.new.123" \
-    "$WF_CLEAN/esp/loader/entries/.dr-state-entry.new.123" \
-    "$WF_CLEAN/esp/EFI/dr/bootloader.new.123"; do
+  for path in "$WF_CLEAN/esp/EFI/dr/kernels/.dr-state.tmp.copied" \
+    "$WF_CLEAN/esp/loader/.dr-state.tmp.loader" \
+    "$WF_CLEAN/esp/loader/entries/.dr-state.tmp.entry" \
+    "$WF_CLEAN/esp/EFI/dr/.dr-state.tmp.marker" \
+    "$WF_CLEAN/top/.dr-state/.dr-state.tmp.control"; do
     [ ! -e "$path" ] || bad "workflow-cleanup: own scratch survived: $path"
   done
   for path in "$WF_CLEAN/esp/EFI/dr/kernels/.tmp.not-ours" \
     "$WF_CLEAN/esp/loader/loader.conf.new.backup" \
     "$WF_CLEAN/esp/loader/entries/.dr-state-entry.new.backup" \
-    "$WF_CLEAN/esp/EFI/dr/bootloader.new.backup"; do
+    "$WF_CLEAN/esp/EFI/dr/bootloader.new.backup" \
+    "$WF_CLEAN/top/.dr-state/.dr-state-entry.new.backup"; do
     [ -e "$path" ] || bad "workflow-cleanup: foreign look-alike removed: $path"
   done
 fi
@@ -1021,50 +488,6 @@ else
   workflow_assert_entry "$WF_OLDER" @os-000001-20261118-120000Z-install "$KVER_OLD"
 fi
 
-# Entry-id boundary: 240 characters is accepted through a short fixed temp basename; 241 is refused before copying.
-WF_LONG_OK="$WORK/wf-long-ok"
-WF_LONG_BAD="$WORK/wf-long-bad"
-LONG_ID_240=$(state_with_entry_id_length 240)
-LONG_ID_241=$(state_with_entry_id_length 241)
-workflow_fixture "$WF_LONG_OK" full
-workflow_state "$WF_LONG_OK" "$LONG_ID_240"
-case_count=$((case_count + 1))
-workflow_run "$WF_LONG_OK" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ]; then
-  bad "workflow-entry-id-240: gen-menu rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-else
-  workflow_assert_entry "$WF_LONG_OK" "$LONG_ID_240" "$KVER"
-fi
-
-workflow_fixture "$WF_LONG_BAD" full
-workflow_state "$WF_LONG_BAD" "$LONG_ID_241"
-case_count=$((case_count + 1))
-workflow_run "$WF_LONG_BAD" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 1 ]; then
-  bad "workflow-entry-id-241: want exit 1, got $rc"
-elif [ -n "$(find "$WF_LONG_BAD/esp/EFI/dr/kernels" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
-  bad "workflow-entry-id-241: copied a kernel before refusing the entry id"
-elif [ -e "$WF_LONG_BAD/esp/loader/loader.conf" ]; then
-  bad "workflow-entry-id-241: wrote loader.conf before refusing the entry id"
-fi
-
-# Production workflow: a foreign case/extension alias is refused before any desired entry is overwritten.
-WF_COLLISION="$WORK/wf-collision"
-workflow_fixture "$WF_COLLISION" full
-workflow_state "$WF_COLLISION" @os-000001-20261118-120000Z-install
-printf 'title foreign owner\n' >"$WF_COLLISION/esp/loader/entries/OS-000001-20261118-120000Z-INSTALL.CONF"
-case_count=$((case_count + 1))
-workflow_run "$WF_COLLISION" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 1 ]; then
-  bad "workflow-collision: want exit 1, got $rc"
-elif ! grep -Fq 'case-insensitively collides' "$WORK/err"; then
-  bad "workflow-collision: refusal did not explain the case alias"
-elif [ "$(cat "$WF_COLLISION/esp/loader/entries/OS-000001-20261118-120000Z-INSTALL.CONF")" != 'title foreign owner' ]; then
-  bad "workflow-collision: foreign entry was changed"
-elif [ -e "$WF_COLLISION/esp/loader/loader.conf" ]; then
-  bad "workflow-collision: loader.conf was written despite refusal"
-fi
-
 # Production workflow: even an exact filename is refused when it does not carry the dr-state ownership marker.
 WF_FOREIGN="$WORK/wf-foreign-exact"
 workflow_fixture "$WF_FOREIGN" full
@@ -1099,167 +522,19 @@ elif [ "$(awk '$1 == "default" {print $2}' "$WF_DEFAULT/esp/loader/loader.conf")
   bad "workflow-set-default: loader.conf did not select os-000002-20261118-120100Z-apt"
 fi
 
-# A pre-existing state whose STATE name ends in .conf is not selectable. gen-menu warns and keeps every valid state.
-WF_CONF_STATE="$WORK/wf-conf-state"
-workflow_invalid_conf_fixture "$WF_CONF_STATE"
-case_count=$((case_count + 1))
-workflow_run "$WF_CONF_STATE" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ]; then
-  bad "workflow-conf-state-gen-menu: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-elif ! grep -Fq -- '@os-000001-20261118-120000Z-install.conf' "$WORK/err" || ! grep -Fq -- 'ends in .conf' "$WORK/err"; then
-  bad "workflow-conf-state-gen-menu: invalid state was not skipped with a clear warning"
-elif [ -e "$WF_CONF_STATE/esp/loader/entries/os-000001-20261118-120000Z-install.conf.conf" ]; then
-  bad "workflow-conf-state-gen-menu: wrote a BLS entry for the invalid state"
-elif [ ! -s "$WF_CONF_STATE/esp/loader/entries/os-000002-20261118-120100Z-apt.conf" ]; then
-  bad "workflow-conf-state-gen-menu: valid entry was not written"
-elif [ "$(awk '$1 == "default" {print $2}' "$WF_CONF_STATE/esp/loader/loader.conf")" != os-000002-20261118-120100Z-apt.conf ]; then
-  bad "workflow-conf-state-gen-menu: default did not select the valid state"
-else
-  assert_loader_default_exists "$WF_CONF_STATE" "workflow-conf-state-gen-menu"
-fi
-
-case_count=$((case_count + 1))
-workflow_run "$WF_CONF_STATE" 999999999 4096 list >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ]; then
-  bad "workflow-conf-state-list: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-elif ! grep -Fq -- 'ends in .conf' "$WORK/err"; then
-  bad "workflow-conf-state-list: invalid state was not skipped with a clear warning"
-elif grep -Fq -- '@os-000001-20261118-120000Z-install.conf' "$WORK/out"; then
-  bad "workflow-conf-state-list: invalid state was listed as selectable"
-elif ! grep -Fqx -- "@os-000002-20261118-120100Z-apt (default) kernel=$KVER" "$WORK/out"; then
-  bad "workflow-conf-state-list: valid default state was not listed"
-fi
-
-case_count=$((case_count + 1))
-workflow_run "$WF_CONF_STATE" 999999999 4096 set-default @os-000001-20261118-120000Z-install.conf \
-  >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 1 ]; then
-  bad "workflow-conf-state-set-default: want refusal exit 1, got $rc"
-elif ! grep -Fq -- 'ends in .conf' "$WORK/err"; then
-  bad "workflow-conf-state-set-default: refusal did not explain the invalid state name"
-fi
-
-WF_CONF_DEFAULT="$WORK/wf-conf-default"
-workflow_invalid_conf_fixture "$WF_CONF_DEFAULT"
-case_count=$((case_count + 1))
-workflow_run "$WF_CONF_DEFAULT" 999999999 4096 gen-menu --default @os-000001-20261118-120000Z-install.conf \
-  >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 1 ]; then
-  bad "workflow-conf-state-default: want refusal exit 1, got $rc"
-elif ! grep -Fq -- 'ends in .conf' "$WORK/err"; then
-  bad "workflow-conf-state-default: refusal did not explain the invalid state name"
-elif [ -e "$WF_CONF_DEFAULT/esp/loader/loader.conf" ]; then
-  bad "workflow-conf-state-default: loader.conf was written despite refusal"
-fi
-
-WF_CONF_BOOT="$WORK/wf-conf-boot"
-workflow_invalid_conf_fixture "$WF_CONF_BOOT"
-install_recording_bootctl "$WF_CONF_BOOT"
-case_count=$((case_count + 1))
-BOOTCTL_LOG="$WF_CONF_BOOT/bootctl-invalid.log" PATH="$WF_CONF_BOOT/boot-bin:$PATH" \
-  workflow_run "$WF_CONF_BOOT" 999999999 4096 boot-once @os-000001-20261118-120000Z-install.conf \
-  >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 1 ]; then
-  bad "workflow-conf-state-boot-once-invalid: want refusal exit 1, got $rc"
-elif ! grep -Fq -- 'ends in .conf' "$WORK/err"; then
-  bad "workflow-conf-state-boot-once-invalid: refusal did not explain the invalid state name"
-elif [ -e "$WF_CONF_BOOT/bootctl-invalid.log" ]; then
-  bad "workflow-conf-state-boot-once-invalid: bootctl received a selector for the invalid state"
-fi
-
-case_count=$((case_count + 1))
-BOOTCTL_LOG="$WF_CONF_BOOT/bootctl-valid.log" PATH="$WF_CONF_BOOT/boot-bin:$PATH" \
-  workflow_run "$WF_CONF_BOOT" 999999999 4096 boot-once @os-000002-20261118-120100Z-apt \
-  >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ]; then
-  bad "workflow-conf-state-boot-once-valid: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-elif ! grep -Fqx -- 'set-oneshot os-000002-20261118-120100Z-apt.conf' "$WF_CONF_BOOT/bootctl-valid.log"; then
-  bad "workflow-conf-state-boot-once-valid: one-shot did not name the valid entry file"
-elif [ "$(awk '$1 == "default" {print $2}' "$WF_CONF_BOOT/esp/loader/loader.conf")" != os-000002-20261118-120100Z-apt.conf ]; then
-  bad "workflow-conf-state-boot-once-valid: loader.conf did not name the valid entry file"
-elif [ -e "$WF_CONF_BOOT/esp/loader/entries/os-000001-20261118-120000Z-install.conf.conf" ]; then
-  bad "workflow-conf-state-boot-once-valid: invalid state gained a BLS entry"
-fi
-
-# An unknown one-shot may target this stale entry, so keep it until the selector is cleared.
-case_count=$((case_count + 1))
-printf '# generated by dr-state sdboot; do not edit\ntitle stale invalid state\n' \
-  >"$WF_CONF_BOOT/esp/loader/entries/os-000001-20261118-120000Z-install.conf.conf"
-printf 'default os-000001-20261118-120000Z-install.conf.conf\ntimeout 5\n' >"$WF_CONF_BOOT/esp/loader/loader.conf"
-write_sdboot_oneshot "$WF_CONF_BOOT" os-000001-20261118-120000Z-install.conf.conf
-workflow_run "$WF_CONF_BOOT" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ]; then
-  bad "workflow-conf-state-stale-selectors: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-elif ! grep -Fq -- 'loader.conf default' "$WORK/err" || ! grep -Fq -- 'LoaderEntryOneShot' "$WORK/err"; then
-  bad "workflow-conf-state-stale-selectors: invalid selectors were not reported"
-elif [ ! -e "$WF_CONF_BOOT/esp/loader/entries/os-000001-20261118-120000Z-install.conf.conf" ]; then
-  bad "workflow-conf-state-stale-selectors: stale entry named by an unknown one-shot was removed"
-elif [ "$(awk '$1 == "default" {print $2}' "$WF_CONF_BOOT/esp/loader/loader.conf")" != os-000002-20261118-120100Z-apt.conf ]; then
-  bad "workflow-conf-state-stale-selectors: loader.conf did not resolve to the valid entry file"
-else
-  assert_loader_default_exists "$WF_CONF_BOOT" "workflow-conf-state-stale-selectors"
-fi
-rm -f "$WF_CONF_BOOT/sys/firmware/efi/efivars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
-case_count=$((case_count + 1))
-workflow_run "$WF_CONF_BOOT" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ] || [ -e "$WF_CONF_BOOT/esp/loader/entries/os-000001-20261118-120000Z-install.conf.conf" ]; then
-  bad "workflow-conf-state-stale-cleanup-after-selector-clear: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-else
-  assert_loader_default_exists "$WF_CONF_BOOT" "workflow-conf-state-stale-cleanup-after-selector-clear"
-fi
-
-# Existing suffix-less defaults are accepted and migrated to the canonical systemd-boot spelling.
-WF_MIGRATE="$WORK/wf-migrate"
-workflow_fixture "$WF_MIGRATE" full
-workflow_two_states "$WF_MIGRATE"
-printf 'default os-000002-20261118-120100Z-apt\ntimeout 10\n' >"$WF_MIGRATE/esp/loader/loader.conf"
-case_count=$((case_count + 1))
-workflow_run "$WF_MIGRATE" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ]; then
-  bad "workflow-migrate-default: gen-menu rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-elif [ "$(awk '$1 == "default" {print $2}' "$WF_MIGRATE/esp/loader/loader.conf")" != os-000002-20261118-120100Z-apt.conf ]; then
-  bad "workflow-migrate-default: suffix-less default was not migrated"
-else
-  assert_loader_default_exists "$WF_MIGRATE" "workflow-migrate-default"
-fi
-
-# list resolves the default state from either spelling even though new writes always use .conf.
+# list resolves the default state from the canonical systemd-boot entry id.
 WF_LIST="$WORK/wf-list"
 workflow_fixture "$WF_LIST" full
 workflow_two_states "$WF_LIST"
-for default_id in os-000002-20261118-120100Z-apt.conf os-000002-20261118-120100Z-apt; do
-  printf 'default %s\ntimeout 5\n' "$default_id" >"$WF_LIST/esp/loader/loader.conf"
-  case_count=$((case_count + 1))
-  workflow_run "$WF_LIST" 999999999 4096 list >"$WORK/out" 2>"$WORK/err"; rc=$?
-  if [ "$rc" != 0 ]; then
-    bad "workflow-list-default-$default_id: list rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-  elif ! grep -Fqx -- "@os-000002-20261118-120100Z-apt (default) kernel=$KVER" "$WORK/out"; then
-    bad "workflow-list-default-$default_id: list did not mark @os-000002-20261118-120100Z-apt as default"
-  fi
-done
-
-# Snapshot allocation must fail closed without a valid high-water mark and must not make an ID reuse guess.
-for counter_value in missing malformed symlink; do
-  WF_COUNTER="$WORK/wf-counter-$counter_value"
-  workflow_fixture "$WF_COUNTER" full
-  workflow_state "$WF_COUNTER" @os-000001-20261118-120000Z-install
-  install_fake_snapshot_btrfs "$WF_COUNTER"
-  case "$counter_value" in
-    malformed) printf 'not-a-number\n' >"$WF_COUNTER/top/.dr-state/last-sequence" ;;
-    symlink)
-      workflow_remove_state_counter "$WF_COUNTER"
-      printf '000001\n' >"$WF_COUNTER/counter-target"
-      ln -s "$WF_COUNTER/counter-target" "$WF_COUNTER/top/.dr-state/last-sequence" ;;
-    missing) workflow_remove_state_counter "$WF_COUNTER" ;;
-  esac
-  case_count=$((case_count + 1))
-  DR_STATE=@os-000001-20261118-120000Z-install PATH="$WF_COUNTER/btrfs-bin:$PATH" \
-    workflow_run "$WF_COUNTER" 999999999 4096 snapshot --reason before-upgrade \
-    >"$WORK/out" 2>"$WORK/err"; rc=$?
-  if [ "$rc" = 0 ] || find "$WF_COUNTER/top" -mindepth 1 -maxdepth 1 -type d -name '@os-000002-*' -print -quit | grep -q .; then
-    bad "workflow-counter-$counter_value-fails-closed: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-  fi
-done
+printf 'default os-000002-20261118-120100Z-apt.conf\ntimeout 5\n' \
+  >"$WF_LIST/esp/loader/loader.conf"
+case_count=$((case_count + 1))
+workflow_run "$WF_LIST" 999999999 4096 list >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 0 ]; then
+  bad "workflow-list-default: list rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+elif ! grep -Fqx -- "@os-000002-20261118-120100Z-apt (default) kernel=$KVER" "$WORK/out"; then
+  bad "workflow-list-default: list did not mark @os-000002-20261118-120100Z-apt as default"
+fi
 
 # boot-once passes the canonical type-1 entry id (WITH .conf) to the single bootctl writer.
 WF_BOOT_ONCE="$WORK/wf-boot-once"
@@ -1276,17 +551,9 @@ elif ! grep -Fqx -- 'set-oneshot os-000002-20261118-120100Z-apt.conf' "$WF_BOOT_
   bad "workflow-boot-once-conf: bootctl did not receive the suffixed entry id"
 fi
 
-# Prune protects both the default and pending one-shot state from either accepted spelling.
-for form in suffixed suffixless; do
-  WF_PRUNE_FORM="$WORK/wf-prune-form-$form"
-  if [ "$form" = suffixed ]; then
-    workflow_prune_form "$WF_PRUNE_FORM" os-000100-20261118-120000Z-manual-default-conf.conf \
-      os-000100-20261118-120000Z-manual-next-conf.conf "$form"
-  else
-    workflow_prune_form "$WF_PRUNE_FORM" os-000100-20261118-120000Z-manual-default \
-      os-000100-20261118-120000Z-manual-next "$form"
-  fi
-done
+# Prune protects both the default and pending one-shot state.
+workflow_prune_form "$WORK/wf-prune-form" os-000100-20261118-120000Z-manual-default-conf.conf \
+  os-000100-20261118-120000Z-manual-next-conf.conf suffixed
 
 # Prune protects every valid default selector and validates every default/timeout directive before deletion.
 WF_MULTI_DEFAULT="$WORK/wf-prune-multiple-defaults"
@@ -1342,28 +609,8 @@ for malformed in second-default timeout missing empty timeout-only; do
   fi
 done
 
-# A one-shot pending state remains independently of whether its EFI variable carries .conf or the legacy spelling.
+# A one-shot pending state remains even when its entry does not map to an existing state.
 workflow_gen_preserves_oneshot "$WORK/wf-oneshot-suffixed" os-000002-20261118-120100Z-apt.conf suffixed
-workflow_gen_preserves_oneshot "$WORK/wf-oneshot-suffixless" os-000002-20261118-120100Z-apt suffixless
-
-# A selector that predates the guest finding names os-X.conf.conf for the legacy state @os-X.conf. Prune must protect
-# that legacy state instead of deleting the next/default boot target.
-WF_CONF_PRUNE="$WORK/wf-conf-prune"
-workflow_fixture "$WF_CONF_PRUNE" full
-mkdir -p "$WF_CONF_PRUNE/top/@os-000001-20261118-120000Z-install" \
-  "$WF_CONF_PRUNE/top/@os-000100-20261118-120000Z-manual-rollback.conf"
-printf 'default os-000100-20261118-120000Z-manual-rollback.conf.conf\ntimeout 5\n' \
-  >"$WF_CONF_PRUNE/esp/loader/loader.conf"
-case_count=$((case_count + 1))
-DR_STATE=@os-000001-20261118-120000Z-install workflow_run "$WF_CONF_PRUNE" 999999999 4096 prune --keep 0 --dry-run \
-  >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ]; then
-  bad "workflow-conf-state-prune: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-elif ! grep -Fq -- 'protecting legacy default state @os-000100-20261118-120000Z-manual-rollback.conf' "$WORK/err"; then
-  bad "workflow-conf-state-prune: legacy selector target was not protected"
-elif [ -n "$(cat "$WORK/out")" ]; then
-  bad "workflow-conf-state-prune: protected legacy state was marked for deletion"
-fi
 
 # Non-dry prune: the default and one-shot both name a canonical state whose reason slug ends in "conf".
 WF_CONF_PROTECTED="$WORK/wf-conf-protected-prune"
@@ -1387,139 +634,22 @@ elif [ -e "$WF_CONF_PROTECTED/top/@os-000101-20261118-120000Z-manual-unprotected
   bad "workflow-conf-protected-prune: unprotected canonical state survived"
 fi
 
-case_count=$((case_count + 1))
-DR_STATE=@os-000001-20261118-120000Z-install.conf workflow_run "$WF_CONF_PRUNE" 999999999 4096 prune --keep 10 --dry-run \
-  >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 1 ]; then
-  bad "workflow-conf-running-prune: want refusal exit 1, got $rc"
-elif ! grep -Fq -- 'ends in .conf' "$WORK/err"; then
-  bad "workflow-conf-running-prune: refusal did not explain the invalid running state"
-fi
-
-WF_CONF_SNAPSHOT="$WORK/wf-conf-snapshot-source"
-workflow_fixture "$WF_CONF_SNAPSHOT" full
-mkdir -p "$WF_CONF_SNAPSHOT/top/@os-000001-20261118-120000Z-install.conf/boot"
-printf 'kernel\n' >"$WF_CONF_SNAPSHOT/top/@os-000001-20261118-120000Z-install.conf/boot/vmlinuz-$KVER"
-printf 'initrd\n' >"$WF_CONF_SNAPSHOT/top/@os-000001-20261118-120000Z-install.conf/boot/initrd.img-$KVER"
-install_fake_snapshot_btrfs "$WF_CONF_SNAPSHOT"
-case_count=$((case_count + 1))
-DR_STATE=@os-000001-20261118-120000Z-install.conf PATH="$WF_CONF_SNAPSHOT/btrfs-bin:$PATH" \
-  workflow_run "$WF_CONF_SNAPSHOT" 999999999 4096 snapshot --reason manual \
-  >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 1 ]; then
-  bad "workflow-conf-running-snapshot: want refusal exit 1, got $rc"
-elif ! grep -Fq -- 'ends in .conf' "$WORK/err"; then
-  bad "workflow-conf-running-snapshot: refusal did not explain the invalid running state"
-fi
-
-# Interruption ordering: an old default names a stale entry that the next menu would remove. Failure before
-# loader.conf publication must leave that old default entry present; failure after publication must leave the new
-# default entry present. In every case the default named by loader.conf must resolve to a real BLS file.
-for fail_step in entry-write entry-publish loader-write loader-publish stale-delete; do
-  WF_ORDER="$WORK/wf-order-$fail_step"
-  workflow_stale_default_fixture "$WF_ORDER" \
-    || bad "workflow-order-$fail_step: stale-default fixture setup failed"
-  case_count=$((case_count + 1))
-  workflow_run_fail "$WF_ORDER" "$fail_step" gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
-  if [ "$rc" != 1 ]; then
-    bad "workflow-order-$fail_step: want injected failure exit 1, got $rc"
-  fi
-  assert_loader_default_exists "$WF_ORDER" "workflow-order-$fail_step"
-done
-
-WF_LOADER_MV="$WORK/wf-order-loader-publish"
-workflow_stale_default_fixture "$WF_LOADER_MV" \
-  || bad "workflow-order-loader-publish: stale-default fixture setup failed"
-install_failing_loader_mv "$WF_LOADER_MV"
-case_count=$((case_count + 1))
-FAIL_LOADER_CONF="$WF_LOADER_MV/esp/loader/loader.conf" PATH="$WF_LOADER_MV/fail-bin:$PATH" \
-  workflow_run "$WF_LOADER_MV" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 73 ]; then
-  bad "workflow-order-loader-publish: want failing mv exit 73, got $rc"
-fi
-assert_loader_default_exists "$WF_LOADER_MV" "workflow-order-loader-publish"
-
-# Prune publishes a menu without every doomed state before deleting any subvolume. If publication fails, all doomed
-# subvolumes remain intact and their old menu entries remain available.
-WF_PRUNE_ORDER="$WORK/wf-prune-order"
-workflow_prune_delete_fixture "$WF_PRUNE_ORDER" \
-  || bad "workflow-prune-order: stale-default fixture setup failed"
-install_failing_loader_mv "$WF_PRUNE_ORDER"
-install_fake_maintenance_btrfs "$WF_PRUNE_ORDER"
-case_count=$((case_count + 1))
-DR_STATE=@os-000001-20261118-120000Z-install FAIL_LOADER_CONF="$WF_PRUNE_ORDER/esp/loader/loader.conf" \
-  FAKE_BLS_ENTRY_DIR="$WF_PRUNE_ORDER/esp/loader/entries" \
-  PATH="$WF_PRUNE_ORDER/fail-bin:$PATH" \
-  workflow_run "$WF_PRUNE_ORDER" 999999999 4096 prune --keep 0 \
-  >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 73 ]; then
-  bad "workflow-prune-order-loader-publish: want failing mv exit 73, got $rc"
-fi
-for state in @os-000002-20261118-120100Z-apt @os-000003-20261118-120200Z-apt; do
-  [ -d "$WF_PRUNE_ORDER/top/$state" ] || bad "workflow-prune-order-loader-publish: deleted $state before menu publication"
-  [ -s "$WF_PRUNE_ORDER/esp/loader/entries/${state#@}.conf" ] \
-    || bad "workflow-prune-order-loader-publish: removed $state's entry despite failed menu publication"
-done
-
-WF_PRUNE_STALE="$WORK/wf-prune-order-stale"
-workflow_stale_default_fixture "$WF_PRUNE_STALE" \
-  || bad "workflow-prune-order-stale: stale-default fixture setup failed"
-case_count=$((case_count + 1))
-DR_STATE=@os-000001-20261118-120000Z-install workflow_run_fail "$WF_PRUNE_STALE" stale-delete prune --keep 10 \
-  >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 1 ]; then
-  bad "workflow-prune-order-stale: want injected failure exit 1, got $rc"
-fi
-assert_loader_default_exists "$WF_PRUNE_STALE" "workflow-prune-order-stale"
-
-# Integrated near-full workflow: the reported need must include parent/record reserves, and one byte on either side
-# of the actual threshold must fail or succeed before any ESP write.
-WF_SPACE_BASE="$WORK/wf-space-base"
-WF_SPACE_OVER="$WORK/wf-space-over"
-WF_SPACE_UNDER="$WORK/wf-space-under"
-for root in "$WF_SPACE_BASE" "$WF_SPACE_OVER" "$WF_SPACE_UNDER"; do
-  workflow_fixture "$root" sparse
-  workflow_two_states "$root"
-done
-case_count=$((case_count + 1))
-workflow_run "$WF_SPACE_BASE" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
-needed=$(sed -n 's/.*ESP space ok: need \([0-9][0-9]*\) bytes.*/\1/p' "$WORK/err" | tail -n1)
-if [ "$rc" != 0 ] || [ -z "$needed" ]; then
-  bad "workflow-space-baseline: rc=$rc needed='$needed' ($(tr '\n' ' ' <"$WORK/err"))"
-elif [ "$needed" -lt $((64 * 4096)) ]; then
-  bad "workflow-space-reserve: need $needed omits conservative parent/FAT-record reserve"
-else
-  case_count=$((case_count + 1))
-  workflow_run "$WF_SPACE_OVER" "$((needed - 1))" 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
-  if [ "$rc" != 1 ]; then
-    bad "workflow-space-over: want exit 1 at $((needed - 1)) bytes, got $rc"
-  elif [ -e "$WF_SPACE_OVER/esp/loader/loader.conf" ] || [ -e "$WF_SPACE_OVER/esp/EFI/dr/kernels" ]; then
-    bad "workflow-space-over: ESP was changed despite refusal"
-  fi
-  case_count=$((case_count + 1))
-  workflow_run "$WF_SPACE_UNDER" "$needed" 4096 gen-menu >"$WORK/out" 2>"$WORK/err"; rc=$?
-  if [ "$rc" != 0 ]; then
-    bad "workflow-space-under: want exit 0 at $needed bytes, got $rc ($(tr '\n' ' ' <"$WORK/err"))"
-  elif [ ! -s "$WF_SPACE_UNDER/esp/loader/loader.conf" ]; then
-    bad "workflow-space-under: loader.conf missing"
-  fi
-fi
-
 # Production prune route removes an unreferenced ESP kernel after regenerating the BLS entries.
 WF_PRUNE="$WORK/wf-prune"
 workflow_fixture "$WF_PRUNE" full
 workflow_two_states "$WF_PRUNE"
 workflow_run "$WF_PRUNE" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err" \
   || bad "workflow-prune-setup: could not generate the valid default menu"
-mkdir -p "$WF_PRUNE/esp/EFI/dr/kernels/9.9.9+deb13-amd64-deadbeefcafe"
-printf x >"$WF_PRUNE/esp/EFI/dr/kernels/9.9.9+deb13-amd64-deadbeefcafe/vmlinuz"
-printf x >"$WF_PRUNE/esp/EFI/dr/kernels/9.9.9+deb13-amd64-deadbeefcafe/initrd.img"
+orphan=9.9.9+deb13-amd64-deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+mkdir -p "$WF_PRUNE/esp/EFI/dr/kernels/$orphan"
+printf x >"$WF_PRUNE/esp/EFI/dr/kernels/$orphan/vmlinuz"
+printf x >"$WF_PRUNE/esp/EFI/dr/kernels/$orphan/initrd.img"
 case_count=$((case_count + 1))
 DR_STATE=@os-000001-20261118-120000Z-install workflow_run "$WF_PRUNE" 999999999 4096 prune --keep 10 \
   >"$WORK/out" 2>"$WORK/err"; rc=$?
 if [ "$rc" != 0 ]; then
   bad "workflow-prune: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-elif [ -e "$WF_PRUNE/esp/EFI/dr/kernels/9.9.9+deb13-amd64-deadbeefcafe" ]; then
+elif [ -e "$WF_PRUNE/esp/EFI/dr/kernels/$orphan" ]; then
   bad "workflow-prune: unreferenced kernel directory survived"
 else
   assert_loader_default_exists "$WF_PRUNE" "workflow-prune-success"
@@ -1532,20 +662,21 @@ workflow_fixture "$WF_PRUNE_CASE" full
 workflow_two_states "$WF_PRUNE_CASE"
 workflow_run "$WF_PRUNE_CASE" 999999999 4096 gen-menu >"$WORK/out" 2>"$WORK/err" \
   || bad "workflow-prune-vfat-case: menu setup failed"
-mkdir -p "$WF_PRUNE_CASE/esp/EFI/dr/kernels/Foreign-Kernel-AAAAAAAAAAAA"
-printf 'foreign kernel\n' >"$WF_PRUNE_CASE/esp/EFI/dr/kernels/Foreign-Kernel-AAAAAAAAAAAA/vmlinuz"
-printf 'foreign initrd\n' >"$WF_PRUNE_CASE/esp/EFI/dr/kernels/Foreign-Kernel-AAAAAAAAAAAA/initrd.img"
+foreign_pair=Foreign-Kernel-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+mkdir -p "$WF_PRUNE_CASE/esp/EFI/dr/kernels/$foreign_pair"
+printf 'foreign kernel\n' >"$WF_PRUNE_CASE/esp/EFI/dr/kernels/$foreign_pair/vmlinuz"
+printf 'foreign initrd\n' >"$WF_PRUNE_CASE/esp/EFI/dr/kernels/$foreign_pair/initrd.img"
 cat >"$WF_PRUNE_CASE/esp/loader/entries/foreign-entry.CONF" <<'EOF'
 title foreign entry
-linux /efi/DR/KERNELS/foreign-kernel-aaaaaaaaaaaa/VMLINUZ
-initrd /EFI/dr/kernels/FOREIGN-KERNEL-AAAAAAAAAAAA/INITRD.IMG
+linux /efi/DR/KERNELS/foreign-kernel-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/VMLINUZ
+initrd /EFI/dr/kernels/FOREIGN-KERNEL-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/INITRD.IMG
 EOF
 case_count=$((case_count + 1))
 DR_STATE=@os-000001-20261118-120000Z-install workflow_run "$WF_PRUNE_CASE" 999999999 4096 prune --keep 10 \
   >"$WORK/out" 2>"$WORK/err"; rc=$?
 if [ "$rc" != 0 ]; then
   bad "workflow-prune-vfat-case: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-elif [ ! -d "$WF_PRUNE_CASE/esp/EFI/dr/kernels/Foreign-Kernel-AAAAAAAAAAAA" ]; then
+elif [ ! -d "$WF_PRUNE_CASE/esp/EFI/dr/kernels/$foreign_pair" ]; then
   bad "workflow-prune-vfat-case: removed a kernel referenced by a foreign uppercase .CONF entry"
 elif [ ! -s "$WF_PRUNE_CASE/esp/loader/entries/foreign-entry.CONF" ]; then
   bad "workflow-prune-vfat-case: removed a foreign BLS entry"
@@ -1646,15 +777,6 @@ if [ "$rc" = 0 ] || [ ! -d "$WF_DELETE_BAD/top/@os-000001-20261118-120000Z-insta
   bad "workflow-delete-invalid-selector: rc=$rc target/menu changed ($(tr '\n' ' ' <"$WORK/err"))"
 fi
 
-# Publish-before-delete means an ESP/menu failure keeps the subvolume intact.
-case_count=$((case_count + 1))
-DR_STATE=@os-000100-20261118-120000Z-manual-recovered \
-  PATH="$WF_DELETE/btrfs-bin:$PATH" workflow_run_fail "$WF_DELETE" loader-publish delete @os-000001-20261118-120000Z-install --yes \
-  >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" = 0 ] || [ ! -d "$WF_DELETE/top/@os-000001-20261118-120000Z-install" ]; then
-  bad "workflow-delete-menu-failure: rc=$rc state was removed despite menu failure"
-fi
-
 # Successful deletion removes only the requested OS subvolume and its now-unused BLS/kernel files.
 case_count=$((case_count + 1))
 DR_STATE=@os-000100-20261118-120000Z-manual-recovered \
@@ -1751,7 +873,7 @@ boot_agnostic_cases() { # TAG BINARY MARKER
     fi
   fi
 
-  if [ "$tag" = python ]; then
+  if [ "$marker" = grub ]; then
     # A configured GRUB default must survive the next snapshot's publication.
     root="$WORK/bag-$tag-configured-default"
     workflow_fixture "$root" full
@@ -1841,8 +963,8 @@ boot_agnostic_cases() { # TAG BINARY MARKER
   FIXTURE_BOOT=$prior_marker
 }
 
-boot_agnostic_cases bash "$DR_BASH" systemd-boot
 boot_agnostic_cases python "$DR_PY" grub
+boot_agnostic_cases systemd-boot "$DR_PY" systemd-boot
 
 # D9 replacements: unmanaged objects are listed, never published, and never mutation targets.
 DR="$DR_PY"
@@ -1880,9 +1002,6 @@ if [ "$rc" != 3 ] || ! grep -Fq 'unmanaged' "$WORK/err" \
   || find "$WF_UNMANAGED_RUN/top" -mindepth 1 -maxdepth 1 -name '@os-000002-*' -print -quit | grep -q .; then
   bad "workflow-unmanaged-running-snapshot: understood running state or changed storage (rc=$rc)"
 fi
-DR="$DR_BASH"
-FIXTURE_BOOT=systemd-boot
-
 if [ "$fail" = 0 ]; then
   echo "test-dr-state-sdboot: OK ($case_count cases)"
 fi
