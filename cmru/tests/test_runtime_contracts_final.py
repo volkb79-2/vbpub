@@ -189,11 +189,11 @@ def test_transaction_release_records_reject_non_string_result_shapes(tmp_path):
 def test_version_file_and_counter_tag_failures_are_not_reported_as_success(tmp_path):
     (tmp_path / "VERSION").write_text("1.0.0\n", encoding="utf-8")
     responses = [SimpleNamespace(returncode=0), SimpleNamespace(returncode=0), SimpleNamespace(returncode=2)]
-    with patch.object(version.subprocess, "run", side_effect=responses):
+    with patch.object(version, "run_process", side_effect=responses):
         with pytest.raises(SystemExit) as error:
             version._apply_strategy_file(tmp_path, "demo-v", "1.1.0", "VERSION", tmp_path)
         assert error.value.code == 1
-    with patch.object(version.subprocess, "run", side_effect=[SimpleNamespace(returncode=0, stdout=""), SimpleNamespace(returncode=2)]):
+    with patch.object(version, "run_process", side_effect=[SimpleNamespace(returncode=0, stdout=""), SimpleNamespace(returncode=2)]):
         with pytest.raises(SystemExit) as error:
             version._apply_strategy_counter(tmp_path, "demo-v", "1.0.0")
         assert error.value.code == 1

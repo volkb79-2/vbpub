@@ -187,7 +187,9 @@ The target bootloader changes how each OS state is made bootable:
   backend in `/etc/dr-state.conf` and an ESP marker. Since systemd-boot cannot
   read kernels from btrfs, `dr-state` copies each bootable state's kernel and
   initrd to the ESP and writes Boot Loader Specification entries. The apt and
-  `zz-dr-state` kernel hooks are shared with GRUB. The installer diverts
+  `zz-dr-state` kernel hooks ship as root-owned files under `files/etc/` and are
+  shared with GRUB, but activate only after the initial state and default menu
+  exist. The installer diverts
   Debian's `/etc/kernel/postinst.d/zz-systemd-boot` and
   `/etc/kernel/postrm.d/zz-systemd-boot` scripts into
   `/etc/kernel/dr-disabled/`, outside both hook directories, so neither
@@ -268,7 +270,7 @@ automation, where cloud-init uses it to start the builder install.
 |---|---|
 | M2 ISO construction and config flow | `iso/build-iso.sh`, `iso/dr-autoinstall`, `iso/dr-plan`, `iso/build-cidata.sh` |
 | Shared target installation and layout | `poc/install-btrfs.sh` |
-| Snapshots, menus, boot-once, defaults, deletion, pruning | `poc/dr-state` |
+| Snapshots, menus, boot-once, defaults, deletion, pruning | `files/usr/local/sbin/dr-state` and `files/usr/local/lib/dr-state/dr_state/` |
 | Recovery contract, destructive acceptance scenarios, and recovery boundary | [ROLLBACK-RECOVERY.md](ROLLBACK-RECOVERY.md) |
 | Cloud-image NoCloud builder | `poc/build-seed.sh`, `poc/seed/user-data`, `poc/seed/meta-data` |
 | M2 guest evidence and limits | [RESULTS-M2-UNATTENDED-ISO-2026-11-18.md](RESULTS-M2-UNATTENDED-ISO-2026-11-18.md) |

@@ -21,6 +21,7 @@ from tls_edge_cli.config import (
 )
 from tls_edge_cli.contract import (
     consumer_contract,
+    consumer_env_duplicates,
     consumer_env_drift,
     consumer_env_drift_message,
 )
@@ -56,12 +57,13 @@ def _finding(config: dict[str, Any]) -> str | None:
                 raise ConfigError(
                     f"cannot read consumer environment {env_path}: {exc}"
                 ) from exc
-            drift = consumer_env_drift(
-                consumer_contract(effective["tls_edge"]),
-                existing,
-            )
+            contract = consumer_contract(effective["tls_edge"])
+            drift = consumer_env_drift(contract, existing)
             if drift:
-                raise ConfigError(consumer_env_drift_message(drift))
+                duplicates = consumer_env_duplicates(contract, existing)
+                raise ConfigError(
+                    consumer_env_drift_message(drift, duplicates=duplicates)
+                )
     except ConfigError as exc:
         return str(exc)
     return None

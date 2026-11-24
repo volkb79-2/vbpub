@@ -1,0 +1,5 @@
+#!/bin/sh
+# regenerate the ESP boot menu after a kernel is installed or removed
+[ -x /usr/local/sbin/dr-state ] || exit 0
+/usr/local/sbin/dr-state gen-menu || echo "dr-state: gen-menu failed, boot menu not refreshed" >&2
+exit 0

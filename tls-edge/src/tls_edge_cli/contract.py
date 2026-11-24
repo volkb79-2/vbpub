@@ -103,14 +103,22 @@ def _checked_values(contract: Mapping[str, str]) -> dict[str, str]:
     return values
 
 
+def _owned_key(line: str) -> str | None:
+    candidate = line.lstrip()
+    if candidate.startswith("export") and candidate[6:7].isspace():
+        candidate = candidate[6:].lstrip()
+    key, separator, _value = candidate.partition("=")
+    return key.rstrip() if separator else None
+
+
 def render_env(contract: Mapping[str, str], existing: str = "") -> str:
     """Rewrite owned keys while retaining every other line and its position."""
     values = _checked_values(contract)
     result: list[str] = []
     written: set[str] = set()
     for line in existing.splitlines():
-        key, separator, _value = line.partition("=")
-        if separator and key in values:
+        key = _owned_key(line)
+        if key is not None and key in values:
             if key not in written:
                 result.append(f"{key}={values[key]}")
                 written.add(key)
@@ -134,9 +142,10 @@ def consumer_env_drift(
     actual: dict[str, str] = {}
     duplicates: set[str] = set()
     for line in existing.splitlines():
-        key, separator, value = line.partition("=")
-        if not separator or key not in values:
+        key = _owned_key(line)
+        if key is None or key not in values:
             continue
+        _, _, value = line.partition("=")
         if key in actual:
             duplicates.add(key)
         actual[key] = value
@@ -147,9 +156,38 @@ def consumer_env_drift(
     ]
 
 
-def consumer_env_drift_message(keys: Sequence[str]) -> str:
+def consumer_env_duplicates(
+    contract: Mapping[str, str],
+    existing: str,
+) -> list[str]:
+    """Name owned keys whose every occurrence has the canonical value."""
+    values = _checked_values(contract)
+    observed: dict[str, list[str]] = {}
+    for line in existing.splitlines():
+        key = _owned_key(line)
+        if key is None or key not in values:
+            continue
+        observed.setdefault(key, []).append(line.partition("=")[2])
+    return [
+        key
+        for key in CONTRACT_KEYS
+        if len(observed.get(key, ())) > 1
+        and set(observed[key]) == {values[key]}
+    ]
+
+
+def consumer_env_drift_message(
+    keys: Sequence[str],
+    *,
+    duplicates: Sequence[str] = (),
+) -> str:
     """Return the shared actionable refusal for one or more drifted keys."""
     names = ", ".join(keys)
+    if len(keys) == 1 and keys[0] in duplicates:
+        return (
+            f"consumer.env {names} is duplicated; "
+            "run tls-edge configure to re-sync"
+        )
     verb = "differs" if len(keys) == 1 else "differ"
     return (
         f"consumer.env {names} {verb} from the site override; "

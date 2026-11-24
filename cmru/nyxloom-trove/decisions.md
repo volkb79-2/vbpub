@@ -38,7 +38,7 @@ here.
 - **Date / decided by:** 2026-11-22, Codex Sol xhigh design review at operator request.
 - **Decision:** `steps.clean` gains the shared finite no-progress watchdog, but preserves its
   existing cleanup-specific environment, quiet-output policy, command/cwd mapping, and
-  `repo_root/logs` behavior. In P7.1, parse `steps.clean` with the project `[runner]` default
+  `repo_root/logs` behavior. Parse `steps.clean` with the project `[runner]` default
   and step override, then start from the existing
   `_build_step_config("clean", project.steps["clean"])` and copy only the resolved finite
   timeout and its winning source key from `project.runner_steps["clean"]`.
