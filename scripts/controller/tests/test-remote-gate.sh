@@ -67,7 +67,7 @@ os.makedirs(os.path.join(d, "artifacts"))
 open(os.path.join(d, "job.log"), "w").write(f"checkout /x at {sha}\n")
 open(os.path.join(d, "lane.log"), "w").write(os.environ.get("FAKE_LANE_LOG", "lane ok\n"))
 open(os.path.join(d, "artifacts", "verdict-a.json"), "w").write("{}")
-print("run-gate: lane suite verdict PASS")
+print(os.environ.get("FAKE_VERDICT_LINE", "run-gate: lane suite verdict PASS"))
 sys.exit(int(os.environ.get("FAKE_RG_RC", "0")))
 PY
 chmod +x "$ROOT/bin/api-check" "$ROOT/bin/api-check-alt" "$ROOT/bin/fake-ssh"
@@ -316,6 +316,29 @@ contains "$ROOT/nossh.out" 'slice_oom_kill_delta=-1' 'an unreadable counter is r
 reset_logs
 FAKE_LANE_LOG=$'task killed: OOMKilled\n' FAKE_RG_RC=1 rg gate-a proj small "$SHA" > "$ROOT/laneoom.out" 2>&1; rc=$?
 [[ $rc == 76 ]] || fail "an OOM marker in the lane log exited $rc, expected 76"
+# a run-gate budget kill (BUDGET_EXCEEDED, exit_code 137) is a budget verdict, not an OOM: the verdict text wins over delta and exit code
+BUDGET_LINE='run-gate: lane suite verdict BUDGET_EXCEEDED; exit_code 137'
+reset_logs
+FAKE_VERDICT_LINE=$BUDGET_LINE FAKE_LANE_LOG=$'bash: line 1: 4242 Killed  exit_code 137\n' OOM_STEP=0 FAKE_RG_RC=137 rg gate-a proj small "$SHA" > "$ROOT/budget.out" 2>&1; rc=$?
+[[ $rc == 137 ]] || fail "a budget kill exited $rc, expected the lane's own 137"
+not_contains "$ROOT/budget.out" 'INCONCLUSIVE-OOM' 'a budget kill is not an OOM verdict'
+contains "$ROOT/budget.out" 'verdict BUDGET_EXCEEDED' 'the budget verdict line is reported'
+reset_logs
+FAKE_VERDICT_LINE=$BUDGET_LINE OOM_STEP=2 FAKE_RG_RC=137 rg gate-a proj small "$SHA" > "$ROOT/budgetoom.out" 2>&1; rc=$?
+[[ $rc == 137 ]] || fail "BUDGET_EXCEEDED with a slice OOM delta exited $rc, expected 137 (the verdict text wins)"
+not_contains "$ROOT/budgetoom.out" 'INCONCLUSIVE-OOM' 'BUDGET_EXCEEDED beats the slice OOM delta'
+reset_logs
+FAKE_VERDICT_LINE='run-gate: lane suite verdict FAIL' OOM_STEP=2 FAKE_RG_RC=1 rg gate-a proj small "$SHA" > "$ROOT/realoom.out" 2>&1; rc=$?
+[[ $rc == 76 ]] || fail "a real OOM (delta 2, verdict FAIL) exited $rc, expected 76"
+contains "$ROOT/realoom.out" 'INCONCLUSIVE-OOM' 'a real OOM stays INCONCLUSIVE-OOM'
+reset_logs
+FAKE_VERDICT_LINE='run-gate: lane suite verdict FAIL' FAKE_LANE_LOG=$'task killed: OOMKilled\n' OOM_STEP=0 FAKE_RG_RC=1 rg gate-a proj small "$SHA" > "$ROOT/markeroom.out" 2>&1; rc=$?
+[[ $rc == 76 ]] || fail "OOMKilled in the lane log (delta 0, verdict FAIL) exited $rc, expected 76"
+contains "$ROOT/markeroom.out" 'INCONCLUSIVE-OOM' 'the OOMKilled marker stays INCONCLUSIVE-OOM'
+reset_logs
+FAKE_LANE_LOG=$'bash: 4242 Killed\nexit_code 137\n' OOM_STEP=0 FAKE_RG_RC=137 rg gate-a proj small "$SHA" > "$ROOT/bare137.out" 2>&1; rc=$?
+[[ $rc == 137 ]] || fail "a bare exit 137 / Killed in the lane log exited $rc, expected 137"
+not_contains "$ROOT/bare137.out" 'INCONCLUSIVE-OOM' 'a bare exit 137 or Killed is not an OOM on its own'
 reset_logs
 FAKE_RG_RC=75 rg gate-a proj small "$SHA" > /dev/null 2>&1; rc=$?
 [[ $rc == 75 ]] || fail "the runner's PSI refusal (75) must pass through, got $rc"

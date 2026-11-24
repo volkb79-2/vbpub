@@ -6,6 +6,13 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Suite budget and remote-gate OOM classification (P-plat-23)
+- `run-gate.toml` `[lanes.suite]` budget 30m -> 50m (measured 29m57s wall on r1002, x 1.6).
+- `remote-gate.sh`: a run-gate `BUDGET_EXCEEDED` verdict is never `INCONCLUSIVE-OOM`
+  (run-gate's own budget kill also exits 137), and the run keeps the lane's own code
+  instead of 76. Otherwise rc 76 needs a slice OOM delta above 0 or `OOMKilled`/`oom-kill`
+  in the lane log; a bare `exit 137` or `Killed` no longer counts.
+
 ### Launcher must-fixes (CTL-38, CTL-42 part 1)
 - CTL-38: every Codex exec path — new, manual resume, and automatic
   continuation — now derives `<run>.last.txt` from the last completed

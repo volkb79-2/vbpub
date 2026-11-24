@@ -15,7 +15,9 @@
 #   5. Writes $CONTROLLER_LOGS_DIR/<run-name>.log (lane log + a binding line `run-gate.commit=<full sha>`), copies the
 #      verdict JSON files next to it, prints the final verdict line and the commit binding, exits with the lane's code.
 # Exit codes: the lane's exit code; 2 usage/refusal; 3 identity or transport failure; 75 PSI refused or slots busy;
-# 76 INCONCLUSIVE-OOM (an OOM kill in the host's gate slice during the run: not a lane FAIL).
+# 76 INCONCLUSIVE-OOM (an OOM kill in the host's gate slice during the run, or OOMKilled/oom-kill in the lane log: not a lane
+#    FAIL). A run-gate verdict BUDGET_EXCEEDED is never 76 (its own kill also exits 137): it keeps the lane's code. A bare
+#    `exit 137` or `Killed` in the lane log no longer counts as an OOM.
 # Never prints secrets. Host, SSH key, pin and identity command come only from the private host table (README, docs/CONFIGURATION.md).
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -290,7 +292,9 @@ echo "commit:   run-gate.commit=$sha  (checkout verified on host: ${checked:-0} 
 echo "verdict:  ${vline:-NO VERDICT LINE (see the log and $run_dir/result.json)}"
 echo "admission: weight=${weight}MiB slots=${#held[@]}/$slots slice_oom_kill_delta=$oomd"
 echo "remote-gate: admission weight=${weight}MiB slots=${#held[@]}/$slots slice_oom_kill_delta=$oomd" >> "$final"
-if (( rc != 0 )) && { (( oomd > 0 )) || grep -q -E 'OOMKilled|oom-kill|exit(_code)? 137|Killed' "$run_dir/lane.log" 2>/dev/null; }; then
+# A budget verdict is run-gate's own kill (exit 137 as well): the verdict text wins over the exit code and the slice delta.
+if (( rc != 0 )) && [[ $vline != *BUDGET_EXCEEDED* ]] \
+   && { (( oomd > 0 )) || grep -q -E 'OOMKilled|oom-kill' "$run_dir/lane.log" 2>/dev/null; }; then
   echo 'verdict:  INCONCLUSIVE-OOM (an OOM kill happened in the host gate slice during this run; NOT a lane FAIL, retry with fewer neighbours)'
   echo 'remote-gate: INCONCLUSIVE-OOM' >> "$final"
   exit 76
