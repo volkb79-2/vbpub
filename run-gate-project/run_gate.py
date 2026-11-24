@@ -17,7 +17,7 @@ See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 # Public CLI distribution: the installed wheel's metadata supplies its version.
 # __revision__ is retained only for persisted-record provenance.
 # rev 65: send single-line JSON over the newline-framed cgprofile control socket
-__revision__ = 71  # rev 71: RG-294/RG-295 one parent-owned scratch root per run, pruned after unclean death
+__revision__ = 72  # rev 72: RG-294/RG-295 scratch owner files and cross-project prune safety
 # rev 66: preflight observer contract before private R2 lanes
 # rev 64: refuse failed ctl carriers and foreign watch verdicts
 # Rev 63 holds requested exec/bare-host children behind a ready/continue
@@ -227,6 +227,8 @@ SCRATCH_RUN_ID_RE = re.compile(r"[1-9][0-9]*-[0-9]{16,}-[0-9a-f]{16}")
 SCRATCH_LEGACY_PREFIXES = ("run-gate-gitcfg-", "run-gate-test-")
 SCRATCH_TEMP_PREFIX = "run-gate-"
 SCRATCH_STORE_TMP = "tmp"
+SCRATCH_OWNER_NAME = ".owner.json"
+SCRATCH_OWNER_SCHEMA = 1
 SCRATCH_PRUNE_FALLBACK_SECONDS = DEFAULT_LANE_DEADLINE_SECONDS
 
 
@@ -11225,6 +11227,21 @@ def _scratch_live_run_ids(project_dir: Path, proc_root: Path
     return ids
 
 
+def _scratch_owner_liveness(root: Path, proc_root: Path) -> str | None:
+    """Read one root's owner claim; None means unreadable, not dead."""
+    try:
+        path = root / SCRATCH_OWNER_NAME
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != SCRATCH_OWNER_SCHEMA:
+        return None
+    return _status_inflight_owner_liveness(data, proc_root)
+
+
 def _scratch_prune_category(area: str, name: str) -> tuple[str, str | None] | None:
     prefix = next((item for item in SCRATCH_LEGACY_PREFIXES
                    if name.startswith(item)), None)
@@ -11233,7 +11250,8 @@ def _scratch_prune_category(area: str, name: str) -> tuple[str, str | None] | No
     if area == "repo-tmp":
         return (f"{SCRATCH_STORE_TMP}/<run-id>", name) \
             if SCRATCH_RUN_ID_RE.fullmatch(name) else None
-    if area == "system-temp" and name.startswith(SCRATCH_TEMP_PREFIX):
+    if area in ("repo-direct", "system-temp") \
+            and name.startswith(SCRATCH_TEMP_PREFIX):
         run_id = name.removeprefix(SCRATCH_TEMP_PREFIX)
         return ("run-gate-<run-id>", run_id) \
             if SCRATCH_RUN_ID_RE.fullmatch(run_id) else None
@@ -11261,7 +11279,7 @@ def prune_run_gate_scratch(repo: Path, project_dir: Path, lanes: dict,
         ("repo-tmp", store / SCRATCH_STORE_TMP, ("tmp/<run-id>",)),
         ("system-temp", temp_dir, legacy + ("run-gate-<run-id>",)),
     )
-    counts = {(str(base), prefix): [0, 0, 0, 0]
+    counts = {(str(base), prefix): [0, 0, 0, 0, 0]
               for _area, base, prefixes in areas
               for prefix in prefixes}
     print(f"{PROG}: doctor --prune: scratch store {store}; "
@@ -11269,7 +11287,7 @@ def prune_run_gate_scratch(repo: Path, project_dir: Path, lanes: dict,
           f"({threshold_source}); dry-run={str(dry_run).lower()}", flush=True)
     for area, base, _prefixes in areas:
         try:
-            fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY)
         except FileNotFoundError:
             continue
         except OSError as exc:
@@ -11283,7 +11301,7 @@ def prune_run_gate_scratch(repo: Path, project_dir: Path, lanes: dict,
                     continue
                 label, run_id = category
                 key = (str(base), label)
-                counts.setdefault(key, [0, 0, 0, 0])
+                counts.setdefault(key, [0, 0, 0, 0, 0])
                 path = base / name
                 try:
                     info = os.stat(name, dir_fd=fd, follow_symlinks=False)
@@ -11297,6 +11315,11 @@ def prune_run_gate_scratch(repo: Path, project_dir: Path, lanes: dict,
                     print(f"{PROG}: doctor --prune: WARNING: refusing "
                           f"non-directory scratch entry {path}",
                           file=sys.stderr, flush=True)
+                    continue
+                owner_state = (_scratch_owner_liveness(path, proc_root)
+                               if run_id is not None else None)
+                if owner_state is not None and owner_state != "dead":
+                    counts[key][1] += 1
                     continue
                 if run_id is not None and run_id in live_ids:
                     counts[key][1] += 1
@@ -11314,19 +11337,23 @@ def prune_run_gate_scratch(repo: Path, project_dir: Path, lanes: dict,
                 except FileNotFoundError:
                     continue
                 except OSError as exc:
-                    fail_infra(f"cannot remove scratch entry {path}: {exc}")
+                    counts[key][4] += 1
+                    print(f"{PROG}: doctor --prune: WARNING: cannot remove "
+                          f"{path}: {exc}", file=sys.stderr, flush=True)
+                    continue
                 counts[key][0] += 1
                 print(f"{PROG}: doctor --prune: removed {path}", flush=True)
         finally:
             os.close(fd)
-    for (base, prefix), (removed, live, young, would_remove) in sorted(
-            counts.items()):
+    for (base, prefix), (removed, live, young, would_remove, errors) in \
+            sorted(counts.items()):
         removed_text = f"removed {removed}"
         if dry_run:
             removed_text += f" (dry-run would remove {would_remove})"
         print(f"{PROG}: doctor --prune: {base}: {prefix}: {removed_text}, "
-              f"kept-live {live}, kept-young {young}", flush=True)
-    return 0
+              f"kept-live {live}, kept-young {young}, error {errors}",
+              flush=True)
+    return 1 if any(item[4] for item in counts.values()) else 0
 
 
 def cmd_doctor_prune(lanes: dict, project_dir: Path, cfg_path: Path,
@@ -15873,12 +15900,23 @@ def _end_scratch_run() -> None:
 
 def _ensure_scratch_base(path: Path) -> None:
     try:
-        info = path.lstat()
+        info = path.stat()
     except FileNotFoundError:
-        path.mkdir(parents=True, mode=0o700, exist_ok=True)
-        info = path.lstat()
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        path.mkdir(parents=True, exist_ok=True)
+        info = path.stat()
+    if not stat.S_ISDIR(info.st_mode):
         fail_infra(f"scratch base {path} is not a real directory")
+
+
+def _write_scratch_owner(root: Path, state: _ScratchRun) -> None:
+    _write_json_atomic({
+        "schema": SCRATCH_OWNER_SCHEMA,
+        "scratch_run_id": state.run_id,
+        "owner_pid": os.getpid(),
+        "owner_start": process_start_ticks(os.getpid()),
+        "boot_id": boot_id(),
+        "pid_ns": pid_ns_inode(),
+    }, root / SCRATCH_OWNER_NAME)
 
 
 def _scratch_root(repo: Path, state: _ScratchRun) -> tuple[Path, Path]:
@@ -15901,6 +15939,7 @@ def _scratch_root(repo: Path, state: _ScratchRun) -> tuple[Path, Path]:
             candidate.mkdir(mode=0o700)
             created = True
             candidate.chmod(0o700)
+            _write_scratch_owner(candidate, state)
             physical = physical_path(candidate)
         except (OSError, GateError) as exc:
             last = str(exc)
@@ -15930,30 +15969,10 @@ def _cleanup_scratch_run(state: _ScratchRun) -> None:
               file=sys.stderr, flush=True)
 
 
-def _direct_private_dir(repo: Path) -> tuple[Path, Path]:
-    last = "no candidate directory"
-    for fallback, base in ((False, Path(tempfile.gettempdir())),
-                           (True, repo / ".run-gate")):
-        made = None
-        try:
-            if fallback:
-                _ensure_scratch_base(base)
-            made = Path(tempfile.mkdtemp(
-                prefix="run-gate-gitcfg-", dir=base))
-            made.chmod(0o700)
-            return made, physical_path(made)
-        except (OSError, GateError) as exc:
-            last = str(exc)
-            if made is not None:
-                shutil.rmtree(made, ignore_errors=True)
-    fail_infra(f"no host-visible private directory for the sanitized git "
-               f"config: {last}")
-
-
 def _make_private_dir(repo: Path) -> tuple[Path, Path]:
     state = _active_scratch_run()
     if state is None:
-        return _direct_private_dir(repo)
+        raise RuntimeError("run-gate scratch allocation outside a run")
     root, _root_physical = _scratch_root(repo, state)
     made = None
     try:
@@ -20911,6 +20930,9 @@ def _dispatch(argv: list[str] | None = None, *,
                 code = cmd_doctor_prune(
                     lanes, project_dir, cfg_path, args.older_than,
                     args.dry_run)
+                if code == 1:
+                    return LaneResult(
+                        "FAIL", reason="scratch-prune-errors")
                 return operation_result(code, "doctor-prune-failed")
             # RG-9 preflight — reads the world, runs nothing. RG-30:
             # --worktree threads through so every per-tree check (git
@@ -21694,6 +21716,7 @@ def main(argv: list[str] | None = None) -> int:
         return finish(LaneResult(
             "ERROR", reason="pid1-without-init",
             _json="--json" in option_argv))
+    previous_scratch = _active_scratch_run()
     scratch_state = _begin_scratch_run()
     previous_sigterm = None
     try:
@@ -21753,7 +21776,10 @@ def main(argv: list[str] | None = None) -> int:
             with deferred_sigterm():
                 _cleanup_scratch_run(scratch_state)
         finally:
-            _end_scratch_run()
+            if previous_scratch is None:
+                _end_scratch_run()
+            else:
+                _SCRATCH_LOCAL.run = previous_scratch
             if previous_sigterm is not None:
                 signal.signal(signal.SIGTERM, previous_sigterm)
 

@@ -10,7 +10,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 
 ### Fixed
-- run-gate: `main()` owns one scratch root per invocation; `doctor --prune` reclaims SIGKILL/OOM and legacy orphans without containers (RG-294/RG-295).
+- run-gate: `main()` owns one scratch root per invocation; `doctor --prune` uses owner identity to reclaim SIGKILL/OOM and legacy orphans across projects without containers, reporting partial removals as exit 1 (RG-294/RG-295).
 
 ### Changed
 - the release gate now also runs the R3 canary in the receipt image; no action needed for consumers

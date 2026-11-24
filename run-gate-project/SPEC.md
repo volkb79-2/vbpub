@@ -696,12 +696,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 - `R-58` **Scratch lifetime (RG-294/RG-295).** Every `main()` invocation has
   one lazy run id (pid, start time, random suffix) and one 0700 root: host-
   visible `<tempdir>/run-gate-<run-id>/`, else
-  `<repo>/.run-gate/tmp/<run-id>/` (creating a fresh `.run-gate`). Private
-  children live inside it. The parent removes it in `try/finally` on normal
-  return, FAIL, SIGTERM/`SystemExit`, `KeyboardInterrupt` or an uncaught
-  exception; there is no atexit owner, and removal errors only WARN. Inflight
-  records carry `scratch_run_id` when one exists. SIGKILL/OOM bypasses Python,
-  so `doctor --prune` is the owner-side backstop.
+  `<repo>/.run-gate/tmp/<run-id>/` (creating a fresh default-umask
+  `.run-gate`, whose symlinks are accepted). Each root carries `.owner.json`
+  with pid, process start ticks, boot id and pid-namespace inode. Private
+  children live inside it; allocation outside an active run is an internal
+  error. The parent removes it in `try/finally` on normal return, FAIL,
+  SIGTERM/`SystemExit`, `KeyboardInterrupt` or an uncaught exception; there is
+  no atexit owner, and removal errors only WARN. Inflight records carry
+  `scratch_run_id` when one exists. SIGKILL/OOM bypasses Python, so
+  `doctor --prune` is the owner-side backstop.
 
 - `R-16` **Inner command** (both kinds) starts `set -euo pipefail`, injects
   `safe.directory=*` through Git's `GIT_CONFIG_COUNT` environment interface,
@@ -1218,12 +1221,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   Read-scope under `--worktree` (RG-30) is `R-37`.
 
 - **`R-30d` `doctor --prune` (RG-295).** Exclusive: no container probe or
-  container starts. It removes only the prefixes and bases in `R-58`; the
-  default age is the longest declared lane `budget`, or a documented 24h
-  fallback. `--older-than DUR` uses the `budget` grammar. It reports removed,
-  kept-live and kept-young counts per prefix; `--dry-run` deletes nothing.
-  Symlinks/non-matches are untouched, and an unreadable inflight record fails
-  closed before deletion.
+  container starts. It removes only the prefixes and bases in `R-58`, including
+  `run-gate-<run-id>` directly under the repo store. The default age is the
+  longest declared lane `budget`, or a documented 24h fallback.
+  `--older-than DUR` uses the `budget` grammar. A readable live root owner is
+  kept across projects; without one, inflight state and age decide, while
+  legacy entries use age alone. It reports removed, kept-live, kept-young and
+  error counts per prefix; a per-entry removal error warns, continues and
+  makes the final status 1. `--dry-run` deletes nothing. Symlinked entries and
+  non-matches are untouched, and an unreadable inflight record fails closed
+  before deletion.
 
 - `R-34` **Assay-lane toolchain fitness (RG-25).** For every `kind = "assay"`
   lane whose environment resolves, `doctor` and `--check-env` ask the JUDGE

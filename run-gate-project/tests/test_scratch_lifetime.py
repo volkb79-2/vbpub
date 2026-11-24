@@ -1,7 +1,7 @@
 """RG-294/RG-295: parent-owned scratch lifetime and the prune backstop."""
 
 import importlib.util
-import json, os, signal, subprocess, sys, time
+import json, os, signal, stat, subprocess, sys, time
 from pathlib import Path
 
 import pytest
@@ -30,6 +30,19 @@ def _dir(base: Path, name: str) -> Path:
     (path / "payload").write_text("orphan\n")
     return path
 
+
+def _owner(root: Path, **overrides) -> None:
+    payload = {
+        "schema": run_gate.SCRATCH_OWNER_SCHEMA,
+        "scratch_run_id": _run_id("a"),
+        "owner_pid": os.getpid(),
+        "owner_start": run_gate.process_start_ticks(os.getpid()),
+        "boot_id": run_gate.boot_id(),
+        "pid_ns": run_gate.pid_ns_inode(),
+    }
+    payload.update(overrides)
+    (root / run_gate.SCRATCH_OWNER_NAME).write_text(json.dumps(payload))
+
 def _run_id(tag: str) -> str:
     return f"123-1700000000000000000-{tag * 16}"
 
@@ -41,7 +54,8 @@ def _record(project: Path, run_id: str, root: Path) -> None:
         "container_id": "sha256:" + "1" * 64, "started_at": "2026-11-24",
         "started_epoch": now, "budget_started_epoch": now,
         "log_path": str(project / ".run-gate" / "suite.log"),
-        "owner_pid": os.getpid(), "owner_start": run_gate.process_start_ticks(os.getpid()),
+        "owner_pid": os.getpid(),
+        "owner_start": run_gate.process_start_ticks(os.getpid()),
         "boot_id": run_gate.boot_id(), "pid_ns": run_gate.pid_ns_inode(),
         "commit": "0" * 40, "worktree": str(project),
         "project_dir": str(project), "revision": run_gate.__revision__,
@@ -146,11 +160,15 @@ def test_prune_defaults_cli_refusals_and_no_probe_mode(
         'import = { environment = "bare-host", lanes = "all" }\n'
         '[assay.pins.assay]\nsha256 = "tools/assay.pyz.sha256"\n'
         'version = "1.0.0"\n')
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("prune must not probe")
-    monkeypatch.setattr(run_gate.shutil, "which", forbidden)
-    monkeypatch.setattr(run_gate, "discover_imported_assay_lanes", forbidden)
+    calls = tmp_path / "docker-calls.txt"
+    shims = tmp_path / "bin"
+    shims.mkdir()
+    docker = shims / "docker"
+    docker.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {calls}\n")
+    docker.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shims}:{os.environ['PATH']}")
     assert _prune(project, temp_dir, monkeypatch) == 0
+    assert not calls.exists(), "doctor --prune invoked a container command"
     assert "not queried (`doctor --prune` starts no containers)" in \
         capsys.readouterr().err
     for argv, message in (
@@ -178,6 +196,123 @@ def test_in_process_main_stamps_and_removes_allocated_scratch(
     assert not seen["root"].exists()
     assert seen["scratch_run_id"] == seen["root"].name.removeprefix(
         run_gate.SCRATCH_TEMP_PREFIX)
+
+
+def test_private_allocation_outside_run_refuses_without_creating(tmp_path):
+    run_gate._end_scratch_run()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pytest.raises(
+            RuntimeError,
+            match="run-gate scratch allocation outside a run"):
+        run_gate._make_private_dir(repo)
+    assert not (repo / ".run-gate").exists()
+
+
+def test_scratch_root_mode_owner_and_symlinked_base(tmp_path, monkeypatch):
+    active = run_gate._active_scratch_run()
+    assert active.root is not None
+    assert stat.S_IMODE(active.root.stat().st_mode) == 0o700
+    assert (active.root / run_gate.SCRATCH_OWNER_NAME).is_file()
+
+    repo = _project(tmp_path / "repo-link")
+    target = tmp_path / "real-store"
+    target.mkdir()
+    (repo / ".run-gate").symlink_to(target, target_is_directory=True)
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("block system temp\n")
+    monkeypatch.setattr(run_gate.tempfile, "gettempdir", lambda: str(blocker))
+    state = run_gate._ScratchRun(_run_id("2"))
+    root, _physical = run_gate._scratch_root(repo, state)
+    assert root.parent == target / run_gate.SCRATCH_STORE_TMP
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    assert (root / run_gate.SCRATCH_OWNER_NAME).is_file()
+    orphan = _dir(target / run_gate.SCRATCH_STORE_TMP, _run_id('3'))
+    _age(orphan)
+    system_temp = tmp_path / "system-temp"
+    system_temp.mkdir()
+    assert _prune(repo, system_temp, monkeypatch, "--older-than", "1h") == 0
+    assert not orphan.exists()
+    run_gate._cleanup_scratch_run(state)
+
+    repo_default = _project(tmp_path / "repo-default")
+    old_umask = os.umask(0o022)
+    try:
+        run_gate._ensure_scratch_base(repo_default / ".run-gate")
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(
+        (repo_default / ".run-gate").stat().st_mode) == 0o755
+
+
+def test_prune_matches_current_root_directly_under_repo_store(
+        tmp_path, monkeypatch):
+    project = _project(tmp_path / "repo")
+    temp_dir = tmp_path / "system-temp"
+    temp_dir.mkdir()
+    store = project / ".run-gate"
+    store.mkdir()
+    live_id, old_id = _run_id("a"), _run_id("b")
+    live = _dir(store, f"{run_gate.SCRATCH_TEMP_PREFIX}{live_id}")
+    old = _dir(store, f"{run_gate.SCRATCH_TEMP_PREFIX}{old_id}")
+    _record(project, live_id, live)
+    _age(live)
+    _age(old)
+    assert _prune(project, temp_dir, monkeypatch, "--older-than", "1h") == 0
+    assert live.is_dir() and not old.exists()
+
+
+def test_prune_uses_root_owner_liveness_and_age_fallback(
+        tmp_path, monkeypatch):
+    project, temp_dir = _project(tmp_path / "repo"), tmp_path / "system-temp"
+    temp_dir.mkdir()
+    live = _dir(temp_dir, f"{run_gate.SCRATCH_TEMP_PREFIX}{_run_id('1')}")
+    dead = _dir(temp_dir, f"{run_gate.SCRATCH_TEMP_PREFIX}{_run_id('2')}")
+    garbage_old = _dir(
+        temp_dir, f"{run_gate.SCRATCH_TEMP_PREFIX}{_run_id('3')}")
+    garbage_young = _dir(
+        temp_dir, f"{run_gate.SCRATCH_TEMP_PREFIX}{_run_id('4')}")
+    reused = _dir(temp_dir, f"{run_gate.SCRATCH_TEMP_PREFIX}{_run_id('5')}")
+    owner_link = _dir(
+        temp_dir, f"{run_gate.SCRATCH_TEMP_PREFIX}{_run_id('8')}")
+    bad_schema = _dir(
+        temp_dir, f"{run_gate.SCRATCH_TEMP_PREFIX}{_run_id('9')}")
+    _owner(live)
+    _owner(dead, owner_pid=999999999)
+    (garbage_old / run_gate.SCRATCH_OWNER_NAME).write_text("{not json")
+    (garbage_young / run_gate.SCRATCH_OWNER_NAME).write_text("garbage\n")
+    _owner(reused, owner_start=(run_gate.process_start_ticks(os.getpid()) or 0) + 1)
+    owner_link.joinpath(run_gate.SCRATCH_OWNER_NAME).symlink_to(live)
+    bad_schema.joinpath(run_gate.SCRATCH_OWNER_NAME).write_text(
+        '{"schema": 2}\n')
+    for path in (live, dead, garbage_old, reused, owner_link):
+        _age(path)
+    assert _prune(project, temp_dir, monkeypatch, "--older-than", "1h") == 0
+    assert live.is_dir() and garbage_young.is_dir() and bad_schema.is_dir()
+    assert not dead.exists() and not garbage_old.exists() and not reused.exists()
+    assert not owner_link.exists()
+
+
+def test_prune_reports_removal_errors_and_continues(
+        tmp_path, monkeypatch, capsys):
+    project, temp_dir = _project(tmp_path / "repo"), tmp_path / "system-temp"
+    temp_dir.mkdir()
+    victim = _dir(temp_dir, f"{run_gate.SCRATCH_TEMP_PREFIX}{_run_id('6')}")
+    survivor = _dir(temp_dir, f"{run_gate.SCRATCH_TEMP_PREFIX}{_run_id('7')}")
+    _age(victim)
+    _age(survivor)
+    victim.chmod(0o500)
+    try:
+        assert _prune(project, temp_dir, monkeypatch,
+                      "--older-than", "1h") == 1
+        captured = capsys.readouterr()
+        assert victim.is_dir() and not survivor.exists()
+        assert "WARNING: cannot remove" in captured.err
+        assert "error 1" in captured.out
+    finally:
+        if victim.exists():
+            victim.chmod(0o700)
+            run_gate.shutil.rmtree(victim)
 
 
 def test_prune_live_state_and_cleanup_edges(
@@ -228,6 +363,7 @@ def dispatch(_argv):
     if sys.argv[4] in results:
         return run_gate.LaneResult(*results[sys.argv[4]])
     if sys.argv[4] == "raise": raise RuntimeError("planted")
+    if sys.argv[4] == "interrupt": raise KeyboardInterrupt
     while True:
         signal.pause()
 run_gate._dispatch = dispatch
@@ -258,7 +394,7 @@ def _communicate(proc) -> tuple[str, str]:
 
 
 @pytest.mark.parametrize(("mode", "exit_code"), [
-    ("normal", 0), ("fail", 1), ("raise", 2)])
+    ("normal", 0), ("fail", 1), ("raise", 2), ("interrupt", 2)])
 def test_main_removes_scratch_root_for_normal_failure_and_raise(
         tmp_path, mode, exit_code):
     proc, marker = _start_child(tmp_path, mode)

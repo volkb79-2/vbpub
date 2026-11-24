@@ -189,6 +189,8 @@ SPEC §9.
 | RG-296 | projects restate lane rules instead of checking them | Minor | OPEN 2026-11-24 (Opus design review) |
 | RG-297 | run-gate re-validates Assay flags it should forward opaquely | Minor | OPEN 2026-11-24 (Opus design review) |
 | RG-298 | durable R2 store transport is not shipped or re-seeded | Minor | OPEN 2026-11-24 (Opus design review; owner T3/T1, file only) |
+| RG-299 | a signal during scratch cleanup re-raises after the verdict | Minor | OPEN 2026-11-24 (P-core-01 review round 1) |
+| RG-300 | `doctor --prune` ignores `--worktree` and imported lane budgets | Minor | OPEN 2026-11-24 (P-core-01 review round 1) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9579,3 +9581,21 @@ Severity: Minor.
 
 Ship and re-seed `.assay/r2-store/<lane>/` with remote-gate artifacts.
 Source: .controller-state/design-review-2026-11-24/SYNTHESIS.md section 5 (and cmru-cli-extended.md M5 for RG-296)
+
+## RG-299 — a signal during scratch cleanup re-raises after the verdict
+
+**Status:** OPEN 2026-11-24 (P-core-01 review round 1). Severity: Minor.
+
+`deferred_sigterm()` re-raises a second signal after root cleanup, replacing a
+closed verdict/status with exit 143. Filed only; no behavior change in this
+round.
+Source: P-core-01 review round 1, 2026-11-24.
+
+## RG-300 — prune ignores `--worktree` and imported lane budgets
+
+**Status:** OPEN 2026-11-24 (P-core-01 review round 1). Severity: Minor.
+
+`doctor --prune` does not honor `--worktree`, and imported Assay lane budgets do
+not contribute to the default `--older-than`. Filed only; no behavior change
+in this round.
+Source: P-core-01 review round 1, 2026-11-24.

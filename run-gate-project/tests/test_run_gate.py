@@ -5,7 +5,6 @@ lesson); live acceptance is oracle O4, run against real docker separately.
 Every argv assertion compares the LIST, never a joined string.
 """
 
-import atexit
 import ast
 import builtins
 import calendar
@@ -46,6 +45,11 @@ import _testdeps   # missing optional test dependencies FAIL by default
 RUN_GATE_DIR = Path(__file__).resolve().parent.parent
 _TOOL = RUN_GATE_DIR / "run_gate.py"
 
+
+def _invoke() -> Path:
+    return Path(os.environ["RUN_GATE_TEST_TOOL_INVOKE"])
+
+
 # Public CLI identity comes from the installed wheel, including when a test
 # subprocess imports the candidate source module. Keep expectations tied to
 # that same installed distribution instead of inventing a test-only version.
@@ -53,26 +57,7 @@ _TEST_VERSION = importlib_metadata.version("run-gate")
 
 # The suite invokes from a neutral directory so each fixture's current working
 # directory selects its project config as the installed CLI contract requires.
-_TOOL_INVOKE_DIR = _TOOL_INVOKE = _CURRENT_TMP_PATH = None
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _isolate_tool_invoke(tmp_path_factory):
-    """Put pytest's basetemp, not process-lifetime /tmp, behind the CLI shim."""
-    global _TOOL_INVOKE_DIR, _TOOL_INVOKE
-    _TOOL_INVOKE_DIR = tmp_path_factory.mktemp("run-gate-test-invoke")
-    _TOOL_INVOKE = _TOOL_INVOKE_DIR / "run_gate.py"
-    _TOOL_INVOKE.symlink_to(_TOOL)
-    yield
-
-
-@pytest.fixture(autouse=True)
-def _isolate_shim_root(tmp_path):
-    """Every PATH shim belongs to this test's pytest-owned directory."""
-    global _CURRENT_TMP_PATH
-    _CURRENT_TMP_PATH = tmp_path
-    yield
-    _CURRENT_TMP_PATH = None
+# conftest owns the pytest-directory paths shared by all importing modules.
 
 import importlib.util  # noqa: E402
 
@@ -744,8 +729,8 @@ def shim_dir_of(monkeypatch) -> Path:
     # (the old "first writable PATH entry" rule replaced the developer's real
     # `assay` with a PASS-fabricating fake). Every shim goes to a private
     # per-test directory that is PREPENDED to PATH.
-    assert _CURRENT_TMP_PATH is not None
-    private = (_CURRENT_TMP_PATH
+    test_tmp = Path(os.environ["RUN_GATE_TEST_TMP_PATH"])
+    private = (test_tmp
                / f"run-gate-test-bin-{len(_TEST_OWNED_SHIM_DIRS)}")
     private.mkdir(mode=0o700)
     _TEST_OWNED_SHIM_DIRS.add(str(private))
@@ -823,7 +808,7 @@ SIMPLE_LANE = """\
 
 
 def run_tool(proj: Path, *args, cwd=None):
-    return subprocess.run([sys.executable, str(_TOOL_INVOKE), *args],
+    return subprocess.run([sys.executable, str(_invoke()), *args],
                           cwd=cwd or proj, capture_output=True, text=True)
 
 
@@ -1068,7 +1053,7 @@ class TestUxSurface:
         """An installed CLI gets project identity from cwd, not argv[0]."""
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
-        proc = subprocess.run([sys.executable, str(_TOOL_INVOKE), "--list"],
+        proc = subprocess.run([sys.executable, str(_invoke()), "--list"],
                               cwd=proj, capture_output=True, text=True)
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert proc.stdout.startswith("suite\t")
@@ -8099,6 +8084,12 @@ class TestDryRun:
             # RG-242: the start-time label is volatile (1 s resolution) and,
             # like the name, differs between two invocations by design.
             line = _re.sub(r"run-gate\.started=\S+", "run-gate.started=T", line)
+            line = _re.sub(
+                r"run-gate-[1-9]\d*-\d{16,}-[0-9a-f]{16}/private-[A-Za-z0-9_-]+",
+                "run-gate-X", line)
+            line = _re.sub(
+                r"/tmp/[1-9]\d*-\d{16,}-[0-9a-f]{16}/private-[A-Za-z0-9_-]+",
+                "/tmp/run-gate-X", line)
             return _re.sub(r"run-gate-gitcfg-\w+", "run-gate-gitcfg-X", line)
         live_norm = norm(live_line)
 
@@ -8587,7 +8578,7 @@ class TestResourceAdmission:
         fcntl.flock(holder, fcntl.LOCK_EX)
         try:
             proc = subprocess.run(
-                [sys.executable, str(_TOOL_INVOKE), "suite"],
+                [sys.executable, str(_invoke()), "suite"],
                 capture_output=True, text=True, cwd=str(proj), env=env,
                 timeout=20)
         finally:
@@ -9837,7 +9828,7 @@ def test_status_worktree_selects_its_config_and_inflight_scope(
 def test_status_rejects_lane_execution_options(tmp_path, monkeypatch, capsys):
     repo = make_repo(tmp_path)
     project = make_project(repo, "schema_version = 1\n")
-    monkeypatch.setattr(sys, "argv", [str(_TOOL_INVOKE)])
+    monkeypatch.setattr(sys, "argv", [str(_invoke())])
     monkeypatch.chdir(project)
 
     assert run_gate.main(["status", "--dry-run"]) == 2
@@ -10180,7 +10171,7 @@ class TestDoctor:
         proj = make_project(repo, SIMPLE_LANE)
         fake_docker(tmp_path, monkeypatch)
         proc = subprocess.run(
-            [sys.executable, str(_TOOL_INVOKE), "doctor"],
+            [sys.executable, str(_invoke()), "doctor"],
             capture_output=True, text=True, cwd=str(proj),
             env={**os.environ,
                  "PYTHONPATH": str(RUN_GATE_DIR / "tests")},
@@ -19860,7 +19851,7 @@ class TestTwoClientsOneLane:
 
     def _client(self, proj: Path, output_path: Path):
         return _start_captured_process(
-            [sys.executable, str(_TOOL_INVOKE), "suite"],
+            [sys.executable, str(_invoke()), "suite"],
             cwd=proj, output_path=output_path)
 
     def test_the_second_client_follows_and_the_owner_reports_its_own_result(
@@ -37979,10 +37970,16 @@ class TestRgNarrowEdges:
                 raise run_gate.GateError("not host-visible")
             return Path(path)
         monkeypatch.setattr(run_gate, "physical_path", physical)
-        made, phys = run_gate._make_private_dir(repo)
-        assert made.parent == repo / ".run-gate" and phys == made
-        assert made.stat().st_mode & 0o777 == 0o700
-        assert list(system_tmp.iterdir()) == []  # the unusable dir was removed
+        state = run_gate._begin_scratch_run()
+        try:
+            made, phys = run_gate._make_private_dir(repo)
+            assert made.parent == repo / ".run-gate" and phys == made
+            assert made.stat().st_mode & 0o777 == 0o700
+            assert list(system_tmp.iterdir()) == []  # unusable root was removed
+        finally:
+            run_gate._cleanup_scratch_run(state)
+            if run_gate._active_scratch_run() is state:
+                run_gate._end_scratch_run()
 
     def test_private_dir_with_no_usable_candidate_is_an_infra_error(
             self, tmp_path, monkeypatch):
@@ -37990,9 +37987,15 @@ class TestRgNarrowEdges:
                             lambda: str(tmp_path / "missing-tmp"))
         blocker = tmp_path / "a-file"
         blocker.write_text("not a directory")
-        with pytest.raises(run_gate.GateInfraError,
-                           match="no host-visible private directory"):
-            run_gate._make_private_dir(blocker / "repo")
+        state = run_gate._begin_scratch_run()
+        try:
+            with pytest.raises(run_gate.GateInfraError,
+                               match="no host-visible private scratch root"):
+                run_gate._make_private_dir(blocker / "repo")
+        finally:
+            run_gate._cleanup_scratch_run(state)
+            if run_gate._active_scratch_run() is state:
+                run_gate._end_scratch_run()
 
     def test_relative_gitfile_resolves_to_the_admin_and_common_dirs(
             self, tmp_path):
