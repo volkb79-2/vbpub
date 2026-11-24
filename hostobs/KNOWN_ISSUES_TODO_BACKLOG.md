@@ -63,7 +63,6 @@ holds the full bodies.
 | HOB-71 | Budget lattice above workload | Minor | OPEN (2026-11-24 Opus design review) |
 | HOB-72 | JSON mode only at observer/control | Minor | OPEN (2026-11-24 Opus design review) |
 | HOB-73 | Hub fixtures over-layered | Minor | OPEN (2026-11-24 Opus design review) |
-| HOB-74 | Consumer boundary contract unwritten | Minor | OPEN (2026-11-24 Opus design review) |
 
 ---
 
@@ -886,19 +885,3 @@ Rust table tests; the Python reference becomes an encoder only.
 byte-for-byte Python check, and leaves the Python reference as the fixture encoder.
 
 Source: .controller-state/design-review-2026-11-24/hostobs.md F12 (Over-layered test oracles for Rust-only components, and a third Python decoder)
-
-## HOB-74 — Consumer boundary contract unwritten
-
-**Where:** `hostobs/docs/CONSUMERS.md` (no "Boundaries" section), plan v4 §G.
-
-CONSUMERS.md gets a "Boundaries" section covering four points:
-
-- cgprofile is frozen to fixes and the M4 `mark` forwarder;
-- span emission is one documented JSON line on the observer socket, with
-  `hostobs_client`/`hostobs-mark` for importers;
-- act never writes `io.cost`/`io.weight`/sysctl;
-- iogovmon H2.
-
-**Exit criteria.** P-19 lands the four-point "Boundaries" section in CONSUMERS.md.
-
-Source: .controller-state/design-review-2026-11-24/hostobs.md §3 M5 row (consumer boundary contract unwritten); synthesis §3.3

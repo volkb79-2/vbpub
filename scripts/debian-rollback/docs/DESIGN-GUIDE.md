@@ -58,6 +58,7 @@ not transfer (section 6).
 | D31 | legacy `@os-0001`/`.conf` compatibility deleted; foreign `@os-*` unmanaged (Q2, H1). |
 | D32 | loader contracts verified against the real loader (bootctl parser or loader boot), never only our own reading (H3; rewords the 2026-11-18 guest-only rule). |
 | D33 | TODO.md is the only status page (M11). |
+| D34 | No automatic retention yet (operator 2026-11-24); `prune` stays manual with a `check` warning; revisit after the P-rollback-40 ESP-exhaustion evidence; source DESIGN-CORE-SPLIT D34. |
 
 ## 3. What "the operating system" means here
 
