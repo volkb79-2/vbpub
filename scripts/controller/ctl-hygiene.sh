@@ -5,7 +5,14 @@
 # usage: ctl-hygiene.sh            (no arguments; run by ctl-doctor.sh, or by hand)
 # Output: one line per finding, `HYGIENE <rule> <path>: <value> (threshold <t>)`, nothing when all is well.
 # Always exits 0. It never moves, edits or creates a file; it reads files and runs one read-only `git ls-files`.
-# "Today" is the UTC date. Rules M1-M3, H1, H2, S1, B1 and their thresholds: CONTEXT-ECONOMY.md section 5, plus review item R2-4.
+# "Today" is the UTC date. Rules (spec: CONTEXT-ECONOMY.md section 5, plus review item R2-4):
+#   M1 MEMORY.md size       > 12288 B or > 70 lines (WARN); > 150 lines (ALERT; only the first 200 lines are loaded)
+#   M2 stale marker         a line with IN PROGRESS / CURRENT / TEMPORARY whose first date is > 3 days old, or undated
+#   M3 dead link            a ](<name>.md) target that is missing from the memory directory
+#   H1 handoff blocks       more than 2 `## RESUME HERE #N` / `## UPDATE ` blocks in a handoff/state file
+#   H2 handoff size         such a file larger than 24576 B
+#   S1 stale successor      handovers/vbpub-<topic>-successor.md > 24 h older than <topic>/STATE.md; any other file there
+#   B1 closed backlog       closed entries are > 30% of a tracked backlog's bytes (or the file's entries cannot be parsed)
 # Test seams (all optional): HYGIENE_MEMORY_DIR (default ~/.claude/projects/-workspaces-vbpub/memory),
 # HYGIENE_REPO (default: the repository of this script; B1 reads its tracked backlogs), HYGIENE_STATE_DIR (default: the
 # .controller-state of the repository's MAIN checkout), HYGIENE_TODAY (YYYY-MM-DD).

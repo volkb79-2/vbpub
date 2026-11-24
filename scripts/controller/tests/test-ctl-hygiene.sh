@@ -50,6 +50,7 @@ n_lines 70 > "$M/MEMORY.md"; hyg; lacks 'M1' '70 lines is at the threshold'
 n_lines 71 > "$M/MEMORY.md"; hyg; has "M1 $M/MEMORY.md: 71 lines \\(threshold 70 lines WARN\\)" '71 lines is one above'
 n_lines 150 > "$M/MEMORY.md"; hyg; has 'M1 .*: 150 lines \(threshold 70 lines WARN\)' '150 lines is still only a WARN'; lacks 'M1 .*ALERT' '150 lines is no ALERT'
 n_lines 151 > "$M/MEMORY.md"; hyg; has 'M1 .*: 151 lines \(threshold 150 lines ALERT' '151 lines is an ALERT'; lacks 'M1 .*70 lines WARN' 'an ALERT replaces the WARN line count'
+printf 'one\ntwo' > "$M/MEMORY.md"; hyg; silent 'a last line without a newline counts as a line, not as a finding'
 
 # --- M2 stale marker: 3 days is fine, 4 is not; undated; each keyword; first date wins; other casing and a future date are quiet
 new_tree m2
@@ -103,6 +104,7 @@ for f in hostobs/STATE.md platform/STATE.md rollback/STATE.md edge/STATE.md assa
 new_tree h2
 n_bytes 24576 > "$S/HANDOFF.md"; hyg; lacks 'H2' '24576 B is at the threshold'
 n_bytes 24577 > "$S/HANDOFF.md"; hyg; has 'H2 state/HANDOFF.md: 24577 B \(threshold 24576 B\)' '24577 B is one above'
+n_bytes 24577 > "$S/stray.md"; rm "$S/HANDOFF.md"; hyg; silent 'only the listed files are measured'
 
 # --- S1 stale successor
 new_tree s1

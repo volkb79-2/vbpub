@@ -129,7 +129,7 @@ doc = json.load(open(sys.argv[1]))
 assert doc["ok"] is True and len(doc["hygiene"]) == 1 and doc["hygiene"][0].startswith("HYGIENE H1 state/HANDOFF.md: 3 blocks ")
 PY
 run_doctor "$HY" --
-no_line '^HYGIENE ' 'the default fake tree is quiet'
+no_line '^HYGIENE ' 'a tree with nothing to report adds no hygiene line (production default path)'
 
 # --- the effective profile follows the environment
 run_doctor RUN_GATE_PROFILE=on --
