@@ -12,10 +12,10 @@ use hostobs_kernel::activation;
 use hostobs_kernel::clock::{Clock, SystemClock, Timeline};
 use hostobs_kernel::fs::RealFs;
 use hostobs_kernel::identity::{read_boot_id, BootId, IdentityError};
-use hostobs_probe::backend::Identity;
 use hostobs_probe::live::ProbeBackend;
 use hostobs_probe::sampler::{self, Published, SamplerConfig, SamplerError};
-use hostobs_probe::server::Server;
+use hostobs_serve::backend::Identity;
+use hostobs_serve::server::Server;
 use rustix::event::{eventfd, EventfdFlags};
 
 use crate::config::{Action, ConfigError, LevelMapError};

@@ -55,9 +55,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crate::hub::{Close, ConnId, Pools, QueryOutcome, SendHub};
 use hostobs_proto::error::ProtoError;
 use hostobs_proto::frame::{FrameType, FRAME_HEADER_LEN, PROTO_MINOR};
-use hostobs_proto::hub::{Close, ConnId, Pools, QueryOutcome, SendHub};
 use hostobs_proto::quality;
 use hostobs_proto::stream::{ConnTimers, Detect, Feed, FrameReader, ModeDetect, RawFrame, Timer};
 
@@ -972,9 +972,9 @@ mod tests {
     use std::cell::Cell;
     use std::sync::Arc;
 
+    use crate::hub::{ConnId, LiveOutcome, QueryOutcome, QueueLimits, SendHub, TickForms};
     use hostobs_proto::envelope::{check_end, check_rep, members_up_to};
     use hostobs_proto::frame::{decode_block_with, FrameType};
-    use hostobs_proto::hub::{ConnId, LiveOutcome, QueryOutcome, QueueLimits, SendHub, TickForms};
     use hostobs_proto::quality;
     use hostobs_proto::stream_dicts::StreamDicts;
 

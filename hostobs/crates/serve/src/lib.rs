@@ -1,0 +1,36 @@
+//! The hostobs sans-IO serving core.
+//!
+//! Each module owns one concern and none of them performs I/O, reads a clock or keeps
+//! connection state: [`limits`] (levels and the section 5.1 bounds), [`verbs`] (the section 4.3
+//! table), [`codes`] (the wire error codes and `detail`), [`args`] (the strict request-argument
+//! reader and the `hello` and `status` schemas), [`classify`] (the request precedence function,
+//! design R11), [`encode`] (the control frames, error envelope and JSON lines) and [`lines`]
+//! (the JSON line reader). Package P5b-1b adds [`backend`] (the injected identity and status
+//! source), [`conn`] (the sans-IO connection state machine) and [`server`] (the `Server` that
+//! owns the one send hub, the connections and the per-level counters); the drivers arrive in
+//! later packages. P5b-2a adds [`selection`], the checked canonical stream key. P5b-2b adds
+//! [`tick`] (backend tick validation and encoding) and [`registry`] (the shared selection
+//! streams). [`hub`] owns every outgoing queue (WIRE.md §5.3).
+
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+#![warn(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::checked_conversions
+)]
+
+pub mod args;
+pub mod backend;
+pub mod classify;
+pub mod codes;
+pub mod conn;
+pub mod encode;
+pub mod hub;
+pub mod limits;
+pub mod lines;
+pub mod registry;
+pub mod selection;
+pub mod server;
+pub mod tick;
+pub mod verbs;

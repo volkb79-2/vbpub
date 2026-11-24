@@ -2,12 +2,13 @@
 
 The Rust host-observability daemon planned in
 [`docs/design/hostobs/PLAN-v4-2026-11-08.md`](../docs/design/hostobs/PLAN-v4-2026-11-08.md)
-as a probe plus an actuator. The workspace has the planned `proto`, `model`, `kernel`,
+as a probe plus an actuator. The workspace has the planned `proto`, `serve`, `model`, `kernel`,
 `store`, `eval`, `act`, and `client` library boundaries plus the `probe` and `act`
 binary packages. The `client` crate is the Rust client of `hostobs/1` (handshake, JSON requests,
 block streams, subscriptions and reconnect over an injected transport and clock; WIRE.md §12 `P5a`).
 
-**What is implemented today.** Four of the seven library crates are functional:
+**What is implemented today.** Five core libraries plus the Rust client described above are
+functional:
 
 - **`model`** — the data model: incarnation identity (`(mount id, cgroup inode)` with
   boot/epoch/process keys), the closed eight-code quality vocabulary, good/bad-quality
@@ -16,6 +17,9 @@ block streams, subscriptions and reconnect over an injected transport and clock;
 - **`proto`** — the wire codec: frame header, section directory, fixed-width typed
   little-endian columns (raw `u64` counters, a `u8` quality per value), history buckets
   and bounded per-segment dictionaries. No I/O, no clock, no `unsafe`, no dependencies.
+- **`serve`** — the sans-IO serving core: request argument readers and classification,
+  wire encoders and line framing, the bounded connection/server state machines, the stream
+  registry and the one send hub. It depends on `proto` and performs no I/O or clock reads.
 - **`kernel`** — the read-only collectors: cgroupfs (`cpu.stat`, `cpu.max`/`weight`,
   `memory.current`/`.stat`/`.events`/`.max` and friends, `io.stat`, `pids.current`/`.max`,
   the three PSI files) and `/proc` (`stat`, `meminfo`, `vmstat`, `loadavg`, one process's
@@ -72,11 +76,16 @@ the named `LISTEN_FDS` sockets configured in `[probe] levels`, starts the sample
 sans-IO `Server` from one bounded non-blocking poll loop. It never binds, spawns or installs a
 signal handler; `SIGTERM` keeps its default action. `hostobs-probe --version` prints the
 package name and version. The installed config path supplied explicitly by the unit is
-`/etc/hostobs/hostobsd.toml`; a start-up refusal is one stderr line and exit 2. The library
-(`bins/probe/src`) holds the pure serving functions of P5b-1a (`limits`, `verbs`, `codes`,
-`args`, `classify`, `encode`, `lines`), the sans-IO serving core (`backend`, `conn`, `server`),
-the P-10 sampler and live backend, and `main.rs` owns the thin process wiring plus `config` and
-`driver`. The proven topos sampler
+`/etc/hostobs/hostobsd.toml`; a start-up refusal is one stderr line and exit 2.
+
+### Crate layout
+
+- `proto` owns the pure wire codec, stream reader/dictionary state and JSON envelope scanner.
+- `serve` owns the sans-IO protocol core: arguments, classification, encoding, limits,
+  connection/server state, selection streams and the send hub.
+- `probe` owns activation, configuration, the poll driver, sampler and live backend.
+
+The proven topos sampler
 (tag `archive/topos-sampler-poc-20261105`, commit `193bf601f`, path `topos/sampler/`) is the
 behavioural source the `kernel` collectors were ported from: its scheduling around a stalled
 `/proc/<pid>/cmdline` read is deliberately not ported, and the parts plan v4 requires to
@@ -84,7 +93,8 @@ change were changed (crate docs, `docs/DESIGN-GUIDE.md` §"Collecting the host",
 `HOB-20`).
 
 Golden fixtures under `fixtures/` are shared by two independent implementations: the Rust
-tests in `crates/model/tests`, `crates/proto/tests` and `crates/store/tests`, and a
+tests in `crates/model/tests`, `crates/proto/tests`, `crates/serve/tests` and
+`crates/store/tests`, and a
 standard-library-only Python reference codec in `python/reference/` that decodes and re-encodes
 the same bytes (`python3 -I -m unittest discover -s python/tests`); the client package
 `python/hostobs_client` (stdlib only: decoder, frame reader, stream dictionaries, `rate()`, the
@@ -171,8 +181,8 @@ which carries it). `selftest` is the workspace's own
 R0/R1 baseline (nextest, doctests, llvm-cov and the per-crate line/region floors).
 
 **`assay-r1` is the estate-standard coverage verdict**: assay's Rust R1 judge reads the
-same `lcov.info` and judges the 61 declared `src` files of the six functional packages (the five crates and
-`bins/probe`) against
+same `lcov.info` and judges the 61 declared `src` files of the seven functional packages
+(the six crates and `bins/probe`) against
 a 95.0% line floor (the floor was derived from 96.04% measured over the first 33 files and
 floored one point down; the later lanes measure 96.7% to 96.9% — derivation in
 [`assay.toml`](assay.toml)). The verdict carries the measured totals, lists the uncovered
@@ -190,7 +200,7 @@ and `FAIL/UNCOVERED_LINES` 14777/15723 = 93.9833 % when one kernel test file is 
 that deletion is committed in a temporary worktree.
 
 **`assay-r2` is hand-run, never a default gate (assay B245 U8b).** It judges mutation (R2) of
-the lines a change touches in the five judged crates by ingesting cargo-mutants' report
+the lines a change touches in the six judged crates by ingesting cargo-mutants' report
 (`cargo-mutants-outcomes`; flags and reasons in the comment block of [`assay.toml`](assay.toml)).
 It is not in the lane list above and no sequence chains it. Run it by hand, one run at a time, on a
 host that can spend hours (about 20-35 s per mutant is an estimate, not a measurement):

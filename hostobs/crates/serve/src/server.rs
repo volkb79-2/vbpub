@@ -69,11 +69,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 
-use hostobs_proto::hub::{ConnId, QueueLimits, SendHub};
-
 use crate::backend::{Backend, BackendError, Identity, StatusInfo, TickData};
 use crate::codes::Code;
 use crate::conn::{Conn, Peer};
+use crate::hub::{ConnId, QueueLimits, SendHub};
 use crate::limits::{ConnLimits, Level, LevelLimits, ProbeLimits};
 use crate::registry::{Delivery, SelectionStreams, StreamLimits};
 use crate::selection::Selection;
@@ -570,10 +569,10 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
+    use crate::hub::{Close, ConnId, LiveOutcome, Pools, QueryOutcome, TickForms};
     use hostobs_proto::dict::Entry;
     use hostobs_proto::envelope::{check_end, check_rep};
     use hostobs_proto::frame::{decode_block_with, Block, FrameType};
-    use hostobs_proto::hub::{Close, ConnId, LiveOutcome, Pools, QueryOutcome, TickForms};
     use hostobs_proto::stream_dicts::StreamDicts;
 
     use super::{Accept, Server, ServerLimits, SERVED};

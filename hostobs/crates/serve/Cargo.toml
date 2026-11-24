@@ -1,0 +1,11 @@
+[package]
+name = "hostobs-serve"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+hostobs-proto = { path = "../proto" }

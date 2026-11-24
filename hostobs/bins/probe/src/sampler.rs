@@ -26,8 +26,7 @@ use hostobs_model::quality::Quality;
 use hostobs_model::value::{Sample, Value};
 use hostobs_proto::dict::{Entry, MetricFacts, MetricValueType};
 use hostobs_proto::frame::{BlockHeaderFacts, Column, Row};
-
-use crate::backend::TickData;
+use hostobs_serve::backend::TickData;
 
 const MAX_SLEEP_NS: u64 = 100_000_000;
 
@@ -877,9 +876,9 @@ mod tests {
         advance_deadline, publish, signal, spawn, supported_metrics, Published, Sampler,
         SamplerConfig, SamplerError, StopGuard, Tick, Timeline,
     };
-    use crate::backend::TickData as Data;
     use hostobs_kernel::clock::{Clock, ManualClock};
     use hostobs_kernel::procfs::Roots;
+    use hostobs_serve::backend::TickData as Data;
 
     const WALL: i64 = 1_700_000_000_000_000_000;
 

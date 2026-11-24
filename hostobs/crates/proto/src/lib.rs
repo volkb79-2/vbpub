@@ -46,10 +46,6 @@
 //!   `ConnTimers`; WIRE.md §5.2-§5.4). Time is injected, a frame's age runs from its first
 //!   byte, a frame completed before an error is returned with it, and a declared length is
 //!   never an allocation size.
-//! - **One send hub owns every outgoing queue** ([`hub`]: `SendHub`; WIRE.md §5.3). Three
-//!   pools (Live, Query, control), `corr` and `dropped` stamped into a private prefix when
-//!   an entry is pinned, one unpinned tick per stream, shedding in the order connection,
-//!   uid, global, and the two slow-client closes, all against an injected clock.
 //! - **A client holds one dictionary per stream** ([`stream_dicts`]: `StreamDicts`; WIRE.md §6):
 //!   a dictionary-bearing block must exceed the held generation, a bare block must carry exactly
 //!   it, any error forgets the stream and a hello drops every dictionary.
@@ -98,7 +94,6 @@ pub mod dict;
 pub mod envelope;
 pub mod error;
 pub mod frame;
-pub mod hub;
 pub mod quality;
 pub mod read;
 pub mod stream;

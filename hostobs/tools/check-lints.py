@@ -32,6 +32,7 @@ _EXPECTED_PACKAGES = {
     "crates/kernel",
     "crates/model",
     "crates/proto",
+    "crates/serve",
     "crates/store",
     "bins/act",
     "bins/probe",

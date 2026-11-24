@@ -8,13 +8,13 @@ use std::cell::OnceCell;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use crate::hub::TickForms;
 use hostobs_proto::dict::{Dictionary, Entry, DEFAULT_ACTIVE_MAX};
 use hostobs_proto::error::ProtoError;
 use hostobs_proto::frame::{
     encode_block, Block, FrameType, SectionKind, FRAME_HEADER_LEN, HEADER_BODY_LEN,
     SECTION_DIR_ENTRY_LEN,
 };
-use hostobs_proto::hub::TickForms;
 use hostobs_proto::quality::Quality;
 
 use crate::backend::TickData;
@@ -421,6 +421,7 @@ mod tests {
     use std::cell::Cell;
     use std::sync::Arc;
 
+    use crate::hub::TickForms;
     use hostobs_proto::dict::{
         Dictionary, Entry, MetricFacts, MetricKind, MetricScope, MetricSource, MetricUnit,
         DEFAULT_ACTIVE_MAX,
@@ -428,7 +429,6 @@ mod tests {
     use hostobs_proto::frame::{
         decode_block, decode_block_with, encode_block, Block, BlockHeaderFacts, FrameType,
     };
-    use hostobs_proto::hub::TickForms;
 
     use super::{
         checked_encoded_len, dictionary_body, encode_bare, encoded_len, n_rows_u32, query_block,
