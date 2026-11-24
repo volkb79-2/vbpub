@@ -6,6 +6,9 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Hygiene notifier (P-plat-22b part C)
+- `ctl-hygiene.sh` (new, report-only, always exit 0): `HYGIENE <rule> <path>: <value> (threshold <t>)` lines for MEMORY.md size/stale markers/dead links (M1-M3), handoff and STATE block counts and size (H1, H2), stale or non-programme `handovers/` files (S1) and closed-entry share of tracked backlogs (B1). B1 follows the R2-4 review: the entry heading accepts `B001` and `IOB-BL-40` style IDs (any ID part with a digit), a status word in the heading's parentheses closes an entry, and a file with Status lines but no parsable entry is reported as `unparsed`. `ctl-doctor.sh` appends the lines to its report (`hygiene` array in `--json`), never changing the exit status. Tests: `tests/test-ctl-hygiene.sh` (fake trees, pinned date) and a hygiene case in `tests/test-ctl-doctor.sh`; both wired into `tests/run-suite.sh`. No hand mutants yet (not in this package's contract).
+
 ### Launcher must-fixes (CTL-38, CTL-42 part 1)
 - CTL-38: every Codex exec path — new, manual resume, and automatic
   continuation — now derives `<run>.last.txt` from the last completed

@@ -62,6 +62,10 @@ see [`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md)). It prints names and paths
 never a value from the env file, the host table or a key. Limit: the env file is
 scanned line by line, so a multi-line assignment reads as a stray line.
 
+## Hygiene notifier (`ctl-hygiene.sh`)
+
+`scripts/controller/ctl-hygiene.sh` is read-only and always exits 0: it prints one `HYGIENE <rule> <path>: <value> (threshold <t>)` line per finding (nothing when all is well) for an oversized or stale `MEMORY.md` (M1-M3), handoff/state files with too many blocks or bytes (H1, H2), stale or foreign `handovers/` files (S1) and tracked backlogs whose closed entries exceed 30% of the file (B1). `ctl-doctor.sh` appends its lines to the report (a `hygiene` array in `--json`) without changing the status; thresholds and test seams are in the script header and `docs/design/agctl/CONTEXT-ECONOMY.md` section 5.
+
 ## State backup (`ctl-state-backup.sh`)
 
 `scripts/controller/ctl-state-backup.sh [--list] [--include-large] [--max-file-bytes <n>]`

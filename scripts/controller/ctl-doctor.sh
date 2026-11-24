@@ -7,8 +7,9 @@
 #                 that still holds old chain-*.sh wrappers). $CONTROLLER_HOME is always scanned.
 # Text report: one `OK|WARN|FAIL|INFO <check>: <message>` line per finding, an indented `fix:` line under every WARN and FAIL.
 # Exit: 0 = no FAIL (warnings allowed), 1 = at least one FAIL, 2 = usage.
-# Read-only: it creates and changes nothing and runs only `docker image inspect` and read-only git queries. It prints names and
-# paths, never a value from controller.local.env, the host table or a key file. One caveat: controller.local.env is
+# Read-only: it creates and changes nothing and runs only `docker image inspect`, read-only git queries and ctl-hygiene.sh
+# (whose `HYGIENE <rule> <path>: ...` findings follow the checks, in a "hygiene" array in --json, and never change the exit
+# status). It prints names and paths, never a value from controller.local.env, the host table or a key file. One caveat: controller.local.env is
 # shell-SOURCED by lib.sh (as by every controller tool) and must hold NAME=value assignments only; the doctor FLAGS other lines
 # but cannot make a value inert (an assignment like A=$(cmd) still runs when sourced).
 set -uo pipefail
@@ -22,13 +23,14 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --json) json=1; shift ;;
     --scan) [[ $# -ge 2 && -n $2 ]] || { echo 'usage: ctl-doctor.sh [--json] [--scan <dir>]...' >&2; exit 2; }; scan_dirs+=("$2"); shift 2 ;;
-    -h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "ctl-doctor.sh: unknown argument '$1'" >&2; echo 'usage: ctl-doctor.sh [--json] [--scan <dir>]...' >&2; exit 2 ;;
   esac
 done
 
 records=$(mktemp "${TMPDIR:-/tmp}/ctl-doctor.XXXXXX") || exit 2
-trap 'rm -f -- "$records"' EXIT
+hygiene=$(mktemp "${TMPDIR:-/tmp}/ctl-doctor.XXXXXX") || exit 2
+trap 'rm -f -- "$records" "$hygiene"' EXIT
 fails=0 warns=0 oks=0
 
 record() {
@@ -43,19 +45,21 @@ record() {
 report() {
   local status check message fix
   if (( json )); then
-    python3 - "$records" "$fails" "$warns" "$oks" <<'PY'
+    python3 - "$records" "$fails" "$warns" "$oks" "$hygiene" <<'PY'
 import json, sys
 rows = []
 for line in open(sys.argv[1], encoding="utf-8"):
     status, check, message, fix = (line.rstrip("\n").split("\t") + ["", "", "", ""])[:4]
     rows.append({"status": status, "check": check, "message": message, "fix": fix})
-print(json.dumps({"ok": sys.argv[2] == "0", "fail": int(sys.argv[2]), "warn": int(sys.argv[3]), "ok_count": int(sys.argv[4]), "checks": rows}, indent=2))
+hygiene = [line.rstrip("\n") for line in open(sys.argv[5], encoding="utf-8")]
+print(json.dumps({"ok": sys.argv[2] == "0", "fail": int(sys.argv[2]), "warn": int(sys.argv[3]), "ok_count": int(sys.argv[4]), "checks": rows, "hygiene": hygiene}, indent=2))
 PY
   else
     while IFS=$'\t' read -r status check message fix; do
       printf '%s %s: %s\n' "$status" "$check" "$message"
       [[ -z $fix ]] || printf '  fix: %s\n' "$fix"
     done < "$records"
+    while IFS= read -r status; do printf '%s\n' "$status"; done < "$hygiene"
     printf 'ctl-doctor: %s ok, %s warning(s), %s failure(s)\n' "$oks" "$warns" "$fails"
   fi
   (( fails == 0 )) || exit 1
@@ -387,5 +391,8 @@ residency_check home "$CONTROLLER_HOME_CONFIGURED" "$CONTROLLER_HOME"
 if [[ $CONTROLLER_RUNS_DIR != "$CONTROLLER_HOME"/* ]]; then
   residency_check runs "$CONTROLLER_RUNS_DIR_CONFIGURED" "$CONTROLLER_RUNS_DIR"
 fi
+
+# ---- memory / handoff / backlog hygiene (report-only; never changes the status) -----------------------------------------------
+"$BASH" "${CTL_HYGIENE_SCRIPT:-$SCRIPT_DIR/ctl-hygiene.sh}" > "$hygiene" 2>/dev/null || : > "$hygiene"   # CTL_HYGIENE_SCRIPT: test seam
 
 report
