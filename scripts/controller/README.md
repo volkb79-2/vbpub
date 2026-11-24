@@ -561,9 +561,11 @@ slot), builds a throwaway detached worktree under `CONTROLLER_HOME`, runs the
 lane and writes `$CONTROLLER_LOGS_DIR/<run>.log` with a binding line
 `run-gate.commit=<sha>` plus the copied verdict JSON files. Exit codes: the
 lane's own, 2 refusal, 3 identity or transport failure, 75 slots or PSI busy,
-76 `INCONCLUSIVE-OOM` (an OOM kill in the host's gate slice during the run, or
-`OOMKilled`/`oom-kill` in the lane log; not a lane FAIL; a run-gate
-`BUDGET_EXCEEDED` verdict is never 76 and keeps the lane's own code). Every setting is a `CONTROLLER_REMOTE_*` variable in
+76 `INCONCLUSIVE-OOM` (an OOM kill in the host's gate slice during the run,
+measured by the slice oom_kill delta; not a lane FAIL; a run-gate
+`BUDGET_EXCEEDED` verdict, read only from run-gate's own verdict line for the
+lane, is never 76 and keeps run-gate's exit 4; words in the lane's own output
+never decide either). Every setting is a `CONTROLLER_REMOTE_*` variable in
 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md); `CONTROLLER_REMOTE_GATE_HOSTS`
 is required. The weights sample is `remote-gate-weights.tsv.example`.
 `-- --base <ref>` (or `--base=<ref>`) after the commit is accepted as a spelling
