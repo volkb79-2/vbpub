@@ -88,6 +88,17 @@ calling container to translate bind paths and chooses the host cgroup inspector.
 With the flag it skips both container lookups, uses the local paths directly,
 and reads the loaded systemd slice and cgroup from the host.
 
+Prerequisites:
+
+- run the command below from the repository checkout, whose `libraries/cowtree`
+  resolver and `vm-lab/vm-lab` wrapper the recipe uses;
+- Python 3.11 or newer, as required by vm-lab;
+- a reachable local Docker daemon;
+- the QEMU guest image, either built as the local `vm-lab-qemu:local` tag with
+  `vm-lab/vm-lab image build` or named by `VM_LAB_QEMU_IMAGE`;
+- the host OVMF code and variable template at
+  `/usr/share/OVMF/OVMF_CODE_4M.fd` and `/usr/share/OVMF/OVMF_VARS_4M.fd`.
+
 Choose one exact guest token and reuse it unchanged in the container name, state
 directory basename, network name, and every teardown command. Use plain ASCII
 letters, digits and hyphens for the token; do not use wildcards or discover a
@@ -95,11 +106,14 @@ guest by a prefix.
 
 ```sh
 GUEST='<guest-name>'                 # exact token for this one run
+# debian-rollback-specific; another topic replaces this line.
 PROJECT=scripts/debian-rollback
 STATE_DIR=$(libraries/cowtree/repo-path vm-lab --project "$PROJECT")/"$GUEST"
 NETWORK="$GUEST-net"
 SLICE="${CGROUP_PARENT_DEV_BACKGROUND:?host lease must set the loaded slice}" # selected by host policy
+# debian-rollback-specific; another topic replaces this line.
 BASE=$(libraries/cowtree/repo-path vm-images)/debian-13-generic-amd64.raw
+# debian-rollback-specific; another topic replaces this line.
 SEED=$(libraries/cowtree/repo-path iso)/debian-rollback-builder.iso
 mkdir -p "$STATE_DIR"
 
@@ -129,10 +143,9 @@ vm-lab/vm-lab start \
 ```
 
 The network must be a dedicated user-defined bridge, not `host`, `none`, or
-`container:<name>`. Omit `--internal` when the guest needs package downloads.
-For an installed disk that boots without builder media, omit both `--seed-iso`
-and `--boot-order dc`. For a CIDATA configuration image, add
-`--config-disk "$CONFIG_DISK"`; it is attached read-only as a virtio disk.
+`container:<name>`. For an installed disk that boots without builder media,
+omit both `--seed-iso` and `--boot-order dc`. For a CIDATA configuration image,
+add `--config-disk "$CONFIG_DISK"`; it is attached read-only as a virtio disk.
 
 The container caps are 2 vCPUs (quota), CPU shares 64, guest RAM 2 GiB plus
 512 MiB container overhead, zero swap, PID limit 128, all Linux capabilities
@@ -156,6 +169,14 @@ docker network rm "$NETWORK"
 only the stopped, exact-name container. Remove the network only after no
 container uses it. To resume the same guest, rerun the original `start` command
 with `--resume` and the same base, firmware, media, network and slice.
+
+If the guest is unresponsive, including after a panic, use the exact-name
+forced path and then remove the stopped container:
+
+```sh
+docker kill "$GUEST"
+vm-lab/vm-lab destroy --name "$GUEST"
+```
 
 ### Console options
 
