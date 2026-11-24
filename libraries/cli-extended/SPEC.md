@@ -615,6 +615,35 @@ that emits JSON or another machine-readable result must keep it free of ANSI,
 including when `--color` was supplied. Query the actual destination stream
 because stdout and stderr can have different terminal states.
 
+### Line-stream severity rendering
+
+`CliOutput.line_stream(stream)` returns a shared
+`cli_extended.line_stream.LineStreamRenderer` bound to that destination.
+The factory passes `color_enabled(stream)` and the invocation's JSON mode to
+the renderer. The renderer never reads the environment or calls `isatty()`.
+
+`LineStreamRenderer.write(text)` buffers until LF or `flush()` and returns the
+number of input characters accepted. LF is the only line boundary; HT and CR
+remain line content, matching CMRU. Each complete or flushed line is processed
+separately. Exactly `[INFO]`, `[WARN]`, and `[ERROR]` at the start of a line
+are recognised; other text, including `[DEBUG]`, is unchanged.
+
+Plain mode preserves the textual prefix contract. For benign input, its final
+output is byte-identical after final flush to CMRU's `SeverityStream` plain
+output for the same input. Colour mode wraps only the prefix in green, yellow,
+or red SGR and emits no other ANSI. JSON mode emits no ANSI even when colour
+was explicitly forced. The same complete input must render identically when
+written in one chunk, at any single split position, or in any multi-split
+partition.
+
+Input-origin terminal controls are sanitised before line recognition in every
+mode. The renderer strips ESC-based and single-byte C1 CSI and OSC sequences,
+incomplete CSI/OSC tails, all C0 controls except LF, HT, and CR, DEL, and other
+C1 controls. OSC payloads include their LF bytes and are stripped with the
+sequence. A malformed CSI ends at LF, which is preserved. There is no visible
+caret replacement. Only the renderer's own severity SGR may reach the stream;
+the severity-only engine emits no OSC 8 hyperlinks.
+
 ### Progress
 
 Long-running verbs that provide progress should expose the following modes:

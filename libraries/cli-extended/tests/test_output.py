@@ -126,6 +126,55 @@ def test_public_color_policy_is_stream_specific(monkeypatch):
     assert output.color_enabled() is False
 
 
+def test_line_stream_factory_uses_the_destination_streams_colour_policy(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
+    tty = _TTYStream()
+    redirected = io.StringIO()
+    output = CliOutput(IDENTITY, stdout=tty, stderr=redirected)
+
+    colour_renderer = output.line_stream(tty)
+    colour_renderer.write("[INFO] ready\n")
+    colour_renderer.flush()
+    assert tty.getvalue() == "\033[32m[INFO]\033[0m ready\n"
+
+    plain_renderer = output.line_stream(redirected)
+    plain_renderer.write("[INFO] ready\n")
+    plain_renderer.flush()
+    assert redirected.getvalue() == "[INFO] ready\n"
+
+
+def test_line_stream_factory_honours_no_color_on_a_tty(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    tty = _TTYStream()
+    renderer = CliOutput(IDENTITY).line_stream(tty)
+
+    renderer.write("[WARN] waiting\n")
+    renderer.flush()
+
+    assert tty.getvalue() == "[WARN] waiting\n"
+
+
+def test_line_stream_factory_keeps_forced_colour_on_a_redirected_stream():
+    redirected = io.StringIO()
+    renderer = CliOutput(IDENTITY, color=True).line_stream(redirected)
+
+    renderer.write("[ERROR] failed\n")
+    renderer.flush()
+
+    assert redirected.getvalue() == "\033[31m[ERROR]\033[0m failed\n"
+
+
+def test_line_stream_factory_keeps_forced_colour_out_of_json_output():
+    redirected = io.StringIO()
+    renderer = CliOutput(IDENTITY, color=True, json_mode=True).line_stream(redirected)
+
+    renderer.write("\x1b[31m[ERROR] failed\x1b[0m\n")
+    renderer.flush()
+
+    assert redirected.getvalue() == "[ERROR] failed\n"
+
+
 @pytest.mark.parametrize("no_color", [None, "", "1", "0", "false"])
 @pytest.mark.parametrize("term", [None, "dumb", "xterm"])
 def test_automatic_color_requires_tty_nonempty_no_color_and_non_dumb_term(

@@ -1,170 +1,151 @@
 # Line-stream renderer design
 
-**Status:** design proposal; no implementation is included in this package.
+**Status:** implemented by CLI-EXT-35 and CLI-EXT-38. Scope is severity
+rendering and input-escape sanitisation only.
 
 ## Problem
 
-`cli-extended` already owns `CliOutput` and the shared colour decision, while
-CMRU's `cmru.output.SeverityStream` maintains a separate line-start parser and
-colour table. That split makes terminal presentation differ between consumers
-and leaves each one to solve line boundaries, inline decoration, and safe
-terminal escapes on its own. The operator's direction is one line-stream
-renderer in `cli-extended`, exposed through `CliOutput` and adopted by CMRU.
+`CliOutput.color_enabled(stream)` owns the shared colour policy, while CMRU
+and CIU each carry a separate `SeverityStream` with its own line parsing and
+ANSI table. CMRU has fixed its multi-line write defect; CIU has not. Both
+copies also pass input-origin terminal escapes through unchanged.
+
+The shared engine must preserve their machine-readable textual prefix
+contract, process every line independently, remain equivalent under arbitrary
+write chunking, and remove hostile input controls at the terminal boundary.
 
 ## Decided direction
 
-- The renderer consumes text as lines and decorates each line. A severity token
-  at the start of a line selects that line's severity prefix and colour
-  treatment. Each line in a multi-line write is processed separately, with
-  chunking behaviour covered by the same equivalence contract as P14. P14
-  separately fixes the current CMRU `SeverityStream` multi-line defect; this
-  design does not include that fix.
-- Within a line, the renderer can highlight file paths, URLs, commit-like hex
-  hashes, and branch names. On a colour-capable TTY, URLs can be emitted as
-  OSC 8 hyperlinks.
-- On a TTY with colour enabled, a small Markdown subset is rendered:
-  `` `code` ``, `**bold**`, and `[text](url)`. When the stream is not a TTY,
-  colour is off, or JSON mode is active, Markdown remains its original plain
-  source.
-- `CliOutput.color_enabled(stream)` remains the sole colour policy. The
-  renderer does not inspect `NO_COLOR`, arguments, or TTY state to invent a
-  second colour decision. JSON output stays plain even when colour is forced.
-- `CliOutput` and CMRU share this engine. CMRU's output layer becomes a thin
-  wrapper, and its many call sites move in small increments: new code and
-  call sites already being changed use the renderer; there is no big-bang
-  rewrite.
+- The renderer recognises exactly `[INFO]`, `[WARN]`, and `[ERROR]` at the
+  start of a line. Other labels, including `[DEBUG]`, and the same tokens
+  later in a line remain ordinary text.
+- LF is the only line boundary. Each line in a multi-line write is processed
+  separately. CR and HT are content bytes, matching the current CMRU
+  `SeverityStream`; CR is not treated as a redraw boundary.
+- Plain mode leaves the sanitised text and its textual severity prefix
+  unchanged. For benign input, the final output is byte-identical to CMRU's
+  `SeverityStream` plain output for the same complete input and final flush.
+- Colour mode wraps only the severity prefix with the existing CMRU palette:
+  green `INFO`, yellow `WARN`, and red `ERROR`. It never changes the prefix
+  text. JSON mode suppresses all generated ANSI even when colour was forced.
+- The engine receives already-resolved `color` and `json_mode` flags. It
+  never reads the environment, calls `isatty()`, or infers a second colour
+  policy.
+- A partial line is buffered until LF or `flush()`. This deliberately trades
+  live partial-line progress for deterministic line recognition and
+  chunking equivalence.
 
-## Public surface proposal
+Path, URL, hash, and branch highlighting (CLI-EXT-36), the inline Markdown
+subset (CLI-EXT-37), and OSC 8 hyperlinks are deferred. The engine emits no
+OSC sequences.
 
-The following names and placement are proposals for the implementation work;
-they are not a committed API:
+## Public surface
 
-- Add `cli_extended.line_stream.LineStreamRenderer` in a new
-  `cli_extended.line_stream` module. It is a stdlib-only text-stream adapter
-  with `write(text)` and `flush()` methods. It owns line segmentation and
-  rendering, but accepts presentation decisions already resolved by its
-  caller. It does not inspect the environment or call `isatty()` itself.
-- Add `CliOutput.line_stream(stream)` as the supported factory. It uses the
-  explicit destination stream with `self.color_enabled(stream)`, carries the
-  invocation's JSON mode, and supplies the TTY fact needed for TTY-only
-  features. The factory keeps colour resolution at `CliOutput`; callers do not
-  pass command-line switches to the renderer.
-- Export the renderer from `cli_extended` only if the implementation confirms
-  that direct construction is a supported use case. Ordinary consumers should
-  obtain it from `CliOutput`, so the shared policy and JSON mode cannot be
-  accidentally bypassed.
+`cli_extended.line_stream.LineStreamRenderer` is a stdlib-only text adapter:
 
-The resolved colour flag controls SGR styling and inline highlights. OSC 8 is
-additionally limited to a TTY. Markdown transformation follows the stricter
-decided rule: it is enabled only for a TTY when the shared colour policy is on
-and JSON mode is off. Thus `--color` can continue to force SGR presentation on
-a redirected human stream, but does not rewrite Markdown there or add OSC 8.
-JSON mode suppresses all styling and Markdown transformation regardless of a
-forced colour setting. Existing plain primary-result and JSON methods remain
-plain; the line renderer is for text streams, not a JSON serializer.
+```python
+LineStreamRenderer(stream, *, color: bool, json_mode: bool)
+renderer.write(text) -> int
+renderer.flush() -> None
+```
 
-## Rendering and escape safety
+`write()` returns the input character count, including characters held
+between the write and a later LF or flush. `flush()` renders the current
+unterminated line, discards any incomplete input escape tail, and flushes
+the destination stream.
 
-The renderer should sanitize input-origin terminal control sequences before
-recognition and decoration. Untrusted ANSI CSI and OSC sequences must be
-stripped or visibly neutralized; the renderer may then add only its own known
-SGR sequences and OSC 8 links. This applies to rendered terminal text and its
-plain fallback so an input escape cannot survive merely because a stream is
-redirected. OSC 8 is generated only for a colour-enabled TTY, and its target
-must be constructed from validated text rather than copied as an escape
-sequence.
+Ordinary consumers obtain the renderer through:
 
-Highlighting and Markdown are limited to text within each line. The engine
-must keep generated opening and closing sequences balanced when a line ends,
-including when a single `write()` contains several lines. It must preserve
-line content and line endings apart from the explicitly requested formatting
-and control-sequence sanitization.
+```python
+renderer = runtime.output.line_stream(destination)
+```
 
-## Testing approach for implementation packages
+`CliOutput.line_stream(stream)` resolves `color_enabled(stream)` for that exact
+destination and carries the invocation's JSON mode. The class remains
+importable from its module for focused tests and adapters, but is not re-
+exported from the package root; the factory is the supported construction
+path so a consumer does not accidentally bypass the shared policy.
 
-Use golden strings for the same input in these modes: colour-enabled TTY,
-colour-disabled TTY, redirected stream, and JSON mode with colour forced. Pin
-severity handling, every supported Markdown construct, each highlighter,
-OSC 8 placement, and hostile ANSI/OSC input. Include a redirected forced-colour
-case to distinguish SGR policy from TTY-only Markdown and hyperlinks. The
-plain-mode goldens must show Markdown source unchanged and no generated ANSI or
-OSC; JSON goldens must remain plain even when colour is forced.
+## Rendering contract
 
-Add a chunking-equivalence property: writing a complete input in one call and
-writing the same characters across arbitrary chunk boundaries, followed by
-the same flush, produces identical output. Include splits inside a severity
-token, Markdown delimiter, URL, hash, branch name, and newline, plus multi-line
-writes and a final unterminated line. Keep these tests deterministic; do not
-use sleeps or timing thresholds. Use small, explicit fake TTY streams and
-assert exact bytes/text rather than terminal screenshots.
+Recognition happens after sanitisation. Thus a discarded CSI prefix cannot
+hide a severity token, and an escape inserted inside a token cannot split
+recognition across an accidental boundary. A severity token produced by
+joining separate writes is still recognised if no newline or flush has
+finalised the current line.
 
-## CMRU migration steps
+The colour output for a recognized prefix is exactly:
 
-Each item is a separate implementation package and has its own close condition.
+```text
+\x1b[32m[INFO]\x1b[0m rest-of-line
+\x1b[33m[WARN]\x1b[0m rest-of-line
+\x1b[31m[ERROR]\x1b[0m rest-of-line
+```
 
-1. **Engine core (CLI-EXT-35).** Implement line segmentation, per-line
-   severity handling, and incremental writes in the shared engine. **Done
-   when:** plain and colour golden strings cover single- and multi-line writes,
-   and chunking-equivalence passes for complete inputs.
-2. **Inline highlighters (CLI-EXT-36).** Add paths, URLs, commit-like hashes,
-   and branch names, with OSC 8 for URLs only under the decided TTY policy.
-   **Done when:** token-level golden cases cover each kind, adjacent
-   punctuation, non-matches, and escape injection in candidate text.
-3. **Markdown subset (CLI-EXT-37).** Add inline code, bold, and links without
-   introducing a general Markdown dependency. **Done when:** exact TTY output
-   is pinned for each construct and non-TTY, colour-off, and JSON output retain
-   the original Markdown source.
-4. **`CliOutput` exposure (CLI-EXT-38).** Add the factory that applies the
-   existing colour policy and JSON/plain rules. **Done when:** tests prove the
-   destination stream is used for the colour decision and forced colour never
-   styles JSON.
-5. **CMRU engine adoption (CLI-EXT-39).** Replace the local rendering engine
-   in `cmru.output` with a thin adapter over the released shared API. Keep
-   CMRU's existing output contract covered; decide the existing optional short
-   timestamp behavior before removing its implementation. **Done when:**
-   CMRU output tests prove the adapter delegates to the shared engine and no
-   second severity/line parser remains in CMRU.
-6. **Incremental CMRU call-site migration (CLI-EXT-40).** New CMRU output and
-   call sites already being changed use the shared renderer. Leave untouched
-   call sites alone until their own small package. **Done when:** every call
-   site changed in the package uses the shared API, its behavior is covered,
-   and the diff contains no unrelated call-site rewrite.
+Only those renderer-owned SGR bytes are added. No input-origin SGR is
+preserved, including bytes directly around a severity token.
+
+## Escape safety
+
+The input sanitiser runs before line segmentation and severity recognition,
+in plain, colour, and JSON modes. It uses a streaming state machine so splits
+inside an escape sequence remain equivalent to a single write.
+
+The following input bytes are stripped rather than rendered visibly:
+
+- Complete ESC-based CSI sequences: `ESC [` through a final byte `0x40..0x7E`.
+- Complete single-byte C1 CSI sequences: U+009B through the same final byte.
+- Complete ESC-based OSC sequences: `ESC ]` through BEL or ST (`ESC \`).
+  All payload bytes, including LF, are part of the stripped sequence.
+- Complete single-byte C1 OSC sequences: U+009D through BEL or U+009C.
+- A lone ESC, and any ESC sequence that is neither CSI nor OSC: the ESC is
+  removed and the following printable character is processed normally.
+- Every C0 control (U+0000..U+001F) except LF, HT, and CR; DEL (U+007F);
+  and every other C1 control in U+0080..U+009F.
+- Incomplete CSI/OSC tails and their consumed parameters/payload. They are
+  discarded when an invalid byte ends the sequence, when `flush()` occurs,
+  or when a malformed CSI reaches LF; LF itself is then preserved.
+
+There is no caret or symbolic replacement: "neutralised" here means the
+unsafe bytes are absent from the output. The engine only emits the
+renderer-owned SGR described above. It does not generate hyperlinks.
+
+## Testing approach
+
+Exact-string goldens cover:
+
+- colour-enabled TTY and colour-disabled TTY decisions supplied by `CliOutput`;
+- forced colour on a redirected destination;
+- forced colour with JSON mode, which remains ANSI-free;
+- hostile CSI, OSC, C0, DEL, and C1 input in plain, colour, and JSON modes;
+- single-line and multi-line writes, including a final unterminated line and
+  `flush()`;
+- the shared plain cases that prove CMRU's textual `[INFO]/[WARN]/[ERROR]`
+  contract without importing CMRU.
+
+A deterministic chunking test writes the same sanitised message in one chunk,
+at every single split position, and in several multi-split partitions. The
+message splits severity tokens, CSI/OSC sequences, CRLF/LF boundaries, and
+ends with an unterminated line. Tests do not sleep or depend on timing.
+
+## Adoption sequence
+
+CLI-EXT-35 and CLI-EXT-38 stop at the shared engine and factory. CLI-EXT-39
+remains the CMRU thin-adapter adoption tracked by CMRU KI-185; it must decide
+how CMRU's optional short timestamp prefix is applied. CLI-EXT-40 continues
+the incremental call-site migration. No CMRU or CIU code changes are part of
+this package.
 
 ## Risks
 
-- A line-aware renderer may need to retain a partial token or line between
-  writes. Buffering too much can delay progress output; buffering too little
-  can make decoration depend on write chunk boundaries.
-- File paths, branch names, hashes, URLs, and Markdown can overlap. False
-  positives or an unclear precedence rule can corrupt otherwise useful text.
-- OSC 8 and ANSI sequences create an injection boundary. Sanitizing input and
-  emitting only balanced renderer-owned sequences are required for safety.
-- `CliOutput` redacts diagnostic messages and primary results. A stream adapter
-  must not create a path around that redaction boundary.
-- CMRU currently supports an opt-in short timestamp prefix in its wrapper.
-  Shared-engine adoption must preserve or explicitly retire it as a separate
-  decision, rather than lose it as an incidental side effect.
-- The renderer must remain stdlib-only so it does not add runtime dependencies
-  to CMRU or other consumers.
-
-## Open questions
-
-- Which severity spellings are recognized, and how are `ERROR:`/`WARNING:`
-  tokens related to existing `[ERROR]`/`[WARN]`/`[INFO]`/`[DEBUG]` tags?
-- What exact path, URL, hash, and branch grammars and token boundaries should
-  be used, and what happens when a candidate also contains Markdown syntax?
-- Which URL schemes and characters are allowed in generated OSC 8 targets?
-  Do Markdown links use the same validation and OSC 8 policy as bare URLs?
-- What escaping, nesting, malformed-delimiter, and link-label rules define the
-  small Markdown subset?
-- What should `flush()` do with a partial severity token or unterminated line,
-  and what latency guarantee should partial progress writes retain?
-- Should lone carriage returns be treated as line boundaries, retained as
-  content, or handled as progress redraws?
-- How should malformed or incomplete ANSI/OSC sequences be neutralized, and
-  should the safe fallback visibly spell them or remove them?
-- Does CMRU keep its opt-in short timestamp prefix, and if so, does the thin
-  adapter apply it or does it become an explicit renderer option?
-- What exact SGR styles and colors identify paths, hashes, branches, Markdown
-  code, and bold text? The shared policy is fixed; these visual choices are
-  not specified here.
+- Buffering every partial line delays progress that does not end in LF; callers
+  needing live non-line progress should not route those writes through this
+  renderer.
+- Removing malformed or incomplete OSC tails can discard text until
+  `flush()`; this is the safe failure mode for an unterminated terminal
+  control string.
+- CR remains content for CMRU byte compatibility and can still redraw a
+  terminal line. A future policy change would need to be explicit and
+  coverage-visible.
+- CMRU adoption must preserve redaction ordering and settle the short
+  timestamp behaviour; this shared engine does neither implicitly.

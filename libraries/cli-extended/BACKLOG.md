@@ -709,7 +709,8 @@ reports `leaked=0` for the whole suite and for `test_procio.py`.
 
 ## CLI-EXT-35 — shared line-stream engine with per-line severity rendering
 
-**Status:** OPEN. **Type:** Feature. **Area:** Output and terminal rendering.
+**Status:** FIXED 2026-11-24 by the severity-only line-stream branch.
+**Type:** Feature. **Area:** Output and terminal rendering.
 
 **Observed.** `CliOutput` formats diagnostics while CMRU keeps a separate
 `SeverityStream`; neither is the shared line-stream engine specified for
@@ -728,6 +729,10 @@ Keep colour decisions outside the engine and pass them in from `CliOutput`.
 single- and multi-line writes, and a deterministic chunking-equivalence test
 proves that arbitrary write partitions of the same complete input render
 identically.
+
+**Landed.** `LineStreamRenderer` now processes every LF-delimited line,
+buffers partial lines, strips input-origin terminal controls before
+recognition, and passes the exact plain/colour/multi-line/chunking oracles.
 
 ## CLI-EXT-36 — highlight paths, URLs, hashes, and branch names in line output
 
@@ -772,7 +777,8 @@ Markdown source without generated terminal escapes.
 
 ## CLI-EXT-38 — expose the line-stream renderer through `CliOutput`
 
-**Status:** OPEN. **Type:** Feature. **Area:** Output API and terminal policy.
+**Status:** FIXED 2026-11-24 by the severity-only line-stream branch.
+**Type:** Feature. **Area:** Output API and terminal policy.
 
 **Observed.** `CliOutput.color_enabled(stream)` is already public, but there is
 no `CliOutput` entry point for the shared line-stream renderer.
@@ -787,27 +793,33 @@ mode to the renderer. Do not duplicate TTY or environment policy inside it.
 
 **Close when.** API tests prove the requested destination determines the
 shared colour result, `NO_COLOR` and explicit colour switches retain their
-existing meaning, Markdown follows its TTY rule, and JSON has no ANSI or OSC
-even when colour is forced.
+existing meaning, forced colour still styles a redirected human stream, and
+JSON has no ANSI even when colour is forced.
+
+**Landed.** `CliOutput.line_stream(stream)` passes `color_enabled(stream)` and
+this invocation's JSON mode to the shared renderer. Markdown and OSC 8 are
+outside this package and remain deferred under CLI-EXT-37.
 
 ## CLI-EXT-39 — make CMRU's output layer a thin adapter over the shared engine
 
 **Status:** OPEN. **Type:** Feature. **Area:** CMRU adoption and output.
 
-**Observed.** `cmru/src/cmru/output.py` owns `SeverityStream`, with its own
+**Observed.** The shared severity renderer now exists in `cli-extended`,
+but `cmru/src/cmru/output.py` still owns `SeverityStream`, with its own
 line-start parsing, severity styling, and TTY colour selection.
 
 **Cause/Need.** The output layer must share the `cli-extended` implementation
 instead of maintaining a second rendering engine.
 
-**Fix.** After the shared API is available, replace CMRU's local renderer with
-a thin adapter to it. Preserve the CMRU output contract and settle the
-short-timestamp behavior recorded in the design note before removing that
-behavior.
+**Fix.** Replace CMRU's local renderer with a thin adapter to the shared API.
+Preserve the CMRU output contract and settle the short-timestamp behavior
+recorded in the design note before removing that behavior.
 
 **Close when.** CMRU output tests prove it delegates line rendering to the
 shared engine, preserve plain and terminal behavior, and the CMRU adapter
 contains no independent severity parser or ANSI renderer.
+
+**Tracking:** CMRU KI-185.
 
 ## CLI-EXT-40 — migrate CMRU output call sites incrementally
 

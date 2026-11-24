@@ -13,6 +13,7 @@ from enum import Enum
 from typing import Any, TextIO
 
 from .identity import CliIdentity
+from .line_stream import LineStreamRenderer
 
 #: CLI-EXT-23. ``"once"`` (default, unchanged) prints the identity headline
 #: after the first error of a run; ``"never"`` leaves the error as the last line.
@@ -224,6 +225,15 @@ class CliOutput:
         no_color = os.environ.get("NO_COLOR", "")
         term = os.environ.get("TERM", "")
         return self._is_tty(stream) and not no_color and term.lower() != "dumb"
+
+    def line_stream(self, stream: TextIO) -> LineStreamRenderer:
+        """Return the shared line renderer with this invocation's policy."""
+
+        return LineStreamRenderer(
+            stream,
+            color=self.color_enabled(stream),
+            json_mode=self.json_mode,
+        )
 
     def format_help(
         self,

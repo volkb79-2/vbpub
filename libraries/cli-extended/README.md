@@ -322,6 +322,23 @@ severity tags. A custom primary renderer can query
 for diagnostics; consumers must still keep JSON plain by disabling color when
 `runtime.json_mode` is true.
 
+For incremental text carrying the machine-readable `[INFO]`, `[WARN]`, and
+`[ERROR]` prefixes, use the shared line renderer rather than a consumer-local
+`SeverityStream`:
+
+```python
+renderer = runtime.output.line_stream(destination)
+renderer.write(text)
+renderer.flush()
+```
+
+The factory resolves colour for that exact destination and carries JSON mode.
+The renderer buffers a partial line until a newline or `flush()`, applies
+severity colour only to the recognized prefix, and strips input-origin ANSI
+CSI/OSC and unsafe controls before recognition. JSON output never receives
+generated ANSI. The current scope is severity only: path/Markdown decoration
+and OSC 8 hyperlinks are deferred.
+
 For a real executable, the package provides a black-box contract assertion:
 
 ```python
