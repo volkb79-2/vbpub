@@ -15,7 +15,8 @@ wheel dependency):
 Each piece is a pure function over versioned documents, so Run-Gate, cmru and a
 fleetd campaign can all call the same committed code. The fleetd CLI is the
 reference caller; none of these commands contacts a host. Assay owns strict
-shard merging through `--merge-shards` and B565's `strict-shard` policy.
+shard merging (`--merge-shard-store`, driven by run-gate's `--merge-shards N`;
+B565's `strict-shard` policy).
 
 The documents these commands read and write are `fleet-r2-scope/1`,
 `fleet-r2-scope-cursor/2` (`fleet-r2-scope-cursor/1` is refused with its
@@ -233,8 +234,8 @@ campaign's budgets too small. `memory_peak_bytes` is the cgprofile observer's
 The next campaign passes that file to `fleet sizing --measurement` and the
 `basis` becomes `measured`.
 
-Strict shard merging is assay-owned through `--merge-shards` and B565's
-`strict-shard` policy. Fleetd copies stores for collection but does not compare
+Strict shard merging is assay-owned (`--merge-shard-store`, driven by
+run-gate's `--merge-shards N`; B565's `strict-shard` policy). Fleetd copies stores for collection but does not compare
 shard identities or produce a merge document.
 
 ## What is not covered

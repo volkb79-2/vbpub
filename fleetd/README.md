@@ -160,8 +160,9 @@ entry, daemon, and thrashguard job registration remain follow-up work (see the
 
 Multi-host, multi-instance R2 is the default way mutation judging runs, and
 fleetd supplies three pieces that make it a mechanism rather than per-tool
-scripts. None of them contacts a host. Assay owns strict shard merging through
-its `--merge-shards` command and B565's `strict-shard` policy.
+scripts. None of them contacts a host. Assay owns strict shard merging
+(`--merge-shard-store`, driven by run-gate's `--merge-shards N`; B565's
+`strict-shard` policy).
 
 - `fleet scope` produces the campaign's candidate-id set. The default scope
   judges only the lines added since the tool's previous release tag; a

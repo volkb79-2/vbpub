@@ -32,7 +32,7 @@
 | FD-024 | Deferred re-queue de-duplication is not pinned for three or more hosts | P3 | DONE | 2026-11-14 |
 | FD-025 | The first stall window uses unscaled reference seconds when no comparable host speed reference exists | P3 | DONE | 2026-11-14 |
 | FD-026 | A host that stays in ERROR has no loss timer | P3 | DONE | 2026-11-14 |
-| FD-029 | Nothing wires `fleet scope`/`fleet sizing`/`fleet merge-check` into a release or campaign workflow | P2 | OPEN | 2026-11-15 |
+| FD-029 | Nothing wires `fleet scope`/`fleet sizing`/`fleet measurement` into a release or campaign workflow | P2 | OPEN | 2026-11-15 |
 | FD-030 | The new per-worker demand keys are not accepted inside `run-gate.toml` | P2 | OPEN | 2026-11-15 |
 | FD-031 | Sizing budgets come from medians and a fixed margin, not a measured tail | P2 | DONE | 2026-11-15 |
 | FD-032 | `fleet scope` reads a checkout it never checks for uncommitted or untracked work | P3 | DONE | 2026-11-15 |
@@ -623,21 +623,21 @@ threshold keeps its batches; SPEC and design guide state the rule.
 
 **State:** OPEN. **Priority:** P2. **Filed:** 2026-11-15.
 
-`fleet scope`, `fleet sizing`, `fleet measurement` and `fleet merge-check` are
-committed, tested producers, but nothing calls them yet: a release step does
-not regenerate the candidate-id file, a campaign does not size its shards from
-the plan, and a shard does not write its `fleet-shard-identity/1` document.
+`fleet scope`, `fleet sizing` and `fleet measurement` are committed, tested
+producers, but nothing calls them yet: a release step does not regenerate the
+candidate-id file and a campaign does not size its shards from the plan.
+(`fleet merge-check` and the shard identity document were deleted by FD-041;
+strict shard merging is assay's, B565 `strict-shard`.)
 Today an operator runs each command by hand and passes the results on. The
 intended callers are the Run-Gate campaign client (RG-276) and the Assay
 supervisor (`--shard`, `--instances`), and neither has the wiring yet.
 
 **Wanted.** Decide which owner calls each producer and at which step: the
 changed-lines id file at the release step (cmru release), the sizing document
-at campaign start, the measurement recorder after collection, and the identity
-document at shard start with the merge check before any merged verdict. **Close
-when.** One end-to-end invocation of a real campaign runs all four without an
-operator retyping a path, and a test pins that a stale id file or a mismatched
-shard stops the flow instead of being noticed later.
+at campaign start, and the measurement recorder after collection. **Close
+when.** One end-to-end invocation of a real campaign runs all three without an
+operator retyping a path, and a test pins that a stale id file stops the flow
+instead of being noticed later.
 
 ## FD-030 The per-worker demand keys are not accepted inside `run-gate.toml`
 

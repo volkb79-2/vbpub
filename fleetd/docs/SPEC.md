@@ -80,9 +80,8 @@ guard rule is validated. `config_digest` remains the SHA-256 digest of the
 configuration bytes, including drop-ins. The guard runtime state and KSM
 opt-in shim are nullable unless their paths are configured. The state is read
 from the owner's configured runtime-state source, never inferred from rule
-validation; its string values and meanings are unchanged, so any historical
-rules-invalid value remains accepted for compatibility even though fleetd can
-no longer produce it. `memory.for_lanes_bytes` is raw `MemTotal`. The collector reports
+validation (rule validation never fed it); its string values and meanings are
+unchanged. `memory.for_lanes_bytes` is raw `MemTotal`. The collector reports
 configured slice presence and `cpu.weight`, but does not collect the parent
 slice's `memory.min`. Older host-facts/1 inputs may include
 `control_plane.memory_min_bytes`; the validator accepts that legacy field and
@@ -429,9 +428,10 @@ probing deterministic job names.
 ## The default R2 campaign
 
 Multi-host, multi-instance R2 is the default: one lane, several worker
-instances per host, shards sized from measured units, a declared scope, and a
-merge check. Four commands implement it; each reads and writes versioned
-documents and none contacts a host. See [the R2 default page](R2-DEFAULT.md)
+instances per host, shards sized from measured units, and a declared scope.
+Three commands implement it (strict shard merging is assay's, B565's
+`strict-shard` policy); each reads and writes versioned documents and none
+contacts a host. See [the R2 default page](R2-DEFAULT.md)
 for the worked examples.
 
 `fleet scope` produces the candidate-id set. Its default mode
@@ -504,8 +504,8 @@ candidate plus 1e-6 s (the recorder's six-decimal rounding). A missing number is
 `resource-profile/1` metric; Assay 12 removed its own sampled
 `peak_rss_bytes`.
 
-Strict shard merging is assay-owned through `--merge-shards` and B565's
-`strict-shard` policy. Fleetd no longer compares shard identities or emits a
+Strict shard merging is assay-owned (`--merge-shard-store`, driven by
+run-gate's `--merge-shards N`; B565's `strict-shard` policy). Fleetd no longer compares shard identities or emits a
 merge document.
 
 ## Collection

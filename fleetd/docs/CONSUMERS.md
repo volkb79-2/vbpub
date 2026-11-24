@@ -615,8 +615,8 @@ observed. The probe and collector preserve this peak from the real progress
 record through duplicate ownership. Pass that file to
 `fleet sizing --measurement` next time.
 
-Strict shard merging belongs to assay: use `--merge-shards` with B565's
-`strict-shard` policy. Fleetd copies shard stores but does not compare
+Strict shard merging belongs to assay: use `--merge-shard-store` (driven by
+run-gate's `--merge-shards N`) with B565's `strict-shard` policy. Fleetd copies shard stores but does not compare
 identities or synthesize a merge document. Guard rule validation belongs to
 thrashguard (TG-1); fleetd only reports the guard's merged `enabled` flag,
 configuration digest and owner-emitted runtime state in `host-facts/1`.

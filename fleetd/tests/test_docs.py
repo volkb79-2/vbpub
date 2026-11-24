@@ -109,7 +109,7 @@ def test_docs_keep_the_first_week_boundary_and_closed_vocabularies_visible():
 
 def test_public_docs_do_not_advertise_the_removed_fleet_owned_surfaces():
     combined = "\n".join(path.read_text(encoding="utf-8") for path in PUBLIC_DOCS)
-    for value in ("fleet merge-check", "fleet-shard-identity/1", "fleet-shard-identity-set/1", "fleet guard validate"):
+    for value in ("fleet merge-check", "fleet-shard-identity/1", "fleet-shard-identity-set/1", "fleet guard validate", "merge check"):
         assert value not in combined, value
 
 

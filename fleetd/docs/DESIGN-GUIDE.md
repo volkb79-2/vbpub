@@ -278,25 +278,14 @@ including it would inflate the next median forever; the per-candidate sum fields
 above count those candidates deliberately, at their bound, because they held a
 worker that long.
 
-## Why the merge check compares identity, not counts
+## Shard merging is assay's
 
-Two shards that judged different commits or different tester images produce a
-merged verdict that *looks* complete either way. The check therefore compares
-the lane, full commit, image digest, plan digest and shard count across every
-shard, and reports both values on a mismatch instead of picking one. Three
-shapes are kept distinct:
-
-- a **duplicated index** is a disagreement about which slice a store holds — a
-  refusal, never an "incomplete" report;
-- a **missing index** is a genuinely incomplete set: reported as `incomplete`
-  and refused (`--require-complete` is accepted and changes nothing), because a
-  merge over a missing shard reports its candidates as absent work;
-- a **differing field** is `mismatched` regardless of completeness.
-
-The image digest is optional in the plan executor and required by the merge
-check. That asymmetry is deliberate: refusing to run a campaign because nobody
-declared an image would be a default invented by the tool, while merging two
-unknown image identities is precisely the mixed-image merge to refuse.
+Fleetd no longer compares or merges shards; assay's strict shard merge
+(`--merge-shard-store`, B565's `strict-shard` policy) owns that, because a
+merge that only counts shards cannot tell two commits or two tester images
+apart. The plan's `execution.image_digest` stays optional: refusing to run a
+campaign because nobody declared an image would be a default invented by the
+tool. It names the tester image for measurement evidence.
 
 ## Facts are read from their owner
 
