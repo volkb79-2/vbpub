@@ -7,6 +7,9 @@ no separate version number, so entries are grouped by the work that landed.
 ## [Unreleased]
 
 ### Changed
+- `dev-profiles.toml:57` (hostobs profile): `dev_image` is now
+  `tester-unified-rust-dev:rs-20261124b`, moved by q266 (hostobs P-hostobs-09,
+  vbpub@2d2e1a566); recorded here, the file itself is unchanged by this entry.
 - `hooks/ctx-hooks.py` is now a drop-in replacement for the untracked live hook
   `.controller-state/hooks/ctx.py` (CTL-43; wiring and deleting `ctx.py` are the
   controller's step): only the command path in `.claude/settings.local.json`
