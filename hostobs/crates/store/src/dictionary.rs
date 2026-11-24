@@ -29,17 +29,19 @@
 //!
 //! # Why this is not `model::IncarnationRegistry`
 //!
-//! `store` may not depend on `model` (a path dependency rewrites `Cargo.lock`, and the lane
-//! image bakes that lock — `HOB-27`), so the index lives here with its own small entry type and
-//! the shared quality/vocabulary fixtures stay the cross-crate contract. The M2 probe owns the
-//! merge of the two (plan v4 §A.3: `bins/probe` is where the registry and the store meet).
+//! The model registry mints from `(mount id, inode)` keys and retires only after consecutive
+//! scan rounds; this index is the epoch's stored-id table and retires against segment
+//! reachability. They answer different state-machine questions even though both ultimately
+//! issue incarnation ids. The M2 probe owns the boundary between the two (plan v4 §A.3:
+//! `bins/probe` is where the registry and the store meet).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::StoreError;
 
-/// The default bound on live entries (plan v4 §A.4's `dict_active_max` proposal).
-pub const DEFAULT_ACTIVE_MAX: usize = 65_536;
+/// The default bound on live entries, re-used from [`hostobs_model::identity::DEFAULT_ACTIVE_MAX`]
+/// (plan v4 §A.4's `dict_active_max`).
+pub const DEFAULT_ACTIVE_MAX: usize = hostobs_model::identity::DEFAULT_ACTIVE_MAX;
 
 /// The longest label the index will hold, in bytes (plan v4 §B.3's entry text bound).
 pub const MAX_LABEL: usize = 256;

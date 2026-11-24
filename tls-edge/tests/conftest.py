@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -46,7 +47,14 @@ def defaults_config() -> dict:
 
 
 def merge(cfg: dict, override: dict) -> dict:
-    return RENDER.deep_merge(cfg, override)
+    """Test-local deep merge: tables merge, while scalars and lists replace."""
+    result = copy.deepcopy(cfg)
+    for key, value in override.items():
+        if isinstance(value, Mapping) and isinstance(result.get(key), Mapping):
+            result[key] = merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
 
 
 def render_to(tmp: Path, cfg: dict) -> Path:

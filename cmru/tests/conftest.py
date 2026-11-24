@@ -27,6 +27,33 @@ pytest_plugins = ["cli_extended.pytest_plugin"]
 #: The process environment when the session started (before any test ran).
 SESSION_START_ENVIRON = dict(os.environ)
 
+#: Keep the known integration/install/e2e cost centers out of a fail-fast kill's
+#: prefix. The env gate keeps every lane except the first-release R2 lane on
+#: pytest's normal collection order.
+HEAVY_LAST_ORDER_ENV = "CMRU_TEST_ORDER"
+HEAVY_LAST_ORDER_VALUE = "heavy-last"
+HEAVY_LAST_FILES = frozenset(
+    {
+        "test_release_end_to_end_real_git.py",
+        "test_tester_unified_image.py",
+        "test_installer_w1_round1.py",
+        "test_installer_inst62.py",
+        "test_installer_w1.py",
+        "test_w2_integ.py",
+        "test_release_gate.py",
+        "test_cli_review_cases.py",
+    }
+)
+
+
+def _is_heavy_last_item(item: pytest.Item) -> bool:
+    return Path(item.path).name in HEAVY_LAST_FILES
+
+
+def pytest_collection_modifyitems(config, items):
+    if os.environ.get(HEAVY_LAST_ORDER_ENV) == HEAVY_LAST_ORDER_VALUE:
+        items.sort(key=_is_heavy_last_item)
+
 
 @pytest.fixture(scope="session", autouse=True)
 def _pytest_adopts_orphaned_test_children():

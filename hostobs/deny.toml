@@ -23,11 +23,6 @@ wildcards = "deny"
 # The two local, unpublished workspace crates are path dependencies without a registry version.
 allow-wildcard-paths = true
 
-# The imported sampler lock resolves separate winnow lines through toml 0.9.8.
-[[bans.skip]]
-crate = "winnow@0.7.15"
-reason = "toml 0.9.8 and toml_parser 1.1.5 resolve separate winnow lines in the imported sampler lock"
-
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"

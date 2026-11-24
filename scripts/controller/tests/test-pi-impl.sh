@@ -48,7 +48,7 @@ git -C "$WORKTREE" commit -qm task
 cat > "$CONTROLLER_ROOT/controller.local.env" <<'ENV'
 PI_ROUTE="deepseek-pi"
 PI_MODEL="deepseek-v4.1-flash-eco"
-PI_THINKING="high"
+PI_THINKING="max"
 PI_SESSION_DIR="$HOME/.pi/agent/sessions"
 ENV
 cat > "$HOME_ROOT/.env.ai" <<'ENV'
@@ -101,7 +101,10 @@ PY
 # A deterministic hold: the fake agent keeps working until the CHECK creates
 # this file. A `sleep N` would make every case that needs "the agent is still
 # running" a race against how loaded the host is.
+# FAKE_PI_HELD_MARKER appears once the whole stream is out and the fake agent is holding: the check's "the stream is
+# complete" event.
 if [[ -n ${FAKE_PI_HOLD_UNTIL:-} ]]; then
+  [[ -z ${FAKE_PI_HELD_MARKER:-} ]] || : > "$FAKE_PI_HELD_MARKER"
   waited=0
   while [[ ! -e $FAKE_PI_HOLD_UNTIL ]]; do
     sleep 0.05
@@ -186,6 +189,27 @@ expect_rc() {
   else
     local actual=$?
     [[ $actual == "$expected" ]] || fail "command exit was $actual, expected $expected"
+  fi
+}
+
+check_pi_default_thinking_max() {
+  local home=$ROOT/default-thinking-controller rc=0 argv=''
+  mkdir -p "$home"
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" CONTROLLER_HOME="$home" \
+    PI_ROUTE=deepseek-pi-volker CONTROLLER_OD_STATE="$ROOT/default-thinking-state.json" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=default-thinking-session FAKE_PI_RC=0 PI_LIVE=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" default-thinking \
+    > "$ROOT/default-thinking.launch.log" 2>&1 < /dev/null || rc=$?
+  [[ $rc == 0 ]] || {
+    cat "$ROOT/default-thinking.launch.log" >&2
+    fail 'pi default-thinking launch failed'
+  }
+  argv=$(grep -- '^-p ' "$PI_ARGV_LOG" | tail -n 1)
+  if [[ $argv != *'--thinking max'* ]]; then
+    printf 'argv=%s\n' "$argv" >&2
+    cat "$ROOT/default-thinking.launch.log" >&2
+    fail 'pi Open Design routes do not default to the catalog maximum thinking level'
   fi
 }
 
@@ -430,31 +454,67 @@ check_retry_streams_into_run() {
     || fail 'a continuation left a temporary stream behind'
 }
 
+# CTL-55: waits on progress events, never on a clock. The fake agent HOLDS after its whole stream is in the run stream
+# (held marker); the sidecar has then consumed it once it has written a snapshot from a tick that started after the
+# marker. Snapshots are replaced atomically and each tick changes `updated_epoch` (ticks are >= 1 s apart), so the
+# third distinct snapshot seen after the marker is such a tick's. Only a generous hang guard remains, and it is
+# reported as inconclusive, never as the real failure.
+LIVE_HANG_GUARD_S=300
+
+# $1 wrapper pid, $2 hold file: let the held agent finish and reap the wrapper; a wrapper that still lives at the
+# hang guard is killed.
+live_reap() {
+  local wrapper=$1 hold=$2 deadline=$(( $(date +%s) + LIVE_HANG_GUARD_S ))
+  : > "$hold"
+  while kill -0 "$wrapper" 2>/dev/null && (( $(date +%s) < deadline )); do sleep 0.1; done
+  kill -- "$wrapper" 2>/dev/null || true
+  wait "$wrapper" 2>/dev/null || true
+}
+
 check_live_snapshot() {
-  local live=$CONTROLLER_ROOT/runs/live-run.live
-  rm -f "$CONTROLLER_ROOT/runs/live-run.done"
+  local live=$CONTROLLER_ROOT/runs/live-run.live hold=$ROOT/live-run.release held=$ROOT/live-run.held
+  local snap=$ROOT/live-run.snapshot.json
+  rm -f "$CONTROLLER_ROOT/runs/live-run.done" "$live" "$hold" "$held" "$snap"
+  # The wrapper starts pi-live.py from its own directory: a mirror whose pi-live.py is $PILIVE lets a mutant reach it.
+  local ctl=$ROOT/live-ctl
+  rm -rf "$ctl"; mkdir "$ctl"
+  ln -s "$(dirname -- "$SRC")"/* "$ctl"/
+  ln -sf "$PILIVE" "$ctl/pi-live.py"
   PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
     CONTROLLER_OD_STATE="$ROOT/live-state.json" \
     FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
     FAKE_PI_SEQUENCE='pi-tool-in-flight' FAKE_PI_COUNTER="$ROOT/live-run.counter" \
     FAKE_PI_SESSION_ID=live-run-session FAKE_PI_RC=0 \
+    FAKE_PI_HOLD_UNTIL="$hold" FAKE_PI_HELD_MARKER="$held" \
     PI_LIVE_INTERVAL_SECONDS=1 PI_EMPTY_RETRY_LIMIT=0 \
-    "$SRC" "$WORKTREE" "$PROMPT" live-run > "$ROOT/live-run.launch.log" 2>&1 < /dev/null &
+    "$ctl/$(basename -- "$SRC")" "$WORKTREE" "$PROMPT" live-run > "$ROOT/live-run.launch.log" 2>&1 < /dev/null &
   local wrapper=$!
-  local waited=0
-  while (( waited < 100 )) && ! grep -qF '"tool_in_flight": "bash"' "$live" 2>/dev/null; do
-    sleep 0.1
-    waited=$(( waited + 1 ))
+  local deadline=$(( $(date +%s) + LIVE_HANG_GUARD_S )) changes=0 current previous=
+  # Phases: the agent holds with the whole stream written, then three distinct snapshots are seen.
+  while (( changes < 3 )); do
+    if (( $(date +%s) >= deadline )); then
+      live_reap "$wrapper" "$hold"
+      cat "$ROOT/live-run.launch.log" >&2
+      fail 'inconclusive: no sidecar progress within the hang guard'
+    fi
+    if ! kill -0 "$wrapper" 2>/dev/null; then
+      : > "$hold"  # an orphaned fake pi would otherwise spin on its hold loop forever
+      wait "$wrapper" 2>/dev/null || true
+      cat "$ROOT/live-run.launch.log" >&2
+      fail 'the wrapper exited before the check released its agent'
+    fi
+    if [[ -e $held ]]; then
+      current=$(cat "$live" 2>/dev/null || true)
+      if [[ -n $current && $current != "$previous" ]]; then
+        previous=$current
+        changes=$(( changes + 1 ))
+      fi
+    fi
+    sleep 0.05
   done
-  if (( waited >= 100 )); then
-    kill -- "$wrapper" 2>/dev/null || true
-    wait "$wrapper" 2>/dev/null || true
-    cat "$ROOT/live-run.launch.log" >&2
-    fail 'the live sidecar never reported the tool call in flight'
-  fi
-  kill -- "$wrapper" 2>/dev/null || true
-  wait "$wrapper" 2>/dev/null || true
-  python3 - "$live" "$wrapper" <<'PY' || fail 'the live snapshot is missing facts'
+  printf '%s\n' "$current" > "$snap"
+  live_reap "$wrapper" "$hold"
+  python3 - "$snap" <<'PY' || fail 'the live snapshot is missing facts after the stream was consumed'
 import json, sys
 body = json.load(open(sys.argv[1], encoding="utf-8"))
 assert body["run"] == "live-run", body
@@ -1789,6 +1849,7 @@ check_job_status_validation() {
 
 if [[ -n ${PI_TEST_FOCUS:-} ]]; then
   case $PI_TEST_FOCUS in
+    default-thinking) check_pi_default_thinking_max ;;
     xtrace-key) check_xtrace_key ;;
     outcome-error) check_outcome_error ;;
     outcome-length) clean_worktree; check_outcome_length ;;
@@ -1894,6 +1955,10 @@ body = json.load(open(sys.argv[1], encoding="utf-8"))
 assert body["latest_total_tokens"] == 258492, body
 assert body["latest_total_tokens_last_report"] == 0, body
 PY
+      ;;
+    live-wrapper)
+      # Only the wrapper-driven live sidecar check (stream consumed, tool in flight).
+      check_live_snapshot
       ;;
     live-snapshot)
       # The sidecar itself is under test here, on the fixture stream a hung
@@ -2221,7 +2286,7 @@ PY
       contains "$CONSUMER_SOURCE" "\`deepseek-pi\` is the favored Pi route" 'consumer guide names the favored Pi route'
       contains "$CONSUMER_SOURCE" 'PI_ROUTE=deepseek-pi' 'consumer guide gives a Pi launch example'
       contains "$RULES_SOURCE" 'deepseek-pi-volker' 'rules list the pinned Pi routes'
-      contains "$ENV_SOURCE" 'PI_THINKING="high"' 'environment example documents Pi thinking'
+      contains "$ENV_SOURCE" 'PI_THINKING="max"' 'environment example documents Pi maximum thinking'
       contains "$README_SOURCE" 'OUTCOME=NO-REPORT' 'README documents the report outcome'
       contains "$README_SOURCE" "\`CONTEXT-FULL\`" 'README documents the context-full class'
       contains "$README_SOURCE" "\`TOOL-CALL-NO-TEXT\`" 'README documents the tool-call-no-text class'
@@ -2244,6 +2309,10 @@ PY
       contains "$CONSUMER_SOURCE" 'EMPTY-COMPLETION-RETRIES-EXHAUSTED' 'consumer guide names the exhausted continuation class'
       contains "$README_SOURCE" 'EMPTY-COMPLETION-RETRIES-EXHAUSTED' 'README names the exhausted continuation class'
       contains "$README_SOURCE" 'PI_EMPTY_RETRY_LIMIT' 'README names the continuation bound'
+      contains "$README_SOURCE" "\`EFFORT\` field is Codex-only" \
+        'README states that done-marker effort is Codex-only'
+      contains "$CONSUMER_SOURCE" "Pi records no thinking level in its \`.done\` marker" \
+        'consumer guide states that Pi records no thinking level'
       contains "$DESIGN_SOURCE" 'Continuation is bounded and class-specific' 'design guide explains the continuation bound'
       contains "$DESIGN_SOURCE" 'Why liveness is a file, not a poll of the process' 'design guide explains the liveness sidecar'
       contains "$README_SOURCE" 'job-status.sh' 'README documents the liveness read'
@@ -2314,7 +2383,7 @@ wait_launch auto-2 deepseek-pi pi-success /dev/null
 wait_launch auto-3 deepseek-pi pi-success /dev/null
 [[ $(cat "$CONTROLLER_ROOT/runs/auto-3.route") == deepseek-pi-volker ]] || fail 'third automatic pi start must alternate back to volker'
 contains "$PI_ARGV_LOG" '--model opendesign_volker/deepseek-v4.1-flash-eco' 'pi uses the selected Volker provider and default model'
-contains "$PI_ARGV_LOG" '--thinking high' 'pi defaults to high thinking'
+contains "$PI_ARGV_LOG" '--thinking max' 'pi configured default uses maximum thinking'
 contains "$PI_ARGV_LOG" "--session-dir $HOME_ROOT/.pi/agent/sessions" 'pi uses its default session directory'
 printf 'brief\n' > "$ROOT/prompt-with-newline.md"
 PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
@@ -2527,6 +2596,7 @@ else rc=$?; [[ $rc == 2 ]] || fail "run traversal exit was $rc, expected 2"; fi
 contains "$ROOT/run-traversal.log" 'invalid run name' 'pi run name traversal guard fires'
 
 check_xtrace_key
+check_pi_default_thinking_max
 check_outcome_error
 check_outcome_length
 check_outcome_tool_call_no_text
@@ -2579,7 +2649,7 @@ contains "$DESIGN_SOURCE" 'Pi 1.5.0 can report a provider 402' 'design guide exp
 contains "$CONSUMER_SOURCE" "\`deepseek-pi\` is the favored Pi route" 'consumer guide names the favored pi route'
 contains "$CONSUMER_SOURCE" 'PI_ROUTE=deepseek-pi' 'consumer guide has a copyable pi launch'
 contains "$RULES_SOURCE" 'deepseek-pi-volker' 'controller rules list pinned pi routes'
-contains "$ENV_SOURCE" 'PI_THINKING="high"' 'local environment example documents the thinking default'
+contains "$ENV_SOURCE" 'PI_THINKING="max"' 'local environment example documents the maximum thinking default'
 if grep -Eq 'OPENDESIGN_API_KEY_[A-Z0-9_]+=' "$ENV_SOURCE"; then
   fail 'controller local environment example contains an API-key assignment'
 fi

@@ -1,9 +1,9 @@
 //! The send-hub golden test (WIRE.md §11.4 hub cases, §5.3).
 //!
 //! Every `fixtures/stream/hub-*.json` is replayed against `SendHub` with a fake clock (`t_ms`
-//! becomes `now_ns`): each step's outputs (outcome, pools of the watched connections, uids and
-//! the global pool, the pinned head, END counts, `query_room`, `head_partial`, the connections
-//! `poll` closes) must equal the fixture's hand-derived expectation exactly. The fixtures are
+//! becomes `now_ns`): each step's outputs (outcome, the watched connection and global pools, the
+//! pinned head, END counts, `query_room`, `head_partial`, the connections `poll` closes) must
+//! equal the fixture's hand-derived expectation exactly. The fixtures are
 //! written by `python/reference/make_hub_fixtures.py` from the rules of §5.3, not by running a
 //! hub. Every block is a 2-section BLOCK of the stated length: `corr` at 8, `dropped` at 104,
 //! the tail from 112 filled with the step's `tag` (default 160).
@@ -23,7 +23,7 @@ use json::Json;
 
 const STREAM_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/stream");
 const NS_PER_MS: u64 = 1_000_000;
-const HUB_CASES: usize = 20;
+const HUB_CASES: usize = 19;
 const DEFAULT_TAG: u8 = 160;
 const PREFIX_LEN: usize = 112;
 
@@ -111,10 +111,8 @@ fn limits_of(spec: &Json) -> QueueLimits {
     let bytes = |key: &str| number(spec.field(key), key);
     QueueLimits {
         client_queue_bytes: bytes("client_queue_bytes"),
-        uid_live_bytes: bytes("uid_live_bytes"),
         global_live_bytes: bytes("global_live_bytes"),
         query_queue_bytes: bytes("query_queue_bytes"),
-        uid_query_bytes: bytes("uid_query_bytes"),
         global_query_bytes: bytes("global_query_bytes"),
         control_queue_bytes: bytes("control_queue_bytes"),
         stall_ns: ns("stall_ms"),
@@ -159,7 +157,6 @@ fn head_text(hub: &mut SendHub, id: ConnId, now: u64, is_block: bool) -> String 
 struct Replay {
     hub: SendHub,
     ids: Vec<ConnId>,
-    uids: Vec<u32>,
     shared: HashMap<String, Rc<Tick>>,
 }
 
@@ -175,8 +172,6 @@ impl Replay {
             let pools = if let Some(index) = key.strip_prefix('c') {
                 self.hub
                     .queued(self.ids[index.parse::<usize>().expect("conn index")])
-            } else if let Some(uid) = key.strip_prefix('u') {
-                self.hub.uid_pools(uid.parse::<u32>().expect("uid"))
             } else {
                 assert_eq!(key, "g", "watch key");
                 self.hub.global_pools()
@@ -334,19 +329,16 @@ fn render_object(object: &Json) -> String {
 fn replay(name: &str, spec: &Json) {
     let mut hub = SendHub::new(limits_of(spec.field("limits")));
     let mut ids = Vec::new();
-    let mut uids = Vec::new();
-    for uid in spec.field("conns").as_array().expect("conns") {
-        let uid = small(uid, "uid");
-        ids.push(hub.add(uid, 0));
-        uids.push(uid);
+    let conn_count = number(spec.field("conns"), "conns");
+    assert!(conn_count > 0, "{name}: at least one connection");
+    for _ in 0..conn_count {
+        ids.push(hub.add(0));
     }
     let mut state = Replay {
         hub,
         ids,
-        uids,
         shared: HashMap::new(),
     };
-    assert!(!state.uids.is_empty(), "{name}: at least one connection");
     let steps = spec.field("steps").as_array().expect("steps");
     let expect = spec.field("expect").as_array().expect("expect");
     assert_eq!(

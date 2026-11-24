@@ -79,27 +79,24 @@ caller records the route evidence and corrects or relaunches a mismatched
 invocation before assigning repository work; an agent's self-report is not the
 route evidence.
 
-For programmatic Codex invocations in this environment, always set
-`CODEX_SQLITE_HOME="$HOME/.codex/sqlite-shared"`. Also set `CODEX_HOME`
-explicitly to `$HOME/.codex` or `$HOME/.codex2`, exactly as the operator
-directs; do not rely on an inherited value. Ordinary tasks use GPT-6-Luna at
-xhigh when that is the operator's route; programmatic reviews and plans use
-GPT-6-Sol at xhigh when directed. Keep the route, shared session database, and
-Codex home explicit:
+For programmatic Codex invocations in this environment, repository work MUST
+be launched through the controller wrapper with the route selected by name.
+Use `scripts/controller/codex-impl.sh` with `CODEX_ROUTE=luna`,
+`CODEX_ROUTE=deepseek-volker`, or `CODEX_ROUTE=deepseek-github2`; reviews use
+`scripts/controller/codex-review.sh`. The wrapper owns the profile-home and
+shared-session details. Do not export a Codex home by hand. Ordinary tasks use
+GPT-6-Luna at xhigh when that is the operator's route; programmatic reviews and
+plans use GPT-6-Sol at xhigh when directed.
 
 ```bash
-export CODEX_SQLITE_HOME="$HOME/.codex/sqlite-shared"
-# Use "$HOME/.codex2" instead only when the operator directs.
-export CODEX_HOME="$HOME/.codex"
 printf '%s' "$PROMPT" |
   codex exec -m gpt-6-sol \
     -c 'model_reasoning_effort="xhigh"' \
     -
 ```
 
-For a Luna-routed task, use the same stdin form with `-m gpt-6-luna` and
-`-c 'model_reasoning_effort="xhigh"'`; choose `.codex` or `.codex2` as the
-operator directs.
+The direct form above is only for ad-hoc Codex work outside repository work,
+using the operator's active profile settings.
 
 ### Claude sessions
 
@@ -148,9 +145,6 @@ read-only sandbox first.
 Example, from the review worktree:
 
 ```bash
-export CODEX_SQLITE_HOME="$HOME/.codex/sqlite-shared"
-# Use "$HOME/.codex2" instead only when the operator directs.
-export CODEX_HOME="$HOME/.codex"
 git rev-parse HEAD
 git status --short
 printf '%s' "$PROMPT" |

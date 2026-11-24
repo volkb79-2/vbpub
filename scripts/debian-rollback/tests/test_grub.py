@@ -1,0 +1,361 @@
+"""GRUB publication and selector reads at fake storage and subprocess boundaries."""
+
+from __future__ import annotations
+
+import io
+import unittest
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from unittest import mock
+
+import _support
+from dr_state import ids
+from dr_state.boot.grub import GrubBoot
+from dr_state.errors import (
+    BootConfigError,
+    BootError,
+    FormatError,
+    Refused,
+    Unsupported,
+)
+from dr_state.storage import KernelPair, Stored
+
+
+@dataclass
+class Completed:
+    returncode: int = 0
+    stdout: str = ""
+    stderr: str = ""
+
+
+class FakeRunner:
+    def __init__(self) -> None:
+        self.environment = ""
+        self.fail_list = False
+        self.fail_set = False
+
+    def run(self, argv: list[str]) -> Completed:
+        if argv[0] != "grub-editenv":
+            return Completed(64, stderr="unsupported fake program")
+        operation = argv[2]
+        if operation == "create":
+            Path(argv[1]).touch()
+            self.environment = ""
+            return Completed()
+        if operation == "list":
+            if self.fail_list:
+                return Completed(1, stderr="simulated unreadable grubenv")
+            return Completed(stdout=self.environment)
+        if operation == "set":
+            if self.fail_set:
+                return Completed(1, stderr="simulated grubenv write failure")
+            key, _, value = argv[3].partition("=")
+            current: dict[str, str] = {}
+            for line in self.environment.splitlines():
+                name, separator, old_value = line.partition("=")
+                if separator:
+                    current[name] = old_value
+            current[key] = value
+            self.environment = "".join(
+                f"{name}={current[name]}\n" for name in sorted(current)
+            )
+            return Completed()
+        return Completed(64, stderr="unsupported fake operation")
+
+
+class FakeStorage:
+    name = "btrfs"
+
+    def __init__(self, states: tuple[ids.StateId, ...]) -> None:
+        self._states = states
+
+    def list(self) -> list[Stored]:
+        return [Stored(state.name, None, None) for state in self._states]
+
+    def running(self) -> str | None:
+        return None
+
+    def kernels(self, state: str) -> list[KernelPair]:
+        _ = state
+        return []
+
+    def locator(self, state: ids.StateId) -> str:
+        _ = state
+        return "11111111-2222-3333-4444-555555555555"
+
+    def root_args(self, state: ids.StateId) -> str:
+        return f"root=UUID=11111111-2222-3333-4444-555555555555 rootflags=subvol={state.name}"
+
+
+def state(
+    sequence: int,
+    hour: int,
+    slug: str = "apt",
+) -> ids.StateId:
+    parsed = ids.make(sequence, datetime(2026, 11, 18, hour, 0, tzinfo=UTC), slug)
+    if parsed is None:
+        raise AssertionError("invalid test state")
+    return parsed
+
+
+class GrubTest(_support.TemporaryRootTest):
+    def setUp(self) -> None:
+        super().setUp()
+        self.install = state(1, 12, "install")
+        self.apt = state(2, 13)
+        self.later = state(3, 14, "manual-later")
+        self.paths.esp_dir.mkdir(parents=True)
+        self.paths.esp_marker.write_text("grub\n", encoding="utf-8")
+        self.storage = FakeStorage((self.install, self.apt, self.later))
+        self.runner = FakeRunner()
+        self.boot = GrubBoot(self.paths, self.storage, self.runner)
+
+    def set_environment(self, contents: str) -> None:
+        self.paths.esp_grubenv.touch()
+        self.runner.environment = contents
+
+    def target(self, value: ids.StateId) -> object:
+        from dr_state.boot import BootTarget
+        from dr_state.storage import KernelPair
+
+        return BootTarget(
+            state=value,
+            title=f"Debian {value.name} (kernel 6.12.117+deb13-amd64)",
+            kernel=KernelPair(
+                version="6.12.117+deb13-amd64",
+                vmlinuz=Path("/unused"),
+                initrd=Path("/unused"),
+                fs_vmlinuz=f"/{value.name}/boot/vmlinuz-6.12.117+deb13-amd64",
+                fs_initrd=f"/{value.name}/boot/initrd.img-6.12.117+deb13-amd64",
+            ),
+            root_args=f"root=UUID=11111111-2222-3333-4444-555555555555 rootflags=subvol={value.name}",
+            locator="11111111-2222-3333-4444-555555555555",
+        )
+
+    def test_install_writes_the_grub_marker_and_format(self) -> None:
+        self.paths.esp_marker.unlink()
+        self.boot.install()
+        self.assertEqual(self.paths.esp_marker.read_text(encoding="utf-8"), "grub\n")
+        self.assertEqual(self.paths.esp_format_file.read_text(encoding="utf-8"), "1\n")
+
+    def test_publish_writes_exact_menu_then_default(self) -> None:
+        self.boot.publish((self.target(self.install), self.target(self.apt)), self.apt)
+        menu = self.paths.esp_grub_cfg.read_text(encoding="utf-8")
+        self.assertTrue(menu.startswith("# generated by dr-state gen-menu; do not edit\n"))
+        self.assertIn(
+            f'menuentry "Debian {self.install.name} (kernel 6.12.117+deb13-amd64)" '
+            f"--id {self.install.name} {{\n",
+            menu,
+        )
+        self.assertIn(
+            f"linux /{self.apt.name}/boot/vmlinuz-6.12.117+deb13-amd64 "
+            f"root=UUID=11111111-2222-3333-4444-555555555555 "
+            f"rootflags=subvol={self.apt.name} ro",
+            menu,
+        )
+        selected = self.boot.default(strict=True)
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.state, self.apt.name)
+
+    def test_publish_refuses_a_foreign_menu_without_changing_it(self) -> None:
+        self.paths.esp_grub_cfg.write_text("title foreign\n", encoding="utf-8")
+        with self.assertRaisesRegex(BootError, "not owned by dr-state"):
+            self.boot.publish((self.target(self.install),), self.install)
+        self.assertEqual(
+            self.paths.esp_grub_cfg.read_text(encoding="utf-8"),
+            "title foreign\n",
+        )
+        self.assertFalse(self.paths.esp_format_file.exists())
+
+    def test_repeated_identical_publish_changes_no_esp_format(self) -> None:
+        targets = (self.target(self.install), self.target(self.apt))
+        self.boot.publish(targets, self.apt)
+        self.paths.esp_format_file.unlink()
+        self.boot.publish(targets, self.apt)
+        self.assertFalse(self.paths.esp_format_file.exists())
+
+    def test_newer_esp_format_refuses_publication_without_changing_the_menu(self) -> None:
+        self.paths.esp_format_file.write_text("2\n", encoding="utf-8")
+        with self.assertRaisesRegex(FormatError, "newer"):
+            self.boot.publish((self.target(self.install),), self.install)
+        self.assertFalse(self.paths.esp_grub_cfg.exists())
+
+    def test_os_errors_during_publication_become_boot_errors(self) -> None:
+        with mock.patch(
+            "dr_state.boot.grub.atomic_write",
+            side_effect=OSError("full ESP"),
+        ):
+            with self.assertRaisesRegex(BootError, "cannot publish.*full ESP"):
+                self.boot.publish((self.target(self.install),), self.install)
+        with mock.patch(
+            "dr_state.boot.grub.write_esp_format",
+            side_effect=OSError("read-only ESP"),
+        ):
+            with self.assertRaisesRegex(BootError, "cannot publish.*read-only ESP"):
+                self.boot.set_oneshot(self.apt)
+
+    def test_empty_selector_values_are_absent_in_both_modes(self) -> None:
+        self.set_environment(
+            f"saved_entry={self.install.name}\n"
+            "next_entry=\n"
+        )
+        for strict in (True, False):
+            with self.subTest(strict=strict):
+                selected = self.boot.default(strict=strict)
+                self.assertIsNotNone(selected)
+                self.assertEqual(selected.state, self.install.name)
+                self.assertIsNone(self.boot.oneshot(strict=strict))
+
+    def test_publication_requires_the_marker(self) -> None:
+        self.paths.esp_marker.unlink()
+        with self.assertRaisesRegex(Refused, "marker"):
+            self.boot.publish((self.target(self.install),), self.install)
+
+    def test_strict_default_fails_closed_for_unreadable_duplicate_and_missing(self) -> None:
+        self.paths.esp_grubenv.touch()
+        self.runner.fail_list = True
+        with self.assertRaisesRegex(BootConfigError, "unreadable"):
+            self.boot.default(strict=True)
+
+        self.runner.fail_list = False
+        self.set_environment(
+            f"saved_entry={self.install.name}\n"
+            f"saved_entry={self.apt.name}\n"
+        )
+        with self.assertRaisesRegex(BootConfigError, "repeats saved_entry"):
+            self.boot.default(strict=True)
+
+        self.set_environment(f"saved_entry={state(99, 15).name}\n")
+        with self.assertRaisesRegex(BootConfigError, "no existing managed state"):
+            self.boot.default(strict=True)
+
+    def test_publication_mode_ignores_a_stale_default_and_oneshot_is_unknown(self) -> None:
+        self.set_environment(
+            f"saved_entry={state(99, 15).name}\n"
+            "next_entry=glob*\n"
+        )
+        self.assertIsNone(self.boot.default(strict=False))
+        oneshot = self.boot.oneshot(strict=False)
+        self.assertIsNotNone(oneshot)
+        self.assertFalse(oneshot.known)
+
+    def test_strict_protection_includes_default_and_pending_state(self) -> None:
+        self.set_environment(
+            f"saved_entry={self.install.name}\n"
+            f"next_entry={self.apt.name}\n"
+        )
+        self.assertEqual(
+            self.boot.protected(),
+            frozenset((self.install.name, self.apt.name)),
+        )
+
+    def test_set_oneshot_records_the_managed_state_name(self) -> None:
+        self.boot.set_oneshot(self.apt)
+        self.assertEqual(self.runner.environment, f"next_entry={self.apt.name}\n")
+        selected = self.boot.oneshot(strict=True)
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.state, self.apt.name)
+
+    def test_repeated_identical_one_shot_changes_no_esp_format(self) -> None:
+        self.boot.set_oneshot(self.apt)
+        self.paths.esp_format_file.unlink()
+        self.boot.set_oneshot(self.apt)
+        self.assertFalse(self.paths.esp_format_file.exists())
+
+    def test_failed_default_update_reports_after_the_menu_was_written(self) -> None:
+        self.boot.publish((self.target(self.install),), self.install)
+        self.runner.fail_set = True
+        with self.assertRaisesRegex(BootError, "saved_entry could not be set"):
+            self.boot.publish((self.target(self.apt),), self.apt)
+        self.assertIn(f"--id {self.apt.name}", self.paths.esp_grub_cfg.read_text())
+        self.assertEqual(self.runner.environment, f"saved_entry={self.install.name}\n")
+
+    def test_publication_mode_keeps_a_known_missing_oneshot_target(self) -> None:
+        missing = state(99, 15)
+        self.set_environment(f"next_entry={missing.name}\n")
+        selector = self.boot.oneshot(strict=False)
+        self.assertIsNotNone(selector)
+        self.assertEqual(selector.state, missing.name)
+        self.assertEqual(selector.entry, missing.name)
+        self.assertTrue(selector.known)
+
+
+class MarkerTest(_support.TemporaryRootTest):
+    def setUp(self) -> None:
+        super().setUp()
+        self.paths.esp_dir.mkdir(parents=True)
+        self.storage = FakeStorage(())
+
+    def context(self, *, boot: object | None = None) -> object:
+        from dr_state.core import Context
+
+        return Context(
+            paths=self.paths,
+            storage=self.storage,
+            runner=FakeRunner(),
+            clock=lambda: datetime(2026, 11, 18, 12, 0, tzinfo=UTC),
+            env={},
+            boot=boot,
+        )
+
+    def test_missing_and_empty_markers_are_refused_without_guessing(self) -> None:
+        from dr_state.core import _require_boot
+
+        with self.assertRaisesRegex(Refused, "missing"):
+            _require_boot(self.context())
+        self.paths.esp_marker.write_text("\r\n", encoding="utf-8")
+        with self.assertRaisesRegex(Refused, "present but empty"):
+            _require_boot(self.context())
+
+    def test_unknown_marker_is_unsupported(self) -> None:
+        from dr_state.core import _require_boot
+
+        self.paths.esp_marker.write_text("grub2\n", encoding="utf-8")
+        with self.assertRaisesRegex(Unsupported, "grub2"):
+            _require_boot(self.context())
+
+    def test_marker_symlink_and_directory_are_refused(self) -> None:
+        from dr_state.core import marker_value
+
+        target = self.root / "marker-target"
+        target.write_text("grub\n", encoding="utf-8")
+        self.paths.esp_marker.symlink_to(target)
+        with self.assertRaisesRegex(Refused, "not a regular file"):
+            marker_value(self.paths)
+        self.paths.esp_marker.unlink()
+        self.paths.esp_marker.mkdir()
+        with self.assertRaisesRegex(Refused, "not a regular file"):
+            marker_value(self.paths)
+
+    def test_nonpublication_verbs_do_not_read_a_symlinked_marker(self) -> None:
+        from dr_state.core import execute, make_context
+
+        self.paths.top.mkdir()
+        installed = state(1, 12, "install")
+        self.storage = FakeStorage((installed,))
+        (self.paths.top / installed.name).mkdir()
+        marker_target = self.root / "marker-target"
+        marker_target.write_text("grub\n", encoding="utf-8")
+        self.paths.esp_marker.symlink_to(marker_target)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        context = make_context(
+            self.paths,
+            storage=self.storage,
+            runner=FakeRunner(),
+            clock=lambda: datetime(2026, 11, 18, 12, 0, tzinfo=UTC),
+            env={},
+            stdout=stdout,
+            stderr=stderr,
+        )
+        self.assertEqual(execute(context, ("list",)), 0)
+        self.assertIn(installed.name, stdout.getvalue())
+        self.assertEqual(execute(context, ("show", installed.name)), 0)
+        self.assertIn(f"state: {installed.name}", stdout.getvalue())
+        with self.assertRaisesRegex(Refused, "not a regular file"):
+            execute(context, ("gen-menu",))
+
+
+if __name__ == "__main__":
+    unittest.main()

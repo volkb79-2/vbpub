@@ -20,15 +20,11 @@
 //! 4. **Late discovery is a birth, not a lifetime.** A cgroup first seen mid-run has a
 //!    measurable age since its discovery and no measurable age since boot.
 //!
-//! **What these tests do not cover, stated rather than implied (`HOB-26`).** The rate
-//! arithmetic below is a **test-local helper** (`rate`), not `model::derive_rate`: `kernel`
-//! must not depend on `model` (a path or dev dependency rewrites the locked `Cargo.lock`, the
-//! lane image pins its digest, and `cargo --locked` then fails — `HOB-17`), so the identity
-//! and clock claims are evidenced against this crate's own types and hand-written arithmetic,
-//! while `model`'s classifier keeps its own `fixtures/rates/rates.json` cases. The two sides
-//! are joined by hand-checked numbers and by the shared quality fixture
-//! (`crates/kernel/tests/quality_table.rs`), not by a call. SP-2's exit is therefore
-//! evidenced for the clock and identity half here and for the rate half in `model`.
+//! **The join.** The rate helper below feeds the kernel's [`Reading`] type directly
+//! to `model::derive_rate`; it does not reproduce the arithmetic. The clock and identity
+//! claims, the classifier and the hand-computed SP-2 answers are therefore observed through
+//! one call across the crate boundary, while `model` keeps its own
+//! `fixtures/rates/rates.json` cases.
 //!
 //! Every assertion is hand-computed and every fixture is a committed tree under
 //! `crates/kernel/tests/fixtures`, never the live host.
@@ -45,7 +41,9 @@ use hostobs_kernel::identity::{
 };
 use hostobs_kernel::procfs::{list_pids, read_process, Proc};
 use hostobs_kernel::quality::QualityCode;
+use hostobs_kernel::value::{Reading, Value};
 use hostobs_kernel::Bounds;
+use hostobs_model::rate::{derive_rate, MonoTime, NoRate, Rate};
 
 const BOOT_A: [u8; 16] = [0x11; 16];
 const BOOT_B: [u8; 16] = [0x22; 16];
@@ -56,14 +54,20 @@ fn timeline(epoch: u64) -> Timeline {
     Timeline::new(BOOT_A, epoch)
 }
 
-/// A rate from a counter delta and the interval it was measured over (the arithmetic a
-/// consumer performs; the refusal is what this test is about).
+/// A rate from a counter delta and the interval it was measured over, derived by the
+/// production classifier from two kernel readings.
 fn rate(delta: u64, interval: Interval) -> Option<f64> {
-    if interval.mono_ns == 0 {
-        return None;
-    }
-    // Hand-computed in the tests, never from a f64 cast of a live reading.
-    Some(delta as f64 / (interval.mono_ns as f64 / 1_000_000_000.0))
+    let previous = Reading::measured(Value::U64(0));
+    let current = Reading::measured(Value::U64(delta));
+    derive_rate(
+        previous,
+        MonoTime::from_nanos(0),
+        current,
+        MonoTime::from_nanos(interval.mono_ns),
+        0,
+    )
+    .rate()
+    .map(Rate::per_second)
 }
 
 // ------------------------------------------------------------------ 1. incarnation reuse
@@ -148,7 +152,7 @@ fn an_identity_refusal_maps_to_unreadable_and_never_to_a_value() {
     // A process whose stat could not be turned into an identity is not a process with
     // "identity 0".
     let missing = IdentityError::Read(hostobs_kernel::fs::FsError::NotFound);
-    assert_eq!(missing.quality(), QualityCode::UNREADABLE);
+    assert_eq!(missing.quality(), QualityCode::Unreadable);
 }
 
 // ------------------------------------------------------------------ 2. wall jumps
@@ -349,16 +353,34 @@ fn a_counter_that_went_backwards_is_a_baseline_and_not_a_negative_rate() {
     // is reset; the reader's job is to report that as a reset, so no rate is derived.
     // The sampler's `Collector::counter` reached this answer by never turning a
     // backwards counter into a spike; here the same fact is two quality codes.
-    assert_eq!(QualityCode::RESET.code(), 4);
-    assert!(!QualityCode::RESET.is_measurement());
-    assert_eq!(QualityCode::STALE.code(), 3);
-    // The arithmetic a consumer must not do: a negative delta is a reset, not a rate.
+    assert_eq!(QualityCode::Reset.code(), 4);
+    assert!(!QualityCode::Reset.is_measurement());
+    assert_eq!(QualityCode::Stale.code(), 3);
+    // A consumer asks the production classifier; a backwards counter is a reset, not a
+    // negative delta and not a rate.
     let previous = 1_000u64;
     let current = 400u64;
-    let delta = current.checked_sub(previous);
     assert_eq!(
-        delta, None,
-        "a negative u64 delta is not representable, let alone a rate"
+        derive_rate(
+            Reading::measured(Value::U64(previous)),
+            MonoTime::from_nanos(0),
+            Reading::measured(Value::U64(current)),
+            MonoTime::from_nanos(1_000_000_000),
+            0,
+        )
+        .reason(),
+        Some(NoRate::CounterReset)
+    );
+    assert_eq!(
+        derive_rate(
+            Reading::measured(Value::U64(previous)),
+            MonoTime::from_nanos(0),
+            Reading::measured(Value::U64(current)),
+            MonoTime::from_nanos(1_000_000_000),
+            0,
+        )
+        .quality(),
+        QualityCode::Reset
     );
 }
 
@@ -520,6 +542,6 @@ fn a_fixture_cgroup_directory_is_read_below_a_root_without_a_path_identity() {
         )
         .unwrap_err()
         .quality(),
-        QualityCode::UNSUPPORTED
+        QualityCode::Unsupported
     );
 }

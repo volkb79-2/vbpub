@@ -139,7 +139,7 @@ behind it. If a later package needs host-scope values that are not per-incarnati
 a deliberate schema addition (a new section kind with its own fixture), not a relaxation of
 this rule.
 
-## Cross-language conformance without a shared type
+## Cross-language conformance with one shared vocabulary
 
 `fixtures/wire/*.bin` are canonical bytes and `*.json` their decoded typed values.
 `fixtures/rates/rates.json` pins the arithmetic of the rate rules with the computation
@@ -147,24 +147,22 @@ written out in each case's `doc`. The contract binds **three** implementations: 
 encoder/decoder, the Rust rate derivation, and a standard-library-only Python reference
 codec written from the layout, not from the Rust code.
 
-`hostobs-proto` does **not** depend on `hostobs-model`. A path dependency changes
-`Cargo.lock`, and the Rust lane image deployed at the time (`tester-unified-rust:local`)
-caches exactly the committed lock and bakes its whole-file digest, so `cargo --locked`
-refuses to build ("cannot update the lock file"). Rather than hand-edit the lock
-(forbidden: the image's baked digest is the authority), the two crates are bound by
-behavior: both assert their vocabulary against `fixtures/wire/quality.json`, and the
-Python decoder asserts the same file. The cost of this choice is recorded as `HOB-3`
-together with what now allows removing it (the lanes run on an image built on the
-registry-set identity, which ignores workspace-member lock edits).
+`hostobs-proto` depends on `hostobs-model`: quality, values and the metric facts whose wire
+codes the dictionary writes have one Rust definition in `model`. The fixture is still a
+cross-language oracle, so the Rust codec, the Rust rate derivation and the independent
+standard-library Python codec all assert the same bytes and decoded JSON. The registry-set
+identity image allowed this dependency without rebuilding for a workspace-member-only
+`Cargo.lock` edit.
 
-The same constraint is why the tiny test-only JSON reader lives in `test-support/json.rs`
-(outside the workspace members) instead of pulling `serde_json` in as a dev-dependency.
+The tiny test-only JSON reader lives in `test-support/json.rs`, outside the workspace
+members, so the judged codec keeps `model` as its only dependency and its test tree does not
+pull `serde_json` into the workspace lock.
 
 ## Collecting the host: what was ported from the sampler, and what was changed
 
-The `kernel` crate is the port of the topos sampler's collectors
-(`topos-sampler-poc-20261105`, `topos/sampler/src/{collect,procs,util,fsafe,cmdline}.rs`),
-under four decisions.
+The `kernel` crate is the port of the topos sampler's collectors (tag
+`archive/topos-sampler-poc-20261105`, commit `193bf601f`, path `topos/sampler/`), under
+four decisions.
 
 **One `Fs` trait, one root, no ambient filesystem.** Every reader takes a [`Fs`] and a root;
 `RealFs` is the only implementation that touches the host and it offers exactly `read`,
@@ -198,7 +196,7 @@ on failure, treating an unclassified device as bottom (`last.get(dev).copied().u
 a failed read therefore summed a stacked device's counters into the cgroup aggregate, and
 the aggregate double-counted. `cgroup::TopologySource` makes the answer an explicit
 three-valued input and an `Unknown` device makes the aggregate
-`QualityCode::UNKNOWN_TOPOLOGY` with **no** values at all. `HOB-20` records the fix, `HOB-21`
+`QualityCode::UnknownTopology` with **no** values at all. `HOB-20` records the fix, `HOB-21`
 the still-missing `/sys` implementation (so every production `io.*` aggregate is
 `unknown-topology` until the probe supplies one — an honest state rather than the bug
 again).
@@ -245,13 +243,11 @@ the whole file rather than a wrapped limit of 0 (`HOB-24`). A sum has the same r
 that overflows is `unreadable`, never clamped at `u64::MAX` — `saturating_add` is for a
 budget, `checked_add` for a reading (`HOB-25`).
 
-**What SP-2 does *not* join (`HOB-26`).** The SP-2 tests compute a rate in a local helper
-rather than through `model::derive_rate`, because `kernel` cannot depend on `model` while the
-deployed lane image pins a whole `Cargo.lock` that any path or dev dependency rewrites. The clock and
-identity half of SP-2 is evidenced here against hand-computed arithmetic, and the classifier
-half lives in `model` with `fixtures/rates/rates.json`; the two are joined by hand-checked
-numbers and the shared quality fixture, not by a call. Stating that is part of the evidence,
-not a footnote to it.
+**What SP-2 joins.** The SP-2 tests feed kernel `Reading` values directly to
+`model::derive_rate`; they do not reproduce the rate arithmetic. The clock and identity
+claims are observed through that one call across the crate boundary, while `model` keeps its
+own `fixtures/rates/rates.json` cases and the classifier test. The hand-computed answers
+therefore exercise the production derivation, not a parallel helper.
 
 ## Storing the history: one write module, four bounds, and a named tail
 
@@ -294,11 +290,14 @@ boundary's worth of a neighbouring tier.
 `payload_kind()`, `record_kind()` and `frame_type()`; the header refuses to encode a payload
 that disagrees with its kind (`TierKindMismatch`), a record's own envelope kind is checked
 against the segment it lives in (`RecordCorpus`), and the reader refuses either mismatch
-rather than decoding one corpus's bytes with the other's rules. `store` cannot call
-`hostobs_proto` to do this (`HOB-27`: a path or dev dependency rewrites the locked
-`Cargo.lock`, which the lane image bakes), so it carries its own four frame-header checks and
-its own eight-entry quality table, the latter asserted against `fixtures/wire/quality.json`
-by `crates/store/tests/quality_table.rs` — the same device `kernel` uses under `HOB-17`.
+rather than decoding one corpus's bytes with the other's rules. `store` calls
+`hostobs_proto::frame::StoredFrameFields::parse_header` for the fixed header fields, then
+applies its configured payload bound, declared length, corpus frame type, exact SECTIONED flag
+and reserved-word checks in the order its stored format has always used. The storage parser
+deliberately defers `SECTIONED`'s BLOCK-only wire rule because the canonical events segment
+stores the EVT+SECTIONED shape. `proto` and `kernel` use `model`'s quality and value types;
+`store` keeps only wire bytes and quality bytes, has no local quality or value type, and
+declares `model` for the future HOB-39 decoded-row join.
 
 **Eviction is by whole segment, oldest first, and `next_seq` is a water mark.** A tier's
 ring is ordered by `(start_s, seq)` and evicts from the front while the segment's entire span
@@ -371,20 +370,19 @@ checked length (`crc::checked_region_len` is the only arithmetic that can wrap, 
 and nothing panics on fixture-shaped corruption — the golden fixture suite decodes each file
 and the Python reference decodes the same bytes independently.
 
-**What an answer is, and is not (`HOB-39`).** A range answer is the stored payload — the whole
-`proto` BLOCK frame, byte-identical to what was written — plus the record's own time and
-incarnation list. The quality bytes are inside that payload, so nothing is lost, but decoding
-is the caller's step: the store cannot carry a column codec while `HOB-27` bans the dependency,
-and copying the entire wire decoder here would be a second implementation of the format rather
-than a join. `quality::Reading`/`QualityCode` are the store's own vocabulary, bound to
-`fixtures/wire/quality.json`, and ready for the join that the registry-set-identity image now allows.
+**What an answer is, and is not (`HOB-39`).** A range answer remains the stored payload — the
+whole `proto` BLOCK frame, byte-identical to what was written — plus the record's own time and
+incarnation list. The quality bytes are inside that payload, so nothing is lost. Decoding is
+still the caller's step; the store now has the dependency needed to join the payload to
+`model` rows, but no such API exists yet. Keeping the current range answer raw also avoids
+making every segment scan decode data the caller may not ask for.
 
 ## Gates and coverage
 
 `lint` runs formatting, Clippy with `-D warnings`, rustdoc with `-D warnings`, cargo-deny
 and the source lints; `selftest` runs nextest, doctests, llvm-cov and the per-crate
 line/region floors from `coverage-floors.toml`; `assay-r1` runs the same workspace command
-and lets assay's Rust R1 judge render the coverage verdict over 33 declared `src` files
+and lets assay's Rust R1 judge render the coverage verdict over 56 declared `src` files
 at a 95.0% line floor. `conformance` runs the standard-library-only Python tests (no cargo).
 All four run in the `tester-unified-rust` image with Docker networking disabled, and the three
 that call cargo are offline and locked.
@@ -463,10 +461,9 @@ as `NOT-BUILT` rather than counted as a kill, because it proves nothing about th
 patch whose stored fragment no longer matches the source is `NOT APPLIED`, which is also
 not a survivor.
 
-`cargo deny` keeps duplicate-version and external wildcard checks strict. Its single
-`winnow@0.7.15` skip is tied to the imported sampler lock: `toml 0.9.8` and its
-`toml_parser 1.1.5` resolve `winnow` 0.7.15 and 1.0.4, so the skip names only the older
-exact version and becomes an unused-entry warning when that edge disappears. Workspace
+`cargo deny` keeps duplicate-version and external wildcard checks strict, with no skip
+entry: the lock holds one version of every crate. A future duplicate needs a reviewed
+`[[bans.skip]]` naming the exact older version. Workspace
 packages are explicitly unpublished; their license metadata is deferred until a
 publication decision, while registry dependencies remain license-checked.
 

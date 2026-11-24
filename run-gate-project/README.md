@@ -442,7 +442,7 @@ overrides it. This is the v7 shape chosen to carry directly into CIU v8's
 Run-Gate asks for inventory only when the answer needs it. Help, `--list`,
 an omitted lane and unrelated local lanes never probe, so they stay usable
 while a persistent judge is stopped; `--list` says on stderr that the import
-was not queried and keeps its three-column machine-readable output. `doctor`,
+was not queried and keeps its three-column machine-readable output. `doctor` except `--prune`,
 `--check-env`, and `history` / `footprint` over every lane do resolve it, and
 refuse with a remedy if the judge is unavailable rather than report a clean
 result or write a manifest that omits imported lanes.

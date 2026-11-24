@@ -1047,19 +1047,22 @@ def _state_entry(record: dict, stem: str) -> dict:
     judge = record.get("judge_sha256")
     if not isinstance(judge, str) or not _SHA256_RE.fullmatch(judge):
         raise ValueError("judge_sha256 is not a SHA-256 digest")
-    # (B530) A carried-over record keeps its executing judge and is evidence
-    # for the judge it was imported into; it is counted under that one and
-    # reported separately as imported.
     effective = mutation.record_effective_judge(record)
     if effective is None:
-        raise ValueError("carry_over provenance is malformed")
+        raise ValueError("record provenance is malformed")
+    provenance = mutation.record_provenance(record)
     return {
         "id": stem,
         "record": record,
         "bucket": bucket,
         "judge": effective,
         "mode": mode,
-        "imported_from": judge if "carry_over" in record else None,
+        "provenance": provenance,
+        "imported_from": (
+            provenance["from_judge_sha256"]
+            if provenance is not None and provenance["kind"] == "imported"
+            else None
+        ),
     }
 
 
@@ -1261,9 +1264,10 @@ def _reconcile_state(
                     entry["imported_from"] for entry in counted.values() if entry["imported_from"]
                 ).items())),
                 "reasons": sorted({
-                    entry["record"]["carry_over"]["reason"]
-                    for entry in counted.values() if entry["imported_from"]
-                })[:10],
+                    entry["provenance"].get("reason")
+                    for entry in counted.values()
+                    if entry["imported_from"]
+                } - {None})[:10],
             },
         },
         "counted": counted,
@@ -1840,6 +1844,10 @@ def campaign(
     limit: int = 100,
 ) -> dict:
     """Build one deterministic closeout; all paths are explicit inputs."""
+    # state.imported reports counted records whose canonical provenance kind is
+    # imported (schema-2 directly, schema-1 by derivation). Carried and
+    # replayed records are separate kind counts, never inferred from judge
+    # equality.
     stage.name = "arguments"
     evidence._report_commit(expected_commit)
     if command_exit is not None and (
@@ -2384,10 +2392,9 @@ def run_campaign_command(args: argparse.Namespace, *, stdout, stderr) -> int:
         print("  blockers: " + ", ".join(result["complete_blockers"] or ["none"]), file=stdout)
         imported = (result.get("state") or {}).get("imported") or {}
         if imported.get("count"):
-            # (B530) never silently merged: name what this judge did NOT execute.
             print(
-                f"  carry-over: {imported['count']} counted result(s) were IMPORTED "
-                f"from another judge identity, not executed by this one; "
+                f"  carry-over: {imported['count']} counted result(s) were imported "
+                f"from another judge identity; "
                 f"from={json.dumps(imported['from_judge_sha256_counts'], sort_keys=True)} "
                 f"reasons={json.dumps(imported['reasons'])}",
                 file=stdout,

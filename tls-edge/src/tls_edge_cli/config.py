@@ -14,15 +14,22 @@ from pathlib import Path
 from typing import Any
 
 import jinja2
-import tomlkit
 
 
+SCHEMA = 1
 TLS_MODES = ("acme-tls", "acme-http", "acme-dns", "static", "dev")
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")
 _PROVIDER = re.compile(r"[a-z0-9][a-z0-9_-]{1,39}")
 _VOLUME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 _CGROUP_PARENT = re.compile(r"[A-Za-z0-9_./@-]{1,255}")
 _ABSOLUTE_MOUNT_PATH = re.compile(r"/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]*")
+_TEMPLATE_MARKERS = ("{{", "{%", "{#")
+_OPEN_OVERRIDE_TABLES = frozenset({
+    ("tls_edge", "acme", "dns", "environment"),
+    ("tls_edge", "secrets"),
+    ("tls_edge", "hooks"),
+})
+_REQUIRED_PRE_SECRETS_HOOK = "hooks/validate_edge.py"
 _ANSWER_KEYS = {
     "domain", "tls_mode", "acme_email", "dns_provider", "dns_wildcard",
     "http_enabled", "http_port", "https_port", "http3_enabled", "calls_enabled",
@@ -98,26 +105,101 @@ def _render_defaults(path: Path) -> dict[str, Any]:
             undefined=jinja2.StrictUndefined,
             keep_trailing_newline=True,
         ).from_string(source).render()
-        return _plain(tomlkit.parse(rendered))
-    except (OSError, jinja2.TemplateError, tomlkit.exceptions.ParseError) as exc:
+        return _plain(tomllib.loads(rendered))
+    except (OSError, jinja2.TemplateError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"cannot load tls-edge defaults from {path}: {exc}") from exc
 
 
-def load_effective_config(root: Path) -> tuple[dict[str, Any], bool]:
-    defaults_path, override_path, _ = instance_paths(root)
-    config = _render_defaults(defaults_path)
-    has_override = os.path.lexists(override_path)
-    if has_override:
-        if override_path.is_symlink() or not override_path.is_file():
-            raise ConfigError(f"site override must be a regular file: {override_path}")
-        try:
-            overlay = _plain(tomlkit.parse(override_path.read_text(encoding="utf-8")))
-        except (OSError, tomlkit.exceptions.ParseError) as exc:
-            raise ConfigError(f"cannot read site override {override_path}: {exc}") from exc
-        config = _deep_merge(config, overlay)
-    if not isinstance(config.get("tls_edge"), dict):
+def _load_override(path: Path) -> dict[str, Any]:
+    if not os.path.lexists(path):
+        return {}
+    if path.is_symlink() or not path.is_file():
+        raise ConfigError(f"site override must be a regular file: {path}")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ConfigError(f"cannot read site override {path}: {exc}") from exc
+    for marker in _TEMPLATE_MARKERS:
+        if marker in text:
+            raise ConfigError(
+                f"site override {path} must be plain TOML; "
+                f"found templating marker {marker!r}"
+            )
+    try:
+        return _plain(tomllib.loads(text))
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"cannot read site override {path}: {exc}") from exc
+
+
+def load_site(
+    stack_dir: Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Load rendered defaults, the sparse override, and their deep merge."""
+    stack_dir = Path(stack_dir)
+    defaults = _render_defaults(stack_dir / "ciu.defaults.toml.j2")
+    overlay = _load_override(stack_dir / "ciu.toml.j2")
+    effective = _deep_merge(defaults, overlay)
+    if not isinstance(effective.get("tls_edge"), dict):
         raise ConfigError("tls-edge defaults must contain a [tls_edge] table")
-    return config["tls_edge"], has_override
+    return defaults, overlay, effective
+
+
+def migrate(overlay: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Migrate an override to the current schema; schema 1 is identity."""
+    return overlay
+
+
+def _check_override_table(
+    defaults: Mapping[str, Any],
+    overlay: Mapping[str, Any],
+    path: tuple[str, ...] = (),
+) -> None:
+    if path in _OPEN_OVERRIDE_TABLES:
+        if (
+            path == ("tls_edge", "hooks")
+            and "pre_secrets" in overlay
+            and (
+                not isinstance(overlay["pre_secrets"], list)
+                or _REQUIRED_PRE_SECRETS_HOOK not in overlay["pre_secrets"]
+            )
+        ):
+            raise ConfigError(
+                "tls_edge.hooks.pre_secrets must contain "
+                f"{_REQUIRED_PRE_SECRETS_HOOK}"
+            )
+        return
+    for key, value in overlay.items():
+        key_path = (*path, str(key))
+        dotted = ".".join(key_path)
+        if key not in defaults:
+            raise ConfigError(f"unknown override key {dotted}")
+        expected = defaults[key]
+        if isinstance(value, Mapping) != isinstance(expected, Mapping):
+            expected_shape = "a TOML table" if isinstance(expected, Mapping) else "a scalar"
+            raise ConfigError(f"override key {dotted} must be {expected_shape}")
+        if isinstance(value, Mapping):
+            _check_override_table(expected, value, key_path)
+
+
+def check_override(defaults: Mapping[str, Any], overlay: Mapping[str, Any]) -> None:
+    """Refuse unknown keys, shape mismatches, and future override schemas."""
+    schema = value_at(overlay, "tls_edge", "schema", default=SCHEMA)
+    if isinstance(schema, bool) or not isinstance(schema, int):
+        raise ConfigError("site override tls_edge.schema must be an integer")
+    if schema < 1:
+        raise ConfigError("site override tls_edge.schema must be at least 1")
+    if schema > SCHEMA:
+        raise ConfigError(
+            f"tls_edge.schema {schema} is newer than this release supports "
+            f"(maximum {SCHEMA})"
+        )
+    _check_override_table(defaults, overlay)
+
+
+def load_effective_config(root: Path) -> tuple[dict[str, Any], bool]:
+    _, override_path, _ = instance_paths(root)
+    _, _, effective = load_site(override_path.parent)
+    return effective["tls_edge"], os.path.lexists(override_path)
 
 
 def load_answers(path: Path | None) -> dict[str, Any]:
@@ -186,6 +268,8 @@ def validate_config(
     *,
     require_domain: bool = True,
     require_certificates: bool = True,
+    stack_dir: Path | None = None,
+    for_standalone: bool = False,
 ) -> list[str]:
     """Validate cross-field edge behavior and return the inbound port plan."""
     tls = _table(config, "tls")
@@ -235,6 +319,48 @@ def validate_config(
     volume_name = acme.get("volume_name", "")
     if not isinstance(volume_name, str) or (volume_name and not _VOLUME.fullmatch(volume_name)):
         raise ConfigError("acme.volume_name must be a valid Docker volume name or empty")
+    store = acme.get("store", "volume")
+    if not isinstance(store, str) or store not in ("volume", "hostdir"):
+        raise ConfigError("acme.store must be volume or hostdir")
+    if store == "hostdir":
+        traefik = _table(config, "traefik")
+        hostdirs = _table(traefik, "hostdir")
+        entry = hostdirs.get("acme")
+        if isinstance(entry, Mapping):
+            path = entry.get("path", "")
+            uid = entry.get("uid", 0)
+        else:
+            path = ""
+            uid = None
+        if not isinstance(path, str) or not path:
+            raise ConfigError(
+                'tls_edge.traefik.hostdir.acme.path is required when '
+                'tls_edge.acme.store = "hostdir"'
+            )
+        if stack_dir is not None:
+            candidate = Path(path)
+            if not candidate.is_absolute():
+                candidate = Path(stack_dir) / candidate
+            stack_root = Path(stack_dir).parent.resolve()
+            if candidate.resolve().is_relative_to(stack_root):
+                raise ConfigError(
+                    "tls_edge.traefik.hostdir.acme.path must resolve outside stack/"
+                )
+        if isinstance(uid, bool) or not isinstance(uid, int) or uid != 0:
+            raise ConfigError(
+                'tls_edge.traefik.hostdir.acme.uid must be 0 when '
+                'tls_edge.acme.store = "hostdir"'
+            )
+        if volume_name:
+            raise ConfigError(
+                'tls_edge.acme.volume_name and tls_edge.acme.store = "hostdir" '
+                "are mutually exclusive"
+            )
+        if for_standalone:
+            raise ConfigError(
+                'tls_edge.acme.store = "hostdir" requires ciu; '
+                'the standalone renderer only supports "volume"'
+            )
     cgroup_parent = value_at(config, "runtime", "cgroup_parent", default="")
     if not isinstance(cgroup_parent, str) or (
         cgroup_parent and (
@@ -291,6 +417,8 @@ def _mutable_table(value: Any) -> bool:
 
 
 def _set_path(document: Any, path: tuple[str, ...], value: Any) -> None:
+    import tomlkit
+
     current = document
     for part in path[:-1]:
         if not _mutable_table(current):
@@ -321,6 +449,8 @@ _FIELDS: dict[str, tuple[str, ...]] = {
     "bind_ip": ("tls_edge", "ports", "bind_ip"),
     "ingress_external": ("tls_edge", "ingress_external"),
     "acme_volume_name": ("tls_edge", "acme", "volume_name"),
+    "acme_store": ("tls_edge", "acme", "store"),
+    "acme_path": ("tls_edge", "traefik", "hostdir", "acme", "path"),
     "cgroup_parent": ("tls_edge", "runtime", "cgroup_parent"),
     "static_cert_base": ("tls_edge", "static", "cert_base"),
     "static_domains": ("tls_edge", "static", "domains"),
@@ -329,6 +459,8 @@ _FIELDS: dict[str, tuple[str, ...]] = {
 
 
 def updated_override(root: Path, values: Mapping[str, Any]) -> tuple[Path, str, int]:
+    import tomlkit
+
     _, override_path, _ = instance_paths(root)
     if os.path.lexists(override_path) and (override_path.is_symlink() or not override_path.is_file()):
         raise ConfigError(f"site override must be a regular file: {override_path}")
@@ -343,6 +475,7 @@ def updated_override(root: Path, values: Mapping[str, Any]) -> tuple[Path, str, 
         original = ""
         mode = 0o644
         document = tomlkit.document()
+    _set_path(document, ("tls_edge", "schema"), SCHEMA)
     for name, value in values.items():
         if name not in _FIELDS:
             raise ConfigError(f"unsupported configuration field {name!r}")

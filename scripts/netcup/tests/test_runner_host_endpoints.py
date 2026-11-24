@@ -547,12 +547,39 @@ def test_all_runner_gids_are_positive_canonical_decimal(loader_results, name: st
     assert f"host endpoints: {key} must be a positive decimal GID without leading zeros" in result["stderr"]
 
 
-@pytest.mark.parametrize("gid_name", LEVEL_GIDS)
+@pytest.mark.parametrize("gid_name", ("CGPROFILE_CONTROL_GID", "TOPOS_OBSERVE_GID"))
 def test_level_gid_equal_to_docker_gid_is_refused(loader_results, gid_name: str):
     results, _ = loader_results
     result = results[f"{gid_name}_docker_equal"]
     assert result["status"] == 2
     assert f"host endpoints: {gid_name} must differ from MDT_HOST_DOCKER_GID" in result["stderr"]
+
+
+def test_buildkit_gid_equal_to_docker_gid_is_accepted(loader_results):
+    """r1002 (2026-11-24): mdt-buildkitd chgrps its socket to docker, so the published BuildKit GID is the docker GID."""
+    results, _ = loader_results
+    result = results["MDT_BUILDKIT_GID_docker_equal"]
+    assert result["status"] == 0, result["stderr"]
+    assert f"LOADED={ENDPOINTS['MDT_DOCKER_API_SOCKET']}" in result["stdout"]
+    assert "must differ" not in result["stderr"]
+
+
+def test_cockpit_start_accepts_buildkit_socket_in_the_docker_group(tmp_path: Path):
+    """NC-43: the fake-docker launcher starts with the BuildKit GID equal to the docker GID and keeps the BuildKit mount."""
+    docker_gid = ENDPOINTS["MDT_HOST_DOCKER_GID"]
+    proc, argv_log, _ = _run_start(tmp_path, overrides={"MDT_BUILDKIT_GID": docker_gid})
+    assert proc.returncode == 0, proc.stderr
+    run_calls = [call[1:] for call in _docker_calls(argv_log) if call and call[0] == "run"]
+    assert len(run_calls) == 1
+    argv = run_calls[0]
+    assert _option_values(argv, "--group-add") == [
+        docker_gid,
+        ENDPOINTS["CGPROFILE_CONTROL_GID"],
+        ENDPOINTS["TOPOS_OBSERVE_GID"],
+        docker_gid,
+    ]
+    bk_dir = ENDPOINTS["MDT_BUILDKIT_SOCKET_DIR"]
+    assert f"type=bind,source={bk_dir},target={bk_dir},readonly" in _option_values(argv, "--mount")
 
 
 def test_cockpit_start_refuses_docker_group_gid_drift(tmp_path: Path):

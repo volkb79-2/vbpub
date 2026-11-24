@@ -41,14 +41,16 @@
 | FD-035 | `host-facts/1` validation does not bound a service `MemoryMin`, so an implausible fact is first refused at plan time, not at collect or validate time | P3 | DONE (by design) | 2026-11-15 |
 | FD-037 | Rolling mode keys a candidate by its file's content, so a partial edit re-judges the whole file | P3 | PARKED 2026-11-24 (until the live campaign) | 2026-11-15 |
 | FD-038 | Rolling mode's changed candidates share the `slice_size` budget, so heavy per-release churn can defer them and starve the never-judged remainder | P3 | DONE | 2026-11-15 |
-| FD-039 | Host probe/start are string programs re-implemented by FakeTransport | P1 | OPEN | 2026-11-24 |
-| FD-040 | `memory_peak_bytes` is always null on real hosts (collect dedup) | P1 | OPEN | 2026-11-24 |
+| FD-039 | Host-side probe logic was a Python string and `FakeTransport` reimplemented it | P1 | PART 1 FIXED | 2026-11-24 |
+| FD-040 | The real probe lost the cgprofile `memory_peak_bytes` that the fake returned | P1 | FIXED | 2026-11-24 |
 | FD-041 | Delete `fleet merge-check`, `fleet-shard-identity/1` and `fleet guard validate`; assay owns `assay-merge-manifest/1` | P1 | OPEN | 2026-11-24 |
 | FD-042 | Two schedulers book v1001: host-local weighted admission in the shared runner | P1 | OPEN | 2026-11-24 |
 | FD-043 | Campaign unit = assay shard range per host | P2 | OPEN | 2026-11-24 |
 | FD-044 | Rolling scope frozen; delete it after B561 carry-forward | P2 | OPEN | 2026-11-24 |
 | FD-045 | Docs are a second, prose-pinned source of truth | P2 | OPEN | 2026-11-24 |
 | FD-046 | Facts tables and one lane-cost store | P2 | OPEN | 2026-11-24 |
+| FD-047 | FakeTransport rewrites progress mtimes after the shared probe | P3 | OPEN | 2026-11-24 |
+| FD-048 | Malformed Run-Gate lane config can crash the host probe and fake start | P3 | OPEN | 2026-11-24 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -846,19 +848,34 @@ were kept.
 
 ## FD-039 Host probe/start are string programs re-implemented by FakeTransport
 
-**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-24.
+**State:** PART 1 FIXED (2026-11-24, `6226a08a1`); installed `fleet host ...`
+verbs remain P-fd-05. **Priority:** P1. **Filed:** 2026-11-24.
 
 fleetd: host-side logic as a real module (hostside.py) shared by the shipped probe and FakeTransport; then installed `fleet host …` verbs with a versioned `fleet-host-agent/1` answer.
 
 Source: .controller-state/design-review-2026-11-24/fleetd.md H1
 
+**Evidence.** `fleetd.hostside` is stdlib-only source shipped through
+`importlib.resources`; the probe, Assay-lane resolution, progress filtering and
+verdict reading each have one implementation. `FakeTransport` materializes a
+temporary host home and calls the same functions:
+`test_the_shipped_probe_equals_the_direct_hostside_answer` and
+`test_fake_start_and_probe_resolve_the_declared_assay_lane`.
+
 ## FD-040 `memory_peak_bytes` is always null on real hosts
 
-**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-24.
+**State:** FIXED (2026-11-24, `6226a08a1`). **Priority:** P1. **Filed:** 2026-11-24.
 
 Collect's de-duplication drops the progress records that carry the peak, so `memory_peak_bytes` is null for every candidate collected from a real host. Fix with the hostside module (FD-039): real-format progress files collect a non-null peak.
 
 Source: .controller-state/design-review-2026-11-24/fleetd.md H1
+
+**Evidence.** The shared probe reads `profile.metrics.memory_peak_bytes` from
+Assay `resource-profile/1` progress events, and collection merges a measured
+duplicate into the first-owned record instead of dropping it:
+`test_measurement_writes_per_candidate_evidence_from_owner_records`,
+`test_collect_keeps_a_measured_peak_when_the_probe_record_lacks_it`, and
+`test_progress_parser_reads_only_a_positive_profile_memory_peak`.
 
 ## FD-041 Delete `fleet merge-check`, `fleet-shard-identity/1` and `fleet guard validate`
 
@@ -907,3 +924,39 @@ Source: .controller-state/design-review-2026-11-24/fleetd.md M5
 fleetd facts: per-service floors from host facts.toml (installer-written), drop the copied table + drift test; speed resolution same as cgprofile machine/1. One lane-cost store (run-gate footprint/history); remote-gate weight and fleet sizing read it; fleet measurement retired.
 
 Source: .controller-state/design-review-2026-11-24/fleetd.md M3, M4
+
+## FD-047 FakeTransport rewrites progress mtimes after the shared probe
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-24.
+
+`FakeTransport._probe` replaces each shared-probe `progress_mtime` with the
+per-job `FakeJob.progress_mtime`. The real probe returns the progress file's
+`stat` mtime, so jobs sharing a file have one mtime and a file with content gets
+that mtime even when the fake job field is null. Remove the override, or document
+and justify the deliberate divergence in FD-039. Close when the fake row is the
+direct `hostside.probe_document` value and no test depends on fake-only timing.
+
+Source: fix-round review finding 4; `fleetd/src/fleetd/transport.py:427-429`.
+
+## FD-048 Malformed Run-Gate lane config can crash the host probe and fake start
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-24.
+
+A non-table `lanes` value or lane declaration raises `AttributeError` in
+`resolve_assay_lane`; the fake start catches only `ValueError`. One unsafe lane
+declaration also fails the whole host probe, and the shipped entrypoint prints a
+traceback instead of one concise error line. Validate the table shape and define
+the per-job versus whole-probe error boundary for fake and shipped execution.
+Close with malformed-config tests through both paths.
+
+Also: a garbled artifact can still crash the whole host probe. `math.isfinite(float(x))`
+on a huge JSON integer raises `OverflowError`, which `probe_document` (it catches
+`OSError` and `ValueError`) does not catch. Sites: `hostside.progress_records` (strict),
+`verdict_reading` (baseline `wall_s`) and `campaign.py:686`. The old runner had it too.
+Close with a huge-integer artifact test through both paths.
+
+Source: fix-round review finding 5; `fleetd/src/fleetd/hostside.py:33-43,245`;
+r2 review finding B.
+
+Nit (r2 finding C): `returned_after_loss` is set on every refresh while pending and
+nothing reads it except tests. Document it as a status marker or drop it.

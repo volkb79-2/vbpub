@@ -478,11 +478,6 @@ pub enum StoreError {
         /// The key it asked to close.
         key: String,
     },
-    /// A quality code outside the closed §C.2 vocabulary.
-    QualityCode {
-        /// The byte found.
-        found: u8,
-    },
     /// A store's in-RAM index holds an id it has not declared (an unknown dictionary entry a
     /// stored payload names).
     UnknownDictionaryEntry {
@@ -568,7 +563,6 @@ impl StoreError {
             StoreError::EventFieldTooLong { .. } => "event-field-too-long",
             StoreError::SpanLimit { .. } => "span-limit",
             StoreError::SpanUnknown { .. } => "span-unknown",
-            StoreError::QualityCode { .. } => "quality-code",
             StoreError::UnknownDictionaryEntry { .. } => "unknown-dictionary-entry",
         }
     }
@@ -918,9 +912,6 @@ impl fmt::Display for StoreError {
             StoreError::SpanUnknown { issuer, key } => {
                 write!(f, "issuer {issuer} has no open span keyed {key:?}")
             }
-            StoreError::QualityCode { found } => {
-                write!(f, "quality code {found} is outside the eight-code vocabulary")
-            }
             StoreError::UnknownDictionaryEntry {
                 segment,
                 index,
@@ -991,7 +982,6 @@ mod tests {
                 issuer: "u".into(),
                 key: "k".into(),
             },
-            StoreError::QualityCode { found: 9 },
             StoreError::UnknownDictionaryEntry {
                 segment: "s".into(),
                 index: 1,
