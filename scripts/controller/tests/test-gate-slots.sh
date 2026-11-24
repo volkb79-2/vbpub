@@ -260,7 +260,7 @@ check_locale_safe_slot_digits() {
   while IFS= read -r locale_name; do
     case ${locale_name,,} in
       *.utf8|*.utf-8)
-        if LC_ALL=$locale_name locale charmap 2>/dev/null | grep -Fqx UTF-8; then
+        if LC_ALL=$locale_name locale charmap 2>/dev/null | grep -Fx UTF-8 >/dev/null; then
           utf8_locale=$locale_name
           break
         fi

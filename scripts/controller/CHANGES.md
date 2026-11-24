@@ -6,6 +6,13 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Test fix: piped `grep -q` under pipefail
+- `tests/test-ctl-state-backup.sh`, `test-gate-slots.sh`, `test-skills-sync.sh`: a producer piped into `grep -q` could get SIGPIPE (rc 141) when grep exited on the first match while the producer was still writing, and `pipefail` then made the condition false (`--include-large must archive the large file` failed on r1002, 2026-11-24). The three uses now read to EOF (`grep ... >/dev/null`). `test-job-check.sh` was reviewed and left alone: its `grep -qF` calls read a file argument, not a pipe.
+
+### Keep-alive watcher (P-plat-22b part D)
+- `ctl-keepalive.sh` (new; `tests/test-ctl-keepalive.sh` with a stub `tmux`, fake sessions, JSONL and /proc, fixed clock): one detached process types `[keepalive] cache refresh only: reply ok, no tools` into the idle, EMPTY single-row prompt box of the named controller panes 55-59 min after the last real API request (newest assistant record with usage; Claude Code's synthetic API-error records are skipped), at most `KEEPALIVE_MAX` = 3 in a row and one per anchor, none at >= 300k context. Pane -> session via `~/.claude/sessions/<pid>.json` with liveness, `procStart`, tmux-session and duplicate-name guards. The ping is read back after 1 s (NBSP = space) and only an exact match gets Enter; a busy pane, a dialog, a multi-line draft or foreign text aborts (our own partial text is cleared with C-u) and `~/controller/keepalive/<sid>.abort` holds the anchor. A SIGTERM waits out a running ping. Dialog and box markers are UNVERIFIED named variables; DeepSeek/Open Design cache constants (110 / 100 min) are recorded in the header, no code path. ctl-doctor integration (`keepalive: running|absent`, `--fix` start) is a follow-up.
+- `resume-lib.sh`: `pane_state` split into `pane_state_of` / `input_row_of` (same behaviour, reused by the watcher); `resolve_pane` (exit 2 when the target does not resolve to a pane id) and `lock_pane`. `compact-resume.sh` / `clear-resume.sh` lock on the resolved `#{pane_id}` like the watcher (exit 7 after 2 min on a held lock). Their tests use a temp lock dir (`*_LOCK_DIR`) and a stub `display`.
+
 ### Changed
 - `hooks/ctx-hooks.py` is now a drop-in replacement for the untracked live hook
   `.controller-state/hooks/ctx.py` (CTL-43; wiring and deleting `ctx.py` are the

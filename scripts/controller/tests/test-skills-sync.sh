@@ -210,7 +210,7 @@ for name in $sources; do
   contains "$docs_root/README.md" "\`$name\`" "README names the copied skill $name"
 done
 # The two anchors the README points at must be real headings, not guesses.
-anchor_of() { sed -n 's/^\(## \)//p' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g' | grep -qxF "$2"; }
+anchor_of() { sed -n 's/^\(## \)//p' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g' | grep -xF "$2" >/dev/null; }
 anchor_of "$docs_root/docs/DESIGN-GUIDE.md" 'copy-hand-written-skills-instead-of-giving-them-a-skills-verb' || \
   fail 'the linked design-guide anchor has no matching heading'
 anchor_of "$docs_root/docs/CONSUMERS.md" 'install-the-tool-skills-an-agent-will-read' || \
