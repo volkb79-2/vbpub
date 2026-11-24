@@ -8,6 +8,22 @@
 - **Changed (probe serving, P-hostobs-05, `HOB-65`):** `current` is answered in its read turn or refused before REP with `too-many-requests` while its connection's Query blocks are unwritten, or `budget {"pool":"query"}` when the Query pools lack room; pending requests, retry, re-resolution and `SendHub::query_ready` are removed.
 - **Docs (P-hostobs-02, `HOB-66`)**: `docs/PROBE-PROCESS.md` decides the probe's process and thread model (sampler, server loop and placed writer threads; non-blocking backend rule; eventfd wakeup; rustix with one audited `unsafe` line in `kernel`; named `LISTEN_FDS`; shutdown; minimal config; in-process test harness); the hub doc no longer claims a mutex.
 
+### Changed (P-hostobs-04 workspace unification)
+
+- **Crates**: `model` now owns the one quality/value vocabulary and metric fact table;
+  `kernel` and `store` depend on `model`, `proto` depends on `model`, and `store` depends on
+  both, with deleted local copies replaced by re-exports or model types.
+- **SP-2**: the kernel evidence now derives rates through `model::derive_rate` instead of a
+  test-local arithmetic implementation.
+- **Store payloads**: fixed frame-header fields are parsed by `proto`; the store applies its
+  configured payload bound, declared length, corpus frame type, flags and reserved checks in
+  their original order, with the existing typed refusals unchanged.
+- **Probe**: the unused `hostobs-kernel` workspace dependency is removed; the four
+  unused registry dependencies (`ruzstd`, `serde`, `serde_json`, `toml`) remain
+  until P-hostobs-08 removes them with its image rebuild.
+- **Docs**: the sampler source is cited by archive tag, commit and path; the README records
+  the measured working dev image and remote `tools/dev` run.
+
 ### Added (P5b-2d server: tick delivery, retries, served verbs and reachable §11.4 cases; `HOB-54` stays open)
 
 - **`bins/probe/src/server.rs`**: `Server::on_tick(now_ns)` pulls one shared delivery set from the
