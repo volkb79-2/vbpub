@@ -61,7 +61,13 @@ class Boot(Protocol):
 
     def payload(self, target: BootTarget) -> list[tuple[str, int]]: ...
 
-    def publish(self, targets: Sequence[BootTarget], default: StateId) -> None: ...
+    def publish(
+        self,
+        targets: Sequence[BootTarget],
+        default: StateId,
+        *,
+        clear_default_variable: bool = False,
+    ) -> None: ...
 
     def default(self, *, strict: bool) -> Selector | None: ...
 

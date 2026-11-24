@@ -4,6 +4,8 @@
 import pathlib
 import sys
 
+sys.dont_write_bytecode = True
+
 if sys.version_info < (3, 13):
     print(
         "dr-state: requires Python 3.13 or newer "

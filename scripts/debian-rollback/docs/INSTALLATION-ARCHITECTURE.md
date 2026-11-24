@@ -268,7 +268,7 @@ automation, where cloud-init uses it to start the builder install.
 |---|---|
 | M2 ISO construction and config flow | `iso/build-iso.sh`, `iso/dr-autoinstall`, `iso/dr-plan`, `iso/build-cidata.sh` |
 | Shared target installation and layout | `poc/install-btrfs.sh` |
-| Snapshots, menus, boot-once, defaults, deletion, pruning | `poc/dr-state` |
+| Snapshots, menus, boot-once, defaults, deletion, pruning | `files/usr/local/sbin/dr-state` and `files/usr/local/lib/dr-state/dr_state/` |
 | Recovery contract, destructive acceptance scenarios, and recovery boundary | [ROLLBACK-RECOVERY.md](ROLLBACK-RECOVERY.md) |
 | Cloud-image NoCloud builder | `poc/build-seed.sh`, `poc/seed/user-data`, `poc/seed/meta-data` |
 | M2 guest evidence and limits | [RESULTS-M2-UNATTENDED-ISO-2026-11-18.md](RESULTS-M2-UNATTENDED-ISO-2026-11-18.md) |
