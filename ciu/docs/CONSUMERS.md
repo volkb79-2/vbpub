@@ -1609,9 +1609,10 @@ found nothing running" — the two must never be confused.
 hostdir, materializes no secret, writes no rendered compose/overlay/configfile
 (not even a `__pycache__` beside a hook it imports), executes no hook `run()`,
 and never contacts Docker. Use it for read-only validation. `ciu up --dry-run`
-still creates hostdirs and runs `pre_secrets`/`pre_compose`; it skips each
-`post_compose` hook unless that hook declares itself safe for dry-run with a
-literal module-level `DRY_RUN_SAFE = True`. An unsafe hook is skipped before
+creates no hostdir either (it resolves and reports them); it still runs
+`pre_secrets`/`pre_compose`, and it skips each `post_compose` hook unless that
+hook declares itself safe for dry-run with a literal module-level
+`DRY_RUN_SAFE = True`. An unsafe hook is skipped before
 import, so import-time code does not run either. The opt-in is an assertion by
 the hook author that the hook is safe to run against the currently live stack
 even though Compose was not updated.
