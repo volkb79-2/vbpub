@@ -47,7 +47,8 @@ git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--mat
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -p no:estate_test_policy"
+estate_policy = "fail"
 
 [tool.coverage.run]
 branch = true
