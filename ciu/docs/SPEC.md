@@ -1040,6 +1040,14 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `CONTAINER_UID:DOCKER_GID`; UID/GID `0` is valid (S2.5). Pre-existing dirs
   with compatible ownership/permissions pass; incompatible = abort with the
   observed owner/group/mode.
+
+  **Ordering (CIU-227, normative).** Every precondition a hostdir's creation
+  depends on is evaluated BEFORE the directory exists, and the S6.5 helper's own
+  preconditions (S6.5) are among them. A run that is refused MUST leave the
+  filesystem unchanged; the refusal may never leave a directory whose ownership
+  the next run refuses. A `--dry-run` creates no hostdir at all: it resolves,
+  validates and reports every declaration (including the S6.6 seed check and the
+  incompatible-ownership refusal above) and still performs the S6.2 rewrite.
 - **S6.4** `--reset` removes `vol-*` dirs **of the stack directory** (resolved
   against the stack dir, never the process cwd), rendered outputs, and
   stack containers; orphan cleanup uses the anchored label filter
@@ -1190,6 +1198,18 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   daemon has root even when the operator does not. This replaces the v1
   per-stack chown-init-container pattern; stacks SHOULD NOT carry init
   containers for ownership fixes.
+
+  **The helper's cgroup tier is a caller-supplied fact (CIU-230, normative).**
+  The one-shot helper runs under `--cgroup-parent $CGROUP_PARENT_DEV_INTERACTIVE`,
+  a LOADED `.slice` unit name. CIU MUST NOT derive, default or guess it: neither
+  the host nor a stack's `[<root>.governance].cgroup_parent` (the tier its
+  CONTAINERS are placed under, S15) identifies the interactive tier, and a wrong
+  slice places the helper silently outside the governed one. A missing, malformed
+  or not-verified-loaded value is refused, and each such refusal MUST name the
+  variable, the expected value shape (a loaded `.slice` unit name) and how to
+  find one (`systemctl list-units --type=slice`). The helper is required only
+  when the target ownership is one this process cannot apply itself; a run that
+  never escalates is not refused for a missing tier (S6.3 ordering).
 - **S6.6** `seed = "<dir>"` (relative to the stack dir): on **first
   creation only**, the directory tree is copied into the hostdir and given
   the hostdir's ownership (via S6.5 when needed). Pre-existing hostdirs are

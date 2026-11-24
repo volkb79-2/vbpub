@@ -11,7 +11,13 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-11-24 — **CIU-230 and CIU-231 FILED; CIU-227 and CIU-229 AMENDED** (T2 core controller, P-core-10 branch: no default cgroup parent for the S6.5 root helper; plain `ciu up` in a stack dir is an rc-0 no-op; a second dry-run hostdir specimen; `worktree rm` on a git-created worktree refuses once per nested root). Previous update 2026-11-24 — **CIU-220 and CIU-224 FIXED IN THIS BRANCH (P-core-10)** (bounded process I/O and the shared renderer; CIU-224..229 had been filed together on P-core-10). Previous update 2026-11-24 — **CIU-224..229 FILED** (T2 core, P-core-10 branch): the renderer adoption, the tester-gate retirement, an override that drops required hooks, hostdirs created before S6.5 preconditions, relative `--dir` with `--root-folder`, and three `ciu worktree rm` defects; CIU-220 design amended (cli-extended 0.8 procio); CIU-162 amended (consumer-stack networks). Previous update 2026-11-18 — **CIU-223 FIXED** (the four CIU-215 test files disable git's automatic gc and maintenance, and an autouse guard reports leftover direct children without signalling them; tests only, no release or consumer action). Previous update 2026-11-18 — **CIU-221 FILED** (`ciu up --dir` applies no profile `topology_overrides`; split from CIU-208, whose profile-mode fix is merged to main as `66db19734`, unreleased). Previous update 2026-11-13 — **CIU-214, CIU-215 and CIU-216 FILED** from the netcup-api-filter migration (`ciu down --dir` parser rejects flags the help lists; CIU 7 linked-worktree exec runners lack the git common-dir mount; `ciu worktree create` renders no `ciu.global.toml` without `DOCKER_HOST`). Previous update 2026-11-11 — **CIU-193 FIXED** on `ciu-193-down-owner-20261111` (`ciu down` ownership-filtered like `clean`; unlabelled candidates fail closed in worktrees). **CIU-205 and CIU-206 FILED and FIXED** (on `ciu-205-dir-selection-20261111` and `ciu-206-host-secret-20261111`, unreleased) from an independent review of the naf deployment plan: `ciu up --dir` omits the S3.12 selection facts from its render context and does not record or guard the resolved selection across invocations, while no host-wide cross-checkout operator-secret scope exists; an uncached stack can prompt or fail in another checkout only when neither an environment value nor a cached value is available, and an environment value can silently replace a cached value. **CIU-208 and CIU-209 FILED** from side findings in the CIU-205 implementation report: profile-mode `ciu up` does not carry a profile's `topology_overrides` into the per-stack engine render even though preflight renders and `ciu resolve` apply them; `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check by calling the profile-package resolver directly. CIU-204 remains OPEN (Docker network-cleanup evidence is UNVERIFIED and must be reconciled without inventing names). CIU-203 is FIXED on `ciu-fix-20261109`; CIU-141 is implemented on `ciu-run-20261105` (unreleased); CIU-202/134/153/154/155/156/157/158 are FIXED; CIU-151 remains OPEN pending live physical-path verification. Historical 7.18 wave update, 2026-10-27: CIU-135 FIXED (its tests and coverage repaired, record schema 6 added for Run-Gate); CIU-107 stays FIXED; CIU-134's retry implementation was parked with unresolved review findings now closed below; CIU-154 (branch pruning discards ignored resumable state; was CIU-143 on an unmerged branch, CIU-152 on the wave branch before integration) and CIU-153 (`rm` deletes unmerged branches) were FILED; CIU-151 has a second reproduction. Previous update 2026-10-15 — **CIU-144 and CIU-143 FILED**: linked-worktree JSON output can be polluted by the CIU-117 image-tag notice, and a conflicting Compose-managed network escapes `ciu check` and fails late during deployment. **CIU-140 remains IN PROGRESS; CIU-142 and CIU-139 remain OPEN (CIU-141 was OPEN then; it is implemented on `ciu-run-20261105` as of 2026-11-06). CIU-135 remains OPEN** pending its registered gate and final review; its candidate also includes direct `ciu up` network verification, truthful collision vs indeterminate status, unreadable CIU-root sibling records, exact legacy-network claims, and explicit root selection (P53 review 04). **CIU-129 is FIXED by Assay B146** for the hidden-failure diagnostic (first failing test retained in the R0 summary/claim; fail-fast coverage warning emitted). **CIU-136** tracks the open CIU-118 service-discovery follow-up (attached networks, aliases, URLs, exit status; the shipped `ciu resolve`/`ciu exec` stay FIXED). **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` failed on the intended key-duplication assertions. **CIU-128 FIXED** with its registered gate pass. The release flow runs the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; dstdns caller migration ships with CIU-118, and RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared test invocations and their budgets.
+Last updated: 2026-11-24 — **CIU-227, CIU-230 and CIU-231 FIXED IN THIS BRANCH (P-core-11)** (hostdirs only after the S6.5 preconditions and none under `--dry-run`, the helper's refusal remedy, an empty selection from inside a stack dir refusing with the `--dir .` remedy). Before that on 2026-11-24 — **CIU-230 and CIU-231 FILED; CIU-227 and CIU-229 AMENDED** (T2 core controller, P-core-10 branch: no default cgroup parent for the S6.5 root helper; plain `ciu up` in a stack dir is an rc-0 no-op; a second dry-run hostdir specimen; `worktree rm` on a git-created worktree refuses once per nested root). Previous update 2026-11-24 — **CIU-220 and CIU-224 FIXED IN THIS BRANCH (P-core-10)** (bounded process I/O and the shared renderer; CIU-224..229 had been filed together on P-core-10). Previous update 2026-11-24 — **CIU-224..229 FILED** (T2 core, P-core-10 branch): the renderer adoption, the tester-gate retirement, an override that drops required hooks, hostdirs created before S6.5 preconditions, relative `--dir` with `--root-folder`, and three `ciu worktree rm` defects; CIU-220 design amended (cli-extended 0.8 procio); CIU-162 amended (consumer-stack networks). Previous update 2026-11-18 — **CIU-223 FIXED** (the four CIU-215 test files disable git's automatic gc and maintenance, and an autouse guard reports leftover direct children without signalling them; tests only, no release or consumer action). Previous update 2026-11-18 — **CIU-221 FILED** (`ciu up --dir` applies no profile `topology_overrides`; split from CIU-208, whose profile-mode fix is merged to main as `66db19734`, unreleased). Previous update 2026-11-13 — **CIU-214, CIU-215 and CIU-216 FILED** from the netcup-api-filter migration (`ciu down --dir` parser rejects flags the help lists; CIU 7 linked-worktree exec runners lack the git common-dir mount; `ciu worktree create` renders no `ciu.global.toml` without `DOCKER_HOST`). Previous update 2026-11-11 — **CIU-193 FIXED** on `ciu-193-down-owner-20261111` (`ciu down` ownership-filtered like `clean`; unlabelled candidates fail closed in worktrees). **CIU-205 and CIU-206 FILED and FIXED** (on `ciu-205-dir-selection-20261111` and `ciu-206-host-secret-20261111`, unreleased) from an independent review of the naf deployment plan: `ciu up --dir` omits the S3.12 selection facts from its render context and does not record or guard the resolved selection across invocations, while no host-wide cross-checkout operator-secret scope exists; an uncached stack can prompt or fail in another checkout only when neither an environment value nor a cached value is available, and an environment value can silently replace a cached value. **CIU-208 and CIU-209 FILED** from side findings in the CIU-205 implementation report: profile-mode `ciu up` does not carry a profile's `topology_overrides` into the per-stack engine render even though preflight renders and `ciu resolve` apply them; `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check by calling the profile-package resolver directly. CIU-204 remains OPEN (Docker network-cleanup evidence is UNVERIFIED and must be reconciled without inventing names). CIU-203 is FIXED on `ciu-fix-20261109`; CIU-141 is implemented on `ciu-run-20261105` (unreleased); CIU-202/134/153/154/155/156/157/158 are FIXED; CIU-151 remains OPEN pending live physical-path verification. Historical 7.18 wave update, 2026-10-27: CIU-135 FIXED (its tests and coverage repaired, record schema 6 added for Run-Gate); CIU-107 stays FIXED; CIU-134's retry implementation was parked with unresolved review findings now closed below; CIU-154 (branch pruning discards ignored resumable state; was CIU-143 on an unmerged branch, CIU-152 on the wave branch before integration) and CIU-153 (`rm` deletes unmerged branches) were FILED; CIU-151 has a second reproduction. Previous update 2026-10-15 — **CIU-144 and CIU-143 FILED**: linked-worktree JSON output can be polluted by the CIU-117 image-tag notice, and a conflicting Compose-managed network escapes `ciu check` and fails late during deployment. **CIU-140 remains IN PROGRESS; CIU-142 and CIU-139 remain OPEN (CIU-141 was OPEN then; it is implemented on `ciu-run-20261105` as of 2026-11-06). CIU-135 remains OPEN** pending its registered gate and final review; its candidate also includes direct `ciu up` network verification, truthful collision vs indeterminate status, unreadable CIU-root sibling records, exact legacy-network claims, and explicit root selection (P53 review 04). **CIU-129 is FIXED by Assay B146** for the hidden-failure diagnostic (first failing test retained in the R0 summary/claim; fail-fast coverage warning emitted). **CIU-136** tracks the open CIU-118 service-discovery follow-up (attached networks, aliases, URLs, exit status; the shipped `ciu resolve`/`ciu exec` stay FIXED). **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` failed on the intended key-duplication assertions. **CIU-128 FIXED** with its registered gate pass. The release flow runs the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; dstdns caller migration ships with CIU-118, and RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared test invocations and their budgets.
+
+Later update, 2026-11-24 — **CIU-227, CIU-230 and CIU-231 FIXED IN THIS BRANCH
+(P-core-11)** (S6.5 preconditions are evaluated before the first hostdir and
+`--dry-run` creates none; the helper's refusals carry the variable, the
+`.slice` shape and `systemctl list-units --type=slice`; an empty selection from
+inside a stack dir of a multi-stack root refuses with the `--dir .` remedy).
 
 Later update, 2026-11-24 — **CIU-232 FIXED IN THIS BRANCH (P-core-10 fix round
 1); CIU-233 FILED** (procio's signal scope had overridden the foreground
@@ -685,11 +691,11 @@ entries.
 | CIU-224 | ciu's `SeverityStream` is a private copy of the severity renderer (with the KI-184 defect) instead of cli-extended's shared renderer | Minor | FIXED IN THIS BRANCH (P-core-10) |
 | CIU-225 | ciu's release gate still runs `cmru tester-gate`, which is being retired (cmru KI-191) | Minor | OPEN 2026-11-24 |
 | CIU-226 | A site override can replace a hook list the defaults require, silently dropping a stack's validator hook | Medium | OPEN 2026-11-24 |
-| CIU-227 | `ciu up` (also `--dry-run`) creates hostdirs before the S6.5 precondition check refuses | Medium | OPEN 2026-11-24 |
+| CIU-227 | `ciu up` (also `--dry-run`) creates hostdirs before the S6.5 precondition check refuses | Medium | FIXED IN THIS BRANCH (P-core-11) |
 | CIU-228 | `ciu up --dir <relative> --root-folder <root>` fails with `[no-ciu-root]`; how a relative `--dir` resolves with `--root-folder` is undefined | Minor | OPEN 2026-11-24 |
 | CIU-229 | `ciu worktree rm`: a spurious first-attempt refusal, sibling roots without a generated identity refused, `--dry-run` reporting merged branches as kept-unmerged | Minor | OPEN 2026-11-24 |
-| CIU-230 | The S6.5 root helper has no default cgroup parent, and its refusal (`CGROUP_PARENT_DEV_INTERACTIVE` required) gives no remedy | Medium | OPEN 2026-11-24 |
-| CIU-231 | `ciu up` with no `--dir` inside a stack dir of a multi-stack root is a silent rc-0 no-op; `down --dir <relative>` from the root refuses `[no-ciu-root]` | Medium | OPEN 2026-11-24 |
+| CIU-230 | The S6.5 root helper has no default cgroup parent, and its refusal (`CGROUP_PARENT_DEV_INTERACTIVE` required) gives no remedy | Medium | FIXED IN THIS BRANCH (P-core-11) |
+| CIU-231 | `ciu up` with no `--dir` inside a stack dir of a multi-stack root is a silent rc-0 no-op; `down --dir <relative>` from the root refuses `[no-ciu-root]` | Medium | FIXED IN THIS BRANCH (P-core-11) for the `up` half; the `down --dir <relative>` half stays with CIU-228 |
 | CIU-232 | procio's signal scope replaced the foreground one-shot's SIGTERM/SIGHUP forwarding handlers during `run_cmd` | Minor | FIXED IN THIS BRANCH (P-core-10 fix round 1) |
 | CIU-233 | Seventeen deferred direct `subprocess.run(capture_output=True)` sites still have no bounded post-exit drain | Minor | OPEN 2026-11-24 (P-core-10 review) |
 | CIU-234 | `procutil.run_cmd`'s helper-thread branch leaves the child running when a main-thread `KeyboardInterrupt` or `SystemExit` interrupts `worker.join()` | Minor | OPEN 2026-11-24 (P-core-10 review r2, M2) |
@@ -7192,7 +7198,7 @@ decoration. The cli-extended floor is 0.8.0. Multi-line prefix, colour,
 
 ## CIU-227 — `ciu up` creates hostdirs before the S6.5 precondition check refuses
 
-**Status:** OPEN (filed 2026-11-24, from vbpub-edge, tls-edge/vss acceptance on r1002, ciu 7.26.0); severity: Medium.
+**Status:** FIXED IN THIS BRANCH (P-core-11) (filed 2026-11-24, from vbpub-edge, tls-edge/vss acceptance on r1002, ciu 7.26.0); severity: Medium.
 
 **Observed.** `ciu up --dry-run` on `voice-screen-share/jitsi-server` created `vol-prosody-config`, owned by the invoking user (runner). It did so BEFORE the S6.5 root-helper precondition refused (`CGROUP_PARENT_DEV_INTERACTIVE` unset). The next run then fails with `[S6.3] Existing hostdir has incompatible ownership/permissions` until the dir is removed by hand. A `--dry-run` should not create hostdirs at all (compare CIU-162, side effects of dry-run).
 
@@ -7201,6 +7207,31 @@ decoration. The cli-extended floor is 0.8.0. Multi-line prefix, colour,
 **Close when.** A test with a failing S6.5 precondition leaves no hostdir behind (also under `--dry-run`), and the next run after the precondition is fixed succeeds without manual cleanup.
 
 **Amendment (2026-11-24, a second specimen from vbpub-edge, tls-edge 3.2.0 acceptance on r1002, ciu 7.26.0, user-scope instance, non-root).** `ciu up --dry-run` on tls-edge 3.2.0 creates the hostdir `ciu-stack/vol-traefik-acme` (owner 0:0, mode 0700) through the S6.5 root helper. These are volume-store instances, where the hostdir path is empty. The close test also covers a dry-run creating no hostdir through the S6.5 helper.
+
+**Fix (done, P-core-11).** `engine.create_hostdirs` gained two pieces and lost
+one order: (1) `_hostdir_needs_privileged_ownership(uid, gid)` DERIVES whether
+this run needs the S6.5 helper at all — false for root, false when the target is
+the process's own uid and a gid it is in (direct `os.chown` then succeeds),
+true otherwise — so the precondition is not applied to runs that never escalate;
+(2) every newly-created directory resolves `_root_helper_cgroup_parent()`
+BEFORE `path.mkdir`, so a refusal leaves the filesystem untouched (the
+incompatible-ownership refusal found after the fact is gone); (3) a new
+`plan_only` mode — selected by `main_execution` for `dry_run and not
+_prepare_only` — resolves, validates and reports only: it prints `Would create:
+<path> (<uid>:<gid>, <mode>)` plus `S6.5 root helper REQUIRED/not needed`, still
+raises the S6.6 seed and S6.3 incompatible refusals, and still rewrites each
+value to its absolute physical path (S6.2) so a dry-run render keeps producing
+`{{ svc.hostdir.<purpose> }}` paths. `_prepare_only` (CIU-141) deliberately keeps
+creating: it is a render for a REAL start. Evidence:
+`tests/tests/test_ciu_227_230_hostdir_preconditions.py` (refuse-fix-rerun with no
+manual cleanup; dry-run against a missing and a satisfiable precondition; the
+local-ownership case needing no parent; plan-mode refusals; the Step-8 wiring).
+Two pinned expectations changed with the fix, both named here: `test_spec_contracts
+.py::TestHostdirPhysicalRewrite::test_logs_hostdir_is_absolute_physical_path` now
+asserts the rendered path and the ABSENT directory (that run is a dry run), and
+`test_ciu_engine_deeper6.py::
+test_hostdir_permission_fallback_targets_physical_path` sets the S6.5
+precondition its foreign ownership now requires before the first directory exists.
 
 ## CIU-228 — a relative `--dir` with `--root-folder` fails with `[no-ciu-root]`
 
@@ -7229,7 +7260,7 @@ decoration. The cli-extended floor is 0.8.0. Multi-line prefix, colour,
 
 ## CIU-230 — the S6.5 root helper has no default cgroup parent, and its refusal gives no remedy
 
-**Status:** OPEN (filed 2026-11-24, from vbpub-edge, tls-edge 3.2.0 + voice-screen-share acceptance on r1002, ciu 7.26.0); severity: Medium.
+**Status:** FIXED IN THIS BRANCH (P-core-11) — the REMEDY, not a fallback (filed 2026-11-24, from vbpub-edge, tls-edge 3.2.0 + voice-screen-share acceptance on r1002, ciu 7.26.0); severity: Medium.
 
 **Observed.** On a native host, a non-root `ciu up` that needs the S6.5 root helper (any uid-0 or uid-1000 hostdir) refuses unless `CGROUP_PARENT_DEV_INTERACTIVE` is exported. `engine.py:454-470` `_root_helper_cgroup_parent` requires a `.slice` unit name, and nothing derives it from the host or the config. The refusal ("CGROUP_PARENT_DEV_INTERACTIVE is required for the S6.5 root helper") names the variable but no remedy. Seen on tls-edge (`vol-traefik-acme`) and voice-screen-share/jitsi-server (`vol-prosody-*`); every consumer README has to document it.
 
@@ -7237,9 +7268,25 @@ decoration. The cli-extended floor is 0.8.0. Multi-line prefix, colour,
 
 **Close when.** A test without the variable either resolves the documented fallback or refuses with the remedy text, and a controlled-wrong message without the remedy fails it.
 
+**Resolution (P-core-11).** The SECOND route was taken: every refusal now carries
+the remedy, and no fallback slice is derived or invented. `_ROOT_HELPER_SLICE_REMEDY`
+(one constant, appended to all three refusals) names the variable, the expected
+value shape (a LOADED `.slice` unit name, with an example) and the finder
+(`systemctl list-units --type=slice`), and says to export the variable. Why no
+fallback: `[<root>.governance].cgroup_parent` is the tier a stack's CONTAINERS are
+governed into (S15), not the interactive cockpit tier the one-shot helper belongs
+in, and no host fact names that tier — a guess would place the helper outside the
+governed slice silently, which is the shadowing/silent-invention default the
+estate forbids. The intermediate fix moved the precondition evaluation itself
+before the first hostdir (CIU-227), so this remedy is what an operator sees
+INSTEAD of a half-applied run. Evidence:
+`tests/tests/test_ciu_227_230_hostdir_preconditions.py::
+test_ciu_230_every_refusal_names_the_variable_shape_and_remedy` (all three texts,
+plus an inline controlled-wrong message that fails the same three assertions).
+
 ## CIU-231 — `ciu up` with no `--dir` inside a stack dir of a multi-stack root is a silent rc-0 no-op
 
-**Status:** OPEN (filed 2026-11-24, from vbpub-edge via the main controller, r1002 bring-up, ciu from the tls-edge v3.2.0 instance); severity: Medium.
+**Status:** FIXED IN THIS BRANCH (P-core-11) for (a); (b) stays with CIU-228 (filed 2026-11-24, from vbpub-edge via the main controller, r1002 bring-up, ciu from the tls-edge v3.2.0 instance); severity: Medium.
 
 **Observed.**
 - (a) `ciu up`, run from inside `voice-screen-share/jitsi-server` (also `fluxer-server`) in a vbpub checkout, prints `No phases/stacks selected to deploy` (a warning, `src/ciu/deploy.py:2809`) and exits 0. `ciu up --dir .` in the same dir deploys. Plain `ciu up` does deploy in a single-stack root (the tls-edge instance stack dir).
@@ -7250,6 +7297,21 @@ Evidence: `.controller-state/edge/reports/r1002-drain-20261124.md` (Bring-up sec
 **Wanted.** (a) Either select the current stack when cwd is inside one, or refuse with rc != 0 and a remedy (`--dir .`): an rc of 0 hides the miss from automation. (b) `down --dir <relative>` resolves exactly like `up --dir`, under the rule CIU-228 defines.
 
 **Close when.** A test with cwd in a stack dir of a multi-stack root either deploys that stack or exits non-zero with the remedy text, and `down --dir <relative>` from the root resolves like `up`.
+
+**Resolution (a) (P-core-11).** The refusal was chosen over implicit selection:
+`build_selection` reads the PROFILE, so a stack the active profile does not name
+is not "the current stack" for this root, and selecting it silently would deploy
+something the profile deliberately excluded. `deploy._implicit_stack_remedy`
+returns the refusal only when the invocation directory is INSIDE this root, is
+not the root itself, and carries a stack marker (`ciu.defaults.toml.j2` or the
+shipped `docker-compose.yml`); `action_deploy` then prints
+`[S10.3] nothing to deploy: <dir> is a stack directory of this root … run
+`ciu up --dir .`` and returns 2. The three rc-0 cases that were correct stay
+rc 0: the root's own profile selecting nothing, an invocation outside this root,
+and a directory that is not a stack (a shipped stack dir counts as a stack).
+Evidence: `tests/tests/test_ciu_231_implicit_stack_selection.py` (the refusal,
+the shipped-stack form, and each unchanged rc-0 case). (b) is untouched here —
+CIU-228 owns the relative-`--dir` resolution rule this item defers to.
 
 ## CIU-232 — procio replaced the foreground one-shot's termination handlers
 
