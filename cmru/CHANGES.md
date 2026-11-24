@@ -39,6 +39,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Changed
 - cmru R2 (`cmru-first-release-r2`): `candidate_fail_fast = true` removes per-candidate coverage and stops at the first failing test; measured 2026-11-18 on v1001 (21 candidates, two workers): mean 304 s per candidate against ~570 s without it (assay P1 of the R2 time-reduction program).
+- cmru R2 (`cmru-first-release-r2`): the eight slowest install/e2e/image-integration test files now run last in both baseline and candidate collection, so a fail-fast kill reaches the fast unit files first without changing suite membership (assay P2 of the R2 time-reduction program; post-ordering cost not yet measured).
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
