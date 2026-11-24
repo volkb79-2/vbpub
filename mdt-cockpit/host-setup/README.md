@@ -1220,6 +1220,27 @@ version rendered. Drop-ins are mode 0644. A killed lane is an infrastructure eve
 zswap (zstd, `max_pool_percent` 25, writeback `yes` on every tier) is unchanged. Open and unmeasured (R3, MDT-072): `io.max` on dev.slice throttles swap writeback, so reclaim at a
 `memory.max` can exhaust its retries on pages under writeback; the acceptance run gates it.
 
+### Acceptance and measurement kit of the dedicated-dev memory model (P-plat-19g, `tools/accept/`)
+
+Step 6 of the migration, as commands. Root on the host, from a checkout of `mdt-cockpit/host-setup/`; `accept-run.sh` refuses unless `/etc/mdt/host-setup.env` says
+`HOST_ROLE=dedicated-dev`. The probe image needs `python3` (default `tester-unified:local`, or `--probe-image REF`). Nothing here is run by the repo's tests against a host.
+
+1. Lanes drained as in the migration, then per run (two runs, take the max; `EV` a fresh directory each time):
+   `tools/accept/accept-run.sh --evidence "$EV" --warmup 600 --window 1800` (add `--interactive` to wait for Enter after the start hints). It starts
+   `mdt-accept-probe-gates` and `mdt-accept-probe-bg` (`--memory 4G --memory-swap 12G`, ~3.8G anon cycling plus random reads of a 4G file), samples every 10 s into
+   `$EV/samples.csv`, starts one `cgprofilectl` session per floored unit (ids in `$EV/cgprofile-sessions.txt`; skipped with a manifest note when `cgprofilectl` is absent)
+   and writes `$EV/manifest.env`. Both probes are removed by exact name on exit, INT and TERM. During the window, start the operator part: one real gate lane, the cockpit
+   attached and idle, an ssh login. Time `ssh <host> true` idle before and loaded during the window, and write `"<idle> <loaded>"` (seconds) into `$EV/ssh.txt`.
+2. `tools/accept/accept-eval.py "$EV1" "$EV2"` (or `--ssh-idle S --ssh-loaded S`): per run M = p99(U) + p99(init.scope) + W + 64M, the hot-set proxy (max
+   `active_anon + active_file`) per unit and the floor 1.25 x that, and the 4.1 criteria (floored-unit refault delta <= `--refault-tol` pages, default 100;
+   system.slice and user.slice `some avg10` max <= 1; ssh loaded <= 2 x idle; no oom/oom_kill delta in vmstat, dev.slice or either tier; dev.slice `memory.events max`
+   rose in the window, else the load was not real). Exit 0 PASS, 1 FAIL, 4 INCONCLUSIVE, 2 usage; the last line is `VERDICT ...`. The `host-setup.env` lines it prints
+   are commented out unless PASS; floor rows are printed only where they exceed the table.
+3. `tools/accept/daemon-reload-check.sh`: a `--memory 2G` container must read `memory.max` 2147483648 before and after `systemctl daemon-reload` (5.3 precedence).
+4. On PASS: put the printed `DEV_HOST_MEMORY_MIN`, `DEV_HOST_MEMORY_MARGIN`, `DEV_INTERACTIVE_MEMORY_MIN` (if wanted) and `DEV_HOST_MEMORY_MEASURED` lines into
+   `/etc/mdt/host-setup.env` and re-run `install.sh`. On FAIL: raise the failing value and repeat, or pin `DEV_HOST_MEMORY_KEEP=1280M` (design note section 8) and file the result.
+   On INCONCLUSIVE: fix what the line names (usually the load) and repeat.
+
 ### Shared tree cache of the dedicated-dev role (AD2-2, MDT-074)
 
 Many lanes read the same checkout and assay template. Copying it per lane costs RAM once per lane; the design
