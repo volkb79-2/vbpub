@@ -301,6 +301,33 @@ def test_validate_config_builds_default_and_optional_port_plans():
     ) == ["80/tcp (HTTP redirect and/or HTTP-01)", "443/tcp (HTTPS, HTTP/1.1 and HTTP/2)"]
 
 
+@pytest.mark.parametrize(
+    ("section", "key", "message"),
+    [
+        ("ports", "expose_http", "ports.expose_http must be true or false"),
+        ("http3", "enabled", "http3.enabled must be true or false"),
+        ("calls", "enabled", "calls.enabled must be true or false"),
+    ],
+)
+def test_port_plan_refuses_non_boolean_listener_switches(
+    section: str, key: str, message: str
+) -> None:
+    value = valid_config()
+    value[section][key] = 1
+    with pytest.raises(config.ConfigError, match=message):
+        config.port_plan(value)
+
+
+def test_port_plan_refuses_http_and_https_on_the_same_tcp_port() -> None:
+    value = valid_config()
+    value["ports"]["http"] = value["ports"]["https"]
+    with pytest.raises(
+        config.ConfigError,
+        match="HTTP and HTTPS cannot publish the same TCP port",
+    ):
+        config.port_plan(value)
+
+
 @pytest.mark.parametrize(("mutate", "message"), [
     (lambda c: c["tls"].update(mode="other"), "tls.mode"),
     (lambda c: c.update(domain=""), "domain is required"),
