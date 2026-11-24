@@ -2163,11 +2163,11 @@ def record_effective_judge(payload: Mapping[str, Any]) -> str | None:
     """(B530) The judge identity a state record is evidence FOR.
 
     A record executed by judge J carries ``judge_sha256 = J`` and is evidence
-    for J. A record imported by ``--carry-over`` keeps its executing judge in
-    ``judge_sha256`` (never rewritten) and names the judge it was imported
-    into in ``carry_over.into_judge_sha256``; that is the identity it resumes
-    under. ``None`` for a record with no usable judge, invalid provenance, or
-    a malformed ``carry_over`` block.
+    for J. A record imported or carried across a judge change keeps its
+    executing judge in ``judge_sha256`` (never rewritten) and names the judge
+    it was imported into in ``carry_over.into_judge_sha256``; that is the
+    identity it resumes under. ``None`` for a record with no usable judge,
+    invalid provenance, or a malformed ``carry_over`` block.
     """
     judge = payload.get("judge_sha256")
     if not isinstance(judge, str) or not judge:
@@ -2196,6 +2196,36 @@ def record_effective_judge(payload: Mapping[str, Any]) -> str | None:
     ):
         return None
     return carry["into_judge_sha256"]
+
+
+def _set_carry_over_provenance(
+    payload: dict[str, Any],
+    *,
+    kind: Literal["imported", "carried"],
+    match: Literal["exact-id", "locus", "window"],
+    from_candidate_id: str,
+    from_judge_sha256: str,
+    into_judge_sha256: str,
+    source: Path,
+    reason: str,
+    imported_at: str,
+) -> None:
+    """Write the one valid schema-2 carry block and its top-level provenance."""
+    payload["carry_over"] = {
+        "schema_version": CARRY_OVER_SCHEMA_VERSION_V2,
+        "into_judge_sha256": into_judge_sha256,
+        "source": str(source),
+        "reason": reason,
+        "imported_at": imported_at,
+        "importer_version": _tool_version() or "unknown",
+    }
+    payload["provenance"] = _provenance_record(
+        kind=kind,
+        from_candidate_id=from_candidate_id,
+        from_judge_sha256=from_judge_sha256,
+        match=match,
+        reason=reason,
+    )
 
 
 def _open_state_dir_fd(state_root: Path | str, state_root_fd: int | None) -> int:
@@ -4097,9 +4127,6 @@ class _CarryForwardRecord:
 
 @record
 class _CarryForwardSourceIndex:
-    source: Path
-    exact: Mapping[str, tuple[_CarryForwardRecord, ...]]
-    loci: LocusIndex
     records: tuple[_CarryForwardRecord, ...]
     invalid_records: int
 
@@ -4172,15 +4199,51 @@ def _carry_forward_record_paths(source: Path) -> tuple[str, ...]:
     return tuple(relatives)
 
 
+def carried_survivor_count(state_root: Path | str) -> int:
+    """Count valid carried survivors in a store's current flat generation."""
+    root = Path(state_root)
+    try:
+        with os.scandir(root) as scanned:
+            children = tuple(scanned)
+    except OSError:
+        return 0
+    total = 0
+    for child in children:
+        if not (
+            child.name.endswith(".json")
+            and _CANDIDATE_ID_RE.fullmatch(child.name[:-5]) is not None
+            and child.is_file(follow_symlinks=False)
+        ):
+            continue
+        try:
+            raw = safeio.read_bounded_input(
+                root, child.name, limit=MUTATION_STATE_RECORD_LIMIT
+            )
+            if raw is None:
+                continue
+            payload = json.loads(raw.decode("utf-8"))
+        except (AssayError, OSError, UnicodeDecodeError, ValueError, RecursionError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        if record_effective_judge(payload) is None:
+            continue
+        provenance = record_provenance(payload)
+        if (
+            provenance is not None
+            and provenance["kind"] == "carried"
+            and payload.get("outcome_bucket") == "survived"
+        ):
+            total += 1
+    return total
+
+
 def _carry_forward_source_index(
     source: Path,
     *,
-    judge: str,
-    rejudge_outcomes: frozenset[str],
     deadline_check: Callable[[], float] | None = None,
 ) -> _CarryForwardSourceIndex:
-    """Read one bounded source and index structurally valid terminal records."""
-    exact: dict[str, list[_CarryForwardRecord]] = collections.defaultdict(list)
+    """Read one bounded source and retain structurally valid terminal records."""
     records: list[_CarryForwardRecord] = []
     invalid_records = 0
     for relative in _carry_forward_record_paths(source):
@@ -4221,8 +4284,6 @@ def _carry_forward_source_index(
         ):
             invalid_records += 1
             continue
-        # Incomplete attempts never seed carry-forward. They remain ordinary
-        # pending work and are deliberately ignored here.
         if bucket not in CARRY_OVER_IMPORTABLE_BUCKETS:
             continue
         if not _valid_carry_forward_identity(payload, candidate):
@@ -4235,17 +4296,9 @@ def _carry_forward_source_index(
             relative=relative,
             effective_judge=effective_judge,
         )
-        exact[candidate].append(record)
         records.append(record)
     records.sort(key=lambda item: (item.payload["candidate_id"], item.relative))
-    exact_records = {
-        candidate: tuple(sorted(values, key=lambda item: item.relative))
-        for candidate, values in exact.items()
-    }
     return _CarryForwardSourceIndex(
-        source=source,
-        exact=exact_records,
-        loci=locus_index_for_records(item.payload for item in records),
         records=tuple(records),
         invalid_records=invalid_records,
     )
@@ -4314,25 +4367,10 @@ def _carry_forward_match_rank(match: _CarryForwardMatch) -> tuple[Any, ...]:
     """Order conflicting claims deterministically, with any kill winning."""
     bucket = match.payload.get("outcome_bucket")
     kind_rank = {"exact-id": 0, "locus": 1, "window": 2}[match.kind]
-    completed_rank = 0.0
-    completed_at = match.payload.get("completed_at")
-    if isinstance(completed_at, str):
-        try:
-            completed = datetime.fromisoformat(completed_at)
-            if completed.tzinfo is not None:
-                completed_rank = completed.timestamp()
-        except (ValueError, OverflowError):
-            pass
-    order = match.payload.get("record_order")
-    order_rank = order if isinstance(order, int) and not isinstance(order, bool) else -1
-    judge = match.payload.get("judge_sha256")
     return (
         0 if bucket == "killed" else 1,
         kind_rank,
-        0 if completed_rank or order_rank >= 0 else 1,
-        -completed_rank,
-        -order_rank,
-        judge if isinstance(judge, str) else "",
+        str(match.payload.get("judge_sha256", "")),
         str(match.source),
         match.relative,
     )
@@ -4350,8 +4388,6 @@ def _carry_forward_match_candidates(
     indexes = tuple(
         _carry_forward_source_index(
             source,
-            judge=judge,
-            rejudge_outcomes=rejudge_outcomes,
             deadline_check=deadline_check,
         )
         for source in sources
@@ -4364,7 +4400,6 @@ def _carry_forward_match_candidates(
         if (record.payload["path"], record.payload["operator"]) in job_families
         and record.effective_judge != judge
     }
-    locus_claims: dict[tuple[str, str, str], set[str]] = collections.defaultdict(set)
     exact_records: dict[str, list[_CarryForwardRecord]] = collections.defaultdict(list)
     locus_records: dict[
         tuple[str, str, str], list[_CarryForwardRecord]
@@ -4378,7 +4413,6 @@ def _carry_forward_match_candidates(
         locus = _locus_from_record(payload.get("locus"))
         if locus is not None:
             locus_key = (payload["path"], payload["operator"], locus.key)
-            locus_claims[locus_key].add(payload["candidate_id"])
             locus_records[locus_key].append(indexed_record)
         window = payload.get("window_key")
         if isinstance(window, str):
@@ -4396,18 +4430,20 @@ def _carry_forward_match_candidates(
         fields = _locus_fields_for_job(job)
         current_locus = _locus_from_record(fields.get("locus"))
         window_key = fields.get("window_key")
-        locus_is_ambiguous = (
-            current_locus is not None
-            and len(
-                locus_claims.get(
-                    (job.path, job.site.operator, current_locus.key), set()
-                )
-            ) > 1
+        family = (job.path, job.site.operator)
+        exact = tuple(exact_records.get(identity, ()))
+        locus = (
+            tuple(locus_records.get((*family, current_locus.key), ()))
+            if current_locus is not None
+            else ()
         )
+        locus_is_ambiguous = len(
+            {record.payload["candidate_id"] for record in locus}
+        ) > 1
         has_exact_id = any(
-            record.payload.get("path") == job.path
-            and record.payload.get("operator") == job.site.operator
-            for record in exact_records.get(identity, ())
+            record.payload["path"] == job.path
+            and record.payload["operator"] == job.site.operator
+            for record in exact
         )
         if locus_is_ambiguous and not has_exact_id:
             ambiguous += 1
@@ -4423,30 +4459,21 @@ def _carry_forward_match_candidates(
             candidates: Iterable[_CarryForwardRecord],
             kind: Literal["exact-id", "locus", "window"],
             *,
-            current_job: MutantJob = job,
             current_matches: dict[
                 tuple[Path, str],
                 tuple[_CarryForwardRecord, Literal["exact-id", "locus", "window"]],
             ] = matched_records,
+            kind_ranks: Mapping[str, int] = match_kind_rank,
         ) -> None:
             for candidate_record in candidates:
-                if (
-                    candidate_record.payload.get("path") != current_job.path
-                    or candidate_record.payload.get("operator")
-                    != current_job.site.operator
-                ):
-                    continue
                 key = (candidate_record.source, candidate_record.relative)
                 previous = current_matches.get(key)
-                if previous is None or match_kind_rank[kind] < match_kind_rank[previous[1]]:
+                if previous is None or kind_ranks[kind] < kind_ranks[previous[1]]:
                     current_matches[key] = (candidate_record, kind)
 
-        family = (job.path, job.site.operator)
-        add_records(exact_records.get(identity, ()), "exact-id")
+        add_records(exact, "exact-id")
         if current_locus is not None and not locus_is_ambiguous:
-            add_records(
-                locus_records.get((*family, current_locus.key), ()), "locus"
-            )
+            add_records(locus, "locus")
         if isinstance(window_key, str):
             add_records(
                 (
@@ -4538,21 +4565,6 @@ def _validate_carry_forward_match(
         raw = match.raw
     else:
         fields = _locus_fields_for_job(job)
-        if match.kind == "locus":
-            source_locus = _locus_from_record(source_payload.get("locus"))
-            current_locus = _locus_from_record(fields.get("locus"))
-            if (
-                source_locus is None
-                or current_locus is None
-                or source_locus.key != current_locus.key
-            ):
-                return None
-        elif match.kind == "window" and (
-            fields.get("window_key") != source_payload.get("window_key")
-            or source_payload.get("outcome_bucket") != "killed"
-        ):
-            return None
-
         # The historical full source is not stored, so validate the prior
         # record's own candidate/locus keys above, then project its outcome
         # fields onto this candidate's checked identity for WP2's complete
@@ -4573,8 +4585,6 @@ def _validate_carry_forward_match(
         raw = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode(
             "utf-8"
         )
-    if raw is None:
-        return None
     try:
         validated = _load_validated_state_record(
             state_root,
@@ -4717,43 +4727,36 @@ def _carry_forward_records(
         match, chosen = min(
             survivors, key=lambda item: _carry_forward_match_rank(item[0])
         )
-        bucket = chosen.get("outcome_bucket")
 
         payload = dict(chosen)
-        needs_provenance = bucket == "survived" or (
-            match.kind != "exact-id"
-        ) or (
-            campaign_deadline_sha256 is not None
-            and chosen.get("campaign_deadline_sha256") != campaign_deadline_sha256
-        )
-        if needs_provenance:
-            identity_fields = candidate_identity_fields(job)
-            payload.update(identity_fields)
-            payload.update(
-                {
-                    "candidate_id": identity,
-                    "replacement_sha256": job.site.replacement_sha256,
-                    "lineno": job.site.lineno,
-                    "description": job.site.description,
-                    **_locus_fields_for_job(job),
-                }
-            )
-            payload.pop("locus", None)
-            payload.pop("window_key", None)
-            payload.update(_locus_fields_for_job(job))
-            payload["carry_over"] = {
-                "schema_version": CARRY_OVER_SCHEMA_VERSION_V2,
-                "from_judge_sha256": chosen["judge_sha256"],
-                "into_judge_sha256": judge,
-                "source": str(match.source),
-                "reason": CARRY_FORWARD_REASON,
-                "imported_at": imported_at,
-                "importer_version": _tool_version() or "unknown",
-                "locus_match": match.kind,
+        identity_fields = candidate_identity_fields(job)
+        payload.update(identity_fields)
+        payload.update(
+            {
+                "candidate_id": identity,
+                "replacement_sha256": job.site.replacement_sha256,
+                "lineno": job.site.lineno,
+                "description": job.site.description,
+                **_locus_fields_for_job(job),
             }
-            payload.pop("campaign_deadline_sha256", None)
-            if campaign_deadline_sha256 is not None:
-                payload["campaign_deadline_sha256"] = campaign_deadline_sha256
+        )
+        payload.pop("locus", None)
+        payload.pop("window_key", None)
+        payload.update(_locus_fields_for_job(job))
+        _set_carry_over_provenance(
+            payload,
+            kind="carried",
+            match=match.kind,
+            from_candidate_id=str(match.payload["candidate_id"]),
+            from_judge_sha256=str(chosen["judge_sha256"]),
+            into_judge_sha256=judge,
+            source=match.source,
+            reason=CARRY_FORWARD_REASON,
+            imported_at=imported_at,
+        )
+        payload.pop("campaign_deadline_sha256", None)
+        if campaign_deadline_sha256 is not None:
+            payload["campaign_deadline_sha256"] = campaign_deadline_sha256
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
             "utf-8"
         )
@@ -4775,8 +4778,7 @@ def _carry_forward_records(
         _write_mutation_state_record(state_root, payload, state_root_fd=state_root_fd)
         records.append(payload)
         counts[match.kind] += 1
-        if bucket == "survived":
-            survivors_carried += 1
+        survivors_carried += 1
 
     return _CarryForwardResult(
         records=tuple(records),
@@ -5165,20 +5167,17 @@ def _carry_over_records(
             payload = dict(chosen)
         else:
             payload = dict(chosen)
-            payload["carry_over"] = {
-                "schema_version": CARRY_OVER_SCHEMA_VERSION_V2,
-                "into_judge_sha256": judge,
-                "source": str(chosen_source),
-                "reason": flex.carry_over_reason,
-                "imported_at": imported_at,
-                "importer_version": _tool_version() or "unknown",
-            }
-            payload["provenance"] = _provenance_record(
+            assert flex.carry_over_reason is not None
+            _set_carry_over_provenance(
+                payload,
                 kind="imported",
+                match="exact-id",
                 from_candidate_id=identity,
                 from_judge_sha256=str(chosen["judge_sha256"]),
-                match="exact-id",
+                into_judge_sha256=judge,
+                source=chosen_source,
                 reason=flex.carry_over_reason,
+                imported_at=imported_at,
             )
             payload.pop("campaign_deadline_sha256", None)
             if campaign_deadline_sha256 is not None:
@@ -6775,6 +6774,7 @@ def run_mutation(
                         }
                     )
                 imported_total = carry.imported_total
+                locus_unavailable_total += carry.locus_unavailable
             if flex is not None and flex.carry_forward_sources:
                 resumed_ids_before_carry = frozenset(
                     record["candidate_id"] for record in resumed_records
@@ -6826,7 +6826,6 @@ def run_mutation(
                             "reason": CARRY_FORWARD_REASON,
                         }
                     )
-                locus_unavailable_total += carry.locus_unavailable
             resumed_ids = {record["candidate_id"] for record in resumed_records}
             pending_jobs = tuple(
                 job for job in selected_jobs if candidate_id(job) not in resumed_ids
