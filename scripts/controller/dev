@@ -14,7 +14,7 @@
 # 2 usage/refusal/image, 3 transport/identity/busy, 75 host memory PSI too high or unreadable (nothing ran), 124 time limit.
 # Environment (optional): AGENT_DEV_HOST (v1001; r1002 only if listed in CONTROLLER_REMOTE_GATE_HOSTS), AGENT_DEV_MEMORY
 # (the soft memory reservation, 512m..8g), AGENT_DEV_CPUS (>0..3), AGENT_DEV_PIDS (<=1024), AGENT_DEV_MAX_S (<=14400),
-# AGENT_DEV_WAIT_S (900). Container properties come from dev-profiles.toml. Seams: AGENT_DEV_HX, AGENT_DEV_TEST_{PSI_DIR,CLOCK,PROFILES}. HOSTOBS_DEV_* exits 2.
+# AGENT_DEV_WAIT_S (900). Container properties come from dev-profiles.toml. Seams: AGENT_DEV_HX, AGENT_DEV_TEST_{PSI_DIR,CLOCK,PROFILES,TTY}. HOSTOBS_DEV_* exits 2.
 # shellcheck disable=SC2015,SC2016 # `A && B || die` guards; single-quoted text is the remote script, expanded on the host
 set -euo pipefail
 
@@ -133,7 +133,8 @@ if [[ $sub != gc && $sub != status && $sub != stop ]]; then
   for w in "${prefix[@]}"; do [[ $w =~ ^[A-Za-z0-9._-]+$ ]] || die 2 "bad command prefix word '$w'"; done
 fi
 tty=0
-if [[ -t 0 && -t 1 ]]; then tty=1; fi
+# AGENT_DEV_TEST_TTY=1 (test seam, read only here) forces the tty path so tests can exercise it without a terminal
+if [[ ( -t 0 && -t 1 ) || ${AGENT_DEV_TEST_TTY:-} == 1 ]]; then tty=1; fi
 
 # ---- docker run argv: dpre (flags), dmount (worktree), dpost (cache, workdir, env, image, limits), then the words
 # $1 = host directory bind-mounted at /work (the host-side literal), $2 = cidfile path
@@ -314,9 +315,12 @@ EOF
   admission_text
   printf 'rm -f "$D/cid"\nrc=0\n'
   if (( tty )); then
-    printf 'SHELL=/bin/bash script -qefc %s /dev/null || rc=$?\n' "$(printf '%q' "bash -c $(printf '%q' "$text")")"
+    # script runs the text in a NEW bash: it sees D and W (the cidfile and the /work mount) only if they are exported
+    printf 'export D W\nSHELL=/bin/bash script -qefc %s /dev/null || rc=$?\n' "$(printf '%q' "bash -c $(printf '%q' "$text")")"
   else
-    printf '%s </dev/null || rc=$?\n' "$text"
+    # background plus wait: bash runs a trapped signal's handler at once when it interrupts `wait`, but not while a
+    # foreground child runs, so the cleanup (docker rm -f by cid) would otherwise wait for the docker client
+    printf '%s </dev/null &\ncpid=$!\nwait "$cpid" || rc=$?\n' "$text"
   fi
   cat <<'EOF'
 if [ "$rc" = 124 ]; then echo "dev: exit 124: the in-container or the host runtime limit, or the command itself returned 124; the container is removed" >&2; fi
@@ -520,9 +524,9 @@ run_remote() {
   if (( tty )); then
     run=$(run_script 0)
     tar -cf - -C "$stage" "${files[@]}" | hx_call "$(upload_script)" >&2 || exit $?
-    stty_saved=$(stty -g); stty -echo -icanon -isig
+    if [[ -t 0 ]]; then stty_saved=$(stty -g); stty -echo -icanon -isig; fi
     if hx_call "$run"; then rc=0; else rc=$?; fi
-    stty "$stty_saved"; stty_saved=''
+    if [[ -n $stty_saved ]]; then stty "$stty_saved"; stty_saved=''; fi
   else
     run=$(run_script 1)
     if tar -cf - -C "$stage" "${files[@]}" | hx_call "$run"; then rc=0; else rc=$?; fi

@@ -486,7 +486,7 @@ for backup_mutant in cap jsonl git-dir work-tree unset relative list-only mode f
   expect_killed "ctl-state-backup-$backup_mutant" \
     env CTL_STATE_BACKUP_SCRIPT="$ROOT/mutants/scripts/controller/ctl-state-backup-$backup_mutant.sh" bash "$SCRIPT_DIR/test-ctl-state-backup.sh"
 done
-for dev_mutant in ticket-hold psi-threshold psi-file psi-full-line image-id quoting cleanup-by-cid banner-dirty git-ro; do
+for dev_mutant in ticket-hold psi-threshold psi-file psi-full-line image-id quoting cleanup-by-cid banner-dirty git-ro tty-env; do
   expect_killed "dev-$dev_mutant" \
     env DEV_SCRIPT="$ROOT/mutants/scripts/controller/dev-$dev_mutant" "${TESTER_VENV:?}/bin/python" -m pytest -x -q -p no:cacheprovider "$SCRIPT_DIR/test_dev.py"
 done

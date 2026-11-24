@@ -1339,6 +1339,7 @@ for name, before, after in (
     # not a TERM-trap mutant: bash runs the EXIT trap on an untrapped SIGTERM too (that mutant survived suite gate 2: equivalent)
     ("cleanup-by-cid", 'docker rm -f "$(cat "$D/cid")" >/dev/null 2>&1 7>&- 8>&- 9>&-', 'docker rm -f "$NAME" >/dev/null 2>&1 7>&- 8>&- 9>&-'),
     ("banner-dirty", "mark=''; if (( dirty )); then mark=+dirty; fi", "mark=+dirty"),
+    ("tty-env", "printf 'export D W\\nSHELL=/bin/bash script", "printf 'SHELL=/bin/bash script"),
     ("git-ro", """mnt+=' -v "$W/.git:/work/.git:ro"'""", """mnt+=' -v "$W/.git:/work/.git"'"""),
 ):
     mutant("scripts/controller/dev", f"dev-{name}", before, after)

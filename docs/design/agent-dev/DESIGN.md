@@ -45,9 +45,9 @@ Agreement test (`tests/test_dev.py`): one profile per project; the lane exists; 
 ## 7. Admission (e): `host-admission/1`
 Written once in `scripts/netcup/runner/README.md`; run-job, remote-gate.py and `fleet host start` adopt it in P-fd-05.
 - **Overcommit is intended:** no MemAvailable check, no memory-weighted slots. The ONLY rule: wait while memory PSI `full` avg10 >= 3 (CPU, io, memory-`some` never block).
-- **Ticket:** `~/host-admission/ticket` (flock) serialises starts, taken after lock and sync. Held 20 s past the start (`( exec 9>&-; sleep 20 ) &` keeps its fd) so the next start sees this container's load.
+- **Ticket:** `~/host-admission/ticket` (flock) serialises starts, taken after lock and sync. Held 20 s from admission (`( exec 9>&-; sleep 20 ) &` keeps its fd; the settle starts just before `docker run`) so the next start sees this container's load.
 - **Wait:** PSI every 10 s, progress every 60 s, exit 75 at `AGENT_DEV_WAIT_S` (900); unreadable PSI: 75 at once.
-- **ssh drop:** the EXIT/HUP/INT/PIPE/TERM trap removes the container (by cid) before the lock and ticket fds go. A SIGKILL of the wrapper is bounded by the in-container `timeout` and `dev stop`.
+- **ssh drop:** in batch mode the docker client runs in the background and the shell `wait`s, so a HUP/INT/PIPE/TERM to the remote shell runs the EXIT trap at once: it removes the container (by cid) before the lock and ticket fds go. An ssh drop that sends NO signal is the remaining window: it is noticed on the container's next output (EPIPE) or at the in-container `timeout` (`max_s`); the container and the per-worktree lock stay until then (a retry exits 3) and `dev stop` frees them. In tty mode the shell waits for `script` in the foreground; the trap runs when it returns. A SIGKILL of the wrapper is bounded the same way.
 - **Cockpit slot:** the weight-1 slot shared with remote-gate.sh is gone; dev and lanes meet only in the host's PSI.
 - **Known limit:** remote-gate lanes and legacy `hostobs-dev-*` containers share `dev-gates.slice` without the ticket.
 - **Same worktree:** a second call exits 3 (non-blocking `lock`).

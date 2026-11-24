@@ -1048,12 +1048,16 @@ MemAvailable check and no memory-weighted slot. The one rule: **wait while the h
 >= 3**; CPU, io and memory-`some` pressure never block a start.
 
 - **Ticket.** `~/host-admission/ticket` (flock) serialises starts. It is taken after the per-worktree lock and the
-  sync, and held 20 s past the container start (`( exec 9>&-; sleep 20 ) &` keeps its fd) so the next start sees
-  this container's load in the PSI.
+  sync, and held for 20 s from admission (`( exec 9>&-; sleep 20 ) &` keeps its fd; the settle starts just before
+  `docker run`) so the next start sees this container's load in the PSI.
 - **Wait.** PSI is read every 10 s, progress printed every 60 s, and the call exits 75 at `AGENT_DEV_WAIT_S`
   (default 900) with nothing run. Unreadable PSI is exit 75 at once (indeterminate is never admitted), and so is no ticket within `AGENT_DEV_WAIT_S`.
-- **Disconnect.** The EXIT/HUP/INT/PIPE/TERM trap removes the container by cid before the lock and ticket fds
-  close. A SIGKILL of the wrapper is bounded by the in-container `timeout` and `dev stop`.
+- **Disconnect.** In batch mode the docker client runs in the background and the remote shell waits for it, so a
+  HUP/INT/PIPE/TERM that reaches the remote shell runs the trap at once: it removes the container by cid before the
+  lock and ticket fds close. An ssh drop that sends no signal is the remaining window: it is noticed when the
+  container next writes output (EPIPE) or at the in-container `timeout` (`max_s`), and until then the container and
+  the per-worktree lock stay (a retry exits 3); `dev stop` frees them. In tty mode the shell waits for `script` in the
+  foreground, so the trap runs when `script` returns. A SIGKILL of the wrapper is bounded the same way.
 - **Same worktree.** A second call exits 3 (non-blocking lock).
 - **Known limit.** remote-gate lanes and legacy `hostobs-dev-*` containers share `dev-gates.slice` without taking
   the ticket; they meet dev runs only in the PSI.

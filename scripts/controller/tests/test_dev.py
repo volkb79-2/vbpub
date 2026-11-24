@@ -138,6 +138,12 @@ case "$1" in
 esac
 '''
 
+# util-linux `script -qefc CMD FILE` without a pty: runs CMD with $SHELL -c, as a NEW process that sees only exported variables
+SCRIPT_STUB = '''#!/bin/bash
+[[ ${1:-} == -qefc ]] || { echo "script stub: unexpected arguments: $*" >&2; exit 2; }
+exec "${SHELL:-/bin/sh}" -c "$2"
+'''
+
 # `sleep 20` is the ticket settle: it ends when a token file appears (the fake docker creates it once it has looked at the ticket)
 SLEEP_STUB = '''#!/bin/bash
 if [[ ${1:-} == 20 && -n ${STUB_LOG_DIR:-} ]]; then
@@ -177,7 +183,7 @@ class DevCase(unittest.TestCase):
         self.stubs, self.logs, self.home, self.psi = (self.tmp / n for n in ("stubs", "logs", "home", "psi"))
         for d in (self.stubs, self.logs, self.home, self.psi):
             d.mkdir()
-        for name, text in (("docker", DOCKER_STUB.replace("@PY@", sys.executable)), ("hx", HX_STUB), ("id", ID_STUB), ("sleep", SLEEP_STUB)):
+        for name, text in (("docker", DOCKER_STUB.replace("@PY@", sys.executable)), ("hx", HX_STUB), ("id", ID_STUB), ("sleep", SLEEP_STUB), ("script", SCRIPT_STUB)):
             (self.stubs / name).write_text(text)
             (self.stubs / name).chmod(0o755)
         self.clock = self.tmp / "clock"
@@ -533,6 +539,17 @@ class RemoteTests(DevCase):
         self.assertEqual(timed.returncode, 124)
         self.assertIn("dev: exit 124", timed.stderr)
 
+    def test_tty_mode_hands_the_cidfile_and_the_work_mount_to_the_inner_bash(self) -> None:
+        proc = self.run_dev("-p", "cmru", "run", "--", "true", AGENT_DEV_TEST_TTY="1")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(len(self.hx_scripts()), 3, "preflight, upload, run")
+        argv = self.runs()[0]["argv"]
+        self.assertIn("-it", argv)
+        self.assertEqual(option(argv, "--cidfile"), str(self.home / "agent-dev" / self.hex / "cid"))
+        self.assertIn(f"{self.work()}:/work", argv)
+        self.assertIn(f"{self.work()}/.git:/work/.git:ro", argv)
+        self.assertEqual(self.rm_calls(), [["rm", "-f", f"cid-agent-dev-cmru-{self.hex}"]])
+
     def test_the_banner_is_first_and_last_and_dirty_exactly_when_the_overlay_is_not_empty(self) -> None:
         sha = self.head()[:12]
         (self.repo / ".git" / "info" / "exclude").write_text("ignored.txt\n")
@@ -671,6 +688,13 @@ class RemoteTests(DevCase):
                     pid = self.runs()[-1]["remote_pid"]
                     self.assertIn(f"HEX={self.hex}".encode(), Path(f"/proc/{pid}/cmdline").read_bytes(), "refusing to signal a foreign process")
                     os.kill(pid, sig)
+                    for _ in range(300):
+                        if len(self.rm_calls()) > self.rm_before:
+                            break
+                        time.sleep(0.1)
+                    # the docker client is still held: the trap must not wait for it
+                    self.assertFalse(hold.exists())
+                    self.assertEqual(self.rm_calls()[self.rm_before:], [["rm", "-f", f"cid-agent-dev-cmru-{self.hex}"]], "removed only after the client ended")
                 finally:
                     hold.write_text("go")
                     proc.communicate(timeout=60)
