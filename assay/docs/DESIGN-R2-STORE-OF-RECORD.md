@@ -44,7 +44,7 @@ Every R2 saving (resume, `--carry-forward`, the isolated replay of WP4) reuses e
 
 1. **Seed.** Seeding gives a run the prior records WITHOUT putting foreign records into a shard directory (`--merge-shard-store` refuses a shard store holding records outside its shard K/N, `_validate_shard_stores`):
    - a whole-lane resumable run: the store of record is seeded into the run's `assay-state/<project>/` working copy;
-   - a shard K/N: only that shard's slice is seeded into `<K>of<N>` (the ids `assay plan --shard K/N --list-pending` prints, with their records), or nothing at all for a first backfill;
+   - a shard K/N: only that shard's slice is seeded into `<K>of<N>` (the slice ids are those `assay plan --shard K/N --list-pending --state-dir <an empty directory>` prints; seed the store-of-record records for those ids), or nothing at all for a first backfill;
    - with `--carry-forward` (WP3a): the store of record is seeded to a separate directory and passed as the carry source, never into the working copy.
 2. **Run.** The lane runs as today (`remote-gate.sh <host> <project> <lane> <sha> [-- --shard K/N]`).
 3. **Collect.** Inside the run, before the throwaway checkout is removed, the working copy is packed (`--collect-store`, §6) and staged in the cockpit at `<repo>/<project>/.assay/r2-staging/<run-name>/` with its sha256.
