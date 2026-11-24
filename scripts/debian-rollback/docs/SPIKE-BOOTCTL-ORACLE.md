@@ -34,4 +34,4 @@ All four runs exit 0.
 The shared tester-unified image installs `systemd` but not `systemd-boot-tools`. The offline lane needs `systemd-boot-tools` (Debian 13 version), plus a tmpfs mount point for the fixture ESP. The image is owned by the estate core libraries topic, so the change goes through it (P-rollback-24).
 
 ## Consequence
-DR-87's cheap tier is real. P-rollback-24 adds an offline test that runs `gen-menu` in test mode, then real `bootctl … list --json=short`, and asserts that `isDefault` names the intended entry. The boot tier (VML-BL-09, P-rollback-32) remains for one-shot and firmware ordering, which bootctl `--no-variables` cannot show.
+DR-87's cheap tier is real. P-rollback-24 adds an offline test that runs `gen-menu` in test mode, then real `bootctl … list --json=short`, and asserts that `isDefault` names the intended entry. The boot tier (VML-BL-09, P-rollback-32) remains for one-shot and firmware ordering, which bootctl `--no-variables` cannot show, and for confirming that the loader itself picks the default bootctl reports.
