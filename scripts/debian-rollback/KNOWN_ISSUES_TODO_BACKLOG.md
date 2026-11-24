@@ -225,3 +225,17 @@ Closed items are one line each in [archive/](archive/). The format is [docs/BACK
 
 **Problem.** `cmd_set_default` calls `storage.activate`, which is a real `zfs clone`/`promote` for the ZFS backend, before `_require_boot` validates the marker and boot backend. A missing or bad marker therefore refuses only after storage has changed.
 **Wanted.** Resolve the boot backend before `storage.activate` so every refusal happens before a storage mutation.
+
+## DR-124 — Acceptance scenarios need a verify-only fresh-disk path
+
+**State:** open · **Severity:** high · **Owner:** rollback · **Links:** P-rollback-25, P-rollback-40, poc/dr-serial.py
+
+**Problem.** Under `DR_ACCEPTANCE=1`, the hot-patch helpers refuse as designed, but s2-s3, recovery-kernel, recovery-library, recovery-dependency, s7, s8, window-negative and s9b still call one of them and therefore cannot run on a freshly built disk.
+**Wanted.** Give those eight scenarios a verify-only path, such as `verify_current_dr_state`, before the controller's leased acceptance run.
+
+## DR-125 — Hook payload modes come from the checkout
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-25, DESIGN-CORE-SPLIT.md D27, files/etc
+
+**Problem.** Hook modes come from the checkout's or ISO stage's source modes. A source tree whose hook modes were widened by tools or a permissive umask can therefore produce writable-group hooks on the target instead of the required `0644` and `0755`.
+**Wanted.** Normalize the three hook modes at a payload ownership boundary or prove the staging path pins them against a wider umask.
