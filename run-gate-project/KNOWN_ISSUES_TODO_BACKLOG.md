@@ -199,6 +199,9 @@ SPEC §9.
 | RG-306 | run-gate's own assay lanes leave `pytest-of-<user>` in the shared state root | Minor | OPEN 2026-11-24 (core, after the 2026-11-24 prune) |
 | RG-307 | 16 assay wrappers have a zero outer-budget margin | Minor | OPEN 2026-11-24 (RG-296 implementation; P-core-08) |
 | RG-308 | runtime Assay-budget warning conflicts with R-59, and argparse accepts ambiguous option prefixes | Minor | OPEN 2026-11-24 (P-core-08 review) |
+| RG-309 | `lanes --check` treats an Assay-accepted canary budget spelling as a hard `canary` FAIL | Minor | OPEN 2026-11-24 (P-core-08 review round 2) |
+| RG-310 | the new `lanes --check` options break more option abbreviations than CHANGES and RG-308(b) record | Minor | OPEN 2026-11-24 (P-core-08 review round 2) |
+| RG-311 | `lanes --check` test and wording follow-ups: real-repository test pins every finding to `budget-margin`, plus five nits | Minor | OPEN 2026-11-24 (P-core-08 review round 2) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9773,3 +9776,49 @@ Disable abbreviations (`allow_abbrev=False`) and require full option names.
 The current change documents the `--check-env` consequence but does not alter
 the parser.
 Source: .controller-state/design-review-2026-11-24, P-core-08 review round 1.
+
+## RG-309 — `lanes --check` rejects a canary budget that Assay accepts
+
+**Status:** OPEN 2026-11-24 (P-core-08 review round 2, finding M1). Severity: Minor.
+
+RG-296 (`lanes --check`) reads the Assay canary budget (`budget_per_attempt`)
+through Run-Gate's own duration grammar. A spelling Assay itself accepts, such
+as `budget_per_attempt = "1m30s"` or `"1.5m"`, is a hard `canary` FAIL
+(exit 1, even without `--strict`), and the finding detail names the wrong key
+(`'budget' must look like ...`). The inner budget got the matching treatment
+in P-core-08 (`"unbounded"` skips the comparison; any other unreadable inner
+value is one `budget-unreadable` WARN). Give an unreadable canary the same
+single WARN, pass `key="budget_per_attempt"` to the detail, and add a test,
+without a second duration parser. Alternative: record the FAIL as by-design
+in SPEC R-59. No tracked `assay.toml` uses such a spelling today. Settle this
+before P-core-12 runs `lanes --check --strict` estate-wide.
+Source: `~/core-runs/P-core-08-review-r2.md` (reproduced with the real script).
+
+## RG-310 — more option abbreviations break than recorded
+
+**Status:** OPEN 2026-11-24 (P-core-08 review round 2, finding L1). Severity: Minor.
+
+The new `--project` option makes `--pr` (formerly an unambiguous prefix of
+`--prune`) ambiguous, and `--ch` .. `--chec` are now ambiguous with the new
+exact `--check`; both refuse with exit 2 (`doctor --pr` now fails; confirmed).
+CHANGES and RG-308(b) record only the `--check-env` abbreviation. No tracked
+caller uses these prefixes and no other subcommand changed behaviour.
+Documentation fix: list the broken prefixes in CHANGES and in RG-308(b);
+RG-308(b) (`allow_abbrev=False`) removes the class.
+Source: `~/core-runs/P-core-08-review-r2.md`.
+
+## RG-311 — `lanes --check` test and wording follow-ups
+
+**Status:** OPEN 2026-11-24 (P-core-08 review round 2, L2 and NITs). Severity: Minor.
+
+- The real-repository test asserts that every finding is `budget-margin`, as the
+  budget-tier ruling asked. A project that adopts a valid Assay spelling would
+  then break Run-Gate's own selftest; assert "all WARN, no FAIL" only.
+- The RG-296 body says the rules were "ported to tests/test_lanes_check.py";
+  they live in `run_gate.py` and the project tests remain.
+- `budget-unreadable` fires even when there is no outer budget or canary to
+  compare against.
+- An unbounded lane's canary value is no longer validated at all.
+- A broken `assay.toml` in single-project mode can exit 1 or 2 depending on the
+  error kind.
+Source: `~/core-runs/P-core-08-review-r2.md`.
