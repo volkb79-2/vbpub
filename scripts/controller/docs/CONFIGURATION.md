@@ -29,6 +29,8 @@ Useful settings:
 | `CONTROLLER_GATE_LOCK` | Absolute path for the first gate slot (always required); read it from host policy before running `gate-run.sh`. |
 | `CONTROLLER_GATE2_LOCK` | Distinct absolute path for the second gate slot; required by `gate-run.sh` from two slots on, not read with `CONTROLLER_GATE_SLOTS=1`. |
 | `CONTROLLER_GATE_LOCK_DIR` | Optional absolute directory for the lock files of slots 3 to 8, which are `gate3.lock` ... `gate8.lock` there; without it they sit beside `CONTROLLER_GATE_LOCK`. Only read from three slots on. Every slot lock path must differ. |
+| `CONTROLLER_GATE_PSI_WAIT_S` | Whole seconds `gate-run.sh` waits, once it holds a slot, while memory PSI `full` avg10 is >= 3 (fixed threshold) before it exits 75 "not admitted ... nothing ran"; default 1800. An unreadable PSI file is refused at once, never waited on. Not a number: exit 2. |
+| `CONTROLLER_GATE_PSI_FILE` | Test seam: the PSI file `gate-run.sh` reads instead of `/proc/pressure/memory`. |
 | `CONTROLLER_REPO` | Checkout used for status and queue work; repo-local scripts derive it. Set it when the queue is installed under `CONTROLLER_HOME/bin`. |
 | `CODEX_HOME_LUNA`, `CODEX_HOME_DEEPSEEK_VOLKER`, `CODEX_HOME_DEEPSEEK_GITHUB2`, `CODEX_HOME_REVIEW` | Explicit Codex config homes for Luna, the two pinned Open Design accounts, and review. |
 | `CODEX_HOME_OVERRIDE` | Optional home override honoured only on the Luna route. |

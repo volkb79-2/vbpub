@@ -1654,7 +1654,7 @@ Source: .controller-state/PROGRAM-2026-11-24/PROGRAM.md §6
 
 ## CTL-55 — the live-sidecar test waits a fixed wall-clock time
 
-**Status:** OPEN (filed 2026-11-24).
+**Status:** FIXED (2026-11-24, P-plat-20: `check_live_snapshot` waits on sidecar progress; the 300 s hang guard is reported as inconclusive).
 
 `tests/test-pi-impl.sh` `check_live_snapshot` polls 100 × `sleep 0.1` (about 10 s of wall clock) for `"tool_in_flight": "bash"` in the `.live` sidecar, which is written every `PI_LIVE_INTERVAL_SECONDS=1` by a process tree started under the same load. On 2026-11-24 the `suite` lane at 0314fdf1b (a docs-only change) failed with `the live sidecar never reported the tool call in flight` while another session's mutation lane loaded the host (load average ~6 on 8 cores). Against the estate rule that verdicts do not depend on host load. Fix: wait on a progress condition instead of a clock, for example until the fake pi's own "tool started" marker exists AND the sidecar has completed at least two write cycles (a sidecar sequence counter), with only a generous outer bound (minutes) that reports "inconclusive under load" separately from "never reported".
 

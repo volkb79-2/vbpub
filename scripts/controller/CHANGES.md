@@ -7,6 +7,7 @@ no separate version number, so entries are grouped by the work that landed.
 ## [Unreleased]
 
 ### Added
+- `gate-run.sh`: after it holds a slot and before it starts `run-gate`, it waits while memory PSI `full` avg10 is >= 3 (CTL-57): one line a minute, bounded by `CONTROLLER_GATE_PSI_WAIT_S` (default 1800), then exit 75 "not admitted ... nothing ran" (never a lane verdict). An unreadable PSI file exits 75 at once. `CONTROLLER_GATE_PSI_FILE` is the test seam. Same rule as `dev` host-admission/1. Tests in `tests/test-gate-slots.sh` (the other gate-run tests run against a quiet PSI file); 9 new hand mutants.
 - `rules.md`: "House rules for every implementer brief" (CTL-50): remote dev container before each commit (interim `hostobs/tools/dev` for Rust), no direct `hx.sh`/`ssh`/`docker` and no tests in the devcontainer, contract plus target size with at most 2 review rounds, explicit launch effort, unique run names with resumed runs verified from git, DONE/PARTIAL/BLOCKED with a finalization. `BRIEF-TEMPLATE.md`, `finisher-generic.md` and the README point to it; the README records the bash freeze (CTL-40).
 - `remote-gate.sh`: `CONTROLLER_REMOTE_GATE_WORKROOT` sets where the per-run throwaway worktree lives (default unchanged: `$CONTROLLER_HOME/remote-gate-work`). A workroot under an IDE workspace folder makes the editor's Git extension adopt every scratch worktree as a repository ("too many active changes" popup) and lets language servers index it; point it outside every workspace folder.
 - `gate-run.sh`: `CONTROLLER_GATE_SLOTS` (integer 1 to 8, default 2) sets the number
@@ -17,6 +18,9 @@ no separate version number, so entries are grouped by the work that landed.
   unchanged); the default stays 2 because the controller devcontainer has an 8 GiB cap
   and was OOM-killed once. Invalid counts exit 2. `ctl-doctor.sh` prints the effective
   count and checks every slot lock. New `tests/test-gate-slots.sh`; 39 new hand mutants.
+
+### Fixed
+- `tests/test-pi-impl.sh` `check_live_snapshot` no longer polls 100 x 0.1 s (CTL-55): the fake agent holds after its whole stream is written (`FAKE_PI_HELD_MARKER`), the check asserts on the third distinct sidecar snapshot seen after that, releases the hold and reaps the wrapper on every path. Only a 300 s hang guard remains, reported as `inconclusive: no sidecar progress within the hang guard`, distinct from a real failure.
 
 ### Fixed (review round of the controller import)
 - `ctl-state-backup.sh`: the member relabel no longer rewrites symlink targets
