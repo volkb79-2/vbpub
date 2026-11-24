@@ -26,9 +26,9 @@ below disagrees, this block wins.
 4. **Explicit effort.** The caller launches with an explicit
    `CODEX_EFFORT=max` (pi: an explicit `PI_THINKING=<value>` stated in the
    brief) until routes.toml lands (CTL-39).
-5. **Unique run names** (`<label>-$(date -u +%Y%m%dT%H%M%S)`), never reused. A
-   resumed Codex run's `.last.txt` may be stale: verify its result from git
-   until CTL-38 is fixed.
+5. **Unique run names** (`<label>-$(date -u +%Y%m%dT%H%M%S)`), never reused.
+   Every Codex exec path derives `.last.txt` from that invocation's stream on
+   normal and signal exits; verify the result from git before publication.
 6. **Finish with DONE, PARTIAL or BLOCKED** plus the finalization: what is done
    and verified (heads, gate logs), what is half-known, the exact next step,
    and facts that exist only in the conversation. A budget or context stop is

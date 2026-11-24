@@ -36,9 +36,17 @@ be killed or refused merely because RAM is short; only host memory PSI
 
 Operator decision 2026-11-24 (documented, no code cap): on a dedicated-dev host
 `dev-interactive.slice` and `dev-buildkitd.slice` are intentionally bounded only
-by dev.slice's `MemoryHigh` and have no `MemoryMax` of their own (dev.slice's
-`MemoryMax` is the RAM+swap figure `memory.max` cannot reach). Only
-`dev-gates.slice` and `dev-background.slice` get a finite `MemoryMax`.
+by dev.slice's `MemoryMax` (P-plat-19e: the tree carries no `MemoryHigh`; above the
+Max it pages into swap) and have no `MemoryMax` of their own. `dev-gates.slice` and
+`dev-background.slice` get a finite `MemoryMax` = dev Max minus the protected tiers'
+`MemoryLow`, the load OOM domain. `memory.max` is reachable now: it bounds
+`memory.current` (RAM plus the zswap pool); a charging task reclaims synchronously
+at it and only an OOM follows when reclaim makes no progress (swap.max reached,
+protected or unreclaimable memory, pages in writeback). Writing `memory.max` below
+`memory.current` loops reclaim and then OOM-kills in that cgroup, which is why the
+reconcile lowers it only with 64M of headroom (that guards only the reconcile's own write: a
+daemon-reload can make systemd itself write the lower value, so a lowering is done with the lanes drained). Never hand-set memory properties
+(`set-property`, `systemctl revert`): see README "Memory of the dedicated-dev role".
 `mdt-host-check.sh` FAILs if systemd-oomd manages any dev tier or the root slice.
 
 The five things below are the entire reason `mdt-dev-governance-reconcile.sh` exists.

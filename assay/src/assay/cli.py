@@ -69,6 +69,7 @@ from .records import record
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections import Counter
+from types import ModuleType
 from typing import Any, Callable, Literal, Mapping, Sequence, TextIO, TypedDict
 
 from . import __version__
@@ -140,6 +141,7 @@ from .output import (
 )
 from .verdict import (
     MUTATION_BUCKETS,
+    VERDICT_SCHEMA_VERSION,
     CampaignBinding,
     Evidence,
     EvidenceDeclaration,
@@ -175,6 +177,78 @@ __all__ = ["build_parser", "main", "plan_jobs", "resolve_declared_adapters"]
 #: that "git is unavailable" is answered promptly rather than waited out.
 #: Exceeding it is therefore evidence about Git, not about the lane.
 LABEL_GRACE_SECONDS = 2.0
+
+_CAPABILITIES_SCHEMA = "assay-capabilities/1"
+_MUTATION_STORE_POLICIES: Mapping[str, str] = {
+    "--resume": "same-judge",
+    "--merge-state": "same-judge",
+    "--merge-shard-store": "strict-shard",
+    "--carry-over": "import-unverified",
+    "--reuse-from": "hint",
+}
+
+
+def _analysis_cli() -> ModuleType:
+    """(A-478/CD18) The judge's one lazy seam to the required analysis package."""
+    try:
+        from assay_analysis import cli as analysis_cli
+    except ModuleNotFoundError as exc:
+        raise AssayError(
+            f"the required assay_analysis package could not be imported: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+        ) from exc
+    return analysis_cli
+
+
+def _subparser(
+    parser: argparse.ArgumentParser, command: str
+) -> argparse.ArgumentParser:
+    """Select one child parser by walking the argparse parser tree."""
+    action = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    return action.choices[command]
+
+
+def _long_options(parser: argparse.ArgumentParser) -> list[str]:
+    """Return the sorted long options accepted by *parser*, including ``--help``."""
+    options = [
+        option
+        for action in parser._actions
+        for option in action.option_strings
+    ]
+    return sorted(filter(lambda option: option.startswith("--"), options))
+
+
+def capabilities_document() -> dict[str, object]:
+    """Build the closed, versioned capability document from live parser objects."""
+    parser = build_parser()
+    analyze_parser = _analysis_cli().build_parser()
+    command_parsers = {
+        "run": _subparser(parser, "run"),
+        "plan": _subparser(parser, "plan"),
+        "verify": _subparser(parser, "verify"),
+        "lanes": _subparser(parser, "lanes"),
+        "analyze campaign": _subparser(analyze_parser, "campaign"),
+    }
+    commands = {
+        name: _long_options(command_parser)
+        for name, command_parser in command_parsers.items()
+    }
+    policies = {
+        flag: _MUTATION_STORE_POLICIES[flag]
+        for flag in set(_MUTATION_STORE_POLICIES) & set(commands["run"])
+    }
+    return {
+        "schema": _CAPABILITIES_SCHEMA,
+        "assay_version": __version__,
+        "verdict_schema_version": VERDICT_SCHEMA_VERSION,
+        "commands": commands,
+        "mutation_store_policies": policies,
+    }
 
 
 def _add_request_base_argument(subparser: argparse.ArgumentParser) -> None:
@@ -265,6 +339,20 @@ def build_parser() -> argparse.ArgumentParser:
             "exactly like the text form; a lane file that fails to load "
             "exits 2 with no JSON on stdout."
         ),
+    )
+
+    capabilities = subparsers.add_parser(
+        "capabilities",
+        help="print the machine-readable capability document",
+        description=(
+            "Print one versioned JSON object describing the flags and mutation-store "
+            "policies this assay build supports. Reads no project files."
+        ),
+    )
+    capabilities.add_argument(
+        "--json",
+        action="store_true",
+        help="the machine-readable form; it is also the default output",
     )
 
     run = subparsers.add_parser(
@@ -667,10 +755,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_analyze(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
-    """(A-478) The only place the judge names assay_analysis; imported only for `analyze`."""
-    from assay_analysis.cli import main as analyze_main
-
-    return analyze_main(argv, stdout=stdout, stderr=stderr)
+    """(A-478) Forward ``analyze`` through the shared lazy analysis seam."""
+    return _analysis_cli().main(argv, stdout=stdout, stderr=stderr)
 
 
 def _termination_signal_handler(signum: int, frame: object) -> None:
@@ -756,14 +842,19 @@ def main(
                 return 2
             signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     raw = list(sys.argv[1:] if argv is None else argv)
-    # Analysis owns its record-command separator. Lane argv appending belongs
-    # to the existing lane commands and must not consume the recorded command.
-    if raw[:1] == ["analyze"]:
-        return _run_analyze(raw[1:], out, err)
-    cli_argv, appended = _split_appended_argv(raw)
-    args = build_parser().parse_args(cli_argv)
     try:
-        if args.command == "lanes":
+        # Analysis owns its record-command separator. Lane argv appending belongs
+        # to the existing lane commands and must not consume the recorded command.
+        if raw[:1] == ["analyze"]:
+            return _run_analyze(raw[1:], out, err)
+        cli_argv, appended = _split_appended_argv(raw)
+        args = build_parser().parse_args(cli_argv)
+        if args.command == "capabilities":
+            print(
+                json.dumps(capabilities_document(), indent=2, sort_keys=True),
+                file=out,
+            )
+        elif args.command == "lanes":
             lane_file = _resolve_lane_file(args.file)
             for lane in lane_file.lanes.values():
                 _emit_lane_validation_warnings(lane_file, lane, err)

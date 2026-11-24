@@ -12,13 +12,14 @@ capacity host-setup already enforces on ``dev-gates.slice`` and publishes it, id
 
     cap = max(1, min(cpu_cap, memory_cap))
     cpu_cap    = floor(gates CPU cores / ADMISSION_CPUS_PER_GATE)               (default 2 CPUs per gate)
-    memory_cap = floor(gates MemoryHigh / ADMISSION_MEMORY_PER_GATE)            (default 2G per gate;
-                 no term when the gates tier has no MemoryHigh)
+    memory_cap = floor(gates MemoryMax (dedicated-dev) or MemoryHigh / ADMISSION_MEMORY_PER_GATE)
+                 (default 2G per gate; no term when the gates tier has neither)
 
 ``gates CPU cores`` is the effective minimum of the ``dev.slice`` and gates-tier CPUQuota values. Auto quotas
 come from ``mdt_capacity``; explicit ``DEV_CPU_QUOTA`` and ``DEV_GATES_CPU_QUOTA`` percentages bound that
-share, and ``-`` omits that level's quota. ``gates MemoryHigh`` is the dedicated-dev
-derivation (``mdt_capacity.dedicated_memory``) or the configured ``DEV_GATES_MEMORY_HIGH``. A 4 vCPU / 8 GB
+share, and ``-`` omits that level's quota. The memory ceiling is the dedicated-dev gates MemoryMax
+(``mdt_capacity.dedicated_memory``; that role has no MemoryHigh, P-plat-19e) or the configured
+``DEV_GATES_MEMORY_HIGH``. A 4 vCPU / 8 GB
 dedicated-dev host (v1001) therefore publishes 2.
 
 Pure functions take the parsed env and the host totals; every host effect (docker, run-gate) goes through an
@@ -226,14 +227,14 @@ def gates_cpu_cores(values: Mapping[str, str], capacity: cap.Capacity) -> tuple[
     return effective, f"tier CPU share ({tier_basis}), bounded by dev.slice ({dev_basis})"
 
 
-def gates_memory_high(values: Mapping[str, str], *, mem_total: int, swap_total: int) -> tuple[int | None, str]:
-    """MemoryHigh the gates tier is rendered with (``None`` = the tier has none)."""
+def gates_memory_ceiling(values: Mapping[str, str], *, mem_total: int, swap_total: int) -> tuple[int | None, str]:
+    """The gates tier's memory ceiling: MemoryMax on dedicated-dev, else MemoryHigh (``None`` = the tier has none)."""
     if values.get("HOST_ROLE", "") == "dedicated-dev":
         try:
             mem = cap.dedicated_memory(dict(values), mem_total=mem_total, swap_total=swap_total)
         except cap.CapacityError as exc:
             raise AdmissionConfigError(str(exc)) from exc
-        return mem.gates_high, f"dedicated-dev gates MemoryHigh ({mem.gates_high_source})"
+        return mem.gates_max, f"dedicated-dev gates MemoryMax ({mem.gates_max_source})"
     raw = (values.get("DEV_GATES_MEMORY_HIGH", "") or "").strip()
     if raw in ("", "-"):
         return None, "no gates MemoryHigh"
@@ -258,7 +259,7 @@ def derive(values: Mapping[str, str], *, nproc: int, mem_total: int, swap_total:
     cpu_cap = int(cores / settings.cpus_per_gate)
     terms = [cpu_cap]
     parts = [f"cpu {cores.normalize():f} cores ({cores_basis}) / {settings.cpus_per_gate.normalize():f} per gate = {cpu_cap}"]
-    high, high_basis = gates_memory_high(values, mem_total=mem_total, swap_total=swap_total)
+    high, high_basis = gates_memory_ceiling(values, mem_total=mem_total, swap_total=swap_total)
     if high is not None:
         memory_cap = high // settings.memory_per_gate
         terms.append(memory_cap)

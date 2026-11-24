@@ -81,6 +81,15 @@ class DerivationTests(unittest.TestCase):
         self.assertIn("memory 9G", d.basis)
         self.assertEqual(derive({**values, "ADMISSION_MEMORY_PER_GATE": "1G"}, nproc=16, mem_gib=16).max_concurrent, 8)
 
+    def test_dedicated_dev_memory_term_comes_from_the_gates_memory_max(self) -> None:
+        # r1002 (design 6.1): gates MemoryMax 4507009024 -> floor(/ 2 GiB) = 2; the basis names MemoryMax, not MemoryHigh
+        values = {"HOST_ROLE": "dedicated-dev", "DEV_INTERACTIVE_MEMORY_LOW": "2.5G"}
+        d = adm.derive(values, nproc=16, mem_total=8320679936, swap_total=63 * GIB)
+        self.assertEqual(d.max_concurrent, 2)
+        self.assertIn("dedicated-dev gates MemoryMax", d.basis)
+        self.assertNotIn("MemoryHigh", d.basis)
+        self.assertEqual(adm.gates_memory_ceiling(values, mem_total=8320679936, swap_total=0)[0], 4507009024)
+
     def test_shared_prod_uses_the_configured_gates_memory_high(self) -> None:
         shared = {"DEV_GATES_MEMORY_HIGH": "6G"}
         self.assertEqual(derive(shared, nproc=16, mem_gib=32).max_concurrent, 3)
@@ -97,7 +106,8 @@ class DerivationTests(unittest.TestCase):
             self.assertIn("memory: no term", d.basis)
 
     def test_a_tiny_host_still_gets_one(self) -> None:
-        d = derive(DEDICATED, nproc=1, mem_gib=2)
+        # 3 GiB: the default floors (565M) exceed 10% of MemTotal, so the host drops the unit rows (F = 192M)
+        d = derive({**DEDICATED, "DEV_HOST_MEMORY_MIN": "-"}, nproc=1, mem_gib=3)
         self.assertEqual(d.max_concurrent, 1)
         self.assertIn("raised to the minimum of 1", d.basis)
 

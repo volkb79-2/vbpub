@@ -862,13 +862,56 @@ done
 # DEV_MEMORY_HIGH/MAX/LOW) win per value; `-` omits one. shared-prod (and an empty role) skip all of it.
 MDT_DEDICATED_PROTECTED_UNITS=""
 MDT_DEDICATED_KEEP=""
+MDT_FLOOR_UNITS=""        # "unit=bytes ..." post-raise floors (P-plat-19e)
+MDT_SYSTEM_SLICE_MIN=""; MDT_SYSTEM_SLICE_LOW=""; MDT_USER_SLICE_MIN=""; MDT_RESERVE_FMK=""
+# Highest MemoryMin another fragment/drop-in (never our own 95- file) already gives <unit>, in bytes (0 = none):
+# the floors are raise-only. Read-only (the pre-flight runs no systemctl): it scans the unit search path.
+_other_memory_min() {
+  local unit="$1" best=0 f v n d
+  for d in "${MDT_SYSTEMD_DIR:-/etc/systemd/system}" /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+    for f in "$d/$unit" "$d/$unit.d"/*.conf; do
+      [ -f "$f" ] || continue
+      case "$f" in */95-mdt-memory-min.conf) continue ;; esac
+      v=$(sed -n 's/^MemoryMin=//p' "$f" | tail -n1)
+      [ -n "$v" ] || continue
+      n=$(_size_to_bytes "$v" 2>/dev/null) || continue
+      if [ "$n" -gt "$best" ]; then best="$n"; fi
+    done
+  done
+  echo "$best"
+}
+DEV_MEMORY_MIN=""   # dedicated-dev: dev.slice's own MemoryMin (sum of every child Min key); other roles use the guaranteed ceiling
 if [ "$MDT_DEDICATED_MEM" = 1 ]; then
-  if ! _ded_mem=$(python3 "$HERE/mdt_capacity.py" dedicated-memory "$CANDIDATE_PATH" --meminfo /proc/meminfo); then
+  _ded_cli() { python3 "$HERE/mdt_capacity.py" dedicated-memory "$CANDIDATE_PATH" --meminfo /proc/meminfo "$@"; }
+  if ! _ded_mem=$(_ded_cli); then
     echo "ERROR: HOST_ROLE=dedicated-dev: the dev.slice memory limits cannot be derived (see above); nothing was changed." >&2
     exit 2
   fi
+  _ded_raised=()
   while IFS='=' read -r _ded_key _ded_value; do
     case "$_ded_key" in
+      "DEDICATED_FLOOR "*)
+        _ded_other=$(_other_memory_min "${_ded_key#DEDICATED_FLOOR }")
+        if [ "$_ded_other" -gt "$_ded_value" ]; then _ded_raised+=(--raised "${_ded_key#DEDICATED_FLOOR }=$_ded_other"); fi ;;
+    esac
+  done <<<"$_ded_mem"
+  if [ "${#_ded_raised[@]}" -gt 0 ]; then
+    if ! _ded_mem=$(_ded_cli "${_ded_raised[@]}"); then
+      echo "ERROR: HOST_ROLE=dedicated-dev: the host floors cannot be derived with the foreign MemoryMin raises (see above); nothing was changed." >&2
+      exit 2
+    fi
+  fi
+  while IFS='=' read -r _ded_key _ded_value; do
+    # shellcheck disable=SC2034  # the DEV_*_MEMORY_HIGH values reach the templates through RENDER_VARS (indirect expansion)
+    case "$_ded_key" in
+      DEDICATED_MEM_MIN) DEV_MEMORY_MIN="$_ded_value" ;;
+      DEDICATED_INTERACTIVE_MIN) DEV_INTERACTIVE_MEMORY_MIN="$_ded_value" ;;
+      DEDICATED_RESERVE) MDT_RESERVE_FMK="$_ded_value" ;;
+      DEDICATED_SYSTEM_SLICE_MIN) MDT_SYSTEM_SLICE_MIN="$_ded_value" ;;
+      DEDICATED_SYSTEM_SLICE_LOW) MDT_SYSTEM_SLICE_LOW="$_ded_value" ;;
+      DEDICATED_USER_SLICE_MIN) MDT_USER_SLICE_MIN="$_ded_value" ;;
+      DEDICATED_IGNORED) _ded_ignored_high="$_ded_value" ;;
+      "DEDICATED_FLOOR "*) MDT_FLOOR_UNITS="$MDT_FLOOR_UNITS ${_ded_key#DEDICATED_FLOOR }=$_ded_value" ;;
       DEDICATED_MEM_KEEP) MDT_DEDICATED_KEEP="$_ded_value" ;;
       DEDICATED_MEM_HIGH) DEV_MEMORY_HIGH="$_ded_value" ;;
       DEDICATED_MEM_MAX) DEV_MEMORY_MAX="$_ded_value" ;;
@@ -898,10 +941,21 @@ if [ "$MDT_DEDICATED_MEM" = 1 ]; then
     esac
     printf -v "$_ded_tier_key" '%s' ""
   done
-  echo "HOST_ROLE=dedicated-dev memory: dev.slice MemoryHigh=${DEV_MEMORY_HIGH:-none} (${_ded_high_src}), MemoryMax=${DEV_MEMORY_MAX:-none} (${_ded_max_src}), MemoryLow=${DEV_MEMORY_LOW:-none} (${_ded_low_src}); host keeps ${MDT_DEDICATED_KEEP}B (DEV_HOST_MEMORY_KEEP); dev-gates MemoryHigh=${DEV_GATES_MEMORY_HIGH:-none} MemoryMax=${DEV_GATES_MEMORY_MAX:-none} (${_ded_gates_high_src}/${_ded_gates_max_src}), dev-background MemoryHigh=${DEV_BACKGROUND_MEMORY_HIGH:-none} MemoryMax=${DEV_BACKGROUND_MEMORY_MAX:-none} (${_ded_bg_high_src}/${_ded_bg_max_src}); interactive and buildkitd tiers carry no MemoryHigh/MemoryMax; interactive/buildkitd swap ceilings equal dev.slice's, gates/background swap = dev.slice's minus the protected tiers' MemoryLow sum"
+  echo "HOST_ROLE=dedicated-dev memory: dev.slice MemoryMax=${DEV_MEMORY_MAX:-none} (${_ded_max_src}), MemoryMin=${DEV_MEMORY_MIN:-none}, MemoryLow=${DEV_MEMORY_LOW:-none} (${_ded_low_src}), no MemoryHigh; host keep K=${MDT_DEDICATED_KEEP}B (floors F, margin M, K = ${MDT_RESERVE_FMK}); dev-gates MemoryMax=${DEV_GATES_MEMORY_MAX:-none} (${_ded_gates_max_src}), dev-background MemoryMax=${DEV_BACKGROUND_MEMORY_MAX:-none} (${_ded_bg_max_src}), no tier MemoryHigh; interactive and buildkitd tiers carry no MemoryHigh/MemoryMax; interactive/buildkitd swap ceilings equal dev.slice's, gates/background swap = dev.slice's minus the protected tiers' MemoryLow sum"
+  if [ -n "${DEV_HOST_MEMORY_KEEP:-}" ]; then
+    echo "NOTICE: DEV_HOST_MEMORY_KEEP=${DEV_HOST_MEMORY_KEEP} now PINS the host keep K (the RAM kept outside dev.slice); it used to mean RAM+swap" >&2
+  fi
+  if [ -n "${_ded_ignored_high:-}" ]; then
+    echo "NOTICE: HOST_ROLE=dedicated-dev renders no MemoryHigh anywhere in the dev tree; ignoring (clear them to silence this): ${_ded_ignored_high}" >&2
+  fi
   if [ -n "$_ded_ignored" ]; then
     echo "NOTICE: HOST_ROLE=dedicated-dev ignores the per-tier memory ceilings still set in $CONFIG_PATH (clear them to silence this):${_ded_ignored}" >&2
   fi
+fi
+# Per-container default (P-plat-19e): an empty DOCKER_SCOPE_BACKSTOP_MEMORY_MAX renders 8G on dedicated-dev, 12G on
+# every other role (the backstop also reaches production containers there); an explicit value wins.
+if [ -z "${DOCKER_SCOPE_BACKSTOP_MEMORY_MAX:-}" ]; then
+  if [ "$MDT_DEDICATED_MEM" = 1 ]; then DOCKER_SCOPE_BACKSTOP_MEMORY_MAX=8G; else DOCKER_SCOPE_BACKSTOP_MEMORY_MAX=12G; fi
 fi
 if [ -n "${DEV_SWAP_MAX:-}" ]; then
   if ! _swap_max_bytes=$(_size_to_bytes "$DEV_SWAP_MAX"); then
@@ -1054,7 +1108,15 @@ render() { # render <template> <dest>
   sed -i '/^[A-Za-z][A-Za-z0-9]*=$/d' "$dst"
   echo "rendered $dst"
 }
-render "$HERE/units/dev.slice.in"              /etc/systemd/system/dev.slice
+if [ "$MDT_DEDICATED_MEM" = 1 ]; then
+  # dev.slice's MemoryMin = the sum of every child Min key there; the guaranteed slice keeps its own ceiling.
+  _ded_guaranteed_ceiling="${DEV_MEMORY_MIN_GUARANTEED_CEILING:-}"
+  DEV_MEMORY_MIN_GUARANTEED_CEILING="$DEV_MEMORY_MIN"
+  render "$HERE/units/dev.slice.in"              /etc/systemd/system/dev.slice
+  DEV_MEMORY_MIN_GUARANTEED_CEILING="$_ded_guaranteed_ceiling"
+else
+  render "$HERE/units/dev.slice.in"              /etc/systemd/system/dev.slice
+fi
 render "$HERE/units/dev-interactive.slice.in"  /etc/systemd/system/dev-interactive.slice
 render "$HERE/units/dev-background.slice.in"   /etc/systemd/system/dev-background.slice
 render "$HERE/units/dev-memory_min_guaranteed.slice.in" \
@@ -1086,19 +1148,61 @@ mkdir -p /etc/systemd/system/docker-.scope.d
 render "$HERE/units/docker-scope-default-limits.conf.in" \
   /etc/systemd/system/docker-.scope.d/50-default-limits.conf
 
-# HOST_ROLE=dedicated-dev host protection (MDT-TESTHOST-MEM): the host's own services outlive the dev tier.
-#   system.slice MemoryLow = DEV_HOST_MEMORY_KEEP   reclaim takes dev pages before the host's;
+# HOST_ROLE=dedicated-dev host protection (MDT-TESTHOST-MEM, P-plat-19e): the host's own services outlive the dev tier.
+#   system.slice MemoryLow derived from K (section 4), MemoryMin floors per unit/slice, OOMPolicy=kill on docker-.scope;
 #   OOMScoreAdjust=-900 on each DEV_HOST_PROTECTED_UNITS member   the kernel OOM killer picks the dev tier first.
 # One drop-in name, owned by this block: any other role removes exactly the files it finds.
 MDT_DED_DROPIN=50-mdt-dedicated-dev.conf
+MDT_FLOOR_DROPIN=95-mdt-memory-min.conf
+MDT_SCOPE_DROPIN=60-mdt-dedicated-dev.conf
+MDT_FLOOR_LIVE=""
 MDT_DED_LIVE_UNITS=""
 MDT_SYSTEMD_DIR="${MDT_SYSTEMD_DIR:-/etc/systemd/system}"
 if [ "$MDT_DEDICATED_MEM" = 1 ]; then
   mkdir -p "$MDT_SYSTEMD_DIR/system.slice.d"
-  printf '%s\n' "# RENDERED by host-setup/install.sh (HOST_ROLE=dedicated-dev) - do not edit." "[Slice]" "MemoryLow=${MDT_DEDICATED_KEEP}" \
+  # system.slice MemoryLow is derived from K (equals the Min at defaults: then the line is omitted).
+  _ded_low_line=()
+  if [ "$MDT_SYSTEM_SLICE_LOW" -gt "$MDT_SYSTEM_SLICE_MIN" ]; then _ded_low_line=("MemoryLow=${MDT_SYSTEM_SLICE_LOW}"); fi
+  printf '%s\n' "# RENDERED by host-setup/install.sh (HOST_ROLE=dedicated-dev) - do not edit." "[Slice]" "${_ded_low_line[@]}" \
     > "$MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN"
   chmod 0644 "$MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN"
-  echo "host protection: system.slice MemoryLow=${MDT_DEDICATED_KEEP}B ($MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN)"
+  echo "host protection: system.slice MemoryLow=${MDT_SYSTEM_SLICE_LOW}B${_ded_low_line:+ (rendered)} ($MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN)"
+  # MemoryMin floors (P-plat-19e section 4): one owned 95- file per unit, system.slice and user.slice; raise-only.
+  _ded_write_floor() { # <unit> <section> <bytes>
+    mkdir -p "$MDT_SYSTEMD_DIR/$1.d"
+    printf '%s\n' "# RENDERED by host-setup/install.sh (HOST_ROLE=dedicated-dev) - do not edit." "[$2]" "MemoryMin=$3" \
+      > "$MDT_SYSTEMD_DIR/$1.d/$MDT_FLOOR_DROPIN"
+    chmod 0644 "$MDT_SYSTEMD_DIR/$1.d/$MDT_FLOOR_DROPIN"
+    MDT_FLOOR_LIVE="$MDT_FLOOR_LIVE $1"
+    echo "host protection: $1 MemoryMin=$3 ($MDT_SYSTEMD_DIR/$1.d/$MDT_FLOOR_DROPIN)"
+  }
+  for _ded_slice_row in "system.slice=$MDT_SYSTEM_SLICE_MIN" "user.slice=$MDT_USER_SLICE_MIN"; do
+    _ded_slice="${_ded_slice_row%%=*}"; _ded_planned="${_ded_slice_row#*=}"
+    _ded_other=$(_other_memory_min "$_ded_slice")
+    if [ "$_ded_other" -gt "$_ded_planned" ]; then _ded_planned="$_ded_other"; fi
+    if [ "$_ded_planned" -gt 0 ]; then _ded_write_floor "$_ded_slice" Slice "$_ded_planned"; fi
+  done
+  for _ded_row in $MDT_FLOOR_UNITS; do
+    _ded_unit="${_ded_row%%=*}"
+    if ! systemctl cat "$_ded_unit" >/dev/null 2>&1; then
+      echo "host protection: $_ded_unit is not installed on this host; no MemoryMin floor"
+      continue
+    fi
+    _ded_write_floor "$_ded_unit" Service "${_ded_row#*=}"
+  done
+  # OOMPolicy=kill on every docker-<id>.scope (Q5): memory.oom.group=1, so an OOM kills the whole container and
+  # only it. Needs systemd >= 253.
+  _ded_sd_version=$(systemctl --version 2>/dev/null | awk 'NR==1 {print $2}')
+  if [ "${_ded_sd_version:-0}" -ge 253 ] 2>/dev/null; then
+    mkdir -p "$MDT_SYSTEMD_DIR/docker-.scope.d"
+    printf '%s\n' "# RENDERED by host-setup/install.sh (HOST_ROLE=dedicated-dev) - do not edit." "[Scope]" "OOMPolicy=kill" \
+      > "$MDT_SYSTEMD_DIR/docker-.scope.d/$MDT_SCOPE_DROPIN"
+    chmod 0644 "$MDT_SYSTEMD_DIR/docker-.scope.d/$MDT_SCOPE_DROPIN"
+    MDT_FLOOR_LIVE="$MDT_FLOOR_LIVE docker-.scope"
+    echo "host protection: docker-.scope OOMPolicy=kill ($MDT_SYSTEMD_DIR/docker-.scope.d/$MDT_SCOPE_DROPIN)"
+  else
+    echo "NOTICE: systemd ${_ded_sd_version:-unknown} is older than 253: OOMPolicy=kill on docker-.scope is skipped" >&2
+  fi
   for _ded_unit in $MDT_DEDICATED_PROTECTED_UNITS; do
     _ded_file="$MDT_SYSTEMD_DIR/$_ded_unit.d/$MDT_DED_DROPIN"
     if [ ! -f "$_ded_file" ]; then
@@ -1138,6 +1242,15 @@ while IFS= read -r _ded_old; do
   rmdir -- "$(dirname -- "$_ded_old")" 2>/dev/null || true
   echo "host protection: removed $_ded_old ($_ded_why)"
 done < <(find "$MDT_SYSTEMD_DIR" -maxdepth 2 -type f -path "*.d/$MDT_DED_DROPIN" 2>/dev/null)
+# The floor and scope files this block owns: every one off-role, otherwise those of units no longer floored.
+while IFS= read -r _ded_old; do
+  [ -n "$_ded_old" ] || continue
+  _ded_old_dir="$(basename -- "$(dirname -- "$_ded_old")")"
+  case " $MDT_FLOOR_LIVE " in *" ${_ded_old_dir%.d} "*) continue ;; esac
+  rm -f -- "$_ded_old"
+  rmdir -- "$(dirname -- "$_ded_old")" 2>/dev/null || true
+  echo "host protection: removed $_ded_old (not wanted by the current role/configuration)"
+done < <(find "$MDT_SYSTEMD_DIR" -maxdepth 2 -type f \( -path "*.d/$MDT_FLOOR_DROPIN" -o -path "*.d/$MDT_SCOPE_DROPIN" \) 2>/dev/null)
 
 if [ -n "${IO_SD_DEV:-}" ]; then
   if [ "$(_mdt_host_role)" = dedicated-dev ]; then
@@ -1459,6 +1572,7 @@ if ! printf '%s\n' "$_probe_out" | grep -Eq '^Name:[[:space:]]+mdt-managed$' \
   exit 2
 fi
 echo "ok: fresh user resolves mdt-managed (remote) from the published endpoint facts"
+if [ "$MDT_DEDICATED_MEM" = 1 ]; then export MDT_COCKPIT_OOM_SCORE_ADJ_PUBLISH=-900; fi   # dedicated-dev only (5.2)
 publish_host_setup_endpoints "$HERE" publish / || {
   _publish_rc=$?
   echo "ERROR: BuildKit is running but the mdt-host-setup endpoint record was not published; builds fail with the shim's message until you re-run install.sh (idempotent)" >&2

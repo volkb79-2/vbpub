@@ -162,38 +162,87 @@ def _override(body: str = "") -> str:
             "acme-tls-non-443",
             _override('[tls_edge.tls]\nmode = "acme-tls"\n'
                       "[tls_edge.ports]\nhttps = 8443\n"),
-            'tls_mode = "acme-tls"\nhttps_port = 8443\n',
+            '[tls_edge.tls]\nmode = "acme-tls"\n'
+            "[tls_edge.ports]\nhttps = 8443\n",
             "acme-tls requires the public HTTPS port to be 443",
         ),
         (
             "calls-conflicts-with-https",
             _override("[tls_edge.calls]\nenabled = true\npublic_port = 443\n"),
-            "https_port = 443\ncalls_enabled = true\ncalls_port = 443\n",
+            "[tls_edge.ports]\nhttps = 443\n"
+            "[tls_edge.calls]\nenabled = true\npublic_port = 443\n",
             "Calls TCP conflicts with the public HTTPS TCP port",
         ),
         (
             "static-without-lineages",
             _override('[tls_edge.tls]\nmode = "static"\n'),
-            'tls_mode = "static"\nstatic_domains = []\n',
+            '[tls_edge.tls]\nmode = "static"\n'
+            "[tls_edge.static]\ndomains = []\n",
             "requires at least one static certificate lineage",
         ),
         (
             "unknown-http3-key",
             _override("[tls_edge.http3]\nenable = true\n"),
-            'domain = "edge.example.test"\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n',
             "unknown override key tls_edge.http3.enable",
         ),
         (
             "newer-schema",
             '[tls_edge]\nschema = 99\ndomain = "edge.example.test"\n',
-            'domain = "edge.example.test"\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n',
             "tls_edge.schema 99 is newer than this release supports (maximum 1)",
         ),
         (
             "good",
             _override(),
-            'domain = "edge.example.test"\ntls_mode = "acme-tls"\nhttps_port = 443\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n'
+            '[tls_edge.tls]\nmode = "acme-tls"\n'
+            "[tls_edge.ports]\nhttps = 443\n",
             None,
+        ),
+        (
+            "hostdir-empty-path",
+            _override(
+                '[tls_edge.acme]\nstore = "hostdir"\n'
+                '[tls_edge.traefik.hostdir]\n'
+                'acme = { path = "", uid = 0, gid = 0, mode = "0700" }\n'
+            ),
+            '[tls_edge]\ndomain = "edge.example.test"\n',
+            'tls_edge.traefik.hostdir.acme.path is required when '
+            'tls_edge.acme.store = "hostdir"',
+        ),
+        (
+            "hostdir-inside-stack",
+            _override(
+                '[tls_edge.acme]\nstore = "hostdir"\n'
+                '[tls_edge.traefik.hostdir]\n'
+                'acme = { path = "./vol-traefik-acme", uid = 0, gid = 0, mode = "0700" }\n'
+            ),
+            '[tls_edge]\ndomain = "edge.example.test"\n',
+            "tls_edge.traefik.hostdir.acme.path must resolve outside stack/",
+        ),
+        (
+            "hostdir-non-root",
+            _override(
+                '[tls_edge.acme]\nstore = "hostdir"\n'
+                '[tls_edge.traefik.hostdir]\n'
+                'acme = { path = "../../shared/acme", uid = 1000, gid = 0, mode = "0700" }\n'
+            ),
+            '[tls_edge]\ndomain = "edge.example.test"\n',
+            'tls_edge.traefik.hostdir.acme.uid must be 0 when '
+            'tls_edge.acme.store = "hostdir"',
+        ),
+        (
+            "hostdir-with-volume-name",
+            _override(
+                '[tls_edge.acme]\nstore = "hostdir"\n'
+                'volume_name = "edge-proxy_acme-data"\n'
+                '[tls_edge.traefik.hostdir]\n'
+                'acme = { path = "../../shared/acme", uid = 0, gid = 0, mode = "0700" }\n'
+            ),
+            '[tls_edge]\ndomain = "edge.example.test"\n',
+            'tls_edge.acme.volume_name and tls_edge.acme.store = "hostdir" '
+            "are mutually exclusive",
         ),
     ],
 )
@@ -397,6 +446,41 @@ def test_standalone_check_requires_a_site_domain(tmp_path: Path):
     result = _run_standalone(stack_dir)
     assert result.returncode != 0
     assert "domain is required" in result.stdout + result.stderr
+
+
+def test_ciu_check_accepts_a_valid_hostdir_site(tmp_path: Path) -> None:
+    """ciu rewrites hostdir tables to absolute paths before it calls the hook.
+
+    The hook validates ciu's merged config but restores the declared
+    [tls_edge.traefik.hostdir] table, so a valid outside-stack hostdir passes.
+    """
+    root, _ = _case_root(
+        tmp_path,
+        _override(
+            '[tls_edge.acme]\nstore = "hostdir"\n'
+            '[tls_edge.traefik.hostdir]\n'
+            'acme = { path = "../../shared/acme", uid = 0, gid = 0, mode = "0700" }\n'
+        ),
+    )
+
+    assert _run_ciu_check(root) == 0
+
+
+def test_standalone_refuses_hostdir_acme_storage(tmp_path: Path):
+    _, stack_dir = _case_root(
+        tmp_path,
+        _override(
+            '[tls_edge.acme]\nstore = "hostdir"\n'
+            '[tls_edge.traefik.hostdir]\n'
+            'acme = { path = "../../shared/acme", uid = 0, gid = 0, mode = "0700" }\n'
+        ),
+    )
+    result = _run_standalone(stack_dir)
+    assert result.returncode != 0
+    assert (
+        'tls_edge.acme.store = "hostdir" requires ciu; '
+        'the standalone renderer only supports "volume"'
+    ) in result.stdout + result.stderr
 
 
 def test_override_rejects_non_utf8_text(tmp_path: Path):
