@@ -103,14 +103,22 @@ def _checked_values(contract: Mapping[str, str]) -> dict[str, str]:
     return values
 
 
+def _owned_key(line: str) -> str | None:
+    candidate = line.lstrip()
+    if candidate.startswith("export") and candidate[6:7].isspace():
+        candidate = candidate[6:].lstrip()
+    key, separator, _value = candidate.partition("=")
+    return key.rstrip() if separator else None
+
+
 def render_env(contract: Mapping[str, str], existing: str = "") -> str:
     """Rewrite owned keys while retaining every other line and its position."""
     values = _checked_values(contract)
     result: list[str] = []
     written: set[str] = set()
     for line in existing.splitlines():
-        key, separator, _value = line.partition("=")
-        if separator and key in values:
+        key = _owned_key(line)
+        if key is not None and key in values:
             if key not in written:
                 result.append(f"{key}={values[key]}")
                 written.add(key)
@@ -134,9 +142,10 @@ def consumer_env_drift(
     actual: dict[str, str] = {}
     duplicates: set[str] = set()
     for line in existing.splitlines():
-        key, separator, value = line.partition("=")
-        if not separator or key not in values:
+        key = _owned_key(line)
+        if key is None or key not in values:
             continue
+        _, _, value = line.partition("=")
         if key in actual:
             duplicates.add(key)
         actual[key] = value

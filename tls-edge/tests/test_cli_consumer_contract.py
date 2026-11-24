@@ -233,6 +233,46 @@ def test_hand_edited_domain_is_refused_then_re_synced_by_configure(
     assert result == 0, output
 
 
+@pytest.mark.parametrize(
+    "owned_line",
+    [
+        "export TLS_EDGE_DOMAIN=other.example.test",
+        " TLS_EDGE_DOMAIN = other.example.test",
+    ],
+    ids=["export-prefix", "padded-key"],
+)
+def test_compose_owned_key_spellings_are_drift_and_re_synced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owned_line: str,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    answers_path = answer_file(tmp_path / "answers.toml", ANSWERS)
+    result, output = _configure(root, answers_path, monkeypatch)
+    assert result == 0, output
+    env_path = root / "stack" / "consumer.env"
+    canonical = env_path.read_text(encoding="utf-8")
+    env_path.write_text(canonical + owned_line + "\n", encoding="utf-8")
+
+    result, output = run_cli(
+        monkeypatch,
+        ["validate", "--root", str(root)],
+    )
+    assert result == 2, output
+    assert DRIFT_MESSAGE in output
+
+    empty_answers = answer_file(tmp_path / "empty.toml", "")
+    result, output = _configure(root, empty_answers, monkeypatch)
+    assert result == 0, output
+    assert env_path.read_text(encoding="utf-8") == canonical
+
+    result, output = run_cli(
+        monkeypatch,
+        ["validate", "--root", str(root)],
+    )
+    assert result == 0, output
+
+
 def test_validate_ignores_an_absent_consumer_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
