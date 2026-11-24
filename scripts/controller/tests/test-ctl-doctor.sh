@@ -55,6 +55,9 @@ fixture() {
   # $1 name; sets H to a complete, passing controller home
   H=$ROOT/$1/home
   mkdir -p "$H/runs" "$H/logs" "$H/keys"
+  printf '4242\n' > "$H/keepalive.pid"
+  mkdir -p "$ROOT/proc/4242"
+  printf 'bash\0%s\0' "$SCRIPT_DIR/../ctl-keepalive.sh" > "$ROOT/proc/4242/cmdline"
   printf 'TOPSECRET-keybody-789\n' > "$H/keys/id"; chmod 600 "$H/keys/id"
   : > "$H/keys/known_hosts"
   printf '#!/bin/sh\nexit 0\n' > "$H/keys/api-check"; chmod +x "$H/keys/api-check"
@@ -85,7 +88,7 @@ run_doctor() {
   shift
   env -i HOME="$ROOT/home" PATH="${TOOLS_IN_USE:-$TOOLS}" CONTROLLER_HOME="$H" CONTROLLER_REPO="$REPO" DOCKER_MODE=present DOCKER_LOG="$ROOT/docker.log" \
     CTL_HYGIENE_SCRIPT=/dev/null HYGIENE_MEMORY_DIR="$ROOT/no-memory" HYGIENE_STATE_DIR="$ROOT/no-state" \
-    HYGIENE_REPO="$REPO" HYGIENE_TODAY=2026-11-24 \
+    HYGIENE_REPO="$REPO" HYGIENE_TODAY=2026-11-24 KEEPALIVE_PROC="$ROOT/proc" \
     ${extra[@]+"${extra[@]}"} "$BASH" "$DOCTOR" "$@" > "$ROOT/out" 2> "$ROOT/err"
   RC=$?
   local secret
@@ -104,13 +107,32 @@ before=$(find "$H" -printf '%p %T@ %s\n' | sort)
 run_doctor --
 expect_rc 0 'a complete controller home must pass'
 for ok in 'OK home' 'OK env-file' 'OK tool:flock' 'OK tool:git' 'OK tool:python3' 'OK tool:jq' 'OK tool:docker' 'OK tool:shellcheck' \
-          'OK hosts:main:alpha' 'OK remote-allow-list' 'OK image' 'OK pinned-image' 'OK runs-dir' 'OK logs-dir' 'OK CONTROLLER_GATE_LOCK' 'OK CONTROLLER_GATE2_LOCK' 'OK residency:home'; do
+          'OK hosts:main:alpha' 'OK remote-allow-list' 'OK image' 'OK pinned-image' 'OK runs-dir' 'OK logs-dir' 'OK keepalive:' 'OK CONTROLLER_GATE_LOCK' 'OK CONTROLLER_GATE2_LOCK' 'OK residency:home'; do
   line "^$ok" "baseline check $ok"
 done
 line '^INFO run-gate-profile: effective RUN_GATE_PROFILE=off ' 'the default profile is printed as off'
 line '^ctl-doctor: [0-9]+ ok, 0 warning\(s\), 0 failure\(s\)$' 'baseline summary'
 grep -qxF 'image inspect --format {{.Id}} fixture-image:1' "$ROOT/docker.log" || fail 'the image must be looked up by its exact name from run-gate.root.toml'
 [[ $(find "$H" -printf '%p %T@ %s\n' | sort) == "$before" ]] || fail 'the doctor must not change anything under CONTROLLER_HOME'
+
+# --- keep-alive watcher: running from /proc, absent, stale; never a lock/signal probe
+DOCTOR_DIR=$(cd -- "$(dirname -- "$DOCTOR")" && pwd -P)
+keepalive_fix="setsid nohup bash $(printf '%q' "$DOCTOR_DIR/ctl-keepalive.sh") >/dev/null 2>&1 & disown"
+fixture keepalive-running
+run_doctor --
+expect_rc 0 'a running keep-alive watcher is not a warning'
+line '^OK keepalive: running pid 4242$' 'running watcher'
+no_line '^WARN keepalive' 'a running watcher has no warning'
+fixture keepalive-absent; rm "$H/keepalive.pid"
+run_doctor --
+expect_rc 0 'an absent keep-alive watcher is only a warning'
+line '^WARN keepalive: absent$' 'absent watcher'
+grep -qxF "  fix: $keepalive_fix" "$ROOT/out" || fail 'absent watcher prints the exact start command'
+fixture keepalive-stale; printf '9999\n' > "$H/keepalive.pid"
+run_doctor --
+expect_rc 0 'a stale keep-alive pid file is only a warning'
+line '^WARN keepalive: absent \(stale pid file\)$' 'stale watcher pid'
+grep -qxF "  fix: $keepalive_fix" "$ROOT/out" || fail 'stale watcher prints the exact start command'
 
 # --- hygiene findings follow the checks and never change the status or the counts (ctl-hygiene.sh has its own test)
 mkdir -p "$ROOT/hy/state" "$ROOT/hy/memory"

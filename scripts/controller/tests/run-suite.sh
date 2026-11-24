@@ -51,6 +51,7 @@ files=(
   "$SCRIPT_DIR/test-chain-run.sh"
   "$SCRIPT_DIR/test-ctl-doctor.sh"
   "$SCRIPT_DIR/test-ctl-hygiene.sh"
+  "$SCRIPT_DIR/test-entrypoints.sh"
   "$SCRIPT_DIR/test-ctl-state-backup.sh"
   "$SCRIPT_DIR/test-clear-resume.sh"
   "$SCRIPT_DIR/test-compact-resume.sh"
@@ -82,6 +83,7 @@ bash "$SCRIPT_DIR/test-remote-gate.sh" || exit $?
 bash "$SCRIPT_DIR/test-chain-run.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-doctor.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-hygiene.sh" || exit $?
+bash "$SCRIPT_DIR/test-entrypoints.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-state-backup.sh" || exit $?
 bash "$SCRIPT_DIR/test-clear-resume.sh" || exit $?
 bash "$SCRIPT_DIR/test-compact-resume.sh" || exit $?

@@ -5,8 +5,8 @@ set -uo pipefail
 # fixed clock (KEEPALIVE_NOW). The stub records every call and serves capture-pane frames per phase (pre = before the
 # ping was typed, typed = after send-keys -l), advancing one frame per call (the last repeats). No real tmux, no sleep.
 #
-# The pane frames below are FIXTURES of the UNVERIFIED markers (dialog cursor/footer, prompt-box rule): replace them with
-# real captured panes (menu, idle box with a dim suggestion, typed text) when the operator has them; the checks follow.
+# The synthetic frames cover the dialog cursor/footer, dim suggestions, drafts and read-back states. The sanitized real
+# captures in fixtures/keepalive cover the idle box with an IDE-switch notice and an agents panel below the mode line.
 for v in $(compgen -v | grep -E '^(KEEPALIVE_|KA_RESUME_|CLEAR_RESUME_|COMPACT_RESUME_)'); do unset "$v"; done
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 KA=${KEEPALIVE_SCRIPT:-$SCRIPT_DIR/../ctl-keepalive.sh}
@@ -115,6 +115,17 @@ klog() { cat -- "$D/home/logs/keepalive.log"; }
 called() { grep -qF -- "$1" "$D/calls.log" 2>/dev/null; }
 logged() { grep -qF -- "$1" "$D/home/logs/keepalive.log" 2>/dev/null; }
 sent_keys() { calls | grep -c '^send-keys'; }
+capture_functions() { # $1 = sanitized real capture; prints "<pane_state rc> <box_ok rc> <dialog_open rc>"
+  KEEPALIVE_SOURCE_ONLY=1 bash -c '
+    set -uo pipefail
+    source "$1"
+    capture=$(<"$2")
+    pane_state_of "$capture"; pane=$?
+    box_ok "$capture"; box=$?
+    dialog_open "$capture"; dialog=$?
+    printf "%s %s %s\n" "$pane" "$box" "$dialog"
+  ' _ "$KA" "$1"
+}
 # 1. the happy path; the text has no digit; the log line; the pid file is gone; Enter only after the read-back
 scenario happy 3400 "I" "ROK"
 run; [[ $RC -eq 0 ]] || fail "happy path exit $RC"
@@ -132,6 +143,12 @@ for kind in ROK ROK2 ROK3; do
 done
 # 1c. the dim suggestion and an older non-empty row in the scrollback are an empty prompt; both ping
 for kind in G O; do scenario "dim-$kind" 3400 "$kind" "ROK"; run; called 'send-keys %1 Enter' || fail "pane $kind must be pingable"; done
+# 1d. both sanitized real captures are ready, their prompt box is intact, and no dialog is visible
+for capture in idle-ide-notice.ansi idle-agents-panel.ansi; do
+  result=$(capture_functions "$SCRIPT_DIR/fixtures/keepalive/$capture") || fail "cannot source the watcher for $capture"
+  [[ $result == '0 0 1' ]] || fail "$capture: pane_state_of/box_ok/dialog_open returned $result, wanted 0 0 1"
+  echo "PASS real capture $capture: pane_state_of=0 box_ok=true dialog_open=false"
+done
 
 # 2. R2-2: the read-back re-runs the busy and dialog checks
 scenario rb-busy 3400 "I" "RBUSY"; run
@@ -218,6 +235,9 @@ logged 'skip one-ping-per-anchor' || fail "one-ping-per-anchor logged"
 
 # 6. the session mapping: every guard skips without touching tmux
 scenario dead 3400 "I" "ROK"; rm -rf "$D/proc/1001"; run; [[ ! -e $D/calls.log ]] || fail "dead pid"
+scenario empty-window 3000 "I" "ROK"; rm -rf "$D/proc/1001"; run
+[[ $RC -eq 0 && ! -e $D/calls.log ]] || fail "an empty window with only a dead pid record exits 0 and sends nothing"
+logged 'dead-or-not-claude' || fail "the dead pid record was not skipped"
 scenario comm 3400 "I" "ROK"; echo bash >"$D/proc/1001/comm"; run; [[ ! -e $D/calls.log ]] || fail "comm is not claude"
 scenario reuse 3400 "I" "ROK"; sed -i 's/ 0 1 0 91001 / 0 1 0 5 /' "$D/proc/1001/stat"; run; [[ ! -e $D/calls.log ]] || fail "procStart mismatch (pid reuse)"
 logged 'pid-reused' || fail "pid reuse logged"
@@ -267,6 +287,16 @@ called 'send-keys %1 /clear Enter' || { calls >&2; fail "the helper must send to
 ! called 'send-keys main' || fail "the helper sent to the unresolved target"
 [[ -e $D/home/locks/%1.lock ]] || fail "the helper's lock file is keyed on the resolved pane id"
 
+# 7a. N1 without a signal: a stub poll_once sets stop during the poll, and the watch loop must not enter the sleep
+scenario stop-after-poll 3400 "I" "ROK"; prep
+KEEPALIVE_SOURCE_ONLY=1 SLEEP_MARKER=$D/slept bash -c '
+  source "$1"
+  stop=0
+  poll_once() { stop=1; }
+  sleep() { printf called >"$SLEEP_MARKER"; exit 42; }
+  watch_loop
+' _ "$KA" || fail "the watch loop did not end immediately after stop was set"
+[[ ! -e $D/slept ]] || fail "the watch loop entered the poll sleep after stop was set"
 # 7b. L1: a SIGTERM during the 1-s read-back does not leave the typed ping behind: the ping is completed first
 scenario term 3400 "I" "ROK"; prep
 STUB_DIR=$D PATH=$ROOT/bin:$PATH KEEPALIVE_HOME=$D/home KEEPALIVE_SESSIONS_DIR=$D/sessions KEEPALIVE_PROJECTS_DIR=$D/projects \

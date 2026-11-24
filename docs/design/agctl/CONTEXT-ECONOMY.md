@@ -125,7 +125,8 @@ last API request, from the JSONL), acts only on measured idleness, derives its p
 lose or reset wrongly), and has its interval and cap as constants in code.
 
 Program: `scripts/controller/ctl-keepalive.sh` (bash, sourcing `resume-lib.sh` for `foot`/`send_text` conventions),
-one process for all panes, started detached (`setsid nohup`) by `ctl-doctor.sh --fix` or by hand; singleton via
+one process for all panes, started detached (`setsid nohup`) by hand; ctl-doctor reports `keepalive: running|absent`
+and prints the start command, but never starts the watcher; singleton via
 `flock -n ~/controller/locks/keepalive.lock`; pid file `~/controller/keepalive.pid`; log
 `~/controller/logs/keepalive.log` (one line per decision: UTC time, name, sessionId prefix, action, reason). It
 survives every controller restart because no controller owns it. ctl-doctor reports `keepalive: running|absent`.

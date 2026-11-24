@@ -3,9 +3,9 @@
 set -u
 # ctl-keepalive.sh [--once]
 # Prompt-cache keep-alive watcher for the interactive Claude Code controller panes in tmux. Spec:
-# docs/design/agctl/CONTEXT-ECONOMY.md section 2 (+ review items R2-1/2/3/5). ONE process for all panes, started
-# detached by hand (`setsid nohup ctl-keepalive.sh &`; ctl-doctor integration is a follow-up), never by a
-# controller session. `--once` runs one poll (tests; it pings too).
+# docs/design/agctl/CONTEXT-ECONOMY.md section 2 (+ review items R2-1/2/3/5). ONE process for all panes, started detached
+# by hand (`setsid nohup ctl-keepalive.sh &`); ctl-doctor reports it running or absent and prints this start command, but
+# never starts it. No controller session owns it. `--once` runs one poll (tests; it pings too).
 # 55-59 min after the last real API request (newest assistant record with usage in the session JSONL) it types
 # one digit-free ping into the pane's EMPTY single-row prompt box, reads it back after 1 s and presses Enter only on
 # an exact match; anything else is cleared (our own text) or left alone (foreign text, dialog, busy) and
@@ -20,8 +20,9 @@ DEEPSEEK_OPENDESIGN_CACHE_TTL_MIN=110
 DEEPSEEK_OPENDESIGN_KEEPALIVE_AT_MIN=100
 #
 # Test seams ONLY (paths and clock, never policy): KEEPALIVE_HOME, KEEPALIVE_SESSIONS_DIR, KEEPALIVE_PROJECTS_DIR,
-# KEEPALIVE_PROC, KEEPALIVE_NOW (epoch seconds), KEEPALIVE_READBACK_WAIT. The constants below are plain assignments:
-# an inherited environment variable cannot change the cap or the name list.
+# KEEPALIVE_PROC, KEEPALIVE_NOW (epoch seconds), KEEPALIVE_READBACK_WAIT, and KEEPALIVE_SOURCE_ONLY (source the functions
+# without starting the watcher). The constants below are plain assignments: an inherited environment variable cannot
+# change the cap or the name list.
 KEEPALIVE_POLL=60                                 # seconds between polls
 KEEPALIVE_IDLE_MIN=3300                           # ping from 55 min after the anchor ...
 KEEPALIVE_IDLE_MAX=3540                           # ... to 59 min (after that the cache is gone: a ping would only pay twice)
@@ -32,8 +33,8 @@ KEEPALIVE_MIN_WIDTH=80                            # panes narrower than this cou
 # The ping: no digits (they would select a numbered menu option), starts with `[` (never a slash command, `!` or `#`).
 PING_PREFIX='[keepalive'                          # what the JSONL scan counts
 PING_TEXT='[keepalive] cache refresh only: reply ok, no tools'
-# ---- pane markers: UNVERIFIED on Claude Code 2.1.331 (replace the fixtures in tests/test-ctl-keepalive.sh with real
-# ---- captured panes when the operator has them; a Claude Code release may change them) ------------------------------
+# ---- pane markers: the sanitized real idle captures in tests/fixtures/keepalive cover the box, notice and agents-panel
+# ---- layouts; the dialog cursor/footer remain UNVERIFIED on Claude Code 2.1.331. A Claude Code release may change them.
 DIALOG_CURSOR_RE='^[[:space:]]*❯[[:space:]]*[0-9]+\.[[:space:]]'   # cursor on a numbered option of a permission/question menu
 DIALOG_FOOTER='Esc to cancel'                                     # footer of those menus
 DIALOG_LINES=15                                                   # how many bottom non-blank lines are searched for them
@@ -226,6 +227,11 @@ poll_once() {
   done
 }
 
+if [[ ${KEEPALIVE_SOURCE_ONLY:-} == 1 ]]; then
+  [[ ${BASH_SOURCE[0]} != "$0" ]] || { echo "KEEPALIVE_SOURCE_ONLY only works when sourced" >&2; exit 2; }
+  return 0
+fi
+
 [[ ${1:-} == --once || $# -eq 0 ]] || { echo "usage: ${0##*/} [--once]" >&2; exit 2; }
 if ! { mkdir -p -- "$home_dir/logs" "$home_dir/locks" "$home_dir/keepalive" && : >>"$log"; } 2>/dev/null; then echo "ERROR cannot write below $home_dir" >&2; exit 2; fi
 exec 8>"$home_dir/locks/keepalive.lock"
@@ -236,4 +242,11 @@ stop=0; trap 'stop=1' TERM INT   # a signal never interrupts a ping: the read-ba
 klog watcher - start "poll=$KEEPALIVE_POLL window=$KEEPALIVE_IDLE_MIN-$KEEPALIVE_IDLE_MAX max=$KEEPALIVE_MAX names=$KEEPALIVE_NAMES"
 if [[ ${1:-} == --once ]]; then poll_once; exit 0; fi
 # the sleep must not inherit the singleton lock (fd 8), or a restart would find it held for up to a minute
-while (( ! stop )); do poll_once; sleep "$KEEPALIVE_POLL" 8>&- & wait $!; done
+watch_loop() {
+  while :; do
+    poll_once
+    (( stop )) && break
+    sleep "$KEEPALIVE_POLL" 8>&- & wait $!
+  done
+}
+watch_loop

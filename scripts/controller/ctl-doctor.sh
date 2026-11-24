@@ -12,6 +12,7 @@
 # status). It prints names and paths, never a value from controller.local.env, the host table or a key file. One caveat: controller.local.env is
 # shell-SOURCED by lib.sh (as by every controller tool) and must hold NAME=value assignments only; the doctor FLAGS other lines
 # but cannot make a value inert (an assignment like A=$(cmd) still runs when sourced).
+# Test seam: KEEPALIVE_PROC (same name as the watcher) points the keep-alive pid check at a fake proc tree.
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=lib.sh
@@ -302,6 +303,21 @@ dir_check() {
 }
 dir_check runs-dir "$CONTROLLER_RUNS_DIR"
 dir_check logs-dir "$CONTROLLER_LOGS_DIR"
+
+# ---- keep-alive watcher: read /proc only; a lock probe could make a starting watcher refuse -------------------------------
+keepalive_proc=${KEEPALIVE_PROC:-/proc}
+keepalive_pid_file=$CONTROLLER_HOME/keepalive.pid
+keepalive_pid=''
+[[ ! -f $keepalive_pid_file ]] || read -r keepalive_pid <"$keepalive_pid_file" || keepalive_pid=''
+keepalive_fix="setsid nohup bash $(printf '%q' "$SCRIPT_DIR/ctl-keepalive.sh") >/dev/null 2>&1 & disown"
+if [[ $keepalive_pid =~ ^[0-9]+$ && -r $keepalive_proc/$keepalive_pid/cmdline ]] &&
+   grep -aqF -- 'ctl-keepalive.sh' "$keepalive_proc/$keepalive_pid/cmdline"; then
+  record OK keepalive "running pid $keepalive_pid"
+elif [[ -e $keepalive_pid_file ]]; then
+  record WARN keepalive 'absent (stale pid file)' "$keepalive_fix"
+else
+  record WARN keepalive absent "$keepalive_fix"
+fi
 
 # ---- local gate slots: gate-run.sh REQUIRES both lock paths --------------------------------------------------------------
 gate_lock_check() {

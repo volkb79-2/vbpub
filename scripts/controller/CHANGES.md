@@ -6,6 +6,18 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Keep-alive follow-ups
+- `ctl-keepalive.sh`: break the watch loop immediately after a poll in which SIGTERM/SIGINT set
+  `stop`, instead of sleeping once more while holding the singleton lock. The smallest
+  source-only test seam is named in its header. `ctl-doctor.sh` now reports
+  `keepalive: running pid <n>` only from `/proc/<pid>/cmdline`, otherwise WARNs `absent` or
+  `absent (stale pid file)` and prints the detached start command; it remains read-only and
+  has no `--fix` mode. The watcher and every other `scripts/controller/*.sh` entry point are
+  100755 in the git index (the sourced `lib.sh` and `resume-lib.sh` are the explicit
+  exceptions). The watch fixtures now include sanitized real panes for the IDE-switch notice
+  and the agents panel below the mode line. Tests: `test-ctl-keepalive.sh`,
+  `test-ctl-doctor.sh`, new `test-entrypoints.sh`; all wired into `run-suite.sh`.
+
 ### Test fix: piped `grep -q` under pipefail
 - `tests/test-ctl-state-backup.sh`, `test-gate-slots.sh`, `test-skills-sync.sh`: a producer piped into `grep -q` could get SIGPIPE (rc 141) when grep exited on the first match while the producer was still writing, and `pipefail` then made the condition false (`--include-large must archive the large file` failed on r1002, 2026-11-24). The three uses now read to EOF (`grep ... >/dev/null`). `test-job-check.sh` was reviewed and left alone: its `grep -qF` calls read a file argument, not a pipe.
 
