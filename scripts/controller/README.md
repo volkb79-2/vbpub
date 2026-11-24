@@ -98,6 +98,8 @@ naming them: the real state lives in the main checkout. What is state and what i
 
 `compact-resume.sh <tmux-pane-id> <guidance-file> <prompt-file> <log-file>` (default: `/compact`, background work survives) and `clear-resume.sh <tmux-pane-id> <prompt-file> <log-file>` (clean slate: `/clear`) restart an interactive Claude Code session in a tmux pane and type the prompt file; both share `resume-lib.sh`; launch detached with `setsid nohup`; procedure, exit codes and limits: AGENTS.md "Successor restart of an interactive session".
 
+`ctl-keepalive.sh [--once]` is the prompt-cache keep-alive watcher: one detached process (`setsid nohup`, singleton lock, log `~/controller/logs/keepalive.log`) that types a short ping into the idle, empty prompt box of the named controller panes 55-59 min after their last API request, at most `KEEPALIVE_MAX` (3) in a row; spec `docs/design/agctl/CONTEXT-ECONOMY.md` section 2. It takes the same per-pane lock as the two resume helpers.
+
 ## Controller loop
 
 Use this order for each implementation task.

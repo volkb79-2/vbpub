@@ -51,6 +51,13 @@ the technical detail below it.
 
 <!-- cmru: pending release notes begin -->
 ### Changed
+- CIU-231: an empty deploy selection no longer reports success when the
+  invocation directory is one stack directory of this CIU root. `ciu up` there
+  used to warn `No phases/stacks selected to deploy` and exit 0, which hides the
+  miss from automation; it now refuses with exit 2 and names the remedy
+  (`ciu up --dir .` in that directory). A profile that genuinely selects nothing,
+  an invocation at the root, and a directory that is not a stack keep the
+  previous rc-0 no-op.
 - CIU-220: `procutil.run_cmd(capture=True)` now delegates to
   `cli_extended.procio.run_capture`, preserving the existing
   `CompletedProcess` and timeout shapes while bounding the post-exit drain and
@@ -76,9 +83,52 @@ the technical detail below it.
   `U+FFFD` instead of failing a command that otherwise exited successfully.
 - CIU-232: captured `run_cmd` calls on the main thread preserve a caller's
   installed SIGTERM/SIGHUP handlers until cli-extended CLI-EXT-51 lands.
+- CIU-227: the S6.5 root helper's own preconditions are now evaluated BEFORE the
+  first hostdir is created, and `--dry-run` creates no hostdir at all. A refused
+  `ciu up` therefore leaves the filesystem untouched instead of leaving the
+  directory whose ownership the next run refuses with `[S6.3] Existing hostdir
+  has incompatible ownership/permissions`; after the precondition is fixed the
+  next run succeeds with no manual cleanup. The helper is only required for a
+  target ownership this process cannot apply itself (a foreign uid, or a gid
+  outside its groups; root never needs it), which is DERIVED from the process
+  identity, never defaulted. `--dry-run` resolves, checks and reports every
+  declaration (`Would create ...`, `S6.5 root helper REQUIRED/not needed`),
+  including the S6.6 seed and the S6.3 refusals, and still rewrites each value
+  to its absolute physical path (S6.2). The S6.6 seed check now also runs before
+  `mkdir` in a real run (a mistyped `seed` used to leave an unchowned
+  runner-owned directory, the same symptom). The ordering is per directory, not a
+  two-pass walk: a directory created earlier in the same walk with ownership
+  already applied remains and passes the next run. The stale statements that
+  `--dry-run` creates hostdirs were corrected in SPEC S13.4a, `docs/FEATURES.md`
+  and two `deploy.py` docstrings. Not covered (follow-up): a failure AFTER
+  `mkdir` that is not a precondition (the helper's `docker run`, `copytree`)
+  still leaves a runner-owned directory.
+- CIU-230: the S6.5 root helper's refusals now carry their remedy. Each names
+  `CGROUP_PARENT_DEV_INTERACTIVE`, the expected value shape (a LOADED `.slice`
+  unit name) and the command that lists candidates
+  (`systemctl list-units --type=slice`). No fallback slice is derived or
+  invented: neither the host nor the stack config identifies the *interactive*
+  tier, so a guess would place the one-shot helper outside the governed tier
+  silently.
 
 ### Testing
 - CIU-223: the CIU-215 tests now disable git's automatic gc and maintenance per process, and an autouse test fixture reports any direct child left under pytest without signalling it. Tests only; no consumer action.
+- CIU-227/230/231: `tests/tests/test_ciu_227_230_hostdir_preconditions.py`
+  covers the ownership-need derivation, the refuse-fix-rerun sequence with no
+  manual cleanup, the plan-only (dry-run) mode against both a missing and a
+  satisfiable precondition, the S6.6/S6.3 refusals under plan mode, a missing
+  seed in a real run, the S6.5 tier resolved once for several hostdirs, the
+  Step-8 wiring for both a dry run and a real run, and the three remedy texts (plus a bare-message control that fails
+  them). `tests/tests/test_ciu_231_implicit_stack_selection.py` covers the
+  refusal inside a stack dir, its shipped-stack form, and the three rc-0 cases
+  that stay unchanged. CIU-227 flipped two pinned expectations: the S6.6 seed-refusal pin in
+  `test_ciu_engine_luna_medium59.py::test_missing_seed_directory_fails_closed_with_typed_error`
+  (the refusal now leaves no directory) and the one in
+  `test_spec_contracts.py` (`test_logs_hostdir_is_absolute_physical_path` now
+  asserts the rendered S6.2 path and the ABSENT directory, because that run is
+  a dry run) and gave
+  `test_ciu_engine_deeper6.py::test_hostdir_permission_fallback_targets_physical_path`
+  the S6.5 precondition its foreign ownership now requires.
 - CIU-220/CIU-224: estate test policy is loaded from source in warn mode;
   process-signalling oracles carry `requires_contained_cgroup`, and the new
   behavioral tests cover bounded draining, group reaping, holder warnings,
@@ -86,6 +136,18 @@ the technical detail below it.
   subprocess exception inventory.
 
 ### Adoption / Migration Notes
+- `ciu up --dry-run` no longer creates hostdirs. A dry run that used to leave
+  `vol-*` directories behind now leaves none; run a real `ciu up` (or
+  `ciu up --dir <stack>`) to provision them. A consumer that relied on a dry run
+  materializing the mount directory must create it with a real run.
+- `ciu up` run from INSIDE a stack directory of a multi-stack root now exits 2
+  instead of 0 when that root's active profile selects nothing. Use
+  `ciu up --dir .` there (or `ciu up --dir <stack>` from the root) to deploy the
+  stack you are standing in. Automation that read the old rc 0 as "nothing to do,
+  fine" must accept the new refusal.
+- The S6.5 root helper still requires `CGROUP_PARENT_DEV_INTERACTIVE`; what
+  changed is that a missing value is refused BEFORE any hostdir exists, and the
+  refusal now says what to export and how to find a loaded slice.
 - ciu now requires cli-extended 0.8.0 or newer. Install cli-extended before
   ciu; `get.py` already hoists the matching wheel from a release bundle. No
   configuration changes are required. When a descendant keeps the output pipe

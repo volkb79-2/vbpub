@@ -16,8 +16,8 @@ set -u
 # /compact was sent, the resume prompt was not); 5 the input line never emptied (someone has text
 # there, or the pane stayed busy before the resume prompt; checked before /compact and before the
 # prompt, nothing is typed over it); 6 a send-keys call failed (text may be partly typed, nothing
-# more is sent). Progress goes to <log-file>. Footer markers and the shared idle logic: resume-lib.sh. Test seams (tests/test-compact-resume.sh):
-# COMPACT_RESUME_{POLL,IDLE_TRIES,TYPE_PAUSE,FINAL_WAIT,START_TRIES,DONE_TRIES,SETTLE}.
+# more is sent); 7 the per-pane lock (also taken by ctl-keepalive.sh) was not obtained within 2 min (nothing sent). Progress goes to <log-file>. Footer markers and the shared idle logic: resume-lib.sh. Test seams (tests/test-compact-resume.sh):
+# COMPACT_RESUME_{POLL,IDLE_TRIES,TYPE_PAUSE,FINAL_WAIT,START_TRIES,DONE_TRIES,SETTLE,LOCK_DIR,LOCK_WAIT}.
 RESUME_PREFIX=COMPACT_RESUME
 # shellcheck source=resume-lib.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/resume-lib.sh"
@@ -30,6 +30,8 @@ check_log
 [[ -r $guidance_file ]] || { say "ERROR guidance file unreadable: $guidance_file"; exit 2; }
 [[ -r $prompt_file ]] || { say "ERROR prompt file unreadable: $prompt_file"; exit 2; }
 check_pane
+resolve_pane   # the target may be a session name: lock and send on the canonical %pane id
+lock_pane      # the keep-alive watcher pings under the same per-pane lock; a held lock is waited for (max 2 min)
 say "start pane=$pane guidance=$guidance_file prompt=$prompt_file"
 idle_or_exit "$idle_tries" 3 "pane never idle within 30 min"
 guidance=$(cat -- "$guidance_file"); guidance=${guidance//$'\n'/ }

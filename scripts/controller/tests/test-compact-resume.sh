@@ -11,6 +11,7 @@ SCRIPT=${COMPACT_RESUME_SCRIPT:-$SCRIPT_DIR/../compact-resume.sh}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-compact-resume-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
+export COMPACT_RESUME_LOCK_DIR=$ROOT/locks   # the per-pane lock must not touch the real $HOME/controller/locks
 fail() { echo "FAIL: $*" >&2; exit 1; }
 contains() { grep -qF -- "$2" "$1" || fail "$3 (missing: $2)"; }
 not_contains() { ! grep -qF -- "$2" "$1" || fail "$3 (unexpected: $2)"; }
@@ -22,6 +23,7 @@ cat > "$ROOT/bin/tmux" <<'SH'
 #!/usr/bin/env bash
 s=$STUB_DIR
 case $1 in
+  display) printf '%s\n' "$4" ;;   # display -p -t <target> '#{pane_id}': the targets here are pane ids already
   has-session) echo "has-session $3" >>"$s/calls.log"; [[ ! -e $s/nosession ]]; exit ;;
   capture-pane)
     phase=$(<"$s/phase"); k=$(( $(cat "$s/idx.$phase" 2>/dev/null || echo 0) + 1 )); echo "$k" >"$s/idx.$phase"
