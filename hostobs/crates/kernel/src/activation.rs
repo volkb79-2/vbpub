@@ -60,26 +60,27 @@ pub enum ActivationError {
     /// [`take`] had already been called, successfully or not.
     AlreadyTaken,
     /// The descriptor was not an open socket.
-    NotASocket(RawFd),
-    /// The descriptor was a socket but not an `AF_UNIX` socket.
-    NotUnix {
+    NotASocket {
         /// The descriptor number.
         fd: RawFd,
+        /// The `LISTEN_FDNAMES` name of the descriptor.
+        name: String,
     },
-    /// The descriptor was not a stream socket.
-    NotStream {
+    /// The descriptor was not the kind of socket systemd must pass.
+    WrongSocket {
         /// The descriptor number.
         fd: RawFd,
-    },
-    /// The descriptor was a stream socket but was not listening.
-    NotListening {
-        /// The descriptor number.
-        fd: RawFd,
+        /// The `LISTEN_FDNAMES` name of the descriptor.
+        name: String,
+        /// The required socket property.
+        want: &'static str,
     },
     /// An fd operation failed after ownership had been transferred.
     FdOperation {
         /// The descriptor number.
         fd: RawFd,
+        /// The `LISTEN_FDNAMES` name of the descriptor.
+        name: String,
         /// The failed operation.
         operation: &'static str,
     },
@@ -114,20 +115,21 @@ impl fmt::Display for ActivationError {
             ActivationError::AlreadyTaken => {
                 write!(f, "{LISTEN_FDS} has already been taken")
             }
-            ActivationError::NotASocket(fd) => {
-                write!(f, "{LISTEN_FDS} fd {fd} is not an open socket")
+            ActivationError::NotASocket { fd, name } => {
+                write!(f, "{LISTEN_FDS} fd {fd} ({name:?}) is not an open socket")
             }
-            ActivationError::NotUnix { fd } => {
-                write!(f, "{LISTEN_FDS} fd {fd} is not AF_UNIX")
+            ActivationError::WrongSocket { fd, name, want } => {
+                write!(f, "{LISTEN_FDS} fd {fd} ({name:?}) is not {want}")
             }
-            ActivationError::NotStream { fd } => {
-                write!(f, "{LISTEN_FDS} fd {fd} is not SOCK_STREAM")
-            }
-            ActivationError::NotListening { fd } => {
-                write!(f, "{LISTEN_FDS} fd {fd} is not listening")
-            }
-            ActivationError::FdOperation { fd, operation } => {
-                write!(f, "{LISTEN_FDS} fd {fd} could not be {operation}")
+            ActivationError::FdOperation {
+                fd,
+                name,
+                operation,
+            } => {
+                write!(
+                    f,
+                    "{LISTEN_FDS} fd {fd} ({name:?}) could not be {operation}"
+                )
             }
         }
     }
@@ -162,7 +164,7 @@ pub fn take(
     let parsed = parse(listen_pid, listen_fds, listen_fdnames, my_pid)?;
     let mut out = Vec::with_capacity(parsed.len());
     for (fd, name) in parsed {
-        out.push((name, adopt_raw(fd)?));
+        out.push((name.clone(), adopt_raw(fd, &name)?));
     }
     Ok(out)
 }
@@ -219,7 +221,10 @@ fn parse(
 }
 
 fn parse_decimal(text: &str, variable: &'static str) -> Result<u32, ActivationError> {
-    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+    if text.is_empty()
+        || !text.bytes().all(|byte| byte.is_ascii_digit())
+        || (text.len() > 1 && text.starts_with('0'))
+    {
         return Err(ActivationError::InvalidVariable(variable));
     }
     text.parse()
@@ -227,34 +232,55 @@ fn parse_decimal(text: &str, variable: &'static str) -> Result<u32, ActivationEr
 }
 
 #[allow(unsafe_code)]
-fn adopt_raw(fd: RawFd) -> Result<UnixListener, ActivationError> {
-    let target = std::fs::read_link(format!("/proc/self/fd/{fd}"))
-        .map_err(|_| ActivationError::NotASocket(fd))?;
+fn adopt_raw(fd: RawFd, name: &str) -> Result<UnixListener, ActivationError> {
+    let target = std::fs::read_link(format!("/proc/self/fd/{fd}")).map_err(|_| {
+        ActivationError::NotASocket {
+            fd,
+            name: name.to_string(),
+        }
+    })?;
     if !target
         .as_os_str()
         .as_encoded_bytes()
         .starts_with(b"socket:")
     {
-        return Err(ActivationError::NotASocket(fd));
+        return Err(ActivationError::NotASocket {
+            fd,
+            name: name.to_string(),
+        });
     }
 
-    // SAFETY: `LISTEN_PID` equals this process, `fd` lies in systemd's fd 3.. range, and
-    // production reaches this only through `take` after its check-and-set guard. Tests
-    // transfer ownership explicitly with `into_raw_fd`. No other owner exists, and the
-    // socket check above proves the descriptor is open.
+    // SAFETY: production reaches this only through `take`, called first in `main` before
+    // any thread exists, after `parse` checked LISTEN_PID, the fd range and the once guard.
+    // Tests reach it only with a descriptor they own and release with `into_raw_fd`. A
+    // non-socket returns above, so `from_raw_fd` never sees a descriptor the caller still
+    // owns; after this line, `owned` is its unique owner.
     let owned = unsafe { OwnedFd::from_raw_fd(fd) };
     if rustix::net::sockopt::socket_domain(&owned) != Ok(AddressFamily::UNIX) {
-        return Err(ActivationError::NotUnix { fd });
+        return Err(ActivationError::WrongSocket {
+            fd,
+            name: name.to_string(),
+            want: "an AF_UNIX socket",
+        });
     }
     if rustix::net::sockopt::socket_type(&owned) != Ok(SocketType::STREAM) {
-        return Err(ActivationError::NotStream { fd });
+        return Err(ActivationError::WrongSocket {
+            fd,
+            name: name.to_string(),
+            want: "a SOCK_STREAM socket",
+        });
     }
     if rustix::net::sockopt::socket_acceptconn(&owned) != Ok(true) {
-        return Err(ActivationError::NotListening { fd });
+        return Err(ActivationError::WrongSocket {
+            fd,
+            name: name.to_string(),
+            want: "a listening socket",
+        });
     }
     rustix::io::fcntl_setfd(&owned, FdFlags::CLOEXEC).map_err(|_| {
         ActivationError::FdOperation {
             fd,
+            name: name.to_string(),
             operation: "marked close-on-exec",
         }
     })?;
@@ -263,6 +289,7 @@ fn adopt_raw(fd: RawFd) -> Result<UnixListener, ActivationError> {
         .set_nonblocking(true)
         .map_err(|_| ActivationError::FdOperation {
             fd,
+            name: name.to_string(),
             operation: "made non-blocking",
         })?;
     Ok(listener)
@@ -331,6 +358,12 @@ mod tests {
             parse(Some("+41"), Some("1"), Some("observe"), 41),
             Err(ActivationError::InvalidVariable("LISTEN_PID"))
         );
+        for leading_zero in ["041", "00", "01"] {
+            assert_eq!(
+                parse(Some(leading_zero), Some("1"), Some("observe"), 1),
+                Err(ActivationError::InvalidVariable("LISTEN_PID"))
+            );
+        }
         assert_eq!(
             parse(Some("41"), Some("zero"), Some("observe"), 41),
             Err(ActivationError::InvalidVariable("LISTEN_FDS"))
@@ -375,7 +408,7 @@ mod tests {
             .expect("abstract name")
             .to_vec();
         let fd = listener.into_raw_fd();
-        let adopted = adopt_raw(fd).expect("listening socket is adoptable");
+        let adopted = adopt_raw(fd, "observe").expect("listening socket is adoptable");
         assert_eq!(
             adopted
                 .local_addr()
@@ -391,8 +424,12 @@ mod tests {
         let (left, _right) = UnixStream::pair().expect("socket pair");
         let fd = left.into_raw_fd();
         assert!(matches!(
-            adopt_raw(fd),
-            Err(ActivationError::NotListening { fd: got }) if got == fd
+            adopt_raw(fd, "operator"),
+            Err(ActivationError::WrongSocket {
+                fd: got,
+                ref name,
+                want: "a listening socket",
+            }) if got == fd && name == "operator"
         ));
     }
 
@@ -401,8 +438,12 @@ mod tests {
         let datagram = UnixDatagram::unbound().expect("unbound datagram");
         let fd = datagram.into_raw_fd();
         assert!(matches!(
-            adopt_raw(fd),
-            Err(ActivationError::NotStream { fd: got }) if got == fd
+            adopt_raw(fd, "observer"),
+            Err(ActivationError::WrongSocket {
+                fd: got,
+                ref name,
+                want: "a SOCK_STREAM socket",
+            }) if got == fd && name == "observer"
         ));
     }
 
@@ -411,8 +452,11 @@ mod tests {
         let file = File::open("/dev/null").expect("read-only file");
         let fd = file.as_raw_fd();
         assert!(matches!(
-            adopt_raw(fd),
-            Err(ActivationError::NotASocket(got)) if got == fd
+            adopt_raw(fd, "observe"),
+            Err(ActivationError::NotASocket {
+                fd: got,
+                ref name,
+            }) if got == fd && name == "observe"
         ));
         file.metadata()
             .expect("the test still owns and can inspect the file");
@@ -421,13 +465,79 @@ mod tests {
     #[test]
     fn take_is_one_shot_even_after_a_failed_first_call() {
         let pid = std::process::id();
+        let other_pid = pid.wrapping_add(1);
         assert!(matches!(
             take(None, None, None, pid),
             Err(ActivationError::MissingVariable("LISTEN_PID"))
         ));
         assert!(matches!(
-            take(Some(&pid.to_string()), Some("1"), Some("observe"), pid),
+            take(
+                Some(&other_pid.to_string()),
+                Some("1"),
+                Some("observe"),
+                pid
+            ),
             Err(ActivationError::AlreadyTaken)
         ));
+    }
+
+    #[test]
+    fn every_refusal_renders_one_line_and_names_its_fact_or_socket() {
+        let cases = [
+            (
+                ActivationError::MissingVariable("LISTEN_PID"),
+                "LISTEN_PID is required",
+            ),
+            (
+                ActivationError::InvalidVariable("LISTEN_FDS"),
+                "LISTEN_FDS must be a decimal integer",
+            ),
+            (
+                ActivationError::PidMismatch {
+                    listen_pid: 42,
+                    my_pid: 41,
+                },
+                "LISTEN_PID is 42, but this process is 41",
+            ),
+            (ActivationError::FdCount(0), "LISTEN_FDS is 0"),
+            (
+                ActivationError::NameCount { fds: 2, names: 1 },
+                "LISTEN_FDNAMES has 1 names",
+            ),
+            (ActivationError::EmptyName(1), "LISTEN_FDNAMES name 1"),
+            (
+                ActivationError::DuplicateName(String::from("observe")),
+                r#"repeats the name "observe""#,
+            ),
+            (ActivationError::AlreadyTaken, "LISTEN_FDS has already"),
+            (
+                ActivationError::NotASocket {
+                    fd: 3,
+                    name: String::from("ob\nserve"),
+                },
+                r#""ob\nserve""#,
+            ),
+            (
+                ActivationError::WrongSocket {
+                    fd: 3,
+                    name: String::from("ob\nserve"),
+                    want: "a listening socket",
+                },
+                "a listening socket",
+            ),
+            (
+                ActivationError::FdOperation {
+                    fd: 3,
+                    name: String::from("ob\nserve"),
+                    operation: "made non-blocking",
+                },
+                "made non-blocking",
+            ),
+        ];
+        for (error, expected) in cases {
+            let text = error.to_string();
+            assert!(!text.contains('\n'), "{text:?}");
+            assert!(text.contains(expected), "missing {expected:?}: {text}");
+        }
     }
 }

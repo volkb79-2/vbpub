@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -62,6 +63,8 @@ _FORBIDDEN_SOURCE_TOKENS = (
     ".set_len(",
     "set_permissions(",
 )
+_UNSAFE_OVERRIDE = re.compile(r"\b(allow|expect|warn)\s*\([^)]*\bunsafe_code\b")
+_UNSAFE_USE = re.compile(r"\bunsafe\s*(?:\{|fn\b|impl\b|trait\b|extern\b)")
 
 
 def _workspace_members(root: Path) -> list[tuple[str, Path, dict[str, object]]]:
@@ -139,7 +142,8 @@ def check(root: Path) -> list[str]:
             if rust_override != expected:
                 raise LintError(f"{relative} must retain the plan's unsafe_code = \"{expected}\" allowance")
 
-    unsafe_allowances: list[tuple[str, int]] = []
+    unsafe_overrides: list[tuple[str, str, int]] = []
+    unsafe_uses: list[tuple[str, int]] = []
     for source in _source_files(root):
         relative = source.relative_to(root).as_posix()
         try:
@@ -149,9 +153,12 @@ def check(root: Path) -> list[str]:
         if "#[mutants::skip]" in text:
             raise LintError(f"{relative} uses forbidden #[mutants::skip]")
         if not relative.startswith("crates/act/"):
-            occurrences = text.count("allow(unsafe_code)")
-            if occurrences:
-                unsafe_allowances.append((relative, occurrences))
+            overrides = list(_UNSAFE_OVERRIDE.finditer(text))
+            for override in overrides:
+                unsafe_overrides.append((relative, override.group(1), 1))
+            uses = len(_UNSAFE_USE.findall(text))
+            if uses:
+                unsafe_uses.append((relative, uses))
         if write_boundary(relative):
             continue
         for token in _FORBIDDEN_SOURCE_TOKENS[1:]:
@@ -161,11 +168,17 @@ def check(root: Path) -> list[str]:
                     f"{sorted(_WRITE_ALLOWED_FILES)} or {sorted(_WRITE_ALLOWED_DIRS)}"
                 )
 
-    expected_allowance = [("crates/kernel/src/activation.rs", 1)]
-    if unsafe_allowances != expected_allowance:
+    expected_overrides = [("crates/kernel/src/activation.rs", "allow", 1)]
+    if unsafe_overrides != expected_overrides:
         raise LintError(
             "allow(unsafe_code) must occur exactly once outside crates/act, in "
-            f"crates/kernel/src/activation.rs; found {unsafe_allowances}"
+            f"crates/kernel/src/activation.rs; found {unsafe_overrides}"
+        )
+    expected_uses = [("crates/kernel/src/activation.rs", 1)]
+    if unsafe_uses != expected_uses:
+        raise LintError(
+            "an unsafe expression must occur exactly once outside crates/act, in "
+            f"crates/kernel/src/activation.rs; found {unsafe_uses}"
         )
     kernel_lib = root / "crates/kernel/src/lib.rs"
     try:

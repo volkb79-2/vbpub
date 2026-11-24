@@ -68,7 +68,7 @@ fn accept_ready<B: Turn>(
     server: &mut Server<B>,
     listeners: &mut [(Level, UnixListener)],
     sockets: &mut BTreeMap<ConnId, Open>,
-    ready: &[usize],
+    ready: &BTreeSet<usize>,
     skip_next: &mut BTreeSet<usize>,
     now_ns: u64,
 ) {
@@ -142,7 +142,7 @@ fn drain_wake(wake: &OwnedFd) -> io::Result<()> {
 fn read_ready<B: Turn>(
     server: &mut Server<B>,
     sockets: &mut BTreeMap<ConnId, Open>,
-    ready: &[ConnId],
+    ready: &BTreeSet<ConnId>,
     buffer: &mut [u8],
     now_ns: u64,
 ) {
@@ -178,15 +178,26 @@ fn write_final(sockets: &mut BTreeMap<ConnId, Open>, id: ConnId, bytes: &[u8]) {
     }
 }
 
+fn finish_if_closed<B: Turn>(
+    server: &mut Server<B>,
+    sockets: &mut BTreeMap<ConnId, Open>,
+    id: ConnId,
+) -> bool {
+    if !server.is_closed(id) {
+        return false;
+    }
+    if let Some(final_bytes) = server.take_final(id) {
+        write_final(sockets, id, &final_bytes);
+    }
+    server.finish(id);
+    sockets.remove(&id);
+    true
+}
+
 fn write_ready<B: Turn>(server: &mut Server<B>, sockets: &mut BTreeMap<ConnId, Open>, now_ns: u64) {
     let ids: Vec<ConnId> = sockets.keys().copied().collect();
     for id in ids {
-        if server.is_closed(id) {
-            if let Some(final_bytes) = server.take_final(id) {
-                write_final(sockets, id, &final_bytes);
-            }
-            server.finish(id);
-            sockets.remove(&id);
+        if finish_if_closed(server, sockets, id) {
             continue;
         }
 
@@ -228,13 +239,14 @@ fn write_ready<B: Turn>(server: &mut Server<B>, sockets: &mut BTreeMap<ConnId, O
                 }
             }
         }
+        finish_if_closed(server, sockets, id);
     }
 }
 
 fn finish_broken<B: Turn>(
     server: &mut Server<B>,
     sockets: &mut BTreeMap<ConnId, Open>,
-    broken: &[ConnId],
+    broken: &BTreeSet<ConnId>,
 ) {
     for id in broken {
         if sockets.contains_key(id) {
@@ -274,8 +286,8 @@ pub(crate) fn run<B: Turn>(
     now_ns: &mut dyn FnMut() -> u64,
 ) -> io::Result<()> {
     let timeout = Timespec {
-        tv_sec: 0,
-        tv_nsec: i64::try_from(TURN_MS.saturating_mul(NS_PER_MS)).unwrap_or(i64::MAX),
+        tv_sec: i64::try_from(TURN_MS / 1_000).unwrap_or(i64::MAX),
+        tv_nsec: i64::try_from((TURN_MS % 1_000).saturating_mul(NS_PER_MS)).unwrap_or(i64::MAX),
     };
     let mut sockets: BTreeMap<ConnId, Open> = BTreeMap::new();
     let mut read_buffer = vec![0u8; READ_CHUNK];
@@ -373,26 +385,29 @@ pub(crate) fn run<B: Turn>(
             server.on_tick(now_ns);
         }
 
-        let listener_ready: Vec<usize> = ready.listeners.into_iter().collect();
         accept_ready(
             &mut server,
             &mut listeners,
             &mut sockets,
-            &listener_ready,
+            &ready.listeners,
             &mut skip_next,
             now_ns,
         );
 
-        let reads: Vec<ConnId> = ready.reads.into_iter().collect();
-        read_ready(&mut server, &mut sockets, &reads, &mut read_buffer, now_ns);
+        read_ready(
+            &mut server,
+            &mut sockets,
+            &ready.reads,
+            &mut read_buffer,
+            now_ns,
+        );
 
         let swept = server.poll(now_ns);
         drop_finished(&mut sockets, &swept);
 
         write_ready(&mut server, &mut sockets, now_ns);
 
-        let broken: Vec<ConnId> = ready.broken.into_iter().collect();
-        finish_broken(&mut server, &mut sockets, &broken);
+        finish_broken(&mut server, &mut sockets, &ready.broken);
     }
 }
 
@@ -413,7 +428,9 @@ mod tests {
     use rustix::event::{eventfd, EventfdFlags};
 
     use super::run;
-    use hostobs_probe::backend::{Backend, BackendError, Identity, StatusInfo, TickData, Turn};
+    use hostobs_probe::backend::{
+        Backend, BackendError, FixedBackend, Identity, StatusInfo, TickData, Turn,
+    };
     use hostobs_probe::encode::{control_frame, server_prefix};
     use hostobs_probe::limits::Level;
     use hostobs_probe::selection::Selection;
@@ -427,37 +444,26 @@ mod tests {
     static NEXT_SOCKET: AtomicU32 = AtomicU32::new(0);
 
     struct TestBackend {
-        identity: Identity,
-        status: StatusInfo,
+        fixed: FixedBackend,
         seq: Arc<AtomicU64>,
-        seen: u64,
         data: TickData,
     }
 
     impl TestBackend {
         fn new(seq: Arc<AtomicU64>, data: TickData) -> TestBackend {
-            TestBackend {
-                identity: Identity {
-                    server: String::from("hostobs-probe"),
-                    boot_id: String::from("00000000-0000-4000-8000-000000000009"),
-                    epoch: 1,
-                    features: Vec::new(),
-                },
-                status: StatusInfo::default(),
-                seq,
-                seen: 0,
-                data,
-            }
+            let mut fixed = FixedBackend::new();
+            fixed.identity.boot_id = String::from("00000000-0000-4000-8000-000000000009");
+            TestBackend { fixed, seq, data }
         }
     }
 
     impl Backend for TestBackend {
         fn identity(&self) -> Identity {
-            self.identity.clone()
+            self.fixed.identity()
         }
 
         fn status(&self) -> StatusInfo {
-            self.status.clone()
+            self.fixed.status()
         }
 
         fn current(&self, _selection: &Selection, max_rows: u32) -> Result<TickData, BackendError> {
@@ -466,7 +472,7 @@ mod tests {
                 return Err(BackendError::TooManyRows);
             }
             let mut data = self.data.clone();
-            data.header.seq = self.seen;
+            data.header.seq = self.fixed.seen;
             Ok(data)
         }
     }
@@ -474,8 +480,8 @@ mod tests {
     impl Turn for TestBackend {
         fn begin_turn(&mut self, _now_ns: u64) -> bool {
             let seq = self.seq.load(Ordering::SeqCst);
-            let fresh = seq != self.seen;
-            self.seen = seq;
+            let fresh = seq != self.fixed.seen;
+            self.fixed.seen = seq;
             fresh
         }
     }
@@ -748,6 +754,7 @@ mod tests {
                 Instant::now() < deadline,
                 "the previous connection was never released"
             );
+            thread::sleep(Duration::from_millis(5));
         }
     }
 
@@ -796,6 +803,8 @@ mod tests {
 
     #[test]
     fn peer_credentials_enforce_the_per_uid_connection_cap() {
+        // This proves the uid produced by SO_PEERCRED reaches the server. No client-visible
+        // frame carries pid, so a pid-path mutant may legitimately survive assay.
         let mut limits = ServerLimits::new();
         limits.observe.max_connections_per_uid = 1;
         let rig = Rig::new(limits, &[Level::Observe], small_data());
@@ -873,30 +882,14 @@ mod tests {
                     }
                     rig.tick();
                 }
-                FrameType::End => {
-                    let (ok, _blocks, _dropped, reason) = end_reason(&frame);
-                    assert!(ok);
-                    assert_eq!(reason.as_deref(), Some("slow-client"));
-                    later_dropped = Some(1);
-                    break;
-                }
-                FrameType::Evt => {
-                    let body = payload(&frame);
-                    check_evt(body).expect("slow-client EVT");
-                    assert!(
-                        String::from_utf8_lossy(body).contains(r#""reason":"slow-client""#),
-                        "{}",
-                        String::from_utf8_lossy(body)
-                    );
-                    later_dropped = Some(1);
-                    break;
-                }
-                other => panic!("unexpected slow-reader frame {other:?}"),
+                other => panic!(
+                    "unexpected slow-reader frame {other:?}; WIRE section 5.3 must count drops"
+                ),
             }
         }
         assert!(
             later_dropped.is_some_and(|dropped| dropped > 0),
-            "the later header must show a dropped block or END slow-client"
+            "the next pinned block must show dropped > 0"
         );
     }
 
