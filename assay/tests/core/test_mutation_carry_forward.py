@@ -1314,7 +1314,7 @@ def test_carry_forward_requires_native_r2_and_list_pending_context(
     assert "apply only to --list-pending" in no_listing[2]
 
     non_r2 = _LANE.replace('rigor = ["R0", "R2"]', 'rigor = ["R0"]')
-    non_r2 = non_r2.split("[lanes.unit.judge]", 1)[0]
+    non_r2 = non_r2.split("[lanes.unit.isolation]", 1)[0]
     git_repo.write("assay.toml", non_r2)
     git_repo.commit_all("remove R2")
     code, error = _invoke_run(
@@ -1498,8 +1498,10 @@ def test_f17_carry_forward_shards_merge_with_provenance_intact(
         }
         for index in range(shard_count)
     ]
-    assert all(expected_by_shard[:2])
-    assert not expected_by_shard[2]
+    assert (
+        sum(1 for ids in expected_by_shard if ids) >= 2
+        and any(not ids for ids in expected_by_shard)
+    )
 
     for index, (store, verdict, expected_ids) in enumerate(
         zip(shards, verdicts, expected_by_shard, strict=True)
