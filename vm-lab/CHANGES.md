@@ -9,13 +9,16 @@ All notable changes to vm-lab are recorded here.
   on a local Docker daemon: it skips cockpit/inspector-container lookups,
   translates no bind paths, verifies a loaded `*.slice` and local cgroups
   directly, and still uses the same operator-configured slice, hardening and
-  container builder. `--cpu-shares`, `--boot-order c|dc`, `--config-disk`, and
-  `--iso`/`--seed-iso` aliases were added for rollback-launcher parity; the
-  copied rollback launcher is retired. Cockpit mode remains the default.
+  container builder. Plain-host names require a hyphen, and its network must
+  resolve by exact name to a Docker network on the `bridge` driver.
+  `--cpu-shares`, `--boot-order c|dc`, `--config-disk`, and `--iso`/`--seed-iso`
+  aliases were added for rollback-launcher parity; the copied rollback launcher
+  is retired. Cockpit mode remains the default.
 - **Cockpit-visible changes in this release.** An explicit empty
   `--cgroup-parent ""` now refuses instead of falling back to
   `CGROUP_PARENT_DEV_BACKGROUND`; the placement, network, and network-identity
-  refusal texts changed; and the `[started]` JSON object now includes
+  refusal texts changed; the post-start `HostConfig.NetworkMode` verification
+  now also applies in cockpit mode; and the `[started]` JSON object now includes
   `"mode": "cockpit" | "plain-host"`.
 - **Cockpit cgroup inspection without the host PID namespace.** Self-inspection now requires read-only host cgroup-v2 and system D-Bus mounts, a loaded and active Docker systemd scope with a readable nonzero `TasksCurrent`, and a well-formed 64-character container ID. It resolves the scope's cgroup through D-Bus and verifies that the scope lies within the selected slice. The Docker-scope path no longer needs a host PID namespace; `host_pid_cgroup` (used by the TrueNAS live gate) still needs `/hostproc` from the inspector. Mounts at or beneath the required paths must all be read-only, and the scope's cgroup path must end in `docker-<id>.scope`.
 - **vmscreen floor (VML-BL-03):** `dependencies = ["vmscreen>=0.1.0"]`, the first vmscreen release (`vmscreen-v0.1.0`, 2026-11-18), which has the `--qemu-dump-dir` option that `vm_lab.text` requires.

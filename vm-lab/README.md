@@ -94,6 +94,8 @@ Prerequisites:
   resolver and `vm-lab/vm-lab` wrapper the recipe uses;
 - Python 3.11 or newer, as required by vm-lab;
 - a reachable local Docker daemon;
+- run vm-lab as an unprivileged user in the `docker` group, never as root:
+  as root the guest's QEMU runs as container UID 0 (VML-BL-14);
 - the QEMU guest image, either built as the local `vm-lab-qemu:local` tag with
   `vm-lab/vm-lab image build` or named by `VM_LAB_QEMU_IMAGE`;
 - the host OVMF code and variable template at
@@ -101,8 +103,9 @@ Prerequisites:
 
 Choose one exact guest token and reuse it unchanged in the container name, state
 directory basename, network name, and every teardown command. Use plain ASCII
-letters, digits and hyphens for the token; do not use wildcards or discover a
-guest by a prefix.
+letters, digits and hyphens for the token, including at least one hyphen: plain-host
+mode requires it so an all-hex token cannot also match an unrelated Docker ID
+prefix. Do not use wildcards or discover a guest by a prefix.
 
 ```sh
 GUEST='<guest-name>'                 # exact token for this one run
@@ -142,10 +145,16 @@ vm-lab/vm-lab start \
   --serial-console
 ```
 
-The network must be a dedicated user-defined bridge, not `host`, `none`, or
-`container:<name>`. For an installed disk that boots without builder media,
-omit both `--seed-iso` and `--boot-order dc`. For a CIDATA configuration image,
-add `--config-disk "$CONFIG_DISK"`; it is attached read-only as a virtio disk.
+The network must be a dedicated user-defined network whose Docker driver is
+`bridge`; vm-lab refuses `host`, `none`, `container:<name>`, and networks on
+`macvlan`, `ipvlan`, or `overlay`. For an installed disk that boots without
+builder media, omit both `--seed-iso` and `--boot-order dc`. For a CIDATA
+configuration image, add `--config-disk "$CONFIG_DISK"`; it is attached read-only
+as a virtio disk.
+
+The selected slice must be active and loaded. An inactive slice has an empty
+`ControlGroup`, so vm-lab refuses it; the host lease must select one that is active
+under host policy.
 
 The container caps are 2 vCPUs (quota), CPU shares 64, guest RAM 2 GiB plus
 512 MiB container overhead, zero swap, PID limit 128, all Linux capabilities
@@ -170,11 +179,19 @@ only the stopped, exact-name container. Remove the network only after no
 container uses it. To resume the same guest, rerun the original `start` command
 with `--resume` and the same base, firmware, media, network and slice.
 
-If the guest is unresponsive, including after a panic, use the exact-name
-forced path and then remove the stopped container:
+If QEMU reports the guest as paused, stop that paused QEMU process while keeping
+state:
 
 ```sh
-docker kill "$GUEST"
+vm-lab/vm-lab terminate-paused --name "$GUEST" --state-dir "$STATE_DIR"
+```
+
+If the guest is otherwise unresponsive, including after a panic, use the exact-name
+and ownership-label-guarded forced path (VML-BL-12), then remove the stopped
+container:
+
+```sh
+[ "$(docker inspect --format '{{.Name}} {{index .Config.Labels "org.vbpub.vm-lab"}}' "$GUEST" 2>/dev/null)" = "/$GUEST true" ] && docker kill "$GUEST"
 vm-lab/vm-lab destroy --name "$GUEST"
 ```
 

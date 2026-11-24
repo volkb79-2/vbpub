@@ -118,3 +118,33 @@ Offer the QEMU image through a ciu service instead of a local `docker build`, so
 **State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py
 
 **Problem.** The cockpit `validate_slice_name` regular expression accepts names beginning with `-` and names containing `:`, while plain-host mode uses the stricter unit-name grammar. **Wanted.** Apply one fail-closed systemd unit-name contract in both modes, with invalid-name tests at the placement boundary.
+
+## VML-BL-18 — Transient-slice guard cannot reject real transient slices
+
+**State:** open · **Severity:** low · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py, vm-lab/tests/test_vm_lab_plain_host.py
+
+**Problem.** The transient-slice check only examines `FragmentPath` when systemd reports `Transient=yes`, but a real transient slice reports a non-empty `/run/systemd/transient/<name>` path. The current refusal cannot fire for a real transient unit, and its empty-fragment fixture is impossible; the real protection is the finite `memory.max` check. **Wanted.** Read `FragmentPath` unconditionally and refuse an empty value or a `/run/systemd/transient/` path, with a realistic systemd fixture.
+
+## VML-BL-19 — Network-inspect parsing lacks Docker-output fixtures
+
+**State:** open · **Severity:** low · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py, vm-lab/tests/test_vm_lab_plain_host.py
+
+**Problem.** `inspect_network` must refuse zero, multiple, and malformed records from `docker network inspect --format '{{.Name}} {{.Driver}}'`, but the tests patch `inspect_network` and the fake Docker boundary ignores its argv. Neither the "N records" nor the malformed-output refusal is exercised. **Wanted.** Drive those refusals from representative Docker output at the fake process boundary.
+
+## VML-BL-20 — Resume recipe retains installation boot inputs
+
+**State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/README.md, VML-BL-15
+
+**Problem.** The one-guest recipe tells the operator to resume the original command, which keeps both `--boot-order dc` and the builder ISO attached after installation even when a normal disk boot is intended. **Wanted.** Define the installed-disk resume command after VML-BL-15 separates installation inputs from steady-state resume identity; warn explicitly until then.
+
+## VML-BL-21 — Recipe network is not internal
+
+**State:** open · **Severity:** low · **Owner:** vm-lab · **Links:** vm-lab/README.md
+
+**Problem.** The documented guest network is a dedicated bridge but not `--internal`, so it can reach external networks according to host routing policy. **Wanted.** Document the operations that need external reachability and when `--internal` is sufficient for the recipe.
+
+## VML-BL-22 — Destroy resolves an ID prefix before an exact name
+
+**State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py, vm-lab/README.md
+
+**Problem.** `vm-lab destroy --name` passes the token to `docker inspect`, which accepts an ID prefix before it can establish that no exact container name exists. The ownership label limits the damage, but an all-hex token can still resolve to an unrelated managed container. **Wanted.** Resolve the exact name without Docker's ID-prefix fallback, and test the collision at the Docker boundary.
