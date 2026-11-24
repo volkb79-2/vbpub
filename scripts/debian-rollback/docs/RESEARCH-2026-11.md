@@ -3,6 +3,7 @@
 Collected 2026-11-12 by five research agents (four web, one repository survey).
 This file keeps the findings and their sources so they need not be gathered
 again. Conclusions drawn from them are in [DESIGN-GUIDE.md](DESIGN-GUIDE.md).
+Current status and work order are in [TODO.md](../TODO.md).
 
 How far a claim was checked:
 

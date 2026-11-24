@@ -1,11 +1,10 @@
 # Planned experiments
 
-Historical experiment plan dated 2026-11-18. Its opening status and host
-schedule are stale: M1 and M2 guest scenarios have since run, systemd-boot is
-the active PoC, and ZFS is deferred. Current status and execution order are in
-the [installation architecture](INSTALLATION-ARCHITECTURE.md) and
-[`../TODO.md`](../TODO.md). Do not use the controller/lease instructions below
-as current host policy.
+Experiment definitions originally written 2026-11-18. Current status and work
+order are in [`../TODO.md`](../TODO.md). The
+[installation architecture](INSTALLATION-ARCHITECTURE.md) defines the product
+flows. Do not use the historical controller or lease instructions below as
+current host policy.
 
 ## E1. Rollback scenarios in the VM lab
 

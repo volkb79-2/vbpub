@@ -54,9 +54,10 @@ its own, `vm-lab/`, with the package `vm_lab` in `src/` and the console script
   `CGROUP_PARENT_DEV_BACKGROUND`), and a missing network says where it comes from
   instead of only naming the variable, because the fix is to read the value
   (`ciu env print`), not to invent one.
-- **Not part of this move:** release registration (cmru, assay lane), a vmscreen
-  version floor, a ciu service for the image. They are open items in
-  `KNOWN_ISSUES_TODO_BACKLOG.md`.
+- **Not part of this move:** release registration (cmru, assay lane) is done
+  (VML-BL-01, archived), and the first release itself is still open together
+  with the vmscreen install order (VML-BL-03). A ciu service for the image is
+  VML-BL-10. Open items are in `KNOWN_ISSUES_TODO_BACKLOG.md`.
 
 ## A profile instead of globals
 
