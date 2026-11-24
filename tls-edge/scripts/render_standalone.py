@@ -20,7 +20,6 @@ import socket
 import subprocess
 import sys
 import tempfile
-import tomllib
 from pathlib import Path
 
 try:
@@ -48,18 +47,6 @@ STANDALONE_OUTPUT_NAMES = {
 
 def jinja_env() -> jinja2.Environment:
     return jinja2.Environment(undefined=jinja2.StrictUndefined, keep_trailing_newline=True)
-
-
-def render_toml(path: Path, context: dict) -> dict:
-    """Jinja-render a .toml.j2 file, then parse it (mirrors ciu S3.2)."""
-    try:
-        text = jinja_env().from_string(path.read_text()).render(**context)
-    except jinja2.UndefinedError as exc:
-        sys.exit(f"error: {path}: {exc} (standalone renders have no ciu namespaces)")
-    try:
-        return tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        sys.exit(f"error: {path}: invalid TOML after render: {exc}")
 
 
 def physical_path(logical: Path) -> Path:
@@ -98,9 +85,13 @@ def physical_path(logical: Path) -> Path:
 
 
 def load_config(stack_dir: Path, defaults_only: bool) -> dict:
-    context = {"env": dict(os.environ)}
     if defaults_only:
-        config = render_toml(stack_dir / "ciu.defaults.toml.j2", context)
+        try:
+            config = edge_config.render_defaults(
+                stack_dir / "ciu.defaults.toml.j2"
+            )
+        except edge_config.ConfigError as exc:
+            sys.exit(f"error: {exc}")
     else:
         try:
             defaults, overlay, config = edge_config.load_site(stack_dir)
