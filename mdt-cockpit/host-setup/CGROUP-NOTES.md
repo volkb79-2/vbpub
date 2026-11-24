@@ -25,6 +25,15 @@ time. `MemoryHigh/Max/Low/Min/SwapMax`, `CPUWeight`/`CPUQuota`, `IOWeight`,
 and `daemon-reload` by themselves and need zero runtime machinery — which is
 why `dev-interactive.slice`/`dev-background.slice` carry as much as they possibly can.
 
+**Dedicated-runner memory overcommit.** A finite `MemoryMax` plus a large
+`MemorySwapMax` IS the overcommit design: cgroup v2 reclaims the cgroup into
+swap before it OOM-kills, and an OOM is reached only when reclaim cannot
+proceed because swap is exhausted or the pages are unreclaimable. Host-setup
+renders no `ManagedOOMMemoryPressure`, `ManagedOOMMemoryPressureLimit` or
+`ManagedOOMSwap` on any dev tier. Operator directive 2026-11-24: work must not
+be killed or refused merely because RAM is short; only host memory PSI
+`full avg10 >= 3` freezes work, and fleetd's host agent owns that freeze.
+
 The five things below are the entire reason `mdt-dev-governance-reconcile.sh` exists.
 
 ## What a slice unit cannot express

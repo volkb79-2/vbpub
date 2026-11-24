@@ -23,7 +23,13 @@ class _Parser(argparse.ArgumentParser):
 
 @dataclass(frozen=True, slots=True)
 class Invocation:
-    """Global options plus the untouched command argv."""
+    """Global options plus the untouched command argv.
+
+    ``json`` is only the ``--json`` given before the verb. D25 also spells
+    ``show S --json`` and ``check --json``, so every verb that supports JSON
+    accepts its own ``--json`` and ORs it with this field. Options after the
+    verb are never read here, so a ``--note --json`` value stays the verb's.
+    """
 
     paths: Paths
     json: bool
@@ -31,7 +37,7 @@ class Invocation:
 
 
 def parse_invocation(argv: Sequence[str]) -> Invocation:
-    """Parse global options wherever they occur, preserving command argv."""
+    """Parse global options before the verb; everything from the verb on is the command."""
 
     parser = _Parser(prog="dr-state", allow_abbrev=False)
     parser.add_argument(
@@ -44,12 +50,13 @@ def parse_invocation(argv: Sequence[str]) -> Invocation:
         action="store_true",
         help="emit versioned JSON where the selected verb supports it",
     )
-    namespace, command = parser.parse_known_args(list(argv))
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    namespace = parser.parse_args(list(argv))
     try:
         paths = Paths.from_sysroot(namespace.sysroot)
     except ValueError as error:
         raise UsageError(str(error)) from error
-    return Invocation(paths, namespace.json, tuple(command))
+    return Invocation(paths, namespace.json, tuple(namespace.command))
 
 
 Dispatcher = Callable[[Invocation], int]

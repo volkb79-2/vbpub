@@ -43,6 +43,9 @@
 #      correct byte count, and returns "?" -- never a bash syntax error,
 #      never a silent mis-compare -- for anything not byte-comparable
 #      (a percentage, garbage) (round-2 review B7).
+#  10. the default render matches the checked-in checksum fixture byte-for-byte,
+#      every dev tier renders no ManagedOOM directive, and a finite MemoryMax
+#      plus a large MemorySwapMax remain the overcommit design.
 #
 # Extracts install.sh's OWN render() function + RENDER_VARS list, and
 # check.sh's OWN _bytes_of function, verbatim (byte range, not a
@@ -130,6 +133,7 @@ OWNED_TEMPLATES="$("$MDT_TEST_PYTHON" "$HERE/mdt_tree_cache.py" templates)" \
   || fail "mdt_tree_cache.py templates failed"
 [ -n "$OWNED_TEMPLATES" ] || fail "mdt_tree_cache.py reports no owned templates"
 rendered_any=0
+rendered_names=()
 for tmpl in "$HERE"/units/*.in; do
   [ -e "$tmpl" ] || continue
   if printf '%s\n' "$OWNED_TEMPLATES" | grep -qxF "$(basename "$tmpl")"; then
@@ -137,6 +141,7 @@ for tmpl in "$HERE"/units/*.in; do
   fi
   rendered_any=1
   dst="$TMP/$(basename "${tmpl%.in}")"
+  rendered_names+=("$(basename "$dst")")
   render "$tmpl" "$dst"
   # (1) no unresolved @VAR@ tokens survive rendering, in ANY unit.
   if grep -qE '@[A-Za-z_][A-Za-z0-9_]*@' "$dst"; then
@@ -144,7 +149,18 @@ for tmpl in "$HERE"/units/*.in; do
   fi
 done
 [ "$rendered_any" = 1 ] || fail "no units/*.in templates found under $HERE/units"
+if grep -Hn '^ManagedOOM' "$TMP"/dev*.slice; then
+  fail "a dev-tier template rendered a ManagedOOM directive"
+fi
+if grep -HnE '^(MemoryMax|MemorySwapMax)=infinity' "$TMP"/dev*.slice; then
+  fail "a dev-tier template rendered an unlimited memory cap"
+fi
+(cd "$TMP" && sha256sum "${rendered_names[@]}" | sort -k2) > "$TMP/render-default.sha256"
+diff -u "$HERE/tests/fixtures/render-default.sha256" "$TMP/render-default.sha256" \
+  || fail "the no-policy render changed; update the golden only for an intentional default-policy change"
 pass "every rendered unit is free of unresolved @VAR@ placeholders"
+pass "the default render matches the checked-in golden checksums byte-for-byte"
+pass "no dev-tier render contains a ManagedOOM directive or an unlimited memory cap"
 
 # The tree-cache-owned templates, rendered by the exact code the installer runs
 # (mdt_tree_cache.py render), from the shipped example, as dedicated-dev. No host
@@ -280,8 +296,6 @@ for expected in \
   "MemoryMax=${DEV_GATES_MEMORY_MAX:?not set after sourcing host-setup.env.example -- missing or mistyped DEV_GATES_MEMORY_MAX= line}" \
   "CPUWeight=${DEV_GATES_CPU_WEIGHT:?not set after sourcing host-setup.env.example -- missing or mistyped DEV_GATES_CPU_WEIGHT= line}" \
   "IOWeight=${DEV_GATES_IO_WEIGHT:?not set after sourcing host-setup.env.example -- missing or mistyped DEV_GATES_IO_WEIGHT= line}" \
-  "ManagedOOMMemoryPressureLimit=${DEV_GATES_OOM_PRESSURE_LIMIT:?not set after sourcing host-setup.env.example -- missing or mistyped DEV_GATES_OOM_PRESSURE_LIMIT= line}" \
-  "ManagedOOMMemoryPressure=kill" \
 ; do
   grep -qxF "$expected" "$GATES_OUT" || fail "dev-gates.slice missing expected line: $expected"
 done
@@ -296,13 +310,12 @@ else
   grep -q '^MemorySwapMax=' "$GATES_OUT" \
     && fail "dev-gates.slice rendered MemorySwapMax with the shipped auto-detect value empty"
 fi
-# ManagedOOMSwap=kill was withdrawn from dev-gates.slice.in (RW-32/D2: an
-# oomd swap-usage kill contradicts D-19's "swap is the gates' relief valve,
-# MemorySwapMax=32G"). Assert it is ABSENT, the mirror image of the
-# presence checks above -- a regression that re-adds it should also go RED.
-grep -qx 'ManagedOOMSwap=kill' "$GATES_OUT" \
-  && fail "dev-gates.slice has ManagedOOMSwap=kill -- withdrawn by RW-32/D2 (contradicts D-19/D-6, see units/dev-gates.slice.in's own comment)"
-pass "dev-gates.slice renders required DEV_GATES_* values and drops auto-detected MemorySwapMax until install time; ManagedOOMSwap=kill stays withdrawn"
+# No dev tier opts into systemd-oomd. A regression that re-adds a kill line
+# must fail here, independently of the all-template check above.
+if grep -Hn '^ManagedOOM' "$TMP"/dev*.slice; then
+  fail "a dev-tier template rendered a ManagedOOM directive"
+fi
+pass "dev-gates.slice renders required DEV_GATES_* values and drops auto-detected MemorySwapMax; no dev tier opts into oomd"
 
 # --- (3) dev.slice / dev-memory_min_guaranteed.slice: no MemoryMin line -----
 # (DEV_MEMORY_MIN_GUARANTEED_CEILING ships unset in the example -- evidence

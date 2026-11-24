@@ -191,3 +191,31 @@ Closed items are one line each in [archive/](archive/). The format is [docs/BACK
 **State:** parked · **Severity:** low · **Owner:** rollback · **Links:** scripts/debian-rollback/docs/ZFS-POC-PLAN.md
 
 **Problem.** DESIGN-GUIDE D23 keeps ZFS with a restricted GRUB as a later comparison only. **Wanted.** Revive it only if the ZFSBootMenu guest report leaves a specific question that the comparison answers.
+
+## DR-112 — Python kernel version order differs from bash `sort -V`
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-21, scripts/debian-rollback/files/usr/local/lib/dr-state/dr_state/ids.py
+
+**Problem.** `ids.compare_versions` is dpkg `verrevcmp`. The bash `latest_kernel` it replaces uses GNU `sort -V`, which is gnulib `filevercmp`: it first strips a trailing `(\.[A-Za-z~][A-Za-z0-9~]*)*` suffix, compares the prefixes, compares the full strings only on a tie, and falls back to bytes on equal keys. `sort -V` puts `6.12.0.custom` below `6.12.0.1` and below `6.12.0-1`, and Python puts it above both. A locally built kernel with a dotted alphabetic `LOCALVERSION` therefore gets a different "latest kernel" than in bash. Debian `-flavour` names are not affected (P-20a review r2, finding 2). **Wanted.** Port the suffix rule and the byte tie-break, and add both cases to the captured `sort -V` fixture, before P-21 deletes the bash oracle.
+
+## DR-113 — Python core is tested on 3.14, not the 3.13 minimum
+
+**State:** open · **Severity:** low · **Owner:** rollback · **Links:** P-rollback-20a, DESIGN-CORE-SPLIT.md U1
+
+**Problem.** The `offline` lane runs the unit suite under CPython 3.14.7 (`/opt/tester-venv/bin/python`). The launcher's minimum is 3.13, the Debian 13 `python3`, and no lane runs on it. **Wanted.** A 3.13 run of the unit suite in a lane (for example `/usr/bin/python3` in a Debian 13 image), or the guest acceptance in P-rollback-40 recorded as the 3.13 evidence.
+
+## DR-114 — Generated `__pycache__` can reach the installed payload
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-21, DESIGN-CORE-SPLIT.md D27
+
+**Problem.** The unit-test lane imports `dr_state` from `files/usr/local/lib/dr-state/` and writes `__pycache__` there. It is gitignored, but a `cp -a` of `files/` from a tested tree (installer, seed or ISO build) would ship stale bytecode. **Wanted.** P-21's switch of installers, seed and ISO to `files/` copies from a clean tree or excludes `__pycache__`, and the lane runs Python with `-B`.
+
+## DR-115 — Small core hardening gaps against bash
+
+**State:** open · **Severity:** low · **Owner:** rollback · **Links:** P-rollback-22, scripts/debian-rollback/files/usr/local/lib/dr-state/dr_state/{lock,metadata}.py
+
+**Problem.** From the P-20a reviews:
+- the lock file is opened without `O_NOFOLLOW`;
+- a created control or metadata directory gets `0o700` minus the umask, an existing one keeps its mode (bash runs `chmod 700` every time), and a missing `/.top` exits 70 where bash `mkdir -p` would create it;
+- a valid sidecar whose `sequence` is 0 or absent contributes nothing to the counter floor, while a corrupt one contributes the sequence in its name.
+**Wanted.** `O_NOFOLLOW` on the lock, an explicit `chmod 0o700` after creation, and `max(name sequence, sidecar sequence)` for the floor, each with a unit test.

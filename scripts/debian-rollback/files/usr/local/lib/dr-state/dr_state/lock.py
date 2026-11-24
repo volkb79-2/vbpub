@@ -11,6 +11,8 @@ from types import TracebackType
 
 from .errors import LockTimeout
 
+SCRATCH_PREFIX = ".dr-state.tmp."
+
 
 class FileLock:
     """A shared or exclusive ``flock`` with a bounded wait."""
@@ -96,7 +98,9 @@ class FileLock:
         self.release()
 
 
-def _fsync_directory(directory: Path) -> None:
+def fsync_directory(directory: Path) -> None:
+    """Flush a directory's entries to stable storage."""
+
     fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         os.fsync(fd)
@@ -112,7 +116,7 @@ def atomic_write(path: str | Path, data: str | bytes, *, mode: int = 0o600) -> N
     parent = destination.parent
     fd, temporary_name = tempfile.mkstemp(
         dir=parent,
-        prefix=f".{destination.name}.tmp.",
+        prefix=SCRATCH_PREFIX,
     )
     temporary = Path(temporary_name)
     try:
@@ -123,7 +127,7 @@ def atomic_write(path: str | Path, data: str | bytes, *, mode: int = 0o600) -> N
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, destination)
-        _fsync_directory(parent)
+        fsync_directory(parent)
     except BaseException:
         if fd >= 0:
             os.close(fd)

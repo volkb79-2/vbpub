@@ -13,8 +13,9 @@ from pathlib import Path
 
 from . import FORMAT
 from .errors import FormatError, Refused
+from . import ids
 from .ids import StateId
-from .lock import FileLock, atomic_write
+from .lock import FileLock, atomic_write, fsync_directory
 from .paths import Paths
 
 SIDECAR_SCHEMA = 2
@@ -218,10 +219,14 @@ def load_sidecar(path: str | Path) -> Metadata | None:
     return parse_sidecar(sidecar.read_bytes())
 
 
-def _require_writable_directory(directory: Path) -> None:
+def _ensure_writable_directory(directory: Path) -> None:
+    """Refuse a symlink or non-directory; create an absent one, durably."""
+
     try:
         status = os.lstat(directory)
     except FileNotFoundError:
+        directory.mkdir(mode=0o700)
+        fsync_directory(directory.parent)
         return
     if stat.S_ISLNK(status.st_mode):
         raise FormatError(f"control directory {directory} is a symlink")
@@ -232,8 +237,8 @@ def _require_writable_directory(directory: Path) -> None:
 def write_sidecar(paths: Paths, state: StateId, metadata: Metadata) -> None:
     """Atomically write schema 2, refusing an existing newer sidecar."""
 
-    _require_writable_directory(paths.control_dir)
-    _require_writable_directory(paths.metadata_dir)
+    _ensure_writable_directory(paths.control_dir)
+    _ensure_writable_directory(paths.metadata_dir)
     target = sidecar_path(paths, state)
     try:
         status = os.lstat(target)
@@ -258,12 +263,22 @@ def scan_sidecar_sequences(
     paths: Paths,
     warn: Callable[[str], None] | None = None,
 ) -> tuple[int, ...]:
-    """Return sequences from usable sidecars, warning instead of failing."""
+    """Return sequences from sidecars, warning instead of failing.
+
+    An unusable sidecar still contributes the sequence in its file name.
+    """
+
+    def warning(message: str) -> None:
+        if warn is not None:
+            warn(message)
 
     sequences: list[int] = []
     try:
         entries = sorted(paths.metadata_dir.iterdir(), key=lambda path: path.name)
     except FileNotFoundError:
+        return ()
+    except OSError as error:
+        warning(f"cannot list sidecars in {paths.metadata_dir}: {error}")
         return ()
     for path in entries:
         if not path.name.endswith(".meta"):
@@ -271,8 +286,10 @@ def scan_sidecar_sequences(
         try:
             metadata = load_sidecar(path)
         except (FormatError, OSError) as error:
-            if warn is not None:
-                warn(f"ignoring unusable sidecar {path}: {error}")
+            warning(f"ignoring unusable sidecar {path}: {error}")
+            named = ids.parse(path.name[: -len(".meta")])
+            if named is not None:
+                sequences.append(named.sequence)
             continue
         if metadata is not None and metadata.sequence:
             sequences.append(metadata.sequence)
@@ -326,7 +343,7 @@ def allocate_sequence(
     if lock.path != paths.lock_file:
         raise RuntimeError(f"writer lock {lock.path} does not protect {paths.lock_file}")
     lock.require_exclusive()
-    _require_writable_directory(paths.control_dir)
+    _ensure_writable_directory(paths.control_dir)
 
     warnings: list[str] = []
 
@@ -358,7 +375,7 @@ def read_format(path: str | Path) -> FormatInfo:
     try:
         status = os.lstat(format_path)
     except FileNotFoundError:
-        return FormatInfo(FORMAT, exists=False)
+        return FormatInfo(1, exists=False)  # D26: an absent file means format 1
     if stat.S_ISLNK(status.st_mode):
         return FormatInfo(FORMAT, exists=True, issue=f"format file {format_path} is a symlink")
     if not stat.S_ISREG(status.st_mode):
@@ -399,7 +416,7 @@ def _write_format(path: Path) -> None:
 def write_control_format(paths: Paths) -> None:
     """Write the control-directory format without following a symlinked control."""
 
-    _require_writable_directory(paths.control_dir)
+    _ensure_writable_directory(paths.control_dir)
     _write_format(paths.control_format_file)
 
 
