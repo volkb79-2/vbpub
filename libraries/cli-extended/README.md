@@ -306,12 +306,14 @@ markdown = app.catalog.render(output_format="markdown")
 ```
 
 For an executable, generated terminal help uses the same color policy as
-diagnostics. Color is automatic only when the destination stream is a TTY and
-`NO_COLOR` is unset; `--color` forces it, while `--no-color` disables it.
-Explicit `--color` may override `NO_COLOR`, but supplying both switches is an
-invocation error. This applies to bare-invocation help, `--help`, `help VERB`,
-and help accompanying parser/runtime refusals. Markdown help, version output,
-and primary results remain plain; JSON is never decorated with ANSI. The CLI
+diagnostics. Color is automatic only when the destination stream is a TTY,
+`NO_COLOR` is unset or empty, and `TERM` is not `dumb`; any non-empty
+`NO_COLOR` disables it. `--color` forces it, while `--no-color` disables it.
+Explicit `--color` may override `NO_COLOR` and `TERM=dumb`, but supplying both
+switches is an invocation error. This applies to bare-invocation help, `--help`,
+`help VERB`, and help accompanying parser/runtime refusals. Markdown help,
+version output, and primary results remain plain; JSON is never decorated with
+ANSI. The CLI
 boundary applies the policy, so use `app.run()` rather than printing parser
 help directly. Consumers should use `runtime.output.info/warn/error/hint()` for
 diagnostics and should not add ANSI sequences or a second color library for
@@ -319,6 +321,23 @@ severity tags. A custom primary renderer can query
 `runtime.output.color_enabled(runtime.output.stdout)` or pass its stderr stream
 for diagnostics; consumers must still keep JSON plain by disabling color when
 `runtime.json_mode` is true.
+
+For incremental text carrying the machine-readable `[INFO]`, `[WARN]`, and
+`[ERROR]` prefixes, use the shared line renderer rather than a consumer-local
+`SeverityStream`:
+
+```python
+renderer = runtime.output.line_stream(destination)
+renderer.write(text)
+renderer.flush()
+```
+
+The factory resolves colour for that exact destination and carries JSON mode.
+The renderer buffers a partial line until a newline or `flush()`, applies
+severity colour only to the recognized prefix, and strips input-origin ANSI
+CSI/OSC and unsafe controls before recognition. JSON output never receives
+generated ANSI. The current scope is severity only: path/Markdown decoration
+and OSC 8 hyperlinks are deferred.
 
 For a real executable, the package provides a black-box contract assertion:
 

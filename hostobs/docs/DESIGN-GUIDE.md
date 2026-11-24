@@ -6,6 +6,8 @@ behavior lives in [`docs/design/hostobs/PLAN-v4-2026-11-08.md`](../../docs/desig
 adoption steps live in [`CONSUMERS.md`](CONSUMERS.md); open items live in
 [`../KNOWN_ISSUES_TODO_BACKLOG.md`](../KNOWN_ISSUES_TODO_BACKLOG.md).
 
+The probe's process and thread model (threads, the non-blocking backend rule, activation, shutdown, config, test harness) is decided in [`PROBE-PROCESS.md`](PROBE-PROCESS.md).
+
 ## Package boundaries
 
 `proto` and `model` are pure libraries: no I/O, no clock reads, no threads, no `unsafe`,

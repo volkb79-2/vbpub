@@ -1,0 +1,20 @@
+#!/usr/bin/python3 -I
+"""Run dr-state from the shared acyclic runtime tree."""
+
+import pathlib
+import sys
+
+if sys.version_info < (3, 13):
+    print(
+        "dr-state: requires Python 3.13 or newer "
+        f"(found {sys.version_info.major}.{sys.version_info.minor})",
+        file=sys.stderr,
+    )
+    raise SystemExit(70)
+
+runtime = pathlib.Path(__file__).resolve().parent.parent / "lib" / "dr-state"
+sys.path.insert(0, str(runtime))
+
+from dr_state.cli import main
+
+raise SystemExit(main())

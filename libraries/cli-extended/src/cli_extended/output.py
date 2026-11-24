@@ -13,6 +13,7 @@ from enum import Enum
 from typing import Any, TextIO
 
 from .identity import CliIdentity
+from .line_stream import LineStreamRenderer
 
 #: CLI-EXT-23. ``"once"`` (default, unchanged) prints the identity headline
 #: after the first error of a run; ``"never"`` leaves the error as the last line.
@@ -154,6 +155,25 @@ def redact_value(value: Any, secrets: Sequence[str] = ()) -> Any:
     return value
 
 
+def auto_color_enabled(stream: TextIO) -> bool:
+    """CLI-EXT-42 automatic colour policy, shared by output and progress.
+
+    True only for a TTY stream, with ``NO_COLOR`` unset or empty (no-color.org),
+    and ``TERM`` not ``dumb``. Explicit ``--color``/``--no-color`` handling stays
+    with the callers; this is the policy that applies when there is no switch.
+    """
+
+    try:
+        is_tty = bool(stream.isatty())
+    except (AttributeError, OSError):
+        return False
+    if not is_tty:
+        return False
+    if os.environ.get("NO_COLOR", ""):
+        return False
+    return os.environ.get("TERM", "").lower() != "dumb"
+
+
 class CliOutput:
     """Human diagnostics plus a clean primary-result stream.
 
@@ -214,14 +234,23 @@ class CliOutput:
             return False
 
     def color_enabled(self, stream: TextIO | None = None) -> bool:
-        """Resolve explicit colour, TTY detection, and ``NO_COLOR``."""
+        """Resolve explicit colour, TTY detection, ``NO_COLOR``, and ``TERM=dumb``."""
 
         stream = stream if stream is not None else self.stderr
         if self.color is False:
             return False
         if self.color is True:
             return True
-        return self._is_tty(stream) and "NO_COLOR" not in os.environ
+        return auto_color_enabled(stream)
+
+    def line_stream(self, stream: TextIO) -> LineStreamRenderer:
+        """Return the shared line renderer with this invocation's policy."""
+
+        return LineStreamRenderer(
+            stream,
+            color=self.color_enabled(stream),
+            json_mode=self.json_mode,
+        )
 
     def format_help(
         self,

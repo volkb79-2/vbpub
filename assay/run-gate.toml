@@ -242,11 +242,10 @@ artifacts = [
 # R0, R1 (whole-target line and branch over src/assay) and the R3 canary run;
 # R2 mutation is explicitly postponed and the run records
 # .assay/mutation-postponed-assay.json (deferral evidence, never an R2 pass).
-# Valid only below assay 12.3.0 (extended 2026-11-12 for the flexible-R2
-# release 12.2.0: R2 is a T3 post-release check per the tier methodology;
-# operator decision 2026-11-12, A-507/B535; earlier extended 2026-11-08 for the
-# E4 env-only launchers and delegated release-gate changes); the full
-# `self-qualification` lane is unchanged and clears the marker. The campaign deadline is its own b105-prov-* file.
+# Any release is eligible: R0/R1 plus R3 are the release gate, R2 runs
+# asynchronously on the latest release, and there is no per-version window.
+# The full `self-qualification` lane is unchanged and clears the marker.
+# The campaign deadline is its own b105-prov-* file.
 [lanes.self-qualification-provisional]
 kind = "command"
 environment = "bare-host"
@@ -374,3 +373,33 @@ artifacts = [
   ".assay/b110-screen-run.log",
   ".assay/progress-b110-screen.jsonl",
 ]
+
+# WP0b replay pilot (assay B562 part 1): times ONE isolated replay of a carried
+# cmru kill (mutant fails, pristine passes) and counts how many old kills still
+# replay as kills at this commit. A measurement, not a verdict: the tool exits 0
+# whenever the measurement completed and 3 when it could not run (no valid pick,
+# interpreter missing). It imports source Assay read-only, so the Cowtree source
+# is on PYTHONPATH like every sibling source-Assay lane. Reads the committed
+# cmru/docs/evidence progress streams; a timed-out pytest call (300 s cap) is
+# recorded in the progress stream, not fatal.
+[lanes.replay-pilot]
+kind = "command"
+environment = "tester-unified"
+network = "none"
+argv = [
+  "bash", "-c",
+  '''set -eu
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="{worktree}/assay/src:{worktree}/libraries/cowtree/src"
+/opt/tester-venv/bin/python {worktree}/assay/tools/replay_pilot.py \
+  --worktree {worktree} --out {worktree}/assay/.assay/replay-pilot \
+  --pytest-arg=--cli-case-partial''',
+]
+exit_map = { "3" = "ERROR" }
+clean_tree = false
+budget = "120m"
+artifacts = [".assay/replay-pilot"]
+
+[lanes.replay-pilot.resources]
+memory = "2g"
+cpus = "2"

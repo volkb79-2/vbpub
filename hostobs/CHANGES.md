@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- **Docs (P-hostobs-19, closes `HOB-74`):** `docs/CONSUMERS.md` gets a "Boundaries" section with the four consumer rules (cgprofile frozen, span emission is one JSON line on the observer socket, act never writes `io.cost`/`io.weight`/sysctl, iogovmon reads hostobs only after M3); cgprofile's freeze is filed as `CP-66`.
+- The hostobs backlog now lists only open items; fixed and closed entries are archived one per line in `archive/2026-Q4.md`, with HOB-62..74 filed and HOB-49's WIRE citation corrected.
+- **Changed (WIRE.md, P-hostobs-03, `HOB-65`/`HOB-71`/`HOB-72` spec):** no request waits (D-W49, D-W50; D-W30 retired), JSON mode only at observer/control (D-W51), probe-wide keys with `max_rows` 1,024, Query 1/4 MiB, `max_block_bytes` 1 MiB and history 2/8 (D-W52), no per-uid pools and per-uid caps equal to the level caps at observe (D-W20, D-W53); code follows in P-hostobs-05/06 (V-21).
+- **Changed (probe serving, P-hostobs-05, `HOB-65`):** `current` is answered in its read turn or refused before REP with `too-many-requests` while its connection's Query blocks are unwritten, or `budget {"pool":"query"}` when the Query pools lack room; pending requests, retry, re-resolution and `SendHub::query_ready` are removed.
+- **Docs (P-hostobs-02, `HOB-66`)**: `docs/PROBE-PROCESS.md` decides the probe's process and thread model (sampler, server loop and placed writer threads; non-blocking backend rule; eventfd wakeup; rustix with one audited `unsafe` line in `kernel`; named `LISTEN_FDS`; shutdown; minimal config; in-process test harness); the hub doc no longer claims a mutex.
+
 ### Changed (P-hostobs-04 workspace unification)
 
 - **Crates**: `model` now owns the one quality/value vocabulary and metric fact table;

@@ -3050,8 +3050,8 @@ not export per-mutant coverage to this archive directory.
 
 #### Provisional release qualification B169 B170
 
-The R2 waiver is a version-bounded release decision, not a substitute for an
-R2 result. CMRU runs Assay's `run-tests` step in its isolated release
+The provisional lane records R2 as owed; it is not a substitute for an R2 result,
+and it is not a per-version waiver. CMRU runs Assay's `run-tests` step in its isolated release
 transaction after preparing the dated `CHANGES.md` heading and before creating
 the release tag. The step runs the ordinary self-hosted release gate, then
 the `self-qualification-provisional` Run-Gate lane: full-source R0 and R1 (100% whole-
@@ -3067,17 +3067,10 @@ The gate checks the first H2 release heading after `## [Unreleased]` because
 the release tag does not exist when CMRU runs `run-tests`. It refuses a
 malformed or unsupported first heading without searching historical sections,
 and requires the heading to match CMRU's protected planned transaction version.
-The currently permitted interval is `10.0.0 <= version < 12.3.0`; the
-operator extended the original 2026-10-27 waiver on 2026-10-31, 2026-11-04,
-2026-11-08 and 2026-11-12. The latest decision (A-507) covers the flexible-R2
-release 12.2.0: under the approved tier methodology R2 is a T3 post-release
-check on the latest release, not a release gate, and assay's own R2 on 12.2.0
-stays a named known issue (B535) until a PASS is recorded. A visible stable
-`assay-vX.Y.Z` tag is also required, and the latest visible tag must be below
-12.3.0. Missing, unreadable, or
-unparseable tag state refuses the waiver. Any later extension requires a new
-operator R2-waiver decision; the gate names this decision in its refusal and
-directs the caller to the full self-qualification lane.
+Any release is R0/R1 plus R3 and an independent review. R2 runs asynchronously
+on the latest release. There is no per-version waiver window. Release tags are
+not consulted. The full `self-qualification` lane remains the way to produce R2
+evidence on demand.
 
 The bare-host wrapper removes an old postponement marker before its own
 dirty-tree and host-admission checks. Run-Gate can refuse admission before the
