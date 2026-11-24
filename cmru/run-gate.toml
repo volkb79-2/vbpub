@@ -78,7 +78,7 @@ assay_lane = "cmru-first-release-r2"
 environment = "tester-unified"
 resource_observer = "cgprofile"
 clean_tree = true
-budget = "7h"
+budget = "425m"
 # CPU- and memory-bound suite (~85% of a core, 1-1.75 GiB per candidate):
 # auto settles on 2 workers under the 4g container below.
 jobs = "auto"

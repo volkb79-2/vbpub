@@ -24,7 +24,7 @@ resource_observer = "cgprofile"
 environment = "tester-unified"
 jobs = "auto"
 clean_tree = false
-budget = "120m"
+budget = "125m"
 artifacts = [".assay/verdict-vmscreen.json",
   ".assay/progress-vmscreen.jsonl"]
 

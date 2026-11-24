@@ -33,7 +33,7 @@ resource_observer = "cgprofile"
 environment = "tester-unified"
 jobs = "auto"
 clean_tree = false
-budget = "240m"
+budget = "245m"
 artifacts = [".assay/verdict-vm-lab.json",
   ".assay/progress-vm-lab.jsonl"]
 

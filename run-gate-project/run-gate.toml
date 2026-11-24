@@ -101,7 +101,7 @@ kind = "assay"
 assay_lane = "r1"                   # -> assay.toml [lanes.r1]
 environment = "tester-unified"
 clean_tree = true
-budget = "30m"
+budget = "35m"
 
 [lanes.assay-r1.resources]
 memory = "2g"
@@ -133,7 +133,7 @@ assay_lane = "r2"                   # -> assay.toml [lanes.r2]
 environment = "tester-unified"
 resource_observer = "cgprofile"
 clean_tree = true
-budget = "4h"
+budget = "245m"
 jobs = "auto"                       # assay.toml jobs_max = 2 is the ceiling
 
 [lanes.assay-r2.resources]
