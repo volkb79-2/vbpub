@@ -5,7 +5,7 @@ All notable changes to scripts/netcup are recorded here.
 ## [Unreleased]
 
 ### Fixed
-- `runner/remote-gate.py` ships the controller checkout's `origin/main` (after `git fetch -q origin main`), not its local `main` branch, and the
+- `runner/remote-gate.py` ships the controller checkout's `origin/main` (after `git fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main`; `--base main` resolves to it too), not its local `main` branch, and the
   host job creates both `refs/remotes/origin/main` and `refs/heads/main` at it (NC-66). A lane with `base = "origin/main"` failed in 4 s with
   GIT_FAILED on every host, and `base = "main"` lanes judged against a local main that was 36 commits behind. A failed fetch warns and uses the
   existing origin/main; an assay lane whose declared `judge.base` does not resolve is refused locally (exit 2) before anything is shipped.

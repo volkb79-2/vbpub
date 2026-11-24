@@ -1968,6 +1968,8 @@ lanes judged against a local main that was 36 commits behind origin/main. Fix: `
 `refs/remotes/origin/main`, create both `refs/remotes/origin/main` and `refs/heads/main` on the host; a failed fetch warns and uses the
 existing origin/main; an assay lane whose declared `judge.base` does not resolve locally is refused with exit 2 (a host-side check of every
 declared ref would need the base passed into the job; not done, so a base that resolves locally but is not main, a tag or HEAD still fails on the host).
+`--base main` / `origin/main` now resolve to the fetched origin/main (not the stale local branch). A host checkout cloned from a seed starts with the
+seed's own `main` and `origin/main`; the job overwrites them, and deletes both when there is no origin/main to set, so nothing stale survives (r1 review F1-F5).
 **Where.** `runner/remote-gate.py` (`local_state`, `lane_checks`, `build_bundle`, job script), `CONSUMERS.md`, `CHANGES.md`.
 
 ## NC-67 — the runner records no container `State.OOMKilled` in result.json

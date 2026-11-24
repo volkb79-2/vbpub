@@ -527,8 +527,11 @@ cockpit. The argv regression is in `tests/test_runner_scripts.py`.
   (assay.toml of nyxloom, cowtree, worktree, ...). The helper runs `git fetch -q origin main` in the controller checkout and ships
   `refs/remotes/origin/main` on the same thin bundle (its commits count towards the "closest host checkout" choice); the job creates BOTH
   `refs/remotes/origin/main` and `refs/heads/main` at that commit without checking it out. The controller's local `main` branch is never
-  shipped (it can lag origin by dozens of commits). A failed fetch prints one `WARNING` naming the existing origin/main commit and uses it;
-  no origin/main at all means none on the host. An assay lane whose declared `judge.base` does not resolve locally is refused (exit 2).
+  shipped (it can lag origin by dozens of commits), and `--base main` / `--base origin/main` resolve to that same fetched commit (refused, exit 2,
+  when there is none). The fetch uses the explicit refspec `+refs/heads/main:refs/remotes/origin/main`, `--no-tags`, no auto-maintenance, no
+  credential prompt and a 60 s limit. A failed fetch prints one `WARNING` naming the existing origin/main commit and uses it; with no origin/main
+  at all the job deletes any `origin/main` and `main` a seed checkout carried over, so nothing stale resolves. An assay lane whose declared
+  `judge.base` does not resolve locally is refused (exit 2); `main` / `origin/main` count as resolving whenever an origin/main is shipped.
 - **Why a run failed.** When the verdict is neither PASS nor FAIL the last line carries the cause: `lane <lane> verdict ERROR; exit_code 2; reason
   <text>` (the verdict line's `reason`, the lane script's last own diagnostic line, else the job log's refusal line; `result.json` has the same `reason`).
   Known causes append a `[hint: ...]`. Known silent-looking causes: an exec-mode lane without a stack (above), a declared base given `--base`,
