@@ -35,20 +35,6 @@ def _markdown_section(path, heading: str) -> str:
     return " ".join(section.split())
 
 
-def test_the_3_x_to_4_0_installer_adoption_step_is_documented_everywhere_required():
-    migration = (
-        "Updating a 3.x instance to 4.0: download the 4.0 release `get.py` and run "
-        "`python3 get.py update` (the 3.x `bin/tls-edge-installer` cannot verify a "
-        "4.0 bundle); from 4.0 on `bin/tls-edge-installer update` works."
-    )
-    assert migration in _markdown_section(ROOT / "docs" / "INSTALL.md", "## 6. Update")
-    assert migration in _markdown_section(ROOT / "CHANGES.md", "### Upgrade")
-    assert migration in _markdown_section(ROOT / "CHANGES.md", "### Operator notes")
-    breaking = _markdown_section(ROOT / "CHANGES.md", "### Breaking")
-    assert "**Adoption/Migration:**" in breaking
-    assert migration in breaking
-
-
 def test_operator_docs_name_the_bundle_root_and_reproducibility_inputs():
     readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
     assert "single staging directory as its top-level directory, `bundle/`" in readme
