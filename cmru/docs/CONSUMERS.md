@@ -106,6 +106,9 @@ schema_version = 1
 [runtime]
 kind = "none" # use "ciu" only when the project owns declared CIU roots
 
+[runner]
+no_progress_timeout_seconds = 1800 # optional; finite, greater than 0, and no off value
+
 [project]
 id = "example-wheel"
 description = "Example wheel project"
@@ -689,6 +692,27 @@ working directories, declared cleanup, and unresolved dynamic-environment
 helpers without starting project commands. To apply the configured defaults,
 run `cmru run example-wheel` after reviewing the preview.
 
+Step execution has a finite inactivity bound. The optional `[runner]` example above sets a
+project-wide value; an optional `steps.<name>.no_progress_timeout_seconds` on the command's
+step wins. If neither is declared, every step resolves to 1800 seconds. Values at either level
+must be numeric, not boolean, finite, and greater than zero. Unknown `[runner]` keys and invalid
+values are refused with exit 2, and watchdog failure diagnostics name the exact source key that
+won. Both keys are optional: an existing revision-5 `cmru.toml` still loads and passes
+`cmru standards` without adding them.
+
+A command ends when its own child exits. If a descendant keeps the inherited output pipe open,
+CMRU drains for two seconds, prints one `[WARN] ...` on stdout, writes one `[cmru] ...` to the
+step log, keeps the child's exit code, and never mirrors the warning into the aggregate log. A
+live but silent command is terminated with its process group when the resolved no-progress bound
+expires; the diagnostic shows the winning source key and the pre-signal tree. SIGINT, SIGTERM
+and SIGHUP take the same whole-group reaping path.
+
+Streamed step output decodes malformed bytes as U+FFFD and never changes a completed child's
+status (D-179). Captured probes stay strict: calling
+`cmru.process_run.run_process(..., capture=True, stdin=...)` delegates to
+`cli_extended.procio.run_capture`, gets a group-reaping timeout and bounded drain, and accepts
+only `stdin=None` or `subprocess.DEVNULL`.
+
 Every `cmru cleanup` mode also displays its pending actions and asks before it
 changes local or remote state. `--yes` accepts the plan shown by that same
 invocation. Use `--dry-run` to inspect actions without applying them:
@@ -724,6 +748,10 @@ If configured cleanup runs `steps.clean`, CMRU commits only paths that become di
 step. Files already dirty when the confirmed plan starts are left out of that commit so cleanup
 does not sweep caller edits into its generated commit. It commits generated files even when the
 cleanup policy selected no release tags for deletion.
+The parsed `steps.clean` contributes only its resolved no-progress timeout and source to cleanup
+(D-178). Cleanup keeps its historical quiet output, command/cwd, `repo_root/logs`, project and
+protected environment, and does not activate ordinary step login, `env_command`, required
+environment, clean directories or other controls.
 
 The project example also declares a Go module target. Its project needs a module file such as:
 
@@ -1318,7 +1346,7 @@ common Git directory writable.
 3. If the host's `python3` is not that environment, the controller says so and continues. It
    switches when it cannot import a declared dependency **or** imports one whose installed
    version does not satisfy the declared requirement (for example `has cli-extended 0.2.0
-   installed, which does not satisfy cli-extended>=0.3.0`):
+   installed, which does not satisfy cli-extended>=0.8.0`):
    `cmru-release-gate: /usr/local/bin/python3 cannot import cli_extended; running the
    controller under the installed CMRU environment's interpreter <venv>/bin/python
    (named by the installed cmru launcher <venv>/bin/cmru)`. Nothing else changes; the lanes

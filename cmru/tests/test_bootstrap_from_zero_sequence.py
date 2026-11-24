@@ -147,7 +147,7 @@ def test_step_one_reaches_a_working_first_cmru_from_the_artifacts_it_built(tmp_p
         capture_output=True, text=True, check=True,
         cwd=tmp_path,  # never the project dir: its local cmru.egg-info would shadow the venv's dist
     ).stdout.split()
-    assert installed == ["0.3.0+bootstrap.source", "0.0.0+bootstrap.source"]  # stale 9.9.9 replaced
+    assert installed == ["0.8.0+bootstrap.source", "0.0.0+bootstrap.source"]  # stale 9.9.9 replaced
 
 
 @_needs_repo

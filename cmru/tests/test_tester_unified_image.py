@@ -118,7 +118,7 @@ TESTER_REQUIREMENTS_GENERATION_RUN = (
     '>&2; exit 1; }; mkdir -p /tmp/cli-extended-release && cp "$1" '
     '/tmp/cli-extended-release/; else '
     '/usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py '
-    '--dest /tmp/cli-extended-release --min-version 0.3.0 "$@"; fi && '
+    '--dest /tmp/cli-extended-release --min-version 0.8.0 "$@"; fi && '
     'set -- /tmp/cli-extended-release/cli_extended-*.whl && [ "$#" -eq 1 ] && '
     '[ -f "$1" ] && echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c -'
 )
@@ -1627,7 +1627,7 @@ def test_dockerfile_pins_the_released_asset_and_digest_by_default_and_latest_is_
         "sha256sum -c reads `<digest><two spaces><file>`"
     )
     assert re.search(r'\*\) echo "[^"]*" >&2; exit 1 ;;', flat)
-    assert 'fetch-cli-extended.py --dest /tmp/cli-extended-release --min-version 0.3.0 "$@"' in flat
+    assert 'fetch-cli-extended.py --dest /tmp/cli-extended-release --min-version 0.8.0 "$@"' in flat
 
 @pytest.mark.parametrize(("prefix", "url", "digest", "label"), [
     ("CLI_EXTENDED", CLI_EXTENDED_WHEEL_URL, CLI_EXTENDED_WHEEL_SHA256, "cli-extended"),

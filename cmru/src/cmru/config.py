@@ -21,6 +21,7 @@ import re
 import subprocess
 import tomllib
 import dataclasses
+import math
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import List, Mapping, Optional
@@ -1372,6 +1373,20 @@ def _targets(raw: object) -> TargetsConfig:
     return TargetsConfig(host=host.strip(), registry=_string_list(registry, "targets.registry"))
 
 
+def _validate_no_progress_timeout(value: object, where: str) -> None:
+    """Validate the shared finite-only watchdog value with the public diagnostic."""
+    finite = False
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            finite = math.isfinite(float(value))
+        except OverflowError:
+            finite = False
+    if not finite or value <= 0:
+        _error(
+            f"{where} must be a finite number of seconds greater than 0; got {value!r}"
+        )
+
+
 def _validate_runner_steps(raw_steps: object) -> dict[str, dict]:
     """Validate the one runner grammar shared by direct and orchestrated runs."""
     if not isinstance(raw_steps, dict) or not raw_steps:
@@ -1379,6 +1394,7 @@ def _validate_runner_steps(raw_steps: object) -> dict[str, dict]:
     known_step_keys = {
         "commands", "bake_set_prefix", "bake_set_vars", "no_cache_env", "clean_dirs",
         "required_env", "login", "env", "env_command", "quiet",
+        "no_progress_timeout_seconds",
     }
     result: dict[str, dict] = {}
     for step_name, step in raw_steps.items():
@@ -1386,6 +1402,11 @@ def _validate_runner_steps(raw_steps: object) -> dict[str, dict]:
         if not isinstance(step_name, str) or not step_name or not isinstance(step, dict):
             _error("[steps.<name>] entries must be non-empty named tables")
         _reject_unknown(step, known_step_keys, where)
+        if "no_progress_timeout_seconds" in step:
+            _validate_no_progress_timeout(
+                step["no_progress_timeout_seconds"],
+                f"{where}.no_progress_timeout_seconds",
+            )
         commands = step.get("commands")
         if not isinstance(commands, list) or not commands:
             _error(f"{where}.commands must be a non-empty list")
@@ -1429,7 +1450,10 @@ def _parse_project_document(
     raw = _read_toml(config_path, PROJECT_CONFIG_FILENAME)
     _reject_unknown(
         raw,
-        {"schema_version", "github", "targets", "env", "build_metadata", "project", "runtime", "steps", "project_metadata", "versions"},
+        {
+            "schema_version", "github", "targets", "env", "build_metadata", "project",
+            "runtime", "runner", "steps", "project_metadata", "versions",
+        },
         PROJECT_CONFIG_FILENAME,
     )
     if raw.get("schema_version") != 1:
@@ -1456,6 +1480,15 @@ def _parse_project_document(
     metadata = _scalar_env(
         raw.get("build_metadata", {}), "build_metadata", reject_credentials=False,
     )
+    runner = raw.get("runner", {})
+    if not isinstance(runner, dict):
+        _error("[runner] must be a table")
+    _reject_unknown(runner, {"no_progress_timeout_seconds"}, "runner")
+    if "no_progress_timeout_seconds" in runner:
+        _validate_no_progress_timeout(
+            runner["no_progress_timeout_seconds"],
+            "runner.no_progress_timeout_seconds",
+        )
     versions = _parse_versions(
         raw.get("versions"), f"{PROJECT_CONFIG_FILENAME} [versions]",
         allow_partial=not require_repository_facts,

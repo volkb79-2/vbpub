@@ -733,6 +733,39 @@ project-relative files/directories and the transaction refuses missing or symlin
 rather than guessing what the gate meant. Removing the wrapper
 also removes it from CMRU's mutation and coverage input lists.
 
+## Step supervision is bounded and comes from cli-extended
+
+CMRU does not keep a second implementation of child supervision. A project command is started in
+its own session through `cli_extended.procio.run_streaming`, with `progress_paths=()` and the
+resolved no-progress bound. The 1800-second default is finite and has no off value. The optional
+top-level `[runner] no_progress_timeout_seconds` supplies a project value; the optional
+`steps.<name>.no_progress_timeout_seconds` wins over it. The strict loader accepts only that
+runner key, requires a non-boolean finite number greater than zero at either level, and reports
+the exact source key in the watchdog failure. The keys are optional, so revision 5 projects and
+`cmru standards` do not need a migration.
+
+The supervisor drains output for two seconds after the child exits, then stops even if a
+descendant still holds the pipe. It keeps the child's exit code, prints one
+`[WARN] ...` line on stdout, and writes one `[cmru] ...` line to the step log; the aggregate
+mirror does not receive the warning. A silent live child hits the watchdog: the captured tree is
+printed before the group receives TERM and then KILL after the five-second grace, and the step
+fails with return code 1. SIGINT, SIGTERM and SIGHUP use the same group-reaping path. A signal
+ignored at startup stays ignored in the child.
+
+Stream output is diagnostic, not structured output (D-179). Its locale decoder uses universal
+newlines and `errors="replace"`, so a completed child that wrote malformed bytes still succeeds
+and its log/mirror receive U+FFFD. Captured probes have the opposite contract:
+`run_process(capture=True)` delegates to `procio.run_capture`, retains strict text decoding, and
+gets its bounded drain and group-reaping timeout. Its new `stdin` argument accepts only `None` or
+`subprocess.DEVNULL`.
+
+Cleanup is deliberately special (D-178). `steps.clean` is parsed with the same project default
+and override, but `cleanup --policy` copies exactly the resolved timeout and source key into its
+existing synthetic cleanup config. Cleanup keeps `quiet=True`, its command/cwd and
+`repo_root/logs`, its project and protected environments, and ignores ordinary step controls,
+login and `env_command`. Thus the watchdog reaches cleanup without activating controls that
+cleanup never honored.
+
 ## Whole-target Assay and explicit R2 bases
 
 CMRU's `cmru` Assay lane judges every executable production module under
@@ -1200,7 +1233,7 @@ The choices, and what was rejected:
   with different code than a release uses).
 - **The declared floor is checked from installed metadata, not from importability.** The
   gate controller used to stop at `find_spec`, so a host that imported `cli_extended`
-  0.2.0 ran the protected gate under a wheel older than CMRU's declared `cli-extended>=0.3.0`.
+  0.2.0 ran the protected gate under a wheel older than CMRU's declared `cli-extended>=0.8.0`.
   It now reads each dependency's installed distribution version and tests it against the whole
   declared requirement (`>=`, `>`, `<=`, `<`, `==`, `!=`, evaluated by a small stdlib ordering,
   because nothing from the worktree or a dependency may be imported before the interpreter is
