@@ -84,7 +84,7 @@ run_doctor() {
   while [[ $# -gt 0 && $1 != -- ]]; do extra+=("$1"); shift; done
   shift
   env -i HOME="$ROOT/home" PATH="${TOOLS_IN_USE:-$TOOLS}" CONTROLLER_HOME="$H" CONTROLLER_REPO="$REPO" DOCKER_MODE=present DOCKER_LOG="$ROOT/docker.log" \
-    CTL_HYGIENE_SCRIPT="$SCRIPT_DIR/../ctl-hygiene.sh" HYGIENE_MEMORY_DIR="$ROOT/no-memory" HYGIENE_STATE_DIR="$ROOT/no-state" \
+    CTL_HYGIENE_SCRIPT=/dev/null HYGIENE_MEMORY_DIR="$ROOT/no-memory" HYGIENE_STATE_DIR="$ROOT/no-state" \
     HYGIENE_REPO="$REPO" HYGIENE_TODAY=2026-11-24 \
     ${extra[@]+"${extra[@]}"} "$BASH" "$DOCTOR" "$@" > "$ROOT/out" 2> "$ROOT/err"
   RC=$?
@@ -116,20 +116,21 @@ grep -qxF 'image inspect --format {{.Id}} fixture-image:1' "$ROOT/docker.log" ||
 no_line '^HYGIENE ' 'a tree with nothing to report adds no hygiene line'
 mkdir -p "$ROOT/hy/state" "$ROOT/hy/memory"
 printf '## RESUME HERE #1\n## RESUME HERE #2\n## RESUME HERE #3\n' > "$ROOT/hy/state/HANDOFF.md"
-run_doctor HYGIENE_STATE_DIR="$ROOT/hy/state" HYGIENE_MEMORY_DIR="$ROOT/hy/memory" --
+HY="CTL_HYGIENE_SCRIPT=$SCRIPT_DIR/../ctl-hygiene.sh"   # the other doctor runs use an empty hygiene script: the mutation stage repeats them hundreds of times
+run_doctor "$HY" HYGIENE_STATE_DIR="$ROOT/hy/state" HYGIENE_MEMORY_DIR="$ROOT/hy/memory" --
 expect_rc 0 'a hygiene finding must not fail the doctor'
 line '^HYGIENE H1 state/HANDOFF.md: 3 blocks ' 'the hygiene finding is appended to the report'
 line '^ctl-doctor: [0-9]+ ok, 0 warning\(s\), 0 failure\(s\)$' 'hygiene findings are not counted as warnings'
 [[ $(tail -n 2 "$ROOT/out" | cut -c1-8 | head -n 1) == 'HYGIENE ' ]] || fail 'the hygiene lines sit just before the summary'
-run_doctor HYGIENE_STATE_DIR="$ROOT/hy/state" HYGIENE_MEMORY_DIR="$ROOT/hy/memory" -- --json
+run_doctor "$HY" HYGIENE_STATE_DIR="$ROOT/hy/state" HYGIENE_MEMORY_DIR="$ROOT/hy/memory" -- --json
 expect_rc 0 'json mode with a hygiene finding'
 python3 - "$ROOT/out" <<'PY' || fail 'the --json report must carry the hygiene findings in a hygiene array'
 import json, sys
 doc = json.load(open(sys.argv[1]))
 assert doc["ok"] is True and len(doc["hygiene"]) == 1 and doc["hygiene"][0].startswith("HYGIENE H1 state/HANDOFF.md: 3 blocks ")
 PY
-run_doctor --
-no_line '^HYGIENE ' 'the default fake tree is quiet again'
+run_doctor "$HY" --
+no_line '^HYGIENE ' 'the default fake tree is quiet'
 
 # --- the effective profile follows the environment
 run_doctor RUN_GATE_PROFILE=on --
