@@ -1924,8 +1924,8 @@ def test_check_leaves_the_filesystem_byte_for_byte_unchanged(tmp_path: Path, cap
 def test_check_never_calls_main_execution(tmp_path: Path, monkeypatch):
     """The forbidden implementation shortcut, pinned as a negative.
 
-    `engine.main_execution(dry_run=True)` still creates hostdirs and still runs
-    hooks for real — building `ciu check` on it would reproduce the exact
+    `engine.main_execution(dry_run=True)` creates no hostdir (CIU-227) but still
+    runs hooks for real — building `ciu check` on it would reproduce the exact
     defect this package removes.
     """
     monkeypatch.setattr(

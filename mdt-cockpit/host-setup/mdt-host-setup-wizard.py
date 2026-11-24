@@ -1959,7 +1959,7 @@ def step_host_role(cfg_current: dict[str, str], example_defaults: dict[str, str]
         else:
             out(f"No usable iobench measurement for this host's root disk: {why}.")
             out("Remedy: run `iobench calibrate` (libraries/iobench/docs/CONSUMERS.md section 2; debian-install-v2 runs it at install time) before applying, or pin the four DEV_IO_*_MAX values at the IO caps step. Without one of the two the install refuses.")
-        out("Memory on this role (P-plat-19e): the host keeps K = the MemoryMin floors of its basic services + a 512M margin; dev.slice MemoryMax = RAM - K, no MemoryHigh anywhere (the dev tree pages above it); the load tiers (gates, background) sit below it by the protected tiers' MemoryLow; the host's services get floors and an OOM-score drop-in; the tiers' own MemoryHigh (asked later) are IGNORED. docs/DESIGN-DEDICATED-DEV-MEMORY.md has the numbers.")
+        out("Memory on this role (P-plat-19e): the host keeps K = the MemoryMin floors of its basic services + a 512M margin; dev.slice MemoryMax = RAM - K, no MemoryHigh anywhere (the dev tree pages above it); the load tiers (gates, background) get dev.slice's own MemoryMax (P-plat-19h) while the interactive MemoryLow protection stays; the host's services get floors and an OOM-score drop-in; the tiers' own MemoryHigh (asked later) are IGNORED. docs/DESIGN-DEDICATED-DEV-MEMORY.md has the numbers.")
         keep = walk_key(
             "Pin of the memory kept outside dev.slice (empty = derive K = floors + margin; else a size of at least F + 128M)",
             "DEV_HOST_MEMORY_KEEP",

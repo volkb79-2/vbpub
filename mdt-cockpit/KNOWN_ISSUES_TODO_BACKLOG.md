@@ -2033,7 +2033,9 @@ report size 0, so `_fifo_file` now serves every read from a fresh FIFO inode: on
 before the content is written, so a reopen can never reach a reader that has not yet seen EOF. The thread polls with `O_NONBLOCK`, is stopped and joined on cleanup.
 **Evidence.** New lane `io-governance-stress` (`run-gate.toml`: both tests, 50 repetitions on one CPU with a competing busy loop, first failure fails the lane),
 run on r1002: unfixed fixture (lane-only commit `c7ebd99a3`) FAIL on repetition 1 (`TimeoutExpired` 30 s, run `rgw-io-governance-stress-20261124T164729-r1002`);
-fix head `a37ab07a0` PASS, 139 s (run `rgw-io-governance-stress-20261124T164918-r1002`).
+fix head `a37ab07a0` PASS, 139 s (run `rgw-io-governance-stress-20261124T164918-r1002`); final head `557966c7d` stress PASS, 143 s (run
+`rgw-io-governance-stress-20261124T165229-r1002`) and `smoke` 3x PASS on r1002 (runs `rgw-smoke-20261124T165546-r1002`, `rgw-smoke-20261124T165833-r1002`,
+`rgw-smoke-20261124T170148-r1002`). Follow-ups from the Opus r1 review (P-mdt-111b): budget 4m, blocking write fd, serving-thread-ended assertion, one-reader-at-a-time docstring.
 
 `host-setup/tests/test_io_governance.py:569-582` (`_fifo_file`) serves a named pipe from a daemon thread whose `serve()` loop reopens the FIFO for writing as
 soon as the previous writer closes. If the reopen beats the reader (`cat`) to EOF, the reader receives the content a second time and never sees EOF.
@@ -2052,3 +2054,9 @@ keeps `-500` deliberately (`scripts/netcup/runner/start-cockpit-runner.sh:16`, `
 no rebuild removes the WARN. Fix: the check accepts the value of `COCKPIT_OOM_SCORE_ADJ` for the runner container (match its container name or read
 the runner.env value), or the WARN names the runner.env knob (`scripts/netcup/runner/runner.env.example:43`) instead of "rebuild the devcontainer".
 Close when check.sh on a runner host reports no WARN for the runner's cockpit and still WARNs for a devcontainer above -900.
+
+## MDT-113 - a `-` or `0` pin of a tier MemoryMax renders `max` on dedicated-dev (2026-11-24)
+
+**Status:** OPEN. Found by the P-plat-19h r1 review (F7); predates that package, which sets the derived tier Max to dev.slice's.
+
+On `HOST_ROLE=dedicated-dev`, `DEV_{GATES,BACKGROUND}_MEMORY_MAX=-` or `0` goes through `pick` (`host-setup/mdt_capacity.py:565`, called at `:623`) to `None`; install.sh then renders an empty `MemoryMax=` and the kernel shows `max`. check.sh accepts it (`want=max`, `scripts/check.sh:351`) and the accept kit refuses such a tier (`tools/accept/accept-run.sh:37`). dev.slice stays finite, so the effect today equals the derived value (tier Max = dev Max), but it is a path to a tier without a MemoryMax and the estate rule is never `MemoryMax=infinity`. Fix: on dedicated-dev, refuse `-`/`0` for the two tier MAX pins in `dedicated_memory` (omitting one has no purpose now that the derived value equals dev's), with a test, and make check.sh FAIL a tier `max` on this role.
