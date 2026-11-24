@@ -698,7 +698,7 @@ sudo mdt-host-check.sh             # verify
 **Required checkout set.** `install.sh` reads files outside `mdt-cockpit/host-setup/`, so a host checkout of `mdt-cockpit/` alone is not enough. The checkout
 must contain, at their repo-relative paths, `mdt-cockpit/` and `scripts/debian-install-v2/tools/` (`iocost_coef_gen.py`, `iocost_plausibility.py`, `cpu_benchmark.py`,
 `cpu_benchmark.py.sha256`, `cpu_benchmark.pins.json`). Before changing anything the installer checks every such file (one list, `preflight_checkout_set` in
-`install.sh`) and exits 2 naming the missing paths and this set; `--help`, `--dry-run-endpoints`, `--apply-protection` and the `--admission-only` publish do not need them.
+`install.sh`) and exits 2 naming the missing paths and this set; `--help`, `--dry-run-endpoints`, `--apply-protection`, `cpu-benchmark` (which checks its own three `cpu_benchmark*` files) and the `--admission-only` publish do not need them. The preflight also runs the `cpu_benchmark.py.sha256` check, so a modified tool is refused before anything is rendered.
 A sparse checkout therefore needs `git sparse-checkout set mdt-cockpit scripts/debian-install-v2/tools`.
 
 ### Host service installation and endpoint publication
@@ -1442,9 +1442,9 @@ presence, BFQ scheduler, timer enablement, and lists every running
 container's cgroup parent, and the published run-gate gates admission cap against the host policy (MDT-077,
 above). Exit 0 = no failures (warnings possible).
 
-It also FAILs when systemd-oomd can act on the dev tier (MDT-108): `ManagedOOMMemoryPressure` or `ManagedOOMSwap` is not `auto` on any `dev*.slice`, or
+It also FAILs when systemd-oomd can act on the dev tier (MDT-108): `ManagedOOMMemoryPressure` or `ManagedOOMSwap` is not `auto` on any `dev*.slice` or on `-.slice`, or
 `oomctl dump` lists a `dev*.slice` or the root slice. A stale drop-in, a `systemctl set-property` override or a distro ancestor default is the usual cause; host-setup never
-removes what it did not render. WARN (not FAIL) when `oomctl` is absent or its dump fails.
+removes what it did not render. WARN (not FAIL) when `oomctl` is absent, its dump fails, or its output lacks the `Memory Pressure Monitored CGroups:` section (format unrecognised, never read as clean).
 
 The other failure it reports as FAIL rather than WARN is a missing
 `memory_recursiveprot`: with that flag absent every `MemoryLow`/`MemoryMin` in

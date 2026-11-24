@@ -183,7 +183,13 @@ preflight_checkout_set() {
   for rel in "${needed[@]}"; do
     [ -f "$HERE/$rel" ] || missing+=("$(realpath -m "$HERE/$rel")")
   done
-  [ "${#missing[@]}" -eq 0 ] && return 0
+  if [ "${#missing[@]}" -eq 0 ]; then
+    # Presence is not enough: install_cpu_benchmark_helper refuses a tool that does not match its pin, and it runs
+    # after the units are rendered. Run the same check here.
+    (cd "$HERE/../../scripts/debian-install-v2/tools" && sha256sum --check --status cpu_benchmark.py.sha256) && return 0
+    echo "ERROR: scripts/debian-install-v2/tools/cpu_benchmark.py does not match cpu_benchmark.py.sha256 (a modified or partial checkout); refusing before changing the host" >&2
+    return 1
+  fi
   root="$(realpath -m "$HERE/../..")"
   {
     echo "ERROR: this checkout is incomplete; install.sh needs files outside host-setup/ and refuses before changing the host. Missing:"

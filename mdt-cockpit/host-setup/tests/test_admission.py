@@ -529,8 +529,9 @@ class CheckTests(unittest.TestCase):
         with self.assertRaises(adm.Skip) as ctx:
             adm.prepare(HOST_SETTINGS, run=FakeHost(), which=which_with(run_gate=False))
         text = str(ctx.exception)
-        self.assertIn("expected on a runner-container gate worker", text)
-        self.assertIn("ADMISSION_COCKPIT", text)
+        self.assertIn("On a runner-container gate worker this is expected", text)
+        self.assertIn("ADMISSION_COCKPIT=mdt-cockpit-runner", text)
+        self.assertIn("install.sh --admission-only", text)
 
     def test_a_failing_show_is_a_fail(self) -> None:
         out = self.lines(HOST_SETTINGS, FakeHost(show_rc=2, show_override="boom"))

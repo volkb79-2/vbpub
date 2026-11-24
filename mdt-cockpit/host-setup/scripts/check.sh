@@ -225,8 +225,10 @@ done
 # nothing else reports it. Check the live unit properties (must be `auto`) and oomd's own watch list.
 check_oomd_dev_tier() {
   local s props mp sw bad=0 out rc hits
-  for s in dev dev-interactive dev-background dev-gates dev-buildkitd dev-cache dev-memory_min_guaranteed; do
-    props=$(systemctl show "$s.slice" -p ManagedOOMMemoryPressure,ManagedOOMSwap 2>/dev/null) || props=""
+  # "-" is the root slice (-.slice): ManagedOOM* is not inherited, so a root-level kill default is invisible on the
+  # dev units; the `--` keeps "-.slice" from parsing as an option.
+  for s in - dev dev-interactive dev-background dev-gates dev-buildkitd dev-cache dev-memory_min_guaranteed; do
+    props=$(systemctl show -p ManagedOOMMemoryPressure,ManagedOOMSwap -- "$s.slice" 2>/dev/null) || props=""
     mp=$(printf '%s\n' "$props" | sed -n 's/^ManagedOOMMemoryPressure=//p')
     sw=$(printf '%s\n' "$props" | sed -n 's/^ManagedOOMSwap=//p')
     if [ -z "$mp" ] || [ -z "$sw" ]; then
@@ -244,6 +246,11 @@ check_oomd_dev_tier() {
   out=$(oomctl dump 2>&1); rc=$?
   if [ "$rc" -ne 0 ]; then
     warn "oomctl dump failed (exit $rc; systemd-oomd not running?) — its watch list is unknown"
+    return 0
+  fi
+  # A dump whose format changed would match nothing and read as clean: require oomd's own section header.
+  if ! printf '%s\n' "$out" | grep -q '^Memory Pressure Monitored CGroups:'; then
+    warn "oomctl dump format unrecognised (no 'Memory Pressure Monitored CGroups:' section) — its watch list is unknown, not clean"
     return 0
   fi
   hits=$(printf '%s\n' "$out" | grep -E '^[[:space:]]*Path:[[:space:]]+(/|/-\.slice|(/[^/ ]+)*/dev(-[^/ ]*)?\.slice(/[^ ]*)?)[[:space:]]*$')

@@ -303,7 +303,7 @@ class OomdDevTierCheck(unittest.TestCase):
                 for name, (mp, sw) in props.items()
             )
             (bindir / "systemctl").write_text(
-                f"#!/bin/sh\ncase \"$2\" in\n{cases}*) echo 'ManagedOOMMemoryPressure=auto'; echo 'ManagedOOMSwap=auto';;\nesac\n",
+                f"#!/bin/sh\nfor last; do :; done\ncase \"$last\" in\n{cases}*) echo 'ManagedOOMMemoryPressure=auto'; echo 'ManagedOOMSwap=auto';;\nesac\n",
                 encoding="utf-8",
             )
             if dump is not None:
@@ -327,7 +327,7 @@ class OomdDevTierCheck(unittest.TestCase):
         self.assertNotIn("WARN", out)
 
     def test_a_non_auto_property_on_any_dev_slice_fails(self) -> None:
-        for name in ("dev", "dev-gates", "dev-background", "dev-interactive", "dev-buildkitd"):
+        for name in ("-", "dev", "dev-gates", "dev-background", "dev-interactive", "dev-buildkitd"):
             for value in (("kill", "auto"), ("auto", "kill")):
                 out = self._run(props={name: value})
                 self.assertIn(f"FAIL {name}.slice has ManagedOOMMemoryPressure={value[0]} ManagedOOMSwap={value[1]}", out)
@@ -338,6 +338,17 @@ class OomdDevTierCheck(unittest.TestCase):
             out = self._run(dump=self.CLEAN_DUMP + f"\tPath: {path}\n")
             self.assertIn("FAIL systemd-oomd monitors the dev tier or the root slice", out, path)
             self.assertNotIn("OK ", out)
+
+    def test_an_unrecognised_dump_format_warns_and_is_never_clean(self) -> None:
+        for dump in ("", '{"monitored": ["/"]}\n', "Dump of Context:\n\tPath: /dev.slice\n"):
+            out = self._run(dump=dump)
+            self.assertIn("WARN oomctl dump format unrecognised", out, dump)
+            self.assertNotIn("OK ", out)
+            self.assertNotIn("FAIL", out)
+
+    def test_the_root_slice_is_queried_with_a_double_dash(self) -> None:
+        self.assertIn('-p ManagedOOMMemoryPressure,ManagedOOMSwap -- "$s.slice"', CHECK_SH)
+        self.assertRegex(CHECK_SH, r"for s in - dev ")
 
     def test_unreadable_properties_warn_never_ok(self) -> None:
         out = self._run(props={"dev-gates": ("", "")})
@@ -366,13 +377,20 @@ class CheckoutSetPreflight(unittest.TestCase):
     FUNCTION = shell_function(INSTALL_SH, "preflight_checkout_set")
     LISTED = re.findall(r"^\s+(\.\./\S+)$", FUNCTION, re.M)
 
-    def _run(self, tree: Path, *, drop: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
+    def _run(self, tree: Path, *, drop: tuple[str, ...] = (), tamper: bool = False) -> subprocess.CompletedProcess:
         here = tree / "mdt-cockpit" / "host-setup"
         here.mkdir(parents=True, exist_ok=True)
         for rel in self.LISTED:
             f = (here / rel).resolve()
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text("x", encoding="utf-8")
+        tools = (here / "../../scripts/debian-install-v2/tools").resolve()
+        import hashlib
+
+        (tools / "cpu_benchmark.py.sha256").write_text(
+            hashlib.sha256(b"x").hexdigest() + "  cpu_benchmark.py\n", encoding="utf-8")
+        if tamper:
+            (tools / "cpu_benchmark.py").write_text("tampered", encoding="utf-8")
         for rel in drop:
             (here / rel).resolve().unlink()
         return run_bash(f'HERE="{here}"\n{self.FUNCTION}\npreflight_checkout_set')
@@ -391,6 +409,46 @@ class CheckoutSetPreflight(unittest.TestCase):
                 self.assertIn(str((Path(tmp) / "mdt-cockpit" / "host-setup" / rel).resolve()), r.stderr)
             self.assertNotIn("cpu_benchmark", r.stderr)
             self.assertIn("mdt-cockpit/ AND scripts/debian-install-v2/tools/", r.stderr)
+
+    def test_a_cpu_benchmark_that_does_not_match_its_pin_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run(Path(tmp), tamper=True)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("does not match cpu_benchmark.py.sha256", r.stderr)
+
+    # The real argument parsing and the real guard, with only the host checks between them left out
+    # (install.sh itself refuses inside a container, so the whole script cannot run here).
+    PARSE = INSTALL_SH[INSTALL_SH.index("CPU_BENCHMARK=0\n"):INSTALL_SH.index("# Host setup changes the host's systemd")]
+    GUARD = INSTALL_SH[INSTALL_SH.index("# Every mode from here on installs"):INSTALL_SH.index("DOCKER_BIN=/usr/bin/docker")]
+
+    def _modes(self, tree: Path, *args: str, complete: bool) -> subprocess.CompletedProcess:
+        here = tree / "mdt-cockpit" / "host-setup"
+        if complete:
+            self._run(tree)
+        else:
+            here.mkdir(parents=True, exist_ok=True)
+        quoted = " ".join(f"'{a}'" for a in args)
+        return run_bash(
+            f'set -euo pipefail\nHERE="{here}"\nusage(){{ :; }}\nset -- {quoted}\n{self.PARSE}\n{self.FUNCTION}\n'
+            f'{self.GUARD}\necho REACHED-RENDER'
+        )
+
+    def test_every_mutating_mode_is_refused_on_an_incomplete_tree_before_render(self) -> None:
+        for args in ((), ("--wizard",), ("--with-baseline",), ("--wizard", "--with-baseline"), ("--wizard", "--reset"),
+                     ("--restart-docker",)):
+            with self.subTest(args=args), tempfile.TemporaryDirectory() as tmp:
+                r = self._modes(Path(tmp), *args, complete=False)
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertNotIn("REACHED-RENDER", r.stdout)
+                self.assertIn("incomplete", r.stderr)
+
+    def test_a_complete_tree_and_apply_protection_pass_the_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._modes(Path(tmp), "--wizard", complete=True)
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, "REACHED-RENDER"), r.stderr)
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._modes(Path(tmp), "--apply-protection", complete=False)
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, "REACHED-RENDER"), r.stderr)
 
     def test_every_out_of_tree_file_install_sh_reads_is_in_the_list(self) -> None:
         listed = " ".join(self.LISTED)
