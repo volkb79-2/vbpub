@@ -432,8 +432,11 @@ contains "$ROOT/envh.out" 'NEW-LIST-MARKER-ONE' 'CTX_HANDOFF_FILE points the hoo
 GREPO=$ROOT/grepo
 git init -q "$GREPO"
 GITENV=(-c user.email=t@example.invalid -c user.name=t -c commit.gpgsign=false)
-GIT_COMMITTER_DATE='3 hours ago' GIT_AUTHOR_DATE='3 hours ago' git -C "$GREPO" "${GITENV[@]}" commit -q --allow-empty -m 'old-merge-subject'
-git -C "$GREPO" "${GITENV[@]}" commit -q --allow-empty -m 'recent-merge-subject'
+OLD_DATE=$(date -u -d '3 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+GIT_COMMITTER_DATE=$OLD_DATE GIT_AUTHOR_DATE=$OLD_DATE git -C "$GREPO" "${GITENV[@]}" commit -q --allow-empty -m 'old-merge-subject' \
+  || fail 'could not create the old fixture commit'
+git -C "$GREPO" "${GITENV[@]}" commit -q --allow-empty -m 'recent-merge-subject' || fail 'could not create the recent fixture commit'
+[[ $(git -C "$GREPO" rev-list --count HEAD) == 2 ]] || fail 'the fixture repository does not hold both commits'
 git -C "$GREPO" update-ref refs/remotes/origin/main HEAD
 mkdir -p "$ROOT/state-pc"
 printf '## RESUME HERE #1\n' > "$ROOT/state-pc/HANDOFF.md"
