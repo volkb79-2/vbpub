@@ -212,7 +212,7 @@ mod tests {
             Err(ReadingError::MissingCannotBeOk)
         );
         for code in 1u8..=7 {
-            let quality = QualityCode::from_code(code).expect("in the vocabulary");
+            let quality = QualityCode::from_code(code, 0).expect("in the vocabulary");
             let reading = Reading::missing(quality).expect("a non-ok code is an absence");
             assert_eq!(reading.quality(), quality);
             assert_eq!(reading.value(), None);
@@ -221,7 +221,11 @@ mod tests {
             .to_string()
             .contains("not a missing reading"));
         assert_eq!(
-            ReadingError::UnknownCode(crate::quality::QualityError::UnknownCode(9)).to_string(),
+            ReadingError::UnknownCode(crate::quality::QualityError::UnknownCode {
+                code: 9,
+                row: 0,
+            })
+            .to_string(),
             "unknown quality code 9"
         );
     }

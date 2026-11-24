@@ -418,7 +418,7 @@ impl Column {
             need,
             have: self.quality.len(),
         })?;
-        let quality = Quality::from_code(code, row)?;
+        let quality = crate::quality::from_code(code, row)?;
         let value = match self.value_type {
             MetricValueType::U64 => TypedValue::U64(raw),
             MetricValueType::I64 => TypedValue::I64(i64::from_le_bytes(raw.to_le_bytes())),
@@ -783,7 +783,7 @@ fn decode_column_body(body: &[u8], n_rows: usize) -> Result<Column, ProtoError> 
     }
     let quality = cursor.take_bytes(n_rows)?.to_vec();
     for (row, code) in quality.iter().enumerate() {
-        Quality::from_code(*code, row)?;
+        crate::quality::from_code(*code, row)?;
     }
     cursor.pad_to_end(8)?;
     Column::new(metric, value_type, kind, values, quality)

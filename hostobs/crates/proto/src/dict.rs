@@ -1593,6 +1593,9 @@ mod tests {
     fn a_quality_code_from_the_shared_table_is_usable_in_a_column() {
         let mut dictionary = Dictionary::new(1);
         dictionary.intern(metric("mem.current")).expect("intern");
-        assert_eq!(Quality::from_code(Quality::Ok.code(), 0), Ok(Quality::Ok));
+        assert_eq!(
+            crate::quality::from_code(Quality::Ok.code(), 0),
+            Ok(Quality::Ok)
+        );
     }
 }

@@ -62,8 +62,12 @@ pub mod fs;
 pub mod identity;
 pub mod parse;
 pub mod procfs;
-pub mod quality;
 pub mod value;
+
+/// The model-owned quality vocabulary used by kernel readings.
+pub mod quality {
+    pub use hostobs_model::quality::{Quality as QualityCode, QualityError};
+}
 
 /// Every bound a reader is given.
 ///
