@@ -54,6 +54,9 @@ SUMMARY_NAME = "replay-pilot-summary.log"
 LANE_PYTHONPATH = "src:../libraries/worktree/src"
 COPIED = ("cmru", "libraries/worktree")
 PLUGIN_NAME = "replay_pilot_timing"
+#: Extra pytest arguments for every call (``--pytest-arg``). cmru's conftest
+#: refuses a focused run of single nodes unless ``--cli-case-partial`` is set.
+EXTRA_PYTEST_ARGS: list[str] = []
 PLUGIN_SOURCE = '''import json, os, time
 _t = {}
 def pytest_sessionstart(session):
@@ -239,7 +242,7 @@ def run_pytest(python: str, tree: Path, args: Sequence[str], plugin_dir: Path,
         "REPLAY_PILOT_TIMES": str(times),
     }
     argv = [python, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-            "-p", PLUGIN_NAME, *args]
+            "-p", PLUGIN_NAME, *EXTRA_PYTEST_ARGS, *args]
     begin, timed_out, exit_code, tail = time.monotonic(), False, None, ""
     try:
         done = subprocess.run(argv, cwd=tree / "cmru", env=env, timeout=timeout,
@@ -299,7 +302,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--python", default=DEFAULT_PYTHON)
     ap.add_argument("--select-only", action="store_true",
                     help="print the reconstructed selection and exit")
+    ap.add_argument("--pytest-arg", action="append", default=[],
+                    help="extra pytest argument for every call (repeatable)")
     args = ap.parse_args(argv)
+    EXTRA_PYTEST_ARGS[:] = args.pytest_arg
     worktree = args.worktree.resolve()
     evidence = args.evidence or worktree / "cmru/docs/evidence"
     if not args.select_only and args.out is None:
@@ -346,6 +352,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 row = {"event": "replay", "candidate_id": rec["candidate_id"],
                        "node": node, "path": rec["path"], "m": m, "p": p}
                 results.append(row)
+                print(f"  replay {rec['candidate_id'][:12]} M exit={m['exit']} P exit={p['exit']}"
+                      f" M tail={m.get('tail', '')[-120:]!r}", flush=True)
                 progress.write(json.dumps(row, sort_keys=True) + "\n")
                 progress.flush()
             files = sorted({witness_file(rec) for rec, _ in picks})

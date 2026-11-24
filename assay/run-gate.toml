@@ -393,7 +393,8 @@ argv = [
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPATH="{worktree}/assay/src:{worktree}/libraries/cowtree/src"
 /opt/tester-venv/bin/python {worktree}/assay/tools/replay_pilot.py \
-  --worktree {worktree} --out {worktree}/.assay/replay-pilot''',
+  --worktree {worktree} --out {worktree}/assay/.assay/replay-pilot \
+  --pytest-arg=--cli-case-partial''',
 ]
 exit_map = { "3" = "ERROR" }
 clean_tree = false
