@@ -87,6 +87,60 @@ def test_configure_writes_the_full_contract_to_a_new_0644_file(
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o644
 
 
+@pytest.mark.parametrize(
+    ("answers", "expected_ports"),
+    [
+        (
+            """\
+[tls_edge]
+domain = "edge.example.test"
+
+[tls_edge.tls]
+mode = "static"
+
+[tls_edge.ports]
+expose_http = true
+http = 8080
+https = 443
+
+[tls_edge.static]
+domains = ["edge.example.test"]
+""",
+            "443/tcp,8080/tcp",
+        ),
+        (
+            """\
+[tls_edge]
+domain = "edge.example.test"
+
+[tls_edge.http3]
+enabled = true
+
+[tls_edge.calls]
+enabled = true
+public_port = 442
+""",
+            "80/tcp,442/tcp,442/udp,443/tcp,443/udp",
+        ),
+    ],
+    ids=["http-before-https", "calls-before-https"],
+)
+def test_public_ports_sort_by_number_then_tcp_before_udp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    answers: str,
+    expected_ports: str,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    answers_path = answer_file(tmp_path / "answers.toml", answers)
+    result, output = _configure(root, answers_path, monkeypatch)
+    assert result == 0, output
+    assert (
+        f"TLS_EDGE_PUBLIC_PORTS={expected_ports}"
+        in (root / "stack" / "consumer.env").read_text(encoding="utf-8").splitlines()
+    )
+
+
 def test_configure_rewrites_owned_keys_in_place(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
