@@ -96,8 +96,12 @@ long voice session. The edge adds no CSP header (good: Fluxer sets its own) and 
 ```bash
 cd /workspaces/vbpub
 ciu env generate --root-folder voice-screen-share/fluxer-server     # creates ciu.env + a network (CIU-162)
-ciu up --dir voice-screen-share/fluxer-server --yes --root-folder voice-screen-share/fluxer-server
+ciu up --dir voice-screen-share/fluxer-server --yes
 ```
+
+Run `ciu up` from the checkout root with `--dir` alone. Adding `--root-folder` makes ciu join the relative
+`--dir` onto the root a second time and refuse with `[no-ciu-root]` (CIU-228). Set `DOCKER_GID` if the host has
+no docker group, the same as for jitsi-server.
 
 `ciu up` materializes the three account passwords, runs the `pre_compose` hook (generates the formatted service
 secrets once, see below), starts the stack and then the `post_compose` hook (admin + two regular users, see
@@ -107,7 +111,9 @@ secrets once, see below), starts the stack and then the `post_compose` hook (adm
 Known tool issues (filed in the ciu backlog): `ciu env generate` attaches the devcontainer to a new network
 (CIU-162; detach it by exact name afterwards), a root that exists only in a linked worktree cannot `ciu up`
 (CIU-167; run it from the main checkout), and the S6.5 root helper refuses to run in a devcontainer
-(see the jitsi-server README; this project uses named volumes and is not affected). `ciu up` from the main
+(see the jitsi-server README; this project uses named volumes and is not affected). `ciu up --dry-run` is not
+side-effect free here: it runs the `pre_compose` hook, which writes the generated service secrets into
+`.ciu/secrets/fluxer-secrets.json` on first use. `ciu up` from the main
 checkout was verified on 2026-11-04 with `expose_public = true`: 21 containers up, accounts created, the edge
 issued the certificate for `fluxer.<PUBLIC_FQDN>`.
 
@@ -134,6 +140,12 @@ document; tests assert it.
 `hooks/post_compose_accounts.py` creates the administrator, `fx_alice`, and `fx_bob` idempotently over the
 registration API, from inside the api container (no browser step). Where each password is, how to read and
 rotate it, and what stays manual: `USERS.md`.
+
+A scripted sign-in check cannot use a plain `POST /api/auth/login`: Fluxer answers `CAPTCHA_REQUIRED` until the
+client solves its ALTCHA proof of work. `hooks/fluxer_accounts.mjs` shows how: it solves the challenge with the
+image's own `altcha-lib` inside the api container. To check sign-in through the edge, run the same
+`altcha-lib` solve in a one-shot container on the edge's ingress network, with the password read from its
+`GEN_LOCAL` file and never on the command line.
 
 ## Tests
 
