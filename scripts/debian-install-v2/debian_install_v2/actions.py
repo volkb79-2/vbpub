@@ -41,6 +41,10 @@ _CLOUD_INIT_CLEAN_ARGV = {
     ("clean",),
     ("clean", "--logs", "--seed"),
 }
+# The installer benchmark rungs (config.IO_BENCHMARK_PROFILES). Literal because
+# this module is imported by the installer's own bootstrap copy set, which does
+# not carry config's timeout table either.
+_IOBENCH_PROFILES = {"veryquick", "quick", "standard"}
 
 
 _SAFE_COMMANDS = {
@@ -179,16 +183,21 @@ class HostActions:
                 )
         elif command == "iobench-install-runner":
             expected = str(Path(__file__).resolve().parents[1] / "tools" / "iobench-install-runner")
-            if argv[0] != expected or len(argv) != 9:
+            if argv[0] != expected or len(argv) != 13:
                 raise ActionError("iobench installer invocation is not the fixed planned-partition command")
-            if argv[1] != "--target" or not re.fullmatch(r"/dev/[A-Za-z0-9._/-]+", argv[2]):
+            if argv[1] != "--profile" or argv[2] not in _IOBENCH_PROFILES:
+                raise ActionError("iobench installer profile is not one of the released rungs")
+            if argv[3] != "--target" or not re.fullmatch(r"/dev/[A-Za-z0-9._/-]+", argv[4]):
                 raise ActionError("iobench installer target is not a block-device path")
-            if argv[3] != "--expect-size" or not re.fullmatch(r"[1-9][0-9]*", argv[4]):
+            if argv[5] != "--expect-size" or not re.fullmatch(r"[1-9][0-9]*", argv[6]):
                 raise ActionError("iobench installer size is invalid")
-            if argv[5] != "--expect-partuuid" or not re.fullmatch(r"[0-9A-Fa-f-]{36}", argv[6]):
+            if argv[7] != "--expect-partuuid" or not re.fullmatch(r"[0-9A-Fa-f-]{36}", argv[8]):
                 raise ActionError("iobench installer PARTUUID is invalid")
-            if argv[7] != "--state-dir" or not Path(argv[8]).is_absolute() or ".." in Path(argv[8]).parts:
-                raise ActionError("iobench installer state directory is invalid")
+            for value, flag in ((argv[10], "--state-dir"), (argv[12], "--output")):
+                if not Path(value).is_absolute() or ".." in Path(value).parts:
+                    raise ActionError(f"iobench installer {flag} path is invalid")
+            if (argv[9], argv[11]) != ("--state-dir", "--output"):
+                raise ActionError("iobench installer paths are not the fixed state/output pair")
         elif command == "btrfs":
             filesystem_show = (
                 len(argv) == 5

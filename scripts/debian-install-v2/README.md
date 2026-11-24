@@ -847,9 +847,17 @@ replacement `run_cpu_benchmark` (`RENAMED_V1_SETTINGS`), described under
 The v1 Geekbench scores were never sizing inputs; v2 does not use them to size
 anything either.
 
-The optional io.cost benchmark (`run_io_benchmark`, off by default) runs
-`iobench veryquick` directly on the planned, unformatted `iobench-raw`
-partition. That Linux partition defaults to 8 GiB and is always part of the
+The optional io.cost benchmark (`run_io_benchmark`, off by default) runs one
+`iobench` rung directly on the planned, unformatted `iobench-raw` partition.
+`io_benchmark_profile` selects the rung and defaults to **`quick`** (operator
+decision 2026-11-10): `veryquick` (about 3 min), `quick` (about 11 min) or
+`standard` (about 59 min). Each rung is bounded by its own outer timeout,
+veryquick 270 s, quick 780 s and standard 3660 s (iobench's hard budget for the
+rung + 60 s), and each keeps its own state directory
+`state_dir/iobench/<rung>`. A value outside those three names is refused at
+config load with `io_benchmark_profile must be one of: veryquick, quick,
+standard`; the key is accepted and simply unused when the benchmark is off.
+That Linux partition defaults to 8 GiB and is always part of the
 layout; choose another `partitioning.iobench_raw_gb` size or set it to
 `false` when the benchmark is off. Stage two verifies the PARTLABEL and
 geometry, confirms the partition is neither mounted nor active swap, and
@@ -860,12 +868,15 @@ coefficients on a fresh install. The old temporary-tail allocation and
 cleanup table write have been removed.
 
 Results (`rbps`/`rseqiops`/`rrandiops`/`wbps`/`wseqiops`/`wrandiops`) go to
-`state_dir/io-benchmark.json` with mode `0600`, the `io_benchmark` step and
-one milestone notification. A benchmark failure is advisory (`warned`, the
-install continues), except a child that cannot be reaped, which stops the
-install. Failed advisory CPU and I/O benchmark commands also write their full,
-already-redacted output to `<state_dir>/cpu-benchmark.log` or
-`<state_dir>/io-benchmark.log`; the step detail and notification name that path.
+`state_dir/io-benchmark.json` (mode `0600`, and it names the rung that produced
+it), the `io_benchmark` step and one milestone notification. A rung that leaves
+a coefficient absent is `warned` with the missing names in the step detail and
+leaves io.cost **unconfigured** — never a crash and never a partial model. A
+benchmark failure is advisory (`warned`, the install continues), except a child
+that cannot be reaped, which stops the install. Failed advisory CPU and I/O
+benchmark commands also write their full, already-redacted output to
+`<state_dir>/cpu-benchmark.log` or `<state_dir>/io-benchmark.log`; the step
+detail and notification name that path.
 The benchmark output is advisory and is not used to write an io.cost model.
 `fio --direct=1` can measure a hypervisor write-back cache rather than durable
 device speed, so interpret virtual-disk numbers accordingly. See

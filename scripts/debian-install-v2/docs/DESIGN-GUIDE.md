@@ -310,6 +310,48 @@ The plan orders partitions by sector extent and preserves complete partitions
 before root, including the Debian genericcloud boot partitions numbered 14
 and 15 before root partition 1. Unknown partitions after root are refused.
 
+## The install-time iobench rung (`io_benchmark_profile`)
+
+`run_io_benchmark` chooses *whether* the install measures the raw partition;
+`io_benchmark_profile` chooses *how long* that measurement runs. The rungs are
+the three iobench ladder profiles the install can afford inside a rebuild:
+`veryquick` (about 3 min), `quick` (about 11 min) and `standard` (about
+59 min). One closed vocabulary, one default, one timeout table
+(`config.IO_BENCHMARK_OUTER_TIMEOUT_S`):
+
+| rung | iobench budget | installer outer timeout |
+|---|---|---|
+| `veryquick` | 210 s | 270 s |
+| `quick` (**default**) | 720 s | 780 s |
+| `standard` | 3600 s | 3660 s |
+
+The outer timeout is the rung's own hard budget plus 60 s for process startup
+and result persistence; it exists to stop an unbounded wait, and it is not the
+budget the rung plans against. The values are the operator decision of
+2026-11-24 (WP-10 Q3) and supersede DIV2-BL-05's earlier 5/12/45 min ladder,
+whose 45 min was *below* standard's own 3600 s budget and would have killed a
+run iobench considers on time.
+
+Why `quick` by default: on the raw partition veryquick's read numbers already
+match the longer rungs, so the deciding gain is elsewhere — quick measures
+`rseqiops` and `wseqiops` (about 6 % and 27 % off the true values) where
+veryquick only estimates them, and the write numbers iogovmon corrects after
+install either way. The operator's decision is recorded in `TODO.md`
+DIV2-BL-05.
+
+Every rung keeps its own state directory, `state_dir/iobench/<rung>`. iobench
+records the rung in `run.profile` and refuses to reuse a directory whose
+record names another rung (`state_dir_profile_mismatch`), so a quick run can
+never overwrite a full standard measurement — and vice versa — just because
+both were asked for by an install that shares one `state_dir`.
+
+A rung may finish without producing every one of the six io.cost
+coefficients. That is not a failure and not a license to invent values: the
+step records `warned`, names the missing keys, and io.cost stays unconfigured
+because its boot unit needs the complete model. A partial model is never
+written, and the previous `io-benchmark.json` is not reused for the keys a
+rung did not measure.
+
 ## Btrfs-root validation and data subvolumes
 
 The rollback ISO installs a GPT disk whose second partition holds one

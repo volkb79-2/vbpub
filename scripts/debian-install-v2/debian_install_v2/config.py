@@ -34,6 +34,19 @@ DEFAULT_KSM_ADVISOR_MAX_CPU_PERCENT = 10
 DEFAULT_KSM_TARGET_SCAN_TIME_SECONDS = 300
 DEFAULT_KSM_SLEEP_MILLISECS = 100
 CLOUD_INIT_CLEANUP_MODES = ("retain", "userdata-only", "clean", "clean-all")
+# The install-time iobench ladder (TODO.md DIV2-BL-05, operator decision
+# 2026-11-10): one closed vocabulary of rungs and ONE outer-timeout table for
+# the installer's wait on the runner. Each timeout is iobench's own hard budget
+# for that rung (libraries/iobench/src/iobench/plan.py PROFILE_BUDGET_S: 210,
+# 720 and 3600 s) plus IOBENCH_OUTER_MARGIN_S for process startup and result
+# persistence. The values are literal because this module must stay importable
+# without the iobench package (the installer runs on a host that only carries
+# the copied iobench sources); tests/test_iobench_runner.py binds every value
+# back to PROFILE_BUDGET_S[profile] + IOBENCH_OUTER_MARGIN_S.
+IO_BENCHMARK_PROFILES = ("veryquick", "quick", "standard")
+IO_BENCHMARK_PROFILE_DEFAULT = "quick"
+IOBENCH_OUTER_MARGIN_S = 60
+IO_BENCHMARK_OUTER_TIMEOUT_S = {"veryquick": 270, "quick": 780, "standard": 3660}
 OBSOLETE_VARIABLES = {
     "SWAP_ARCH",
     "SWAP_TOTAL_GB",
@@ -208,6 +221,15 @@ class Config:
     # partitioning.iobench_raw_gb=false disables it when benchmarking is off.
     # Persists the io.cost model in state_dir/io-benchmark.json.
     run_io_benchmark: bool = False
+    # Which iobench rung that run uses: veryquick (about 3 min), quick (about
+    # 11 min) or standard (about 59 min). Default quick (operator decision
+    # 2026-11-10, TODO.md DIV2-BL-05): on the raw partition its read numbers
+    # match veryquick, and it measures the sequential rates veryquick only
+    # estimates. The rung's outer timeout comes from
+    # IO_BENCHMARK_OUTER_TIMEOUT_S; the runner keeps one state directory per
+    # rung. The key is accepted, and simply unused, when run_io_benchmark is
+    # false.
+    io_benchmark_profile: Literal["veryquick", "quick", "standard"] = IO_BENCHMARK_PROFILE_DEFAULT
     # Configure io.cost for the ROOT disk from that persisted result (boot-time
     # unit). Takes effect only when a valid result exists; with none, the unit
     # is not installed and the notification says so (never a failure).
@@ -526,6 +548,10 @@ def validate_config(config: Config) -> None:
             )
     except layout_policy.LayoutPolicyError as exc:
         raise ConfigError(str(exc)) from exc
+    if config.io_benchmark_profile not in IO_BENCHMARK_PROFILES:
+        raise ConfigError(
+            "io_benchmark_profile must be one of: " + ", ".join(IO_BENCHMARK_PROFILES)
+        )
     if not 5 <= config.zswap_pool_percent <= 60:
         raise ConfigError("zswap_pool_percent must be from 5 to 60")
     if not 0 <= config.swap_priority <= 32767:

@@ -488,7 +488,7 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Operator decision 2026-11-10 (design rev 4.1, binding).**
 
-1. `run_io_benchmark` defaults to true. Every install selects one profile from `veryquick` (about 3 min), `quick` (about 7.5 min, the DEFAULT), or `standard` (about 30-35 min), with outer timeouts of 5, 12 and 45 min. All rungs use the same nested cell family and measure the same quantities at increasing length.
+1. `run_io_benchmark` defaults to true. Every install selects one profile from `veryquick` (about 3 min), `quick` (about 7.5 min, the DEFAULT), or `standard` (about 30-35 min), with outer timeouts of 5, 12 and 45 min. All rungs use the same nested cell family and measure the same quantities at increasing length. **Superseded in WP-10 P2 (2026-11-24):** the key is `io_benchmark_profile` and the timeout table is `config.IO_BENCHMARK_OUTER_TIMEOUT_S` = veryquick 270 s, quick 780 s, standard 3660 s (each rung's iobench budget — 210, 720, 3600 s — plus 60 s). The old 45 min bound sat *below* standard's own 3600 s budget and would have killed a run iobench considers on time.
 2. After WP-10, the benchmark target is the reserved `iobench-raw` partition, with the writer holding the `O_EXCL` claim for the complete raw stages. <host> sets `iobench_raw_gb: 32`.
 3. Before WP-10, an ext4-root file may supply only the derived numbers whose ext4 verdict in the bounded study table is `✓` live-with or `⚠` iogovmon-must-correct. A btrfs file is never used for the model. If no permitted target exists for a number, keep the stable named `io.cost_unconfigured_no_safe_benchmark_target` refusal; never substitute cache-inflated output, generic earlier output, or a guessed model.
 4. During every run, `io.cost` is unconfigured and every cgroup IO control is off, with the state asserted by WP-3. The interim io.cost model is coarse and QoS stays off.
@@ -497,7 +497,7 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Minimal solution.** Implement the installer side in coordination with its owning dependencies:
 
-1. Add `io_benchmark_profile = "quick"` with the allowed `veryquick` and `standard` values and the design's timeout table. Preserve explicit operator selection; no install silently changes rungs.
+1. Add `io_benchmark_profile = "quick"` with the allowed `veryquick` and `standard` values and the design's timeout table. Preserve explicit operator selection; no install silently changes rungs. **Done in WP-10 P2** (`config.IO_BENCHMARK_PROFILES`, `IO_BENCHMARK_OUTER_TIMEOUT_S`, one state dir per rung); the remaining items 2-5 stay open.
 2. Route `quick`, or the selected rung, through the iobench runner on `iobench-raw` once WP-10 exists. Until then choose the ext4 fallback per derived number from the study verdict table, or record the named refusal when the number has no permitted target.
 3. Assert `io.cost` and every cgroup IO control are off before measurement, keep QoS off for the interim model, and retain the complete redacted result and refusal in the persisted install result.
 4. Expose the rung summary line from the study table in the wizard. Add the final `fstrim -av` and keep `autodefrag` off.
@@ -530,3 +530,13 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 **Finding.** DIV2-BL-08 applies control-plane `MemoryMin` only on hosts without host-setup. DI2's exact-equality `MemoryMin` readback (`installer.py:1167-1172`) fails after a host-setup raise.
 
 **Do.** Accept `>=` when a `95-mdt-memory-min.conf` is in `DropInPaths`. New floor rows go to DI2's table first; check them in `tools/hotset.py`.
+
+## OPEN (DIV2-BL-16, 2026-11-24): the `run-gate.toml` `[lanes.r2]` budget (30m) is unsized
+
+**Source.** WP-10 P2, contract item 7, and the IC-M1a rollback merge note: the first remote `r2` (`debian-install-v2-20261124_121348-icm1a-btrfs-root`, head `2ea1912ca`, host r1002) exceeded its budget while in mutation.
+
+**Finding.** `[lanes.r2]` declares `budget = "30m"` (`run-gate.toml:81`) with no campaign measurement behind the number. It is a native assay mutation lane over the whole `debian_install_v2` subtree, so it executes mutants one by one; 30 minutes cuts the campaign, which then reports nothing usable and must be resumed in chunks.
+
+**Do.** Run one full `r2` campaign on a test host, record its wall time and mutant count, and set `[lanes.r2] budget` from that measurement. Do not raise it to an arbitrary larger value in the same change: the point is a measured bound, not a guess. `run-gate.toml` is not changed by WP-10 P2.
+
+**Close when.** `[lanes.r2]`'s budget is a measured value, a complete r2 campaign finishes inside it on a test host (`MUTATION_EXIT=0`), and the campaign's wall time and mutant count are recorded next to the number.
