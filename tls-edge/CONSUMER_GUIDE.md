@@ -369,7 +369,7 @@ Traefik self-signed default), canary route end-to-end, ops isolation probe.
 
 ```sh
 # Traefik logs show provider reload events when containers start/stop.
-docker logs edge-traefik --follow --tail 50
+docker logs tls-edge-<id>-traefik --follow --tail 50
 
 # Look for lines like:
 #   level=info ... msg="Adding route for [svc.my.domain]"
@@ -413,10 +413,10 @@ The Traefik access log is in **JSON format**.  Use `jq` to query it:
 
 ```sh
 # Time, router name, and HTTP status for all routed requests
-docker logs edge-traefik | jq -r 'select(.RouterName != null) | [.time, .RouterName, .DownstreamStatus] | @tsv'
+docker logs tls-edge-<id>-traefik | jq -r 'select(.RouterName != null) | [.time, .RouterName, .DownstreamStatus] | @tsv'
 
 # Filter to a specific router
-docker logs edge-traefik | jq -r 'select(.RouterName == "pattern-a-app@docker")'
+docker logs tls-edge-<id>-traefik | jq -r 'select(.RouterName == "pattern-a-app@docker")'
 
 # Docker events show container registration / deregistration moments.
 docker events --filter type=container --filter event=start --filter event=die
@@ -462,7 +462,7 @@ Traefik router rule collisions (two services declare the same hostname + entrypo
 - Use unique subdomains, or add a path prefix rule to distinguish them.
 - Only one service can own a given Host + entrypoint combination; add
   `&& PathPrefix(...)` to share it between multiple services.
-- Check for conflicts: `docker logs edge-traefik | grep -i "conflict\|duplicate"`
+- Check for conflicts: `docker logs tls-edge-<id>-traefik | grep -i "conflict\|duplicate"`
 
 ---
 

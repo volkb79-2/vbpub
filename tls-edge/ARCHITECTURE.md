@@ -140,7 +140,7 @@ can bind any host port.  **Not recommended** for services in this architecture.
 ```
 ingress_public (shared, created by the tls-edge stack)
     │
-    ├── edge-traefik
+    ├── tls-edge-<id>-traefik
     ├── stack-A public service
     └── stack-B public service
 
@@ -673,7 +673,7 @@ middlewares, and the static certificate store.
 
 ## 12. Container Hardening
 
-### edge-traefik hardening decisions
+### Traefik hardening decisions
 
 | Directive | Why |
 |---|---|
@@ -834,7 +834,7 @@ Traefik logs container discovery events at INFO level when `watch: true` is set.
 
 ```sh
 # Live tail of route registration events
-docker logs edge-traefik --follow | grep -E "Adding|Removing|Configuration"
+docker logs tls-edge-<id>-traefik --follow | grep -E "Adding|Removing|Configuration"
 
 # Docker event stream: container start/stop/label changes
 docker events --filter type=container --filter event=start \
@@ -868,16 +868,16 @@ and latency.
 
 ```sh
 # Structured access log query: time, router, status for all routed requests
-docker logs edge-traefik | jq -r 'select(.RouterName != null) | [.time, .RouterName, .DownstreamStatus] | @tsv'
+docker logs tls-edge-<id>-traefik | jq -r 'select(.RouterName != null) | [.time, .RouterName, .DownstreamStatus] | @tsv'
 
 # Filter by router name
-docker logs edge-traefik | jq -r 'select(.RouterName == "pattern-a-app@docker")'
+docker logs tls-edge-<id>-traefik | jq -r 'select(.RouterName == "pattern-a-app@docker")'
 
 # Count requests by router
-docker logs edge-traefik | jq -r 'select(.RouterName != null) | .RouterName' | sort | uniq -c | sort -rn
+docker logs tls-edge-<id>-traefik | jq -r 'select(.RouterName != null) | .RouterName' | sort | uniq -c | sort -rn
 ```
 
-Pipe `docker logs edge-traefik` to a log aggregator (Loki, Elastic, Splunk)
+Pipe `docker logs tls-edge-<id>-traefik` to a log aggregator (Loki, Elastic, Splunk)
 for persistent, searchable, tamper-resistant audit.
 
 ### Ops isolation verification
@@ -970,7 +970,7 @@ consideration:
 
 ### F6. Centralised log aggregation
 
-Pipe `docker logs edge-traefik` to a log aggregation stack for persistent,
+Pipe `docker logs tls-edge-<id>-traefik` to a log aggregation stack for persistent,
 searchable, tamper-resistant audit trail.  The access log is already JSON,
 which integrates cleanly with:
 
@@ -978,7 +978,7 @@ which integrates cleanly with:
 - **Elastic Stack**: full-text search; higher resource cost.
 - **Splunk**: enterprise; highest operational cost.
 
-Configure via Docker log driver on `edge-traefik`:
+Configure via Docker log driver on the `traefik` service:
 ```yaml
 logging:
   driver: loki
