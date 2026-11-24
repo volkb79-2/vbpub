@@ -38,6 +38,7 @@ from .config import (
 )
 from .contract import (
     consumer_contract,
+    consumer_env_duplicates,
     consumer_env_drift,
     consumer_env_drift_message,
 )
@@ -260,9 +261,14 @@ def _load_validated_site(
         require_domain=require_domain,
         stack_dir=stack_dir,
     )
-    consumer_env = _consumer_env_status(root, consumer_contract(config))
+    consumer_env, duplicates = _consumer_env_status(
+        root,
+        consumer_contract(config),
+    )
     if consumer_env["state"] == "drift":
-        raise ConfigError(consumer_env_drift_message(consumer_env["drift"]))
+        raise ConfigError(
+            consumer_env_drift_message(consumer_env["drift"], duplicates=duplicates)
+        )
     return config, ports
 
 
@@ -356,10 +362,10 @@ def configure(args: Any, runtime: CliRuntime) -> int:
 def _consumer_env_status(
     root: Path,
     contract: Mapping[str, str],
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[str]]:
     env_path = root / "stack" / "consumer.env"
     if not os.path.lexists(env_path):
-        return {"state": "absent", "drift": []}
+        return {"state": "absent", "drift": []}, []
     if env_path.is_symlink() or not env_path.is_file():
         raise ConfigError(f"consumer environment must be a regular file: {env_path}")
     try:
@@ -367,7 +373,8 @@ def _consumer_env_status(
     except (OSError, UnicodeError) as exc:
         raise ConfigError(f"cannot read consumer environment {env_path}: {exc}") from exc
     drift = consumer_env_drift(contract, existing)
-    return {"state": "drift" if drift else "in-sync", "drift": drift}
+    duplicates = consumer_env_duplicates(contract, existing)
+    return {"state": "drift" if drift else "in-sync", "drift": drift}, duplicates
 
 
 def show(args: Any, runtime: CliRuntime) -> int:
@@ -384,7 +391,7 @@ def show(args: Any, runtime: CliRuntime) -> int:
         )
         ports = port_plan(config)
         contract = consumer_contract(config)
-        consumer_env = _consumer_env_status(root, contract)
+        consumer_env, _duplicates = _consumer_env_status(root, contract)
     except ConfigError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
     if runtime.output.json_mode:

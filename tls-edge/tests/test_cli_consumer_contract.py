@@ -409,6 +409,43 @@ def test_validate_names_every_drifted_key(
     ) in output
 
 
+def test_validate_names_an_identically_duplicated_owned_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    answers_path = answer_file(tmp_path / "answers.toml", ANSWERS)
+    result, output = _configure(root, answers_path, monkeypatch)
+    assert result == 0, output
+    env_path = root / "stack" / "consumer.env"
+    canonical = env_path.read_text(encoding="utf-8")
+    env_path.write_text(
+        canonical + "TLS_EDGE_DOMAIN=edge.example.test\n",
+        encoding="utf-8",
+    )
+
+    result, output = run_cli(
+        monkeypatch,
+        ["validate", "--root", str(root)],
+    )
+    assert result == 2, output
+    assert (
+        "consumer.env TLS_EDGE_DOMAIN is duplicated; "
+        "run tls-edge configure to re-sync"
+    ) in output
+
+    empty_answers = answer_file(tmp_path / "empty.toml", "")
+    result, output = _configure(root, empty_answers, monkeypatch)
+    assert result == 0, output
+    assert env_path.read_text(encoding="utf-8") == canonical
+
+    result, output = run_cli(
+        monkeypatch,
+        ["validate", "--root", str(root)],
+    )
+    assert result == 0, output
+
+
 def test_show_reports_drift_and_exits_zero(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
