@@ -20,6 +20,9 @@ Cases (each asserts a specific outcome, so the check cannot pass by being noisy)
 * an `.rs` file that does not exist in the real tree, planted in `crates/store/src/`,
   with a write — refused: the rule is about *location*, not about a list of known files;
 * `#[mutants::skip]` — refused everywhere, including `fsio.rs`.
+* a second `allow(unsafe_code)` in another kernel file — refused;
+* kernel `lib.rs` restored to `#![forbid(unsafe_code)]` instead of the one audited
+  `deny` allowance — refused.
 
 Usage: `python3 tools/check-lints-mutation.py [WORKSPACE]` (default: this repository).
 """
@@ -169,15 +172,42 @@ def main() -> int:
         )
         expect_refusal(case, "mutants::skip in fsio.rs", "uses forbidden #[mutants::skip]")
 
+        case = fresh()
+        insert(
+            case,
+            "crates/kernel/src/parse.rs",
+            "use core::fmt;",
+            "use core::fmt;\n#[allow(unsafe_code)] fn _second_allowance() {}\n",
+        )
+        expect_refusal(
+            case,
+            "second unsafe allowance in kernel",
+            "allow(unsafe_code) must occur exactly once outside crates/act",
+        )
+
+        case = fresh()
+        insert(
+            case,
+            "crates/kernel/src/lib.rs",
+            "#![deny(unsafe_code)]",
+            "#![forbid(unsafe_code)]",
+        )
+        expect_refusal(
+            case,
+            "kernel lib.rs lost deny(unsafe_code)",
+            "must contain #![deny(unsafe_code)]",
+        )
+
         # The allowed module stays allowed, and the allowed directory too.
         case = fresh()
         expected = (case / "crates/store/src/fsio.rs").read_text(encoding="utf-8")
         assert ".write(true)" in expected, "fsio.rs must be the writer this check exercises"
         expect_ok(case, "fsio.rs as the allowed write path")
     print(
-        "lint mutation check: 13 refusals, 2 allowances, all as expected "
+        "lint mutation check: 15 refusals, 2 allowances, all as expected "
         "(write outside fsio, mkdir, Command::new, planted file, mutants::skip, "
-        "eight further filesystem-mutating forms; fsio.rs and crates/act allowed)"
+        "eight further filesystem-mutating forms, a second unsafe allowance, a missing "
+        "kernel deny; fsio.rs and crates/act allowed)"
     )
     return 0
 

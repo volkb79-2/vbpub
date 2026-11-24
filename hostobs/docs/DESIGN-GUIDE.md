@@ -18,13 +18,12 @@ tests deterministic and what keeps a wire bug from hiding inside a filesystem ca
 The workspace denies unsafe Rust by default. Only `kernel` and `act` declare the planned
 unsafe-code allowance. Cargo rejects combining a workspace-lint inheritance stanza with a
 package-level override, so those two manifests declare their allowance directly while the
-other seven inherit the workspace lint. The allowance is nominally there for `kernel`
-(`statx`, a `procfs` read) but **nothing uses it**: the crate carries its own
-`#![forbid(unsafe_code)]`, which a package lint override cannot raise, and every host read
-is `File::open`, `read_dir` and `symlink_metadata`. The allowance stays declared because
-`tools/check-lints.py` pins the workspace's expected override table, and because the first
-thing that genuinely needs a syscall (a `statx` mount id, `HOB-18`) should be a one-line
-manifest change reviewed on its own, not a crate-wide relaxation.
+other seven inherit the workspace lint. Kernel uses its allowance in exactly one audited
+item, `activation::adopt_raw`, which claims a systemd-owned `LISTEN_FDS` descriptor after
+checking that it is an open listening `AF_UNIX` stream socket. The crate carries
+`#![deny(unsafe_code)]` and `tools/check-lints.py` permits exactly that one
+`allow(unsafe_code)` occurrence outside `crates/act`. Held-fd adoption is the only raw-fd
+transfer; every ordinary host read remains `File::open`, `read_dir` and `symlink_metadata`.
 
 ## Wire: why fixed-width typed columns (D4)
 
