@@ -197,8 +197,8 @@ SPEC §9.
 | RG-304 | prune hygiene: doubled kept counts, flag check, fixture order, stale allowlist | Minor | OPEN 2026-11-24 (P-core-01 review round 2) |
 | RG-305 | `.run-gate` producers that neither own their lifetime nor are known to prune | Major | OPEN 2026-11-24 (core, after the 2026-11-24 prune) |
 | RG-306 | run-gate's own assay lanes leave `pytest-of-<user>` in the shared state root | Minor | OPEN 2026-11-24 (core, after the 2026-11-24 prune) |
-| RG-307 | 16 assay wrappers have a zero outer-budget margin | Minor | OPEN 2026-11-24 (RG-296 implementation; P-core-08) |
-| RG-308 | runtime Assay-budget warning conflicts with R-59, and argparse accepts ambiguous option prefixes | Minor | OPEN 2026-11-24 (P-core-08 review) |
+| RG-307 | 16 assay wrappers had a zero outer-budget margin | Minor | FIXED IN THIS BRANCH (P-core-RG307); all raised to inner + 5m, `--strict` clean |
+| RG-308 | runtime Assay-budget warning conflicts with R-59 (a), and argparse accepts ambiguous option prefixes (b) | Minor | (a) FIXED IN THIS BRANCH (P-core-RG307); (b) OPEN 2026-11-24 (P-core-08 review) |
 | RG-309 | `lanes --check` treats an Assay-accepted canary budget spelling as a hard `canary` FAIL | Minor | OPEN 2026-11-24 (P-core-08 review round 2) |
 | RG-310 | the new `lanes --check` options break more option abbreviations than CHANGES and RG-308(b) record | Minor | OPEN 2026-11-24 (P-core-08 review round 2) |
 | RG-311 | `lanes --check` test and wording follow-ups: real-repository test pins every finding to `budget-margin`, plus five nits | Minor | OPEN 2026-11-24 (P-core-08 review round 2) |
@@ -7739,7 +7739,7 @@ value appears in the refusal text in a table test. (c) The dstdns pilot lane run
 
 ## RG-155 — the lane header prints `budget 300m (hard limit)` while an Assay lane's own `budget` in `assay.toml` ends each attempt (LANE_TIMEOUT)
 
-**Status:** PARTIAL 2026-11-04 (fix-rg-154-20261104): header and exec/bare paths print the Assay lane budget with its source and warn when it is below the run-gate budget; the warning against the plan's estimated wall time is OPEN (needs `assay plan --json`, assay B213). Filed 2026-11-04. Severity: Minor.
+**Status:** PARTIAL 2026-11-04 (fix-rg-154-20261104; RG-308a, P-core-RG307): header and exec/bare paths print the Assay lane budget with its source and warn when the run-gate wrapper budget is below `inner + 5m` (the R-59 margin; `outer < inner` gets the stronger wording). The warning against the plan's estimated wall time is OPEN (needs `assay plan --json`, assay B213). Filed 2026-11-04. Severity: Minor.
 
 **Observed.** `inf_events_obs_r2` declares `budget = "3m"` in dstdns's `assay.toml` and its plan estimates 2880 s serial. Run-Gate printed
 `run-gate: budget 300m (hard limit; clock starts after admission and lock waits)` (its own wrapper limit) and the first attempt ended
@@ -9724,50 +9724,68 @@ removed at exit. Either run-gate hands Assay lanes a per-run subdirectory as
 as `selftest` does. Assay's own per-mutant basetemp for R2 must keep working.
 Source: vbpub-main-controller post-prune task (b), 2026-11-24.
 
-## RG-307 — 16 assay wrappers have a zero outer-budget margin
+## RG-307 — 16 assay wrappers had a zero outer-budget margin
 
-**Status:** OPEN 2026-11-24 (RG-296 implementation; P-core-08). Severity: Minor.
+**Status:** FIXED IN THIS BRANCH (P-core-RG307): all 16 outer budgets raised
+to `inner + 5m`, so `run-gate lanes --check --all --strict` now exits 0 with
+zero findings estate-wide. Severity: Minor.
 
-`run-gate lanes --check --all` reports 16 wrappers whose outer budget equals
-the inner Assay lane budget. Container start and the editable Assay install
+`run-gate lanes --check --all` used to report 16 wrappers whose outer budget
+equalled the inner Assay lane budget. Container start and the editable Assay install
 consume that same window, so a near-limit run can end as an outer timeout
 instead of Assay's BUDGET verdict. These are `budget-margin` warnings today;
 `--strict` promotes them to failures.
 
-| Project | Run-Gate lane | Outer | Assay lane | Inner |
-|---|---|---|---|---|
-| cgprofile | r2 | 24h | r2 | 24h |
-| ciu | ciu | 8h | ciu | 8h |
-| cmru | assay-first-release-r2 | 7h | cmru-first-release-r2 | 7h |
-| libraries/cowtree | cowtree | 180m | cowtree | 180m |
-| libraries/iobench | r2 | 360m | iobench | 360m |
-| libraries/test-policy | r2 | 120m | test-policy | 120m |
-| libraries/vmscreen | r2 | 120m | vmscreen | 120m |
-| libraries/worktree | worktree | 8h | worktree | 8h |
-| mdt-cockpit | assay-full | 2h | host_setup | 2h |
-| nyxloom | tester-unified | 30m | tester-unified | 30m |
-| nyxloom | session-extract | 10h | session-extract | 10h |
-| pwmcp | r1 | 15m | r1 | 15m |
-| pwmcp | r2 | 4h | r2 | 4h |
-| run-gate-project | assay-r1 | 30m | r1 | 30m |
-| run-gate-project | assay-r2 | 4h | r2 | 4h |
-| vm-lab | r2 | 240m | vm-lab | 240m |
+| Project | Run-Gate lane | Old outer | New outer | Assay lane | Inner |
+|---|---|---|---|---|---|
+| cgprofile | r2 | 24h | 1445m | r2 | 24h |
+| ciu | ciu | 8h | 485m | ciu | 8h |
+| cmru | assay-first-release-r2 | 7h | 425m | cmru-first-release-r2 | 7h |
+| libraries/cowtree | cowtree | 180m | 185m | cowtree | 180m |
+| libraries/iobench | r2 | 360m | 365m | iobench | 360m |
+| libraries/test-policy | r2 | 120m | 125m | test-policy | 120m |
+| libraries/vmscreen | r2 | 120m | 125m | vmscreen | 120m |
+| libraries/worktree | worktree | 8h | 485m | worktree | 8h |
+| mdt-cockpit | assay-full | 2h | 125m | host_setup | 2h |
+| nyxloom | tester-unified | 30m | 35m | tester-unified | 30m |
+| nyxloom | session-extract | 10h | 605m | session-extract | 10h |
+| pwmcp | r1 | 15m | 20m | r1 | 15m |
+| pwmcp | r2 | 4h | 245m | r2 | 4h |
+| run-gate-project | assay-r1 | 30m | 35m | r1 | 30m |
+| run-gate-project | assay-r2 | 4h | 245m | r2 | 4h |
+| vm-lab | r2 | 240m | 245m | vm-lab | 240m |
 
-Wanted: each project raises its outer budget by at least 5m on its next touch;
-once none remain, P-core-12 runs the estate lint lane with `--strict`.
-Source: P-core-08's `run-gate lanes --check --all` audit, 2026-11-24.
+Wanted (now done): each project raised its outer budget by at least 5m; the
+estate lint lane can run with `--strict` from now on. The raises above went in
+as one package (P-core-RG307), with two one-line pinned follow-ups: cgprofile's
+`tests/test_docs.py` restated the `r2` budget (`24h` -> `1445m`), and
+nyxloom's consumer gate timeout kept covering the whole lane
+(`nyxloom/nyxloom-trove/nyxloom.toml`: `timeout_seconds` 1800 -> 2100 for the
+new 35m budget, R-32's pairing rule). Oracle: `lanes --check --all --strict`
+exits 0 with zero findings, and `tests/test_lanes_check.py`'s real-repository
+test asserts exactly that, so a new zero-margin wrapper turns it red on the
+commit that introduces it.
+Source: P-core-08's `run-gate lanes --check --all` audit, 2026-11-24;
+fixed by P-core-RG307, 2026-11-24.
 
 ## RG-308 — Assay-budget warning and argparse prefix ambiguity
 
-**Status:** OPEN 2026-11-24 (P-core-08 review). Severity: Minor.
+**Status:** (a) FIXED IN THIS BRANCH (P-core-RG307); (b) still OPEN
+2026-11-24 (P-core-08 review). Severity: Minor.
 
-(a) `assay_lane_budget_lines()` warns whenever the inner Assay budget is below
-the outer Run-Gate budget. R-59 now requires the outer budget to be at least
-the inner budget plus five minutes, so each project that fixes its RG-307
-margin starts warning on every run. Reconcile the warning policy with R-59
-(for example, warn only when the outer budget is less than twice the inner
-budget) or remove the warning. This is filed only; runtime behavior is
-unchanged in P-core-08.
+(a) `assay_lane_budget_lines()` used to warn whenever the inner Assay budget
+was below the outer Run-Gate budget. R-59 requires the outer budget to be at
+least the inner budget plus five minutes, so once RG-307 raised the estate's
+wrappers every fixed lane would have warned on every run. The warning now
+follows R-59 exactly: silent from `inner + LANES_CHECK_BUDGET_MARGIN_SECONDS`
+(5m) up; a margin wording naming both budgets, the required margin and the
+remedy in the band `inner <= outer < inner + 5m`; and a stronger BELOW wording
+for `outer < inner`, where the container is killed before Assay can close its
+verdict. The "effective per-attempt bound" line is unchanged, and an
+unreadable inner budget behaves as before. Oracles:
+`test_wrapper_budget_warning_follows_r59` (four cases) and
+`test_margin_warning_names_the_margin_and_the_remedy`; SPEC R-59 states the
+run-time rule next to the offline one.
 
 (b) `RunGateArgumentParser` keeps argparse's default `allow_abbrev=True`, so
 new prefixes such as `--proj` and `--str` are accepted silently. The new exact
