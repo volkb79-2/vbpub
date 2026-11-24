@@ -44,11 +44,12 @@ The Dockerfile was not built in RP-02 (a later step builds it; the package set m
 
 ## VML-BL-07 Start on a plain Docker host
 
-`vm-lab start` needs a cockpit container today (self-inspection), so debian-rollback keeps a declared copy of vm-lab's argv in `poc/dr-qemu.sh`. Direction: skip self-inspection outside a cockpit container and take an explicit cgroup parent.
+`vm-lab start` needed a cockpit container (self-inspection), so debian-rollback kept a declared copy of vm-lab's argv. Direction: skip self-inspection outside a cockpit container and take an explicit cgroup parent.
 
 Source: .controller-state/design-review-2026-11-24/debian-rollback.md H6
+In progress: vm-lab-20261124_060821-plain-host
 
-**Close-when:** one live start on a test host without a cockpit container; debian-rollback `poc/dr-qemu.sh` deleted.
+**Close-when:** one live start on a test host without a cockpit container; debian-rollback's copied launcher and its test are deleted.
 
 ## VML-BL-08 Guest session
 
