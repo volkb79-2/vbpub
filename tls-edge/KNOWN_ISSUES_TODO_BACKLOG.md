@@ -16,24 +16,27 @@ between safe generic edge defaults and an application-specific listener.
 the edge listener to remain disabled until an operator opts in. A live Calls
 acceptance check still belongs in the migration checklist.
 
-### acme-data volume loss triggers certificate re-issuance
+### acme-data volume loss triggers certificate re-issuance (`store = "volume"`)
 
-Running `docker compose down -v` or `ciu --reset` destroys the `acme-data`
-named volume, which contains `acme.json` — Traefik's ACME account key and all
-issued certificates.  On the next start, Traefik re-issues certificates from
-scratch.  Let's Encrypt enforces a rate limit of approximately five duplicate
-certificates per registered domain per week; hitting this limit blocks new
-issuance for up to a week.
+This limitation applies only with `[tls_edge.acme] store = "volume"`. Running
+`docker compose down -v`, `ciu --reset`, or `ciu clean` may destroy the
+instance-owned `acme-data` named volume, which contains `acme.json` — Traefik's
+ACME account key and all issued certificates. On the next start, Traefik
+re-issues certificates from scratch. Let's Encrypt enforces a rate limit of
+approximately five duplicate certificates per registered domain per week;
+hitting this limit blocks new issuance for up to a week.
 
-Workaround: avoid `-v` on the edge-proxy stack.  Before any destructive
-operation, back up the volume:
+Workaround: use the hostdir storage created for new root-run instances, or
+avoid `-v` on the edge-proxy stack. Before any destructive operation on a
+volume-backed edge, back up the volume:
 ```bash
 docker run --rm -v acme-data:/data -v "$(pwd)":/backup alpine \
   tar czf /backup/acme-data.tar.gz -C /data .
 ```
-ciu users who run into this regularly can migrate `acme-data` to a ciu hostdir
-(spec S6.7a), which survives `ciu --reset` and can be backed up with the
-host filesystem.
+To move an existing instance to `<instance root>/shared/acme`, follow INSTALL
+section 6. The hostdir survives `ciu --reset`, `down -v`, and `ciu clean`, and
+can be backed up with the host filesystem.
+An adopted external volume is still removable by `ciu clean` (see INSTALL §6).
 
 ---
 
@@ -224,17 +227,6 @@ drops its 8443 listeners and Mattermost publishes 8443 itself.
 
 Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M7
 
-### TE-10 — ACME state deletable by routine commands
-
-The default `acme-data` is a compose-owned volume, so `ciu --reset`,
-`down -v` and `ciu clean` delete the ACME account and every certificate.
-Decided: new instances keep ACME state where those commands cannot reach it: an
-explicit hostdir outside `stack/` (`<instance root>/shared/acme`), or an
-adapter-created external volume if the design note finds the hostdir
-unworkable; `acme.volume_name` adoption stays.
-
-Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M8
-
 ### TE-11 — docs restate facts
 
 Ports, keys and defaults are restated across many documents. ARCHITECTURE has
@@ -257,6 +249,15 @@ test-dependency list (the pyproject extra), `cmru release` only, and the
 override documented and enforced as plain TOML.
 
 Source: `.controller-state/design-review-2026-11-24/tls-edge.md` L4
+
+### TE-13 — rootless Docker ownership of vol-traefik-acme
+
+Question: Under rootless Docker, the S6.5 helper's `chown 0:0` of
+`vol-traefik-acme` maps to the user's uid; ciu's S6.3 check
+(`ciu/src/ciu/engine.py:899-914`) may then reject the existing dir on the next
+run. Unverified; check on a rootless host before 4.0.0.
+
+Source: P-edge-04b fix review (2026-11-24).
 
 ### FEAT-01 — bearer-token authentication middleware for routed services
 
@@ -317,7 +318,7 @@ sufficient for a searchable, persistent audit trail.
 ### Instance packaging follow-ups (filed 2026-11-04)
 
 - Drop the installer adapter's `git init` once ciu runs in a non-git standalone root (ciu CIU-163).
-- Live migration of the hand-made deployment: after TE-10, TE-04, TE-09 (see TE-09 for the Calls cut-over).
+- Live migration of the hand-made deployment: after TE-04 and TE-09 (see TE-09 for the Calls cut-over).
 
 ### ciu dev-mode integration: generate dev certs via a pre-compose hook
 
