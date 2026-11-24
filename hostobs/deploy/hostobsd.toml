@@ -1,0 +1,8 @@
+# The only installed probe configuration (PROBE-PROCESS.md §(g)).
+[probe]
+levels = ["observe", "operator"]
+tick_ms = 1000
+cgroup_root = "/sys/fs/cgroup"
+
+[limits]
+max_rows = 1024

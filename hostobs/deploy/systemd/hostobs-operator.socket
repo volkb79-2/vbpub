@@ -1,0 +1,17 @@
+[Unit]
+Description=hostobs operator-level UNIX socket
+After=systemd-tmpfiles-setup.service
+
+[Socket]
+ListenStream=/run/hostobs/operator/hostobs.sock
+FileDescriptorName=operator
+Accept=no
+SocketUser=root
+SocketGroup=hostobs-operator
+SocketMode=0660
+# The directory comes from tmpfiles.d, not DirectoryMode (which would be root:root).
+DirectoryMode=0750
+Service=hostobs-probe.service
+
+[Install]
+WantedBy=sockets.target
