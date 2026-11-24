@@ -189,7 +189,7 @@ while IFS= read -r -d '' run_file; do
   fi
   if [[ ! -f $runs_dir/$run.route ]]; then echo "SKIP $run (no route sidecar)"; continue; fi
   IFS= read -r route < "$runs_dir/$run.route" || true
-  case $route in luna|deepseek|deepseek-volker|deepseek-github2) ;; *) echo "SKIP $run (invalid route sidecar)"; continue ;; esac
+  case $route in sol|luna|deepseek|deepseek-volker|deepseek-github2) ;; *) echo "SKIP $run (invalid route sidecar)"; continue ;; esac
   thread_id=$(thread_id_from_stream "$run_file")
   if [[ -z $thread_id ]]; then echo "SKIP $run (no thread id)"; continue; fi
   if (( dry_run )); then

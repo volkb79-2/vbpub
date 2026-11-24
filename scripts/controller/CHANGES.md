@@ -20,6 +20,10 @@ no separate version number, so entries are grouped by the work that landed.
   `CODEX_HOME_REVIEW` precedence, so a caller's override cannot redirect a
   review. Repository guidance names the wrappers rather than a Codex home. The
   limits note and reader remain dropped.
+- Route/home migration: usage-limit recovery now accepts the review's `sol`
+  `.route` value. Previously started Luna threads under `$HOME/.codex` must be
+  resumed with `CODEX_HOME_LUNA="$HOME/.codex"`, because new Luna runs default
+  to `$HOME/.codex2`.
 - `gate-run.sh` validates `CONTROLLER_GATE_SLOTS` with explicit ASCII digit
   lists, so a Unicode collation cannot admit a non-ASCII digit.
 

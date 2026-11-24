@@ -332,6 +332,8 @@ expect_killed resume-route-sidecar-guard \
   env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-route-sidecar.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed resume-route-value-guard \
   env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-route-value.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed resume-sol-route-guard \
+  env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-sol-route.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed resume-max-age-validation \
   env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-max-age-validation.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed resume-excluded-prefixes \

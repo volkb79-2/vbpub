@@ -327,8 +327,11 @@ mutant("scripts/controller/resume-usage-limited.sh", "resume-skip-list.sh",
 mutant("scripts/controller/resume-usage-limited.sh", "resume-route-sidecar.sh",
        'if [[ ! -f $runs_dir/$run.route ]]; then', 'if false; then')
 mutant("scripts/controller/resume-usage-limited.sh", "resume-route-value.sh",
-       'case $route in luna|deepseek|deepseek-volker|deepseek-github2) ;; *) echo "SKIP $run (invalid route sidecar)"; continue ;; esac',
+       'case $route in sol|luna|deepseek|deepseek-volker|deepseek-github2) ;; *) echo "SKIP $run (invalid route sidecar)"; continue ;; esac',
        'case $route in *) ;; esac')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-sol-route.sh",
+       'case $route in sol|luna|deepseek|deepseek-volker|deepseek-github2) ;; *) echo "SKIP $run (invalid route sidecar)"; continue ;; esac',
+       'case $route in luna|deepseek|deepseek-volker|deepseek-github2) ;; *) echo "SKIP $run (invalid route sidecar)"; continue ;; esac')
 mutant("scripts/controller/resume-usage-limited.sh", "resume-max-age-validation.sh",
        "if [[ ! $max_age =~ ^[0-9]+$ ]] || (( max_age <= 0 )); then",
        'if false; then')
