@@ -314,7 +314,7 @@ sufficient for a searchable, persistent audit trail.
 ### Instance packaging follow-ups (filed 2026-11-04)
 
 - Drop the installer adapter's `git init` once ciu runs in a non-git standalone root (ciu CIU-163).
-- Live migration of the hand-made deployment: after TE-10, TE-04, TE-09 (see TE-09 for the Calls cut-over).
+- Live migration of the hand-made deployment: after TE-04 and TE-09 (see TE-09 for the Calls cut-over).
 
 ### ciu dev-mode integration: generate dev certs via a pre-compose hook
 
