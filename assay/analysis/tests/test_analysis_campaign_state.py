@@ -143,7 +143,7 @@ def test_b530_the_text_closeout_names_imported_results(tmp_path, monkeypatch):
     )
     assert (code, err) == (0, ""), out
     assert (
-        "carry-over: 1 counted result(s) were IMPORTED from another judge identity"
+        "carry-over: 1 counted result(s) were imported from another judge identity"
     ) in out
     assert f'from={{"{J_X1}": 1}}' in out
     assert 'reasons=["assay upgrade cannot change outcomes"]' in out
@@ -173,7 +173,7 @@ def _provenance(kind, candidate_id, from_judge, *, reason="schema-2 provenance")
     return value
 
 
-def test_campaign_classifies_fresh_imported_carried_and_replayed_from_provenance(
+def test_campaign_imported_classification_uses_provenance_kind(
     tmp_path, monkeypatch
 ):
     root, head, rows = _synthetic(tmp_path, monkeypatch, 5)
@@ -226,12 +226,6 @@ def test_campaign_classifies_fresh_imported_carried_and_replayed_from_provenance
         "schema-1 provenance",
         "schema-2 provenance",
     ]
-    assert document["state"]["provenance_kind_counts"] == {
-        "fresh": 1,
-        "imported": 2,
-        "carried": 1,
-        "replayed": 1,
-    }
     assert document["state"]["judge_sha256_counts"] == {J_X1: 5}
 
 

@@ -2092,12 +2092,7 @@ def _valid_carry_over(value: Any) -> bool:
         for key in ("source", "reason", "imported_at", "importer_version")
     ):
         return False
-    if version == CARRY_OVER_SCHEMA_VERSION:
-        return True
-    try:
-        return len(value["reason"].encode("utf-8")) <= CARRY_OVER_REASON_MAX_BYTES
-    except UnicodeEncodeError:
-        return False
+    return True
 
 
 def record_provenance(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -3121,9 +3116,14 @@ def _validate_record_locus(
     """
     if "locus" not in payload and "window_key" not in payload:
         return False
+    stored_binding_matches = all(
+        payload.get(key) == getattr(job.site, key)
+        for key in ("start_byte", "end_byte", "lineno")
+    )
     expected = _locus_fields_for_job(job)
     if (
-        expected
+        stored_binding_matches
+        and expected
         and payload.get("locus") == expected.get("locus")
         and payload.get("window_key") == expected.get("window_key")
     ):
@@ -3271,12 +3271,6 @@ def _load_validated_state_record(
         # source_sha256 specifically) would discard exactly the evidence
         # this check exists to surface.
         raise MutationStateError(f"mutation-state record {identity} has stale {key}")
-    if "locus" in payload or "window_key" in payload:
-        for key in ("start_byte", "end_byte", "lineno"):
-            if payload.get(key) != getattr(job.site, key):
-                raise MutationStateError(
-                    f"mutation-state record {identity} has stale {key}"
-                )
     locus_unavailable = _validate_record_locus(payload, job=job)
     if locus_status is not None:
         locus_status.append(locus_unavailable)

@@ -252,34 +252,29 @@ def test_valid_locus_and_window_load_unchanged(tmp_path):
     assert loaded["locus"] == _locus_fields(job)["locus"]
 
 
-def test_record_locus_must_bind_the_jobs_span_line_and_operator(tmp_path):
+@pytest.mark.parametrize("swap_locus", [False, True])
+def test_swapped_span_drops_locus_and_record_remains_usable(
+    tmp_path, swap_locus: bool
+):
     job, other = _first_and_second_jobs()
     payload = _record(job)
     swapped = _record(other)
-    for key in (
-        "start_byte",
-        "end_byte",
-        "lineno",
-        "description",
-        "locus",
-        "window_key",
-    ):
+    for key in ("start_byte", "end_byte", "lineno"):
         payload[key] = swapped[key]
+    if swap_locus:
+        for key in ("description", "locus", "window_key"):
+            payload[key] = swapped[key]
     root = _store(tmp_path, job, payload)
+    locus_status: list[bool] = []
 
-    with pytest.raises(MutationStateError, match="stale start_byte"):
-        mutation._load_validated_state_record(root, job, judge=_JUDGE)
+    loaded = mutation._load_validated_state_record(
+        root, job, judge=_JUDGE, locus_status=locus_status
+    )
 
-
-def test_record_locus_rejects_a_span_swapped_without_its_locus(tmp_path):
-    job, other = _first_and_second_jobs()
-    payload = _record(job)
-    payload["start_byte"] = other.site.start_byte
-    payload["end_byte"] = other.site.end_byte
-    root = _store(tmp_path, job, payload)
-
-    with pytest.raises(MutationStateError, match="stale start_byte"):
-        mutation._load_validated_state_record(root, job, judge=_JUDGE)
+    assert isinstance(loaded, dict)
+    assert loaded["candidate_id"] == mutation.candidate_id(job)
+    assert "locus" not in loaded and "window_key" not in loaded
+    assert locus_status == [True]
 
 
 def test_record_locus_rejects_an_operator_that_does_not_bind_the_job(tmp_path):
@@ -452,6 +447,30 @@ def test_schema_two_replay_shape_is_unusable(tmp_path):
         )
         is mutation._RECORD_REJECTED
     )
+
+
+def test_replayed_provenance_without_carry_over_resumes(
+    git_repo: GitRepo, tmp_path
+):
+    _seed_function(git_repo)
+    state = tmp_path / "state"
+    _code, _events = _run(git_repo, state, tmp_path / "1.jsonl")
+    (path,) = sorted(state.glob("*.json"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["provenance"] = _provenance(
+        _OLD_JUDGE,
+        kind="replayed",
+        match="hint",
+        from_judge_sha256=_OLD_JUDGE,
+        replay_node_id="node-1",
+    )
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    _code, events = _run(git_repo, state, tmp_path / "2.jsonl")
+
+    assert _event(events, "candidate") is None
+    resume = _event(events, "resume")
+    assert (resume["resumed_total"], resume["rejected_total"]) == (1, 0)
 
 
 @pytest.mark.parametrize(

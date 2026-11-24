@@ -2033,7 +2033,7 @@ into "judged by this judge": the progress stream emits a `carry_over` event
 (`imported_total`, `copied_total`, `refused_total` with a sample of reasons,
 `from_judge_counts`, `reason`), `candidates.imported_total`, and
 `assay analyze campaign` reports `state.imported` and prints a
-`carry-over: N counted result(s) were IMPORTED ...` line in its text closeout.
+`carry-over: N counted result(s) were imported ...` line in its text closeout.
 Known limit (B532): the verdict document itself does not yet mark imported
 outcomes.
 

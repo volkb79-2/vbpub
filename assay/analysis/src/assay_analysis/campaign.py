@@ -1051,7 +1051,6 @@ def _state_entry(record: dict, stem: str) -> dict:
     if effective is None:
         raise ValueError("record provenance is malformed")
     provenance = mutation.record_provenance(record)
-    provenance_kind = None if provenance is None else provenance["kind"]
     return {
         "id": stem,
         "record": record,
@@ -1059,10 +1058,9 @@ def _state_entry(record: dict, stem: str) -> dict:
         "judge": effective,
         "mode": mode,
         "provenance": provenance,
-        "provenance_kind": provenance_kind,
         "imported_from": (
             provenance["from_judge_sha256"]
-            if provenance_kind == "imported"
+            if provenance is not None and provenance["kind"] == "imported"
             else None
         ),
     }
@@ -1260,14 +1258,6 @@ def _reconcile_state(
             "judge_sha256_current": current,
             "judge_sha256_source": source,
             "judge_sha256_counts": dict(sorted(Counter(e["judge"] for e in entries).items())),
-            "provenance_kind_counts": {
-                kind: sum(
-                    1
-                    for entry in counted.values()
-                    if (entry["provenance_kind"] or "fresh") == kind
-                )
-                for kind in ("fresh", "imported", "carried", "replayed")
-            },
             "imported": {
                 "count": sum(1 for entry in counted.values() if entry["imported_from"]),
                 "from_judge_sha256_counts": dict(sorted(Counter(
@@ -2403,7 +2393,7 @@ def run_campaign_command(args: argparse.Namespace, *, stdout, stderr) -> int:
         imported = (result.get("state") or {}).get("imported") or {}
         if imported.get("count"):
             print(
-                f"  carry-over: {imported['count']} counted result(s) were IMPORTED "
+                f"  carry-over: {imported['count']} counted result(s) were imported "
                 f"from another judge identity; "
                 f"from={json.dumps(imported['from_judge_sha256_counts'], sort_keys=True)} "
                 f"reasons={json.dumps(imported['reasons'])}",

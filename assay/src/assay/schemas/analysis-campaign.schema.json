@@ -454,7 +454,7 @@
     },
     "state": {
       "type": "object", "additionalProperties": false,
-      "required": ["records", "counted", "foreign", "stale_judge", "unreconciled", "unverified_hung", "judge_sha256_current", "judge_sha256_source", "judge_sha256_counts", "provenance_kind_counts"],
+      "required": ["records", "counted", "foreign", "stale_judge", "unreconciled", "unverified_hung", "judge_sha256_current", "judge_sha256_source", "judge_sha256_counts"],
       "properties": {
         "records": {"type": "integer", "minimum": 0},
         "counted": {"type": "integer", "minimum": 0},
@@ -472,17 +472,6 @@
         "judge_sha256_current": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
         "judge_sha256_source": {"enum": ["candidates-event", "paired-records", "unknown"]},
         "judge_sha256_counts": {"$ref": "#/$defs/judgeCounts"},
-        "provenance_kind_counts": {
-          "description": "Counted state records classified by the canonical provenance object; absent provenance is fresh.",
-          "type": "object", "additionalProperties": false,
-          "required": ["fresh", "imported", "carried", "replayed"],
-          "properties": {
-            "fresh": {"type": "integer", "minimum": 0},
-            "imported": {"type": "integer", "minimum": 0},
-            "carried": {"type": "integer", "minimum": 0},
-            "replayed": {"type": "integer", "minimum": 0}
-          }
-        },
         "imported": {
           "description": "Counted records whose canonical provenance kind is imported, including schema-1 derivation.",
           "type": "object", "additionalProperties": false,
