@@ -190,15 +190,18 @@ only with `acme-dns` and `[tls_edge.acme.dns] wildcard_main = "example.test"`.
 **Static-mode certbot hook.** Install the hook once on the host:
 
 ```bash
-cp /srv/tls-edge-instance/stack/scripts/certbot-deploy-hook.sh \
+ln -sf /srv/tls-edge-instance/stack/scripts/certbot-deploy-hook.sh \
   /etc/letsencrypt/renewal-hooks/deploy/01-reload-traefik.sh
-chmod +x /etc/letsencrypt/renewal-hooks/deploy/01-reload-traefik.sh
 certbot renew --dry-run
 ```
 
 After a renewal the hook finds the Traefik container by its Compose service label and installed-instance name
 pattern, then runs `docker restart --time 5 <name>`. Expect about 3 seconds of edge downtime. It does not write
 or rewrite any file in the instance; when no matching container is running it prints a message and exits 0.
+The stable symlink follows the hook shipped in `stack/scripts/`. Reinstall it after updating a 3.x instance that
+used the old copied hook. A static-mode 3.x instance whose old hook ran must pass `--overwrite-local` to the 4.0
+update because the old hook rewrote `stack/edge-proxy/conf.d/certs.yml`, which the 4.0 bundle no longer ships;
+the replaced original is saved under `shared/overwritten/`.
 
 **Staging CA** while testing: `[tls_edge.acme] ca_server = "https://acme-staging-v02.api.letsencrypt.org/directory"`
 (switch back and remove the ACME volume contents before going live, or the staging account is reused).
