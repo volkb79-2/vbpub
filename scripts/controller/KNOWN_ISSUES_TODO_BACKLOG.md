@@ -46,7 +46,7 @@ together.
 | CTL-32 | `ctl-state-backup.sh` has no restore helper, and keys/pins are outside the archive by design | Nice-to-have | OPEN |
 | CTL-33 | The local gate slots are hardcoded to two (`CONTROLLER_GATE_LOCK`/`CONTROLLER_GATE2_LOCK`); the count should be configurable | Should-fix | DONE 2026-11-18 |
 | CTL-37 | A run is ten loose files keyed by a caller name | Must-fix | OPEN 2026-11-24 (Opus design review) |
-| CTL-38 | Auto-continued Codex runs lose the final answer | Must-fix | FIXED 2026-11-24 (0c366bf2fa11743281cf4bbcddb0cc981ebba5d1) |
+| CTL-38 | Auto-continued Codex runs lose the final answer | Must-fix | FIXED 2026-11-24 (0c366bf2fa11743281cf4bbcddb0cc981ebba5d1; r1 follow-ups 93fe8963d, 2f52b9793) |
 | CTL-39 | Routes in about nine places | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-40 | agctl package; bash frozen | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-41 | ctl-clean treats the symptom | Should-fix | OPEN 2026-11-24 (Opus design review) |
@@ -64,6 +64,7 @@ together.
 | CTL-53 | Worktree sprawl | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-54 | Backlogs and SPECs are append-only | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | OPEN 2026-11-24 |
+| CTL-56 | P-plat-04 r1 leftovers: locale oracle, interim-message fake, misplaced Pi mutant reference, Unicode continuation digits | Should-fix | OPEN 2026-11-24 |
 
 ---
 
@@ -1539,6 +1540,14 @@ no-text stream. The wrapper suite also asserts a positive new-run extraction.
 A hand mutant that removed the resume extraction was killed by the focused gate
 test (`CTL-38 resume did not derive exactly FINAL-B from its stream`).
 
+Review r1 closed two remaining gaps. Commit `93fe8963d` removes the old
+`.done` and `.last.txt` before a resume launch and extracts from the current
+stream on the EXIT/signal path; its focused test holds a resumed child, verifies
+the old text is gone, recreates it once, and then SIGTERMs the wrapper.
+Commit `2f52b9793` extracts from this invocation's accumulated `$name.jsonl`
+after an auto-continuation, so a later empty attempt does not erase text already
+produced by attempt 1.
+
 **Close when.** Done: all Codex exec paths derive `.last.txt` from their own
 stream, and the no-text and stale-file cases are tested.
 
@@ -1702,3 +1711,22 @@ Source: .controller-state/PROGRAM-2026-11-24/PROGRAM.md §6
 `tests/test-pi-impl.sh` `check_live_snapshot` polls 100 × `sleep 0.1` (about 10 s of wall clock) for `"tool_in_flight": "bash"` in the `.live` sidecar, which is written every `PI_LIVE_INTERVAL_SECONDS=1` by a process tree started under the same load. On 2026-11-24 the `suite` lane at 0314fdf1b (a docs-only change) failed with `the live sidecar never reported the tool call in flight` while another session's mutation lane loaded the host (load average ~6 on 8 cores). Against the estate rule that verdicts do not depend on host load. Fix: wait on a progress condition instead of a clock, for example until the fake pi's own "tool started" marker exists AND the sidecar has completed at least two write cycles (a sidecar sequence counter), with only a generous outer bound (minutes) that reports "inconclusive under load" separately from "never reported".
 
 Source: suite lane log of 2026-11-24 (run-gate lane `suite`, head 0314fdf1b).
+
+## CTL-56 — P-plat-04 r1 leftovers
+
+**Status:** OPEN (filed 2026-11-24).
+
+- Finding 4: the locale test does not discriminate on glibc ≥2.28 or the
+  tester-unified `C.UTF-8` locale; the explicit ASCII digit list is correct, but
+  the oracle needs a locale where the old range admits `٣`, or a direct
+  validator-list check.
+- The CTL-38 fake resume stream has no interim `agent_message` before
+  `FINAL-B`, so a first-message-wins extractor could still pass.
+- CTL-42's text still cites the Pi `max` mutant, which belongs to the launcher
+  effort change rather than the route-salvage item.
+- `CODEX_AUTO_CONTINUE` is ASCII-checked in shell and then passed to Python
+  `int()`, which accepts Unicode digits; reject those explicitly at the wrapper
+  boundary.
+
+Source: P-plat-04 r1 Opus review findings 4 and 9, explicitly deferred by the
+controller.
