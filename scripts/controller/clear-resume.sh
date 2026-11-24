@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -u
-# self-resume.sh <tmux-pane-id> <successor-prompt-file> <log-file>
+# clear-resume.sh <tmux-pane-id> <successor-prompt-file> <log-file>
 # CLEAN-SLATE restart of an interactive Claude Code session that runs in a tmux pane: wait until
 # the pane is idle, send /clear, wait for the cleared status line, type the successor prompt and
 # Enter. /clear ends the session's background work; the default restart that keeps it is
@@ -11,9 +11,9 @@ set -u
 # Exit codes: 0 prompt sent (a missing cleared marker only logs WARN); 2 bad arguments, unreadable
 # prompt file, unwritable log or no such pane (nothing sent); 3 pane never idle within 30 min
 # (nothing sent). Progress goes to <log-file>. Footer markers and the shared idle logic:
-# resume-lib.sh. Test seams (tests/test-self-resume.sh): SELF_RESUME_{POLL,IDLE_TRIES,TYPE_PAUSE,
+# resume-lib.sh. Test seams (tests/test-clear-resume.sh): CLEAR_RESUME_{POLL,IDLE_TRIES,TYPE_PAUSE,
 # FINAL_WAIT,CLEAR_TRIES}.
-RESUME_PREFIX=SELF_RESUME
+RESUME_PREFIX=CLEAR_RESUME
 # shellcheck source=resume-lib.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/resume-lib.sh"
 clear_tries=$(seam CLEAR_TRIES 30)

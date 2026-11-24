@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016 # the prompt fixture carries a literal $HOME and backticks
 set -uo pipefail
-# self-resume.sh against a STUB tmux first on PATH: it records every call and serves capture-pane
+# clear-resume.sh against a STUB tmux first on PATH: it records every call and serves capture-pane
 # output from frame files that advance one per call (the last frame repeats), so the checks are
 # deterministic under any host load. The script's poll interval is shortened through its test seams.
-unset SELF_RESUME_POLL SELF_RESUME_IDLE_TRIES SELF_RESUME_CLEAR_TRIES SELF_RESUME_TYPE_PAUSE SELF_RESUME_FINAL_WAIT
+unset CLEAR_RESUME_POLL CLEAR_RESUME_IDLE_TRIES CLEAR_RESUME_CLEAR_TRIES CLEAR_RESUME_TYPE_PAUSE CLEAR_RESUME_FINAL_WAIT
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-SCRIPT=${SELF_RESUME_SCRIPT:-$SCRIPT_DIR/../self-resume.sh}
-ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-self-resume-test.XXXXXX")
+SCRIPT=${CLEAR_RESUME_SCRIPT:-$SCRIPT_DIR/../clear-resume.sh}
+ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-clear-resume-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -54,7 +54,7 @@ scenario() {
 }
 # run <args...>: the script under the stub, short polls; sets RC
 run() {
-  STUB_DIR=$D PATH=$ROOT/bin:$PATH SELF_RESUME_POLL=0.01 SELF_RESUME_TYPE_PAUSE=0.01 SELF_RESUME_FINAL_WAIT=0.01 \
+  STUB_DIR=$D PATH=$ROOT/bin:$PATH CLEAR_RESUME_POLL=0.01 CLEAR_RESUME_TYPE_PAUSE=0.01 CLEAR_RESUME_FINAL_WAIT=0.01 \
     bash "$SCRIPT" "$@" 2>"$D/stderr"; RC=$?
 }
 calls() { cat -- "$D/calls.log" 2>/dev/null; }
@@ -81,7 +81,7 @@ run '%9' "$D/prompt.txt" "$D/log"
 
 # 3. Never idle (continuously busy): exit 3, nothing sent.
 scenario busy "B" "C"
-SELF_RESUME_IDLE_TRIES=5 run '%9' "$D/prompt.txt" "$D/log"
+CLEAR_RESUME_IDLE_TRIES=5 run '%9' "$D/prompt.txt" "$D/log"
 [[ $RC -eq 3 ]] || fail "never idle exit $RC (want 3)"
 [[ $(calls) == "$(printf '%s\n' 'has-session %9'; rep 5 'capture start')" ]] || fail "never idle: call sequence"
 contains "$D/log" "ERROR pane never idle" "never idle logged"
@@ -90,13 +90,13 @@ not_contains <(calls) "send-keys" "never idle: keys were sent"
 
 # 4. Only short idle runs (never 3 in a row) is also never idle.
 scenario blips "B I I B I I B I I" "C"
-SELF_RESUME_IDLE_TRIES=9 run '%9' "$D/prompt.txt" "$D/log"
+CLEAR_RESUME_IDLE_TRIES=9 run '%9' "$D/prompt.txt" "$D/log"
 [[ $RC -eq 3 ]] || fail "idle blips exit $RC (want 3)"
 not_contains <(calls) "send-keys" "idle blips: keys were sent"
 
 # 5. No cleared marker within the limit: WARN, the prompt is still sent, exit 0.
 scenario nocheck "I" "N"
-SELF_RESUME_CLEAR_TRIES=3 run '%9' "$D/prompt.txt" "$D/log"
+CLEAR_RESUME_CLEAR_TRIES=3 run '%9' "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "no cleared marker exit $RC"
 contains "$D/log" "WARN no 'ctx ?' after 60 s" "WARN logged"
 cmp -s "$D/sent.txt" "$D/expected.txt" || fail "no cleared marker: prompt not sent"
@@ -117,4 +117,4 @@ run '%9' "$D/prompt.txt" "$D/log2"; [[ $RC -eq 2 ]] || fail "missing pane exit $
 contains "$D/log2" "ERROR no pane %9" "missing pane logged"
 [[ $(calls) == "has-session %9" ]] || fail "missing pane: only has-session expected"
 
-echo 'PASS self-resume'
+echo 'PASS clear-resume'

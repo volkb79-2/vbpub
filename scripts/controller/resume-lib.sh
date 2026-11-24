@@ -1,7 +1,7 @@
 # shellcheck shell=bash disable=SC2034,SC2154 # sourced: the callers use the settings and own pane/log
-# resume-lib.sh: the pane-idle/footer logic shared by self-resume.sh and compact-resume.sh.
+# resume-lib.sh: the pane-idle/footer logic shared by clear-resume.sh and compact-resume.sh.
 # Source it, never run it. The caller sets RESUME_PREFIX (the env prefix of its test seams,
-# e.g. SELF_RESUME) before sourcing and pane/log after; one copy of the footer markers lives here.
+# e.g. CLEAR_RESUME) before sourcing and pane/log after; one copy of the footer markers lives here.
 #
 # Footer markers, tied to the status line measured on Claude Code 2.1.331; adjust if it changes.
 BUSY_MARKERS=('esc to interrupt')   # present while the session works (a caller may add more)

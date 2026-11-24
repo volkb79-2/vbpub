@@ -5,7 +5,7 @@ set -u
 # idle, send "/compact <guidance>" (the file's newlines become spaces), wait until the compaction
 # has finished (pane busy, then idle again; max 60 min), then type the resume prompt and Enter.
 # The session is kept as a summary and its background work (subagents, Monitors, background
-# shells, codex runs) survives, unlike /clear (self-resume.sh). Measured 2026-11-24: 442k -> ~60k
+# shells, codex runs) survives, unlike /clear (clear-resume.sh). Measured 2026-11-24: 442k -> ~60k
 # tokens in ~46 s. Launch it DETACHED (`setsid nohup ... &`, never Bash run_in_background), then
 # end the turn. Procedure: AGENTS.md "Successor restart of an interactive session".
 #
