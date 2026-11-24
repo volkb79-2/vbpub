@@ -1054,9 +1054,8 @@ def test_completed_resume_skips_host_discovery(tmp_path):
     marker = Path(installer.config.state_dir) / "stage2_done"
     marker.touch()
 
-    completed = Installer(
-        installer.config, actions, inspect_host=False, inspect_on_resume=True,
-    )
+    completed = Installer(installer.config, actions, inspect_host=False)
+    completed._inspect_on_resume = True
 
     assert completed.stage2_complete is True
     assert completed.resume() is False

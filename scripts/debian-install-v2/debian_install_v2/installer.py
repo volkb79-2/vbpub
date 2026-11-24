@@ -237,11 +237,10 @@ class Installer:
         actions: HostActions,
         *,
         inspect_host: bool = True,
-        inspect_on_resume: bool = False,
     ):
         self.config = config
         self.actions = actions
-        self._inspect_on_resume = inspect_on_resume
+        self._inspect_on_resume = False
         self.state = StateStore(config.state_dir)
         self.state.dry_run = actions.dry_run
         self._notify_stage = "stage1"

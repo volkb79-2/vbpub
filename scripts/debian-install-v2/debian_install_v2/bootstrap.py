@@ -187,12 +187,13 @@ def _make_resume_installer(runtime: Any) -> Installer:
         config = _stage2_config(state_dir)
     except StateError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
-    return Installer(
+    installer = Installer(
         config,
         HostActions(dry_run=runtime.dry_run),
         inspect_host=False,
-        inspect_on_resume=True,
     )
+    installer._inspect_on_resume = True
+    return installer
 
 
 def _render_status(status: dict[str, Any]) -> str:
