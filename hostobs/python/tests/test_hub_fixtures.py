@@ -28,7 +28,7 @@ OPS = {
     "push_live",
     "push_query",
     "push_control",
-    "query_ready",
+    "query_room",
     "end_stream",
     "head",
     "head_partial",
@@ -78,7 +78,7 @@ class HubFixtureTests(unittest.TestCase):
                         elif output is not None:
                             self.assertIn(
                                 next(iter(output)),
-                                {"pools", "closed", "head", "counts", "ready", "partial"},
+                                {"pools", "closed", "head", "counts", "room", "partial"},
                             )
                     self.assertEqual("watch" in step, any(
                         isinstance(o, dict) and "pools" in o for o in outputs
