@@ -4,8 +4,9 @@ No network: it reads the shipped templates, renders them with jinja2 and
 loads the hooks via importlib. Covers the
 isolation contract (own names, only the LiveKit pair published, nothing of the
 live edge), digest pinning, port-plan agreement with the area README, the
-resource caps, "no credentials / no hard-coded domain in tracked files", and
-the secret-generation hook's idempotence and file modes.
+resource caps, "no credentials / no hard-coded domain in tracked files", the
+secret-generation hook's stored-value stability and file modes, and the
+one-time legacy-account migration.
 """
 from __future__ import annotations
 
@@ -64,16 +65,15 @@ def test_rendered_account_passwords_are_exact_ciu_gen_local_secrets() -> None:
     assert cfg["accounts"]["admin"] == "fx_admin"
     assert cfg["accounts"]["users"] == ["fx_alice", "fx_bob"]
 
-    account_secrets = {
-        name: spec for name, spec in cfg["secrets"].items() if name.startswith("account_")
-    }
     expected = {f"account_{name}" for name in ("fx_admin", "fx_alice", "fx_bob")}
-    assert set(account_secrets) == expected
+    assert set(cfg["secrets"]) == expected
     for username in ("fx_admin", "fx_alice", "fx_bob"):
-        spec = account_secrets[f"account_{username}"]
+        spec = cfg["secrets"][f"account_{username}"]
         assert spec["directive"] == f"GEN_LOCAL:fluxer/account_{username}"
         assert spec["mode"] == "0600"
         assert spec["consumed_by"] == "hook"
+    assert cfg["hooks"]["pre_secrets"] == ["hooks/pre_secrets_migrate_accounts.py"]
+    assert cfg["hooks"]["pre_compose"] == ["hooks/pre_compose_secrets.py"]
 
 
 def _mem_bytes(value: str) -> int:
@@ -320,11 +320,108 @@ def _ctx(tmp_path: Path) -> SimpleNamespace:
     return SimpleNamespace(stack_dir=str(tmp_path), wait_healthy=None)
 
 
+@pytest.fixture()
+def migration_hook():
+    return _load_hook("pre_secrets_migrate_accounts")
+
+
+@pytest.fixture()
+def migration_world(migration_hook, tmp_path: Path):
+    store_root = tmp_path / ".ciu" / "secrets"
+    account_store = store_root / "fluxer"
+    names = {"fx_admin", "fx_alice", "fx_bob"}
+    targets = {
+        f"account_{name}": account_store / f"account_{name}" for name in names
+    }
+
+    def secret_file(name: str) -> Path:
+        try:
+            return targets[name]
+        except KeyError as exc:
+            raise KeyError(name) from exc
+
+    ctx = SimpleNamespace(
+        stack_dir=str(tmp_path),
+        repo_root=str(tmp_path),
+        secret_file=secret_file,
+    )
+    return migration_hook, {"fluxer": _cfg()}, ctx, store_root, targets
+
+
+def test_legacy_accounts_are_migrated_byte_exact_then_removed(migration_world) -> None:
+    hook, cfg, ctx, store_root, targets = migration_world
+    passwords = {
+        "fx_admin": "migrated-admin-PASSWORD-SENTINEL",
+        "fx_alice": "migrated-alice-PASSWORD-SENTINEL",
+        "fx_bob": "migrated-bob-PASSWORD-SENTINEL",
+    }
+    store_root.mkdir(parents=True, mode=0o700)
+    legacy = store_root / "accounts.json"
+    legacy.write_text(json.dumps(passwords), encoding="utf-8")
+
+    hook.run(cfg, ctx)
+
+    for username, password in passwords.items():
+        target = targets[f"account_{username}"]
+        assert target.read_bytes() == password.encode("utf-8")
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+        assert stat.S_IMODE(target.parent.stat().st_mode) == 0o700
+    assert not legacy.exists()
+
+
+def test_migration_never_overwrites_an_existing_store_file(migration_world) -> None:
+    hook, cfg, ctx, store_root, targets = migration_world
+    store_root.mkdir(parents=True, mode=0o700)
+    existing = targets["account_fx_alice"]
+    existing.parent.mkdir(parents=True, mode=0o700)
+    existing.write_text("existing-ciu-password-SENTINEL", encoding="utf-8")
+    legacy = store_root / "accounts.json"
+    legacy.write_text(
+        json.dumps({
+            "fx_admin": "legacy-admin-PASSWORD-SENTINEL",
+            "fx_alice": "legacy-alice-PASSWORD-SENTINEL",
+            "fx_bob": "legacy-bob-PASSWORD-SENTINEL",
+        }),
+        encoding="utf-8",
+    )
+
+    hook.run(cfg, ctx)
+
+    assert existing.read_text(encoding="utf-8") == "existing-ciu-password-SENTINEL"
+    assert targets["account_fx_admin"].read_text(encoding="utf-8") == "legacy-admin-PASSWORD-SENTINEL"
+    assert targets["account_fx_bob"].read_text(encoding="utf-8") == "legacy-bob-PASSWORD-SENTINEL"
+    assert not legacy.exists()
+
+
+def test_migration_without_legacy_accounts_is_a_noop(migration_world, capsys) -> None:
+    hook, cfg, ctx, store_root, _ = migration_world
+
+    assert hook.run(cfg, ctx) == {}
+    assert not store_root.exists()
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
+def test_migration_never_prints_legacy_passwords(migration_world, capsys) -> None:
+    hook, cfg, ctx, store_root, _ = migration_world
+    passwords = {
+        "fx_admin": "migration-output-admin-SENTINEL",
+        "fx_alice": "migration-output-alice-SENTINEL",
+        "fx_bob": "migration-output-bob-SENTINEL",
+    }
+    store_root.mkdir(parents=True, mode=0o700)
+    (store_root / "accounts.json").write_text(json.dumps(passwords), encoding="utf-8")
+
+    hook.run(cfg, ctx)
+
+    captured = capsys.readouterr()
+    assert not any(password in captured.out + captured.err for password in passwords.values())
+
+
 def test_secrets_hook_generates_once_with_private_modes(secrets_hook, tmp_path: Path) -> None:
     cfg = {"fluxer": _cfg()}
     d = tmp_path / ".ciu" / "secrets"
     d.mkdir(parents=True)
-    (d / "accounts.json").write_text('{"fx_admin":"stale-password"}', encoding="utf-8")
     secrets_hook.run(cfg, _ctx(tmp_path))
     assert stat.S_IMODE(d.stat().st_mode) == 0o700
     store_path = d / "fluxer-secrets.json"
@@ -342,7 +439,18 @@ def test_secrets_hook_generates_once_with_private_modes(secrets_hook, tmp_path: 
     # idempotent: a second run changes nothing
     secrets_hook.run(cfg, _ctx(tmp_path))
     assert json.loads(store_path.read_text()) == first
-    assert not (d / "accounts.json").exists()
+
+
+def test_pre_compose_hook_does_not_consume_legacy_accounts(secrets_hook, tmp_path: Path) -> None:
+    cfg = {"fluxer": _cfg()}
+    d = tmp_path / ".ciu" / "secrets"
+    d.mkdir(parents=True)
+    legacy = d / "accounts.json"
+    legacy.write_text('{"fx_admin":"migration-owns-this-file"}', encoding="utf-8")
+
+    secrets_hook.run(cfg, _ctx(tmp_path))
+
+    assert legacy.exists()
 
 
 def test_secrets_hook_keeps_existing_values_and_fills_gaps(secrets_hook, tmp_path: Path) -> None:
@@ -488,7 +596,7 @@ def test_account_passwords_never_appear_in_argv_logs_or_errors(accounts_world, c
     assert not any(password in message + captured.out + captured.err for password in passwords)
 
 
-def test_account_hook_rerun_is_idempotent_and_writes_no_password_copy(accounts_world) -> None:
+def test_account_hook_rerun_sends_same_payload_and_writes_no_password_copy(accounts_world) -> None:
     hook, cfg, ctx, calls, _, _, secrets = accounts_world
     hook.run(cfg, ctx)
     first_payload = calls[0]["payload"]

@@ -217,10 +217,6 @@ def run(config: dict, ctx) -> dict:
     directory = secrets_dir(ctx)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
-    try:
-        (directory / "accounts.json").unlink()
-    except FileNotFoundError:
-        pass
     store, added = ensure_store(directory)
     livekit_key = (root.get("livekit") or {}).get("api_key", "fluxer")
     s3_access_key = (root.get("s3") or {}).get("access_key", "fluxer")

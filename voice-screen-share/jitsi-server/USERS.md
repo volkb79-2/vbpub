@@ -43,6 +43,15 @@ stdin. Registering an existing user sets its password to the stored value, so ev
 same state. Within the container, for the instant that process runs, the password is an argument of
 `prosodyctl`; it is never on the host command line.
 
+## Remove an account
+
+To remove a leftover account such as one of the former `dummy1`..`dummy3` users, use the configured
+`jitsi.container_prefix` as `<prefix>`:
+
+```bash
+docker exec <prefix>-prosody prosodyctl --config /run/prosody/config/prosody.cfg.lua unregister dummy1 meet.jitsi
+```
+
 ## Rotate one user
 
 ```bash

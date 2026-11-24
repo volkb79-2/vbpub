@@ -15,7 +15,9 @@ Names are `[fluxer.accounts]` in `ciu.defaults.toml.j2`. Sign-in is **username +
 Each password is one ciu `GEN_LOCAL` secret. The files are mode 0600 in a 0700 directory and are git-ignored
 (`**/.ciu/`). ciu generates each value on first materialization and reuses those bytes on later `ciu up` runs.
 The account hook reads each file through `ctx.secret_file()`; passwords are never printed or logged. The
-pre-compose hook removes an obsolete `.ciu/secrets/accounts.json` copy left by an older checkout.
+`pre_secrets` hook performs a one-time migration of `.ciu/secrets/accounts.json`: a missing ciu store file
+receives the account's exact legacy password, existing store files are never overwritten, and the legacy file
+is removed after migration.
 
 From the repository root, the exact commands are:
 
@@ -57,8 +59,12 @@ The account password and its ciu secret must match, so change both:
    `.ciu/secrets/fluxer/`, preserving mode 0600.
 
 If only the file is changed, the next `ciu up` fails to sign in, tries to register the existing name and
-reports `user_failed:...`: it never overwrites an account. To start over completely, remove the data volumes
-and reset the stack's ciu secrets before running `ciu up` again.
+reports `user_failed:...`: it never overwrites an account. To start over completely with empty data volumes
+and newly generated secrets, run:
+
+```bash
+ciu up --dir voice-screen-share/fluxer-server --reset --secrets --yes
+```
 
 ## Rotating infrastructure secrets
 

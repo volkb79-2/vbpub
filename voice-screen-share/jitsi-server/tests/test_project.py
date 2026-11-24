@@ -139,13 +139,17 @@ def test_rendered_users_and_password_declarations_are_exactly_three_hook_secrets
     assert "dummy_users" not in cfg["auth"]
     assert all("dummy" not in u for u in cfg["users"])
 
-    account_secrets = {
-        name: spec for name, spec in cfg["secrets"].items() if name.startswith("user_")
+    expected = {
+        "user_admin",
+        "user_alice",
+        "user_bob",
+        "jicofo_auth_password",
+        "jvb_auth_password",
+        "jicofo_component_secret",
     }
-    expected = {f"user_{name}" for name in ("admin", "alice", "bob")}
-    assert set(account_secrets) == expected
+    assert set(cfg["secrets"]) == expected
     for username in ("admin", "alice", "bob"):
-        spec = account_secrets[f"user_{username}"]
+        spec = cfg["secrets"][f"user_{username}"]
         assert spec["directive"] == f"GEN_LOCAL:jitsi/user_{username}"
         assert spec["mode"] == "0600"
         assert spec["consumed_by"] == "hook"
