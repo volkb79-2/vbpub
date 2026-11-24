@@ -1,15 +1,10 @@
 # Rollback recovery and state management
 
-**Scope:** systemd-boot target on the current btrfs layout. The M2
-systemd-boot-target ISO and timestamped-ID runtime were installed in fresh
-UEFI guests. A separate current-source NoCloud builder run passed the
-dependency-break, kernel, and dynamic-loader recovery scenarios. Exact hashes,
-counts, and logs are in the
-[2026-11-23 builder report](RESULTS-SDBOOT-NOCLOUD-2026-11-23.md); evidence
-for the named M2 ISO artifact remains in the
-[2026-11-22 report](RESULTS-SDBOOT-M2-2026-11-22.md). The GRUB-target
-comparison install is complete. The registered offline gate and exact-commit
-independent review are the merge criteria for this variant.
+**Scope:** the recovery contract for the btrfs/systemd-boot target. This page
+defines the operator flow, state-management behavior, data boundary, and
+acceptance scenarios. Current status and the work order are in
+[TODO.md](../TODO.md); hashes, counts, and logs stay in the dated RESULTS
+reports.
 
 ## Recovery contract
 
@@ -188,10 +183,8 @@ checks that the witness remains and the failed BLS entry is gone.
 
 Run each on a fresh disposable VM. Do not reuse a damaged guest. These
 scenarios deliberately do not stage `dr-state boot-once`: they test selection
-after the default has become unusable. All three recovery scenarios passed in
-the current-source NoCloud builder guest run. State deletion was exercised after
-recovery in each. Pruning older snapshots is covered by the offline
-`dr-state prune` workflow suite; live prune and ESP cleanup remain unverified.
+after the default has become unusable. Live prune, ESP cleanup, and their
+acceptance status are tracked in [TODO.md](../TODO.md).
 
 ## Evidence and implementation
 
@@ -203,35 +196,8 @@ recovery in each. Pruning older snapshots is covered by the offline
 | Serial/QMP and scenario contract coverage | `poc/test-dr-serial.py` |
 | Registered gate | `run-gate offline` from `scripts/debian-rollback/` |
 
-Current-source systemd-boot builder evidence is in
-[RESULTS-SDBOOT-NOCLOUD-2026-11-23.md](RESULTS-SDBOOT-NOCLOUD-2026-11-23.md).
-The dependency-break scenario passed 23 checks, kernel damage 27, and loader
-damage 25. Each selected the known-good pre-change snapshot after the default
-became unusable, restored service and/or boot capability, preserved post-snapshot
-`/home` data, made the recovered state the default, proved a plain reboot, and
-deleted the failed state. These runs use the timestamped ID schema and current
-source hashes, unlike the historical runs below.
-
-Historical v1001 guest evidence (not certification of the current candidate),
-all run on disposable overlays of `installed-sdboot-c749-r10.qcow2` (SHA-256
-`3b13b57d6d8f8a918e5cd9dbae548e48f2acd9d4505cc67df97e7bbc7d7d284c`):
-
-- `s2-s3`: 23 checks passed; the guest captured the APT plan for
-  `install hello - -> 2.10-5` and booted the pre-install state. Transcript:
-  `/home/runner/jobs/dr-poc/logs/snapshot-metadata-20261121-apt-001.transcript`.
-- `recovery-kernel`: 27 checks passed; transcript:
-  `/home/runner/jobs/dr-poc/logs/recovery-kernel-current-20261121-001.transcript`.
-- `recovery-library`: 25 checks passed; transcript:
-  `/home/runner/jobs/dr-poc/logs/recovery-library-current-20261121-001.transcript`.
-- A later historical `kernel-upgrade` run against the `c749db1` source passed
-  21 checks; two preceding attempts timed out after the generated command
-  contained `; ;`. These reports used legacy `@os-0001` state names and do not
-  validate the current sequence-ID schema. See the current-candidate matrix
-  above and the dated results report.
-
-The historical reports recorded `dr-state` hash
-`ab7cf555eba00c96de24edb7afdba8437b83b506ee0f9c14fe4fc17a6bac3e52`, driver
-hash `5f8988855a3eadbf6d2e54b7e2a55a3e79867a2643ff82d9d4ffd92c2d5bef74`, and
-installer hash `ca8848f773392aaf5eac8e90e2b89885849dbd8fac4372a58cf2ad3312e3f0a0`.
-The current candidate hashes and new log locations are in the dated results
-report. Preserve these historical reports alongside the current evidence.
+Dated guest results, hashes, scenario counts, and retained evidence are in the
+[systemd-boot M2 report](RESULTS-SDBOOT-M2-2026-11-22.md) and the
+[NoCloud builder report](RESULTS-SDBOOT-NOCLOUD-2026-11-23.md). Earlier runs
+remain historical evidence for the source and artifact they name; they do not
+extend the recovery contract on this page.

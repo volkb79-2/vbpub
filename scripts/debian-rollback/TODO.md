@@ -1,78 +1,58 @@
-# Current work order — 2026-11-23
+# debian-rollback status
 
-Complete the systemd-boot target path first, then continue with the ZFS PoC.
-The separate M2 Live ISO variants and guest evidence are complete. The latest
-NoCloud builder matrix also passed. Each merge candidate must pass the
-registered offline lane and an exact-commit DeepSeek ECO review. The layers
-and media distinction are documented in the
-[installation architecture](docs/INSTALLATION-ARCHITECTURE.md).
+This is the project's only status page. Architecture and operating details are
+in [INSTALLATION-ARCHITECTURE.md](docs/INSTALLATION-ARCHITECTURE.md),
+[ROLLBACK-RECOVERY.md](docs/ROLLBACK-RECOVERY.md), and
+[DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md). Decisions are recorded in the design
+guide; work packages are tracked below.
 
-## 1. Finish systemd-boot PoC
+## Done
 
-- The systemd-boot M2 Live ISO guest matrix remains recorded against its named
-  artifact in [the 2026-11-22 report](docs/RESULTS-SDBOOT-M2-2026-11-22.md).
-  A separate current-source NoCloud builder run passed nine fresh-overlay
-  scenarios: boot-check (12), ESP (16), apt rollback (23), one-shot (9),
-  dependency recovery (23), kernel recovery (27), loader recovery (25), stable
-  kernel update (21), and backports update (21). The full report is
-  [here](docs/RESULTS-SDBOOT-NOCLOUD-2026-11-23.md).
-- The stable run upgraded from `6.12.117` to `6.12.118`; the backports run
-  upgraded from `6.12.117` to `7.3.4`. Both old and new kernel states booted
-  with matching modules, and one-shot rollback returned to the new default.
-  Each destructive recovery selected the recovery entry, preserved data
-  written after its snapshot, set the recovered state as default, proved a
-  plain reboot, and deleted the failed state.
-- The fresh GRUB-target M2 comparison passed first-boot checks (9) and
-  apt-rollback/default-selection checks (21). The separate NoCloud
-  systemd-boot builder matrix is recorded in the linked report. The installed
-  disk booted without its seed or cloud image; this builder path is not
-  required by the M2 product install.
-- Before merging, run the registered offline lane and obtain an independent
-  DeepSeek review of the exact candidate commit. Use only the approved
-  `deepseek-v4.1-flash-eco` route.
-- Automatic failed-boot fallback is not part of this PoC.
-- New state IDs use a monotonic six-digit sequence, UTC timestamp, and
-  origin/reason slug (install, apt, or manual reason). The high-water counter
-  is outside all OS states; deletion does not reuse numbers, and a missing or
-  corrupt counter refuses new snapshots. Fresh installs initialize
-  `000001-install`; historical `@os-0001` PoC disks are not migrated and no
-  adoption command is planned. Keep those disks on their existing runtime; do
-  not copy the new runtime onto them, because its APT snapshot hook correctly
-  refuses to make package changes without the required counter. This schema
-  applies to fresh installs and snapshots on both bootloaders.
-- The systemd-boot M2 ISO has fresh install, first boot, rollback and
-  destructive-recovery evidence. The fresh GRUB-target comparison also passed
-  install, first boot and rollback/default-selection checks. Merge only after
-  the final gate and exact-commit review.
+- **systemd-boot target variant:** merged in `9bd4e5dcd`; evidence is in the
+  [M2 results](docs/RESULTS-SDBOOT-M2-2026-11-22.md) and the
+  [NoCloud builder results](docs/RESULTS-SDBOOT-NOCLOUD-2026-11-23.md).
+- **M2 target ISO variants:** the GRUB-target and systemd-boot-target variants
+  are done; evidence is in the
+  [GRUB-target results](docs/RESULTS-M2-UNATTENDED-ISO-2026-11-18.md) and the
+  [systemd-boot results](docs/RESULTS-SDBOOT-M2-2026-11-22.md).
 
-## 2. Validate both M2 target ISO variants
+## ZFS
 
-- `iso/build-iso.sh --bootloader grub|systemd-boot` creates separate
-  artifacts and stores the fixed choice in `/dr/target-bootloader`.
-- `dr-autoinstall` validates that marker and passes it to `install-btrfs.sh`;
-  install configuration and optional config media cannot override it.
-- Keep both Live environments booting through Debian Live's GRUB path; only
-  the target disk's bootloader changes.
-- Both artifacts were built from the verified Debian Live base. The
-  systemd-boot target passed clean UEFI install and rollback scenarios; the
-  GRUB-target comparison passed disk layout, first boot, boot-menu and
-  rollback/default-selection checks. Results and hashes are in the dated
-  report.
+ZFS is paused for the core split (D28, DR-84, DR-96). PoC evidence is archived
+outside git (it contains a password hash); index in the rollback controller
+state. The install and runtime history remains in the
+[ZFS PoC plan](docs/ZFS-POC-PLAN.md) and its dated reports.
 
-## 3. ZFS PoC — deferred
+2026-11-24: the last PoC candidate ISO (`findmnt-securehandoff`) installed in a TCG guest (3072 MiB, 4 vCPUs): `DR-ZFS-AUTOINSTALL-DONE rc=0` after 4,978 s, clean power-off. First-boot acceptance was not run: it tests the superseded state manager. The installed disk is kept read-only as the base for the ZFS guest acceptance.
 
-Start the ZFS PoC after the systemd-boot branch passes its final gate and
-review and is merged. Use the existing experiment definitions as a starting
-point, update their old controller and host-scheduling assumptions, then
-evaluate the chosen ZFS boot environment in disposable guests. The old
-comparison plan is not itself evidence or current authorization.
+## Work order
 
-## Host and repository constraints
+- Wave 0: finish these status documents and lint every disk-wiping guard.
+- Wave 1: write the core-split design.
+- Wave 2: build the stdlib Python core with btrfs and GRUB, then the
+  systemd-boot, apt, and retention work.
+- Wave 2 tooling: build the loader-contract tier and move guest tooling into
+  `vm-lab`.
+- Wave 3: run the release matrix on ISO-built disks, then rebuild ZFS on the
+  core.
 
-- r1002 and v1001 are available for VMs without another approval request.
-- Keep using this existing worktree. Do not invoke the unavailable Claude
-  controller or its subcontrollers.
-- Keep guest disks and run data out of Git. Resolve shared ISO and VM paths
-  through `cowtree`; preserve existing host evidence and artifacts.
-- Run project tests only through the registered `run-gate` lane. The cockpit
-  is for inspection and orchestration.
+## Open items
+
+- **DR-82** F11: stdlib Python, runtime outside states, format versions — OPEN — P-rollback-10 — review H2/M2
+- **DR-83** one state-ID grammar; foreign `@os-*` unmanaged; legacy/.conf code removed — OPEN — P-rollback-20 — review H1
+- **DR-84** core/backends split (storage btrfs|zfs, boot grub|sdboot|zbm) before ZFS — OPEN — P-rollback-20/21 — review H2, L1, L2
+- **DR-85** snapshot never fails on menu capacity; degraded menu; capacity-aware retention; ESP-exhaustion guest scenario — OPEN — P-rollback-22/40 — review H5, F13
+- **DR-86** bootloader from ESP marker only — OPEN — P-rollback-20 — review M1
+- **DR-87** loader-contract tier: bootctl offline + vm-lab ESP boot — OPEN — P-rollback-24/32 — review H3
+- **DR-88** `check` + `--json`; dr-serial observable-only; mirror parsers removed — OPEN — P-rollback-24/26 — review H4, L4
+- **DR-89** one APT hook — OPEN — P-rollback-22 — review M3
+- **DR-90** metadata `kind` + `pinned` — OPEN — P-rollback-22 — review M4
+- **DR-91** kernel hash cache — OPEN — P-rollback-23 — review M5
+- **DR-92** counter floor from names + sidecars — OPEN — P-rollback-22 — review M6
+- **DR-93** boot-counting suffix rule defined — OPEN — P-rollback-10 — review M8
+- **DR-94** payload as files; hot-patch dev-only; snapper removed — OPEN — P-rollback-25 — review M10, L6
+- **DR-95** matrix runner committed; dr-qemu.sh retired; evidence archived — OPEN — P-rollback-30/33 — review H6
+- **DR-96** ZFS snapshot checkpoints + clone/promote; name = ID; no send/receive — OPEN — P-rollback-12/42 — review M7
+- **DR-97** all disk-wiping guards linted; release matrix on ISO-built disk — OPEN — P-rollback-04/40 — review L3, L5
+- **DR-98** kernel-install plugin instead of dpkg-divert — OPEN — P-rollback-41 — review plans-review
+- Parked (no ID): E2; phase 2 fallback; Secure Boot on sdboot; D25 RAM experiment; restore-image ISO + licence audit; ZFS restricted-GRUB comparison.
