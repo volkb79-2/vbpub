@@ -296,6 +296,11 @@ check_ctl38_last_text_all_paths() {
   done
   [[ -s $ROOT/ctl38-signal.hold.pid ]] \
     || { cat "$ROOT/ctl38-signal.out" >&2; fail 'CTL-38 signalled resume child never started'; }
+  [[ ! -e $runs/ctl38-signal.last.txt ]] \
+    || fail 'CTL-38 resumed child started beside the previous final text'
+  # Recreate the old text after launch so the EXIT-trap extraction is observable
+  # independently of the pre-launch cleanup above.
+  printf 'FINAL-A' > "$runs/ctl38-signal.last.txt"
   signal_pgid=$(ps -o pgid= -p "$(cat "$ROOT/ctl38-signal.hold.pid")" | tr -d '[:space:]')
   [[ $signal_pgid =~ ^[0-9]+$ ]] || fail 'CTL-38 signalled resume published no process group'
   kill -TERM -- "-$signal_pgid" || fail 'CTL-38 signalled resume process group was already gone'

@@ -206,8 +206,17 @@ mutant("scripts/controller/codex-impl.sh", "codex-run-name-claim.sh",
        'controller_run_claim "$name" || exit 2',
        ': # name ownership not claimed')
 mutant("scripts/controller/codex-impl.sh", "codex-resume-stale-marker.sh",
-       '  rm -f -- "$out/$name.done"\n  codex_launched=1',
+       '  rm -f -- "$out/$name.done" "$out/$name.last.txt"\n  codex_launched=1',
        '  codex_launched=1')
+mutant("scripts/controller/codex-impl.sh", "codex-resume-stale-last-text.sh",
+       'rm -f -- "$out/$name.done" "$out/$name.last.txt"',
+       'rm -f -- "$out/$name.done"')
+mutant("scripts/controller/codex-impl.sh", "codex-finish-stale-last-text.sh",
+       '  if (( codex_launched == 1 )); then\n'
+       '    codex_extract_last_text "$out/$name.jsonl" "$out/$name.last.txt"\n'
+       '    if [[ ! -e $out/$name.done ]]; then',
+       '  if (( codex_launched == 1 )); then\n'
+       '    if [[ ! -e $out/$name.done ]]; then')
 mutant("scripts/controller/codex-impl.sh", "codex-effort-vocabulary.sh",
        'case $effort in\n  minimal|low|medium|high|xhigh|max) ;;\n  *)\n    echo \'CODEX_EFFORT must be one of minimal, low, medium, high, xhigh, max\' >&2\n    exit 2\n    ;;\nesac',
        ': # CODEX_EFFORT vocabulary is not validated')
@@ -286,6 +295,19 @@ mutant("scripts/controller/codex-impl.sh", "codex-route-sidecar-unpinned.sh",
 mutant("scripts/controller/codex-impl.sh", "codex-unknown-route-fallback.sh",
        '*) echo "unknown CODEX_ROUTE=$route" >&2; exit 2 ;;',
        '*) route=luna; route_home=${CODEX_HOME_LUNA:-"$HOME/.codex"}; default_model=gpt-6-luna; default_effort=xhigh; auto_default=0 ;;')
+mutant("scripts/controller/codex-impl.sh", "codex-pinned-route-effort.sh",
+       '  deepseek-volker|deepseek-github2)\n'
+       '    od_account=${route#deepseek-}\n'
+       '    route_record=$route\n'
+       '    od_start_kind=pinned\n'
+       '    default_model=deepseek-v4.1-flash-eco\n'
+       '    default_effort=max',
+       '  deepseek-volker|deepseek-github2)\n'
+       '    od_account=${route#deepseek-}\n'
+       '    route_record=$route\n'
+       '    od_start_kind=pinned\n'
+       '    default_model=deepseek-v4.1-flash-eco\n'
+       '    default_effort=high')
 mutant("scripts/controller/opencode-impl.sh", "opencode-default-provider.sh",
        'provider=${OPENCODE_PROVIDER:-opendesign_github2}', 'provider=${OPENCODE_PROVIDER:-opendesign}')
 mutant("scripts/controller/README.md", "README-home-override-route.md",
@@ -297,6 +319,12 @@ mutant("scripts/controller/rules.md", "RULES-stale-last-text.md",
 mutant("scripts/controller/codex-impl.sh", "codex-autoresume-bound.sh",
        'while (( auto_count < auto_limit )) && reasoning_end',
        'while (( auto_count <= auto_limit )) && reasoning_end')
+mutant("scripts/controller/codex-impl.sh", "codex-autoresume-attempt-stream.sh",
+       '  # The whole invocation stream is the source of truth. A failed or empty later\n'
+       '  # attempt must not erase a completed agent message that this invocation\'s\n'
+       '  # primary child (or an earlier continuation) already produced.\n'
+       '  codex_extract_last_text "$out/$name.jsonl" "$out/$name.last.txt"',
+       '  codex_extract_last_text "$attempt_stream" "$out/$name.last.txt"')
 mutant("scripts/controller/codex-impl.sh", "codex-autoresume-limit-validation.sh",
        'raise SystemExit(0 if value <= 2147483647 else 1)', 'raise SystemExit(0)')
 mutant("scripts/controller/codex-impl.sh", "codex-stale-run-markers.sh",
@@ -504,6 +532,8 @@ mutant("scripts/controller/pi-impl.sh", "pi-run-collision-guard.sh",
 # owner's records get overwritten under it).
 mutant("scripts/controller/pi-impl.sh", "pi-run-name-claim.sh",
        'controller_run_claim "$name" || exit 2', ': # name ownership not claimed')
+mutant("scripts/controller/pi-impl.sh", "pi-default-thinking.sh",
+       'thinking=${PI_THINKING:-max}', 'thinking=${PI_THINKING:-high}')
 # The lock lives in lib.sh, and pi-impl.sh sources lib.sh from its own
 # directory, so a lib mutant judged against test-pi-impl.sh needs its own wrapper
 # copy beside the mutated library (otherwise the wrapper would load the real

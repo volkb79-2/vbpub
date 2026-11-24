@@ -85,6 +85,10 @@ expect_killed codex-run-name-claim \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-run-name-claim.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-resume-stale-marker \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-resume-stale-marker.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-resume-stale-last-text \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-resume-stale-last-text.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-finish-stale-last-text \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-finish-stale-last-text.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-effort-vocabulary \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-effort-vocabulary.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-run-name-child-close \
@@ -160,6 +164,8 @@ expect_killed codex-route-sidecar-pinned-form \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-route-sidecar-unpinned.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed codex-unknown-route-refusal \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-unknown-route-fallback.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-pinned-route-maximum-effort \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-pinned-route-effort.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-manual-resume-account \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-manual-resume-account.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-bookkeeping-exit-overwrite \
@@ -321,10 +327,15 @@ expect_killed od-resume-blocked-fallback \
   env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/od-resume-blocked-fallback/resume-usage-limited.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed codex-autoresume-bound \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-autoresume-bound.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed codex-autoresume-invocation-stream \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-autoresume-attempt-stream.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-autoresume-limit-validation \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-autoresume-limit-validation.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed controller-runs-dir-environment-override \
   env CONTROLLER_LIB_SCRIPT="$ROOT/mutants/scripts/controller/controller-run-dir-override.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed pi-default-maximum-thinking \
+  env PI_TEST_FOCUS=default-thinking PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/pi-default-thinking.sh" \
+    bash "$SCRIPT_DIR/test-pi-impl.sh"
 expect_killed resume-usage-limit-detection \
   env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-usage-detection.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed usage-retry-insufficient-balance \
