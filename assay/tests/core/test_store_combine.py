@@ -534,10 +534,18 @@ def test_policy_precedence_keeps_own_then_merge_then_shard_then_import(
     )
     assert result.records == (own,)
 
+    # The shard store here holds a DIFFERENT bucket than the merge record, so a
+    # reversed merge/shard order in _carry_over_records yields the shard's
+    # killed record and fails this case (review R2-1).
+    killed_shard_source = tmp_path / "killed-shard"
+    _arm_shard(killed_shard_source, job, bucket="killed")
+    killed_shard = mutation_store.StoreSource(
+        path=killed_shard_source, policy="strict-shard"
+    )
     merge_target = tmp_path / "merge-target"
     merge_events: list[dict[str, object]] = []
     result = mutation_store.combine(
-        (merge, shard, imported),
+        (merge, killed_shard, imported),
         _request(
             (job,), merge_target, carry_over_reason="precedence test", events=merge_events
         ),
