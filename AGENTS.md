@@ -666,27 +666,34 @@ still until the operator compacted, and lost hours in which work was ready to ru
 Before it ends a turn it keeps one monitor armed over every running job, so a job cannot
 finish or fail unnoticed while the session sits idle.
 
-### Successor restart of an interactive session (`scripts/controller/self-resume.sh`)
+### Successor restart of an interactive session (`compact-resume.sh`, `self-resume.sh`)
 
-An interactive Claude Code session in a tmux pane can be restarted into a fresh successor
-without the operator's click: `scripts/controller/self-resume.sh <pane-id> <prompt-file> <log>`
-waits until the pane is idle (no busy marker for 3 checks, max 30 min), sends `/clear`,
-waits for the cleared status line, types the prompt file's text and Enter. Proven 5 times on
-2026-11-24 (nonce/canary test, then the assay, rollback, platform and edge successors). Exit
-codes are in the script header (2: bad arguments or no pane, nothing sent; 3: never idle).
+An interactive Claude Code session in a tmux pane can be restarted without the operator's
+click. Both helpers wait until the pane is idle (no busy marker for 3 checks, max 30 min), act,
+then type the prompt file's text and Enter; exit codes are in each script header (2: bad
+arguments or no pane, nothing sent; 3: never idle; compact only, 4: compaction unfinished).
 
-- **Controller-driven restart of a sub-controller:** the sub-controller writes its handover,
-  reports "at boundary, ready for successor" and ends its turn; the controller runs the
-  helper on that pane with a prompt file that names the handover and its read-first list.
-- **Self-restart:** the session writes its handover (`controller-handover` skill) and a prompt
-  file, launches the helper DETACHED with `setsid nohup scripts/controller/self-resume.sh
-  "$TMUX_PANE" <prompt-file> <log> >/dev/null 2>&1 &` (never Bash `run_in_background`, which
-  dies with the session), then ends its turn. The helper does the rest once the turn ended.
-- **Limits:** the footer markers (`esc to interrupt`, `ctx ?`) are tied to Claude Code 2.1.331
-  and must be re-measured after a Claude Code upgrade. Whether a cross-session message that
-  arrives in the ~20 s between `/clear` and the prompt survives is untested, so a successor
-  asks its peers to resend anything they sent around the restart. Today a human or the
-  controller launches it; the future verb is `agctl successor <pane> <prompt-file>`
+- **Default: `/compact` via `scripts/controller/compact-resume.sh <pane-id> <guidance-file>
+  <prompt-file> <log>`.** Sends `/compact <guidance>`, waits for the compaction to finish, then
+  types the resume prompt. The context is kept as a summary and background work (subagents,
+  Monitors, background shells, codex runs) survives. Measured 2026-11-24: 442k -> ~60k in ~46 s.
+- **Clean slate: `/clear` via `scripts/controller/self-resume.sh <pane-id> <prompt-file> <log>`.**
+  Use it when the summary itself is untrustworthy or a different role takes the pane. Background
+  work dies with the session. Proven 5 times on 2026-11-24 (nonce/canary test, then the assay,
+  rollback, platform and edge successors).
+- **Both:** the session writes its handover file FIRST (`controller-handover` skill; the
+  PreCompact hook text is capped at 10,000 characters, so the file carries the content) and a
+  resume prompt that points at it and its read-first list.
+- **Controller-driven restart of a sub-controller:** it reports "at boundary, ready for
+  successor" and ends its turn; the controller runs the helper on that pane.
+- **Self-restart:** launch the helper DETACHED (`setsid nohup scripts/controller/compact-resume.sh
+  "$TMUX_PANE" <guidance> <prompt-file> <log> >/dev/null 2>&1 &`, never Bash `run_in_background`,
+  which dies with the session), then end the turn; the helper acts once it has ended.
+- **Limits:** the footer markers (`esc to interrupt`, `Compacting`, `ctx ?`; one copy in
+  `scripts/controller/resume-lib.sh`) are tied to Claude Code 2.1.331 and must be re-measured
+  after an upgrade. Whether a cross-session message arriving in the gap between the restart and
+  the prompt survives is untested, so a successor asks its peers to resend anything sent around
+  the restart. Future verb: `agctl successor <pane> <prompt-file> [--clear]`
   (`docs/design/agctl/DESIGN.md` section 6a).
 
 ### Spawned or non-interactive session (subagent, Codex/opencode/pi job, worker)
