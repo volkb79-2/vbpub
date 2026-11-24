@@ -72,6 +72,7 @@ def test_rev_c_s1_argv_must_match_the_authorised_extent():
     host = standard_host()
     ref = target_ref(host)
     j = devio.FioJob("j", DEV, "randwrite", 4096, 8, 5, 0, GIB, 4096 * 100, prefix="/run/iobench/j", device_guard=True)
+    host.claim(ref)
     host.write_range(j.argv(), ref, 0, GIB)
     for bad in (j.with_(filename="/dev/vda3"), j.with_(offset=4096), j.with_(size=2 * GIB)):
         with pytest.raises(HostError, match="authorised"):
@@ -86,6 +87,7 @@ def test_rev_c_s1_argv_must_match_the_authorised_extent():
         host.discard_range(devio.blkdiscard_argv(DEV, 0, 9 * GIB), ref, 0, GIB)
     with pytest.raises(HostError, match="discard argv"):
         host.discard_range(devio.blkdiscard_argv("/dev/vda3", 0, GIB), ref, 0, GIB)
+    host.release_claim()
     file_ref = TargetRef("file", "/bench/t.img", 8 * GIB)
     devio.assert_discard_bound(devio.punch_hole_argv("/bench/t.img", 0, GIB), file_ref, 0, GIB)
 
@@ -152,9 +154,10 @@ def test_rev_c_nr2_1_a_busy_device_is_a_refusal_exit_2(monkeypatch):
 
     monkeypatch.setattr("os.open", busy)
     ref = TargetRef("device", DEV, 10 * GIB, devno="254:7", partuuid="x")
-    with pytest.raises(HostError, match="exclusively"):
-        real.write_marker(ref, "{}")
-    # init_device turns that HostError into exit 2
+    with pytest.raises(Refusal) as busy_refusal:
+        real.claim(ref)
+    assert busy_refusal.value.condition == "device_in_use" and "Device or resource busy" in str(busy_refusal.value)
+    # init_device turns a marker HostError into exit 2
     host = standard_host()
 
     def claim(target, text):

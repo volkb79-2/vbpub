@@ -236,10 +236,19 @@ class Safety:
         self.report.io_max_before = snapshot_io_max(self.host)
         self.begun = True
 
-    def release(self) -> None:
-        if self.locked:
-            self.host.unlock()
-            self.locked = False
+    def release(self) -> str | None:
+        """Release the raw claim after every child is reaped, then the single-instance lock."""
+        claim_problem: str | None = None
+        try:
+            try:
+                claim_problem = self.host.release_claim()
+            except Exception as exc:  # noqa: BLE001 -- cleanup must still drop the lock and report a named failure
+                claim_problem = f"raw_claim_release_failed: {type(exc).__name__}: {exc}"
+        finally:
+            if self.locked:
+                self.host.unlock()
+                self.locked = False
+        return claim_problem
 
     # journal writes (SAF-01: before the first state change)
     def _write_journal(self) -> None:

@@ -113,7 +113,7 @@ def test_cli_11_capability_and_cache_delay_are_registered():
 from helpers import R1002_PARTUUID, R1002_SIZE  # noqa: E402,F401
 from iobench import testing  # noqa: E402
 
-GUARDS = ["--confirm-quiet-window", "--protect-cgroup", "game-server.slice", "--abort-psi", "40"]
+GUARDS = ["--confirm-quiet-window", "--protect-cgroup", "game-server.slice", "--abort-psi", "40", "--allow-raw-write"]
 
 
 def fresh_host():

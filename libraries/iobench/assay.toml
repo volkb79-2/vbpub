@@ -28,8 +28,8 @@ source_roots = ["src/iobench"]
 mode = "whole_target"
 # Every executable shipped module; tests/test_gate.py checks the inventory.
 # The docstring-only __init__.py has no executable lines for whole-target
-# coverage. host.py and __main__.py remain the two coverage-excluded real-effect
-# shims, covered by the r1002 acceptance probe IOB-ACC-01 and FakeHost parity.
+# coverage. __main__.py remains the only coverage-excluded entry shim; host.py's
+# syscall and subprocess boundaries are unit-tested with mocks and mutated.
 targets = [
   "src/iobench/cache.py",
   "src/iobench/calibrate.py",
@@ -42,6 +42,7 @@ targets = [
   "src/iobench/errors.py",
   "src/iobench/extents.py",
   "src/iobench/guard.py",
+  "src/iobench/host.py",
   "src/iobench/ladder.py",
   "src/iobench/matrix.py",
   "src/iobench/plan.py",

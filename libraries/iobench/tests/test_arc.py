@@ -172,8 +172,10 @@ def test_arc_03_fakefio_time_based_write_wraps_cache_recency():
     legacy_argv = [arg for arg in bounded.argv() if arg != "--time_based"]
     legacy_argv.append("--time_based")
 
+    host.claim(target_ref(host))
     handle = host.write_range(legacy_argv, target_ref(host), 0, size)
     handle.wait()
+    host.release_claim()
 
     assert handle.sim is not None and handle.sim.io_bytes == pytest.approx(3 * GIB)
     assert list(dev.cache.order.items()) == [(0, 1.0)]
@@ -353,6 +355,7 @@ def test_arc_05_fakehost_device_commands():
     assert h.devices["/bench/t.img"].kind == "file" and h.stat("/bench/t.img").size == 4 * GIB
     assert h.preallocate("/bench/big.img", 100 * GIB).returncode == 1
     # marker and discard
+    h.claim(ref)
     h.write_marker(ref, "{}")
     assert h.read_marker(ref) == "{}"
     assert h.discard_range(devio.blkdiscard_argv("/dev/vda7", 0, 4096), ref, 0, 4096).returncode == 0
@@ -369,12 +372,14 @@ def test_arc_05_fakehost_device_commands():
     h._verify(fref)
     with pytest.raises(HostError):
         h._verify(dataclasses.replace(fref, inode=1))
+    h.release_claim()
 
 
 def test_arc_05_fakehost_writer_rules():
     h = standard_host()
     ref = target_ref(h)
     j = job("randwrite", size=GIB)
+    h.claim(ref)
     with pytest.raises(HostError, match="write_range"):
         h.spawn(j.argv())
     with pytest.raises(HostError, match="extent"):
@@ -401,6 +406,7 @@ def test_arc_05_fakehost_writer_rules():
     assert h.devices["/dev/vda7"].unwritten_reads == [(10 * GIB, GIB)]
     with pytest.raises(TailViolation):
         h.spawn(job("randread", off=h.devices["/dev/vda7"].size - 4096, size=4096, name="t").argv())
+    h.release_claim()
 
 
 def test_tgt_03_device_model_tail_rules():

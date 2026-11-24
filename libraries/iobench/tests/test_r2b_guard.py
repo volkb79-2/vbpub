@@ -107,11 +107,12 @@ def test_a_device_with_a_serial_but_no_partuuid_is_never_accepted_on_an_unset_pa
     host = standard_host()
     host.add_disk("vdb", 8, 10 * GIB, serial="SER-1")
     host.add_partition("vdb", "vdb1", 8, 1, 4 * GIB, None)
-    args = dict(own=True, expect_size=4 * GIB, expect_partuuid=None, created=CREATED)
     with pytest.raises(Refusal) as err:
-        guard.init_device(host, "/dev/vdb1", expect_serial="WRONG", **args)
-    assert err.value.condition == "expect_identity_mismatch"
-    assert guard.init_device(host, "/dev/vdb1", expect_serial="SER-1", **args).serial == "SER-1"
+        guard.init_device(host, "/dev/vdb1", own=True, expect_size=4 * GIB, expect_partuuid=None,
+                          expect_serial="SER-1", created=CREATED)
+    assert err.value.condition == "raw_target_partuuid_required"
+    assert "serial alone" in str(err.value)
+    assert not any(claim.path == "/dev/vdb1" for claim in host.claims.values())
 
 
 # -- the root filesystem ----------------------------------------------------------------------------------------------

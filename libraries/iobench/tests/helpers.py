@@ -21,11 +21,20 @@ def job(rw="randread", *, off=0, size=GIB, bs=4096, qd=32, rt=30, io=None, metri
 
 def run_job(host: FakeHost, j: devio.FioJob, path: str = "/dev/vda7") -> devio.FioResult:
     started = host.now()
-    if j.writes:
-        handle = host.write_range(j.argv(), target_ref(host, path), j.offset, j.size)
-    else:
-        handle = host.spawn(j.argv())
-    return devio.collect(host, j, handle.wait(), started)
+    added_claim = j.writes and path not in host.claims
+    if added_claim:
+        host.claim(target_ref(host, path))
+    try:
+        if j.writes:
+            handle = host.write_range(j.argv(), target_ref(host, path), j.offset, j.size)
+        else:
+            handle = host.spawn(j.argv())
+        return devio.collect(host, j, handle.wait(), started)
+    finally:
+        if added_claim:
+            problem = host.release_claim()
+            if problem is not None:
+                raise AssertionError(problem)
 
 
 def cached_host(*, capacity=265, hit=92000, miss=9800, size=435853320192, **cache_kw) -> FakeHost:
@@ -66,7 +75,7 @@ def make_host(size: int = R1002_SIZE, *, cache: dict | None = None, read: dict |
 
 def config(**kw) -> stages.Config:
     base = dict(target="/dev/vda7", tool_version="0.1.0", work_dir="/bench/w", confirm_quiet_window=True,
-                protect_cgroup="game-server.slice", abort_psi=40.0)
+                protect_cgroup="game-server.slice", abort_psi=40.0, raw_write=True)
     base.update(kw)
     return stages.Config(**base)
 
