@@ -24,7 +24,9 @@ case $1 in
     phase=$(<"$s/phase"); k=$(( $(cat "$s/idx.$phase" 2>/dev/null || echo 0) + 1 )); echo "$k" >"$s/idx.$phase"
     f=$(printf '%s/frames/%s.%03d' "$s" "$phase" "$k")
     [[ -e $f ]] || f=$(printf '%s\n' "$s/frames/$phase".* | sort | tail -1)
-    echo "capture $phase" >>"$s/calls.log"; cat -- "$f" ;;
+    echo "capture $phase" >>"$s/calls.log"
+    # like tmux: -e keeps the SGR escapes of the fixture, without it they are dropped
+    if [[ " $* " == *" -e "* ]]; then cat -- "$f"; else sed 's/\x1b\[[0-9;]*m//g' "$f"; fi ;;
   send-keys)
     # send-keys -t <pane> /clear Enter | -t <pane> -l [--] <text> | -t <pane> Enter
     # Like tmux, a text that starts with "-" is parsed as flags (exit 1) unless "--" precedes it.
@@ -48,6 +50,8 @@ frame() {
     I) printf 'output\n❯\xc2\xa0\n\n  ctx 41%%\n' >"$f" ;;
     T) printf 'output\n❯ half-typed text\n\n  ctx 41%%\n' >"$f" ;;
     S) printf '❯ older prompt\nreply\n❯\xc2\xa0\n\n  ctx 41%%\n' >"$f" ;;
+    G) printf 'output\n❯\xc2\xa0\x1b[2mrun the tests\x1b[0m\n\n  ctx 41%%\n' >"$f" ;;        # dim prompt suggestion = empty
+    X) printf 'output\n\x1b[39m❯\x1b[0m half-typed \x1b[2mtext\x1b[22m\n\n  ctx 41%%\n' >"$f" ;; # coloured marker, plain typed text
     D) printf '(esc to interrupt)\n1\n2\n3\n4\n> \n' >"$f" ;;
     C) printf '\n> \n  ctx ?\n' >"$f" ;;
     N) printf '> \n  loading\n' >"$f" ;;
@@ -146,6 +150,17 @@ CLEAR_RESUME_IDLE_TRIES=5 run '%9' "$D/prompt.txt" "$D/log"
 [[ $RC -eq 5 ]] || fail "input never empty after /clear exit $RC (want 5)"
 [[ $(calls | grep -c '^send-keys') -eq 1 ]] || { calls >&2; fail "input never empty after /clear: only /clear Enter may be sent"; }
 [[ ! -e $D/sent.txt ]] || fail "input never empty after /clear: the prompt was typed"
+
+# 5e. A dim prompt suggestion in the input row (ESC[2m ... ESC[0m) is not typed text: the helper proceeds;
+#     plain text after a coloured marker is: nothing is sent (the stub serves the escapes only for capture -e).
+scenario dim "G" "C"
+run '%9' "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "dim suggestion blocked the send (exit $RC)"
+[[ $(calls | grep -c '^capture start') -eq 3 ]] || fail "dim suggestion: expected exactly 3 checks"
+scenario coloured "X" "C"
+CLEAR_RESUME_IDLE_TRIES=5 run '%9' "$D/prompt.txt" "$D/log"
+[[ $RC -eq 5 ]] || fail "typed text after a coloured marker exit $RC (want 5)"
+not_contains <(calls) "send-keys" "typed text after a coloured marker: /clear was sent"
 
 # 6. Argument and precondition errors exit 2 and send nothing.
 scenario args "I" "C"

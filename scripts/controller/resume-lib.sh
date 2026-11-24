@@ -21,10 +21,15 @@ busy() { pane_state; [[ $? -eq 1 ]]; } # one capture per call
 pane_state() { # ONE capture; 0 ready, 1 busy, 2 the input row has text
   # Input row = the LAST line starting with INPUT_MARKER (older prompt rows in the scrollback start
   # with it too); empty = the marker followed only by spaces / NBSP (or no such row at all).
-  local t f m row; t=$(tmux capture-pane -p -t "$pane")
-  f=$(grep -v '^[[:space:]]*$' <<<"$t" | tail -n "$FOOT_LINES")
+  # Claude Code shows a prompt SUGGESTION as dim text (ESC[2m ... ESC[0m or ESC[22m) in an EMPTY input row;
+  # a plain capture cannot tell it from typed text (every idle pane looked non-empty on 2026-11-24). So the
+  # capture keeps the escapes (-e), dim runs are dropped from the input row, and the remaining SGR escapes are
+  # stripped from the row and from the footer text before the busy markers are matched.
+  local t f m row esc=$'\033'; t=$(tmux capture-pane -e -p -t "$pane")
+  f=$(perl -pe 's/\e\[[0-9;]*m//g' <<<"$t" | grep -v '^[[:space:]]*$' | tail -n "$FOOT_LINES")
   for m in "${BUSY_MARKERS[@]}"; do grep -qF -- "$m" <<<"$f" && return 1; done
-  row=$(grep "^$INPUT_MARKER" <<<"$t" | tail -1)
+  row=$(grep -aE "^(${esc}\[[0-9;]*m)*$INPUT_MARKER" <<<"$t" | tail -1)
+  row=$(perl -pe 's/\e\[2m.*?(\e\[(0|22)m|$)//g; s/\e\[[0-9;]*m//g' <<<"$row")
   row=${row#"$INPUT_MARKER"}; row=${row//$'\xc2\xa0'/}; row=${row//[[:space:]]/}
   [[ -z $row ]] || return 2
 }
