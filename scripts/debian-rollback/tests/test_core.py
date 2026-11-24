@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import shutil
 import unittest
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ import _support
 from dr_state import ids, metadata
 from dr_state.boot import Inspection, Selector
 from dr_state.boot.grub import GrubBoot
+from dr_state.boot.sdboot import DEFAULT_EFIVAR, SdbootBoot
 from dr_state.core import Completed, Context, Runner, execute, make_context
 from dr_state.errors import (
     BootConfigError,
@@ -180,7 +182,14 @@ class FakeBoot:
             return None
         return Selector(self.oneshot_name, self.oneshot_name, self.oneshot_name, True)
 
-    def publish(self, targets: object, default: ids.StateId) -> None:
+    def publish(
+        self,
+        targets: object,
+        default: ids.StateId,
+        *,
+        clear_default_variable: bool = False,
+    ) -> None:
+        _ = clear_default_variable
         self.events.append("publish")
         if self.publish_error is not None:
             raise self.publish_error
@@ -276,6 +285,48 @@ class CoreTest(_support.TemporaryRootTest):
             stderr=io.StringIO(),
         )
         return context, runner
+
+    def sdboot_context(self) -> tuple[Context, FakeRunner]:
+        self.paths.esp.mkdir(parents=True, exist_ok=True)
+        self.paths.esp_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.esp_marker.write_text("systemd-boot\n", encoding="utf-8")
+        self.paths.loader_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.entry_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.esp_kernel_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.efivars_dir.mkdir(parents=True, exist_ok=True)
+        (self.paths.entry_dir / "os-windows.conf").write_text(
+            "title Windows\n",
+            encoding="utf-8",
+        )
+        value = b"\x07\x00\x00\x00" + "os-windows.conf".encode("utf-16-le")
+        (self.paths.efivars_dir / DEFAULT_EFIVAR).write_bytes(value)
+
+        class SdbootRunner(FakeRunner):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls: list[list[str]] = []
+
+            def run(self, argv: list[str], *, input: str | None = None) -> Completed:
+                if argv[0] == "bootctl":
+                    self.calls.append(argv)
+                    return Completed(0, "", "")
+                return super().run(argv, input=input)
+
+        runner = SdbootRunner()
+        boot = SdbootBoot(self.paths, self.storage, runner)
+        return self.context(runner=runner, boot=boot), runner
+
+    def assert_sdboot_verb_preserves_foreign_default(
+        self,
+        command: tuple[str, ...],
+    ) -> None:
+        context, runner = self.sdboot_context()
+        self.assertEqual(execute(context, command), 0)
+        self.assertEqual(
+            (self.paths.efivars_dir / DEFAULT_EFIVAR).read_bytes(),
+            b"\x07\x00\x00\x00" + "os-windows.conf".encode("utf-16-le"),
+        )
+        self.assertNotIn(["bootctl", "set-default", ""], runner.calls)
 
     def assert_snapshot_survives_publication_failure(
         self,
@@ -474,6 +525,56 @@ class CoreTest(_support.TemporaryRootTest):
         )
         self.assertEqual(execute(context, ("show", self.apt.name)), 0)
         self.assertIn("status: default", context.stdout.getvalue())
+
+    def test_gen_menu_preserves_a_foreign_loader_entry_default(self) -> None:
+        self.assert_sdboot_verb_preserves_foreign_default(("gen-menu",))
+
+    def test_snapshot_preserves_a_foreign_loader_entry_default(self) -> None:
+        self.assert_sdboot_verb_preserves_foreign_default(
+            ("snapshot", "--reason", "apt")
+        )
+
+    def test_apt_hook_preserves_a_foreign_loader_entry_default(self) -> None:
+        context, runner = self.sdboot_context()
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, b"VERSION 2\n\n")
+            os.close(write_fd)
+            write_fd = -1
+            context.env = {"APT_HOOK_INFO_FD": str(read_fd)}
+            self.assertEqual(execute(context, ("apt-pre-install-pkgs",)), 0)
+        finally:
+            if write_fd >= 0:
+                os.close(write_fd)
+            os.close(read_fd)
+        self.assertEqual(
+            (self.paths.efivars_dir / DEFAULT_EFIVAR).read_bytes(),
+            b"\x07\x00\x00\x00" + "os-windows.conf".encode("utf-16-le"),
+        )
+        self.assertNotIn(["bootctl", "set-default", ""], runner.calls)
+
+    def test_prune_preserves_a_foreign_loader_entry_default(self) -> None:
+        self.assert_sdboot_verb_preserves_foreign_default(
+            ("prune", "--keep", "10")
+        )
+
+    def test_delete_preserves_a_foreign_loader_entry_default(self) -> None:
+        self.assert_sdboot_verb_preserves_foreign_default(
+            ("delete", self.apt.name, "--yes")
+        )
+
+    def test_boot_once_preserves_a_foreign_loader_entry_default(self) -> None:
+        self.assert_sdboot_verb_preserves_foreign_default(
+            ("boot-once", self.apt.name)
+        )
+
+    def test_set_default_clears_the_loader_entry_override(self) -> None:
+        context, runner = self.sdboot_context()
+        self.assertEqual(execute(context, ("set-default", self.apt.name)), 0)
+        self.assertEqual(
+            runner.calls,
+            [["bootctl", "set-default", ""]],
+        )
 
     def test_snapshot_note_can_be_the_json_literal(self) -> None:
         context = self.context()

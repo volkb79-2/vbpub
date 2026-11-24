@@ -432,6 +432,7 @@ def _publish(
     *,
     exclude: Iterable[str] = (),
     requested: ids.StateId | None = None,
+    clear_default_variable: bool = False,
 ) -> None:
     boot = _require_boot(context)
     excluded = frozenset(exclude)
@@ -482,7 +483,11 @@ def _publish(
                 f"ESP cannot fit the selected systemd-boot menu: need {needed} "
                 f"bytes, capacity {capacity} bytes after protected entries"
             )
-    boot.publish(tuple(targets), chosen)
+    boot.publish(
+        tuple(targets),
+        chosen,
+        clear_default_variable=clear_default_variable,
+    )
 
 
 def _list_line(
@@ -806,7 +811,11 @@ def cmd_set_default(context: Context, command: Sequence[str]) -> int:
     if not context.storage.kernels(target.name):
         raise StorageError(f"state {target.name} has no bootable kernel")
     context.storage.activate(target)
-    _publish(context, requested=target)
+    _publish(
+        context,
+        requested=target,
+        clear_default_variable=True,
+    )
     return 0
 
 

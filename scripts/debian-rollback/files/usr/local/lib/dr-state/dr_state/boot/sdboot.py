@@ -31,7 +31,7 @@ _PAIR_ID_RE = re.compile(
     re.IGNORECASE,
 )
 _SELECTOR_RE = re.compile(
-    r"^os-[A-Za-z0-9][A-Za-z0-9._-]*(?:\+[0-9]+(?:-[0-9]+)?)?.conf$",
+    r"^os-[A-Za-z0-9][A-Za-z0-9._-]*(?:\+[0-9]+(?:-[0-9]+)?)?\.conf$",
     re.IGNORECASE,
 )
 _UUID_RE = re.compile(
@@ -65,13 +65,19 @@ class Filesystem:
         return os.statvfs(path)
 
     def lookup(self, path: Path) -> Path | None:
-        """Return the path the filesystem resolves, preserving its case."""
+        """Return the actual entry name, preferring an exact match over a VFAT alias."""
 
         try:
-            self.lstat(path)
+            candidates = tuple(path.parent.iterdir())
         except FileNotFoundError:
             return None
-        return path
+        for candidate in candidates:
+            if candidate.name == path.name:
+                return candidate
+        for candidate in candidates:
+            if candidate.name.casefold() == path.name.casefold():
+                return candidate
+        return None
 
     def mkdir(self, path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
@@ -196,7 +202,11 @@ def _entry_refs(data: bytes) -> frozenset[str]:
     return frozenset(refs)
 
 
-def _pair_id(version: str, kernel_hash: str, initrd_hash: str) -> str:
+def _pair_id(
+    version: str,
+    kernel_hash: str | None = None,
+    initrd_hash: str | None = None,
+) -> str:
     if (
         _KERNEL_VERSION_RE.fullmatch(version) is None
         or ".." in version
@@ -204,7 +214,9 @@ def _pair_id(version: str, kernel_hash: str, initrd_hash: str) -> str:
     ):
         raise BootError(f"unsafe kernel version {version!r}")
     if (
-        len(kernel_hash) != 64
+        not isinstance(kernel_hash, str)
+        or not isinstance(initrd_hash, str)
+        or len(kernel_hash) != 64
         or len(initrd_hash) != 64
         or any(char not in "0123456789abcdef" for char in kernel_hash + initrd_hash)
     ):
@@ -584,33 +596,6 @@ class SdbootBoot:
         if cache_key in self._pair_cache:
             return self._pair_cache[cache_key]
         pairs = self._scan().pairs_by_fold()
-        entry = self._entry_for_state(target.state.name)
-        if entry is not None:
-            for ref in sorted(entry.refs):
-                pair = pairs.get(ref)
-                if pair is None or pair.version != target.kernel.version:
-                    continue
-                try:
-                    sizes = (
-                        self.files.lstat(pair.path / "vmlinuz").st_size,
-                        self.files.lstat(pair.path / "initrd.img").st_size,
-                    )
-                except FileNotFoundError:
-                    continue
-                except OSError as error:
-                    raise BootError(f"cannot inspect kernel pair {pair.path}: {error}") from error
-                if sizes[0] > 0 and sizes[1] > 0:
-                    plan = _PairPlan(
-                        pair.name,
-                        pair.path,
-                        target.kernel.vmlinuz,
-                        target.kernel.initrd,
-                        None,
-                        None,
-                        sizes,
-                    )
-                    self._pair_cache[cache_key] = plan
-                    return plan
         kernel_hash, kernel_size = self._hash_source(target.kernel.vmlinuz)
         initrd_hash, initrd_size = self._hash_source(target.kernel.initrd)
         pair_id = _pair_id(target.kernel.version, kernel_hash, initrd_hash)
@@ -658,6 +643,11 @@ class SdbootBoot:
     def _entry_text(self, target: BootTarget, pair_id: str) -> bytes:
         if _UUID_RE.fullmatch(target.locator) is None:
             raise BootError(f"unsafe root locator {target.locator!r}")
+        pair = _PAIR_ID_RE.fullmatch(pair_id)
+        if pair is None or pair.group("version") != target.kernel.version:
+            raise BootError(
+                f"kernel id {pair_id!r} does not name version {target.kernel.version!r}"
+            )
         return (
             f"{ENTRY_MARKER}\n"
             f"title {target.title}\n"
@@ -717,25 +707,29 @@ class SdbootBoot:
             (entry.path.name.casefold(), ENTRY_BYTES),
         ]
 
-    def _selector_entry_names(self, selector: Selector | None) -> frozenset[str]:
-        if selector is None or not selector.known:
-            return frozenset()
-        parsed = ids.parse_entry_id(selector.entry or selector.raw)
+    def _selector_entry_names(
+        self, raw: str, inventory: _Inventory
+    ) -> frozenset[str]:
+        parsed = ids.parse_entry_id(raw)
         if parsed is None:
             return frozenset()
-        return frozenset(entry.name for entry in self._owned_entries(parsed.name))
+        return frozenset(
+            entry.name
+            for entry in inventory.owned_entries
+            if entry.state == parsed.name
+        )
 
     def _protected(
         self, inventory: _Inventory
     ) -> tuple[bool, frozenset[str], frozenset[str]]:
         """Return (known one-shot, protected entry names, protected states)."""
 
-        _ = inventory
         names: set[str] = set()
         states: set[str] = set()
         selectors: list[Selector] = []
         override = self._read_efivar(DEFAULT_EFIVAR, strict=False)
         if override.present and override.raw is not None:
+            names.update(self._selector_entry_names(override.raw, inventory))
             mapped = self._map_selector(
                 override.raw,
                 strict=False,
@@ -745,6 +739,7 @@ class SdbootBoot:
             if mapped is not None:
                 selectors.append(mapped)
         for raw in self._loader_defaults(strict=False):
+            names.update(self._selector_entry_names(raw, inventory))
             mapped = self._map_selector(
                 raw,
                 strict=False,
@@ -756,8 +751,8 @@ class SdbootBoot:
         pending = self.oneshot(strict=False)
         if pending is not None and pending.known:
             selectors.append(pending)
+            names.update(self._selector_entry_names(pending.raw, inventory))
         for selector in selectors:
-            names.update(self._selector_entry_names(selector))
             parsed = ids.parse_entry_id(selector.entry or selector.raw)
             if parsed is not None and parsed.name in self._managed_names():
                 states.add(parsed.name)
@@ -776,6 +771,9 @@ class SdbootBoot:
 
         inventory = self._scan()
         keep_states = frozenset(target.state.name for target in keep)
+        target_pairs = frozenset(
+            self._pair_plan(target).id.casefold() for target in keep
+        )
         known, protected_names, protected_states = self._protected(inventory)
         foreign_refs = frozenset().union(
             *(entry.refs for entry in inventory.entries if not entry.owned)
@@ -823,7 +821,12 @@ class SdbootBoot:
                 owner is not None and owner not in keep_states for owner in owners
             ):
                 continue
-            if known and folded in protected_refs and folded not in keep_refs:
+            if (
+                known
+                and folded in protected_refs
+                and folded not in keep_refs
+                and folded not in target_pairs
+            ):
                 continue
             try:
                 credit += (
@@ -914,7 +917,7 @@ class SdbootBoot:
         parent = plan.path.parent
         self.files.mkdir(parent)
         scratch = parent / f"{SCRATCH_PREFIX}{plan.id}"
-        if scratch.exists():
+        if self.files.lookup(scratch) is not None:
             self.files.rmtree(scratch)
         self.files.mkdir(scratch)
         try:
@@ -934,7 +937,7 @@ class SdbootBoot:
                     f"kernel payload changed while publishing {plan.kernel} "
                     f"or {plan.initrd}; retry"
                 )
-            if not plan.path.exists():
+            if self.files.lookup(plan.path) is None:
                 self.files.replace(scratch, plan.path)
                 fsync_directory(parent)
                 return
@@ -944,7 +947,7 @@ class SdbootBoot:
         except OSError as error:
             raise BootError(f"cannot publish kernel pair {plan.path}: {error}") from error
         finally:
-            if scratch.exists():
+            if self.files.lookup(scratch) is not None:
                 try:
                     self.files.rmtree(scratch)
                 except OSError:
@@ -987,15 +990,36 @@ class SdbootBoot:
         except OSError as error:
             raise BootError(f"cannot read {self.paths.loader_conf}: {error}") from error
 
-    def publish(self, targets: Sequence[BootTarget], default: ids.StateId) -> None:
+    def publish(
+        self,
+        targets: Sequence[BootTarget],
+        default: ids.StateId,
+        *,
+        clear_default_variable: bool = False,
+    ) -> None:
         """Publish the targets through shrink, copy-check, and write phases."""
 
         try:
-            self._publish(targets, default)
+            self._publish(
+                targets,
+                default,
+                clear_default_variable=clear_default_variable,
+            )
         except OSError as error:
             raise BootError(f"cannot publish systemd-boot configuration: {error}") from error
+        finally:
+            self._managed = None
+            self._inventory_cache = None
+            self._pair_cache.clear()
+            self._entry_cache.clear()
 
-    def _publish(self, targets: Sequence[BootTarget], default: ids.StateId) -> None:
+    def _publish(
+        self,
+        targets: Sequence[BootTarget],
+        default: ids.StateId,
+        *,
+        clear_default_variable: bool,
+    ) -> None:
         self._prepare_publication()
         names = tuple(target.state.name for target in targets)
         if default.name not in names:
@@ -1014,6 +1038,9 @@ class SdbootBoot:
         loader_old = self._loader_bytes()
         loader_new = self._rewrite_loader(ids.entry_id(default), loader_current)
         override = self._read_efivar(DEFAULT_EFIVAR, strict=False)
+        clear_default = (
+            clear_default_variable and override.present and override.readable
+        )
 
         self._shrink(
             inventory,
@@ -1027,7 +1054,7 @@ class SdbootBoot:
             not entry_changes
             and not pair_changes
             and not loader_changes
-            and not override.present
+            and not clear_default
         ):
             return
         if entry_changes or pair_changes or loader_changes:
@@ -1046,7 +1073,7 @@ class SdbootBoot:
             # B-1: loader.conf names the old default until every new entry and pair exists.
             self.files.mkdir(self.paths.loader_conf.parent)
             self.files.write_atomic(self.paths.loader_conf, loader_new)
-        if override.present:
+        if clear_default:
             self._run(["bootctl", "set-default", ""])
 
         # Only after the new default is effective may D17a remove old-default leftovers.
@@ -1055,8 +1082,6 @@ class SdbootBoot:
             target_entries=target_entries,
             target_pairs=target_pairs,
         )
-        self._pair_cache.clear()
-        self._entry_cache.clear()
 
     def set_oneshot(self, state: ids.StateId) -> None:
         try:

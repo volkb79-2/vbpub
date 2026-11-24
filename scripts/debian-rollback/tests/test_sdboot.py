@@ -73,17 +73,6 @@ class FakeSpaceFilesystem(Filesystem):
         return SimpleNamespace(f_bavail=self.free, f_frsize=1)
 
 
-class CaseInsensitiveFilesystem(Filesystem):
-    def lookup(self, path: Path) -> Path | None:
-        parent = path.parent
-        if not parent.is_dir():
-            return None
-        for candidate in parent.iterdir():
-            if candidate.name.casefold() == path.name.casefold():
-                return candidate
-        return None
-
-
 class RecordingFilesystem(FakeSpaceFilesystem):
     def __init__(self, free: int = 1 << 40) -> None:
         super().__init__(free)
@@ -123,6 +112,10 @@ class RecordingFilesystem(FakeSpaceFilesystem):
     def write_atomic(self, path: Path, data: bytes) -> None:
         self._record("write", path)
         super().write_atomic(path, data)
+
+    def lookup(self, path: Path) -> Path | None:
+        self._record("lookup", path)
+        return super().lookup(path)
 
 
 def make_state(sequence: int, hour: int, slug: str = "apt") -> ids.StateId:
@@ -308,12 +301,25 @@ class SdbootTest(_support.TemporaryRootTest):
     def test_sdboot_refuses_case_alias_foreign_entry(self) -> None:
         alias = self.paths.entry_dir / ids.entry_id(self.install).upper()
         alias.write_text("title foreign owner\n", encoding="utf-8")
-        filesystem = CaseInsensitiveFilesystem()
-        boot = self.make_boot(filesystem=filesystem)
+        boot = self.make_boot()
         with self.assertRaisesRegex(BootError, "case-insensitively collides"):
             boot.publish((self.target(self.install),), self.install)
         self.assertEqual(alias.read_text(encoding="utf-8"), "title foreign owner\n")
         self.assertFalse(self.paths.loader_conf.exists())
+
+    def test_filesystem_lookup_prefers_exact_then_returns_the_vfat_alias(self) -> None:
+        filesystem = Filesystem()
+        filesystem.mkdir(self.paths.entry_dir / "exact")
+        exact_upper = self.paths.entry_dir / "exact" / "Entry.Conf"
+        exact_lower = self.paths.entry_dir / "exact" / "entry.conf"
+        exact_upper.write_text("upper\n", encoding="utf-8")
+        exact_lower.write_text("lower\n", encoding="utf-8")
+        self.assertEqual(filesystem.lookup(exact_lower), exact_lower)
+        requested = self.paths.entry_dir / "alias" / "Mixed-Name.CONF"
+        actual = self.paths.entry_dir / "alias" / "mixed-name.conf"
+        filesystem.mkdir(actual.parent)
+        actual.write_text("alias\n", encoding="utf-8")
+        self.assertEqual(filesystem.lookup(requested), actual)
 
     def test_publish_refuses_foreign_exact_entry(self) -> None:
         self.entry(self.install).write_text("title foreign exact name\n", encoding="utf-8")
@@ -419,7 +425,31 @@ class SdbootTest(_support.TemporaryRootTest):
         self.storage.states.remove(self.install)
         self.storage.states.remove(self.apt)
         self.write_efivar(ONESHOT_EFIVAR, ids.entry_id(self.apt))
-        self.assertEqual(self.boot.capacity((self.target(later),)), 10)
+        self.assertEqual(
+            self.make_boot(filesystem=filesystem).capacity((self.target(later),)),
+            10,
+        )
+
+    def test_target_pair_only_referenced_by_a_protected_entry_is_credited(self) -> None:
+        shared_kernel = b"shared-kernel\n"
+        shared_initrd = b"shared-initrd\n"
+        self.add_state(self.install, kernel=shared_kernel, initrd=shared_initrd)
+        self.add_state(self.apt, kernel=shared_kernel, initrd=shared_initrd)
+        self.publish((self.install, self.apt), self.install)
+        shared_pair = self.pair_path(self.apt)
+        self.storage.states.remove(self.install)
+        self.storage.states.remove(self.apt)
+        later = make_state(3, 14, "manual-later")
+        self.add_state(later, kernel=shared_kernel, initrd=shared_initrd)
+        self.write_efivar(ONESHOT_EFIVAR, ids.entry_id(self.apt))
+        filesystem = FakeSpaceFilesystem(CAPACITY_MARGIN)
+        expected = (shared_pair / "vmlinuz").stat().st_size + (
+            shared_pair / "initrd.img"
+        ).stat().st_size
+        self.assertEqual(
+            self.make_boot(filesystem=filesystem).capacity((self.target(later),)),
+            expected,
+        )
 
     def test_foreign_entry_keeps_referenced_pair_during_shrink(self) -> None:
         self.publish((self.install, self.apt), self.install)
@@ -533,11 +563,26 @@ class SdbootTest(_support.TemporaryRootTest):
             f"default {ids.entry_id(self.apt)}",
         )
 
-    def test_loader_entry_default_is_cleared_after_publication(self) -> None:
-        self.publish((self.install, self.apt), self.install)
+    def test_loader_entry_default_is_cleared_only_by_an_explicit_set_default(self) -> None:
         self.write_efivar(DEFAULT_EFIVAR, ids.entry_id(self.apt))
         self.publish((self.install, self.apt), self.install)
+        self.assertNotIn(["bootctl", "set-default", ""], self.runner.calls)
+        self.boot.publish(
+            tuple(self.target(value) for value in (self.install, self.apt)),
+            self.install,
+            clear_default_variable=True,
+        )
         self.assertIn(["bootctl", "set-default", ""], self.runner.calls)
+
+    def test_unreadable_loader_entry_default_is_never_cleared(self) -> None:
+        (self.paths.efivars_dir / DEFAULT_EFIVAR).write_bytes(b"\x07\x00\x00")
+        self.publish((self.install, self.apt), self.install)
+        self.boot.publish(
+            tuple(self.target(value) for value in (self.install, self.apt)),
+            self.install,
+            clear_default_variable=True,
+        )
+        self.assertNotIn(["bootctl", "set-default", ""], self.runner.calls)
 
     def test_set_oneshot_uses_an_existing_owned_entry_and_the_bootctl_boundary(self) -> None:
         self.publish((self.install, self.apt), self.install)
@@ -571,14 +616,46 @@ class SdbootTest(_support.TemporaryRootTest):
                 (directory / f".tmp.lookalike-{index}.backup").is_file()
             )
 
-    def test_repeated_identical_publish_does_not_read_or_replace_payload(self) -> None:
+    def test_changed_initrd_at_same_kernel_version_refreshes_pair(self) -> None:
+        self.publish((self.install,), self.install)
+        old_pair = self.pair_path(self.install)
+        old_kernel = (old_pair / "vmlinuz").read_bytes()
+        source = (
+            self.paths.top
+            / self.install.name
+            / "boot"
+            / "initrd.img-6.12.117+deb13-amd64"
+        )
+        source.write_bytes(b"regenerated initrd for the same kernel version\n")
+        self.publish((self.install,), self.install)
+        new_pair = self.pair_path(self.install)
+        self.assertNotEqual(new_pair, old_pair)
+        self.assertEqual((new_pair / "vmlinuz").read_bytes(), old_kernel)
+        self.assertEqual((new_pair / "initrd.img").read_bytes(), source.read_bytes())
+        self.assertIn(
+            new_pair.name,
+            self.entry(self.install).read_text(encoding="utf-8"),
+        )
+
+    def test_copy_pair_checks_destinations_through_the_injected_filesystem(self) -> None:
+        filesystem = RecordingFilesystem()
+        self.boot = self.make_boot(filesystem=filesystem)
         self.publish((self.install,), self.install)
         pair = self.pair_path(self.install)
-        before = (pair / "vmlinuz").read_bytes()
-        source = self.paths.top / self.install.name / "boot" / "vmlinuz-6.12.117+deb13-amd64"
-        source.write_bytes(b"changed underneath the same version\n")
-        self.publish((self.install,), self.install)
-        self.assertEqual((pair / "vmlinuz").read_bytes(), before)
+        self.assertIn(("lookup", f".dr-state.tmp.{pair.name}"), filesystem.events)
+        self.assertIn(("lookup", pair.name), filesystem.events)
+
+    def test_selector_regex_requires_a_literal_conf_extension(self) -> None:
+        phantom = self.paths.entry_dir / (
+            f"{ids.entry_id(self.install).removesuffix('.conf')}-conf"
+        )
+        phantom.write_text("title foreign suffix-less entry\n", encoding="utf-8")
+        self.paths.loader_conf.write_text(
+            f"default {phantom.name}\ntimeout 5\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(BootConfigError, "malformed"):
+            self.boot.default(strict=True)
 
     def test_inspect_maps_counter_suffixed_owned_entry_to_its_state(self) -> None:
         self.publish((self.install,), self.install)
