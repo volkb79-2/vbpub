@@ -201,10 +201,8 @@ certbot renew --dry-run
 After a renewal the hook finds the Traefik container by its Compose service label and installed-instance name
 pattern, then runs `docker restart --time 5 <name>`. Expect about 3 seconds of edge downtime. It does not write
 or rewrite any file in the instance; when no matching container is running it prints a message and exits 0.
-The stable symlink follows the hook shipped in `stack/scripts/`. Reinstall it after updating a 3.x instance that
-used the old copied hook. A static-mode 3.x instance whose old hook ran must pass `--overwrite-local` to the 4.0
-update because the old hook rewrote `stack/edge-proxy/conf.d/certs.yml`, which the 4.0 bundle no longer ships;
-the replaced original is saved under `shared/overwritten/`.
+The stable symlink follows the hook shipped in `stack/scripts/`: a 4.x `update` refreshes the file it points at,
+so later instance updates take effect without another copied hook.
 
 **Staging CA** while testing: `[tls_edge.acme] ca_server = "https://acme-staging-v02.api.letsencrypt.org/directory"`
 (switch back and remove the ACME volume contents before going live, or the staging account is reused).
