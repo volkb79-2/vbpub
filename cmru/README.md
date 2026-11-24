@@ -1147,7 +1147,8 @@ a branch created at the published release tag (so the exact tagged source is jud
 If origin has no published stable CMRU tag, the same protected provisional
 release workflow runs the ordinary `assay` lane, because `_plan_gate` selects no
 special lane for a first release; the gate records that whole-source R2 is still
-due and names `run-gate assay-first-release-r2` as its follow-up.
+due and names `run-gate assay-first-release-r2` as its follow-up; a failed or
+inaccessible origin query is an error, never an empty release history.
 See the [first-release design](docs/DESIGN-GUIDE.md#first-release-has-no-historical-diff-baseline)
 and [release steps](docs/CONSUMERS.md#the-cmru-r0-r3-gate).
 The registered `gate` lane queries every CMRU release tag on origin through

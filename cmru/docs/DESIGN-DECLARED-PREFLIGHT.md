@@ -241,9 +241,9 @@ their argv, cwd and env outside the export.
    raise site. Docker unavailable is SKIPPED in `dry-run` mode and FAIL in `release` mode.
 9. The gate snapshot, with a fake `run-gate --list --json`. If the inventory lacks
    `assay`, the gate refuses before any lane runs. If it maps that lane to
-   `cmru-fr2`, `validate_lane_outputs` refuses a lane that leaves a retired first-release
-   closeout file as unapproved output (that closeout set is gone with KI-141 part 7), and
-   `campaign-cmru-fr2.json` is copied back.
+   `cmru-fr2`, `validate_lane_outputs` refuses a lane that leaves the formerly hard-coded
+   `cmru/.assay/campaign-cmru.json` as unapproved output (proving the set is derived from the
+   inventory, not from `_ASSAY_CLOSEOUT_LANES`), and `campaign-cmru-fr2.json` is copied back.
 10. An unchanged revision-5 project without the step loads, passes `cmru standards` and gets
     only the built-in rows.
 11. A multi-family release where family B's preflight FAILs: exit 4, and no family dispatches,

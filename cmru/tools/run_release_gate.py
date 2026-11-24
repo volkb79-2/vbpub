@@ -1123,7 +1123,7 @@ def _validate_postponement(project_root: Path, tracking_id: str) -> str:
 
 
 def _record_postponement(
-    project_root: Path, tracking_id: str, *, has_published_release: bool = True,
+    project_root: Path, tracking_id: str, *, has_published_release: bool,
 ) -> tuple[Path, dict[str, object]]:
     """Write the retained marker saying the mutation lane was deferred, and WARN.
 
