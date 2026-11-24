@@ -2033,7 +2033,9 @@ report size 0, so `_fifo_file` now serves every read from a fresh FIFO inode: on
 before the content is written, so a reopen can never reach a reader that has not yet seen EOF. The thread polls with `O_NONBLOCK`, is stopped and joined on cleanup.
 **Evidence.** New lane `io-governance-stress` (`run-gate.toml`: both tests, 50 repetitions on one CPU with a competing busy loop, first failure fails the lane),
 run on r1002: unfixed fixture (lane-only commit `c7ebd99a3`) FAIL on repetition 1 (`TimeoutExpired` 30 s, run `rgw-io-governance-stress-20261124T164729-r1002`);
-fix head `a37ab07a0` PASS, 139 s (run `rgw-io-governance-stress-20261124T164918-r1002`).
+fix head `a37ab07a0` PASS, 139 s (run `rgw-io-governance-stress-20261124T164918-r1002`); final head `557966c7d` stress PASS, 143 s (run
+`rgw-io-governance-stress-20261124T165229-r1002`) and `smoke` 3x PASS on r1002 (runs `rgw-smoke-20261124T165546-r1002`, `rgw-smoke-20261124T165833-r1002`,
+`rgw-smoke-20261124T170148-r1002`). Follow-ups from the Opus r1 review (P-mdt-111b): budget 4m, blocking write fd, serving-thread-ended assertion, one-reader-at-a-time docstring.
 
 `host-setup/tests/test_io_governance.py:569-582` (`_fifo_file`) serves a named pipe from a daemon thread whose `serve()` loop reopens the FIFO for writing as
 soon as the previous writer closes. If the reopen beats the reader (`cat`) to EOF, the reader receives the content a second time and never sees EOF.
