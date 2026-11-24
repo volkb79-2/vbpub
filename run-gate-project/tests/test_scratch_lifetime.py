@@ -254,6 +254,29 @@ def test_private_allocation_chmod_failure_removes_partial_dir(
     assert (root / run_gate.SCRATCH_OWNER_NAME).is_file()
 
 
+def test_private_allocation_mkdtemp_failure_has_no_partial_dir(
+        tmp_path, monkeypatch):
+    active = run_gate._active_scratch_run()
+    assert active is not None and active.root is not None
+    root = active.root
+    real_mkdtemp = run_gate.tempfile.mkdtemp
+
+    def deny_private_mkdtemp(*args, **kwargs):
+        if Path(kwargs.get("dir", "")) == root:
+            raise PermissionError(13, "Permission denied", str(root))
+        return real_mkdtemp(*args, **kwargs)
+
+    monkeypatch.setattr(run_gate.tempfile, "mkdtemp", deny_private_mkdtemp)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pytest.raises(
+            run_gate.GateInfraError,
+            match="no host-visible private directory"):
+        run_gate._make_private_dir(repo)
+    assert not list(root.glob("private-*"))
+    assert (root / run_gate.SCRATCH_OWNER_NAME).is_file()
+
+
 def test_scratch_root_mode_owner_and_symlinked_base(tmp_path, monkeypatch):
     active = run_gate._active_scratch_run()
     assert active.root is not None
