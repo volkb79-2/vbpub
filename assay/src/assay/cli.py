@@ -84,6 +84,7 @@ from . import (
     liveness,
     measurability,
     mutation,
+    mutation_store,
     process_tree,
     provenance,
     registry,
@@ -1461,15 +1462,15 @@ def _pilot_has_budget_record(
     if judge_sha256 is None or _CANDIDATE_ID_RE.fullmatch(judge_sha256) is None:
         return False
     try:
-        record = mutation._load_validated_state_record(
+        record = mutation_store._load_validated_state_record(
             state_dir,
             job,
             judge=judge_sha256,
             campaign_deadline_sha256=campaign_deadline_sha256,
-            cold_witness=cold_witness,
+            context=mutation_store.RecordContext(cold_witness=cold_witness),
             state_root_fd=state_root_fd,
         )
-    except mutation.MutationTerminalEvidenceError:
+    except mutation_store.MutationTerminalEvidenceError:
         # A present malformed terminal record is corruption, not an ordinary
         # unresolved budget candidate. Preserve the state error so the pilot
         # refuses before printing a summary that could hide it.
@@ -2114,7 +2115,7 @@ def _campaign_state_records_match(state_dir: Path, deadline_sha256: str) -> None
             raw = safeio.read_bounded_input(
                 state_dir,
                 name,
-                limit=mutation.MUTATION_STATE_RECORD_LIMIT,
+                limit=mutation_store.MUTATION_STATE_RECORD_LIMIT,
             )
         except AssayError as exc:
             raise LaneConfigError(
@@ -3595,7 +3596,7 @@ def _run_reserved(
                     if state_dir is not None
                     else mutation.default_state_root(lane_file.project_root)
                 )
-                if mutation.carried_survivor_count(store):
+                if mutation_store.carried_survivor_count(store):
                     print(
                         "note: carried survivors stay carried until "
                         "--rejudge-carried (or a WP4 replay) runs",
@@ -4530,7 +4531,7 @@ def _print_pending(
             done = any(record_judge == judge for record_judge, _bucket in found)
         else:
             done = any(
-                bucket in mutation.CARRY_OVER_IMPORTABLE_BUCKETS
+                bucket in mutation_store.CARRY_OVER_IMPORTABLE_BUCKETS
                 for _judge, bucket in found
             )
         if done:
@@ -4541,7 +4542,7 @@ def _print_pending(
     ambiguous_loci_ignored = 0
     if carry_forward_sources:
         assert judge is not None
-        match_kinds, ambiguous_loci_ignored = mutation.carry_forward_match_kinds(
+        match_kinds, ambiguous_loci_ignored = mutation_store.carry_forward_match_kinds(
             [job for _identity, job in pending],
             carry_forward_sources,
             judge=judge,

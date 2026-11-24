@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from assay import coverage as coverage_api
-from assay import git, mutation
+from assay import git, mutation, mutation_store
 from assay.candidate_identity import candidate_id_from_fields
 from assay.config import LaneFile, load_lane_file
 from assay.errors import AssayError
@@ -1115,7 +1115,7 @@ def _read_state_dir(state_dir: Path) -> list[dict]:
                 "state records exceed "
                 f"{MAX_STATE_DIRECTORY_BYTES} aggregate bytes"
             )
-        record_limit = min(mutation.MUTATION_STATE_RECORD_LIMIT, remaining)
+        record_limit = min(mutation_store.MUTATION_STATE_RECORD_LIMIT, remaining)
         try:
             raw, artifact = _read_artifact(
                 path, limit=record_limit, label="state record"
@@ -1133,7 +1133,7 @@ def _read_state_dir(state_dir: Path) -> list[dict]:
         except _StateAggregateBudgetExceeded as exc:
             raise ValueError(str(exc)) from exc
         except ValueError as exc:
-            if record_limit < mutation.MUTATION_STATE_RECORD_LIMIT and (
+            if record_limit < mutation_store.MUTATION_STATE_RECORD_LIMIT and (
                 f"exceeds {record_limit} bytes" in str(exc)
             ):
                 raise ValueError(

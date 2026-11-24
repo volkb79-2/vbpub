@@ -22,15 +22,17 @@ from assay.cli import _plan_rows_from_jobs, _resolve_declared_adapters
 from assay.config import load_lane_file
 from assay.mutation import (
     MUTATION_BUCKETS,
-    MUTATION_STATE_SCHEMA_VERSION,
     MutantEvidence,
     MutationTarget,
     UNSUPPORTED,
     candidate_id,
     collect_mutation_sites,
+    valid_hung_resource_evidence,
+)
+from assay.mutation_store import (
+    MUTATION_STATE_SCHEMA_VERSION,
     _execution_from_state_record,
     _terminal_result_matches_bucket,
-    valid_hung_resource_evidence,
 )
 from assay.process_tree import ProcessTreeEvidence
 from assay.resource_limits import ResourceLimitEvidence

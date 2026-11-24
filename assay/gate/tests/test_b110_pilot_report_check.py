@@ -22,7 +22,6 @@ from assay import observer_windows
 from assay.adapters.python import PythonAdapter
 from assay.mutation import (
     MUTATION_BUCKETS,
-    MUTATION_STATE_SCHEMA_VERSION,
     MutationTarget,
     candidate_id,
     candidate_identity_fields,
@@ -30,6 +29,7 @@ from assay.mutation import (
     plan_sha256,
     valid_hung_resource_evidence,
 )
+from assay.mutation_store import MUTATION_STATE_SCHEMA_VERSION
 from assay.process_tree import ProcessTreeEvidence
 from assay.r2_command import R2_APPENDED, R2_TRANSFORM_ID, collection_digest, transform_argv
 from gate.tests.support import PROJECT_ROOT

@@ -39,7 +39,7 @@ from pathlib import Path
 
 import pytest
 
-from assay import liveness, mutation
+from assay import liveness, mutation_store
 
 
 class _FakeClock:
@@ -237,7 +237,7 @@ def test_hung_result_retains_complete_time_aligned_resource_evidence(
     )
     assert all(sample["resources"]["status"] == "available" for sample in samples)
     assert samples[-1]["candidate_cpu_s"] == 3.0
-    assert mutation._valid_hung_resource_evidence(evidence)
+    assert mutation_store._valid_hung_resource_evidence(evidence)
 
 
 def test_progress_reset_retains_prior_snapshot_for_first_trace_interval(
@@ -762,7 +762,7 @@ def test_session_finish_then_still_alive_is_hung_after_a_full_idle_grace(
         runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
     assert clock.t == (1.0 if later_event_at is None else later_event_at) + 30.0
     assert proc.waited
-    assert mutation._valid_hung_resource_evidence(excinfo.value.resource_evidence)
+    assert mutation_store._valid_hung_resource_evidence(excinfo.value.resource_evidence)
 
 
 def test_session_finish_grace_does_not_classify_growing_cpu_as_hung(

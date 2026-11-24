@@ -41,7 +41,7 @@ from pathlib import Path
 import pytest
 from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
 
-from assay import mutation
+from assay import mutation, mutation_store
 from assay.adapters.python import PythonAdapter
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.mutation import MutationTarget, run_mutation
@@ -242,7 +242,7 @@ def test_signaled_test_runner_is_crashed_not_killed(tmp_path: Path):
     assert [outcome.lineno for outcome in result.crashed] == [3, 4, 5, 8]
     signaled = next(outcome for outcome in result.crashed if outcome.lineno == 3)
     assert signaled.process_tree_evidence.leader_status == "signaled"
-    assert mutation._terminal_result_matches_bucket(
+    assert mutation_store._terminal_result_matches_bucket(
         {
             "terminal_result": {
                 "outcome": "FAIL",

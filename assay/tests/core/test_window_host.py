@@ -25,7 +25,7 @@ from conftest import (
     process_tree_evidence_dict,
 )
 
-from assay import _window_host, cli, liveness, mutation, runner
+from assay import _window_host, cli, liveness, mutation, mutation_store, runner
 from assay.adapters.python import PythonAdapter
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.mutation import MutationExecution, MutationTarget, MutationWitnessReceipt
@@ -156,7 +156,7 @@ def test_host_result_protocol_preserves_mutation_bucket_inputs(
         if bucket == "killed"
         else None
     )
-    original_run = mutation._MutantRun(
+    original_run = mutation_store._MutantRun(
         result=result,
         equivalence_bytes=b"same" if bucket == "equivalent" else b"different",
         execution=MutationExecution(mode="full", witness=witness),
@@ -165,20 +165,20 @@ def test_host_result_protocol_preserves_mutation_bucket_inputs(
             result.process_tree_evidence
         ),
     )
-    run = mutation._MutantRun(
+    run = mutation_store._MutantRun(
         result=restored,
         equivalence_bytes=b"same" if bucket == "equivalent" else b"different",
         execution=MutationExecution(mode="full", witness=witness),
         resource_limit_evidence=_ZERO_LIMITS,
         process_tree_evidence=process_tree,
     )
-    host_bucket = mutation._bucket_for_run(
+    host_bucket = mutation_store._bucket_for_run(
         run,
         equivalence_artifact="result.json" if bucket == "equivalent" else None,
         baseline_equivalence=b"same" if bucket == "equivalent" else None,
         kill_signal_artifact=None,
     )
-    in_process_bucket = mutation._bucket_for_run(
+    in_process_bucket = mutation_store._bucket_for_run(
         original_run,
         equivalence_artifact="result.json" if bucket == "equivalent" else None,
         baseline_equivalence=b"same" if bucket == "equivalent" else None,
@@ -247,12 +247,12 @@ def test_window_host_preserves_a_completed_outcome_beneath_a_descendant_leak(
     assert result.underlying_outcome.outcome is underlying
     assert result.underlying_outcome.returncode == returncode
 
-    run = mutation._MutantRun(
+    run = mutation_store._MutantRun(
         result=result,
         resource_limit_evidence=_ZERO_LIMITS,
         process_tree_evidence=evidence,
     )
-    assert mutation._bucket_for_run(
+    assert mutation_store._bucket_for_run(
         run,
         equivalence_artifact=None,
         baseline_equivalence=None,
@@ -440,12 +440,12 @@ def test_candidate_budget_kills_the_child_tree_inside_the_window_host(tmp_path):
     )
     assert restored.underlying_outcome is None
     restored_evidence = ProcessTreeEvidence.from_dict(restored.process_tree_evidence)
-    run = mutation._MutantRun(
+    run = mutation_store._MutantRun(
         result=restored,
         resource_limit_evidence=_ZERO_LIMITS,
         process_tree_evidence=restored_evidence,
     )
-    assert mutation._bucket_for_run(
+    assert mutation_store._bucket_for_run(
         run,
         equivalence_artifact=None,
         baseline_equivalence=None,
@@ -484,14 +484,14 @@ def test_abrupt_window_host_exit_becomes_crashed_with_exec_failed_cause(
     assert evidence.clean
     assert type(evidence.signal) is int
     assert evidence.signal == signal.SIGKILL
-    run = mutation._MutantRun(
+    run = mutation_store._MutantRun(
         result=result,
         equivalence_bytes=None,
         execution=MutationExecution(mode="full", witness=None),
         resource_limit_evidence=_ZERO_LIMITS,
         process_tree_evidence=evidence,
     )
-    assert mutation._bucket_for_run(
+    assert mutation_store._bucket_for_run(
         run,
         equivalence_artifact=None,
         baseline_equivalence=None,

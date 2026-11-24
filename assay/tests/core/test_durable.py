@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from assay import _durable, cli, mutation, output
+from assay import _durable, cli, mutation_store, output
 
 
 def test_durable_fsync_raw_syscall(tmp_path, monkeypatch):
@@ -155,7 +155,7 @@ def test_state_and_verdict_writes_use_durable(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(_durable, "fsync", calls.append)
 
-    mutation._write_mutation_state_record(
+    mutation_store._write_mutation_state_record(
         tmp_path / "mutation-state", {"candidate_id": "a" * 64}
     )
     destination = tmp_path / "verdict.json"
