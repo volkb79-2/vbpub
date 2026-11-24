@@ -238,15 +238,22 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   below the Git toplevel via `git ls-files -z` with `--all`. Existing project
   configs load their normal refusals; under `--all`, a load refusal is a `load`
   finding and checking continues. The verb performs no Assay, Docker, or network
-  work, and `lanes` is a reserved lane name.
+  work, and `lanes` is a reserved lane name. A structural Assay error (`lanes`
+  not a table, or lane `judge`/`judge.canary` not a table) is a `load` FAIL
+  finding, not a traceback. An `assay.toml` read/parse refusal is attributed to
+  lane `assay.toml` when reported as an `--all` finding.
   `lanes` without `--check`, and any option outside the surface above, is a
   closed usage refusal; lane listing remains `--list`.
   For each effective `kind = "assay"` lane whose Run-Gate and named
-  `<project>/assay.toml` lanes both declare `budget`, `outer < inner` is a
-  `budget` FAIL and `inner <= outer < inner + 5m` is a `budget-margin` WARN.
-  A declared `judge.canary.budget_per_attempt` must be `<=` that Assay lane's
-  budget. The named Assay lane must exist; every such lane in a project with no
-  `assay.toml` reports that missing file. A native-R2 Assay lane (one that declares
+  `<project>/assay.toml` lanes both declare a comparable budget, `outer < inner`
+  is a `budget` FAIL and `inner <= outer < inner + 5m` is a `budget-margin`
+  WARN. Inner `budget = "unbounded"` means no inner deadline and skips both
+  comparisons. Any other inner spelling outside Run-Gate's duration grammar
+  yields exactly one WARN finding, rule `budget-unreadable`, and skips the
+  canary comparison. A declared `judge.canary.budget_per_attempt` must be
+  `<=` that Assay lane's comparable budget. The named Assay lane must exist;
+  every such lane in a project with no `assay.toml` reports that missing file.
+  A native-R2 Assay lane (one that declares
   `judge.mutation`) must admit `--shard 0/2` as instance `<lane>.shard0of2` and
   `--merge-shards 2` through `attach_r2_flex()`, while
   `refuse_serialized_shard()` must not refuse it; a refusal is a `shard` finding
@@ -254,7 +261,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   lane names are not rules.
   Text prints one `FAIL|WARN <project>:<lane> <rule> <detail>` line per
   finding, then `checked P projects, L lanes, F failures, W warnings`.
-  `--json` prints only
+  On a completed check, `--json` prints only
   `{"projects":[{"project","lanes_checked","findings":[...]}]}`, with each
   finding carrying `lane`, `rule`, `detail`, and `level` (`fail` or `warn`).
   WARN findings exit 0 unless `--strict` promotes them to FAIL; any FAIL uses

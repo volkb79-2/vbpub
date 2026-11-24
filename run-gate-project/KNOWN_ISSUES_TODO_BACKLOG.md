@@ -198,6 +198,7 @@ SPEC §9.
 | RG-305 | `.run-gate` producers that neither own their lifetime nor are known to prune | Major | OPEN 2026-11-24 (core, after the 2026-11-24 prune) |
 | RG-306 | run-gate's own assay lanes leave `pytest-of-<user>` in the shared state root | Minor | OPEN 2026-11-24 (core, after the 2026-11-24 prune) |
 | RG-307 | 16 assay wrappers have a zero outer-budget margin | Minor | OPEN 2026-11-24 (RG-296 implementation; P-core-08) |
+| RG-308 | runtime Assay-budget warning conflicts with R-59, and argparse accepts ambiguous option prefixes | Minor | OPEN 2026-11-24 (P-core-08 review) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9572,8 +9573,8 @@ Source: .controller-state/design-review-2026-11-24/SYNTHESIS.md section 5 (and c
 `run-gate lanes --check [--project DIR | --all] [--strict] [--json]` now
 checks the effective lane set offline: two-tier outer/Assay budget relations,
 canary bounds, Assay-lane existence, and native-R2 shard/merge admission.
-Its project tests are ported to `run-gate-project/tests/test_lanes_check.py`; the
-two restating project tests remain until their own P-core-12 gates.
+The rules were ported to `run-gate-project/tests/test_lanes_check.py`; the two
+restating project tests remain until their own P-core-12 gates.
 Source: .controller-state/design-review-2026-11-24/SYNTHESIS.md section 5 (and cmru-cli-extended.md M5 for RG-296)
 
 ## RG-297 — run-gate re-validates Assay flags
@@ -9752,3 +9753,23 @@ instead of Assay's BUDGET verdict. These are `budget-margin` warnings today;
 Wanted: each project raises its outer budget by at least 5m on its next touch;
 once none remain, P-core-12 runs the estate lint lane with `--strict`.
 Source: P-core-08's `run-gate lanes --check --all` audit, 2026-11-24.
+
+## RG-308 — Assay-budget warning and argparse prefix ambiguity
+
+**Status:** OPEN 2026-11-24 (P-core-08 review). Severity: Minor.
+
+(a) `assay_lane_budget_lines()` warns whenever the inner Assay budget is below
+the outer Run-Gate budget. R-59 now requires the outer budget to be at least
+the inner budget plus five minutes, so each project that fixes its RG-307
+margin starts warning on every run. Reconcile the warning policy with R-59
+(for example, warn only when the outer budget is less than twice the inner
+budget) or remove the warning. This is filed only; runtime behavior is
+unchanged in P-core-08.
+
+(b) `RunGateArgumentParser` keeps argparse's default `allow_abbrev=True`, so
+new prefixes such as `--proj` and `--str` are accepted silently. The new exact
+`--check` flag also displaces the former abbreviation of `--check-env`.
+Disable abbreviations (`allow_abbrev=False`) and require full option names.
+The current change documents the `--check-env` consequence but does not alter
+the parser.
+Source: .controller-state/design-review-2026-11-24, P-core-08 review round 1.

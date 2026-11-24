@@ -19841,13 +19841,13 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    in a short container of its own (RG-26)",
         "  --prune           `doctor` only: remove orphaned private scratch",
         "  --older-than DUR  age in budget grammar; default longest lane budget",
-        "  --check            `lanes` only: run the project lane-rule check;",
-        "                     without it the verb refuses rather than listing lanes",
-        "  --project DIR      `lanes --check`: check DIR instead of the current",
-        "                     project",
-        "  --all              `lanes --check`: check every tracked run-gate.toml",
-        "                     under this checkout's Git toplevel",
-        "  --strict           `lanes --check`: promote WARN findings to FAIL",
+        "  --check           `lanes` only: run the project lane-rule check;",
+        "                    without it the verb refuses rather than listing lanes",
+        "  --project DIR     `lanes --check`: check DIR instead of the current",
+        "                    project",
+        "  --all             `lanes --check`: check every tracked run-gate.toml",
+        "                    under this checkout's Git toplevel",
+        "  --strict          `lanes --check`: promote WARN findings to FAIL",
         "  --check-env       advisory drift sweep: env references in the project's",
         "                    Python sources covered by neither forward_env nor a",
         "                    lane's required_env (heuristic — warns, never refuses),",
@@ -20021,6 +20021,14 @@ def _lanes_check_finding(lane: str, rule: str, detail: object,
     }
 
 
+class LanesCheckLoadError(GateError):
+    """A project-file load error attributed to the file that failed."""
+
+    def __init__(self, lane: str, detail: object):
+        self.lanes_check_lane = lane
+        super().__init__(str(detail))
+
+
 def _lanes_check_invalid_options(args: argparse.Namespace) -> list[str]:
     allowed = {"lane", "check", "project", "all_projects", "strict",
                "json", "help"}
@@ -20057,15 +20065,19 @@ def _lanes_check_effective_lanes(project_dir: Path) -> tuple[
     return lanes, cfg, cfg_path, central, central_path
 
 
-def _lanes_check_assay_table(project_dir: Path) -> tuple[dict, str | None]:
+def _lanes_check_assay_table(
+        project_dir: Path) -> tuple[dict | None, str | None]:
     path = project_dir / "assay.toml"
     if not path.is_file():
         return {}, f"{path} does not exist"
     try:
         document = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
-        fail(f"cannot read {path}: {exc}")
-    return document.get("lanes", {}), None
+        raise LanesCheckLoadError("assay.toml", f"cannot read {path}: {exc}")
+    lanes = document.get("lanes", {})
+    if not isinstance(lanes, dict):
+        return None, f"{path}: 'lanes' must be a table"
+    return lanes, None
 
 
 def _lanes_check_r2_args(*, shard: str | None = None,
@@ -20077,15 +20089,27 @@ def _lanes_check_r2_args(*, shard: str | None = None,
         exclude_candidates=None)
 
 
-def _lanes_check_budget(lane_name: str, outer: object,
-                        inner_name: str, inner: object) -> dict | None:
+def _lanes_check_inner_budget(lane_name: str, inner_name: str,
+                              inner: object) -> tuple[int | None, dict | None]:
+    if inner == "unbounded":
+        return None, None
     try:
-        outer_seconds = _lanes_check_seconds(
-            outer, f"[lanes.{lane_name}].budget")
-        inner_seconds = _lanes_check_seconds(
-            inner, f"assay.toml [lanes.{inner_name}].budget")
-    except GateError as exc:
-        return _lanes_check_finding(lane_name, "budget", exc)
+        return _lanes_check_seconds(
+            inner, f"assay.toml [lanes.{inner_name}].budget"), None
+    except GateError:
+        return None, _lanes_check_finding(
+            lane_name, "budget-unreadable",
+            f"assay lane {inner_name!r} budget {inner!r} is outside "
+            f"Run-Gate's comparable budget grammar; budget and canary "
+            f"comparisons were skipped",
+            level="warn")
+
+
+def _lanes_check_budget(lane_name: str, outer: object,
+                        inner_name: str, inner: object,
+                        inner_seconds: int) -> dict | None:
+    outer_seconds = _lanes_check_seconds(
+        outer, f"[lanes.{lane_name}].budget")
     if outer_seconds < inner_seconds:
         return _lanes_check_finding(
             lane_name, "budget",
@@ -20101,15 +20125,14 @@ def _lanes_check_budget(lane_name: str, outer: object,
 
 
 def _lanes_check_canary(lane_name: str, inner_name: str,
-                        inner_budget: object, attempt: object) -> dict | None:
-    if attempt is None:
+                        inner_budget: object, inner_seconds: int | None,
+                        attempt: object) -> dict | None:
+    if attempt is None or inner_seconds is None:
         return None
     try:
         attempt_seconds = _lanes_check_seconds(
             attempt, f"assay.toml [lanes.{inner_name}] "
                      "judge.canary.budget_per_attempt")
-        inner_seconds = _lanes_check_seconds(
-            inner_budget, f"assay.toml [lanes.{inner_name}].budget")
     except GateError as exc:
         return _lanes_check_finding(lane_name, "canary", exc)
     if attempt_seconds > inner_seconds:
@@ -20158,6 +20181,10 @@ def _check_lanes_project(project_dir: Path, project_name: str,
     ]
     assay_table, assay_error = (
         _lanes_check_assay_table(project_dir) if assay_lanes else ({}, None))
+    if assay_table is None:
+        findings.append(_lanes_check_finding(
+            "assay.toml", "load", assay_error))
+        assay_lanes = []
 
     for lane_name, lane in assay_lanes:
         assay_lane_name = lane["assay_lane"]
@@ -20171,16 +20198,37 @@ def _check_lanes_project(project_dir: Path, project_name: str,
 
         outer_budget = lane.get("budget")
         inner_budget = inner.get("budget")
-        if outer_budget is not None and inner_budget is not None:
+        inner_seconds, inner_finding = (
+            _lanes_check_inner_budget(
+                lane_name, assay_lane_name, inner_budget)
+            if inner_budget is not None else (None, None))
+        if inner_finding is not None:
+            findings.append(inner_finding)
+        if (outer_budget is not None and inner_seconds is not None):
             budget_finding = _lanes_check_budget(
-                lane_name, outer_budget, assay_lane_name, inner_budget)
+                lane_name, outer_budget, assay_lane_name, inner_budget,
+                inner_seconds)
             if budget_finding is not None:
                 findings.append(budget_finding)
 
-        judge = inner.get("judge") or {}
-        canary = judge.get("canary") or {}
+        judge_decl = inner.get("judge")
+        if judge_decl is not None and not isinstance(judge_decl, dict):
+            findings.append(_lanes_check_finding(
+                "assay.toml", "load",
+                f"assay lane {assay_lane_name!r} 'judge' must be a table"))
+            continue
+        judge = judge_decl or {}
+        canary_decl = judge.get("canary")
+        if canary_decl is not None and not isinstance(canary_decl, dict):
+            findings.append(_lanes_check_finding(
+                "assay.toml", "load",
+                f"assay lane {assay_lane_name!r} "
+                f"'judge.canary' must be a table"))
+            canary = {}
+        else:
+            canary = canary_decl or {}
         canary_finding = _lanes_check_canary(
-            lane_name, assay_lane_name, inner_budget,
+            lane_name, assay_lane_name, inner_budget, inner_seconds,
             canary.get("budget_per_attempt"))
         if canary_finding is not None:
             findings.append(canary_finding)
@@ -20226,7 +20274,8 @@ def _dispatch_lanes_check(args: argparse.Namespace) -> bool:
                 "project": project_name,
                 "lanes_checked": 0,
                 "findings": [_lanes_check_finding(
-                    CONFIG_NAME, "load", exc)],
+                    getattr(exc, "lanes_check_lane", CONFIG_NAME),
+                    "load", exc)],
             })
 
     failures = sum(finding["level"] == "fail"
@@ -20952,6 +21001,11 @@ def _dispatch(argv: list[str] | None = None, *,
             if not args.check:
                 fail("`run-gate lanes` requires --check; lane listing is "
                      "`run-gate --list`")
+            positionals = (
+                [args.target] if args.target is not None else []) + lane_args
+            if positionals:
+                fail("`run-gate lanes --check`: unexpected positional "
+                     f"argument(s): {positionals!r}")
             invalid = _lanes_check_invalid_options(args)
             if invalid:
                 fail("`run-gate lanes --check` accepts only [--project DIR | "
@@ -21072,8 +21126,9 @@ def _dispatch(argv: list[str] | None = None, *,
                 "status")) \
                 and args.lane not in ("history", "footprint", "status") \
                 and not (args.list and args.lane is None):
-            fail("--json is honored by the `history`/`footprint`/`status` verbs only "
-                 "and by a lane result (run-gate <lane> --json) and by "
+            fail("--json is honored by the `history`/`footprint`/`status` "
+                 "verbs only, plus `lanes --check`; and by a lane result "
+                 "(run-gate <lane> --json) and by "
                  "`--list`; plain `--list` stays the three-column table "
                  "(name<TAB>kind<TAB>environment)")
         if args.write and args.lane != "footprint":

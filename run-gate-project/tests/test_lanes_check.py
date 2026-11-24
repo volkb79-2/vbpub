@@ -134,14 +134,39 @@ def test_canary_attempt_is_bounded_by_inner_budget(tmp_path, monkeypatch, capsys
         assert "canary" not in out
 
 
-def test_invalid_budgets_are_rule_findings(tmp_path, monkeypatch, capsys):
+def test_unbounded_inner_budget_skips_budget_and_canary_comparisons(
+        tmp_path, monkeypatch, capsys):
     code, out, _err = _check_one(
         tmp_path, monkeypatch, capsys, _gate_config("50m"),
-        _assay_config("auto", canary="auto"))
+        _assay_config("unbounded", canary="10m"))
+    assert code == 0 and "FAIL " not in out and "WARN " not in out
+    assert "checked 1 projects, 1 lanes, 0 failures, 0 warnings\n" in out
+
+
+@pytest.mark.parametrize(("strict", "code", "failures"), (
+    (False, 0, 0), (True, 1, 1)))
+def test_unreadable_inner_budget_is_one_warning(
+        tmp_path, monkeypatch, capsys, strict, code, failures):
+    actual, out, _err = _check_one(
+        tmp_path, monkeypatch, capsys, _gate_config("50m"),
+        _assay_config("1h30m", canary="1m30s"),
+        *(("--strict",) if strict else ()))
+    assert actual == code
+    assert out.count("budget-unreadable") == 1
+    assert "comparable budget grammar" in out
+    assert "project:outer canary" not in out
+    assert (f"checked 1 projects, 1 lanes, {failures} failures, "
+            f"{1 - failures} warnings\n" in out)
+
+
+def test_unreadable_canary_attempt_is_a_canary_failure(
+        tmp_path, monkeypatch, capsys):
+    code, out, _err = _check_one(
+        tmp_path, monkeypatch, capsys, _gate_config("50m"),
+        _assay_config("45m", canary="auto"))
     assert code == 1
-    assert "FAIL project:outer budget " in out
     assert "FAIL project:outer canary " in out
-    assert "checked 1 projects, 1 lanes, 2 failures, 0 warnings\n" in out
+    assert "budget_per_attempt" in out
 
 
 @pytest.mark.parametrize(("gate", "assay"), (
@@ -166,20 +191,59 @@ def test_assay_lane_must_exist_in_the_project_manifest(tmp_path, monkeypatch, ca
     assert detail in out
 
 
-@pytest.mark.parametrize("shared", (False, True))
-def test_native_r2_admits_a_shard_unless_the_lane_serializes(tmp_path, monkeypatch, capsys, shared):
-    code, out, _err = _check_one(
+@pytest.mark.parametrize(("shared", "mutation", "expected_code"), (
+    (False, True, 0), (True, True, 1), (True, False, 0)))
+def test_shard_rule_only_applies_to_native_r2(
+        tmp_path, monkeypatch, capsys, shared, mutation, expected_code):
+    actual, out, _err = _check_one(
         tmp_path, monkeypatch, capsys, _gate_config("50m", shared=shared),
-        _assay_config("45m", mutation=True), "--json")
+        _assay_config("45m", mutation=mutation), "--json")
     findings = json.loads(out)["projects"][0]["findings"]
-    assert code == (1 if shared else 0)
-    if shared:
+    assert actual == expected_code
+    if mutation and shared:
         assert [(item["lane"], item["rule"], item["level"])
                 for item in findings] == [("outer", "shard", "fail")]
         assert "declares resources.shared" in findings[0]["detail"]
         assert "serializes every run" in findings[0]["detail"]
     else:
         assert findings == []
+
+
+@pytest.mark.parametrize("assay", (
+    "schema_version = 2\nlanes = 1\n",
+    'schema_version = 2\n[lanes.inner]\nbudget = "45m"\njudge = "x"\n',
+    'schema_version = 2\n[lanes.inner]\nbudget = "45m"\n'
+    '[lanes.inner.judge]\ncanary = "x"\n',
+))
+def test_malformed_assay_shape_is_a_load_finding(
+        tmp_path, monkeypatch, capsys, assay):
+    code, out, err = _check_one(
+        tmp_path, monkeypatch, capsys, _gate_config("50m"), assay)
+    assert code == 1
+    assert "FAIL project:assay.toml load" in out
+    assert "Traceback" not in out + err
+
+
+def test_all_continues_after_malformed_shapes_and_parse_errors(
+        tmp_path, monkeypatch, capsys):
+    repo = _repo(tmp_path)
+    _project(repo, "00-lanes-shape", _gate_config("50m"),
+             "schema_version = 2\nlanes = 1\n")
+    _project(repo, "01-judge-shape", _gate_config("50m"),
+             'schema_version = 2\n[lanes.inner]\nbudget = "45m"\njudge = "x"\n')
+    _project(repo, "02-canary-shape", _gate_config("50m"),
+             'schema_version = 2\n[lanes.inner]\nbudget = "45m"\n'
+             '[lanes.inner.judge]\ncanary = "x"\n')
+    _project(repo, "03-parse", _gate_config("50m"), "[lanes.inner\n")
+    _project(repo, "04-later", _gate_config("44m"), _assay_config("45m"))
+    code, out, _err = _run(
+        monkeypatch, capsys, repo, "lanes", "--check", "--all")
+    assert code == 1
+    for name in ("00-lanes-shape", "01-judge-shape", "02-canary-shape",
+                 "03-parse"):
+        assert f"FAIL {name}:assay.toml load" in out
+    assert "FAIL 04-later:outer budget " in out
+    assert "checked 5 projects, 4 lanes, 5 failures, 0 warnings\n" in out
 
 
 def test_shard_instance_and_merge_refusals_are_findings(tmp_path, monkeypatch, capsys):
@@ -242,12 +306,13 @@ def test_json_shape_has_level_on_each_finding(tmp_path, monkeypatch, capsys):
 def test_project_option_checks_a_non_current_project(tmp_path, monkeypatch, capsys):
     repo = _repo(tmp_path)
     project = _project(
-        repo, "chosen", _gate_config("50m"), _assay_config("45m"))
+        repo, "chosen", _gate_config("44m"), _assay_config("45m"))
     code, out, _err = _run(
         monkeypatch, capsys, repo, "lanes", "--check",
         "--project", str(project))
-    assert code == 0
-    assert "checked 1 projects, 1 lanes, 0 failures, 0 warnings\n" in out
+    assert code == 1
+    assert "FAIL chosen:outer budget " in out
+    assert "checked 1 projects, 1 lanes, 1 failures, 0 warnings\n" in out
 
 
 def test_lanes_check_has_a_closed_option_surface(tmp_path, monkeypatch, capsys):
@@ -263,6 +328,21 @@ def test_lanes_check_has_a_closed_option_surface(tmp_path, monkeypatch, capsys):
     assert code == 2 and "either --project DIR or --all" in err
     code, _out, err = _run(monkeypatch, capsys, project, "doctor", "--all")
     assert code == 2 and "honored by `run-gate lanes --check` only" in err
+    for argv in (("doctor", "--strict"),
+                 ("doctor", "--project", str(project))):
+        code, _out, err = _run(monkeypatch, capsys, project, *argv)
+        assert code == 2
+        assert "honored by `run-gate lanes --check` only" in err
+    code, _out, err = _run(
+        monkeypatch, capsys, project, "lanes", "--project", str(project))
+    assert code == 2 and "requires --check" in err
+    for argv in (("lanes", "--check", "extra"), ("lanes", "--check", ""),
+                 ("lanes", "--check", "--", "extra")):
+        code, _out, err = _run(monkeypatch, capsys, project, *argv)
+        assert code == 2 and "unexpected positional argument(s)" in err
+        assert "--target" not in err and "--lane-args" not in err
+    code, _out, err = _run(monkeypatch, capsys, project, "doctor", "--json")
+    assert code == 2 and "`lanes --check`" in err
 
 
 def test_a_lane_named_lanes_is_refused_at_load(tmp_path, monkeypatch, capsys):
@@ -312,16 +392,14 @@ def test_real_repository_all_has_only_budget_margin_warnings(tmp_path, monkeypat
     assert code == 0, err
     findings = [finding for project in json.loads(out)["projects"]
                 for finding in project["findings"]]
-    assert findings, "current estate should retain budget-margin debt"
     assert all(item["level"] == "warn" and item["rule"] == "budget-margin"
                for item in findings)
 
-    code, out, err = _run(
+    strict_code, out, err = _run(
         monkeypatch, capsys, REPO_ROOT,
         "lanes", "--check", "--all", "--strict", "--json")
-    assert code == 1, err
+    assert strict_code == (1 if findings else 0), err
     strict = [finding for project in json.loads(out)["projects"]
               for finding in project["findings"]]
-    assert strict
     assert all(item["level"] == "fail" and item["rule"] == "budget-margin"
                for item in strict)

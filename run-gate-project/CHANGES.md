@@ -17,6 +17,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Changed
 - the release gate now also runs the R3 canary in the receipt image; no action needed for consumers
+- run-gate: `--check` now names the new `lanes --check` mode, so the former abbreviation of `--check-env` is no longer accepted; spell `--check-env` in full.
 
 ### Testing
 - no action needed: tests and documentation only (RG-290 and the image rebuild rule)
