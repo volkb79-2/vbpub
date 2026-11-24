@@ -523,10 +523,15 @@ cockpit. The argv regression is in `tests/test_runner_scripts.py`.
   environment without `container_name` is refused. `--min-run-gate VER` raises or lowers the
   profile's run-gate floor for one run. The vbpub profile floors the host run-gate at 25.0.1 and falls back to the `gate-tools2502` venv, so <host>'s
   default 24.3.0 is not used for estate lanes (add a newer venv with `runner/setup-cockpit-run-gate.sh`; a miss prints that command).
-- **Local `main`.** The throwaway checkout is detached and has no branches, but lanes declare `base = "main"` (assay.toml of nyxloom,
-  cowtree, worktree, ...). The controller's local `main` rides the same thin bundle (head `refs/heads/main`, its commits count towards the
-  "closest host checkout" choice) and the job creates `refs/heads/main` in the checkout without checking it out, so `--base main` and
-  `base = "main"` resolve like on the controller. Only a local branch `main` is shipped (no `origin/main`; no local `main` means none on the host).
+- **`main` is origin/main.** The throwaway checkout is detached and has no branches, but lanes declare `base = "main"` or `"origin/main"`
+  (assay.toml of nyxloom, cowtree, worktree, ...). The helper runs `git fetch -q origin main` in the controller checkout and ships
+  `refs/remotes/origin/main` on the same thin bundle (its commits count towards the "closest host checkout" choice); the job creates BOTH
+  `refs/remotes/origin/main` and `refs/heads/main` at that commit without checking it out. The controller's local `main` branch is never
+  shipped (it can lag origin by dozens of commits), and `--base main` / `--base origin/main` resolve to that same fetched commit (refused, exit 2,
+  when there is none). The fetch uses the explicit refspec `+refs/heads/main:refs/remotes/origin/main`, `--no-tags`, no auto-maintenance, no
+  credential prompt and a 60 s limit. A failed fetch prints one `WARNING` naming the existing origin/main commit and uses it; with no origin/main
+  at all the job deletes any `origin/main` and `main` a seed checkout carried over, so nothing stale resolves. An assay lane whose declared
+  `judge.base` does not resolve locally is refused (exit 2); `main` / `origin/main` count as resolving whenever an origin/main is shipped.
 - **Why a run failed.** When the verdict is neither PASS nor FAIL the last line carries the cause: `lane <lane> verdict ERROR; exit_code 2; reason
   <text>` (the verdict line's `reason`, the lane script's last own diagnostic line, else the job log's refusal line; `result.json` has the same `reason`).
   Known causes append a `[hint: ...]`. Known silent-looking causes: an exec-mode lane without a stack (above), a declared base given `--base`,
@@ -861,17 +866,17 @@ hashes, installs into `/opt/fleetd/<version>/venv`, and links
 
 ```bash
 wheel_dir=/var/cache/host-wheels
-fleetd_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/fleetd-0.3.0-py3-none-any.whl.sha256")
-cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.5.0-py3-none-any.whl.sha256")
+fleetd_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/fleetd-0.1.0-py3-none-any.whl.sha256")
+cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.8.0-py3-none-any.whl.sha256")
 sudo bash "$HOME/runner-scripts/install-fleetd.sh" \
   --wheel-dir "$wheel_dir" \
-  --fleetd-version 0.3.0 --fleetd-sha256 "$fleetd_sha256" \
-  --cli-extended-version 0.5.0 --cli-extended-sha256 "$cli_extended_sha256" \
+  --fleetd-version 0.1.0 --fleetd-sha256 "$fleetd_sha256" \
+  --cli-extended-version 0.8.0 --cli-extended-sha256 "$cli_extended_sha256" \
   --check
 sudo bash "$HOME/runner-scripts/install-fleetd.sh" \
   --wheel-dir "$wheel_dir" \
-  --fleetd-version 0.3.0 --fleetd-sha256 "$fleetd_sha256" \
-  --cli-extended-version 0.5.0 --cli-extended-sha256 "$cli_extended_sha256"
+  --fleetd-version 0.1.0 --fleetd-sha256 "$fleetd_sha256" \
+  --cli-extended-version 0.8.0 --cli-extended-sha256 "$cli_extended_sha256"
 command -v fleet
 ```
 

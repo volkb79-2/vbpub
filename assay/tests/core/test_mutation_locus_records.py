@@ -19,7 +19,7 @@ from test_flex_r2_campaigns import (
 from test_mutation_judge_identity import _record as _state_record
 from test_mutation_judge_identity import _store
 
-from assay import mutation
+from assay import mutation, mutation_store
 from assay.candidate_locus import LOCUS_SCHEMA, Locus
 from assay.mutation import MutationStateError
 
@@ -76,7 +76,7 @@ def _first_and_second_jobs() -> tuple[mutation.MutantJob, mutation.MutantJob]:
 
 def _locus_fields(job: mutation.MutantJob) -> dict[str, object]:
     source = job.original_text.encode("utf-8")
-    return mutation._locus_fields(
+    return mutation_store._locus_fields(
         path=job.path,
         source=source,
         start_byte=job.site.start_byte,
@@ -120,7 +120,7 @@ def _seed_function(repo: GitRepo) -> None:
 
 def _carry_v1(judge: str) -> dict[str, object]:
     return {
-        "schema_version": mutation.CARRY_OVER_SCHEMA_VERSION,
+        "schema_version": mutation_store.CARRY_OVER_SCHEMA_VERSION,
         "from_judge_sha256": judge,
         "into_judge_sha256": judge,
         "source": "/prior/store",
@@ -132,7 +132,7 @@ def _carry_v1(judge: str) -> dict[str, object]:
 
 def _carry_v2(**overrides: object) -> dict[str, object]:
     value = {
-        "schema_version": mutation.CARRY_OVER_SCHEMA_VERSION_V2,
+        "schema_version": mutation_store.CARRY_OVER_SCHEMA_VERSION_V2,
         "into_judge_sha256": _CURRENT_JUDGE,
         "source": "/prior/store",
         "reason": "schema-2 provenance",
@@ -156,13 +156,13 @@ def _provenance(candidate: str = _JUDGE, **overrides: object) -> dict[str, objec
 
 
 def test_provenance_constructor_owns_the_optional_fields():
-    imported = mutation._provenance_record(
+    imported = mutation_store._provenance_record(
         kind="imported",
         from_candidate_id=_JUDGE,
         from_judge_sha256=_JUDGE,
         match="exact-id",
     )
-    replayed = mutation._provenance_record(
+    replayed = mutation_store._provenance_record(
         kind="replayed",
         from_candidate_id=_JUDGE,
         from_judge_sha256=_JUDGE,
@@ -220,7 +220,7 @@ def test_schema_one_carry_over_derives_imported_exact_id_provenance():
     # at all, even with a valid candidate id.
     assert mutation.record_provenance({
         "candidate_id": candidate,
-        "carry_over": {"schema_version": mutation.CARRY_OVER_SCHEMA_VERSION},
+        "carry_over": {"schema_version": mutation_store.CARRY_OVER_SCHEMA_VERSION},
     }) is None
 
 
@@ -271,7 +271,7 @@ def test_old_record_without_locus_loads_unchanged(tmp_path):
     payload = _record(job, locus=False)
     root = _store(tmp_path, job, payload)
 
-    loaded = mutation._load_validated_state_record(root, job, judge=_JUDGE)
+    loaded = mutation_store._load_validated_state_record(root, job, judge=_JUDGE)
 
     assert loaded == payload
 
@@ -281,7 +281,7 @@ def test_valid_locus_and_window_load_unchanged(tmp_path):
     payload = _record(job)
     root = _store(tmp_path, job, payload)
 
-    loaded = mutation._load_validated_state_record(root, job, judge=_JUDGE)
+    loaded = mutation_store._load_validated_state_record(root, job, judge=_JUDGE)
 
     assert loaded == payload
     assert loaded["locus"] == _locus_fields(job)["locus"]
@@ -302,7 +302,7 @@ def test_swapped_span_drops_locus_and_record_remains_usable(
     root = _store(tmp_path, job, payload)
     locus_status: list[bool] = []
 
-    loaded = mutation._load_validated_state_record(
+    loaded = mutation_store._load_validated_state_record(
         root, job, judge=_JUDGE, locus_status=locus_status
     )
 
@@ -319,7 +319,7 @@ def test_record_locus_rejects_an_operator_that_does_not_bind_the_job(tmp_path):
     root = _store(tmp_path, job, payload)
 
     with pytest.raises(MutationStateError, match="stale operator"):
-        mutation._load_validated_state_record(root, job, judge=_JUDGE)
+        mutation_store._load_validated_state_record(root, job, judge=_JUDGE)
 
 
 @pytest.mark.parametrize(
@@ -345,7 +345,7 @@ def test_present_locus_with_wrong_shape_is_dropped(tmp_path, bad_locus):
     payload["locus"] = bad_locus
     root = _store(tmp_path, job, payload)
 
-    loaded = mutation._load_validated_state_record(root, job, judge=_JUDGE)
+    loaded = mutation_store._load_validated_state_record(root, job, judge=_JUDGE)
 
     assert isinstance(loaded, dict)
     assert "locus" not in loaded and "window_key" not in loaded
@@ -357,7 +357,7 @@ def test_window_key_must_match_locus(tmp_path):
     payload["window_key"] = "f" * 64
     root = _store(tmp_path, job, payload)
 
-    loaded = mutation._load_validated_state_record(root, job, judge=_JUDGE)
+    loaded = mutation_store._load_validated_state_record(root, job, judge=_JUDGE)
 
     assert isinstance(loaded, dict)
     assert "locus" not in loaded and "window_key" not in loaded
@@ -369,7 +369,7 @@ def test_window_key_without_locus_is_dropped(tmp_path):
     payload["window_key"] = "f" * 64
     root = _store(tmp_path, job, payload)
 
-    loaded = mutation._load_validated_state_record(root, job, judge=_JUDGE)
+    loaded = mutation_store._load_validated_state_record(root, job, judge=_JUDGE)
 
     assert isinstance(loaded, dict)
     assert "locus" not in loaded and "window_key" not in loaded
@@ -396,7 +396,7 @@ def test_locus_on_an_exact_id_fallback_site_is_dropped(tmp_path):
     payload.update(fallback_fields)
     root = _store(tmp_path, job, payload)
 
-    loaded = mutation._load_validated_state_record(root, job, judge=_JUDGE)
+    loaded = mutation_store._load_validated_state_record(root, job, judge=_JUDGE)
 
     assert isinstance(loaded, dict)
     assert "locus" not in loaded and "window_key" not in loaded
@@ -460,7 +460,7 @@ def test_schema_two_is_valid_beside_matching_provenance(tmp_path, kind: str):
     payload["provenance"] = _provenance(mutation.candidate_id(job), kind=kind)
     root = _store(tmp_path, job, payload)
 
-    loaded = mutation._load_validated_state_record(
+    loaded = mutation_store._load_validated_state_record(
         root, job, judge=_CURRENT_JUDGE
     )
 
@@ -477,10 +477,10 @@ def test_schema_two_replay_shape_is_unusable(tmp_path):
     root = _store(tmp_path, job, payload)
 
     assert (
-        mutation._load_validated_state_record(
+        mutation_store._load_validated_state_record(
             root, job, judge=_CURRENT_JUDGE
         )
-        is mutation._RECORD_REJECTED
+        is mutation_store._RECORD_REJECTED
     )
 
 
@@ -561,10 +561,10 @@ def test_unusable_provenance_is_rejected_without_raising(
     root = _store(tmp_path, job, payload)
 
     assert (
-        mutation._load_validated_state_record(
+        mutation_store._load_validated_state_record(
             root, job, judge=_CURRENT_JUDGE
         )
-        is mutation._RECORD_REJECTED
+        is mutation_store._RECORD_REJECTED
     )
 
 
@@ -577,8 +577,8 @@ def test_valid_imported_provenance_pair_is_accepted(tmp_path):
     payload["provenance"] = _provenance(mutation.candidate_id(job))
     root = _store(tmp_path, job, payload)
 
-    loaded = mutation._load_validated_state_record(root, job, judge=_CURRENT_JUDGE)
-    assert loaded is not None and loaded is not mutation._RECORD_REJECTED
+    loaded = mutation_store._load_validated_state_record(root, job, judge=_CURRENT_JUDGE)
+    assert loaded is not None and loaded is not mutation_store._RECORD_REJECTED
 
 
 @pytest.mark.parametrize("case", ["unknown-kind", "without-provenance"])
@@ -717,14 +717,14 @@ def test_locus_index_skips_malformed_records_and_keys():
 def test_locus_fields_never_raises_and_omits_an_unavailable_window(monkeypatch):
     job = _function_job()
     source = job.original_text.encode("utf-8")
-    real_locus_for_site = mutation._locus_for_site
+    real_locus_for_site = mutation_store._locus_for_site
 
     def explode(*_args, **_kwargs):
         raise RuntimeError("untrusted parser input")
 
-    monkeypatch.setattr(mutation, "_locus_for_site", explode)
+    monkeypatch.setattr(mutation_store, "_locus_for_site", explode)
     assert (
-        mutation._locus_fields(
+        mutation_store._locus_fields(
             path=job.path,
             source=source,
             start_byte=job.site.start_byte,
@@ -735,7 +735,9 @@ def test_locus_fields_never_raises_and_omits_an_unavailable_window(monkeypatch):
         == {}
     )
 
-    monkeypatch.setattr(mutation, "_locus_for_site", real_locus_for_site)
-    monkeypatch.setattr(mutation, "_window_key_for_site", lambda *_a, **_k: None)
+    monkeypatch.setattr(mutation_store, "_locus_for_site", real_locus_for_site)
+    monkeypatch.setattr(
+        mutation_store, "_window_key_for_site", lambda *_a, **_k: None
+    )
     fields = _locus_fields(job)
     assert set(fields) == {"locus"}

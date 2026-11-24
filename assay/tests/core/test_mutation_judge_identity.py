@@ -39,7 +39,7 @@ from types import SimpleNamespace
 import pytest
 from conftest import GitRepo, make_lane, make_plan, zero_resource_limit_evidence_dict
 
-from assay import isolation, mutation, observer_windows
+from assay import isolation, mutation, mutation_store, observer_windows
 from assay.cli import main
 from assay.errors import Outcome, ReasonCode
 from assay.mutation import MutationStateError, judge_sha256
@@ -428,8 +428,8 @@ def test_the_real_sweep_folds_the_real_assay_version():
     be assay's actual version, or the dimension above is decorative."""
     from assay import __version__
 
-    assert mutation._tool_version() == __version__
-    assert isinstance(mutation._tool_version(), str)
+    assert mutation_store._tool_version() == __version__
+    assert isinstance(mutation_store._tool_version(), str)
 
 
 def test_an_empty_environment_is_accepted_and_distinct():
@@ -537,7 +537,7 @@ def _record(job, *, judge: str, **overrides) -> dict:
         else "exited"
     )
     payload = {
-        "schema_version": mutation.MUTATION_STATE_SCHEMA_VERSION,
+        "schema_version": mutation_store.MUTATION_STATE_SCHEMA_VERSION,
         "candidate_id": mutation.candidate_id(job),
         "path": job.path,
         "operator": job.site.operator,
@@ -692,7 +692,7 @@ def test_state_record_resources_roundtrip(tmp_path: Path):
     }
     root = _store(tmp_path, job, _record(job, judge="j" * 64, resources=resources))
 
-    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+    loaded = mutation_store._load_validated_state_record(root, job, judge="j" * 64)
 
     assert isinstance(loaded, dict)
     assert loaded["resources"] == resources
@@ -712,7 +712,7 @@ def test_state_record_resources_roundtrip_with_unavailable_measurements(
     }
     root = _store(tmp_path, job, _record(job, judge="j" * 64, resources=resources))
 
-    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+    loaded = mutation_store._load_validated_state_record(root, job, judge="j" * 64)
 
     assert isinstance(loaded, dict)
     assert loaded["resources"] == resources
@@ -791,7 +791,7 @@ def test_state_record_resources_are_strictly_validated(
     )
 
     with pytest.raises(MutationStateError, match=message):
-        mutation._load_validated_state_record(root, job, judge="j" * 64)
+        mutation_store._load_validated_state_record(root, job, judge="j" * 64)
 
 
 def test_hung_record_without_resource_evidence_is_rejected(tmp_path: Path):
@@ -803,8 +803,8 @@ def test_hung_record_without_resource_evidence_is_rejected(tmp_path: Path):
     )
 
     assert (
-        mutation._load_validated_state_record(root, job, judge="j" * 64)
-        is mutation._RECORD_REJECTED
+        mutation_store._load_validated_state_record(root, job, judge="j" * 64)
+        is mutation_store._RECORD_REJECTED
     )
 
 
@@ -821,9 +821,9 @@ def test_hung_record_with_complete_resource_evidence_resumes(tmp_path: Path):
         ),
     )
 
-    record = mutation._load_validated_state_record(root, job, judge="j" * 64)
+    record = mutation_store._load_validated_state_record(root, job, judge="j" * 64)
 
-    assert record is not mutation._RECORD_REJECTED
+    assert record is not mutation_store._RECORD_REJECTED
     assert record["liveness_resource_evidence"]["decision"] == "idle-hang"
 
 
@@ -849,8 +849,8 @@ def test_session_finish_hang_evidence_needs_a_full_clean_grace(tmp_path: Path):
     )
 
     assert (
-        mutation._load_validated_state_record(root, job, judge="j" * 64)
-        is not mutation._RECORD_REJECTED
+        mutation_store._load_validated_state_record(root, job, judge="j" * 64)
+        is not mutation_store._RECORD_REJECTED
     )
 
 
@@ -873,7 +873,7 @@ def test_session_finish_hang_evidence_requires_a_quiet_complete_cpu_window(
         for sample in evidence["samples"][:-2]:
             sample["candidate_cpu_s"] = None
 
-    assert not mutation._valid_hung_resource_evidence(evidence)
+    assert not mutation_store._valid_hung_resource_evidence(evidence)
 
 
 @pytest.mark.parametrize("sample_count, accepted", [(32, False), (42, True)])
@@ -890,7 +890,7 @@ def test_finish_hang_cache_cpu_window_restarts_after_tree_sum_drops(
     for sample in evidence["samples"][10:]:
         sample["candidate_cpu_s"] = 1.0
 
-    assert mutation._valid_hung_resource_evidence(evidence) is accepted
+    assert mutation_store._valid_hung_resource_evidence(evidence) is accepted
 
 
 @pytest.mark.parametrize("version", [0, 2])
@@ -899,9 +899,9 @@ def test_hung_resource_evidence_with_a_non_current_schema_version_is_refused(ver
     (`liveness.py` writes `schema_version: 1`; resume re-reads it through
     `_valid_hung_resource_evidence`). A non-current version is never trusted."""
     evidence = _hung_evidence()
-    assert mutation._valid_hung_resource_evidence(evidence) is True
+    assert mutation_store._valid_hung_resource_evidence(evidence) is True
     evidence["schema_version"] = version
-    assert mutation._valid_hung_resource_evidence(evidence) is False
+    assert mutation_store._valid_hung_resource_evidence(evidence) is False
 
 
 def test_idle_hang_evidence_may_also_retain_a_candidate_finish_event():
@@ -911,7 +911,7 @@ def test_idle_hang_evidence_may_also_retain_a_candidate_finish_event():
         session_finish_eligible_s=10.0,
     )
 
-    assert mutation._valid_hung_resource_evidence(evidence) is True
+    assert mutation_store._valid_hung_resource_evidence(evidence) is True
 
 
 def test_first_retained_clean_interval_carries_its_prior_snapshot():
@@ -919,58 +919,58 @@ def test_first_retained_clean_interval_carries_its_prior_snapshot():
     first = evidence["samples"][0]
     first["resource_interval"] = "clear"
 
-    assert mutation._valid_hung_resource_evidence(evidence) is False
+    assert mutation_store._valid_hung_resource_evidence(evidence) is False
 
     first["previous_resources"] = _available_resource_snapshot()
 
-    assert mutation._valid_hung_resource_evidence(evidence) is True
+    assert mutation_store._valid_hung_resource_evidence(evidence) is True
 
 
 def test_hung_trace_accepts_pressure_then_a_complete_clean_cpu_window():
     evidence = _pressure_then_clean_hung_evidence()
-    assert mutation._valid_hung_resource_evidence(evidence) is True
+    assert mutation_store._valid_hung_resource_evidence(evidence) is True
 
 
 def test_hung_trace_rejects_pressure_labeled_as_eligible():
     evidence = _pressure_then_clean_hung_evidence()
     evidence["samples"][0]["eligible_interval_s"] = 1.0
 
-    assert mutation._valid_hung_resource_evidence(evidence) is False
+    assert mutation_store._valid_hung_resource_evidence(evidence) is False
 
 
 def test_hung_trace_rejects_mismatched_pressure_delta():
     evidence = _pressure_then_clean_hung_evidence()
     evidence["samples"][0]["resource_deltas"]["host_psi.memory.full_us"] = 2
 
-    assert mutation._valid_hung_resource_evidence(evidence) is False
+    assert mutation_store._valid_hung_resource_evidence(evidence) is False
 
 
 def test_hung_trace_rejects_inconsistent_eligible_time():
     evidence = _hung_evidence()
     evidence["samples"][1]["eligible_interval_s"] = 2.0
 
-    assert mutation._valid_hung_resource_evidence(evidence) is False
+    assert mutation_store._valid_hung_resource_evidence(evidence) is False
 
 
 def test_hung_trace_rejects_unproved_idle_or_intervening_progress():
     inflated = _hung_evidence()
     inflated["samples"] = inflated["samples"][1:]
-    assert mutation._valid_hung_resource_evidence(inflated) is False
+    assert mutation_store._valid_hung_resource_evidence(inflated) is False
 
     progressed = _hung_evidence()
     progressed["samples"][15]["event_count"] = 1
-    assert mutation._valid_hung_resource_evidence(progressed) is False
+    assert mutation_store._valid_hung_resource_evidence(progressed) is False
 
     missing = _hung_evidence()
     missing["samples"][15].pop("stdout_bytes")
-    assert mutation._valid_hung_resource_evidence(missing) is False
+    assert mutation_store._valid_hung_resource_evidence(missing) is False
 
 
 def test_hung_trace_rejects_idle_span_shorter_than_claimed():
     evidence = _hung_evidence()
     evidence["idle_eligible_s"] = 30.0
 
-    assert mutation._valid_hung_resource_evidence(evidence) is False
+    assert mutation_store._valid_hung_resource_evidence(evidence) is False
 
 
 def test_maximum_complete_hung_trace_fits_mutation_state_record_limit():
@@ -984,8 +984,8 @@ def test_maximum_complete_hung_trace_fits_mutation_state_record_limit():
     )
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
-    assert mutation._valid_hung_resource_evidence(evidence) is True
-    assert len(encoded) <= mutation.MUTATION_STATE_RECORD_LIMIT
+    assert mutation_store._valid_hung_resource_evidence(evidence) is True
+    assert len(encoded) <= mutation_store.MUTATION_STATE_RECORD_LIMIT
 
 
 @pytest.mark.parametrize(
@@ -1027,8 +1027,8 @@ def test_incomplete_or_inconsistent_hung_evidence_is_rejected(
     )
 
     assert (
-        mutation._load_validated_state_record(root, job, judge="j" * 64)
-        is mutation._RECORD_REJECTED
+        mutation_store._load_validated_state_record(root, job, judge="j" * 64)
+        is mutation_store._RECORD_REJECTED
     )
 
 
@@ -1111,7 +1111,7 @@ def test_hung_evidence_validator_rejects_incomplete_or_inconsistent_trace(damage
     evidence = copy.deepcopy(_hung_evidence())
     damage(evidence)
 
-    assert mutation._valid_hung_resource_evidence(evidence) is False
+    assert mutation_store._valid_hung_resource_evidence(evidence) is False
 
 
 @pytest.mark.parametrize(
@@ -1123,7 +1123,7 @@ def test_non_object_resume_records_are_unreadable_artifacts(
     job = _job()
     root = _store(tmp_path, job, payload)
     with pytest.raises(MutationStateError) as refused:
-        mutation._load_validated_state_record(root, job, judge="j" * 64)
+        mutation_store._load_validated_state_record(root, job, judge="j" * 64)
     assert refused.value.outcome is Outcome.ERROR
     assert refused.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
@@ -1146,12 +1146,12 @@ def test_numeric_resume_record_exceeding_decoder_limit_is_unreadable(
     root = _store(tmp_path, job, None)
     record, = root.glob("*.json")
     raw = "1" * (bounded_integer_decoder + 1)
-    assert len(raw) < mutation.MUTATION_STATE_RECORD_LIMIT
+    assert len(raw) < mutation_store.MUTATION_STATE_RECORD_LIMIT
     record.write_text(raw, encoding="utf-8")
     with pytest.raises(ValueError, match="integer string conversion"):
         json.loads(raw)
     with pytest.raises(MutationStateError) as refused:
-        mutation._load_validated_state_record(root, job, judge="j" * 64)
+        mutation_store._load_validated_state_record(root, job, judge="j" * 64)
     assert refused.value.outcome is Outcome.ERROR
     assert refused.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
     assert record.read_text(encoding="utf-8") == raw
@@ -1166,7 +1166,7 @@ def test_decoder_recursion_refusal_is_an_unreadable_artifact(tmp_path: Path, mon
 
     monkeypatch.setattr(mutation.json, "loads", recursion_refusal)
     with pytest.raises(MutationStateError) as refused:
-        mutation._load_validated_state_record(root, job, judge="j" * 64)
+        mutation_store._load_validated_state_record(root, job, judge="j" * 64)
     assert refused.value.outcome is Outcome.ERROR
     assert refused.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
@@ -1217,7 +1217,7 @@ def test_cli_writes_structured_verdict_for_non_object_resume_record(
 def test_a_matching_judge_resumes_the_record(tmp_path: Path):
     job = _job()
     root = _store(tmp_path, job, _record(job, judge="j" * 64))
-    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+    loaded = mutation_store._load_validated_state_record(root, job, judge="j" * 64)
     assert loaded is not None and loaded["outcome_bucket"] == "survived"
 
 
@@ -1231,27 +1231,31 @@ def test_equivalent_record_requires_matching_declared_artifact_evidence(
         _record(job, judge="j" * 64, outcome_bucket="equivalent"),
     )
 
-    loaded = mutation._load_validated_state_record(
+    loaded = mutation_store._load_validated_state_record(
         root,
         job,
         judge="j" * 64,
-        equivalence_artifact=".assay/schema-dump.sql",
-        baseline_equivalence_sha256="a" * 64,
+        context=mutation_store.RecordContext(
+            equivalence_artifact=".assay/schema-dump.sql",
+            baseline_equivalence_sha256="a" * 64,
+        ),
     )
-    assert loaded is not mutation._RECORD_REJECTED
+    assert loaded is not mutation_store._RECORD_REJECTED
     assert (
-        mutation._load_validated_state_record(root, job, judge="j" * 64)
-        is mutation._RECORD_REJECTED
+        mutation_store._load_validated_state_record(root, job, judge="j" * 64)
+        is mutation_store._RECORD_REJECTED
     )
     assert (
-        mutation._load_validated_state_record(
+        mutation_store._load_validated_state_record(
             root,
             job,
             judge="j" * 64,
-            equivalence_artifact=".assay/other.sql",
-            baseline_equivalence_sha256="a" * 64,
+            context=mutation_store.RecordContext(
+                equivalence_artifact=".assay/other.sql",
+                baseline_equivalence_sha256="a" * 64,
+            ),
         )
-        is mutation._RECORD_REJECTED
+        is mutation_store._RECORD_REJECTED
     )
 
 
@@ -1269,14 +1273,14 @@ def test_forced_crash_cannot_be_relabelled_as_killed(tmp_path: Path):
         },
     )
     root = _store(tmp_path, job, payload)
-    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+    loaded = mutation_store._load_validated_state_record(root, job, judge="j" * 64)
     assert isinstance(loaded, dict) and loaded["outcome_bucket"] == "crashed"
 
     payload["outcome_bucket"] = "killed"
     root = _store(tmp_path / "relabelled", job, payload)
-    assert mutation._load_validated_state_record(
+    assert mutation_store._load_validated_state_record(
         root, job, judge="j" * 64
-    ) is mutation._RECORD_REJECTED
+    ) is mutation_store._RECORD_REJECTED
 
 
 def test_hung_cleanup_descendants_follow_shared_leak_precedence():
@@ -1307,7 +1311,7 @@ def test_hung_cleanup_descendants_follow_shared_leak_precedence():
         process_tree_evidence=evidence.to_dict(),
     )
 
-    assert mutation._terminal_result_matches_bucket(
+    assert mutation_store._terminal_result_matches_bucket(
         payload, process_tree_evidence=evidence
     )
     failures: list[str] = []
@@ -1357,7 +1361,7 @@ def test_normal_exit_with_descendants_cannot_be_a_functional_kill():
         outcome_bucket="killed",
         process_tree_evidence=evidence.to_dict(),
     )
-    assert not mutation._terminal_result_matches_bucket(
+    assert not mutation_store._terminal_result_matches_bucket(
         payload, process_tree_evidence=evidence
     )
 
@@ -1382,7 +1386,7 @@ def test_present_malformed_terminal_evidence_is_corruption(
     )
 
     with pytest.raises(MutationStateError, match="invalid terminal evidence"):
-        mutation._load_validated_state_record(root, job, judge="j" * 64)
+        mutation_store._load_validated_state_record(root, job, judge="j" * 64)
 
 
 def test_a_pass_with_a_limit_event_is_reused_as_survived(tmp_path: Path):
@@ -1403,7 +1407,7 @@ def test_a_pass_with_a_limit_event_is_reused_as_survived(tmp_path: Path):
         _record(job, judge="j" * 64, resource_limit_evidence=evidence),
     )
 
-    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+    loaded = mutation_store._load_validated_state_record(root, job, judge="j" * 64)
     assert isinstance(loaded, dict) and loaded["outcome_bucket"] == "survived"
 
 
@@ -1431,9 +1435,9 @@ def test_a_crashed_pass_with_a_limit_event_is_rejected_and_rerun(tmp_path: Path)
         ),
     )
 
-    assert mutation._load_validated_state_record(
+    assert mutation_store._load_validated_state_record(
         root, job, judge="j" * 64
-    ) is mutation._RECORD_REJECTED
+    ) is mutation_store._RECORD_REJECTED
 
 
 def test_a_current_judge_record_without_b145_evidence_is_rejected(tmp_path: Path):
@@ -1443,8 +1447,8 @@ def test_a_current_judge_record_without_b145_evidence_is_rejected(tmp_path: Path
     root = _store(tmp_path, job, payload)
 
     assert (
-        mutation._load_validated_state_record(root, job, judge="j" * 64)
-        is mutation._RECORD_REJECTED
+        mutation_store._load_validated_state_record(root, job, judge="j" * 64)
+        is mutation_store._RECORD_REJECTED
     )
 
 
@@ -1461,7 +1465,7 @@ def test_unobserved_resource_record_is_reused_with_explicit_state_marker(
     }
     root = _store(tmp_path, job, payload)
 
-    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+    loaded = mutation_store._load_validated_state_record(root, job, judge="j" * 64)
 
     assert isinstance(loaded, dict)
     assert loaded["outcome_bucket"] == bucket
@@ -1478,9 +1482,9 @@ def test_unobserved_kill_record_without_clean_report_is_rejected(tmp_path: Path)
     }
     root = _store(tmp_path, job, payload)
 
-    assert mutation._load_validated_state_record(
+    assert mutation_store._load_validated_state_record(
         root, job, judge="j" * 64
-    ) is mutation._RECORD_REJECTED
+    ) is mutation_store._RECORD_REJECTED
 
 
 def test_unobserved_kill_record_with_clean_report_is_reused(tmp_path: Path):
@@ -1507,7 +1511,7 @@ def test_unobserved_kill_record_with_clean_report_is_reused(tmp_path: Path):
     }
     root = _store(tmp_path, job, payload)
 
-    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+    loaded = mutation_store._load_validated_state_record(root, job, judge="j" * 64)
 
     assert isinstance(loaded, dict)
     assert loaded["outcome_bucket"] == "killed"
@@ -1526,7 +1530,7 @@ def test_resource_state_cannot_claim_observed_and_unobserved_windows(
     root = _store(tmp_path, job, payload)
 
     with pytest.raises(MutationStateError, match="cannot carry both"):
-        mutation._load_validated_state_record(root, job, judge="j" * 64)
+        mutation_store._load_validated_state_record(root, job, judge="j" * 64)
 
 
 @pytest.mark.parametrize(
@@ -1559,8 +1563,8 @@ def test_pre_current_b145_state_shapes_are_validated_then_rejected(
     root = _store(tmp_path, job, payload)
 
     assert (
-        mutation._load_validated_state_record(root, job, judge="n" * 64)
-        is mutation._RECORD_REJECTED
+        mutation_store._load_validated_state_record(root, job, judge="n" * 64)
+        is mutation_store._RECORD_REJECTED
     )
 
 
@@ -1583,7 +1587,7 @@ def test_corrupt_pre_current_b145_state_shape_is_still_an_error(tmp_path: Path):
     root = _store(tmp_path, job, payload)
 
     with pytest.raises(MutationStateError, match="invalid resource-limit evidence"):
-        mutation._load_validated_state_record(root, job, judge="n" * 64)
+        mutation_store._load_validated_state_record(root, job, judge="n" * 64)
 
 
 def test_b251_advances_judge_identity_for_durable_candidate_errors():
@@ -1605,8 +1609,8 @@ def test_a_different_judge_is_rejected_not_treated_as_tampering(tmp_path: Path):
     job = _job()
     root = _store(tmp_path, job, _record(job, judge="j" * 64))
     assert (
-        mutation._load_validated_state_record(root, job, judge="k" * 64)
-        is mutation._RECORD_REJECTED
+        mutation_store._load_validated_state_record(root, job, judge="k" * 64)
+        is mutation_store._RECORD_REJECTED
     )
 
 
@@ -1619,8 +1623,8 @@ def test_a_pre_b088_record_with_no_judge_at_all_is_rejected(tmp_path: Path):
     del payload["judge_sha256"]
     root = _store(tmp_path, job, payload)
     assert (
-        mutation._load_validated_state_record(root, job, judge="j" * 64)
-        is mutation._RECORD_REJECTED
+        mutation_store._load_validated_state_record(root, job, judge="j" * 64)
+        is mutation_store._RECORD_REJECTED
     )
 
 
@@ -1639,8 +1643,8 @@ def test_a_non_string_judge_field_is_rejected_even_against_a_none_judge(tmp_path
     payload["judge_sha256"] = None
     root = _store(tmp_path, job, payload)
     assert (
-        mutation._load_validated_state_record(root, job, judge=None)  # type: ignore[arg-type]
-        is mutation._RECORD_REJECTED
+        mutation_store._load_validated_state_record(root, job, judge=None)  # type: ignore[arg-type]
+        is mutation_store._RECORD_REJECTED
     )
 
 
@@ -1650,7 +1654,7 @@ def test_an_absent_record_is_absent_not_rejected(tmp_path: Path):
     job = _job()
     root = tmp_path / "empty-state"
     root.mkdir()
-    assert mutation._load_validated_state_record(root, job, judge="j" * 64) is None
+    assert mutation_store._load_validated_state_record(root, job, judge="j" * 64) is None
 
 
 def test_a_corrupt_record_still_raises_even_when_the_judge_also_moved(tmp_path: Path):
@@ -1663,7 +1667,7 @@ def test_a_corrupt_record_still_raises_even_when_the_judge_also_moved(tmp_path: 
     job = _job()
     root = _store(tmp_path, job, _record(job, judge="j" * 64, source_sha256="0" * 64))
     with pytest.raises(MutationStateError, match="stale source_sha256"):
-        mutation._load_validated_state_record(root, job, judge="k" * 64)
+        mutation_store._load_validated_state_record(root, job, judge="k" * 64)
 
 
 def test_a_stale_schema_version_is_still_rerun_and_not_a_lane_failure(tmp_path: Path):
@@ -1675,15 +1679,15 @@ def test_a_stale_schema_version_is_still_rerun_and_not_a_lane_failure(tmp_path: 
     job = _job()
     root = _store(tmp_path, job, _record(job, judge="j" * 64, schema_version=99))
     assert (
-        mutation._load_validated_state_record(root, job, judge="j" * 64)
-        is mutation._RECORD_REJECTED
+        mutation_store._load_validated_state_record(root, job, judge="j" * 64)
+        is mutation_store._RECORD_REJECTED
     )
 
 
 def test_the_shard_summary_schema_version_is_unchanged():
     """The reason the bump was declined, stated as a fact rather than a
     comment: a consumer's existing shard summary documents still merge."""
-    assert mutation.MUTATION_STATE_SCHEMA_VERSION == 1
+    assert mutation_store.MUTATION_STATE_SCHEMA_VERSION == 1
 
 
 # --- two real repositories, the real CLI --------------------------------------
@@ -2238,7 +2242,7 @@ def test_the_worst_case_record_still_fits_the_readers_own_limit():
     object.__setattr__(result, "stdout_tail", worst)
     object.__setattr__(result, "stderr_tail", worst)
     payload = {
-        "schema_version": mutation.MUTATION_STATE_SCHEMA_VERSION,
+        "schema_version": mutation_store.MUTATION_STATE_SCHEMA_VERSION,
         "candidate_id": "0" * 64,
         "judge_sha256": "0" * 64,
         "path": "infra/db-init/init-scripts/03c-create-workflow-core.sql",
@@ -2251,7 +2255,7 @@ def test_the_worst_case_record_still_fits_the_readers_own_limit():
         **mutation._crash_diagnostic_tails("crashed", result),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    assert len(encoded) < mutation.MUTATION_STATE_RECORD_LIMIT, len(encoded)
+    assert len(encoded) < mutation_store.MUTATION_STATE_RECORD_LIMIT, len(encoded)
 
 
 @pytest.mark.parametrize(
@@ -2283,7 +2287,7 @@ def test_real_10_0_1_state_records_are_rejected_for_a_new_judge(
         / fixture_name
     )
     payload = json.loads(fixture.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == mutation.MUTATION_STATE_SCHEMA_VERSION
+    assert payload["schema_version"] == mutation_store.MUTATION_STATE_SCHEMA_VERSION
     assert payload["outcome_bucket"] == expected_bucket
 
     job = SimpleNamespace(
@@ -2298,7 +2302,7 @@ def test_real_10_0_1_state_records_are_rejected_for_a_new_judge(
         ),
         original_text="fixture-source",
     )
-    real_hashlib = mutation.hashlib
+    real_hashlib = mutation_store.hashlib
 
     def fixture_hash(data: bytes, *args, **kwargs):
         if data == b"fixture-source":
@@ -2310,10 +2314,10 @@ def test_real_10_0_1_state_records_are_rejected_for_a_new_judge(
         return SimpleNamespace(hexdigest=lambda: digest)
 
     monkeypatch.setattr(
-        mutation, "hashlib", SimpleNamespace(sha256=fixture_hash)
+        mutation_store, "hashlib", SimpleNamespace(sha256=fixture_hash)
     )
     monkeypatch.setattr(
-        mutation, "candidate_id", lambda candidate: candidate.candidate_id
+        mutation_store, "candidate_id", lambda candidate: candidate.candidate_id
     )
 
     state_root = tmp_path / "state"
@@ -2323,7 +2327,7 @@ def test_real_10_0_1_state_records_are_rejected_for_a_new_judge(
     assert payload["judge_sha256"] != current_judge
 
     try:
-        loaded = mutation._load_validated_state_record(
+        loaded = mutation_store._load_validated_state_record(
             state_root, job, judge=current_judge
         )
     except mutation.MutationStateError as exc:
@@ -2332,4 +2336,4 @@ def test_real_10_0_1_state_records_are_rejected_for_a_new_judge(
             f"raise {type(exc).__name__}: {exc}"
         )
 
-    assert loaded is mutation._RECORD_REJECTED
+    assert loaded is mutation_store._RECORD_REJECTED

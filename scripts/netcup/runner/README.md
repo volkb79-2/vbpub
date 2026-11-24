@@ -489,17 +489,17 @@ into a versioned venv, verifies both wheel hashes first, and publishes
 
 ```bash
 wheel_dir=/var/cache/host-wheels
-fleetd_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/fleetd-0.3.0-py3-none-any.whl.sha256")
-cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.5.0-py3-none-any.whl.sha256")
+fleetd_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/fleetd-0.1.0-py3-none-any.whl.sha256")
+cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.8.0-py3-none-any.whl.sha256")
 sudo bash "$HOME/runner-scripts/install-fleetd.sh" \
   --wheel-dir "$wheel_dir" \
-  --fleetd-version 0.3.0 --fleetd-sha256 "$fleetd_sha256" \
-  --cli-extended-version 0.5.0 --cli-extended-sha256 "$cli_extended_sha256" \
+  --fleetd-version 0.1.0 --fleetd-sha256 "$fleetd_sha256" \
+  --cli-extended-version 0.8.0 --cli-extended-sha256 "$cli_extended_sha256" \
   --check
 sudo bash "$HOME/runner-scripts/install-fleetd.sh" \
   --wheel-dir "$wheel_dir" \
-  --fleetd-version 0.3.0 --fleetd-sha256 "$fleetd_sha256" \
-  --cli-extended-version 0.5.0 --cli-extended-sha256 "$cli_extended_sha256"
+  --fleetd-version 0.1.0 --fleetd-sha256 "$fleetd_sha256" \
+  --cli-extended-version 0.8.0 --cli-extended-sha256 "$cli_extended_sha256"
 command -v fleet
 ```
 
@@ -1049,6 +1049,28 @@ would name a cause nobody observed). The verdict is decided from the job log's *
 not from the phrase "memory admission" appearing anywhere: a lane that was admitted and then exited 75 for its own
 reason is not a memory refusal either. Neither refusal started the lane, so nothing was cleaned up and no container
 exists.
+
+## Host admission for dev runs (`host-admission/1`)
+
+The contract of `scripts/controller/dev` (design: `docs/design/agent-dev/DESIGN.md` section 7); `run-job`,
+`remote-gate.py` and `fleet host start` adopt it in P-fd-05. Memory is overcommitted by design, so there is no
+MemAvailable check and no memory-weighted slot. The one rule: **wait while the host's memory PSI `full` avg10 is
+>= 3**; CPU, io and memory-`some` pressure never block a start.
+
+- **Ticket.** `~/host-admission/ticket` (flock) serialises starts. It is taken after the per-worktree lock and the
+  sync, and held for 20 s from admission (`( exec 9>&-; sleep 20 ) &` keeps its fd; the settle starts just before
+  `docker run`) so the next start sees this container's load in the PSI.
+- **Wait.** PSI is read every 10 s, progress printed every 60 s, and the call exits 75 at `AGENT_DEV_WAIT_S`
+  (default 900) with nothing run. Unreadable PSI is exit 75 at once (indeterminate is never admitted), and so is no ticket within `AGENT_DEV_WAIT_S`.
+- **Disconnect.** In batch mode the docker client runs in the background and the remote shell waits for it, so a
+  HUP/INT/PIPE/TERM that reaches the remote shell runs the trap at once: it removes the container by cid before the
+  lock and ticket fds close. An ssh drop that sends no signal is the remaining window: it is noticed when the
+  container next writes output (EPIPE) or at the in-container `timeout` (`max_s`), and until then the container and
+  the per-worktree lock stay (a retry exits 3); `dev stop` frees them. In tty mode the shell waits for `script` in the
+  foreground, so the trap runs when `script` returns. A SIGKILL of the wrapper is bounded the same way.
+- **Same worktree.** A second call exits 3 (non-blocking lock).
+- **Known limit.** remote-gate lanes and legacy `hostobs-dev-*` containers share `dev-gates.slice` without taking
+  the ticket; they meet dev runs only in the PSI.
 
 ## Collecting and seeding a run's store directory (remote-gate `--collect-store` / `--seed-store`, RG-298)
 

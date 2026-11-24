@@ -15,7 +15,7 @@ from pathlib import PurePosixPath
 import pytest
 from conftest import GitRepo
 
-from assay import cli, git, isolation, mutation, runner
+from assay import cli, git, isolation, mutation, mutation_store, runner
 from assay.adapters import sql as sql_adapter_module
 from assay.adapters.sql import SqlAdapter
 from assay.candidate_identity import candidate_id_from_fields
@@ -594,8 +594,8 @@ def test_o16a_iv_a_lane_without_a_mutation_judge_raises(git_repo: GitRepo):
 def test_o16a_v_the_public_names_are_the_judge_functions_themselves():
     assert cli.resolve_declared_adapters is cli._resolve_declared_adapters
     assert runner.resolve_declared_base is runner._resolve_declared_base
-    assert mutation.execution_from_state_record is mutation._execution_from_state_record
-    assert mutation.valid_hung_resource_evidence is mutation._valid_hung_resource_evidence
+    assert mutation.execution_from_state_record is mutation_store._execution_from_state_record
+    assert mutation.valid_hung_resource_evidence is mutation_store._valid_hung_resource_evidence
     assert cli.__all__ == ["build_parser", "main", "plan_jobs", "resolve_declared_adapters"]
     assert "resolve_declared_base" in runner.__all__
     assert {

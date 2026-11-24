@@ -60,13 +60,14 @@ together.
 | CTL-49 | agctl DESIGN behind the operator | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-50 | Brief house rules | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-51 | Three tree-shipping transports | Nice-to-have | OPEN 2026-11-24 (Opus design review) |
-| CTL-52 | Dev container is hostobs-only and admits one job host-wide | Must-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-52 | Dev container is hostobs-only and admits one job host-wide | Must-fix | FIXED 2026-11-24 (P-plat-02: generic `scripts/controller/dev`) |
 | CTL-53 | Worktree sprawl | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-54 | Backlogs and SPECs are append-only | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | FIXED 2026-11-24 |
 | CTL-56 | P-plat-04 r1 leftovers: locale oracle, interim-message fake, misplaced Pi mutant reference, Unicode continuation digits | Should-fix | OPEN 2026-11-24 |
 | CTL-57 | `gate-run.sh` local admission only queues on the slot locks; it starts a gate while the cockpit is at the memory-PSI stop signal | Must-fix | FIXED 2026-11-24 |
 | CTL-58 | `push-image.sh` destroys the host's rollback image: `docker load` untags the old `<image:tag>` and no `:prev-*` tag is kept | Should-fix | OPEN 2026-11-24 |
+| CTL-59 | P-plat-02 r2 leftovers (dev tool) | Nice-to-have | OPEN 2026-11-24 (Opus r2 review) |
 | CTL-60 | P-plat-20 r1 leftovers: fourth-snapshot assertion, never-started sidecar reported as inconclusive, no-PSI host refused with 75, chain-run shows 75 as STOPPED-ON-FAIL | Should-fix | OPEN 2026-11-24 |
 | CTL-62 | remote-gate admission holds the admit ticket while waiting, is not PSI-only, and lets an identical live launch through | Must-fix | OPEN 2026-11-24 |
 
@@ -1686,9 +1687,9 @@ Source: .controller-state/design-review-2026-11-24/fleetd.md H4; SYNTHESIS.md T1
 
 ## CTL-52 — dev container is hostobs-only and admits one job host-wide
 
-**Status:** OPEN (filed 2026-11-24).
+**Status:** FIXED 2026-11-24 (package P-plat-02; guide `scripts/controller/docs/DEV.md`).
 
-Generic `scripts/controller/dev` with Python and Rust profiles. Host-local weighted admission with a bounded wait. `gc`, a NOT-EVIDENCE banner, and the hostobs shim.
+Generic `scripts/controller/dev` with Python and Rust profiles (`scripts/controller/dev-profiles.toml`). Admission is host-local and memory-PSI-only (host-admission/1: memory `full` avg10 >= 3 waits, bounded by `AGENT_DEV_WAIT_S`, then exit 75); RAM overcommit (finite MemoryMax, large swap) is by design. `gc`, a NOT-EVIDENCE banner, and the hostobs shim.
 
 Source: .controller-state/design-review-2026-11-24/hostobs.md F4; operator 2026-11-24
 
@@ -1752,6 +1753,19 @@ Source: vbpub-main-controller, 2026-11-24 07:50Z (cockpit PSI 3-6 with 4 local g
 Wanted: before `docker load`, retag the host's current `<image:tag>` as `<image>:prev-<date>`, never overwriting an existing prev tag (the same rule as `tester-unified/promote-image.sh`); print the kept image id. Test at a fake docker boundary (current tag present / absent / prev tag already present).
 
 Interim rollback path: push `tester-unified:prev-20261124b` from the cockpit.
+
+## CTL-59 — P-plat-02 r2 leftovers (dev tool)
+
+**Status:** OPEN (filed 2026-11-24, from the Opus r2 review of `scripts/controller/dev`, bound to aaa56b27e).
+
+Six small items, none of which blocks the tool:
+
+1. A signal that arrives before the cidfile is written orphans the container: `cleanup` finds no cid, and the background `timeout`/docker client goes on to create and run it with nobody waiting. Bounded by `max_s`; the next call exits 3 "container exists, use dev stop". Fix: with an empty cid, `docker rm -f "$NAME"` (safe under the lock after the exists check) and/or kill the background job.
+2. A few host steps still fail with errexit's code 1 or 2 and no `dev: exit 3` line: `rm -rf "$W"`, `rm -rf`/`mkdir` of `.git/hooks`, and the upload `tar -xf - -C "$UP"` in `upload_text`. Wrap them in `step`/`own 3` like the sync steps.
+3. `--dry-run` shows the image tag in its argv, while a real run uses the host image id. Say so in DEV.md or print "image id resolved at preflight".
+4. The signal test's assertion message "removed only after the client ended" says the opposite of what it checks; reword it.
+5. The docker command is built in two places (`build_docker_argv` for dry-run and tests, `container_command_text` for the run), so the read-only `.git` mount had to be added at both and the `dev-git-ro` mutant covers only one. Derive the run text from the arrays.
+6. `dev` is 552 lines against DESIGN §0's "~250 lines on top of the moved code" and is at the bash freeze limit (CTL-40): grow in Python (`dev_profile.py`), not in the shell.
 
 ## CTL-60 — P-plat-20 r1 leftovers
 

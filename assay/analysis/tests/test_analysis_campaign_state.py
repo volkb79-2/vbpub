@@ -21,7 +21,7 @@ from analysis.tests.test_analysis_campaign import (
     _validate,
 )
 from analysis.tests.test_analysis_campaign_oracles import _analyze, _synthetic
-from assay import mutation
+from assay import mutation, mutation_store
 from assay_analysis import campaign as campaign_api
 
 J_X, J_X1 = support.JUDGE_A, support.JUDGE_B
@@ -125,7 +125,7 @@ def test_b530_the_text_closeout_names_imported_results(tmp_path, monkeypatch):
     rows = _plan_rows(_fixture_document("r2_pass"))
     _set_judge(progress, J_X)
     carry = {
-        "schema_version": mutation.CARRY_OVER_SCHEMA_VERSION,
+        "schema_version": mutation_store.CARRY_OVER_SCHEMA_VERSION,
         "from_judge_sha256": J_X1,
         "into_judge_sha256": J_X,
         "source": "/old/store",
@@ -151,7 +151,7 @@ def test_b530_the_text_closeout_names_imported_results(tmp_path, monkeypatch):
 
 def _carry_over_v2(into_judge, *, reason="schema-2 provenance"):
     return {
-        "schema_version": mutation.CARRY_OVER_SCHEMA_VERSION_V2,
+        "schema_version": mutation_store.CARRY_OVER_SCHEMA_VERSION_V2,
         "into_judge_sha256": into_judge,
         "source": "/prior/store",
         "reason": reason,
@@ -183,7 +183,7 @@ def test_campaign_imported_classification_uses_provenance_kind(
         support.run_records(head, rows, executed=[row["id"] for row in rows], judge=J_X1),
     )
     schema_one_import = {
-        "schema_version": mutation.CARRY_OVER_SCHEMA_VERSION,
+        "schema_version": mutation_store.CARRY_OVER_SCHEMA_VERSION,
         "from_judge_sha256": J_X,
         "into_judge_sha256": J_X1,
         "source": "/prior/store",

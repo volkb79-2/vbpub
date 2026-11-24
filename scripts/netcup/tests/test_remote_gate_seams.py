@@ -31,6 +31,51 @@ def test_local_state_records_the_local_main_sha(tmp_path):
     assert rg.local_state(ctx, "/wt", None)["main"] is None
 
 
+def main_handlers(origin="e" * 40, local="d" * 40, fetch=None):
+    """for-each-ref answers by the ref asked for: origin/main and a stale local main differ; `fetch` is the answer to `git fetch origin main`."""
+    def refs(argv):
+        return rg.Result(0, (origin if "refs/remotes/origin/main" in argv else local if "refs/heads/main" in argv else "") + "\n")
+
+    return git_handlers() + [("for-each-ref", refs), ("--no-tags", fetch or rg.Result(0))]
+
+
+def test_main_is_the_fetched_origin_main_never_the_stale_local_branch(tmp_path):
+    ctx, out = ctx_for(tmp_path, main_handlers())
+    assert rg.local_state(ctx, "/wt", None)["main"] == "e" * 40  # a stale local main (d...) does not win
+    flat = [" ".join(c[0]) for c in ctx.runner.calls]
+    fetch = next(i for i, c in enumerate(flat) if " fetch " in c)
+    asked = next(i for i, c in enumerate(flat) if "for-each-ref" in c)
+    assert fetch < asked and not any("for-each-ref" in c and "refs/heads/main" in c for c in flat)
+    assert out == []
+    argv = ctx.runner.calls[fetch][0]  # hygiene: explicit refspec, no tags, no prompt, no auto-maintenance in the shared repo
+    assert argv[:2] == ["env", "GIT_TERMINAL_PROMPT=0"] and "+refs/heads/main:refs/remotes/origin/main" in argv and "--no-tags" in argv
+    assert argv[argv.index("gc.auto=0") - 1] == "-c" and "maintenance.auto=false" in argv
+
+
+@pytest.mark.parametrize("name", ["main", "origin/main", "refs/heads/main"])
+def test_base_main_resolves_to_the_fetched_origin_main_not_the_stale_local_branch(tmp_path, name):
+    # git_handlers answers every `--verify` (what a local `main` resolves to) with c...; origin/main, fetched, is e...
+    ctx, _ = ctx_for(tmp_path, main_handlers())
+    assert rg.local_state(ctx, "/wt", name)["base"] == "e" * 40
+    assert not any("--verify" in c[0] for c in ctx.runner.calls)
+    ctx, _ = ctx_for(tmp_path, main_handlers())
+    assert rg.local_state(ctx, "/wt", "some-tag")["base"] == "c" * 40  # any other ref resolves as before
+
+
+def test_base_main_without_any_origin_main_is_refused_not_resolved_to_the_local_branch(tmp_path):
+    ctx, _ = ctx_for(tmp_path, main_handlers(origin="", fetch=rg.Result(128, "", "x")))
+    with pytest.raises(rg.GateError, match="--base 'main' means origin/main"):
+        rg.local_state(ctx, "/wt", "main")
+
+
+def test_a_failed_fetch_warns_naming_the_existing_origin_main_and_uses_it(tmp_path):
+    ctx, out = ctx_for(tmp_path, main_handlers(fetch=rg.Result(128, "", "fatal: unable to access")))
+    assert rg.local_state(ctx, "/wt", None)["main"] == "e" * 40
+    assert len(out) == 1 and out[0].startswith("WARNING") and "e" * 40 in out[0] and "unable to access" in out[0]
+    ctx, out = ctx_for(tmp_path, main_handlers(origin="", fetch=rg.Result(128, "", "x")))  # no origin/main at all: nothing shipped, still loud
+    assert rg.local_state(ctx, "/wt", None)["main"] is None and "(none)" in out[0]
+
+
 def test_main_rides_the_bundle_and_forces_one_when_the_seed_lacks_it(tmp_path):
     main = "e" * 40
 
@@ -40,7 +85,7 @@ def test_main_rides_the_bundle_and_forces_one_when_the_seed_lacks_it(tmp_path):
     ctx, _ = ctx_for(tmp_path, [("for-each-ref", rg.Result(0, main + "\n")), ("rev-list --count", count)] + git_handlers() + [psi(1, 1), LS])
     assert rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "m1")) == 0
     bundle = next(c[0] for c in ctx.runner.calls if "bundle" in c[0] and "create" in c[0])
-    assert "refs/heads/main" in bundle and f"^{SEED}" in bundle
+    assert "refs/remotes/origin/main" in bundle and "refs/heads/main" not in bundle and f"^{SEED}" in bundle
     assert f"MAIN_SHA={main}\n" in (tmp_path / "out" / "m1" / "job.sh").read_text()
 
 
@@ -48,7 +93,7 @@ def test_no_local_main_means_an_empty_main_sha_and_no_main_ref(tmp_path):
     ctx, _ = ctx_for(tmp_path, git_handlers() + [psi(1, 1), LS])
     assert rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "m2")) == 0
     bundle = next(c[0] for c in ctx.runner.calls if "bundle" in c[0] and "create" in c[0])
-    assert "refs/heads/main" not in bundle
+    assert "refs/remotes/origin/main" not in bundle and "refs/heads/main" not in bundle
     assert "MAIN_SHA=''\n" in (tmp_path / "out" / "m2" / "job.sh").read_text()
 
 
@@ -63,10 +108,13 @@ def test_real_git_and_bash_the_host_checkout_gets_a_main_branch_without_checking
     sh("git", "checkout", "-q", "-b", "feature", cwd=src)
     sh("git", "commit", "-q", "--allow-empty", "-m", "feature work", cwd=src)
     head = sh("git", "rev-parse", "HEAD", cwd=src)
-    sh("git", "checkout", "-q", "main", cwd=src)
-    sh("git", "commit", "-q", "--allow-empty", "-m", "main moved on", cwd=src)
+    sh("git", "checkout", "-q", "-b", "upstream", "main", cwd=src)
+    sh("git", "commit", "-q", "--allow-empty", "-m", "origin main moved on", cwd=src)
     main = sh("git", "rev-parse", "HEAD", cwd=src)
+    sh("git", "update-ref", "refs/remotes/origin/main", main, cwd=src)  # origin/main is ahead of the (stale) local main branch
     sh("git", "checkout", "-q", "feature", cwd=src)  # the worktree is on the feature branch; main is never checked out
+    stale = sh("git", "rev-parse", "main", cwd=src)
+    assert stale != main
     ctx = rg.Ctx(runner=rg.Runner(), hosts=hosts(), out_dir=tmp_path / "out")
     st = {"top": str(src), "sha": head, "base": None, "main": main, "tags": []}
     dest = tmp_path / "rgdir" / "in.bundle"
@@ -74,13 +122,14 @@ def test_real_git_and_bash_the_host_checkout_gets_a_main_branch_without_checking
     assert rg.build_bundle(ctx, st, [seed], str(dest)) == seed
     job = rg.render_job(hosts()["v1001"], "t8", st, "suite", ".", "", 60, [])
     fetch = job[job.index("if [[ -f $D/in.bundle ]]"):job.index("# every release tag of the source")]
-    setref = job[job.index("if [[ -n $MAIN_SHA ]]; then\n  # a local"):job.index("if (( ADMISSION_CHECK ))")]
+    setref = job[job.index("# origin/main and a local"):job.index("if (( ADMISSION_CHECK ))")]
     script = (f'D={dest.parent}\nCKDIR={host}\nBASE_SHA=\nMAIN_SHA={main}\nlog() {{ echo "$@" >&2; }}\n' + fetch
               + f"git -C {host} checkout -q --detach {head} 2>/dev/null || git -C {host} update-ref --no-deref HEAD {head}\n" + setref)
     r = subprocess.run(["bash", "-euo", "pipefail", "-c", script], capture_output=True, text=True, env=GIT_ENV)
     assert r.returncode == 0, r.stderr
-    assert sh("git", "rev-parse", "main", cwd=host) == main
-    assert "local main ->" in r.stderr
+    assert sh("git", "rev-parse", "main", cwd=host) == main  # `main` on the host is origin/main, not the stale local branch
+    assert sh("git", "rev-parse", "origin/main^{commit}", cwd=host) == main
+    assert f"origin/main -> {main}" in r.stderr and "local main ->" in r.stderr
 
 
 def test_the_main_step_of_the_job_reports_a_missing_commit_instead_of_failing(tmp_path):
@@ -88,10 +137,27 @@ def test_the_main_step_of_the_job_reports_a_missing_commit_instead_of_failing(tm
     repo.mkdir()
     sh("git", "init", "-q", "-b", "x", cwd=repo)
     job = rg.render_job(hosts()["v1001"], "t9", {"sha": SHA, "base": None, "main": "f" * 40, "tags": []}, "suite", ".", "", 60, [])
-    setref = job[job.index("if [[ -n $MAIN_SHA ]]; then\n  # a local"):job.index("if (( ADMISSION_CHECK ))")]
+    setref = job[job.index("# origin/main and a local"):job.index("if (( ADMISSION_CHECK ))")]
     r = subprocess.run(["bash", "-euo", "pipefail", "-c", f'CKDIR={repo}\nMAIN_SHA={"f" * 40}\nlog() {{ echo "$@" >&2; }}\n' + setref],
                        capture_output=True, text=True, env=GIT_ENV)
     assert r.returncode == 0 and "is missing on the host" in r.stderr
+
+
+@pytest.mark.parametrize("main_sha", ["", "f" * 40])
+def test_real_git_a_seeded_checkout_loses_the_seeds_stale_main_refs_when_there_is_nothing_to_set(tmp_path, main_sha):
+    repo = tmp_path / "r"
+    repo.mkdir()
+    sh("git", "init", "-q", "-b", "main", cwd=repo)
+    sh("git", "commit", "-q", "--allow-empty", "-m", "seed", cwd=repo)
+    sh("git", "update-ref", "refs/remotes/origin/main", "HEAD", cwd=repo)  # what `git clone` of a seed checkout leaves behind
+    sh("git", "checkout", "-q", "--detach", cwd=repo)
+    job = rg.render_job(hosts()["v1001"], "t10", {"sha": SHA, "base": None, "main": main_sha or None, "tags": []}, "suite", ".", "", 60, [])
+    setref = job[job.index("# origin/main and a local"):job.index("if (( ADMISSION_CHECK ))")]
+    r = subprocess.run(["bash", "-euo", "pipefail", "-c", f'CKDIR={repo}\nMAIN_SHA={main_sha}\nlog() {{ echo "$@" >&2; }}\n' + setref],
+                       capture_output=True, text=True, env=GIT_ENV)
+    assert r.returncode == 0, r.stderr
+    for ref in ("refs/remotes/origin/main", "refs/heads/main"):
+        assert subprocess.run(["git", "rev-parse", "--verify", "-q", ref], cwd=repo, env=GIT_ENV).returncode != 0, ref
 
 
 # ---- (2) a declared assay base refuses --base locally ----
@@ -108,6 +174,34 @@ def tree(tmp_path, run_gate, assay=None, root=None, proj="p"):
 
 
 RG_ASSAY = '[lanes.assay]\nkind = "assay"\nassay_lane = "cmru"\n'
+
+
+@pytest.mark.parametrize("base,st_main,resolves", [("origin/main", None, True), ("nope", "e" * 40, False)])
+def test_a_declared_base_that_cannot_resolve_is_refused_naming_the_ref_and_the_lane(tmp_path, base, st_main, resolves):
+    st = {**tree(tmp_path, RG_ASSAY, f'[lanes.cmru.judge]\nbase = "{base}"\n'), "main": st_main}
+    ctx, out = ctx_for(tmp_path, [("--verify", rg.Result(0 if resolves else 1, "c" * 40 + "\n"))])
+    with pytest.raises(rg.GateError, match=f"lane 'assay'.*judge.base = '{base}'") as e:
+        rg.lane_checks(ctx, st, "p", "assay", False, False)
+    assert e.value.code == 2 and "GIT_FAILED" in str(e.value)
+
+
+def test_a_declared_base_that_resolves_passes(tmp_path):
+    st = {**tree(tmp_path, RG_ASSAY, '[lanes.cmru.judge]\nbase = "cmru-v6.1.0"\n'), "main": "e" * 40}
+    ctx, out = ctx_for(tmp_path, [("--verify", rg.Result(0, "c" * 40 + "\n"))])
+    rg.lane_checks(ctx, st, "p", "assay", False, False)
+    assert out == [] and any("--verify" in c[0] for c in ctx.runner.calls)
+
+
+@pytest.mark.parametrize("base", ["main", "origin/main"])
+def test_a_declared_main_base_follows_the_shipped_origin_main_not_a_local_branch(tmp_path, base):
+    top = tree(tmp_path, RG_ASSAY, f'[lanes.cmru.judge]\nbase = "{base}"\n')
+    # no local `main` here (a clone with only origin/*): the host still gets one from the shipped origin/main
+    ctx, out = ctx_for(tmp_path, [("--verify", rg.Result(1))])
+    rg.lane_checks(ctx, {**top, "main": "e" * 40}, "p", "assay", False, False)
+    assert out == [] and not ctx.runner.calls
+    with pytest.raises(rg.GateError, match="no origin/main after the fetch") as e:  # nothing shipped: the host could not resolve it
+        rg.lane_checks(ctx_for(tmp_path, [("--verify", rg.Result(0))])[0], {**top, "main": None}, "p", "assay", False, False)
+    assert e.value.code == 2
 
 
 @pytest.mark.parametrize("judge", ['base = "cmru-v6.1.0"\n', 'base = "x"\nbase_source = "declared"\n', 'base_source = "declared"\n'])
@@ -137,7 +231,7 @@ def test_assay_lane_name_defaults_to_the_run_gate_lane_name(tmp_path):
 
 def test_cmd_run_refuses_a_declared_base_lane_before_contacting_a_host(tmp_path):
     top = tree(tmp_path, RG_ASSAY, '[lanes.cmru.judge]\nbase = "x"\n')["top"]
-    handlers = [("--show-toplevel", rg.Result(0, top + "\n")), ("--show-prefix", rg.Result(0, "p/\n"))] + git_handlers()
+    handlers = [("--show-toplevel", rg.Result(0, top + "\n")), ("--show-prefix", rg.Result(0, "p/\n")), ("for-each-ref", rg.Result(0, "e" * 40 + "\n"))] + git_handlers()
     ctx, _ = ctx_for(tmp_path, handlers)
     with pytest.raises(rg.GateError, match="declares its comparison base"):
         rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "assay", "--base", "main", "--name", "d1"))

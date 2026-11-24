@@ -26,7 +26,7 @@ from conftest import (
     zero_resource_limit_evidence_dict,
 )
 
-from assay import mutation, runner
+from assay import mutation, mutation_store, runner
 
 
 def _job():
@@ -47,7 +47,7 @@ def _record(job=None):
     source = job.original_text.encode()
     mutated = job.site.apply(source)
     return {
-        "schema_version": mutation.MUTATION_STATE_SCHEMA_VERSION,
+        "schema_version": mutation_store.MUTATION_STATE_SCHEMA_VERSION,
         "candidate_id": mutation.candidate_id(job),
         "path": job.path,
         "replacement_sha256": hashlib.sha256(job.site.replacement).hexdigest(),
@@ -236,7 +236,7 @@ def test_atomic_state_record_write_tolerates_a_missing_temp_during_cleanup(
         lambda *_args: (_ for _ in ()).throw(FileNotFoundError("already gone")),
     )
     with pytest.raises(OSError, match="replace failed"):
-        mutation._write_mutation_state_record(
+        mutation_store._write_mutation_state_record(
             tmp_path, {"candidate_id": mutation.candidate_id(job)}
         )
 
@@ -256,7 +256,7 @@ def test_state_record_refuses_missing_identity_and_outcome_fields(
     payload.pop(remove)
     _write_record(tmp_path, payload)
     with pytest.raises(MutationStateError, match=message):
-        mutation._load_validated_state_record(tmp_path, job, judge="j" * 64)
+        mutation_store._load_validated_state_record(tmp_path, job, judge="j" * 64)
 
 
 @pytest.mark.parametrize(
@@ -274,7 +274,7 @@ def test_state_record_refuses_unknown_buckets_and_execution_shapes(
     payload[field] = value
     _write_record(tmp_path, payload)
     with pytest.raises(MutationStateError, match=message):
-        mutation._load_validated_state_record(tmp_path, job, judge="j" * 64)
+        mutation_store._load_validated_state_record(tmp_path, job, judge="j" * 64)
 
 
 @pytest.mark.parametrize(
@@ -290,12 +290,12 @@ def test_execution_state_decoder_rejects_unknown_or_malformed_shapes(
     execution, message
 ):
     with pytest.raises((TypeError, ValueError), match=message):
-        mutation._execution_from_state_record({"execution": execution})
+        mutation_store._execution_from_state_record({"execution": execution})
 
 
 def test_execution_state_decoder_accepts_a_witness_prefix_receipt():
     node = "tests/test_mod.py::test_behavior"
-    decoded = mutation._execution_from_state_record(
+    decoded = mutation_store._execution_from_state_record(
         {
             "execution": {
                 "mode": "witness-prefix",
@@ -318,13 +318,13 @@ def test_execution_state_decoder_accepts_a_witness_prefix_receipt():
 
 def test_resumed_outcome_decoder_types_malformed_records():
     with pytest.raises(MutationStateError, match="invalid resumed mutation record"):
-        mutation._outcome_from_record({})
+        mutation_store._outcome_from_record({})
 
 
 def test_resumed_mutation_merge_refuses_a_duplicate_candidate():
     job = _job()
     payload = _record(job)
-    outcome = mutation._outcome_from_record(payload)
+    outcome = mutation_store._outcome_from_record(payload)
     current = Mutation(candidate_count=1, total=1, killed=(outcome,))
 
     with pytest.raises(MutationStateError, match="repeat 1 candidate identity"):
@@ -842,7 +842,7 @@ def _candidate_for(index, count):
 
 def _shard(index=0, count=2, ids=None, **overrides):
     result = {
-        "schema_version": mutation.MUTATION_STATE_SCHEMA_VERSION,
+        "schema_version": mutation_store.MUTATION_STATE_SCHEMA_VERSION,
         "lane": "package",
         "commit": "c" * 40,
         "shard_index": index,
@@ -859,13 +859,13 @@ def _shard(index=0, count=2, ids=None, **overrides):
         ([], "cannot merge zero mutation shards"),
         ([_shard(schema_version=999)], "unsupported shard schema_version"),
         (
-            [_shard(schema_version=mutation.MUTATION_STATE_SCHEMA_VERSION - 1)],
-            f"unsupported shard schema_version {mutation.MUTATION_STATE_SCHEMA_VERSION - 1}; "
-            f"expected {mutation.MUTATION_STATE_SCHEMA_VERSION}$",
+            [_shard(schema_version=mutation_store.MUTATION_STATE_SCHEMA_VERSION - 1)],
+            f"unsupported shard schema_version {mutation_store.MUTATION_STATE_SCHEMA_VERSION - 1}; "
+            f"expected {mutation_store.MUTATION_STATE_SCHEMA_VERSION}$",
         ),
         (
             [_shard(schema_version=0)],
-            f"unsupported shard schema_version 0; expected {mutation.MUTATION_STATE_SCHEMA_VERSION}$",
+            f"unsupported shard schema_version 0; expected {mutation_store.MUTATION_STATE_SCHEMA_VERSION}$",
         ),
         ([_shard(lane="")], "lane and commit must be non-empty"),
         ([_shard(commit=None)], "lane and commit must be non-empty"),

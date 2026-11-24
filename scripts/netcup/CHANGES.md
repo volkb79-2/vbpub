@@ -5,6 +5,13 @@ All notable changes to scripts/netcup are recorded here.
 ## [Unreleased]
 
 ### Fixed
+- `run-gate.toml` `[lanes.suite]` budget 5m -> 11m (P-plat-25): measured need, not a flakiness margin. Of 22 registered runs on 2026-11-24 before this change, 17 completed in 127-289 s and 5 on v1001 ended BUDGET_EXCEEDED at 300 s at 75-88% of their tests (slowest extrapolated need about 390 s); 11m = that need x 1.6, rounded up.
+- `runner/remote-gate.py` ships the controller checkout's `origin/main` (after `git fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main`; `--base main` resolves to it too), not its local `main` branch, and the
+  host job creates both `refs/remotes/origin/main` and `refs/heads/main` at it (NC-66). A lane with `base = "origin/main"` failed in 4 s with
+  GIT_FAILED on every host, and `base = "main"` lanes judged against a local main that was 36 commits behind. A failed fetch warns and uses the
+  existing origin/main; an assay lane whose declared `judge.base` does not resolve is refused locally (exit 2) before anything is shipped.
+  Tests: `tests/test_remote_gate_seams.py`.
+- The `install-fleetd.sh` examples in `runner/README.md` and `CONSUMERS.md` name the published wheels (fleetd 0.1.0, cli-extended 0.8.0) instead of the `0.3.0`/`0.5.0` placeholders (P-fd-03). fleetd 0.1.0 was installed with it on v1001 and r1002 on 2026-11-24 (hash-verified from the published release assets; `fleet --version` = 0.1.0 as the runner user).
 - `runner/lib.sh` `load_host_endpoints` accepts `MDT_BUILDKIT_GID` equal to `MDT_HOST_DOCKER_GID` (NC-43): mdt-buildkitd
   hands its socket to group docker, so on a real host the two are the same GID and `start-cockpit-runner.sh` refused
   to start (r1002, 2026-11-12 and again 2026-11-24). cgprofile and topos GIDs must still differ from docker and from
