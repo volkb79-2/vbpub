@@ -99,10 +99,9 @@ ciu env generate --root-folder voice-screen-share/fluxer-server     # creates ci
 ciu up --dir voice-screen-share/fluxer-server --yes
 ```
 
-Run `ciu up` from the checkout root with `--dir` alone. Adding `--root-folder` makes ciu 7.26 join the relative
-`--dir` onto the root a second time and refuse with `[no-ciu-root]` (CIU-228). On a native host (not the
-devcontainer), export `DOCKER_GID` and `CGROUP_PARENT_DEV_INTERACTIVE` (the host's interactive slice, e.g.
-`dev-interactive.slice`) before `ciu env generate` and `ciu up`.
+Run `ciu up` from the checkout root with `--dir` alone. Adding `--root-folder` makes ciu join the relative
+`--dir` onto the root a second time and refuse with `[no-ciu-root]` (CIU-228). Set `DOCKER_GID` if the host has
+no docker group, the same as for jitsi-server.
 
 `ciu up` materializes the three account passwords, runs the `pre_compose` hook (generates the formatted service
 secrets once, see below), starts the stack and then the `post_compose` hook (admin + two regular users, see
@@ -144,8 +143,9 @@ rotate it, and what stays manual: `USERS.md`.
 
 A scripted sign-in check cannot use a plain `POST /api/auth/login`: Fluxer answers `CAPTCHA_REQUIRED` until the
 client solves its ALTCHA proof of work. `hooks/fluxer_accounts.mjs` shows how: it solves the challenge with the
-image's own `altcha-lib` inside the api container. Run a post-deploy login check the same way, in a container
-on the edge's ingress network, never with a password on the command line.
+image's own `altcha-lib` inside the api container. To check sign-in through the edge, run the same
+`altcha-lib` solve in a one-shot container on the edge's ingress network, with the password read from its
+`GEN_LOCAL` file and never on the command line.
 
 ## Tests
 
