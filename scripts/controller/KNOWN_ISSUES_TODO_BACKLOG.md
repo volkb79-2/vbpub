@@ -69,6 +69,8 @@ together.
 | CTL-58 | `push-image.sh` destroys the host's rollback image: `docker load` untags the old `<image:tag>` and no `:prev-*` tag is kept | Should-fix | OPEN 2026-11-24 |
 | CTL-60 | P-plat-20 r1 leftovers: fourth-snapshot assertion, never-started sidecar reported as inconclusive, no-PSI host refused with 75, chain-run shows 75 as STOPPED-ON-FAIL | Should-fix | OPEN 2026-11-24 |
 | CTL-62 | remote-gate admission holds the admit ticket while waiting, is not PSI-only, and lets an identical live launch through | Must-fix | OPEN 2026-11-24 |
+| CTL-63 | `ctl-hygiene.sh` B1 is blind to 6 of the 21 tracked backlogs: `**State:** DONE` files and files without any status line read as all-open, and the `unparsed` report fires only at 0 entries | Nice-to-have | OPEN 2026-11-24 |
+| CTL-64 | `ctl-hygiene.sh` reads the backlogs (B1) of the checkout that holds the script, the state of the main checkout: a lagging worktree reports stale B1 numbers next to fresh state numbers | Nice-to-have | OPEN 2026-11-24 |
 
 ---
 
@@ -1769,3 +1771,15 @@ Interim rollback path: push `tester-unified:prev-20261124b` from the cockpit.
 Wanted: the admit ticket is never held while waiting; admission is memory-PSI-only (programme rule: memory `full` avg10 >= 3 waits), so `CONTROLLER_REMOTE_SLOTS` / `CONTROLLER_REMOTE_BUDGET_MB` become no-ops, `remote-gate.py` `mem_admit_ok` becomes PSI-only, and its host-side `psi_high` / `--wait-psi` check (today memory `some` > 25 or io `full` > 25) moves to memory `full` avg10 >= 3; the anti-starvation ticket design in the `remote-gate.sh` header is retired with it; a second identical live launch (host + project + lane + sha + args digest) is refused with exit 2; the run name (today second-resolution and fixed before the host-side wait) gets a pid/random suffix so it is unique, and a refused run prints REFUSED, never another run's result.
 
 Source: P-plat-14b plan; observations in runs rgw-assay-first-release-r2-20261124T054814-v1001 (vbpub-assay) and rgw-r0-r1-20261124T060903-v1001 (vbpub-hostobs).
+
+## CTL-63 — ctl-hygiene.sh B1 cannot see 6 of the 21 tracked backlogs
+
+**Status:** OPEN (filed 2026-11-24, P-plat-22b-C review r1 F4; a spec decision for the controller).
+
+B1 counts an entry as closed only from a `Status:` line (or a closed word in the heading's parentheses). `fleetd` (46 entries), `scripts/debian-rollback` (36) and `vm-lab` (30) use `**State:** DONE|open` instead; `hostobs` (58), `tls-edge` (10) and `scripts/truenas` (10) carry no status line at all. Every entry then counts as open and B1 stays silent, and the `unparsed` report only fires for a file with 0 entries. Cheap fix that keeps the spec's closed-word rule: also report `B1 <path>: unparsed: <n> entries but no Status line` when a file has entries, no Status line and no closed heading. Whether `State:` becomes an accepted alias for `Status:` is the controller's call.
+
+## CTL-64 — ctl-hygiene.sh B1 reads the script's own checkout, the state comes from the main checkout
+
+**Status:** OPEN (filed 2026-11-24, P-plat-22b-C review r1 F6).
+
+`ctl-hygiene.sh` resolves `state_dir` to the main checkout's `.controller-state` but leaves `repo` at the checkout that holds the script. Run from a lagging worktree such as `.worktrees/controller-tools`, B1 reports stale backlog numbers beside fresh state numbers. Fix: resolve the default `repo` to the main checkout too (`${common%/.git}`), or say in the header that B1 follows the script's checkout.

@@ -12,6 +12,8 @@ runner = root / "mutants/scripts/netcup/runner"
 controller.mkdir(parents=True)
 runner.mkdir(parents=True)
 shutil.copy2(repo / "scripts/controller/lib.sh", controller / "lib.sh")
+# The doctor runs ctl-hygiene.sh from its own directory: a doctor mutant must keep that default path working.
+shutil.copy2(repo / "scripts/controller/ctl-hygiene.sh", controller / "ctl-hygiene.sh")
 shutil.copy2(repo / "scripts/controller/opendesign-accounts.py", controller / "opendesign-accounts.py")
 shutil.copy2(repo / "scripts/controller/pi-live.py", controller / "pi-live.py")
 shutil.copy2(repo / "scripts/controller/job-status.sh", controller / "job-status.sh")
@@ -1281,6 +1283,7 @@ def doctor_with_lib_mutant(name: str, before: str, after: str) -> Path:
     variant = controller / name
     variant.mkdir(parents=True, exist_ok=True)
     shutil.copy2(repo / "scripts/controller/ctl-doctor.sh", variant / "ctl-doctor.sh")
+    shutil.copy2(repo / "scripts/controller/ctl-hygiene.sh", variant / "ctl-hygiene.sh")
     mutant("scripts/controller/lib.sh", "lib.sh", before, after, variant)
     return variant / "ctl-doctor.sh"
 
@@ -1349,6 +1352,17 @@ for _name, _before, _after in (
      """unknown argument '$1'" >&2; echo 'usage: ctl-doctor.sh [--json] [--scan <dir>]...' >&2; exit 0 ;;"""),
 ):
     mutant("scripts/controller/ctl-doctor.sh", f"ctl-doctor-{_name}.sh", _before, _after)
+# The doctor's default path to ctl-hygiene.sh: a broken default silently drops every hygiene line from production doctor runs.
+mutant("scripts/controller/ctl-doctor.sh", "ctl-doctor-hygiene-default.sh",
+       '"$BASH" "${CTL_HYGIENE_SCRIPT:-$SCRIPT_DIR/ctl-hygiene.sh}" > "$hygiene"',
+       '"$BASH" "${CTL_HYGIENE_SCRIPT:-/dev/null}" > "$hygiene"')
+# ctl-hygiene.sh: the state directory default (main checkout from a linked worktree) and the heading-parenthesis scoping.
+mutant("scripts/controller/ctl-hygiene.sh", "ctl-hygiene-state-default.sh",
+       'if [[ $common == */.git ]]; then state_dir=${common%/.git}/.controller-state; else state_dir=$repo/.controller-state; fi',
+       'state_dir=$repo/.controller-state')
+mutant("scripts/controller/ctl-hygiene.sh", "ctl-hygiene-heading-paren.sh",
+       r'in_heading = {w for inner in re.findall(r"\(([^)]*)\)", line) for w in re.findall(r"[A-Z-]+", inner)}',
+       'in_heading = set(re.findall(r"[A-Z-]+", line))')
 doctor_with_lib_mutant("doctor-lib-readonly-mkdir",
                        '  [[ -n ${CONTROLLER_INIT_READONLY:-} ]] || mkdir -p -- "$CONTROLLER_LOGS_DIR"',
                        '  mkdir -p -- "$CONTROLLER_LOGS_DIR"')

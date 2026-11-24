@@ -23,7 +23,7 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --json) json=1; shift ;;
     --scan) [[ $# -ge 2 && -n $2 ]] || { echo 'usage: ctl-doctor.sh [--json] [--scan <dir>]...' >&2; exit 2; }; scan_dirs+=("$2"); shift 2 ;;
-    -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "ctl-doctor.sh: unknown argument '$1'" >&2; echo 'usage: ctl-doctor.sh [--json] [--scan <dir>]...' >&2; exit 2 ;;
   esac
 done

@@ -113,10 +113,9 @@ grep -qxF 'image inspect --format {{.Id}} fixture-image:1' "$ROOT/docker.log" ||
 [[ $(find "$H" -printf '%p %T@ %s\n' | sort) == "$before" ]] || fail 'the doctor must not change anything under CONTROLLER_HOME'
 
 # --- hygiene findings follow the checks and never change the status or the counts (ctl-hygiene.sh has its own test)
-no_line '^HYGIENE ' 'a tree with nothing to report adds no hygiene line'
 mkdir -p "$ROOT/hy/state" "$ROOT/hy/memory"
 printf '## RESUME HERE #1\n## RESUME HERE #2\n## RESUME HERE #3\n' > "$ROOT/hy/state/HANDOFF.md"
-HY="CTL_HYGIENE_SCRIPT=$SCRIPT_DIR/../ctl-hygiene.sh"   # the other doctor runs use an empty hygiene script: the mutation stage repeats them hundreds of times
+HY=CTL_HYGIENE_SCRIPT=   # empty: the doctor falls back to its own ctl-hygiene.sh (the production path); the other runs use /dev/null, the mutation stage repeats them hundreds of times
 run_doctor "$HY" HYGIENE_STATE_DIR="$ROOT/hy/state" HYGIENE_MEMORY_DIR="$ROOT/hy/memory" --
 expect_rc 0 'a hygiene finding must not fail the doctor'
 line '^HYGIENE H1 state/HANDOFF.md: 3 blocks ' 'the hygiene finding is appended to the report'

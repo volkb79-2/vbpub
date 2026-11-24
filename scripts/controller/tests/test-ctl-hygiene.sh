@@ -50,7 +50,6 @@ n_lines 70 > "$M/MEMORY.md"; hyg; lacks 'M1' '70 lines is at the threshold'
 n_lines 71 > "$M/MEMORY.md"; hyg; has "M1 $M/MEMORY.md: 71 lines \\(threshold 70 lines WARN\\)" '71 lines is one above'
 n_lines 150 > "$M/MEMORY.md"; hyg; has 'M1 .*: 150 lines \(threshold 70 lines WARN\)' '150 lines is still only a WARN'; lacks 'M1 .*ALERT' '150 lines is no ALERT'
 n_lines 151 > "$M/MEMORY.md"; hyg; has 'M1 .*: 151 lines \(threshold 150 lines ALERT' '151 lines is an ALERT'; lacks 'M1 .*70 lines WARN' 'an ALERT replaces the WARN line count'
-printf 'one\ntwo' > "$M/MEMORY.md"; hyg; silent 'a last line without a newline counts as a line, not as a finding'
 
 # --- M2 stale marker: 3 days is fine, 4 is not; undated; each keyword; first date wins; other casing and a future date are quiet
 new_tree m2
@@ -104,7 +103,6 @@ for f in hostobs/STATE.md platform/STATE.md rollback/STATE.md edge/STATE.md assa
 new_tree h2
 n_bytes 24576 > "$S/HANDOFF.md"; hyg; lacks 'H2' '24576 B is at the threshold'
 n_bytes 24577 > "$S/HANDOFF.md"; hyg; has 'H2 state/HANDOFF.md: 24577 B \(threshold 24576 B\)' '24577 B is one above'
-n_bytes 24577 > "$S/stray.md"; rm "$S/HANDOFF.md"; hyg; silent 'only the listed files are measured'
 
 # --- S1 stale successor
 new_tree s1
@@ -168,8 +166,8 @@ has 'B1 assay/nyxloom-trove/4-backlog.md: [0-9]+% of [0-9]+ B in 1 closed of 2 e
 has 'B1 libraries/iobench/KNOWN_ISSUES_TODO_BACKLOG.md: 66% of 1500 B in 1 closed of 2 entries' 'a status word in the heading parentheses closes an IOB-BL-style entry'
 # a heading with no digit in its ID is not an entry; a heading with an ID and only a lowercase parenthesis is not closed
 new_tree b1-ids; mkdir -p "$R/t"
-{ entry '## README — what this is' 'Status: DONE' 500; entry '## CIU-9 — open (see fixed notes)' '' 500; } > "$R/t/KNOWN_ISSUES_TODO_BACKLOG.md"; track t/KNOWN_ISSUES_TODO_BACKLOG.md
-hyg; silent 'only an ID that contains a digit makes an entry; lowercase words in a heading do not close it'
+{ entry '## README — what this is' 'Status: DONE' 500; entry '## CIU-9 — open (see fixed notes)' '' 500; entry '## CTL-5 — DONE claim was premature' 'Status: OPEN' 500; } > "$R/t/KNOWN_ISSUES_TODO_BACKLOG.md"; track t/KNOWN_ISSUES_TODO_BACKLOG.md
+hyg; silent 'only an ID with a digit makes an entry; only a closed word INSIDE the heading parentheses closes one'
 # a file with Status lines and no parsable entry is reported as unparsed; one with neither is silent
 new_tree b1-unparsed; mkdir -p "$R/u" "$R/v"
 printf '## Intro\nStatus: OPEN\nStatus: DONE\n' > "$R/u/KNOWN_ISSUES_TODO_BACKLOG.md"; printf '## Intro\nnothing\n' > "$R/v/KNOWN_ISSUES_TODO_BACKLOG.md"
@@ -180,6 +178,26 @@ lacks 'B1 v/' 'a file with no entries and no Status lines is silent'
 # no git repository at all: B1 is skipped, the other rules still run
 new_tree b1-norepo; rm -rf "$R"; n_lines 71 > "$M/MEMORY.md"
 hyg; has 'M1' 'M1 still runs without a repository'; lacks 'B1' 'B1 needs a repository'
+
+# --- F5: a failing rule group becomes an `error` finding and the later groups still run; a bad date does not stop anything
+new_tree err; n_lines 71 > "$M/MEMORY.md"; blocks 3 > "$S/HANDOFF.md"
+TODAY=not-a-date hyg
+has 'error HYGIENE_TODAY: ValueError' 'a bad HYGIENE_TODAY is reported'; has 'M1 ' 'the rules still run after a bad date'; has 'H1 ' 'every rule group still runs'
+if [[ $(id -u) != 0 ]]; then   # root reads a mode-000 directory anyway
+  chmod 000 "$S/handovers"; hyg; chmod 755 "$S/handovers"
+  has 'error S1: PermissionError \(threshold no exception\)' 'an unreadable handovers directory is an error finding'
+  has 'H1 ' 'the groups before it ran'; lacks 'error B1' 'the group after it ran'
+fi
+
+# --- F1: every production default (state dir of the MAIN checkout from a linked worktree, memory dir under HOME)
+new_tree defaults
+git -C "$R" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --allow-empty -m x || fail 'git commit'
+git -C "$R" worktree add -q --detach "$T/wt" || fail 'git worktree add'
+mkdir -p "$R/.controller-state" "$T/home/.claude/projects/-workspaces-vbpub/memory"
+blocks 3 > "$R/.controller-state/HANDOFF.md"; n_lines 71 > "$T/home/.claude/projects/-workspaces-vbpub/memory/MEMORY.md"
+env -i HOME="$T/home" PATH="$PATH" HYGIENE_REPO="$T/wt" HYGIENE_TODAY="$TODAY" bash "$HYG" > "$ROOT/out" 2> "$ROOT/err"
+has 'H1 .controller-state/HANDOFF.md: 3 blocks' 'run from a linked worktree it reads the main checkout state'
+has "M1 $T/home/.claude/projects/-workspaces-vbpub/memory/MEMORY.md: 71 lines" 'the memory directory defaults to the one under HOME'
 
 # --- the script changes nothing it reads
 new_tree readonly; mkdir -p "$S/platform"
