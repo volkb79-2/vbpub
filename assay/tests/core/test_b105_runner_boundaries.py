@@ -365,7 +365,10 @@ def test_snapshot_preparation_oserror_becomes_a_named_refusal(
 
     assert verdict.outcome is Outcome.ERROR
     assert verdict.reason_code is ReasonCode.GIT_FAILED
-    assert "snapshot preparation or cleanup failed" in diagnostics.getvalue()
+    assert (
+        "ERROR/GIT_FAILED: seed/snapshot: snapshot mount disappeared"
+        in diagnostics.getvalue()
+    )
 
 
 def test_cleanup_oserror_replaces_the_highest_completed_rigor_claim(

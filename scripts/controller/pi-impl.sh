@@ -189,7 +189,7 @@ case $route in
 esac
 
 model=${PI_MODEL:-deepseek-v4.1-flash-eco}
-thinking=${PI_THINKING:-high}
+thinking=${PI_THINKING:-max}
 session_dir=${PI_SESSION_DIR:-"$HOME/.pi/agent/sessions"}
 
 if [[ -n $od_start_kind ]]; then
