@@ -31,6 +31,21 @@ budget = "6m"
 memory = "1g"
 memory_swap = "2g"
 
+# MDT-111 close condition: the two FIFO-backed lister tests pass 50 repetitions on ONE CPU shared with a competing busy loop.
+# The race this catches (a FIFO writer reopening before the previous reader reached EOF) only shows when the reader is
+# descheduled, so the loop and every pytest run are pinned to the same CPU (the first one this container may use).
+# Each repetition is its own pytest process (fresh fixture, fresh tmp tree); the first failing repetition fails the lane.
+# The loop is killed by the EXIT trap. Budget: see the measured figure below.
+[lanes.io-governance-stress]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. MDT_REQUIRE_SHELLS=1; cpu=$(/opt/tester-venv/bin/python -c 'import os; print(min(os.sched_getaffinity(0)))') || exit 1; taskset -c $cpu bash -c 'while :; do :; done' & busy=$!; trap 'kill $busy 2>/dev/null' EXIT; i=0; while [ $i -lt 50 ]; do i=$((i+1)); taskset -c $cpu /opt/tester-venv/bin/pytest -p no:cacheprovider -q -x host-setup/tests/test_io_governance.py -k 'test_it_lists_limits_from_files_that_report_size_zero or test_systemd_mode_prints_properties' || { echo \"stress: FAILED on repetition $i\"; exit 1; }; done; echo 'stress: 50 repetitions OK'"]
+budget = "10m"
+
+[lanes.io-governance-stress.resources]
+memory = "1g"
+memory_swap = "2g"
+
 [lanes.estate-doctor]
 kind = "command"
 environment = "tester-unified"
