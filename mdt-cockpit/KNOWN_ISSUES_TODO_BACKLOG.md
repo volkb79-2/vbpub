@@ -1964,10 +1964,26 @@ the first-party CLIs" section.
 
 **Acceptance.** A fake `npm` that answers ETARGET twice and then succeeds lets the install pass and logs both retries; a fake that always answers ETARGET fails after the bound with the original error text.
 
-## MDT-107 - the devcontainer stops when its PID-1 `sleep` child is killed (2026-11-18)
+## MDT-106 - shell-start.d docs export every API key into every shell (2026-11-24)
 
-**Status:** FIXED-pending-rebuild (2026-11-24): the image `CMD` and the `devcontainer.json` flip (`overrideCommand` false, `init` true) are in; the effect needs the image release (check its `Config.Cmd`) and an operator-run devcontainer rebuild. Closed once the rebuilt container shows a real init as PID 1.
+**Status:** OPEN; severity: medium.
 
-**Observed.** Without an `overrideCommand` key the Dev Containers default made PID 1 `/bin/sh -c 'echo Container started; trap "exit 0" 15; exec "$@"; while sleep 1 & wait $!; do :; done' -`. Killing its `sleep` child makes `wait` fail, the loop ends and PID 1 exits 0, which stopped the whole cockpit (measured twice on 2026-11-18, `OOMKilled=false`).
+Do not register `~/.env.ai` on agent cockpits; launchers load per-route keys (CTL-47). Also: take over tls-edge's mkcert item.
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md M3 (SYNTHESIS.md §5)
+
+## MDT-107 - the devcontainer stops when its PID-1 `sleep` child is killed (2026-11-24)
+
+**Status:** FIXED-pending-rebuild (2026-11-24); severity: high. The image `CMD` (plat-19-pid1-20261124) is released: mdt-cockpit image `trixie-py3.14-php8.5-20261124`, digest sha256:be8d913f095f35ab62fdcf6c239e707afdcd2b8137d0aac7102f0660fa35762e, `Config.Cmd` confirmed from the registry. The `devcontainer.json` flip (`overrideCommand` false, `init` true) is in. The effect needs an operator-run devcontainer rebuild. The runner cockpit gets the keepalive separately (P-plat-19f, start-cockpit-runner.sh).
+
+**Observed.** Without an `overrideCommand` key the Dev Containers default made PID 1 `/bin/sh -c 'echo Container started; trap "exit 0" 15; exec "$@"; while sleep 1 & wait $!; do :; done' -`. Killing its `sleep` child makes `wait` fail, the loop ends and PID 1 exits 0, which stopped the whole cockpit (measured twice on 2026-11-18, `OOMKilled=false`). The cockpit must survive a killed child, so a pid-signalling test or a stray `pkill` can no longer take it down.
 
 **Fix.** See `CHANGES.md` [Unreleased]. Order matters: a rebuild with the flipped `devcontainer.json` on an older image exits at once, so release the image first.
+
+Source: memory `devcontainer-pid1-dies-when-sleep-child-killed` (2026-11-18)
+
+## MDT-108 - dedicated runner hosts must rely on finite caps plus swap, not systemd-oomd kills (2026-11-24)
+
+**Status:** FIXED 2026-11-24 in commit `07dc9d6898eb8fa57e6fb5bd6d86231eae21f3e0`.
+
+Host-setup renders no `ManagedOOMMemoryPressure`, `ManagedOOMMemoryPressureLimit` or `ManagedOOMSwap` on any dev tier, and the dead per-tier pressure-limit knobs are removed. Finite `MemoryMax` plus a large `MemorySwapMax` is the overcommit design: cgroup v2 reclaims to swap before OOM, while fleetd alone freezes work at host memory PSI `full avg10 >= 3` (operator directive 2026-11-24). The default golden changes only for `dev-gates.slice` and `dev-background.slice`; every other rendered unit and every other role is unchanged.

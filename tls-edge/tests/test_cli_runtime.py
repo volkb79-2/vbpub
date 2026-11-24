@@ -16,7 +16,9 @@ def make_root(path: Path) -> Path:
     defaults.parent.mkdir(parents=True)
     defaults.write_text("""\
 [tls_edge]
+schema = 1
 domain = "edge.example.com"
+ingress_external = false
 [tls_edge.tls]
 mode = "acme-tls"
 [tls_edge.ports]
@@ -35,6 +37,8 @@ volume_name = ""
 cert_base = "/etc/letsencrypt"
 domains = []
 source = "bind"
+[tls_edge.runtime]
+cgroup_parent = ""
 """, encoding="utf-8")
     return path
 
@@ -269,6 +273,28 @@ static_source = "volume"
     }
 
 
+def test_configure_repairs_a_cross_field_invalid_current_site(tmp_path: Path):
+    root = make_root(tmp_path / "instance")
+    override = root / "stack/ciu-stack/ciu.toml.j2"
+    override.write_text(
+        '[tls_edge]\ndomain = "edge.example.com"\n'
+        '[tls_edge.tls]\nmode = "static"\n',
+        encoding="utf-8",
+    )
+    answers = answer_file(
+        tmp_path / "answers.toml",
+        'tls_mode = "acme-tls"\nhttps_port = 443\n',
+    )
+
+    assert cli.configure(
+        SimpleNamespace(root=root, answers=answers, dry_run=False),
+        Runtime(),
+    ) == 0
+    written = __import__("tomllib").loads(override.read_text(encoding="utf-8"))
+    assert written["tls_edge"]["schema"] == 1
+    assert written["tls_edge"]["tls"]["mode"] == "acme-tls"
+
+
 def test_configure_wraps_answer_and_partial_write_errors(tmp_path: Path, monkeypatch):
     root = make_root(tmp_path / "instance")
     bad_answers = answer_file(tmp_path / "bad.toml", "tls_mode = \"static\"\nacme_email = \"ops@example.org\"\n")
@@ -312,14 +338,13 @@ def test_show_and_validate_valid_empty_and_invalid_instances(tmp_path: Path):
         cli.validate(SimpleNamespace(root=root), Runtime())
 
 
-def test_show_unconfigured_domain_without_inbound_ports(tmp_path: Path, monkeypatch):
+def test_show_unconfigured_domain(tmp_path: Path):
     root = make_root(tmp_path / "unconfigured")
     override = root / "stack/ciu-stack/ciu.toml.j2"
     override.write_text('[tls_edge]\ndomain = ""\n', encoding="utf-8")
-    monkeypatch.setattr(cli, "validate_config", lambda *_args, **_kwargs: [])
     runtime = Runtime()
     assert cli.show(SimpleNamespace(root=root), runtime) == 0
-    assert "Inbound ports:" not in runtime.output.lines
+    assert "Inbound ports:" in runtime.output.lines
     assert any("Run `tls-edge configure`" in line for line in runtime.output.lines)
 
 
