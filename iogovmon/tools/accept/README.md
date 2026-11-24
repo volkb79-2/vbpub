@@ -15,7 +15,7 @@ Host-free tests: `tests/test_accept_stage.py`, `tests/test_accept_tools.py` (lan
 ## Run
 1. `cp stage.example.toml <workdir>/stage.toml`; fix `[paths]` (every path is configurable; `--config` defaults to `/root/iogovmon-accept2/stage.toml`).
    The fill dirs must be `iogov-fill` and the stage files `iogov-*` directly under `/srv/cow` or `/var/tmp`, else the run refuses to start.
-2. Rehearse first: `stage.py --rehearsal` (seconds-long phases, 1 GiB budget, dry annotations; own lock and files).
+2. Rehearse first: `stage.py --rehearsal` (seconds-long phases, 1 GiB budget, dry annotations; own log, snap, summary and phases files, but the same lock, STOP file and fill dirs as a real run).
 3. Reference probe: `systemd-run --unit=iogov-a2-refprobe --property=CPUQuota=20% --property=Nice=10 --property=MemoryHigh=256M python3 refprobe.py --run`
    (`--workdir` moves its lock, STOP file and CSVs; keep it equal to the stage workdir).
 4. Stage, with T0 = the fresh iogovmon start (at most `t0_max_age_s` old): `systemd-run --unit=iogov-a2-stage --property=CPUQuota=100%
