@@ -157,6 +157,30 @@ def test_a_pack_failure_is_reported_per_store_leaves_no_archive_and_keeps_the_la
     assert not list(rgd(sandbox).glob("assay-store*"))
 
 
+@pytest.mark.parametrize("bad", ["ln -s /etc s1/l", "mkfifo s1/p", "mkdir s1/d && ln -s ../f s1/d/l"])
+def test_a_store_holding_anything_but_files_and_directories_is_refused_whole_and_the_lane_verdict_is_untouched(sandbox, bad):
+    r = run_job(sandbox, ["s1", "s2"], f"mkdir -p s1 s2 && echo a > s1/f && echo b > s2/f && {bad}", rc=1)
+    assert r.returncode == 1 and (rgd(sandbox) / "rc").read_text().strip() == "1"
+    assert "STORE-COLLECT-FAILED s1 special-file" in r.stdout and "STORE-COLLECTED s2" in r.stdout
+    assert [n for n, _ in listing(rgd(sandbox) / "assay-store.tgz")] == ["s2", "s2/f"]
+    assert "verdict FAIL" in (rgd(sandbox) / "lane.log").read_text()
+
+
+FAKE_TAR_UNREADABLE = """#!/usr/bin/env bash
+# the sizing pass (`tar -cf - ...`) cannot read the tree; every other tar is the real one
+case "$*" in *"-cf - "*) echo "tar: s1/f: Cannot open: Permission denied" >&2; exit 2;; esac
+exec /usr/bin/tar "$@"
+"""
+
+
+def test_an_unreadable_store_logs_the_first_bytes_of_tars_complaint_and_keeps_the_lane_rc(sandbox):
+    _exe(sandbox.tmp / "bin" / "tar", FAKE_TAR_UNREADABLE)
+    r = run_job(sandbox, ["s1"], "mkdir -p s1 && echo a > s1/f")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "STORE-COLLECT-FAILED s1 unreadable tar: s1/f: Cannot open: Permission denied" in r.stdout
+    assert not list(rgd(sandbox).glob("assay-store*"))
+
+
 def test_a_run_without_collect_store_creates_no_store_files(sandbox):
     r = run_job(sandbox, [], tree_setup())
     assert r.returncode == 0 and "STORE-" not in r.stdout

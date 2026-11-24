@@ -475,10 +475,17 @@ collect_stores() {
     if ! store_rel_check "$rel"; then log "STORE-COLLECT-FAILED $rel $STORE_WHY"; continue; fi
     if [[ ! -e $CKDIR/$rel ]]; then log "STORE-ABSENT $rel"; continue; fi
     if [[ ! -d $CKDIR/$rel ]]; then log "STORE-COLLECT-FAILED $rel not-a-directory"; continue; fi
-    if ! bytes=$(tar -cf - -C "$CKDIR" -- "$rel" 2>/dev/null | wc -c); then log "STORE-COLLECT-FAILED $rel unreadable"; continue; fi
+    # the tree was written by code under test: anything but regular files and directories (a symlink, hardlink, fifo, device) could
+    # make the consumer's `tar -xzf` write outside its target, so such a store is refused whole
+    if [[ -n $(find "$CKDIR/$rel" ! -type f ! -type d -print -quit 2>/dev/null) ]]; then log "STORE-COLLECT-FAILED $rel special-file"; continue; fi
+    if ! bytes=$(tar -cf - -C "$CKDIR" -- "$rel" 2>"$D/assay-store.err" | wc -c); then
+      err=$(head -c 200 "$D/assay-store.err" 2>/dev/null | tr '\n' ' ')
+      log "STORE-COLLECT-FAILED $rel unreadable ${err:-no-detail}"; continue
+    fi
     if (( bytes > STORE_MAX_BYTES )); then log "STORE-TOO-LARGE $rel $bytes"; continue; fi
     ok+=("$rel")
   done
+  rm -f -- "$D/assay-store.err"
   (( ${#ok[@]} )) || return 0
   rm -f -- "$D/assay-store.tgz" "$D/assay-store.tgz.sha256" "$D/assay-store.tgz.part"
   if tar -czf "$D/assay-store.tgz.part" -C "$CKDIR" -- "${ok[@]}" 2>"$D/assay-store.err" \

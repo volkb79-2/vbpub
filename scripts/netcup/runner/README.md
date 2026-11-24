@@ -1053,10 +1053,11 @@ remote-gate.py collect r1    # fetches assay-store.tgz + assay-store.tgz.sha256 
 ```
 
 - `<rel>` is relative to the **repository root of the run's own host checkout** and normalised (`a//b/./c/` is `a/b/c`).
-  An absolute path, `..`, the root itself, a character outside `A-Za-z0-9._@+=,:-` or a symlinked component is refused
+  An absolute path, `..`, a `.git` component (collect and seed), the root itself, a character outside `A-Za-z0-9._@+=,:-` or a symlinked component is refused
   with exit 2 before anything is sent (the local worktree is checked, and the host job checks its own tree again and
   reports `STORE-COLLECT-FAILED <rel> symlink`). Each run has its own checkout, so concurrent runs never share a store.
-- After the lane exits, per path: absent gives one `STORE-ABSENT <rel>` job-log line and no archive; more than
+- After the lane exits, per path: absent gives one `STORE-ABSENT <rel>` job-log line and no archive; a tree holding anything but
+  regular files and directories (symlink, fifo, device) gives `STORE-COLLECT-FAILED <rel> special-file` and is not packed; more than
   `--store-max-mib` (default 512) **uncompressed tar bytes** gives `STORE-TOO-LARGE <rel> <bytes>` and nothing is packed;
   any packing failure gives `STORE-COLLECT-FAILED <rel> <reason>`; success logs `STORE-COLLECTED <rels>`. None of
   these changes the lane's verdict or the job's exit code. `collect` echoes these lines before the verdict line.
@@ -1072,8 +1073,8 @@ remote-gate.py collect r1    # fetches assay-store.tgz + assay-store.tgz.sha256 
   directory must exist and contain only regular files and directories (a symlink, hardlink or device is refused locally, exit
   2), and its uncompressed tar bytes must fit `--store-max-mib` (the same bound in both directions). It is uploaded as
   `assay-seed-<n>.tgz` + `.sha256` (one archive per seed, members named `<rel>/...`) over the bundle's transport, with the
-  same post-upload `sha256sum` check (mismatch: exit 3). The host job, after the checkout is prepared and before admission and
-  the lane, verifies the checksum, re-checks the size bound on the decompressed stream, refuses special members and members
+  same post-upload `sha256sum` check (mismatch: exit 3). The host job, after the checkout is prepared, after the run-gate admission
+  check and before memory admission and the lane, verifies the checksum, re-checks the size bound on the decompressed stream, refuses special members and members
   outside `<rel>/` (including `..`), refuses a target that holds tracked files, removes the target and unpacks. Any refusal logs
   `STORE-SEED-FAILED <rel> <reason>` and ends the job with **exit 78** (verdict `STORE_SEED_FAILED`, never a lane verdict; the
   lane is not started and the checkout is removed as usual). Success logs `STORE-SEEDED <rels>`.
