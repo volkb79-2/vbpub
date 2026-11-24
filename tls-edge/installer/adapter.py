@@ -73,12 +73,14 @@ def bootstrap(
     if effective_euid != 0:
         return
 
-    hostdir = instance_root / "shared" / "acme"
+    shared = instance_root / "shared"
+    shared.mkdir(mode=0o755, exist_ok=True)
+    hostdir = shared / "acme"
     if os.path.lexists(hostdir):
         if hostdir.is_symlink() or not hostdir.is_dir():
             raise FileExistsError(f"{hostdir} must be a plain directory")
     else:
-        hostdir.mkdir(mode=0o700, parents=True)
+        hostdir.mkdir(mode=0o700)
     (chown_fn or os.chown)(hostdir, 0, 0)
     (chmod_fn or os.chmod)(hostdir, 0o700)
 
