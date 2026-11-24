@@ -39,6 +39,7 @@ def test_progress_default_stream_selection_and_auto_tty_detection(monkeypatch):
             return True
 
     monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
     tty = TTY()
     progress = ProgressRenderer(ProgressMode.AUTO, stream=tty)
     assert progress.mode is ProgressMode.TTY
@@ -58,6 +59,7 @@ def test_progress_color_policy_all_modes_and_explicit_overrides(monkeypatch):
             return True
 
     monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
     assert ProgressRenderer(ProgressMode.TTY, stream=TTY())._color_enabled()
     assert not ProgressRenderer(
         ProgressMode.TTY, stream=TTY(), color=False
@@ -72,7 +74,16 @@ def test_progress_color_policy_all_modes_and_explicit_overrides(monkeypatch):
         ProgressMode.RAWJSON, stream=TTY(), color=True
     )._color_enabled()
 
+    # CLI-EXT-42: an empty NO_COLOR is unset, a non-empty one disables.
     monkeypatch.setenv("NO_COLOR", "")
+    assert ProgressRenderer(ProgressMode.TTY, stream=TTY())._color_enabled()
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert not ProgressRenderer(ProgressMode.TTY, stream=TTY())._color_enabled()
+    assert ProgressRenderer(ProgressMode.TTY, stream=TTY(), color=True)._color_enabled()
+
+    # TERM=dumb disables automatic colour; an explicit --color still wins.
+    monkeypatch.delenv("NO_COLOR")
+    monkeypatch.setenv("TERM", "dumb")
     assert not ProgressRenderer(ProgressMode.TTY, stream=TTY())._color_enabled()
     assert ProgressRenderer(ProgressMode.TTY, stream=TTY(), color=True)._color_enabled()
 

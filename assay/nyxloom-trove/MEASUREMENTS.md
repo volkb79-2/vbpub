@@ -219,6 +219,20 @@ Two consequences, both recorded in nyxloom's backlog:
 Until a readiness pass is measured at band 1, the cost rows here transfer and
 the quality rows do not.
 
+## R2 isolated replay (WP0b, B562 part 1, 2026-11-24)
+
+M on v1001 with `tools/replay_pilot.py` (lane `replay-pilot`, run `rgw-replay-pilot-20261124T063119-v1001`). Input: the committed cmru R2 progress streams (`cmru/docs/evidence/r2-*`: 1,714 candidates, 1,487 kills); 20 kills whose mutant reconstructs byte-exactly at today's commit (`mutated_file_sha256`), stratified over 20 witness files; each replayed as `pytest <file>::<node>` alone on the mutant (M) and on the pristine tree (P), the judge lane's interpreter and env, one-file collection.
+
+| Quantity | M |
+|---|---|
+| r, one replay (M+P) | median 3.81 s, p90 4.16 s (M alone 1.91 s, P alone 1.93 s) |
+| collection share of r | 17.3 % (one-file collection 1.6-2.1 s; full collection 14.2 s) |
+| replay confirms the old kill (M fails, P passes) | 19/20; the 20th node is skipped on M (environment-dependent skip) |
+| kills without a recorded witness | 20 / 1,487 = 1.3 % |
+| distinct witness nodes | 558 over 104 files (median 1 kill per node) |
+
+Consequences (C): one cmru release's ~4,190 carried kills cost about 4.4 h serial (≈ 0.75 h at 6 workers) to re-prove, against ~182 s per kill judged in full. Phase 2 (WP7/D6) stays parked (r ≤ 10 s); the witness recorder needs no fix (null share < 10 %). Two WP4 requirements found: (1) a project's collection guard can refuse a single-node run (cmru's conftest needs `--cli-case-partial`; the first pilot run measured 0/20 without it), so the isolated run needs per-lane extra arguments that enter the judge identity; (2) a refused, skipped or timed-out isolated run is neither a kill nor a survivor and falls back to the full judge.
+
 ## Tooling caveats that distort a measurement if you do not know them
 
 - **A backgrounded CLI's completion signal reports the WRAPPER, not the work —

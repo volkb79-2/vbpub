@@ -17,7 +17,8 @@ they are not current status.
 
 | Document | Purpose |
 |---|---|
-| [TODO.md](TODO.md) | Single current status page, work order, and open items |
+| [TODO.md](TODO.md) | Single current status page and work order |
+| [KNOWN_ISSUES_TODO_BACKLOG.md](KNOWN_ISSUES_TODO_BACKLOG.md) | Open items (DR-NN); closed items are in [archive/](archive/) |
 | [docs/INSTALLATION-ARCHITECTURE.md](docs/INSTALLATION-ARCHITECTURE.md) | Canonical architecture, ISO variants, Debian changes, and install flows |
 | [docs/ROLLBACK-RECOVERY.md](docs/ROLLBACK-RECOVERY.md) | Recovery contract, boot-menu operator flow, state management, and acceptance scenarios |
 | [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Product goals, decisions, and design rationale |
