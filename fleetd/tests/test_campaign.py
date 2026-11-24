@@ -964,6 +964,7 @@ def test_stop_errors_are_recorded_for_the_affected_host(tmp_path):
     first = next(job for job in duplicate_state["jobs"].values() if job["host"] == "host-a")
     second = next(job for job in duplicate_state["jobs"].values() if job["host"] == "host-b")
     second["records"].append({"candidate_id": first["candidate_ids"][0]})
+    first["lost_mono"] = 0.0
     duplicate_manager.runner.stop = fail_stop
     duplicate_manager._stop_returned_duplicates(duplicate_state, "host-a")
     assert duplicate_state["hosts"]["host-a"]["status"] == "ERROR"
@@ -1553,6 +1554,26 @@ def test_a_failed_returned_duplicate_stop_is_retried_on_the_next_refresh(tmp_pat
     assert attempts == 2
 
 
+def test_returned_duplicate_stop_spares_a_batch_that_is_finishing_on_the_same_host(tmp_path):
+    plan, first_id, second_id = _two_host_one_candidate_plan()
+    manager = CampaignManager(tmp_path, FakeTransport())
+    manager.run("campaign", plan)
+    state = _state(tmp_path)
+    lost = _first_running(state, "host-b")
+    lost["lost_mono"] = 0.0
+    state["jobs"][_first_running(state, "host-a")["name"]]["records"] = [{"candidate_id": second_id}]
+    own = [{"candidate_id": first_id}]
+    # A post-return batch and a lost batch that has all its own records but no EXIT yet are finishing.
+    state["jobs"]["fresh"] = {**lost, "name": "fresh", "candidate_ids": [first_id], "records": own}
+    state["jobs"]["fresh"].pop("lost_mono")
+    state["jobs"]["finishing"] = {**lost, "name": "finishing", "candidate_ids": [first_id], "records": own}
+    stopped = []
+    manager.runner.stop = lambda host, name: stopped.append(name)
+    assert manager._stop_returned_duplicates(state, "host-b") is False
+    assert stopped == [lost["name"]]
+    assert [state["jobs"][name]["status"] for name in ("fresh", "finishing")] == ["RUNNING", "RUNNING"]
+
+
 def test_superseded_and_returned_duplicate_stop_failures_preserve_retry_state(tmp_path):
     plan, _first_id, second_id = _two_host_one_candidate_plan()
     transport = FakeTransport()
@@ -1572,6 +1593,7 @@ def test_superseded_and_returned_duplicate_stop_failures_preserve_retry_state(tm
     state["hosts"]["host-b"]["status"] = "LOST"
     state["jobs"][job_b["name"]]["status"] = "RUNNING"
     state["jobs"][job_b["name"]]["candidate_ids"] = [second_id]
+    state["jobs"][job_b["name"]]["lost_mono"] = 0.0
     state["jobs"][next(job for job in state["jobs"] if state["jobs"][job]["host"] == "host-a")]["records"] = [{
         "candidate_id": second_id, "outcome_bucket": "survived", "elapsed_seconds": 1,
         "emitted_at": None,
@@ -3381,7 +3403,7 @@ def test_every_contact_failure_site_starts_the_clock_at_now_not_at_last_contact(
     assert host_state["status"] == "UNREACHABLE" and host_state["unreachable_since_mono"] == clock()
     # Returned-duplicate stop.
     host_state.update({"status": "ONLINE", "unreachable_since_mono": None})
-    job["status"] = "RUNNING"
+    job["status"], job["lost_mono"] = "RUNNING", 0.0
     state["jobs"]["other"] = {**job, "name": "other", "host": "elsewhere", "records": [{"candidate_id": c} for c in job["candidate_ids"]]}
     clock.advance(10)
     manager._stop_returned_duplicates(state, host_id)

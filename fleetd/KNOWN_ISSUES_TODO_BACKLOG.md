@@ -949,4 +949,14 @@ traceback instead of one concise error line. Validate the table shape and define
 the per-job versus whole-probe error boundary for fake and shipped execution.
 Close with malformed-config tests through both paths.
 
-Source: fix-round review finding 5; `fleetd/src/fleetd/hostside.py:33-43,245`.
+Also: a garbled artifact can still crash the whole host probe. `math.isfinite(float(x))`
+on a huge JSON integer raises `OverflowError`, which `probe_document` (it catches
+`OSError` and `ValueError`) does not catch. Sites: `hostside.progress_records` (strict),
+`verdict_reading` (baseline `wall_s`) and `campaign.py:686`. The old runner had it too.
+Close with a huge-integer artifact test through both paths.
+
+Source: fix-round review finding 5; `fleetd/src/fleetd/hostside.py:33-43,245`;
+r2 review finding B.
+
+Nit (r2 finding C): `returned_after_loss` is set on every refresh while pending and
+nothing reads it except tests. Document it as a status marker or drop it.

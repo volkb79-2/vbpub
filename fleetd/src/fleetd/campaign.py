@@ -877,7 +877,7 @@ class CampaignManager:
         done_elsewhere = self._done_by_other_hosts(state, host_id)
         pending = False
         for job in state["jobs"].values():
-            if job["host"] != host_id or job["status"] != "RUNNING":
+            if job["host"] != host_id or job["status"] != "RUNNING" or job.get("lost_mono") is None:
                 continue
             finished = {
                 record["candidate_id"]
@@ -885,6 +885,8 @@ class CampaignManager:
                 if isinstance(record, dict) and isinstance(record.get("candidate_id"), str)
             }
             outstanding = set(job["candidate_ids"]) - finished
+            if not outstanding:
+                continue  # finishing on its own: nothing is done "elsewhere" for it
             if not outstanding <= done_elsewhere:
                 pending = True
                 continue
