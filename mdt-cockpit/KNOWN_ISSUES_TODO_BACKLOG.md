@@ -2018,16 +2018,17 @@ Follow-up P-plat-19d (2026-11-24): `mdt-host-check.sh` FAILs when oomd can still
 - **SIGHUP subtest.** `tests/test_accept_kit.py::test_int_term_and_hup_remove_both_probes_by_exact_name` (`:347-355`) failed once on r1002 in the
   SIGHUP subtest (`:348`); the log tail read "rm bg, rm bg" and the cause is unexplained. Investigate whether a HUP arriving during
   `start_probe` / sampling (`tools/accept/accept-run.sh:87-97`) can skip the removal of the gates probe (the tail shows `rm bg` twice, which suggests the
-  gates removal was not reached or was logged under the wrong name). Add a subtest that sends HUP before the second probe exists, and make the
-  removal trap independent of how far start-up got.
+  gates removal was not reached or was logged under the wrong name). Add a subtest that sends HUP before the second probe exists. Note that `finish()` already removes both names
+  unconditionally (`:67`, trap armed at `:74` before `start_probe`), so also check whether a late fake-docker append from the
+  previous subtest (the log is reset at `test_accept_kit.py:350`) or an out-of-order append explains the extra `rm bg`.
 - **dev-cache.slice flake.** `tests/test-render.sh` hit a `dev-cache.slice` flake once (smoke run 2 at `8b3361f73`; the dev-cache.slice assertions are at
   `:186-190`), not reproduced. Record the failing assertion when it recurs.
 
 ## MDT-111 - the `_fifo_file` fixture in `test_io_governance.py` races and times out under load (2026-11-24)
 
-**Status:** OPEN (filed 2026-11-24); Minor. Source: `.controller-state/platform/reviews/plat-19d-r1-opus.md`, "# Round 2".
+**Status:** OPEN (filed 2026-11-24); Minor. Same fixture as MDT-022 (FIXED, orphaned readers); this is a different defect. Source: `.controller-state/platform/reviews/plat-19d-r1-opus.md`, "# Round 2".
 
-`tests/test_io_governance.py:569-582` (`_fifo_file`) serves a named pipe from a daemon thread whose `serve()` loop reopens the FIFO for writing as
+`host-setup/tests/test_io_governance.py:569-582` (`_fifo_file`) serves a named pipe from a daemon thread whose `serve()` loop reopens the FIFO for writing as
 soon as the previous writer closes. If the reopen beats the reader (`cat`) to EOF, the reader receives the content a second time and never sees EOF.
 The failing run's captured stdout showed the `dev.slice vda` row twice. `test_it_lists_limits_from_files_that_report_size_zero_with_effective_values`
 (`:601`) and `test_systemd_mode_prints_properties_and_drop_in_paths` (`:614`) time out under host load; the retry passed, so the cause is the fixture
