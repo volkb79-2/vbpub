@@ -14,6 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-201 | OPEN (filed 2026-11-24, test-policy-v0.1.0 push failure) | — |
 | KI-200 | OPEN (filed 2026-11-24, Opus design review) | — |
 | KI-199 | OPEN (filed 2026-11-24, Opus design review) | — |
 | KI-198 | OPEN (filed 2026-11-24, Opus design review) | — |
@@ -4180,3 +4181,16 @@ On-touch structure work, no big-bang rewrite:
 - closed KIs move to a `KNOWN_ISSUES_CLOSED.md` archive; design notes carry decisions and contracts only.
 
 Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md M7, M8, M9
+
+## KI-201 - wheel-publish glob is derived from the tag prefix and the dry run never checks it
+
+**Status:** OPEN (filed 2026-11-24); severity: medium.
+
+`cmru handler wheel-publish` without `--glob` matches `<prefix with - as _>-*.whl` (`handlers._wheel_glob`), taken from the tag prefix rather than from the distribution the build produced. For test-policy (prefix `test-policy`, distribution `estate-test-policy`), the first release `test-policy-v0.1.0` built `estate_test_policy-0.1.0-py3-none-any.whl`. It then failed at the push step with `No artifact in .../libraries/test-policy/dist (glob: test_policy-*.whl)`, after the tag was already on origin. The preceding `--dry-run` passed, because it never resolves the publish glob against the build's output. Recovery was post-publication: delete the tag by exact object, abandon, and re-release.
+
+**Wanted.**
+- `wheel-publish` defaults its glob to the built distribution's escaped name, from the build-output record or `[project] scm_dist`. The prefix is never used.
+- `cmru release --dry-run` (or the config validation) refuses when a `wheel-publish` glob cannot match the wheel name the build will produce.
+- Tests: a project whose prefix differs from its distribution publishes with no `--glob`, and a mismatched explicit `--glob` fails before the tag is pushed.
+
+The immediate fix is the explicit `--glob` in `libraries/test-policy/cmru.toml`, with `libraries/test-policy/tests/test_release_contract.py` as its guard. Every other wheel project's prefix matches its distribution name (checked 2026-11-24).
