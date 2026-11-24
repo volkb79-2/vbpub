@@ -164,6 +164,10 @@ def _require_boot(context: Context) -> Boot:
             f"bootloader marker {context.paths.esp_marker} is missing; "
             "run install-grub first"
         )
+    if not marker:
+        raise Refused(
+            f"bootloader marker {context.paths.esp_marker} is present but empty"
+        )
     raise Unsupported(f"boot backend {marker!r} is not installed in this runtime")
 
 

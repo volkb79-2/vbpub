@@ -10,7 +10,7 @@ from pathlib import Path
 import _support
 from dr_state import ids
 from dr_state.boot.grub import GrubBoot
-from dr_state.errors import BootConfigError, BootError, Refused
+from dr_state.errors import BootConfigError, BootError, Refused, Unsupported
 from dr_state.storage import KernelPair, Stored
 
 
@@ -213,6 +213,63 @@ class GrubTest(_support.TemporaryRootTest):
             self.boot.publish((self.target(self.apt),), self.apt)
         self.assertIn(f"--id {self.apt.name}", self.paths.esp_grub_cfg.read_text())
         self.assertEqual(self.runner.environment, f"saved_entry={self.install.name}\n")
+
+    def test_publication_mode_keeps_a_known_missing_oneshot_target(self) -> None:
+        missing = state(99, 15)
+        self.set_environment(f"next_entry={missing.name}\n")
+        selector = self.boot.oneshot(strict=False)
+        self.assertIsNotNone(selector)
+        self.assertEqual(selector.state, missing.name)
+        self.assertEqual(selector.entry, missing.name)
+        self.assertTrue(selector.known)
+
+
+class MarkerTest(_support.TemporaryRootTest):
+    def setUp(self) -> None:
+        super().setUp()
+        self.paths.esp_dir.mkdir(parents=True)
+        self.storage = FakeStorage(())
+
+    def context(self, *, boot: object | None = None) -> object:
+        from dr_state.core import Context
+
+        return Context(
+            paths=self.paths,
+            storage=self.storage,
+            runner=FakeRunner(),
+            clock=lambda: datetime(2026, 11, 18, 12, 0, tzinfo=UTC),
+            env={},
+            boot=boot,
+        )
+
+    def test_missing_and_empty_markers_are_refused_without_guessing(self) -> None:
+        from dr_state.core import _require_boot
+
+        with self.assertRaisesRegex(Refused, "missing"):
+            _require_boot(self.context())
+        self.paths.esp_marker.write_text("\r\n", encoding="utf-8")
+        with self.assertRaisesRegex(Refused, "present but empty"):
+            _require_boot(self.context())
+
+    def test_unknown_marker_is_unsupported(self) -> None:
+        from dr_state.core import _require_boot
+
+        self.paths.esp_marker.write_text("grub2\n", encoding="utf-8")
+        with self.assertRaisesRegex(Unsupported, "grub2"):
+            _require_boot(self.context())
+
+    def test_marker_symlink_and_directory_are_refused(self) -> None:
+        from dr_state.core import marker_value
+
+        target = self.root / "marker-target"
+        target.write_text("grub\n", encoding="utf-8")
+        self.paths.esp_marker.symlink_to(target)
+        with self.assertRaisesRegex(Refused, "not a regular file"):
+            marker_value(self.paths)
+        self.paths.esp_marker.unlink()
+        self.paths.esp_marker.mkdir()
+        with self.assertRaisesRegex(Refused, "not a regular file"):
+            marker_value(self.paths)
 
 
 if __name__ == "__main__":

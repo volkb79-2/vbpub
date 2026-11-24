@@ -76,6 +76,13 @@ class BtrfsTest(_support.TemporaryRootTest):
         self.paths.proc_cmdline.write_text("quiet root=/dev/sda2\n", encoding="utf-8")
         self.assertIsNone(storage.running())
 
+    def test_activate_is_an_idempotent_local_noop(self) -> None:
+        storage = BtrfsStorage(self.paths, FakeRunner())
+        state_id = state("@os-000001-20261118-120000Z-install")
+        storage.activate(state_id)
+        storage.activate(state_id)
+        self.assertEqual(storage.runner.calls, [])
+
     def test_kernels_returns_only_complete_pairs_newest_first(self) -> None:
         name = "@os-000001-20261118-120000Z-install"
         directory = self.paths.top / name

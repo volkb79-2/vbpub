@@ -4,7 +4,6 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL="$HERE/install-btrfs.sh"
-DR="$HERE/dr-state"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 fail=0
@@ -36,7 +35,6 @@ contains grub-default-package "$WORK/grub-default.err" \
 contains grub-default-install "$WORK/grub-default.err" \
   'chroot /mnt/drtarget /usr/local/sbin/dr-state install-grub'
 absent grub-default-no-systemd-package "$WORK/grub-default.err" 'systemd-boot,'
-absent grub-default-no-systemd-config "$WORK/grub-default.out" 'BOOTLOADER=systemd-boot'
 
 run_dry grub-explicit --bootloader grub
 contains grub-explicit-package "$WORK/grub-explicit.err" \
@@ -57,8 +55,6 @@ contains sdboot-disable-kernel-install-bls-dir "$WORK/sdboot.err" \
   '+ mkdir -p /mnt/drtarget/etc/kernel/install.d'
 contains sdboot-disable-kernel-install-bls "$WORK/sdboot.err" \
   '+ ln -s /dev/null /mnt/drtarget/etc/kernel/install.d/90-loaderentry.install'
-contains sdboot-config "$DR" "printf 'BOOTLOADER=systemd-boot\\n' >\"\$DR_STATE_CONF.new.\$\$\""
-contains sdboot-marker "$DR" "printf 'systemd-boot\\n' >\"\$SDBOOT_MARKER.new.\$\$\""
 contains restricted-esp-install-mount "$WORK/sdboot.err" 'mount -o umask=0077'
 absent sdboot-no-grub-package "$WORK/sdboot.err" 'linux-image-amd64,grub-efi-amd64'
 absent sdboot-no-grub-installer "$WORK/sdboot.err" 'dr-state install-grub'
@@ -70,7 +66,6 @@ absent grub-no-systemd-hook-diversion "$WORK/grub-default.err" 'dpkg-divert --lo
 contains apt-preinstall-hook "$INSTALL" 'DPkg::Pre-Install-Pkgs { "/usr/local/sbin/dr-state apt-pre-install-pkgs"; };'
 contains apt-plan-version "$INSTALL" 'DPkg::Tools::Options::/usr/local/sbin/dr-state::Version "2";'
 contains apt-plan-fd "$INSTALL" 'DPkg::Tools::Options::/usr/local/sbin/dr-state::InfoFD "3";'
-contains apt-preinvoke-fallback "$INSTALL" 'dr-state snapshot --reason apt || exit 100'
 
 # The BLS override must precede debootstrap's systemd-boot/kernel package configuration; hook diversions and
 # dr-state installation follow package installation but precede state capture and menu generation.

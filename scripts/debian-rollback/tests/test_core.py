@@ -188,19 +188,29 @@ class CoreTest(_support.TemporaryRootTest):
         self,
         *,
         boot: FakeBoot | None = None,
+        runner: object | None = None,
         env: dict[str, str] | None = None,
         now: datetime | None = None,
     ) -> Context:
         return Context(
             paths=self.paths,
             storage=self.storage,
-            runner=FakeRunner(),
+            runner=runner or FakeRunner(),
             clock=lambda: now or datetime(2026, 11, 18, 14, 0, tzinfo=UTC),
             env=env or {"GRUBEDITENV_STATE": "unused"},
             stdout=io.StringIO(),
             stderr=io.StringIO(),
             boot=boot or self.boot,
         )
+
+    def add_state(self, sequence: int, hour: int, slug: str = "apt") -> ids.StateId:
+        value = make_state(sequence, hour, slug)
+        boot = self.paths.top / value.name / "boot"
+        boot.mkdir(parents=True)
+        (boot / "vmlinuz-6.12.117+deb13-amd64").write_text("kernel\n")
+        (boot / "initrd.img-6.12.117+deb13-amd64").write_text("initrd\n")
+        self.storage.states += (value,)
+        return value
 
     def test_snapshot_records_metadata_and_survives_publication_failure(self) -> None:
         self.boot.publish_error = BootConfigError("marker missing")
@@ -253,6 +263,51 @@ class CoreTest(_support.TemporaryRootTest):
         self.assertFalse((self.paths.top / self.install.name).exists())
         self.assertIn(f"deleted {self.install.name}", context.stdout.getvalue())
 
+    def test_delete_refuses_the_configured_default_before_any_change(self) -> None:
+        self.storage.running_name = self.apt.name
+        self.boot.default_name = self.install.name
+        context = self.context()
+        with self.assertRaisesRegex(Refused, "configured grub default"):
+            execute(context, ("delete", self.install.name, "--yes"))
+        self.assertEqual(self.events, [])
+        self.assertTrue((self.paths.top / self.install.name).is_dir())
+
+    def test_delete_refuses_the_running_state_before_any_change(self) -> None:
+        self.storage.running_name = self.apt.name
+        self.boot.default_name = self.install.name
+        context = self.context()
+        with self.assertRaisesRegex(Refused, "running state"):
+            execute(context, ("delete", self.apt.name, "--yes"))
+        self.assertEqual(self.events, [])
+        self.assertTrue((self.paths.top / self.apt.name).is_dir())
+
+    def test_prune_never_deletes_a_pinned_state(self) -> None:
+        third = self.add_state(3, 14)
+        fourth = self.add_state(4, 15)
+        self.make_control_dir()
+        metadata.write_sidecar(
+            self.paths,
+            self.apt,
+            metadata.Metadata(
+                state=self.apt.name,
+                sequence=self.apt.sequence,
+                origin_slug=self.apt.slug,
+                source="apt",
+                reason="apt",
+                kind="checkpoint",
+                pinned=True,
+            ),
+        )
+        context = self.context()
+        execute(context, ("prune", "--keep", "0"))
+        self.assertEqual(
+            self.events,
+            ["publish", "delete", "delete", "publish"],
+        )
+        self.assertTrue((self.paths.top / self.apt.name).is_dir())
+        self.assertFalse((self.paths.top / third.name).exists())
+        self.assertFalse((self.paths.top / fourth.name).exists())
+
     def test_prune_fails_closed_when_the_default_is_unreadable(self) -> None:
         self.boot.default_error = BootConfigError("simulated unreadable grubenv")
         context = self.context()
@@ -269,6 +324,30 @@ class CoreTest(_support.TemporaryRootTest):
         output = context.stdout.getvalue()
         self.assertIn("@os-0001 (unmanaged) kernel=unknown", output)
         self.assertIn(f"{self.apt.name} (default) kernel=", output)
+
+    def test_install_grub_writes_the_marker_after_the_grub_image(self) -> None:
+        self.paths.esp.mkdir(parents=True)
+        calls: list[tuple[str, ...]] = []
+
+        class InstallRunner:
+            def run(
+                self, argv: list[str], *, input: str | None = None
+            ) -> Completed:
+                _ = input
+                calls.append(tuple(argv))
+                return Completed(0, "", "")
+
+        context = self.context(runner=InstallRunner())
+        execute(context, ("install-grub",))
+        self.assertEqual(calls[0][0], "grub-mkimage")
+        self.assertEqual(
+            self.paths.esp_marker.read_text(encoding="utf-8"),
+            "grub\n",
+        )
+        self.assertEqual(
+            self.paths.esp_format_file.read_text(encoding="utf-8"),
+            "1\n",
+        )
 
 
 if __name__ == "__main__":
