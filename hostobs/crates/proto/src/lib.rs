@@ -3,9 +3,10 @@
 //! per-segment dictionaries.
 //!
 //! This crate is **pure**: no I/O, no sockets, no clock, no threads, no `unsafe`, and no
-//! dependencies. Bytes in, typed values out (and the exact inverse), with every failure a
-//! typed [`ProtoError`](crate::error::ProtoError). The probe serves these bytes, the
-//! store writes them to segments and the client decodes them; none of that belongs here.
+//! dependencies beyond the pure `hostobs-model` vocabulary. Bytes in, typed values out (and
+//! the exact inverse), with every failure a typed
+//! [`ProtoError`](crate::error::ProtoError). The probe serves these bytes, the store writes
+//! them to segments and the client decodes them; none of that belongs here.
 //!
 //! # Contracts
 //!

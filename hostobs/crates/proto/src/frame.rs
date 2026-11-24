@@ -76,7 +76,10 @@
 
 use std::collections::HashSet;
 
-use crate::dict::{Aggregation, Dictionary, Entry, MetricKind, MetricValueType};
+use crate::dict::{
+    aggregation_from_code, metric_kind_from_code, Aggregation, Dictionary, Entry, MetricKind,
+    MetricValueType,
+};
 use crate::error::{ProtoError, MAX_FRAME_BYTES};
 use crate::quality::Quality;
 use crate::read::Cursor;
@@ -418,7 +421,7 @@ impl Column {
             need,
             have: self.quality.len(),
         })?;
-        let quality = Quality::from_code(code, row)?;
+        let quality = crate::quality::from_code(code, row)?;
         let value = match self.value_type {
             MetricValueType::U64 => TypedValue::U64(raw),
             MetricValueType::I64 => TypedValue::I64(i64::from_le_bytes(raw.to_le_bytes())),
@@ -499,7 +502,11 @@ impl Block {
     }
 }
 
-/// The parsed frame header.
+/// The parsed frame header of a wire frame.
+///
+/// A value returned by [`FrameHeader::parse`] always carries
+/// `FRAME_HEADER_LEN <= len <= MAX_FRAME_BYTES`. Stored payloads whose declared length is
+/// governed by their corpus use [`StoredFrameFields`] instead.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameHeader {
     /// The declared length of the whole frame, header included.
@@ -513,6 +520,57 @@ pub struct FrameHeader {
 }
 
 impl FrameHeader {
+    fn parse_with_policy(
+        bytes: &[u8],
+        enforce_sectioned_frame_type: bool,
+        enforce_declared_bounds: bool,
+    ) -> Result<FrameHeader, ProtoError> {
+        let mut cursor = Cursor::new(bytes, "frame header");
+        let len = cursor.u32()?;
+        let frame_type = FrameType::from_code(cursor.u8()?)?;
+        let flags = cursor.u8()?;
+        if flags & !DEFINED_FRAME_FLAGS != 0 {
+            return Err(ProtoError::UnknownFrameFlags(flags));
+        }
+        // SECTIONED is defined for BLOCK only (WIRE.md §2.1): on any other frame it is an
+        // unknown flag, `bad-frame` on the wire.
+        if enforce_sectioned_frame_type
+            && flags & FLAG_SECTIONED != 0
+            && frame_type != FrameType::Block
+        {
+            return Err(ProtoError::UnknownFrameFlags(flags));
+        }
+        let reserved = cursor.u16()?;
+        if reserved != 0 {
+            return Err(ProtoError::NonZeroReserved(reserved));
+        }
+        let corr = cursor.u32()?;
+        if enforce_declared_bounds {
+            // The length is judged after the fixed fields, the order the Python reference
+            // uses, so a frame with several defects reports the same first refusal in both.
+            let declared = usize::try_from(len).map_err(|_| ProtoError::LengthOverflow)?;
+            if declared > MAX_FRAME_BYTES {
+                return Err(ProtoError::OversizedFrame {
+                    len: declared,
+                    max: MAX_FRAME_BYTES,
+                });
+            }
+            if declared < FRAME_HEADER_LEN {
+                return Err(ProtoError::Truncated {
+                    context: "frame length shorter than the header",
+                    need: FRAME_HEADER_LEN,
+                    have: declared,
+                });
+            }
+        }
+        Ok(FrameHeader {
+            len,
+            frame_type,
+            flags,
+            corr,
+        })
+    }
+
     /// Parse the first [`FRAME_HEADER_LEN`] bytes of a frame.
     ///
     /// The declared length is bounded here, not only in [`decode_block`]: a returned header
@@ -526,45 +584,45 @@ impl FrameHeader {
     /// [`ProtoError::NonZeroReserved`] or [`ProtoError::OversizedFrame`] for a declared
     /// length above [`MAX_FRAME_BYTES`].
     pub fn parse(bytes: &[u8]) -> Result<FrameHeader, ProtoError> {
-        let mut cursor = Cursor::new(bytes, "frame header");
-        let len = cursor.u32()?;
-        let frame_type = FrameType::from_code(cursor.u8()?)?;
-        let flags = cursor.u8()?;
-        if flags & !DEFINED_FRAME_FLAGS != 0 {
-            return Err(ProtoError::UnknownFrameFlags(flags));
+        FrameHeader::parse_with_policy(bytes, true, true)
+    }
+}
+
+/// The fixed fields of a stored payload's frame header.
+///
+/// This is deliberately not a [`FrameHeader`]: the segment's corpus owns the frame type,
+/// exact flag policy and payload bound, so the declared length need not satisfy
+/// [`MAX_FRAME_BYTES`] here. The raw fields are exposed so the corpus owner can report
+/// refusals in its own required order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StoredFrameFields {
+    /// The declared length of the whole frame, header included.
+    pub len: u32,
+    /// The frame type byte, before corpus-specific interpretation.
+    pub frame_type: u8,
+    /// The frame flags byte, before corpus-specific interpretation.
+    pub flags: u8,
+    /// The reserved word, which the corpus owner must require to be zero.
+    pub reserved: u16,
+    /// The correlation id.
+    pub corr: u32,
+}
+
+impl StoredFrameFields {
+    /// Parse the fixed little-endian fields from exactly one frame header.
+    ///
+    /// The array type proves all twelve bytes are present. Semantic checks stay with the
+    /// stored payload's corpus owner, which can therefore preserve its historical refusal
+    /// order independently of the wire decoder.
+    #[must_use]
+    pub const fn parse_header(bytes: &[u8; FRAME_HEADER_LEN]) -> StoredFrameFields {
+        StoredFrameFields {
+            len: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            frame_type: bytes[4],
+            flags: bytes[5],
+            reserved: u16::from_le_bytes([bytes[6], bytes[7]]),
+            corr: u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
         }
-        // SECTIONED is defined for BLOCK only (WIRE.md §2.1): on any other frame it is an
-        // unknown flag, `bad-frame` on the wire.
-        if flags & FLAG_SECTIONED != 0 && frame_type != FrameType::Block {
-            return Err(ProtoError::UnknownFrameFlags(flags));
-        }
-        let reserved = cursor.u16()?;
-        if reserved != 0 {
-            return Err(ProtoError::NonZeroReserved(reserved));
-        }
-        let corr = cursor.u32()?;
-        // The length is judged after the fixed fields, the order the Python reference
-        // uses, so a frame with several defects reports the same first refusal in both.
-        let declared = usize::try_from(len).map_err(|_| ProtoError::LengthOverflow)?;
-        if declared > MAX_FRAME_BYTES {
-            return Err(ProtoError::OversizedFrame {
-                len: declared,
-                max: MAX_FRAME_BYTES,
-            });
-        }
-        if declared < FRAME_HEADER_LEN {
-            return Err(ProtoError::Truncated {
-                context: "frame length shorter than the header",
-                need: FRAME_HEADER_LEN,
-                have: declared,
-            });
-        }
-        Ok(FrameHeader {
-            len,
-            frame_type,
-            flags,
-            corr,
-        })
     }
 }
 
@@ -772,7 +830,7 @@ fn decode_column_body(body: &[u8], n_rows: usize) -> Result<Column, ProtoError> 
     let mut cursor = Cursor::new(body, "column section");
     let metric = cursor.u32()?;
     let value_type = MetricValueType::from_code(cursor.u8()?)?;
-    let kind = MetricKind::from_code(cursor.u8()?)?;
+    let kind = metric_kind_from_code(cursor.u8()?)?;
     let pad = cursor.u16()?;
     if pad != 0 {
         return Err(ProtoError::ColumnReserved { metric, pad });
@@ -783,7 +841,7 @@ fn decode_column_body(body: &[u8], n_rows: usize) -> Result<Column, ProtoError> 
     }
     let quality = cursor.take_bytes(n_rows)?.to_vec();
     for (row, code) in quality.iter().enumerate() {
-        Quality::from_code(*code, row)?;
+        crate::quality::from_code(*code, row)?;
     }
     cursor.pad_to_end(8)?;
     Column::new(metric, value_type, kind, values, quality)
@@ -849,7 +907,7 @@ fn decode_time_body(body: &[u8], n_buckets: usize) -> Result<Vec<TimeBucket>, Pr
     }
     let mut agg = Vec::with_capacity(n_buckets);
     for _ in 0..n_buckets {
-        agg.push(Aggregation::from_code(cursor.u8()?)?);
+        agg.push(aggregation_from_code(cursor.u8()?)?);
     }
     cursor.pad_to_end(8)?;
     Ok(real_ns
@@ -1484,12 +1542,13 @@ pub fn decode_block_with(bytes: &[u8], held: Option<&Dictionary>) -> Result<Bloc
 mod tests {
     use super::{
         decode_block, detect_mode, encode_block, encode_frame, hello, Block, BlockHeaderFacts,
-        Column, FrameHeader, FrameType, Mode, Row, Section, SectionKind, TimeBucket, TypedValue,
-        FRAME_HEADER_LEN, HEADER_BODY_LEN, MAGIC, MAX_FRAME_BYTES, PROTO_MAJOR, PROTO_MINOR,
+        Column, FrameHeader, FrameType, Mode, Row, Section, SectionKind, StoredFrameFields,
+        TimeBucket, TypedValue, FRAME_HEADER_LEN, HEADER_BODY_LEN, MAGIC, MAX_FRAME_BYTES,
+        PROTO_MAJOR, PROTO_MINOR,
     };
     use crate::dict::{
-        Aggregation, Dictionary, Entry, MetricFacts, MetricKind, MetricScope, MetricSource,
-        MetricUnit, MetricValueType,
+        aggregation_from_code, Aggregation, Dictionary, Entry, MetricFacts, MetricKind,
+        MetricScope, MetricSource, MetricUnit, MetricValueType,
     };
     use crate::error::ProtoError;
     use crate::quality::Quality;
@@ -2458,6 +2517,35 @@ mod tests {
             FrameHeader::parse(&plain).map(|header| header.frame_type),
             Ok(FrameType::Req)
         );
+    }
+
+    #[test]
+    fn stored_fields_defer_corpus_policy_and_declared_bounds_to_the_caller() {
+        // The canonical events segment stores an EVT payload with SECTIONED set. Wire parsing
+        // keeps refusing that shape, while storage parsing exposes the fields so the segment
+        // format can apply its own corpus policy.
+        let mut stored = encode_block(&live_block()).expect("encode");
+        stored[4] = FrameType::Evt.code();
+        let stored_header: &[u8; FRAME_HEADER_LEN] = stored
+            .get(..FRAME_HEADER_LEN)
+            .and_then(|bytes| bytes.try_into().ok())
+            .expect("encode_block emits a complete header");
+        let fields = StoredFrameFields::parse_header(stored_header);
+        assert_eq!(fields.frame_type, FrameType::Evt.code());
+        assert_eq!(fields.flags, super::FLAG_SECTIONED);
+        assert_eq!(
+            FrameHeader::parse(&stored),
+            Err(ProtoError::UnknownFrameFlags(super::FLAG_SECTIONED))
+        );
+
+        // A segment's configured payload bound is the storage authority. The storage parser
+        // reports the declared length; the strict wire parser still applies this codec's bound.
+        let unbounded = header_declaring(u32::MAX);
+        assert_eq!(StoredFrameFields::parse_header(&unbounded).len, u32::MAX);
+        assert!(matches!(
+            FrameHeader::parse(&unbounded),
+            Err(ProtoError::OversizedFrame { .. })
+        ));
     }
 
     #[test]
@@ -3559,7 +3647,7 @@ mod tests {
         ];
         for (metric, kind, mask) in permitted {
             for code in 0..6u8 {
-                let agg = Aggregation::from_code(code).expect("a defined aggregation");
+                let agg = aggregation_from_code(code).expect("a defined aggregation");
                 let mut block = history_block(&[agg], vec![column_of(metric, kind, 1)]);
                 block.dictionary = Some(table.clone());
                 let decoded = decode_block(&history_bytes(&block));

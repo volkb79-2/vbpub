@@ -16,6 +16,7 @@ import threading
 import time
 import tomllib
 from pathlib import Path
+from typing import Literal, get_type_hints
 
 import pytest
 
@@ -31,6 +32,7 @@ START_LIMIT = 5.0
 ORPHAN_LIMIT = 15.0  # a scripted shell's own ``sleep 1`` ends by itself well inside this
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 TERMINATION_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+pytestmark = pytest.mark.requires_contained_cgroup
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -135,6 +137,16 @@ def _holder_script(pidfile: Path, exit_code: int) -> str:
     return f"sleep 600 & echo $! > {pidfile}; echo hello; echo world; exit {exit_code}"
 
 
+def _python_pipe_holder_script(pidfile: Path) -> str:
+    sleep_script = "import time; time.sleep(600)"
+    return (
+        "import subprocess, sys\n"
+        f"grandchild = subprocess.Popen([sys.executable, '-c', {sleep_script!r}])\n"
+        f"with open({str(pidfile)!r}, 'w', encoding='utf-8') as stream:\n"
+        "    stream.write(str(grandchild.pid))\n"
+    )
+
+
 @pytest.fixture
 def default_signals():
     """Start from the default handlers (a runner may itself run under nohup); restore after."""
@@ -163,6 +175,7 @@ def test_streaming_holder_does_not_hang_and_keeps_exit_code_and_names_the_holder
         assert not thread.is_alive(), "run_streaming is still waiting for pipe EOF"
         result, lines = outcome["result"]
         assert result.returncode == 3 and result.outcome == "exited"
+        assert result.abandoned is True
         assert result.abandoned_holders == (holder,)
         assert result.warning == (
             f"'bash' exited with code 3 but its output pipe is still held open by pid(s) {holder}; "
@@ -187,6 +200,7 @@ def test_capture_holder_does_not_hang_and_keeps_exit_code_and_names_the_holder(t
         assert isinstance(result, subprocess.CompletedProcess)
         assert result.returncode == 3 and result.stdout == "hello\nworld\n" and result.stderr == ""
         assert result.args == ["bash", "-c", _holder_script(pidfile, 3)]
+        assert result.abandoned is True
         assert result.abandoned_holders == (holder,)
         assert f"pid(s) {holder}" in result.warning and "exited with code 3" in result.warning
         assert _alive(holder)
@@ -222,6 +236,7 @@ def test_holder_scan_failure_still_warns_with_no_pids(tmp_path, monkeypatch, fun
         thread.join(JOIN_LIMIT)
         assert not thread.is_alive()
         result = outcome["result"][0] if function == "stream" else outcome["result"]
+        assert result.abandoned is True
         assert result.abandoned_holders is None
         assert "still held open by another process" in result.warning
         assert str(holder) not in result.warning
@@ -238,11 +253,17 @@ def test_holder_the_scan_cannot_see_is_reported_as_another_process(tmp_path, mon
         holder = _wait_pidfile(pidfile)
         thread.join(JOIN_LIMIT)
         result = outcome["result"][0]
+        assert result.abandoned is True
         assert result.abandoned_holders == () and "another process" in result.warning
     finally:
         _kill_quietly(holder)
 
 
+@pytest.mark.estate_allow(
+    "wall-time-assert",
+    reason="The drain deadline itself is the behavior under test.",
+    backlog="CLI-EXT-47",
+)
 def test_drain_ends_the_wait_at_drain_seconds_not_before_and_not_at_eof(tmp_path, reap_orphans):
     """A holder that keeps writing is cut off at the drain deadline; earlier output is kept."""
     pidfile = tmp_path / "holder.pid"
@@ -258,7 +279,7 @@ def test_drain_ends_the_wait_at_drain_seconds_not_before_and_not_at_eof(tmp_path
         assert not thread.is_alive()
         result, lines = outcome["result"]
         assert time.monotonic() - started >= 1.4, "stopped before the drain period ran out"
-        assert lines[0] == "first\n" and result.returncode == 0 and result.warning
+        assert lines[0] == "first\n" and result.returncode == 0 and result.abandoned
     finally:
         _kill_quietly(holder)
 
@@ -268,8 +289,43 @@ def test_ordinary_output_order_exit_code_and_clean_result(tmp_path):
     result, lines = _stream(["bash", "-c", script], tmp_path)
     assert lines == ["a\n", "b\n", "c\n", "d\n", "to-stderr\n", "last-without-newline"]
     assert result.returncode == 4 and result.outcome == "exited"
+    assert result.abandoned is False
     assert result.abandoned_holders == () and result.warning is None and result.watchdog is None
     assert result.last_line == "last-without-newline"
+
+
+@pytest.mark.parametrize("function", ["stream", "capture"])
+def test_abandoned_is_true_for_a_python_grandchild_that_holds_the_pipe(tmp_path, function):
+    pidfile = tmp_path / "holder.pid"
+    holder = None
+    try:
+        argv = [sys.executable, "-c", _python_pipe_holder_script(pidfile)]
+        call = _stream if function == "stream" else _capture
+        thread, outcome = _in_thread(call, argv, tmp_path)
+        thread.join(JOIN_LIMIT)
+        assert not thread.is_alive(), f"run_{function} did not stop at the drain deadline"
+        assert "error" not in outcome, outcome.get("error")
+        result = outcome["result"][0] if function == "stream" else outcome["result"]
+        holder = _wait_pidfile(pidfile)
+        assert result.abandoned is True
+        assert result.warning is not None
+        assert result.abandoned_holders is None or holder in result.abandoned_holders
+    finally:
+        _kill_quietly(holder)
+
+
+@pytest.mark.parametrize("function", ["stream", "capture"])
+def test_abandoned_is_false_for_a_python_child_that_exits_cleanly(tmp_path, function):
+    argv = [sys.executable, "-c", "print('done')"]
+    if function == "stream":
+        result, lines = _stream(argv, tmp_path)
+        assert lines == ["done\n"]
+    else:
+        result = _capture(argv, tmp_path)
+        assert result.stdout == "done\n"
+    assert result.returncode == 0
+    assert result.abandoned is False
+    assert result.abandoned_holders == () and result.warning is None
 
 
 def test_last_line_is_the_last_non_blank_line(tmp_path):
@@ -306,6 +362,11 @@ def test_capture_text_is_strict_like_subprocess_run_and_bytes_mode_keeps_the_byt
     assert raw.stdout == b"ok \xff\xfe end\n\xe2\x82" and raw.returncode == 0
 
 
+@pytest.mark.estate_allow(
+    "wall-time-assert",
+    reason="The bounded completion time is the regression oracle for quadratic copying.",
+    backlog="CLI-EXT-47",
+)
 def test_one_huge_unterminated_line_is_assembled_without_quadratic_copying(tmp_path):
     script = (
         "import sys\n"
@@ -519,6 +580,9 @@ def test_progress_paths_must_be_a_sequence_not_one_path(tmp_path, paths):
 
 def test_the_outcome_vocabulary_is_closed():
     assert procio.OUTCOMES == ("exited", "watchdog")
+    assert procio.Outcome == Literal["exited", "watchdog"]
+    assert get_type_hints(procio.StreamResult)["outcome"] == procio.Outcome
+    assert "Outcome" in procio.__all__
 
 
 # ------------------------------------------------- 4. signals reach the whole group
@@ -615,6 +679,11 @@ def _handlers() -> dict[int, object]:
     return {s: signal.getsignal(s) for s in (*TERMINATION_SIGNALS, signal.SIGINT)}
 
 
+@pytest.mark.estate_allow(
+    "short-timeout",
+    reason="The short subprocess timeout is the signal and cleanup behavior under test.",
+    backlog="CLI-EXT-47",
+)
 def test_handlers_are_installed_while_running_and_restored_afterwards(tmp_path, default_signals):
     before = _handlers()
     seen: dict[int, object] = {}
@@ -833,6 +902,46 @@ def test_capture_returns_bytes_when_text_is_false(tmp_path):
     assert isinstance(result.stdout, bytes) and result.returncode == 0
 
 
+def test_capture_stdin_devnull_gives_the_child_immediate_eof(tmp_path):
+    read_fd, write_fd = os.pipe()
+    saved_stdin = os.dup(0)
+    try:
+        # An inherited ambient stdin is often already EOF in CI. Hold a pipe open on fd 0
+        # so only an explicit DEVNULL can make the child read immediately.
+        os.dup2(read_fd, 0)
+        result = _capture(
+            [sys.executable, "-c", "import sys; print(repr(sys.stdin.read()))"],
+            tmp_path,
+            stdin=subprocess.DEVNULL,
+            timeout=JOIN_LIMIT,
+        )
+    finally:
+        os.dup2(saved_stdin, 0)
+        for descriptor in (saved_stdin, read_fd, write_fd):
+            os.close(descriptor)
+    assert result.returncode == 0
+    assert result.stdout == "''\n"
+
+
+def test_capture_rejects_input_with_devnull_stdin_before_spawning(tmp_path):
+    marker = tmp_path / "spawned"
+    script = f"open({str(marker)!r}, 'w', encoding='utf-8').write('spawned')"
+    with pytest.raises(ValueError, match="input cannot be combined"):
+        _capture(
+            [sys.executable, "-c", script],
+            tmp_path,
+            input="ignored",
+            stdin=subprocess.DEVNULL,
+        )
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("stdin", [subprocess.PIPE, subprocess.STDOUT, "pipe"])
+def test_capture_rejects_any_other_stdin_value_before_spawning(tmp_path, stdin):
+    with pytest.raises(ValueError, match="stdin must be None or subprocess.DEVNULL"):
+        _capture([sys.executable, "-c", "raise SystemExit('spawned')"], tmp_path, stdin=stdin)
+
+
 def test_capture_text_uses_universal_newlines(tmp_path):
     result = _capture(["bash", "-c", r"printf 'a\r\nb\rc\n'"], tmp_path)
     assert result.stdout == "a\nb\nc\n"
@@ -900,6 +1009,11 @@ def test_capture_timeout_reaps_the_group_and_raises_timeout_expired(tmp_path):
         _kill_quietly(holder)
 
 
+@pytest.mark.estate_allow(
+    "wall-time-assert",
+    reason="The elapsed upper bound distinguishes timeout cleanup from waiting for the child.",
+    backlog="CLI-EXT-47",
+)
 def test_capture_timeout_ends_the_call_at_the_timeout_not_when_the_child_ends(tmp_path):
     """A child with a bounded lifetime (25 s): reaping makes the call return long before that."""
     shell_pidfile, holder_pidfile = tmp_path / "shell.pid", tmp_path / "holder.pid"
@@ -1013,6 +1127,11 @@ def test_streaming_pipe_is_closed_exactly_once_on_every_path(tmp_path, monkeypat
         counter.cleanup()
 
 
+@pytest.mark.estate_allow(
+    "short-timeout",
+    reason="Short timeouts deliberately exercise every timeout cleanup path.",
+    backlog="CLI-EXT-47",
+)
 def test_capture_pipes_are_closed_exactly_once_on_every_path(tmp_path, monkeypatch):
     counter = _CloseCounter(monkeypatch)
     try:
@@ -1323,13 +1442,16 @@ def test_pipe_holder_scan_reads_descriptor_links_from_a_fake_proc(tmp_path, monk
 
 def test_procio_is_stdlib_only_and_the_package_stays_dependency_free():
     tree = ast.parse(Path(procio.__file__).read_text(encoding="utf-8"))
-    imported = {
-        (node.module if isinstance(node, ast.ImportFrom) else alias.name).split(".")[0]
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.Import, ast.ImportFrom)) and not getattr(node, "level", 0)
-        for alias in (node.names if isinstance(node, ast.Import) else [None])
-    }
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            assert node.level == 0, "procio must not use relative imports"
+            assert node.module is not None
+            imported.add(node.module.split(".")[0])
     assert imported <= set(sys.stdlib_module_names), imported - set(sys.stdlib_module_names)
+    assert "cli_extended" not in imported
     project = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert project["project"]["dependencies"] == []
 

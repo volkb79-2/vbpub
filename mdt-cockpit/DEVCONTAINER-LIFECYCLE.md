@@ -6,7 +6,13 @@ their project-specific notes. For the whole picture in one place (host setup thr
 startup, shell selection included) read [docs/DEVCONTAINER-MECHANISMS.md](docs/DEVCONTAINER-MECHANISMS.md).
 
 The shipped template uses `shutdownAction: "none"`; the devcontainer remains running when its
-attached Dev Containers session disconnects. `CODEX_SQLITE_HOME` points at the shared SQLite
+attached Dev Containers session disconnects. The image's own `CMD` is a keepalive loop that starts its next
+`sleep` when one is killed (MDT-107); a `devcontainer.json` with `"overrideCommand": false` and `"init": true`
+runs it as the only child of a real init. The Dev Containers default instead makes PID 1 a shell loop
+`while sleep 1 & wait $!`, which ended, and stopped the container, whenever its `sleep` child was killed.
+Killing the keepalive shell itself (tini's only child) still stops the container. The shipped templates and the controller's own `devcontainer.json` use
+that setting (`overrideCommand` false, `init` true), which needs an image carrying the `CMD`: with an older
+image (base `CMD ["python3"]`) the container exits at once, so rebuild only after the image is released. `CODEX_SQLITE_HOME` points at the shared SQLite
 database beneath the complete persistent home.
 
 ## The two lifecycle hooks (set in the consuming repo's `devcontainer.json`)

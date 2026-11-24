@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- **Docs (P-hostobs-19, closes `HOB-74`):** `docs/CONSUMERS.md` gets a "Boundaries" section with the four consumer rules (cgprofile frozen, span emission is one JSON line on the observer socket, act never writes `io.cost`/`io.weight`/sysctl, iogovmon reads hostobs only after M3); cgprofile's freeze is filed as `CP-66`.
 - The hostobs backlog now lists only open items; fixed and closed entries are archived one per line in `archive/2026-Q4.md`, with HOB-62..74 filed and HOB-49's WIRE citation corrected.
 - **Changed (WIRE.md, P-hostobs-03, `HOB-65`/`HOB-71`/`HOB-72` spec):** no request waits (D-W49, D-W50; D-W30 retired), JSON mode only at observer/control (D-W51), probe-wide keys with `max_rows` 1,024, Query 1/4 MiB, `max_block_bytes` 1 MiB and history 2/8 (D-W52), no per-uid pools and per-uid caps equal to the level caps at observe (D-W20, D-W53).
 - **Changed (probe serving, P-hostobs-05, `HOB-65`):** `current` is answered in its read turn or refused before REP with `too-many-requests` while its connection's Query blocks are unwritten, or `budget {"pool":"query"}` when the Query pools lack room; pending requests, retry, re-resolution and `SendHub::query_ready` are removed.
@@ -9,6 +10,22 @@
 - **Changed (send hub, P-hostobs-06, `HOB-71`):** per-uid Live and Query pools are removed; the same-uid multiple-connection and query-backpressure cases now exercise only connection and global pools, and observe's connection and selection uid caps equal its level caps.
 - **Changed (JSON mode, P-hostobs-06, `HOB-72`):** observe and operator refuse a first `{` with exactly one fatal `binary-required` line at `corr` 0 and close; observer and control keep JSON mode, and both clients now treat ten codes as fatal.
 - **Docs (P-hostobs-02, `HOB-66`)**: `docs/PROBE-PROCESS.md` decides the probe's process and thread model (sampler, server loop and placed writer threads; non-blocking backend rule; eventfd wakeup; rustix with one audited `unsafe` line in `kernel`; named `LISTEN_FDS`; shutdown; minimal config; in-process test harness); the hub doc no longer claims a mutex.
+
+### Changed (P-hostobs-04 workspace unification)
+
+- **Crates**: `model` now owns the one quality/value vocabulary and metric fact table;
+  `kernel` and `store` depend on `model`, `proto` depends on `model`, and `store` depends on
+  both, with deleted local copies replaced by re-exports or model types.
+- **SP-2**: the kernel evidence now derives rates through `model::derive_rate` instead of a
+  test-local arithmetic implementation.
+- **Store payloads**: fixed frame-header fields are parsed by `proto`; the store applies its
+  configured payload bound, declared length, corpus frame type, flags and reserved checks in
+  their original order, with the existing typed refusals unchanged.
+- **Probe**: the unused `hostobs-kernel` workspace dependency is removed; the four
+  unused registry dependencies (`ruzstd`, `serde`, `serde_json`, `toml`) remain
+  until P-hostobs-08 removes them with its image rebuild.
+- **Docs**: the sampler source is cited by archive tag, commit and path; the README records
+  the measured working dev image and remote `tools/dev` run.
 
 ### Added (P5b-2d server: tick delivery, retries, served verbs and reachable §11.4 cases; `HOB-54` stays open)
 

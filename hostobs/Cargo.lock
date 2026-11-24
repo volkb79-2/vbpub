@@ -39,6 +39,9 @@ version = "0.1.0"
 [[package]]
 name = "hostobs-kernel"
 version = "0.1.0"
+dependencies = [
+ "hostobs-model",
+]
 
 [[package]]
 name = "hostobs-model"
@@ -48,7 +51,6 @@ version = "0.1.0"
 name = "hostobs-probe"
 version = "0.1.0"
 dependencies = [
- "hostobs-kernel",
  "hostobs-proto",
  "ruzstd",
  "serde",
@@ -59,10 +61,17 @@ dependencies = [
 [[package]]
 name = "hostobs-proto"
 version = "0.1.0"
+dependencies = [
+ "hostobs-model",
+]
 
 [[package]]
 name = "hostobs-store"
 version = "0.1.0"
+dependencies = [
+ "hostobs-model",
+ "hostobs-proto",
+]
 
 [[package]]
 name = "indexmap"

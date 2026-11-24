@@ -372,6 +372,7 @@ def _running_container(profile):
         "Config": {"Labels": {profile.vm_label: profile.label_value, profile.state_label: "state-hash"}},
         "HostConfig": {
             "CgroupParent": "dev-background.slice",
+            "NetworkMode": "zbm-test",
             "NanoCpus": profile.nano_cpus,
             "Memory": profile.container_memory_bytes,
             "MemorySwap": profile.container_memory_bytes,

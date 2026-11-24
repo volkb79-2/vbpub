@@ -13,6 +13,8 @@ guide; work packages are tracked below.
 - **M2 target ISO variants:** GRUB-target and systemd-boot-target are done;
   both are covered by the [M2 results](docs/RESULTS-SDBOOT-M2-2026-11-22.md).
 
+2026-11-24: `poc/dr-qemu.sh` retired in favour of `vm-lab start --plain-host` (vm-lab VML-BL-07); source at `a5802b837:scripts/debian-rollback/poc/dr-qemu.sh`
+
 ## ZFS
 
 ZFS is paused for the core split (D28, DR-84, DR-96). PoC evidence is archived
@@ -24,32 +26,27 @@ state. The install and runtime history remains in the
 
 ## Work order
 
-- Wave 0: finish these status documents and lint every disk-wiping guard.
-- Wave 1: write the core-split design.
-- Wave 2: build the stdlib Python core with btrfs and GRUB, then the
-  systemd-boot, apt, and retention work.
-- Wave 2 tooling: build the loader-contract tier and move guest tooling into
-  `vm-lab`.
-- Wave 3: run the release matrix on ISO-built disks, then rebuild ZFS on the
-  core.
+- Done:
+  - Status documents (P-rollback-02).
+  - vm-lab inspector (P-rollback-03).
+  - Lint of the disk-wiping guards (P-rollback-04).
+  - Core-split design (P-rollback-10, [DESIGN-CORE-SPLIT.md](docs/DESIGN-CORE-SPLIT.md)).
+  - bootctl spike (P-rollback-11, [SPIKE-BOOTCTL-ORACLE.md](docs/SPIKE-BOOTCTL-ORACLE.md)).
+  - ZFS plan rewrite (P-rollback-12, [ZFS-POC-PLAN.md](docs/ZFS-POC-PLAN.md)).
+- In progress:
+  - Stdlib Python core, first part (P-rollback-20a).
+  - vm-lab start on a plain Docker host (P-rollback-30).
+  - Backlog migration (P-rollback-05).
+- Next:
+  - Python core with the btrfs and GRUB backends (P-rollback-20b), then
+    systemd-boot (P-rollback-21) and the apt hook and retention work
+    (P-rollback-22).
+  - Guest session in `vm-lab` (P-rollback-31).
+- Later:
+  - Loader-contract tier.
+  - Release matrix on ISO-built disks.
+  - ZFS rebuilt on the core.
 
 ## Open items
 
-- **DR-82** F11: stdlib Python, runtime outside states, format versions — OPEN — P-rollback-10 — review H2/M2
-- **DR-83** one state-ID grammar; foreign `@os-*` unmanaged; legacy/.conf code removed — OPEN — P-rollback-20 — review H1
-- **DR-84** core/backends split (storage btrfs|zfs, boot grub|sdboot|zbm) before ZFS — OPEN — P-rollback-20/21 — review H2, L1, L2
-- **DR-85** snapshot never fails on menu capacity; degraded menu; capacity-aware retention; ESP-exhaustion guest scenario — OPEN — P-rollback-22/40 — review H5, F13
-- **DR-86** bootloader from ESP marker only — OPEN — P-rollback-20 — review M1
-- **DR-87** loader-contract tier: bootctl offline + vm-lab ESP boot — OPEN — P-rollback-24/32 — review H3
-- **DR-88** `check` + `--json`; dr-serial observable-only; mirror parsers removed — OPEN — P-rollback-24/26 — review H4, L4
-- **DR-89** one APT hook — OPEN — P-rollback-22 — review M3
-- **DR-90** metadata `kind` + `pinned` — OPEN — P-rollback-22 — review M4
-- **DR-91** kernel hash cache — OPEN — P-rollback-23 — review M5
-- **DR-92** counter floor from names + sidecars — OPEN — P-rollback-22 — review M6
-- **DR-93** boot-counting suffix rule defined — OPEN — P-rollback-10 — review M8
-- **DR-94** payload as files; hot-patch dev-only; snapper removed — OPEN — P-rollback-25 — review M10, L6
-- **DR-95** matrix runner committed; dr-qemu.sh retired; evidence archived — OPEN — P-rollback-30/33 — review H6
-- **DR-96** ZFS snapshot checkpoints + clone/promote; name = ID; no send/receive — OPEN — P-rollback-12/42 — review M7
-- **DR-97** all disk-wiping guards linted; release matrix on ISO-built disk — OPEN — P-rollback-04/40 — review L3, L5
-- **DR-98** kernel-install plugin instead of dpkg-divert — OPEN — P-rollback-41 — review plans review
-- Parked (no ID): E2; phase 2 fallback; Secure Boot on sdboot; D25 RAM experiment; restore-image ISO + licence audit; ZFS restricted-GRUB comparison.
+Open items are in [KNOWN_ISSUES_TODO_BACKLOG.md](KNOWN_ISSUES_TODO_BACKLOG.md) (DR-82 and up); closed ones are in [archive/](archive/).

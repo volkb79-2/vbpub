@@ -11,9 +11,7 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-import pytest
-
-jinja2 = pytest.importorskip("jinja2")
+import jinja2
 
 PROJECT = Path(__file__).resolve().parents[1]
 DEFAULTS = PROJECT / "ciu.defaults.toml.j2"
@@ -133,29 +131,23 @@ def test_theme_enabled_js_links_the_served_stylesheet() -> None:
 
 def _check_js(js: str, tmp_path: Path) -> None:
     node = shutil.which("node")
-    if node:
-        f = tmp_path / "custom-config.js"
-        f.write_text(js, encoding="utf-8")
-        proc = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
-        assert proc.returncode == 0, proc.stderr
-        # run it against a stub `config`/`document`: every assignment must work
-        runner = tmp_path / "run.js"
-        runner.write_text(
-            "global.config = {};\n"
-            "const appended = [];\n"
-            "global.document = {head: {appendChild: (e) => appended.push(e)},\n"
-            "  documentElement: {style: {}}, createElement: (t) => ({tag: t})};\n"
-            f"require({str(f)!r});\n"
-            "console.log(JSON.stringify({config: global.config, appended}));\n",
-            encoding="utf-8")
-        out = subprocess.run([node, str(runner)], capture_output=True, text=True)
-        assert out.returncode == 0, out.stderr
-        return
-    # fallback syntax sanity: balanced brackets outside strings and comments
-    code = re.sub(r"//[^\n]*", "", js)
-    code = re.sub(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', '""', code)
-    for a, b in ("()", "{}", "[]"):
-        assert code.count(a) == code.count(b), f"unbalanced {a}{b}"
+    assert node, "node is required by the Jitsi client-JS tests"
+    f = tmp_path / "custom-config.js"
+    f.write_text(js, encoding="utf-8")
+    proc = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    # run it against a stub `config`/`document`: every assignment must work
+    runner = tmp_path / "run.js"
+    runner.write_text(
+        "global.config = {};\n"
+        "const appended = [];\n"
+        "global.document = {head: {appendChild: (e) => appended.push(e)},\n"
+        "  documentElement: {style: {}}, createElement: (t) => ({tag: t})};\n"
+        f"require({str(f)!r});\n"
+        "console.log(JSON.stringify({config: global.config, appended}));\n",
+        encoding="utf-8")
+    out = subprocess.run([node, str(runner)], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
 
 
 def test_client_js_defaults_valid_and_flags_present(tmp_path: Path) -> None:
