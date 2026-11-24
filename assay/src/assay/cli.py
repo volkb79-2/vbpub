@@ -426,8 +426,7 @@ def build_parser() -> argparse.ArgumentParser:
             "pessimistically; kills run in full. Same-judge exact-id records "
             "are left to resume/merge-state. DIR must be "
             "inside the checkout. Repeatable; cannot be combined with "
-            "--carry-over, --carry-over-reason, --shard, "
-            "--merge-shard-store, --reuse-from or --candidates-file."
+            "--carry-over or --carry-over-reason."
         ),
     )
     run.add_argument(
@@ -2302,16 +2301,18 @@ def _resolve_flex_options(
             raise LaneConfigError(
                 "--carry-forward cannot be combined with --carry-over-reason"
             )
-        if getattr(args, "candidates_file", None) is not None:
+        if getattr(args, "candidates_file", None) is not None and (
+            carry
+            or merges
+            or shard_stores
+            or reason is not None
+            or only_path is not None
+            or exclude_path is not None
+        ):
             raise LaneConfigError(
                 "--candidates-file (pilot) cannot be combined with --carry-over, "
-                "--carry-forward, "
                 "--merge-state, --only-candidates or --exclude-candidates"
             )
-        if carry_forward and getattr(args, "shard", None) is not None:
-            raise LaneConfigError("--carry-forward cannot be combined with --shard")
-        if carry_forward and getattr(args, "reuse_from", None) is not None:
-            raise LaneConfigError("--carry-forward cannot be combined with --reuse-from")
     if (
         (carry or carry_forward or merges or shard_stores)
         and not getattr(args, "resume", False)
@@ -2324,12 +2325,10 @@ def _resolve_flex_options(
         getattr(args, "shard", None) is not None
         or only_path is not None
         or exclude_path is not None
-        or carry_forward
     ):
         raise LaneConfigError(
             "--merge-shard-store is the whole-lane merge; it cannot be combined "
-            "with --shard, --only-candidates, --exclude-candidates or "
-            "--carry-forward"
+            "with --shard, --only-candidates or --exclude-candidates"
         )
 
     def _directories(raws: list[Any], flag: str) -> tuple[Path, ...]:
@@ -3497,6 +3496,19 @@ def _run_reserved(
         _emit_verdict_written(verdict)
         if args.verdict_json != "-":
             _print_run_summary(verdict, out)
+            flex = getattr(args, "flex_options", None)
+            if flex is not None and flex.carry_forward_sources:
+                store = (
+                    state_dir
+                    if state_dir is not None
+                    else mutation.default_state_root(lane_file.project_root)
+                )
+                if mutation.carried_survivor_count(store):
+                    print(
+                        "note: carried survivors stay carried until "
+                        "--rejudge-carried (or a WP4 replay) runs",
+                        file=out,
+                    )
         return verdict.exit_code
 
     def _deliver_refusal(exc: AssayError) -> int:
@@ -4484,12 +4496,14 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
         if getattr(args, "json", False) or getattr(args, "reuse_from", None) is not None:
             raise LaneConfigError("--list-pending cannot be combined with --json or --reuse-from")
         if getattr(args, "carry_forward", None) and getattr(args, "judge", None) is None:
+            # Classification uses the current judge to select earlier evidence.
             raise LaneConfigError("--list-pending --carry-forward requires --judge")
     elif (
         getattr(args, "state_dir", None) is not None
         or getattr(args, "judge", None) is not None
         or getattr(args, "carry_forward", None)
     ):
+        # A store scan has meaning only for the pending-candidate listing.
         raise LaneConfigError(
             "--state-dir, --judge and --carry-forward apply only to --list-pending"
         )
