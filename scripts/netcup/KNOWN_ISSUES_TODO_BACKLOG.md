@@ -70,7 +70,13 @@ docs landed together.
 | NC-62 | The rendered gates memory policy has no live fresh-host acceptance: it is proven only against fakes, while the measured policy it reproduces came from one hand-configured host (also carries the `--adopt` one-time step and the 6655-vs-6656 nominal-size finding of review round 1) | Should-fix | LIVE HALF CLOSED for v1001 2026-11-16 (adoption accepted; its run also LOWERED sshd's live `-1000` listener score to `-900`, now fixed as NC-64 — evidence below); r1002 OPEN (blocked on its iogovmon acceptance until 2026-11-17T14:38Z) |
 | NC-63 | The `docker-.scope.d` `OOMPolicy=kill` drop-in covers every Docker container on the host, so an OOM in the cockpit or a buildkitd scope kills that container whole | Minor | OPEN 2026-11-16 (by design for lane scopes; restriction open) |
 | NC-64 | `provision-gates-limits.sh` LOWERED sshd's own OOM protection: it wrote `-900` over the `-1000` live score sshd keeps on its listener, and would have replaced a packaged stronger value with a drop-in | Major | FIXED 2026-11-16 (never-reduce rule for the live score and the drop-in; sshd finding from the v1001 adoption; round-1 review fixed a swallowed `command not found` that refused MORE protective foreign files) |
-| NC-65 | `provision-gates-limits.sh` writes the `dev-gates.slice` memory policy and `OOMPolicy=kill` unconditionally and lists ssh in the -900 set; it should skip the slice and scope halves when host-setup's `dev-gates.slice` fragment exists and drop ssh (sessions inherit it) | Should-fix | OPEN 2026-11-24 (from DESIGN-DEDICATED-DEV-MEMORY.md section 10; before host-setup lands on any runner host) |
+| NC-65 | `provision-gates-limits.sh` writes the `dev-gates.slice` memory policy and `OOMPolicy=kill` unconditionally and lists ssh in the -900 set; it should skip the slice and scope halves when host-setup's `dev-gates.slice` fragment exists and drop ssh (sessions inherit it) | Should-fix | OPEN 2026-11-24 (from DESIGN-DEDICATED-DEV-MEMORY.md section 10; before host-setup lands on any runner host); addendum OPEN 2026-11-24: no re-render of `20-memory-policy.conf` at all on `HOST_ROLE=dedicated-dev` |
+| NC-66 | remote-gate shipped the controller's local `main`; nothing created `origin/main` on the host | Should-fix | FIXED 2026-11-24 (P-plat-24; follow-ups NC-70) |
+| NC-67 | The runner records no container `State.OOMKilled` in result.json | Should-fix | OPEN 2026-11-24 |
+| NC-68 | HAZARD: `verdict_of()` in remote-gate.py is unanchored and takes the last match | Must-fix | OPEN 2026-11-24 |
+| NC-69 | Concurrent remote-gate runs from one controller checkout share the temporary ref `refs/remote-gate/base`, so one run can ship another run's base and fail rc 72 | Should-fix | OPEN 2026-11-24 |
+| NC-70 | `--base main~1` / `main^` (and a declared `judge.base = "main~1"`) still resolve against the stale local `main`; carries the plat-24 nits N2-N4 | Minor | OPEN 2026-11-24 |
+| NC-71 | `remote-gate.py` status/logs/collect/cancel read the host table only from the default hosts file, so a gate launched through `scripts/controller/remote-gate.sh` cannot be cancelled without `--hosts-file` | Should-fix | OPEN 2026-11-24 |
 
 ---
 
@@ -1958,6 +1964,16 @@ on docker-.scope and `OOMScoreAdjust=-900` on ssh.service. Follow-up: skip the s
 `dev-gates.slice` fragment exists, and drop ssh from the -900 list (sessions inherit it). Sequence this item before
 host-setup lands on any runner host; `check.sh` WARNs meanwhile (design section 7).
 
+**Addendum OPEN 2026-11-24 (main ruling 12:20Z).** `provision-gates-limits.sh` must not re-render `dev-gates.slice.d/20-memory-policy.conf`
+at all on a `HOST_ROLE=dedicated-dev` host (the role host-setup governs; `mdt-cockpit/host-setup/host-setup.env.example:448-449`). The
+script writes it unconditionally (`slice_dropin`, `runner/provision-gates-limits.sh:478`, rendered at `:752`), so the next runner
+provisioning brings the file back and with it `check.sh`'s tier `memory.max` FAIL: the drop-in's `MemoryMax=6656M` no longer
+matches the dedicated-dev derivation (`mdt-cockpit/host-setup/scripts/check.sh:345-355`). Separately, `check.sh:417` WARNs on the file
+itself, names the placeholder `NC-nn` (now NC-65), and says it becomes a FAIL once this follow-up lands. Fix: detect the role (the host-setup env's `HOST_ROLE`, or host-setup's own `dev-gates.slice` fragment) and, on dedicated-dev, skip
+the slice file, retire an existing `20-memory-policy.conf` this script owns (marker line) through the existing `retire_paths` mechanism, and report that host-setup owns the policy.
+This is the same change as the slice half above; the role test is its trigger. Close when a test renders on a dedicated-dev fixture and
+no `20-memory-policy.conf` exists afterwards, and a shared host still gets it.
+
 ## NC-66 — remote-gate shipped the controller's local `main`; nothing created `origin/main` on the host
 
 **Status:** FIXED by P-plat-24 (2026-11-24). Source: vbpub-rollback run `rgw-r2-20261124T144053-v1001`.
@@ -1967,7 +1983,8 @@ host-setup lands on any runner host; `check.sh` WARNs meanwhile (design section 
 lanes judged against a local main that was 36 commits behind origin/main. Fix: `git fetch -q origin main` in the controller checkout, bundle
 `refs/remotes/origin/main`, create both `refs/remotes/origin/main` and `refs/heads/main` on the host; a failed fetch warns and uses the
 existing origin/main; an assay lane whose declared `judge.base` does not resolve locally is refused with exit 2 (a host-side check of every
-declared ref would need the base passed into the job; not done, so a base that resolves locally but is not main, a tag or HEAD still fails on the host).
+declared ref would need the base passed into the job; not done, so a declared base that names a branch other than main, or a non-release tag
+(only HEAD, origin/main (set on the host as both `origin/main` and `main`), the `--base` commit and release tags `refs/tags/*-v[0-9]*` travel in the bundle; `remote-gate.py:422`, `:457`), passes the local check and still fails on the host).
 `--base main` / `origin/main` now resolve to the fetched origin/main (not the stale local branch). A host checkout cloned from a seed starts with the
 seed's own `main` and `origin/main`; the job overwrites them, and deletes both when there is no origin/main to set, so nothing stale survives (r1 review F1-F5).
 **Where.** `runner/remote-gate.py` (`local_state`, `lane_checks`, `build_bundle`, job script), `CONSUMERS.md`, `CHANGES.md`.
@@ -1987,3 +2004,50 @@ seed's own `main` and `origin/main`; the job overwrites them, and deletes both w
 `verdict_of()` (`runner/remote-gate.py`, `VERDICT_RE`) matches `lane '?X'? verdict Y` anywhere in the text and takes the last match, so a
 lane's free output (test stderr quoting "lane X verdict Y") can fake the `result.json` verdict. Proposal: anchor it as
 `scripts/controller/remote-gate.sh` does since P-plat-23 (q246): line start, exact lane.
+
+## NC-69 — concurrent remote-gate runs from one controller checkout share the temporary ref `refs/remote-gate/base`
+
+**Status:** OPEN (filed 2026-11-24); Should-fix. Pre-existing (not introduced by P-plat-24). Source: `.controller-state/platform/reviews/plat-24-r2-opus.md`, N5.
+
+`runner/remote-gate.py` names the temporary bundle head for the `--base` commit with the constant `BASE_REF = "refs/remote-gate/base"` (`:433`;
+used at `:458-470`, cleanup `:469-470`). Linked worktrees share every ref outside `refs/worktree/*`, so every run from one controller repository writes the same
+ref: run A sets it to X, run B sets it to Y, A's `bundle create` ships Y, and A's host lacks X and ends rc 72 "base ... missing on the host"
+(`JOB_REASON_RE`, `:1150`). Also A's `finally` deletes the ref while B still needs it. With `--base main` both runs now usually map to the same fetched
+sha, so P-plat-24 did not make it worse, but any two runs with different bases collide. Fix: a per-run ref name, `refs/remote-gate/base-<run name>`,
+used for the bundle head, the host-side `git fetch` of it (`:664-665` job script) and the cleanup. Close when a test creates two runs with different bases
+and asserts each bundle carries its own base.
+
+## NC-70 — `--base main~1` / `main^` still resolve against the stale local `main`; plat-24 nits N2-N4
+
+**Status:** OPEN (filed 2026-11-24); Minor. Source: `.controller-state/platform/reviews/plat-24-r2-opus.md`, N1-N4 (N5 is NC-69, N6 was corrected in NC-66).
+
+- **N1 (follow-up).** `MAIN_NAMES` (`runner/remote-gate.py:300`, checked at `:328`) is an exact-match tuple, so only `main`, `origin/main`,
+  `refs/heads/main` and `refs/remotes/origin/main` map to the fetched origin/main. `--base main~1`, `main^` or `main@{1}` fall through to
+  `rev-parse --verify` (`:331-336`) in the controller checkout and resolve against local `refs/heads/main`, which was 36 commits behind in the
+  incident: the gate judges a base 37 commits back and nothing warns. The same holds for a declared `judge.base = "main~1"` (`:386-390`):
+  the local check resolves it against the local branch, possibly absent (a false refusal), while the host resolves it against origin/main.
+  Fix: when `base` matches `^(refs/heads/)?main([~^@].*)?$`, rewrite the `main` prefix to `refs/remotes/origin/main` before the `rev-parse`, for both
+  `--base` and the declared check; or refuse it with rc 2. One parametrize case.
+- **N2.** The 60 s fetch bound is untested (`FETCH_TIMEOUT`, `:301`, used `:320`): `Fake.run` in `tests/test_remote_gate.py` drops `timeout`
+  (`:40-42`), so reverting to the 300 s default passes every test. Record `timeout` in `Fake.calls` (or a one-off recording runner) and assert
+  `== rg.FETCH_TIMEOUT` in `tests/test_remote_gate_seams.py` (`:42-52`).
+- **N3.** A seeded clone keeps a dangling `refs/remotes/origin/HEAD` after the job deletes `origin/main` (`:693-695` job script): lane
+  stderr gets `warning: ignoring broken ref` and `origin` alone no longer resolves. Add
+  `git -C "$CKDIR" symbolic-ref -d refs/remotes/origin/HEAD 2>/dev/null || true` to the same else branch.
+- **N4.** The declared-base parse runs on every assay lane run, not only with `--base` (the `if base_given` guard moved inward, `:377-380`).
+  An `assay.toml` whose `lanes` or `lanes.<x>.judge` is not a table (`judge = "x"`) raises an AttributeError traceback (rc 1) instead of
+  "no opinion". Guard both with `isinstance(..., dict)` as the neighbouring `assay_cfg` / `imp` parse does.
+- Optional: rename `test_local_state_records_the_local_main_sha` (`tests/test_remote_gate_seams.py:26`), which now describes origin/main.
+
+## NC-71 — `remote-gate.py` status/logs/collect/cancel read the host table only from the default hosts file
+
+**Status:** OPEN (filed 2026-11-24); Should-fix. Source: main controller request 2026-11-24 (platform STATE.md, Queued): a losing duplicate gate could not be cancelled.
+
+The `--hosts-file` option defaults to `$REMOTE_GATE_HOSTS` or `~/.config/remote-gate/hosts.json` (`runner/remote-gate.py:38`, `:1323`) and the
+verbs `status`, `logs`, `collect` and `cancel` load it at `:1363`. Launches through `scripts/controller/remote-gate.sh` resolve their own table
+(`CONTROLLER_REMOTE_HOSTS_FILE` or `CONTROLLER_HOSTS_FILE`, `remote-gate.sh:102-104`) and pass it as `--hosts-file` (`:259`). A `remote-gate.py cancel <id>`
+without `--hosts-file` therefore fails to find the host, so a duplicate or losing gate cannot be cancelled without pid-signalling the process,
+which this estate forbids. Fix: these verbs resolve the host table the way launch does (the same CONTROLLER_* variables), or `remote-gate.sh`
+grows `status`/`logs`/`collect`/`cancel` verbs that pass the table and the out-dir. Workaround: pass the global options before the verb,
+`remote-gate.py --hosts-file <table> --out-dir <dir> cancel <id>`, or export `REMOTE_GATE_HOSTS`. Close when a test launches with a non-default table
+and cancels the run without naming the table again.

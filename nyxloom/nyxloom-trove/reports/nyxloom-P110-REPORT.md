@@ -158,7 +158,7 @@ self-mint webhooks.
 
 - `RateLimitSettings.Enable` **defaults `false`**.
 - **tls-edge does not compensate.** Its only entrypoint-level middleware is
-  `secure-headers` (`edge-proxy/conf.d/middlewares.yml`: HSTS, nosniff,
+  `secure-headers` (`ciu-stack/conf.d/middlewares.yml`: HSTS, nosniff,
   referrer-policy — `frameDeny` deliberately unset). `rateLimit` appears only
   under `ARCHITECTURE.md` **F5 "Traefik middleware additions — Partially
   implemented"** as a *future* item, and in `KNOWN_ISSUES.md` as an unbuilt

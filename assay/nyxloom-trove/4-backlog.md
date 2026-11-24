@@ -225,6 +225,7 @@ items:
   - {id: B573, title: "tooling-tests misses new tests/core files", type: bugfix, component: gate, context_estimate: small}
   - {id: B574, title: "Carry-forward aborts on a stored hint match", type: bugfix, component: mutation, context_estimate: small}
   - {id: B575, title: "Carry-forward review notes (WP3a, out of contract)", type: feature, component: mutation, context_estimate: small}
+  - {id: B576, title: "mutation_store contract-test gaps (P-assay-11 review)", type: bugfix, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -15963,3 +15964,11 @@ The single error is at `descendants[0]`, so the only difference between an accep
 3. **Plan and run can disagree.** The `plan --list-pending --carry-forward` labels (`src/assay/cli.py:640`, `:4555`) skip the WP2 record validation, so a malformed record can be labelled `exact-id` while the run ignores it.
 4. **Untested CONSUMERS claim.** `docs/CONSUMERS.md` says carry-forward composes with `--only-candidates`/`--exclude-candidates`; no test covers it.
 **Wanted.** Fold 1-3 into P-assay-12 (one store-combine) or P-assay-13, where the carry-forward matcher is reworked; add the test for 4 there. **Close when.** Each item is fixed with a test or closed as by design in its package's hand-over. Source: `.controller-state/assay/reviews/wp3a-opus-review.md` (r1 and r2 "Out of contract").
+
+## B576 — mutation_store contract-test gaps (P-assay-11 review)
+
+**Status: OPEN (filed 2026-11-24 from the P-assay-11 Opus r1 review, merged as q248 ba15e8dda); severity: low.** Two findings outside the P-assay-11 contract, neither with any effect today:
+1. **The store import contract misses two import forms.** `tests/core/test_import_contracts.py:150-180` enforces "`mutation_store` never imports `mutation` at runtime". It catches the relative forms and `import assay.mutation`. It misses `from assay import mutation` and `importlib.import_module("assay.mutation")`. Extend the AST walk to both, with one negative fixture each.
+2. **One contract key is misplaced.** In `dataclass-contract.json:802` the key `assay.mutation_store.FlexOptions` sits among the `assay.mutation.*` keys. The lookup is dict-based, so this is cosmetic. Move it into sorted position when the file is next regenerated.
+
+**Close when.** Item 1 is fixed with its two fixtures, and item 2 is sorted or closed as cosmetic in that package's hand-over. Source: `.controller-state/assay/reviews/p11-opus-review.md` (items 2 and 3).

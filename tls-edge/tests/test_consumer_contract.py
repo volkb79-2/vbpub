@@ -44,7 +44,6 @@ def test_contract_has_exact_keys_values_and_order() -> None:
         "tls_edge": {
             "domain": "Example.TEST.",
             "http3": {"enabled": True},
-            "calls": {"enabled": True},
         }
     })
     result = contract.consumer_contract(edge)
@@ -55,7 +54,7 @@ def test_contract_has_exact_keys_values_and_order() -> None:
         "TLS_EDGE_HTTPS_ENTRYPOINT": "websecure",
         "TLS_EDGE_HEADERS_MIDDLEWARE": "secure-headers@file",
         "TLS_EDGE_HTTP3": "true",
-        "TLS_EDGE_PUBLIC_PORTS": "80/tcp,443/tcp,443/udp,8443/tcp,8443/udp",
+        "TLS_EDGE_PUBLIC_PORTS": "80/tcp,443/tcp,443/udp",
     }
 
 
@@ -63,15 +62,12 @@ def test_port_plan_is_the_one_source_for_the_text_plan() -> None:
     edge = _edge({
         "tls_edge": {
             "http3": {"enabled": True},
-            "calls": {"enabled": True},
         }
     })
     expected = [
         (80, "tcp", "HTTP redirect and/or HTTP-01"),
         (443, "tcp", "HTTPS, HTTP/1.1 and HTTP/2"),
         (443, "udp", "HTTP/3 over QUIC"),
-        (8443, "tcp", "Calls media"),
-        (8443, "udp", "Calls media"),
     ]
     assert config.port_plan(edge) == expected
     assert config.validate_config(
@@ -89,7 +85,6 @@ def test_public_ports_sort_by_number_then_tcp_before_udp() -> None:
     edge = _edge({
         "tls_edge": {
             "http3": {"enabled": True},
-            "calls": {"enabled": True},
         }
     })
     result = contract.consumer_contract(edge)
@@ -97,8 +92,6 @@ def test_public_ports_sort_by_number_then_tcp_before_udp() -> None:
         "80/tcp",
         "443/tcp",
         "443/udp",
-        "8443/tcp",
-        "8443/udp",
     ]
 
 

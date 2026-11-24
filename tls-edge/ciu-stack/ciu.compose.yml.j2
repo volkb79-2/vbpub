@@ -1,6 +1,6 @@
 # ─── GENERATED from ciu-stack/ciu.compose.yml.j2 — do not edit copies ─────────
 # Edit the template, then re-render:
-#   standalone : scripts/render.sh   (writes edge-proxy/docker-compose.yml)
+#   standalone : scripts/render.sh --out DIR  (trial docker-compose.yml)
 #   ciu v2     : run `ciu` in the ciu-stack directory (renders ciu.compose.yml + overlay)
 #
 # Two containers:
@@ -82,11 +82,6 @@ services:
 {% if tls_edge.http3.enabled %}
       # HTTP/3 over QUIC shares the public HTTPS port on UDP.
       - "{{ bind }}{{ tls_edge.ports.https }}:443/udp"
-{% endif %}
-{% if tls_edge.calls.enabled %}
-      # Mattermost Calls: the same public port over TCP and UDP.
-      - "{{ bind }}{{ tls_edge.calls.public_port }}:{{ tls_edge.calls.tcp_internal_port }}/tcp"
-      - "{{ bind }}{{ tls_edge.calls.public_port }}:{{ tls_edge.calls.udp_internal_port }}/udp"
 {% endif %}
 {% if tls_edge.tls.mode == 'acme-dns' %}
 {% if tls_edge.standalone %}
