@@ -111,7 +111,11 @@ from estate_test_policy import policy as _estate_policy  # noqa: E402
 _ORIGINAL_ESTATE_ANALYZE = _estate_policy.analyze_source
 
 def _analyze_test_source(source: str, **kwargs):
-    """Strip the test function's own indentation without moving string literals."""
+    """Temporary shim for libraries/test-policy TP-18.
+
+    TP-18 (controller files it): analyze_source fails on a method with column-0
+    string-literal lines; remove the shim when it lands.
+    """
     indent = source[: len(source) - len(source.lstrip())]
     normalized = "".join(
         line[len(indent):] if indent and line.startswith(indent) else line

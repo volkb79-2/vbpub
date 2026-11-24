@@ -9,6 +9,7 @@ import select
 import signal
 import subprocess
 import sys
+import time
 import tomllib
 from collections import Counter
 from datetime import datetime
@@ -21,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu import engine, output, procutil  # noqa: E402
 from ciu.output import SeverityStream  # noqa: E402
 from ciu.procutil import run_cmd  # noqa: E402
+from cli_extended import line_stream  # noqa: E402
 from cli_extended.line_stream import LineStreamRenderer  # noqa: E402
 from cli_extended.procio import run_capture, run_streaming  # noqa: E402
 
@@ -60,6 +62,26 @@ def test_colour_off_sanitises_hostile_input_before_severity_recognition():
     assert rendered == "[ERROR] forged\n[INFO] safe\n"
     assert "\x1b" not in rendered
     assert "\x07" not in rendered
+
+def test_plain_adapter_removes_every_renderer_sgr_and_keeps_the_time_prefix(
+    monkeypatch,
+):
+    monkeypatch.setitem(line_stream._SEVERITY_COLOUR, "[INFO]", "\033[1;36m")
+
+    class _FixedDatetime:
+        @classmethod
+        def now(cls, _timezone=None):
+            return datetime(2026, 11, 24, 12, 34, 56)
+
+    monkeypatch.setattr(output, "datetime", _FixedDatetime)
+    rendered = _render("[INFO] first\n[WARN] second\n[ERROR] third\n",
+                       time_short=True, colour=False)
+    assert rendered == (
+        "12:34:56 [INFO] first\n"
+        "12:34:56 [WARN] second\n"
+        "12:34:56 [ERROR] third\n"
+    )
+    assert "\x1b" not in rendered
 
 @pytest.mark.parametrize(
     ("environment", "expected"),
@@ -124,13 +146,13 @@ def test_cli_extended_floor_carries_the_shared_renderer_and_procio():
     assert engine.COMPOSE_UP_NO_PROGRESS_SECONDS == 1800
     assert engine.COMPOSE_UP_DRAIN_SECONDS == 2.0
 
-def test_dependency_probe_spawn_failures_are_reported(monkeypatch, capsys):
+def test_dependency_probe_spawn_failures_are_reported(
+    tmp_path, monkeypatch, capsys,
+):
     monkeypatch.delenv("SKIP_DEPENDENCY_CHECK", raising=False)
-
-    def missing(*_args, **_kwargs):
-        raise FileNotFoundError("docker")
-
-    monkeypatch.setattr(engine.procutil, "run_cmd", missing)
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
     with pytest.raises(engine.DependencyError):
         engine.check_runtime_dependencies()
     output = capsys.readouterr().out
@@ -147,6 +169,22 @@ def _fake_docker(tmp_path: Path, body: str) -> tuple[Path, dict[str, str]]:
     env = dict(os.environ)
     env["PATH"] = f"{executable.parent}:{env.get('PATH', '')}"
     return executable, env
+
+@pytest.fixture
+def pipe_holder_docker(tmp_path):
+    pid_file = tmp_path / "holder.pid"
+    docker, env = _fake_docker(
+        tmp_path,
+        '/bin/sleep 600 &\n'
+        'holder=$!\n'
+        'printf "%s\\n" "$holder" > "$HOLDER_PID_FILE"\n'
+        'printf "compose finished\\n"\n'
+        'exit 17',
+    )
+    env["HOLDER_PID_FILE"] = str(pid_file)
+    yield docker, env, pid_file
+    if pid_file.exists():
+        _reap_pid(int(pid_file.read_text(encoding="utf-8")), signal_first=True)
 
 def _pidfd_is_alive(pid: int) -> bool:
     pidfd = os.pidfd_open(pid)
@@ -190,57 +228,83 @@ def _reap_pid(pid: int, *, signal_first: bool) -> bool:
         os.close(pidfd)
 
 @pytest.mark.requires_contained_cgroup
+@pytest.mark.estate_allow(
+    "wall-time-assert",
+    reason="the bound is the CIU-220 oracle; 60s is a generous failure ceiling, not a speed expectation",
+    backlog="CIU-220",
+)
 def test_compose_child_exit_keeps_code_and_warns_once_about_pipe_holder(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, pipe_holder_docker,
 ):
-    pid_file = tmp_path / "holder.pid"
-    _docker, env = _fake_docker(
-        tmp_path, '/bin/sleep 600 &\nholder=$!\nprintf "%s\\n" "$holder" > "$HOLDER_PID_FILE"\n'
-        'printf "compose finished\\n"\nexit 17',
-    )
-    env["HOLDER_PID_FILE"] = str(pid_file)
+    _docker, env, pid_file = pipe_holder_docker
     monkeypatch.setattr(engine, "verify_workspace_runtime_network", lambda _root: None)
 
-    holder_pid: int | None = None
-    try:
-        result = engine.execute_docker_compose_with_logs(
-            ["-f", "ciu.compose.yml"], cwd=tmp_path, env=env,
-            project="ciu-220-project", repo_root=tmp_path,
-        )
-        holder_pid = int(pid_file.read_text(encoding="utf-8"))
-        warn_lines = [line for line in capsys.readouterr().out.splitlines()
-                      if line.startswith("[WARN] ")]
+    started = time.monotonic()
+    result = engine.execute_docker_compose_with_logs(
+        ["-f", "ciu.compose.yml"], cwd=tmp_path, env=env,
+        project="ciu-220-project", repo_root=tmp_path,
+    )
+    elapsed = time.monotonic() - started
+    holder_pid = int(pid_file.read_text(encoding="utf-8"))
+    warn_lines = [line for line in capsys.readouterr().out.splitlines()
+                  if line.startswith("[WARN] ")]
 
-        assert result["status"] == "error"
-        assert result["message"] == "Docker compose failed with exit code 17"
-        assert result["stdout"] == "compose finished\n"
-        assert len(warn_lines) == 1
-        assert str(holder_pid) in warn_lines[0]
-        assert _pidfd_is_alive(holder_pid)
-    finally:
-        if holder_pid is not None:
-            _reap_pid(holder_pid, signal_first=True)
+    assert result["status"] == "error"
+    assert result["message"] == "Docker compose failed with exit code 17"
+    assert result["stdout"] == "compose finished\n"
+    assert elapsed < 60
+    assert len(warn_lines) == 1
+    assert str(holder_pid) in warn_lines[0]
+    assert _pidfd_is_alive(holder_pid)
+
+@pytest.mark.requires_contained_cgroup
+def test_run_cmd_warns_once_to_stderr_about_the_pipe_holder(
+    pipe_holder_docker, capsys,
+):
+    _docker, env, pid_file = pipe_holder_docker
+
+    result = run_cmd(["docker", "compose", "up"], env=env)
+    holder_pid = int(pid_file.read_text(encoding="utf-8"))
+    stderr_lines = capsys.readouterr().err.splitlines()
+
+    assert result.returncode == 17
+    assert result.stdout == "compose finished\n"
+    assert len(stderr_lines) == 1
+    assert stderr_lines[0].startswith("[WARN] ")
+    assert str(holder_pid) in stderr_lines[0]
+    assert _pidfd_is_alive(holder_pid)
 
 @pytest.mark.requires_contained_cgroup
 @pytest.mark.estate_allow(
     "short-timeout",
-    reason="the timeout is the CIU-220 oracle; 30s leaves ample startup headroom under arbitrary load",
+    reason="the timeout is the CIU-220 oracle; 10s leaves startup headroom under arbitrary load",
     backlog="CIU-220",
 )
+@pytest.mark.parametrize("caller_signal_handler", [False, True])
 def test_run_cmd_timeout_reaps_the_child_group_and_lingering_grandchild(
-    tmp_path,
+    tmp_path, caller_signal_handler,
 ):
     pid_file = tmp_path / "pids"
     executable = _write_executable(
         tmp_path / "lingering-child",
-        '/bin/sleep 600 &\ngrandchild=$!\n'
-        'printf "%s\\n%s\\n" "$$" "$grandchild" > "$PID_FILE"\nwait',
+        'printf "%s\\n" "$$" > "$PID_FILE"\n'
+        '/bin/sleep 600 &\n'
+        'grandchild=$!\n'
+        'printf "%s\\n" "$grandchild" >> "$PID_FILE"\n'
+        'wait',
     )
     env = dict(os.environ)
     env["PID_FILE"] = str(pid_file)
 
-    with pytest.raises(subprocess.TimeoutExpired):
-        run_cmd([str(executable)], timeout=30, env=env)
+    previous = None
+    if caller_signal_handler:
+        previous = signal.signal(signal.SIGTERM, lambda _signum, _frame: None)
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_cmd([str(executable)], timeout=10, env=env)
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
 
     leader_pid, grandchild_pid = (
         int(value)
@@ -279,7 +343,36 @@ def test_malformed_utf8_in_streamed_output_is_replacement_text_and_success(
 def test_run_cmd_keeps_text_input_and_replacement_decoding():
     assert run_cmd(["cat"], input="hello").stdout == "hello"
     assert run_cmd(["sh", "-c", "printf '\\377'"]).stdout == "\ufffd"
+    assert run_cmd(["sh", "-c", "printf 'a\\r\\nb\\rc\\n'"]).stdout == "a\nb\nc\n"
     assert procutil._decode_output(None) is None
+
+
+@pytest.mark.requires_contained_cgroup
+@pytest.mark.estate_allow(
+    "short-timeout",
+    reason="the command timeout is a deadlock failsafe; the real-child signal handshake decides the assertion",
+    backlog="CIU-232",
+)
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP])
+def test_run_cmd_preserves_a_python_callers_termination_handler(signum):
+    received: list[int] = []
+
+    def record(signum, _frame):
+        received.append(signum)
+
+    previous = signal.signal(signum, record)
+    signal_name = signal.Signals(signum).name.removeprefix("SIG")
+    try:
+        result = run_cmd(
+            ["sh", "-c", f"kill -s {signal_name} $PPID; sleep 0.3; echo ok"],
+            timeout=10,
+        )
+    finally:
+        signal.signal(signum, previous)
+
+    assert received == [signum]
+    assert result.returncode == 0
+    assert result.stdout == "ok\n"
 
 def test_compose_watchdog_maps_to_error_and_prints_the_pre_signal_process_tree(
     tmp_path, monkeypatch, capsys
@@ -315,33 +408,37 @@ def test_compose_watchdog_maps_to_error_and_prints_the_pre_signal_process_tree(
     assert f"  {report.tree_lines[0]}\n" in console
 
 _UNBOUNDED_EXCEPTIONS = {
-    ("cli.py", "_bake", "subprocess.run", 0): "Buildx --print preview is an unbounded captured query; P-core-10 defers migration.",
+    ("cli.py", "_bake", "subprocess.run", 0): "Buildx --print preview is an unbounded captured query; bounded-drain migration is owned by CIU-233.",
     ("cli.py", "_bake", "subprocess.call", 0): "Buildx's real build inherits terminal stdio, so there is no output pipe to drain.",
     ("dev.py", "run_dev", "subprocess.call", 0): "The HMR loop inherits terminal stdio so interactive input and output stay attached.",
-    ("diagnose.py", "_run", "subprocess.run", 0): "Diagnose is a read-only Docker evidence query; migration is outside P-core-10.",
-    ("host_enroll.py", "_run", "subprocess.run", 0): "Host enrollment captures ssh-keygen/hostname probes; migration is outside P-core-10.",
+    ("diagnose.py", "_run", "subprocess.run", 0): "Diagnose is an unbounded captured Docker query; bounded-drain migration is owned by CIU-233.",
+    ("host_enroll.py", "_run", "subprocess.run", 0): "Host enrollment has unbounded captured probes; bounded-drain migration is owned by CIU-233.",
     ("transport_ssh.py", "_ssh_exec_subprocess", "subprocess.run", 0): "SSH execution inherits terminal stdio so prompts and Ctrl-C stay attached.",
     ("transport_ssh.py", "ssh_sync", "subprocess.run", 0): "rsync inherits terminal stdio for progress and terminal signal delivery.",
     ("transport_ssh.py", "scp_file", "subprocess.run", 0): "scp inherits terminal stdio for progress and terminal signal delivery.",
-    ("workspace.py", "discover_committed_roots", "subprocess.run", 0): "Git-tree inventory is a captured read-only query; migration is deferred.",
-    ("workspace.py", "_tracked_blob", "subprocess.run", 0): "Git object-type lookup is a captured read-only query; migration is deferred.",
-    ("workspace.py", "_validate_committed_marker", "subprocess.run", 0): "Git blob lookup is a captured read-only query; migration is deferred.",
-    ("worktree.py", "_git", "subprocess.run", 0): "The worktree Git adapter captures a read-only query; migration is deferred.",
+    ("workspace.py", "discover_committed_roots", "subprocess.run", 0): "Git-tree inventory is an unbounded captured query; bounded-drain migration is owned by CIU-233.",
+    ("workspace.py", "_tracked_blob", "subprocess.run", 0): "Git object-type lookup is an unbounded captured query; bounded-drain migration is owned by CIU-233.",
+    ("workspace.py", "_validate_committed_marker", "subprocess.run", 0): "Git blob lookup is an unbounded captured query; bounded-drain migration is owned by CIU-233.",
+    ("worktree.py", "_git", "subprocess.run", 0): "The worktree Git adapter is an unbounded captured query; bounded-drain migration is owned by CIU-233.",
     ("worktree.py", "_generate_env_in", "subprocess.run", 0): "Env generation inherits terminal stdio to preserve the child verb's I/O contract.",
     ("worktree.py", "_run_cleanup_child", "subprocess.run", 0): "Non-JSON cleanup inherits terminal stdio so the child owns its visible output.",
-    ("worktree.py", "_run_cleanup_child", "subprocess.run", 1): "JSON cleanup captures its child to move diagnostics off the primary JSON stdout.",
+    ("worktree.py", "_run_cleanup_child", "subprocess.run", 1): "JSON cleanup has an unbounded capture; bounded-drain migration is owned by CIU-233.",
     ("worktree.py", "_run_child", "subprocess.run", 0): "Worktree start inherits terminal stdio to preserve the child's signal and output contract.",
-    ("workspace_env.py", "_detect_physical_repo_root", "subprocess.run", 0): "Physical-root detection is a Docker capture with known EOF risk; migration is deferred.",
-    ("workspace_env.py", "_detect_host_mdt_tmp", "subprocess.run", 0): "Host temp-path detection is a Docker capture with known EOF risk; migration is deferred.",
-    ("workspace_env.py", "_docker_available", "subprocess.run", 0): "Docker availability is a captured read-only probe; migration is deferred.",
-    ("workspace_env.py", "_ensure_network_exists", "subprocess.run", 0): "Network inspection is a Docker capture; migration is deferred.",
-    ("workspace_env.py", "_ensure_network_exists", "subprocess.run", 1): "Network creation is a Docker capture; migration is deferred.",
-    ("workspace_env.py", "_resolve_own_container_name", "subprocess.run", 0): "Own-container inspection is a Docker capture; migration is deferred.",
-    ("workspace_env.py", "_connect_devcontainer_to_network", "subprocess.run", 0): "Network membership inspection is a Docker capture; migration is deferred.",
-    ("workspace_env.py", "_connect_devcontainer_to_network", "subprocess.run", 1): "Network connection is a Docker capture; migration is deferred.",
-    ("workspace_env.py", "_check_tls_access", "subprocess.run", 0): "TLS access checks are Docker captures; migration is deferred.",
+    ("workspace_env.py", "_detect_physical_repo_root", "subprocess.run", 0): "Physical-root detection is an unbounded Docker capture; bounded-drain migration is owned by CIU-233.",
+    ("workspace_env.py", "_detect_host_mdt_tmp", "subprocess.run", 0): "Host temp-path detection is an unbounded Docker capture; bounded-drain migration is owned by CIU-233.",
+    ("workspace_env.py", "_docker_available", "subprocess.run", 0): "Docker availability is an unbounded captured probe; bounded-drain migration is owned by CIU-233.",
+    ("workspace_env.py", "_ensure_network_exists", "subprocess.run", 0): "Network inspection is an unbounded Docker capture; bounded-drain migration is owned by CIU-233.",
+    ("workspace_env.py", "_ensure_network_exists", "subprocess.run", 1): "Network creation is an unbounded Docker capture; bounded-drain migration is owned by CIU-233.",
+    ("workspace_env.py", "_resolve_own_container_name", "subprocess.run", 0): "Own-container inspection is an unbounded Docker capture; bounded-drain migration is owned by CIU-233.",
+    ("workspace_env.py", "_connect_devcontainer_to_network", "subprocess.run", 0): "Network membership inspection is an unbounded Docker capture; bounded-drain migration is owned by CIU-233.",
+    ("workspace_env.py", "_connect_devcontainer_to_network", "subprocess.run", 1): "Network connection is an unbounded Docker capture; bounded-drain migration is owned by CIU-233.",
+    ("workspace_env.py", "_check_tls_access", "subprocess.run", 0): "TLS access checks are unbounded Docker captures; bounded-drain migration is owned by CIU-233.",
     ("workspace_env.py", "update_cert_permissions", "subprocess.run", 0): "Certificate updates inherit terminal stdio so the privileged child reports directly.",
     ("procutil.py", "popen", "subprocess.Popen", 0): "The long-lived run primitive exposes its streams to the caller; only procutil.run_cmd captures.",
+}
+
+_POPEN_CALL_SITES = {
+    ("oneshot.py", "_run_foreground", "procutil.popen", 0): "stdout=<inherited>",
 }
 
 _BOUNDED_EXCEPTIONS = {
@@ -424,6 +521,45 @@ def _direct_subprocess_calls(
             ordinals[family] += 1
     return found, unbounded
 
+
+def _procutil_popen_call_sites(
+    src_root: Path,
+) -> dict[tuple[str, str, str, int], str]:
+    """Find every ``procutil.popen`` call and its ``stdout=`` value."""
+    found: dict[tuple[str, str, str, int], str] = {}
+    for path in sorted(src_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        parents = {child: parent for parent in ast.walk(tree)
+                   for child in ast.iter_child_nodes(parent)}
+        ordinals: Counter[tuple[str, str, str]] = Counter()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            resolved = _resolved_call_name(node.func, {})
+            if not resolved.endswith(".popen") and resolved != "popen":
+                continue
+            stdout = next(
+                (keyword.value for keyword in node.keywords if keyword.arg == "stdout"), None,
+            )
+            family = (str(path.relative_to(src_root)), _enclosing_name(node, parents), resolved)
+            key = (*family, ordinals[family])
+            found[key] = ("stdout=<inherited>" if stdout is None
+                          else f"stdout={ast.unparse(stdout)}")
+            ordinals[family] += 1
+    return found
+
+
+def _run_cmd_subprocess_run_keywords(src_root: Path) -> list[set[str]]:
+    """Return keyword names on each ``subprocess.run`` call inside ``run_cmd``."""
+    tree = ast.parse((src_root / "procutil.py").read_text(encoding="utf-8"))
+    run_cmd = next(node for node in tree.body if getattr(node, "name", None) == "run_cmd")
+    return [
+        {keyword.arg for keyword in node.keywords if keyword.arg is not None}
+        for node in ast.walk(run_cmd)
+        if isinstance(node, ast.Call) and _resolved_call_name(node.func, {}) == "subprocess.run"
+    ]
+
+
 def test_every_remaining_direct_subprocess_call_is_an_explicit_exception():
     src_root = Path(engine.__file__).resolve().parent
     found, unbounded = _direct_subprocess_calls(src_root)
@@ -444,3 +580,13 @@ def test_every_remaining_direct_subprocess_call_is_an_explicit_exception():
         "direct calls are in the wrong bound exception table: "
         f"{misclassified}"
     )
+
+
+def test_run_cmd_and_procutil_popen_keep_their_stream_contracts_structural():
+    src_root = Path(engine.__file__).resolve().parent
+
+    run_keywords = _run_cmd_subprocess_run_keywords(src_root)
+    assert len(run_keywords) == 1
+    assert "capture_output" not in run_keywords[0]
+    assert "stdout" not in run_keywords[0]
+    assert _procutil_popen_call_sites(src_root) == _POPEN_CALL_SITES

@@ -16,11 +16,12 @@ from typing import TextIO
 from cli_extended.line_stream import LineStreamRenderer
 
 
-# The renderer emits one of these SGR decorations before a recognised
-# severity. The adapter uses the renderer's own decoration boundary to place
+# The renderer emits an SGR decoration before a recognised severity. The
+# sanitizer has already removed input-origin ESC bytes, so any remaining SGR at
+# line start belongs to the renderer. The adapter uses that boundary to place
 # the timestamp and honour CIU's final colour decision; it does not inspect or
 # classify severity text.
-_RENDERED_SEVERITY = re.compile(r"^(\033\[(?:31|32|33)m)([^\x1b\n]*)(\033\[0m)")
+_RENDERED_SEVERITY = re.compile(r"^(\033\[[0-9;]*m)([^\x1b\n]*)(\033\[0m)")
 _TIME_ENV = "CIU_LOG_PREFIX_TIME_SHORT"
 
 

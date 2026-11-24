@@ -13,6 +13,11 @@ shipped capability.
 
 Last updated: 2026-11-24 — **CIU-230 and CIU-231 FILED; CIU-227 and CIU-229 AMENDED** (T2 core controller, P-core-10 branch: no default cgroup parent for the S6.5 root helper; plain `ciu up` in a stack dir is an rc-0 no-op; a second dry-run hostdir specimen; `worktree rm` on a git-created worktree refuses once per nested root). Previous update 2026-11-24 — **CIU-220 and CIU-224 FIXED IN THIS BRANCH (P-core-10)** (bounded process I/O and the shared renderer; CIU-224..229 had been filed together on P-core-10). Previous update 2026-11-24 — **CIU-224..229 FILED** (T2 core, P-core-10 branch): the renderer adoption, the tester-gate retirement, an override that drops required hooks, hostdirs created before S6.5 preconditions, relative `--dir` with `--root-folder`, and three `ciu worktree rm` defects; CIU-220 design amended (cli-extended 0.8 procio); CIU-162 amended (consumer-stack networks). Previous update 2026-11-18 — **CIU-223 FIXED** (the four CIU-215 test files disable git's automatic gc and maintenance, and an autouse guard reports leftover direct children without signalling them; tests only, no release or consumer action). Previous update 2026-11-18 — **CIU-221 FILED** (`ciu up --dir` applies no profile `topology_overrides`; split from CIU-208, whose profile-mode fix is merged to main as `66db19734`, unreleased). Previous update 2026-11-13 — **CIU-214, CIU-215 and CIU-216 FILED** from the netcup-api-filter migration (`ciu down --dir` parser rejects flags the help lists; CIU 7 linked-worktree exec runners lack the git common-dir mount; `ciu worktree create` renders no `ciu.global.toml` without `DOCKER_HOST`). Previous update 2026-11-11 — **CIU-193 FIXED** on `ciu-193-down-owner-20261111` (`ciu down` ownership-filtered like `clean`; unlabelled candidates fail closed in worktrees). **CIU-205 and CIU-206 FILED and FIXED** (on `ciu-205-dir-selection-20261111` and `ciu-206-host-secret-20261111`, unreleased) from an independent review of the naf deployment plan: `ciu up --dir` omits the S3.12 selection facts from its render context and does not record or guard the resolved selection across invocations, while no host-wide cross-checkout operator-secret scope exists; an uncached stack can prompt or fail in another checkout only when neither an environment value nor a cached value is available, and an environment value can silently replace a cached value. **CIU-208 and CIU-209 FILED** from side findings in the CIU-205 implementation report: profile-mode `ciu up` does not carry a profile's `topology_overrides` into the per-stack engine render even though preflight renders and `ciu resolve` apply them; `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check by calling the profile-package resolver directly. CIU-204 remains OPEN (Docker network-cleanup evidence is UNVERIFIED and must be reconciled without inventing names). CIU-203 is FIXED on `ciu-fix-20261109`; CIU-141 is implemented on `ciu-run-20261105` (unreleased); CIU-202/134/153/154/155/156/157/158 are FIXED; CIU-151 remains OPEN pending live physical-path verification. Historical 7.18 wave update, 2026-10-27: CIU-135 FIXED (its tests and coverage repaired, record schema 6 added for Run-Gate); CIU-107 stays FIXED; CIU-134's retry implementation was parked with unresolved review findings now closed below; CIU-154 (branch pruning discards ignored resumable state; was CIU-143 on an unmerged branch, CIU-152 on the wave branch before integration) and CIU-153 (`rm` deletes unmerged branches) were FILED; CIU-151 has a second reproduction. Previous update 2026-10-15 — **CIU-144 and CIU-143 FILED**: linked-worktree JSON output can be polluted by the CIU-117 image-tag notice, and a conflicting Compose-managed network escapes `ciu check` and fails late during deployment. **CIU-140 remains IN PROGRESS; CIU-142 and CIU-139 remain OPEN (CIU-141 was OPEN then; it is implemented on `ciu-run-20261105` as of 2026-11-06). CIU-135 remains OPEN** pending its registered gate and final review; its candidate also includes direct `ciu up` network verification, truthful collision vs indeterminate status, unreadable CIU-root sibling records, exact legacy-network claims, and explicit root selection (P53 review 04). **CIU-129 is FIXED by Assay B146** for the hidden-failure diagnostic (first failing test retained in the R0 summary/claim; fail-fast coverage warning emitted). **CIU-136** tracks the open CIU-118 service-discovery follow-up (attached networks, aliases, URLs, exit status; the shipped `ciu resolve`/`ciu exec` stay FIXED). **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` failed on the intended key-duplication assertions. **CIU-128 FIXED** with its registered gate pass. The release flow runs the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; dstdns caller migration ships with CIU-118, and RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared test invocations and their budgets.
 
+Later update, 2026-11-24 — **CIU-232 FIXED IN THIS BRANCH (P-core-10 fix round
+1); CIU-233 FILED** (procio's signal scope had overridden the foreground
+one-shot's forwarding handlers; the 17 deferred captured subprocess readers
+still need the bounded drain).
+
 Later update, 2026-11-11 — **CIU-207 FILED (CIU R2 economics and diff-scoped
 release campaign planning are not expressed by a declared campaign base or
 cost preflight). CIU-210 FILED and PENDING on branch `r2-jobs-20261111`
@@ -673,7 +678,7 @@ entries.
 | CIU-217 | The KSM ELF verifier accepts a program-header table whose declared entry size is zero (`e_phentsize = 0`) | Minor | OPEN 2026-11-13 (strict xfail `test_zero_program_header_entry_size_is_refused` records it) |
 | CIU-218 | `ciu host enroll` cannot install an opt-in forced-command key for the fleet campaign runner | Major | OPEN 2026-11-13 |
 | CIU-219 | The packaged ciu skills have no grammar or coverage oracle, so a released verb can be absent from the text a consumer's agent reads | Minor | OPEN 2026-11-15 |
-| CIU-220 | Subprocess output loops wait for pipe EOF and can hang after the child has exited | High for unattended runs | FIXED IN THIS BRANCH (P-core-10) |
+| CIU-220 | Subprocess output loops wait for pipe EOF and can hang after the child has exited | High for unattended runs | FIXED IN THIS BRANCH (P-core-10) for `run_cmd` + Compose-up; CIU-233 owns the remaining 17 captured sites |
 | CIU-221 | `ciu up --dir` applies no profile `topology_overrides` to the per-stack render, unlike profile-mode `ciu up` after CIU-208 | Medium | OPEN 2026-11-18 |
 | CIU-222 | `ciu up` in a standalone, non-git instance directory (the PWMCP instance a cockpit image ships) aborts at the S16.3 git requirement, and a bare `git init` still fails (no `HEAD`) | Minor | OPEN 2026-11-18 |
 | CIU-223 | The four CIU-215 tests leave git auto-maintenance children behind, so assay's R0 subreaper reports a leaked process tree | Major for CIU R2 baselines | FIXED 2026-11-18 (`132f7bebb`; tests only) |
@@ -685,6 +690,8 @@ entries.
 | CIU-229 | `ciu worktree rm`: a spurious first-attempt refusal, sibling roots without a generated identity refused, `--dry-run` reporting merged branches as kept-unmerged | Minor | OPEN 2026-11-24 |
 | CIU-230 | The S6.5 root helper has no default cgroup parent, and its refusal (`CGROUP_PARENT_DEV_INTERACTIVE` required) gives no remedy | Medium | OPEN 2026-11-24 |
 | CIU-231 | `ciu up` with no `--dir` inside a stack dir of a multi-stack root is a silent rc-0 no-op; `down --dir <relative>` from the root refuses `[no-ciu-root]` | Medium | OPEN 2026-11-24 |
+| CIU-232 | procio's signal scope replaced the foreground one-shot's SIGTERM/SIGHUP forwarding handlers during `run_cmd` | Minor | FIXED IN THIS BRANCH (P-core-10 fix round 1) |
+| CIU-233 | Seventeen deferred direct `subprocess.run(capture_output=True)` sites still have no bounded post-exit drain | Minor | OPEN 2026-11-24 (P-core-10 review) |
 
 
 The approved milestone decisions and serial package order are in
@@ -7080,11 +7087,12 @@ turn the test red, the refreshed 7.25.1 text passes unchanged, and
 uses `run_capture` with the shared two-second drain and timeout reaping.
 Compose-up uses `run_streaming`, keeps the child's exit code, drains for at
 most two seconds, emits one PID-naming `[WARN]`, replaces malformed bytes and
-applies the exported 1800-second no-progress watchdog. The behavioral oracles
-start real children; the guard lists all 40 remaining direct subprocess calls,
-separating the 27 calls without a timeout keyword from 13 explicitly bounded
-calls. The
-renderer/process suite supplies the close-when holder and guard evidence.
+applies the exported 1800-second no-progress watchdog. This closes CIU-220 for
+those two converted boundaries. The behavioral oracles start real children;
+the guard lists all 40 remaining direct subprocess calls, separating the 27
+calls without a timeout keyword from 13 explicitly bounded calls. CIU-233 owns
+the 17 deferred captured `subprocess.run` sites. The renderer/process suite
+supplies the close-when holder and guard evidence.
 
 ## CIU-221 — `ciu up --dir` applies no profile `topology_overrides` to the per-stack render
 
@@ -7241,3 +7249,25 @@ Evidence: `.controller-state/edge/reports/r1002-drain-20261124.md` (Bring-up sec
 **Wanted.** (a) Either select the current stack when cwd is inside one, or refuse with rc != 0 and a remedy (`--dir .`): an rc of 0 hides the miss from automation. (b) `down --dir <relative>` resolves exactly like `up --dir`, under the rule CIU-228 defines.
 
 **Close when.** A test with cwd in a stack dir of a multi-stack root either deploys that stack or exits non-zero with the remedy text, and `down --dir <relative>` from the root resolves like `up`.
+
+## CIU-232 — procio replaced the foreground one-shot's termination handlers
+
+**Status:** FIXED IN THIS BRANCH (P-core-10 fix round 1) (filed 2026-11-24, from the P-core-10 r1 review); severity: Minor.
+
+**Observed.** CIU-141's foreground one-shot installs recording SIGTERM/SIGHUP handlers in `oneshot.py` around lines 1202-1295 and forwards the first signal to the container. P-core-10 made every captured `procutil.run_cmd` enter `procio._SignalScope`, which replaces any non-`SIG_IGN` SIGTERM/SIGHUP handler, even a caller's Python callable; a signal during the one-shot's docker inspect/kill calls raised `SystemExit(143/129)` and force-removed the container without the grace period.
+
+**Measured repro.** The controller ran `/tmp/sigprobe.py <ciu-root> <cli-extended-src>`: a recording SIGTERM handler plus `run_cmd(["sh", "-c", "kill -TERM $PPID; sleep 0.3; echo ok"])` called the handler and returned rc 0 on origin/main; on the P-core-10 head the handler was skipped and `run_cmd` raised `SystemExit(143)`. Root cause in `cli-extended.procio._SignalScope` is controller-filed as CLI-EXT-47 (leave any non-default SIGTERM/SIGHUP handler alone); that upstream item owns the permanent correction.
+
+**Resolution.** In `procutil.run_cmd`'s capture branch, when the call is on the main thread and either termination signal has a Python-callable handler, CIU runs `procio.run_capture` in a joined helper thread. procio installs its signal scope only on the main thread, so CIU's handler remains active; timeout enforcement and process-group reaping stay inside procio. The behavioral tests use a real child that signals its parent for SIGTERM and SIGHUP, and the timeout/group-reap oracle runs in both branches. The workaround is removed when CLI-EXT-47 lands; `oneshot.py` is untouched.
+
+**Close when.** CLI-EXT-47 is released, CIU removes the helper-thread branch and keeps the SIGTERM/SIGHUP real-child tests green.
+
+## CIU-233 — deferred captured subprocess readers still lack a bounded drain
+
+**Status:** OPEN 2026-11-24 (P-core-10 review); severity: Minor.
+
+**Observed.** P-core-10 converted `procutil.run_cmd(capture=True)` and Compose-up, but deferred 17 direct `subprocess.run(capture_output=True)` sites: the workspace-environment Docker probes, `docker run`, and Git reads in `cli.py::_bake`, `diagnose.py`, `host_enroll.py`, `workspace.py`, `worktree.py`, and `workspace_env.py`. A descendant that keeps stdout or stderr open can still block those captures after the command exits; the CIU-220 guard now lists every such site and points each unbounded reason here.
+
+**Wanted.** Migrate each captured site to `procutil.run_cmd`/`procio.run_capture`, or retain an explicit exception with a separately justified non-pipe contract; preserve caller-visible output, timeout, and error precedence. Two stale floor statements remain outside this item's allowed files: `ciu/assay.toml:45` and `ciu/docs/RUNBOOK-CIU-215-LIVE-PROBE.md:170` still say `cli-extended>=0.5.0`, and both move to 0.8.0 with this item.
+
+**Close when.** No unbounded captured reader remains, or every remaining exception names a non-pipe or bounded reason, and the stale floor statements agree with `pyproject.toml`.

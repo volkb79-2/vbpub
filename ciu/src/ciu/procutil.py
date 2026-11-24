@@ -17,17 +17,53 @@ Rules
 """
 from __future__ import annotations
 
+import codecs
+import io
+import signal
 import subprocess
+import sys
+import threading
 from typing import IO, Any
 
 from cli_extended import procio
 
 
+_CALLER_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+
+
 def _decode_output(value: bytes | str | None) -> str | None:
-    """Preserve CIU's UTF-8 replacement-decoding text contract."""
+    """Preserve CIU's UTF-8 replacement and universal-newline text contract."""
     if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
+        decoder = io.IncrementalNewlineDecoder(
+            codecs.getincrementaldecoder("utf-8")("replace"),
+            translate=True,
+        )
+        return decoder.decode(value, final=True)
     return value
+
+
+def _caller_has_python_signal_handler() -> bool:
+    """Whether procio's main-thread signal scope would replace a ciu handler."""
+    return any(callable(signal.getsignal(signum)) for signum in _CALLER_SIGNALS)
+
+
+def _run_capture_without_replacing_callers_signals(**kwargs: Any) -> procio.CaptureResult:
+    """Run procio off-main-thread, leaving ciu's forwarding handlers armed (CLI-EXT-47)."""
+    outcome: dict[str, Any] = {}
+
+    def capture() -> None:
+        try:
+            outcome["result"] = procio.run_capture(**kwargs)
+        except BaseException as exc:  # transferred to the main thread below
+            outcome["exception"] = exc
+
+    worker = threading.Thread(target=capture, name="ciu-run-capture")
+    worker.start()
+    worker.join()
+    exception = outcome.get("exception")
+    if exception is not None:
+        raise exception
+    return outcome["result"]
 
 
 def run_cmd(
@@ -81,19 +117,28 @@ def run_cmd(
     FileNotFoundError
         When the executable is not found on PATH.  Propagates unchanged.
     subprocess.TimeoutExpired
-        When *timeout* is exceeded. Carries the established text output shape.
+        When *timeout* is exceeded. ``output`` and ``stderr`` are text strings
+        (``""`` for a stream with no captured bytes), never bytes or ``None``.
     """
     if capture:
         stdin_input = input.encode("utf-8") if input is not None else None
+        capture_arguments = {
+            "cwd": cwd,
+            "env": env,
+            "input": stdin_input,
+            "timeout": timeout,
+            "text": False,
+        }
         try:
-            captured = procio.run_capture(
-                cmd,
-                cwd=cwd,
-                env=env,
-                input=stdin_input,
-                timeout=timeout,
-                text=False,
-            )
+            if (
+                threading.current_thread() is threading.main_thread()
+                and _caller_has_python_signal_handler()
+            ):
+                captured = _run_capture_without_replacing_callers_signals(
+                    argv=cmd, **capture_arguments
+                )
+            else:
+                captured = procio.run_capture(cmd, **capture_arguments)
         except subprocess.TimeoutExpired as exc:
             raise subprocess.TimeoutExpired(
                 exc.cmd,
@@ -101,6 +146,8 @@ def run_cmd(
                 output=_decode_output(exc.output),
                 stderr=_decode_output(exc.stderr),
             ) from exc
+        if captured.warning is not None:
+            print(f"[WARN] {captured.warning}", file=sys.stderr, flush=True)
         result = subprocess.CompletedProcess(
             captured.args,
             captured.returncode,
@@ -114,7 +161,6 @@ def run_cmd(
             text=True,
             encoding="utf-8",
             errors="replace",
-            capture_output=False,
             timeout=timeout,
             env=env,
             cwd=cwd,

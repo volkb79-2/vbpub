@@ -1682,7 +1682,9 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `procio.run_capture`: the child starts in a process group; reading stops
   after a finite post-exit drain even if a descendant holds either pipe;
   a timeout reaps that whole group; and CIU still returns its established
-  text `CompletedProcess` shape with UTF-8 replacement decoding.
+  text `CompletedProcess` shape with UTF-8 replacement decoding and
+  universal-newline translation. When the bounded drain ends with pipe holders,
+  `run_cmd` writes one PID-naming `[WARN]` line to stderr.
   Compose-up MUST use `procio.run_streaming`: it keeps the child's exit
   code, replaces malformed output bytes instead of failing the command,
   emits one `[WARN]` naming the PIDs that still hold the pipe after the
@@ -2292,8 +2294,9 @@ v1 contract.
   Severity rendering is one logical line at a time through cli-extended's shared
   renderer, so every prefixed line is classified independently; an unterminated
   line is emitted on `flush()`. Non-empty `NO_COLOR` and `TERM=dumb` disable
-  colour. Input-origin terminal escape and unsafe control sequences are removed
-  before display, so child output cannot inject terminal control bytes.
+  colour. When ciu decorates the stream, input-origin terminal escape and unsafe
+  control sequences are removed before display, so decorated child output cannot
+  inject terminal control bytes.
 - **S10.8 (generated reference)** The exported CLI surface (every route, argument,
   option and constraint) is generated from the registry by `cli-extended surface
   sync` into `docs/cli-surface.json` and the region below; `surface check` fails

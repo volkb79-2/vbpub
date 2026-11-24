@@ -15,6 +15,8 @@ authors = [{name = "Volker Badziong"}]
 # cli-extended is a REAL wheel dependency (unified-adoption CX-D1), never vendored and
 # never put on a path. Floor 0.8.0 carries the shared LineStreamRenderer used by ciu's
 # severity output and the bounded procio capture/streaming readers (CIU-224, CIU-220).
+# In-estate library released from this repository; the 14-day third-party freshness
+# buffer does not apply.
 # It is published to GitHub Releases only (the bare name is unclaimed on PyPI), so every
 # install of ciu MUST be `--no-index --find-links <wheelhouse>` or `--no-deps` after
 # installing cli-extended first; get.py hoists cli-extended first (KI-51).
@@ -97,5 +99,5 @@ ciu = "ciu.cli:main"
 # ciu's conftest loads estate_test_policy from this repository's source, like
 # cli-extended does. Disable the installed pytest11 entry point to prevent
 # double registration; warn mode is used until the whole suite is clean.
-addopts = "-q -p no:estate_test_policy"
+addopts = "-p no:estate_test_policy"
 estate_policy = "warn"

@@ -675,8 +675,7 @@ def test_linked_git_worktree_takes_the_strict_rule_without_a_record(tmp_path):
 
 
 def test_missing_git_binary_is_not_a_linked_worktree(monkeypatch, tmp_path):
-    def boom(*a, **k):
-        raise OSError("no git")
-
-    monkeypatch.setattr(worktree.procutil, "run_cmd", boom)
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
     assert deploy._is_linked_git_worktree(tmp_path) is False

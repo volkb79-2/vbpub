@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,17 @@ import yaml
 
 from ciu import cli, composefile, deploy, engine, oneshot, worktree
 from ciu.worktree import WorktreeError
+
+
+def _install_fake_docker(tmp_path, monkeypatch, body: str) -> Path:
+    """Install a capture-aware Docker executable for live-state tests."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    executable = bin_dir / "docker"
+    executable.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+    return executable
 
 
 @pytest.fixture(autouse=True)
@@ -439,15 +451,16 @@ def test_live_resolution_absent_multiple_and_inspect_errors(resolvable_repo, mon
         deploy.resolve_identities(repo, service="test-runner", live=True)
 
 
-def test_live_identity_state_captures_both_docker_responses(monkeypatch):
-    def docker(argv, **_kwargs):
-        if argv[0] == "ps":
-            stdout = "cid-1\n"
-        else:
-            stdout = '{"Status":"running","Health":{"Status":"healthy"}}'
-        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
-
-    monkeypatch.setattr(deploy.procutil, "docker", docker)
+def test_live_identity_state_captures_both_docker_responses(tmp_path, monkeypatch):
+    _install_fake_docker(
+        tmp_path,
+        monkeypatch,
+        'if [ "$1" = "ps" ]; then\n'
+        '  printf "cid-1\\n"\n'
+        "else\n"
+        '  printf \'{"Status":"running","Health":{"Status":"healthy"}}\'\n'
+        "fi",
+    )
     assert deploy._resolve_identity_live_state("project", "service") == {
         "state": "running",
         "health": "healthy",
@@ -457,6 +470,8 @@ def test_live_identity_state_captures_both_docker_responses(monkeypatch):
             "health": "healthy",
         }],
     }
+
+
 @pytest.mark.parametrize(
     ("phase", "stdout", "stderr", "chosen", "ignored"),
     [
@@ -468,22 +483,29 @@ def test_live_identity_state_captures_both_docker_responses(monkeypatch):
     ],
 )
 def test_live_identity_state_wraps_docker_errors_and_prefers_stderr(
-    monkeypatch, phase, stdout, stderr, chosen, ignored,
+    tmp_path, monkeypatch, phase, stdout, stderr, chosen, ignored,
 ):
-    def docker(argv, **_kwargs):
-        if argv[0] == "ps":
-            if phase == "query":
-                return SimpleNamespace(returncode=17, stdout=stdout, stderr=stderr)
-            return SimpleNamespace(returncode=0, stdout="cid-1\n", stderr="")
-        return SimpleNamespace(returncode=17, stdout=stdout, stderr=stderr)
-
-    monkeypatch.setattr(deploy.procutil, "docker", docker)
+    _install_fake_docker(
+        tmp_path,
+        monkeypatch,
+        'if [ "$DOCKER_PHASE" = "query" ] || [ "$1" != "ps" ]; then\n'
+        '  printf "%s" "$DOCKER_STDOUT"\n'
+        '  printf "%s" "$DOCKER_STDERR" >&2\n'
+        "  exit 17\n"
+        "fi\n"
+        'printf "cid-1\\n"',
+    )
+    monkeypatch.setenv("DOCKER_PHASE", phase)
+    monkeypatch.setenv("DOCKER_STDOUT", stdout)
+    monkeypatch.setenv("DOCKER_STDERR", stderr)
     with pytest.raises(RuntimeError) as exc_info:
         deploy._resolve_identity_live_state("project", "service")
     message = str(exc_info.value)
     assert chosen in message
     if ignored is not None:
         assert ignored not in message
+
+
 def test_exec_selector_and_selection_refusals(resolvable_repo, monkeypatch):
     repo, _stack, _global = resolvable_repo
     with pytest.raises(ValueError, match="requires a command"):
