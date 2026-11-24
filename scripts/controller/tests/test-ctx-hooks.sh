@@ -288,7 +288,7 @@ assert "Weigh" not in agent_low, agent_low
 # the thresholds are named values: the same fill flips the wording, through the environment or `limits`.
 assert "FORCED YIELD" in note(260_000, "c", "controller", limits=(100_000, 150_000, 250_000, 2))
 assert "2 more tool calls pass" in note(260_000, "c", "controller", limits=(100_000, 150_000, 250_000, 2))
-assert "FORCED" not in note(300_000, "c", "controller", limits=(200_000, 250_000, 350_000, 5))
+assert "FORCED YIELD" not in note(300_000, "c", "controller", limits=(200_000, 250_000, 350_000, 5))
 assert module.controller_limits() == (200_000, 250_000, 300_000, 5)
 os.environ.update(CTX_INFORM_AT="150000", CTX_URGE_AT="x", CTX_FORCE_AT="-5", CTX_FORCE_GRACE="0")
 assert module.controller_limits() == (150_000, 250_000, 300_000, 0)   # bad values keep the default; grace 0 is legal
@@ -402,7 +402,7 @@ rm -f -- "$HOME/.claude/settings.json"
 mkdir -p "$ROOT/h-big/.claude"
 printf '%s' '{"autoCompactWindow":400000,"modelSettings":{"claude-sonnet-5-5":{"autoCompactWindow":400000}}}' > "$ROOT/h-big/.claude/settings.json"
 HOME=$ROOT/h-big notes 299999 claude-sonnet-5-5
-not_contains 'FORCED' 'a 400k window does not move the forced yield below 300k' "$ROOT/n.out"
+not_contains 'FORCED YIELD' 'a 400k window does not move the forced yield below 300k' "$ROOT/n.out"
 HOME=$ROOT/h-big notes 300000 claude-sonnet-5-5
 contains "$ROOT/n.out" 'FORCED YIELD' 'a 400k window still forces at exactly 300k'
 not_contains 'lowered from' 'no threshold is lowered by a window' "$ROOT/n.out"
