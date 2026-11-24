@@ -104,8 +104,8 @@ pub enum LiveOutcome {
 pub enum QueryOutcome {
     /// Appended (also the answer for a connection that is gone: the block is discarded).
     Queued,
-    /// A Query pool refused the block: the producer keeps it and pauses the stream until
-    /// [`SendHub::query_ready`].
+    /// A Query pool refused the block: nothing was queued. The caller may refuse the request
+    /// and let the client retry after it reads its queued blocks.
     Backpressure(Arc<[u8]>),
 }
 
@@ -149,11 +149,10 @@ struct Item {
     seq: u64,
 }
 
-/// A pool trio that also counts how often Query bytes left it (for `query_ready`).
+/// A pool trio.
 #[derive(Clone, Copy, Debug, Default)]
 struct Totals {
     pools: Pools,
-    query_freed: u64,
 }
 
 impl Pools {
@@ -175,15 +174,6 @@ impl Totals {
     fn release(&mut self, kind: Kind, len: usize) {
         let slot = self.pools.slot(kind);
         *slot = slot.saturating_sub(len);
-        if kind == Kind::Query {
-            self.query_freed = self.query_freed.wrapping_add(1);
-        }
-    }
-
-    /// The freed counter to remember when this pool refuses `len` more Query bytes.
-    fn refusal(&self, len: usize, cap: usize) -> Option<u64> {
-        let over = self.pools.query.saturating_add(len) > cap;
-        over.then_some(self.query_freed)
     }
 }
 
@@ -219,25 +209,6 @@ impl Shared {
     }
 }
 
-/// Which Query pools refused a block, with the freed counter each had at that moment.
-#[derive(Clone, Copy, Debug, Default)]
-struct Wait {
-    conn: Option<u64>,
-    uid: Option<u64>,
-    global: Option<u64>,
-}
-
-impl Wait {
-    fn is_refused(&self) -> bool {
-        self.conn.is_some() || self.uid.is_some() || self.global.is_some()
-    }
-}
-
-/// `true` when a pool that refused (`snapshot`) has freed Query bytes since.
-fn changed(snapshot: Option<u64>, now: u64) -> bool {
-    matches!(snapshot, Some(then) if then != now)
-}
-
 /// The per-stream state of one connection (WIRE.md §5.3).
 #[derive(Clone, Copy, Debug, Default)]
 struct Stream {
@@ -245,7 +216,6 @@ struct Stream {
     needs_dict: bool,
     last_pushed_gen: u32,
     blocks: u32,
-    wait: Option<Wait>,
 }
 
 impl Stream {
@@ -339,13 +309,10 @@ impl Conn {
         }
     }
 
-    /// A Query block was refused (`wait` is `Some`) or queued (`None`, counted).
-    fn note_query(&mut self, stream: u32, wait: Option<Wait>) {
+    /// A Query block was queued: count it for the stream's END.
+    fn note_query_queued(&mut self, stream: u32) {
         let state = self.streams.entry(stream).or_default();
-        state.wait = wait;
-        if wait.is_none() {
-            state.blocks = state.blocks.saturating_add(1);
-        }
+        state.blocks = state.blocks.saturating_add(1);
     }
 
     /// A push into an empty queue restarts the stall clock (WIRE.md §5.3).
@@ -445,14 +412,13 @@ fn stamped_prefix(bytes: &[u8], corr: u32, dropped: u32) -> Vec<u8> {
     prefix
 }
 
-/// Which Query pools refuse `len` more bytes for `conn`, each with its freed counter.
-fn query_wait(limits: &QueueLimits, shared: &Shared, conn: &Conn, len: usize) -> Wait {
-    let uid_totals = shared.uid_totals(conn.uid);
-    Wait {
-        conn: conn.totals.refusal(len, limits.query_queue_bytes),
-        uid: uid_totals.refusal(len, limits.uid_query_bytes),
-        global: shared.global.refusal(len, limits.global_query_bytes),
-    }
+/// Whether all three Query pools have room for `len` more bytes for `conn`.
+fn query_fits(limits: &QueueLimits, shared: &Shared, conn: &Conn, len: usize) -> bool {
+    let uid = shared.uid_totals(conn.uid).pools.query;
+    let fits = |used: usize, cap: usize| used.saturating_add(len) <= cap;
+    fits(conn.totals.pools.query, limits.query_queue_bytes)
+        && fits(uid, limits.uid_query_bytes)
+        && fits(shared.global.pools.query, limits.global_query_bytes)
 }
 
 /// The id after `id`: increasing, skipping 0 on a wrap.
@@ -621,12 +587,10 @@ impl SendHub {
         let Some(conn) = self.conns.get_mut(&id) else {
             return QueryOutcome::Queued;
         };
-        let wait = query_wait(&self.limits, &self.shared, conn, block.len());
-        let refused = wait.is_refused();
-        conn.note_query(stream, refused.then_some(wait));
-        if refused {
+        if !query_fits(&self.limits, &self.shared, conn, block.len()) {
             return QueryOutcome::Backpressure(block);
         }
+        conn.note_query_queued(stream);
         let seq = self.fresh_seq();
         let item = Item {
             kind: Kind::Query,
@@ -640,23 +604,6 @@ impl SendHub {
         QueryOutcome::Queued
     }
 
-    /// `true` when `stream`'s refused block may be retried: a pool that refused it has freed
-    /// Query bytes since. A connection that is gone answers `true` (the retry is discarded).
-    #[must_use]
-    pub fn query_ready(&self, id: ConnId, stream: u32) -> bool {
-        let Some(conn) = self.conns.get(&id) else {
-            return true;
-        };
-        let waiting = conn.streams.get(&stream).and_then(|state| state.wait);
-        let Some(wait) = waiting else {
-            return false;
-        };
-        let uid_freed = self.shared.uid_totals(conn.uid).query_freed;
-        changed(wait.conn, conn.totals.query_freed)
-            || changed(wait.uid, uid_freed)
-            || changed(wait.global, self.shared.global.query_freed)
-    }
-
     /// Every counted drop since [`SendHub::new`]: each increment of any stream's
     /// `pending_drops` (coalesce, shed, a dropped incoming tick, and the unpinned tick that
     /// [`SendHub::end_stream`] removes). `drain_unpinned` and `remove` count none.
@@ -667,11 +614,11 @@ impl SendHub {
 
     /// Whether [`SendHub::push_query`] would answer `Queued` now for `len` bytes. The
     /// connection, uid and global Query pools must all fit. An unknown connection answers
-    /// `true`, because its retry is discarded as `Queued`.
+    /// `true`, because its push is discarded as `Queued`.
     #[must_use]
     pub fn query_room(&self, id: ConnId, len: usize) -> bool {
         match self.conns.get(&id) {
-            Some(conn) => !query_wait(&self.limits, &self.shared, conn, len).is_refused(),
+            Some(conn) => query_fits(&self.limits, &self.shared, conn, len),
             None => true,
         }
     }
@@ -878,8 +825,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        query_wait, Close, ConnId, LiveOutcome, Pools, QueryOutcome, QueueLimits, SendHub,
-        StreamCounts, TickForms,
+        Close, ConnId, LiveOutcome, Pools, QueryOutcome, QueueLimits, SendHub, StreamCounts,
+        TickForms,
     };
 
     fn limits() -> QueueLimits {
@@ -1032,7 +979,11 @@ mod tests {
                 last_seq = Some(item.seq);
             }
             assert_eq!(conn.totals.pools, sum, "connection pools");
-            let wanted = !query_wait(&hub.limits, &hub.shared, conn, 137).is_refused();
+            let uid = hub.shared.uid_totals(conn.uid).pools.query;
+            let fits = |used: usize, cap: usize| used.saturating_add(137) <= cap;
+            let wanted = fits(conn.totals.pools.query, hub.limits.query_queue_bytes)
+                && fits(uid, hub.limits.uid_query_bytes)
+                && fits(hub.shared.global.pools.query, hub.limits.global_query_bytes);
             assert_eq!(hub.query_room(*id, 137), wanted, "Query room");
             pending = pending.saturating_add(
                 conn.streams
@@ -1402,29 +1353,30 @@ mod tests {
         check(&hub);
     }
 
-    // ---- push_query, query_ready --------------------------------------------------------
+    // ---- push_query, query_room ---------------------------------------------------------
 
     #[test]
-    fn query_row_backpressure_waits_and_query_ready_follows_freed_bytes() {
+    fn query_row_backpressure_refuses_without_waiting_and_room_follows_freed_bytes() {
         let mut hub = SendHub::new(limits());
         let c = hub.add(1, 0);
+        assert!(hub.query_room(c, 600));
         assert_eq!(query(&mut hub, c, 1, 600), QueryOutcome::Queued);
+        assert!(!hub.query_room(c, 600));
         let second = query(&mut hub, c, 1, 600);
         assert!(refused(&second));
         assert_eq!(second, QueryOutcome::Backpressure(block(2, 600, 0xC0)));
-        assert!(!hub.query_ready(c, 1));
         head(&mut hub, c, 0);
-        assert!(!hub.query_ready(c, 1), "a pinned head frees nothing");
+        assert!(!hub.query_room(c, 600), "a pinned head frees nothing");
         hub.wrote(c, 600, 0);
-        assert!(hub.query_ready(c, 1));
+        assert!(hub.query_room(c, 600));
         assert_eq!(query(&mut hub, c, 1, 600), QueryOutcome::Queued);
-        assert!(!hub.query_ready(c, 1), "a queued retry clears the wait");
+        assert!(!hub.query_room(c, 600), "the queued block refills the pool");
         assert_eq!(hub.end_stream(c, 1), counts(2, 0));
         check(&hub);
     }
 
     #[test]
-    fn query_row_each_pool_refuses_and_only_its_own_freed_bytes_wake_the_stream() {
+    fn query_row_each_pool_refuses_and_room_tracks_the_same_pools() {
         let mut limits = limits();
         limits.global_query_bytes = 1200;
         limits.uid_query_bytes = 2000;
@@ -1436,14 +1388,14 @@ mod tests {
         let global = query(&mut hub, b, 2, 200);
         assert!(refused(&global), "global pool refuses");
         pop(&mut hub, a, 0);
-        assert!(hub.query_ready(b, 2), "a's bytes were in the global pool");
+        assert!(hub.query_room(b, 200), "a's bytes left the global pool");
         assert_eq!(query(&mut hub, b, 2, 200), QueryOutcome::Queued);
         assert_eq!(hub.uid_pools(2).query, 600);
         check(&hub);
     }
 
     #[test]
-    fn query_row_the_uid_pool_refuses_alone_and_its_freed_bytes_wake_the_stream() {
+    fn query_row_the_uid_pool_refuses_alone_and_room_follows_its_bytes() {
         let mut limits = limits();
         limits.uid_query_bytes = 700;
         let mut hub = SendHub::new(limits);
@@ -1452,9 +1404,9 @@ mod tests {
         // The connection pool (400 + 400 <= 1000) and the global pool have room.
         let refused_by_uid = query(&mut hub, ids[1], 1, 400);
         assert!(refused(&refused_by_uid), "only the uid pool refuses");
-        assert!(!hub.query_ready(ids[1], 1));
+        assert!(!hub.query_room(ids[1], 400));
         pop(&mut hub, ids[0], 0);
-        assert!(hub.query_ready(ids[1], 1), "uid bytes freed");
+        assert!(hub.query_room(ids[1], 400), "uid bytes freed");
         assert_eq!(query(&mut hub, ids[1], 1, 400), QueryOutcome::Queued);
         assert_eq!(hub.uid_pools(1).query, 400);
         check(&hub);
@@ -1536,18 +1488,19 @@ mod tests {
     }
 
     #[test]
-    fn query_ready_counts_freed_query_bytes_only() {
+    fn query_room_counts_only_query_bytes() {
         let mut hub = SendHub::new(limits());
         let c = hub.add(1, 0);
         live(&mut hub, c, 2, &tick(1, None, 240), 0);
         assert_eq!(query(&mut hub, c, 1, 600), QueryOutcome::Queued);
+        assert!(!hub.query_room(c, 600));
         let second = query(&mut hub, c, 1, 600);
         assert!(refused(&second));
         pop(&mut hub, c, 0);
         assert_eq!(hub.queued(c), pools(0, 600, 0), "the Live entry is gone");
-        assert!(!hub.query_ready(c, 1), "Live bytes do not wake");
+        assert!(!hub.query_room(c, 600), "Live bytes are not Query room");
         pop(&mut hub, c, 0);
-        assert!(hub.query_ready(c, 1));
+        assert!(hub.query_room(c, 600));
         check(&hub);
     }
 
@@ -1658,7 +1611,7 @@ mod tests {
         let gone = live(&mut hub, ConnId(99), 1, &tick(1, None, 240), 0);
         assert_eq!(gone, LiveOutcome::DroppedIncoming);
         assert_eq!(query(&mut hub, ConnId(99), 1, 200), QueryOutcome::Queued);
-        assert!(hub.query_ready(ConnId(99), 1));
+        assert!(hub.query_room(ConnId(99), 200));
         assert_eq!(hub.end_stream(ConnId(99), 1), StreamCounts::default());
         hub.drain_unpinned(ConnId(99));
         hub.remove(ConnId(99));

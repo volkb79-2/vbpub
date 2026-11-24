@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - **Changed (WIRE.md, P-hostobs-03, `HOB-65`/`HOB-71`/`HOB-72` spec):** no request waits (D-W49, D-W50; D-W30 retired), JSON mode only at observer/control (D-W51), probe-wide keys with `max_rows` 1,024, Query 1/4 MiB, `max_block_bytes` 1 MiB and history 2/8 (D-W52), no per-uid pools and per-uid caps equal to the level caps at observe (D-W20, D-W53); code follows in P-hostobs-05/06 (V-21).
+- **Changed (probe serving, P-hostobs-05, `HOB-65`):** `current` is answered in its read turn or refused before REP with `too-many-requests` while its connection's Query blocks are unwritten, or `budget {"pool":"query"}` when the Query pools lack room; pending requests, retry, re-resolution and `SendHub::query_ready` are removed.
 
 ### Added (P5b-2d server: tick delivery, retries, served verbs and reachable §11.4 cases; `HOB-54` stays open)
 
