@@ -4,6 +4,12 @@ All notable changes to scripts/netcup are recorded here.
 
 ## [Unreleased]
 
+### Fixed
+- `runner/lib.sh` `load_host_endpoints` accepts `MDT_BUILDKIT_GID` equal to `MDT_HOST_DOCKER_GID` (NC-43): mdt-buildkitd
+  hands its socket to group docker, so on a real host the two are the same GID and `start-cockpit-runner.sh` refused
+  to start (r1002, 2026-11-12 and again 2026-11-24). cgprofile and topos GIDs must still differ from docker and from
+  each other. The host-local lib.sh patch from 2026-11-12 is no longer needed.
+
 ### Added
 - `runner/remote-gate-cache.sh` (CTL-12) resolves a ref and publishes a cached copy of `runner/remote-gate.py` for a
   controller helper to run, under a per-invocation staging name and one atomic rename to a content-addressed
