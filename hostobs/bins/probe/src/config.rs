@@ -15,8 +15,8 @@ use std::io::Read;
 use std::os::unix::net::UnixListener;
 use std::path::{Component, Path, PathBuf};
 
-use hostobs_probe::limits::Level;
-use hostobs_probe::server::ServerLimits;
+use hostobs_serve::limits::Level;
+use hostobs_serve::server::ServerLimits;
 use serde::Deserialize;
 use toml::Spanned;
 

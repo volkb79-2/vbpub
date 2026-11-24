@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use hostobs_proto::hub::{ConnId, LiveOutcome, QueryOutcome, QueueLimits, SendHub, TickForms};
+use hostobs_serve::hub::{ConnId, LiveOutcome, QueryOutcome, QueueLimits, SendHub, TickForms};
 use json::Json;
 
 const STREAM_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/stream");

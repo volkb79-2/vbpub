@@ -6,9 +6,10 @@ use std::sync::Arc;
 use hostobs_proto::dict::Entry;
 use hostobs_proto::frame::{Column, Row};
 
-use crate::backend::{Backend, BackendError, Identity, StatusInfo, TickData, TickInfo};
+use hostobs_serve::backend::{Backend, BackendError, Identity, StatusInfo, TickData, TickInfo};
+use hostobs_serve::selection::{Sel, Selection};
+
 use crate::sampler::{Published, Tick};
-use crate::selection::{Sel, Selection};
 
 /// The production backend over one immutable sampler publication.
 #[derive(Debug)]
@@ -180,7 +181,7 @@ fn matches_selector(selector: &Sel, inc: u64, label: &str) -> bool {
     }
 }
 
-impl crate::backend::Turn for ProbeBackend {
+impl hostobs_serve::backend::Turn for ProbeBackend {
     fn begin_turn(&mut self, now_ns: u64) -> bool {
         ProbeBackend::begin_turn(self, now_ns)
     }
