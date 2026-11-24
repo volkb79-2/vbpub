@@ -140,6 +140,9 @@ def _fake_docker(tmp_path: Path, name: str = "") -> tuple[Path, Path]:
 #!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
 args="$*"
+if [[ "${1:-}" == "ps" && -n "${FAKE_DOCKER_PS_EXIT:-}" ]]; then
+    exit "$FAKE_DOCKER_PS_EXIT"
+fi
 if [[ "${1:-}" == "ps" \
     && "$args" == *"--filter label=com.docker.compose.service=traefik"* \
     && "$args" == *"--filter name=tls-edge-.*-traefik"* \
@@ -450,6 +453,32 @@ def test_certbot_hook_without_a_container_is_a_noop(tmp_path: Path) -> None:
     assert "no running Traefik container found" in result.stdout
     assert "restart" not in log.read_text(encoding="utf-8")
     assert before == _tree_digest(stack)
+
+
+def test_certbot_hook_reports_docker_discovery_failure(tmp_path: Path) -> None:
+    stack = _copy_tracked_stack(tmp_path / "instance")
+    script = stack / "scripts" / "certbot-deploy-hook.sh"
+    script.parent.mkdir()
+    shutil.copy2(ROOT / "scripts" / "certbot-deploy-hook.sh", script)
+
+    bin_dir, log = _fake_docker(tmp_path)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "FAKE_DOCKER_LOG": str(log),
+        "FAKE_DOCKER_PS_EXIT": "1",
+        "TRAEFIK_CONTAINER": "",
+    }
+    result = subprocess.run(
+        ["bash", str(script)],
+        cwd=stack,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "tls-edge: docker ps failed; cannot reload Traefik" in result.stderr
+    assert "restart" not in log.read_text(encoding="utf-8")
 
 
 def test_external_middleware_citations_use_the_template_source() -> None:

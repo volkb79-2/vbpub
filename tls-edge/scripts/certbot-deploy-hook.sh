@@ -20,7 +20,13 @@ _discover() {
         --filter "name=tls-edge-.*-traefik" --format '{{.Names}}' 2>/dev/null | sed -n '1p'
 }
 
-TRAEFIK_CONTAINER="${TRAEFIK_CONTAINER:-$(_discover | sed -n '1p')}"
+if [[ -z "${TRAEFIK_CONTAINER:-}" ]]; then
+    if ! found="$(_discover)"; then
+        echo "tls-edge: docker ps failed; cannot reload Traefik" >&2
+        exit 1
+    fi
+    TRAEFIK_CONTAINER="${found%%$'\n'*}"
+fi
 if [[ -z "$TRAEFIK_CONTAINER" ]]; then
     echo "tls-edge: no running Traefik container found — skipping certificate reload"
     exit 0
