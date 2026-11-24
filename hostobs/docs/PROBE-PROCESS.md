@@ -16,8 +16,9 @@ Each section gives the decision, then the strongest alternative and why it lost.
 | **sampler** (`hostobs-sampler`) | the `kernel` readers over `RealFs`, the `IncarnationRegistry`, the clocks; builds one immutable `Tick` per `tick_ms` and publishes it as `Arc<Tick>` | touch a socket, the `Server` or the hub; wait for the server |
 | **store writer** (`hostobs-writer`) | `crates/store` and its existing bounded writer queue (`writer_queue_bytes`, drops counted); later publishes an immutable `Arc` read index (P-15) | run on the sampler or server thread. **Placed, not spawned**: the live slice (P-09/P-10/P-11) starts no writer; P-16 spawns it |
 
-- **Publication.** `Published` is a `Mutex<Arc<Tick>>`. The sampler replaces the `Arc` under the
-  lock and does nothing else there; the server loop clones the `Arc` once per turn. No lock is held
+- **Publication.** `Published` is a `Mutex<Arc<Tick>>`. The sampler swaps the `Arc` under the
+  lock (`mem::replace`) and drops the old one after unlocking; the server loop clones the `Arc`
+  once per turn in `begin_turn` and drops its previous one after unlocking (§(b)). No lock is held
   across I/O, a scan or an encode. A poisoned lock is recovered with `PoisonError::into_inner` (the
   guarded value is one pointer, never half-written).
 - **`cmdline` and every `/proc/<pid>/*` read never run on the server thread.** The slice reads
@@ -41,14 +42,41 @@ archive: `Arc` publish, the sampler's deadline schedule and the stall evidence (
 
 1. A `Backend` (and later `QueryBackend`) method reads **only the turn's published immutable
    state**: the `Arc<Tick>` (and later the store's `Arc` read index) plus the turn's `now_ns`,
-   which the driver sets before the turn's first core call (`begin_turn`, P-10 rule 6).
+   which the driver sets before the turn's first core call (`Turn::begin_turn`, §(b) seam).
 2. It makes **no syscall, no file read and no lock acquisition**, and takes no time beyond
    O(rows it resolves). `current` stops at `max_rows + 1` rows (`TooManyRows`), as it does now.
+   The single lock the server thread ever takes is `begin_turn`'s bounded pointer swap on
+   `Published`: clone the `Arc` under the lock, drop the previous turn's `Arc` after unlocking. It
+   runs before the turn's core calls, never inside one.
 3. It never answers "not yet". Before the first tick it answers `Unavailable`. A history verb is
    answered from an in-RAM published index or refused; until P-16 the history verbs stay unserved
    (`unknown-verb`, design R11).
 4. With D5 every request therefore finishes in the turn that parsed it: there is no completion to
    route back, so there is no request record.
+
+**The P-09/P-10 seam** (both are built in parallel; this text is binding for both):
+
+```rust
+// bins/probe/src/backend.rs (crates/serve after P-12)
+/// The driver's per-turn hook (docs/PROBE-PROCESS.md §(b)).
+pub trait Turn: Backend {
+    /// Load the turn's published state; `true` when its tick is newer than the previous turn's.
+    fn begin_turn(&mut self, now_ns: u64) -> bool;
+}
+```
+
+- `driver::run<B: Turn>(server: Server<B>, listeners, wake, stop)`; the driver and its tests need
+  only `Turn`. `FixedBackend` implements it with two new fields, `seq` (the test bumps it) and
+  `seen` (both 0 in `new()`): `let fresh = self.seq != self.seen; self.seen = self.seq; fresh`.
+  P-09 and P-10 both add this exact trait and impl hunk; the package that merges second keeps
+  main's copy when it merges origin/main.
+- `Published::{new, store(Arc<Tick>), load() -> Arc<Tick>}`: `load` clones under the lock;
+  `store` does `mem::replace` under the lock and drops the old `Arc` outside it.
+- `ProbeBackend::new(identity, Arc<Published>)`; its `begin_turn` calls `load`.
+- `sampler::spawn(cfg, Arc<Published>, wake: OwnedFd, stop: Arc<AtomicBool>) ->
+  io::Result<JoinHandle<()>>`, where `cfg` carries `boot_id`, `epoch`, `tick_ms`, `cgroup_root`
+  and `max_rows`. `main` computes `epoch` (`CLOCK_BOOTTIME` ns at start, P-10 rule 3) and reads
+  `boot_id`, and passes both.
 
 **Alternative: blocking backend calls on a worker pool, with completion events to the loop.**
 Lost: a completion needs a pending request record, a retry or resume pass and close-path cleanup,
@@ -77,26 +105,41 @@ std has no `poll`, no eventfd and no absolute `CLOCK_MONOTONIC`/`CLOCK_BOOTTIME`
 - **Crate:** `rustix`, `default-features = false`, features exactly `std` (the std fd types),
   `event` (`poll`, `eventfd`), `net` (`SO_PEERCRED`, and the `SO_DOMAIN`, `SO_TYPE` and
   `SO_ACCEPTCONN` checks of an adopted fd) and `time` (`clock_gettime` for `Monotonic` and
-  `Boottime`). `fcntl_getfd`/`fcntl_setfd` and `read`/`write` are in rustix's always-on `io` module. It is
-  licensed `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`, which `deny.toml` allows, and its
-  Linux backend needs no `libc`. A later feature of the same crate needs no image rebuild unless it
+  `Boottime`). `crates/kernel` uses `net` (activation) and `time` (`kernel::clock`); `bins/probe`
+  uses `event` and `net`. `fcntl_setfd` and `read`/`write` are in rustix's always-on `io` module. It is
+  licensed `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`, which `deny.toml` allows, and it
+  builds no `libc` on Linux. A later feature of the same crate needs no image rebuild unless it
   pulls in a new crate. `getpid` comes from `std::process::id`, so `process` is not enabled.
 - **Version floor policy:** P-08 picks the newest rustix release that is at least 14 days past
   its crates.io release on the day P-08 resolves it. It is written once, in `[workspace.dependencies]`,
   in the same caret-floor form and reason-comment style as the existing entries; members say
   `rustix.workspace = true`, and `Cargo.lock` is the resolved authority. One rustix version only
-  (`multiple-versions = "deny"`). P-08 adds the dependency to `crates/kernel` and `bins/probe`.
+  (`multiple-versions = "deny"`), a dependency of `crates/kernel` and `bins/probe`.
+- **Who resolves the lock:** the offline cache lacks rustix, so P-08 cannot resolve it offline.
+  T2's networked image-build step runs `cargo add rustix@<ver>` once against the hostobs
+  workspace and hands back the resulting `Cargo.toml` and `Cargo.lock` diff; P-08 commits exactly
+  that diff.
 - **The one `unsafe`:** `OwnedFd::from_raw_fd` for each `LISTEN_FDS` descriptor lives in a new
   `crates/kernel/src/activation.rs`. `crates/kernel` already carries the plan's allowance
   (`unsafe_code = "allow"`, §A.3, `_EXPECTED_UNSAFE_OVERRIDES`) and is the plan's home for held
-  fds. Its `lib.rs` changes `#![forbid(unsafe_code)]` to `#![deny(unsafe_code)]`; one function carries
-  `#[allow(unsafe_code)]` with a `// SAFETY:` comment. The argument: `LISTEN_PID` equals our pid,
-  the fd lies in `3..3+LISTEN_FDS`, adoption runs first in `main`, before any thread or other fd
-  exists, and runs once per fd. The function then validates the fd and refuses it unless
-  `fcntl_getfd` succeeds (on `EBADF` the `OwnedFd` is `mem::forget`-ed, never closed), `SO_DOMAIN`
-  is `AF_UNIX`, `SO_TYPE` is `SOCK_STREAM` and `SO_ACCEPTCONN` is 1. It sets `FD_CLOEXEC` and
-  returns a std `UnixListener` (`From<OwnedFd>`). Everything else in the probe stays safe code:
-  rustix `poll`, `eventfd`, `socket_peercred`, `clock_gettime`.
+  fds. Its `lib.rs` changes `#![forbid(unsafe_code)]` to `#![deny(unsafe_code)]`; one private
+  function, `adopt_raw(fd)`, carries `#[allow(unsafe_code)]` with a `// SAFETY:` comment.
+  - **Public API, the only one:** `kernel::activation::take(listen_pid, listen_fds,
+    listen_fdnames, my_pid) -> Result<Vec<(String, UnixListener)>, ActivationError>`. It calls
+    `parse` (§(e)), refuses a second call through a process-wide `AtomicBool`, and passes only
+    fds in `parse`'s range `3..3+LISTEN_FDS` to `adopt_raw`. No safe public function takes a raw
+    fd number, so no caller can adopt an fd something else owns.
+  - **`adopt_raw`:** before `from_raw_fd` it checks, with the safe
+    `std::fs::read_link("/proc/self/fd/<n>")`, that the target starts with `socket:`, which
+    proves the fd is open and is a socket (no `mem::forget` path). The SAFETY argument:
+    `LISTEN_PID` equals our pid, the fd lies in systemd's passed range, `take` runs once and first
+    in `main`, before any thread exists, so nothing else owns the fd. After adoption it refuses the
+    fd (closing it) unless `SO_DOMAIN` is `AF_UNIX`, `SO_TYPE` is `SOCK_STREAM` and
+    `SO_ACCEPTCONN` is 1; it sets `FD_CLOEXEC` and returns a non-blocking std `UnixListener`
+    (`From<OwnedFd>`).
+
+  Everything else in the probe stays safe code: rustix `poll`, `eventfd`, `socket_peercred`,
+  `clock_gettime`.
   - The kernel doc bullet "free of `unsafe`" and the DESIGN-GUIDE "nothing uses it" paragraph
     change with it (P-09).
 
@@ -110,11 +153,12 @@ for one line, and `bins/probe` is `forbid` by §A.3.
 
 The probe never binds. `main` adopts the systemd-passed sockets before anything else:
 
-1. `kernel::activation::parse(listen_pid, listen_fds, listen_fdnames, my_pid)` is pure and tested
-   without an environment. It refuses an absent or unparsable variable, `LISTEN_PID` !=
+1. `kernel::activation::parse(listen_pid, listen_fds, listen_fdnames, my_pid)` is pure, private to
+   the module and tested without an environment. It refuses an absent or unparsable variable, `LISTEN_PID` !=
    `std::process::id()`, `LISTEN_FDS` of 0 or more than 3, a name count other than `LISTEN_FDS`,
    and an empty or duplicate name. It yields `(fd = 3 + i, name)`.
-2. `kernel::activation::adopt(fd)` (§(d)) turns each into a non-blocking `UnixListener`.
+2. `kernel::activation::take(...)` (§(d)) runs `parse` and turns each fd into a non-blocking
+   `UnixListener` through the private `adopt_raw`.
 3. The probe maps the names to levels against the config's `levels`. The names are `observe`,
    `operator` and `observer`; `control` (it belongs to act) and **any other name are refused**. The
    check runs both ways: every fd's name is a configured level, and every configured level has
@@ -178,15 +222,16 @@ keys, so the shape would change twice.
 
 `Command::new` stays banned outside `crates/act` and `crates/store/src/fsio.rs`.
 
-- **Rust tests run the driver in-process.** `driver::run(server, listeners, wake, stop)` is a
-  library function. A test binds a `UnixListener` on a Linux **abstract** address
+- **Rust tests run the driver in-process.** `driver::run<B: Turn>(server, listeners, wake, stop)`
+  is a library function, driven in tests by `FixedBackend` (§(b) seam). A test binds a `UnixListener` on a Linux **abstract** address
   (`SocketAddrExt::from_abstract_name`, `UnixListener::bind_addr`, a name unique per test and pid):
   no file is created, and the lane's private network namespace scopes the name. The test runs the
   loop on a thread and connects with `UnixStream::connect_addr`. That covers the real accept,
   `SO_PEERCRED` (the test's own uid and pid), the poll loop, partial writes and EOF.
-- **`kernel::activation`:** `parse` is tested purely; `adopt` runs on fds whose ownership the test
-  released with `into_raw_fd`: a listening abstract socket is adopted, and a connected
-  `UnixStream::pair()` end, a `UnixDatagram` and a read-only file are refused.
+- **`kernel::activation`:** unit tests inside `activation.rs` test `parse` purely and call the
+  private `adopt_raw` directly on fds whose ownership the test released with `into_raw_fd`: a
+  listening abstract socket is adopted, and a connected `UnixStream::pair()` end, a `UnixDatagram`
+  and a read-only file are refused. A second `take` call is refused.
 - **The one Python run over a real socket** is a `python/tests` case. It binds an abstract
   listener and spawns the built probe with that listener as fd 3, through
   `sh -c 'exec 3<&"$2" && LISTEN_PID=$$ exec "$0" --config "$1"' <probe> <config> <fd>`
@@ -209,21 +254,27 @@ Lost: it widens the spawn lint to a directory. Setting `LISTEN_PID` after the fo
 ## (i) The hub text
 
 `crates/proto/src/hub.rs` said "P5b wraps one `SendHub` in one mutex". That is wrong: the server
-loop thread owns the one `SendHub` inside `Server`, with no lock (§(a)). This package fixes the hub
-doc. WIRE.md §5.3 carries the same sentence, and its fix belongs to the package that owns that
-section.
+loop thread owns the one `SendHub` inside `Server`, with no lock (§(a)). WIRE §5.3 already states
+that no mutex is needed (design R27); only the hub.rs module doc was stale, and this package fixes
+it.
 
 ## Rules for P-09 (driver)
 
-1. Files: `bins/probe/src/{driver,config}.rs`, `main.rs` and `crates/kernel/src/activation.rs`.
+1. Files: `bins/probe/src/{driver,config}.rs`, `main.rs`, the `Turn` hunk of `backend.rs` and
+   `crates/kernel/src/activation.rs`.
    Each new `src` file is added to `assay.toml` `targets`.
-2. `main` order: adopt the activation fds (§(e) 1-2); read and parse the config; map names to
-   levels; read `boot_id` once and fix the identity; create the eventfd; spawn the sampler; run
-   the loop. Exit 2 on any start-up refusal, and 1 when the loop returns on the stop flag.
+2. `main` order: `kernel::activation::take` (§(e) 1-2); read and parse the config; map names to
+   levels; read `boot_id` once and compute `epoch`; build the identity; create the eventfd and
+   `Arc<Published>`; `sampler::spawn`; `ProbeBackend::new`; `driver::run`. Exit 2 on any start-up
+   refusal, and 1 when the loop returns on the stop flag. The driver and its tests need only
+   `Turn` (§(b) seam); the `main.rs` wiring to `sampler`/`ProbeBackend` is P-09's **last commit,
+   made after P-10 has merged**.
 3. The poll set: the eventfd (`POLLIN`), each listener (`POLLIN`) and each connection (`POLLIN`
    until its read returned 0, `POLLOUT` only while the hub queues output for it). The timeout is
    `TURN_MS = 100`. `EINTR` counts as a turn with no events. `now_ns` is
-   `clock_gettime(Monotonic)`, read once per turn.
+   `kernel::clock::SystemClock::mono_ns()`, read once per turn: the same clock the sampler stamps
+   with (absolute `CLOCK_MONOTONIC` once P-10 lands; timers use differences only, so the driver
+   works unchanged before that).
 4. **One turn, in this order, each step bounded:**
    1. check the stop flag;
    2. `begin_turn(now)`, and `on_tick(now)` once if the `seq` is new;
@@ -232,7 +283,8 @@ section.
       `on_bytes`, or `on_eof` on 0;
    5. `Server::poll(now)`;
    6. writes in `ConnId` order: `output` → `write_vectored` of the two slices → `wrote`, until
-      `WouldBlock`, an empty queue or 256 KiB this turn.
+      `WouldBlock`, an empty queue or 256 KiB written to that connection this turn (the budget is
+      per connection).
 5. On accept, set the stream non-blocking and read `socket_peercred` into `Peer{uid,pid}`. A
    failure passes `None`, which `Server::accept` refuses uncounted. `Refused` drops the stream.
    An accept error other than `WouldBlock`, `EINTR` or `ECONNABORTED` (for example `EMFILE`)
@@ -243,34 +295,41 @@ section.
    short write is abandoned), then `finish`. Any other read or write error is `finish` (Rust
    ignores `SIGPIPE`, so a gone peer is `EPIPE`). A connection still open after a turn whose poll
    reported `POLLHUP` or `POLLERR` is `finish`ed.
-7. Never bind, install a signal handler, use `SO_PEERPIDFD` or spawn a process.
-8. Tests (§(h)): hello, `current`, `subscribe` over a real socket on a scripted `FixedBackend`;
+7. Never bind, install a signal handler, use `SO_PEERPIDFD` or spawn a process. The P-11 systemd
+   units set `RestartPreventExitStatus=2`, so a start-up refusal does not restart in a loop.
+8. Tests (§(h)): hello, `current`, `subscribe` over a real socket on `FixedBackend` (`Turn` via its
+   `seq` field);
    a slow reader (the hub sheds, others are served); EOF; refused unknown and missing fd names;
    the stop path's `closing shutting-down`; and the one Python run.
 
 ## Rules for P-10 (sampler and `ProbeBackend`)
 
-1. Files: `bins/probe/src/sampler.rs` (thread, schedule, `Published`) and
-   `bins/probe/src/live.rs` (`ProbeBackend`). The work is a `Sampler::tick(&mut self) -> Tick`
+1. Files: `bins/probe/src/sampler.rs` (thread, schedule, `Published`, `sampler::spawn`),
+   `bins/probe/src/live.rs` (`ProbeBackend`, its `Turn` impl), the `Turn` hunk of `backend.rs`
+   and `crates/kernel/src/clock.rs`; interfaces exactly as in the §(b) seam. The work is a
+   `Sampler::tick(&mut self) -> Tick`
    step, tested with `ManualClock` and the committed fixture trees. The thread loop is a thin
    wrapper around it.
 2. **Deadline schedule:** `next += tick_ms` and sleep until `next`. When behind, skip to now and
    count the skipped deadlines. `seq` counts published ticks.
-3. Each tick stamps `mono_*_ns` from `CLOCK_MONOTONIC`, `boot_ns` from `CLOCK_BOOTTIME` (both
+3. **Clocks:** P-10 adds `boot_ns()` to `kernel::Clock` and a boot field to `ManualClock`;
+   `SystemClock` reads absolute `CLOCK_MONOTONIC` and `CLOCK_BOOTTIME` through `rustix::time`
+   (so the `time` feature belongs to `kernel`), and the kernel crate-doc bullet on clocks changes
+   with it. Each tick stamps `mono_*_ns` from `mono_ns()`, `boot_ns` from `boot_ns()` (both
    absolute, so a consumer can correlate them with its own clock) and `real_ns` from the wall
-   clock. The epoch is `CLOCK_BOOTTIME` ns at process start. That keeps WIRE §6.4's "greater than
-   every earlier epoch of this boot" with no persisted file.
-4. **Publish order:** build the whole immutable `Tick`, replace the `Arc` in `Published` (nothing
-   else under the lock), then write the wake eventfd. The sampler has no other channel to the
+   clock. The epoch `main` passes in is `boot_ns()` at process start. That keeps WIRE §6.4's
+   "greater than every earlier epoch of this boot" with no persisted file.
+4. **Publish order:** build the whole immutable `Tick`, `Published::store` it (`mem::replace`
+   under the lock, the old `Arc` dropped outside), then write the wake eventfd. The sampler has no other channel to the
    server and never waits for it.
 5. Read only cgroupfs under `cgroup_root` and host-wide `/proc` files, bounded by
    `kernel::Bounds::POLICY`. Read no `/proc/<pid>/*` and no cmdline. Identity comes from
    `IncarnationRegistry` (P-07). A failed read is a missing value with its quality code, never a
    zero, and a walk cut by a bound is a quality state, never a silent cut.
-6. `ProbeBackend` holds the turn's `Option<Arc<Tick>>` and `now_ns`, set by
-   `begin_turn(&mut self, now_ns) -> bool`. It is the one `&mut` method, it is called only by the
-   driver before the turn's core calls, and it is `true` when the loaded `seq` is newer than the
-   previous turn's.
+6. `ProbeBackend::new(identity, Arc<Published>)` holds the turn's `Arc<Tick>` and `now_ns`, set
+   by `Turn::begin_turn(&mut self, now_ns) -> bool` (`Published::load`, the server thread's only
+   lock, §(b) 2). It is called only by the driver before the turn's core calls, and it is `true`
+   when the loaded `seq` is newer than the previous turn's.
    - `current`, `status` and `identity` follow §(b).
    - `status.tiers` is empty until the store runs.
 7. The sampler thread holds the stop drop guard (§(f)). Its body must not hold the `Published`
@@ -289,7 +348,14 @@ section.
 > socket-type checks on systemd-passed fds) and `time` (absolute `CLOCK_MONOTONIC` and
 > `CLOCK_BOOTTIME`). Why rustix: std lacks these calls, rustix wraps them in a safe API, its
 > licence (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) is inside hostobs `deny.toml`,
-> and its Linux backend needs no `libc`. With it, the probe needs exactly one `unsafe` line,
-> adopting a `LISTEN_FDS` descriptor. The images get a new registry-set identity, and P-08 moves
-> `hostobs/run-gate.toml` and `hostobs/tools/dev` to the new tag. Design:
+> and it builds no `libc` on Linux. With it, the probe needs exactly one `unsafe` line,
+> adopting a `LISTEN_FDS` descriptor. The offline cache lacks rustix, so hostobs cannot resolve
+> the lock itself: please let the networked image-build step run `cargo add rustix@<ver>` (with
+> the features above, as a `[workspace.dependencies]` entry used by `crates/kernel` and
+> `bins/probe`) once against the hostobs workspace and hand back the resulting `Cargo.toml` and
+> `Cargo.lock` diff; P-08 commits exactly that diff. Expect also libc, errno and windows-sys
+> (with windows-link/windows-targets depending on the version) in the lock: not built on Linux,
+> but they must be in the cache (verify-crate-cache matches the lock exactly; deny.toml has no
+> targets filter). All are MIT OR Apache-2.0. The images get a new registry-set identity, and
+> P-08 moves `hostobs/run-gate.toml` and `hostobs/tools/dev` to the new tag. Design:
 > `hostobs/docs/PROBE-PROCESS.md` §(d).
