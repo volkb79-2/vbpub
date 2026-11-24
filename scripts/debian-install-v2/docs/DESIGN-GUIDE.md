@@ -310,8 +310,88 @@ The plan orders partitions by sector extent and preserves complete partitions
 before root, including the Debian genericcloud boot partitions numbered 14
 and 15 before root partition 1. Unknown partitions after root are refused.
 
-Exact mounts on `/`, `/var`, `/var/lib`, `/srv`, and `/home` are refused.
+## Btrfs-root validation and data subvolumes
+
+The rollback ISO installs a GPT disk whose second partition holds one
+single-device btrfs filesystem. Its top level (subvolume 5) contains the
+`@os-*` states and the excluded data objects; the running state and the data
+objects are separate subvolumes. v2 must configure this layout without
+becoming a second layout creator. Root discovery therefore uses
+`findmnt -n -o SOURCE,FSTYPE --nofsroot /`, which reports the backing
+partition rather than a `/dev/...[/@os-...]` source, and separately asks
+`btrfs filesystem show --raw` for the device list. Zero or multiple devices
+fail closed. ZFS is detected only to refuse it with `root_fs_unsupported`;
+IC-M6 owns ZFS-root support.
+
+`schema_version: 2` adds the root-aware validation. Schema 1 remains loadable
+and retains its legacy ext4 meaning. With a discovered btrfs root, the only
+valid shape released by IC-M1a is root `"*"`, reserve 0, data kind `"none"`
+or `"subvolumes"`, no raw benchmark partition, and
+`swap_policy: "off"` with `swap_partition_count: 0`. The root type is never a
+config key. The refusal codes are deliberately part of the contract because
+the ISO layout facts, not generic schema errors, determine the remedy.
+
+For `data.kind: "subvolumes"`, v2 requires `/.top` to be mounted at
+`subvolid=5` on the same backing partition as `/`; a tmpfs or another btrfs
+filesystem is refused. It creates one top-level `@...` child per configured
+volume and mounts it at the configured path. Existing subvolumes are accepted
+when their NOCOW property matches. An empty existing subvolume that lacks
+`+C` gets it reapplied; a regular file/directory at the expected path, or a
+non-empty subvolume with a different NOCOW setting, is refused. NOCOW is set
+with `chattr +C` immediately after creation and before any file can be
+written. Each fstab row reuses the root entry's filesystem source and option
+set, adds `user_subvol_rm_allowed`, and adds `subvol=<name>`. A pre-existing
+mount at the target is accepted only after `findmnt` verifies its backing
+source, filesystem type, target, and fsroot.
+
+The ISO's excluded data mounts come from D18 plus `/usr/local`:
+`/home`, `/root`, `/srv`, `/var/www`, `/var/log`, `/var/lib/docker`,
+`/var/lib/containers`, `/var/lib/postgresql`, `/var/lib/mysql`, and
+`/usr/local`. A new data subvolume mount at one of those paths or at an
+ancestor would cover ISO-owned state and is refused; a descendant such as
+`/srv/cow` is allowed. v2's existing `_check_mount` policy remains in force on
+top of C9: a path at, inside, or above a protected tree such as `/boot`,
+`/etc`, `/usr`, `/proc`, `/var/lib/dpkg`, or `/var/log` is refused, except
+the documented `/var/log/journal` subtree; a path intersecting
+`/var/lib/docker` or `/var/lib/containerd` is refused; and an exact or
+ancestor path for the reserved mount points `/var`, `/var/lib`, `/srv`, or
+`/home` is refused. A descendant such as `/srv/cow` remains accepted when no
+other rule covers it. The subvolume work happens in stage two, after Docker
+may already be running, so the live-service rule applies exactly as it does
+to partition and LVM data mounts below.
+
+IC-M1a keeps `user_subvol_rm_allowed` on each data-subvolume fstab row as the
+brief requires. Btrfs applies most options per filesystem; IC-M1b owns adding
+the effective option to the root mount via `install-btrfs.sh` `OPTS`, and
+IC-M1c owns the live `/srv/cow` mount-option check. The data-row option is
+harmless in the meantime.
+
+The C9 swap row is superseded for btrfs by WP-10 P3. IC-M1a creates no
+swapfile and no permanent raw benchmark partition. It reports the benchmark
+and io.cost as skipped until the Q-A raw-result import lands. The ZFS-root
+path, IC-M1b/c handoff pieces, and the VM/runner acceptance are also outside
+this package; see the README's btrfs section for the exact split.
+
+When the rollback layer is present and `dr-state list` shows a managed running
+state, stage two first writes `phase=done` and `stage2_done`, then takes one
+final `dr-state snapshot --reason host-setup`. The marker exists at snapshot
+time, so the checkpoint contains a completed stage two; the snapshot remains
+the last change to the OS state. Its failure removes the marker again and fails
+stage two. Both v2 stage environments set `DR_STATE=none`; the snapshot call
+uses `env -u DR_STATE` so it alone is visible to the rollback layer. A re-run
+after `stage2_done` is a no-op, including no second snapshot. When the command
+is absent or the root is unmanaged, v2 records a named skip rather than
+inventing a snapshot.
+
+For C4's rollback-to-the-pre-v2-initial-state boundary, v2's marker and saved
+done state are inside `/var/lib` and therefore roll back with the OS state.
+The unchanged install guard cannot prevent a replay there; only C4's deletion
+of the two files in `/root/.vbpub`, which live in `@root` outside every state,
+does.
+
 ## Data mount safety
+
+Exact mounts on `/`, `/var`, `/var/lib`, `/srv`, and `/home` are refused.
 
 The data filesystem is configured in stage two. By then stage one has already
 written installer executables under `/usr/local/sbin` and, when enabled, has

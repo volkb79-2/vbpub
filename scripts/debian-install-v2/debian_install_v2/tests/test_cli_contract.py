@@ -10,6 +10,7 @@ import pytest
 from cli_extended import assert_cli_contract, make_invoker
 
 from debian_install_v2.bootstrap import IDENTITY, build_cli, main
+from debian_install_v2.config import SUPPORTED_SCHEMA_VERSIONS
 
 PROJECT = Path(__file__).resolve().parents[2]
 ENTRYPOINT = PROJECT / "debian-install-v2.py"
@@ -232,12 +233,12 @@ def test_documented_config_examples_parse_with_the_shipped_loader():
         source = path.read_text(encoding="utf-8")
         for example in re.findall(r"```json\s*\n(.*?)\n```", source, re.DOTALL):
             config = load_config(raw_json=example)
-            assert config.schema_version == 1
+            assert config.schema_version in SUPPORTED_SCHEMA_VERSIONS
         for inline_example in re.findall(
             r"--config-json\s+\\\n\s+'([^']+)'", source
         ):
             config = load_config(raw_json=inline_example)
-            assert config.schema_version == 1
+            assert config.schema_version in SUPPORTED_SCHEMA_VERSIONS
 
 
 def slug(heading: str) -> str:
