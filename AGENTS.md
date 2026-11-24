@@ -666,6 +666,29 @@ still until the operator compacted, and lost hours in which work was ready to ru
 Before it ends a turn it keeps one monitor armed over every running job, so a job cannot
 finish or fail unnoticed while the session sits idle.
 
+### Successor restart of an interactive session (`scripts/controller/self-resume.sh`)
+
+An interactive Claude Code session in a tmux pane can be restarted into a fresh successor
+without the operator's click: `scripts/controller/self-resume.sh <pane-id> <prompt-file> <log>`
+waits until the pane is idle (no busy marker for 3 checks, max 30 min), sends `/clear`,
+waits for the cleared status line, types the prompt file's text and Enter. Proven 5 times on
+2026-11-24 (nonce/canary test, then the assay, rollback, platform and edge successors). Exit
+codes are in the script header (2: bad arguments or no pane, nothing sent; 3: never idle).
+
+- **Controller-driven restart of a sub-controller:** the sub-controller writes its handover,
+  reports "at boundary, ready for successor" and ends its turn; the controller runs the
+  helper on that pane with a prompt file that names the handover and its read-first list.
+- **Self-restart:** the session writes its handover (`controller-handover` skill) and a prompt
+  file, launches the helper DETACHED with `setsid nohup scripts/controller/self-resume.sh
+  "$TMUX_PANE" <prompt-file> <log> >/dev/null 2>&1 &` (never Bash `run_in_background`, which
+  dies with the session), then ends its turn. The helper does the rest once the turn ended.
+- **Limits:** the footer markers (`esc to interrupt`, `ctx ?`) are tied to Claude Code 2.1.331
+  and must be re-measured after a Claude Code upgrade. Whether a cross-session message that
+  arrives in the ~20 s between `/clear` and the prompt survives is untested, so a successor
+  asks its peers to resend anything they sent around the restart. Today a human or the
+  controller launches it; the future verb is `agctl successor <pane> <prompt-file>`
+  (`docs/design/agctl/DESIGN.md` section 6a).
+
 ### Spawned or non-interactive session (subagent, Codex/opencode/pi job, worker)
 
 Nobody sits in it and nobody applies a recovery read order for it, so it **self-terminates**

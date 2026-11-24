@@ -66,6 +66,10 @@ agctl owns controller identity and handover, the run registry, routes, agent fin
 3. **Fresh session, started by the operator** (new session or `/clear`): a controller-only SessionStart[startup|clear] hook (only with `CONTROLLER_NAME`) checks `READY`'s hash and head, injects "read <handover> first (head <sha>, written <utc>)", and renames it `READY.consumed.<session>`; missing or mismatched, the note says so and gives HANDOFF's age.
 4. **Auto-compaction is only the backstop** (window above soft); SessionStart[compact] warns the handover predates it and asks for a new one.
 
+## 6a. Successor restart (the mechanism of the handover cycle)
+
+Step 3 of section 6 ("fresh session, started by the operator") has a mechanical form today: `scripts/controller/self-resume.sh <pane> <prompt-file> <log>` (tmux; bash, grandfathered under the CTL-40 freeze as a proven 40-line entry point). It waits for an idle pane, sends `/clear`, waits for the cleared footer and types the prompt file, so a session or its controller can restart it after `agctl handover ready` without a click; the prompt is the "read <handover> first" line the SessionStart hook would otherwise inject. Proven 5 times on 2026-11-24; footer markers tied to Claude Code 2.1.331; the ~20 s message gap is untested (AGENTS.md "Successor restart of an interactive session"). **Future verb:** `agctl successor <pane> <prompt-file>` (Python port, the same idle/clear/type contract and exit codes, the markers in `agctl.toml`).
+
 ## 7. Agents: return contract, finalization, priming (slice 2)
 
 - **Implementers and reviewers are bounded and succeeded, never compacted.**

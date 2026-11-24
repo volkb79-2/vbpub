@@ -80,6 +80,10 @@ worktree that lacks `.controller-state` or `plan.yaml`, the run prints a WARNING
 naming them: the real state lives in the main checkout. What is state and what is work:
 [`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md).
 
+## Successor restart (`self-resume.sh`)
+
+`scripts/controller/self-resume.sh <tmux-pane-id> <prompt-file> <log-file>` restarts an interactive Claude Code session in a tmux pane (wait for idle, `/clear`, type the prompt file); launch it detached with `setsid nohup`; procedure, exit codes and limits: AGENTS.md "Successor restart of an interactive session".
+
 ## Controller loop
 
 Use this order for each implementation task.
