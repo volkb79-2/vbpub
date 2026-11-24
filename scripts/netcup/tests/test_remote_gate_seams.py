@@ -186,7 +186,7 @@ def test_a_declared_base_that_cannot_resolve_is_refused_naming_the_ref_and_the_l
 
 
 def test_a_declared_base_that_resolves_passes(tmp_path):
-    st = {**tree(tmp_path, RG_ASSAY, '[lanes.cmru.judge]\nbase = "origin/main"\n'), "main": "e" * 40}
+    st = {**tree(tmp_path, RG_ASSAY, '[lanes.cmru.judge]\nbase = "cmru-v6.1.0"\n'), "main": "e" * 40}
     ctx, out = ctx_for(tmp_path, [("--verify", rg.Result(0, "c" * 40 + "\n"))])
     rg.lane_checks(ctx, st, "p", "assay", False, False)
     assert out == [] and any("--verify" in c[0] for c in ctx.runner.calls)
