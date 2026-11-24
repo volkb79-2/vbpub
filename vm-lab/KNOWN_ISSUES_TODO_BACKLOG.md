@@ -148,3 +148,39 @@ Offer the QEMU image through a ciu service instead of a local `docker build`, so
 **State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py, vm-lab/README.md
 
 **Problem.** `vm-lab destroy --name` passes the token to `docker inspect`, which accepts an ID prefix before it can establish that no exact container name exists. The ownership label limits the damage, but an all-hex token can still resolve to an unrelated managed container. **Wanted.** Resolve the exact name without Docker's ID-prefix fallback, and test the collision at the Docker boundary.
+
+## VML-BL-23 — vmscreen floor reason omits direct guest imports
+
+**State:** open · **Severity:** low · **Owner:** vm-lab · **Links:** vm-lab/pyproject.toml, vm-lab/src/vm_lab/guest.py
+
+**Problem.** The `vmscreen>=0.1.0` floor comment still says vm-lab runs the tool as a subprocess. `vm_lab.guest` imports `make_mark` and calls `read_serial(mark=)` directly, while `vm_lab.text` uses the subprocess path, so the recorded floor reason is incomplete. **Wanted.** State both the direct APIs and the subprocess use in the dependency rationale.
+
+## VML-BL-24 — Wheel lane never imports `vm_lab.guest`
+
+**State:** open · **Severity:** low · **Owner:** vm-lab · **Links:** vm-lab/run-gate.toml, vm-lab/src/vm_lab/guest.py
+
+**Problem.** The wheel lane builds and installs both wheels, but its smoke checks run only the console entry points and inspect the packaged image context. A missing vmscreen API needed by `vm_lab.guest` would not fail that lane. **Wanted.** Import `vm_lab.guest` from the installed vm-lab wheel and exercise the two vmscreen APIs it needs.
+
+## VML-BL-25 — Cockpit identity scans every running container
+
+**State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py
+
+**Problem.** `inspect_current_container` runs `docker inspect` on every running container to identify itself, contrary to the operator rule to inspect only named containers. This can be expensive on a busy Docker host. **Wanted.** Read `/etc/hostname` and inspect only that exact container name, with a test at the Docker boundary.
+
+## VML-BL-26 — `docker_inspect(name)` can resolve another object type
+
+**State:** open · **Severity:** low · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py
+
+**Problem.** `docker_inspect(name)` does not pass `--type container`, so an all-hex name can select another Docker object type before the ownership guard runs. The plain-name validator narrows the collision but does not remove it. **Wanted.** Add `--type container` and test an all-hex collision at the Docker boundary.
+
+## VML-BL-27 — P-31b/P-31c consumer contracts after line search
+
+**State:** open · **Severity:** medium · **Owner:** debian-rollback · **Links:** scripts/debian-rollback/poc/dr-serial.py, vm-lab/src/vm_lab/guest.py
+
+**Problem.** P-31c still has to rewrite `INIT_FAILURE_RE` and the login patterns for the new rule that searches each rendered serial line independently. P-31b must keep installer output exactly `DR-HOSTKEY <type> <base64>` because the parser refuses a trailing comment. **Wanted.** Land both consumer contracts with their tests; do not change `vm_lab.guest` to compensate for whole-log or commented installer formats.
+
+## VML-BL-28 — Live probe for SSH master startup under captured pipes
+
+**State:** open · **Severity:** medium · **Owner:** operator · **Links:** vm-lab/src/vm_lab/guest.py
+
+**Problem.** The live behaviour of `ssh -M -N -f` under `subprocess.run` with captured stdout and stderr pipes has not been confirmed. A forked master that inherits pipe descriptors could make every call wait for the full SSH timeout. **Wanted.** Run one leased probe confirming that `_invoke` returns promptly after the master is established, and record the result outside the repository.

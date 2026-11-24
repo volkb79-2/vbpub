@@ -30,6 +30,17 @@ All notable changes to vm-lab are recorded here.
 - **The QEMU image build context ships with the wheel (VML-BL-02).** `qemu-image/` moved to `src/vm_lab/qemu-image` and is declared package data (`vm_lab/qemu-image/*`); `QEMU_IMAGE_CONTEXT` resolves next to the module, so `vm-lab image build` works from a checkout, an editable install and an installed wheel without `--context`. `--context DIR` stays the override; an empty value counts as not given. The "no Dockerfile" refusal no longer suggests running from a checkout.
 - The unit lane is now `r0-r1` (`vm-lab/run-gate.toml`: coverage floor 72 %, measured 74.0 %), next to the new `r2` (assay mutation lane), `wheel` and `gate` lanes. A test builds a wheel from a copy of the project, so the lane first installs the pinned build tools (`setuptools==82.0.1`, `wheel==0.47.0`, `setuptools_scm==10.0.5`).
 
+### Fixed
+- **Guest session review fixes (P-31a).** Serial patterns now search each
+  rendered line unchanged, so realistic panic lines and inline regex flags
+  work; implicit failure watches start at their own mark; and success/failure
+  ordering follows the earliest stream position. Readiness replaces any stale
+  SSH master before reuse. Private credentials cannot live below the state
+  directory, must be owned by the caller, and reject SSH path expansion
+  hazards; malformed marks, invalid timeouts, NUL commands and missing
+  container identity become `GuestError`. A network disconnect no longer
+  masks an exception from the managed block.
+
 ### Added
 - **Guest session module (VML-BL-08 / P-31a).** `vm_lab.guest` provides
   `ssh_endpoint`, `attached_to_network`, `Guest` and the guest-session error

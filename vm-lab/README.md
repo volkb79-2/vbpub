@@ -259,6 +259,18 @@ is the shorthand for the explicit boot-id sequence above. `Guest.reset` and
 is sent. `serial_write`, `wait_serial`, `serial_mark` and `press_until` cover
 serial input and line-anchored waits. Call `close()` to drop the SSH master.
 
+Serial wait patterns are searched unchanged against each rendered line
+independently. Inline flags such as `(?i)` work, but a pattern cannot span a
+newline. Use `^` and `$` when a match must be a complete line rather than a
+fragment such as a prompt-looking suffix of a kernel banner. `$` also matches
+the unfinished final line, so a prompt is visible before its terminating
+newline; leading and trailing spaces are stripped from rendered output, so
+anchor on the last visible prompt character.
+
+With `wait_ready(..., fail_on=PATTERN, since=None)`, the call marks the serial
+log on entry and watches only output written after that point. Pass `since`
+explicitly when the failure may already be present when the call starts.
+
 On a plain Docker host, use `attached_to_network(network, plain_host=True)` or
 call the API without the context manager. In a cockpit container it connects
 the calling container to the exact guest bridge for the block and disconnects
