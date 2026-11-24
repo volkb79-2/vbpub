@@ -6,7 +6,8 @@ the edge owns 80 and 443. Raw TCP/UDP media is published directly by its applica
 host port pair. All hosts below use `${TLS_EDGE_DOMAIN}` from `.env.example` (the placeholder
 `example.test`); an installed edge writes the same variable to
 `<instance>/stack/consumer.env`, so a real consumer can run
-`docker compose --env-file /srv/tls-edge-instance/stack/consumer.env up -d`.
+`docker compose --env-file /srv/tls-edge-instance/stack/consumer.env up -d`. `pattern-e-media-udp`
+additionally needs `MEDIA_PUBLIC_PORT` and `MEDIA_CONTAINER_PORT` set because they are not in `consumer.env`.
 
 Check any example offline before starting it: `docker compose --env-file ../.env.example config`.
 

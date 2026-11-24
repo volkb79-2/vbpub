@@ -222,7 +222,7 @@ docker compose --env-file /srv/tls-edge-instance/stack/consumer.env up -d
 
 Rules: one host name per service, globally unique router/service names (`<stack>-<service>`), and no
 published HTTP ports 80/443 on the consumer. Raw TCP/UDP media is published directly by the application;
-its host port pair must be disjoint from `TLS_EDGE_PUBLIC_PORTS`, as demonstrated by `pattern-e-media-udp`.
+its host port pair must be disjoint from `TLS_EDGE_PUBLIC_PORTS`, as in `pattern-e-media-udp`.
 
 ## 6. Update
 
