@@ -20,7 +20,7 @@ All examples use `example.test`, a reserved placeholder; use your own domain.
     ciu                            stub: execs the ciu pinned by `current`
     ciu-stack/                     templates (synced from the release)
       ciu.toml.j2                  YOUR site override (written by `tls-edge configure`)
-    consumer.env                   TLS_EDGE_DOMAIN=<your domain>, written by the CLI
+    consumer.env                   six effective consumer-contract keys, written by the CLI
     .git, .gitignore               a one-commit repository so ciu can run (see 9)
     .ciu/                          ciu state (survives updates)
 ```
@@ -127,9 +127,31 @@ sudo ./scripts/verify.sh --domain app.example.test
 ## 4. Configure listeners and certificates
 
 Use `/srv/tls-edge-instance/bin/tls-edge configure` for supported settings. It preserves unrelated site
-configuration and comments, and updates only `TLS_EDGE_DOMAIN` in `consumer.env`. Use `--dry-run` to review a
-change without writing files. Advanced settings can still be edited in `stack/ciu-stack/ciu.toml.j2`; the full
-schema and shipped defaults are in `ciu.defaults.toml.j2`.
+configuration and comments. In `consumer.env`, it rewrites the six tls-edge-owned keys and keeps every other
+line, including operator-owned values; missing keys are appended in contract order and duplicate owned lines
+are removed. An existing file keeps its mode, while a new file is `0644`. Use `--dry-run` to review a change
+without writing files. Advanced settings can still be edited in `stack/ciu-stack/ciu.toml.j2`; the full schema
+and shipped defaults are in `ciu.defaults.toml.j2`.
+
+The six keys are `TLS_EDGE_DOMAIN`, `TLS_EDGE_NETWORK`, `TLS_EDGE_HTTPS_ENTRYPOINT`,
+`TLS_EDGE_HEADERS_MIDDLEWARE`, `TLS_EDGE_HTTP3` and `TLS_EDGE_PUBLIC_PORTS`. Their values are defined once in
+[CONSUMERS.md](CONSUMERS.md#rendered-consumer-contract). Read the deployed values with
+`tls-edge show --json`; do not infer them from templates.
+
+`tls-edge validate` and the CIU preflight hook refuse an existing `consumer.env` when an owned key is missing
+or differs from the effective site configuration:
+
+```text
+consumer.env TLS_EDGE_DOMAIN differs from the site override; run tls-edge configure to re-sync
+```
+
+`tls-edge show` reports the drift without failing, and `tls-edge configure` re-syncs it. An absent file is not
+checked. To re-sync without changing any answer, use an empty answers file:
+
+```bash
+printf '' > /tmp/tls-edge-empty.toml
+sudo /srv/tls-edge-instance/bin/tls-edge configure --answers /tmp/tls-edge-empty.toml --yes
+```
 
 `configure` writes every managed field whose mode applies to the proposed configuration. This keep-list makes
 a later change to a shipped default harmless for a configured instance. Prompt defaults are the current
@@ -198,14 +220,15 @@ docker compose --env-file /srv/tls-edge-instance/stack/consumer.env config   # o
 docker compose --env-file /srv/tls-edge-instance/stack/consumer.env up -d
 ```
 
-Rules: one host name per service, globally unique router/service names (`<stack>-<service>`), no published ports
-80/443/8443 on the consumer. Mattermost Calls media attaches with the TCP and UDP routers of `pattern-e-media-udp`
-(one media pair per edge).
+Rules: one host name per service, globally unique router/service names (`<stack>-<service>`), and published
+application ports disjoint from `TLS_EDGE_PUBLIC_PORTS`. Mattermost Calls media attaches with the TCP and UDP
+routers of `pattern-e-media-udp` (one media pair per edge).
 
 ## 6. Update
 
 ```bash
 sudo /srv/tls-edge-instance/bin/tls-edge-installer update --variant py313
+sudo /srv/tls-edge-instance/bin/tls-edge configure --answers /tmp/tls-edge-empty.toml --yes
 cd /srv/tls-edge-instance/stack && sudo ./ciu up
 ```
 
@@ -214,7 +237,17 @@ you edited in the synced set (not `ciu.toml.j2`, which is not part of it) stop t
 keep host edits in `ciu.toml.j2` or pass `--overwrite-local` (the replaced files are saved under
 `shared/overwritten/<UTC time>/`). The installer does not touch `ciu.toml.j2`, `consumer.env`, `.ciu/`, volumes
 or `shared/acme`. `tls-edge configure` is the supported writer for the site override and domain variable;
-`status` shows the installed tag and any locally modified files.
+`status` shows the installed tag and any locally modified files. A user-scope instance lives under
+`$HOME/.local/share/tls-edge-instance`; its `tls-edge-installer status` also needs the matching scope:
+
+```bash
+tls-edge-installer status --scope user
+```
+
+4.0 upgrade step: a 3.2 `consumer.env` has only `TLS_EDGE_DOMAIN`. Run
+`tls-edge configure --answers <empty file> --yes` after the update and before `ciu up`; otherwise the
+preflight hook refuses the missing contract keys. Run `configure` after every update, before the next `ciu up`,
+so the override is written in the updated schema.
 
 An upgraded 3.1 instance has no `shared/acme` marker and its override normally has no `acme.store`. It therefore
 keeps the same `acme-data` volume as before; `configure` writes `store = "volume"` explicitly. If
@@ -307,6 +340,8 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
    Run `/srv/tls-edge-instance/bin/tls-edge configure --answers /path/to/live.toml --yes` and
    `/srv/tls-edge-instance/bin/tls-edge validate`. Do **not** run `ciu up` yet. The proposed public set is
    80/tcp, 443/tcp, 443/udp (HTTP/3), and 8443/tcp+udp (Calls); allow these in both firewalls.
+   Do not use `ciu up --skip-check` to move past a refused configuration: CIU creates the hostdir before the
+   hook refuses, so the failed attempt can leave a root-owned `stack/ciu-stack/vol-traefik-acme`.
 2. **Review adoption.** Confirm the generated override contains `ingress_external = true`,
    `volume_name = "edge-proxy_acme-data"`, and `cgroup_parent = "edge.slice"`. The network and volume are
    adopted (`external: true`), never created or removed by the instance.
@@ -345,6 +380,11 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
   non-git root (ciu backlog CIU-163; the installer adapter creates it). Do not delete `.git`.
 - `ciu env generate` and `ciu up --dry-run` create/attach a Docker network (CIU-162): run them on the host, not
   from a devcontainer you care about.
+- A non-root CIU run that creates `vol-traefik-acme` through the S6.5 root helper needs
+  `CGROUP_PARENT_DEV_INTERACTIVE=<slice>` exported (CIU-230).
+- `ciu up --dry-run` can create the root-owned `stack/ciu-stack/vol-traefik-acme` (CIU-227).
+- Removing a user-scope instance also encounters that root-owned `stack/ciu-stack/vol-traefik-acme`; delete it
+  with root before removing the instance directory.
 - The release publishes one bundle per interpreter; publishing goes through a project script until cmru has a
   variants handler (cmru KI-115).
 

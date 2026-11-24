@@ -5,15 +5,16 @@ shape, pinned images. No network; docker is used only for `compose config`.
 from __future__ import annotations
 
 import datetime as dt
-import importlib.util
 import os
 import re
 import subprocess
 import sys
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 
 import jinja2
+import pytest
 import yaml
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -211,51 +212,81 @@ def test_edge_consumer_labels_and_networks() -> None:
     assert "no-new-privileges:true" in text and "cap_drop:" in text
 
 
-def _tls_edge_default(output_dir: Path, *, http3: bool) -> tuple[dict, dict, dict]:
-    edge_root = PROJECT.parents[1] / "tls-edge"
-    renderer_path = edge_root / "scripts" / "render_standalone.py"
-    spec = importlib.util.spec_from_file_location("jitsi_tls_edge_renderer", renderer_path)
-    assert spec is not None and spec.loader is not None, f"cannot load {renderer_path}"
-    renderer = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = renderer
-    spec.loader.exec_module(renderer)
-
-    stack_dir = edge_root / "ciu-stack"
-    edge_cfg = renderer.load_config(stack_dir, defaults_only=True)
-    edge_cfg["http3"]["enabled"] = http3
-    renderer.validate(edge_cfg)
-    renderer.render_outputs(stack_dir, output_dir, edge_cfg, certs_only=False)
-    static = yaml.safe_load((output_dir / "traefik.yml").read_text(encoding="utf-8"))
-    compose = yaml.safe_load((output_dir / "docker-compose.yml").read_text(encoding="utf-8"))
-    return edge_cfg, static, compose
+def _tls_edge_root() -> Path | None:
+    for parent in PROJECT.parents:
+        candidate = parent / "tls-edge"
+        if (candidate / "src" / "tls_edge_cli" / "contract.py").is_file():
+            return candidate
+    return None
 
 
-def test_default_tls_edge_contract_accepts_jitsi_router_and_optional_http3(tmp_path: Path) -> None:
-    edge_h2, static_h2, compose_h2 = _tls_edge_default(tmp_path / "edge-h2", http3=False)
+def _labels(service: Mapping) -> dict[str, str]:
+    raw = service.get("labels", {})
+    if isinstance(raw, Mapping):
+        return {str(key): str(value) for key, value in raw.items()}
+    if isinstance(raw, list):
+        result: dict[str, str] = {}
+        for item in raw:
+            key, separator, value = str(item).partition("=")
+            if separator:
+                result[key] = value
+        return result
+    raise AssertionError(f"unsupported Compose labels shape: {raw!r}")
+
+
+def _published_ports(compose: Mapping) -> set[tuple[int, str]]:
+    result: set[tuple[int, str]] = set()
+    for service in compose["services"].values():
+        for entry in service.get("ports", []):
+            if isinstance(entry, Mapping):
+                published = entry.get("published")
+                protocol = str(entry.get("protocol", "tcp"))
+            else:
+                spec, _, protocol = str(entry).partition("/")
+                protocol = protocol or "tcp"
+                parts = spec.rsplit(":", 2)
+                published = parts[-2] if len(parts) > 1 else None
+            if published not in (None, ""):
+                result.add((int(published), protocol))
+    return result
+
+
+def _contract_ports(value: str) -> set[tuple[int, str]]:
+    result: set[tuple[int, str]] = set()
+    for item in value.split(","):
+        port, protocol = item.split("/", 1)
+        result.add((int(port), protocol))
+    return result
+
+
+def test_jitsi_uses_the_tls_edge_consumer_contract() -> None:
+    edge_root = _tls_edge_root()
+    if edge_root is None:
+        pytest.skip("tls-edge not in this checkout")
+
+    source = str(edge_root / "src")
+    if source not in sys.path:
+        sys.path.insert(0, source)
+    from tls_edge_cli.contract import contract_for
+
+    edge = contract_for(
+        edge_root / "ciu-stack",
+        {"tls_edge": {"http3": {"enabled": True}}},
+    )
     jitsi = _cfg()
     compose = yaml.safe_load(_compose_text())
     web = compose["services"]["jitsi-web"]
-    labels = web["labels"]
+    labels = _labels(web)
     router = jitsi["router_name"]
 
-    assert jitsi["ingress_network"] == edge_h2["ingress_network"]
-    assert labels["traefik.docker.network"] == edge_h2["ingress_network"]
-    entrypoint_name = labels[f"traefik.http.routers.{router}.entrypoints"]
-    entrypoint = static_h2["entryPoints"][entrypoint_name]
-    assert entrypoint["address"] == ":443"
-    assert "http3" not in entrypoint
-    assert entrypoint["http"]["tls"]["certResolver"] == edge_h2["acme"]["resolver_name"]
-    https_port = edge_h2["ports"]["https"]
-    h2_ports = compose_h2["services"]["traefik"]["ports"]
-    assert f"{https_port}:443/tcp" in h2_ports
-    assert f"{https_port}:443/udp" not in h2_ports
-
-    edge_h3, static_h3, compose_h3 = _tls_edge_default(tmp_path / "edge-h3", http3=True)
-    h3_entrypoint = static_h3["entryPoints"][entrypoint_name]
-    h3_port = edge_h3["ports"]["https"]
-    assert h3_entrypoint["http3"]["advertisedPort"] == h3_port
-    assert f"{h3_port}:443/tcp" in compose_h3["services"]["traefik"]["ports"]
-    assert f"{h3_port}:443/udp" in compose_h3["services"]["traefik"]["ports"]
+    assert edge["TLS_EDGE_HTTP3"] == "true"
+    assert labels["traefik.docker.network"] == edge["TLS_EDGE_NETWORK"]
+    assert labels[f"traefik.http.routers.{router}.entrypoints"] == (
+        edge["TLS_EDGE_HTTPS_ENTRYPOINT"]
+    )
+    assert _published_ports(compose).isdisjoint(
+        _contract_ports(edge["TLS_EDGE_PUBLIC_PORTS"])
+    )
 
 
 def test_own_names_and_governance() -> None:

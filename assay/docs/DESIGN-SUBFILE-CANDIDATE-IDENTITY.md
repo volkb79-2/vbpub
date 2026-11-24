@@ -191,7 +191,7 @@ locus_key = sha256( "assay-locus/1" \0 path \0 qualname \0 segment_sha256 \0
 
 | Field | Type | Rule |
 |---|---|---|
-| `kind` | string | closed set. In a state record: `imported`, `carried`, `replayed`. `fresh` is never written (absent `provenance` = fresh). `resumed` is never written: it is assigned when a run takes a record from its store, at projection time (v21). |
+| `kind` | string | closed set. In a state record: `imported`, `carried`, `replayed`. `fresh` is never written (absent `provenance` = fresh). `resumed` is never written: it is assigned when a run takes a record from its store, at projection time (v21), and applies only to a record with no stored provenance (a carried/imported record keeps its stored kind when resumed). |
 | `from_candidate_id` | 64-hex | the candidate id of the prior record (equals the record's own `candidate_id` for `match = exact-id`) |
 | `from_judge_sha256` | 64-hex | the judge that executed the prior evidence |
 | `match` | string | closed set `exact-id`, `locus`, `window`, `hint` |
@@ -204,7 +204,7 @@ locus_key = sha256( "assay-locus/1" \0 path \0 qualname \0 segment_sha256 \0
 - `--carry-forward` survivors (WP3a): `carry_over` schema 2 plus `provenance {kind: carried, …, match: exact-id|locus|window}`.
 - Replayed kill (WP4): a FRESH current-judge record with `provenance {kind: replayed, …, replay_node_id}` and NO `carry_over` block. So an executing judge equal to the into-judge never appears beside a `carry_over` block, and the `from == into` ambiguity cannot occur.
 
-**`carry_over` schema 2 (redefined in place; it never shipped, so there is no schema 3).** Key set: `schema_version, into_judge_sha256, source, reason, imported_at, importer_version` (prior-evidence facts and the match live in `provenance` only; no `locus_match`, no `from_judge_sha256`). It is valid only beside a valid `provenance` of kind `imported` or `carried` whose `from_judge_sha256` equals the record's `judge_sha256`. `record_effective_judge` returns `into_judge_sha256` for such a record and the executing judge for a record without `carry_over`. Schema 1 blocks are READ (resume, merge, analysis) and never written again; `record_provenance` derives `{kind: imported, from_candidate_id: <own id>, from_judge_sha256: carry_over.from_judge_sha256, match: exact-id}` for them.
+**`carry_over` schema 2 (redefined in place; it never shipped, so there is no schema 3).** Key set: `schema_version, into_judge_sha256, source, reason, imported_at, importer_version` (prior-evidence facts and the match live in `provenance` only; no `locus_match`, no `from_judge_sha256`). It is valid only beside a valid `provenance` of kind `imported` or `carried` whose `from_judge_sha256` equals the record's `judge_sha256`. `record_effective_judge` returns `into_judge_sha256` for such a record and the executing judge for a record without `carry_over`. Schema 1 blocks are READ (resume, merge, analysis) and never written again; `record_provenance` derives `{kind: imported, from_candidate_id: <own id>, from_judge_sha256: carry_over.from_judge_sha256, match: exact-id, reason: carry_over.reason}` for them.
 
 **Validation is shape only, and never raises.** A `provenance` or schema-2 `carry_over` that fails the shape rules (unknown kind or match, wrong types, extra keys, kind/`carry_over` mismatch) makes the record unusable exactly as a malformed `carry_over` is today (`record_effective_judge` is `None`; the record is not resumed or carried, it is re-judged and counted); it never raises `MutationStateError`.
 
