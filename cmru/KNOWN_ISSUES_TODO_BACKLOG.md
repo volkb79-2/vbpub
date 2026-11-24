@@ -3844,7 +3844,7 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Amended 2026-11-24 (Opus design review):** Solved by KI-190 (declared preflight), not by widening the cmru-only rows.
 
-**Amended 2026-11-24 (P-core-13 design):** `docs/DESIGN-DECLARED-PREFLIGHT.md` D3 and D13. The preflight runs for every project in scope. The wheel-builder, probe and DinD rows become built-in rows keyed on cmru's own verbs (`cmru handler wheel-build`, `cmru tester-gate`, `--enable-docker`), and each is evaluated against that project's own config. cmru's own release loses its unused probe row.
+**Amended 2026-11-24 (P-core-13 design):** `docs/DESIGN-DECLARED-PREFLIGHT.md` D3 and D13. The preflight runs for every project in scope. The wheel-builder, probe and DinD rows become built-in rows keyed on cmru's own verbs, each evaluated against that project's own config: wheel-builder on `cmru handler wheel-build`; probe on `cmru handler wheel-build` or `cmru tester-gate`, because wheel-build starts the probe with `--pull=never`; DinD on `--enable-docker`.
 
 **Observed.** `_release_gate_preconditions_before_dispatch` and its rows (Run-Gate image identity, Bootstrap, `Wheel-builder image`, `Cgroup probe image`) run only when `cmru` is in the release scope. A release of any other project (`cmru release ciu`) skips them, although its gate and wheel build use the same `--pull=never` probe image and the wheel builder. The DinD row (KI-182) is the only image row that already runs per project.
 
@@ -4077,7 +4077,7 @@ Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md H3
 
 **Status:** OPEN (filed 2026-11-24); severity: medium.
 
-**Amended 2026-11-24 (P-core-13 design):** Decisions in `docs/DESIGN-DECLARED-PREFLIGHT.md`: `[steps.preflight]` is a reserved one-command step, run before dispatch in a `git archive` export of the release revision; stdout is one JSON document (`format` 1, statuses `PASS`/`FAIL`/`SKIPPED`), and malformed output fails closed with exit 4; the bootstrap literal check moves to a `libraries/test-policy` estate lane; the closeout lanes come from `cmru/run-gate.toml`; implementation follows P-core-06 and P-core-12 M0.
+**Amended 2026-11-24 (P-core-13 design):** Decisions in `docs/DESIGN-DECLARED-PREFLIGHT.md`: `[steps.preflight]` is a reserved one-command step, run before dispatch in a `git archive` export of the release revision; stdout is one JSON document (`format` 1, statuses `PASS`/`FAIL`/`SKIPPED`), and malformed output fails closed with exit 4; the bootstrap literal check moves to a `libraries/test-policy` estate lane; the closeout lanes come from `run-gate --list --json`, and a missing lane refuses; implementation follows P-core-06 and P-core-12 M0.
 
 `release_preconditions.py` runs `exec()` on `cmru/tools/run_release_gate.py` read from a git blob, calls its private `_current_run_gate_identity`, hard-codes project `cmru`, `tester-unified` and `run-gate.root.toml`, and derives remedies by regex over error prose. A shell snippet must match a block in `docs/BOOTSTRAP-FROM-ZERO.md` (a documentation drift check that blocks releases). `gate_snapshot.py` has `_ASSAY_CLOSEOUT_LANES = ("cmru", "cmru-first-release")`. KI-183 is a direct symptom.
 **Wanted.** An optional declared `[steps.preflight]` in the project grammar, run by the generic runner for every project in scope before dispatch, printing JSON rows `{check, status, detail, remedy}` (cmru's own `cmru.toml` declares `python tools/run_release_gate.py --preflight --json`). Remove the exec/regex identity check. The bootstrap-literal check moves to the owning project's own lane, or to a lane of `libraries/test-policy` (`estate_test_policy`) if it is genuinely estate-wide (see KI-194). `gate_snapshot` takes its lanes from config. The release path needs one real dry-run to prove it.
@@ -4088,6 +4088,8 @@ Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md H4
 ## KI-191 - tester-gate is a second gate runner
 
 **Status:** OPEN (filed 2026-11-24); severity: medium.
+
+**Amended 2026-11-24 (P-core-13 design):** `cmru handler wheel-build` also starts the cgroup probe (`handlers.py:651` → `tester_gate.check_slice_unit` → `_run_probe`, `--pull=never`). Removing tester-gate must keep `check_slice_unit` and the probe preflight row for wheel-build; only the DinD row goes with it (`docs/DESIGN-DECLARED-PREFLIGHT.md` D13).
 
 `cmru tester-gate` (`tester_gate.py`, 1,120 lines: DinD sidecar, cgroup probe, device throttles) duplicates Run-Gate's job of container placement, caps and DinD. Only `ciu/cmru.toml` (two lanes, one with `--enable-docker`) and `topos/cmru.toml` (one command lane) still use it.
 **Wanted.** Migrate ciu (CIU-225; the DinD lane is the real work) and topos to run-gate lanes. Deprecate `tester-gate` in the next minor and remove it in the next major, together with the DinD preflight (KI-182). Until then it is frozen: no P6c slice and no P7.2 changes beyond keeping it importable.
