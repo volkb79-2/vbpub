@@ -451,7 +451,7 @@ STORE_FUNCS = r"""# --collect-store: packing of the run's own store directories,
 # $STORE_MAX_BYTES and log() come from the job. Every outcome is one STORE-* log line; nothing here ever changes the lane's rc.
 STORE_PATH_RE='^[A-Za-z0-9._@+=,:-]+(/[A-Za-z0-9._@+=,:-]+)*$'
 STORE_WHY=
-# store_rel_check <rel>: 0 when <rel> is a canonical relative path (no absolute, empty, '.' or '..' component) none of whose
+# store_rel_check <rel>: 0 when <rel> is a canonical relative path (no absolute, empty, '.', '..' or '.git' component) none of whose
 # components below $CKDIR is a symlink; otherwise 1 with STORE_WHY = invalid-path | symlink.
 store_rel_check() {
   local rel=$1 comp p=$CKDIR
@@ -460,7 +460,7 @@ store_rel_check() {
   if [[ ! $rel =~ $STORE_PATH_RE ]]; then STORE_WHY=invalid-path; return 1; fi
   IFS=/ read -r -a parts <<<"$rel"
   for comp in "${parts[@]}"; do
-    if [[ $comp == . || $comp == .. ]]; then STORE_WHY=invalid-path; return 1; fi
+    if [[ $comp == . || $comp == .. || $comp == .git ]]; then STORE_WHY=invalid-path; return 1; fi
     p+=/$comp
     if [[ -L $p ]]; then STORE_WHY=symlink; return 1; fi
   done
@@ -895,6 +895,8 @@ def normalise_store_rel(raw: str, top: str, flag: str = "--collect-store") -> st
     parts = [x for x in raw.split("/") if x not in ("", ".")]
     if not parts or ".." in parts:
         raise GateError(f"{flag} {raw!r} must name a directory inside the repository checkout (no '..', not the root itself)")
+    if ".git" in parts:
+        raise GateError(f"{flag} {raw!r}: a '.git' path component is refused (it would replace or read the checkout's repository)")
     bad = [x for x in parts if not STORE_COMPONENT_RE.match(x)]
     if bad:
         raise GateError(f"{flag} {raw!r}: component {bad[0]!r} has characters outside A-Za-z0-9._@+=,:-")

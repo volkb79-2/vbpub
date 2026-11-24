@@ -237,7 +237,7 @@ ln -sfn ../seed-src "$ROOT/seed-cwd/rel-seed"
 ( cd "$ROOT/seed-cwd" && rg gate-a proj small "$SHA" --seed-store rel-seed=proj/.run-gate/s1 > /dev/null 2>&1 ) || fail 'run with --seed-store failed'
 contains "$RG_LOG" '"--seed-store", "'"$ROOT"'/seed-src=proj/.run-gate/s1"' '--seed-store reaches the runner with its local side made absolute'
 reset_logs
-for bad in "$ROOT/missing=x/y" "$ROOT/seed-src" "$ROOT/seed-src=/abs" "$ROOT/seed-src=../x" "$ROOT/seed-src=a=b" "=x"; do
+for bad in "$ROOT/missing=x/y" "$ROOT/seed-src" "$ROOT/seed-src=/abs" "$ROOT/seed-src=../x" "$ROOT/seed-src=a=b" "=x" "$ROOT/seed-src=.git" "$ROOT/seed-src=a/.git/hooks"; do
   if rg gate-a proj small "$SHA" --seed-store "$bad" > /dev/null 2>&1; then fail "--seed-store '$bad' was accepted"; fi
 done
 [[ ! -e $RG_LOG ]] || fail 'a refused --seed-store reached the runner'
@@ -247,7 +247,7 @@ not_contains "$RG_LOG" 'collect-store' 'no store option unless requested'
 not_contains "$RG_LOG" 'seed-store' 'no seed unless requested'
 not_contains "$RG_LOG" 'store-max-mib' 'no store bound unless requested'
 reset_logs
-for bad in /abs/store ../x a/../../x 'a b' 'a;b' ''; do
+for bad in /abs/store ../x a/../../x 'a b' 'a;b' '' .git a/.git/hooks; do
   if rg gate-a proj small "$SHA" --collect-store "$bad" > /dev/null 2>&1; then fail "--collect-store '$bad' was accepted"; fi
 done
 for bad in 0 -1 abc 1.5 '' 99999999; do

@@ -48,6 +48,7 @@ while [[ ${1:-} == --base || ${1:-} == --collect-store || ${1:-} == --store-max-
       # the same refusals remote-gate.py makes (it normalises and checks symlinks), here before any slot is taken
       [[ $2 != /* && $2 =~ ^[A-Za-z0-9._@+=,:/-]+$ ]] || die "--collect-store '$2' must be a relative path of A-Za-z0-9._@+=,:/- characters"
       [[ /$2/ != */../* ]] || die "--collect-store '$2' must stay inside the repository (no '..')"
+      [[ /$2/ != */.git/* ]] || die "--collect-store '$2' must not have a '.git' component"
       store_args+=(--collect-store "$2") ;;
     --seed-store)
       # <local dir>=<rel>: the runner runs from a throwaway worktree, so the local side is made absolute HERE (the caller's cwd)
@@ -55,6 +56,7 @@ while [[ ${1:-} == --base || ${1:-} == --collect-store || ${1:-} == --store-max-
       seed_local=${2%%=*} seed_rel=${2#*=}
       [[ -n $seed_local && -d $seed_local ]] || die "--seed-store '$2': the local side is not an existing directory"
       [[ $seed_rel != /* && $seed_rel =~ ^[A-Za-z0-9._@+,:/-]+$ && /$seed_rel/ != */../* ]] || die "--seed-store '$2': the target must be a relative path inside the repository"
+      [[ /$seed_rel/ != */.git/* ]] || die "--seed-store '$2': the target must not have a '.git' component"
       seed_local=$(cd -- "$seed_local" && pwd -P) || die "--seed-store '$2': cannot resolve the local directory"
       store_args+=(--seed-store "$seed_local=$seed_rel") ;;
     --store-max-mib)

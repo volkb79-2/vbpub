@@ -114,7 +114,8 @@ def test_a_small_store_under_the_bound_is_packed(sandbox):
 
 
 @pytest.mark.parametrize("raw,why", [("../x", "invalid-path"), ("/etc", "invalid-path"), ("a/../b", "invalid-path"), ("a//b", "invalid-path"),
-                                     ("./a", "invalid-path"), ("a b", "invalid-path"), ("", "invalid-path"), (".", "invalid-path")])
+                                     ("./a", "invalid-path"), ("a b", "invalid-path"), ("", "invalid-path"), (".", "invalid-path"),
+                                     (".git", "invalid-path"), ("a/.git/hooks", "invalid-path")])
 def test_the_host_refuses_a_path_that_is_not_canonical_and_relative(sandbox, raw, why):
     r = run_job(sandbox, [raw], "mkdir -p x && echo 1 > x/f", rc=0)
     assert r.returncode == 0
@@ -173,7 +174,7 @@ def test_the_job_with_stores_is_valid_bash(tmp_path):
 
 # ---- local side: refusal before anything is sent ----
 
-@pytest.mark.parametrize("raw", ["/abs/path", "../x", "a/../../x", "", ".", "a b", "a;rm"])
+@pytest.mark.parametrize("raw", ["/abs/path", "../x", "a/../../x", "", ".", "a b", "a;rm", ".git", "a/.git/hooks"])
 def test_run_refuses_a_bad_collect_store_path_before_a_host_is_contacted(tmp_path, raw):
     ctx, _ = ctx_for(tmp_path, git_handlers() + [psi(1, 1), LS])
     with pytest.raises(rg.GateError) as e:
@@ -413,6 +414,8 @@ def _hash_names_another_file(d):
     (lambda d: make_seed(d, "tracked", {"f": "1"}), "tracked", "tracked-files", 10 ** 9),
     (lambda d: None, "../s", "invalid-path", 10 ** 9),
     (lambda d: None, "/abs", "invalid-path", 10 ** 9),
+    (lambda d: None, ".git", "invalid-path", 10 ** 9),
+    (lambda d: None, ".git/hooks", "invalid-path", 10 ** 9),
 ])
 def test_a_refused_seed_exits_78_and_leaves_the_checkout_untouched(tmp_path, prep, rel, why, max_bytes):
     d = tmp_path / "D"
@@ -530,7 +533,7 @@ def test_a_seed_whose_upload_checksum_differs_aborts_with_a_transport_error(tmp_
     assert not any("run-job" in " ".join(c[0]) for c in ctx.runner.calls)
 
 
-@pytest.mark.parametrize("raw", ["MISSING=x/y", "SRC", "SRC=/abs", "SRC=../x", "SRC=a=b", "=x/y"])
+@pytest.mark.parametrize("raw", ["MISSING=x/y", "SRC", "SRC=/abs", "SRC=../x", "SRC=a=b", "=x/y", "SRC=.git", "SRC=a/.git/hooks"])
 def test_run_refuses_a_bad_seed_before_a_host_is_contacted(tmp_path, raw):
     src = seed_src(tmp_path)
     ctx, _ = ctx_for(tmp_path, git_handlers() + [psi(1, 1), LS])
