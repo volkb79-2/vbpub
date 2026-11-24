@@ -126,7 +126,7 @@ impl IdentityError {
     /// device tree) and never a zero.
     #[must_use]
     pub const fn quality(&self) -> QualityCode {
-        QualityCode::UNREADABLE
+        QualityCode::Unreadable
     }
 }
 
@@ -136,7 +136,7 @@ impl IdentityError {
 /// the caller either skips the entity (generating no reading) or reports it as unreadable.
 #[must_use]
 pub const fn identity_failure_quality() -> QualityCode {
-    QualityCode::UNREADABLE
+    QualityCode::Unreadable
 }
 
 /// A boot id (plan v4 §C.1), stored as the 16 bytes the wire header carries.
@@ -855,7 +855,7 @@ mod tests {
         }
         assert_eq!(
             super::identity_failure_quality(),
-            super::QualityCode::UNREADABLE
+            super::QualityCode::Unreadable
         );
     }
 }

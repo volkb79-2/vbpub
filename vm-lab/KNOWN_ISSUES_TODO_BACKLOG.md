@@ -47,6 +47,7 @@ The Dockerfile has not been built (the package set mirrors `scripts/debian-insta
 `vm-lab start` needs a cockpit container today (self-inspection), so debian-rollback keeps a declared copy of vm-lab's argv in `poc/dr-qemu.sh`. Direction: skip self-inspection outside a cockpit container and take an explicit cgroup parent.
 
 Source: .controller-state/design-review-2026-11-24/debian-rollback.md H6
+In progress: vm-lab-20261124_060821-plain-host
 
 **Close-when:** one live start on a test host without a cockpit container; debian-rollback `poc/dr-qemu.sh` deleted.
 
@@ -81,3 +82,69 @@ Offer the QEMU image through a ciu service instead of a local `docker build`, so
 **State:** open · **Severity:** low · **Owner:** vm-lab · **Links:** scripts/truenas/docs/CONSUMERS.md, scripts/truenas/docs/DESIGN-GUIDE.md, scripts/truenas/tcg_vm.py
 
 **Problem.** The TrueNAS docs (`scripts/truenas/docs/CONSUMERS.md`, `scripts/truenas/docs/DESIGN-GUIDE.md`) do not mention the read-only cgroup and D-Bus mount requirement that `tcg_vm.py` inherits from vm-lab. No TrueNAS test covers the new scope path, and `host_pid_cgroup` still needs `/hostproc`. **Wanted.** Document the mounts, add a test for the scope path, and decide whether `host_pid_cgroup` keeps the `/hostproc` requirement.
+
+## VML-BL-12 — Terminate an unresponsive guest
+
+**State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/README.md, vm-lab/src/vm_lab/core.py
+
+**Problem.** `stop` only requests graceful ACPI shutdown and never force-kills, while `destroy` only removes an already stopped container. A panicked or otherwise unresponsive guest needs the operator to run `docker kill` before `vm-lab destroy`. **Wanted.** Add an explicit vm-lab verb that verifies the managed exact-name container, terminates it without deleting disk or firmware state, follows the backlog-compatible CLI conventions, and is documented in the one-host start recipe.
+
+## VML-BL-13 — Force-stop after failed placement or network verification
+
+**State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py
+
+**Problem.** `cleanup_failed_start` never force-stops after a startup verification failure, including a placement or network identity failure that requires the container to stop immediately. **Wanted.** After a bounded graceful attempt, force-stop the exact managed container while preserving state; tests should cover placement and network-verification failures at the Docker boundary.
+
+## VML-BL-14 — Plain-host root starts the guest container as UID 0
+
+**State:** open · **Severity:** high · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py, vm-lab/README.md
+
+**Problem.** In plain-host mode the container user is the invoking host UID. Running vm-lab as root therefore runs QEMU as container UID 0 despite the otherwise hardened container. **Wanted.** Refuse a root invocation or provide an explicit, documented privilege-drop contract with tests at the Docker boundary.
+
+## VML-BL-15 — Boot order is part of the resume identity
+
+**State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py
+
+**Problem.** `boot_order` is recorded in `runner.json`, so an install started with `dc` cannot later be resumed for normal disk boot with `c`; resume refuses although the guest and disks are valid. **Wanted.** Separate installation/bootstrap inputs from steady-state resume identity, or define and document an explicit transition.
+
+## VML-BL-16 — Validate and verify CPU shares
+
+**State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py, vm-lab/README.md
+
+**Problem.** `--cpu-shares 1` is accepted although Docker's minimum is 2, and the running container's CPU shares are not included in post-start verification. **Wanted.** Reject values below Docker's minimum and verify the requested shares on the created container at the Docker boundary.
+
+## VML-BL-17 — Cockpit slice validator accepts leading dash and colon
+
+**State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py
+
+**Problem.** The cockpit `validate_slice_name` regular expression accepts names beginning with `-` and names containing `:`, while plain-host mode uses the stricter unit-name grammar. **Wanted.** Apply one fail-closed systemd unit-name contract in both modes, with invalid-name tests at the placement boundary.
+
+## VML-BL-18 — Transient-slice guard cannot reject real transient slices
+
+**State:** open · **Severity:** low · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py, vm-lab/tests/test_vm_lab_plain_host.py
+
+**Problem.** The transient-slice check only examines `FragmentPath` when systemd reports `Transient=yes`, but a real transient slice reports a non-empty `/run/systemd/transient/<name>` path. The current refusal cannot fire for a real transient unit, and its empty-fragment fixture is impossible; the real protection is the finite `memory.max` check. **Wanted.** Read `FragmentPath` unconditionally and refuse an empty value or a `/run/systemd/transient/` path, with a realistic systemd fixture.
+
+## VML-BL-19 — Network-inspect parsing lacks Docker-output fixtures
+
+**State:** open · **Severity:** low · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py, vm-lab/tests/test_vm_lab_plain_host.py
+
+**Problem.** `inspect_network` must refuse zero, multiple, and malformed records from `docker network inspect --format '{{.Name}} {{.Driver}}'`, but the tests patch `inspect_network` and the fake Docker boundary ignores its argv. Neither the "N records" nor the malformed-output refusal is exercised. **Wanted.** Drive those refusals from representative Docker output at the fake process boundary.
+
+## VML-BL-20 — Resume recipe retains installation boot inputs
+
+**State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/README.md, VML-BL-15
+
+**Problem.** The one-guest recipe tells the operator to resume the original command, which keeps both `--boot-order dc` and the builder ISO attached after installation even when a normal disk boot is intended. **Wanted.** Define the installed-disk resume command after VML-BL-15 separates installation inputs from steady-state resume identity; warn explicitly until then.
+
+## VML-BL-21 — Recipe network is not internal
+
+**State:** open · **Severity:** low · **Owner:** vm-lab · **Links:** vm-lab/README.md
+
+**Problem.** The documented guest network is a dedicated bridge but not `--internal`, so it can reach external networks according to host routing policy. **Wanted.** Document the operations that need external reachability and when `--internal` is sufficient for the recipe.
+
+## VML-BL-22 — Destroy resolves an ID prefix before an exact name
+
+**State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py, vm-lab/README.md
+
+**Problem.** `vm-lab destroy --name` passes the token to `docker inspect`, which accepts an ID prefix before it can establish that no exact container name exists. The ownership label limits the damage, but an all-hex token can still resolve to an unrelated managed container. **Wanted.** Resolve the exact name without Docker's ID-prefix fallback, and test the collision at the Docker boundary.

@@ -67,6 +67,14 @@ devcontainer provides it, `ciu env print` shows it), a QEMU image (`--image`,
 else `VM_LAB_QEMU_IMAGE`, else the local `vm-lab-qemu:local` built by `vm-lab
 image build`), the OVMF firmware files, and a Debian installer ISO.
 
+When `vm-lab` runs outside a cockpit container, add `--plain-host` and give the
+local Docker host's loaded slice with `--cgroup-parent` (or
+`CGROUP_PARENT_DEV_BACKGROUND`). Plain-host mode does not inspect the calling
+container or look for a separate inspector container. Use one exact guest name,
+state directory and user-defined network, and run one managed guest per host.
+See [Start one guest on a test host](../README.md#start-one-guest-on-a-test-host)
+for the complete command, caps and exact-name teardown.
+
 ```
 VM=scripts/<project>/vm-lab/deb1
 BASE=downloads/vm-images/deb1-base.qcow2
@@ -116,8 +124,10 @@ PPM file in `$VM`.
 
 After the install, `stop` the guest, then start again with `--resume` and the
 same options, including the same ISO. Resume refuses if the base disk,
-firmware, image, network, slice, sizing, forwards or ISO differ from the first
-start. A first start without an ISO may add one on resume. `destroy` removes the stopped container and keeps the disk state.
+firmware, image, network, slice, sizing, forwards, boot order, config disk,
+CPU shares or ISO differ from the first start. A first start without an ISO may
+add one on resume. `destroy` removes the stopped container and keeps the disk
+state.
 
 Reach the guest from another container on the same Docker network at
 `<container address>:2222`. Nothing is published on the host.
