@@ -1974,8 +1974,10 @@ Source: .controller-state/design-review-2026-11-24/controller-tooling.md M3 (SYN
 
 ## MDT-107 - the devcontainer stops when its PID-1 `sleep` child is killed (2026-11-24)
 
-**Status:** OPEN; severity: high.
+**Status:** PARTLY FIXED (2026-11-24); severity: high. The image `CMD` is fixed (plat-19-pid1-20261124). The `devcontainer.json` flip (`overrideCommand` false, `init` true; branch plat-19-pid1-json-20261124) waits for the image release and a check of its `Config.Cmd`, then an operator-run devcontainer rebuild. Closed once the rebuilt container shows a real init as PID 1.
 
-The overrideCommand loop `while sleep 1 & wait $!; do :; done` ends on a killed sleep: a killed `sleep` makes `wait` return non-zero, the loop exits and PID 1 ends, which stops the whole cockpit. Measured twice on 2026-11-18 (exit 0, not OOM). The loop must survive a killed child, so a pid-signalling test or a stray `pkill` can no longer take the cockpit down.
+**Observed.** Without an `overrideCommand` key the Dev Containers default made PID 1 `/bin/sh -c 'echo Container started; trap "exit 0" 15; exec "$@"; while sleep 1 & wait $!; do :; done' -`. Killing its `sleep` child makes `wait` fail, the loop ends and PID 1 exits 0, which stopped the whole cockpit (measured twice on 2026-11-18, `OOMKilled=false`). The cockpit must survive a killed child, so a pid-signalling test or a stray `pkill` can no longer take it down.
+
+**Fix.** See `CHANGES.md` [Unreleased]. Order matters: a rebuild with the flipped `devcontainer.json` on an older image exits at once, so release the image first.
 
 Source: memory `devcontainer-pid1-dies-when-sleep-child-killed` (2026-11-18)
