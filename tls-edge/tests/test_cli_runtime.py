@@ -349,16 +349,20 @@ def test_interactive_static_modes_default_lineages_to_domain(
     mode: str,
 ) -> None:
     root = make_root(tmp_path / "instance")
+    domain = f"{mode}.lineage.example.test"
     result, output = run_cli(
         monkeypatch,
         ["configure", "--root", str(root), "--yes"],
         select_value=mode,
+        text_responses={
+            "Base DNS domain for consumer host names": domain,
+        },
     )
     assert result == 0, output
     written = tomllib.loads(
         (root / "stack" / "ciu-stack" / "ciu.toml.j2").read_text(encoding="utf-8")
     )
-    assert written["tls_edge"]["static"]["domains"] == ["edge.example.test"]
+    assert written["tls_edge"]["static"]["domains"] == [domain]
 
 
 def test_configure_reports_a_failure_after_the_override_write(
