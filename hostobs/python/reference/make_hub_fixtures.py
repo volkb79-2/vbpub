@@ -11,14 +11,14 @@ Format of one case: ``{"case", "doc", "limits", "conns", "steps", "expect"}``. `
 nine ``QueueLimits`` fields (times in ms); ``conns`` lists the peer uid of each connection (index
 0 is the first ``add``, all at t = 0). A step is ``{"t_ms", "op", ...fields, "watch"?}`` with ``op``
 one of ``push_live {c, s, gen, bare|null, dict, tag?, share?}``, ``push_query {c, s, len}``,
-``push_control {c, len}``, ``query_ready {c, s}``, ``end_stream {c, s}``, ``head {c, block}``,
+``push_control {c, len}``, ``query_room {c, len}``, ``end_stream {c, s}``, ``head {c, block}``,
 ``head_partial {c}``, ``wrote {c, n}``, ``poll``, ``drain_unpinned {c}``, ``remove {c}``.
 ``watch`` lists ``c<i>`` (connection), ``u<uid>`` or ``g`` (global) pool keys. ``expect`` holds one
 list per step: the operation's own output first (``push_live``: ``queued|coalesced|
 dropped-incoming``; ``push_query``: ``queued|backpressure``; ``push_control``: ``ok|close``;
 ``end_stream``: ``{"counts": {"blocks", "dropped"}}``; ``head``: ``{"head": {"len", ...}}`` or
-``null``, with ``corr``, ``dropped`` and ``tail_tag`` when ``block``; ``query_ready``:
-``{"ready": bool}``; ``head_partial``: ``{"partial": bool}``; ``poll``: ``{"closed": [conn
+``null``, with ``corr``, ``dropped`` and ``tail_tag`` when ``block``; ``query_room``:
+``{"room": bool}``; ``head_partial``: ``{"partial": bool}``; ``poll``: ``{"closed": [conn
 indexes]}``), then one ``{"pools": {key: [live, query, control]}}`` when the step watches pools.
 ``share`` names a tick object that several pushes (of different connections) use.
 
@@ -100,6 +100,9 @@ class Case:
 
     def query(self, t, c, s, length, out, watch=None):
         self.add(t, "push_query", [out], watch, c=c, s=s, len=length)
+
+    def room(self, t, c, length, out):
+        self.add(t, "query_room", [{"room": out}], None, c=c, len=length)
 
     def control(self, t, c, length, out, watch=None):
         self.add(t, "push_control", [out], watch, c=c, len=length)
@@ -263,17 +266,22 @@ def build_cases() -> list[tuple[str, dict]]:
     k.head(0, 0, 200, 1, 0)
     cases.append(k)
 
-    k = Case("hub-query-backpressure", "a Query pool refusal is backpressure, nothing is dropped; freed Query bytes make query_ready true and the retry is queued", [1])
-    k.query(0, 0, 1, 600, "queued")
+    k = Case("hub-query-backpressure", "query_room and push_query refuse a full connection pool and then a full global pool; nothing waits or is dropped, and reading a block restores room for a new request", [1, 2], global_query_bytes=1500)
+    k.room(0, 0, 600, True)
+    k.query(0, 0, 1, 600, "queued", watch={"c0": (0, 600, 0), "g": (0, 600, 0)})
+    k.room(0, 0, 600, False)
     k.query(0, 0, 1, 600, "backpressure")
-    k.add(0, "query_ready", [{"ready": False}], None, c=0, s=1)
+    k.query(0, 1, 2, 600, "queued", watch={"g": (0, 1200, 0)})
+    k.room(0, 1, 400, False)
+    k.query(0, 1, 2, 400, "backpressure")
     k.head(0, 0, 600, 1, 0)
-    k.add(0, "query_ready", [{"ready": False}], None, c=0, s=1)
+    k.room(0, 1, 400, False)
     k.wrote(0, 0, 600)
-    k.add(0, "query_ready", [{"ready": True}], None, c=0, s=1)
-    k.query(0, 0, 1, 600, "queued")
-    k.add(0, "query_ready", [{"ready": False}], None, c=0, s=1)
-    k.end(0, 0, 1, 2, 0)
+    k.room(0, 1, 400, True)
+    k.query(0, 1, 2, 400, "queued", watch={"c1": (0, 1000, 0), "g": (0, 1000, 0)})
+    k.room(0, 1, 1, False)
+    k.end(0, 0, 1, 1, 0)
+    k.end(0, 1, 2, 2, 0)
     cases.append(k)
 
     k = Case("hub-query-own-pool", "a query sheds no tick and a tick displaces no query block", [1, 2], global_live_bytes=800, query_queue_bytes=500)

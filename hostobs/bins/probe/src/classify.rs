@@ -15,8 +15,8 @@
 //! 7. `hello` when the connection is `Ready` (either mode): `bad-request`, key `verb` (R8);
 //! 8. JSON mode and a block verb: `binary-required`;
 //! 9. the verb is known but not served by this package: `unknown-verb`;
-//! 10. an outstanding `current` or `subscribe`: `too-many-requests` (other verb shapes are
-//!     never refused by it);
+//! 10. a one-block verb (`current`, `snapshot_at`) while the connection's Query pool holds
+//!     unwritten blocks: `too-many-requests` (other verbs are never refused by it);
 //! 11. the argument schema (`hello`, `status`, `current`, `subscribe`, `unsubscribe`):
 //!     `bad-request` with the schema path, or, for a JSON-mode `hello` with a `proto.major`
 //!     other than 1, `unsupported-version` (fatal, R8); a binary `hello.proto` must equal the
@@ -74,10 +74,10 @@ pub struct Prefix {
 /// The connection facts that join the pure precedence after the verb table.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ConnFacts {
-    /// The binary frame `corr` is a live subscription or pending request.
+    /// The binary frame `corr` is a live subscription.
     pub corr_in_use: bool,
-    /// `pending.len() >= max_outstanding`.
-    pub outstanding_full: bool,
+    /// The connection's Query pool holds at least one unwritten block.
+    pub query_occupied: bool,
     /// The intervals accepted by the connection's level.
     pub interval: IntervalRule,
 }
@@ -293,8 +293,13 @@ fn call_of(
     }
 }
 
-/// Step 10 after the served check. Block requests are refused by the outstanding cap;
-/// JSON-shape requests remain answerable (design S5, Q6).
+/// Whether `verb` answers one block in a single turn (WIRE.md section 5.1).
+fn one_block(verb: &Verb) -> bool {
+    matches!(verb.name, "current" | "snapshot_at")
+}
+
+/// Step 10 after the served check. A one-block request waits for the client to read the
+/// connection's previous query block; subscriptions and JSON-shaped requests remain answerable.
 fn call_after_served(
     query: &Query<'_>,
     corr: u32,
@@ -302,7 +307,7 @@ fn call_after_served(
     text: &[u8],
     facts: &ConnFacts,
 ) -> Result<Call, Refusal> {
-    if query.mode == Mode::Binary && facts.outstanding_full && verb.shape == Shape::Block {
+    if query.mode == Mode::Binary && facts.query_occupied && one_block(verb) {
         return Err(refuse(Code::TooManyRequests, corr));
     }
     call_of(query, corr, verb, text, facts)
@@ -317,7 +322,7 @@ pub fn classify(query: &Query<'_>) -> Result<Dispatch, Refusal> {
     classify_with(query, &ConnFacts::default())
 }
 
-/// Classify one request with the connection's live `corr`, outstanding and interval facts.
+/// Classify one request with the connection's live `corr`, Query pool and interval facts.
 ///
 /// # Errors
 ///
@@ -1056,7 +1061,7 @@ mod tests {
     fn full_facts() -> ConnFacts {
         ConnFacts {
             corr_in_use: false,
-            outstanding_full: true,
+            query_occupied: true,
             interval: IntervalRule {
                 min_ms: 1_000,
                 tick_ms: 1_000,
@@ -1116,7 +1121,7 @@ mod tests {
         let current = find(b"current").expect("current row");
         let query = binary(b"{}");
         let refusal = call_after_served(&query, 5, current, b"{}", &full_facts())
-            .expect_err("the outstanding cap wins");
+            .expect_err("the occupied Query pool wins");
         assert_eq!(
             (refusal.code, refusal.corr, refusal.detail),
             (Code::TooManyRequests, 5, Detail::Empty)
@@ -1129,7 +1134,21 @@ mod tests {
     }
 
     #[test]
-    fn classify_step_10_spares_json_shape_verbs() {
+    fn classify_step_10_spares_subscriptions_and_json_shape_verbs() {
+        let subscribe = find(b"subscribe").expect("subscribe row");
+        let subscribe_text = req("subscribe", SUBSCRIBE_ARGS);
+        let query = binary(subscribe_text.as_bytes());
+        let call = call_after_served(
+            &query,
+            5,
+            subscribe,
+            SUBSCRIBE_ARGS.as_bytes(),
+            &full_facts(),
+        )
+        .expect("subscribe starts a live stream, not a query block");
+        assert!(matches!(call, Call::Subscribe(_)));
+        assert_eq!(subscribe.shape, Shape::Block);
+
         let status = find(b"status").expect("status row");
         let status_text = req("status", "{}");
         let query = binary(status_text.as_bytes());
