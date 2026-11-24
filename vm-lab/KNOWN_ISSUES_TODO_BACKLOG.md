@@ -42,6 +42,30 @@ The Dockerfile was not built in RP-02 (a later step builds it; the package set m
 
 **Close-when:** the image builds and one guest boots from it; the program name is `vm-lab` in messages, with the tests updated.
 
+## VML-BL-07 Start on a plain Docker host
+
+`vm-lab start` needs a cockpit container today (self-inspection), so debian-rollback keeps a declared copy of vm-lab's argv in `poc/dr-qemu.sh`. Direction: skip self-inspection outside a cockpit container and take an explicit cgroup parent.
+
+**Close-when:** one live start on a test host without a cockpit container; debian-rollback `poc/dr-qemu.sh` deleted.
+
+Source: .controller-state/design-review-2026-11-24/debian-rollback.md H6
+
+## VML-BL-08 Guest session
+
+debian-rollback's `poc/dr-serial.py` has its own QMP client and a marker-framed serial `Guest` session (login, marker-framed run, reboot proven by boot_id, reset, keys). Direction: move that session into vm-lab on top of vmscreen's `QmpClient`; test images take commands via the QEMU guest agent or SSH, serial only for boot observation.
+
+**Close-when:** dr-serial imports it and has no QMP client of its own.
+
+Source: .controller-state/design-review-2026-11-24/debian-rollback.md H6
+
+## VML-BL-09 Boot an ESP fixture
+
+A cheap loader-contract oracle. Build an mtools ESP image from a directory, boot it with a Debian kernel and a tiny initramfs that prints `/proc/cmdline` to serial and powers off, with OVMF vars preseeded by `virt-fw-vars` (for example `LoaderEntryOneShot`).
+
+**Close-when:** the debian-rollback lane `loader-boot` passes on a head.
+
+Source: .controller-state/design-review-2026-11-24/debian-rollback.md H3
+
 ## RP-07 ciu service for the image (idea)
 
 Offer the QEMU image through a ciu service instead of a local `docker build`, so every host pulls one built image. Not started; depends on the release registration (VML-BL-01).
