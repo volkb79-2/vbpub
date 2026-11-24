@@ -37,6 +37,7 @@ iogovmon/
     experiment.py         `quiet-experiment`: plan printer only
   install.sh            idempotent installer helper (--dry-run prints every action); becomes the `install` verb in WP-IGM-b
   tools/write_installed_version.py  stamps source-install version provenance
+  tools/accept/         acceptance-2 tooling (fill stage, reference probe, stats, synthetic shift check); re-run notes in tools/accept/README.md
   units/*.in            systemd unit / slice / udev templates (rendered by install.sh, never installed as they are)
   iogovmon.toml.example configuration
   docs/DESIGN-GUIDE.md  the v1 design note

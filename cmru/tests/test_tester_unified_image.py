@@ -259,6 +259,14 @@ TESTER_AUGEAS_TOOLS_RUN = (
     '&& test "$(dpkg -S /usr/bin/augparse | cut -d: -f1)" = augeas-tools '
     "&& rm -rf /var/lib/apt/lists/*"
 )
+# TU-XORR (debian-rollback's offline lane packs NoCloud seed ISOs): an apt layer like TU-AUG's.
+TESTER_XORRISO_RUN = (
+    "apt-get update && apt-get install -y --no-install-recommends xorriso "
+    "&& test -x /usr/bin/xorriso "
+    '&& test "$(dpkg -S /usr/bin/xorriso | cut -d: -f1)" = xorriso '
+    "&& /usr/bin/xorriso -version "
+    "&& rm -rf /var/lib/apt/lists/*"
+)
 TESTER_NODE_LINKS_RUN = (
     "ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm "
     "&& ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx "
@@ -270,6 +278,7 @@ CMRU_PRE_SENSITIVE_RUN_BODIES = (
     TESTER_ZSH_RUN,
     TESTER_SYSTEMCTL_RUN,
     TESTER_AUGEAS_TOOLS_RUN,
+    TESTER_XORRISO_RUN,
     TESTER_NODE_LINKS_RUN,
     CMRU_SOURCE_TREE_CLEAN_RUN,
     CMRU_VENV_CLEAN_RUN,
@@ -4683,6 +4692,21 @@ def test_tester_unified_installs_real_augeas_tools_before_source_copy_layers():
         if line.startswith("COPY tester-unified/gen-requirements.py ")
     )
     assert augeas_index < source_copy_index
+
+
+def test_tester_unified_installs_real_xorriso_before_source_copy_layers():
+    """TU-XORR: debian-rollback's offline lane packs NoCloud seed ISOs with Debian's xorriso."""
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    instructions = _dockerfile_logical_instructions(dockerfile)
+    xorriso_runs = [line for line in instructions if line.startswith("RUN ") and "xorriso" in line]
+    assert xorriso_runs == [f"RUN {TESTER_XORRISO_RUN}"], xorriso_runs
+
+    xorriso_index = instructions.index(xorriso_runs[0])
+    source_copy_index = next(
+        index for index, line in enumerate(instructions)
+        if line.startswith("COPY tester-unified/gen-requirements.py ")
+    )
+    assert xorriso_index < source_copy_index
 
 
 def test_go_toolchain_is_selected_by_wings_configuration_and_recorded():
