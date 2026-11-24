@@ -343,6 +343,8 @@ MAX_EQUIVALENCE_ARTIFACT_BYTES = 16 * 1024 * 1024
 #: artifact ceiling above; 64 KiB is generous headroom over any single
 #: PostgreSQL error message.
 MAX_KILL_SIGNAL_BYTES = 64 * 1024
+
+
 class MutationDiscoveryError(AssayError):
     """A syntax-aware discovery BOUNDARY failed (P21/A-171).
 
@@ -366,6 +368,7 @@ class MutationDiscoveryError(AssayError):
             reason_code=ReasonCode.MUTATION_DISCOVERY_FAILED,
         )
 
+
 class InvalidRejudgeIdError(AssayError):
     """A requested candidate id is absent from the current candidate set."""
 
@@ -375,6 +378,7 @@ class InvalidRejudgeIdError(AssayError):
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
+
 
 class R2CommandProofError(AssayError):
     def __init__(self, message: str) -> None:
