@@ -582,7 +582,6 @@ pub struct IncarnationRegistry {
     /// The last round whose absence bookkeeping ran; 0 while round 0 is open.
     ended_round: u64,
     max_active: usize,
-    peak_active: usize,
     /// Live entries only, keyed by id so iteration and retirement order are stable.
     entries: BTreeMap<Incarnation, Entry>,
     by_key: HashMap<CgroupKey, Incarnation>,
@@ -612,7 +611,6 @@ impl IncarnationRegistry {
             round: 0,
             ended_round: 0,
             max_active,
-            peak_active: 0,
             entries: BTreeMap::new(),
             by_key: HashMap::new(),
             retired: 0,
@@ -699,7 +697,6 @@ impl IncarnationRegistry {
         };
         self.entries.insert(id, entry);
         self.by_key.insert(key, id);
-        self.peak_active = self.peak_active.max(self.entries.len());
         Ok(id)
     }
 
@@ -734,11 +731,11 @@ impl IncarnationRegistry {
             self.entries.remove(id);
             self.by_key.remove(key);
         }
-        // Removals leave hash-table tombstones. Rebuild after a retiring round with enough
-        // room for the peak live set observed so far, so churn cannot grow the reverse
-        // index beyond the configured live bound.
         if !retired.is_empty() {
-            let mut compact = HashMap::with_capacity(self.peak_active);
+            // Tombstone-heavy churn can grow a hash table past the live bound even when
+            // the live set stays small. Rebuild at the configured bound, never at an
+            // all-time peak.
+            let mut compact = HashMap::with_capacity(self.max_active);
             compact.extend(self.entries.values().map(|entry| (entry.key, entry.id)));
             self.by_key = compact;
         }

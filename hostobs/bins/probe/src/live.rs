@@ -1,6 +1,6 @@
 //! The production backend: answers from the turn's immutable published tick only.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use hostobs_proto::dict::Entry;
@@ -69,25 +69,49 @@ impl Backend for ProbeBackend {
         }
         let data = self.tick.data();
         let limit = usize::try_from(max_rows).unwrap_or(usize::MAX);
-        let mut resolved = Vec::new();
-        let mut seen = HashSet::new();
-        for (row_index, row) in data.rows.iter().enumerate() {
-            let Some(Entry::Entity { inc, label }) = data.entries.get(row.ent as usize) else {
-                continue;
-            };
-            if !selection
-                .entities()
-                .iter()
-                .any(|selector| matches_selector(selector, *inc, label))
-                || !seen.insert(row.ent)
-            {
-                continue;
+        let scan_required = selection
+            .entities()
+            .iter()
+            .any(|selector| matches!(selector, Sel::Prefix(_) | Sel::All));
+        let mut resolved = BTreeSet::new();
+        if scan_required {
+            for (row_index, row) in data.rows.iter().enumerate() {
+                let Some(Entry::Entity { inc, label }) = data.entries.get(row.ent as usize) else {
+                    continue;
+                };
+                if selection
+                    .entities()
+                    .iter()
+                    .any(|selector| matches_selector(selector, *inc, label))
+                    && resolved.insert(row_index)
+                    && resolved.len() > limit
+                {
+                    return Err(BackendError::TooManyRows);
+                }
             }
-            resolved.push((row_index, row.t_off_us));
-            if resolved.len() > limit {
-                return Err(BackendError::TooManyRows);
+        } else {
+            for selector in selection.entities() {
+                let row_index = match selector {
+                    Sel::Inc(inc) => self.tick.row_for_inc(*inc),
+                    Sel::Path(path) => self.tick.row_for_label(path),
+                    Sel::Prefix(_) | Sel::All => None,
+                };
+                if let Some(row_index) = row_index {
+                    resolved.insert(row_index);
+                    if resolved.len() > limit {
+                        return Err(BackendError::TooManyRows);
+                    }
+                }
             }
         }
+        let resolved: Vec<(usize, u32)> = resolved
+            .into_iter()
+            .filter_map(|row_index| {
+                data.rows
+                    .get(row_index)
+                    .map(|row| (row_index, row.t_off_us))
+            })
+            .collect();
 
         let entity_count = u32::try_from(resolved.len()).unwrap_or(u32::MAX);
         let mut entries =
@@ -104,10 +128,10 @@ impl Backend for ProbeBackend {
 
         let mut columns = Vec::new();
         for name in selection.metrics() {
-            let Some((slot, column)) = self.tick.metric_column(name) else {
+            let Some((metric_entry, column)) = self.tick.metric_column(name) else {
                 continue;
             };
-            let Some(Entry::Metric { facts, .. }) = data.entries.get(slot.entry as usize) else {
+            let Some(Entry::Metric { facts, .. }) = data.entries.get(metric_entry as usize) else {
                 continue;
             };
             entries.push(Entry::Metric {

@@ -10,10 +10,10 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use hostobs_kernel::cgroup::{
-    self, Absence, CgroupSnapshot, DeviceTopology, FixedTopology, KernelError, Readings,
+    self, Absence, CgroupSnapshot, DeviceTopology, FixedTopology, KernelError,
 };
 use hostobs_kernel::clock::{Clock, SystemClock, Timeline};
-use hostobs_kernel::fs::{Fs, RealFs};
+use hostobs_kernel::fs::{Fs, FsError, RealFs};
 use hostobs_kernel::identity::cgroup_identity;
 use hostobs_kernel::procfs::{self, HostSnapshot, Proc, Roots};
 use hostobs_kernel::Bounds;
@@ -31,51 +31,73 @@ use crate::backend::TickData;
 
 const MAX_SLEEP_NS: u64 = 100_000_000;
 
-const CGROUP_METRICS: [&str; 31] = [
-    "cpu.usage_usec",
-    "cpu.user_usec",
-    "cpu.system_usec",
-    "mem.current",
-    "mem.anon",
-    "mem.file",
-    "mem.swap_current",
-    "pids.current",
-    "io.rbytes",
-    "io.wbytes",
-    "io.rios",
-    "io.wios",
-    "io.dbytes",
-    "io.dios",
-    "io.cost.usage",
-    "io.cost.wait",
-    "io.cost.indelay",
-    "io.cost.vrate",
-    "memev.oom_kill",
-    "psi.cpu.some.avg10",
-    "psi.cpu.full.avg10",
-    "psi.cpu.some.total",
-    "psi.cpu.full.total",
-    "psi.memory.some.avg10",
-    "psi.memory.full.avg10",
-    "psi.memory.some.total",
-    "psi.memory.full.total",
-    "psi.io.some.avg10",
-    "psi.io.full.avg10",
-    "psi.io.some.total",
-    "psi.io.full.total",
+type MetricMapping = (&'static str, &'static str, &'static str);
+const METRIC_MAPPINGS: &[MetricMapping] = &[
+    ("cpu.stat", "cpu.usage_usec", "cpu.usage_usec"),
+    ("cpu.stat", "cpu.user_usec", "cpu.user_usec"),
+    ("cpu.stat", "cpu.system_usec", "cpu.system_usec"),
+    ("memory.current", "mem.current", "mem.current"),
+    ("memory.stat", "mem.stat.anon", "mem.anon"),
+    ("memory.stat", "mem.stat.file", "mem.file"),
+    (
+        "memory.swap.current",
+        "mem.swap_current",
+        "mem.swap_current",
+    ),
+    ("pids.current", "pids.current", "pids.current"),
+    ("io.stat", "io.rbytes", "io.rbytes"),
+    ("io.stat", "io.wbytes", "io.wbytes"),
+    ("io.stat", "io.rios", "io.rios"),
+    ("io.stat", "io.wios", "io.wios"),
+    ("io.stat", "io.dbytes", "io.dbytes"),
+    ("io.stat", "io.dios", "io.dios"),
+    ("io.stat", "io.cost.usage", "io.cost.usage"),
+    ("io.stat", "io.cost.wait", "io.cost.wait"),
+    ("io.stat", "io.cost.indelay", "io.cost.indelay"),
+    ("io.stat", "io.cost.vrate", "io.cost.vrate"),
+    ("memory.events", "memev.oom_kill", "memev.oom_kill"),
+    ("cpu.pressure", "psi.cpu.some.avg10", "psi.cpu.some.avg10"),
+    ("cpu.pressure", "psi.cpu.full.avg10", "psi.cpu.full.avg10"),
+    ("cpu.pressure", "psi.cpu.some.total", "psi.cpu.some.total"),
+    ("cpu.pressure", "psi.cpu.full.total", "psi.cpu.full.total"),
+    (
+        "memory.pressure",
+        "psi.memory.some.avg10",
+        "psi.memory.some.avg10",
+    ),
+    (
+        "memory.pressure",
+        "psi.memory.full.avg10",
+        "psi.memory.full.avg10",
+    ),
+    (
+        "memory.pressure",
+        "psi.memory.some.total",
+        "psi.memory.some.total",
+    ),
+    (
+        "memory.pressure",
+        "psi.memory.full.total",
+        "psi.memory.full.total",
+    ),
+    ("io.pressure", "psi.io.some.avg10", "psi.io.some.avg10"),
+    ("io.pressure", "psi.io.full.avg10", "psi.io.full.avg10"),
+    ("io.pressure", "psi.io.some.total", "psi.io.some.total"),
+    ("io.pressure", "psi.io.full.total", "psi.io.full.total"),
+    ("proc.stat", "proc.ctxt", "host.ctxt"),
+    ("proc.stat", "proc.processes", "host.forks"),
+    ("proc.stat", "proc.procs_running", "host.procs_running"),
+    ("proc.stat", "proc.procs_blocked", "host.procs_blocked"),
+    ("loadavg", "one", "host.load1"),
+    ("loadavg", "five", "host.load5"),
+    ("loadavg", "fifteen", "host.load15"),
+    ("daemon", "cgroups_skipped", "probe.cgroups_skipped"),
+    ("daemon", "ticks_skipped", "probe.ticks_skipped"),
 ];
 
-const HOST_METRICS: [&str; 7] = [
-    "host.ctxt",
-    "host.forks",
-    "host.procs_running",
-    "host.procs_blocked",
-    "host.load1",
-    "host.load5",
-    "host.load15",
-];
-
-const DAEMON_METRICS: [&str; 2] = ["probe.cgroups_skipped", "probe.ticks_skipped"];
+type MetricColumnIndex = BTreeMap<String, usize>;
+type EntityIndex = BTreeMap<u64, usize>;
+type LabelIndex = BTreeMap<String, usize>;
 
 /// The fixed facts of one sampler process.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -97,35 +119,38 @@ pub struct SamplerConfig {
 pub struct Tick {
     data: TickData,
     scan_ms: u32,
-    metric_columns: BTreeMap<String, MetricSlot>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct MetricSlot {
-    pub(crate) entry: u32,
-    pub(crate) column: usize,
+    metric_columns: Arc<MetricColumnIndex>,
+    entity_inc: EntityIndex,
+    entity_label: LabelIndex,
 }
 
 impl Tick {
     /// Build a tick, indexing the metric dictionary entries clients may request.
     #[must_use]
     pub fn new(data: TickData, scan_ms: u32) -> Tick {
-        let mut metric_columns = BTreeMap::new();
-        for (column, value) in data.columns.iter().enumerate() {
-            if let Some(Entry::Metric { name, .. }) = data.entries.get(value.metric as usize) {
-                metric_columns.insert(
-                    name.clone(),
-                    MetricSlot {
-                        entry: value.metric,
-                        column,
-                    },
-                );
-            }
-        }
+        let metric_columns = Arc::new(metric_column_index(&data));
+        let (entity_inc, entity_label) = entity_index(&data);
         Tick {
             data,
             scan_ms,
             metric_columns,
+            entity_inc,
+            entity_label,
+        }
+    }
+
+    fn with_metric_columns(
+        data: TickData,
+        scan_ms: u32,
+        metric_columns: Arc<MetricColumnIndex>,
+    ) -> Tick {
+        let (entity_inc, entity_label) = entity_index(&data);
+        Tick {
+            data,
+            scan_ms,
+            metric_columns,
+            entity_inc,
+            entity_label,
         }
     }
 
@@ -147,10 +172,44 @@ impl Tick {
         self.data.header.seq
     }
 
-    pub(crate) fn metric_column(&self, name: &str) -> Option<(MetricSlot, &Column)> {
-        let slot = self.metric_columns.get(name).copied()?;
-        Some((slot, self.data.columns.get(slot.column)?))
+    pub(crate) fn metric_column(&self, name: &str) -> Option<(u32, &Column)> {
+        let column = self.data.columns.get(*self.metric_columns.get(name)?)?;
+        Some((column.metric, column))
     }
+
+    pub(crate) fn row_for_inc(&self, inc: u64) -> Option<usize> {
+        self.entity_inc.get(&inc).copied()
+    }
+
+    pub(crate) fn row_for_label(&self, label: &str) -> Option<usize> {
+        self.entity_label.get(label).copied()
+    }
+}
+
+fn metric_column_index(data: &TickData) -> MetricColumnIndex {
+    data.columns
+        .iter()
+        .enumerate()
+        .filter_map(|(column, value)| {
+            let Entry::Metric { name, .. } = data.entries.get(value.metric as usize)? else {
+                return None;
+            };
+            Some((name.clone(), column))
+        })
+        .collect()
+}
+
+fn entity_index(data: &TickData) -> (EntityIndex, LabelIndex) {
+    let mut by_inc = EntityIndex::new();
+    let mut by_label = LabelIndex::new();
+    for (row_index, row) in data.rows.iter().enumerate() {
+        let Some(Entry::Entity { inc, label }) = data.entries.get(row.ent as usize) else {
+            continue;
+        };
+        by_inc.entry(*inc).or_insert(row_index);
+        by_label.entry(label.clone()).or_insert(row_index);
+    }
+    (by_inc, by_label)
 }
 
 /// The sampler's single-slot publication.
@@ -166,7 +225,7 @@ impl Published {
     #[must_use]
     pub fn new(started_mono_ns: u64, started_real_ns: i64) -> Published {
         Published {
-            current: Mutex::new(Arc::new(Tick::new(TickData::empty(), 0))),
+            current: Mutex::new(Arc::new(Tick::new(empty_tick_data(), 0))),
             started_mono_ns,
             started_real_ns,
         }
@@ -219,6 +278,7 @@ pub struct Sampler<F, C> {
     registry: IncarnationRegistry,
     metrics: Vec<MetricSpec>,
     positions: BTreeMap<&'static str, usize>,
+    metric_columns: Arc<MetricColumnIndex>,
     seq: u64,
     ticks_skipped: u64,
     next_deadline_ns: u64,
@@ -248,6 +308,13 @@ impl<F: Fs, C: Clock> Sampler<F, C> {
             .enumerate()
             .map(|(index, metric)| (metric.name, index))
             .collect();
+        let metric_columns = Arc::new(
+            metrics
+                .iter()
+                .enumerate()
+                .map(|(column, metric)| (metric.name.to_string(), column))
+                .collect(),
+        );
         let next_deadline_ns = clock.mono_ns();
         Sampler {
             fs,
@@ -258,6 +325,7 @@ impl<F: Fs, C: Clock> Sampler<F, C> {
             registry: IncarnationRegistry::with_max(registry_max),
             metrics,
             positions,
+            metric_columns,
             seq: 0,
             ticks_skipped: 0,
             next_deadline_ns,
@@ -286,7 +354,6 @@ impl<F: Fs, C: Clock> Sampler<F, C> {
                 &mut samples,
                 &row.path,
                 &snapshot,
-                row.label == "/",
             );
             if row.label == "/" {
                 fill_host(&self.positions, &mut samples, &host);
@@ -325,7 +392,7 @@ impl<F: Fs, C: Clock> Sampler<F, C> {
             &self.metrics,
             &all_samples,
         );
-        Tick::new(data, scan_ms)
+        Tick::with_metric_columns(data, scan_ms, Arc::clone(&self.metric_columns))
     }
 
     fn absent_samples(&self) -> Vec<Sample> {
@@ -356,14 +423,18 @@ impl<F: Fs, C: Clock> Sampler<F, C> {
             } else {
                 None
             };
+            let mut published = false;
             if publishable {
                 match identity {
                     Some((_, key)) => match self.registry.observe(key, Some(&label)) {
-                        Ok(inc) if seen.insert(inc) => rows.push(WalkedRow {
-                            path: path.clone(),
-                            label: label.clone(),
-                            inc: inc.raw(),
-                        }),
+                        Ok(inc) if seen.insert(inc) => {
+                            rows.push(WalkedRow {
+                                path: path.clone(),
+                                label: label.clone(),
+                                inc: inc.raw(),
+                            });
+                            published = true;
+                        }
                         Ok(_) => skipped = skipped.saturating_add(1),
                         Err(ModelIdentityError::RegistryFull { .. }) => {
                             skipped = skipped.saturating_add(1);
@@ -378,6 +449,7 @@ impl<F: Fs, C: Clock> Sampler<F, C> {
 
             let children = match self.fs.list(&path, Bounds::POLICY.max_entries) {
                 Ok(children) => children,
+                Err(FsError::NotFound) if published => continue,
                 Err(_) => {
                     skipped = skipped.saturating_add(1);
                     continue;
@@ -420,36 +492,31 @@ struct WalkedRow {
     inc: u64,
 }
 
-impl TickData {
-    fn empty() -> TickData {
-        TickData {
-            header: BlockHeaderFacts {
-                boot_id: [0; 16],
-                epoch: 0,
-                seq: 0,
-                mono_start_ns: 0,
-                mono_end_ns: 0,
-                boot_ns: 0,
-                real_ns: 0,
-                dict_gen: 0,
-                n_rows: 0,
-                dropped: 0,
-                flags: 0,
-            },
-            entries: Vec::new(),
-            rows: Vec::new(),
-            columns: Vec::new(),
-        }
+fn empty_tick_data() -> TickData {
+    TickData {
+        header: BlockHeaderFacts {
+            boot_id: [0; 16],
+            epoch: 0,
+            seq: 0,
+            mono_start_ns: 0,
+            mono_end_ns: 0,
+            boot_ns: 0,
+            real_ns: 0,
+            dict_gen: 0,
+            n_rows: 0,
+            dropped: 0,
+            flags: 0,
+        },
+        entries: Vec::new(),
+        rows: Vec::new(),
+        columns: Vec::new(),
     }
 }
 
 fn supported_metrics(registry: &MetricRegistry) -> Vec<MetricSpec> {
-    let names = CGROUP_METRICS
-        .into_iter()
-        .chain(HOST_METRICS)
-        .chain(DAEMON_METRICS);
-    names
-        .map(|name| {
+    METRIC_MAPPINGS
+        .iter()
+        .map(|&(_, _, name)| {
             let metric = registry.get(name).expect("supported metric is registered");
             MetricSpec {
                 name,
@@ -500,169 +567,62 @@ fn set(
     }
 }
 
-fn fill_file(
-    positions: &BTreeMap<&'static str, usize>,
-    samples: &mut [Sample],
-    snapshot: &CgroupSnapshot,
-    file: &str,
-    mappings: &[(&str, &'static str)],
-) {
-    if let Some(readings) = snapshot.readings_of(file) {
-        for (reader, published) in mappings {
-            if let Some(&sample) = readings.get(reader) {
-                set(positions, samples, published, sample);
-            }
-        }
-    } else {
-        let quality = snapshot
-            .failure_of(file)
-            .map_or(Quality::Absent, KernelError::quality);
-        fill_group(positions, samples, mappings, quality);
-    }
-}
-
-fn fill_group(
-    positions: &BTreeMap<&'static str, usize>,
-    samples: &mut [Sample],
-    mappings: &[(&str, &'static str)],
-    quality: Quality,
-) {
-    for (_, published) in mappings {
-        set(positions, samples, published, missing(quality));
-    }
-}
-
 fn fill_cgroup<F: Fs>(
     fs: &F,
     positions: &BTreeMap<&'static str, usize>,
     samples: &mut [Sample],
     dir: &Path,
     snapshot: &CgroupSnapshot,
-    root: bool,
 ) {
-    fill_file(
-        positions,
-        samples,
-        snapshot,
-        "cpu.stat",
-        &[
-            ("cpu.usage_usec", "cpu.usage_usec"),
-            ("cpu.user_usec", "cpu.user_usec"),
-            ("cpu.system_usec", "cpu.system_usec"),
-        ],
-    );
-    fill_file(
-        positions,
-        samples,
-        snapshot,
-        "memory.current",
-        &[("mem.current", "mem.current")],
-    );
-    fill_file(
-        positions,
-        samples,
-        snapshot,
-        "memory.stat",
-        &[("mem.stat.anon", "mem.anon"), ("mem.stat.file", "mem.file")],
-    );
-    fill_file(
-        positions,
-        samples,
-        snapshot,
-        "memory.swap.current",
-        &[("mem.swap_current", "mem.swap_current")],
-    );
-    fill_file(
-        positions,
-        samples,
-        snapshot,
-        "pids.current",
-        &[("pids.current", "pids.current")],
-    );
-    fill_file(
-        positions,
-        samples,
-        snapshot,
-        "memory.events",
-        &[("memev.oom_kill", "memev.oom_kill")],
-    );
-    fill_file(
-        positions,
-        samples,
-        snapshot,
-        "io.stat",
-        &[
-            ("io.rbytes", "io.rbytes"),
-            ("io.wbytes", "io.wbytes"),
-            ("io.rios", "io.rios"),
-            ("io.wios", "io.wios"),
-            ("io.dbytes", "io.dbytes"),
-            ("io.dios", "io.dios"),
-            ("io.cost.usage", "io.cost.usage"),
-            ("io.cost.wait", "io.cost.wait"),
-            ("io.cost.indelay", "io.cost.indelay"),
-            ("io.cost.vrate", "io.cost.vrate"),
-        ],
-    );
-    if root {
-        return;
-    }
-    for (resource, file) in [
-        (cgroup::PressureResource::Cpu, "cpu.pressure"),
-        (cgroup::PressureResource::Memory, "memory.pressure"),
-        (cgroup::PressureResource::Io, "io.pressure"),
-    ] {
-        let result = cgroup::read_file(fs, dir, file, Bounds::POLICY, Absence::Feature)
-            .and_then(|bytes| cgroup::parse_pressure(resource, &bytes, Bounds::POLICY));
-        fill_pressure(positions, samples, result, resource.name());
-    }
-}
-
-fn fill_pressure(
-    positions: &BTreeMap<&'static str, usize>,
-    samples: &mut [Sample],
-    result: Result<Readings, KernelError>,
-    resource: &str,
-) {
-    let names = pressure_names(resource);
-    match result {
-        Ok(readings) => {
-            for name in names {
-                let sample = readings
-                    .get(name)
+    let mut current_file = None;
+    let mut readings = None;
+    let mut failure_quality = Quality::Absent;
+    let mut pressure = None;
+    for &(file, reader, published) in METRIC_MAPPINGS {
+        if matches!(file, "proc.stat" | "loadavg" | "daemon") {
+            continue;
+        }
+        if current_file != Some(file) {
+            current_file = Some(file);
+            if let Some(resource) = pressure_resource(file) {
+                let loaded = cgroup::read_file(fs, dir, file, Bounds::POLICY, Absence::Feature)
+                    .and_then(|bytes| cgroup::parse_pressure(resource, &bytes, Bounds::POLICY));
+                pressure = Some(loaded);
+                readings = None;
+            } else {
+                readings = snapshot.readings_of(file);
+                failure_quality = snapshot
+                    .failure_of(file)
+                    .map_or(Quality::Absent, KernelError::quality);
+                pressure = None;
+            }
+        }
+        let sample = if let Some(result) = &pressure {
+            match result {
+                Ok(contents) => contents
+                    .get(reader)
                     .copied()
-                    .unwrap_or_else(|| missing(Quality::Unsupported));
-                set(positions, samples, name, sample);
+                    .unwrap_or_else(|| missing(Quality::Unsupported)),
+                Err(error) => missing(error.quality()),
             }
-        }
-        Err(error) => {
-            for name in names {
-                set(positions, samples, name, missing(error.quality()));
-            }
-        }
+        } else if let Some(contents) = readings {
+            contents
+                .get(reader)
+                .copied()
+                .unwrap_or_else(|| missing(Quality::Unsupported))
+        } else {
+            missing(failure_quality)
+        };
+        set(positions, samples, published, sample);
     }
 }
 
-fn pressure_names(resource: &str) -> [&'static str; 4] {
-    match resource {
-        "cpu" => [
-            "psi.cpu.some.avg10",
-            "psi.cpu.full.avg10",
-            "psi.cpu.some.total",
-            "psi.cpu.full.total",
-        ],
-        "memory" => [
-            "psi.memory.some.avg10",
-            "psi.memory.full.avg10",
-            "psi.memory.some.total",
-            "psi.memory.full.total",
-        ],
-        _ => [
-            "psi.io.some.avg10",
-            "psi.io.full.avg10",
-            "psi.io.some.total",
-            "psi.io.full.total",
-        ],
+fn pressure_resource(file: &str) -> Option<cgroup::PressureResource> {
+    match file {
+        "cpu.pressure" => Some(cgroup::PressureResource::Cpu),
+        "memory.pressure" => Some(cgroup::PressureResource::Memory),
+        "io.pressure" => Some(cgroup::PressureResource::Io),
+        _ => None,
     }
 }
 
@@ -671,76 +631,27 @@ fn fill_host(
     samples: &mut [Sample],
     host: &HostSnapshot,
 ) {
-    let stat = [
-        ("proc.ctxt", "host.ctxt"),
-        ("proc.processes", "host.forks"),
-        ("proc.procs_running", "host.procs_running"),
-        ("proc.procs_blocked", "host.procs_blocked"),
-    ];
-    match &host.stat {
-        Ok(readings) => {
-            for (reader, published) in stat {
-                let sample = readings
+    for &(file, reader, published) in METRIC_MAPPINGS {
+        let sample = match file {
+            "proc.stat" => match &host.stat {
+                Ok(readings) => readings
                     .get(reader)
                     .copied()
-                    .unwrap_or_else(|| missing(Quality::Unsupported));
-                set(positions, samples, published, sample);
-            }
-        }
-        Err(error) => {
-            for (_, published) in stat {
-                set(positions, samples, published, missing(error.quality()));
-            }
-        }
-    }
-    match &host.loadavg {
-        Ok(load) => {
-            set(
-                positions,
-                samples,
-                "host.load1",
-                measured(Value::F64(load.one)),
-            );
-            set(
-                positions,
-                samples,
-                "host.load5",
-                measured(Value::F64(load.five)),
-            );
-            set(
-                positions,
-                samples,
-                "host.load15",
-                measured(Value::F64(load.fifteen)),
-            );
-        }
-        Err(error) => {
-            for published in ["host.load1", "host.load5", "host.load15"] {
-                set(positions, samples, published, missing(error.quality()));
-            }
-        }
-    }
-    for (resource, result) in [
-        ("cpu", &host.pressure_cpu),
-        ("memory", &host.pressure_memory),
-        ("io", &host.pressure_io),
-    ] {
-        match result {
-            Ok(readings) => {
-                for name in pressure_names(resource) {
-                    let sample = readings
-                        .get(name)
-                        .copied()
-                        .unwrap_or_else(|| missing(Quality::Unsupported));
-                    set(positions, samples, name, sample);
-                }
-            }
-            Err(error) => {
-                for name in pressure_names(resource) {
-                    set(positions, samples, name, missing(error.quality()));
-                }
-            }
-        }
+                    .unwrap_or_else(|| missing(Quality::Unsupported)),
+                Err(error) => missing(error.quality()),
+            },
+            "loadavg" => match &host.loadavg {
+                Ok(load) => measured(Value::F64(match reader {
+                    "one" => load.one,
+                    "five" => load.five,
+                    "fifteen" => load.fifteen,
+                    _ => continue,
+                })),
+                Err(error) => missing(error.quality()),
+            },
+            _ => continue,
+        };
+        set(positions, samples, published, sample);
     }
 }
 
@@ -836,6 +747,7 @@ fn encode(sample: Sample, expected: MetricValueType) -> (u64, Quality) {
     }
 }
 
+/// Advance to the first deadline at or after `now`, returning the deadlines skipped.
 fn advance_deadline(next: &mut u64, now_ns: u64, tick_ns: u64) -> u64 {
     if tick_ns == 0 {
         return 0;
@@ -853,7 +765,13 @@ fn advance_deadline(next: &mut u64, now_ns: u64, tick_ns: u64) -> u64 {
 
 fn signal(wake: &OwnedFd) {
     let one = 1u64.to_le_bytes();
-    let _ = rustix::io::write(wake, &one);
+    match rustix::io::write(wake, &one) {
+        Ok(_) => {}
+        Err(rustix::io::Errno::AGAIN) => {}
+        Err(_) => {
+            // This side has no error channel; the driver still sees the stop flag.
+        }
+    }
 }
 
 fn publish(published: &Published, wake: &OwnedFd, tick: Arc<Tick>) {
@@ -923,6 +841,7 @@ pub fn spawn(
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     use hostobs_kernel::fs::MemFs;
     use hostobs_model::identity::Incarnation;
@@ -983,6 +902,12 @@ mod tests {
         fs.file("/cg/memory.current", "4096\n", 3);
         fs.file("/cg/memory.stat", "anon 1000\nfile 2000\n", 4);
         fs.file("/cg/io.stat", "8:0 rbytes=5 wbytes=6 rios=7 wios=8\n", 5);
+        fs.file(
+            "/cg/cpu.pressure",
+            "some avg10=1.00 avg60=0.50 avg300=0.20 total=5000\n\
+             full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+            11,
+        );
         fs.directory("/cg/a.slice", 6);
         fs.file("/cg/a.slice/cpu.stat", "usage_usec 20\n", 7);
         fs.directory("/cg/b.slice", 8);
@@ -1050,6 +975,11 @@ mod tests {
         assert_eq!(value(&tick, "cpu.usage_usec", 0), (10, Quality::Ok.code()));
         assert_eq!(value(&tick, "mem.current", 0), (4096, Quality::Ok.code()));
         assert_eq!(value(&tick, "mem.anon", 0), (1000, Quality::Ok.code()));
+        assert_eq!(
+            value(&tick, "psi.cpu.some.total", 0),
+            (5000, Quality::Ok.code()),
+            "the root row publishes its own cgroup PSI"
+        );
         assert_eq!(value(&tick, "cpu.usage_usec", 1), (20, Quality::Ok.code()));
         assert_eq!(
             value(&tick, "io.rbytes", 0),
@@ -1093,15 +1023,38 @@ mod tests {
         };
         sampler.tick();
         assert!(sampler.registry.is_active(Incarnation::from_raw(child)));
+        sampler.fs = {
+            let mut back = MemFs::new();
+            back.directory("/cg", 1);
+            back.directory("/cg/a.slice", 2);
+            back
+        };
+        let back = sampler.tick();
+        assert_eq!(
+            incs(&back)[1],
+            child,
+            "a cgroup missing one round and coming back keeps its inc"
+        );
+
+        sampler.fs = {
+            let mut gone = MemFs::new();
+            gone.directory("/cg", 1);
+            gone
+        };
+        sampler.tick();
         sampler.tick();
         assert!(!sampler.registry.is_active(Incarnation::from_raw(child)));
 
         let mut recycled = MemFs::new();
         recycled.directory("/cg", 1);
-        recycled.directory("/cg/a.slice", 3);
+        recycled.directory("/cg/a.slice", 2);
         sampler.fs = recycled;
         let next = sampler.tick();
-        assert_ne!(incs(&next)[1], child, "a recycled inode mints a new inc");
+        assert_ne!(
+            incs(&next)[1],
+            child,
+            "a recycled inode mints a new inc after retirement"
+        );
     }
 
     #[test]
@@ -1272,6 +1225,14 @@ mod tests {
         assert!(published.load().seq() >= 1);
         stop.store(true, Ordering::Release);
         signal(&read);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !joined.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "sampler thread did not join within 30 s"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         joined.join().expect("sampler thread");
     }
 }

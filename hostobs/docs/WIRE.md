@@ -437,8 +437,9 @@ cgroup's path relative to the configured root (`/` for the root and `/a.slice/b.
 and `all` matches every row. It contains only metrics registered in the model table, with that table's
 facts; host readings from `/proc` and daemon `probe.*` metrics appear only on the root row and are
 `absent` on every other row, while cgroup columns are dense and carry a quality code on every row
-(a missing or failed reading has a non-measured placeholder, never a measured zero). Derived metrics
-are not produced. A selection resolving to no rows is successful with zero rows; only the seq-0
+(a missing or failed reading has a non-measured placeholder, never a measured zero).
+`probe.cgroups_skipped` counts cgroups and directory listings the walk left out in that tick (a refused listing counts once).
+Derived metrics are not produced. A selection resolving to no rows is successful with zero rows; only the seq-0
 "no tick yet" state is `unavailable`, and an unregistered requested metric yields no column.
 
 4.8 **snapshot_at** — args `{"selection": Selection, "real_ns": i64, "tier": "auto|hot|warm|cold",
@@ -843,10 +844,9 @@ corr) is a new stream. Exported segments carry it in every record (plan §C.5).
 6.4 **Epoch.** A probe process takes a new epoch at start, the `CLOCK_BOOTTIME` nanoseconds at process
 start, so greater than every earlier epoch of the same boot; nothing is persisted. It keeps that
 epoch until it exits; epoch and boot therefore never change within a connection. On reconnect a
-client MUST drop every dictionary and live
-subscription; if `hello.epoch` or `hello.boot_id` differs it MUST also drop cursors and open span keys
-and report `session-lost`/`window-lost` for any session or window it held (plan §D.2); with the same
-epoch its cursors stay valid.
+client MUST drop every dictionary and live subscription; if `hello.epoch` or `hello.boot_id` differs
+it MUST also drop cursors and open span keys and report `session-lost`/`window-lost` for any session
+or window it held (plan §D.2); with the same epoch its cursors stay valid.
 6.5 A client that sees any decoder error on a BLOCK MUST close the connection and reconnect (the
 server is the only producer, so the stream is no longer trustworthy).
 
@@ -1470,7 +1470,7 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | D-W51 | JSON mode is served at observer and control only; at observe and operator a `{` first byte is answered with one `binary-required` line (`corr` 0) and the connection closes, at mode detection (§1.3); `binary-required` becomes connection-fatal and §4.2 step 8 is retired | the JSON consumers (`hostobs-mark`, run-gate control, assay observer) live at observer and control, and JSON mode at block levels could only do `hello`, `status`, `unsubscribe` (review F11); refusing at the first byte needs no line reader or parse there and reuses the `unknown-mode` one-line path; `hello` is optional in JSON mode, so it cannot be the point, and waiting for the first line would parse a request only to refuse it; `binary-required` was otherwise unreachable (BLK verbs are `forbidden` at JSON levels) and tells the client what to do |
 | D-W52 | `tick_ms`, `max_rows`, `max_block_bytes`, `client_queue_bytes`, `query_queue_bytes` and the history caps are probe-wide keys (the `hello` ones announced equally at observe and operator); defaults `max_rows` 1,024, `query_queue_bytes` 1 MiB (global Query 4 MiB), `max_block_bytes` 1 MiB, history concurrency 2 per connection / 8 per probe (applied when history is served); Live defaults unchanged | the per-level values were min/max-unified across observe and operator, so a per-level setting could not take effect (review F7); sized to the workload (≤ 500 cgroups, 5k PIDs, ≤ 16 telemetry clients): 1,024 rows is 2× the cgroup count, not 8×; worst-case query RAM including queued Query bytes is 6 MiB ≤ 9 MiB, and the widest 1,024-row block (890,624 B) still fits `max_block_bytes` (§5.1 "Query RAM") |
 | D-W53 | No per-uid Live or Query pools; the per-uid connection and selection caps stay (D-W20) but never bind below the level caps at observe: per-uid connections 16 = the observe level cap, per-uid selections 8 = the level's selection cap (operator's per-uid connection cap 4 of 8 stays: operator clients are interactive tools, not shared-uid telemetry) | the Live victim rule already sheds the largest holder, so a uid's many connections shed themselves first; a per-uid Query pool equal to one connection's (×1) would serialize every client of one service uid, the expected case for ≤ 16 estate clients under a few uids, and leave the global pool unreachable; for the same reason the per-uid caps must not refuse those clients before the level is full; global caps keep the memory bound unchanged. Residual: any few slowly reading connections, of one uid or several, can keep the global Query pool full; other clients get `budget {"pool":"query"}` and retry. Each pinned block must complete within `frame_completion_ms`, so the hold lasts only while those clients keep reading |
-| D-W54 | A process epoch is the `CLOCK_BOOTTIME` nanosecond value at process start; nothing is persisted | boot time includes suspend, so it is greater than every earlier epoch of the same boot without a durable counter or an fsync on the start path |
+| D-W54 | A process epoch is the `CLOCK_BOOTTIME` nanosecond value at process start; nothing is persisted | monotonic within a boot, so greater than every earlier epoch of that boot; BOOTTIME so it matches the header's `boot_ns` timeline |
 | D-W55 | A live block has one row per published cgroup incarnation and the live-block contents paragraph's dense, quality-bearing columns; only registered non-derived metrics are published, and host and daemon metrics are root-row only | absence is a quality, never zero; a bounded tick makes a cut walk visible and gives `current {"all":true}` a truthful `max_rows + 1` refusal |
 
 ### Divergences (code or plan vs this document)

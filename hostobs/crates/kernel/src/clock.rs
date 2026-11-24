@@ -196,10 +196,14 @@ impl SystemClock {
     }
 }
 
-fn timespec_ns(value: rustix::time::Timespec) -> u64 {
-    let nanos = i128::from(value.tv_sec)
+fn timespec_i128(value: rustix::time::Timespec) -> i128 {
+    i128::from(value.tv_sec)
         .saturating_mul(1_000_000_000)
-        .saturating_add(i128::from(value.tv_nsec));
+        .saturating_add(i128::from(value.tv_nsec))
+}
+
+fn timespec_ns(value: rustix::time::Timespec) -> u64 {
+    let nanos = timespec_i128(value);
     u64::try_from(nanos).unwrap_or(u64::MAX)
 }
 
@@ -216,9 +220,7 @@ impl Clock for SystemClock {
 
     fn wall_ns(&self) -> i64 {
         let value = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
-        let nanos = i128::from(value.tv_sec)
-            .saturating_mul(1_000_000_000)
-            .saturating_add(i128::from(value.tv_nsec));
+        let nanos = timespec_i128(value);
         i64::try_from(nanos).unwrap_or(if nanos.is_negative() {
             i64::MIN
         } else {

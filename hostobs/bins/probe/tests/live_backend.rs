@@ -283,7 +283,10 @@ fn current_all_path_prefix_and_inc_decode_fixture_values() {
         id,
         1_003_000_000,
         2,
-        selection(vec![Sel::All], &["cpu.usage_usec", "mem.current"]),
+        selection(
+            vec![Sel::All],
+            &["cpu.usage_usec", "mem.current", "psi.cpu.some.total"],
+        ),
     );
     assert_eq!(all.header.seq, 1);
     assert_eq!(label(&all, 0), "/");
@@ -295,6 +298,11 @@ fn current_all_path_prefix_and_inc_decode_fixture_values() {
         metric(&all, "mem.current", 3),
         (0, Quality::Absent.code()),
         "a cgroup without the file is absent, never a measured zero"
+    );
+    assert_eq!(
+        metric(&all, "psi.cpu.some.total", 0),
+        (5000, Quality::Ok.code()),
+        "the configured root publishes its own PSI, not host-wide PSI"
     );
 
     let system = "/system.slice";
