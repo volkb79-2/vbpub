@@ -227,6 +227,7 @@ routers of `pattern-e-media-udp` (one media pair per edge).
 ## 6. Update
 
 ```bash
+printf '' > /tmp/tls-edge-empty.toml
 sudo /srv/tls-edge-instance/bin/tls-edge-installer update --variant py313
 sudo /srv/tls-edge-instance/bin/tls-edge configure --answers /tmp/tls-edge-empty.toml --yes
 cd /srv/tls-edge-instance/stack && sudo ./ciu up
@@ -381,8 +382,9 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
 - `ciu env generate` and `ciu up --dry-run` create/attach a Docker network (CIU-162): run them on the host, not
   from a devcontainer you care about.
 - A non-root CIU run that creates `vol-traefik-acme` through the S6.5 root helper needs
-  `CGROUP_PARENT_DEV_INTERACTIVE=<slice>` exported (CIU-230).
-- `ciu up --dry-run` can create the root-owned `stack/ciu-stack/vol-traefik-acme` (CIU-227).
+  `CGROUP_PARENT_DEV_INTERACTIVE=<slice>` exported (CIU-230; filed with ciu; see its backlog).
+- `ciu up --dry-run` can create the root-owned `stack/ciu-stack/vol-traefik-acme` (CIU-227; filed with
+  ciu; see its backlog).
 - Removing a user-scope instance also encounters that root-owned `stack/ciu-stack/vol-traefik-acme`; delete it
   with root before removing the instance directory.
 - The release publishes one bundle per interpreter; publishing goes through a project script until cmru has a

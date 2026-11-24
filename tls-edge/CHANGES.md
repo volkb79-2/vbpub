@@ -18,6 +18,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   lines are kept, duplicate owned lines are removed, and the file remains the contract consumers import.
 - `tls-edge validate` and the CIU preflight hook refuse a drifted existing `consumer.env`; `tls-edge show`
   reports drift without failing, and `tls-edge configure` re-syncs it.
+- `tls_edge.ingress_network` must be a valid Docker network name.
+- `$` is refused in `tls_edge.traefik.hostdir.acme.path` (ciu expands `$VAR`; the validator sees it raw).
 
 ### Added
 - `tls-edge show --json` emits the effective contract, structured public-port plan and
