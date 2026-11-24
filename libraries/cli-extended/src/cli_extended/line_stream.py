@@ -62,17 +62,24 @@ class _InputSanitizer:
         elif self._state == _OSC:
             if character in ("\x07", "\x9c"):
                 self._state = _NORMAL
+            elif character == "\n":
+                self._state = _NORMAL
+                safe.append(character)
+            elif character in ("\x18", "\x1a"):
+                self._state = _NORMAL
             elif character == "\x1b":
                 self._state = _OSC_ESCAPE
         else:
             if character == "\\":
                 self._state = _NORMAL
+            elif character == "\n":
+                self._state = _NORMAL
+                safe.append(character)
+            elif character in ("\x18", "\x1a"):
+                self._state = _NORMAL
             else:
-                self._state = _OSC
-                if character in ("\x07", "\x9c"):
-                    self._state = _NORMAL
-                elif character == "\x1b":
-                    self._state = _OSC_ESCAPE
+                self._state = _ESCAPE
+                self._feed_character(character, safe)
 
     def _normal(self, character: str, safe: list[str]) -> None:
         if character == "\x1b":

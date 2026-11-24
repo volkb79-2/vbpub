@@ -184,8 +184,53 @@ def test_flush_discards_incomplete_escape_tails_without_losing_safe_prefixes():
         ("\x1bc[INFO] not at start\n", "c[INFO] not at start\n", "c[INFO] not at start\n"),
         (
             "\x1b]0;title\npayload\x07[INFO] ready\n",
-            "[INFO] ready\n",
-            f"{_INFO} ready\n",
+            "\npayload[INFO] ready\n",
+            "\npayload[INFO] ready\n",
+        ),
+        (
+            "\x1b]0;title\n[ERROR] real failure\n[INFO] more\n",
+            "\n[ERROR] real failure\n[INFO] more\n",
+            f"\n{_ERROR} real failure\n{_INFO} more\n",
+        ),
+        (
+            "\x9dx\n[ERROR] real failure\n",
+            "\n[ERROR] real failure\n",
+            f"\n{_ERROR} real failure\n",
+        ),
+        (
+            "\x1b]0;t\x1b[31m\n[ERROR] real\n",
+            "\n[ERROR] real\n",
+            f"\n{_ERROR} real\n",
+        ),
+        (
+            "\x1b]0;t\x1b\n[ERROR] after ESC-LF\n",
+            "\n[ERROR] after ESC-LF\n",
+            f"\n{_ERROR} after ESC-LF\n",
+        ),
+        (
+            "\x1b]0;t\x1b\x18[ERROR] after ESC-CAN\n",
+            "[ERROR] after ESC-CAN\n",
+            f"{_ERROR} after ESC-CAN\n",
+        ),
+        (
+            "\x1b]0;t\x1b\x1a[ERROR] after ESC-SUB\n",
+            "[ERROR] after ESC-SUB\n",
+            f"{_ERROR} after ESC-SUB\n",
+        ),
+        (
+            "\x1b]0;title\x18[ERROR] after CAN\n",
+            "[ERROR] after CAN\n",
+            f"{_ERROR} after CAN\n",
+        ),
+        (
+            "\x1b]0;title\x1a[ERROR] after SUB\n",
+            "[ERROR] after SUB\n",
+            f"{_ERROR} after SUB\n",
+        ),
+        (
+            "\x1b]0;title\x1bX[ERROR] after ESC-X\n",
+            "X[ERROR] after ESC-X\n",
+            "X[ERROR] after ESC-X\n",
         ),
         (
             "\x1b[31\n[INFO] next\n",
@@ -204,8 +249,8 @@ def test_flush_discards_incomplete_escape_tails_without_losing_safe_prefixes():
         ),
         (
             "\x1b]payload\x1bX\x1b\x1b\\[INFO] ok\n",
-            "[INFO] ok\n",
-            f"{_INFO} ok\n",
+            "X\\[INFO] ok\n",
+            "X\\[INFO] ok\n",
         ),
     ],
 )
@@ -249,12 +294,14 @@ def test_text_after_flush_continues_the_same_unterminated_logical_line():
 
 _CHUNK_INPUT = (
     "plain\r\n"
+    "\x1b]0;unterminated\n[ERROR] recovered\n"
     "\x1b[31m[ER\x1b[0mROR] bad\x1b]0;title\x07\n"
     "\x9b33m[WARN]\x9c continuing\t\n"
     "tail\x1b]8;;https://example.invalid\x1b\\cut"
 )
 _CHUNK_EXPECTED = (
-    f"plain\r\n{_ERROR} bad\n{_WARN} continuing\t\ntailcut"
+    f"plain\r\n\n{_ERROR} recovered\n{_ERROR} bad\n"
+    f"{_WARN} continuing\t\ntailcut"
 )
 
 

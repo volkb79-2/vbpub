@@ -628,21 +628,27 @@ remain line content, matching CMRU. Each complete or flushed line is processed
 separately. Exactly `[INFO]`, `[WARN]`, and `[ERROR]` at the start of a line
 are recognised; other text, including `[DEBUG]`, is unchanged.
 
+An interactive prompt written through this renderer MUST be followed by
+`flush()` before the CLI waits for input.
+
 Plain mode preserves the textual prefix contract. For benign input, its final
 output is byte-identical after final flush to CMRU's `SeverityStream` plain
-output for the same input. Colour mode wraps only the prefix in green, yellow,
-or red SGR and emits no other ANSI. JSON mode emits no ANSI even when colour
-was explicitly forced. The same complete input must render identically when
-written in one chunk, at any single split position, or in any multi-split
-partition.
+output with `time_short=False` for the same input. Colour mode wraps only the
+prefix in green, yellow, or red SGR and emits no other ANSI. JSON mode emits no
+ANSI even when colour was explicitly forced. The same complete input must
+render identically when written in one chunk, at any single split position, or
+in any multi-split partition.
 
 Input-origin terminal controls are sanitised before line recognition in every
 mode. The renderer strips ESC-based and single-byte C1 CSI and OSC sequences,
 incomplete CSI/OSC tails, all C0 controls except LF, HT, and CR, DEL, and other
-C1 controls. OSC payloads include their LF bytes and are stripped with the
-sequence. A malformed CSI ends at LF, which is preserved. There is no visible
-caret replacement. Only the renderer's own severity SGR may reach the stream;
-the severity-only engine emits no OSC 8 hyperlinks.
+C1 controls. Both OSC forms end at BEL, U+009C, or `ESC \`. A malformed OSC
+also ends at LF, which is preserved, or CAN/SUB, which are dropped; ESC
+followed by a non-backslash byte re-enters ESC handling. A malformed CSI ends
+at LF, which is preserved. Unsupported DCS/APC/PM/SOS strings drop only their
+ESC introducer; their remaining text stays visible. There is no visible caret
+replacement. Only the renderer's own severity SGR may reach the stream; the
+severity-only engine emits no OSC 8 hyperlinks.
 
 ### Progress
 

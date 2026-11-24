@@ -812,8 +812,19 @@ line-start parsing, severity styling, and TTY colour selection.
 instead of maintaining a second rendering engine.
 
 **Fix.** Replace CMRU's local renderer with a thin adapter to the shared API.
-Preserve the CMRU output contract and settle the short-timestamp behavior
-recorded in the design note before removing that behavior.
+Preserve the CMRU output contract. Adoption must explicitly resolve the
+partial-line buffering differences: CMRU's
+`test_plain_partial_progress_is_forwarded_immediately_and_not_decorated`
+(`cmru/tests/test_output.py:40`) contradicts the shared renderer's buffered
+contract; `\r`-only progress grows the partial buffer and displays nothing
+until the line ends or is flushed; and `write(prompt)` without `flush()` stays
+hidden while the CLI waits for input.
+
+The shared API also needs a CLI-EXT-39 addition for CMRU's `time_short`
+prefix, because CMRU currently colours `HH:MM:SS [INFO]` as one unit. CMRU's
+`SeverityStream.__getattr__` additionally forwards `isatty`, `fileno`,
+`encoding`, `writelines`, and `closed`; the thin adapter must provide those
+attributes or `LineStreamRenderer` must gain them in CLI-EXT-39.
 
 **Close when.** CMRU output tests prove it delegates line rendering to the
 shared engine, preserve plain and terminal behavior, and the CMRU adapter

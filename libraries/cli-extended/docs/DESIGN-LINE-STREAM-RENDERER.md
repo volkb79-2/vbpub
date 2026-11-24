@@ -23,8 +23,9 @@ write chunking, and remove hostile input controls at the terminal boundary.
   separately. CR and HT are content bytes, matching the current CMRU
   `SeverityStream`; CR is not treated as a redraw boundary.
 - Plain mode leaves the sanitised text and its textual severity prefix
-  unchanged. For benign input, the final output is byte-identical to CMRU's
-  `SeverityStream` plain output for the same complete input and final flush.
+  unchanged. For benign input with CMRU's `time_short=False`, the final output
+  is byte-identical to `SeverityStream` for the same complete input and final
+  flush.
 - Colour mode wraps only the severity prefix with the existing CMRU palette:
   green `INFO`, yellow `WARN`, and red `ERROR`. It never changes the prefix
   text. JSON mode suppresses all generated ANSI even when colour was forced.
@@ -95,20 +96,28 @@ The following input bytes are stripped rather than rendered visibly:
 
 - Complete ESC-based CSI sequences: `ESC [` through a final byte `0x40..0x7E`.
 - Complete single-byte C1 CSI sequences: U+009B through the same final byte.
-- Complete ESC-based OSC sequences: `ESC ]` through BEL or ST (`ESC \`).
-  All payload bytes, including LF, are part of the stripped sequence.
-- Complete single-byte C1 OSC sequences: U+009D through BEL or U+009C.
+- Complete ESC-based and single-byte C1 OSC sequences. Both forms accept BEL,
+  U+009C, and ST (`ESC \`) as terminators.
+- A malformed OSC ends at LF, which is emitted, or at CAN/SUB, which are
+  dropped. ESC followed by anything other than `\` re-enters ESC handling
+  with that byte; this lets a nested CSI or ordinary text escape the OSC
+  payload without leaking the ESC itself.
 - A lone ESC, and any ESC sequence that is neither CSI nor OSC: the ESC is
   removed and the following printable character is processed normally.
+- ESC-initiated DCS (`ESC P`), APC (`ESC _`), PM (`ESC ^`), and SOS (`ESC X`)
+  string controls drop only the ESC. Their introducer and payload remain
+  visible and can push a following severity token off the line start.
 - Every C0 control (U+0000..U+001F) except LF, HT, and CR; DEL (U+007F);
   and every other C1 control in U+0080..U+009F.
 - Incomplete CSI/OSC tails and their consumed parameters/payload. They are
   discarded when an invalid byte ends the sequence, when `flush()` occurs,
   or when a malformed CSI reaches LF; LF itself is then preserved.
 
-There is no caret or symbolic replacement: "neutralised" here means the
-unsafe bytes are absent from the output. The engine only emits the
-renderer-owned SGR described above. It does not generate hyperlinks.
+There is no caret or symbolic replacement. For handled CSI/OSC sequences,
+"neutralised" means their control bytes and framing are absent from the
+output. For unsupported DCS/APC/PM/SOS strings, only the ESC is removed and
+their ordinary payload remains visible as described above. The engine only
+emits the renderer-owned SGR described above. It does not generate hyperlinks.
 
 ## Testing approach
 
@@ -141,9 +150,9 @@ this package.
 - Buffering every partial line delays progress that does not end in LF; callers
   needing live non-line progress should not route those writes through this
   renderer.
-- Removing malformed or incomplete OSC tails can discard text until
-  `flush()`; this is the safe failure mode for an unterminated terminal
-  control string.
+- Recoverable malformed OSC input ends at LF, CAN/SUB, or ESC followed by a
+  non-backslash byte. An OSC still unterminated at `flush()` loses its payload,
+  but LF-delimited output after the sequence is no longer swallowed.
 - CR remains content for CMRU byte compatibility and can still redraw a
   terminal line. A future policy change would need to be explicit and
   coverage-visible.
