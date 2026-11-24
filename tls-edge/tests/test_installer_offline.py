@@ -1,9 +1,9 @@
 """Offline installer test: the committed get.py installs a fixture bundle into a temp root.
 
 No network (sockets are blocked in-process, pip runs with --no-index inside get.py), a stub
-`docker` on PATH, fake ciu/dependency wheels. What is REAL: the committed get.py, the real
-installer/adapter.py, the real ciu-stack templates, the real manifest writer
-(scripts/write-bundle-manifest.py) and a real `git init` of the instance root.
+`docker` on PATH, fake ciu/dependency wheels. What is REAL: the committed get.py,
+the real installer/adapter.py, the real ciu-stack templates, cmru's generic
+bundle manifest writer, and a real `git init` of the instance root.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import json
 import os
 import socket
 import subprocess
@@ -51,7 +52,7 @@ def _load(name: str, path: Path):
 
 
 ADAPTER = _load("tls_edge_adapter", ROOT / "installer" / "adapter.py")
-MANIFEST = _load("tls_edge_write_manifest", ROOT / "scripts" / "write-bundle-manifest.py")
+from cmru.manifest import build_bundle_manifest, write_manifest
 
 
 def make_wheel(directory: Path, dist: str, version: str, console: str | None = None) -> Path:
@@ -77,7 +78,7 @@ def make_wheel(directory: Path, dist: str, version: str, console: str | None = N
 
 
 def make_bundle(workdir: Path, tag: str, variant: str, marker: str) -> None:
-    """A bundle shaped like build-artifact.sh's: real templates + adapter, fake wheels."""
+    """A bundle shaped like cmru handler bundle-build's output."""
     stage = workdir / "stage" / tag
     for rel in (
         "ciu-stack/ciu.compose.yml.j2", "ciu-stack/traefik.yml.j2",
@@ -88,7 +89,9 @@ def make_bundle(workdir: Path, tag: str, variant: str, marker: str) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((ROOT / rel).read_bytes())
     (stage / "marker.txt").write_text(marker, encoding="utf-8")
-    (stage / ".gitignore").write_bytes((ROOT / "installer" / "instance.gitignore").read_bytes())
+    (stage / ".gitignore").write_bytes(
+        (ROOT / "packaging" / "instance-root" / ".gitignore").read_bytes()
+    )
     wheels = stage / "wheels"
     make_wheel(wheels, "ciu", "7.0.0", console="ciu")
     make_wheel(wheels, "tls_edge_cli", "1.0.0", console="tls-edge")
@@ -99,8 +102,8 @@ def make_bundle(workdir: Path, tag: str, variant: str, marker: str) -> None:
         make_wheel(wheels, dist, "1.0.0")
     (stage / "ciu.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     os.chmod(stage / "ciu.sh", 0o755)
-    manifest = MANIFEST.build(tag, stage, config=ROOT / "cmru.toml")
-    MANIFEST.write_manifest(manifest, stage / "manifest.json")
+    manifest = build_bundle_manifest(project="tls-edge", tag=tag, bundle_root=stage)
+    write_manifest(manifest, stage / "manifest.json")
     asset = workdir / f"{tag}-{variant}.tar.xz"
     with tarfile.open(asset, "w:xz") as archive:
         archive.add(stage, arcname=tag)
@@ -409,6 +412,30 @@ def test_wheel_replaced_after_manifest_is_refused(env, tmp_path):
     ns, root, answers = env
     _repack(tmp_path / "served", TAG,
             lambda stage: make_wheel(stage / "wheels", "jinja2", "1.0.0").write_bytes(b"not a wheel"))
+    with pytest.raises(SystemExit):
+        run(ns, "do_install", answers, version=TAG)
+    assert not (root / "stack").exists()
+
+
+def test_extra_wheel_is_refused_even_when_the_generic_manifest_lists_it(env, tmp_path):
+    ns, root, answers = env
+
+    def add_wheel(stage: Path) -> None:
+        wheel = make_wheel(stage / "wheels", "evil", "1.0.0")
+        manifest_path = stage / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        rel = wheel.relative_to(stage).as_posix()
+        manifest["files"][rel] = {
+            "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+            "size": wheel.stat().st_size,
+            "mode": 0o644,
+        }
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+
+    _repack(tmp_path / "served", TAG, add_wheel)
     with pytest.raises(SystemExit):
         run(ns, "do_install", answers, version=TAG)
     assert not (root / "stack").exists()

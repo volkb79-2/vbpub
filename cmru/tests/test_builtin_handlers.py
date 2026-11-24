@@ -742,7 +742,7 @@ def test_find_built_wheel_alias(tmp_path):
 _BUILD_STEP = """
 [steps.build]
 quiet = true
-commands = [{ label = "build tarball", argv = ["bash", "scripts/build-artifact.sh"], cwd = "." }]
+commands = [{ label = "build tarball", argv = ["bash", "scripts/build.sh"], cwd = "." }]
 
 [steps.push]
 quiet = true

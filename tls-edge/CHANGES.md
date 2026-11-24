@@ -17,7 +17,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `[tls_edge.http3] enabled = true`. The 3.1 flat answer vocabulary is refused, and each old key names its
   schema-shaped replacement.
 - The standalone installer is removed. The generated `edge-proxy/` tree is no longer committed; use
-  `scripts/render_standalone.py --out DIR --defaults-only` only for a disposable trial.
+  `tools/render_standalone.py --out DIR --defaults-only` only for a maintainer's disposable trial.
 - `tls-edge configure/show/validate --root` now names a stack directory containing `ciu-stack/` (the instance's
   `stack/` directory or a repository checkout). `consumer.env` is optional for a checkout.
 - In static mode the certbot deploy hook now discovers the instance's Traefik container and restarts it
@@ -33,6 +33,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   reports drift without failing, and `tls-edge configure` re-syncs it.
 - `tls_edge.ingress_network` must be a valid Docker network name.
 - `$` is refused in `tls_edge.traefik.hostdir.acme.path` (ciu expands `$VAR`; the validator sees it raw).
+- Bundles are built by `cmru handler bundle-build`; maintainer scripts no longer ship in the instance and archives are reproducible.
 
 ### Added
 - `tls-edge show --json` emits the effective contract, structured public-port plan and

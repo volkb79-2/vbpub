@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _load_renderer():
     spec = importlib.util.spec_from_file_location(
-        "tls_edge_render_standalone", ROOT / "scripts" / "render_standalone.py"
+        "tls_edge_render_standalone", ROOT / "tools" / "render_standalone.py"
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module

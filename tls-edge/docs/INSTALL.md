@@ -171,7 +171,8 @@ and a newer schema is refused. Unknown keys are refused by their full dotted pat
 are `[tls_edge.acme.dns.environment]`, `[tls_edge.secrets]`, and `[tls_edge.hooks]`. An override that sets
 `[tls_edge.hooks] pre_secrets` must keep `hooks/validate_edge.py` in that list, or it is refused.
 
-`ciu check`, the automatic `ciu up` static preflight, `scripts/render_standalone.py --check`, `tls-edge validate`,
+`ciu check`, the automatic `ciu up` static preflight, the maintainer-only
+`tools/render_standalone.py --check`, `tls-edge validate`,
 and `tls-edge configure --dry-run` all run this same validation. Limit: ciu runs the validator because the shipped
 defaults declare it under `[tls_edge.hooks]` `pre_secrets` and `pre_compose`. An override that empties both lists
 removes it from `ciu check` and `ciu up`, so keep the shipped entries (tracked upstream as ciu CIU-226).
@@ -419,20 +420,26 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
   ciu; see its backlog).
 - Removing a user-scope instance also encounters that root-owned `stack/ciu-stack/vol-traefik-acme`; delete it
   with root before removing the instance directory.
-- The release publishes one bundle per interpreter; publishing goes through a project script until cmru has a
-  variants handler (cmru KI-115).
+- The release publishes one bundle per interpreter through `cmru handler bundle-build` and
+  `cmru handler tarball-publish --variant`.
 
 ### Releasing tls-edge (maintainers)
 
 - The Calls preset removal is a major-version change. Mark breaking changes with
   `!` or a `BREAKING CHANGE:` footer so conventional versioning can identify
   them, and select the target version explicitly when releasing.
-- Stage the bundled ciu reproducibly: `TLS_EDGE_CIU_VERSION=<x.y.z>` (or `scripts/stage-wheels.py --ciu-version`)
-  refuses any other ciu release; without it the newest stable ciu is bundled. The staged ciu version and sha256 are
-  printed: copy them into the release notes. PyPI wheels are resolved with pip's `--uploaded-prior-to P14D` cutoff,
-  then checked against PyPI upload timestamps. Staging fails before replacing existing wheels if its selected pip
-  lacks the cutoff option. If a new minimum dependency is not yet old enough, wait for an eligible release or use
-  `--allow-fresh`, which omits the cutoff and age check; justify it in the release notes.
+- Build with `cmru handler bundle-build --bundle-config bundle.toml --cmru-config
+  ../cmru.orchestration.toml --name tls-edge --variant all`. The archive names, file allowlist, installer
+  manifest and deterministic `xztar` writer come from `bundle.toml`; the first-party fetcher is
+  `tools/bundle_wheels.py`. The build step derives `TLS_EDGE_VERSION` from the
+  committed `VERSION` file, clears stale `dist/` output first and fails if the
+  variable is absent. `TLS_EDGE_CIU_VERSION=<x.y.z>` and
+  `TLS_EDGE_CLI_EXTENDED_VERSION=<x.y.z>` optionally pin the GitHub-only first-party wheels.
+  The third-party closure is generated from the first-party dependency declarations by
+  `python3 tools/bundle_wheels.py requirements` and vendored for each declared interpreter.
+- CMRU's archive writer uses the runner's `SOURCE_DATE_EPOCH` and normalised owner, mode and
+  ordering. Identical inputs and epoch produce byte-identical archives. The older tls-edge-only
+  PyPI upload-age check is not reimplemented here; freshness remains cmru KI-198.
 - Tests: `run-gate tls-edge tests` (lane `tests` in `run-gate.toml`, tester-unified). A missing cmru/jinja2/docker
   fails the lane; only `TLS_EDGE_ALLOW_INSTALLER_SKIP=1` skips the installer test, deliberately, outside the lane.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ─── scripts/release.sh — explicit CMRU release entry point ──────────────────
+# ─── tools/release.sh — explicit CMRU release entry point ────────────────────
 #
 # This has no private tag/build/publish implementation.  It preserves the
 # familiar project-local command while delegating the complete source-first

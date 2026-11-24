@@ -621,11 +621,15 @@ tls-edge/
       certs.yml                     ←   rendered cert store (ACME mode: empty)
     .env                            ←   (gitignored) acme-dns trial credentials
 
-  scripts/
-    render.sh                       ←   standalone re-render (default --out: edge-proxy/)
+  scripts/                          ←   operator files copied into the instance bundle
     verify.sh                       ←   post-deploy check suite
     dev-certs.sh                    ←   generate self-signed certs for dev mode
     certbot-deploy-hook.sh          ←   install to /etc/letsencrypt/renewal-hooks/deploy/
+    gen-guard-secret.sh             ←   generate the Pattern D basicAuth hash
+    verify-external.sh              ←   live HTTP/2 + HTTP/3 acceptance probe
+
+  tools/                            ←   maintainer-only; never copied into a bundle
+    render.sh                       ←   standalone re-render (default --out: edge-proxy/)
 
   consumer-examples/
     pattern-a-public-only/
