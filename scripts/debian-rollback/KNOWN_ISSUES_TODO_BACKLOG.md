@@ -219,3 +219,59 @@ Closed items are one line each in [archive/](archive/). The format is [docs/BACK
 - a created control or metadata directory gets `0o700` minus the umask, an existing one keeps its mode (bash runs `chmod 700` every time), and a missing `/.top` exits 70 where bash `mkdir -p` would create it;
 - a valid sidecar whose `sequence` is 0 or absent contributes nothing to the counter floor, while a corrupt one contributes the sequence in its name.
 **Wanted.** `O_NOFOLLOW` on the lock, an explicit `chmod 0o700` after creation, and `max(name sequence, sidecar sequence)` for the floor, each with a unit test.
+
+## DR-116 — Python systemd-boot selection needs P-21 parity checks
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-21
+
+**Problem.** The Python runtime raises `Unsupported` for a `systemd-boot` marker, and `snapshot` does not catch that exception, so it exits 4 after the checkpoint and sidecar are durable. When the systemd-boot cases move to Python, their `delete` without `--yes` exit code (Python 3, bash 1) and `boot-once` target checks also need comparison. This was found in the P-20b fix round 1.
+**Wanted.** Include the `systemd-boot` backend selection refusal in P-21's D16 warning handling, then verify the moved case's delete and one-shot target outcomes against the bash oracle and the pinned D29 exit codes.
+
+## DR-117 — btrfs unmanaged-object scans disagree
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** scripts/debian-rollback/files/usr/local/lib/dr-state/dr_state/storage/btrfs.py
+
+**Problem.** `delete`'s dependents scan skips unmanaged `@os-*` objects, while `list()` reports `@os-*` entries that are not directories. This was found in the P-20b fix round 1.
+**Wanted.** Scan every unmanaged `@os-*` object that can be a btrfs parent for delete safety, and classify non-directory `@os-*` entries consistently with the storage protocol.
+
+## DR-118 — Initialize identifies a missing counter by message text
+
+**State:** open · **Severity:** low · **Owner:** rollback · **Links:** scripts/debian-rollback/files/usr/local/lib/dr-state/dr_state/core.py
+
+**Problem.** `cmd_initialize` distinguishes a missing counter by comparing `CounterRead.issue` with the exact formatted message. This was found in the P-20b fix round 1.
+**Wanted.** Carry a structured missing/absent state from the metadata reader instead of matching human-readable text.
+
+## DR-119 — Initialize pins the live state before D22
+
+**State:** open · **Severity:** low · **Owner:** rollback · **Links:** P-rollback-22
+
+**Problem.** `initialize-state` writes `pinned=True` before D22's `pin`/`unpin` and retention semantics land. This was found in the P-20b fix round 1.
+**Wanted.** Check the default pin policy against D22 when metadata `kind` and `pinned` semantics are completed, and change the initialization value if the policy differs.
+
+## DR-120 — systemd-boot needs the non-raising list/show selector reader
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-21, DR-116
+
+**Problem.** The P-20b production default-label path constructs a non-raising `GrubBoot` only for a `grub` marker. P-21's lazy `systemd-boot` resolution needs the same reader so `list` and `show` can label a configured default without making marker failures fatal; DR-116 still holds for publication and the moved cases.
+**Wanted.** Add a non-raising `systemd-boot` default reader for `list`/`show` while retaining lazy marker resolution and the existing publication refusal paths.
+
+## DR-121 — Post-Invoke gen-menu under DR_STATE=none
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-22, DESIGN-CORE-SPLIT.md D18
+
+**Problem.** The D18 apt wrapper guards only Pre-Install. Under `DR_STATE=none`, the Post-Invoke `gen-menu` still runs and selects from the command-line running state or candidates. P-20b restored command-line precedence to avoid publishing the oldest state, but the escape's intended Post-Invoke semantics remain undecided.
+**Wanted.** Decide whether Post-Invoke `gen-menu` honours `DR_STATE=none`, then implement and test the chosen wrapper/configuration behavior.
+
+## DR-122 — Replace the temporary --json refusal in P-24
+
+**State:** open · **Severity:** low · **Owner:** rollback · **Links:** P-rollback-24, DESIGN-CORE-SPLIT.md D25
+
+**Problem.** P-20b temporarily refuses a global or verb-option `--json` with `Unsupported` (exit 4) while preserving `--json` as a value after `--note`, `--reason` or `--apt-actions`.
+**Wanted.** In P-24, replace the refusal with per-verb support, including `show STATE --json` and `check --json`, using the D25 schemas.
+
+## DR-123 — ZFS set-default mutates storage before boot resolution
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-42, scripts/debian-rollback/files/usr/local/lib/dr-state/dr_state/core.py
+
+**Problem.** `cmd_set_default` calls `storage.activate`, which is a real `zfs clone`/`promote` for the ZFS backend, before `_require_boot` validates the marker and boot backend. A missing or bad marker therefore refuses only after storage has changed.
+**Wanted.** Resolve the boot backend before `storage.activate` so every refusal happens before a storage mutation.

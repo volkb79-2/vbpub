@@ -37,18 +37,19 @@ MemorySwapMax=@DEV_SWAP_MAX@
 # silently denies every descendant with no other symptom.
 MemoryZSwapWriteback=@DEV_ZSWAP_WRITEBACK@
 #
-# MemoryMin below exists ONLY to back dev-memory_min_guaranteed.slice's own
-# floor -- cgroup v2's ancestor-chain rule means a child's MemoryMin is
-# inert unless every ancestor up to here also carries an adequate value
-# (CGROUP-NOTES.md "Per-container memory.min guarantees"). It MUST stay
-# exactly equal to that slice's own MemoryMin, never more: any surplus here
-# beyond what the guaranteed tier actually claims leaks, via cgroup v2's
-# proportional redistribution, to dev-interactive.slice and
-# dev-background.slice too -- both rendered from the SAME
-# DEV_MEMORY_MIN_GUARANTEED_CEILING env var for exactly this reason.
-# DEV_MEMORY_MIN_GUARANTEED_CEILING is the authoritative dev.slice MemoryMin
-# and is deliberately shared with dev-memory_min_guaranteed.slice. The three
-# other root controls have their own DEV_MEMORY_* keys below.
+# MemoryMin below exists ONLY to back its children's own floors -- cgroup v2's
+# ancestor-chain rule means a child's MemoryMin is inert unless every ancestor
+# up to here also carries an adequate value (CGROUP-NOTES.md "Per-container
+# memory.min guarantees"). It MUST equal the sum of the children's MemoryMin
+# (dev-memory_min_guaranteed.slice's own, plus on HOST_ROLE=dedicated-dev
+# the dev-interactive/-gates/-background/-buildkitd Min keys): any surplus
+# leaks, via cgroup v2's proportional redistribution, to the gate tiers.
+# Other roles: exactly DEV_MEMORY_MIN_GUARANTEED_CEILING (the guaranteed
+# slice's own value, shared with dev-memory_min_guaranteed.slice); on
+# dedicated-dev install.sh renders THIS file with the sum in that variable.
+# HOST_ROLE=dedicated-dev renders NO MemoryHigh here (P-plat-19e): above the
+# MemoryMax the tree pages, it is not throttled. The three other root controls
+# have their own DEV_MEMORY_* keys below.
 MemoryMin=@DEV_MEMORY_MIN_GUARANTEED_CEILING@
 MemoryLow=@DEV_MEMORY_LOW@
 MemoryHigh=@DEV_MEMORY_HIGH@

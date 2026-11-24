@@ -280,7 +280,7 @@ contains "$ROOT/too-large-limit.out" 'CODEX_AUTO_CONTINUE must be a non-negative
 
 RUNS=$ROOT/custom-runs
 mkdir -p "$RUNS"
-for name in limited skipme success nonusage noroute invalidroute naf-owned live-wrapper foreign-owned missingmap; do
+for name in limited solroute skipme success nonusage noroute invalidroute naf-owned live-wrapper foreign-owned missingmap; do
   cp "$SCRIPT_DIR/fixtures/usage-limit.jsonl" "$RUNS/$name.jsonl"
   if [[ $name == missingmap ]]; then
     printf '%s\n' "$ROOT/worktree" > "$RUNS/$name.worktree"
@@ -288,7 +288,7 @@ for name in limited skipme success nonusage noroute invalidroute naf-owned live-
     printf '%s\n' "$ROOT/worktree" > "$RUNS/$name.wt"
   fi
   if [[ $name != noroute ]]; then
-    if [[ $name == invalidroute ]]; then printf 'unknown\n' > "$RUNS/$name.route"; elif [[ $name == limited ]]; then printf 'deepseek-volker\n' > "$RUNS/$name.route"; else printf 'luna\n' > "$RUNS/$name.route"; fi
+    if [[ $name == invalidroute ]]; then printf 'unknown\n' > "$RUNS/$name.route"; elif [[ $name == limited ]]; then printf 'deepseek-volker\n' > "$RUNS/$name.route"; elif [[ $name == solroute ]]; then printf 'sol\n' > "$RUNS/$name.route"; else printf 'luna\n' > "$RUNS/$name.route"; fi
   fi
   printf 'EXIT=1\n' > "$RUNS/$name.done"
 done
@@ -313,6 +313,7 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
   "$RESUME_SRC" --dry-run --runs-dir "$RUNS" --skip skipme > "$ROOT/resume-dry.out" 2>&1 \
   || fail 'usage-limit dry-run failed'
 contains "$ROOT/resume-dry.out" 'RESUME limited thread=01a1c574-3312-71e1-a10a-16379be028dc reset=3:46 PM' 'dry-run shows detected reset and thread'
+contains "$ROOT/resume-dry.out" 'RESUME solroute thread=01a1c574-3312-71e1-a10a-16379be028dc reset=3:46 PM' 'usage-limit recovery accepts the review Sol route'
 contains "$ROOT/resume-dry.out" 'SKIP skipme (RESUME_SKIP)' 'configured skip list is honored'
 contains "$ROOT/resume-dry.out" 'SKIP noroute (no route sidecar)' 'usage-limit recovery requires an originating route'
 contains "$ROOT/resume-dry.out" 'SKIP invalidroute (invalid route sidecar)' 'usage-limit recovery validates the originating route'
@@ -347,6 +348,7 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
   || fail 'usage-limit resume invocation failed'
 contains "$RESUME_CALL_LOG" 'limited-resumed resume 01a1c574-3312-71e1-a10a-16379be028dc' 'resume uses a new run name and the original thread'
 contains "$RESUME_CALL_LOG" 'CODEX_ROUTE=deepseek-volker' 'usage-limit recovery resumes on the recorded account'
+contains "$RESUME_CALL_LOG" 'CODEX_ROUTE=sol' 'usage-limit recovery resumes the recorded Sol route'
 contains "$RESUME_CALL_LOG" "CONTROLLER_RUNS_DIR=$RUNS" 'usage-limit recovery writes into its configured runs directory'
 not_contains "$RESUME_CALL_LOG" 'skipme' 'skip list prevents a resume call'
 not_contains "$RESUME_CALL_LOG" 'naf-owned-resumed' 'other-controller run is not resumed'
@@ -354,6 +356,7 @@ not_contains "$RESUME_CALL_LOG" 'missingmap-resumed' 'run without .wt is not res
 not_contains "$RESUME_CALL_LOG" 'live-wrapper-resumed' 'live wrapper is not resumed again'
 not_contains "$RESUME_CALL_LOG" 'success-resumed' 'successful run is not resumed'
 not_contains "$RESUME_CALL_LOG" 'nonusage-resumed' 'non-usage turn failure is not resumed'
+contains "$RUNS/solroute-resumed.done" 'EXIT=0' 'usage-limit recovery completed the Sol resume'
 not_contains "$RESUME_CALL_LOG" 'dated-future-resumed' 'future dated retry was not launched by a real scan'
 
 FALLBACK_RUNS=$ROOT/fallback-runs
@@ -444,6 +447,11 @@ LOCK2=$ROOT/locks/gate-two.lock
 mkdir -p "$LOCK_HOME" "$ROOT/locks"
 RUN_GATE_LOG=$ROOT/run-gate.log
 export RUN_GATE_LOG
+# CTL-57: gate-run waits on the host's memory PSI before it starts a gate; these cases run against a quiet file so the real
+# host's pressure never decides them (the wait itself is checked in test-gate-slots.sh).
+printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$ROOT/psi-quiet"
+unset CONTROLLER_GATE_PSI_WAIT_S
+export CONTROLLER_GATE_PSI_FILE=$ROOT/psi-quiet
 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
   CONTROLLER_GATE_LOCK="$LOCK1" CONTROLLER_GATE2_LOCK="$LOCK2" \
   "$GATE_RUN_SRC" suite --verbose > "$ROOT/gate-first.out" 2>&1 \
