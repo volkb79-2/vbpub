@@ -63,7 +63,7 @@ together.
 | CTL-52 | Dev container is hostobs-only and admits one job host-wide | Must-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-53 | Worktree sprawl | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-54 | Backlogs and SPECs are append-only | Should-fix | OPEN 2026-11-24 (Opus design review) |
-| CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | OPEN 2026-11-24 |
+| CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | FIXED 2026-11-24 |
 
 ---
 
