@@ -98,7 +98,10 @@ def resolve_plan(
     pool_end = disk_sectors
     swap_total = 0
     try:
-        spec = layout_policy.disk_spec(config.partitioning)
+        spec = layout_policy.disk_spec(
+            config.partitioning,
+            schema_version=config.schema_version,
+        )
         safe_end = layout_policy.gpt_safe_end(disk_sectors)
         swap_extents: list[tuple[int, int]] = []
         if config.swap_policy == "on":

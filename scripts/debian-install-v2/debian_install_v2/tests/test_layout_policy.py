@@ -80,7 +80,7 @@ def test_swap_end_slack_boundary():
         ({"reserve_gb": "all"}, "reserve_gb"),
         ({"root": "*", "reserve_gb": "*"}, r'exactly one "\*"'),
         ({"data": "x"}, "must be an object"),
-        ({"data": {"kind": "zfs", "volumes": [vol()]}}, "kind must be partitions or lvm"),
+        ({"data": {"kind": "zfs", "volumes": [vol()]}}, "kind must be none, partitions, lvm or subvolumes"),
         ({"data": {"kind": "partitions"}}, "non-empty list"),
         ({"data": {"kind": "partitions", "volumes": [], "vg": "v"}}, "unknown key"),
         (parts(vol(), vol(label="B", mount="/srv/b")), r'exactly one "\*"'),  # root and both volumes are "*"

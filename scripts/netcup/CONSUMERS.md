@@ -895,16 +895,16 @@ root's `PATH`.
 ```bash
 wheel_dir=/var/cache/host-wheels
 augeaswrap_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/augeaswrap-0.2.0-py3-none-any.whl.sha256")
-cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.6.0-py3-none-any.whl.sha256")
+cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.8.0-py3-none-any.whl.sha256")
 sudo bash "$HOME/runner-scripts/install-augeaswrap.sh" \
   --wheel-dir "$wheel_dir" \
   --augeaswrap-version 0.2.0 --augeaswrap-sha256 "$augeaswrap_sha256" \
-  --cli-extended-version 0.6.0 --cli-extended-sha256 "$cli_extended_sha256" \
+  --cli-extended-version 0.8.0 --cli-extended-sha256 "$cli_extended_sha256" \
   --dry-run
 sudo bash "$HOME/runner-scripts/install-augeaswrap.sh" \
   --wheel-dir "$wheel_dir" \
   --augeaswrap-version 0.2.0 --augeaswrap-sha256 "$augeaswrap_sha256" \
-  --cli-extended-version 0.6.0 --cli-extended-sha256 "$cli_extended_sha256"
+  --cli-extended-version 0.8.0 --cli-extended-sha256 "$cli_extended_sha256"
 command -v augeaswrap
 ```
 

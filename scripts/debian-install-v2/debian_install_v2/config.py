@@ -24,7 +24,12 @@ _WARNED_REMOVED_KEYS: set[str] = set()
 REMOVED_KEYS = {
     "zswap_zpool": "the zswap zpool knob is absent on 7.x kernels; zsmalloc is the only backend",
 }
-SCHEMA_VERSION = 1
+# Schema 1 remains the current ext4-compatible default. Schema 2 opts into
+# root-aware validation; an ISO-installed btrfs root requires it.
+SCHEMA_VERSION = layout_policy.LEGACY_SCHEMA_VERSION
+LEGACY_SCHEMA_VERSION = SCHEMA_VERSION
+BTRFS_SCHEMA_VERSION = layout_policy.ROOT_AWARE_SCHEMA_VERSION
+SUPPORTED_SCHEMA_VERSIONS = (SCHEMA_VERSION, BTRFS_SCHEMA_VERSION)
 DEFAULT_KSM_ADVISOR_MAX_CPU_PERCENT = 10
 DEFAULT_KSM_TARGET_SCAN_TIME_SECONDS = 300
 DEFAULT_KSM_SLEEP_MILLISECS = 100
@@ -106,8 +111,9 @@ class Config:
     # The explicit disk plan (README "Disk layout", docs/DESIGN-data-area-v2.md):
     #   {"root": "*"|"keep"|GiB|"N%", "reserve_gb": 0|GiB|"*",
     #    "iobench_raw_gb": 8|GiB|false,
-    #    "data": {"kind": "partitions"|"lvm", "vg", "pv_size", "vg_free_gib",
-    #             "volumes": [{"name","size","fs","mount","label"}]}}
+    #    "data": {"kind": "none"|"partitions"|"lvm"|"subvolumes", "vg", "pv_size", "vg_free_gib",
+    #             "volumes": partition/lvm: {"name","size","fs","mount","label"},
+    #                        subvolumes:   {"name","mount","nocow"}}}
     # An omitted size is "*" (the remainder); exactly one "*" per pool. The
     # default 8 GiB raw iobench partition is reserved after data/reserve and
     # before end-of-disk swap; false disables it.
@@ -225,6 +231,7 @@ class Config:
 
 
 _SIZE_RE = re.compile(r"^[0-9]+$")
+_SAFE_STATE_DIR_RE = re.compile(r"/[A-Za-z0-9._/-]+")
 _GEEKBENCH_VERSION_RE = re.compile(r"^[0-9]{1,2}\.[0-9]{1,3}\.[0-9]{1,3}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _DOCKER_LOG_MAX_SIZE_RE =re.compile(r"^[0-9]+[bkmg]?$", re.IGNORECASE)
@@ -364,9 +371,11 @@ def validate_address_pools(pools: Any) -> None:
 
 def validate_config(config: Config) -> None:
     """Validate a Config instance with the same rules used by JSON loading."""
-    if config.schema_version != SCHEMA_VERSION:
+    if config.schema_version not in SUPPORTED_SCHEMA_VERSIONS:
         raise ConfigError(
-            f"schema_version must be {SCHEMA_VERSION}, got {config.schema_version}"
+            "schema_version must be one of "
+            + ", ".join(str(value) for value in SUPPORTED_SCHEMA_VERSIONS)
+            + f", got {config.schema_version}"
         )
     boolean_names = [item.name for item in fields(Config) if item.type == "bool" or item.type is bool]
     for name in boolean_names:
@@ -441,19 +450,44 @@ def validate_config(config: Config) -> None:
         raise ConfigError("docker_log_max_file must be a positive integer string (e.g. '3')")
     if not config.fresh_install:
         raise ConfigError("v2 install is restricted to fresh_install=true in this release")
-    for name in ("log_dir", "state_dir", "stage2_output"):
+    for name in ("log_dir", "stage2_output"):
         value = getattr(config, name)
         if "\x00" in value:
             raise ConfigError(f"{name} must not contain a NUL character")
         if not value.startswith("/") or value.endswith("/"):
             raise ConfigError(f"{name} must be an absolute path without a trailing slash")
+    if "\x00" in config.state_dir:
+        raise ConfigError(
+            "unsafe_state_path: state_dir must not contain a NUL character"
+        )
+    if (
+        not _SAFE_STATE_DIR_RE.fullmatch(config.state_dir)
+        or ".." in config.state_dir
+        or config.state_dir.endswith("/")
+    ):
+        raise ConfigError(
+            "unsafe_state_path: state_dir must be an absolute path containing only "
+            "[A-Za-z0-9._/-], with no '..' segment and no trailing slash"
+        )
     if config.swap_disk_total_gb is not None and (
         not _SIZE_RE.fullmatch(str(config.swap_disk_total_gb))
         or not 1 <= config.swap_disk_total_gb <= 10240
     ):
         raise ConfigError("swap_disk_total_gb must be an integer from 1 to 10240 or null for auto")
-    if not _SIZE_RE.fullmatch(str(config.swap_partition_count)) or not 1 <= config.swap_partition_count <= 64:
-        raise ConfigError("swap_partition_count must be an integer from 1 to 64")
+    minimum_swap_partitions = 1 if config.schema_version == LEGACY_SCHEMA_VERSION else 0
+    if (
+        not _SIZE_RE.fullmatch(str(config.swap_partition_count))
+        or not minimum_swap_partitions <= config.swap_partition_count <= 64
+    ):
+        raise ConfigError(
+            f"swap_partition_count must be an integer from {minimum_swap_partitions} to 64"
+        )
+    if (
+        config.schema_version == BTRFS_SCHEMA_VERSION
+        and config.swap_partition_count == 0
+        and config.swap_policy != "off"
+    ):
+        raise ConfigError("swap_partition_count may be 0 only when swap_policy=off")
     if not isinstance(config.swap_policy, str) or config.swap_policy not in {"on", "off"}:
         raise ConfigError("swap_policy must be on or off; untouched was removed because a disk plan must own the full layout")
     for name in ("preserve_root_size_gb",):
@@ -463,7 +497,10 @@ def validate_config(config: Config) -> None:
     if not isinstance(config.partitioning, dict):
         raise ConfigError("partitioning must be an object")
     try:
-        spec = layout_policy.disk_spec(config.partitioning)
+        spec = layout_policy.disk_spec(
+            config.partitioning,
+            schema_version=config.schema_version,
+        )
         layout_policy.validate_prereqs(swap_policy=config.swap_policy)
         if config.swap_policy == "on":
             swap_slots = (
@@ -479,7 +516,11 @@ def validate_config(config: Config) -> None:
                 f"configured partition plan needs at least partition number {highest_planned_number}, above the GPT "
                 f"limit of {layout_policy.GPT_MAX_PARTITIONS}; reduce data volumes, iobench_raw_gb, or swap slots"
             )
-        if config.run_io_benchmark and spec.iobench_raw_gb is None:
+        if (
+            config.schema_version == LEGACY_SCHEMA_VERSION
+            and config.run_io_benchmark
+            and spec.iobench_raw_gb is None
+        ):
             raise layout_policy.LayoutPolicyError(
                 "run_io_benchmark requires partitioning.iobench_raw_gb; reserve the raw partition or disable the benchmark"
             )

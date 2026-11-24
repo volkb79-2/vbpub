@@ -1,6 +1,34 @@
 <!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # debian-install-v2 — TODO / backlog
 
+## OPEN (IC-M1a follow-ups, 2026-11-24): btrfs swap, raw benchmark import, and integration
+
+**Status:** open by the IC-M1a package split; no host or VM work belongs here.
+
+- WP-10 P3 owns swap on btrfs. The operator decision supersedes C6's `@swap`
+  swapfile and C9's btrfs swap row: the end-of-disk span is first one
+  unformatted raw partition for iobench, then regular swap partitions; a re-bench
+  frees the span and reinstates the swaps. Until P3, a btrfs config must use
+  `swap_policy: off` and `swap_partition_count: 0`, otherwise v2 refuses with
+  `btrfs_swap_needs_p3`.
+- Q-A option (c) owns import of the raw benchmark result into io.cost. Until it
+  lands, a btrfs root has no `iobench-raw` partition and v2 records the
+  benchmark and io.cost as skipped (`iobench_raw_unavailable_on_btrfs` /
+  `iocost_not_configured_btrfs`).
+- IC-M1b owns the dr first-boot hook/bundle handoff, the ISO netcup console
+  option, and `/.top` mode 0700. IC-M1c owns the `r1-vm-iso-btrfs` lane and the
+  runner's btrfs CoW mount/acceptance. IC-M1a must not add those files or claim
+  their milestone evidence.
+- IC-M6 owns ZFS-root support; IC-M1a detects it and refuses with
+  `root_fs_unsupported`.
+- `plan --dry-run` still hard-codes an ext4 root, so it cannot preview a btrfs-root configuration; make dry-run obtain or explicitly refuse the missing root fact rather than print an ext4 partition plan.
+- At config load, schema 2 with `swap_policy: "on"` and `swap_partition_count: 0` gets a generic swap error before root discovery; surface the named `btrfs_swap_needs_p3` refusal for a known btrfs configuration.
+- Open design decision: data-subvolume fstab rows currently have no `nofail`, so a missing subvolume can send boot to emergency mode; decide whether that stricter boot dependency is intended.
+- IC-M1b must add `user_subvol_rm_allowed` to the root btrfs option set in dr's `install-btrfs.sh` `OPTS`, and IC-M1c must verify the live `/srv/cow` mount reports it; v2 keeps the harmless data-row option meanwhile.
+- B1: the `debian-install-v2 plan` btrfs `show_plan` fallback still reaches `_disk_facts()` and can print a meaningless ext4 partition table; skip the fallback for `root_fs == "btrfs"`.
+- B2: `_stage2_btrfs` touches `stage2_done` without the ext4 path's dry-run guard; apply the same guard when btrfs dry-run support lands.
+- B3: the btrfs completion summary groups warned and failed steps under the "Btrfs skips" heading; rename it to "Btrfs skips/warnings".
+
 ## IMPLEMENTED (DIV2-BL-06, unreleased): bound KSM advisor work and scanner wakeups
 
 **Status:** IMPLEMENTED in this unreleased change.

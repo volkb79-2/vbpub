@@ -86,6 +86,10 @@ worktree that lacks `.controller-state` or `plan.yaml`, the run prints a WARNING
 naming them: the real state lives in the main checkout. What is state and what is work:
 [`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md).
 
+## Successor restart (`compact-resume.sh`, `clear-resume.sh`)
+
+`compact-resume.sh <tmux-pane-id> <guidance-file> <prompt-file> <log-file>` (default: `/compact`, background work survives) and `clear-resume.sh <tmux-pane-id> <prompt-file> <log-file>` (clean slate: `/clear`) restart an interactive Claude Code session in a tmux pane and type the prompt file; both share `resume-lib.sh`; launch detached with `setsid nohup`; procedure, exit codes and limits: AGENTS.md "Successor restart of an interactive session".
+
 ## Controller loop
 
 Use this order for each implementation task.
@@ -713,13 +717,39 @@ printf '%s' '<hook JSON>' | scripts/controller/hooks/ctx-hooks.py pre-compact \
 ```
 
 Subcommands: `statusline`, `post-tool-use`, `pre-compact`, `session-start`,
-`stop`. Configuration is flags or environment (`CTX_STATE_DIR`,
+`stop`: the same five words as the retired untracked `.controller-state/hooks/ctx.py`,
+so wiring this script is a path change in `.claude/settings.local.json`
+(`python3 <repo>/scripts/controller/hooks/ctx-hooks.py <mode>` per mode).
+Configuration is flags or environment (`CTX_STATE_DIR`,
 `CTX_EXTRACT_CMD`,
 `CTX_READBACK_BUDGET_TOKENS` = 30000, `CTX_READBACK_TAIL_PROSE_TOKENS` =
 10000, `CTX_READBACK_GOAL_FILE`, `CTX_READBACK_GOAL_PROMPT`,
-`CTX_READBACK_REDACT_PATTERNS`, `CTX_SESSION_KIND`, `CTX_READBACK_TIMEOUT`, `CTX_HOOK_LOG`); the
-state directory defaults to the hook input's own `cwd/.controller-state`, so no
-checkout path is hard-coded. Which harness/situation rows are tested is in
+`CTX_READBACK_REDACT_PATTERNS`, `CTX_SESSION_KIND`, `CTX_HOOK_ROLE`,
+`CTX_REPO_ROOT`, `CTX_HANDOFF_FILE`, `CTX_READBACK_TIMEOUT`, `CTX_HOOK_LOG`); the
+state directory defaults to the nearest `.controller-state` at or above the hook
+input's `cwd`, so no checkout path is hard-coded.
+
+The pressure ladder (`post-tool-use`) notes every 50k from 100k on. The ceiling
+comes from `~/.claude/settings.json` (`modelSettings.<model>.autoCompactWindow`
+for the session's model, else the top-level `autoCompactWindow`, else 500000;
+a missing or malformed file never raises) and feeds the growth line ("calls to
+the Nk ceiling"). One soft threshold per session kind: controller
+`CTX_SOFT_CONTROLLER` (alias `CTX_CONTROLLER_SOFT`, default 650000), agent
+`CTX_SOFT_AGENT` (default 200000); the note fires at `min(soft, ceiling - 50000)`
+and the hook log gets a `warning` event when the ceiling is at or below the soft
+threshold. A controller below its threshold is told to
+persist and keep working; at or past it, to write the handover
+(controller-handover skill), sync the plan, set READY and end the turn. An agent
+gets the marker only until its threshold, then finish-or-PARTIAL. A controller
+past 200k with a HANDOFF.md older than 15 minutes also gets a stale-state
+warning, and `session-start` prints a role rule (main controller, sub-controller
+or any other session reads its own list) followed by the READ FIRST list of the
+newest `RESUME HERE #N` block of HANDOFF.md instead of a hard-coded order. The
+readback files and state are per session (`readback-<session_id>-N.md`,
+`readback-state-<session_id>.json`), `session-start` names a readback only when
+that session's own last build succeeded, and the pressure state files live in
+`<state>/hooks/`. With no `.controller-state` above the hook's `cwd`, the one of
+the repo holding the script is used, else nothing is written. Which harness/situation rows are tested is in
 [`docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md`](../../../docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md);
 the reason each choice was made is in the
 [read-back design](docs/DESIGN-GUIDE.md#compaction-recovery-hooks).

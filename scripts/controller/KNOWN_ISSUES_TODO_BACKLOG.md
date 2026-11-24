@@ -51,7 +51,7 @@ together.
 | CTL-40 | agctl package; bash frozen | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-41 | ctl-clean treats the symptom | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-42 | Limit note on the launch path | Should-fix | PARTIAL 2026-11-24 (0c366bf2fa11743281cf4bbcddb0cc981ebba5d1; sol + wrapper wording fixed; limits-reader and OD ordering remain OPEN) |
-| CTL-43 | Live ctx hook untracked, contradicts AG-HANDOVER-PRIORITY | Must-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-43 | Live ctx hook untracked, contradicts AG-HANDOVER-PRIORITY | Must-fix | FIXED-pending-wiring 2026-11-24 (P-plat-05: tracked `hooks/ctx-hooks.py`) |
 | CTL-44 | HANDOFF is an append-only log | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-45 | Launcher twins | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-46 | Four readers of run records | Nice-to-have | OPEN 2026-11-24 (Opus design review) |
@@ -65,6 +65,7 @@ together.
 | CTL-54 | Backlogs and SPECs are append-only | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | FIXED 2026-11-24 |
 | CTL-56 | P-plat-04 r1 leftovers: locale oracle, interim-message fake, misplaced Pi mutant reference, Unicode continuation digits | Should-fix | OPEN 2026-11-24 |
+| CTL-61 | P-plat-21 r1 leftovers: resume-helper prompt limits, test gaps, fail-open input check, live smoke before relying on clear-resume (B2-B13) | Should-fix | OPEN 2026-11-24 |
 | CTL-57 | `gate-run.sh` local admission only queues on the slot locks; it starts a gate while the cockpit is at the memory-PSI stop signal | Must-fix | FIXED 2026-11-24 |
 | CTL-58 | `push-image.sh` destroys the host's rollback image: `docker load` untags the old `<image:tag>` and no `:prev-*` tag is kept | Should-fix | OPEN 2026-11-24 |
 | CTL-59 | P-plat-02 r2 leftovers (dev tool) | Nice-to-have | OPEN 2026-11-24 (Opus r2 review) |
@@ -1615,7 +1616,7 @@ Source: .controller-state/design-review-2026-11-24/controller-tooling.md H5
 
 ## CTL-43 — live ctx hook untracked, contradicts AG-HANDOVER-PRIORITY
 
-**Status:** OPEN (filed 2026-11-24).
+**Status:** FIXED-pending-wiring 2026-11-24 (package P-plat-05): `scripts/controller/hooks/ctx-hooks.py` is a drop-in for the untracked `.controller-state/hooks/ctx.py`. Remaining controller steps: the operator swaps the five hook paths in `.claude/settings.local.json` (path only, mode words unchanged); `.controller-state/hooks/ctx.py` is deleted after one clean day. AGENTS.md "Context pressure ladder" and the controller-handover skill step 7 now name `ctx-hooks.py` (review r1 fix). Swapping drops the live `state-*.json` cadence state, so each live session gets one extra note at its current step.
 
 Wire `hooks/ctx-hooks.py` and delete the copy. Ceiling per model; past the soft threshold, handover, READY, end of turn.
 
@@ -1736,6 +1737,25 @@ Source: suite lane log of 2026-11-24 (run-gate lane `suite`, head 0314fdf1b).
 Source: P-plat-04 r1 Opus review findings 4 and 9, explicitly deferred by the
 controller.
 
+## CTL-61 — P-plat-21 r1 leftovers (resume helpers)
+
+**Status:** OPEN (filed 2026-11-24 from the Opus r1 and r2 reviews `.controller-state/platform/reviews/plat-21-r1-opus.md`, `plat-21-r2-opus.md`; F1-F3, R1 and R2 fixed).
+
+Not blocking, for `compact-resume.sh`, `clear-resume.sh`, `resume-lib.sh` and their tests:
+- **B2 prompt limits undocumented:** keep prompt and guidance short (the tmux client refuses a command line over about 16 KiB, "command too long"), no trailing `;` (tmux drops it as a command separator), no leading `/` or `!` (Claude Code treats them as commands) and no trailing `@mention` (Enter accepts the completion). Document in AGENTS.md; consider refusing such input with exit 2.
+- **B3 test gaps:** a compact scenario where the spinner appears only after 3 or more idle polls (pins `START_TRIES` and the start-wait loop), a frame with the `Compacting` line 5-6 lines up (pins `FOOT_LINES=6`), and the stub recording the `capture-pane` target (a wrong `-t` survives today).
+- **B4 defaults unpinned:** no test pins poll 2 s, idle 900, clear 30, start 60, done 1800 (surviving mutants `IDLE_TRIES 900->5`, `CLEAR_TRIES 30->1`, `poll 2->0.01`, `START_TRIES 60->2`, `$idle_tries` used in place of `$done_tries` in the done wait).
+- **B5 missing lib:** `source resume-lib.sh` failing under `set -u` ends as exit 3 "never idle" with nothing sent; use `|| exit 2`.
+- **B6 broad shellcheck disables:** the file-wide `disable=SC1091,SC2034,SC2154` in both helpers hides real unused/unassigned variables; run `shellcheck -x` in `tests/run-suite.sh` and narrow them.
+- **B7 DESIGN 6a:** a compaction is not a "fresh session" (step 3 framing); the SessionStart[compact] note of section 6.4 ("the handover predates it") will false-alarm on every deliberate compact; `agctl successor <pane> <prompt-file> [--clear]` needs a guidance argument for the default compact mode.
+- **B8 self-compaction example** uses the relative `scripts/controller/...` and `>/dev/null 2>&1`: launched from the wrong cwd it fails invisibly after the session has ended its turn. Give an absolute or tools-relative path (the controller tools run from `.worktrees/controller-tools`) and log to a file.
+- **B9 fail-open input check:** a pane with NO `❯` row counts as ready (the cleared fixtures depend on it), so a permission or selection menu with an indented cursor could receive our Enter. Measure the real empty row (`❯` plus NBSP) and treat "no input row" as not ready.
+- **B10 live smoke before relying on clear-resume again:** neither helper's empty-input check has been observed on a live pane. a plain `capture-pane -p` drops attributes, so dim suggestion text in an empty input box read as typed text (all five live helpers hung on 2026-11-24); the check now captures with `-e` and drops dim runs (stub-tested only). Other dim placeholders after `/clear` or a reverse-video cursor cell are unmeasured. One operator-watched run of EACH helper settles it.
+- **B11 type/Enter race:** text the operator types between the third ready check and the send, or during the `type_pause` before Enter, merges into ours; inherent to polling, document it.
+- **B12 first-line-empty input:** an input whose first line is empty with text only on continuation lines (Shift+Enter first) reads as empty.
+- **B13 timeout classification:** `wait_idle` reports 3 or 5 from the LAST poll only, so a pane that had text for 29 min and was busy at the final poll reports 3 (cosmetic).
+
+Source: Opus r1 review of P-plat-21 at head 4b9563cbd and r2 review at head b2162f3f1.
 ## CTL-57 — gate-run.sh starts local gates at the memory-PSI stop signal
 
 **Status:** FIXED (2026-11-24, P-plat-20: `gate-run.sh` waits for memory PSI `full` avg10 < 3 after taking a slot, bounded by `CONTROLLER_GATE_PSI_WAIT_S`; exit 75 "not admitted, nothing ran", unreadable PSI exits 75 at once).
