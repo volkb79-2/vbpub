@@ -155,25 +155,20 @@ from .isolation import SnapshotRepository, netstring
 from .mutation_parsers import MutationFormatSpec
 from .mutation_parsers.model import IngestedMutationReport
 from .mutation_store import (
-    CARRY_FORWARD_REASON,
     MUTATION_STATE_SCHEMA_VERSION,
-    RESOURCE_SENSITIVE_BUCKETS,
     RecordContext,
     Clock,
     FlexOptions,
     InvalidCandidateSelectionError,
+    InvalidRejudgeIdError,
     JUDGE_GENERATIONS_DIR,
     MutationStateError,
     SHARD_MANIFEST_NAME,
     ShardStoreMergeError,
     _MutantRun,
-    _RECORD_REJECTED,
-    _carry_forward_records,
-    _carry_over_records,
     _locus_fields_for_job,
-    _read_generation_record_bytes,
+    _reject_unknown_rejudge_ids,
     _tool_version,
-    _validate_shard_stores,
     _write_shard_manifest,
     candidate_id,
     candidate_identity_fields,
@@ -369,17 +364,6 @@ class MutationDiscoveryError(AssayError):
         )
 
 
-class InvalidRejudgeIdError(AssayError):
-    """A requested candidate id is absent from the current candidate set."""
-
-    def __init__(self, message: str) -> None:
-        super().__init__(
-            message,
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.BAD_LANE_CONFIG,
-        )
-
-
 class R2CommandProofError(AssayError):
     def __init__(self, message: str) -> None:
         super().__init__(message, outcome=Outcome.ERROR, reason_code=ReasonCode.BAD_LANE_CONFIG)
@@ -403,22 +387,6 @@ class CampaignPlanMismatchError(AssayError):
             message,
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
-        )
-
-
-def _reject_unknown_rejudge_ids(
-    rejudge_ids: frozenset[str], current_ids: set[str]
-) -> None:
-    unknown_rejudge_ids = rejudge_ids - current_ids
-    if unknown_rejudge_ids:
-        raise InvalidRejudgeIdError(
-            "--rejudge named a candidate id not present in "
-            "this run's selected candidate set (unknown, stale "
-            "because source bytes changed, or excluded by the selected "
-            "operators/shard -- B088's own 'an identity that "
-            "no longer matches current reality must not be "
-            "silently trusted' principle): "
-            f"{sorted(unknown_rejudge_ids)}"
         )
 
 
@@ -3005,229 +2973,38 @@ def run_mutation(
             ),
             kill_signal_artifact=kill_signal_artifact,
         )
-        if flex is not None and flex.shard_stores:
-            assert state_root is not None and judge is not None
-
-            def _strict_record(job: MutantJob, raw: bytes) -> Any:
-                return mutation_store._load_validated_state_record(
-                    Path(state_root),
-                    job,
-                    judge=judge,
-                    raw_override=raw,
-                    context=record_context,
-                )
-
-            shard_counts = _validate_shard_stores(
-                flex.shard_stores,
+        combined = mutation_store.combine(
+            () if flex is None else flex.store_sources(),
+            mutation_store.CombineRequest(
                 jobs=selected_jobs,
                 judge=judge,
+                state_root=Path(state_root) if state_root is not None else None,
+                state_root_fd=state_root_fd,
+                state_root_guard=state_root_guard,
                 campaign_deadline_sha256=campaign_deadline_sha256,
-                load_record=_strict_record,
-            )
-            if write_progress is not None:
-                write_progress(
-                    {
-                        "event": "shard_merge",
-                        "candidate_total": total,
-                        "shard_count": len(flex.shard_stores),
-                        "records_per_store": shard_counts,
-                    }
-                )
-        resumed_records: list[Mapping[str, Any]] = []
-        rejudged_candidate_ids: set[str] = set()
-        rejected_total = 0
-        rejudged_total = 0
-        resource_rejudged_total = 0
-        promoted_total = 0
-        imported_total = 0
-        locus_unavailable_total = 0
+                context=record_context,
+                resume=resume,
+                rejudge_ids=rejudge_ids,
+                rejudge_outcomes=rejudge_outcomes,
+                resource_sha256=(
+                    projection.resource_sha256 if projection is not None else None
+                ),
+                carry_over_reason=None if flex is None else flex.carry_over_reason,
+                clock=clock,
+                deadline_check=deadline.remaining,
+                write_progress=write_progress,
+                total=total,
+            ),
+        )
+        resumed_records = list(combined.records)
+        rejudged_candidate_ids = set(combined.rejudged_candidate_ids)
+        rejected_total = combined.rejected_total
+        rejudged_total = combined.rejudged_total
+        resource_rejudged_total = combined.resource_rejudged_total
+        promoted_total = combined.promoted_total
+        imported_total = combined.imported_total
+        locus_unavailable_total = combined.locus_unavailable_total
         if resume:
-            assert isinstance(state_root, Path)
-            assert judge is not None
-            if state_root_guard is not None:
-                state_root_guard()
-            # (B091/D-23, P7 A5) `--rejudge <id>[,...]` refuses BEFORE any
-            # record is even loaded, the moment a named id does not match
-            # ANY of this run's own current candidate identities. Candidate
-            # ids fold in the mutant's own source bytes by construction
-            # (B066), so an id whose source has since changed simply no
-            # longer appears in `current_ids` -- indistinguishable, at the
-            # id level, from a typo or a stale id copied from a different
-            # run. Either way, silently ignoring it (treating "not found"
-            # as "nothing to do") would let a consumer believe a rejudge
-            # happened when it did not -- exactly the B088 principle this
-            # item cross-references: an identity that no longer matches
-            # current reality must not be silently trusted.
-            if rejudge_ids:
-                _reject_unknown_rejudge_ids(
-                    rejudge_ids, {candidate_id(job) for job in selected_jobs}
-                )
-            for job in selected_jobs:
-                if state_root_guard is not None:
-                    state_root_guard()
-                flat_locus_status: list[bool] = []
-                record = mutation_store._load_validated_state_record(
-                    state_root,
-                    job,
-                    judge=judge,
-                    campaign_deadline_sha256=campaign_deadline_sha256,
-                    context=record_context,
-                    state_root_fd=state_root_fd,
-                    locus_status=flat_locus_status,
-                )
-                locus_unavailable_total += sum(flat_locus_status)
-                if record is _RECORD_REJECTED or record is None:
-                    # (B527) The flat name may hold another judge's record
-                    # (archived generations live under `judges/<judge>/`).
-                    # A generation of THIS judge resumes and is promoted back
-                    # to the flat name; the displaced record is archived.
-                    generation_locus_status: list[bool] = []
-                    generation = mutation_store._load_validated_state_record(
-                        state_root,
-                        job,
-                        judge=judge,
-                        campaign_deadline_sha256=campaign_deadline_sha256,
-                        context=record_context,
-                        raw_override=_read_generation_record_bytes(
-                            state_root,
-                            candidate_id(job),
-                            judge,
-                            state_root_fd=state_root_fd,
-                        ),
-                        locus_status=generation_locus_status,
-                    )
-                    locus_unavailable_total += sum(generation_locus_status)
-                    if generation is not None and generation is not _RECORD_REJECTED:
-                        assert not isinstance(generation, str)
-                        mutation_store._write_mutation_state_record(
-                            Path(state_root), generation, state_root_fd=state_root_fd
-                        )
-                        promoted_total += 1
-                        record = generation
-                if record is _RECORD_REJECTED:
-                    rejected_total += 1
-                elif record is not None:
-                    assert not isinstance(record, str)
-                    # (B091/D-23, P7 A5) A record matching EITHER selection
-                    # is dropped here, before it ever reaches
-                    # `resumed_records` -- the exact same effect as a
-                    # candidate with no record at all, so it falls straight
-                    # through to `pending_jobs` below and genuinely
-                    # re-executes against the CURRENT judging suite, never
-                    # replaying the old verdict.
-                    if (
-                        candidate_id(job) in rejudge_ids
-                        or record.get("outcome_bucket") in rejudge_outcomes
-                    ):
-                        rejudged_total += 1
-                        rejudged_candidate_ids.add(candidate_id(job))
-                        continue
-                    if (
-                        projection is not None
-                        and record.get("outcome_bucket") in RESOURCE_SENSITIVE_BUCKETS
-                        and record.get("resource_sha256") != projection.resource_sha256
-                    ):
-                        # (B529) Resource settings left the judge identity,
-                        # so an outcome that can depend on them is re-executed
-                        # when they changed; killed/survived are reused.
-                        resource_rejudged_total += 1
-                        rejudged_candidate_ids.add(candidate_id(job))
-                        continue
-                    resumed_records.append(record)
-            if flex is not None and flex.reads_carry_over_stores:
-                carry = _carry_over_records(
-                    flex,
-                    jobs=[
-                        job
-                        for job in selected_jobs
-                        if candidate_id(job)
-                        not in {record["candidate_id"] for record in resumed_records}
-                        and candidate_id(job) not in rejudge_ids
-                    ],
-                    judge=judge,
-                    state_root=Path(state_root),
-                    state_root_fd=state_root_fd,
-                    state_root_guard=state_root_guard,
-                    campaign_deadline_sha256=campaign_deadline_sha256,
-                    context=record_context,
-                    rejudge_outcomes=rejudge_outcomes,
-                    resource_sha256=(
-                        projection.resource_sha256 if projection is not None else None
-                    ),
-                    clock=clock,
-                )
-                resumed_records.extend(carry.records)
-                if write_progress is not None:
-                    write_progress(
-                        {
-                            "event": "carry_over",
-                            "candidate_total": total,
-                            "imported_total": carry.imported_total,
-                            "copied_total": carry.copied_total,
-                            "refused_total": len(carry.refused),
-                            "refused_sample": [
-                                {"candidate_id": identity, "reason": reason}
-                                for identity, reason in carry.refused[:10]
-                            ],
-                            "from_judge_counts": dict(
-                                sorted(carry.from_judge_counts.items())
-                            ),
-                            "sources": [str(path) for path in flex.carry_over_sources],
-                            "merge_sources": [str(path) for path in flex.merge_sources],
-                            "shard_stores": [str(path) for path in flex.shard_stores],
-                            "reason": flex.carry_over_reason,
-                        }
-                    )
-                imported_total = carry.imported_total
-                locus_unavailable_total += carry.locus_unavailable
-            if flex is not None and flex.carry_forward_sources:
-                resumed_ids_before_carry = frozenset(
-                    record["candidate_id"] for record in resumed_records
-                )
-                carry_forward = _carry_forward_records(
-                    flex,
-                    jobs=[
-                        job
-                        for job in selected_jobs
-                        if candidate_id(job) not in rejudge_ids
-                    ],
-                    skip_candidate_ids=resumed_ids_before_carry,
-                    judge=judge,
-                    state_root=Path(state_root),
-                    state_root_fd=state_root_fd,
-                    state_root_guard=state_root_guard,
-                    campaign_deadline_sha256=campaign_deadline_sha256,
-                    context=record_context,
-                    rejudge_outcomes=rejudge_outcomes,
-                    clock=clock,
-                    deadline_check=deadline.remaining,
-                )
-                resumed_records.extend(carry_forward.records)
-                imported_total += carry_forward.survivors_carried
-                if write_progress is not None:
-                    write_progress(
-                        {
-                            "event": "carry_forward",
-                            "candidate_total": total,
-                            "considered_total": carry_forward.considered_total,
-                            "exact_id": carry_forward.exact_id,
-                            "locus": carry_forward.locus,
-                            "window": carry_forward.window,
-                            "survivors_carried": carry_forward.survivors_carried,
-                            "kills_requeued": carry_forward.kills_requeued,
-                            "ambiguous_loci_ignored": (
-                                carry_forward.ambiguous_loci_ignored
-                            ),
-                            "unmatched": carry_forward.unmatched,
-                            "from_judges": carry_forward.from_judges,
-                            "same_judge_resume": carry_forward.same_judge_resume,
-                            "invalid_records": carry_forward.invalid_records,
-                            "sources": [
-                                str(path) for path in flex.carry_forward_sources
-                            ],
-                            "reason": CARRY_FORWARD_REASON,
-                        }
-                    )
             resumed_ids = {record["candidate_id"] for record in resumed_records}
             pending_jobs = tuple(
                 job for job in selected_jobs if candidate_id(job) not in resumed_ids

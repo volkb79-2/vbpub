@@ -67,6 +67,31 @@ if TYPE_CHECKING:  # pragma: no cover -- annotation-only imports; importing at r
 
 _CANDIDATE_ID_RE = re.compile(r"[0-9a-f]{64}")
 
+CombinePolicy = Literal[
+    "same-judge",
+    "strict-shard",
+    "owner-manifest",
+    "import-unverified",
+    "carry-forward",
+]
+COMBINE_POLICIES: tuple[CombinePolicy, ...] = (
+    "same-judge",
+    "strict-shard",
+    "owner-manifest",
+    "import-unverified",
+    "carry-forward",
+)
+STORE_FLAG_POLICIES: Mapping[str, str] = {
+    "--resume": "same-judge",
+    "--merge-state": "same-judge",
+    "--merge-shard-store": "strict-shard",
+    "--merge-manifest": "owner-manifest",
+    "--carry-over": "import-unverified",
+    "--carry-forward": "carry-forward",
+    "--reuse-from": "hint",
+}
+ProgressWriter = Callable[[Mapping[str, Any]], None]
+
 MUTATION_STATE_RECORD_LIMIT = 1024 * 1024
 #: NOT bumped by B088, deliberately. `judge_sha256` is an ADDITIVE field
 #: whose absence already has the correct meaning -- "this record predates
@@ -152,6 +177,33 @@ class InvalidCandidateSelectionError(AssayError):
             message,
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+
+
+class InvalidRejudgeIdError(AssayError):
+    """(B091/D-23, P7 A5) A rejudge selection cannot match this run's plan."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message,
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+
+
+def _reject_unknown_rejudge_ids(
+    rejudge_ids: frozenset[str], current_ids: set[str]
+) -> None:
+    unknown_rejudge_ids = rejudge_ids - current_ids
+    if unknown_rejudge_ids:
+        raise InvalidRejudgeIdError(
+            "--rejudge named a candidate id not present in "
+            "this run's selected candidate set (unknown, stale "
+            "because source bytes changed, or excluded by the selected "
+            "operators/shard -- B088's own 'an identity that "
+            "no longer matches current reality must not be "
+            "silently trusted' principle): "
+            f"{sorted(unknown_rejudge_ids)}"
         )
 
 
@@ -398,6 +450,21 @@ class FlexOptions:
     exclude_candidates: frozenset[str] | None = None
     carry_forward_sources: tuple[Path, ...] = ()
 
+    def store_sources(self) -> tuple[StoreSource, ...]:
+        """The explicitly named stores in their fixed policy/CLI order."""
+        return (
+            *(StoreSource(path=path, policy="same-judge") for path in self.merge_sources),
+            *(StoreSource(path=path, policy="strict-shard") for path in self.shard_stores),
+            *(
+                StoreSource(path=path, policy="import-unverified")
+                for path in self.carry_over_sources
+            ),
+            *(
+                StoreSource(path=path, policy="carry-forward")
+                for path in self.carry_forward_sources
+            ),
+        )
+
     def __post_init__(self) -> None:
         if self.lane_file_name is not None and (
             not is_nonempty_str(self.lane_file_name)
@@ -452,6 +519,64 @@ class FlexOptions:
     @property
     def selection_active(self) -> bool:
         return self.only_candidates is not None or self.exclude_candidates is not None
+
+
+@record
+class StoreSource:
+    """One explicitly named mutation store and the policy that reads it."""
+
+    path: Path
+    policy: CombinePolicy
+
+
+@record
+class CombineRequest:
+    """Every fact the four combine stages share during one mutation run."""
+
+    jobs: Sequence[MutantJob]
+    judge: str | None
+    state_root: Path | None
+    state_root_fd: int | None
+    state_root_guard: Callable[[], None] | None
+    campaign_deadline_sha256: str | None
+    context: RecordContext
+    resume: bool
+    rejudge_ids: frozenset[str]
+    rejudge_outcomes: frozenset[str]
+    resource_sha256: str | None
+    carry_over_reason: str | None
+    clock: Clock
+    deadline_check: Callable[[], float]
+    write_progress: ProgressWriter | None
+    total: int
+
+
+@record
+class Hint:
+    """Prior kill evidence retained for P-assay-13's isolated replay."""
+
+    candidate_id: str
+    node_id: str
+    source: Literal["verdict", "store"]
+    source_ref: str
+    from_candidate_id: str
+    from_judge_sha256: str | None
+    match: Literal["exact-id", "locus", "window"]
+
+
+@record
+class CombineResult:
+    """The records and telemetry produced by :func:`combine`."""
+
+    records: tuple[Mapping[str, Any], ...]
+    rejected_total: int
+    rejudged_total: int
+    resource_rejudged_total: int
+    promoted_total: int
+    imported_total: int
+    locus_unavailable_total: int
+    rejudged_candidate_ids: frozenset[str]
+    hints: tuple[Hint, ...]
 
 
 def _provenance_record(
@@ -2447,6 +2572,17 @@ class _CarryOverResult:
 
 
 @record
+class _OwnStoreResult:
+    records: tuple[Mapping[str, Any], ...]
+    rejected_total: int
+    rejudged_total: int
+    resource_rejudged_total: int
+    promoted_total: int
+    locus_unavailable_total: int
+    rejudged_candidate_ids: frozenset[str]
+
+
+@record
 class _CarryForwardRecord:
     payload: Mapping[str, Any]
     raw: bytes
@@ -3524,6 +3660,334 @@ def _carry_over_records(
         refused=tuple(refused),
         from_judge_counts=dict(from_judges),
         locus_unavailable=locus_unavailable,
+    )
+
+
+def _resume_own_store(request: CombineRequest) -> _OwnStoreResult:
+    """Apply D5's verbatim own-store resume to this run's selected jobs."""
+    records: list[Mapping[str, Any]] = []
+    rejudged_candidate_ids: set[str] = set()
+    rejected_total = 0
+    rejudged_total = 0
+    resource_rejudged_total = 0
+    promoted_total = 0
+    locus_unavailable_total = 0
+    if not request.resume:
+        return _OwnStoreResult(
+            records=(),
+            rejected_total=0,
+            rejudged_total=0,
+            resource_rejudged_total=0,
+            promoted_total=0,
+            locus_unavailable_total=0,
+            rejudged_candidate_ids=frozenset(),
+        )
+    assert isinstance(request.state_root, Path)
+    assert request.judge is not None
+    state_root = request.state_root
+    judge = request.judge
+    if request.state_root_guard is not None:
+        request.state_root_guard()
+    # (B091/D-23, P7 A5) `--rejudge <id>[,...]` refuses BEFORE any
+    # record is even loaded, the moment a named id does not match
+    # ANY of this run's own current candidate identities. Candidate
+    # ids fold in the mutant's own source bytes by construction
+    # (B066), so an id whose source has since changed simply no
+    # longer appears in `current_ids` -- indistinguishable, at the
+    # id level, from a typo or a stale id copied from a different
+    # run. Either way, silently ignoring it (treating "not found"
+    # as "nothing to do") would let a consumer believe a rejudge
+    # happened when it did not -- exactly the B088 principle this
+    # item cross-references: an identity that no longer matches
+    # current reality must not be silently trusted.
+    if request.rejudge_ids:
+        _reject_unknown_rejudge_ids(
+            request.rejudge_ids, {candidate_id(job) for job in request.jobs}
+        )
+    for job in request.jobs:
+        if request.state_root_guard is not None:
+            request.state_root_guard()
+        flat_locus_status: list[bool] = []
+        record = _load_validated_state_record(
+            state_root,
+            job,
+            judge=judge,
+            campaign_deadline_sha256=request.campaign_deadline_sha256,
+            context=request.context,
+            state_root_fd=request.state_root_fd,
+            locus_status=flat_locus_status,
+        )
+        locus_unavailable_total += sum(flat_locus_status)
+        if record is _RECORD_REJECTED or record is None:
+            # (B527) The flat name may hold another judge's record
+            # (archived generations live under `judges/<judge>/`).
+            # A generation of THIS judge resumes and is promoted back
+            # to the flat name; the displaced record is archived.
+            generation_locus_status: list[bool] = []
+            generation = _load_validated_state_record(
+                state_root,
+                job,
+                judge=judge,
+                campaign_deadline_sha256=request.campaign_deadline_sha256,
+                context=request.context,
+                raw_override=_read_generation_record_bytes(
+                    state_root,
+                    candidate_id(job),
+                    judge,
+                    state_root_fd=request.state_root_fd,
+                ),
+                locus_status=generation_locus_status,
+            )
+            locus_unavailable_total += sum(generation_locus_status)
+            if generation is not None and generation is not _RECORD_REJECTED:
+                assert not isinstance(generation, str)
+                _write_mutation_state_record(
+                    state_root, generation, state_root_fd=request.state_root_fd
+                )
+                promoted_total += 1
+                record = generation
+        if record is _RECORD_REJECTED:
+            rejected_total += 1
+        elif record is not None:
+            assert not isinstance(record, str)
+            # (B091/D-23, P7 A5) A record matching EITHER selection
+            # is dropped here, before it ever reaches
+            # `resumed_records` -- the exact same effect as a
+            # candidate with no record at all, so it falls straight
+            # through to `pending_jobs` below and genuinely
+            # re-executes against the CURRENT judging suite, never
+            # replaying the old verdict.
+            if (
+                candidate_id(job) in request.rejudge_ids
+                or record.get("outcome_bucket") in request.rejudge_outcomes
+            ):
+                rejudged_total += 1
+                rejudged_candidate_ids.add(candidate_id(job))
+                continue
+            if (
+                request.resource_sha256 is not None
+                and record.get("outcome_bucket") in RESOURCE_SENSITIVE_BUCKETS
+                and record.get("resource_sha256") != request.resource_sha256
+            ):
+                # (B529) Resource settings left the judge identity,
+                # so an outcome that can depend on them is re-executed
+                # when they changed; killed/survived are reused.
+                resource_rejudged_total += 1
+                rejudged_candidate_ids.add(candidate_id(job))
+                continue
+            records.append(record)
+    return _OwnStoreResult(
+        records=tuple(records),
+        rejected_total=rejected_total,
+        rejudged_total=rejudged_total,
+        resource_rejudged_total=resource_rejudged_total,
+        promoted_total=promoted_total,
+        locus_unavailable_total=locus_unavailable_total,
+        rejudged_candidate_ids=frozenset(rejudged_candidate_ids),
+    )
+
+
+def _flex_from_sources(
+    sources: Sequence[StoreSource], *, carry_over_reason: str | None
+) -> FlexOptions:
+    """Project source records into the legacy exact-id/carry-forward helpers."""
+    for source in sources:
+        if source.policy not in COMBINE_POLICIES:
+            raise ValueError(f"unknown combine policy {source.policy!r}")
+        if not isinstance(source.path, Path):
+            raise ValueError("combine source paths must be Path objects")
+    return FlexOptions(
+        merge_sources=tuple(
+            source.path for source in sources if source.policy == "same-judge"
+        ),
+        shard_stores=tuple(
+            source.path for source in sources if source.policy == "strict-shard"
+        ),
+        carry_over_sources=tuple(
+            source.path
+            for source in sources
+            if source.policy == "import-unverified"
+        ),
+        carry_over_reason=carry_over_reason,
+        carry_forward_sources=tuple(
+            source.path for source in sources if source.policy == "carry-forward"
+        ),
+    )
+
+
+def combine(
+    sources: Sequence[StoreSource], request: CombineRequest
+) -> CombineResult:
+    """Apply the fixed same-judge → shard → import → carry-forward pipeline."""
+    if request.judge is None:
+        if request.resume or sources:
+            raise ValueError("mutation store combine requires a judge identity")
+        return CombineResult(
+            records=(),
+            rejected_total=0,
+            rejudged_total=0,
+            resource_rejudged_total=0,
+            promoted_total=0,
+            imported_total=0,
+            locus_unavailable_total=0,
+            rejudged_candidate_ids=frozenset(),
+            hints=(),
+        )
+    if not request.resume and sources:
+        raise ValueError("mutation store combine requires resume=True")
+
+    exact = _flex_from_sources(
+        sources, carry_over_reason=request.carry_over_reason
+    )
+    state_root = request.state_root
+    judge = request.judge
+
+    if exact.shard_stores:
+        assert state_root is not None
+
+        def _strict_record(job: MutantJob, raw: bytes) -> Any:
+            return _load_validated_state_record(
+                state_root,
+                job,
+                judge=judge,
+                raw_override=raw,
+                context=request.context,
+            )
+
+        shard_counts = _validate_shard_stores(
+            exact.shard_stores,
+            jobs=request.jobs,
+            judge=judge,
+            campaign_deadline_sha256=request.campaign_deadline_sha256,
+            load_record=_strict_record,
+        )
+        if request.write_progress is not None:
+            request.write_progress(
+                {
+                    "event": "shard_merge",
+                    "candidate_total": request.total,
+                    "shard_count": len(exact.shard_stores),
+                    "records_per_store": shard_counts,
+                }
+            )
+
+    own = _resume_own_store(request)
+    resumed_records = list(own.records)
+    imported_total = 0
+    locus_unavailable_total = own.locus_unavailable_total
+
+    if exact.reads_carry_over_stores:
+        assert state_root is not None
+        resumed_ids = {
+            record["candidate_id"] for record in resumed_records
+        }
+        carry = _carry_over_records(
+            exact,
+            jobs=[
+                job
+                for job in request.jobs
+                if candidate_id(job) not in resumed_ids
+                and candidate_id(job) not in request.rejudge_ids
+            ],
+            judge=judge,
+            state_root=state_root,
+            state_root_fd=request.state_root_fd,
+            state_root_guard=request.state_root_guard,
+            campaign_deadline_sha256=request.campaign_deadline_sha256,
+            context=request.context,
+            rejudge_outcomes=request.rejudge_outcomes,
+            resource_sha256=request.resource_sha256,
+            clock=request.clock,
+        )
+        resumed_records.extend(carry.records)
+        if request.write_progress is not None:
+            request.write_progress(
+                {
+                    "event": "carry_over",
+                    "candidate_total": request.total,
+                    "imported_total": carry.imported_total,
+                    "copied_total": carry.copied_total,
+                    "refused_total": len(carry.refused),
+                    "refused_sample": [
+                        {"candidate_id": identity, "reason": reason}
+                        for identity, reason in carry.refused[:10]
+                    ],
+                    "from_judge_counts": dict(
+                        sorted(carry.from_judge_counts.items())
+                    ),
+                    "sources": [
+                        str(path) for path in exact.carry_over_sources
+                    ],
+                    "merge_sources": [
+                        str(path) for path in exact.merge_sources
+                    ],
+                    "shard_stores": [str(path) for path in exact.shard_stores],
+                    "reason": exact.carry_over_reason,
+                }
+            )
+        imported_total = carry.imported_total
+        locus_unavailable_total += carry.locus_unavailable
+
+    if exact.carry_forward_sources:
+        assert state_root is not None
+        resumed_ids_before_carry = frozenset(
+            record["candidate_id"] for record in resumed_records
+        )
+        carry_forward = _carry_forward_records(
+            exact,
+            jobs=[
+                job
+                for job in request.jobs
+                if candidate_id(job) not in request.rejudge_ids
+            ],
+            skip_candidate_ids=resumed_ids_before_carry,
+            judge=judge,
+            state_root=state_root,
+            state_root_fd=request.state_root_fd,
+            state_root_guard=request.state_root_guard,
+            campaign_deadline_sha256=request.campaign_deadline_sha256,
+            context=request.context,
+            rejudge_outcomes=request.rejudge_outcomes,
+            clock=request.clock,
+            deadline_check=request.deadline_check,
+        )
+        resumed_records.extend(carry_forward.records)
+        imported_total += carry_forward.survivors_carried
+        if request.write_progress is not None:
+            request.write_progress(
+                {
+                    "event": "carry_forward",
+                    "candidate_total": request.total,
+                    "considered_total": carry_forward.considered_total,
+                    "exact_id": carry_forward.exact_id,
+                    "locus": carry_forward.locus,
+                    "window": carry_forward.window,
+                    "survivors_carried": carry_forward.survivors_carried,
+                    "kills_requeued": carry_forward.kills_requeued,
+                    "ambiguous_loci_ignored": (
+                        carry_forward.ambiguous_loci_ignored
+                    ),
+                    "unmatched": carry_forward.unmatched,
+                    "from_judges": carry_forward.from_judges,
+                    "same_judge_resume": carry_forward.same_judge_resume,
+                    "invalid_records": carry_forward.invalid_records,
+                    "sources": [
+                        str(path) for path in exact.carry_forward_sources
+                    ],
+                    "reason": CARRY_FORWARD_REASON,
+                }
+            )
+
+    return CombineResult(
+        records=tuple(resumed_records),
+        rejected_total=own.rejected_total,
+        rejudged_total=own.rejudged_total,
+        resource_rejudged_total=own.resource_rejudged_total,
+        promoted_total=own.promoted_total,
+        imported_total=imported_total,
+        locus_unavailable_total=locus_unavailable_total,
+        rejudged_candidate_ids=own.rejudged_candidate_ids,
+        hints=(),
     )
 
 
