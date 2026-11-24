@@ -1222,13 +1222,14 @@ zswap (zstd, `max_pool_percent` 25, writeback `yes` on every tier) is unchanged.
 
 ### Acceptance and measurement kit of the dedicated-dev memory model (P-plat-19g, `tools/accept/`)
 
-Step 6 of the migration, root on the host (details: the header of each script, `accept-eval.py --help`). Lanes stay drained for all of it.
+Step 6 of the migration, root on the host (details: the header of each script, `accept-eval.py --help`). Keep admission and the edge demo stacks drained (section 8 step 0) and start exactly one gate lane by hand during each window.
 
-1. Per run, twice (`EV` a fresh directory): launch DETACHED so an ssh drop cannot orphan it, e.g.
-   `systemd-run --unit mdt-accept-1 --collect tools/accept/accept-run.sh --evidence "$EV" --warmup 600 --window 1800`. During the window start the operator part: one
-   real gate lane, the cockpit attached and idle, an ssh login; write `"<idle> <loaded>"` seconds of `ssh <host> true` into `$EV/ssh.txt`. The probes also exit by themselves
-   after warm-up + window + 300 s. cgprofile sessions are not captured: the daemon refuses cgroup targets (CP-55).
-2. `tools/accept/accept-eval.py "$EV1" "$EV2"`: exit 0 PASS, 1 FAIL, 4 INCONCLUSIVE (missing data or a load that was not real: repeat), 2 usage or crash (never a pin reason).
+1. Per run, twice (`EV` a fresh ABSOLUTE directory): launch DETACHED so an ssh drop cannot orphan it, e.g.
+   `systemd-run --unit mdt-accept-1 --collect "$PWD/tools/accept/accept-run.sh" --evidence "$EV" --warmup 600 --window 1800` (the unit runs in `/`, hence absolute paths; its
+   start hints are in `journalctl -u mdt-accept-1`). During the window start the operator part: the one gate lane, the cockpit attached and idle, an ssh login; write
+   `"<idle> <loaded>"` seconds of `ssh <host> true` into `$EV/ssh.txt`. The probes exit by themselves after warm-up + window + 300 s; after a SIGKILL run
+   `docker rm -f mdt-accept-probe-gates mdt-accept-probe-bg` at once. cgprofile sessions are not captured: the daemon refuses cgroup targets (CP-55).
+2. `tools/accept/accept-eval.py "$EV1" "$EV2"`: exit 0 PASS, 1 FAIL, 4 INCONCLUSIVE (missing data or a load that was not real: repeat; "install.sh would refuse these values" needs a decision on the floor row, not a repeat), 2 usage or crash (never a pin reason).
 3. `tools/accept/daemon-reload-check.sh`: it refuses (exit 3, nothing done) while `/run/mdt/reconcile/memory-deferred` exists or systemd and the kernel disagree on a dev `MemoryMax`.
 4. PASS: put the printed lines into `/etc/mdt/host-setup.env` and re-run `install.sh`. FAIL: raise the failing value and repeat, or pin `DEV_HOST_MEMORY_KEEP=1280M` (section 8).
 

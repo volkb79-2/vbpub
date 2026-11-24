@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import fcntl
 import importlib.util
 import io
 import os
@@ -16,6 +17,7 @@ import time
 import unittest
 import zlib
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 KIT = ROOT / "tools" / "accept"
@@ -136,6 +138,13 @@ class EvalTests(unittest.TestCase):
         (d / "ssh.txt").write_text("0.5 0.9\n")
         self.assertEqual(run_eval(str(d))[0], 0)
 
+    def test_without_mdt_capacity_the_env_lines_are_unchecked_so_never_a_pass(self) -> None:
+        with mock.patch.object(ev, "cap", None):
+            rc, out = self.ev(write_run(self.tmp / "r1"))
+        self.assertEqual(rc, 4, out)
+        self.assertIn("NOT checked against install.sh", out)
+        self.assertIn("# DEV_HOST_MEMORY_MARGIN=", out)
+
     def test_kernel_oom_lines_need_attribution(self) -> None:
         self.assertEqual(self.ev(write_run(self.tmp / "r1", kernel_oom=2))[0], 4)
 
@@ -178,8 +187,8 @@ exit 0
 '''
 FAKE_SYSTEMCTL = r'''echo "systemctl $*" >> "$FAKE_LOG"
 case "$1" in
-  show) cat "$FAKE_SHOW/$5" 2>/dev/null ;;
-  daemon-reload) [ -n "${FAKE_RELOAD_WRITE:-}" ] && printf %s "$FAKE_RELOAD_WRITE" > "$FAKE_MAX_FILE" ;;
+  show) if [ "$3" = NeedDaemonReload ]; then cat "$FAKE_SHOW/need-$5" 2>/dev/null || echo no; else cat "$FAKE_SHOW/$5" 2>/dev/null; fi ;;
+  daemon-reload) [ -n "${FAKE_RELOAD_WRITE:-}" ] && { ( sleep "${FAKE_RELOAD_DELAY:-0}"; printf %s "$FAKE_RELOAD_WRITE" > "$FAKE_MAX_FILE" ) >/dev/null 2>&1 & } ;;
 esac
 exit 0
 '''
@@ -379,7 +388,8 @@ class ShellKitTests(unittest.TestCase):
         f = self.cg / "system.slice" / "docker-fakeid0123.scope" / "memory.max"
         f.parent.mkdir()
         f.write_text("2147483648\n")
-        env = dict(self.env, FAKE_RELOAD_WRITE=reload_write, FAKE_MAX_FILE=str(f))
+        # systemd answers the reload before the properties are re-applied: the rewrite lands 0.3 s later, inside the 10 x 0.2 s poll
+        env = dict(self.env, FAKE_RELOAD_WRITE=reload_write, FAKE_MAX_FILE=str(f), FAKE_RELOAD_DELAY="0.3", MDT_ACCEPT_POLL_STEP="0.2")
         return subprocess.run([str(KIT / "daemon-reload-check.sh")], env=env, capture_output=True, text=True)
 
     def test_daemon_reload_check_passes_when_the_declared_cap_survives(self) -> None:
@@ -393,6 +403,17 @@ class ShellKitTests(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("after=8589934592", r.stdout)
         self.assertEqual(self.calls()[-1], "rm -f mdt-accept-memcheck")
+
+    def test_daemon_reload_check_refuses_with_a_pending_reload_or_while_an_accept_run_holds_the_lock(self) -> None:
+        (self.tmp / "show" / "need-dev-gates.slice").write_text("yes\n")  # an on-disk drop-in that a reload would apply
+        r = self._reload_check()
+        self.assertEqual((r.returncode, "NeedDaemonReload=yes" in r.stderr, "systemctl daemon-reload" in self.calls()), (3, True, False))
+        (self.tmp / "show" / "need-dev-gates.slice").unlink()
+        shutil.rmtree(self.cg / "system.slice" / "docker-fakeid0123.scope")
+        with open(self.tmp / "lock", "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            r = self._reload_check()
+        self.assertEqual((r.returncode, "holds the lock" in r.stderr, [c for c in self.calls() if c.startswith("run ")]), (3, True, []))
 
     def test_daemon_reload_check_refuses_with_a_deferred_lowering_or_a_systemd_kernel_mismatch(self) -> None:
         (self.tmp / "deferred").write_text("dev.slice\n")

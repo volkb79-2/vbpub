@@ -219,6 +219,9 @@ def _main(argv: list[str] | None) -> int:
     if refused:
         print(f"INCONCLUSIVE proposal: install.sh's derivation would refuse these values: {refused}")
         verdict = "FAIL" if verdict == "FAIL" else "INCONCLUSIVE"
+    if cap is None:   # table, tested margin and Low would all be 0: the lines could not be checked, so no PASS
+        print("INCONCLUSIVE proposal: mdt_capacity is not importable (kit copied out of the checkout); the env lines are NOT checked against install.sh")
+        verdict = "FAIL" if verdict == "FAIL" else "INCONCLUSIVE"
     pre = "" if verdict == "PASS" else "# "
     print("== host-setup.env" + ("" if verdict == "PASS" else f" (NOT to be applied: {verdict}; on FAIL pin DEV_HOST_MEMORY_KEEP=1280M per design note 8)"))
     for u, h in sorted(hot.items()):
