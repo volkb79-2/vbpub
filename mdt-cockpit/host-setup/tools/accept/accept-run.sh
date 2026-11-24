@@ -36,7 +36,7 @@ for p in "$PARENT_GATES" "$PARENT_BG"; do   # an absent tier unit would make doc
   case $p in dev-*.slice) ;; *) echo "accept-run: cgroup parent $p is not a dev-*.slice; refusing" >&2; exit 3 ;; esac
   [ -n "$(rdnum "$CG/dev.slice/$p/memory.max")" ] || { echo "accept-run: $CG/dev.slice/$p has no numeric memory.max; refusing" >&2; exit 3; }
 done
-root=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null); avail=$(df -P -B1 --output=avail "${root:-/}" 2>/dev/null | tail -n 1 | tr -d ' ')
+root=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null); avail=$(df -B1 --output=avail"${root:-/}" 2>/dev/null | tail -n 1 | tr -d ' ')
 # Each probe writes a 4G file into its overlay layer: 8G in the Docker data root for the whole run.
 [ "${avail:-0}" -ge "${MDT_ACCEPT_MIN_DISK:-12884901888}" ] || { echo "accept-run: less than 12G free in the Docker data root; refusing" >&2; exit 3; }
 # A probe: ~3.8G of INCOMPRESSIBLE anon (zswap must not absorb the page-out) cycled by random reads and rewrites, plus random

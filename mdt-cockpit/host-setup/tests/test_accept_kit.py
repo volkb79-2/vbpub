@@ -326,10 +326,12 @@ class ShellKitTests(unittest.TestCase):
     def _start_long(self) -> subprocess.Popen:
         samples = self.tmp / "ev" / "samples.csv"
         p = subprocess.Popen([str(KIT / "accept-run.sh"), "--evidence", str(self.tmp / "ev"), "--warmup", "0", "--window", "100000"],
-                             env=dict(self.env, MDT_ACCEPT_INTERVAL="600"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                             env=dict(self.env, MDT_ACCEPT_INTERVAL="600"), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         deadline = time.monotonic() + 120
-        while time.monotonic() < deadline and not (samples.exists() and len(samples.read_text().splitlines()) >= 2):
+        while p.poll() is None and time.monotonic() < deadline and not (samples.exists() and len(samples.read_text().splitlines()) >= 2):
             time.sleep(0.05)
+        if p.poll() is not None:
+            self.fail(f"the run ended early rc={p.returncode}: {p.stderr.read()}")
         self.assertTrue(samples.exists() and len(samples.read_text().splitlines()) >= 2, "no sample row before the deadline")
         return p
 
