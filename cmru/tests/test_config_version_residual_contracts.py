@@ -195,7 +195,13 @@ def test_version_counter_failure_and_release_unknown_strategy_refuse(tmp_path):
         with pytest.raises(SystemExit) as error:
             version.release_cmd(root, {"demo": project})
         assert error.value.code == 2
-    with patch.object(version.subprocess, "run", side_effect=[SimpleNamespace(returncode=0, stdout=""), SimpleNamespace(returncode=3)]):
+    with patch.object(
+        version, "run_process",
+        return_value=SimpleNamespace(returncode=0, stdout=""),
+    ), patch(
+        "cmru.git_auth.run_process",
+        return_value=SimpleNamespace(returncode=3, stdout="", stderr=""),
+    ):
         with pytest.raises(SystemExit) as error:
             version._apply_strategy_counter(root, "demo-v", "1.0.0")
         assert error.value.code == 1

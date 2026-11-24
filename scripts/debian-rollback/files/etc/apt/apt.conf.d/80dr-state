@@ -1,0 +1,5 @@
+DPkg::Tools::Options::/usr/local/sbin/dr-state::Version "2";
+DPkg::Tools::Options::/usr/local/sbin/dr-state::InfoFD "3";
+DPkg::Pre-Install-Pkgs { "/usr/local/sbin/dr-state apt-pre-install-pkgs"; };
+DPkg::Pre-Invoke { "[ ! -x /usr/local/sbin/dr-state ] || /usr/local/sbin/dr-state snapshot --reason apt || exit 100"; };
+DPkg::Post-Invoke { "[ ! -x /usr/local/sbin/dr-state ] || /usr/local/sbin/dr-state gen-menu || true"; };

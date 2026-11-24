@@ -12,6 +12,9 @@ CMRU_RELEASE_NOTES = "## cmru wheel\n\nBuild, publish, and release orchestration
 # installed release (CX-D1), never from a source root.
 PYTHONPATH = "src:../libraries/worktree/src"
 
+[runner]
+no_progress_timeout_seconds = 1800
+
 [project]
 id = "cmru"
 description = "Configurable Multi Release Utility."

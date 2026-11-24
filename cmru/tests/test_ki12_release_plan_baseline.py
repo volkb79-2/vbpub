@@ -195,7 +195,9 @@ def test_tag_pushed_to_origin_raises_when_origin_is_unreachable():
             _tag_pushed_to_origin(repo.root, "demo-v1.0.0")
 
 
-def test_tag_pushed_to_origin_raises_when_ls_remote_output_is_unparseable(monkeypatch):
+def test_tag_pushed_to_origin_raises_when_ls_remote_output_is_unparseable(
+    monkeypatch, process_run_seam,
+):
     """Defensive guard: the exact two-refspec query this function sends
     should, with real git, only ever come back with lines matching one of
     the two exact patterns it parses -- not reachable through real git, so
@@ -206,12 +208,14 @@ def test_tag_pushed_to_origin_raises_when_ls_remote_output_is_unparseable(monkey
         stdout = "deadbeef\trefs/tags/some-other-unrelated-tag\n"
         stderr = ""
 
-    monkeypatch.setattr(version.subprocess, "run", lambda *a, **k: _FakeResult())
+    process_run_seam(version, lambda *a, **k: _FakeResult())
     with pytest.raises(ReleasePlanRefused, match="could not be parsed"):
         _tag_pushed_to_origin(Path("/nonexistent"), "demo-v1.0.0")
 
 
-def test_highest_remote_tag_for_prefix_skips_ls_remote_lines_outside_refs_tags(monkeypatch):
+def test_highest_remote_tag_for_prefix_skips_ls_remote_lines_outside_refs_tags(
+    monkeypatch, process_run_seam,
+):
     """Defensive guard: `--tags` should mean every returned line is a
     refs/tags/* ref -- skip anything else rather than mis-parse it. Not
     reachable through real git; exercised directly against a forced
@@ -221,7 +225,7 @@ def test_highest_remote_tag_for_prefix_skips_ls_remote_lines_outside_refs_tags(m
         stdout = "deadbeef\trefs/heads/main\ncafebabe\trefs/tags/demo-v1.0.0\n"
         stderr = ""
 
-    monkeypatch.setattr(version.subprocess, "run", lambda *a, **k: _FakeResult())
+    process_run_seam(version, lambda *a, **k: _FakeResult())
     result = version._highest_remote_tag_for_prefix(Path("/nonexistent"), "demo-v", lambda t: t)
     assert result == "demo-v1.0.0"
 

@@ -187,7 +187,9 @@ The target bootloader changes how each OS state is made bootable:
   backend in `/etc/dr-state.conf` and an ESP marker. Since systemd-boot cannot
   read kernels from btrfs, `dr-state` copies each bootable state's kernel and
   initrd to the ESP and writes Boot Loader Specification entries. The apt and
-  `zz-dr-state` kernel hooks are shared with GRUB. The installer diverts
+  `zz-dr-state` kernel hooks ship as root-owned files under `files/etc/` and are
+  shared with GRUB, but activate only after the initial state and default menu
+  exist. The installer diverts
   Debian's `/etc/kernel/postinst.d/zz-systemd-boot` and
   `/etc/kernel/postrm.d/zz-systemd-boot` scripts into
   `/etc/kernel/dr-disabled/`, outside both hook directories, so neither

@@ -2345,6 +2345,7 @@ may use the runner controls below. No second runner config exists:
 
 ```toml
 commands      = [{ label = "build", argv = ["docker", "buildx", "bake", "all"], cwd = "." }]
+no_progress_timeout_seconds = 3600
 login         = { registry = "ghcr.io", username_env = "GITHUB_USERNAME", token_env = "GITHUB_PUSH_PAT", required = true }
 required_env  = ["GITHUB_TOKEN"]
 clean_dirs    = ["dist/"]
@@ -2353,6 +2354,24 @@ no_cache_env  = "BUILD_NO_CACHE"
 bake_set_prefix = "base.args."
 bake_set_vars = ["OCI_VERSION"]
 ```
+
+The optional top-level `[runner]` table accepts only
+`no_progress_timeout_seconds`. A step's optional
+`steps.<name>.no_progress_timeout_seconds` wins; otherwise the project value applies;
+otherwise the resolved value is the finite default 1800 seconds. Both values must be numeric,
+not boolean, finite, and greater than zero. An invalid value exits 2 with exactly one of:
+
+```
+runner.no_progress_timeout_seconds must be a finite number of seconds greater than 0; got <value>
+steps.<step>.no_progress_timeout_seconds must be a finite number of seconds greater than 0; got <value>
+```
+
+Unknown `[runner]` keys are refused. Every parsed step carries both the resolved duration and
+the exact winning source key: `steps.<name>.no_progress_timeout_seconds`,
+`runner.no_progress_timeout_seconds`, or
+`default runner.no_progress_timeout_seconds`. Direct `run_command` calls without parsed step
+metadata use the exported 1800-second CMRU constant. These keys are optional, so template
+revision 5 is unchanged and a project that declares neither key remains valid.
 
 **S3.3** The runner MUST set `SOURCE_DATE_EPOCH` to the Unix timestamp of the HEAD commit before every step.
 
@@ -2370,26 +2389,42 @@ choice: every CMRU line that already starts `[INFO]`, `[WARN]`, or `[ERROR]` is 
 three severity tokens green/yellow/red; redirected stdout/stderr is deliberately ANSI-free so
 the stable logs and machine consumers retain plain text.
 
-**S3.4a — Step process lifetime (KI-178).** A step ends when its own process exits, not when
-every holder of its output pipe closes it. After the child has exited the runner drains the
-output for at most `OUTPUT_DRAIN_SECONDS` (2 s; a module constant, not a configuration key),
-then stops reading and closes the pipe, keeps the child's own exit code, and logs one `[WARN]`
-(also written to the step log) naming the pids that still hold the pipe, found through
-`/proc/<pid>/fd`; when that scan fails the WARN omits the pids. The holders are named, never
-killed. Each command starts in its own session and process group (`start_new_session`). While a
-command runs, `run_command` turns SIGTERM and SIGHUP delivered to cmru into `SystemExit` (main
-thread only; other threads install nothing; the previous handlers are restored afterwards; a
-signal that was ignored when cmru started, such as a SIGHUP ignored by `nohup`, stays ignored for
-cmru and, because the disposition survives exec, for the step), and
-Ctrl-C raises `KeyboardInterrupt`; each of them sends SIGTERM to the whole group, SIGKILL after
-`GROUP_TERM_GRACE_SECONDS` (5 s) if any member survives, and reaps it. SIGKILL of cmru itself
-cannot be caught and still leaves the step running as an orphan in its own session. The output
-wait uses poll/epoll, so it works for pipe descriptors numbered 1024 and above. Output lines,
-their order, decoding (locale encoding, universal newlines) and exit codes are unchanged for a
-child that closes its pipe. A command in its own session has no controlling terminal: plain
-reads on the inherited standard input still work, but anything that opens `/dev/tty` (sudo, ssh
-or git prompts) fails with `ENXIO`; steps are non-interactive. A no-progress watchdog and a
-helper shared with other tools remain open under KI-178.
+**S3.4a — Step process lifetime (KI-178/KI-180/KI-188).** Every step command is supervised by
+`cli_extended.procio.run_streaming` with `progress_paths=()`: pipe bytes are the only progress
+source because the step log is written from those bytes. The child's exit status is authoritative.
+After it exits, the runner drains output for at most `OUTPUT_DRAIN_SECONDS` (2 s; a module
+constant, not a configuration key), then stops and closes the pipe. If a descendant still holds
+the pipe, CMRU prints exactly one `[WARN] ...` line to stdout and writes exactly one
+`[cmru] ...` line to the step log, including in quiet mode. The warning is never copied into the
+aggregate mirror, names the visible holder PIDs, and never kills those holders.
+
+The no-progress watchdog uses the resolved 1800-second default or the valid project/step override
+from S3.2. Its diagnostic is printed and logged even in quiet mode, names the winning source key,
+shows the process tree captured before signalling, sends SIGTERM to the command's process group,
+then sends SIGKILL after `GROUP_TERM_GRACE_SECONDS` (5 s) if needed. Watchdog expiry fails through
+the existing step path with return code 1; the killed child's negative signal status is never the
+CLI exit code. Each command starts in its own session and group. During supervision, SIGTERM and
+SIGHUP delivered to cmru become `SystemExit`, and Ctrl-C becomes `KeyboardInterrupt`; each takes
+the same group-reaping path. A SIGTERM or SIGHUP ignored when cmru started, such as a SIGHUP
+ignored by `nohup`, stays ignored and is inherited by the child. The shared helper defers a
+signal across spawn and closes pipes in `finally`, so a signal cannot leave an unreaped child
+behind, and a failing reap cannot hide an open pipe.
+
+Streamed output uses the locale encoding and universal newlines with `errors="replace"`. Malformed
+bytes therefore become U+FFFD and do not change a child's success or failure (D-179); every
+complete line and unterminated tail is still written to the step log and aggregate mirror.
+Captured probes remain strict: `run_process(capture=True)` delegates to
+`cli_extended.procio.run_capture`, whose bounded drain and timeout reap the child's process group.
+Its `stdin` accepts exactly `None` or `subprocess.DEVNULL`; any other value raises `ValueError`.
+
+Cleanup preserves its historical contract (D-178): `cleanup --policy` copies only the resolved
+no-progress timeout and its source key from parsed `steps.clean` into the existing synthetic
+cleanup step. The cleanup command/cwd, `quiet=True`, ignored step controls and login/environment
+helpers, project and protected environments, and `repo_root/logs` log root all remain unchanged.
+The output wait is selector-based, so it works for pipe descriptors numbered 1024 and above. A
+command in its own session has no controlling terminal: plain reads on inherited standard input
+still work, but anything that opens `/dev/tty` (sudo, ssh or git prompts) fails with `ENXIO`; steps
+are non-interactive.
 
 **S3.5 — Transaction evidence lifecycle.** Release failure MUST retain its worktree, logs,
 artifacts, and generated gate evidence for inspection/resume. Successful release MUST remove

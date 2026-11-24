@@ -13,7 +13,23 @@ from pathlib import Path
 
 import pytest
 
+
+def _policy_source() -> Path:
+    """Find the repository's test-policy source tree, including copied suites."""
+    project = Path(__file__).resolve().parents[1]
+    cwd = Path.cwd().resolve()
+    for root in (*project.parents, cwd, *cwd.parents):
+        candidate = root / "libraries" / "test-policy" / "src"
+        if (candidate / "estate_test_policy" / "plugin.py").is_file():
+            return candidate.resolve()
+    raise RuntimeError("cannot locate libraries/test-policy/src from cmru tests")
+
+
+_POLICY_SRC = _policy_source()
+sys.path.insert(0, str(_POLICY_SRC))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from estate_test_policy import policy as _estate_policy  # noqa: E402
 
 from cmru.process_guard import (
     DescendantGuard,
@@ -22,10 +38,74 @@ from cmru.process_guard import (
     restore_child_subreaper,
 )
 
-pytest_plugins = ["cli_extended.pytest_plugin"]
+_ORIGINAL_ESTATE_ANALYZE = _estate_policy.analyze_source
+
+
+def _analyze_test_source(source: str, **kwargs):
+    """Strip the test function's own indentation without moving string literals.
+
+    libraries/test-policy TP-18 (controller files it): analyze_source fails on
+    a method with column-0 string-literal lines; remove the shim when it lands.
+    """
+    indent = source[: len(source) - len(source.lstrip())]
+    normalized = "".join(
+        line[len(indent):] if indent and line.startswith(indent) else line
+        for line in source.splitlines(keepends=True)
+    )
+    return _ORIGINAL_ESTATE_ANALYZE(normalized, **kwargs)
+
+
+_estate_policy.analyze_source = _analyze_test_source
+
+pytest_plugins = ["cli_extended.pytest_plugin", "estate_test_policy.plugin"]
 
 #: The process environment when the session started (before any test ran).
 SESSION_START_ENVIRON = dict(os.environ)
+
+
+@pytest.fixture
+def process_run_seam(monkeypatch):
+    """Install an old subprocess fake at today's shared process-run seam.
+
+    Captured calls now enter ``cli_extended.procio.run_capture`` through
+    ``cmru.process_run.run_process``. Tests that deliberately fake Git still
+    describe the same completed-process responses; this fixture translates
+    those fakes to the production seam instead of making production inspect a
+    test's monkeypatch. Direct, not-yet-migrated ``subprocess.run`` calls in
+    the same module are patched too because existing tests exercise both.
+    """
+    def install(module, replacement):
+        from cmru import git_auth
+
+        def adapted_run_process(
+            argv, *, cwd=None, env=None, timeout=None, check=False,
+            capture=True, text=True, input=None, stdin=None,
+        ):
+            kwargs = {"check": check}
+            if capture:
+                kwargs["capture_output"] = True
+            if text is not None:
+                kwargs["text"] = text
+            if cwd is not None:
+                kwargs["cwd"] = cwd
+            if env is not None:
+                kwargs["env"] = env
+            if timeout is not None:
+                kwargs["timeout"] = timeout
+            if input is not None:
+                kwargs["input"] = input
+            if stdin is not None:
+                kwargs["stdin"] = stdin
+            return replacement(list(argv), **kwargs)
+
+        if hasattr(module, "run_process"):
+            monkeypatch.setattr(module, "run_process", adapted_run_process)
+        if hasattr(module, "subprocess"):
+            monkeypatch.setattr(module.subprocess, "run", replacement)
+        if module.__name__ in {"cmru.cli", "cmru.transaction", "cmru.version"}:
+            monkeypatch.setattr(git_auth, "run_process", adapted_run_process)
+
+    return install
 
 #: Keep the known integration/install/e2e cost centers out of a fail-fast kill's
 #: prefix. The env gate keeps every lane except the first-release R2 lane on

@@ -29,6 +29,15 @@ assert_stage() { # assert_stage LABEL BOOTLOADER
     || bad "$label: files payload differs"
   [ -x "$stage/poc/files/usr/local/sbin/dr-state" ] \
     || bad "$label: launcher lost its executable mode"
+  for pair in \
+    "etc/apt/apt.conf.d/80dr-state:644" \
+    "etc/kernel/postinst.d/zz-dr-state:755" \
+    "etc/kernel/postrm.d/zz-dr-state:755"; do
+    path=${pair%:*}; want=${pair##*:}
+    [ -f "$stage/poc/files/$path" ] || bad "$label: hook payload omits $path"
+    got=$(stat -c %a "$stage/poc/files/$path" 2>/dev/null || true)
+    [ "$got" = "$want" ] || bad "$label: hook $path mode is '$got', want $want"
+  done
   [ -z "$(find "$stage/poc/files" -type d -name __pycache__ -print -quit)" ] \
     || bad "$label: bytecode directory reached the seed payload"
   printf '%s\n' "$bootloader" >"$WORK/$label.marker"
@@ -204,6 +213,9 @@ else
     cmp -s "$WORK/$backend.want" "$WORK/$backend.extracted" \
       || bad "$backend ISO: extracted marker differs"
     for member in \
+      /poc/files/etc/apt/apt.conf.d/80dr-state \
+      /poc/files/etc/kernel/postinst.d/zz-dr-state \
+      /poc/files/etc/kernel/postrm.d/zz-dr-state \
       /poc/files/usr/local/sbin/dr-state \
       /poc/files/usr/local/lib/dr-state/dr_state/core.py; do
       line=$(xorriso -indev "$iso" -lsl "$member" 2>/dev/null || true)
@@ -211,7 +223,7 @@ else
         || bad "$backend ISO: $member is not root-owned: '$line'"
     done
   done
-  covered="staging, isolated success/failure cleanup, executed user-data marker selection, installer pass-through, invalid-value refusal, ISO packing, root-owned payload metadata, and extracted markers"
+  covered="staging modes, isolated success/failure cleanup, executed user-data marker selection, installer pass-through, invalid-value refusal, ISO packing, root-owned payload metadata, and extracted markers"
 fi
 
 [ "$fail" = 0 ] && echo "test-build-seed: OK ($covered)"

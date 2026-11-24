@@ -30,7 +30,9 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
-def test_transaction_promotion_non_rejection_fails_without_rebase(tmp_path):
+def test_transaction_promotion_non_rejection_fails_without_rebase(
+    tmp_path, process_run_seam,
+):
     root = repo(tmp_path)
     workspace = transaction.ReleaseWorkspace(root, root, "cmru/release/x", git(root, "rev-parse", "HEAD"))
     result = SimpleNamespace(returncode=1, stderr="protected branch", stdout="")
@@ -39,12 +41,14 @@ def test_transaction_promotion_non_rejection_fails_without_rebase(tmp_path):
         if len(argv) > 1 and argv[1] == "push":
             return result
         return original(argv, **kwargs)
-    with patch.object(transaction.subprocess, "run", side_effect=fail_push):
-        with pytest.raises(RuntimeError, match="push"):
-            transaction.promote_workspace(workspace)
+    process_run_seam(transaction, fail_push)
+    with pytest.raises(RuntimeError, match="push"):
+        transaction.promote_workspace(workspace)
 
 
-def test_transaction_backup_branch_uses_force_and_cleanup_is_best_effort(tmp_path):
+def test_transaction_backup_branch_uses_force_and_cleanup_is_best_effort(
+    tmp_path, process_run_seam,
+):
     root = repo(tmp_path)
     workspace = transaction.ReleaseWorkspace(root, root, "cmru/release/x", git(root, "rev-parse", "HEAD"))
     calls = []
@@ -56,10 +60,10 @@ def test_transaction_backup_branch_uses_force_and_cleanup_is_best_effort(tmp_pat
             return SimpleNamespace(returncode=0)
         return real_run(argv, **kw)  # the internal git-common-dir lookups mark/backup_was_pushed make
 
-    with patch.object(transaction.subprocess, "run", side_effect=fake):
-        transaction.push_backup_branch(workspace)
-        assert transaction.backup_was_pushed(root, workspace) is True  # KI-15: recorded as pushed
-        transaction.remove_backup_branch(workspace)
+    process_run_seam(transaction, fake)
+    transaction.push_backup_branch(workspace)
+    assert transaction.backup_was_pushed(root, workspace) is True  # KI-15: recorded as pushed
+    transaction.remove_backup_branch(workspace)
     assert ["--force", "origin", "HEAD:refs/heads/cmru/release/x"][-3:] == calls[0][-3:]
     assert "--delete" in calls[1]
 
