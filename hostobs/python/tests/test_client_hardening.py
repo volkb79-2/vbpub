@@ -333,8 +333,8 @@ class Tables(unittest.TestCase):
     def test_refusal_codes_and_fatal_codes_are_the_documented_sets(self) -> None:
         self.assertEqual(
             conn_module.FATAL_CODES,
-            {"unknown-mode", "unsupported-version", "hello-required", "bad-frame", "frame-too-large", "deadline",
-             "idle", "slow-client", "shutting-down"},
+            {"unknown-mode", "binary-required", "unsupported-version", "hello-required", "bad-frame",
+             "frame-too-large", "deadline", "idle", "slow-client", "shutting-down"},
         )
         self.assertEqual(
             profiling.REFUSED_CODES, {"forbidden", "unsupported-feature", "unsupported-version", "unknown-verb"}
