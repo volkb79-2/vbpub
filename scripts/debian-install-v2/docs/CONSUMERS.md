@@ -187,9 +187,49 @@ partition:
   },
   "swap_policy": "on",
   "swap_disk_total_gb": 16,
-  "swap_partition_count": 4
+  "swap_partition_count": 4,
+  "run_io_benchmark": true,
+  "io_benchmark_profile": "quick"
 }
 ```
+
+### Choose the install-time iobench rung
+
+`io_benchmark_profile` picks how long the raw-partition measurement runs. It
+accepts exactly `veryquick`, `quick` (the default) or `standard`, and anything
+else is refused at load with `io_benchmark_profile must be one of: veryquick,
+quick, standard`. The key is accepted and simply unused when
+`run_io_benchmark` is false.
+
+```json
+{
+  "schema_version": 1,
+  "run_io_benchmark": true,
+  "io_benchmark_profile": "standard",
+  "partitioning": {"root": "*", "iobench_raw_gb": 32}
+}
+```
+
+| `io_benchmark_profile` | wall time | installer outer timeout |
+|---|---|---|
+| `veryquick` | about 3 min | 270 s |
+| `quick` (default) | about 11 min | 780 s |
+| `standard` | about 59 min | 3660 s |
+
+The outer timeout is iobench's hard budget for that rung plus 60 s; it stops an
+unbounded wait and is not the budget the run plans against. Each rung keeps its
+own state directory (`state_dir/iobench/<rung>`), so switching rung never
+inherits another rung's record — and `tools/iobench-install-runner` refuses a
+state directory whose stored record names a different rung
+(`state_dir_profile_mismatch`; iobench's own guard protects only a `veryquick`
+run's directory).
+
+A rung can complete without all six io.cost coefficients. The step is then
+`warned`, its detail names the missing keys, and io.cost stays **unconfigured**
+for that host — the boot unit needs the complete model, and no value is
+invented or carried over from an earlier file. Enable io.cost only when
+`state_dir/io-benchmark.json` carries all six keys; the file itself names the
+rung (`profile`) that produced them.
 
 Every managed partition is numbered by physical order: root, `MDT_COW`,
 `iobench-raw`, then the tail swap partitions. The exact numbers depend on the

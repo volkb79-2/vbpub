@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Run iobench's veryquick calibration against the install plan's raw partition."""
+"""Run one iobench calibration rung against the install plan's raw partition."""
 
 from __future__ import annotations
 
@@ -13,19 +13,49 @@ import sys
 import tempfile
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--profile", required=True)
     parser.add_argument("--target", required=True)
     parser.add_argument("--expect-size", required=True, type=int)
     parser.add_argument("--expect-partuuid", required=True)
     parser.add_argument("--state-dir", required=True)
-    args = parser.parse_args()
+    parser.add_argument("--output", required=True)
+    return parser
+
+
+def _refuse(option: str, message: str) -> None:
+    print(f"iobench-install-runner: {option}: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def _require_state_dir_profile(state_dir: Path, profile: str) -> None:
+    """Refuse a state directory whose stored record names another rung.
+
+    One state directory per rung: a record written by another rung is never
+    reused or overwritten, because every file it replaces is that rung's own
+    measurement.
+    """
+    recorded = _recorded_profile(state_dir)
+    if recorded is not None and recorded != profile:
+        raise SystemExit(
+            f"state_dir_profile_mismatch: {state_dir} holds a {recorded} result; "
+            f"a {profile} run needs its own state directory"
+        )
+
+
+def main() -> int:
+    args = _build_parser().parse_args()
+    for name, value in (("--state-dir", args.state_dir), ("--output", args.output)):
+        path = Path(value)
+        if not value.startswith("/") or ".." in path.parts or path.is_symlink():
+            _refuse(name, f"{name} must be an absolute, normalized, non-symlink path")
     if not re.fullmatch(r"/dev/[A-Za-z0-9._/-]+", args.target):
-        parser.error("--target must be a block-device path")
+        _refuse("--target", "--target must be a block-device path")
     if args.expect_size <= 0:
-        parser.error("--expect-size must be positive")
+        _refuse("--expect-size", "--expect-size must be positive")
     if not re.fullmatch(r"[0-9A-Fa-f-]{36}", args.expect_partuuid):
-        parser.error("--expect-partuuid must be a UUID")
+        _refuse("--expect-partuuid", "--expect-partuuid must be a UUID")
 
     install_root = Path(__file__).resolve().parents[1]
     source = install_root / "iobench" / "src"
@@ -33,10 +63,21 @@ def main() -> int:
         raise SystemExit("iobench source is missing from the installer bootstrap")
     sys.path.insert(0, str(source))
 
-    from iobench import guard
+    from iobench import guard, plan
     from iobench.calibrate import Calibrator
     from iobench.host import RealHost
     from iobench.stages import Config
+
+    # The rung vocabulary and its budget are iobench's, not a copy here: a
+    # rung iobench cannot plan is refused rather than run on a guessed budget.
+    if args.profile not in plan.PROFILE_BUDGET_S:
+        raise SystemExit(
+            f"unknown_profile: {args.profile} is not an iobench rung "
+            f"({', '.join(sorted(plan.PROFILE_BUDGET_S))})"
+        )
+
+    state_dir = Path(args.state_dir)
+    _require_state_dir_profile(state_dir, args.profile)
 
     digest = hashlib.sha256()
     for path in sorted((source / "iobench").glob("*.py")):
@@ -55,13 +96,12 @@ def main() -> int:
         expect_serial=None,
         created=datetime.now(timezone.utc).isoformat(),
     )
-    state_dir = Path(args.state_dir)
     outcome = Calibrator(
         host,
         Config(
             target=args.target,
             tool_version=tool_version,
-            profile="veryquick",
+            profile=args.profile,
             state_dir=str(state_dir),
             installer=True,
         ),
@@ -69,27 +109,22 @@ def main() -> int:
     if outcome.exit_code or outcome.status != "complete" or not outcome.calibration:
         raise SystemExit(f"iobench {outcome.status}: {outcome.message or 'no calibration result'}")
 
+    # A rung may leave a coefficient absent (quick does not measure every
+    # number veryquick estimates). Record exactly what exists: the installer
+    # names the missing keys and leaves io.cost unconfigured; it never fills
+    # them in.
     model = outcome.calibration["calibration"]["proposals"]["iocost_model"]
-    keys = ("rbps", "rseqiops", "rrandiops", "wbps", "wseqiops", "wrandiops")
-    results = {}
-    for key in keys:
-        proposal = model[key]
-        value = proposal.get("value")
-        if proposal.get("status") == "absent" or isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
-            raise SystemExit(f"iobench did not produce a usable {key} coefficient")
-        results[key] = int(value)
-
-    output = state_dir.parent / "io-benchmark.json"
+    results = _collect_results(model)
+    document = _document(
+        profile=args.profile,
+        target=args.target,
+        partition_size_bytes=args.expect_size,
+        tool_version=tool_version,
+        calibration_id=outcome.calibration["calibration"]["id"],
+        results=results,
+    )
+    output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    document = {
-        "tool": "iobench",
-        "tool_version": tool_version,
-        "profile": "veryquick",
-        "target": args.target,
-        "partition_size_bytes": args.expect_size,
-        "results": results,
-        "calibration_id": outcome.calibration["calibration"]["id"],
-    }
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=output.parent, delete=False) as stream:
         json.dump(document, stream, indent=2, sort_keys=True)
         stream.write("\n")
@@ -97,9 +132,61 @@ def main() -> int:
         import os
         os.fsync(stream.fileno())
         temporary = Path(stream.name)
+    temporary.chmod(0o600)
     temporary.replace(output)
-    print("iobench: " + " ".join(f"{key}={value}" for key, value in results.items()))
+    print(
+        f"iobench {args.profile}: "
+        + " ".join(f"{key}={value}" for key, value in results.items())
+        + (f" (absent: {', '.join(_absent(results))})" if _absent(results) else "")
+    )
     return 0
+
+
+# iobench's io.cost coefficients and the order they are reported in.
+RESULT_KEYS = ("rbps", "rseqiops", "rrandiops", "wbps", "wseqiops", "wrandiops")
+
+
+def _collect_results(model: dict) -> dict[str, int]:
+    """The usable coefficients of an iobench model; absent/invalid ones are left out, never filled in."""
+    results: dict[str, int] = {}
+    for key in RESULT_KEYS:
+        proposal = model[key]
+        value = proposal.get("value")
+        if proposal.get("status") == "absent" or isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            continue
+        results[key] = int(value)
+    return results
+
+
+def _absent(results: dict[str, int]) -> list[str]:
+    return [key for key in RESULT_KEYS if key not in results]
+
+
+def _document(*, profile: str, target: str, partition_size_bytes: int, tool_version: str,
+              calibration_id: str, results: dict[str, int]) -> dict:
+    """The record the installer reads back. It always names the rung that produced it."""
+    return {
+        "tool": "iobench",
+        "tool_version": tool_version,
+        "profile": profile,
+        "target": target,
+        "partition_size_bytes": partition_size_bytes,
+        "results": dict(results),
+        "calibration_id": calibration_id,
+    }
+
+
+def _recorded_profile(state_dir: Path) -> str | None:
+    """The rung a state directory's stored record names; None when it holds no readable record."""
+    for name in ("calibration.json", "result.json"):
+        try:
+            document = json.loads((state_dir / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        profile = document.get("run", {}).get("profile") if isinstance(document, dict) else None
+        if isinstance(profile, str) and profile:
+            return profile
+    return None
 
 
 if __name__ == "__main__":

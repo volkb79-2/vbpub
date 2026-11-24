@@ -9,7 +9,10 @@ import pytest
 
 from debian_install_v2 import installer as installer_module
 from debian_install_v2.actions import ActionError, HostActions, PlannedAction
-from debian_install_v2.config import Config
+from debian_install_v2.config import (
+    IO_BENCHMARK_OUTER_TIMEOUT_S,
+    Config,
+)
 from debian_install_v2.installer import Installer, InstallerError
 from debian_install_v2.layout_policy import IOBENCH_PARTLABEL, ZFS_TYPE_GUID
 from debian_install_v2.state import StateStore
@@ -40,6 +43,8 @@ class SimDisk(HostActions):
         self.files: dict[str, bytes] = {}
         self.findmnt_output = "/dev/vda3 / ext4\n"
         self.swap_output = ""
+        # What the fake runner records; a test may drop or invalidate a key.
+        self.iobench_results: dict[str, object] | None = None
 
     def dump(self) -> str:
         lines = ["label: gpt", "device: /dev/vda", "unit: sectors", "sector-size: 512", ""]
@@ -78,9 +83,11 @@ class SimDisk(HostActions):
         if name == "blkid" and "PARTUUID" in argv:
             return PARTUUID
         if name == "iobench-install-runner":
-            state_dir = Path(argv[argv.index("--state-dir") + 1])
-            output = state_dir.parent / "io-benchmark.json"
-            output.write_text(json.dumps({"results": RESULTS}), encoding="utf-8")
+            # The runner records exactly what its calibration produced; a test
+            # may seed fewer coefficients than the six the step needs.
+            results = RESULTS if self.iobench_results is None else self.iobench_results
+            output = Path(argv[argv.index("--output") + 1])
+            output.write_text(json.dumps({"results": results}), encoding="utf-8")
         return ""
 
     def write_file(self, path: str, content: str, mode: int = 0o644) -> None:
@@ -139,8 +146,8 @@ def test_install_benchmark_wipes_and_runs_against_the_planned_raw_partition(tmp_
     run = next(i for i, action in enumerate(actions) if Path(action.argv[0]).name == "iobench-install-runner")
     assert wipe < run
     assert actions[wipe].argv == ("/usr/sbin/wipefs", "-a", raw_device)
-    assert actions[run].argv[2] == raw_device
-    assert actions[run].argv[4] == str(8 * GIB)
+    assert actions[run].argv[4] == raw_device
+    assert actions[run].argv[6] == str(8 * GIB)
     assert not any("--force" in action.argv or "-N" in action.argv for action in actions)
     assert disk.table[raw_number]["name"] == IOBENCH_PARTLABEL
     assert not any(
@@ -149,7 +156,7 @@ def test_install_benchmark_wipes_and_runs_against_the_planned_raw_partition(tmp_
         for action in actions
     )
     assert step(installer)["status"] == "success"
-    assert ("iobench-install-runner", installer_module.IOBENCH_OUTER_TIMEOUT_S) in disk.timeouts
+    assert ("iobench-install-runner", IO_BENCHMARK_OUTER_TIMEOUT_S["quick"]) in disk.timeouts
 
 
 def test_benchmark_off_does_not_wipe_or_run_the_raw_partition(tmp_path):
@@ -170,7 +177,9 @@ def test_benchmark_failure_is_advisory_and_keeps_the_reserved_partition(tmp_path
 
     assert step(installer)["status"] == "warned"
     assert disk.table[raw_number]["name"] == IOBENCH_PARTLABEL
-    assert len([item for item in sent if "iobench failed (advisory)" in item.lower()]) == 1
+    # The generic advisory line names the rung the install asked for.
+    assert step(installer)["detail"].startswith("iobench quick failed (advisory)")
+    assert len([item for item in sent if "iobench quick failed (advisory)" in item.lower()]) == 1
 
 
 def test_failed_benchmark_keeps_full_stderr_and_names_the_log(tmp_path):

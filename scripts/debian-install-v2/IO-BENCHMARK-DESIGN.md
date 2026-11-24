@@ -20,8 +20,14 @@ first-class partition and how stage two runs it safely.
   The partition remains reserved and raw afterward.
 - The runner is copied into the remote bootstrap with only the `iobench`
   source modules it imports. Before calibration, iobench's guard checks target
-  device size and PARTUUID. Its `veryquick` profile runs within a 270-second
-  outer timeout.
+  device size and PARTUUID. The rung it runs is `config.io_benchmark_profile`
+  (`veryquick`, `quick` — the default — or `standard`), and each rung has one
+  outer timeout: 270, 780 or 3660 s, iobench's own budget for that rung
+  (`iobench/plan.py` `PROFILE_BUDGET_S`) plus 60 s.
+- A rung keeps its own state directory, `state_dir/iobench/<rung>`. iobench
+  records the rung in `run.profile`; the runner refuses a directory whose
+  record names another rung (`state_dir_profile_mismatch`) rather than
+  replacing another rung's measurement.
 
 The fixed extent avoids temporary partition writes, scratch-filesystem
 creation, and deletion. It also keeps the installed benchmark on a planned raw
@@ -39,13 +45,18 @@ before root growth, swap activation, and data-volume formatting:
    PARTLABEL, Linux type, start, and sector count against the current table.
 2. Confirm its block device is not mounted and is not an active swap source.
 3. Install `fio` if needed, wipe signatures, and read the partition PARTUUID.
-4. Invoke `tools/iobench-install-runner` with target, exact byte size,
-   PARTUUID, and an installer-owned state directory.
-5. The runner initializes iobench's destructive-device guard, runs profile
-   `veryquick`, validates the six positive io.cost coefficients, and writes
-   `state_dir/io-benchmark.json` atomically with mode `0600`.
-6. Mark the step `success` and notify with the coefficients. The raw partition
-   is left in the same table and remains unformatted.
+4. Invoke `tools/iobench-install-runner` with the configured rung, target,
+   exact byte size, PARTUUID, the rung's own state directory and the output
+   path.
+5. The runner initializes iobench's destructive-device guard, runs that rung,
+   collects whatever positive io.cost coefficients it produced, and writes
+   `state_dir/io-benchmark.json` atomically with mode `0600`, naming the rung
+   in `profile`.
+6. Mark the step `success` and notify with the coefficients. A rung that left
+   a coefficient absent marks the step `warned`, names the missing keys, and
+   leaves io.cost unconfigured: the boot unit needs the complete model, so no
+   partial model is written and no value is carried over from an earlier file.
+   The raw partition is left in the same table and remains unformatted.
 
 The step is idempotent: a terminal `success`, `skipped`, or `warned` result is
 not repeated on resume. A normal benchmark/tool failure is advisory and marks
@@ -55,9 +66,10 @@ for benchmarking.
 
 ## Output and limits
 
-The JSON result records tool version, profile, target, partition byte size,
-calibration ID, and `rbps`, `rseqiops`, `rrandiops`, `wbps`, `wseqiops`, and
-`wrandiops`. The result is advisory: this installer step does not write
+The JSON result records tool version, the profile (rung) that produced it,
+target, partition byte size, calibration ID, and the `results` it measured:
+`rbps`, `rseqiops`, `rrandiops`, `wbps`, `wseqiops`, and `wrandiops`, minus any
+the rung left absent. The result is advisory: this installer step does not write
 `io.cost.model` or `io.cost.qos` from it.
 
 `fio --direct=1` does not bypass every hypervisor write-back cache. A virtual

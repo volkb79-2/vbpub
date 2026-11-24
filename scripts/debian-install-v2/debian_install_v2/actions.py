@@ -41,6 +41,13 @@ _CLOUD_INIT_CLEAN_ARGV = {
     ("clean",),
     ("clean", "--logs", "--seed"),
 }
+# The installer benchmark rungs (config.IO_BENCHMARK_PROFILES). A literal copy
+# on purpose: this module is the command allow-list and imports no other
+# package module, so it cannot take the tuple from config. The copy cannot
+# drift silently: every rung's runner argv is sent through this validator by
+# the installer tests, which are parametrized over config's vocabulary, so a
+# rung added to config without being added here is refused (and that test red).
+_IOBENCH_PROFILES = {"veryquick", "quick", "standard"}
 
 
 _SAFE_COMMANDS = {
@@ -179,16 +186,30 @@ class HostActions:
                 )
         elif command == "iobench-install-runner":
             expected = str(Path(__file__).resolve().parents[1] / "tools" / "iobench-install-runner")
-            if argv[0] != expected or len(argv) != 9:
+            if argv[0] != expected or len(argv) != 13:
                 raise ActionError("iobench installer invocation is not the fixed planned-partition command")
-            if argv[1] != "--target" or not re.fullmatch(r"/dev/[A-Za-z0-9._/-]+", argv[2]):
+            if argv[1] != "--profile" or argv[2] not in _IOBENCH_PROFILES:
+                raise ActionError("iobench installer profile is not one of the released rungs")
+            if argv[3] != "--target" or not re.fullmatch(r"/dev/[A-Za-z0-9._/-]+", argv[4]):
                 raise ActionError("iobench installer target is not a block-device path")
-            if argv[3] != "--expect-size" or not re.fullmatch(r"[1-9][0-9]*", argv[4]):
+            if argv[5] != "--expect-size" or not re.fullmatch(r"[1-9][0-9]*", argv[6]):
                 raise ActionError("iobench installer size is invalid")
-            if argv[5] != "--expect-partuuid" or not re.fullmatch(r"[0-9A-Fa-f-]{36}", argv[6]):
+            if argv[7] != "--expect-partuuid" or not re.fullmatch(r"[0-9A-Fa-f-]{36}", argv[8]):
                 raise ActionError("iobench installer PARTUUID is invalid")
-            if argv[7] != "--state-dir" or not Path(argv[8]).is_absolute() or ".." in Path(argv[8]).parts:
-                raise ActionError("iobench installer state directory is invalid")
+            for value, flag in ((argv[10], "--state-dir"), (argv[12], "--output")):
+                if not Path(value).is_absolute() or ".." in Path(value).parts:
+                    raise ActionError(f"iobench installer {flag} path is invalid")
+            if (argv[9], argv[11]) != ("--state-dir", "--output"):
+                raise ActionError("iobench installer paths are not the fixed state/output pair")
+            # The installer builds exactly `<state_dir>/iobench/<rung>` and
+            # `<state_dir>/io-benchmark.json`. Anything wider would let a caller
+            # bug have the runner, running as root, atomically replace an
+            # arbitrary file (its own is_symlink check does not stop that).
+            state_dir = Path(argv[10])
+            if state_dir.name != argv[2]:
+                raise ActionError("iobench installer state directory is not the rung's own directory")
+            if argv[12] != str(state_dir.parent.parent / "io-benchmark.json"):
+                raise ActionError("iobench installer output is not the install's io-benchmark.json")
         elif command == "btrfs":
             filesystem_show = (
                 len(argv) == 5
