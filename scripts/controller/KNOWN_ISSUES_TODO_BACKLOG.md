@@ -45,6 +45,8 @@ together.
 | CTL-31 | `ctl-doctor.sh` reads `controller.local.env` line by line (a multi-line assignment reads as a stray line) and does not run the identity check | Nice-to-have | OPEN |
 | CTL-32 | `ctl-state-backup.sh` has no restore helper, and keys/pins are outside the archive by design | Nice-to-have | OPEN |
 | CTL-33 | The local gate slots are hardcoded to two (`CONTROLLER_GATE_LOCK`/`CONTROLLER_GATE2_LOCK`); the count should be configurable | Should-fix | DONE 2026-11-18 |
+| CTL-38 | Codex `resume` and automatic continuation do not update `.last.txt`, so the final answer is absent or stale | Should-fix | FIXED 2026-11-24 (0c366bf2fa11743281cf4bbcddb0cc981ebba5d1) |
+| CTL-42 | The `ctl-routes-limits` branch mixed a useful Sol/home salvage with a launch-path limits note and stale Open Design blocking policy | Should-fix | PARTIAL 2026-11-24 (0c366bf2fa11743281cf4bbcddb0cc981ebba5d1; sol + wrapper wording fixed; limits-reader and OD ordering remain OPEN) |
 
 ---
 
@@ -1488,3 +1490,55 @@ interim only.
 **Close when.** Done: `git grep -n CONTROLLER_GATE_SLOTS -- scripts/controller` shows
 `gate-run.sh`, `ctl-doctor.sh`, the docs and the tests. Open question for the fleet
 daemon: retire the static count when its admission exists.
+
+## CTL-38 — Codex resume paths leave `.last.txt` stale or absent
+
+**Status:** FIXED 2026-11-24 (commit `0c366bf2fa11743281cf4bbcddb0cc981ebba5d1`);
+severity: should-fix.
+
+A new Codex run used `-o` for `.last.txt`, but manual `resume` and automatic
+continuation did not. A reasoning-only first turn therefore left either no final
+text or the previous invocation's text, including after the continuation produced
+the actual final answer.
+
+`codex-impl.sh` now has one `codex_extract_last_text` function used after the new,
+manual-resume and each auto-continue child exits. It takes the last completed
+`agent_message` item from that child's JSON stream, replaces `.last.txt`
+atomically, and removes an older file when the stream has no final text. The new
+run no longer passes `-o`; the child exit and `.done` classification are unchanged.
+
+`check_ctl38_last_text_all_paths` covers `FINAL-A` to `FINAL-B` on resume across a
+reasoning-only first turn, automatic continuation, and stale-file removal for a
+no-text stream. The wrapper suite also asserts a positive new-run extraction.
+A hand mutant that removed the resume extraction was killed by the focused gate
+test (`CTL-38 resume did not derive exactly FINAL-B from its stream`).
+
+**Close when.** Done: all Codex exec paths derive `.last.txt` from their own
+stream, and the no-text and stale-file cases are tested.
+
+## CTL-42 — route/home salvage and remaining limits/Open Design work
+
+**Status:** PARTIAL 2026-11-24 (commit
+`0c366bf2fa11743281cf4bbcddb0cc981ebba5d1`; part 1 fixed, remainder open);
+severity: should-fix.
+
+The unmerged `ctl-routes-limits-20261118` branch was reviewed as two separable
+changes. Its useful route correction was re-applied by hand: `codex-impl.sh`
+accepts `sol` with the independent review home, Luna defaults to `$HOME/.codex2`,
+`CODEX_HOME_OVERRIDE` wins for Luna and Sol/review, and `codex-review.sh` records
+`CODEX_ROUTE=sol`. The env example, config/consumer docs, and AGENTS.md wording
+now name the wrapper rather than a Codex home.
+
+The launch-path `codex_limit_note`, `ctl-limits.sh`, its test, and the detached
+reader fix were not carried. Tests `route-home-luna`, `route-home-sol`, both
+override cases, and the review-route assertion exercise the salvaged behavior.
+A hand mutant restoring the Pi Open Design default from `max` to `high` was killed
+by the focused gate test.
+
+Remaining open work: make the read-only limits reader consume the planned
+`routes.toml` and run registry and cover Pi routes, and make Open Design
+`blocked_until` an ordering hint rather than a refusal based on stale local state.
+
+**Close when.** The limits reader has the new sources and Pi coverage, and the
+Open Design picker treats local blocking as ordering with the provider's 402 as
+authority.
