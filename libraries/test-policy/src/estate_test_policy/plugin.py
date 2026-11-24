@@ -178,10 +178,13 @@ def estate_policy_guard(request: pytest.FixtureRequest):
 
     before = take_snapshot()
     child_guard = None
-    if policy.RULE_CHILDREN not in allowed and children.is_linux():
-        child_guard = children.ChildGuard(
-            settle_seconds=float(config.getini("estate_policy_settle_seconds"))
-        )
+    allowed_child_before = None
+    if children.is_linux():
+        settle = float(config.getini("estate_policy_settle_seconds"))
+        if policy.RULE_CHILDREN in allowed:
+            allowed_child_before = children.direct_children()
+        else:
+            child_guard = children.ChildGuard(settle_seconds=settle)
     yield
     lines = []
     if policy.RULE_LEAK not in allowed:
@@ -194,4 +197,6 @@ def estate_policy_guard(request: pytest.FixtureRequest):
                 "(killed and reaped by the guard):"
             )
             lines.extend(f"  {leak}" for leak in child_leaks)
+    elif allowed_child_before is not None:
+        children.reap_new_zombies(allowed_child_before)
     _report(config, lines, mode)

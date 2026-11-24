@@ -1,5 +1,6 @@
 import builtins
 import os
+import shlex
 import threading
 import time
 import types
@@ -242,12 +243,22 @@ def test_containment_marker_fails_at_setup_and_does_not_run_the_body(run, pytest
 def test_containment_refusal_is_cached_for_the_session(run, pytester, fake_estate, monkeypatch):
     fake_estate.private(memory="max", pids="max")
     _set_fake_containment(monkeypatch, fake_estate)
+    real_reader = containment._read_text
+    cgroup_reads = []
+
+    def counting_reader(path):
+        if path == fake_estate.proc / "self" / "cgroup":
+            cgroup_reads.append(path)
+        return real_reader(path)
+
+    monkeypatch.setattr(containment, "DEFAULT_READER", counting_reader)
     sentinel = pytester.path / "body-ran"
     first = _marked_body(sentinel)
     second = first.replace("test_marked", "test_marked_again")
     result = run(first + second)
     result.assert_outcomes(errors=2)
     assert not sentinel.exists()
+    assert len(cgroup_reads) == 1
 
 
 def test_containment_marker_warn_skips_with_distinct_reason(run, pytester, fake_estate, monkeypatch):
@@ -256,12 +267,13 @@ def test_containment_marker_warn_skips_with_distinct_reason(run, pytester, fake_
     fake_estate.process(9, 1, command="foreign")
     _set_fake_containment(monkeypatch, fake_estate)
     sentinel = pytester.path / "body-ran"
-    result = run(_marked_body(sentinel))
+    result = run(_marked_body(sentinel), "-rs")
     result.assert_outcomes(skipped=1)
     result.stdout.fnmatch_lines(
         [
             "*estate-test-policy: requires_contained_cgroup refused:*",
             "*pid-namespace-shared*",
+            "*SKIPPED*estate-test-policy: requires_contained_cgroup refused*",
         ]
     )
     assert not sentinel.exists()
@@ -307,6 +319,44 @@ def test_children_warn_mode_warns_and_still_cleans_up(run, pytester):
     assert children.read_process(pid) is None
 
 
+def test_grandchild_reparented_to_subreaper_is_rescanned_killed_and_reported(run, pytester):
+    sh_pid_path = pytester.path / "sh.pid"
+    sleep_pid_path = pytester.path / "grandchild.pid"
+    shell_command = (
+        f"sleep 300 & echo $! > {shlex.quote(str(sleep_pid_path))}; wait"
+    )
+    body = (
+        "import pathlib, subprocess, time\n"
+        "PROCS = []\n"
+        "def test_leaks_process_tree():\n"
+        f"    child = subprocess.Popen(['/bin/sh', '-c', {shell_command!r}])\n"
+        "    PROCS.append(child)\n"
+        f"    pathlib.Path({str(sh_pid_path)!r}).write_text(str(child.pid))\n"
+        "    deadline = time.monotonic() + 120\n"
+        "    while True:\n"
+        "        try:\n"
+        f"            if pathlib.Path({str(sleep_pid_path)!r}).read_text():\n"
+        "                break\n"
+        "        except FileNotFoundError:\n"
+        "            pass\n"
+        "        if time.monotonic() >= deadline:\n"
+        "            raise AssertionError('grandchild pid was not recorded')\n"
+        "        time.sleep(0.001)\n"
+    )
+    result = run(body)
+    result.assert_outcomes(passed=1, errors=1)
+    sh_pid = int(sh_pid_path.read_text())
+    sleep_pid = int(sleep_pid_path.read_text())
+    result.stdout.fnmatch_lines(
+        [
+            f"*pid {sh_pid} comm*alive; SIGKILL sent and reaped*",
+            f"*pid {sleep_pid} comm*alive; SIGKILL sent and reaped*",
+        ]
+    )
+    assert children.read_process(sh_pid) is None
+    assert children.read_process(sleep_pid) is None
+
+
 def test_reaped_zombie_is_reported(run, pytester):
     pid_path = pytester.path / "zombie.pid"
     body = (
@@ -347,6 +397,31 @@ def test_estate_allow_children_exempts_and_cleanup_remains_test_owned(run, pytes
     record = children.read_process(pid)
     assert record is not None
     assert children.remove_if_still_ours(record) is not None
+    assert children.read_process(pid) is None
+
+
+def test_estate_allow_children_reaps_new_zombies_only(run, pytester):
+    pid_path = pytester.path / "allowed-zombie.pid"
+    body = (
+        "import pathlib, pytest, subprocess, time\n"
+        "from estate_test_policy import children\n"
+        "PROCS = []\n"
+        "@pytest.mark.estate_allow('children', reason='allowed zombie must still be reaped', backlog='TP-12')\n"
+        "def test_allowed_zombie():\n"
+        "    child = subprocess.Popen(['/bin/true'])\n"
+        "    PROCS.append(child)\n"
+        f"    pathlib.Path({str(pid_path)!r}).write_text(str(child.pid))\n"
+        "    deadline = time.monotonic() + 120\n"
+        "    while True:\n"
+        "        record = children.read_process(child.pid)\n"
+        "        if record is not None and record.state == 'Z':\n"
+        "            break\n"
+        "        if time.monotonic() >= deadline:\n"
+        "            raise AssertionError('child did not become a zombie')\n"
+        "        time.sleep(0.001)\n"
+    )
+    run(body).assert_outcomes(passed=1)
+    pid = int(pid_path.read_text())
     assert children.read_process(pid) is None
 
 

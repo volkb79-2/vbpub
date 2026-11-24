@@ -1,3 +1,4 @@
+import errno
 import os
 import subprocess
 import time
@@ -52,6 +53,15 @@ def test_process_parser_and_vanished_entry(tmp_path):
     record = children.read_process(10, tmp_path)
     assert record == children.ProcessRecord(10, 3, "S", "worker", 900)
     assert children.read_process(11, tmp_path) is None
+
+
+def test_process_parser_treats_esrch_as_vanished(tmp_path):
+    fake_process(tmp_path, 10, 3, start=900)
+
+    def gone(path):
+        raise ProcessLookupError(errno.ESRCH, "process vanished")
+
+    assert children.read_process(10, tmp_path, reader=gone) is None
 
 
 @pytest.mark.parametrize(
@@ -158,9 +168,33 @@ def test_settle_returns_a_persistent_live_child_at_the_deadline(tmp_path):
 
 
 def test_child_guard_does_not_report_a_child_that_vanished_before_removal(tmp_path):
-    guard = children.ChildGuard(root_pid=3, proc_root=tmp_path, settle_seconds=0)
+    now = [0.0]
+
+    def clock():
+        return now[0]
+
+    def sleeper(seconds):
+        now[0] += seconds
+        (tmp_path / "999999999" / "stat").unlink()
+
+    guard = children.ChildGuard(
+        root_pid=3,
+        proc_root=tmp_path,
+        settle_seconds=0.01,
+        clock=clock,
+        sleeper=sleeper,
+    )
     fake_process(tmp_path, 999_999_999, 3)
     assert guard.check() == []
+
+
+def test_child_guard_reports_the_cleanup_pass_bound(tmp_path):
+    guard = children.ChildGuard(root_pid=3, proc_root=tmp_path, settle_seconds=0)
+    fake_process(tmp_path, 999_999_999, 3)
+    leaked = guard.check()
+    assert len(leaked) == 1
+    assert "reached the 10-pass bound" in leaked[0]
+    assert "remaining new children: pid 999999999" in leaked[0]
 
 
 def test_missing_pidfd_is_treated_as_gone():
@@ -174,6 +208,37 @@ def test_live_child_is_pidfd_killed_reaped_and_reported():
     leaked = guard.check()
     assert any(f"pid {proc.pid} comm sleep (alive; SIGKILL sent and reaped)" == item for item in leaked)
     assert children.read_process(proc.pid) is None
+
+
+def test_bounded_reap_returns_unreaped_without_hanging():
+    proc = subprocess.Popen(["/bin/sleep", "300"])
+    record = children.read_process(proc.pid)
+    assert record is not None
+    now = [0.0]
+    calls = [0]
+
+    def clock():
+        return now[0]
+
+    def sleeper(seconds):
+        now[0] += seconds
+
+    def never_ready(*args):
+        calls[0] += 1
+        if calls[0] > 10:
+            raise AssertionError("bounded reap kept polling past its deadline")
+        return None
+
+    outcome = children.remove_if_still_ours(
+        record,
+        reap_timeout=0.02,
+        clock=clock,
+        sleeper=sleeper,
+        waiter=never_ready,
+    )
+    assert outcome is not None and "unreaped after SIGKILL" in outcome
+    assert 1 <= calls[0] <= 3
+    assert proc.wait(timeout=120) == -9
 
 
 def test_zombie_child_is_reported_as_zombie_and_reaped():
@@ -193,6 +258,72 @@ def test_identity_recheck_does_not_touch_a_replaced_child():
     wrong = children.ProcessRecord(record.pid, record.ppid, record.state, record.command, record.start_time + 1)
     assert children.remove_if_still_ours(wrong) is None
     assert proc.wait(timeout=120) == 0
+
+
+def test_allowlisted_zombie_reaper_reaps_only_new_zombies():
+    old_zombie = subprocess.Popen(["/bin/true"])
+    wait_for_state(old_zombie.pid, "Z")
+    before = children.direct_children()
+
+    new_zombie = subprocess.Popen(["/bin/true"])
+    wait_for_state(new_zombie.pid, "Z")
+    live = subprocess.Popen(["/bin/sleep", "300"])
+    try:
+        assert children.reap_new_zombies(before) == 1
+        assert children.read_process(new_zombie.pid) is None
+        assert children.read_process(old_zombie.pid) is not None
+        assert children.read_process(live.pid) is not None
+    finally:
+        live_record = children.read_process(live.pid)
+        if live_record is not None:
+            children.remove_if_still_ours(live_record)
+        assert old_zombie.wait(timeout=120) == 0
+
+
+def test_allowlisted_zombie_reaper_ignores_a_pidfd_that_vanished(tmp_path, monkeypatch):
+    fake_process(tmp_path, 10, 3, state="Z")
+
+    def gone(pid):
+        raise ProcessLookupError(errno.ESRCH, "process vanished")
+
+    monkeypatch.setattr(children.os, "pidfd_open", gone)
+    assert children.reap_new_zombies({}, root_pid=3, proc_root=tmp_path) == 0
+
+
+def test_allowlisted_zombie_reaper_rechecks_process_identity(tmp_path, monkeypatch):
+    fake_process(tmp_path, 10, 3, state="Z", start=100)
+    original = (tmp_path / "10" / "stat").read_text()
+    fake_process(tmp_path, 10, 3, state="Z", start=101)
+    changed = (tmp_path / "10" / "stat").read_text()
+    responses = iter((original, changed))
+
+    monkeypatch.setattr(children.os, "pidfd_open", lambda pid: object())
+    monkeypatch.setattr(children.os, "close", lambda pidfd: None)
+    assert (
+        children.reap_new_zombies(
+            {},
+            root_pid=3,
+            proc_root=tmp_path,
+            reader=lambda path: next(responses),
+        )
+        == 0
+    )
+
+
+def test_allowlisted_zombie_reaper_tolerates_not_yet_reaped(tmp_path, monkeypatch):
+    fake_process(tmp_path, 10, 3, state="Z")
+
+    monkeypatch.setattr(children.os, "pidfd_open", lambda pid: object())
+    monkeypatch.setattr(children.os, "close", lambda pidfd: None)
+    assert (
+        children.reap_new_zombies(
+            {},
+            root_pid=3,
+            proc_root=tmp_path,
+            waiter=lambda *args: None,
+        )
+        == 0
+    )
 
 
 def test_plugin_session_is_off_by_default_and_opt_in_enables_subreaper(pytester):

@@ -1,3 +1,4 @@
+import errno
 import shutil
 
 import pytest
@@ -99,6 +100,14 @@ def test_missing_cgroup_leaf_and_controllers_refuse(fake_estate):
 
     (fake_estate.cgroup / "cgroup.controllers").mkdir()
     assert "cgroup-v2" in reasons(check(fake_estate))
+
+
+def test_missing_root_controllers_refuses_even_with_leaf_controllers(fake_estate):
+    fake_estate.private(cgroup_path="/parent/leaf")
+    (fake_estate.cgroup / "cgroup.controllers").unlink()
+    result = check(fake_estate)
+    assert "cgroup-v2" in reasons(result)
+    assert str(fake_estate.cgroup / "cgroup.controllers") in result.message
 
 
 def test_unreadable_cgroup_and_process_files_refuse(fake_estate):
@@ -227,6 +236,15 @@ def test_unreadable_self_stat_and_process_directory_refuse(fake_estate):
 
     records, errors = containment._process_tree(fake_estate.proc / "missing")
     assert records == {} and "cannot enumerate" in errors[0]
+
+
+def test_containment_reader_treats_esrch_as_vanished(fake_estate):
+    fake_estate.private()
+
+    def gone(path):
+        raise ProcessLookupError(errno.ESRCH, "process vanished")
+
+    assert containment._read_record(fake_estate.proc / "self" / "stat", reader=gone) is None
 
 
 def test_transient_foreign_process_disappears_during_settle(fake_estate):

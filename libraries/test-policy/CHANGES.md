@@ -8,7 +8,9 @@
 - TP-12: the plugin sets `PR_SET_CHILD_SUBREAPER` at session start in every pytest/xdist process and replaces the
   old snapshot-diff child check. New direct children and zombies are settled, pidfd-pinned, re-checked by parent
   and start time, killed through the pidfd and reaped with `waitid(P_PIDFD)`; a leak is still reported after
-  cleanup. `estate_allow("children", ...)` is the explicit exception.
+  bounded cleanup, and the scan/kill/reap loop catches grandchildren reparented when their parent dies.
+  `estate_allow("children", ...)` is the explicit exception. `estate_allow("resource-leak")` now covers only
+  threads and file descriptors; it no longer exempts children, which have the separate `children` rule.
 - TP-13: `@pytest.mark.requires_contained_cgroup` checks finite effective cgroup-v2 memory/pids caps and a private
   PID namespace against injectable `/proc` and `/sys/fs/cgroup` roots. `fail` refuses at setup, `warn` warns and
   skips, and `off` is inert.

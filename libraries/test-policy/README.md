@@ -30,11 +30,21 @@ pytest only. Release contract: `cmru.toml` (tag `test-policy-vX.Y.Z`, wheel to G
   sets `PR_SET_CHILD_SUBREAPER` so orphaned descendants reparent to it. At each test teardown the plugin compares
   direct children by `(pid, starttime)`. A new child gets `estate_policy_settle_seconds` to exit; survivors and
   zombies are then pinned with a pidfd, re-checked for the same parent and start time, killed through the pidfd
-  when alive, and reaped with `waitid(P_PIDFD)`. A zombie is reported as a zombie leak, and a live child is
-  reported after successful SIGKILL and reap: cleanup never hides the leak. `fail` reports a teardown error; `warn`
-  warns and cleans up. A deliberate exception uses
+  when alive, and reaped with bounded `waitid(P_PIDFD, WNOHANG)` polling. The scan/kill/reap sequence repeats so
+  grandchildren reparented by killing their parent are found too, with a 10-pass bound that is itself reported.
+  A zombie is reported as a zombie leak, a live child is reported after successful SIGKILL and reap, and a child
+  still unreaped at the deadline is reported as unreaped: cleanup never hangs or hides the leak. `fail` reports a
+  teardown error; `warn` warns and cleans up. A deliberate exception uses
   `@pytest.mark.estate_allow("children", reason="...", backlog="XX-NN")`. Non-Linux runs are a no-op and record
-  one warning (TP-12).
+  one warning. Allowed tests leave live children alone but new direct-child zombies are reaped with
+  `waitid(WNOHANG)` so they do not accumulate (TP-12).
+
+  **Adopting the child guard:** a process created lazily by module or session code, or by a self-daemonizing tool
+  (`gpg-agent`, SSH `ControlPersist`, git `gc.autoDetach` or automatic maintenance), is a new child of pytest and
+  will be killed and reported when its owning test ends. Disable git auto-gc and maintenance in test repositories
+  (`git config --local gc.auto 0`; `git config --local maintenance.auto false`), arrange an explicit owner that
+  stops it before teardown, or mark the test with `estate_allow("children", ...)` when a persistent helper is
+  genuinely part of the test contract.
 * `@pytest.mark.requires_contained_cgroup` (TP-13) protects tests that signal, kill or flood processes. At setup
   the plugin requires a finite effective cgroup-v2 `memory.max` and `pids.max`, `/proc` without `hidepid` or
   `subset=pid`, and a private PID namespace: every other process must lie in the test's top-level tree below

@@ -61,10 +61,22 @@ class _ProcessReadError(Exception):
     """A process entry existed but could not be interpreted as a stat record."""
 
 
-def _read_record(path: Path, expected_pid: int | None = None) -> Process | None:
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+DEFAULT_READER: Callable[[Path], str] = _read_text
+
+
+def _read_record(
+    path: Path,
+    expected_pid: int | None = None,
+    *,
+    reader: Callable[[Path], str] = _read_text,
+) -> Process | None:
     try:
-        stat = path.read_text(encoding="utf-8", errors="replace")
-    except FileNotFoundError:
+        stat = reader(path)
+    except (FileNotFoundError, ProcessLookupError):
         return None
     except OSError as exc:
         raise _ProcessReadError(f"cannot read {path}: {exc}") from exc
@@ -87,7 +99,11 @@ def _read_record(path: Path, expected_pid: int | None = None) -> Process | None:
     return Process(pid, ppid, fields[0], stat[open_paren + 1 : close_paren], start_time)
 
 
-def _process_tree(proc_root: Path) -> tuple[dict[int, Process], list[str]]:
+def _process_tree(
+    proc_root: Path,
+    *,
+    reader: Callable[[Path], str] = _read_text,
+) -> tuple[dict[int, Process], list[str]]:
     records: dict[int, Process] = {}
     errors: list[str] = []
     try:
@@ -98,7 +114,7 @@ def _process_tree(proc_root: Path) -> tuple[dict[int, Process], list[str]]:
         if not _DIGITS.fullmatch(entry.name):
             continue
         try:
-            record = _read_record(entry / "stat", expected_pid=int(entry.name))
+            record = _read_record(entry / "stat", expected_pid=int(entry.name), reader=reader)
         except _ProcessReadError as exc:
             errors.append(str(exc))
             continue
@@ -107,14 +123,15 @@ def _process_tree(proc_root: Path) -> tuple[dict[int, Process], list[str]]:
     return records, errors
 
 
-def _read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
-
-
-def _cgroup_leaf(proc_root: Path, cgroup_root: Path) -> tuple[Path | None, list[Refusal]]:
+def _cgroup_leaf(
+    proc_root: Path,
+    cgroup_root: Path,
+    *,
+    reader: Callable[[Path], str] = _read_text,
+) -> tuple[Path | None, list[Refusal]]:
     cgroup_path = proc_root / "self" / "cgroup"
     try:
-        lines = _read_text(cgroup_path).splitlines()
+        lines = reader(cgroup_path).splitlines()
     except OSError as exc:
         return None, [Refusal("cgroup-v2", f"cannot read {cgroup_path}: {exc}")]
     if len(lines) != 1 or not lines[0].startswith("0::/"):
@@ -128,14 +145,19 @@ def _cgroup_leaf(proc_root: Path, cgroup_root: Path) -> tuple[Path | None, list[
     try:
         if not leaf.is_dir():
             return None, [Refusal("cgroup-v2", f"cgroup directory does not exist: {leaf}")]
-        controllers = leaf / "cgroup.controllers"
-        _read_text(controllers)
+        for directory in (leaf, cgroup_root):
+            _ = reader(directory / "cgroup.controllers")
     except OSError as exc:
         return None, [Refusal("cgroup-v2", f"cannot read cgroup-v2 capability file: {exc}")]
     return leaf, []
 
 
-def _cgroup_limits(leaf: Path, cgroup_root: Path) -> list[Refusal]:
+def _cgroup_limits(
+    leaf: Path,
+    cgroup_root: Path,
+    *,
+    reader: Callable[[Path], str] = _read_text,
+) -> list[Refusal]:
     levels = []
     current = leaf
     while True:
@@ -151,7 +173,7 @@ def _cgroup_limits(leaf: Path, cgroup_root: Path) -> list[Refusal]:
         for level in levels:
             limit_path = level / filename
             try:
-                value = _read_text(limit_path).strip()
+                value = reader(limit_path).strip()
             except FileNotFoundError:
                 continue
             except OSError as exc:
@@ -181,10 +203,14 @@ def _unescape_mount(value: str) -> str:
     return _MOUNT_ESCAPE.sub(lambda match: chr(int(match.group(1), 8)), value)
 
 
-def _proc_mount(proc_root: Path) -> list[Refusal]:
+def _proc_mount(
+    proc_root: Path,
+    *,
+    reader: Callable[[Path], str] = _read_text,
+) -> list[Refusal]:
     mountinfo = proc_root / "self" / "mountinfo"
     try:
-        lines = _read_text(mountinfo).splitlines()
+        lines = reader(mountinfo).splitlines()
     except OSError as exc:
         return [Refusal("proc-hidepid", f"cannot read {mountinfo}: {exc}")]
 
@@ -229,9 +255,11 @@ def _classify_namespace(
     proc_root: Path,
     records: dict[int, Process],
     scan_errors: list[str],
+    *,
+    reader: Callable[[Path], str] = _read_text,
 ) -> tuple[list[Refusal], bool]:
     try:
-        me = _read_record(proc_root / "self" / "stat")
+        me = _read_record(proc_root / "self" / "stat", reader=reader)
     except _ProcessReadError as exc:
         return [Refusal("pid-namespace-entry", str(exc))], False
     if me is None:
@@ -320,9 +348,11 @@ def _namespace(
     settle_seconds: float,
     clock: Callable[[], float],
     sleeper: Callable[[float], None],
+    *,
+    reader: Callable[[Path], str] = _read_text,
 ) -> list[Refusal]:
-    records, scan_errors = _process_tree(proc_root)
-    failures, unsettled = _classify_namespace(proc_root, records, scan_errors)
+    records, scan_errors = _process_tree(proc_root, reader=reader)
+    failures, unsettled = _classify_namespace(proc_root, records, scan_errors, reader=reader)
     if not unsettled or settle_seconds <= 0:
         return failures
 
@@ -332,8 +362,8 @@ def _namespace(
         if remaining <= 0:
             return failures
         sleeper(min(SETTLE_POLL_SECONDS, remaining))
-        records, scan_errors = _process_tree(proc_root)
-        failures, unsettled = _classify_namespace(proc_root, records, scan_errors)
+        records, scan_errors = _process_tree(proc_root, reader=reader)
+        failures, unsettled = _classify_namespace(proc_root, records, scan_errors, reader=reader)
         if not unsettled:
             return failures
 
@@ -345,12 +375,16 @@ def check(
     settle_seconds: float = 5.0,
     clock: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
+    reader: Callable[[Path], str] | None = None,
 ) -> ContainmentResult:
     """Evaluate every containment fact and aggregate every refusal."""
     proc_root = DEFAULT_PROC_ROOT if proc_root is None else Path(proc_root)
     cgroup_root = DEFAULT_CGROUP_ROOT if cgroup_root is None else Path(cgroup_root)
-    leaf, cgroup_failures = _cgroup_leaf(proc_root, cgroup_root)
-    limit_failures = _cgroup_limits(leaf, cgroup_root) if leaf is not None else []
-    failures = cgroup_failures + limit_failures + _proc_mount(proc_root)
-    failures.extend(_namespace(proc_root, settle_seconds, clock, sleeper))
+    selected_reader = DEFAULT_READER if reader is None else reader
+    leaf, cgroup_failures = _cgroup_leaf(proc_root, cgroup_root, reader=selected_reader)
+    limit_failures = (
+        _cgroup_limits(leaf, cgroup_root, reader=selected_reader) if leaf is not None else []
+    )
+    failures = cgroup_failures + limit_failures + _proc_mount(proc_root, reader=selected_reader)
+    failures.extend(_namespace(proc_root, settle_seconds, clock, sleeper, reader=selected_reader))
     return ContainmentResult(not failures, tuple(failures))
