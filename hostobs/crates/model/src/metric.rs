@@ -41,53 +41,94 @@ pub const MAX_METRIC_NAME_LEN: usize = 96;
 
 /// The value kind of a metric (§B.2 column types: `u64`, `i64`, `f64`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[repr(u8)]
 pub enum MetricKind {
     /// A cumulative counter, stored raw as `u64` (§C.3).
-    Counter,
+    Counter = 1,
     /// A point-in-time gauge, stored as `u64`, `i64` or `f64` per its unit.
-    Gauge,
+    Gauge = 0,
     /// A closed state code, stored as a small integer.
-    State,
+    State = 2,
+}
+
+impl MetricKind {
+    /// The stable stored code.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// Parse a stored code.
+    ///
+    /// # Errors
+    ///
+    /// [`MetricError::UnknownKind`].
+    pub const fn from_code(code: u8) -> Result<MetricKind, MetricError> {
+        match code {
+            0 => Ok(MetricKind::Gauge),
+            1 => Ok(MetricKind::Counter),
+            2 => Ok(MetricKind::State),
+            other => Err(MetricError::UnknownKind { code: other }),
+        }
+    }
+
+    /// The stable lower-case name used by fixtures and wire dictionaries.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            MetricKind::Gauge => "gauge",
+            MetricKind::Counter => "counter",
+            MetricKind::State => "state",
+        }
+    }
+
+    /// The permitted aggregations of this kind, as the wire mask.
+    #[must_use]
+    pub const fn aggregation_mask(self) -> u16 {
+        match self {
+            MetricKind::Counter => {
+                Aggregation::Raw.bit() | Aggregation::Last.bit() | Aggregation::Delta.bit()
+            }
+            MetricKind::Gauge => {
+                Aggregation::Last.bit()
+                    | Aggregation::Mean.bit()
+                    | Aggregation::Min.bit()
+                    | Aggregation::Max.bit()
+            }
+            MetricKind::State => Aggregation::Last.bit(),
+        }
+    }
 }
 
 /// What one value measures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[repr(u8)]
 pub enum Unit {
     /// No dimension (a count of things, a ratio, a percentage).
-    None,
+    None = 0,
     /// Microseconds.
-    Microseconds,
+    Microseconds = 1,
     /// Milliseconds.
-    Milliseconds,
+    Milliseconds = 2,
     /// Nanoseconds.
-    Nanoseconds,
+    Nanoseconds = 3,
     /// Bytes.
-    Bytes,
+    Bytes = 4,
     /// A count of objects (pids, pages, faults).
-    Count,
+    Count = 5,
     /// A ratio or percentage in `0..=100` or `0..=1` per the metric's own definition.
-    Ratio,
+    Ratio = 6,
     /// Volts.
-    Volts,
+    Volts = 7,
     /// Degrees Celsius.
-    Celsius,
+    Celsius = 8,
 }
 
 impl Unit {
     /// The stable stored code.
     #[must_use]
     pub const fn code(self) -> u8 {
-        match self {
-            Unit::None => 0,
-            Unit::Microseconds => 1,
-            Unit::Milliseconds => 2,
-            Unit::Nanoseconds => 3,
-            Unit::Bytes => 4,
-            Unit::Count => 5,
-            Unit::Ratio => 6,
-            Unit::Volts => 7,
-            Unit::Celsius => 8,
-        }
+        self as u8
     }
 
     /// Parse a stored code.
@@ -125,31 +166,43 @@ impl Unit {
             Unit::Celsius => "degC",
         }
     }
+
+    /// The stable lower-case name used by fixtures and wire dictionaries.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Unit::None => "none",
+            Unit::Microseconds => "usec",
+            Unit::Milliseconds => "msec",
+            Unit::Nanoseconds => "nsec",
+            Unit::Bytes => "bytes",
+            Unit::Count => "count",
+            Unit::Ratio => "ratio",
+            Unit::Volts => "volts",
+            Unit::Celsius => "celsius",
+        }
+    }
 }
 
 /// Where a value is measured (plan v4 §C.3 on inclusive hierarchy counters).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[repr(u8)]
 pub enum Scope {
     /// A whole-host fact read from a host file (`/proc/stat`, `/proc/pressure/...`).
-    Host,
+    Host = 0,
     /// A fact about one cgroup (inclusive of its descendants, as cgroupfs reports it).
-    Cgroup,
+    Cgroup = 1,
     /// A fact about one process.
-    Process,
+    Process = 2,
     /// A fact about the probe itself.
-    Daemon,
+    Daemon = 3,
 }
 
 impl Scope {
     /// The stable stored code.
     #[must_use]
     pub const fn code(self) -> u8 {
-        match self {
-            Scope::Host => 0,
-            Scope::Cgroup => 1,
-            Scope::Process => 2,
-            Scope::Daemon => 3,
-        }
+        self as u8
     }
 
     /// Parse a stored code.
@@ -166,34 +219,40 @@ impl Scope {
             other => Err(MetricError::UnknownScope { code: other }),
         }
     }
+
+    /// The stable lower-case name used by fixtures and wire dictionaries.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Scope::Host => "host",
+            Scope::Cgroup => "cgroup",
+            Scope::Process => "process",
+            Scope::Daemon => "daemon",
+        }
+    }
 }
 
 /// Which reader produced a value (plan v4 §A.3 `source`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[repr(u8)]
 pub enum Source {
     /// A file in cgroupfs (`cpu.stat`, `memory.current`, `io.stat`).
-    CgroupFs,
+    CgroupFs = 0,
     /// A file under `/proc` (host-wide counters, pressure, process data).
-    ProcFs,
+    ProcFs = 1,
     /// A file under `/sys` (device, zswap, ksm facts).
-    SysFs,
+    SysFs = 2,
     /// The probe's own bookkeeping (self-monitoring, plan §A.1).
-    Probe,
+    Probe = 3,
     /// Kernels facts derived from another metric by `model` (rates, rollups).
-    Derived,
+    Derived = 4,
 }
 
 impl Source {
     /// The stable stored code.
     #[must_use]
     pub const fn code(self) -> u8 {
-        match self {
-            Source::CgroupFs => 0,
-            Source::ProcFs => 1,
-            Source::SysFs => 2,
-            Source::Probe => 3,
-            Source::Derived => 4,
-        }
+        self as u8
     }
 
     /// Parse a stored code.
@@ -211,23 +270,36 @@ impl Source {
             other => Err(MetricError::UnknownSource { code: other }),
         }
     }
+
+    /// The stable lower-case name used by fixtures and wire dictionaries.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Source::CgroupFs => "cgroupfs",
+            Source::ProcFs => "procfs",
+            Source::SysFs => "sysfs",
+            Source::Probe => "probe",
+            Source::Derived => "derived",
+        }
+    }
 }
 
 /// An aggregation a stored series may use (plan v4 §B.2, §B.3).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[repr(u8)]
 pub enum Aggregation {
     /// Store the raw reading (counters).
-    Raw,
+    Raw = 0,
     /// The value at the end of a bucket (counters and gauges).
-    Last,
+    Last = 1,
     /// Difference of two raw counter readings over the covered interval.
-    Delta,
+    Delta = 2,
     /// Sample-weighted mean (gauges only).
-    Mean,
+    Mean = 3,
     /// Bucket minimum (gauges only).
-    Min,
+    Min = 4,
     /// Bucket maximum (gauges only).
-    Max,
+    Max = 5,
 }
 
 impl Aggregation {
@@ -235,6 +307,42 @@ impl Aggregation {
     #[must_use]
     pub const fn bit(self) -> u16 {
         1 << (self as u16)
+    }
+
+    /// The stable stored code.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// Parse a stored aggregation code.
+    ///
+    /// # Errors
+    ///
+    /// [`MetricError::UnknownAggregation`].
+    pub const fn from_code(code: u8) -> Result<Aggregation, MetricError> {
+        match code {
+            0 => Ok(Aggregation::Raw),
+            1 => Ok(Aggregation::Last),
+            2 => Ok(Aggregation::Delta),
+            3 => Ok(Aggregation::Mean),
+            4 => Ok(Aggregation::Min),
+            5 => Ok(Aggregation::Max),
+            other => Err(MetricError::UnknownAggregation { code: other }),
+        }
+    }
+
+    /// The stable lower-case name used by fixtures and operator output.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Aggregation::Raw => "raw",
+            Aggregation::Last => "last",
+            Aggregation::Delta => "delta",
+            Aggregation::Mean => "mean",
+            Aggregation::Min => "min",
+            Aggregation::Max => "max",
+        }
     }
 }
 
@@ -298,18 +406,7 @@ impl Metric {
     /// The aggregation this kind permits, as the wire mask of §B.3.
     #[must_use]
     pub const fn aggregation_mask(self) -> u16 {
-        match self.kind {
-            MetricKind::Counter => {
-                Aggregation::Raw.bit() | Aggregation::Last.bit() | Aggregation::Delta.bit()
-            }
-            MetricKind::Gauge => {
-                Aggregation::Last.bit()
-                    | Aggregation::Mean.bit()
-                    | Aggregation::Min.bit()
-                    | Aggregation::Max.bit()
-            }
-            MetricKind::State => Aggregation::Last.bit(),
-        }
+        self.kind.aggregation_mask()
     }
 
     /// True when this metric's kind permits `aggregation`.
@@ -374,6 +471,16 @@ pub enum MetricError {
         /// The stored code.
         code: u8,
     },
+    /// A metric-kind code outside the table.
+    UnknownKind {
+        /// The stored code.
+        code: u8,
+    },
+    /// An aggregation code outside the table.
+    UnknownAggregation {
+        /// The stored code.
+        code: u8,
+    },
 }
 
 impl fmt::Display for MetricError {
@@ -393,6 +500,10 @@ impl fmt::Display for MetricError {
             MetricError::UnknownUnit { code } => write!(f, "unknown unit code {code}"),
             MetricError::UnknownScope { code } => write!(f, "unknown scope code {code}"),
             MetricError::UnknownSource { code } => write!(f, "unknown source code {code}"),
+            MetricError::UnknownKind { code } => write!(f, "unknown metric-kind code {code}"),
+            MetricError::UnknownAggregation { code } => {
+                write!(f, "unknown aggregation code {code}")
+            }
         }
     }
 }
@@ -1184,8 +1295,40 @@ mod tests {
                 Err(MetricError::UnknownSource { code })
             );
         }
+        for kind in [MetricKind::Gauge, MetricKind::Counter, MetricKind::State] {
+            assert_eq!(MetricKind::from_code(kind.code()), Ok(kind));
+        }
+        for code in 3u8..=u8::MAX {
+            assert_eq!(
+                MetricKind::from_code(code),
+                Err(MetricError::UnknownKind { code })
+            );
+        }
+        for aggregation in super::ALL_AGGREGATIONS {
+            assert_eq!(Aggregation::from_code(aggregation.code()), Ok(aggregation));
+        }
+        for code in 6u8..=u8::MAX {
+            assert_eq!(
+                Aggregation::from_code(code),
+                Err(MetricError::UnknownAggregation { code })
+            );
+        }
         assert_eq!(Unit::Bytes.symbol(), "B");
         assert_eq!(Unit::None.symbol(), "");
+        assert_eq!(
+            [
+                Unit::None.name(),
+                Unit::Microseconds.name(),
+                Unit::Milliseconds.name(),
+                Unit::Nanoseconds.name(),
+                Unit::Bytes.name(),
+                Unit::Count.name(),
+                Unit::Ratio.name(),
+                Unit::Volts.name(),
+                Unit::Celsius.name(),
+            ],
+            ["none", "usec", "msec", "nsec", "bytes", "count", "ratio", "volts", "celsius"]
+        );
     }
 
     #[test]
@@ -1280,6 +1423,14 @@ mod tests {
         assert_eq!(
             MetricError::UnknownSource { code: 5 }.to_string(),
             "unknown source code 5"
+        );
+        assert_eq!(
+            MetricError::UnknownKind { code: 3 }.to_string(),
+            "unknown metric-kind code 3"
+        );
+        assert_eq!(
+            MetricError::UnknownAggregation { code: 6 }.to_string(),
+            "unknown aggregation code 6"
         );
         assert_eq!(
             MetricError::UnknownMetric { name: "x.y".into() }.to_string(),

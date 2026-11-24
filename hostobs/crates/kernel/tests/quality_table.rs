@@ -1,11 +1,5 @@
-//! The kernel crate's quality table is the *shared* wire table, byte for byte.
-//!
-//! `hostobs-kernel` does not depend on `hostobs-model` (a path dependency rewrites
-//! `Cargo.lock`, which the Rust lane image pins — `HOB-17`), so the two crates are bound by
-//! this fixture instead of by a type. `model`, `proto`, the independent Python decoder and
-//! this crate all read `hostobs/fixtures/wire/quality.json`; a renumbered or renamed code
-//! is a red test in every one of them, which is the only thing that makes four separate
-//! tables one table.
+//! Kernel readings carry the model's quality type, and the model table is the shared
+//! wire table byte for byte. The independent Python decoder checks the same fixture.
 
 #[path = "../../../test-support/json.rs"]
 mod json;
@@ -25,7 +19,7 @@ fn the_kernel_table_is_the_shared_wire_table() {
     for (position, entry) in codes.iter().enumerate() {
         let code = u8::try_from(entry.field("code").as_u64().expect("code")).expect("u8");
         assert_eq!(usize::from(code), position, "codes are stored in order");
-        let parsed = QualityCode::from_code(code).expect("in the vocabulary");
+        let parsed = QualityCode::from_code(code, position).expect("in the vocabulary");
         assert_eq!(parsed.name(), entry.field("name").as_str().expect("name"));
         assert_eq!(
             parsed.is_measurement(),
@@ -35,6 +29,6 @@ fn the_kernel_table_is_the_shared_wire_table() {
         );
     }
     // The one code the M1 fix added is present and is not a measurement.
-    assert_eq!(QualityCode::UNKNOWN_TOPOLOGY.code(), 7);
-    assert!(!QualityCode::UNKNOWN_TOPOLOGY.is_measurement());
+    assert_eq!(QualityCode::UnknownTopology.code(), 7);
+    assert!(!QualityCode::UnknownTopology.is_measurement());
 }

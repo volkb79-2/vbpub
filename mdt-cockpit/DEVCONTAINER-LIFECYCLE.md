@@ -10,9 +10,9 @@ attached Dev Containers session disconnects. The image's own `CMD` is a keepaliv
 `sleep` when one is killed (MDT-107); a `devcontainer.json` with `"overrideCommand": false` and `"init": true`
 runs it as the only child of a real init. The Dev Containers default instead makes PID 1 a shell loop
 `while sleep 1 & wait $!`, which ended, and stopped the container, whenever its `sleep` child was killed.
-Killing the keepalive shell itself (tini's only child) still stops the container. The shipped templates move to
-that setting only once the image carrying the `CMD` is released: with an older image (base `CMD ["python3"]`)
-the container would exit at once. `CODEX_SQLITE_HOME` points at the shared SQLite
+Killing the keepalive shell itself (tini's only child) still stops the container. The shipped templates and the controller's own `devcontainer.json` use
+that setting (`overrideCommand` false, `init` true), which needs an image carrying the `CMD`: with an older
+image (base `CMD ["python3"]`) the container exits at once, so rebuild only after the image is released. `CODEX_SQLITE_HOME` points at the shared SQLite
 database beneath the complete persistent home.
 
 ## The two lifecycle hooks (set in the consuming repo's `devcontainer.json`)

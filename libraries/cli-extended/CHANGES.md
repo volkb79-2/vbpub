@@ -9,6 +9,12 @@ know when upgrading; it is not generated.
 
 ### Unreleased — adoption blockers (CLI-EXT-35, CLI-EXT-38, CLI-EXT-42, CLI-EXT-43, CLI-EXT-44)
 
+- **Estate test policy (P-core-04b).** Tests only: cli-extended now loads
+  `estate_test_policy` from the repository source, disables the installed
+  `pytest11` entry point to prevent double registration, and enforces its
+  `fail` mode. The local P11 leftover-child guard is retired in favour of TP-12;
+  process-signalling `procio` tests carry `requires_contained_cgroup`, and the
+  lanes that run them declare finite pids caps.
 - **Colour policy (CLI-EXT-42).** `CliOutput.color_enabled()` now follows
   no-color.org and the cmru/ciu policy: an empty `NO_COLOR` is unset, and
   `TERM=dumb` disables automatic colour. This is behaviour-visible: a TTY with

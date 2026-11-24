@@ -435,7 +435,7 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int)
     MemoryMax = MemTotal + SwapTotal - MDT_EXCLUDED_RAM - MDT_EXCLUDED_SWAP - DEV_HOST_MEMORY_KEEP
     (a combined RAM+swap figure; the kernel's memory.max counts RAM (and zswap) only, which physical RAM
     caps, so on these hosts it is NOT reachable and is no leak backstop: the bounds that act are MemoryHigh
-    throttling, memory.swap.max, oomd and finally the global OOM killer; see README).
+    throttling, memory.swap.max and finally the global OOM killer; systemd-oomd is not one of them; see README).
     MemoryHigh = MemTotal - MDT_EXCLUDED_RAM - DEV_HOST_MEMORY_KEEP: the RAM the dev tier may hold; above
     it the kernel reclaims the tier into zswap/swap instead of taking pages from the host.
     An explicit DEV_MEMORY_HIGH / DEV_MEMORY_MAX is a pin and wins per value; `-` omits it.

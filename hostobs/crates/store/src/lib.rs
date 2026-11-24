@@ -25,7 +25,6 @@
 //!   blocks a segment holds with their quality codes intact.
 //! * [`tier`] — one directory of segments with its configured step, `keep_s`, `cap_bytes`
 //!   and ring semantics (whole-segment eviction, oldest first).
-//! * [`quality`] — the store's copy of the closed §C.2 code table, bound to the shared fixture.
 //! * [`queue`] — the bounded writer queue with counted drops and one writer.
 //! * [`tmpfs`] — the mount table reader that decides whether a tier really is on tmpfs.
 //! * [`events`] — the events/spans store: the same segment machinery and its own cap.
@@ -34,11 +33,8 @@
 //!
 //! # Decisions taken where the plan is open
 //!
-//! * `store` does not depend on `hostobs-proto` (or `model`): a path dependency rewrites
-//!   `Cargo.lock` and the lane image bakes that lock (`HOB-27`), so the crate validates the
-//!   four payload facts it needs itself and hands the bytes to `proto` at the consumer's
-//!   boundary. Its quality codes are its own closed table, bound to
-//!   `fixtures/wire/quality.json` by a test, exactly as `kernel` did (`HOB-17`).
+//! * The store uses `proto`'s frame vocabulary and declares `model` for the HOB-39 decoded-row
+//!   join; it has no local frame, quality or value type.
 //! * The store keeps **raw `u64` counters** and **quality per value** (§C.3/§C.2): it never
 //!   converts a value, never derives a rate and never rounds a reading.
 //! * A record's payload is a `proto` BLOCK frame, so a segment is a sequence of column blocks
@@ -63,7 +59,6 @@ pub mod error;
 pub mod events;
 pub mod format;
 pub mod fsio;
-pub mod quality;
 pub mod queue;
 pub mod segment;
 pub mod store;

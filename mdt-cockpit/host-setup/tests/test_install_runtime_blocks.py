@@ -275,6 +275,214 @@ class EndpointInstallPreflight(unittest.TestCase):
         self.assertNotIn('"CGPROFILE_ENABLE"', wizard)
 
 
+class OomdDevTierCheck(unittest.TestCase):
+    """check.sh check_oomd_dev_tier: oomd must not act on the dev tier (MDT-108), run with systemctl/oomctl shims."""
+
+    FUNCTION = shell_function(CHECK_SH, "check_oomd_dev_tier")
+    CLEAN_DUMP = (
+        "Dump of Context:\nSwap Monitored CGroups:\nMemory Pressure Monitored CGroups:\n"
+        "\tPath: /nyxloom.slice\n\t\tMemory Pressure Limit: 60.00%\n\tPath: /user.slice/user-1000.slice\n"
+        "\tPath: /device.slice\n"
+    )
+
+    def _run(self, *, props: dict[str, tuple[str, str]] | None = None, dump: str | None = CLEAN_DUMP,
+             oomctl_rc: int = 0) -> str:
+        """props maps a slice name to (ManagedOOMMemoryPressure, ManagedOOMSwap); the rest are auto.
+        dump=None means oomctl is not installed."""
+        import shutil
+
+        bash = shutil.which("bash")  # the child's PATH holds only the shims
+        props = props or {}
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp) / "bin"
+            bindir.mkdir()
+            for tool in ("cat", "sed", "grep", "tr"):
+                (bindir / tool).symlink_to(shutil.which(tool))
+            cases = "".join(
+                f"{name}.slice) echo 'ManagedOOMMemoryPressure={mp}'; echo 'ManagedOOMSwap={sw}';;\n"
+                for name, (mp, sw) in props.items()
+            )
+            (bindir / "systemctl").write_text(
+                f"#!/bin/sh\nfor last; do :; done\ncase \"$last\" in\n{cases}*) echo 'ManagedOOMMemoryPressure=auto'; echo 'ManagedOOMSwap=auto';;\nesac\n",
+                encoding="utf-8",
+            )
+            if dump is not None:
+                (dump_file := Path(tmp) / "dump.txt").write_text(dump, encoding="utf-8")
+                (bindir / "oomctl").write_text(f"#!/bin/sh\ncat '{dump_file}'\nexit {oomctl_rc}\n", encoding="utf-8")
+            for shim in bindir.iterdir():
+                if not shim.is_symlink():
+                    shim.chmod(0o755)
+            harness = (
+                'ok(){ echo "OK $*"; }\nwarn(){ echo "WARN $*"; }\nfail(){ echo "FAIL $*"; }\n'
+                + self.FUNCTION + "\ncheck_oomd_dev_tier\n"
+            )
+            return subprocess.run(
+                [bash, "-c", harness], capture_output=True, text=True, env={"PATH": str(bindir)}
+            ).stdout
+
+    def test_all_auto_and_an_unrelated_dump_is_ok(self) -> None:
+        out = self._run()
+        self.assertIn("OK systemd-oomd manages no dev*.slice", out)
+        self.assertNotIn("FAIL", out)
+        self.assertNotIn("WARN", out)
+
+    def test_a_non_auto_property_on_any_dev_slice_fails(self) -> None:
+        for name in ("-", "dev", "dev-gates", "dev-background", "dev-interactive", "dev-buildkitd"):
+            for value in (("kill", "auto"), ("auto", "kill")):
+                out = self._run(props={name: value})
+                self.assertIn(f"FAIL {name}.slice has ManagedOOMMemoryPressure={value[0]} ManagedOOMSwap={value[1]}", out)
+                self.assertNotIn("OK ", out)
+
+    def test_oomd_watching_a_dev_slice_or_the_root_slice_fails(self) -> None:
+        for path in ("/dev.slice", "/dev.slice/dev-gates.slice/docker-abc.scope", "/dev-background.slice", "/", "/-.slice"):
+            out = self._run(dump=self.CLEAN_DUMP + f"\tPath: {path}\n")
+            self.assertIn("FAIL systemd-oomd monitors the dev tier or the root slice", out, path)
+            self.assertNotIn("OK ", out)
+
+    def test_an_unrecognised_dump_format_warns_and_is_never_clean(self) -> None:
+        for dump in ("", '{"monitored": ["/"]}\n', "Dump of Context:\n\tPath: /dev.slice\n"):
+            out = self._run(dump=dump)
+            self.assertIn("WARN oomctl dump format unrecognised", out, dump)
+            self.assertNotIn("OK ", out)
+            self.assertNotIn("FAIL", out)
+
+    def test_the_root_slice_is_queried_with_a_double_dash(self) -> None:
+        self.assertIn('-p ManagedOOMMemoryPressure,ManagedOOMSwap -- "$s.slice"', CHECK_SH)
+        self.assertRegex(CHECK_SH, r"for s in - dev ")
+
+    def test_unreadable_properties_warn_never_ok(self) -> None:
+        out = self._run(props={"dev-gates": ("", "")})
+        self.assertIn("WARN dev-gates.slice: could not read", out)
+        self.assertNotIn("OK ", out)
+
+    def test_missing_or_failing_oomctl_warns_and_never_fails(self) -> None:
+        out = self._run(dump=None)
+        self.assertIn("WARN oomctl not found", out)
+        self.assertNotIn("FAIL", out)
+        out = self._run(oomctl_rc=1)
+        self.assertIn("WARN oomctl dump failed", out)
+        self.assertNotIn("FAIL", out)
+
+    def test_a_bad_property_still_fails_when_oomctl_is_missing(self) -> None:
+        out = self._run(props={"dev-gates": ("kill", "auto")}, dump=None)
+        self.assertIn("FAIL dev-gates.slice", out)
+
+    def test_check_sh_actually_calls_it(self) -> None:
+        self.assertRegex(CHECK_SH, r"(?m)^check_oomd_dev_tier$")
+
+
+class CheckoutSetPreflight(unittest.TestCase):
+    """install.sh preflight_checkout_set: a checkout missing a file outside host-setup/ is refused before any host change."""
+
+    FUNCTION = shell_function(INSTALL_SH, "preflight_checkout_set")
+    LISTED = re.findall(r"^\s+(\.\./\S+)$", FUNCTION, re.M)
+
+    def _run(self, tree: Path, *, drop: tuple[str, ...] = (), tamper: bool = False) -> subprocess.CompletedProcess:
+        here = tree / "mdt-cockpit" / "host-setup"
+        here.mkdir(parents=True, exist_ok=True)
+        for rel in self.LISTED:
+            f = (here / rel).resolve()
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("x", encoding="utf-8")
+        tools = (here / "../../scripts/debian-install-v2/tools").resolve()
+        import hashlib
+
+        (tools / "cpu_benchmark.py.sha256").write_text(
+            hashlib.sha256(b"x").hexdigest() + "  cpu_benchmark.py\n", encoding="utf-8")
+        if tamper:
+            (tools / "cpu_benchmark.py").write_text("tampered", encoding="utf-8")
+        for rel in drop:
+            (here / rel).resolve().unlink()
+        return run_bash(f'HERE="{here}"\n{self.FUNCTION}\npreflight_checkout_set')
+
+    def test_a_complete_checkout_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run(Path(tmp))
+            self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+    def test_a_missing_out_of_tree_file_is_refused_naming_it_and_the_required_set(self) -> None:
+        drop = ("../../scripts/debian-install-v2/tools/iocost_coef_gen.py", "../../scripts/debian-install-v2/tools/iocost_plausibility.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run(Path(tmp), drop=drop)
+            self.assertEqual(r.returncode, 1)
+            for rel in drop:
+                self.assertIn(str((Path(tmp) / "mdt-cockpit" / "host-setup" / rel).resolve()), r.stderr)
+            self.assertNotIn("cpu_benchmark", r.stderr)
+            self.assertIn("mdt-cockpit/ AND scripts/debian-install-v2/tools/", r.stderr)
+
+    def test_a_cpu_benchmark_that_does_not_match_its_pin_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run(Path(tmp), tamper=True)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("does not match cpu_benchmark.py.sha256", r.stderr)
+
+    # The real argument parsing and the real guard, with only the host checks between them left out
+    # (install.sh itself refuses inside a container, so the whole script cannot run here).
+    PARSE = INSTALL_SH[INSTALL_SH.index("CPU_BENCHMARK=0\n"):INSTALL_SH.index("# Host setup changes the host's systemd")]
+    GUARD = INSTALL_SH[INSTALL_SH.index("# Every mode from here on installs"):INSTALL_SH.index("DOCKER_BIN=/usr/bin/docker")]
+
+    def _modes(self, tree: Path, *args: str, complete: bool) -> subprocess.CompletedProcess:
+        here = tree / "mdt-cockpit" / "host-setup"
+        if complete:
+            self._run(tree)
+        else:
+            here.mkdir(parents=True, exist_ok=True)
+        quoted = " ".join(f"'{a}'" for a in args)
+        return run_bash(
+            f'set -euo pipefail\nHERE="{here}"\nusage(){{ :; }}\nset -- {quoted}\n{self.PARSE}\n{self.FUNCTION}\n'
+            f'{self.GUARD}\necho REACHED-RENDER'
+        )
+
+    def test_every_mutating_mode_is_refused_on_an_incomplete_tree_before_render(self) -> None:
+        for args in ((), ("--wizard",), ("--with-baseline",), ("--wizard", "--with-baseline"), ("--wizard", "--reset"),
+                     ("--restart-docker",)):
+            with self.subTest(args=args), tempfile.TemporaryDirectory() as tmp:
+                r = self._modes(Path(tmp), *args, complete=False)
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertNotIn("REACHED-RENDER", r.stdout)
+                self.assertIn("incomplete", r.stderr)
+
+    def test_a_complete_tree_and_apply_protection_pass_the_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._modes(Path(tmp), "--wizard", complete=True)
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, "REACHED-RENDER"), r.stderr)
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._modes(Path(tmp), "--apply-protection", complete=False)
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, "REACHED-RENDER"), r.stderr)
+
+    def test_every_out_of_tree_file_install_sh_reads_is_in_the_list(self) -> None:
+        listed = " ".join(self.LISTED)
+        for path in set(re.findall(r'\$HERE/(\.\./[^\s"\\]+)', INSTALL_SH)):
+            self.assertIn(path, listed, f"install.sh reads {path} but the preflight does not check it")
+        for name in ("iocost_coef_gen.py", "iocost_plausibility.py", "cpu_benchmark.py", "cpu_benchmark.py.sha256", "cpu_benchmark.pins.json"):
+            self.assertIn(name, listed)
+
+    def test_it_runs_before_the_first_host_change(self) -> None:
+        call = INSTALL_SH.index("preflight_checkout_set || exit 2")
+        for later in ('DOCKER_BIN=/usr/bin/docker', 'echo "== scripts =="', 'echo "== packages =="', "systemctl daemon-reload"):
+            self.assertLess(call, INSTALL_SH.index(later), later)
+
+
+class RetiredOomKeysWarning(unittest.TestCase):
+    """MDT-108: an old host-setup.env that still sets the retired oomd keys gets one WARN naming them, never a failure."""
+
+    BLOCK = INSTALL_SH[INSTALL_SH.index("_retired_oomd_keys=()"):INSTALL_SH.index('DEV_STATIC_RBW="$MDT_STATIC_RBPS"')]
+
+    def _run(self, assignments: str) -> subprocess.CompletedProcess:
+        return run_bash(f'set -euo pipefail\nCONFIG_PATH=/etc/mdt/host-setup.env\n{assignments}\n{self.BLOCK}\necho done')
+
+    def test_names_every_retired_key_present_and_still_succeeds(self) -> None:
+        r = self._run("DEV_GATES_OOM_PRESSURE_LIMIT=75%\nMDT_MEMORY_POLICY=oomd\nDEV_BACKGROUND_OOM_PRESSURE_LIMIT=")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "done"), r.stderr)
+        self.assertEqual(r.stderr.count("WARN:"), 1)
+        for key in ("DEV_GATES_OOM_PRESSURE_LIMIT", "DEV_BACKGROUND_OOM_PRESSURE_LIMIT", "MDT_MEMORY_POLICY"):
+            self.assertIn(key, r.stderr)
+
+    def test_is_silent_without_them(self) -> None:
+        r = self._run("DEV_GATES_MEMORY_MAX=1G")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+
 class ReconcileKeepsCapsOnTransientDeviceLoss(unittest.TestCase):
     """MDT-019: a valid baseline with no discovered device does not clear the per-container caps."""
 

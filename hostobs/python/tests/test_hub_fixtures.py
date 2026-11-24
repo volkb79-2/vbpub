@@ -6,7 +6,7 @@ Part of the registered `conformance` lane (HOB-4); by hand:
     python3 -I -m unittest discover -s python/tests -p 'test_hub_fixtures.py' -v
 
 Two checks: the committed files are exactly what the generator writes (byte for byte, exactly
-the 20 expected files), and their JSON shape is the documented one. The Rust replay
+the 19 expected files), and their JSON shape is the documented one. The Rust replay
 (`crates/proto/tests/hub_fixtures.rs`) judges the hub against the expectations.
 """
 
@@ -48,9 +48,9 @@ def committed() -> dict[str, str]:
 
 
 class HubFixtureTests(unittest.TestCase):
-    def test_exactly_the_20_cases(self) -> None:
+    def test_exactly_the_19_cases(self) -> None:
         names = sorted(f"{name}.json" for name in make_hub_fixtures.CASE_NAMES)
-        self.assertEqual(len(names), 20)
+        self.assertEqual(len(names), 19)
         self.assertEqual(sorted(committed()), names)
 
     def test_committed_files_equal_the_generator_output(self) -> None:
@@ -63,7 +63,8 @@ class HubFixtureTests(unittest.TestCase):
                 self.assertEqual(f"{doc['case']}.json", name)
                 self.assertEqual(set(doc), {"case", "doc", "limits", "conns", "steps", "expect"})
                 self.assertEqual(set(doc["limits"]), LIMIT_KEYS)
-                self.assertTrue(all(isinstance(uid, int) for uid in doc["conns"]))
+                self.assertIsInstance(doc["conns"], int)
+                self.assertGreaterEqual(doc["conns"], 1)
                 self.assertEqual(len(doc["steps"]), len(doc["expect"]))
                 last = 0
                 for step, outputs in zip(doc["steps"], doc["expect"]):
@@ -71,7 +72,7 @@ class HubFixtureTests(unittest.TestCase):
                     self.assertGreaterEqual(step["t_ms"], last)
                     last = step["t_ms"]
                     if "c" in step:
-                        self.assertLess(step["c"], len(doc["conns"]))
+                        self.assertLess(step["c"], doc["conns"])
                     for output in outputs:
                         if isinstance(output, str):
                             self.assertIn(output, OUTCOMES)

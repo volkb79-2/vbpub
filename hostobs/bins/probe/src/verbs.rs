@@ -2,8 +2,9 @@
 //! mask, its reply shape, whether this package serves it and whether it is reserved (4.13).
 //!
 //! A verb that is reserved (M5/M6) or known but not served yet answers `unknown-verb` and is
-//! absent from `hello.verbs`; `forbidden` and `binary-required` are still judged from the full
-//! table (design R11), so the table carries every verb, served or not. P5b-2d serves `current`,
+//! absent from `hello.verbs`; `forbidden` is still judged from the full table (design R11), so
+//! the table carries every verb, served or not. The block levels are binary-only and mode
+//! detection answers `binary-required` before a JSON line is parsed. P5b-2d serves `current`,
 //! `subscribe` and `unsubscribe` at observe and operator.
 
 use crate::limits::Level;
@@ -13,7 +14,7 @@ use crate::limits::Level;
 pub enum Shape {
     /// One REP.
     Json,
-    /// REP, BLOCK frames, END: refused in JSON mode (`binary-required`).
+    /// REP, BLOCK frames, END. These verbs exist only at binary-only levels.
     Block,
 }
 

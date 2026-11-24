@@ -88,7 +88,7 @@ click path is not verified here.
 
 - Joins, no audio/video from others: UDP 10000 blocked (host or provider firewall); see
   `README.md`.
-- Login loop: the account is not registered; run `ciu up` again (hook is idempotent) and read the
-  password from the credentials file named in its output.
+- Login loop: the account is not registered; run `ciu up` again (the hook is idempotent), then read
+  the password with the per-user `cat` commands in `USERS.md`.
 - Certificate warning: `jitsi.<domain>` has no DNS record to the host, so the edge cannot
   issue its certificate.

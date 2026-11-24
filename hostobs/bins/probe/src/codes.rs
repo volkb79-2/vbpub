@@ -2,7 +2,7 @@
 //! envelope (WIRE.md section 4.1).
 //!
 //! Every code has one fixed `message` (a `&'static str`: client text is never echoed, design
-//! R14) and one fatality (WIRE.md section 5.4: the nine connection-fatal codes close the
+//! R14) and one fatality (WIRE.md section 5.4: the ten connection-fatal codes close the
 //! connection, every other code answers one request and keeps it).
 
 /// One wire error code.
@@ -32,9 +32,9 @@ pub enum Code {
     UnknownVerb,
     /// The verb exists but not at this level.
     Forbidden,
-    /// A block verb was asked in JSON mode.
+    /// JSON mode was attempted at a level that serves block verbs.
     BinaryRequired,
-    /// Too many outstanding requests.
+    /// The connection's query blocks have not all been read.
     TooManyRequests,
     /// A budget pool is exhausted.
     Budget,
@@ -153,12 +153,13 @@ impl Code {
         codes.find(|code| code.name() == name)
     }
 
-    /// Whether the code closes the connection (WIRE.md section 5.4, the nine fatal codes).
+    /// Whether the code closes the connection (WIRE.md section 5.4, the ten fatal codes).
     #[must_use]
     pub const fn fatal(self) -> bool {
         matches!(
             self,
             Code::UnknownMode
+                | Code::BinaryRequired
                 | Code::UnsupportedVersion
                 | Code::HelloRequired
                 | Code::BadFrame
@@ -186,8 +187,8 @@ impl Code {
             Code::BadRequest => "the request is malformed",
             Code::UnknownVerb => "the verb is not served",
             Code::Forbidden => "the verb is not available at this level",
-            Code::BinaryRequired => "the verb needs the binary protocol",
-            Code::TooManyRequests => "too many requests are outstanding",
+            Code::BinaryRequired => "this level accepts only the binary protocol",
+            Code::TooManyRequests => "the connection's query blocks are not yet read",
             Code::Budget => "a budget is exhausted",
             Code::RateLimited => "the request rate is limited",
             Code::NotFound => "the object was not found",
@@ -281,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn exactly_the_nine_section_5_4_codes_are_fatal() {
+    fn exactly_the_ten_section_5_4_codes_are_fatal() {
         let fatal: Vec<&str> = Code::ALL
             .iter()
             .filter(|code| code.fatal())
@@ -299,6 +300,7 @@ mod tests {
                 "idle",
                 "slow-client",
                 "shutting-down",
+                "binary-required",
             ]
         );
     }

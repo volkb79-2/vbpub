@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
+from . import hostside
 from .contracts import ContractError, is_candidate_id
 from .measurement import measurement_document
 from .plan import replan_pending
@@ -135,6 +136,18 @@ def _event_key(event: Mapping[str, object], host: str, job: str) -> tuple[float,
     except (ValueError, OverflowError, OSError):
         when = math.inf
     return when, host, job
+
+
+def _merge_memory_peak(previous: dict[str, Any], event: Mapping[str, object]) -> None:
+    """Keep one progress event while filling its measured peak from a later read."""
+    peak = event.get("memory_peak_bytes")
+    if (
+        previous.get("memory_peak_bytes") is None
+        and isinstance(peak, int)
+        and not isinstance(peak, bool)
+        and peak > 0
+    ):
+        previous["memory_peak_bytes"] = peak
 
 
 class CampaignManager:
@@ -291,6 +304,7 @@ class CampaignManager:
                 "last_contact_mono": None,
                 "unreachable_since_mono": None,
                 "loss_requeued": False,
+                "returned_duplicates_pending": False,
                 "paused_seconds": 0.0,
                 "last_progress_mono": now,
             }
@@ -586,15 +600,14 @@ class CampaignManager:
         returned_lost = (
             host_state["unreachable_since_mono"] is not None
             and now - host_state["unreachable_since_mono"] > LOST_AFTER_SECONDS
-        ) or host_state["status"] == "LOST" or bool(host_state["loss_requeued"])
+        ) or host_state["status"] == "LOST" or bool(host_state["loss_requeued"]) or bool(
+            host_state.get("returned_duplicates_pending")
+        )
         self._end_unreachable_episode(host_state, job_rows, now)
         host_state["last_contact_mono"] = now
         host_state["status"] = "ONLINE"
         host_state.pop("error", None)
         host_state["pressure"] = self.runner.pressure(host_id)
-        if returned_lost:
-            host_state["loss_requeued"] = False
-            host_state["returned_after_loss"] = True
         for name, job in job_rows.items():
             row = rows[name]
             state_name = row.get("state")
@@ -652,8 +665,9 @@ class CampaignManager:
             allowed = set(job["candidate_ids"])
             all_records = job.setdefault("records", [])
             record_keys = {
-                (item.get("candidate_id"), item.get("outcome_bucket"), item.get("emitted_at"), item.get("elapsed_seconds"))
-                for item in all_records if isinstance(item, dict)
+                (item.get("candidate_id"), item.get("outcome_bucket"), item.get("emitted_at"), item.get("elapsed_seconds")): item
+                for item in all_records
+                if isinstance(item, dict)
             }
             not_started_ids = set(job.get("not_started_ids", []))
             for event in [*records, *verdict_records]:
@@ -668,9 +682,7 @@ class CampaignManager:
                     not_started_ids.add(candidate_id)
                     continue
                 outcome = event.get("outcome_bucket")
-                if not isinstance(outcome, str) or outcome not in {
-                    "killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"
-                }:
+                if not isinstance(outcome, str) or outcome not in hostside.OUTCOME_BUCKETS:
                     continue
                 elapsed = event.get("elapsed_seconds")
                 if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or not math.isfinite(float(elapsed)) or elapsed < 0:
@@ -687,9 +699,12 @@ class CampaignManager:
                     "memory_peak_bytes": memory_peak,
                 }
                 key = (candidate_id, outcome, emitted, elapsed)
-                if key not in record_keys:
-                    record_keys.add(key)
+                previous = record_keys.get(key)
+                if previous is None:
+                    record_keys[key] = record
                     all_records.append(record)
+                else:
+                    _merge_memory_peak(previous, record)
             job["not_started_ids"] = sorted(not_started_ids)
             finished = {record["candidate_id"] for record in all_records if isinstance(record, dict)}
             job["finished_ids"] = sorted(finished)
@@ -739,7 +754,9 @@ class CampaignManager:
                 else:
                     job["status"] = "SUPERSEDED_PENDING"
         if returned_lost:
-            self._stop_returned_duplicates(state, host_id)
+            host_state["returned_after_loss"] = True
+            host_state["loss_requeued"] = False
+            host_state["returned_duplicates_pending"] = self._stop_returned_duplicates(state, host_id)
         self._stop_superseded_host(state, host_id)
 
     @staticmethod
@@ -851,22 +868,41 @@ class CampaignManager:
         for host_id in sorted(state["hosts"]):
             self._stop_superseded_host(state, host_id)
 
-    def _stop_returned_duplicates(self, state: dict[str, Any], host_id: str) -> None:
+    def _stop_returned_duplicates(self, state: dict[str, Any], host_id: str) -> bool:
+        """Stop source duplicates whose unfinished work finished elsewhere.
+
+        The return fact remains pending while a retry is incomplete or a stop
+        fails, so a later successful refresh retries the stop.
+        """
         done_elsewhere = self._done_by_other_hosts(state, host_id)
+        pending = False
         for job in state["jobs"].values():
-            if job["host"] != host_id or job["status"] != "RUNNING":
+            if job["host"] != host_id or job["status"] != "RUNNING" or job.get("lost_mono") is None:
                 continue
-            if set(job["candidate_ids"]) <= done_elsewhere:
-                try:
-                    self.runner.stop(host_id, job["name"])
-                except HostUnavailable as exc:
-                    self._note_unavailable(state["hosts"][host_id], exc, self.clock())
-                    continue
-                except (TransportError, ContractError) as exc:
-                    self._record_host_error(state["hosts"][host_id], str(exc))
-                    continue
-                job["status"] = "SUPERSEDED"
-                job["stop_pending"] = False
+            finished = {
+                record["candidate_id"]
+                for record in job.get("records", [])
+                if isinstance(record, dict) and isinstance(record.get("candidate_id"), str)
+            }
+            outstanding = set(job["candidate_ids"]) - finished
+            if not outstanding:
+                continue  # finishing on its own: nothing is done "elsewhere" for it
+            if not outstanding <= done_elsewhere:
+                pending = True
+                continue
+            try:
+                self.runner.stop(host_id, job["name"])
+            except HostUnavailable as exc:
+                pending = True
+                self._note_unavailable(state["hosts"][host_id], exc, self.clock())
+                continue
+            except (TransportError, ContractError) as exc:
+                pending = True
+                self._record_host_error(state["hosts"][host_id], str(exc))
+                continue
+            job["status"] = "SUPERSEDED"
+            job["stop_pending"] = False
+        return pending
 
     @staticmethod
     def _done_ids(state: Mapping[str, Any]) -> set[str]:
@@ -1344,7 +1380,7 @@ class CampaignManager:
     def _collect_result(self, state: dict[str, Any]) -> dict[str, Any]:
         expected_ids = set(state["planned_ids"])
         events: list[dict[str, Any]] = []
-        seen_progress: set[tuple[str, str, str, str | None, float | None]] = set()
+        seen_progress: dict[tuple[str, str, str, str | None, float | None], dict[str, Any]] = {}
         missing_artifacts: list[dict[str, str]] = []
         not_started_reasons: dict[str, str] = {}
         progress_paths: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -1360,9 +1396,7 @@ class CampaignManager:
                     or candidate_id not in expected_ids
                     or candidate_id not in allowed
                     or not isinstance(outcome, str)
-                    or outcome not in {
-                    "killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"
-                    }
+                    or outcome not in hostside.OUTCOME_BUCKETS
                 ):
                     continue
                 emitted_at = record.get("emitted_at") if isinstance(record.get("emitted_at"), str) else None
@@ -1373,9 +1407,13 @@ class CampaignManager:
                     else None
                 )
                 key = (job["host"], candidate_id, outcome, emitted_at, elapsed_seconds)
-                if key not in seen_progress:
-                    events.append({**record, "host": job["host"], "job": job["name"]})
-                    seen_progress.add(key)
+                event = {**record, "host": job["host"], "job": job["name"]}
+                previous = seen_progress.get(key)
+                if previous is None:
+                    events.append(event)
+                    seen_progress[key] = event
+                else:
+                    _merge_memory_peak(previous, event)
             if job["status"] in {"QUEUED", "STARTING"}:
                 continue
             path = job.get("progress_path")
@@ -1412,9 +1450,13 @@ class CampaignManager:
                         else None
                     )
                     key = (host, record["candidate_id"], record["outcome_bucket"], emitted_at, elapsed_seconds)
-                    if key not in seen_progress:
-                        events.append({**record, "host": host, "job": job["name"]})
-                        seen_progress.add(key)
+                    event = {**record, "host": host, "job": job["name"]}
+                    previous = seen_progress.get(key)
+                    if previous is None:
+                        events.append(event)
+                        seen_progress[key] = event
+                    else:
+                        _merge_memory_peak(previous, event)
         for job in sorted(state["jobs"].values(), key=lambda row: row["name"]):
             if job["status"] in {"QUEUED", "STARTING"}:
                 continue
@@ -1548,43 +1590,9 @@ class CampaignManager:
     @classmethod
     def _verdict_records(cls, content: bytes, expected_ids: set[str]) -> list[dict[str, Any]]:
         try:
-            document = json.loads(content.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ContractError("verdict artifact is not UTF-8 JSON") from exc
-        mutations: list[Mapping[str, Any]] = []
-        claims = document.get("claims", []) if isinstance(document, dict) else []
-        if isinstance(claims, list):
-            for claim in claims:
-                if isinstance(claim, dict) and claim.get("rigor") == "R2" and isinstance(claim.get("mutation"), dict):
-                    mutations.append(claim["mutation"])
-        judgment = document.get("judgment") if isinstance(document, dict) else None
-        r2 = judgment.get("r2") if isinstance(judgment, dict) else None
-        if isinstance(r2, dict) and isinstance(r2.get("mutation"), dict):
-            mutations.append(r2["mutation"])
-        records = []
-        for mutation in mutations:
-            for bucket in ("killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"):
-                outcomes = mutation.get(bucket, [])
-                if not isinstance(outcomes, list):
-                    continue
-                for outcome in outcomes:
-                    if not isinstance(outcome, dict):
-                        continue
-                    candidate_id = outcome.get("candidate_id")
-                    if not isinstance(candidate_id, str) or candidate_id not in expected_ids:
-                        continue
-                    records.append({
-                        "candidate_id": candidate_id,
-                        "outcome_bucket": bucket,
-                        "elapsed_seconds": None,
-                        "emitted_at": None,
-                        "not_started": (
-                            bucket == "budget_exceeded"
-                            and isinstance(outcome.get("process_tree_evidence"), dict)
-                            and outcome["process_tree_evidence"].get("leader_status") == "not-started"
-                        ),
-                    })
-        return records
+            return hostside.verdict_reading(content, expected_ids)[0]
+        except ValueError as exc:
+            raise ContractError(str(exc)) from exc
 
     @staticmethod
     def _measured_bucket(row: Mapping[str, Any]) -> str | None:
