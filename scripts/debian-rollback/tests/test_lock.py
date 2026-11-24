@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import os
 import stat
+import threading
+import time
 import unittest
+from unittest import mock
 
 import _support  # noqa: F401
 from dr_state.errors import LockTimeout
@@ -33,6 +36,23 @@ class AtomicWriteTest(_support.TemporaryRootTest):
         self.assertEqual(elsewhere.read_text(encoding="utf-8"), "foreign\n")
         with self.assertRaises(FileNotFoundError):
             atomic_write(self.root / "missing-parent" / "target", "data")
+
+    def test_scratch_has_the_single_dr_state_shape_and_is_gone_afterwards(self) -> None:
+        target = self.root / "last-sequence"
+        seen: list[list[str]] = []
+        real_replace = os.replace
+
+        def replace(source: object, destination: object) -> None:
+            seen.append(sorted(path.name for path in self.root.iterdir()))
+            real_replace(source, destination)
+
+        with mock.patch("dr_state.lock.os.replace", replace):
+            atomic_write(target, "000001\n")
+        (during,) = seen
+        scratch = [name for name in during if name != "last-sequence"]
+        self.assertEqual(len(scratch), 1)
+        self.assertTrue(scratch[0].startswith(".dr-state.tmp."), scratch)
+        self.assertEqual([path.name for path in self.root.iterdir()], ["last-sequence"])
 
 
 class FileLockTest(_support.TemporaryRootTest):
@@ -69,6 +89,37 @@ class FileLockTest(_support.TemporaryRootTest):
         self.assertEqual(stat.S_IMODE(os.stat(self.paths.lock_file).st_mode), 0o600)
         with self.assertRaisesRegex(ValueError, "negative"):
             FileLock(self.paths.lock_file, timeout=-1)
+
+    def test_bounded_wait_acquires_once_the_holder_releases(self) -> None:
+        order: list[str] = []
+        holding = threading.Event()
+
+        def hold() -> None:
+            with FileLock(self.paths.lock_file, timeout=0):
+                order.append("held")
+                holding.set()
+                time.sleep(0.2)
+                order.append("released")
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        try:
+            self.assertTrue(holding.wait(5))
+            waiter = FileLock(self.paths.lock_file, timeout=5)
+            waiter.acquire()
+            order.append("acquired")
+            self.assertTrue(waiter.held)
+            waiter.release()
+        finally:
+            holder.join()
+        self.assertEqual(order, ["held", "released", "acquired"])
+
+    def test_wait_gives_up_after_its_timeout_with_the_holder_still_in(self) -> None:
+        with FileLock(self.paths.lock_file, timeout=0):
+            started = time.monotonic()
+            with self.assertRaises(LockTimeout):
+                FileLock(self.paths.lock_file, timeout=0.2).acquire()
+            self.assertGreaterEqual(time.monotonic() - started, 0.2)
 
 
 if __name__ == "__main__":

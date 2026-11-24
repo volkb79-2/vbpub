@@ -13,13 +13,26 @@ from dr_state import errors, cli
 class InvocationTest(_support.TemporaryRootTest):
     def test_global_options_paths_and_relative_refusal(self) -> None:
         invocation = cli.parse_invocation(
-            ("--sysroot", str(self.root), "snapshot", "--reason", "apt", "--json")
+            ("--sysroot", str(self.root), "--json", "snapshot", "--reason", "apt")
         )
         self.assertEqual(invocation.paths.sysroot, self.root)
         self.assertEqual(invocation.command, ("snapshot", "--reason", "apt"))
         self.assertTrue(invocation.json)
         with self.assertRaisesRegex(errors.UsageError, "absolute"):
             cli.parse_invocation(("--sysroot", "relative", "list"))
+
+    def test_global_options_after_the_verb_belong_to_the_verb(self) -> None:
+        invocation = cli.parse_invocation(("snapshot", "--note", "--json"))
+        self.assertEqual(invocation.command, ("snapshot", "--note", "--json"))
+        self.assertFalse(invocation.json)
+        invocation = cli.parse_invocation(
+            ("--sysroot", str(self.root), "show", "--sysroot", "/elsewhere", "--json", "@os-1")
+        )
+        self.assertEqual(invocation.paths.sysroot, self.root)
+        self.assertEqual(
+            invocation.command, ("show", "--sysroot", "/elsewhere", "--json", "@os-1")
+        )
+        self.assertFalse(invocation.json)
 
     def test_default_sysroot_is_root(self) -> None:
         invocation = cli.parse_invocation(("--json", "show", "@os-1"))

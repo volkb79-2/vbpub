@@ -30,7 +30,7 @@ class Invocation:
 
 
 def parse_invocation(argv: Sequence[str]) -> Invocation:
-    """Parse global options wherever they occur, preserving command argv."""
+    """Parse global options before the verb; everything from the verb on is the command."""
 
     parser = _Parser(prog="dr-state", allow_abbrev=False)
     parser.add_argument(
@@ -43,12 +43,13 @@ def parse_invocation(argv: Sequence[str]) -> Invocation:
         action="store_true",
         help="emit versioned JSON where the selected verb supports it",
     )
-    namespace, command = parser.parse_known_args(list(argv))
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    namespace = parser.parse_args(list(argv))
     try:
         paths = Paths.from_sysroot(namespace.sysroot)
     except ValueError as error:
         raise UsageError(str(error)) from error
-    return Invocation(paths, namespace.json, tuple(command))
+    return Invocation(paths, namespace.json, tuple(namespace.command))
 
 
 Dispatcher = Callable[[Invocation], int]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import stat
 import unittest
+from unittest import mock
 
 import _support
 from dr_state import FORMAT, ids, metadata
@@ -167,6 +168,32 @@ class SidecarTest(_support.TemporaryRootTest):
         self.assertEqual(len(warnings), 1)
         self.assertIn("bad.meta", warnings[0])
 
+    def test_unusable_sidecar_still_contributes_the_sequence_in_its_name(self) -> None:
+        named = state(9)
+        (self.paths.metadata_dir / f"{named.name}.meta").write_text(
+            "schema=wat\n", encoding="utf-8"
+        )
+        foreign = self.root / "foreign.meta"
+        foreign.write_bytes(raw_sidecar(1, (("sequence", "000031"),)))
+        linked = state(12)
+        (self.paths.metadata_dir / f"{linked.name}.meta").symlink_to(foreign)
+        (self.paths.metadata_dir / "not-a-state.meta").write_text("x\n", encoding="utf-8")
+        warnings: list[str] = []
+        self.assertEqual(
+            sorted(metadata.scan_sidecar_sequences(self.paths, warnings.append)), [9, 12]
+        )
+        self.assertEqual(len(warnings), 3)
+
+    def test_unlistable_metadata_directory_warns_instead_of_failing(self) -> None:
+        warnings: list[str] = []
+        with mock.patch.object(
+            type(self.paths.metadata_dir), "iterdir", side_effect=PermissionError("denied")
+        ):
+            self.assertEqual(metadata.scan_sidecar_sequences(self.paths, warnings.append), ())
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("denied", warnings[0])
+        self.assertEqual(metadata.scan_sidecar_sequences(self.paths), ())
+
 
 class FormatTest(_support.TemporaryRootTest):
     def setUp(self) -> None:
@@ -175,7 +202,7 @@ class FormatTest(_support.TemporaryRootTest):
 
     def test_absent_format_is_one_and_control_and_esp_writes_record_it(self) -> None:
         info = metadata.read_format(self.paths.control_format_file)
-        self.assertEqual((info.version, info.exists, info.issue), (FORMAT, False, None))
+        self.assertEqual((info.version, info.exists, info.issue), (1, False, None))
         metadata.write_control_format(self.paths)
         self.assertEqual(self.paths.control_format_file.read_text(encoding="ascii"), "1\n")
         self.paths.esp_dir.mkdir(parents=True)
@@ -208,6 +235,41 @@ class FormatTest(_support.TemporaryRootTest):
         with self.assertRaisesRegex(FormatError, "symlink"):
             metadata.write_control_format(self.paths)
         self.assertEqual(list(actual.iterdir()), [])
+
+
+class MissingControlDirectoryTest(_support.TemporaryRootTest):
+    """A fresh install has `/.top` but no `.dr-state` yet; the first writer creates it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.paths.top.mkdir()
+        self.isolate_lock_path()
+
+    def test_first_sequence_allocation_creates_the_private_control_directory(self) -> None:
+        self.assertFalse(self.paths.control_dir.exists())
+        lock = FileLock(self.paths.lock_file, timeout=0)
+        with lock:
+            result = metadata.allocate_sequence(self.paths, (), lock=lock)
+        self.assertEqual((result.sequence, result.floor), (1, 0))
+        self.assertEqual(stat.S_IMODE(self.paths.control_dir.stat().st_mode), 0o700)
+        self.assertEqual(self.paths.counter_file.read_text(encoding="ascii"), "000001\n")
+
+    def test_first_sidecar_write_creates_both_private_directories(self) -> None:
+        current = state(1)
+        metadata.write_sidecar(
+            self.paths, current, metadata.Metadata(state=current.name, sequence=1)
+        )
+        for directory in (self.paths.control_dir, self.paths.metadata_dir):
+            self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
+        self.assertEqual(
+            metadata.load_sidecar(metadata.sidecar_path(self.paths, current)).sequence, 1
+        )
+
+    def test_a_regular_file_in_place_of_the_directory_is_still_refused(self) -> None:
+        self.paths.control_dir.write_text("not a directory\n", encoding="utf-8")
+        lock = FileLock(self.paths.lock_file, timeout=0)
+        with lock, self.assertRaisesRegex(FormatError, "not a directory"):
+            metadata.allocate_sequence(self.paths, (), lock=lock)
 
 
 class CounterFloorTest(_support.TemporaryRootTest):

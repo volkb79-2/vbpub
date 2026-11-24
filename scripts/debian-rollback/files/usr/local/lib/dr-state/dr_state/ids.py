@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import cmp_to_key
 from typing import Iterable
 
 _STATE_RE = re.compile(
@@ -70,7 +71,11 @@ def make(sequence: int, created: datetime, slug: str) -> StateId | None:
 
 
 def slug(source: str, reason: str) -> str | None:
-    """Return the fixed or sanitized origin/reason component for an ID."""
+    """Return the fixed or sanitized slug for an ID; None when there is none.
+
+    A manual reason that normalizes to ``manual`` or already starts with
+    ``manual-`` is kept as is, and one that normalizes to nothing is refused.
+    """
 
     if source == "apt":
         return "apt"
@@ -79,10 +84,11 @@ def slug(source: str, reason: str) -> str | None:
     if source != "manual":
         return None
     normalized = _MANUAL_SLUG_RE.sub("-", reason.lower()).strip("-_")
-    result = ("manual-" + normalized)[:64].rstrip("-_")
-    if not result:
-        result = "manual"
-    return result
+    if not normalized:
+        return None
+    if normalized != "manual" and not normalized.startswith("manual-"):
+        normalized = "manual-" + normalized
+    return normalized[:64].rstrip("-_")
 
 
 def entry_id(state: StateId) -> str:
@@ -107,20 +113,53 @@ def unmanaged(value: object) -> bool:
     return isinstance(value, str) and value.startswith("@os-") and parse(value) is None
 
 
-def version_key(version: str) -> tuple[tuple[int, int, str], ...]:
-    """A deterministic approximation of GNU ``sort -V`` for kernel names."""
+def _digit(char: str) -> bool:
+    return "0" <= char <= "9"
 
-    tokens: list[tuple[int, int, str]] = []
-    for match in re.finditer(r"[0-9]+|[A-Za-z]+|~|.", version):
-        token = match.group(0)
-        if token.isdigit():
-            tokens.append((3, int(token), token))
-        elif token == "~":
-            tokens.append((0, 0, ""))
-        else:
-            tokens.append((2, 0, token))
-    tokens.append((1, 0, ""))
-    return tuple(tokens)
+
+def _order(char: str) -> int:
+    if _digit(char):
+        return 0
+    if "a" <= char.lower() <= "z":
+        return ord(char)
+    if char == "~":
+        return -1
+    return ord(char) + 256
+
+
+def compare_versions(left: str, right: str) -> int:
+    """Compare two version strings with dpkg's ``verrevcmp`` ordering."""
+
+    i = j = 0
+    while i < len(left) or j < len(right):
+        while (i < len(left) and not _digit(left[i])) or (
+            j < len(right) and not _digit(right[j])
+        ):
+            a = _order(left[i]) if i < len(left) else 0
+            b = _order(right[j]) if j < len(right) else 0
+            if a != b:
+                return a - b
+            i += 1
+            j += 1
+        while i < len(left) and left[i] == "0":
+            i += 1
+        while j < len(right) and right[j] == "0":
+            j += 1
+        first_difference = 0
+        while i < len(left) and _digit(left[i]) and j < len(right) and _digit(right[j]):
+            first_difference = first_difference or ord(left[i]) - ord(right[j])
+            i += 1
+            j += 1
+        if i < len(left) and _digit(left[i]):
+            return 1
+        if j < len(right) and _digit(right[j]):
+            return -1
+        if first_difference:
+            return first_difference
+    return 0
+
+
+version_key = cmp_to_key(compare_versions)
 
 
 def newest_first(versions: Iterable[str]) -> tuple[str, ...]:
