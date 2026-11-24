@@ -28,6 +28,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - B556 (items 1-2): a non-git `OSError` during snapshot preparation or cleanup
   remains `ERROR`/`GIT_FAILED`; its detail is the last stage entered followed
   by `str(exc)` plus the `/proc/self/fd` path for an integer fd (best effort, at report time).
+- B557: removed assay's per-version R2 waiver window from the provisional
+  self-qualification gate, lane configuration and public docs; any release is
+  R0/R1 plus R3 plus independent review, while R2 remains owed and runs asynchronously on the latest release.
 - A request-base changed-line lane now limits its `git diff` to the declared
   source roots and exact source files, using both their lexical and resolved
   spellings, and `--no-renames` for deterministic boundary-rename handling.
