@@ -1,4 +1,4 @@
-//! The two clocks a sampler needs, and the reason they are distinct.
+//! The clocks a sampler needs, and the reason they are distinct.
 //!
 //! Plan v4 §C.3 and §B.2: monotonic time drives every interval (a rate, a window, a
 //! duration), and wall time only *stamps* a record so a human can find it. A wall clock
@@ -6,6 +6,11 @@
 //! is negative, huge, or zero for a real gap. A monotonic clock cannot go backwards, but it
 //! does not survive a reboot, so a pair of readings is only comparable inside `(boot,
 //! epoch)`.
+//!
+//! [`Clock::mono_ns`] is absolute `CLOCK_MONOTONIC` (it stops while the system is
+//! suspended), [`Clock::boot_ns`] is absolute `CLOCK_BOOTTIME` (it continues through
+//! suspend), and [`Clock::wall_ns`] is `CLOCK_REALTIME`. The boot clock is the source of a
+//! process epoch: it advances through every earlier restart of the same boot.
 //!
 //! # Contracts
 //!
@@ -148,8 +153,10 @@ pub fn interval_between(
 
 /// The clock a reader uses.
 pub trait Clock: fmt::Debug {
-    /// Monotonic nanoseconds.
+    /// Absolute `CLOCK_MONOTONIC` nanoseconds.
     fn mono_ns(&self) -> u64;
+    /// Absolute `CLOCK_BOOTTIME` nanoseconds.
+    fn boot_ns(&self) -> u64;
     /// Wall nanoseconds since the Unix epoch; may step in either direction.
     fn wall_ns(&self) -> i64;
     /// The boot/epoch this clock currently belongs to.
@@ -167,49 +174,56 @@ pub trait Clock: fmt::Debug {
 
 // ---------------------------------------------------------------- the real clocks
 
-/// `CLOCK_MONOTONIC` plus `CLOCK_REALTIME` read from the kernel, with `unsafe` avoided.
+/// `CLOCK_MONOTONIC`, `CLOCK_BOOTTIME` and `CLOCK_REALTIME` read directly from the kernel.
 ///
-/// `std::time::Instant` is the monotonic clock and `SystemTime` the wall clock, both
-/// documented as reading `CLOCK_MONOTONIC` and `CLOCK_REALTIME` respectively. `Instant`
-/// has no "since boot" origin, so this type fixes one when it is created and reports the
-/// nanoseconds since then; the origin is irrelevant to a *difference*, which is the only
-/// thing any interval uses, and the boot id travels beside it so a pair that spans a
-/// restart is refused rather than silently mis-subtracted.
+/// The absolute clocks have no per-instance origin: two clocks created at different times
+/// report readings on the same timeline. The boot id travels beside them so a pair that
+/// spans a restart is refused rather than silently mis-subtracted.
 #[derive(Clone, Copy, Debug)]
 pub struct SystemClock {
-    origin: std::time::Instant,
     timeline: Timeline,
 }
 
 impl SystemClock {
-    /// A clock whose monotonic origin is *now*, for the given boot and epoch.
+    /// A clock for the given boot and epoch.
     ///
     /// The boot id and the epoch are read (or minted) by the caller; a consumer that
     /// compares readings from two clocks must give them the same pair (or expect
     /// [`ClockError::NotComparable`], which is the point).
     #[must_use]
     pub fn new(timeline: Timeline) -> SystemClock {
-        SystemClock {
-            origin: std::time::Instant::now(),
-            timeline,
-        }
+        SystemClock { timeline }
     }
+}
+
+fn timespec_ns(value: rustix::time::Timespec) -> u64 {
+    let nanos = i128::from(value.tv_sec)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(i128::from(value.tv_nsec));
+    u64::try_from(nanos).unwrap_or(u64::MAX)
 }
 
 impl Clock for SystemClock {
     fn mono_ns(&self) -> u64 {
-        u64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(u64::MAX)
+        timespec_ns(rustix::time::clock_gettime(
+            rustix::time::ClockId::Monotonic,
+        ))
+    }
+
+    fn boot_ns(&self) -> u64 {
+        timespec_ns(rustix::time::clock_gettime(rustix::time::ClockId::Boottime))
     }
 
     fn wall_ns(&self) -> i64 {
-        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-            Ok(after) => i64::try_from(after.as_nanos()).unwrap_or(i64::MAX),
-            // A wall clock before 1970 is a real (if absurd) state, and it is reported
-            // rather than turned into zero.
-            Err(before) => i64::try_from(before.duration().as_nanos())
-                .map(|nanos| -nanos)
-                .unwrap_or(i64::MIN),
-        }
+        let value = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
+        let nanos = i128::from(value.tv_sec)
+            .saturating_mul(1_000_000_000)
+            .saturating_add(i128::from(value.tv_nsec));
+        i64::try_from(nanos).unwrap_or(if nanos.is_negative() {
+            i64::MIN
+        } else {
+            i64::MAX
+        })
     }
 
     fn timeline(&self) -> Timeline {
@@ -227,6 +241,7 @@ impl Clock for SystemClock {
 #[derive(Clone, Debug)]
 pub struct ManualClock {
     mono_ns: u64,
+    boot_ns: u64,
     wall_ns: i64,
     timeline: Timeline,
 }
@@ -237,22 +252,29 @@ impl ManualClock {
     pub const fn new(timeline: Timeline, mono_ns: u64, wall_ns: i64) -> ManualClock {
         ManualClock {
             mono_ns,
+            boot_ns: mono_ns,
             wall_ns,
             timeline,
         }
     }
 
-    /// Move both clocks forward by `mono_ns` (monotonic and wall together).
+    /// Move all clocks forward by `mono_ns` (monotonic, boot and wall together).
     ///
     /// Advancing can only move the monotonic reading forward, so this cannot fail; an
     /// advance past `u64::MAX` (584 years of nanoseconds) saturates, which is still a
     /// forward reading and never a wrapped one.
     pub fn advance(&mut self, mono_ns: u64) -> &mut ManualClock {
         self.mono_ns = self.mono_ns.saturating_add(mono_ns);
+        self.boot_ns = self.boot_ns.saturating_add(mono_ns);
         self.wall_ns = self
             .wall_ns
             .saturating_add(i64::try_from(mono_ns).unwrap_or(i64::MAX));
         self
+    }
+
+    /// Advance only the boot clock, modelling a system suspend.
+    pub fn suspend(&mut self, delta_ns: u64) {
+        self.boot_ns = self.boot_ns.saturating_add(delta_ns);
     }
 
     /// Step the wall clock by `delta_ns` without touching the monotonic clock: an NTP
@@ -270,6 +292,10 @@ impl ManualClock {
 impl Clock for ManualClock {
     fn mono_ns(&self) -> u64 {
         self.mono_ns
+    }
+
+    fn boot_ns(&self) -> u64 {
+        self.boot_ns
     }
 
     fn wall_ns(&self) -> i64 {
@@ -401,6 +427,33 @@ mod tests {
     }
 
     #[test]
+    fn manual_advance_moves_boot_and_suspend_moves_only_boot() {
+        let mut clock = ManualClock::new(timeline(1), 10, WALL);
+        assert_eq!(clock.boot_ns(), clock.mono_ns());
+        clock.advance(5);
+        assert_eq!(clock.mono_ns(), 15);
+        assert_eq!(clock.boot_ns(), 15);
+        clock.suspend(7);
+        assert_eq!(clock.mono_ns(), 15);
+        assert_eq!(clock.boot_ns(), 22);
+        assert_eq!(clock.wall_ns(), WALL.saturating_add(5));
+    }
+
+    #[test]
+    fn system_clocks_read_one_absolute_monotonic_timeline() {
+        let first = SystemClock::new(Timeline::new(BOOT_A, 9));
+        let first_ns = first.mono_ns();
+        let second = SystemClock::new(Timeline::new(BOOT_A, 9));
+        assert!(second.mono_ns() >= first_ns);
+        let mono_ns = second.mono_ns();
+        let boot_ns = second.boot_ns();
+        assert!(
+            boot_ns >= mono_ns,
+            "boot time includes suspended time: boot={boot_ns}, mono={mono_ns}"
+        );
+    }
+
+    #[test]
     fn the_system_clock_moves_forward_and_reports_its_timeline() {
         let clock: SystemClock = SystemClock::new(Timeline::new(BOOT_A, 9));
         assert_eq!(clock.timeline(), Timeline::new(BOOT_A, 9));
@@ -414,6 +467,11 @@ mod tests {
         assert!(
             interval.wall_ns <= 1_000_000_000_000_000,
             "two reads are microseconds apart, not decades"
+        );
+        assert!(first.mono_ns > 0, "monotonic readings are absolute");
+        assert!(
+            clock.boot_ns() >= first.mono_ns,
+            "boot time is at least monotonic time"
         );
         assert!(first.wall_ns > 1_600_000_000_000_000_000, "after 2020");
     }
