@@ -149,7 +149,10 @@ std has no `poll`, no eventfd and no absolute `CLOCK_MONOTONIC`/`CLOCK_BOOTTIME`
     non-blocking std `UnixListener` (`From<OwnedFd>`).
 
   Everything else in the probe stays safe code: rustix `poll`, `eventfd`,
-  `socket_peercred` and `clock_gettime`.
+  `socket_peercred` and `clock_gettime`. The probe and every client must share one PID
+  namespace: Linux reports pid 0 through `SO_PEERCRED` when the client's pid is invisible from
+  the probe's namespace, and rustix 1.1.6's conversion of that value has undefined behavior.
+  P-11's container demo therefore places the probe and clients in the same PID namespace.
   - The kernel doc bullet "free of `unsafe`" and the DESIGN-GUIDE "nothing uses it" paragraph
     change with it (P-09).
 
@@ -252,7 +255,8 @@ keys, so the shape would change twice.
   (`SocketAddrExt::from_abstract_name`, `UnixListener::bind_addr`, a name unique per test and pid):
   no file is created, and the lane's private network namespace scopes the name. The test runs the
   loop on a thread and connects with `UnixStream::connect_addr`. That covers the real accept,
-  `SO_PEERCRED` (the test's own uid and pid), the poll loop, partial writes and EOF.
+  `SO_PEERCRED`'s uid reaching the per-uid cap (the pid value has no client-visible effect),
+  the poll loop, partial writes and EOF.
 - **`kernel::activation`:** unit tests inside `activation.rs` test `parse` purely and call the
   private `adopt_raw` directly on fds whose ownership the test released with `into_raw_fd`: a
   listening abstract socket is adopted, and a connected `UnixStream::pair()` end, a `UnixDatagram`
@@ -266,8 +270,10 @@ keys, so the shape would change twice.
   (`pass_fds`, env `LISTEN_FDS=1`, `LISTEN_FDNAMES=observe`). Its config points `cgroup_root` at a
   committed kernel fixture tree. If `HOSTOBS_PROBE_BIN` is unset or not executable the test
   **fails**, naming the variable and the `conformance` lane; it never skips. That lane builds
-  the probe (`tools/cargo-offline.sh build -p hostobs-probe --locked --offline`), checks
-  `test -x`, and exports `HOSTOBS_PROBE_BIN` before the existing Python suite. The test sends
+  the probe (`tools/cargo-offline.sh build -p hostobs-probe --locked --offline`), reads
+  `target_directory` from the same wrapper's offline locked `cargo metadata`, exports
+  `HOSTOBS_PROBE_BIN`, and refuses loudly if that executable is absent before the existing
+  Python suite. The test sends
   signals, so it runs only inside `tools/dev` or a lane container with a private PID namespace.
 - **The one check-lints change (P-09)** audits the `unsafe` line instead of permitting a spawn:
   exactly one lint override naming `unsafe_code` may occur in the workspace outside

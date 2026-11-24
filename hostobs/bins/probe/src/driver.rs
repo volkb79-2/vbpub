@@ -231,7 +231,7 @@ fn write_ready<B: Turn>(server: &mut Server<B>, sockets: &mut BTreeMap<ConnId, O
                     budget = budget.saturating_sub(count);
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => break,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => {
                     server.finish(id);
                     sockets.remove(&id);
@@ -803,8 +803,8 @@ mod tests {
 
     #[test]
     fn peer_credentials_enforce_the_per_uid_connection_cap() {
-        // This proves the uid produced by SO_PEERCRED reaches the server. No client-visible
-        // frame carries pid, so a pid-path mutant may legitimately survive assay.
+        // A consistent per-peer uid reaches the per-uid cap; neither uid nor pid values are
+        // client-visible, so a pid-path mutant may legitimately survive assay.
         let mut limits = ServerLimits::new();
         limits.observe.max_connections_per_uid = 1;
         let rig = Rig::new(limits, &[Level::Observe], small_data());

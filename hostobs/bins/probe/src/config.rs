@@ -165,7 +165,14 @@ impl ConfigError {
             .span()
             .as_ref()
             .map_or((0, 0), |span| position(source, span.start));
-        let key = named_field(&message)
+        let named = if message.starts_with("missing field `")
+            || message.starts_with("unknown field `")
+        {
+            named_field(&message)
+        } else {
+            None
+        };
+        let key = named
             .or_else(|| {
                 error
                     .span()
@@ -678,7 +685,40 @@ max_rows = 1
     }
 
     #[test]
-    fn strings_reject_escapes_controls_and_trailing_text() {
+    fn type_and_overwide_integer_refusals_name_each_key_at_its_line() {
+        for (text, line, key) in [
+            (
+                "[probe]\nlevels=[\"observe\"]\ntick_ms=true\ncgroup_root=\"/\"\n[limits]\nmax_rows=1\n",
+                "line 3",
+                "tick_ms",
+            ),
+            (
+                "[probe]\nlevels=[\"observe\"]\ntick_ms=99999999999\ncgroup_root=\"/\"\n[limits]\nmax_rows=1\n",
+                "line 3",
+                "tick_ms",
+            ),
+            (
+                "[probe]\nlevels=[\"observe\"]\ntick_ms=100\ncgroup_root=\"/\"\n[limits]\nmax_rows=1.5\n",
+                "line 6",
+                "max_rows",
+            ),
+            (
+                "[probe]\nlevels=\"observe\"\ntick_ms=100\ncgroup_root=\"/\"\n[limits]\nmax_rows=1\n",
+                "line 2",
+                "levels",
+            ),
+            (
+                "[probe]\nlevels=[\"observe\", true]\ntick_ms=100\ncgroup_root=\"/\"\n[limits]\nmax_rows=1\n",
+                "line 2",
+                "levels",
+            ),
+        ] {
+            parse_refusal(text, line, key);
+        }
+    }
+
+    #[test]
+    fn cgroup_root_refuses_relative_parent_control_and_trailing_text() {
         for root in [
             r#""relative""#,
             r#""""#,

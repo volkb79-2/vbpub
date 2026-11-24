@@ -56,8 +56,15 @@ argv = [
   '''set -eu
 cd {worktree}/hostobs
 tools/cargo-offline.sh build -p hostobs-probe --locked --offline
-export HOSTOBS_PROBE_BIN="${CARGO_TARGET_DIR:-$PWD/target}/debug/hostobs-probe"
-test -x "$HOSTOBS_PROBE_BIN"
+target_dir="$(
+  tools/cargo-offline.sh metadata --locked --offline --no-deps --format-version 1 |
+  python3 -I -c 'import json, sys; print(next(json.loads(line)["target_directory"] for line in sys.stdin if line.lstrip().startswith("{")))'
+)"
+export HOSTOBS_PROBE_BIN="$target_dir/debug/hostobs-probe"
+if ! test -x "$HOSTOBS_PROBE_BIN"; then
+  echo "conformance: no executable at $HOSTOBS_PROBE_BIN" >&2
+  exit 1
+fi
 python3 -B -I -W error::ResourceWarning -m unittest discover -s python/tests''',
 ]
 clean_tree = true

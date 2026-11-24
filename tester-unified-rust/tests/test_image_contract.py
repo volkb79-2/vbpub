@@ -290,9 +290,17 @@ class ImageContractTests(unittest.TestCase):
             self.assertEqual(lane["environment"], "tester-unified-rust", name)
             self.assertEqual(lane["network"], "none", name)
             if name == "conformance":
-                # The Python tests call no cargo: standard library only, run from the mounted tree.
-                self.assertIn("python3 -B -I", lane["argv"][-1], name)
-                self.assertNotIn("cargo", lane["argv"][-1], name)
+                # The lane builds the probe offline and locked, then runs its own stdlib-only
+                # Python suite from the mounted tree.
+                command = lane["argv"][-1]
+                self.assertIn("python3 -B -I", command, name)
+                for line in command.splitlines():
+                    if "cargo" not in line:
+                        continue
+                    self.assertIn("tools/cargo-offline.sh", line, name)
+                    if " build " in line or " metadata " in line:
+                        self.assertIn("--locked", line, name)
+                        self.assertIn("--offline", line, name)
                 continue
             if name == "assay-r1":
                 # The judge lane's command lives in assay.toml; its cargo calls must be locked and offline.

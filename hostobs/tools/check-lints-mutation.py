@@ -25,6 +25,7 @@ Cases (each asserts a specific outcome, so the check cannot pass by being noisy)
 * whitespace around `allow ( unsafe_code )` — refused;
 * a crate-level `warn(unsafe_code)` — refused;
 * a bare `unsafe {}` in a kernel integration test — refused;
+* a second `unsafe {}` in `activation.rs` — refused;
 * a second `allow(unsafe_code)` in `activation.rs` itself — refused;
 * kernel `lib.rs` restored to `#![forbid(unsafe_code)]` instead of the one audited
   `deny` allowance — refused.
@@ -247,6 +248,19 @@ def main() -> int:
         insert(
             case,
             "crates/kernel/src/activation.rs",
+            "let owned = unsafe { OwnedFd::from_raw_fd(fd) };",
+            "let owned = unsafe { OwnedFd::from_raw_fd(fd) };\n    let _second = unsafe { 0 };",
+        )
+        expect_refusal(
+            case,
+            "second unsafe expression in activation",
+            "unsafe expression must occur exactly once outside crates/act",
+        )
+
+        case = fresh()
+        insert(
+            case,
+            "crates/kernel/src/activation.rs",
             "#[allow(unsafe_code)]",
             "#[allow(unsafe_code)]\n#[allow(dead_code, unsafe_code)]",
         )
@@ -275,9 +289,9 @@ def main() -> int:
         assert ".write(true)" in expected, "fsio.rs must be the writer this check exercises"
         expect_ok(case, "fsio.rs as the allowed write path")
     print(
-        "lint mutation check: 20 refusals, 2 allowances, all as expected "
+        "lint mutation check: 21 refusals, 2 allowances, all as expected "
         "(write outside fsio, mkdir, Command::new, planted file, mutants::skip, "
-        "eight further filesystem-mutating forms, five unsafe-lint forms, a second "
+        "eight further filesystem-mutating forms, six unsafe-lint forms, a second "
         "activation allowance, a missing kernel deny; fsio.rs and crates/act allowed)"
     )
     return 0

@@ -139,8 +139,9 @@ toolchain, debugging): [`../tester-unified-rust/docs/DEV.md`](../tester-unified-
 ## Gates
 
 The registered default lanes are `lint`, `selftest`, `assay-r1` and `conformance` (the hand-run
-`assay-r2` is registered too, see below). `conformance` builds the probe offline, exports
-`HOSTOBS_PROBE_BIN`, checks it is executable, and runs the Python reference decoders, fixture
+`assay-r2` is registered too, see below). `conformance` builds the probe offline, reads the
+cargo target directory from locked offline metadata, exports `HOSTOBS_PROBE_BIN`, checks it is
+executable, and runs the Python reference decoders, fixture
 checks, `hostobs_client` tests and the real-socket probe test, standard library only; `HOB-4`.
 An unset or non-executable `HOSTOBS_PROBE_BIN` fails the real-socket test rather than skipping
 it. Run the lanes through the estate's
