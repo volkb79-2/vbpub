@@ -35,8 +35,6 @@ RUN_GATE_WHEEL_VERSION_HELPER = REPO_ROOT / "tester-unified" / "run-gate-wheel-v
 NYXLOOM_DOCKERFILE = REPO_ROOT / "nyxloom" / "nyxloomd" / "Dockerfile"
 CLI_EXTENDED_WHEEL_URL = "https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.8.0/cli_extended-0.8.0-py3-none-any.whl"
 CLI_EXTENDED_WHEEL_SHA256 = "8df21b7e85cf2eddc4a5787688b78eead86ec405d117e30b4bed0c612734f1c1"
-ESTATE_TEST_POLICY_WHEEL_URL = "https://github.com/volkb79-2/vbpub/releases/download/test-policy-v0.1.0/estate_test_policy-0.1.0-py3-none-any.whl"
-ESTATE_TEST_POLICY_WHEEL_SHA256 = "be23c07a7264faef0c37141cfe688d950778d2071e9633435016673de92ff70f"
 CMRU_WHEEL_BUILD_COMMAND = (
     r"/tmp/internal-build-venv/bin/pip wheel[\s\S]*?/src/cmru"
 )
@@ -122,14 +120,7 @@ TESTER_REQUIREMENTS_GENERATION_RUN = (
     '/usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py '
     '--dest /tmp/cli-extended-release --min-version 0.3.0 "$@"; fi && '
     'set -- /tmp/cli-extended-release/cli_extended-*.whl && [ "$#" -eq 1 ] && '
-    '[ -f "$1" ] && echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c - && '
-    "/usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py "
-    "--distribution estate-test-policy --dest /tmp/estate-test-policy-release "
-    "--min-version 0.1.0 --wheel-url \"${ESTATE_TEST_POLICY_WHEEL_URL}\" "
-    "--sha256 \"${ESTATE_TEST_POLICY_WHEEL_SHA256}\" && "
-    "set -- /tmp/estate-test-policy-release/estate_test_policy-*.whl && "
-    '[ "$#" -eq 1 ] && [ -f "$1" ] && '
-    'echo "${ESTATE_TEST_POLICY_WHEEL_SHA256}  $1" | sha256sum -c -'
+    '[ -f "$1" ] && echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c -'
 )
 TESTER_DEPENDENCY_BOOTSTRAP_RUN = (
     "/usr/local/bin/python3.14 -m venv --copies /opt/tester-venv && "
@@ -138,12 +129,7 @@ TESTER_DEPENDENCY_BOOTSTRAP_RUN = (
     '/opt/tester-venv/bin/pip install --no-cache-dir --uploaded-prior-to '
     '"${PIP_MIN_RELEASE_AGE}" -r /tmp/tester-requirements.txt && '
     "/opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps "
-    "/tmp/cli-extended-release/*.whl && "
-    "/opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps "
-    "/tmp/estate-test-policy-release/*.whl && "
-    "/opt/tester-venv/bin/python -c 'import importlib.metadata as m; "
-    "assert m.version(\"estate-test-policy\") == \"0.1.0\"' && "
-    "/usr/local/bin/python3.14 -m venv "
+    "/tmp/cli-extended-release/*.whl && /usr/local/bin/python3.14 -m venv "
     "/tmp/internal-build-venv && /tmp/internal-build-venv/bin/pip install "
     '--no-cache-dir --uploaded-prior-to "${PIP_MIN_RELEASE_AGE}" '
     "-r /tmp/internal-build-requirements.txt"
@@ -159,8 +145,7 @@ CMRU_WHEEL_INSTALL_PREFIX = (
 CMRU_WHEEL_INSTALL_RUN_BODY = (
     CMRU_WHEEL_INSTALL_PREFIX
     + " && rm -rf /tmp/internal-build-venv /tmp/internal-wheels "
-    "/tmp/internal-build-requirements.txt /tmp/cli-extended-release "
-    "/tmp/estate-test-policy-release"
+    "/tmp/internal-build-requirements.txt /tmp/cli-extended-release"
     + ' && /opt/tester-venv/bin/python -c "import build, cmru, run_gate, pytest, pytest_cov, '
     "xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, tomlkit, textual, zstandard, mcp, "
     "paramiko, coverage, structlog, markdown_it, linkify_it; "
@@ -1547,10 +1532,10 @@ def _pip_commands(code: str) -> list[str]:
     return commands
 
 
-def test_dockerfile_first_party_wheels_reach_pip_only_as_sha256_verified_offline_installs():
-    """D8: cli-extended and estate-test-policy reach pip only as the release
-    wheels the fetcher verified, offline and without dependency resolution;
-    every other pip command either is offline or takes the generator closure."""
+def test_dockerfile_no_cli_extended_reaches_pip_except_the_sha256_verified_release_wheel():
+    """D8: the only pip command that may name cli-extended installs the wheel the
+    fetcher verified, offline and without dependency resolution; every other pip
+    command either is offline or takes only the generator's (skipped) closure."""
     code = _dockerfile_run_lines()
     commands = _pip_commands(code)
     assert commands
@@ -1560,13 +1545,6 @@ def test_dockerfile_first_party_wheels_reach_pip_only_as_sha256_verified_offline
         r"pip install --no-cache-dir --no-index --no-deps /tmp/cli-extended-release/\*\.whl$",
         release[0],
     ), release[0]
-    policy = [c for c in commands if "estate-test-policy" in c or "estate_test_policy" in c]
-    assert len(policy) == 1, policy
-    assert re.search(
-        r"pip install --no-cache-dir --no-index --no-deps "
-        r"/tmp/estate-test-policy-release/\*\.whl$",
-        policy[0],
-    ), policy[0]
     for command in commands:
         if "--no-index" in command:
             continue
@@ -1587,16 +1565,9 @@ def test_dockerfile_fetches_the_release_by_sha256_before_cmru_is_installed():
     flat = re.sub(r"\\\n\s*", " ", code)
     fetch = flat.index("fetch-cli-extended.py")
     install_release = flat.index("/tmp/cli-extended-release/*.whl")
-    requirements_install = flat.index("-r /tmp/tester-requirements.txt")
-    policy_fetch = flat.index("--distribution estate-test-policy")
-    policy_install = flat.index(
-        "pip install --no-cache-dir --no-index --no-deps /tmp/estate-test-policy-release/*.whl"
-    )
     build_cmru = flat.index("pip wheel")
     install_cmru = flat.index("/tmp/internal-wheels/*.whl")
     assert fetch < install_release < build_cmru < install_cmru
-    assert requirements_install < policy_install
-    assert policy_fetch < policy_install
     # Pointer or pin, both through the digest-verifying fetcher; no bare index install.
     assert "CLI_EXTENDED_POINTER_URL" in code and "--sha256" in flat and "--min-version" in flat
     assert re.search(r"^ARG CLI_EXTENDED_POINTER_URL=https://github\.com/volkb79-2/vbpub/releases/download/"
@@ -1621,7 +1592,7 @@ def _assert_wheel_pin(
     return args
 
 
-def test_dockerfile_pins_the_released_assets_and_digests_by_default_and_latest_is_opt_in():
+def test_dockerfile_pins_the_released_asset_and_digest_by_default_and_latest_is_opt_in():
     """D-3: the repo carries the sha256 pin (the pointer cannot vouch for itself);
     `latest.json` mode needs an explicit CLI_EXTENDED_RESOLVE=latest build arg."""
     text = DOCKERFILE.read_text("utf-8")
@@ -1658,22 +1629,9 @@ def test_dockerfile_pins_the_released_assets_and_digests_by_default_and_latest_i
     assert re.search(r'\*\) echo "[^"]*" >&2; exit 1 ;;', flat)
     assert 'fetch-cli-extended.py --dest /tmp/cli-extended-release --min-version 0.3.0 "$@"' in flat
 
-    policy_args = _assert_wheel_pin(
-        DOCKERFILE, "ESTATE_TEST_POLICY", ESTATE_TEST_POLICY_WHEEL_URL,
-        ESTATE_TEST_POLICY_WHEEL_SHA256, "estate-test-policy",
-    )
-    policy = fetcher._wheel_pattern("estate-test-policy").fullmatch(
-        policy_args["ESTATE_TEST_POLICY_WHEEL_URL"].rsplit("/", 1)[-1])
-    assert policy is not None and policy["version"] == "0.1.0"
-
-
 @pytest.mark.parametrize(("prefix", "url", "digest", "label"), [
     ("CLI_EXTENDED", CLI_EXTENDED_WHEEL_URL, CLI_EXTENDED_WHEEL_SHA256, "cli-extended"),
-    (
-        "ESTATE_TEST_POLICY", ESTATE_TEST_POLICY_WHEEL_URL,
-        ESTATE_TEST_POLICY_WHEEL_SHA256, "estate-test-policy",
-    ),
-], ids=["cli-extended", "estate-test-policy"])
+], ids=["cli-extended"])
 def test_shared_wheel_pin_oracle_refuses_a_wrong_sha_on_a_temp_dockerfile(
     tmp_path, prefix, url, digest, label,
 ):
@@ -5147,10 +5105,7 @@ def test_build_image_stops_when_the_fetcher_refuses(tmp_path):
 #: floor is that list (plus the derived project names); these path markers are how the Dockerfiles
 #: refer to first-party inputs (``$1`` is the staged wheel a ``set -- <first-party glob>`` in the same
 #: RUN selected: the Run-Gate wheel, or the local-mode cli-extended wheel).
-_FIRST_PARTY_MARKERS = (
-    "cli-extended", "cli_extended", "estate-test-policy", "estate_test_policy",
-    "run-gate", "run_gate", "internal-wheels", "/src/", "$1",
-)
+_FIRST_PARTY_MARKERS = ("cli-extended", "cli_extended", "run-gate", "run_gate", "internal-wheels", "/src/", "$1")
 #: The only things an aged (index-bound) pip command may install.
 _AGED_TARGETS = {"pip", "build", "-r /tmp/tester-requirements.txt", "-r /tmp/internal-build-requirements.txt"}
 
@@ -5202,7 +5157,6 @@ def test_the_age_window_never_applies_to_a_first_party_package(tmp_path):
         "cgprofile", "pwmcp-client", "patchseries",
     ):
         assert name in gen.ESTATE_INTERNAL, name
-    assert "estate-test-policy" in gen.derive_internal(REPO_ROOT)
     tester_base = REPO_ROOT / "tester-base" / "Dockerfile"
     assert not re.search(r"\bpip\b", tester_base.read_text("utf-8"))
     # A global age setting (pip reads PIP_UPLOADED_PRIOR_TO, or a pip.conf key, for EVERY invocation,
@@ -5250,7 +5204,7 @@ def test_the_age_window_never_applies_to_a_first_party_package(tmp_path):
                 assert "--no-index" in tokens, (dockerfile.name, tokens)
                 assert "--uploaded-prior-to" not in tokens, (dockerfile.name, tokens)
     assert len(aged) == 5, aged  # pip + closure + build backends (tester-unified), pip + build (wheel-builder)
-    assert len(first_party) == 5, first_party  # cli-extended, estate-test-policy, cmru source wheel, cmru install, Run-Gate
+    assert len(first_party) == 4, first_party  # cli-extended, cmru source wheel, cmru install, Run-Gate
 
     # The two requirements files an aged pip reads, generated from the real pyprojects.
     _real_estate_layout(tmp_path)

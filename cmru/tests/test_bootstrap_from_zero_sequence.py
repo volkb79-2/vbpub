@@ -189,8 +189,6 @@ def _dockerfile(path: Path, url: str, sha: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "FROM scratch\n"
-        "ARG ESTATE_TEST_POLICY_WHEEL_URL=https://example.invalid/estate_test_policy-9.9.9-py3-none-any.whl\n"
-        f"ARG ESTATE_TEST_POLICY_WHEEL_SHA256={'c' * 64}\n"
         "ARG CLI_EXTENDED_RESOLVE=pinned\n"
         f"ARG CLI_EXTENDED_WHEEL_URL={url}\n"
         f"ARG CLI_EXTENDED_WHEEL_SHA256={sha}\n",

@@ -206,11 +206,10 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   Every image carries `org.vbpub.cli-extended.wheel-sha256`, the digest of the wheel it
   installed (the Dockerfile pin, the `local` digest, or the `latest` digest), verified
   against the installed file during the build and re-read by `build-image.sh` afterwards.
-  The image also installs the released `estate-test-policy` 0.1.0 wheel from its
-  `ESTATE_TEST_POLICY_WHEEL_URL` + `ESTATE_TEST_POLICY_WHEEL_SHA256` pin after pytest is
-  present, again with `--no-index --no-deps`, so a project's
-  `required_plugins = estate-test-policy` resolves in every opted-in lane. Its
-  `org.vbpub.estate-test-policy.wheel-sha256` label records the verified digest.
+  The `estate-test-policy` wheel is intentionally not installed yet: test-policy's own
+  suite must first tolerate its auto-loaded `pytest11` entry point (double registration
+  with `-p estate_test_policy.plugin` and coverage of pre-parsed module-level lines),
+  tracked in the test-policy backlog.
   A separate source-backed test exception covers cgprofile's `augeaswrap>=0.1.0` edge:
   the generator excludes it from the PyPI closure, and `cgprofile/tools/gate.sh`
   places the bound checkout's `augeaswrap/src` on `PYTHONPATH`. The endpoint
