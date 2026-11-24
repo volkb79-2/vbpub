@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -22,6 +23,7 @@ from debian_install_v2.installer import (
     Installer,
     InstallerError,
 )
+from debian_install_v2.state import StateStore
 
 
 COW_VOLUME = {"name": "@cow", "mount": "/srv/cow", "nocow": False}
@@ -134,13 +136,11 @@ def _root_device_output(devids: tuple[str, ...] = ("1",)) -> str:
     return f"Label: none  uuid: 00000000-0000-0000-0000-000000000000\n{devid_lines}\n"
 
 
-def _assert_no_partition_or_resize_commands(actions: BoundaryActions) -> None:
+def _assert_btrfs_command_allowlist(
+    actions: BoundaryActions, allowed: set[str],
+) -> None:
     tools = [Path(action.argv[0]).name for action in actions.planned]
-    forbidden = {
-        "sfdisk", "partx", "blockdev", "dumpe2fs", "resize2fs", "e2fsck",
-        "growpart", "mkswap", "swapon", "swapoff",
-    }
-    assert not (set(tools) & forbidden), actions.planned
+    assert set(tools) <= allowed, actions.planned
 
 
 # ---------------------------------------------------------------- discovery
@@ -402,27 +402,31 @@ def test_subvolume_mounts_keep_existing_protected_tree_checks(mount):
 # ---------------------------------------------------------- no disk mutation
 
 
-def _layout_skip_methods(installer: Installer):
-    return (
-        installer._apply_known_swap_shape,
-        installer._grow_root_to_plan,
-        installer._verify_and_apply_root_shrink,
-        installer._ensure_disk_transaction_manifest,
-        installer._configure_root_cap_boot_guards,
-        installer._plan_root_shrink,
-        installer._disable_active_swap,
-        installer._activate_swap_partitions,
-    )
-
-
-def test_btrfs_skip_paths_issue_no_partition_or_resize_action(tmp_path):
+def test_btrfs_stage_two_never_calls_ext4_layout_methods(tmp_path, monkeypatch):
     actions = BoundaryActions()
     installer = _btrfs_installer(tmp_path, actions=actions)
+    for name in (
+        "_configure_control_plane_memory_min", "_packages", "_configure_zswap",
+        "_configure_cgroup2_flags", "_configure_ksm", "_configure_oomd",
+        "_configure_fstrim", "_configure_auto_reboot", "_configure_iocost",
+        "_configure_data_area", "_health_gate_swap_devices",
+        "_verify_control_plane_memory_min", "_run_cpu_benchmark",
+        "_release_apt_timers", "_cleanup_cloud_init_cache",
+    ):
+        monkeypatch.setattr(installer, name, lambda *args, **kwargs: None)
+    for name in (
+        "_apply_known_swap_shape", "_grow_root_to_plan",
+        "_verify_and_apply_root_shrink", "_ensure_disk_transaction_manifest",
+        "_configure_root_cap_boot_guards", "_plan_root_shrink",
+        "_disable_active_swap", "_activate_swap_partitions",
+    ):
+        monkeypatch.setattr(installer, name, lambda name=name: (_ for _ in ()).throw(
+            AssertionError(f"ext4-only {name} ran on btrfs")
+        ))
 
-    for method in _layout_skip_methods(installer):
-        method()
+    installer._stage2()
 
-    _assert_no_partition_or_resize_commands(actions)
+    _assert_btrfs_command_allowlist(actions, {"tee", "env"})
     assert installer._root_policy() == "untouched"
     assert installer._root_guarded() is False
     plan = installer.show_plan()
@@ -432,15 +436,20 @@ def test_btrfs_skip_paths_issue_no_partition_or_resize_action(tmp_path):
     assert "sfdisk_plan" not in plan
 
 
-def test_btrfs_shrink_verification_skips_before_reading_disk_facts(tmp_path):
+def test_btrfs_stage_one_records_resize_skips_without_calling_ext4_hooks(tmp_path, monkeypatch):
     actions = BoundaryActions()
     installer = _btrfs_installer(
         tmp_path,
         actions=actions,
         state=RecordingState({"root_shrink": {"status": "planned"}}),
     )
+    for name in ("_configure_root_cap_boot_guards", "_plan_root_shrink"):
+        monkeypatch.setattr(installer, name, lambda name=name: (_ for _ in ()).throw(
+            AssertionError(f"ext4-only {name} ran on btrfs")
+        ))
 
-    assert installer._verify_and_apply_root_shrink() is False
+    installer._mark_btrfs_stage1_layout_skips()
+
     step = installer.state.data["steps"]["root_shrink"]
     assert step["status"] == "skipped"
     assert "btrfs_root_resize_unsupported" in step["detail"]
@@ -470,7 +479,7 @@ def test_stage_one_btrfs_branch_does_not_plan_shrink_or_partition(tmp_path, monk
     assert "_remove_managed_swap_backings" not in events
     assert installer.state.data["steps"]["root_cap_guards"]["status"] == "skipped"
     assert installer.state.data["steps"]["root_shrink"]["status"] == "skipped"
-    _assert_no_partition_or_resize_commands(actions)
+    _assert_btrfs_command_allowlist(actions, set())
 
 
 # -------------------------------------------------------------- subvolumes
@@ -504,14 +513,40 @@ def test_subvolume_rerun_accepts_the_same_nocow_property_without_mutation(tmp_pa
 def test_subvolume_rerun_with_different_nocow_property_is_refused(tmp_path):
     show = ("/usr/bin/btrfs", "subvolume", "show", "/.top/@cow")
     lsattr = ("/usr/bin/lsattr", "-d", "/.top/@cow")
+    find = (
+        "/usr/bin/find", "/.top/@cow",
+        "-mindepth", "1", "-maxdepth", "1", "-print", "-quit",
+    )
     actions = BoundaryActions(
-        outputs={show: "Name: @cow\n", lsattr: "---------------------- /.top/@cow\n"},
+        outputs={
+            show: "Name: @cow\n",
+            lsattr: "---------------------- /.top/@cow\n",
+            find: "/.top/@cow/data\n",
+        },
         existing={"/.top/@cow"},
     )
     installer = _btrfs_installer(tmp_path, actions=actions)
 
     with pytest.raises(InstallerError, match="btrfs_subvolume_properties_differ"):
         installer._ensure_btrfs_subvolume("@cow", True)
+
+
+def test_existing_empty_subvolume_recovers_missing_nocow(tmp_path):
+    show = ("/usr/bin/btrfs", "subvolume", "show", "/.top/@cow")
+    lsattr = ("/usr/bin/lsattr", "-d", "/.top/@cow")
+    find = (
+        "/usr/bin/find", "/.top/@cow",
+        "-mindepth", "1", "-maxdepth", "1", "-print", "-quit",
+    )
+    chattr = ("/usr/bin/chattr", "+C", "/.top/@cow")
+    actions = BoundaryActions(
+        outputs={show: "Name: @cow\n", lsattr: "---------------------- /.top/@cow\n"},
+        existing={"/.top/@cow"},
+    )
+    installer = _btrfs_installer(tmp_path, actions=actions)
+
+    assert installer._ensure_btrfs_subvolume("@cow", True) == "/.top/@cow"
+    assert [action.argv for action in actions.planned] == [show, lsattr, find, chattr]
 
 
 def test_existing_non_subvolume_path_is_a_named_property_refusal(tmp_path):
@@ -527,8 +562,26 @@ def test_existing_non_subvolume_path_is_a_named_property_refusal(tmp_path):
 
 
 def test_top_level_mount_must_be_subvolid_five(tmp_path):
-    argv = ("/usr/bin/findmnt", "-n", "-o", "FSROOT", "/.top")
-    actions = BoundaryActions(outputs={argv: "/@rootfs\n"})
+    argv = ("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE,FSROOT", "/.top")
+    actions = BoundaryActions(outputs={argv: "/dev/vda2 btrfs /@rootfs\n"})
+    installer = _btrfs_installer(tmp_path, actions=actions)
+
+    with pytest.raises(InstallerError, match="btrfs_top_level_required"):
+        installer._require_btrfs_top_level()
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "/dev/vda2 tmpfs /\n",
+        "/dev/vdb2 btrfs /\n",
+        "/dev/vdas2 btrfs /\n",
+        "tmpfs tmpfs /\n",
+    ],
+)
+def test_top_level_mount_must_be_the_btrfs_root_partition(tmp_path, row):
+    argv = ("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE,FSROOT", "/.top")
+    actions = BoundaryActions(outputs={argv: row})
     installer = _btrfs_installer(tmp_path, actions=actions)
 
     with pytest.raises(InstallerError, match="btrfs_top_level_required"):
@@ -536,7 +589,7 @@ def test_top_level_mount_must_be_subvolid_five(tmp_path):
 
 
 def test_fstab_subvolume_lines_use_root_options_plus_user_subvol_rm_allowed(tmp_path, monkeypatch):
-    top = ("/usr/bin/findmnt", "-n", "-o", "FSROOT", "/.top")
+    top = ("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE,FSROOT", "/.top")
     show_cow = ("/usr/bin/btrfs", "subvolume", "show", "/.top/@cow")
     show_nocow = ("/usr/bin/btrfs", "subvolume", "show", "/.top/@cow-nocow")
     create_cow = ("/usr/bin/btrfs", "subvolume", "create", "/.top/@cow")
@@ -547,7 +600,7 @@ def test_fstab_subvolume_lines_use_root_options_plus_user_subvol_rm_allowed(tmp_
         "/usr/bin/findmnt", "-rn", "-o", "SOURCE,FSTYPE,TARGET,FSROOT", "/srv/cow-nocow",
     )
     actions = BoundaryActions(
-        outputs={top: "/\n"},
+        outputs={top: "/dev/vda2 btrfs /\n"},
         errors={show_cow: ActionError("action failed (1): no subvolume"), show_nocow: ActionError("action failed (1): no subvolume"),
                 findmnt_cow: ActionError("action failed (1): not mounted"),
                 findmnt_nocow: ActionError("action failed (1): not mounted")},
@@ -580,12 +633,12 @@ def test_fstab_subvolume_lines_use_root_options_plus_user_subvol_rm_allowed(tmp_
 
 
 def test_existing_mount_is_accepted_only_for_the_configured_subvolume(tmp_path, monkeypatch):
-    top = ("/usr/bin/findmnt", "-n", "-o", "FSROOT", "/.top")
+    top = ("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE,FSROOT", "/.top")
     show = ("/usr/bin/btrfs", "subvolume", "show", "/.top/@cow")
     lsattr = ("/usr/bin/lsattr", "-d", "/.top/@cow")
     findmnt = ("/usr/bin/findmnt", "-rn", "-o", "SOURCE,FSTYPE,TARGET,FSROOT", "/srv/cow")
     actions = BoundaryActions(outputs={
-        top: "/\n",
+        top: "/dev/vda2 btrfs /\n",
         show: "Name: @cow\n",
         lsattr: "---------------------- /.top/@cow\n",
         findmnt: "/dev/vda2[/@cow] btrfs /srv/cow /@cow\n",
@@ -640,7 +693,7 @@ def test_multiple_data_subvolumes_do_not_accept_nested_mounts():
 # ------------------------------------------------------ swap / benchmark / cloud-init
 
 
-def test_btrfs_swap_benchmark_and_health_skips_are_named(tmp_path):
+def test_btrfs_swap_benchmark_and_health_skips_are_named(tmp_path, monkeypatch):
     stage2_log = tmp_path / "stage2.log"
     stage2_log.write_text("running\n")
     actions = BoundaryActions()
@@ -650,17 +703,22 @@ def test_btrfs_swap_benchmark_and_health_skips_are_named(tmp_path):
         config_overrides={"stage2_output": str(stage2_log), "run_zswap_config": False},
     )
 
-    installer._disable_active_swap()
-    installer._activate_swap_partitions()
-    installer._run_io_benchmark()
-    installer._health_gate_swap_devices()
+    for name in (
+        "_configure_control_plane_memory_min", "_packages", "_configure_zswap",
+        "_configure_cgroup2_flags", "_configure_ksm", "_configure_oomd",
+        "_configure_fstrim", "_configure_auto_reboot", "_configure_iocost",
+        "_configure_data_area", "_verify_control_plane_memory_min",
+        "_run_cpu_benchmark", "_release_apt_timers", "_cleanup_cloud_init_cache",
+    ):
+        monkeypatch.setattr(installer, name, lambda *args, **kwargs: None)
+    installer._stage2()
 
     steps = installer.state.data["steps"]
     assert "btrfs_swap_needs_p3" in steps["swap_partitions"]["detail"]
     assert "iobench_raw_unavailable_on_btrfs" in steps["io_benchmark"]["detail"]
     assert "Q-A" in steps["io_benchmark"]["detail"]
     assert "btrfs_swap_needs_p3" in steps["health_gate"]["detail"]
-    _assert_no_partition_or_resize_commands(actions)
+    _assert_btrfs_command_allowlist(actions, {"tee"})
 
 
 def test_btrfs_iocost_ignores_a_stale_benchmark_file_and_names_the_skip(tmp_path):
@@ -726,6 +784,25 @@ def _snapshot_actions(**overrides) -> BoundaryActions:
     )
 
 
+def _resume_btrfs_installer(
+    tmp_path: Path, actions: BoundaryActions, monkeypatch,
+) -> Installer:
+    installer = _btrfs_installer(tmp_path, actions=actions)
+    store = StateStore(installer.config.state_dir)
+    store.save_new(StateStore.new(installer.config))
+    installer.state = store
+    for name in (
+        "_configure_control_plane_memory_min", "_packages", "_configure_zswap",
+        "_configure_cgroup2_flags", "_configure_ksm", "_configure_oomd",
+        "_configure_fstrim", "_configure_auto_reboot", "_configure_iocost",
+        "_configure_data_area", "_health_gate_swap_devices",
+        "_verify_control_plane_memory_min", "_run_cpu_benchmark",
+        "_release_apt_timers", "_cleanup_cloud_init_cache",
+    ):
+        monkeypatch.setattr(installer, name, lambda *args, **kwargs: None)
+    return installer
+
+
 def test_host_setup_snapshot_runs_once_and_is_the_last_successful_step(tmp_path):
     actions = _snapshot_actions()
     installer = _btrfs_installer(tmp_path, actions=actions)
@@ -755,7 +832,7 @@ def test_host_setup_snapshot_runs_once_and_is_the_last_successful_step(tmp_path)
         "snapshot", "--reason", "host-setup",
     )
     assert actions.planned[-1].dangerous is True
-    _assert_no_partition_or_resize_commands(actions)
+    _assert_btrfs_command_allowlist(actions, {"env", "tee"})
 
 
 def test_successful_host_setup_snapshot_is_not_repeated_on_retry(tmp_path):
@@ -809,6 +886,67 @@ def test_layer_absent_or_unmanaged_root_takes_no_snapshot(tmp_path):
     assert [action.argv for action in actions.planned] == [list_argv]
 
 
+def test_resume_completes_marker_before_the_last_snapshot_step(tmp_path, monkeypatch):
+    actions = _snapshot_actions()
+    installer = _resume_btrfs_installer(tmp_path, actions, monkeypatch)
+    marker = Path(installer.config.state_dir) / "stage2_done"
+    snapshot_probe = {}
+    real_snapshot = installer._snapshot_host_setup_once
+
+    def snapshot():
+        snapshot_probe["marker"] = marker.exists()
+        snapshot_probe["state"] = installer.state.load()
+        real_snapshot()
+
+    monkeypatch.setattr(installer, "_snapshot_host_setup_once", snapshot)
+
+    assert installer.resume() is True
+
+    assert snapshot_probe["marker"] is True
+    assert snapshot_probe["state"]["phase"] == "done"
+    assert snapshot_probe["state"]["status"] == "success"
+    assert actions.planned[-1].argv[4:] == ("snapshot", "--reason", "host-setup")
+
+
+def test_resume_failed_snapshot_removes_marker_and_fails_stage_two(tmp_path, monkeypatch):
+    snapshot_argv = (
+        "/usr/bin/env", "-u", "DR_STATE", ROLLBACK_STATE_COMMAND,
+        "snapshot", "--reason", "host-setup",
+    )
+    actions = _snapshot_actions(errors={snapshot_argv: ActionError("snapshot failed")})
+    installer = _resume_btrfs_installer(tmp_path, actions, monkeypatch)
+    marker = Path(installer.config.state_dir) / "stage2_done"
+
+    with pytest.raises(ActionError, match="snapshot failed"):
+        installer.resume()
+
+    assert not marker.exists()
+    state = installer.state.load()
+    assert state["status"] == "failed"
+    assert state["phase"] == "stage2"
+    assert "snapshot failed" in state["last_error"]
+    assert actions.planned[-1].argv[4:] == ("snapshot", "--reason", "host-setup")
+
+
+def test_btrfs_complete_summary_names_the_layer_skip(tmp_path, monkeypatch):
+    actions = BoundaryActions(existing=set())
+    installer = _resume_btrfs_installer(tmp_path, actions, monkeypatch)
+    sent = []
+    monkeypatch.setattr(installer, "_notify", lambda message, **_kwargs: sent.append(message))
+    monkeypatch.setattr(Installer, "_notifications_enabled", property(lambda self: True))
+    monkeypatch.setattr("debian_install_v2.installer.collect_host_facts", lambda _installer: {})
+    monkeypatch.setattr(
+        "debian_install_v2.installer.format_facts_html", lambda _facts: "",
+    )
+
+    installer.resume()
+
+    assert any(
+        "Install complete" in message and "rollback_layer_absent" in message
+        for message in sent
+    ), sent
+
+
 # ------------------------------------------------------------- stage2 rerun
 
 
@@ -827,8 +965,24 @@ def test_stage_two_rerun_after_completion_marker_plans_nothing(tmp_path, monkeyp
     ))
     monkeypatch.setattr(installer.state, "load", lambda: (_ for _ in ()).throw(AssertionError("state loaded")))
 
-    installer.resume()
+    assert installer.resume() is False
 
+    assert not actions.planned
+
+
+def test_completed_resume_skips_host_discovery(tmp_path):
+    actions = BoundaryActions(errors={
+        ("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/"):
+            HostIdentityRefusal("host discovery must not run"),
+    })
+    installer = _btrfs_installer(tmp_path, actions=actions)
+    marker = Path(installer.config.state_dir) / "stage2_done"
+    marker.touch()
+
+    completed = Installer(installer.config, actions, inspect_host=True)
+
+    assert completed.stage2_complete is True
+    assert completed.resume() is False
     assert not actions.planned
 
 
@@ -852,6 +1006,44 @@ def test_stage_two_unit_has_the_exact_firstboot_cleanup_line(tmp_path):
     assert cleanup_lines == [expected]
     assert "Environment=DR_STATE=none" in unit.splitlines()
     assert "%" not in cleanup_lines[0]
+
+
+def test_stage_two_unit_full_render_is_golden(tmp_path):
+    actions = BoundaryActions()
+    installer = _btrfs_installer(tmp_path, actions=actions)
+    installer._install_stage2()
+
+    unit = actions.files["/etc/systemd/system/vbpub-bootstrap-stage2.service"]
+    working_directory = str(Path(__file__).resolve().parents[2])
+    python = shutil.which("python3") or "/usr/bin/python3"
+    state_dir = installer.config.state_dir
+    expected = f"""\
+[Unit]
+Description=vbpub debian install stage2
+After=network-online.target local-fs.target
+Wants=network-online.target
+ConditionPathExists={state_dir}/stage1_done
+ConditionPathExists=!{state_dir}/stage2_done
+OnFailure=vbpub-bootstrap-failed@%n.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/vbpub/bootstrap.env
+Environment=DR_STATE=none
+WorkingDirectory={working_directory}
+# ONE launch path: the installed entrypoint puts the cli-extended wheel beside
+# it on sys.path. `python3 -m debian_install_v2...` bypasses that and crashes
+# with ModuleNotFoundError: cli_extended (live v1001 2026-10-06).
+ExecStart={python} {working_directory}/debian-install-v2.py resume --yes
+ExecStartPost=/bin/sh -c 'if [ -e {state_dir}/stage2_done ]; then exec /usr/bin/rm -f -- /root/.vbpub/firstboot.json /root/.vbpub/firstboot.started; fi'
+TimeoutStartSec=infinity
+StandardOutput=append:{installer.config.stage2_output}
+StandardError=append:{installer.config.stage2_output}
+
+[Install]
+WantedBy=multi-user.target
+"""
+    assert unit == expected
 
 
 def test_stage_units_export_dr_state_none(tmp_path):

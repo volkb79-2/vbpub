@@ -63,8 +63,9 @@ _SAFE_COMMANDS = {
     "fallocate": {"-l"},
     "findmnt": {
         "-n", "-rn", "-o", "SOURCE,FSTYPE", "SOURCE,TARGET,FSTYPE",
-        "SOURCE,FSTYPE,TARGET,FSROOT", "FSROOT", "--nofsroot",
+        "SOURCE,FSTYPE,TARGET,FSROOT", "SOURCE,FSTYPE,FSROOT", "--nofsroot",
     },
+    "find": {"-mindepth", "1", "-maxdepth", "-print", "-quit"},
     "sha256sum": set(),
     "free": {"-g"},
     "git": {"clone", "fetch", "reset"},
@@ -208,6 +209,13 @@ class HostActions:
                 or not re.fullmatch(r"/\.top/@[A-Za-z0-9_.+-]{1,48}", argv[2])
             ):
                 raise ActionError(f"chattr invocation is not allowlisted: {argv[1:]!r}")
+        elif command == "find":
+            if (
+                len(argv) != 8
+                or argv[2:] != ["-mindepth", "1", "-maxdepth", "1", "-print", "-quit"]
+                or re.fullmatch(r"/\.top/@[A-Za-z0-9_.+-]{1,48}", argv[1]) is None
+            ):
+                raise ActionError(f"find invocation is not allowlisted: {argv[1:]!r}")
         elif command == "env":
             if not (
                 len(argv) >= 5

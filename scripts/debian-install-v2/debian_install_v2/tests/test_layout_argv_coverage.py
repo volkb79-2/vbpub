@@ -69,6 +69,12 @@ def _literal_argvs() -> list[tuple[str, int, list[str]]]:
             elif rendered[:2] == ["/usr/bin/chattr", "+C"] and len(rendered) == 3:
                 rendered[2] = "/.top/@x"
             elif (
+                len(rendered) == 8
+                and rendered[0] == "/usr/bin/find"
+                and rendered[2:] == ["-mindepth", "1", "-maxdepth", "1", "-print", "-quit"]
+            ):
+                rendered[1] = "/.top/@x"
+            elif (
                 len(rendered) >= 5
                 and rendered[0] == "/usr/bin/env"
                 and rendered[1:3] == ["-u", "DR_STATE"]
