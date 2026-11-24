@@ -1,8 +1,8 @@
 """Behavioral contract for Mattermost's directly published Calls media."""
 from __future__ import annotations
 
-import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +10,6 @@ import pytest
 
 from _render import (
     render_mattermost,
-    render_tls_edge_config,
     service_environment,
     service_label_keys,
     tls_edge_root,
@@ -62,6 +61,28 @@ def _mattermost_service(document: dict[str, Any]) -> dict[str, Any]:
     return document["services"]["mattermost"]
 
 
+def _labels(service: Mapping[str, Any]) -> dict[str, str]:
+    raw = service.get("labels", {})
+    if isinstance(raw, Mapping):
+        return {str(key): str(value) for key, value in raw.items()}
+    if isinstance(raw, list):
+        result: dict[str, str] = {}
+        for item in raw:
+            key, separator, value = str(item).partition("=")
+            if separator:
+                result[key] = value
+        return result
+    raise AssertionError(f"unsupported compose labels shape: {raw!r}")
+
+
+def _contract_ports(value: str) -> set[tuple[int, str]]:
+    result: set[tuple[int, str]] = set()
+    for item in value.split(","):
+        port, protocol = item.split("/", 1)
+        result.add((int(port), protocol))
+    return result
+
+
 def test_normalizer_supports_short_and_long_compose_syntax() -> None:
     expected = (8443, 8443, "udp")
     assert normalize_ports(["8443:8443/udp"]) == [expected]
@@ -107,35 +128,35 @@ def test_no_public_calls_media_without_both_flags(
     }
 
 
-def test_calls_ports_do_not_collide_with_tls_edge_inbound_ports(
+def test_mattermost_uses_the_tls_edge_consumer_contract(
     tmp_path: Path,
 ) -> None:
     edge = tls_edge_root()
     if edge is None:
         pytest.skip("tls-edge not in this checkout")
 
-    edge_config = render_tls_edge_config()
-    edge_config["http3"]["enabled"] = True
-    edge_config["ports"]["expose_http"] = True
-
     source = str(edge / "src")
     if source not in sys.path:
         sys.path.insert(0, source)
-    from tls_edge_cli.config import validate_config
+    from tls_edge_cli.contract import contract_for
 
-    edge_ports: set[tuple[int, str]] = set()
-    for plan in validate_config(
-        edge_config, require_domain=False, require_certificates=False
-    ):
-        match = re.match(r"(\d+)/(tcp|udp)\b", plan)
-        assert match, f"unparseable tls-edge port plan entry: {plan!r}"
-        edge_ports.add((int(match.group(1)), match.group(2)))
+    contract = contract_for(
+        edge / "ciu-stack",
+        {"tls_edge": {"http3": {"enabled": True}}},
+    )
 
     service = _mattermost_service(render_mattermost(tmp_path))
+    labels = _labels(service)
+    assert labels["traefik.docker.network"] == contract["TLS_EDGE_NETWORK"]
+    assert labels["traefik.http.routers.nyxloom-mattermost.entrypoints"] == (
+        contract["TLS_EDGE_HTTPS_ENTRYPOINT"]
+    )
     mattermost_ports = {
         (host_port, protocol)
         for host_port, _container_port, protocol in normalize_ports(
             service.get("ports")
         )
     }
-    assert not mattermost_ports & edge_ports
+    assert mattermost_ports.isdisjoint(
+        _contract_ports(contract["TLS_EDGE_PUBLIC_PORTS"])
+    )

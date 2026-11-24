@@ -15,6 +15,15 @@ false`).  Always publish `https://` URLs.
 Consumers attach to the shared `ingress_public` network and declare routing
 via Compose labels.  No access to the edge-proxy stack itself is needed.
 
+The network, HTTPS entrypoint, headers middleware, HTTP/3 state and public
+ports are one rendered contract, not values inferred from tls-edge defaults.
+[`docs/CONSUMERS.md`](docs/CONSUMERS.md#rendered-consumer-contract) defines the
+six keys once. The deployed strings are in
+`/srv/tls-edge-instance/stack/consumer.env`; the same mapping and structured
+port plan are available from `tls-edge show --json`. A consumer test should
+import `contract_for` from `tls-edge/src/tls_edge_cli/contract.py` and skip
+when tls-edge is absent from a sparse checkout.
+
 ---
 
 ## Installing tls-edge
@@ -152,10 +161,10 @@ labels:
 
 Keep Prosody, Jicofo, and JVB on Jitsi's private network; only `jitsi-web`
 needs edge-network membership. The Jitsi project tests its label/network
-contract and direct UDP media publication. Its integration test renders
-tls-edge's defaults and checks that the `websecure` route has the HTTPS
-listener, certificate resolver, and optional HTTP/3 configuration the
-consumer uses.
+contract and direct UDP media publication. Its integration test uses
+`contract_for` to compare the route's network and entrypoint with
+`TLS_EDGE_NETWORK` and `TLS_EDGE_HTTPS_ENTRYPOINT`, and checks that JVB's
+published port is disjoint from `TLS_EDGE_PUBLIC_PORTS`.
 
 ### Pattern A – Public-only service
 

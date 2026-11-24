@@ -61,6 +61,24 @@ def test_http3_publishes_udp_on_https_port_and_keeps_tcp(tmp_path):
     assert static["entryPoints"]["websecure"]["http3"] == {"advertisedPort": 443}
 
 
+def test_consumer_contract_names_the_rendered_https_entrypoint_and_middleware(
+    tmp_path,
+) -> None:
+    from tls_edge_cli.contract import HEADERS_MIDDLEWARE, HTTPS_ENTRYPOINT
+
+    out = render_to(tmp_path, defaults_config())
+    static = yaml.safe_load((out / "traefik.yml").read_text())
+    resolver_entrypoints = [
+        name
+        for name, entrypoint in static["entryPoints"].items()
+        if entrypoint.get("http", {}).get("tls", {}).get("certResolver")
+    ]
+    assert resolver_entrypoints == [HTTPS_ENTRYPOINT]
+    assert static["entryPoints"][HTTPS_ENTRYPOINT]["http"]["middlewares"] == [
+        HEADERS_MIDDLEWARE
+    ]
+
+
 def test_http_off_drops_port_80(tmp_path):
     cfg = merge(defaults_config(), {"ports": {"expose_http": False}})
     out = render_to(tmp_path, cfg)

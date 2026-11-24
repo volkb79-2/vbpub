@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import tomlkit
 
-from tls_edge_cli import config
+from tls_edge_cli import config, contract
 
 
 def valid_config() -> dict:
@@ -298,6 +298,32 @@ def test_validate_config_builds_default_and_optional_port_plans():
     ) == ["80/tcp (HTTP redirect and/or HTTP-01)", "443/tcp (HTTPS, HTTP/1.1 and HTTP/2)"]
 
 
+@pytest.mark.parametrize(
+    ("section", "key", "message"),
+    [
+        ("ports", "expose_http", "ports.expose_http must be true or false"),
+        ("http3", "enabled", "http3.enabled must be true or false"),
+    ],
+)
+def test_port_plan_refuses_non_boolean_listener_switches(
+    section: str, key: str, message: str
+) -> None:
+    value = valid_config()
+    value[section][key] = 1
+    with pytest.raises(config.ConfigError, match=message):
+        config.port_plan(value)
+
+
+def test_port_plan_refuses_http_and_https_on_the_same_tcp_port() -> None:
+    value = valid_config()
+    value["ports"]["http"] = value["ports"]["https"]
+    with pytest.raises(
+        config.ConfigError,
+        match="HTTP and HTTPS cannot publish the same TCP port",
+    ):
+        config.port_plan(value)
+
+
 @pytest.mark.parametrize(("mutate", "message"), [
     (lambda c: c["tls"].update(mode="other"), "tls.mode"),
     (lambda c: c.update(domain=""), "domain is required"),
@@ -363,6 +389,13 @@ def test_validate_config_hostdir_rules_and_modes(tmp_path: Path):
     value["traefik"]["hostdir"]["acme"]["path"] = str(tmp_path / "shared" / "acme")
     assert config.validate_config(value, stack_dir=stack_dir)
     assert config.validate_config(value)  # no containment check without stack context
+
+    value["traefik"]["hostdir"]["acme"]["path"] = "../../shared/$EDGE/acme"
+    with pytest.raises(
+        config.ConfigError,
+        match=r"must not contain '\$'",
+    ):
+        config.validate_config(value, stack_dir=stack_dir)
 
     value["acme"]["store"] = "archive"
     with pytest.raises(config.ConfigError, match="acme.store must be volume or hostdir"):
@@ -435,23 +468,39 @@ def test_updated_override_reports_parse_and_nested_shape_errors(tmp_path: Path):
         config.updated_override(root, {"domain": "x.example"})
 
 
-def test_updated_consumer_env_creates_and_replaces_only_domain_entries(tmp_path: Path):
+def _consumer_contract(domain: str) -> dict[str, str]:
+    return {
+        "TLS_EDGE_DOMAIN": domain,
+        "TLS_EDGE_NETWORK": "ingress_public",
+        "TLS_EDGE_HTTPS_ENTRYPOINT": "websecure",
+        "TLS_EDGE_HEADERS_MIDDLEWARE": "secure-headers@file",
+        "TLS_EDGE_HTTP3": "false",
+        "TLS_EDGE_PUBLIC_PORTS": "80/tcp,443/tcp",
+    }
+
+
+def test_updated_consumer_env_creates_and_replaces_only_owned_entries(
+    tmp_path: Path,
+) -> None:
     root = make_root(tmp_path / "instance")
-    path, text, mode = config.updated_consumer_env(root, "one.example")
-    assert text == "TLS_EDGE_DOMAIN=one.example\n" and mode == 0o644
+    one = _consumer_contract("one.example")
+    path, text, mode = config.updated_consumer_env(root, one)
+    assert text == contract.render_env(one) and mode == 0o644
     path.write_text("OTHER=value\nTLS_EDGE_DOMAIN=old\nTLS_EDGE_DOMAIN=duplicate\n", encoding="utf-8")
     path.chmod(0o600)
-    _, text, mode = config.updated_consumer_env(root, "two.example")
-    assert text == "OTHER=value\nTLS_EDGE_DOMAIN=two.example\n"
+    two = _consumer_contract("two.example")
+    _, text, mode = config.updated_consumer_env(root, two)
+    assert text == contract.render_env(two, "OTHER=value\n")
     assert mode == 0o600
     path.write_text("OTHER=value\n", encoding="utf-8")
-    _, text, mode = config.updated_consumer_env(root, "three.example")
-    assert text == "OTHER=value\nTLS_EDGE_DOMAIN=three.example\n"
+    three = _consumer_contract("three.example")
+    _, text, mode = config.updated_consumer_env(root, three)
+    assert text == contract.render_env(three, "OTHER=value\n")
     assert mode == 0o600
     path.unlink()
     path.mkdir()
     with pytest.raises(config.ConfigError, match="consumer environment must be a regular file"):
-        config.updated_consumer_env(root, "three.example")
+        config.updated_consumer_env(root, three)
 
 
 def test_atomic_write_sets_mode(tmp_path: Path):

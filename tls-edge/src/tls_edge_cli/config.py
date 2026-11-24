@@ -492,6 +492,11 @@ def validate_config(
                 'tls_edge.traefik.hostdir.acme.path is required when '
                 'tls_edge.acme.store = "hostdir"'
             )
+        if "$" in path:
+            raise ConfigError(
+                "tls_edge.traefik.hostdir.acme.path must not contain '$'; "
+                "ciu expands environment variables in hostdir paths"
+            )
         if stack_dir is not None:
             candidate = Path(path)
             if not candidate.is_absolute():
@@ -531,10 +536,7 @@ def validate_config(
         _required(static, "domains", "static.domains")
     )
 
-    inbound = [f"{http_port}/tcp (HTTP redirect and/or HTTP-01)"] if expose_http else []
-    inbound.append(f"{https_port}/tcp (HTTPS, HTTP/1.1 and HTTP/2)")
-    if h3_enabled:
-        inbound.append(f"{https_port}/udp (HTTP/3 over QUIC)")
+    inbound = port_plan(config)
 
     if mode == "acme-dns":
         provider = normalize_provider(
@@ -550,7 +552,39 @@ def validate_config(
     if mode in ("static", "dev") and require_certificates and not static_domains:
         raise ConfigError(f"tls.mode {mode} requires at least one static certificate lineage")
     normalize_email(_required(acme, "email", "acme.email"))
-    return inbound
+    return [
+        f"{port}/{protocol} ({purpose})"
+        for port, protocol, purpose in inbound
+    ]
+
+
+def port_plan(config: Mapping[str, Any]) -> list[tuple[int, str, str]]:
+    """Return the validated public listeners as structured port-plan rows."""
+    ports = _table(config, "ports")
+    http3 = _table(config, "http3")
+    expose_http = _required(ports, "expose_http", "ports.expose_http")
+    h3_enabled = _required(http3, "enabled", "http3.enabled")
+    if not isinstance(expose_http, bool):
+        raise ConfigError("ports.expose_http must be true or false")
+    if not isinstance(h3_enabled, bool):
+        raise ConfigError("http3.enabled must be true or false")
+
+    http_port = normalize_port(
+        _required(ports, "http", "ports.http"), "ports.http"
+    )
+    https_port = normalize_port(
+        _required(ports, "https", "ports.https"), "ports.https"
+    )
+    if expose_http and http_port == https_port:
+        raise ConfigError("HTTP and HTTPS cannot publish the same TCP port")
+
+    plan: list[tuple[int, str, str]] = []
+    if expose_http:
+        plan.append((http_port, "tcp", "HTTP redirect and/or HTTP-01"))
+    plan.append((https_port, "tcp", "HTTPS, HTTP/1.1 and HTTP/2"))
+    if h3_enabled:
+        plan.append((https_port, "udp", "HTTP/3 over QUIC"))
+    return plan
 
 
 def _mutable_table(value: Any) -> bool:
@@ -619,29 +653,22 @@ def updated_override(
     return override_path, tomlkit.dumps(document), mode
 
 
-def updated_consumer_env(root: Path, domain: str) -> tuple[Path, str, int]:
+def updated_consumer_env(
+    root: Path,
+    contract: Mapping[str, str],
+) -> tuple[Path, str, int]:
+    from .contract import render_env
+
     _, _, env_path = instance_paths(root)
     if os.path.lexists(env_path) and (env_path.is_symlink() or not env_path.is_file()):
         raise ConfigError(f"consumer environment must be a regular file: {env_path}")
     if env_path.exists():
         original = env_path.read_text(encoding="utf-8")
         mode = stat.S_IMODE(env_path.stat().st_mode)
-        lines = original.splitlines()
-        replaced = False
-        result = []
-        for line in lines:
-            if line.startswith("TLS_EDGE_DOMAIN="):
-                if not replaced:
-                    result.append(f"TLS_EDGE_DOMAIN={domain}")
-                    replaced = True
-            else:
-                result.append(line)
-        if not replaced:
-            result.append(f"TLS_EDGE_DOMAIN={domain}")
-        text = "\n".join(result).rstrip("\n") + "\n"
+        text = render_env(contract, original)
     else:
         mode = 0o644
-        text = f"TLS_EDGE_DOMAIN={domain}\n"
+        text = render_env(contract)
     return env_path, text, mode
 
 

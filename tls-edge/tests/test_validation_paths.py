@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -472,6 +473,34 @@ def test_ciu_check_accepts_a_valid_hostdir_site(tmp_path: Path) -> None:
     assert _run_ciu_check(root) == 0
 
 
+def test_ciu_hooks_preflight_invokes_validate_edge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ciu import hooks_runner
+
+    root, _ = _case_root(tmp_path, _override())
+    calls: list[Path] = []
+    original = hooks_runner.load_hook_for_check
+
+    def recording_loader(path: Path):
+        run_fn, validate_fn = original(path)
+        if Path(path).name != "validate_edge.py" or validate_fn is None:
+            return run_fn, validate_fn
+
+        def recording_validate(config: dict, ctx: Any) -> list[str]:
+            calls.append(Path(path))
+            return validate_fn(config, ctx)
+
+        return run_fn, recording_validate
+
+    monkeypatch.setattr(hooks_runner, "load_hook_for_check", recording_loader)
+    assert _run_ciu_check(root) == 0
+    assert calls == [
+        root / "stack" / "ciu-stack" / "hooks" / "validate_edge.py"
+    ]
+
+
 def test_standalone_refuses_hostdir_acme_storage(tmp_path: Path):
     _, stack_dir = _case_root(
         tmp_path,
@@ -525,6 +554,39 @@ def test_hook_run_rechecks_the_sparse_override(tmp_path: Path) -> None:
     (stack_dir / "ciu.toml.j2").write_text(_override(), encoding="utf-8")
     _, _, effective = config.load_site(stack_dir)
     assert hook.run(effective, None) == {}
+
+
+def test_hook_reports_consumer_env_drift_as_an_error_finding(
+    tmp_path: Path,
+) -> None:
+    from tls_edge_cli.contract import consumer_contract, render_env
+
+    root, stack_dir = _case_root(tmp_path, _override())
+    _, _, effective = config.load_site(stack_dir)
+    env_path = root / "stack" / "consumer.env"
+    env_path.write_text(
+        render_env(consumer_contract(effective["tls_edge"])),
+        encoding="utf-8",
+    )
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8").replace(
+            "TLS_EDGE_DOMAIN=edge.example.test",
+            "TLS_EDGE_DOMAIN=hand-edited.example.test",
+        ),
+        encoding="utf-8",
+    )
+
+    spec = importlib.util.spec_from_file_location(
+        "validate_edge_drift_hook",
+        stack_dir / "hooks" / "validate_edge.py",
+    )
+    assert spec is not None and spec.loader is not None
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    assert hook.validate_config(effective, None) == [
+        "consumer.env TLS_EDGE_DOMAIN differs from the site override; "
+        "run tls-edge configure to re-sync"
+    ]
 
 
 def test_configure_writes_schema_two(
