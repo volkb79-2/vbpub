@@ -63,6 +63,7 @@ together.
 | CTL-52 | Dev container is hostobs-only and admits one job host-wide | Must-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-53 | Worktree sprawl | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-54 | Backlogs and SPECs are append-only | Should-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | OPEN 2026-11-24 |
 
 ---
 
@@ -1650,3 +1651,11 @@ Source: .controller-state/PROGRAM-2026-11-24/PROGRAM.md §5
 `docs/BACKLOG-FORMAT.md` plus `agctl backlog index|check`. Pilot on scripts/controller and mdt-cockpit.
 
 Source: .controller-state/PROGRAM-2026-11-24/PROGRAM.md §6
+
+## CTL-55 — the live-sidecar test waits a fixed wall-clock time
+
+**Status:** OPEN (filed 2026-11-24).
+
+`tests/test-pi-impl.sh` `check_live_snapshot` polls 100 × `sleep 0.1` (about 10 s of wall clock) for `"tool_in_flight": "bash"` in the `.live` sidecar, which is written every `PI_LIVE_INTERVAL_SECONDS=1` by a process tree started under the same load. On 2026-11-24 the `suite` lane at 0314fdf1b (a docs-only change) failed with `the live sidecar never reported the tool call in flight` while another session's mutation lane loaded the host (load average ~6 on 8 cores). Against the estate rule that verdicts do not depend on host load. Fix: wait on a progress condition instead of a clock, for example until the fake pi's own "tool started" marker exists AND the sidecar has completed at least two write cycles (a sidecar sequence counter), with only a generous outer bound (minutes) that reports "inconclusive under load" separately from "never reported".
+
+Source: suite lane log of 2026-11-24 (run-gate lane `suite`, head 0314fdf1b).
