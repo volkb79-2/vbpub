@@ -317,7 +317,7 @@ are excluded. Worst selection: 16 × (`{"prefix":` 10 + 512·3 + 2 + `}` 1 + `,`
 64 × (64 + 3) = 4,288 B, keys and punctuation < 100 B, so ≤ 29,200 B; the other `series_batch` args
 (two i64, u32s, 4 agg names, a cursor ≤ 256 B ASCII) and the envelope add < 600 B: every legal
 observe/operator request is < 30 KiB ≤ `max_request_bytes` = 32 KiB.
-**Request precedence** (P5b design R11, implemented by `classify` in `bins/probe/src/classify.rs`; the
+**Request precedence** (P5b design R11, implemented by `classify` in `crates/serve/src/classify.rs`; the
 first failing step answers, later steps are never inspected): (1) a frame that is not a REQ:
 `bad-frame`, `corr` 0, fatal (binary only); (2) binary `corr` 0 or the `corr` of a live subscription
 (§2.3): `bad-frame`, `corr` 0, fatal; (3) the envelope check of this section: `bad-request` on
@@ -714,7 +714,7 @@ entries are shed); each frame a client is sent must complete within `frame_compl
 dribbling reader cannot hold a pool; a stalled writer is closed after `stall_ms` from the last byte it
 accepted, never sooner after an idle period.
 
-**Implemented (`crates/proto/src/hub.rs`).** One unit test per operation row and per consequence
+**Implemented (`crates/serve/src/hub.rs`; moved from `proto` by P-12).** One unit test per operation row and per consequence
 above (`control_row_*`, `live_row_*`, `fit_*`, `query_row_*`, `end_stream_row_*`, `head_row_*`,
 `poll_row_*`, `drain_unpinned_row_*`, `remove_row_*`), plus a pool-exactness checker that recomputes
 every pool from the queues after each operation of a pseudo-random run. Precisions the tables leave
@@ -965,7 +965,7 @@ the line, newline included, is bounded by `max_request_bytes` and the request de
 (`frame-too-large`/`deadline`, close); the line reader is bounded like §5.2 (no allocation beyond the
 bytes received, capacity ≤ `max_request_bytes`). Empty lines and invalid JSON text (§4.2) are
 `bad-request` with `corr: 0` when no `corr` could be read; the connection stays. Each reply is one
-line. **Line rules** (P5b design R13, `bins/probe/src/lines.rs`): a line including its `\n` is at most
+line. **Line rules** (P5b design R13, `crates/serve/src/lines.rs`): a line including its `\n` is at most
 `max_request_bytes`; when that many bytes are buffered without a `\n` the reader refuses with
 `frame-too-large` (fatal); a `\r\n` ending reaches the envelope check with a trailing `\r`, which is a
 trailing byte and so `bad-request` (non-fatal); an empty line is `bad-request`; the request-deadline
@@ -1124,7 +1124,7 @@ hello with a new epoch `changed`: the bare block finds nothing held; a dictionar
 epoch `same`: dictionaries are dropped here too; cursors and subscriptions are the caller's, §6.4).
 
 Hub cases (`fixtures/stream/hub-*.json`, 19 files written by `python/reference/make_hub_fixtures.py`,
-replayed by `crates/proto/tests/hub_fixtures.rs` with a fake clock, `t_ms * 1_000_000` as `now_ns`;
+replayed by `crates/serve/tests/hub_fixtures.rs` with a fake clock, `t_ms * 1_000_000` as `now_ns`;
 a Python test pins the committed bytes to the generator). Format: `{"case", "doc", "limits", "conns",
 "steps", "expect"}`; `limits` holds the seven `QueueLimits` fields (scaled: Live 1000/8000 per
 connection/global, Query 1000/4000, control 500, stall and frame completion 5000 ms),
@@ -1190,7 +1190,8 @@ P5b-3, and the socketpair form remains P5b-4.
 ## 12. Work breakdown
 
 **P2 — `proto` stream layer and codec additions (L).** Modules `crates/proto/src/stream.rs` (`FrameReader`,
-`ModeDetect`, `ConnTimers`, `StreamDicts`), `crates/proto/src/hub.rs` (`SendHub`), `crates/proto/src/envelope.rs` (REQ/REP/END/EVT JSON shape checks without a JSON
+`ModeDetect`, `ConnTimers`, `StreamDicts`), `crates/serve/src/hub.rs` (`SendHub`, moved from `proto`
+by P-12), `crates/proto/src/envelope.rs` (REQ/REP/END/EVT JSON shape checks without a JSON
 dependency: byte-level only — `proto` stays dependency-free; JSON parsing is the caller's),
 `frame.rs` additions. Public API:
 `FrameReader::new(max_frame: u32, completion_ns: u64) -> FrameReader`;

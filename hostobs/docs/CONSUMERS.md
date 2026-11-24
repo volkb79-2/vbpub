@@ -1,7 +1,7 @@
 # Using the hostobs Rust lanes
 
-`model`, `proto`, `kernel` and `store` are functional; the remaining three library crates and
-two binaries are still the M0 scaffold. The registered lanes are `lint`, `selftest`, `assay-r1`
+`model`, `proto`, `serve`, `kernel`, `store`, `client` and `bins/probe` are functional;
+`eval`, `act` and `bins/act` are still the M0 scaffold. The registered lanes are `lint`, `selftest`, `assay-r1`
 and `conformance` (the Python tests). The estate wraps every lane run in the controller's gate wrappers, which take the
 shared gate slots and the lane's lock (see `scripts/controller/README.md`, "Running the
 registered gate" and "Run one lane on a remote gate worker"); a bare `run-gate <lane>` skips
@@ -152,7 +152,8 @@ B549 records the same finding from the judge's side.
   a drop of the 629-line headroom lands almost entirely on product code, so 95.0 % is looser
   on product code than it reads (the sampled uncovered line `store/src/tier.rs:1553` is a test
   `assert!` message argument). The per-crate floors in the lane's argv carry the same bias.
-- **Three of the four `crates/*/src/lib.rs` files** (`model`, `proto`, `store`) are module
+- **Five of the six judged `crates/*/src/lib.rs` files** (`model`, `proto`, `serve`, `store`,
+  `client`) are module
   declarations and `//!` documentation only, so cargo-llvm-cov emits no LCOV record for them and
   they are not declared targets; Assay refuses a declared target it cannot measure rather than
   excusing it. `crates/kernel/src/lib.rs` does carry `Bounds` (7 executable lines, all covered),

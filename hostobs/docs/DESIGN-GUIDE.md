@@ -10,15 +10,15 @@ The probe's process and thread model (threads, the non-blocking backend rule, ac
 
 ## Package boundaries
 
-`proto` and `model` are pure libraries: no I/O, no clock reads, no threads, no `unsafe`,
-no dependencies. The probe reads the host and hands facts to them; the store writes bytes
+`proto`, `serve` and `model` are pure libraries: no I/O, no clock reads, no threads and no
+`unsafe`. The probe reads the host and hands facts to them; the store writes bytes
 they produce; the client decodes bytes they describe. Purity is what makes the property
 tests deterministic and what keeps a wire bug from hiding inside a filesystem call.
 
 The workspace denies unsafe Rust by default. Only `kernel` and `act` declare the planned
 unsafe-code allowance. Cargo rejects combining a workspace-lint inheritance stanza with a
 package-level override, so those two manifests declare their allowance directly while the
-other seven inherit the workspace lint. Kernel uses its allowance in exactly one audited
+other eight inherit the workspace lint. Kernel uses its allowance in exactly one audited
 item, `activation::adopt_raw`, which claims a systemd-owned `LISTEN_FDS` descriptor after
 checking that it is an open listening `AF_UNIX` stream socket. The crate carries
 `#![deny(unsafe_code)]` and `tools/check-lints.py` permits exactly that one
@@ -382,7 +382,7 @@ making every segment scan decode data the caller may not ask for.
 `lint` runs formatting, Clippy with `-D warnings`, rustdoc with `-D warnings`, cargo-deny
 and the source lints; `selftest` runs nextest, doctests, llvm-cov and the per-crate
 line/region floors from `coverage-floors.toml`; `assay-r1` runs the same workspace command
-and lets assay's Rust R1 judge render the coverage verdict over 56 declared `src` files
+and lets assay's Rust R1 judge render the coverage verdict over 61 declared `src` files
 at a 95.0% line floor. `conformance` runs the standard-library-only Python tests (no cargo).
 All four run in the `tester-unified-rust` image with Docker networking disabled, and the three
 that call cargo are offline and locked.
@@ -437,9 +437,11 @@ is derived and argued in [`assay.toml`](../assay.toml)'s header. The rejected al
 their own tests reached 98.06%/97.90% and 99.45%/97.88%, `kernel` after its own tests reached
 92.19% line/93.50% region, and `store` after its own tests reached 94.87% line/93.90% region —
 a crate whose floor starts at the bootstrap value is treated as scaffold, and one with real
-tests raises its own floor instead of hiding code. The other five packages keep the bootstrap
-floor because they are still the compilable scaffold; their identity test is not a
-product-coverage claim. Floors are never lowered and code is never excluded from coverage.
+tests raises its own floor instead of hiding code. The other six packages keep their bootstrap
+or inherited floor: `serve` inherits the 90%/85% floor that `probe` had for the serving code
+moved by P-12, while `act`, `client`, `eval`, `bins/act` and `bins/probe` retain 90%/85%.
+Scaffold identity tests are not a product-coverage claim. Floors are never lowered and code
+is never excluded from coverage.
 The line-only Assay claim sits ON TOP of these per-crate line/region floors: the floors fire
 in the lane's argv (R0), assay judges the same artifact (R1), and neither replaces the other.
 

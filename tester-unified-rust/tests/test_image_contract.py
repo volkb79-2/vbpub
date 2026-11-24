@@ -369,6 +369,7 @@ class ImageContractTests(unittest.TestCase):
             "crates/kernel": (92.0, 93.0),
             "crates/model": (97.0, 96.0),
             "crates/proto": (98.0, 96.0),
+            "crates/serve": (90.0, 85.0),
             "crates/store": (94.0, 93.0),
         }
         self.assertEqual(set(ratchet), set(floors))
