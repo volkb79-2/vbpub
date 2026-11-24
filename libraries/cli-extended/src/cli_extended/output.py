@@ -154,6 +154,25 @@ def redact_value(value: Any, secrets: Sequence[str] = ()) -> Any:
     return value
 
 
+def auto_color_enabled(stream: TextIO) -> bool:
+    """CLI-EXT-42 automatic colour policy, shared by output and progress.
+
+    True only for a TTY stream, with ``NO_COLOR`` unset or empty (no-color.org),
+    and ``TERM`` not ``dumb``. Explicit ``--color``/``--no-color`` handling stays
+    with the callers; this is the policy that applies when there is no switch.
+    """
+
+    try:
+        is_tty = bool(stream.isatty())
+    except (AttributeError, OSError):
+        return False
+    if not is_tty:
+        return False
+    if os.environ.get("NO_COLOR", ""):
+        return False
+    return os.environ.get("TERM", "").lower() != "dumb"
+
+
 class CliOutput:
     """Human diagnostics plus a clean primary-result stream.
 
@@ -221,9 +240,7 @@ class CliOutput:
             return False
         if self.color is True:
             return True
-        no_color = os.environ.get("NO_COLOR", "")
-        term = os.environ.get("TERM", "")
-        return self._is_tty(stream) and not no_color and term.lower() != "dumb"
+        return auto_color_enabled(stream)
 
     def format_help(
         self,

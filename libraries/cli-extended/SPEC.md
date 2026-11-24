@@ -608,9 +608,9 @@ primary result data never use ANSI colour. Supplying both explicit controls is
 an invocation error rather than a last-option-wins rule.
 
 `CliOutput.color_enabled(stream)` is the public stream-specific query for a
-consumer-owned renderer. With no explicit switch it reports TTY plus non-empty
-`NO_COLOR` and `TERM=dumb`; `--color` forces true and `--no-color` forces
-false. The result does not override the plain-output requirement: a consumer
+consumer-owned renderer. With no explicit switch it reports true only for a
+TTY with `NO_COLOR` unset or empty and `TERM` not `dumb`; `--color` forces true
+and `--no-color` forces false. The result does not override the plain-output requirement: a consumer
 that emits JSON or another machine-readable result must keep it free of ANSI,
 including when `--color` was supplied. Query the actual destination stream
 because stdout and stderr can have different terminal states.
@@ -1559,7 +1559,9 @@ descendants with `estate_test_policy` (TP-12), not with `procio`.
   `abandoned_holders`, `warning`, `last_line` and `watchdog`.
   `CaptureResult` exposes the completed-process fields plus `abandoned: bool`,
   `abandoned_holders` and `warning`. `Outcome` is the exported
-  `Literal["exited", "watchdog"]` alias.
+  `Literal["exited", "watchdog"]` alias. `abandoned` is a read-only property
+  (true exactly when `warning` is set), not a dataclass field, so it does not
+  appear in `dataclasses.fields()` or `asdict()`.
 - `terminate_as_exit()`, `reap_process_group(proc, grace)`,
   `pipe_holder_pids(inode)` and `process_tree(pid)`.
 

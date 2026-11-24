@@ -13,7 +13,8 @@ know when upgrading; it is not generated.
   no-color.org and the cmru/ciu policy: an empty `NO_COLOR` is unset, and
   `TERM=dumb` disables automatic colour. This is behaviour-visible: a TTY with
   `NO_COLOR=""` now receives colour, while a TTY with `TERM=dumb` no longer
-  does. Explicit `--color`/`--no-color` still win.
+  does. Explicit `--color`/`--no-color` still win. `ProgressRenderer` colour
+  follows the same rule; both now share `output.auto_color_enabled`.
 - **`procio` 0.8 API polish (CLI-EXT-43).** `StreamResult` and `CaptureResult`
   have `abandoned: bool`, true exactly when reading was abandoned regardless
   of whether holder pids were found. `StreamResult.outcome` is the exported
