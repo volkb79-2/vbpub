@@ -21,6 +21,28 @@ the technical detail below it.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [7.28.0] - 2026-11-24
+<!-- cmru: generated -->
+<!-- cmru: source-end=c45dd7393d469cda84ee280e302fec9a58683e91 -->
+
+### Fixed
+- fix(ciu): CIU-227 r2 fix-forward: flip the luna_medium59 seed-refusal pin (no directory is left), reword SPEC S6.3 absolute sentence, correct S8.3/S9.6 and a test docstring on --dry-run, note the root-squash residue and the CIU-231/CIU-228 remedy limit (2a920e6df)
+- fix(ciu): CIU-227 review r1 fix-forward: S6.6 seed refused before mkdir, once-resolved helper tier test, real-run Step-8 wiring test, SPEC S6.3 wording, stale dry-run hostdir claims, DESIGN-GUIDE edit dropped, follow-ups filed (52b7114d1)
+- fix(ciu): CIU-227 hostdirs only after the S6.5 preconditions; CIU-230 refusal remedy; CIU-231 empty-selection refusal (09253513c)
+
+### Changed
+- run-gate: raise the 14 estate assay-wrapper budgets to inner + 5m (RG-307) (892d86ffa)
+
+### Documentation
+- docs(ciu): CIU-227/230/231 in CHANGES, backlog, SPEC S6.3/S6.5, CONSUMERS 14 and the DESIGN-GUIDE (811347637)
+
+### Testing
+- test(ciu): cover the existing-compatible-hostdir early return (ciu-gate coverage 99.98% on 14d8f4157) (9acb108e6)
+- test(ciu): CIU-227/230/231 focused tests (preconditions-before-hostdir, remedy text, empty-selection refusal) (a4be59c2a)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - CIU-231: an empty deploy selection no longer reports success when the
   invocation directory is one stack directory of this CIU root. `ciu up` there
@@ -90,8 +112,7 @@ the technical detail below it.
 - The S6.5 root helper still requires `CGROUP_PARENT_DEV_INTERACTIVE`; what
   changed is that a missing value is refused BEFORE any hostdir exists, and the
   refusal now says what to export and how to find a loaded slice.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [7.27.0] - 2026-11-24
 <!-- cmru: generated -->
