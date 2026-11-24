@@ -319,6 +319,7 @@ def test_help_automatically_colors_only_when_destination_is_a_tty(monkeypatch):
 
     app = _registered_cli()
     monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
     stdout = TTY()
     assert app.run(argv=(), stdout=stdout, stderr=io.StringIO()) == 0
     assert "\033[" in stdout.getvalue()
@@ -328,7 +329,14 @@ def test_help_automatically_colors_only_when_destination_is_a_tty(monkeypatch):
     assert app.run(argv=(), stdout=stdout, stderr=io.StringIO()) == 0
     assert "\033[" not in stdout.getvalue()
 
+    # CLI-EXT-42: an empty NO_COLOR is unset (no-color.org), so a TTY gets colour.
     monkeypatch.setenv("NO_COLOR", "")
+    stdout = TTY()
+    assert app.run(argv=(), stdout=stdout, stderr=io.StringIO()) == 0
+    assert "\033[" in stdout.getvalue()
+
+    monkeypatch.delenv("NO_COLOR")
+    monkeypatch.setenv("TERM", "dumb")
     stdout = TTY()
     assert app.run(argv=(), stdout=stdout, stderr=io.StringIO()) == 0
     assert "\033[" not in stdout.getvalue()
@@ -1237,12 +1245,13 @@ def test_progress_auto_falls_back_to_plain_and_rawjson_is_machine_readable():
     assert "finished <redacted>" in redacted.getvalue()
 
 
-def test_progress_tty_completion_keeps_severity_and_honors_empty_no_color(monkeypatch):
+def test_progress_tty_completion_keeps_severity_and_follows_the_colour_rule(monkeypatch):
     class TTY(io.StringIO):
         def isatty(self):
             return True
 
-    monkeypatch.setenv("NO_COLOR", "")
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setenv("NO_COLOR", "1")
     plain = TTY()
     progress = ProgressRenderer(ProgressMode.TTY, stream=plain)
     progress.update("working")
@@ -1250,6 +1259,14 @@ def test_progress_tty_completion_keeps_severity_and_honors_empty_no_color(monkey
     assert "\033[36m" not in plain.getvalue()
     assert "[INFO] working" in plain.getvalue()
     assert plain.getvalue().endswith("[INFO] complete\n")
+
+    # An empty NO_COLOR is unset (CLI-EXT-42), so the TTY gets colour.
+    monkeypatch.setenv("NO_COLOR", "")
+    empty = TTY()
+    progress = ProgressRenderer(ProgressMode.TTY, stream=empty)
+    progress.update("working")
+    progress.finish("complete")
+    assert "\033[36m[INFO] complete\033[0m" in empty.getvalue()
 
     monkeypatch.delenv("NO_COLOR")
     colored = TTY()
