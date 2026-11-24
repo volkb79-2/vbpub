@@ -29,6 +29,8 @@ files=(
   "$SCRIPT_DIR/../push-image.sh"
   "$SCRIPT_DIR/../skills-sync.sh"
   "$SCRIPT_DIR/../self-resume.sh"
+  "$SCRIPT_DIR/../compact-resume.sh"
+  "$SCRIPT_DIR/../resume-lib.sh"
   "$REPO_ROOT/scripts/netcup/runner/host-sat-queue.sh"
   "$REPO_ROOT/scripts/netcup/runner/remote-gate-cache.sh"
   "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh"
@@ -46,6 +48,7 @@ files=(
   "$SCRIPT_DIR/test-ctl-doctor.sh"
   "$SCRIPT_DIR/test-ctl-state-backup.sh"
   "$SCRIPT_DIR/test-self-resume.sh"
+  "$SCRIPT_DIR/test-compact-resume.sh"
   "$SCRIPT_DIR/run-suite.sh"
   "$queue_test"
 )
@@ -68,6 +71,7 @@ bash "$SCRIPT_DIR/test-chain-run.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-doctor.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-state-backup.sh" || exit $?
 bash "$SCRIPT_DIR/test-self-resume.sh" || exit $?
+bash "$SCRIPT_DIR/test-compact-resume.sh" || exit $?
 bash "$queue_test" || exit $?
 bash "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh" || exit $?
 bash "$SCRIPT_DIR/test-mutations.sh" || exit $?

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -u
+# compact-resume.sh <tmux-pane-id> <compact-guidance-file> <resume-prompt-file> <log-file>
+# DEFAULT restart of an interactive Claude Code session in a tmux pane: wait until the pane is
+# idle, send "/compact <guidance>" (the file's newlines become spaces), wait until the compaction
+# has finished (pane busy, then idle again; max 60 min), then type the resume prompt and Enter.
+# The session is kept as a summary and its background work (subagents, Monitors, background
+# shells, codex runs) survives, unlike /clear (self-resume.sh). Measured 2026-11-24: 442k -> ~60k
+# tokens in ~46 s. Launch it DETACHED (`setsid nohup ... &`, never Bash run_in_background), then
+# end the turn. Procedure: AGENTS.md "Successor restart of an interactive session".
+#
+# Exit codes: 0 resume prompt sent (a compaction that never showed busy only logs WARN); 2 bad
+# arguments, unreadable guidance/prompt file, unwritable log or no such pane (nothing sent);
+# 3 pane never idle within 30 min (nothing sent); 4 compaction not finished within 60 min (the
+# /compact was sent, the resume prompt was not). Progress goes to <log-file>. Footer markers and
+# the shared idle logic: resume-lib.sh. Test seams (tests/test-compact-resume.sh):
+# COMPACT_RESUME_{POLL,IDLE_TRIES,TYPE_PAUSE,FINAL_WAIT,START_TRIES,DONE_TRIES,SETTLE}.
+RESUME_PREFIX=COMPACT_RESUME
+# shellcheck source=resume-lib.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/resume-lib.sh"
+BUSY_MARKERS+=('Compacting')   # the spinner line of a running compaction (Claude Code 2.1.331)
+FOOT_LINES=6                   # the compaction spinner sits higher than the working one
+start_tries=$(seam START_TRIES 60) done_tries=$(seam DONE_TRIES 1800) settle=$(seam SETTLE 3)
+[[ $# -eq 4 ]] || { echo "usage: ${0##*/} <tmux-pane-id> <compact-guidance-file> <resume-prompt-file> <log-file>" >&2; exit 2; }
+pane=$1; guidance_file=$2; prompt_file=$3; log=$4
+check_log
+[[ -r $guidance_file ]] || { say "ERROR guidance file unreadable: $guidance_file"; exit 2; }
+[[ -r $prompt_file ]] || { say "ERROR prompt file unreadable: $prompt_file"; exit 2; }
+check_pane
+say "start pane=$pane guidance=$guidance_file prompt=$prompt_file"
+wait_idle "$idle_tries" || { say "ERROR pane never idle within 30 min"; exit 3; }
+guidance=$(cat -- "$guidance_file"); guidance=${guidance//$'\n'/ }
+say "pane idle; footer before: $(foot | grep -o 'ctx [0-9?]*k\?' | tail -1)"
+send_text "/compact $guidance"
+started=0
+for _ in $(seq "$start_tries"); do if busy; then started=1; break; fi; sleep "$poll"; done
+if [[ $started -eq 1 ]]; then say "compaction running"; else say "WARN compaction never showed busy"; fi
+wait_idle "$done_tries" || { say "ERROR compaction not finished within 60 min"; exit 4; }
+say "compaction done; footer: $(foot | tr '\n' '|')"
+sleep "$settle"
+send_text "$(cat -- "$prompt_file")"
+sleep "$final_wait"
+say "resume prompt sent; footer: $(foot | tr '\n' '|')"
