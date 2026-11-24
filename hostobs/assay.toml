@@ -23,8 +23,10 @@
 #   `encode.rs`, `lib.rs`, `limits.rs`, `lines.rs`, `main.rs` and `verbs.rs`, 55 since P5b-1b
 #   added and declared `bins/probe/src/backend.rs` and `conn.rs`, 56 since P5b-1b part 2
 #   added and declared `bins/probe/src/server.rs`, 58 since P5b-2b added and declared
-#   `bins/probe/src/registry.rs` and `tick.rs`, 56 now after P4 deleted `kernel/src/quality.rs`,
-#   `kernel/src/value.rs` and `store/src/quality.rs`; the measurements below are the historical 33)
+#   `bins/probe/src/registry.rs` and `tick.rs`, 60 after P10 added and declared
+#   `bins/probe/src/live.rs` and `sampler.rs`, 61 now after P09 added and declared
+#   `crates/kernel/src/activation.rs`, `bins/probe/src/config.rs` and `driver.rs`; the
+#   measurements below are the historical 33)
 #   coverage:   15100 / 15723 executable lines = 96.0377 %
 #               model 98.09 % (2004/2043), proto 99.71 % (3454/3464),
 #               kernel 93.52 % (2627/2809), store 94.71 % (7015/7407)
@@ -135,7 +137,9 @@ targets = [
   "bins/probe/src/backend.rs",
   "bins/probe/src/classify.rs",
   "bins/probe/src/codes.rs",
+  "bins/probe/src/config.rs",
   "bins/probe/src/conn.rs",
+  "bins/probe/src/driver.rs",
   "bins/probe/src/encode.rs",
   "bins/probe/src/lib.rs",
   "bins/probe/src/limits.rs",
@@ -155,6 +159,7 @@ targets = [
   "crates/client/src/level.rs",
   "crates/client/src/streams.rs",
   "crates/client/src/transport.rs",
+  "crates/kernel/src/activation.rs",
   "crates/kernel/src/cgroup.rs",
   "crates/kernel/src/clock.rs",
   "crates/kernel/src/cmdline.rs",
