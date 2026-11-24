@@ -203,9 +203,9 @@ def test_provenance_constructor_owns_the_optional_fields():
 def test_schema_one_carry_over_derives_imported_exact_id_provenance():
     # Positive control for the read-only schema-1 path: a valid block on a
     # record with a valid candidate id derives the canonical imported object,
-    # with the block's own judge digest and reason.
+    # with the block's from-judge digest (not its into digest) and its reason.
     candidate = "c" * 64
-    carry = _carry_v1(_OLD_JUDGE)
+    carry = {**_carry_v1(_OLD_JUDGE), "into_judge_sha256": _CURRENT_JUDGE}
     assert mutation.record_provenance({
         "candidate_id": candidate,
         "carry_over": carry,
