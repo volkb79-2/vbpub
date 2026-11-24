@@ -24,12 +24,13 @@ TURN service is configured. Mattermost documents the integrated service as
 self-hosted and says call media and metadata do not traverse a third-party
 system. See the [Calls deployment guide](https://docs.mattermost.com/deployment-guide/calls/calls-deployment-guide).
 
-The public HTTPS/WebSocket route remains on TCP 443. Calls media uses public
-TCP and UDP 8443, with UDP preferred and TCP as a fallback. Both edge routers
-forward to port 8443 inside the Mattermost container. On this host, HTTPS-alt
-uses public TCP 9443 and Traefik's internal TCP 8443. Therefore Traefik's
-Calls TCP entrypoint uses internal TCP 8444; UDP 8443 does not conflict with
-TCP 8443 because these are separate protocols.
+The public HTTPS/WebSocket route remains on TCP 443 through tls-edge. Calls
+uses DTLS/SRTP media on host TCP and UDP 8443, with UDP preferred and TCP as
+a fallback, published directly by the Mattermost container. The edge carries
+no Calls L4 traffic: UDP has no SNI for routing, the edge terminates no TLS
+on that transport, and an extra userland hop would add CPU cost and lose
+client source addresses. TCP and UDP can use the same numeric port because
+they are separate sockets.
 
 The Calls plugin advertises the configured public hostname and port so clients
 can connect to this host directly. This avoids the server having to discover

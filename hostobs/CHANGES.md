@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - **Changed (WIRE.md, P-hostobs-03, `HOB-65`/`HOB-71`/`HOB-72` spec):** no request waits (D-W49, D-W50; D-W30 retired), JSON mode only at observer/control (D-W51), probe-wide keys with `max_rows` 1,024, Query 1/4 MiB, `max_block_bytes` 1 MiB and history 2/8 (D-W52), no per-uid pools and per-uid caps equal to the level caps at observe (D-W20, D-W53); code follows in P-hostobs-05/06 (V-21).
+- **Docs (P-hostobs-02, `HOB-66`)**: `docs/PROBE-PROCESS.md` decides the probe's process and thread model (sampler, server loop and placed writer threads; non-blocking backend rule; eventfd wakeup; rustix with one audited `unsafe` line in `kernel`; named `LISTEN_FDS`; shutdown; minimal config; in-process test harness); the hub doc no longer claims a mutex.
 
 ### Added (P5b-2d server: tick delivery, retries, served verbs and reachable §11.4 cases; `HOB-54` stays open)
 
