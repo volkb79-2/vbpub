@@ -358,6 +358,7 @@ def test_the_real_dockerfile_pin_is_readable_by_the_check(tmp_path):
     text = DOCKERFILE.read_text(encoding="utf-8")
     pinned = re.search(r"^ARG CLI_EXTENDED_WHEEL_SHA256=([0-9a-f]{64})$", text, re.MULTILINE).group(1)
     url = re.search(r"^ARG CLI_EXTENDED_WHEEL_URL=(\S+)$", text, re.MULTILINE).group(1)
+    assert "cli-extended-v0.8.0/cli_extended-0.8.0-py3-none-any.whl" in url
     _pointer(tmp_path / "latest.json", pinned, url)
 
     values = _parse(_identity(

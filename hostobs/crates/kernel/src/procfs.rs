@@ -10,7 +10,7 @@
 //!   ([`ProcError::Gone`]) rather than returning an empty record.
 //! - **A per-process field that did not parse is unreadable, never zero.** [`parse_statm`]
 //!   and [`parse_status`] keep the fields they read and report the rest as
-//!   [`QualityCode::UNREADABLE`] with the field name.
+//!   [`QualityCode::Unreadable`] with the field name.
 //! - **`/proc/stat`'s CPU tick fields are counters, and their names are the kernel's.**
 //!   Guest and guest-nice reuse the user/nice slots on a host with no guests; this reader
 //!   keeps every column the file writes and does not fold two columns into one, because the
@@ -66,15 +66,15 @@ impl ProcError {
     #[must_use]
     pub fn quality(&self) -> QualityCode {
         match self {
-            ProcError::Gone => QualityCode::ABSENT,
-            ProcError::Read(error) => error.quality(QualityCode::ABSENT),
-            ProcError::NotAPid { .. } => QualityCode::UNREADABLE,
-            ProcError::Parse { .. } => QualityCode::UNREADABLE,
+            ProcError::Gone => QualityCode::Absent,
+            ProcError::Read(error) => error.quality(QualityCode::Absent),
+            ProcError::NotAPid { .. } => QualityCode::Unreadable,
+            ProcError::Parse { .. } => QualityCode::Unreadable,
             ProcError::Kernel(error) => error.quality(),
             ProcError::Cmdline(error) => error.quality(),
             ProcError::Identity(error) => match error {
-                IdentityError::Read(read) => read.quality(QualityCode::UNREADABLE),
-                _ => QualityCode::UNREADABLE,
+                IdentityError::Read(read) => read.quality(QualityCode::Unreadable),
+                _ => QualityCode::Unreadable,
             },
         }
     }
@@ -270,8 +270,8 @@ pub fn parse_proc_stat(text: &[u8], bounds: Bounds) -> Result<Readings, ProcErro
                     Some(Ok(raw)) => readings.measured(metric, Value::U64(raw)),
                     // The kernel may write fewer than ten columns on an older build;
                     // `guest`/`guest_nice` missing is a feature absence, not zero.
-                    Some(Err(_)) => readings.missing(metric, QualityCode::UNREADABLE),
-                    None => readings.missing(metric, QualityCode::UNSUPPORTED),
+                    Some(Err(_)) => readings.missing(metric, QualityCode::Unreadable),
+                    None => readings.missing(metric, QualityCode::Unsupported),
                 }
             }
             // Columns past the ten known ones keep the kernel's own name.
@@ -292,7 +292,7 @@ pub fn parse_proc_stat(text: &[u8], bounds: Bounds) -> Result<Readings, ProcErro
                         } else {
                             format!("proc.cpu.{name}.{field}")
                         },
-                        QualityCode::UNREADABLE,
+                        QualityCode::Unreadable,
                     ),
                 }
             }
@@ -309,8 +309,8 @@ pub fn parse_proc_stat(text: &[u8], bounds: Bounds) -> Result<Readings, ProcErro
         };
         match parts.get(1).copied().map(parse_u64) {
             Some(Ok(value)) => readings.measured(metric, Value::U64(value)),
-            Some(Err(_)) => readings.missing(metric, QualityCode::UNREADABLE),
-            None => readings.missing(metric, QualityCode::UNREADABLE),
+            Some(Err(_)) => readings.missing(metric, QualityCode::Unreadable),
+            None => readings.missing(metric, QualityCode::Unreadable),
         }
     }
     if !saw_cpu {
@@ -375,7 +375,7 @@ pub fn parse_meminfo(text: &[u8], bounds: Bounds) -> Result<Readings, ProcError>
         let metric = format!("meminfo.{unit}.{name}");
         match parse_u64(number_text) {
             Ok(raw) => readings.measured(metric, Value::U64(raw)),
-            Err(_) => readings.missing(metric, QualityCode::UNREADABLE),
+            Err(_) => readings.missing(metric, QualityCode::Unreadable),
         }
     }
     Ok(readings)
@@ -411,7 +411,7 @@ pub fn parse_vmstat(text: &[u8], bounds: Bounds) -> Result<Readings, ProcError> 
         let metric = format!("vmstat.{name}");
         match parse_u64(value) {
             Ok(raw) => readings.measured(metric, Value::U64(raw)),
-            Err(_) => readings.missing(metric, QualityCode::UNREADABLE),
+            Err(_) => readings.missing(metric, QualityCode::Unreadable),
         }
     }
     Ok(readings)
@@ -661,7 +661,7 @@ pub fn parse_status(text: &[u8], bounds: Bounds) -> Result<Readings, ProcError> 
             let metric = format!("proc.status.{unit}.{name}.{index}");
             match parse_u64(part) {
                 Ok(raw) => readings.measured(metric, Value::U64(raw)),
-                Err(_) => readings.missing(metric, QualityCode::UNREADABLE),
+                Err(_) => readings.missing(metric, QualityCode::Unreadable),
             }
         }
     }
@@ -670,7 +670,7 @@ pub fn parse_status(text: &[u8], bounds: Bounds) -> Result<Readings, ProcError> 
         if !seen.contains(&field) {
             readings.missing(
                 format!("proc.status.count.{field}.0"),
-                QualityCode::UNSUPPORTED,
+                QualityCode::Unsupported,
             );
         }
     }
@@ -687,7 +687,7 @@ pub fn parse_status(text: &[u8], bounds: Bounds) -> Result<Readings, ProcError> 
 ///
 /// # Errors
 ///
-/// `ProcError::Parse` for a shape the file does not have, and [`QualityCode::UNREADABLE`]
+/// `ProcError::Parse` for a shape the file does not have, and [`QualityCode::Unreadable`]
 /// for one field that does not parse (that field alone).
 pub fn parse_statm(text: &[u8]) -> Result<Readings, ProcError> {
     let parts = fields(trim(text));
@@ -712,7 +712,7 @@ pub fn parse_statm(text: &[u8]) -> Result<Readings, ProcError> {
     {
         match parse_u64(parts[index]) {
             Ok(raw) => readings.measured(*metric, Value::U64(raw)),
-            Err(_) => readings.missing(*metric, QualityCode::UNREADABLE),
+            Err(_) => readings.missing(*metric, QualityCode::Unreadable),
         }
     }
     Ok(readings)
@@ -1011,7 +1011,7 @@ mod tests {
         assert_eq!(readings.u64("proc.statm.size"), Some(10));
         assert_eq!(
             readings.quality("proc.statm.shared"),
-            Some(QualityCode::UNREADABLE)
+            Some(QualityCode::Unreadable)
         );
     }
 
@@ -1022,11 +1022,11 @@ mod tests {
         assert_eq!(readings.u64("proc.status.text.Name"), Some(u64::from(b'a')));
         assert_eq!(
             readings.quality("proc.status.count.Threads.0"),
-            Some(QualityCode::UNREADABLE)
+            Some(QualityCode::Unreadable)
         );
         assert_eq!(
             readings.quality("proc.status.count.VmPeak.0"),
-            Some(QualityCode::UNSUPPORTED),
+            Some(QualityCode::Unsupported),
             "a field the kernel did not write is an absence, never a zero"
         );
         assert!(STATUS_FIELDS.contains(&"VmSwap"));

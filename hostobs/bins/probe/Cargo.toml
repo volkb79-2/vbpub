@@ -8,7 +8,6 @@ publish = false
 workspace = true
 
 [dependencies]
-hostobs-kernel = { path = "../../crates/kernel" }
 hostobs-proto = { path = "../../crates/proto" }
 ruzstd.workspace = true
 serde.workspace = true

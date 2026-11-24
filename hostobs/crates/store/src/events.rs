@@ -25,9 +25,9 @@
 //!   an unknown name, [`check_name`] enforces §C.4's `^[a-z][a-z0-9_.-]{0,63}$`, and
 //!   [`check_bounded`] enforces the byte bounds. Nothing is truncated to fit: a 65-byte key is
 //!   a refused key.
-//! * **The payload is still a `proto` EVT frame.** The store does not build one (it has no
-//!   `proto` dependency, `HOB-27`): it checks the frame header facts that decide whether these
-//!   bytes may be stored, exactly as it does for a BLOCK frame in a history tier.
+//! * **The payload is still a `proto` EVT frame.** The store does not build one: it parses
+//!   the fixed header fields through `proto`, then checks the events corpus's frame type and
+//!   SECTIONED flag exactly as it does for a BLOCK frame in a history tier.
 
 use std::collections::BTreeMap;
 

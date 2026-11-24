@@ -10,7 +10,7 @@ recovery scenarios require systemd-boot). Scenarios are NOT idempotent: s2-s3 en
 default, kernel-upgrade changes boot state, and each recovery scenario damages and then deletes its failed guest state.
 Run each in its own fresh guest (new overlay on the installed base); boot-check may share a guest with either. The
 apt hook's dedupe window (dr-state, default 900 s) is another reason: a second apt run of the same state within the
-window takes no snapshot, so scenarios that count new snapshots need a guest without a recent one. The guest must be running (dr-qemu.sh start) with a
+window takes no snapshot, so scenarios that count new snapshots need a guest without a recent one. The guest must be running (vm-lab start --plain-host) with a
 login prompt on ttyS0 and root password "root" (the PoC installer default). The log is a plain transcript
 and is the evidence; the PASS/FAIL lines are a convenience. Exit status is non-zero when any check fails.
 

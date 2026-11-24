@@ -695,6 +695,12 @@ sudo ./install.sh --with-baseline  # re-render + measure disk ceilings (~12 min 
 sudo mdt-host-check.sh             # verify
 ```
 
+**Required checkout set.** `install.sh` reads files outside `mdt-cockpit/host-setup/`, so a host checkout of `mdt-cockpit/` alone is not enough. The checkout
+must contain, at their repo-relative paths, `mdt-cockpit/` and `scripts/debian-install-v2/tools/` (`iocost_coef_gen.py`, `iocost_plausibility.py`, `cpu_benchmark.py`,
+`cpu_benchmark.py.sha256`, `cpu_benchmark.pins.json`). Before changing anything the installer checks every such file (one list, `preflight_checkout_set` in
+`install.sh`) and exits 2 naming the missing paths and this set; `--help`, `--dry-run-endpoints`, `--apply-protection`, `cpu-benchmark` (which checks its own three `cpu_benchmark*` files) and the `--admission-only` publish do not need them. The preflight also runs the `cpu_benchmark.py.sha256` check, so a modified tool is refused before anything is rendered.
+A sparse checkout therefore needs `git sparse-checkout set mdt-cockpit scripts/debian-install-v2/tools`.
+
 ### Host service installation and endpoint publication
 
 `mdt-cockpit/host-setup` no longer provisions cgprofile or topos runtime files,
@@ -767,7 +773,11 @@ policy is left alone (no new generation). A missing cap is published with `run-g
 default `auto`, the full install keeps a differing readable cap; the explicit `--admission-only` command reconciles
 it with `--replace`. `replace` opts the full install into the same reconciliation, while `missing` never replaces.
 The explicit `--admission-only` action also uses `--replace` to repair a published object whose limit cannot be
-parsed. The cap is read back after every write. Prerequisites a fresh host does not have yet (Docker CLI missing,
+parsed. The cap is read back after every write. `run-gate` on the HOST is not expected on a runner-container gate worker (for example r1002 after the mdt-cockpit deploy): there run-gate lives inside the cockpit
+container (`mdt-cockpit-runner`, see `scripts/netcup/runner/README.md`), so the NOTE `run-gate (...) is not installed on the host` means `ADMISSION_COCKPIT` is still empty.
+Set `ADMISSION_COCKPIT=mdt-cockpit-runner` (and `ADMISSION_TICKET_IMAGE` if needed) in `/etc/mdt/host-setup.env`, then run `sudo ./host-setup/install.sh --admission-only`.
+On a host that runs gates directly (no cockpit container), run-gate must instead be on `PATH` or named by `ADMISSION_RUN_GATE`.
+Prerequisites a fresh host does not have yet (Docker CLI missing,
 Docker daemon unavailable, run-gate missing on the host or in the cockpit, cockpit stopped, ticket image absent)
 are distinct printed `NOTE`s and exit 0. After reinstall, operators must run
 `sudo ./host-setup/install.sh --admission-only` once run-gate and the ticket image exist. A publish that was
@@ -1204,6 +1214,11 @@ unmeasured (MDT-072): `io.max` on dev.slice throttles the swap-out of dev pages,
 inversion); watch `memory` PSI on the host, not only the lane. Per-container ceilings stay where a launcher sets them (`docker run --memory`, cmru's `CMRU_TESTER_*`);
 the docker-scope backstop (7.1) is untouched.
 
+Operator decision 2026-11-24 (documented, no code cap): on a dedicated-dev host `dev-interactive.slice` and `dev-buildkitd.slice` are intentionally bounded
+only by dev.slice's `MemoryHigh` (reclaim into swap above it) and carry no `MemoryMax` of their own; dev.slice's own `MemoryMax` is the combined RAM+swap figure
+that `memory.max` cannot reach (see above). Only `dev-gates.slice` and `dev-background.slice` get a finite `MemoryMax` (dev.slice's `MemoryHigh`). The IDE and the
+BuildKit daemon are therefore never OOM-killed by a tier cap, and a runaway in either meets only dev.slice throttling, the swap allowance and finally the global OOM killer.
+
 ssh is deliberately not protected: sshd restores the OOM score it started with into every login session, so `OOMScoreAdjust=-900` on `ssh.service` would make every login
 shell, IDE server and manual process -900 after the next sshd restart (the sshd listener already runs at -1000). `DEV_HOST_PROTECTED_UNITS` refuses ssh/sshd names, and
 install.sh removes a stale `ssh.service.d/50-mdt-dedicated-dev.conf` an earlier version rendered. Drop-ins are mode 0644.
@@ -1427,7 +1442,11 @@ presence, BFQ scheduler, timer enablement, and lists every running
 container's cgroup parent, and the published run-gate gates admission cap against the host policy (MDT-077,
 above). Exit 0 = no failures (warnings possible).
 
-The one failure it reports as FAIL rather than WARN is a missing
+It also FAILs when systemd-oomd can act on the dev tier (MDT-108): `ManagedOOMMemoryPressure` or `ManagedOOMSwap` is not `auto` on any `dev*.slice` or on `-.slice`, or
+`oomctl dump` lists a `dev*.slice` or the root slice. A stale drop-in, a `systemctl set-property` override or a distro ancestor default is the usual cause; host-setup never
+removes what it did not render. WARN (not FAIL) when `oomctl` is absent, its dump fails, or its output lacks the `Memory Pressure Monitored CGroups:` section (format unrecognised, never read as clean).
+
+The other failure it reports as FAIL rather than WARN is a missing
 `memory_recursiveprot`: with that flag absent every `MemoryLow`/`MemoryMin` in
 both tiers protects nothing, while `systemctl show` still reports the value you
 set. See [CGROUP-NOTES.md §5](CGROUP-NOTES.md#5-cgroup2-mount-options--not-a-unit-setting-at-all).

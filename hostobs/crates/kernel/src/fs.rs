@@ -153,15 +153,15 @@ impl FsError {
     /// The quality code this refusal maps to.
     ///
     /// `absent` is the code the caller uses for a missing *optional* file: an absent
-    /// per-cgroup controller is `QualityCode::ABSENT`, while an absent host feature (a
-    /// kernel without PSI, say) is `QualityCode::UNSUPPORTED`. The caller states which,
+    /// per-cgroup controller is `QualityCode::Absent`, while an absent host feature (a
+    /// kernel without PSI, say) is `QualityCode::Unsupported`. The caller states which,
     /// so this function cannot guess it wrongly.
     #[must_use]
     pub const fn quality(self, absent: QualityCode) -> QualityCode {
         match self {
             FsError::NotFound | FsError::NotAFile | FsError::NotADirectory => absent,
-            FsError::PermissionDenied | FsError::Io(_) => QualityCode::UNREADABLE,
-            FsError::TooLarge { .. } | FsError::TooManyEntries { .. } => QualityCode::NOT_SAMPLED,
+            FsError::PermissionDenied | FsError::Io(_) => QualityCode::Unreadable,
+            FsError::TooLarge { .. } | FsError::TooManyEntries { .. } => QualityCode::NotSampled,
         }
     }
 }
@@ -608,22 +608,22 @@ mod tests {
     #[test]
     fn every_failure_maps_to_a_quality_code_and_absence_is_the_callers_choice() {
         assert_eq!(
-            FsError::NotFound.quality(QualityCode::ABSENT),
-            QualityCode::ABSENT
+            FsError::NotFound.quality(QualityCode::Absent),
+            QualityCode::Absent
         );
         assert_eq!(
-            FsError::NotFound.quality(QualityCode::UNSUPPORTED),
-            QualityCode::UNSUPPORTED,
+            FsError::NotFound.quality(QualityCode::Unsupported),
+            QualityCode::Unsupported,
             "an absent host feature is the caller's code, not a guess"
         );
         for error in [FsError::PermissionDenied, FsError::Io(IoKind::Other)] {
-            assert_eq!(error.quality(QualityCode::ABSENT), QualityCode::UNREADABLE);
+            assert_eq!(error.quality(QualityCode::Absent), QualityCode::Unreadable);
         }
         for error in [
             FsError::TooLarge { max_bytes: 4 },
             FsError::TooManyEntries { max_entries: 4 },
         ] {
-            assert_eq!(error.quality(QualityCode::ABSENT), QualityCode::NOT_SAMPLED);
+            assert_eq!(error.quality(QualityCode::Absent), QualityCode::NotSampled);
         }
         for error in [
             FsError::NotFound,
