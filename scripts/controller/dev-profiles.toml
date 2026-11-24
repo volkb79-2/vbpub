@@ -54,7 +54,7 @@ clippy = ["--workspace", "--all-targets", "--", "-D", "warnings"]
 kind = "rust"
 lane = "selftest"
 environment = "tester-unified-rust"
-dev_image = "tester-unified-rust-dev:local"
+dev_image = "tester-unified-rust-dev:rs-20261124"
 workdir = "hostobs"
 cache = "/home/gate/.cache/hostobs-target"
 
