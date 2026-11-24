@@ -77,6 +77,8 @@ contains apt-preinvoke-fallback "$INSTALL" 'dr-state snapshot --reason apt || ex
 
 # Assemble the archive with the production helper as the lane's non-root user. The archive records root ownership;
 # extraction as root then reproduces it. Existing destination directories are omitted so extraction cannot alter them.
+cases=$((cases + 1))
+[ "$(id -u)" != 0 ] || bad "payload ownership test requires the lane's non-root uid"
 sed -n '/^# BEGIN payload-copy helpers$/,/^# END payload-copy helpers$/p' \
   "$INSTALL" >"$WORK/payload-helpers.sh"
 # shellcheck disable=SC1091  # extracted from the installer under test

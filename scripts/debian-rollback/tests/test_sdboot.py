@@ -938,6 +938,100 @@ class SdbootTest(_support.TemporaryRootTest):
         )
         self.assertFalse(no_pairs.exists())
 
+    def test_shrink_orphan_table_covers_none_all_order_and_unsafe_names(self) -> None:
+        def pair_name(label: str) -> str:
+            name = f"6.12.0-{label.encode().hex().ljust(64, '0')[:64]}"
+            if len(name) != len("6.12.0-") + 64:
+                raise AssertionError(f"invalid orphan-table fixture label {label!r}")
+            return name
+
+        def make_pair(label: str) -> _Pair:
+            name = pair_name(label)
+            pair_path = self.paths.esp_kernel_dir / name
+            pair_path.mkdir()
+            (pair_path / "vmlinuz").write_bytes(b"kernel\n")
+            (pair_path / "initrd.img").write_bytes(b"initrd\n")
+            return _Pair(pair_path, name, "6.12.0")
+
+        def make_entry(label: str, refs: tuple[str, ...]) -> _Entry:
+            entry_path = self.paths.entry_dir / f"{label}.conf"
+            text = "".join(
+                f"linux /EFI/dr/kernels/{ref}/vmlinuz\n"
+                f"initrd /EFI/dr/kernels/{ref}/initrd.img\n"
+                for ref in refs
+            )
+            data = text.encode()
+            entry_path.write_bytes(data)
+            return _Entry(entry_path, entry_path.name, data, False, None, frozenset(refs))
+
+        pair_none_a = make_pair("none-a")
+        pair_none_b = make_pair("none-b")
+        none_entry_a = make_entry("none-ref-a", (pair_none_a.name,))
+        none_entry_b = make_entry(
+            "none-ref-b",
+            (pair_none_a.name, pair_none_b.name),
+        )
+        self.boot._shrink(
+            _Inventory(
+                (none_entry_a, none_entry_b),
+                (pair_none_a, pair_none_b),
+            ),
+            target_entries=frozenset(),
+            target_pairs=frozenset(),
+        )
+        self.assertTrue(pair_none_a.path.exists())
+        self.assertTrue(pair_none_b.path.exists())
+
+        pair_all_a = make_pair("all-a")
+        pair_all_b = make_pair("all-b")
+        all_entry_a = make_entry("all-a-entry", ())
+        all_entry_b = make_entry("all-b-entry", ())
+        self.boot._shrink(
+            _Inventory(
+                (all_entry_a, all_entry_b),
+                (pair_all_a, pair_all_b),
+            ),
+            target_entries=frozenset(),
+            target_pairs=frozenset(),
+        )
+        self.assertFalse(pair_all_a.path.exists())
+        self.assertFalse(pair_all_b.path.exists())
+
+        keep_pair = make_pair("keep")
+        a_pair = make_pair("a-old")
+        z_pair = make_pair("z-old")
+        keep_entry = make_entry("order-keep", (keep_pair.name,))
+        self.boot._shrink(
+            _Inventory(
+                (keep_entry,),
+                (z_pair, keep_pair, a_pair),
+            ),
+            target_entries=frozenset(),
+            target_pairs=frozenset(),
+        )
+        self.assertTrue(keep_pair.path.exists())
+        self.assertFalse(z_pair.path.exists())
+        self.assertFalse(a_pair.path.exists())
+
+        invalid_pair = self.paths.esp_kernel_dir / "unsafe-existing-pair"
+        invalid_pair.mkdir()
+        (invalid_pair / "vmlinuz").write_bytes(b"kernel\n")
+        (invalid_pair / "initrd.img").write_bytes(b"initrd\n")
+        self.assertNotIn(
+            invalid_pair,
+            {pair.path for pair in self.boot._fresh_scan().pairs},
+        )
+        self.boot._shrink(
+            self.boot._fresh_scan(),
+            target_entries=frozenset(),
+            target_pairs=frozenset(),
+        )
+        self.assertTrue(invalid_pair.exists())
+        self.assertEqual(
+            _entry_refs(b"linux /EFI/dr/kernels/../escape/vmlinuz\n"),
+            frozenset(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
