@@ -12,7 +12,7 @@ unset CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING CONTROLLER_OD_UNKNOWN_BL
 unset OPENCODE_COMMAND OPENCODE_MODEL OPENCODE_PROVIDER
 unset FAKE_CODEX_402 FAKE_CODEX_402_UNKNOWN FAKE_CODEX_THREAD_ID FAKE_CODEX_CORRUPT_STATE CODEX_RC FAKE_CODEX_DAEMON
 unset FAKE_CODEX_HOLD_ON_CALL FAKE_CODEX_HOLD_UNTIL FAKE_CODEX_HOLD_CALL_COUNT FAKE_CODEX_HOLD_PID FAKE_CODEX_REASONING
-unset FAKE_CODEX_RESUME_SEQUENCE FAKE_CODEX_RESUME_TEXT FAKE_CODEX_TEXT_REASONING_EMPTY
+unset FAKE_CODEX_RESUME_SEQUENCE FAKE_CODEX_RESUME_TEXT FAKE_CODEX_TEXT_REASONING_EMPTY FAKE_CODEX_TEXT_REASONING_HOLD
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-wrapper-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
@@ -115,6 +115,22 @@ if (( hold_this_call == 1 )); then
     (( waited < 6000 )) || break
   done
   exit "${CODEX_RC:-0}"
+fi
+if [[ ${FAKE_CODEX_TEXT_REASONING_HOLD:-0} == 1 ]]; then
+  if [[ $1 == exec && $2 == resume ]]; then
+    # The first continuation ends reasoning-only, so the wrapper starts a
+    # second continuation. That second call is held by the generic hold block.
+    printf '{"type":"turn.started"}\n'
+    printf '{"type":"item.completed","item":{"type":"reasoning","text":"still thinking"}}\n'
+    printf '{"type":"turn.completed"}\n'
+    exit 0
+  fi
+  printf '{"type":"thread.started","thread_id":"held-source-thread"}\n'
+  printf '{"type":"turn.started"}\n'
+  printf '{"type":"item.completed","item":{"type":"agent_message","text":"ATTEMPT-1-FINAL"}}\n'
+  printf '{"type":"item.completed","item":{"type":"reasoning","text":"trailing thought"}}\n'
+  printf '{"type":"turn.completed"}\n'
+  exit 0
 fi
 if [[ -n ${FAKE_CODEX_SLEEP:-} ]]; then
   # A slow child, so a test can observe a run that is still working.
@@ -273,6 +289,33 @@ check_ctl38_last_text_all_paths() {
     || fail 'CTL-38 auto-resume erased the invocation text when a later attempt was empty'
   [[ $(cat "$runs/ctl38-full-stream.done") == 'EXIT=42 OUTCOME=CODE-EXIT AUTORESUME=1 EFFORT=xhigh' ]] \
     || fail 'CTL-38 full-stream fixture recorded the wrong completion marker'
+
+  # Hold the SECOND continuation so the check can inspect the file between
+  # attempts. The first continuation is reasoning-only and must not erase text
+  # already present in the invocation's accumulated stream.
+  local held_launcher held_rc=0
+  rm -f -- "$ROOT/ctl38-held.hold.pid" "$ROOT/ctl38-held.release" "$ROOT/ctl38-held.count"
+  PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+    CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+    CODEX_LOG="$ROOT/ctl38-held.log" CODEX_AUTO_CONTINUE=2 FAKE_CODEX_TEXT_REASONING_HOLD=1 \
+    FAKE_CODEX_HOLD_UNTIL="$ROOT/ctl38-held.release" FAKE_CODEX_HOLD_PID="$ROOT/ctl38-held.hold.pid" \
+    FAKE_CODEX_HOLD_ON_CALL=3 FAKE_CODEX_HOLD_CALL_COUNT="$ROOT/ctl38-held.count" \
+    "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" ctl38-held > "$ROOT/ctl38-held.out" 2>&1 &
+  held_launcher=$!
+  for _ in {1..2000}; do
+    [[ -s $ROOT/ctl38-held.hold.pid ]] && break
+    kill -0 "$held_launcher" 2>/dev/null || break
+    sleep 0.05
+  done
+  [[ -s $ROOT/ctl38-held.hold.pid ]] \
+    || { cat "$ROOT/ctl38-held.out" >&2; fail 'CTL-38 held continuation never started'; }
+  cmp -s "$ROOT/ctl38-full-stream.expected" "$runs/ctl38-held.last.txt" \
+    || fail 'CTL-38 an intervening reasoning-only attempt erased the invocation text'
+  : > "$ROOT/ctl38-held.release"
+  wait "$held_launcher" || held_rc=$?
+  [[ $held_rc == 0 ]] || { cat "$ROOT/ctl38-held.out" >&2; fail "CTL-38 held continuation exited $held_rc"; }
+  [[ $(cat "$runs/ctl38-held.done") == 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=2 EFFORT=xhigh' ]] \
+    || fail 'CTL-38 held continuation recorded the wrong completion marker'
 
   # A signalled resume must not expose the previous invocation's text beside the
   # fresh marker. The fake child publishes its pid after the stream is open and
