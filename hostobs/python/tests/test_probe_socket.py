@@ -126,6 +126,15 @@ class RealProbeSocket(unittest.TestCase):
                 self.fail("the activated probe published no sampler tick within 30 s")
             time.sleep(0.01)
 
+    def subscription_interval_ms(self, connection: Connection) -> int:
+        tick_ms = connection.limits["tick_ms"]
+        minimum = max(connection.limits["min_interval_ms"], tick_ms)
+        if tick_ms <= 0:
+            self.fail(f"block-level probe announced tick_ms={tick_ms}")
+        interval_ms = ((minimum + tick_ms - 1) // tick_ms) * tick_ms
+        self.assertLessEqual(interval_ms, 60_000)
+        return interval_ms
+
     def test_hello_current_subscribe_then_default_sigterm(self) -> None:
         child = self.spawn_probe()
         connection = None
@@ -136,6 +145,7 @@ class RealProbeSocket(unittest.TestCase):
             )
             self.assertEqual(connection.level, "observe")
             self.assertEqual(connection.limits["tick_ms"], 100)
+            self.assertEqual(connection.limits["min_interval_ms"], 1_000)
             self.assertEqual(connection.limits["max_rows"], 1024)
             self.wait_for_tick(connection)
 
@@ -146,7 +156,8 @@ class RealProbeSocket(unittest.TestCase):
             self.assertGreater(blocks[0].header.n_rows, 0)
             self.assertEqual(stream.end["reason"], "complete")
 
-            subscription = connection.subscribe(SELECTION, 100)
+            interval_ms = self.subscription_interval_ms(connection)
+            subscription = connection.subscribe(SELECTION, interval_ms)
             first = next(subscription)
             second = next(subscription)
             self.assertGreater(first.header.seq, 0)
@@ -177,13 +188,16 @@ class RealProbeSocket(unittest.TestCase):
         try:
             client.settimeout(CHILD_WAIT_S)
             client.connect(self.address)
+            # The parent's listening descriptor keeps the queued connection from seeing EOF
+            # after the probe exits. Drop it before waiting; the child has its own inherited fd.
+            self.listener.close()
             _, stderr = self.reap(child)
             self.assertEqual(child.returncode, 2)
             self.assert_one_stderr_line(stderr)
             self.assertIn("control", stderr)
             try:
-                got = client.recv(1, socket.MSG_DONTWAIT)
-            except (BlockingIOError, BrokenPipeError, ConnectionResetError):
+                got = client.recv(1)
+            except (BrokenPipeError, ConnectionResetError):
                 got = b""
             self.assertEqual(got, b"")
         finally:

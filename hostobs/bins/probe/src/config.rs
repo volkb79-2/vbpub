@@ -165,13 +165,12 @@ impl ConfigError {
             .span()
             .as_ref()
             .map_or((0, 0), |span| position(source, span.start));
-        let named = if message.starts_with("missing field `")
-            || message.starts_with("unknown field `")
-        {
-            named_field(&message)
-        } else {
-            None
-        };
+        let named =
+            if message.starts_with("missing field `") || message.starts_with("unknown field `") {
+                named_field(&message)
+            } else {
+                None
+            };
         let key = named
             .or_else(|| {
                 error
