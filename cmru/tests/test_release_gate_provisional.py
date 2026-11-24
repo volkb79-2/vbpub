@@ -58,20 +58,54 @@ def test_a_finished_deferred_gate_is_machine_readably_provisional(tmp_path, monk
     assert deferred["lane"] == "mutation"
     assert deferred["tracking_id"] == POSTPONE
     assert deferred["reason"] == run_release_gate.POSTPONE_REASON
-    # The standalone `mutation` lane cannot run without gate-prepared baseline
-    # facts; the documented follow-up is the full Run-Gate `gate`.
-    assert deferred["follow_up_lane"] == "gate"
+    # The native whole-target lane is the one surviving R2 path (KI-199).
+    assert deferred["follow_up_lane"] == "assay-first-release-r2"
     assert [item["id"] for item in deferred["follow_up_prerequisites"]] == [
         "release-tag-branch", "cgprofile-observer", "d4-capacity-evidence",
     ]
     marker = json.loads(_paths(repo)[1].read_text(encoding="utf-8"))
     assert marker["result"] == "provisional" and marker["status"] == "postponed"
-    assert marker["follow_up_lane"] == "gate"
+    assert marker["follow_up_lane"] == "assay-first-release-r2"
     assert marker["follow_up_prerequisites"] == deferred["follow_up_prerequisites"]
     assert marker["candidate_commit"] == _git(repo, "rev-parse", "HEAD") == manifest["source_commit"]
     report = capsys.readouterr().err
     assert "PROVISIONAL PASS" in report and "NOT an R2 pass" in report
     assert "mutation lane is DEFERRED (KI-79)" in report
+
+
+@pytest.mark.parametrize("first_release", [False, True], ids=["tagged", "no-tag"])
+def test_every_deferral_records_the_whole_target_r2_follow_up_lane(
+    tmp_path, monkeypatch, first_release,
+):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    postpone = POSTPONE
+    if first_release:
+        # A release repository with no published stable tag: same follow-up lane.
+        (repo / "cmru" / "CHANGES.md").write_text(
+            "# Changelog\n\n## [0.1.0] - 2026-10-15\n\n- first release\n", encoding="utf-8",
+        )
+        _git(repo, "add", "cmru/CHANGES.md")
+        _git(repo, "commit", "--quiet", "-m", "prepare first CMRU release")
+        monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", _git(repo, "rev-parse", "HEAD"))
+        original_load = run_release_gate._load_components
+
+        def load_without_published_stable_tag():
+            git, baseline = original_load()
+            baseline.published_release_state = lambda _root, *, git_auth: (None, {})
+            return git, baseline
+
+        monkeypatch.setattr(
+            run_release_gate, "_load_components", load_without_published_stable_tag,
+        )
+        postpone = run_release_gate.FIRST_RELEASE_POSTPONEMENT_ID
+
+    assert _gate(repo, private_root, postpone=postpone) == 0
+
+    assert "mutation" not in calls  # the deferral is recorded, never read back by the gate
+    (deferred,) = _manifest(repo)["deferred_lanes"]
+    marker = json.loads(_paths(repo)[1].read_text(encoding="utf-8"))
+    assert deferred["follow_up_lane"] == marker["follow_up_lane"] == "assay-first-release-r2"
+    assert "run-gate assay-first-release-r2" in deferred["reason"]
 
 
 def test_the_marker_is_written_only_after_the_final_assay_lane_succeeds(tmp_path, monkeypatch):

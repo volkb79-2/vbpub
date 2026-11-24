@@ -1136,8 +1136,9 @@ retained snapshot manifest (`cmru/.assay/release-gate-snapshot.json`, schema 4) 
 tracking id, follow-up lane and prerequisites, and the marker
 `.assay/mutation-postponed-cmru.json` says `result: "provisional"`. A failed lane or snapshot check
 leaves neither record, and a full `gate` records `state: "passed"` with an empty
-`deferred_lanes` and removes any stale marker. The recorded follow-up lane is `gate`
-(the standalone `mutation` lane cannot run without the aggregate gate's baseline facts).
+`deferred_lanes` and removes any stale marker. The recorded follow-up lane is
+`assay-first-release-r2` for every release, first or not: the native whole-target lane is the one
+surviving R2 path (KI-199).
 Success is decided only after cleanup: if removing the planted canary or releasing the
 snapshot fails after every lane passed, the gate exits non-zero, the marker is removed and the
 manifest says `failed`. An invocation refused before a new gate starts (for example an

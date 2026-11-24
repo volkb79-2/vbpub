@@ -1029,8 +1029,9 @@ def _report_lane_failure(project_root: Path, lane: str, since_ns: int) -> None:
 POSTPONED_MARKER = Path(".assay") / "mutation-postponed-cmru.json"
 POSTPONE_REASON = (
     "standing release rule (KI-79; the marker's target_version names the release): R0/R1 and R3 "
-    "ran, the long R2 mutation lane was skipped, and R2 runs asynchronously on the latest "
-    "release against the released tag"
+    "ran, the long R2 mutation lane was skipped, and whole-source R2 runs asynchronously on the "
+    f"latest release with `run-gate {FIRST_RELEASE_R2_FOLLOW_UP_LANE}`, at a branch created at "
+    "the released tag"
 )
 FIRST_RELEASE_POSTPONE_REASON = (
     "first CMRU release has no earlier published source baseline; whole-source R0/R1/R3 ran, "
@@ -1160,9 +1161,8 @@ def _record_postponement(
     target_version = _validate_postponement(
         project_root, tracking_id, first_release=first_release,
     )
-    # The standalone `mutation` lane refuses to run without the baseline facts
-    # only the aggregate gate prepares, so the documented follow-up is `gate`.
-    follow_up_lane = FIRST_RELEASE_R2_FOLLOW_UP_LANE if first_release else "gate"
+    # The native whole-target lane is the one surviving R2 path (KI-199).
+    follow_up_lane = FIRST_RELEASE_R2_FOLLOW_UP_LANE
     reason = FIRST_RELEASE_POSTPONE_REASON if first_release else POSTPONE_REASON
     deferral = {
         "lane": "mutation",

@@ -2063,10 +2063,9 @@ exits 0 after every required non-mutation lane and the final canary pass, and re
   (a full gate records `"passed"`; any other outcome `"failed"`, `"interrupted"` or
   `"incomplete"`), and `deferred_lanes` is a list whose entries are `{lane: "mutation",
   tracking_id, reason, follow_up_lane, follow_up_prerequisites: [{id, requirement}]}`. It is
-  `[]` for every state other than `"provisional"`. `follow_up_lane` is `gate` (the full
-  Run-Gate `gate`: the standalone `mutation` lane refuses to run without the baseline facts only
-  the aggregate gate prepares) or, for a first release with no published stable tag,
-  `assay-first-release-r2`.
+  `[]` for every state other than `"provisional"`. `follow_up_lane` is
+  `assay-first-release-r2` for every release, first or not: the native whole-target lane is the one
+  surviving R2 path (KI-199).
 - `cmru/.assay/mutation-postponed-cmru.json` (`schema_version` 3): the earlier fields plus
   `result: "provisional"` and `follow_up_prerequisites`. It is deleted when a valid new gate
   starts and written only after the canary succeeds, so a failed gate leaves none.

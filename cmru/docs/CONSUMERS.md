@@ -1062,9 +1062,9 @@ therefore has no mutation event evidence. Read its result from
 `cmru/.assay/release-gate-snapshot.json`: `"state": "provisional"` with a `deferred_lanes`
 entry for `mutation` (never `"passed"`), for example
 `jq '{state, deferred_lanes: [.deferred_lanes[] | {lane, tracking_id, follow_up_lane}]}'`.
-The later mutation campaign needs a branch created at the published release tag (so the exact tagged source is judged), the CGProfile host observer deployed and reachable, and the D-4 capacity evidence the Run-Gate follow-up lane requires (defined by the Run-Gate RG-55 program, not by CMRU). Run `run-gate
-gate` when full R2 evidence is required (the recorded `follow_up_lane` is `gate`); that lane
-includes the mutation campaign. If cleanup fails after the lanes pass, the gate exits non-zero and
+The later mutation campaign needs a branch created at the published release tag (so the exact tagged source is judged), the CGProfile host observer deployed and reachable, and the D-4 capacity evidence the Run-Gate follow-up lane requires (defined by the Run-Gate RG-55 program, not by CMRU). The recorded `follow_up_lane` is
+`assay-first-release-r2` for every release, first or not; the full `gate` lane
+remains runnable for a tag-based R2 but is no longer the recorded follow-up. If cleanup fails after the lanes pass, the gate exits non-zero and
 leaves `"state": "failed"` with an empty `deferred_lanes` and no marker; an invocation refused
 before a new gate starts leaves the previous run's marker and manifest untouched.
 

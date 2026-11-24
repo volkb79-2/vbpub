@@ -296,7 +296,7 @@ def test_first_release_uses_whole_source_lane_and_records_actionable_r2_follow_u
     assert record["target_version"] == "0.1.0"
     assert record["baseline_state"] == "no-published-stable-release"
     assert record["follow_up_lane"] == "assay-first-release-r2"
-    assert "whole-source R2" in record["reason"]
+    assert "run-gate assay-first-release-r2" in record["reason"]
     assert "FIRST-RELEASE-R2" in capsys.readouterr().err
 
 
