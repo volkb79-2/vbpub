@@ -322,12 +322,14 @@ def _acme_settings(
     root: Path,
     current: dict[str, Any],
     overlay: dict[str, Any],
+    volume_name: str,
 ) -> dict[str, str]:
     store = value_at(current, "acme", "store", default="volume")
     path = value_at(current, "traefik", "hostdir", "acme", "path", default="")
     if (
         (root / "shared" / "acme").is_dir()
         and value_at(overlay, "tls_edge", "acme", "store") is None
+        and not volume_name
     ):
         store = "hostdir"
         path = "../../shared/acme"
@@ -376,7 +378,9 @@ def configure(args: Any, runtime: CliRuntime) -> int:
         values = _collect_values(
             current, runtime, answers, allow_prompt=args.answers is None
         )
-        values.update(_acme_settings(root, current, overlay))
+        values.update(_acme_settings(
+            root, current, overlay, values["acme_volume_name"]
+        ))
         proposed = dict(current)
         proposed["domain"] = values["domain"]
         proposed.setdefault("tls", {})["mode"] = values["tls_mode"]

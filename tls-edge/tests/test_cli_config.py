@@ -268,6 +268,8 @@ def test_validate_config_hostdir_rules_and_modes(tmp_path: Path):
     stack_dir = tmp_path / "instance" / "stack" / "ciu-stack"
     stack_dir.mkdir(parents=True)
     assert config.validate_config(value, stack_dir=stack_dir)
+    value["traefik"]["hostdir"]["acme"]["path"] = str(tmp_path / "shared" / "acme")
+    assert config.validate_config(value, stack_dir=stack_dir)
     assert config.validate_config(value)  # no containment check without stack context
 
     value["acme"]["store"] = "archive"
@@ -290,6 +292,17 @@ def test_validate_config_hostdir_rules_and_modes(tmp_path: Path):
     }
     with pytest.raises(config.ConfigError, match="hostdir.acme.uid must be 0"):
         config.validate_config(value)
+
+
+def test_validate_config_hostdir_is_refused_by_standalone_renderer():
+    value = valid_config()
+    value["acme"]["store"] = "hostdir"
+    value["traefik"]["hostdir"]["acme"]["path"] = "../../shared/acme"
+    with pytest.raises(
+        config.ConfigError,
+        match='acme.store = "hostdir" requires ciu',
+    ):
+        config.validate_config(value, for_standalone=True)
 
 
 def test_set_path_creates_nested_tables_and_rejects_non_mutable_parents():

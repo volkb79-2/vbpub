@@ -65,9 +65,12 @@ def _instance(tmp_path: Path, *, marker: bool) -> tuple[Path, Path]:
     return root, stack_dir
 
 
-def _configure(root: Path, tmp_path: Path) -> None:
+def _configure(root: Path, tmp_path: Path, extra_answers: str = "") -> None:
     answers = tmp_path / "answers.toml"
-    answers.write_text('domain = "edge.example.test"\n', encoding="utf-8")
+    answers.write_text(
+        'domain = "edge.example.test"\n' + extra_answers,
+        encoding="utf-8",
+    )
     assert cli.configure(
         SimpleNamespace(root=root, answers=answers, dry_run=False),
         Runtime(),
@@ -140,6 +143,26 @@ def test_external_volume_name_is_unchanged(tmp_path: Path) -> None:
         '[tls_edge.acme]\nvolume_name = "edge-proxy_acme-data"\n',
         encoding="utf-8",
     )
+
+    compose = _render_compose(stack_dir)
+    assert _acme_mount(compose) == "acme-data:/var/lib/traefik"
+    assert compose["volumes"]["acme-data"] == {
+        "name": "edge-proxy_acme-data",
+        "external": True,
+    }
+
+
+def test_new_instance_can_still_adopt_an_external_volume(tmp_path: Path) -> None:
+    root, stack_dir = _instance(tmp_path, marker=True)
+    _configure(
+        root,
+        tmp_path,
+        'acme_volume_name = "edge-proxy_acme-data"\n',
+    )
+
+    override = tomllib.loads((stack_dir / "ciu.toml.j2").read_text(encoding="utf-8"))
+    assert override["tls_edge"]["acme"]["store"] == "volume"
+    assert override["tls_edge"]["acme"]["volume_name"] == "edge-proxy_acme-data"
 
     compose = _render_compose(stack_dir)
     assert _acme_mount(compose) == "acme-data:/var/lib/traefik"
