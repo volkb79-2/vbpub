@@ -6,6 +6,9 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Pi review launcher (`pi-review.sh`)
+- `pi-review.sh` (new; `tests/test-pi-review.sh` with the fake `pi` and account seams of `test-pi-impl.sh`): the pi counterpart of `codex-review.sh`, and a thin wrapper over `pi-impl.sh`. It runs the review on the Open Design account the implementer did NOT use, derived from `<implementer-run>.route` when that pins one and otherwise from `<implementer-run>.thread` via `opendesign-accounts.py find-thread-account`; an account it cannot find is refused with exit 2 (never a fallback to the implementer's account), and `--account volker|github2` pins the reviewer directly. Before and after the launch it records `git rev-parse HEAD`, `git status --porcelain=v1 -uall` and a hash of `git diff HEAD`; any difference appends `REVIEW-MODIFIED-TREE` to `<run>.done`, prints it and exits 4 without reverting the change. `--report` is passed through, so a review that writes no review file stays `OUTCOME=NO-REPORT`, and a report path inside the reviewed worktree is refused. `pi --help` can restrict tools (`--tools`, `--exclude-tools`, `--no-tools`) but `pi-impl.sh` has no pass-through for extra pi arguments, so that restriction is a follow-up rather than part of this change.
+
 ### Test fix: piped `grep -q` under pipefail
 - `tests/test-ctl-state-backup.sh`, `test-gate-slots.sh`, `test-skills-sync.sh`: a producer piped into `grep -q` could get SIGPIPE (rc 141) when grep exited on the first match while the producer was still writing, and `pipefail` then made the condition false (`--include-large must archive the large file` failed on r1002, 2026-11-24). The three uses now read to EOF (`grep ... >/dev/null`). `test-job-check.sh` was reviewed and left alone: its `grep -qF` calls read a file argument, not a pipe.
 
