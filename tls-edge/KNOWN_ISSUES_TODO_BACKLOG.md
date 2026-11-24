@@ -146,8 +146,8 @@ Source: `.controller-state/design-review-2026-11-24/tls-edge.md` H1, H3
 
 ### TE-02 — config schema exists three times
 
-Besides the defaults file, `_FIELDS`, `_ANSWER_KEYS` and the hand-built
-`proposed` dict in the CLI map the same fields again, `value_at(...,
+Besides the defaults file, `_FIELDS` and `_ANSWER_KEYS` in `config.py` and the
+hand-built `proposed` dict in `cli.py` map the same fields again, `value_at(...,
 default=...)` fallbacks repeat the defaults, and answer keys use a second
 vocabulary (`http_enabled` vs `ports.expose_http`). Decided: one field table
 drives prompts, answers, override writing and the proposed merge; `--answers`
@@ -197,7 +197,8 @@ Source: `.controller-state/design-review-2026-11-24/tls-edge.md` H6
 released CHANGES sections were edited after their tags, and INSTALL.md keeps
 release history. Decided: the headline is version-agnostic (install and verify
 only); version prose lives only in pending notes before the tag; released
-CHANGES sections are immutable from now on; bundled versions come from the
+CHANGES sections are immutable from now on (existing post-tag edits stay);
+INSTALL.md carries no release history; bundled versions come from the
 manifest (cmru KI-197).
 
 Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M2
@@ -221,9 +222,10 @@ Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M4
 The suite renders through `render_standalone.py`, not ciu's renderer, so the
 3.0.0 ciu-only ACME mount failure was invisible, no test ties the port plan to
 the rendered ports, and the 100% gate is met partly by tests of private
-helpers, source greps and config literals. Decided: port-plan and ciu-versus-standalone render
-oracles; R1 stays whole-target line and branch at 100% with
-`allow_excluded = true` for pragmas `# pragma: no cover -- <class>: <reason>`
+helpers, source greps and config literals. Decided: port-plan and
+ciu-versus-standalone render oracles; R1 stays whole-target line and branch at
+100% with `allow_excluded = true`, excluding only lines marked
+`# pragma: no cover -- <class>: <reason>`
 (`os-error`, `main-guard`, `tty-only`), at most 12 excluded lines, enforced by
 `tests/test_coverage_policy.py`; tests drive public boundaries only.
 
@@ -237,7 +239,8 @@ proxy into the generic edge, while Jitsi JVB publishes its media directly.
 Decided 2026-11-24: Mattermost publishes Calls media directly; the next major
 release deletes the preset, and the schema 2 `migrate()` drops
 `calls.enabled = false` silently and refuses `calls.enabled = true` with a
-pointer to the Mattermost stack.
+pointer to the Mattermost stack. The live cut-over is one window: the edge
+drops its 8443 listeners and Mattermost publishes 8443 itself.
 
 Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M7
 
@@ -258,7 +261,8 @@ Ports, keys and defaults are restated across many documents. ARCHITECTURE has
 two socket-proxy allowlists and claims a single source of truth, and this
 backlog holds resolved and out-of-scope plans. Decided: facts live in
 `ciu.defaults.toml.j2` and `tls-edge show`, with docs linking there;
-ARCHITECTURE keeps rationale only. The DOCKER-USER helper, multiple Traefik
+ARCHITECTURE keeps rationale only. The backlog keeps open items only; closed
+ones go one line each to `archive/2026-Q4.md`. The DOCKER-USER helper, multiple Traefik
 instances and log aggregation are dropped; the middleware library folds into
 FEAT-01, and mkcert moves to the mdt-cockpit backlog.
 
