@@ -496,6 +496,18 @@ def validate_plain_host_network(value: str) -> None:
         )
 
 
+def validate_plain_host_network_identity(value: str, network_name: str, driver: str) -> None:
+    if network_name != value:
+        raise RunnerError(
+            f"plain-host --network {value!r} resolved to Docker network {network_name!r}; "
+            "pass the exact network name, not an ID or prefix"
+        )
+    if driver in ("host", "null"):
+        raise RunnerError(
+            f"plain-host --network {value!r} uses forbidden Docker network driver {driver!r}"
+        )
+
+
 def validate_max_concurrent_guests(value: int, maximum: int) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
         raise RunnerError(
@@ -983,6 +995,14 @@ def plain_host_systemd_slice_path(slice_name: str) -> str:
         raise RunnerError(
             f"systemd slice {slice_name} has LoadState={load_state!r}; refusing auto-created slices"
         )
+    transient = plain_host_systemd_property(slice_name, "Transient")
+    if transient != "no":
+        fragment_path = plain_host_systemd_property(slice_name, "FragmentPath")
+        if not fragment_path:
+            raise RunnerError(
+                f"systemd slice {slice_name} has Transient={transient!r} and no FragmentPath; "
+                "refusing an auto-created slice"
+            )
     control_group = plain_host_systemd_property(slice_name, "ControlGroup")
     return validate_systemd_control_group(control_group, slice_name)
 
@@ -1053,6 +1073,11 @@ def verify_running_container(
     if host_config.get("Memory") != memory_bytes or host_config.get("MemorySwap") != memory_bytes:
         raise RunnerError(
             f"Docker did not apply the requested {memory_bytes / 1024**3:g} GiB memory and no-swap limits"
+        )
+    if host_config.get("NetworkMode") != network:
+        raise RunnerError(
+            f"container {name!r} has unexpected Docker network mode "
+            f"{host_config.get('NetworkMode')!r}; expected {network!r}"
         )
     if network not in (item.get("NetworkSettings", {}).get("Networks") or {}):
         raise RunnerError(f"container {name!r} is not attached to required network {network!r}")
@@ -1455,8 +1480,20 @@ def extra_disk_sizes_bytes(values: list[str]) -> list[int]:
     return [parse_extra_disk_size(value) for value in values]
 
 
-def inspect_network(name: str) -> None:
-    docker_run(["docker", "network", "inspect", name])
+def inspect_network(name: str) -> tuple[str, str]:
+    """Return Docker's exact resolved network name and driver."""
+    result = docker_run(
+        ["docker", "network", "inspect", name, "--format", "{{.Name}} {{.Driver}}"]
+    )
+    lines = result.stdout.splitlines()
+    if len(lines) != 1:
+        raise RunnerError(
+            f"Docker network inspect {name!r} returned {len(lines)} records; expected exactly one"
+        )
+    fields = lines[0].split()
+    if len(fields) != 2:
+        raise RunnerError(f"Docker returned malformed network identity for {name!r}: {lines[0]!r}")
+    return fields[0], fields[1]
 
 
 def image_exists(name: str) -> None:
@@ -2277,7 +2314,9 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         pass
     state_hash = state_identity(state_dir)
 
-    inspect_network(network)
+    network_identity = inspect_network(network)
+    if plain_host:
+        validate_plain_host_network_identity(network, *network_identity)
     selected_image_id = image_id(image)
     if plain_host:
         # The local Docker daemon sees the same namespace as this process.
