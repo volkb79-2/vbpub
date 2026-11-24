@@ -247,3 +247,31 @@ Closed items are one line each in [archive/](archive/). The format is [docs/BACK
 
 **Problem.** `initialize-state` writes `pinned=True` before D22's `pin`/`unpin` and retention semantics land. This was found in the P-20b fix round 1.
 **Wanted.** Check the default pin policy against D22 when metadata `kind` and `pinned` semantics are completed, and change the initialization value if the policy differs.
+
+## DR-120 — systemd-boot needs the non-raising list/show selector reader
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-21, DR-116
+
+**Problem.** The P-20b production default-label path constructs a non-raising `GrubBoot` only for a `grub` marker. P-21's lazy `systemd-boot` resolution needs the same reader so `list` and `show` can label a configured default without making marker failures fatal; DR-116 still holds for publication and the moved cases.
+**Wanted.** Add a non-raising `systemd-boot` default reader for `list`/`show` while retaining lazy marker resolution and the existing publication refusal paths.
+
+## DR-121 — Post-Invoke gen-menu under DR_STATE=none
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-22, DESIGN-CORE-SPLIT.md D18
+
+**Problem.** The D18 apt wrapper guards only Pre-Install. Under `DR_STATE=none`, the Post-Invoke `gen-menu` still runs and selects from the command-line running state or candidates. P-20b restored command-line precedence to avoid publishing the oldest state, but the escape's intended Post-Invoke semantics remain undecided.
+**Wanted.** Decide whether Post-Invoke `gen-menu` honours `DR_STATE=none`, then implement and test the chosen wrapper/configuration behavior.
+
+## DR-122 — Replace the temporary --json refusal in P-24
+
+**State:** open · **Severity:** low · **Owner:** rollback · **Links:** P-rollback-24, DESIGN-CORE-SPLIT.md D25
+
+**Problem.** P-20b temporarily refuses a global or verb-option `--json` with `Unsupported` (exit 4) while preserving `--json` as a value after `--note`, `--reason` or `--apt-actions`.
+**Wanted.** In P-24, replace the refusal with per-verb support, including `show STATE --json` and `check --json`, using the D25 schemas.
+
+## DR-123 — ZFS set-default mutates storage before boot resolution
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-42, scripts/debian-rollback/files/usr/local/lib/dr-state/dr_state/core.py
+
+**Problem.** `cmd_set_default` calls `storage.activate`, which is a real `zfs clone`/`promote` for the ZFS backend, before `_require_boot` validates the marker and boot backend. A missing or bad marker therefore refuses only after storage has changed.
+**Wanted.** Resolve the boot backend before `storage.activate` so every refusal happens before a storage mutation.
