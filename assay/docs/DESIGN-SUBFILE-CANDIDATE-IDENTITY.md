@@ -221,7 +221,7 @@ locus_key = sha256( "assay-locus/1" \0 path \0 qualname \0 segment_sha256 \0
 | `--carry-over DIR --carry-over-reason` | unchanged exact-id import. Under v21 its imported kills are marked `carried-unverified` (§7 D2) |
 | `--merge-state`, `--merge-shard-store` | unchanged: same effective judge only (`4088-4095`). Carried and replayed records merge like any other |
 | `--shard K/N` | unchanged assignment (by current id). Each shard carries forward and replays its own jobs. Node baselines are cached per shard store (`<store>/node-baselines/<judge>/<sha256(node)>.json`), so a node shared by two shards costs two baselines (E: small). assay's `--merge-shard-store` copies the cache like records (run-gate's `--merge-shards` only drives it) |
-| `--reuse-from` (B106) | unchanged. `--carry-forward` is its shard-compatible, store-driven sibling. The two flags are mutually exclusive in one run |
+| `--reuse-from` (B106) | unchanged. `--carry-forward` is its store-driven sibling and composes with it; `--reuse-from` itself remains incompatible with `--shard` until P-assay-13 retires the prefix path |
 | `--rejudge-outcome survived` | also re-runs carried survivors. New `--rejudge-carried` re-runs every `carried` record |
 
 ## 4. Invalidation rules

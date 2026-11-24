@@ -814,6 +814,96 @@
         "weakref_slot": false
       }
     },
+    "assay.mutation_store.CombineRequest": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.mutation_store.CombineResult": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.mutation_store.Hint": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.mutation_store.MergeManifest": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.mutation_store.MergeManifestStore": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.mutation_store.StoreSource": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.mutation.IngestedMutationResult": {
       "fields": {
         "report_absent": {
@@ -958,6 +1048,51 @@
       }
     },
     "assay.mutation_store._CarryOverResult": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.mutation_store._MergeManifestProblem": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.mutation_store._MergeManifestResult": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.mutation_store._OwnStoreResult": {
       "fields": {},
       "params": {
         "eq": true,
