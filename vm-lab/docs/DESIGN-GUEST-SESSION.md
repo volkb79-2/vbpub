@@ -135,11 +135,14 @@ Semantics:
   `ConnectTimeout=5`. Only after it has proven the boot does the session open the master explicitly
   (`-M -N -f`, `ControlPersist=900`, `ConnectTimeout=30`) under a short private 0700 directory
   (unix path limit). Master establishment is retried until the caller's deadline; a started command
-  is never retried. Commands then use `ControlMaster=no` with that `ControlPath`: one key exchange
-  per boot instead of per command, which matters under TCG.
+  is never retried. Commands then use `ControlMaster=no` with that `ControlPath` and
+  `ProxyCommand=/bin/false`: one key exchange per boot instead of per command, which matters under
+  TCG. The mux client never uses the ProxyCommand, so when the master is gone a command cannot fall
+  back to its own connection (to whichever boot answers); it fails with 255 and a diagnostic, which
+  is a `GuestTransportError` (fake case: master gone, `run` raises and the command never executes).
 - **`run`** passes one remote string, `shlex.join(["timeout", "-k", "5", str(T), "bash", "-c",
-  cmd])`: `cmd` is quoted once for `bash -c`, and the whole string once more for the login shell
-  that ssh hands it to. `bash`, not `sh`: commands run in bash today (`read -t`), and dash would turn
+  cmd])`: `cmd` is quoted once by `shlex.join`; the login shell's single parse yields
+  `timeout … bash -c <cmd>`; the string is passed to ssh as one argv element. `bash`, not `sh`: commands run in bash today (`read -t`), and dash would turn
   some into silent `|| :` passes. No tty: no echo, prompt or pager. `input` goes to the remote stdin
   (file transfer, hot patches). Output is UTF-8 with replacement; each call appends a transcript
   record (time, command, rc, stdout, stderr, elapsed) to `log`.
