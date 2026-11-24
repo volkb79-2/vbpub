@@ -123,7 +123,9 @@ def test_publication_rejects_non_string_manifest_source_commit(tmp_path):
         transaction.validate_build_output_tree(root, "alpha", output_id)
 
 
-def test_abandon_captures_remote_command_output_as_text(monkeypatch, tmp_path):
+def test_abandon_captures_remote_command_output_as_text(
+    monkeypatch, tmp_path, process_run_seam,
+):
     monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     branch = "cmru-release-20260927_120000-alpha-ab12cd"
     ref = f"refs/heads/{branch}"
@@ -144,7 +146,7 @@ def test_abandon_captures_remote_command_output_as_text(monkeypatch, tmp_path):
             return subprocess.CompletedProcess(argv, 0, "", "")
         raise AssertionError(argv)
 
-    monkeypatch.setattr(transaction.subprocess, "run", run)
+    process_run_seam(transaction, run)
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_args: True)
     monkeypatch.setattr(transaction, "backup_was_removed", lambda *_args: False)
     monkeypatch.setattr(transaction, "mark_backup_removed", lambda *_args: None)
