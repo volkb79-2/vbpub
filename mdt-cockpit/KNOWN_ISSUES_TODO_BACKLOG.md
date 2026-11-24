@@ -2012,3 +2012,35 @@ Follow-up P-plat-19d (2026-11-24): `mdt-host-check.sh` FAILs when oomd can still
 - **Finding 10 (memory.peak).** 4.1's per-unit `memory.peak` is not sampled (`accept-run.sh` `ucols`, `:111-116`); no criterion uses it.
 - **F5/F7 (notes).** `swap_used` (`accept-run.sh:134`) feeds no criterion (any OOM FAILs, conservative); optionally cross-check `tested.maximum` against the manifest's `memory.max:dev.slice` (`accept-eval.py:146`).
 - **F6 (tests).** `tests/test_accept_kit.py:366` asserts a prefix of an append-only log (vacuous): use `assertEqual(self.calls(), before)`; the `frac >= 0.5` half of the load rule (`accept-eval.py:112-118`) is untested: add a run whose `dev.max_local` rises on one tick only and expect rc 4.
+
+**Addendum OPEN 2026-11-24 (unexplained flakes, from P-plat-19g/19e runs).**
+
+- **SIGHUP subtest.** `tests/test_accept_kit.py::test_int_term_and_hup_remove_both_probes_by_exact_name` (`:347-355`) failed once on r1002 in the
+  SIGHUP subtest (`:348`); the log tail read "rm bg, rm bg" and the cause is unexplained. Investigate whether a HUP arriving during
+  `start_probe` / sampling (`tools/accept/accept-run.sh:87-97`) can skip the removal of the gates probe (the tail shows `rm bg` twice, which suggests the
+  gates removal was not reached or was logged under the wrong name). Add a subtest that sends HUP before the second probe exists, and make the
+  removal trap independent of how far start-up got.
+- **dev-cache.slice flake.** `tests/test-render.sh` hit a `dev-cache.slice` flake once (smoke run 2 at `8b3361f73`; the dev-cache.slice assertions are at
+  `:186-190`), not reproduced. Record the failing assertion when it recurs.
+
+## MDT-111 - the `_fifo_file` fixture in `test_io_governance.py` races and times out under load (2026-11-24)
+
+**Status:** OPEN (filed 2026-11-24); Minor. Source: `.controller-state/platform/reviews/plat-19d-r1-opus.md`, "# Round 2".
+
+`tests/test_io_governance.py:569-582` (`_fifo_file`) serves a named pipe from a daemon thread whose `serve()` loop reopens the FIFO for writing as
+soon as the previous writer closes. If the reopen beats the reader (`cat`) to EOF, the reader receives the content a second time and never sees EOF.
+The failing run's captured stdout showed the `dev.slice vda` row twice. `test_it_lists_limits_from_files_that_report_size_zero_with_effective_values`
+(`:601`) and `test_systemd_mode_prints_properties_and_drop_in_paths` (`:614`) time out under host load; the retry passed, so the cause is the fixture
+race and not pure slowness (contention-agnostic rule: a verdict must not depend on load). Fix: serve each FIFO once per expected read (a counted
+loop), or use regular files plus a size-0 shim. Close when both tests pass 50 repetitions under `taskset` to one CPU with a competing busy loop.
+
+## MDT-112 - check.sh WARNs about the runner's deliberate `oom_score_adj=-500`, and no rebuild clears it (2026-11-24)
+
+**Status:** OPEN (filed 2026-11-24); Minor. Source: main controller request 2026-11-24 (platform STATE.md, Queued).
+
+`host-setup/scripts/check.sh:422-425` WARNs "a dev-interactive container (...) runs at oom_score_adj=-500: rebuild the devcontainer so it gets -900"
+for every container in `dev-interactive.slice` whose score is above -900. The netcup runner's cockpit container is such a container, and its launcher
+keeps `-500` deliberately (`scripts/netcup/runner/start-cockpit-runner.sh:16`, `COCKPIT_OOM_SCORE_ADJ`, P-plat-19e note 5.2; design section 5.2), so
+no rebuild removes the WARN. Fix: the check accepts the value of `COCKPIT_OOM_SCORE_ADJ` for the runner container (match its container name or read
+the runner.env value), or the WARN names the runner.env knob (`scripts/netcup/runner/runner.env.example:43`) instead of "rebuild the devcontainer".
+Close when check.sh on a runner host reports no WARN for the runner's cockpit and still WARNs for a devcontainer above -900.
