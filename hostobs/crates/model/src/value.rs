@@ -46,6 +46,16 @@ impl Value {
             _ => false,
         }
     }
+
+    /// The column value-type byte for this variant (plan v4 §B.2).
+    #[must_use]
+    pub const fn type_code(self) -> u8 {
+        match self {
+            Value::U64(_) => 1,
+            Value::I64(_) => 2,
+            Value::F64(_) => 3,
+        }
+    }
 }
 
 impl PartialEq for Value {
@@ -65,7 +75,7 @@ impl core::fmt::Display for SampleError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             SampleError::MissingCannotBeOk => {
-                f.write_str("quality `ok` marks a measurement, not a missing sample")
+                f.write_str("quality `ok` marks a measurement, not a missing reading")
             }
         }
     }
@@ -113,6 +123,16 @@ impl Sample {
     #[must_use]
     pub const fn from_wire(value: Value, quality: Quality) -> Sample {
         Sample { value, quality }
+    }
+
+    /// The collector-side name for [`Sample::from_wire`].
+    ///
+    /// A reader may already have a raw value and a quality byte; this constructor keeps
+    /// those bytes without pretending the pair is a measurement when the quality says it
+    /// is not.
+    #[must_use]
+    pub const fn from_raw(value: Value, quality: Quality) -> Sample {
+        Sample::from_wire(value, quality)
     }
 
     /// The quality code of this value.
@@ -282,6 +302,13 @@ mod tests {
             Sample::from_wire(Value::U64(5), Quality::Stale),
             Sample::from_wire(Value::U64(5), Quality::Ok),
             "the same bytes with a different quality are different values"
+        );
+        assert_eq!(Value::U64(1).type_code(), 1);
+        assert_eq!(Value::I64(1).type_code(), 2);
+        assert_eq!(Value::F64(1.0).type_code(), 3);
+        assert_eq!(
+            Sample::from_raw(Value::U64(5), Quality::Stale),
+            Sample::from_wire(Value::U64(5), Quality::Stale)
         );
     }
 }

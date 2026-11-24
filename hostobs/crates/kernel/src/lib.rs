@@ -2,10 +2,10 @@
 //!
 //! Milestone M1, part 2 (plan v4 §A.3 `kernel`, §C.1–§C.3, §F.3 SP-2). The crate reads
 //! cgroupfs and `/proc`/`/sys` files through a root-anchored, bounded, **read-only**
-//! [`Fs`](crate::fs::Fs) abstraction and returns [`Reading`](crate::value::Reading) values, each carrying one quality code from
-//! the closed vocabulary. It is the port of the proven topos sampler collectors
-//! (`topos-sampler-poc-20261105`, `topos/sampler/src/{collect,procs,util,fsafe,cmdline}`
-//! `.rs`) with the behaviours plan v4 requires to be fixed:
+//! [`Fs`](crate::fs::Fs) abstraction and returns [`Reading`](crate::value::Reading) values,
+//! each carrying one quality code from the closed vocabulary. It is the port of the
+//! proven topos sampler collectors (tag `archive/topos-sampler-poc-20261105`, commit
+//! `193bf601f`, path `topos/sampler/`) with the behaviours plan v4 requires to be fixed:
 //!
 //! - **A parse failure is a typed error carrying its quality, never a zero.** The
 //!   sampler wrote `0.0` with a state code inside the same value; here a failure produces
@@ -35,17 +35,12 @@
 //! decide *when* a fact is stale (the consumer's interval is a policy input), and it does
 //! not derive rates (`model` owns that arithmetic).
 //!
-//! # Why there is a local [`Reading`](crate::value::Reading) instead of `hostobs_model::Sample`
+//! # Shared model vocabulary
 //!
-//! A path dependency on `hostobs-model` changes `Cargo.lock`, and the Rust lane image
-//! caches exactly the committed lock (the image's baked lock digest is the authority), so
-//! `cargo --locked` refuses to build until the image is rebuilt from the new lock
-//! (`HOB-3`/`HOB-10` already record this for `model`/`proto`). The crate is therefore
-//! dependency-free: it produces the same three raw value types and the same closed
-//! quality bytes, asserted against `fixtures/wire/quality.json`, and the probe package
-//! converts `Reading` into the model's `Sample` at the boundary. `HOB-17` is the
-//! decision point (delete this type at the first image rebuild); `HOB-19` records that
-//! the conversion has no test yet because no package performs it.
+//! [`Reading`](crate::value::Reading) is an alias of `hostobs_model::Sample`, and
+//! [`QualityCode`](crate::quality::QualityCode) is the model's `Quality` type. Kernel
+//! collectors, rate derivation and the wire codec therefore agree by type rather than by
+//! copied tables or a boundary conversion.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -62,11 +57,15 @@ pub mod fs;
 pub mod identity;
 pub mod parse;
 pub mod procfs;
-pub mod value;
 
 /// The model-owned quality vocabulary used by kernel readings.
 pub mod quality {
     pub use hostobs_model::quality::{Quality as QualityCode, QualityError};
+}
+
+/// The model-owned value vocabulary returned by kernel readers.
+pub mod value {
+    pub use hostobs_model::value::{Sample as Reading, SampleError as ReadingError, Value};
 }
 
 /// Every bound a reader is given.
