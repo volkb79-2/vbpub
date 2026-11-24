@@ -263,7 +263,7 @@ def test_assay_source_preflight_runs_before_loading_release_components_and_lanes
     assert os.environ.get("PYTHONPYCACHEPREFIX") == prior_cache_env
 
 
-def test_first_release_uses_whole_source_lane_and_records_actionable_r2_follow_up(
+def test_a_no_tag_release_uses_the_ordinary_lane_and_records_the_r2_follow_up(
     tmp_path, monkeypatch, capsys,
 ):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
@@ -273,7 +273,6 @@ def test_first_release_uses_whole_source_lane_and_records_actionable_r2_follow_u
     )
     _git(repo, "add", "cmru/CHANGES.md")
     _git(repo, "commit", "--quiet", "-m", "prepare first CMRU release")
-    monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", _git(repo, "rev-parse", "HEAD"))
     original_load = run_release_gate._load_components
 
     def load_without_published_stable_tag():
@@ -285,31 +284,24 @@ def test_first_release_uses_whole_source_lane_and_records_actionable_r2_follow_u
     assert run_release_gate.run_release_gate(
         repo, temp_parent=private_root, postpone_mutation="KI-79",
     ) == 0
-    assert calls == [
-        "release-preconditions", "ref-probe", "installed-wheel-live", "assay-first-release",
-    ]
+    # No stable tag selects no special lane: the same gate runs, on `assay`.
+    assert calls == ["release-preconditions", "ref-probe", "installed-wheel-live", "assay"]
     marker = repo / "cmru" / ".assay" / "mutation-postponed-cmru.json"
     record = json.loads(marker.read_text(encoding="utf-8"))
     assert record["schema_version"] == 3
     assert record["result"] == "provisional"
-    assert record["tracking_id"] == "FIRST-RELEASE-R2"
+    assert record["tracking_id"] == "KI-79"
     assert record["target_version"] == "0.1.0"
     assert record["baseline_state"] == "no-published-stable-release"
     assert record["follow_up_lane"] == "assay-first-release-r2"
     assert "run-gate assay-first-release-r2" in record["reason"]
-    assert "FIRST-RELEASE-R2" in capsys.readouterr().err
+    assert "KI-79" in capsys.readouterr().err
 
 
-def test_first_release_refuses_without_protected_candidate_commit_before_any_lane(
+def test_a_no_tag_release_without_a_deferral_is_refused_before_any_lane(
     tmp_path, monkeypatch,
 ):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
-    (repo / "cmru" / "CHANGES.md").write_text(
-        "# Changelog\n\n## [0.1.0] - 2026-10-15\n\n- first release\n",
-        encoding="utf-8",
-    )
-    _git(repo, "add", "cmru/CHANGES.md")
-    _git(repo, "commit", "--quiet", "-m", "prepare first CMRU release")
     original_load = run_release_gate._load_components
 
     def load_without_published_stable_tag():
@@ -318,15 +310,31 @@ def test_first_release_refuses_without_protected_candidate_commit_before_any_lan
         return git, baseline
 
     monkeypatch.setattr(run_release_gate, "_load_components", load_without_published_stable_tag)
-    monkeypatch.delenv("CMRU_RELEASE_GATE_COMMIT", raising=False)
-    with pytest.raises(RuntimeError, match="only inside CMRU's protected release transaction"):
+    with pytest.raises(RuntimeError, match="release through `release-gate`"):
+        run_release_gate.run_release_gate(repo, temp_parent=private_root)
+    assert calls == []
+
+
+def test_a_no_tag_release_refuses_an_unauthorized_tracking_id_before_any_lane(
+    tmp_path, monkeypatch,
+):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    original_load = run_release_gate._load_components
+
+    def load_without_published_stable_tag():
+        git, baseline = original_load()
+        baseline.published_release_state = lambda _root, *, git_auth: (None, {})
+        return git, baseline
+
+    monkeypatch.setattr(run_release_gate, "_load_components", load_without_published_stable_tag)
+    with pytest.raises(RuntimeError, match="is not authorized for a release"):
         run_release_gate.run_release_gate(
-            repo, temp_parent=private_root, postpone_mutation="KI-79",
+            repo, temp_parent=private_root, postpone_mutation="FIRST-RELEASE-R2",
         )
     assert calls == []
 
 
-def test_first_release_refuses_when_origin_tag_query_fails_instead_of_claiming_empty(
+def test_a_no_tag_release_refuses_when_origin_tag_query_fails_instead_of_claiming_empty(
     tmp_path, monkeypatch,
 ):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
@@ -590,7 +598,9 @@ def test_unapproved_lane_output_fails_and_is_not_copied_back(tmp_path, monkeypat
     assert not (repo / "cmru" / ".assay" / "verdict-cmru.json").exists()
 
 
-def test_first_release_assay_closeout_files_are_approved(tmp_path, monkeypatch):
+def test_the_retired_first_release_assay_closeout_files_are_no_longer_approved(
+    tmp_path, monkeypatch,
+):
     from cmru import gate_snapshot as gs
 
     repo, *_rest = _fixture(tmp_path, monkeypatch)
@@ -598,17 +608,17 @@ def test_first_release_assay_closeout_files_are_approved(tmp_path, monkeypatch):
     try:
         closeout_dir = snapshot.worktree_path / "cmru" / ".assay"
         closeout_dir.mkdir(parents=True)
-        for suffix in ("exit", "json", "txt", "err"):
-            (closeout_dir / f"campaign-cmru-first-release.{suffix}").write_text(
-                "closeout\n", encoding="utf-8",
-            )
+        closeout = closeout_dir / "campaign-cmru-first-release.json"
+        closeout.write_text("closeout\n", encoding="utf-8")
 
-        gs.validate_lane_outputs(
-            snapshot.worktree_path, snapshot.commit,
-            protected_refs=snapshot.protected_refs,
-            expected_refs_sha256=snapshot.refs_sha256,
-            anchor_refs=snapshot.anchor_refs,
-        )
+        with pytest.raises(RuntimeError) as raised:
+            gs.validate_lane_outputs(
+                snapshot.worktree_path, snapshot.commit,
+                protected_refs=snapshot.protected_refs,
+                expected_refs_sha256=snapshot.refs_sha256,
+                anchor_refs=snapshot.anchor_refs,
+            )
+        assert "cmru/.assay/campaign-cmru-first-release.json" in str(raised.value)
     finally:
         gs.close_gate_snapshot(snapshot)
 

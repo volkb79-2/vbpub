@@ -73,20 +73,19 @@ def test_a_finished_deferred_gate_is_machine_readably_provisional(tmp_path, monk
     assert "mutation lane is DEFERRED (KI-79)" in report
 
 
-@pytest.mark.parametrize("first_release", [False, True], ids=["tagged", "no-tag"])
+@pytest.mark.parametrize("published_release", [True, False], ids=["tagged", "no-tag"])
 def test_every_deferral_records_the_whole_target_r2_follow_up_lane(
-    tmp_path, monkeypatch, first_release,
+    tmp_path, monkeypatch, published_release,
 ):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
     postpone = POSTPONE
-    if first_release:
+    if not published_release:
         # A release repository with no published stable tag: same follow-up lane.
         (repo / "cmru" / "CHANGES.md").write_text(
             "# Changelog\n\n## [0.1.0] - 2026-10-15\n\n- first release\n", encoding="utf-8",
         )
         _git(repo, "add", "cmru/CHANGES.md")
         _git(repo, "commit", "--quiet", "-m", "prepare first CMRU release")
-        monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", _git(repo, "rev-parse", "HEAD"))
         original_load = run_release_gate._load_components
 
         def load_without_published_stable_tag():
@@ -97,7 +96,6 @@ def test_every_deferral_records_the_whole_target_r2_follow_up_lane(
         monkeypatch.setattr(
             run_release_gate, "_load_components", load_without_published_stable_tag,
         )
-        postpone = run_release_gate.FIRST_RELEASE_POSTPONEMENT_ID
 
     assert _gate(repo, private_root, postpone=postpone) == 0
 

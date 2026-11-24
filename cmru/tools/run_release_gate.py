@@ -39,9 +39,7 @@ _RUN_GATE_MODULE_FILES = ("run_gate.py", "run_gate_admission.py")
 # inside this gate's fresh, snapshot-bound manifest. The plain `installed-wheel`
 # lane stays runnable directly (it bypasses the secret boundary, as documented).
 LIVE_WHEEL_LANE = "installed-wheel-live"
-FIRST_RELEASE_ASSAY_LANE = "assay-first-release"
 FIRST_RELEASE_R2_FOLLOW_UP_LANE = "assay-first-release-r2"
-FIRST_RELEASE_POSTPONEMENT_ID = "FIRST-RELEASE-R2"
 # Every directory the gate puts on ``sys.path`` (or whose scripts it runs), so a
 # stray top-level module such as ``cmru/src/json.py`` is as visible as a
 # package helper.
@@ -1033,11 +1031,6 @@ POSTPONE_REASON = (
     f"latest release with `run-gate {FIRST_RELEASE_R2_FOLLOW_UP_LANE}`, at a branch created at "
     "the released tag"
 )
-FIRST_RELEASE_POSTPONE_REASON = (
-    "first CMRU release has no earlier published source baseline; whole-source R0/R1/R3 ran, "
-    "and whole-source R2 must be run afterwards with "
-    f"`run-gate {FIRST_RELEASE_R2_FOLLOW_UP_LANE}`"
-)
 #: The one recognised tracking id of the standing release rule (operator decision 2026-11-18:
 #: a release needs R0/R1 full branch coverage and R3 canary plus an independent review, and R2
 #: runs asynchronously on the latest release). It replaced the per-minor version windows of
@@ -1111,26 +1104,12 @@ def _prepared_release_version(project_root: Path) -> str | None:
     return None
 
 
-def _validate_postponement(
-    project_root: Path, tracking_id: str, *, first_release: bool = False,
-) -> str:
-    """Allow a documented first-release or the standing-rule (KI-79) R2 deferral.
+def _validate_postponement(project_root: Path, tracking_id: str) -> str:
+    """Allow the standing-rule (KI-79) R2 deferral.
 
-    Both paths require a dated prepared changelog heading, whose version the marker records
+    Any path requires a dated prepared changelog heading, whose version the marker records
     as ``target_version``. No release version is refused: the standing rule has no window.
     """
-    if first_release:
-        if tracking_id != FIRST_RELEASE_POSTPONEMENT_ID:
-            raise RuntimeError(
-                "a CMRU checkout with no published stable release must use the "
-                f"{FIRST_RELEASE_POSTPONEMENT_ID} whole-source R2 follow-up"
-            )
-        observed_version = _prepared_release_version(project_root)
-        if observed_version is None:
-            raise RuntimeError(
-                "first-release R2 deferral requires a dated, prepared CMRU release heading"
-            )
-        return observed_version
     if tracking_id != STANDING_POSTPONEMENT_ID:
         raise RuntimeError(
             f"mutation postponement {tracking_id!r} is not authorized for a release"
@@ -1144,7 +1123,7 @@ def _validate_postponement(
 
 
 def _record_postponement(
-    project_root: Path, tracking_id: str, *, first_release: bool = False,
+    project_root: Path, tracking_id: str, *, has_published_release: bool = True,
 ) -> tuple[Path, dict[str, object]]:
     """Write the retained marker saying the mutation lane was deferred, and WARN.
 
@@ -1158,12 +1137,10 @@ def _record_postponement(
     marker = project_root / POSTPONED_MARKER
     marker.parent.mkdir(parents=True, exist_ok=True)
     candidate_commit = _git_output(project_root.parent, "rev-parse", "HEAD").decode("ascii").strip()
-    target_version = _validate_postponement(
-        project_root, tracking_id, first_release=first_release,
-    )
+    target_version = _validate_postponement(project_root, tracking_id)
     # The native whole-target lane is the one surviving R2 path (KI-199).
     follow_up_lane = FIRST_RELEASE_R2_FOLLOW_UP_LANE
-    reason = FIRST_RELEASE_POSTPONE_REASON if first_release else POSTPONE_REASON
+    reason = POSTPONE_REASON
     deferral = {
         "lane": "mutation",
         "tracking_id": tracking_id,
@@ -1179,7 +1156,9 @@ def _record_postponement(
         "tracking_id": tracking_id,
         "candidate_commit": candidate_commit,
         "target_version": target_version,
-        "baseline_state": "no-published-stable-release" if first_release else "prior-release-available",
+        "baseline_state": "prior-release-available" if has_published_release else (
+            "no-published-stable-release"
+        ),
         "follow_up_lane": follow_up_lane,
         "follow_up_prerequisites": deferral["follow_up_prerequisites"],
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1425,41 +1404,20 @@ def _plan_gate(repo_root: Path, project_root: Path, baseline, postpone_mutation:
         repo_root, git_auth=auth,
     )
     first_release = latest_stable_tag is None
-    if first_release:
-        if postpone_mutation is None:
-            raise RuntimeError(
-                "origin has no published stable CMRU release tag, so the changed-source "
-                "mutation baseline does not exist; release through `release-gate` to "
-                "run whole-source R0/R1/R3 and record the required whole-source R2 follow-up"
-            )
-        if postpone_mutation != STANDING_POSTPONEMENT_ID:
-            raise RuntimeError(
-                "origin has no published stable CMRU release tag; only the release workflow's "
-                "provisional R2 deferral can select the whole-source first-release gate"
-            )
-        expected_commit = _git_output(repo_root, "rev-parse", "HEAD").decode("ascii").strip()
-        protected_commit = os.environ.get("CMRU_RELEASE_GATE_COMMIT", "")
-        if protected_commit != expected_commit:
-            raise RuntimeError(
-                "whole-source first-release qualification is permitted only inside CMRU's "
-                "protected release transaction with CMRU_RELEASE_GATE_COMMIT equal to HEAD"
-            )
-        effective_postponement = FIRST_RELEASE_POSTPONEMENT_ID
-        _validate_postponement(
-            project_root, effective_postponement, first_release=True,
+    if postpone_mutation is not None:
+        _validate_postponement(project_root, postpone_mutation)
+    elif first_release:
+        raise RuntimeError(
+            "origin has no published stable CMRU release tag, so the changed-source "
+            "mutation baseline does not exist; release through `release-gate`, whose "
+            f"whole-source R2 follow-up is `{FIRST_RELEASE_R2_FOLLOW_UP_LANE}`"
         )
-        assay_lane = FIRST_RELEASE_ASSAY_LANE
-    else:
-        effective_postponement = postpone_mutation
-        assay_lane = "assay"
-        if postpone_mutation is not None:
-            _validate_postponement(project_root, postpone_mutation)
     return {
         "auth": auth,
         "remote_tags": remote_tags,
-        "first_release": first_release,
-        "effective_postponement": effective_postponement,
-        "assay_lane": assay_lane,
+        "has_published_release": not first_release,
+        "effective_postponement": postpone_mutation,
+        "assay_lane": "assay",
     }
 
 
@@ -1474,7 +1432,7 @@ def _run_locked_gate(
     _assert_no_untracked_gate_code(repo_root)
     auth = plan["auth"]
     remote_tags = plan["remote_tags"]
-    first_release = plan["first_release"]
+    has_published_release = plan["has_published_release"]
     effective_postponement = plan["effective_postponement"]
     assay_lane = plan["assay_lane"]
     lane_environment = _lane_environment()
@@ -1531,7 +1489,7 @@ def _run_locked_gate(
         # required lane and source snapshot check succeeded, and it is the last thing that
         # can fail before the zero exit.
         _marker, deferral = _record_postponement(
-            project_root, effective_postponement, first_release=first_release,
+            project_root, effective_postponement, has_published_release=has_published_release,
         )
         snapshot.deferred_lanes = [deferral]
     return 0

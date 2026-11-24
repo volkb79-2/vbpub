@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WHOLE_TARGET_LANES = (
-    "cmru", "cmru-r0-r1", "cmru-first-release", "cmru-first-release-r2",
+    "cmru", "cmru-r0-r1", "cmru-first-release-r2",
 )
 
 
