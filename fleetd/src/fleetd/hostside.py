@@ -73,9 +73,9 @@ def progress_records(
         if not isinstance(event, dict) or event.get("event") != "candidate":
             continue
         candidate_id = event.get("candidate_id")
-        if strict and (
-            not isinstance(candidate_id, str) or _CANDIDATE_ID.fullmatch(candidate_id) is None
-        ):
+        if not isinstance(candidate_id, str):
+            continue
+        if strict and _CANDIDATE_ID.fullmatch(candidate_id) is None:
             raise ValueError(f"progress line {line_number}: invalid candidate id")
         if candidate_id not in expected_ids:
             continue
@@ -131,11 +131,14 @@ def verdict_reading(
             if not isinstance(outcomes, list):
                 continue
             for outcome in outcomes:
-                if not isinstance(outcome, dict) or outcome.get("candidate_id") not in expected_ids:
+                if not isinstance(outcome, dict):
+                    continue
+                candidate_id = outcome.get("candidate_id")
+                if not isinstance(candidate_id, str) or candidate_id not in expected_ids:
                     continue
                 evidence = outcome.get("process_tree_evidence")
                 records.append({
-                    "candidate_id": outcome["candidate_id"],
+                    "candidate_id": candidate_id,
                     "outcome_bucket": bucket,
                     "elapsed_seconds": None,
                     "emitted_at": None,

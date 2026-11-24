@@ -679,9 +679,7 @@ class CampaignManager:
                     not_started_ids.add(candidate_id)
                     continue
                 outcome = event.get("outcome_bucket")
-                if not isinstance(outcome, str) or outcome not in {
-                    "killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"
-                }:
+                if not isinstance(outcome, str) or outcome not in hostside.OUTCOME_BUCKETS:
                     continue
                 elapsed = event.get("elapsed_seconds")
                 if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or not math.isfinite(float(elapsed)) or elapsed < 0:
@@ -1376,9 +1374,7 @@ class CampaignManager:
                     or candidate_id not in expected_ids
                     or candidate_id not in allowed
                     or not isinstance(outcome, str)
-                    or outcome not in {
-                    "killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"
-                    }
+                    or outcome not in hostside.OUTCOME_BUCKETS
                 ):
                     continue
                 emitted_at = record.get("emitted_at") if isinstance(record.get("emitted_at"), str) else None

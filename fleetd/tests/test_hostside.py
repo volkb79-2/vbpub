@@ -232,6 +232,16 @@ def test_progress_records_reject_ranges_and_utf8_and_filter_lines():
         {"candidate_id": candidate, "memory_peak_bytes": 42}]
 
 
+@pytest.mark.parametrize("candidate_id", [["a" * 64], {"candidate_id": "a" * 64}])
+def test_progress_records_skip_non_string_candidate_ids(candidate_id):
+    content = json.dumps({
+        "event": "candidate",
+        "candidate_id": candidate_id,
+        "outcome_bucket": "killed",
+    }).encode()
+    assert hostside.progress_records(content, {"a" * 64}, strict=True) == []
+
+
 @pytest.mark.parametrize(("baseline", "expected"), [
     ({"wall_s": 12.5}, 12.5), ({"wall_s": True}, None), ({"wall_s": -1}, None),
     ({"wall_s": math.inf}, None), ({"wall_s": "bad"}, None), ("bad", None),
@@ -254,6 +264,15 @@ def test_verdict_reading_accepts_shapes_and_validates_baseline(baseline, expecte
         hostside.verdict_reading(b"not-json", set())
     for content in (b"[]", b'{"claims":"bad","judgment":{"r2":"bad"}}'):
         assert hostside.verdict_reading(content, set()) == ([], None)
+
+
+@pytest.mark.parametrize("candidate_id", [["a" * 64], {"candidate_id": "a" * 64}])
+def test_verdict_reading_skips_non_string_candidate_ids(candidate_id):
+    document = {"claims": [{
+        "rigor": "R2",
+        "mutation": {"survived": [{"candidate_id": candidate_id}]},
+    }]}
+    assert hostside.verdict_reading(json.dumps(document).encode(), {"a" * 64}) == ([], None)
 
 
 def test_payload_and_main_entry_shapes(tmp_path, monkeypatch, capsys):

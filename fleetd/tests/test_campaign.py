@@ -1223,6 +1223,12 @@ def test_assay_verdict_parser_accepts_claim_and_judgment_shapes_and_outcome_buck
     ]
     assert CampaignManager._verdict_records(b"[]", {first}) == []
     assert CampaignManager._verdict_records(json.dumps({"claims": "bad", "judgment": {"r2": "bad"}}).encode(), {first}) == []
+    for candidate_id in ([first], {"candidate_id": first}):
+        invalid = {"claims": [{
+            "rigor": "R2",
+            "mutation": {"survived": [{"candidate_id": candidate_id}]},
+        }]}
+        assert CampaignManager._verdict_records(json.dumps(invalid).encode(), {first}) == []
     with pytest.raises(ContractError, match="not UTF-8 JSON"):
         CampaignManager._verdict_records(b"\xff", {first})
     with pytest.raises(ContractError, match="not UTF-8 JSON"):
