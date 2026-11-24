@@ -74,7 +74,7 @@ agctl owns controller identity and handover, the run registry, routes, agent fin
 
 ## 8. Slices, in order
 
-1. **Slice 1** (the costly incidents were controller-side, M6): (a) **run registry**: P-plat-09, routes P-plat-10/11 (P-plat-11 acceptance also: a non-OD key in ~/.env.ai is not visible to the child), `agctl run`, `status|check|limits` (P-plat-12a/b); (b) **handover cycle**: P-plat-13, then header/check/ready, primer, `CONTROLLER_NAME`, state dirs (P-plat-15), main controller last; (c) **hook**: P-plat-05 (no agctl code). Return-contract docs P-plat-03.
+1. **Slice 1** (the costly incidents were controller-side, M6): (a) **run registry**: P-plat-09, routes P-plat-10/11 (P-plat-11 acceptance also: a non-OD key in ~/.env.ai is not visible to the child), `agctl run`, `status|check|limits` (P-plat-12a/b); (b) **handover cycle**: P-plat-13, then header/check/ready, primer, `CONTROLLER_NAME`, state dirs (P-plat-15), main controller last; (c) **hook**: P-plat-05 (no agctl code); (d) **estate header** (operator 2026-11-24; P-plat-15, hook side in `ctx-hooks.py`): a compact block in tool-call results via the hook's `additionalContext`: merge queue (unmerged worktree branches and heads), leases, live runs (registry), each peer's last hand-over (from the `~/controller-state/<name>/` dirs), HANDOFF age. Sources are the §3 header sources. Emitted only when its content changed since this session's last emission (a digest per session in the hook's state dir); hard cap ~1k tokens (4 KB), truncated with a `[truncated]` marker, because every injection costs context. Return-contract docs P-plat-03.
 2. **Slice 2:** P-plat-21. **Then:** P-plat-20 (after 1b), P-plat-16, P-plat-23 (`run --after`, `skills`, `worktrees prune`), picker P-plat-22 last. Each package: tests, a lane, at most 2 review rounds.
 
 ## 8a. The hook: one threshold
@@ -85,6 +85,7 @@ The tracked `scripts/controller/hooks/ctx-hooks.py` is wired (operator re-wires 
 - **Harness window** (ceiling, informational; operator set 800k): `modelSettings.<model>.autoCompactWindow` in `~/.claude/settings.json`, else the top-level value; shown in notes, warning when at or below `soft`.
 - **Constants:** arm 100000, a note every 50000, growth = mean per tool call over the session's own last 20 calls, projection `(soft - fill) / growth` tool calls.
 - **Notes:** below soft "Context {fill}k of soft {soft}k (harness window {win}k); growth {g}k per tool call; about {n} tool calls to the soft threshold." Controller past soft: "Past the soft threshold. Finish the current step, then write the handover (controller-handover skill), sync plan.yaml, run `agctl handover check` and `agctl handover ready`, and end the turn. Do not start new work." Spawned past soft: "Reach a semantic boundary and return PARTIAL with a finalization; a budget stop is never BLOCKED." The read order comes from the handover's read-first list, never hard-coded plan ids.
+- **Estate header** (§8 1d): the same hook appends it to `additionalContext` on change only, digest in its state dir, cap 4 KB.
 - **Learning log** `steering-log.jsonl` beside `hook-log.jsonl` (ts, kind, fill, growth, projected calls, note id, later outcome), reviewed before automation is trusted.
 
 ## 9. Deferred, limits, unverified
