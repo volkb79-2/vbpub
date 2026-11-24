@@ -205,3 +205,15 @@ Run-gate validates only its own mounts and its shard instance names. Manifest st
 - **D3. Owner versus target.** The owner record replaces a differing same-judge record already in the target store. This makes the merge a pure function of the manifest; strict-shard instead lets the target win, which is kept unchanged. *Recommend: owner wins, counted.*
 - **D4. New progress event `merge_manifest`.** It is added to `PROGRESS_EVENTS` (`mutation.py:1260`). It is not a verdict, `ReasonCode` or `vocabulary.py` change, so it is outside D-A12. *Recommend: add it.*
 - **D5. Own-store resume moves into `combine`** verbatim, so that "which record stands" has one owner. *Recommend: move it. The fallback is to keep it in `mutation.py` and have `combine` start at stage 3, at the cost of a two-entry API.*
+
+## 9. Controller decisions (vbpub-assay, 2026-11-24)
+
+The assay sub-controller read this note and checked its key citations against `ba15e8dda`: `cli.py:2388-2395`, `test_capabilities.py:81-87`, `cli.py:183-189` and `mutation.py:4166-4178`. All five recommendations are accepted:
+
+- **D1: defer.** P-assay-12 ships only the hint adapter. P-assay-13 retires the B106 prefix path along with its 11 tests and lifts C5. This moves the plan's P-assay-12 acceptance line "the B106 prefix path is retired" to P-assay-13.
+- **D2:** bump to `assay-capabilities/2` now.
+- **D3:** the owner record wins over the target and is counted.
+- **D4:** add the `merge_manifest` progress event.
+- **D5:** own-store resume moves into `combine`.
+
+This note is the implementation contract for P-assay-12.
