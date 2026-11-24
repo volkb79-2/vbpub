@@ -481,7 +481,7 @@ def seeded_ctx(tmp_path, tamper=False):
 
 def seed_src(tmp_path):
     src = tmp_path / "seedsrc"
-    (src / "sub").mkdir(parents=True)
+    (src / "sub").mkdir(parents=True, exist_ok=True)
     (src / "a.json").write_text("one")
     (src / "sub" / "b.json").write_text("two")
     return src
