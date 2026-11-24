@@ -474,7 +474,7 @@ for gate_run_profile_mutant in default override; do
   expect_killed "gate-run-profile-$gate_run_profile_mutant" \
     env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-profile-$gate_run_profile_mutant.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 done
-for remote_gate_mutant in identity allow-list project-dir-guard slot-roundup weight-min oom-delta commit-binding slot-descriptors base-forward api-override runner-ref base-passthrough base-twice \
+for remote_gate_mutant in identity allow-list project-dir-guard slot-roundup weight-min oom-delta budget-verdict verdict-anchor commit-binding slot-descriptors base-forward api-override runner-ref base-passthrough base-twice \
                           old-env-silent old-env-one-dropped old-env-py-name old-env-dry-hold weights-unreadable-silent weights-missing-warns repo-name-default snapshot-fixed-name snapshot-leftover; do
   expect_killed "remote-gate-$remote_gate_mutant" \
     env REMOTE_GATE_SCRIPT="$ROOT/mutants/scripts/controller/remote-gate-$remote_gate_mutant.sh" bash "$SCRIPT_DIR/test-remote-gate.sh"
