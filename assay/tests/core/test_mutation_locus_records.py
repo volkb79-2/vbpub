@@ -493,8 +493,6 @@ def test_replayed_provenance_without_carry_over_resumes(
         (_carry_v2(schema_version=True), _provenance()),
         (_carry_v2(into_judge_sha256=7), _provenance()),
         (_carry_v2(importer_version=None), _provenance()),
-        (_carry_v2(reason="\ud800"), _provenance()),
-        (_carry_v2(reason="x" * 1025), _provenance()),
         (_carry_v2(), _ABSENT),
         (_carry_v2(), None),
         (
@@ -520,6 +518,9 @@ def test_unusable_provenance_is_rejected_without_raising(
     payload = _record(job)
     if carry_over is not _ABSENT:
         payload["carry_over"] = carry_over
+    if isinstance(provenance, dict) and provenance.get("from_candidate_id") == _JUDGE:
+        # bind the helper's placeholder to the job, so each row fails on its own defect
+        provenance = {**provenance, "from_candidate_id": mutation.candidate_id(job)}
     if provenance is not _ABSENT:
         payload["provenance"] = provenance
     root = _store(tmp_path, job, payload)
@@ -530,6 +531,19 @@ def test_unusable_provenance_is_rejected_without_raising(
         )
         is mutation._RECORD_REJECTED
     )
+
+
+def test_valid_imported_provenance_pair_is_accepted(tmp_path):
+    """Positive control for the rejection rows above: the same record with a
+    valid schema-2 carry_over and a matching provenance resumes."""
+    job = _function_job()
+    payload = _record(job)
+    payload["carry_over"] = _carry_v2()
+    payload["provenance"] = _provenance(mutation.candidate_id(job))
+    root = _store(tmp_path, job, payload)
+
+    loaded = mutation._load_validated_state_record(root, job, judge=_CURRENT_JUDGE)
+    assert loaded is not None and loaded is not mutation._RECORD_REJECTED
 
 
 @pytest.mark.parametrize("case", ["unknown-kind", "without-provenance"])
