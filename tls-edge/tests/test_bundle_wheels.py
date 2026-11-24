@@ -243,15 +243,65 @@ def test_github_fetcher_refuses_another_distributions_asset(
     assert "unexpected cli-extended wheel" in capsys.readouterr().err
 
 
-def test_build_flags_do_not_require_a_local_python_resolution(monkeypatch, tmp_path: Path) -> None:
+def test_local_cli_wheel_build_uses_the_explicit_no_deps_and_wheel_dir(
+    monkeypatch, tmp_path: Path,
+) -> None:
     wheel = tmp_path / "tls_edge_cli-4.0.0-py3-none-any.whl"
-    wheel.write_bytes(b"wheel")
-    monkeypatch.setattr(
-        bundle_wheels.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
-    )
+    observed = {}
+
+    def fake_run(argv, **kwargs):
+        observed["argv"] = argv
+        observed["cwd"] = kwargs.get("cwd")
+        observed["check"] = kwargs.get("check")
+        wheel.write_bytes(b"wheel")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(bundle_wheels.subprocess, "run", fake_run)
 
     result = bundle_wheels._build_tls_edge_cli(tmp_path)
 
     assert result == wheel
+    assert observed == {
+        "argv": [
+            bundle_wheels.sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            "--disable-pip-version-check",
+            "--no-deps",
+            "--wheel-dir",
+            str(tmp_path),
+            str(bundle_wheels.TLS_EDGE_DIR),
+        ],
+        "cwd": bundle_wheels.TLS_EDGE_DIR,
+        "check": False,
+    }
+
+
+def test_dependency_resolution_uses_the_target_python_and_platform_flags(
+    monkeypatch,
+) -> None:
+    observed = {}
+
+    def fake_run(argv, **kwargs):
+        observed["argv"] = argv
+        observed["cwd"] = kwargs.get("cwd")
+        observed["check"] = kwargs.get("check")
+        destination = Path(argv[argv.index("--dest") + 1])
+        (destination / "Jinja2-3.1.6-py3-none-any.whl").write_bytes(b"wheel")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(bundle_wheels.subprocess, "run", fake_run)
+
+    resolved = bundle_wheels.resolve_requirements()
+
+    assert resolved["jinja2"] == ("Jinja2", "3.1.6")
+    argv = observed["argv"]
+    assert argv[argv.index("--python-version") + 1] == "3.13"
+    assert argv[argv.index("--implementation") + 1] == "cp"
+    assert argv[argv.index("--abi") + 1] == "cp313"
+    assert {
+        item.partition("=")[2] for item in argv if item.startswith("--platform=")
+    } == set(bundle_wheels.PLATFORMS)
+    assert observed["cwd"] == bundle_wheels.TLS_EDGE_DIR
+    assert observed["check"] is False
