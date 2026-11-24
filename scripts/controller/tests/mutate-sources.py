@@ -1336,7 +1336,8 @@ for name, before, after in (
     ("psi-full-line", "/^full/ { sub", "/^some/ { sub"),
     ("image-id", 'elif [[ $lid != "$hid" ]]; then', "elif false; then"),
     ("quoting", "printf '%q' \"$a\"; done; }", "printf '%s' \"$a\"; done; }"),
-    ("trap-term", "trap 'exit 143' TERM", ":"),
+    # not a TERM-trap mutant: bash runs the EXIT trap on an untrapped SIGTERM too (that mutant survived suite gate 2: equivalent)
+    ("cleanup-by-cid", 'docker rm -f "$(cat "$D/cid")" >/dev/null 2>&1 7>&- 8>&- 9>&-', 'docker rm -f "$NAME" >/dev/null 2>&1 7>&- 8>&- 9>&-'),
     ("banner-dirty", "mark=''; if (( dirty )); then mark=+dirty; fi", "mark=+dirty"),
 ):
     mutant("scripts/controller/dev", f"dev-{name}", before, after)
