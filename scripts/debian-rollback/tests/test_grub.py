@@ -6,11 +6,18 @@ import unittest
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
 import _support
 from dr_state import ids
 from dr_state.boot.grub import GrubBoot
-from dr_state.errors import BootConfigError, BootError, Refused, Unsupported
+from dr_state.errors import (
+    BootConfigError,
+    BootError,
+    FormatError,
+    Refused,
+    Unsupported,
+)
 from dr_state.storage import KernelPair, Stored
 
 
@@ -155,6 +162,46 @@ class GrubTest(_support.TemporaryRootTest):
             self.paths.esp_grub_cfg.read_text(encoding="utf-8"),
             "title foreign\n",
         )
+        self.assertFalse(self.paths.esp_format_file.exists())
+
+    def test_repeated_identical_publish_changes_no_esp_format(self) -> None:
+        targets = (self.target(self.install), self.target(self.apt))
+        self.boot.publish(targets, self.apt)
+        self.paths.esp_format_file.unlink()
+        self.boot.publish(targets, self.apt)
+        self.assertFalse(self.paths.esp_format_file.exists())
+
+    def test_newer_esp_format_refuses_publication_without_changing_the_menu(self) -> None:
+        self.paths.esp_format_file.write_text("2\n", encoding="utf-8")
+        with self.assertRaisesRegex(FormatError, "newer"):
+            self.boot.publish((self.target(self.install),), self.install)
+        self.assertFalse(self.paths.esp_grub_cfg.exists())
+
+    def test_os_errors_during_publication_become_boot_errors(self) -> None:
+        with mock.patch(
+            "dr_state.boot.grub.atomic_write",
+            side_effect=OSError("full ESP"),
+        ):
+            with self.assertRaisesRegex(BootError, "cannot publish.*full ESP"):
+                self.boot.publish((self.target(self.install),), self.install)
+        with mock.patch(
+            "dr_state.boot.grub.write_esp_format",
+            side_effect=OSError("read-only ESP"),
+        ):
+            with self.assertRaisesRegex(BootError, "cannot publish.*read-only ESP"):
+                self.boot.set_oneshot(self.apt)
+
+    def test_empty_selector_values_are_absent_in_both_modes(self) -> None:
+        self.set_environment(
+            f"saved_entry={self.install.name}\n"
+            "next_entry=\n"
+        )
+        for strict in (True, False):
+            with self.subTest(strict=strict):
+                selected = self.boot.default(strict=strict)
+                self.assertIsNotNone(selected)
+                self.assertEqual(selected.state, self.install.name)
+                self.assertIsNone(self.boot.oneshot(strict=strict))
 
     def test_publication_requires_the_marker(self) -> None:
         self.paths.esp_marker.unlink()
@@ -205,6 +252,12 @@ class GrubTest(_support.TemporaryRootTest):
         selected = self.boot.oneshot(strict=True)
         self.assertIsNotNone(selected)
         self.assertEqual(selected.state, self.apt.name)
+
+    def test_repeated_identical_one_shot_changes_no_esp_format(self) -> None:
+        self.boot.set_oneshot(self.apt)
+        self.paths.esp_format_file.unlink()
+        self.boot.set_oneshot(self.apt)
+        self.assertFalse(self.paths.esp_format_file.exists())
 
     def test_failed_default_update_reports_after_the_menu_was_written(self) -> None:
         self.boot.publish((self.target(self.install),), self.install)

@@ -78,7 +78,6 @@ class GrubBoot:
                 f"bootloader marker {self.paths.esp_marker} names {marker!r}, "
                 f"not {self.name!r}"
             )
-        write_esp_format(self.paths)
 
     def install(self) -> None:
         """Write the GRUB ESP marker and format file."""
@@ -156,6 +155,16 @@ class GrubBoot:
     def publish(self, targets: Sequence[BootTarget], default: ids.StateId) -> None:
         """Publish exactly the targets, then make ``default`` effective."""
 
+        try:
+            self._publish(targets, default)
+        except OSError as error:
+            raise BootError(f"cannot publish GRUB boot configuration: {error}") from error
+
+    def _publish(
+        self,
+        targets: Sequence[BootTarget],
+        default: ids.StateId,
+    ) -> None:
         self._prepare_publication()
         target_names = tuple(target.state.name for target in targets)
         if default.name not in target_names:
@@ -173,10 +182,15 @@ class GrubBoot:
                 )
 
         current = self.default(strict=False)
-        if old != menu:
+        menu_changed = old != menu
+        selector_changed = current is None or current.state != default.name
+        if not menu_changed and not selector_changed:
+            return
+        write_esp_format(self.paths)
+        if menu_changed:
             self.paths.esp_dir.mkdir(parents=True, exist_ok=True)
             atomic_write(self.paths.esp_grub_cfg, menu, mode=0o644)
-        if current is None or current.state != default.name:
+        if selector_changed:
             if not self.paths.esp_grubenv.exists():
                 try:
                     self._run(
@@ -289,14 +303,8 @@ class GrubBoot:
                 return None
             return Selector(raw="", state=None, entry=None, known=False)
         raw = environment.get(key)
-        if raw is None:
+        if raw is None or not raw:
             return None
-        if not raw:
-            if strict:
-                raise BootConfigError(f"GRUB {key} is empty")
-            if default:
-                return None
-            return Selector(raw="", state=None, entry=None, known=False)
         try:
             mapped = self._map_selector(raw, strict=strict, default=default)
         except BootConfigError:
@@ -312,7 +320,19 @@ class GrubBoot:
         return self._selector("next_entry", strict=strict, default=False)
 
     def set_oneshot(self, state: ids.StateId) -> None:
+        try:
+            self._set_oneshot(state)
+        except OSError as error:
+            raise BootError(
+                f"cannot publish the GRUB one-shot boot: {error}"
+            ) from error
+
+    def _set_oneshot(self, state: ids.StateId) -> None:
         self._prepare_publication()
+        current = self.oneshot(strict=False)
+        if current is not None and current.raw == state.name:
+            return
+        write_esp_format(self.paths)
         if not self.paths.esp_grubenv.exists():
             self._run(["grub-editenv", str(self.paths.esp_grubenv), "create"])
         self._run(
