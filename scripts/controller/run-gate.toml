@@ -7,9 +7,10 @@ argv = ["bash", "-c", "cd {worktree}/scripts/controller && bash tests/run-suite.
 # Measured need, not a safety margin for flakiness: the registered lane run on
 # the platform docs branch (plat-docs-20261124 @271581e89, 2026-11-24) took
 # 29m57s wall on r1002, against the previous 30m budget, i.e. no margin at all;
-# four later branches then ended in BUDGET_EXCEEDED. The budget is the measured
-# time x 1.6 (about 48 min, rounded up to 50m). The earlier figure (about 15 min
-# for the 354-mutant controller-import branch) is the old measurement. A run that
-# needs more than this would be a real regression in the suite's cost and should
-# be investigated, not absorbed here.
-budget = "50m"
+# four later branches then ended in BUDGET_EXCEEDED. The P-plat-23 branch itself
+# (@1bda40257, 2026-11-24) took 34m59s on v1001, the slower host. The budget is
+# the slowest measured time x 1.6 (about 56 min, rounded up to 60m). The earlier
+# figure (about 15 min for the 354-mutant controller-import branch) is the old
+# measurement. A run that needs more than this would be a real regression in the
+# suite's cost and should be investigated, not absorbed here.
+budget = "60m"

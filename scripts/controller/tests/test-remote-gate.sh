@@ -332,13 +332,14 @@ FAKE_VERDICT_LINE='run-gate: lane suite verdict FAIL' OOM_STEP=2 FAKE_RG_RC=1 rg
 [[ $rc == 76 ]] || fail "a real OOM (delta 2, verdict FAIL) exited $rc, expected 76"
 contains "$ROOT/realoom.out" 'INCONCLUSIVE-OOM' 'a real OOM stays INCONCLUSIVE-OOM'
 reset_logs
+# Failure messages here must not contain the OOM markers themselves: lane.log carries this suite's stderr, and the marker grep would turn a FAIL into INCONCLUSIVE-OOM.
 FAKE_VERDICT_LINE='run-gate: lane suite verdict FAIL' FAKE_LANE_LOG=$'task killed: OOMKilled\n' OOM_STEP=0 FAKE_RG_RC=1 rg gate-a proj small "$SHA" > "$ROOT/markeroom.out" 2>&1; rc=$?
-[[ $rc == 76 ]] || fail "OOMKilled in the lane log (delta 0, verdict FAIL) exited $rc, expected 76"
-contains "$ROOT/markeroom.out" 'INCONCLUSIVE-OOM' 'the OOMKilled marker stays INCONCLUSIVE-OOM'
+[[ $rc == 76 ]] || fail "the OOM marker in the lane log (delta 0, verdict FAIL) exited $rc, expected 76"
+contains "$ROOT/markeroom.out" 'INCONCLUSIVE-OOM' 'the lane-log OOM marker stays INCONCLUSIVE-OOM'
 reset_logs
 FAKE_LANE_LOG=$'bash: 4242 Killed\nexit_code 137\n' OOM_STEP=0 FAKE_RG_RC=137 rg gate-a proj small "$SHA" > "$ROOT/bare137.out" 2>&1; rc=$?
-[[ $rc == 137 ]] || fail "a bare exit 137 / Killed in the lane log exited $rc, expected 137"
-not_contains "$ROOT/bare137.out" 'INCONCLUSIVE-OOM' 'a bare exit 137 or Killed is not an OOM on its own'
+[[ $rc == 137 ]] || fail "a bare kill status in the lane log exited $rc, expected the lane rc"
+not_contains "$ROOT/bare137.out" 'INCONCLUSIVE-OOM' 'a bare kill status is not an OOM on its own'
 reset_logs
 FAKE_RG_RC=75 rg gate-a proj small "$SHA" > /dev/null 2>&1; rc=$?
 [[ $rc == 75 ]] || fail "the runner's PSI refusal (75) must pass through, got $rc"
