@@ -13,9 +13,9 @@ set -u
 # prompt file, unwritable log or no such pane (nothing sent); 3 pane never idle within 30 min
 # (nothing sent); 5 the input line never emptied (someone has text there; checked before /clear and
 # before the prompt, nothing is typed over it; also the pane still busy 30 min after /clear, prompt
-# not sent); 6 a send-keys call failed (nothing more is sent).
+# not sent); 6 a send-keys call failed (nothing more is sent); 7 the per-pane lock (also taken by ctl-keepalive.sh) was not obtained within 2 min (nothing sent).
 # Progress goes to <log-file>. Footer markers and the shared idle logic: resume-lib.sh. Test seams (tests/test-clear-resume.sh): CLEAR_RESUME_{POLL,IDLE_TRIES,TYPE_PAUSE,
-# FINAL_WAIT,CLEAR_TRIES}.
+# FINAL_WAIT,CLEAR_TRIES,LOCK_DIR,LOCK_WAIT}.
 RESUME_PREFIX=CLEAR_RESUME
 # shellcheck source=resume-lib.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/resume-lib.sh"
@@ -25,6 +25,8 @@ pane=$1; prompt_file=$2; log=$3
 check_log
 [[ -r $prompt_file ]] || { say "ERROR prompt file unreadable: $prompt_file"; exit 2; }
 check_pane
+resolve_pane   # the target may be a session name: lock and send on the canonical %pane id
+lock_pane      # the keep-alive watcher pings under the same per-pane lock; a held lock is waited for (max 2 min)
 say "start pane=$pane prompt=$prompt_file"
 idle_or_exit "$idle_tries" 3 "pane never idle within 30 min"
 say "pane idle, input empty; sending /clear"

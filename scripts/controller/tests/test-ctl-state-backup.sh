@@ -96,7 +96,7 @@ mkdir -p "$ROOT/restore"; tar -xf "$archive" -C "$ROOT/restore"
 ! grep -rqF 'OUTSIDE-SECRET-CONTENT' "$ROOT/restore" || fail 'a symlink must never be followed into the archive'
 run_backup --include-large --max-file-bytes 100
 archive2=$(sed -n 's/^archive: //p' "$ROOT/out")
-tar -tf "$archive2" | grep -qx 'repo/.controller-state/big.bin' || fail '--include-large must archive the large file'
+tar -tf "$archive2" | grep -x 'repo/.controller-state/big.bin' >/dev/null || fail '--include-large must archive the large file'
 # Two backups with the same timestamp must not overwrite each other. The clock is frozen, so this never depends on two runs
 # landing in the same second (a slow host made the 'overwrite' mutant survive once).
 fixture frozen
