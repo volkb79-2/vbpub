@@ -57,7 +57,8 @@ idle_or_exit() { # $1 = max polls, $2 = exit code when the pane stayed busy, $3 
 check_log() { { : >>"$log"; } 2>/dev/null || { echo "ERROR log file not writable: $log" >&2; exit 2; }; }
 resolve_pane() { # the target may be a session name or any tmux target: from here on `pane` is the canonical #{pane_id}
   local id; id=$(tmux display -p -t "$pane" '#{pane_id}' 2>/dev/null) || id=
-  [[ $id =~ ^%[0-9]+$ ]] && pane=$id
+  [[ $id =~ ^%[0-9]+$ ]] || { say "ERROR cannot resolve $pane to a pane id; nothing sent"; exit 2; }
+  pane=$id
 }
 lock_pane() { # one lock per pane id, shared with ctl-keepalive.sh (it pings a pane under the same lock); a held lock is waited for
   local dir; dir=$(seam LOCK_DIR "${CONTROLLER_HOME:-$HOME/controller}/locks")

@@ -23,6 +23,7 @@ cat > "$ROOT/bin/tmux" <<'SH'
 #!/usr/bin/env bash
 s=$STUB_DIR
 case $1 in
+  display) printf '%s\n' "$4" ;;   # display -p -t <target> '#{pane_id}': the targets here are pane ids already
   has-session) echo "has-session $3" >>"$s/calls.log"; [[ ! -e $s/nosession ]]; exit ;;
   capture-pane)
     phase=$(<"$s/phase"); k=$(( $(cat "$s/idx.$phase" 2>/dev/null || echo 0) + 1 )); echo "$k" >"$s/idx.$phase"

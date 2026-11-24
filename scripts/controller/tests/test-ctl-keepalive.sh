@@ -70,6 +70,10 @@ frame() {
     RFO) box "❯ hello $TEXT" >"$f" ;;                                     # foreign text typed by the operator
     RBUSY) { printf '%s\n' "$BUSYL"; box "❯ $TEXT"; } >"$f" ;;            # a turn started: our text, busy
     RBUSYFO) { printf '%s\n' "$BUSYL"; box "❯ hello $TEXT"; } >"$f" ;;    # busy and foreign text
+    MLP) box '❯\xc2\xa0\n  foo' >"$f" ;;                                    # multi-line draft, empty first line (continuation lines have no marker)
+    RML1) box "❯\xc2\xa0\n  foo$TEXT" >"$f" ;;                             # read-back: the ping landed at the end of the draft line
+    RML2) box "❯ $TEXT\n  foo" >"$f" ;;                                      # read-back: the cursor was on the marker row
+    SG) printf 'output\n%s\n\e[0m\n❯\xc2\xa0\n%s\n  ctx 41%%\n' "$RULE" "$RULE" >"$f" ;;   # a codes-only line between rule and row
     RDLG) { printf '%b\n' "$MENU"; box "❯ $TEXT"; } >"$f" ;;                   # a menu opened, our text in the box
   esac
 }
@@ -77,6 +81,7 @@ iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%S.000Z; }
 a_rec() { printf '{"type":"assistant","timestamp":"%s","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":%s,"cache_creation_input_tokens":0}}}\n' "$(iso "$1")" "${2:-100000}" >>"$J"; }
 u_rec() { printf '{"type":"user","timestamp":"%s","message":{"role":"user","content":"%s"}}\n' "$(iso "$1")" "$2" >>"$J"; }
 t_rec() { printf '{"type":"user","timestamp":"%s","message":{"role":"user","content":[{"type":"tool_result","content":"x"}]}}\n' "$(iso "$1")" >>"$J"; }
+s_rec() { printf '{"type":"assistant","isApiErrorMessage":true,"timestamp":"%s","message":{"model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' "$(iso "$1")" >>"$J"; }   # Claude Code's own API-error record
 x_rec() { printf '{"type":"api-request","timestamp":"%s","id":"r"}\n' "$(iso "$1")" >>"$J"; }
 # mk_session <pid> <name> <sid> <tmux field> [cwd]: the session file, a live fake process and the (empty) JSONL, mtime = now
 mk_session() {
@@ -98,8 +103,9 @@ scenario() {
   i=0; read -ra a <<<"$4"; for k in "${a[@]}"; do frame "$D" typed $((++i)) "$k"; done
   touch -d "@$T0" "$J"
 }
-run() { # the watcher once; sets RC; every run starts at the pre-typing frames, the JSONL is "now"
-  echo pre >"$D/phase"; rm -f "$D"/idx.*; find "$D/projects" -name '*.jsonl' -exec touch -d "@$T0" {} +
+prep() { echo pre >"$D/phase"; rm -f "$D"/idx.*; find "$D/projects" -name '*.jsonl' -exec touch -d "@$T0" {} +; }   # pre-typing frames, the JSONL is "now"
+run() { # the watcher once; sets RC
+  prep
   STUB_DIR=$D PATH=$ROOT/bin:$PATH KEEPALIVE_HOME=$D/home KEEPALIVE_SESSIONS_DIR=$D/sessions KEEPALIVE_PROJECTS_DIR=$D/projects \
     KEEPALIVE_PROC=$D/proc KEEPALIVE_NOW=$T0 KEEPALIVE_READBACK_WAIT=0.01 bash "$KA" --once 2>"$D/stderr"; RC=$?
 }
@@ -154,12 +160,22 @@ called 'send-keys %1 C-u' || fail "partial typing must be cleared with C-u"
 logged 'abort-cleared' || fail "abort-cleared logged"; [[ -e $D/home/keepalive/$SID.abort ]] || fail "abort file (cleared)"
 
 # 4. pane checks before typing: nothing at all is typed
-for kind in T B M MB NB FAR; do
+for kind in T B M MB NB FAR MLP; do
   scenario "pane-$kind" 3400 "$kind" "ROK"; run
   [[ $(sent_keys) -eq 0 ]] || { calls >&2; fail "pane $kind must not be pinged"; }
 done
 scenario pane-narrow 3400 "I" "ROK"; echo "%1 main 70" >"$D/panes.txt"; run
 [[ $(sent_keys) -eq 0 ]] || fail "a pane narrower than 80 columns must not be pinged"; logged 'pane-narrow (70)' || fail "narrow logged"
+
+# 4b. M1: a multi-line draft (box row empty, continuation line below it) is never typed into, and never erased or submitted
+#     when it only shows on the read-back (cursor on the draft line or on the marker row)
+for kind in RML1 RML2; do
+  scenario "ml-$kind" 3400 "I" "$kind"; run
+  [[ $(sent_keys) -eq 1 ]] || { calls >&2; fail "M1: read-back $kind: nothing but the typing may be sent (no C-u, no Enter)"; }
+  logged 'prompt box layout changed' || fail "M1: read-back $kind: abort logged"
+done
+# 4c. L4: a line that holds only colour codes between the rule and the row does not hide the box
+scenario sgr 3400 "SG" "ROK"; run; called 'send-keys %1 Enter' || fail "L4: a codes-only line must be blank before the box check"
 
 # 5. timing, context, cap and the stateless count
 scenario young 3000 "I" "ROK"; run; [[ ! -e $D/calls.log ]] || fail "anchor 50 min old: no tmux call at all"
@@ -183,6 +199,18 @@ scenario reset 3400 "I" "ROK"
 : >"$J"; for d in 9000 8000 7000; do u_rec $((T0 - d)) '[keepalive] x'; a_rec $((T0 - d + 5)); done
 u_rec $((T0 - 4000)) '<task-notification>done</task-notification>'; a_rec $((T0 - 3400)); run
 logged 'ping 1/3' || { klog >&2; fail "a task notification or a real prompt ends the count"; }
+# M2: after a failed ping Claude Code writes a synthetic API-error assistant record with all-zero usage: it is no request
+scenario synth 3400 "I" "ROK"; u_rec $((T0 - 3390)) '[keepalive] x'; s_rec $((T0 - 3380)); run
+[[ ! -e $D/calls.log ]] || fail "M2: a synthetic error record must not move the anchor (one ping per anchor)"
+logged 'skip one-ping-per-anchor' || fail "M2: one-ping-per-anchor logged"
+scenario synthctx 3400 "I" "ROK"; a_rec $((T0 - 3399)) 300000; s_rec $((T0 - 3300)); run
+[[ ! -e $D/calls.log ]] || fail "M2: a synthetic error record must not reset ctx to 0 (the 300k guard holds)"
+logged 'skip context 300005' || fail "M2: context skip logged"
+# L2: policy constants are not environment-overridable
+scenario envmax 3400 "I" "ROK"
+: >"$J"; u_rec $((T0 - 8000)) 'real'; a_rec $((T0 - 7900)); u_rec $((T0 - 7000)) '[keepalive] x'; a_rec $((T0 - 6990))
+u_rec $((T0 - 3500)) '[keepalive] x'; a_rec $((T0 - 3400)); KEEPALIVE_MAX=1 KEEPALIVE_NAMES=nobody run
+logged 'ping 3/3' || { klog >&2; fail "L2: an inherited KEEPALIVE_MAX / KEEPALIVE_NAMES must change nothing"; }
 # R2-5: a ping that failed (no reply: the anchor stays) is not followed by another within the same window
 scenario failed 3400 "I" "ROK"; u_rec $((T0 - 3390)) '[keepalive] x'; run
 [[ ! -e $D/calls.log ]] || fail "R2-5: at most one ping per anchor"
@@ -239,8 +267,24 @@ called 'send-keys %1 /clear Enter' || { calls >&2; fail "the helper must send to
 ! called 'send-keys main' || fail "the helper sent to the unresolved target"
 [[ -e $D/home/locks/%1.lock ]] || fail "the helper's lock file is keyed on the resolved pane id"
 
+# 7b. L1: a SIGTERM during the 1-s read-back does not leave the typed ping behind: the ping is completed first
+scenario term 3400 "I" "ROK"; prep
+STUB_DIR=$D PATH=$ROOT/bin:$PATH KEEPALIVE_HOME=$D/home KEEPALIVE_SESSIONS_DIR=$D/sessions KEEPALIVE_PROJECTS_DIR=$D/projects \
+  KEEPALIVE_PROC=$D/proc KEEPALIVE_NOW=$T0 KEEPALIVE_READBACK_WAIT=1 bash "$KA" --once 2>"$D/stderr" & TERMPID=$!
+for _ in $(seq 100); do [[ -e $D/sent.txt ]] && break; sleep 0.05; done
+[[ -e $D/sent.txt ]] || fail "the watcher never typed the ping"
+kill -TERM "$TERMPID"; wait "$TERMPID"; RC=$?
+[[ $RC -eq 0 ]] || fail "SIGTERM exit $RC"
+called 'send-keys %1 Enter' || { calls >&2; fail "L1: the read-back must finish (Enter) before a SIGTERM ends the watcher"; }
+[[ ! -e $D/home/keepalive.pid ]] || fail "pid file removed after SIGTERM"
+# 7c. L5: a target tmux cannot resolve to a pane id exits 2, nothing sent (no silent fallback to the unresolved name)
+scenario noresolve 3400 "I" "I"; echo "prompt" >"$D/prompt.txt"
+helper "$SCRIPT_DIR/../clear-resume.sh" no-such-target "$D/prompt.txt" "$D/log"
+[[ $RC -eq 2 ]] || fail "L5: unresolvable target exit $RC (want 2)"; [[ $(sent_keys) -eq 0 ]] || fail "L5: keys were sent"
+contains "$D/log" "ERROR cannot resolve no-such-target" "L5: refusal logged"
+
 # 8. constants: the cap default (3) and the DeepSeek / Open Design numbers are named in the script header
-grep -q '^KEEPALIVE_MAX=${KEEPALIVE_MAX:-3} ' "$KA" || fail "KEEPALIVE_MAX defaults to 3 as one named constant"
+grep -q '^KEEPALIVE_MAX=3 ' "$KA" || fail "KEEPALIVE_MAX is 3, one named constant"
 [[ $(grep -c '^KEEPALIVE_MAX=' "$KA") -eq 1 ]] || fail "KEEPALIVE_MAX is defined once"
 grep -q '^DEEPSEEK_OPENDESIGN_CACHE_TTL_MIN=110$' "$KA" || fail "DeepSeek / Open Design cache TTL constant"
 grep -q '^DEEPSEEK_OPENDESIGN_KEEPALIVE_AT_MIN=100$' "$KA" || fail "DeepSeek / Open Design keep-alive constant"
