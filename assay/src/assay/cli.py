@@ -179,14 +179,8 @@ __all__ = ["build_parser", "main", "plan_jobs", "resolve_declared_adapters"]
 #: Exceeding it is therefore evidence about Git, not about the lane.
 LABEL_GRACE_SECONDS = 2.0
 
-_CAPABILITIES_SCHEMA = "assay-capabilities/1"
-_MUTATION_STORE_POLICIES: Mapping[str, str] = {
-    "--resume": "same-judge",
-    "--merge-state": "same-judge",
-    "--merge-shard-store": "strict-shard",
-    "--carry-over": "import-unverified",
-    "--reuse-from": "hint",
-}
+_CAPABILITIES_SCHEMA = "assay-capabilities/2"
+_MUTATION_STORE_POLICIES: Mapping[str, str] = mutation_store.STORE_FLAG_POLICIES
 
 
 def _analysis_cli() -> ModuleType:
@@ -249,6 +243,7 @@ def capabilities_document() -> dict[str, object]:
         "verdict_schema_version": VERDICT_SCHEMA_VERSION,
         "commands": commands,
         "mutation_store_policies": policies,
+        "combine_policies": list(mutation_store.COMBINE_POLICIES),
     }
 
 
