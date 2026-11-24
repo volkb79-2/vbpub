@@ -3844,6 +3844,8 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Amended 2026-11-24 (Opus design review):** Solved by KI-190 (declared preflight), not by widening the cmru-only rows.
 
+**Amended 2026-11-24 (P-core-13 design):** `docs/DESIGN-DECLARED-PREFLIGHT.md` D3 and D13. The preflight runs for every project in scope. The wheel-builder, probe and DinD rows become built-in rows keyed on cmru's own verbs (`cmru handler wheel-build`, `cmru tester-gate`, `--enable-docker`), and each is evaluated against that project's own config. cmru's own release loses its unused probe row.
+
 **Observed.** `_release_gate_preconditions_before_dispatch` and its rows (Run-Gate image identity, Bootstrap, `Wheel-builder image`, `Cgroup probe image`) run only when `cmru` is in the release scope. A release of any other project (`cmru release ciu`) skips them, although its gate and wheel build use the same `--pull=never` probe image and the wheel builder. The DinD row (KI-182) is the only image row that already runs per project.
 
 **Wanted.** Evaluate the wheel-builder and probe rows for every project in the release scope against that project's own config, as KI-182 does for the DinD row.
@@ -4074,6 +4076,8 @@ Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md H3
 ## KI-190 - estate gate knowledge lives in the generic release engine
 
 **Status:** OPEN (filed 2026-11-24); severity: medium.
+
+**Amended 2026-11-24 (P-core-13 design):** Decisions in `docs/DESIGN-DECLARED-PREFLIGHT.md`: `[steps.preflight]` is a reserved one-command step, run before dispatch in a `git archive` export of the release revision; stdout is one JSON document (`format` 1, statuses `PASS`/`FAIL`/`SKIPPED`), and malformed output fails closed with exit 4; the bootstrap literal check moves to a `libraries/test-policy` estate lane; the closeout lanes come from `cmru/run-gate.toml`; implementation follows P-core-06 and P-core-12 M0.
 
 `release_preconditions.py` runs `exec()` on `cmru/tools/run_release_gate.py` read from a git blob, calls its private `_current_run_gate_identity`, hard-codes project `cmru`, `tester-unified` and `run-gate.root.toml`, and derives remedies by regex over error prose. A shell snippet must match a block in `docs/BOOTSTRAP-FROM-ZERO.md` (a documentation drift check that blocks releases). `gate_snapshot.py` has `_ASSAY_CLOSEOUT_LANES = ("cmru", "cmru-first-release")`. KI-183 is a direct symptom.
 **Wanted.** An optional declared `[steps.preflight]` in the project grammar, run by the generic runner for every project in scope before dispatch, printing JSON rows `{check, status, detail, remedy}` (cmru's own `cmru.toml` declares `python tools/run_release_gate.py --preflight --json`). Remove the exec/regex identity check. The bootstrap-literal check moves to the owning project's own lane, or to a lane of `libraries/test-policy` (`estate_test_policy`) if it is genuinely estate-wide (see KI-194). `gate_snapshot` takes its lanes from config. The release path needs one real dry-run to prove it.
