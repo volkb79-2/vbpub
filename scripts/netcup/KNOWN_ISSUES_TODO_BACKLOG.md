@@ -70,6 +70,7 @@ docs landed together.
 | NC-62 | The rendered gates memory policy has no live fresh-host acceptance: it is proven only against fakes, while the measured policy it reproduces came from one hand-configured host (also carries the `--adopt` one-time step and the 6655-vs-6656 nominal-size finding of review round 1) | Should-fix | LIVE HALF CLOSED for v1001 2026-11-16 (adoption accepted; its run also LOWERED sshd's live `-1000` listener score to `-900`, now fixed as NC-64 — evidence below); r1002 OPEN (blocked on its iogovmon acceptance until 2026-11-17T14:38Z) |
 | NC-63 | The `docker-.scope.d` `OOMPolicy=kill` drop-in covers every Docker container on the host, so an OOM in the cockpit or a buildkitd scope kills that container whole | Minor | OPEN 2026-11-16 (by design for lane scopes; restriction open) |
 | NC-64 | `provision-gates-limits.sh` LOWERED sshd's own OOM protection: it wrote `-900` over the `-1000` live score sshd keeps on its listener, and would have replaced a packaged stronger value with a drop-in | Major | FIXED 2026-11-16 (never-reduce rule for the live score and the drop-in; sshd finding from the v1001 adoption; round-1 review fixed a swallowed `command not found` that refused MORE protective foreign files) |
+| NC-65 | `provision-gates-limits.sh` writes the `dev-gates.slice` memory policy and `OOMPolicy=kill` unconditionally and lists ssh in the -900 set; it should skip the slice and scope halves when host-setup's `dev-gates.slice` fragment exists and drop ssh (sessions inherit it) | Should-fix | OPEN 2026-11-24 (from DESIGN-DEDICATED-DEV-MEMORY.md section 10; before host-setup lands on any runner host) |
 
 ---
 
@@ -1946,3 +1947,13 @@ retirement, and a rival-file listing that exits at the first file.
 readability of both inputs is a hard error, and the runner guide names the
 directional meaning of `oom_score_adj` so nobody reads `-1000 -> -900` as
 "converged".
+
+## NC-65 — `provision-gates-limits.sh` must yield to a host-setup `dev-gates.slice` fragment and stop listing ssh in the -900 set
+
+**Status:** OPEN (filed 2026-11-24); Should-fix. Source: `mdt-cockpit/host-setup/docs/DESIGN-DEDICATED-DEV-MEMORY.md`
+section 10 ("Cross-tool interplay"), whose placeholder `NC-nn` this entry resolves.
+
+`runner/provision-gates-limits.sh` writes `dev-gates.slice.d/20-memory-policy.conf` (MemoryMax 6656M), `OOMPolicy=kill`
+on docker-.scope and `OOMScoreAdjust=-900` on ssh.service. Follow-up: skip the slice and scope halves when host-setup's
+`dev-gates.slice` fragment exists, and drop ssh from the -900 list (sessions inherit it). Sequence this item before
+host-setup lands on any runner host; `check.sh` WARNs meanwhile (design section 7).
