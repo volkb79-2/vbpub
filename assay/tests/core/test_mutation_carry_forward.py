@@ -397,7 +397,7 @@ def test_same_judge_exact_record_is_left_to_merge_state(
 def test_same_judge_locus_record_is_not_a_cross_judge_match(tmp_path: Path):
     job = _job("def flag():\n    return True\n")
     prior = _job("def flag():\n    return True\n\nOTHER = 1\n")
-    judge = "j" * 64
+    judge = "a" * 64
     store = tmp_path / "prior"
     _write_records(
         store,
@@ -725,7 +725,7 @@ def test_unreadable_generation_keeps_other_carry_forward_records(
 def test_carry_forward_lookup_honors_deadline_and_rejudge_outcomes(tmp_path: Path):
     job = _job("def flag():\n    return True\n")
     record = _minimal_record(
-        job, judge="x" * 64, bucket="survived"
+        job, judge="a" * 64, bucket="survived"
     )
     store = tmp_path / "records"
     _write_records(store, record)
@@ -733,13 +733,13 @@ def test_carry_forward_lookup_honors_deadline_and_rejudge_outcomes(tmp_path: Pat
         return 1.0
 
     assert mutation._carry_forward_lookup(
-        [job], (store,), judge="j" * 64,
+        [job], (store,), judge="b" * 64,
         rejudge_outcomes=frozenset({"survived"}),
         deadline_check=deadline_check,
     )[0] == {}
     with pytest.raises(RuntimeError, match="expired"):
         mutation._carry_forward_lookup(
-            [job], (store,), judge="j" * 64,
+            [job], (store,), judge="b" * 64,
             deadline_check=lambda: (_ for _ in ()).throw(RuntimeError("expired")),
         )
 
@@ -796,6 +796,11 @@ def test_carry_forward_import_rejects_invalid_and_nonfinal_matches(
     )
     assert bad_exact.unmatched == 1
 
+    monkeypatch.setattr(
+        mutation,
+        "_validate_carry_forward_match",
+        lambda match, *_args, **_kwargs: match.payload,
+    )
     matched = mutation._CarryForwardMatch(
         kind="window",
         source=source,
@@ -868,24 +873,36 @@ def test_carry_forward_skips_resumed_jobs_with_or_without_matches(
 ):
     unmatched_job = _job("def unmatched():\n    return True\n")
     invalid_job = _job("def invalid():\n    return True\n")
+    valid_job = _job("def valid():\n    return True\n")
     source = tmp_path / "source"
     _write_records(
         source,
         _minimal_record(invalid_job, judge="a" * 64, bucket="survived"),
+        _minimal_record(valid_job, judge="a" * 64, bucket="survived"),
     )
+
+    def validate(match, *_args, **_kwargs):
+        if match.payload["candidate_id"] == mutation.candidate_id(invalid_job):
+            return None
+        return match.payload
+
     monkeypatch.setattr(
         mutation,
         "_validate_carry_forward_match",
-        lambda *_args, **_kwargs: None,
+        validate,
     )
 
     result = mutation._carry_forward_records(
         mutation.FlexOptions(carry_forward_sources=(source,)),
-        jobs=[unmatched_job, invalid_job],
+        jobs=[unmatched_job, invalid_job, valid_job],
         skip_candidate_ids=frozenset(
-            {mutation.candidate_id(unmatched_job), mutation.candidate_id(invalid_job)}
+            {
+                mutation.candidate_id(unmatched_job),
+                mutation.candidate_id(invalid_job),
+                mutation.candidate_id(valid_job),
+            }
         ),
-        judge="j" * 64,
+        judge="b" * 64,
         state_root=tmp_path / "target",
         state_root_fd=None,
         state_root_guard=None,
@@ -1105,21 +1122,21 @@ def test_duplicate_method_segments_have_no_locus_and_keep_exact_id_lookup(
     store = tmp_path / "exact"
     _write_records(
         store,
-        _minimal_record(edited, judge="x" * 64, bucket="killed"),
+        _minimal_record(edited, judge="a" * 64, bucket="killed"),
     )
     matches, _ignored = mutation._carry_forward_lookup(
-        [job], (store,), judge="j" * 64
+        [job], (store,), judge="b" * 64
     )
     assert matches == {}
 
     exact = _minimal_record(
         job,
-        judge="x" * 64,
+        judge="a" * 64,
         bucket="killed",
     )
     _write_records(store, exact)
     matches, _ignored = mutation._carry_forward_lookup(
-        [job], (store,), judge="j" * 64
+        [job], (store,), judge="b" * 64
     )
     assert matches[mutation.candidate_id(job)].kind == "exact-id"
 
@@ -1137,12 +1154,12 @@ def test_module_and_class_body_candidates_have_no_subfile_lookup(
     store = tmp_path / "unused"
     match = _minimal_record(
         prior,
-        judge="x" * 64,
+        judge="a" * 64,
         bucket="killed",
     )
     _write_records(store, match)
     matches, _ignored = mutation._carry_forward_lookup(
-        [job], (store,), judge="j" * 64
+        [job], (store,), judge="b" * 64
     )
     assert matches == {}
 
@@ -1176,7 +1193,7 @@ def test_f11_module_and_class_body_edits_run_the_full_judge(
         "--carry-forward",
         str(source_store),
     )
-    assert code == 0
+    assert code != 0
     carry = _event(final, "carry_forward")
     assert (carry["exact_id"], carry["locus"], carry["window"]) == (0, 0, 0)
     assert carry["unmatched"] == 1
@@ -1296,9 +1313,9 @@ def test_carry_forward_requires_native_r2_and_list_pending_context(
     assert no_listing[0] == 2
     assert "apply only to --list-pending" in no_listing[2]
 
-    git_repo.write(
-        "assay.toml", _LANE.replace('rigor = ["R0", "R2"]', 'rigor = ["R0"]')
-    )
+    non_r2 = _LANE.replace('rigor = ["R0", "R2"]', 'rigor = ["R0"]')
+    non_r2 = non_r2.split("[lanes.unit.judge.mutation]", 1)[0]
+    git_repo.write("assay.toml", non_r2)
     git_repo.commit_all("remove R2")
     code, error = _invoke_run(
         git_repo,
@@ -1333,13 +1350,13 @@ def test_carry_forward_finds_same_candidate_id_from_an_earlier_judge(tmp_path: P
     foreign = _minimal_record(
         job,
         candidate=mutation.candidate_id(job),
-        judge="x" * 64,
+        judge="a" * 64,
         bucket="survived",
     )
     store = tmp_path / "foreign"
     _write_records(store, foreign)
     matches, _ignored = mutation._carry_forward_lookup(
-        [job], (store,), judge="j" * 64
+        [job], (store,), judge="b" * 64
     )
     assert matches[mutation.candidate_id(job)].kind == "exact-id"
 
@@ -1442,7 +1459,7 @@ def test_structural_but_invalid_survivor_is_rejected_then_rerun(
         "--carry-forward",
         str(source_store),
     )
-    assert code == 0
+    assert code != 0
     carry = _event(final, "carry_forward")
     assert carry["invalid_records"] == 1
     assert carry["survivors_carried"] == 0
@@ -1458,16 +1475,22 @@ def test_f17_carry_forward_shards_merge_with_provenance_intact(
     _seed_source(git_repo, "a = True\nb = True\n", "a = False\nb = False\n")
     source_store = git_repo.path / ".assay" / "prior"
     _code, _first = _run(git_repo, source_store, tmp_path / "first.jsonl")
-    assert {record["outcome_bucket"] for record in _records(source_store)} == {
-        "survived"
-    }
+    prior_records = _records(source_store)
+    assert {record["outcome_bucket"] for record in prior_records} == {"survived"}
     assert len(mutation._carry_forward_record_paths(source_store)) == 2
+    source_ids = tuple(record["candidate_id"] for record in prior_records)
 
     git_repo.write("tests/judge.sh", _BLIND + "# whole-tree judge change\n")
     git_repo.commit_all("judge change")
     shards = [tmp_path / f"shard-{index}" for index in range(2)]
     verdicts = [tmp_path / f"shard-{index}.json" for index in range(2)]
     for index, (store, verdict) in enumerate(zip(shards, verdicts, strict=True)):
+        expected_ids = {
+            source_ids[position]
+            for position in mutation.select_mutation_shard(
+                source_ids, index=index, count=2
+            )
+        }
         code, events = _run(
             git_repo,
             store,
@@ -1478,11 +1501,14 @@ def test_f17_carry_forward_shards_merge_with_provenance_intact(
             str(source_store),
             verdict=verdict,
         )
-        assert code != 0
-        assert _event(events, "carry_forward")["survivors_carried"] == 1
+        assert code == (0 if not expected_ids else 1)
+        assert _event(events, "carry_forward")["survivors_carried"] == len(expected_ids)
         assert _event(events, "candidate") is None
-        (record,) = _records(store)
-        assert record["provenance"]["kind"] == "carried"
+        shard_records = _records(store)
+        assert {record["candidate_id"] for record in shard_records} == expected_ids
+        assert {record["provenance"]["kind"] for record in shard_records} <= {
+            "carried"
+        }
         assert main(
             ["verify", str(verdict)], stdout=io.StringIO(), stderr=io.StringIO()
         ) == 0
@@ -1634,7 +1660,7 @@ def test_carried_survivor_count_ignores_unusable_and_noncarried_records(
     assert mutation.carried_survivor_count(store) == 0
 
     def rejected_read(*_args, **_kwargs):
-        raise mutation.AssayError("unreadable")
+        raise LaneConfigError("unreadable")
 
     monkeypatch.setattr(mutation.safeio, "read_bounded_input", rejected_read)
     assert mutation.carried_survivor_count(store) == 0
