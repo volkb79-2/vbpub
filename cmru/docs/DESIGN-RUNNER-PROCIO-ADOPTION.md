@@ -1,7 +1,7 @@
 # Design: CMRU adopts `cli_extended.procio` (P7)
 
-Scope: KI-178 items 3 and 4 in CMRU, KI-180, and the routing part of KI-189. One package, one
-merge. Other consumers adopt the same released helper with their owners: CIU-220,
+Scope: KI-178 items 3 and 4 in CMRU, KI-180, KI-186 (as re-scoped), KI-188, and the routing
+part of KI-189. One package, one merge. Other consumers adopt the same released helper with their owners: CIU-220,
 MDT-104, NL-83.
 
 ## Decisions
@@ -11,8 +11,9 @@ MDT-104, NL-83.
 2. **No Run-Gate lane-cap fact, no `capped_container` allowlist (P7.0a and RG-293 dropped).**
    Containment is a local fact. `estate_test_policy`'s `requires_contained_cgroup` (TP-13) checks
    it without coupling cmru to lane names, Assay declarations or image paths.
-3. **The image prerequisite is a pin bump plus an import smoke (P-core-05).** `fetch-cli-extended.py`
-   already enforces the wheel SHA-256, so no further evidence chain is needed.
+3. **P7.0b, the image prerequisite, is a pin bump plus an import smoke (P-core-05).**
+   `fetch-cli-extended.py` already enforces the wheel SHA-256, so no further evidence chain is
+   needed.
 4. **Order: release cli-extended 0.8.0, build the tester image with it, then P7.** The cmru floor
    `cli-extended>=0.8.0` must never name a wheel the gate image lacks.
 5. **runner.py's private procio copy (~`runner.py:384-620`) is deleted.** Steps call
@@ -29,7 +30,8 @@ MDT-104, NL-83.
    reliable than writing `U+FFFD`.
 10. **`run_process(capture=True)` delegates to `procio.run_capture` and gains a `stdin`
     parameter.** Captured probes get a bounded drain and group-reaping timeouts. `stdin=DEVNULL`
-    becomes expressible (KI-186's P6b gap).
+    becomes expressible (KI-186's P6b gap). `stdin` is exactly `None` or `subprocess.DEVNULL`;
+    any other value raises `ValueError`, as procio does.
 11. **`tester_gate.py` is frozen.** It only switches its import so that it keeps importing (to
     `cli_extended.procio.terminate_as_exit` or a thin wrapper). It is a retirement candidate
     (KI-191).
@@ -66,6 +68,8 @@ no_progress_timeout_seconds = 3600
   whichever cmru verb runs it.
 - Direct `run_command` calls without parsed step metadata use one exported CMRU constant,
   1800 s. `_execute_step` always passes the parsed value and its source.
+- cmru passes `drain_seconds=OUTPUT_DRAIN_SECONDS` and `term_grace_seconds=GROUP_TERM_GRACE_SECONDS`
+  (`runner.py:314-316`) to `run_streaming`, together with the resolved `no_progress_seconds`.
 
 ### Watchdog expiry
 
@@ -105,9 +109,14 @@ Changed: decoding (D-179), the new watchdog, and the bounded drain in place of t
 - Everything else stays cleanup-owned:
   - the command list and the original absolute cwd;
   - `quiet=True`;
-  - no bake, login, `env_command`, `required_env`, `step_env`, `clean_dirs` or registries;
+  - no bake, login, `no_cache_env`, `env_command`, `required_env`, `step_env`, `clean_dirs`
+    or registries (`bake_set_prefix=None`, `bake_set_vars=[]`, `no_cache_env=None`,
+    `clean_dirs=[]`, `required_env=[]`, `login=None`, `step_env={}`, `env_command=None`,
+    `registries=None`);
   - `repo_root/logs` as the log root;
-  - `CMRU_VERSION`, the selected publisher token and the protected cleanup environment.
+  - `CMRU_VERSION`, the selected publisher token, the project environment and the protected
+    cleanup environment (`CMRU_RELEASE_COMMIT`/`CMRU_RELEASE_TAG` cleared, selected
+    `GITHUB_PUSH_PAT` applied).
 - A `steps.clean` override reaches the watchdog, and its diagnostic names
   `steps.clean.no_progress_timeout_seconds`.
 
@@ -135,13 +144,20 @@ Changed: decoding (D-179), the new watchdog, and the bounded drain in place of t
 - Both `cli-extended` requirements in `cmru/pyproject.toml`, including the `interactive`
   extra, rise to `>=0.8.0`.
 - The floor oracles rise with them: `tools/installed_wheel_smoke.py`,
-  `tests/test_packaging_cli_extended.py`, `tests/test_release_gate_interpreter.py`, and any
-  other assertion of the supported floor.
+  `tests/test_packaging_cli_extended.py`, `tests/test_release_gate_interpreter.py`, the
+  interactive-extra literal in `tests/test_w2_integ.py:234`, and any other assertion of the
+  supported floor. Only deliberately old generic-parser fixtures may keep 0.3.0; they must not
+  declare CMRU's supported floor.
 - Process-signalling tests carry `@pytest.mark.requires_contained_cgroup` (TP-13). TP-13 means
   a finite effective `memory.max` and `pids.max` and a private PID namespace. The tests use
-  pipe or pidfd handshakes and a fake clock, never sleeps. cmru's pytest ini sets
-  `estate_policy = fail` and `required_plugins = estate-test-policy`, with the plugin loaded
-  from source.
+  pipe or pidfd handshakes and a fake clock, never sleeps.
+- cmru does not opt into `estate_test_policy` today. P7 adds `required_plugins =
+  estate-test-policy` (plugin loaded from source) and `estate_policy = warn` to cmru's pytest
+  ini. The project-wide mode drives every rule (sleep, timeout, walltime, leak), not only the
+  marker. Under `warn` a refused marked test is skipped; under `fail` it fails at setup. In
+  both modes the body never runs. Rule: opt in with `fail` only if the implementer shows zero
+  unrelated rule hits across the suite. Otherwise use `warn`; unrelated hits get a per-test
+  `estate_allow` or are deferred, and P7 does not fix them.
 - The public documentation states the default, precedence, finite-only rule, source
   diagnostics, D-178, D-179 and revision-5 compatibility. That covers SPEC S3.2 and S3.4a,
   README, DESIGN-GUIDE, CONSUMERS, and the repository's own `cmru.toml` `[runner]` example.
@@ -155,6 +171,9 @@ These run under the marker, in the gate container:
 - Malformed UTF-8 never fails a step whose child exited 0 (D-179).
 - `cleanup --policy` honours the per-step override.
 - A captured probe with a lingering grandchild times out and reaps its group.
+
+Compatibility: an unchanged revision-5 project still loads, passes `cmru standards`, and
+resolves the finite 1800 s default.
 
 ## Not in this package
 
