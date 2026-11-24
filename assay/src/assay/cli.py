@@ -2408,6 +2408,7 @@ def _resolve_flex_options(
         (carry or carry_forward or merges or shard_stores)
         and not getattr(args, "resume", False)
     ):
+        # Carry-forward consumes prior state, so it is inherently a resume operation.
         raise LaneConfigError(
             "--carry-over, --carry-forward, --merge-state and "
             "--merge-shard-store require --resume"

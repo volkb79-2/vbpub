@@ -4499,8 +4499,8 @@ def _carry_forward_match_candidates(
             elif matched_record.effective_judge != judge:
                 if payload.get("outcome_bucket") in rejudge_outcomes:
                     continue
-                if kind != "window" or payload.get("outcome_bucket") == "killed":
-                    cross_judge.append(match)
+                # Window matches were filtered to kills above.
+                cross_judge.append(match)
         # Keep same-judge exact records alongside older claims until WP2
         # validates them. A valid current record takes precedence in the
         # consumer; a stale one must not hide a valid earlier record.
@@ -4737,18 +4737,24 @@ def _carry_forward_records(
                 "replacement_sha256": job.site.replacement_sha256,
                 "lineno": job.site.lineno,
                 "description": job.site.description,
-                **_locus_fields_for_job(job),
             }
         )
         payload.pop("locus", None)
         payload.pop("window_key", None)
         payload.update(_locus_fields_for_job(job))
+        stored_provenance = record_provenance(chosen)
+        if stored_provenance is not None:
+            from_candidate_id = stored_provenance["from_candidate_id"]
+            from_judge_sha256 = stored_provenance["from_judge_sha256"]
+        else:
+            from_candidate_id = match.payload["candidate_id"]
+            from_judge_sha256 = chosen["judge_sha256"]
         _set_carry_over_provenance(
             payload,
             kind="carried",
             match=match.kind,
-            from_candidate_id=str(match.payload["candidate_id"]),
-            from_judge_sha256=str(chosen["judge_sha256"]),
+            from_candidate_id=str(from_candidate_id),
+            from_judge_sha256=str(from_judge_sha256),
             into_judge_sha256=judge,
             source=match.source,
             reason=CARRY_FORWARD_REASON,
