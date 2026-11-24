@@ -434,9 +434,14 @@ so it never sees a writer's scratch. `list` and `show` take no lock.
     - `etc/kernel/{postinst.d,postrm.d}/zz-dr-state`.
   - **Timing.** The runtime tree lands in P-rollback-20, but installs switch to it only in P-rollback-21, for both
     variants at once (D33). The hooks leave the heredocs in P-rollback-25.
-  - **Installer.** `install-btrfs.sh` copies `$HERE/files` (ISO, seed) or `$HERE/../files` (repository) into the
-    target with `cp -a`. It prints the initial state name with `printf` instead of calling `dr-state _state-name`;
-    `initialize-state` stays the only validator, so the Live system needs no Python.
+  - **Installer.** `install-btrfs.sh` packs `$HERE/files` (ISO, seed) or `$HERE/../files` (repository) into a tar
+    archive whose members are explicitly owned `0:0`, then extracts it as root with `--same-owner`. It omits directory
+    members that already exist at the destination, so `/`, `/usr`, `/usr/local` and every other pre-existing target
+    directory keep their owner and mode. It prints the initial state name with `printf` instead of calling
+    `dr-state _state-name`; `initialize-state` stays the only validator, so the Live system needs no Python.
+  - **Seed and ISO ownership.** The seed ISO is packed with `-uid 0 -gid 0`; the remastered ISO applies
+    `-chown_r 0 /dr/files -- -chgrp_r 0 /dr/files --` before commit. A non-root builder therefore cannot stamp its
+    uid on a root-executed runtime.
   - **Hot patching.** The dev-only hot-patch helpers in dr-serial ship the whole `files/usr/local` tree and are
     refused with `DR_ACCEPTANCE=1` (P-rollback-25).
 

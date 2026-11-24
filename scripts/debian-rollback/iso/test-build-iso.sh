@@ -34,6 +34,13 @@ for bootloader in grub systemd-boot; do
     || { echo "FAIL $bootloader: ISO launcher differs from the files payload" >&2; exit 1; }
   [ -x "$WORK/launcher-$bootloader" ] \
     || { echo "FAIL $bootloader: ISO launcher lost its executable mode" >&2; exit 1; }
+  for member in \
+    /dr/files/usr/local/sbin/dr-state \
+    /dr/files/usr/local/lib/dr-state/dr_state/core.py; do
+    line=$(xorriso -indev "$out" -lsl "$member" 2>/dev/null || true)
+    printf '%s\n' "$line" | awk '$2 == 1 && $3 == 0 && $4 == 0 { ok = 1 } END { exit !ok }' \
+      || { echo "FAIL $bootloader: $member is not root-owned: '$line'" >&2; exit 1; }
+  done
   xorriso -osirrox on -indev "$out" \
     -extract /dr/files/usr/local/lib/dr-state/dr_state/core.py "$WORK/core-$bootloader" >/dev/null 2>&1
   cmp -s "$HERE/../files/usr/local/lib/dr-state/dr_state/core.py" "$WORK/core-$bootloader" \

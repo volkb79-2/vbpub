@@ -75,7 +75,7 @@ main() {
   SEED_STAGE=$(mktemp -d)
   trap 'if [ -n "${SEED_STAGE:-}" ]; then rm -rf -- "$SEED_STAGE"; fi' EXIT
   stage_seed "$SEED_STAGE" "$bootloader"
-  xorriso -as mkisofs -quiet -volid cidata -joliet -rock -o "$out" "$SEED_STAGE"
+  xorriso -as mkisofs -quiet -volid cidata -joliet -rock -uid 0 -gid 0 -o "$out" "$SEED_STAGE"
   sha256sum "$out"
 }
 

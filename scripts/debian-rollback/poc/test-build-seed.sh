@@ -203,8 +203,15 @@ else
     printf '%s\n' "$backend" >"$WORK/$backend.want"
     cmp -s "$WORK/$backend.want" "$WORK/$backend.extracted" \
       || bad "$backend ISO: extracted marker differs"
+    for member in \
+      /poc/files/usr/local/sbin/dr-state \
+      /poc/files/usr/local/lib/dr-state/dr_state/core.py; do
+      line=$(xorriso -indev "$iso" -lsl "$member" 2>/dev/null || true)
+      printf '%s\n' "$line" | awk '$2 == 1 && $3 == 0 && $4 == 0 { ok = 1 } END { exit !ok }' \
+        || bad "$backend ISO: $member is not root-owned: '$line'"
+    done
   done
-  covered="staging, isolated success/failure cleanup, executed user-data marker selection, installer pass-through, invalid-value refusal, ISO packing and extracted markers"
+  covered="staging, isolated success/failure cleanup, executed user-data marker selection, installer pass-through, invalid-value refusal, ISO packing, root-owned payload metadata, and extracted markers"
 fi
 
 [ "$fail" = 0 ] && echo "test-build-seed: OK ($covered)"

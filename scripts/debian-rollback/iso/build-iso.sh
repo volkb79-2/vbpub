@@ -112,6 +112,8 @@ xorriso -indev "$BASE" -outdev "$OUT.part" -boot_image any replay \
   -map "$STAGE/dr" /dr \
   -map "$STAGE/hooks" /live/config-hooks \
   -map "$SCRATCH/grub.cfg" /boot/grub/grub.cfg \
+  -chown_r 0 /dr/files -- \
+  -chgrp_r 0 /dr/files -- \
   -commit >"$SCRATCH/xorriso.log" 2>&1 || { tail -n 20 "$SCRATCH/xorriso.log" >&2; rm -f "$OUT.part"; die "xorriso failed"; }
 mv "$OUT.part" "$OUT"
 echo "$OUT $(stat -c %s "$OUT") bytes (target bootloader: $BOOTLOADER)"
