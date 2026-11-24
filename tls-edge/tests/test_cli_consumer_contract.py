@@ -34,7 +34,7 @@ def _expected_contract(root: Path, answers: str) -> dict[str, str]:
     from tls_edge_cli.contract import contract_for
 
     overlay = tomllib.loads(answers)
-    return contract_for(root / "stack" / "ciu-stack", overlay)
+    return contract_for(root / "ciu-stack", overlay)
 
 
 def _configure(
@@ -80,7 +80,7 @@ def test_configure_writes_the_full_contract_to_a_new_0644_file(
     answers_path = answer_file(tmp_path / "answers.toml", ANSWERS)
     result, output = _configure(root, answers_path, monkeypatch)
     assert result == 0, output
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     assert env_path.read_text(encoding="utf-8") == _canonical_env(
         _expected_contract(root, ANSWERS)
     )
@@ -137,7 +137,7 @@ def test_public_ports_sort_by_number_then_tcp_before_udp(
     assert result == 0, output
     assert (
         f"TLS_EDGE_PUBLIC_PORTS={expected_ports}"
-        in (root / "stack" / "consumer.env").read_text(encoding="utf-8").splitlines()
+        in (root / "consumer.env").read_text(encoding="utf-8").splitlines()
     )
 
 
@@ -146,7 +146,7 @@ def test_configure_rewrites_owned_keys_in_place(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = make_root(tmp_path / "instance")
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     env_path.write_text(
         "CUSTOM_BEFORE=one\n"
         "TLS_EDGE_DOMAIN=stale.example.test\n"
@@ -169,7 +169,7 @@ def test_configure_appends_missing_owned_keys_in_contract_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = make_root(tmp_path / "instance")
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     env_path.write_text(
         "TLS_EDGE_DOMAIN=stale.example.test\n"
         "CUSTOM_CONSUMER_SETTING=kept\n",
@@ -200,7 +200,7 @@ def test_configure_removes_duplicate_owned_lines(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = make_root(tmp_path / "instance")
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     env_path.write_text(
         "TLS_EDGE_DOMAIN=first.example.test\n"
         "CUSTOM_SETTING=kept\n"
@@ -221,7 +221,7 @@ def test_configure_keeps_comments_blank_lines_and_unowned_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = make_root(tmp_path / "instance")
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     preserved = (
         "# operator-owned consumer settings\n"
         "CUSTOM_CONSUMER_SETTING=keep-me\n"
@@ -247,7 +247,7 @@ def test_validate_accepts_operator_owned_consumer_env_lines(
     answers_path = answer_file(tmp_path / "answers.toml", ANSWERS)
     result, output = _configure(root, answers_path, monkeypatch)
     assert result == 0, output
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     env_path.write_text(
         env_path.read_text(encoding="utf-8")
         + "# operator-owned settings\n"
@@ -266,7 +266,7 @@ def test_configure_keeps_the_existing_consumer_env_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = make_root(tmp_path / "instance")
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     env_path.write_text(
         "TLS_EDGE_DOMAIN=stale.example.test\n",
         encoding="utf-8",
@@ -286,7 +286,7 @@ def test_hand_edited_domain_is_refused_then_re_synced_by_configure(
     answers_path = answer_file(tmp_path / "answers.toml", ANSWERS)
     result, output = _configure(root, answers_path, monkeypatch)
     assert result == 0, output
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     expected = env_path.read_text(encoding="utf-8")
     _hand_edit_domain(env_path)
 
@@ -326,7 +326,7 @@ def test_compose_owned_key_spellings_are_drift_and_re_synced(
     answers_path = answer_file(tmp_path / "answers.toml", ANSWERS)
     result, output = _configure(root, answers_path, monkeypatch)
     assert result == 0, output
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     canonical = env_path.read_text(encoding="utf-8")
     env_path.write_text(canonical + owned_line + "\n", encoding="utf-8")
 
@@ -354,7 +354,7 @@ def test_validate_ignores_an_absent_consumer_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = make_root(tmp_path / "instance")
-    override = root / "stack" / "ciu-stack" / "ciu.toml.j2"
+    override = root / "ciu-stack" / "ciu.toml.j2"
     override.write_text(
         '[tls_edge]\ndomain = "edge.example.test"\n',
         encoding="utf-8",
@@ -371,7 +371,7 @@ def test_validate_refuses_a_non_docker_ingress_network_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = make_root(tmp_path / "instance")
-    override = root / "stack" / "ciu-stack" / "ciu.toml.j2"
+    override = root / "ciu-stack" / "ciu.toml.j2"
     override.write_text(
         '[tls_edge]\ndomain = "edge.example.test"\ningress_network = "edge public"\n',
         encoding="utf-8",
@@ -408,7 +408,7 @@ def test_validate_names_every_drifted_key(
     answers_path = answer_file(tmp_path / "answers.toml", ANSWERS)
     result, output = _configure(root, answers_path, monkeypatch)
     assert result == 0, output
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     text = env_path.read_text(encoding="utf-8").replace(
         "TLS_EDGE_NETWORK=ingress_public\n",
         "",
@@ -439,7 +439,7 @@ def test_validate_names_an_identically_duplicated_owned_key(
     answers_path = answer_file(tmp_path / "answers.toml", ANSWERS)
     result, output = _configure(root, answers_path, monkeypatch)
     assert result == 0, output
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     canonical = env_path.read_text(encoding="utf-8")
     env_path.write_text(
         canonical + "TLS_EDGE_DOMAIN=edge.example.test\n",
@@ -476,7 +476,7 @@ def test_show_reports_drift_and_exits_zero(
     answers_path = answer_file(tmp_path / "answers.toml", ANSWERS)
     result, output = _configure(root, answers_path, monkeypatch)
     assert result == 0, output
-    _hand_edit_domain(root / "stack" / "consumer.env")
+    _hand_edit_domain(root / "consumer.env")
 
     result, output = run_cli(
         monkeypatch,
@@ -512,7 +512,7 @@ def test_show_refuses_an_unreadable_consumer_env_shape(
     answers_path = answer_file(tmp_path / "answers.toml", ANSWERS)
     result, output = _configure(root, answers_path, monkeypatch)
     assert result == 0, output
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     env_path.unlink()
     if shape == "directory":
         env_path.mkdir()
@@ -561,7 +561,7 @@ def test_show_json_has_the_exact_envelope_and_in_sync_contract(
     assert payload["format"] == 1
     assert payload["version"] == "0.0.0"
     assert payload["schema"] == 1
-    assert payload["stack_dir"] == str(root / "stack" / "ciu-stack")
+    assert payload["stack_dir"] == str(root / "ciu-stack")
     assert payload["override"] is True
     assert payload["contract"] == _expected_contract(root, ANSWERS)
     assert payload["ports"] == [
@@ -582,7 +582,7 @@ def test_show_json_reports_drift_and_absence_without_failing(
     answers_path = answer_file(tmp_path / "answers.toml", ANSWERS)
     result, output = _configure(root, answers_path, monkeypatch)
     assert result == 0, output
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     _hand_edit_domain(env_path)
 
     result, output = run_cli(

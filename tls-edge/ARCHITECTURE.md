@@ -137,7 +137,7 @@ can bind any host port.  **Not recommended** for services in this architecture.
 ### Decision: separate ingress_public + per-stack private networks
 
 ```
-ingress_public (shared, created by edge-proxy stack)
+ingress_public (shared, created by the tls-edge stack)
     │
     ├── edge-traefik
     ├── stack-A public service
@@ -251,8 +251,8 @@ When `wildcard_main` is set (e.g. `"my.domain"`), a single wildcard
 certificate is requested for `my.domain` + `*.my.domain` on both entrypoints.
 
 **Credential delivery**:
-- Standalone mode: plain environment variables in the gitignored
-  `edge-proxy/.env` (loaded via `env_file`; `chmod 600`).
+- Trial standalone mode: plain environment variables in the generated,
+  gitignored `edge-proxy/.env` (loaded via `env_file`; `chmod 600`).
 - ciu mode: Docker secrets referenced by `*_FILE` variable names declared in
   `[tls_edge.secrets]`.
 
@@ -288,8 +288,8 @@ devcontainer / Docker-outside-of-Docker (DooD) environments, a named volume
 ### Port 80 is ON by default
 
 Port 80 carries a permanent HTTP→HTTPS redirect and ACME HTTP-01 challenges
-(`acme-http` mode requires it).  `expose_http = false` (installer
-`--disable-port-80`) frees the port for a host that must not serve it; the edge
+(`acme-http` mode requires it).  `tls-edge configure` can set
+`expose_http = false` for a host that must not serve it; the edge
 is then TLS-only.  Consumers should still publish `https://` URLs.
 
 ### Wildcard DNS record vs wildcard certificate vs per-name ACME
@@ -637,23 +637,22 @@ ciu-stack/
 `ciu-stack/` is also a complete ciu v2 stack package and can be deployed
 directly by ciu without any extra tooling.
 
-### Two render paths
+### Supported and trial render paths
 
-**Standalone** (`scripts/render.sh`):
-Reads `ciu.defaults.toml.j2` and optionally a gitignored `ciu-stack/ciu.toml.j2`
-override, then writes the rendered output to `edge-proxy/`.  The `edge-proxy/`
-directory ships pre-rendered for the default `acme-tls` mode so that
-`docker compose up -d` works immediately without any tooling.
-
-Do not edit the rendered copies in `edge-proxy/` directly; changes will be
-overwritten on the next render.
-
-**ciu v2**:
+**Supported (ciu)**:
 Renders the templates natively as part of its deployment pipeline.  Uses
 configfile overlay mounts (`[tls_edge.traefik.configfile.*]`) to inject
 `traefik.yml` and the `conf.d/` files into the container at the right paths.
 The Traefik service key in the compose template must remain `traefik` (ciu spec
 S5.3); renaming it silently detaches the configfile mounts.
+
+**Trial (standalone)** (`scripts/render.sh`):
+Reads `ciu.defaults.toml.j2` and optionally a gitignored `ciu-stack/ciu.toml.j2`
+override, then writes a generated tree to the `--out` directory. This output is
+never committed and exists only for inspection or a disposable trial.
+
+Do not edit files in the generated `--out` directory directly; changes will
+be overwritten on the next render.
 
 ### Overriding defaults
 
@@ -757,27 +756,17 @@ Certbot runs on the host and renews certificates automatically.  After a
 successful renewal, the deploy hook triggers a Traefik dynamic-config reload.
 
 **Deploy hook** (`scripts/certbot-deploy-hook.sh`):
-The hook rewrites the `# rendered:` timestamp line in `edge-proxy/conf.d/certs.yml`
-on the host filesystem.  Because the `conf.d/` directory is bind-mounted into
-the container with `:ro`, **host-side writes propagate through the mount** and
-trigger Traefik's inotify file-provider watcher.  The `:ro` flag only blocks
-writes from inside the container; it does not block the host.  A content
-rewrite (not a bare `touch` or attribute-only change) is required to reliably
-fire the inotify event.  This achieves **zero-downtime certificate reload**.
+The hook resolves the Traefik container with the same Compose-label discovery
+as `scripts/verify.sh`, then runs `docker restart --time 5 <name>`.  The restart
+takes about 3 seconds and writes no synced stack file.
 
 ```sh
-# Install the hook (run once, or via scripts/install.sh):
-cp tls-edge/scripts/certbot-deploy-hook.sh \
+# Install the stable hook symlink from the instance:
+ln -sf /srv/tls-edge-instance/stack/scripts/certbot-deploy-hook.sh \
    /etc/letsencrypt/renewal-hooks/deploy/01-reload-traefik.sh
-chmod +x /etc/letsencrypt/renewal-hooks/deploy/01-reload-traefik.sh
 
 # Test renewal dry-run including hook execution:
 certbot renew --dry-run
-```
-
-**Fallback** (if inotify reload does not fire):
-```sh
-docker restart --time 5 edge-traefik   # ~3 seconds downtime
 ```
 
 ### Superseded alternatives
@@ -790,8 +779,8 @@ access-log rotation in some proxies).  This section has been removed.
 because it was believed that a `:ro` bind mount blocked the host-side writes
 needed to trigger inotify.  This was incorrect.  `:ro` only restricts writes
 from inside the container; the host can always write through the mount.  The
-read-only flag is retained for hardening; the hook uses a content rewrite
-rather than a bare `touch` to ensure the inotify event fires.
+read-only flag is retained for hardening. The supported hook does not depend on
+that inotify path; it performs the documented restart instead.
 
 ---
 
@@ -803,7 +792,7 @@ If two containers attempt to publish the same host port (e.g., both `ports: - "4
 - Docker rejects the second `docker compose up` with:
   `Bind for 0.0.0.0:443 failed: port is already allocated`
 - The first stack retains the binding; the second fails to start.
-- **Rule**: only the `edge-proxy` stack may publish host HTTPS, optional HTTP,
+- **Rule**: only the tls-edge instance may publish host HTTPS, optional HTTP,
   and explicitly configured L4 media ports. Consumer stacks use `expose:` only.
 
 ### Traefik router rule collision (proxy level)
@@ -1021,10 +1010,10 @@ a second gate that is harder to satisfy accidentally.
 | Docker has no per-port-per-network ACL | Ops endpoints can only be isolated by app bind address or host firewall | Use loopback binding + sidecar; plan for DOCKER-USER rules |
 | Cert mount footgun (static mode): must mount parent dirs, not `live/<domain>` directly | Mounting `live/<domain>` breaks certbot's relative symlinks; Traefik silently serves its self-signed default cert | Fixed by design: compose template mounts `cert_base/live` and `cert_base/archive` as parents; explanation retained for awareness |
 | `exposedByDefault: false` is the only admission gate | Any container on `ingress_public` with the right label is routed | Add label constraints (F7) or network segmentation by trust class (F2) |
-| Zero-downtime cert renewal in static mode depends on inotify | If the file watcher does not fire (e.g. attribute-only change), certs do not reload | Hook uses a content rewrite to ensure inotify fires; fallback: `docker restart --time 5 edge-traefik` (~3s downtime) |
+| Static-mode certificate reload restarts Traefik | The hook resolves the instance container and restarts it, so the edge is unavailable briefly | `docker restart --time 5 <resolved-name>`; expect about 3 seconds of downtime after a renewal |
 | acme-data volume loss | `docker compose down -v` destroys ACME state; all certs are re-issued on next start; LE rate limits (~5 duplicate certs/week) apply | Never use `-v` in production without a backup plan; use staging CA for experiments |
 | sniStrict rejects SNI-less clients | Bare-IP probes, some uptime checkers, and `openssl s_client` without `-servername` are rejected | Expected and desirable; disable `sniStrict` in `conf.d/options.yml` only if such clients must be served |
-| Port 80 is on by default | The edge answers on a second public port | Use `tls-edge configure` to disable it for an installed instance, or `scripts/install.sh --disable-port-80` for the standalone installer; `acme-http` then cannot be used |
+| Port 80 is on by default | The edge answers on a second public port | Use `tls-edge configure` to disable it for an installed instance; `acme-http` then cannot be used |
 | Router name uniqueness is operator-enforced | Two stacks using the same router name will conflict | Naming convention adopted in examples: `<stack>-<service>` |
 | App must configure loopback bind for ops | Docker cannot enforce this; relies on app configuration discipline | Document requirement prominently; verify via `scripts/verify.sh` |
 | Single Traefik instance is a SPOF | If Traefik crashes, all public services are unreachable | `restart: unless-stopped` mitigates transient failures; HA Traefik requires Swarm or Kubernetes |

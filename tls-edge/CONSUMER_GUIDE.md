@@ -2,7 +2,7 @@
 
 ## Overview
 
-The edge-proxy stack runs a single Traefik instance that:
+The tls-edge instance runs a single Traefik deployment that:
 - terminates TLS for all consumer services on this host
 - routes requests by host name (one host name per service, all on port 443)
 - discovers consumer services automatically from Docker labels
@@ -13,7 +13,7 @@ ACME HTTP-01 challenges.  It can be disabled (`tls_edge.ports.expose_http =
 false`).  Always publish `https://` URLs.
 
 Consumers attach to the shared `ingress_public` network and declare routing
-via Compose labels.  No access to the edge-proxy stack itself is needed.
+via Compose labels.  No access to the tls-edge instance itself is needed.
 
 The network, HTTPS entrypoint, headers middleware, HTTP/3 state and public
 ports are one rendered contract, not values inferred from tls-edge defaults.
@@ -39,27 +39,21 @@ cd /srv/tls-edge-instance/stack && sudo ./ciu up
 ```
 
 Container names of an installed instance are `tls-edge-<id>-traefik` and
-`tls-edge-<id>-dockerproxy` (the network alias `traefik` is kept).  The log
-and restart commands below say `edge-traefik` (the name of the plain-compose
-render in `edge-proxy/`); substitute your container's name.
+`tls-edge-<id>-dockerproxy` (the network alias `traefik` is kept).  Use those
+names in the commands below; they are discovered from Compose labels where the
+scripts can do so.
 
 ---
 
 ## Prerequisites
 
-1. The edge-proxy stack is running (any of these starts it):
+1. The tls-edge instance is running:
    ```sh
-   # Standalone (pre-rendered default — acme-tls mode, no tooling required):
-   cd tls-edge/edge-proxy && docker compose up -d
-
-   # Installed instance (get.py, bundled ciu; docs/INSTALL.md):
+   # Supported path (get.py, bundled ciu; docs/INSTALL.md):
    cd /srv/tls-edge-instance/stack && ./ciu up
-
-   # Interactive installer for the plain-compose render:
-   tls-edge/scripts/install.sh
    ```
 
-2. The shared ingress network exists (created by the edge-proxy stack):
+2. The shared ingress network exists (created by the tls-edge stack):
    ```sh
    docker network ls | grep ingress_public
    ```
@@ -261,7 +255,7 @@ Checklist:
 
 Protects the route with HTTP Basic Authentication declared entirely in Docker
 Compose labels.  Traefik discovers the middleware automatically — no changes to
-the edge-proxy stack are needed.
+the tls-edge instance are needed.
 
 #### How it works
 
@@ -459,7 +453,7 @@ the offline run-gate lane because it needs public DNS, ACME, and UDP/443 access.
 Docker host port collisions (two containers try to `ports: - "443:..."` directly):
 - Docker rejects the second `docker compose up` with an error like:
   `Bind for 0.0.0.0:443 failed: port is already allocated`
-- Only the edge-proxy stack should ever publish ports 80, 443 and 8443.
+- Only the tls-edge instance should ever publish ports 80, 443 and 8443.
 - Consumer stacks must NOT publish their own ports on those numbers.
 
 Traefik router rule collisions (two services declare the same hostname + entrypoint):
@@ -487,17 +481,15 @@ certificates per week per domain).  Do not delete the volume in production.
 
 ### static mode — per-subdomain or SAN cert (automatic certbot renewal)
 
-Certbot runs on the host and renews certificates automatically.  After
-renewal, the deploy hook rewrites the `# rendered:` timestamp in
-`edge-proxy/conf.d/certs.yml` on the host filesystem.  The `:ro` bind mount
-propagates this change into the container and triggers Traefik's inotify
-file-provider watcher, reloading the new certificate with **zero downtime**.
+Certbot runs on the host and renews certificates automatically.  After renewal,
+the deploy hook resolves the instance's Traefik container from Compose labels
+and runs `docker restart --time 5 <name>`.  The restart takes about 3 seconds
+and reads no modified synced file.
 
 ```sh
-# Install the hook (run once, or via scripts/install.sh):
-cp tls-edge/scripts/certbot-deploy-hook.sh \
+# Install the stable hook symlink (run once, and again after updating a 3.x copied hook):
+ln -sf /srv/tls-edge-instance/stack/scripts/certbot-deploy-hook.sh \
    /etc/letsencrypt/renewal-hooks/deploy/01-reload-traefik.sh
-chmod +x /etc/letsencrypt/renewal-hooks/deploy/01-reload-traefik.sh
 
 # Test renewal dry-run including hook execution:
 certbot renew --dry-run
@@ -506,14 +498,10 @@ certbot renew --dry-run
 Expected output during renewal:
 ```
 Running deploy hook: /etc/letsencrypt/renewal-hooks/deploy/01-reload-traefik.sh
-[certbot-hook] Certificate renewed.  Reloading Traefik dynamic config...
-[certbot-hook] Reload triggered.
+tls-edge: restarting tls-edge-example-traefik to reload certificates (about 3 s)
 ```
 
-If the inotify reload does not fire for any reason, the fallback is:
-```sh
-docker restart --time 5 edge-traefik   # ~3 seconds downtime
-```
+When no matching container is running, the hook prints a message and exits 0.
 
 ### static mode — wildcard cert via manual DNS TXT (no DNS API required)
 
@@ -624,18 +612,17 @@ tls-edge/
       certs.yml.j2                  ←   static cert store template
     ciu.toml.j2                     ←   (gitignored) your local overrides
 
-  edge-proxy/                       ← rendered output — DO NOT EDIT DIRECTLY
-    docker-compose.yml              ←   pre-rendered for acme-tls (default mode)
-    traefik.yml                     ←   pre-rendered static config
+  edge-proxy/                       ← optional gitignored trial render
+    docker-compose.yml              ←   generated for acme-tls (default mode)
+    traefik.yml                     ←   generated static config
     conf.d/
       options.yml                   ←   copied from ciu-stack/conf.d/
       middlewares.yml               ←   copied from ciu-stack/conf.d/
       certs.yml                     ←   rendered cert store (ACME mode: empty)
-    .env                            ←   (gitignored) acme-dns credentials
+    .env                            ←   (gitignored) acme-dns trial credentials
 
   scripts/
-    render.sh                       ←   standalone re-render (writes edge-proxy/)
-    install.sh                      ←   first-time setup + hook installation
+    render.sh                       ←   standalone re-render (default --out: edge-proxy/)
     verify.sh                       ←   post-deploy check suite
     dev-certs.sh                    ←   generate self-signed certs for dev mode
     certbot-deploy-hook.sh          ←   install to /etc/letsencrypt/renewal-hooks/deploy/
@@ -652,15 +639,13 @@ tls-edge/
     .env.example
 ```
 
-To change any configuration value, edit `ciu-stack/ciu.toml.j2` (create it if
-it does not exist) with only the keys to override, then re-render:
+For the supported deployment, use `/srv/tls-edge-instance/bin/tls-edge
+configure` and then run ciu:
 
 ```sh
-# Standalone:
-tls-edge/scripts/render.sh
-
-# ciu v2:
-cd tls-edge/ciu-stack && ciu
+sudo /srv/tls-edge-instance/bin/tls-edge configure
+cd /srv/tls-edge-instance/stack
+sudo ./ciu check && sudo ./ciu up --dry-run && sudo ./ciu up
 ```
 
 Static config changes (log level, entrypoints, TLS mode, ACME settings) take

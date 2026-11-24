@@ -69,15 +69,14 @@ def _tracked_stack_files() -> list[Path]:
 
 
 def _case_root(tmp_path: Path, override: str) -> tuple[Path, Path]:
-    root = tmp_path / "instance"
-    stack_root = root / "stack"
-    stack_dir = stack_root / "ciu-stack"
+    root = tmp_path / "instance" / "stack"
+    stack_dir = root / "ciu-stack"
     for relative in _tracked_stack_files():
         source = REPO_ROOT / relative
         target = stack_dir / relative.relative_to(Path("tls-edge/ciu-stack"))
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
-    shutil.copy2(ROOT / "ciu.global.defaults.toml.j2", stack_root)
+    shutil.copy2(ROOT / "ciu.global.defaults.toml.j2", root)
     (stack_dir / "ciu.toml.j2").write_text(override, encoding="utf-8")
     return root, stack_dir
 
@@ -90,14 +89,14 @@ def _run_ciu_check(root: Path) -> int:
         "INSTANCE_ID": "test",
     }
     global_config = deploy.load_global_config(
-        root / "stack", write_rendered=False, environ=environ
+        root, write_rendered=False, environ=environ
     )
     profile = deploy.resolve_profiles(global_config, None, environ=environ)
     selection = deploy.build_selection(profile)
     context = profiles_pkg.render_ciu_context(profile, selection)
     rendered = {}
     for entry in selection:
-        stack_dir = root / "stack" / entry["path"]
+        stack_dir = root / entry["path"]
         rendered[entry["path"]] = config_model.render_stack(
             stack_dir,
             global_config=profile.config,
@@ -107,7 +106,7 @@ def _run_ciu_check(root: Path) -> int:
             environ=environ,
         )
     return deploy.action_check(
-        root / "stack", profile, selection, rendered,
+        root, profile, selection, rendered,
         live=False, json_output=False,
     )
 
@@ -491,7 +490,7 @@ def test_ciu_hooks_preflight_invokes_validate_edge(
     monkeypatch.setattr(hooks_runner, "load_hook_for_check", recording_loader)
     assert _run_ciu_check(root) == 0
     assert calls == [
-        root / "stack" / "ciu-stack" / "hooks" / "validate_edge.py"
+        root / "ciu-stack" / "hooks" / "validate_edge.py"
     ]
 
 
@@ -556,7 +555,7 @@ def test_hook_reports_consumer_env_drift_as_an_error_finding(
 
     root, stack_dir = _case_root(tmp_path, _override())
     _, _, effective = config.load_site(stack_dir)
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     env_path.write_text(
         render_env(consumer_contract(effective["tls_edge"])),
         encoding="utf-8",
@@ -587,7 +586,7 @@ def test_configure_writes_schema_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, _ = _case_root(tmp_path, _override())
-    override_path = root / "stack" / "ciu-stack" / "ciu.toml.j2"
+    override_path = root / "ciu-stack" / "ciu.toml.j2"
     override_path.unlink()
 
     result, _ = _run_cli_with_prompts(

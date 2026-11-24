@@ -59,10 +59,12 @@ class FixedPrompts:
 
 
 def make_root(path: Path) -> Path:
-    stack_dir = path / "stack" / "ciu-stack"
+    root = path / "stack"
+    stack_dir = root / "ciu-stack"
     stack_dir.mkdir(parents=True)
     shutil.copy2(ROOT / "ciu-stack" / "ciu.defaults.toml.j2", stack_dir)
-    return path
+    (root.parent / "current").symlink_to(root.parent / "releases" / "tls-edge")
+    return root
 
 
 def answer_file(path: Path, text: str) -> Path:
@@ -120,8 +122,8 @@ def test_configure_dry_run_decline_write_and_idempotent(
     )
     assert result == 0, output
     assert "Dry run: no files were changed." in output
-    assert not (root / "stack/ciu-stack/ciu.toml.j2").exists()
-    assert not (root / "stack/consumer.env").exists()
+    assert not (root / "ciu-stack/ciu.toml.j2").exists()
+    assert not (root / "consumer.env").exists()
 
     result, output = run_cli(
         monkeypatch,
@@ -130,16 +132,16 @@ def test_configure_dry_run_decline_write_and_idempotent(
     )
     assert result == 0, output
     assert "Configuration was not changed." in output
-    assert not (root / "stack/consumer.env").exists()
+    assert not (root / "consumer.env").exists()
 
     result, output = run_cli(
         monkeypatch,
         ["configure", "--root", str(root), "--answers", str(answers), "--yes"],
     )
     assert result == 0, output
-    override = root / "stack/ciu-stack/ciu.toml.j2"
+    override = root / "ciu-stack/ciu.toml.j2"
     assert 'domain = "edge.example.org"' in override.read_text(encoding="utf-8")
-    assert (root / "stack/consumer.env").read_text(encoding="utf-8") == (
+    assert (root / "consumer.env").read_text(encoding="utf-8") == (
         "TLS_EDGE_DOMAIN=edge.example.org\n"
         "TLS_EDGE_NETWORK=ingress_public\n"
         "TLS_EDGE_HTTPS_ENTRYPOINT=websecure\n"
@@ -199,7 +201,7 @@ cgroup_parent = "dev-background.slice"
     )
     assert result == 0, output
     document = tomllib.loads(
-        (root / "stack/ciu-stack/ciu.toml.j2").read_text(encoding="utf-8")
+        (root / "ciu-stack/ciu.toml.j2").read_text(encoding="utf-8")
     )
     settings = document["tls_edge"]
     assert settings["acme"]["email"] == "ops@example.org"
@@ -242,7 +244,7 @@ source = "volume"
     )
     assert result == 0, output
     static_doc = tomllib.loads(
-        (static_root / "stack/ciu-stack/ciu.toml.j2").read_text(encoding="utf-8")
+        (static_root / "ciu-stack/ciu.toml.j2").read_text(encoding="utf-8")
     )
     assert static_doc["tls_edge"]["static"] == {
         "cert_base": "/srv/certs",
@@ -274,7 +276,7 @@ mode = "dev"
     )
     assert result == 0, output
     dev_doc = tomllib.loads(
-        (dev_root / "stack/ciu-stack/ciu.toml.j2").read_text(encoding="utf-8")
+        (dev_root / "ciu-stack/ciu.toml.j2").read_text(encoding="utf-8")
     )
     assert dev_doc["tls_edge"]["static"]["domains"] == ["dev.example.org"]
 
@@ -284,7 +286,7 @@ def test_interactive_configure_and_cross_field_repair(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = make_root(tmp_path / "instance")
-    override = root / "stack/ciu-stack/ciu.toml.j2"
+    override = root / "ciu-stack/ciu.toml.j2"
     override.write_text(
         '[tls_edge]\ndomain = "edge.example.test"\n'
         '[tls_edge.tls]\nmode = "static"\n',
@@ -334,7 +336,7 @@ def test_interactive_static_lineages_are_parsed_from_the_list_prompt(
     )
     assert result == 0, output
     written = tomllib.loads(
-        (root / "stack" / "ciu-stack" / "ciu.toml.j2").read_text(encoding="utf-8")
+        (root / "ciu-stack" / "ciu.toml.j2").read_text(encoding="utf-8")
     )
     assert written["tls_edge"]["static"]["domains"] == [
         "one.example.test",
@@ -360,7 +362,7 @@ def test_interactive_static_modes_default_lineages_to_domain(
     )
     assert result == 0, output
     written = tomllib.loads(
-        (root / "stack" / "ciu-stack" / "ciu.toml.j2").read_text(encoding="utf-8")
+        (root / "ciu-stack" / "ciu.toml.j2").read_text(encoding="utf-8")
     )
     assert written["tls_edge"]["static"]["domains"] == [domain]
 
@@ -374,15 +376,14 @@ def test_configure_reports_a_failure_after_the_override_write(
         tmp_path / "answers.toml",
         '[tls_edge]\ndomain = "edge.example.test"\n',
     )
-    stack = root / "stack"
-    stack.chmod(0o500)
+    root.chmod(0o500)
     try:
         result, output = run_cli(
             monkeypatch,
             ["configure", "--root", str(root), "--answers", str(answers), "--yes"],
         )
     finally:
-        stack.chmod(0o700)
+        root.chmod(0o700)
     assert result == 2, output
     assert "could not finish writing configuration" in output
     assert "inspect" in output
@@ -481,7 +482,7 @@ def test_show_and_validate_valid_empty_and_invalid_instances(
     assert result != 0, output
     assert "domain is required" in output
 
-    override = root / "stack/ciu-stack/ciu.toml.j2"
+    override = root / "ciu-stack/ciu.toml.j2"
     override.write_text(
         '[tls_edge]\ndomain = "custom.example.org"\n'
         "[tls_edge.http3]\nenabled = true\n",
@@ -528,7 +529,7 @@ def test_main_reports_version_lookup_and_root_failures(
         ["show", "--root", str(tmp_path / "missing")],
     )
     assert result == 2, output
-    assert "not a tls-edge instance root" in output
+    assert "not a tls-edge stack directory" in output
 
 
 def test_configure_refuses_defaults_that_omit_a_managed_key(
@@ -536,7 +537,7 @@ def test_configure_refuses_defaults_that_omit_a_managed_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = make_root(tmp_path / "instance")
-    defaults = root / "stack/ciu-stack/ciu.defaults.toml.j2"
+    defaults = root / "ciu-stack/ciu.defaults.toml.j2"
     defaults.write_text(
         '[tls_edge]\ndomain = "edge.example.test"\n',
         encoding="utf-8",
