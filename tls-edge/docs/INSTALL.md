@@ -61,6 +61,9 @@ it does not collect site settings. `tls-edge configure` then asks for the domain
 HTTP/3, network/volume adoption, and runtime placement. It displays the exact changes and
 inbound firewall ports before writing the instance override and `consumer.env`.
 
+A host that already runs a tls-edge 3.x instance has no in-place path to 4.0: a 3.x instance cannot update to 4.0
+through the installer, so 4.0 is installed fresh exactly as this section describes.
+
 On a root-run system install, bootstrap creates `shared/acme` as `root:root` with mode `0700`. When the override
 does not yet set `[tls_edge.acme] store`, `configure` selects `store = "hostdir"`, unless
 `[tls_edge.acme] volume_name` is set: an adopted volume keeps `store = "volume"`, and `ciu clean` can still remove
