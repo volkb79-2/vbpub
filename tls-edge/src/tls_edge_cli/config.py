@@ -268,6 +268,8 @@ def validate_config(
     *,
     require_domain: bool = True,
     require_certificates: bool = True,
+    stack_dir: Path | None = None,
+    for_standalone: bool = False,
 ) -> list[str]:
     """Validate cross-field edge behavior and return the inbound port plan."""
     tls = _table(config, "tls")
@@ -317,6 +319,48 @@ def validate_config(
     volume_name = acme.get("volume_name", "")
     if not isinstance(volume_name, str) or (volume_name and not _VOLUME.fullmatch(volume_name)):
         raise ConfigError("acme.volume_name must be a valid Docker volume name or empty")
+    store = acme.get("store", "volume")
+    if not isinstance(store, str) or store not in ("volume", "hostdir"):
+        raise ConfigError("acme.store must be volume or hostdir")
+    if store == "hostdir":
+        traefik = _table(config, "traefik")
+        hostdirs = _table(traefik, "hostdir")
+        entry = hostdirs.get("acme")
+        if isinstance(entry, Mapping):
+            path = entry.get("path", "")
+            uid = entry.get("uid", 0)
+        else:
+            path = ""
+            uid = None
+        if not isinstance(path, str) or not path:
+            raise ConfigError(
+                'tls_edge.traefik.hostdir.acme.path is required when '
+                'tls_edge.acme.store = "hostdir"'
+            )
+        if stack_dir is not None:
+            candidate = Path(path)
+            if not candidate.is_absolute():
+                candidate = Path(stack_dir) / candidate
+            stack_root = Path(stack_dir).parent.resolve()
+            if candidate.resolve().is_relative_to(stack_root):
+                raise ConfigError(
+                    "tls_edge.traefik.hostdir.acme.path must resolve outside stack/"
+                )
+        if isinstance(uid, bool) or not isinstance(uid, int) or uid != 0:
+            raise ConfigError(
+                'tls_edge.traefik.hostdir.acme.uid must be 0 when '
+                'tls_edge.acme.store = "hostdir"'
+            )
+        if volume_name:
+            raise ConfigError(
+                'tls_edge.acme.volume_name and tls_edge.acme.store = "hostdir" '
+                "are mutually exclusive"
+            )
+        if for_standalone:
+            raise ConfigError(
+                'tls_edge.acme.store = "hostdir" requires ciu; '
+                'the standalone renderer only supports "volume"'
+            )
     cgroup_parent = value_at(config, "runtime", "cgroup_parent", default="")
     if not isinstance(cgroup_parent, str) or (
         cgroup_parent and (
@@ -405,6 +449,8 @@ _FIELDS: dict[str, tuple[str, ...]] = {
     "bind_ip": ("tls_edge", "ports", "bind_ip"),
     "ingress_external": ("tls_edge", "ingress_external"),
     "acme_volume_name": ("tls_edge", "acme", "volume_name"),
+    "acme_store": ("tls_edge", "acme", "store"),
+    "acme_path": ("tls_edge", "traefik", "hostdir", "acme", "path"),
     "cgroup_parent": ("tls_edge", "runtime", "cgroup_parent"),
     "static_cert_base": ("tls_edge", "static", "cert_base"),
     "static_domains": ("tls_edge", "static", "domains"),

@@ -5,11 +5,54 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 <!-- cmru: pending release notes begin -->
+
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [3.2.0] - 2026-11-24
+<!-- cmru: generated -->
+<!-- cmru: source-end=b9ed1c8ac3ca2c636fdbca3fc69fb39b0757062e -->
+
+### Added
+- feat(tls-edge): persist new-instance ACME state in hostdir (4995df452)
+- feat(tls-edge): unify configuration validation on every path (1aae1ba1e)
+
+### Fixed
+- fix(tls-edge): hook validates ciu's merged config, restoring only the hostdir table (1eabd9df0)
+- fix(tls-edge): harden ACME hostdir bootstrap (f0bcdf037)
+- fix(tls-edge): preserve explicit ACME volume adoption (2f26f5e3e)
+- fix(tls-edge): P-edge-02 r2 fix-forward (docs + verify skip) (4b9bf3912)
+- fix(tls-edge): keep repair and validator checks reachable (d4f042474)
+- fix(tls-edge): validate existing configure input before repair (d0d81c4ef)
+- fix(tls-edge): preserve standalone defaults validation (33e569a25)
+
+### Documentation
+- docs(tls-edge): P-edge-04b r2 fix-forward (3.2.0 notes, INSTALL rollback + §8) (c216be9da)
+- docs(tls-edge): correct ACME storage and teardown guidance (3dc330256)
+- docs(tls-edge): remove stale TE-10 dependency (cf2f6a33d)
+- docs(tls-edge): D1 note review changes (8f3bcef6d)
+- docs(tls-edge): schema and consumer-contract design note (P-edge-D1) (13b4bc57d)
+- docs(tls-edge): TE backlog review nits (TE-02, TE-06, TE-08, TE-09, TE-11) (f5be93751)
+- docs(tls-edge): file TE-01..TE-12 from the 2026-11-24 design review (2fea61448)
+
+### Testing
+- test(tls-edge): apply P-edge-03 review fixes (a15357bc5)
+- test(tls-edge): add behavioural render oracles and coverage policy (67efa0f72)
+- test(tls-edge): run oracle against base CIU in memory (9f3be62c3)
+- test(tls-edge): add shared validation path oracle (015950977)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - Site overrides now record `[tls_edge] schema = 1`; absent means schema 1 and newer schemas are refused.
 - `tls-edge configure`, `tls-edge validate`, the standalone renderer, `ciu check`, and `ciu up` use the same
   tls-edge validation, including the same refusal messages, while the shipped `hooks/validate_edge.py`
   declarations stay in place.
+- New root-run instances store their ACME account and certificates in `shared/acme` (root:root, mode 0700),
+  outside `stack/`, which the volume and `vol-*` passes of `ciu --reset`, `docker compose down -v` and
+  `ciu clean` cannot reach.
+- Every instance whose hostdir path is empty (all volume-store instances) now gets an empty root-owned
+  `ciu-stack/vol-traefik-acme`; on a non-root run ciu creates it through the S6.5 helper.
 
 ### Changed
 - Unknown keys in the site override are refused (`unknown override key tls_edge.<path>`); 3.1 overrides written by `configure` are unaffected.
@@ -17,10 +60,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `[tls_edge.acme.dns.environment]`, `[tls_edge.secrets]`, and `[tls_edge.hooks]` remain open tables.
 - An override that sets `[tls_edge.hooks] pre_secrets` must keep `hooks/validate_edge.py` in that list; a 3.1
   override that replaced the list is refused until the entry is added back.
+- `tls-edge configure` now writes `acme.store` explicitly. Existing 3.1 instances and user-scope installs keep
+  their `acme-data` volume; `acme.volume_name` adoption is unchanged.
 
+### Testing
+- Added standalone/ciu port-plan and renderer oracles plus D10's classified coverage-exclusion policy.
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [3.1.1] - 2026-11-21
 <!-- cmru: generated -->

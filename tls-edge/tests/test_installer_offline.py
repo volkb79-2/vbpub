@@ -236,6 +236,128 @@ def test_adapter_bootstraps_only_the_git_root(tmp_path):
     assert (tmp_path / "stack" / ".git").is_dir()
     assert not (tmp_path / "stack" / "ciu-stack" / "ciu.toml.j2").exists()
     assert not (tmp_path / "stack" / "consumer.env").exists()
+    assert not (tmp_path / "shared" / "acme").exists()
+
+
+def test_adapter_bootstrap_creates_hostdir_for_root(tmp_path):
+    calls: list[tuple[Path, int, int]] = []
+    chmods: list[tuple[Path, int]] = []
+
+    def record_chown(path, uid, gid):
+        calls.append((Path(path), uid, gid))
+
+    def record_chmod(path, mode):
+        chmods.append((Path(path), mode))
+
+    ADAPTER.bootstrap(
+        tmp_path,
+        euid=0,
+        chown_fn=record_chown,
+        chmod_fn=record_chmod,
+    )
+
+    hostdir = tmp_path / "shared" / "acme"
+    assert hostdir.is_dir() and not hostdir.is_symlink()
+    assert calls == [(hostdir, 0, 0)]
+    assert chmods == [(hostdir, 0o700)]
+
+
+def test_adapter_bootstrap_preserves_existing_hostdir(tmp_path):
+    hostdir = tmp_path / "shared" / "acme"
+    hostdir.mkdir(parents=True)
+    marker = hostdir / "acme.json"
+    marker.write_text("existing state", encoding="utf-8")
+    calls: list[tuple[Path, int, int]] = []
+    chmods: list[tuple[Path, int]] = []
+
+    ADAPTER.bootstrap(
+        tmp_path,
+        euid=0,
+        chown_fn=lambda path, uid, gid: calls.append((Path(path), uid, gid)),
+        chmod_fn=lambda path, mode: chmods.append((Path(path), mode)),
+    )
+
+    assert marker.read_text(encoding="utf-8") == "existing state"
+    assert calls == [(hostdir, 0, 0)]
+    assert chmods == [(hostdir, 0o700)]
+
+
+@pytest.mark.parametrize("kind", ["symlink", "file"])
+def test_adapter_bootstrap_refuses_non_directory_hostdir(
+    tmp_path: Path, kind: str
+) -> None:
+    hostdir = tmp_path / "shared" / "acme"
+    hostdir.parent.mkdir(parents=True)
+    if kind == "symlink":
+        target = tmp_path / "hostdir-target"
+        target.mkdir()
+        hostdir.symlink_to(target)
+    else:
+        hostdir.write_text("not a directory", encoding="utf-8")
+    calls: list[tuple[Path, int, int]] = []
+    chmods: list[tuple[Path, int]] = []
+
+    with pytest.raises(FileExistsError, match="must be a plain directory"):
+        ADAPTER.bootstrap(
+            tmp_path,
+            euid=0,
+            chown_fn=lambda path, uid, gid: calls.append((Path(path), uid, gid)),
+            chmod_fn=lambda path, mode: chmods.append((Path(path), mode)),
+        )
+
+    assert calls == []
+    assert chmods == []
+
+
+def test_adapter_bootstrap_sets_fixed_modes_independent_of_umask(tmp_path):
+    previous_umask = os.umask(0o002)
+    try:
+        ADAPTER.bootstrap(
+            tmp_path,
+            euid=0,
+            chown_fn=lambda _path, _uid, _gid: None,
+            chmod_fn=lambda _path, _mode: None,
+        )
+
+        shared = tmp_path / "shared"
+        hostdir = shared / "acme"
+        assert shared.stat().st_mode & 0o777 == 0o755
+        assert hostdir.stat().st_mode & 0o777 == 0o700
+    finally:
+        os.umask(previous_umask)
+
+
+def test_adapter_bootstrap_does_nothing_for_non_root(tmp_path):
+    calls: list[tuple[Path, int, int]] = []
+
+    def refuse_chown(path, uid, gid):
+        calls.append((Path(path), uid, gid))
+
+    ADAPTER.bootstrap(
+        tmp_path,
+        euid=1000,
+        chown_fn=refuse_chown,
+        chmod_fn=lambda _path, _mode: None,
+    )
+
+    assert calls == []
+    assert not (tmp_path / "shared" / "acme").exists()
+
+
+@pytest.mark.parametrize("action", ["apply", "rollback"])
+def test_adapter_apply_and_rollback_never_create_acme_hostdir(
+    tmp_path: Path, action: str
+) -> None:
+    tree = tmp_path / "releases" / "tls-edge-v9.9.9" / "tree"
+    tree.mkdir(parents=True)
+    result = ADAPTER.main([
+        action,
+        "--release-root", str(tree),
+        "--config", str(tmp_path / "host.toml"),
+        "--manifest", str(tmp_path / "manifest.json"),
+    ])
+    assert result == 0
+    assert not (tmp_path / "shared" / "acme").exists()
 
 
 def _repack(served: Path, tag: str, mutate) -> None:

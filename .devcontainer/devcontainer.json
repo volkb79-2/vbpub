@@ -239,6 +239,10 @@
     // server that started before the record existed still adds the right group. The template keeps 65534.
     "--group-add", "${localEnv:CGPROFILE_CONTROL_GID:989}",
     "--group-add", "${localEnv:TOPOS_OBSERVE_GID:65534}",
+    // Dedicated-dev hosts only (P-plat-19e 5.2): host-setup publishes MDT_COCKPIT_OOM_SCORE_ADJ=-900 there so every OOM
+    // domain picks a load task before the cockpit; everywhere else it is unset and the score stays 0. Create-time:
+    // an existing cockpit needs a rebuild.
+    "--oom-score-adj", "${localEnv:MDT_COCKPIT_OOM_SCORE_ADJ:0}",
 
     // topos observe socket directory. The configured endpoint is normally
     // `/run/topos/observe/topos.sock` and its dedicated observe GID is published

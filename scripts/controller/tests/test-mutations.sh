@@ -85,6 +85,14 @@ expect_killed codex-run-name-claim \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-run-name-claim.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-resume-stale-marker \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-resume-stale-marker.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-resume-stale-last-text \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-resume-stale-last-text.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-finish-stale-last-text \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-finish-stale-last-text.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-signal-exit-trap \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-term-trap.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-effort-vocabulary \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-effort-vocabulary.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-run-name-child-close \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-run-name-child-close/codex-impl.sh" \
     bash "$SCRIPT_DIR/test-wrappers.sh"
@@ -158,12 +166,16 @@ expect_killed codex-route-sidecar-pinned-form \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-route-sidecar-unpinned.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed codex-unknown-route-refusal \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-unknown-route-fallback.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-pinned-route-maximum-effort \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-pinned-route-effort.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-manual-resume-account \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-manual-resume-account.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-bookkeeping-exit-overwrite \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-bookkeeping-exit-overwrite.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed docs-codex-home-override-route \
   env README_SOURCE="$ROOT/mutants/scripts/controller/README-home-override-route.md" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed docs-rules-stale-last-text \
+  env RULES_SOURCE="$ROOT/mutants/scripts/controller/RULES-stale-last-text.md" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed opencode-default-provider \
   env OPENCODE_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/opencode-default-provider.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 for pi_case in \
@@ -208,7 +220,7 @@ for pi_case in \
       bash "$SCRIPT_DIR/test-pi-impl.sh"
 done
 for pi_live_case in \
-  pi-live-atomic:live-atomic pi-live-tool-in-flight:live-snapshot \
+  pi-live-atomic:live-atomic pi-live-tool-in-flight:live-wrapper \
   pi-live-missing-fact:live-snapshot pi-live-usage-trend:live-usage-trend \
   pi-live-tokens-zero-as-measurement:live-usage-trend \
   pi-live-progress-stream-only:live-progress \
@@ -252,7 +264,8 @@ for pi_live_case in \
 done
 for pi_doc_mutant in README-pi-route-table DESIGN-pi-402-classification CONSUMER-pi-launch-route \
                      README-long-tool-state README-steering-action README-died-state \
-                     DESIGN-long-tool-rationale CONSUMER-steering-target CONSUMER-codex-marker-shape; do
+                     DESIGN-long-tool-rationale CONSUMER-steering-target CONSUMER-codex-marker-shape \
+                     CONSUMER-pi-thinking-not-recorded; do
   case $pi_doc_mutant in
     README-pi-route-table|README-long-tool-state|README-steering-action|README-died-state) doc_env=README_SOURCE ;;
     DESIGN-pi-402-classification|DESIGN-long-tool-rationale) doc_env=DESIGN_SOURCE ;;
@@ -316,10 +329,15 @@ expect_killed od-resume-blocked-fallback \
   env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/od-resume-blocked-fallback/resume-usage-limited.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed codex-autoresume-bound \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-autoresume-bound.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed codex-autoresume-invocation-stream \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-autoresume-attempt-stream.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-autoresume-limit-validation \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-autoresume-limit-validation.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed controller-runs-dir-environment-override \
   env CONTROLLER_LIB_SCRIPT="$ROOT/mutants/scripts/controller/controller-run-dir-override.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed pi-default-maximum-thinking \
+  env PI_TEST_FOCUS=default-thinking PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/pi-default-thinking.sh" \
+    bash "$SCRIPT_DIR/test-pi-impl.sh"
 expect_killed resume-usage-limit-detection \
   env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-usage-detection.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed usage-retry-insufficient-balance \
@@ -332,6 +350,8 @@ expect_killed resume-route-sidecar-guard \
   env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-route-sidecar.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed resume-route-value-guard \
   env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-route-value.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed resume-sol-route-guard \
+  env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-sol-route.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed resume-max-age-validation \
   env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-max-age-validation.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed resume-excluded-prefixes \
@@ -356,7 +376,8 @@ expect_killed gate-run-refusal-names-example \
   env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-refusal-example.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 for gate_slots_mutant in slots-range slots-default one-slot-needs-gate2 one-slot-message lock-dir-absolute lock-dir-unused-below-three \
                          distinct-detail two-slot-distinct-oneline first-pass-last-slot poll-last-slot poll-open-last-slot fd-shared fd-first-slots \
-                         slot-label lock-held-while-running wait-two wait-many wait-one progress-many progress-two progress-one labels-join exit-code; do
+                         slot-label lock-held-while-running wait-two wait-many wait-one progress-many progress-two progress-one labels-join exit-code \
+                         psi-threshold psi-unreadable-quiet psi-unreadable-waits psi-unreadable-in-wait psi-timeout-rc psi-bound psi-log-rate psi-first-pass-skip psi-poll-skip; do
   expect_killed "gate-run-$gate_slots_mutant" \
     env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-$gate_slots_mutant.sh" bash "$SCRIPT_DIR/test-gate-slots.sh"
 done
