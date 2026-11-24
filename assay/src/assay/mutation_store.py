@@ -2621,6 +2621,7 @@ class _CarryForwardResult:
     from_judges: int
     same_judge_resume: int
     invalid_records: int
+    hints: tuple[Hint, ...]
 
 
 def _carry_forward_record_paths(source: Path) -> tuple[str, ...]:
@@ -3100,6 +3101,7 @@ def _carry_forward_records(
     counts: collections.Counter[str] = collections.Counter()
     survivors_carried = 0
     kills_requeued = 0
+    hints: list[Hint] = []
     unmatched = 0
     considered_total = 0
     same_judge_resume = 0
@@ -3165,6 +3167,23 @@ def _carry_forward_records(
             match, _chosen = min(kills, key=lambda item: _carry_forward_match_rank(item[0]))
             counts[match.kind] += 1
             kills_requeued += 1
+            witness = execution_from_state_record(_chosen).witness
+            if witness is not None:
+                hints.append(
+                    Hint(
+                        candidate_id=identity,
+                        node_id=witness.node_id,
+                        source="store",
+                        source_ref=str(match.source),
+                        from_candidate_id=str(_chosen["candidate_id"]),
+                        from_judge_sha256=(
+                            str(_chosen["judge_sha256"])
+                            if isinstance(_chosen.get("judge_sha256"), str)
+                            else None
+                        ),
+                        match=match.kind,
+                    )
+                )
             continue
 
         survivors = [
@@ -3257,6 +3276,7 @@ def _carry_forward_records(
         from_judges=from_judge_count,
         same_judge_resume=same_judge_resume,
         invalid_records=invalid_records + len(invalid_match_records),
+        hints=tuple(hints),
     )
 
 
@@ -3875,6 +3895,7 @@ def combine(
     resumed_records = list(own.records)
     imported_total = 0
     locus_unavailable_total = own.locus_unavailable_total
+    hints: list[Hint] = []
 
     if exact.reads_carry_over_stores:
         assert state_root is not None
@@ -3953,6 +3974,7 @@ def combine(
         )
         resumed_records.extend(carry_forward.records)
         imported_total += carry_forward.survivors_carried
+        hints.extend(carry_forward.hints)
         if request.write_progress is not None:
             request.write_progress(
                 {
@@ -3987,7 +4009,7 @@ def combine(
         imported_total=imported_total,
         locus_unavailable_total=locus_unavailable_total,
         rejudged_candidate_ids=own.rejudged_candidate_ids,
-        hints=(),
+        hints=tuple(hints),
     )
 
 
