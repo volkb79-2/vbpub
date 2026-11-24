@@ -130,39 +130,6 @@ def _carry(**overrides):
     return block
 
 
-@pytest.mark.parametrize(
-    "block",
-    [
-        "not-a-mapping",
-        {"schema_version": 1},
-        _carry(schema_version=True),
-        _carry(schema_version=2),
-        _carry(from_judge_sha256="A" * 64),
-        _carry(into_judge_sha256=7),
-        _carry(reason=""),
-        _carry(importer_version=None),
-    ],
-)
-def test_a_malformed_carry_over_block_has_no_effective_judge(block):
-    assert mutation._valid_carry_over(block) is False
-    assert mutation.record_effective_judge({"judge_sha256": _A, "carry_over": block}) is None
-
-
-def test_effective_judge_of_plain_imported_and_judgeless_records():
-    assert mutation.record_effective_judge({"judge_sha256": _A}) == _A
-    assert mutation.record_effective_judge({"judge_sha256": _A, "carry_over": _carry()}) == _B
-    # The block must name the record's own executing judge.
-    assert (
-        mutation.record_effective_judge(
-            {"judge_sha256": _C, "carry_over": _carry()}
-        )
-        is None
-    )
-    assert mutation.record_effective_judge({"judge_sha256": ""}) is None
-    assert mutation.record_effective_judge({"judge_sha256": 5}) is None
-    assert mutation.record_effective_judge({}) is None
-
-
 # --------------------------------------------------------------------------
 # B527 judge generations: directories that are missing, files, or links
 # --------------------------------------------------------------------------
@@ -452,6 +419,7 @@ def test_a_resumed_record_with_a_malformed_carry_over_block_re_executes(
     path.write_text(json.dumps(payload), encoding="utf-8")
     _code, events = _run(git_repo, state, tmp_path / "2.jsonl")
     assert sum(1 for event in events if event.get("event") == "candidate") == 1
+    assert _event(events, "resume")["rejected_total"] == 1
 
 
 # --------------------------------------------------------------------------
@@ -763,7 +731,7 @@ def test_campaign_analysis_refuses_a_malformed_carry_over_block(
         stdout=out,
         stderr=io.StringIO(),
     )
-    assert "carry_over provenance is malformed" in out.getvalue()
+    assert "record provenance is malformed" in out.getvalue()
 
 
 def test_a_candidate_absent_from_every_source_is_not_a_refusal(

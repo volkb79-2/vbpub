@@ -473,7 +473,7 @@
         "judge_sha256_source": {"enum": ["candidates-event", "paired-records", "unknown"]},
         "judge_sha256_counts": {"$ref": "#/$defs/judgeCounts"},
         "imported": {
-          "description": "B530: counted records imported by --carry-over; judge_sha256_counts counts them under the judge they were imported into, from_judge_sha256_counts under the judge that executed them.",
+          "description": "Counted records whose canonical provenance kind is imported, including schema-1 derivation.",
           "type": "object", "additionalProperties": false,
           "required": ["count", "from_judge_sha256_counts", "reasons"],
           "properties": {
