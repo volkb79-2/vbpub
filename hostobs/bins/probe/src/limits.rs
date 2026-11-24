@@ -26,8 +26,32 @@ const KIB: u32 = 1024;
 /// One MiB.
 const MIB: u32 = 1024 * 1024;
 
+/// Largest accepted subscription interval (WIRE.md section 4.7).
+pub const MAX_INTERVAL_MS: u32 = 60_000;
+
 /// The room the control queue keeps for END and EVT frames beyond the replies (WIRE.md 5.1).
 pub const END_SLACK_BYTES: u32 = 256 * KIB;
+
+/// The accepted subscription interval classes of one serving level.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct IntervalRule {
+    /// The level's `min_interval_ms`.
+    pub min_ms: u32,
+    /// The level's `tick_ms`.
+    pub tick_ms: u32,
+}
+
+impl IntervalRule {
+    /// Whether `interval_ms` is a whole number of at least one tick, is at least
+    /// `max(min_ms, tick_ms)` and is at most [`MAX_INTERVAL_MS`] (design S8).
+    #[must_use]
+    pub fn accepts(self, interval_ms: u32) -> bool {
+        self.tick_ms > 0
+            && interval_ms.is_multiple_of(self.tick_ms)
+            && interval_ms >= self.min_ms.max(self.tick_ms)
+            && interval_ms <= MAX_INTERVAL_MS
+    }
+}
 
 /// A serving level: one socket, one set of verbs, one set of bounds.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -129,6 +153,10 @@ pub struct Limits {
     pub frame_completion_ms: u32,
     /// Outstanding requests per connection.
     pub max_outstanding: u32,
+    /// Distinct selections per peer uid across levels (block levels).
+    pub max_uid_selections: u32,
+    /// Distinct live selections per probe (block levels).
+    pub max_selections: u32,
     /// Live subscriptions per connection (block levels).
     pub max_subscriptions: u32,
     /// Live pool bytes per connection (block levels).
@@ -197,6 +225,8 @@ impl Limits {
             stall_ms: 5_000,
             frame_completion_ms: 5_000,
             max_outstanding,
+            max_uid_selections: block(4),
+            max_selections: block(8),
             max_subscriptions: block(4),
             client_queue_bytes: block(4 * MIB),
             query_queue_bytes: block(4 * MIB),
@@ -272,11 +302,23 @@ impl Limits {
             frame_completion_ns: ns(self.frame_completion_ms),
         }
     }
+
+    /// The discrete subscription intervals this level accepts (design S8).
+    #[must_use]
+    pub fn interval_rule(&self) -> IntervalRule {
+        IntervalRule {
+            min_ms: self.min_interval_ms,
+            tick_ms: self.tick_ms,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{control_queue_for, max_reply_for, Level, Limits, END_SLACK_BYTES};
+    use super::{
+        control_queue_for, max_reply_for, IntervalRule, Level, Limits, END_SLACK_BYTES,
+        MAX_INTERVAL_MS,
+    };
     use hostobs_proto::envelope::{members_up_to, Kind};
 
     const BLOCK_KEYS: [&str; 9] = [
@@ -361,7 +403,77 @@ mod tests {
             assert_eq!(limits.tick_ms, 1_000);
             assert_eq!(limits.max_block_bytes, limits.client_queue_bytes);
             assert_eq!(limits.max_block_bytes, limits.query_queue_bytes);
+            assert_eq!(limits.max_uid_selections, 4);
+            assert_eq!(limits.max_selections, 8);
         }
+    }
+
+    #[test]
+    fn limits_selection_caps_defaults_and_zero_at_non_block_levels() {
+        for level in [Level::Observe, Level::Operator] {
+            let limits = Limits::for_level(level);
+            assert_eq!(limits.max_uid_selections, 4);
+            assert_eq!(limits.max_selections, 8);
+            assert_eq!(
+                limits.interval_rule(),
+                IntervalRule {
+                    min_ms: 1_000,
+                    tick_ms: 1_000,
+                }
+            );
+        }
+        for level in [Level::Observer, Level::Control] {
+            let limits = Limits::for_level(level);
+            assert_eq!(limits.max_uid_selections, 0);
+            assert_eq!(limits.max_selections, 0);
+        }
+    }
+
+    #[test]
+    fn hello_keys_still_19() {
+        assert_eq!(Limits::HELLO_KEYS, 19);
+        for level in Level::ALL {
+            let limits = Limits::for_level(level);
+            assert_eq!(limits.hello_entries().len(), Limits::HELLO_KEYS);
+            assert_eq!(
+                members_up_to(limits.hello_json().as_bytes(), 64)
+                    .expect("hello limits object")
+                    .len(),
+                Limits::HELLO_KEYS
+            );
+        }
+    }
+
+    #[test]
+    fn interval_rule_default_refuses_all() {
+        let rule = IntervalRule::default();
+        for interval in [0u32, 1, 1_000, MAX_INTERVAL_MS] {
+            assert!(!rule.accepts(interval), "{interval}");
+        }
+    }
+
+    #[test]
+    fn interval_rule_tick_ms_0_refuses() {
+        for min in [0u32, 1, 1_000] {
+            let rule = IntervalRule {
+                min_ms: min,
+                tick_ms: 0,
+            };
+            assert!(!rule.accepts(1_000));
+        }
+    }
+
+    #[test]
+    fn interval_rule_min_ms_0_still_needs_a_tick() {
+        let rule = IntervalRule {
+            min_ms: 0,
+            tick_ms: 250,
+        };
+        assert!(!rule.accepts(0));
+        assert!(!rule.accepts(249));
+        assert!(rule.accepts(250));
+        assert!(rule.accepts(MAX_INTERVAL_MS));
+        assert!(!rule.accepts(MAX_INTERVAL_MS + 1));
     }
 
     #[test]

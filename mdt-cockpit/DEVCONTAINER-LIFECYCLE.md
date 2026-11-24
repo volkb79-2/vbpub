@@ -103,10 +103,20 @@ MDT shell files, examples and manifest live under `/usr/local/share/mdt-cockpit`
 nothing into the home, creates no links, and never replaces a user path; creating your own file
 overrides the matching default. `PATH` is the image's one definition with `~/.local/bin` last.
 
-The user-editable central API key file is `~/.config/mdt-cockpit/ai.env`, a file **you** create from
-`/usr/local/share/mdt-cockpit/ai.env.example`. Shell startup sources it once, so the keys are in every
-tool's environment. The same directory may carry optional `aliases.sh` and `shell.env` overrides,
-sourced after the image's own.
+The conventional user API key file is `~/.env.ai`. Create it with private permissions from
+`/usr/local/share/mdt-cockpit/.env.ai.example`, edit it, then register it in the shell-startup directory:
+
+```bash
+install -m 600 /usr/local/share/mdt-cockpit/.env.ai.example ~/.env.ai
+${EDITOR:-vi} ~/.env.ai
+mkdir -p ~/.config/mdt-cockpit/shell-start.d
+ln -s ~/.env.ai ~/.config/mdt-cockpit/shell-start.d/.env.ai
+```
+
+`profile.sh` sources files placed in `~/.config/mdt-cockpit/shell-start.d/` in lexical order; it
+does not look for `.env.ai` by name. This keeps the shell loader generic while making the registered
+keys available to tools launched from new bash or zsh shells. The same `~/.config/mdt-cockpit/`
+directory may carry optional `shell.env` and `aliases.sh` overrides.
 
 **Why a persisted host-backed `/tmp`:** `/tmp` git worktrees then survive rebuilds AND are visible to
 **sibling containers** (e.g. the `test-runner`) that bind the same host dir — so `/tmp`-based worktrees

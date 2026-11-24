@@ -31,6 +31,7 @@ from cmru.config_names import (
     ORCHESTRATION_CONFIG_FILENAME,
     PROJECT_CONFIG_FILENAME,
 )
+from cmru.process_run import run_process
 from cmru.version_config import deep_merge_versions, parse_versions_section
 
 
@@ -486,9 +487,9 @@ def _git_scope(path: Path) -> dict[str, Optional[Path]]:
     probe_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     probe_env["LC_ALL"] = "C"
     try:
-        probe = subprocess.run(
+        probe = run_process(
             ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=False, env=probe_env,
+            capture=True, text=True, check=False, env=probe_env,
         )
     except OSError as exc:
         # No git binary: outside any repository that is the old "no Git here"

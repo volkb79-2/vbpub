@@ -6,14 +6,17 @@ shape, pinned images. No network; docker is used only for `compose config`
 from __future__ import annotations
 
 import datetime as dt
+import importlib.util
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
 import pytest
+import yaml
 
 PROJECT = Path(__file__).resolve().parents[1]
 AREA = PROJECT.parent
@@ -187,15 +190,69 @@ def test_edge_consumer_labels_and_networks() -> None:
     text = _compose_text()
     cfg = _cfg()
     r = cfg["router_name"]
-    assert f"traefik.http.routers.{r}.entrypoints" in text and '"websecure"' in text
+    public_host = cfg["public_host"]
+    web_port = cfg["web"]["port"]
+    host_rule = f"Host({chr(96)}{public_host}{chr(96)})"
+    services = text.split("services:\n", 1)[1].split("\nnetworks:\n", 1)[0]
+    web = services.split("\n  jitsi-web:\n", 1)[1]
+    assert f'traefik.http.routers.{r}.rule: "{host_rule}"' in web
+    assert f'traefik.http.routers.{r}.entrypoints: "websecure"' in web
+    assert f'traefik.http.services.{r}.loadbalancer.server.port: "{web_port}"' in web
+    assert 'traefik.docker.network: "ingress_public"' in web
     assert "ingress_public" in text
     # only the web service joins the edge network
-    web = text.split("  jitsi-web:")[1]
     assert "- ingress" in web
-    assert text.split("  jitsi-web:")[0].count("- ingress") == 0
+    assert services.split("\n  jitsi-web:\n", 1)[0].count("- ingress") == 0
     # service key must not be a generic alias on the shared network
     assert re.search(r"^  web:", text, re.MULTILINE) is None
     assert "no-new-privileges:true" in text and "cap_drop:" in text
+
+
+def _tls_edge_default(output_dir: Path, *, http3: bool) -> tuple[dict, dict, dict]:
+    edge_root = PROJECT.parents[1] / "tls-edge"
+    renderer_path = edge_root / "scripts" / "render_standalone.py"
+    spec = importlib.util.spec_from_file_location("jitsi_tls_edge_renderer", renderer_path)
+    assert spec is not None and spec.loader is not None, f"cannot load {renderer_path}"
+    renderer = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = renderer
+    spec.loader.exec_module(renderer)
+
+    stack_dir = edge_root / "ciu-stack"
+    edge_cfg = renderer.load_config(stack_dir, defaults_only=True)
+    edge_cfg["http3"]["enabled"] = http3
+    renderer.validate(edge_cfg)
+    renderer.render_outputs(stack_dir, output_dir, edge_cfg, certs_only=False)
+    static = yaml.safe_load((output_dir / "traefik.yml").read_text(encoding="utf-8"))
+    compose = yaml.safe_load((output_dir / "docker-compose.yml").read_text(encoding="utf-8"))
+    return edge_cfg, static, compose
+
+
+def test_default_tls_edge_contract_accepts_jitsi_router_and_optional_http3(tmp_path: Path) -> None:
+    edge_h2, static_h2, compose_h2 = _tls_edge_default(tmp_path / "edge-h2", http3=False)
+    jitsi = _cfg()
+    compose = yaml.safe_load(_compose_text())
+    web = compose["services"]["jitsi-web"]
+    labels = web["labels"]
+    router = jitsi["router_name"]
+
+    assert jitsi["ingress_network"] == edge_h2["ingress_network"]
+    assert labels["traefik.docker.network"] == edge_h2["ingress_network"]
+    entrypoint_name = labels[f"traefik.http.routers.{router}.entrypoints"]
+    entrypoint = static_h2["entryPoints"][entrypoint_name]
+    assert entrypoint["address"] == ":443"
+    assert "http3" not in entrypoint
+    assert entrypoint["http"]["tls"]["certResolver"] == edge_h2["acme"]["resolver_name"]
+    https_port = edge_h2["ports"]["https"]
+    h2_ports = compose_h2["services"]["traefik"]["ports"]
+    assert f"{https_port}:443/tcp" in h2_ports
+    assert f"{https_port}:443/udp" not in h2_ports
+
+    edge_h3, static_h3, compose_h3 = _tls_edge_default(tmp_path / "edge-h3", http3=True)
+    h3_entrypoint = static_h3["entryPoints"][entrypoint_name]
+    h3_port = edge_h3["ports"]["https"]
+    assert h3_entrypoint["http3"]["advertisedPort"] == h3_port
+    assert f"{h3_port}:443/tcp" in compose_h3["services"]["traefik"]["ports"]
+    assert f"{h3_port}:443/udp" in compose_h3["services"]["traefik"]["ports"]
 
 
 def test_own_names_and_governance() -> None:

@@ -26,9 +26,10 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+
+from cmru.process_run import run_process
 
 #: Protected input CMRU gives the publishing step: ``changelog:<project-relative
 #: path>`` or ``none``. Projects cannot declare it (it is a reserved name).
@@ -371,13 +372,13 @@ def _read_changelog(project_dir: Path, relative: str, commit: str | None) -> tup
             return target.read_text(encoding="utf-8"), str(target)
         except (OSError, UnicodeError) as exc:
             raise ReleaseNotesError(f"cannot read release notes source {target}: {exc}") from exc
-    prefix = subprocess.run(
+    prefix = run_process(
         ["git", "-C", str(project_dir), "rev-parse", "--show-prefix"],
-        capture_output=True, text=True, check=False,
+        capture=True, text=True, check=False,
     )
-    shown = subprocess.run(
+    shown = run_process(
         ["git", "-C", str(project_dir), "show", f"{commit}:{prefix.stdout.strip()}{path.as_posix()}"],
-        capture_output=True, check=False,
+        capture=True, check=False, text=None,
     )
     where = f"{path.as_posix()} at {commit[:12]}"
     if prefix.returncode or shown.returncode:

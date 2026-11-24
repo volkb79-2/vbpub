@@ -3,19 +3,21 @@
 # Run INSIDE a disposable guest (or the future installer ISO), never on a
 # machine whose disk matters. It wipes the device you name.
 #
-#   install-btrfs.sh --device /dev/vdb --yes [--suite trixie] [--mirror URL] [--security-mirror URL]
+#   install-btrfs.sh --device /dev/vdb --yes [--bootloader grub|systemd-boot]
+#                    [--suite trixie] [--mirror URL] [--security-mirror URL]
 #                    [--hostname NAME] [--root-password PW] [--dry-run]
 #
 # Layout (flat, default subvolume stays the top level, id 5):
 #   p1 ESP (vfat) at /boot/efi      p2 btrfs "drroot"
-#   @os-0001                     the first OS state (root, /boot, /etc, /opt, ...)
+#   @os-000001-YYYYMMDD-HHMMSSZ-install  the initial OS state (root, /boot, /etc, /opt, ...)
 #   @home @root @srv @www @log   outside the state (D18)
 #   @docker @containers @postgresql @mysql @usr-local
-# Kernels live inside each state. The boot menu is a static grub.cfg on the ESP
-# written by dr-state (design guide F5).
+# Kernels live inside each state. GRUB (the default) reads them directly from a
+# static menu on the ESP (design guide F5). systemd-boot cannot read btrfs, so
+# dr-state copies the newest bootable pair per state to a deduplicated ESP pool.
 set -euo pipefail
 
-DEVICE="" ; YES=0 ; DRY=0
+DEVICE="" ; YES=0 ; DRY=0 ; BOOTLOADER=grub
 SUITE=trixie ; MIRROR=http://deb.debian.org/debian ; SECURITY_MIRROR=http://deb.debian.org/debian-security
 HOSTNAME_=drpoc ; ROOTPW=root ; ROOTPW_HASH=""
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,6 +35,7 @@ while [ $# -gt 0 ]; do
     --hostname) HOSTNAME_=${2:?}; shift 2 ;;
     --root-password) ROOTPW=${2:?}; shift 2 ;;
     --root-password-hash) ROOTPW_HASH=${2:?}; shift 2 ;;   # crypt(3) hash; replaces --root-password
+    --bootloader) BOOTLOADER=${2:?}; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -40,6 +43,7 @@ done
 
 [ -n "$DEVICE" ] || die "--device is required"
 [ "$YES" = 1 ] || die "refusing to wipe $DEVICE without --yes"
+case "$BOOTLOADER" in grub|systemd-boot) ;; *) die "--bootloader must be grub or systemd-boot" ;; esac
 [ "$DRY" = 1 ] || [ -b "$DEVICE" ] || die "$DEVICE is not a block device"
 [ -d /sys/firmware/efi ] || [ "$DRY" = 1 ] || die "not booted in UEFI mode (D4: UEFI only)"
 if [ "$DRY" != 1 ]; then
@@ -68,7 +72,6 @@ cleanup() { # a failed run must not leave the target mounted (the next run's gua
   umount "$TOP" 2>/dev/null || true
 }
 trap cleanup EXIT
-STATE=@os-0001
 DATA_SUBVOLS="@home:/home @root:/root @srv:/srv @www:/var/www @log:/var/log @docker:/var/lib/docker @containers:/var/lib/containers @postgresql:/var/lib/postgresql @mysql:/var/lib/mysql @usr-local:/usr/local"
 # the database and container directories must not be copy-on-write
 NOCOW="@docker @containers @postgresql @mysql"
@@ -82,6 +85,10 @@ run mkfs.btrfs -f -L drroot "$ROOT"
 
 run mkdir -p "$TOP" "$T"
 run mount "$ROOT" "$TOP"
+# The initial state ID records when its Btrfs subvolume is created, not when disk partitioning starts.
+STATE_TIMESTAMP=$(date -u +%Y%m%d%H%M%S)
+STATE=$("$HERE/dr-state" _state-name 000001 "$STATE_TIMESTAMP" install) \
+  || die "cannot construct the timestamped initial state ID"
 run btrfs subvolume create "$TOP/$STATE"
 for sv in $DATA_SUBVOLS; do
   name=${sv%%:*}
@@ -96,9 +103,24 @@ for sv in $DATA_SUBVOLS; do
   run mount -o "subvol=$name" "$ROOT" "$T$path"
 done
 run mkdir -p "$T/boot/efi" "$T/.top"
-run mount "$ESP" "$T/boot/efi"
+run mount -o umask=0077 "$ESP" "$T/boot/efi"
 
-run debootstrap --include=linux-image-amd64,grub-efi-amd64,btrfs-progs,snapper,initramfs-tools,systemd-sysv,openssh-server,sudo,locales,ifupdown,isc-dhcp-client,dosfstools,ca-certificates "$SUITE" "$T" "$MIRROR"
+# Disable systemd's stock BLS writer before debootstrap configures systemd-boot and the kernel. Its package
+# postinst can call kernel-install during debootstrap, before the dr-state hooks are installed below.
+if [ "$BOOTLOADER" = systemd-boot ]; then
+  run mkdir -p "$T/etc/kernel/install.d"
+  run ln -s /dev/null "$T/etc/kernel/install.d/90-loaderentry.install"
+fi
+
+BOOT_PACKAGES=grub-efi-amd64
+[ "$BOOTLOADER" = systemd-boot ] && BOOT_PACKAGES=systemd-boot,systemd-boot-efi
+run debootstrap --include=linux-image-amd64,"$BOOT_PACKAGES",btrfs-progs,snapper,initramfs-tools,systemd-sysv,openssh-server,sudo,locales,ifupdown,isc-dhcp-client,dosfstools,ca-certificates "$SUITE" "$T" "$MIRROR"
+
+if [ "$BOOTLOADER" = systemd-boot ] && [ "$DRY" != 1 ]; then
+  bls_override="$T/etc/kernel/install.d/90-loaderentry.install"
+  [ -L "$bls_override" ] && [ "$(readlink "$bls_override")" = /dev/null ] \
+    || die "the systemd-boot BLS writer override did not survive debootstrap"
+fi
 
 if [ "$DRY" != 1 ]; then
   RUUID=$(blkid -s UUID -o value "$ROOT")
@@ -147,14 +169,48 @@ if [ "$DRY" != 1 ]; then
 fi
 run chmod 700 "$T/root"
 chroot_run update-initramfs -u -k all
-chroot_run /usr/local/sbin/dr-state install-grub
+if [ "$BOOTLOADER" = grub ]; then
+  chroot_run /usr/local/sbin/dr-state install-grub
+else
+  # Do not depend on writable EFI variables while installing. The state-carrying config and the ESP marker both
+  # select systemd-boot; dr-state fails loudly if they later disagree.
+  chroot_run /usr/local/sbin/dr-state install-systemd-boot
+  # Debian's systemd-boot kernel hooks call kernel-install, which creates an extra machine-id BLS entry and kernel
+  # copy outside dr-state's per-state ESP layout. The earlier BLS writer override suppresses that output; divert the
+  # package hooks too, and let zz-dr-state own kernel updates.
+  # Keep diverted files outside the run-parts directories: --lsbsysinit accepts the usual .distrib suffix.
+  chroot_run mkdir -p /etc/kernel/dr-disabled
+  for d in postinst.d postrm.d; do
+    hook="/etc/kernel/$d/zz-systemd-boot"
+    target="/etc/kernel/dr-disabled/${d%.d}-zz-systemd-boot"
+    chroot_run dpkg-divert --local --add --rename --divert "$target" "$hook"
+  done
+fi
+chroot_run /usr/local/sbin/dr-state initialize-state "$STATE" "$STATE_TIMESTAMP"
 chroot_run /usr/local/sbin/dr-state gen-menu --default "$STATE"
+
+# The BLS writer override is installed before debootstrap. Still refuse to finish if any package hook bypassed it and
+# left an unowned entry that could point at the top-level subvolume.
+if [ "$BOOTLOADER" = systemd-boot ] && [ "$DRY" != 1 ]; then
+  BLS_ENTRY_DIR="$T/boot/efi/loader/entries"
+  if [ -d "$BLS_ENTRY_DIR" ]; then
+    while IFS= read -r -d '' bls_entry; do
+      [ -f "$bls_entry" ] && [ ! -L "$bls_entry" ] \
+        || die "unexpected non-regular systemd-boot entry $bls_entry; refusing to finish the installation"
+      [ "$(head -n 1 "$bls_entry" | tr -d '\r')" = '# generated by dr-state sdboot; do not edit' ] \
+        || die "unowned systemd-boot entry $bls_entry remains after debootstrap; refusing to finish the installation"
+    done < <(find "$BLS_ENTRY_DIR" -mindepth 1 -maxdepth 1 -name '*.conf' -print0)
+  fi
+fi
 
 # Hooks. apt: one writable copy of the running state before every dpkg run, menu refreshed after it.
 # kernel: the menu follows kernel installs and removals (a menu naming a removed kernel does not boot).
 # DR_STATE=none in the environment skips the snapshot (recovery chroots have no rootflags= on the command line).
 if [ "$DRY" != 1 ]; then
   cat >"$T/etc/apt/apt.conf.d/80dr-state" <<'EOF'
+DPkg::Tools::Options::/usr/local/sbin/dr-state::Version "2";
+DPkg::Tools::Options::/usr/local/sbin/dr-state::InfoFD "3";
+DPkg::Pre-Install-Pkgs { "/usr/local/sbin/dr-state apt-pre-install-pkgs"; };
 DPkg::Pre-Invoke { "[ ! -x /usr/local/sbin/dr-state ] || /usr/local/sbin/dr-state snapshot --reason apt || exit 100"; };
 DPkg::Post-Invoke { "[ ! -x /usr/local/sbin/dr-state ] || /usr/local/sbin/dr-state gen-menu || true"; };
 EOF

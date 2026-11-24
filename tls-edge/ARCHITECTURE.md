@@ -221,8 +221,11 @@ TLS mode is selected via `[tls_edge.tls] mode` in `ciu-stack/ciu.defaults.toml.j
 Traefik's built-in Let's Encrypt via TLS-ALPN-01.  The entire challenge
 exchange happens on port 443; no port 80 is needed.  Traefik automatically
 issues a certificate for every `Host()` name declared in a consumer router,
-provided that DNS name resolves to this host.  Certificates are stored in the
-`acme-data` named volume (`acme.json`, created at `0600` by Traefik).
+provided that DNS name resolves to this host. Certificates are stored in the
+`acme-data` named volume at `/var/lib/traefik/acme.json` (`0600`, created by
+Traefik). The volume is mounted outside `/etc/traefik`, because CIU mounts the
+parent directories of configured Traefik config files read-only. Docker creates
+the mountpoint when needed, so the container root filesystem can stay read-only.
 
 Renewal is automatic and zero-downtime.
 
@@ -505,12 +508,14 @@ ambiguous.  At least one discriminator is required.
 ### Decision: host-name routing only
 
 One HTTP/TLS Traefik entrypoint carries all HTTPS: `websecure` on port 443.
-Every service gets its own host name; there is no alternate HTTPS port.  The
-public ports are exactly 80/tcp, 443/tcp and 8443 tcp+udp.
+Every service gets its own host name; there is no alternate HTTPS port.
+Generic defaults publish 80/tcp and 443/tcp only. HTTP/3 optionally adds UDP
+on the configured public HTTPS port; the optional Calls media preset adds
+8443/tcp and 8443/udp.
 
-When Mattermost Calls support is enabled (the default), two raw L4 entrypoints
-are added: one TCP and one UDP, both on public (and container) port 8443.  They
-are distinct protocol sockets, so the same numeric port is safe.
+When Mattermost Calls support is enabled, two raw L4 entrypoints are added:
+one TCP and one UDP, both on public (and container) port 8443. They are
+distinct protocol sockets, so the same numeric port is safe.
 
 Path-based routing can be layered on top by adding `&& PathPrefix(...)` to the
 router rule.
@@ -1019,7 +1024,7 @@ a second gate that is harder to satisfy accidentally.
 | Zero-downtime cert renewal in static mode depends on inotify | If the file watcher does not fire (e.g. attribute-only change), certs do not reload | Hook uses a content rewrite to ensure inotify fires; fallback: `docker restart --time 5 edge-traefik` (~3s downtime) |
 | acme-data volume loss | `docker compose down -v` destroys ACME state; all certs are re-issued on next start; LE rate limits (~5 duplicate certs/week) apply | Never use `-v` in production without a backup plan; use staging CA for experiments |
 | sniStrict rejects SNI-less clients | Bare-IP probes, some uptime checkers, and `openssl s_client` without `-servername` are rejected | Expected and desirable; disable `sniStrict` in `conf.d/options.yml` only if such clients must be served |
-| Port 80 is on by default | The edge answers on a second public port | `expose_http = false` (installer `--disable-port-80`) when the host must not serve it; `acme-http` then cannot be used |
+| Port 80 is on by default | The edge answers on a second public port | Use `tls-edge configure` to disable it for an installed instance, or `scripts/install.sh --disable-port-80` for the standalone installer; `acme-http` then cannot be used |
 | Router name uniqueness is operator-enforced | Two stacks using the same router name will conflict | Naming convention adopted in examples: `<stack>-<service>` |
 | App must configure loopback bind for ops | Docker cannot enforce this; relies on app configuration discipline | Document requirement prominently; verify via `scripts/verify.sh` |
 | Single Traefik instance is a SPOF | If Traefik crashes, all public services are unreachable | `restart: unless-stopped` mitigates transient failures; HA Traefik requires Swarm or Kubernetes |

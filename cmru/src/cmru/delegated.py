@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from cmru import exit_codes
+from cmru.process_run import run_process
 
 
 def _which(tool: str) -> Optional[str]:
@@ -33,7 +34,7 @@ def _which(tool: str) -> Optional[str]:
 def _run(argv: Sequence[str], cwd: Optional[Path] = None) -> int:
     """Run an external command; stream output; return its exit code."""
     print(f"[INFO] external-tool: {' '.join(argv)}")
-    result = subprocess.run(list(argv), cwd=cwd)
+    result = run_process(argv, cwd=cwd, capture=False)
     return result.returncode
 
 

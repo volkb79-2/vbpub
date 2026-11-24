@@ -69,9 +69,11 @@ and the driver takes `take_final` and makes ONE non-blocking write, abandoning a
 and the server prefix was queued (the `conn-prefix-surplus` shape: prefix + a bad REQ in one read), the
 final bytes are the 8 prefix bytes followed by the final frame; 1..7 written means `head_partial` is
 already true and nothing more is written. A major-version mismatch: the final bytes are the prefix alone.
-**R3 Unreachable in P5b-1:** `too-many-requests` and "corr already in use" need a request that stays
-outstanding; `hello`/`status` are synchronous, so outstanding is 0 whenever the next request arrives.
-Both arrive in P5b-2 with the first block verb; their position in the precedence list (R11) is pinned now.
+**R3 Superseded by P5b-2c + P5b-2d (unreachable in P5b-1):** `too-many-requests` and "corr already
+in use" need a request that stays outstanding; `hello`/`status` are synchronous, so outstanding is 0
+whenever the next request arrives in P5b-1. P5b-2c supplies the outstanding `current` and
+subscription state, and P5b-2d serves the block verbs; their position in the precedence list (R11)
+is unchanged. See `P5B2-LIVE-STREAMS-DESIGN.md` S5, S6 and S28.
 **R4 Args reader.** Do NOT use serde for requests (it accepts duplicate keys in map-typed objects,
 recursion limit 128 not 8, and `detail.key` would be scraped from error text), although `bins/probe/Cargo.toml`
 depends on `serde_json`. Build on `proto::envelope`: `check_req` already enforces UTF-8, grammar, depth <= 8,
@@ -143,10 +145,14 @@ entry point (`accept`, `on_bytes`, `wrote`, `poll`). Within `on_bytes`: `on_byte
 frame (`on_enqueue` per push), stop at the first fatal outcome, then apply `Feed.error`; frames left in a
 `Feed` after a fatal outcome are DISCARDED, not dispatched. `Feed`'s frame vector is bounded only by the
 driver's read size: P5b-4 fixes one read size (<= 64 KiB).
-**R21 §11.4 cases reachable in P5b-1:** all connection cases except `conn-reply-page-truncated` (uses
-`events`, M3: retarget to `procs` in P5b-3), `conn-not-idle-with-subscription`, `conn-dribbling-reader`
-and the END half of `conn-half-close` (P5b-2). "In-process socketpair" becomes the sans-IO core under
-test; the socketpair runs move to P5b-4 (deviation note in §11.4).
+**R21 Superseded for block-verb connection cases by P5b-2c + P5b-2d (reachable in P5b-1):** all
+connection cases ran in P5b-1 except `conn-reply-page-truncated` (uses `events`, M3: retarget to
+`procs` in P5b-3), `conn-not-idle-with-subscription`, `conn-dribbling-reader`, the END half of
+`conn-half-close`, `conn-corr-in-use-sub`, `conn-corr-in-use-pending` and
+`conn-too-many-requests`. P5b-2c supplies the connection state and P5b-2d delivers ticks, retries
+and the served block verbs; those cases now run against the in-memory `Conn`/`Server`.
+"In-process socketpair" becomes the sans-IO core under test; the socketpair runs move to P5b-4
+(deviation note in §11.4). See `P5B2-LIVE-STREAMS-DESIGN.md` S31.
 **R23 Peer:** `client` is a free label, never identity; a request key naming a uid, pid or cgroup is
 `bad-request` through the strict schemas (test it); `pid` is unused in P5b-1.
 **R24 Mode detection** uses `stream::ModeDetect`, NOT `frame::detect_mode` (one-shot, reports a partial

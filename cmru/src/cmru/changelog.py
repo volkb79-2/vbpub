@@ -12,10 +12,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 import re
-import subprocess
 from typing import Any, Mapping
 
 from cmru.errors import RefusedBeforeChange, StepUnavailable, UsageRefusal
+from cmru.process_run import run_process
 from cmru.release_notes import (
     HISTORY_MARKER,
     PENDING_NOTES_BEGIN,
@@ -135,8 +135,8 @@ def fold_unreleased_notes(markdown: str, version: str) -> str | None:
 
 
 def _git(repo_root: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=repo_root, capture_output=True, text=True, check=False,
+    result = run_process(
+        ["git", *args], cwd=repo_root, capture=True, text=True, check=False,
     )
     if result.returncode:
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
@@ -512,10 +512,10 @@ def _generated_outputs_changed(repo_root: Path, project: Any) -> bool:
     if not outputs:
         return False
     cwd = getattr(project, "cwd", None) or project.name
-    result = subprocess.run(
+    result = run_process(
         ["git", "status", "--porcelain", "--", *[f"{cwd}/{path}" for path in outputs]],
         cwd=repo_root,
-        capture_output=True,
+        capture=True,
         text=True,
         check=False,
     )
@@ -791,10 +791,10 @@ def generate_release_changelog(
 
 def _previous_project_tag(repo_root: Path, prefix: str, tag: str) -> str | None:
     """Return the nearest earlier tag in ``tag``'s ancestry, if one exists."""
-    result = subprocess.run(
+    result = run_process(
         ["git", "describe", "--tags", "--abbrev=0", "--match", f"{prefix}*", f"{tag}^"],
         cwd=repo_root,
-        capture_output=True,
+        capture=True,
         text=True,
         check=False,
     )

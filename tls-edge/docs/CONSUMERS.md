@@ -1,8 +1,23 @@
-# Consumers: Mattermost Calls media
+# Consumers: Jitsi Meet and Mattermost Calls
 
 The [README](../README.md) lists tls-edge's public surface. The
 [design guide](DESIGN-GUIDE.md) records why Calls uses TCP and UDP forwarding
 separate from HTTPS.
+
+## Jitsi Meet web and signaling
+
+The repository's [Jitsi Meet deployment](https://github.com/volkb79-2/vbpub/tree/main/voice-screen-share/jitsi-server)
+uses the ordinary HTTP consumer contract: `jitsi-web` joins `ingress_public`,
+routes `jitsi.<domain>` on `websecure`, and serves plain HTTP on container port
+8000. The edge terminates TLS and handles HTTP/2; when HTTP/3 is enabled at the
+edge, the same router is available over QUIC without Jitsi-specific labels.
+WebSocket signaling uses that same host router.
+
+Jitsi Videobridge media is a separate path: JVB publishes UDP 10000 directly on
+the host. That port does not pass through Traefik and does not require the
+Mattermost Calls preset on 8443. Jitsi's registered test suite renders the
+consumer Compose template and compares its route with tls-edge's rendered
+default entrypoint.
 
 ## What a Calls consumer needs
 

@@ -12,11 +12,11 @@ argv = [
 ]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-# The 2026-10-05 rate was measured with multiple workers. B157 now serializes
-# native R2 so event-counter deltas remain attributable. Re-measure this large
+# The 2026-10-05 rate was measured with multiple workers. Re-measure this large
 # campaign with a bounded pilot before treating the 12-hour gate window as a
 # completion estimate. B144 tracks covering-test ordering that may reduce its
-# per-candidate work.
+# per-candidate work. This is the ceiling of one UNSHARDED run: run-gate's native
+# `r2` lane splits the campaign with `--shard K/N` (see run-gate.toml).
 budget = "720m"
 allow_argv_append = false
 
@@ -67,10 +67,11 @@ format = "coverage-py-json"
 artifact = "coverage.json"
 
 [lanes.cli-extended.judge.mutation]
-# Ceiling (assay >= 11). Measured 1461 candidates, median 10.9 s, mean 15 s;
-# the run-gate r2 lane is a command lane, so it only honours `--jobs N` added
-# to its argv (see reports/assay-jobs-audit-REPORT.md: convert it to
-# kind = "assay" like iobench to get `jobs = "auto"`).
+# Ceiling (assay >= 11). Measured 1461 candidates, median 10.9 s, mean 15 s
+# (1561 candidates with `procio`). The run-gate `r2` lane is a native
+# `kind = "assay"` lane (CLI-EXT-41) with `jobs = "auto"`, so run-gate picks the
+# worker count up to this ceiling; B157 is closed, concurrent candidate windows
+# are legal (see run-gate-project/CONSUMERS.md, Shard, merge, carry over).
 jobs_max = 3
 # Raised for the unified-adoption wave (2026-10-05): the library roughly
 # doubled (skills, doctor, config, findings, constraints), so the previous

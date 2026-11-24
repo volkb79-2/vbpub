@@ -7,19 +7,30 @@
 //! key is bounded and made of schema characters, every encoder output parses back with the
 //! protocol crate's own checkers, and the line reader never holds more than its bound.
 
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
 use hostobs_probe::args;
+use hostobs_probe::backend::{BackendError, FixedBackend, TickData};
 use hostobs_probe::classify::{classify, Call, Dispatch, Mode, Phase, Prefix, Query, Refusal};
 use hostobs_probe::codes::{Code, Detail};
-use hostobs_probe::encode::{closing_evt, error_line, rep_error, rep_ok, rep_ok_line};
-use hostobs_probe::limits::Level;
+use hostobs_probe::conn::Peer;
+use hostobs_probe::encode::{
+    closing_evt, control_frame, error_line, rep_error, rep_ok, rep_ok_line, server_prefix,
+};
+use hostobs_probe::limits::{IntervalRule, Level};
 use hostobs_probe::lines::{LineError, LineReader};
-use hostobs_proto::envelope::{check_evt, check_rep};
-use hostobs_proto::frame::FrameType;
+use hostobs_probe::selection::{Sel, Selection};
+use hostobs_probe::server::{Accept, Server, ServerLimits};
+use hostobs_proto::envelope::{check_end, check_evt, check_rep, Rep};
+use hostobs_proto::frame::{decode_block_with, FrameType};
+use hostobs_proto::hub::{ConnId, Pools};
+use hostobs_proto::stream_dicts::StreamDicts;
 
 const RUNS: usize = 2_000;
 const MS: u64 = 1_000_000;
 const LINE_MAX: u32 = 64;
 const HELLO_ARGS: &str = "{\"client\":\"c\",\"proto\":{\"major\":1,\"minor\":1}}";
+const CURRENT_ARGS: &str = "{\"selection\":{\"entities\":[{\"inc\":1}],\"metrics\":[\"m\"]}}";
 const VERBS: [&str; 5] = ["hello", "status", "current", "events", "annotate"];
 
 /// The codes `classify` may refuse with.
@@ -96,7 +107,11 @@ impl Xorshift {
 fn seeds() -> Vec<(Mode, String)> {
     let mut out = Vec::new();
     for verb in VERBS {
-        let args = if verb == "hello" { HELLO_ARGS } else { "{}" };
+        let args = match verb {
+            "hello" => HELLO_ARGS,
+            "current" => CURRENT_ARGS,
+            _ => "{}",
+        };
         let binary = format!("{{\"verb\":\"{verb}\",\"args\":{args}}}");
         let line = format!("{{\"verb\":\"{verb}\",\"args\":{args},\"corr\":7}}");
         out.push((Mode::Binary, binary));
@@ -255,6 +270,7 @@ fn check_refusal(query: &Query<'_>, refusal: &Refusal) {
             assert_eq!(refusal.code, Code::BadRequest);
             assert!(key_is_schema_text(path), "{path:?}");
         }
+        Detail::Pool(_) => assert_eq!(refusal.code, Code::Budget),
     }
     check_error_encodings(refusal.code, refusal.corr, &refusal.detail);
 }
@@ -295,6 +311,66 @@ fn check_args(bytes: &[u8]) {
     if let Err(error) = args::status(bytes) {
         assert!(key_is_schema_text(&error.key), "{:?}", error.key);
     }
+}
+
+fn check_selection(selection: &Selection) {
+    assert!(!selection.entities().is_empty());
+    assert!(!selection.metrics().is_empty());
+    assert!(selection
+        .entities()
+        .iter()
+        .zip(selection.entities().iter().skip(1))
+        .all(|(a, b)| a < b));
+    assert!(selection
+        .metrics()
+        .iter()
+        .zip(selection.metrics().iter().skip(1))
+        .all(|(a, b)| a < b));
+}
+
+fn check_argument_outcome(payload: &[u8], which: usize) {
+    let rule = IntervalRule {
+        min_ms: 1_000,
+        tick_ms: 250,
+    };
+    match which % 4 {
+        0 => match args::current(payload) {
+            Ok(selection) => check_selection(&selection),
+            Err(error) => assert!(key_is_schema_text(&error.key), "{:?}", error.key),
+        },
+        1 => match args::subscribe(payload, rule) {
+            Ok(parsed) => {
+                check_selection(&parsed.selection);
+                assert!(rule.accepts(parsed.interval_ms));
+            }
+            Err(error) => assert!(key_is_schema_text(&error.key), "{:?}", error.key),
+        },
+        _ => {
+            if let Err(error) = args::unsubscribe(payload) {
+                assert!(key_is_schema_text(&error.key), "{:?}", error.key);
+            }
+        }
+    }
+}
+
+fn argument_seeds() -> Vec<(usize, Vec<u8>)> {
+    vec![
+        (
+            0,
+            br#"{"selection":{"entities":[{"inc":1}],"metrics":["cpu"]}}"#.to_vec(),
+        ),
+        (
+            1,
+            concat!(
+                r#"{"selection":{"entities":[{"all":true},{"inc":2}],"#,
+                r#""metrics":["a-b.c_d"]},"interval_ms":1000}"#
+            )
+            .as_bytes()
+            .to_vec(),
+        ),
+        (2, br#"{"sub":0}"#.to_vec()),
+        (2, br#"{"sub":4294967295}"#.to_vec()),
+    ]
 }
 
 #[test]
@@ -365,6 +441,26 @@ fn two_thousand_mutated_valid_inputs_stay_in_the_closed_set() {
         };
         check_outcome(&query);
         check_args(&payload);
+    }
+}
+
+#[test]
+fn two_thousand_random_2a_argument_inputs_stay_in_the_closed_set() {
+    let mut rng = Xorshift(0xA24B_AED4_963E_E407);
+    for index in 0..RUNS {
+        let payload = random_payload(&mut rng);
+        check_argument_outcome(&payload, index);
+    }
+}
+
+#[test]
+fn two_thousand_mutated_valid_2a_argument_inputs_stay_in_the_closed_set() {
+    let mut rng = Xorshift(0x9FB2_1C65_1E98_DF25);
+    let seeds = argument_seeds();
+    for _index in 0..RUNS {
+        let (which, seed) = &seeds[rng.below(seeds.len())];
+        let payload = mutate(&mut rng, seed);
+        check_argument_outcome(&payload, *which);
     }
 }
 
@@ -532,17 +628,17 @@ fn expected(case: &Case) -> (Option<Code>, u32) {
     if !binary && matches!(case.verb, "current" | "snapshot_at") {
         return (Some(Code::BinaryRequired), corr);
     }
-    if !matches!(case.verb, "hello" | "status") {
+    if !matches!(case.verb, "hello" | "status" | "current") {
         return (Some(Code::UnknownVerb), corr);
     }
     (None, corr)
 }
 
 fn payload_of(case: &Case) -> String {
-    let args = if case.verb == "hello" {
-        HELLO_ARGS
-    } else {
-        "{}"
+    let args = match case.verb {
+        "hello" => HELLO_ARGS,
+        "current" => CURRENT_ARGS,
+        _ => "{}",
     };
     let verb = case.verb;
     if case.mode == Mode::Binary {
@@ -614,4 +710,641 @@ fn a_line_reader_run_that_jumps_past_the_completion_deadline_is_deadline() {
     assert_eq!(reader.poll(0), Err(LineError::Deadline));
     let after = reader.feed(b"x", 61_000 * MS);
     assert_eq!(after.error, Some(LineError::Deadline));
+}
+
+const SUBSCRIBE_ARGS: &str = "{\"selection\":{\"entities\":[{\"inc\":1}],\"metrics\":[\"m\"]},\
+     \"interval_ms\":1000}";
+
+fn server_selection() -> Selection {
+    Selection::new(vec![Sel::Inc(1)], vec!["m".to_string()]).expect("selection")
+}
+
+fn server_request(corr: u32, verb: &str, args: &str) -> Vec<u8> {
+    let payload = format!("{{\"verb\":\"{verb}\",\"args\":{args}}}");
+    control_frame(FrameType::Req, corr, payload.as_bytes())
+}
+
+fn server_current(corr: u32) -> Vec<u8> {
+    server_request(corr, "current", CURRENT_ARGS)
+}
+
+fn server_subscribe(corr: u32) -> Vec<u8> {
+    server_request(corr, "subscribe", SUBSCRIBE_ARGS)
+}
+
+fn server_unsubscribe(corr: u32, sub: u32) -> Vec<u8> {
+    server_request(corr, "unsubscribe", &format!("{{\"sub\":{sub}}}"))
+}
+
+fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
+    let held = bytes.get(at..at.checked_add(4)?)?;
+    let exact: [u8; 4] = held.try_into().ok()?;
+    Some(u32::from_le_bytes(exact))
+}
+
+/// One connection's modelled client: complete BLOCKs decode under its held dictionaries and
+/// every END equals the number of BLOCKs that preceded it on that stream. Request episodes stay
+/// in send order so reuse after a queued END remains valid before the client drains that END.
+#[derive(Clone, Copy, Debug)]
+enum DataVerb {
+    Current,
+    Subscribe,
+}
+
+#[derive(Clone, Copy)]
+struct ActiveEpisode {
+    id: usize,
+    reused_corr: bool,
+    saw_block: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ReplyExpectation {
+    Plain(ExpectedReply),
+    Data(DataVerb, ExpectedReply),
+}
+
+#[derive(Clone, Copy)]
+enum ExpectedReply {
+    Either,
+    Success,
+    Error,
+}
+
+#[derive(Clone, Copy)]
+struct DataRequestExpectation {
+    verb: DataVerb,
+    reply: ExpectedReply,
+}
+
+struct ObservedConnection {
+    buffered: Vec<u8>,
+    binary: Option<bool>,
+    dicts: StreamDicts,
+    blocks: BTreeMap<u32, u32>,
+    ended_corrs: BTreeSet<u32>,
+    requests: BTreeMap<u32, VecDeque<ReplyExpectation>>,
+    active_episodes: BTreeMap<u32, ActiveEpisode>,
+    next_episode_id: usize,
+    reused_episodes_with_block: BTreeSet<usize>,
+    blocks_seen: usize,
+    ends_seen: usize,
+    corr_reuses: usize,
+    partial_frames: usize,
+}
+
+impl ObservedConnection {
+    fn new() -> ObservedConnection {
+        ObservedConnection {
+            buffered: Vec::new(),
+            binary: None,
+            dicts: StreamDicts::new(),
+            blocks: BTreeMap::new(),
+            ended_corrs: BTreeSet::new(),
+            requests: BTreeMap::new(),
+            active_episodes: BTreeMap::new(),
+            next_episode_id: 0,
+            reused_episodes_with_block: BTreeSet::new(),
+            blocks_seen: 0,
+            ends_seen: 0,
+            corr_reuses: 0,
+            partial_frames: 0,
+        }
+    }
+
+    fn data_request_with_expected_reply(&mut self, corr: u32, expected: DataRequestExpectation) {
+        self.requests
+            .entry(corr)
+            .or_default()
+            .push_back(ReplyExpectation::Data(expected.verb, expected.reply));
+    }
+
+    fn plain_request_with_expected_reply(&mut self, corr: u32, expected: ExpectedReply) {
+        self.requests
+            .entry(corr)
+            .or_default()
+            .push_back(ReplyExpectation::Plain(expected));
+    }
+
+    fn request_reply(&mut self, corr: u32, payload: &[u8], rep: &Rep) {
+        let request = self.requests.get_mut(&corr).and_then(VecDeque::pop_front);
+        if self.requests.get(&corr).is_some_and(VecDeque::is_empty) {
+            self.requests.remove(&corr);
+        }
+        let Some(request) = request else {
+            return;
+        };
+        let (verb, expected) = match request {
+            ReplyExpectation::Plain(expected) => (None, expected),
+            ReplyExpectation::Data(verb, expected) => (Some(verb), expected),
+        };
+        match expected {
+            ExpectedReply::Either => {}
+            ExpectedReply::Success => assert!(rep.ok, "expected successful REP corr {corr}"),
+            ExpectedReply::Error => assert!(!rep.ok, "expected failed REP corr {corr}"),
+        }
+        let Some(verb) = verb else {
+            return;
+        };
+        if !rep.ok {
+            return;
+        }
+        let expected = match verb {
+            DataVerb::Current => String::from("{\"stream\":{\"tick_ms\":1000}}"),
+            DataVerb::Subscribe => format!("{{\"sub\":{corr},\"interval_ms\":1000}}"),
+        };
+        assert_eq!(
+            payload.get(rep.body.clone()).expect("REP result range"),
+            expected.as_bytes(),
+            "successful {verb:?} REP matches its request episode"
+        );
+        assert!(
+            !self.active_episodes.contains_key(&corr),
+            "successful REP corr {corr} does not overlap an active episode"
+        );
+        let reused_corr = self.ended_corrs.remove(&corr);
+        let id = self.next_episode_id;
+        self.next_episode_id = self
+            .next_episode_id
+            .checked_add(1)
+            .expect("bounded request episode count");
+        self.active_episodes.insert(
+            corr,
+            ActiveEpisode {
+                id,
+                reused_corr,
+                saw_block: false,
+            },
+        );
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        self.buffered.extend_from_slice(bytes);
+        if self.binary.is_none() {
+            let Some(first) = self.buffered.first().copied() else {
+                return;
+            };
+            if first == b'{' {
+                self.binary = Some(false);
+            } else {
+                if self.buffered.len() < 8 {
+                    return;
+                }
+                let magic = server_prefix(1, 0);
+                assert!(
+                    self.buffered.starts_with(&magic[..4]),
+                    "binary output begins with the server prefix"
+                );
+                self.binary = Some(true);
+                self.buffered = self.buffered.split_off(8);
+            }
+        }
+        if self.binary == Some(false) {
+            while let Some(end) = self.buffered.iter().position(|byte| *byte == b'\n') {
+                let rest = self.buffered.split_off(end.saturating_add(1));
+                let line = std::mem::replace(&mut self.buffered, rest);
+                assert!(line.ends_with(b"\n"));
+            }
+            return;
+        }
+        loop {
+            let Some(declared) = u32_at(&self.buffered, 0) else {
+                if !self.buffered.is_empty() {
+                    self.partial_frames = self.partial_frames.saturating_add(1);
+                }
+                return;
+            };
+            let declared = usize::try_from(declared).expect("frame length");
+            assert!(declared >= 12, "frame has its header");
+            if declared > self.buffered.len() {
+                self.partial_frames = self.partial_frames.saturating_add(1);
+                return;
+            }
+            let rest = self.buffered.split_off(declared);
+            let frame = std::mem::replace(&mut self.buffered, rest);
+            let kind = frame.get(4).copied().expect("frame type");
+            let corr = u32_at(&frame, 8).expect("frame corr");
+            let payload = frame.get(12..).expect("frame payload");
+            if kind == FrameType::Block.code() {
+                let block = decode_block_with(&frame, self.dicts.held(corr))
+                    .expect("every delivered BLOCK decodes");
+                assert_eq!(block.corr, corr);
+                self.dicts
+                    .accept(corr, &block)
+                    .expect("every BLOCK follows the stream dictionary rules");
+                let active = self
+                    .active_episodes
+                    .get_mut(&corr)
+                    .expect("BLOCK follows a successful current or subscribe REP");
+                if active.reused_corr {
+                    self.reused_episodes_with_block.insert(active.id);
+                    if !active.saw_block {
+                        self.corr_reuses = self.corr_reuses.saturating_add(1);
+                        active.saw_block = true;
+                    }
+                }
+                let count = self.blocks.entry(corr).or_insert(0);
+                *count = count.saturating_add(1);
+                self.blocks_seen = self.blocks_seen.saturating_add(1);
+            } else if kind == FrameType::End.code() {
+                let end = check_end(payload).expect("every END parses");
+                let delivered = self.blocks.remove(&corr).unwrap_or(0);
+                assert_eq!(end.blocks, delivered, "END corr {corr} counts its BLOCKs");
+                self.dicts.close(corr);
+                assert!(
+                    self.active_episodes.remove(&corr).is_some(),
+                    "END corr {corr} closes a successful request episode"
+                );
+                self.ended_corrs.insert(corr);
+                self.ends_seen = self.ends_seen.saturating_add(1);
+            } else if kind == FrameType::Rep.code() {
+                let rep = check_rep(payload, false).expect("every binary REP parses");
+                self.request_reply(corr, payload, &rep);
+            } else if kind == FrameType::Evt.code() {
+                check_evt(payload).expect("every binary EVT parses");
+            }
+        }
+    }
+}
+
+fn observed_feed(model: &mut BTreeMap<ConnId, ObservedConnection>, id: ConnId, bytes: &[u8]) {
+    let held = model.entry(id).or_insert_with(ObservedConnection::new);
+    held.feed(bytes);
+}
+
+fn send_data_request(
+    server: &mut Server<FixedBackend>,
+    model: &mut BTreeMap<ConnId, ObservedConnection>,
+    id: ConnId,
+    corr: u32,
+    verb: DataVerb,
+    bytes: &[u8],
+    now: u64,
+) {
+    send_data_request_with_expected_reply(
+        server,
+        model,
+        id,
+        corr,
+        DataRequestExpectation {
+            verb,
+            reply: ExpectedReply::Either,
+        },
+        bytes,
+        now,
+    );
+}
+
+fn send_data_request_with_expected_reply(
+    server: &mut Server<FixedBackend>,
+    model: &mut BTreeMap<ConnId, ObservedConnection>,
+    id: ConnId,
+    corr: u32,
+    expected: DataRequestExpectation,
+    bytes: &[u8],
+    now: u64,
+) {
+    model
+        .get_mut(&id)
+        .expect("connection has an output model")
+        .data_request_with_expected_reply(corr, expected);
+    server.on_bytes(id, bytes, now);
+}
+
+fn send_plain_request(
+    server: &mut Server<FixedBackend>,
+    model: &mut BTreeMap<ConnId, ObservedConnection>,
+    id: ConnId,
+    corr: u32,
+    bytes: &[u8],
+    now: u64,
+) {
+    send_plain_request_with_expected_reply(
+        server,
+        model,
+        id,
+        corr,
+        ExpectedReply::Either,
+        bytes,
+        now,
+    );
+}
+
+fn send_plain_request_with_expected_reply(
+    server: &mut Server<FixedBackend>,
+    model: &mut BTreeMap<ConnId, ObservedConnection>,
+    id: ConnId,
+    corr: u32,
+    expected: ExpectedReply,
+    bytes: &[u8],
+    now: u64,
+) {
+    model
+        .get_mut(&id)
+        .expect("connection has an output model")
+        .plain_request_with_expected_reply(corr, expected);
+    server.on_bytes(id, bytes, now);
+}
+
+fn drain_server(
+    server: &mut Server<FixedBackend>,
+    model: &mut BTreeMap<ConnId, ObservedConnection>,
+    id: ConnId,
+    max: usize,
+    now: u64,
+) -> usize {
+    let mut total = 0usize;
+    while total < max {
+        let chunk: Vec<u8> = match server.output(id, now) {
+            Some([prefix, tail]) => [prefix, tail].concat(),
+            None => break,
+        };
+        if chunk.is_empty() {
+            break;
+        }
+        let take = chunk.len().min(max.saturating_sub(total));
+        observed_feed(model, id, chunk.get(..take).unwrap_or_default());
+        server.wrote(id, take, now);
+        total = total.saturating_add(take);
+    }
+    total
+}
+
+fn run_final(
+    server: &mut Server<FixedBackend>,
+    model: &mut BTreeMap<ConnId, ObservedConnection>,
+    id: ConnId,
+) {
+    if let Some(last) = server.take_final(id) {
+        observed_feed(model, id, &last);
+    }
+    server.finish(id);
+}
+
+/// P5b-2d hostile run: 2,000 fixed-seed server turns over four slots and two uids. Valid
+/// binary `current`, `subscribe` and `unsubscribe` requests mix with random bytes, partial
+/// writes, polls, sampler ticks and EOF. The model client decodes every complete BLOCK under its
+/// held dictionary and checks that each END's count is exactly what it received.
+#[test]
+fn server_hostile_2000_steps_with_block_verbs() {
+    let selected = server_selection();
+    let data = TickData::example(7, &[1], &["m"]);
+    let mut server = Server::new(ServerLimits::new(), FixedBackend::new());
+    server
+        .backend_mut()
+        .current
+        .insert(selected.clone(), Ok(data.clone()));
+    let mut rng = Xorshift(0x6A09_E667_F3BC_C909);
+    let mut now = 0u64;
+    let mut slots: [Option<ConnId>; 4] = [None; 4];
+    let mut subscriptions: [Vec<u32>; 4] = std::array::from_fn(|_| Vec::new());
+    let mut model = BTreeMap::new();
+
+    for slot in 0..slots.len() {
+        let level = if slot % 2 == 0 {
+            Level::Observe
+        } else {
+            Level::Operator
+        };
+        let uid = 1 + u32::try_from(slot % 2).expect("uid");
+        let peer = Peer { uid, pid: 7 };
+        let Accept::Accepted(id) = server.accept(level, Some(peer), now) else {
+            panic!("prelude accept");
+        };
+        slots[slot] = Some(id);
+        model.insert(id, ObservedConnection::new());
+        let mut hello = server_prefix(1, 1).to_vec();
+        hello.extend(server_request(1, "hello", HELLO_ARGS));
+        send_plain_request_with_expected_reply(
+            &mut server,
+            &mut model,
+            id,
+            1,
+            ExpectedReply::Success,
+            &hello,
+            now,
+        );
+        drain_server(&mut server, &mut model, id, usize::MAX, now);
+        if slot == 0 {
+            server
+                .backend_mut()
+                .current
+                .insert(selected.clone(), Err(BackendError::Unavailable));
+            send_data_request_with_expected_reply(
+                &mut server,
+                &mut model,
+                id,
+                2,
+                DataRequestExpectation {
+                    verb: DataVerb::Current,
+                    reply: ExpectedReply::Error,
+                },
+                &server_current(2),
+                now,
+            );
+            drain_server(&mut server, &mut model, id, usize::MAX, now);
+            server
+                .backend_mut()
+                .current
+                .insert(selected.clone(), Ok(data.clone()));
+        }
+        send_plain_request_with_expected_reply(
+            &mut server,
+            &mut model,
+            id,
+            2,
+            ExpectedReply::Success,
+            &server_request(2, "status", "{}"),
+            now,
+        );
+        send_data_request(
+            &mut server,
+            &mut model,
+            id,
+            2,
+            DataVerb::Current,
+            &server_current(2),
+            now,
+        );
+        // The first END is queued already, but the client model has not read it yet.
+        send_data_request(
+            &mut server,
+            &mut model,
+            id,
+            2,
+            DataVerb::Current,
+            &server_current(2),
+            now,
+        );
+        drain_server(&mut server, &mut model, id, usize::MAX, now);
+        let sub = 10 + u32::try_from(slot).expect("slot");
+        send_data_request(
+            &mut server,
+            &mut model,
+            id,
+            sub,
+            DataVerb::Subscribe,
+            &server_subscribe(sub),
+            now,
+        );
+        subscriptions[slot].push(sub);
+        drain_server(&mut server, &mut model, id, usize::MAX, now);
+    }
+    server.on_tick(now);
+    for id in slots.iter().flatten() {
+        drain_server(&mut server, &mut model, *id, usize::MAX, now);
+    }
+
+    let mut eof_actions = 0usize;
+    for _step in 0..2_000 {
+        let slot = rng.below(slots.len());
+        if let Some(id) = slots[slot] {
+            if server.conn(id).is_none() {
+                slots[slot] = None;
+                subscriptions[slot].clear();
+            } else if server.is_closed(id) {
+                run_final(&mut server, &mut model, id);
+                slots[slot] = None;
+                subscriptions[slot].clear();
+            }
+        }
+        let Some(id) = slots[slot] else {
+            let level = if rng.below(2) == 0 {
+                Level::Observe
+            } else {
+                Level::Operator
+            };
+            let uid = 1 + u32::try_from(slot % 2).expect("uid");
+            let peer = Peer { uid, pid: 7 };
+            if let Accept::Accepted(id) = server.accept(level, Some(peer), now) {
+                slots[slot] = Some(id);
+                subscriptions[slot].clear();
+                model.insert(id, ObservedConnection::new());
+                let mut hello = server_prefix(1, 1).to_vec();
+                hello.extend(server_request(1, "hello", HELLO_ARGS));
+                send_plain_request_with_expected_reply(
+                    &mut server,
+                    &mut model,
+                    id,
+                    1,
+                    ExpectedReply::Success,
+                    &hello,
+                    now,
+                );
+            }
+            continue;
+        };
+        match rng.below(12) {
+            0 => {
+                let bytes = random_payload(&mut rng);
+                server.on_bytes(id, &bytes, now);
+            }
+            1 | 2 => {
+                let corr = 2 + u32::try_from(rng.below(8)).expect("corr");
+                send_data_request(
+                    &mut server,
+                    &mut model,
+                    id,
+                    corr,
+                    DataVerb::Current,
+                    &server_current(corr),
+                    now,
+                );
+            }
+            3 | 4 => {
+                let corr = 10 + u32::try_from(rng.below(4)).expect("corr");
+                if subscriptions[slot].contains(&corr) {
+                    send_plain_request(
+                        &mut server,
+                        &mut model,
+                        id,
+                        20 + corr,
+                        &server_unsubscribe(20 + corr, corr),
+                        now,
+                    );
+                    subscriptions[slot].retain(|held| *held != corr);
+                } else {
+                    subscriptions[slot].push(corr);
+                    send_data_request(
+                        &mut server,
+                        &mut model,
+                        id,
+                        corr,
+                        DataVerb::Subscribe,
+                        &server_subscribe(corr),
+                        now,
+                    );
+                }
+            }
+            5 => {
+                let corr = 10 + u32::try_from(rng.below(4)).expect("corr");
+                send_plain_request(
+                    &mut server,
+                    &mut model,
+                    id,
+                    20 + corr,
+                    &server_unsubscribe(20 + corr, corr),
+                    now,
+                );
+                subscriptions[slot].retain(|held| *held != corr);
+            }
+            6 | 7 => {
+                server.on_tick(now);
+            }
+            8 | 9 => {
+                let advance = u64::try_from(rng.below(100_000)).expect("ns");
+                now = now.saturating_add(advance);
+                server.poll(now);
+            }
+            10 => {
+                eof_actions = eof_actions.saturating_add(1);
+                server.on_eof(id, now);
+            }
+            _ => {
+                let max = rng.below(2_048);
+                drain_server(&mut server, &mut model, id, max, now);
+            }
+        }
+    }
+
+    for _ in 0..3 {
+        now = now.saturating_add(1_000 * MS);
+        server.poll(now);
+    }
+    server.shutdown();
+    let remaining = server.ids();
+    for id in remaining {
+        run_final(&mut server, &mut model, id);
+    }
+
+    let blocks: usize = model.values().map(|held| held.blocks_seen).sum();
+    let ends: usize = model.values().map(|held| held.ends_seen).sum();
+    let partial_frames: usize = model.values().map(|held| held.partial_frames).sum();
+    let corr_reuses: usize = model.values().map(|held| held.corr_reuses).sum();
+    let expected_corr_reuses: usize = model
+        .values()
+        .map(|held| held.reused_episodes_with_block.len())
+        .sum();
+    assert!(blocks > 0);
+    assert!(ends > 0);
+    assert!(partial_frames > 0, "run writes at least one partial frame");
+    assert!(eof_actions > 0, "run sends at least one EOF");
+    assert!(
+        expected_corr_reuses > 0,
+        "run reuses a correlation after END"
+    );
+    assert_eq!(
+        corr_reuses, expected_corr_reuses,
+        "one correlation reuse per accepted episode with a BLOCK"
+    );
+    assert_eq!(server.conn_count(), 0);
+    assert_eq!(server.uid_entries(), 0);
+    assert_eq!(server.hub().global_pools(), Pools::default());
+    assert_eq!(server.streams().live_selections(), 0);
+    assert_eq!(server.streams().subscribers(), 0);
+    for uid in [1u32, 2] {
+        assert_eq!(server.hub().uid_pools(uid), Pools::default());
+        assert_eq!(server.streams().uid_selections(uid), 0);
+    }
+    assert!(server.hub().poll(u64::MAX).is_empty());
 }

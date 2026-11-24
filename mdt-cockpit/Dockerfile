@@ -350,7 +350,7 @@ RUN --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-input
     install -m 0644 /tmp/mdt-inputs/customization/README.md "${share_dir}/README.md"; \
     install -m 0644 /tmp/mdt-inputs/customization/aliases.sh "${share_dir}/aliases.sh"; \
     install -m 0644 /tmp/mdt-inputs/customization/aliases.sh.example "${share_dir}/aliases.sh.example"; \
-    install -m 0644 /tmp/mdt-inputs/customization/ai.env.example "${share_dir}/ai.env.example"; \
+    install -m 0644 /tmp/mdt-inputs/customization/.env.ai.example "${share_dir}/.env.ai.example"; \
     install -m 0644 /tmp/mdt-inputs/customization/shell.env "${share_dir}/shell.env"; \
     install -m 0644 /tmp/mdt-inputs/customization/bashrc "${share_dir}/bashrc"; \
     install -m 0644 /tmp/mdt-inputs/customization/zshrc "${share_dir}/zshrc"; \

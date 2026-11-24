@@ -35,7 +35,7 @@ entryPoints:
     http:
       redirections:
         entryPoint:
-          to: websecure
+          to: ":{{ tls_edge.ports.https }}"
           scheme: https
           permanent: true
 {% else %}
@@ -51,6 +51,11 @@ entryPoints:
   # need tls=true or certresolver labels.
   websecure:
     address: ":443"
+{% if tls_edge.http3.enabled %}
+    http3:
+      # Compose may publish the internal :443 listener on a different host port.
+      advertisedPort: {{ tls_edge.ports.https }}
+{% endif %}
     http:
 {% if tls_edge.headers.enabled %}
       middlewares:
@@ -89,7 +94,7 @@ certificatesResolvers:
 {% if tls_edge.acme.email %}
       email: "{{ tls_edge.acme.email }}"
 {% endif %}
-      storage: /etc/traefik/acme/acme.json
+      storage: /var/lib/traefik/acme.json
       caServer: "{{ tls_edge.acme.ca_server }}"
 {% if tls_edge.tls.mode == 'acme-http' %}
       # HTTP-01: requires ports.expose_http = true (challenge arrives on :80).

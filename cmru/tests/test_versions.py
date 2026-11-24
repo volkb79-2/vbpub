@@ -2877,7 +2877,7 @@ proxy = "https://proxy.golang.org"
         workspace_sum.write_text("sum changed\n", encoding="utf-8")
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(versions.subprocess, "run", run)
+    monkeypatch.setattr(versions, "run_process", run)
     write_text_atomic = versions._write_text_atomic
 
     def fail_generated_output(path, contents):
@@ -2907,14 +2907,14 @@ def test_go_workspace_file_discovery_uses_go_env(monkeypatch, tmp_path, reported
         assert kwargs == {
             "cwd": tmp_path,
             "text": True,
-            "capture_output": True,
+            "capture": True,
             "check": False,
             "timeout": 20,
             "env": {},
         }
         return types.SimpleNamespace(returncode=0, stdout=reported, stderr="")
 
-    monkeypatch.setattr(versions.subprocess, "run", run)
+    monkeypatch.setattr(versions, "run_process", run)
     actual = versions._go_workspace_files(tmp_path, {})
     if reported == "go.work":
         assert actual == [tmp_path / path for path in expected]
@@ -2923,7 +2923,7 @@ def test_go_workspace_file_discovery_uses_go_env(monkeypatch, tmp_path, reported
 
 
 def test_go_workspace_file_discovery_reports_probe_failures(monkeypatch, tmp_path):
-    monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: types.SimpleNamespace(
+    monkeypatch.setattr(versions, "run_process", lambda *_args, **_kwargs: types.SimpleNamespace(
         returncode=2, stdout="", stderr="invalid GOWORK",
     ))
     with pytest.raises(versions.VersionsOperationError, match="could not determine the Go workspace.*invalid GOWORK"):
@@ -2956,7 +2956,7 @@ def test_python_constraints_registry_auth_cutoff_and_file_edges(monkeypatch, tmp
     tight = _result("pypi.tight", "pypi", "1.0.0", now - timedelta(days=40), age_cutoff=now - timedelta(days=21))
     loose = _result("pypi.loose", "pypi", "2.0.0", now - timedelta(days=40), age_cutoff=now - timedelta(days=14))
     calls = []
-    monkeypatch.setattr(versions.subprocess, "run", lambda command, **kwargs: (
+    monkeypatch.setattr(versions, "run_process", lambda command, **kwargs: (
         calls.append((command, kwargs)) or types.SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
     ))
 
@@ -3378,7 +3378,7 @@ def test_root_and_project_resolved_records_have_their_selected_policy(tmp_path, 
         calls.append((command, kwargs))
         return Process()
 
-    monkeypatch.setattr(versions.subprocess, "run", run)
+    monkeypatch.setattr(versions, "run_process", run)
     assert versions.main(["resolve", "all", "--config", str(root_config)]) == 0
     output = capsys.readouterr().out
     assert "root" in output and "demo" in output
@@ -3579,7 +3579,7 @@ def test_standalone_project_local_target_resolves_and_records_project_side(tmp_p
         stdout = "requests==2.31.0\n"
         stderr = ""
 
-    monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr(versions, "run_process", lambda *_args, **_kwargs: Process())
     assert versions.main(["resolve", "all", "--config", str(config_path)]) == 0
     document = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert document["versions"]["targets"]["pypi.requests"]["resolved"]["version"] == "2.31.0"
@@ -3640,7 +3640,7 @@ def test_npm_native_lock_writer_pins_dependencies_and_uses_age_exceptions(tmp_pa
         complete.stdout = ""
         return complete
 
-    monkeypatch.setattr(versions.subprocess, "run", run)
+    monkeypatch.setattr(versions, "run_process", run)
     versions._run_npm(
         tmp_path,
         {"@acme/lib": ("1.2.0", "npm.acme.lib")},
@@ -3649,10 +3649,12 @@ def test_npm_native_lock_writer_pins_dependencies_and_uses_age_exceptions(tmp_pa
         {"@acme/lib": {"name": "@acme/lib", "registry": "https://registry.npmjs.org"}},
     )
     assert len(calls) == 2
-    assert calls[0][1]["text"] is True and calls[0][1]["capture_output"] is True
+    assert calls[0][1]["text"] is True and calls[0][1]["capture"] is True
     assert calls[0][1]["check"] is False
-    assert calls[1][1]["text"] is True and calls[1][1]["capture_output"] is True
+    assert calls[0][1]["cwd"] == tmp_path and calls[0][1]["timeout"] == 20
+    assert calls[1][1]["text"] is True and calls[1][1]["capture"] is True
     assert calls[1][1]["check"] is False
+    assert calls[1][1]["cwd"] == tmp_path and calls[1][1]["timeout"] == 900
     command = calls[1][0]
     assert "--package-lock-only" in command and "--ignore-scripts" in command
     assert command[command.index("--before") + 1] == versions._timestamp(cutoff)
@@ -3695,15 +3697,16 @@ def test_npm_writer_refuses_unowned_overrides_and_old_npm_exception(monkeypatch,
         stdout = "10.0.0"
         stderr = ""
 
-    monkeypatch.setattr(versions.subprocess, "run", lambda command, **kwargs: calls.append((command, kwargs)) or OldNpm())
+    monkeypatch.setattr(versions, "run_process", lambda command, **kwargs: calls.append((command, kwargs)) or OldNpm())
     with pytest.raises(versions.VersionsPrerequisiteError, match="11.5.0 or newer"):
         versions._run_npm(
             tmp_path, {"left-pad": ("1.2.0", "npm.left-pad")},
             {"npm.left-pad": result}, {"npm.left-pad": None}, {"left-pad": source},
         )
     assert len(calls) == 1 and calls[0][0] == ["npm", "--version"]
-    assert calls[0][1]["text"] is True and calls[0][1]["capture_output"] is True
+    assert calls[0][1]["text"] is True and calls[0][1]["capture"] is True
     assert calls[0][1]["check"] is False
+    assert calls[0][1]["cwd"] == tmp_path and calls[0][1]["timeout"] == 20
 
     class FailedProbe:
         returncode = 1
@@ -3712,7 +3715,7 @@ def test_npm_writer_refuses_unowned_overrides_and_old_npm_exception(monkeypatch,
 
     calls.clear()
     monkeypatch.setattr(
-        versions.subprocess, "run",
+        versions, "run_process",
         lambda command, **kwargs: calls.append((command, kwargs)) or FailedProbe(),
     )
     with pytest.raises(versions.VersionsPrerequisiteError, match="11.5.0 or newer"):
@@ -3748,7 +3751,7 @@ def test_npm_writer_auth_overrides_and_external_command_failures(monkeypatch, tm
         assert "${NPM_TOKEN}" in userconfig.read_text(encoding="utf-8")
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(versions.subprocess, "run", successful)
+    monkeypatch.setattr(versions, "run_process", successful)
     versions._run_npm(
         tmp_path, {"pkg": ("1.2.0", "npm.pkg")}, {"npm.pkg": old},
         {"npm.pkg": None}, {"pkg": source},
@@ -3781,7 +3784,7 @@ def test_npm_writer_auth_overrides_and_external_command_failures(monkeypatch, tm
     def missing(*_args, **_kwargs):
         raise FileNotFoundError("npm")
 
-    monkeypatch.setattr(versions.subprocess, "run", missing)
+    monkeypatch.setattr(versions, "run_process", missing)
     with pytest.raises(versions.VersionsPrerequisiteError, match="npm on PATH"):
         versions._run_npm(
             tmp_path, {"pkg": ("1.2.0", "npm.pkg")}, {"npm.pkg": old},
@@ -3795,7 +3798,7 @@ def test_npm_writer_auth_overrides_and_external_command_failures(monkeypatch, tm
             {"npm.pkg": None}, {"pkg": {"name": "pkg", "registry": "https://registry.example"}},
         )
 
-    monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+    monkeypatch.setattr(versions, "run_process", lambda *_args, **_kwargs: (_ for _ in ()).throw(
         subprocess.TimeoutExpired("npm", 900),
     ))
     with pytest.raises(versions.VersionsOperationError, match="did not finish"):
@@ -3804,7 +3807,7 @@ def test_npm_writer_auth_overrides_and_external_command_failures(monkeypatch, tm
             {"npm.pkg": None}, {"pkg": {"name": "pkg", "registry": "https://registry.example"}},
         )
 
-    monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: types.SimpleNamespace(
+    monkeypatch.setattr(versions, "run_process", lambda *_args, **_kwargs: types.SimpleNamespace(
         returncode=1, stdout="fallback output", stderr="",
     ))
     with pytest.raises(versions.VersionsOperationError, match="fallback output"):
@@ -3914,7 +3917,7 @@ def test_npm_writer_validates_package_lock_and_registry_shapes(tmp_path, monkeyp
         "node_modules/ignored": "not a table", "custom/path": {},
     }}), encoding="utf-8")
     calls = []
-    monkeypatch.setattr(versions.subprocess, "run", lambda command, **kwargs: (
+    monkeypatch.setattr(versions, "run_process", lambda command, **kwargs: (
         calls.append(command) or types.SimpleNamespace(returncode=0, stdout="", stderr="")
     ))
     versions._run_npm(
@@ -3980,7 +3983,7 @@ def test_go_native_writer_uses_private_netrc_and_reports_tool_failure(monkeypatc
         assert "machine proxy.example login alice password secret" in netrc.read_text(encoding="utf-8")
         return Process()
 
-    monkeypatch.setattr(versions.subprocess, "run", run)
+    monkeypatch.setattr(versions, "run_process", run)
     versions._run_go(
         tmp_path, {"example.com/lib": ("v1.2.3", "go.example.lib")},
         {"example.com/lib": {
@@ -3991,8 +3994,10 @@ def test_go_native_writer_uses_private_netrc_and_reports_tool_failure(monkeypatc
     command, kwargs = captured[0]
     assert command == ["go", "get", "example.com/lib@v1.2.3"]
     assert kwargs["text"] is True
-    assert kwargs["capture_output"] is True
+    assert kwargs["capture"] is True
     assert kwargs["check"] is False
+    assert kwargs["cwd"] == tmp_path
+    assert kwargs["timeout"] == 900
     assert kwargs["env"]["GOPROXY"] == "https://proxy.example"
     assert kwargs["env"]["GONOPROXY"] == "none"
     assert not Path(kwargs["env"]["NETRC"]).exists()
@@ -4002,7 +4007,7 @@ def test_go_native_writer_uses_private_netrc_and_reports_tool_failure(monkeypatc
         stdout = "useful Go diagnostic"
         stderr = ""
 
-    monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: Failed())
+    monkeypatch.setattr(versions, "run_process", lambda *_args, **_kwargs: Failed())
     with pytest.raises(versions.VersionsOperationError, match="Go module update failed.*useful Go diagnostic"):
         versions._run_go(
             tmp_path, {"example.com/lib": ("v1.2.3", "go.example.lib")},
@@ -4050,7 +4055,7 @@ def test_go_writer_prerequisites_and_npm_dependency_reader_failures(monkeypatch,
         )
 
     source = {"module": "example.com/lib", "proxy": "https://proxy.example"}
-    monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("go")))
+    monkeypatch.setattr(versions, "run_process", lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("go")))
     with pytest.raises(versions.VersionsPrerequisiteError, match="go on PATH"):
         versions._go_workspace_files(tmp_path, {})
     with pytest.raises(versions.VersionsPrerequisiteError, match="go on PATH"):
@@ -4058,7 +4063,7 @@ def test_go_writer_prerequisites_and_npm_dependency_reader_failures(monkeypatch,
             tmp_path, {"example.com/lib": ("v1.2.3", "go.lib")},
             {"example.com/lib": source},
         )
-    monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+    monkeypatch.setattr(versions, "run_process", lambda *_args, **_kwargs: (_ for _ in ()).throw(
         subprocess.TimeoutExpired("go", 900),
     ))
     with pytest.raises(versions.VersionsOperationError, match="did not finish within 20 seconds"):
@@ -4225,7 +4230,7 @@ def test_python_constraints_compile_uses_age_policy_and_markers(monkeypatch, tmp
         captured.append((command, kwargs))
         return Process()
 
-    monkeypatch.setattr(versions.subprocess, "run", run)
+    monkeypatch.setattr(versions, "run_process", run)
     generated = versions._compile_python_constraints(
         tmp_path, {"pypi.requests": older, "pypi.urgent": fresh}, declarations,
     )
@@ -4237,8 +4242,9 @@ def test_python_constraints_compile_uses_age_policy_and_markers(monkeypatch, tmp
     assert kwargs["env"]["UV_INDEX_CMRU_PASSWORD"] == "secret"
     assert kwargs["input"] == "requests==2.31.0\nurgent==1.1.0\n"
     assert kwargs["text"] is True
-    assert kwargs["capture_output"] is True
+    assert kwargs["capture"] is True
     assert kwargs["check"] is False
+    assert kwargs["cwd"] == tmp_path
     assert all(content.startswith("# Generated by cmru versions resolve") for _path, content in generated)
     assert [path.name for path, _ in generated] == ["constraints-20260924.txt", "constraints.txt"]
     assert versions._compile_python_constraints(tmp_path, {}, {}) == []
@@ -4285,17 +4291,17 @@ def test_python_constraints_refuse_conflicts_markers_and_tool_errors(monkeypatch
 
     result = _result("pypi.a", "pypi", "1.0.0", now - timedelta(days=30))
     declaration = {"pypi.a": {"pypi": {"name": "a", "registry": "https://pypi.org"}}}
-    monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: types.SimpleNamespace(
+    monkeypatch.setattr(versions, "run_process", lambda *_args, **_kwargs: types.SimpleNamespace(
         returncode=1, stdout="", stderr="compile failed",
     ))
     with pytest.raises(versions.VersionsOperationError, match="uv pip compile failed"):
         versions._compile_python_constraints(tmp_path, {"pypi.a": result}, declaration)
-    monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: types.SimpleNamespace(
+    monkeypatch.setattr(versions, "run_process", lambda *_args, **_kwargs: types.SimpleNamespace(
         returncode=1, stdout="fallback output", stderr="",
     ))
     with pytest.raises(versions.VersionsOperationError, match="fallback output"):
         versions._compile_python_constraints(tmp_path, {"pypi.a": result}, declaration)
-    monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: types.SimpleNamespace(
+    monkeypatch.setattr(versions, "run_process", lambda *_args, **_kwargs: types.SimpleNamespace(
         returncode=0, stdout="", stderr="",
     ))
     with pytest.raises(versions.VersionsError, match="without producing"):
@@ -4304,14 +4310,14 @@ def test_python_constraints_refuse_conflicts_markers_and_tool_errors(monkeypatch
     def missing(*_args, **_kwargs):
         raise FileNotFoundError("uv")
 
-    monkeypatch.setattr(versions.subprocess, "run", missing)
+    monkeypatch.setattr(versions, "run_process", missing)
     with pytest.raises(versions.VersionsPrerequisiteError, match="uv on PATH"):
         versions._compile_python_constraints(tmp_path, {"pypi.a": result}, declaration)
 
     def timeout(*_args, **_kwargs):
         raise subprocess.TimeoutExpired("uv", 900)
 
-    monkeypatch.setattr(versions.subprocess, "run", timeout)
+    monkeypatch.setattr(versions, "run_process", timeout)
     with pytest.raises(versions.VersionsOperationError, match="did not finish"):
         versions._compile_python_constraints(tmp_path, {"pypi.a": result}, declaration)
 

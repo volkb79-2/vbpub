@@ -15,7 +15,9 @@
 //! - **Stamping at pin.** The first `head` call for an entry pins it. For a block the hub
 //!   copies the first `16 + 8 * n_sec + 80` bytes, writes `corr` at 8 and the stream's pending
 //!   `dropped` count at `88 + 8 * n_sec`, and returns that private prefix and the shared
-//!   tail. Every drop happens to an unpinned entry, so each is counted exactly once.
+//!   tail. A Live pin consumes the pending count; a Query pin stamps 0 and leaves it untouched,
+//!   so a new Live stream that reused the Query stream's `corr` cannot inherit the old pin.
+//!   Every drop happens to an unpinned entry, so each is counted exactly once.
 //! - **One unpinned tick per stream.** A newer tick replaces an unpinned one in place.
 //! - **Deterministic order.** Connections are kept by ascending [`ConnId`]; the victim tie
 //!   break and the order of [`SendHub::poll`] results are by ascending id.
@@ -247,13 +249,15 @@ struct Stream {
 }
 
 impl Stream {
-    /// The pin of one of this stream's blocks: hand out and reset the pending drops; a Live
-    /// block is counted now.
+    /// The pin of one of this stream's blocks: a Live block is counted now and hands out the
+    /// pending drops; a Query block stamps 0 and leaves the Live stream's pending drops alone.
     fn stamp(&mut self, live: bool) -> u32 {
         if live {
             self.blocks = self.blocks.saturating_add(1);
+            std::mem::take(&mut self.pending_drops)
+        } else {
+            0
         }
-        std::mem::take(&mut self.pending_drops)
     }
 }
 
@@ -473,6 +477,7 @@ pub struct SendHub {
     limits: QueueLimits,
     next_id: u32,
     next_seq: u64,
+    counted_drops: u64,
     conns: BTreeMap<ConnId, Conn>,
     shared: Shared,
 }
@@ -485,6 +490,7 @@ impl SendHub {
             limits,
             next_id: 1,
             next_seq: 0,
+            counted_drops: 0,
             conns: BTreeMap::new(),
             shared: Shared::default(),
         }
@@ -651,6 +657,25 @@ impl SendHub {
             || changed(wait.global, self.shared.global.query_freed)
     }
 
+    /// Every counted drop since [`SendHub::new`]: each increment of any stream's
+    /// `pending_drops` (coalesce, shed, a dropped incoming tick, and the unpinned tick that
+    /// [`SendHub::end_stream`] removes). `drain_unpinned` and `remove` count none.
+    #[must_use]
+    pub fn dropped_blocks(&self) -> u64 {
+        self.counted_drops
+    }
+
+    /// Whether [`SendHub::push_query`] would answer `Queued` now for `len` bytes. The
+    /// connection, uid and global Query pools must all fit. An unknown connection answers
+    /// `true`, because its retry is discarded as `Queued`.
+    #[must_use]
+    pub fn query_room(&self, id: ConnId, len: usize) -> bool {
+        match self.conns.get(&id) {
+            Some(conn) => !query_wait(&self.limits, &self.shared, conn, len).is_refused(),
+            None => true,
+        }
+    }
+
     /// End `stream`: remove its unpinned tick (counted), return the END counts, forget it.
     /// Queued Query entries of the stream stay.
     pub fn end_stream(&mut self, id: ConnId, stream: u32) -> StreamCounts {
@@ -763,6 +788,7 @@ impl SendHub {
         let conn = self.conns.get_mut(&id)?;
         let item = conn.take_unpinned_live(only)?;
         conn.note_drop(item.stream, item.dict);
+        self.counted_drops = self.counted_drops.saturating_add(1);
         self.shared.release(conn.uid, item.kind, item.bytes.len());
         Some(item)
     }
@@ -772,6 +798,7 @@ impl SendHub {
     fn note_drop(&mut self, id: ConnId, stream: u32, dict: bool) {
         if let Some(conn) = self.conns.get_mut(&id) {
             conn.note_drop(stream, dict);
+            self.counted_drops = self.counted_drops.saturating_add(1);
         }
     }
 
@@ -851,8 +878,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        Close, ConnId, LiveOutcome, Pools, QueryOutcome, QueueLimits, SendHub, StreamCounts,
-        TickForms,
+        query_wait, Close, ConnId, LiveOutcome, Pools, QueryOutcome, QueueLimits, SendHub,
+        StreamCounts, TickForms,
     };
 
     fn limits() -> QueueLimits {
@@ -995,7 +1022,8 @@ mod tests {
     fn check(hub: &SendHub) {
         let mut global = pools(0, 0, 0);
         let mut per_uid: HashMap<u32, Pools> = HashMap::new();
-        for conn in hub.conns.values() {
+        let mut pending = 0u64;
+        for (id, conn) in &hub.conns {
             let mut sum = pools(0, 0, 0);
             let mut last_seq = None;
             for item in &conn.queue {
@@ -1004,6 +1032,14 @@ mod tests {
                 last_seq = Some(item.seq);
             }
             assert_eq!(conn.totals.pools, sum, "connection pools");
+            let wanted = !query_wait(&hub.limits, &hub.shared, conn, 137).is_refused();
+            assert_eq!(hub.query_room(*id, 137), wanted, "Query room");
+            pending = pending.saturating_add(
+                conn.streams
+                    .values()
+                    .map(|state| u64::from(state.pending_drops))
+                    .sum::<u64>(),
+            );
             let uid_sum = per_uid.entry(conn.uid).or_default();
             uid_sum.live += sum.live;
             uid_sum.query += sum.query;
@@ -1022,6 +1058,10 @@ mod tests {
             }
         }
         assert_eq!(hub.shared.global.pools, global, "global pools");
+        assert!(
+            hub.dropped_blocks() >= pending,
+            "counted drops cannot trail pending drops"
+        );
         assert_eq!(hub.shared.uids.len(), per_uid.len(), "uid entries");
         for (uid, totals) in &hub.shared.uids {
             assert_eq!(Some(&totals.pools), per_uid.get(uid), "uid {uid}");
@@ -1417,6 +1457,81 @@ mod tests {
         assert!(hub.query_ready(ids[1], 1), "uid bytes freed");
         assert_eq!(query(&mut hub, ids[1], 1, 400), QueryOutcome::Queued);
         assert_eq!(hub.uid_pools(1).query, 400);
+        check(&hub);
+    }
+
+    #[test]
+    fn hub_query_pin_leaves_pending_drops() {
+        let mut hub = SendHub::new(limits());
+        let c = hub.add(1, 0);
+        query(&mut hub, c, 3, 200);
+        assert_eq!(hub.end_stream(c, 3), counts(1, 0));
+        live(&mut hub, c, 3, &tick(1, Some(200), 240), 0);
+        assert_eq!(
+            live(&mut hub, c, 3, &tick(1, Some(200), 240), 0),
+            LiveOutcome::Coalesced
+        );
+        assert_eq!(head(&mut hub, c, 0), (200, 3, 0), "old Query pin");
+        hub.wrote(c, 200, 0);
+        assert_eq!(head(&mut hub, c, 0), (240, 3, 1), "new Live pin");
+        check(&hub);
+    }
+
+    #[test]
+    fn hub_query_room_checks_each_pool_and_unknown_ids() {
+        let mut hub = SendHub::new(limits());
+        let c0 = hub.add(1, 0);
+        let c1 = hub.add(1, 0);
+        query(&mut hub, c0, 1, 600);
+        assert!(hub.query_room(c0, 400));
+        assert!(!hub.query_room(c0, 401), "connection pool");
+        query(&mut hub, c1, 1, 400);
+        assert!(!hub.query_room(c0, 1), "uid pool");
+        assert!(hub.query_room(ConnId(999), usize::MAX));
+
+        let mut global_limits = limits();
+        global_limits.global_query_bytes = 1500;
+        let mut global = SendHub::new(global_limits);
+        let a = global.add(1, 0);
+        let b = global.add(2, 0);
+        query(&mut global, a, 1, 1000);
+        query(&mut global, b, 1, 400);
+        assert!(!global.query_room(b, 101), "global pool");
+        check(&hub);
+        check(&global);
+    }
+
+    #[test]
+    fn hub_dropped_blocks_counts_every_note_drop() {
+        let mut hub = SendHub::new(limits());
+        let c = hub.add(1, 0);
+        live(&mut hub, c, 1, &tick(1, Some(304), 304), 0);
+        live(&mut hub, c, 1, &tick(1, Some(304), 304), 0);
+        assert_eq!(hub.dropped_blocks(), 1, "coalesce");
+        live(&mut hub, c, 2, &tick(1, Some(304), 304), 0);
+        live(&mut hub, c, 3, &tick(1, Some(304), 304), 0);
+        live(&mut hub, c, 4, &tick(1, Some(304), 304), 0);
+        assert_eq!(hub.dropped_blocks(), 2, "shed");
+        head(&mut hub, c, 0);
+        live(&mut hub, c, 5, &tick(1, Some(304), 304), 0);
+        assert_eq!(hub.dropped_blocks(), 3, "shed behind a pinned head");
+        hub.drain_unpinned(c);
+        assert_eq!(hub.dropped_blocks(), 3, "drain counts none");
+        pop(&mut hub, c, 0);
+        live(&mut hub, c, 6, &tick(1, Some(904), 904), 0);
+        head(&mut hub, c, 0);
+        live(&mut hub, c, 7, &tick(1, Some(904), 904), 0);
+        assert_eq!(hub.dropped_blocks(), 4, "dropped incoming");
+        pop(&mut hub, c, 0);
+        live(&mut hub, c, 8, &tick(1, Some(304), 304), 0);
+        hub.end_stream(c, 8);
+        assert_eq!(hub.dropped_blocks(), 5, "end_stream");
+        live(&mut hub, c, 8, &tick(1, Some(304), 304), 0);
+        hub.drain_unpinned(c);
+        assert_eq!(hub.dropped_blocks(), 5);
+        live(&mut hub, c, 8, &tick(1, Some(304), 304), 0);
+        hub.remove(c);
+        assert_eq!(hub.dropped_blocks(), 5, "remove counts none");
         check(&hub);
     }
 

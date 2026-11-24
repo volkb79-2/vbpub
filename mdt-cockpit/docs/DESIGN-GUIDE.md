@@ -402,7 +402,7 @@ with an empty home.
 | vim | `/etc/vim/vimrc.local`, sourced by Debian's `/etc/vim/vimrc` | none | `/etc/vim/vimrc`, then `~/.vimrc` (later wins) |
 | Neovim / NvChad | `/etc/xdg/nvim/` (tree + `sysinit.vim`) | none (a starter-style tree would keep its plugins in `~/.local/share/nvim`) | Neovim itself starts `$XDG_CONFIG_DIRS/nvim/init.lua` while the user has no `init.lua`/`init.vim`, so creating one replaces the default; `sysinit.vim` only redirects a `configs.lazy` lockfile into `~/.local/state/nvim` (proven with a fixture tree, not with the shipped one - MDT-011) |
 | less | `LESSOPEN` in `shell.env` | none | environment variable |
-| MDT shell files | `/usr/local/share/mdt-cockpit/{shell.env,aliases.sh}` | none | the user's `~/.config/mdt-cockpit/` files are sourced *after* and may override; `ai.env` has no image default |
+| MDT shell files | `/usr/local/share/mdt-cockpit/{shell.env,aliases.sh}` | none | user overrides are sourced after image defaults; user startup snippets are registered in `~/.config/mdt-cockpit/shell-start.d/` |
 | lnav formats | `/etc/lnav/formats/` | none | already system-wide |
 | image manifest | `/usr/local/share/mdt-cockpit/manifest.md` | none (no `~/mdt-manifest.md`) | `IMAGE_MANIFEST` in `/etc/os-release` |
 
@@ -417,6 +417,20 @@ a fixture tree with a `configs/lazy` module gets its lockfile redirected - not a
 working NvChad. Neovim's own fallback to `$XDG_CONFIG_DIRS/nvim/init.lua` starts the
 tree; an earlier `sysinit.vim` also `dofile`d it and so ran it twice per start, which
 the fixture's run counter now catches.
+
+Shell startup follows the same explicit-placement rule as other user configuration. The shared
+profile sources regular files and dotfiles in `~/.config/mdt-cockpit/shell-start.d/` in lexical
+order for bash and zsh, exporting variables to child processes. The loader does not search for
+tool-specific filenames. A user can keep API keys at the conventional `~/.env.ai` path for tools
+that read it directly and register that file in the startup directory with a symlink. This keeps
+secret discovery opt-in and lets consumers use the same startup mechanism for any shell snippet.
+
+Provider effort belongs to the model configuration. The OpenDesign DeepSeek Flash Eco entry sets
+`max` as its default in Codex, OpenCode, and Pi, while other models retain their own defaults. Each
+harness maps a one-invocation override (`model_reasoning_effort="high"`, `#high`, or
+`--thinking high`) to the provider's request field, so choosing a different effort does not rewrite
+the stored default. The [consumer guide](AI-HARNESSES.md) documents the matching account keys and
+configuration.
 
 ## VS Code terminal sessions
 

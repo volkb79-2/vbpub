@@ -150,6 +150,15 @@ RUN apt-get update \
  && test -x /usr/bin/augparse \
  && test "$(dpkg -S /usr/bin/augparse | cut -d: -f1)" = augeas-tools \
  && rm -rf /var/lib/apt/lists/*
+#  * xorriso (TU-XORR): debian-rollback's registered offline lane packs NoCloud seed ISOs
+#    and extracts their backend marker. Keep real ISO tooling in the shared tester image so
+#    the lane proves its packing path without a second derivative test image.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends xorriso \
+ && test -x /usr/bin/xorriso \
+ && test "$(dpkg -S /usr/bin/xorriso | cut -d: -f1)" = xorriso \
+ && /usr/bin/xorriso -version \
+ && rm -rf /var/lib/apt/lists/*
 #  * Node.js + npm + npx (D-004) from the official node image (stage `node-source` above,
 #    digest-pinned and age-checked by `cmru versions`), not Debian's nodejs, which is too old.
 #    pwmcp's runtime-gateway tests execute the node binary. The links mirror the official image's.
@@ -190,6 +199,7 @@ COPY augeaswrap/pyproject.toml /src/augeaswrap/pyproject.toml
 COPY pwmcp/client/pyproject.toml /src/pwmcp/client/pyproject.toml
 COPY run-gate-project/pyproject.toml /src/run-gate-project/pyproject.toml
 COPY libraries/patchseries/pyproject.toml /src/libraries/patchseries/pyproject.toml
+COPY tls-edge/pyproject.toml /src/tls-edge/pyproject.toml
 # ZERO-RELEASE INPUT: empty (a .gitkeep) unless the operator dropped a locally
 # built cli_extended-*.whl here for CLI_EXTENDED_RESOLVE=local (see below).
 COPY tester-unified/local-wheel/ /tmp/cli-extended-local/
@@ -365,7 +375,7 @@ RUN rm -rf /tmp/internal-wheels \
       -w /tmp/internal-wheels /src/cmru
 RUN /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/internal-wheels/*.whl \
  && rm -rf /tmp/internal-build-venv /tmp/internal-wheels /tmp/internal-build-requirements.txt /tmp/cli-extended-release \
- && /opt/tester-venv/bin/python -c "import build, cmru, run_gate, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog, markdown_it, linkify_it; print('tester-unified closure OK')" \
+ && /opt/tester-venv/bin/python -c "import build, cmru, run_gate, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, tomlkit, textual, zstandard, mcp, paramiko, coverage, structlog, markdown_it, linkify_it; print('tester-unified closure OK')" \
  && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, scipy, numpy, ruptures; print('cgprofile report tier OK')"
 
 # Build-time assertion (BG-05): `worktree` and cmru resolve from THIS image's

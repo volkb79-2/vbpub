@@ -14,6 +14,10 @@ for why these tools live in the shared gate image and the
 [consumer guide](docs/CONSUMERS.md#running-an-augeas-consumer-gate) for the
 registered lane invocation.
 
+The image includes Debian trixie's `xorriso` package for debian-rollback's
+registered offline lane, which builds NoCloud seed ISOs and extracts their
+bootloader markers. The lane fails if the real ISO packing tool is missing.
+
 The image is built FROM `tester-base` (the minimal gate base: `python:3.14-trixie` +
 docker client + minisign + shellcheck; see `tester-base/README.md`), through
 `ARG TESTER_UNIFIED_BASE_IMAGE` (default `tester-base:local` until tester-base has a CMRU

@@ -431,22 +431,22 @@ def test_git_scope_finds_a_real_repository_from_a_subdirectory(tmp_path):
 
 def test_git_scope_reports_other_git_failures_and_a_missing_git_binary(monkeypatch, tmp_path):
     repo = _git_init(tmp_path / "repo")
-    real_run = subprocess.run
+    real_run = config.run_process
 
     def failing(argv, **kwargs):
         return SimpleNamespace(returncode=128, stderr="fatal: detected dubious ownership\n")
 
-    monkeypatch.setattr(config.subprocess, "run", failing)
+    monkeypatch.setattr(config, "run_process", failing)
     with pytest.raises(ValueError, match="dubious ownership"):
         config._git_scope(repo)
 
     def missing(argv, **kwargs):
         raise FileNotFoundError("git")
 
-    monkeypatch.setattr(config.subprocess, "run", missing)
+    monkeypatch.setattr(config, "run_process", missing)
     with pytest.raises(ValueError, match="could not resolve Git context"):
         config._git_scope(repo)
-    monkeypatch.setattr(config.subprocess, "run", real_run)
+    monkeypatch.setattr(config, "run_process", real_run)
 
 
 def test_git_scope_without_a_git_binary_is_empty_outside_a_repository(monkeypatch, tmp_path):
@@ -456,7 +456,7 @@ def test_git_scope_without_a_git_binary_is_empty_outside_a_repository(monkeypatc
     def missing(argv, **kwargs):
         raise FileNotFoundError("git")
 
-    monkeypatch.setattr(config.subprocess, "run", missing)
+    monkeypatch.setattr(config, "run_process", missing)
     assert config._git_scope(plain) == {}
 
 

@@ -6,7 +6,7 @@
 # (when none exists) so zsh-newuser-install does not take over the terminal.
 
 # Same env/aliases/cgroup-banner profile that bash gets — zsh otherwise never
-# picks up shell.env / ai.env / aliases.sh.
+# picks up shell.env / shell-start.d files / aliases.sh.
 if [ -r /usr/local/share/mdt-cockpit/profile.sh ]; then
     . /usr/local/share/mdt-cockpit/profile.sh
 fi

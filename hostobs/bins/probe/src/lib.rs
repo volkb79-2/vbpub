@@ -9,7 +9,9 @@
 //! (the JSON line reader). Package P5b-1b adds [`backend`] (the injected identity and status
 //! source), [`conn`] (the sans-IO connection state machine) and [`server`] (the `Server` that
 //! owns the one send hub, the connections and the per-level counters); the drivers arrive in
-//! later packages.
+//! later packages. P5b-2a adds [`selection`], the checked canonical stream key. P5b-2b adds
+//! [`tick`] (backend tick validation and encoding) and [`registry`] (the shared selection
+//! streams).
 
 #![warn(missing_docs)]
 
@@ -21,7 +23,10 @@ pub mod conn;
 pub mod encode;
 pub mod limits;
 pub mod lines;
+pub mod registry;
+pub mod selection;
 pub mod server;
+pub mod tick;
 pub mod verbs;
 
 /// The package name, `hostobs-probe` (the M0 scaffold identity).
