@@ -705,6 +705,12 @@ The same work made the short-window `procio` tests load-independent (a child mus
 own start-up: `START_LIMIT`). Meta-test: `tests/test_no_leftover_children.py`. After: the wrapper
 reports `leaked=0` for the whole suite and for `test_procio.py`.
 
+**Upstreamed 2026-11-24 (P-core-04b):** `estate_test_policy` TP-12 now owns the
+leftover-child guard. cli-extended removed its local subreaper, scanner,
+pidfd cleanup and `allow_children` marker; its remaining subprocess oracle
+tests the source-loaded plugin's behaviour, and the procio orphan fixture
+uses a source-backed compatibility shape rather than cli-extended guard logic.
+
 **Provenance:** `ciu/docs/DESIGN-NOTE-2026-11-CIU-215-CIU-220.md`, Decision 2.
 
 ## CLI-EXT-35 — shared line-stream engine with per-line severity rendering
@@ -938,3 +944,12 @@ Add a per-run scratch helper whose directory the parent removes in `finally`,
 plus `prune(root, live_ids, older_than)`. It waits for a consumer (T1 agctl).
 
 Source: `.controller-state/design-review-2026-11-24/cmru-cli-extended.md` SYNTHESIS T3
+
+## CLI-EXT-47 — timed `procio` oracles need non-duration substitutes
+
+**Status:** OPEN. **Type:** Test debt. **Area:** Process supervision tests.
+
+Six intentionally timed tests carry `estate_allow` markers for
+`short-timeout` or `wall-time-assert`. Replace elapsed bounds and short real
+timeouts with operation-count, event or injected-clock oracles where that
+preserves the behavioural contract, then remove the markers for this id.

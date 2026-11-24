@@ -15,6 +15,7 @@ artifacts = ["coverage.json"]
 
 [lanes.r0-r1.resources]
 memory = "512m"
+pids = 2048
 
 # R2 (whole-source mutation, 1561 candidates; measured median 10.9 s, mean 15 s
 # per candidate) as a NATIVE Assay lane (CLI-EXT-41). A `kind = "command"` lane
@@ -71,6 +72,7 @@ budget = "10m"
 
 [lanes.r3.resources]
 memory = "512m"
+pids = 2048
 
 [lanes.gate]
 kind = "command"
@@ -81,3 +83,7 @@ argv = [
 ]
 clean_tree = false
 budget = "760m"
+
+[lanes.gate.resources]
+memory = "512m"
+pids = 2048
