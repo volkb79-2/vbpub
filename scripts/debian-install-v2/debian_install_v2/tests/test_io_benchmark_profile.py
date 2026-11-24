@@ -271,7 +271,7 @@ def test_the_runner_main_refuses_a_state_dir_recorded_for_another_rung(tmp_path)
     assert not output.exists()
 
 
-def test_the_runner_falls_back_to_iobench_for_the_rung_vocabulary(tmp_path):
+def test_the_runner_refuses_a_rung_iobench_cannot_plan(tmp_path):
     """The rung vocabulary is iobench's: a rung it cannot plan is refused by name."""
     root = stub_install_root(tmp_path, budgets={"quick": 720, "standard": 3600})
     state_dir = tmp_path / "state" / "iobench" / "thorough"

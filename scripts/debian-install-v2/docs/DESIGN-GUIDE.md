@@ -344,7 +344,8 @@ runner records the rung in `run.profile` and refuses to reuse a directory
 whose record names another rung (`state_dir_profile_mismatch`), so a quick
 run can never overwrite a full standard measurement — and vice versa — just
 because both were asked for by an install that shares one `state_dir`. (iobench's
-own guard is narrower: it protects only a `veryquick` run's directory.)
+own guard is narrower: only a `veryquick` run checks the directory it is about
+to overwrite, and it refuses unless that record is already a `veryquick` one.)
 
 A rung may finish without producing every one of the six io.cost
 coefficients. That is not a failure and not a license to invent values: the

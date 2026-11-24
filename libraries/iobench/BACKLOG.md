@@ -2,7 +2,7 @@
 
 Items the IOB-03 P3 review wave and the later review waves deliberately did not do. Each names why it waits and what closes it.
 
-Entries IOB-BL-01..38 remain here. New entries continue in [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md), starting at IOB-BL-40.
+Entries IOB-BL-01..38 remain here. New entries continue in [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md), starting at IOB-BL-40; IOB-BL-54 is the last entry filed there. IOB-BL-55 is recorded at the end of this file because the 2026-11-24 docs-nits package was scoped to it; the numbering is one sequence across both files.
 
 * **IOB-BL-01 dry-run preflight report mode.** `--dry-run` is plan-only and says `preflight: not_run`. A report mode that runs the live-host preflight, the namespace check and the work-dir checks read-only and prints the refusal a real run would raise (exit 2) needs a SPEC change to IOB-PRF-01 and a regeneration of the reviewed CLI cases.
 * **IOB-BL-02 sequential-series time proof for the write BPS cap.** The write BPS cap is `unproven: short_observation` because its proof (the 4 KiB random observation) is a different series from the sequential 1 MiB figure it caps. Closing it needs a longer (>= 150 s) sequential 1 MiB observation run and its allotment.
@@ -50,7 +50,7 @@ Entries IOB-BL-01..38 remain here. New entries continue in [`KNOWN_ISSUES_TODO_B
 ## Added from the 2026-11-08 IB-VQ r1002 rerun, controller run and v1001 reinstall
 
 * **IOB-BL-28 raw-device mode requires fio `exclusive_open`, which fio 3.39 (Debian 13) does not have, although the docs say fio >= 3.30. FIXED 2026-11-08 (`885f80b40`, iobench-bl-20261108); CLAIM WRITER 2026-11-24 (WP-10 P1):** On the reinstalled v1001 `iobench-install-runner --target /dev/vda5 ...` exited 1 in under a second with `Refusal: fio_option_unsupported: the installed fio does not document the option 'exclusive_open'` (`fio --cmdhelp=exclusive_open`: "No such command"; a job with `--exclusive_open=1`: "unrecognized option"). The fio floor was corrected. `--allow_mounted_write=0` is retained for planned argv parity, but under `/dev/fd/N` the held claim is the mounted-device guard. The boundary was temporarily closed by refusal while no writer could retain one exclusive descriptor. **Current resolution (2026-11-24, IOB-TGT-12):** `--allow-raw-write` plus a PARTUUID-marked dedicated partition now uses one `O_RDWR|O_EXCL|O_CLOEXEC` run claim from S0 until all raw children are reaped. Marker initialization has its own short-lived claim. Fio through the inherited `/dev/fd/N` and chunked `BLKDISCARD` use the run claim; `EBUSY`/`EAGAIN` remain `device_in_use`. Without the flag, the word-for-word `raw_device_write_unsupported` refusal remains. Whole disks, dm/md/loop, mounted/root/holder/swap targets, missing PARTUUID, serial-only markers and changed size/devno/PARTUUID are refused for every device verb, including attempts to read an existing marker. Fake-boundary regressions are in `tests/test_raw_claim.py`; the 2026-11-24 r1002 probe verified the claim and real fio writes through the inherited descriptor. Destructive raw acceptance, mount/swapon-under-claim, discard and cleanup remain P4, and installer wiring is a later package.
-  * **Gate scope DONE 2026-11-24 (review backlog item 1, amendment).** `host.py` is no longer omitted by `.coveragerc` and is listed in `assay.toml` mutation targets. Its syscall/subprocess boundaries are mocked in unit tests; only genuinely kernel/device-observable lines carry a narrow `no cover` pragma, and expected real-device-only R2 survivors are named in the P1 report.
+  * **Gate scope DONE 2026-11-24 (review backlog item 1, amendment).** `host.py` is no longer omitted by `.coveragerc` and is listed in `assay.toml` mutation targets. Its syscall/subprocess boundaries are mocked in unit tests, so the 100 % branch floor is met without exclusions: `src/iobench/` carries no `no cover` pragma at all (`grep -rn 'pragma' libraries/iobench/src` is empty; `.coveragerc` omits only the `__main__.py` entry shim and `assay.toml` sets `allow_excluded = false`). Expected real-device-only R2 survivors are named in the P1 report, not excluded from coverage.
   * **Closed in WP-10 P1 fix round 1.** The run claim is now separate from marker initialization; whole-disk/dm/md/loop/serial-only markers are refused by `load_target` for every verb; the supervisor reports adopted children through a reserved sentinel on normal and kill paths; release refuses under an active registered raw handle; fio job JSON `error != 0` is `IOB-PLA-20`; refusal/exception cleanup problems attach without replacing the original exception, and verification failure keeps exit 9.
   * **P4 acceptance (review backlog item 2).** While the claim is held, run `blkid -p -o export DEVICE` and `wipefs -n -p DEVICE` and record that neither util-linux probe opens with an incompatible exclusive mode. These probes run before every writing stage, so a distribution-specific `O_EXCL` would otherwise turn every raw stage into a named failure. Also confirm that fio with `--filename=/dev/fd/N` does not invoke its mounted-source check; only the absence of a second claim can make that check observable.
   * **R2 NIT-4 (open).** Include the interrupted child's status in the supervisor unreaped sentinel so an rc 254 sentinel does not discard fio's own signal/exit status.
@@ -359,3 +359,53 @@ are identity/sanity evidence versus measured performance and proven tuning value
 by iogovmon's weekly quick re-bench and bounded adjustment. Until that evidence exists, every install that
 cannot pass `--allow-raw-write` or establish the marker, target identity and held claim records the stable
 named refusal and never promotes fallback output to raw-target proof.
+
+## IOB-BL-55 — the iobench `r2` lane cannot finish a whole-target campaign (sizing package, 2026-11-24)
+
+**Status:** OPEN (filed 2026-11-24 from the WP-10 P1 merge ruling; no lane change made yet). Priority: R2
+evidence for the M1 raw claim writer, which has no mutation evidence until this runs.
+
+**Finding.** The only complete `r2` measurement so far is the remote gate
+`rgw-gate-20261124T164429-v1001` at head `74e86a3f5` (run-gate 25.7.0, image
+`sha256:6ca3cb7d01fd`, budget 400 min). It ended `FAIL` exit 4 (`BUDGET_EXCEEDED`): 75 of 1891
+candidates judged in 6 h — 0.2 candidates/min, about 5 min each, ETA about 8450 min — and wrote no
+verdict JSON, so the survivor counts for those 75 are unknown. Three facts make the campaign
+unfinishable as declared: `[lanes.iobench.judge] mode = "whole_target"` (`assay.toml:28`) makes the
+candidate set the whole `src/iobench` subtree; the lane memory cap (`run-gate.toml:34`,
+`memory = "1536m"`) — not `jobs_max = 4` (`assay.toml:69`) — is what decides the job count, so
+`jobs = "auto"` (`run-gate.toml:26`) ran one job with a 1.2 GiB memory budget (75 % of the cap);
+and `budget_per_candidate = "auto"` (`assay.toml:72`) produced the 5 min per candidate above.
+`[lanes.r2] budget = "365m"` (`run-gate.toml:28`) is a fifth of the measured ETA.
+
+**Package (six items, shortest first).** Each is a lane/config or host change, not a code change
+under test.
+
+1. **Diff-scope the campaign.** Set `[lanes.iobench.judge] base_source = "request"` and pass
+   `--request-base "{base}"` in the r2 lane argv, as `scripts/debian-install-v2` already does
+   (commits `c80d6b03a`, `2ea1912ca`). iobench's gate lane is a command lane without `{base}`, so the
+   r2 lane must carry its own base; remote hosts have no `origin/main` and the controller passes
+   `--base` explicitly. This is what turns 1891 candidates into the changed-file set.
+2. **Resume hardening (verify before relying on chunking).** The verdict is bound to the host
+   checkout (`judge_sha256` differs per checkout); assay B577 and run-gate RG-314 cover the absolute
+   `{worktree}` `PYTHONPATH` case. Check the iobench r2 argv carries no absolute worktree env, and
+   confirm a seeded resume reports `resumed_total > 0`.
+3. **Memory and jobs (needs a host capability).** Raise the lane memory cap, or measure RSS per
+   candidate, so `auto` picks `jobs >= 3`. This needs a cheap-clone (btrfs CoW) workspace on the
+   host; without it the candidate trees defeat the cap.
+4. **Sharding across both test hosts.** Split the candidate set by module over v1001 and r1002 as
+   one assay shard/carry-over campaign, one lane each, instead of one serial lane.
+5. **Per-candidate budget.** Size `budget_per_candidate` from the measurement above instead of
+   `"auto"`; state the value next to the number the measurement supports.
+6. **Then run the owed campaign and file survivors.** Run the sized campaign on P1's `host.py` /
+   M1 core code and file the survivors for a fix-forward package. Until that report exists, the M1
+   raw claim writer has no mutation evidence and the P1 report's "no R2 yet" line stands.
+
+**Acceptance idea.** The assembled lane finishes one complete campaign on a test host with
+`MUTATION_EXIT=0` inside the declared budget and writes a verdict JSON with candidate, killed,
+survived and timed-out counts; a re-dispatched chunk shows `resumed_total > 0`; and the survivor
+inventory is filed with block ids. A campaign that still stops at `BUDGET_EXCEEDED` with no verdict
+JSON does not satisfy it.
+
+**Close when.** Items 1-5 land as a reviewed lane/config change with the measured numbers recorded
+beside each value, item 6's campaign has run on P1's code, and survivors are filed. Until then, any
+release note that mentions R2 for iobench says "R2 pending (IOB-BL-55)".

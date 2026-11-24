@@ -488,7 +488,7 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Operator decision 2026-11-10 (design rev 4.1, binding).**
 
-1. `run_io_benchmark` defaults to true. Every install selects one profile from `veryquick` (about 3 min), `quick` (about 7.5 min, the DEFAULT), or `standard` (about 30-35 min), with outer timeouts of 5, 12 and 45 min. All rungs use the same nested cell family and measure the same quantities at increasing length. **Superseded in WP-10 P2 (2026-11-24):** the key is `io_benchmark_profile` and the timeout table is `config.IO_BENCHMARK_OUTER_TIMEOUT_S` = veryquick 270 s, quick 780 s, standard 3660 s (each rung's iobench budget — 210, 720, 3600 s — plus 60 s). The old 45 min bound sat *below* standard's own 3600 s budget and would have killed a run iobench considers on time.
+1. `run_io_benchmark` defaults to true. Every install selects one profile from `veryquick` (about 3 min), `quick` (about 7.5 min, the DEFAULT), or `standard` (about 30-35 min), with outer timeouts of 5, 12 and 45 min — the sizes the 2026-11-10 design then stated; all four figures are superseded by WP-10 P2 (below), which measures about 11 and 59 min for quick and standard. All rungs use the same nested cell family and measure the same quantities at increasing length. **Superseded in WP-10 P2 (2026-11-24):** the key is `io_benchmark_profile` and the timeout table is `config.IO_BENCHMARK_OUTER_TIMEOUT_S` = veryquick 270 s, quick 780 s, standard 3660 s (each rung's iobench budget — 210, 720, 3600 s — plus 60 s). The old 45 min bound sat *below* standard's own 3600 s budget and would have killed a run iobench considers on time.
 2. After WP-10, the benchmark target is the reserved `iobench-raw` partition, with the writer holding the `O_EXCL` claim for the complete raw stages. <host> sets `iobench_raw_gb: 32`.
 3. Before WP-10, an ext4-root file may supply only the derived numbers whose ext4 verdict in the bounded study table is `✓` live-with or `⚠` iogovmon-must-correct. A btrfs file is never used for the model. If no permitted target exists for a number, keep the stable named `io.cost_unconfigured_no_safe_benchmark_target` refusal; never substitute cache-inflated output, generic earlier output, or a guessed model.
 4. During every run, `io.cost` is unconfigured and every cgroup IO control is off, with the state asserted by WP-3. The interim io.cost model is coarse and QoS stays off.
@@ -531,7 +531,7 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Do.** Accept `>=` when a `95-mdt-memory-min.conf` is in `DropInPaths`. New floor rows go to DI2's table first; check them in `tools/hotset.py`.
 
-## OPEN (DIV2-BL-16, 2026-11-24): the `run-gate.toml` `[lanes.r2]` budget (30m) is unsized
+## SUPERSEDED (DIV2-BL-16, 2026-11-24): the `run-gate.toml` `[lanes.r2]` budget (30m) is unsized
 
 **Source.** WP-10 P2, contract item 7, and the IC-M1a rollback merge note: the first remote `r2` (`debian-install-v2-20261124_121348-icm1a-btrfs-root`, head `2ea1912ca`, host r1002) exceeded its budget while in mutation.
 
@@ -539,12 +539,46 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Do.** Run one full `r2` campaign on a test host, record its wall time and mutant count, and set `[lanes.r2] budget` from that measurement. Do not raise it to an arbitrary larger value in the same change: the point is a measured bound, not a guess. `run-gate.toml` is not changed by WP-10 P2.
 
-**Close when.** `[lanes.r2]`'s budget is a measured value, a complete r2 campaign finishes inside it on a test host (`MUTATION_EXIT=0`), and the campaign's wall time and mutant count are recorded next to the number.
+**Original close when.** `[lanes.r2]`'s budget is a measured value, a complete r2 campaign finishes inside it on a test host (`MUTATION_EXIT=0`), and the campaign's wall time and mutant count are recorded next to the number.
 
 **Superseded (2026-11-24).** Not run as this item's own campaign: the controller's separate v2 `r2` fix-forward package owns the measurement, the budget change and this item's closure.
 
-## OPEN (WP-10 P2 r1 review, 2026-11-24): three out-of-contract findings, filed not fixed
+## OPEN (DIV2-BL-17, 2026-11-24): the `iocost` step reads an `io-benchmark.json` it does not bind to this run
 
-- trace: `installer.py:2043,2095,2145` read `io-benchmark.json` without binding it to this install's `io_benchmark` step or to `record['profile'] == config.io_benchmark_profile`, so a failed runner beside an older complete file still configures io.cost (docs `DESIGN-GUIDE.md:350-352`, `CONSUMERS.md:226-228` claim otherwise); bind the record to the run that produced it and record the named refusal.
-- docs: `README.md:879` and `IO-BENCHMARK-DESIGN.md:72-73` say the benchmark "is not used to write an io.cost model" while `README.md:646-655` and the `iocost` step do write it from the same result; state one outcome in both places.
-- bound: `installer.py:3716` (`_packages(["fio"], "io_benchmark")`) runs before the runner and outside the iobench outer timeout, so "quick about 11 min" is a floor, not a ceiling; give the package step its own named bound and state the measured total.
+**Source.** WP-10 P2 r1 review, out-of-contract finding 1 (filed, not fixed on the gated head `cdb47c934`).
+
+**Finding.** `installer.py:2043,2095,2145` read `io-benchmark.json` without binding it to this install's `io_benchmark` step or to `record['profile'] == config.io_benchmark_profile`, so a failed runner beside an older complete file still configures io.cost. The docs say the file is safe because it names its rung (`README.md:870-871`, `docs/CONSUMERS.md:231-232`; `docs/DESIGN-GUIDE.md:350-355` says a partial model is never carried over), but the installer never compares that name to the configured rung.
+
+**Do.** Bind the record to the run that produced it (step result plus `profile`) and record the named refusal when the file does not match.
+
+**Close when.** A failed runner with an older complete file next to it leaves io.cost unconfigured and records the named refusal, with a focused test that goes red if the binding is removed.
+
+## OPEN (DIV2-BL-18, 2026-11-24): README and `IO-BENCHMARK-DESIGN.md` still say the benchmark does not write io.cost
+
+**Source.** WP-10 P2 r1 review, out-of-contract finding 2 (filed, not fixed on the gated head `cdb47c934`).
+
+**Finding.** `README.md:880` and `IO-BENCHMARK-DESIGN.md:72-73` say the benchmark "is not used to write an io.cost model", while `README.md:646-658` (the `io.cost` section) and the `iocost` step (`installer.py:2076-2114`) do write it from the same result. Two sections of one README state opposite outcomes.
+
+**Do.** State one outcome in both places: the step is advisory, and when the result is complete and `iocost_enabled` is true the install writes the boot unit that applies it.
+
+**Close when.** README and `IO-BENCHMARK-DESIGN.md` agree on the outcome and name the same conditions.
+
+## OPEN (DIV2-BL-19, 2026-11-24): the `fio` package step sits outside the iobench outer timeout
+
+**Source.** WP-10 P2 r1 review, out-of-contract finding 3 (filed, not fixed on the gated head `cdb47c934`).
+
+**Finding.** `installer.py:3716` (`_packages(["fio"], "io_benchmark")`) runs before the runner and outside the iobench outer timeout, so the quoted "quick about 11 min" (`README.md:853`) is a floor, not a ceiling, whenever `fio` has to be installed.
+
+**Do.** Give the package step its own named bound and state the measured total (rung plus package install) in README and the step detail.
+
+**Close when.** The package step carries a named bound and the documented wall time includes it.
+
+## OPEN (DIV2-BL-20, 2026-11-24): the `iobench-install-runner` allow-list does not anchor the state-dir root
+
+**Source.** WP-10 P2 r2 review nit N1 (filed, not fixed on the gated head `cdb47c934`).
+
+**Finding.** The allow-list in `debian_install_v2/actions.py:204-212` requires `Path(argv[10]).name == argv[2]` and `argv[12] == str(Path(argv[10]).parent.parent / "io-benchmark.json")`. That pins the output filename and the rung directory name, but any absolute directory works as the root: it does not tie either path to `config.state_dir`, so a caller bug can still redirect the runner, which runs as root, to an `io-benchmark.json` outside the install's state dir. `HostActions` carries no config, which is why it is unanchored today.
+
+**Do.** Either pass the resolved `config.state_dir` to the allow-list and compare against it, or move that check into the installer-side caller where the config is known. Do not widen the current check as an alternative.
+
+**Close when.** A state-dir root other than `config.state_dir` is refused with a named error, and the legitimate installer argv (both rung-parametrized cases) is still accepted.
