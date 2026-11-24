@@ -230,8 +230,10 @@ exist; and fewer than the allowed number of guests are running.
 The host cgroup inspector mounts the host cgroup v2 filesystem and system D-Bus
 socket read-only. It can keep private PID and cgroup namespaces: vm-lab resolves
 the Docker container's systemd scope and checks that it is loaded, active, and
-has tasks before reading the scope's resource limits. It does not need a host
-PID namespace or writable access to host cgroups.
+has tasks before reading the scope's resource limits. That path does not need a
+host PID namespace or writable access to host cgroups. The TrueNAS live gate
+still resolves guest placement with `host_pid_cgroup`, which reads
+`/hostproc/<pid>/cgroup` and so still needs `/hostproc` from the inspector.
 
 All profiles share one start lock (in the repository's common Git directory, or
 in `--lock-dir` / `VM_LAB_ADMISSION_LOCK_DIR` from an installed wheel)

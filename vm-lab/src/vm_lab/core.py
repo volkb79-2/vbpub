@@ -282,6 +282,11 @@ QMP_SOCKET_PATH_MAX_BYTES = 107
 MAX_MEMORY_PSI_SOME_AVG10 = 10.0
 MAX_MEMORY_PSI_FULL_AVG10 = 1.0
 MAX_EXTRA_DISKS = 8
+INSPECTOR_CGROUP_MOUNT = "/sys/fs/cgroup"
+INSPECTOR_DBUS_MOUNT = "/run/dbus/system_bus_socket"
+SYSTEMD_UNREADABLE_UINT64 = 2**64 - 1  # systemd reports an unreadable counter as UINT64_MAX.
+# busctl get-property output per D-Bus type tag: `s "text"` and `t 123`.
+BUSCTL_VALUE_PATTERNS = {"s": r's\s+"([^"]*)"', "t": r"t\s+([0-9]+)"}
 
 
 @contextlib.contextmanager
@@ -701,20 +706,28 @@ def resolve_docker_path(path: Path, mounts: list[dict[str, Any]], *, writable: b
     return mount_source_for_path(resolved, mounts, require_writable=writable)
 
 
+def _has_mount(mounts: list[dict[str, Any]], source: str) -> bool:
+    return any(mount.get("Source") == source and mount.get("Destination") == source for mount in mounts)
+
+
 def _read_only_mount_problem(mounts: list[dict[str, Any]], source: str, description: str) -> str | None:
-    """Return why a required host mount is absent or not read-only, or None when it is valid."""
-    matching = [
-        mount
-        for mount in mounts
-        if mount.get("Source") == source and mount.get("Destination") == source
-    ]
-    if not matching:
+    """Return why a required host mount is absent or not read-only, or None when it is valid.
+
+    Fails closed: every mount at the required path or beneath it must be read-only.
+    """
+    if not _has_mount(mounts, source):
         return f"{description} mount {source} is missing"
-    if any(mount.get("RW") is False for mount in matching):
-        return None
-    if any(mount.get("RW") is True for mount in matching):
-        return f"{description} mount {source} is read-write; it must be read-only"
-    return f"{description} mount {source} has no readable read-only state"
+    for mount in mounts:
+        destination = mount.get("Destination")
+        if not isinstance(destination, str):
+            continue
+        if destination != source and not destination.startswith(source.rstrip("/") + "/"):
+            continue
+        if mount.get("RW") is True:
+            return f"{description} mount {destination} is read-write; it must be read-only"
+        if mount.get("RW") is not False:
+            return f"{description} mount {destination} has no readable read-only state"
+    return None
 
 
 def find_cgroup_inspector() -> str:
@@ -727,18 +740,14 @@ def find_cgroup_inspector() -> str:
         problems = [
             problem
             for problem in (
-                _read_only_mount_problem(mounts, "/sys/fs/cgroup", "host cgroup"),
-                _read_only_mount_problem(
-                    mounts,
-                    "/run/dbus/system_bus_socket",
-                    "system D-Bus",
-                ),
+                _read_only_mount_problem(mounts, INSPECTOR_CGROUP_MOUNT, "host cgroup"),
+                _read_only_mount_problem(mounts, INSPECTOR_DBUS_MOUNT, "system D-Bus"),
             )
             if problem is not None
         ]
         if not problems:
             matches.append(container_id)
-        else:
+        elif _has_mount(mounts, INSPECTOR_CGROUP_MOUNT) or _has_mount(mounts, INSPECTOR_DBUS_MOUNT):
             rejected.append(f"{container_id}: {'; '.join(problems)}")
     if len(matches) != 1:
         detail = f" Rejected candidates: {'; '.join(rejected)}." if rejected else ""
@@ -753,7 +762,8 @@ def inspector_exec(inspector: str, argv: list[str]) -> str:
     return docker_run(["docker", "exec", inspector, *argv]).stdout.strip()
 
 
-def busctl_value(inspector: str, path: str, interface: str, prop: str) -> str:
+def busctl_value(inspector: str, path: str, interface: str, prop: str, signature: str) -> str:
+    """Read one host systemd property whose D-Bus type must be `signature` (`s` string or `t` uint64)."""
     raw = inspector_exec(
         inspector,
         [
@@ -766,24 +776,27 @@ def busctl_value(inspector: str, path: str, interface: str, prop: str) -> str:
             prop,
         ],
     )
-    match = re.fullmatch(r'[st]\s+(?:"([^"]*)"|([0-9]+|true|false))', raw)
+    match = re.fullmatch(BUSCTL_VALUE_PATTERNS[signature], raw)
     if not match:
-        raise RunnerError(f"could not parse host systemd property {interface}.{prop}: {raw!r}")
-    return match.group(1) if match.group(1) is not None else match.group(2)
+        raise RunnerError(
+            f"could not parse host systemd property {interface}.{prop} as D-Bus type {signature!r}: {raw!r}"
+        )
+    return match.group(1)
 
 
 def systemd_slice_path(inspector: str, slice_name: str) -> str:
     validate_slice_name(slice_name)
-    return systemd_unit_control_group(inspector, slice_name, "org.freedesktop.systemd1.Slice")
+    object_path = systemd_loaded_unit_path(inspector, slice_name, "slice", "auto-created slices")
+    return systemd_control_group(inspector, object_path, slice_name, "org.freedesktop.systemd1.Slice")
 
 
-def systemd_unit_control_group(inspector: str, unit_name: str, interface: str) -> str:
-    """Resolve a loaded systemd unit to its host cgroup path through the host manager."""
+def systemd_loaded_unit_path(inspector: str, unit_name: str, kind: str, refusal: str) -> str:
+    """Return the object path of a systemd unit that the host manager reports as loaded."""
     object_path = systemd_unit_object_path(inspector, unit_name)
-    load_state = busctl_value(inspector, object_path, "org.freedesktop.systemd1.Unit", "LoadState")
+    load_state = busctl_value(inspector, object_path, "org.freedesktop.systemd1.Unit", "LoadState", "s")
     if load_state != "loaded":
-        raise RunnerError(f"systemd unit {unit_name} has LoadState={load_state!r}; refusing unresolved units")
-    return systemd_control_group(inspector, object_path, unit_name, interface)
+        raise RunnerError(f"systemd {kind} {unit_name} has LoadState={load_state!r}; refusing {refusal}")
+    return object_path
 
 
 def systemd_unit_object_path(inspector: str, unit_name: str) -> str:
@@ -810,7 +823,7 @@ def systemd_unit_object_path(inspector: str, unit_name: str) -> str:
 
 def systemd_control_group(inspector: str, object_path: str, unit_name: str, interface: str) -> str:
     """Read and validate a systemd unit's cgroup path."""
-    control_group = busctl_value(inspector, object_path, interface, "ControlGroup")
+    control_group = busctl_value(inspector, object_path, interface, "ControlGroup", "s")
     if not control_group.startswith("/") or ".." in PurePosixPath(control_group).parts:
         raise RunnerError(f"systemd returned an unsafe cgroup path for {unit_name}: {control_group!r}")
     return control_group
@@ -821,19 +834,20 @@ def systemd_scope_path(inspector: str, container_id: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{64}", container_id):
         raise RunnerError(f"Docker returned an invalid full container ID: {container_id!r}")
     unit_name = f"docker-{container_id}.scope"
-    object_path = systemd_unit_object_path(inspector, unit_name)
-    load_state = busctl_value(inspector, object_path, "org.freedesktop.systemd1.Unit", "LoadState")
-    if load_state != "loaded":
-        raise RunnerError(f"systemd unit {unit_name} has LoadState={load_state!r}; refusing unresolved units")
-    active_state = busctl_value(inspector, object_path, "org.freedesktop.systemd1.Unit", "ActiveState")
+    object_path = systemd_loaded_unit_path(inspector, unit_name, "unit", "unresolved units")
+    active_state = busctl_value(inspector, object_path, "org.freedesktop.systemd1.Unit", "ActiveState", "s")
     if active_state != "active":
         raise RunnerError(f"Docker systemd scope {unit_name} has ActiveState={active_state!r}")
-    tasks_raw = busctl_value(inspector, object_path, "org.freedesktop.systemd1.Scope", "TasksCurrent")
-    if re.fullmatch(r"[0-9]+", tasks_raw) is None:
+    tasks_raw = busctl_value(inspector, object_path, "org.freedesktop.systemd1.Scope", "TasksCurrent", "t")
+    tasks = int(tasks_raw)
+    if tasks == SYSTEMD_UNREADABLE_UINT64:
         raise RunnerError(f"Docker systemd scope {unit_name} has unreadable TasksCurrent={tasks_raw!r}")
-    if int(tasks_raw) < 1:
+    if tasks < 1:
         raise RunnerError(f"Docker systemd scope {unit_name} has no active tasks: TasksCurrent={tasks_raw!r}")
-    return systemd_control_group(inspector, object_path, unit_name, "org.freedesktop.systemd1.Scope")
+    control_group = systemd_control_group(inspector, object_path, unit_name, "org.freedesktop.systemd1.Scope")
+    if control_group.rsplit("/", 1)[-1] != unit_name:
+        raise RunnerError(f"systemd returned cgroup path {control_group!r} that does not end in {unit_name}")
+    return control_group
 
 
 def cgroup_file(inspector: str, control_group: str, name: str) -> str | None:
