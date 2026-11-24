@@ -283,95 +283,6 @@ def shell_block(source: str, start: str, end: str) -> str:
     return source[i:source.index(end, i)]
 
 
-def shell_function(source: str, name: str) -> str:
-    start = source.index(f"{name}() {{")
-    return source[start:source.index("\n}\n", start) + 3]
-
-
-class OvercommitPolicyTests(unittest.TestCase):
-    FUNCTION = shell_function(INSTALL_SH, "_mdt_apply_memory_policy")
-    PIN_MARK = shell_block(
-        INSTALL_SH,
-        "for _memory_policy_var in DEV_MEMORY_MAX",
-        "for _swap_var in DEV_SWAP_MAX",
-    )
-
-    def run_policy(self, role: str, *, pins: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-        values = {
-            "DEV_MEMORY_MAX": "7.5G",
-            "DEV_GATES_MEMORY_MAX": "5.5G",
-            "DEV_BACKGROUND_MEMORY_MAX": "5.5G",
-            "DEV_SWAP_MAX": str(32 * GIB),
-            "DEV_GATES_MEMORY_SWAP_MAX": str(24 * GIB),
-            "DEV_BACKGROUND_MEMORY_SWAP_MAX": str(24 * GIB),
-        }
-        pin_flags = {f"{key}_POLICY_PIN": "0" for key in values}
-        for key, value in (pins or {}).items():
-            values[key] = value
-            pin_flags[f"{key}_POLICY_PIN"] = "1"
-        assignments = "\n".join(f'{key}="{value}"' for key, value in {**values, **pin_flags}.items())
-        script = f'''set -euo pipefail
-{self.FUNCTION}
-{assignments}
-_mdt_apply_memory_policy overcommit "{role}" || exit $?
-printf 'MAX=%s GATES_MAX=%s BG_MAX=%s SWAP=%s GATES_SWAP=%s BG_SWAP=%s\\n' \
-  "$DEV_MEMORY_MAX" "$DEV_GATES_MEMORY_MAX" "$DEV_BACKGROUND_MEMORY_MAX" \
-  "$DEV_SWAP_MAX" "$DEV_GATES_MEMORY_SWAP_MAX" "$DEV_BACKGROUND_MEMORY_SWAP_MAX"
-'''
-        return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
-
-    def test_policy_sets_all_unlimited_maxima_and_names_each_change(self) -> None:
-        r = self.run_policy("dedicated-dev")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("MAX=infinity GATES_MAX=infinity BG_MAX=infinity SWAP=infinity GATES_SWAP=infinity BG_SWAP=infinity", r.stdout)
-        for label in (
-            "dev.slice MemoryMax", "dev-gates.slice MemoryMax", "dev-background.slice MemoryMax",
-            "dev.slice MemorySwapMax", "dev-gates.slice MemorySwapMax", "dev-background.slice MemorySwapMax",
-        ):
-            self.assertIn(f"MDT_MEMORY_POLICY=overcommit: {label}", r.stdout)
-            self.assertIn("-> infinity", r.stdout)
-        self.assertIn("system.slice MemoryMax <unset> -> infinity", r.stdout)
-
-    def test_policy_with_another_role_is_refused_before_changing_anything(self) -> None:
-        r = self.run_policy("shared-prod")
-        self.assertEqual(r.returncode, 2)
-        self.assertEqual(r.stdout, "")
-        self.assertIn("valid only with HOST_ROLE=dedicated-dev", r.stderr)
-        self.assertIn("no units were rendered", r.stderr)
-
-    def test_explicit_per_tier_pin_wins_and_the_log_says_so(self) -> None:
-        r = self.run_policy("dedicated-dev", pins={"DEV_GATES_MEMORY_MAX": "6G"})
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("MAX=infinity GATES_MAX=6G BG_MAX=infinity", r.stdout)
-        self.assertIn("dev-gates.slice MemoryMax=6G kept (explicit pin wins)", r.stdout)
-
-    def test_explicit_and_omitted_config_values_are_marked_as_pins_but_auto_is_not(self) -> None:
-        script = f'''set -euo pipefail
-DEV_MEMORY_MAX=6G
-DEV_SWAP_MAX=auto
-DEV_GATES_MEMORY_MAX=-
-{self.PIN_MARK}
-printf 'MAX=%s SWAP=%s GATES=%s\\n' \
-  "$DEV_MEMORY_MAX_POLICY_PIN" "$DEV_SWAP_MAX_POLICY_PIN" "$DEV_GATES_MEMORY_MAX_POLICY_PIN"
-'''
-        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), "MAX=1 SWAP=0 GATES=1")
-
-    def test_the_strict_validator_refuses_policy_with_any_other_role(self) -> None:
-        wiz = _load("mdt_wizard_overcommit_t", ROOT / "mdt-host-setup-wizard.py")
-        values = wiz.parse_env_file(EXAMPLE.read_text(encoding="utf-8"))
-        values["HOST_ROLE"] = "shared-prod"
-        values["MDT_MEMORY_POLICY"] = "overcommit"
-        with self.assertRaisesRegex(wiz.TemplateError, "requires HOST_ROLE=dedicated-dev.*no units were rendered"):
-            wiz.validate_host_setup_values(
-                values,
-                values,
-                {"MemTotal": 8 * 1024 * 1024, "SwapTotal": 16 * 1024 * 1024},
-                config_label="fixture", example_label="example", meminfo_label="meminfo",
-            )
-
-
 class InstallBlockTests(unittest.TestCase):
     """The two install.sh blocks, extracted and run with fakes."""
 
@@ -493,7 +404,7 @@ echo "CASCADE=$DEV_SWAP_CASCADE_PCT"
         env = "HOST_ROLE=dedicated-dev\nDEV_MEMORY_MAX=7.5G\nDEV_INTERACTIVE_MEMORY_MAX=4.5G\n"
         self.assertNotEqual(self.render_all(env, with_block=False), self.render_all(env, with_block=True))
 
-    def run_dropins(self, dedicated: bool, units: str = "docker.service containerd.service ghost.service", policy: str = "") -> tuple[subprocess.CompletedProcess, Path]:
+    def run_dropins(self, dedicated: bool, units: str = "docker.service containerd.service ghost.service") -> tuple[subprocess.CompletedProcess, Path]:
         sysdir = self.tmp / "systemd"
         sysdir.mkdir(exist_ok=True)
         script = f'''set -euo pipefail
@@ -502,7 +413,6 @@ MDT_SYSTEMD_DIR="{sysdir}"
 MDT_DEDICATED_MEM={1 if dedicated else 0}
 MDT_DEDICATED_KEEP=536870912
 MDT_DEDICATED_PROTECTED_UNITS="{units}"
-MDT_MEMORY_POLICY="{policy}"
 {self.DROPINS}
 echo "LIVE=$MDT_DED_LIVE_UNITS"
 '''
@@ -518,13 +428,6 @@ echo "LIVE=$MDT_DED_LIVE_UNITS"
         self.assertIn("LIVE= docker.service", r.stdout)
         for f in (sysdir / "docker.service.d/50-mdt-dedicated-dev.conf", sysdir / "system.slice.d/50-mdt-dedicated-dev.conf"):
             self.assertEqual(stat.S_IMODE(f.stat().st_mode), 0o644, f)
-
-    def test_overcommit_adds_unlimited_maxima_to_the_dedicated_system_dropin(self) -> None:
-        r, sysdir = self.run_dropins(True, policy="overcommit")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        lines = (sysdir / "system.slice.d/50-mdt-dedicated-dev.conf").read_text().splitlines()
-        self.assertEqual(lines[-4:], ["[Slice]", "MemoryLow=536870912", "MemoryMax=infinity", "MemorySwapMax=infinity"])
-        self.assertIn("MemoryMax=infinity MemorySwapMax=infinity", r.stdout)
 
     def test_a_stale_ssh_dropin_from_an_earlier_version_is_removed_and_nothing_else(self) -> None:
         sysdir = self.tmp / "systemd"
@@ -624,14 +527,23 @@ class CheckShTests(unittest.TestCase):
 
 
 class TemplateAndDocsTests(unittest.TestCase):
-    def test_overcommit_policy_is_documented_at_all_three_operator_surfaces(self) -> None:
-        example = EXAMPLE.read_text()
-        self.assertEqual(len(re.findall(r"(?m)^MDT_MEMORY_POLICY=", example)), 1)
-        self.assertRegex(example, r"(?m)^# Allowed MDT_MEMORY_POLICY: .*overcommit")
-        self.assertRegex((ROOT / "README.md").read_text(), r"(?m)^\| `MDT_MEMORY_POLICY` \|")
+    def test_dev_tiers_document_no_systemd_oomd_kill(self) -> None:
+        readme = (ROOT / "README.md").read_text()
         notes = (ROOT / "CGROUP-NOTES.md").read_text()
-        for phrase in ("Operator directive 2026-11-24", "full avg10 >= 3", "explicit pins"):
-            self.assertIn(phrase, notes)
+        for text, name in ((readme, "README"), (notes, "CGROUP-NOTES")):
+            text = " ".join(text.lower().split())
+            for phrase in (
+                "finite `memorymax`",
+                "large `memoryswapmax`",
+                "overcommit design",
+                "reclaims",
+                "operator directive 2026-11-24",
+                "full avg10 >= 3",
+                "fleetd",
+            ):
+                self.assertIn(phrase, text, f"{name} does not document {phrase!r}")
+        for text, name in ((readme, "README"), (notes, "CGROUP-NOTES"), (EXAMPLE.read_text(), "env example")):
+            self.assertNotIn("MDT_MEMORY_POLICY", text, name)
 
     def test_the_dedicated_role_blanks_tier_ceilings_that_shared_prod_still_renders(self) -> None:
         # behavioural: the pre-flight block empties the tier variables on dedicated-dev only (InstallBlockTests), while the

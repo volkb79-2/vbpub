@@ -73,7 +73,6 @@ class EnvExampleAllowedValues(unittest.TestCase):
             ("DEVCONTAINER_MISSING_BIND_SOURCE_POLICY", ("create-by-spelling", "fail")),
             ("BUILDX_ACCIDENTAL_CONTAINER_POLICY", ("report-only", "terminate")),
             ("WATCHER_MEMORY_POLICY", ("enabled", "disabled")),
-            ("MDT_MEMORY_POLICY", ("overcommit",)),
             ("CGROUP2_FLAGS", ("fix", "warn")),
             ("DEV_ZSWAP_WRITEBACK", ("yes", "no")),
         ):

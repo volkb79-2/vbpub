@@ -614,12 +614,6 @@ def validate_watcher_memory_policy(value: str) -> str | None:
     return None
 
 
-def validate_memory_policy(value: str) -> str | None:
-    if value in ("", "overcommit"):
-        return None
-    return "choose empty (role default) or exactly 'overcommit'"
-
-
 def confirm_guard_termination(policy: str) -> str:
     """Require an explicit yes before the host guard may remove workers."""
     if policy != "terminate":
@@ -878,7 +872,6 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_TIER_EXCLUDED_CPU_CORES": mdt_capacity.validate_cores,
         "MDT_PROTECTED_UNITS": mdt_capacity.validate_units,
         "MDT_PSI_GUARD": validate_psi_guard_mode,
-        "MDT_MEMORY_POLICY": validate_memory_policy,
         "DEV_CPU_QUOTA": validate_cpu_quota,
         "DEV_SWAP_CASCADE_PCT": validate_pct_1_100,
         "DEV_SWAP_MAX": validate_size_or_auto,
@@ -959,9 +952,6 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_BUILDKITD_IO_WEIGHT",
     ):
         validators[key] = validate_weight
-    for key in ("DEV_BACKGROUND_OOM_PRESSURE_LIMIT", "DEV_GATES_OOM_PRESSURE_LIMIT"):
-        validators[key] = validate_systemd_pct_1_100
-
     for key in (
         "DEV_MEMORY_HIGH",
         "DEV_MEMORY_MAX",
@@ -1050,11 +1040,6 @@ def validate_host_setup_values(
             field_errors.append(f"{key}: {error}")
     if field_errors:
         raise TemplateError("invalid host-setup.env values: " + "; ".join(field_errors))
-    if values.get("MDT_MEMORY_POLICY") == "overcommit" and values.get("HOST_ROLE") != "dedicated-dev":
-        raise TemplateError(
-            "MDT_MEMORY_POLICY=overcommit requires HOST_ROLE=dedicated-dev "
-            f"(found {values.get('HOST_ROLE') or 'empty'}); no units were rendered"
-        )
     total_kib = meminfo.get("MemTotal", 0)
     if total_kib <= 0:
         raise TemplateError(
@@ -1594,19 +1579,6 @@ def validate_pct_1_100(value: str) -> str | None:
         return f"{value!r} is not an integer percentage (give a bare number, e.g. 80 -- no '%' sign)"
     if pct < 1 or pct > 100:
         return f"{pct} is outside 1-100"
-    return None
-
-
-def validate_systemd_pct_1_100(value: str) -> str | None:
-    """Validate systemd's percentage form, including its required ``%``."""
-    if not value:
-        return "a percentage is required (an integer followed by '%', 1-100)"
-    match = re.fullmatch(r"(\d+)%", value)
-    if not match:
-        return f"{value!r} is not a systemd percentage (use an integer followed by '%', e.g. '75%')"
-    pct = int(match.group(1))
-    if not 1 <= pct <= 100:
-        return f"{pct}% is outside 1-100%"
     return None
 
 
@@ -3013,13 +2985,6 @@ def step_slice_first_resources(
             "  MemoryZSwapWriteback", f"{prefix}_ZSWAP_WRITEBACK",
             cfg_current, example_defaults,
         )
-        if prefix in ("DEV_BACKGROUND", "DEV_GATES"):
-            out("  systemd-oomd may act at this pressure percentage; it is separate from MemoryMax.")
-            values[f"{prefix}_OOM_PRESSURE_LIMIT"] = walk_key(
-                "  ManagedOOMMemoryPressureLimit (systemd percentage, e.g. 75%)",
-                f"{prefix}_OOM_PRESSURE_LIMIT", cfg_current, example_defaults,
-                validate=validate_systemd_pct_1_100,
-            )
         if prefix == "DEV_BUILDKITD":
             out("  The host-managed rootless worker is the only approved normal BuildKit worker. Solver parallelism limits simultaneous RUN/cache operations inside this daemon; it does not limit the number of client builds and is separate from release REPACK_JOBS and REPACK_CONCURRENCY.")
             values["DEV_BUILDKITD_IMAGE"] = walk_key(
