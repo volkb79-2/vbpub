@@ -651,8 +651,8 @@ Reads `ciu.defaults.toml.j2` and optionally a gitignored `ciu-stack/ciu.toml.j2`
 override, then writes a generated tree to the `--out` directory. This output is
 never committed and exists only for inspection or a disposable trial.
 
-Do not edit the rendered copies in `edge-proxy/` directly; changes will be
-overwritten on the next render.
+Do not edit files in the generated `--out` directory directly; changes will
+be overwritten on the next render.
 
 ### Overriding defaults
 
@@ -761,10 +761,9 @@ as `scripts/verify.sh`, then runs `docker restart --time 5 <name>`.  The restart
 takes about 3 seconds and writes no synced stack file.
 
 ```sh
-# Install the hook (run once):
-cp tls-edge/scripts/certbot-deploy-hook.sh \
+# Install the stable hook symlink from the instance:
+ln -sf /srv/tls-edge-instance/stack/scripts/certbot-deploy-hook.sh \
    /etc/letsencrypt/renewal-hooks/deploy/01-reload-traefik.sh
-chmod +x /etc/letsencrypt/renewal-hooks/deploy/01-reload-traefik.sh
 
 # Test renewal dry-run including hook execution:
 certbot renew --dry-run

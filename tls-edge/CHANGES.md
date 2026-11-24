@@ -36,8 +36,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Upgrade
 - Anyone who used the removed standalone installer or plain Compose on the committed `edge-proxy/` tree must
   install a get.py instance and run its bundled CIU stack. Follow `docs/INSTALL.md`; do not migrate by copying
-  the old rendered tree. From a repository checkout, pass `--root <checkout>`, and from an installed instance,
-  pass `--root <instance>/stack`.
+  the old rendered tree. From a repository checkout, pass `--root <checkout>/tls-edge`, and from an installed
+  instance, pass `--root <instance>/stack`.
 - A static-mode 3.x instance whose old certbot hook ran must pass `--overwrite-local` to the 4.0 update: the old
   hook rewrote `stack/edge-proxy/conf.d/certs.yml`, which the 4.0 bundle no longer ships. The replaced original
   is saved under `shared/overwritten/`.

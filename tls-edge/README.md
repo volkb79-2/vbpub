@@ -142,7 +142,7 @@ the supported get.py + ciu deployment, follow
 
 ## Quickstart C — wildcard certificate via manual DNS TXT
 
-[Configure static certificates and the certbot hook](docs/INSTALL.md#4-configure-listeners-and-certificates).
+[Create the wildcard certificate with manual DNS TXT](CONSUMER_GUIDE.md#static-mode--wildcard-cert-via-manual-dns-txt-no-dns-api-required).
 
 ---
 

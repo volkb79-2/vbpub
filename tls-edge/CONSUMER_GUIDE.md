@@ -622,7 +622,7 @@ tls-edge/
     .env                            ←   (gitignored) acme-dns trial credentials
 
   scripts/
-    render.sh                       ←   standalone re-render (requires --out)
+    render.sh                       ←   standalone re-render (default --out: edge-proxy/)
     verify.sh                       ←   post-deploy check suite
     dev-certs.sh                    ←   generate self-signed certs for dev mode
     certbot-deploy-hook.sh          ←   install to /etc/letsencrypt/renewal-hooks/deploy/

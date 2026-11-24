@@ -64,9 +64,14 @@ def is_installed_stack(stack: Path) -> bool:
 
 def _check_stack_layout(root: Path) -> None:
     defaults = root / "ciu-stack" / "ciu.defaults.toml.j2"
-    if not root.is_dir() or not defaults.is_file():
+    if not defaults.is_file():
+        hint = (
+            f"; pass --root {root / 'stack'}"
+            if (root / "stack" / "ciu-stack").is_dir()
+            else ""
+        )
         raise ConfigError(
-            f"{root} is not a tls-edge stack directory (expected {defaults})"
+            f"{root} is not a tls-edge stack directory (expected {defaults}){hint}"
         )
 
 

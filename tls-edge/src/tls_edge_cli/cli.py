@@ -362,10 +362,11 @@ def configure(args: Any, runtime: CliRuntime) -> int:
         runtime.output.primary(f"Saved {override_path}.")
     else:
         runtime.output.primary(f"Saved {override_path} and {env_path}.")
-    runtime.output.primary(
-        f"Next: cd {root} && sudo ./ciu check && sudo ./ciu up --dry-run; "
-        "review the rendered config, then deploy with CIU."
-    )
+    if is_installed_stack(root):
+        runtime.output.primary(
+            f"Next: cd {root} && sudo ./ciu check && sudo ./ciu up --dry-run; "
+            "review the rendered config, then deploy with CIU."
+        )
     return 0
 
 

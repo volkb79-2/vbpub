@@ -306,6 +306,7 @@ def test_checkout_configure_yes_creates_no_consumer_env(
     assert (stack / "ciu-stack" / "ciu.toml.j2").is_file()
     assert not (stack / "consumer.env").exists()
     assert "consumer.env" not in output
+    assert "./ciu" not in output
 
 
 def test_checkout_configure_updates_an_existing_consumer_env(
@@ -384,6 +385,21 @@ def test_cli_refuses_a_directory_without_ciu_stack(
     assert result == 2, output
     assert "is not a tls-edge stack directory" in output
     assert str(not_a_stack / "ciu-stack") in output
+
+
+def test_cli_guides_old_style_instance_root_to_stack_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    instance = tmp_path / "instance"
+    stack = _copy_tracked_stack(instance / "stack")
+    result, output = _run_cli(
+        monkeypatch,
+        ["validate", "--root", str(instance)],
+    )
+    assert result == 2, output
+    assert "is not a tls-edge stack directory" in output
+    assert f"pass --root {stack}" in output
 
 
 def test_certbot_hook_restarts_detected_container_without_tree_writes(

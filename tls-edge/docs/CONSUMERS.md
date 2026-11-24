@@ -66,6 +66,9 @@ bundled ciu (`cd /srv/tls-edge-instance/stack && ./ciu up`); see [INSTALL.md](IN
 Traefik container is `tls-edge-<id>-traefik`. The standalone renderer is only a disposable trial
 and is not a deployment path.
 
+The live host still runs the hand-made `/root/tls-edge-LIVE` stack with `edge-traefik` until the cut-over
+described in [INSTALL §8](INSTALL.md#8-migrate-from-a-hand-made-deployment-plan-not-executed).
+
 ## Network/firewall requirements
 
 Allow every value in `TLS_EDGE_PUBLIC_PORTS`, plus any port an application
