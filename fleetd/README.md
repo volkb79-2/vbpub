@@ -144,8 +144,10 @@ combined `fleet-campaign-result/1` JSON file plus a Markdown report in the
 state directory. Each candidate has one owner: the earliest finished record
 wins, and later copies are counted as ignored duplicates; a duplicate carrying
 a measured memory peak fills that field on the owner instead of being discarded.
-When a host returns after loss, its still-running duplicate is stopped once the
-other hosts have finished those candidates. Never-started
+When a host returns after loss, its still-running duplicate may finish too;
+collection chooses one owner. Once every unfinished candidate has finished
+elsewhere, the duplicate is stopped. An incomplete retry or failed stop leaves
+that return fact pending for a later successful refresh. Never-started
 candidates remain `missing` with a distinct reason; zero-progress failed
 batches include the failure reason and exit code when available. Host transport or
 contract errors are shown as `ERROR` in status while other hosts continue to

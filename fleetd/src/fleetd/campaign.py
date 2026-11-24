@@ -751,9 +751,8 @@ class CampaignManager:
                 else:
                     job["status"] = "SUPERSEDED_PENDING"
         if returned_lost:
-            host_state["loss_requeued"] = False
             host_state["returned_after_loss"] = True
-            self._stop_returned_duplicates(state, host_id)
+            host_state["loss_requeued"] = self._stop_returned_duplicates(state, host_id)
         self._stop_superseded_host(state, host_id)
 
     @staticmethod
@@ -865,22 +864,39 @@ class CampaignManager:
         for host_id in sorted(state["hosts"]):
             self._stop_superseded_host(state, host_id)
 
-    def _stop_returned_duplicates(self, state: dict[str, Any], host_id: str) -> None:
+    def _stop_returned_duplicates(self, state: dict[str, Any], host_id: str) -> bool:
+        """Stop source duplicates whose unfinished work finished elsewhere.
+
+        The return fact remains pending while a retry is incomplete or a stop
+        fails, so a later successful refresh retries the stop.
+        """
         done_elsewhere = self._done_by_other_hosts(state, host_id)
+        pending = False
         for job in state["jobs"].values():
             if job["host"] != host_id or job["status"] != "RUNNING":
                 continue
-            if set(job["candidate_ids"]) <= done_elsewhere:
-                try:
-                    self.runner.stop(host_id, job["name"])
-                except HostUnavailable as exc:
-                    self._note_unavailable(state["hosts"][host_id], exc, self.clock())
-                    continue
-                except (TransportError, ContractError) as exc:
-                    self._record_host_error(state["hosts"][host_id], str(exc))
-                    continue
-                job["status"] = "SUPERSEDED"
-                job["stop_pending"] = False
+            finished = {
+                record["candidate_id"]
+                for record in job.get("records", [])
+                if isinstance(record, dict) and isinstance(record.get("candidate_id"), str)
+            }
+            outstanding = set(job["candidate_ids"]) - finished
+            if not outstanding <= done_elsewhere:
+                pending = True
+                continue
+            try:
+                self.runner.stop(host_id, job["name"])
+            except HostUnavailable as exc:
+                pending = True
+                self._note_unavailable(state["hosts"][host_id], exc, self.clock())
+                continue
+            except (TransportError, ContractError) as exc:
+                pending = True
+                self._record_host_error(state["hosts"][host_id], str(exc))
+                continue
+            job["status"] = "SUPERSEDED"
+            job["stop_pending"] = False
+        return pending
 
     @staticmethod
     def _done_ids(state: Mapping[str, Any]) -> set[str]:

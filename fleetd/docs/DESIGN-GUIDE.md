@@ -383,9 +383,10 @@ observed and not from the last success, marks the host lost; `tick`
 re-plans only unfinished candidate IDs from running and queued batches on the
 reachable planned host with the largest `cap_alone_bytes`. Idle planned hosts
 are probed too, so they can receive requeued work. If the original host later
-returns, its duplicate is stopped once the return refresh proves the candidates
-finished elsewhere. A job-loop error does not consume that fact: the next complete
-refresh still stops the duplicate exactly once.
+returns, its duplicate may finish too; collection chooses one owner. Once the
+return refresh proves every unfinished candidate finished elsewhere, fleetd
+stops the duplicate. A job-loop error, an unfinished retry or a failed stop does
+not consume that fact: the next complete refresh retries the stop.
 
 The first detached command writes `list.sha256` before the campaign supervisor
 starts. During the brief startup interval, probe can recompute it from the

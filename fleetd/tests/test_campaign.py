@@ -1462,6 +1462,96 @@ def test_returning_running_duplicate_is_stopped_after_other_host_finishes(tmp_pa
     assert transport.host("host-b").stops == stops_before + 1
 
 
+def test_returning_while_retry_runs_stops_the_duplicate_when_it_finishes(tmp_path):
+    plan, first_id, second_id = _two_host_one_candidate_plan()
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    state = _state(tmp_path)
+    first_job = _first_running(state, "host-a")
+    lost = _first_running(state, "host-b")
+    transport.add_progress("host-a", first_job["name"], first_id, "killed")
+    transport.finish("host-a", first_job["name"])
+    manager.status("campaign")
+    transport.set_unreachable("host-b")
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    manager.tick("campaign")
+    retry = next(job for job in _state(tmp_path)["jobs"].values() if job.get("requeue_reason") == "host-lost")
+    stops_before = transport.host("host-b").stops
+
+    transport.set_unreachable("host-b", False)
+    manager.tick("campaign")
+    waiting = _state(tmp_path)
+    assert waiting["hosts"]["host-b"]["returned_after_loss"] is True
+    assert waiting["hosts"]["host-b"]["loss_requeued"] is True
+    assert waiting["jobs"][lost["name"]]["status"] == "RUNNING"
+    assert transport.host("host-b").stops == stops_before
+
+    transport.add_progress("host-a", retry["name"], second_id, "survived")
+    transport.finish("host-a", retry["name"])
+    manager.tick("campaign")
+    final = _state(tmp_path)
+    assert final["hosts"]["host-b"]["loss_requeued"] is False
+    assert final["hosts"]["host-b"]["returned_after_loss"] is True
+    assert final["jobs"][lost["name"]]["status"] == "SUPERSEDED"
+    assert transport.host("host-b").stops == stops_before + 1
+    manager.tick("campaign")
+    assert transport.host("host-b").stops == stops_before + 1
+
+
+def test_a_failed_returned_duplicate_stop_is_retried_on_the_next_refresh(tmp_path):
+    plan, first_id, second_id = _two_host_one_candidate_plan()
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    state = _state(tmp_path)
+    first_job = _first_running(state, "host-a")
+    lost = _first_running(state, "host-b")
+    transport.add_progress("host-a", first_job["name"], first_id, "killed")
+    transport.finish("host-a", first_job["name"])
+    manager.status("campaign")
+    transport.set_unreachable("host-b")
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    manager.tick("campaign")
+    retry = next(job for job in _state(tmp_path)["jobs"].values() if job.get("requeue_reason") == "host-lost")
+    transport.add_progress("host-a", retry["name"], second_id, "survived")
+    transport.finish("host-a", retry["name"])
+    manager.tick("campaign")
+
+    original_stop = manager.runner.stop
+    attempts = 0
+
+    def fail_first_stop(host, name):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TransportError("stop refused")
+        return original_stop(host, name)
+
+    manager.runner.stop = fail_first_stop
+    stops_before = transport.host("host-b").stops
+    transport.set_unreachable("host-b", False)
+    manager.tick("campaign")
+    failed = _state(tmp_path)
+    assert failed["hosts"]["host-b"]["status"] == "ERROR"
+    assert failed["hosts"]["host-b"]["returned_after_loss"] is True
+    assert failed["hosts"]["host-b"]["loss_requeued"] is True
+    assert failed["jobs"][lost["name"]]["status"] == "RUNNING"
+    assert transport.host("host-b").stops == stops_before
+
+    manager.tick("campaign")
+    final = _state(tmp_path)
+    assert final["hosts"]["host-b"]["status"] == "ONLINE"
+    assert final["hosts"]["host-b"]["loss_requeued"] is False
+    assert final["jobs"][lost["name"]]["status"] == "SUPERSEDED"
+    assert transport.host("host-b").stops == stops_before + 1
+    assert attempts == 2
+
+
 def test_superseded_and_returned_duplicate_stop_failures_preserve_retry_state(tmp_path):
     plan, _first_id, second_id = _two_host_one_candidate_plan()
     transport = FakeTransport()

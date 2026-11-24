@@ -365,8 +365,11 @@ or stalled batch with no finished candidate from its own start becomes
 `FAILED`, is not re-queued, and appears in status and collection with its
 failure reason and exit code when available. Re-queue remains unlimited for batches that made progress. A stalled
 batch that made progress keeps its `STALLED` marker and creates one replacement
-batch. A returning host's still-running duplicate is stopped once a complete
-refresh proves the candidate finished elsewhere; no lease or renewal is used.
+batch. A returning host's still-running duplicate may finish too; collection
+chooses one owner. Once a complete refresh proves every unfinished candidate
+finished elsewhere, fleetd stops the duplicate. An incomplete retry or failed
+stop keeps that return fact pending for a later complete refresh. No lease or
+renewal is used.
 Known limit: if the lost source host returns and re-adopts a deferred candidate
 (FD-017), and a third, larger host then comes online, the retry excludes only the
 source host's in-flight jobs and may start the candidate there as well; the

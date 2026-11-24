@@ -13,9 +13,10 @@ All notable changes to this project are recorded here.
   P-fd-05). The probe now returns the observer's `profile.metrics.memory_peak_bytes`,
   and collection merges that measured value into a matching earlier record
   instead of dropping it (FD-040).
-- A host that returns after loss stops its still-running duplicate exactly once
-  after a complete successful refresh; a digest error during that refresh no
-  longer consumes the returned-after-loss fact (WP2c/L2).
+- A host that returns after loss keeps its returned-duplicate fact pending while
+  the retry is unfinished or a stop fails; a later successful refresh stops the
+  source duplicate once. A duplicate may finish too, and collection still
+  chooses one owner (WP2c/L2).
 - Campaign supervision (WP2). The host-loss clock starts at the first failed
   contact the controller observed instead of the last successful contact, so one
   failed probe after a long gap no longer marks a healthy host `LOST`; a probe
