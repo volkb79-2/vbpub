@@ -260,9 +260,11 @@ def write_requirements(
 
 
 def _version_tuple(value: str) -> tuple[int, ...]:
+    raw = value
+    value = re.sub(r"^[A-Za-z0-9_.-]+-v", "", value, count=1)
     value = value.removeprefix("v")
     if not _VERSION_RE.fullmatch(value):
-        _fail(f"release version is not numeric: {value!r}")
+        _fail(f"release version is not numeric: {raw!r}")
     return tuple(int(part) for part in value.split("."))
 
 

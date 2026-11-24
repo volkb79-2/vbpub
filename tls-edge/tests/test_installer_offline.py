@@ -419,7 +419,9 @@ def test_wheel_replaced_after_manifest_is_refused(env, tmp_path):
     assert not (root / "stack").exists()
 
 
-def test_extra_wheel_is_refused_even_when_the_generic_manifest_lists_it(env, tmp_path):
+def test_extra_wheel_is_refused_even_when_the_generic_manifest_lists_it(
+    env, tmp_path, capsys,
+):
     ns, root, answers = env
 
     def add_wheel(stage: Path) -> None:
@@ -441,6 +443,10 @@ def test_extra_wheel_is_refused_even_when_the_generic_manifest_lists_it(env, tmp
     with pytest.raises(SystemExit):
         run(ns, "do_install", answers, version=TAG)
     assert not (root / "stack").exists()
+    assert (
+        "bundle contains wheel(s) absent from [[project.installer.wheels]]: "
+        "wheels/evil-1.0.0-py3-none-any.whl"
+    ) in capsys.readouterr().err
 
 
 def test_cmru_generic_manifest_has_no_seam_3_distribution_entries(tmp_path, monkeypatch):

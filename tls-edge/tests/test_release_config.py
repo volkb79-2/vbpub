@@ -68,6 +68,11 @@ def test_operator_docs_name_the_bundle_root_and_reproducibility_inputs():
     ) in install
 
 
+def test_closed_te_05_uses_the_archive_table_shape():
+    archive = (ROOT / "archive" / "2026-Q4.md").read_text(encoding="utf-8")
+    assert "TE-05 | hand-rolled bundle build | <this merge> | 2026-11-24" in archive
+
+
 def test_push_step_is_the_cmru_variants_handler_not_a_project_script():
     argv = _publish_argv()
     assert argv[:3] == ["cmru", "handler", "tarball-publish"]

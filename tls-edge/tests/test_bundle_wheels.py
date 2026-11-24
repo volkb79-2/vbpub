@@ -144,6 +144,12 @@ def test_version_env_comes_from_the_committed_version_file() -> None:
     assert bundle_wheels.version_env() == f"TLS_EDGE_VERSION={version}"
 
 
+def test_version_tuple_accepts_a_distribution_prefixed_release_tag() -> None:
+    assert bundle_wheels._version_tuple("ciu-v1.2.3") == (1, 2, 3)
+    assert bundle_wheels._version_tuple("v1.2.3") == (1, 2, 3)
+    assert bundle_wheels._version_tuple("1.2.3") == (1, 2, 3)
+
+
 def test_wheel_inventory_refuses_an_extra_distribution(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:

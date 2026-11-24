@@ -23,4 +23,3 @@ consumer-examples/**/secrets/*
 
 # Release bundle outputs (cmru handler bundle-build)
 /dist/
-/vendor/
