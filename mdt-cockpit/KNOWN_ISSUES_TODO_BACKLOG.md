@@ -1963,3 +1963,11 @@ the first-party CLIs" section.
 2. Decide whether codex, claude and opencode should follow the same vetted-record and age-buffer rule as the other three tools (the estate rule is a 14-day buffer); if they stay on `latest`, say so in `docs/BUILD-ARCHITECTURE.md`, because a version published minutes before the build is then shipped unvetted.
 
 **Acceptance.** A fake `npm` that answers ETARGET twice and then succeeds lets the install pass and logs both retries; a fake that always answers ETARGET fails after the bound with the original error text.
+
+## MDT-107 - the devcontainer stops when its PID-1 `sleep` child is killed (2026-11-18)
+
+**Status:** PARTLY FIXED (2026-11-24): the image `CMD` is fixed (plat-19-pid1-20261124); the `devcontainer.json` flip (`overrideCommand` false, `init` true; branch plat-19-pid1-json-20261124) waits for the image release and a check of its `Config.Cmd`, then an operator-run devcontainer rebuild. Closed once the rebuilt container shows a real init as PID 1.
+
+**Observed.** Without an `overrideCommand` key the Dev Containers default made PID 1 `/bin/sh -c 'echo Container started; trap "exit 0" 15; exec "$@"; while sleep 1 & wait $!; do :; done' -`. Killing its `sleep` child makes `wait` fail, the loop ends and PID 1 exits 0, which stopped the whole cockpit (measured twice on 2026-11-18, `OOMKilled=false`).
+
+**Fix.** See `CHANGES.md` [Unreleased]. Order matters: a rebuild with the flipped `devcontainer.json` on an older image exits at once, so release the image first.
