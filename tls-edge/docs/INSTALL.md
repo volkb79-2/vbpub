@@ -69,7 +69,8 @@ That source is outside `stack/`: `ciu --reset`, `docker compose down -v`, and `c
 
 For unattended configuration, prepare a sparse site override in the schema's own shape and pass it to the
 CLI. `--answers` changes only the keys named in the file; `configure` still writes every managed field
-explicitly:
+explicitly. Schema keys that no field row manages are also accepted and written explicitly; the open
+`environment`, `secrets`, and `hooks` tables remain refused:
 
 ```bash
 sudo /srv/tls-edge-instance/bin/tls-edge configure --answers edge.toml --yes
@@ -276,31 +277,31 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
    answers file with the live domain and ACME email and these settings, replacing `example.test` and the email:
 
    ```toml
-[tls_edge]
-domain = "example.test"
-ingress_external = true
+   [tls_edge]
+   domain = "example.test"
+   ingress_external = true
 
-[tls_edge.tls]
-mode = "acme-tls"
+   [tls_edge.tls]
+   mode = "acme-tls"
 
-[tls_edge.acme]
-email = "ops@example.test"
-volume_name = "edge-proxy_acme-data"
+   [tls_edge.acme]
+   email = "ops@example.test"
+   volume_name = "edge-proxy_acme-data"
 
-[tls_edge.ports]
-expose_http = true
-http = 80
-https = 443
+   [tls_edge.ports]
+   expose_http = true
+   http = 80
+   https = 443
 
-[tls_edge.http3]
-enabled = true
+   [tls_edge.http3]
+   enabled = true
 
-[tls_edge.calls]
-enabled = true
-public_port = 8443
+   [tls_edge.calls]
+   enabled = true
+   public_port = 8443
 
-[tls_edge.runtime]
-cgroup_parent = "edge.slice"
+   [tls_edge.runtime]
+   cgroup_parent = "edge.slice"
    ```
 
    Run `/srv/tls-edge-instance/bin/tls-edge configure --answers /path/to/live.toml --yes` and

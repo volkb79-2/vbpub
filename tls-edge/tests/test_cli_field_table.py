@@ -12,8 +12,8 @@ import pytest
 from cli_extended import identity as identity_module
 from cli_extended import prompts as prompts_module
 
-from tls_edge_cli import cli, config
-from tls_edge_cli.fields import FIELDS, Field
+from tls_edge_cli import cli
+from tls_edge_cli.fields import Field
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -104,21 +104,20 @@ def flat_target(legacy_key: str) -> str:
     return targets[legacy_key]
 
 
-def dotted_get(config_table: dict, key: str) -> object:
-    current: object = config_table
-    for part in key.split("."):
-        assert isinstance(current, dict), (key, current)
-        assert part in current, (key, current)
-        current = current[part]
-    return current
-
-
 def test_field_rejects_an_unknown_kind_at_construction() -> None:
     with pytest.raises(
         ValueError,
         match="unsupported field kind 'mystery' for tls_edge.domain",
     ):
         Field("domain", "mystery", None)
+
+
+def test_choice_field_requires_choices_at_construction() -> None:
+    with pytest.raises(
+        ValueError,
+        match="choice field tls_edge.tls.mode requires at least one choice",
+    ):
+        Field("tls.mode", "choice", None)
 
 
 def test_sparse_answers_change_one_key_and_preserve_override_comments(
@@ -161,26 +160,63 @@ enabled = true
     assert "# operator note: keep this comment" in text
     assert "# unrelated site setting" in text
     written = tomllib.loads(text)["tls_edge"]
-    assert written["domain"] == "edge.example.test"
-    assert written["traefik"]["log_level"] == "WARN"
-    assert written["http3"]["enabled"] is True
+    assert written == {
+        "schema": 1,
+        "domain": "edge.example.test",
+        "tls": {"mode": "acme-tls"},
+        "acme": {"email": "", "volume_name": "", "store": "volume"},
+        "ports": {
+            "expose_http": True,
+            "http": 80,
+            "https": 443,
+            "bind_ip": "",
+        },
+        "http3": {"enabled": True},
+        "ingress_external": False,
+        "runtime": {"cgroup_parent": ""},
+        "calls": {"enabled": False},
+        "traefik": {"log_level": "WARN"},
+    }
 
-    _, _, effective = config.load_site(root / "stack" / "ciu-stack")
-    edge = effective["tls_edge"]
-    for field in FIELDS:
-        if field.when(edge):
-            dotted_get(written, field.key)
-    assert edge["tls"]["mode"] == "acme-tls"
-    assert edge["ports"]["expose_http"] is True
-    assert edge["ports"]["http"] == 80
-    assert edge["ports"]["https"] == 443
-    assert edge["ports"]["bind_ip"] == ""
-    assert edge["http3"]["enabled"] is True
-    assert edge["ingress_external"] is False
-    assert edge["acme"]["volume_name"] == ""
-    assert edge["acme"]["store"] == "volume"
-    assert edge["runtime"]["cgroup_parent"] == ""
-    assert edge["calls"]["enabled"] is False
+
+def test_unmanaged_answer_leaf_is_written_and_preserves_comments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    override = write_override(
+        root,
+        """\
+# before the managed table
+[tls_edge]
+schema = 1
+domain = "edge.example.test"
+
+[tls_edge.traefik]
+# keep this neighbour before log_level
+name = "traefik"
+# keep this neighbour after log_level
+image = "traefik:v3.7"
+""",
+    )
+    answers = write_answers(
+        tmp_path / "answers.toml",
+        """\
+[tls_edge.traefik]
+log_level = "DEBUG"
+""",
+    )
+    result, output = run_cli(
+        monkeypatch,
+        ["configure", "--root", str(root), "--answers", str(answers), "--yes"],
+    )
+    assert result == 0, output
+    text = override.read_text(encoding="utf-8")
+    assert "# before the managed table" in text
+    assert "# keep this neighbour before log_level" in text
+    assert "# keep this neighbour after log_level" in text
+    written = tomllib.loads(text)["tls_edge"]
+    assert written["traefik"]["log_level"] == "DEBUG"
 
 
 @pytest.mark.parametrize("legacy_key", [
@@ -222,6 +258,32 @@ def test_all_3_1_flat_answer_keys_are_refused(
     assert expected in output
 
 
+def test_all_3_1_flat_answer_keys_are_reported_in_one_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    answers = write_answers(
+        tmp_path / "answers.toml",
+        """\
+domain = "edge.example.test"
+http_enabled = true
+static_domains = []
+""",
+    )
+    result, output = run_cli(
+        monkeypatch,
+        ["configure", "--root", str(root), "--answers", str(answers), "--dry-run", "--yes"],
+    )
+    assert result == 2, output
+    for legacy_key in ("domain", "http_enabled", "static_domains"):
+        expected = (
+            f"answers key {legacy_key!r} is the 3.1 flat form; "
+            f"write {flat_target(legacy_key)}"
+        )
+        assert expected in output
+
+
 def test_unknown_answers_key_names_the_schema_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -239,7 +301,10 @@ enable = true
         ["configure", "--root", str(root), "--answers", str(answers), "--dry-run", "--yes"],
     )
     assert result == 2, output
-    assert "unknown override key tls_edge.http3.enable" in output
+    assert (
+        f"unknown answers key 'tls_edge.http3.enable' "
+        f"(answers file {answers})"
+    ) in output
     assert "tls_edge.http3.enabled" in output
 
 
@@ -255,7 +320,8 @@ def test_unknown_top_level_answers_key_is_refused(
     )
     assert result == 2, output
     assert (
-        "unknown answers key 'mystery'; answers use the site-override shape "
+        f"unknown answers key 'mystery' (answers file {answers}); "
+        "answers use the site-override shape "
         "[tls_edge.<table>]"
     ) in output
 
@@ -330,11 +396,14 @@ mode = "static"
             str(root),
             "--answers",
             str(answers),
-            "--dry-run",
             "--yes",
         ],
     )
     assert result == 0, output
+    written = tomllib.loads(
+        (root / "stack" / "ciu-stack" / "ciu.toml.j2").read_text(encoding="utf-8")
+    )
+    assert written["tls_edge"]["static"]["domains"] == ["default.example.test"]
 
 
 def test_hostdir_without_a_new_instance_marker_requires_a_path(

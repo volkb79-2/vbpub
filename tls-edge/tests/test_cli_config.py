@@ -119,33 +119,6 @@ def test_render_defaults_and_report_template_and_toml_errors(tmp_path: Path):
         config.render_defaults(path)
 
 
-def test_load_effective_config_merges_valid_override_and_requires_tls_edge(tmp_path: Path):
-    root = make_root(tmp_path / "instance")
-    assert config.load_effective_config(root) == (valid_config(), False)
-    override = root / "stack/ciu-stack/ciu.toml.j2"
-    override.write_text('[tls_edge]\ndomain = "override.example.org"\n', encoding="utf-8")
-    merged, exists = config.load_effective_config(root)
-    assert exists and merged["domain"] == "override.example.org"
-
-    bad = make_root(tmp_path / "bad", "[other]\nvalue = 1\n")
-    with pytest.raises(config.ConfigError, match="must contain a \\[tls_edge\\] table"):
-        config.load_effective_config(bad)
-
-
-@pytest.mark.parametrize("kind", ["symlink", "directory", "malformed"])
-def test_load_effective_config_refuses_invalid_site_override(tmp_path: Path, kind: str):
-    root = make_root(tmp_path / kind)
-    override = root / "stack/ciu-stack/ciu.toml.j2"
-    if kind == "symlink":
-        override.symlink_to(root / "missing")
-    elif kind == "directory":
-        override.mkdir()
-    else:
-        override.write_text("broken = [", encoding="utf-8")
-    with pytest.raises(config.ConfigError, match="site override"):
-        config.load_effective_config(root)
-
-
 def test_load_answers_none_valid_unknown_and_parse_error(tmp_path: Path):
     assert config.load_answers(None) == {}
     path = tmp_path / "answers.toml"
@@ -157,8 +130,9 @@ def test_load_answers_none_valid_unknown_and_parse_error(tmp_path: Path):
     with pytest.raises(config.ConfigError, match="3.1 flat form"):
         config.load_answers(path)
     path.write_text("unknown = true\n", encoding="utf-8")
-    with pytest.raises(config.ConfigError, match="unknown answers key 'unknown'"):
+    with pytest.raises(config.ConfigError, match="unknown answers key 'unknown'") as exc:
         config.load_answers(path)
+    assert f"(answers file {path})" in str(exc.value)
     path.write_text("x = [", encoding="utf-8")
     with pytest.raises(config.ConfigError, match="cannot read answers"):
         config.load_answers(path)
@@ -166,7 +140,9 @@ def test_load_answers_none_valid_unknown_and_parse_error(tmp_path: Path):
         config.load_answers(tmp_path / "missing")
 
 
-def test_validate_answers_accepts_managed_keys_and_refuses_other_shapes() -> None:
+def test_validate_answers_accepts_schema_keys_and_refuses_other_shapes(
+    tmp_path: Path,
+) -> None:
     defaults = config.render_defaults(
         Path(__file__).resolve().parents[1]
         / "ciu-stack"
@@ -189,19 +165,18 @@ def test_validate_answers_accepts_managed_keys_and_refuses_other_shapes() -> Non
         match="answers key 'tls_edge.secrets' is an open site-override table",
     ):
         config.validate_answers(defaults, {"tls_edge": {"secrets": {}}})
-    with pytest.raises(
-        config.ConfigError,
-        match="answers key 'tls_edge.traefik.log_level' is not a managed setting",
-    ):
-        config.validate_answers(
-            defaults,
-            {"tls_edge": {"traefik": {"log_level": "WARN"}}},
-        )
-    with pytest.raises(config.ConfigError, match="unknown override key tls_edge.ports.nope"):
+    config.validate_answers(
+        defaults,
+        {"tls_edge": {"traefik": {"log_level": "WARN"}}},
+    )
+    answers_file = tmp_path / "answers.toml"
+    with pytest.raises(config.ConfigError, match="unknown answers key") as exc:
         config.validate_answers(
             defaults,
             {"tls_edge": {"ports": {"nope": 1}}},
+            answers_file=answers_file,
         )
+    assert f"(answers file {answers_file})" in str(exc.value)
     with pytest.raises(config.ConfigError, match="newer than this release supports"):
         config.validate_answers(defaults, {"tls_edge": {"schema": 99}})
 
@@ -408,6 +383,14 @@ def test_updated_override_creates_preserves_and_rejects_invalid_paths(tmp_path: 
     path.chmod(0o600)
     _, text, mode = config.updated_override(root, {"domain": "new.example.net"})
     assert "# keep this comment" in text and mode == 0o600
+    _, text, _ = config.updated_override(
+        root,
+        {"domain": "new.example.net"},
+        {"traefik.log_level": "DEBUG"},
+    )
+    assert tomlkit.parse(text)["tls_edge"]["traefik"]["log_level"] == "DEBUG"
+    with pytest.raises(config.ConfigError, match="must use field-table values"):
+        config.updated_override(root, {}, {"domain": "new.example.net"})
     with pytest.raises(config.ConfigError, match="unsupported configuration field"):
         config.updated_override(root, {"unknown": True})
 

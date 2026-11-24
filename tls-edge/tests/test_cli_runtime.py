@@ -319,7 +319,7 @@ def test_interactive_static_lineages_are_parsed_from_the_list_prompt(
     root = make_root(tmp_path / "instance")
     result, output = run_cli(
         monkeypatch,
-        ["configure", "--root", str(root), "--dry-run", "--yes"],
+        ["configure", "--root", str(root), "--yes"],
         select_value="static",
         text_responses={
             "Certificate lineage directory names, comma separated": (
@@ -328,7 +328,32 @@ def test_interactive_static_lineages_are_parsed_from_the_list_prompt(
         },
     )
     assert result == 0, output
-    assert "Dry run: no files were changed." in output
+    written = tomllib.loads(
+        (root / "stack" / "ciu-stack" / "ciu.toml.j2").read_text(encoding="utf-8")
+    )
+    assert written["tls_edge"]["static"]["domains"] == [
+        "one.example.test",
+        "two.example.test",
+    ]
+
+
+@pytest.mark.parametrize("mode", ["static", "dev"])
+def test_interactive_static_modes_default_lineages_to_domain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    result, output = run_cli(
+        monkeypatch,
+        ["configure", "--root", str(root), "--yes"],
+        select_value=mode,
+    )
+    assert result == 0, output
+    written = tomllib.loads(
+        (root / "stack" / "ciu-stack" / "ciu.toml.j2").read_text(encoding="utf-8")
+    )
+    assert written["tls_edge"]["static"]["domains"] == ["edge.example.test"]
 
 
 def test_configure_reports_a_failure_after_the_override_write(

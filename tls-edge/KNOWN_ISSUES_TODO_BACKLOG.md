@@ -8,7 +8,7 @@
 
 **Resolved 2026-11-21:** the generic tls-edge template keeps raw TCP/UDP media
 ports closed by default. When hosting a Mattermost Calls consumer, configure
-the edge with `calls_enabled = true` and `calls_port = 8443`; the Mattermost
+the edge with `[tls_edge.calls] enabled = true` and `public_port = 8443`; the Mattermost
 project's own default media port remains 8443. This is an intentional split
 between safe generic edge defaults and an application-specific listener.
 

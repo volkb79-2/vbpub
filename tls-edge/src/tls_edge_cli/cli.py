@@ -34,7 +34,7 @@ from .config import (
     validate_config,
     validate_answers,
 )
-from .fields import FIELDS, Field, Layout, value_at
+from .fields import FIELDS, Field, Layout, MANAGED_KEYS, value_at
 
 
 def _identity() -> CliIdentity:
@@ -67,6 +67,26 @@ def _plain_set(config: dict[str, Any], path: tuple[str, ...], value: Any) -> Non
     for part in path[:-1]:
         current = current.setdefault(part, {})
     current[path[-1]] = value
+
+
+def _answer_extras(answers: Mapping[str, Any]) -> dict[str, Any]:
+    """Return unmanaged scalar or list leaves supplied by the answers file."""
+    extras: dict[str, Any] = {}
+
+    def visit(table: Mapping[str, Any], prefix: tuple[str, ...]) -> None:
+        for key, value in table.items():
+            path = (*prefix, str(key))
+            if isinstance(value, Mapping):
+                visit(value, path)
+                continue
+            dotted = ".".join(path)
+            if dotted not in MANAGED_KEYS and dotted != "schema":
+                extras[dotted] = value
+
+    tls_edge = answers.get("tls_edge")
+    if isinstance(tls_edge, Mapping):
+        visit(tls_edge, ())
+    return extras
 
 
 def _typecheck(field: Field, value: Any, source: str) -> Any:
@@ -180,7 +200,13 @@ def _propose(
         if from_answers:
             raw = value_at(proposed_overlay["tls_edge"], field.key)
         elif allow_prompt and field.prompt is not None:
-            raw = _prompt_value(runtime, field, value_at(edge, field.key))
+            prompt_default = value_at(edge, field.key)
+            if (
+                not _contains(overlay, ("tls_edge", *field.key.split(".")))
+                and field.initial is not None
+            ):
+                prompt_default = field.initial(layout)
+            raw = _prompt_value(runtime, field, prompt_default)
             field_source = f"interactive prompt for tls_edge.{field.key}"
         elif (
             not _contains(overlay, ("tls_edge", *field.key.split(".")))
@@ -229,9 +255,17 @@ def _load_validated_site(
     )
 
 
-def _render_config(root: Path, values: dict[str, Any]) -> tuple[Path, str, int, Path, str, int]:
+def _render_config(
+    root: Path,
+    values: dict[str, Any],
+    extra: Mapping[str, Any],
+) -> tuple[Path, str, int, Path, str, int]:
     try:
-        override_path, override_text, override_mode = updated_override(root, values)
+        override_path, override_text, override_mode = updated_override(
+            root,
+            values,
+            extra,
+        )
         env_path, env_text, env_mode = updated_consumer_env(root, values["domain"])
     except (OSError, ConfigError) as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
@@ -252,7 +286,8 @@ def configure(args: Any, runtime: CliRuntime) -> int:
         defaults, _, overlay = _load_checked_site(root)
         answers = load_answers(args.answers)
         answers = dict(migrate(answers))
-        validate_answers(defaults, answers)
+        validate_answers(defaults, answers, answers_file=args.answers)
+        extra = _answer_extras(answers)
         values, plan = _propose(
             defaults,
             overlay,
@@ -262,7 +297,9 @@ def configure(args: Any, runtime: CliRuntime) -> int:
             allow_prompt=args.answers is None,
             source=f"answers file {args.answers}",
         )
-        override_path, override_text, override_mode, env_path, env_text, env_mode = _render_config(root, values)
+        override_path, override_text, override_mode, env_path, env_text, env_mode = (
+            _render_config(root, values, extra)
+        )
     except ConfigError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
 
@@ -373,7 +410,7 @@ def build_cli() -> Any:
         dry_run_help="show proposed changes without writing the instance files",
         options=(
             root_option,
-            OptionSpec(("--answers",), "read configuration answers from a TOML file", metavar="FILE",
+            OptionSpec(("--answers",), "a sparse site override in [tls_edge.*] shape", metavar="FILE",
                        parser_kwargs={"type": Path, "default": None}),
         ),
         handler=configure,

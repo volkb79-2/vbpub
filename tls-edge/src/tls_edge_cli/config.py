@@ -193,12 +193,6 @@ def check_override(defaults: Mapping[str, Any], overlay: Mapping[str, Any]) -> N
     _check_override_table(defaults, overlay)
 
 
-def load_effective_config(root: Path) -> tuple[dict[str, Any], bool]:
-    _, override_path, _ = instance_paths(root)
-    _, _, effective = load_site(override_path.parent)
-    return effective["tls_edge"], os.path.lexists(override_path)
-
-
 def load_answers(path: Path | None) -> dict[str, Any]:
     """Parse a sparse answers file in the site-override shape."""
     if path is None:
@@ -210,20 +204,27 @@ def load_answers(path: Path | None) -> dict[str, Any]:
         raise ConfigError(f"cannot read answers file {path}: {exc}") from exc
     from .fields import LEGACY_ANSWER_KEYS, legacy_answers_message
 
-    top_level = sorted(set(answers) - {"tls_edge"})
-    if top_level:
-        key = top_level[0]
+    messages: list[str] = []
+    for key in sorted(set(answers) - {"tls_edge"}):
         if key in LEGACY_ANSWER_KEYS:
-            raise ConfigError(legacy_answers_message(key))
-        raise ConfigError(
-            f"unknown answers key {key!r}; answers use the site-override shape "
-            "[tls_edge.<table>]"
-        )
+            messages.append(legacy_answers_message(key))
+        else:
+            messages.append(
+                f"unknown answers key {key!r} (answers file {path}); "
+                "answers use the site-override shape [tls_edge.<table>]"
+            )
+    if messages:
+        raise ConfigError("\n".join(messages))
     return answers
 
 
-def validate_answers(defaults: Mapping[str, Any], answers: Mapping[str, Any]) -> None:
-    """Refuse answers that name anything but one of the managed schema keys."""
+def validate_answers(
+    defaults: Mapping[str, Any],
+    answers: Mapping[str, Any],
+    *,
+    answers_file: Path | None = None,
+) -> None:
+    """Refuse unknown answers and the open site-override tables."""
     from .fields import FIELD_BY_KEY
 
     if not answers:
@@ -246,28 +247,16 @@ def validate_answers(defaults: Mapping[str, Any], answers: Mapping[str, Any]) ->
             if key.rpartition(".")[0] == dotted.rpartition(".")[0]
         )
         hint = f"; did you mean {siblings[0]}?" if len(siblings) == 1 else ""
-        raise ConfigError(f"{message}{hint}") from exc
+        source = f" (answers file {answers_file})" if answers_file is not None else ""
+        raise ConfigError(
+            f"unknown answers key {dotted!r}{source}{hint}"
+        ) from exc
     for path in _all_paths(tls_edge, ("tls_edge",)):
         dotted = ".".join(path)
-        if dotted == "tls_edge.schema":
-            continue
         if any(path[: len(open_path)] == open_path for open_path in _OPEN_OVERRIDE_TABLES):
             raise ConfigError(
-                f"answers key {dotted!r} is an open site-override table; "
-                "answers may set only managed fields"
+                f"answers key {dotted!r} is an open site-override table"
             )
-        if dotted in managed_paths:
-            continue
-        if any(key.startswith(dotted + ".") for key in managed_paths):
-            continue
-        siblings = sorted(
-            key for key in managed_paths
-            if key.rpartition(".")[0] == dotted.rpartition(".")[0]
-        )
-        hint = f"; did you mean {siblings[0]}?" if len(siblings) == 1 else ""
-        raise ConfigError(
-            f"answers key {dotted!r} is not a managed setting{hint}"
-        )
 
 
 def _all_paths(
@@ -558,8 +547,12 @@ def _set_path(document: Any, path: tuple[str, ...], value: Any) -> None:
     current[path[-1]] = value
 
 
-def updated_override(root: Path, values: Mapping[str, Any]) -> tuple[Path, str, int]:
-    """Apply managed values, in field-table order, to the comment-preserving override."""
+def updated_override(
+    root: Path,
+    values: Mapping[str, Any],
+    extra: Mapping[str, Any] | None = None,
+) -> tuple[Path, str, int]:
+    """Apply managed values and unmanaged answer leaves to the override."""
     import tomlkit
     from .fields import FIELDS, MANAGED_KEYS
 
@@ -580,6 +573,12 @@ def updated_override(root: Path, values: Mapping[str, Any]) -> tuple[Path, str, 
     unknown = sorted(set(values) - MANAGED_KEYS)
     if unknown:
         raise ConfigError(f"unsupported configuration field {unknown[0]!r}")
+    extra = dict(extra or {})
+    managed_extra = sorted(set(extra) & MANAGED_KEYS)
+    if managed_extra:
+        raise ConfigError(
+            f"managed configuration field {managed_extra[0]!r} must use field-table values"
+        )
     _set_path(document, ("tls_edge", "schema"), SCHEMA)
     for field in FIELDS:
         if field.key in values:
@@ -588,6 +587,8 @@ def updated_override(root: Path, values: Mapping[str, Any]) -> tuple[Path, str, 
                 ("tls_edge", *field.key.split(".")),
                 values[field.key],
             )
+    for key in sorted(extra):
+        _set_path(document, ("tls_edge", *key.split(".")), extra[key])
     return override_path, tomlkit.dumps(document), mode
 
 

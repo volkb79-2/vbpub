@@ -10,14 +10,12 @@ from typing import Any, Callable
 
 from .config import (
     ConfigError,
-    SCHEMA,
     TLS_MODES,
     normalize_bind_ip,
     normalize_cert_base,
     normalize_cgroup_parent,
     normalize_domain,
     normalize_email,
-    normalize_port,
     normalize_provider,
     normalize_static_domains,
     normalize_volume_name,
@@ -79,6 +77,8 @@ class Field:
             raise ValueError(
                 f"unsupported field kind {self.kind!r} for tls_edge.{self.key}"
             )
+        if self.kind == "choice" and not self.choices:
+            raise ValueError(f"choice field tls_edge.{self.key} requires at least one choice")
 
 
 def _static_domains(value: Any) -> list[str]:

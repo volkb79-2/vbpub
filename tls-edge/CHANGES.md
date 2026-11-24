@@ -13,6 +13,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Changed
 - `tls-edge configure` now uses one field table for prompts, answers, explicit override writes and the proposed
   merge. Shipped defaults come only from the rendered defaults file.
+- Schema-shaped answers may set any non-open, validated leaf; unmanaged leaves are written explicitly.
 
 <!-- cmru: pending release notes end -->
 
