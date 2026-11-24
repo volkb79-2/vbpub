@@ -231,7 +231,7 @@ FIELDS: tuple[Field, ...] = (
 FIELD_BY_KEY = {field.key: field for field in FIELDS}
 MANAGED_KEYS = frozenset(FIELD_BY_KEY)
 
-LEGACY_ANSWER_KEYS: Mapping[str, str] = MappingProxyType({
+LEGACY_ANSWER_KEYS: Mapping[str, str | None] = MappingProxyType({
     "domain": "domain",
     "tls_mode": "tls.mode",
     "acme_email": "acme.email",
@@ -248,11 +248,18 @@ LEGACY_ANSWER_KEYS: Mapping[str, str] = MappingProxyType({
     "static_cert_base": "static.cert_base",
     "static_domains": "static.domains",
     "static_source": "static.source",
+    "calls_enabled": None,
+    "calls_port": None,
 })
 
 
 def legacy_answers_message(key: str) -> str:
     target = LEGACY_ANSWER_KEYS[key]
+    if target is None:
+        return (
+            "the Calls preset was removed in 4.0; delete this key "
+            "(Mattermost publishes media directly)"
+        )
     table, separator, leaf = target.rpartition(".")
     table_name = f"tls_edge.{table}" if separator else "tls_edge"
     return (

@@ -403,6 +403,44 @@ def test_configure_drops_a_migrated_calls_table_and_shows_both_changes(
     assert "calls" not in written
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("calls_enabled", "true"), ("calls_port", "8443")],
+)
+def test_removed_calls_flat_answer_key_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+    value: str,
+) -> None:
+    root, _ = _instance(tmp_path / key, _override(""))
+    answers = tmp_path / f"{key}.toml"
+    answers.write_text(f"{key} = {value}\n", encoding="utf-8")
+    result, output = _run_cli(
+        monkeypatch,
+        [
+            "configure",
+            "--root",
+            str(root),
+            "--answers",
+            str(answers),
+            "--dry-run",
+            "--yes",
+        ],
+    )
+    assert result == 2, output
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    errors = [
+        line.removeprefix("[ERROR] ")
+        for line in clean.splitlines()
+        if line.startswith("[ERROR] ")
+    ]
+    assert errors == [
+        "the Calls preset was removed in 4.0; delete this key "
+        "(Mattermost publishes media directly)"
+    ]
+
+
 def test_tracked_defaults_render_no_calls_defaults_ports_or_entrypoints(
     tmp_path: Path,
 ) -> None:
