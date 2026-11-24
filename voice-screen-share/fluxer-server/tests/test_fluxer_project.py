@@ -1,7 +1,7 @@
 """Offline guard for the Fluxer tryout (voice-screen-share/fluxer-server).
 
-No docker daemon, no network: it reads the shipped templates, renders them
-with jinja2 (when importable) and loads the hooks via importlib. Covers the
+No network: it reads the shipped templates, renders them with jinja2 and
+loads the hooks via importlib. Covers the
 isolation contract (own names, only the LiveKit pair published, nothing of the
 live edge), digest pinning, port-plan agreement with the area README, the
 resource caps, "no credentials / no hard-coded domain in tracked files", and
@@ -13,7 +13,6 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -21,7 +20,9 @@ import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
+import jinja2
 import pytest
+import yaml
 
 PROJECT = Path(__file__).resolve().parents[1]
 AREA = PROJECT.parent
@@ -46,7 +47,6 @@ def _load_hook(name: str):
 
 
 def _render(path: Path, **context):
-    jinja2 = pytest.importorskip("jinja2")
     env = jinja2.Environment(undefined=jinja2.Undefined, keep_trailing_newline=True)
     return env.from_string(path.read_text(encoding="utf-8")).render(**context)
 
@@ -59,6 +59,23 @@ def _cfg(**overrides) -> dict:
     return cfg
 
 
+def test_rendered_account_passwords_are_exact_ciu_gen_local_secrets() -> None:
+    cfg = _cfg()
+    assert cfg["accounts"]["admin"] == "fx_admin"
+    assert cfg["accounts"]["users"] == ["fx_alice", "fx_bob"]
+
+    account_secrets = {
+        name: spec for name, spec in cfg["secrets"].items() if name.startswith("account_")
+    }
+    expected = {f"account_{name}" for name in ("fx_admin", "fx_alice", "fx_bob")}
+    assert set(account_secrets) == expected
+    for username in ("fx_admin", "fx_alice", "fx_bob"):
+        spec = account_secrets[f"account_{username}"]
+        assert spec["directive"] == f"GEN_LOCAL:fluxer/account_{username}"
+        assert spec["mode"] == "0600"
+        assert spec["consumed_by"] == "hook"
+
+
 def _mem_bytes(value: str) -> int:
     m = re.fullmatch(r"(\d+)([mg])", value)
     assert m, value
@@ -66,15 +83,12 @@ def _mem_bytes(value: str) -> int:
 
 
 def _tracked_files() -> list[Path]:
-    """Project files git would track: `git ls-files` when available, else a walk."""
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(PROJECT), "ls-files", "--cached", "--others", "--exclude-standard", "."],
-            capture_output=True, text=True, check=True, timeout=30,
-        ).stdout.splitlines()
-        return [PROJECT / line for line in out if (PROJECT / line).is_file()]
-    except (OSError, subprocess.SubprocessError):
-        return [p for p in PROJECT.rglob("*") if p.is_file() and ".ciu" not in p.parts]
+    """Project files git would track; git is a required test tool."""
+    out = subprocess.run(
+        ["git", "-C", str(PROJECT), "ls-files", "--cached", "--others", "--exclude-standard", "."],
+        capture_output=True, text=True, check=True, timeout=30,
+    ).stdout.splitlines()
+    return [PROJECT / line for line in out if (PROJECT / line).is_file()]
 
 
 # ── isolation ────────────────────────────────────────────────────────────────
@@ -135,14 +149,12 @@ def test_no_live_edge_routers_and_own_router_name() -> None:
 def test_not_routed_through_the_edge_when_disabled() -> None:
     cfg = _cfg(expose_public=False)
     assert cfg["expose_public"] is False
-    yaml = pytest.importorskip("yaml")
     doc = yaml.safe_load(_render(COMPOSE, fluxer=cfg))
     assert "ingress" not in doc["networks"]
     assert all("labels" not in svc and "ingress" not in svc.get("networks", []) for svc in doc["services"].values())
 
 
 def test_routed_through_the_edge_when_enabled() -> None:
-    yaml = pytest.importorskip("yaml")
     cfg = _cfg(expose_public=True)
     doc = yaml.safe_load(_render(COMPOSE, fluxer=cfg))
     edge = doc["services"]["edge"]
@@ -157,7 +169,6 @@ def test_routed_through_the_edge_when_enabled() -> None:
 
 
 def test_edge_is_plain_http_behind_proxy_mode() -> None:
-    yaml = pytest.importorskip("yaml")
     doc = yaml.safe_load(_render(COMPOSE, fluxer=_cfg()))
     env = doc["services"]["edge"]["environment"]
     assert env["FLUXER_EDGE_SITE_ADDRESS"] == ":8080"
@@ -206,7 +217,6 @@ def test_every_service_has_memory_and_cpu_caps_below_the_bundle_defaults() -> No
 
 
 def test_compose_renders_and_is_valid_yaml() -> None:
-    yaml = pytest.importorskip("yaml")
     doc = yaml.safe_load(_render(COMPOSE, fluxer=_cfg()))
     assert len(doc["services"]) == 21
     assert doc["networks"]["fluxer"]["driver"] == "bridge"
@@ -219,7 +229,6 @@ def test_compose_renders_and_is_valid_yaml() -> None:
     assert "FLUXER_POSTGRES_PASSWORD" not in rendered
 
 
-@pytest.mark.skipif(shutil.which("docker") is None, reason="docker CLI absent")
 def test_docker_compose_config_validates(tmp_path: Path) -> None:
     (tmp_path / "ciu.compose.yml").write_text(_render(COMPOSE, fluxer=_cfg()), encoding="utf-8")
     proc = subprocess.run(
@@ -249,7 +258,6 @@ def test_ports_agree_with_the_area_readme_port_plan() -> None:
 
 
 def test_livekit_config_uses_the_configured_pair() -> None:
-    yaml = pytest.importorskip("yaml")
     doc = yaml.safe_load(_render(COMPOSE, fluxer=_cfg()))
     lk = yaml.safe_load(doc["services"]["livekit"]["environment"]["LIVEKIT_CONFIG"])
     assert lk["rtc"]["tcp_port"] == 7891 and lk["rtc"]["udp_port"] == 7892
@@ -312,15 +320,16 @@ def _ctx(tmp_path: Path) -> SimpleNamespace:
     return SimpleNamespace(stack_dir=str(tmp_path), wait_healthy=None)
 
 
-@pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl absent")
 def test_secrets_hook_generates_once_with_private_modes(secrets_hook, tmp_path: Path) -> None:
     cfg = {"fluxer": _cfg()}
-    secrets_hook.run(cfg, _ctx(tmp_path))
     d = tmp_path / ".ciu" / "secrets"
+    d.mkdir(parents=True)
+    (d / "accounts.json").write_text('{"fx_admin":"stale-password"}', encoding="utf-8")
+    secrets_hook.run(cfg, _ctx(tmp_path))
     assert stat.S_IMODE(d.stat().st_mode) == 0o700
     store_path = d / "fluxer-secrets.json"
     first = json.loads(store_path.read_text())
-    expected_files = {"fluxer-secrets.json", "accounts.json", "env.fluxer", "env.api", "env.postgres",
+    expected_files = {"fluxer-secrets.json", "env.fluxer", "env.api", "env.postgres",
                       "env.meilisearch", "env.livekit", "env.s3init"}
     assert {p.name for p in d.iterdir()} == expected_files
     for p in d.iterdir():
@@ -333,12 +342,9 @@ def test_secrets_hook_generates_once_with_private_modes(secrets_hook, tmp_path: 
     # idempotent: a second run changes nothing
     secrets_hook.run(cfg, _ctx(tmp_path))
     assert json.loads(store_path.read_text()) == first
-    accounts = json.loads((d / "accounts.json").read_text())
-    assert set(accounts) == {"fx_admin", "fx_alice", "fx_bob", "fx_carol"}
-    assert len({*accounts.values()}) == 4
+    assert not (d / "accounts.json").exists()
 
 
-@pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl absent")
 def test_secrets_hook_keeps_existing_values_and_fills_gaps(secrets_hook, tmp_path: Path) -> None:
     cfg = {"fluxer": _cfg()}
     secrets_hook.run(cfg, _ctx(tmp_path))
@@ -352,7 +358,6 @@ def test_secrets_hook_keeps_existing_values_and_fills_gaps(secrets_hook, tmp_pat
     assert after["postgres_password"] == kept and after["meili_master_key"]
 
 
-@pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl absent")
 def test_env_files_map_secrets_to_the_variable_names_the_compose_expects(secrets_hook, tmp_path: Path) -> None:
     secrets_hook.run({"fluxer": _cfg()}, _ctx(tmp_path))
     d = tmp_path / ".ciu" / "secrets"
@@ -373,13 +378,10 @@ def test_env_files_map_secrets_to_the_variable_names_the_compose_expects(secrets
 
 
 def test_hook_output_never_contains_a_secret_value(secrets_hook, tmp_path: Path, capsys) -> None:
-    if shutil.which("openssl") is None:
-        pytest.skip("openssl absent")
     secrets_hook.run({"fluxer": _cfg()}, _ctx(tmp_path))
     out = capsys.readouterr().out
     store = json.loads((tmp_path / ".ciu" / "secrets" / "fluxer-secrets.json").read_text())
-    accounts = json.loads((tmp_path / ".ciu" / "secrets" / "accounts.json").read_text())
-    for value in [*store.values(), *accounts.values()]:
+    for value in store.values():
         assert value not in out
 
 
@@ -394,15 +396,115 @@ def test_preflight_rejects_bad_accounts_and_ports(secrets_hook) -> None:
     assert any("udp_port" in f for f in findings)
 
 
-def test_accounts_payload_requires_every_credential() -> None:
+@pytest.fixture()
+def accounts_world(tmp_path: Path, monkeypatch):
     hook = _load_hook("post_compose_accounts")
-    root = _cfg()
-    accounts = {"fx_admin": "x", "fx_alice": "y", "fx_bob": "z", "fx_carol": "w"}
-    payload = hook.build_payload(root, accounts, {"setup_token": "t"})
-    assert payload["admin"]["username"] == "fx_admin" and len(payload["users"]) == 3
-    assert payload["registration_mode_after"] == "closed"
-    with pytest.raises(hook.AccountsError):
-        hook.build_payload(root, {"fx_admin": "x"}, {"setup_token": "t"})
+    secrets = tmp_path / ".ciu" / "secrets"
+    account_store = secrets / "fluxer"
+    account_store.mkdir(parents=True)
+    passwords = {
+        "fx_admin": "fx-admin-PASSWORD-SENTINEL",
+        "fx_alice": "fx-alice-PASSWORD-SENTINEL",
+        "fx_bob": "fx-bob-PASSWORD-SENTINEL",
+    }
+    for username, password in passwords.items():
+        (account_store / f"account_{username}").write_text(password, encoding="utf-8")
+    (secrets / "fluxer-secrets.json").write_text(
+        json.dumps({"setup_token": "setup-token-SENTINEL"}), encoding="utf-8"
+    )
+
+    calls: list[dict] = []
+    secret_reads: list[str] = []
+    harness = {"fail": False}
+
+    def fake_run(argv, input=None, **kwargs):
+        payload = json.loads(input)
+        calls.append({"argv": list(argv), "input": input, "payload": payload})
+        if harness["fail"]:
+            return subprocess.CompletedProcess(argv, 1, stdout=input, stderr=input)
+        result = {
+            payload["admin"]["username"]: "admin_created",
+            **{user["username"]: "user_created" for user in payload["users"]},
+            "_setup": "configured",
+            "_registration_mode": "set:closed",
+        }
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(result), stderr="")
+
+    monkeypatch.setattr(hook.subprocess, "run", fake_run)
+
+    def secret_file(name: str) -> Path:
+        secret_reads.append(name)
+        path = account_store / name
+        if not path.is_file():
+            raise KeyError(name)
+        return path
+
+    ctx = SimpleNamespace(
+        stack_dir=str(tmp_path),
+        wait_healthy=lambda service, timeout_s=1: True,
+        secret_file=secret_file,
+    )
+    cfg = {"fluxer": _cfg()}
+    return hook, cfg, ctx, calls, secret_reads, harness, secrets
+
+
+def test_account_hook_reads_three_ciu_secrets_and_creates_exact_accounts(accounts_world) -> None:
+    hook, cfg, ctx, calls, secret_reads, _, _ = accounts_world
+    hook.run(cfg, ctx)
+
+    assert len(calls) == 1
+    payload = calls[0]["payload"]
+    assert payload["admin"] == {
+        "username": "fx_admin", "password": "fx-admin-PASSWORD-SENTINEL",
+    }
+    assert payload["users"] == [
+        {"username": "fx_alice", "password": "fx-alice-PASSWORD-SENTINEL"},
+        {"username": "fx_bob", "password": "fx-bob-PASSWORD-SENTINEL"},
+    ]
+    assert secret_reads == [
+        "account_fx_admin", "account_fx_alice", "account_fx_bob",
+    ]
+
+
+def test_account_passwords_never_appear_in_argv_logs_or_errors(accounts_world, capsys) -> None:
+    hook, cfg, ctx, calls, _, harness, _ = accounts_world
+    passwords = {
+        "fx-admin-PASSWORD-SENTINEL",
+        "fx-alice-PASSWORD-SENTINEL",
+        "fx-bob-PASSWORD-SENTINEL",
+    }
+
+    hook.run(cfg, ctx)
+    captured = capsys.readouterr()
+    assert calls and all(not (passwords & set(call["argv"])) for call in calls)
+    assert not any(password in " ".join(call["argv"]) for call in calls for password in passwords)
+    assert not any(password in captured.out + captured.err for password in passwords)
+
+    harness["fail"] = True
+    with pytest.raises(hook.AccountsError) as exc_info:
+        hook.run(cfg, ctx)
+    captured = capsys.readouterr()
+    message = str(exc_info.value)
+    assert not any(password in message + captured.out + captured.err for password in passwords)
+
+
+def test_account_hook_rerun_is_idempotent_and_writes_no_password_copy(accounts_world) -> None:
+    hook, cfg, ctx, calls, _, _, secrets = accounts_world
+    hook.run(cfg, ctx)
+    first_payload = calls[0]["payload"]
+    hook.run(cfg, ctx)
+
+    assert len(calls) == 2
+    assert calls[0]["payload"] == calls[1]["payload"] == first_payload
+    files = {
+        path.relative_to(secrets).as_posix() for path in secrets.rglob("*") if path.is_file()
+    }
+    assert files == {
+        "fluxer-secrets.json",
+        "fluxer/account_fx_admin",
+        "fluxer/account_fx_alice",
+        "fluxer/account_fx_bob",
+    }
 
 
 def test_accounts_script_prints_codes_only() -> None:

@@ -2,13 +2,8 @@
 
 Authentication is Jitsi secure-domain with prosody **internal** accounts. Nobody joins without
 logging in (`jitsi.auth.guests = false`). Accounts are declared in `ciu.defaults.toml.j2`
-(`[[jitsi.users]]`): `admin`, plus `dummy1`, `dummy2`, `dummy3` marked `dummy = true`. Jitsi
-internal auth has no separate admin role: `admin` is simply a normal account you keep for yourself.
-
-**Dummy users are opt-in.** By default (`jitsi.auth.dummy_users = false`) only `admin` is registered, so a
-production host carries no throwaway accounts. For a test setup set `dummy_users = true` in a sparse
-`ciu.toml.j2` override under `[jitsi.auth]` and `ciu up`. Turning it back to false stops registering them
-but does not delete accounts already created; unregister them (see "Add or remove a user").
+(`[[jitsi.users]]`): `admin`, `alice`, and `bob`, all registered on every `ciu up`. Jitsi internal auth
+has no separate admin role: `admin` is simply a normal account kept for the operator.
 
 ## Hostdir permissions
 
@@ -21,48 +16,47 @@ container and `chown 1000:1000` (ciu then accepts them, S6.3).
 
 ## Where the credentials live
 
-- Source of truth: one file per user, `voice-screen-share/jitsi-server/.ciu/secrets/jitsi/user_<name>`
-  (mode 0600, directory 0700, generated randomly by ciu `GEN_LOCAL` on first `ciu up`).
-- Convenience copy: `voice-screen-share/jitsi-server/.ciu/credentials.txt` (0600, rebuilt on every
-  `ciu up`; tab-separated `user<TAB>password`).
-- `.ciu/` is gitignored; nothing in a tracked file or in a log contains a password. `ciu up`
-  prints only the path of the credentials file. Read it yourself: `cat <path>`.
-- The three service secrets (`jicofo_auth_password`, `jvb_auth_password`, `jicofo_component_secret`)
-  live next to them. The Jitsi images take them only from the container environment, so they
-  are readable by anyone with docker access on the host.
+Each password is one ciu `GEN_LOCAL` secret: a mode-0600 file in a 0700 directory, git-ignored under
+`**/.ciu/`. ciu generates each value on first materialization and reuses it on later runs. The hook writes no
+aggregate credentials file and removes an obsolete `.ciu/credentials.txt` copy left by an older checkout. From
+the repository root, the exact commands are:
+
+```bash
+cat voice-screen-share/jitsi-server/.ciu/secrets/jitsi/user_admin
+cat voice-screen-share/jitsi-server/.ciu/secrets/jitsi/user_alice
+cat voice-screen-share/jitsi-server/.ciu/secrets/jitsi/user_bob
+ciu secrets list --dir voice-screen-share/jitsi-server
+```
+
+`ciu secrets list` shows names and store paths without values. The three service secrets
+(`jicofo_auth_password`, `jvb_auth_password`, `jicofo_component_secret`) live next to the account files.
+The Jitsi images take those service secrets from the container environment, so anyone with docker access can
+read them there.
 
 The login name in the Jitsi UI is the bare username (`admin`), not `admin@meet.jitsi`.
 
 ## How accounts are created (idempotent)
 
-After the stack is healthy, the `post_compose` hook runs `prosodyctl register <user> meet.jitsi`
-for every declared user inside the prosody container, password on stdin. Registering an
-existing user sets its password to the stored value, so every `ciu up` converges to the same
-state. (Within the container, for the instant that process runs, the password is an argument
-of `prosodyctl`; it is never on the host command line.)
+After the stack is healthy, the `post_compose` hook reads all three password files through `ctx.secret_file()`.
+It then runs `prosodyctl register <user> meet.jitsi` for each inside the prosody container, with the password on
+stdin. Registering an existing user sets its password to the stored value, so every `ciu up` converges to the
+same state. Within the container, for the instant that process runs, the password is an argument of
+`prosodyctl`; it is never on the host command line.
 
 ## Rotate one user
 
 ```bash
-rm voice-screen-share/jitsi-server/.ciu/secrets/jitsi/user_dummy1   # exact path, one file
+ciu secrets reset --dir voice-screen-share/jitsi-server --name user_alice -y
 ciu up --dir voice-screen-share/jitsi-server --yes
 ```
 
-ciu generates a new password, the hook applies it, `credentials.txt` is rebuilt. Existing
-sessions of that user stay valid until they end.
+ciu generates a new password and the hook applies it. Existing sessions of that user stay valid until they end.
 
 ## Rotate the service secrets
 
 Delete `jicofo_auth_password`, `jvb_auth_password` and `jicofo_component_secret` together, remove
 `vol-prosody-data/data/auth%2emeet%2ejitsi/accounts/{focus,jvb}.dat`, then `ciu up` (the
 containers are recreated and re-register).
-
-## Add or remove a user
-
-Add a `[[jitsi.users]]` entry and a matching `user_<name>` secret (same shape as the others)
-in a sparse override, `ciu up`. Removing the entry does not delete the account; delete it with
-`docker exec <prefix>-prosody prosodyctl --config /run/prosody/config/prosody.cfg.lua unregister <user> meet.jitsi`
-(and the secret file).
 
 ## Allowing guests
 
