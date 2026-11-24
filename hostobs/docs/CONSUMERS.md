@@ -379,3 +379,26 @@ Which image runs what: the Rust lanes run on `tester-unified-rust:rs-20261118`, 
 the registry-set identity, so a workspace-only lock edit (a path dependency between members)
 needs no image rebuild. An image with the older whole-lock identity rejects ANY lock byte
 change. Which tag a host carries is a fact of that host and is not recorded in this repository.
+
+## Boundaries
+
+These four rules say where hostobs ends and its neighbours begin; later packages and other tools
+follow them.
+
+1. **cgprofile is frozen and shares no code.** Until hostobs 1.0 runs on both hosts with one R2
+   campaign each, cgprofile 3.x takes fixes and the M4 `mark` forwarder only, and no code is
+   shared between the two (plan v4 §G, §D.1; cgprofile backlog item CP-66). New collector and
+   observer features are built in hostobs.
+2. **A span is one JSON line on the observer socket.** The line is a JSON-mode request
+   (WIRE §8.1, §8.2) with verb `annotate` and the args of WIRE §4.12 (typed span fields in plan v4
+   §C.4). WIRE §4.12 fixes its args and result; the probe serves it from M3 (WIRE §4.3). A control
+   client sends the same line to act on the control socket. The judges, assay and run-gate, stay
+   dependency-free and write that line themselves. `hostobs_client` (WIRE §7) and `hostobs-mark`
+   (WIRE §8.5) serve importers such as cmru, iobench and `cgprofile mark`: programs and scripts
+   that would rather call a helper than speak the wire.
+3. **act never writes `io.cost`, `io.weight` or sysctl.** `hostobs-act` serves only the verbs
+   of plan v4 §A.2, and iogovmon owns `io.cost.*`, `io.weight` and the sysctls (plan v4 §A.1,
+   "Never does" column for `hostobs-act`).
+4. **iogovmon reads hostobs only after M3, and only to do less.** It reads through the library
+   once the M3 release exists, and hostobs data may only make iogovmon less active (iogovmon's
+   asymmetric trust rule H2, `docs/design/iogovmon/DESIGN-rev9-2026-11-06.md`; plan v4 §D.1, §G).

@@ -293,7 +293,9 @@ services:
       MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"
       MM_PLUGINSETTINGS_ENABLEMARKETPLACE: "false"
       MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE: "false"
-{% if mattermost.calls.enabled %}
+{% if mattermost.calls.enabled and mattermost.expose_public %}
+      # Calls media is raw DTLS/SRTP traffic. Publish it directly on the host
+      # instead of adding a userland L4 hop through the web edge.
       MM_CALLS_DEFAULT_ENABLED: "true"
       MM_CALLS_ALLOW_SCREEN_SHARING: "{{ 'true' if mattermost.calls.allow_screen_sharing else 'false' }}"
       MM_CALLS_UDP_SERVER_PORT: "{{ mattermost.calls.port }}"
@@ -335,9 +337,10 @@ services:
       - mattermost-client-plugins:/mattermost/client/plugins
     expose:
       - "{{ mattermost.app.port }}"
-{% if mattermost.calls.enabled %}
-      - "{{ mattermost.calls.port }}/tcp"
-      - "{{ mattermost.calls.port }}/udp"
+{% if mattermost.calls.enabled and mattermost.expose_public %}
+    ports:
+      - "{{ mattermost.calls.public_port }}:{{ mattermost.calls.port }}/tcp"
+      - "{{ mattermost.calls.public_port }}:{{ mattermost.calls.port }}/udp"
 {% endif %}
     networks:
       - internal
@@ -360,17 +363,6 @@ services:
       traefik.http.routers.nyxloom-mattermost.rule: "Host(`{{ mattermost.public_host }}`)"
       traefik.http.routers.nyxloom-mattermost.entrypoints: "websecure"
       traefik.http.services.nyxloom-mattermost.loadbalancer.server.port: "{{ mattermost.app.port }}"
-{% if mattermost.calls.enabled %}
-      # Calls media is raw L4 traffic, not HTTPS. Route the TCP fallback and
-      # UDP media transport to the plugin's in-container listener.
-      traefik.tcp.routers.nyxloom-mattermost-calls-tcp.rule: "HostSNI(`*`)"
-      traefik.tcp.routers.nyxloom-mattermost-calls-tcp.entrypoints: "mattermost-calls-tcp"
-      traefik.tcp.routers.nyxloom-mattermost-calls-tcp.service: "nyxloom-mattermost-calls-tcp"
-      traefik.tcp.services.nyxloom-mattermost-calls-tcp.loadbalancer.server.port: "{{ mattermost.calls.port }}"
-      traefik.udp.routers.nyxloom-mattermost-calls-udp.entrypoints: "mattermost-calls-udp"
-      traefik.udp.routers.nyxloom-mattermost-calls-udp.service: "nyxloom-mattermost-calls-udp"
-      traefik.udp.services.nyxloom-mattermost-calls-udp.loadbalancer.server.port: "{{ mattermost.calls.port }}"
-{% endif %}
 {% endif %}
     logging:
       driver: json-file

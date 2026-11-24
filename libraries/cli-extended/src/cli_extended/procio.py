@@ -38,12 +38,13 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import IO, Any
+from typing import IO, Any, Literal
 
 __all__ = [
     "DEFAULT_DRAIN_SECONDS",
     "DEFAULT_TERM_GRACE_SECONDS",
     "OUTCOMES",
+    "Outcome",
     "CaptureResult",
     "ProcessEntry",
     "StreamResult",
@@ -58,7 +59,8 @@ __all__ = [
 
 DEFAULT_DRAIN_SECONDS = 2.0
 DEFAULT_TERM_GRACE_SECONDS = 5.0
-OUTCOMES = ("exited", "watchdog")
+Outcome = Literal["exited", "watchdog"]
+OUTCOMES: tuple[Outcome, ...] = ("exited", "watchdog")
 
 _PROC_ROOT = "/proc"
 _POLL_SECONDS = 0.2
@@ -118,19 +120,25 @@ class StreamResult:
     """The outcome of :func:`run_streaming`.
 
     ``returncode`` is always the child's own (a negative signal number after a watchdog kill).
-    ``abandoned_holders`` is ``()`` when nothing was abandoned, the pids that still held the
-    pipe when reading stopped, or ``None`` when the ``/proc`` scan failed. ``()`` is ambiguous
-    by itself ("nothing abandoned" or "abandoned, none found"): only ``warning`` says a pipe
-    was abandoned. ``warning`` is the
-    one-line WARN text (without a level prefix) when reading was abandoned, else ``None``.
+    ``abandoned`` is true exactly when reading stopped with an output pipe still open, whether
+    or not the holder scan found a pid. ``abandoned_holders`` is ``()`` when nothing was
+    abandoned, the pids that still held the pipe when reading stopped, or ``None`` when the
+    ``/proc`` scan failed. ``warning`` is the one-line WARN text (without a level prefix) when
+    reading was abandoned, else ``None``.
     """
 
     returncode: int
-    outcome: str
+    outcome: Outcome
     abandoned_holders: tuple[int, ...] | None
     warning: str | None
     last_line: str | None
     watchdog: WatchdogReport | None
+
+    @property
+    def abandoned(self) -> bool:
+        """Whether reading stopped while an output pipe was still open."""
+
+        return self.warning is not None
 
 
 class CaptureResult(subprocess.CompletedProcess):
@@ -148,6 +156,12 @@ class CaptureResult(subprocess.CompletedProcess):
         super().__init__(args, returncode, stdout, stderr)
         self.abandoned_holders = abandoned_holders
         self.warning = warning
+
+    @property
+    def abandoned(self) -> bool:
+        """Whether reading stopped while an output pipe was still open."""
+
+        return self.warning is not None
 
 
 # ---------------------------------------------------------------------- /proc helpers
@@ -695,6 +709,7 @@ def run_capture(
     cwd: Any,
     env: Mapping[str, str] | None,
     input: str | bytes | None = None,
+    stdin: int | None = None,
     timeout: float | None = None,
     text: bool = True,
     drain_seconds: float = DEFAULT_DRAIN_SECONDS,
@@ -708,13 +723,19 @@ def run_capture(
     ``abandoned_holders`` and carries the WARN text in ``warning``. ``text=True`` decodes like
     a text pipe (locale encoding, universal newlines) and, like ``subprocess.run``, is strict:
     undecodable output raises ``UnicodeDecodeError`` after the child has been reaped; ``False``
-    returns the ``bytes`` intact. With ``input is None`` stdin is inherited. ``timeout`` (seconds, from
-    the start) reaps the whole process group and raises ``subprocess.TimeoutExpired`` with the
-    partial output as bytes. Signals to the caller reap the group like :func:`run_streaming`.
+    returns the ``bytes`` intact. ``stdin=None`` inherits the caller's stdin when ``input`` is
+    also ``None``; ``input`` opens a pipe. ``stdin=subprocess.DEVNULL`` gives the child immediate
+    EOF, and no other value is accepted. ``timeout`` (seconds, from the start) reaps the whole
+    process group and raises ``subprocess.TimeoutExpired`` with the partial output as bytes.
+    Signals to the caller reap the group like :func:`run_streaming`.
     """
     _require_seconds("drain_seconds", drain_seconds, positive=False)
     if timeout is not None:
         _require_seconds("timeout", timeout, positive=True)
+    if stdin is not None and stdin != subprocess.DEVNULL:
+        raise ValueError("stdin must be None or subprocess.DEVNULL")
+    if stdin == subprocess.DEVNULL and input is not None:
+        raise ValueError("input cannot be combined with stdin=subprocess.DEVNULL")
     encoding = "utf-8" if sys.flags.utf8_mode else locale.getencoding()
     if input is None:
         data = None
@@ -726,6 +747,13 @@ def run_capture(
         raise TypeError(
             f"input must be {'str' if text else 'bytes'} when text={text}; got {type(input).__name__}"
         )
+    child_stdin = (
+        subprocess.PIPE
+        if data is not None
+        else subprocess.DEVNULL
+        if stdin == subprocess.DEVNULL
+        else None
+    )
     start = time.monotonic()
     buffers: dict[int, list[bytes]] = {}
     state = {"timed_out": False}
@@ -733,7 +761,7 @@ def run_capture(
         try:
             try:
                 proc = scope.spawn(
-                    argv, cwd=cwd, env=env, stdin=None if data is None else subprocess.PIPE,
+                    argv, cwd=cwd, env=env, stdin=child_stdin,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
                 )
                 assert proc.stdout is not None and proc.stderr is not None

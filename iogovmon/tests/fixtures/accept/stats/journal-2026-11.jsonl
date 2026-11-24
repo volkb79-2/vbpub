@@ -1,0 +1,6 @@
+{"type": "probe", "t": 500.0, "lane": "r_cold", "n": 1, "attempts": 1, "lat_us": [999999]}
+{"type": "probe", "t": 1100.0, "lane": "r_cold", "n": 5, "attempts": 10, "lat_us": [100, 200, 300, 400, 500]}
+{"type": "probe", "t": 1500.0, "lane": "r_witness", "n": 3, "attempts": 3, "lat_us": [50, 50, 50]}
+{"type": "bench", "t": 1600.0, "lanes": {"r_seq": {"valid": true, "rate_bps": 104857600}, "w_fresh_qd4": {"valid": true, "rate_write_bps": 209715200}, "w_over_4k": {"valid": true, "lat": {"lat_us": [10, 20, 30]}}, "r_bad": {"valid": false, "rate_bps": 1}}}
+{"type": "probe", "t": 2500.0, "lane": "r_cold", "n": 2, "attempts": 10, "lat_us": [1000, 2000]}
+{"type": "probe", "t": 4000.0, "lane": "r_cold", "n": 1, "attempts": 1, "lat_us": [7]}
