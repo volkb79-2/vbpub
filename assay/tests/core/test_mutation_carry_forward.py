@@ -296,7 +296,7 @@ def test_survivor_is_carried_pessimistically_and_keeps_the_r2_claim_failing(
     ) == 0
     r2 = next(claim for claim in verdict["claims"] if claim["rigor"] == "R2")
     assert r2["status"] == "FAIL"
-    assert code != 0, (out, err)
+    assert code == 1, (out, err)
     assert out.count("--rejudge-carried") == 1
     assert "WP4 replay" in out
 
@@ -326,7 +326,7 @@ def test_carry_forward_records_the_outcome_without_progress(
         stdout=out,
         stderr=err,
     )
-    assert code != 0
+    assert code == 1
     (record,) = _records(final_state)
     assert record["provenance"]["kind"] == "carried"
     assert "provenance" in record and "carry_over" in record
@@ -452,7 +452,7 @@ def test_locus_survivor_is_rewritten_for_the_current_candidate(
         if claim["rigor"] == "R2"
     )
     assert r2["status"] == "FAIL"
-    assert code != 0
+    assert code == 1
 
 
 def test_chained_carry_forward_names_the_original_executed_record(
@@ -1193,7 +1193,7 @@ def test_f11_module_and_class_body_edits_run_the_full_judge(
         "--carry-forward",
         str(source_store),
     )
-    assert code != 0
+    assert code == 1
     carry = _event(final, "carry_forward")
     assert (carry["exact_id"], carry["locus"], carry["window"]) == (0, 0, 0)
     assert carry["unmatched"] == 1
@@ -1314,7 +1314,7 @@ def test_carry_forward_requires_native_r2_and_list_pending_context(
     assert "apply only to --list-pending" in no_listing[2]
 
     non_r2 = _LANE.replace('rigor = ["R0", "R2"]', 'rigor = ["R0"]')
-    non_r2 = non_r2.split("[lanes.unit.judge.mutation]", 1)[0]
+    non_r2 = non_r2.split("[lanes.unit.judge]", 1)[0]
     git_repo.write("assay.toml", non_r2)
     git_repo.commit_all("remove R2")
     code, error = _invoke_run(
@@ -1459,7 +1459,7 @@ def test_structural_but_invalid_survivor_is_rejected_then_rerun(
         "--carry-forward",
         str(source_store),
     )
-    assert code != 0
+    assert code == 1
     carry = _event(final, "carry_forward")
     assert carry["invalid_records"] == 1
     assert carry["survivors_carried"] == 0
@@ -1472,36 +1472,49 @@ def test_structural_but_invalid_survivor_is_rejected_then_rerun(
 def test_f17_carry_forward_shards_merge_with_provenance_intact(
     git_repo: GitRepo, tmp_path: Path
 ):
-    _seed_source(git_repo, "a = True\nb = True\n", "a = False\nb = False\n")
+    _seed_source(
+        git_repo,
+        "a = True\nb = True\nc = True\nd = True\n",
+        "a = False\nb = False\nc = False\nd = False\n",
+    )
     source_store = git_repo.path / ".assay" / "prior"
     _code, _first = _run(git_repo, source_store, tmp_path / "first.jsonl")
     prior_records = _records(source_store)
     assert {record["outcome_bucket"] for record in prior_records} == {"survived"}
-    assert len(mutation._carry_forward_record_paths(source_store)) == 2
+    assert len(mutation._carry_forward_record_paths(source_store)) == 4
     source_ids = tuple(record["candidate_id"] for record in prior_records)
 
     git_repo.write("tests/judge.sh", _BLIND + "# whole-tree judge change\n")
     git_repo.commit_all("judge change")
-    shards = [tmp_path / f"shard-{index}" for index in range(2)]
-    verdicts = [tmp_path / f"shard-{index}.json" for index in range(2)]
-    for index, (store, verdict) in enumerate(zip(shards, verdicts, strict=True)):
-        expected_ids = {
+    shard_count = 3
+    shards = [tmp_path / f"shard-{index}" for index in range(shard_count)]
+    verdicts = [tmp_path / f"shard-{index}.json" for index in range(shard_count)]
+    expected_by_shard = [
+        {
             source_ids[position]
             for position in mutation.select_mutation_shard(
-                source_ids, index=index, count=2
+                source_ids, index=index, count=shard_count
             )
         }
+        for index in range(shard_count)
+    ]
+    assert all(expected_by_shard[:2])
+    assert not expected_by_shard[2]
+
+    for index, (store, verdict, expected_ids) in enumerate(
+        zip(shards, verdicts, expected_by_shard, strict=True)
+    ):
         code, events = _run(
             git_repo,
             store,
             tmp_path / f"shard-{index}.jsonl",
             "--shard",
-            f"{index}/2",
+            f"{index}/{shard_count}",
             "--carry-forward",
             str(source_store),
             verdict=verdict,
         )
-        assert code == (0 if not expected_ids else 1)
+        assert code == (1 if expected_ids else 5)
         assert _event(events, "carry_forward")["survivors_carried"] == len(expected_ids)
         assert _event(events, "candidate") is None
         shard_records = _records(store)
@@ -1509,6 +1522,14 @@ def test_f17_carry_forward_shards_merge_with_provenance_intact(
         assert {record["provenance"]["kind"] for record in shard_records} <= {
             "carried"
         }
+        claim = next(
+            item
+            for item in json.loads(verdict.read_text(encoding="utf-8"))["claims"]
+            if item["rigor"] == "R2"
+        )
+        assert claim["status"] == ("FAIL" if expected_ids else "INCONCLUSIVE")
+        if not expected_ids:
+            assert claim["reason_code"] == "NO_MUTANTS"
         assert main(
             ["verify", str(verdict)], stdout=io.StringIO(), stderr=io.StringIO()
         ) == 0
@@ -1529,13 +1550,13 @@ def test_f17_carry_forward_shards_merge_with_provenance_intact(
         str(source_store),
         verdict=merged_verdict,
     )
-    assert code != 0
-    assert _event(events, "carry_over")["copied_total"] == 2
+    assert code == 1
+    assert _event(events, "carry_over")["copied_total"] == 4
     carry = _event(events, "carry_forward")
     assert (carry["exact_id"], carry["locus"], carry["window"]) == (0, 0, 0)
     assert carry["same_judge_resume"] == 0
     records = _records(merged)
-    assert len(records) == 2
+    assert len(records) == 4
     assert {record["provenance"]["kind"] for record in records} == {"carried"}
     assert main(
         ["verify", str(merged_verdict)], stdout=io.StringIO(), stderr=io.StringIO()
@@ -1545,7 +1566,7 @@ def test_f17_carry_forward_shards_merge_with_provenance_intact(
         for claim in json.loads(merged_verdict.read_text(encoding="utf-8"))["claims"]
         if claim["rigor"] == "R2"
     )
-    assert len(r2["mutation"]["survived"]) == 2
+    assert len(r2["mutation"]["survived"]) == 4
 
 
 def test_carry_forward_composes_with_reuse_from(
