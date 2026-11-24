@@ -153,6 +153,9 @@ class LifecycleRunner(stages.Runner):
         if self.action == "base-exception-unreaped":
             self.host.unreaped_children.add(4242)
             raise KeyboardInterrupt("the lifecycle test was interrupted after taking the claim")
+        if self.action == "aborted-unreaped":
+            self.host.unreaped_children.add(4242)
+            raise Aborted("the lifecycle test aborted after taking the claim")
         if self.action == "first-signal":
             writer = self.job("first-signal", "randwrite", 4096, 1, 10, 0, GIB, io_size=4096)
             self.allowed_writes.add(0, GIB)
@@ -708,7 +711,8 @@ def test_tgt_12_real_verify_live_refuses_devno_size_and_partuuid_drift(monkeypat
         else real_open(path, *args, **kwargs)
     ))
 
-    def run(argv, **_kwargs):
+    def run(argv, **kwargs):
+        assert kwargs == {"capture_output": True, "text": True, "check": False}
         blkid_calls.append(list(argv))
         return SimpleNamespace(returncode=0 if live_partuuid else 2,
                                stdout=f"PART_ENTRY_UUID={live_partuuid}\n" if live_partuuid else "", stderr="")
@@ -852,7 +856,7 @@ def test_tgt_12_fio_device_preamble_is_a_warning_not_a_parse_failure():
     cleaned(host)
 
 
-def test_tgt_12_fio_job_error_is_a_named_failure_even_with_a_preamble_and_rc_zero():
+def test_pla_20_fio_job_error_is_a_named_failure_even_with_a_preamble_and_rc_zero():
     host = standard_host()
     read = devio.FioJob("error-job", DEV, "randread", 4096, 1, 1, 0, 4096,
                         prefix="/run/iobench/error-job")
@@ -892,8 +896,15 @@ class _PopenStub:
 class _KillTimeoutPopen(_PopenStub):
     timeout: float | None = None
 
+    def __init__(self, argv, **kwargs) -> None:
+        super().__init__(argv, **kwargs)
+        self.signals: list[int] = []
+
     def poll(self) -> None:
         return None
+
+    def send_signal(self, signum: int) -> None:
+        self.signals.append(signum)
 
     def wait(self, timeout=None) -> int:
         self.timeout = timeout
@@ -948,6 +959,7 @@ def test_tgt_12_proc_handle_kill_timeout_sets_and_reports_the_unreaped_pid(monke
     handle.kill()
     assert handle.unreaped_pid == 4242 and seen == [4242]
     assert handle._p.timeout == host_mod.SUPERVISOR_EXIT_TIMEOUT_S
+    assert handle._p.signals == [signal.SIGTERM]
     assert handle._out.closed and handle._err.closed
 
 
@@ -956,7 +968,7 @@ def test_tgt_12_proc_handle_poll_reports_the_supervisor_unreaped_sentinel(monkey
     monkeypatch.setattr(host_mod.subprocess, "Popen", _SentinelPopen)
     monkeypatch.setattr(host_mod, "_PRCTL", object())
     handle = host_mod._ProcHandle(["true"], on_unreaped=seen.append)
-    handle._err.write(f"{host_mod.SUPERVISOR_UNREAPED_PREFIX}6001,6002\n")
+    handle._err.write(f"partial-no-newline{host_mod.SUPERVISOR_UNREAPED_PREFIX}6001,6002")
     handle._err.flush()
     assert handle.poll() == host_mod.SUPERVISOR_UNREAPED_STATUS
     assert handle.unreaped_pid == 6001 and seen == [6001, 6002]
@@ -977,6 +989,22 @@ def test_tgt_12_real_release_keeps_the_claim_under_a_registered_active_raw_handl
     assert problem == "raw_claim_child_unreaped: raw writer handle(s) 5151 still hold the claim"
     assert real.closed == [] and real.host._claim_fd == 71
     raw_handle.active = False
+    assert real.host.release_claim() is None
+    assert real.closed == [71]
+
+
+def test_tgt_12_real_finished_raw_handle_closes_temp_files_while_the_claim_is_held(monkeypatch):
+    real = RealClaim(monkeypatch)
+    assert real.claim() == 71
+    monkeypatch.setattr(host_mod, "_PRCTL", object())
+    monkeypatch.setattr(host_mod.subprocess, "Popen", _PopenStub)
+    writer = claimed_write_job(name="finished-raw-handle")
+    handle = real.host.write_range(writer.argv(), real.ref, 0, writer.size)
+    assert not handle._out.closed and not handle._err.closed
+    assert handle.wait().returncode == 0
+    assert handle._out.closed and handle._err.closed
+    assert real.host._claim_fd == 71
+    assert handle in real.host._raw_handles
     assert real.host.release_claim() is None
     assert real.closed == [71]
 
@@ -1136,6 +1164,19 @@ def test_tgt_12_unreaped_child_keeps_the_claim_and_fails_the_run():
     assert result.message == "raw_claim_child_unreaped: child pid(s) 4242 still hold the claim"
     assert host.claims[DEV] == target_ref(host)
     assert host.locks == {}
+
+
+def test_tgt_12_aborted_run_with_unreaped_child_keeps_aborted_and_exit_8():
+    host = make_host(cache=INVERSION)
+    runner = LifecycleRunner(host, config(raw_write=True), "aborted-unreaped")
+    result = runner.execute()
+    assert result.status == "aborted" and result.exit_code == 8
+    assert "the lifecycle test aborted after taking the claim" in result.message
+    assert "raw_claim_child_unreaped: child pid(s) 4242 still hold the claim" in result.message
+    assert host.claims[DEV] == target_ref(host)
+    assert host.locks == {}
+    host.unreaped_children.clear()
+    host.release_claim()
 
 
 def test_tgt_12_cleanup_preserves_verification_failure_and_claim_problem(monkeypatch):

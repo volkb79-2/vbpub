@@ -36,6 +36,7 @@ BLKDISCARD = 0x1277
 SUPERVISOR_UNREAPED_STATUS = 254
 SUPERVISOR_UNREAPED_PREFIX = "IOBENCH-SUPERVISOR-UNREAPED-CHILDREN="
 SUPERVISOR_REAP_TIMEOUT_S = 2.0
+# Per-handle kill fallback; an abort waits this long serially for each stuck supervisor.
 SUPERVISOR_EXIT_TIMEOUT_S = 10.0
 
 
@@ -486,9 +487,10 @@ class _ProcHandle:
         stderr = self._err.read()
         if returncode == SUPERVISOR_UNREAPED_STATUS:
             for line in stderr.splitlines():
-                if not line.startswith(SUPERVISOR_UNREAPED_PREFIX):
+                marker_at = line.find(SUPERVISOR_UNREAPED_PREFIX)
+                if marker_at < 0:
                     continue
-                detail = line.partition("=")[2].strip()
+                detail = line[marker_at + len(SUPERVISOR_UNREAPED_PREFIX):].strip()
                 try:
                     pids = tuple(int(pid) for pid in detail.split(",") if pid != "unknown")
                 except ValueError:
@@ -505,7 +507,12 @@ class _ProcHandle:
     def wait(self) -> RunResult:
         rc = self._p.wait()
         self._out.seek(0)
-        return RunResult(rc, self._out.read(), self._inspect_stderr(rc))
+        try:
+            return RunResult(rc, self._out.read(), self._inspect_stderr(rc))
+        finally:
+            self._out.close()
+            self._err.close()
+            self._closed = True
 
     def kill(self) -> None:
         if self._closed:
