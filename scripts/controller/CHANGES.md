@@ -6,6 +6,28 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Changed
+- `hooks/ctx-hooks.py` is now a drop-in replacement for the untracked live hook
+  `.controller-state/hooks/ctx.py` (CTL-43; wiring and deleting `ctx.py` are the
+  controller's step): only the command path in `.claude/settings.local.json`
+  changes. The pressure ladder reads its ceiling from
+  `~/.claude/settings.json` (`modelSettings.<model>.autoCompactWindow` of the
+  transcript's model, else the top-level `autoCompactWindow`, else 500000) and
+  prints the live hook's growth marker ("calls to the Nk ceiling"). One soft
+  threshold per kind: `CTX_SOFT_CONTROLLER` (alias `CTX_CONTROLLER_SOFT`, default
+  650000) and `CTX_SOFT_AGENT` (default 200000). A controller below its threshold
+  persists and keeps working; at or past it, it is told to write the handover
+  (controller-handover skill), sync the plan, set READY and end the turn
+  (operator 2026-11-18: auto-compaction is not a safe handover). An agent gets
+  the marker only until its threshold, then finish-or-PARTIAL. `CTX_HOOK_ROLE`
+  is honoured. Ported from the live hook: the stale-HANDOFF warning (older than
+  15 min, controller past 200k), the growth line, the PreCompact "merges since"
+  list. `session-start` prints the READ FIRST list of the newest `RESUME HERE #N`
+  block of HANDOFF.md instead of a hard-coded order. New `CTX_REPO_ROOT` and
+  `CTX_HANDOFF_FILE`; the default state directory is the nearest
+  `.controller-state` above the hook's `cwd`. The pressure state file is keyed by
+  session id as well. 12 new hand mutants.
+
 ### Added
 - `remote-gate.sh`: `CONTROLLER_REMOTE_GATE_WORKROOT` sets where the per-run throwaway worktree lives (default unchanged: `$CONTROLLER_HOME/remote-gate-work`). A workroot under an IDE workspace folder makes the editor's Git extension adopt every scratch worktree as a repository ("too many active changes" popup) and lets language servers index it; point it outside every workspace folder.
 - `gate-run.sh`: `CONTROLLER_GATE_SLOTS` (integer 1 to 8, default 2) sets the number

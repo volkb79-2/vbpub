@@ -421,8 +421,21 @@ fired inside a subagent builds nothing unless a kind is named (it would renumber
 and re-mark the controller's state). `--redact-pattern` /
 `CTX_READBACK_REDACT_PATTERNS` reach the extract, but a pattern can itself be a
 secret, so the hook logs, stores and prints only a `<REGEX>` placeholder.
+- **One hook, one threshold per kind, no number compiled in.** The tracked hook
+replaced an untracked 203-line copy that told the controller "auto-compaction is
+the only limit: never stop" (it contradicts the operator's 2026-11-18 handover
+decision: auto-compaction is not a safe handover) and hard-coded a 500k ceiling.
+The ceiling is the model's `autoCompactWindow` from `~/.claude/settings.json`
+(model entry, else top-level, else a documented default), read from the
+session's own transcript model. The soft threshold is the one place the wording
+changes: below it the controller keeps working and persists at boundaries, at or
+past it the controller writes the handover, syncs the plan, sets READY and ends
+the turn; an agent finishes or returns PARTIAL from its own threshold. The read
+order after a compaction is the READ FIRST line of the newest handover block,
+so a handover edit needs no hook edit.
 - **State, not a checkout path.** The state directory comes from a flag, then
-`CTX_STATE_DIR`, then the hook input's own `cwd/.controller-state`. No
+`CTX_STATE_DIR`, then the nearest `.controller-state` at or above the hook
+input's `cwd` (a controller that `cd`s into a worktree keeps its state). No
 repository path, transcript path or 30000/10000 budget is compiled in; the
 budgets are flags/env with those documented defaults.
 - **The numbering is crash-safe.** `readback-N.md` takes one past the highest

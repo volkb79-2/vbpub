@@ -66,7 +66,12 @@ Useful settings:
 | `CONTROLLER_GATE_RUN_SCRIPT`, `CONTROLLER_REMOTE_GATE_SCRIPT` | Test injection for `chain-run.sh`: the launcher used for plain lanes and for `remote:<lane>` lanes. Default: `gate-run.sh` / `remote-gate.sh` next to `chain-run.sh`. A chain's logs and marker go to `CONTROLLER_LOGS_DIR`. |
 | `CONTROLLER_BACKUP_DIR` | Required by `ctl-state-backup.sh`: absolute directory for the state archives; must lie outside every git work tree. Keep it on a different volume than the state. |
 | `CONTROLLER_INIT_READONLY` | Set to `1` by `ctl-doctor.sh` only: `controller_init` then creates no directory and keeps the spelling of one that does not exist. `CONTROLLER_HOME_CONFIGURED`, `CONTROLLER_LOGS_DIR_CONFIGURED`, `CONTROLLER_RUNS_DIR_CONFIGURED` are exported by `controller_init` and hold the paths before symlinks are resolved (read by the doctor; never set them). |
-| `CTX_STATE_DIR` | Optional controller state directory for `hooks/ctx-hooks.py`; defaults to the hook input's own `cwd/.controller-state`. |
+| `CTX_STATE_DIR` | Optional controller state directory for `hooks/ctx-hooks.py`; defaults to the nearest `.controller-state` at or above the hook input's `cwd` (else `cwd/.controller-state`). |
+| `CTX_REPO_ROOT` | The checkout whose `git log` lists the merges since the last HANDOFF.md write (PreCompact note); defaults to the state directory's parent. |
+| `CTX_HANDOFF_FILE` | The controller handover file (stale-state warning, read order, PreCompact note); defaults to `<state dir>/HANDOFF.md`. |
+| `CTX_SOFT_CONTROLLER` | Controller soft threshold in tokens (alias `CTX_CONTROLLER_SOFT`; the canonical name wins); default `650000`. Below it the controller is told to persist and keep working; at or past it, to write the handover, sync the plan, set READY and end the turn. An invalid value uses the default. |
+| `CTX_SOFT_AGENT` | Agent soft threshold in tokens; default `200000`. Below it an agent gets only the context marker; from it, finish or return PARTIAL with a handoff report. |
+| `CTX_HOOK_ROLE` | `agent` or `controller`: the live hook's name for the session-kind override (`--session-kind` and `CTX_SESSION_KIND` win). |
 | `CTX_EXTRACT_CMD` | The extract command `hooks/ctx-hooks.py` runs; defaults to `nyxloom-harness` on `PATH`. |
 | `CTX_READBACK_BUDGET_TOKENS` | Readback budget for a controller session; defaults to `30000` (a spawned session's controller passes a smaller flag or this variable). |
 | `CTX_READBACK_TAIL_PROSE_TOKENS` | Recent-prose tail of the readback; defaults to `10000`. |
@@ -75,7 +80,7 @@ Useful settings:
 | `CTX_READBACK_REDACT_PATTERNS` | Regexes, one per line, forwarded to the extract as `--redact-pattern` (the flag `--redact-pattern` is repeatable too). A matching paragraph is replaced in the whole readback, tail included. The hook never logs, stores or prints a pattern (the manual fallback shows `<REGEX>`), but the extract's own placeholder names the pattern that matched, so use a pattern that matches the surrounding text, not the literal secret. An invalid regex makes the extract refuse, so the build fails closed. |
 | `CTX_READBACK_TIMEOUT` | Seconds allowed for the readback build; defaults to `15` and is capped at the hard 20 s limit. |
 | `CTX_HOOK_LOG` | Hook log path; defaults to `<state dir>/hooks/hook-log.jsonl`. |
-| `CTX_SESSION_KIND` | `controller` or `spawned`; selects the pressure-note wording from 200k on (persist and continue vs stop at the boundary). Default: `spawned` inside an Agent-tool subagent (hook input has `agent_id`), otherwise `controller`. |
+| `CTX_SESSION_KIND` | `controller` or `spawned`; selects the pressure-note wording (persist and continue / handover at the soft threshold, vs finish or PARTIAL). Default: `spawned` inside an Agent-tool subagent (hook input has `agent_id`), otherwise `controller`. |
 
 ## `hosts.local.json`
 

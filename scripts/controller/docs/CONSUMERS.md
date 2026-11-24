@@ -291,15 +291,25 @@ Everything is a flag or an environment variable (`CTX_STATE_DIR`,
 (10000), `CTX_READBACK_GOAL_FILE`, `CTX_READBACK_GOAL_PROMPT`,
 `CTX_READBACK_REDACT_PATTERNS` (one regex per line, forwarded as `--redact-pattern`),
 `CTX_READBACK_TIMEOUT`, `CTX_HOOK_LOG`,
-`CTX_SESSION_KIND`). Without
-`--state-dir` the state directory is the hook input's own `cwd/.controller-state`,
-so nothing depends on a fixed checkout path. The pressure ladder is a note every
-50000 tokens from 100000 on, with finishing wording below 200000. From 200000 on
-the wording follows the session kind (`--session-kind` / `CTX_SESSION_KIND`;
-default: the main session is a `controller`, a hook fired inside an Agent-tool
-subagent is `spawned`): a controller is told to persist its working state at the
-next semantic boundary and CONTINUE (it cannot terminate itself and must never wait
-for a compaction), a spawned session is told to stop at the boundary with a brief.
+`CTX_SESSION_KIND`, `CTX_HOOK_ROLE`, `CTX_SOFT_CONTROLLER`, `CTX_SOFT_AGENT`,
+`CTX_REPO_ROOT`, `CTX_HANDOFF_FILE`). Without
+`--state-dir` the state directory is the nearest `.controller-state` at or above
+the hook input's `cwd`, so nothing depends on a fixed checkout path. The pressure
+ladder is a note every 50000 tokens from 100000 on. The wording follows the
+session kind (`--session-kind` / `CTX_SESSION_KIND` / `CTX_HOOK_ROLE`; default:
+the main session is a `controller`, a hook fired inside an Agent-tool subagent is
+`spawned`) and that kind's soft threshold: a controller below it (default 650000)
+persists at the next semantic boundary and continues, never stopping or waiting for
+a compaction; at or past it, it writes the handover (controller-handover skill),
+syncs the plan, sets READY and ends the turn. A spawned session gets the context
+marker until its threshold (default 200000), then finish-or-return-PARTIAL. The
+context ceiling in the marker is the model's `autoCompactWindow` from
+`~/.claude/settings.json`.
+
+To replace a hand-written hook with this script, change only the path in each
+`.claude/settings.local.json` command: the five commands are
+`python3 <repo>/scripts/controller/hooks/ctx-hooks.py statusline`, `post-tool-use`,
+`stop`, `pre-compact` and `session-start` (matcher `compact`).
 A failed build never fails the
 session: `session-start` then prints the exact manual command, and
 `readback-state.json` carries the failure so the next session sees it. Which
