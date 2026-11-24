@@ -13,6 +13,9 @@ root-owned helper that hands a read-only fd replaces it); kill switches exercise
 timers stopped). Until then host-tuning's and the installer's `services.iogovmon.install` stays `false`; it flips to `true` in the change that records this
 acceptance. IOWeight in `iogovmon.slice` is advisory (effective only with io.cost or bfq): the real control is the PSI gating of the mini write bench
 (starts only below the limits, aborts when they rise) plus the byte budgets.
+**Evidence 2026-11-24:** r1002 has a recommend-only journal of more than 5 days (2026-11-19T04:08Z..11-24T05:40Z, 1,320 ticks, 107 valid benches) after
+acceptance-2. It is kept as the "48 h of ticks" candidate. The byte/PSI budgets are still to be verified from it. The timers were stopped and disabled
+2026-11-24T05:40Z. See `docs/evidence/ACCEPT2-STAGE-2026-11-19.md`.
 
 ## IGM-02 - Assay R2 (mutation) lane and the 100 % coverage floor
 
@@ -300,3 +303,66 @@ decision of this entry; one more option beside those above: on a host with no
 protected workload the strict guard measures the bench's own load, so make the
 `5 x` factor a named key and let the in-run guard read pressure that excludes
 the bench's own cgroup, or the protected cgroups' pressure only.
+
+## IGM-19 - `r_cold` yield on a thin disk: windows go insufficient at the default attempts, and the population shifts with fill
+
+**Status:** OPEN. Filed 2026-11-24 from the r1002 acceptance-2 fill stage (`docs/evidence/ACCEPT2-STAGE-2026-11-19.md`).
+
+**Problem.** `r_cold` reads random blocks of the device and keeps only non-zero blocks. On a thin disk the non-zero fraction is whatever data
+exists. On r1002 it was 7-10 % at baseline. With the defaults (`read_samples_per_tick=12`, `read_max_attempts=36`, 300 s ticks), a 1 h window
+gets 22-43 non-zero reads against `min_samples["r_cold"]=30`, so windows go `insufficient` on a lightly used disk. Acceptance-2 ran with
+`read_max_attempts=128` (`.cond-v2`) to avoid this. Fill changes the population itself: the yield rose from 10.4 % (A0) to 75 % (B4/B5a) and
+fell back to 10.3 % only after `fstrim`. The lane then measured fresh fill data instead of the original data. A capability change and a
+population change cannot be told apart from the lane's median.
+
+**Do (the item is the decision).**
+1. Derive `read_max_attempts` from a measured yield: probe once at install or plan time and record it, or make the attempts adaptive up to
+   the HARD_MAX of 128. Either way, a 1 h window must reach `min_samples` at a 5 % yield.
+2. Record the yield (non-zero / attempts) per window in the journal and the recognizer state. A window whose yield differs from the baseline
+   windows by more than a stated factor is marked `confounded`, not judged.
+
+**Where.** `src/iogovmon/rawread.py` (offset sampling), `config.py` (`read_max_attempts`, `min_samples`), `recognizer.py` (window qualification).
+
+**Close when.** A fixture with a 5 % non-zero device fills a 1 h `r_cold` window at the defaults. A fixture whose yield jumps from 10 % to
+70 % yields a `confounded` window instead of a shift or no-shift verdict. Both are documented in the DESIGN-GUIDE.
+
+## IGM-20 - the recognizer is blind to tail-only shifts and to median drifts under ~1.4x
+
+**Status:** OPEN. Filed 2026-11-24 from the r1002 acceptance-2 fill stage (`docs/evidence/ACCEPT2-STAGE-2026-11-19.md`).
+
+**Problem.** The recognizer judges each window by its median, through log2 CUSUM with `cusum_k = 0.5` (ignores drift under ~1.4x) and
+`noise_floor_log2 = 0.25`. During the fill stage it raised no event at all, beyond `baseline_established`. That held while `r_seq` fell
+25 % and `w_fresh_qd4` fell 20-30 % at the median, while `w_over_4k` rose 15-20 %, and while reads of the churned fill data on btrfs grew
+an ~80 ms p95/p99 tail over a median that moved only about 2x. Earlier synthetic checks (`synth_shift_check.py`) also showed tail-only x8
+and x1.5 median shifts unseen.
+
+**Do (choose one disposition).**
+1. Add one tail statistic per latency lane (window p95 or p99, with its own baseline and CUSUM), judged separately from the median, with its
+   own `min_samples`.
+2. Document the limit: the recognizer detects median capability changes of about 1.4x or more only. Tail regressions are out of scope, and
+   README, DESIGN-GUIDE and the `recommendations` text say so.
+
+**Where.** `src/iogovmon/recognizer.py`, `config.py` (`cusum_*`, `noise_floor_log2`), `docs/DESIGN-GUIDE.md`.
+
+**Close when.** Option 1: a fixture with a tail-only x8 shift raises `shift_detected` on the tail statistic, and a quiet fixture raises
+none. Option 2: the limit is stated in all three places, and `synth_shift_check.py` (imported by P-hostobs-21) asserts it.
+
+## IGM-21 - the HARD_MIN/HARD_MAX clamps are code constants, not a documented limits profile
+
+**Status:** OPEN. Filed 2026-11-24 from the r1002 acceptance-2 fill stage.
+
+**Problem.** `config.py` clamps every safety value into `HARD_MIN`/`HARD_MAX`. Examples: tick ≥30 s, bench ≥1 h, read 256 MiB/day,
+write 2 GiB/day, bench pressure some 5 / tick pressure some 25, `read_max_attempts` ≤128. The clamps are right as safety rails. But they
+are code constants, and nothing documents them as a profile. Acceptance-2 had to run on a config that already sat at several maxima
+(`read_max_attempts=128`, 256 MiB/day). Changing a clamp for a condensed acceptance would mean editing code, and the only record of a
+clamp is `Config.clamped` at load time.
+
+**Do.** Move the clamps into one documented limits profile, for example a `LIMITS` table in `config.py` rendered into the README by the
+existing docs check. Each limit carries its reason. An explicit operator override (a named file or key, e.g. `[limits.override]` with a
+mandatory `reason`) is journaled as an `action` record at load time. Without an override, the clamps behave exactly as today.
+
+**Where.** `src/iogovmon/config.py`, `README.md`, `docs/DESIGN-GUIDE.md` (the safety section).
+
+**Close when.** The limits table is the single source that the README shows. A test shows that an override without `reason` is refused,
+and that an override with `reason` is applied and journaled. The default clamps are unchanged, and a test pins them by behaviour: a
+too-large value is clamped and reported.
