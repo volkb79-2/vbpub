@@ -203,6 +203,7 @@ SPEC §9.
 | RG-310 | the new `lanes --check` options break more option abbreviations than CHANGES and RG-308(b) record | Minor | OPEN 2026-11-24 (P-core-08 review round 2) |
 | RG-311 | `lanes --check` test and wording follow-ups: real-repository test pins every finding to `budget-margin`, plus five nits | Minor | OPEN 2026-11-24 (P-core-08 review round 2) |
 | RG-312 | R-59 does not cover enclosing `kind = "command"` lanes or consumer timeouts; P-core-RG307 r1 follow-ups | Minor | OPEN 2026-11-24 (P-core-RG307 review r1; the two known enclosing budgets were fixed forward) |
+| RG-313 | `TestRg109InterruptedClient::test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record` asserts "no direct child left" immediately after the client exits, racing the fake `docker logs -f` shell's 0.2 s `sleep` window | Minor | OPEN 2026-11-24 (rg307b gate-full on v1001, assay-r1 R0; passed in the selftest lane on the same sha) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9857,3 +9858,16 @@ Source: `~/core-runs/P-core-08-review-r2.md`.
 - **NIT 7.** The nyxloom.toml comment says "R-32/R-59 pair them"; only R-32 pairs consumer timeouts (R-59 is wrapper vs inner).
 
 Source: vbpub-core, P-core-RG307 Opus review r1 (`~/core-runs/rg307b-review-r1.md`).
+
+## RG-313 — SIGTERM client test races the fake `docker logs -f` shell exit
+
+**Status:** OPEN 2026-11-24 (found by the rg307b gate-full on v1001, lane `assay-r1` R0, run `rgw-gate-full-20261124T144400-v1001`, head 1193575c2). Severity: Minor, a test defect (flaky red, no product defect).
+
+- **Test.** `tests/test_run_gate.py:19501`
+  `TestRg109InterruptedClient::test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record`. The leak assertion is `assert leaked_children == []` (`:19554`), taken from `_direct_child_pids()` (`:119`) straight after `_wait_for_captured_process()` returns. The test makes itself a child subreaper (`_set_child_subreaper(True)`, `:105`), so the fake Docker shell is adopted by the test process when the client dies.
+- **Evidence.** The failing run printed `SIGTERM cleanup left the fake docker logs process tree behind: [(17377, 'docker')]`. The 3510-test `selftest` lane on the SAME sha passed this test, and the branch does not touch it or its helpers (last change 886452561, 2026-10-28, "reap SIGTERM fake docker sleeper"). The leaked pid is the fake `docker` shell itself (`comm` is `docker`), not a `sleep`.
+- **Probable cause (read from the shim, not reproduced).** The fake `logs -f` shim (`:19136-19148`) polls `sleep 0.2` in the foreground under `trap '__stop_logs' TERM INT`. A POSIX shell runs the trap only after the current foreground command ends, so after SIGTERM the shell lives for up to 0.2 s more. If the client exits and the test reads `/proc/self/task/*/children` inside that window, the shell is still a live (or not yet reaped) direct child. The window is a sleep, so the verdict depends on host load.
+- **Fix direction.** Wait on the child, not on a sleep window: replace the one-shot `_direct_child_pids()` read by a bounded wait that reaps adopted children (`os.waitpid(pid, 0)` per pid, with the same deadline style as `_kill_and_reap_direct_children`, `:138`) and only then asserts that NONE of them survived the deadline; or make the shim's wait end on the signal itself (`sleep 0.2 & wait $!` so the trap runs at once, and kill the sleeper in the trap). Either gives an explicit synchronisation point. Do not widen the sleep or add a fixed `time.sleep`. Any sibling test that reads `_direct_child_pids()` once after a SIGTERM (`tests/test_run_gate.py:19675`, `:22423`, `:22618`, `:32287` at 1193575c2) has the same race; fix them together.
+- **Close when.** The test passes under a loaded host without a fixed delay, and a hand mutation that makes the shim ignore TERM still fails it.
+
+Source: vbpub-core, rg307b gate-full failure 2026-11-24 (`~/controller/remote-gates/rgw-gate-full-20261124T144400-v1001/`), main's ruling "file RG-313 now" (load-independent testing rule).
