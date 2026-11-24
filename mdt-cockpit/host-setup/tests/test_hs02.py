@@ -372,7 +372,9 @@ class PreflightBeforeActionTests(unittest.TestCase):
         "_mdt_io_sched_value", "_mdt_io_sched_list", "_mdt_io_sched_offered", "_mdt_sched_module_available",
         "_mdt_io_sched_current", "_mdt_host_role", "_mdt_load_iobench_caps", "_mdt_dedicated_remedy",
         "_mdt_resolve_static_io_dedicated", "_mdt_root_disk_majmin", "_mdt_io_disk_identity",
+        "_mdt_apply_memory_policy",
     }
+    INSTALL_READ_ONLY_HELPERS = {"_mdt_apply_memory_policy"}
     ALLOWED_REDIRECT = re.compile(r'\d*>>?\s*(&\d|/dev/null|"?\$CANDIDATE\w*"?)')
 
     @classmethod
@@ -423,9 +425,11 @@ class PreflightBeforeActionTests(unittest.TestCase):
         self.assertEqual(self.violations(region), [])
 
     def test_the_allowlisted_helpers_are_themselves_read_only(self) -> None:
+        install = (ROOT / "install.sh").read_text()
         lib = LIB.read_text()
         for helper in sorted(self.READ_ONLY_HELPERS):
-            body = self.function_body(lib, helper)
+            source = install if helper in self.INSTALL_READ_ONLY_HELPERS else lib
+            body = self.function_body(source, helper)
             self.assertEqual(self.violations(body), [], helper)
 
     def test_the_installed_config_is_replaced_only_at_the_commit_point(self) -> None:
