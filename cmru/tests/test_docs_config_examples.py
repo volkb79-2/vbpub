@@ -234,15 +234,11 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "mutation" not in lane["judge"]
     assert lane["judge"]["canary"]["mechanism"] == "import-break"
 
-    for name, rigor in (
-        ("cmru-first-release", ["R0", "R1", "R3"]),
-        ("cmru-first-release-r2", ["R0", "R1", "R2", "R3"]),
-    ):
-        first_lane = assay_config[name]
-        assert first_lane["rigor"] == rigor
-        assert first_lane["judge"]["mode"] == "whole_target"
-        assert "base" not in first_lane["judge"]
-        assert first_lane["judge"]["coverage"]["artifact"] == "coverage.json"
+    first_r2 = assay_config["cmru-first-release-r2"]
+    assert first_r2["rigor"] == ["R0", "R1", "R2", "R3"]
+    assert first_r2["judge"]["mode"] == "whole_target"
+    assert "base" not in first_r2["judge"]
+    assert first_r2["judge"]["coverage"]["artifact"] == "coverage.json"
 
     t1_lane = assay_config["cmru-r0-r1"]
     assert t1_lane["rigor"] == ["R0", "R1"]
@@ -254,7 +250,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "--maxfail=1" not in t1_lane["argv"]
 
     changelog_preflight_ignore = "--ignore=tests/test_w3_prep_changelog_preflight.py"
-    for name in ("cmru", "cmru-r0-r1", "cmru-first-release", "cmru-first-release-r2"):
+    for name in ("cmru", "cmru-r0-r1", "cmru-first-release-r2"):
         assert changelog_preflight_ignore in assay_config[name]["argv"]
 
     first_r2 = assay_config["cmru-first-release-r2"]
@@ -339,11 +335,8 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "--require-live-snapshot" in " ".join(gate["lanes"]["installed-wheel-live"]["argv"])
     assert 'LIVE_WHEEL_LANE = "installed-wheel-live"' in release_gate
     assert 'REF_PROBE_LANE = "ref-probe"' in release_gate
-    assert 'FIRST_RELEASE_ASSAY_LANE = "assay-first-release"' in release_gate
     assert 'FIRST_RELEASE_R2_FOLLOW_UP_LANE = "assay-first-release-r2"' in release_gate
     assert "published_release_state" in release_gate
-    first_lane = gate["lanes"]["assay-first-release"]
-    assert first_lane["assay_lane"] == "cmru-first-release"
     t1_assay = gate["lanes"]["assay-r0-r1"]
     assert t1_assay["kind"] == "assay"
     assert t1_assay["assay_lane"] == "cmru-r0-r1"
@@ -353,6 +346,14 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     first_r2 = gate["lanes"]["assay-first-release-r2"]
     assert first_r2["assay_lane"] == "cmru-first-release-r2"
     assert first_r2["resource_observer"] == "cgprofile"
+    # Survivor pin (KI-141 part 7): the whole-source R2 lane survives in both files and
+    # the retired first-release R0/R1/R3 lanes are gone.
+    first_r2_assay = assay_config["cmru-first-release-r2"]
+    assert "R2" in first_r2_assay["rigor"]
+    assert first_r2_assay["judge"]["mode"] == "whole_target"
+    for retired in ("assay-first-release", "cmru-first-release"):
+        assert retired not in gate["lanes"]
+        assert retired not in assay_config
     mutation_command = " ".join(gate["lanes"]["mutation"]["argv"])
     assert "--cov" not in mutation_command
     assert "--cov-fail-under" not in mutation_command
