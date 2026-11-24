@@ -18,7 +18,12 @@ def valid_config() -> dict:
         "ports": {"expose_http": True, "http": 80, "https": 443, "bind_ip": ""},
         "http3": {"enabled": False},
         "calls": {"enabled": False},
-        "acme": {"email": "", "volume_name": ""},
+        "acme": {"email": "", "volume_name": "", "store": "volume"},
+        "traefik": {
+            "hostdir": {
+                "acme": {"path": "", "uid": 0, "gid": 0, "mode": "0700"}
+            }
+        },
         "static": {"cert_base": "/etc/letsencrypt", "domains": [], "source": "bind"},
         "ingress_external": False,
         "runtime": {"cgroup_parent": ""},
@@ -47,10 +52,13 @@ enabled = false
 [tls_edge.acme]
 email = ""
 volume_name = ""
+store = "volume"
 [tls_edge.static]
 cert_base = "/etc/letsencrypt"
 domains = []
 source = "bind"
+[tls_edge.traefik.hostdir]
+acme = { path = "", uid = 0, gid = 0, mode = "0700" }
 [tls_edge.runtime]
 cgroup_parent = ""
 """, encoding="utf-8")
@@ -251,6 +259,50 @@ def test_validate_config_http3_calls_dns_static_and_port_constraints():
     value["calls"].update(enabled=True, public_port=443)
     with pytest.raises(config.ConfigError, match="Calls TCP conflicts"):
         config.validate_config(value)
+
+
+def test_validate_config_hostdir_rules_and_modes(tmp_path: Path):
+    value = valid_config()
+    value["acme"]["store"] = "hostdir"
+    value["traefik"]["hostdir"]["acme"]["path"] = "../../shared/acme"
+    stack_dir = tmp_path / "instance" / "stack" / "ciu-stack"
+    stack_dir.mkdir(parents=True)
+    assert config.validate_config(value, stack_dir=stack_dir)
+    value["traefik"]["hostdir"]["acme"]["path"] = str(tmp_path / "shared" / "acme")
+    assert config.validate_config(value, stack_dir=stack_dir)
+    assert config.validate_config(value)  # no containment check without stack context
+
+    value["acme"]["store"] = "archive"
+    with pytest.raises(config.ConfigError, match="acme.store must be volume or hostdir"):
+        config.validate_config(value)
+
+    value["acme"]["store"] = "hostdir"
+    value["traefik"]["hostdir"]["acme"] = ""
+    with pytest.raises(config.ConfigError, match="hostdir.acme.path is required"):
+        config.validate_config(value)
+
+    value["traefik"]["hostdir"]["acme"] = {
+        "path": 3, "uid": 0, "gid": 0, "mode": "0700",
+    }
+    with pytest.raises(config.ConfigError, match="hostdir.acme.path is required"):
+        config.validate_config(value)
+
+    value["traefik"]["hostdir"]["acme"] = {
+        "path": "../../shared/acme", "uid": False, "gid": 0, "mode": "0700",
+    }
+    with pytest.raises(config.ConfigError, match="hostdir.acme.uid must be 0"):
+        config.validate_config(value)
+
+
+def test_validate_config_hostdir_is_refused_by_standalone_renderer():
+    value = valid_config()
+    value["acme"]["store"] = "hostdir"
+    value["traefik"]["hostdir"]["acme"]["path"] = "../../shared/acme"
+    with pytest.raises(
+        config.ConfigError,
+        match='acme.store = "hostdir" requires ciu',
+    ):
+        config.validate_config(value, for_standalone=True)
 
 
 def test_set_path_creates_nested_tables_and_rejects_non_mutable_parents():

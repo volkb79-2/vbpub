@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from io import TextIOBase
 from typing import NoReturn
 
-from .errors import UsageError, exit_code
+from .core import execute, make_context
+from .errors import Unsupported, UsageError, exit_code
 from .paths import Paths
 
 
@@ -75,6 +76,17 @@ def run(
         debug = os.environ.get("DR_STATE_DEBUG") == "1"
     try:
         invocation = parse_invocation(argv)
+        json_option = any(
+            argument == "--json"
+            and not (
+                index > 0
+                and invocation.command[index - 1]
+                in ("--note", "--reason", "--apt-actions")
+            )
+            for index, argument in enumerate(invocation.command)
+        )
+        if invocation.json or json_option:
+            raise Unsupported("JSON output is not supported in this runtime")
         if not invocation.command:
             raise UsageError("a command is required")
         return dispatch(invocation)
@@ -87,14 +99,13 @@ def run(
         return code
 
 
-def _unimplemented(invocation: Invocation) -> int:
-    raise UsageError(
-        f"{invocation.command[0]}: command implementation is not installed"
-    )
+def _production_dispatch(invocation: Invocation) -> int:
+    context = make_context(invocation.paths)
+    return execute(context, invocation.command)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Launcher entry point; P-20b replaces the core-only dispatcher."""
+    """Launcher entry point with the production core dispatcher."""
 
     arguments = sys.argv[1:] if argv is None else list(argv)
-    return run(arguments, _unimplemented)
+    return run(arguments, _production_dispatch)
