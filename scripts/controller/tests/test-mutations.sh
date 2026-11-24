@@ -490,6 +490,8 @@ for dev_mutant in ticket-hold psi-threshold psi-file psi-full-line image-id quot
   expect_killed "dev-$dev_mutant" \
     env DEV_SCRIPT="$ROOT/mutants/scripts/controller/dev-$dev_mutant" "${TESTER_VENV:?}/bin/python" -m pytest -x -q -p no:cacheprovider "$SCRIPT_DIR/test_dev.py"
 done
-expect_killed dev-profile-image-regex \
-  env DEV_PROFILE_SCRIPT="$ROOT/mutants/scripts/controller/dev-profile-image-regex" "${TESTER_VENV:?}/bin/python" -m pytest -x -q -p no:cacheprovider "$SCRIPT_DIR/test_dev.py"
+for profile_mutant in image-regex work-mount; do
+  expect_killed "dev-profile-$profile_mutant" \
+    env DEV_PROFILE_SCRIPT="$ROOT/mutants/scripts/controller/dev-profile-$profile_mutant" "${TESTER_VENV:?}/bin/python" -m pytest -x -q -p no:cacheprovider "$SCRIPT_DIR/test_dev.py"
+done
 echo "PASS hand mutations: $killed_count killed"
