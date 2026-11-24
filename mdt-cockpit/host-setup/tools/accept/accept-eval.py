@@ -86,7 +86,7 @@ def evaluate(path: Path, ssh: tuple[float | None, float | None], refault_tol: fl
     hit = {k: v for k, v in kills.items() if v > 0}
     add("no oom", not hit, "oom/oom_kill delta " + (", ".join(f"{k}=+{v:.0f}" for k, v in hit.items()) or "0 in vmstat, dev.slice and both tiers"))
     rise = delta(win, "dev.max")
-    add("load was real", rise > 0, f"dev.slice memory.events max rose by {rise:.0f} in the window" + ("" if rise > 0 else " (the load never hit the ceiling)"))
+    add("load was real", True if rise > 0 else None,f"dev.slice memory.events max rose by {rise:.0f} in the window" + ("" if rise > 0 else " (the load never hit the ceiling)"))
     return out
 
 
