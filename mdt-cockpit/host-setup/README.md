@@ -1222,24 +1222,15 @@ zswap (zstd, `max_pool_percent` 25, writeback `yes` on every tier) is unchanged.
 
 ### Acceptance and measurement kit of the dedicated-dev memory model (P-plat-19g, `tools/accept/`)
 
-Step 6 of the migration, as commands. Root on the host, from a checkout of `mdt-cockpit/host-setup/`; `accept-run.sh` refuses unless `/etc/mdt/host-setup.env` says
-`HOST_ROLE=dedicated-dev`. The probe image needs `python3` (default `tester-unified:local`, or `--probe-image REF`). Nothing here is run by the repo's tests against a host.
+Step 6 of the migration, root on the host (details: the header of each script, `accept-eval.py --help`). Lanes stay drained for all of it.
 
-1. Lanes drained as in the migration, then per run (two runs, take the max; `EV` a fresh directory each time):
-   `tools/accept/accept-run.sh --evidence "$EV" --warmup 600 --window 1800` (add `--interactive` to wait for Enter after the start hints). It starts
-   `mdt-accept-probe-gates` and `mdt-accept-probe-bg` (`--memory 4G --memory-swap 12G`, ~3.8G anon cycling plus random reads of a 4G file), samples every 10 s into
-   `$EV/samples.csv`, starts one `cgprofilectl` session per floored unit (ids in `$EV/cgprofile-sessions.txt`; skipped with a manifest note when `cgprofilectl` is absent)
-   and writes `$EV/manifest.env`. Both probes are removed by exact name on exit, INT and TERM. During the window, start the operator part: one real gate lane, the cockpit
-   attached and idle, an ssh login. Time `ssh <host> true` idle before and loaded during the window, and write `"<idle> <loaded>"` (seconds) into `$EV/ssh.txt`.
-2. `tools/accept/accept-eval.py "$EV1" "$EV2"` (or `--ssh-idle S --ssh-loaded S`): per run M = p99(U) + p99(init.scope) + W + 64M, the hot-set proxy (max
-   `active_anon + active_file`) per unit and the floor 1.25 x that, and the 4.1 criteria (floored-unit refault delta <= `--refault-tol` pages, default 100;
-   system.slice and user.slice `some avg10` max <= 1; ssh loaded <= 2 x idle; no oom/oom_kill delta in vmstat, dev.slice or either tier; dev.slice `memory.events max`
-   rose in the window, else the load was not real). Exit 0 PASS, 1 FAIL, 4 INCONCLUSIVE, 2 usage; the last line is `VERDICT ...`. The `host-setup.env` lines it prints
-   are commented out unless PASS; floor rows are printed only where they exceed the table.
-3. `tools/accept/daemon-reload-check.sh`: a `--memory 2G` container must read `memory.max` 2147483648 before and after `systemctl daemon-reload` (5.3 precedence).
-4. On PASS: put the printed `DEV_HOST_MEMORY_MIN`, `DEV_HOST_MEMORY_MARGIN`, `DEV_INTERACTIVE_MEMORY_MIN` (if wanted) and `DEV_HOST_MEMORY_MEASURED` lines into
-   `/etc/mdt/host-setup.env` and re-run `install.sh`. On FAIL: raise the failing value and repeat, or pin `DEV_HOST_MEMORY_KEEP=1280M` (design note section 8) and file the result.
-   On INCONCLUSIVE: fix what the line names (usually the load) and repeat.
+1. Per run, twice (`EV` a fresh directory): launch DETACHED so an ssh drop cannot orphan it, e.g.
+   `systemd-run --unit mdt-accept-1 --collect tools/accept/accept-run.sh --evidence "$EV" --warmup 600 --window 1800`. During the window start the operator part: one
+   real gate lane, the cockpit attached and idle, an ssh login; write `"<idle> <loaded>"` seconds of `ssh <host> true` into `$EV/ssh.txt`. The probes also exit by themselves
+   after warm-up + window + 300 s. cgprofile sessions are not captured: the daemon refuses cgroup targets (CP-55).
+2. `tools/accept/accept-eval.py "$EV1" "$EV2"`: exit 0 PASS, 1 FAIL, 4 INCONCLUSIVE (missing data or a load that was not real: repeat), 2 usage or crash (never a pin reason).
+3. `tools/accept/daemon-reload-check.sh`: it refuses (exit 3, nothing done) while `/run/mdt/reconcile/memory-deferred` exists or systemd and the kernel disagree on a dev `MemoryMax`.
+4. PASS: put the printed lines into `/etc/mdt/host-setup.env` and re-run `install.sh`. FAIL: raise the failing value and repeat, or pin `DEV_HOST_MEMORY_KEEP=1280M` (section 8).
 
 ### Shared tree cache of the dedicated-dev role (AD2-2, MDT-074)
 
