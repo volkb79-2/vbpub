@@ -8,15 +8,41 @@ pytest only. Release contract: `cmru.toml` (tag `test-policy-vX.Y.Z`, wheel to G
 * `estate_test_policy`: a pytest plugin. Per test it fails (or warns) on a fixed `time.sleep`/`asyncio.sleep` of
   0.2 s or more outside a poll loop, on literal timeouts below 120 s (`timeout=`, `wait/join/settimeout(N)`, and
   `timeout N` inside strings such as scenario commands), on assertions over elapsed wall time, and on leaked
-  threads, file descriptors and child processes (before/after snapshot, all reported). Allowlist:
-  `@pytest.mark.estate_allow("fixed-sleep", reason="...", backlog="XX-NN")`; a missing reason or backlog id is
-  itself a failure. Rules: `fixed-sleep`, `short-timeout`, `wall-time-assert`, `resource-leak`.
+  threads or file descriptors. Allowlist: `@pytest.mark.estate_allow("fixed-sleep", reason="...", backlog=
+  "XX-NN")`; a missing reason or backlog id is itself a failure. Rules: `fixed-sleep`, `short-timeout`,
+  `wall-time-assert`, `resource-leak`, `children`.
   Load with `-p estate_test_policy.plugin` or install the wheel (entry point `pytest11`).
-  `--estate-policy=off|warn|fail` (default fail); ini `estate_policy_sleep_threshold`, `estate_policy_settle_seconds`.
-  Rollout warning: the default is `fail`, so installing the wheel into an image enforces the policy on every test
-  run in it, and a static violation is a fixture ERROR at setup (the test body does not run, so it also gives no
-  signal whether the test is otherwise red). Roll out per project with `--estate-policy=warn` (or
-  `-p no:estate_test_policy`) until the project is clean (TP-10).
+  The entry point defaults to `off`, so installing the wheel changes nothing. A project opts in in `pytest.ini`
+  (or pyproject `[tool.pytest.ini_options]`):
+
+  ```ini
+  [pytest]
+  estate_policy = fail
+  required_plugins = estate-test-policy
+  ```
+
+  `estate_policy` accepts `off|warn|fail`; `--estate-policy=off|warn|fail` overrides it when given. In `off` the
+  plugin registers its markers and is otherwise inert. Ini `estate_policy_sleep_threshold` and
+  `estate_policy_settle_seconds` keep their defaults (0.2 and 5 seconds). A static violation or a refused
+  containment marker is a fixture error at setup under `fail`, so its body does not run; `warn` reports a warning
+  and continues, except that a refused containment marker is skipped (TP-10a).
+* Leftover-child guard (TP-12): when policy is not `off`, every pytest process, including each xdist worker, first
+  sets `PR_SET_CHILD_SUBREAPER` so orphaned descendants reparent to it. At each test teardown the plugin compares
+  direct children by `(pid, starttime)`. A new child gets `estate_policy_settle_seconds` to exit; survivors and
+  zombies are then pinned with a pidfd, re-checked for the same parent and start time, killed through the pidfd
+  when alive, and reaped with `waitid(P_PIDFD)`. A zombie is reported as a zombie leak, and a live child is
+  reported after successful SIGKILL and reap: cleanup never hides the leak. `fail` reports a teardown error; `warn`
+  warns and cleans up. A deliberate exception uses
+  `@pytest.mark.estate_allow("children", reason="...", backlog="XX-NN")`. Non-Linux runs are a no-op and record
+  one warning (TP-12).
+* `@pytest.mark.requires_contained_cgroup` (TP-13) protects tests that signal, kill or flood processes. At setup
+  the plugin requires a finite effective cgroup-v2 `memory.max` and `pids.max`, `/proc` without `hidepid` or
+  `subset=pid`, and a private PID namespace: every other process must lie in the test's top-level tree below
+  PID 1. It re-scans for a transient foreign pid during `estate_policy_settle_seconds`. Under `fail` a refusal is
+  a setup error with all failed facts and the container remedy; under `warn` it emits an `EstatePolicyWarning`
+  and skips with reason `estate-test-policy: requires_contained_cgroup refused: ...`; under `off` the marker is
+  inert. `estate_allow` does not accept this rule. Formula and false passes/refusals:
+  `docs/DESIGN-CONTAINMENT-MARKER.md`.
 * `flakehunt`: repeats a pytest selection under a stress recipe until N failures or M passes.
   `flakehunt --recipe slow-cpu --image IMG -v SRC:/work --memory 2g --cgroup-parent SLICE --pids-limit N --run-id ID -- tests/x.py -k name`.
   Recipes: `none`, `slow-cpu` (lane `--cpus 0.25`), `cpu-contended` (lane shares 10 vs an exact-named `stress-ng`
@@ -40,8 +66,8 @@ pytest only. Release contract: `cmru.toml` (tag `test-policy-vX.Y.Z`, wheel to G
 
 ## Limits
 
-* Plugin, static analysis: only the test function's own source is analysed, not helpers it calls (the leak check is
-  the backstop). Quiet false negatives, backlog TP-09: aliased clock imports
+* Plugin, static analysis: only the test function's own source is analysed, not helpers it calls (the thread,
+  fd and child checks are the backstop). Quiet false negatives, backlog TP-09: aliased clock imports
   (`from time import perf_counter as pc`), `datetime.now()` deltas, sleeps in helpers, randomness.
 * Order and shared-state dependence is NOT detected (backlog TP-07): a test that passes only in file order is stable
   when the file runs whole and fails with exit 1 when run alone, which looks like an ordinary failure.
@@ -55,4 +81,4 @@ pytest only. Release contract: `cmru.toml` (tag `test-policy-vX.Y.Z`, wheel to G
 * The CLI is plain argparse (cli-extended adoption: TP-08).
 
 Formats (JSON report, flake ledger): `docs/FORMATS.md`. Known failures and their causes: `docs/FLAKE-LEDGER.md`.
-Tests: `PYTHONPATH=src python -m pytest tests --cov --cov-branch`.
+Tests run through the registered `r0-r1` lane, which uses tester-unified with 100% line and branch coverage.
