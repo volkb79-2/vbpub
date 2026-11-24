@@ -53,9 +53,10 @@ agctl owns controller identity and handover, the run registry, routes, agent fin
 | deepseek-{A} | codex | A | deepseek-v4.1-flash-eco | catalog (max) | `OPENDESIGN_API_KEY_{A}` | `~/.codex-opendesign-{a}` |
 | deepseek-pi-{A} | pi | A | same | catalog | same | `opendesign_{a}` |
 
-  A = VOLKER or GITHUB2 (a = lower case). Trailers: `Codex gpt-6-luna`, `Codex gpt-6-sol`, `Codex deepseek-v4.1-flash`; pi is open question 1. volker: `concurrency = 10`.
-- **Aliases** `deepseek`, `deepseek-pi` are `[alias]` lists: candidates with a present key first, then by OD account state (soonest reset, then least recently blocked); never a refusal for "blocked". Reason: local "blocked" is stale; the provider's 402 is the authority (B11; `pick_available` exit 3 goes, H5).
-- **A missing key is a synchronous refusal** (configuration, not usage): github2 has no key, so pinned github2 routes refuse and aliases skip them.
+  A = VOLKER or GITHUB2 (a = lower case). Trailers: `Codex gpt-6-luna`, `Codex gpt-6-sol`, `Codex deepseek-v4.1-flash` (pi too, §11). volker: `concurrency = 10`.
+- **Aliases** `deepseek`, `deepseek-pi` are `[alias]` lists in drain order (volker, then github2), reordered by OD account state (soonest reset, then least recently blocked); never a refusal for "blocked". Reason: local "blocked" is stale; the provider's 402 is the authority (B11; `pick_available` exit 3 goes, H5).
+- **A missing key is a synchronous refusal** (configuration, not usage). Both OD keys exist in `~/.env.ai`; each route loads only its own.
+- **Per-session budgets are a main-controller decision, not routes.toml data** (today: drain volker first, then +1 concurrent on github2 per sub-controller).
 - **Usage never blocks a launch** (operator 2026-11-18): no refusing or warning preflight; limits are information. On volker `tier_limit_exceeded` (10 sessions estate-wide) the run ends CONCURRENCY-LIMIT and is resumed on the same thread later, never relaunched fresh. Reason: a fresh run loses the thread's work and adds a session against the cap.
 - **Picker last** (P-plat-22): `agctl route pick`, advisory, soonest-reset allowance first (generalising `CONTROLLER_OD_PREFER_EXPIRING`), reviews on another `family`.
 
@@ -65,7 +66,7 @@ agctl owns controller identity and handover, the run registry, routes, agent fin
 
 1. **Below the soft threshold: keep working** (operator 2026-11-15, never idle); notes give fill, growth and projected calls to the threshold.
 2. **Past it: finish the current step, then once** (not per merge batch, rejected as an extra call each time): the `controller-handover` skill writes the prose under the generated header; sync `plan.yaml`; `agctl handover check` (non-zero on drift against git, registry, worktrees or plan schema); `agctl handover ready` writes `READY` by atomic rename (name, handover path and sha256, repo head, session id, UTC); end the turn.
-3. **Fresh session, started by the operator.** A controller-only SessionStart[startup] hook (only with `CONTROLLER_NAME`) reads `READY`, checks hash and head, injects "read <handover> first (head <sha>, written <utc>)", and renames it `READY.consumed.<session>`. Missing or mismatched: the note says so and gives the current HANDOFF's age.
+3. **Fresh session, started by the operator** (new session or `/clear`). A controller-only SessionStart[startup|clear] hook (only with `CONTROLLER_NAME`) reads `READY`, checks hash and head, injects "read <handover> first (head <sha>, written <utc>)", and renames it `READY.consumed.<session>`. Missing or mismatched: the note says so and gives the current HANDOFF's age.
 4. **Auto-compaction is only the backstop** (window above the soft threshold, set by the operator). If it fires, SessionStart[compact] warns the handover predates it and asks for a new one first.
 
 - **A successor without the operator's click** is AG-2 E6's question (`claude --bg` plus attach, P-plat-20); slice 1 builds no TUI.
@@ -92,25 +93,22 @@ Reason: the week's costly incidents were all controller-side (M6). Each package:
 
 The tracked `scripts/controller/hooks/ctx-hooks.py` is wired (operator re-wires `settings.local.json`); `.controller-state/hooks/ctx.py` is deleted after one clean day. Reason: continuity-critical code was untracked and contradicted 22:50Z (H6).
 
-- **Config** `$CONTROLLER_HOME/agctl.toml` (path override `CTX_AGCTL_TOML`): `[context.controller] soft = 250000`, `[context.spawned] soft = 200000` (tokens). `CTX_SOFT` overrides the session's own kind (`CTX_SESSION_KIND`). A bad or missing file is logged once and defaults apply. Reason: rev 3 specified seven keys before one note was measured (M6); the soft threshold is the only decision point.
-- **Harness window** (informational): `modelSettings.<model>.autoCompactWindow` in `~/.claude/settings.json`, else the top-level value; shown in notes, with a warning when it is at or below `soft`.
+- **Config** `$CONTROLLER_HOME/agctl.toml` (path override `CTX_AGCTL_TOML`): `[context.controller] soft = 650000`, `[context.spawned] soft = 200000` (tokens; main controller 2026-11-24). `CTX_SOFT` overrides the session's own kind (`CTX_SESSION_KIND`); `CTX_CONTROLLER_SOFT` is kept as an alias for the controller kind. A bad or missing file is logged once and defaults apply. Reason: rev 3 specified seven keys before one note was measured (M6); the soft threshold is the only decision point.
+- **Harness window** (the ceiling, informational; the operator set 800k): `modelSettings.<model>.autoCompactWindow` in `~/.claude/settings.json`, else the top-level value; shown in notes, with a warning when it is at or below `soft`.
 - **Constants:** arm 100000, a note every 50000, growth = mean per tool call over the session's own last 20 calls, projection `(soft - fill) / growth` tool calls.
 - **Notes:** below soft "Context {fill}k of soft {soft}k (harness window {win}k); growth {g}k per tool call; about {n} tool calls to the soft threshold." Controller past soft: "Past the soft threshold. Finish the current step, then write the handover (controller-handover skill), sync plan.yaml, run `agctl handover check` and `agctl handover ready`, and end the turn. Do not start new work." Spawned past soft: "Reach a semantic boundary and return PARTIAL with a finalization; a budget stop is never BLOCKED." The read order comes from the handover's read-first list, never hard-coded plan ids.
 - **Learning log** `steering-log.jsonl` beside `hook-log.jsonl` (ts, kind, fill, growth, projected calls, note id, later outcome), reviewed before automation is trusted (operator 2026-11-18).
 
 ## 9. Operator decisions this note rests on
 
-2026-11-18: name, skills with the tool, `CONTROLLER_NAME`, learning log; usage never blocks a launch; 22:50Z handover. 2026-11-24: review defaults accepted; volker cap 10, same-thread resume; github2 has no key.
+2026-11-18: name, skills with the tool, `CONTROLLER_NAME`, learning log; usage never blocks a launch; 22:50Z handover. 2026-11-24: review defaults accepted; volker cap 10, same-thread resume; github2 keyed; soft 650k/200k.
 
 ## 10. Deferred, limits, unverified
 
 - **Deferred:** `agctld`, the TUI, fork/resume priming, name lease/adopt, the opencode adapter (`opencode-impl.sh` unchanged until then), a Rust session extractor.
-- **Limit:** `concurrency` counts only this devcontainer's registry; the estate-wide volker budget stays a controller rule.
+- **Limit:** estate-wide OD concurrency is not counted in v1 (`concurrency` sees only this devcontainer's registry); per-sub-controller budgets set by the main controller are the mechanism.
 - **Unverified:** E6 `--bg`; whether SessionStart `additionalContext` reliably primes a fresh session; whether pi accepts `PI_THINKING=max`.
 
 ## 11. Open questions
 
-1. **pi trailer:** H2 says pi must not carry the Codex DeepSeek trailer; the exact line needs an operator pick. Until then pi keeps today's value.
-2. **Primer on SessionStart[clear] too?** Recommended yes: `/clear` is the cheapest successor start.
-3. **Soft defaults 250k/200k** come from rev 3's cost model on a 300k window; the controller now has an 800k window. Confirm, or measure first.
-4. **Aggregate volker concurrency estate-wide** (fleetd or a shared registry)?
+1. **pi trailer (operator):** H2 says pi should not carry the Codex DeepSeek trailer; pi keeps today's value until the operator picks a line.
