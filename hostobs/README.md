@@ -130,7 +130,7 @@ interactive shell in a capped, network-less, unprivileged container that shares 
 toolchain and offline crate cache. It runs on a gate host, `v1001` by default (your worktree, including
 uncommitted changes up to 20 MiB, is synced there per call); local mode is refused. Try
 `tools/dev --dry-run test -p hostobs-store` to see the plan. A green dev run is **not** gate evidence;
-only the lanes below on a committed head are. The dev image (`tester-unified-rust-dev:rs-20261124`) exists
+only the lanes below on a committed head are. The dev image (`tester-unified-rust-dev:rs-20261124b`) exists
 and the dev tool runs remotely on the gate host (measured 2026-11-24 with the pre-shim tool:
 `test -p hostobs-model`, 53 tests, 79 s wall). Guide:
 [`../scripts/controller/docs/DEV.md`](../scripts/controller/docs/DEV.md); the Rust dev image (build,
