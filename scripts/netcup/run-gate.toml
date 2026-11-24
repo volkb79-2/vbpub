@@ -12,4 +12,11 @@ schema_version = 1
 kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/scripts/netcup && export PYTHONPATH=\"{worktree}/libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH}\" && \"$TESTER_VENV/bin/python\" -m pytest tests/ -q"]
-budget = "5m"
+# Measured need, not a safety margin for flakiness: the 17 completed registered
+# runs of this lane on 2026-11-24 took 127 s to 289 s (pytest's own "passed in";
+# the slowest, 288.95 s on v1001 while controller suites loaded that host, was 96%
+# of the previous 5m budget), and five v1001 runs ended BUDGET_EXCEEDED at 300 s
+# (08:01Z x2, 15:08Z, 15:17Z, 15:25Z), so their true need is larger still. The
+# budget is the slowest measured time x 1.6 (about 462 s, rounded up to 8m). A run
+# that needs more than this would be a real regression in the suite's cost.
+budget = "8m"
