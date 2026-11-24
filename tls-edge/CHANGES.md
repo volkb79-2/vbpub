@@ -6,6 +6,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 ### Breaking
+- **Adoption/Migration:** Updating a 3.x instance to 4.0: download the 4.0 release `get.py` and
+  run `python3 get.py update` (the 3.x `bin/tls-edge-installer` cannot verify a 4.0 bundle);
+  from 4.0 on `bin/tls-edge-installer update` works.
 - The Mattermost Calls preset is removed. `tls-edge` no longer defines a `calls` key, media CLI questions,
   `mattermost-calls-*` entrypoints, or TCP/UDP media ports.
 - Site overrides use schema 2. Schema 1 records with `[tls_edge.calls] enabled = false` (or no `enabled`) and
@@ -40,10 +43,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `consumer_env` state in a versioned `tls-edge.show` envelope.
 
 ### Operator notes
+- 4.0 adoption: Updating a 3.x instance to 4.0: download the 4.0 release `get.py` and run
+  `python3 get.py update` (the 3.x `bin/tls-edge-installer` cannot verify a 4.0 bundle);
+  from 4.0 on `bin/tls-edge-installer update` works.
 - 4.0 upgrade step: run `tls-edge configure --answers <empty file> --yes` after updating and before
   `ciu up`, so the new contract keys are added to the 3.2 `consumer.env`.
 
 ### Upgrade
+- Updating a 3.x instance to 4.0: download the 4.0 release `get.py` and run `python3 get.py update`
+  (the 3.x `bin/tls-edge-installer` cannot verify a 4.0 bundle); from 4.0 on
+  `bin/tls-edge-installer update` works.
 - Anyone who used the removed standalone installer or plain Compose on the committed `edge-proxy/` tree must
   install a get.py instance and run its bundled CIU stack. Follow `docs/INSTALL.md`; do not migrate by copying
   the old rendered tree. From a repository checkout, pass `--root <checkout>/tls-edge`, and from an installed

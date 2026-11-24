@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 import tomllib
 
 from cmru.bundle import parse_config as parse_bundle_config
@@ -22,6 +23,30 @@ def _publish_argv() -> list[str]:
     commands = CONFIG["steps"]["push"]["commands"]
     assert len(commands) == 1
     return commands[0]["argv"]
+
+
+def _markdown_section(path, heading: str) -> str:
+    text = path.read_text(encoding="utf-8")
+    start = re.search(rf"^{re.escape(heading)}\s*$", text, flags=re.MULTILINE)
+    assert start is not None, f"{path}: missing heading {heading!r}"
+    remainder = text[start.end():]
+    end = re.search(r"^#{2,3} .+\s*$", remainder, flags=re.MULTILINE)
+    section = remainder[:end.start()] if end is not None else remainder
+    return " ".join(section.split())
+
+
+def test_the_3_x_to_4_0_installer_adoption_step_is_documented_everywhere_required():
+    migration = (
+        "Updating a 3.x instance to 4.0: download the 4.0 release `get.py` and run "
+        "`python3 get.py update` (the 3.x `bin/tls-edge-installer` cannot verify a "
+        "4.0 bundle); from 4.0 on `bin/tls-edge-installer update` works."
+    )
+    assert migration in _markdown_section(ROOT / "docs" / "INSTALL.md", "## 6. Update")
+    assert migration in _markdown_section(ROOT / "CHANGES.md", "### Upgrade")
+    assert migration in _markdown_section(ROOT / "CHANGES.md", "### Operator notes")
+    breaking = _markdown_section(ROOT / "CHANGES.md", "### Breaking")
+    assert "**Adoption/Migration:**" in breaking
+    assert migration in breaking
 
 
 def test_push_step_is_the_cmru_variants_handler_not_a_project_script():

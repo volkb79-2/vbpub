@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -77,7 +78,7 @@ def make_wheel(directory: Path, dist: str, version: str, console: str | None = N
     return path
 
 
-def make_bundle(workdir: Path, tag: str, variant: str, marker: str) -> None:
+def make_bundle(workdir: Path, tag: str, variant: str, marker: str) -> dict:
     """A bundle shaped like cmru handler bundle-build's output."""
     stage = workdir / "stage" / tag
     for rel in (
@@ -109,6 +110,7 @@ def make_bundle(workdir: Path, tag: str, variant: str, marker: str) -> None:
         archive.add(stage, arcname=tag)
     digest = hashlib.sha256(asset.read_bytes()).hexdigest()
     (workdir / f"{asset.name}.sha256").write_text(f"{digest}  {asset.name}\n", encoding="utf-8")
+    return manifest
 
 
 @pytest.fixture()
@@ -439,6 +441,44 @@ def test_extra_wheel_is_refused_even_when_the_generic_manifest_lists_it(env, tmp
     with pytest.raises(SystemExit):
         run(ns, "do_install", answers, version=TAG)
     assert not (root / "stack").exists()
+
+
+def test_cmru_generic_manifest_has_no_seam_3_distribution_entries(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    manifest = make_bundle(tmp_path / "served", TAG, "py313", "one")
+    installer = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))["project"]["installer"]
+    distributions = {wheel["distribution"] for wheel in installer["wheels"]}
+
+    # If cmru starts writing Seam-3 entries, remove the one-time 3.x adoption note.
+    assert set(manifest) == {"schema_version", "project", "tag", "created", "files"}
+    assert distributions.isdisjoint(manifest)
+
+
+def test_legacy_3_2_installer_refuses_the_generic_manifest_with_the_documented_message(
+    tmp_path, capsys, monkeypatch,
+):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    manifest = make_bundle(tmp_path / "served", TAG, "py313", "one")
+    legacy = _load(
+        "legacy_get_3_2_wheel_verify",
+        Path(__file__).parent / "fixtures" / "legacy_get_3_2_wheel_verify.py",
+    )
+    legacy.MANIFEST_NAME = "manifest.json"
+    legacy.EXIT_FAIL = 1
+
+    def fatal(message, code):
+        print(message, file=sys.stderr)
+        raise SystemExit(code)
+
+    legacy.fatal = fatal
+    legacy.ok = lambda *_args, **_kwargs: None
+    wheel = tmp_path / "served" / "stage" / TAG / "wheels" / "cli_extended-1.0.0-py3-none-any.whl"
+
+    with pytest.raises(SystemExit) as refusal:
+        legacy._verify_wheel_sha256(wheel, manifest, "cli-extended")
+
+    assert refusal.value.code == 1
+    assert "manifest.json has no entry for distribution 'cli-extended'." in capsys.readouterr().err
 
 
 def test_locally_modified_synced_file_blocks_update_until_overwrite_local(env):

@@ -249,6 +249,13 @@ its host port pair must be disjoint from `TLS_EDGE_PUBLIC_PORTS`, as in `pattern
 
 ## 6. Update
 
+Updating a 3.x instance to 4.0: download the 4.0 release `get.py` and run
+`python3 get.py update` (the 3.x `bin/tls-edge-installer` cannot verify a 4.0
+bundle); from 4.0 on `bin/tls-edge-installer update` works. `get.py update`
+targets `/srv/tls-edge-instance` by default; pass `--scope user` for a
+user-scope instance. It reuses the installed interpreter variant; pass
+`--variant py313` or `--variant py314` only to override that selection.
+
 ```bash
 printf '' > /tmp/tls-edge-empty.toml
 sudo /srv/tls-edge-instance/bin/tls-edge-installer update --variant py313

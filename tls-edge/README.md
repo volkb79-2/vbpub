@@ -45,6 +45,12 @@ rollback and migrating a hand-made deployment are all in
 
 ### Update
 
+Updating a 3.x instance to 4.0: download the 4.0 release `get.py` and run
+`python3 get.py update` (the 3.x `bin/tls-edge-installer` cannot verify a 4.0
+bundle); from 4.0 on `bin/tls-edge-installer update` works. The command targets
+the system instance by default, accepts `--scope user` for a user instance, and
+reuses the installed interpreter variant unless `--variant` overrides it.
+
 ```bash
 sudo /srv/tls-edge-instance/bin/tls-edge-installer update --variant py313
 cd /srv/tls-edge-instance/stack && sudo ./ciu up
