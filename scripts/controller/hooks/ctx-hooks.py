@@ -37,18 +37,30 @@ retired untracked `.controller-state/hooks/ctx.py` are kept, so re-pointing
                  after that every call is DENIED (PreToolUse permissionDecision
                  deny) with the instruction to write the handover, launch
                  compact-resume.sh detached on the session's own pane and end
-                 the turn. ALLOW-LIST (always passes, not counted): Write/Edit/
-                 MultiEdit of a file under the state directory or of `plan.yaml`
-                 at the repo root, and a Bash call that is ONLY the launch of
-                 scripts/controller/compact-resume.sh or clear-resume.sh (optional
-                 `setsid`/`nohup`/`bash` prefix, redirects and one trailing `&`;
-                 any `;` `|` `&&` backtick `$(` or newline refuses the match).
+                 the turn. ALLOW-LIST (always passes, not counted):
+                   Write/Edit/MultiEdit of a file under the state directory, of
+                   `plan.yaml` at the repo root, or under the hook input's
+                   `scratchpad_dir`;
+                   Read of a path under the state directory, of plan.yaml, or of
+                   the hook's own `scripts/controller/` -- the harness refuses an
+                   Edit of a file this conversation did not Read, and
+                   resume-read.sh prints HANDOFF.md through a Bash call, which
+                   registers no Read (review H1);
+                   the `Skill` tool for `controller-handover`;
+                   a Bash call that is ONLY the launch of compact-resume.sh or
+                   clear-resume.sh (optional `setsid`/`nohup`/`bash` prefix,
+                   redirects and one trailing `&`; any `;` `|` `&&` backtick `$(`
+                   or newline, any other `&`, and any script path other than the
+                   hook's own resolved one refuse the match).
                  Everything else is denied until the fill is below FORCE_AT again.
                  Unreadable fill or state: fail open (nothing is denied).
   pre-compact    builds the readback into `<state dir>/readback-<session_id>-N.md`
                  (state in `<state dir>/hooks/readback-state-<session_id>.json`:
-                 every session has its own files and `--since` marker), prunes
-                 (the newest 3 readbacks per session stay; pressure, force and
+                 every session has its own files and `--since` marker), DROPS this
+                 session's force-<sid>-*.json (the grace count of the fill band that
+                 is ending; session-start drops them too, so the reset does not
+                 depend on which hook fires), prunes (the newest 3 readbacks per
+                 session stay; pressure, force and
                  readback-state files untouched for 14 days go) and prints a note
                  for the SUMMARISER: keep the session's goal and the in-flight
                  list, the age of HANDOFF.md, and the merges to origin/main since
@@ -93,7 +105,13 @@ Configuration (flags or environment; nothing is hard-coded):
                                    is the same override under the live hook's
                                    name (the flag and CTX_SESSION_KIND win). A
                                    pre-compact fired inside a subagent (and no
-                                   explicit kind) builds nothing.
+                                   explicit kind) builds nothing. An interactive
+                                   top-level session that is NOT a controller
+                                   (a reviewer, a per-tool session the operator
+                                   opens in the same checkout) must export
+                                   CTX_HOOK_ROLE=agent with the swapped settings;
+                                   otherwise it is forced at FORCE_AT like any
+                                   controller (review L3).
   --repo-root / CTX_REPO_ROOT      the checkout `git log` runs in for the
                                    "merges since" list. Default: the state
                                    directory's parent.
@@ -126,9 +144,11 @@ script and the docs, never a controller's settings.local.json or state files.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -148,6 +168,7 @@ STALE_MIN = 15         # minutes after which HANDOFF.md counts as stale
 HARD_TIMEOUT = 20.0    # a compaction must never wait longer than this
 READ_ORDER_LIMIT = 9_000  # hook stdout/additionalContext cap is 10,000 chars
 HANDOFF_TAIL_BYTES = 400_000  # the newest handover block is read from the file's tail
+TAIL_BYTES = 400_000   # the transcript tail the fill and the compact_boundary are read from
 ACTIVE_LOG: Path | None = None  # the resolved log, so main() can log an unexpected crash
 
 # Printed after the handover-derived read order. Nothing here names a plan item
@@ -339,31 +360,47 @@ def last_assistant(path: str) -> tuple[int | None, str | None]:
     """(fill, model) of the last assistant message that carries usage, read from
     the transcript's tail; (None, None) when it cannot be read. The fill is the
     estimated context size: input + cache read + cache creation tokens
-    (measured in E4)."""
+    (measured in E4).
+
+    The backward scan stops at a `{"type":"system","subtype":"compact_boundary"}`
+    record and returns None: after a compaction the tail still holds the
+    PRE-compaction fill (the new assistant record is not flushed yet when the hooks
+    run, measured 2026-11-24), and reading it as the current fill let a stale grace
+    count deny the first post-compaction call (review M2). A `<synthetic>` record or
+    one whose usage is all zero is not a context reading and is skipped (review L1)."""
     if not path:
         return None, None
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as handle:
-            handle.seek(max(0, size - 400_000))
+            handle.seek(max(0, size - TAIL_BYTES))
             tail = handle.read().decode("utf-8", "replace").splitlines()
         for line in reversed(tail):
             try:
                 rec = json.loads(line)
             except Exception:
                 continue
-            if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
+                return None, None
+            if rec.get("type") != "assistant":
                 continue
             message = rec.get("message") or {}
+            if not isinstance(message, dict):
+                continue
             usage = message.get("usage")
-            if not usage:
+            if not isinstance(usage, dict):
                 continue
             model = message.get("model")
-            return (
+            fill = (
                 int(usage.get("input_tokens", 0) or 0)
                 + int(usage.get("cache_read_input_tokens", 0) or 0)
                 + int(usage.get("cache_creation_input_tokens", 0) or 0)
-            ), (model if isinstance(model, str) and model else None)
+            )
+            if fill <= 0 or (isinstance(model, str) and model.startswith("<synthetic")):
+                continue
+            return fill, (model if isinstance(model, str) and model else None)
     except Exception:
         return None, None
     return None, None
@@ -382,12 +419,16 @@ def soft_threshold() -> int:
 
 def controller_limits() -> tuple[int, int, int, int]:
     """(inform, urge, force, grace) of the controller policy, each from its
-    CTX_* variable; a non-positive or non-numeric value keeps the default."""
+    CTX_* variable; a non-positive or non-numeric value keeps the default. The
+    thresholds are kept in order (inform <= urge <= force), so a variable that
+    inverts them cannot produce contradictory wording (review nit2)."""
     def positive(name: str, default: int) -> int:
         value = env_int(name, default)
         return value if value > 0 else default
-    return (positive("CTX_INFORM_AT", INFORM_AT), positive("CTX_URGE_AT", URGE_AT),
-            positive("CTX_FORCE_AT", FORCE_AT), max(0, env_int("CTX_FORCE_GRACE", FORCE_GRACE)))
+    inform = positive("CTX_INFORM_AT", INFORM_AT)
+    urge = max(inform, positive("CTX_URGE_AT", URGE_AT))
+    force = max(urge, positive("CTX_FORCE_AT", FORCE_AT))
+    return (inform, urge, force, max(0, env_int("CTX_FORCE_GRACE", FORCE_GRACE)))
 
 
 def read_state(path: Path) -> dict:
@@ -480,10 +521,16 @@ def state_key(state: Path | None, prefix: str, session: str, who: str) -> Path |
     return None if state is None else state / "hooks" / f"{prefix}-{safe}.json"
 
 
-def controller_wording(fill: int, marker: str, limits: tuple[int, int, int, int]) -> str:
+def controller_wording(
+    fill: int, marker: str, limits: tuple[int, int, int, int],
+    left: int | None = None,
+) -> str:
     """The controller's note: persist-and-continue below INFORM_AT, then the
-    voluntary-stop reminder (INFORM, stronger from URGE), then the forced yield."""
+    voluntary-stop reminder (INFORM, stronger from URGE), then the forced yield.
+    `left` is the grace still unused (`grace - force_count`), because the current
+    call was already counted by pre-tool-use before this note is printed (review L4)."""
     inform, urge, force, grace = limits
+    remaining = grace if left is None else left
     launch = ("launch scripts/controller/compact-resume.sh DETACHED on your own pane (`setsid nohup ... >log 2>&1 &`, "
               "never Bash run_in_background) with a guidance file and a resume prompt, then end the turn")
     if fill < inform:
@@ -503,10 +550,31 @@ def controller_wording(fill: int, marker: str, limits: tuple[int, int, int, int]
             + f"There write the handover (controller-handover skill) and sync the plan, then {launch}. {WEIGH}"
         )
     return (
-        f"{marker} [controller] FORCED YIELD: past {force // 1000}k. {grace} more tool calls pass, then every tool "
-        "call is DENIED except the handover writes (Write/Edit under the state directory, plan.yaml) and the "
-        f"compact-resume launch. Finish your unit of work now, write the handover, then {launch}. {WEIGH}"
+        f"{marker} [controller] FORCED YIELD: past {force // 1000}k. {remaining} more tool calls pass, then every tool "
+        "call is DENIED except the handover writes (Write/Edit under the state directory, plan.yaml, your "
+        f"scratchpad dir) and the compact-resume launch. Finish your unit of work now, write the handover, then {launch}. {WEIGH}"
     )
+
+
+def force_files(state: Path | None, session: str) -> list[Path]:
+    """This session's force files (one per `who`), and never another session's."""
+    if state is None:
+        return []
+    try:
+        return sorted((state / "hooks").glob(f"force-{session}-*.json"))
+    except Exception:
+        return []
+
+
+def drop_force_files(state: Path | None, session: str) -> None:
+    """Forget this session's grace count: the fill band it belonged to has ended.
+    Called by pre-compact AND by session-start, so the reset does not depend on
+    which of the two hooks fires (review M2)."""
+    for entry in force_files(state, session):
+        try:
+            entry.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def force_count(state: Path | None, session: str, who: str) -> int:
@@ -516,6 +584,31 @@ def force_count(state: Path | None, session: str, who: str) -> int:
         return int(read_state(key).get("used", 0)) if key is not None else 0
     except Exception:
         return 0
+
+
+def bump_force_count(state: Path | None, session: str, who: str, fill: int) -> int:
+    """Count one tool call against the grace and return the new count. The
+    read-increment-write runs under an exclusive lock on the key file, because
+    parallel tool calls of one message run their PreToolUse hooks concurrently: an
+    unlocked sequence loses increments and more than FORCE_GRACE calls pass (L2).
+    A lock or write failure falls back to the unlocked path rather than denying."""
+    key = state_key(state, "force", session, who)
+    if key is None:
+        return 0
+    try:
+        key.parent.mkdir(parents=True, exist_ok=True)
+        with open(key.with_suffix(key.suffix + ".lock"), "a", encoding="utf-8") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                used = force_count(state, session, who) + 1
+                write_state(key, {"used": used, "at": fill})
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+        return used
+    except Exception:
+        used = force_count(state, session, who) + 1
+        write_state(key, {"used": used, "at": fill})
+        return used
 
 
 def pressure_note(
@@ -563,7 +656,10 @@ def pressure_note(
             "next step, and which facts exist only in this conversation. If your dispatch brief sets "
             f"a context rule, that rule wins. {WEIGH} The controller decides who continues."
         )
-    note = controller_wording(fill, marker, limits)
+    note = controller_wording(
+        fill, marker, limits,
+        None if fill < limits[2] else max(0, limits[3] - force_count(state, session, who)),
+    )
     age = handoff_age(handoff) if fill >= STALE_FROM else None
     if age and age[1] >= STALE_MIN:
         note += (
@@ -863,44 +959,141 @@ def prune(state: Path, session: str) -> None:
             entry.unlink(missing_ok=True)
         cutoff = time.time() - PRUNE_DAYS * 86400
         for prefix in ("pressure", "force", "readback-state"):
-            for entry in (state / "hooks").glob(f"{prefix}-*.json"):
+            # `.json*` also matches the `force-<sid>-<who>.json.lock` of the grace counter (L2).
+            for entry in (state / "hooks").glob(f"{prefix}-*.json*"):
                 if entry.stat().st_mtime < cutoff:
                     entry.unlink(missing_ok=True)
     except Exception:
         pass
 
 
-# Bash that is ONLY the launch of the successor helpers: optional setsid/nohup/bash words, the script,
-# its arguments, redirects and one trailing `&`. Anything that chains or substitutes is refused.
-RESUME_LAUNCH_RE = re.compile(
-    r"^(?:(?:setsid|nohup|bash)\s+)*(?:\S*/)?scripts/controller/(?:compact|clear)-resume\.sh(?:\s|$)"
-)
+# The launch the forced yield lets through is ONE bare command: optional setsid/nohup/bash words,
+# then the script of THIS checkout, its arguments, redirects and exactly one trailing `&`.
+# Any remaining `&` refuses the match (a lone `&` is a bash command separator and chains a
+# second command), as do `;` `|` backtick `$(` `<(` `>(` newline and `&&`. The only legal `&`
+# uses are the redirects `&>`/`&>>` and the file-descriptor duplications `2>&1`/`>&2`.
 CHAIN_RE = re.compile(r"[;|`\n\r]|&&|\$\(|<\(|>\(")
+RESUME_SCRIPT_NAMES = ("compact-resume.sh", "clear-resume.sh")
+LAUNCH_PREFIXES = ("setsid", "nohup", "bash")
+FD_DUP_RE = re.compile(r"^[0-9]*>&[0-9]+$")
+FD_DUP_ANY_RE = re.compile(r"[0-9]*>&[0-9]+")
+REDIRECT_RE = re.compile(r"^(?:&>>?|[0-9]?>>?)")
+AMP_RE = re.compile(r"&>>?")
+HANDOVER_SKILL = "controller-handover"
+SAFE_REDIRECT_TARGETS = ("/dev/null", "/dev/stdout", "/dev/stderr")
+
+
+def controller_dir() -> Path:
+    """The `scripts/controller` directory of THIS hook's checkout: the launch
+    allow-list is anchored to its own compact-resume.sh/clear-resume.sh."""
+    return Path(os.path.realpath(Path(__file__).resolve().parents[1]))
+
+
+def under(target: Path, roots: list[Path]) -> bool:
+    """True when `target` is one of `roots` or inside one of them."""
+    return any(root == target or root in target.parents for root in roots)
+
+
+def strip_safe_amps(text: str) -> str:
+    """`text` without the legal `&` uses (`&>`/`&>>` redirects and `2>&1`/`>&2`
+    file-descriptor duplications). Every other `&` stays, so the caller can refuse it."""
+    return AMP_RE.sub("", FD_DUP_ANY_RE.sub("", text))
+
+
+def launch_ok(command: str, state: Path, base: Path, scratch: Path | None = None) -> bool:
+    """True only for the one bare launch of this checkout's restart helper: no
+    chain, no second command after an `&`, no copy of the script under the state
+    directory, no redirection outside the state directory (review M1).
+
+    The script of the live idiom is often written relative to the cwd
+    (`scripts/controller/compact-resume.sh`) or below the repo root: both are
+    accepted when they resolve to this checkout's own file, so the template works
+    from a worktree as well."""
+    text = command.strip()
+    if text.endswith("&"):
+        text = text[:-1].rstrip()
+    if "&" in strip_safe_amps(text):
+        return False
+    if CHAIN_RE.search(text):
+        return False
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        return False
+    index = 0
+    while index < len(words) and words[index] in LAUNCH_PREFIXES:
+        index += 1
+    if index >= len(words):
+        return False
+    # The script word is resolved the way bash would resolve it (against the hook
+    # input's cwd) and must be exactly this checkout's own file: a copy under the
+    # state directory, a copy in another checkout and a symlink elsewhere are all
+    # refused (review M1). The deny template prints the absolute path.
+    allowed_scripts = {str(controller_dir() / name) for name in RESUME_SCRIPT_NAMES}
+    if os.path.realpath(os.path.join(base, words[index])) not in allowed_scripts:
+        return False
+    allowed = [Path(os.path.realpath(state))]
+    if scratch is not None:
+        allowed.append(scratch)
+    for position in range(index + 1, len(words)):
+        word = words[position]
+        if FD_DUP_RE.match(word):
+            continue
+        match = REDIRECT_RE.match(word)
+        if not match:
+            continue
+        raw = word[match.end():]
+        if not raw and position + 1 < len(words):
+            raw = words[position + 1]
+            position += 1
+        if not raw:
+            return False
+        target = os.path.realpath(os.path.join(base, raw))
+        if target not in SAFE_REDIRECT_TARGETS and not under(Path(target), allowed):
+            return False
+    return True
 
 
 def is_handover_call(hook: dict, state: Path, repo: Path | None) -> bool:
     """True for the calls the forced-yield deny must let through (documented in
-    the module docstring): a Write/Edit under the state directory or of plan.yaml,
-    or the detached launch of compact-resume.sh / clear-resume.sh."""
+    the module docstring): the handover writes, the reads they need (the harness
+    refuses an Edit of a file this conversation did not Read, and resume-read.sh
+    prints HANDOFF.md through a Bash call that registers no Read), the
+    controller-handover skill, and the detached launch of compact-resume.sh /
+    clear-resume.sh."""
     tool = hook.get("tool_name")
     data = hook.get("tool_input")
     if not isinstance(data, dict):
         return False
+    base = hook.get("cwd") if isinstance(hook.get("cwd"), str) else os.getcwd()
+
+    def target_of(value: object) -> Path | None:
+        if not isinstance(value, str) or not value:
+            return None
+        return Path(os.path.realpath(os.path.join(base, value)))
+
     if tool == "Bash":
         command = data.get("command")
-        return (isinstance(command, str) and not CHAIN_RE.search(command)
-                and bool(RESUME_LAUNCH_RE.match(command.strip())))
-    if tool in ("Write", "Edit", "MultiEdit"):
-        raw = data.get("file_path")
-        if not isinstance(raw, str) or not raw:
+        return isinstance(command, str) and launch_ok(
+            command, state, base, target_of(hook.get("scratchpad_dir")))
+    if tool == "Skill":
+        return data.get("skill") == HANDOVER_SKILL
+    if tool in ("Read", "Write", "Edit", "MultiEdit"):
+        target = target_of(data.get("file_path"))
+        if target is None:
             return False
-        base = hook.get("cwd") if isinstance(hook.get("cwd"), str) else os.getcwd()
-        target = Path(os.path.realpath(os.path.join(base, raw)))
         roots = [Path(os.path.realpath(state))]
         if repo is not None:
-            if target == Path(os.path.realpath(repo / "plan.yaml")):
-                return True
-        return any(target == root or root in target.parents for root in roots)
+            roots.append(Path(os.path.realpath(repo / "plan.yaml")))
+        if under(target, roots):
+            return True
+        if tool == "Read":
+            # Read is read-only; it is what the harness needs before an Edit or an
+            # overwriting Write of HANDOFF.md/STATE.md/plan.yaml, and the resume flow
+            # prints those through resume-read.sh (a Bash call), not a Read (H1).
+            return under(target, [controller_dir()])
+        scratch = target_of(hook.get("scratchpad_dir"))
+        return scratch is not None and (target == scratch or scratch in target.parents)
     return False
 
 
@@ -923,17 +1116,22 @@ def force_decision(
         return None
     if state is None or is_handover_call(hook, state, repo):
         return None
-    used = force_count(state, session, who) + 1
-    write_state(key, {"used": used, "at": fill})
+    used = bump_force_count(state, session, who, fill)
     if used <= grace:
         return None
     return (
         f"FORCED YIELD: the context is {fill // 1000}k (limit {force // 1000}k) and the {grace}-call grace is used, so "
-        "this tool call is denied. Do this now, nothing else: (1) write the handover (controller-handover skill: "
-        f"HANDOFF.md block and plan.yaml; Write/Edit under {state} and plan.yaml stay allowed); (2) launch "
-        "scripts/controller/compact-resume.sh <your tmux pane id> <guidance-file> <resume-prompt-file> <log-file> "
-        "DETACHED (`setsid nohup ... >log 2>&1 &`, never run_in_background; only that launch is allowed in Bash); "
-        "(3) end the turn. All other tool calls are denied until the context is below the limit again."
+        "this tool call is denied. Do this now, nothing else: (1) write the handover with the controller-handover "
+        f"skill or by hand: a HANDOFF.md block and plan.yaml. These pass and are NOT counted: Write/Edit under {state} "
+        "and of plan.yaml, Write/Edit under your scratchpad dir, Read under the state dir, plan.yaml and "
+        "scripts/controller/, and the Skill tool for controller-handover. (2) with the Write tool, write the "
+        f"compaction guidance and the resume prompt UNDER the state dir (for example {state}/compact-guidance.txt "
+        f"and {state}/compact-prompt.txt). (3) launch the restart DETACHED as ONE bare command with exactly one "
+        "trailing '&' (no cd, no ';', '&&', pipe or heredoc; the guidance and prompt files must be under the "
+        "state dir), never Bash run_in_background:\n"
+        f"setsid nohup {controller_dir()}/compact-resume.sh \"$TMUX_PANE\" {state}/compact-guidance.txt "
+        f"{state}/compact-prompt.txt {state}/compact-launch.log >/dev/null 2>&1 &\n"
+        "(4) end the turn. Every other tool call is denied until the context is below the limit again."
     )
 
 
@@ -1044,6 +1242,11 @@ def run(mode: str, args: argparse.Namespace) -> int:
         if state is None:
             log(log_path, {"ev": "SessionStart", "source": source, "error": "no state dir"})
             return 0
+        # A compaction or a restart starts a new fill band: this session's grace
+        # count is dropped, so the first post-resume call cannot be denied on a stale
+        # pre-compaction count (review M2; the fill itself is re-derived from the new
+        # transcript, whose backward scan stops at the compact_boundary).
+        drop_force_files(state, safe_id(hook.get("session_id")))
         # Every source (compact, resume, startup) gets the same text: a resumed
         # session needs the artifact as much as an automatically compacted one.
         # The settings matcher (`compact`) decides which events fire at all.
@@ -1055,6 +1258,10 @@ def run(mode: str, args: argparse.Namespace) -> int:
 
     if mode == "pre-compact":
         must_keep_note(hook, state, "PreCompact", log_path)
+        # The grace counter belongs to the fill band that is ending: drop it now, so a
+        # stale count is gone even if the SessionStart hook is skipped or arrives late
+        # (review M2).
+        drop_force_files(state, safe_id(hook.get("session_id")))
         explicit = args.session_kind or os.environ.get("CTX_SESSION_KIND")
         role_env = (os.environ.get("CTX_HOOK_ROLE") or "").strip().lower()
         if (hook.get("agent_id") or role_env == "agent") and not explicit:

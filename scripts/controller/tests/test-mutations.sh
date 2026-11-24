@@ -428,10 +428,14 @@ expect_killed ctx-hooks-crash-log \
 for ctx_mutant in subagent-path stale-check stale-age urge-wording agent-soft \
                   role-env read-order-newest merges-window state-walkup role-env-skip sid-state \
                   pressure-dir state-fallback force-at force-grace force-below force-agent allow-chain allow-root \
-                  prune-keep prune-age first-action legacy-state; do
+                  prune-keep prune-age first-action legacy-state handover-read allow-skill allow-scratch \
+                  amp-chain script-path compact-boundary synthetic-fill force-drop grace-left limits-order \
+                  precompact-force-drop; do
   expect_killed "ctx-hooks-$ctx_mutant" \
     env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-$ctx_mutant.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
 done
+expect_killed resume-read-no-budget \
+  env RESUME_READ_SCRIPT="$ROOT/mutants/scripts/controller/resume-read-no-budget.sh" bash "$SCRIPT_DIR/test-resume-read.sh"
 expect_killed push-pipeline-exit-propagation \
   env PUSH_IMAGE_SCRIPT="$ROOT/mutants/scripts/controller/push-image-status.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 for skills_mutant in skills-stamp-ownership skills-modified-clobber skills-stale-detection \

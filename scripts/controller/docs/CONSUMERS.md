@@ -309,7 +309,11 @@ the main session is a `controller`, a hook fired inside an Agent-tool subagent i
 continues; from 200000 (and again, more urgently, from 250000) it is asked to write the
 handover (controller-handover skill) and launch `compact-resume.sh` detached; from 300000
 the `pre-tool-use` mode denies every tool call after 5 more, except the handover
-writes and that launch. A spawned session gets the context marker until its threshold
+writes (state dir, `plan.yaml`, `scratchpad_dir`), the reads of the state dir, `plan.yaml`
+and `scripts/controller/` that an Edit needs first, `Skill controller-handover`, and one bare
+launch of this checkout's own `compact-resume.sh`/`clear-resume.sh` (the deny reason carries
+the template). An interactive top-level session that is NOT a controller must export
+`CTX_HOOK_ROLE=agent`, or it is forced at 300000 too. A spawned session gets the context marker until its threshold
 (default 200000), then finish-or-return-PARTIAL. The marker counts calls to the 300k
 forced yield; no ceiling or `autoCompactWindow` is read.
 

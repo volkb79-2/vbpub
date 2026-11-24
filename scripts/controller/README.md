@@ -92,7 +92,7 @@ naming them: the real state lives in the main checkout. What is state and what i
 
 ## Restart read (`resume-read.sh`)
 
-`resume-read.sh <main|platform|core|assay|hostobs|edge|rollback>`: ONE read-only call that prints exactly the state-file slices a restarted session needs (each under `== <path> [<slice>] (<bytes> B, cap <cap> B) ==`, cut at its cap with a visible marker, `MISSING` for an absent file, exit 2 for an unknown role). The SessionStart hook names it as the first command; slices and settings: the script header and AGENTS.md "Long-running controllers"; test: `tests/test-resume-read.sh`.
+`resume-read.sh <main|platform|core|assay|hostobs|edge|rollback>`: ONE read-only call that prints exactly the state-file slices a restarted session needs (each under `== <path> [<slice>] (<bytes> B, cap <cap> B) ==`, cut at its cap with a visible marker, `MISSING` for an absent file, exit 2 for an unknown role). The output has a budget (`RESUME_READ_TOTAL`, default 24000 B) that the per-slice caps (`RESUME_READ_CAP_<SLICE>`) are scaled to fit, because the Bash tool turns anything above about 30,000 characters into a persisted file; a STATE.md over its share prints one `WARN STATE.md is N B, cap C: shorten it` line. The SessionStart hook names it as the first command; slices and settings: the script header and AGENTS.md "Long-running controllers"; test: `tests/test-resume-read.sh`.
 
 ## Successor restart (`compact-resume.sh`, `clear-resume.sh`)
 
@@ -729,7 +729,11 @@ printf '%s' '<hook JSON>' | scripts/controller/hooks/ctx-hooks.py pre-compact \
 Subcommands: `statusline`, `post-tool-use`, `pre-compact`, `session-start`,
 `stop` (the same five words as the retired untracked `.controller-state/hooks/ctx.py`) and
 `pre-tool-use` (the forced yield at 300k: 5 grace calls, then a deny that still allows the
-handover writes and the `compact-resume.sh` launch). Wiring this script is a path change in
+handover writes (under the state directory, `plan.yaml`, the hook's `scratchpad_dir`), the
+reads those edits need (the state directory, `plan.yaml`, `scripts/controller/` -- the harness
+refuses an Edit of a file this conversation did not Read), `Skill controller-handover`, and ONE
+bare launch of this checkout's own `compact-resume.sh`/`clear-resume.sh`; the deny reason
+carries the launch template). Wiring this script is a path change in
 `.claude/settings.local.json` (`python3 <repo>/scripts/controller/hooks/ctx-hooks.py <mode>`
 per mode) plus one new `PreToolUse` entry. Controller thresholds: 200k INFORM, 250k urge,
 300k forced (`CTX_INFORM_AT`, `CTX_URGE_AT`, `CTX_FORCE_AT`, `CTX_FORCE_GRACE`).

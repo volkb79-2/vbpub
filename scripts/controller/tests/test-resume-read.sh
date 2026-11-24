@@ -204,4 +204,57 @@ done
 [[ $(tree_sum) == "$before" ]] || fail 'resume-read.sh changed a file of the state or the repository'
 ! grep -qE '\b(curl|wget|ssh|nc|git +(fetch|pull|push))\b' "$SCRIPT" || fail 'resume-read.sh must stay offline'
 
+# --- 6. the output budget (M3): the Bash tool persists anything above about 30,000 characters, so the
+# default caps of every role must sum within RESUME_READ_TOTAL (24000 B) and a real read must stay
+# under it. The numbers are read from the script's own defaults, not from a copy here.
+defaults() { # defaults <SLICE>...: the DEFAULT of each cap, parsed from the script's own text
+  # (sourcing the script would run a read, and a copy of the numbers here would drift silently)
+  local name
+  for name in "$@"; do
+    awk -v n="$name" 'index($0, n "=${RESUME_READ_" n ":-") == 1 { sub(/^.*:-/, ""); sub(/\}.*/, ""); print; exit }' "$SCRIPT"
+  done
+}
+caps_main="$(defaults CAP_PRIME CAP_BLOCK CAP_UPDATES CAP_SECTION8 CAP_DECISIONS CAP_GIT)"
+caps_topic="$(defaults CAP_STATE CAP_BLOCK CAP_UPDATES CAP_SUCCESSOR CAP_PRIME CAP_HEADINGS CAP_SECTION8)"
+caps_plain="$(defaults CAP_STATE CAP_SUCCESSOR CAP_PRIME CAP_HEADINGS CAP_SECTION8)"
+TOTAL=$(defaults TOTAL)
+[[ $TOTAL =~ ^[0-9]+$ ]] || fail "RESUME_READ_TOTAL is not a number: $TOTAL"
+(( TOTAL > 0 )) || fail "RESUME_READ_TOTAL is not positive: $TOTAL"
+(( TOTAL < 26000 )) || fail "the output budget must stay under the 30,000-character inline limit: $TOTAL"
+# (the three role shapes: main, the widest topic, and the plain topic without a HANDOFF slice)
+budget_check() { # budget_check <role> <caps>
+  local total
+  total=$(awk '{ total += $1 } END { print total + 0 }' <<< "$2")
+  [[ $total =~ ^[0-9]+$ ]] || fail "the $1 default caps are not numbers: $2"
+  (( total <= TOTAL )) || fail "the $1 default caps sum to $total B, over the $TOTAL B budget: $2"
+}
+budget_check main "$caps_main"
+budget_check topic "$caps_topic"
+budget_check plain "$caps_plain"
+# a budget below the requested caps scales them down (proportionally, in whole bytes)
+rr main RESUME_READ_TOTAL=100 RESUME_READ_CAP_PRIME=1000
+premain=$(grep -E '^== .*\[PRIME\] ' "$O" | sed -n -E 's/.*cap ([0-9]+) B\) ==$/\1/p')
+[[ -n $premain ]] || fail 'no PRIME cap header in the scaled read'
+(( premain <= 100 )) || fail "RESUME_READ_TOTAL did not scale the PRIME cap: $premain > 100"
+# RESUME_READ_TOTAL=0 keeps the caps as written (no scaling)
+rr main RESUME_READ_TOTAL=0 RESUME_READ_CAP_PRIME=50
+contains "$O" 'cap 50 B' 'RESUME_READ_TOTAL=0 disables the scaling'
+# a full read with the defaults stays under the budget, for main and for the widest topic role
+rr main
+[[ $RC == 0 ]] || fail 'main failed'
+bytes=$(wc -c < "$O")
+[[ ${bytes//[[:space:]]/} -le 26000 ]] || fail "the main read is $bytes B, over the output budget"
+{ printf '## Now\n'; printf 'state-line-%s-aaaaaaaaaaaaaaaa\n' $(seq 1 1200); } > "$STATE/platform/STATE.md"
+rr platform
+[[ $RC == 0 ]] || fail 'platform failed on a large STATE.md'
+bytes=$(wc -c < "$O")
+[[ ${bytes//[[:space:]]/} -le 26000 ]] || fail "the platform read is $bytes B, over the output budget"
+# the one-line STATE.md warning: it names the real size and the cap the owner has to fit
+[[ $(grep -c 'WARN STATE.md is' "$O") == 1 ]] || fail 'an oversized STATE.md does not get exactly one WARN line'
+grep -E '^WARN STATE\.md is [0-9]+ B, cap [0-9]+ B: shorten it' "$O" > /dev/null \
+  || fail "the STATE.md WARN line does not carry the size, the cap and the instruction: $(grep 'WARN STATE' "$O")"
+{ printf 'short\n'; } > "$STATE/platform/STATE.md"
+rr platform
+not_contains "$O" 'WARN STATE.md is' 'a STATE.md under its cap is not warned about'
+
 echo 'PASS resume-read: slices per role, caps, MISSING, successor-newer rule, exit 2, read-only'

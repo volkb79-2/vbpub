@@ -292,6 +292,12 @@ assert "FORCED YIELD" not in note(300_000, "c", "controller", limits=(200_000, 2
 assert module.controller_limits() == (200_000, 250_000, 300_000, 5)
 os.environ.update(CTX_INFORM_AT="150000", CTX_URGE_AT="x", CTX_FORCE_AT="-5", CTX_FORCE_GRACE="0")
 assert module.controller_limits() == (150_000, 250_000, 300_000, 0)   # bad values keep the default; grace 0 is legal
+# nit2: the three thresholds are kept in order (inform <= urge <= force), so an inverted pair
+# cannot produce contradictory wording.
+os.environ.update(CTX_INFORM_AT="260000", CTX_URGE_AT="200000", CTX_FORCE_AT="250000")
+assert module.controller_limits() == (260_000, 260_000, 260_000, 5), module.controller_limits()
+os.environ.update(CTX_INFORM_AT="200000", CTX_URGE_AT="240000", CTX_FORCE_AT="210000")
+assert module.controller_limits() == (200_000, 240_000, 240_000, 5), module.controller_limits()
 for name in ("CTX_INFORM_AT", "CTX_URGE_AT", "CTX_FORCE_AT", "CTX_FORCE_GRACE"):
     del os.environ[name]
 assert "PARTIAL" in note(150_000, "a", "spawned", soft=120_000)
@@ -816,6 +822,14 @@ for needle in ("FORCED YIELD", "300k", "5-call grace", "write the handover", "sc
     assert needle in text, (needle, text)
 PY
 }
+# is_denied_with <needle>...: a deny, plus the caller's own needles (the launch template, H1/M1).
+is_denied_with() {
+  is_denied || return 1
+  local needle
+  for needle in "$@"; do
+    grep -qF -- "$needle" "$ROOT/pt.out" || fail "the deny reason does not name: $needle"
+  done
+}
 is_allowed() { [[ ! -s $ROOT/pt.out ]]; }
 pt "$ROOT/pt-lo.jsonl" s1 Bash '{"command":"ls"}'
 is_allowed || fail 'a call below 300k was not passed silently'
@@ -841,29 +855,112 @@ pt "$ROOT/pt-hi.jsonl" s1 Write '{"file_path":"'"$PT"'/../src/escape.md","conten
 is_denied || fail 'a .. escape out of the state directory was allowed'
 pt "$ROOT/pt-hi.jsonl" s1 Write '{"file_path":"'"$PT"'-sibling/x.md","content":"x"}'
 is_denied || fail 'a sibling directory sharing the state directory prefix was allowed'
+# The launch must be THIS hook's own scripts/controller/compact-resume.sh (M1): a copy under the
+# state directory, another checkout's copy, or any second command after the launch is refused. The
+# path comes from the hook under test (a mutant copy resolves to its own directory).
+LAUNCH_SCRIPT=$(python3 - "$HOOKS" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("ctx_hooks", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(Path(module.controller_dir()) / "compact-resume.sh")
+PY
+)
+CLEAR_SCRIPT=${LAUNCH_SCRIPT%compact-resume.sh}clear-resume.sh
+SCRATCH=$ROOT/scratch
+mkdir -p "$SCRATCH"
 # shellcheck disable=SC2016 # the fixtures carry a literal $TMUX_PANE and $(id)
 for launch in \
-  'setsid nohup /w/scripts/controller/compact-resume.sh %13 g.md p.md l.log >/dev/null 2>&1 &' \
-  'nohup scripts/controller/compact-resume.sh "$TMUX_PANE" g p l > l.out 2>&1 &' \
-  'scripts/controller/clear-resume.sh %4 p.md l.log' \
-  'bash /w/scripts/controller/compact-resume.sh %13 g p l'; do
+  "setsid nohup $LAUNCH_SCRIPT \"\$TMUX_PANE\" $PT/compact-guidance.txt $PT/compact-prompt.txt $PT/launch.log >/dev/null 2>&1 &" \
+  "nohup $LAUNCH_SCRIPT %13 g.md p.md $PT/launch.log > $PT/launch.log 2>&1 &" \
+  "$CLEAR_SCRIPT %4 $PT/prompt.md $PT/launch.log" \
+  "bash $LAUNCH_SCRIPT %13 g.md p.md $PT/launch.log"; do
   pt "$ROOT/pt-hi.jsonl" s1 Bash '{"command":"'"${launch//\"/\\\"}"'"}'
   is_allowed || fail "the compact-resume launch was denied: $launch"
 done
+# the deny reason carries a copy-paste template with the state dir in it (H1)
+pt "$ROOT/pt-hi.jsonl" s1 Bash '{"command":"ls"}'
+is_denied_with "$LAUNCH_SCRIPT" "$PT/compact-guidance.txt" "under the state dir" "ONE bare command" \
+  || fail 'the deny reason does not carry the launch template of H1'
 # shellcheck disable=SC2016
 for bad in \
-  'scripts/controller/compact-resume.sh %13 g p l; rm -rf /x' \
-  'scripts/controller/compact-resume.sh %13 g p l && ls' \
-  'ls | scripts/controller/compact-resume.sh %13 g p l' \
-  'echo scripts/controller/compact-resume.sh %13' \
+  "$LAUNCH_SCRIPT %13 g p l; rm -rf /x" \
+  "$LAUNCH_SCRIPT %13 g p l && ls" \
+  "ls | $LAUNCH_SCRIPT %13 g p l" \
+  "echo $LAUNCH_SCRIPT %13" \
   'compact-resume.sh %13 g p l' \
-  'scripts/controller/compact-resume.sh-evil %13' \
-  'scripts/controller/compact-resume.sh $(id) g p l' \
+  "$LAUNCH_SCRIPT-evil %13" \
+  "$LAUNCH_SCRIPT \$(id) g p l" \
+  "$LAUNCH_SCRIPT %13 g p l & git push origin main" \
+  "$LAUNCH_SCRIPT & ls" \
+  "$LAUNCH_SCRIPT %13 g p l > $HOME/.bashrc" \
+  "$PT/scripts/controller/compact-resume.sh %13 g p l" \
+  "$ROOT/scripts/controller/compact-resume.sh %13 g p l" \
   'ls
-scripts/controller/compact-resume.sh %13 g p l'; do
+'"$LAUNCH_SCRIPT"' %13 g p l'; do
   pt "$ROOT/pt-hi.jsonl" s1 Bash "$(python3 -c 'import json,sys; print(json.dumps({"command": sys.argv[1]}))' "$bad")"
   is_denied || fail "a Bash call that is not just the launch was allowed: $bad"
 done
+# a lone `&` is a command separator (M1): each of these chains a second command onto the launch.
+# shellcheck disable=SC2016
+for chained in \
+  "$LAUNCH_SCRIPT %13 g p l & rm -rf $ROOT/victim &" \
+  "setsid nohup $LAUNCH_SCRIPT %13 g p l > /dev/null & echo done &"; do
+  pt "$ROOT/pt-hi.jsonl" s1 Bash "$(python3 -c 'import json,sys; print(json.dumps({"command": sys.argv[1]}))' "$chained")"
+  is_denied || fail "a lone '&' chained a second command past the allow-list: $chained"
+done
+# The H1 allow-list: what an interactive controller really needs once the grace is used. Read is a
+# READ-ONLY pass (the harness refuses an Edit of a file this conversation did not Read, and
+# resume-read.sh prints HANDOFF.md through a Bash call, so no Read is registered for it).
+pt "$ROOT/pt-hi.jsonl" s1 Read '{"file_path":"'"$PT"'/HANDOFF.md"}'
+is_allowed || fail 'a Read of HANDOFF.md under the state directory was denied (H1)'
+pt "$ROOT/pt-hi.jsonl" s1 Read '{"file_path":"'"$PT"'/../state-pt/plan.yaml"}'
+is_allowed || fail 'a Read with a ../ segment inside the state directory was denied'
+pt "$ROOT/pt-hi.jsonl" s1 Read '{"file_path":"'"$ROOT"'/plan.yaml"}'
+is_allowed || fail 'a Read of plan.yaml was denied'
+pt "$ROOT/pt-hi.jsonl" s1 Read '{"file_path":"'"$LAUNCH_SCRIPT"'"}'
+is_allowed || fail 'a Read under scripts/controller/ was denied'
+pt "$ROOT/pt-hi.jsonl" s1 Read '{"file_path":"'"$ROOT"'/src/code.py"}'
+is_denied || fail 'a Read outside the allowed roots was allowed'
+pt "$ROOT/pt-hi.jsonl" s1 Read '{"file_path":"'"$PT"'-sibling/HANDOFF.md"}'
+is_denied || fail 'a Read of a sibling of the state directory was allowed'
+# Skill: the controller-handover skill is what the deny tells the session to load.
+pt "$ROOT/pt-hi.jsonl" s1 Skill '{"skill":"controller-handover"}'
+is_allowed || fail 'the controller-handover skill was denied (H1)'
+pt "$ROOT/pt-hi.jsonl" s1 Skill '{"skill":"assay-cli"}'
+is_denied || fail 'an unrelated skill was allowed'
+# Write/Edit under the hook input's scratchpad_dir (real hook input carries it).
+pt_scratch() { # pt_scratch <tool> <file_path>
+  run "$ROOT/pt.out" pre-tool-use \
+    '{"session_id":"s1","transcript_path":"'"$ROOT/pt-hi.jsonl"'","cwd":"'"$ROOT"'","scratchpad_dir":"'"$SCRATCH"'","tool_name":"'"$1"'","tool_input":{"file_path":"'"$2"'","content":"x"}}' \
+    --state-dir "$PT"
+}
+pt_scratch Write "$SCRATCH/compact-guidance.txt"
+is_allowed || fail 'a Write to the scratchpad dir was denied (H1)'
+pt_scratch Edit "$SCRATCH/sub/prompt.txt"
+is_allowed || fail 'an Edit inside the scratchpad dir was denied'
+pt_scratch Write "$ROOT/src/code.py"
+is_denied || fail 'a Write outside the state dir and the scratchpad was allowed'
+pt_scratch Write "$SCRATCH-sibling/x.md"
+is_denied || fail 'a sibling of the scratchpad dir was allowed'
+# MultiEdit is the same handover write as Edit.
+pt "$ROOT/pt-hi.jsonl" s1 MultiEdit '{"file_path":"'"$PT"'/HANDOFF.md","edits":[{"old_string":"a","new_string":"b"}]}'
+is_allowed || fail 'a MultiEdit of the handover was denied'
+pt "$ROOT/pt-hi.jsonl" s1 MultiEdit '{"file_path":"'"$ROOT"'/src/code.py","edits":[]}'
+is_denied || fail 'a MultiEdit outside the state directory was allowed'
+# fail open: a tool_input that is not an object, a missing file_path, and a garbage payload.
+pt "$ROOT/pt-hi.jsonl" s1 Bash '{"command":["ls","-l"]}'
+is_denied || fail 'a non-string command was allowed (it must just be denied, not crash)'
+pt "$ROOT/pt-hi.jsonl" s1 Write '{"file_path":null}'
+is_denied || fail 'a null file_path was allowed'
+pt "$ROOT/pt-hi.jsonl" s1 Write '{}'
+is_denied || fail 'a write with no file_path was allowed'
+pt "$ROOT/pt-hi.jsonl" s1 Bash 'not-an-object'
+is_denied || fail 'a non-dict tool_input was allowed'
+[[ ! -s $ROOT/pt-garbage.out ]] || fail 'a null tool_input was denied (the fail-open must hold)'
+[[ ! -s $ROOT/pt-garbage2.out ]] || fail 'garbage stdin was denied (the fail-open must hold)'
+
 # allowed calls are not counted: 3 handover writes, then 5 plain calls still pass and the 6th is denied
 for i in 1 2 3; do pt "$ROOT/pt-hi.jsonl" s2 Write '{"file_path":"'"$PT"'/HANDOFF.md","content":"x"}'; done
 for i in 1 2 3 4 5; do
@@ -877,7 +974,9 @@ pt "$ROOT/pt-hi.jsonl" s3 Bash '{"command":"ls"}'
 pt "$ROOT/pt-hi.jsonl" s3 Bash '{"command":"ls"}'
 PT_POST='{"session_id":"s3","transcript_path":"'"$ROOT/pt-hi.jsonl"'","cwd":"'"$ROOT"'","tool_name":"Bash"}'
 run "$ROOT/pt-post1.out" post-tool-use "$PT_POST" --state-dir "$PT"
-contains "$ROOT/pt-post1.out" 'FORCED YIELD: past 300k. 5 more tool calls pass' 'the 300k note announces the grace'
+# L4: the 300k step note prints what is LEFT (2 of the 5 grace calls are used), like the countdown,
+# not the full grace.
+contains "$ROOT/pt-post1.out" 'FORCED YIELD: past 300k. 3 more tool calls pass' 'the 300k note announces the grace that is left'
 run "$ROOT/pt-post2.out" post-tool-use "$PT_POST" --state-dir "$PT"
 contains "$ROOT/pt-post2.out" '3 grace tool calls left' 'every call past 300k counts the grace down'
 pt "$ROOT/pt-lo.jsonl" s3 Bash '{"command":"ls"}'
@@ -896,6 +995,103 @@ contains "$ROOT/pt.out" '"permissionDecision": "deny"' 'CTX_FORCE_GRACE=0 did no
 contains "$ROOT/pt.out" '0-call grace' 'the deny names the configured grace'
 CTX_FORCE_AT=350000 pt "$ROOT/pt-hi.jsonl" s8 Bash '{"command":"ls"}'
 is_allowed || fail 'CTX_FORCE_AT did not move the forced yield'
+
+# 18a. M2/L1: the fill is never read from the pre-compaction tail, and the grace count of the
+#      fill band that ended is dropped by pre-compact and by session-start.
+python3 - "$ROOT/pt-compacted.jsonl" <<'PY'
+import json, sys
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    handle.write(json.dumps({"type": "assistant", "uuid": "old", "timestamp": "2026-11-24T18:00:00Z",
+                             "message": {"role": "assistant", "id": "mold", "model": "claude-opus-5-5",
+                                         "content": [{"type": "text", "text": "pre-compaction"}],
+                                         "usage": {"input_tokens": 320_000}}}) + "\n")
+    handle.write(json.dumps({"type": "system", "subtype": "compact_boundary",
+                             "timestamp": "2026-11-24T18:21:00Z"}) + "\n")
+    # the attachments the harness re-adds right after the boundary
+    for line in ("file-a", "file-b", "file-c"):
+        handle.write(json.dumps({"type": "user", "message": {"role": "user", "content": line}}) + "\n")
+PY
+python3 - "$HOOKS" "$ROOT/pt-compacted.jsonl" <<'PY' || fail 'the fill is still read across a compact_boundary (M2)'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ctx_hooks", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.last_assistant(sys.argv[2]) == (None, None), module.last_assistant(sys.argv[2])
+PY
+# the grace is exhausted (used 9 > 5): the ONLY thing that lets this call pass is the boundary
+# stop in last_assistant, which makes the fill unknown -> fail open.
+printf '{"used": 9, "at": 320000}' > "$PT/hooks/force-sC-main.json"
+run "$ROOT/pt-c1.out" pre-tool-use '{"session_id":"sC","transcript_path":"'"$ROOT/pt-compacted.jsonl"'","cwd":"'"$ROOT"'","tool_name":"Bash","tool_input":{"command":"scripts/controller/resume-read.sh main"}}' --state-dir "$PT"
+[[ ! -s $ROOT/pt-c1.out ]] || fail 'the first call after a compaction was denied on the pre-compaction fill (M2)'
+[[ -e $PT/hooks/force-sC-main.json ]] || fail 'an unknown fill must not consume or clear the grace count'
+# a force file with the grace used is dropped by pre-compact and by session-start (both, so the
+# reset does not depend on which of the two hooks fires)
+force_file=$PT/hooks/force-sess-1-main.json
+printf '{"used": 9, "at": 300000}' > "$force_file"
+run "$ROOT/pt-pc.out" pre-compact '{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROOT"'","trigger":"auto"}' --state-dir "$PT" --extract "$BIN/fake-extract"
+[[ ! -e $force_file ]] || fail 'pre-compact did not drop the grace count of the ending fill band (M2)'
+printf '{"used": 9, "at": 300000}' > "$force_file"
+run "$ROOT/pt-ss.out" session-start "$MAIN_JSON" --state-dir "$PT" --extract "$BIN/fake-extract"
+[[ ! -e $force_file ]] || fail 'session-start did not drop the grace count of the ending fill band (M2)'
+# another session's force file is untouched by both
+printf '{"used": 9, "at": 300000}' > "$PT/hooks/force-sess-OTHER-main.json"
+run "$ROOT/pt-pc2.out" pre-compact '{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROOT"'","trigger":"auto"}' --state-dir "$PT" --extract "$BIN/fake-extract"
+[[ -f $PT/hooks/force-sess-OTHER-main.json ]] || fail 'pre-compact dropped another session grace count'
+# L2: the grace count is incremented under a lock, so parallel tool calls of one message cannot
+# lose increments (12 concurrent increments must end at 12 exactly).
+python3 - "$HOOKS" "$ROOT/state-race" <<'PY' || fail 'the grace counter lost increments under concurrency (L2)'
+import importlib.util, subprocess, sys
+from pathlib import Path
+code = """
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('ctx_hooks', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(module.bump_force_count(__import__('pathlib').Path(sys.argv[2]), 'race', 'main', 320000))
+"""
+state = Path(sys.argv[2])
+state.mkdir(parents=True, exist_ok=True)
+procs = [subprocess.Popen([sys.executable, "-c", code, sys.argv[1], str(state)],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(12)]
+seen = sorted(int(p.communicate()[0].decode().strip()) for p in procs)
+assert seen == list(range(1, 13)), seen
+spec = importlib.util.spec_from_file_location("ctx_hooks", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.force_count(state, 'race', 'main') == 12, module.force_count(state, 'race', 'main')
+PY
+# L1: a <synthetic> record and an all-zero usage record are not a context reading
+python3 - "$ROOT/pt-synthetic.jsonl" <<'PY'
+import json, sys
+records = [
+    {"type": "assistant", "uuid": "real", "timestamp": "2026-11-24T17:00:00Z",
+     "message": {"role": "assistant", "id": "mreal", "model": "claude-opus-5-5",
+                 "content": [{"type": "text", "text": "real"}],
+                 "usage": {"input_tokens": 260_000}}},
+    {"type": "assistant", "uuid": "s1", "timestamp": "2026-11-24T17:01:00Z",
+     "message": {"role": "assistant", "id": "ms1", "model": "<synthetic>",
+                 "stop_reason": "tool_use", "content": [{"type": "text", "text": "synthetic"}],
+                 "usage": {"input_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}},
+    {"type": "assistant", "uuid": "s2", "timestamp": "2026-11-24T17:02:00Z",
+     "message": {"role": "assistant", "id": "ms2", "model": "claude-opus-5-5",
+                 "content": [{"type": "text", "text": "zero"}],
+                 "usage": {"input_tokens": 0}}},
+]
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    for record in records:
+        handle.write(json.dumps(record) + "\n")
+PY
+python3 - "$HOOKS" "$ROOT/pt-synthetic.jsonl" <<'PY' || fail 'a synthetic or all-zero record still resets the fill (L1)'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ctx_hooks", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+fill, model = module.last_assistant(sys.argv[2])
+assert (fill, model) == (260_000, "claude-opus-5-5"), (fill, model)
+PY
+run "$ROOT/pt-syn.out" post-tool-use '{"session_id":"sS","transcript_path":"'"$ROOT/pt-synthetic.jsonl"'","cwd":"'"$ROOT"'","tool_name":"Bash"}' --state-dir "$PT"
+contains "$ROOT/pt-syn.out" 'ctx 260k' 'the note reports the last real fill, not the synthetic record (L1)'
+not_contains 'ctx 0k' 'a zero-usage synthetic record is never the fill' "$ROOT/pt-syn.out"
 
 # 18b. pre-compact prunes: the newest 3 readbacks per session stay, old pressure/force/readback-state files go.
 PR=$ROOT/state-prune

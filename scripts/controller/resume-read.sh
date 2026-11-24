@@ -19,7 +19,13 @@ set -u
 # Settings (environment; defaults in brackets): RESUME_READ_STATE [nearest .controller-state above
 # the current directory, else the one of the checkout holding this script], RESUME_READ_REPO [the
 # checkout holding this script; where git runs], RESUME_READ_PROGRAM [PROGRAM-2026-11-24: the
-# programme directory under the state directory], RESUME_READ_CAP_<SLICE> overrides a cap below.
+# programme directory under the state directory], RESUME_READ_CAP_<SLICE> overrides a cap below,
+# RESUME_READ_TOTAL [24000 B] the budget the caps are scaled to fit.
+# OUTPUT BUDGET: the Bash tool turns output above about 30,000 characters into a persisted file with
+# a 2 KB preview, so ONE call must stay under it. RESUME_READ_TOTAL is that budget: each cap below is
+# scaled down, proportionally and in whole bytes, when the number of slices a role prints times their
+# caps would exceed it (a slice that is printed under its cap keeps its bytes, so the output is at
+# most the budget plus the headers). Setting it to 0 disables the scaling (the caps apply as written).
 # Truncation keeps the start of a slice, except for the tail slices (section 8, update lines), which
 # keep the newest end. A cap cuts bytes, so a multi-byte character at the cut can be split.
 
@@ -29,16 +35,36 @@ PROGRAM=${RESUME_READ_PROGRAM:-PROGRAM-2026-11-24}
 TOPICS="platform core assay hostobs edge rollback"
 TOPICS_WITH_HANDOFF="platform assay"
 TAIL_LINES=40
+# The output budget: the Bash tool inlines output up to about 30,000 characters and persists anything
+# larger (2 KB preview), which turns the "ONE call" orientation into a second Read. 24 kB leaves room
+# for the headers and the truncation markers (measured 2026-11-24: the real main read was 22.5 kB).
+TOTAL=${RESUME_READ_TOTAL:-24000}
 # Caps in bytes per slice (about 4 bytes per token: the whole main read stays near 15k tokens).
-CAP_PRIME=${RESUME_READ_CAP_PRIME:-12000}
-CAP_BLOCK=${RESUME_READ_CAP_BLOCK:-14000}
-CAP_UPDATES=${RESUME_READ_CAP_UPDATES:-4000}
-CAP_SECTION8=${RESUME_READ_CAP_SECTION8:-6000}
-CAP_DECISIONS=${RESUME_READ_CAP_DECISIONS:-6000}
-CAP_GIT=${RESUME_READ_CAP_GIT:-2000}
+# STATE.md is the living state of a topic, so it keeps the largest share; the worst-case role
+# (platform, which also prints a HANDOFF block and update lines) sums to 23500 B, under the budget.
+CAP_PRIME=${RESUME_READ_CAP_PRIME:-3000}
+CAP_BLOCK=${RESUME_READ_CAP_BLOCK:-3000}
+CAP_UPDATES=${RESUME_READ_CAP_UPDATES:-1200}
+CAP_SECTION8=${RESUME_READ_CAP_SECTION8:-2500}
+CAP_DECISIONS=${RESUME_READ_CAP_DECISIONS:-4000}
+CAP_GIT=${RESUME_READ_CAP_GIT:-1500}
 CAP_STATE=${RESUME_READ_CAP_STATE:-12000}
-CAP_SUCCESSOR=${RESUME_READ_CAP_SUCCESSOR:-12000}
-CAP_HEADINGS=${RESUME_READ_CAP_HEADINGS:-2000}
+CAP_SUCCESSOR=${RESUME_READ_CAP_SUCCESSOR:-1500}
+CAP_HEADINGS=${RESUME_READ_CAP_HEADINGS:-300}
+
+# The caps a role's slices are printed under, scaled to fit the output budget: main prints PRIME,
+# block, update lines, section 8, the last decision sections and the git log; a topic prints STATE,
+# [its HANDOFF block and update lines], the successor, PRIME, the section 1-3 headings and section 8.
+fit_caps() {
+  local total=0 cap scale=0
+  for cap in "$@"; do total=$((total + cap)); done
+  if [[ -z ${TOTAL//[0-9]/} && $TOTAL -gt 0 && $total -gt $TOTAL ]]; then
+    scale=$((total - TOTAL))
+  fi
+  for cap in "$@"; do
+    printf '%s\n' "$((cap - (cap * scale + total - 1) / total))"
+  done
+}
 
 usage() { echo "usage: ${0##*/} <main|${TOPICS// /|}>" >&2; }
 
@@ -120,8 +146,24 @@ git_slices() {
   emit "$REPO" "worktree count (git worktree list)" 16
 }
 
+# state_oversize <state.md> <cap>: one line when the file is bigger than its share, so its owner keeps
+# STATE.md current-only instead of relying on the truncation marker (review M3).
+state_oversize() {
+  local file=$1 cap=$2 bytes
+  [[ -r $file ]] || return 0
+  bytes=$(wc -c < "$file")
+  bytes=${bytes//[[:space:]]/}
+  if (( bytes > cap )); then
+    printf 'WARN STATE.md is %s B, cap %s B: shorten it to what the next session needs\n' "$bytes" "$cap"
+  fi
+}
+
 read_main() {
   local state=$1
+  # Every slice main prints, scaled to the output budget in one step.
+  mapfile -t caps < <(fit_caps "$CAP_PRIME" "$CAP_BLOCK" "$CAP_UPDATES" "$CAP_SECTION8" "$CAP_DECISIONS" "$CAP_GIT")
+  CAP_PRIME=${caps[0]} CAP_BLOCK=${caps[1]} CAP_UPDATES=${caps[2]} CAP_SECTION8=${caps[3]}
+  CAP_DECISIONS=${caps[4]} CAP_GIT=${caps[5]}
   whole_file "$state/$PROGRAM/PRIME-main-controller.md" "PRIME" "$CAP_PRIME"
   resume_block "$state/HANDOFF.md"
   section8_tail "$state/$PROGRAM/PROGRAM.md"
@@ -130,9 +172,20 @@ read_main() {
 }
 
 read_topic() {
-  local state=$1 topic=$2 successor program=$1/$PROGRAM/PROGRAM.md
+  local state=$1 topic=$2 successor program=$1/$PROGRAM/PROGRAM.md with_handoff=0
+  [[ " $TOPICS_WITH_HANDOFF " == *" $topic "* ]] && with_handoff=1
+  if (( with_handoff )); then
+    mapfile -t caps < <(fit_caps "$CAP_STATE" "$CAP_BLOCK" "$CAP_UPDATES" "$CAP_SUCCESSOR" "$CAP_PRIME" "$CAP_HEADINGS" "$CAP_SECTION8")
+    CAP_STATE=${caps[0]} CAP_BLOCK=${caps[1]} CAP_UPDATES=${caps[2]} CAP_SUCCESSOR=${caps[3]}
+    CAP_PRIME=${caps[4]} CAP_HEADINGS=${caps[5]} CAP_SECTION8=${caps[6]}
+  else
+    mapfile -t caps < <(fit_caps "$CAP_STATE" "$CAP_SUCCESSOR" "$CAP_PRIME" "$CAP_HEADINGS" "$CAP_SECTION8")
+    CAP_STATE=${caps[0]} CAP_SUCCESSOR=${caps[1]} CAP_PRIME=${caps[2]}
+    CAP_HEADINGS=${caps[3]} CAP_SECTION8=${caps[4]}
+  fi
+  state_oversize "$state/$topic/STATE.md" "$CAP_STATE"
   whole_file "$state/$topic/STATE.md" "STATE" "$CAP_STATE"
-  if [[ " $TOPICS_WITH_HANDOFF " == *" $topic "* ]]; then resume_block "$state/$topic/HANDOFF.md"; fi
+  if (( with_handoff )); then resume_block "$state/$topic/HANDOFF.md"; fi
   successor=$state/handovers/vbpub-$topic-successor.md
   if [[ ! -e $successor ]]; then missing "$successor" "successor handover"
   elif [[ ! -e $state/$topic/STATE.md || $successor -nt $state/$topic/STATE.md ]]; then

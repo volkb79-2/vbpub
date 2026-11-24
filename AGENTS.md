@@ -645,20 +645,31 @@ verdict tables, and do not restate any behaviour they do not record.
 
 ### Interactive controller session (a person sits in it)
 
-Nobody outside compacts or restarts this session, so it **cannot terminate itself**. It
-relies on its harness's auto-compaction (or the operator's manual compaction) and on the
-recovery setup: `plan.yaml`, `.controller-state/` and its readbacks in the repo, plus
-hooks that print the read order after a compaction.
+Nobody outside compacts or restarts this session, so it never waits for an outside
+compaction: it **restarts itself** through `compact-resume.sh` on its own tmux pane
+(operator 2026-11-24), from the ladder below. Auto-compaction by the harness remains the
+other route, and the recovery setup is what both rely on: `plan.yaml`, `.controller-state/`,
+its readbacks in the repo, plus the hooks that print the read order after a compaction (and
+drop the forced-yield grace count: `PreCompact` and `SessionStart` both do, and the fill
+scan stops at the `compact_boundary`).
 
 It does not stand still in anticipation of a compaction — neither an automatic one nor the
-operator's `/compact`. On a pressure note it persists its working state at the next
-semantic boundary and CONTINUES; the compaction happens when the harness or the operator
-makes it happen, and the recovery files plus the readback are what survive it. (This rule
-exists because a controller read "stop at a semantic boundary" as an instruction to stand
-still until the operator compacted, and lost hours in which work was ready to run.) From 200k
-the ladder below asks it to compact ITSELF at a good compaction point, by launching
-`compact-resume.sh` on its own pane (operator 2026-11-24); it still never idles waiting for
-someone else's compaction.
+operator's `/compact`. Below 200k a pressure note is a "persist at the next semantic boundary
+and CONTINUE" note. From 200k the ladder below asks it to reach a voluntary stop for
+compaction at a good compaction point and to launch `compact-resume.sh` itself: 200k INFORM,
+250k URGE. From 300k the yield is FORCED: 5 more tool calls pass, then `pre-tool-use` DENIES
+every call except the handover (writes under the state directory, `plan.yaml`, the hook's
+`scratchpad_dir`; reads of the state dir, `plan.yaml` and `scripts/controller/`; the
+`controller-handover` skill) and one bare launch of the checkout's own `compact-resume.sh`.
+The deny reason carries a copy-paste template; the guidance and prompt files go under the
+state directory. (This rule exists because a controller read "stop at a semantic boundary" as
+an instruction to stand still until the operator compacted, and lost hours in which work was
+ready to run; and because a hook that only *suggests* a stop can be ignored past 300k.)
+
+The forced yield applies to every top-level session of the checkout, not only to
+controllers: a reviewer or "2-3 sessions per tool" session that is not a controller must
+export `CTX_HOOK_ROLE=agent` with the swapped settings, or it is denied at 300k like a
+controller.
 
 Before it ends a turn it keeps one monitor armed over every running job, so a job cannot
 finish or fail unnoticed while the session sits idle.

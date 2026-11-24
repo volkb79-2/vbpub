@@ -494,7 +494,7 @@ mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-force-below.py",
        '    if fill < force:\n        try:', '    if fill <= force:\n        try:')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-force-agent.py",
        '        if session_kind(args, hook) == "spawned":\n            return 0\n        reason', '        reason')
-mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-allow-chain.py", 'and not CHAIN_RE.search(command)', 'and True')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-allow-chain.py", '    if CHAIN_RE.search(text):', '    if False:')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-allow-root.py",
        'root in target.parents', 'root.parent in target.parents')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-prune-keep.py",
@@ -517,6 +517,39 @@ mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-stale-age.py",
        'if age and age[1] >= STALE_MIN:', 'if age:')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-urge-wording.py",
        '        urgent = fill >= urge', '        urgent = False')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-handover-read.py",
+       '        if tool == "Read":\n            # Read is read-only',
+       '        if False:\n            # Read is read-only')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-allow-skill.py",
+       '        return data.get("skill") == HANDOVER_SKILL', '        return False')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-allow-scratch.py",
+       '        scratch = target_of(hook.get("scratchpad_dir"))',
+       '        scratch = None')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-amp-chain.py",
+       '    if "&" in strip_safe_amps(text):', '    if False:')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-script-path.py",
+       '    if os.path.realpath(os.path.join(base, words[index])) not in allowed_scripts:',
+       '    if False:')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-compact-boundary.py",
+       '            if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":\n                return None, None',
+       '            if False:\n                return None, None')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-synthetic-fill.py",
+       '            if fill <= 0 or (isinstance(model, str) and model.startswith("<synthetic")):',
+       '            if False:')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-force-drop.py",
+       '        drop_force_files(state, safe_id(hook.get("session_id")))\n        # Every source',
+       '        pass\n        # Every source')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-precompact-force-drop.py",
+       '        # The grace counter belongs to the fill band that is ending: drop it now, so a\n        # stale count is gone even if the SessionStart hook is skipped or arrives late\n        # (review M2).\n        drop_force_files(state, safe_id(hook.get("session_id")))',
+       '        # (review M2)\n        pass')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-grace-left.py",
+       '        None if fill < limits[2] else max(0, limits[3] - force_count(state, session, who)),',
+       '        None,')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-limits-order.py",
+       '    urge = max(inform, positive("CTX_URGE_AT", URGE_AT))',
+       '    urge = positive("CTX_URGE_AT", URGE_AT)')
+mutant("scripts/controller/resume-read.sh", "resume-read-no-budget.sh",
+       'TOTAL=${RESUME_READ_TOTAL:-24000}', 'TOTAL=0')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-agent-soft.py",
        '        if fill < soft:\n            return marker', '        if True:\n            return marker')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-role-env.py",
