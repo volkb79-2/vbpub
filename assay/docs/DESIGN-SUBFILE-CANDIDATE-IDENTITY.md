@@ -191,7 +191,7 @@ locus_key = sha256( "assay-locus/1" \0 path \0 qualname \0 segment_sha256 \0
 
 | Field | Type | Rule |
 |---|---|---|
-| `kind` | string | closed set. In a state record: `imported`, `carried`, `replayed`. `fresh` is never written (absent `provenance` = fresh). `resumed` applies only to a record with no stored provenance (a carried/imported record keeps its stored kind when resumed). |
+| `kind` | string | closed set. In a state record: `imported`, `carried`, `replayed`. `fresh` is never written (absent `provenance` = fresh). `resumed` is never written: it is assigned when a run takes a record from its store, at projection time (v21), and applies only to a record with no stored provenance (a carried/imported record keeps its stored kind when resumed). |
 | `from_candidate_id` | 64-hex | the candidate id of the prior record (equals the record's own `candidate_id` for `match = exact-id`) |
 | `from_judge_sha256` | 64-hex | the judge that executed the prior evidence |
 | `match` | string | closed set `exact-id`, `locus`, `window`, `hint` |
