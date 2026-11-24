@@ -235,7 +235,7 @@ helper "$SCRIPT_DIR/../compact-resume.sh" main "$D/guide.txt" "$D/prompt.txt" "$
 scenario helpok 3400 "I I I I I I I I I I I I" "I"; echo "prompt" >"$D/prompt.txt"; mkdir -p "$D/home/locks"
 helper "$SCRIPT_DIR/../clear-resume.sh" main "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || { cat "$D/log" >&2; fail "clear-resume with a free lock exit $RC"; }
-called '^send-keys %1 /clear Enter' || { calls >&2; fail "the helper must send to the resolved pane id %1, not the session name"; }
+called 'send-keys %1 /clear Enter' || { calls >&2; fail "the helper must send to the resolved pane id %1, not the session name"; }
 ! called 'send-keys main' || fail "the helper sent to the unresolved target"
 [[ -e $D/home/locks/%1.lock ]] || fail "the helper's lock file is keyed on the resolved pane id"
 
