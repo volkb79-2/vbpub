@@ -909,7 +909,6 @@ elif [ "${_host_swap_bytes:-}" = 0 ]; then
 else
   echo "WARN: could not read /proc/meminfo's SwapTotal — MemorySwapMax auto-detect skipped; set DEV_SWAP_MAX and the *_MEMORY_SWAP_MAX values explicitly if this host has swap"
 fi
-
 # Tree cache plan (AD2-2, MDT-074): gid lookup, the half-of-RAM bound and path rules live in make_plan, not in
 # the wizard validators, so they are evaluated here, before the commit point (a refusal changes nothing).
 if [ "$MDT_DEDICATED_MEM" = 1 ]; then _tree_role=dedicated-dev; else _tree_role=other; fi
@@ -938,8 +937,7 @@ esac
 
 echo "== packages =="
 # fio/pv: dependencies of the shared io.cost baseline benchmark.
-# systemd-oomd: without it every ManagedOOM*
-# setting in dev-background.slice is a silent no-op (separate package on Debian).
+# systemd-oomd is retained for host policy; no dev slice opts into ManagedOOM*.
 apt-get update -qq || echo "WARN: apt-get update failed — install may use a stale index"
 apt-get install -y --no-install-recommends fio pv systemd-oomd \
   || echo "WARN: apt install failed — install fio + pv + systemd-oomd manually"
@@ -983,10 +981,10 @@ DEV_INTERACTIVE_MEMORY_SWAP_MAX DEV_INTERACTIVE_CPU_WEIGHT DEV_INTERACTIVE_CPU_Q
 DEV_INTERACTIVE_IO_WEIGHT DEV_INTERACTIVE_ZSWAP_WRITEBACK \
 DEV_BACKGROUND_MEMORY_MIN DEV_BACKGROUND_MEMORY_LOW DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX \
 DEV_BACKGROUND_CPU_WEIGHT DEV_BACKGROUND_CPU_QUOTA DEV_BACKGROUND_IO_WEIGHT \
-DEV_BACKGROUND_OOM_PRESSURE_LIMIT DEV_BACKGROUND_ZSWAP_WRITEBACK \
+DEV_BACKGROUND_ZSWAP_WRITEBACK \
 DEV_MEMORY_MIN_GUARANTEED_CEILING DEV_MEMORY_MIN_GUARANTEED_LOW DEV_MEMORY_MIN_GUARANTEED_HIGH DEV_MEMORY_MIN_GUARANTEED_MAX \
 DEV_GATES_MEMORY_MIN DEV_GATES_MEMORY_LOW DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY_MAX DEV_GATES_MEMORY_SWAP_MAX \
-DEV_GATES_CPU_WEIGHT DEV_GATES_CPU_QUOTA DEV_GATES_IO_WEIGHT DEV_GATES_OOM_PRESSURE_LIMIT \
+DEV_GATES_CPU_WEIGHT DEV_GATES_CPU_QUOTA DEV_GATES_IO_WEIGHT \
 DEV_GATES_ZSWAP_WRITEBACK \
 DEV_BUILDKITD_MEMORY_MIN DEV_BUILDKITD_MEMORY_LOW DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX \
 DEV_BUILDKITD_CPU_WEIGHT DEV_BUILDKITD_CPU_QUOTA DEV_BUILDKITD_IO_WEIGHT DEV_BUILDKITD_IMAGE DEV_BUILDKITD_CACHE \

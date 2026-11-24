@@ -1981,3 +1981,9 @@ Source: .controller-state/design-review-2026-11-24/controller-tooling.md M3 (SYN
 **Fix.** See `CHANGES.md` [Unreleased]. Order matters: a rebuild with the flipped `devcontainer.json` on an older image exits at once, so release the image first.
 
 Source: memory `devcontainer-pid1-dies-when-sleep-child-killed` (2026-11-18)
+
+## MDT-108 - dedicated runner hosts must rely on finite caps plus swap, not systemd-oomd kills (2026-11-24)
+
+**Status:** FIXED 2026-11-24 in commit `07dc9d6898eb8fa57e6fb5bd6d86231eae21f3e0`.
+
+Host-setup renders no `ManagedOOMMemoryPressure`, `ManagedOOMMemoryPressureLimit` or `ManagedOOMSwap` on any dev tier, and the dead per-tier pressure-limit knobs are removed. Finite `MemoryMax` plus a large `MemorySwapMax` is the overcommit design: cgroup v2 reclaims to swap before OOM, while fleetd alone freezes work at host memory PSI `full avg10 >= 3` (operator directive 2026-11-24). The default golden changes only for `dev-gates.slice` and `dev-background.slice`; every other rendered unit and every other role is unchanged.
