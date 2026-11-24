@@ -265,6 +265,9 @@ per-host campaign slot limit. A subsequent `fleet run` with the same campaign
 and plan re-adopts existing jobs by name. The same campaign ID is bound to the
 original commit, project, and lane. A changed plan stops jobs whose names are
 no longer wanted and creates names from the replacement candidate lists.
+The optional `execution.image_digest` names the tester image (`sha256:` plus
+64 lowercase hex digits) used for measurement evidence; shard-store merging
+and its image-identity policy are assay-owned.
 
 Transport is limited to `hx` in this MVP. `Transport.run(host, argv_or_script,
 timeout)` returns `(rc, stdout, stderr)`; `put` and `get` handle small

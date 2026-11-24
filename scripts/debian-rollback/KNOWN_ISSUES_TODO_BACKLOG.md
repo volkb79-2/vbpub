@@ -16,12 +16,6 @@ Closed items are one line each in [archive/](archive/). The format is [docs/BACK
 
 **Problem.** Three name grammars coexist and about 25 legacy and `.conf` code paths serve no supported disk. **Wanted.** `states()` returns only names that pass the canonical grammar, other `@os-*` objects are listed as unmanaged and never touched, and the legacy readers, migrations and tests are deleted.
 
-## DR-84 — Core/backends split before any ZFS code
-
-**State:** open · **Severity:** high · **Owner:** rollback · **Links:** P-rollback-20, P-rollback-21, H2, L1, L2
-
-**Problem.** Storage and boot logic are interleaved in one bash file through seven backend dispatches and about 20 test hooks, so ZFS would copy the core. **Wanted.** A core with a storage interface (btrfs, zfs) and a boot interface (grub, sdboot, zbm), one CLI, test seams removed, FAT accounting reduced to "sum plus margin".
-
 ## DR-85 — Snapshot never fails on menu capacity
 
 **State:** open · **Severity:** high · **Owner:** rollback · **Links:** P-rollback-22, P-rollback-40, H5, F13
@@ -70,12 +64,6 @@ Closed items are one line each in [archive/](archive/). The format is [docs/BACK
 
 **Problem.** A missing or corrupt counter file blocks all package management. **Wanted.** The floor is the maximum of the counter, the sequences in names and the sequences in sidecars; a repair under the lock with a warning, and the rare repeat documented.
 
-## DR-93 — Boot-counting suffix rule
-
-**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-21, M8, scripts/debian-rollback/docs/DESIGN-CORE-SPLIT.md
-
-**Problem.** The boot-counting suffix rule is decided by DESIGN-CORE-SPLIT D12, but the bash `dr-state` still treats a renamed `os-X+3.conf` as foreign. **Wanted.** Implement the rule in the systemd-boot backend (ownership by marker line, counter suffix stripped when mapping to an ID) in P-rollback-21; phase 2 itself stays unbuilt.
-
 ## DR-94 — Payload as files; hot-patch dev-only; snapper removed
 
 **State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-25, M10, L6
@@ -123,12 +111,6 @@ Closed items are one line each in [archive/](archive/). The format is [docs/BACK
 **State:** open · **Severity:** low · **Owner:** rollback · **Links:** P-rollback-22, P-rollback-25, scripts/debian-rollback/poc/test-install-btrfs-bootloader.sh, scripts/debian-rollback/docs/DESIGN-CORE-SPLIT.md
 
 **Problem.** The cases `apt-preinstall-hook`, `apt-plan-version` and `apt-plan-fd` in `test-install-btrfs-bootloader.sh` assert the old hook text (found in the P-rollback-10 review). **Wanted.** Adapt them to the wrapper and the `files/` payload in the same packages, and list them in DESIGN-CORE-SPLIT D29/D31.
-
-## DR-102 — Capacity shrink step: remaining references and CapacityError
-
-**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-21, DESIGN-CORE-SPLIT D19, scripts/debian-rollback/docs/DESIGN-CORE-SPLIT.md
-
-**Problem.** In the shrink step of DESIGN-CORE-SPLIT D19, a pair may go only when no remaining entry and no target references it, and a `CapacityError` after the shrink leaves the already-shrunk menu (found in the P-rollback-10 review). **Wanted.** Define and test both: the reference rule, and the menu left after a failed copy check.
 
 ## DR-103 — ZFS naming for duplicate checkpoint names, and related leaks
 
@@ -192,23 +174,11 @@ Closed items are one line each in [archive/](archive/). The format is [docs/BACK
 
 **Problem.** DESIGN-GUIDE D23 keeps ZFS with a restricted GRUB as a later comparison only. **Wanted.** Revive it only if the ZFSBootMenu guest report leaves a specific question that the comparison answers.
 
-## DR-112 — Python kernel version order differs from bash `sort -V`
-
-**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-21, scripts/debian-rollback/files/usr/local/lib/dr-state/dr_state/ids.py
-
-**Problem.** `ids.compare_versions` is dpkg `verrevcmp`. The bash `latest_kernel` it replaces uses GNU `sort -V`, which is gnulib `filevercmp`: it first strips a trailing `(\.[A-Za-z~][A-Za-z0-9~]*)*` suffix, compares the prefixes, compares the full strings only on a tie, and falls back to bytes on equal keys. `sort -V` puts `6.12.0.custom` below `6.12.0.1` and below `6.12.0-1`, and Python puts it above both. A locally built kernel with a dotted alphabetic `LOCALVERSION` therefore gets a different "latest kernel" than in bash. Debian `-flavour` names are not affected (P-20a review r2, finding 2). **Wanted.** Port the suffix rule and the byte tie-break, and add both cases to the captured `sort -V` fixture, before P-21 deletes the bash oracle.
-
 ## DR-113 — Python core is tested on 3.14, not the 3.13 minimum
 
 **State:** open · **Severity:** low · **Owner:** rollback · **Links:** P-rollback-20a, DESIGN-CORE-SPLIT.md U1
 
 **Problem.** The `offline` lane runs the unit suite under CPython 3.14.7 (`/opt/tester-venv/bin/python`). The launcher's minimum is 3.13, the Debian 13 `python3`, and no lane runs on it. **Wanted.** A 3.13 run of the unit suite in a lane (for example `/usr/bin/python3` in a Debian 13 image), or the guest acceptance in P-rollback-40 recorded as the 3.13 evidence.
-
-## DR-114 — Generated `__pycache__` can reach the installed payload
-
-**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-21, DESIGN-CORE-SPLIT.md D27
-
-**Problem.** The unit-test lane imports `dr_state` from `files/usr/local/lib/dr-state/` and writes `__pycache__` there. It is gitignored, but a `cp -a` of `files/` from a tested tree (installer, seed or ISO build) would ship stale bytecode. **Wanted.** P-21's switch of installers, seed and ISO to `files/` copies from a clean tree or excludes `__pycache__`, and the lane runs Python with `-B`.
 
 ## DR-115 — Small core hardening gaps against bash
 
@@ -219,13 +189,6 @@ Closed items are one line each in [archive/](archive/). The format is [docs/BACK
 - a created control or metadata directory gets `0o700` minus the umask, an existing one keeps its mode (bash runs `chmod 700` every time), and a missing `/.top` exits 70 where bash `mkdir -p` would create it;
 - a valid sidecar whose `sequence` is 0 or absent contributes nothing to the counter floor, while a corrupt one contributes the sequence in its name.
 **Wanted.** `O_NOFOLLOW` on the lock, an explicit `chmod 0o700` after creation, and `max(name sequence, sidecar sequence)` for the floor, each with a unit test.
-
-## DR-116 — Python systemd-boot selection needs P-21 parity checks
-
-**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-21
-
-**Problem.** The Python runtime raises `Unsupported` for a `systemd-boot` marker, and `snapshot` does not catch that exception, so it exits 4 after the checkpoint and sidecar are durable. When the systemd-boot cases move to Python, their `delete` without `--yes` exit code (Python 3, bash 1) and `boot-once` target checks also need comparison. This was found in the P-20b fix round 1.
-**Wanted.** Include the `systemd-boot` backend selection refusal in P-21's D16 warning handling, then verify the moved case's delete and one-shot target outcomes against the bash oracle and the pinned D29 exit codes.
 
 ## DR-117 — btrfs unmanaged-object scans disagree
 
@@ -247,13 +210,6 @@ Closed items are one line each in [archive/](archive/). The format is [docs/BACK
 
 **Problem.** `initialize-state` writes `pinned=True` before D22's `pin`/`unpin` and retention semantics land. This was found in the P-20b fix round 1.
 **Wanted.** Check the default pin policy against D22 when metadata `kind` and `pinned` semantics are completed, and change the initialization value if the policy differs.
-
-## DR-120 — systemd-boot needs the non-raising list/show selector reader
-
-**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-21, DR-116
-
-**Problem.** The P-20b production default-label path constructs a non-raising `GrubBoot` only for a `grub` marker. P-21's lazy `systemd-boot` resolution needs the same reader so `list` and `show` can label a configured default without making marker failures fatal; DR-116 still holds for publication and the moved cases.
-**Wanted.** Add a non-raising `systemd-boot` default reader for `list`/`show` while retaining lazy marker resolution and the existing publication refusal paths.
 
 ## DR-121 — Post-Invoke gen-menu under DR_STATE=none
 
