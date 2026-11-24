@@ -177,7 +177,7 @@ def test_line_stream_factory_keeps_forced_colour_out_of_json_output():
 
 @pytest.mark.parametrize("no_color", [None, "", "1", "0", "false"])
 @pytest.mark.parametrize("term", [None, "dumb", "xterm"])
-def test_automatic_color_requires_tty_nonempty_no_color_and_non_dumb_term(
+def test_automatic_color_requires_tty_empty_or_unset_no_color_and_non_dumb_term(
     monkeypatch, no_color, term,
 ):
     if no_color is None:

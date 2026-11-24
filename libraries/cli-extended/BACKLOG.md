@@ -870,21 +870,23 @@ took CLI-EXT-35 to CLI-EXT-40 first).
 
 ## CLI-EXT-42 — colour policy contradicts no-color.org and cmru/ciu
 
-**Status:** FIXED by this branch. **Type:** Bug. **Area:** Output and terminal policy.
+**Status:** FIXED 2026-11-24 (P-core-03). **Type:** Bug. **Area:** Output and terminal policy.
 
 `CliOutput.color_enabled()` treated the presence of `NO_COLOR`, including an
-empty value, as a disable signal and ignored `TERM=dumb`. That contradicted
-no-color.org and the policies CMRU and CIU already implement. Automatic colour
-is now on only for a TTY with `NO_COLOR` unset or empty and `TERM` not `dumb`;
-explicit `--color` and `--no-color` still win. Only cli-extended's
-`color_enabled` was wrong: cmru and ciu already treated an empty `NO_COLOR` as
-unset and `TERM=dumb` as colour off.
+empty value, as a disable signal and ignored `TERM=dumb`; `ProgressRenderer`
+had its own copy of the same wrong check. That contradicted no-color.org and
+the policies CMRU and CIU already implement. Automatic colour is now on only
+for a TTY with `NO_COLOR` unset or empty and `TERM` not `dumb`; explicit
+`--color` and `--no-color` still win. cli-extended had two places that decided
+this (`CliOutput.color_enabled` and `ProgressRenderer`); both now call the one
+helper `cli_extended.output.auto_color_enabled`. cmru and ciu already treated
+an empty `NO_COLOR` as unset and `TERM=dumb` as colour off.
 
 Source: `.controller-state/design-review-2026-11-24/cmru-cli-extended.md` M3
 
 ## CLI-EXT-43 — procio 0.8 API polish
 
-**Status:** FIXED by this branch. **Type:** API polish. **Area:** Child-process supervision.
+**Status:** FIXED 2026-11-24 (P-core-03). **Type:** API polish. **Area:** Child-process supervision.
 
 `StreamResult` and `CaptureResult` now carry `abandoned: bool`, true exactly
 when reading was abandoned even if no holder pid was found.
@@ -898,7 +900,7 @@ Source: `.controller-state/design-review-2026-11-24/cmru-cli-extended.md` L3
 
 ## CLI-EXT-44 — record the three supervision tiers
 
-**Status:** FIXED by this branch. **Type:** Documentation and guard. **Area:** Child-process supervision.
+**Status:** FIXED 2026-11-24 (P-core-03). **Type:** Documentation and guard. **Area:** Child-process supervision.
 
 SPEC section 16 now records the three tiers: CLI tools use
 `cli_extended.procio`; judges keep their own supervision for judge

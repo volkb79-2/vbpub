@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from collections.abc import Sequence
 from enum import Enum
 from typing import Any, Self, TextIO
 
-from .output import LogLevel, redact_text
+from .output import LogLevel, auto_color_enabled, redact_text
 
 
 class ProgressMode(str, Enum):
@@ -81,7 +80,7 @@ class ProgressRenderer:
             return False
         if self.color is True:
             return True
-        return _is_tty(self.stream) and "NO_COLOR" not in os.environ
+        return auto_color_enabled(self.stream)
 
     def _event(
         self, message: str, *, current: float | None, total: float | None, done: bool

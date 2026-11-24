@@ -13,7 +13,8 @@ know when upgrading; it is not generated.
   no-color.org and the cmru/ciu policy: an empty `NO_COLOR` is unset, and
   `TERM=dumb` disables automatic colour. This is behaviour-visible: a TTY with
   `NO_COLOR=""` now receives colour, while a TTY with `TERM=dumb` no longer
-  does. Explicit `--color`/`--no-color` still win.
+  does. Explicit `--color`/`--no-color` still win. `ProgressRenderer` colour
+  follows the same rule; both now share `output.auto_color_enabled`.
 - **Shared line-stream renderer (CLI-EXT-35, CLI-EXT-38).**
   `CliOutput.line_stream(stream)` returns the stdlib-only
   `LineStreamRenderer`, using that destination's colour decision and the
