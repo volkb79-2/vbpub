@@ -8,9 +8,10 @@ argv = ["bash", "-c", "cd {worktree}/scripts/controller && bash tests/run-suite.
 # the platform docs branch (plat-docs-20261124 @271581e89, 2026-11-24) took
 # 29m57s wall on r1002, against the previous 30m budget, i.e. no margin at all;
 # four later branches then ended in BUDGET_EXCEEDED. The P-plat-23 branch itself
-# (@1bda40257, 2026-11-24) took 34m59s on v1001, the slower host. The budget is
-# the slowest measured time x 1.6 (about 56 min, rounded up to 60m). The earlier
+# took 34m59s on v1001 (@1bda40257) and 55m14s on v1001 under a fuller gate
+# load (@78f398bf5, 2026-11-24). The budget is the slowest measured time x 1.6
+# (about 88 min, rounded up to 90m). The earlier
 # figure (about 15 min for the 354-mutant controller-import branch) is the old
 # measurement. A run that needs more than this would be a real regression in the
 # suite's cost and should be investigated, not absorbed here.
-budget = "60m"
+budget = "90m"

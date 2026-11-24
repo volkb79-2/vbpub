@@ -7,7 +7,7 @@ no separate version number, so entries are grouped by the work that landed.
 ## [Unreleased]
 
 ### Suite budget and remote-gate OOM classification (P-plat-23)
-- `run-gate.toml` `[lanes.suite]` budget 30m -> 60m (measured 29m57s wall on r1002 and 34m59s on v1001; slowest x 1.6).
+- `run-gate.toml` `[lanes.suite]` budget 30m -> 90m (measured 29m57s wall on r1002, 34m59s and 55m14s on v1001; slowest x 1.6).
 - `remote-gate.sh`: classification reads runner- or run-gate-written evidence only.
   A run-gate `BUDGET_EXCEEDED` verdict (run-gate exits 4), read from run-gate's own
   verdict line for the lane anchored at the line start, is never `INCONCLUSIVE-OOM`
