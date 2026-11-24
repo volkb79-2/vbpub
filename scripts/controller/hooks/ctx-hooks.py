@@ -30,15 +30,20 @@ same as the retired untracked `.controller-state/hooks/ctx.py`, so re-pointing
                      marker only.
                  A controller past 200k whose HANDOFF.md is older than 15
                  minutes also gets a stale-state warning.
-  pre-compact    builds the readback into `<state dir>/readback-N.md` and
-                 prints a note for the SUMMARISER: keep the session's goal and
-                 the in-flight list, the age of HANDOFF.md, and the merges to
-                 origin/main since it was written.
+  pre-compact    builds the readback into `<state dir>/readback-<session_id>-N.md`
+                 (state in `readback-state-<session_id>.json`: every session has
+                 its own files and `--since` marker) and prints a note for the
+                 SUMMARISER: keep the session's goal and the in-flight list, the
+                 age of HANDOFF.md, and the merges to origin/main since it was
+                 written. A subagent, or a session with CTX_HOOK_ROLE=agent,
+                 builds nothing unless a session kind is named explicitly.
   session-start  after a compaction (`source` compact), a resume or a fresh
-                 startup: the read order TAKEN FROM the newest `RESUME HERE`
-                 block of HANDOFF.md (its READ FIRST line; nothing is hard-coded),
-                 the newest readback's path and size, and -- when the build
-                 failed -- the exact manual command to build it.
+                 startup: the role rule (main controller / sub-controller /
+                 any other session reads its own list), the main controller's
+                 read order TAKEN FROM the newest `RESUME HERE` block of
+                 HANDOFF.md (its READ FIRST line), THIS session's readback path
+                 and size when its own last build succeeded, otherwise the
+                 failure and the exact manual command to build it.
   stop           a user-visible scrollback marker (time and context fill).
 
 Context ceiling and soft thresholds (the ladder never compares against a
@@ -51,16 +56,20 @@ hard-coded number):
                  malformed file falls back to that default; it never raises.
   soft threshold one per session kind. Controller: CTX_SOFT_CONTROLLER
                  (alias CTX_CONTROLLER_SOFT), default 650000. Agent:
-                 CTX_SOFT_AGENT, default 200000.
+                 CTX_SOFT_AGENT, default 200000. The threshold a note fires at
+                 is min(soft, ceiling - 50000): a window at or below the soft
+                 threshold (a 400k window against 650k) still gets its handover
+                 note, and the hook log gets a `warning` event.
 
 Configuration (flags or environment; nothing is hard-coded):
 
   --state-dir / CTX_STATE_DIR      controller state directory. Default: the
                                    nearest `.controller-state` directory at or
                                    above the hook input's `cwd` (so a `cd` into
-                                   a worktree keeps the controller's state),
-                                   else `<cwd>/.controller-state`. Never a fixed
-                                   checkout path.
+                                   a worktree keeps the controller's state), else
+                                   the `.controller-state` of the repo holding
+                                   this script, else none (nothing is written).
+                                   Never a fixed checkout path.
   --extract / CTX_EXTRACT_CMD      the extract command. Default:
                                    `nyxloom-harness` resolved on PATH.
   --budget-tokens / CTX_READBACK_BUDGET_TOKENS
@@ -98,7 +107,10 @@ Configuration (flags or environment; nothing is hard-coded):
                                    an invalid one makes the extract refuse, so
                                    the build fails closed.
   --timeout / CTX_READBACK_TIMEOUT 15 seconds (capped at 20).
-  --log / CTX_HOOK_LOG             default `<state dir>/hooks/hook-log.jsonl`.
+  --log / CTX_HOOK_LOG             default `<state dir>/hooks/hook-log.jsonl`
+                                   (the per-session pressure files live there too).
+  CTX_MAIN_CONTROLLER              the main controller's session name in the
+                                   session-start role rule (vbpub-main-controller).
 
 The controller points its own settings at this file; the repository ships the
 script and the docs, never a controller's settings.local.json or state files.
@@ -136,15 +148,36 @@ REALITY_CHECK = (
 
 MANUAL = (
     "BUILD IT BY HAND (the automatic build did not produce a readback):\n"
-    "  {extract} extract {session} --preset readback --budget-tokens {budget} "
-    "--tail-prose-tokens {tail}{since}{goal} > {state}/readback-N.md"
+    "  {extract} extract {transcript} --preset readback --budget-tokens {budget} "
+    "--tail-prose-tokens {tail}{since}{goal} > {state}/readback-{sid}-N.md"
 )
 
 RESUME_RE = re.compile(r"^## RESUME HERE #\d+", re.MULTILINE)
 # A line that starts a new labelled section of a handover block ("AFTER A RESTART ...:").
 SECTION_RE = re.compile(r"^(?:[A-Z][A-Z0-9 ()/,'-]{2,}:|\(#\d+|## )")
 MARKER_RE = re.compile(r"^\[readback marker: (?P<marker>[^\]]*)\]$", re.MULTILINE)
-READBACK_FILE_RE = re.compile(r"^readback-(\d+)\.md$")
+
+MAIN_CONTROLLER_DEFAULT = "vbpub-main-controller"
+
+# The role rule printed in front of the read order (the live hook's logic): every
+# top-level session of the repo compacts on its own, and only the main controller
+# reads the handover list that follows.
+ROLE_RULE = (
+    "Find your role from your session name (/rename, --name) or from your own last messages, then read ONLY your list first:\n"
+    " MAIN CONTROLLER ({main}): the handover list below.\n"
+    " SUB-CONTROLLER vbpub-<topic>: (1) {state}/<topic>/STATE.md (your living state; for platform and assay also "
+    "{state}/<topic>/HANDOFF.md newest block); (2) {state}/handovers/vbpub-<topic>-successor.md if newer than STATE.md; "
+    "(3) {state}/PROGRAM-*/PRIME-<topic>.md (rules). Your main controller is {main} (SendMessage). The handover list below "
+    "is NOT yours.\n"
+    " ANY OTHER SESSION (implementer/reviewer): your brief and your own run records; do not act as a controller."
+)
+
+# The sentence every pressure note for a role carries (AGENTS.md "Context pressure ladder").
+WEIGH = (
+    "Weigh the REMAINING EFFORT (how many units are left, and whether they fit), what already lives in tools and files "
+    "(commits, state files, logs, gate output) versus only in this conversation's prose, and how well the work would "
+    "resume from a prose readback alone."
+)
 
 
 # ---------------------------------------------------------------- plumbing
@@ -193,10 +226,24 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def safe_id(value: object) -> str:
+    """A session id usable in a file name."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", str(value or "x"))[:80] or "x"
+
+
+def readback_re(session: str) -> "re.Pattern[str]":
+    return re.compile(rf"^readback-{re.escape(session)}-(\d+)\.md$")
+
+
+def readback_state_path(state: Path, session: str) -> Path:
+    return state / f"readback-state-{session}.json"
+
+
 def resolve_state_dir(args: argparse.Namespace, hook: dict) -> Path | None:
     """The state directory: flag, then environment, then the nearest
     `.controller-state` at or above the hook's cwd (a `cd` into a worktree must
-    not move the controller's state), then `<cwd>/.controller-state`."""
+    not move the controller's state), then the `.controller-state` of the repo that
+    holds this script, else None (nothing is written anywhere)."""
     explicit = args.state_dir or os.environ.get("CTX_STATE_DIR")
     if explicit:
         return Path(explicit).expanduser()
@@ -206,8 +253,11 @@ def resolve_state_dir(args: argparse.Namespace, hook: dict) -> Path | None:
         for parent in (base, *base.parents):
             if (parent / ".controller-state").is_dir():
                 return parent / ".controller-state"
-        return base / ".controller-state"
-    return None
+    try:
+        own = Path(__file__).resolve().parents[3] / ".controller-state"
+        return own if own.is_dir() else None
+    except Exception:
+        return None
 
 
 def resolve_repo_root(args: argparse.Namespace, state: Path | None) -> Path | None:
@@ -339,6 +389,13 @@ def soft_threshold(kind: str) -> int:
     return value if value > 0 else CONTROLLER_SOFT_DEFAULT
 
 
+def effective_soft(soft: int, ceiling: int) -> int:
+    """The threshold the handover note really fires at: never later than one step
+    before the ceiling, or a session whose auto-compaction window is at or below
+    the configured soft threshold (a 400k window against 650k) is never told."""
+    return max(ARM_AT, min(soft, ceiling - STEP))
+
+
 def read_state(path: Path) -> dict:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -435,7 +492,7 @@ def pressure_note(
         return None
     step = fill // STEP
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{session}-{who}")
-    key = state / f"pressure-{safe}.json" if state is not None else None
+    key = state / "hooks" / f"pressure-{safe}.json" if state is not None else None
     stored = read_state(key) if key is not None else {}
     try:
         recorded = int(stored.get("step", 0))
@@ -454,31 +511,33 @@ def pressure_note(
     if key is not None:
         write_state(key, {"step": step, "at": fill, "calls": 0})
     controller = kind != "spawned"
-    soft = soft if soft else soft_threshold(kind)
+    configured = soft if soft else soft_threshold(kind)
+    soft = effective_soft(configured, ceiling)
+    lowered = f", lowered from {configured // 1000}k to stay below the ceiling" if soft < configured else ""
     marker = growth_marker(fill, stored, calls, ceiling)
     if not controller:
         if fill < soft:
             return marker
         return (
-            f"{marker} [agent] Past {soft // 1000}k: at the next semantic boundary (a unit of work "
+            f"{marker} [agent] Past {soft // 1000}k{lowered}: at the next semantic boundary (a unit of work "
             "is finished, its outcome is durably recorded, nothing half-edited) finish or return "
             "PARTIAL with a handoff report: what is done and verified, what is half-known, the exact "
             "next step, and which facts exist only in this conversation. If your dispatch brief sets "
-            "a context rule, that rule wins. The controller decides who continues."
+            f"a context rule, that rule wins. {WEIGH} The controller decides who continues."
         )
     if fill >= soft:
         note = (
             f"{marker} [controller] Past the soft threshold ({soft // 1000}k of a {ceiling // 1000}k "
-            "ceiling). Auto-compaction is not a safe handover (operator 2026-11-18: no model turn "
-            "runs before it). At the next semantic boundary write the handover (controller-handover "
-            "skill), sync the plan, set READY, then end the turn."
+            f"ceiling{lowered}). Auto-compaction is not a safe handover (operator 2026-11-18: no model "
+            "turn runs before it). At the next semantic boundary write the handover (controller-handover "
+            f"skill), sync the plan, set READY, then end the turn. {WEIGH}"
         )
     else:
         note = (
-            f"{marker} [controller] Below the soft threshold ({soft // 1000}k): keep working. At the "
+            f"{marker} [controller] Below the soft threshold ({soft // 1000}k{lowered}): keep working. At the "
             "next semantic boundary (a unit of work finished, its outcome durably recorded, nothing "
             "half-edited) persist your state (plan, decision log, HANDOFF.md) and continue; never "
-            "stop or wait for a compaction."
+            f"stop or wait for a compaction. {WEIGH}"
         )
     age = handoff_age(handoff) if fill >= STALE_FROM else None
     if age and age[1] >= STALE_MIN:
@@ -491,13 +550,14 @@ def pressure_note(
     return note
 
 
-def readback_number(state: Path, recorded: int) -> int:
-    """The next readback number: one past the highest state file on disk, so a
-    state file lost to a crash cannot re-use a number."""
+def readback_number(state: Path, recorded: int, session: str) -> int:
+    """The next readback number of this session: one past the highest of its files
+    on disk, so a state file lost to a crash cannot re-use a number."""
     highest = recorded
+    pattern = readback_re(session)
     try:
         for entry in state.iterdir():
-            match = READBACK_FILE_RE.match(entry.name)
+            match = pattern.match(entry.name)
             if match:
                 highest = max(highest, int(match.group(1)))
     except Exception:
@@ -558,15 +618,17 @@ def build_readback(
     timeout: float,
     log_path: Path | None,
     flags: tuple[list[str], list[str]],
+    session: str = "x",
 ) -> dict:
-    """Build `<state>/readback-N.md` and record its marker. Never raises.
-    `flags` is `extra_flags(...)`: the real optional flags and their shown form."""
-    stored = read_state(state / "readback-state.json")
+    """Build `<state>/readback-<session>-N.md` and record its marker in this
+    session's own state file. Never raises. `flags` is `extra_flags(...)`: the
+    real optional flags and their shown form."""
+    stored = read_state(readback_state_path(state, session))
     marker = stored.get("marker") or None
     if isinstance(marker, str) and marker in ("", "none"):
         marker = None
-    number = readback_number(state, int(stored.get("n") or 0))
-    target = state / f"readback-{number}.md"
+    number = readback_number(state, int(stored.get("n") or 0), session)
+    target = state / f"readback-{session}-{number}.md"
     command = readback_command(extract, transcript, budget, tail, marker, flags[0])
     shown = readback_command(extract, transcript, budget, tail, marker, flags[1])
     result = {
@@ -575,28 +637,28 @@ def build_readback(
     }
     if not os.path.isfile(transcript):
         result["reason"] = f"no readable transcript at {transcript}"
-        return _failed(state, log_path, result, None)
+        return _failed(state, log_path, result, None, session)
     try:
         completed = subprocess.run(
             command, capture_output=True, text=True, timeout=timeout, check=False,
         )
     except subprocess.TimeoutExpired:
         result["reason"] = f"timeout after {timeout:g}s"
-        return _failed(state, log_path, result, None)
+        return _failed(state, log_path, result, None, session)
     except Exception as exc:
         result["reason"] = f"could not run: {exc!r}"[:200]
-        return _failed(state, log_path, result, None)
+        return _failed(state, log_path, result, None, session)
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip().splitlines()
         result["reason"] = (
             f"extract exited {completed.returncode}: "
             f"{detail[-1][:300] if detail else 'no output'}"
         )
-        return _failed(state, log_path, result, completed.returncode)
+        return _failed(state, log_path, result, completed.returncode, session)
     text = completed.stdout or ""
     if not text.strip():
         result["reason"] = "extract printed nothing"
-        return _failed(state, log_path, result, 0)
+        return _failed(state, log_path, result, 0, session)
     new_marker = marker
     match = MARKER_RE.search(text)
     if match:
@@ -610,10 +672,10 @@ def build_readback(
         os.replace(tmp, target)
     except Exception as exc:
         result["reason"] = f"could not write {target}: {exc!r}"[:200]
-        return _failed(state, log_path, result, 0)
+        return _failed(state, log_path, result, 0, session)
     result.update(ok=True, marker=new_marker, bytes=len(text),
                   estimated_tokens=max(1, len(text) // 4))
-    write_state(state / "readback-state.json", {
+    write_state(readback_state_path(state, session), {
         "n": number, "path": str(target), "marker": new_marker,
         "bytes": len(text), "ok": True, "command": shown,
     })
@@ -621,12 +683,12 @@ def build_readback(
     return result
 
 
-def _failed(state: Path, log_path: Path | None, result: dict, rc: int | None) -> dict:
+def _failed(state: Path, log_path: Path | None, result: dict, rc: int | None, session: str = "x") -> dict:
     """Record a failed build: the next session must be told to build it by
     hand, so the failure is durable state, not only a log line."""
     log(log_path, {"ev": "readback", **result, "rc": rc})
-    write_state(state / "readback-state.json", {
-        "n": int(read_state(state / "readback-state.json").get("n") or 0),
+    write_state(readback_state_path(state, session), {
+        "n": int(read_state(readback_state_path(state, session)).get("n") or 0),
         "path": result["path"], "marker": result.get("marker"), "ok": False,
         "reason": result.get("reason", ""), "command": result.get("command", []),
     })
@@ -695,7 +757,12 @@ def read_order(handoff: Path | None, state: Path) -> str:
             break
         if first or line.startswith("READ FIRST"):
             first.append(line)
-    out = ["CONTROLLER RESUME (printed by the SessionStart hook)."]
+    main = os.environ.get("CTX_MAIN_CONTROLLER") or MAIN_CONTROLLER_DEFAULT
+    out = [
+        "CONTROLLER RESUME (printed by the SessionStart hook).",
+        ROLE_RULE.format(main=main, state=state),
+        f"HANDOVER LIST OF THE MAIN CONTROLLER ({main}) ONLY:",
+    ]
     if first:
         out.append(f"Newest handover: {handoff} -- {header}")
         out.append("It supersedes older blocks; later '(#N HH:MMZ)' lines extend it. Read in this order and nothing else first:")
@@ -712,25 +779,18 @@ def read_order(handoff: Path | None, state: Path) -> str:
 def session_start_text(
     state: Path, log_path: Path | None, extract: list[str], transcript: str,
     budget: int, tail: int, flags: tuple[list[str], list[str]], session_name: str,
-    handoff: Path | None = None,
+    handoff: Path | None = None, session: str = "x",
 ) -> str:
-    """The read order, the newest readback, and -- on failure -- the manual
-    command. Capped so the harness's 10,000-character hook cap never truncates
-    the read order itself."""
-    stored = read_state(state / "readback-state.json")
+    """The read order, THIS session's readback (only when its own last build
+    succeeded) and -- otherwise -- the failure and the manual command. Capped so
+    the harness's 10,000-character hook cap never truncates the read order."""
+    stored = read_state(readback_state_path(state, session))
     lines = [read_order(handoff, state)]
     newest = None
-    try:
-        numbers = sorted(
-            int(match.group(1))
-            for entry in state.iterdir()
-            if (match := READBACK_FILE_RE.match(entry.name))
-        )
-        if numbers:
-            newest = state / f"readback-{numbers[-1]}.md"
-    except Exception:
-        newest = None
-    if newest is not None and newest.exists():
+    if stored.get("ok") is True:
+        candidate = Path(str(stored.get("path") or ""))
+        newest = candidate if candidate.is_file() else None
+    if newest is not None:
         size = newest.stat().st_size
         lines.append(
             f"NEWEST READBACK: {newest} ({size} bytes, about {max(1, size // 4)} estimated "
@@ -742,7 +802,7 @@ def session_start_text(
         if stored.get("marker"):
             since = f" --since {stored['marker']}"
         manual = MANUAL.format(
-            extract=" ".join(extract), session=transcript or "<session.jsonl>",
+            extract=" ".join(extract), transcript=transcript or "<session.jsonl>", sid=session,
             budget=budget, tail=tail, since=since, state=state,
             goal=(" " + " ".join(flags[1])) if flags[1] else "",
         )
@@ -829,7 +889,8 @@ def run(mode: str, args: argparse.Namespace) -> int:
         ceiling, source = ceiling_for(model or (hook.get("model") if isinstance(hook.get("model"), str) else None))
         soft = soft_threshold(kind)
         must_keep_note(hook, state, "PostToolUse", log_path, {
-            "ctx": fill, "kind": kind, "soft": soft, "ceiling": ceiling, "ceiling_source": source,
+            "ctx": fill, "kind": kind, "soft": soft, "soft_effective": effective_soft(soft, ceiling),
+            "ceiling": ceiling, "ceiling_source": source,
         })
         note = pressure_note(
             fill, state, who, kind, soft=soft, ceiling=ceiling, handoff=handoff,
@@ -837,6 +898,12 @@ def run(mode: str, args: argparse.Namespace) -> int:
         )
         if note is None:
             return 0
+        if ceiling <= soft:
+            # Not on stderr: a hook's stdout is JSON the harness parses.
+            log(log_path, {"ev": "warning", "kind": kind, "soft": soft, "ceiling": ceiling,
+                           "ceiling_source": source,
+                           "msg": "ceiling is at or below the soft threshold; the handover note fires at "
+                                  f"{effective_soft(soft, ceiling)}"})
         print(json.dumps({
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse", "additionalContext": note,
@@ -849,25 +916,23 @@ def run(mode: str, args: argparse.Namespace) -> int:
         if state is None:
             log(log_path, {"ev": "SessionStart", "source": source, "error": "no state dir"})
             return 0
-        if source == "compact":
-            print(session_start_text(
-                state, log_path, extract, transcript, budget, tail, flags, source, handoff,
-            ))
-        else:
-            # resume/startup: the same read order, because a resumed session
-            # (a manual compaction, an external one, or a different harness)
-            # needs the artifact just as much as an automatic compaction does.
-            print(session_start_text(
-                state, log_path, extract, transcript, budget, tail, flags, source, handoff,
-            ))
+        # Every source (compact, resume, startup) gets the same text: a resumed
+        # session needs the artifact as much as an automatically compacted one.
+        # The settings matcher (`compact`) decides which events fire at all.
+        print(session_start_text(
+            state, log_path, extract, transcript, budget, tail, flags, source, handoff,
+            safe_id(hook.get("session_id")),
+        ))
         return 0
 
     if mode == "pre-compact":
         must_keep_note(hook, state, "PreCompact", log_path)
         explicit = args.session_kind or os.environ.get("CTX_SESSION_KIND")
-        if hook.get("agent_id") and not explicit:
-            # A compaction inside an Agent-tool subagent must not build into
-            # (and renumber/re-mark) the controller's readback state.
+        role_env = (os.environ.get("CTX_HOOK_ROLE") or "").strip().lower()
+        if (hook.get("agent_id") or role_env == "agent") and not explicit:
+            # A compaction inside an Agent-tool subagent, or in a spawned
+            # top-level session (CTX_HOOK_ROLE=agent), builds no readback; an
+            # explicit CTX_SESSION_KIND / --session-kind still does.
             log(log_path, {"ev": "readback", "skipped": "subagent compaction",
                            "agent_id": str(hook.get("agent_id"))})
             return 0
@@ -878,7 +943,8 @@ def run(mode: str, args: argparse.Namespace) -> int:
             print(summariser_note(result, state or Path("."), handoff_note(handoff, repo)))
             return 0
         print(summariser_note(
-            build_readback(extract, transcript, state, budget, tail, timeout, log_path, flags),
+            build_readback(extract, transcript, state, budget, tail, timeout, log_path, flags,
+                           safe_id(hook.get("session_id"))),
             state, handoff_note(handoff, repo),
         ))
         return 0

@@ -99,15 +99,15 @@ run() { # run <outfile> <mode> <json> [extra args...]
 
 MAIN_JSON='{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROOT"'","hook_event_name":"SessionStart","source":"compact"}'
 
-# 1. pre-compact success: readback-N.md written, marker stored, summariser note.
+# 1. pre-compact success: readback-<sid>-N.md written, marker stored, summariser note.
 run "$ROOT/pc1.out" pre-compact '{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROOT"'","trigger":"auto"}' \
   --state-dir "$STATE" --extract "$BIN/fake-extract"
-[[ -f $STATE/readback-1.md ]] || fail 'pre-compact did not write readback-1.md'
-contains "$STATE/readback-1.md" 'Goal of the session' 'the readback document is stored'
+[[ -f $STATE/readback-sess-1-1.md ]] || fail 'pre-compact did not write readback-sess-1-1.md'
+contains "$STATE/readback-sess-1-1.md" 'Goal of the session' 'the readback document is stored'
 contains "$ROOT/pc1.out" "session's ORIGINAL goal" 'summariser note asks for the goal'
 contains "$ROOT/pc1.out" 'IN-FLIGHT list' 'summariser note asks for the in-flight list'
-contains "$ROOT/pc1.out" 'readback-1.md' 'summariser note names the readback'
-python3 - "$STATE/readback-state.json" <<'PY' || fail 'readback state did not record the marker'
+contains "$ROOT/pc1.out" 'readback-sess-1-1.md' 'summariser note names the readback'
+python3 - "$STATE/readback-state-sess-1.json" <<'PY' || fail 'readback state did not record the marker'
 import json, sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
 assert state["marker"] == "fake-marker-7", state
@@ -120,15 +120,15 @@ contains "$FAKE_EXTRACT_LOG" '--tail-prose-tokens 10000' 'the default tail is 10
 # 2. second compaction: N increments and the previous marker is passed as --since.
 run "$ROOT/pc2.out" pre-compact '{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROOT"'","trigger":"manual"}' \
   --state-dir "$STATE" --extract "$BIN/fake-extract"
-[[ -f $STATE/readback-2.md ]] || fail 'second pre-compact did not write readback-2.md'
+[[ -f $STATE/readback-sess-1-2.md ]] || fail 'second pre-compact did not write readback-sess-1-2.md'
 contains "$FAKE_EXTRACT_LOG" '--since fake-marker-7' 'the previous readback marker is used as the cut'
 
 # 3. a lost state file cannot re-use a number (highest on disk wins).
-rm -f -- "$STATE/readback-state.json"
+rm -f -- "$STATE/readback-state-sess-1.json"
 run "$ROOT/pc3.out" pre-compact '{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROOT"'","trigger":"auto"}' \
   --state-dir "$STATE" --extract "$BIN/fake-extract"
-[[ -f $STATE/readback-3.md ]] || fail 'readback numbering did not follow the files on disk'
-[[ ! -e $STATE/readback-1.md ]] && fail 'the first readback vanished'
+[[ -f $STATE/readback-sess-1-3.md ]] || fail 'readback numbering did not follow the files on disk'
+[[ ! -e $STATE/readback-sess-1-1.md ]] && fail 'the first readback vanished'
 
 # 4. extract failure: exit 0, a log line, a durable failure, no readback file.
 export FAKE_EXTRACT_RC=2
@@ -138,7 +138,7 @@ run "$ROOT/pc-fail.out" pre-compact \
 unset FAKE_EXTRACT_RC
 contains "$ROOT/pc-fail.out" 'could not be built automatically' 'failure is announced to the summariser'
 contains "$STATE/hooks/hook-log.jsonl" '"ev": "readback"' 'failure is logged'
-python3 - "$STATE/readback-state.json" <<'PY' || fail 'a failed build was not recorded durably'
+python3 - "$STATE/readback-state-sess-1.json" <<'PY' || fail 'a failed build was not recorded durably'
 import json, sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
 assert state["ok"] is False and "extract exited 2" in state["reason"], state
@@ -167,12 +167,15 @@ run "$ROOT/pc-none.out" pre-compact \
 contains "$ROOT/pc-none.out" 'could not be built automatically' 'a missing transcript is reported'
 [[ ! -s $FAKE_EXTRACT_LOG ]] || fail 'a missing transcript still ran the extract'
 
-# 7. session-start[compact]: read order, newest readback path and size.
+# 7. session-start[compact]: read order, this session's readback path and size
+#    (the builds above ended in failures, so a fresh successful build comes first).
+run "$ROOT/pc7.out" pre-compact '{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROOT"'","trigger":"auto"}' \
+  --state-dir "$STATE" --extract "$BIN/fake-extract"
 run "$ROOT/ss.out" session-start "$MAIN_JSON" --state-dir "$STATE" --extract "$BIN/fake-extract"
 contains "$ROOT/ss.out" 'CONTROLLER RESUME' 'session-start prints the read order'
 contains "$ROOT/ss.out" 'operator-decisions.md' 'the read order names the decision log'
 contains "$ROOT/ss.out" 'HANDOFF.md' 'the read order names the handoff file'
-contains "$ROOT/ss.out" "$STATE/readback-3.md" 'session-start names the newest readback'
+contains "$ROOT/ss.out" "$STATE/readback-sess-1-4.md" 'session-start names the newest readback'
 contains "$ROOT/ss.out" 'estimated tokens' 'session-start reports the readback size'
 python3 - "$ROOT/ss.out" <<'PY' || fail 'session-start output exceeds the hook cap'
 import sys
@@ -191,7 +194,7 @@ run "$ROOT/ss-fail.out" session-start "$MAIN_JSON" --state-dir "$ROOT/state-fail
 contains "$ROOT/ss-fail.out" 'BUILD IT BY HAND' 'a failed build yields the manual command'
 contains "$ROOT/ss-fail.out" '--preset readback' 'the manual command names the preset'
 contains "$ROOT/ss-fail.out" "$TRANSCRIPT" 'the manual command names the session file'
-contains "$ROOT/ss-fail.out" "readback-N.md" 'the manual command names the target file'
+contains "$ROOT/ss-fail.out" "readback-sess-1-N.md" 'the manual command names the target file'
 
 # 9. a subagent's own transcript is used, never the parent's.
 PARENT=$ROOT/transcripts/sess/subagents
@@ -260,6 +263,10 @@ assert "never stop" not in ctl_soft and "continue" not in ctl_soft.lower(), ctl_
 assert agent_low.startswith("[ctx 150k") and "PARTIAL" not in agent_low and "[agent]" not in agent_low, agent_low
 assert "finish or return PARTIAL with a handoff report" in agent_soft, agent_soft
 assert "handover" not in agent_soft and "READY" not in agent_soft, agent_soft
+# both roles are told to weigh the same three things (AGENTS.md ladder); the marker-only agent note is not.
+for text in (ctl_low, ctl_soft, agent_soft):
+    assert "Weigh the REMAINING EFFORT" in text and "prose readback alone" in text, text
+assert "Weigh" not in agent_low, agent_low
 # the soft threshold is a parameter: the same fill flips the wording.
 assert "set READY" in note(300_000, "c", "controller", soft=250_000)
 assert "set READY" not in note(300_000, "c", "controller", soft=350_000)
@@ -359,6 +366,36 @@ printf '%s' '{"autoCompactWindow":600000,"modelSettings":{"claude-opus-5-5":{"au
 [[ $(ceiling_probe "$ROOT/h-none" claude-opus-5-5 e) == '~6 calls to the 500k ceiling' ]] || fail 'a missing settings file does not give the documented default'
 [[ $(ceiling_probe "$ROOT/h-bad" claude-opus-5-5 f) == '~6 calls to the 500k ceiling' ]] || fail 'a malformed settings file does not give the documented default'
 [[ $(ceiling_probe "$ROOT/h-badwin" claude-opus-5-5 g) == '~8 calls to the 600k ceiling' ]] || fail 'a non-numeric model window does not fall through to the top-level one'
+# model names as the transcript spells them: a `[1m]` suffix and a -YYYYMMDD date suffix are stripped.
+[[ $(ceiling_probe "$ROOT/h-model" 'claude-opus-5-5[1m]' h) == '~12 calls to the 800k ceiling' ]] || fail 'a [1m] model suffix is not stripped'
+[[ $(ceiling_probe "$ROOT/h-model" claude-sonnet-5-5-20261001 i) == '~4 calls to the 400k ceiling' ]] || fail 'a date model suffix is not stripped'
+[[ $(ceiling_probe "$ROOT/h-model" 'claude-sonnet-5-5-20261001[1m]' j) == '~4 calls to the 400k ceiling' ]] || fail 'both model suffixes are not stripped'
+
+# 10d0b. the handover threshold is min(soft, ceiling - 50000): a 400k window must still get its
+#        handover note before 400k, and the hook log carries a warning. Exact boundaries of the
+#        controller (650000) and agent (200000) soft thresholds, with a ceiling far above both.
+mkdir -p "$ROOT/h-big/.claude"
+printf '%s' '{"autoCompactWindow":900000}' > "$ROOT/h-big/.claude/settings.json"
+HOME=$ROOT/h-model notes 349999 claude-sonnet-5-5
+not_contains 'set READY' 'below ceiling - 50k a 400k window gets no handover note yet' "$ROOT/n.out"
+HOME=$ROOT/h-model notes 350000 claude-sonnet-5-5
+contains "$ROOT/n.out" 'set READY' 'a 400k window gets the handover note at ceiling - 50k'
+contains "$ROOT/n.out" 'lowered from 650k' 'the note names the lowered threshold'
+contains "$ROOT/state-n$SEQ/hooks/hook-log.jsonl" '"ev": "warning"' 'a ceiling at or below the soft threshold is logged'
+HOME=$ROOT/h-model notes 351000 claude-sonnet-5-5
+contains "$ROOT/n.out" 'set READY' 'a 400k window gets the handover note before 400k'
+HOME=$ROOT/h-big notes 649999 claude-opus-5-5
+not_contains 'set READY' 'one token below 650000 is below the controller soft threshold' "$ROOT/n.out"
+HOME=$ROOT/h-big notes 650000 claude-opus-5-5
+contains "$ROOT/n.out" 'set READY' 'exactly 650000 is at the controller soft threshold'
+not_contains 'lowered from' 'a ceiling far above soft does not lower it' "$ROOT/n.out"
+CTX_HOOK_ROLE=agent notes 199999 claude-opus-5-5
+not_contains 'PARTIAL' 'one token below 200000 is below the agent soft threshold' "$ROOT/n.out"
+CTX_HOOK_ROLE=agent notes 200000 claude-opus-5-5
+contains "$ROOT/n.out" 'PARTIAL' 'exactly 200000 is at the agent soft threshold'
+contains "$ROOT/n.out" 'Weigh the REMAINING EFFORT' 'the agent note carries the weigh sentence'
+compgen -G "$ROOT/state-n$SEQ/hooks/pressure-*" > /dev/null || fail 'pressure state files are not under <state>/hooks/'
+! compgen -G "$ROOT/state-n$SEQ/pressure-*" > /dev/null || fail 'a pressure state file landed in the state dir root'
 
 # 10d1. a controller past 200k whose HANDOFF.md is older than 15 minutes is warned;
 #       a fresh file, an agent, and a fill below 200k are not.
@@ -370,7 +407,7 @@ STALE_JSON='{"session_id":"st","transcript_path":"'"$ROOT/stale.jsonl"'","cwd":"
 stale_run() { # stale_run <tag> [extra args...]
   local tag=$1
   shift
-  rm -rf "$ROOT/state-stale/pressure-"*
+  rm -rf "$ROOT/state-stale/hooks/pressure-"*
   run "$ROOT/stale-$tag.out" post-tool-use "$STALE_JSON" --state-dir "$ROOT/state-stale" "$@"
 }
 stale_run old
@@ -391,6 +428,31 @@ not_contains 'STALE STATE' 'below 200k there is no stale warning' "$ROOT/stale-l
 python3 "$ROOT/mk.py" "$ROOT/stale.jsonl" 251000
 stale_run nofile --handoff-file "$ROOT/does-not-exist.md"
 not_contains 'STALE STATE' 'a missing handover file is not flagged' "$ROOT/stale-nofile.out"
+# exact boundaries: the handover is 30 minutes old (stale) in both runs; 200000 is the stale threshold.
+python3 "$ROOT/mk.py" "$ROOT/stale.jsonl" 199999
+stale_run just-below
+not_contains 'STALE STATE' 'one token below 200000 there is no stale warning' "$ROOT/stale-just-below.out"
+python3 "$ROOT/mk.py" "$ROOT/stale.jsonl" 200000
+stale_run at-200k
+contains "$ROOT/stale-at-200k.out" 'STALE STATE' 'exactly 200000 gets the stale warning'
+# the 15-minute limit, with a pinned clock: 14 min 59 s is fresh, exactly 15 min is stale.
+python3 - "$HOOKS" <<'PY' || fail 'the 15-minute stale boundary is wrong'
+import importlib.util, os, sys, tempfile
+spec = importlib.util.spec_from_file_location("ctx_hooks", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+from pathlib import Path
+base = 1_000_000_000
+with tempfile.TemporaryDirectory() as tmp:
+    handoff = Path(tmp) / "HANDOFF.md"
+    handoff.write_text("x")
+    os.utime(handoff, (base, base))
+    for seconds, stale in ((899, False), (900, True), (960, True)):
+        module.time.time = lambda s=seconds: base + s
+        text = module.pressure_note(250_000, Path(tmp) / f"s{seconds}", "main", handoff=handoff)
+        assert ("STALE STATE" in text) == stale, (seconds, text)
+        assert module.handoff_age(handoff)[1] == seconds // 60
+PY
 
 # 10d2. the read order is taken from the newest RESUME HERE block's READ FIRST line.
 mkdir -p "$ROOT/state-ro"
@@ -435,7 +497,15 @@ GIT_COMMITTER_DATE=$OLD_DATE GIT_AUTHOR_DATE=$OLD_DATE git -C "$GREPO" "${GITENV
   || fail 'could not create the old fixture commit'
 git -C "$GREPO" "${GITENV[@]}" commit -q --allow-empty -m 'recent-merge-subject' || fail 'could not create the recent fixture commit'
 [[ $(git -C "$GREPO" rev-list --count HEAD) == 2 ]] || fail 'the fixture repository does not hold both commits'
+# a side branch merged with --no-ff (only the merge is first-parent), then origin/main is pinned and
+# HEAD moves on, so a list built from HEAD or without --first-parent would show the extra subjects.
+MAINB=$(git -C "$GREPO" symbolic-ref --short HEAD)
+git -C "$GREPO" checkout -q -b side-branch
+git -C "$GREPO" "${GITENV[@]}" commit -q --allow-empty -m 'side-branch-subject' || fail 'could not create the side commit'
+git -C "$GREPO" checkout -q "$MAINB"
+git -C "$GREPO" "${GITENV[@]}" merge -q --no-ff -m 'merged-side-subject' side-branch || fail 'could not create the merge'
 git -C "$GREPO" update-ref refs/remotes/origin/main HEAD
+git -C "$GREPO" "${GITENV[@]}" commit -q --allow-empty -m 'head-only-subject' || fail 'could not create the head-only commit'
 mkdir -p "$ROOT/state-pc"
 printf '## RESUME HERE #1\n' > "$ROOT/state-pc/HANDOFF.md"
 touch -d '30 minutes ago' "$ROOT/state-pc/HANDOFF.md"
@@ -445,6 +515,9 @@ contains "$ROOT/pcn.out" "HANDOFF.md was last written at" 'the summariser is tol
 matches "$ROOT/pcn.out" '\(3[0-9] min before this compaction\)' 'the summariser is told its age'
 contains "$ROOT/pcn.out" 'recent-merge-subject' 'a merge since the handover is listed'
 not_contains 'old-merge-subject' 'a merge older than the handover is not listed' "$ROOT/pcn.out"
+contains "$ROOT/pcn.out" 'merged-side-subject' 'the merge commit of a side branch is listed'
+not_contains 'side-branch-subject' 'a commit inside a merged side branch is not first-parent' "$ROOT/pcn.out"
+not_contains 'head-only-subject' 'the list is read from origin/main, not from HEAD' "$ROOT/pcn.out"
 
 # 10e. statusline and stop carry the fill.
 python3 "$ROOT/mk.py" "$ROOT/sl.jsonl" 201000
@@ -558,7 +631,7 @@ SUB_PC='{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROO
 run "$ROOT/pc-sub.out" pre-compact "$SUB_PC" --state-dir "$ROOT/state-sub" \
   --extract "$BIN/fake-extract"
 [[ ! -s $FAKE_EXTRACT_LOG ]] || fail 'a subagent compaction ran the extract'
-[[ ! -e $ROOT/state-sub/readback-state.json ]] || fail 'a subagent compaction touched the readback state'
+! compgen -G "$ROOT/state-sub/readback-state*" > /dev/null || fail 'a subagent compaction touched the readback state'
 contains "$ROOT/state-sub/hooks/hook-log.jsonl" 'subagent compaction' 'the skipped subagent compaction is logged'
 SUB_OWN='{"session_id":"sess","transcript_path":"'"$ROOT/transcripts/parent-session.jsonl"'","cwd":"'"$ROOT"'","trigger":"auto","agent_id":"child1"}'
 run "$ROOT/pc-sub2.out" pre-compact "$SUB_OWN" --state-dir "$ROOT/state-sub2" \
@@ -577,9 +650,9 @@ contains "$FAKE_EXTRACT_LOG" '--redact-pattern env-pattern-secret-1' 'the first 
 contains "$FAKE_EXTRACT_LOG" '--redact-pattern env-pattern-secret-2' 'the second env pattern reaches the extract'
 [[ $(grep -o -- '--redact-pattern' "$FAKE_EXTRACT_LOG" | wc -l) == 3 ]] || fail 'a blank env line became a pattern'
 not_contains 'pattern-secret' 'a redaction pattern must never be stored or logged' \
-  "$ROOT/state-redact/readback-state.json" "$ROOT/state-redact/hooks/hook-log.jsonl" \
+  "$ROOT/state-redact/readback-state-sess-1.json" "$ROOT/state-redact/hooks/hook-log.jsonl" \
   "$ROOT/pc-redact.out"
-contains "$ROOT/state-redact/readback-state.json" '<REGEX>' 'the stored command shows a placeholder'
+contains "$ROOT/state-redact/readback-state-sess-1.json" '<REGEX>' 'the stored command shows a placeholder'
 export FAKE_EXTRACT_RC=2
 CTX_READBACK_REDACT_PATTERNS='env-pattern-secret-1' run "$ROOT/pc-redact-fail.out" pre-compact "$PC_JSON" \
   --state-dir "$ROOT/state-redact-fail" --extract "$BIN/fake-extract"
@@ -596,7 +669,7 @@ run "$ROOT/pc-nonemarker.out" pre-compact \
   '{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROOT"'","trigger":"auto"}' \
   --state-dir "$ROOT/state-goal" --extract "$BIN/fake-extract"
 unset FAKE_MARKER
-python3 - "$ROOT/state-goal/readback-state.json" <<'PY' || fail 'a none marker replaced the stored marker'
+python3 - "$ROOT/state-goal/readback-state-sess-1.json" <<'PY' || fail 'a none marker replaced the stored marker'
 import json, sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
 assert state["marker"] == "fake-marker-7", state
@@ -606,7 +679,7 @@ PY
 # 14c. the SessionStart output is capped under the harness's 10,000 characters
 #      even when the stored failure reason is enormous.
 mkdir -p "$ROOT/state-huge"
-python3 - "$ROOT/state-huge/readback-state.json" <<'PY'
+python3 - "$ROOT/state-huge/readback-state-sess-1.json" <<'PY'
 import json, sys
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     json.dump({"ok": False, "reason": "x" * 30_000, "marker": "m1"}, handle)
@@ -619,6 +692,78 @@ text = open(sys.argv[1], encoding="utf-8").read()
 assert len(text) <= 10000, len(text)
 assert text.startswith("CONTROLLER RESUME"), text[:80]
 PY
+
+# 16. readback state is per session: two sessions share one state dir and never see
+#     each other's files, markers or numbers; a failed build is never covered by an
+#     older readback; a session that never built one gets the manual command.
+PS=$ROOT/state-ps
+mkdir -p "$PS"
+printf 'legacy readback of another session\n' > "$PS/readback-8.md"
+pc_json() { printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","trigger":"auto"}' "$1" "$TRANSCRIPT" "$ROOT"; }
+ss_json() { printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","source":"compact"}' "$1" "$TRANSCRIPT" "$ROOT"; }
+run "$ROOT/ps-a1.out" pre-compact "$(pc_json sess-A)" --state-dir "$PS" --extract "$BIN/fake-extract"
+: > "$FAKE_EXTRACT_LOG"
+run "$ROOT/ps-b1.out" pre-compact "$(pc_json sess-B)" --state-dir "$PS" --extract "$BIN/fake-extract"
+[[ -f $PS/readback-sess-A-1.md && -f $PS/readback-sess-B-1.md ]] || fail 'each session did not get its own readback file'
+not_contains '--since' 'session B must not start from session A marker' "$FAKE_EXTRACT_LOG"
+run "$ROOT/ps-a2.out" pre-compact "$(pc_json sess-A)" --state-dir "$PS" --extract "$BIN/fake-extract"
+[[ -f $PS/readback-sess-A-2.md && ! -e $PS/readback-sess-B-2.md ]] || fail 'readback numbers are not per session'
+run "$ROOT/ps-ssa.out" session-start "$(ss_json sess-A)" --state-dir "$PS" --extract "$BIN/fake-extract"
+contains "$ROOT/ps-ssa.out" "$PS/readback-sess-A-2.md" 'session A is pointed at its own newest readback'
+not_contains 'readback-sess-B' 'session A is never pointed at session B' "$ROOT/ps-ssa.out"
+not_contains 'readback-8.md' 'a legacy session-less readback is never printed' "$ROOT/ps-ssa.out"
+run "$ROOT/ps-ssb.out" session-start "$(ss_json sess-B)" --state-dir "$PS" --extract "$BIN/fake-extract"
+contains "$ROOT/ps-ssb.out" "$PS/readback-sess-B-1.md" 'session B is pointed at its own readback'
+FAKE_EXTRACT_RC=2 run "$ROOT/ps-a3.out" pre-compact "$(pc_json sess-A)" --state-dir "$PS" --extract "$BIN/fake-extract"
+run "$ROOT/ps-ssa2.out" session-start "$(ss_json sess-A)" --state-dir "$PS" --extract "$BIN/fake-extract"
+contains "$ROOT/ps-ssa2.out" 'LAST BUILD FAILED' 'a failed build is reported'
+contains "$ROOT/ps-ssa2.out" 'BUILD IT BY HAND' 'a failed build yields the manual command'
+not_contains 'NEWEST READBACK' 'a stale readback is not printed after a failed build' "$ROOT/ps-ssa2.out"
+not_contains 'readback-sess-A-2.md' 'the older readback is not named after a failed build' "$ROOT/ps-ssa2.out"
+run "$ROOT/ps-ssb2.out" session-start "$(ss_json sess-B)" --state-dir "$PS" --extract "$BIN/fake-extract"
+contains "$ROOT/ps-ssb2.out" "$PS/readback-sess-B-1.md" 'session B is unaffected by session A failing'
+run "$ROOT/ps-ssc.out" session-start "$(ss_json sess-C)" --state-dir "$PS" --extract "$BIN/fake-extract"
+contains "$ROOT/ps-ssc.out" 'BUILD IT BY HAND' 'a session that never built one gets the manual command'
+not_contains 'NEWEST READBACK' 'a session without a build is never given another readback' "$ROOT/ps-ssc.out"
+
+# 16b. the role rule precedes the main controller's list; a non-writer session is told not to follow it.
+python3 - "$ROOT/ro.out" <<'PY' || fail 'the role rule is missing or comes after the list'
+import sys
+text = open(sys.argv[1], encoding="utf-8").read()
+for needle in ("MAIN CONTROLLER (vbpub-main-controller)", "SUB-CONTROLLER vbpub-<topic>", "/STATE.md",
+               "-successor.md", "ANY OTHER SESSION", "do not act as a controller", "is NOT yours"):
+    assert needle in text, needle
+assert text.index("Find your role") < text.index("NEW-LIST-MARKER-ONE"), text
+PY
+CTX_MAIN_CONTROLLER=vbpub-other run "$ROOT/ro3.out" session-start "$MAIN_JSON" --state-dir "$ROOT/state-ro" --extract "$BIN/fake-extract"
+contains "$ROOT/ro3.out" 'MAIN CONTROLLER (vbpub-other)' 'the main controller name is configurable'
+
+# 16c. CTX_HOOK_ROLE=agent skips the readback build like a subagent; an explicit kind still builds.
+: > "$FAKE_EXTRACT_LOG"
+CTX_HOOK_ROLE=agent run "$ROOT/pc-roleenv.out" pre-compact "$(pc_json sess-R)" --state-dir "$ROOT/state-roleenv" \
+  --extract "$BIN/fake-extract"
+[[ ! -s $FAKE_EXTRACT_LOG ]] || fail 'CTX_HOOK_ROLE=agent ran the extract'
+! compgen -G "$ROOT/state-roleenv/readback-*" > /dev/null || fail 'CTX_HOOK_ROLE=agent wrote readback state'
+contains "$ROOT/state-roleenv/hooks/hook-log.jsonl" 'subagent compaction' 'the skipped build is logged'
+CTX_HOOK_ROLE=agent run "$ROOT/pc-roleenv2.out" pre-compact "$(pc_json sess-R)" --state-dir "$ROOT/state-roleenv" \
+  --extract "$BIN/fake-extract" --session-kind spawned
+[[ -f $ROOT/state-roleenv/readback-sess-R-1.md ]] || fail 'an explicit session kind did not build'
+
+# 17. no .controller-state above the cwd: fall back to the repo holding the script; with none, write nothing.
+SOLO=$ROOT/solo
+mkdir -p "$SOLO/scripts/controller/hooks" "$ROOT/elsewhere"
+cp -- "$HOOKS" "$SOLO/scripts/controller/hooks/ctx-hooks.py"
+python3 "$ROOT/mk.py" "$ROOT/solo.jsonl" 151000
+SOLO_JSON='{"session_id":"solo","transcript_path":"'"$ROOT/solo.jsonl"'","cwd":"'"$ROOT/elsewhere"'"}'
+printf '%s' "$SOLO_JSON" | python3 "$SOLO/scripts/controller/hooks/ctx-hooks.py" post-tool-use > "$ROOT/solo1.out" 2>&1 \
+  || fail 'a hook with no state directory failed'
+contains "$ROOT/solo1.out" 'never stop or wait for a compaction' 'the note is still delivered without a state directory'
+[[ ! -e $ROOT/elsewhere/.controller-state && ! -e $SOLO/.controller-state ]] || fail 'the hook created a state directory'
+mkdir -p "$SOLO/.controller-state"
+printf '%s' "$SOLO_JSON" | python3 "$SOLO/scripts/controller/hooks/ctx-hooks.py" post-tool-use > "$ROOT/solo2.out" 2>&1 \
+  || fail 'the script-repo fallback failed'
+[[ -f $SOLO/.controller-state/hooks/hook-log.jsonl ]] || fail 'the script repo state directory was not used'
+[[ ! -e $ROOT/elsewhere/.controller-state ]] || fail 'the hook wrote under the cwd'
 
 # 15. the hook never writes a secret into its log or its output.
 not_contains 'secret-token-fixture' 'the hook must not leak extract output into the log' \

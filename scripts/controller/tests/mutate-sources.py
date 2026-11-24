@@ -426,7 +426,17 @@ mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-pattern-leak.py",
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-spawned-goal.py",
        '        or kind == "spawned"\n', '        or False\n')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-subagent-skip.py",
-       '        if hook.get("agent_id") and not explicit:', '        if False:')
+       '        if (hook.get("agent_id") or role_env == "agent") and not explicit:', '        if False:')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-role-env-skip.py",
+       '(hook.get("agent_id") or role_env == "agent") and not explicit:', 'hook.get("agent_id") and not explicit:')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-sid-state.py",
+       'return state / f"readback-state-{session}.json"', 'return state / "readback-state-x.json"')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-effective-soft.py",
+       'return max(ARM_AT, min(soft, ceiling - STEP))', 'return soft')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-pressure-dir.py",
+       'state / "hooks" / f"pressure-{safe}.json"', 'state / f"pressure-{safe}.json"')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-state-fallback.py",
+       'return own if own.is_dir() else None', 'return own')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-crash-log.py",
        'log(ACTIVE_LOG, {"ev": "hook-error"', 'log(None, {"ev": "hook-error"')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-ceiling-model.py",
