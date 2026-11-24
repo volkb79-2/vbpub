@@ -190,6 +190,12 @@ pub trait Backend {
     fn current(&self, selection: &Selection, max_rows: u32) -> Result<TickData, BackendError>;
 }
 
+/// The driver's per-turn hook (docs/PROBE-PROCESS.md §(b)).
+pub trait Turn: Backend {
+    /// Load the turn's published state; `true` when its tick is newer than the previous turn's.
+    fn begin_turn(&mut self, now_ns: u64) -> bool;
+}
+
 /// A backend with fixed answers, for tests and the P5b-4 bring-up.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FixedBackend {
@@ -199,6 +205,10 @@ pub struct FixedBackend {
     pub status: StatusInfo,
     /// The answer of [`Backend::current`], keyed by the canonical selection.
     pub current: BTreeMap<Selection, Result<TickData, BackendError>>,
+    /// The test-controlled sequence number of the current published tick.
+    pub seq: u64,
+    /// The last sequence number announced by [`Turn::begin_turn`].
+    pub seen: u64,
 }
 
 impl FixedBackend {
@@ -214,6 +224,8 @@ impl FixedBackend {
             },
             status: StatusInfo::default(),
             current: BTreeMap::new(),
+            seq: 0,
+            seen: 0,
         }
     }
 }
@@ -249,15 +261,37 @@ impl Backend for FixedBackend {
     }
 }
 
+impl Turn for FixedBackend {
+    fn begin_turn(&mut self, _now_ns: u64) -> bool {
+        let fresh = self.seq != self.seen;
+        self.seen = self.seq;
+        fresh
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use hostobs_proto::dict::Entry;
 
-    use super::{Backend, BackendError, FixedBackend, TickData};
+    use super::{Backend, BackendError, FixedBackend, TickData, Turn};
     use crate::selection::{Sel, Selection};
 
     fn selection() -> Selection {
         Selection::new(vec![Sel::Inc(1)], vec!["m".to_string()]).expect("selection")
+    }
+
+    #[test]
+    fn fixed_backend_announces_each_sequence_change_once() {
+        let mut backend = FixedBackend::new();
+        assert!(!backend.begin_turn(1));
+        backend.seq = 2;
+        assert!(backend.begin_turn(2));
+        assert!(!backend.begin_turn(3));
+        backend.seq = 2;
+        assert!(!backend.begin_turn(4));
+        backend.seq = 3;
+        assert!(backend.begin_turn(5));
+        assert_eq!(backend.seen, 3);
     }
 
     #[test]
