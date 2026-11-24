@@ -372,8 +372,6 @@ def _check_subvolume_mount(mount: object, what: str) -> str:
     ancestor would cover ISO-owned state, while `/srv/cow` remains allowed.
     """
     mount = _check_mount(mount, what)
-    if mount in PREPOPULATED_SYSTEM_MOUNTS:
-        return mount
     for excluded in BTRFS_ISO_EXCLUDED_MOUNTS:
         if mount == excluded or excluded.startswith(mount + "/"):
             raise LayoutPolicyError(

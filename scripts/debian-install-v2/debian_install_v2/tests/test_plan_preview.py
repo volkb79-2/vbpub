@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -308,3 +309,54 @@ def test_live_plan_failure_diagnostic_uses_detected_root_number(monkeypatch):
     with pytest.raises(bootstrap.CliFailure, match="test diagnostic path"):
         bootstrap._plan(args, runtime)
     assert observed["root_number"] == 3
+
+
+def test_cli_plan_inspects_a_completed_ext4_host(tmp_path, monkeypatch):
+    from debian_install_v2.installer import Installer
+    from debian_install_v2.tests.test_fake_integration import FakeHostActions
+
+    config = Config(
+        state_dir=str(tmp_path / "state"),
+        log_dir=str(tmp_path / "logs"),
+        telegram_bot_token="",
+        telegram_chat_id="",
+        auto_reboot_after_stage1=False,
+        swap_disk_total_gb=32,
+        swap_partition_count=8,
+        partitioning={"root": "keep", "reserve_gb": "*"},
+    )
+    marker = Path(config.state_dir) / "stage2_done"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+
+    actions = FakeHostActions()
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = (
+        "/dev/vda3 ext4\n"
+    )
+    actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = (
+        "/dev/vda3 / ext4\n"
+    )
+    actions.outputs[("/usr/sbin/blockdev", "--getsize64", "/dev/vda")] = str(512 * 1024 ** 3)
+    monkeypatch.setattr(Installer, "_detect_release", lambda _self: "trixie")
+    installer = Installer(config, actions)
+    installer._root_used_bytes = lambda: 8 * 1024 ** 3
+    monkeypatch.setattr(
+        bootstrap, "_make_installer", lambda _args, _runtime: installer,
+    )
+
+    class Output:
+        def primary(self, value):
+            self.value = value
+
+    output = Output()
+    runtime = SimpleNamespace(json_mode=True, output=output)
+    args = SimpleNamespace(disk_size=None)
+
+    assert bootstrap._plan(args, runtime) == 0
+    assert output.value["root_device"] == "/dev/vda3"
+    assert (
+        "/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/",
+    ) in [action.argv for action in actions.planned]
+    assert (
+        "/usr/sbin/blockdev", "--getsize64", "/dev/",
+    ) not in [action.argv for action in actions.planned]

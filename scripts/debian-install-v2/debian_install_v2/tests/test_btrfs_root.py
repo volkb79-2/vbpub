@@ -367,10 +367,43 @@ def test_subvolume_mount_at_or_above_an_excluded_path_is_refused(mount):
 
 
 @pytest.mark.parametrize(
+    ("mount", "isolate_iso_rule"),
+    [
+        ("/var/www", False),
+        ("/var/lib/containers", False),
+        ("/var/lib/postgresql", False),
+        ("/var/lib/mysql", False),
+        ("/var/lib", True),
+    ],
+)
+def test_iso_exclusions_refuse_paths_not_covered_by_general_mount_policy(
+    mount, isolate_iso_rule, monkeypatch,
+):
+    if isolate_iso_rule:
+        # /var/lib is also a general mount-policy refusal. Isolate C9 here so
+        # the ancestor direction is pinned to the ISO exclusion message itself.
+        monkeypatch.setattr(layout_policy, "_check_mount", lambda value, _what: value)
+    partitioning = {
+        **VALID_PARTITIONING,
+        "data": {"kind": "subvolumes", "volumes": [
+            {"name": "@cow", "mount": mount},
+        ]},
+    }
+    with pytest.raises(
+        layout_policy.LayoutPolicyError, match="at or above excluded path",
+    ):
+        layout_policy.disk_spec(
+            partitioning, root_fs="btrfs", schema_version=2,
+            swap_policy="off", swap_partition_count=0,
+        )
+
+
+@pytest.mark.parametrize(
     "mount",
     [
         "/srv/cow",
         "/home/alice/data",
+        "/var/lib/postgresql/x",
     ],
 )
 def test_subvolume_mount_below_an_excluded_path_is_accepted(mount):
@@ -591,6 +624,7 @@ def test_top_level_mount_must_be_subvolid_five(tmp_path):
     [
         "/dev/vda2 tmpfs /\n",
         "/dev/vdb2 btrfs /\n",
+        "/dev/vda3 btrfs /\n",
         "/dev/vdas2 btrfs /\n",
         "tmpfs tmpfs /\n",
     ],
@@ -600,8 +634,9 @@ def test_top_level_mount_must_be_the_btrfs_root_partition(tmp_path, row):
     actions = BoundaryActions(outputs={argv: row})
     installer = _btrfs_installer(tmp_path, actions=actions)
 
-    with pytest.raises(InstallerError, match="btrfs_top_level_required"):
+    with pytest.raises(InstallerError, match="btrfs_top_level_required") as exc_info:
         installer._require_btrfs_top_level()
+    assert "/dev/vda2" in str(exc_info.value)
 
 
 def test_fstab_subvolume_lines_use_root_options_plus_user_subvol_rm_allowed(tmp_path, monkeypatch):
@@ -877,6 +912,30 @@ def test_host_setup_snapshot_failure_is_visible_and_marks_the_step_failed(tmp_pa
     assert "snapshot failed" in step["detail"]
 
 
+def test_snapshot_step_is_pending_when_the_snapshot_command_runs(tmp_path):
+    snapshot_argv = (
+        "/usr/bin/env", "-u", "DR_STATE", ROLLBACK_STATE_COMMAND,
+        "snapshot", "--reason", "host-setup",
+    )
+    actions = _snapshot_actions()
+    installer = _btrfs_installer(tmp_path, actions=actions)
+    observed = []
+    real_run = actions.run
+
+    def run(argv, *args, **kwargs):
+        if tuple(argv) == snapshot_argv:
+            observed.append(
+                installer.state.load()["steps"]["host_setup_snapshot"]["status"]
+            )
+        return real_run(argv, *args, **kwargs)
+
+    actions.run = run
+    installer._snapshot_host_setup_once()
+
+    assert observed == ["run"]
+    assert installer.state.data["steps"]["host_setup_snapshot"]["status"] == "success"
+
+
 def test_layer_absent_or_unmanaged_root_takes_no_snapshot(tmp_path):
     actions = BoundaryActions(existing=set())
     installer = _btrfs_installer(tmp_path, actions=actions)
@@ -995,7 +1054,9 @@ def test_completed_resume_skips_host_discovery(tmp_path):
     marker = Path(installer.config.state_dir) / "stage2_done"
     marker.touch()
 
-    completed = Installer(installer.config, actions, inspect_host=True)
+    completed = Installer(
+        installer.config, actions, inspect_host=False, inspect_on_resume=True,
+    )
 
     assert completed.stage2_complete is True
     assert completed.resume() is False

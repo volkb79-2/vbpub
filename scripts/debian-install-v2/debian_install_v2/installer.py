@@ -237,9 +237,11 @@ class Installer:
         actions: HostActions,
         *,
         inspect_host: bool = True,
+        inspect_on_resume: bool = False,
     ):
         self.config = config
         self.actions = actions
+        self._inspect_on_resume = inspect_on_resume
         self.state = StateStore(config.state_dir)
         self.state.dry_run = actions.dry_run
         self._notify_stage = "stage1"
@@ -267,7 +269,7 @@ class Installer:
         self._stage2_complete = (
             self._completion_marker.exists() or self._completion_marker.is_symlink()
         )
-        if inspect_host and not self._stage2_complete:
+        if inspect_host:
             self.inspect()
 
     @property
@@ -653,6 +655,11 @@ class Installer:
             # A rerun after completion is a pure no-op: no plan, notifications,
             # host actions, or another host-setup snapshot.
             return False
+        if self._inspect_on_resume and self.root_partition_path == "":
+            # The resume CLI constructs without inspection so a completed
+            # rerun stays a no-op. Every unfinished run still needs the root's
+            # filesystem type to choose the btrfs or ext4 stage-two path.
+            self.inspect()
         # Stage2 appends to custom_script.output2 (systemd StandardOutput=append:
         # creates it 0644), so restrict /root/custom_script* before anything can
         # write to or fail around it.
@@ -729,9 +736,11 @@ class Installer:
                 if not self.actions.dry_run:
                     self._completion_marker.touch(mode=0o600)
             self._stage2_complete = True
+            # The host-setup snapshot is the last change to the OS state.
             # Only NOW, after the marker external pollers watch for already
-            # exists on disk: this used to run inside _stage2() itself,
-            # BEFORE this marker was ever touched. Live-confirmed
+            # exists on disk, revoke the controller key: this used to run
+            # inside _stage2() itself, BEFORE this marker was ever touched.
+            # Live-confirmed
             # 2026-09-09 (v1001 round 12, the first fully successful
             # install this whole effort): scp-api-install-host.py's own
             # completion poller authenticates with this exact controller
@@ -5207,6 +5216,11 @@ MaxFileSec=1month
                 "rollback_layer_unmanaged: dr-state reports no managed running root",
             )
             return
+        self._mark_step(
+            "host_setup_snapshot",
+            "run",
+            "dr-state snapshot --reason host-setup",
+        )
         try:
             self._run(
                 [
