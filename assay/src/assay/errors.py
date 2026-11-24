@@ -23,20 +23,17 @@ every other module may depend on it.
 
 from __future__ import annotations
 
-import errno
-import os
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Mapping
 
 __all__ = [
-    "EXIT_CODES",
-    "REASON_CODES",
     "AssayError",
+    "EXIT_CODES",
     "LaneConfigError",
     "Outcome",
+    "REASON_CODES",
     "ReasonCode",
-    "describe_os_error",
     "require_advance",
 ]
 
@@ -284,114 +281,6 @@ REASON_CODES: Mapping[Outcome, frozenset[ReasonCode]] = MappingProxyType(
         ),
     }
 )
-
-
-_OSERROR_TEXT_MAX_CHARS = 4096
-_OSERROR_TEXT_TRUNCATION = " ... [truncated]"
-
-
-def _bounded_os_error_text(text: str) -> str:
-    if len(text) <= _OSERROR_TEXT_MAX_CHARS:
-        return text
-    keep = _OSERROR_TEXT_MAX_CHARS - len(_OSERROR_TEXT_TRUNCATION)
-    return text[:keep] + _OSERROR_TEXT_TRUNCATION
-
-
-def _bounded_os_error_fallback(exc: OSError, *, phase: str) -> str:
-    """Render whatever facts remain when the rich formatter itself fails."""
-    try:
-        errno_value = str(exc.errno)
-    except Exception:
-        errno_value = f"<{type(exc.errno).__name__}>"
-    errno_name = errno.errorcode.get(exc.errno, "?")
-    raw_operation = exc.strerror
-    if isinstance(raw_operation, str) and raw_operation:
-        operation = raw_operation
-    else:
-        try:
-            operation = str(exc) or "unknown error"
-        except Exception:
-            operation = "the original exception's text could not be rendered"
-    filename = getattr(exc, "filename", None)
-    if filename is None:
-        path_note = ""
-    elif isinstance(filename, int):
-        try:
-            bits = filename.bit_length()
-        except Exception:
-            bits = "unknown"
-        path_note = f"; path=<int filename omitted ({bits} bits)>"
-    else:
-        path_note = f"; path=<{type(filename).__name__} filename omitted>"
-    return _bounded_os_error_text(
-        f"snapshot preparation or cleanup failed during phase {phase!r}: "
-        f"[Errno {errno_value} {errno_name}] operation={operation!r}{path_note}"
-    )
-
-
-def describe_os_error(exc: OSError, *, phase: str) -> str:
-    """Render a non-git ``OSError`` with the facts needed to diagnose it.
-
-    ``phase`` names the last higher-rigor lane stage entered, best effort; it
-    does not always attribute the failing operation. Cleanup during exception
-    unwinding can report the stage that raised first. R2 candidate and R3
-    canary snapshot materialization report the enclosing ``lane command``
-    stage.
-
-    ``str(OSError)`` often ends at an integer file descriptor for failures
-    raised by fd-based calls such as ``os.chmod``. An integer filename is
-    resolved best-effort through ``/proc/self/fd`` at REPORT time; this
-    function receives a foreign exception and cannot resolve it at raise
-    time. If the descriptor was closed and reused meanwhile, the path can be
-    wrong, so the rendering names both the descriptor and its resolved path.
-    If the descriptor is gone, it is named as unresolved rather than
-    inventing a path.
-
-    The operation here is the OS-provided ``strerror``; ``OSError`` carries
-    no syscall/function name. The rich formatter must never replace the
-    original exception with one of its own: any failure while formatting a
-    hostile filename, errno, or operation falls back to bounded diagnostic
-    text.
-    """
-    try:
-        return _bounded_os_error_text(_describe_os_error(exc, phase=phase))
-    except Exception:
-        try:
-            return _bounded_os_error_text(str(exc))
-        except Exception:
-            try:
-                return _bounded_os_error_fallback(exc, phase=phase)
-            except Exception:
-                return (
-                    "snapshot preparation or cleanup failed; "
-                    "the original OSError could not be rendered"
-                )
-
-
-def _describe_os_error(exc: OSError, *, phase: str) -> str:
-    errno_name = errno.errorcode.get(exc.errno, "?")
-    operation = exc.strerror or str(exc) or "unknown error"
-    parts = [
-        (
-            f"snapshot preparation or cleanup failed during phase {phase!r}: "
-            f"[Errno {exc.errno} {errno_name}] operation={operation!r}"
-        )
-    ]
-    for label, attribute in (("path", "filename"), ("path2", "filename2")):
-        filename = getattr(exc, attribute, None)
-        if filename is None:
-            continue
-        if isinstance(filename, int):
-            try:
-                resolved = os.readlink(f"/proc/self/fd/{filename}")
-            except OSError:
-                rendered = f"fd {filename} (unresolved)"
-            else:
-                rendered = f"fd {filename} -> {resolved!r}"
-        else:
-            rendered = repr(filename)
-        parts.append(f"{label}={rendered}")
-    return "; ".join(parts)
 
 
 class AssayError(Exception):
