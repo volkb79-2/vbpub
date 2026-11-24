@@ -215,6 +215,7 @@ def test_new_candidate_records_and_progress_events_carry_locus_and_window(
     assert candidate["locus"] == record["locus"] == fields["locus"]
     assert candidate["window_key"] == record["window_key"] == fields["window_key"]
     assert candidate["locus"]["qualname"] == "flags"
+    assert "provenance" not in record and "carry_over" not in record
 
 
 def test_module_level_fallback_writes_neither_locus_field(
