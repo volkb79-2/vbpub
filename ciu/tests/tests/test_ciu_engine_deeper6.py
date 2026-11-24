@@ -31,6 +31,16 @@ def test_hostdir_permission_fallback_targets_physical_path(monkeypatch, tmp_path
     (physical_root / "stacks" / "database").mkdir(parents=True)
 
     helper_calls = []
+    # CIU-227: this config's target ownership (1000:994) is foreign to the run
+    # uid, so the S6.5 helper IS needed and its precondition is evaluated BEFORE
+    # the directory is created — the refusal is what CIU-227 moved earlier.
+    monkeypatch.setattr(
+        engine, "_hostdir_needs_privileged_ownership", lambda _uid, _gid: True
+    )
+    monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "dev-interactive.slice")
+    monkeypatch.setattr(
+        engine.governance, "check_slice_unit", lambda _name: (True, "loaded")
+    )
 
     def deny_chown(*_args):
         raise PermissionError("fixed-UID volume")

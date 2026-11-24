@@ -2777,6 +2777,37 @@ def action_render_toml(repo_root: Path, profile: profiles_pkg.Profile, selection
     return 0
 
 
+def _implicit_stack_remedy(repo_root: Path) -> Optional[str]:
+    """Why an empty selection deserves a refusal here, or ``None`` (CIU-231).
+
+    The reported case: ``ciu up`` with no ``--dir``, run from inside one stack
+    directory of a MULTI-stack root, selected nothing (that stack is not part of
+    the root's active profile) and exited 0 after a warning, so automation saw a
+    successful deploy. The selection is a profile fact, so the remedy is to name
+    the stack: ``--dir .``. A single-stack root selects its stack already (the
+    selection is not empty), and a genuinely empty profile — every service
+    disabled — keeps the rc-0 no-op it had. Read from the INVOCATION directory,
+    never from the resolved root.
+    """
+    root = Path(repo_root).resolve()
+    cwd = Path.cwd().resolve()
+    if cwd == root:
+        return None                      # invoked at the root: nothing to name
+    try:
+        cwd.relative_to(root)
+    except ValueError:
+        return None                      # invoked outside this root: not our case
+    if not (
+        (cwd / STACK_CONFIG_DEFAULTS).is_file() or (cwd / SHIPPED_COMPOSE).is_file()
+    ):
+        return None                      # not a stack directory
+    return (
+        f"{cwd} is a stack directory of this root, and an interactive `ciu up` "
+        "there selects the root profile's stacks, not this one; run "
+        "`ciu up --dir .` in that directory to deploy it"
+    )
+
+
 def action_deploy(
     repo_root: Path,
     profile: profiles_pkg.Profile,
@@ -2799,6 +2830,9 @@ def action_deploy(
 
     With *health_after_phase* (S7.7) the health gate runs after each
     successfully-started phase; a gate failure is treated as a phase failure.
+
+    CIU-231: an empty selection from inside a stack directory of this root is a
+    REFUSAL (rc 2, with the remedy), not the rc-0 warning it used to print.
     """
     info("=" * 60)
     info(f"DEPLOY: profile={profile.name or '(default/all)'}  dry_run={dry_run}")
@@ -2806,6 +2840,10 @@ def action_deploy(
 
     grouped = group_by_phase(selection)
     if not grouped:
+        remedy = _implicit_stack_remedy(repo_root)
+        if remedy is not None:
+            error(f"[S10.3] nothing to deploy: {remedy}")
+            return 2
         warn("No phases/stacks selected to deploy")
         return 0
 
