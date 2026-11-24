@@ -11,8 +11,9 @@ below disagrees, this block wins.
    `scripts/controller/docs/DEV.md`; `hostobs/tools/dev` is a shim onto it).
    A project without a profile is not run before the commit, only through its
    registered lane. On exit 75 (not admitted: host memory pressure) or exit 3
-   (transport failure, or another dev call on the same worktree in progress),
-   retry once, then report it. A dev run is never
+   for a transport failure or for another dev call on the same worktree in
+   progress, retry once, then report it. Any other exit 3 (the host user or
+   identity refusal, a failed sync step) is never retried: report it. A dev run is never
    gate evidence: evidence is only a registered lane on the exact final head.
 2. **Never use `hx.sh`, `ssh` or `docker` directly, and never run `pytest`,
    `cargo` or a project test script in the devcontainer** (it is cockpit-only;

@@ -7,7 +7,7 @@ head is. Report "dev: ...", never a gate result.
 
 ```
 scripts/controller/dev [--dry-run] -p <project> <verb> [args]
-scripts/controller/dev [--dry-run|--this] gc
+scripts/controller/dev gc [--dry-run|--this]
 ```
 
 ## Verbs and profiles
@@ -30,34 +30,42 @@ Examples: `dev -p cmru test -- tests/test_x.py -k name`, `dev -p hostobs test -p
 
 ## What happens on a call
 
+0. Run it from inside the worktree whose copy of `scripts/controller/dev` you call: another tree (or a directory
+   outside any git worktree) is exit 2 naming both paths, because the tool ships the tree it lives in. The banner names that
+   worktree.
 1. Preflight (one hx call): the host user is 1003:1003 (else exit 3), and the host's image id (for Rust also the
    `tester-unified-rust-dev` image and the base-image label it records) against the cockpit's. A missing or different
    image is exit 2 naming the tag, the ids and `scripts/controller/push-image.sh` (which needs the main controller's
-   grant); the tool never pulls or builds.
+   grant); the tool never pulls or builds. The container is started from the host image id the preflight checked, not
+   from the tag.
 2. Your worktree (committed head as a thin bundle, plus patch and untracked files up to 20 MiB) is synced to
-   `~/agent-dev/<hex12>/work` on the host, under a per-worktree lock; a second call for the same worktree exits 3.
+   `~/agent-dev/<hex12>/work` on the host, under a per-worktree lock; a second call for the same worktree exits 3. A
+   failed host-side sync step (git clone, fetch, checkout, apply, tar) is exit 3 with `dev: sync failed at: <step>`; the
+   command never ran. The checkout's `.git` is always mounted read-only (the tool adds it; a profile cannot).
 3. Admission (`host-admission/1`, see `scripts/netcup/runner/README.md`): one start at a time through a ticket; the
    call waits while the host's memory PSI `full` avg10 is >= 3, prints progress every 60 s, and exits 75 after
    `AGENT_DEV_WAIT_S` (900) with nothing run. Unreadable PSI is exit 75 at once.
 4. The container starts (`--network none --cap-drop ALL --init`, private PID namespace, memory reservation with an
    8 GiB ceiling and unlimited swap) and its output and exit code stream back.
 
-First and last stderr line: `AGENT-DEV <proj> <host> <sha12>[+dirty]: NOT GATE EVIDENCE`.
+First and last stderr line: `AGENT-DEV <proj> <host> <sha12>[+dirty] <worktree path>: NOT GATE EVIDENCE`.
 
 ## Exit codes
 
-The command's own code propagates. The tool's own are printed as `dev: exit N` before the closing banner:
-2 usage, refusal or image problem; 3 transport, identity (wrong host user) or the same worktree busy; 75 not
-admitted (host memory PSI too high or unreadable; retry once, then report); 124 time limit (the in-container or host
-runtime limit; the container is removed).
+The command's own code propagates, except that a command exiting 255, 97 or 98 is reported as exit 3 (those are the
+transport codes of `hx.sh`: ssh failure, identity, guard). The tool's own are printed as `dev: exit N` before the
+closing banner: 2 usage, refusal, image problem or wrong worktree; 3 transport, identity (wrong host user), a failed
+sync step or the same worktree busy (retry once only for transport or a busy worktree, never for the identity refusal);
+75 not admitted (host memory PSI too high or unreadable; retry once, then report); 124 time limit (the in-container or
+host runtime limit; the container is removed).
 
 ## Environment
 
 `AGENT_DEV_HOST` (`v1001`; `r1002` only when listed in `CONTROLLER_REMOTE_GATE_HOSTS`), `AGENT_DEV_MEMORY`
-(soft reservation 512m..8g), `AGENT_DEV_CPUS` (0..3), `AGENT_DEV_PIDS` (<= 1024), `AGENT_DEV_MAX_S` (<= 14400),
+(soft reservation 512m..8g), `AGENT_DEV_CPUS` (above 0, at most 3), `AGENT_DEV_PIDS` (<= 1024), `AGENT_DEV_MAX_S` (<= 14400),
 `AGENT_DEV_WAIT_S` (0..86400, default 900). Bounds are enforced by the tool and cannot be lifted by a profile. There is no local mode (`--local` exits 2: the cockpit daemon is the production daemon) and
 no image override. `HOSTOBS_DEV_{HOST,MEMORY,CPUS,PIDS,MAX_S}` are mapped by the `hostobs/tools/dev` shim; any other
-`HOSTOBS_DEV_*` exits 2. Test seams (never set them by hand): `AGENT_DEV_HX`, `AGENT_DEV_TEST_{PSI_DIR,CLOCK,PROFILES}`.
+`HOSTOBS_DEV_*` exits 2. Test seams (never set them by hand): `AGENT_DEV_HX`, `AGENT_DEV_TEST_{PSI_DIR,CLOCK,PROFILES,TTY}`.
 
 ## Housekeeping
 

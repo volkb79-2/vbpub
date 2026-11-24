@@ -251,11 +251,11 @@ class DevCase(unittest.TestCase):
         env.update(extra)
         return env
 
-    def run_dev(self, *args: str, dev: Path | None = None, unset: tuple = (), **extra: str) -> subprocess.CompletedProcess:
+    def run_dev(self, *args: str, dev: Path | None = None, unset: tuple = (), cwd: Path | None = None, **extra: str) -> subprocess.CompletedProcess:
         env = self.env(**extra)
         for key in unset:
             env.pop(key, None)
-        return subprocess.run([str(dev or self.dev), *args], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180)
+        return subprocess.run([str(dev or self.dev), *args], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180, cwd=cwd or self.repo)
 
     # ---- records
     def calls(self, role: str = "host") -> list:
@@ -404,6 +404,7 @@ class ArgvTests(DevCase):
         edits["network-in-kind"] = base.replace("[kinds.python]\n", '[kinds.python]\nnetwork = "host"\n', 1)
         python_only = ("network-in-profile", "network-in-kind")
         edits["root user"] = base.replace('user = "1003:1003"', 'user = "0:0"')
+        edits["a user other than the host checkout owner"] = base.replace('user = "1003:1003"', 'user = "1003:0"')
         edits["foreign capability"] = base.replace('gdb = ["SYS_PTRACE"]', 'gdb = ["SYS_ADMIN"]')
         edits["escaping mount"] = base.replace('"{work}:/work"', '"/:/work"')
         for label, mounts in (("writable .git mount", '"{work}/.git:/work/.git"'), ("read-only .git mount", '"{work}/.git:/work/.git:ro"'),
@@ -555,6 +556,15 @@ class RemoteTests(DevCase):
                 self.assertEqual(lines[-2], "dev: exit 3")
                 self.assertEqual(self.runs(), [])
 
+    def test_the_run_uses_the_host_image_id_the_preflight_checked_not_the_tag(self) -> None:
+        for project, tag in (("cmru", PY_IMAGE), ("hostobs", RS_DEV_IMAGE)):
+            with self.subTest(project=project):
+                before = len(self.runs())
+                self.assertEqual(self.run_dev("-p", project, "run", "--", "true").returncode, 0)
+                argv = self.runs()[before]["argv"]
+                self.assertIn(image_id(tag), argv)
+                self.assertNotIn(tag, argv)
+
     def test_an_oversized_overlay_is_refused_before_any_host_call(self) -> None:
         (self.repo / "cmru" / "big.bin").write_bytes(b"x" * (21 * 1024 * 1024))
         proc = self.run_dev("-p", "cmru", "run", "--", "true")
@@ -597,13 +607,13 @@ class RemoteTests(DevCase):
                     (self.repo / change[0]).write_text(change[1])
                 proc = self.run_dev("-p", "cmru", "run", "--", "true")
                 self.assertEqual(proc.returncode, 0, proc.stderr)
-                banner = f"AGENT-DEV cmru v1001 {sha}{'+dirty' if dirty else ''}: NOT GATE EVIDENCE"
+                banner = f"AGENT-DEV cmru v1001 {sha}{'+dirty' if dirty else ''} {self.repo}: NOT GATE EVIDENCE"
                 lines = proc.stderr.splitlines()
                 self.assertEqual((lines[0], lines[-1]), (banner, banner))
 
     def test_own_exit_codes_are_printed_before_the_closing_banner(self) -> None:
         sha = self.head()[:12]
-        banner = f"AGENT-DEV cmru v1001 {sha}: NOT GATE EVIDENCE"
+        banner = f"AGENT-DEV cmru v1001 {sha} {self.repo}: NOT GATE EVIDENCE"
         self.set_images("host", **{PY_IMAGE.replace(":", "__"): {"id": image_id("other"), "label": ""}})
         for label, code, extra in (("image mismatch", 2, {}), ("transport", 3, {"STUB_HX_RC": "255"}), ("identity", 3, {"STUB_HX_RC": "97"}), ("guard", 3, {"STUB_HX_RC": "98"})):
             with self.subTest(label):
@@ -639,6 +649,8 @@ class RemoteTests(DevCase):
         names = {f"agent-dev-cmru-{self.hex}", f"cid-agent-dev-cmru-{self.hex}", f"agent-dev-cache-cmru-{self.hex}"}
         for call in self.calls():
             self.assertFalse(any("ancestor" in a or a in ("prune", "--all") for a in call), call)
+            if call[0] == "inspect":
+                self.assertEqual(call[call.index("--type") + 1], "container", call)
             if call[0] == "ps":
                 self.assertIn(call[call.index("--filter") + 1], ("name=^agent-dev-", "name=^hostobs-dev-"))
             elif call[0] in ("inspect", "rm") or call[:2] == ["volume", "inspect"]:
@@ -704,6 +716,20 @@ class RemoteTests(DevCase):
         self.assertEqual(len(self.runs()), 2)
         self.assertTrue(self.ticket_free())
 
+    def test_the_tool_refuses_to_ship_a_worktree_other_than_the_callers(self) -> None:
+        other = self.make_repo(self.tmp / "other")
+        plain = self.tmp / "plain"
+        plain.mkdir()
+        for label, cwd, text in (("another worktree", other, str(other)), ("no worktree", plain, "no git worktree")):
+            with self.subTest(label):
+                proc = self.run_dev("--dry-run", "-p", "cmru", "test", cwd=cwd)
+                self.assertEqual(proc.returncode, 2, proc.stdout)
+                self.assertIn(str(self.repo), proc.stderr)
+                self.assertIn(text, proc.stderr)
+                self.assertEqual(proc.stderr.splitlines()[-1], "dev: exit 2")
+        self.assertEqual(self.run_dev("--dry-run", "-p", "cmru", "test", cwd=self.repo / "cmru").returncode, 0)
+        self.assertEqual(self.hx_scripts(), [])
+
     def test_the_trap_removes_the_container_by_cid_on_every_signal(self) -> None:
         def restore() -> None:
             for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGPIPE, signal.SIGTERM):
@@ -712,7 +738,7 @@ class RemoteTests(DevCase):
             with self.subTest(signal=sig.name):
                 hold = self.tmp / f"hold-{sig.name}"
                 self.rm_before = len(self.rm_calls())
-                proc = subprocess.Popen([str(self.dev), "-p", "cmru", "run", "--", "true"], env=self.env(STUB_RUN_HOLD=str(hold)),
+                proc = subprocess.Popen([str(self.dev), "-p", "cmru", "run", "--", "true"], env=self.env(STUB_RUN_HOLD=str(hold)), cwd=self.repo,
                                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, preexec_fn=restore)
                 try:
                     for _ in range(600):
