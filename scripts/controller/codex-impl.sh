@@ -375,7 +375,10 @@ while (( auto_count < auto_limit )) && reasoning_end "$out/$name.jsonl"; do
     attempt_rc=$?
   fi
   cat -- "$attempt_stream" >> "$out/$name.jsonl"
-  codex_extract_last_text "$attempt_stream" "$out/$name.last.txt"
+  # The whole invocation stream is the source of truth. A failed or empty later
+  # attempt must not erase a completed agent message that this invocation's
+  # primary child (or an earlier continuation) already produced.
+  codex_extract_last_text "$out/$name.jsonl" "$out/$name.last.txt"
   rm -f -- "$attempt_stream"
   printf 'AUTORESUME attempt=%s EXIT=%s THREAD=%s\n' "$auto_count" "$attempt_rc" "$thread_id" >> "$auto_log"
   rc=$attempt_rc

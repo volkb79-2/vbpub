@@ -12,7 +12,7 @@ unset CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING CONTROLLER_OD_UNKNOWN_BL
 unset OPENCODE_COMMAND OPENCODE_MODEL OPENCODE_PROVIDER
 unset FAKE_CODEX_402 FAKE_CODEX_402_UNKNOWN FAKE_CODEX_THREAD_ID FAKE_CODEX_CORRUPT_STATE CODEX_RC FAKE_CODEX_DAEMON
 unset FAKE_CODEX_HOLD_ON_CALL FAKE_CODEX_HOLD_UNTIL FAKE_CODEX_HOLD_CALL_COUNT FAKE_CODEX_HOLD_PID FAKE_CODEX_REASONING
-unset FAKE_CODEX_RESUME_SEQUENCE FAKE_CODEX_RESUME_TEXT
+unset FAKE_CODEX_RESUME_SEQUENCE FAKE_CODEX_RESUME_TEXT FAKE_CODEX_TEXT_REASONING_EMPTY
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-wrapper-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
@@ -63,6 +63,21 @@ if [[ ${FAKE_CODEX_RESUME_SEQUENCE:-} == reasoning-text && $1 == exec && $2 == r
   printf '{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}\n' "${FAKE_CODEX_RESUME_TEXT:-FINAL-B}"
   printf '{"type":"turn.completed"}\n'
   exit "${CODEX_RC:-0}"
+fi
+if [[ ${FAKE_CODEX_TEXT_REASONING_EMPTY:-0} == 1 ]]; then
+  if [[ $1 == exec && $2 == resume ]]; then
+    # The continuation produces no stream event at all and fails.
+    printf '{"type":"error","message":"continuation failed"}\n' >&2
+    exit 42
+  fi
+  # The primary child completes text and then ends its turn on reasoning, so
+  # the wrapper reaches auto-continuation with real text already in the stream.
+  printf '{"type":"thread.started","thread_id":"text-reasoning-thread"}\n'
+  printf '{"type":"turn.started"}\n'
+  printf '{"type":"item.completed","item":{"type":"agent_message","text":"ATTEMPT-1-FINAL"}}\n'
+  printf '{"type":"item.completed","item":{"type":"reasoning","text":"trailing thought"}}\n'
+  printf '{"type":"turn.completed"}\n'
+  exit 0
 fi
 if [[ ${FAKE_CODEX_402:-0} == 1 ]]; then
   printf '{"error":{"code":"insufficient_balance","details":{"coding_plan_exhausted":true,"reset_at":"2099-11-17T11:44:44Z"}}}\n' >&2
@@ -231,6 +246,23 @@ check_ctl38_last_text_all_paths() {
     || fail 'CTL-38 left a stale last.txt for a stream with no final text'
   [[ $(cat "$runs/ctl38-empty.done") == 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=0 EFFORT=xhigh' ]] \
     || fail 'CTL-38 changed the done outcome for a no-text stream'
+
+  # Text followed by trailing reasoning reaches auto-continuation. If the next
+  # attempt exits with an empty stream, the invocation's earlier final message
+  # remains the result rather than being deleted with the attempt.
+  rc=0
+  PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+    CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+    CODEX_LOG="$ROOT/ctl38-full-stream.log" CODEX_AUTO_CONTINUE=1 \
+    FAKE_CODEX_TEXT_REASONING_EMPTY=1 \
+    "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" ctl38-full-stream \
+    > "$ROOT/ctl38-full-stream.out" 2>&1 || rc=$?
+  [[ $rc == 42 ]] || { cat "$ROOT/ctl38-full-stream.out" >&2; fail "CTL-38 full-stream fixture exited $rc, expected 42"; }
+  printf 'ATTEMPT-1-FINAL' > "$ROOT/ctl38-full-stream.expected"
+  cmp -s "$ROOT/ctl38-full-stream.expected" "$runs/ctl38-full-stream.last.txt" \
+    || fail 'CTL-38 auto-resume erased the invocation text when a later attempt was empty'
+  [[ $(cat "$runs/ctl38-full-stream.done") == 'EXIT=42 OUTCOME=CODE-EXIT AUTORESUME=1 EFFORT=xhigh' ]] \
+    || fail 'CTL-38 full-stream fixture recorded the wrong completion marker'
 
   # A signalled resume must not expose the previous invocation's text beside the
   # fresh marker. The fake child publishes its pid after the stream is open and
