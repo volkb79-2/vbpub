@@ -28,6 +28,9 @@ SIDECAR_SUFFIX = ".iobench-target"
 ROOT_TARGET_FREE_SHARE = 0.10
 WORKDIR_MARK = ".iobench-workdir"
 MIN_WORKDIR_FREE = 4 * GIB
+_RAW_DM = re.compile(r"dm-[0-9]+")
+_RAW_MD = re.compile(r"md[0-9]+")
+_RAW_LOOP = re.compile(r"loop[0-9]+")
 # These virtual-device serials encode generated IDs or slots, not hardware identity; keep their full families together.
 PLACEHOLDER_DISK_IDENTIFIER_PATTERN = re.compile(
     r"""
@@ -283,6 +286,23 @@ def read_device(host: Host, path: str) -> DeviceFacts:
                        disk_attr(host, chain.disk_name, "device/model"), chain)
 
 
+def require_claimable_partition(facts: DeviceFacts) -> None:
+    """A raw writer needs a real partition with a PARTUUID, never a whole or virtual block device."""
+    disk = facts.chain.disk_name
+    if _RAW_DM.fullmatch(disk):
+        raise Refusal("raw_target_dm", f"{facts.path} is a device-mapper device ({disk})", "name a real dedicated partition")
+    if _RAW_MD.fullmatch(disk):
+        raise Refusal("raw_target_md", f"{facts.path} is a Linux md device ({disk})", "name a real dedicated partition")
+    if _RAW_LOOP.fullmatch(disk):
+        raise Refusal("raw_target_loop", f"{facts.path} is a loop device ({disk})", "name a real dedicated partition")
+    if not facts.chain.is_partition:
+        raise Refusal("raw_target_not_partition", f"{facts.path} is a whole block device, not a partition",
+                      "name a dedicated GPT/MBR partition such as /dev/vda7")
+    if facts.partuuid is None:
+        raise Refusal("raw_target_partuuid_required", f"{facts.path} has no PARTUUID; a serial alone is not an iobench raw-target identity",
+                      "use a partition with a PARTUUID and pass --expect-partuuid")
+
+
 # -- mount namespace and swap evidence ---------------------------------------------
 def _touching(host: Host, entries: Sequence[MountEntry], devnos: set[str], names: set[str]) -> set[MountEntry]:
     return {MountEntry(resolved_mount_devno(host, e), e.mountpoint, e.fstype, e.source, e.options)
@@ -432,34 +452,40 @@ def init_device(host: Host, path: str, *, own: bool, expect_size: int | None, ex
                 expect_serial: str | None, created: str, dry_run: bool = False) -> Target:
     """``iobench target init DEV`` (IOB-TGT-01/02): refuse, or write the marker."""
     facts = read_device(host, path)
+    require_claimable_partition(facts)
     found = violations(host, facts)
     hard = [v for v in found if not v.overridable]
     if hard:
         raise Refusal(hard[0].condition, "; ".join(v.message for v in hard),
                       "use a dedicated unmounted partition; mounted, swap and root targets can never be overridden")
     require_minimum_target_size(path, facts.size_bytes)
-    _need(facts.partuuid is not None or facts.serial is not None, "identity_missing",
-          f"{path} has neither a PARTUUID nor a serial; size alone is not an identity",
-          "create a GPT partition (it carries a PARTUUID) and target that")
     if found:
         _need(own, "signature", found[0].message,
               "if this device is yours to destroy, pass --i-own-this-device with --expect-size and --expect-partuuid (or --expect-serial)")
     _need(expect_size == facts.size_bytes, "expect_size_mismatch",
           f"--expect-size {expect_size} does not equal the actual size {facts.size_bytes} of {path}",
           f"pass --expect-size {facts.size_bytes} if this is the intended device")
-    if facts.serial is not None:
-        _need(expect_serial == facts.serial or expect_partuuid == facts.partuuid and facts.partuuid is not None,
-              "expect_identity_mismatch", f"--expect-serial / --expect-partuuid do not match {path}",
-              "pass the serial (or PARTUUID) shown by `lsblk -o NAME,SERIAL,PARTUUID`")
-    else:
-        _need(expect_partuuid == facts.partuuid, "expect_identity_mismatch",
-              f"--expect-partuuid {expect_partuuid} does not equal the actual PARTUUID of {path}",
-              "pass the PARTUUID shown by `lsblk -o NAME,PARTUUID`")
+    _need(expect_partuuid == facts.partuuid, "expect_identity_mismatch",
+          f"--expect-partuuid {expect_partuuid} does not equal the actual PARTUUID of {path}",
+          "pass the PARTUUID shown by `lsblk -o NAME,PARTUUID`")
+    if not found:
+        _need(own, "own_device_required", f"{path} is a writable raw target; the marker write needs explicit ownership",
+              "pass --i-own-this-device with the exact --expect-size and --expect-partuuid")
+    if expect_serial is not None and facts.serial is not None:
+        _need(expect_serial == facts.serial, "expect_identity_mismatch",
+              f"--expect-serial {expect_serial} does not equal the actual serial of {path}",
+              "pass the serial shown by `lsblk -o NAME,SERIAL` or omit the optional serial check")
     target = Target("device", path, facts.size_bytes, facts.devno, facts.partuuid, facts.serial, None, None,
                     facts.chain.disk_name, facts.wwn, facts.model)
     if not dry_run:
         try:
-            host.write_marker(target.ref, marker_text(facts.size_bytes, facts.partuuid, facts.serial, created))
+            host.claim(target.ref)
+            try:
+                host.write_marker(target.ref, marker_text(facts.size_bytes, facts.partuuid, facts.serial, created))
+            finally:
+                problem = host.release_claim()
+                if problem is not None:
+                    raise HostError(problem)
         except HostError as exc:  # the identity re-verification (or the kernel's exclusive open) said no: a refusal, exit 2
             raise Refusal("identity_changed", f"the device could not be claimed for the marker ({exc})",
                           "check that the device is still the intended, unused one and rerun") from exc
@@ -471,6 +497,7 @@ def load_target(host: Host, path: str) -> Target:
     if host.devno(path) is None:
         return load_file_target(host, path)
     facts = read_device(host, path)
+    require_claimable_partition(facts)
     target = Target("device", path, facts.size_bytes, facts.devno, facts.partuuid, facts.serial, None, None,
                     facts.chain.disk_name, facts.wwn, facts.model)
     marker = parse_marker(host.read_marker(target.ref))

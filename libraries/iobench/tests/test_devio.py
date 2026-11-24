@@ -52,8 +52,10 @@ def test_arc_05_bounded_fill_replays_and_prevents_the_time_based_signature():
     legacy_argv = [arg for arg in bounded_job.argv() if arg != "--time_based"]
     legacy_argv.append("--time_based")
     legacy_started = legacy_host.now()
+    legacy_host.claim(target_ref(legacy_host))
     legacy_handle = legacy_host.write_range(legacy_argv, target_ref(legacy_host), 0, io_size)
     legacy = devio.collect(legacy_host, bounded_job, legacy_handle.wait(), legacy_started)
+    legacy_host.release_claim()
     legacy_ratio = (io_size / legacy.stats.runtime_s) / rate_bps
     assert legacy.stats.runtime_s == pytest.approx(runtime_s)
     assert legacy.stats.io_bytes == pytest.approx(runtime_s * rate_bps, rel=0.01)

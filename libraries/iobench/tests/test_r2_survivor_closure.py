@@ -837,22 +837,22 @@ def test_real_extent_query_refuses_a_nonadvancing_seek_hole_without_spinning(mon
         host.written_bytes(target, 0, MIB)
 
 
-def test_marker_device_in_use_message_uses_the_os_error_when_strerror_is_empty(monkeypatch, tmp_path):
+def test_claim_device_in_use_message_uses_the_os_error_when_strerror_is_empty(monkeypatch, tmp_path):
     _host, target = _real_file_target(tmp_path)
     target = dataclasses.replace(target, kind="device", devno="254:7")
     _scope_file_os(monkeypatch, target, open_error=OSError(errno.EBUSY, ""))
     with pytest.raises(Refusal) as error:
-        RealHost._probe_device_exclusive_open(target)
+        RealHost().claim(target)
     assert error.value.condition == "device_in_use"
     assert "[Errno 16]" in str(error.value)
 
 
-def test_marker_probe_error_uses_the_os_error_when_strerror_is_empty(monkeypatch, tmp_path):
+def test_claim_open_error_uses_the_os_error_when_strerror_is_empty(monkeypatch, tmp_path):
     _host, target = _real_file_target(tmp_path)
     target = dataclasses.replace(target, kind="device", devno="254:7")
     _scope_file_os(monkeypatch, target, open_error=OSError(errno.EACCES, ""))
     with pytest.raises(HostError) as error:
-        RealHost._probe_device_exclusive_open(target)
+        RealHost().claim(target)
     assert "[Errno 13]" in str(error.value)
 
 

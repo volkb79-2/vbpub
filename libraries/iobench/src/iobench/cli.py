@@ -74,6 +74,7 @@ TARGET_KNOBS = (
 RUN_OPTIONS = (
     OptionSpec(("--target",), "The prepared target: a device path or a file target (see `target init`).", group="RUN", metavar="TARGET",
                parser_kwargs={"required": True}),
+    _flag(("--allow-raw-write",), "Opt in to raw-partition writes and discards under one held kernel O_EXCL claim; the target must be a prepared, unmounted partition with its named PARTUUID. File targets need no opt-in.", "RUN"),
     _value(("--work-dir",), "An existing, empty directory on an existing filesystem; leave max(4 GiB, 3x planned cell volume) free.", "DIR", "RUN"),
     STATE_DIR, *GUARDS, *TARGET_KNOBS,
     _value(("--governor-histogram",), "A governor latency histogram file; recorded as the latency source.", "FILE", "RUN"),
@@ -112,6 +113,7 @@ def _config(args: Any, version: str, *, profile: str = "standard") -> Config:
                   budget_minutes=getattr(args, "budget_minutes", None), cache_idle_delay_s=getattr(args, "cache_idle_delay_s", None),
                   state_dir=args.state_dir, confirm_quiet_window=args.confirm_quiet_window,
                   protect_cgroup=args.protect_cgroup, abort_psi=args.abort_psi, installer=args.installer,
+                  raw_write=getattr(args, "allow_raw_write", False),
                   production_pattern=args.production_pattern, production_units=tuple(args.production_unit or ()),
                   metering=getattr(args, "metering", None), full_sweep=getattr(args, "full_sweep", False), knob=getattr(args, "knob", None),
                   candidates=candidates, repeat=getattr(args, "repeat", False), governor_histogram=args.governor_histogram,
@@ -152,12 +154,12 @@ def build_cli(cli_identity: CliIdentity | None = None, host_factory: HostFactory
     target_registry = CliRegistry(ident, prog="iobench target", description="Prepare and inspect targets of at least 1 GiB usable plus the reserved 1 MiB tail.",
                                   unexpected_exceptions="report", expected_exceptions=(IobenchError, HostError, res.LoadError, SeriesError))
     target_registry.register(VerbSpec(
-        "init", None, "Write the iobench marker to a dedicated device (or create a file target); raw-device mutation stages are currently refused.",
+        "init", None, "Write the iobench marker to a dedicated partition (or create a file target).",
         group=VerbGroup.MODIFICATION.value, mutating=True, dry_run=True, include_confirmation=False,
         examples=("iobench target init /dev/vda7 --i-own-this-device --expect-size 435853320192 --expect-partuuid 3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007",
                   "iobench target init --file /var/lib/iobench/target.img --size 6442450944 --i-own-this-file --expect-fs-uuid UUID --confirm-quiet-window"),
         arguments=(ArgumentSpec("device", "Block device or partition (omit with --file).", metavar="DEVICE", parser_kwargs={"nargs": "?"}),),
-        options=(_flag(("--i-own-this-device",), "You own this device and accept that iobench overwrites its last MiB marker. Raw-device write/discard stages are currently refused because fio cannot use the same held O_EXCL descriptor.", "DEVICE TARGET"),
+        options=(_flag(("--i-own-this-device",), "You own this device and accept that iobench overwrites its last MiB marker.", "DEVICE TARGET"),
                  _value(("--expect-size",), f"The exact device size in bytes; targets need at least {guard.MIN_TARGET_SIZE_BYTES} bytes.", "BYTES", "DEVICE TARGET", type=int),
                  _value(("--expect-partuuid",), "The PARTUUID; must equal the actual one.", "PARTUUID", "DEVICE TARGET"),
                  _value(("--expect-serial",), "The serial, when the device reports one.", "SERIAL", "DEVICE TARGET"),

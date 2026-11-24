@@ -51,6 +51,7 @@ class Config:
     protect_cgroup: str | None = None
     abort_psi: float | None = None
     installer: bool = False
+    raw_write: bool = False
     production_pattern: str | None = None
     production_units: tuple[str, ...] = ()
     metering: str | None = None
@@ -200,6 +201,8 @@ class Runner:
 
     def finish(self, job: FioJob, handle: Any, started: float) -> FioResult:
         out = devio.collect(self.host, job, handle.wait(), started)
+        for warning in out.warnings:
+            self.safety.report.warnings.append(f"fio_preamble: {warning}")
         for path in (job.log_path, job.hist_path):
             self.host.remove(path)
         if out.returncode != 0:
@@ -257,6 +260,8 @@ class Runner:
         self.host.makedirs(self.scratch)
         self.host.allow_scratch(self.scratch)  # the run's own log directory: the only place a fio log prefix may point to
         self.preflight.update({"slice_io_max_before": self.safety.report.io_max_before})
+        if self.target.kind == "device" and cfg.raw_write:
+            self.host.claim(self.target.ref)  # one kernel claim covers every raw stage until cleanup's reaps are complete
         self.mark("S0", "ok")
 
 
@@ -327,17 +332,20 @@ class Runner:
         return "complete", "", 0
 
     def cleanup(self, status: str, message: str, exit_code: int) -> tuple[str, str, int]:
-        """Restore every knob, verify io.max, release the lock (IOB-SAF-02/-03/-04)."""
+        """Restore every knob, verify io.max, and release the lock after the raw claim (IOB-SAF-02/-03/-04)."""
         if not self.safety.locked:
             return status, message, exit_code  # refused before the lock: this invocation owns no journal and restores nothing
+        claim_problem: str | None = None
         try:
             self.safety.restore()
             self.safety.verify_io_max()
         except VerificationFailure as exc:
-            return "failed", str(exc), exc.exit_code
+            status, message, exit_code = "failed", str(exc), exc.exit_code
         finally:
             self.clear_scratch()
-            self.safety.release()
+            claim_problem = self.safety.release()
+        if claim_problem is not None:
+            return "failed", claim_problem, 1
         return status, message, exit_code
 
     def clear_scratch(self) -> None:

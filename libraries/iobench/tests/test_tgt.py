@@ -124,8 +124,8 @@ def test_tgt_01_refuses_root():
 def test_tgt_01_refuses_parent_of_mounted():
     host = standard_host()
     host.mounts = [m for m in host.mounts if m[2] != "/"]
-    msg = refused(host, "parent_of_mounted", path="/dev/vda", expect_size=500 * GIB, expect_partuuid=None, expect_serial="x")
-    assert "parent of" in msg
+    msg = refused(host, "raw_target_not_partition", path="/dev/vda", expect_size=500 * GIB, expect_partuuid=None, expect_serial="x")
+    assert "whole block device" in msg
     # a partition whose PARENT DISK is itself mounted
     host2 = standard_host()
     host2.mounts = [m for m in host2.mounts if m[2] != "/"]
@@ -176,9 +176,9 @@ def test_tgt_02_override_matrix():
     host.add_disk("sdb", 8, 10 * GIB, serial="SER123")
     dev = host.add_partition("sdb", "sdb1", 8, 1, 4 * GIB, "aaaa-1")
     dev.signatures.append("xfs")
-    assert init(host, "/dev/sdb1", expect_serial="SER123", expect_partuuid=None).serial == "SER123"
+    assert init(host, "/dev/sdb1", expect_serial="SER123", expect_partuuid="aaaa-1").serial == "SER123"
     with pytest.raises(Refusal, match="expect-serial"):
-        init(host, "/dev/sdb1", expect_serial="OTHER", expect_partuuid="bbb")
+        init(host, "/dev/sdb1", expect_serial="OTHER", expect_partuuid="aaaa-1")
     # mounted, swap and root are never overridable, even with every flag right
     for mount in ("/", "/boot", "/mnt/x"):
         h = standard_host()
@@ -192,7 +192,7 @@ def test_tgt_02_size_only_device_refused():
     host.devices[DEV].partuuid = None
     with pytest.raises(Refusal) as err:
         init(host, expect_partuuid=None)
-    assert err.value.condition == "identity_missing" and "size alone is not an identity" in str(err.value)
+    assert err.value.condition == "raw_target_partuuid_required" and "serial alone" in str(err.value)
     assert untouched(host)
 
 
@@ -201,16 +201,20 @@ def test_tgt_03_reserved_tail_one_per_writer_type():
     ref = target_ref(host)
     size = host.devices[DEV].size
     overlap = size - TAIL_BYTES - 4096
-    with pytest.raises(TailViolation):  # a fio job
-        host.write_range(job("randwrite", off=overlap, size=8192, name="w").argv(), ref, overlap, 8192)
-    with pytest.raises(TailViolation):  # a discard range
-        host.discard_range(devio.blkdiscard_argv(DEV, overlap, 8192), ref, overlap, 8192)
-    with pytest.raises(TailViolation):  # a fill job
-        f = job("write", off=0, size=size, bs=1 << 20, qd=16, name="fill", metric="bw")
-        host.write_range(f.argv(), ref, 0, size)
-    with pytest.raises(TailViolation):  # a marker rewrite whose extent leaves the tail
-        host.devices[DEV].check_range(overlap, 8192, "marker")
-    assert host.devices[DEV].written.total() == 0
+    host.claim(ref)
+    try:
+        with pytest.raises(HostError):  # a fio job, rejected by the Host extent binding before launch
+            host.write_range(job("randwrite", off=overlap, size=8192, name="w").argv(), ref, overlap, 8192)
+        with pytest.raises(TailViolation):  # a discard range
+            host.discard_range(devio.blkdiscard_argv(DEV, overlap, 8192), ref, overlap, 8192)
+        with pytest.raises(HostError):  # a fill job, rejected by the Host extent binding before launch
+            f = job("write", off=0, size=size, bs=1 << 20, qd=16, name="fill", metric="bw")
+            host.write_range(f.argv(), ref, 0, size)
+        with pytest.raises(TailViolation):  # a marker rewrite whose extent leaves the tail
+            host.devices[DEV].check_range(overlap, 8192, "marker")
+        assert host.devices[DEV].written.total() == 0
+    finally:
+        host.release_claim()
 
 
 def test_tgt_03_iobench_writes_no_filesystem():

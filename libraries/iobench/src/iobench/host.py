@@ -16,18 +16,23 @@ import posixpath
 import re
 import secrets
 import signal
+import stat
+import struct
 import subprocess
 import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol, Sequence
+from typing import Any, Callable, Protocol, Sequence
 
-from .errors import Refusal
+from .errors import Aborted, Refusal
 from .probe_source import PROBE_SOURCE
 
 TAIL_BYTES = 1024 * 1024
 SEEK_EXTENT_FILESYSTEMS = frozenset(("ext4", "xfs", "btrfs"))
+RAW_DISCARD_CHUNK_BYTES = 1 << 30
+BLKGETSIZE64 = 0x80081272
+BLKDISCARD = 0x1277
 
 
 class HostError(RuntimeError):
@@ -86,6 +91,14 @@ _FIO_PATH_KEYS = ("--filename", "--write_bw_log", "--write_iops_log", "--write_h
 
 def is_scratch_name(path: str) -> bool:
     return SCRATCH_NAME.fullmatch(posixpath.basename(path)) is not None
+
+
+def _devno_pair(target: TargetRef) -> int:
+    try:
+        major, minor = (int(x) for x in (target.devno or "").split(":", 1))
+    except ValueError:
+        raise HostError(f"{target.path}: invalid device number {target.devno!r}") from None
+    return os.makedev(major, minor)
 
 
 def _fio_opt(argv: Sequence[str], key: str) -> str | None:
@@ -289,6 +302,8 @@ class Host(Protocol):
     def append_line(self, path: str, line: str) -> None: ...
     def remove(self, path: str) -> None: ...
     def write_sysfs(self, path: str, value: str) -> None: ...
+    def claim(self, target: TargetRef) -> int: ...
+    def release_claim(self) -> str | None: ...
     def write_marker(self, target: TargetRef, text: str) -> None: ...
     def read_marker(self, target: TargetRef) -> str: ...
     def written_bytes(self, target: TargetRef, start: int, end: int) -> int | None: ...
@@ -360,7 +375,12 @@ signal.signal(signal.SIGTERM, _parent_died)
 signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
 if parent_died:
     sys.exit(1)
-child = subprocess.Popen(sys.argv[1:], start_new_session=True)
+pass_fds = tuple(
+    int(arg.split("--filename=/dev/fd/", 1)[1])
+    for arg in sys.argv[1:]
+    if arg.startswith("--filename=/dev/fd/")
+)
+child = subprocess.Popen(sys.argv[1:], start_new_session=True, pass_fds=pass_fds)
 if parent_died:
     _parent_died(signal.SIGTERM, None)
 try:
@@ -392,11 +412,13 @@ def _reap(proc: "subprocess.Popen[str]") -> None:
 
 
 class _ProcHandle:
-    def __init__(self, argv: Sequence[str]) -> None:
+    def __init__(self, argv: Sequence[str], *, pass_fds: Sequence[int] = (), on_unreaped: Callable[[int], None] | None = None) -> None:
         if _PRCTL is None:
             raise HostError(
                 "prctl(PR_SET_PDEATHSIG) is unavailable on this host: asynchronous _ProcHandle commands cannot be started"
             )
+        self._on_unreaped = on_unreaped
+        self.unreaped_pid: int | None = None
         self._out = tempfile.TemporaryFile("w+")
         self._err = tempfile.TemporaryFile("w+")
         # The supervisor is the direct child with a parent-death signal. It
@@ -404,7 +426,7 @@ class _ProcHandle:
         # session so the supervisor can kill every forked worker and reap fio.
         command = [sys.executable, "-c", _PROCESS_GROUP_SUPERVISOR, *argv]
         self._p = subprocess.Popen(command, stdout=self._out, stderr=self._err, text=True, start_new_session=True,
-                                   preexec_fn=lambda parent=os.getpid(): _arm_parent_death(parent))
+                                   pass_fds=tuple(pass_fds), preexec_fn=lambda parent=os.getpid(): _arm_parent_death(parent))
 
     def poll(self) -> int | None:
         return self._p.poll()
@@ -424,7 +446,9 @@ class _ProcHandle:
         try:
             self._p.wait(timeout=5)  # reap; a process stuck in D state is left to the kernel rather than blocking the restore
         except subprocess.TimeoutExpired:
-            pass
+            self.unreaped_pid = self._p.pid
+            if self._on_unreaped is not None:
+                self._on_unreaped(self._p.pid)
         self._out.close()  # the abort path never calls wait(): do not leave the temporary files to the garbage collector (IOB-BL-14)
         self._err.close()
 
@@ -434,6 +458,9 @@ class RealHost:
 
     def __init__(self) -> None:
         self._lock_fd: Any = None
+        self._claim_fd: int | None = None
+        self._claim_target: TargetRef | None = None
+        self._unreaped_children: set[int] = set()
         self._signal: str | None = None
         self._escalated = False  # a second signal arrived while the first was still pending
         self.scratch_roots: list[str] = []  # the directories an unbound argv may name (the run's log dir, the verified work dir)
@@ -602,17 +629,23 @@ class RealHost:
             return
         devno = f"{os.major(st.st_rdev)}:{os.minor(st.st_rdev)}"
         if devno != target.devno:
-            raise HostError(f"device number changed: {target.path} {devno} != {target.devno}")
+            raise Refusal("raw_target_devno_changed",
+                          f"the device number of {target.path} changed ({target.devno} -> {devno})",
+                          "stop and rerun `iobench target init` against the intended partition")
         with open(f"/sys/dev/block/{devno}/size", encoding="utf-8") as fh:
             live_size = int(fh.read()) * 512
         if live_size != target.size_bytes:
-            raise HostError(f"device size changed: {target.path}")
+            raise Refusal("raw_target_size_changed",
+                          f"the size of {target.path} changed ({target.size_bytes} -> {live_size})",
+                          "stop and rerun `iobench target init` if the resize was intentional")
         probe = subprocess.run(["blkid", "-p", "-o", "export", target.path], capture_output=True, text=True, check=False)
         if probe.returncode not in (0, 2):  # 2 = no signature; anything else is a failed probe, not an empty device
             raise HostError(f"blkid failed (exit {probe.returncode}) while verifying {target.path}: {probe.stderr.strip()}")
         live = dict(line.split("=", 1) for line in probe.stdout.splitlines() if "=" in line)
         if target.partuuid is not None and live.get("PART_ENTRY_UUID") != target.partuuid:
-            raise HostError(f"PARTUUID changed: {target.path}")
+            raise Refusal("raw_target_partuuid_changed",
+                          f"the PARTUUID of {target.path} changed ({target.partuuid} -> {live.get('PART_ENTRY_UUID')})",
+                          "stop and rerun `iobench target init` against the intended partition")
 
     @staticmethod
     def _check_extent(target: TargetRef, offset: int, length: int) -> None:
@@ -622,15 +655,17 @@ class RealHost:
     def write_marker(self, target: TargetRef, text: str) -> None:
         self._verify_live(target)
         data = text.encode("utf-8").ljust(4096, b"\0")
-        flags = os.O_WRONLY | getattr(os, "O_DIRECT", 0)
         if target.kind == "device":
-            flags |= os.O_EXCL  # protects this marker open only; a later raw stage must establish its own boundary
+            if self._claim_fd is None or self._claim_target != target:
+                raise HostError(f"{target.path}: a raw-device marker is written only through the run's held O_EXCL claim")
+            fd = self._claim_fd
+            close = False
         else:
-            flags |= os.O_NOFOLLOW  # a file target was verified as a plain file: a symlink swapped in since is not followed
-        try:
-            fd = os.open(target.path, flags)
-        except OSError as exc:  # EBUSY: the kernel's exclusive open found the device mounted, swap-active or claimed (md/dm)
-            raise HostError(f"{target.path} cannot be opened exclusively ({exc.strerror or exc}): the kernel refused the O_EXCL open; it may be mounted or have another exclusive kernel holder") from exc
+            try:
+                fd = os.open(target.path, os.O_WRONLY | getattr(os, "O_DIRECT", 0) | os.O_NOFOLLOW)
+            except OSError as exc:  # a file target was verified as a plain file: a symlink swapped in since is not followed
+                raise HostError(f"{target.path} cannot be opened for its marker ({exc.strerror or exc})") from exc
+            close = True
         try:
             import mmap
             buf = mmap.mmap(-1, 4096)
@@ -638,7 +673,8 @@ class RealHost:
             os.pwritev(fd, [buf], target.size_bytes - TAIL_BYTES)
             os.fsync(fd)
         finally:
-            os.close(fd)
+            if close:
+                os.close(fd)
 
     def read_marker(self, target: TargetRef) -> str:
         with open(target.path, "rb") as fh:
@@ -694,13 +730,14 @@ class RealHost:
         from . import devio  # late: devio imports this module
         self._verify_live(target)
         self._check_extent(target, offset, length)
-        devio.assert_writer_bound(argv, target, offset, length)  # the argv writes exactly the authorised extent
+        devio.assert_writer_bound(argv, target, offset, length)  # the planned argv writes exactly the authorised extent
         check_argv(argv, bound=True, host=self)
         if target.kind == "device":
-            self._probe_device_exclusive_open(target)
-            raise Refusal("raw_device_write_unsupported",
-                          f"raw-device fio writes to {target.path} are disabled: fio opens the path itself and cannot use iobench's kernel O_EXCL claim for the whole write interval",
-                          "use a file target; raw-device writes require a writer that performs I/O through the same held O_EXCL descriptor")
+            fd = self._claim_fd_for(target, write=True)
+            launch = [f"--filename=/dev/fd/{fd}" if t == f"--filename={target.path}" else t for t in argv]
+            if launch.count(f"--filename=/dev/fd/{fd}") != 1:
+                raise HostError(f"{target.path}: the planned fio argv does not name the claimed target exactly once")
+            return _ProcHandle(launch, pass_fds=(fd,), on_unreaped=self._unreaped_children.add)
         return _ProcHandle(argv)
 
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
@@ -710,30 +747,105 @@ class RealHost:
         devio.assert_discard_bound(argv, target, offset, length)
         check_argv(argv, bound=True, host=self)
         if target.kind == "device":
-            self._probe_device_exclusive_open(target)
-            raise Refusal("raw_device_write_unsupported",
-                          f"raw-device discard on {target.path} is disabled: blkdiscard cannot use iobench's kernel O_EXCL claim for the whole discard interval",
-                          "use a file target; raw-device mutation requires a writer that performs I/O through the same held O_EXCL descriptor")
+            fd = self._claim_fd_for(target, write=False)
+            remaining, position = length, offset
+            while remaining:
+                if self._escalated:
+                    raise Aborted("second signal during raw-device discard")
+                chunk = min(remaining, RAW_DISCARD_CHUNK_BYTES)
+                try:
+                    fcntl.ioctl(fd, BLKDISCARD, struct.pack("QQ", position, chunk))
+                except OSError as exc:
+                    if exc.errno == errno.EOPNOTSUPP:
+                        return RunResult(1, "", "Operation not supported")
+                    raise HostError(f"BLKDISCARD failed at [{position}, {position + chunk}) on {target.path}: {exc.strerror or exc}") from exc
+                position += chunk
+                remaining -= chunk
+            return RunResult(0, "", "")
         return self._run_polled(argv, None)
 
-    @staticmethod
-    def _probe_device_exclusive_open(target: TargetRef) -> None:
-        """Probe for a Linux block-device holder conflict, not an ordinary opener.
-
-        O_EXCL can reject a mounted filesystem or another exclusive kernel
-        holder. An ordinary non-exclusive open descriptor does not make this
-        probe fail. The probe is closed immediately; no raw writer follows it.
-        """
-        flags = os.O_RDONLY | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    def claim(self, target: TargetRef) -> int:
+        """Take and hold the kernel's exclusive claim for one raw target."""
+        if target.kind != "device":
+            raise HostError(f"{target.path}: only a block device can be claimed")
+        if self._claim_fd is not None:
+            if self._claim_target == target:
+                return self._claim_fd
+            raise HostError(f"{target.path}: another raw target is already claimed by this process")
         try:
-            fd = os.open(target.path, flags)
+            fd = os.open(target.path, os.O_RDWR | os.O_EXCL | getattr(os, "O_CLOEXEC", 0))
         except OSError as exc:
             if exc.errno in (errno.EBUSY, errno.EAGAIN):
                 raise Refusal("device_in_use",
-                              f"{target.path} is busy: Linux refused the O_EXCL block-device claim at the raw-device write boundary ({exc.strerror or exc}); a mounted filesystem or another exclusive kernel holder may be active. An ordinary non-exclusive opener does not make this probe fail",
-                              "ensure the device is unmounted and has no conflicting kernel holder before retrying; iobench still refuses raw-device writes until the writer can use a held claim") from exc
-            raise HostError(f"cannot probe O_EXCL access to {target.path} at the raw-device write boundary ({exc.strerror or exc})") from exc
-        os.close(fd)
+                              f"{target.path} is busy: Linux refused the O_EXCL block-device claim ({exc.strerror or exc}); it may be mounted, swap-active, or held by md, dm, or another O_EXCL opener",
+                              "unmount and swapoff the device, remove conflicting md/dm holders, and ensure no other process holds an O_EXCL claim") from exc
+            raise HostError(f"cannot claim {target.path} with O_EXCL ({exc.strerror or exc})") from exc
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISBLK(info.st_mode):
+                raise Refusal("raw_target_not_block_device",
+                              f"{target.path}: the claimed descriptor is not a block device",
+                              "name a real dedicated partition")
+            want = _devno_pair(target)
+            if info.st_rdev != want:
+                raise Refusal("raw_target_devno_changed",
+                              f"{target.path}: claimed device number differs from {target.devno}",
+                              "stop and rerun `iobench target init` against the intended partition")
+            size_buf = bytearray(8)
+            fcntl.ioctl(fd, BLKGETSIZE64, size_buf, True)
+            if struct.unpack("Q", size_buf)[0] != target.size_bytes:
+                raise Refusal("raw_target_size_changed",
+                              f"{target.path}: claimed device size differs from {target.size_bytes}",
+                              "stop and rerun `iobench target init` if the resize was intentional")
+            self._verify_live(target)
+        except BaseException:
+            os.close(fd)
+            raise
+        self._claim_fd, self._claim_target = fd, target
+        return fd
+
+    def release_claim(self) -> str | None:
+        """Close the claim after its consumers are gone; keep it when a child could not be reaped."""
+        if self._claim_fd is None:
+            return None
+        if self._unreaped_children:
+            return f"raw_claim_child_unreaped: child pid(s) {', '.join(map(str, sorted(self._unreaped_children)))} still hold the claim"
+        try:
+            os.close(self._claim_fd)
+        except OSError as exc:
+            return f"raw_claim_release_failed: closing {self._claim_target.path if self._claim_target else 'the raw-device'} claim failed ({exc.strerror or exc})"
+        self._claim_fd, self._claim_target = None, None
+        return None
+
+    def _claim_fd_for(self, target: TargetRef, *, write: bool) -> int:
+        if self._claim_fd is None:
+            if write:
+                raise Refusal("raw_device_write_unsupported",
+                              f"raw-device fio writes to {target.path} are disabled: fio opens the path itself and cannot use iobench's kernel O_EXCL claim for the whole write interval",
+                              "use a file target; raw-device writes require a writer that performs I/O through the same held O_EXCL descriptor")
+            raise Refusal("raw_device_write_unsupported",
+                          f"raw-device discard on {target.path} is disabled: blkdiscard cannot use iobench's kernel O_EXCL claim for the whole discard interval",
+                          "use a file target; raw-device mutation requires a writer that performs I/O through the same held O_EXCL descriptor")
+        held = self._claim_target
+        if held is None:
+            raise HostError(f"{target.path}: the held O_EXCL claim has no target identity")
+        if held.devno != target.devno:
+            raise Refusal("raw_target_devno_changed",
+                          f"{target.path}: the held claim names device {held.devno}, not {target.devno}",
+                          "stop and rerun `iobench target init` against the intended partition")
+        if held.size_bytes != target.size_bytes:
+            raise Refusal("raw_target_size_changed",
+                          f"{target.path}: the held claim names size {held.size_bytes}, not {target.size_bytes}",
+                          "stop and rerun `iobench target init` if the resize was intentional")
+        if held.partuuid != target.partuuid:
+            raise Refusal("raw_target_partuuid_changed",
+                          f"{target.path}: the held claim names PARTUUID {held.partuuid}, not {target.partuuid}",
+                          "stop and rerun `iobench target init` against the intended partition")
+        if held != target:
+            raise Refusal("raw_target_claim_mismatch",
+                          f"{target.path}: the held O_EXCL claim belongs to a different raw target identity",
+                          "do not mutate a target after its claim is taken; rerun from `target init`")
+        return self._claim_fd
 
     # -- single instance and signals --------------------------------------
     def lock(self, path: str) -> bool:
