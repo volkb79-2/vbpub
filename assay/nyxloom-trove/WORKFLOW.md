@@ -6,14 +6,14 @@
 > `FROZEN-WAVE-CONTROLLER-PROMPT.md`. The P00-P19 narrative below is retained as
 > historical evidence, not current controller authority.
 
-## Pre-merge gate set for tooling, lane tables and waiver documents
+## Pre-merge gate set for tooling, lane tables and provisional-policy documents
 
 The merge checklist must run `run-gate tooling-tests` when the branch diff
 touches any of `assay/tools/**`, `assay/gate/**`, `assay/assay.toml`, or the
-public documents carrying the R2 waiver window (`assay/README.md`,
+public documents carrying the provisional R2 policy (`assay/README.md`,
 `assay/docs/DESIGN-GUIDE.md`, `assay/docs/CONSUMERS.md`). The lane covers the
 three failure groups surfaced only by the 12.1.0 release attempt: the B105
-checker tests, the release-gate script tests, and the docs window test, together
+checker tests, the release-gate script tests, and the provisional-policy docs test, together
 with the other tooling modules used by those launchers. This is a path-triggered
 review gate, not an Assay qualification or release receipt.
 
@@ -28,7 +28,7 @@ git diff --name-only "$base"...HEAD |
 ```
 
 Run-Gate execution remains serialized by the operator's shared gate lock. A
-docs-only change touching the waiver window and a one-file tooling change use
+docs-only change touching the provisional policy and a one-file tooling change use
 the same trigger.
 
 ## Pre-merge coverage gate for judge and analysis sources (B534)

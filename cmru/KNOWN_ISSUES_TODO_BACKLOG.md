@@ -14,16 +14,30 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-187 | CODE FIXED 2026-11-22 (deterministic synthetic `/proc` observation replaces the load-sensitive pipe-holder permission-skip test); final integrated-head `cmru-r0-r1` evidence pending controller receipt | `afd992c6d` |
-| KI-186 | OPEN (migrate the remaining `subprocess.run` sites to `run_process`; 40 occurrences in 12 non-template modules after P6b; candidate effect not measured) | — |
-| KI-185 | OPEN (adopt the [cli-extended line-stream renderer proposal](../libraries/cli-extended/docs/DESIGN-LINE-STREAM-RENDERER.md) through CLI-EXT-35–CLI-EXT-40) | — |
+| KI-201 | OPEN (filed 2026-11-24, test-policy-v0.1.0 push failure) | — |
+| KI-200 | OPEN (filed 2026-11-24, Opus design review) | — |
+| KI-199 | OPEN (filed 2026-11-24, Opus design review) | — |
+| KI-198 | OPEN (filed 2026-11-24, Opus design review) | — |
+| KI-197 | OPEN (filed 2026-11-24, Opus design review) | — |
+| KI-196 | OPEN (filed 2026-11-24, Opus design review) | — |
+| KI-195 | OPEN (filed 2026-11-24, Opus design review) | — |
+| KI-194 | OPEN (filed 2026-11-24, Opus design review) | — |
+| KI-193 | OPEN (filed 2026-11-24, Opus design review) | — |
+| KI-192 | OPEN (filed 2026-11-24, Opus design review) | — |
+| KI-191 | OPEN (filed 2026-11-24, Opus design review) | — |
+| KI-190 | OPEN (filed 2026-11-24, Opus design review) | — |
+| KI-189 | OPEN (filed 2026-11-24, Opus design review) | — |
+| KI-188 | OPEN (filed 2026-11-24, Opus design review) | — |
+| KI-187 | FIXED 2026-11-24 (deterministic synthetic `/proc` observation replaces the load-sensitive pipe-holder permission-skip test; closure evidence = P6b `7d8418727` passed the registered cmru `r0-r1` lane, controller HANDOFF #38, 2026-11-22 16:31Z) | `afd992c6d` |
+| KI-186 | OPEN (migrate the remaining `subprocess.run` sites to `run_process`; 40 occurrences in 12 non-template modules after P6b; candidate effect not measured; close condition is KI-189's, P6c/P6d retired) | — |
+| KI-185 | OPEN (adopt the [cli-extended line-stream renderer proposal](../libraries/cli-extended/docs/DESIGN-LINE-STREAM-RENDERER.md) through CLI-EXT-35/38/39; CLI-EXT-36/37 deferred, CLI-EXT-40 a rule) | — |
 | KI-184 | FIXED 2026-11-18 (every line in one multi-line write is processed at a severity boundary) | `54b9d3b75` |
-| KI-183 | OPEN (the wheel-builder and probe rows and the cmru gate rows of the release preflight run only for a release that includes cmru) | — |
+| KI-183 | OPEN (the wheel-builder and probe rows and the cmru gate rows of the release preflight run only for a release that includes cmru; solved by KI-190, declared preflight) | — |
 | KI-182 | FIXED 2026-11-18 (the release preflight checks the DinD sidecar image of every project in the scope that has an `--enable-docker` step) | see KI-182 entry |
 | KI-181 | OPEN (`dist_dir` containment still accepts project-owned directories such as `src`, `.git` or a symlink to another project directory) | — |
-| KI-180 | OPEN (runner residuals: a signal between fork and `Popen` return can leave the child unreaped; a failing group reap skips the explicit pipe close) | — |
+| KI-180 | OPEN (runner residuals: a signal between fork and `Popen` return can leave the child unreaped; a failing group reap skips the explicit pipe close; to close with KI-188) | — |
 | KI-179 | OPEN (`cmru abandon` withholds a superseded release candidate whose content is on main and offers no operator path) | — |
-| KI-178 | OPEN (items 1 and 2 fixed 2026-11-18: bounded drain after child exit and whole-process-group reaping; item 3 no-progress watchdog and item 4 shared helper remain) | `4d9ecf912` (code; earlier changes `4b59e8740`, `d21e1921b`) |
+| KI-178 | OPEN (items 1 and 2 fixed 2026-11-18: bounded drain after child exit and whole-process-group reaping; item 3 no-progress watchdog and item 4 shared helper remain; both delivered by KI-188) | `4d9ecf912` (code; earlier changes `4b59e8740`, `d21e1921b`) |
 | KI-175 | FIXED 2026-11-18 (`dist_dir` must be a strict descendant of `project_root` at parse time and is rechecked before every recursive removal) | `f582481c4` |
 | KI-173 | FIXED 2026-11-16 (estate argv failures explain shell-expanded values for typed options and their environment fallback) | `f20d3ae566e60f591638f9bc5e66e9bfd7e38a39` |
 | KI-171 | OPEN (the packaged cmru-cli SKILL is grammar-checked but not coverage-checked: a verb or flag a release adds can be missing from it with every existing test green) | — |
@@ -41,7 +55,7 @@
 | KI-177 | FIXED 2026-11-18 (same mechanism as KI-161; the mdt-cockpit ADVISORY comment shape is a regression test) | `7b3364a7b` (merged into main by `5f862034b`) |
 | KI-160 | OPEN (post-promotion evidence retention can exit 1 after a successful release) | — |
 | KI-159 | FIXED 2026-11-18 (the per-minor KI-79 window is removed; standing release rule, operator decision 2026-11-18) | `0e6e28f8b` |
-| KI-141 | OPEN (R2 owed on the latest release at all times; ledger entry, no version upper bound after KI-159) | — |
+| KI-141 | OPEN (pointer since 2026-11-24: R2 owed on the latest release at all times, tracked in the T3 ledger via KI-199 and assay B562; no version upper bound after KI-159) | — |
 | KI-79 | FIXED 2026-11-18 (`gate-provisional` renamed `release-gate`; no version window; R2 owed asynchronously, recorded by marker, manifest and KI-141) | `0e6e28f8b` |
 | KI-158 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
 | KI-157 | FIXED 2026-11-16 (checked-out main worktree is derived and given its owner-scoped remedy) | `4d36980b8d6f3ed7533da2f900b955c06075cb1f` |
@@ -3232,6 +3246,10 @@ not implementable as the brief's "small" follow-on.
 
 ## KI-141 - record a full R2 run on the latest provisional CMRU release (KI-79)
 
+**Pointer (2026-11-24):** the R2 debt of cmru is tracked in ONE place, the T3 ledger: KI-199 (one R2 path: native `assay-first-release-r2` with `--carry-forward` from the store of record `cmru/.assay/r2-store/cmru-first-release-r2/`, `assay/docs/DESIGN-R2-STORE-OF-RECORD.md`) and assay B562 (whole-source backfill). This entry keeps only the history below and the part-6/7 amendment. The Constraint, Fix and Close-when paragraphs below are superseded history; the ledger of what is owed is the T3 ledger, not this entry. The owed whole-source R2 runs as `assay-first-release-r2` (whole-target, no diff base), not as the retiring `r2` lane or `run-gate --base cmru-v6.1.0 r2`. KI-141 closes when a T3 ledger PASS row records `assay-first-release-r2` at the latest release tag with every candidate killed and no survivors (the original Close-when bar, on the surviving lane), that is, when the B562 backfill is complete in the store of record. Interim measure on the way to the backfill: the P2 heavy-last test order (`CMRU_TEST_ORDER=heavy-last`, `cmru/tests/conftest.py`), to be replaced by assay's generic `judge.mutation.test_order = "fast-first"` (assay B568).
+
+**P2 measurement (2026-11-24, v1001, 2 workers, shard 1/64 of `assay-first-release-r2` at `546373a81`, first 18 of 75 candidates, run `rgw-assay-first-release-r2-20261124T062801-v1001`):** kills (n=15) mean 69 s, median 50 s (P1 n=15: 182 s / 76 s); survivors (n=3) mean 678 s (P1 n=6: 608 s). The overall mean fell from 304 s (P1, fail-fast only, 21 candidates) to 170 s (18 candidates), but the two samples have different survivor shares (6/21 against 3/18); at P1's mix the P2 rates give about 243 s. The saving is all on kills, as designed; survivors still run the whole suite. Raw stream: `.controller-state/assay/p2-measure-20261124/` (controller state, not in git).
+
 **Status:** OPEN (filed 2026-11-09); severity: major (mutation evidence gap, tracking entry). `cmru-v7.2.4` shipped on 2026-11-08 through `gate-provisional` under the KI-79 window `>= 7.2.0`, `< 7.3.0` (operator decision 2026-11-04, R2 waived for releases). The mutation lane did not run for it; the retained marker `.assay/mutation-postponed-cmru.json` is deferral evidence, not a pass. By the 2026-11-12 decision, the 7.3.x line also ships provisionally and its T3 R2 campaign is owed after the latest release.
 
 **State of the owed R2.** The whole-source campaign is sharded; recorded so far: s4 (KI-133: 21 survivors, KI-134: 1 `budget_exceeded`), s12 (KI-135: 136 survivors, 1 crashed, `EXEC_FAILED`), s13 (KI-138: 3 survivors) and the earlier s1 (KI-129). Shards not named here, and one aggregate judgment over the current whole-source tree, have no recorded result in this file.
@@ -3244,7 +3262,7 @@ The 2026-11-12 T3 rehearsal of `r2` remained PARTIAL: its preflight had six fail
 
 **Close when.** A T3 ledger PASS row records cmru `r2` at the latest release tag, with a base at or before the last R2-covered tag (`cmru-v6.1.0`) and every candidate killed with no survivors; the campaign judges the latest released source and closes the accumulated R2 debt of every provisional release up to it.
 
-**Remaining WP-CMRU parts 6, 7, and 9.** Part 6 follows a successful part-5 T3 rehearsal: make CMRU's `gate` a mutation-free release orchestrator and always write the R2-owed marker with `follow_up_lane = "r2"`. Part 7 follows parts 6 and 1 (`whole_target`): retire `cmru-first-release`, `assay-first-release`, and the `_plan_gate` first-release branch. Part 9 still needs the `TMPDIR`/`PYTHONPYCACHEPREFIX` A/B and a duration survey on a quiet host, including an explanation of the control variance in an isolated run; the current `io_sync = "relaxed"` setting remains in place.
+**Remaining WP-CMRU parts 6, 7, and 9.** Part 6 follows a successful part-5 T3 rehearsal: make CMRU's `gate` a mutation-free release orchestrator and always write the R2-owed marker with `follow_up_lane = "assay-first-release-r2"` (AMENDED 2026-11-24, agreed T2/T3: the native whole-target lane is the one surviving R2 path; the `r2`/`mutation` command lanes retire with KI-199). Part 7 follows parts 6 and 1 (`whole_target`): retire `cmru-first-release`, `assay-first-release`, and the `_plan_gate` first-release branch; `assay-first-release-r2` stays. Part 9 still needs the `TMPDIR`/`PYTHONPYCACHEPREFIX` A/B and a duration survey on a quiet host, including an explanation of the control variance in an isolated run; the current `io_sync = "relaxed"` setting remains in place.
 
 **Window policy.** KI-159 (FIXED 2026-11-18) removed the per-minor window allowlist: the standing release rule above replaced KI-79's bounded windows, so this entry no longer waits on any window design.
 
@@ -3753,13 +3771,15 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Keep-entry grammar.** SPEC S9.4 requires an exact bundle-relative POSIX file path and explicitly rejects glob syntax, absolute paths, and traversal, but it does not spell out backslashes, drive-style prefixes, control characters, empty values, or trailing separators. The public config path rejects those forms and accepts spaces (the list reader rejects empty strings before the validator sees them); the regression table pins those current results and exact error text. Clarify the remaining grammar explicitly in S9.4 when the next SPEC edit is made.
 
-**Assay lane cost.** Before 2026-11-18 the `assay-first-release-r2` Run-Gate lane did not set `candidate_fail_fast`; each candidate ran the full 6,678-test suite, measured at about 500 seconds on one host flavor and 575 seconds on the other, so the measured 4,890-candidate target projected to about 202 hours across two hosts. The lane now sets `candidate_fail_fast = true` (comment in `assay.toml` corrected). Measured 2026-11-18 on the v1001 host (one shard of the lane, two workers, 21 candidates, all `full` execution mode): mean 304 s per candidate (15 kills: mean 182 s, median 76 s; 6 survivors: mean 608 s, which is 57% of the total time), peak container memory 1.24 GiB of 4 GiB, peak CPU 201%. A whole-source run of about 5,000 candidates at this rate still needs about 9 days of two-worker wall time; the remaining reductions are test ordering (heavy end-to-end files last), reusing earlier results for unchanged code (assay B561) and the delta lane.
+**Assay lane cost.** Before 2026-11-18 the `assay-first-release-r2` Run-Gate lane did not set `candidate_fail_fast`; each candidate ran the full 6,678-test suite, measured at about 500 seconds on one host flavor and 575 seconds on the other, so the measured 4,890-candidate target projected to about 202 hours across two hosts. The lane now sets `candidate_fail_fast = true` (comment in `assay.toml` corrected). Measured 2026-11-18 on the v1001 host (one shard of the lane, two workers, 21 candidates, all `full` execution mode): mean 304 s per candidate (15 kills: mean 182 s, median 76 s; 6 survivors: mean 608 s, which is 57% of the total time), peak container memory 1.24 GiB of 4 GiB, peak CPU 201%. The eight known heavy files now run last in both the baseline and candidate runs; the post-ordering measurement (2026-11-24, kills mean 69 s, median 50 s) is recorded in KI-141. A whole-source run of about 5,000 candidates at this rate still needs about 9 days of two-worker wall time; the remaining reductions are reusing earlier results for unchanged code (assay B561) and the delta lane.
 
 **Close when.** S9.4 explicitly defines the tested keep-entry grammar, and the lane's fail-fast policy is either enabled with its comment and acceptance evidence updated or recorded as an intentional cost with a reason. The selected-subset verdict follow-up is tracked in KI-134; the missing-tag sync failure is tracked by netcup NC-56.
 
 ## KI-171 — the packaged skill is grammar-checked, never coverage-checked
 
 **Status:** OPEN (filed 2026-11-15 during the estate-wide skills refresh); severity: minor (documentation drift, no product behaviour).
+
+**Amended 2026-11-24 (Opus design review):** To be generated from docs/cli-surface.json (SPEC rewrite package P-core-15).
 
 **Problem.** `cmru skills install`/`check` bind the INSTALLED copy to the packaged source, and `tests/test_w2_pkg5_skills_doctor.py` parses every `cmru ...` line in the SKILL against the real registry, so a flag the CLI never had cannot appear. Nothing asserts the other direction: a verb or a public option that a release ADDS can be absent from the skill while every existing test stays green. The 7.1.3 → 7.3.1 drift measured in the 2026-11-15 refresh is exactly that shape — `handler` (including `bundle-build` and its variant grammar), `installer check`, `--allow-tag-ahead-of-head`, `--allow-stale-tool-deps`, `--discard evidence`, `versions` exit 5 (`RATE_LIMITED`), and the fail-closed `[archive].keep` rule were all shipped and all undocumented in the skill.
 
@@ -3813,6 +3833,8 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Status:** FIXED 2026-11-18; severity: medium (a multi-minute test step was spent before the failure, and the failed candidate had to be retired by hand, see KI-179).
 
+**Amended 2026-11-24 (Opus design review):** Removed together with cmru tester-gate in the next major (KI-191).
+
 **Observed.** A ciu 7.26.0 release attempt (attempt 2) pinned `CMRU_TESTER_DIND_IMAGE = "docker@sha256:..."` in `ciu/cmru.toml` for its `--enable-docker` enrollment gate. The image was absent from the Docker host, and `cmru tester-gate` failed with a bare `CalledProcessError ... exit status 125` four minutes into the release, after the 6681-test step.
 
 **Cause.** The sidecar is started with `--pull=never`, so an absent reference surfaces only when the gate step starts it. KI-168's preflight (`check_release_build_images_precondition`) covered the wheel-builder image and the cgroup probe image but not `CMRU_TESTER_DIND_IMAGE`, which has the probe's contract.
@@ -3825,6 +3847,10 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Status:** OPEN (filed 2026-11-18); severity: low.
 
+**Amended 2026-11-24 (Opus design review):** Solved by KI-190 (declared preflight), not by widening the cmru-only rows.
+
+**Amended 2026-11-24 (P-core-13 design):** `docs/DESIGN-DECLARED-PREFLIGHT.md` D3 and D13. The preflight runs for every project in scope. The wheel-builder, probe and DinD rows become built-in rows keyed on cmru's own verbs, each evaluated against that project's own config: wheel-builder on `cmru handler wheel-build`; probe on `cmru handler wheel-build` or `cmru tester-gate`, because wheel-build starts the probe with `--pull=never`; DinD on `--enable-docker`.
+
 **Observed.** `_release_gate_preconditions_before_dispatch` and its rows (Run-Gate image identity, Bootstrap, `Wheel-builder image`, `Cgroup probe image`) run only when `cmru` is in the release scope. A release of any other project (`cmru release ciu`) skips them, although its gate and wheel build use the same `--pull=never` probe image and the wheel builder. The DinD row (KI-182) is the only image row that already runs per project.
 
 **Wanted.** Evaluate the wheel-builder and probe rows for every project in the release scope against that project's own config, as KI-182 does for the DinD row.
@@ -3834,6 +3860,8 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 ## KI-185 adopt the cli-extended line-stream renderer in the cmru output layer
 
 **Status:** OPEN; severity: medium.
+
+**Amended 2026-11-24 (Opus design review):** Scope becomes CLI-EXT-35/38/39; CLI-EXT-36/37 are deferred (no consumer); CLI-EXT-40 is a rule (touched call sites use the renderer).
 
 **Observed.** `cmru/src/cmru/output.py` owns a separate `SeverityStream` for
 severity parsing and terminal colour. CMRU output therefore does not share the
@@ -3867,6 +3895,8 @@ incrementally with no independent CMRU severity parser or ANSI renderer left.
 
 **Status:** OPEN (filed 2026-11-18, residuals of KI-178 items 1 and 2); severity: low.
 
+**Amended 2026-11-24 (Opus design review):** Delivered by KI-188 (review L1): procio's `_SignalScope.spawn` defers a signal across fork/Popen and its `finally` closes the pipes; closes when P7 merges.
+
 **Observed.** (1) A SIGTERM or SIGHUP that arrives in the microseconds between the fork and the return of `Popen` can leave the child unreaped, because the handler that turns the signal into `SystemExit` runs before the child handle exists. (2) If the whole-group reap itself raises, the explicit close of the output pipe is skipped; garbage collection closes it later.
 
 **Code (checked against main at `5f862034b`).** `cmru/src/cmru/runner.py`: `_terminate_as_exit` installs a handler that raises `SystemExit(128 + signum)` and blocks nothing around the fork; `_run_command` sets `process = None` and assigns it only when `subprocess.Popen` returns, so a `SystemExit` raised before that assignment finds `process is None` and reaps nothing. The `except BaseException` branch calls `_reap_process_group(process)` and only then `process.stdout.close()`, so a raising reap skips the close.
@@ -3894,6 +3924,8 @@ incrementally with no independent CMRU severity parser or ANSI renderer left.
 **Status:** OPEN, items 1 and 2 (cmru side) FIXED 2026-11-18, items 3 and 4 remain (filed 2026-11-17 during the mdt-cockpit release); severity: high (an unattended release or gate never finishes, never fails, and says nothing; found only because the operator looked).
 
 **Resolution/evidence, items 1 and 2 (2026-11-18).** `cmru/src/cmru/runner.py` `run_command` reads the child's pipe by descriptor with the same decoding as a text pipe, stops `OUTPUT_DRAIN_SECONDS` (2 s) after the child has exited, closes the reader, keeps the child's exit code and logs one WARN naming the holder pids from `/proc/<pid>/fd` (without pids when the scan fails). Children start with `start_new_session=True`; Ctrl-C, SIGTERM and SIGHUP (the last two turned into `SystemExit` for the duration of `run_command`, main thread only, previous handlers restored; a signal ignored at start, such as `nohup`'s SIGHUP, stays ignored and is inherited by the step) send SIGTERM to the group, SIGKILL after `GROUP_TERM_GRACE_SECONDS`, and reap it (cmru has no per-step timeout, so these are the only reaping triggers; SIGKILL of cmru itself still orphans the step). The output wait uses `selectors.DefaultSelector`, so pipe descriptors >= 1024 work. A child in its own session has no controlling terminal: reads on inherited fd 0 work, `/dev/tty` opens (sudo, ssh, git prompts) fail with ENXIO. Review fixes (2026-11-18): the fd-limit, signal-orphaning and terminal-wording corrections. Tests: `tests/test_runner_pipe_holders.py` (a `sleep 600` holder with exit 3 and exit 0, scan failure, unchanged ordinary output and exit code, split multibyte output, own session and group, whole-group interrupt by pid, SIGTERM-ignoring child, descriptor above 1024, SIGTERM and SIGHUP delivered to a driver process, handler install and restore, off-main-thread). SPEC S3.4a records the rule. **Still open:** item 3 (the no-progress watchdog, with its `cmru.toml` period) and item 4 (the shared helper; the same read-to-EOF shape remains in `build-push.py` and `ciu/src/ciu/engine.py`, tracked as CIU-220, MDT-104 and NL-83). Do not close KI-178 until both land.
+
+**Amended 2026-11-24 (Opus design review):** Items 3-4 are delivered by KI-188 (P7 single package).
 
 **Observed.** The shared buildkitd was restarted mid-build (host `apt upgrade`, 16:44:34Z). `docker buildx bake` failed, its `release-bake.sh` bash exited (`<defunct>`), but an orphaned VS Code dev-containers credential helper (`docker-credential-dev-containers-*`, parent 1) that docker had spawned kept the inherited stdout pipe open. `build-push.py` sat in `anon_pipe_read` and `cmru release` behind it for 11 minutes; killing only that helper made both exit at once.
 
@@ -3961,6 +3993,8 @@ Closed implementation plan for items 3 and 4: [cmru/docs/DESIGN-RUNNER-PROCIO-AD
 
 **Status:** OPEN (filed 2026-11-18); severity: low (scattered subprocess keyword plumbing creates low-value mutation candidates).
 
+**Amended 2026-11-24 (Opus design review):** The close condition becomes KI-189's: `run_process(capture=True)` delegates to `cli_extended.procio.run_capture` (+`stdin`); the private `_git` helpers fold into `git_auth.run_local_git`; the P6c/P6d slices are retired (remaining sites migrate on touch); `tester_gate.py` is frozen.
+
 **Remaining sites.** `grep -c 'subprocess.run'` after P6b, excluding templates and the `process_run.py` wrapper:
 
 | Module | Count |
@@ -3988,7 +4022,7 @@ Closed implementation plan for items 3 and 4: [cmru/docs/DESIGN-RUNNER-PROCIO-AD
 
 ## KI-187 - pipe-holder permission-skip test depends on real process scheduling
 
-**Status:** CODE FIXED (filed 2026-11-22; fixed 2026-11-22; fix commit
+**Status:** FIXED 2026-11-24: closure evidence = P6b `7d8418727` passed the registered cmru `r0-r1` lane (controller HANDOFF #38, 2026-11-22 16:31Z). (Filed 2026-11-22; code fixed 2026-11-22; fix commit
 `afd992c6db63635fb88a05655bd5586db47dd69d`); severity: test strength. The P6a r0-r1 gate at `9cf2a0733` failed once on
 `tests/test_runner_pipe_holders.py::test_pipe_holder_scan_skips_processes_it_cannot_inspect` while another
 gate ran, then passed on an identical-head rerun. The P6b r0-r1 gate at `015bdb7bb` failed on the same test
@@ -4008,10 +4042,165 @@ historical/interim evidence from the pre-integration commit, not final evidence 
 
 **Final closure evidence.** Final P6b closure requires the integrated final head to pass the registered
 `cmru-r0-r1` lane. After that gate, the controller will record the final-head receipt in
-`artifacts/release-program-20261027/reports/p6b-cmru-finalization.json`. No final integrated head or passing
-gate result is claimed here.
+`artifacts/release-program-20261027/reports/p6b-cmru-finalization.json`.
+
+**Closed 2026-11-24.** The integrated final P6b head `7d8418727` passed the registered `cmru-r0-r1` lane
+(release-preconditions 449/449, R0/R1 PASS); receipt
+`artifacts/release-program-20261027/reports/p6b-cmru-finalization.json`; controller HANDOFF #38 UPDATE
+2026-11-22 16:31Z.
 
 **Close condition.** The focused oracle has no real child process, pipe, fixed wait, signal, or scheduler
 dependency; a scanner that reports the inaccessible PID, drops the visible holder, includes the current PID,
 or treats a non-PID entry as a process fails it; and the integrated final P6b head passes the registered
 `cmru-r0-r1` lane with green controller evidence.
+
+## KI-188 - P7 prerequisite chain costs more than the change
+
+**Status:** OPEN (filed 2026-11-24); severity: low.
+
+The P7 code change is small: it deletes about 150 lines of `runner.py` that duplicate procio, calls `run_streaming`, and adds one config key. The planned prerequisites (the P7.0a `RUN_GATE_LANE_CAPS_V1` fact and cmru-side allowlist, the P7.0b image-evidence chain) cost more than that change and couple cmru's tests to Run-Gate lane names, Assay declarations and the tester image path.
+**Wanted.** P7 is ONE package (one merge), ordered after KI-141 part 7. Order: cli-extended 0.8.0 release, then the tester-unified image, then P7.
+- TP-13 replaces P7.0a and the allowlist. P7 does not edit `cmru/assay.toml`; the TP-13 predicate is per `libraries/test-policy/docs/DESIGN-CONTAINMENT-MARKER.md` (finite effective `memory.max` and `pids.max` AND a private PID namespace).
+- P7.0b becomes a pin bump plus an import smoke (`python -c 'import cli_extended.procio'` in the selected image).
+- Pass `progress_paths=()`: the log is written only from pipe bytes, which already count as progress.
+- The design note keeps decisions only (D-178, D-179, the 1,800 s finite default with no off value, precedence, source diagnostics); the mutation and presentation tables go.
+
+Closes KI-180 and KI-178 items 3-4.
+Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md H2
+
+## KI-189 - run_process adds no policy
+
+**Status:** OPEN (filed 2026-11-24); severity: low.
+
+`cmru/src/cmru/process_run.py` `run_process` is `subprocess.run` with renamed keywords. It gives captured probes none of KI-178's protection (a `git` credential helper or a `docker` call that leaves a grandchild holding the pipe still hangs) and cannot express `stdin=DEVNULL`. About 13 private `_git` helpers coexist with `git_auth.run_local_git` (95 uses).
+**Wanted.** In the P7 package (KI-188), `run_process(capture=True)` delegates to `cli_extended.procio.run_capture` (bounded drain, timeout that reaps the group, strict decoding) with a new `stdin` parameter. The private `_git` helpers fold into `git_auth.run_local_git` (one error shape), on touch. The P6c/P6d slices are retired; remaining `subprocess.run` sites migrate on touch. `tester_gate.py` is frozen (KI-191).
+
+KI-186's close condition becomes this one.
+Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md H3
+
+## KI-190 - estate gate knowledge lives in the generic release engine
+
+**Status:** OPEN (filed 2026-11-24); severity: medium.
+
+**Amended 2026-11-24 (P-core-13 design):** Decisions in `docs/DESIGN-DECLARED-PREFLIGHT.md`: `[steps.preflight]` is a reserved one-command step, run before dispatch in a `git archive` export of the release revision; stdout is one JSON document (`format` 1, statuses `PASS`/`FAIL`/`SKIPPED`), and malformed output fails closed with exit 4; the bootstrap literal check moves to a `libraries/test-policy` estate lane; the closeout lanes come from `run-gate --list --json`, and a missing lane refuses; implementation follows P-core-06 and P-core-12 M0.
+
+`release_preconditions.py` runs `exec()` on `cmru/tools/run_release_gate.py` read from a git blob, calls its private `_current_run_gate_identity`, hard-codes project `cmru`, `tester-unified` and `run-gate.root.toml`, and derives remedies by regex over error prose. A shell snippet must match a block in `docs/BOOTSTRAP-FROM-ZERO.md` (a documentation drift check that blocks releases). `gate_snapshot.py` has `_ASSAY_CLOSEOUT_LANES = ("cmru", "cmru-first-release")`. KI-183 is a direct symptom.
+**Wanted.** An optional declared `[steps.preflight]` in the project grammar, run by the generic runner for every project in scope before dispatch, printing JSON rows `{check, status, detail, remedy}` (cmru's own `cmru.toml` declares `python tools/run_release_gate.py --preflight --json`). Remove the exec/regex identity check. The bootstrap-literal check moves to the owning project's own lane, or to a lane of `libraries/test-policy` (`estate_test_policy`) if it is genuinely estate-wide (see KI-194). `gate_snapshot` takes its lanes from config. The release path needs one real dry-run to prove it.
+
+Closes KI-183.
+Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md H4
+
+## KI-191 - tester-gate is a second gate runner
+
+**Status:** OPEN (filed 2026-11-24); severity: medium.
+
+**Amended 2026-11-24 (P-core-13 design):** `cmru handler wheel-build` also starts the cgroup probe (`handlers.py:651` → `tester_gate.check_slice_unit` → `_run_probe`, `--pull=never`). Removing tester-gate must keep `check_slice_unit` and the probe preflight row for wheel-build; only the DinD row goes with it (`docs/DESIGN-DECLARED-PREFLIGHT.md` D13).
+
+`cmru tester-gate` (`tester_gate.py`, 1,120 lines: DinD sidecar, cgroup probe, device throttles) duplicates Run-Gate's job of container placement, caps and DinD. Only `ciu/cmru.toml` (two lanes, one with `--enable-docker`) and `topos/cmru.toml` (one command lane) still use it.
+**Wanted.** Migrate ciu (CIU-225; the DinD lane is the real work) and topos to run-gate lanes. Deprecate `tester-gate` in the next minor and remove it in the next major, together with the DinD preflight (KI-182). Until then it is frozen: no P6c slice and no P7.2 changes beyond keeping it importable.
+
+Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md H6
+
+## KI-192 - six GitHub HTTP clients inside cmru
+
+**Status:** OPEN (filed 2026-11-24); severity: low.
+
+`cli.py`, `release.py` `GitHubReleases`, `hosts/github.py` `GitHubReleaseHost`, `ghcr.py` `GitHubPackages`, `tool_deps.py` and `resolve.py` each carry their own client; timeout, retry (KI-144) and error mapping are per-client because tests monkeypatch a bare `urlopen`.
+**Wanted.** `hosts/github.py` becomes the one transport with one timeout and retry policy; the other modules become thin typed wrappers on it, and tests fake the transport object, not `urlopen`. Migrate on touch, starting with `cli.py`'s GHCR and cleanup functions extracted into `cleanup.py` (KI-200).
+
+Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md M1
+
+## KI-193 - tests pin call shape; round-named files
+
+**Status:** OPEN (filed 2026-11-24); severity: low.
+
+Keyword-shape oracles (`test_process_run.py`, the `urlopen` monkeypatching) turn every refactor into test churn, and about 105 round-named files (`*adversarial*`, `*final*`, `*residual*`, `*gaps*`, ...) hide where a behaviour's oracle lives and grow R0 and R2 time.
+**Wanted.** Oracle rule: assert observable behaviour at a fake boundary (a temporary git repo, a fake transport, a fake `/proc` root), never the keyword arguments of a call. New tests go into module-named files; round-named files are folded in when touched. A mutant that only a kwargs oracle can kill is paired with the behaviour it changes; if it changes none, it is equivalent and is recorded as such.
+
+Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md M2
+
+## KI-194 - cmru suite judges other projects
+
+**Status:** OPEN (filed 2026-11-24); severity: medium.
+
+`tests/test_tester_unified_image.py` (5,441 lines, the tester-unified Dockerfile and `gen-requirements.py`), `test_dependency_levels_pyproject.py::TestRealEstate` and the bootstrap-order tests judge other projects; the P6b final gate failed on 13 such tests when tls-edge was added to the tester PROJECTS list. `tests/test_gate_budgets.py` restates Run-Gate's budget rule.
+**Wanted.** Cross-project checks move to the project they check (the tester-unified checks to tester-unified's own lanes); anything genuinely estate-wide becomes a lane of `libraries/test-policy` (`estate_test_policy`). There is no new top-level estate-lint directory. `test_gate_budgets.py` is deleted after RG-296. cmru's gate then judges cmru.
+
+Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md M5/M6
+
+## KI-195 - test guard ships in the runtime wheel
+
+**Status:** OPEN (filed 2026-11-24); severity: low.
+
+`cmru/src/cmru/process_guard.py` (278 lines of test-only code) ships in the production wheel and is used only by `cmru/tests/conftest.py`; it is one of three differently-specified test-descendant guards.
+**Wanted.** After TP-12 (the leftover-children guard in `estate_test_policy`) is adopted in cmru, delete `process_guard.py`.
+
+Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md H5
+
+## KI-196 - installer wheel set baked into get.py
+
+**Status:** OPEN (filed 2026-11-24); severity: medium.
+
+`cmru.toml` of tls-edge lists 11 `[[project.installer.wheels]]` entries that `get.py` `WHEEL_SPECS` freezes at render time. When ciu gains a dependency the release build fails until someone edits the list; an older self-copied installer cannot install a newer bundle with a different closure.
+**Wanted.** The installer derives the wheel set from the verified bundle manifest (`manifest[distribution] = {wheel, sha256, size}`), keeping only the ordering rules (cli-extended first); drop `[[project.installer.wheels]]`. The fail-closed unlisted-wheel check in the manifest writer stays.
+Consumer: T5 (tls-edge).
+
+Source: .controller-state/design-review-2026-11-24/tls-edge.md M1
+
+## KI-197 - release surface follow-ups
+
+**Status:** OPEN (filed 2026-11-24); severity: low.
+
+Five small cmru release-surface items raised by tls-edge:
+- `tarball-publish` reads the declared `[[project.variants]]` by default (as `bundle-build` does), so the repeated `--variant` argv and the test guarding it go (M3);
+- released CHANGES sections keep no pending-notes markers; cmru folds pending notes without leaving the markers in history (M2);
+- bundled first-party versions and sha256 come from the manifest into the release notes automatically (M2);
+- the instance root is passed explicitly (adapter argument and launcher env) instead of walking from `sys.prefix` to `current` (L2);
+- no wizard text in `get.py`'s header when no questions are declared (L3).
+
+Consumer: T5 (tls-edge).
+Source: .controller-state/design-review-2026-11-24/tls-edge.md M2, M3, L2, L3
+
+## KI-198 - freshness rule implemented five times
+
+**Status:** OPEN (filed 2026-11-24); severity: low.
+
+The 14-day freshness rule is implemented separately in tls-edge `stage-wheels.py`, topos `build_daemon_lock.py`, pwmcp `resolve-playwright-version.py` and two mdt-cockpit scripts, although cmru's `versions`/`tool_deps` already own freshness.
+**Wanted.** One freshness implementation in `tool_deps` for tls-edge, topos, pwmcp and mdt, keeping the semantics (pip `--uploaded-prior-to` with a PyPI timestamp cross-check).
+
+Source: .controller-state/design-review-2026-11-24/tls-edge.md H6
+
+## KI-199 - two R2 paths
+
+**Status:** OPEN (filed 2026-11-24); severity: medium.
+
+cmru runs R2 two ways: lanes `mutation` and `r2` run `tools/mutation_campaign.py` (1,502 lines, own `--resume` and evidence format; `gate_snapshot.py` seeds its resume files), and the native lane `assay-first-release-r2`. R2 debt is recorded in four places (the `.assay/mutation-postponed-cmru.json` marker, the snapshot's `deferred_lanes`, KI-141's prose, the T3 ledger).
+**Wanted.** After assay B564 (and the B561 native whole-target R2 with `--carry-forward` in production), retire `tools/mutation_campaign.py`, the `mutation`/`r2` command lanes, their test and the snapshot seeding. The T3 ledger is the only record of what is owed; KI-141 becomes a pointer (not edited here).
+Owner: T3 (vbpub-assay); filed here, worked there. The surviving follow-up lane is the native run-gate lane `assay-first-release-r2` (assay lane `cmru-first-release-r2`).
+
+Source: .controller-state/design-review-2026-11-24/assay.md H6; cmru-cli-extended.md L2
+
+## KI-200 - structure on touch
+
+**Status:** OPEN (filed 2026-11-24); severity: low.
+
+On-touch structure work, no big-bang rewrite:
+- split `cli.py` (9,399 lines, 205 top-level functions) into `cleanup.py` (on KI-192's transport), `tags.py`, `config.py` (`load_config`) and `release_controller.py`; `transaction.py` is 4,252 lines;
+- the runner stops mutating the process-global `os.environ`: after P7 (KI-188), build an explicit env mapping and pass it to `apply_env_command`, `maybe_login` and `run_streaming`;
+- SPEC links the generated `docs/cli-surface.json` instead of embedding about 900 lines of CLI tables, and KI-171 is generated from it;
+- closed KIs move to a `KNOWN_ISSUES_CLOSED.md` archive; design notes carry decisions and contracts only.
+
+Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md M7, M8, M9
+
+## KI-201 - wheel-publish glob is derived from the tag prefix and the dry run never checks it
+
+**Status:** OPEN (filed 2026-11-24); severity: medium.
+
+`cmru handler wheel-publish` without `--glob` matches `<prefix with - as _>-*.whl` (`handlers._wheel_glob`), taken from the tag prefix rather than from the distribution the build produced. For test-policy (prefix `test-policy`, distribution `estate-test-policy`), the first release `test-policy-v0.1.0` built `estate_test_policy-0.1.0-py3-none-any.whl`. It then failed at the push step with `No artifact in .../libraries/test-policy/dist (glob: test_policy-*.whl)`, after the tag was already on origin. The preceding `--dry-run` passed, because it never resolves the publish glob against the build's output. Recovery was post-publication: delete the tag by exact object, abandon, and re-release.
+
+**Wanted.**
+- `wheel-publish` defaults its glob to the built distribution's escaped name, from the build-output record or `[project] scm_dist`. The prefix is never used.
+- `cmru release --dry-run` (or the config validation) refuses when a `wheel-publish` glob cannot match the wheel name the build will produce.
+- Tests: a project whose prefix differs from its distribution publishes with no `--glob`, and a mismatched explicit `--glob` fails before the tag is pushed.
+
+The immediate fix is the explicit `--glob` in `libraries/test-policy/cmru.toml`, with `libraries/test-policy/tests/test_release_contract.py` as its guard. Every other wheel project's prefix matches its distribution name (checked 2026-11-24).

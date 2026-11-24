@@ -6,7 +6,7 @@ schema_version = 1
 kind = "none"
 
 [env]
-TEST_POLICY_RELEASE_NOTES = "## estate-test-policy wheel\n\nThe `estate_test_policy` pytest plugin (fixed sleeps, sub-120 s timeouts, wall-time assertions, thread/fd/child leaks) and the `flakehunt` stress-repeat runner. See `libraries/test-policy/CHANGES.md` for the full entry.\n\n**Read before installing**\n- The wheel registers the plugin through the `pytest11` entry point with `--estate-policy=fail` as the default, so installing it into an image makes every test in that image subject to the policy. Roll it out per project with `-p no:estate_test_policy` or `--estate-policy=warn` until the project is clean (README, TP-10).\n- `flakehunt` container mode needs `--cgroup-parent` and `--pids-limit` from the host (no defaults); only the `slow-cpu` recipe has been validated against real docker so far (see README Limits).\n\n**Install (wheel)**\n```bash\npython -m pip install --no-index --find-links . estate_test_policy-*.whl\n```"
+TEST_POLICY_RELEASE_NOTES = "## estate-test-policy wheel\n\nThe `estate_test_policy` pytest plugin (fixed sleeps, sub-120 s timeouts, wall-time assertions, thread/fd leaks, the subreaper-based leftover-child guard, and the `requires_contained_cgroup` marker) and the `flakehunt` stress-repeat runner. See `libraries/test-policy/CHANGES.md` for the full entry.\n\n**Read before installing**\n- The wheel registers the plugin through the `pytest11` entry point with the policy `off` by default: installing it into an image changes nothing until a project opts in with the ini key `estate_policy = warn|fail` (an explicit `--estate-policy` wins over the ini). In `off` only the markers are registered (README, TP-10).\n- With the policy on, the child guard kills and reports any new child a test leaves behind, including self-daemonizing tools (gpg-agent, ssh ControlPersist, git auto-gc/maintenance); see the README \"Adopting\" note.\n- `flakehunt` container mode needs `--cgroup-parent` and `--pids-limit` from the host (no defaults); only the `slow-cpu` recipe has been validated against real docker so far (see README Limits).\n\n**Install (wheel)**\n```bash\npython -m pip install --no-index --find-links . estate_test_policy-*.whl\n```"
 
 [project]
 id = "test-policy"
@@ -41,5 +41,5 @@ commands = [
 [steps.push]
 quiet = true
 commands = [
-  { label = "test-policy: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "test-policy", "--cwd", ".", "--notes-env", "TEST_POLICY_RELEASE_NOTES"], cwd = "." },
+  { label = "test-policy: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "test-policy", "--glob", "estate_test_policy-*.whl", "--cwd", ".", "--notes-env", "TEST_POLICY_RELEASE_NOTES"], cwd = "." },
 ]
