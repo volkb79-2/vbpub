@@ -273,7 +273,7 @@ class WrapperArgvTests(DevCase):
         self.assertEqual(caps, ["SYS_PTRACE"] if sub[0] in ("gdb", "strace") else [])
         # core dumps are off everywhere: a piped core_pattern would send them to a host handler outside the cgroup
         self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "--ulimit"], ["core=0:0"])
-        image = argv.index("tester-unified-rust-dev:rs-20261124")
+        image = argv.index("tester-unified-rust-dev:rs-20261124b")
         self.assertEqual(argv[image + 1:image + 6], ["nice", "-n", "10", "ionice", "-c3"])
         # the deadline also runs INSIDE the container, so a killed wrapper cannot leave an unbounded container
         self.assertEqual(argv[image + 6:image + 11], TIMEOUT_PREFIX)

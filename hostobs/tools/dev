@@ -44,7 +44,7 @@ readonly SYNC_CAP_BYTES=$((20 * 1024 * 1024))
 readonly REQUIRED_HOST=v1001
 readonly REQUIRED_SLICE=dev-gates.slice
 
-image=${HOSTOBS_DEV_IMAGE:-tester-unified-rust-dev:rs-20261124}
+image=${HOSTOBS_DEV_IMAGE:-tester-unified-rust-dev:rs-20261124b}
 memory=${HOSTOBS_DEV_MEMORY-3g}
 cpus=${HOSTOBS_DEV_CPUS-2}
 pids=${HOSTOBS_DEV_PIDS-1024}

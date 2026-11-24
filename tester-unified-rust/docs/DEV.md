@@ -22,7 +22,7 @@ hostobs/tools/dev test -p hostobs-store
   1. admission slot (remote-gate's flock)
   2. preflight over scripts/controller/hx.sh -> uid, dev-gates.slice memory, PSI, one-at-a-time
   3. git bundle of HEAD (thin) + patch + untracked tar --->  ~/hostobs-dev/<12-hex>/work   (reset to HEAD, patch applied)
-  4. run over hx.sh  ---------------------------------->  docker run ... tester-unified-rust-dev:rs-20261124
+  4. run over hx.sh  ---------------------------------->  docker run ... tester-unified-rust-dev:rs-20261124b
      stdout/stderr streamed back, exit code propagated    named volume hostobs-dev-target-<12-hex> = target dir
 ```
 
@@ -88,14 +88,14 @@ The controller gives the go; a controller-run implementer or the controller does
 
    ```sh
    nice -n 19 tester-unified-rust/build-dev-image.sh \
-     --base tester-unified-rust:rs-20261124 --tag tester-unified-rust-dev:rs-20261124 \
+     --base tester-unified-rust:rs-20261124b --tag tester-unified-rust-dev:rs-20261124b \
      --cgroup-parent dev-gates.slice --builder default --record /tmp/dev-image-versions.tsv
    ```
 
    Options: `--tag IMAGE` (default `tester-unified-rust-dev:local`), `--base IMAGE` (default
    `tester-unified-rust:local`), `--builder NAME` (default `default`; precedence option, then
    `TESTER_UNIFIED_RUST_BUILDER`, then the default), `--record FILE`. Use as `--base` the image the
-   lanes name in `run-gate.root.toml` (`tester-unified-rust:rs-20261124`); the default `:local`
+   lanes name in `run-gate.root.toml` (`tester-unified-rust:rs-20261124b`); the default `:local`
    is that image only while `:local` has not been moved back to an older whole-lock image (a
    rollback of the tag would silently put the dev layer on the old image: the label
    `org.vbpub.tester-unified-rust-dev.base-image-id` shows which id it was built on). The default builder is the
@@ -375,7 +375,7 @@ committed head belongs to `remote-gate.sh`.
 
 ## Environment variables
 
-`HOSTOBS_DEV_HOST`, `HOSTOBS_DEV_IMAGE` (default `tester-unified-rust-dev:rs-20261124`),
+`HOSTOBS_DEV_HOST`, `HOSTOBS_DEV_IMAGE` (default `tester-unified-rust-dev:rs-20261124b`),
 `HOSTOBS_DEV_MEMORY`, `HOSTOBS_DEV_CPUS`, `HOSTOBS_DEV_ALLOW_PARALLEL`, `HOSTOBS_DEV_ALLOW_LOCAL`,
 `HOSTOBS_DEV_SLICE_MEM_MAX_MB`; the controller's `CONTROLLER_HOME`, `CONTROLLER_REMOTE_GATE_HOSTS`,
 `CONTROLLER_REMOTE_SLOTS`, `CONTROLLER_REMOTE_SLOT_WAIT_S`; `CGROUP_PARENT_DEV_GATES` (required).
