@@ -381,6 +381,16 @@ for _name, _before, _after in (
     ("labels-join", 'if (( slot == slots )); then labels_text+=" and ${slot_label[slot]}"; else labels_text+=", ${slot_label[slot]}"; fi',
      'labels_text+=" and ${slot_label[slot]}"'),
     ("exit-code", '    nice -n 10 run-gate "$@"\n    return $?\n  else\n    rc=$?\n  fi\n  [[ $rc == 75 ]]', '    nice -n 10 run-gate "$@"\n    return 0\n  else\n    rc=$?\n  fi\n  [[ $rc == 75 ]]'),
+    # CTL-57: the memory-PSI admission after a slot is held
+    ("psi-threshold", 'BEGIN { exit !(m + 0 >= 3) }', 'BEGIN { exit !(m + 0 > 3) }'),
+    ("psi-unreadable-quiet", 'psi_why="memory PSI unreadable ($psi_file)"; return 0 ;;', 'psi_why="memory PSI unreadable ($psi_file)"; return 1 ;;'),
+    ("psi-timeout-rc", '      exit 75\n    fi\n    if (( waited >= next_log ))', '      exit 1\n    fi\n    if (( waited >= next_log ))'),
+    ("psi-bound", 'if (( waited >= psi_wait_limit )); then', 'if (( waited > psi_wait_limit )); then'),
+    ("psi-log-rate", 'next_log=$((next_log + 60))', 'next_log=$((next_log + 10))'),
+    ("psi-first-pass-skip", '    admit_memory\n    nice -n 10 run-gate "$@"\n    return $?\n  else\n    rc=$?\n  fi\n  eval',
+     '    nice -n 10 run-gate "$@"\n    return $?\n  else\n    rc=$?\n  fi\n  eval'),
+    ("psi-poll-skip", '    admit_memory\n    nice -n 10 run-gate "$@"\n    return $?\n  else\n    rc=$?\n  fi\n  [[ $rc == 75 ]] && return 75\n  echo "cannot lock gate slot $label (flock exit $rc; $lock)"',
+     '    nice -n 10 run-gate "$@"\n    return $?\n  else\n    rc=$?\n  fi\n  [[ $rc == 75 ]] && return 75\n  echo "cannot lock gate slot $label (flock exit $rc; $lock)"'),
 ):
     mutant("scripts/controller/gate-run.sh", f"gate-run-{_name}.sh", _before, _after)
 

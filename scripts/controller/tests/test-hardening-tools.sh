@@ -444,6 +444,11 @@ LOCK2=$ROOT/locks/gate-two.lock
 mkdir -p "$LOCK_HOME" "$ROOT/locks"
 RUN_GATE_LOG=$ROOT/run-gate.log
 export RUN_GATE_LOG
+# CTL-57: gate-run waits on the host's memory PSI before it starts a gate; these cases run against a quiet file so the real
+# host's pressure never decides them (the wait itself is checked in test-gate-slots.sh).
+printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$ROOT/psi-quiet"
+unset CONTROLLER_GATE_PSI_WAIT_S
+export CONTROLLER_GATE_PSI_FILE=$ROOT/psi-quiet
 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
   CONTROLLER_GATE_LOCK="$LOCK1" CONTROLLER_GATE2_LOCK="$LOCK2" \
   "$GATE_RUN_SRC" suite --verbose > "$ROOT/gate-first.out" 2>&1 \
