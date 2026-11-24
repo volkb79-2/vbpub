@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -89,7 +90,10 @@ def _payload(
     bucket: str = "survived",
     **overrides: object,
 ) -> dict[str, object]:
-    return _record(job, judge=judge, outcome_bucket=bucket, **overrides)
+    payload = _record(job, judge=judge, outcome_bucket=bucket)
+    payload.update(mutation_store.candidate_identity_fields(job))
+    payload.update(overrides)
+    return payload
 
 
 def _write(store: Path, payload: dict[str, object]) -> None:
@@ -124,6 +128,47 @@ def _request(
         ),
         total=len(jobs),
     )
+
+
+def test_mutation_store_record_classes_are_constructed_with_keywords_only() -> None:
+    source = Path(mutation_store.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    records = {
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and any(
+            (
+                isinstance(decorator, ast.Name)
+                and decorator.id == "record"
+            )
+            or (
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Name)
+                and decorator.func.id == "record"
+            )
+            for decorator in node.decorator_list
+        )
+    }
+    offenders: list[str] = []
+    for path in Path(mutation_store.__file__).parent.rglob("*.py"):
+        path_tree = ast.parse(path.read_text(encoding="utf-8"))
+        for call in ast.walk(path_tree):
+            if not isinstance(call, ast.Call):
+                continue
+            name = (
+                call.func.id
+                if isinstance(call.func, ast.Name)
+                else call.func.attr
+                if isinstance(call.func, ast.Attribute)
+                else None
+            )
+            if name in records and (
+                call.args or any(keyword.arg is None for keyword in call.keywords)
+            ):
+                offenders.append(f"{path.name}:{call.lineno}: {name}")
+
+    assert not offenders, offenders
 
 
 def _arm_shard(
@@ -310,8 +355,26 @@ def test_carry_forward_policy_requeues_a_kill_as_a_hint(tmp_path: Path) -> None:
         ),
         (
             "window",
-            "def flag():\n    marker = 1\n    return True\n",
-            "def flag():\n    marker = 2\n    return True\n",
+            (
+                "def flag():\n"
+                "    marker = 1\n"
+                "    padding = 0\n"
+                "    padding = 1\n"
+                "    padding = 2\n"
+                "    padding = 3\n"
+                "    return True\n"
+                "    padding = 4\n"
+            ),
+            (
+                "def flag():\n"
+                "    marker = 2\n"
+                "    padding = 0\n"
+                "    padding = 1\n"
+                "    padding = 2\n"
+                "    padding = 3\n"
+                "    return True\n"
+                "    padding = 4\n"
+            ),
         ),
     ],
 )
@@ -771,16 +834,68 @@ def _zero_timings(value: object) -> object:
         return {
             key: (
                 0.0
-                if key.endswith("_seconds")
+                if (
+                    key.endswith("_seconds")
+                    or (
+                        key == "phase_seconds"
+                        and isinstance(item, dict)
+                    )
+                )
                 and isinstance(item, (int, float))
                 and not isinstance(item, bool)
-                else _zero_timings(item)
+                else (
+                    _zero_timings(item)
+                    if key != "phase_seconds"
+                    else {
+                        phase: (
+                            0.0
+                            if isinstance(seconds, (int, float))
+                            and not isinstance(seconds, bool)
+                            else seconds
+                        )
+                        for phase, seconds in item.items()
+                    }
+                )
             )
             for key, item in value.items()
         }
     if isinstance(value, list):
         return [_zero_timings(item) for item in value]
     return value
+
+
+def _first_differences(
+    left: object,
+    right: object,
+    path: tuple[object, ...] = (),
+) -> list[tuple[tuple[object, ...], object, object]]:
+    if isinstance(left, dict) and isinstance(right, dict):
+        differences = []
+        for key in sorted(left.keys() | right.keys(), key=str):
+            if key not in left or key not in right:
+                differences.append((path + (key,), left.get(key), right.get(key)))
+            else:
+                differences.extend(
+                    _first_differences(left[key], right[key], path + (key,))
+                )
+        return differences
+    if isinstance(left, list) and isinstance(right, list):
+        differences = []
+        for index in range(max(len(left), len(right))):
+            if index >= len(left) or index >= len(right):
+                differences.append(
+                    (
+                        path + (index,),
+                        None if index >= len(left) else left[index],
+                        None if index >= len(right) else right[index],
+                    )
+                )
+            else:
+                differences.extend(
+                    _first_differences(left[index], right[index], path + (index,))
+                )
+        return differences
+    return [] if left == right else [(path, left, right)]
 
 
 def _verdict_semantics(path: Path) -> dict[str, object]:
@@ -901,6 +1016,16 @@ def test_a_real_run_is_unchanged_when_store_hints_are_present(
         path.name: path.read_bytes() for path in sorted(hinted_target.glob("*.json"))
     }
     assert len(no_hint_records) == 2
+    record_differences = [
+        difference
+        for name in sorted(no_hint_records)
+        for difference in _first_differences(
+            json.loads(no_hint_records[name]),
+            json.loads(hinted_records[name]),
+            (name,),
+        )
+    ]
+    assert not record_differences, record_differences
     assert no_hint_records == hinted_records
     assert _verdict_semantics(no_hint_verdict) == _verdict_semantics(hinted_verdict)
 

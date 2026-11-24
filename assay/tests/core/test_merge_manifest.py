@@ -16,7 +16,7 @@ from test_flex_r2_campaigns import _STRICT_AB, _seed, _stable_resource_counters
 
 from assay import cli, mutation, mutation_store
 from assay.cli import main
-from assay.errors import LaneConfigError, Outcome, ReasonCode
+from assay.errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from test_mutation_judge_identity import _record
 
 _AUTOUSE = (_stable_resource_counters,)
@@ -768,6 +768,118 @@ def test_runtime_refusal_is_bad_lane_config_exit_two(
 
     with pytest.raises(mutation_store.MergeManifestError, match=token) as caught:
         _combine(manifest, (job,), tmp_path / "target")
+    assert caught.value.outcome is Outcome.ERROR
+    assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert caught.value.exit_code == 2
+
+
+def _all_refusal_case(
+    root: Path, token: str
+) -> tuple[object, str]:
+    job = _job()
+    candidate = mutation.candidate_id(job)
+    source = root / "source"
+    source.mkdir(parents=True)
+    if token == "malformed-manifest":
+        manifest = root / "manifest.json"
+        manifest.write_text("", encoding="utf-8")
+        return (
+            lambda: mutation_store.load_merge_manifest(manifest),
+            "invalid UTF-8 JSON: Expecting value: line 1 column 1 (char 0)",
+        )
+    if token == "missing-store":
+        missing = root / "absent-store"
+        manifest = _manifest(root, [(missing, (candidate,))])
+        return (
+            lambda: mutation_store.load_merge_manifest(manifest),
+            f"{missing}: not an existing directory",
+        )
+    if token == "duplicate-store":
+        manifest = _manifest(root, [(source, ()), (source, ())])
+        return (
+            lambda: mutation_store.load_merge_manifest(manifest),
+            f"{source}: also named by an earlier store entry",
+        )
+    if token == "duplicate-owner":
+        second = root / "second"
+        second.mkdir()
+        manifest = _manifest(
+            root,
+            [(source, (candidate,)), (second, (candidate,))],
+        )
+        return (
+            lambda: mutation_store.load_merge_manifest(manifest),
+            f"{source.resolve()}: candidate is also owned by {second.resolve()}",
+        )
+
+    stores: list[tuple[Path | str, tuple[str, ...]]]
+    if token == "unknown-candidate":
+        stores = [(source, (candidate, "f" * 64))]
+    elif token == "unowned-candidate":
+        stores = []
+    elif token == "judge-mismatch":
+        stores = [(source, (candidate,))]
+    elif token == "missing-owner-record":
+        stores = [(source, (candidate,))]
+    else:
+        assert token == "invalid-owner-record"
+        stores = [(source, (candidate,))]
+        (source / f"{candidate}.json").write_text("not-json", encoding="utf-8")
+    manifest = _manifest(
+        root,
+        stores,
+        judge=_OTHER_JUDGE if token == "judge-mismatch" else _JUDGE,
+    )
+    details = {
+        "unknown-candidate": (
+            f"manifest owns candidate {'f' * 64} outside the current plan"
+        ),
+        "unowned-candidate": (
+            f"current candidate {candidate} has no manifest owner"
+        ),
+        "judge-mismatch": (
+            f"manifest judge {_OTHER_JUDGE[:12]} does not match this run's "
+            f"judge {_JUDGE[:12]}"
+        ),
+        "missing-owner-record": (
+            f"{source.resolve()}: no flat {candidate}.json"
+        ),
+        "invalid-owner-record": (
+            f"{source.resolve()}: flat record is not a UTF-8 JSON object"
+        ),
+    }
+    return (
+        lambda: _combine(manifest, (job,), root / "target"),
+        details[token],
+    )
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "malformed-manifest",
+        "missing-store",
+        "duplicate-store",
+        "duplicate-owner",
+        "unknown-candidate",
+        "unowned-candidate",
+        "judge-mismatch",
+        "missing-owner-record",
+        "invalid-owner-record",
+    ],
+)
+def test_every_manifest_refusal_renders_its_exact_message_and_exit_class(
+    tmp_path: Path, token: str
+) -> None:
+    operation, detail = _all_refusal_case(tmp_path, token)
+
+    with pytest.raises(AssayError) as caught:
+        operation()  # type: ignore[operator]
+
+    message = str(caught.value)
+    expected = f"merge manifest refused: {token}: {detail}"
+    assert message == expected
+    assert f"merge manifest refused: {token}:" in message
     assert caught.value.outcome is Outcome.ERROR
     assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
     assert caught.value.exit_code == 2
