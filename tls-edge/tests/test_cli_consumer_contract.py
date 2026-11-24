@@ -344,6 +344,40 @@ def test_validate_ignores_an_absent_consumer_env(
     assert result == 0, output
 
 
+def test_validate_refuses_a_non_docker_ingress_network_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    override = root / "stack" / "ciu-stack" / "ciu.toml.j2"
+    override.write_text(
+        '[tls_edge]\ndomain = "edge.example.test"\ningress_network = "edge public"\n',
+        encoding="utf-8",
+    )
+    result, output = run_cli(
+        monkeypatch,
+        ["validate", "--root", str(root)],
+    )
+    assert result == 2, output
+    assert "ingress_network must be a valid Docker network name" in output
+    assert "Traceback" not in output
+
+
+def test_configure_refuses_a_non_docker_ingress_network_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    answers_path = answer_file(
+        tmp_path / "answers.toml",
+        '[tls_edge]\ndomain = "edge.example.test"\ningress_network = "edge public"\n',
+    )
+    result, output = _configure(root, answers_path, monkeypatch)
+    assert result == 2, output
+    assert "ingress_network must be a valid Docker network name" in output
+    assert "Traceback" not in output
+
+
 def test_validate_names_every_drifted_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

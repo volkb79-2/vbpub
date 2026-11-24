@@ -21,6 +21,7 @@ TLS_MODES = ("acme-tls", "acme-http", "acme-dns", "static", "dev")
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")
 _PROVIDER = re.compile(r"[a-z0-9][a-z0-9_-]{1,39}")
 _VOLUME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+_DOCKER_NETWORK = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _CGROUP_PARENT = re.compile(r"[A-Za-z0-9_./@-]{1,255}")
 _ABSOLUTE_MOUNT_PATH = re.compile(r"/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]*")
 _TEMPLATE_MARKERS = ("{{", "{%", "{#")
@@ -413,6 +414,14 @@ def validate_config(
         normalize_domain(domain)
     elif domain:
         normalize_domain(domain)
+
+    if "ingress_network" in config:
+        ingress_network = config["ingress_network"]
+        if (
+            not isinstance(ingress_network, str)
+            or _DOCKER_NETWORK.fullmatch(ingress_network) is None
+        ):
+            raise ConfigError("ingress_network must be a valid Docker network name")
 
     expose_http = _required(ports, "expose_http", "ports.expose_http")
     h3_enabled = _required(http3, "enabled", "http3.enabled")
