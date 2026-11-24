@@ -1201,14 +1201,16 @@ is only done with the lanes drained (see the migration below).
 memory or oomd keys on system.slice, user.slice or the dev slices: `mdt-host-check.sh` FAILs on such files on this role (WARN elsewhere) and on a foreign memory
 drop-in (`90-vbpub-memory-min.conf`, MemoryMin only, is allowed; the runner's `20-memory-policy.conf` is a WARN naming `provision-gates-limits.sh`).
 
-**Migrating an installed host** (main controller, root; r1002): (0) drain the lanes, then check dev.slice `memory.current` <= 7124254720 and dev-gates and dev-background
-each <= 4439900160 (a reload may apply the lower `memory.max` itself); (1) `mdt-host-check.sh` and `grep -rs ManagedOOM /etc/systemd/system/{system,dev*}.slice.d/`: nothing may
-set `kill`; (2) copy aside, then delete, only the memory and oomd runtime files of dev.slice, dev-gates, dev-background and system.slice under `/run/systemd/system.control/`
-(never `systemctl revert`, no hand daemon-reload); (3) in `/etc/mdt/host-setup.env` SET `DEV_MEMORY_HIGH=`, `DEV_MEMORY_MAX=`, `DEV_GATES_MEMORY_HIGH=`, `DEV_GATES_MEMORY_MAX=`,
+**Migrating an installed host** (main controller, root; r1002): (0) only on `HOST_ROLE=dedicated-dev`; drain the lanes AND HOLD the drain until step 4 is verified (no run-gate or mutation lane, vm-lab or edge demo stack in dev-gates or
+dev-background; a reload, install.sh's or the reconcile timer's IO reload, may apply the lower `memory.max` itself); (1) `mdt-host-check.sh` and
+`grep -rs ManagedOOM /etc/systemd/system/{system,user,dev*}.slice.d/`: nothing may set `kill`; (2) copy aside, then delete, the memory and oomd keys of the runtime files of
+`{system,user,dev*}.slice.d` under BOTH `/run/systemd/system.control/` and `/etc/systemd/system.control/` (the places `mdt-host-check.sh` FAILs on; files with other content are
+left for hand handling; never `systemctl revert`, no hand daemon-reload); (3) in `/etc/mdt/host-setup.env` SET `DEV_MEMORY_HIGH=`, `DEV_MEMORY_MAX=`, `DEV_GATES_MEMORY_HIGH=`, `DEV_GATES_MEMORY_MAX=`,
 `DEV_BACKGROUND_MEMORY_HIGH=`, `DEV_BACKGROUND_MEMORY_MAX=` and `DOCKER_SCOPE_BACKSTOP_MEMORY_MAX=` (or `8G`) to empty and never delete those lines (install.sh refuses an env that lacks a
 declared key; an old example's `DEV_BACKGROUND_MEMORY_MAX=8G` is refused and its `DEV_GATES_MEMORY_MAX=1.5G` would silently pin the gates), empty `DEV_HOST_MEMORY_KEEP=`, leave
-`DEV_HOST_MEMORY_MIN` and `DEV_HOST_MEMORY_MARGIN` empty, keep `MDT_PSI_GUARD=report`; (4) `sudo ./install.sh`; the dev (7.5 to 6.70 GiB) and tier (5.5 to 4.20 GiB) lowering is
-safe because of step 0; the converge defers its own write if a lane is still above the target and the timer finishes it; (5) rebuild the cockpit devcontainer when convenient; (6) the acceptance and measurement
+`DEV_HOST_MEMORY_MIN` and `DEV_HOST_MEMORY_MARGIN` empty (append after a trailing newline), keep `MDT_PSI_GUARD=report`; then derive the targets with
+`python3 mdt_capacity.py dedicated-memory /etc/mdt/host-setup.env --meminfo /proc/meminfo` and check each `memory.current` <= target - 64M; (4) `sudo ./install.sh`; the dev (7.5 to
+6.70 GiB) and tier (5.5 to 4.20 GiB) lowering is safe because of step 0; the converge defers its own write if a lane is still above the target and the timer finishes it; (5) rebuild the cockpit devcontainer when convenient; (6) the acceptance and measurement
 run of the design note (section 4.1 load and window, then write the measured floors, `DEV_HOST_MEMORY_MARGIN` and `DEV_HOST_MEMORY_MEASURED`, re-run install.sh; on failure pin
 `DEV_HOST_MEMORY_KEEP=1280M` and file the result). `mdt-host-check.sh` NOTEs while `DEV_HOST_MEMORY_MEASURED` is empty.
 

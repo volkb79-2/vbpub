@@ -89,7 +89,7 @@ class DerivationTests(unittest.TestCase):
 
     def test_an_explicit_unlimited_dev_memory_max_is_refused(self) -> None:
         # P-plat-19e review B1: `-`, 0, max and infinity would run the whole dev tree at memory.max=max
-        for raw in ("-", "0", "max", "infinity", "MAX"):
+        for raw in ("-", "0", "0G", "0.0", "max", "infinity", "MAX"):
             with self.subTest(raw), self.assertRaisesRegex(cap.CapacityError, "without a MemoryMax"):
                 cap.dedicated_memory({"DEV_MEMORY_MAX": raw}, **HOST)
 

@@ -571,6 +571,8 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int,
             parsed = parse_size_bytes(raw)
             if parsed is None:
                 raise CapacityError(f"{key}={raw!r} is not a size (use a size such as 6G, `-` or 0 to omit)")
+            if parsed == 0 and key == "DEV_MEMORY_MAX":  # 0G, 0M, 0.0 ...: an unlimited dev tree (review r2 B1a)
+                raise CapacityError(f"{key}={raw!r} would leave dev.slice without a MemoryMax; empty derives it, or give a size")
             if parsed == 0:  # the shared validators' "0 = none": same as `-`
                 return None, "omitted (0)"
             if key != "DEV_MEMORY_LOW" and parsed < DEDICATED_MEMORY_PIN_MIN:

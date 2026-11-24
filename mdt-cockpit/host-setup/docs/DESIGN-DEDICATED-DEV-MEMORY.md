@@ -329,11 +329,14 @@ formula reads "gates MemoryMax (dedicated-dev) or MemoryHigh", so the memory ter
 1. Run `mdt-host-check.sh` (19d already FAILs on non-`auto` `ManagedOOM*`) and
    `grep -rs ManagedOOM /etc/systemd/system/{system,dev*}.slice.d/`: nothing in `/etc` may set `kill` before the
    runtime oomd files go (r1 12a).
-2. Copy, then delete, only the memory and oomd runtime files of dev.slice, dev-gates, dev-background and
-   system.slice under `/run/systemd/system.control/`. Never `systemctl revert`; **no daemon-reload by hand**
-   (install.sh renders first, then reloads).
-   **Step 0 (impl review r1 F2):** drain the lanes first; dev.slice `memory.current` <= 7124254720 and each load tier
-   <= 4439900160 before install.sh.
+   **Step 0 (impl review r1 F2, r2 M2):** only on `HOST_ROLE=dedicated-dev`; drain the lanes AND HOLD the drain until
+   step 4 is verified (also vm-lab and the edge demo stacks in dev-gates/dev-background); the reconcile timer's IO
+   reload applies a lowering like install.sh's. Re-derive the targets with `mdt_capacity.py dedicated-memory` after
+   step 3 and check each `memory.current` <= target - 64M.
+2. Copy, then delete, the memory and oomd keys of the runtime files of `{system,user,dev*}.slice.d` under both
+   `/run/systemd/system.control/` and `/etc/systemd/system.control/` (the set check.sh FAILs on; r2 M1). Never
+   `systemctl revert`; **no daemon-reload by hand** (install.sh renders first, then reloads). The exact block is
+   in the implementation report.
 3. `/etc/mdt/host-setup.env`: SET the HIGH/MAX pins and `DOCKER_SCOPE_BACKSTOP_MEMORY_MAX` (or `8G`) to empty
    (`KEY=`); never delete those lines (install.sh refuses a missing declared key; F1). `DEV_HOST_MEMORY_KEEP=` empty;
    leave `DEV_HOST_MEMORY_MIN` and `DEV_HOST_MEMORY_MARGIN` empty; keep `MDT_PSI_GUARD=report`.
