@@ -445,6 +445,9 @@ On btrfs, `layout_policy.disk_spec` accepts only `partitioning.root: "*"`,
 `btrfs_root_resize_unsupported`, `btrfs_reserve_unsupported`,
 `btrfs_data_kind_unsupported`, `btrfs_iobench_raw_unavailable`, and
 `btrfs_swap_needs_p3`.
+Config load also refuses `unsafe_state_path` on every root, ext4 included:
+`state_dir` must be absolute and contain only `[A-Za-z0-9._/-]`, with no
+`..` segment and no trailing slash.
 
 Example for the r1002 CoW area, `@cow` at `/srv/cow`:
 
@@ -496,7 +499,7 @@ When the cloud-init package is absent, a requested cleanup is a named no-op,
 not an error. When `/usr/local/sbin/dr-state` exists and reports a managed
 running `@os-*` state, stage two writes `phase=done` and `stage2_done` before
 exactly one `dr-state snapshot --reason host-setup`; the snapshot is the last
-host-changing step and captures a completed stage two. A snapshot failure
+change to the OS state and captures a completed stage two. A snapshot failure
 removes `stage2_done` and fails stage two.
 If the layer is absent or reports an unmanaged root, no snapshot is taken and
 the summary says why. A stage-two re-run after the completion marker exists

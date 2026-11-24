@@ -16,6 +16,9 @@ All notable changes to debian-install-v2 are recorded here.
   `none` or `subvolumes`, no raw benchmark partition, and `swap_policy: "off"`
   with `swap_partition_count: 0` are accepted; each unsupported shape has a
   named refusal.
+- Config load applies `unsafe_state_path` to every root, ext4 included:
+  `state_dir` must be absolute and contain only characters matching
+  `[A-Za-z0-9._/-]`, with no `..` segment and no trailing slash.
 - `data.kind: "subvolumes"` creates top-level `@...` children under `/.top`,
   verifies idempotent NOCOW properties before writing the setting, reapplies
   `chattr +C` to an empty subvolume after an interrupted create, writes fstab

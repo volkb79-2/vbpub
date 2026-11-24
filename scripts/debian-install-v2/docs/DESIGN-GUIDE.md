@@ -376,7 +376,7 @@ When the rollback layer is present and `dr-state list` shows a managed running
 state, stage two first writes `phase=done` and `stage2_done`, then takes one
 final `dr-state snapshot --reason host-setup`. The marker exists at snapshot
 time, so the checkpoint contains a completed stage two; the snapshot remains
-the last host-changing step. Its failure removes the marker again and fails
+the last change to the OS state. Its failure removes the marker again and fails
 stage two. Both v2 stage environments set `DR_STATE=none`; the snapshot call
 uses `env -u DR_STATE` so it alone is visible to the rollback layer. A re-run
 after `stage2_done` is a no-op, including no second snapshot. When the command
