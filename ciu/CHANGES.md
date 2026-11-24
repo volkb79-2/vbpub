@@ -21,6 +21,35 @@ the technical detail below it.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [7.27.0] - 2026-11-24
+<!-- cmru: generated -->
+<!-- cmru: source-end=14a43edb2e11c5a65f6b8508b3143275ed88c494 -->
+
+### Fixed
+- fix(ciu): P-core-10 r2 fix-forward: disable git auto-maintenance in the suite env (M1), CLI-EXT-47 -> CLI-EXT-51 in the three ciu references (M3), file CIU-234 (M2) (6a154c358)
+- fix(ciu): close P-core-10 review round 1 (11d17f969)
+- fix(ciu): adopt shared renderer and bounded procio (CIU-220, CIU-224) (f7cd47d51)
+
+### Documentation
+- docs(ciu): file CIU-230/231; amend CIU-227 (second dry-run hostdir specimen) and CIU-229 (git-created worktree rm) (c4d9e21e9)
+- docs(ciu): file CIU-224..229; amend CIU-220 (procio design) and CIU-162 (d01efbfdd)
+- docs(ciu): record CIU-223 pathlib-fake follow-up and leak scan (e697de42a)
+- docs(ciu): record CIU-223 test-process fix (tests only) (cd6014365)
+- docs(ciu): CIU-222 review fixes (code locations in the worktree library, verified-once wording, evidence reference without host name) (98f2bb3e6)
+- docs(ciu): CIU-222 lists all four measured requirements of a standalone instance dir (04a5a6fbe)
+- docs(ciu): file CIU-222 (ciu up in a standalone non-git instance dir aborts at the S16.3 git requirement) (166c43dd7)
+
+### Testing
+- test(ciu): make pytester child cleanup load-independent (fcac9a4ac)
+- test(ciu): reap pytester probe children before inner exit (53eb3ea86)
+- test(ciu): release pytester children through an inherited pipe (9dd0080f0)
+- test(ciu): prove the CIU-223 guard and add its opt-out (758367fb9)
+- test(ciu): keep CIU-223 guard independent of pathlib test fakes (d4c4d5f09)
+- test(ciu): keep CIU-215 git calls from leaving maintenance children (CIU-223) (132f7bebb)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - CIU-220: `procutil.run_cmd(capture=True)` now delegates to
   `cli_extended.procio.run_capture`, preserving the existing
@@ -64,8 +93,7 @@ the technical detail below it.
   PID-naming WARN to stderr; Compose-up returns the child's code and writes that
   WARN to CIU's stdout. Compose-up also gains the 1800-second no-progress
   boundary.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [7.26.0] - 2026-11-18
 <!-- cmru: generated -->

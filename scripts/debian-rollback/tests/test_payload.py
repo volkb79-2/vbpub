@@ -16,7 +16,8 @@ from unittest import mock
 
 import _support
 
-_FILES = _support._PROJECT / "files" / "usr" / "local"
+_PAYLOAD_ROOT = _support._PROJECT / "files"
+_FILES = _PAYLOAD_ROOT / "usr" / "local"
 LAUNCHER = _FILES / "sbin" / "dr-state"
 
 
@@ -54,6 +55,17 @@ class PayloadTest(unittest.TestCase):
         ):
             with self.subTest(module=module):
                 self.assertTrue((package / f"{module}.py").is_file())
+
+    def test_d27_hook_files_and_modes(self) -> None:
+        for relative, mode in (
+            ("etc/apt/apt.conf.d/80dr-state", 0o644),
+            ("etc/kernel/postinst.d/zz-dr-state", 0o755),
+            ("etc/kernel/postrm.d/zz-dr-state", 0o755),
+        ):
+            with self.subTest(path=relative):
+                path = _PAYLOAD_ROOT / relative
+                self.assertTrue(path.is_file())
+                self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), mode)
 
     def test_launcher_runs_isolated_and_reaches_the_error_translation(self) -> None:
         # With the real dispatcher (P-20b) `list` on an empty sysroot is refused
