@@ -263,3 +263,39 @@ def test_up_reaches_step_8_in_plan_only_mode_only_for_a_dry_run(monkeypatch, tmp
             skip_hooks=True, skip_secrets=True,
         )
     assert seen == [dry_run]
+
+
+@pytest.mark.parametrize("plan_only", [False, True])
+def test_an_existing_compatible_directory_needs_no_helper_and_is_left_alone(
+    tmp_path, monkeypatch, capsys, unprivileged, plan_only,
+):
+    """The compatible-ownership early return comes BEFORE the helper precondition.
+
+    Nothing is chowned for a directory that already carries the target
+    ownership, so a missing ``CGROUP_PARENT_DEV_INTERACTIVE`` must not refuse it
+    and nothing is created or counted. The target ownership is read back from
+    the directory itself, so the verdict does not depend on the process uid.
+    """
+    monkeypatch.delenv("CGROUP_PARENT_DEV_INTERACTIVE", raising=False)
+    existing = tmp_path / "vol-api-data"
+    existing.mkdir()
+    st = existing.stat()
+    config = {
+        "deploy": {"env": {"shared": {
+            "CONTAINER_UID": str(st.st_uid), "DOCKER_GID": str(st.st_gid),
+        }}},
+        "service": {"name": "api", "hostdir": {"data": ""}},
+    }
+    monkeypatch.setattr(engine.os, "chown", lambda *_a: pytest.fail("nothing to chown"))
+
+    engine.create_hostdirs(
+        config, tmp_path, repo_root=tmp_path, physical_root=tmp_path, plan_only=plan_only,
+    )
+
+    out = capsys.readouterr().out
+    assert f"Exists with compatible ownership: {existing}" in out
+    assert config["service"]["hostdir"]["data"] == str(existing.resolve())
+    if plan_only:
+        assert "Would create 0 volume directories" in out
+    else:
+        assert "No volume directories to create" in out
