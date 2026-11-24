@@ -37,12 +37,16 @@ esac
 SH
 chmod +x "$ROOT/bin/tmux"
 
-# frame <dir> <phase> <n> <kind>: B busy, I idle, D idle with a stale busy line above the last 4, C cleared, N not yet cleared
+# frame <dir> <phase> <n> <kind>: B busy, I idle (input row = marker + NBSP only), T idle with text typed in the
+# input row, S idle with an older non-empty input row in the scrollback and an empty current one, D idle with a
+# stale busy line above the last 4, C cleared, N not yet cleared
 frame() {
   local f; f=$(printf '%s/frames/%s.%03d' "$1" "$2" "$3")
   case $4 in
     B) printf 'output\n  * Thinking (12s . esc to interrupt)\n\n' >"$f" ;;
-    I) printf 'output\n> \n\n  ctx 41%%\n' >"$f" ;;
+    I) printf 'output\n❯\xc2\xa0\n\n  ctx 41%%\n' >"$f" ;;
+    T) printf 'output\n❯ half-typed text\n\n  ctx 41%%\n' >"$f" ;;
+    S) printf '❯ older prompt\nreply\n❯\xc2\xa0\n\n  ctx 41%%\n' >"$f" ;;
     D) printf '(esc to interrupt)\n1\n2\n3\n4\n> \n' >"$f" ;;
     C) printf '\n> \n  ctx ?\n' >"$f" ;;
     N) printf '> \n  loading\n' >"$f" ;;
@@ -65,15 +69,16 @@ calls() { cat -- "$D/calls.log" 2>/dev/null; }
 rep() { local n=$1; shift; local i; for ((i = 0; i < n; i++)); do printf '%s\n' "$@"; done; }
 
 # 1. Busy then idle (with an idle blip that resets the count): waits for 3 idle checks in a row,
-#    sends /clear, waits for the cleared marker, types the prompt exactly, then Enter.
+#    sends /clear, waits for the cleared marker (3 polls), 3 more checks before the prompt, types the
+#    prompt exactly, then Enter.
 scenario happy "B B I I B I I I" "N N C"
 run '%9' "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "happy path exit $RC"
-want=$( { echo "has-session %9"; rep 8 "capture start"; echo "send-keys %9 /clear Enter"; rep 3 "capture cleared"
+want=$( { echo "has-session %9"; rep 8 "capture start"; echo "send-keys %9 /clear Enter"; rep 6 "capture cleared"
           echo "send-keys %9 -l <text>"; echo "send-keys %9 Enter"; echo "capture cleared"; } )
 [[ $(calls) == "$want" ]] || { calls >&2; fail "happy path call sequence"; }
 cmp -s "$D/sent.txt" "$D/expected.txt" || fail "prompt text was not sent exactly"
-contains "$D/log" "pane idle; sending /clear" "idle logged"
+contains "$D/log" "pane idle, input empty; sending /clear" "idle logged"
 contains "$D/log" "clear confirmed (ctx ?)" "clear logged"
 contains "$D/log" "prompt sent; footer:" "final footer logged"
 
@@ -104,16 +109,42 @@ CLEAR_RESUME_CLEAR_TRIES=3 run '%9' "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "no cleared marker exit $RC"
 contains "$D/log" "WARN no 'ctx ?' after 60 s" "WARN logged"
 cmp -s "$D/sent.txt" "$D/expected.txt" || fail "no cleared marker: prompt not sent"
-[[ $(calls | grep -c '^capture cleared') -eq 5 ]] || fail "no cleared marker: 3 polls + WARN footer + final footer"
+[[ $(calls | grep -c '^capture cleared') -eq 8 ]] || fail "no cleared marker: 3 polls + WARN footer + 3 pre-prompt checks + final footer"
 
-# 5b. A failing send-keys of the prompt exits 5 and is not logged as sent (the happy path above types a
+# 5b. A failing send-keys of the prompt exits 6 and is not logged as sent (the happy path above types a
 #     prompt starting with "-", which the stub rejects without "--": the old code lost it silently).
 scenario sendfail "I" "C"
 touch "$D/sendfail"
 run '%9' "$D/prompt.txt" "$D/log"
-[[ $RC -eq 5 ]] || fail "send-keys failure exit $RC (want 5)"
+[[ $RC -eq 6 ]] || fail "send-keys failure exit $RC (want 6)"
 contains "$D/log" "ERROR send-keys failed (text)" "send failure logged"
 not_contains "$D/log" "prompt sent" "send failure: logged as sent"
+
+# 5c. Text in the input row: nothing is sent until it is empty again, before /clear and before the prompt;
+#     the LAST input row counts (an older non-empty one in the scrollback does not), NBSP-only is empty.
+scenario typing "T T I I I" "C T T C C C"
+run '%9' "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "typing exit $RC"
+want=$( { echo "has-session %9"; rep 5 "capture start"; echo "send-keys %9 /clear Enter"; rep 6 "capture cleared"
+          echo "send-keys %9 -l <text>"; echo "send-keys %9 Enter"; echo "capture cleared"; } )
+[[ $(calls) == "$want" ]] || { calls >&2; fail "typing: nothing may be sent before the input row is empty"; }
+scenario scroll "S" "C"
+run '%9' "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "older non-empty input row in the scrollback blocked the send (exit $RC)"
+[[ $(calls | grep -c '^capture start') -eq 3 ]] || fail "scrollback row: expected exactly 3 checks"
+
+# 5d. The input row never empties: exit 5, nothing is ever sent (checked from the recorded send-keys calls),
+#     at the start and again before the prompt (after /clear).
+scenario typed "T" "C"
+CLEAR_RESUME_IDLE_TRIES=5 run '%9' "$D/prompt.txt" "$D/log"
+[[ $RC -eq 5 ]] || fail "input never empty exit $RC (want 5)"
+contains "$D/log" "ERROR input line still has text" "input never empty logged"
+not_contains <(calls) "send-keys" "input never empty: keys were sent"
+scenario typedlate "I" "C T"
+CLEAR_RESUME_IDLE_TRIES=5 run '%9' "$D/prompt.txt" "$D/log"
+[[ $RC -eq 5 ]] || fail "input never empty after /clear exit $RC (want 5)"
+[[ $(calls | grep -c '^send-keys') -eq 1 ]] || { calls >&2; fail "input never empty after /clear: only /clear Enter may be sent"; }
+[[ ! -e $D/sent.txt ]] || fail "input never empty after /clear: the prompt was typed"
 
 # 6. Argument and precondition errors exit 2 and send nothing.
 scenario args "I" "C"

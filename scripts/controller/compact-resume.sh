@@ -13,9 +13,10 @@ set -u
 # Exit codes: 0 resume prompt sent (a compaction that never showed busy only logs WARN); 2 bad
 # arguments, unreadable guidance/prompt file, unwritable log or no such pane (nothing sent);
 # 3 pane never idle within 30 min (nothing sent); 4 compaction not finished within 60 min (the
-# /compact was sent, the resume prompt was not); 5 a send-keys call failed (text may be partly typed,
-# nothing more is sent). Progress goes to <log-file>. Footer markers and
-# the shared idle logic: resume-lib.sh. Test seams (tests/test-compact-resume.sh):
+# /compact was sent, the resume prompt was not); 5 the input line never emptied (someone has text
+# there, or the pane stayed busy before the resume prompt; checked before /compact and before the
+# prompt, nothing is typed over it); 6 a send-keys call failed (text may be partly typed, nothing
+# more is sent). Progress goes to <log-file>. Footer markers and the shared idle logic: resume-lib.sh. Test seams (tests/test-compact-resume.sh):
 # COMPACT_RESUME_{POLL,IDLE_TRIES,TYPE_PAUSE,FINAL_WAIT,START_TRIES,DONE_TRIES,SETTLE}.
 RESUME_PREFIX=COMPACT_RESUME
 # shellcheck source=resume-lib.sh
@@ -30,16 +31,17 @@ check_log
 [[ -r $prompt_file ]] || { say "ERROR prompt file unreadable: $prompt_file"; exit 2; }
 check_pane
 say "start pane=$pane guidance=$guidance_file prompt=$prompt_file"
-wait_idle "$idle_tries" || { say "ERROR pane never idle within 30 min"; exit 3; }
+idle_or_exit "$idle_tries" 3 "pane never idle within 30 min"
 guidance=$(cat -- "$guidance_file"); guidance=${guidance//$'\n'/ }
-say "pane idle; footer before: $(foot | grep -o 'ctx [0-9?]*k\?' | tail -1)"
+say "pane idle, input empty; footer before: $(foot | grep -o 'ctx [0-9?]*k\?' | tail -1)"
 send_text "/compact $guidance"
 started=0
 for _ in $(seq "$start_tries"); do if busy; then started=1; break; fi; sleep "$poll"; done
 if [[ $started -eq 1 ]]; then say "compaction running"; else say "WARN compaction never showed busy"; fi
-wait_idle "$done_tries" || { say "ERROR compaction not finished within 60 min"; exit 4; }
+wait_idle "$done_tries" busy-only || { say "ERROR compaction not finished within 60 min"; exit 4; }
 say "compaction done; footer: $(foot | tr '\n' '|')"
 sleep "$settle"
+idle_or_exit "$idle_tries" 5 "pane busy for 30 min after the compaction; resume prompt NOT sent"
 send_text "$(cat -- "$prompt_file")"
 sleep "$final_wait"
 say "resume prompt sent; footer: $(foot | tr '\n' '|')"

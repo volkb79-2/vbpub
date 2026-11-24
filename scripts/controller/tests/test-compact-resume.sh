@@ -44,13 +44,16 @@ esac
 SH
 chmod +x "$ROOT/bin/tmux"
 
-# frame <dir> <phase> <n> <kind>: B busy, K compacting spinner, I idle
+# frame <dir> <phase> <n> <kind>: B busy, K compacting spinner, I idle (input row = marker + NBSP only), T idle
+# with text typed in the input row, S idle with an older non-empty input row in the scrollback and an empty current one
 frame() {
   local f; f=$(printf '%s/frames/%s.%03d' "$1" "$2" "$3")
   case $4 in
     B) printf 'output\n  * Thinking (12s . esc to interrupt)\n\n' >"$f" ;;
     K) printf 'output\n  * Compacting conversation... (3s)\n\n' >"$f" ;;
-    I) printf 'output\n> \n\n  ctx 442k\n' >"$f" ;;
+    I) printf 'output\n❯\xc2\xa0\n\n  ctx 442k\n' >"$f" ;;
+    T) printf 'output\n❯ half-typed text\n\n  ctx 442k\n' >"$f" ;;
+    S) printf '❯ older prompt\nreply\n❯\xc2\xa0\n\n  ctx 442k\n' >"$f" ;;
   esac
 }
 # scenario <name> <start frames> <compact frames>: fresh stub dir, guidance, prompt and log
@@ -75,16 +78,17 @@ rep() { local n=$1; shift; local i; for ((i = 0; i < n; i++)); do printf '%s\n' 
 #    and submitted, the first idle frame is skipped while waiting for the spinner, the Compacting
 #    spinner counts as busy, then 3 idle checks, and only then the resume prompt, exactly, then Enter.
 #    start: B I I I (4 checks) + footer-before = 5 captures.
-#    compact: I K K I I I (start wait: I, K; idle wait: K I I I) + done footer = 7, send, final footer = 1.
+#    compact: I K K I I I (start wait: I, K; idle wait: K I I I) + done footer = 7, 3 checks before the
+#    prompt = 10, send, final footer = 1.
 scenario happy "B I I I" "I K K I I I"
 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "happy path exit $RC"
 want=$( { echo "has-session %9"; rep 5 "capture start"; echo "send-keys %9 -l <text 1>"; echo "send-keys %9 Enter"
-          rep 7 "capture compact"; echo "send-keys %9 -l <text 2>"; echo "send-keys %9 Enter"; echo "capture compact"; } )
+          rep 10 "capture compact"; echo "send-keys %9 -l <text 2>"; echo "send-keys %9 Enter"; echo "capture compact"; } )
 [[ $(calls) == "$want" ]] || { calls >&2; fail "happy path call sequence"; }
 cmp -s "$D/sent.1" "$D/expected-compact.txt" || fail "/compact line was not sent exactly"
 cmp -s "$D/sent.2" "$D/expected-prompt.txt" || fail "resume prompt was not sent exactly"
-contains "$D/log" "pane idle; footer before: ctx 442k" "idle logged with the footer"
+contains "$D/log" "pane idle, input empty; footer before: ctx 442k" "idle logged with the footer"
 contains "$D/log" "compaction running" "compaction start logged"
 contains "$D/log" "compaction done; footer:" "compaction end logged"
 contains "$D/log" "resume prompt sent; footer:" "final footer logged"
@@ -93,7 +97,7 @@ contains "$D/log" "resume prompt sent; footer:" "final footer logged"
 scenario blips "I B I I B I I I" "K I I K I I K I I I"
 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "idle blips exit $RC"
-[[ $(calls | grep -c '^capture compact') -eq 12 ]] || { calls >&2; fail "blips: compact captures (start 1 + wait 9 + 2 footers)"; }
+[[ $(calls | grep -c '^capture compact') -eq 15 ]] || { calls >&2; fail "blips: compact captures (start 1 + wait 9 + done footer + 3 checks + final footer)"; }
 cmp -s "$D/sent.2" "$D/expected-prompt.txt" || fail "blips: resume prompt not sent"
 
 # 3. Never idle (continuously busy): exit 3, nothing sent.
@@ -122,15 +126,42 @@ COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 contains "$D/log" "WARN compaction never showed busy" "WARN logged"
 cmp -s "$D/sent.2" "$D/expected-prompt.txt" || fail "no spinner: resume prompt not sent"
 
-# 5b. A failing send-keys exits 5, is not logged as sent and nothing more is sent (the happy path types a
+# 5b. A failing send-keys exits 6, is not logged as sent and nothing more is sent (the happy path types a
 #     resume prompt starting with "-", which the stub rejects without "--": the old code lost it silently).
 scenario sendfail "I" "I"
 touch "$D/sendfail"
 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
-[[ $RC -eq 5 ]] || fail "send-keys failure exit $RC (want 5)"
+[[ $RC -eq 6 ]] || fail "send-keys failure exit $RC (want 6)"
 contains "$D/log" "ERROR send-keys failed (text)" "send failure logged"
 [[ ! -e $D/sent.1 ]] || fail "send failure: something was recorded as sent"
 not_contains "$D/log" "compaction running" "send failure: went on waiting for a compaction"
+
+# 5c. Text in the input row: nothing is sent until it is empty again, before the /compact and before the resume
+#     prompt (text typed DURING the compaction does not stall the compaction wait); the LAST input row counts
+#     (an older non-empty one in the scrollback does not); NBSP-only is empty.
+#     start: T T I I I + footer = 6; compact: I K K I T I I | T T I I I = 12.
+scenario typing "T T I I I" "I K K I T I I T T I I I"
+run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "typing exit $RC"
+want=$( { echo "has-session %9"; rep 6 "capture start"; echo "send-keys %9 -l <text 1>"; echo "send-keys %9 Enter"
+          rep 12 "capture compact"; echo "send-keys %9 -l <text 2>"; echo "send-keys %9 Enter"; echo "capture compact"; } )
+[[ $(calls) == "$want" ]] || { calls >&2; fail "typing: nothing may be sent before the input row is empty"; }
+scenario scroll "S" "I"
+COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "older non-empty input row in the scrollback blocked the send (exit $RC)"
+[[ $(calls | grep -c '^capture start') -eq 4 ]] || fail "scrollback row: expected 3 checks + the footer"
+
+# 5d. The input row never empties: exit 5 and nothing is ever sent while it has text (checked from the recorded
+#     send-keys calls), at the start, and again before the resume prompt (/compact sent, prompt not).
+scenario typed "T" "I"
+COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 5 ]] || fail "input never empty exit $RC (want 5)"
+contains "$D/log" "ERROR input line still has text" "input never empty logged"
+not_contains <(calls) "send-keys" "input never empty: keys were sent"
+scenario typedlate "I" "K I I I T"
+COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 5 ]] || fail "input never empty before the prompt exit $RC (want 5)"
+[[ $(calls | grep -c '^send-keys') -eq 2 && ! -e $D/sent.2 ]] || { calls >&2; fail "input never empty before the prompt: only the /compact line and its Enter may be sent"; }
 
 # 6. Argument and precondition errors exit 2 and send nothing.
 scenario args "I" "I"

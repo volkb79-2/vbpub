@@ -672,7 +672,9 @@ An interactive Claude Code session in a tmux pane can be restarted without the o
 click. Both helpers wait until the pane is idle (no busy marker for 3 checks, max 30 min), act,
 then type the prompt file's text and Enter; exit codes are in each script header (2: bad
 arguments or no pane, nothing sent; 3: never idle; compact only, 4: compaction unfinished;
-5: a `tmux send-keys` call failed).
+5: the input line never emptied; 6: a `tmux send-keys` call failed). Before EVERY typed send both
+helpers wait until the pane is idle AND the input row (the last line starting with `❯`) is empty,
+so nothing is typed over text someone has in the input line.
 
 - **Default: `/compact` via `scripts/controller/compact-resume.sh <pane-id> <guidance-file>
   <prompt-file> <log>`.** Sends `/compact <guidance>`, waits for the compaction to finish, then
