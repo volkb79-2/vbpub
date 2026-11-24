@@ -100,7 +100,7 @@ work on both images (that call is unchanged), but a lock edit, even workspace-on
 passes only on an image built from this source.
 
 The `tester-unified-rust` environment in `run-gate.root.toml` names
-`tester-unified-rust:rs-20261118` (registry-set identity). `:local` is the older
+`tester-unified-rust:rs-20261124` (registry-set identity; `rs-20261118` stays tagged on the hosts for rollback). `:local` is the older
 whole-lock image; it is re-pointed to the new tag only after every Rust lane has passed
 on it. A new tag is built with `build-image.sh --tag tester-unified-rust:<new>` and
 adopted by changing that one `image` line.

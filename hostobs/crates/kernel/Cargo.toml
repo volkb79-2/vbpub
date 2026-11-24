@@ -11,3 +11,7 @@ publish = false
 # `crates/act` has).
 [lints.rust]
 unsafe_code = "allow"
+
+[dependencies]
+hostobs-model = { path = "../model" }
+rustix.workspace = true

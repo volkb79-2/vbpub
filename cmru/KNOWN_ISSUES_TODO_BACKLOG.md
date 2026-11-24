@@ -14,6 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-202 | OPEN (filed 2026-11-24, repo-wide GitHub "Latest" follows the last cmru release) | — |
 | KI-201 | OPEN (filed 2026-11-24, test-policy-v0.1.0 push failure) | — |
 | KI-200 | OPEN (filed 2026-11-24, Opus design review) | — |
 | KI-199 | OPEN (filed 2026-11-24, Opus design review) | — |
@@ -4204,3 +4205,24 @@ Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md M7, M8, 
 - Tests: a project whose prefix differs from its distribution publishes with no `--glob`, and a mismatched explicit `--glob` fails before the tag is pushed.
 
 The immediate fix is the explicit `--glob` in `libraries/test-policy/cmru.toml`, with `libraries/test-policy/tests/test_release_contract.py` as its guard. Every other wheel project's prefix matches its distribution name (checked 2026-11-24).
+
+Review notes for the implementation (2026-11-24):
+- The `--glob` help text at `handlers.py:1247` says `default: <prefix>-*.whl`, but the real default turns `-` into `_`.
+- The `_wheel_glob` docstring calls this "PEP 503 dist-name normalisation", which is wrong; it is the wheel-spec escaping.
+- `scm_dist` is optional (`truenas/tnt/cmru.toml` has none), so a derived default needs a fallback.
+- `libraries/test-policy/tests/test_release_contract.py` pairs argv items by position; walk the argv instead.
+
+## KI-202 - every cmru release becomes the repository-wide GitHub "Latest"
+
+**Status:** OPEN (filed 2026-11-24); severity: medium.
+
+`release.GitHubAPI.create_release` (`release.py:219`) posts `{tag_name, name, body[, target_commitish]}` with no `make_latest` field. GitHub defaults `make_latest` to `true` for a non-draft, non-prerelease release, so every cmru release, including the thin `<prefix>-latest` pointer releases, takes over the repo-global Latest badge and the `releases/latest` endpoint. On 2026-11-24 `gh api repos/volkb79-2/vbpub/releases/latest` returned `test-policy-latest`. In a monorepo with per-tool tag prefixes, "Latest" is meaningless and misleads anything that follows it: docs links, install one-liners, and third-party tooling that defaults to `releases/latest`. cmru's own resolution is not affected: `resolve_latest` scans `<prefix>-v*` across pages.
+
+A second, related limit is in the generated installer `templates/get.py.tmpl` (rendered into `ciu/get.py`, `pwmcp/get.py` and `tls-edge/get.py`). `resolve_latest_tag` reads ONE page (`?per_page=100`) and filters by prefix. Once more than 100 newer releases of other tools exist, a tool's newest release falls off that page: the installer then picks an older version, or fails with "No ... releases found".
+
+**Wanted.**
+- `create_release` sends `"make_latest": "false"` for every release, or an explicit config names the single project that may hold "Latest" and only its versioned release sets it. The pointer releases never set it. Existing releases need one manual PATCH to clear the badge, given as a documented command.
+- The installer template pages through releases (like `resolve_latest`), or reads the project's own `<prefix>-latest/latest.json` pointer, which cmru already publishes.
+- Tests at the fake HTTP boundary: the create payload carries `make_latest: "false"`; an installer listing whose matching tag sits only on page 2 still resolves it.
+
+Source: vbpub-edge, via the main controller (get.py investigation), 2026-11-24.
