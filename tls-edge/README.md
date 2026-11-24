@@ -4,13 +4,13 @@ tls-edge provides TLS termination as a shared host service: one hardened
 Traefik v3 container handles HTTPS (port 443, one host name per service; port 80
 for the redirect and ACME HTTP-01) for Docker Compose stacks on a host. HTTP/2
 and HTTP/1.1 use the shared TCP listener; HTTP/3 over QUIC/UDP is an optional
-instance-wide feature. The Mattermost Calls TCP+UDP media preset is also
-optional and disabled by default.
+instance-wide feature. Raw TCP+UDP media (for example Jitsi JVB or Mattermost
+Calls) is published directly by the application, outside Traefik.
 Consumers join the shared `ingress_public` network and declare labels — TLS
 certificates are handled by the edge, including automatic issuance and
 zero-downtime renewal via Let's Encrypt. A docker-socket-proxy (POST denied)
 shields the Docker API from Traefik. See the
-[Calls design guide](docs/DESIGN-GUIDE.md) and
+[direct-media design guide](docs/DESIGN-GUIDE.md) and
 [consumer instructions](docs/CONSUMERS.md), plus the [transport and instance
 configuration guide](docs/TRANSPORTS-AND-CONFIGURATION.md) for HTTP/2, HTTP/3,
 QUIC, server events, and where operators configure the shared endpoint. The
@@ -82,25 +82,18 @@ tls-edge/
       middlewares.yml         ← secure-headers middleware (HSTS etc.)
       certs.yml.j2            ← static cert store (acme-tls: empty; static/dev: populated)
 
-  edge-proxy/                 ← pre-rendered default-mode artifacts
-    docker-compose.yml        ← *** do not edit rendered copies — edit templates ***
-    traefik.yml               ← *** and re-render via scripts/render.sh or ciu     ***
-    conf.d/                   ← rendered dynamic config
-    .env.example              ← acme-dns secret variable names
-
   scripts/
     render.sh                 ← standalone renderer (wraps render_standalone.py)
     render_standalone.py      ← Jinja2+TOML render engine; DooD-aware path handling
-    install.sh                ← interactive guided installer (see Quickstart B)
     verify.sh                 ← post-install verification checks
     dev-certs.sh              ← self-signed CA + cert generation for dev mode
     gen-guard-secret.sh       ← generate bcrypt/APR1 hash for Pattern D basicAuth guard
-    update-rendered.sh        ← update edge-proxy/ from templates (CI helper)
+    update-rendered.sh        ← regenerate ignored edge-proxy/ trial output
 
   consumer-examples/          ← ready-to-copy example stacks
     pattern-a-public-only/
     pattern-d-guarded/          ← basicAuth per-route guard (labels only; no edge changes)
-    pattern-e-media-udp/        ← HTTPS host + TCP and UDP media routers (Mattermost Calls)
+    pattern-e-media-udp/        ← HTTPS host + application-published TCP and UDP media
     README.md                   ← label-by-label explanation
 
   ARCHITECTURE.md             ← design rationale, tradeoffs, rejected alternatives
@@ -110,10 +103,9 @@ tls-edge/
 
 ---
 
-## Quickstart A — plain `docker compose` (no tooling required)
+## Quickstart A — trial, generated
 
-Suitable for sysadmins who want to inspect the rendered defaults and start
-without installing any tooling.
+The standalone tree is a generated trial artifact, not a supported deployment:
 
 **Defaults**: ACME TLS-ALPN-01 challenge, port 80 on, Let's Encrypt
 production CA.  Setting an ACME contact email is strongly recommended (avoids
@@ -122,173 +114,56 @@ rate-limit notices from Let's Encrypt); see the note below.
 ```bash
 # 1. Point your DNS A/AAAA record at this host.
 
-# 2. Start the stack.
-cd tls-edge/edge-proxy
+# 2. Generate the trial tree.
+cd tls-edge
+python3 scripts/render_standalone.py --out "$PWD/edge-proxy" --defaults-only
+
+# 3. Start the trial stack.
+cd edge-proxy
 docker compose up -d
 
-# 3. Verify.
+# 4. Verify the trial.
 bash ../scripts/verify.sh
 
-# 4. Onboard your services — see CONSUMER_GUIDE.md.
+# 5. Onboard your services — see CONSUMER_GUIDE.md.
 ```
 
-To set an ACME email without re-rendering, edit
-`edge-proxy/traefik.yml` directly (static config — requires container
-restart).  For a persistent change, set `tls_edge.acme.email` in
-`ciu-stack/ciu.toml.j2` and re-render with `scripts/render.sh`.
+`edge-proxy/` is gitignored and may be deleted or regenerated at any time. For
+the supported get.py + ciu deployment, follow
+[INSTALL §3](docs/INSTALL.md#3-install).
 
 ---
 
-## Quickstart B — guided installer
+## Quickstart B — get.py + ciu instance
 
-`scripts/install.sh` is an interactive script that:
-
-1. Detects the host FQDN via reverse DNS lookup.
-2. Probes DNS capabilities: wildcard record present? A/AAAA vs host IPs? Dangling AAAA?
-3. Reports which TLS modes are possible given the DNS state.
-4. Picks and configures the TLS mode, prompts for any required secrets.
-5. Renders the templates into `edge-proxy/`.
-6. Starts the stack and runs `scripts/verify.sh`.
-
-```bash
-# Interactive (recommended for first-time setup):
-bash scripts/install.sh
-
-# With specific mode and staging CA (safe for experimentation):
-bash scripts/install.sh --mode acme-tls --staging
-```
+[Install and configure the supported instance](docs/INSTALL.md#3-install).
 
 ---
 
 ## Quickstart C — wildcard certificate via manual DNS TXT
 
-For operators who want a wildcard cert (`*.example.com`) but do **not** have
-programmatic access to their DNS zone (no API key).  Uses
-`certbot --manual --preferred-challenges dns` for initial issuance; the
-installer guides you through the DNS TXT record step interactively.
-
-```bash
-# Let the installer guide you:
-bash scripts/install.sh --mode static --domain example.com
-# → when prompted for "wildcard?", answer: y
-# → certbot will display a TXT record value; add it to your DNS zone
-# → press Enter in certbot once the record is live; cert is issued
-```
-
-Or run certbot manually first, then install:
-
-```bash
-# 1. Issue the wildcard cert (interactive — certbot pauses for your DNS update).
-certbot certonly \
-  --manual --preferred-challenges dns \
-  --email ops@example.com --agree-tos --no-eff-email \
-  -d example.com -d '*.example.com'
-# certbot will output something like:
-#   Please deploy a DNS TXT record under the name:
-#   _acme-challenge.example.com
-#   with the following value: AbCdEf123...
-#   (add the record, then press Enter)
-# Cert saved to: /etc/letsencrypt/live/example.com/
-
-# 2. Configure tls-edge for static mode.
-bash scripts/install.sh --mode static --domain example.com --render-only
-
-# 3. Start.
-cd edge-proxy && docker compose up -d
-```
-
-**Renewal** — every ~60-90 days, re-run the certbot command above and add the
-new TXT record value when prompted.  The deploy hook auto-reloads Traefik:
-
-```bash
-# Check expiry before it becomes urgent:
-certbot certificates
-
-# Re-issue (interactive — prompts for a new TXT record):
-certbot certonly \
-  --manual --preferred-challenges dns \
-  --email ops@example.com --agree-tos --no-eff-email \
-  -d example.com -d '*.example.com'
-
-# Traefik reloads automatically via the deploy hook; no restart needed.
-# If the hook is not installed: docker restart --time 5 edge-traefik
-```
-
-> **No DNS API access?**  This is the right path.  If you later gain API
-> access to your DNS provider, switch to `acme-dns` mode for fully automated
-> renewals (no manual TXT records ever again).
+[Create the wildcard certificate with manual DNS TXT](CONSUMER_GUIDE.md#static-mode--wildcard-cert-via-manual-dns-txt-no-dns-api-required).
 
 ---
 
 ## Quickstart D — dev / devcontainer
 
-For local development, devcontainers, or hosts without public DNS.  Generates
-a self-signed local CA and certificate using `openssl` (or `mkcert` if
-installed).  Works under Docker-outside-of-Docker via a named volume for certs.
-
-```bash
-# Automated:
-bash scripts/install.sh --mode dev --domain test.localdomain
-
-# Or generate certs manually and start:
-bash scripts/dev-certs.sh --domain test.localdomain
-cd edge-proxy && docker compose up -d
-```
-
-Browsers will show a security warning unless the generated CA certificate is
-imported into the browser/OS trust store.  `mkcert -install` handles this
-automatically if mkcert is available.
+[Configure dev mode and generate local certificates](docs/INSTALL.md#4-configure-listeners-and-certificates).
 
 ---
 
 ## Quickstart E — ciu v2
 
-For teams using [ciu](../ciu/) for multi-stack deployment management.
+[Run the supported CIU stack from its instance](docs/INSTALL.md#3-install).
 
-1. Copy `ciu-stack/` into your ciu-managed infrastructure repository (e.g.
-   `infra/tls-edge/`).
-2. Create a gitignored `ciu.toml.j2` in the same directory with your
-   overrides.
-3. Run `ciu` in the stack directory.
-
-**Minimal override (`ciu-stack/ciu.toml.j2`):**
-
-```toml
-[tls_edge.acme]
-email = "ops@example.com"
-
-[tls_edge.tls]
-mode = "acme-tls"   # or acme-dns / static / dev
-```
-
-**acme-dns with Cloudflare (DNS-01, wildcard-capable):**
-
-```toml
-[tls_edge.tls]
-mode = "acme-dns"
-
-[tls_edge.acme.dns]
-provider    = "cloudflare"
-wildcard_main = "example.com"   # issues *.example.com + example.com
-
-[tls_edge.acme.dns.environment]
-CF_DNS_API_TOKEN_FILE = "/run/secrets/dns_api_token"
-
-[tls_edge.secrets]
-dns_api_token = "ASK_EXTERNAL:CF_DNS_API_TOKEN"
-```
-
-ciu resolves `ASK_EXTERNAL:CF_DNS_API_TOKEN` from the operator-supplied
-environment (or Vault), injects it as a Docker secret, and leaks-scans the
-rendered output before starting anything.
+[Configure DNS-01 credentials through CIU](docs/INSTALL.md#4-configure-listeners-and-certificates).
 
 ---
 
-## Why use ciu instead of plain compose
+## Why the supported path uses ciu
 
-Plain `docker compose up -d` works and is fully supported — ciu is a wrapper,
-not a requirement.  When the host grows beyond a single stack, ciu provides
-capabilities that plain Compose cannot express:
+The get.py instance runs CIU from a stable stack root. CIU provides capabilities
+that a generated trial tree cannot express:
 
 **Secrets management.**  Plain `.env` files store credentials as readable text
 on disk.  ciu's secret directives (`ASK_VAULT:`, `ASK_EXTERNAL:`, `GEN_*`,
@@ -300,18 +175,16 @@ starts.
 **Validated workspace environment.**  ciu checks that required environment
 variables are set, that named TLS certificate files exist _and_ are readable by
 the Docker group, and that the host satisfies all preconditions before rendering
-or starting anything.  With plain compose, a missing file causes a silent TLS
-failure after the container starts.
+or starting anything.
 
 **Devcontainer / DooD path handling.**  When the repo is mounted inside a
 devcontainer and Docker runs outside it (Docker-outside-of-Docker), logical repo
 paths and physical host paths diverge.  ciu translates paths transparently;
-the standalone renderer requires manual `--base-dir` overrides.
+the standalone renderer handles the trial case separately.
 
 **Multi-stack orchestration.**  `ciu-deploy` runs stacks in numbered phases with
 health gates between them: deploy tls-edge in phase 1, verify it healthy, then
-deploy application stacks in phase 2.  Plain compose has no native equivalent
-for cross-stack sequencing.
+deploy application stacks in phase 2.
 
 **Consistent naming + profiles.**  ciu derives container names from
 `<project>-<environment>-<service>` automatically and supports per-host
@@ -337,12 +210,12 @@ on disk.
 **Wildcard without DNS API** (`static` mode + `certbot --manual`): issue a
 `*.example.com` cert interactively by adding a `_acme-challenge` TXT record
 when certbot prompts.  No DNS API key needed.  Requires manual action every
-~60 days.  See Quickstart C above.
+~60 days.  See [the manual DNS-TXT procedure](CONSUMER_GUIDE.md#static-mode--wildcard-cert-via-manual-dns-txt-no-dns-api-required).
 
 **Port 80 note**: port 80 is on by default (HTTP→HTTPS redirect, required for
 `acme-http`). Use `tls-edge configure` to turn it off for an installed CIU
-instance; for a standalone checkout, set `tls_edge.ports.expose_http = false`
-in the site override and re-render.
+instance; for a generated trial checkout, set
+`tls_edge.ports.expose_http = false` in the site override and re-render.
 
 **Static mode note**: both `live/<domain>/` and `archive/<domain>/` must be
 mounted.  Certbot uses relative symlinks between these two directories; mounting
@@ -357,7 +230,7 @@ only `live/` causes silent TLS failure inside the container.
 | Check | What it verifies |
 |---|---|
 | Stack health | Both containers report healthy (`docker inspect`) |
-| Port binding | Configured HTTP/HTTPS ports and any enabled HTTP/3 or Calls sockets are bound on the expected interface |
+| Port binding | Configured HTTP/HTTPS ports and any enabled HTTP/3 socket are bound on the expected interface |
 | TLS handshake | `openssl s_client` against the host FQDN; cert loaded (not the Traefik default self-signed) |
 | ACME volume | `acme.json` exists, is non-empty, and has mode 0600 |
 | Network | `ingress_public` network exists and Traefik is attached |
@@ -433,9 +306,9 @@ The tarball contains a single top-level directory `tls-edge-v<ver>/` so
 - **ARCHITECTURE.md** — full design rationale: network model, TLS strategy,
   proxy selection, socket security, container hardening, renewal mechanisms,
   future options.
-- **docs/DESIGN-GUIDE.md** — rationale for the optional TCP/UDP Calls listener.
-- **docs/CONSUMERS.md** — how to route a service's raw media protocols through
-  tls-edge and which firewall ports are needed.
+- **docs/DESIGN-GUIDE.md** — rationale for application-published TCP/UDP media.
+- **docs/CONSUMERS.md** — HTTP routing plus direct application media publication
+  and the firewall ports each path needs.
 - **CONSUMER_GUIDE.md** — step-by-step onboarding for service teams: label
   reference, consumer patterns (A/B/C), verification commands.
 - **KNOWN_ISSUES_TODO_BACKLOG.md** — current limitations, workarounds, and roadmap items.

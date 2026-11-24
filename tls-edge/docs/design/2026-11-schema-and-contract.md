@@ -217,8 +217,10 @@ Why drop-only: ciu renders the raw override file (S3.2, S3.3), never `migrate()`
 migration may only drop keys that no 4.0 template reads, or refuse. A rename or a default flip is
 not a migration rule. Rejected: the hook rewriting the override (`ciu check` writes nothing, S13.4a).
 
-The hook validates the migrated effective config, not ciu's raw merged config (which still holds
-`[tls_edge.calls]`). P-edge-06 adds a test through ciu's library render with a 3.1 override carrying
+The hook validates ciu's raw merged config, which still holds `[tls_edge.calls]` for a 3.1 override.
+That is safe today because `validate_config` does not read `calls`; `check_override` runs on the
+migrated overlay, and the migration never writes during hook execution. P-edge-06 adds a test
+through ciu's library render with a 3.1 override carrying
 `[tls_edge.calls] enabled = false, public_port = 8443`: `check` passes and the compose does not
 publish 8443.
 
