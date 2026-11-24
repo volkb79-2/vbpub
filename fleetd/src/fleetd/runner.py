@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib.resources
 import json
-import math
 import re
 import shlex
 import zlib
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Mapping
 
+from . import hostside
 from .contracts import ContractError, is_candidate_id
 from .runner_layout import (
     ASSAY_DIR,
@@ -143,200 +145,10 @@ def probe_script(jobs: Mapping[str, JobSpec], *, proc_root: str = "/proc") -> st
     """Build the read-only probe command; ``proc_root`` lets a test point at a fixture tree."""
     encoded = probe_payload(jobs)
     metadata = command_metadata("probe", {})
-    python_source = r'''import base64
-import hashlib
-import json
-import os
-from pathlib import Path
-import re
-import sys
-import tomllib
-import zlib
-
-runner_home = Path(sys.argv[1])
-groups = json.loads(zlib.decompress(base64.b64decode(sys.argv[2], validate=True)))
-proc_root = Path(sys.argv[3])
-home = Path.home()
-targets = [
-    {**{key: value for key, value in group.items() if key not in {"names", "ids_template"}},
-     "name": name, "ids_path": group["ids_template"].replace("@NAME@", name)}
-    for group in groups for name in group["names"]
-]
-rows = []
-for target in sorted(targets, key=lambda row: row["name"]):
-    name = target["name"]
-    job_dir = home / "jobs" / name
-    checkout = runner_home / "checkouts" / target["commit"]
-    project_dir = checkout if target["project"] == "." else checkout / target["project"]
-    if not job_dir.is_dir():
-        # Start refuses an unsynced checkout before uploading into its path.
-        ready = checkout.is_dir() and not checkout.is_symlink() and (checkout / ".git").exists() and project_dir.is_dir()
-        rows.append({"name": name, "state": "MISSING", "checkout_ready": ready})
-        continue
-    ids_file = runner_home / target["ids_path"]
-    try:
-        planned = [line.strip() for line in ids_file.read_text(encoding="ascii").splitlines() if line.strip()]
-    except (OSError, UnicodeError):
-        planned = []
-    calculated_digest = hashlib.sha256("".join(f"{candidate_id}\n" for candidate_id in sorted(planned)).encode("ascii")).hexdigest()
-    try:
-        list_digest = (job_dir / "list.sha256").read_text(encoding="ascii").strip()
-    except OSError:
-        # run-job creates the job directory before its detached command starts;
-        # the uploaded ids file is the durable recovery source during that gap.
-        list_digest = calculated_digest if planned else None
-    exit_file = job_dir / "EXIT"
-    exit_code = None
-    if exit_file.is_file():
-        try:
-            exit_code = int(exit_file.read_text(encoding="ascii").strip())
-        except (OSError, ValueError):
-            exit_code = None
-        state = "EXIT"
-    else:
-        state = "UNKNOWN"
-        try:
-            pid = int((job_dir / "pid").read_text(encoding="ascii").strip())
-            os.kill(pid, 0)
-            state = "RUNNING"
-        except (OSError, ValueError):
-            pass
-    def read_offset(filename):
-        try:
-            value = (job_dir / filename).read_text(encoding="ascii").strip()
-        except OSError:
-            return None
-        return int(value) if re.fullmatch(r"[0-9]+", value) else None
-    progress_offset = read_offset("progress-offset")
-    progress_end_offset = read_offset("progress-end-offset")
-    if progress_end_offset is not None and (
-        progress_offset is None or progress_end_offset < progress_offset
-    ):
-        progress_end_offset = None
-    assay_lane = target["lane"]
-    for config_path in (project_dir / "run-gate.toml", checkout / "run-gate.root.toml"):
-        try:
-            declaration = tomllib.loads(config_path.read_text(encoding="utf-8")).get("lanes", {}).get(target["lane"])
-        except (OSError, UnicodeError, tomllib.TOMLDecodeError):
-            continue
-        if declaration is not None:
-            assay_lane = declaration.get("assay_lane", target["lane"])
-            break
-    if not isinstance(assay_lane, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", assay_lane) is None:
-        raise ValueError("resolved Assay lane is not a safe artifact name")
-    progress_source = project_dir / target["assay_dir"] / f"{target['progress_prefix']}{assay_lane}{target['progress_suffix']}"
-    # Home-relative for a later get. Lexical first, so a symlinked checkouts
-    # directory outside HOME still works; never fail the whole probe here.
-    try:
-        progress_path = progress_source.relative_to(home).as_posix()
-    except ValueError:
-        try:
-            progress_path = progress_source.resolve().relative_to(home.resolve()).as_posix()
-        except (OSError, ValueError):
-            progress_path = None
-    records = []
-    mtime = None
-    try:
-        mtime = progress_source.stat().st_mtime
-        if progress_offset is not None and (state != "EXIT" or progress_end_offset is not None):
-            content = progress_source.read_bytes()
-            end_offset = progress_end_offset if state == "EXIT" else len(content)
-            for line in content[progress_offset:end_offset].decode("utf-8").splitlines():
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(event, dict) and event.get("event") == "candidate" and event.get("candidate_id") in planned:
-                    records.append({key: event[key] for key in (
-                        "candidate_id", "outcome_bucket", "elapsed_seconds", "emitted_at"
-                    ) if key in event})
-    except (OSError, UnicodeError):
-        mtime = None
-    verdict_path = f"campaigns/{name}-s1/verdict.json"
-    verdict_records = []
-    baseline_seconds = None
-    if state == "EXIT":
-        try:
-            verdict = json.loads((runner_home / verdict_path).read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            verdict = None
-        mutations = []
-        claims = verdict.get("claims", []) if isinstance(verdict, dict) else []
-        if isinstance(claims, list):
-            for claim in claims:
-                if isinstance(claim, dict) and claim.get("rigor") == "R2" and isinstance(claim.get("mutation"), dict):
-                    mutations.append(claim["mutation"])
-        judgment = verdict.get("judgment") if isinstance(verdict, dict) else None
-        r2 = judgment.get("r2") if isinstance(judgment, dict) else None
-        if isinstance(r2, dict) and isinstance(r2.get("mutation"), dict):
-            mutations.append(r2["mutation"])
-        for mutation in mutations:
-            for bucket in ("killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"):
-                outcomes = mutation.get(bucket, [])
-                if not isinstance(outcomes, list):
-                    continue
-                for outcome in outcomes:
-                    if not isinstance(outcome, dict) or outcome.get("candidate_id") not in planned:
-                        continue
-                    evidence = outcome.get("process_tree_evidence")
-                    verdict_records.append({
-                        "candidate_id": outcome["candidate_id"],
-                        "outcome_bucket": bucket,
-                        "elapsed_seconds": None,
-                        "emitted_at": None,
-                        "not_started": (
-                            bucket == "budget_exceeded"
-                            and isinstance(evidence, dict)
-                            and evidence.get("leader_status") == "not-started"
-                        ),
-                    })
-        command = r2.get("r2_command") if isinstance(r2, dict) else None
-        baseline = command.get("r2_baseline") if isinstance(command, dict) else None
-        baseline_seconds = baseline.get("wall_s") if isinstance(baseline, dict) else None
-        if (
-            isinstance(baseline_seconds, bool)
-            or not isinstance(baseline_seconds, (int, float))
-            or not math.isfinite(float(baseline_seconds))
-            or baseline_seconds < 0
-        ):
-            baseline_seconds = None
-    done = {event.get("candidate_id") for event in records if isinstance(event.get("candidate_id"), str)}
-    rows.append({
-        "name": name, "state": state, "exit_code": exit_code,
-        "list_digest": list_digest, "progress_count": len(done),
-        "progress_mtime": mtime, "progress_path": progress_path,
-        "progress_offset": progress_offset,
-        "progress_end_offset": progress_end_offset,
-        "verdict_path": verdict_path, "records": records,
-        "verdict_records": verdict_records,
-        "baseline_seconds": baseline_seconds,
-    })
-def read_pressure(resource):
-    # "some avg10=X ..." from the kernel's PSI file; None when unreadable or malformed.
-    try:
-        for line in (proc_root / "pressure" / resource).read_text(encoding="ascii").splitlines():
-            fields = line.split()
-            if fields[:1] == ["some"]:
-                for field in fields[1:]:
-                    if field.startswith("avg10="):
-                        value = float(field[6:])
-                        return value if 0 <= value <= 100 else None
-    except (OSError, UnicodeError, ValueError):
-        pass
-    return None
-pressure = {"memory_some_avg10": read_pressure("memory"), "io_some_avg10": read_pressure("io")}
-print(json.dumps({"jobs": rows, "pressure": pressure}, sort_keys=True, separators=(",", ":")))
-'''
-    compressed = base64.b64encode(zlib.compress(python_source.encode("utf-8"))).decode("ascii")
-    bootstrap = (
-        "import base64,zlib;exec(zlib.decompress(base64.b64decode("
-        + repr(compressed)
-        + ")))"
-    )
     remote = "\n".join([
         "set -euo pipefail",
         'source "$HOME/runner-scripts/lib.sh"',
-        f"python3 -c {shlex.quote(bootstrap)} \"$RUNNER_HOME\" {shlex.quote(encoded)} {shlex.quote(proc_root)}",
+        _hostside_command("probe", '"$RUNNER_HOME"', shlex.quote(encoded), shlex.quote(proc_root)),
     ])
     return f"{metadata}\n{remote}"
 
@@ -394,24 +206,9 @@ def start_script(spec: JobSpec) -> str:
             f"checkout_dir={checkout_dir}",
             f"project_dir={project_dir}",
             f"candidate_file={candidate_file}",
-            "assay_lane=$(python3 - \"$checkout_dir\" " + shlex.quote(spec.project) + " " + shlex.quote(spec.lane) + " <<'PY'\n"
-            + "import re, sys, tomllib\n"
-            + "from pathlib import Path\n"
-            + "checkout = Path(sys.argv[1])\n"
-            + "project_dir = checkout if sys.argv[2] == '.' else checkout / sys.argv[2]\n"
-            + "assay_lane = sys.argv[3]\n"
-            + "for config_path in (project_dir / 'run-gate.toml', checkout / 'run-gate.root.toml'):\n"
-            + "    try:\n"
-            + "        declaration = tomllib.loads(config_path.read_text(encoding='utf-8')).get('lanes', {}).get(sys.argv[3])\n"
-            + "    except (OSError, UnicodeError, tomllib.TOMLDecodeError):\n"
-            + "        continue\n"
-            + "    if declaration is not None:\n"
-            + "        assay_lane = declaration.get('assay_lane', sys.argv[3])\n"
-            + "        break\n"
-            + "if not isinstance(assay_lane, str) or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', assay_lane) is None:\n"
-            + "    raise SystemExit('resolved Assay lane is not a safe artifact name')\n"
-            + "print(assay_lane)\n"
-            + "PY\n)",
+            "assay_lane=$(" + _hostside_command(
+                "resolve-assay", '"$checkout_dir"', shlex.quote(spec.project), shlex.quote(spec.lane)
+            ) + ")",
             'progress_file="$project_dir/.assay/progress-$assay_lane.jsonl"',
             f"expected_digest={expected_digest}",
             'file_digest=$(sha256sum -- "$candidate_file" | cut -d " " -f 1)',
@@ -440,6 +237,23 @@ def start_script(spec: JobSpec) -> str:
         ]
     )
     return f"{metadata}\n{remote}"
+
+
+@lru_cache(maxsize=1)
+def _hostside_bootstrap() -> str:
+    """Compress the packaged host-side source for one ``python3 -c`` argument."""
+    source = importlib.resources.files("fleetd").joinpath("hostside.py").read_text(encoding="utf-8")
+    compressed = base64.b64encode(zlib.compress(source.encode("utf-8"))).decode("ascii")
+    return (
+        "import base64,zlib;exec(zlib.decompress(base64.b64decode("
+        + repr(compressed)
+        + ")))"
+    )
+
+
+def _hostside_command(*args: str) -> str:
+    """Build one shipped-module invocation from already shell-quoted arguments."""
+    return f"python3 -c {shlex.quote(_hostside_bootstrap())} " + " ".join(args)
 
 
 def stop_script(name: str) -> str:
@@ -556,26 +370,6 @@ def _parse_pressure(value: object) -> dict[str, float | None] | None:
     return result
 
 
-def _progress_memory_peak(event: Mapping[str, object]) -> int | None:
-    """Read one ``resource-profile/1`` memory peak, or ``None``.
-
-    Assay 12 removed its sampled ``peak_rss_bytes``; the cgprofile observer's
-    ``profile.metrics.memory_peak_bytes`` is the only per-candidate memory
-    number a progress event carries. A profile that is absent, of another
-    status, or has a null/non-positive peak yields ``None`` -- never zero.
-    """
-    profile = event.get("profile")
-    if not isinstance(profile, Mapping):
-        return None
-    metrics = profile.get("metrics")
-    if not isinstance(metrics, Mapping):
-        return None
-    value = metrics.get("memory_peak_bytes")
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        return None
-    return value
-
-
 def parse_progress(
     content: bytes,
     expected_ids: set[str],
@@ -583,52 +377,18 @@ def parse_progress(
     start_offset: int = 0,
     end_offset: int | None = None,
 ) -> list[dict[str, object]]:
-    """Parse the candidate events needed by the collector from one progress stream."""
-    if isinstance(start_offset, bool) or not isinstance(start_offset, int) or start_offset < 0:
-        raise ContractError("progress start offset must be a non-negative integer")
-    if end_offset is not None and (
-        isinstance(end_offset, bool) or not isinstance(end_offset, int) or end_offset < start_offset
-    ):
-        raise ContractError("progress end offset must be an integer at or after its start")
+    """Apply the collector's closed contract to the host-side reader."""
     try:
-        text = content[start_offset:end_offset].decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ContractError("progress artifact is not UTF-8") from exc
-    records: list[dict[str, object]] = []
-    for line_number, line in enumerate(text.splitlines(), start=1):
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict) or event.get("event") != "candidate":
-            continue
-        candidate_id = event.get("candidate_id")
-        if not isinstance(candidate_id, str) or not is_candidate_id(candidate_id):
-            raise ContractError(f"progress line {line_number}: invalid candidate id")
-        if candidate_id not in expected_ids:
-            continue
-        outcome = event.get("outcome_bucket")
-        if not isinstance(outcome, str):
-            raise ContractError(f"progress line {line_number}: unsupported candidate outcome")
-        if outcome not in {"killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"}:
-            raise ContractError(f"progress line {line_number}: unsupported candidate outcome")
-        elapsed = event.get("elapsed_seconds")
-        if (
-            isinstance(elapsed, bool)
-            or not isinstance(elapsed, (int, float))
-            or not math.isfinite(float(elapsed))
-            or elapsed < 0
-        ):
-            elapsed = None
-        emitted = event.get("emitted_at")
-        records.append({
-            "candidate_id": candidate_id,
-            "outcome_bucket": outcome,
-            "elapsed_seconds": elapsed,
-            "emitted_at": emitted if isinstance(emitted, str) else None,
-            "memory_peak_bytes": _progress_memory_peak(event),
-        })
-    return records
+        records = hostside.progress_records(
+            content,
+            expected_ids,
+            start_offset=start_offset,
+            end_offset=end_offset,
+            strict=True,
+        )
+    except ValueError as exc:
+        raise ContractError(str(exc)) from exc
+    return [{**record, "memory_peak_bytes": record.get("memory_peak_bytes")} for record in records]
 
 
 def canonical_probe_json(value: object) -> str:

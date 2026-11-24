@@ -34,14 +34,14 @@ PSI busy, 76 `INCONCLUSIVE-OOM`, none of which is a lane verdict). The run log i
 
 **The Rust lanes need the `tester-unified-rust` image on the executing host** (the local
 Docker daemon, or the remote worker). If it is missing the lane stops with `verdict ERROR;
-docker run failed (exit 125)` and `Unable to find image 'tester-unified-rust:rs-20261118'`
+docker run failed (exit 125)` and `Unable to find image 'tester-unified-rust:rs-20261124'`
 (the image named by the `tester-unified-rust` environment in `run-gate.root.toml`); that is
 an environment fault, not a verdict on the code.
 
 All three use `tester-unified-rust` with Docker networking disabled. The image contains the
 stable Rust toolchain, the cargo tools, Python for the cache/floor helpers, and the crate
 archive closure for this exact `Cargo.lock`. Do not run Cargo from the cockpit or use a
-network fallback. The lane image (`tester-unified-rust:rs-20261118`) has a Cargo wrapper that refuses before
+network fallback. The lane image (`tester-unified-rust:rs-20261124`) has a Cargo wrapper that refuses before
 invoking Cargo if the mounted lock's registry-set digest, crate set, lock checksums, or cached
 archive bytes disagree with the image (the registry set is the downloaded packages plus the
 lock version; workspace members' own entries are not part of it). An image built before this
@@ -375,7 +375,7 @@ the later R-5 work package. Do not edit `Cargo.lock` by hand to satisfy a lane: 
 registry-set digest is the authority, and a mismatch is a signal to rebuild the image, not
 to hand-edit the lock.
 
-Which image runs what: the Rust lanes run on `tester-unified-rust:rs-20261118`, which carries
+Which image runs what: the Rust lanes run on `tester-unified-rust:rs-20261124`, which carries
 the registry-set identity, so a workspace-only lock edit (a path dependency between members)
 needs no image rebuild. An image with the older whole-lock identity rejects ANY lock byte
 change. Which tag a host carries is a fact of that host and is not recorded in this repository.

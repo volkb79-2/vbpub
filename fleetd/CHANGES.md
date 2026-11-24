@@ -6,6 +6,20 @@ All notable changes to this project are recorded here.
 
 ### Fixed
 
+- Host-side progress and verdict readers now skip non-string candidate ids
+  instead of raising a `TypeError` while testing set membership. Their outcome
+  bucket list is shared through `hostside.OUTCOME_BUCKETS`.
+- Host-side probe logic is now the stdlib-only `fleetd.hostside` module shipped
+  as source and imported by the controller. `FakeTransport` materializes a
+  temporary host home and calls the same probe, lane resolution, progress
+  filtering and verdict reader (FD-039; installed `fleet host ...` verbs remain
+  P-fd-05). The probe now returns the observer's `profile.metrics.memory_peak_bytes`,
+  and collection merges that measured value into a matching earlier record
+  instead of dropping it (FD-040).
+- A host that returns after loss keeps its returned-duplicate fact pending while
+  the retry is unfinished or a stop fails; a later successful refresh stops the
+  source duplicate once. A duplicate may finish too, and collection still
+  chooses one owner (WP2c/L2).
 - Campaign supervision (WP2). The host-loss clock starts at the first failed
   contact the controller observed instead of the last successful contact, so one
   failed probe after a long gap no longer marks a healthy host `LOST`; a probe
