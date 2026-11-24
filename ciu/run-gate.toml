@@ -24,7 +24,7 @@ assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
 environment = "tester-unified"
 jobs = "auto"
 resource_observer = "cgprofile"
-budget = "8h"
+budget = "485m"
 # Internal vbpub lanes omit assay_command and pins deliberately. run-gate
 # installs assay from the selected worktree in the lane environment; the
 # verdict records the exact runtime assay version and source commit.

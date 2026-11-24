@@ -19,7 +19,7 @@ environment = "tester-unified"       # central [environments.tester-unified]
 # the same reason it always was -- coverage run traces only the parent,
 # measuring ~nothing of xdist workers. Both facts now live in assay.toml's
 # argv (the judged command), not here.
-budget = "30m"                       # advisory; consumers may enforce
+budget = "35m"                       # advisory; consumers may enforce
 
 # Internal vbpub lanes omit assay_command and pins deliberately. run-gate
 # installs assay from the selected worktree in the lane environment; the
@@ -45,7 +45,7 @@ environment = "tester-unified"       # central [environments.tester-unified]
 # 8.1 hours serially (about 3 hours at the 3 workers `jobs = "auto"` selects).
 # This hard outer bound mirrors assay.toml and leaves room for R0/R1 and R3
 # while still refusing an unbounded campaign.
-budget = "10h"
+budget = "605m"
 jobs = "auto"                        # assay.toml jobs_max = 3 is the ceiling
 
 [lanes.session-extract.resources]

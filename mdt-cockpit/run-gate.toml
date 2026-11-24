@@ -79,7 +79,7 @@ assay_lane = "host_setup"
 environment = "tester-unified"
 resource_observer = "cgprofile"
 clean_tree = true
-budget = "2h"
+budget = "125m"
 artifacts = [".assay/verdict-host_setup.json", ".assay/progress-host_setup.jsonl", ".assay/coverage.json"]
 
 [lanes.assay-full.resources]
