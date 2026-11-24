@@ -12,6 +12,7 @@
 //! later packages. P5b-2a adds [`selection`], the checked canonical stream key. P5b-2b adds
 //! [`tick`] (backend tick validation and encoding) and [`registry`] (the shared selection
 //! streams).
+//! [`sampler`] owns the real producer and [`live`] is the production backend over its tick.
 
 #![warn(missing_docs)]
 
@@ -23,7 +24,9 @@ pub mod conn;
 pub mod encode;
 pub mod limits;
 pub mod lines;
+pub mod live;
 pub mod registry;
+pub mod sampler;
 pub mod selection;
 pub mod server;
 pub mod tick;

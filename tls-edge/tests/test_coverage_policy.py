@@ -18,12 +18,14 @@ from pathlib import Path
 
 import coverage
 import pytest
+from coverage.config import DEFAULT_PARTIAL_ALWAYS
 from coverage.exceptions import NotPython
 from coverage.misc import join_regex
 from coverage.parser import PythonParser
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src" / "tls_edge_cli"
+PYPROJECT = ROOT / "pyproject.toml"
 MAX_EXCLUDED_LINES = 12
 VALID_PRAGMA = re.compile(
     r"# pragma: no cover -- (os-error|main-guard|tty-only): \S(?:.*\S)?$"
@@ -37,13 +39,28 @@ def _display_path(path: Path) -> Path:
         return path
 
 
-def coverage_policy_violations(source: Path) -> list[str]:
+def coverage_policy_violations(
+    source: Path,
+    *,
+    config_file: Path | None = PYPROJECT,
+) -> list[str]:
     """Return D10 violations for every Python file at or below ``source``."""
-    coverage_config = coverage.Coverage().config
+    coverage_config = coverage.Coverage(
+        config_file=(
+            str(config_file)
+            if config_file is not None and config_file.exists()
+            else False
+        )
+    ).config
     exclude_matcher = re.compile(join_regex(coverage_config.exclude_list))
-    partial_matcher = re.compile(join_regex(coverage_config.partial_list))
+    partial_regex = join_regex(coverage_config.partial_list)
     violations: list[str] = []
     excluded: list[tuple[Path, int]] = []
+    if list(coverage_config.partial_always_list) != list(DEFAULT_PARTIAL_ALWAYS):
+        violations.append(
+            "coverage partial_always_list differs from coverage.py's default: "
+            f"{coverage_config.partial_always_list!r}"
+        )
 
     for path in sorted(source.rglob("*.py")):
         relative = _display_path(path)
@@ -67,12 +84,6 @@ def coverage_policy_violations(source: Path) -> list[str]:
                         f"{comment!r}; expected '# pragma: no cover -- "
                         "<os-error|main-guard|tty-only>: <reason>'"
                     )
-            if partial_matcher.search(comment):
-                violations.append(
-                    f"{relative}:{token.start[0]}: 'pragma: no branch' is not "
-                    "permitted by D10.2-3"
-                )
-
         try:
             parser = PythonParser(
                 text=text,
@@ -83,6 +94,11 @@ def coverage_policy_violations(source: Path) -> list[str]:
         except NotPython as exc:
             violations.append(f"{relative}: coverage.py could not parse source: {exc}")
             continue
+
+        for line in sorted(parser.lines_matching(partial_regex)):
+            violations.append(
+                f"{relative}:{line}: 'pragma: no branch' is not permitted by D10.2-3"
+            )
 
         source_lines = text.splitlines() or [""]
         for line in sorted(parser.raw_excluded):
@@ -154,5 +170,43 @@ def test_coverage_policy_accepts_the_classified_pragma(tmp_path: Path) -> None:
     assert coverage_policy_violations(_source_tree(tmp_path, source)) == []
 
 
-def test_coverage_policy_applies_to_the_real_source() -> None:
+def test_coverage_policy_matches_no_branch_pragmas_in_string_literals(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "def f(mode: str) -> int:\n"
+        "    if mode == \"# pragma: no branch\":\n"
+        "        return 1\n"
+        "    return 2\n"
+    )
+    violations = coverage_policy_violations(_source_tree(tmp_path, source))
+    assert any("sample.py:2:" in violation for violation in violations), violations
+
+
+def test_coverage_policy_rejects_changed_partial_always_list(
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "pyproject.toml"
+    config_file.write_text(
+        """\
+[tool.coverage.report]
+partial_branches_always = ["# pragma: no mystery"]
+""",
+        encoding="utf-8",
+    )
+    violations = coverage_policy_violations(
+        _source_tree(tmp_path, "value = 1\n"),
+        config_file=config_file,
+    )
+    assert any(
+        "coverage partial_always_list differs from coverage.py's default" in violation
+        for violation in violations
+    ), violations
+
+
+def test_coverage_policy_applies_to_the_real_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
     assert coverage_policy_violations(SOURCE) == []
