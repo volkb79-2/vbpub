@@ -138,7 +138,7 @@ class EvalTests(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("# K 1300M tested -> 1300M proposed", out)
         self.assertIn("keep the pin", out)
-        self.assertNotRegex(out, r"pin DEV_HOST_MEMORY_KEEP=\d+M")
+        self.assertNotRegex(out, r"on FAIL pin DEV_HOST_MEMORY_KEEP=\d+M")  # the header names no number (the note's "at the pin ...=1300M" is not advice)
         self.assertIn("DEV_HOST_MEMORY_KEEP above the tested 1300M", out)
         ok = write_run(self.tmp / "r2")
         (ok / "host-setup.env.snapshot").write_text("HOST_ROLE=dedicated-dev\nDEV_HOST_MEMORY_KEEP=1300M\n")
