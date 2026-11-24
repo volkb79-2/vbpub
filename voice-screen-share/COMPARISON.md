@@ -205,7 +205,7 @@ Reserve numbers once, for all projects.
 | Service | Port | Proto | Exposure | Route | Collision check |
 |---|---|---|---|---|---|
 | Mattermost / Mattermore app | 8065 | TCP | internal | Traefik Host rule on 443 | none |
-| Mattermost Calls media | 8443 | TCP+UDP | public | tls-edge entrypoints (live) | taken: no other service on 8443 |
+| Mattermost Calls media | 8443 | TCP+UDP | public | direct publish (see README port plan) | taken: no other service on 8443 |
 | Mattermore tryout media | any free port, never 8443/8444/9443 | TCP+UDP | LAN trial only | direct publish | do not run beside live Calls on 8443 |
 | Mumble | 64738 | TCP+UDP | public | own TLS: edge TCP `HostSNI(*)` passthrough + UDP entrypoint, or direct publish | free |
 | RustDesk hbbs | 21115 | TCP | public | raw entrypoint or direct publish | free |
