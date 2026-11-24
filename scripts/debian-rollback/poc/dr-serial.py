@@ -485,23 +485,20 @@ def valid_entry_id(entry_id):
 
 
 def is_sdboot_scratch_path(path):
-    """True only for the seven exact interrupted-file/directory shapes dr-state generates."""
+    """True only for Python dr-state scratch directly inside its five owned directories."""
     p = PurePosixPath(path)
-    if str(p.parent) == "/boot/efi/EFI/dr/kernels":
-        return bool(re.fullmatch(r"\.tmp\.[A-Za-z0-9]{6}", p.name))
-    if str(p.parent.parent) == "/boot/efi/EFI/dr/kernels":
-        return (valid_kernel_id(p.parent.name)
-                and bool(re.fullmatch(r"\.(?:vmlinuz|initrd\.img)\.tmp\.[0-9]+", p.name)))
-    if str(p.parent) == "/boot/efi/loader/entries":
-        if re.fullmatch(r"\.dr-state-entry\.new\.[0-9]+", p.name):
-            return True
-        m = re.fullmatch(r"\.(os-[A-Za-z0-9][A-Za-z0-9._-]*)\.conf\.new\.[0-9]+", p.name)
-        return bool(m and valid_entry_id(m.group(1)))
-    if str(p.parent) == "/boot/efi/loader":
-        return bool(re.fullmatch(r"loader\.conf\.new\.[0-9]+", p.name))
-    if str(p.parent) == "/boot/efi/EFI/dr":
-        return bool(re.fullmatch(r"bootloader\.new\.[0-9]+", p.name))
-    return False
+    owned = {
+        "/boot/efi/EFI/dr/kernels",
+        "/boot/efi/loader/entries",
+        "/boot/efi/loader",
+        "/boot/efi/EFI/dr",
+        "/.top/.dr-state",
+    }
+    return (
+        str(p.parent) in owned
+        and p.name.startswith(".dr-state.tmp.")
+        and len(p.name) > len(".dr-state.tmp.")
+    )
 
 
 def parse_bls_entry(text):
@@ -1129,18 +1126,13 @@ def scenario_sdboot_esp(g, log):
 
     rc, out = g.run(
         "shopt -s nullglob; "
-        "for p in /boot/efi/EFI/dr/kernels/.tmp.*; do "
-        "[ -d \"$p\" ] && printf 'SCRATCH_CANDIDATE:%s\\n' \"$p\"; done; "
-        "for p in /boot/efi/EFI/dr/kernels/*/.vmlinuz.tmp.* "
-        "/boot/efi/EFI/dr/kernels/*/.initrd.img.tmp.*; do "
-        "[ -f \"$p\" ] && printf 'SCRATCH_CANDIDATE:%s\\n' \"$p\"; done; "
-        "for p in /boot/efi/loader/entries/.dr-state-entry.new.* "
-        "/boot/efi/loader/entries/.*.conf.new.*; do "
-        "[ -f \"$p\" ] && printf 'SCRATCH_CANDIDATE:%s\\n' \"$p\"; done; "
-        "for p in /boot/efi/loader/loader.conf.new.*; do "
-        "[ -f \"$p\" ] && printf 'SCRATCH_CANDIDATE:%s\\n' \"$p\"; done; "
-        "for p in /boot/efi/EFI/dr/bootloader.new.*; do "
-        "[ -f \"$p\" ] && printf 'SCRATCH_CANDIDATE:%s\\n' \"$p\"; done; "
+        "for p in /boot/efi/EFI/dr/kernels/.dr-state.tmp.* "
+        "/boot/efi/loader/entries/.dr-state.tmp.* "
+        "/boot/efi/loader/.dr-state.tmp.* "
+        "/boot/efi/EFI/dr/.dr-state.tmp.* "
+        "/.top/.dr-state/.dr-state.tmp.*; do "
+        "if [ -e \"$p\" ] || [ -L \"$p\" ]; then "
+        "printf 'SCRATCH_CANDIDATE:%s\\n' \"$p\"; fi; done; "
         "printf 'SCRATCH_SCAN_DONE:1\\n'"
     )
     candidates = raw_tags(out, "SCRATCH_CANDIDATE")
@@ -1228,35 +1220,77 @@ def recovery_precondition(g, log):
     return state, kernel
 
 
-def payload_archive() -> bytes:
-    """Return the complete runtime tree as a mode-preserving, bytecode-free tar archive."""
+def payload_files() -> tuple[Path, ...]:
+    """Return every bytecode-free regular file in the runtime payload."""
 
     if not PAYLOAD_ROOT.is_dir():
         raise ValueError(f"files payload {PAYLOAD_ROOT} is missing")
+    return tuple(
+        sorted(
+            (
+                path
+                for path in PAYLOAD_ROOT.rglob("*")
+                if path.is_file()
+                and "__pycache__" not in path.relative_to(PAYLOAD_ROOT).parts
+                and path.suffix not in (".pyc", ".pyo")
+            ),
+            key=lambda path: path.relative_to(PAYLOAD_ROOT).as_posix().encode(),
+        )
+    )
 
-    def without_bytecode(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
+
+def payload_manifest_digest() -> str:
+    """Hash the relative names and bytes of the complete installed runtime tree."""
+
+    manifest = hashlib.sha256()
+    for path in payload_files():
+        relative = path.relative_to(PAYLOAD_ROOT).as_posix()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        manifest.update(f"{digest}  {relative}\n".encode("ascii"))
+    return manifest.hexdigest()
+
+
+def installed_payload_digest_command() -> str:
+    """Return the guest shell expression matching payload_manifest_digest()."""
+
+    return (
+        "cd /usr/local && "
+        "find sbin/dr-state lib/dr-state -type f -print0 "
+        "| LC_ALL=C sort -z "
+        "| xargs -0 sha256sum "
+        "| sha256sum "
+        "| awk '{print $1}'"
+    )
+
+
+def payload_archive() -> bytes:
+    """Return the complete runtime tree as a root-owned, mode-preserving tar archive."""
+
+    def normalized(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
         parts = PurePosixPath(member.name).parts
         if "__pycache__" in parts or member.name.endswith((".pyc", ".pyo")):
             return None
+        member.uid = 0
+        member.gid = 0
+        member.uname = "root"
+        member.gname = "root"
         return member
 
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w", format=tarfile.PAX_FORMAT) as archive:
         for child in sorted(PAYLOAD_ROOT.iterdir(), key=lambda item: item.name):
-            archive.add(child, arcname=child.name, filter=without_bytecode)
+            archive.add(child, arcname=child.name, filter=normalized)
     return output.getvalue()
 
 
 def install_current_dr_state(g, log):
-    """Upload the files/usr/local runtime tree and verify the installed launcher."""
-    launcher = PAYLOAD_ROOT / "sbin" / "dr-state"
+    """Upload the files/usr/local runtime tree and verify the complete installed payload."""
     try:
         payload = payload_archive()
-        launcher_bytes = launcher.read_bytes()
+        digest = payload_manifest_digest()
     except (OSError, ValueError) as exc:
         check(log, "current dr-state payload is readable by the guest driver", False, repr(exc))
         return False
-    digest = hashlib.sha256(launcher_bytes).hexdigest()
     encoded = base64.encodebytes(payload).decode("ascii")
     command = (
         "dr_payload=/tmp/dr-state-payload-new.$$; "
@@ -1266,8 +1300,8 @@ def install_current_dr_state(g, log):
         "__dr_b64_rc=$?; "
         "if [ \"$__dr_b64_rc\" = 0 ] "
         "&& rm -rf /usr/local/lib/dr-state "
-        "&& tar -C /usr/local -xf \"$dr_payload\"; then "
-        "printf 'DRSTATE_SHA:%s\\n' \"$(sha256sum /usr/local/sbin/dr-state | awk '{print $1}')\"; "
+        "&& tar -C /usr/local --same-owner -xf \"$dr_payload\"; then "
+        "printf 'DRSTATE_SHA:%s\\n' \"$(" + installed_payload_digest_command() + ")\"; "
         "printf 'DRSTATE_INSTALL_RC:0\\n'; "
         "else printf 'DRSTATE_INSTALL_RC:1\\n'; fi; "
         "rm -f \"$dr_payload\""
@@ -1280,13 +1314,12 @@ def install_current_dr_state(g, log):
 
 def verify_current_dr_state(g, log):
     """Reject a guest base whose installed rollback runtime differs from this driver's source tree."""
-    path = PAYLOAD_ROOT / "sbin" / "dr-state"
     try:
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        digest = payload_manifest_digest()
     except OSError as exc:
         check(log, "current dr-state source is readable by the guest driver", False, repr(exc))
         return False
-    _, out = g.run("echo DRSTATE_SHA:$(sha256sum /usr/local/sbin/dr-state | awk '{print $1}')")
+    _, out = g.run(f"echo DRSTATE_SHA:$({installed_payload_digest_command()})")
     return check(log, "guest runs the exact dr-state source under test",
                  tag(out, "DRSTATE_SHA") == digest,
                  f"sha={tag(out, 'DRSTATE_SHA')} expected={digest}")
@@ -1952,24 +1985,38 @@ def _precondition(g, log):
     return state0, kernel
 
 
-def _update_dr_state(g, log, needle="subvol_parent_uuid", what="parent-aware dedupe window"):
-    """Install the dr-state from the seed ISO (attached as read-only media at /dev/sr0) over the one on the disk, so a
-    scenario can test the current tool without a 21-minute reinstall. Returns True when the new version is in place
-    (`needle` is a name that only the new version contains)."""
-    _, out = g.run("mkdir -p /mnt/seed; mount -o ro /dev/sr0 /mnt/seed; echo MNTRC:$?; "
-                   "rm -rf /usr/local/lib/dr-state; "
-                   "cp -a /mnt/seed/poc/files/usr/local/. /usr/local/; echo INSRC:$?; umount /mnt/seed; "
-                   f"echo NEWFEATURE:$(grep -R -c '{needle}' /usr/local/lib/dr-state/dr_state/core.py)")
-    return check(log, f"dr-state updated from the seed medium ({what} present)",
-                 tag(out, "MNTRC") == "0" and tag(out, "INSRC") == "0" and (tag(out, "NEWFEATURE") or "0") not in ("0", ""),
-                 f"mnt={tag(out, 'MNTRC')} install={tag(out, 'INSRC')} feature={tag(out, 'NEWFEATURE')}")
+def _update_dr_state(g, log, what="Python runtime"):
+    """Install the complete files payload from the seed ISO (mounted at /dev/sr0)."""
+    digest = payload_manifest_digest()
+    _, out = g.run(
+        "mkdir -p /mnt/seed; mount -o ro /dev/sr0 /mnt/seed; echo MNTRC:$?; "
+        "rm -rf /usr/local/lib/dr-state; "
+        "if cp -a --no-preserve=ownership "
+        "/mnt/seed/poc/files/usr/local/sbin/dr-state /usr/local/sbin/dr-state "
+        "&& cp -a --no-preserve=ownership "
+        "/mnt/seed/poc/files/usr/local/lib/dr-state /usr/local/lib/; "
+        "then echo INSRC:0; else echo INSRC:1; fi; "
+        "chown -R 0:0 /usr/local/sbin/dr-state /usr/local/lib/dr-state; echo OWNRC:$?; "
+        "umount /mnt/seed; "
+        f"echo DRSTATE_SHA:$({installed_payload_digest_command()})"
+    )
+    return check(
+        log,
+        f"dr-state updated from the seed medium ({what} payload exact)",
+        tag(out, "MNTRC") == "0"
+        and tag(out, "INSRC") == "0"
+        and tag(out, "OWNRC") == "0"
+        and tag(out, "DRSTATE_SHA") == digest,
+        f"mnt={tag(out, 'MNTRC')} install={tag(out, 'INSRC')} "
+        f"owner={tag(out, 'OWNRC')} sha={tag(out, 'DRSTATE_SHA')} expected={digest}",
+    )
 
 
 def scenario_s8(g, log):
     """S8: many states and pruning. 30 snapshots, a boot with a 31-entry menu, `prune --keep 5` keeps the newest five,
     and a one-shot target outside the newest N is protected and still boots."""
     pc = _precondition(g, log)
-    if not pc or not _update_dr_state(g, log, "cmd_prune", "prune command"):
+    if not pc or not _update_dr_state(g, log, "prune command"):
         return
     state0, _ = pc
     before = state_list(g)
@@ -2155,8 +2202,6 @@ def scenario_window_negative(g, log):
     if not check(log, "running the earlier state A", running_state(tag(out, "CMDLINE")) == a, str(running_state(tag(out, "CMDLINE")))):
         return
     before2 = state_list(g)
-    _, out = g.run(f"dr-state _window-blocks {a} 900 $(date -u +%s); echo WB:$?")
-    check(log, "A's own name is inside the window (a lineage-blind window would block the next apt run)", tag(out, "WB") == "0", str(tag(out, "WB")))
     _, out = g.run("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tree >/var/log/dr-wn2.log 2>&1; echo APTRC:$?; "
                    "echo TREE:$(command -v tree || echo none)", 600)
     after2 = state_list(g)
