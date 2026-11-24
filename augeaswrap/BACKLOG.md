@@ -387,7 +387,9 @@ any of these IDs to verified-killed based only on source inspection.
   `16876f60acdf77a2c998daca1e6cce5a08d09201f2390c74796409edbef21545`).**
   Invoke the maintenance CLI command and assert it omits progress output when
   its command registration sets `include_progress=False`. (closed: killed by
-  tests/test_cli.py::test_endpoint_help_does_not_advertise_unavailable_progress_option;
+  tests/test_cli.py::test_root_help_offers_no_global_progress_option.
+  `endpoints` is a delegated verb, so its own `--help` never reflects this flag.
+  The flag acts only on the root's `any(include_progress)`.
   verify = r2-sample lane)
 - **AW-BL-44 (sample survivor, `endpoint.py:30`, `True->False`, candidate
   `57c9b1ffe85c62cd64bb44b20c2574c1c7565d867ee72f9067780f0fd67a5103`).**

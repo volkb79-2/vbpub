@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import binascii
 import hashlib
 import os
 from dataclasses import FrozenInstanceError
@@ -107,7 +108,12 @@ def test_transaction_setup_error_stays_primary_when_cleanup_fails(tmp_path, monk
             raise OSError("no space")
         return original_ensure(root_arg, path, **kwargs)
 
-    def fail_cleanup(_path, *, ignore_errors=False):
+    real_rmtree = transactions.shutil.rmtree
+
+    def fail_cleanup(path, *args, ignore_errors=False, **kwargs):
+        # shutil is process-wide: delegate every path outside this test's root (AW-BL-50 rule)
+        if not Path(path).is_relative_to(root):
+            return real_rmtree(path, *args, ignore_errors=ignore_errors, **kwargs)
         if not ignore_errors:
             raise OSError("cleanup failed")
 
@@ -130,7 +136,12 @@ def test_transaction_discard_error_does_not_replace_stage_refusal(tmp_path, monk
     def fail_stage(_self, _ctx, _change):
         raise OSError("stage failed")
 
-    def fail_cleanup(_path, *, ignore_errors=False):
+    real_rmtree = transactions.shutil.rmtree
+
+    def fail_cleanup(path, *args, ignore_errors=False, **kwargs):
+        # shutil is process-wide: delegate every path outside this test's root (AW-BL-50 rule)
+        if not Path(path).is_relative_to(root):
+            return real_rmtree(path, *args, ignore_errors=ignore_errors, **kwargs)
         cleanup_calls.append(ignore_errors)
         if not ignore_errors:
             raise OSError("cleanup failed")
@@ -327,7 +338,7 @@ def test_revert_snapshot_rejects_non_base64_before_writing_data(tmp_path, monkey
     )
     monkeypatch.setattr(transactions, "kind_spec", lambda kind: spec)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(binascii.Error):
         transactions._write_preimage(
             root,
             txn_dir,

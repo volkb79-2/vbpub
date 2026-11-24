@@ -33,7 +33,7 @@ aa3417c9c259a9cd9b63d9d9fb93c7b0c73259b93068158004a7bac51db0720e,src/augeaswrap/
 a5aef878f613ceafd46191cb08ee49125cededad8cc2fd2c7bb400ed5768281e,src/augeaswrap/check.py,60,False->True,tests/test_file_check.py,1
 9a0b95d931a7011af86f2937b31aa7d3d349a74a23fc881e71a961c1a5879c93,src/augeaswrap/check.py,61,True->False,tests/test_file_check.py,1
 a027ef703b1a2bc35e30c32c567864b9c88507c6c3f6cb3ccbb9ecec5d3bcbaa,src/augeaswrap/cli.py,190,Or->And,tests/test_cli.py,1
-16876f60acdf77a2c998daca1e6cce5a08d09201f2390c74796409edbef21545,src/augeaswrap/cli.py,348,False->True,tests/test_cli.py::test_endpoint_help_does_not_advertise_unavailable_progress_option,1
+16876f60acdf77a2c998daca1e6cce5a08d09201f2390c74796409edbef21545,src/augeaswrap/cli.py,348,False->True,tests/test_cli.py::test_root_help_offers_no_global_progress_option,1
 8fc81ca430ee702bf5c0d3fda548cc4eeac95f973038681ebea1556cd50f1a01,src/augeaswrap/json_key.py,188,True->False,tests/test_r2_survivors.py,1
 493da71952f4263ee1615ba047da752d962b93db7a19961382f016776e76b154,src/augeaswrap/json_key.py,199,True->False,tests/test_json_key.py,1
 751829813517d3432460864eb3465017a53778524efd03098c1051bcf51ba4e9,src/augeaswrap/json_key.py,252,False->True,tests/test_json_key.py,1
