@@ -317,11 +317,12 @@ fn call_after_served(
 ///
 /// A [`Refusal`]; [`Refusal::fatal`] says whether the connection closes.
 pub fn classify(query: &Query<'_>) -> Result<Dispatch, Refusal> {
-    debug_assert!(!(query.mode == Mode::Json && query.level.serves_blocks()));
     classify_with(query, &ConnFacts::default())
 }
 
 /// Classify one request with the connection's live `corr`, Query pool and interval facts.
+/// Callers never pass a JSON query at a block level (D-W51, mode detection); debug builds
+/// assert it.
 ///
 /// # Errors
 ///

@@ -1062,16 +1062,22 @@ mod tests {
     }
 
     #[test]
-    fn dw53_observe_default_uid_cap_does_not_bind_below_the_level_cap() {
-        let mut d = Driver::new();
+    fn dw53_observe_level_cap_refuses_a_seventeenth_uid() {
+        let mut limits = ServerLimits::new();
+        assert_eq!(limits.observe.max_connections, 16);
+        // Make the level, not the uid cap, the only possible refusal at 17.
+        limits.observe.max_connections_per_uid = limits.observe.max_connections + 1;
+        let mut d = Driver::with(limits);
         for _ in 0..16 {
             assert!(matches!(d.try_open(Level::Observe, 7), Accept::Accepted(_)));
         }
         assert_eq!(d.server.count(Level::Observe), 16);
         assert_eq!(d.server.uid_count(Level::Observe, 7), 16);
         assert_eq!(d.try_open(Level::Observe, 7), Accept::Refused);
+        assert_eq!(d.try_open(Level::Observe, 8), Accept::Refused);
         assert_eq!(d.server.count(Level::Observe), 16);
         assert_eq!(d.server.uid_count(Level::Observe, 7), 16);
+        assert_eq!(d.server.uid_count(Level::Observe, 8), 0);
     }
 
     #[test]
@@ -1429,17 +1435,48 @@ mod tests {
 
     #[test]
     fn the_hub_counts_only_connection_and_global_pools() {
-        let mut d = Driver::new();
+        let max_rows = ServerLimits::new().probe.max_rows;
+        let first = crate::tick::query_block(
+            live_data(5, "first"),
+            BlockBounds {
+                max_rows,
+                max_block_bytes: u32::MAX,
+            },
+        )
+        .expect("first query block");
+        let second = crate::tick::query_block(
+            live_data(6, "second-query-block"),
+            BlockBounds {
+                max_rows,
+                max_block_bytes: u32::MAX,
+            },
+        )
+        .expect("second query block");
+        assert_ne!(first.len(), second.len());
+        let query_cap = first.len().max(second.len());
+        let mut limits = ServerLimits::new();
+        // Each connection fits one block; two blocks fit only the global pool.
+        limits.probe.query_queue_bytes = u32::try_from(query_cap).expect("query cap");
+        let mut d = Driver::with(limits);
         let a = d.open(Level::Observe, 1000);
-        let b = d.open(Level::Observe, 1001);
+        let b = d.open(Level::Observe, 1000);
         assert_eq!(d.push_live(a, 1, 200), LiveOutcome::Queued);
-        assert_eq!(d.push_query(a, 2, 300), QueryOutcome::Queued);
         assert_eq!(d.push_live(b, 1, 500), LiveOutcome::Queued);
-        assert_eq!(d.push_query(b, 2, 700), QueryOutcome::Queued);
-        assert_eq!(d.server.hub().global_pools(), pools(700, 1_000));
-        assert_eq!(d.server.hub().queued(a), pools(200, 300));
+        let now = d.now;
+        assert_eq!(
+            d.server.hub.push_query(a, 2, Arc::clone(&first), now),
+            QueryOutcome::Queued
+        );
+        assert_eq!(
+            d.server.hub.push_query(b, 2, Arc::clone(&second), now),
+            QueryOutcome::Queued
+        );
+        let query = first.len() + second.len();
+        assert_eq!(d.server.hub().global_pools(), pools(700, query));
+        assert_eq!(d.server.hub().queued(a), pools(200, first.len()));
+        assert_eq!(d.server.hub().queued(b), pools(500, second.len()));
         d.server.finish(a);
-        assert_eq!(d.server.hub().global_pools(), pools(500, 700));
+        assert_eq!(d.server.hub().global_pools(), pools(500, second.len()));
         d.server.finish(b);
         assert_clean(&d, "both finished");
     }
@@ -1456,7 +1493,11 @@ mod tests {
             },
         )
         .expect("query block");
-        let mut d = Driver::new();
+        let block = u32::try_from(encoded.len()).expect("block");
+        let mut limits = ServerLimits::new();
+        // One block fills each connection and a retired one-block uid pool.
+        limits.probe.query_queue_bytes = block;
+        let mut d = Driver::with(limits);
         let a = d.open(Level::Observe, 1000);
         let b = d.open(Level::Observe, 1000);
         d.ready(a);
@@ -1468,6 +1509,7 @@ mod tests {
         assert_eq!(d.server.hub().queued(a).query, block);
         assert_eq!(d.server.hub().queued(b).query, block);
         assert_eq!(d.server.hub().global_pools().query, 2 * block);
+        assert!(!d.server.hub().query_room(a, 1));
         for (id, corr) in [(a, 2), (b, 3)] {
             d.pump(id, usize::MAX);
             let raw = raw_frames(&d.take_out(id));
