@@ -6,6 +6,8 @@ of its own (80, 443 and 8443 belong to the edge). All hosts below use `${TLS_EDG
 `.env.example` (the placeholder `example.test`); an installed edge writes the same variable to
 `<instance>/stack/consumer.env`, so a real consumer can run
 `docker compose --env-file /srv/tls-edge-instance/stack/consumer.env up -d`.
+The effective values are defined by the
+[rendered consumer contract](../docs/CONSUMERS.md#rendered-consumer-contract).
 
 Check any example offline before starting it: `docker compose --env-file ../.env.example config`.
 

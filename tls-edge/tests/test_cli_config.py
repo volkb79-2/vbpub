@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import tomlkit
 
-from tls_edge_cli import config, contract
+from tls_edge_cli import config
 
 
 def valid_config() -> dict:
@@ -500,17 +500,41 @@ def test_updated_consumer_env_creates_and_replaces_only_owned_entries(
     root = make_root(tmp_path / "instance")
     one = _consumer_contract("one.example")
     path, text, mode = config.updated_consumer_env(root, one)
-    assert text == contract.render_env(one) and mode == 0o644
+    assert text == (
+        "TLS_EDGE_DOMAIN=one.example\n"
+        "TLS_EDGE_NETWORK=ingress_public\n"
+        "TLS_EDGE_HTTPS_ENTRYPOINT=websecure\n"
+        "TLS_EDGE_HEADERS_MIDDLEWARE=secure-headers@file\n"
+        "TLS_EDGE_HTTP3=false\n"
+        "TLS_EDGE_PUBLIC_PORTS=80/tcp,443/tcp\n"
+    )
+    assert mode == 0o644
     path.write_text("OTHER=value\nTLS_EDGE_DOMAIN=old\nTLS_EDGE_DOMAIN=duplicate\n", encoding="utf-8")
     path.chmod(0o600)
     two = _consumer_contract("two.example")
     _, text, mode = config.updated_consumer_env(root, two)
-    assert text == contract.render_env(two, "OTHER=value\n")
+    assert text == (
+        "OTHER=value\n"
+        "TLS_EDGE_DOMAIN=two.example\n"
+        "TLS_EDGE_NETWORK=ingress_public\n"
+        "TLS_EDGE_HTTPS_ENTRYPOINT=websecure\n"
+        "TLS_EDGE_HEADERS_MIDDLEWARE=secure-headers@file\n"
+        "TLS_EDGE_HTTP3=false\n"
+        "TLS_EDGE_PUBLIC_PORTS=80/tcp,443/tcp\n"
+    )
     assert mode == 0o600
     path.write_text("OTHER=value\n", encoding="utf-8")
     three = _consumer_contract("three.example")
     _, text, mode = config.updated_consumer_env(root, three)
-    assert text == contract.render_env(three, "OTHER=value\n")
+    assert text == (
+        "OTHER=value\n"
+        "TLS_EDGE_DOMAIN=three.example\n"
+        "TLS_EDGE_NETWORK=ingress_public\n"
+        "TLS_EDGE_HTTPS_ENTRYPOINT=websecure\n"
+        "TLS_EDGE_HEADERS_MIDDLEWARE=secure-headers@file\n"
+        "TLS_EDGE_HTTP3=false\n"
+        "TLS_EDGE_PUBLIC_PORTS=80/tcp,443/tcp\n"
+    )
     assert mode == 0o600
     path.unlink()
     path.mkdir()

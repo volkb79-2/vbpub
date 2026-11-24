@@ -225,7 +225,7 @@ COPY tester-unified/local-wheel/ /tmp/cli-extended-local/
 # generator REFUSES any estate-internal name (worktree, cmru, assay, ciu, ...):
 # `worktree` is an unrelated PyPI project and `cli-extended` is unclaimed on
 # PyPI, i.e. a dependency-confusion path into an image that is handed the host
-# Docker socket. cmru declares `cli-extended>=0.3.0`; the generator SKIPS that
+# Docker socket. cmru declares `cli-extended>=0.8.0`; the generator SKIPS that
 # one line (no cli-extended requirement ever reaches pip), and the image installs
 # the RELEASED cli-extended wheel instead: fetch-cli-extended.py downloads the
 # pinned release asset (default; or `cli-extended-latest/latest.json` as an opt-in),
@@ -305,7 +305,7 @@ RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py 
       mkdir -p /tmp/cli-extended-release && cp "$1" /tmp/cli-extended-release/; \
     else \
       /usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py \
-        --dest /tmp/cli-extended-release --min-version 0.3.0 "$@"; \
+        --dest /tmp/cli-extended-release --min-version 0.8.0 "$@"; \
     fi \
  && set -- /tmp/cli-extended-release/cli_extended-*.whl \
  && [ "$#" -eq 1 ] && [ -f "$1" ] \

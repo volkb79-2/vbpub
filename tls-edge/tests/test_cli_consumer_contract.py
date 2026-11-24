@@ -87,6 +87,60 @@ def test_configure_writes_the_full_contract_to_a_new_0644_file(
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o644
 
 
+@pytest.mark.parametrize(
+    ("answers", "expected_ports"),
+    [
+        (
+            """\
+[tls_edge]
+domain = "edge.example.test"
+
+[tls_edge.tls]
+mode = "static"
+
+[tls_edge.ports]
+expose_http = true
+http = 8080
+https = 443
+
+[tls_edge.static]
+domains = ["edge.example.test"]
+""",
+            "443/tcp,8080/tcp",
+        ),
+        (
+            """\
+[tls_edge]
+domain = "edge.example.test"
+
+[tls_edge.http3]
+enabled = true
+
+[tls_edge.calls]
+enabled = true
+public_port = 442
+""",
+            "80/tcp,442/tcp,442/udp,443/tcp,443/udp",
+        ),
+    ],
+    ids=["http-before-https", "calls-before-https"],
+)
+def test_public_ports_sort_by_number_then_tcp_before_udp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    answers: str,
+    expected_ports: str,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    answers_path = answer_file(tmp_path / "answers.toml", answers)
+    result, output = _configure(root, answers_path, monkeypatch)
+    assert result == 0, output
+    assert (
+        f"TLS_EDGE_PUBLIC_PORTS={expected_ports}"
+        in (root / "consumer.env").read_text(encoding="utf-8").splitlines()
+    )
+
+
 def test_configure_rewrites_owned_keys_in_place(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -185,6 +239,28 @@ def test_configure_keeps_comments_blank_lines_and_unowned_values(
     assert env_path.read_text(encoding="utf-8").startswith(preserved)
 
 
+def test_validate_accepts_operator_owned_consumer_env_lines(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    answers_path = answer_file(tmp_path / "answers.toml", ANSWERS)
+    result, output = _configure(root, answers_path, monkeypatch)
+    assert result == 0, output
+    env_path = root / "consumer.env"
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + "# operator-owned settings\n"
+        + "CUSTOM_CONSUMER_SETTING=keep-me\n",
+        encoding="utf-8",
+    )
+    result, output = run_cli(
+        monkeypatch,
+        ["validate", "--root", str(root)],
+    )
+    assert result == 0, output
+
+
 def test_configure_keeps_the_existing_consumer_env_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -233,6 +309,46 @@ def test_hand_edited_domain_is_refused_then_re_synced_by_configure(
     assert result == 0, output
 
 
+@pytest.mark.parametrize(
+    "owned_line",
+    [
+        "export TLS_EDGE_DOMAIN=other.example.test",
+        " TLS_EDGE_DOMAIN = other.example.test",
+    ],
+    ids=["export-prefix", "padded-key"],
+)
+def test_compose_owned_key_spellings_are_drift_and_re_synced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owned_line: str,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    answers_path = answer_file(tmp_path / "answers.toml", ANSWERS)
+    result, output = _configure(root, answers_path, monkeypatch)
+    assert result == 0, output
+    env_path = root / "consumer.env"
+    canonical = env_path.read_text(encoding="utf-8")
+    env_path.write_text(canonical + owned_line + "\n", encoding="utf-8")
+
+    result, output = run_cli(
+        monkeypatch,
+        ["validate", "--root", str(root)],
+    )
+    assert result == 2, output
+    assert DRIFT_MESSAGE in output
+
+    empty_answers = answer_file(tmp_path / "empty.toml", "")
+    result, output = _configure(root, empty_answers, monkeypatch)
+    assert result == 0, output
+    assert env_path.read_text(encoding="utf-8") == canonical
+
+    result, output = run_cli(
+        monkeypatch,
+        ["validate", "--root", str(root)],
+    )
+    assert result == 0, output
+
+
 def test_validate_ignores_an_absent_consumer_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -248,6 +364,40 @@ def test_validate_ignores_an_absent_consumer_env(
         ["validate", "--root", str(root)],
     )
     assert result == 0, output
+
+
+def test_validate_refuses_a_non_docker_ingress_network_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    override = root / "ciu-stack" / "ciu.toml.j2"
+    override.write_text(
+        '[tls_edge]\ndomain = "edge.example.test"\ningress_network = "edge public"\n',
+        encoding="utf-8",
+    )
+    result, output = run_cli(
+        monkeypatch,
+        ["validate", "--root", str(root)],
+    )
+    assert result == 2, output
+    assert "ingress_network must be a valid Docker network name" in output
+    assert "Traceback" not in output
+
+
+def test_configure_refuses_a_non_docker_ingress_network_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    answers_path = answer_file(
+        tmp_path / "answers.toml",
+        '[tls_edge]\ndomain = "edge.example.test"\ningress_network = "edge public"\n',
+    )
+    result, output = _configure(root, answers_path, monkeypatch)
+    assert result == 2, output
+    assert "ingress_network must be a valid Docker network name" in output
+    assert "Traceback" not in output
 
 
 def test_validate_names_every_drifted_key(
@@ -279,6 +429,43 @@ def test_validate_names_every_drifted_key(
         "consumer.env TLS_EDGE_DOMAIN, TLS_EDGE_NETWORK differ from the site "
         "override; run tls-edge configure to re-sync"
     ) in output
+
+
+def test_validate_names_an_identically_duplicated_owned_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    answers_path = answer_file(tmp_path / "answers.toml", ANSWERS)
+    result, output = _configure(root, answers_path, monkeypatch)
+    assert result == 0, output
+    env_path = root / "consumer.env"
+    canonical = env_path.read_text(encoding="utf-8")
+    env_path.write_text(
+        canonical + "TLS_EDGE_DOMAIN=edge.example.test\n",
+        encoding="utf-8",
+    )
+
+    result, output = run_cli(
+        monkeypatch,
+        ["validate", "--root", str(root)],
+    )
+    assert result == 2, output
+    assert (
+        "consumer.env TLS_EDGE_DOMAIN is duplicated; "
+        "run tls-edge configure to re-sync"
+    ) in output
+
+    empty_answers = answer_file(tmp_path / "empty.toml", "")
+    result, output = _configure(root, empty_answers, monkeypatch)
+    assert result == 0, output
+    assert env_path.read_text(encoding="utf-8") == canonical
+
+    result, output = run_cli(
+        monkeypatch,
+        ["validate", "--root", str(root)],
+    )
+    assert result == 0, output
 
 
 def test_show_reports_drift_and_exits_zero(
@@ -396,11 +583,6 @@ def test_show_json_reports_drift_and_absence_without_failing(
     result, output = _configure(root, answers_path, monkeypatch)
     assert result == 0, output
     env_path = root / "consumer.env"
-    while "\n\n" in env_path.read_text(encoding="utf-8"):
-        env_path.write_text(
-            env_path.read_text(encoding="utf-8").replace("\n\n", "\n"),
-            encoding="utf-8",
-        )
     _hand_edit_domain(env_path)
 
     result, output = run_cli(

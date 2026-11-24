@@ -853,7 +853,7 @@ and [`runner/README.md`](runner/README.md).
 
 ### Install fleetd for host facts
 
-`fleet facts collect` and `fleet guard validate` run on the host, so the wheel
+`fleet facts collect` runs on the host, so the wheel
 (not a checkout) is what a host needs. `install-fleetd.sh` verifies both wheel
 hashes, installs into `/opt/fleetd/<version>/venv`, and links
 `/usr/local/bin/fleet`; it never installs into the system Python, which Debian

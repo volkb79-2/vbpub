@@ -61,8 +61,8 @@ one test file renders into in place while three others copy out of. The
 TOCTOU with an ``fcntl`` writer/reader lock; see that section's own comment
 for why ``pytest.mark.xdist_group`` cannot be used here.
 
-Direct-child guard opt-out (CIU-223)
-------------------------------------
+Direct-child guard opt-out (CIU-223) and estate test policy
+-----------------------------------------------------------
 The autouse ``_no_leftover_direct_children`` guard fails any test that leaves
 a new direct child of pytest behind. A test whose contract legitimately
 requires a child to outlive its body declares
@@ -70,6 +70,12 @@ requires a child to outlive its body declares
 ``pytest_configure`` below and documented on the fixture itself. The guard
 never signals or reaps a child, and the opted-out child must end within its
 own bounded lifetime.
+
+``estate_test_policy`` is loaded from this repository's source and runs in
+``warn`` mode. It owns process/thread/fd leak enforcement across the suite;
+the CIU-223 guard remains the narrower report-only direct-child check. A
+process-signalling test declares ``requires_contained_cgroup`` and is
+responsible for waiting on every child it starts.
 """
 from __future__ import annotations
 
@@ -78,11 +84,46 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Optional
 
 import pytest
+
+
+def _policy_source() -> Path:
+    """Find estate_test_policy's source tree, including tests run from a copy."""
+    project = Path(__file__).resolve().parents[1]
+    cwd = Path.cwd().resolve()
+    for root in (*project.parents, cwd, *cwd.parents):
+        candidate = root / "libraries" / "test-policy" / "src"
+        if (candidate / "estate_test_policy" / "plugin.py").is_file():
+            return candidate.resolve()
+    raise RuntimeError("cannot locate libraries/test-policy/src from ciu tests")
+
+
+_POLICY_SRC = _policy_source()
+sys.path.insert(0, str(_POLICY_SRC))
+
+from estate_test_policy import policy as _estate_policy  # noqa: E402
+
+_ORIGINAL_ESTATE_ANALYZE = _estate_policy.analyze_source
+
+def _analyze_test_source(source: str, **kwargs):
+    """Temporary shim for libraries/test-policy TP-18.
+
+    TP-18 (controller files it): analyze_source fails on a method with column-0
+    string-literal lines; remove the shim when it lands.
+    """
+    indent = source[: len(source) - len(source.lstrip())]
+    normalized = "".join(
+        line[len(indent):] if indent and line.startswith(indent) else line
+        for line in source.splitlines(keepends=True)
+    )
+    return _ORIGINAL_ESTATE_ANALYZE(normalized, **kwargs)
+
+_estate_policy.analyze_source = _analyze_test_source
 
 # CIU-87. Captured at import time, before any test can `monkeypatch.setattr`
 # `subprocess.run` (which several boundary tests do, on the shared module
@@ -95,7 +136,11 @@ _REAL_SUBPROCESS_RUN = subprocess.run
 # fails the session unless every active catalog row links a collected test through
 # ``@pytest.mark.cli_case``. A focused run of a few test files must pass ``--cli-case-partial``
 # (the full gate and the full suite need no flag).
-pytest_plugins = ["cli_extended.pytest_plugin", "pytester"]
+pytest_plugins = [
+    "cli_extended.pytest_plugin",
+    "pytester",
+    "estate_test_policy.plugin",
+]
 
 CIU_TEST_SUITE_ENV = "CIU_TEST_SUITE"
 _CIU_PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -128,6 +173,26 @@ def python_child_env(environ: Mapping[str, str] | None = None) -> dict[str, str]
 # Mechanism 1, at import time: collection-time module bodies and any `ciu`
 # subprocess a test spawns both read os.environ, and neither sees a fixture.
 os.environ[CIU_TEST_SUITE_ENV] = "1"
+
+
+def _disable_git_auto_maintenance_in_env() -> None:
+    """Turn git's automatic maintenance off for every git process the suite spawns.
+
+    A git command that runs ``gc --auto`` or ``maintenance run --auto`` detaches a
+    child that outlives the test; the test-policy plugin makes pytest the
+    subreaper, so that child becomes a direct child of pytest and the CIU-223
+    guard fails the test (observed with git 2.56.1). The settings travel as
+    ``GIT_CONFIG_COUNT`` entries (appended after any the caller already set),
+    never as a global git config.
+    """
+    count = int(os.environ.get("GIT_CONFIG_COUNT", "0") or "0")
+    for offset, (key, value) in enumerate((("gc.auto", "0"), ("maintenance.auto", "false"))):
+        os.environ[f"GIT_CONFIG_KEY_{count + offset}"] = key
+        os.environ[f"GIT_CONFIG_VALUE_{count + offset}"] = value
+    os.environ["GIT_CONFIG_COUNT"] = str(count + 2)
+
+
+_disable_git_auto_maintenance_in_env()
 
 
 def _ensure_ciu_distribution_metadata() -> None:
