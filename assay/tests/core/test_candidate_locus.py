@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import random
+import time
 
 import pytest
 
@@ -918,3 +919,30 @@ def test_window_default_is_three_lines():
     ) == window_key_for_site(
         "pkg/mod.py", source, start, end, OPERATOR, REPLACEMENT, lines=3
     )
+
+
+def test_three_thousand_function_sites_index_in_bounded_time():
+    chunks: list[bytes] = []
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for index in range(3_000):
+        marker = f"return {index + 1}".encode()
+        chunk = f"def f_{index:04d}():\n    {marker.decode()}\n".encode()
+        marker_start = chunk.index(marker)
+        spans.append((cursor + marker_start, cursor + marker_start + len(marker)))
+        chunks.append(chunk)
+        cursor += len(chunk)
+    source = b"".join(chunks)
+    candidate_locus._cached_source_index.cache_clear()
+
+    started = time.perf_counter()
+    for start, end in spans:
+        assert locus_for_site(
+            "pkg/many.py", source, start, end, OPERATOR, REPLACEMENT
+        ) is not None
+        assert window_key_for_site(
+            "pkg/many.py", source, start, end, OPERATOR, REPLACEMENT
+        ) is not None
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 10.0, f"3,000 indexed loci took {elapsed:.3f}s"

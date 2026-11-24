@@ -1746,6 +1746,13 @@ Shards assign by keyed digest of the candidate ID. Their merge is
 a manifest-level set proof: exact index coverage, one schema/lane/commit/count,
 and duplicate-free IDs—not bucket-count arithmetic.
 
+### One provenance object and advisory locus (B561/WP2)
+
+One optional `provenance` object names import, carry or replay; its absence is fresh, and verdict v21 projects it unchanged.
+Schema 2 stores only import metadata beside that object, and schema-1 blocks are read by derivation and never written.
+Malformed provenance makes the candidate re-judge without failing the lane; malformed locus metadata is dropped, counted, and exact-id resume continues.
+See [the consumer contract and field table](CONSUMERS.md#carry-finished-records-across-a-judge-change-b530).
+
 ### Serial tail retries for native R2 (B179)
 
 After the first sweep, Assay retries once, serially, each candidate executed in

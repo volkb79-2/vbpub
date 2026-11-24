@@ -461,10 +461,9 @@ as `NOT-BUILT` rather than counted as a kill, because it proves nothing about th
 patch whose stored fragment no longer matches the source is `NOT APPLIED`, which is also
 not a survivor.
 
-`cargo deny` keeps duplicate-version and external wildcard checks strict. Its single
-`winnow@0.7.15` skip is tied to the imported sampler lock: `toml 0.9.8` and its
-`toml_parser 1.1.5` resolve `winnow` 0.7.15 and 1.0.4, so the skip names only the older
-exact version and becomes an unused-entry warning when that edge disappears. Workspace
+`cargo deny` keeps duplicate-version and external wildcard checks strict, with no skip
+entry: the lock holds one version of every crate. A future duplicate needs a reviewed
+`[[bans.skip]]` naming the exact older version. Workspace
 packages are explicitly unpublished; their license metadata is deferred until a
 publication decision, while registry dependencies remain license-checked.
 

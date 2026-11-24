@@ -417,11 +417,28 @@ def test_carry_over_imports_finished_records_with_provenance(
     assert _executed(second) == [], "an imported record is not re-executed"
     (record,) = _records(state)
     assert record["judge_sha256"] == judge_a, "the executing judge is never rewritten"
-    assert record["carry_over"]["from_judge_sha256"] == judge_a
+    assert set(record["carry_over"]) == {
+        "schema_version",
+        "into_judge_sha256",
+        "source",
+        "reason",
+        "imported_at",
+        "importer_version",
+    }
+    assert (
+        record["carry_over"]["schema_version"]
+        == mutation.CARRY_OVER_SCHEMA_VERSION_V2
+    )
     assert record["carry_over"]["into_judge_sha256"] == judge_b
     assert record["carry_over"]["reason"] == "comment-only test change"
     assert record["carry_over"]["source"] == str(state)
-    assert mutation.record_effective_judge(record) == judge_b
+    assert record["provenance"] == {
+        "kind": "imported",
+        "from_candidate_id": record["candidate_id"],
+        "from_judge_sha256": judge_a,
+        "match": "exact-id",
+        "reason": "comment-only test change",
+    }
 
     # The next attempt resumes it without asking again.
     _code, third = _run(git_repo, state, tmp_path / "3.jsonl")
@@ -450,7 +467,7 @@ def test_carry_over_copies_same_judge_records_from_another_store(
     assert (carry["imported_total"], carry["copied_total"]) == (0, 1)
     assert _executed(merged) == []
     (record,) = _records(main_store)
-    assert "carry_over" not in record
+    assert "carry_over" not in record and "provenance" not in record
 
 
 def test_carry_over_refuses_a_record_filed_under_the_wrong_identity(
@@ -733,4 +750,4 @@ def test_campaign_analysis_counts_imported_records_separately(
     assert document["state"]["counted"] == 1
     text = io.StringIO()
     main([*common, "--format", "text"], stdout=text, stderr=io.StringIO())
-    assert "carry-over: 1 counted result(s) were IMPORTED" in text.getvalue()
+    assert "carry-over: 1 counted result(s) were imported" in text.getvalue()

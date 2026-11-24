@@ -37,6 +37,11 @@ ciu up --dir voice-screen-share/jitsi-server --yes               # start, regist
 ciu down --dir voice-screen-share/jitsi-server
 ```
 
+On a native host (not the devcontainer), also export `CGROUP_PARENT_DEV_INTERACTIVE` (the host's
+interactive slice, e.g. `dev-interactive.slice`). The S6.5 root helper needs it to give the `vol-*`
+hostdirs their uid-1000 owner. If an earlier run (including `--dry-run`) was refused before that, remove the
+empty runner-owned `vol-*` dirs it left before you retry (CIU-227).
+
 Like every ciu root, run `ciu up` from the main checkout path (S16.3 refuses to start a
 worktree whose project does not yet exist in the primary checkout). A bare `ciu up` selects
 nothing: always pass `--dir`.

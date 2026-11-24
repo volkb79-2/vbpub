@@ -3,7 +3,7 @@
 //! no threads, no clock reads.
 //!
 //! A [`Server`] owns ONE `SendHub`, the connections keyed by `ConnId` (iterated in ascending id
-//! order), the per-level and per-uid connection counters, the per-level [`Limits`] and the
+//! order), the per-level and per-uid connection counters, the configured limits and the
 //! backend. A single-threaded driver calls [`Server::accept`], [`Server::on_bytes`],
 //! [`Server::on_eof`], [`Server::poll`], [`Server::on_tick`], [`Server::output`] and
 //! [`Server::wrote`], and finishes every connection it is done with.
@@ -14,9 +14,9 @@
 //!   section 1: it belongs to `act`), a missing peer has no identity, a level at its
 //!   `max_connections` or a uid at its
 //!   `max_connections_per_uid` on that level is full: all four answer [`Accept::Refused`] with
-//!   no hub entry, no counter and no byte. Otherwise the connection is added to the hub with the
-//!   peer's uid, a [`Conn`] is created and the counters grow (accept when `count < cap`). The peer
-//!   is captured once: every later decrement and hub call uses the stored uid (R23).
+//!   no hub entry, no counter and no byte. Otherwise the connection is added to the hub, a
+//!   [`Conn`] is created and the counters grow (accept when `count < cap`). The peer is captured
+//!   once for the per-uid connection counter and selection caps (R23).
 //! - **`finish` is the single release path (R22).** It decrements the level and uid counters,
 //!   deletes a uid entry that reaches 0, removes the connection from the hub and drops it. It is
 //!   idempotent and is the only place that does so; every close path ends in it: the driver
@@ -39,13 +39,13 @@
 //!   connection wins, so a tie is settled by the order: the hello deadline against the writer
 //!   stall on the unread server prefix, and the reader's age (`deadline`) against a stall due in
 //!   the same `poll` (the reader's age wins, the hub's `slow-client` finds a closed connection).
-//! - **One hub, server-wide block-pool caps.** The Live and Query pool caps are the smaller
-//!   observe/operator values and are unified in both levels' hello limits
-//!   ([`ServerLimits::queue_limits`], S20). The hub's control cap and timers are the widest of the
-//!   served levels. The observer's smaller `control_queue_bytes` (design R28) is enforced by the
-//!   server after every `on_bytes`: a connection whose queued control bytes exceed its own level's
-//!   cap is closed with `slow-client`. A frame is at most `max_reply_bytes`, below the cap, so this
-//!   equals the hub's rule (a frame into an empty control queue is always admitted).
+//! - **One hub, probe-wide block-pool caps.** The Live and Query pool caps have one probe-wide
+//!   value ([`ServerLimits::queue_limits`], S20 and D-W52). The hub's control cap and timers are
+//!   the widest of the served levels. The observer's smaller `control_queue_bytes` (design R28) is
+//!   enforced by the server after every `on_bytes`: a connection whose queued control bytes
+//!   exceed its own level's cap is closed with `slow-client`. A frame is at most
+//!   `max_reply_bytes`, below the cap, so this equals the hub's rule (a frame into an empty
+//!   control queue is always admitted).
 //! - **Every push path ends in `enforce_control`.** The server hands a connection the hub and
 //!   the backend through one private method (`drive`), which runs the control-cap check right
 //!   after the connection returns. Every path that can queue a frame of a connection (today
@@ -74,23 +74,25 @@ use hostobs_proto::hub::{ConnId, QueueLimits, SendHub};
 use crate::backend::{Backend, BackendError, Identity, StatusInfo, TickData};
 use crate::codes::Code;
 use crate::conn::{Conn, Peer};
-use crate::limits::{Level, Limits};
+use crate::limits::{ConnLimits, Level, LevelLimits, ProbeLimits};
 use crate::registry::{Delivery, SelectionStreams, StreamLimits};
 use crate::selection::Selection;
-use crate::tick::BlockBounds;
 
 /// The levels the probe serves, in the order `status.clients` lists them.
 const SERVED: [Level; 3] = [Level::Observe, Level::Operator, Level::Observer];
 
-/// The per-level bounds of the served levels (`Control` belongs to `act`).
+/// The configured bounds of the served levels (`Control` belongs to `act`). Probe-wide keys
+/// live once in `probe`; only per-level facts live in each level.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServerLimits {
+    /// The one probe-wide configuration.
+    pub probe: ProbeLimits,
     /// The bounds of the `observe` level.
-    pub observe: Limits,
+    pub observe: LevelLimits,
     /// The bounds of the `operator` level.
-    pub operator: Limits,
+    pub operator: LevelLimits,
     /// The bounds of the `observer` level.
-    pub observer: Limits,
+    pub observer: LevelLimits,
 }
 
 impl ServerLimits {
@@ -100,15 +102,16 @@ impl ServerLimits {
     #[must_use]
     pub fn new() -> ServerLimits {
         ServerLimits {
-            observe: Limits::for_level(Level::Observe),
-            operator: Limits::for_level(Level::Operator),
-            observer: Limits::for_level(Level::Observer),
+            probe: ProbeLimits::new(),
+            observe: LevelLimits::for_level(Level::Observe),
+            operator: LevelLimits::for_level(Level::Operator),
+            observer: LevelLimits::for_level(Level::Observer),
         }
     }
 
-    /// The bounds of `level`; `None` for `Control`, which the probe never serves.
+    /// The per-level bounds of `level`; `None` for `Control`, which the probe never serves.
     #[must_use]
-    pub fn get(&self, level: Level) -> Option<&Limits> {
+    pub fn get(&self, level: Level) -> Option<&LevelLimits> {
         match level {
             Level::Observe => Some(&self.observe),
             Level::Operator => Some(&self.operator),
@@ -117,52 +120,29 @@ impl ServerLimits {
         }
     }
 
-    /// These bounds with the server-wide facts unified (design S20): `stall_ms` and
-    /// `frame_completion_ms` are widest; `tick_ms` is the larger observe/operator value; and
-    /// `max_rows`, `max_block_bytes`, and the per-connection Live and Query pool caps are the
-    /// smaller observe/operator values. This gives the one hub a server-wide block-pool bound and
-    /// announces that same bound at both block-serving levels. [`Server::new`] applies it.
+    /// The effective bounds of one served connection.
+    #[must_use]
+    pub fn conn_limits(&self, level: Level) -> Option<ConnLimits> {
+        self.get(level)
+            .copied()
+            .map(|limits| ConnLimits::new(level, limits, self.probe))
+    }
+
+    /// These bounds with the server-wide facts unified (design S20): the two hub timers are the
+    /// widest; `max_block_bytes` is clamped to both connection pools. Probe-wide values are
+    /// never min/max-unified between levels. [`Server::new`] applies it.
     #[must_use]
     pub fn unified(&self) -> ServerLimits {
-        let client_queue_bytes = self
-            .observe
-            .client_queue_bytes
-            .min(self.operator.client_queue_bytes);
-        let query_queue_bytes = self
-            .observe
-            .query_queue_bytes
-            .min(self.operator.query_queue_bytes);
         let first = self.observe.stall_ms.max(self.operator.stall_ms);
         let stall_ms = first.max(self.observer.stall_ms);
         let first = self.observe.frame_completion_ms;
         let first = first.max(self.operator.frame_completion_ms);
         let frame_completion_ms = first.max(self.observer.frame_completion_ms);
-        let tick_ms = self.observe.tick_ms.max(self.operator.tick_ms);
-        let max_rows = self.observe.max_rows.min(self.operator.max_rows);
-        let max_block_bytes = self
-            .observe
-            .max_block_bytes
-            .min(self.operator.max_block_bytes)
-            .min(query_queue_bytes)
-            .min(client_queue_bytes);
         let mut out = *self;
+        out.probe = out.probe.clamped();
         for limits in [&mut out.observe, &mut out.operator, &mut out.observer] {
             limits.stall_ms = stall_ms;
             limits.frame_completion_ms = frame_completion_ms;
-        }
-        for limits in [&mut out.observe, &mut out.operator] {
-            limits.client_queue_bytes = client_queue_bytes;
-            limits.query_queue_bytes = query_queue_bytes;
-            limits.max_block_bytes = max_block_bytes;
-        }
-        out.observer.max_block_bytes = self
-            .observer
-            .max_block_bytes
-            .min(self.observer.query_queue_bytes)
-            .min(self.observer.client_queue_bytes);
-        for limits in [&mut out.observe, &mut out.operator] {
-            limits.tick_ms = tick_ms;
-            limits.max_rows = max_rows;
         }
         out
     }
@@ -171,28 +151,19 @@ impl ServerLimits {
     #[must_use]
     pub fn stream_limits(&self) -> StreamLimits {
         StreamLimits {
-            bounds: BlockBounds {
-                max_rows: self.observe.max_rows,
-                max_block_bytes: self.observe.max_block_bytes,
-            },
+            bounds: self.probe.block_bounds(),
         }
     }
 
-    /// The caps of the one hub: Live and Query pools use the smaller observe/operator values;
-    /// the control queue and timers use the widest value of all served levels (the observer's
-    /// smaller control queue is enforced by the server, see the module docs).
+    /// The caps of the one hub: Live and Query pools are probe-wide; the control queue and timers
+    /// use the widest value of all served levels (the observer's smaller control queue is
+    /// enforced by the server, see the module docs).
     #[must_use]
     pub fn queue_limits(&self) -> QueueLimits {
-        let observe = self.observe.queue_limits();
-        let operator = self.operator.queue_limits();
-        let observer = self.observer.queue_limits();
+        let observe = ConnLimits::new(Level::Observe, self.observe, self.probe).queue_limits();
+        let operator = ConnLimits::new(Level::Operator, self.operator, self.probe).queue_limits();
+        let observer = ConnLimits::new(Level::Observer, self.observer, self.probe).queue_limits();
         QueueLimits {
-            client_queue_bytes: observe.client_queue_bytes.min(operator.client_queue_bytes),
-            uid_live_bytes: observe.uid_live_bytes.min(operator.uid_live_bytes),
-            global_live_bytes: observe.global_live_bytes.min(operator.global_live_bytes),
-            query_queue_bytes: observe.query_queue_bytes.min(operator.query_queue_bytes),
-            uid_query_bytes: observe.uid_query_bytes.min(operator.uid_query_bytes),
-            global_query_bytes: observe.global_query_bytes.min(operator.global_query_bytes),
             control_queue_bytes: observe
                 .control_queue_bytes
                 .max(operator.control_queue_bytes)
@@ -205,6 +176,7 @@ impl ServerLimits {
                 .frame_completion_ns
                 .max(operator.frame_completion_ns)
                 .max(observer.frame_completion_ns),
+            ..observe
         }
     }
 }
@@ -354,7 +326,7 @@ impl<B: Backend> Server<B> {
         let Some(peer) = peer else {
             return Accept::Refused;
         };
-        let Some(limits) = self.limits.get(level).copied() else {
+        let Some(limits) = self.limits.get(level) else {
             return Accept::Refused;
         };
         if self.counts.level(level) >= limits.max_connections {
@@ -363,8 +335,12 @@ impl<B: Backend> Server<B> {
         if self.counts.uid(level, peer.uid) >= limits.max_connections_per_uid {
             return Accept::Refused;
         }
-        let id = self.hub.add(peer.uid, now_ns);
-        let conn = Conn::new(id, level, peer, &limits, now_ns);
+        let conn_limits = self
+            .limits
+            .conn_limits(level)
+            .expect("the level was checked above");
+        let id = self.hub.add(now_ns);
+        let conn = Conn::new(id, level, peer, &conn_limits, now_ns);
         self.counts.add(level, peer.uid);
         self.conns.insert(id, conn);
         Accept::Accepted(id)
@@ -606,10 +582,10 @@ mod tests {
 
     use super::{Accept, Server, ServerLimits, SERVED};
     use crate::backend::{BackendError, FixedBackend, TickData, TickInfo, TierInfo};
-    use crate::codes::Code;
+    use crate::codes::{Code, Detail};
     use crate::conn::{Peer, State, SERVER_MINOR};
-    use crate::encode::{control_frame, server_prefix};
-    use crate::limits::{Level, Limits};
+    use crate::encode::{control_frame, error_line, server_prefix};
+    use crate::limits::{Level, LevelLimits};
     use crate::registry::{Delivery, SelectionCaps, SubKey};
     use crate::selection::{Sel, Selection};
     use crate::tick::BlockBounds;
@@ -924,10 +900,6 @@ mod tests {
             assert_eq!(d.server.count(level), 0, "{what}: level counter {level:?}");
         }
         assert_eq!(d.server.uid_entries(), 0, "{what}: uid entries left");
-        for uid in &d.uids {
-            let held = d.server.hub().uid_pools(*uid);
-            assert_eq!(held, Pools::default(), "{what}: pools of uid {uid}");
-        }
         assert_eq!(d.server.hub().global_pools(), Pools::default(), "{what}");
         for id in &d.opened {
             assert_eq!(d.server.hub().queued(*id), Pools::default(), "{what}");
@@ -984,7 +956,7 @@ mod tests {
         crate::tick::query_block(
             data.clone(),
             BlockBounds {
-                max_rows: d.observe.max_rows,
+                max_rows: d.probe.max_rows,
                 max_block_bytes: u32::MAX,
             },
         )
@@ -995,14 +967,12 @@ mod tests {
     fn query_bound_limits(need: usize) -> ServerLimits {
         let mut limits = ServerLimits::new();
         let size = u32::try_from(need).expect("query size");
-        for level in [&mut limits.observe, &mut limits.operator] {
-            level.query_queue_bytes = size;
-            level.max_block_bytes = size;
-        }
+        limits.probe.query_queue_bytes = size;
+        limits.probe.max_block_bytes = size;
         limits
     }
 
-    /// Fill `blocker`'s Query pool with `len` bytes from another connection of the same uid.
+    /// Fill `blocker`'s own connection Query pool with `len` bytes.
     fn fill_query(d: &mut Driver, blocker: ConnId, len: usize) {
         assert_eq!(d.push_query(blocker, 99, len), QueryOutcome::Queued);
     }
@@ -1106,7 +1076,6 @@ mod tests {
         assert_eq!(d.server.count(Level::Observe), 1);
         assert_eq!(d.server.uid_count(Level::Observe, 2), 0);
         assert_eq!(d.server.uid_entries(), 1);
-        assert_eq!(d.server.hub().uid_pools(2), Pools::default());
         d.server.finish(first);
         let next = d.open(Level::Observe, 2);
         assert_eq!(next, ConnId(first.0 + 1));
@@ -1353,7 +1322,6 @@ mod tests {
         let queued = d.server.hub().queued(id);
         assert_eq!((queued.live, queued.query), (held.live, held.query));
         assert!(queued.control > 0);
-        assert_eq!(d.server.hub().uid_pools(1000), held);
         assert_eq!(d.server.hub().global_pools(), held);
         let head = if query_first { QUERY_LEN } else { LIVE_LEN };
         let offered = d.server.output(id, d.now).map(|[a, b]| a.len() + b.len());
@@ -1442,7 +1410,6 @@ mod tests {
             loaded_bad_frame(&mut d, id);
             let head = pools(LIVE_LEN, 0);
             assert_eq!(d.server.hub().queued(id), head);
-            assert_eq!(d.server.hub().uid_pools(1000), head);
             assert_eq!(d.server.hub().global_pools(), head);
             let has_final = d.server.conn(id).is_some_and(|conn| conn.has_final());
             assert_eq!(has_final, written == 0);
@@ -1452,7 +1419,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hub_uid_is_the_peers_stored_uid() {
+    fn the_hub_counts_only_connection_and_global_pools() {
         let mut d = Driver::new();
         let a = d.open(Level::Observe, 1000);
         let b = d.open(Level::Observe, 1001);
@@ -1460,14 +1427,9 @@ mod tests {
         assert_eq!(d.push_query(a, 2, 300), QueryOutcome::Queued);
         assert_eq!(d.push_live(b, 1, 500), LiveOutcome::Queued);
         assert_eq!(d.push_query(b, 2, 700), QueryOutcome::Queued);
-        assert_eq!(d.server.hub().uid_pools(1000), pools(200, 300));
-        assert_eq!(d.server.hub().uid_pools(1001), pools(500, 700));
-        assert_eq!(d.server.hub().uid_pools(0), Pools::default());
         assert_eq!(d.server.hub().global_pools(), pools(700, 1_000));
         assert_eq!(d.server.hub().queued(a), pools(200, 300));
         d.server.finish(a);
-        assert_eq!(d.server.hub().uid_pools(1000), Pools::default());
-        assert_eq!(d.server.hub().uid_pools(1001), pools(500, 700));
         assert_eq!(d.server.hub().global_pools(), pools(500, 700));
         d.server.finish(b);
         assert_clean(&d, "both finished");
@@ -1593,14 +1555,14 @@ mod tests {
         let json = json_script();
         let mut whole = Driver::new();
         let wa = whole.open(Level::Observe, 1);
-        let wb = whole.open(Level::Observe, 2);
+        let wb = whole.open(Level::Observer, 2);
         whole.send(wa, &binary);
         whole.send(wb, &json);
         whole.pump(wa, usize::MAX);
         whole.pump(wb, usize::MAX);
         let mut dribble = Driver::new();
         let da = dribble.open(Level::Observe, 1);
-        let db = dribble.open(Level::Observe, 2);
+        let db = dribble.open(Level::Observer, 2);
         for index in 0..binary.len().max(json.len()) {
             if let Some(byte) = binary.get(index) {
                 dribble.send(da, &[*byte]);
@@ -1679,25 +1641,20 @@ mod tests {
         let hub = limits.queue_limits();
         assert_eq!(hub.control_queue_bytes, 2 * 1024 * 1024);
         assert_eq!(hub.client_queue_bytes, 4 * 1024 * 1024);
-        assert_eq!(hub.uid_live_bytes, 8 * 1024 * 1024);
         assert_eq!(hub.global_live_bytes, 32 * 1024 * 1024);
-        assert_eq!(hub.uid_query_bytes, 4 * 1024 * 1024);
-        assert_eq!(hub.global_query_bytes, 16 * 1024 * 1024);
-        assert_eq!(hub.query_queue_bytes, 4 * 1024 * 1024);
+        assert_eq!(hub.global_query_bytes, 4 * 1024 * 1024);
+        assert_eq!(hub.query_queue_bytes, 1024 * 1024);
         assert_eq!(hub.stall_ns, 5_000 * MS);
         assert_eq!(hub.frame_completion_ns, 5_000 * MS);
         assert_eq!(limits.get(Level::Control), None);
     }
 
     #[test]
-    fn the_hub_caps_use_minimum_block_pools_and_widest_controls_and_timers() {
+    fn the_hub_caps_use_one_probe_pool_and_widest_controls_and_timers() {
         let mut limits = ServerLimits::new();
-        limits.observe.client_queue_bytes = 100_000;
-        limits.operator.client_queue_bytes = 300_000;
-        limits.observer.client_queue_bytes = 200_000;
-        limits.observe.query_queue_bytes = 300_000;
-        limits.operator.query_queue_bytes = 100_000;
-        limits.observer.query_queue_bytes = 200_000;
+        limits.probe.client_queue_bytes = 300_000;
+        limits.probe.query_queue_bytes = 100_000;
+        limits.probe.max_block_bytes = 100_000;
         limits.observe.control_queue_bytes = 100_000;
         limits.operator.control_queue_bytes = 200_000;
         limits.observer.control_queue_bytes = 300_000;
@@ -1708,11 +1665,9 @@ mod tests {
         limits.operator.frame_completion_ms = 8_000;
         limits.observer.frame_completion_ms = 7_000;
         let hub = limits.queue_limits();
-        assert_eq!(hub.client_queue_bytes, 100_000);
-        assert_eq!(hub.uid_live_bytes, 200_000);
-        assert_eq!(hub.global_live_bytes, 800_000);
+        assert_eq!(hub.client_queue_bytes, 300_000);
+        assert_eq!(hub.global_live_bytes, 2_400_000);
         assert_eq!(hub.query_queue_bytes, 100_000);
-        assert_eq!(hub.uid_query_bytes, 100_000);
         assert_eq!(hub.global_query_bytes, 400_000);
         assert_eq!(hub.control_queue_bytes, 300_000);
         assert_eq!(hub.stall_ns, 9_000 * MS);
@@ -1720,47 +1675,39 @@ mod tests {
     }
 
     #[test]
-    fn server_limits_block_invariant_holds_for_defaults_and_a_wrong_input() {
+    fn server_limits_clamp_max_block_and_keep_probe_wide_values() {
         let defaults = ServerLimits::new().unified();
+        assert_eq!(defaults.probe.tick_ms, 1_000);
+        assert_eq!(defaults.probe.max_rows, 1_024);
+        assert_eq!(defaults.probe.max_block_bytes, 1 << 20);
+        assert!(defaults.probe.max_block_bytes <= defaults.probe.query_queue_bytes);
+        assert!(defaults.probe.max_block_bytes <= defaults.probe.client_queue_bytes);
         for level in [Level::Observe, Level::Operator] {
-            let limits = defaults.get(level).expect("served");
-            assert_eq!(limits.tick_ms, 1_000);
-            assert_eq!(limits.max_rows, 4_096);
-            assert_eq!(limits.max_block_bytes, 4 << 20);
-            assert!(limits.max_block_bytes <= limits.query_queue_bytes);
-            assert!(limits.max_block_bytes <= limits.client_queue_bytes);
+            let limits = defaults.conn_limits(level).expect("served");
+            assert_eq!(limits.probe, defaults.probe);
         }
         assert_eq!(
             defaults.stream_limits().bounds,
             BlockBounds {
-                max_rows: 4_096,
-                max_block_bytes: 4 << 20,
+                max_rows: 1_024,
+                max_block_bytes: 1 << 20,
             }
         );
 
         let mut wrong = ServerLimits::new();
-        wrong.observe.tick_ms = 500;
-        wrong.operator.tick_ms = 900;
-        wrong.observe.max_rows = 100;
-        wrong.operator.max_rows = 200;
-        wrong.observe.max_block_bytes = 4_000;
-        wrong.operator.max_block_bytes = 4_000;
-        wrong.observe.query_queue_bytes = 1_000;
-        wrong.observe.client_queue_bytes = 500;
-        wrong.operator.query_queue_bytes = 2_000;
-        wrong.operator.client_queue_bytes = 1_500;
+        wrong.probe.tick_ms = 900;
+        wrong.probe.max_rows = 100;
+        wrong.probe.max_block_bytes = 4_000;
+        wrong.probe.query_queue_bytes = 1_000;
+        wrong.probe.client_queue_bytes = 500;
         let unified = wrong.unified();
-        for level in [Level::Observe, Level::Operator] {
-            let limits = unified.get(level).expect("served");
-            assert_eq!(limits.tick_ms, 900);
-            assert_eq!(limits.max_rows, 100);
-            assert_eq!(limits.client_queue_bytes, 500);
-            assert_eq!(limits.query_queue_bytes, 1_000);
-            assert!(limits.max_block_bytes <= limits.query_queue_bytes);
-            assert!(limits.max_block_bytes <= limits.client_queue_bytes);
-        }
-        assert_eq!(unified.observe.max_block_bytes, 500);
-        assert_eq!(unified.operator.max_block_bytes, 500);
+        assert_eq!(unified.probe.tick_ms, 900);
+        assert_eq!(unified.probe.max_rows, 100);
+        assert_eq!(unified.probe.client_queue_bytes, 500);
+        assert_eq!(unified.probe.query_queue_bytes, 1_000);
+        assert_eq!(unified.probe.max_block_bytes, 500);
+        assert!(unified.probe.max_block_bytes <= unified.probe.query_queue_bytes);
+        assert!(unified.probe.max_block_bytes <= unified.probe.client_queue_bytes);
         let server = Server::new(wrong, FixedBackend::new());
         assert_eq!(server.streams().live_selections(), 0);
         assert_eq!(server.limits(), &unified);
@@ -1768,14 +1715,11 @@ mod tests {
     }
 
     #[test]
-    fn server_shared_stream_uses_both_levels_smallest_block_pool() {
+    fn server_shared_stream_uses_the_one_clamped_probe_block_bound() {
         let mut limits = ServerLimits::new();
-        limits.observe.max_block_bytes = 4_000;
-        limits.operator.max_block_bytes = 4_000;
-        limits.observe.query_queue_bytes = 4_000;
-        limits.observe.client_queue_bytes = 4_000;
-        limits.operator.query_queue_bytes = 2_000;
-        limits.operator.client_queue_bytes = 500;
+        limits.probe.max_block_bytes = 4_000;
+        limits.probe.query_queue_bytes = 500;
+        limits.probe.client_queue_bytes = 4_000;
 
         let selection = selection(1);
         let incarnations: Vec<u64> = (1..=20).collect();
@@ -1806,7 +1750,12 @@ mod tests {
 
         for level in [Level::Observe, Level::Operator] {
             assert_eq!(
-                server.limits().get(level).expect("served").max_block_bytes,
+                server
+                    .limits()
+                    .conn_limits(level)
+                    .expect("served")
+                    .probe
+                    .max_block_bytes,
                 500
             );
         }
@@ -1881,7 +1830,7 @@ mod tests {
     }
 
     #[test]
-    fn server_current_uses_smallest_shared_query_pool() {
+    fn a_block_above_the_query_pool_is_clamped_so_an_empty_current_queues() {
         let incarnations: Vec<u64> = (1..=20).collect();
         let data = TickData::example(1, &incarnations, &["m"]);
         let encoded = crate::tick::query_block(
@@ -1896,17 +1845,16 @@ mod tests {
         let query_cap = u32::try_from(encoded.len()).expect("query cap");
 
         let mut limits = ServerLimits::new();
-        limits.observe.query_queue_bytes = query_cap;
-        limits.operator.query_queue_bytes = query_cap.saturating_mul(4);
-        limits.observe.client_queue_bytes = query_cap.saturating_mul(4);
-        limits.operator.client_queue_bytes = query_cap.saturating_mul(4);
+        limits.probe.query_queue_bytes = query_cap;
+        limits.probe.max_block_bytes = query_cap.saturating_mul(4);
+        limits.probe.client_queue_bytes = query_cap.saturating_mul(4);
         let mut d = Driver::with(limits);
         let id = d.open(Level::Observe, 1);
         d.ready(id);
         for level in [Level::Observe, Level::Operator] {
-            let advertised = d.server.limits().get(level).expect("served level");
-            assert_eq!(advertised.query_queue_bytes, query_cap);
-            assert_eq!(advertised.max_block_bytes, query_cap);
+            let advertised = d.server.limits().conn_limits(level).expect("served level");
+            assert_eq!(advertised.probe.query_queue_bytes, query_cap);
+            assert_eq!(advertised.probe.max_block_bytes, query_cap);
         }
 
         put_current(&mut d, &selection(1), data);
@@ -1916,7 +1864,6 @@ mod tests {
 
         d.send(id, &request(3, "current", CURRENT_ARGS));
         assert_eq!(d.server.hub().queued(id).query, encoded.len());
-        assert_eq!(d.server.hub().uid_pools(1).query, encoded.len());
         assert_eq!(d.server.hub().global_pools().query, encoded.len());
 
         d.server.finish(id);
@@ -2104,9 +2051,9 @@ mod tests {
         assert_eq!(Accept::Refused.id(), None);
         let defaults = ServerLimits::default();
         assert_eq!(defaults, ServerLimits::new());
-        assert_eq!(defaults.observe, Limits::for_level(Level::Observe));
-        assert_eq!(defaults.operator, Limits::for_level(Level::Operator));
-        assert_eq!(defaults.observer, Limits::for_level(Level::Observer));
+        assert_eq!(defaults.observe, LevelLimits::for_level(Level::Observe));
+        assert_eq!(defaults.operator, LevelLimits::for_level(Level::Operator));
+        assert_eq!(defaults.observer, LevelLimits::for_level(Level::Observer));
         assert_eq!(defaults.get(Level::Operator), Some(&defaults.operator));
         let mut d = Driver::new();
         assert_eq!(d.server.limits(), &defaults);
@@ -2221,43 +2168,33 @@ mod tests {
     }
 
     #[test]
-    fn server_json_binary_required() {
+    fn server_json_is_refused_at_both_block_levels() {
         let mut d = Driver::new();
-        let id = d.open(Level::Observe, 1);
-        d.send(id, &line(1, "hello", HELLO_ARGS));
-        d.pump(id, usize::MAX);
-        d.take_out(id);
-        d.send(id, &line(2, "current", CURRENT_ARGS));
-        d.pump(id, usize::MAX);
-        let out = d.take_out(id);
-        let current_text = text(&out);
-        assert!(current_text.contains("\"corr\":2"));
-        assert!(current_text.contains("\"code\":\"binary-required\""));
-        let subscribe_args = subscribe_args(1, 1_000);
-        d.send(id, &line(3, "subscribe", subscribe_args.as_str()));
-        d.pump(id, usize::MAX);
-        let subscribe_text = text(&d.take_out(id));
-        assert!(subscribe_text.contains("\"corr\":3"));
-        assert!(subscribe_text.contains("\"code\":\"binary-required\""));
-        assert_eq!(d.server.streams().subscribers(), 0);
-        d.server.finish(id);
-        assert_clean(&d, "JSON block refusal");
+        let expected = error_line(0, Code::BinaryRequired, &Detail::Empty);
+        for level in [Level::Observe, Level::Operator] {
+            let id = d.open(level, 1);
+            d.send(id, &line(1, "hello", HELLO_ARGS));
+            assert_eq!(d.close_code(id), Some(Code::BinaryRequired));
+            assert!(d.server.is_closed(id));
+            d.close_out(id);
+            assert_eq!(d.take_out(id), expected, "{}", level.name());
+            assert_eq!(d.server.take_final(id), None);
+        }
+        assert_clean(&d, "JSON refused at block levels");
     }
 
     #[test]
-    fn server_json_unsubscribe_not_found() {
+    fn server_json_is_served_at_observer() {
         let mut d = Driver::new();
-        let id = d.open(Level::Observe, 1);
+        let id = d.open(Level::Observer, 1);
         d.send(id, &line(1, "hello", HELLO_ARGS));
         d.pump(id, usize::MAX);
-        d.take_out(id);
-        d.send(id, &line(2, "unsubscribe", r#"{"sub":2}"#));
-        d.pump(id, usize::MAX);
         let out = text(&d.take_out(id));
-        assert!(out.contains("\"corr\":2"));
-        assert!(out.contains("\"code\":\"not-found\""));
+        assert_eq!(out.lines().count(), 1);
+        assert!(out.starts_with("{\"ok\":true,\"corr\":1,"));
+        assert_eq!(d.state(id), Some(State::Ready));
         d.server.finish(id);
-        assert_clean(&d, "JSON unsubscribe");
+        assert_clean(&d, "JSON observer hello");
     }
 
     #[test]
@@ -2615,7 +2552,7 @@ mod tests {
     }
 
     #[test]
-    fn conn_too_many_requests() {
+    fn conn_too_many_requests_spares_status_and_subscribe() {
         let data = live_data(5, "one");
         let selected = selection(1);
         let need = stream_block_len(&ServerLimits::new(), &data);
@@ -2627,9 +2564,10 @@ mod tests {
         assert_eq!(d.server.hub().queued(id).query, need);
         d.send(id, &request(3, "current", CURRENT_ARGS));
         d.send(id, &req(4, "status"));
+        d.send(id, &request(5, "subscribe", &subscribe_args(1, 1_000)));
         d.pump(id, usize::MAX);
         let raw = raw_frames(&d.take_out(id));
-        assert_eq!(raw.len(), 5);
+        assert_eq!(raw.len(), 6);
         assert_eq!((raw[0].0, raw[0].1), (FrameType::Rep.code(), 2));
         assert_eq!((raw[1].0, raw[1].1), (FrameType::Block.code(), 2));
         assert_eq!((raw[2].0, raw[2].1), (FrameType::End.code(), 2));
@@ -2649,10 +2587,47 @@ mod tests {
                 .expect("status")
                 .ok
         );
+        let subscribe = raw
+            .iter()
+            .find(|(kind, corr, _)| *kind == FrameType::Rep.code() && *corr == 5)
+            .expect("subscribe reply");
+        assert!(
+            check_rep(frame_payload(&subscribe.2), false)
+                .expect("subscribe")
+                .ok
+        );
+        assert_eq!(d.server.conn(id).map(|conn| conn.subscriptions()), Some(1));
+        assert_eq!(d.server.streams().subscribers(), 1);
         assert_eq!(d.state(id), Some(State::Ready));
         assert_eq!(d.server.hub().queued(id).query, 0);
         d.server.finish(id);
         assert_clean(&d, "too many requests");
+    }
+
+    #[test]
+    fn clean_eof_with_queued_current_delivers_block_and_end_then_closes_silently() {
+        let selected = selection(1);
+        let mut d = Driver::new();
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        put_current(&mut d, &selected, live_data(5, "one"));
+        d.send(id, &request(2, "current", CURRENT_ARGS));
+        assert!(d.server.hub().queued(id).query > 0);
+
+        d.eof(id);
+        assert_eq!(d.state(id), Some(State::Draining));
+        assert!(!d.server.is_closed(id));
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        assert_eq!(raw.len(), 3);
+        assert_eq!((raw[0].0, raw[0].1), (FrameType::Rep.code(), 2));
+        assert_eq!((raw[1].0, raw[1].1), (FrameType::Block.code(), 2));
+        assert_eq!((raw[2].0, raw[2].1), (FrameType::End.code(), 2));
+        assert_end_ok(&raw[2].2, 1, 0, "complete");
+        assert!(d.server.is_closed(id));
+        assert_eq!(d.server.take_final(id), None);
+        d.server.finish(id);
+        assert_clean(&d, "clean EOF with queued current");
     }
 
     #[test]
