@@ -261,7 +261,6 @@ class Runner:
         self.host.allow_scratch(self.scratch)  # the run's own log directory: the only place a fio log prefix may point to
         self.preflight.update({"slice_io_max_before": self.safety.report.io_max_before})
         if self.target.kind == "device" and cfg.raw_write:
-            guard.require_raw_claimable_partition(self.host, self.target)
             self.host.claim(self.target.ref)  # one kernel claim covers every raw stage until cleanup's reaps are complete
         self.mark("S0", "ok")
 

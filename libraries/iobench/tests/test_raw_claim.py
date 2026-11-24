@@ -77,14 +77,6 @@ def legacy_marked_target(case: str) -> tuple[FakeHost, str, str]:
     return host, dev.path, condition
 
 
-class _PrimaryOutput:
-    def __init__(self) -> None:
-        self.primary_lines: list[object] = []
-
-    def primary(self, value: object) -> None:
-        self.primary_lines.append(value)
-
-
 class RealClaim:
     """A real-host claim with only the device syscall boundary faked."""
 
@@ -339,7 +331,7 @@ def test_tgt_12_signature_remedy_never_offers_serial_only_identity():
     assert "--expect-partuuid" in err.value.remedy
 
 
-def test_tgt_12_refuses_serial_only_init_but_keeps_the_old_marker_readable_until_raw_mutation():
+def test_tgt_12_refuses_serial_only_init_and_an_existing_serial_only_marker():
     host = standard_host()
     host.dynamic["/sys/fs/cgroup/game-server.slice/io.pressure"] = (
         lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
@@ -352,52 +344,42 @@ def test_tgt_12_refuses_serial_only_init_but_keeps_the_old_marker_readable_until
     assert err.value.condition == "raw_target_partuuid_required"
     assert "serial alone" in str(err.value)
     dev.marker = guard.marker_text(dev.size, None, "SERIAL-ONLY", CREATED)
-    loaded = guard.load_target(host, dev.path)
-    assert loaded.partuuid is None and loaded.serial == "SERIAL-ONLY"
-    runner = calibrate.Calibrator(host, config(target=dev.path, raw_write=True))
-    try:
-        with pytest.raises(Refusal) as raw:
-            runner.s0(need_workdir=False)
-        assert raw.value.condition == "raw_target_partuuid_required"
-        assert host.claims == {}
-    finally:
-        runner.safety.release()
+    with pytest.raises(Refusal) as loaded:
+        guard.load_target(host, dev.path)
+    assert loaded.value.condition == "raw_target_partuuid_required"
+    assert host.claims == {}
     cleaned(host)
 
 
 @pytest.mark.parametrize("case", ("whole-disk", "dm", "md", "loop", "serial-only"))
-def test_tgt_12_old_marker_kinds_stay_readable_but_require_claimable_identity_for_raw_mutation(case):
+def test_tgt_12_old_marker_kinds_are_refused_by_target_show(case):
     host, path, condition = legacy_marked_target(case)
-    target = guard.load_target(host, path)
-    assert target.path == path
-    runtime = SimpleNamespace(dry_run=False, json_mode=True, output=_PrimaryOutput())
-    assert cli._target_show(SimpleNamespace(path=path), runtime, lambda: host) == 0
-    assert runtime.output.primary_lines[0]["target"] == path
-    live_identity = result.live_identity(host, {"target": {"path": path}, "disk_scope": None})
-    assert live_identity is not None and live_identity["target"]["path"] == path
-
-    runner = calibrate.Calibrator(host, config(target=path, raw_write=False))
-    try:
-        runner.s0(need_workdir=False)
-        read = runner.job(f"legacy-{case}-read", "randread", 4096, 1, 1, 0, 4096, filename=path)
-        runner.read_extent.add(0, 4096)
-        host.devices[path].written.add(0, 4096)
-        out = runner.fio(read)
-        assert out.stats is not None and host.fio_spawns > 0
-    finally:
-        runner.cleanup("complete", "", 0)
+    runtime = SimpleNamespace(dry_run=False, json_mode=True, output=None)
+    with pytest.raises(Refusal) as err:
+        cli._target_show(SimpleNamespace(path=path), runtime, lambda: host)
+    assert err.value.condition == condition
+    assert host.claims == {}
     cleaned(host)
 
-    raw_host, raw_path, raw_condition = legacy_marked_target(case)
-    raw_runner = calibrate.Calibrator(raw_host, config(target=raw_path, raw_write=True))
-    try:
-        with pytest.raises(Refusal) as err:
-            raw_runner.s0(need_workdir=False)
-        assert err.value.condition == raw_condition == condition
-        assert raw_host.claims == {}
-    finally:
-        raw_runner.safety.release()
-    cleaned(raw_host)
+
+@pytest.mark.parametrize("case", ("whole-disk", "dm", "md", "loop", "serial-only"))
+def test_tgt_12_old_marker_kinds_are_refused_by_result_identity(monkeypatch, case):
+    host, path, condition = legacy_marked_target(case)
+    observed: list[str] = []
+    real_load = guard.load_target
+
+    def load(host_arg, path_arg):
+        try:
+            return real_load(host_arg, path_arg)
+        except Refusal as exc:
+            observed.append(exc.condition)
+            raise
+
+    monkeypatch.setattr(result.guard, "load_target", load)
+    assert result.live_identity(host, {"target": {"path": path}, "disk_scope": None}) is None
+    assert observed == [condition]
+    assert host.claims == {}
+    cleaned(host)
 
 
 @pytest.mark.parametrize(

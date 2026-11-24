@@ -283,9 +283,9 @@ A few more refusals you may meet (each names its condition and a remedy; all exi
 * `raw_target_not_partition`, `raw_target_dm`, `raw_target_md`, `raw_target_loop`: the named target is a whole disk or a virtual block device rather
   than a dedicated physical partition. `raw_target_partuuid_required` means the partition has no PARTUUID; a serial, including a serial supplied with
   `--expect-serial`, is never sufficient identity. `raw_target_size_changed`, `raw_target_devno_changed` and `raw_target_partuuid_changed` mean the
-  claimed or freshly checked device no longer equals the identity named at `target init`; rerun the guard against the intended partition. These raw-target
-  refusals apply when `--allow-raw-write` authorizes mutation. A historical marker on a whole disk, dm/md/loop device or serial-only partition remains
-  readable by `target show`, result identity and read-only stages, but cannot authorize a raw write or discard.
+  claimed or freshly checked device no longer equals the identity named at `target init`; rerun the guard against the intended partition. These target-shape
+  refusals apply to every device verb, including `target show`, result identity and read-only stages. A marker previously written on a whole disk,
+  dm/md/loop device or serial-only partition cannot be read; re-run `target init` on a dedicated partition carrying a PARTUUID.
 * A dry run is a plan, not an acceptance: its output says `preflight: not_run`; the same invocation without `--dry-run` may still be refused.
 * `check --section writeback --calibration` is a usage error (a calibration carries no writeback); `check` exit 5 also covers `damaged_proposals` and a `schema_minor` newer than the installed iobench.
 

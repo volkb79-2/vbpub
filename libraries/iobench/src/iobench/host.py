@@ -2,9 +2,9 @@
 
 Every side effect of iobench goes through a ``Host``: files, sysfs/sysctl,
 subprocesses, clock, sleep, environment, signals and unique tokens.  This module
-is the only core module allowed to touch the operating system.  It is exercised
-by the FakeHost-parity tests and by the r1002 acceptance probe (IOB-ACC-01), and
-is therefore the one core module excluded from the coverage gate.
+is the only core module allowed to touch the operating system.  Its syscall and
+subprocess boundaries are exercised by mocked unit tests and by the r1002
+acceptance probe (IOB-ACC-01); it participates in both coverage and mutation.
 """
 from __future__ import annotations
 

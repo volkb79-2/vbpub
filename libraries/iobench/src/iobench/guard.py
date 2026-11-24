@@ -303,11 +303,6 @@ def require_claimable_partition(facts: DeviceFacts) -> None:
                       "use a partition with a PARTUUID and pass --expect-partuuid")
 
 
-def require_raw_claimable_partition(host: Host, target: Target) -> None:
-    """Apply raw-writer target rules only when raw mutation is authorized."""
-    require_claimable_partition(read_device(host, target.path))
-
-
 # -- mount namespace and swap evidence ---------------------------------------------
 def _touching(host: Host, entries: Sequence[MountEntry], devnos: set[str], names: set[str]) -> set[MountEntry]:
     return {MountEntry(resolved_mount_devno(host, e), e.mountpoint, e.fstype, e.source, e.options)
@@ -498,10 +493,11 @@ def init_device(host: Host, path: str, *, own: bool, expect_size: int | None, ex
 
 
 def load_target(host: Host, path: str) -> Target:
-    """Read facts and marker of an existing target; raw-claim constraints are applied only before raw mutation."""
+    """Read facts and marker of an existing target; refuse unless it is an iobench target (TGT-04/07)."""
     if host.devno(path) is None:
         return load_file_target(host, path)
     facts = read_device(host, path)
+    require_claimable_partition(facts)
     target = Target("device", path, facts.size_bytes, facts.devno, facts.partuuid, facts.serial, None, None,
                     facts.chain.disk_name, facts.wwn, facts.model)
     marker = parse_marker(host.read_marker(target.ref))
