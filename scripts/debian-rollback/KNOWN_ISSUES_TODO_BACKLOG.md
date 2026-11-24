@@ -64,12 +64,6 @@ Closed items are one line each in [archive/](archive/). The format is [docs/BACK
 
 **Problem.** A missing or corrupt counter file blocks all package management. **Wanted.** The floor is the maximum of the counter, the sequences in names and the sequences in sidecars; a repair under the lock with a warning, and the rare repeat documented.
 
-## DR-94 — Payload as files; hot-patch dev-only; snapper removed
-
-**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-25, M10, L6
-
-**Problem.** The APT and kernel hooks are heredocs in the installer, guests are hot-patched, and snapper is installed but unused. **Wanted.** The payload lives in `files/`, acceptance runs only on freshly built disks (hot-patching labelled dev-only), and snapper leaves `--include`.
-
 ## DR-95 — Matrix runner committed; dr-qemu.sh retired; evidence archived
 
 **State:** open · **Severity:** high · **Owner:** rollback · **Links:** P-rollback-30, P-rollback-33, H6, VML-BL-07, VML-BL-08
