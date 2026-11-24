@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import sys
 from pathlib import Path
 from typing import Any
@@ -24,10 +25,19 @@ STACK_DIR = Path(__file__).resolve().parents[1]
 
 def _finding(config: dict[str, Any]) -> str | None:
     try:
-        defaults, overlay, _ = load_site(STACK_DIR)
+        defaults, overlay, effective = load_site(STACK_DIR)
         overlay = migrate(overlay)
         check_override(defaults, overlay)
-        validate_edge_config(config["tls_edge"])
+        # Validate what ciu deploys: its merged config, including values from
+        # other ciu layers and expansion. The one exception is the
+        # [tls_edge.traefik.hostdir] table, which ciu has already rewritten to
+        # absolute paths. The path, UID and mutual-exclusion rules need the
+        # declared table, so restore it from the site's effective config.
+        deployed = copy.deepcopy(config["tls_edge"])
+        declared = effective["tls_edge"].get("traefik", {}).get("hostdir")
+        if declared is not None:
+            deployed.setdefault("traefik", {})["hostdir"] = copy.deepcopy(declared)
+        validate_edge_config(deployed, stack_dir=STACK_DIR)
     except ConfigError as exc:
         return str(exc)
     return None

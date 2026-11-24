@@ -45,9 +45,11 @@
 #      (a percentage, garbage) (round-2 review B7).
 #  10. the default render matches the checked-in checksum fixture byte-for-byte,
 #      every dev tier renders no ManagedOOM directive and no `=infinity`
-#      MemoryMax/MemorySwapMax. (That the dedicated-dev derivation still gives
-#      dev-gates and dev-background a finite MemoryMax is asserted in
-#      test_testhost_mem.py, InstallBlockTests.)
+#      MemoryMax/MemorySwapMax. (That the dedicated-dev derivation gives dev-gates
+#      and dev-background a finite MemoryMax and NO MemoryHigh, P-plat-19e, is
+#      asserted in test_testhost_mem.py, InstallBlockTests. The golden's docker
+#      scope default has no MemoryMax line: the example ships the key empty and
+#      install.sh renders the role default, 8G or 12G.)
 #
 # Extracts install.sh's OWN render() function + RENDER_VARS list, and
 # check.sh's OWN _bytes_of function, verbatim (byte range, not a

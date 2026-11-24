@@ -104,16 +104,15 @@ class PlanTests(TmpCase):
         without = cap.dedicated_memory(env, mem_total=8 * GIB, swap_total=16 * GIB)
         with_cache = cap.dedicated_memory({**env, "DEV_CACHE_MEMORY_LOW": "1G"}, mem_total=8 * GIB, swap_total=16 * GIB)
         self.assertEqual(with_cache.low - without.low, GIB)  # dev.slice MemoryLow covers the cache (recursive protection)
-        self.assertEqual(without.gates_high - with_cache.gates_high, GIB)  # load tiers leave room for it
-        self.assertEqual(without.background_high - with_cache.background_high, GIB)
-        # AD2-0: MemoryMax is dev High (does not subtract the Low); the swap ceiling does
-        self.assertEqual(with_cache.gates_max, without.gates_max)
-        self.assertEqual(with_cache.background_max, without.background_max)
+        # P-plat-19e: no tier MemoryHigh; the load tiers' MemoryMax leaves room for the cache Low, as does the swap ceiling
+        self.assertIsNone(with_cache.gates_high)
+        self.assertEqual(without.gates_max - with_cache.gates_max, GIB)
+        self.assertEqual(without.background_max - with_cache.background_max, GIB)
         self.assertEqual(cap.load_tier_swap(16 * GIB, 768 * 1024 ** 2) - cap.load_tier_swap(16 * GIB, 768 * 1024 ** 2 + GIB), GIB)
         # `-` and empty mean none
         for none in ("", "-"):
             same = cap.dedicated_memory({**env, "DEV_CACHE_MEMORY_LOW": none}, mem_total=8 * GIB, swap_total=16 * GIB)
-            self.assertEqual((same.low, same.gates_high), (without.low, without.gates_high))
+            self.assertEqual((same.low, same.gates_max), (without.low, without.gates_max))
 
 
 class RenderTests(TmpCase):
