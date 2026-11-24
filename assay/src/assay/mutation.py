@@ -1250,6 +1250,7 @@ PROGRESS_EVENTS = frozenset(
         "carry_forward",  # prior-judge lookup by id, locus or kill window
         "selection",  # --only/--exclude-candidates: what runs, what is left out
         "shard_merge",  # --merge-shard-store: the strict per-shard proof (RG-265 review B1)
+        "merge_manifest",  # --merge-manifest: owner proof and materialization (B544)
         # --- mutation sweep, judged by progress not by time (B091/D-23) ---
         "plan",  # the sweep's own first record: what the baseline measured
         # --- per-test liveness detail, BASELINE only (B091/D-23, P7 A4) ---
@@ -2550,14 +2551,27 @@ def run_mutation(
     if flex is not None:
         if not isinstance(flex, FlexOptions):
             raise ValueError("run_mutation flex must be FlexOptions or None")
-        if flex.reads_other_stores and not resume:
+        legacy_store_reads = bool(
+            flex.carry_over_sources
+            or flex.carry_forward_sources
+            or flex.merge_sources
+            or flex.shard_stores
+        )
+        if legacy_store_reads and not resume:
             raise ValueError(
                 "run_mutation carry-over/carry-forward/merge requires resume=True"
             )
-        if (flex.reads_other_stores or flex.selection_active) and state_root is None:
+        if flex.merge_manifest is not None and not resume:
+            raise ValueError("run_mutation --merge-manifest requires resume=True")
+        if (legacy_store_reads or flex.selection_active) and state_root is None:
             raise ValueError(
                 "run_mutation carry-over and candidate selection require the "
                 "caller's authoritative state_root (carry-forward also requires it)"
+            )
+        if flex.merge_manifest is not None and state_root is None:
+            raise ValueError(
+                "run_mutation --merge-manifest requires the caller's "
+                "authoritative state_root"
             )
         if flex.selection_active and selection_specified:
             raise ValueError(

@@ -549,6 +549,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--merge-manifest",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help=(
+            "(B544) with --resume: merge an assay-merge-manifest/1 owner "
+            "manifest. Every current candidate must be owned exactly once; "
+            "each owner's flat record is validated under this judge and "
+            "materialized before resume. An owner record wins over a differing "
+            "record already in --state-dir. Cannot be combined with --shard, "
+            "--only-candidates, --exclude-candidates, --candidates-file or "
+            "--merge-shard-store."
+        ),
+    )
+    run.add_argument(
         "--carry-over-reason",
         default=None,
         metavar="TEXT",
@@ -2367,6 +2382,7 @@ def _resolve_flex_options(
     carry_forward = list(getattr(args, "carry_forward", None) or ())
     merges = list(getattr(args, "merge_state", None) or ())
     shard_stores = list(getattr(args, "merge_shard_store", None) or ())
+    manifest_raw = getattr(args, "merge_manifest", None)
     reason = getattr(args, "carry_over_reason", None)
     only_path = getattr(args, "only_candidates", None)
     exclude_path = getattr(args, "exclude_candidates", None)
@@ -2452,6 +2468,42 @@ def _resolve_flex_options(
                 "(absent or not yet copied shard store)"
             )
         strict_stores.append(store)
+    manifest_path: Path | None = None
+    if manifest_raw is not None:
+        # Every manifest check is new, so it follows every pre-existing flex
+        # check above. A combination that already had an old refusal still
+        # reports exactly the old message and order.
+        if not native_r2:
+            raise LaneConfigError(
+                "--merge-manifest requires a native R2 mutation lane"
+            )
+        if not getattr(args, "resume", False):
+            raise LaneConfigError("--merge-manifest requires --resume")
+        if (
+            getattr(args, "shard", None) is not None
+            or only_path is not None
+            or exclude_path is not None
+        ):
+            raise LaneConfigError(
+                "--merge-manifest is the whole-lane merge; it cannot be "
+                "combined with --shard, --only-candidates or --exclude-candidates"
+            )
+        if shard_stores:
+            raise LaneConfigError(
+                "--merge-manifest cannot be combined with --merge-shard-store"
+            )
+        if getattr(args, "candidates_file", None) is not None:
+            raise LaneConfigError(
+                "--merge-manifest cannot be combined with --candidates-file"
+            )
+        manifest_path = Path(
+            os.path.abspath(os.path.expanduser(os.fspath(manifest_raw)))
+        )
+        if not manifest_path.is_file():
+            raise LaneConfigError(
+                f"--merge-manifest {manifest_raw}: is not an existing file"
+            )
+        mutation_store.load_merge_manifest(manifest_path)
     if not native_r2:
         return None
     try:
@@ -2462,6 +2514,7 @@ def _resolve_flex_options(
             carry_over_reason=reason,
             merge_sources=merge_sources,
             shard_stores=tuple(strict_stores),
+            merge_manifest=manifest_path,
             only_candidates=(
                 None
                 if only_path is None

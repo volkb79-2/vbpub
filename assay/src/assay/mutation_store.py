@@ -43,7 +43,7 @@ from .candidate_locus import LocusIndex
 from .candidate_locus import from_record as _locus_from_record
 from .candidate_locus import locus_for_site as _locus_for_site
 from .candidate_locus import window_key_for_site as _window_key_for_site
-from .errors import AssayError, Outcome, ReasonCode
+from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from .guards import is_nonempty_str
 from .process_tree import ProcessTreeEvidence
 from .records import record
@@ -66,6 +66,11 @@ if TYPE_CHECKING:  # pragma: no cover -- annotation-only imports; importing at r
     from .runner import CommandResult
 
 _CANDIDATE_ID_RE = re.compile(r"[0-9a-f]{64}")
+
+MERGE_MANIFEST_SCHEMA = "assay-merge-manifest/1"
+MERGE_MANIFEST_LIMIT = 16 * 1024 * 1024
+_MERGE_MANIFEST_KEYS = frozenset({"schema", "judge_sha256", "stores"})
+_MERGE_MANIFEST_STORE_KEYS = frozenset({"path", "candidates"})
 
 CombinePolicy = Literal[
     "same-judge",
@@ -210,6 +215,218 @@ def _reject_unknown_rejudge_ids(
 class ShardStoreMergeError(InvalidCandidateSelectionError):
     """(RG-265 review B1) ``--merge-shard-store`` inputs are not exactly one
     complete store per shard of the current plan and judge."""
+
+
+class MergeManifestError(InvalidCandidateSelectionError):
+    """An owner manifest cannot prove the whole current plan and judge."""
+
+
+@record
+class MergeManifestStore:
+    path: Path
+    candidates: tuple[str, ...]
+
+
+@record
+class MergeManifest:
+    path: Path
+    judge_sha256: str
+    stores: tuple[MergeManifestStore, ...]
+
+
+@record
+class _MergeManifestProblem:
+    token: str
+    identity: str
+    detail: str
+
+
+@record
+class _MergeManifestResult:
+    owners: int
+    non_owner_duplicates: int
+    unplanned_records: int
+    target_replaced: int
+
+
+def _merge_manifest_message(problems: Sequence[_MergeManifestProblem]) -> str:
+    """Render the deterministic, bounded refusal every manifest failure uses."""
+    ordered = sorted(
+        problems,
+        key=lambda problem: (problem.token, problem.identity, problem.detail),
+    )
+    rendered = "; ".join(
+        f"{problem.token}: {problem.detail}" for problem in ordered[:20]
+    )
+    return f"merge manifest refused: {rendered}"
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate object key {key!r}")
+        value[key] = item
+    return value
+
+
+def _reject_non_json_constant(value: str) -> None:
+    raise ValueError(f"non-JSON numeric constant {value!r}")
+
+
+def load_merge_manifest(path: Path) -> MergeManifest:
+    """Read and validate one bounded ``assay-merge-manifest/1`` document.
+
+    The document is parsed before any lane work. Ownership is proved later,
+    against the current plan and judge, because those facts do not exist yet.
+    """
+    manifest_path = Path(path).expanduser()
+    if not manifest_path.is_absolute():
+        manifest_path = Path(os.path.abspath(manifest_path))
+    identity = str(manifest_path)
+    problems: list[_MergeManifestProblem] = []
+
+    def malformed(detail: str) -> None:
+        problems.append(_MergeManifestProblem("malformed-manifest", identity, detail))
+
+    try:
+        raw = safeio.read_bounded_input(
+            manifest_path.parent,
+            manifest_path.name,
+            limit=MERGE_MANIFEST_LIMIT,
+        )
+    except AssayError as exc:
+        malformed(str(exc))
+        raw = None
+    if raw is None:
+        if not problems:
+            malformed("the manifest file does not exist")
+        raise LaneConfigError(_merge_manifest_message(problems))
+    try:
+        document = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_non_json_constant,
+        )
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        malformed(f"invalid UTF-8 JSON: {exc}")
+        raise LaneConfigError(_merge_manifest_message(problems)) from exc
+    if not isinstance(document, dict) or set(document) != _MERGE_MANIFEST_KEYS:
+        malformed(
+            "the top-level object must contain exactly "
+            f"{sorted(_MERGE_MANIFEST_KEYS)}"
+        )
+        raise LaneConfigError(_merge_manifest_message(problems))
+    if (
+        not isinstance(document["schema"], str)
+        or document["schema"] != MERGE_MANIFEST_SCHEMA
+    ):
+        malformed(f"schema must be {MERGE_MANIFEST_SCHEMA!r}")
+    judge = document["judge_sha256"]
+    if (
+        not isinstance(judge, str)
+        or _CANDIDATE_ID_RE.fullmatch(judge) is None
+    ):
+        malformed("judge_sha256 must be a 64-character lowercase hexadecimal digest")
+    stores_document = document["stores"]
+    if not isinstance(stores_document, list):
+        malformed("stores must be an array")
+        raise LaneConfigError(_merge_manifest_message(problems))
+
+    manifest_directory = manifest_path.parent
+    stores: list[MergeManifestStore] = []
+    resolved_paths: dict[Path, str] = {}
+    owners: dict[str, MergeManifestStore] = {}
+    for store_index, raw_store in enumerate(stores_document):
+        if (
+            not isinstance(raw_store, dict)
+            or set(raw_store) != _MERGE_MANIFEST_STORE_KEYS
+        ):
+            malformed(
+                f"stores[{store_index}] must contain exactly "
+                f"{sorted(_MERGE_MANIFEST_STORE_KEYS)}"
+            )
+            continue
+        spelling = raw_store["path"]
+        candidates_document = raw_store["candidates"]
+        if (
+            not isinstance(spelling, str)
+            or not spelling
+            or "\0" in spelling
+        ):
+            malformed(f"stores[{store_index}].path must be non-empty text")
+            continue
+        if not isinstance(candidates_document, list):
+            malformed(f"stores[{store_index}].candidates must be an array")
+            continue
+        candidate_path = Path(spelling)
+        store_path = (
+            candidate_path
+            if candidate_path.is_absolute()
+            else manifest_directory / candidate_path
+        )
+        store_path = store_path.resolve()
+        if store_path in resolved_paths:
+            problems.append(
+                _MergeManifestProblem(
+                    "duplicate-store",
+                    str(store_path),
+                    f"{spelling}: also named by an earlier store entry",
+                )
+            )
+            continue
+        resolved_paths[store_path] = spelling
+        if not store_path.is_dir():
+            problems.append(
+                _MergeManifestProblem(
+                    "missing-store",
+                    str(store_path),
+                    f"{spelling}: not an existing directory",
+                )
+            )
+            continue
+        candidates: list[str] = []
+        for candidate_index, candidate in enumerate(candidates_document):
+            if (
+                not isinstance(candidate, str)
+                or _CANDIDATE_ID_RE.fullmatch(candidate) is None
+            ):
+                malformed(
+                    f"stores[{store_index}].candidates[{candidate_index}] is not "
+                    "a 64-character lowercase hexadecimal candidate id"
+                )
+                continue
+            if candidate in candidates:
+                problems.append(
+                    _MergeManifestProblem(
+                        "duplicate-owner",
+                        candidate,
+                        f"{store_path}: candidate is listed twice",
+                    )
+                )
+                continue
+            if candidate in owners:
+                problems.append(
+                    _MergeManifestProblem(
+                        "duplicate-owner",
+                        candidate,
+                        f"{owners[candidate].path}: candidate is also owned by {store_path}",
+                    )
+                )
+                continue
+            candidates.append(candidate)
+        store = MergeManifestStore(path=store_path, candidates=tuple(candidates))
+        stores.append(store)
+        for candidate in candidates:
+            owners[candidate] = store
+
+    if problems:
+        raise LaneConfigError(_merge_manifest_message(problems))
+    return MergeManifest(
+        path=manifest_path,
+        judge_sha256=str(judge),
+        stores=tuple(stores),
+    )
 
 
 def _locus_fields_for_job(job: MutantJob) -> dict[str, object]:
@@ -439,6 +656,10 @@ class FlexOptions:
       one store per shard ``0..N-1`` of the current plan, each written by
       ``--shard K/N`` under the current judge and complete. Refused, by
       name, before anything runs otherwise (:func:`_validate_shard_stores`).
+    * *merge_manifest* -- the owner manifest (B544): one file designates the
+      sole owner of every candidate's flat record. Its proof and owner
+      materialization run before ordinary resume, so an owner record wins
+      over a differing target record (D3).
     """
 
     lane_file_name: str | None = None
@@ -449,12 +670,18 @@ class FlexOptions:
     only_candidates: frozenset[str] | None = None
     exclude_candidates: frozenset[str] | None = None
     carry_forward_sources: tuple[Path, ...] = ()
+    merge_manifest: Path | None = None
 
     def store_sources(self) -> tuple[StoreSource, ...]:
         """The explicitly named stores in their fixed policy/CLI order."""
         return (
             *(StoreSource(path=path, policy="same-judge") for path in self.merge_sources),
             *(StoreSource(path=path, policy="strict-shard") for path in self.shard_stores),
+            *(
+                (StoreSource(path=self.merge_manifest, policy="owner-manifest"),)
+                if self.merge_manifest is not None
+                else ()
+            ),
             *(
                 StoreSource(path=path, policy="import-unverified")
                 for path in self.carry_over_sources
@@ -492,6 +719,16 @@ class FlexOptions:
             raise ValueError(
                 "a strict shard merge cannot be combined with a candidate selection"
             )
+        if self.merge_manifest is not None and not isinstance(self.merge_manifest, Path):
+            raise ValueError("FlexOptions.merge_manifest must be a path or None")
+        if self.merge_manifest is not None and self.shard_stores:
+            raise ValueError(
+                "an owner manifest cannot be combined with a strict shard merge"
+            )
+        if self.merge_manifest is not None and self.selection_active:
+            raise ValueError(
+                "an owner manifest cannot be combined with a candidate selection"
+            )
         for name in ("only_candidates", "exclude_candidates"):
             value = getattr(self, name)
             if value is None:
@@ -509,6 +746,7 @@ class FlexOptions:
             or self.carry_forward_sources
             or self.merge_sources
             or self.shard_stores
+            or self.merge_manifest is not None
         )
 
     @property
@@ -3683,6 +3921,211 @@ def _carry_over_records(
     )
 
 
+def _canonical_state_record_bytes(payload: Mapping[str, Any]) -> bytes:
+    """The exact reserialization :func:`_write_mutation_state_record` publishes."""
+    return (
+        json.dumps(dict(payload), sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+
+
+def _parse_flat_state_record(raw: bytes) -> Mapping[str, Any] | None:
+    """Decode just enough of a flat record to classify a manifest refusal."""
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def validate_merge_manifest(
+    manifest: MergeManifest, request: CombineRequest
+) -> _MergeManifestResult:
+    """Prove the owner manifest and materialize its flat records into the target.
+
+    The plan proof precedes every record read. Only after every current
+    candidate has one valid owner record are those records written into the
+    target, before own-store resume. Generations are deliberately never read:
+    the manifest names the flat record that owns the candidate.
+    """
+    assert request.judge is not None
+    assert request.state_root is not None
+    judge = request.judge
+    state_root = request.state_root
+    current_ids = tuple(candidate_id(job) for job in request.jobs)
+    owners = {
+        candidate: store
+        for store in manifest.stores
+        for candidate in store.candidates
+    }
+    problems: list[_MergeManifestProblem] = []
+    if manifest.judge_sha256 != judge:
+        problems.append(
+            _MergeManifestProblem(
+                "judge-mismatch",
+                str(manifest.path),
+                f"manifest judge {manifest.judge_sha256[:12]} does not match "
+                f"this run's judge {judge[:12]}",
+            )
+        )
+    for candidate in sorted(set(owners) - set(current_ids)):
+        problems.append(
+            _MergeManifestProblem(
+                "unknown-candidate",
+                candidate,
+                f"manifest owns candidate {candidate} outside the current plan",
+            )
+        )
+    for candidate in sorted(set(current_ids) - set(owners)):
+        problems.append(
+            _MergeManifestProblem(
+                "unowned-candidate",
+                candidate,
+                f"current candidate {candidate} has no manifest owner",
+            )
+        )
+    if problems:
+        raise MergeManifestError(_merge_manifest_message(problems))
+
+    owned_records: list[tuple[str, MergeManifestStore, Mapping[str, Any]]] = []
+    for job in request.jobs:
+        request.deadline_check()
+        identity = candidate_id(job)
+        owner = owners[identity]
+        try:
+            raw = safeio.read_bounded_input(
+                owner.path,
+                mutation_state_record_name(identity),
+                limit=MUTATION_STATE_RECORD_LIMIT,
+            )
+        except AssayError as exc:
+            problems.append(
+                _MergeManifestProblem(
+                    "invalid-owner-record",
+                    identity,
+                    f"{owner.path}: record is unreadable: {exc}",
+                )
+            )
+            continue
+        if raw is None:
+            problems.append(
+                _MergeManifestProblem(
+                    "missing-owner-record",
+                    identity,
+                    f"{owner.path}: no flat {mutation_state_record_name(identity)}",
+                )
+            )
+            continue
+        parsed = _parse_flat_state_record(raw)
+        if parsed is None:
+            problems.append(
+                _MergeManifestProblem(
+                    "invalid-owner-record",
+                    identity,
+                    f"{owner.path}: flat record is not a UTF-8 JSON object",
+                )
+            )
+            continue
+        effective = record_effective_judge(parsed)
+        if effective != judge:
+            problems.append(
+                _MergeManifestProblem(
+                    "judge-mismatch",
+                    identity,
+                    f"{owner.path}: record is effective for {effective}, "
+                    f"this run judges {judge}",
+                )
+            )
+            continue
+        try:
+            record = _load_validated_state_record(
+                state_root,
+                job,
+                judge=judge,
+                campaign_deadline_sha256=request.campaign_deadline_sha256,
+                raw_override=raw,
+                context=request.context,
+            )
+        except MutationStateError as exc:
+            problems.append(
+                _MergeManifestProblem(
+                    "invalid-owner-record",
+                    identity,
+                    f"{owner.path}: record is invalid: {exc}",
+                )
+            )
+            continue
+        if record is None or record is _RECORD_REJECTED:
+            problems.append(
+                _MergeManifestProblem(
+                    "invalid-owner-record",
+                    identity,
+                    f"{owner.path}: record does not resume under this run "
+                    "and campaign",
+                )
+            )
+            continue
+        assert not isinstance(record, str)
+        owned_records.append((identity, owner, record))
+    if problems:
+        raise MergeManifestError(_merge_manifest_message(problems))
+
+    # Count records the manifest deliberately ignores. The owner map, not a
+    # source's age or mtime, decides which spelling is a duplicate.
+    planned_ids = frozenset(current_ids)
+    unplanned_records = 0
+    non_owner_duplicates = 0
+    for store in manifest.stores:
+        request.deadline_check()
+        try:
+            entries = os.scandir(store.path)
+        except OSError:
+            # Every owner record above already proved this directory readable.
+            # A second walk that loses it contributes no ignored-record counts.
+            continue
+        with entries:
+            for entry in entries:
+                if re.fullmatch(r"[0-9a-f]{64}\.json", entry.name) is None:
+                    continue
+                identity = entry.name[:-5]
+                if identity not in planned_ids:
+                    unplanned_records += 1
+                elif owners[identity] is not store:
+                    non_owner_duplicates += 1
+
+    target_replaced = 0
+    for identity, _owner, record in owned_records:
+        request.deadline_check()
+        try:
+            existing = _read_state_record_bytes(
+                state_root, identity, state_root_fd=request.state_root_fd
+            )
+        except MutationStateError:
+            existing = None
+        if existing is not None:
+            previous = _parse_flat_state_record(existing)
+            if (
+                previous is not None
+                and record_effective_judge(previous) == judge
+                and _canonical_state_record_bytes(previous)
+                != _canonical_state_record_bytes(record)
+            ):
+                target_replaced += 1
+        _write_mutation_state_record(
+            state_root,
+            record,
+            state_root_fd=request.state_root_fd,
+            commit_guard=request.deadline_check,
+        )
+        request.deadline_check()
+
+    return _MergeManifestResult(
+        owners=len(owned_records),
+        non_owner_duplicates=non_owner_duplicates,
+        unplanned_records=unplanned_records,
+        target_replaced=target_replaced,
+    )
+
+
 def _resume_own_store(request: CombineRequest) -> _OwnStoreResult:
     """Apply D5's verbatim own-store resume to this run's selected jobs."""
     records: list[Mapping[str, Any]] = []
@@ -3816,6 +4259,11 @@ def _flex_from_sources(
             raise ValueError(f"unknown combine policy {source.policy!r}")
         if not isinstance(source.path, Path):
             raise ValueError("combine source paths must be Path objects")
+    manifests = tuple(
+        source.path for source in sources if source.policy == "owner-manifest"
+    )
+    if len(manifests) > 1:
+        raise ValueError("combine accepts at most one owner manifest")
     return FlexOptions(
         merge_sources=tuple(
             source.path for source in sources if source.policy == "same-judge"
@@ -3823,6 +4271,7 @@ def _flex_from_sources(
         shard_stores=tuple(
             source.path for source in sources if source.policy == "strict-shard"
         ),
+        merge_manifest=manifests[0] if manifests else None,
         carry_over_sources=tuple(
             source.path
             for source in sources
@@ -3888,6 +4337,25 @@ def combine(
                     "candidate_total": request.total,
                     "shard_count": len(exact.shard_stores),
                     "records_per_store": shard_counts,
+                }
+            )
+
+    if exact.merge_manifest is not None:
+        assert state_root is not None
+        try:
+            manifest = load_merge_manifest(exact.merge_manifest)
+        except LaneConfigError as exc:
+            raise MergeManifestError(str(exc)) from exc
+        manifest_result = validate_merge_manifest(manifest, request)
+        if request.write_progress is not None:
+            request.write_progress(
+                {
+                    "event": "merge_manifest",
+                    "candidate_total": request.total,
+                    "owners": manifest_result.owners,
+                    "non_owner_duplicates": manifest_result.non_owner_duplicates,
+                    "unplanned_records": manifest_result.unplanned_records,
+                    "target_replaced": manifest_result.target_replaced,
                 }
             )
 
