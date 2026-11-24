@@ -525,6 +525,10 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONT
   || fail 'pinned DeepSeek route failed instead of staying on volker'
 [[ $(cat "$ROOT/controller/runs/od-pinned.route") == deepseek-volker ]] || fail 'pinned route changed accounts'
 contains "$ROOT/od-pinned-codex.log" "HOME=$VOLKER_HOME" 'pinned DeepSeek route uses the named account home'
+contains "$ROOT/od-pinned-codex.log" 'model_reasoning_effort="max"' \
+  'pinned DeepSeek route uses the catalog maximum effort'
+contains "$ROOT/controller/runs/od-pinned.done" 'EFFORT=max' \
+  'pinned DeepSeek route records the maximum effort in its done marker'
 python3 - "$ROOT/od-pinned.json" <<'PY' || fail 'pinned DeepSeek start selected the other account in state'
 import json, sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
