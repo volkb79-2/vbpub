@@ -11,6 +11,19 @@ All notable changes to scripts/netcup are recorded here.
   each other. The host-local lib.sh patch from 2026-11-12 is no longer needed.
 
 ### Added
+- `runner/remote-gate.py run --collect-store <rel>` (repeatable, `--store-max-mib`, default 512; RG-298 part 1) packs a directory
+  of the run's own host checkout into `assay-store.tgz` + `assay-store.tgz.sha256` after the lane exits and BEFORE the throwaway
+  checkout is removed, and `collect` fetches both into the run dir and verifies the sha256. Absent, oversize (uncompressed tar bytes)
+  and failed stores are reported as `STORE-ABSENT` / `STORE-TOO-LARGE` / `STORE-COLLECT-FAILED` job-log lines and never change the
+  lane verdict or the job's exit code; absolute, `..` and symlinked paths are refused (exit 2 locally, again on the host); a
+  checksum mismatch makes only `collect` fail (exit 77, archive kept as `.rejected`). Before this, every remote run's Assay store
+  records died with the checkout. Tests: `tests/test_remote_gate_store.py`.
+- `runner/remote-gate.py run --seed-store <local dir>=<rel>` (repeatable; RG-298 part 2) uploads a local store directory (tar +
+  sha256, regular files and directories only, bounded by `--store-max-mib`) and unpacks it at `<rel>` of the run's own host
+  checkout after the checkout is prepared and before the lane starts. A host-side refusal (checksum, size, special or outside
+  members, symlinked component, tracked files at the target) ends the job as exit 78 / verdict `STORE_SEED_FAILED`, a transport
+  error and never a lane FAIL. `scripts/controller/remote-gate.sh` forwards `--collect-store`, `--seed-store` and
+  `--store-max-mib` to the runner (test: `scripts/controller/tests/test-remote-gate.sh`).
 - `runner/remote-gate-cache.sh` (CTL-12) resolves a ref and publishes a cached copy of `runner/remote-gate.py` for a
   controller helper to run, under a per-invocation staging name and one atomic rename to a content-addressed
   `remote-gate-<blob>.py`, with the refresh serialised by `flock` on `<cache-dir>/.refresh.lock`. It replaces a
