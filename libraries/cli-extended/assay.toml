@@ -45,6 +45,7 @@ targets = [
   "src/cli_extended/doctor.py",
   "src/cli_extended/findings.py",
   "src/cli_extended/identity.py",
+  "src/cli_extended/line_stream.py",
   "src/cli_extended/output.py",
   "src/cli_extended/parser.py",
   "src/cli_extended/procio.py",
