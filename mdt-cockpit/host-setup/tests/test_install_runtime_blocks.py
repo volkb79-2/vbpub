@@ -359,6 +359,71 @@ class OomdDevTierCheck(unittest.TestCase):
         self.assertRegex(CHECK_SH, r"(?m)^check_oomd_dev_tier$")
 
 
+class CheckoutSetPreflight(unittest.TestCase):
+    """install.sh preflight_checkout_set: a checkout missing a file outside host-setup/ is refused before any host change."""
+
+    FUNCTION = shell_function(INSTALL_SH, "preflight_checkout_set")
+    LISTED = re.findall(r"^\s+(\.\./\S+)$", FUNCTION, re.M)
+
+    def _run(self, tree: Path, *, drop: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
+        here = tree / "mdt-cockpit" / "host-setup"
+        here.mkdir(parents=True, exist_ok=True)
+        for rel in self.LISTED:
+            f = (here / rel).resolve()
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("x", encoding="utf-8")
+        for rel in drop:
+            (here / rel).resolve().unlink()
+        return run_bash(f'HERE="{here}"\n{self.FUNCTION}\npreflight_checkout_set')
+
+    def test_a_complete_checkout_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run(Path(tmp))
+            self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+    def test_a_missing_out_of_tree_file_is_refused_naming_it_and_the_required_set(self) -> None:
+        drop = ("../../scripts/debian-install-v2/tools/iocost_coef_gen.py", "../../scripts/debian-install-v2/tools/iocost_plausibility.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run(Path(tmp), drop=drop)
+            self.assertEqual(r.returncode, 1)
+            for rel in drop:
+                self.assertIn(str((Path(tmp) / "mdt-cockpit" / "host-setup" / rel).resolve()), r.stderr)
+            self.assertNotIn("cpu_benchmark", r.stderr)
+            self.assertIn("mdt-cockpit/ AND scripts/debian-install-v2/tools/", r.stderr)
+
+    def test_every_out_of_tree_file_install_sh_reads_is_in_the_list(self) -> None:
+        listed = " ".join(self.LISTED)
+        for path in set(re.findall(r'\$HERE/(\.\./[^\s"\\]+)', INSTALL_SH)):
+            self.assertIn(path, listed, f"install.sh reads {path} but the preflight does not check it")
+        for name in ("iocost_coef_gen.py", "iocost_plausibility.py", "cpu_benchmark.py", "cpu_benchmark.py.sha256", "cpu_benchmark.pins.json"):
+            self.assertIn(name, listed)
+
+    def test_it_runs_before_the_first_host_change(self) -> None:
+        call = INSTALL_SH.index("preflight_checkout_set || exit 2")
+        for later in ('DOCKER_BIN=/usr/bin/docker', 'echo "== scripts =="', 'echo "== packages =="', "systemctl daemon-reload"):
+            self.assertLess(call, INSTALL_SH.index(later), later)
+
+
+class RetiredOomKeysWarning(unittest.TestCase):
+    """MDT-108: an old host-setup.env that still sets the retired oomd keys gets one WARN naming them, never a failure."""
+
+    BLOCK = INSTALL_SH[INSTALL_SH.index("_mdt_retired_keys=()"):INSTALL_SH.index('DEV_STATIC_RBW="$MDT_STATIC_RBPS"')]
+
+    def _run(self, assignments: str) -> subprocess.CompletedProcess:
+        return run_bash(f'set -euo pipefail\nCONFIG_PATH=/etc/mdt/host-setup.env\n{assignments}\n{self.BLOCK}\necho done')
+
+    def test_names_every_retired_key_present_and_still_succeeds(self) -> None:
+        r = self._run("DEV_GATES_OOM_PRESSURE_LIMIT=75%\nMDT_MEMORY_POLICY=oomd\nDEV_BACKGROUND_OOM_PRESSURE_LIMIT=")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "done"), r.stderr)
+        self.assertEqual(r.stderr.count("WARN:"), 1)
+        for key in ("DEV_GATES_OOM_PRESSURE_LIMIT", "DEV_BACKGROUND_OOM_PRESSURE_LIMIT", "MDT_MEMORY_POLICY"):
+            self.assertIn(key, r.stderr)
+
+    def test_is_silent_without_them(self) -> None:
+        r = self._run("DEV_GATES_MEMORY_MAX=1G")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+
 class ReconcileKeepsCapsOnTransientDeviceLoss(unittest.TestCase):
     """MDT-019: a valid baseline with no discovered device does not clear the per-container caps."""
 

@@ -165,6 +165,34 @@ Safety and result
 EOF
 }
 
+# Checkout-set preflight (P-plat-19d item 7). install.sh reads files OUTSIDE host-setup/: the io.cost and CPU
+# benchmark tools from scripts/debian-install-v2/tools/ and the BuildKit builder from mdt-cockpit/scripts/. A host
+# checkout of mdt-cockpit/ alone used to abort at "== scripts ==" AFTER the units were already rendered. This is
+# the ONE list of those files (paths relative to host-setup/); every one must be here. It runs before any host
+# change and refuses naming the missing paths.
+preflight_checkout_set() {
+  local rel missing=() root
+  local needed=(
+    ../scripts/mdt_buildkit_builder.py
+    ../../scripts/debian-install-v2/tools/iocost_coef_gen.py
+    ../../scripts/debian-install-v2/tools/iocost_plausibility.py
+    ../../scripts/debian-install-v2/tools/cpu_benchmark.py
+    ../../scripts/debian-install-v2/tools/cpu_benchmark.py.sha256
+    ../../scripts/debian-install-v2/tools/cpu_benchmark.pins.json
+  )
+  for rel in "${needed[@]}"; do
+    [ -f "$HERE/$rel" ] || missing+=("$(realpath -m "$HERE/$rel")")
+  done
+  [ "${#missing[@]}" -eq 0 ] && return 0
+  root="$(realpath -m "$HERE/../..")"
+  {
+    echo "ERROR: this checkout is incomplete; install.sh needs files outside host-setup/ and refuses before changing the host. Missing:"
+    printf '  %s\n' "${missing[@]}"
+    echo "Required checkout set under $root: mdt-cockpit/ AND scripts/debian-install-v2/tools/ (a checkout of mdt-cockpit/ alone is not enough). See host-setup/README.md."
+  } >&2
+  return 1
+}
+
 # HB-3: install the per-host CPU benchmark helper. The measuring tool is the ONE shared
 # scripts/debian-install-v2/tools/cpu_benchmark.py, pinned by its .sha256 (verified here against the
 # checkout BEFORE it is copied, and again by the wrapper before every run); the pins file carries the
@@ -294,6 +322,11 @@ fi
 if [ "$RESET" = 1 ] && [ "$WIZARD" != 1 ]; then
   echo "ERROR: --reset requires --wizard; refusing to re-seed an unvalidated example" >&2
   exit 2
+fi
+
+# Every mode from here on installs units and scripts (--apply-protection only writes drop-ins and needs none of it).
+if [ "$APPLY_PROTECTION" != 1 ]; then
+  preflight_checkout_set || exit 2
 fi
 
 DOCKER_BIN=/usr/bin/docker
@@ -642,6 +675,14 @@ if ! _mdt_resolve_static_io; then
 fi
 if [ "$(_mdt_host_role)" = unset ]; then
   echo "NOTICE: HOST_ROLE is not set in $CONFIG_PATH — treated as shared-prod (conservative static limits). On a sole-tenant dev/test host set HOST_ROLE=dedicated-dev so dev.slice uses the MEASURED device limits (install.sh --wizard asks)." >&2
+fi
+# MDT-108: these keys drove the removed systemd-oomd kill on the dev tiers and are now ignored. Never fatal.
+_mdt_retired_keys=()
+for _mdt_k in DEV_GATES_OOM_PRESSURE_LIMIT DEV_BACKGROUND_OOM_PRESSURE_LIMIT MDT_MEMORY_POLICY; do
+  [ -n "${!_mdt_k+x}" ] && _mdt_retired_keys+=("$_mdt_k")
+done
+if [ "${#_mdt_retired_keys[@]}" -gt 0 ]; then
+  echo "WARN: ${_mdt_retired_keys[*]} in $CONFIG_PATH are retired (MDT-108: no systemd-oomd kill on the dev tiers) and are ignored; delete the line(s)" >&2
 fi
 DEV_STATIC_RBW="$MDT_STATIC_RBPS"; DEV_STATIC_WBW="$MDT_STATIC_WBPS"
 DEV_STATIC_RIOPS="$MDT_STATIC_RIOPS"; DEV_STATIC_WIOPS="$MDT_STATIC_WIOPS"
