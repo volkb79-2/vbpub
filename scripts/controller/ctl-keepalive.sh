@@ -231,6 +231,14 @@ poll_once() {
   done
 }
 
+watch_loop() {
+  while :; do
+    poll_once
+    (( stop )) && break
+    sleep "$KEEPALIVE_POLL" 8>&- & wait $!
+  done
+}
+
 if [[ ${KEEPALIVE_SOURCE_ONLY:-} == 1 ]]; then
   [[ ${BASH_SOURCE[0]} != "$0" ]] || { echo "KEEPALIVE_SOURCE_ONLY only works when sourced" >&2; exit 2; }
   return 0
@@ -246,11 +254,4 @@ stop=0; trap 'stop=1' TERM INT   # a signal never interrupts a ping: the read-ba
 klog watcher - start "poll=$KEEPALIVE_POLL window=$KEEPALIVE_IDLE_MIN-$KEEPALIVE_IDLE_MAX max=$KEEPALIVE_MAX names=$KEEPALIVE_NAMES"
 if [[ ${1:-} == --once ]]; then poll_once; exit 0; fi
 # the sleep must not inherit the singleton lock (fd 8), or a restart would find it held for up to a minute
-watch_loop() {
-  while :; do
-    poll_once
-    (( stop )) && break
-    sleep "$KEEPALIVE_POLL" 8>&- & wait $!
-  done
-}
 watch_loop
