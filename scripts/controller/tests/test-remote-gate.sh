@@ -216,6 +216,46 @@ reset_logs
 if rg gate-a proj small "$SHA" --base "$SHA" -- --base "$SHA" > /dev/null 2>&1; then fail 'a base given as option and as pass-through was accepted'; fi
 if rg gate-a proj small "$SHA" -- --base > /dev/null 2>&1; then fail 'a pass-through --base without a ref was accepted'; fi
 [[ ! -e $RG_LOG ]] || fail 'a refused --base reached the runner'
+# --- RG-298: --collect-store / --store-max-mib reach remote-gate.py run as separate argv words, before `--`
+reset_logs
+if rg gate-a proj small "$SHA" --collect-store 'proj/.run-gate/store a' > /dev/null 2>&1; then fail 'a --collect-store path with a space was accepted'; fi
+[[ ! -e $RG_LOG ]] || fail 'a refused --collect-store reached the runner'
+reset_logs
+rg gate-a proj small "$SHA" --collect-store proj/.run-gate/s1 --base "$SHA" --collect-store proj/.run-gate/s2 --store-max-mib 64 -- --jobs 3 > /dev/null 2>&1 || fail 'run with store options failed'
+contains "$RG_LOG" '"--collect-store", "proj/.run-gate/s1", "--collect-store", "proj/.run-gate/s2", "--store-max-mib", "64"' 'store options are forwarded as one argv word each'
+contains "$RG_LOG" '"--base", "'"$SHA"'"' '--base still reaches remote-gate.py beside the store options'
+contains "$RG_LOG" '"--", "--jobs", "3"' 'extra run-gate arguments stay after --'
+python3 - "$RG_LOG" <<'PY' || fail 'the store options were not placed before the run-gate pass-through'
+import json, sys
+a = json.loads(open(sys.argv[1]).read().splitlines()[-1])
+sep = a.index("--")
+assert all(a.index(x) < sep for x in ("--collect-store", "--store-max-mib")), a
+PY
+reset_logs
+mkdir -p "$ROOT/seed-src" "$ROOT/seed-cwd"
+ln -sfn ../seed-src "$ROOT/seed-cwd/rel-seed"
+( cd "$ROOT/seed-cwd" && rg gate-a proj small "$SHA" --seed-store rel-seed=proj/.run-gate/s1 > /dev/null 2>&1 ) || fail 'run with --seed-store failed'
+contains "$RG_LOG" '"--seed-store", "'"$ROOT"'/seed-src=proj/.run-gate/s1"' '--seed-store reaches the runner with its local side made absolute'
+reset_logs
+for bad in "$ROOT/missing=x/y" "$ROOT/seed-src" "$ROOT/seed-src=/abs" "$ROOT/seed-src=../x" "$ROOT/seed-src=a=b" "=x"; do
+  if rg gate-a proj small "$SHA" --seed-store "$bad" > /dev/null 2>&1; then fail "--seed-store '$bad' was accepted"; fi
+done
+[[ ! -e $RG_LOG ]] || fail 'a refused --seed-store reached the runner'
+reset_logs
+rg gate-a proj small "$SHA" > /dev/null 2>&1 || fail 'a run without store options failed'
+not_contains "$RG_LOG" 'collect-store' 'no store option unless requested'
+not_contains "$RG_LOG" 'seed-store' 'no seed unless requested'
+not_contains "$RG_LOG" 'store-max-mib' 'no store bound unless requested'
+reset_logs
+for bad in /abs/store ../x a/../../x 'a b' 'a;b' ''; do
+  if rg gate-a proj small "$SHA" --collect-store "$bad" > /dev/null 2>&1; then fail "--collect-store '$bad' was accepted"; fi
+done
+for bad in 0 -1 abc 1.5 '' 99999999; do
+  if rg gate-a proj small "$SHA" --store-max-mib "$bad" > /dev/null 2>&1; then fail "--store-max-mib '$bad' was accepted"; fi
+done
+if rg gate-a proj small "$SHA" --collect-store > /dev/null 2>&1; then fail '--collect-store without a value was accepted'; fi
+if rg gate-a proj small "$SHA" --store-max-mib 5 --store-max-mib 6 > /dev/null 2>&1; then fail '--store-max-mib given twice was accepted'; fi
+[[ ! -e $RG_LOG ]] || fail 'a refused store option reached the runner'
 reset_logs
 CONTROLLER_REMOTE_REPO_NAME=named-repo rg gate-a proj small "$SHA" > /dev/null 2>&1 || fail 'run with a configured repo name failed'
 contains "$RG_LOG" '"--repo", "named-repo"' 'a configured repo name is forwarded'

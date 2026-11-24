@@ -4,7 +4,7 @@
 usage:
   remote-gate run <host|auto> <worktree-of-any-git-repo> <lane> [--project-dir DIR] [--repo NAME] [--base REF] [--name N] [--detach]
               [--wait-psi SECONDS] [--mem-need-mb MIB] [--mem-floor-mb MIB] [--wait-mem SECONDS] [--out-dir DIR]
-              [--collect-store REL]... [--store-max-mib MIB] [-- extra run-gate args...]
+              [--collect-store REL]... [--seed-store LOCALDIR=REL]... [--store-max-mib MIB] [-- extra run-gate args...]
   remote-gate status|logs|collect|cancel <id> [--out-dir DIR]
 
 The host table (ssh argv, provider identity check, guard, cockpit name) lives in a gitignored JSON file
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import gzip
 import hashlib
 import json
 import os
@@ -22,6 +23,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tarfile
 import time
 import tomllib
 from dataclasses import dataclass, field, replace
@@ -87,6 +89,7 @@ RESERVED_ENV = {"RUN_GATE_ALLOW_MAIN_CHECKOUT", "ASSAY_GATE_HOST_REPO_ROOT", "AS
 REPO_KEYS = {"run_gate_min", "run_gate_bins", "required_images", "uid_check", "admission_check", "tester_image", "env"}
 STORE_MAX_MIB = 512  # --store-max-mib default: uncompressed tar bytes of one store directory (collect refuses above it)
 STORE_RC = 77  # `collect` exit code when the run itself ended 0 but its fetched store archive failed its checksum (the lane verdict is untouched)
+SEED_RC = 78  # the job's exit code (verdict STORE_SEED_FAILED) when a --seed-store upload could not be installed: a transport error, never a lane verdict
 STORE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._@+=,:-]+$")
 STORE_LOG_RE = re.compile(r"^\S+ (STORE-(?:ABSENT|TOO-LARGE|COLLECT-FAILED|COLLECTED) .*)$", re.M)
 PREREQ_RC = 76  # the job's exit code (and verdict PREREQ_MISSING) when a per-repo prerequisite is not met
@@ -489,7 +492,33 @@ collect_stores() {
   fi
   rm -f -- "$D/assay-store.err"
   return 0
+}
+# --seed-store: archive n (assay-seed-<n>.tgz + .sha256, uploaded by the controller) goes to SEEDS[n]. Every refusal is
+# STORE-SEED-FAILED <rel> <reason> and exit 78 (a transport error; the lane never starts and no lane verdict exists).
+seed_fail() { log "STORE-SEED-FAILED $1 $2"; rc=78; exit 78; }
+seed_stores() {
+  local i=0 rel f bytes
+  (( ${#SEEDS[@]} )) || return 0
+  for rel in "${SEEDS[@]}"; do
+    f=$D/assay-seed-$i.tgz
+    store_rel_check "$rel" || seed_fail "$rel" "$STORE_WHY"
+    [[ -s $f && -s $f.sha256 ]] || seed_fail "$rel" missing-archive
+    ( cd "$D" && sha256sum -c --status "assay-seed-$i.tgz.sha256" ) 2>/dev/null || seed_fail "$rel" checksum
+    if ! bytes=$(gzip -dc -- "$f" 2>/dev/null | wc -c); then seed_fail "$rel" unreadable-archive; fi
+    (( bytes <= STORE_MAX_BYTES )) || seed_fail "$rel" "too-large $bytes"
+    # only regular files and directories, every member inside <rel>/
+    if tar -tvzf "$f" 2>/dev/null | cut -c1 | grep -qv '[-d]'; then seed_fail "$rel" special-member; fi
+    tar -tzf "$f" 2>/dev/null | awk -v r="$rel" '$0 !~ /(^|\/)\.\.(\/|$)/ && ($0 == r || index($0, r "/") == 1) {next} {bad=1} END {exit bad}' || seed_fail "$rel" member-outside-path
+    if [[ -n $(git -C "$CKDIR" ls-files -- "$rel" 2>/dev/null) ]]; then seed_fail "$rel" tracked-files; fi
+    rm -rf -- "${CKDIR:?}/$rel"
+    mkdir -p -- "$(dirname -- "$CKDIR/$rel")" || seed_fail "$rel" mkdir-failed
+    tar -xzf "$f" -C "$CKDIR" --no-same-owner 2>/dev/null || seed_fail "$rel" unpack-failed
+    rm -f -- "$f" "$f.sha256"
+    i=$((i + 1))
+  done
+  log "STORE-SEEDED ${SEEDS[*]}"
 }"""
+
 
 
 JOB_TEMPLATE = r"""#!/usr/bin/env bash
@@ -529,6 +558,7 @@ UID_IMAGE=@@UID_IMAGE@@
 UID_NUM=@@UID_NUM@@
 ADMISSION_CHECK=@@ADMISSION_CHECK@@
 STORES=(@@STORES@@)
+SEEDS=(@@SEEDS@@)
 STORE_MAX_BYTES=@@STORE_MAX_BYTES@@
 LANE_STARTED=0
 rc=70
@@ -644,6 +674,9 @@ if (( ADMISSION_CHECK )); then
   fi
   log "admission: $(grep -oE 'max_concurrent=[0-9]+' <<<"$adm" | head -n1 || true)"
 fi
+
+# --seed-store: unpack the uploaded store directories into this run's own checkout, after it is prepared and before the lane
+seed_stores
 
 # memory admission: one host-wide ticket (fd 9, a fixed path under ~/rg so every caller of this host shares the same inode)
 # so two lanes never read the same MemAvailable; the ticket is held until the new lane's memory shows up in MemAvailable
@@ -806,13 +839,13 @@ def substitute(template: str, sub: dict) -> str:
 
 def render_job(host: Host, name: str, st: dict, lane: str, proj: str, seed: str, psi_wait: int, extra: Sequence[str],
                repo: str = "vbpub", prof: Optional[RepoProfile] = None, mem_need_mb: int = 0, mem_floor_mb: int = 1024,
-               mem_wait: int = 900, mem_settle: int = 20, collect_stores: Sequence[str] = (), store_max_mib: int = STORE_MAX_MIB) -> str:
+               mem_wait: int = 900, mem_settle: int = 20, collect_stores: Sequence[str] = (), store_max_mib: int = STORE_MAX_MIB, seed_stores: Sequence[str] = ()) -> str:
     prof = prof or host.profile(repo)
     sub = {"NAME": name, "SHORT": st["sha"][:12], "PROJ": shlex.quote(proj), "LANE": shlex.quote(lane), "REPO": shlex.quote(repo),
            "SHA": st["sha"], "BASE": st["base"] or "''", "MAIN": st.get("main") or "''", "SEED": shlex.quote(seed), "PSI_LIMIT": f"{PSI_LIMIT:g}",
            "PSI_WAIT": str(int(psi_wait)), "MEM_NEED_MB": str(int(mem_need_mb)), "MEM_FLOOR_MB": str(int(mem_floor_mb)),
            "MEM_WAIT": str(int(mem_wait)), "MEM_SETTLE": str(int(mem_settle)), "TAGS": "\n".join(f"{c} {n}" for c, n in st.get("tags", [])),
-           "EXTRA": " ".join(shlex.quote(a) for a in extra), "STORES": " ".join(shlex.quote(x) for x in collect_stores),
+           "EXTRA": " ".join(shlex.quote(a) for a in extra), "STORES": " ".join(shlex.quote(x) for x in collect_stores), "SEEDS": " ".join(shlex.quote(x) for x in seed_stores),
            "STORE_MAX_BYTES": str(int(store_max_mib) * 1024 * 1024), "STORE_FUNCS": STORE_FUNCS, **profile_subs(host, prof)}
     return substitute(JOB_TEMPLATE, sub)
 
@@ -870,6 +903,68 @@ def normalise_store_rel(raw: str, top: str, flag: str = "--collect-store") -> st
     return "/".join(parts)
 
 
+class _ByteCount:
+    """A write-only sink that only counts: the exact uncompressed tar bytes of a seed directory, without a temporary file."""
+
+    def __init__(self) -> None:
+        self.n = 0
+
+    def write(self, b: bytes) -> int:
+        self.n += len(b)
+        return len(b)
+
+
+def _seed_filter(ti: tarfile.TarInfo) -> tarfile.TarInfo:
+    if not (ti.isreg() or ti.isdir()):
+        raise GateError(f"--seed-store: {ti.name!r} is not a regular file or directory (symlinks, hardlinks and devices are never uploaded)")
+    ti.uid = ti.gid = 0
+    ti.uname = ti.gname = ""
+    return ti
+
+
+def write_seed_archive(local: str, rel: str, sink) -> None:
+    """The directory `local` as a tar stream whose members are named `<rel>/...` (regular files and directories only)."""
+    with tarfile.open(fileobj=sink, mode="w|", format=tarfile.GNU_FORMAT) as tf:
+        tf.add(local, arcname=rel, filter=_seed_filter)
+
+
+def parse_seed(raw: str, top: str, max_mib: int) -> tuple:
+    """`<local dir>=<rel>` -> (absolute local dir, normalised rel); exit 2 for a missing or non-directory local side, a bad rel, a
+    symlink or special file inside the directory, or more uncompressed tar bytes than --store-max-mib (the host checks again)."""
+    if raw.count("=") != 1:
+        raise GateError(f"--seed-store {raw!r} must be <local dir>=<path relative to the repository root> (exactly one '=')")
+    local, rel = raw.split("=")
+    if not local or not os.path.isdir(local):
+        raise GateError(f"--seed-store {raw!r}: the local side {local!r} is not an existing directory")
+    rel = normalise_store_rel(rel, top, "--seed-store")
+    sink = _ByteCount()
+    write_seed_archive(local, rel, sink)
+    if sink.n > max_mib * 1024 * 1024:
+        raise GateError(f"--seed-store {raw!r}: {sink.n} uncompressed tar bytes exceed --store-max-mib {max_mib}")
+    return os.path.abspath(local), rel
+
+
+def upload_seeds(ctx: Ctx, host: Host, run_dir: Path, rgd: str, seeds: Sequence[tuple]) -> None:
+    """Archive n = assay-seed-<n>.tgz + .sha256 into the run's host directory over the bundle's transport, checksum-verified."""
+    for n, (local, rel) in enumerate(seeds):
+        name = f"assay-seed-{n}.tgz"
+        tgz = run_dir / name
+        with open(tgz, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
+            write_seed_archive(local, rel, gz)
+        want = sha256_file(str(tgz))
+        sumf = run_dir / (name + ".sha256")
+        sumf.write_text(f"{want}  {name}\n")
+        for f in (tgz, sumf):
+            r = remote(ctx, host, f"cat > {shlex.quote(rgd)}/{f.name}", stdin_path=str(f), timeout=1800)
+            if r.rc != 0:
+                raise GateError(f"{host.name}: seed upload of {f.name} failed: {r.err.strip()[:200]}", 3)
+        got = remote(ctx, host, f"sha256sum {shlex.quote(rgd)}/{name}").out.split()[:1]
+        if got != [want]:
+            raise GateError(f"{host.name}: seed checksum mismatch after upload of {name}", 3)
+        tgz.unlink()
+        sumf.unlink()
+
+
 def check_mem_args(need_mb: int, floor_mb: int, wait_s: int) -> None:
     """Refuse a nonsensical admission argument by name instead of letting arithmetic turn it into something else: a negative
     expected peak would admit anything, and a zero floor would let a lane consume the whole control plane's memory."""
@@ -893,6 +988,9 @@ def cmd_run(ctx: Ctx, a: argparse.Namespace) -> int:
         raise GateError(f"--store-max-mib must be a positive number of MiB below 10^7, got {a.store_max_mib}")
     st = local_state(ctx, a.worktree, a.base)
     stores = list(dict.fromkeys(normalise_store_rel(x, st["top"]) for x in a.collect_store))  # refused here, before a host is contacted
+    seeds = [parse_seed(x, st["top"], a.store_max_mib) for x in a.seed_store]
+    if len({r for _, r in seeds}) != len(seeds):
+        raise GateError("--seed-store names the same target path twice")
     proj = a.project_dir if a.project_dir is not None else (st["prefix"] or ".")
     if proj.startswith("/") or ".." in Path(proj).parts:
         raise GateError("--project-dir must be relative to the worktree root and stay inside it")
@@ -929,8 +1027,10 @@ def cmd_run(ctx: Ctx, a: argparse.Namespace) -> int:
         got = remote(ctx, host, f"sha256sum {shlex.quote(rgd)}/in.bundle").out.split()[:1]
         if got != [want]:
             raise GateError(f"{host.name}: bundle checksum mismatch after upload", 3)
+    upload_seeds(ctx, host, run_dir, rgd, seeds)
     job = render_job(host, name, st, lane, proj, seed or "", a.wait_psi, a.extra, repo, prof,
-                     a.mem_need_mb, a.mem_floor_mb, a.wait_mem, collect_stores=stores, store_max_mib=a.store_max_mib)
+                     a.mem_need_mb, a.mem_floor_mb, a.wait_mem, collect_stores=stores, store_max_mib=a.store_max_mib,
+                     seed_stores=[r for _, r in seeds])
     job_path = run_dir / "job.sh"
     job_path.write_text(job)
     r = remote(ctx, host, f"cat > {shlex.quote(rgd)}/job.sh", stdin_path=str(job_path))
@@ -938,7 +1038,7 @@ def cmd_run(ctx: Ctx, a: argparse.Namespace) -> int:
         raise GateError(f"{host.name}: job upload failed: {r.err.strip()[:200]}", 3)
     meta = {"name": name, "host": host.name, "repo": repo, "run_gate": rg_bin, "lane": lane, "project_dir": proj, "sha": st["sha"], "base": st["base"],
             "seed_checkout": seed, "bundle": need_bundle, "started_utc": ctx.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "remote_dir": rgd, "extra": list(a.extra), "collect_store": stores, "store_max_mib": a.store_max_mib}
+            "remote_dir": rgd, "extra": list(a.extra), "collect_store": stores, "store_max_mib": a.store_max_mib, "seed_store": [r for _, r in seeds]}
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
     if need_bundle:
         os.unlink(bundle)
@@ -1006,7 +1106,7 @@ REASON_RE = re.compile(r"verdict [A-Z_]+;(?: exit_code \d+;)? reason ([^;\n]+)")
 # A refusal line, not a substring anywhere in the log: every memory-admission refusal ends in "refusing to start", while the
 # success line ("memory admission ok (waited Ns): ...") does not — so a lane that was admitted and then failed for some other
 # reason is never labelled a memory refusal.
-JOB_REASON_RE = re.compile(r"^\S+ (PREREQ MISSING: .*|PSI above .*|memory admission.*refusing to start.*|terminated by cancel|base \S+ missing on the host)$", re.M)
+JOB_REASON_RE = re.compile(r"^\S+ (PREREQ MISSING: .*|STORE-SEED-FAILED .*|PSI above .*|memory admission.*refusing to start.*|terminated by cancel|base \S+ missing on the host)$", re.M)
 # A memory-admission refusal shares exit 75 with the PSI refusal (both mean "the host said not yet, nothing ran"), so the
 # verdict is named from the job's own log rather than folded into PSI_REFUSED: reporting a memory refusal as a PSI refusal
 # would certify a cause that was never observed. It must be a refusal LINE (the `refusing to start` phrase, which the
@@ -1104,6 +1204,8 @@ def collect(ctx: Ctx, host: Host, meta: dict, run_dir: Path) -> int:
     job_log = (run_dir / "job.log").read_text(errors="replace") if (run_dir / "job.log").exists() else ""
     if rc == 75 and verdict == "UNKNOWN":
         verdict = "MEM_REFUSED" if memory_refused(job_log) else "PSI_REFUSED"
+    if rc == SEED_RC and verdict == "UNKNOWN":
+        verdict = "STORE_SEED_FAILED"
     if rc == PREREQ_RC and verdict == "UNKNOWN":
         verdict = "PREREQ_MISSING"
     if rc == 143:
@@ -1197,6 +1299,8 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--wait-mem", type=int, default=900, help="seconds the host job may wait for memory admission before refusing with exit 75 (default 900)")
     r.add_argument("--collect-store", action="append", default=[], metavar="REL",
                    help="repeatable: pack this directory of the run's OWN host checkout (path relative to the repository root, e.g. scripts/netcup/.run-gate/assay-shards) into assay-store.tgz + assay-store.tgz.sha256 before the checkout is removed; `collect` fetches and verifies them into the run dir. Absent -> STORE-ABSENT, above --store-max-mib -> STORE-TOO-LARGE, failure -> STORE-COLLECT-FAILED; none changes the lane verdict")
+    r.add_argument("--seed-store", action="append", default=[], metavar="LOCALDIR=REL",
+                   help="repeatable: upload this local directory (regular files and directories only; tar + sha256) and unpack it at REL of the run's own host checkout after the checkout is prepared and before the lane starts, replacing what is there (never tracked files). Any failure ends the run as exit 78 (STORE_SEED_FAILED), never a lane FAIL; the bound is --store-max-mib")
     r.add_argument("--store-max-mib", type=int, default=STORE_MAX_MIB, help=f"bound on the uncompressed tar bytes of each --collect-store directory (default {STORE_MAX_MIB})")
     r.add_argument("--poll", type=float, default=20)
     r.add_argument("extra", nargs="*", help="after `--`: extra run-gate arguments")

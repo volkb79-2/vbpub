@@ -1040,7 +1040,7 @@ not from the phrase "memory admission" appearing anywhere: a lane that was admit
 reason is not a memory refusal either. Neither refusal started the lane, so nothing was cleaned up and no container
 exists.
 
-## Collecting a run's store directory (remote-gate `--collect-store`, RG-298)
+## Collecting and seeding a run's store directory (remote-gate `--collect-store` / `--seed-store`, RG-298)
 
 A remote run's checkout is throwaway: the job removes it on exit, so a directory the lane filled inside it (for example an
 Assay shard store under `<project>/.run-gate/assay-shards/...`) was lost. `--collect-store <rel>` (repeatable) packs that
@@ -1068,6 +1068,19 @@ remote-gate.py collect r1    # fetches assay-store.tgz + assay-store.tgz.sha256 
   renames the file to `assay-store.tgz.rejected` (a corrupt archive never keeps its usable name) and makes `collect`
   exit 77 when the lane's own exit code was 0; a lane that failed keeps its own exit code. `result.json` and the
   final `lane ... verdict ...` line are never changed by a store problem.
+- `--seed-store <local dir>=<rel>` (repeatable; exactly one `=`, the target rules are the ones above) goes the other way: the local
+  directory must exist and contain only regular files and directories (a symlink, hardlink or device is refused locally, exit
+  2), and its uncompressed tar bytes must fit `--store-max-mib` (the same bound in both directions). It is uploaded as
+  `assay-seed-<n>.tgz` + `.sha256` (one archive per seed, members named `<rel>/...`) over the bundle's transport, with the
+  same post-upload `sha256sum` check (mismatch: exit 3). The host job, after the checkout is prepared and before admission and
+  the lane, verifies the checksum, re-checks the size bound on the decompressed stream, refuses special members and members
+  outside `<rel>/` (including `..`), refuses a target that holds tracked files, removes the target and unpacks. Any refusal logs
+  `STORE-SEED-FAILED <rel> <reason>` and ends the job with **exit 78** (verdict `STORE_SEED_FAILED`, never a lane verdict; the
+  lane is not started and the checkout is removed as usual). Success logs `STORE-SEEDED <rels>`.
+- `scripts/controller/remote-gate.sh` forwards `--collect-store`, `--seed-store` and `--store-max-mib` (in any order with
+  `--base`, before `--`), one argv word per value, validated with the same refusals before a slot is taken; the local side of
+  a seed is made absolute by the wrapper (the runner runs from a throwaway worktree). The wrapper runs the `remote-gate.py` of
+  `CONTROLLER_REMOTE_GATE_PY_REF` (default `origin/main`), so the options work through it once this change is on that ref.
 - A run cancelled with `cancel` (TERM) is not collected: the job stops before the packing step. Never `/tmp`; the archive
   is written under the run's own `~/rg/<name>/` directory.
 

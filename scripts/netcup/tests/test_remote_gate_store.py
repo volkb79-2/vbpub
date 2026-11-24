@@ -3,16 +3,19 @@
 `Fake` runner. The store's content, size and sha256 are checked at the file boundary; no network, no host, no real container."""
 from __future__ import annotations
 
+import gzip
 import hashlib
+import io
 import json
 import os
+import re
 import subprocess
 import tarfile
 from pathlib import Path
 
 import pytest
 
-from test_remote_gate import SHA, ctx_for, git_handlers, hosts, psi, rg, run_args  # noqa: F401
+from test_remote_gate import SHA, Fake, ctx_for, git_handlers, hosts, psi, rg, run_args  # noqa: F401
 from test_remote_gate_repos import LS, _exe, _source_bundle, sandbox  # noqa: F401
 
 STORE = "scripts/.run-gate/assay-shards/k1"
@@ -26,7 +29,7 @@ exit "${FAKE_RC:-0}"
 '''
 
 
-def run_job(sb, stores, setup="", max_mib=512, rc=0):
+def run_job(sb, stores, setup="", max_mib=512, rc=0, seeds=()):
     """Render the real job for these (raw, unnormalised) store paths and run it in bash; returns the CompletedProcess."""
     _exe(sb.rgbin, STORE_RUN_GATE)
     sb.env["FAKE_STORE_SETUP"] = setup
@@ -37,7 +40,7 @@ def run_job(sb, stores, setup="", max_mib=512, rc=0):
     host = hosts()["r1002"]
     host.repos = {"vbpub": {"run_gate_bins": [str(sb.rgbin)]}}
     text = rg.render_job(host, "j1", {"sha": sha, "base": None, "tags": []}, "docs", ".", "", 0, [], "vbpub",
-                         collect_stores=stores, store_max_mib=max_mib)
+                         collect_stores=stores, store_max_mib=max_mib, seed_stores=seeds)
     (sb.tmp / "mem").write_text("some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
     (sb.tmp / "io").write_text("some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
     text = text.replace("/proc/pressure/memory /proc/pressure/io", f"{sb.tmp}/mem {sb.tmp}/io").replace("/tmp/rg-j1.pid", str(sb.tmp / "rg-j1.pid"))
@@ -280,3 +283,259 @@ def test_a_stale_local_store_file_never_survives_a_recollect(tmp_path):
     host, meta, _ = rg.load_meta(ctx, "c1")
     assert rg.collect(ctx, host, meta, run_dir) == 0
     assert not (run_dir / "assay-store.tgz").exists() and not (run_dir / "assay-store.tgz.sha256").exists()
+
+
+# ---- seed (RG-298 part 2): upload on the controller, unpack on the host before the lane starts ----
+
+def make_seed(dest_dir: Path, rel: str, files: dict, n: int = 0) -> Path:
+    """assay-seed-<n>.tgz + .sha256 in dest_dir, built like the controller does."""
+    src = dest_dir / f"seed-src-{n}"
+    for name, data in files.items():
+        (src / name).parent.mkdir(parents=True, exist_ok=True)
+        (src / name).write_text(data)
+    tgz = dest_dir / f"assay-seed-{n}.tgz"
+    with open(tgz, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
+        rg.write_seed_archive(str(src), rel, gz)
+    (dest_dir / f"assay-seed-{n}.tgz.sha256").write_text(f"{hashlib.sha256(tgz.read_bytes()).hexdigest()}  assay-seed-{n}.tgz\n")
+    return tgz
+
+
+def make_raw_seed(dest_dir: Path, members, n: int = 0) -> Path:
+    """members: (name, kind, payload) with kind in file|dir|symlink; written verbatim, no controller-side filter."""
+    tgz = dest_dir / f"assay-seed-{n}.tgz"
+    with tarfile.open(tgz, "w:gz") as tf:
+        for name, kind, payload in members:
+            ti = tarfile.TarInfo(name)
+            if kind == "dir":
+                ti.type, ti.mode = tarfile.DIRTYPE, 0o755
+                tf.addfile(ti)
+            elif kind == "symlink":
+                ti.type, ti.linkname = tarfile.SYMTYPE, payload
+                tf.addfile(ti)
+            else:
+                ti.size = len(payload)
+                tf.addfile(ti, io.BytesIO(payload.encode()))
+    (dest_dir / f"assay-seed-{n}.tgz.sha256").write_text(f"{hashlib.sha256(tgz.read_bytes()).hexdigest()}  assay-seed-{n}.tgz\n")
+    return tgz
+
+
+def mk_ck(tmp_path):
+    """A real git checkout with one tracked file (tracked/x); created once, so a test may add untracked state afterwards."""
+    ck = tmp_path / "ck"
+    if not (ck / ".git").exists():
+        ck.mkdir(exist_ok=True)
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        (ck / "tracked").mkdir()
+        (ck / "tracked" / "x").write_text("x")
+        for argv in (["init", "-q"], ["add", "."], ["commit", "-q", "-m", "c"]):
+            subprocess.run(["git", "-C", str(ck), *argv], check=True, env=env, capture_output=True)
+    return ck
+
+
+def seed_harness(tmp_path, seeds, max_bytes=10 ** 9):
+    """The job's seed_stores run alone: D holds the archives, CKDIR is a real git checkout with one tracked file."""
+    d, ck = tmp_path / "D", mk_ck(tmp_path)
+    d.mkdir(exist_ok=True)
+    script = (f'set -u\nD={d}\nCKDIR={ck}\nSEEDS=({" ".join(seeds)})\nSTORE_MAX_BYTES={max_bytes}\nrc=0\nlog() {{ echo "$*"; }}\n'
+              + rg.STORE_FUNCS + "\nseed_stores\n")
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True), d, ck
+
+
+def test_a_seed_replaces_the_target_directory_and_removes_the_archive(tmp_path):
+    ck0 = mk_ck(tmp_path)
+    (ck0 / "s" / "a").mkdir(parents=True)
+    (ck0 / "s" / "a" / "stale").write_text("old")
+    (tmp_path / "D").mkdir()
+    make_seed(tmp_path / "D", "s/a", {"f.json": "new", "sub/g": "deep"})
+    r, d, ck = seed_harness(tmp_path, ["s/a"])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert sorted(p.relative_to(ck).as_posix() for p in (ck / "s").rglob("*")) == ["s/a", "s/a/f.json", "s/a/sub", "s/a/sub/g"]  # `stale` is gone
+    assert (ck / "s" / "a" / "f.json").read_text() == "new" and "STORE-SEEDED s/a" in r.stdout
+    assert not (d / "assay-seed-0.tgz").exists() and not (d / "assay-seed-0.tgz.sha256").exists()
+
+
+def test_two_seeds_are_installed_from_their_own_archives(tmp_path):
+    d = tmp_path / "D"
+    d.mkdir()
+    make_seed(d, "one", {"f": "1"}, n=0)
+    make_seed(d, "two/x", {"f": "2"}, n=1)
+    r, _, ck = seed_harness(tmp_path, ["one", "two/x"])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (ck / "one" / "f").read_text() == "1" and (ck / "two" / "x" / "f").read_text() == "2"
+
+
+def _corrupt(d):
+    (d / "assay-seed-0.tgz").write_bytes((d / "assay-seed-0.tgz").read_bytes() + b"x")
+
+
+def _special(d):
+    make_raw_seed(d, [("s", "dir", ""), ("s/l", "symlink", "/etc")])
+
+
+def _outside(d):
+    make_raw_seed(d, [("s", "dir", ""), ("other/f", "file", "x")])
+
+
+def _dotdot(d):
+    make_raw_seed(d, [("s", "dir", ""), ("s/../escape", "file", "x")])
+
+
+def _missing(d):
+    (d / "assay-seed-0.tgz").unlink()
+
+
+@pytest.mark.parametrize("prep,rel,why,max_bytes", [
+    (_corrupt, "s", "checksum", 10 ** 9),
+    (_special, "s", "special-member", 10 ** 9),
+    (_outside, "s", "member-outside-path", 10 ** 9),
+    (_dotdot, "s", "member-outside-path", 10 ** 9),
+    (_missing, "s", "missing-archive", 10 ** 9),
+    (lambda d: None, "s", "too-large", 100),
+    (lambda d: make_seed(d, "tracked", {"f": "1"}), "tracked", "tracked-files", 10 ** 9),
+    (lambda d: None, "../s", "invalid-path", 10 ** 9),
+    (lambda d: None, "/abs", "invalid-path", 10 ** 9),
+])
+def test_a_refused_seed_exits_78_and_leaves_the_checkout_untouched(tmp_path, prep, rel, why, max_bytes):
+    d = tmp_path / "D"
+    d.mkdir()
+    make_seed(d, "s", {"f": "1"})
+    prep(d)
+    r, _, ck = seed_harness(tmp_path, [rel], max_bytes)
+    assert r.returncode == 78, r.stdout + r.stderr
+    assert f"STORE-SEED-FAILED {rel} {why}" in r.stdout
+    assert not (ck / "s").exists() and (ck / "tracked" / "x").read_text() == "x"
+
+
+def test_a_symlinked_component_refuses_the_seed(tmp_path):
+    mk_ck(tmp_path)
+    (tmp_path / "real").mkdir()
+    (tmp_path / "ck" / "lnk").symlink_to(tmp_path / "real")
+    d = tmp_path / "D"
+    d.mkdir()
+    make_seed(d, "lnk/s", {"f": "1"})
+    r, _, _ = seed_harness(tmp_path, ["lnk/s"])
+    assert r.returncode == 78 and "STORE-SEED-FAILED lnk/s symlink" in r.stdout and not list((tmp_path / "real").iterdir())
+
+
+def test_the_seed_is_in_place_when_the_lane_starts(sandbox):
+    d = rgd(sandbox)
+    make_seed(d, STORE, {"f.json": "seeded"})
+    out = sandbox.tmp / "seen"
+    r = run_job(sandbox, [], f"cat {STORE}/f.json > {out}", seeds=[STORE])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert out.read_text() == "seeded" and "STORE-SEEDED " + STORE in r.stdout
+    lines = r.stdout.splitlines()
+    assert next(i for i, x in enumerate(lines) if "STORE-SEEDED" in x) < next(i for i, x in enumerate(lines) if "lane exited" in x)
+
+
+def test_a_failed_seed_ends_the_job_as_a_transport_error_before_the_lane_starts(sandbox):
+    d = rgd(sandbox)
+    make_seed(d, STORE, {"f.json": "x"})
+    _corrupt(d)
+    r = run_job(sandbox, [], "echo lane-ran > " + str(sandbox.tmp / "ran"), seeds=[STORE])
+    assert r.returncode == rg.SEED_RC == 78 and (d / "rc").read_text().strip() == "78"
+    assert f"STORE-SEED-FAILED {STORE} checksum" in r.stdout
+    assert not (sandbox.tmp / "ran").exists() and not (d / "lane.log").exists()
+    assert not list((sandbox.home / "checkouts" / "vbpub" / ".worktrees").glob("rg-*"))  # the checkout is cleaned on the way out
+
+
+def test_collect_names_a_failed_seed_and_prints_its_reason(tmp_path):
+    log = f"2026-11-24T10:00:00Z STORE-SEED-FAILED {STORE} checksum\n2026-11-24T10:00:01Z done rc=78\n"
+    ctx, out = ctx_for(tmp_path, git_handlers() + [psi(1, 1), LS])
+    assert rg.cmd_run(ctx, run_args(tmp_path, "r1002", "/wt", "suite", "--detach", "--name", "c2")) == 0
+    ctx.runner.handlers[:0] = [("jobs/rg-c2/job.log", rg.Result(0, log)), ("/EXIT", rg.Result(0, "78\n")), ("/rc", rg.Result(0, "78\n"))]
+    host, meta, run_dir = rg.load_meta(ctx, "c2")
+    assert rg.collect(ctx, host, meta, run_dir) == 78
+    assert out[-1].startswith(f"lane suite verdict STORE_SEED_FAILED; exit_code 78; reason STORE-SEED-FAILED {STORE} checksum")
+
+
+# ---- seed, controller side ----
+
+class Uploading(Fake):
+    """Keeps the bytes of every file piped to `cat > <host path>` and answers sha256sum for the uploaded archive."""
+
+    def __init__(self, handlers):
+        super().__init__(handlers)
+        self.up = {}
+
+    def run(self, argv, stdin_path=None, timeout=300):
+        m = re.search(r"cat > \S+/(assay-seed-\d+\.tgz(?:\.sha256)?)", " ".join(argv))
+        if m and stdin_path:
+            self.up[m.group(1)] = Path(stdin_path).read_bytes()
+        return super().run(argv, stdin_path, timeout)
+
+
+def seeded_ctx(tmp_path, tamper=False):
+    ctx, out = ctx_for(tmp_path, git_handlers() + [psi(1, 1), LS])
+    ctx.runner = Uploading(ctx.runner.handlers)
+
+    def sha(argv):
+        m = re.search(r"(assay-seed-\d+\.tgz)", " ".join(argv))
+        if not m:
+            return rg.Result(0, hashlib.sha256(b"bundle").hexdigest() + "  in.bundle\n")
+        return rg.Result(0, ("0" * 64 if tamper else hashlib.sha256(ctx.runner.up[m.group(1)]).hexdigest()) + "  x\n")
+
+    ctx.runner.handlers.insert(0, ("sha256sum", sha))
+    return ctx, out
+
+
+def seed_src(tmp_path):
+    src = tmp_path / "seedsrc"
+    (src / "sub").mkdir(parents=True)
+    (src / "a.json").write_text("one")
+    (src / "sub" / "b.json").write_text("two")
+    return src
+
+
+def test_run_uploads_each_seed_with_a_verified_checksum_and_names_it_in_the_job(tmp_path):
+    src = seed_src(tmp_path)
+    ctx, _ = seeded_ctx(tmp_path)
+    assert rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "u1", "--seed-store", f"{src}=x/store")) == 0
+    up = ctx.runner.up
+    assert sorted(up) == ["assay-seed-0.tgz", "assay-seed-0.tgz.sha256"]
+    assert up["assay-seed-0.tgz.sha256"].decode().split() == [hashlib.sha256(up["assay-seed-0.tgz"]).hexdigest(), "assay-seed-0.tgz"]
+    with tarfile.open(fileobj=io.BytesIO(up["assay-seed-0.tgz"])) as t:
+        assert sorted((m.name, m.size) for m in t.getmembers()) == [("x/store", 0), ("x/store/a.json", 3), ("x/store/sub", 0), ("x/store/sub/b.json", 3)]
+    assert not list((tmp_path / "out" / "u1").glob("assay-seed*"))  # nothing of the seed is left in the run dir
+    assert "SEEDS=(x/store)\n" in (tmp_path / "out" / "u1" / "job.sh").read_text()
+    assert json.loads((tmp_path / "out" / "u1" / "meta.json").read_text())["seed_store"] == ["x/store"]
+    flat = [" ".join(c[0]) for c in ctx.runner.calls]
+    assert max(i for i, c in enumerate(flat) if "assay-seed-0.tgz.sha256" in c or "assay-seed-0.tgz" in c) < next(i for i, c in enumerate(flat) if "run-job" in c)
+
+
+def test_a_seed_whose_upload_checksum_differs_aborts_with_a_transport_error(tmp_path):
+    ctx, _ = seeded_ctx(tmp_path, tamper=True)
+    with pytest.raises(rg.GateError, match="seed checksum mismatch") as e:
+        rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "u2", "--seed-store", f"{seed_src(tmp_path)}=x/store"))
+    assert e.value.code == 3
+    assert not any("run-job" in " ".join(c[0]) for c in ctx.runner.calls)
+
+
+@pytest.mark.parametrize("raw", ["MISSING=x/y", "SRC", "SRC=/abs", "SRC=../x", "SRC=a=b", "=x/y"])
+def test_run_refuses_a_bad_seed_before_a_host_is_contacted(tmp_path, raw):
+    src = seed_src(tmp_path)
+    ctx, _ = ctx_for(tmp_path, git_handlers() + [psi(1, 1), LS])
+    with pytest.raises(rg.GateError) as e:
+        rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "u3", "--seed-store", raw.replace("SRC", str(src))))
+    assert e.value.code == 2
+    assert not any(c[0][0] in ("ssh", "apicheck") for c in ctx.runner.calls) and not (tmp_path / "out" / "u3").exists()
+
+
+def test_a_seed_directory_with_a_symlink_is_refused_locally(tmp_path):
+    src = seed_src(tmp_path)
+    (src / "evil").symlink_to("/etc")
+    ctx, _ = ctx_for(tmp_path, git_handlers() + [psi(1, 1), LS])
+    with pytest.raises(rg.GateError, match="not a regular file or directory") as e:
+        rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "u4", "--seed-store", f"{src}=x/s"))
+    assert e.value.code == 2 and not any(c[0][0] == "ssh" for c in ctx.runner.calls)
+
+
+def test_a_seed_above_the_bound_is_refused_locally_and_the_same_target_twice_too(tmp_path):
+    src = seed_src(tmp_path)
+    (src / "big.bin").write_bytes(b"\0" * 1_200_000)
+    ctx, _ = ctx_for(tmp_path, git_handlers() + [psi(1, 1), LS])
+    with pytest.raises(rg.GateError, match="exceed --store-max-mib 1") as e:
+        rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "u5", "--store-max-mib", "1", "--seed-store", f"{src}=x/s"))
+    assert e.value.code == 2
+    with pytest.raises(rg.GateError, match="same target path twice"):
+        rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "u6", "--seed-store", f"{seed_src(tmp_path)}=x/s", "--seed-store", f"{seed_src(tmp_path)}=x//s/"))

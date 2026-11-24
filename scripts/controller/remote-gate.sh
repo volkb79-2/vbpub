@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run ONE registered run-gate lane on a remote gate worker through the host table.
 #
-# usage: remote-gate.sh <host-alias> <project-dir-relative-to-repo> <lane> <commit-or-branch> [--base <ref>] [-- extra run-gate args...]
+# usage: remote-gate.sh <host-alias> <project-dir-relative-to-repo> <lane> <commit-or-branch> [--base <ref>]
+#                       [--collect-store <rel>]... [--seed-store <local dir>=<rel>]... [--store-max-mib <n>] [-- extra run-gate args...]
 #
 # In order:
 #   1. Resolve <commit-or-branch> to a full commit in the controller repo (a branch may be given as `x` or `origin/x`).
@@ -33,13 +34,36 @@ for renamed in REMOTE_GATE_V1001_SLOTS:CONTROLLER_REMOTE_SLOTS REMOTE_GATE_V1001
   [[ -z ${!old_name:-} ]] || echo "remote-gate.sh: WARNING: $old_name is set but not read here (not mapped); use ${renamed#*:}" >&2
 done
 
-[[ $# -ge 4 ]] || die 'usage: remote-gate.sh <host-alias> <project-dir> <lane> <commit-or-branch> [--base <ref>] [-- extra run-gate args...]'
+[[ $# -ge 4 ]] || die 'usage: remote-gate.sh <host-alias> <project-dir> <lane> <commit-or-branch> [--base <ref>] [--collect-store <rel>]... [--seed-store <dir>=<rel>]... [--store-max-mib <n>] [-- extra run-gate args...]'
 host=$1 pdir=$2 lane=$3 ref=$4; shift 4
 base=''
-if [[ ${1:-} == --base ]]; then
-  [[ $# -ge 2 && -n $2 ]] || die '--base needs a ref'
-  base=$2; shift 2
-fi
+store_args=()   # --collect-store REL / --store-max-mib N, forwarded to remote-gate.py as separate argv words (RG-298)
+store_max=''
+while [[ ${1:-} == --base || ${1:-} == --collect-store || ${1:-} == --store-max-mib || ${1:-} == --seed-store ]]; do
+  opt=$1
+  [[ $# -ge 2 && -n $2 ]] || die "$opt needs a value"
+  case $opt in
+    --base) [[ -z $base ]] || die '--base given twice'; base=$2 ;;
+    --collect-store)
+      # the same refusals remote-gate.py makes (it normalises and checks symlinks), here before any slot is taken
+      [[ $2 != /* && $2 =~ ^[A-Za-z0-9._@+=,:/-]+$ ]] || die "--collect-store '$2' must be a relative path of A-Za-z0-9._@+=,:/- characters"
+      [[ /$2/ != */../* ]] || die "--collect-store '$2' must stay inside the repository (no '..')"
+      store_args+=(--collect-store "$2") ;;
+    --seed-store)
+      # <local dir>=<rel>: the runner runs from a throwaway worktree, so the local side is made absolute HERE (the caller's cwd)
+      [[ $2 == *=* && $2 != *=*=* ]] || die "--seed-store '$2' must be <local dir>=<relative path> (exactly one '=')"
+      seed_local=${2%%=*} seed_rel=${2#*=}
+      [[ -n $seed_local && -d $seed_local ]] || die "--seed-store '$2': the local side is not an existing directory"
+      [[ $seed_rel != /* && $seed_rel =~ ^[A-Za-z0-9._@+,:/-]+$ && /$seed_rel/ != */../* ]] || die "--seed-store '$2': the target must be a relative path inside the repository"
+      seed_local=$(cd -- "$seed_local" && pwd -P) || die "--seed-store '$2': cannot resolve the local directory"
+      store_args+=(--seed-store "$seed_local=$seed_rel") ;;
+    --store-max-mib)
+      [[ -z $store_max ]] || die '--store-max-mib given twice'
+      [[ $2 =~ ^[1-9][0-9]{0,6}$ ]] || die "--store-max-mib '$2' must be a positive whole number of MiB"
+      store_max=$2; store_args+=(--store-max-mib "$2") ;;
+  esac
+  shift 2
+done
 extra=()
 if [[ ${1:-} == -- ]]; then shift; extra=("$@"); elif [[ $# -gt 0 ]]; then die "unexpected argument '$1' (extra run-gate arguments go after --)"; fi
 # The old pass-through spelling `-- --base <ref>` (or `--base=<ref>`) reaches the same effect as the --base option: only
@@ -229,6 +253,7 @@ fi
 run_args=(--hosts-file "$hosts_file" --out-dir "$out" run "$host" . "$lane" --project-dir "$pdir")
 run_args+=(--repo "${CONTROLLER_REMOTE_REPO_NAME:-vbpub}")   # this IS the vbpub repo: the checkout directory name must not decide
 [[ -z $base ]] || run_args+=(--base "$base")
+run_args+=(${store_args[@]+"${store_args[@]}"})
 run_args+=(--name "$name" --wait-psi "${CONTROLLER_REMOTE_WAIT_PSI:-120}")
 tmp=$(mktemp "$CONTROLLER_HOME/.rgw-XXXXXX.out")
 ( close_slots; cd "$wt" && "$py" "$rg" "${run_args[@]}" ${extra[@]+-- "${extra[@]}"} ) 2>&1 | ( close_slots; exec tee "$tmp" >&2 )
