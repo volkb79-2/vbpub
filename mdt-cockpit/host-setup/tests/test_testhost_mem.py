@@ -718,7 +718,7 @@ echo "RC=$MDT_RC"
             tiers[-1].write_text("")
         r = self.converge("MemoryMax", "4507009024", "memory.max")
         self.assertIn("deferred", r.stdout)
-        self.assertEqual(dev_reclaim.read_text(), "")
+        self.assertEqual(dev_reclaim.read_text().strip(), "")  # the old code wrote 256M here
         for f in tiers:
             self.assertEqual(f.read_text().strip(), "256M", f)
 
