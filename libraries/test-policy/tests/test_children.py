@@ -326,7 +326,15 @@ def test_allowlisted_zombie_reaper_tolerates_not_yet_reaped(tmp_path, monkeypatc
     )
 
 
-def test_plugin_session_is_off_by_default_and_opt_in_enables_subreaper(pytester):
+def source_on_subprocess_path(monkeypatch):
+    # pytest.ini `pythonpath = src` reaches only this process; a subprocess run needs it in PYTHONPATH.
+    src = str(Path(children.__file__).resolve().parents[1])
+    existing = os.environ.get("PYTHONPATH")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([src, existing]) if existing else src)
+
+
+def test_plugin_session_is_off_by_default_and_opt_in_enables_subreaper(pytester, monkeypatch):
+    source_on_subprocess_path(monkeypatch)
     pytester.makeini("[pytest]\n")
     pytester.makepyfile(
         test_sample="""
@@ -352,7 +360,8 @@ def test_plugin_session_is_off_by_default_and_opt_in_enables_subreaper(pytester)
     )
 
 
-def test_every_xdist_worker_enables_its_own_subreaper(pytester):
+def test_every_xdist_worker_enables_its_own_subreaper(pytester, monkeypatch):
+    source_on_subprocess_path(monkeypatch)
     pytester.makeini("[pytest]\nestate_policy = fail\nestate_policy_settle_seconds = 0\n")
     pytester.makepyfile(
         test_sample="""
