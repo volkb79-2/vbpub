@@ -2,21 +2,23 @@
 
 Status, 2026-11-24: rewritten in P-rollback-12 for the core split (PLAN-rollback B8, design review M7). ZFS is one
 storage backend (`dr_state/storage/zfs.py`) and ZFSBootMenu one boot backend (`dr_state/boot/zbm.py`) of the single
-`dr-state` in [DESIGN-CORE-SPLIT.md](DESIGN-CORE-SPLIT.md). That design is binding; this plan adds only ZFS facts,
-the installer and the acceptance. The parked branch's send/receive design (DESIGN-GUIDE D22) is superseded.
+`dr-state` in [DESIGN-CORE-SPLIT.md](DESIGN-CORE-SPLIT.md), which is binding. The branch's send/receive design
+(DESIGN-GUIDE D22) is superseded.
 
 Evidence so far (`RESULTS-ZFSBOOTMENU-POC-2026-11-23.md` and `-24.md`, copied to main by P-rollback-02):
 - the pinned ZBM v3.1.0 EFI was authenticated; the ZFS Live ISO was built; the Live ZFS DKMS module loads;
 - the last candidate ISO installed a disk: `DR-ZFS-AUTOINSTALL-DONE rc=0` after 4,978 s under TCG at 3072 MiB;
 - first-boot acceptance was not run on that disk. An earlier disk showed that ZBM puts no `root=ZFS=` on the kernel
-  command line, so the running root comes from `findmnt -n -o SOURCE --target /`.
+  command line, so the running root comes from `findmnt -n -o SOURCE --target /`;
+- the preserved PoC disk is evidence only (superseded installer: DR-STAGING, `active=on`, `python3-minimal`,
+  `dr-zfs-state`).
 
-No ZFS code was reviewed; the gates ran on a dirty tree. Nothing here is product behaviour before P-44 passes.
+No ZFS code was reviewed; gates ran on a dirty tree. Nothing here is product behaviour before P-44.
 
 ## Goal and scope
 
 Prove that a user recovers an installed Debian 13 UEFI system from the btrfs acceptance's dependency break by
-selecting the pre-change state in ZFSBootMenu. Guests run on the test host under TCG: function, not performance.
+selecting the pre-change state in ZFSBootMenu. Guests run under TCG on the test host.
 
 ## Layers
 
@@ -24,7 +26,7 @@ selecting the pre-change state in ZFSBootMenu. Guests run on the test host under
   the default is `bootfs`). `findmnt -n -o FSTYPE` picks storage (core D6); the ESP marker `zfsbootmenu` picks boot.
 - **P-43:** a separate ZFS ISO from the verified Debian Live ISO, with `/dr/target-filesystem` = `zfs` and its own
   hook and `dr-zfs-autoinstall` entry point (never `dr-autoinstall` or `install-btrfs.sh`; `dr-plan` only picks the
-  disk). It installs `files/` (core D27) into `/usr/local`, a dataset outside every BE (core D2).
+  disk). It copies `files/` into the target (core D27); the runtime lands in the `/usr/local` dataset (core D2).
   `--bootloader` stays closed to `grub|systemd-boot`; the `--bootloader zfs` refusal must still pass.
 - **P-44:** guest acceptance on a disk built by that ISO.
 
@@ -35,12 +37,17 @@ selecting the pre-change state in ZFSBootMenu. Guests run on the test host under
 - Every BE has a **local** `canmount=noauto`. The property is not inherited, and clones do not copy local properties.
   Without it, several roots compete to mount at `/`. `activate` therefore sets it on every clone (core §3.5).
 - Every BE has a local `org.zfsbootmenu:commandline` with the console options and no `root=`. ZBM supplies the root.
-  `activate` copies the source BE's local value, so a change to a parent never rewrites older BEs.
-- Nothing sets `org.zfsbootmenu:active`. The branch set it only to hide its staging datasets, which no longer exist.
+  `activate` copies the holder's value, so a change to a parent never rewrites older BEs.
+- The branch set `active=on` on every BE and `off` on staging. Neither is needed, because ZBM lists any
+  `mountpoint=/` dataset that is not `active=off`. Nothing sets it now.
 - `bootfs` is the persistent default. A menu selection is temporary; `set-default` makes it persistent.
 - There is no one-shot: `supports_oneshot = False`, and `boot-once` exits 4 (`Unsupported`).
 - ZBM v3.1.0 counts down 10 s; the PoC sets neither `zbm.timeout=0` nor `zbm.skip` (EFI image options).
 - Checkpoints appear in ZBM's snapshot menu, not as entries. dr-state writes no menu files and checks BEs itself (C12).
+- ZBM v3.1.0 snapshot menu (`zfsbootmenu-core.sh`): MOD+C runs `zfs clone -o mountpoint=/ -o canmount=noauto` plus
+  every local or received property of the parent; MOD+X does the same, then `zfs promote`; ENTER "duplicates" by
+  `zfs send -p -w | zfs recv -u -o canmount=noauto -o mountpoint=/`, a full copy. ZBM proposes no name and never
+  changes `bootfs`.
 
 ## ZFS state identity and apt flow
 
@@ -71,18 +78,28 @@ D18. The dedupe window (core D21) keys on `org.dr-state:parent` equal to the run
 
 **A BE is created only by `set-default`.** Rollback is `set-default` on a checkpoint. The core calls
 `storage.activate(X)`, then `boot.publish(..., default=X)` (core §3.5):
-- `zfs clone -o canmount=noauto -o mountpoint=/ -o org.zfsbootmenu:commandline=<source's local value>
+- `zfs clone -o canmount=noauto -o mountpoint=/ -o org.zfsbootmenu:commandline=<holder's value>
   <holder>@<bare> rpool/ROOT/<bare>`;
 - `zfs promote rpool/ROOT/<bare>`;
 - `zpool set bootfs=rpool/ROOT/<bare> rpool`.
 
 This is what zectl and bectl do. Promote moves `@<bare>` and all older snapshots of the holder to the new BE, and
-the old BE becomes a clone of `rpool/ROOT/<bare>@<bare>`. The holder of a checkpoint therefore changes over time.
-Storage always resolves it from a fresh `list()`. `activate` is idempotent (S5): on an existing BE it only sets
-missing local properties.
+the old BE becomes a clone of `rpool/ROOT/<bare>@<bare>`. A holder therefore changes over time; storage resolves it
+from a fresh `list()`. `activate` is idempotent (S5). On an existing BE it:
+- promotes it if it is an unpromoted clone of `<holder>@<bare>` (a ZBM MOD+C clone), so the snapshot folds into it;
+- sets missing local properties; a missing command line is copied from the holder (the dataset that held its origin
+  snapshot).
 
-**Delete** follows core §3.5: a checkpoint with clones, or a BE holding other checkpoints or children, is refused,
-naming them; a BE's own `@<leaf>` goes first when it has no clones; no `-r`; running and `bootfs` BEs are protected.
+`list` folds a snapshot into a dataset of the same leaf that is cloned from it or holds it, so S3 (each name once)
+holds before and after promote. A dataset that repeats a checkpoint's name without that relation is unmanaged.
+
+**Origin bare** (used by U4): for an unpromoted clone, the snapshot part of its `origin`; for a promoted BE, its
+`@os-*` snapshot that is another BE's origin. An ENTER duplicate has no origin: it stays unmanaged, and `set-default`
+inside it exits 3.
+
+**Delete** follows core §3.5: a checkpoint with clones, a BE with children, and a BE with any snapshot other than its
+own `@<leaf>`, managed or not, are refused (S2) and each blocker is named. A BE's own `@<leaf>` goes first when it has
+no clones; no `-r`; running and `bootfs` BEs are protected.
 
 **Retention** comes from the core: core D20 (unpinned count at most N, default 10; pool `free + freeing` at least
 max(2 GiB, 5 %), re-read after each destroy), core D34 (`prune` is manual) and core D22 (the install state is
@@ -107,22 +124,24 @@ D25). Only the ZFS behaviour is listed here.
 | `check [--json]` | C3: `bootfs` names a managed BE. C6: ESP marker. C12: BE properties. C9 exempts checkpoints. |
 | `initialize-state` | Run by the installer for the initial BE (`kind=live`, `pinned=1`). |
 
-C12 checks each managed BE: local `canmount=noauto`, `mountpoint=/`, a local `org.zfsbootmenu:commandline` without
-`root=`, `org.zfsbootmenu:active` not `off`, a kernel pair in `/boot`, and no local `quota`, `reservation`,
-`refquota` or `refreservation`. These checks are salvaged from `dr-zfs-state` (P-42).
+C12 checks each managed BE, accepting `local` or `received` sources (any `zfs recv` copy has `received` ones):
+`canmount=noauto`, `mountpoint=/`, `org.zfsbootmenu:commandline` without `root=`, `active` not `off`, a kernel pair in
+`/boot`, and no `quota`, `reservation`, `refquota` or `refreservation`. Salvaged from `dr-zfs-state` (P-42).
 
 ## Open ZFS details
 
-The core design leaves these open. Each is decided in the named package, without changing core section 3.
+The core design leaves these open. Each is decided in the named package, without changing core section 3. The core
+design gave the U4 measurement to P-12; P-12 is docs-only, so it moves to P-42 (fake model) and P-44 (guest). The ZBM
+source already settles the clone properties and that ZBM proposes no name.
 
 | Item | Rule now | Decided in |
 |---|---|---|
-| U4: the dataset name ZBM gives a BE that the operator clones from its snapshot menu; renaming a mounted root | Core §3.5: a non-`os-*` name is unmanaged; `set-default <ID>` inside it renames it to `rpool/ROOT/<origin bare>`, then proceeds. The acceptance enters the bare ID as the name, so no rename is needed there. | Rule tested at the fake in P-42; ZBM behaviour measured in a guest in P-44 |
-| U5: `.zfs/snapshot/<bare>/boot` access on the running BE | Read-only temporary mount as fallback (core §3.5) | P-42 |
-| Control directory path | A dataset `rpool/DR-META` outside every BE; the branch mounted it at `/var/lib/debian-rollback` | P-42 (`paths.py`), P-43 (installer) |
-| Verb that runs `Boot.install()` for ZBM (marker, format file, EFI copies) | Same pattern as `install-grub` / `install-systemd-boot` | P-42 |
-| `prune` when a victim is refused (it has clones) | Skip it with the S2 reason in the output and continue with the next victim | P-42 |
-| Checkpoint space growth and pool budget | Measure, then set the fixture size | P-44 |
+| U4: the name the operator types at ZBM's prompt; `zfs rename -u` of the mounted `/` (without `-u` it fails busy) | A non-`os-*` name is unmanaged; `set-default <ID>` inside it renames it to `rpool/ROOT/<origin bare>`, then proceeds (core §3.5). Measure what `findmnt -n -o SOURCE` shows after the rename and before a reboot, so `running()` never reports a stale name. | P-42, P-44 |
+| U5: `.zfs/snapshot/<bare>/boot` on the running BE | Read-only temporary mount as fallback (core §3.5) | P-42 |
+| Control directory | A dataset `rpool/DR-META` outside every BE (branch path `/var/lib/debian-rollback`). Writes refuse (exit 3) unless findmnt shows the control directory mounted from the control dataset (salvaged from `dr-zfs-state`); otherwise D14's counter repair writes into the BE's empty directory and a rollback discards it. | P-42, P-43 |
+| ESP writer | Verb `install-zfsbootmenu` (`Boot.install()`): copies the verified EFI three times, checks the free space, writes the marker and format file | P-42 |
+| `prune` victim refused (S2: held checkpoints, other snapshots, clones) | Skip it and continue; exit 0 with a warning, as D20's "victims run out"; `--dry-run` lists each skip with its reason | P-42 |
+| Checkpoint space growth, pool budget | Measure, then size the fixture | P-44 |
 
 ## Installer and boot flow
 
@@ -145,17 +164,17 @@ The core design leaves these open. Each is decided in the named package, without
 7. **Runtime.** Copy `files/` into the target (core D27); the runtime lands in the `/usr/local` dataset. Run
    `initialize-state` for the initial BE inside the target, as `install-btrfs.sh` does. Set
    `bootfs` to the initial BE and verify it.
-8. **ESP.** Fetch and verify the pinned ZBM EFI (ZBM artifact below). Install it at `EFI/ZBM/`, a backup copy beside
-   it, and the same file at `EFI/BOOT/BOOTX64.EFI`, the UEFI fallback path. The disk must boot from fresh firmware
-   variables without an NVRAM entry; `efibootmgr` may add one as a convenience. Write the ESP marker.
+8. **ESP.** The ISO carries the ZBM EFI verified at build time (ZBM artifact below); the installer rechecks its
+   SHA-256, then runs `dr-state install-zfsbootmenu`. That verb is the only ESP writer: `EFI/ZBM/`, a backup copy,
+   `EFI/BOOT/BOOTX64.EFI` (the fallback path), the marker and the format file. The disk boots from fresh firmware
+   variables without an NVRAM entry.
 9. **Network and credentials.** DHCP on the Live default-route interface, not `eth0`. The password goes through a
    private temporary file, never an argument; the config and config-bearing ISOs are mode 0600.
 
 **ZBM artifact.** Pin `zfsbootmenu-recovery-x86_64-v3.1.0-linux6.12.EFI`, SHA-256
-`9910458dfe7fc2895214922e22b6ae2513cd0f5a43d4d3c5526eee26e69a2198`, never a mutable latest URL. Verify the release's
-`sha256.sig` with `signify` and the pinned `zfsbootmenu.pub`. Verify the key's inline-signed OpenPGP message
-`zfsbootmenu.pub.gpg` with GPG, signer `971D2693A47CA0E203E1C5DA312485BE75E3D7AC`, and record the key's SHA-256.
-The EFI file stays unmodified.
+`9910458dfe7fc2895214922e22b6ae2513cd0f5a43d4d3c5526eee26e69a2198`. Verify `sha256.sig` with `signify` and the
+pinned `zfsbootmenu.pub`, and the key's `zfsbootmenu.pub.gpg` with GPG (signer
+`971D2693A47CA0E203E1C5DA312485BE75E3D7AC`). The EFI file stays unmodified.
 
 ## Pool layout and sizing
 
@@ -170,22 +189,20 @@ rpool/DATA/usr-local           /usr/local: the shared dr-state runtime (core D2)
 rpool/DR-META                  control directory (path open, P-42)
 ```
 
-`/etc`, `/usr`, `/var/lib/dpkg`, `/opt` and `/boot` stay inside each BE. The branch's `rpool/DR-STAGING`,
-`@dr-pending-*` snapshots and `active=on/off` values are gone. ROLLBACK-RECOVERY.md gets ZFS cases after P-44.
+`/etc`, `/usr`, `/var/lib/dpkg`, `/opt` and `/boot` stay inside each BE. The branch's `rpool/DR-STAGING` and
+`@dr-pending-*` are gone, and nothing sets `active`. ROLLBACK-RECOVERY.md gets ZFS cases after P-44.
 
-Do not run `zpool upgrade`. A pool feature upgrade first needs a ZBM artifact verified against it. Record the pool
-features, the Debian OpenZFS module version and the ZBM OpenZFS version.
+No `zpool upgrade` before the ZBM artifact is verified against the new features; record both OpenZFS versions.
 
-**ESP.** The pinned EFI is 85,742,592 bytes by the release metadata. Three copies must leave at least 128 MiB free
-on the formatted 512 MiB ESP. Measure the real file and the real free space at build and install time.
+**ESP.** The pinned EFI is 85,742,592 bytes (release metadata). Three copies must leave 128 MiB free on the 512 MiB
+ESP; measure both at build and install time.
 
 **Sizing (DESIGN-GUIDE D24/D25, landed on main by P-rollback-02).**
-- The guest disk is 64 GiB. That is a fixture size, not a supported minimum.
-- The TCG Live install runs at 3072 MiB. That is a run setting, not a measured minimum.
-- Installed-system boot and recovery run at 2048 MiB. The ARC is not capped. Record RAM, disk and ARC policy.
-- Pool budget: `R + C + D + M`. R is the measured BE `refer`, C the measured `used` of the retained checkpoints after
-  representative updates, D the persistent-data budget, M the metadata and update reserve. The branch's
-  `(keep + 2) * R` term came from full copies and is dropped.
+- Disk 64 GiB and TCG install RAM 3072 MiB are run settings, not minimums.
+- Installed-system boot and recovery run at 2048 MiB, ARC uncapped; record RAM, disk and ARC policy.
+- Pool budget: `R + C + D + M`. R is the measured BE `refer`; C the measured `used` of the retained checkpoints after
+  representative updates, including hidden same-leaf origin snapshots held by dependent clones; D the
+  persistent-data budget; M the metadata and update reserve. The branch's `(keep + 2) * R` is dropped.
 
 ## Acceptance
 
@@ -198,12 +215,11 @@ behaviour (B12): `dr-state list --json`, `check --json`, `/proc/cmdline`, `findm
    exits 0.
 3. **Dependency break.** An apt run breaks the real app/library dependency. The hook made exactly one checkpoint,
    `…-install@os-000002-…-apt`, whose `apt_actions` names the change. The app fails.
-4. **Select the pre-change state.** Reboot, interrupt the countdown, open the snapshot menu of the running BE, and
-   clone and promote `@os-000002-…-apt` with the bare ID as the new name. Boot it. The damaged package state is
-   absent; witnesses written to `/home` and `/srv` after the checkpoint are still there. Record the default name
-   ZBM offered and the properties it set (U4).
-5. **Set-default.** In the recovered BE, `dr-state set-default @os-000002-…-apt`. `bootfs` names it; C12 passes;
-   `check` exits 0.
+4. **Select the pre-change state.** Reboot, interrupt the countdown, open the running BE's snapshot menu, press
+   MOD+X (clone and promote, not ENTER's full duplicate) on `@os-000002-…-apt` and type the bare ID as the name.
+   Boot it. The damaged package state is absent; `/home` and `/srv` witnesses written after the checkpoint remain.
+5. **Set-default.** In the recovered BE, `dr-state set-default @os-000002-…-apt`. `bootfs` names it; C12 passes on
+   the properties ZBM copied; `check` exits 0.
 6. **Plain reboot.** No key press. A new boot_id, and `findmnt` shows `rpool/ROOT/os-000002-…-apt`.
 7. **Delete the failed BE.** `dr-state delete @os-000001-…-install --yes` succeeds. The recovered BE, its data and
    unrelated datasets remain.
@@ -217,34 +233,35 @@ behaviour (B12): `dr-state list --json`, `check --json`, `/proc/cmdline`, `findm
 - `set-default` on a checkpoint from the broken state: clone, promote, `bootfs`; a plain reboot boots it.
 - Repeated dpkg calls: one checkpoint per window; later calls append plan lines (core D21).
 - Follow-up apt in the recovered BE makes the next checkpoint.
-- ZBM-named clone: unmanaged; `set-default` inside it renames it (U4); `snapshot` refuses until then.
+- Non-`os-*` clone name: unmanaged; `set-default` inside it renames it (U4); `snapshot` refuses until then.
 - Delete and prune: a checkpoint with clones is refused, naming them; `prune --dry-run` matches core D20.
+- ZBM snapshot interaction: a snapshot made in ZBM's UI is listed; `delete` and `prune` refuse its BE, naming it;
+  after the operator destroys it, the retry succeeds.
 - Kernel coverage: old and new kernels boot, stable and backports where the ZFS module supports them.
 - Feature ordering recorded; `swapon --show` empty.
 
-Lock behaviour, counter repair, snapshot atomicity and delete refusals are tested offline in P-42 at a fake
-`zfs`/`zpool` model that asserts the resulting datasets and snapshots, never the call tuples.
+Lock, counter repair, snapshot atomicity and delete refusals are tested in P-42 at a fake `zfs`/`zpool` model that
+asserts resulting datasets and snapshots, never call tuples.
 
 ## Test and evidence path
 
-- Registered lanes on the exact head are the only merge evidence; then an Opus review. `offline` runs on the shared
-  tester-unified image. The ZFS lanes use a project layer (`signify-openbsd`, `gnupg`, `tesseract-ocr`) built by a
-  documented step (P-43).
-- Guests run through the vm-lab runner (P-33), one at a time. Evidence is archived durably, never only on the test
-  host (B13). The report records hashes, ZBM verification, ESP free space, versions, RAM, disk and checkpoint `used`.
+- Registered lanes on the exact head are the only merge evidence, then an Opus review. ZFS lanes add a project layer
+  (`signify-openbsd`, `gnupg`, `tesseract-ocr`) built by a documented step (P-43).
+- Guests run through the vm-lab runner (P-33), one at a time; evidence is archived durably (B13) with hashes,
+  versions, ESP free space, RAM, disk and checkpoint `used`.
 
 **Risks.**
-- **R5.** The branch pins every lane, `offline` included, to the local tag `tester-unified:debian-rollback-zfs-tools`,
-  which exists only where someone built it. P-43 moves the lanes to the shared image; the project layer serves only
-  the ZFS lanes.
-- **U4.** If ZBM's clone lacks `canmount=noauto` or the command line, `activate` in step 5 must set them.
+- **R5.** The branch pins every lane to the local tag `tester-unified:debian-rollback-zfs-tools`, which exists only
+  where someone built it. P-43 moves them to the shared image; the project layer serves only the ZFS lanes.
+- **U4.** ZBM's clone carries `canmount=noauto`, `mountpoint=/` and the command line, so `activate` only checks
+  them (C12); it does not depend on setting them. The open part is the typed name and the rename.
 - **Pool full.** Checkpoints pin old blocks and prune is manual (D34). P-44 measures the growth.
-- **TCG time.** One install takes about 83 minutes; later scenarios reuse the installed disk read-only.
+- **TCG time.** One install takes about 83 minutes. Scenarios reuse the P-44 disk, built from the candidate head, as
+  a read-only base. The preserved PoC disk is evidence only.
 
 ## Salvaged vs dropped branch files
 
-The 30 paths of `330bdb835`. "Salvage" means the file lands from a fresh branch off main after review and a lane
-pass; nothing lands unreviewed. Counts: 14 salvage, 13 partial, 3 drop.
+The 30 paths of `330bdb835`: 14 salvage, 13 partial, 3 drop. Salvaged files land from fresh branches, reviewed.
 
 | Path (`scripts/debian-rollback/` unless rooted) | Verdict | Pkg | Reason |
 |---|---|---|---|
@@ -281,21 +298,10 @@ pass; nothing lands unreviewed. Counts: 14 salvage, 13 partial, 3 drop.
 
 ## Non-goals
 
-Automatic fallback; a ZBM one-shot; Secure Boot; encryption; converting btrfs or `@os-0001` disks; performance claims
-from QEMU; physical hardware and power loss; swap on the target; changing the test host's own filesystems; ZFS with
-GRUB.
+Automatic fallback, one-shot, Secure Boot, encryption, disk conversion, QEMU performance claims, physical hardware,
+target swap, the test host's own filesystems, ZFS with GRUB.
 
 ## Later experiments (outside P-44)
 
-- **Low memory.** Boot a copy of the accepted disk at 1024, 1536 and 2048 MiB with no swap, ZRAM, and Zswap on a
-  swap partition outside the pool. Record memory, swap, PSI and whether update, checkpoint and recovery work. The
-  no-swap default stays until this reports.
-- **Prebuilt restore image.** Whole-disk image versus a ZFS stream into a fresh pool. A clone needs new machine id,
-  SSH host keys, hostid and pool GUID. Publishing needs a per-component licence inventory first.
-
-## References
-
-ZFSBootMenu v3.1 [Debian UEFI guide](https://docs.zfsbootmenu.org/en/v3.1.x/guides/debian/uefi.html) and
-[snapshot management](https://docs.zfsbootmenu.org/en/v3.1.x/online/snapshot-management.html); OpenZFS
-[zfsprops(7)](https://openzfs.github.io/openzfs-docs/man/master/7/zfsprops.7.html) and
-[zpoolprops(7)](https://openzfs.github.io/openzfs-docs/man/master/7/zpoolprops.7.html).
+- Low memory: 1024-2048 MiB with no swap, ZRAM, or Zswap on a partition outside the pool (DESIGN-GUIDE D25).
+- Prebuilt restore image: needs new machine identity and pool GUID, and a licence inventory before publishing.
