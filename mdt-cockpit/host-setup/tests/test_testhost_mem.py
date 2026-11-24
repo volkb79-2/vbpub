@@ -556,6 +556,12 @@ class TemplateAndDocsTests(unittest.TestCase):
         for text, name in ((readme, "README"), (notes, "CGROUP-NOTES"), (EXAMPLE.read_text(), "env example")):
             self.assertNotIn("MDT_MEMORY_POLICY", text, name)
 
+    def test_the_no_own_cap_decision_for_interactive_and_buildkitd_is_documented(self) -> None:
+        for name in ("README.md", "CGROUP-NOTES.md"):
+            text = " ".join((ROOT / name).read_text().split())
+            self.assertIn("Operator decision 2026-11-24", text, name)
+            self.assertIn("`dev-interactive.slice` and `dev-buildkitd.slice` are intentionally bounded", text.replace("\n", " "), name)
+
     def test_the_dedicated_role_blanks_tier_ceilings_that_shared_prod_still_renders(self) -> None:
         # behavioural: the pre-flight block empties the tier variables on dedicated-dev only (InstallBlockTests), while the
         # templates still carry the directive for shared-prod
