@@ -188,7 +188,7 @@ def test_the_ticket_is_released_with_the_job_so_the_next_lane_can_start(tmp_path
     (home / "rg").mkdir(parents=True)
     # this test is about the ticket's release, so the memory fact is a fixed "admitted" (the real function reads the host's live
     # MemAvailable, which made the verdict depend on the host's load: 75 whenever the host had under ~2.5 GiB available)
-    block = ('set -u\nlog() { :; }\nrc=70\n' + _admission_functions(1500, 1024) + "mem_admit_ok() { return 0; }\n"
+    block = ('set -u\nlog() { :; }\nrc=70\n' + _admission_functions(1500, 1024) + "mem_admit_ok() { MEM_LAST=fixed-admitted; return 0; }\n"
              + "MEM_WAIT=0\nMEM_SETTLE=0\n" + _ticket_block(need=1500, wait=0, settle=0))
     for run in (1, 2):
         r = subprocess.run(["bash", "-c", block], env={**os.environ, "HOME": str(home)},
