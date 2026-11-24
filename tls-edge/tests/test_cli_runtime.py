@@ -18,6 +18,7 @@ def make_root(path: Path) -> Path:
 [tls_edge]
 schema = 1
 domain = "edge.example.com"
+ingress_external = false
 [tls_edge.tls]
 mode = "acme-tls"
 [tls_edge.ports]
@@ -36,6 +37,8 @@ volume_name = ""
 cert_base = "/etc/letsencrypt"
 domains = []
 source = "bind"
+[tls_edge.runtime]
+cgroup_parent = ""
 """, encoding="utf-8")
     return path
 

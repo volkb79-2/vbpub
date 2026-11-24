@@ -310,11 +310,16 @@ def _port_plan(config: dict[str, Any]) -> list[str]:
     return validate_config(config)
 
 
-def _load_validated_site(root: Path) -> dict[str, Any]:
+def _load_validated_site(
+    root: Path,
+    *,
+    require_domain: bool = True,
+) -> tuple[dict[str, Any], list[str]]:
     defaults, overlay, effective = load_site(root / "stack" / "ciu-stack")
     overlay = migrate(overlay)
     check_override(defaults, overlay)
-    return effective["tls_edge"]
+    config = effective["tls_edge"]
+    return config, validate_config(config, require_domain=require_domain)
 
 
 def _render_config(root: Path, values: dict[str, Any]) -> tuple[Path, str, int, Path, str, int]:
@@ -337,7 +342,7 @@ def _diff(path: Path, old: str, new: str) -> str:
 def configure(args: Any, runtime: CliRuntime) -> int:
     root = _root(args)
     try:
-        current = _load_validated_site(root)
+        current, _ = _load_validated_site(root, require_domain=False)
         answers = load_answers(args.answers)
         values = _collect_values(
             current, runtime, answers, allow_prompt=args.answers is None
@@ -447,8 +452,7 @@ def show(args: Any, runtime: CliRuntime) -> int:
 def validate(args: Any, runtime: CliRuntime) -> int:
     root = _root(args)
     try:
-        config = _load_validated_site(root)
-        ports = validate_config(config)
+        _, ports = _load_validated_site(root)
     except ConfigError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
     runtime.output.primary("tls-edge configuration is valid.")

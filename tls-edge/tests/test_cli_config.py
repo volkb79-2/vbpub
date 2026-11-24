@@ -12,6 +12,7 @@ from tls_edge_cli import config
 
 def valid_config() -> dict:
     return {
+        "schema": 1,
         "domain": "edge.example.com",
         "tls": {"mode": "acme-tls"},
         "ports": {"expose_http": True, "http": 80, "https": 443, "bind_ip": ""},
@@ -19,6 +20,8 @@ def valid_config() -> dict:
         "calls": {"enabled": False},
         "acme": {"email": "", "volume_name": ""},
         "static": {"cert_base": "/etc/letsencrypt", "domains": [], "source": "bind"},
+        "ingress_external": False,
+        "runtime": {"cgroup_parent": ""},
     }
 
 
@@ -29,6 +32,7 @@ def make_root(path: Path, template: str | None = None) -> Path:
 [tls_edge]
 schema = 1
 domain = "edge.example.com"
+ingress_external = false
 [tls_edge.tls]
 mode = "acme-tls"
 [tls_edge.ports]
@@ -47,6 +51,8 @@ volume_name = ""
 cert_base = "/etc/letsencrypt"
 domains = []
 source = "bind"
+[tls_edge.runtime]
+cgroup_parent = ""
 """, encoding="utf-8")
     return path
 
