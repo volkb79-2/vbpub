@@ -488,7 +488,7 @@ and runs `docker restart --time 5 <name>`.  The restart takes about 3 seconds
 and reads no modified synced file.
 
 ```sh
-# Install the stable hook symlink (run once, and again after updating a 3.x copied hook):
+# Install the stable hook symlink (run once on a fresh instance):
 ln -sf /srv/tls-edge-instance/stack/scripts/certbot-deploy-hook.sh \
    /etc/letsencrypt/renewal-hooks/deploy/01-reload-traefik.sh
 

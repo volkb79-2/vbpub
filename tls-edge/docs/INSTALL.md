@@ -61,8 +61,8 @@ it does not collect site settings. `tls-edge configure` then asks for the domain
 HTTP/3, network/volume adoption, and runtime placement. It displays the exact changes and
 inbound firewall ports before writing the instance override and `consumer.env`.
 
-A host that already runs a tls-edge 3.x instance has no in-place path to 4.0: a 3.x instance cannot update to 4.0
-through the installer, so 4.0 is installed fresh exactly as this section describes.
+A host that already runs a tls-edge instance older than 4.0 has no in-place path to 4.0: such an instance cannot
+update to 4.0 through the installer, so 4.0 is installed fresh exactly as this section describes.
 
 On a root-run system install, bootstrap creates `shared/acme` as `root:root` with mode `0700`. When the override
 does not yet set `[tls_edge.acme] store`, `configure` selects `store = "hostdir"`, unless
@@ -273,18 +273,16 @@ or `shared/acme`. `tls-edge configure` is the supported writer for the site over
 tls-edge-installer status --scope user
 ```
 
-4.0 upgrade step: a 3.2 `consumer.env` has only `TLS_EDGE_DOMAIN`. Run
-`tls-edge configure --answers <empty file> --yes` after the update and before `ciu up`; otherwise the
-preflight hook refuses the missing contract keys. Run `configure` after every update, before the next `ciu up`,
-so the override is written in the updated schema.
-A tls-edge 3.x edge with its Calls preset enabled holds 8443 on that host; disable it before running
-Mattermost's `ciu up`, which publishes Calls media directly.
+Run `tls-edge configure --answers <empty file> --yes` after every update, before the next `ciu up`; otherwise
+the preflight hook refuses a `consumer.env` that lacks an owned contract key. `configure` also rewrites the
+managed override fields, so the override is written in the schema of the installed release.
+An edge that still runs its Calls preset holds 8443 on that host; disable that preset before Mattermost's
+`ciu up` publishes Calls media directly (see 8).
 
-An upgraded 3.1 instance has no `shared/acme` marker and its override normally has no `acme.store`. It therefore
-keeps the same `acme-data` volume as before; `configure` writes `store = "volume"` explicitly. If
-`acme.volume_name` names an existing external volume, that volume is still used unchanged. `down -v` and
-`ciu --reset` preserve an external volume, but `ciu clean` may remove it when it carries this project's labels;
-only the hostdir is guaranteed to survive `ciu clean`.
+An instance whose override adopts an existing volume keeps it: `acme.volume_name` names that exact external
+volume and `configure` writes `store = "volume"` explicitly. `down -v` and `ciu --reset` preserve an external
+volume, but `ciu clean` may remove it when it carries this project's labels; only the hostdir is guaranteed to
+survive `ciu clean`.
 
 To move an existing instance to the durable hostdir manually:
 
