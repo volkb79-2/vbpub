@@ -73,6 +73,16 @@ holds the full bodies.
 | HOB-81 | The reverse-index rebuild holds memory at the configured bound, not the live set | Minor | OPEN (P-hostobs-10 review) |
 | HOB-82 | Cgroups with non-UTF-8 names can never be published | Minor | OPEN (P-hostobs-10 review) |
 | HOB-83 | Sampler hygiene: skip double-count, `Tick::new` duplicate rows, shared test harness | Minor | OPEN (P-hostobs-10 review) |
+| HOB-84 | `tools/dev` admission on v1001 has no queue and no ETA while neighbours hold the slice charge | Major | OPEN (P-hostobs-09 report; fix is platform-owned) |
+| HOB-85 | `check-lints` misses `#[no_mangle]`, `#[export_name]` and `#[link_section]` in kernel sources and tests | Minor | OPEN (P-hostobs-09 review) |
+| HOB-86 | Kernel coverage sits 0.36 points above its declared floor | Minor | OPEN (P-hostobs-09 report) |
+| HOB-87 | The conformance lane prints a Python traceback when `cargo metadata` yields no JSON line | Minor | OPEN (P-hostobs-09 r2) |
+| HOB-88 | The image-contract test checks `--locked`/`--offline` only on build and metadata lines | Minor | OPEN (P-hostobs-09 r2) |
+| HOB-89 | The conformance lane's 10-minute budget was never measured on a complete cold run | Minor | OPEN (P-hostobs-09 r1/r2) |
+| HOB-90 | rustix 1.1.6 `socket_peercred` has undefined behavior when the peer pid is invisible | Major | OPEN (P-hostobs-09 report; constraint documented) |
+| HOB-91 | `max_rows` up to 4,096 is accepted but the default `max_block_bytes` fits only about 1,170 rows | Minor | OPEN (P-hostobs-09 report) |
+| HOB-92 | `SIGTERM` keeps its default action; the graceful stop path is required before P-16 | Major | OPEN (P-hostobs-09 decision) |
+| HOB-93 | P-hostobs-09 residual doc and test nits | Minor | OPEN (P-hostobs-09 r2) |
 
 ---
 
@@ -997,3 +1007,112 @@ Source: `reviews/p10-r2-8d6316a8a.md` backlog.
 **Exit criteria.** Each case is counted once; `Tick::new` refuses duplicate keys or is made crate-private; the helpers live in one shared module.
 
 Source: `reviews/p10-r2-8d6316a8a.md` N4/N5; `reviews/p10-r1-26db62e8c.md` size cut 5.
+
+## HOB-84 — `tools/dev` admission on v1001 has no queue and no ETA while neighbours hold the slice charge
+
+**Where:** `scripts/controller/dev` (platform-owned; the generic remote dev tool behind `hostobs/tools/dev`). hostobs is the reporter. The fix lives in the platform tool, and this entry tracks it from the hostobs side.
+
+During P-hostobs-09 the admission check on v1001 refused every attempt, and one implementer turn ended with nothing committed (17 files modified, one new). The measured slice charge was 3,595 to 4,297 MiB against a 3,584 MiB cap. The resume measured 3,983, 4,040, 4,167, 4,098, 4,239 and 4,022 MiB, and the charge stayed over the cap after P-09's own target volume and checkout were removed. Every refusal exited 75 before any command ran. The charge includes page cache and belongs to other jobs, so the caller can neither wait it out with a known bound nor tell which job holds it. The package finished only because main moved its gates to r1002.
+
+**Exit criteria.** Platform files and closes a matching item in its own backlog (`scripts/controller`) citing this entry. The tool must then do all of the following, each covered by a test with a fake cgroup tree:
+- the refusal line prints the measured charge, the cap and the part of the charge that is reclaimable page cache;
+- a charge made only of reclaimable cache above the cap does not refuse, or the tool reclaims it before deciding;
+- a bounded wait (`AGENT_DEV_WAIT_S`) reports the last measured charge when it expires, still with exit 75.
+
+Source: `runs/p09-driver.report.md` Backlog candidates 5; `STATE.md` "P-09 B, 14:25Z".
+
+## HOB-85 — `check-lints` misses `#[no_mangle]`, `#[export_name]` and `#[link_section]`
+
+**Where:** `tools/check-lints.py` (`_UNSAFE_USE` and the override patterns) and `tools/check-lints-mutation.py`.
+
+Under the kernel package's `unsafe_code = "allow"` these three attributes trigger the `unsafe_code` lint, but neither regex matches them. A kernel source or integration test can therefore carry one without the "exactly one audited unsafe" count noticing.
+
+**Exit criteria.** `check-lints.py` refuses each of the three attributes, in kernel sources and kernel integration tests, outside the one audited site. `check-lints-mutation.py` has one failing case per attribute form, and the refusal count in its summary rises by three.
+
+Source: `reviews/p09-r1-26c204d42.md` Backlog candidates; `runs/p09-driver.report.md` Backlog candidates 6.
+
+## HOB-86 — Kernel coverage sits 0.36 points above its declared floor
+
+**Where:** `hostobs/coverage-floors.toml` (`kernel`), `crates/kernel/src/activation.rs` and its tests.
+
+The diagnostic selftest measured kernel line coverage at 92.36% (2,854 of 3,090 lines) against a 92.00% floor, and region coverage at 93.71% against 93.00%. The next edit to the activation code that is not matched by a proportional test addition fails the selftest.
+
+**Exit criteria.** Tests for the uncovered kernel lines (about 30 lines is one point) bring the selftest's kernel line coverage to at least 93.00% and region coverage to at least 94.00%, with the floors unchanged. The new figures are recorded in CHANGES.
+
+Source: `reviews/p09-r1-26c204d42.md` Backlog candidates; `runs/p09-driver.report.md` Backlog candidates 8.
+
+## HOB-87 — The conformance lane prints a Python traceback when `cargo metadata` yields no JSON line
+
+**Where:** `run-gate.toml` `conformance` lane (the `python3 -I -c` that reads `target_directory`).
+
+The parser is `next(<generator>)` over the lines that start with `{`. If metadata prints no such line, the lane ends in a multi-line `StopIteration` traceback, not one named line. The failure is loud, but the missing-binary path two lines below prints exactly one line (`conformance: no executable at <path>`).
+
+**Exit criteria.** With no JSON line on stdin the parser exits 1 and prints exactly one stderr line, `conformance: no cargo metadata JSON`, and no `Traceback`. A test extracts the snippet from the lane and feeds it input without a `{` line to prove it.
+
+Source: `reviews/p09-r2-3bc01d21f.md` Backlog candidates.
+
+## HOB-88 — The image-contract test checks `--locked`/`--offline` only on build and metadata lines
+
+**Where:** `tester-unified-rust/tests/test_image_contract.py`, the conformance branch (the `if " build " in line or " metadata " in line:` guard, around lines 292-304). The package is core-owned, so hostobs is the reporter.
+
+P-09's resume 3 required every line that mentions cargo in the conformance argv to carry the `tools/cargo-offline.sh` wrapper plus `--locked` and `--offline`. The test enforces the wrapper on every cargo line but the two flags only on build and metadata lines. A future `tools/cargo-offline.sh test …` line without `--locked` would pass. Both current cargo lines carry both flags.
+
+**Exit criteria.** The guard is removed so the flags are required on every cargo line of the conformance lane. A new test case feeds a conformance argv with `tools/cargo-offline.sh test` and no `--locked`, and it fails. The `tester-unified-rust` selftest is rerun on the change.
+
+Source: `reviews/p09-r2-3bc01d21f.md` Nit 1.
+
+## HOB-89 — The conformance lane's 10-minute budget was never measured on a complete cold run
+
+**Where:** `run-gate.toml` `conformance` lane (`budget = "10m"`).
+
+The lane now builds the probe before the Python tests. The only timings are from dirty-tree diagnostics: a cold probe build took 9.22 s, one run took about 21 s to reach a metadata failure, and the green run ran 204 tests in 1.765 s. No complete cold run on a committed head recorded its total duration, so the budget is neither confirmed nor tightened.
+
+**Exit criteria.** The total duration of a complete cold conformance run on a committed head (for example `rgw-conformance-20261124T170039-r1002`, from run-gate history) is recorded in this entry or in CHANGES. The `budget` is then either kept with that figure noted, or set to a stated multiple of it.
+
+Source: `reviews/p09-r1-26c204d42.md` and `reviews/p09-r2-3bc01d21f.md` Backlog candidates; `runs/p09-driver.report.md` Backlog candidates 7.
+
+## HOB-90 — rustix 1.1.6 `socket_peercred` has undefined behavior when the peer pid is invisible
+
+**Where:** `bins/probe/src/driver.rs` `peer` (the `rustix::net::sockopt::socket_peercred(stream).ok()?` call before `Peer` is built), and `docs/PROBE-PROCESS.md` §(d).
+
+Linux reports pid 0 through `SO_PEERCRED` when the peer's pid is invisible from the probe's PID namespace (`pid_vnr`). rustix 1.1.6 decodes the `ucred` into `Pid(NonZeroI32)` after `assume_init`, so pid 0 is undefined behavior. It is reachable when the probe runs in a private container PID namespace and a host or sibling-namespace client reaches a bind-mounted socket. It is not reachable in the initial host PID namespace. PROBE-PROCESS §(d) now says the probe and every client must share one PID namespace, which is a policy and not a guard. P-09 adds no raw `getsockopt`, because that would be a second audited `unsafe`.
+
+**Exit criteria.** One of these lands before any deployment with clients in a different PID namespace than the probe, including P-11's container demo if it ever splits them:
+- a guard that reads the raw 12-byte `ucred` and rejects pid 0 before any `NonZeroI32` conversion, with a test whose socket peer reports pid 0 and a lint count (`expected_uses`) updated for the second audited site; or
+- a rustix release whose decoder accepts pid 0, with the lock and image bumped under the freshness rule.
+
+Until then §(d) stays as the only protection.
+
+Source: `runs/p09-driver.report.md` Backlog candidates 1; `reviews/p09-r1-26c204d42.md` BC1.
+
+## HOB-91 — `max_rows` up to 4,096 is accepted but the default `max_block_bytes` fits only about 1,170 rows
+
+**Where:** `bins/probe/src/config.rs` (`(1..=4_096).contains(&max_rows)`), `bins/probe/src/limits.rs`, `docs/WIRE.md`.
+
+`limits.rs::worst_case_query_ram_is_derived_from_the_encoder_helpers` pins 1,024 rows at 890,624 bytes. Scaled with the same row shape, the default 1 MiB `max_block_bytes` is reached near 1,170 rows. A configuration with `max_rows = 4096` and the default block size is therefore accepted at start-up and refused later, at block build time.
+
+**Exit criteria.** The relation is enforced at start-up: a configuration whose `max_rows` worst-case block exceeds `max_block_bytes` exits 2 with one line naming both keys, using the same encoder helpers as the limits test, or the allowed `max_rows` range is derived from `max_block_bytes`. WIRE or the config docs state the relation. Tests: `max_rows = 4096` with the default block size is refused at start-up, and `max_rows = 1024` is accepted.
+
+Source: `runs/p09-driver.report.md` Backlog candidates 2.
+
+## HOB-92 — `SIGTERM` keeps its default action; the graceful stop path is required before P-16
+
+**Where:** `bins/probe/src/main.rs` and `bins/probe/src/driver.rs` (the stop flag and `Server::shutdown`), `docs/PROBE-PROCESS.md` §(f).
+
+By decision the probe installs no signal handler. `SIGTERM` kills the process, the kernel closes every socket, and clients see EOF or `ECONNRESET`. The internal stop path (a drop guard sets the stop flag, the loop calls `Server::shutdown()`, and each client gets `closing shutting-down`) exists and is exercised by sampler panic and return, but nothing connects `SIGTERM` to it. That is acceptable while there is no store writer to drain. P-16 spawns the writer, so a kill then loses buffered store data. rustix 1.1.6 has no safe `sigprocmask` or `signalfd`. `libc` 0.2.191 is already locked and image-cached, so a `signalfd` module needs audited `unsafe` calls but no image rebuild.
+
+**Exit criteria.** `SIGTERM` is wired to the internal stop path through a signalfd (or equivalent) in the existing poll loop. A real-process Python test sends `SIGTERM` to an activated probe with a connected client. The client reads `closing shutting-down`, and the process exits 0 within a stated number of turns. The conformance case that now asserts the default `SIGTERM` action is replaced by it. The new `unsafe` sites are audited in `check-lints.py` (`expected_uses`) and in PROBE-PROCESS §(e), and §(f) drops the "filed backlog item" wording. This lands before P-16 spawns the store writer.
+
+Source: `runs/p09-driver.report.md` Backlog candidates 3; `docs/PROBE-PROCESS.md` §(f); `STATE.md` accepted design decisions.
+
+## HOB-93 — P-hostobs-09 residual doc and test nits
+
+**Where:** `bins/probe/src/config.rs` (`parse_refusal`), `docs/PROBE-PROCESS.md` §(d), `hostobs/README.md` lines 133-135.
+
+- `parse_refusal` asserts `text.contains(key)` on the whole refusal text. Today the serde messages never contain field names, so the test still fails on the regression, but `contains(&format!("key {key}:"))` pins the key slot exactly.
+- §(d) is stricter than the kernel requires. A client in a descendant PID namespace is visible to the probe. The exact rule is that the probe's namespace must be the same as, or an ancestor of, every client's. "One shared namespace" stays as the simple form.
+- The README sentence names `rs-20261124b` but keeps the "79 s" figure measured earlier with the pre-shim tool on the old image.
+
+**Exit criteria.** `parse_refusal` asserts the exact `key <name>:` slot and every existing refusal case passes. §(d) states the ancestor rule beside the simple one. The README figure is replaced by a measurement taken on `rs-20261124b` (the P-09 round 3 `tools/dev test -p hostobs-probe` took 30.1 s), or the sentence names the image it was measured on.
+
+Source: `reviews/p09-r2-3bc01d21f.md` Nits 2, 3, 4.
