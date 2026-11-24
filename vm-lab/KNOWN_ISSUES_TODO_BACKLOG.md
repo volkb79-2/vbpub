@@ -10,19 +10,17 @@ The format is [docs/BACKLOG-FORMAT.md](../docs/BACKLOG-FORMAT.md).
 
 `pyproject.toml` depends on `vmscreen>=0.1.0`. The functional floor is the `--qemu-dump-dir` option (also checked at run time, `VMSCREEN_REQUIRED_OPTION`). The dependency has no public index to resolve from: install the vmscreen wheel from its GitHub Release (or from `libraries/vmscreen`) or use `--no-deps` for the vm-lab wheel.
 
-**Resolved question (review RP-02 finding 6):** the floor is 0.1.0, the first vmscreen release. The dependency-confusion risk of the bare name (an installer pointed at a public index could resolve a foreign `vmscreen`) is reduced by the floor but not removed.
+The floor is 0.1.0, the first vmscreen release (`vmscreen-v0.1.0`, a GitHub Release wheel). The dependency-confusion risk of the bare name (an installer pointed at a public index could resolve a foreign `vmscreen`) is reduced by the floor but not removed: no public index carries the estate's vmscreen, so install the vmscreen wheel first (or use `--no-deps` for the vm-lab wheel) until the estate has a resolver for first-party wheels.
 
-**Floor set (controller, 2026-11-18):** `pyproject.toml` now declares `vmscreen>=0.1.0` with its reason (the `--qemu-dump-dir` option); `vmscreen-v0.1.0` is released as a GitHub Release wheel. The dependency-confusion risk of the bare name remains in one respect: no public index carries the estate's vmscreen, so install the vmscreen wheel first (or use `--no-deps` for the vm-lab wheel) until the estate has a resolver for first-party wheels. Close this entry when vm-lab's first release notes state that install order.
+No vm-lab release exists yet, and its R2 mutation lane has never run (`core.py` is 62.8 % covered).
 
-**Close-when:** vm-lab's first release notes state the install order (vmscreen wheel first, or `--no-deps`). The floor itself is done.
+**Close-when:** vm-lab's first release notes state the install order (vmscreen wheel first, or `--no-deps`); first vm-lab release, then the R2 lane on it. The floor itself is done.
 
 ## VML-BL-04 — Start admission lock path in an installed wheel
 
 **State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/core.py
 
-`vm_start_lock_path()` first runs `git -C <directory of core.py> rev-parse --git-common-dir` (unchanged for a checkout, the wrapper, an editable install and the TrueNAS front). When that finds no repository (an installed wheel) or no git, the lock directory comes from `--lock-dir DIR` on `start` and `disk promote`, else `VM_LAB_ADMISSION_LOCK_DIR`; an unset or unusable value is a refusal naming both. The lock file name stays the shared historical one.
-
-**Caveat:** a wheel start and a checkout start share one lock only when both name the same directory (the repository's common Git directory); a wheel in a different place takes its own lock. A venv inside a repository resolves that repository's Git directory through the probe, as before.
+A wheel start and a checkout start share one lock only when both name the same directory (the repository's common Git directory); a wheel in a different place takes its own lock. A venv inside a repository resolves that repository's Git directory through the probe. The lookup order is in the README.
 
 **Close-when:** the mdt-cockpit image recipe sets `VM_LAB_ADMISSION_LOCK_DIR` to the directory every starter on that host shares, and one live start from the installed wheel has taken the lock.
 
@@ -38,7 +36,7 @@ The format is [docs/BACKLOG-FORMAT.md](../docs/BACKLOG-FORMAT.md).
 
 **State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/qemu-image
 
-The Dockerfile was not built in RP-02 (a later step builds it; the package set mirrors `scripts/debian-install-v2/testing/vm/Dockerfile`). The profile `program` is still `vm_lab.py`, so messages read `vm_lab.py: ...` also from the `vm-lab` command; tests pin the text and the admission lock message.
+The Dockerfile has not been built (the package set mirrors `scripts/debian-install-v2/testing/vm/Dockerfile`). The profile `program` is still `vm_lab.py`, so messages read `vm_lab.py: ...` also from the `vm-lab` command; tests pin the text and the admission lock message.
 
 **Close-when:** the image builds and one guest boots from it; the program name is `vm-lab` in messages, with the tests updated.
 
@@ -76,4 +74,10 @@ Source: .controller-state/design-review-2026-11-24/debian-rollback.md H3
 
 **State:** open · **Severity:** low · **Owner:** vm-lab · **Links:** -
 
-Offer the QEMU image through a ciu service instead of a local `docker build`, so every host pulls one built image. Not started; depends on the release registration (VML-BL-01).
+Offer the QEMU image through a ciu service instead of a local `docker build`, so every host pulls one built image.
+
+## VML-BL-11 — TrueNAS docs miss the read-only cgroup and D-Bus mount requirement
+
+**State:** open · **Severity:** low · **Owner:** vm-lab · **Links:** scripts/truenas/docs/CONSUMERS.md, scripts/truenas/docs/DESIGN-GUIDE.md, scripts/truenas/tcg_vm.py
+
+**Problem.** The TrueNAS docs (`scripts/truenas/docs/CONSUMERS.md`, `scripts/truenas/docs/DESIGN-GUIDE.md`) do not mention the read-only cgroup and D-Bus mount requirement that `tcg_vm.py` inherits from vm-lab. No TrueNAS test covers the new scope path, and `host_pid_cgroup` still needs `/hostproc`. **Wanted.** Document the mounts, add a test for the scope path, and decide whether `host_pid_cgroup` keeps the `/hostproc` requirement.
