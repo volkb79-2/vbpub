@@ -103,7 +103,7 @@ Verify the running edge:
 ```bash
 cd /srv/tls-edge-instance/stack
 sudo ./ciu env generate     # first time only; ciu up does it too. Needs the Docker group id:
-                            # sudo DOCKER_GID=$(stat -c %g /var/run/docker.sock) ./ciu env generate
+                            # sudo env DOCKER_GID=$(stat -c %g /var/run/docker.sock) ./ciu env generate
 sudo ./ciu check            # all stages pass on a fresh install
 sudo ./scripts/verify.sh --domain app.example.test
 ```
@@ -228,7 +228,8 @@ To move an existing instance to the durable hostdir manually:
 4. Run `sudo ./ciu check && sudo ./ciu up`. Keep the old volume until the new edge has issued or reused its
    certificates successfully. A rollback to a release older than 3.2 ignores `store`, mounts the `acme-data`
    volume (empty unless the old one was kept); an empty volume forces re-issuance, and the hostdir remains on
-   disk for a later roll-forward.
+   disk for a later roll-forward. An instance that adopted a volume must restore `[tls_edge.acme] volume_name`
+   before rolling back, or the older release mounts the project's own, empty `acme-data`.
 
 ## 7. Roll back
 
@@ -238,8 +239,9 @@ cd /srv/tls-edge-instance/stack && sudo ./ciu up
 ```
 
 `rollback` re-points `current` to the previous release, resyncs `stack/` and the stubs. A 3.2 rollback keeps
-`shared/acme`, but a rollback to a release older than 3.2 ignores `acme.store`, starts an empty `acme-data` volume,
-and re-issues every certificate. The hostdir remains on disk; roll forward again to reuse it.
+`shared/acme`, but a rollback to a release older than 3.2 ignores `acme.store` and mounts the `acme-data` volume
+(empty unless the old one was kept, see §6), so it may re-issue every certificate. The hostdir remains on disk;
+roll forward again to reuse it.
 
 ## 8. Migrate from a hand-made deployment (PLAN, not executed)
 
@@ -275,7 +277,7 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
 2. **Review adoption.** Confirm the generated override contains `ingress_external = true`,
    `volume_name = "edge-proxy_acme-data"`, and `cgroup_parent = "edge.slice"`. The network and volume are
    adopted (`external: true`), never created or removed by the instance.
-3. **Dry run.** `cd /srv/tls-edge-instance/stack && sudo ./ciu check && sudo ./ciu up --dry-run`. Compare the
+3. **Dry run.** `cd /srv/tls-edge-instance/stack && sudo ./ciu env generate && sudo ./ciu check && sudo ./ciu up --dry-run`. Compare the
    rendered ports, mounts and cgroup parent with `docker inspect edge-traefik`. Note: `ciu env generate` and
    `up --dry-run` create a Docker network and attach the calling container (ciu CIU-162); detach and remove it
    by its exact name afterwards.
@@ -289,9 +291,9 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
    consumer host (not the default certificate, not expired), an HTTP/3 request from a client with HTTP/3 support,
    a Calls test from outside on 8443 tcp and udp, and one real call.
 7. **Rollback (any failure in 6).** `cd /srv/tls-edge-instance/stack && sudo ./ciu down` (no `-v`). `ciu down`
-   only stops containers; if rollback also removes them, use `docker compose -p <project> down` (never `-v`),
-   where `<project>` comes from
-   `docker inspect <traefik-container> --format '{{index .Config.Labels "com.docker.compose.project"}}'`.
+   only stops containers; to remove them as well, use `docker compose -p <project> down` (never `-v`), where
+   `<project>` comes from `docker inspect <container_prefix>-traefik --format '{{index .Config.Labels "com.docker.compose.project"}}'`
+   (`container_prefix` is in `ciu-stack/ciu.toml`).
    Then `cd /root/tls-edge-LIVE && docker compose up -d`. Volume and network were never touched and the ports
    are the same; downtime is seconds.
 8. **Later cleanup** (after one soak and a renewal window): archive `/root/tls-edge-LIVE`; remove old compose-project

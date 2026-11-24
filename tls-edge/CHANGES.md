@@ -11,9 +11,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   tls-edge validation, including the same refusal messages, while the shipped `hooks/validate_edge.py`
   declarations stay in place.
 - New root-run instances store their ACME account and certificates in `shared/acme` (root:root, mode 0700),
-  outside `stack/`, which those commands' volume and `vol-*` passes cannot reach.
-- Every instance, including volume-store instances, now gets an empty root-owned `ciu-stack/vol-traefik-acme`;
-  on a non-root run ciu creates it through the S6.5 helper.
+  outside `stack/`, which the volume and `vol-*` passes of `ciu --reset`, `docker compose down -v` and
+  `ciu clean` cannot reach.
+- Every instance whose hostdir path is empty (all volume-store instances) now gets an empty root-owned
+  `ciu-stack/vol-traefik-acme`; on a non-root run ciu creates it through the S6.5 helper.
 
 ### Changed
 - Unknown keys in the site override are refused (`unknown override key tls_edge.<path>`); 3.1 overrides written by `configure` are unaffected.
