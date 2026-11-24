@@ -20,7 +20,7 @@
 //! 4. **Late discovery is a birth, not a lifetime.** A cgroup first seen mid-run has a
 //!    measurable age since its discovery and no measurable age since boot.
 //!
-//! **The join (`HOB-26`).** The rate helper below feeds the kernel's [`Reading`] type directly
+//! **The join.** The rate helper below feeds the kernel's [`Reading`] type directly
 //! to `model::derive_rate`; it does not reproduce the arithmetic. The clock and identity
 //! claims, the classifier and the hand-computed SP-2 answers are therefore observed through
 //! one call across the crate boundary, while `model` keeps its own

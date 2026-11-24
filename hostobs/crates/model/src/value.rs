@@ -21,7 +21,7 @@
 //!   reading, never by converting. Casting `u64` to `f64` above 2<sup>53</sup> loses
 //!   integers, which plan v4 §B.1 refuses; a caller that wants a float says so.
 
-use crate::quality::Quality;
+use crate::quality::{Quality, QualityError};
 
 /// The typed raw reading of one value, matching the column codec's value types.
 #[derive(Clone, Copy, Debug)]
@@ -69,6 +69,8 @@ impl PartialEq for Value {
 pub enum SampleError {
     /// [`Quality::Ok`] names a measurement, so it cannot describe an absence.
     MissingCannotBeOk,
+    /// A quality code outside the closed vocabulary.
+    UnknownCode(QualityError),
 }
 
 impl core::fmt::Display for SampleError {
@@ -77,6 +79,7 @@ impl core::fmt::Display for SampleError {
             SampleError::MissingCannotBeOk => {
                 f.write_str("quality `ok` marks a measurement, not a missing reading")
             }
+            SampleError::UnknownCode(error) => write!(f, "{error}"),
         }
     }
 }
@@ -199,7 +202,7 @@ impl PartialEq for Sample {
 #[cfg(test)]
 mod tests {
     use super::{Sample, SampleError, Value};
-    use crate::quality::{Quality, ALL};
+    use crate::quality::{Quality, QualityError, ALL};
 
     #[test]
     fn a_measurement_reads_back_and_a_missing_sample_does_not() {
@@ -309,6 +312,10 @@ mod tests {
         assert_eq!(
             Sample::from_raw(Value::U64(5), Quality::Stale),
             Sample::from_wire(Value::U64(5), Quality::Stale)
+        );
+        assert_eq!(
+            SampleError::UnknownCode(QualityError::UnknownCode { code: 9, row: 0 }).to_string(),
+            "unknown quality code 9"
         );
     }
 }

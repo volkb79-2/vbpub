@@ -197,6 +197,11 @@ pub enum StoreError {
         /// The reserved value found.
         found: u16,
     },
+    /// `proto` refused a payload frame header for a reason without a store-specific variant.
+    PayloadFrameHeader {
+        /// The codec's typed refusal.
+        error: hostobs_proto::error::ProtoError,
+    },
     /// A payload is larger than the store's configured bound.
     PayloadTooLarge {
         /// The payload's length.
@@ -526,6 +531,7 @@ impl StoreError {
             StoreError::PayloadFrameLength { .. } => "payload-frame-length",
             StoreError::PayloadFrameFlags { .. } => "payload-frame-flags",
             StoreError::PayloadFrameReserved { .. } => "payload-frame-reserved",
+            StoreError::PayloadFrameHeader { .. } => "payload-frame-header",
             StoreError::PayloadTooLarge { .. } => "payload-too-large",
             StoreError::NotSealed => "not-sealed",
             StoreError::FooterMagic { .. } => "footer-magic",
@@ -606,6 +612,7 @@ impl StoreError {
                 | StoreError::PayloadFrameLength { .. }
                 | StoreError::PayloadFrameFlags { .. }
                 | StoreError::PayloadFrameReserved { .. }
+                | StoreError::PayloadFrameHeader { .. }
                 | StoreError::NotSealed
                 | StoreError::FooterMagic { .. }
                 | StoreError::FooterCrc { .. }
@@ -767,6 +774,9 @@ impl fmt::Display for StoreError {
             }
             StoreError::PayloadFrameReserved { found } => {
                 write!(f, "payload frame reserved field is {found}, not zero")
+            }
+            StoreError::PayloadFrameHeader { error } => {
+                write!(f, "payload frame header refused by proto: {error}")
             }
             StoreError::PayloadTooLarge { len, max } => {
                 write!(f, "payload of {len} bytes exceeds the bound of {max}")

@@ -31,11 +31,11 @@
 //!
 //! # Why `symlink_metadata` and not `openat`/`O_NOFOLLOW`
 //!
-//! `O_NOFOLLOW` is only reachable through `libc` or `rustix`, i.e. `unsafe` or a new
-//! dependency; the workspace forbids the first and the lane image's baked `Cargo.lock`
-//! forbids the second (`HOB-27`). The check below is therefore a `symlink_metadata` before
-//! the open, which closes the accidental-link case (a link planted before the store runs,
-//! the sampler's `fsafe` lesson) and leaves a documented TOCTOU window for a link swapped in
+//! `O_NOFOLLOW` is only reachable through `libc` or `rustix`, i.e. `unsafe` or a dependency
+//! outside the store's approved `model`/`proto` vocabulary; the workspace forbids the first
+//! and has no such dependency. The check below is therefore a `symlink_metadata` before the
+//! open, which closes the accidental-link case (a link planted before the store runs, the
+//! sampler's `fsafe` lesson) and leaves a documented TOCTOU window for a link swapped in
 //! between the two calls (`HOB-31`).
 
 use core::fmt;

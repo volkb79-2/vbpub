@@ -516,6 +516,57 @@ pub struct FrameHeader {
 }
 
 impl FrameHeader {
+    fn parse_with_policy(
+        bytes: &[u8],
+        enforce_sectioned_frame_type: bool,
+        enforce_declared_bounds: bool,
+    ) -> Result<FrameHeader, ProtoError> {
+        let mut cursor = Cursor::new(bytes, "frame header");
+        let len = cursor.u32()?;
+        let frame_type = FrameType::from_code(cursor.u8()?)?;
+        let flags = cursor.u8()?;
+        if flags & !DEFINED_FRAME_FLAGS != 0 {
+            return Err(ProtoError::UnknownFrameFlags(flags));
+        }
+        // SECTIONED is defined for BLOCK only (WIRE.md §2.1): on any other frame it is an
+        // unknown flag, `bad-frame` on the wire.
+        if enforce_sectioned_frame_type
+            && flags & FLAG_SECTIONED != 0
+            && frame_type != FrameType::Block
+        {
+            return Err(ProtoError::UnknownFrameFlags(flags));
+        }
+        let reserved = cursor.u16()?;
+        if reserved != 0 {
+            return Err(ProtoError::NonZeroReserved(reserved));
+        }
+        let corr = cursor.u32()?;
+        if enforce_declared_bounds {
+            // The length is judged after the fixed fields, the order the Python reference
+            // uses, so a frame with several defects reports the same first refusal in both.
+            let declared = usize::try_from(len).map_err(|_| ProtoError::LengthOverflow)?;
+            if declared > MAX_FRAME_BYTES {
+                return Err(ProtoError::OversizedFrame {
+                    len: declared,
+                    max: MAX_FRAME_BYTES,
+                });
+            }
+            if declared < FRAME_HEADER_LEN {
+                return Err(ProtoError::Truncated {
+                    context: "frame length shorter than the header",
+                    need: FRAME_HEADER_LEN,
+                    have: declared,
+                });
+            }
+        }
+        Ok(FrameHeader {
+            len,
+            frame_type,
+            flags,
+            corr,
+        })
+    }
+
     /// Parse the first [`FRAME_HEADER_LEN`] bytes of a frame.
     ///
     /// The declared length is bounded here, not only in [`decode_block`]: a returned header
@@ -529,45 +580,24 @@ impl FrameHeader {
     /// [`ProtoError::NonZeroReserved`] or [`ProtoError::OversizedFrame`] for a declared
     /// length above [`MAX_FRAME_BYTES`].
     pub fn parse(bytes: &[u8]) -> Result<FrameHeader, ProtoError> {
-        let mut cursor = Cursor::new(bytes, "frame header");
-        let len = cursor.u32()?;
-        let frame_type = FrameType::from_code(cursor.u8()?)?;
-        let flags = cursor.u8()?;
-        if flags & !DEFINED_FRAME_FLAGS != 0 {
-            return Err(ProtoError::UnknownFrameFlags(flags));
-        }
-        // SECTIONED is defined for BLOCK only (WIRE.md §2.1): on any other frame it is an
-        // unknown flag, `bad-frame` on the wire.
-        if flags & FLAG_SECTIONED != 0 && frame_type != FrameType::Block {
-            return Err(ProtoError::UnknownFrameFlags(flags));
-        }
-        let reserved = cursor.u16()?;
-        if reserved != 0 {
-            return Err(ProtoError::NonZeroReserved(reserved));
-        }
-        let corr = cursor.u32()?;
-        // The length is judged after the fixed fields, the order the Python reference
-        // uses, so a frame with several defects reports the same first refusal in both.
-        let declared = usize::try_from(len).map_err(|_| ProtoError::LengthOverflow)?;
-        if declared > MAX_FRAME_BYTES {
-            return Err(ProtoError::OversizedFrame {
-                len: declared,
-                max: MAX_FRAME_BYTES,
-            });
-        }
-        if declared < FRAME_HEADER_LEN {
-            return Err(ProtoError::Truncated {
-                context: "frame length shorter than the header",
-                need: FRAME_HEADER_LEN,
-                have: declared,
-            });
-        }
-        Ok(FrameHeader {
-            len,
-            frame_type,
-            flags,
-            corr,
-        })
+        FrameHeader::parse_with_policy(bytes, true, true)
+    }
+
+    /// Parse fixed header fields for a caller that owns its payload bounds and flag policy.
+    ///
+    /// Stored payloads use the same frame header, but their corpus owner decides which
+    /// flag combination and payload bound are valid for that record. This parser checks
+    /// the fixed layout, known frame type, defined flag bits, reserved word and correlation
+    /// id. It does not reject `SECTIONED` on a non-BLOCK type or apply [`MAX_FRAME_BYTES`];
+    /// the caller must compare [`FrameHeader::len`] with the stored bytes and apply its own
+    /// bound. Callers that accept wire frames must use [`FrameHeader::parse`] instead.
+    ///
+    /// # Errors
+    ///
+    /// The fixed-field errors documented on [`FrameHeader::parse`]. A defined flag is not
+    /// refused here for a frame type the caller's storage format allows.
+    pub fn parse_fields(bytes: &[u8]) -> Result<FrameHeader, ProtoError> {
+        FrameHeader::parse_with_policy(bytes, false, false)
     }
 }
 
@@ -2461,6 +2491,34 @@ mod tests {
             FrameHeader::parse(&plain).map(|header| header.frame_type),
             Ok(FrameType::Req)
         );
+    }
+
+    #[test]
+    fn stored_fields_defer_corpus_policy_and_declared_bounds_to_the_caller() {
+        // The canonical events segment stores an EVT payload with SECTIONED set. Wire parsing
+        // keeps refusing that shape, while storage parsing exposes the fields so the segment
+        // format can apply its own corpus policy.
+        let mut stored = encode_block(&live_block()).expect("encode");
+        stored[4] = FrameType::Evt.code();
+        let fields = FrameHeader::parse_fields(&stored).expect("stored EVT fields");
+        assert_eq!(fields.frame_type, FrameType::Evt);
+        assert_eq!(fields.flags, super::FLAG_SECTIONED);
+        assert_eq!(
+            FrameHeader::parse(&stored),
+            Err(ProtoError::UnknownFrameFlags(super::FLAG_SECTIONED))
+        );
+
+        // A segment's configured payload bound is the storage authority. The storage parser
+        // reports the declared length; the strict wire parser still applies this codec's bound.
+        let unbounded = header_declaring(u32::MAX);
+        assert_eq!(
+            FrameHeader::parse_fields(&unbounded).map(|header| header.len),
+            Ok(u32::MAX)
+        );
+        assert!(matches!(
+            FrameHeader::parse(&unbounded),
+            Err(ProtoError::OversizedFrame { .. })
+        ));
     }
 
     #[test]

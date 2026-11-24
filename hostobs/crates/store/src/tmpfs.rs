@@ -2,10 +2,11 @@
 //!
 //! Plan v4 §A.4 puts hot and warm on tmpfs and requires a `require_tmpfs` check. `statfs`'s
 //! `f_type == TMPFS_MAGIC` is only reachable through `libc` or `rustix` — `unsafe` or a new
-//! dependency, both forbidden here (`HOB-27`) — so the check reads the kernel's own
-//! `/proc/self/mounts` instead and matches the directory against the mount whose prefix covers
-//! it. That is a *read*, and it is the same fact `statfs` reports one layer up: the mount
-//! table states the filesystem type of every mount in the calling process's mount namespace.
+//! dependency outside the store's approved `model`/`proto` vocabulary — so the check reads
+//! the kernel's own `/proc/self/mounts` instead and matches the directory against the mount
+//! whose prefix covers it. That is a *read*, and it is the same fact `statfs` reports one
+//! layer up: the mount table states the filesystem type of every mount in the calling
+//! process's mount namespace.
 //!
 //! # Contracts
 //!
