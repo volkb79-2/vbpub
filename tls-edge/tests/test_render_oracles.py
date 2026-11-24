@@ -123,8 +123,11 @@ def test_ciu_mounts_do_not_overlap_read_only_configfile_parents(tmp_path) -> Non
     )
     traefik = stack_config["tls_edge"]["traefik"]
     configfiles = traefik["configfile"]
+    assert configfiles, "rendered stack has no traefik configfile targets"
+    traefik_volumes = compose["services"]["traefik"]["volumes"]
+    assert traefik_volumes, "rendered traefik service has no volumes"
     violations: list[str] = []
-    for mount in compose["services"]["traefik"]["volumes"]:
+    for mount in traefik_volumes:
         target = PurePosixPath(_mount_target(mount))
         for name, configfile in configfiles.items():
             parent = PurePosixPath(configfile["target"]).parent
@@ -143,9 +146,13 @@ def normalize_traefik_paths(
     standalone_prefixes: tuple[Path, ...],
     ciu_prefixes: tuple[Path, ...],
 ) -> dict[str, Any]:
-    """Normalize only renderer-owned host prefixes in parsed traefik.yml.
+    """Normalize renderer-owned host prefixes only to make drift visible.
 
-    It removes exactly two kinds of legitimate path drift:
+    A host path in ``traefik.yml`` is a bug in both renderers. The oracle
+    requires this helper to substitute nothing in current output before it
+    compares the standalone and CIU documents.
+
+    The helper recognizes exactly two renderer-owned prefixes:
 
     1. the standalone deployment's ``base_dir`` prefix; and
     2. CIU's physical hostdir/rendered-config staging prefix.
@@ -209,6 +216,16 @@ def test_ciu_and_standalone_render_the_same_traefik_config(
         standalone_doc,
         standalone_prefixes=(standalone_dir,),
         ciu_prefixes=(ciu_stack / ".ciu/rendered",),
+    )
+    assert normalized_ciu == ciu_doc, (
+        "CIU traefik.yml contains a host path that normalization would hide:\n"
+        f"raw={yaml.safe_dump(ciu_doc, sort_keys=True)}\n"
+        f"normalized={yaml.safe_dump(normalized_ciu, sort_keys=True)}"
+    )
+    assert normalized_standalone == standalone_doc, (
+        "standalone traefik.yml contains a host path that normalization would hide:\n"
+        f"raw={yaml.safe_dump(standalone_doc, sort_keys=True)}\n"
+        f"normalized={yaml.safe_dump(normalized_standalone, sort_keys=True)}"
     )
     assert normalized_ciu == normalized_standalone, (
         "ciu and standalone parsed traefik.yml differ:\n"

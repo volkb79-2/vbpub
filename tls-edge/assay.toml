@@ -40,8 +40,7 @@ targets = [
   "src/tls_edge_cli/config.py",
 ]
 fail_under = 100.0
-# D10.2-3: tests/test_coverage_policy.py requires classified, reasoned pragmas
-# and a 12-line whole-package budget before exclusions may affect this floor.
+# D10.2-3: only os-error/main-guard/tty-only with a reason; coverage-counted exclusions <=12; raising the budget needs package reviewer approval; enforced by tests/test_coverage_policy.py
 allow_excluded = true
 require_branch = true
 
