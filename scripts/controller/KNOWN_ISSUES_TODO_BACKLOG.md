@@ -64,6 +64,7 @@ together.
 | CTL-53 | Worktree sprawl | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-54 | Backlogs and SPECs are append-only | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | OPEN 2026-11-24 |
+| CTL-59 | P-plat-02 r2 leftovers (dev tool) | Nice-to-have | OPEN 2026-11-24 (Opus r2 review) |
 
 ---
 
@@ -1659,3 +1660,16 @@ Source: .controller-state/PROGRAM-2026-11-24/PROGRAM.md §6
 `tests/test-pi-impl.sh` `check_live_snapshot` polls 100 × `sleep 0.1` (about 10 s of wall clock) for `"tool_in_flight": "bash"` in the `.live` sidecar, which is written every `PI_LIVE_INTERVAL_SECONDS=1` by a process tree started under the same load. On 2026-11-24 the `suite` lane at 0314fdf1b (a docs-only change) failed with `the live sidecar never reported the tool call in flight` while another session's mutation lane loaded the host (load average ~6 on 8 cores). Against the estate rule that verdicts do not depend on host load. Fix: wait on a progress condition instead of a clock, for example until the fake pi's own "tool started" marker exists AND the sidecar has completed at least two write cycles (a sidecar sequence counter), with only a generous outer bound (minutes) that reports "inconclusive under load" separately from "never reported".
 
 Source: suite lane log of 2026-11-24 (run-gate lane `suite`, head 0314fdf1b).
+
+## CTL-59 — P-plat-02 r2 leftovers (dev tool)
+
+**Status:** OPEN (filed 2026-11-24, from the Opus r2 review of `scripts/controller/dev`, bound to aaa56b27e).
+
+Six small items, none of which blocks the tool:
+
+1. A signal that arrives before the cidfile is written orphans the container: `cleanup` finds no cid, and the background `timeout`/docker client goes on to create and run it with nobody waiting. Bounded by `max_s`; the next call exits 3 "container exists, use dev stop". Fix: with an empty cid, `docker rm -f "$NAME"` (safe under the lock after the exists check) and/or kill the background job.
+2. A few host steps still fail with errexit's code 1 or 2 and no `dev: exit 3` line: `rm -rf "$W"`, `rm -rf`/`mkdir` of `.git/hooks`, and the upload `tar -xf - -C "$UP"` in `upload_text`. Wrap them in `step`/`own 3` like the sync steps.
+3. `--dry-run` shows the image tag in its argv, while a real run uses the host image id. Say so in DEV.md or print "image id resolved at preflight".
+4. The signal test's assertion message "removed only after the client ended" says the opposite of what it checks; reword it.
+5. The docker command is built in two places (`build_docker_argv` for dry-run and tests, `container_command_text` for the run), so the read-only `.git` mount had to be added at both and the `dev-git-ro` mutant covers only one. Derive the run text from the arrays.
+6. `dev` is 552 lines against DESIGN §0's "~250 lines on top of the moved code" and is at the bash freeze limit (CTL-40): grow in Python (`dev_profile.py`), not in the shell.

@@ -64,6 +64,8 @@ def settings(cfg: dict, profile: dict, kind: dict) -> dict:
         dest = posixpath.normpath(mount.split(":")[1])
         if dest == "/work/.git" or dest.startswith("/work/.git/"):
             raise Refusal(f"mount '{mount}': /work/.git is always the read-only host .git, added by dev itself")
+        if mount.startswith("{work}:") and dest != "/work":
+            raise Refusal(f"mount '{mount}': the checkout may only be mounted at /work (its .git must stay read-only)")
     return out
 
 

@@ -61,9 +61,9 @@ Written once in `scripts/netcup/runner/README.md`; run-job, remote-gate.py and `
 - **SYS_PTRACE:** `gdb`/`strace` only (with uid 1003 it only widens seccomp).
 
 ## 9. Output, exit, gc (g, h)
-- **Banner:** `AGENT-DEV <proj> <host> <sha12>[+dirty]: NOT GATE EVIDENCE`, first and last stderr line; `+dirty` = non-empty patch or tar.
+- **Banner:** `AGENT-DEV <proj> <host> <sha12>[+dirty] <worktree>: NOT GATE EVIDENCE`, first and last stderr line; `+dirty` = non-empty patch or tar.
 - **Env:** `AGENT_DEV_{HOST,MEMORY,CPUS,PIDS,MAX_S,WAIT_S}` (MEMORY = the soft reservation); seams `AGENT_DEV_HX`, `AGENT_DEV_TEST_{PSI_DIR,CLOCK,PROFILES}`; no image override; other `HOSTOBS_DEV_*` exit 2.
-- **Exit codes:** the command's propagates; the tool's own, printed as `dev: exit N` before the closing banner, are 2 usage/refusal/image, 3 transport/identity/busy, 75 not admitted (memory PSI full avg10 >= 3 until `AGENT_DEV_WAIT_S`, or PSI unreadable; nothing ran), 124 time limit.
+- **Exit codes:** the command's propagates, except that 255, 97 or 98 (the `hx.sh` transport codes) are reported as 3; the tool's own, printed as `dev: exit N` before the closing banner, are 2 usage/refusal/image/wrong worktree, 3 transport/identity/failed sync step/busy, 75 not admitted (memory PSI full avg10 >= 3 until `AGENT_DEV_WAIT_S`, or PSI unreadable; nothing ran), 124 time limit.
 - **`dev gc [--dry-run|--this]`:** a hex is stale if absent from `git worktree list` with `last-use` > 3 days, or `last-use` > 30 days. Removes `agent-dev-cache-*-<hex>` (exact name) and `~/agent-dev/<hex>`; skips held locks and live containers; never touches `~/checkouts`.
 
 ## 10. CTL-50 brief text (j)

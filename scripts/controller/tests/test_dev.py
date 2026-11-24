@@ -408,7 +408,8 @@ class ArgvTests(DevCase):
         edits["foreign capability"] = base.replace('gdb = ["SYS_PTRACE"]', 'gdb = ["SYS_ADMIN"]')
         edits["escaping mount"] = base.replace('"{work}:/work"', '"/:/work"')
         for label, mounts in (("writable .git mount", '"{work}/.git:/work/.git"'), ("read-only .git mount", '"{work}/.git:/work/.git:ro"'),
-                              ("a mount over .git", '"{cache}:/work/x/../.git"'), ("a mount below .git", '"{cache}:/work/.git/hooks"')):
+                              ("a mount over .git", '"{cache}:/work/x/../.git"'), ("a mount below .git", '"{cache}:/work/.git/hooks"'),
+                              ("the checkout mounted a second time", '"{work}:/w2"'), ("the checkout mounted elsewhere, read-only", '"{work}:/w2/../x:ro"')):
             edits[label] = base.replace('mounts = ["{work}:/work"]', f'mounts = ["{{work}}:/work", {mounts}]')
         edits["hostile cache path"] = base.replace('cache = "/home/gate/.cache/hostobs-target"', "cache = " + json.dumps('/x"; touch Z; "'))
         edits["memory_max below the reservation"] = base.replace('memory_max = "8g"', 'memory_max = "512m"')

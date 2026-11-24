@@ -1345,3 +1345,4 @@ for name, before, after in (
     mutant("scripts/controller/dev", f"dev-{name}", before, after)
 # the profile resolver is the host-injection gate (tests/test_dev.py reads DEV_PROFILE_SCRIPT)
 mutant("scripts/controller/dev_profile.py", "dev-profile-image-regex", 'IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/:@-]*$")', 'IMAGE = re.compile(r"(?s).*")')
+mutant("scripts/controller/dev_profile.py", "dev-profile-work-mount", 'if mount.startswith("{work}:") and dest != "/work":', 'if False:')
