@@ -1,6 +1,6 @@
 # Usage: python3 -I stats.py <extracted-root> > stats.md   (<extracted-root> = the unpacked accept2-files.tgz)
-# This is the script that ../ACCEPT2-STAGE-2026-11-19.md cites; stats.md beside it is its exact output.
-"""Per-phase p50/p95/p99 for the iogovmon acceptance-2 fill stage (r1002, 2026-11-18/19).
+# This is the script that docs/evidence/ACCEPT2-STAGE-2026-11-19.md cites; docs/evidence/accept2-stage-2026-11-19/stats.md is its exact output.
+"""Per-phase p50/p95/p99 for the iogovmon acceptance-2 fill stage (2026-11-18/19).
 
 usage: python3 -I stats.py <extracted-root> > stats.md
 Sources: var/lib/iogovmon/journal/journal-2026-11.jsonl (probe + bench records),
