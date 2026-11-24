@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091,SC2034,SC2154 # settings and helpers come from the sourced resume-lib.sh
 set -u
 # clear-resume.sh <tmux-pane-id> <successor-prompt-file> <log-file>
 # CLEAN-SLATE restart of an interactive Claude Code session that runs in a tmux pane: wait until
