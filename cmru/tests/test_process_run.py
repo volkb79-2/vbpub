@@ -1,141 +1,113 @@
-"""Contract tests for CMRU's shared subprocess keyword seam."""
+"""Behavioural contract for CMRU's shared process-run seam."""
 
 from __future__ import annotations
 
+import os
 import subprocess
-from pathlib import Path
-from unittest.mock import Mock
+import sys
 
 import pytest
 
-from cmru import process_run
-from cmru import delegated, doctor
+from cmru import delegated, doctor, process_run
+
+pytestmark = pytest.mark.requires_contained_cgroup
 
 
-_DEFAULT = object()
-
-
-@pytest.mark.parametrize(
-    ("parameter", "value", "expected"),
-    [
-        ("cwd", _DEFAULT, {"check": False, "capture_output": True, "text": True}),
-        ("cwd", "/workspace", {
-            "cwd": "/workspace", "check": False,
-            "capture_output": True, "text": True,
-        }),
-        ("cwd", None, {"check": False, "capture_output": True, "text": True}),
-        ("env", _DEFAULT, {"check": False, "capture_output": True, "text": True}),
-        ("env", {"KEY": "value"}, {
-            "env": {"KEY": "value"}, "check": False,
-            "capture_output": True, "text": True,
-        }),
-        ("env", None, {"check": False, "capture_output": True, "text": True}),
-        ("timeout", _DEFAULT, {"check": False, "capture_output": True, "text": True}),
-        ("timeout", 2.5, {
-            "timeout": 2.5, "check": False,
-            "capture_output": True, "text": True,
-        }),
-        ("timeout", None, {"check": False, "capture_output": True, "text": True}),
-        ("check", _DEFAULT, {"check": False, "capture_output": True, "text": True}),
-        ("check", True, {"check": True, "capture_output": True, "text": True}),
-        ("check", None, {"check": None, "capture_output": True, "text": True}),
-        ("capture", _DEFAULT, {"check": False, "capture_output": True, "text": True}),
-        ("capture", False, {"check": False, "text": True}),
-        ("capture", None, {"check": False, "text": True}),
-        ("text", _DEFAULT, {"check": False, "capture_output": True, "text": True}),
-        ("text", False, {"check": False, "capture_output": True, "text": False}),
-        ("text", None, {"check": False, "capture_output": True}),
-        ("input", _DEFAULT, {"check": False, "capture_output": True, "text": True}),
-        ("input", "payload", {
-            "input": "payload", "check": False,
-            "capture_output": True, "text": True,
-        }),
-        ("input", None, {"check": False, "capture_output": True, "text": True}),
-    ],
-)
-def test_run_process_forwards_exact_subprocess_call(
-    monkeypatch, parameter, value, expected,
-):
-    run = Mock()
-    monkeypatch.setattr(process_run.subprocess, "run", run)
-    options = {} if value is _DEFAULT else {parameter: value}
-
-    process_run.run_process(("tool", "argument"), **options)
-
-    run.assert_called_once_with(["tool", "argument"], **expected)
-    assert "shell" not in run.call_args.kwargs
-
-
-def test_run_process_copies_argv_to_a_list(monkeypatch):
-    run = Mock()
-    monkeypatch.setattr(process_run.subprocess, "run", run)
-    argv = ["tool", "argument"]
-
-    process_run.run_process(argv)
-
-    assert run.call_args.args[0] == argv
-    assert run.call_args.args[0] is not argv
-
-
-@pytest.mark.parametrize(
-    "exception",
-    [
-        subprocess.TimeoutExpired(["tool"], 1),
-        subprocess.CalledProcessError(1, ["tool"]),
-        FileNotFoundError("tool"),
-    ],
-)
-def test_run_process_propagates_subprocess_exceptions_unchanged(
-    monkeypatch, exception,
-):
-    monkeypatch.setattr(
-        process_run.subprocess, "run", Mock(side_effect=exception),
+def test_captured_probe_keeps_stdout_and_stderr_separate_and_strictly_decoded(tmp_path):
+    result = process_run.run_process(
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('out'); print('err', file=sys.stderr)",
+        ],
+        cwd=tmp_path,
     )
 
-    with pytest.raises(type(exception)) as raised:
-        process_run.run_process(["tool"])
-
-    assert raised.value is exception
-
-
-def test_run_process_returns_completed_process_unchanged(monkeypatch):
-    completed = subprocess.CompletedProcess(["tool"], 0, stdout="out", stderr="err")
-    run = Mock(return_value=completed)
-    monkeypatch.setattr(process_run.subprocess, "run", run)
-
-    result = process_run.run_process(["tool"])
-
-    assert result is completed
+    assert result.returncode == 0
+    assert result.stdout == "out\n"
+    assert result.stderr == "err\n"
 
 
-def test_doctor_run_uses_shared_process_wrapper(monkeypatch):
-    completed = subprocess.CompletedProcess(["tool"], 0, stdout="ok", stderr="")
-    calls = []
-    monkeypatch.setattr(
-        doctor, "run_process",
-        lambda argv, **kwargs: calls.append((argv, kwargs)) or completed,
+def test_captured_probe_keeps_strict_text_decoding(tmp_path):
+    with pytest.raises(UnicodeDecodeError):
+        process_run.run_process(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'ok \\xff end\\n')",
+            ],
+            cwd=tmp_path,
+        )
+
+
+def test_captured_probe_text_false_returns_bytes(tmp_path):
+    result = process_run.run_process(
+        [sys.executable, "-c", "import sys; print('bytes')"],
+        cwd=tmp_path,
+        text=False,
     )
 
-    result = doctor._run(["tool"], timeout=3)
-
-    assert result is completed
-    assert calls == [(
-        ["tool"], {"capture": True, "text": True, "timeout": 3, "check": False},
-    )]
+    assert result.returncode == 0
+    assert result.stdout == b"bytes\n"
+    assert result.stderr == b""
 
 
-def test_delegated_run_inherits_streams_and_returns_returncode(monkeypatch, capsys):
-    completed = subprocess.CompletedProcess(["tool", "argument"], 7)
-    calls = []
-    monkeypatch.setattr(
-        delegated, "run_process",
-        lambda argv, **kwargs: calls.append((argv, kwargs)) or completed,
+def test_captured_probe_check_raises_with_the_child_output(tmp_path):
+    argv = [
+        sys.executable,
+        "-c",
+        "import sys; print('partial'); print('bad', file=sys.stderr); raise SystemExit(7)",
+    ]
+    with pytest.raises(subprocess.CalledProcessError) as failed:
+        process_run.run_process(argv, cwd=tmp_path, check=True)
+
+    assert failed.value.returncode == 7
+    assert failed.value.cmd == argv
+    assert failed.value.stdout == "partial\n"
+    assert failed.value.stderr == "bad\n"
+
+
+def test_captured_probe_uses_the_requested_cwd_and_environment(tmp_path):
+    environment = {**os.environ, "CMRU_PROCESS_VALUE": "scoped"}
+    result = process_run.run_process(
+        [
+            sys.executable,
+            "-c",
+            "import os; print(os.getcwd()); print(os.environ['CMRU_PROCESS_VALUE'])",
+        ],
+        cwd=tmp_path,
+        env=environment,
     )
 
-    result = delegated._run(("tool", "argument"), cwd=Path("/work"))
+    assert result.stdout == f"{tmp_path}\nscoped\n"
 
-    assert result == 7
-    assert calls == [(
-        ("tool", "argument"), {"cwd": Path("/work"), "capture": False},
-    )]
-    assert "external-tool: tool argument" in capsys.readouterr().out
+
+def test_uncaptured_probe_inherits_streams_and_returns_a_completed_process(tmp_path):
+    result = process_run.run_process(
+        [sys.executable, "-c", "print('inherited')"],
+        cwd=tmp_path,
+        capture=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout is None and result.stderr is None
+
+
+def test_doctor_process_probe_returns_the_real_result(tmp_path):
+    result = doctor._run(
+        [sys.executable, "-c", "print('doctor-ok')"],
+        timeout=120,
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "doctor-ok\n"
+
+
+def test_delegated_process_runs_the_real_child_and_returns_its_status(tmp_path):
+    result = delegated._run(
+        [sys.executable, "-c", "print('delegated'); raise SystemExit(3)"],
+        cwd=tmp_path,
+    )
+
+    assert result == 3

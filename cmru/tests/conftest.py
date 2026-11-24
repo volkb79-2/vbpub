@@ -13,6 +13,19 @@ from pathlib import Path
 
 import pytest
 
+
+def _policy_source() -> Path:
+    """Find the repository's test-policy source tree, including copied suites."""
+    project = Path(__file__).resolve().parents[1]
+    cwd = Path.cwd().resolve()
+    for root in (*project.parents, cwd, *cwd.parents):
+        candidate = root / "libraries" / "test-policy" / "src"
+        if (candidate / "estate_test_policy" / "plugin.py").is_file():
+            return candidate.resolve()
+    raise RuntimeError("cannot locate libraries/test-policy/src from cmru tests")
+
+
+sys.path.insert(0, str(_policy_source()))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cmru.process_guard import (
@@ -22,7 +35,7 @@ from cmru.process_guard import (
     restore_child_subreaper,
 )
 
-pytest_plugins = ["cli_extended.pytest_plugin"]
+pytest_plugins = ["cli_extended.pytest_plugin", "estate_test_policy.plugin"]
 
 #: The process environment when the session started (before any test ran).
 SESSION_START_ENVIRON = dict(os.environ)

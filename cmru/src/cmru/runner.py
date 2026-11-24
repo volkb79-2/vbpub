@@ -2,28 +2,28 @@
 """Generic execution engine for the strict project-local ``cmru.toml`` grammar."""
 from __future__ import annotations
 
-import codecs
-import io
-import locale
+import math
 import os
 import re
-import selectors
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
-import threading
 from collections import deque
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from time import monotonic, sleep
+from time import monotonic
 from typing import Iterable, Iterator, Mapping, Optional
+
+from cli_extended import procio
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cmru.errors import CredentialMissing, StepFailed
+
+
+DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS = 1800.0
+DEFAULT_NO_PROGRESS_TIMEOUT_SOURCE = "default runner.no_progress_timeout_seconds"
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,8 @@ class StepConfig:
     env_command: Optional[list[str]]
     registries: list = None  # [targets].registry for multi-push
     quiet: bool = False  # suppress live line-by-line stdout tee; log file only + tail-on-failure
+    no_progress_timeout_seconds: float = DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS
+    no_progress_timeout_source: str = DEFAULT_NO_PROGRESS_TIMEOUT_SOURCE
 
 
 @dataclass(frozen=True)
@@ -213,6 +215,34 @@ def parse_step(config: dict, step_name: str) -> StepConfig:
     if not isinstance(quiet, bool):
         raise ValueError(f"steps.{step_name}.quiet must be explicitly true or false")
 
+    runner_settings = config.get("runner")
+    if runner_settings is None:
+        runner_settings = {}
+    if not isinstance(runner_settings, dict):
+        raise ValueError("[runner] must be a table")
+    step_timeout_key = f"steps.{step_name}.no_progress_timeout_seconds"
+    runner_timeout_key = "runner.no_progress_timeout_seconds"
+    if "no_progress_timeout_seconds" in step:
+        timeout_value = step["no_progress_timeout_seconds"]
+        timeout_source = step_timeout_key
+    elif "no_progress_timeout_seconds" in runner_settings:
+        timeout_value = runner_settings["no_progress_timeout_seconds"]
+        timeout_source = runner_timeout_key
+    else:
+        timeout_value = DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS
+        timeout_source = DEFAULT_NO_PROGRESS_TIMEOUT_SOURCE
+    finite = False
+    if isinstance(timeout_value, (int, float)) and not isinstance(timeout_value, bool):
+        try:
+            finite = math.isfinite(float(timeout_value))
+        except OverflowError:
+            finite = False
+    if not finite or timeout_value <= 0:
+        raise ValueError(
+            f"{timeout_source} must be a finite number of seconds greater than 0; "
+            f"got {timeout_value!r}"
+        )
+
     return StepConfig(
         name=step_name,
         commands=commands,
@@ -225,6 +255,8 @@ def parse_step(config: dict, step_name: str) -> StepConfig:
         step_env=step_env,
         env_command=[str(item) for item in env_command] if env_command else None,
         quiet=quiet,
+        no_progress_timeout_seconds=float(timeout_value),
+        no_progress_timeout_source=timeout_source,
     )
 
 
@@ -314,8 +346,6 @@ ERROR_LINES_ON_FAILURE = 20
 OUTPUT_DRAIN_SECONDS = 2.0
 # KI-178: SIGTERM-to-SIGKILL grace when an interrupt reaps the step's process group.
 GROUP_TERM_GRACE_SECONDS = 5.0
-# How often a silent child is checked for exit while no output arrives.
-_OUTPUT_POLL_SECONDS = 0.2
 # Matches this codebase's own "[ERROR] ..." convention (wherever it appears in a line,
 # e.g. after a buildkit "#63 89.30 " progress prefix) and docker/buildkit's own
 # top-level "ERROR: target ... failed to solve" summary line.
@@ -381,137 +411,6 @@ def _open_aggregate_log(local_log: Path, *, quiet: bool):
     return aggregate_path.open("a", encoding="utf-8", buffering=1)
 
 
-def _pipe_holder_pids(inode: int) -> list[int]:
-    """Pids (other than ours) with the pipe ``inode`` open, found through ``/proc/<pid>/fd``."""
-    wanted = f"pipe:[{inode}]"
-    holders: list[int] = []
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit() or int(entry) == os.getpid():
-            continue
-        try:
-            descriptors = os.listdir(f"/proc/{entry}/fd")
-            for descriptor in descriptors:
-                if os.readlink(f"/proc/{entry}/fd/{descriptor}") == wanted:
-                    holders.append(int(entry))
-                    break
-        except OSError:
-            continue  # exited meanwhile, or owned by another user: not ours to inspect
-    return sorted(holders)
-
-
-def _warn_pipe_holders(process, argv: list[str], log_handle) -> None:
-    """One WARN: the child exited but something else still holds its output pipe open."""
-    try:
-        holders = _pipe_holder_pids(os.fstat(process.stdout.fileno()).st_ino)
-    except OSError:
-        holders = None
-    named = (
-        f"still held open by pid(s) {', '.join(map(str, holders))}"
-        if holders else "still held open by another process"
-    )
-    message = (
-        f"[WARN] '{argv[0]}' exited with code {process.returncode} but its output pipe is {named}; "
-        f"stopped reading after {OUTPUT_DRAIN_SECONDS:g}s and kept the exit code."
-    )
-    print(message, flush=True)
-    _write_line(log_handle, f"[cmru] {message[len('[WARN] '):]}\n")
-
-
-def _output_lines(process, argv: list[str], log_handle) -> Iterator[str]:
-    """Yield the child's combined output line by line, like ``for line in process.stdout``.
-
-    The same decoding as a text-mode pipe (locale encoding, universal newlines), but reading
-    stops ``OUTPUT_DRAIN_SECONDS`` after the child has exited instead of waiting for EOF: EOF
-    needs every holder of the write end to close it, and a grandchild that inherited the pipe
-    can keep it open forever (KI-178). The abandoned pipe is reported by ``_warn_pipe_holders``.
-    """
-    stream = process.stdout
-    encoding = "utf-8" if sys.flags.utf8_mode else locale.getencoding()
-    decoder = io.IncrementalNewlineDecoder(codecs.getincrementaldecoder(encoding)(), translate=True)
-    pending = ""
-    exited_at: Optional[float] = None
-    # epoll/poll based: the fd-set select(2) API refuses descriptors >= FD_SETSIZE (1024), which
-    # a busy release process can easily reach.
-    with selectors.DefaultSelector() as selector:
-        selector.register(stream, selectors.EVENT_READ)
-        while True:
-            wait = _OUTPUT_POLL_SECONDS
-            if exited_at is not None:
-                wait = min(wait, exited_at + OUTPUT_DRAIN_SECONDS - monotonic())
-                if wait <= 0:
-                    _warn_pipe_holders(process, argv, log_handle)
-                    break
-            if selector.select(wait):
-                chunk = stream.read(65536)
-                text = decoder.decode(chunk, final=not chunk)
-                if not chunk:
-                    pending += text
-                    break
-                pending += text
-                while "\n" in pending:
-                    line, _, pending = pending.partition("\n")
-                    yield line + "\n"
-            if exited_at is None and process.poll() is not None:
-                exited_at = monotonic()
-    if pending:
-        yield pending
-
-
-def _reap_process_group(process) -> None:
-    """SIGTERM then SIGKILL the step's whole process group and reap its leader.
-
-    The child leads its own group (``start_new_session``), so the group is exactly the step and
-    whatever it spawned; nothing the caller owns is signalled.
-    """
-    group = process.pid
-    try:
-        os.killpg(group, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    deadline = monotonic() + GROUP_TERM_GRACE_SECONDS
-    while monotonic() < deadline:
-        if process.poll() is not None:  # leader reaped: the group is done once it is empty
-            try:
-                os.killpg(group, 0)
-            except ProcessLookupError:
-                return
-        sleep(0.02)
-    try:
-        os.killpg(group, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait()
-
-
-@contextmanager
-def _terminate_as_exit() -> Iterator[None]:
-    """Turn SIGTERM/SIGHUP into ``SystemExit`` so ``finally`` cleanup runs.
-
-    The step runs in its own session (KI-178), so a SIGTERM or SIGHUP that kills cmru by the
-    default action (ssh or terminal drop, ``timeout``, ``kill -- -pgid``) would leave it running
-    as an orphan; the ``SystemExit`` instead takes the group-reaping path. ``signal.signal`` only
-    works in the main thread: in any other thread nothing is installed and the caller's own
-    signal policy stands. A signal that is ignored when this starts (a SIGHUP set to ``SIG_IGN``
-    by ``nohup``) stays ignored, for cmru and, since the disposition survives exec, for the step.
-    Only what was installed here is restored on exit, even when a later install fails.
-    """
-    previous: dict[int, object] = {}
-
-    def _handler(signum, _frame) -> None:
-        raise SystemExit(128 + signum)
-
-    try:
-        if threading.current_thread() is threading.main_thread():
-            for signum in (signal.SIGTERM, signal.SIGHUP):
-                if signal.getsignal(signum) == signal.SIG_IGN:
-                    continue
-                previous[signum] = signal.signal(signum, _handler)
-        yield
-    finally:
-        for signum, handler in previous.items():
-            signal.signal(signum, handler if handler is not None else signal.SIG_DFL)
-
-
 def run_command(
     argv: list[str],
     cwd: Path,
@@ -520,16 +419,20 @@ def run_command(
     quiet: bool = False,
     log_path: Optional[Path] = None,
     mirror_handle=None,
+    no_progress_timeout_seconds: float = DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
+    no_progress_timeout_source: str = DEFAULT_NO_PROGRESS_TIMEOUT_SOURCE,
 ) -> CommandResult:
     """Run argv, streaming its combined stdout/stderr into log_handle.
 
-    SIGTERM and SIGHUP delivered to this process while the command runs reap the command's
-    whole process group (see ``_terminate_as_exit``), like Ctrl-C does.
+    ``cli_extended.procio`` owns the bounded drain, no-progress watchdog and caller-signal
+    reaping for the command's whole process group.
     """
-    with _terminate_as_exit():
-        return _run_command(
-            argv, cwd, log_handle, quiet=quiet, log_path=log_path, mirror_handle=mirror_handle,
-        )
+    return _run_command(
+        argv, cwd, log_handle, quiet=quiet, log_path=log_path,
+        mirror_handle=mirror_handle,
+        no_progress_timeout_seconds=no_progress_timeout_seconds,
+        no_progress_timeout_source=no_progress_timeout_source,
+    )
 
 
 def _run_command(
@@ -540,10 +443,10 @@ def _run_command(
     quiet: bool,
     log_path: Optional[Path],
     mirror_handle,
+    no_progress_timeout_seconds: float,
+    no_progress_timeout_source: str,
 ) -> CommandResult:
-    """The body of :func:`run_command`, which adds the termination-signal scope around it.
-
-    Streams the command's combined stdout/stderr into log_handle.
+    """Stream the command's combined stdout/stderr into log_handle through procio.
 
     When ``quiet`` is set (build/push steps whose subprocess is itself very
     noisy, e.g. `docker buildx bake`), individual lines are not echoed live —
@@ -568,44 +471,46 @@ def _run_command(
     # failure produces more than ERROR_LINES_ON_FAILURE matches.
     error_lines: list[str] = []
     evidence_lines: deque[str] = deque(maxlen=300)
-    process: Optional[subprocess.Popen] = None
-    try:
-        # Started inside the try so a termination signal arriving right after it returns
-        # still takes the reaping path below (KI-178).
-        process = subprocess.Popen(
-            argv,
-            cwd=str(cwd),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            bufsize=0,
-            env=command_env,
-            # Its own session and process group: an interrupt reaps the step and everything it
-            # spawned, and a terminal Ctrl-C reaches only cmru, which does that reaping.
-            start_new_session=True,
-        )
-        assert process.stdout is not None
-        for line in _output_lines(process, argv, log_handle):
-            _write_line(log_handle, line)
-            if mirror_handle is not None:
-                _write_line(mirror_handle, line)
-            evidence_lines.append(line)
-            if quiet:
-                tail.append(line)
-                if len(error_lines) < ERROR_LINES_ON_FAILURE and _ERROR_LINE_RE.search(line):
-                    error_lines.append(line)
-            else:
-                print(line, end="", flush=True)
-        exit_code = process.wait()
-    except BaseException:
-        # Ctrl-C / SystemExit from a SIGTERM handler: never leave the child, or anything
-        # in its process group, running (or unreaped) behind us (BG-02, KI-178).
-        if process is not None:
-            _reap_process_group(process)
-            process.stdout.close()
-        raise
-    else:
-        process.stdout.close()
+
+    def receive_line(line: str) -> None:
+        _write_line(log_handle, line)
+        if mirror_handle is not None:
+            _write_line(mirror_handle, line)
+        evidence_lines.append(line)
+        if quiet:
+            tail.append(line)
+            if len(error_lines) < ERROR_LINES_ON_FAILURE and _ERROR_LINE_RE.search(line):
+                error_lines.append(line)
+        else:
+            print(line, end="", flush=True)
+
+    result = procio.run_streaming(
+        argv,
+        cwd=str(cwd),
+        env=command_env,
+        on_line=receive_line,
+        drain_seconds=OUTPUT_DRAIN_SECONDS,
+        no_progress_seconds=no_progress_timeout_seconds,
+        progress_paths=(),
+        term_grace_seconds=GROUP_TERM_GRACE_SECONDS,
+    )
+    exit_code = result.returncode
     elapsed_seconds = monotonic() - start
+    if result.warning is not None:
+        print(f"[WARN] {result.warning}", flush=True)
+        _write_line(log_handle, f"[cmru] {result.warning}\n")
+    if result.watchdog is not None:
+        diagnostic = result.watchdog.render(no_progress_timeout_source)
+        log_error(diagnostic)
+        _write_line(log_handle, f"[cmru] {diagnostic}\n")
+        if result.watchdog.tree_lines:
+            tree_header = "process tree before termination:"
+            print(tree_header, file=sys.stderr, flush=True)
+            _write_line(log_handle, f"[cmru] {tree_header}\n")
+            for tree_line in result.watchdog.tree_lines:
+                print(tree_line, file=sys.stderr, flush=True)
+                _write_line(log_handle, tree_line + "\n")
+        raise subprocess.CalledProcessError(1, argv)
     if exit_code != 0:
         if quiet and error_lines:
             sys.stderr.write(f"[ERROR] {len(error_lines)} error-looking line(s) from the output:\n")
@@ -751,6 +656,8 @@ def _execute_step(
                         quiet=quiet,
                         log_path=log_file,
                         mirror_handle=aggregate_handle,
+                        no_progress_timeout_seconds=step.no_progress_timeout_seconds,
+                        no_progress_timeout_source=step.no_progress_timeout_source,
                     )
                 except subprocess.CalledProcessError as exc:
                     # A failing project step is an expected outcome, not an
