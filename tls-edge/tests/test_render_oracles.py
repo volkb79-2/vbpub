@@ -63,35 +63,27 @@ def _override(
     *,
     expose_http: bool,
     http3: bool,
-    calls: bool,
     https_port: int,
 ) -> dict[str, Any]:
     return {
         "tls": {"mode": "acme-tls" if https_port == 443 else "acme-dns"},
         "ports": {"expose_http": expose_http, "https": https_port},
         "http3": {"enabled": http3},
-        "calls": {
-            "enabled": calls,
-            "public_port": 9443 if calls and https_port == 8443 else 8443,
-        },
     }
 
 
 @pytest.mark.parametrize("expose_http", [False, True])
 @pytest.mark.parametrize("http3_enabled", [False, True])
-@pytest.mark.parametrize("calls_enabled", [False, True])
 @pytest.mark.parametrize("https_port", [443, 8443])
 def test_port_plan_matches_every_rendered_compose_port(
     tmp_path,
     expose_http: bool,
     http3_enabled: bool,
-    calls_enabled: bool,
     https_port: int,
 ) -> None:
     override = _override(
         expose_http=expose_http,
         http3=http3_enabled,
-        calls=calls_enabled,
         https_port=https_port,
     )
 

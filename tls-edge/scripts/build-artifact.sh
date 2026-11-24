@@ -10,9 +10,8 @@
 #   VERSION
 #   manifest.json  (written by `cmru handler bundle-manifest`: sha256 of every other file)
 #   get.py  (ships in artifact so 'tls-edge update' works without re-fetching)
-#   scripts/  (all except update-rendered.sh)
+#   scripts/  (all except the maintainer-only update-rendered.sh helper)
 #   ciu-stack/ (*.j2 + conf.d/{certs.yml.j2,options.yml,middlewares.yml})
-#   edge-proxy/ (docker-compose.yml, traefik.yml, .env.example, conf.d/*)
 #   consumer-examples/
 #   README.md, ARCHITECTURE.md, CONSUMER_GUIDE.md, KNOWN_ISSUES_TODO_BACKLOG.md
 #
@@ -21,7 +20,7 @@
 #   __pycache__/, *.pyc
 #   .claude/, .git/
 #   Gitignored runtime files: ciu-stack/ciu.toml.j2, ciu-stack/ciu.toml,
-#   ciu-stack/ciu.compose.yml, ciu-stack/traefik.yml, edge-proxy/.env,
+#   ciu-stack/ciu.compose.yml, ciu-stack/traefik.yml, edge-proxy/ (generated trial),
 #   *.bak, certs-dev/, .ciu/
 #
 set -euo pipefail
@@ -94,16 +93,6 @@ trap 'rm -rf "$STAGE"; rm -f "$TMP_LIST"' EXIT
                 # Only exclude these from the ciu-stack root (not conf.d/)
                 [[ "$dir" == "ciu-stack" ]] && continue
                 ;;
-        esac
-        echo "$rel"
-    done
-
-    # edge-proxy/ — committed defaults only; exclude .env and *.bak
-    find "$TLS_EDGE_ROOT/edge-proxy" -type f | sort | while IFS= read -r f; do
-        rel="${f#$TLS_EDGE_ROOT/}"
-        base="$(basename "$f")"
-        case "$base" in
-            .env|*.bak) continue ;;
         esac
         echo "$rel"
     done
@@ -191,7 +180,7 @@ done
 # version input beside the tarballs so artifact-only publication never reads a
 # mutable source-tree file after the build worktree has been removed.
 cp -p "$VERSION_FILE" "$DIST_DIR/VERSION"
-# The standalone installer is a release asset beside the bundles (`tarball-publish
+# The get.py bootstrapper is a release asset beside the bundles (`tarball-publish
 # --extra-asset dist/get.py`); the retained record carries it for the same reason.
 cp -p "$TLS_EDGE_ROOT/get.py" "$DIST_DIR/get.py"
 echo "  Next: cmru release tls-edge --config ../cmru.toml"
