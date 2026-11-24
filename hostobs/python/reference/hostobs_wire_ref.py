@@ -2,7 +2,7 @@
 """Independent reference encoder/decoder for the hostobs/1 column codec (plan v4 §B).
 
 This module is written **from the wire specification**
-(``hostobs/docs/WIRE-COLUMN-CODEC.md``), not from the Rust implementation. It is
+(``docs/WIRE.md`` §3 for the block layout), not from the Rust implementation. It is
 deliberately small: one encoder, one decoder, the closed vocabularies, and typed
 errors. It is not a client — no sockets, no scheduling, no store.
 

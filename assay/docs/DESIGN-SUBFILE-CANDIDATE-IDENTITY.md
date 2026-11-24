@@ -171,7 +171,7 @@ locus_key = sha256( "assay-locus/1" \0 path \0 qualname \0 segment_sha256 \0
 - **`candidate_id`.** Unchanged (`candidate_identity.py` is not touched). So `plan_sha256`, `select_mutation_shard`, `--only/--exclude-candidates`, the shard manifests (`mutation.py:1795-1800`) and B106 are unaffected.
 - **The state record gains an optional `locus` object:** `{schema: "assay-locus/1", key, qualname, segment_sha256, rel_start, rel_end}`, or `null` for the fallback.
   - It is written by the two record builders (`mutation.py:7092-7119` ff. and `~7236`), which already spread `_progress_event` (`1479-1501`). Adding the locus there puts it into the progress stream as well. The state writer is `_write_mutation_state_record` (`2185`).
-  - It is validated in `_load_validated_state_record` next to the other identity keys (`2930-2967`). A present `locus` that differs from the value recomputed for the job is "stale", which means corruption, exactly as for `source_sha256`.
+  - It is validated in `_load_validated_state_record` next to the other identity keys (`2930-2967`). A present `locus` that differs from the value recomputed for the job is "stale", which means corruption, exactly as for `source_sha256` (superseded 2026-11-24: the locus is advisory, see §7 AMENDED and §5.3 F14).
   - An absent `locus` is legal. A pre-P4 record therefore keeps resuming and carrying by exact id, but it can never be found by locus. That is explicit, not silent: progress counts it as `locus_unavailable`.
   - `MUTATION_STATE_SCHEMA_VERSION` stays 1 (`mutation.py:295`). An older assay never resumes a newer record anyway, because the assay version is in the judge (`1672-1678`).
 - **A record carried or replayed by locus is written under the CURRENT candidate id,** with the current identity fields. It names its origin in a `carry_over` block of schema 2:
@@ -266,7 +266,7 @@ Each starts from a store in which candidate C in `f` was KILLED by node X and ca
 | F11 | site in a class body or at module level, file edited | full judge |
 | F12 | a new test kills S | S1: S `carried` and the verdict FAILs (never PASS). With R-a, S becomes a `witness-isolated` kill |
 | F13 | locus collision injected into the source store | both records ignored |
-| F14 | tampered `locus` in a record | `MutationStateError`, "stale locus" |
+| F14 | tampered `locus` in a record | ignored and counted (`locus_unavailable`), never trusted; resume proceeds by exact id (AMENDED 2026-11-24, D-A9) |
 | F15 | verdict edited: a `killed` outcome with mode `carried` | `assay verify` refuses |
 | F16 | lane with xdist, nonempty `PYTEST_ADDOPTS` or cold-witness | no isolated replay, full judge |
 | F17 | shard run, then `--merge-shard-store` | provenance and node baselines survive; counts re-derive |
@@ -293,6 +293,17 @@ Every WP that changes `src` needs the B534 host self-qualification before merge.
 ## 7. Decisions (operator, 2026-11-18)
 
 **DECIDED 2026-11-18 (operator, relayed by the main controller): D1-D6 as recommended below, with these exact outcomes.** D1: yes, an isolated kill is acceptable, disclosed as `witness-isolated`. D2: a PASS is refused while any `carried-unverified` kill exists for release claims; allowed for exploratory campaigns. D3: S1, survivors always carried pessimistically; the optional probe R-a comes later (WP8). D4: deferred; decide after WP0, Phase 1 in production and a measured replay share. D5: the line-window key B is adopted for kill LOOKUP only (the WP0 threshold is met: B(k=2..5) re-keys 79-93 candidates per cmru release against 211 for A', 151-169 against 468 for ciu, 79-105 against 517 for run-gate; tables in the sub-controller's WP0 record). D6: split out a `classifier_version`. **KI-141 is resolved by the operator's reasoning:** a previously tested candidate still holds if the code that was tested did not change, so the R2 claim covers the WHOLE source, assembled from carried and re-verified results, not a delta-only claim.
+
+**AMENDED 2026-11-24 (operator, Opus design review accepted as recommended; backlog B562-B570).** These outcomes supersede the 2026-11-18 text where they differ:
+- **D2 replaced (D-A3, B567).** Any `carried-unverified` kill means the R2 status is not PASS (PARTIAL or FAIL by the v21 rule), with the count disclosed. There is no claim-type axis.
+- **R-a promoted (D-A4, B564).** The survivor probe moves into Phase 1: WP8 becomes part of WP4, whose scope is one isolated-run primitive `run_isolated(tests, tree)` used for carried kills, witness hints for changed-function candidates, and carried survivors against changed tests. Key B (D5) is a hint-ranking input only.
+- **Phase 2 parked (D-A5).** WP7 and D6 are parked; they re-open only if WP0b measures an isolated replay above about 20 s.
+- **One provenance object (D-A8, B563).** The state record carries `provenance {kind: fresh|resumed|imported|carried|replayed, from_candidate_id, from_judge_sha256, match: exact-id|locus|window|hint, replay_node_id?, reason?}`, projected unchanged into verdict v21. A replayed kill is a FRESH current-judge record (`kind: replayed`, no `carry_over` block). Schema-1 `carry_over` blocks are read, never written; the WP2 schema 2 is redefined in place (it never shipped).
+- **Advisory locus (D-A9, B563).** A stored `locus` or window key that is of an unknown schema or differs from the recomputed value is dropped and counted (`locus_unavailable`), never `MutationStateError`. This replaces the §3.3 "stale means corruption" rule; F14 reads accordingly.
+- **One store-combine (D-A10, B565).** `combine(sources, policy)` with the policies `same-judge`, `strict-shard`, `owner-manifest`, `carry-forward`, `import-unverified`; today's flags become aliases; `--carry-forward` composes with `--shard`; `--reuse-from` becomes a hint source.
+- **v21 is the single cut (D-A12, B567).** It collects B532, B545, the B556 reason code, B559 and the provenance projection; no other package touches the verdict schema, `ReasonCode` or the closed vocabularies.
+- **F-tests with WP4 (D-A16).** WP6's F1-F9, F12 (R-a variant) and F16 land with WP4 as its acceptance tests; WP3b shrinks to the survivor-loop notice, and `--rejudge-carried` becomes an alias of `--rejudge-outcome survived` or is dropped.
+- **Order.** WP0b (replay pilot) → WP2' (amended, B563) → cmru whole-source backfill ∥ WP3a → B566 (`mutation_store.py` extraction) → WP4 (with the WP6 F-tests) → WP5 (v21).
 
 The original options and recommendations follow for reference.
 

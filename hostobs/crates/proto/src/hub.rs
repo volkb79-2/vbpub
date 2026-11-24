@@ -3,7 +3,8 @@
 //!
 //! The hub is pure like the rest of the crate: no sockets, no threads, no clock. Every time is
 //! an injected monotonic `now_ns`, and every outcome is decided by the tables of §5.3, so each
-//! row is a fake-clock unit test. P5b wraps one `SendHub` in one mutex.
+//! row is a fake-clock unit test. The probe's server-loop thread owns the one `SendHub` inside
+//! its `Server` and no mutex wraps it (`docs/PROBE-PROCESS.md` §(a), §(i)).
 //!
 //! # Contracts
 //!
