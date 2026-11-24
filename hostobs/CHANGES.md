@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- **Fixed (P-hostobs-06b):** the serving core has no production panic in `accept`, and frame-level tests now cover the D-W53 shared-uid Query path, observe's level/uid caps, and D-W52's clamped `current` size refusal; retired JSON block-level cells are gone.
 - **Changed (P-hostobs-07, `HOB-7`):** `IncarnationRegistry` now stores only live incarnations (O(live + retired · log live) `end_round`, plus one O(`max_active`) reverse-index rebuild after a round that retires, about 3 MiB at the 65,536 default; model-owned default `dict_active_max` 65,536, configurable hard bound with typed `RegistryFull`, and no live eviction); store's dictionary re-uses that default.
 - **Added (probe sampler):** `hostobs-sampler` walks the configured cgroup tree under the kernel/policy bounds, publishes immutable quality-bearing `Tick`s, coalesces wakeups through eventfd, and reports walk cuts through `probe.cgroups_skipped`.
 - **Added (probe live backend):** `ProbeBackend` answers `current`, `status` and `identity` from one published tick per turn, with selector de-duplication, row budgets, zero-row success and no I/O or publication lock in the backends.

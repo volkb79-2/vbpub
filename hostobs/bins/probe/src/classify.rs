@@ -13,6 +13,7 @@
 //! 5. the verb is not in the table or is reserved: `unknown-verb`;
 //! 6. the level does not know the verb: `forbidden`;
 //! 7. `hello` when the connection is `Ready` (either mode): `bad-request`, key `verb` (R8);
+//! 8. retired (D-W51: JSON mode never reaches a block level, see mode detection);
 //! 9. the verb is known but not served by this package: `unknown-verb`;
 //! 10. a one-block verb (`current`, `snapshot_at`) while the connection's Query pool holds
 //!     unwritten blocks: `too-many-requests` (other verbs are never refused by it);
@@ -316,6 +317,7 @@ fn call_after_served(
 ///
 /// A [`Refusal`]; [`Refusal::fatal`] says whether the connection closes.
 pub fn classify(query: &Query<'_>) -> Result<Dispatch, Refusal> {
+    debug_assert!(!(query.mode == Mode::Json && query.level.serves_blocks()));
     classify_with(query, &ConnFacts::default())
 }
 
@@ -325,6 +327,7 @@ pub fn classify(query: &Query<'_>) -> Result<Dispatch, Refusal> {
 ///
 /// A [`Refusal`]; [`Refusal::fatal`] says whether the connection closes.
 pub fn classify_with(query: &Query<'_>, facts: &ConnFacts) -> Result<Dispatch, Refusal> {
+    debug_assert!(!(query.mode == Mode::Json && query.level.serves_blocks()));
     let binary = query.mode == Mode::Binary;
     if binary {
         frame_gate(query, facts)?;
@@ -390,6 +393,7 @@ mod tests {
         Query {
             mode: Mode::Json,
             corr: 0,
+            level: Level::Control,
             ..binary(payload)
         }
     }
@@ -767,7 +771,7 @@ mod tests {
         assert_plain(&binary(text.as_bytes()), Code::UnknownVerb, 5);
         let text = line("export", "{}", 6);
         let query = Query {
-            level: Level::Operator,
+            level: Level::Control,
             ..json(text.as_bytes())
         };
         assert_refusal(&query, Code::UnknownVerb, 6, &Detail::Empty);
@@ -841,7 +845,7 @@ mod tests {
             let text = req(verb, "{}");
             assert_plain(&binary(text.as_bytes()), Code::UnknownVerb, 5);
         }
-        for verb in ["events", "spans", "procs"] {
+        for verb in ["events", "spans"] {
             let text = line(verb, "{}", 5);
             assert_refusal(&json(text.as_bytes()), Code::UnknownVerb, 5, &Detail::Empty);
         }
@@ -857,11 +861,6 @@ mod tests {
         let text = req("unsubscribe", "{\"sub\":2}");
         assert_eq!(
             dispatched(&binary(text.as_bytes())).call,
-            Call::Unsubscribe(2)
-        );
-        let text = line("unsubscribe", "{\"sub\":2}", 4);
-        assert_eq!(
-            dispatched(&json(text.as_bytes())).call,
             Call::Unsubscribe(2)
         );
     }
