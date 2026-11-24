@@ -298,7 +298,7 @@ class ShellKitTests(unittest.TestCase):
     def test_a_failed_probe_start_removes_both_names(self) -> None:
         r = self.run_kit(FAKE_FAIL_RUN="mdt-accept-probe-bg")
         self.assertEqual(r.returncode, 3)
-        self.assertEqual(len([c for c in self.calls() if c.startswith("run ")]), 1)
+        self.assertEqual(len([c for c in self.calls() if c.startswith("run ")]), 2)  # gates started, bg refused: the already-started probe is still removed
         self.assert_probes_removed()
 
     def test_wrong_placement_or_caps_stop_the_run_and_clean_up(self) -> None:
