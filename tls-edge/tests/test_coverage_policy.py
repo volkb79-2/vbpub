@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 import re
 import tokenize
+import tomllib
 from pathlib import Path
 
 import coverage
@@ -122,6 +123,24 @@ def coverage_policy_violations(
     return violations
 
 
+def executable_package_targets() -> set[str]:
+    """Return package-relative paths with at least one executable statement."""
+    coverage_config = coverage.Coverage(
+        config_file=str(PYPROJECT) if PYPROJECT.exists() else False
+    ).config
+    targets: set[str] = set()
+    for path in sorted(SOURCE.rglob("*.py")):
+        parser = PythonParser(
+            text=path.read_text(encoding="utf-8"),
+            filename=str(path),
+            exclude=join_regex(coverage_config.exclude_list),
+        )
+        parser.parse_source()
+        if parser.statements:
+            targets.add(path.relative_to(ROOT).as_posix())
+    return targets
+
+
 def _source_tree(tmp_path: Path, source: str) -> Path:
     tree = tmp_path / "src"
     tree.mkdir()
@@ -210,3 +229,10 @@ def test_coverage_policy_applies_to_the_real_source(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     assert coverage_policy_violations(SOURCE) == []
+
+
+def test_release_gate_declares_every_executable_package_module() -> None:
+    with (ROOT / "assay.toml").open("rb") as stream:
+        judge = tomllib.load(stream)["lanes"]["release-gate"]["judge"]
+    assert judge["mode"] == "whole_target"
+    assert set(judge["targets"]) == executable_package_targets()

@@ -4,6 +4,30 @@ The [README](../README.md) lists tls-edge's public surface. The
 [design guide](DESIGN-GUIDE.md) records why Calls uses TCP and UDP forwarding
 separate from HTTPS.
 
+## Rendered consumer contract
+
+`tls-edge configure` writes the effective values below to
+`stack/consumer.env`. Consumers and their tests use those exact strings; they
+do not load tls-edge defaults or renderer internals. `tls-edge show --json`
+returns the same mapping under `contract`, together with the structured port
+plan and the current `consumer_env` state.
+
+| Key | Effective value | Example |
+|---|---|---|
+| `TLS_EDGE_DOMAIN` | normalised `domain`; empty when unset | `example.test` |
+| `TLS_EDGE_NETWORK` | `ingress_network` | `ingress_public` |
+| `TLS_EDGE_HTTPS_ENTRYPOINT` | the HTTPS entrypoint carrying the resolver | `websecure` |
+| `TLS_EDGE_HEADERS_MIDDLEWARE` | the middleware named by that entrypoint | `secure-headers@file` |
+| `TLS_EDGE_HTTP3` | `true` or `false` | `false` |
+| `TLS_EDGE_PUBLIC_PORTS` | sorted `<port>/<protocol>` values, comma-joined | `80/tcp,443/tcp,443/udp` |
+
+`tls-edge validate` and CIU's preflight hook refuse when an existing
+`consumer.env` is missing an owned key or differs from the effective
+configuration. The message names the drifted keys and says
+`run tls-edge configure to re-sync`; `configure` rewrites only the six owned
+lines and keeps every other line. An absent `consumer.env` in a checkout is
+not treated as drift. `tls-edge show` reports the same state without failing.
+
 ## Jitsi Meet web and signaling
 
 The repository's [Jitsi Meet deployment](https://github.com/volkb79-2/vbpub/tree/main/voice-screen-share/jitsi-server)
@@ -15,9 +39,8 @@ WebSocket signaling uses that same host router.
 
 Jitsi Videobridge media is a separate path: JVB publishes UDP 10000 directly on
 the host. That port does not pass through Traefik and does not require the
-Mattermost Calls preset on 8443. Jitsi's registered test suite renders the
-consumer Compose template and compares its route with tls-edge's rendered
-default entrypoint.
+Mattermost Calls preset on 8443. Jitsi's registered test suite compares its
+network, entrypoint and published ports with the rendered consumer contract.
 
 ## What a Calls consumer needs
 
@@ -47,9 +70,10 @@ deployment") it still runs host-level Docker Compose from `/root/tls-edge-LIVE`,
 
 ## Network/firewall requirements
 
-For the Mattermost instance in this repository, allow inbound TCP and UDP 8443
-to the host, alongside TCP 443 (HTTPS) and TCP 80 (redirect, ACME HTTP-01). There is no alternate
-HTTPS port. A provider firewall and a host firewall can both filter the traffic;
+Allow every value in `TLS_EDGE_PUBLIC_PORTS`, plus any port an application
+publishes directly (Jitsi's JVB UDP 10000 and, while the Calls preset is enabled,
+Mattermost's TCP/UDP 8443). Use `tls-edge show --json` for the authoritative
+list. A provider firewall and a host firewall can both filter the traffic;
 check both layers. Docker-published traffic follows the host's forwarding
 rules, so an egress or ingress rule for host processes alone may not cover it.
 

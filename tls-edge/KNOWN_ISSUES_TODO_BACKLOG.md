@@ -180,20 +180,6 @@ manifest (cmru KI-197).
 
 Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M2
 
-### TE-07 — implicit consumer contract
-
-Consumers learn the network, entrypoint, middleware and domain by reading
-tls-edge's defaults files and importing `scripts/render_standalone.py`, and only
-the domain is exported in `consumer.env`, written apart from the override.
-Decided: `consumer_contract(effective)` renders `consumer.env` and
-`tls-edge show --json` (`TLS_EDGE_DOMAIN`, `TLS_EDGE_NETWORK`,
-`TLS_EDGE_HTTPS_ENTRYPOINT`, `TLS_EDGE_HEADERS_MIDDLEWARE`, `TLS_EDGE_HTTP3`,
-`TLS_EDGE_PUBLIC_PORTS`), and consumer tests import it from `tls-edge/src`. The
-red voice-screen-share Mattermost Calls test is fixed on the consumer side by
-P-edge-01.
-
-Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M4
-
 ### TE-08 — tests exercise the wrong renderer; coverage rule
 
 Remaining: rebase the CLI tests on the CLI boundary and remove the
