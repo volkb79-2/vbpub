@@ -164,6 +164,13 @@ def select_picks(
     return picks, skips
 
 
+def mutant_failed(exit_code: int | None) -> bool:
+    """Assay counts any judgeable non-pass as a kill: exit 2 is a collection
+    error (e.g. a mutant breaking an import). Exit 4 (node not found), 5 (no
+    tests collected) and timeouts (None) are not kills."""
+    return exit_code in (1, 2)
+
+
 def _percentile(values: Sequence[float], pct: float) -> float | None:
     if not values:
         return None
@@ -335,7 +342,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 finally:
                     target.write_bytes(original)
                 p = run_pytest(args.python, pristine, [node], plugin_dir, args.timeout)
-                m["failed"], p["passed"] = m["exit"] == 1, p["exit"] == 0
+                m["failed"], p["passed"] = mutant_failed(m["exit"]), p["exit"] == 0
                 row = {"event": "replay", "candidate_id": rec["candidate_id"],
                        "node": node, "path": rec["path"], "m": m, "p": p}
                 results.append(row)
