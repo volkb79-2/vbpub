@@ -572,7 +572,8 @@ class ListingToolTests(unittest.TestCase):
         `path` BEFORE the content is written. A writer that reopened the same inode could attach to the previous reader
         before that reader had seen EOF and feed it the content twice (the reader then never finished). The next reader
         opens the new inode, so no reopen can reach an old reader, whatever the scheduling. The thread polls with
-        O_NONBLOCK, so it ends when the fixture is stopped or its directory is gone (no orphan, MDT-022) and is joined."""
+        O_NONBLOCK, so it ends when the fixture is stopped or its directory is gone (no orphan, MDT-022) and is joined.
+        Readers must read one at a time (one serve per open): concurrent openers of the same inode share one serve."""
         os.mkfifo(path)
         spare = path.with_name(path.name + ".next")
         stop = threading.Event()
@@ -587,6 +588,7 @@ class ListingToolTests(unittest.TestCase):
                     stop.wait(0.005)
                     continue
                 try:
+                    os.set_blocking(fd, True)  # the open needed O_NONBLOCK; a write over the pipe buffer must not be cut short
                     os.mkfifo(spare)
                     os.rename(spare, path)  # the next reader gets a fresh inode
                     with os.fdopen(fd, "w") as handle:
@@ -602,8 +604,13 @@ class ListingToolTests(unittest.TestCase):
 
         thread = threading.Thread(target=serve, daemon=True)
         thread.start()
-        self.addCleanup(thread.join, 10)
-        self.addCleanup(stop.set)
+
+        def finish() -> None:
+            stop.set()
+            thread.join(10)
+            self.assertFalse(thread.is_alive(), f"the {path.name} serving thread did not end")
+
+        self.addCleanup(finish)
 
     def _tree(self, tmp: str) -> Path:
         root = Path(tmp)
@@ -611,6 +618,13 @@ class ListingToolTests(unittest.TestCase):
         self._fifo_file(root / "dev.slice" / "io.max", f"254:0 rbps={80 * MIB} wbps={40 * MIB} riops=800 wiops=600\n")
         self._fifo_file(root / "dev.slice" / "dev-gates.slice" / "io.max", "254:0 rbps=max wbps=max riops=480 wiops=360\n")
         return root
+
+    def test_the_fixture_serves_a_payload_larger_than_the_pipe_buffer_whole(self) -> None:
+        big = "x" * 200_000 + "\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "big"
+            self._fifo_file(f, big)
+            self.assertEqual(f.read_text(), big)
 
     def test_the_fixture_really_defeats_a_size_test(self) -> None:
         """Negative control: the old script's `[ -s io.max ]` sees nothing here."""
