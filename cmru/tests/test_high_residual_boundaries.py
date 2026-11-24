@@ -98,5 +98,5 @@ def test_version_bump_rejects_non_semver_and_breaking_commit_precedes_feature():
 
 
 def test_version_counter_handles_no_numeric_suffix_without_inventing_existing_count(tmp_path):
-    with patch.object(version.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="demo-v1.0.0-rbad\n")):
+    with patch.object(version, "run_process", return_value=SimpleNamespace(returncode=0, stdout="demo-v1.0.0-rbad\n")):
         assert version._next_counter_version(tmp_path, "demo-v", "1.0.0") == "1.0.0-r1"

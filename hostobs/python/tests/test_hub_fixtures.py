@@ -6,7 +6,7 @@ Part of the registered `conformance` lane (HOB-4); by hand:
     python3 -I -m unittest discover -s python/tests -p 'test_hub_fixtures.py' -v
 
 Two checks: the committed files are exactly what the generator writes (byte for byte, exactly
-the 19 expected files), and their JSON shape is the documented one. The Rust replay
+the 20 expected files), and their JSON shape is the documented one. The Rust replay
 (`crates/proto/tests/hub_fixtures.rs`) judges the hub against the expectations.
 """
 
@@ -48,9 +48,9 @@ def committed() -> dict[str, str]:
 
 
 class HubFixtureTests(unittest.TestCase):
-    def test_exactly_the_19_cases(self) -> None:
+    def test_exactly_the_20_cases(self) -> None:
         names = sorted(f"{name}.json" for name in make_hub_fixtures.CASE_NAMES)
-        self.assertEqual(len(names), 19)
+        self.assertEqual(len(names), 20)
         self.assertEqual(sorted(committed()), names)
 
     def test_committed_files_equal_the_generator_output(self) -> None:

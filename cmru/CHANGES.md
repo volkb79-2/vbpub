@@ -32,6 +32,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
+- refactor(cmru): route four process seams through `run_process` (internal change; no action needed).
+- refactor(cmru): route 19 version, changelog, release-note, and Git-scope process calls through `run_process` (P6b; internal change; no action needed).
 - feat(cmru): the release preflight also verifies the DinD sidecar image (KI-182): for every project in the release scope whose own release config has a `[steps.*]` command with `--enable-docker` in its argv (cmru or not), `cmru release` and `cmru release --dry-run` add a `DinD sidecar image` row for `CMRU_TESTER_DIND_IMAGE` (label suffixed ` (<project>)` when the scope has several projects or the project is not cmru), with the cgroup probe's `--pull=never` contract (never pulled; Docker unavailable is `SKIPPED` on a dry-run and a failure on a release). The wheel-builder and probe rows stay cmru-release-only (KI-183). Adoption / Migration Notes: a release of a project whose gate uses `--enable-docker` now refuses at the dry-run when its DinD image is absent; `docker pull <digest>` first. A project with no `--enable-docker` step sees no new row and no docker call.
 - fix(cmru): process every severity boundary in a multi-line `SeverityStream.write` call (KI-184).
 

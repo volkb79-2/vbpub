@@ -1,11 +1,4 @@
-"""tls-edge side: the Mattermost Calls defaults are on and internally consistent.
-
-Operator decision 2026-11-04: Calls is ON by default and tls-edge forwards
-TCP+UDP 8443 as the single media pair. These oracles read the shipped defaults
-and the static edge-proxy copy and pin that they agree. The cross-project check
-against the Mattermost project's own defaults lives in that project's tests
-(and is repeated here, skipped when the sibling is not in the checkout).
-"""
+"""The optional Mattermost Calls listener stays internally consistent."""
 from __future__ import annotations
 
 import re
@@ -26,8 +19,8 @@ def _tls_edge() -> dict:
     return tomllib.loads(DEFAULTS.read_text(encoding="utf-8"))["tls_edge"]
 
 
-def test_calls_enabled_by_default() -> None:
-    assert _tls_edge()["calls"]["enabled"] is True
+def test_calls_listener_is_disabled_in_generic_defaults() -> None:
+    assert _tls_edge()["calls"]["enabled"] is False
 
 
 def test_calls_media_pair_is_8443() -> None:
@@ -47,26 +40,23 @@ def test_no_alternate_https_port_by_default() -> None:
         assert "websecure-alt" not in text and "https_alt" not in text, path
 
 
-def test_public_ports_are_exactly_80_443_8443() -> None:
-    """The edge's published set: 80/tcp, 443/tcp and the 8443 tcp+udp media pair."""
+def test_default_public_ports_are_web_only() -> None:
+    """The generic edge opens HTTP and HTTPS; optional listeners stay closed."""
+    assert _tls_edge()["http3"]["enabled"] is False
     published = re.findall(r'^\s*- "(?:\{\{.*?\}\})?([^"]+)"', EDGE_COMPOSE.read_text(), re.M)
     ports = sorted(p for p in published if re.fullmatch(r"\d+:\d+(/(tcp|udp))?", p))
-    assert ports == ["443:443", "80:80", "8443:8443/tcp", "8443:8443/udp"]
+    assert ports == ["443:443/tcp", "80:80/tcp"]
 
 
 def test_static_edge_proxy_publishes_the_same_pair() -> None:
     calls = _tls_edge()["calls"]
     text = EDGE_COMPOSE.read_text(encoding="utf-8")
-    pub = calls["public_port"]
-    assert f'"{pub}:{calls["tcp_internal_port"]}/tcp"' in text
-    assert f'"{pub}:{calls["udp_internal_port"]}/udp"' in text
+    assert calls["enabled"] is False
+    assert "8443:8443/tcp" not in text
+    assert "8443:8443/udp" not in text
     traefik = EDGE_TRAEFIK.read_text(encoding="utf-8")
-    assert re.search(
-        rf'mattermost-calls-tcp:\s*\n\s*address: ":{calls["tcp_internal_port"]}"', traefik
-    )
-    assert re.search(
-        rf'mattermost-calls-udp:\s*\n\s*address: ":{calls["udp_internal_port"]}/udp"', traefik
-    )
+    assert "mattermost-calls-tcp:" not in traefik
+    assert "mattermost-calls-udp:" not in traefik
 
 
 def test_templates_use_the_configured_ports_for_both_entrypoints() -> None:
@@ -75,7 +65,10 @@ def test_templates_use_the_configured_ports_for_both_entrypoints() -> None:
     assert "tls_edge.calls.tcp_internal_port" in compose
     assert "tls_edge.calls.udp_internal_port" in compose
     traefik = TRAEFIK_J2.read_text(encoding="utf-8")
-    assert "mattermost-calls-tcp" in traefik and "mattermost-calls-udp" in traefik
+    assert "if tls_edge.calls.enabled" in traefik
+    assert "if tls_edge.http3.enabled" in traefik
+    assert "advertisedPort: {{ tls_edge.ports.https }}" in traefik
+    assert "{{ bind }}{{ tls_edge.ports.https }}:443/udp" in compose
 
 
 def _mattermost_defaults() -> Path | None:
@@ -89,7 +82,5 @@ def test_agrees_with_mattermost_project_when_present() -> None:
         pytest.skip("mattermost-server sibling not in this checkout")
     mattermost = tomllib.loads(mm.read_text(encoding="utf-8"))["mattermost"]["calls"]
     calls = _tls_edge()["calls"]
-    assert mattermost["enabled"] is True
-    assert calls["enabled"] is True
     assert mattermost["public_port"] == calls["public_port"]
     assert mattermost["port"] == calls["udp_internal_port"]

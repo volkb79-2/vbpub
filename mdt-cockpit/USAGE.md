@@ -325,7 +325,7 @@ runtimes live under `/opt/mdt` and `/srv` (primary and secondary Python environm
 standalone CLIs, uv-managed Pythons, Oh My Zsh, PWMCP), group-writable for the `mdt` group your user
 belongs to. Defaults for bash, zsh, nano, htop, mc, Neovim and `less` are wired system-wide under
 `/etc` and `/usr/local/share/mdt-cockpit`; you override one by creating your own file, and your
-`~/.config/mdt-cockpit/{ai.env,shell.env,aliases.sh}` are sourced after the image's. The only home
+`~/.config/mdt-cockpit/{shell-start.d/,shell.env,aliases.sh}` are sourced after the image's. The only home
 file the finalizer writes is a comment-only `~/.zshrc` stub, and only when you have no zsh startup
 file. The home mount's host source is mode `0700` when created. Host SSH keys remain a separate
 readonly mount at `/run/mdt/host-ssh`; `/tmp` remains a separate host-backed source at

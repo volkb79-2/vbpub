@@ -41,7 +41,7 @@ def test_version_git_log_without_paths_preserves_unscoped_git_command(monkeypatc
         captured.update(command=command, kwargs=kwargs)
         return SimpleNamespace(stdout="subject\n\n", returncode=0)
 
-    monkeypatch.setattr(version.subprocess, "run", run)
+    monkeypatch.setattr(version, "run_process", run)
     assert version._git_log(tmp_path, "HEAD~1") == ["subject"]
     assert "--" not in captured["command"]
 
@@ -56,7 +56,7 @@ def test_version_git_log_refuses_failed_history_queries(
     monkeypatch, tmp_path, stdout, stderr, detail,
 ):
     monkeypatch.setattr(
-        version.subprocess, "run",
+        version, "run_process",
         lambda *_args, **_kwargs: SimpleNamespace(
             stdout=stdout, stderr=stderr, returncode=128,
         ),
@@ -68,7 +68,7 @@ def test_version_git_log_refuses_failed_history_queries(
 
 def test_version_git_log_preserves_a_successful_empty_history(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        version.subprocess, "run",
+        version, "run_process",
         lambda *_args, **_kwargs: SimpleNamespace(stdout="", stderr="", returncode=0),
     )
 
@@ -77,7 +77,7 @@ def test_version_git_log_preserves_a_successful_empty_history(monkeypatch, tmp_p
 
 def test_version_git_log_refuses_when_git_cannot_start(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        version.subprocess, "run",
+        version, "run_process",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("git")),
     )
 

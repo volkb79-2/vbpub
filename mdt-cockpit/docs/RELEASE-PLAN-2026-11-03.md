@@ -182,7 +182,7 @@ devcontainer uses the 20261027 `-latest` image, and steps 1-9 are repeated from 
 14. **Migrate the home.** Use the documented script in `mdt-cockpit/docs/HOME-PERSISTENCE.md:88-111`. Run it as the
     host user (uid 1003 equals the in-container vscode user) with `NEW=~/mdt-cockpit-vbpub-home`.
     - It covers `.claude`, `.claude.json`, `.ssh`, `.gnupg`, `.minisign`, `.claudelink`, `.pi`, `.reasonix`, `.openclaw`,
-      `.gitconfig` and `.codex*` (without `packages/standalone`), plus `.config/{gh,git,docker}` and `ai.env`.
+      `.gitconfig` and `.codex*` (without `packages/standalone`), plus `.config/{gh,git,docker}` and the user's API-key file.
     - About 24 GB in total, of which `.codex/sessions` is 12 GB.
     - Prefix it with `ionice -c3 nice -n 19`. About 5-10 minutes.
     - Copy, never move: `~/mdt--mounted-folders` stays the rollback.

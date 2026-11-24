@@ -21,7 +21,13 @@ write_files:
       DEV=$(lsblk -dnpo NAME,SIZE,TYPE | awk '$3=="disk" && $2=="8G" {print $1; exit}')
       echo "target device: $DEV"; lsblk
       [ -n "$DEV" ] || { echo "DR-BUILD-FAIL no-8G-disk"; exit 1; }
-      bash /mnt/seed/poc/install-btrfs.sh --device "$DEV" --yes
+      [ -f /mnt/seed/bootloader ] || { echo "DR-BUILD-FAIL missing-bootloader-marker"; exit 1; }
+      BL=$(cat /mnt/seed/bootloader)
+      case "$BL" in
+        grub|systemd-boot) ;;
+        *) echo "DR-BUILD-FAIL unknown-bootloader:$BL"; exit 1 ;;
+      esac
+      bash /mnt/seed/poc/install-btrfs.sh --device "$DEV" --yes --bootloader "$BL"
       rc=$?
       echo "DR-BUILD-DONE rc=$rc"
       sync

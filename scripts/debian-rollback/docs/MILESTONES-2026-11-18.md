@@ -1,9 +1,12 @@
 # Milestones from 2026-11-18
 
-Agreed with the operator (interview, 2026-11-18) and acknowledged by the
-controller session `vbpub-main-controller`. Decisions D18 and D19 in the
-[design guide](DESIGN-GUIDE.md). This plan narrows the order of
-[WORK-PACKAGES.md](WORK-PACKAGES.md); package ids there stay valid.
+Historical plan agreed on 2026-11-18. Its controller/lease sequence and
+implementation order were superseded by the operator on 2026-11-20: finish
+systemd-boot first, defer ZFS, and use r1002/v1001 for VMs without another
+approval request. See the current [TODO](../TODO.md) and
+[installation architecture](INSTALLATION-ARCHITECTURE.md). The milestone
+tables below preserve the original plan and are not current execution
+instructions.
 
 ## M1. Proof of concept by hand (start now)
 

@@ -69,6 +69,8 @@ EDGE_TRAEFIK="${EDGE_TRAEFIK:-$(_discover traefik | head -n1)}"
 EDGE_DOCKERPROXY="${EDGE_DOCKERPROXY:-$(_discover dockerproxy | head -n1)}"
 EDGE_TRAEFIK="${EDGE_TRAEFIK:-edge-traefik}"
 EDGE_DOCKERPROXY="${EDGE_DOCKERPROXY:-edge-dockerproxy}"
+EDGE_ACME_VOLUME="${EDGE_ACME_VOLUME:-$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/traefik"}}{{.Name}}{{end}}{{end}}' "$EDGE_TRAEFIK" 2>/dev/null || true)}"
+# Accept the former /etc/traefik target for an already-running instance during upgrade.
 EDGE_ACME_VOLUME="${EDGE_ACME_VOLUME:-$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/etc/traefik/acme"}}{{.Name}}{{end}}{{end}}' "$EDGE_TRAEFIK" 2>/dev/null || true)}"
 EDGE_ACME_VOLUME="${EDGE_ACME_VOLUME:-edge-proxy_acme-data}"
 OVERRIDE_FILE="$STACK_DIR/ciu.toml.j2"

@@ -14,6 +14,8 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-187 | CODE FIXED 2026-11-22 (deterministic synthetic `/proc` observation replaces the load-sensitive pipe-holder permission-skip test); final integrated-head `cmru-r0-r1` evidence pending controller receipt | `afd992c6d` |
+| KI-186 | OPEN (migrate the remaining `subprocess.run` sites to `run_process`; 40 occurrences in 12 non-template modules after P6b; candidate effect not measured) | — |
 | KI-185 | OPEN (adopt the [cli-extended line-stream renderer proposal](../libraries/cli-extended/docs/DESIGN-LINE-STREAM-RENDERER.md) through CLI-EXT-35–CLI-EXT-40) | — |
 | KI-184 | FIXED 2026-11-18 (every line in one multi-line write is processed at a severity boundary) | `54b9d3b75` |
 | KI-183 | OPEN (the wheel-builder and probe rows and the cmru gate rows of the release preflight run only for a release that includes cmru) | — |
@@ -3903,6 +3905,8 @@ incrementally with no independent CMRU severity parser or ANSI renderer left.
 3. An optional no-progress watchdog per step (no output and no growth of the step's log for a declared period) that fails the step with the last output line and the live process tree. The operator names the period in `cmru.toml`; the default is generous, never infinite.
 4. The shared helper lives in one place (cli-extended or cmru's runner) and the other tools reuse it: CIU-220, MDT-104 and NL-83 track the call sites.
 
+Closed implementation plan for items 3 and 4: [cmru/docs/DESIGN-RUNNER-PROCIO-ADOPTION.md](docs/DESIGN-RUNNER-PROCIO-ADOPTION.md).
+
 **Acceptance.** A test child spawns `sleep 600` with inherited stdout, then exits 3: the runner returns exit 3 within the drain period and logs the holder pid; a second test with a silent live child fails at the watchdog period with the process tree; a SIGINT test shows the whole group gone.
 
 ## KI-177 `cmru versions resolve` rewrites cmru.toml and silently drops its comments
@@ -3952,3 +3956,62 @@ incrementally with no independent CMRU severity parser or ANSI renderer left.
 **Resolution/evidence (2026-11-18).** `_write_normal` now writes one ordinary line and returns the text after its newline. `write` loops over that remainder from line-start state, preserving the existing candidate carry-over and return length. Tests compare multiline writes with newline-separated and mid-token chunks, exhaustively check all chunkings of a small multiline sample, cover a plain line followed by a severity prefix, and pin the original input length when a held candidate precedes multiline text. Against the pre-fix code, the focused suite failed 6 tests (4 passed). Four hand mutations were killed: omitting the line-start reset (6 failures), stopping after the first newline (5), dropping the held candidate (3), and counting the held candidate in the return value (1). The focused suite passes 10 tests on the fix.
 
 **Close when.** Closed by the multiline severity boundary fix and its chunking, candidate and return-length regressions.
+
+## KI-186 - migrate the remaining `subprocess.run` sites to `run_process`
+
+**Status:** OPEN (filed 2026-11-18); severity: low (scattered subprocess keyword plumbing creates low-value mutation candidates).
+
+**Remaining sites.** `grep -c 'subprocess.run'` after P6b, excluding templates and the `process_run.py` wrapper:
+
+| Module | Count |
+| --- | ---: |
+| `bundle.py` | 2 |
+| `cli.py` | 8 |
+| `config.py` | 1 |
+| `delegated.py` | 1 |
+| `gate_snapshot.py` | 3 |
+| `git_auth.py` | 1 |
+| `handlers.py` | 6 |
+| `release_preconditions.py` | 3 |
+| `runner.py` | 3 |
+| `scaffold.py` | 1 |
+| `tester_gate.py` | 7 |
+| `transaction.py` | 4 |
+
+**Candidate effect.** Not measured from existing campaign evidence.
+
+**P6b slice (2026-11-19).** Migrated 19 of the 20 sites in `version.py` (8), `versions.py` (5), `changelog.py` (3), `release_notes.py` (2), and `config.py` (1). The remaining `config.py` GitHub token lookup passes `stdin=subprocess.DEVNULL`; `run_process` does not accept `stdin`, and this slice does not widen the wrapper.
+
+**Wanted.** Migrate the remaining production `subprocess.run` sites to the shared `run_process` wrapper without changing command behavior.
+
+**Close when.** The remaining modules use `run_process`, their behavior contracts pass, and the wrapper owns the shared subprocess keyword semantics.
+
+## KI-187 - pipe-holder permission-skip test depends on real process scheduling
+
+**Status:** CODE FIXED (filed 2026-11-22; fixed 2026-11-22; fix commit
+`afd992c6db63635fb88a05655bd5586db47dd69d`); severity: test strength. The P6a r0-r1 gate at `9cf2a0733` failed once on
+`tests/test_runner_pipe_holders.py::test_pipe_holder_scan_skips_processes_it_cannot_inspect` while another
+gate ran, then passed on an identical-head rerun. The P6b r0-r1 gate at `015bdb7bb` failed on the same test
+while gates again ran concurrently. The test started two real `sleep 600` processes and relied on their
+descriptors becoming visible before it injected an inspection failure, making its verdict depend on
+scheduling and host load.
+
+**Wanted.** Replace the real processes, pipe descriptors, fixed waits, and signal cleanup with a deterministic
+synthetic `/proc` observation. Monkeypatch the scanner's `os.listdir`, `os.readlink`, and `getpid` boundaries
+through pytest's `monkeypatch` fixture, and assert in one scan that a visible matching holder is returned, an
+inaccessible PID is skipped, the current PID is excluded, and non-PID `/proc` entries are ignored. That
+deterministic synthetic oracle is present in the test fix.
+
+**Interim gate evidence.** The `cmru-r0-r1` result at
+`b779f2b6a46b1df5e8963f46797df5f0c25f5584` (R0 `PASS`, R1 `PASS`; outcome `PASS`, exit code `0`) is
+historical/interim evidence from the pre-integration commit, not final evidence for the integrated P6b head.
+
+**Final closure evidence.** Final P6b closure requires the integrated final head to pass the registered
+`cmru-r0-r1` lane. After that gate, the controller will record the final-head receipt in
+`artifacts/release-program-20261027/reports/p6b-cmru-finalization.json`. No final integrated head or passing
+gate result is claimed here.
+
+**Close condition.** The focused oracle has no real child process, pipe, fixed wait, signal, or scheduler
+dependency; a scanner that reports the inaccessible PID, drops the visible holder, includes the current PID,
+or treats a non-PID entry as a process fails it; and the integrated final P6b head passes the registered
+`cmru-r0-r1` lane with green controller evidence.

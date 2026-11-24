@@ -13,6 +13,7 @@ DooD-aware: when running inside a container whose Docker daemon is the host's
 
 import argparse
 import datetime
+import ipaddress
 import json
 import os
 import shutil
@@ -118,9 +119,44 @@ def validate(cfg: dict) -> None:
     mode = cfg["tls"]["mode"]
     if mode not in MODES:
         sys.exit(f"error: tls.mode {mode!r} is not one of {', '.join(MODES)}")
-    if mode == "acme-http" and not cfg["ports"]["expose_http"]:
-        sys.exit("error: tls.mode acme-http needs ports.expose_http = true "
-                 "(the HTTP-01 challenge arrives on port 80)")
+    ports = cfg["ports"]
+    http3 = cfg.get("http3", {})
+    calls = cfg["calls"]
+    for name, value in (("ports.http", ports.get("http")),
+                        ("ports.https", ports.get("https"))):
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
+            sys.exit(f"error: {name} must be an integer from 1 through 65535")
+    expose_http = ports.get("expose_http")
+    h3_enabled = http3.get("enabled")
+    calls_enabled = calls.get("enabled")
+    if not isinstance(expose_http, bool):
+        sys.exit("error: ports.expose_http must be true or false")
+    if not isinstance(h3_enabled, bool):
+        sys.exit("error: http3.enabled must be true or false")
+    if not isinstance(calls_enabled, bool):
+        sys.exit("error: calls.enabled must be true or false")
+    if expose_http and ports["http"] == ports["https"]:
+        sys.exit("error: public HTTP and HTTPS cannot use the same TCP port")
+    if mode == "acme-tls" and ports["https"] != 443:
+        sys.exit("error: tls.mode acme-tls requires the public HTTPS port to be 443")
+    if mode == "acme-http" and (not expose_http or ports["http"] != 80):
+        sys.exit("error: tls.mode acme-http needs the public HTTP listener on port 80")
+    bind_ip = ports.get("bind_ip", "")
+    if not isinstance(bind_ip, str):
+        sys.exit("error: ports.bind_ip must be an IP address or an empty string")
+    if bind_ip:
+        try:
+            ipaddress.ip_address(bind_ip)
+        except ValueError:
+            sys.exit("error: ports.bind_ip must be a valid IP address")
+    if calls_enabled:
+        call_port = calls.get("public_port")
+        if isinstance(call_port, bool) or not isinstance(call_port, int) or not 1 <= call_port <= 65535:
+            sys.exit("error: calls.public_port must be an integer from 1 through 65535")
+        if expose_http and call_port == ports["http"]:
+            sys.exit("error: Calls TCP conflicts with the public HTTP TCP port")
+        if call_port == ports["https"]:
+            sys.exit("error: Calls TCP conflicts with the public HTTPS TCP port")
     if mode in ("static", "dev") and not cfg["static"]["domains"]:
         sys.exit(f"error: tls.mode {mode} needs [tls_edge.static] domains = [...]")
     if cfg.get("secrets"):
