@@ -23,8 +23,10 @@ import pilot_r2_snapshot
 from assay.candidate_identity import candidate_id_from_fields
 from assay import __version__ as ASSAY_VERSION
 from assay.mutation import (
-    MUTATION_STATE_SCHEMA_VERSION,
     PROGRESS_EVENTS,
+)
+from assay.mutation_store import (
+    MUTATION_STATE_SCHEMA_VERSION,
     _execution_from_state_record,
     _terminal_result_matches_bucket,
     _valid_hung_resource_evidence,

@@ -131,6 +131,7 @@ ALLOWED_JUDGE_MODULES = frozenset(
         "assay.errors",
         "assay.git",
         "assay.mutation",
+        "assay.mutation_store",
         "assay.runner",
         "assay.safeio",
         "assay.verdict",
