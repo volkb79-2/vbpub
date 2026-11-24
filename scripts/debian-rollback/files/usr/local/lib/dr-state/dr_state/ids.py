@@ -139,8 +139,11 @@ def _order(char: str) -> int:
     return ord(char) + 256
 
 
-def compare_versions(left: str, right: str) -> int:
-    """Compare two version strings with dpkg's ``verrevcmp`` ordering."""
+_FILE_VERSION_SUFFIX_RE = re.compile(r"(?:\.[A-Za-z~][A-Za-z0-9~]*)*$")
+
+
+def _verrevcmp(left: str, right: str) -> int:
+    """Compare version prefixes with the dpkg ``verrevcmp`` rule."""
 
     i = j = 0
     while i < len(left) or j < len(right):
@@ -169,6 +172,24 @@ def compare_versions(left: str, right: str) -> int:
         if first_difference:
             return first_difference
     return 0
+
+
+def compare_versions(left: str, right: str) -> int:
+    """Compare names with GNU ``sort -V``'s ``filevercmp`` rule."""
+
+    left_prefix = _FILE_VERSION_SUFFIX_RE.sub("", left)
+    right_prefix = _FILE_VERSION_SUFFIX_RE.sub("", right)
+    result = _verrevcmp(left_prefix, right_prefix)
+    if result:
+        return result
+    # gnulib filevercmp makes a second verrevcmp pass on the complete names
+    # before falling back to byte comparison.
+    result = _verrevcmp(left, right)
+    if result:
+        return result
+    left_bytes = left.encode("utf-8")
+    right_bytes = right.encode("utf-8")
+    return (left_bytes > right_bytes) - (left_bytes < right_bytes)
 
 
 version_key = cmp_to_key(compare_versions)
