@@ -1976,6 +1976,6 @@ Source: .controller-state/design-review-2026-11-24/controller-tooling.md M3 (SYN
 
 **Status:** OPEN; severity: high.
 
-The overrideCommand loop `while sleep 1 & wait $!; do :; done` ends on a killed sleep: a killed `sleep` makes `wait` return non-zero, the loop exits and PID 1 ends, which stops the whole cockpit. Measured twice on 2026-11-18 (exit 0, not OOM). The loop must survive a killed child (for example loop unconditionally and only exit on a TERM trap), so a pid-signalling test or a stray `pkill` can no longer take the cockpit down.
+The overrideCommand loop `while sleep 1 & wait $!; do :; done` ends on a killed sleep: a killed `sleep` makes `wait` return non-zero, the loop exits and PID 1 ends, which stops the whole cockpit. Measured twice on 2026-11-18 (exit 0, not OOM). The loop must survive a killed child, so a pid-signalling test or a stray `pkill` can no longer take the cockpit down.
 
 Source: memory `devcontainer-pid1-dies-when-sleep-child-killed` (2026-11-18)

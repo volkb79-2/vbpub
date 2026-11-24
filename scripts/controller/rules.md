@@ -7,22 +7,26 @@ below disagrees, this block wins.
 
 1. **Compile and test remotely before every commit, serially.** Use
    `scripts/controller/dev -p <project> <verb> …` (the remote capped dev
-   container). Until that tool exists: Rust via `hostobs/tools/dev`; anything
-   else is not run before the commit, only through its registered lane. On exit
-   75 (host busy) retry once, then report it. A dev run is never gate evidence:
-   evidence is only a registered lane on the exact final head.
+   container). Until that tool exists: hostobs (Rust) via `hostobs/tools/dev`;
+   anything else is not run before the commit, only through its registered
+   lane. On exit 75 (host busy), or exit 3 from `hostobs/tools/dev` naming
+   another dev call in progress, retry once, then report it. A dev run is never
+   gate evidence: evidence is only a registered lane on the exact final head.
 2. **Never use `hx.sh`, `ssh` or `docker` directly, and never run `pytest`,
    `cargo` or a project test script in the devcontainer** (it is cockpit-only;
-   killing its PID 1's child stops the whole cockpit). Code that sends signals
-   to processes (kill, pkill, process groups, pidfds) runs only inside the dev
-   container, which has a private PID namespace.
+   killing its PID 1's child stops the whole cockpit).
+   `scripts/controller/gate-run.sh <lane>` is allowed: the lane runs in its own
+   container. Code that sends signals to processes (kill, pkill, process
+   groups, pidfds) runs only inside the dev container or a registered lane's
+   container (both have a private PID namespace), never in the devcontainer.
 3. **Contract and size.** The brief states a contract (allowed files and
    behaviour) and a target size. Review runs at most 2 rounds against that
    contract; a finding outside it is closed by design and filed in the tool's
    backlog, not fixed in the package.
 4. **Explicit effort.** The caller launches with an explicit
-   `CODEX_EFFORT=max` (or `PI_THINKING`) until routes.toml lands (CTL-39).
-5. **Unique run names** (`<label>-$(date -u +%H%M%S)`), never reused. A
+   `CODEX_EFFORT=max` (pi: an explicit `PI_THINKING=<value>` stated in the
+   brief) until routes.toml lands (CTL-39).
+5. **Unique run names** (`<label>-$(date -u +%Y%m%dT%H%M%S)`), never reused. A
    resumed Codex run's `.last.txt` may be stale: verify its result from git
    until CTL-38 is fixed.
 6. **Finish with DONE, PARTIAL or BLOCKED** plus the finalization: what is done
@@ -32,9 +36,9 @@ below disagrees, this block wins.
 
 ## Standing rules
 
-- The devcontainer is a cockpit. Tests and gates run only through the
-  registered `run-gate` lane in `tester-unified`; never run a test suite in the
-  cockpit. Take a gate slot through the gate wrapper (below) and run one lane
+- The devcontainer is a cockpit. Gate evidence comes only from the registered
+  `run-gate` lane in `tester-unified`; pre-commit compile and test runs go
+  through the dev tool (house rule 1). Never run a test suite in the cockpit. Take a gate slot through the gate wrapper (below) and run one lane
   at a time per job.
 - Keep run logs, run streams, host config, queue state, release archives, and
   reports outside the repository (the controller's own `plan.yaml` and
@@ -90,8 +94,9 @@ below disagrees, this block wins.
 - Every Bash call carries a `description` that states its intent in plain
   words; successor extracts and audits depend on it.
 - Do not ship unrun code: if a gate cannot run yet, still run the focused test
-  files of your change serially through the dev container (house rule 1, never
-  in the cockpit) and report exactly what ran. Coverage gates
+  files of your change serially through the dev tool where house rule 1
+  provides one (never in the cockpit); otherwise say that nothing ran before
+  the commit, and report exactly what ran. Coverage gates
   hide never-run branches, so keep the static undefined-name test green.
 - Make the final required `origin/main` merge the last content change, then
   run gates on a clean tree and confirm every gate log names the final head.

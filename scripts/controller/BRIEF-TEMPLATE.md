@@ -46,9 +46,9 @@ any survivor.
   [`rules.md`](rules.md).
 - Keep external working notes as scratch. Anything reusable, cited, or decided
   belongs in the repository.
-- Use project-owned workflows. Run tests only through a registered
-  `tester-unified` `run-gate` lane, under the shared gate lock. Run one lane at
-  a time.
+- Use project-owned workflows. Gate evidence comes only from a registered
+  `tester-unified` `run-gate` lane, under the shared gate lock, one lane at a
+  time; pre-commit runs follow house rule 1.
 - Optional test dependencies FAIL, never skip; no `--skip-gates`; no
   screenshots or binaries in the repository; docs stay agnostic of host, server
   and container names. Third-party dependencies must be at least 14 days past

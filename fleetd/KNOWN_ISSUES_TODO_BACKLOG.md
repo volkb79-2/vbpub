@@ -864,7 +864,7 @@ Source: .controller-state/design-review-2026-11-24/fleetd.md H1
 
 **State:** OPEN. **Priority:** P1. **Filed:** 2026-11-24.
 
-fleetd: delete `fleet merge-check` now (assay strict merge owns it); assay owns `assay-merge-manifest/1`. Drop guard.toml validation (owner: thrashguard/TG-1); FD-012 becomes job registration on the thrashguard socket.
+fleetd: delete `fleet merge-check` now (assay strict merge owns it); assay owns `assay-merge-manifest/1`. Drop guard.toml validation (owner: thrashguard/TG-1); FD-012 becomes job registration on the thrashguard socket. Also delete `fleet-shard-identity/1` (fd-H5 Direction).
 
 Source: .controller-state/design-review-2026-11-24/fleetd.md H5, M1
 
@@ -882,7 +882,7 @@ Source: .controller-state/design-review-2026-11-24/fleetd.md H3
 
 fleetd: campaign unit = assay shard range per host (sizing → --shard-offset/--shard-total); retire batch candidate lists except the memory-crash retry; collect = store copy + strict --merge-shards. Operator decision 2026-11-24 (option C): shard ranges per host now; RAM-ordered lists later only with measured per-candidate RAM.
 
-Source: .controller-state/design-review-2026-11-24/fleetd.md H2
+Source: .controller-state/design-review-2026-11-24/fleetd.md H2; .controller-state/PROGRAM-2026-11-24/PROGRAM.md 2026-11-24 05:23Z (operator: option C)
 
 ## FD-044 Rolling scope frozen; delete it after B561 carry-forward
 

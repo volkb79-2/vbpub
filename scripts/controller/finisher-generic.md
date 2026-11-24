@@ -10,8 +10,8 @@ on every task commit, including merges, and leave the worktree clean. If a gate
 cannot run, report the exact reason and what did run; do not claim completion.
 If you are short of budget, write the report first (what ran, what did not, the
 unchecked items), then continue. The house rules in `scripts/controller/rules.md`
-(CTL-50) still bind: compile and test only through the remote dev container,
-never `hx.sh`, `ssh`, `docker`, `pytest` or `cargo` in the devcontainer, and
+(CTL-50) still bind: compile and test before a commit only as house rule 1
+says (gate evidence only from registered lanes), never `hx.sh`, `ssh`, `docker`, `pytest` or `cargo` in the devcontainer, and
 finish with DONE, PARTIAL or BLOCKED (a budget stop is PARTIAL, never BLOCKED).
 
 The final message must give the report path, final head, clean-tree result, and
