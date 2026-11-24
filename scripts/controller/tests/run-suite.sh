@@ -24,6 +24,7 @@ files=(
   "$SCRIPT_DIR/../remote-gate.sh"
   "$SCRIPT_DIR/../chain-run.sh"
   "$SCRIPT_DIR/../ctl-doctor.sh"
+  "$SCRIPT_DIR/../ctl-hygiene.sh"
   "$SCRIPT_DIR/../ctl-state-backup.sh"
   "$SCRIPT_DIR/../release-from-wt.sh"
   "$SCRIPT_DIR/../push-image.sh"
@@ -49,6 +50,7 @@ files=(
   "$SCRIPT_DIR/test-remote-gate.sh"
   "$SCRIPT_DIR/test-chain-run.sh"
   "$SCRIPT_DIR/test-ctl-doctor.sh"
+  "$SCRIPT_DIR/test-ctl-hygiene.sh"
   "$SCRIPT_DIR/test-ctl-state-backup.sh"
   "$SCRIPT_DIR/test-clear-resume.sh"
   "$SCRIPT_DIR/test-compact-resume.sh"
@@ -79,6 +81,7 @@ bash "$SCRIPT_DIR/test-skills-sync.sh" || exit $?
 bash "$SCRIPT_DIR/test-remote-gate.sh" || exit $?
 bash "$SCRIPT_DIR/test-chain-run.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-doctor.sh" || exit $?
+bash "$SCRIPT_DIR/test-ctl-hygiene.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-state-backup.sh" || exit $?
 bash "$SCRIPT_DIR/test-clear-resume.sh" || exit $?
 bash "$SCRIPT_DIR/test-compact-resume.sh" || exit $?

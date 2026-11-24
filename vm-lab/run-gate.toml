@@ -33,7 +33,7 @@ resource_observer = "cgprofile"
 environment = "tester-unified"
 jobs = "auto"
 clean_tree = false
-budget = "240m"
+budget = "245m"
 artifacts = [".assay/verdict-vm-lab.json",
   ".assay/progress-vm-lab.jsonl"]
 
@@ -83,4 +83,5 @@ argv = [
   "cd {worktree}/vm-lab && run-gate --worktree {worktree} r0-r1 && run-gate --worktree {worktree} wheel && run-gate --worktree {worktree} r2",
 ]
 clean_tree = false
-budget = "270m"
+# r0-r1 20m + wheel 10m + r2 245m = 275m (RG-307 raised r2 from 240m); 280m stays above the sum.
+budget = "280m"

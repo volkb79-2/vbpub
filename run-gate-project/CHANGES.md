@@ -42,9 +42,10 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: pending release notes begin -->
 ### Added
-- run-gate: `lanes --check [--project DIR | --all] [--strict] [--json]` applies Run-Gate's budget-margin, canary, Assay-lane and native-R2 shard rules offline (RG-296); the current estate reports RG-307's 16 non-fatal margin warnings.
+- run-gate: `lanes --check [--project DIR | --all] [--strict] [--json]` applies Run-Gate's budget-margin, canary, Assay-lane and native-R2 shard rules offline (RG-296); the estate's 16 zero-margin wrappers were raised to `inner + 5m` in this rev (RG-307), so `--strict` is now clean estate-wide.
 
 ### Fixed
+- run-gate: the run-time Assay-budget warning follows R-59 (RG-308a). It used to fire whenever the inner Assay budget was BELOW the outer wrapper budget — the state R-59 requires — so every fixed lane warned on every run. It now warns only when the wrapper budget is below `inner + LANES_CHECK_BUDGET_MARGIN_SECONDS` (5m): the margin wording names both budgets and the margin, and a wrapper below the inner budget gets the stronger "killed before Assay can close its verdict" wording. From inner + 5m up the run is silent, and the "effective per-attempt bound" line is unchanged.
 - run-gate: `main()` owns one scratch root per invocation; `doctor --prune` uses owner identity to reclaim SIGKILL/OOM and legacy orphans across projects without containers, reporting partial removals as exit 1 (RG-294/RG-295).
 
 ### Changed
