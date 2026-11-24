@@ -21,8 +21,44 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Changed
+- CIU-220: `procutil.run_cmd(capture=True)` now delegates to
+  `cli_extended.procio.run_capture`, preserving the existing
+  `CompletedProcess` and timeout shapes while bounding the post-exit drain and
+  reaping a timed-out child group. Compose-up now delegates to
+  `procio.run_streaming`: it keeps the child's exit code, drains for at most
+  two seconds, warns once with the PIDs still holding the pipe, uses the
+  exported 1800-second no-progress watchdog, and prints the pre-signal process
+  tree when that watchdog expires. The remaining direct subprocess sites are
+  explicit, justified guard-test exceptions.
+- CIU-224: severity presentation is now a thin adapter over the shared
+  cli-extended `LineStreamRenderer`. Prefixes and the
+  `CIU_LOG_PREFIX_TIME_SHORT` timestamp remain unchanged; each line is
+  classified independently. `NO_COLOR` (when non-empty) and `TERM=dumb` keep
+  output plain, and input-origin terminal escapes are removed before display.
+  Unterminated text is emitted on `flush()`.
+- The `cli-extended` floor is now `>=0.8.0`, the release carrying the shared
+  renderer and bounded process readers.
+
+### Fixed
+- CIU-220: malformed UTF-8 in streamed command output is replaced with
+  `U+FFFD` instead of failing a command that otherwise exited successfully.
+
 ### Testing
 - CIU-223: the CIU-215 tests now disable git's automatic gc and maintenance per process, and an autouse test fixture reports any direct child left under pytest without signalling it. Tests only; no consumer action.
+- CIU-220/CIU-224: estate test policy is loaded from source in warn mode;
+  process-signalling oracles carry `requires_contained_cgroup`, and the new
+  behavioral tests cover bounded draining, group reaping, holder warnings,
+  replacement decoding, multi-line severity rendering and the full direct
+  subprocess exception inventory.
+
+### Adoption / Migration Notes
+- ciu now requires cli-extended 0.8.0 or newer. Install cli-extended before
+  ciu; `get.py` already hoists the matching wheel from a release bundle. No
+  configuration changes are required. A command whose output pipe is held
+  after exit now returns with that command's code and a PID-naming warning
+  instead of waiting forever, and Compose-up gains the 1800-second
+  no-progress boundary.
 
 <!-- cmru: release history -->
 

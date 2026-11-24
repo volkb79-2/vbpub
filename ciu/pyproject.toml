@@ -13,14 +13,13 @@ requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Volker Badziong"}]
 # cli-extended is a REAL wheel dependency (unified-adoption CX-D1), never vendored and
-# never put on a path. Floor 0.5.0: the released wheel tester-unified installs; it carries
-# register_doctor/register_skills_verbs (doctor + skills groups), CliIdentity.resolve with
-# version_probe, VerbSpec(dry_run=...) and the surface lifecycle ciu's CLI is registered with.
+# never put on a path. Floor 0.8.0 carries the shared LineStreamRenderer used by ciu's
+# severity output and the bounded procio capture/streaming readers (CIU-224, CIU-220).
 # It is published to GitHub Releases only (the bare name is unclaimed on PyPI), so every
 # install of ciu MUST be `--no-index --find-links <wheelhouse>` or `--no-deps` after
 # installing cli-extended first; get.py hoists cli-extended first (KI-51).
 dependencies = [
-	"cli-extended>=0.5.0",
+	"cli-extended>=0.8.0",
 	"Jinja2>=3.1.2",
 	"PyYAML>=6.0.1",
 	"tomli_w>=1.0.0",
@@ -93,3 +92,10 @@ version_file = "src/ciu/_version.py"
 
 [project.scripts]
 ciu = "ciu.cli:main"
+
+[tool.pytest.ini_options]
+# ciu's conftest loads estate_test_policy from this repository's source, like
+# cli-extended does. Disable the installed pytest11 entry point to prevent
+# double registration; warn mode is used until the whole suite is clean.
+addopts = "-q -p no:estate_test_policy"
+estate_policy = "warn"

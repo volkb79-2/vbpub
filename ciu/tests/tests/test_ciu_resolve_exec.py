@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -441,20 +440,14 @@ def test_live_resolution_absent_multiple_and_inspect_errors(resolvable_repo, mon
 
 
 def test_live_identity_state_captures_both_docker_responses(monkeypatch):
-    calls = []
-
-    def run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        if argv[1] == "ps":
-            stdout = "cid-1\n" if kwargs["capture_output"] else None
+    def docker(argv, **_kwargs):
+        if argv[0] == "ps":
+            stdout = "cid-1\n"
         else:
-            stdout = (
-                '{"Status":"running","Health":{"Status":"healthy"}}'
-                if kwargs["capture_output"] else None
-            )
-        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+            stdout = '{"Status":"running","Health":{"Status":"healthy"}}'
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
-    monkeypatch.setattr(deploy.procutil.subprocess, "run", run)
+    monkeypatch.setattr(deploy.procutil, "docker", docker)
     assert deploy._resolve_identity_live_state("project", "service") == {
         "state": "running",
         "health": "healthy",
@@ -464,9 +457,6 @@ def test_live_identity_state_captures_both_docker_responses(monkeypatch):
             "health": "healthy",
         }],
     }
-    assert [kwargs["capture_output"] for _argv, kwargs in calls] == [True, True]
-
-
 @pytest.mark.parametrize(
     ("phase", "stdout", "stderr", "chosen", "ignored"),
     [
@@ -480,28 +470,20 @@ def test_live_identity_state_captures_both_docker_responses(monkeypatch):
 def test_live_identity_state_wraps_docker_errors_and_prefers_stderr(
     monkeypatch, phase, stdout, stderr, chosen, ignored,
 ):
-    calls = []
-
-    def run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        if argv[1] == "ps":
+    def docker(argv, **_kwargs):
+        if argv[0] == "ps":
             if phase == "query":
-                return subprocess.CompletedProcess(
-                    argv, 17, stdout=stdout, stderr=stderr
-                )
-            return subprocess.CompletedProcess(argv, 0, stdout="cid-1\n", stderr="")
-        return subprocess.CompletedProcess(argv, 17, stdout=stdout, stderr=stderr)
+                return SimpleNamespace(returncode=17, stdout=stdout, stderr=stderr)
+            return SimpleNamespace(returncode=0, stdout="cid-1\n", stderr="")
+        return SimpleNamespace(returncode=17, stdout=stdout, stderr=stderr)
 
-    monkeypatch.setattr(deploy.procutil.subprocess, "run", run)
+    monkeypatch.setattr(deploy.procutil, "docker", docker)
     with pytest.raises(RuntimeError) as exc_info:
         deploy._resolve_identity_live_state("project", "service")
     message = str(exc_info.value)
     assert chosen in message
     if ignored is not None:
         assert ignored not in message
-    assert calls
-
-
 def test_exec_selector_and_selection_refusals(resolvable_repo, monkeypatch):
     repo, _stack, _global = resolvable_repo
     with pytest.raises(ValueError, match="requires a command"):

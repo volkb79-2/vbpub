@@ -1677,6 +1677,20 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   *project name* from — that stays `-p` (S8.7) — it only changes how
   relative paths and `.env` resolution inside/around the compose file
   resolve.
+- **S8.1b** *(CIU-220).* CIU's converted capture and streaming boundaries
+  use `cli_extended.procio`. `procutil.run_cmd(capture=True)` MUST use
+  `procio.run_capture`: the child starts in a process group; reading stops
+  after a finite post-exit drain even if a descendant holds either pipe;
+  a timeout reaps that whole group; and CIU still returns its established
+  text `CompletedProcess` shape with UTF-8 replacement decoding.
+  Compose-up MUST use `procio.run_streaming`: it keeps the child's exit
+  code, replaces malformed output bytes instead of failing the command,
+  emits one `[WARN]` naming the PIDs that still hold the pipe after the
+  two-second drain, and applies the exported
+  `COMPOSE_UP_NO_PROGRESS_SECONDS = 1800` watchdog. A watchdog failure is
+  an error naming the limit, last line and pre-signal process tree.
+  `run_cmd(capture=False)` remains an inherited-terminal exception: it has
+  no output pipe, and a new session would break terminal job control.
 - **S8.2** The compose process environment is exactly: `os.environ`
   (facts seeded from the generated TOML tables, never from `ciu.env`) + `PWD` +
   `COMPOSE_PROFILES`
@@ -2275,6 +2289,11 @@ v1 contract.
   (S15.18), and the library's output controls. The registry's handlers hand the
   validated command to the implementation layer as tokens; the implementation
   parsers (`deploy.main`, `engine.main`, `worktree`) are an internal layer.
+  Severity rendering is one logical line at a time through cli-extended's shared
+  renderer, so every prefixed line is classified independently; an unterminated
+  line is emitted on `flush()`. Non-empty `NO_COLOR` and `TERM=dumb` disable
+  colour. Input-origin terminal escape and unsafe control sequences are removed
+  before display, so child output cannot inject terminal control bytes.
 - **S10.8 (generated reference)** The exported CLI surface (every route, argument,
   option and constraint) is generated from the registry by `cli-extended surface
   sync` into `docs/cli-surface.json` and the region below; `surface check` fails

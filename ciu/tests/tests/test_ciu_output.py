@@ -37,12 +37,14 @@ def test_error_colour_wraps_only_the_machine_readable_prefix():
     assert target.getvalue() == "\033[31m[ERROR]\033[0m deployment failed\n"
 
 
-def test_plain_partial_progress_is_forwarded_immediately_and_not_decorated():
+def test_plain_partial_progress_is_buffered_until_newline_or_flush():
     target = io.StringIO()
     stream = SeverityStream(target, time_short=True, colour=True)
 
     stream.write("rendering 50%")
+    assert target.getvalue() == ""
 
+    stream.flush()
     assert target.getvalue() == "rendering 50%"
 
 
@@ -57,9 +59,11 @@ def test_split_severity_is_buffered_only_until_it_can_be_classified_and_flushes_
     stream.flush()
 
     assert target.getvalue() == "[INFO] ready\n[ER"
+    stream.write("ROR]\n")
     # Delegating unknown stream attributes keeps the wrapper transparent to
     # callers which need StringIO's diagnostic helpers.
     assert stream.getvalue() == target.getvalue()
+    assert target.getvalue() == "[INFO] ready\n[ERROR]\n"
     assert stream.write("") == 0
     stream.flush()
 

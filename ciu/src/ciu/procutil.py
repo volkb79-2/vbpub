@@ -1,22 +1,33 @@
-"""Subprocess discipline for CIU v2.
+"""Subprocess discipline for CIU.
 
-Single subprocess entry-point for all CIU code (groundwork for SPEC S7.3
-exit-semantics: no sys.exit in helpers).
+Bounded reads are shared cli-extended behaviour, not a private ciu loop.
+``run_cmd(capture=True)`` delegates to :func:`cli_extended.procio.run_capture`;
+``run_streaming`` is used directly by the Compose execution boundary. The
+remaining direct subprocess sites are explicit exceptions in the CIU-220 guard
+test.
 
 Rules
 -----
-- ``run_cmd`` and ``popen`` are the **only** places CIU spawns child processes.
 - ``run_cmd`` MUST NOT call ``sys.exit``; callers decide what to do on failure.
 - On ``check=True``, raises ``subprocess.CalledProcessError`` enriched with a
   human-readable message containing the command, returncode, and the last few
   lines of stderr.
 - ``FileNotFoundError`` (command not found) and ``subprocess.TimeoutExpired``
-  propagate to the caller unchanged.
+  propagate to the caller with their established public shapes.
 """
 from __future__ import annotations
 
 import subprocess
 from typing import IO, Any
+
+from cli_extended import procio
+
+
+def _decode_output(value: bytes | str | None) -> str | None:
+    """Preserve CIU's UTF-8 replacement-decoding text contract."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def run_cmd(
@@ -70,20 +81,45 @@ def run_cmd(
     FileNotFoundError
         When the executable is not found on PATH.  Propagates unchanged.
     subprocess.TimeoutExpired
-        When *timeout* is exceeded.  Propagates unchanged.
+        When *timeout* is exceeded. Carries the established text output shape.
     """
-    result: subprocess.CompletedProcess[str] = subprocess.run(
-        cmd,
-        check=False,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=capture,
-        timeout=timeout,
-        env=env,
-        cwd=cwd,
-        input=input,
-    )
+    if capture:
+        stdin_input = input.encode("utf-8") if input is not None else None
+        try:
+            captured = procio.run_capture(
+                cmd,
+                cwd=cwd,
+                env=env,
+                input=stdin_input,
+                timeout=timeout,
+                text=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise subprocess.TimeoutExpired(
+                exc.cmd,
+                exc.timeout,
+                output=_decode_output(exc.output),
+                stderr=_decode_output(exc.stderr),
+            ) from exc
+        result = subprocess.CompletedProcess(
+            captured.args,
+            captured.returncode,
+            _decode_output(captured.stdout),
+            _decode_output(captured.stderr),
+        )
+    else:
+        result = subprocess.run(
+            cmd,
+            check=False,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=False,
+            timeout=timeout,
+            env=env,
+            cwd=cwd,
+            input=input,
+        )
 
     if check and result.returncode != 0:
         stderr_text = result.stderr or ""
