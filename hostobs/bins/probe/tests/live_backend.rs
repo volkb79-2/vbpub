@@ -56,7 +56,8 @@ fn fixture_sampler() -> (Sampler<RealFs, ManualClock>, Arc<Published>) {
         ManualClock::new(Timeline::new([7; 16], 11), started, WALL),
         cfg,
         64,
-    );
+    )
+    .expect("the compiled metric baseline is valid");
     (sampler, Arc::new(Published::new(started, WALL)))
 }
 

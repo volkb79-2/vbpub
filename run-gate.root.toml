@@ -37,7 +37,7 @@ io_sync = "relaxed"
 # network = "none" so the isolation is visible at the lane that consumes it.
 [environments.tester-unified-rust]
 mode = "ephemeral"
-image = "tester-unified-rust:rs-20261124"
+image = "tester-unified-rust:rs-20261124b"
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 network = "none"
 

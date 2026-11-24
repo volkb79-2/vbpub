@@ -20,11 +20,12 @@
 //! - **No path-keyed identity.** A cgroup is `(mount id, inode)` and a process is
 //!   `(boot id, pid, starttime ticks)`; a path is a label. Nothing in this crate derives
 //!   an identity from a path, and a test pins the recycled-inode case.
-//! - **Read-only, bounded, and free of `unsafe`.** The [`Fs`](crate::fs::Fs) trait has no write
-//!   operation, every read takes a byte bound and every listing an entry bound, and the
-//!   crate is `#![forbid(unsafe_code)]` (the plan allows `unsafe` here, but nothing
-//!   needs it: `std::time::Instant`/`SystemTime` are the clocks and `File::open` the read
-//!   path, so the allowance stays unused and the lint stays in force).
+//! - **Read-only, bounded, and one audited `unsafe` item.** The [`Fs`](crate::fs::Fs) trait
+//!   has no write operation, every read takes a byte bound and every listing an entry
+//!   bound. `activation::adopt_raw` is the crate's only `unsafe` item: it claims a
+//!   systemd-owned fd after the checks in [`activation`]. The crate carries the
+//!   `unsafe_code` deny lint, and the sole allowance is on that function. Absolute
+//!   `CLOCK_MONOTONIC` and `CLOCK_BOOTTIME` readings use rustix's safe `time` API.
 //! - **An injectable clock** ([`Clock`](crate::clock::Clock), [`ManualClock`](crate::clock::ManualClock)) so no test depends on host
 //!   speed, load or the wall clock.
 //!
@@ -42,7 +43,7 @@
 //! collectors, rate derivation and the wire codec therefore agree by type rather than by
 //! copied tables or a boundary conversion.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(
     clippy::cast_possible_truncation,
@@ -50,6 +51,7 @@
     clippy::checked_conversions
 )]
 
+pub mod activation;
 pub mod cgroup;
 pub mod clock;
 pub mod cmdline;
