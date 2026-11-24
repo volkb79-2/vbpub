@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- **Docs (backlog):** file HOB-84..HOB-93 from the P-hostobs-09 reviews and report (`tools/dev` admission starvation, unsafe-equivalent attributes in `check-lints`, kernel coverage margin, conformance metadata traceback, contract-test flag coverage, cold-build budget, rustix pid-0 `SO_PEERCRED` UB, `max_rows` vs `max_block_bytes`, `SIGTERM` stop path, residual nits).
 - **Changed (P-plat-02):** `tools/dev` is now a thin shim over the generic remote dev tool `scripts/controller/dev -p hostobs` (guide `scripts/controller/docs/DEV.md`): `HOSTOBS_DEV_{HOST,MEMORY,CPUS,PIDS,MAX_S}` map to `AGENT_DEV_*`, any other `HOSTOBS_DEV_*` exits 2, `clean [--checkout]` is `gc --this`; admission is the host-memory-PSI wait (`host-admission/1`), exit 75 when the host stays busy; the host state is `~/agent-dev/<hex>` and `agent-dev-cache-hostobs-<hex>` (the old `hostobs-dev-*` state is removed by `dev gc`).
 - **Fixed (P-hostobs-06b):** the serving core has no production panic in `accept`; frame-level tests cover the D-W53 shared-uid Query regression and D-W52's clamped `current` size refusal, an accept-level test covers observe's level cap, `classify` asserts in debug builds that JSON never reaches a block level, and retired JSON block-level cells are gone.
 - **Added (P-hostobs-09):** `kernel::activation` adopts systemd's named `LISTEN_FDS` sockets exactly once, validates each as an open listening `AF_UNIX` stream, makes each non-blocking, and replaces the kernel's lint forbid with one audited `adopt_raw` allowance.
