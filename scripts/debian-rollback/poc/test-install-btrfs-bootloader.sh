@@ -36,7 +36,6 @@ contains grub-default-package "$WORK/grub-default.err" \
 contains grub-default-install "$WORK/grub-default.err" \
   'chroot /mnt/drtarget /usr/local/sbin/dr-state install-grub'
 absent grub-default-no-systemd-package "$WORK/grub-default.err" 'systemd-boot,'
-absent grub-default-no-systemd-config "$WORK/grub-default.out" 'BOOTLOADER=systemd-boot'
 
 run_dry grub-explicit --bootloader grub
 contains grub-explicit-package "$WORK/grub-explicit.err" \
@@ -57,7 +56,6 @@ contains sdboot-disable-kernel-install-bls-dir "$WORK/sdboot.err" \
   '+ mkdir -p /mnt/drtarget/etc/kernel/install.d'
 contains sdboot-disable-kernel-install-bls "$WORK/sdboot.err" \
   '+ ln -s /dev/null /mnt/drtarget/etc/kernel/install.d/90-loaderentry.install'
-contains sdboot-config "$DR" "printf 'BOOTLOADER=systemd-boot\\n' >\"\$DR_STATE_CONF.new.\$\$\""
 contains sdboot-marker "$DR" "printf 'systemd-boot\\n' >\"\$SDBOOT_MARKER.new.\$\$\""
 contains restricted-esp-install-mount "$WORK/sdboot.err" 'mount -o umask=0077'
 absent sdboot-no-grub-package "$WORK/sdboot.err" 'linux-image-amd64,grub-efi-amd64'

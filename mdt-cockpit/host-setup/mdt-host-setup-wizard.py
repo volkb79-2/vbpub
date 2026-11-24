@@ -558,6 +558,11 @@ def validate_rotational_flag(value: str) -> str | None:
     return f"{value!r} is not valid; leave empty to trust queue/rotational, or `ignore` for a fast virtio disk that wrongly reports rotational=1"
 
 
+def validate_backstop_memory_max(value: str) -> str | None:
+    """DOCKER_SCOPE_BACKSTOP_MEMORY_MAX: empty (install.sh's role default: 8G dedicated-dev, 12G elsewhere) or a positive size."""
+    return None if value == "" else validate_positive_size(value)
+
+
 def validate_optional_positive_size(value: str) -> str | None:
     if value in ("", "-"):
         return None
@@ -847,6 +852,9 @@ def _config_value_validators() -> dict[str, Validator]:
     validators: dict[str, Validator] = {
         "HOST_ROLE": validate_host_role,
         "DEV_HOST_MEMORY_KEEP": mdt_capacity.validate_host_memory_keep,
+        "DEV_HOST_MEMORY_MIN": mdt_capacity.validate_host_memory_min,
+        "DEV_HOST_MEMORY_MARGIN": mdt_capacity.validate_host_memory_margin,
+        "DEV_HOST_MEMORY_MEASURED": lambda value: None,  # free text: `<UTC date> <evidence dir>`, never read by the derivation
         "DEV_HOST_PROTECTED_UNITS": mdt_capacity.validate_host_protected_units,
         "DEV_CACHE_MEMORY_LOW": mdt_capacity.validate_optional_size,
         "DEV_CACHE_ZSWAP_WRITEBACK": validate_yes_no,
@@ -893,7 +901,7 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY": validate_missing_bind_source_policy,
         "WATCHER_MEMORY_POLICY": validate_watcher_memory_policy,
         "DOCKER_DAEMON_CGROUP_PARENT": validate_cgroup_parent,
-        "DOCKER_SCOPE_BACKSTOP_MEMORY_MAX": validate_positive_size,
+        "DOCKER_SCOPE_BACKSTOP_MEMORY_MAX": validate_backstop_memory_max,
         "DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX": validate_positive_size,
         "WATCHER_INTERACTIVE_MEMORY_HIGH": validate_optional_positive_size,
         "WATCHER_INTERACTIVE_MEMORY_MAX": validate_optional_positive_size,
@@ -952,9 +960,6 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_BUILDKITD_IO_WEIGHT",
     ):
         validators[key] = validate_weight
-    for key in ("DEV_BACKGROUND_OOM_PRESSURE_LIMIT", "DEV_GATES_OOM_PRESSURE_LIMIT"):
-        validators[key] = validate_systemd_pct_1_100
-
     for key in (
         "DEV_MEMORY_HIGH",
         "DEV_MEMORY_MAX",
@@ -1585,19 +1590,6 @@ def validate_pct_1_100(value: str) -> str | None:
     return None
 
 
-def validate_systemd_pct_1_100(value: str) -> str | None:
-    """Validate systemd's percentage form, including its required ``%``."""
-    if not value:
-        return "a percentage is required (an integer followed by '%', 1-100)"
-    match = re.fullmatch(r"(\d+)%", value)
-    if not match:
-        return f"{value!r} is not a systemd percentage (use an integer followed by '%', e.g. '75%')"
-    pct = int(match.group(1))
-    if not 1 <= pct <= 100:
-        return f"{pct}% is outside 1-100%"
-    return None
-
-
 def validate_yes_no(value: str) -> str | None:
     if value not in ("yes", "no"):
         return "choose exactly 'yes' or 'no'"
@@ -1967,9 +1959,9 @@ def step_host_role(cfg_current: dict[str, str], example_defaults: dict[str, str]
         else:
             out(f"No usable iobench measurement for this host's root disk: {why}.")
             out("Remedy: run `iobench calibrate` (libraries/iobench/docs/CONSUMERS.md section 2; debian-install-v2 runs it at install time) before applying, or pin the four DEV_IO_*_MAX values at the IO caps step. Without one of the two the install refuses.")
-        out("Memory on this role (MDT-TESTHOST-MEM): dev.slice MemoryMax = RAM + swap - the host's share, MemoryHigh = RAM - the host's share; the tiers' own MemoryHigh/MemoryMax (asked later) are IGNORED, so no tier is tighter than dev.slice. The host's services get MemoryLow and an OOM-score drop-in, so the dev tier is killed first.")
+        out("Memory on this role (P-plat-19e): the host keeps K = the MemoryMin floors of its basic services + a 512M margin; dev.slice MemoryMax = RAM - K, no MemoryHigh anywhere (the dev tree pages above it); the load tiers (gates, background) sit below it by the protected tiers' MemoryLow; the host's services get floors and an OOM-score drop-in; the tiers' own MemoryHigh (asked later) are IGNORED. docs/DESIGN-DEDICATED-DEV-MEMORY.md has the numbers.")
         keep = walk_key(
-            "Memory kept for the host (a size of at least 256M, default 1G; must cover system.slice memory.current)",
+            "Pin of the memory kept outside dev.slice (empty = derive K = floors + margin; else a size of at least F + 128M)",
             "DEV_HOST_MEMORY_KEEP",
             cfg_current,
             example_defaults,
@@ -2512,7 +2504,7 @@ def step_docker_daemon(
         "DOCKER_SCOPE_BACKSTOP_MEMORY_MAX",
         cfg_current,
         example_defaults,
-        validate=validate_positive_size,
+        validate=validate_backstop_memory_max,
     )
     backstop_swap = walk_key(
         "Backstop MemorySwapMax",
@@ -3001,13 +2993,6 @@ def step_slice_first_resources(
             "  MemoryZSwapWriteback", f"{prefix}_ZSWAP_WRITEBACK",
             cfg_current, example_defaults,
         )
-        if prefix in ("DEV_BACKGROUND", "DEV_GATES"):
-            out("  systemd-oomd may act at this pressure percentage; it is separate from MemoryMax.")
-            values[f"{prefix}_OOM_PRESSURE_LIMIT"] = walk_key(
-                "  ManagedOOMMemoryPressureLimit (systemd percentage, e.g. 75%)",
-                f"{prefix}_OOM_PRESSURE_LIMIT", cfg_current, example_defaults,
-                validate=validate_systemd_pct_1_100,
-            )
         if prefix == "DEV_BUILDKITD":
             out("  The host-managed rootless worker is the only approved normal BuildKit worker. Solver parallelism limits simultaneous RUN/cache operations inside this daemon; it does not limit the number of client builds and is separate from release REPACK_JOBS and REPACK_CONCURRENCY.")
             values["DEV_BUILDKITD_IMAGE"] = walk_key(

@@ -4,6 +4,12 @@ All notable changes to scripts/netcup are recorded here.
 
 ## [Unreleased]
 
+### Fixed
+- `runner/lib.sh` `load_host_endpoints` accepts `MDT_BUILDKIT_GID` equal to `MDT_HOST_DOCKER_GID` (NC-43): mdt-buildkitd
+  hands its socket to group docker, so on a real host the two are the same GID and `start-cockpit-runner.sh` refused
+  to start (r1002, 2026-11-12 and again 2026-11-24). cgprofile and topos GIDs must still differ from docker and from
+  each other. The host-local lib.sh patch from 2026-11-12 is no longer needed.
+
 ### Added
 - `runner/remote-gate.py run --collect-store <rel>` (repeatable, `--store-max-mib`, default 512; RG-298 part 1) packs a directory
   of the run's own host checkout into `assay-store.tgz` + `assay-store.tgz.sha256` after the lane exits and BEFORE the throwaway
@@ -73,6 +79,11 @@ All notable changes to scripts/netcup are recorded here.
   real-flock ticket, the default-no-peak path, and the `MEM_REFUSED` verdict including its two negative cases).
 
 ### Changed
+- `runner/start-cockpit-runner.sh` starts the cockpit with the image's keepalive CMD (MDT-107) instead of a trailing
+  `sleep infinity`, which overrode it: under `--init --restart unless-stopped` a killed `sleep` made tini exit, the
+  runner restarted and every lane inside died (`P-plat-19f`). It reads `docker image inspect -f '{{json .Config.Cmd}}'`
+  before removing the old cockpit and matches the `while :; do sleep` loop text; an older image keeps `sleep infinity`
+  with one `WARN ... no keepalive CMD (MDT-107)` line on stderr, and an inspect failure exits 2 before `docker rm`/`run`.
 - The no-host-setup path's `MemoryMax=6G` instruction is superseded: the memory values come from
   `provision-gates-limits.sh`, and the unit fragment carries only what makes the slice a loaded installed slice for
   `cgroup-parent.sh` (`NC-59`).

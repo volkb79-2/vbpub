@@ -20,15 +20,24 @@
 //!   different process after a reboot or a pid reuse.
 //! - **Labels expire with their incarnation**: a label can only be set on an active
 //!   incarnation, so a late enrichment reply can never relabel a replacement cgroup.
+//! - **The live registry is bounded.** At most [`DEFAULT_ACTIVE_MAX`] incarnations are held
+//!   by default, and a registry can be built with a different configured maximum. Attempting
+//!   to mint a new key at the bound is [`IdentityError::RegistryFull`]; a live entry is never
+//!   evicted and an already-live key can still be refreshed (plan v4 §A.4).
 //!
 //! Incarnation ids start at 1; 0 is [`Incarnation::UNASSIGNED`] and is never minted, so
 //! an all-zero identity field is detectable. Ids are never reused.
 
 use core::fmt;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Largest accepted label or enrichment value in bytes (plan v4 §B.3: bounded UTF-8 ≤ 256 B).
 pub const MAX_LABEL_LEN: usize = 256;
+
+/// The default maximum number of live incarnations (plan v4 §A.4 `dict_active_max`).
+///
+/// The store's active dictionary re-uses this default.
+pub const DEFAULT_ACTIVE_MAX: usize = 65_536;
 
 /// Every identity refusal.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,6 +87,11 @@ pub enum IdentityError {
     UnassignedIncarnation,
     /// The incarnation is not (or no longer) active.
     UnknownIncarnation(Incarnation),
+    /// Minting a new key would exceed the registry's live-entry bound.
+    RegistryFull {
+        /// The configured maximum number of live entries.
+        max: usize,
+    },
     /// The id space of an `u64` incarnation counter is exhausted.
     IncarnationSpaceExhausted,
 }
@@ -109,6 +123,9 @@ impl fmt::Display for IdentityError {
             }
             IdentityError::UnassignedIncarnation => f.write_str("incarnation 0 is unassigned"),
             IdentityError::UnknownIncarnation(id) => write!(f, "incarnation {id} is not active"),
+            IdentityError::RegistryFull { max } => {
+                write!(f, "incarnation registry is full at {max} live entries")
+            }
             IdentityError::IncarnationSpaceExhausted => {
                 f.write_str("incarnation id space exhausted")
             }
@@ -547,16 +564,33 @@ struct Entry {
 
 /// The incarnation registry: mints ids per `(mount id, inode)` and retires them after
 /// two consecutive scans without the cgroup (plan v4 §C.1).
-#[derive(Debug, Default)]
+///
+/// Live entries are keyed by incarnation id, with a compact reverse index from the kernel
+/// [`CgroupKey`] to the id. Retirement removes both records, so neither storage nor
+/// [`Self::end_round`] grows with ids that were minted and retired earlier. Point lookups
+/// are O(log live), [`Self::active`] is O(1), and `end_round` is O(live entries).
+///
+/// The registry is bounded by a configurable maximum, [`DEFAULT_ACTIVE_MAX`] by default
+/// (plan v4 §A.4's `dict_active_max`). At the bound, observing an already-live key still
+/// refreshes it, while observing a new key returns [`IdentityError::RegistryFull`]. The
+/// registry never evicts a live entry to make room and never mints past the bound.
+#[derive(Debug)]
 pub struct IncarnationRegistry {
     next: u64,
     round: u64,
     /// The last round whose absence bookkeeping ran; 0 while round 0 is open.
     ended_round: u64,
-    /// Slot `id.raw() - 1` holds the entry; a retired slot is empty and never reused.
-    entries: Vec<Option<Entry>>,
+    max_active: usize,
+    /// Live entries only, keyed by id so iteration and retirement order are stable.
+    entries: BTreeMap<Incarnation, Entry>,
     by_key: HashMap<CgroupKey, Incarnation>,
     retired: u64,
+}
+
+impl Default for IncarnationRegistry {
+    fn default() -> IncarnationRegistry {
+        IncarnationRegistry::with_max(DEFAULT_ACTIVE_MAX)
+    }
 }
 
 impl IncarnationRegistry {
@@ -564,6 +598,28 @@ impl IncarnationRegistry {
     #[must_use]
     pub fn new() -> IncarnationRegistry {
         IncarnationRegistry::default()
+    }
+
+    /// An empty registry bounded to at most `max_active` live entries.
+    ///
+    /// A maximum of zero is a valid bound that refuses every mint; it never panics.
+    #[must_use]
+    pub fn with_max(max_active: usize) -> IncarnationRegistry {
+        IncarnationRegistry {
+            next: 0,
+            round: 0,
+            ended_round: 0,
+            max_active,
+            entries: BTreeMap::new(),
+            by_key: HashMap::new(),
+            retired: 0,
+        }
+    }
+
+    /// The configured maximum number of live entries.
+    #[must_use]
+    pub const fn max_active(&self) -> usize {
+        self.max_active
     }
 
     /// Start a new scan round. Observations belong to the round that is open.
@@ -592,6 +648,7 @@ impl IncarnationRegistry {
     /// # Errors
     ///
     /// [`IdentityError::LabelTooLong`], [`IdentityError::LabelControl`] or
+    /// [`IdentityError::RegistryFull`] when a new key would exceed the live bound, or
     /// [`IdentityError::IncarnationSpaceExhausted`].
     pub fn observe(
         &mut self,
@@ -603,22 +660,22 @@ impl IncarnationRegistry {
         }
         if let Some(id) = self.by_key.get(&key) {
             let id = *id;
-            if let Some(slot) = usize::try_from(id.raw())
-                .ok()
-                .and_then(|index| index.checked_sub(1))
-            {
-                if let Some(Some(entry)) = self.entries.get_mut(slot) {
-                    entry.last_round = self.round;
-                    entry.absent_rounds = 0;
-                    if let Some(label) = label {
-                        entry.label = Some(label.to_string());
-                    }
-                    return Ok(id);
+            if let Some(entry) = self.entries.get_mut(&id) {
+                entry.last_round = self.round;
+                entry.absent_rounds = 0;
+                if let Some(label) = label {
+                    entry.label = Some(label.to_string());
                 }
+                return Ok(id);
             }
-            // A key indexed to a slot that is not live is an internal inconsistency; drop
-            // the index rather than minting on top of a stale entry.
+            // A key indexed to an entry that is not live is an internal inconsistency;
+            // drop the index rather than returning a retired incarnation.
             self.by_key.remove(&key);
+        }
+        if self.entries.len() >= self.max_active {
+            return Err(IdentityError::RegistryFull {
+                max: self.max_active,
+            });
         }
         let next = self
             .next
@@ -626,12 +683,6 @@ impl IncarnationRegistry {
             .ok_or(IdentityError::IncarnationSpaceExhausted)?;
         self.next = next;
         let id = Incarnation::from_raw(next);
-        // The entry's slot is its id minus one, and slots are appended in id order and
-        // never reused: the checked conversions below are the only way that can fail.
-        let slot = usize::try_from(next)
-            .ok()
-            .and_then(|index| index.checked_sub(1))
-            .ok_or(IdentityError::IncarnationSpaceExhausted)?;
         let entry = Entry {
             id,
             key,
@@ -641,12 +692,7 @@ impl IncarnationRegistry {
             absent_rounds: 0,
             labels: Vec::new(),
         };
-        debug_assert_eq!(
-            slot,
-            self.entries.len(),
-            "an id is appended one slot past the last"
-        );
-        self.entries.push(Some(entry));
+        self.entries.insert(id, entry);
         self.by_key.insert(key, id);
         Ok(id)
     }
@@ -656,26 +702,29 @@ impl IncarnationRegistry {
     ///
     /// Closing the same round twice is a no-op: a second call would otherwise count one
     /// absent scan twice and retire a cgroup that was missing for only one scan.
+    ///
+    /// The pass walks the live entries only (the `BTreeMap` is ordered by id, so the
+    /// returned ids remain in mint order); retired entries are removed from both indexes.
+    /// It is O(live entries), never O(ids minted over the process lifetime).
     pub fn end_round(&mut self) -> Vec<Incarnation> {
         if self.round_is_ended() {
             return Vec::new();
         }
         self.ended_round = self.round;
         let mut retired = Vec::new();
-        for slot in &mut self.entries {
-            let Some(entry) = slot.as_mut() else { continue };
+        for entry in self.entries.values_mut() {
             if entry.last_round == self.round {
                 continue;
             }
             entry.absent_rounds = entry.absent_rounds.saturating_add(1);
             if entry.absent_rounds >= 2 {
-                // The key has to be read before the slot is cleared, or the reverse
+                // The key has to be read before the entry is removed, or the reverse
                 // index would keep pointing at an incarnation that no longer exists.
                 retired.push((entry.id, entry.key));
-                *slot = None;
             }
         }
-        for (_, key) in &retired {
+        for (id, key) in &retired {
+            self.entries.remove(id);
             self.by_key.remove(key);
         }
         self.retired = self.retired.saturating_add(retired.len() as u64);
@@ -712,8 +761,7 @@ impl IncarnationRegistry {
         if id.is_unassigned() {
             return None;
         }
-        let index = usize::try_from(id.raw()).ok()?.checked_sub(1)?;
-        self.entries.get(index)?.as_ref()
+        self.entries.get(&id)
     }
 
     /// Bind a label to an active incarnation, replacing a label of the same kind.
@@ -727,15 +775,10 @@ impl IncarnationRegistry {
         if id.is_unassigned() {
             return Err(IdentityError::UnassignedIncarnation);
         }
-        let index = usize::try_from(id.raw()).map_err(|_| IdentityError::UnknownIncarnation(id))?;
-        let index = index
-            .checked_sub(1)
-            .ok_or(IdentityError::UnassignedIncarnation)?;
-        let slot = self
+        let entry = self
             .entries
-            .get_mut(index)
+            .get_mut(&id)
             .ok_or(IdentityError::UnknownIncarnation(id))?;
-        let entry = slot.as_mut().ok_or(IdentityError::UnknownIncarnation(id))?;
         match entry
             .labels
             .iter_mut()
@@ -756,7 +799,7 @@ impl IncarnationRegistry {
     /// The number of active incarnations.
     #[must_use]
     pub fn active(&self) -> usize {
-        self.entries.iter().filter(|slot| slot.is_some()).count()
+        self.entries.len()
     }
 
     /// The number of incarnations retired so far.
@@ -765,14 +808,16 @@ impl IncarnationRegistry {
         self.retired
     }
 
-    /// The ids of the active incarnations, in mint order (stable, unlike a map walk).
+    /// The ids of the active incarnations, in mint order.
     #[must_use]
     pub fn active_ids(&self) -> Vec<Incarnation> {
-        self.entries
-            .iter()
-            .flatten()
-            .map(|entry| entry.id)
-            .collect()
+        self.entries.keys().copied().collect()
+    }
+
+    /// The lengths of the two collections that grow with live incarnations.
+    #[cfg(test)]
+    fn storage_len(&self) -> (usize, usize) {
+        (self.entries.len(), self.by_key.len())
     }
 }
 
@@ -780,8 +825,9 @@ impl IncarnationRegistry {
 mod tests {
     use super::{
         validate_text, BootId, CgroupKey, Epoch, IdentityError, Incarnation, IncarnationRegistry,
-        Label, LabelKind, LabelSource, ProcessKey,
+        Label, LabelKind, LabelSource, ProcessKey, DEFAULT_ACTIVE_MAX,
     };
+    use std::collections::VecDeque;
 
     const BOOT: &str = "00112233-4455-6677-8899-aabbccddeeff";
 
@@ -1083,7 +1129,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_keys_can_be_replaced_in_their_slot_without_id_reuse() {
+    fn retired_ids_are_never_reused() {
         let mut registry = IncarnationRegistry::new();
         registry.begin_round();
         let a = registry.observe(key(1), None).expect("mint");
@@ -1094,11 +1140,143 @@ mod tests {
         assert_eq!(registry.end_round(), vec![a]);
         registry.begin_round();
         let b = registry.observe(key(2), None).expect("mint");
-        assert_eq!(b.raw(), 2, "ids increase, a retired slot is never reused");
+        assert_eq!(b.raw(), 2, "ids increase, a retired id is never reused");
         registry.end_round();
         assert!(registry.is_active(b));
         assert!(!registry.is_active(a));
         assert!(registry.snapshot(a).is_none());
+    }
+
+    #[test]
+    fn the_registry_bound_refuses_new_keys_and_reuses_freed_capacity() {
+        let mut registry = IncarnationRegistry::with_max(2);
+        assert_eq!(registry.max_active(), 2);
+        registry.begin_round();
+        let first = registry.observe(key(1), Some("/first")).expect("mint");
+        let second = registry.observe(key(2), Some("/second")).expect("mint");
+
+        assert_eq!(
+            registry.observe(key(3), Some("/refused")),
+            Err(IdentityError::RegistryFull { max: 2 }),
+            "a new key is refused at the bound"
+        );
+        assert_eq!(registry.active(), 2, "the refusal evicts nothing");
+        assert!(registry.is_active(first) && registry.is_active(second));
+
+        assert_eq!(
+            registry.observe(key(1), Some("/renamed")),
+            Ok(first),
+            "re-observing a live key still succeeds at the bound"
+        );
+        assert_eq!(
+            registry.snapshot(first).and_then(|view| view.label),
+            Some("/renamed")
+        );
+        registry.end_round();
+
+        registry.begin_round();
+        registry.observe(key(1), None).expect("keep first");
+        registry.end_round();
+        assert!(
+            registry.is_active(second),
+            "one absent round does not retire the second key"
+        );
+
+        registry.begin_round();
+        registry.observe(key(1), None).expect("keep first");
+        assert_eq!(
+            registry.observe(key(3), None),
+            Err(IdentityError::RegistryFull { max: 2 }),
+            "retirement has not run yet, so the bound is still full"
+        );
+        assert_eq!(
+            registry.end_round(),
+            vec![second],
+            "the second key is retired after two absent rounds"
+        );
+
+        registry.begin_round();
+        registry.observe(key(1), None).expect("keep first");
+        let third = registry
+            .observe(key(3), Some("/third"))
+            .expect("retirement freed one slot");
+        assert_eq!(
+            third.raw(),
+            second.raw() + 1,
+            "the refused mint did not consume an id"
+        );
+        assert_ne!(third, second, "freed capacity mints a fresh id");
+        assert_eq!(registry.active(), 2);
+
+        let mut zero = IncarnationRegistry::with_max(0);
+        zero.begin_round();
+        assert_eq!(
+            zero.observe(key(4), None),
+            Err(IdentityError::RegistryFull { max: 0 }),
+            "a zero bound refuses instead of panicking"
+        );
+        assert_eq!(zero.active(), 0);
+
+        assert_eq!(
+            IncarnationRegistry::new().max_active(),
+            DEFAULT_ACTIVE_MAX,
+            "the model owns the one default bound"
+        );
+    }
+
+    #[test]
+    fn bounded_registry_stays_live_sized_through_extended_churn() {
+        // Scan rounds are the fake clock. Each round creates ten new cgroups and does not
+        // observe the ten from two rounds ago, so those ten retire at this round's end.
+        const ROUNDS: u64 = 100_000;
+        const GROUPS_PER_ROUND: u64 = 10;
+        const MAX_ACTIVE: usize = 30;
+        const STORAGE_BOUND: usize = 2 * MAX_ACTIVE;
+
+        let mut registry = IncarnationRegistry::with_max(MAX_ACTIVE);
+        let mut due: VecDeque<Vec<Incarnation>> = VecDeque::new();
+        let mut previous = Incarnation::UNASSIGNED;
+        for round in 0..ROUNDS {
+            registry.begin_round();
+            let mut minted = Vec::new();
+            for slot in 0..GROUPS_PER_ROUND {
+                let inode = round * GROUPS_PER_ROUND + slot + 1;
+                let id = registry
+                    .observe(key(inode), None)
+                    .expect("ten new cgroups fit the bound");
+                assert!(
+                    id.raw() > previous.raw(),
+                    "incarnation ids stay monotonically increasing"
+                );
+                previous = id;
+                minted.push(id);
+            }
+            let (entries, reverse) = registry.storage_len();
+            assert_eq!(entries, reverse, "both live indexes retire together");
+            assert!(entries <= MAX_ACTIVE);
+            assert!(entries + reverse <= STORAGE_BOUND);
+
+            due.push_back(minted);
+            let retired = registry.end_round();
+            if due.len() > 2 {
+                assert_eq!(
+                    retired,
+                    due.pop_front().expect("a two-round-old batch is due"),
+                    "end_round returns exactly the cgroups that became two-rounds absent"
+                );
+            } else {
+                assert!(retired.is_empty(), "the first two rounds retire nothing");
+            }
+            let (entries, reverse) = registry.storage_len();
+            assert_eq!(entries, reverse, "retirement removes both index records");
+            assert!(entries <= MAX_ACTIVE);
+            assert!(entries + reverse <= STORAGE_BOUND);
+        }
+        assert_eq!(
+            registry.active(),
+            20,
+            "only the current and immediately preceding ten-cgroup batches remain"
+        );
     }
 
     #[test]
@@ -1247,6 +1425,10 @@ mod tests {
                 "incarnation inc:5 is not active",
             ),
             (
+                IdentityError::RegistryFull { max: 2 },
+                "incarnation registry is full at 2 live entries",
+            ),
+            (
                 IdentityError::IncarnationSpaceExhausted,
                 "incarnation id space exhausted",
             ),
@@ -1297,10 +1479,9 @@ mod tests {
     }
 
     #[test]
-    fn an_index_pointing_at_a_retired_slot_is_repaired_by_minting_a_fresh_incarnation() {
-        // The reverse index and the slot table are one invariant. This test breaks it on
-        // purpose: a key left indexed to a retired slot must not resurrect that id, and
-        // must not mint on top of the entry either.
+    fn an_index_pointing_at_a_retired_entry_is_repaired_by_minting_a_fresh_incarnation() {
+        // The reverse index and the live entry map are one invariant. This test breaks it
+        // on purpose: a key left indexed to a retired entry must not resurrect that id.
         let key = CgroupKey::new(31, 1).expect("key");
         let mut registry = IncarnationRegistry::new();
         registry.begin_round();

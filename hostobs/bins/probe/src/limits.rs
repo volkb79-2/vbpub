@@ -1,15 +1,18 @@
-//! Serving levels and the per-level bounds of WIRE.md section 5.1 (design R18, R28).
+//! Serving levels, the probe-wide bounds and the per-level bounds of WIRE.md section 5.1
+//! (design R18, R28; D-W52).
 //!
-//! The field names of [`Limits`] are the `hostobsd.toml` key names (`[limits.<level>]`); no TOML
-//! is parsed here, the defaults below are the whole configuration of this package.
+//! The field names are the `hostobsd.toml` key names: probe-wide keys live once in
+//! [`ProbeLimits`], and only genuinely per-level keys live in [`LevelLimits`]. [`ConnLimits`]
+//! joins the two for one accepted connection and builds its `hello.limits` object; it is not a
+//! second configuration.
 //!
 //! # Reply bound and control queue (R28)
 //!
 //! WIRE.md section 5.1 derives `max_reply_bytes = (control_queue_bytes - 256 KiB) /
 //! max_outstanding`, so `control_queue_bytes = max_outstanding * max_reply_bytes + 256 KiB`: the
-//! replies of every outstanding request plus 256 KiB of END and EVT frames always fit one
-//! control queue. For observe and operator the largest reply is a paged `events` or `procs`
-//! reply, so the default stays 2 MiB (4 * 448 KiB + 256 KiB). The observer level serves only
+//! unread replies represented by the reply-bound slots plus 256 KiB of END and EVT frames
+//! always fit one control queue. For observe and operator the largest reply is a paged `events`
+//! or `procs` reply, so the default stays 2 MiB (4 * 448 KiB + 256 KiB). The observer level serves only
 //! `hello` and `annotate` (`status` is forbidden there, WIRE.md section 4.3): WIRE.md section
 //! 5.1 bounds every fixed-shape reply and error envelope there below 3 KiB, and the observer
 //! `hello` reply (at most 2 verbs, at most 8 quality codes, the 19 limit keys) is below 3 KiB
@@ -18,6 +21,8 @@
 //! connections can hold at 40 MiB instead of 256 MiB, with no hub change.
 
 use hostobs_proto::hub::QueueLimits;
+
+use crate::tick::BlockBounds;
 
 /// Nanoseconds per millisecond.
 const NS_PER_MS: u64 = 1_000_000;
@@ -37,7 +42,7 @@ pub const END_SLACK_BYTES: u32 = 256 * KIB;
 pub struct IntervalRule {
     /// The level's `min_interval_ms`.
     pub min_ms: u32,
-    /// The level's `tick_ms`.
+    /// The probe-wide `tick_ms`.
     pub tick_ms: u32,
 }
 
@@ -111,8 +116,8 @@ impl Level {
     }
 }
 
-/// The largest JSON reply that fits `control_queue_bytes` for `max_outstanding` requests:
-/// `(control_queue_bytes - 256 KiB) / max_outstanding`, 0 when no request may be outstanding.
+/// The largest JSON reply that fits `control_queue_bytes` in each of the `max_outstanding`
+/// reply-bound slots: `(control_queue_bytes - 256 KiB) / max_outstanding`, or 0 without a slot.
 #[must_use]
 pub fn max_reply_for(control_queue_bytes: u32, max_outstanding: u32) -> u32 {
     let room = control_queue_bytes.saturating_sub(END_SLACK_BYTES);
@@ -127,12 +132,81 @@ pub fn control_queue_for(max_outstanding: u32, max_reply_bytes: u32) -> u32 {
     replies.saturating_add(END_SLACK_BYTES)
 }
 
-/// The bounds of one level (WIRE.md section 5.1): the 19 `hello.limits` keys of section 4.4 and
-/// the two connection caps. The nine block keys (`max_subscriptions`, `client_queue_bytes`,
-/// `query_queue_bytes`, `max_block_bytes`, `max_rows`, `max_block_buckets`, `max_page_blocks`,
-/// `min_interval_ms`, `tick_ms`) are 0 at levels that serve no block verb (R18).
+/// The probe-wide keys of WIRE.md section 5.1 (D-W52). These values have one owner for the whole
+/// probe, whatever level a connection serves.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Limits {
+pub struct ProbeLimits {
+    /// The sampling tick and the unit of every subscription interval.
+    pub tick_ms: u32,
+    /// Most rows a selection may resolve to.
+    pub max_rows: u32,
+    /// Largest BLOCK the server builds; clamped to both connection pools.
+    pub max_block_bytes: u32,
+    /// Live pool bytes per connection; the global Live pool is eight times this.
+    pub client_queue_bytes: u32,
+    /// Query pool bytes per connection; the global Query pool is four times this.
+    pub query_queue_bytes: u32,
+    /// History streams with queued blocks allowed per connection.
+    pub history_streams_per_connection: u32,
+    /// History streams with queued blocks allowed per probe.
+    pub history_streams: u32,
+}
+
+impl ProbeLimits {
+    /// The WIRE.md section 5.1 defaults.
+    #[must_use]
+    pub const fn new() -> ProbeLimits {
+        ProbeLimits {
+            tick_ms: 1_000,
+            max_rows: 1_024,
+            max_block_bytes: MIB,
+            client_queue_bytes: 4 * MIB,
+            query_queue_bytes: MIB,
+            history_streams_per_connection: 2,
+            history_streams: 8,
+        }
+    }
+
+    /// The configured values with `max_block_bytes` bounded by both connection pools, so any
+    /// block that passes its own bound fits an empty connection pool (WIRE.md section 5.1).
+    #[must_use]
+    pub const fn clamped(self) -> ProbeLimits {
+        let max_block_bytes = if self.max_block_bytes < self.client_queue_bytes {
+            self.max_block_bytes
+        } else {
+            self.client_queue_bytes
+        };
+        let max_block_bytes = if max_block_bytes < self.query_queue_bytes {
+            max_block_bytes
+        } else {
+            self.query_queue_bytes
+        };
+        ProbeLimits {
+            max_block_bytes,
+            ..self
+        }
+    }
+
+    /// The row and byte bounds shared by every live selection stream.
+    #[must_use]
+    pub const fn block_bounds(self) -> BlockBounds {
+        BlockBounds {
+            max_rows: self.max_rows,
+            max_block_bytes: self.max_block_bytes,
+        }
+    }
+}
+
+impl Default for ProbeLimits {
+    fn default() -> ProbeLimits {
+        ProbeLimits::new()
+    }
+}
+
+/// The bounds that genuinely vary by serving level. The probe-wide keys and their `hello`
+/// announcements are in [`ProbeLimits`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LevelLimits {
     /// Connections per level (`refuse` beyond it).
     pub max_connections: u32,
     /// Connections per peer uid per level.
@@ -151,7 +225,7 @@ pub struct Limits {
     pub stall_ms: u32,
     /// Pinned head, pin to completely written.
     pub frame_completion_ms: u32,
-    /// Outstanding requests per connection.
+    /// Unread JSON replies the reply bound allows for (not enforced itself).
     pub max_outstanding: u32,
     /// Distinct selections per peer uid across levels (block levels).
     pub max_uid_selections: u32,
@@ -159,35 +233,22 @@ pub struct Limits {
     pub max_selections: u32,
     /// Live subscriptions per connection (block levels).
     pub max_subscriptions: u32,
-    /// Live pool bytes per connection (block levels).
-    pub client_queue_bytes: u32,
-    /// Query pool bytes per connection (block levels).
-    pub query_queue_bytes: u32,
     /// Queued REP, EVT and END bytes per connection.
     pub control_queue_bytes: u32,
     /// Largest JSON REP the server builds.
     pub max_reply_bytes: u32,
-    /// Largest BLOCK the server builds (block levels).
-    pub max_block_bytes: u32,
-    /// Most rows a selection may resolve to (block levels).
-    pub max_rows: u32,
     /// Most buckets per history block (block levels).
     pub max_block_buckets: u32,
     /// Most blocks per `series_batch` page (block levels).
     pub max_page_blocks: u32,
     /// Smallest subscription interval (block levels).
     pub min_interval_ms: u32,
-    /// The sampling tick (block levels).
-    pub tick_ms: u32,
 }
 
-impl Limits {
-    /// The number of keys of `hello.limits`.
-    pub const HELLO_KEYS: usize = 19;
-
-    /// The defaults of `level`.
+impl LevelLimits {
+    /// The per-level defaults of `level`.
     #[must_use]
-    pub fn for_level(level: Level) -> Limits {
+    pub fn for_level(level: Level) -> LevelLimits {
         let max_outstanding = 4;
         let blocks = level.serves_blocks();
         let block = |value: u32| if blocks { value } else { 0 };
@@ -199,7 +260,7 @@ impl Limits {
             (control, max_reply_for(control, max_outstanding))
         };
         let (max_connections, max_connections_per_uid) = match level {
-            Level::Observe => (16, 8),
+            Level::Observe => (16, 16),
             Level::Operator => (8, 4),
             Level::Observer => (128, 64),
             Level::Control => (64, 32),
@@ -214,7 +275,7 @@ impl Limits {
         } else {
             5_000
         };
-        Limits {
+        LevelLimits {
             max_connections,
             max_connections_per_uid,
             max_frame_bytes: 16 * MIB,
@@ -225,45 +286,76 @@ impl Limits {
             stall_ms: 5_000,
             frame_completion_ms: 5_000,
             max_outstanding,
-            max_uid_selections: block(4),
+            max_uid_selections: block(8),
             max_selections: block(8),
             max_subscriptions: block(4),
-            client_queue_bytes: block(4 * MIB),
-            query_queue_bytes: block(4 * MIB),
             control_queue_bytes,
             max_reply_bytes,
-            max_block_bytes: block(4 * MIB),
-            max_rows: block(4_096),
             max_block_buckets: block(4_096),
             max_page_blocks: block(64),
             min_interval_ms: block(1_000),
-            tick_ms: block(1_000),
+        }
+    }
+}
+
+/// The effective bounds of one connection: the level's own values joined with the one
+/// probe-wide configuration. The nine block keys are announced as 0 at levels without BLK verbs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConnLimits {
+    /// The level these bounds describe.
+    pub serving: Level,
+    /// Values that vary by serving level.
+    pub level: LevelLimits,
+    /// Values shared by every connection of the probe.
+    pub probe: ProbeLimits,
+}
+
+impl ConnLimits {
+    /// Join the configured probe-wide and per-level values for a connection.
+    #[must_use]
+    pub const fn new(serving: Level, level: LevelLimits, probe: ProbeLimits) -> ConnLimits {
+        ConnLimits {
+            serving,
+            level,
+            probe,
         }
     }
 
+    /// Whether this connection's level serves block verbs.
+    const fn serves_blocks(self) -> bool {
+        self.serving.serves_blocks()
+    }
+
+    /// The number of keys of `hello.limits`.
+    pub const HELLO_KEYS: usize = 19;
+
     /// The 19 `hello.limits` members in the order of WIRE.md section 4.4.
     #[must_use]
-    pub fn hello_entries(&self) -> [(&'static str, u32); Limits::HELLO_KEYS] {
+    pub fn hello_entries(&self) -> [(&'static str, u32); ConnLimits::HELLO_KEYS] {
+        let blocks = self.serves_blocks();
+        let block = |value: u32| if blocks { value } else { 0 };
+        let level = self.level;
+        let probe = self.probe;
         [
-            ("max_frame_bytes", self.max_frame_bytes),
-            ("max_request_bytes", self.max_request_bytes),
-            ("request_deadline_ms", self.request_deadline_ms),
-            ("hello_deadline_ms", self.hello_deadline_ms),
-            ("idle_ms", self.idle_ms),
-            ("stall_ms", self.stall_ms),
-            ("frame_completion_ms", self.frame_completion_ms),
-            ("max_outstanding", self.max_outstanding),
-            ("max_subscriptions", self.max_subscriptions),
-            ("client_queue_bytes", self.client_queue_bytes),
-            ("query_queue_bytes", self.query_queue_bytes),
-            ("control_queue_bytes", self.control_queue_bytes),
-            ("max_reply_bytes", self.max_reply_bytes),
-            ("max_block_bytes", self.max_block_bytes),
-            ("max_rows", self.max_rows),
-            ("max_block_buckets", self.max_block_buckets),
-            ("max_page_blocks", self.max_page_blocks),
-            ("min_interval_ms", self.min_interval_ms),
-            ("tick_ms", self.tick_ms),
+            ("max_frame_bytes", level.max_frame_bytes),
+            ("max_request_bytes", level.max_request_bytes),
+            ("request_deadline_ms", level.request_deadline_ms),
+            ("hello_deadline_ms", level.hello_deadline_ms),
+            ("idle_ms", level.idle_ms),
+            ("stall_ms", level.stall_ms),
+            ("frame_completion_ms", level.frame_completion_ms),
+            ("max_outstanding", level.max_outstanding),
+            ("max_subscriptions", level.max_subscriptions),
+            ("client_queue_bytes", block(probe.client_queue_bytes)),
+            ("query_queue_bytes", block(probe.query_queue_bytes)),
+            ("control_queue_bytes", level.control_queue_bytes),
+            ("max_reply_bytes", level.max_reply_bytes),
+            ("max_block_bytes", block(probe.max_block_bytes)),
+            ("max_rows", block(probe.max_rows)),
+            ("max_block_buckets", level.max_block_buckets),
+            ("max_page_blocks", level.max_page_blocks),
+            ("min_interval_ms", level.min_interval_ms),
+            ("tick_ms", block(probe.tick_ms)),
         ]
     }
 
@@ -281,25 +373,22 @@ impl Limits {
         out
     }
 
-    /// The send-hub caps of this level (WIRE.md sections 5.1 and 5.3): the per-uid pools are a
-    /// quarter of the global ones (Live 4 MiB, 8 MiB, 32 MiB; Query 4 MiB, 4 MiB, 16 MiB), the
-    /// control queue and the two timers are the level's own.
+    /// The send-hub caps of this connection (WIRE.md sections 5.1 and 5.3): global Live is eight
+    /// connection pools and global Query is four; there are no per-uid pools.
     #[must_use]
     pub fn queue_limits(&self) -> QueueLimits {
         let size = |value: u32| usize::try_from(value).unwrap_or(usize::MAX);
-        let live = size(self.client_queue_bytes);
-        let query = size(self.query_queue_bytes);
+        let live = size(self.probe.client_queue_bytes);
+        let query = size(self.probe.query_queue_bytes);
         let ns = |ms: u32| u64::from(ms).saturating_mul(NS_PER_MS);
         QueueLimits {
             client_queue_bytes: live,
-            uid_live_bytes: live.saturating_mul(2),
             global_live_bytes: live.saturating_mul(8),
             query_queue_bytes: query,
-            uid_query_bytes: query,
             global_query_bytes: query.saturating_mul(4),
-            control_queue_bytes: size(self.control_queue_bytes),
-            stall_ns: ns(self.stall_ms),
-            frame_completion_ns: ns(self.frame_completion_ms),
+            control_queue_bytes: size(self.level.control_queue_bytes),
+            stall_ns: ns(self.level.stall_ms),
+            frame_completion_ns: ns(self.level.frame_completion_ms),
         }
     }
 
@@ -307,8 +396,12 @@ impl Limits {
     #[must_use]
     pub fn interval_rule(&self) -> IntervalRule {
         IntervalRule {
-            min_ms: self.min_interval_ms,
-            tick_ms: self.tick_ms,
+            min_ms: self.level.min_interval_ms,
+            tick_ms: if self.serves_blocks() {
+                self.probe.tick_ms
+            } else {
+                0
+            },
         }
     }
 }
@@ -316,9 +409,12 @@ impl Limits {
 #[cfg(test)]
 mod tests {
     use super::{
-        control_queue_for, max_reply_for, IntervalRule, Level, Limits, END_SLACK_BYTES,
-        MAX_INTERVAL_MS,
+        control_queue_for, max_reply_for, ConnLimits, IntervalRule, Level, LevelLimits,
+        ProbeLimits, END_SLACK_BYTES, MAX_INTERVAL_MS,
     };
+    use crate::backend::TickData;
+    use crate::tick::{dictionary_body, encoded_len, query_block};
+    use hostobs_proto::dict::Entry;
     use hostobs_proto::envelope::{members_up_to, Kind};
 
     const BLOCK_KEYS: [&str; 9] = [
@@ -333,7 +429,11 @@ mod tests {
         "tick_ms",
     ];
 
-    fn value_of(limits: &Limits, key: &str) -> u32 {
+    fn conn_limits(level: Level) -> ConnLimits {
+        ConnLimits::new(level, LevelLimits::for_level(level), ProbeLimits::new())
+    }
+
+    fn value_of(limits: &ConnLimits, key: &str) -> u32 {
         let entries = limits.hello_entries();
         let found = entries.iter().find(|(name, _)| *name == key);
         found.map(|(_, value)| *value).expect("key present")
@@ -356,33 +456,50 @@ mod tests {
     }
 
     #[test]
-    fn defaults_follow_the_section_5_1_table() {
-        let observe = Limits::for_level(Level::Observe);
+    fn probe_defaults_are_the_section_5_1_and_dw52_values() {
+        assert_eq!(
+            ProbeLimits::new(),
+            ProbeLimits {
+                tick_ms: 1_000,
+                max_rows: 1_024,
+                max_block_bytes: 1 << 20,
+                client_queue_bytes: 4 << 20,
+                query_queue_bytes: 1 << 20,
+                history_streams_per_connection: 2,
+                history_streams: 8,
+            }
+        );
+    }
+
+    #[test]
+    fn level_defaults_follow_the_section_5_1_table() {
+        let observe = LevelLimits::for_level(Level::Observe);
         assert_eq!(observe.max_connections, 16);
-        assert_eq!(observe.max_connections_per_uid, 8);
+        assert_eq!(
+            observe.max_connections_per_uid, observe.max_connections,
+            "D-W53: the observe uid cap is the level cap"
+        );
         assert_eq!(observe.max_request_bytes, 32 * 1024);
         assert_eq!(observe.request_deadline_ms, 5_000);
         assert_eq!(observe.max_subscriptions, 4);
-        assert_eq!(observe.client_queue_bytes, 4 << 20);
-        assert_eq!(observe.max_block_bytes, 4 << 20);
         assert_eq!(observe.max_reply_bytes, 448 * 1024);
         assert_eq!(observe.control_queue_bytes, 2 << 20);
         assert_eq!(observe.max_frame_bytes, 16 << 20);
-        let operator = Limits::for_level(Level::Operator);
+        let operator = LevelLimits::for_level(Level::Operator);
         assert_eq!(operator.max_connections, 8);
         assert_eq!(operator.max_connections_per_uid, 4);
         assert_eq!(operator.max_request_bytes, 32 * 1024);
-        let observer = Limits::for_level(Level::Observer);
+        let observer = LevelLimits::for_level(Level::Observer);
         assert_eq!(observer.max_connections, 128);
         assert_eq!(observer.max_connections_per_uid, 64);
         assert_eq!(observer.max_request_bytes, 16 * 1024);
-        let control = Limits::for_level(Level::Control);
+        let control = LevelLimits::for_level(Level::Control);
         assert_eq!(control.max_connections, 64);
         assert_eq!(control.max_connections_per_uid, 32);
         assert_eq!(control.max_request_bytes, 1 << 20);
         assert_eq!(control.request_deadline_ms, 25_000);
         for level in Level::ALL {
-            let limits = Limits::for_level(level);
+            let limits = LevelLimits::for_level(level);
             assert_eq!(limits.hello_deadline_ms, 5_000);
             assert_eq!(limits.idle_ms, 300_000);
             assert_eq!(limits.stall_ms, 5_000);
@@ -393,27 +510,35 @@ mod tests {
     }
 
     #[test]
-    fn block_levels_carry_the_block_defaults() {
+    fn block_levels_announce_the_same_probe_wide_and_shared_defaults() {
+        let observe = conn_limits(Level::Observe);
+        let operator = conn_limits(Level::Operator);
+        assert_eq!(
+            observe.hello_entries(),
+            operator.hello_entries(),
+            "observe and operator share all 19 hello values"
+        );
         for level in [Level::Observe, Level::Operator] {
-            let limits = Limits::for_level(level);
-            assert_eq!(limits.max_rows, 4_096);
-            assert_eq!(limits.max_block_buckets, 4_096);
-            assert_eq!(limits.max_page_blocks, 64);
-            assert_eq!(limits.min_interval_ms, 1_000);
-            assert_eq!(limits.tick_ms, 1_000);
-            assert_eq!(limits.max_block_bytes, limits.client_queue_bytes);
-            assert_eq!(limits.max_block_bytes, limits.query_queue_bytes);
-            assert_eq!(limits.max_uid_selections, 4);
-            assert_eq!(limits.max_selections, 8);
+            let limits = conn_limits(level);
+            assert_eq!(value_of(&limits, "max_rows"), 1_024);
+            assert_eq!(value_of(&limits, "max_block_buckets"), 4_096);
+            assert_eq!(value_of(&limits, "max_page_blocks"), 64);
+            assert_eq!(value_of(&limits, "min_interval_ms"), 1_000);
+            assert_eq!(value_of(&limits, "tick_ms"), 1_000);
+            assert_eq!(value_of(&limits, "client_queue_bytes"), 4 << 20);
+            assert_eq!(value_of(&limits, "query_queue_bytes"), 1 << 20);
+            assert_eq!(value_of(&limits, "max_block_bytes"), 1 << 20);
+            assert_eq!(limits.level.max_uid_selections, 8);
+            assert_eq!(limits.level.max_selections, 8);
         }
     }
 
     #[test]
     fn limits_selection_caps_defaults_and_zero_at_non_block_levels() {
         for level in [Level::Observe, Level::Operator] {
-            let limits = Limits::for_level(level);
-            assert_eq!(limits.max_uid_selections, 4);
-            assert_eq!(limits.max_selections, 8);
+            let limits = conn_limits(level);
+            assert_eq!(limits.level.max_uid_selections, 8);
+            assert_eq!(limits.level.max_selections, 8);
             assert_eq!(
                 limits.interval_rule(),
                 IntervalRule {
@@ -423,23 +548,23 @@ mod tests {
             );
         }
         for level in [Level::Observer, Level::Control] {
-            let limits = Limits::for_level(level);
-            assert_eq!(limits.max_uid_selections, 0);
-            assert_eq!(limits.max_selections, 0);
+            let limits = conn_limits(level);
+            assert_eq!(limits.level.max_uid_selections, 0);
+            assert_eq!(limits.level.max_selections, 0);
         }
     }
 
     #[test]
     fn hello_keys_still_19() {
-        assert_eq!(Limits::HELLO_KEYS, 19);
+        assert_eq!(ConnLimits::HELLO_KEYS, 19);
         for level in Level::ALL {
-            let limits = Limits::for_level(level);
-            assert_eq!(limits.hello_entries().len(), Limits::HELLO_KEYS);
+            let limits = conn_limits(level);
+            assert_eq!(limits.hello_entries().len(), ConnLimits::HELLO_KEYS);
             assert_eq!(
                 members_up_to(limits.hello_json().as_bytes(), 64)
                     .expect("hello limits object")
                     .len(),
-                Limits::HELLO_KEYS
+                ConnLimits::HELLO_KEYS
             );
         }
     }
@@ -479,13 +604,13 @@ mod tests {
     #[test]
     fn r18_block_keys_are_zero_at_levels_without_block_verbs() {
         for level in [Level::Observer, Level::Control] {
-            let limits = Limits::for_level(level);
+            let limits = conn_limits(level);
             for key in BLOCK_KEYS {
                 assert_eq!(value_of(&limits, key), 0, "{key} at {}", level.name());
             }
         }
         for level in [Level::Observe, Level::Operator] {
-            let limits = Limits::for_level(level);
+            let limits = conn_limits(level);
             for key in BLOCK_KEYS {
                 assert_ne!(value_of(&limits, key), 0, "{key} at {}", level.name());
             }
@@ -495,7 +620,7 @@ mod tests {
     #[test]
     fn r28_control_queue_follows_the_reply_formula_at_every_level() {
         for level in Level::ALL {
-            let limits = Limits::for_level(level);
+            let limits = LevelLimits::for_level(level);
             let bound = limits.max_outstanding * limits.max_reply_bytes + END_SLACK_BYTES;
             assert!(limits.control_queue_bytes <= bound, "{}", level.name());
             assert_eq!(limits.control_queue_bytes, bound, "{}", level.name());
@@ -509,11 +634,11 @@ mod tests {
 
     #[test]
     fn r28_the_observer_queue_is_320_kib_not_2_mib() {
-        let observer = Limits::for_level(Level::Observer);
+        let observer = LevelLimits::for_level(Level::Observer);
         assert_eq!(observer.max_reply_bytes, 16 * 1024);
         assert_eq!(observer.control_queue_bytes, 320 * 1024);
         assert!(observer.max_reply_bytes >= 3 * 1024);
-        let others = Limits::for_level(Level::Observe);
+        let others = LevelLimits::for_level(Level::Observe);
         assert_eq!(others.max_reply_bytes, 448 * 1024);
         assert_eq!(others.control_queue_bytes, 2 * 1024 * 1024);
     }
@@ -526,6 +651,96 @@ mod tests {
         assert_eq!(max_reply_for(u32::MAX, 0), 0);
         assert_eq!(control_queue_for(0, 100), END_SLACK_BYTES);
         assert_eq!(control_queue_for(u32::MAX, u32::MAX), u32::MAX);
+    }
+
+    #[test]
+    fn max_block_is_clamped_to_both_connection_pools() {
+        let probe = ProbeLimits {
+            max_block_bytes: 16 << 20,
+            client_queue_bytes: 4 << 20,
+            query_queue_bytes: 1 << 20,
+            ..ProbeLimits::new()
+        }
+        .clamped();
+        assert_eq!(probe.max_block_bytes, probe.query_queue_bytes);
+        assert!(probe.max_block_bytes <= probe.client_queue_bytes);
+        let probe = ProbeLimits {
+            max_block_bytes: 2 << 20,
+            client_queue_bytes: 1 << 20,
+            query_queue_bytes: 4 << 20,
+            ..ProbeLimits::new()
+        }
+        .clamped();
+        assert_eq!(probe.max_block_bytes, probe.client_queue_bytes);
+        assert!(probe.max_block_bytes <= probe.query_queue_bytes);
+    }
+
+    fn worst_case_data(rows: usize) -> TickData {
+        let entity_labels: Vec<String> = (0..rows)
+            .map(|index| {
+                let mut label = "e".repeat(256);
+                label.replace_range(252.., &format!("{index:04}"));
+                label
+            })
+            .collect();
+        let metric_names: Vec<String> = (0..64)
+            .map(|index| {
+                let mut name = "m".repeat(256);
+                name.replace_range(252.., &format!("{index:04}"));
+                name
+            })
+            .collect();
+        let names: Vec<&str> = metric_names.iter().map(String::as_str).collect();
+        let row_count = u64::try_from(rows).expect("rows fit u64");
+        let incarnations: Vec<u64> = (0..row_count).collect();
+        let mut data = TickData::example(1, &incarnations, &names);
+        for (entry, label) in data.entries.iter_mut().take(rows).zip(entity_labels) {
+            let Entry::Entity { label: held, .. } = entry else {
+                panic!("the first entries are entities");
+            };
+            *held = label;
+        }
+        data
+    }
+
+    #[test]
+    fn worst_case_query_ram_is_derived_from_the_encoder_helpers() {
+        let probe = ProbeLimits::new().clamped();
+        let bounds = probe.block_bounds();
+        let widest_data = worst_case_data(usize::try_from(probe.max_rows).expect("rows"));
+        let dictionary = dictionary_body(1, &widest_data.entries).expect("dictionary");
+        let widest_len = encoded_len(&widest_data, Some(dictionary.len())).expect("encoded length");
+        let block = query_block(widest_data, bounds).expect("widest block fits");
+        assert_eq!(block.len(), widest_len);
+        assert_eq!(widest_len, 890_624, "WIRE.md section 5.1 worst-case block");
+        assert!(widest_len <= usize::try_from(probe.max_block_bytes).expect("block bytes"));
+
+        let resolution_data = worst_case_data(
+            usize::try_from(probe.max_rows.saturating_add(1)).expect("resolution rows"),
+        );
+        let resolution_dictionary =
+            dictionary_body(1, &resolution_data.entries).expect("resolution dictionary");
+        let resolution_len = encoded_len(&resolution_data, Some(resolution_dictionary.len()))
+            .expect("resolution length");
+        assert!(resolution_len <= usize::try_from(probe.max_block_bytes).expect("block bytes"));
+
+        let hub = ConnLimits::new(
+            Level::Observe,
+            LevelLimits::for_level(Level::Observe),
+            probe,
+        )
+        .queue_limits();
+        let total = hub
+            .global_query_bytes
+            .saturating_add(resolution_len)
+            .saturating_add(widest_len);
+        let ceiling = total
+            .saturating_add((1 << 20) - 1)
+            .checked_div(1 << 20)
+            .expect("divisor")
+            .saturating_mul(1 << 20);
+        assert_eq!(ceiling, 6 << 20, "global Query + resolution + block");
+        assert!(ceiling <= 9 << 20, "D-W52 query-RAM ceiling");
     }
 
     /// The WIRE.md section 4.4 key names in order, pinned here independently of the code.
@@ -552,34 +767,43 @@ mod tests {
     ];
 
     /// The struct fields spelled out per key, in the order of [`HELLO_KEY_NAMES`].
-    fn field_values(limits: &Limits) -> [u32; 19] {
+    fn field_values(limits: &ConnLimits) -> [u32; 19] {
+        let level = limits.level;
+        let probe = limits.probe;
+        let block = |value: u32| {
+            if limits.serves_blocks() {
+                value
+            } else {
+                0
+            }
+        };
         [
-            limits.max_frame_bytes,
-            limits.max_request_bytes,
-            limits.request_deadline_ms,
-            limits.hello_deadline_ms,
-            limits.idle_ms,
-            limits.stall_ms,
-            limits.frame_completion_ms,
-            limits.max_outstanding,
-            limits.max_subscriptions,
-            limits.client_queue_bytes,
-            limits.query_queue_bytes,
-            limits.control_queue_bytes,
-            limits.max_reply_bytes,
-            limits.max_block_bytes,
-            limits.max_rows,
-            limits.max_block_buckets,
-            limits.max_page_blocks,
-            limits.min_interval_ms,
-            limits.tick_ms,
+            level.max_frame_bytes,
+            level.max_request_bytes,
+            level.request_deadline_ms,
+            level.hello_deadline_ms,
+            level.idle_ms,
+            level.stall_ms,
+            level.frame_completion_ms,
+            level.max_outstanding,
+            level.max_subscriptions,
+            block(probe.client_queue_bytes),
+            block(probe.query_queue_bytes),
+            level.control_queue_bytes,
+            level.max_reply_bytes,
+            block(probe.max_block_bytes),
+            block(probe.max_rows),
+            level.max_block_buckets,
+            level.max_page_blocks,
+            level.min_interval_ms,
+            block(probe.tick_ms),
         ]
     }
 
     #[test]
     fn hello_json_is_the_19_exact_integer_keys_in_order() {
         for level in Level::ALL {
-            let limits = Limits::for_level(level);
+            let limits = conn_limits(level);
             let fields = field_values(&limits);
             let entries = limits.hello_entries();
             let names: Vec<&str> = entries.iter().map(|(key, _)| *key).collect();
@@ -589,7 +813,7 @@ mod tests {
             let json = limits.hello_json();
             let text = json.as_bytes();
             let found = members_up_to(text, 64).expect("one object");
-            assert_eq!(found.len(), Limits::HELLO_KEYS);
+            assert_eq!(found.len(), ConnLimits::HELLO_KEYS);
             for (index, member) in found.iter().enumerate() {
                 assert_eq!(member.kind, Kind::Number);
                 let key = HELLO_KEY_NAMES.get(index).expect("key name");

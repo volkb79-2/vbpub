@@ -20,12 +20,15 @@ from cli_extended import (
 )
 
 from .config import (
+    check_override,
     ConfigError,
     TLS_MODES,
     atomic_write,
     load_answers,
     load_effective_config,
+    load_site,
     locate_instance_root,
+    migrate,
     normalize_domain,
     updated_consumer_env,
     updated_override,
@@ -303,8 +306,51 @@ def _collect_values(
     return values
 
 
-def _port_plan(config: dict[str, Any]) -> list[str]:
-    return validate_config(config)
+def _port_plan(config: dict[str, Any], stack_dir: Path) -> list[str]:
+    return validate_config(config, stack_dir=stack_dir)
+
+
+def _load_checked_site(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    stack_dir = root / "stack" / "ciu-stack"
+    defaults, overlay, effective = load_site(stack_dir)
+    overlay = migrate(overlay)
+    check_override(defaults, overlay)
+    return effective["tls_edge"], overlay
+
+
+def _acme_settings(
+    root: Path,
+    current: dict[str, Any],
+    overlay: dict[str, Any],
+    volume_name: str,
+) -> dict[str, str]:
+    store = value_at(current, "acme", "store", default="volume")
+    path = value_at(current, "traefik", "hostdir", "acme", "path", default="")
+    if (
+        (root / "shared" / "acme").is_dir()
+        and value_at(overlay, "tls_edge", "acme", "store") is None
+        and not volume_name
+    ):
+        store = "hostdir"
+        path = "../../shared/acme"
+    values = {"acme_store": store}
+    if store == "hostdir":
+        values["acme_path"] = path
+    return values
+
+
+def _load_validated_site(
+    root: Path,
+    *,
+    require_domain: bool = True,
+) -> tuple[dict[str, Any], list[str]]:
+    stack_dir = root / "stack" / "ciu-stack"
+    config, _ = _load_checked_site(root)
+    return config, validate_config(
+        config,
+        require_domain=require_domain,
+        stack_dir=stack_dir,
+    )
 
 
 def _render_config(root: Path, values: dict[str, Any]) -> tuple[Path, str, int, Path, str, int]:
@@ -327,11 +373,14 @@ def _diff(path: Path, old: str, new: str) -> str:
 def configure(args: Any, runtime: CliRuntime) -> int:
     root = _root(args)
     try:
-        current, _ = load_effective_config(root)
+        current, overlay = _load_checked_site(root)
         answers = load_answers(args.answers)
         values = _collect_values(
             current, runtime, answers, allow_prompt=args.answers is None
         )
+        values.update(_acme_settings(
+            root, current, overlay, values["acme_volume_name"]
+        ))
         proposed = dict(current)
         proposed["domain"] = values["domain"]
         proposed.setdefault("tls", {})["mode"] = values["tls_mode"]
@@ -346,6 +395,11 @@ def configure(args: Any, runtime: CliRuntime) -> int:
         if values["calls_enabled"]:
             proposed["calls"]["public_port"] = values["calls_port"]
         proposed.setdefault("acme", {})["volume_name"] = values["acme_volume_name"]
+        proposed["acme"]["store"] = values["acme_store"]
+        if "acme_path" in values:
+            proposed.setdefault("traefik", {}).setdefault("hostdir", {}).setdefault(
+                "acme", {}
+            )["path"] = values["acme_path"]
         proposed["acme"]["email"] = values.get(
             "acme_email", value_at(current, "acme", "email", default="")
         )
@@ -362,7 +416,7 @@ def configure(args: Any, runtime: CliRuntime) -> int:
                 "domains": values["static_domains"],
                 "source": values["static_source"],
             })
-        plan = _port_plan(proposed)
+        plan = _port_plan(proposed, root / "stack" / "ciu-stack")
         override_path, override_text, override_mode, env_path, env_text, env_mode = _render_config(root, values)
     except ConfigError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
@@ -411,7 +465,10 @@ def show(args: Any, runtime: CliRuntime) -> int:
         config, has_override = load_effective_config(root)
         mode = value_at(config, "tls", "mode", default="unknown")
         ports = validate_config(
-            config, require_domain=False, require_certificates=False
+            config,
+            require_domain=False,
+            require_certificates=False,
+            stack_dir=root / "stack" / "ciu-stack",
         )
     except ConfigError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
@@ -425,10 +482,9 @@ def show(args: Any, runtime: CliRuntime) -> int:
     runtime.output.primary(
         f"Calls media: {'enabled' if value_at(config, 'calls', 'enabled', default=False) else 'disabled'}"
     )
-    if ports:
-        runtime.output.primary("Inbound ports:")
-        for item in ports:
-            runtime.output.primary(f"  {item}")
+    runtime.output.primary("Inbound ports:")
+    for item in ports:
+        runtime.output.primary(f"  {item}")
     if not value_at(config, "domain", default=""):
         runtime.output.primary("Run `tls-edge configure` to complete the instance settings.")
     return 0
@@ -437,8 +493,7 @@ def show(args: Any, runtime: CliRuntime) -> int:
 def validate(args: Any, runtime: CliRuntime) -> int:
     root = _root(args)
     try:
-        config, _ = load_effective_config(root)
-        ports = validate_config(config)
+        _, ports = _load_validated_site(root)
     except ConfigError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
     runtime.output.primary("tls-edge configuration is valid.")

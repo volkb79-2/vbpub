@@ -7,6 +7,44 @@ know when upgrading; it is not generated.
 
 ## Contract and upgrade notes
 
+### Unreleased — adoption blockers (CLI-EXT-35, CLI-EXT-38, CLI-EXT-42, CLI-EXT-43, CLI-EXT-44)
+
+- **Estate test policy (P-core-04b).** Tests only: cli-extended now loads
+  `estate_test_policy` from the repository source, disables the installed
+  `pytest11` entry point to prevent double registration, and enforces its
+  `fail` mode. The local P11 leftover-child guard is retired in favour of TP-12;
+  process-signalling `procio` tests carry `requires_contained_cgroup`, and the
+  lanes that run them declare finite pids caps.
+- **Colour policy (CLI-EXT-42).** `CliOutput.color_enabled()` now follows
+  no-color.org and the cmru/ciu policy: an empty `NO_COLOR` is unset, and
+  `TERM=dumb` disables automatic colour. This is behaviour-visible: a TTY with
+  `NO_COLOR=""` now receives colour, while a TTY with `TERM=dumb` no longer
+  does. Explicit `--color`/`--no-color` still win. `ProgressRenderer` colour
+  follows the same rule; both now share `output.auto_color_enabled`.
+- **Shared line-stream renderer (CLI-EXT-35, CLI-EXT-38).**
+  `CliOutput.line_stream(stream)` returns the stdlib-only
+  `LineStreamRenderer`, using that destination's colour decision and the
+  invocation's JSON mode. It recognises `[INFO]`, `[WARN]`, and `[ERROR]` at
+  each line start, preserves CMRU's plain text prefixes, strips input-origin
+  CSI/OSC and unsafe C0/C1 controls before recognition, and never emits ANSI
+  in JSON mode. Partial lines are buffered until LF or `flush()`, so adoption
+  changes timing for non-newline progress writes even though final plain
+  bytes remain compatible. CMRU/CIU adoption and the short-timestamp decision
+  remain CLI-EXT-39 work; highlighting, Markdown, and OSC 8 remain deferred.
+- **`procio` 0.8 API polish (CLI-EXT-43).** `StreamResult` and `CaptureResult`
+  have `abandoned: bool`, true exactly when reading was abandoned regardless
+  of whether holder pids were found. `StreamResult.outcome` is the exported
+  `Outcome = Literal["exited", "watchdog"]`; its values are unchanged.
+  `run_capture` accepts only `stdin=None` (today's inherit/input-pipe
+  behaviour) or `stdin=subprocess.DEVNULL` (immediate child EOF). Combining
+  `input` with `DEVNULL`, or passing any other `stdin` value, raises
+  `ValueError` before spawning.
+- **Supervision tiers (CLI-EXT-44).** SPEC section 16 now records that CLI
+  tools use `procio`, judges keep independent supervision, and test suites
+  prove descendant cleanup with `estate_test_policy` TP-12 rather than
+  `procio`. The stdlib-only import guard now rejects relative and
+  `cli_extended` imports as well as non-stdlib imports.
+
 ### Unreleased — `cli_extended.procio`: one bounded subprocess reader
 
 Library contract version remains 1 and the surface manifest schema remains 7;
@@ -240,11 +278,42 @@ Behaviour changes a consumer can see:
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [0.8.0] - 2026-11-24
+<!-- cmru: generated -->
+<!-- cmru: source-end=b260a1ce039a7476c14e1df9fc7442c6b486085c -->
+
+### Added
+- feat(cli-extended): add severity-only line-stream renderer (94ae24646)
+- feat(cli-extended): adoption-blocking 0.8.0 fixes (CLI-EXT-42, 43, 44) (d2aa7ac5c)
+
+### Fixed
+- fix(cli-extended): recover malformed OSC streams (P-core-07 B1) (6a24b666c)
+- fix(cli-extended): one colour policy helper for output and progress (CLI-EXT-42 review r1) (7a76cd183)
+- fix(cli-extended): r2 contract test fails, never skips, when run-gate-project is missing; budget rule wording (CLI-EXT-35) (aeb632ec7)
+- fix(cli-extended): r2 lane review fixes: carry-over path, auto-jobs wording, outer budget, contract test through run-gate's own code (CLI-EXT-35) (dff8c3769)
+
+### Changed
+- chore(cli-extended): add line_stream.py to the R2 mutation targets (7fb92c97e)
+- build(cli-extended): r2 run-gate lane becomes a native assay lane so it can be sharded (CLI-EXT-35) (9a6517190)
+
+### Documentation
+- docs: propose shared line-stream renderer (8c0dbc4c8)
+
+### Testing
+- test(cli-extended): P11 meta-test cleanup lets the shell reap its own killed child (teardown leak found in the container run) (0051c9680)
+- test(cli-extended): P11 review fix: pidfd-pinned kill in the guard, load-independent procio windows (af1c64196)
+- test(cli-extended): P11 guard reports the ended status so a skipped SIGKILL is detected (hand-mutation survivor) (3a3d0e1af)
+- test(cli-extended): P11 reap_orphans fixture for the four leaking procio tests, deflake orphan meta-test, docs (d03a921e1)
+- test(cli-extended): P11 guard sets the child-subreaper flag like assay does, orphan scenario (12347a9d7)
+- test(cli-extended): P11 leftover-children guard (autouse fixture) and its meta-test (644893c3c)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - Tooling only, no action needed: the `r2` run-gate lane is now a native `kind = "assay"` lane (CLI-EXT-41), so `run-gate r2 --shard K/N`, `--merge-shards N` and `--carry-over` split and merge the whole-source mutation campaign. No library code or consumer contract changes.
 - Tests only, no action needed: a leftover-children guard fails any test that leaves a child process of pytest behind (assay's R0/R2 judge the tree at the leader's exit), and four `procio` tests now reap their orphaned shell grandchildren.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [0.7.0] - 2026-11-18
 <!-- cmru: generated -->

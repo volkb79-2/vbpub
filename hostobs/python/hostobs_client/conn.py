@@ -46,8 +46,8 @@ LEVELS = ("observe", "operator", "observer", "control")
 #: Connection-fatal codes (WIRE.md 5.4).
 FATAL_CODES = frozenset(
     (
-        "unknown-mode", "unsupported-version", "hello-required", "bad-frame", "frame-too-large",
-        "deadline", "idle", "slow-client", "shutting-down",
+        "unknown-mode", "binary-required", "unsupported-version", "hello-required", "bad-frame",
+        "frame-too-large", "deadline", "idle", "slow-client", "shutting-down",
     )
 )
 LIVE_QUEUE = 8

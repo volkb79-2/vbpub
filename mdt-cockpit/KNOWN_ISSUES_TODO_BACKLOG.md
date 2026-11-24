@@ -1963,3 +1963,42 @@ the first-party CLIs" section.
 2. Decide whether codex, claude and opencode should follow the same vetted-record and age-buffer rule as the other three tools (the estate rule is a 14-day buffer); if they stay on `latest`, say so in `docs/BUILD-ARCHITECTURE.md`, because a version published minutes before the build is then shipped unvetted.
 
 **Acceptance.** A fake `npm` that answers ETARGET twice and then succeeds lets the install pass and logs both retries; a fake that always answers ETARGET fails after the bound with the original error text.
+
+## MDT-106 - shell-start.d docs export every API key into every shell (2026-11-24)
+
+**Status:** OPEN; severity: medium.
+
+Do not register `~/.env.ai` on agent cockpits; launchers load per-route keys (CTL-47). Also: take over tls-edge's mkcert item.
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md M3 (SYNTHESIS.md §5)
+
+## MDT-107 - the devcontainer stops when its PID-1 `sleep` child is killed (2026-11-24)
+
+**Status:** FIXED-pending-rebuild (2026-11-24); severity: high. The image `CMD` (plat-19-pid1-20261124) is released: mdt-cockpit image `trixie-py3.14-php8.5-20261124`, digest sha256:be8d913f095f35ab62fdcf6c239e707afdcd2b8137d0aac7102f0660fa35762e, `Config.Cmd` confirmed from the registry. The `devcontainer.json` flip (`overrideCommand` false, `init` true) is in. The effect needs an operator-run devcontainer rebuild. The runner cockpit gets the keepalive separately (P-plat-19f, start-cockpit-runner.sh).
+
+**Observed.** Without an `overrideCommand` key the Dev Containers default made PID 1 `/bin/sh -c 'echo Container started; trap "exit 0" 15; exec "$@"; while sleep 1 & wait $!; do :; done' -`. Killing its `sleep` child makes `wait` fail, the loop ends and PID 1 exits 0, which stopped the whole cockpit (measured twice on 2026-11-18, `OOMKilled=false`). The cockpit must survive a killed child, so a pid-signalling test or a stray `pkill` can no longer take it down.
+
+**Fix.** See `CHANGES.md` [Unreleased]. Order matters: a rebuild with the flipped `devcontainer.json` on an older image exits at once, so release the image first.
+
+Source: memory `devcontainer-pid1-dies-when-sleep-child-killed` (2026-11-18)
+
+## MDT-108 - dedicated runner hosts must rely on finite caps plus swap, not systemd-oomd kills (2026-11-24)
+
+**Status:** FIXED 2026-11-24 in commit `07dc9d6898eb8fa57e6fb5bd6d86231eae21f3e0`.
+
+Host-setup renders no `ManagedOOMMemoryPressure`, `ManagedOOMMemoryPressureLimit` or `ManagedOOMSwap` on any dev tier, and the dead per-tier pressure-limit knobs are removed. Finite `MemoryMax` plus a large `MemorySwapMax` is the overcommit design: cgroup v2 reclaims to swap before OOM, while fleetd alone freezes work at host memory PSI `full avg10 >= 3` (operator directive 2026-11-24). The default golden changes only for `dev-gates.slice` and `dev-background.slice`; every other rendered unit and every other role is unchanged.
+
+Follow-up P-plat-19d (2026-11-24): `mdt-host-check.sh` FAILs when oomd can still act on a dev tier (live `ManagedOOM*` not `auto`, or `oomctl dump` lists a `dev*.slice` or the root slice), because host-setup never removes a stale drop-in or `set-property` override it did not render; install.sh names the retired oomd keys when a host-setup.env still sets them; on dedicated-dev, `dev-interactive` and `dev-buildkitd` carry no `MemoryMax` by operator decision 2026-11-24 (bounded by dev.slice `MemoryHigh` only).
+
+## MDT-109 - P-plat-19e impl r1 leftovers (2026-11-24)
+
+**Status:** OPEN. From the Opus review `reviews/plat-19e-impl-r1-opus.md`; F1-F3 and B1 were fixed in fix round 1.
+
+- **F4.** Raised floors are not seen by `check.sh`, `mdt_admission.gates_memory_ceiling()` or the wizard: install.sh derives with `--raised` (foreign MemoryMin above the table), the others call `dedicated_memory()` without it, so after a foreign raise check.sh FAILs permanently on the system.slice `memory.min` and the dev/tier `memory.max` derivation. No live impact today (DI2's table equals the mirror). Fix: one shared raise scan.
+- **F5.** The `check.sh` tests are string-level only. Note section 7 asks for the extracted function executed for: runtime file FAIL/WARN by role, IO-only OK, `20-memory-policy.conf` WARN, mismatch FAIL, mismatch WARN with a deferral record, owned key INFO. An executed test with a raise would have caught F4. Also a JSONC parse of the three devcontainer.json files.
+- **B2.** A `DEV_MEMORY_MIN_GUARANTEED_HIGH` pin still renders a MemoryHigh in the dev tree (`dev-memory_min_guaranteed.slice`); add it to the ignored HIGH keys.
+- **B3.** psi-guard role wiring in `main()` (`high_tiers=()` on dedicated-dev) is untested; the test passes `high_tiers=()` directly.
+- **B4.** `_other_memory_min` also scans the real `/run`, `/usr/lib`, `/lib` systemd dirs in tests (not hermetic); a system.slice raise from it bypasses the 460M / 10 % bounds.
+- **B5.** Stale text: `units/dev-cache.slice.in:18` ("their MemoryMax is dev High"); the `runtime-optional-keys.re` comment ("DEV_HOST_MEMORY_KEEP ... default 512M"); the report's claim that `DEV_INTERACTIVE_MEMORY_MIN=-` gives the 512M default (it means no floor).
+- **Cleanup.** The dead HIGH plumbing (`DedicatedMemory.high`, `load_high`, `gates_high`, `background_high`, their `*_source`, the CLI `DEDICATED_{MEM,GATES,BACKGROUND}_HIGH*` lines and the install.sh case arms with their SC2034 directive); check.sh still reads `DEDICATED_MEM_HIGH`.
+- **r2 backlog.** The note's migration "Step 0" sits as a continuation of item 1 instead of standing before it. The wizard may still offer `-` for `DEV_MEMORY_MAX` on dedicated-dev, which install.sh then refuses (safe). `check.sh` and the CLI ignore `--raised` (see F4).

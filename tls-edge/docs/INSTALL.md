@@ -48,6 +48,8 @@ curl -fsSLO "https://raw.githubusercontent.com/volkb79-2/vbpub/${TAG}/tls-edge/g
 sudo python3 get.py install --version "$TAG" --variant py313
 sudo /srv/tls-edge-instance/bin/tls-edge configure
 cd /srv/tls-edge-instance/stack
+# If Docker has no group entry, use: sudo env DOCKER_GID=<gid> ./ciu env generate
+sudo ./ciu env generate
 sudo ./ciu check
 sudo ./ciu up --dry-run
 sudo ./ciu up
@@ -57,6 +59,13 @@ The install command pins the same release tag used to fetch `get.py`. `get.py` b
 it does not collect site settings. `tls-edge configure` then asks for the domain, certificate mode, public ports,
 HTTP/3, optional Calls media, network/volume adoption, and runtime placement. It displays the exact changes and
 inbound firewall ports before writing the instance override and `consumer.env`.
+
+On a root-run system install, bootstrap creates `shared/acme` as `root:root` with mode `0700`. When the override
+does not yet set `[tls_edge.acme] store`, `configure` selects `store = "hostdir"`, unless
+`[tls_edge.acme] volume_name` is set: an adopted volume keeps `store = "volume"`, and `ciu clean` can still remove
+it (see §6). For the hostdir, `configure` writes `[tls_edge.traefik.hostdir.acme] path = "../../shared/acme"`.
+That source is outside `stack/`: `ciu --reset`, `docker compose down -v`, and `ciu clean` do not remove it. A
+`--scope user` install cannot create a root-owned directory, so it keeps the volume behaviour.
 
 For unattended configuration, prepare a TOML file and pass it to the CLI:
 
@@ -94,7 +103,7 @@ Verify the running edge:
 ```bash
 cd /srv/tls-edge-instance/stack
 sudo ./ciu env generate     # first time only; ciu up does it too. Needs the Docker group id:
-                            # sudo DOCKER_GID=$(stat -c %g /var/run/docker.sock) ./ciu env generate
+                            # sudo env DOCKER_GID=$(stat -c %g /var/run/docker.sock) ./ciu env generate
 sudo ./ciu check            # all stages pass on a fresh install
 sudo ./scripts/verify.sh --domain app.example.test
 ```
@@ -107,6 +116,18 @@ Use `/srv/tls-edge-instance/bin/tls-edge configure` for supported settings. It p
 configuration and comments, and updates only `TLS_EDGE_DOMAIN` in `consumer.env`. Use `--dry-run` to review a
 change without writing files. Advanced settings can still be edited in `stack/ciu-stack/ciu.toml.j2`; the full
 schema and shipped defaults are in `ciu.defaults.toml.j2`.
+
+The site override is plain TOML and is never templated. A `{{`, `{%`, or `{#` marker in it is refused with the
+override path. `tls-edge configure` records `[tls_edge] schema = 1`; an override without the key means schema 1,
+and a newer schema is refused. Unknown keys are refused by their full dotted path, for example
+`unknown override key tls_edge.http3.enable`. The open tables where provider or site-defined keys are expected
+are `[tls_edge.acme.dns.environment]`, `[tls_edge.secrets]`, and `[tls_edge.hooks]`. An override that sets
+`[tls_edge.hooks] pre_secrets` must keep `hooks/validate_edge.py` in that list, or it is refused.
+
+`ciu check`, the automatic `ciu up` static preflight, `scripts/render_standalone.py --check`, `tls-edge validate`,
+and `tls-edge configure --dry-run` all run this same validation. Limit: ciu runs the validator because the shipped
+defaults declare it under `[tls_edge.hooks]` `pre_secrets` and `pre_compose`. An override that empties both lists
+removes it from `ciu check` and `ciu up`, so keep the shipped entries (tracked upstream as ciu CIU-226).
 
 | `[tls_edge.tls] mode` | How | Port needed | Certificates |
 |---|---|---|---|
@@ -172,8 +193,43 @@ The update downloads and verifies the new bundle, builds its venv, swaps `curren
 you edited in the synced set (not `ciu.toml.j2`, which is not part of it) stop the update with exit 2 and a list;
 keep host edits in `ciu.toml.j2` or pass `--overwrite-local` (the replaced files are saved under
 `shared/overwritten/<UTC time>/`). The installer does not touch `ciu.toml.j2`, `consumer.env`, `.ciu/`, volumes
-or the ACME account. `tls-edge configure` is the supported writer for the site override and domain variable;
+or `shared/acme`. `tls-edge configure` is the supported writer for the site override and domain variable;
 `status` shows the installed tag and any locally modified files.
+
+An upgraded 3.1 instance has no `shared/acme` marker and its override normally has no `acme.store`. It therefore
+keeps the same `acme-data` volume as before; `configure` writes `store = "volume"` explicitly. If
+`acme.volume_name` names an existing external volume, that volume is still used unchanged. `down -v` and
+`ciu --reset` preserve an external volume, but `ciu clean` may remove it when it carries this project's labels;
+only the hostdir is guaranteed to survive `ciu clean`.
+
+To move an existing instance to the durable hostdir manually:
+
+1. `cd /srv/tls-edge-instance/stack && sudo ./ciu down`
+2. Create the destination, then copy `acme.json` from the exact existing volume with one exact-name container:
+
+   ```bash
+   sudo install -d -m 0700 -o root -g root /srv/tls-edge-instance/shared/acme
+   sudo docker run --rm --name tls-edge-acme-copy \
+     -v '<current acme volume>:/source:ro' \
+     -v /srv/tls-edge-instance/shared/acme:/destination \
+     alpine sh -c 'cp -p /source/acme.json /destination/acme.json'
+   ```
+
+3. Set this in the site override (clear `volume_name` if it was used):
+
+   ```toml
+   [tls_edge.acme]
+   store = "hostdir"
+   volume_name = ""
+   [tls_edge.traefik.hostdir]
+   acme = { path = "../../shared/acme", uid = 0, gid = 0, mode = "0700" }
+   ```
+
+4. Run `sudo ./ciu check && sudo ./ciu up`. Keep the old volume until the new edge has issued or reused its
+   certificates successfully. A rollback to a release older than 3.2 ignores `store`, mounts the `acme-data`
+   volume (empty unless the old one was kept); an empty volume forces re-issuance, and the hostdir remains on
+   disk for a later roll-forward. An instance that adopted a volume must restore `[tls_edge.acme] volume_name`
+   before rolling back, or the older release mounts the project's own, empty `acme-data`.
 
 ## 7. Roll back
 
@@ -182,8 +238,10 @@ sudo /srv/tls-edge-instance/bin/tls-edge-installer rollback
 cd /srv/tls-edge-instance/stack && sudo ./ciu up
 ```
 
-`rollback` re-points `current` to the previous release, resyncs `stack/` and the stubs. The ACME volume is
-independent of releases, so certificates survive.
+`rollback` re-points `current` to the previous release, resyncs `stack/` and the stubs. A 3.2 rollback keeps
+`shared/acme`, but a rollback to a release older than 3.2 ignores `acme.store` and mounts the `acme-data` volume
+(empty unless the old one was kept, see §6), so it may re-issue every certificate. The hostdir remains on disk;
+roll forward again to reuse it.
 
 ## 8. Migrate from a hand-made deployment (PLAN, not executed)
 
@@ -219,7 +277,7 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
 2. **Review adoption.** Confirm the generated override contains `ingress_external = true`,
    `volume_name = "edge-proxy_acme-data"`, and `cgroup_parent = "edge.slice"`. The network and volume are
    adopted (`external: true`), never created or removed by the instance.
-3. **Dry run.** `cd /srv/tls-edge-instance/stack && sudo ./ciu check && sudo ./ciu up --dry-run`. Compare the
+3. **Dry run.** `cd /srv/tls-edge-instance/stack && sudo ./ciu env generate && sudo ./ciu check && sudo ./ciu up --dry-run`. Compare the
    rendered ports, mounts and cgroup parent with `docker inspect edge-traefik`. Note: `ciu env generate` and
    `up --dry-run` create a Docker network and attach the calling container (ciu CIU-162); detach and remove it
    by its exact name afterwards.
@@ -232,9 +290,12 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
 6. **Verify.** `scripts/verify.sh --domain <host>`, `curl -I https://<each consumer host>`, one certificate check per
    consumer host (not the default certificate, not expired), an HTTP/3 request from a client with HTTP/3 support,
    a Calls test from outside on 8443 tcp and udp, and one real call.
-7. **Rollback (any failure in 6).** `cd /srv/tls-edge-instance/stack && sudo ./ciu down` (no `-v`), then
-   `cd /root/tls-edge-LIVE && docker compose up -d`. Volume and network were never touched and the ports are the same;
-   downtime is seconds.
+7. **Rollback (any failure in 6).** `cd /srv/tls-edge-instance/stack && sudo ./ciu down` (no `-v`). `ciu down`
+   only stops containers; to remove them as well, use `docker compose -p <project> down` (never `-v`), where
+   `<project>` comes from `docker inspect <container_prefix>-traefik --format '{{index .Config.Labels "com.docker.compose.project"}}'`
+   (`container_prefix` is in `ciu-stack/ciu.toml`).
+   Then `cd /root/tls-edge-LIVE && docker compose up -d`. Volume and network were never touched and the ports
+   are the same; downtime is seconds.
 8. **Later cleanup** (after one soak and a renewal window): archive `/root/tls-edge-LIVE`; remove old compose-project
    leftovers by exact name. Keep `ingress_external = true` as long as the network predates the instance.
 

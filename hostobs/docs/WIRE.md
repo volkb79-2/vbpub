@@ -24,7 +24,7 @@ silently at its hello deadline (§5.1).
 
 | First bytes from the client | Mode | Server action |
 |---|---|---|
-| `0x7B` (`{`) | JSON lines (§8) for the whole connection | read lines |
+| `0x7B` (`{`) | JSON lines (§8) for the whole connection, observer and control only | read lines; at observe and operator write one line `{"ok":false,"corr":0,"error":{"code":"binary-required","message":"...","detail":{}}}\n`, close (D-W51) |
 | `48 4F 42 01` (`HOB\x01`) `u16 major` `u16 minor` (8 B) | binary | §1.4 |
 | 1-7 bytes whose first `min(have, 4)` match `HOB\x01` (bytes 5-8 are the version, any value) | undecided | wait until the hello deadline (§5.1), then close silently |
 | any other byte, or a byte that diverges from `HOB\x01` | refused | write one line `{"ok":false,"corr":0,"error":{"code":"unknown-mode","message":"...","detail":{}}}\n`, close |
@@ -43,9 +43,9 @@ silently at its hello deadline (§5.1).
 
 The prefix is 8 bytes; every later byte belongs to a 12-byte-header frame (§2).
 
-1.5 **Half-close.** A client `shutdown(SHUT_WR)` means "no further requests": the server finishes every
-outstanding request (final `REP` or `END`), ends every live subscription with
-`END` reason `client-eof` (§2.2) and then closes. A server that closes for a code writes the `closing`
+1.5 **Half-close.** A client `shutdown(SHUT_WR)` means "no further requests": every request is already
+answered (§5.1, no request waits); the server ends every live subscription with `END` reason
+`client-eof` (§2.2) and closes once its queue is written. A server that closes for a code writes the `closing`
 EVT under the conditions of §5.4 `Closing`; a client MUST NOT depend on receiving it.
 
 ## 2. Frames
@@ -85,12 +85,13 @@ connection (§5.4).
 A frame type sent in the wrong direction is `bad-frame`. JSON payloads carry no BOM and no trailing
 bytes after the object; integers follow §8.3.
 
-2.3 **`corr`.** The client allocates `corr` for each REQ: non-zero, unique among its outstanding
-requests and live subscriptions, and SHOULD increase by one per request. Every REP, BLOCK and END
-answering a request carries its `corr`; every live BLOCK of a subscription carries the `subscribe`
-request's `corr` until that subscription's END. `corr = 0` is reserved for server-originated EVT and
-for the connection-fatal REP of a frame whose own `corr` cannot be trusted. A REQ with `corr = 0` or a
-`corr` already in use is `bad-frame` (REP `corr = 0`, close).
+2.3 **`corr`.** The client allocates `corr` for each REQ: non-zero, unique among its unanswered requests
+(final REP or END not yet read) and live subscriptions, and SHOULD increase by one per request. Every
+REP, BLOCK and END answering a request carries its `corr`; every live BLOCK of a subscription carries
+the `subscribe` request's `corr` until that subscription's END. `corr = 0` is reserved for
+server-originated EVT and for the connection-fatal REP of a frame whose own `corr` cannot be trusted.
+A REQ with `corr = 0` or the `corr` of a live subscription (the only `corr` the server holds, D-W49) is
+`bad-frame` (REP `corr = 0`, close).
 
 2.4 **Reply shapes.** A JSON verb answers with exactly one REP. A block verb answers
 `REP ok:true` (stream header), then 0..n BLOCK, then exactly one END. A block verb that fails before
@@ -318,35 +319,36 @@ are excluded. Worst selection: 16 × (`{"prefix":` 10 + 512·3 + 2 + `}` 1 + `,`
 observe/operator request is < 30 KiB ≤ `max_request_bytes` = 32 KiB.
 **Request precedence** (P5b design R11, implemented by `classify` in `bins/probe/src/classify.rs`; the
 first failing step answers, later steps are never inspected): (1) a frame that is not a REQ:
-`bad-frame`, `corr` 0, fatal (binary only); (2) binary `corr` 0 or already in use by a subscription or
-pending request: `bad-frame`, `corr` 0, fatal; (3) the envelope check of this section: `bad-request` on
+`bad-frame`, `corr` 0, fatal (binary only); (2) binary `corr` 0 or the `corr` of a live subscription
+(§2.3): `bad-frame`, `corr` 0, fatal; (3) the envelope check of this section: `bad-request` on
 the frame `corr` (JSON: the recovered `corr`, §8.1), `detail.key` as above; (4) binary before `hello`: a
 verb other than `hello` is `hello-required` on its own `corr`, `hello` with a `corr` other than 1 is
 `bad-frame` `corr` 0 (both fatal); (5) a verb not in the table or reserved (§4.13): `unknown-verb`; (6) a
 verb the level does not know: `forbidden`; (7) `hello` when already answered, either mode: `bad-request`
-`{"key":"verb"}`; (8) a BLK verb in JSON mode: `binary-required`; (9) a verb known but not served by this
-build: `unknown-verb`; (10) an outstanding `current` or `subscribe` when `pending.len()` has reached
-`max_outstanding`: `too-many-requests`, non-fatal, `detail {}`; other verb shapes are never refused by
-this cap; (11) the argument schema: `bad-request` with the schema path (a `hello` with a JSON-mode
-`proto.major` other than 1 is `unsupported-version`, fatal); (12) execution. So duplicate keys inside
-the args of an unknown verb are never inspected, and `forbidden` and `binary-required` are judged from
-the full table (a verb the build does not serve yet still answers `forbidden` at a level that does not
-know it). A `corr` is free again once its final REP or END is queued. `unsupported-feature` follows
-(11). A `detail.key` echoes an unknown or duplicate key only if it is at most 64 bytes of
-`[A-Za-z0-9_.-]`, else the path stops at the parent, and the `message` is fixed text, never client text.
+`{"key":"verb"}`; (8) retired (JSON mode never reaches a level with BLK verbs, §1.3); (9) a verb known
+but not served by this build: `unknown-verb`; (10) `too-many-requests` (non-fatal, `detail {}`) for a
+one-block verb while the connection's Query pool is not empty, or a `series_batch` at the
+per-connection history cap (§5.1 "No request waits"); the one other `too-many-requests` is judged at
+step 12; (11) the argument schema: `bad-request` with the schema path (a `hello` with a JSON-mode
+`proto.major` other than 1 is `unsupported-version`, fatal); (12) execution, including the §5.1
+refusals judged after resolution (`budget {"pool":"query"}`; for `series_batch`, the first-block
+`too-many-requests`), all before the REP. So duplicate keys inside the args of an unknown verb are never inspected, and `forbidden` is
+judged from the full table (a verb the build does not serve yet still answers `forbidden` at a level
+that does not know it). A `corr` is free again once its final REP or END is queued.
+`unsupported-feature` follows (11). A `detail.key` echoes an unknown or duplicate key only if it is at
+most 64 bytes of `[A-Za-z0-9_.-]`, else the path stops at the parent, and the `message` is fixed text,
+never client text.
 **Integers** (the digits-only rule of §8.3, enforced
 below the envelope): only the digits `0-9`, at most 20 of them, no sign (so `-0` and a negative value
 for an unsigned field are refused; a signed field refuses `-0` too), no fraction, no exponent, and the
 value must fit the field's own type (`proto.minor` is a `u16`: 65,536 is `bad-request`).
 
-4.3 **Verbs by level** (✓ = served; JSON = REP only; BLK = REP + BLOCK* + END; JSON mode refuses
-BLK verbs with `binary-required`, §8.4):
+4.3 **Verbs by level** (✓ = served; JSON = REP only; BLK = REP + BLOCK* + END; JSON mode exists only
+at observer and control, which serve no BLK verb, §1.3):
 
 P5b-2d serves `current`, `subscribe` and `unsubscribe` at observe and operator. The `hello.verbs`
 array at those levels lists exactly `hello`, `status`, `current`, `subscribe`, `unsubscribe`;
-observer remains `hello`. In JSON mode `current` and `subscribe` stay `binary-required`, while
-`unsubscribe` is a served JSON verb and answers `not-found` when the named subscription is not
-held (§4.7).
+observer remains `hello`.
 
 | Verb | observe | operator | observer | control | Shape | Since |
 |---|---|---|---|---|---|---|
@@ -382,7 +384,7 @@ lone surrogate; it is a free label, never an identity, and a request key naming 
 "client_queue_bytes": u32, "query_queue_bytes": u32, "control_queue_bytes": u32, "max_reply_bytes":
 u32, "max_block_bytes": u32, "max_rows": u32, "max_block_buckets": u32,
 "max_page_blocks": u32, "min_interval_ms": u32, "tick_ms": u32}}`, exactly these keys; values as
-§5.1, plus defaults `max_rows` 4,096, `max_block_buckets` 4,096, `max_page_blocks` 64,
+§5.1, plus defaults `max_rows` 1,024 (D-W52), `max_block_buckets` 4,096, `max_page_blocks` 64,
 `min_interval_ms` 1,000, `tick_ms` 1,000 (levels that serve no block verb report the block keys as
 0: `max_subscriptions`, `client_queue_bytes`, `query_queue_bytes`, `max_block_bytes`, `max_rows`,
 `max_block_buckets`, `max_page_blocks`, `min_interval_ms` and `tick_ms`; `verbs` lists the verbs served
@@ -401,11 +403,9 @@ sheds, dropped incoming Live ticks and the unpinned Live tick removed by an END)
 
 4.6 **current** — args `{"selection": Selection}`. REP result `{"stream": {"tick_ms": u32}}`, one
 live-shaped BLOCK (dictionary-bearing, latest tick; a Query entry, §5.3, so never dropped), END
-`reason: "complete"`. Before the REP the server stops backend resolution at `max_rows + 1` rows and
-judges the dictionary-bearing frame's size before encoding. If the Query pool backpressures the
-block, its REP is already queued and the request waits without holding the block bytes; when room
-appears it re-resolves the latest tick at queue time. A failed wait ends with `END ok:false` after
-that REP.
+`reason: "complete"`, all queued in the turn that reads the request. Before the REP the server stops
+backend resolution at `max_rows + 1` rows, judges the dictionary-bearing frame's size before encoding
+and applies the §5.1 one-block refusals; a `current` never fails after its REP.
 
 4.7 **subscribe** — args `{"selection": Selection, "interval_ms": u32}`. The interval is accepted
 without rounding only when `tick_ms > 0`, it is a multiple of `tick_ms`, it is at least
@@ -416,7 +416,7 @@ per interval with this corr (Live entries, §5.3: a lagging client gets the newe
 last pushed (also when its interval skipped the tick that changed the generation) and the first after
 a dropped or replaced dictionary-bearing block are dictionary-bearing (§5.3 form rule, §6.2). The REP
 precedes all data; the first BLOCK comes from the next due sampler tick, never from `subscribe`. The caps of §5.1 apply in this
-order: `max_subscriptions` per connection, 4 distinct selections per peer uid, 8 per probe; each is
+order: `max_subscriptions` per connection, 8 distinct selections per peer uid, 8 per probe; each is
 `budget` with its `pool`. A subscription whose canonical selection is already live joins that
 selection stream without creating one: a uid that already uses the selection joins with no selection
 cap check; a uid that does not use it yet is checked against that uid's cap but not the probe cap.
@@ -426,15 +426,14 @@ levels.
 `reason: "unsubscribed"` on the subscription's corr. Unknown `sub`: `not-found`.
 
 The unsubscribe race follows the queue rules: an unpinned queued tick removed by `end_stream` is
-counted in END `dropped`; a pinned tick is written before the END and counted in `blocks`.
-Clean EOF in `Ready` enters Draining: every subscription ends with `client-eof` after the same
-per-stream counts, outstanding `current` requests finish, and the connection closes silently only
-when both `pending` and the queue are empty.
+counted in END `dropped`; a pinned tick is written before the END and counted in `blocks`. Clean EOF:
+§1.5, §5.4 `Draining`.
 
 4.8 **snapshot_at** — args `{"selection": Selection, "real_ns": i64, "tier": "auto|hot|warm|cold",
 "provenance": bool}`. REP result `{"resolved": {"tier": str, "bucket_real_ns": i64, "step_ms": u32,
 "covered_ms": u32}, "provenance": [object] (≤ 64 objects, each ≤ 1 KiB encoded) | null}`; one live-shaped BLOCK (rows + columns,
-`t_off_us = 0`, header `real_ns = bucket_real_ns`); END `complete`. Outside retention: `not-found`.
+`t_off_us = 0`, header `real_ns = bucket_real_ns`); END `complete`; the one-block refusals of §5.1
+apply. Outside retention: `not-found`.
 
 4.9 **series_batch** — args `{"selection": Selection, "from_real_ns": i64, "to_real_ns": i64,
 "step_ms": u32 (0 = coarsest tier covering the range), "aggs": [agg-name] (1..4), "cursor": str|null,
@@ -451,7 +450,8 @@ reason `complete` or `page` with `next`. **Packing (deterministic):**
    `max_block_buckets`, or whose block would exceed `max_block_bytes`, is split into consecutive blocks
    in time order, each the largest prefix that fits both.
 3. Block order = subject, then agg, then time. `max_blocks` counts BLOCK frames of this page; when it
-   is reached and blocks remain, END is `page` with `next` naming the next (subject, agg, bucket).
+   is reached, or the next block does not fit the Query pools (§5.1), and blocks remain, END is `page`
+   with `next` naming the next (subject, agg, bucket). A page carries at least one block.
 4. History header: `boot_id`/`epoch` of the serving probe, `seq = 0`, `mono_start_ns = mono_end_ns =
    boot_ns = 0`, `real_ns` = first `bucket_real_ns` of the block, `dict_gen` of the query stream,
    `n_rows` = buckets, `dropped = 0`.
@@ -505,53 +505,58 @@ values are the defaults; the ones a client needs are announced in `hello.limits`
 | Bound (`hello.limits` key) | observe | operator | observer | control | On violation |
 |---|---|---|---|---|---|
 | connections per level | 16 | 8 | 128 | 64 | accept, close at once, no byte written (§5.4 `refuse`) |
-| connections per peer uid per level | 8 | 4 | 64 | 32 | same |
+| connections per peer uid per level | 16 | 4 | 64 | 32 | same |
 | hello deadline, accept → hello complete (`hello_deadline_ms`) | 5 s | 5 s | 5 s | 5 s | §5.4 row `hello-timer` |
 | request frame or line bytes (`max_request_bytes`) | 32 KiB | 32 KiB | 16 KiB | 1 MiB | `frame-too-large`, fatal |
 | request deadline, first byte → complete (`request_deadline_ms`) | 5 s | 5 s | 5 s | 25 s | `deadline`, fatal |
 | idle deadline (`idle_ms`) | 300 s | 300 s | 300 s | 300 s | `idle`, fatal |
-| outstanding requests (`max_outstanding`) | 4 | 4 | 4 | 4 | `too-many-requests`, request refused, connection stays |
+| unread JSON replies the reply bound allows for (`max_outstanding`) | 4 | 4 | 4 | 4 | nothing is held (below); the control queue bounds them (`slow-client`) |
 | live subscriptions per connection (`max_subscriptions`) | 4 | 4 | — | — | `budget` `{"pool":"subscriptions"}` |
-| distinct live selections per peer uid / per probe | 4 / 8 | 4 / 8 | — | — | `budget` `{"pool":"uid-selections"}` / `{"pool":"selections"}` |
-| Live pool: queued subscription BLOCK bytes per connection (`client_queue_bytes`) / per peer uid / global | 4 MiB / 8 MiB / 32 MiB | same | — | — | §5.3 (oldest unpinned Live entry shed, else the incoming tick dropped) |
-| Query pool: queued query BLOCK bytes per connection (`query_queue_bytes`) / per peer uid / global | 4 MiB / 4 MiB / 16 MiB | same | — | — | §5.3 `Backpressure` (the producer waits, nothing is dropped) |
+| distinct live selections per peer uid / per probe | 8 / 8 | 8 / 8 | — | — | `budget` `{"pool":"uid-selections"}` / `{"pool":"selections"}` |
+| Live pool, probe-wide: queued subscription BLOCK bytes per connection (`client_queue_bytes`) / global | 4 MiB / 32 MiB | same | — | — | §5.3 (oldest unpinned Live entry shed, else the incoming tick dropped) |
+| Query pool, probe-wide: queued query BLOCK bytes per connection (`query_queue_bytes`) / global | 1 MiB / 4 MiB | same | — | — | the request is refused, nothing waits or is dropped (below) |
+| `series_batch` streams with queued blocks per connection / per probe (probe-wide, not in `hello`) | 2 / 8 | same | — | — | `too-many-requests` / `budget` `{"pool":"query"}` |
 | queued REP/EVT/END bytes per connection (`control_queue_bytes`) | 2 MiB | 2 MiB | 320 KiB | 2 MiB | `slow-client`, fatal (a frame into an empty control queue is always admitted) |
 | largest JSON REP the server builds (`max_reply_bytes`) | 448 KiB | 448 KiB | 16 KiB | 448 KiB | never built (pages end early with `next`, reply sizes below) |
 | frame completion: a pinned head, pin → completely written (`frame_completion_ms`) | 5 s | 5 s | 5 s | 5 s | `slow-client`, fatal |
 | writer stall: queue non-empty, no byte written (`stall_ms`) | 5 s | 5 s | 5 s | 5 s | `slow-client`, fatal |
-| largest BLOCK the server builds (`max_block_bytes`) | 4 MiB | 4 MiB | — | — | never built (§4.9 splits) |
+| largest BLOCK the server builds (`max_block_bytes`, probe-wide) | 1 MiB | 1 MiB | — | — | never built (§4.9 splits) |
 | largest frame either side accepts (`max_frame_bytes`) | 16 MiB | 16 MiB | 16 MiB | 16 MiB | client reader: `oversized-frame` |
 
 `max_request_bytes` is derived from the worst legal request (§4.2, §4.12 give the arithmetic), so a
-request that obeys every field bound always fits. An **outstanding request** is one whose final REP or
-END is not yet enqueued; live subscriptions do not count. In M2 the only outstanding request is a
-`current` whose block met Query backpressure at queue time. A rows, validation, size or backend
-refusal never creates an outstanding request. A **distinct selection** is the canonical
+request that obeys every field bound always fits. A **distinct selection** is the canonical
 form of §4.2; a uid's selections are those its connections' live subscriptions use (a selection two
 uids use counts for both), across levels. Joining an already-live selection adds no probe stream; a
 uid joining a selection it did not already use is checked against the uid cap, while a stream creation
 is checked against the uid and probe caps in that order, using the requesting level's values.
-For block-serving levels, the server uses and announces one shared set of `client_queue_bytes` and
-`query_queue_bytes`: each is the smaller configured value of observe and operator. The per-uid and
-global Live and Query pool caps are derived from those effective values (Live ×2 and ×8; Query ×1
-and ×4), so hello and hub enforcement agree. `max_block_bytes` is the smaller configured block
-bound, clamped to the shared Query and Live connection caps. With the defaults,
-`max_block_bytes = client_queue_bytes = query_queue_bytes`; therefore a block that passes its bound
-always fits an empty per-connection pool. A Query push that waits on a pool is waiting for bytes
-already queued by that connection, its uid, or the server; those bytes leave within
-`frame_completion_ms` + `stall_ms` or their connection is closed (§5.3 `poll`). The per-uid pools are
-a quarter of the global ones, so one uid (up to 8 observe connections, D-W20) can never hold more
-than a quarter of either pool, however slowly it reads.
 
-The server unifies `tick_ms`, `max_rows`, `max_block_bytes`, `client_queue_bytes` and
-`query_queue_bytes` across observe and operator (`tick_ms` the larger; the other values the
-smaller). The per-uid and global Live and Query caps are derived from those shared connection caps.
-Thus both hellos announce the exact block-pool limits enforced by the hub, and
-`max_block_bytes <= query_queue_bytes` and `client_queue_bytes` hold for both. A block that passes
-its bound always fits an empty per-connection Query pool.
+**Probe-wide keys** (D-W52). `tick_ms`, `max_rows`, `max_block_bytes`, `client_queue_bytes`,
+`query_queue_bytes` and the history caps have one probe-wide value each; observe and operator announce
+the same `hello` values (0 at levels without BLK verbs, §4.4). The global pools are Live ×8 and Query ×4 the
+connection pools; `max_block_bytes` is clamped to `min(client_queue_bytes, query_queue_bytes)`, so a
+block that passes its bound fits an empty connection pool. **Query RAM** (D-W52, ≤ 9 MiB including
+queued Query bytes): the widest `max_rows` block (1,024 entities, 64 metrics, every text 256 B) is
+16 + 67·8 directory + 80 header + dictionary (8 + 1,024·268 + 64·266 = 291,464) + rows 8·1,024 +
+64 columns · align8(8 + 9·1,024) = 890,624 B < 1 MiB = `max_block_bytes`; one turn holds one resolution
+(≤ 1,025 rows of the same data, ≤ 1 MiB) and one block (≤ 1 MiB): global Query 4 MiB + 2 MiB = 6 MiB.
+No per-uid pools (D-W53): a uid is bounded by its connection and selection caps, and the Live victim
+rule (§5.3) sheds the largest holder first.
 
-**Reply sizes.** `max_reply_bytes = (control_queue_bytes − 256 KiB) / max_outstanding` = 448 KiB, so the
-replies of every outstanding request plus 256 KiB of END/EVT frames always fit one control queue; a
+**No request waits** (D-W49, D-W50). Every request is answered in the turn that reads it (REP, every
+BLOCK and END queued) or refused before its REP (§2.4); no request record survives the turn, and a
+connection's only request state is its live subscriptions. A Query block is queued only when it fits
+the connection and global Query pools (`query_room`, §5.3). Refusals:
+- one-block verbs (`current`, `snapshot_at`): `too-many-requests` while the connection's Query pool is
+  not empty (unwritten query blocks; §4.2 step 10); else, after resolution and the size check,
+  `budget {"pool":"query"}` when the global pool lacks room for the block;
+- `series_batch` (applied when history is served): `too-many-requests` at 2 streams with queued blocks
+  on the connection (step 10) or when its first block does not fit the connection pool; `budget`
+  `{"pool":"query"}` at 8 per probe or when it does not fit the global pool; a page ends early (§4.9).
+The client retries, after reading its queued blocks (`too-many-requests`) or later (`budget`); each
+queued Query block is written within `frame_completion_ms` of its pin or its connection is closed.
+
+**Reply sizes.** `max_reply_bytes = (control_queue_bytes − 256 KiB) / max_outstanding` = 448 KiB, so
+`max_outstanding` unread replies of that size plus 256 KiB of END/EVT frames always fit one control queue; a
 client that keeps sending requests without reading their replies is `slow-client`. The formula runs
 both ways, `control_queue_bytes = max_outstanding * max_reply_bytes + 256 KiB`, and the observer level
 uses it to derive its queue from its reply bound (design R28): the observer serves only `hello` and
@@ -622,8 +627,9 @@ to `len / 64 KiB` reallocations for the largest frame (256 at 16 MiB); this is a
 capacity bound forbids geometric growth.
 
 5.3 **Send hub** (`proto::hub::SendHub`, server side, one per serving process that owns every
-connection's outgoing queue; P5b needs no mutex: a single-threaded `poll(2)` driver owns the hub and passes `&mut SendHub` to the connection methods, design R27). It owns the per-uid and global pools, so the
-victim of an overflow is chosen with every queue in view.
+connection's outgoing queue). The serving process's driver is a single-threaded `poll(2)` loop that
+owns the hub and passes `&mut SendHub` to the connection methods; no mutex exists. The hub owns the
+global pools, so the victim of an overflow is chosen with every queue in view.
 
 Queue entries, in one FIFO per connection: `Control{bytes}` (REP/EVT/END, encoded by the caller),
 `Live{stream, tick}` (a subscription tick, droppable), `Query{stream, bytes}` (a block of `current`,
@@ -631,11 +637,10 @@ Queue entries, in one FIFO per connection: `Control{bytes}` (REP/EVT/END, encode
 `corr`. `tick` implements `TickForms`: `generation() -> u32` (the selection stream's `dict_gen` this
 tick encodes, §6.2), `bare() -> Option<Arc<[u8]>>` (absent on the tick that changes the generation) and
 `dict_form() -> Arc<[u8]>` (encoded at most once per tick, on first call). Three pools, each counted per
-connection, per peer uid (given to `add`) and globally against the §5.1 caps: **Live** (unsent bytes of
-Live entries), **Query** (unsent bytes of Query entries), **control** (unsent bytes of Control entries,
-per connection only). Per connection also `last_progress_ns` and, for a pinned head, `pinned_ns`; per
-stream `pending_drops: u32`, `needs_dict: bool`, `last_pushed_gen: u32` (0 = nothing pushed yet),
-`blocks: u32`, `query_waiting: bool`.
+connection and globally against the §5.1 caps: **Live** (unsent bytes of Live entries), **Query**
+(unsent bytes of Query entries), **control** (unsent bytes of Control entries, per connection only).
+Per connection also `last_progress_ns` and, for a pinned head, `pinned_ns`; per stream
+`pending_drops: u32`, `needs_dict: bool`, `last_pushed_gen: u32` (0 = nothing pushed yet), `blocks: u32`.
 
 **Pin.** `head(c, now)` returns the head entry as `[prefix, tail]`. The first `head` call for an entry
 **pins** it and sets `pinned_ns = now`; for a Live or Query block the hub also copies the first `16 +
@@ -653,8 +658,8 @@ at `end_stream` it includes Query blocks still waiting ahead of the END.
 **Drop total and Query room.** `SendHub::dropped_blocks()` returns every counted drop since `new`:
 each increment of any stream's `pending_drops`, while `drain_unpinned` and `remove` count none.
 `SendHub::query_room(c, len)` is true exactly when `push_query(c, _, block of len, _)` would queue now:
-the connection, uid and global Query pools all fit; an unknown connection is true because its retry is
-discarded as `Queued`.
+the connection and global Query pools both fit; an unknown connection is true (its push is a no-op
+`Queued`). The server calls it before the REP of every block verb (§5.1 "No request waits").
 
 **Form.** A Live entry is pushed as `dict_form()` when `needs_dict[s]` is set, when `bare()` is absent,
 or when `tick.generation() ≠ last_pushed_gen[s]`; otherwise as `bare()`. Every queued Live entry (also
@@ -665,37 +670,35 @@ comparison is per stream, a subscriber whose `interval_ms` skipped the tick that
 (the stream joined an existing selection stream, §4.7) still gets the dictionary form on its next
 push. The flag is sticky across an empty queue, so a later tick repairs it however long the gap.
 
-**Fit.** Pushing `L` bytes into a pool checks, in the order connection, uid, global: while `pool + L >
+**Fit.** Pushing `L` bytes into a pool checks, in the order connection, global: while `pool + L >
 cap`, shed one **victim**: the oldest unpinned Live entry of the victim connection, counted on its
 stream (`pending_drops += 1`, `needs_dict` set if dictionary-bearing). The victim connection is `c`
-itself for the connection pool, and for the uid and global pools the connection (of that uid, resp. of
-all) with the largest Live bytes **among those holding an unpinned Live entry** (ties: lowest
-connection id). If a pool has no victim left, the push fails. Only the Live pool sheds; the Query and
+itself for the connection pool, and for the global pool the connection with the largest Live bytes
+**among those holding an unpinned Live entry** (ties: lowest connection id). If a pool has no victim left, the push fails. Only the Live pool sheds; the Query and
 control pools never shed anything.
 
 | Operation | Rule (in this order) |
 |---|---|
 | `push_control(c, f, now)` | control pool of `c` empty ⇒ append, whatever the length (a frame is ≤ `max_frame_bytes` by construction; every legal REP is ≤ `max_reply_bytes` anyway, §5.1); else `control + len > control_queue_bytes` ⇒ return `Close(slow-client)`; else append. Never counts toward a block pool, never dropped. |
 | `push_live(c, s, tick, now)` | 1. **Coalesce**: if stream `s` has an unpinned Live entry, it is replaced in place by the new tick (`pending_drops[s] += 1`; if the old one was dictionary-bearing, `needs_dict[s] = true`); its bytes leave the pools. 2. The form rule picks the form, `L` = its length. 3. **Fit** `L` into the Live pool (the entry being pushed is not yet inserted, so it is never its own victim). 4. Fit failed ⇒ the new entry is dropped (`pending_drops[s] += 1`, `needs_dict[s] = true` if its form was dictionary-bearing; entries already shed stay shed) ⇒ `DroppedIncoming`; else insert (in place when coalesced) ⇒ `Queued`/`Coalesced`. |
-| `push_query(c, s, block, now)` | Query pool of `c`, of its uid and global all fit `len` ⇒ append, `blocks[s] += 1` ⇒ `Queued`; else `query_waiting[s] = true` ⇒ `Backpressure(block)`. A producer that owns an encoded block keeps it and pauses until `query_ready(c, s)`; `current` follows S6/S7 instead, discarding the bytes and re-resolving its saved request when `query_room` permits (D-W30). Nothing is shed: a query never displaces a Live tick and a tick never displaces a query block. |
+| `push_query(c, s, block, now)` | Query pool of `c` and global both fit `len` ⇒ append, `blocks[s] += 1` ⇒ `Queued`; else `Backpressure(block)`, nothing queued (the server checks `query_room` first, so it never sees this outcome; nothing waits, D-W49). Nothing is shed: a query never displaces a Live tick and a tick never displaces a query block. |
 | `end_stream(c, s)` | Removes every unpinned Live entry of `s` (counted), returns `{blocks: blocks[s], dropped: pending_drops[s]}` for the END payload (§2.2) and forgets the stream; queued Query entries of `s` stay (already counted, they precede the END); the caller then `push_control`s the END. |
 | empty → non-empty (any push) | `last_progress_ns = now` |
 | `head(c, now)` | the head entry, pinning it on the first call (above). |
 | `head_partial(c)` | true when the head is pinned and some but not all of its bytes are written. |
 | `wrote(c, n, now)` | `n > 0` ⇒ `last_progress_ns = now`; advance; a complete head is popped and its bytes leave its pools. |
 | `poll(now)` | for each connection: a pinned head not completely written and `now > pinned_ns + frame_completion_ms`, or a non-empty queue and `now > last_progress_ns + stall_ms` ⇒ `Close(slow-client)`; returns the list. The first rule bounds a dribbling reader (1 byte per second never trips the second); the second bounds a socket that accepts nothing while no head is pinned, so the outcome does not depend on when the writer calls `head`. |
-| `query_ready(c, s)` | true when `query_waiting[s]` and Query bytes of a pool that refused it have been freed since; the producer retries (a `Queued` retry clears `query_waiting[s]`). |
 | `drain_unpinned(c)` | removes every unpinned entry of `c` (all kinds), releases their bytes; a pinned head stays. |
 | `remove(c)` | drops everything of `c`, releases its bytes, forgets `c`. |
 
 Consequences, each a test (§11.4): a connection holds at most one unpinned Live entry per stream, so a
 lagging subscriber sees the newest tick and a `dropped` count, never a stale backlog; a bare block
 always carries the generation its stream was last pushed; a REP or END never competes with blocks; a
-query never loses data, it waits, and never costs another client a tick; one slow group member cannot
-close another (the victim is whoever holds the most sheddable bytes, and only Live entries are shed);
-one uid holds at most a quarter of each pool and each frame it is sent must complete within
-`frame_completion_ms`, so a dribbling reader cannot starve other clients; a stalled writer is closed
-after `stall_ms` from the last byte it accepted, never sooner after an idle period.
+query never loses data (it is queued whole or refused) and never costs another client a tick; one slow
+group member cannot close another (the victim is whoever holds the most sheddable bytes, and only Live
+entries are shed); each frame a client is sent must complete within `frame_completion_ms`, so a
+dribbling reader cannot hold a pool; a stalled writer is closed after `stall_ms` from the last byte it
+accepted, never sooner after an idle period.
 
 **Implemented (`crates/proto/src/hub.rs`).** One unit test per operation row and per consequence
 above (`control_row_*`, `live_row_*`, `fit_*`, `query_row_*`, `end_stream_row_*`, `head_row_*`,
@@ -710,15 +713,12 @@ apply to it) but has nothing to stamp; "empty → non-empty" is judged before th
 queue, so a coalesce or a shed that empties the queue and then inserts never restarts
 `last_progress_ns` (a stalled socket with one tick per second is still closed); a
 coalesced tick keeps its queue position (the replaced entry's sequence number) and, when it then does
-not fit, counts two drops (the replaced and the incoming tick); the victim of the uid and global pools
+not fit, counts two drops (the replaced and the incoming tick); the victim of the global pool
 may be the pushing connection itself (it holds the most sheddable bytes); `drain_unpinned` and
 `remove` do not count the removed ticks (the connection is closing), but `drain_unpinned` of a
 dictionary-bearing tick sets `needs_dict` for its stream; `end_stream` of a stream with no
 state (never pushed, or already ended) returns zeros, and a Query block of an ended stream that is
-pinned later is stamped `dropped = 0` with its own `corr`; `query_ready` compares per pool (connection,
-uid, global) the freed-Query-bytes counter at refusal with its current value, so only bytes freed in a
-pool that refused wake the stream, and it answers true for an unknown connection (the retry is then
-discarded as `Queued`); operations on an unknown connection are no-ops (`push_control` `Ok`,
+pinned later is stamped `dropped = 0` with its own `corr`; operations on an unknown connection are no-ops (`push_control` `Ok`,
 `push_live` `DroppedIncoming`, `push_query` `Queued`, `head` `None`, pools zero); `poll` is `&self`
 and keeps reporting a connection until the caller `remove`s it; `ConnId` starts at 1, a wrap skips 0
 and an id still in use; a stamped field that lies outside a block shorter than its header is not
@@ -749,7 +749,7 @@ without sockets):
 |---|---|---|
 | (accept) | level or peer-uid connection cap reached | `refuse`: close, no byte written, nothing read |
 | (accept) | else | `Undecided{have: 0}`; `hello_deadline = now + hello_deadline_ms`; peer credentials read (§4.12) |
-| `Undecided{have}` | byte `0x7B` at `have = 0` | `JsonNoHello` (§8) |
+| `Undecided{have}` | byte `0x7B` at `have = 0` | observer, control: `JsonNoHello` (§8); observe, operator: write the one `binary-required` line (§1.3), close |
 | `Undecided{have}` | byte equal to `HOB\x01`[have] (have < 4) or any byte (4 ≤ have < 8) | `have + 1`; at 8 ⇒ send the server prefix (§1.4) ⇒ `AwaitHello` (major mismatch ⇒ prefix, close) |
 | `Undecided{have}` | any other byte | write the one `unknown-mode` line (§1.3), close |
 | `Undecided`, `AwaitHello`, `JsonNoHello` | `now > hello_deadline` (`hello-timer`) | `Undecided`: close silently; `AwaitHello`: REP `corr=0` `deadline`; `JsonNoHello`: `deadline` line; then close |
@@ -758,19 +758,17 @@ without sockets):
 | `AwaitHello` | complete REQ with `corr ≠ 0` that passes `check_req` and is not a valid first `hello`: a verb other than `hello`, or `hello` with `corr ≠ 1` | other verb: REP `corr=<its corr>` `hello-required`; `hello` with `corr ≠ 1`: REP `corr=0` `bad-frame`; then close |
 | `AwaitHello` | `corr ≠ 0` and `check_req` fails (§4.2), or a `hello` with `corr = 1` whose args are invalid | non-fatal `bad-request` REP on its own `corr` (D-W28, §4.2 first): the state stays `AwaitHello` and the hello timer keeps running |
 | `JsonNoHello` | first complete line | handled as a request ⇒ `Ready` (hello optional, §8.4) |
-| `Ready` | complete request | dispatch; `max_outstanding` exceeded for a BLK-shape `current` or `subscribe` ⇒ REP `too-many-requests` (other shapes are still dispatched) |
-| `Ready` | no pending request, no live subscription, reader at `Header{0}`, queue empty | arm `idle_deadline = now + idle_ms` (disarmed by any received byte or enqueued frame) |
+| `Ready` | complete request | dispatch (§4.2 precedence); answered or refused in this turn (§5.1 "No request waits") |
+| `Ready` | no live subscription, reader at `Header{0}`, queue empty | arm `idle_deadline = now + idle_ms` (disarmed by any received byte or enqueued frame) |
 | `Ready` | `now > idle_deadline` | `Closing(idle)` |
-| `Ready` | reader `eof()` clean (`SHUT_WR`) | `Draining`: finish outstanding requests, `end_stream` every subscription with reason `client-eof`, close when `pending` and the queue are empty |
+| `Ready` | reader `eof()` clean (`SHUT_WR`) | `Draining`: `end_stream` every subscription with reason `client-eof`, close when the queue is empty |
 | any | reader error, hub `Close(slow-client)`, server shutdown | `Closing(code)` |
 | `Closing(code)` | — | `drain_unpinned(c)`; if `head_partial(c)` is false the connection holds ONE final frame outside the hub (D-W28): the REP (or error line) of the outcome for a request or reader error, `EVT corr=0 {"event":"closing","reason":code}` (binary) or the error line (JSON) for `idle`, `slow-client`, `shutting-down`; the driver makes one non-blocking write of it and abandons a short write; `remove(c)`; close. When no byte was written yet and the server prefix is queued, the final bytes start with the 8 prefix bytes (prefix guarantee); a major mismatch writes the prefix alone. The driver never writes the hub head after the close (a head pinned with 0 bytes written is not partial and stays in the hub; the final bytes already repeat the prefix). A client MUST NOT depend on receiving it. |
 | `Undecided` or `AwaitHello` or `JsonNoHello` or `Ready` | stream end (EOF) other than the clean one of the `Ready` row above: before `Ready` (also mid-line or mid-frame), or in `Ready` inside a frame or line, or bytes after the end | close without a reply (no request is owed; design R10) |
 
-**Driver cadence (P5b-2d).** A P5b-2 driver calls `poll(now)` first and then `on_tick(now)` once
-per sampler tick in the same loop iteration. `on_tick` asks the registry for at most one shared
-block per due selection stream and delivers it to each subscriber; the first block follows a
-`subscribe` REP. `wrote` and `poll` end with the pending-`current` retry pass, in connection-id
-and correlation-id order (design S7, S24, S25).
+**Driver cadence (P5b-2d).** A P5b-2 driver calls `poll(now)` first and then `on_tick(now)` once per
+sampler tick in the same loop iteration (no retry pass, D-W49). `on_tick` asks the registry for at most
+one shared block per due selection stream and delivers it to each subscriber after the `subscribe` REP.
 
 **Implemented (`ConnTimers`).** `ConnTimers::new(hello_ns, idle_ns)` holds the level's two
 durations; nothing is armed until `on_accept(now)` (a refused connection never calls it).
@@ -781,8 +779,8 @@ idle_ns` only when it is not armed (an armed deadline is kept, never pushed out)
 strict (`now > deadline`) and reports `Timer::Hello` before `Timer::Idle`. Tests: `timers_row_*`,
 one per row above.
 
-**Connection-fatal codes**: `unknown-mode`, `unsupported-version`, `hello-required`, `bad-frame`,
-`frame-too-large`, `deadline`, `idle`, `slow-client`, `shutting-down`. Every other code answers one
+**Connection-fatal codes**: `unknown-mode`, `binary-required`, `unsupported-version`, `hello-required`,
+`bad-frame`, `frame-too-large`, `deadline`, `idle`, `slow-client`, `shutting-down`. Every other code answers one
 request and keeps the connection. A refused connection (`refuse`) carries no code at all: the mode is
 unknown before the first byte, so no reply could be framed.
 
@@ -826,7 +824,7 @@ start at 1, so a first dictionary-bearing block at generation 0, and any later o
 generation, is `generation-regressed`. `accept` forgets the stream's dictionary on any error, and the caller
 MUST `close(corr)` after any decoder error and then close the connection (§6.5). `accept` does not compare
 `block.corr` with its argument (the caller routes by corr). There is no cap on the number of streams: the
-caller's bound is `max_outstanding` + `max_subscriptions` (§5.1). `generation-rollover` has no client-side
+caller's bound is its own unanswered requests (§2.3) plus `max_subscriptions` (§5.1). `generation-rollover` has no client-side
 rule beyond `generation-regressed`: the server ends the subscriptions at `u32::MAX`.
 6.3 Query replies carry their dictionary in their first BLOCK; a `series_batch` continuation (new
 corr) is a new stream. Exported segments carry it in every record (plan §C.5).
@@ -970,9 +968,9 @@ objects plus `"corr"`. Server-originated lines use `corr: 0`.
 u64 up to 2^64−1 MUST round-trip; a fraction where an integer is required is `bad-request`. Floats
 appear only where a schema names them; non-finite values are never sent (`null` + quality instead).
 JavaScript consumers are unsupported (plan K-JSON).
-8.4 **hello is optional** in JSON mode (without it the connection runs at minor 0). Block verbs are
-refused with `binary-required`: JSON clients get telemetry through `hostobsctl --json`, which speaks
-binary and prints JSON.
+8.4 **Levels and hello.** JSON mode is served at observer and control only (at observe and operator a
+first `{` gets one `binary-required` line and a close, §1.3, D-W51); JSON telemetry comes from
+`hostobsctl --json`, which speaks binary. `hello` is optional (without it the connection runs at minor 0).
 8.5 **`hostobs-mark`** writes one `annotate` line to `HOSTOBS_OBSERVER_SOCKET`, `shutdown(SHUT_WR)`,
 reads one reply line, exits 0 (`--require`: non-zero on any failure; otherwise a stderr notice and 0).
 
@@ -991,11 +989,11 @@ unknown version is refused, `frame.rs` `decode_block`). Unknown optional section
 
 ## 10. Wire error codes (closed list, minor 0 + 1)
 
-`unknown-mode`, `unsupported-version`, `hello-required`, `bad-frame`, `frame-too-large`, `deadline`,
-`idle`, `slow-client`, `shutting-down` (the §5.4 fatal set), `bad-request`, `unknown-verb`,
-`forbidden`, `binary-required`, `too-many-requests`, `budget`, `rate-limited`, `not-found`,
+`unknown-mode`, `binary-required`, `unsupported-version`, `hello-required`, `bad-frame`,
+`frame-too-large`, `deadline`, `idle`, `slow-client`, `shutting-down` (the §5.4 fatal set),
+`bad-request`, `unknown-verb`, `forbidden`, `too-many-requests`, `budget`, `rate-limited`, `not-found`,
 `cursor-invalid`, `span-unknown`, `unsupported-feature`, `session-lost`, `window-lost`, `internal`.
-`detail` keys: `budget` → `{"pool": "subscriptions"|"uid-selections"|"selections"|"rows"|"spans"}`
+`detail` keys: `budget` → `{"pool": "subscriptions"|"uid-selections"|"selections"|"rows"|"query"|"spans"}`
 (`spans` is reserved until P5b-3);
 `rate-limited` → `{"retry_after_ms": u32}`; `bad-request` → `{"key": str}` (dotted path of the
 offending key, `""` for a JSON text error); `unsupported-feature` → `{"feature": str}`; every other
@@ -1111,21 +1109,21 @@ stream closed, so the bare block after it is stale), `client-epoch-change` (hell
 hello with a new epoch `changed`: the bare block finds nothing held; a dictionary, hello with the same
 epoch `same`: dictionaries are dropped here too; cursors and subscriptions are the caller's, §6.4).
 
-Hub cases (`fixtures/stream/hub-*.json`, 20 files written by `python/reference/make_hub_fixtures.py`,
+Hub cases (`fixtures/stream/hub-*.json`, 19 files written by `python/reference/make_hub_fixtures.py`,
 replayed by `crates/proto/tests/hub_fixtures.rs` with a fake clock, `t_ms * 1_000_000` as `now_ns`;
 a Python test pins the committed bytes to the generator). Format: `{"case", "doc", "limits", "conns",
-"steps", "expect"}`; `limits` holds the nine `QueueLimits` fields (scaled: Live 1000/2000/8000 per
-connection/uid/global, Query 1000/1000/4000, control 500, stall and frame completion 5000 ms),
-`conns` the peer uid of each connection (index 0 first, added at t = 0). Every block is a
+"steps", "expect"}`; `limits` holds the seven `QueueLimits` fields (scaled: Live 1000/8000 per
+connection/global, Query 1000/4000, control 500, stall and frame completion 5000 ms),
+`conns` the number of connections (index 0 first, added at t = 0). Every block is a
 2-section BLOCK of the stated length (at least 112; `dropped` at offset 104, tail from 112
 filled with `tag`, default 160). A step is `{"t_ms", "op", ...}` with `op` one of `push_live {c, s,
 gen, bare|null, dict, tag?, share?}` (`share` names one tick object used by several pushes),
-`push_query {c, s, len}`, `push_control {c, len}`, `query_ready {c, s}`, `end_stream {c, s}`,
+`push_query {c, s, len}`, `push_control {c, len}`, `query_room {c, len}`, `end_stream {c, s}`,
 `head {c, block}`, `head_partial {c}`, `wrote {c, n}`, `poll`, `drain_unpinned {c}`, `remove {c}`,
-each with an optional `watch` list of `c<i>`, `u<uid>` and `g`. `expect` has one list per step: the
+each with an optional `watch` list of `c<i>` and `g`. `expect` has one list per step: the
 operation's output (`queued|coalesced|dropped-incoming`, `queued|backpressure`, `ok|close`,
 `{"counts": {"blocks", "dropped"}}`, `{"head": {"len": remaining, "corr", "dropped", "tail_tag"}}`
-or `null`, `{"ready": bool}`, `{"partial": bool}`, `{"closed": [conn indexes]}`), then
+or `null`, `{"room": bool}`, `{"partial": bool}`, `{"closed": [conn indexes]}`), then
 `{"pools": {key: [live, query, control]}}` when the step watches. The replay also asserts at most
 one `dict_form` call per push:
 
@@ -1140,9 +1138,8 @@ one `dict_form` call per push:
 | `hub-per-connection-shed` | over `client_queue_bytes`: oldest unpinned Live entry of another stream dropped |
 | `hub-global-largest` | three connections, global over: the largest connection's oldest unpinned Live entry dropped, the pushing one untouched |
 | `hub-victim-skips-pinned` | global over, the largest connection holds only a pinned head and Query bytes: the next largest connection with an unpinned Live entry is shed; with no such connection the push is `DroppedIncoming` (counted, `needs_dict` if dictionary-bearing) |
-| `hub-uid-cap` | one uid's four connections at 8 MiB of Live bytes, another uid's connection idle: the next push of the first uid sheds that uid's largest connection's oldest unpinned Live entry; the other uid's entries untouched |
 | `hub-interval-skips-generation` | stream pushed generation 1 (pinned and written); the change tick to 2 is not pushed to it (interval); the next tick, generation 2 with a bare form, is pushed as the dictionary form; a following generation-2 tick is bare |
-| `hub-query-backpressure` | `push_query` over the Query pool: `Backpressure`, no Query entry dropped; after `wrote` frees Query bytes `query_ready(c, s)` is true and the retry is `Queued` |
+| `hub-query-backpressure` | `query_room` false and `push_query` `Backpressure` over the connection and over the global Query pool, nothing queued or dropped; after `wrote` frees Query bytes `query_room` is true and a new push is `Queued` |
 | `hub-query-own-pool` | Live pool full of other connections' unpinned ticks: `push_query` sheds none of them; Query pool full: `push_live` unaffected |
 | `hub-query-pin-after-corr-reuse` | after a Query stream's END, a new Live stream reuses its `corr`: the old Query pin stamps `dropped = 0` without consuming the Live stream's pending drop, and the next Live pin stamps 1 |
 | `hub-control-cap` | a frame larger than `control_queue_bytes` into an empty control queue: admitted; a second control push while it is unsent: `Close(slow-client)`; blocks never block a control push |
@@ -1155,7 +1152,8 @@ one `dict_form` call per push:
 Connection cases (P5b, Rust only, a fake clock, one per §5.4 row; in P5b-1 and P5b-2 the case runs against the sans-IO core (`Conn` and `Server` fed bytes in memory, design R21), and the socketpair runs of the same cases move to P5b-4 with the drivers):
 `conn-refuse-level-cap`, `conn-refuse-uid-cap` (no byte written), `conn-silent-hello-timeout`
 (nothing sent, closed at `+5001` ms, no byte written), `conn-prefix-partial` (`HOB\x01` + 2 bytes, then
-the timer: silent close), `conn-unknown-mode`, `conn-json-first-line`, `conn-hello-required`,
+the timer: silent close), `conn-unknown-mode`, `conn-json-first-line` (observer),
+`conn-json-block-level` (`{` at observe: one `binary-required` line, close), `conn-hello-required`,
 `conn-hello-corr-not-1` (`bad-frame`), `conn-corr-zero-req` (`bad-frame`), `conn-idle` (`idle` at
 `+idle_ms + 1`), `conn-not-idle-with-subscription`, `conn-half-close` (END `client-eof`, then close),
 `conn-request-too-large` (`frame-too-large`), `conn-request-deadline` (`deadline`),
@@ -1168,10 +1166,12 @@ connection stays; the original `events` form, `limit` 1,000 with 8 attrs of 256 
 unwritten head: EVT `closing` written; with a partially written head: no EVT, closed).
 
 P5b-2c and P5b-2d make `conn-not-idle-with-subscription`, `conn-dribbling-reader`, the END half
-of `conn-half-close`, `conn-corr-in-use-sub`, `conn-corr-in-use-pending` and
-`conn-too-many-requests` reachable against the in-memory `Conn`/`Server`; R21's P5b-1 exclusion is
-superseded for those cases. `conn-reply-page-truncated` remains P5b-3, and the socketpair form
-remains P5b-4.
+of `conn-half-close`, `conn-corr-in-use-sub` and `conn-too-many-requests` reachable against the
+in-memory `Conn`/`Server`; R21's P5b-1 exclusion is superseded for those cases. Under D-W49
+`conn-too-many-requests` is a `current` while the connection's Query pool holds a block (refused, the
+connection stays), `conn-current-budget-query` a `current` against a full global Query pool (`budget`
+before any REP), and `conn-corr-in-use-pending` is retired. `conn-reply-page-truncated` remains
+P5b-3, and the socketpair form remains P5b-4.
 
 ## 12. Work breakdown
 
@@ -1186,19 +1186,19 @@ error: Option<ProtoError> }`; `FrameReader::poll(&mut self, now_ns: u64) -> Resu
 Vec<u8> }`;
 `ModeDetect::new() -> ModeDetect`; `ModeDetect::feed(&mut self, bytes: &[u8]) -> Detect`, `enum Detect
 { Need, Json { at: usize }, Binary { prefix: [u8; 8], at: usize }, Unknown }` (§5.3 mode detection);
-`QueueLimits { client_queue_bytes: usize, uid_live_bytes: usize, global_live_bytes: usize,
-query_queue_bytes: usize, uid_query_bytes: usize, global_query_bytes: usize, control_queue_bytes:
-usize, stall_ns: u64, frame_completion_ns: u64 }`; `SendHub::new(QueueLimits) -> SendHub`; `add(&mut
-self, uid: u32, now_ns: u64) -> ConnId` (`ConnId(u32)`, increasing; ties in §5.3 go to the lowest);
+`QueueLimits { client_queue_bytes: usize, global_live_bytes: usize, query_queue_bytes: usize,
+global_query_bytes: usize, control_queue_bytes: usize, stall_ns: u64, frame_completion_ns: u64 }`;
+`SendHub::new(QueueLimits) -> SendHub`; `add(&mut self, now_ns: u64) -> ConnId` (`ConnId(u32)`,
+increasing; ties in §5.3 go to the lowest);
 `remove(ConnId)`; `drain_unpinned(ConnId)`;
 `push_control(ConnId, Arc<[u8]>, now_ns) -> Result<(), Close>`;
 `push_live(ConnId, stream: u32, &dyn TickForms, now_ns) -> LiveOutcome {Queued, Coalesced,
 DroppedIncoming}`; `push_query(ConnId, stream: u32, Arc<[u8]>, now_ns) -> QueryOutcome {Queued,
-Backpressure(Arc<[u8]>)}`; `query_ready(ConnId, stream: u32) -> bool`; `end_stream(ConnId, stream:
+Backpressure(Arc<[u8]>)}`; `query_room(ConnId, len: usize) -> bool`; `end_stream(ConnId, stream:
 u32) -> StreamCounts {blocks: u32, dropped: u32}`; `head(ConnId, now_ns) -> Option<[&[u8]; 2]>`
 (pins); `head_partial(ConnId) -> bool`; `wrote(ConnId, n: usize, now_ns)`; `poll(now_ns) ->
 Vec<(ConnId, Close)>`; `queued(ConnId) -> Pools { live: usize, query: usize, control: usize }`,
-`uid_pools(uid: u32) -> Pools`, `global_pools() -> Pools` (`control` 0); `trait TickForms { fn
+`global_pools() -> Pools` (`control` 0); `trait TickForms { fn
 generation(&self) -> u32; fn bare(&self) -> Option<Arc<[u8]>>; fn dict_form(&self) -> Arc<[u8]>; }`;
 `enum Close { SlowClient }`;
 `ConnTimers { hello_deadline_ns: Option<u64>, idle_deadline_ns: Option<u64> }` with
@@ -1418,7 +1418,7 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 
 ## 13. Decisions taken, divergences, open questions
 
-### Decisions taken
+### Decisions taken (D-W31..D-W48 are held by the parked P5b-3 branch)
 
 | ID | Decision | Reason |
 |---|---|---|
@@ -1434,24 +1434,29 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | D-W10 | Gauge min/max/mean = separate history blocks, one aggregation each; agg must be permitted by every column's mask | no layout change for `HOB-5`; the mask already encodes what is permitted |
 | D-W11 | `procs`, `events`, `spans` replies are JSON pages, not BLOCKs | per-process strings and the `(pid, start_ticks)` identity do not fit the u64 entity model; pages are ≤ 256/1,000 items |
 | D-W12 | Error codes are kebab-case (`bad-request`, not `bad_request`) | every other code in plan and codec is kebab-case |
-| D-W13 | JSON mode refuses block verbs (`binary-required`) | a second JSON rendering of blocks would be a second codec to keep conformant |
+| D-W13 | JSON mode carries no block verb; amended by D-W51: it is not served at the block levels at all | a second JSON rendering of blocks would be a second codec to keep conformant |
 | D-W14 | Python reads each frame into its own exact-size `bytearray(len)` after the header validates against the client limit (16 MiB), the one exception to "never allocate by `len`"; the §5.2 machine is otherwise shared, with an injected clock and a deadline-based `settimeout` | decoded views stay valid as long as the caller holds the block; the only peer is the probe chosen by socket path; one allocation per frame is cheap at ≤ 120 KB/s |
 | D-W15 | Python gates are deterministic: equal `sys.settrace` line counts at 100 and 1,000 rows, and `tracemalloc` peak growth ≤ 4 KiB plus an absolute ≤ 16 KiB enforced on CPython 3.14.10 only (the registered `conformance` lane runs 3.13.5 and skips it; re-measured on any version change, patch level included); CPU ratio and absolute times are published only | measured (§7.8): the ratio of the correct path (5.6-5.7) and of a per-value loop (7.5-7.9) are too close to gate; line counts (141 = 141 vs 1,733 / 16,133) and memory growth (2,088 B vs 31,136 B for `list()`) separate them without load dependence |
 | D-W16 | Client-side reader limits 16 MiB / 30 s; server limits per level as §5.1 | the probe must not be cut by its own client under host load; the probe's stall bound (5 s) protects the probe from clients, the reverse protection only needs to bound a dead probe |
 | D-W17 | Section layouts are frozen at version 1; changes take new kind codes | the implemented decoder refuses a known kind with another version even when optional |
-| D-W18 | One `SendHub` owns every connection's queue and three pools: Live (droppable, 4 MiB / connection, 8 MiB / uid, 32 MiB global), Query (backpressure, never dropped, 4 / 4 / 16 MiB) and control (2 MiB / connection, a frame into an empty control queue always admitted); a pool overflow sheds the oldest unpinned Live entry of the largest connection that has one, else the incoming tick is dropped; queries never shed ticks | a REP/END can no longer close a lagging client; history and snapshot replies never lose data and a history loop cannot churn other clients' ticks; one slow group member or one uid cannot close or starve another (finding 4, round 2 D) |
+| D-W18 | One `SendHub` owns every connection's queue and three pools: Live (droppable, 4 MiB / connection, 32 MiB global), Query (never dropped; a block that does not fit is refused, D-W49; 1 / 4 MiB, D-W52) and control (2 MiB / connection, a frame into an empty control queue always admitted); a pool overflow sheds the oldest unpinned Live entry of the largest connection that has one, else the incoming tick is dropped; queries never shed ticks. Amended by D-W53: no per-uid pools | a REP/END can no longer close a lagging client; history and snapshot replies never lose data and a history loop cannot churn other clients' ticks; one slow group member cannot close another (finding 4, round 2 D) |
 | D-W19 | Over-cap connections are refused by close without a byte; `busy` is not a code | the mode is unknown before the first byte, so no reply can be framed (finding 8) |
-| D-W20 | Hello deadline 5 s from accept, idle deadline 300 s, per-uid connection caps (half the level cap) and selection caps (4 of 8) | a silent or idle connection cannot hold a slot; one uid cannot lock a level or the selection pool (finding 9) |
+| D-W20 | Hello deadline 5 s from accept, idle deadline 300 s, per-uid connection caps (half the level cap at operator, observer and control; equal to it at observe) and selection caps (8 of 8, equal to the level's); amended by D-W53 | a silent or idle connection cannot hold a slot (finding 9); the per-uid caps must not bind below the level caps where telemetry clients share service uids (D-W53) |
 | D-W21 | Selection bounds 16 entities, paths ≤ 512 B without control characters; observe/operator requests ≤ 32 KiB, observer ≤ 16 KiB; annotate attr key ≤ 64 B, value ≤ 256 B | the worst legal request, at 3× JSON escaping, fits with margin (§4.2, §4.12 arithmetic), so a legal request is never `frame-too-large` (finding 10) |
 | D-W22 | Received-frame rules: every section `len` ≡ 0 (mod 8) (`section-length`), directory entry 0 is the header (`section-order`, checked after the rank check, §3.10, so the pinned `section-order` fixture is unchanged) | the alignment, the header offset and the `dropped` offset are then true for received frames, not only for encoded ones (finding 12) |
 | D-W23 | A repeated dictionary identity is `duplicate-dictionary-entry` whatever the other fields | one outcome per defect in both languages; the Python reference already does it (finding 22) |
 | D-W24 | `series_batch` packing is subject-major, then agg in request order, then time; metrics no agg permits are listed in `omitted`; history headers carry `seq` and mono fields 0 | one byte sequence per answer, so fixtures and cursors are deterministic (finding 11) |
-| D-W25 | Every pinned head must be completely written within `frame_completion_ms` (5 s) of its pin; the writer stall rule stays for a queue whose head is not pinned; per-uid pools are a quarter of the global ones | a reader that accepts a byte every few seconds never trips a byte-progress rule, and with 8 connections per uid could otherwise hold the whole global pool (round 2 B) |
-| D-W26 | Every JSON REP is ≤ `max_reply_bytes` = (`control_queue_bytes` − 256 KiB) / `max_outstanding` = 448 KiB; paged verbs end the page early with `next`; `cmdline` ≤ 4,096 B, `provenance` ≤ 64 objects | a legal reply can never overflow a healthy client's control queue, even with every outstanding request answered at once (§5.1 reply sizes; round 2 C) |
+| D-W25 | Every pinned head must be completely written within `frame_completion_ms` (5 s) of its pin; the writer stall rule stays for a queue whose head is not pinned; (per-uid pools: retired by D-W53) | a reader that accepts a byte every few seconds never trips a byte-progress rule, and with 8 connections per uid could otherwise hold the whole global pool (round 2 B) |
+| D-W26 | Every JSON REP is ≤ `max_reply_bytes` = (`control_queue_bytes` − 256 KiB) / `max_outstanding` = 448 KiB; paged verbs end the page early with `next`; `cmdline` ≤ 4,096 B, `provenance` ≤ 64 objects | a legal reply can never overflow a healthy client's control queue, even with `max_outstanding` such replies unread (§5.1 reply sizes; round 2 C) |
 | D-W27 | The hub keeps `last_pushed_gen` per stream; a Live tick whose generation differs from it is pushed in the dictionary form | a subscription whose interval skips the tick that changed the shared generation would otherwise get a bare block for a generation it never received (round 2 A) |
 | D-W28 | A connection-fatal outcome yields exactly one final frame held outside the hub (`Conn::take_final`), written once by the driver and abandoned on a short write, only when no head is partly written; if nothing was written and the server prefix is queued it is prefixed by the prefix; a malformed REQ in `AwaitHello` is a non-fatal `bad-request` on its own `corr` | §5.2 and §5.4 disagreed (hub frame vs direct write; `hello-required` vs `bad-request`); a bad request in the same read as the prefix must not leave the client without a handshake (P5b design R1, R2, R6) |
 | D-W29 | `subscribe` performs no backend resolution or block encoding; its first BLOCK comes from the next due sampler tick, creator and joiner alike | encoding at subscribe made subscribe/unsubscribe churn a CPU amplifier; the cost is at most one `tick_ms` of latency (P5b-2 S9/S10) |
-| D-W30 | A backpressured `current` holds its request and selection, never its block bytes, and re-resolves the latest tick when Query room appears | holding pending blocks would put up to `max_outstanding` blocks per connection outside every pool; `max_block_bytes <= query_queue_bytes` guarantees a retry fits an empty own pool (P5b-2 S7/S22) |
+| D-W30 | **Retired, see D-W49.** Was: a backpressured `current` holds its request and selection, never its block bytes, and re-resolves the latest tick when Query room appears | no request waits any more, so none is held or re-resolved |
+| D-W49 | No request waits: every request is answered (REP, every BLOCK, END queued) or refused before its REP in the server turn that reads it; no request record survives the turn; a connection's only request state is its live subscriptions, so "in use" (§2.3) and the idle and Draining conditions (§5.4) count subscriptions only; there is no retry pass. Scope: the observe and operator request verbs of this document; later stream verbs (control relays, `session.watch`, `export`) state their own rule when they are specified | the pending machinery (request records, retry pass, re-resolution, uid rotation, exactly-once cleanup on every close path) was the complexity centre and held most P5b-3 defects, for a local daemon with ≤ 16 clients; a client can retry, and a cursor already is a backpressure mechanism (review F3) |
+| D-W50 | Refusals (§5.1): a one-block verb (`current`, `snapshot_at`) is `too-many-requests` while the connection's Query pool is not empty (step 10), else `budget {"pool":"query"}` when the global pool has no room for its block; `series_batch` is `too-many-requests` at 2 streams with queued blocks per connection (or when its first block does not fit the connection pool) and `budget {"pool":"query"}` at 8 per probe (or when its first block does not fit the global pool), and ends its page early with END `page` + `next` when the next block does not fit; `max_outstanding` stays in `hello` as the reply-bound factor only | a refusal before the REP keeps §2.4's shapes (no `END ok:false` for a query that never started); `too-many-requests` names the connection's own unwritten query blocks (the pool empties as bytes reach the socket), `budget` the shared pool; every page carries a block, so each continuation progresses |
+| D-W51 | JSON mode is served at observer and control only; at observe and operator a `{` first byte is answered with one `binary-required` line (`corr` 0) and the connection closes, at mode detection (§1.3); `binary-required` becomes connection-fatal and §4.2 step 8 is retired | the JSON consumers (`hostobs-mark`, run-gate control, assay observer) live at observer and control, and JSON mode at block levels could only do `hello`, `status`, `unsubscribe` (review F11); refusing at the first byte needs no line reader or parse there and reuses the `unknown-mode` one-line path; `hello` is optional in JSON mode, so it cannot be the point, and waiting for the first line would parse a request only to refuse it; `binary-required` was otherwise unreachable (BLK verbs are `forbidden` at JSON levels) and tells the client what to do |
+| D-W52 | `tick_ms`, `max_rows`, `max_block_bytes`, `client_queue_bytes`, `query_queue_bytes` and the history caps are probe-wide keys (the `hello` ones announced equally at observe and operator); defaults `max_rows` 1,024, `query_queue_bytes` 1 MiB (global Query 4 MiB), `max_block_bytes` 1 MiB, history concurrency 2 per connection / 8 per probe (applied when history is served); Live defaults unchanged | the per-level values were min/max-unified across observe and operator, so a per-level setting could not take effect (review F7); sized to the workload (≤ 500 cgroups, 5k PIDs, ≤ 16 telemetry clients): 1,024 rows is 2× the cgroup count, not 8×; worst-case query RAM including queued Query bytes is 6 MiB ≤ 9 MiB, and the widest 1,024-row block (890,624 B) still fits `max_block_bytes` (§5.1 "Query RAM") |
+| D-W53 | No per-uid Live or Query pools; the per-uid connection and selection caps stay (D-W20) but never bind below the level caps at observe: per-uid connections 16 = the observe level cap, per-uid selections 8 = the level's selection cap (operator's per-uid connection cap 4 of 8 stays: operator clients are interactive tools, not shared-uid telemetry) | the Live victim rule already sheds the largest holder, so a uid's many connections shed themselves first; a per-uid Query pool equal to one connection's (×1) would serialize every client of one service uid, the expected case for ≤ 16 estate clients under a few uids, and leave the global pool unreachable; for the same reason the per-uid caps must not refuse those clients before the level is full; global caps keep the memory bound unchanged. Residual: any few slowly reading connections, of one uid or several, can keep the global Query pool full; other clients get `budget {"pool":"query"}` and retry. Each pinned block must complete within `frame_completion_ms`, so the hold lasts only while those clients keep reading |
 
 ### Divergences (code or plan vs this document)
 
@@ -1471,7 +1476,7 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | V-12 | `dict.rs` `decode` (891 → `intern` 596) on the P2a1 base | metric name repeated with other facts → `conflicting-column` | `duplicate-dictionary-entry` (Python reference already, measured) | fixed by P2a1 (`HOB-52`) |
 | V-13 | `hostobs_wire_ref.py` `decode_frame` 484-493 on the P2a1 base | buffer length and `SECTIONED` checked before `not-a-block` | §3.10 precedence (Rust order) | fixed by P2a1 (`HOB-53`) |
 | V-14 | plan §B.3 | `(epoch, dict_gen)` probe-global | generation per selection stream / query stream; client rule relative to held | none (D-W5) |
-| V-15 | plan §B.4 | full queue drops the oldest unsent BLOCK, counted in "the next `HDR.dropped`"; `DICT/REP/EVT` over budget close | at most one unpinned tick per stream, drop-oldest across streams (victim: the largest connection with an unpinned Live entry, else the incoming tick), stamp at pin; the plan's separate query budget is kept as its own Query pool (4 MiB / connection, 4 MiB / uid, 16 MiB global, sizes are WIRE.md's) whose blocks are never dropped and never shed a tick; per-uid Live cap 8 MiB; control frames on their own budget | none (D-W8, D-W18) |
+| V-15 | plan §B.4 | full queue drops the oldest unsent BLOCK, counted in "the next `HDR.dropped`"; `DICT/REP/EVT` over budget close | at most one unpinned tick per stream, drop-oldest across streams (victim: the largest connection with an unpinned Live entry, else the incoming tick), stamp at pin; the plan's separate query budget is kept as its own Query pool (1 MiB / connection, 4 MiB global, sizes are WIRE.md's) whose blocks are never dropped and never shed a tick; control frames on their own budget | none (D-W8, D-W18, D-W53) |
 | V-16 | plan §B.4 | observe/observer requests 4,096 B; one 5 s "frame completion age" | 32 KiB / 16 KiB (D-W21); the 5 s frame completion age is **retained** on the send side (`frame_completion_ms`, pin → completely written; it is what bounds a dribbling reader, D-W25), plus server request deadline 5 s / 25 s (control, plan's RG55 value), writer stall 5 s for an unpinned head, client reader 30 s (D-W16) | none |
 | V-17 | plan §B.2 | gauges carry min/max/mean columns | one aggregation per block, separate blocks per agg | none (D-W10) |
 | V-18 | plan §B.1 | JSON mode for "ctl, shell, launchers, debug" (all verbs) | JSON mode refuses block verbs; `hostobsctl --json` renders them | none (D-W13) |
@@ -1521,13 +1526,13 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | # | Finding (severity) | Disposition | Where fixed |
 |---|---|---|---|
 | A | a subscriber whose interval skips the generation-changing tick gets a bare block it cannot decode (major) | fixed: `TickForms::generation()`, per-stream `last_pushed_gen`; any generation the stream was not last pushed goes out in the dictionary form | §4.7, §5.3 Form, §6.2, §12, D-W27, `hub-interval-skips-generation` |
-| B | a dribbling reader holds the global budget; the plan's frame completion age was dropped (major) | fixed: a pinned head must be written within `frame_completion_ms` (5 s) of its pin; the stall rule stays, because it alone covers a head that is not pinned; per-uid pools = a quarter of the global ones | §5.1, §5.3 `poll`, §4.4, §12, D-W25, V-16, `hub-frame-completion`, `hub-uid-cap`, `conn-dribbling-reader` |
+| B | a dribbling reader holds the global budget; the plan's frame completion age was dropped (major) | fixed: a pinned head must be written within `frame_completion_ms` (5 s) of its pin; the stall rule stays, because it alone covers a head that is not pinned; per-uid pools = a quarter of the global ones (per-uid pools retired by D-W53) | §5.1, §5.3 `poll`, §4.4, §12, D-W25, V-16, `hub-frame-completion`, `hub-uid-cap`, `conn-dribbling-reader` |
 | C | a legal reply can exceed the control queue and close a healthy client (major) | fixed: a frame into an empty control queue is always admitted; every JSON REP ≤ `max_reply_bytes` = 448 KiB, sized so `max_outstanding` replies plus END/EVT slack fit; pages end early with `next`; per-verb worst cases; `cmdline` ≤ 4,096 B, `provenance` ≤ 64 objects | §5.1 reply sizes, §4.4, §4.8, §4.10, §4.11, D-W26, `hub-control-cap`, `conn-reply-page-truncated` |
-| D | the global victim may hold no sheddable entry; queries shed other clients' ticks (major) | fixed: the victim is the largest connection that holds an unpinned Live entry, none ⇒ the incoming tick is dropped (`DroppedIncoming`); Query blocks have their own pool (4 MiB / connection, 4 MiB / uid, 16 MiB global) and only ever wait (`Backpressure`) | §5.1, §5.3 Fit, D-W18, V-15, `hub-victim-skips-pinned`, `hub-query-own-pool` |
+| D | the global victim may hold no sheddable entry; queries shed other clients' ticks (major) | fixed: the victim is the largest connection that holds an unpinned Live entry, none ⇒ the incoming tick is dropped (`DroppedIncoming`); Query blocks have their own pool (4 MiB / connection, 4 MiB / uid, 16 MiB global) and only ever wait (`Backpressure`) (the uid pool retired by D-W53, the wait by D-W49) | §5.1, §5.3 Fit, D-W18, V-15, `hub-victim-skips-pinned`, `hub-query-own-pool` |
 | E | END `blocks` misses queued Query blocks (minor) | fixed: `blocks` counts a Query entry when it is queued (a Live one at pin) | §5.3 Pin, `end_stream`, `hub-end-stream` |
 | F | entry-0 rule vs the pinned `section-order` fixture (major) | fixed: rank check first, entry-0 rule only for an unknown kind at entry 0; fixture directory read from the `.bin` (`[5, 1, 2, 3, 3]`), pinned `index: 1, kind_code: 1` stays valid, no fixture changes | §3.1, §3.10, D-W22 |
-| G | Closing row and §12 API disagree; prefix machine unnamed (minor) | fixed: `head_partial`, `drain_unpinned`, `query_ready(c, stream)`, `enum Timer { Hello, Idle }` (the request deadline is the reader's completion age, no duplicate timer), `ModeDetect` with `at` handing surplus bytes to the reader | §5.3, §5.4, §12, `conn-prefix-surplus`, `conn-closing-evt` |
+| G | Closing row and §12 API disagree; prefix machine unnamed (minor) | fixed: `head_partial`, `drain_unpinned`, `query_ready(c, stream)` (retired by D-W49), `enum Timer { Hello, Idle }` (the request deadline is the reader's completion age, no duplicate timer), `ModeDetect` with `at` handing surplus bytes to the reader | §5.3, §5.4, §12, `conn-prefix-surplus`, `conn-closing-evt` |
 | H | previous-body view pins a whole frame; table provenance; CPython patch level (minor) | fixed: retention stated and bounded (one previous frame of ≤ 1 MiB per stream; a digest rejected, it adds a hash to the measured path and makes the skip probabilistic); table attributed to `bench2.py`, the `bytes()` row to `bench.py`; pinned CPython 3.14.10, re-measure on any version change, patch level included | §7.4, §7.8, D-W15 |
 | I | V-11..V-13 and the stream machines have no backlog id (minor) | fixed: `HOB-51`..`HOB-53` (V-11..V-13), `HOB-54` (stream layer, P2/P3/P5b exit criteria) | backlog, V-11..V-13, §12, CHANGES.md |
 
-Case counts after P5b-2d (§11.4): 12 reader, 6 client, 20 hub, 21 connection.
+Case counts (§11.4): 12 reader, 6 client, 19 hub, 22 connection.

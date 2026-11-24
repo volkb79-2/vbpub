@@ -219,6 +219,51 @@ for s in dev dev-interactive dev-background dev-gates; do
   fi
 done
 
+# systemd-oomd must never act on the dev tier (MDT-108, operator 2026-11-24: PSI is the only stop signal).
+# host-setup renders no ManagedOOM* line, but it never removes what it did not render: a stale drop-in, a
+# `systemctl set-property` override or a distro `-.slice.d` oomd default would still make oomd kill lanes, and
+# nothing else reports it. Check the live unit properties (must be `auto`) and oomd's own watch list.
+check_oomd_dev_tier() {
+  local s props mp sw bad=0 out rc hits
+  # "-" is the root slice (-.slice): ManagedOOM* is not inherited, so a root-level kill default is invisible on the
+  # dev units; the `--` keeps "-.slice" from parsing as an option.
+  for s in - dev dev-interactive dev-background dev-gates dev-buildkitd dev-cache dev-memory_min_guaranteed; do
+    props=$(systemctl show -p ManagedOOMMemoryPressure,ManagedOOMSwap -- "$s.slice" 2>/dev/null) || props=""
+    mp=$(printf '%s\n' "$props" | sed -n 's/^ManagedOOMMemoryPressure=//p')
+    sw=$(printf '%s\n' "$props" | sed -n 's/^ManagedOOMSwap=//p')
+    if [ -z "$mp" ] || [ -z "$sw" ]; then
+      warn "$s.slice: could not read ManagedOOMMemoryPressure/ManagedOOMSwap — whether systemd-oomd may kill in this tier is unknown"
+      bad=1
+    elif [ "$mp" != auto ] || [ "$sw" != auto ]; then
+      fail "$s.slice has ManagedOOMMemoryPressure=$mp ManagedOOMSwap=$sw (want auto/auto) — systemd-oomd can kill the dev tier. Look for /etc/systemd/system/$s.slice.d/*.conf, a systemctl set-property override (/etc/systemd/system.control, /run/systemd/system.control) or a distro ancestor default, remove it, then systemctl daemon-reload && systemctl restart systemd-oomd"
+      bad=1
+    fi
+  done
+  if ! command -v oomctl >/dev/null 2>&1; then
+    warn "oomctl not found — cannot verify that systemd-oomd monitors no dev*.slice or the root slice"
+    return 0
+  fi
+  out=$(oomctl dump 2>&1); rc=$?
+  if [ "$rc" -ne 0 ]; then
+    warn "oomctl dump failed (exit $rc; systemd-oomd not running?) — its watch list is unknown"
+    return 0
+  fi
+  # A dump whose format changed would match nothing and read as clean: require oomd's own section header.
+  if ! printf '%s\n' "$out" | grep -q '^Memory Pressure Monitored CGroups:'; then
+    warn "oomctl dump format unrecognised (no 'Memory Pressure Monitored CGroups:' section) — its watch list is unknown, not clean"
+    return 0
+  fi
+  hits=$(printf '%s\n' "$out" | grep -E '^[[:space:]]*Path:[[:space:]]+(/|/-\.slice|(/[^/ ]+)*/dev(-[^/ ]*)?\.slice(/[^ ]*)?)[[:space:]]*$')
+  if [ -n "$hits" ]; then
+    fail "systemd-oomd monitors the dev tier or the root slice (oomctl dump): $(printf '%s' "$hits" | tr -s '[:space:]' ' ') — oomd would kill dev lanes under pressure. Remove the ManagedOOM* source, then systemctl restart systemd-oomd"
+    bad=1
+  fi
+  [ "$bad" = 0 ] && ok "systemd-oomd manages no dev*.slice and not the root slice (ManagedOOM*=auto on every dev tier, oomctl dump clean)"
+  return 0
+}
+echo "== systemd-oomd stays off the dev tier =="
+check_oomd_dev_tier
+
 echo "== dev-interactive.slice effective values =="
 INTERACTIVE_PATH="$(_slice_path dev-interactive.slice)"
 if [ -d "$INTERACTIVE_PATH" ]; then
@@ -273,10 +318,23 @@ if [ -d "$DEV_PATH" ]; then
   printf '  %-14s %s\n' io.bfq.weight "$(cat "$DEV_PATH/io.bfq.weight" 2>/dev/null)"
   _cpu_quota_check dev.slice DEV_CPU_QUOTA
   _swap_max_check dev.slice DEV_SWAP_MAX
+  # Runtime/hand overrides of memory or oomd keys outrank the rendered units (never set-property memory, README):
+  # FAIL on dedicated-dev, WARN on every other role. IO runtime files are fine.
+  _ovr=fail; [ "$(_mdt_host_role)" = dedicated-dev ] || _ovr=warn
+  for _rd in /run/systemd/system.control /etc/systemd/system.control; do
+    for _rf in "$_rd"/{system,user,dev*}.slice.d/*.conf; do
+      [ -f "$_rf" ] && grep -Eq '^(Memory|ManagedOOM)' "$_rf" || continue
+      "$_ovr" "$_rf sets $(grep -Eo '^(Memory|ManagedOOM)[A-Za-z]*' "$_rf" | sort -u | tr '\n' ' ')(a hand-set runtime override outranks the rendered units): copy it aside, delete it, then re-run install.sh. Never set-property or systemctl revert for memory"
+    done
+  done
   if [ "$(_mdt_host_role)" = dedicated-dev ]; then
     # HOST_ROLE=dedicated-dev (MDT-TESTHOST-MEM): the derived values, read through the one implementation.
+    _psi_owned=""
+    if [ -r "${MDT_PSI_GUARD_STATE:-/run/mdt/psi-guard/state.json}" ]; then
+      _psi_owned=$(python3 -c 'import json,sys; print(" ".join(sorted(json.load(open(sys.argv[1])).get("owned", {}))))' "${MDT_PSI_GUARD_STATE:-/run/mdt/psi-guard/state.json}" 2>/dev/null || true)
+    fi
     if _ded_mem=$(python3 "$_CAPACITY_PY" dedicated-memory "$CONF" --meminfo /proc/meminfo 2>&1); then
-      for prop_label in "memory.high:DEDICATED_MEM_HIGH" "memory.max:DEDICATED_MEM_MAX"; do
+      for prop_label in "memory.high:DEDICATED_MEM_HIGH" "memory.max:DEDICATED_MEM_MAX" "memory.min:DEDICATED_MEM_MIN"; do
         prop="${prop_label%%:*}"; want="$(printf '%s\n' "$_ded_mem" | sed -n "s/^${prop_label#*:}=//p")"
         eff="$(cat "$DEV_PATH/$prop" 2>/dev/null)"
         [ -n "$want" ] || want=max
@@ -291,7 +349,9 @@ if [ -d "$DEV_PATH" ]; then
           prop="${prop_label%%:*}"; want="$(printf '%s\n' "$_ded_mem" | sed -n "s/^DEDICATED_${_tier_key}_${prop_label#*:}=//p")"
           eff="$(cat "$_tier_dir/$prop" 2>/dev/null)"
           [ -n "$want" ] || want=max
-          if [ "$eff" = "$want" ]; then ok "$_tier_unit $prop=$eff matches the HOST_ROLE=dedicated-dev derivation (dev.slice minus the protected tiers' MemoryLow)"
+          if [ "$eff" = "$want" ]; then ok "$_tier_unit $prop=$eff matches the HOST_ROLE=dedicated-dev derivation (dev.slice MemoryMax minus the protected tiers' MemoryLow; no MemoryHigh)"
+          elif [ "$prop" = memory.high ] && printf ' %s ' "$_psi_owned" | grep -Fq " $_tier_unit/memory.high "; then
+            info "$_tier_unit memory.high=$eff is owned by psi-guard right now (the converge never writes it)"
           else fail "$_tier_unit $prop=$eff but the HOST_ROLE=dedicated-dev derivation says $want (dev.slice minus the protected tiers' MemoryLow, or a DEV_${_tier_key}_MEMORY_${prop_label#*:} pin). Re-run install.sh."; fi
         done
         # AD2-0: memory.max = dev.slice memory.high (checked above), memory.swap.max = dev.slice's minus the protected Lows' sum.
@@ -311,25 +371,60 @@ if [ -d "$DEV_PATH" ]; then
         else
           warn "HOST_ROLE=dedicated-dev load-tier swap derivation failed: $_ded_swap"
         fi
-        _t_high="$(cat "$_tier_dir/memory.high" 2>/dev/null)"; _d_high="$(cat "$DEV_PATH/memory.high" 2>/dev/null)"
-        if [ "$_t_high" != max ] && [ "$_d_high" != max ] && [ "$_t_high" -lt "$_d_high" ] 2>/dev/null; then
-          ok "$_tier_unit memory.high=$_t_high is below dev.slice memory.high=$_d_high (the load yields before the protected tiers)"
-        else warn "$_tier_unit memory.high=$_t_high is not below dev.slice memory.high=$_d_high: the protected tiers' MemoryLow is not shielded from this tier (pin or omitted?)"; fi
       done
     else
       warn "HOST_ROLE=dedicated-dev memory derivation failed: $_ded_mem"
     fi
-    _sl_low="$(cat "$CG/system.slice/memory.low" 2>/dev/null)"
-    if [ -n "$_sl_low" ] && [ "$_sl_low" != 0 ]; then ok "system.slice memory.low=$_sl_low (host memory protected from the dev tier)"
-    else warn "system.slice memory.low is 0: the host's own memory is not protected from the dev tier (re-run install.sh)"; fi
-    # The keep must cover the host's working set (README "Sizing the keep"): above it the host's pages are reclaimable.
-    _keep_b="$(printf '%s\n' "${_ded_mem:-}" | sed -n 's/^DEDICATED_MEM_KEEP=//p')"
-    _sys_cur="$(cat "$CG/system.slice/memory.current" 2>/dev/null)"
-    if [ -n "$_keep_b" ] && [ -n "$_sys_cur" ]; then
-      if [ "$_sys_cur" -gt "$_keep_b" ] 2>/dev/null; then
-        warn "system.slice memory.current=$_sys_cur exceeds DEV_HOST_MEMORY_KEEP=$_keep_b: the part above the keep is reclaimable by the dev tier and can thrash; raise DEV_HOST_MEMORY_KEEP and re-run install.sh"
-      else ok "system.slice memory.current=$_sys_cur is within DEV_HOST_MEMORY_KEEP=$_keep_b"; fi
+    # P-plat-19e: host floors. system.slice/user.slice MemoryMin = the derived sums; each floored unit at least its plan.
+    for _fl in "system.slice:DEDICATED_SYSTEM_SLICE_MIN" "user.slice:DEDICATED_USER_SLICE_MIN"; do
+      want="$(printf '%s\n' "${_ded_mem:-}" | sed -n "s/^${_fl#*:}=//p")"; eff="$(cat "$CG/${_fl%%:*}/memory.min" 2>/dev/null)"
+      if [ -n "$want" ] && [ "$eff" = "$want" ]; then ok "${_fl%%:*} memory.min=$eff matches the derived host floor"
+      else fail "${_fl%%:*} memory.min=${eff:-unreadable} but the derived host floor is ${want:-unknown}: re-run install.sh (or run the reconcile)"; fi
+    done
+    while IFS='=' read -r _fk _fb; do
+      _fu="${_fk#DEDICATED_FLOOR }"
+      _fcur="$(systemctl show -p MemoryMin --value "$_fu" 2>/dev/null)"
+      if [ -z "$_fcur" ]; then info "$_fu: not installed or not readable; no floor checked"
+      elif [ "$_fcur" -ge "$_fb" ] 2>/dev/null; then ok "$_fu MemoryMin=$_fcur >= planned $_fb"
+      else fail "$_fu MemoryMin=$_fcur is below the planned floor $_fb (DropInPaths: $(systemctl show -p DropInPaths --value "$_fu" 2>/dev/null)); re-run install.sh"; fi
+    done < <(printf '%s\n' "${_ded_mem:-}" | grep '^DEDICATED_FLOOR ')
+    _deferred=""; [ -r /run/mdt/reconcile/memory-deferred ] && _deferred=$(cat /run/mdt/reconcile/memory-deferred 2>/dev/null)
+    for _kv in dev.slice dev-gates.slice dev-background.slice system.slice user.slice; do
+      _kd="$(_slice_path "$_kv")"; [ -d "$_kd" ] || continue
+      for _kp in MemoryMin:memory.min MemoryMax:memory.max; do
+        _sv="$(systemctl show -p "${_kp%%:*}" --value "$_kv" 2>/dev/null)"; [ "$_sv" = infinity ] && _sv=max
+        _kvv="$(cat "$_kd/${_kp#*:}" 2>/dev/null)"
+        [ -n "$_sv" ] && [ "$_sv" != "$_kvv" ] || continue
+        if printf '%s\n' "$_deferred" | grep -q "^$_kv "; then warn "$_kv ${_kp#*:} kernel=$_kvv systemd=$_sv: a lowering is deferred (/run/mdt/reconcile/memory-deferred); the timer retries"
+        else fail "$_kv ${_kp#*:} kernel=$_kvv but systemd says $_sv: run mdt-dev-governance-reconcile.sh (or re-run install.sh)"; fi
+      done
+    done
+    # The hot part of system.slice should stay inside its floor plus the margin (page cache above it is reclaimable).
+    _sys_cur="$(cat "$CG/system.slice/memory.current" 2>/dev/null)"; _sys_inact="$(sed -n 's/^inactive_file //p' "$CG/system.slice/memory.stat" 2>/dev/null)"
+    _sys_min="$(printf '%s\n' "${_ded_mem:-}" | sed -n 's/^DEDICATED_SYSTEM_SLICE_MIN=//p')"
+    _res_m="$(printf '%s\n' "${_ded_mem:-}" | sed -n 's/^DEDICATED_RESERVE=//p' | awk '{print $2}')"
+    if [ -n "$_sys_cur" ] && [ -n "$_sys_min" ] && [ -n "$_res_m" ]; then
+      if [ $(( _sys_cur - ${_sys_inact:-0} )) -gt $(( _sys_min + _res_m )) ] 2>/dev/null; then
+        warn "system.slice memory.current - inactive_file = $(( _sys_cur - ${_sys_inact:-0} )) exceeds its MemoryMin + M = $(( _sys_min + _res_m )): the host's hot set outgrew its floor (raise the unit rows of DEV_HOST_MEMORY_MIN, DIV2-BL-11)"
+      else ok "system.slice hot memory is within its MemoryMin + M"; fi
     fi
+    for _rf in /etc/systemd/system/{system,user,dev*}.slice.d/*.conf; do
+      [ -f "$_rf" ] || continue
+      case "$(basename "$_rf")" in 50-mdt-dedicated-dev.conf|95-mdt-memory-min.conf) continue ;; esac
+      grep -Eq '^(Memory|ManagedOOM)' "$_rf" || continue
+      case "$(basename "$_rf")" in
+        90-vbpub-memory-min.conf) if grep -E '^(Memory|ManagedOOM)' "$_rf" | grep -qv '^MemoryMin='; then fail "$_rf sets more than MemoryMin"; fi ;;
+        20-memory-policy.conf) warn "$_rf is the runner's (scripts/netcup/runner/provision-gates-limits.sh, NC-nn): it will FAIL here once that follow-up lands" ;;
+        *) fail "$_rf is a foreign memory drop-in on a slice host-setup governs: remove it and re-run install.sh" ;;
+      esac
+    done
+    # The cockpit must be created with --oom-score-adj=-900 (devcontainer runArg): an old one is picked first by an OOM.
+    for _cp in "$(_slice_path dev-interactive.slice)"/docker-*.scope/cgroup.procs; do
+      [ -r "$_cp" ] || continue
+      _pid="$(head -n1 "$_cp" 2>/dev/null)"; _adj="$(cat "/proc/$_pid/oom_score_adj" 2>/dev/null)"
+      if [ -n "$_adj" ] && [ "$_adj" -gt -900 ] 2>/dev/null; then warn "a dev-interactive container ($_cp) runs at oom_score_adj=$_adj: rebuild the devcontainer so it gets -900"; fi
+    done
+    [ -n "${DEV_HOST_MEMORY_MEASURED:-}" ] || info "NOTE: DEV_HOST_MEMORY_MEASURED is empty: the floors and the margin are unmeasured defaults (README, acceptance run)"
     if [ -e /etc/systemd/system/ssh.service.d/50-mdt-dedicated-dev.conf ]; then
       fail "ssh.service.d/50-mdt-dedicated-dev.conf exists: sshd would hand OOMScoreAdjust=-900 to every login session after its next restart; re-run install.sh (it removes the file)"
     fi
@@ -447,7 +542,9 @@ case "${gmin:-0}" in
   0|""|"[not set]") gmin_set=0 ;;
   *) gmin_set=1 ;;
 esac
-if [ -z "$gfp" ] || [ "$gmin_set" = 0 ]; then
+if [ "$(_mdt_host_role)" = dedicated-dev ]; then
+  info "dev.slice MemoryMin is the sum of every child Min key on HOST_ROLE=dedicated-dev (checked under dev.slice), not the guaranteed slice's own"
+elif [ -z "$gfp" ] || [ "$gmin_set" = 0 ]; then
   # install.sh's render() DROPS a directive whose value resolves to empty, so
   # an unset DEV_MEMORY_MIN_GUARANTEED_CEILING leaves both slices without a
   # MemoryMin at all. That is the shipped default and the expected state on

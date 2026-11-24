@@ -54,9 +54,10 @@ its own, `vm-lab/`, with the package `vm_lab` in `src/` and the console script
   `CGROUP_PARENT_DEV_BACKGROUND`), and a missing network says where it comes from
   instead of only naming the variable, because the fix is to read the value
   (`ciu env print`), not to invent one.
-- **Not part of this move:** release registration (cmru, assay lane), a vmscreen
-  version floor, a ciu service for the image. They are open items in
-  `KNOWN_ISSUES_TODO_BACKLOG.md`.
+- **Not part of this move:** release registration (cmru, assay lane) is done
+  (VML-BL-01, archived), and the first release itself is still open together
+  with the vmscreen install order (VML-BL-03). A ciu service for the image is
+  VML-BL-10. Open items are in `KNOWN_ISSUES_TODO_BACKLOG.md`.
 
 ## A profile instead of globals
 
@@ -182,8 +183,10 @@ this invocation never recorded.
 
 The key table behind `console type` (US-layout ASCII to QEMU key names, in
 `vm_lab.console`) and the key table of `libraries/vmscreen` (its `send` verb)
-are deliberately two copies: the VM tool does not import vmscreen (it runs it as a
-subprocess for screen text), and vmscreen keeps its own. Both tables must list the same key names. The tests
+are deliberately two copies. `cli`, `core`, `console` and `text` do not import
+vmscreen (the CLI runs it as a subprocess for screen text), while the driver
+module `vm_lab.guest` imports vmscreen's `keys` table and adds no third table.
+`console type` therefore still works without vmscreen. Both tables must list the same key names. The tests
 cannot compare them mechanically: `libraries/vmscreen/docs/cli-surface.json`
 names the `--keys` option but not the key names, so the rule is stated here and
 checked by review when either table changes (vmscreen backlog VMS-BL-03, closed by this rule).
@@ -363,13 +366,15 @@ disagreement about "start". Only the serial engine can honour a mark; the others
 ignore an explicit one with one stderr note. A mark taken after the action it
 should precede loses that action's early output: take it first.
 
-**Why vmscreen is a subprocess, and where it comes from.** The VM tool is a
-script with no dependencies; making it import vmscreen would give it
-vmscreen's dependency (`cli-extended`) and tie its import path to a wheel. As a
-subprocess, a machine without vmscreen degrades to OCR instead of breaking the
-other verbs, and QMP stays strictly sequential: QMP serves one client, so the VM
-tool never holds a connection while vmscreen connects, and the engines run one
-after the other.
+**Why the CLI uses vmscreen as a subprocess, and where it comes from.** The
+launcher modules `cli`, `core`, `console` and `text` remain usable without
+vmscreen: the CLI runs it as a subprocess, so a machine without it degrades to
+OCR instead of breaking the other verbs, and QMP stays strictly sequential
+(QMP serves one client, so the VM tool never holds a connection while vmscreen
+connects). The separate driver module `vm_lab.guest` imports only vmscreen's
+standard-library `qmp`, `keys`, `sources` and `serialtext` modules; those do
+not import `cli-extended`. `cli` does not import `guest`, so the CLI's
+degradation is unchanged.
 
 vmscreen must be **installed**: `pip install` of `libraries/vmscreen` (an
 editable install is enough). It does not run from a bare source tree, because
