@@ -351,13 +351,14 @@ The ISO's excluded data mounts come from D18 plus `/usr/local`:
 ancestor would cover ISO-owned state and is refused; a descendant such as
 `/srv/cow` is allowed. v2's existing `_check_mount` policy remains in force on
 top of C9: a path at, inside, or above a protected tree such as `/boot`,
-`/etc`, `/usr`, `/proc`, `/var/lib/dpkg`, or `/var/log` is refused; a path
-intersecting `/var/lib/docker` or `/var/lib/containerd` is refused; and an
-exact or ancestor path for the reserved mount points `/var`, `/var/lib`,
-`/srv`, or `/home` is refused. A descendant such as `/srv/cow` remains
-accepted when no other rule covers it. The subvolume work happens in stage
-two, after Docker may already be running, so the live-service rule applies
-exactly as it does to partition and LVM data mounts below.
+`/etc`, `/usr`, `/proc`, `/var/lib/dpkg`, or `/var/log` is refused, except
+the documented `/var/log/journal` subtree; a path intersecting
+`/var/lib/docker` or `/var/lib/containerd` is refused; and an exact or
+ancestor path for the reserved mount points `/var`, `/var/lib`, `/srv`, or
+`/home` is refused. A descendant such as `/srv/cow` remains accepted when no
+other rule covers it. The subvolume work happens in stage two, after Docker
+may already be running, so the live-service rule applies exactly as it does
+to partition and LVM data mounts below.
 
 IC-M1a keeps `user_subvol_rm_allowed` on each data-subvolume fstab row as the
 brief requires. Btrfs applies most options per filesystem; IC-M1b owns adding

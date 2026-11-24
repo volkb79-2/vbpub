@@ -332,8 +332,9 @@ option set plus `user_subvol_rm_allowed` and `subvol=<name>`. A mount at or
 above an ISO-excluded path is refused, while `/srv/cow` (below `/srv`) is the
 supported example. v2's existing protected-tree and live-service checks still
 apply: at/below/above `/boot`, `/etc`, `/usr`, `/proc`, `/var/lib/dpkg`, and
-the other protected trees is refused; `/var/lib/docker` and
-`/var/lib/containerd` cannot be covered at any depth.
+the other protected trees is refused (except the documented
+`/var/log/journal` subtree); `/var/lib/docker` and `/var/lib/containerd`
+cannot be covered at any depth.
 
 IC-M1a keeps `user_subvol_rm_allowed` on each data-subvolume row. The effective
 root-filesystem option set is IC-M1b's `install-btrfs.sh` `OPTS` change, with

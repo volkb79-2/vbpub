@@ -482,8 +482,9 @@ and the rollback-layer names are reserved. Data mounts at or above one of the
 excluded paths are refused, while mounts below them (for example
 `/srv/cow`) are allowed. v2's existing mount policy still applies on top:
 mounts at, below, or above `/boot`, `/etc`, `/usr`, `/proc`, `/var/lib/dpkg`
-and the other protected trees are refused, and `/var/lib/containerd` and
-`/var/lib/docker` cannot be covered at any depth.
+and the other protected trees are refused, except the documented
+`/var/log/journal` subtree; `/var/lib/containerd` and `/var/lib/docker`
+cannot be covered at any depth.
 
 IC-M1a keeps `user_subvol_rm_allowed` on each data-subvolume fstab row as the
 package contract requires. Btrfs applies most options per filesystem, so

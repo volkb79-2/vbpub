@@ -391,8 +391,13 @@ def test_subvolume_mount_below_an_excluded_path_is_accepted(mount):
     "/etc/example",
     "/usr/example",
     "/boot/cache",
+    "/tmp/scratch",
     "/proc/x",
+    "/sys/x",
+    "/dev/x",
+    "/run/x",
     "/var/lib/dpkg/cache",
+    "/var/log/other",
     "/var/lib/docker/volumes/scratch",
     "/var/lib/containerd",
 ])
