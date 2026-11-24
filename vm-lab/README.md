@@ -227,6 +227,12 @@ finite `memory.max`; memory pressure (PSI) at the slice and its ancestors is
 under policy; the slice CPU quota allows `--cpus`; the Docker network and image
 exist; and fewer than the allowed number of guests are running.
 
+The host cgroup inspector mounts the host cgroup v2 filesystem and system D-Bus
+socket read-only. It can keep private PID and cgroup namespaces: vm-lab resolves
+the Docker container's systemd scope and checks that it is loaded, active, and
+has tasks before reading the scope's resource limits. It does not need a host
+PID namespace or writable access to host cgroups.
+
 All profiles share one start lock (in the repository's common Git directory, or
 in `--lock-dir` / `VM_LAB_ADMISSION_LOCK_DIR` from an installed wheel)
 and one guest count. A running TrueNAS guest and a running vm-lab guest count
