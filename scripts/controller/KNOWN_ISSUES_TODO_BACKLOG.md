@@ -64,6 +64,8 @@ together.
 | CTL-53 | Worktree sprawl | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-54 | Backlogs and SPECs are append-only | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | OPEN 2026-11-24 |
+| CTL-56 | remote-gate admission holds the admit ticket while waiting, is not PSI-only, and lets an identical live launch through | Must-fix | OPEN 2026-11-24 |
+| CTL-57 | `gate-run.sh` local admission only queues on the slot locks; it starts a gate while the cockpit is at the memory-PSI stop signal | Must-fix | OPEN 2026-11-24 |
 
 ---
 
@@ -1659,3 +1661,19 @@ Source: .controller-state/PROGRAM-2026-11-24/PROGRAM.md §6
 `tests/test-pi-impl.sh` `check_live_snapshot` polls 100 × `sleep 0.1` (about 10 s of wall clock) for `"tool_in_flight": "bash"` in the `.live` sidecar, which is written every `PI_LIVE_INTERVAL_SECONDS=1` by a process tree started under the same load. On 2026-11-24 the `suite` lane at 0314fdf1b (a docs-only change) failed with `the live sidecar never reported the tool call in flight` while another session's mutation lane loaded the host (load average ~6 on 8 cores). Against the estate rule that verdicts do not depend on host load. Fix: wait on a progress condition instead of a clock, for example until the fake pi's own "tool started" marker exists AND the sidecar has completed at least two write cycles (a sidecar sequence counter), with only a generous outer bound (minutes) that reports "inconclusive under load" separately from "never reported".
 
 Source: suite lane log of 2026-11-24 (run-gate lane `suite`, head 0314fdf1b).
+
+## CTL-56 — remote-gate admission: ticket held while waiting, not PSI-only, duplicate launches
+
+**Status:** OPEN (filed 2026-11-24; package P-plat-14b).
+
+Wanted: the admit ticket is never held while waiting; admission is memory-PSI-only (programme rule: memory `full` avg10 >= 3 waits), so `CONTROLLER_REMOTE_SLOTS` / `CONTROLLER_REMOTE_BUDGET_MB` become no-ops and `remote-gate.py` `mem_admit_ok` becomes PSI-only; a second identical live launch (host + project + lane + sha + args digest) is refused with exit 2; the run name is derived AFTER admission with a pid/random suffix, and a refused run prints REFUSED, never another run's result.
+
+Source: P-plat-14b plan; observations in runs rgw-assay-first-release-r2-20261124T054814-v1001 (vbpub-assay) and rgw-r0-r1-20261124T060903-v1001 (vbpub-hostobs).
+
+## CTL-57 — gate-run.sh starts local gates at the memory-PSI stop signal
+
+**Status:** OPEN (filed 2026-11-24).
+
+`gate-run.sh` admits a local gate as soon as one of its slot locks is free. At 07:50Z on 2026-11-24 the cockpit host ran 4 local gates at memory PSI `full` avg10 3-6, above the programme's only stop signal (>= 3). Sessions can be told to stop, but external codex implementers that call `gate-run.sh` mid-run cannot. Wanted: after taking a slot and before starting the lane, wait while `/proc/pressure/memory` `full` avg10 >= 3 (unreadable counts as busy), print one line per minute naming the PSI value and the wait, release nothing it does not hold, and give up after a bounded wait with a distinct exit code that says "not admitted, nothing ran" (never a FAIL verdict). Same semantics as `scripts/controller/dev` host-admission/1, so one rule covers both.
+
+Source: vbpub-main-controller, 2026-11-24 07:50Z (cockpit PSI 3-6 with 4 local gates).
