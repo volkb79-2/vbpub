@@ -5,10 +5,10 @@ S7.3 (no sys.exit in helpers).
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -303,41 +303,48 @@ class TestRunCmdNoSystemExit:
 # ---------------------------------------------------------------------------
 
 
+def _install_fake_docker(tmp_path: Path, monkeypatch, body: str) -> Path:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    executable = bin_dir / "docker"
+    executable.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+    return executable
+
+
 class TestDockerWrapper:
-    def test_docker_prepends_docker_to_argv(self) -> None:
-        """docker() must call subprocess.run with ['docker', ...] as first arg."""
-        captured: list = []
+    def test_docker_runs_the_named_executable_with_the_requested_argv(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        executable = _install_fake_docker(
+            tmp_path, monkeypatch, 'printf "%s\\n" "$0" "$@"'
+        )
 
-        def fake_run(cmd, **kwargs):
-            captured.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        result = docker(["ps", "--all"])
 
-        with patch("subprocess.run", side_effect=fake_run):
-            docker(["ps", "--all"])
+        assert Path(result.stdout.splitlines()[0]).name == executable.name
+        assert result.stdout.splitlines()[1:] == ["ps", "--all"]
 
-        assert captured == [["docker", "ps", "--all"]]
+    def test_docker_forwards_cwd_to_the_child(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        _install_fake_docker(tmp_path, monkeypatch, "pwd")
 
-    def test_docker_forwards_kwargs(self) -> None:
-        """Keyword arguments like check= are forwarded to run_cmd."""
-        calls: list = []
+        result = docker(["info"], cwd=str(tmp_path))
 
-        def fake_run(cmd, **kwargs):
-            calls.append((cmd, kwargs))
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        assert result.stdout.strip() == str(tmp_path)
 
-        with patch("subprocess.run", side_effect=fake_run):
-            docker(["info"], timeout=5.0)
-
-        assert len(calls) == 1
-        _cmd, kwargs = calls[0]
-        assert kwargs.get("timeout") == 5.0
-
-    def test_docker_check_true_raises_on_nonzero(self) -> None:
+    def test_docker_check_true_raises_on_nonzero(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
         """docker(check=True) propagates CalledProcessError on failure."""
+        _install_fake_docker(
+            tmp_path, monkeypatch, "printf 'error output\\n' >&2\nexit 7"
+        )
 
-        def fake_run(cmd, **kwargs):
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="error output")
+        with pytest.raises(subprocess.CalledProcessError) as exc_info:
+            docker(["nonexistent"], check=True)
 
-        with patch("subprocess.run", side_effect=fake_run):
-            with pytest.raises(subprocess.CalledProcessError):
-                docker(["nonexistent"], check=True)
+        assert exc_info.value.returncode == 7
+        assert exc_info.value.stderr == "error output\n"

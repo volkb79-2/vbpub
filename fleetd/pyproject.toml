@@ -44,7 +44,7 @@ where = ["src"]
 fleetd = ["skills/**/*"]
 
 # Surface lifecycle (cli-extended AC-16..AC-18). ONE entry covers every route:
-# the root registry mounts `facts` and `guard` as delegated groups and `skills`
+# the root registry mounts `facts` as a delegated group and `skills`
 # from the library, so a second entry would be a duplicate. Paths are relative
 # to this file; run `cli-extended surface check` from fleetd/ with the package
 # importable (PYTHONPATH=src or an installed wheel).

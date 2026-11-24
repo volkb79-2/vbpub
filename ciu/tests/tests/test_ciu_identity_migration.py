@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import subprocess
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +34,34 @@ def _write_old_facts(root: Path, facts: dict | None = None) -> Path:
 
 def _docker_empty(*_args, **_kwargs):
     return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+def _install_fake_docker(tmp_path: Path, monkeypatch, body: str) -> Path:
+    """Install a real capture-aware Docker boundary on PATH."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    executable = bin_dir / "docker"
+    executable.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+    return executable
+
+
+def _install_fake_docker_result(
+    tmp_path: Path, monkeypatch, *, stdout: str = "", stderr: str = "",
+    returncode: int = 0,
+) -> Path:
+    executable = _install_fake_docker(
+        tmp_path,
+        monkeypatch,
+        'printf "%s" "$DOCKER_STDOUT"\n'
+        'printf "%s" "$DOCKER_STDERR" >&2\n'
+        'exit "$DOCKER_RETURNCODE"',
+    )
+    monkeypatch.setenv("DOCKER_STDOUT", stdout)
+    monkeypatch.setenv("DOCKER_STDERR", stderr)
+    monkeypatch.setenv("DOCKER_RETURNCODE", str(returncode))
+    return executable
 
 
 def test_outdated_identity_repairs_only_when_old_network_and_labels_are_absent(
@@ -330,12 +358,12 @@ def test_identity_label_scan_keeps_stdout_error_detail(monkeypatch):
     assert "label scan detail" in str(exc_info.value)
 
 
-def test_identity_label_scan_captures_resource_rows(monkeypatch):
-    def run(argv, **kwargs):
-        output = "cid\t/physical/repo\tproject-a\n" if kwargs["capture_output"] else None
-        return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
-
-    monkeypatch.setattr(procutil.subprocess, "run", run)
+def test_identity_label_scan_captures_resource_rows(tmp_path, monkeypatch):
+    _install_fake_docker(
+        tmp_path,
+        monkeypatch,
+        "printf 'cid\\t/physical/repo\\tproject-a\\n'",
+    )
     resources = workspace_env._identity_labeled_resources("ab12cd")
     assert resources == {
         "container": ["cid"],
@@ -353,12 +381,11 @@ def test_identity_label_scan_captures_resource_rows(monkeypatch):
     ],
 )
 def test_identity_label_scan_keeps_error_stream_precedence(
-    monkeypatch, stdout, stderr, chosen,
+    tmp_path, monkeypatch, stdout, stderr, chosen,
 ):
-    def run(argv, **_kwargs):
-        return subprocess.CompletedProcess(argv, 17, stdout=stdout, stderr=stderr)
-
-    monkeypatch.setattr(procutil.subprocess, "run", run)
+    _install_fake_docker_result(
+        tmp_path, monkeypatch, stdout=stdout, stderr=stderr, returncode=17,
+    )
     with pytest.raises(workspace_env.WorkspaceEnvError) as exc_info:
         workspace_env._identity_labeled_resources("ab12cd")
     assert chosen in str(exc_info.value)
@@ -453,17 +480,19 @@ def test_identity_project_label_scan_keeps_stdout_error_detail(monkeypatch):
     assert "daemon query detail" in str(exc_info.value)
 
 
-def test_identity_project_label_scan_captures_project_labels(monkeypatch):
+def test_identity_project_label_scan_captures_project_labels(tmp_path, monkeypatch):
     monkeypatch.setattr(
         workspace_env, "_identity_labeled_resources",
         lambda *_a, **_kw: {"project": []},
     )
-
-    def run(argv, **kwargs):
-        output = "repo-ab12cd-stack\n" if kwargs["capture_output"] else None
-        return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
-
-    monkeypatch.setattr(procutil.subprocess, "run", run)
+    _install_fake_docker(
+        tmp_path,
+        monkeypatch,
+        'case "$*" in\n'
+        '  *"label=ciu.instance="*) ;;\n'
+        '  *) printf "repo-ab12cd-stack\\n" ;;\n'
+        "esac",
+    )
     assert workspace_env._identity_project_labels("ab12cd", "repo") == {
         "repo-ab12cd-stack"
     }
@@ -477,13 +506,10 @@ def test_identity_project_label_scan_captures_project_labels(monkeypatch):
     ],
 )
 def test_identity_project_label_scan_keeps_error_stream_precedence(
-    monkeypatch, stdout, stderr, chosen,
+    tmp_path, monkeypatch, stdout, stderr, chosen,
 ):
-    monkeypatch.setattr(
-        procutil.subprocess, "run",
-        lambda argv, **_kwargs: subprocess.CompletedProcess(
-            argv, 17, stdout=stdout, stderr=stderr
-        ),
+    _install_fake_docker_result(
+        tmp_path, monkeypatch, stdout=stdout, stderr=stderr, returncode=17,
     )
     with pytest.raises(workspace_env.WorkspaceEnvError) as exc_info:
         workspace_env._identity_project_labels("ab12cd", "repo")
@@ -531,14 +557,17 @@ def test_old_identity_network_scan_keeps_stdout_error_detail(monkeypatch):
     assert "network query detail" in str(exc_info.value)
 
 
-def test_old_identity_network_scan_captures_exact_network_name(monkeypatch):
+def test_old_identity_network_scan_captures_exact_network_name(
+    tmp_path, monkeypatch,
+):
     network = OLD_FACTS["network"]
 
-    def run(argv, **kwargs):
-        output = f"{network}\n" if kwargs["capture_output"] else None
-        return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
-
-    monkeypatch.setattr(procutil.subprocess, "run", run)
+    _install_fake_docker(
+        tmp_path,
+        monkeypatch,
+        'printf "%s\\n" "$DOCKER_NETWORK"',
+    )
+    monkeypatch.setenv("DOCKER_NETWORK", network)
     assert workspace_env._old_identity_resources_exist(OLD_FACTS)
 
 
@@ -550,12 +579,11 @@ def test_old_identity_network_scan_captures_exact_network_name(monkeypatch):
     ],
 )
 def test_old_identity_network_scan_keeps_error_stream_precedence(
-    monkeypatch, stdout, stderr, chosen,
+    tmp_path, monkeypatch, stdout, stderr, chosen,
 ):
-    def run(argv, **_kwargs):
-        return subprocess.CompletedProcess(argv, 17, stdout=stdout, stderr=stderr)
-
-    monkeypatch.setattr(procutil.subprocess, "run", run)
+    _install_fake_docker_result(
+        tmp_path, monkeypatch, stdout=stdout, stderr=stderr, returncode=17,
+    )
     with pytest.raises(workspace_env.WorkspaceEnvError) as exc_info:
         workspace_env._old_identity_resources_exist(OLD_FACTS)
     assert chosen in str(exc_info.value)

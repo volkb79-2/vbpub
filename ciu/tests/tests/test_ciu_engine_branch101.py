@@ -140,7 +140,7 @@ def test_compose_keyboard_interrupt_without_process_returns_interrupted(
     def start_process(*_args, **_kwargs):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(engine.subprocess, "Popen", start_process)
+    monkeypatch.setattr(engine.procio, "run_streaming", start_process)
 
     result = engine.execute_docker_compose_with_logs(
         [], cwd=Path("/unused"), project="test-project", repo_root=Path("/unused")

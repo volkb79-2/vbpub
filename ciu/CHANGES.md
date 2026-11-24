@@ -21,8 +21,49 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Changed
+- CIU-220: `procutil.run_cmd(capture=True)` now delegates to
+  `cli_extended.procio.run_capture`, preserving the existing
+  `CompletedProcess` and timeout shapes while bounding the post-exit drain and
+  reaping a timed-out child group. UTF-8 replacement decoding also translates
+  universal newlines, and a held output pipe produces one PID-naming `[WARN]`
+  on stderr. Compose-up now delegates to
+  `procio.run_streaming`: it keeps the child's exit code, drains for at most
+  two seconds, warns once with the PIDs still holding the pipe, uses the
+  exported 1800-second no-progress watchdog, and prints the pre-signal process
+  tree when that watchdog expires. The 17 unbounded captured direct subprocess
+  sites are explicit, justified guard-test exceptions owned by CIU-233.
+- CIU-224: severity presentation is now a thin adapter over the shared
+  cli-extended `LineStreamRenderer`. Prefixes and the
+  `CIU_LOG_PREFIX_TIME_SHORT` timestamp remain unchanged; each line is
+  classified independently. `NO_COLOR` (when non-empty) and `TERM=dumb` keep
+  output plain, and input-origin terminal escapes are removed when ciu decorates
+  the stream. Unterminated text is emitted on `flush()`.
+- The `cli-extended` floor is now `>=0.8.0`, the release carrying the shared
+  renderer and bounded process readers.
+
+### Fixed
+- CIU-220: malformed UTF-8 in streamed command output is replaced with
+  `U+FFFD` instead of failing a command that otherwise exited successfully.
+- CIU-232: captured `run_cmd` calls on the main thread preserve a caller's
+  installed SIGTERM/SIGHUP handlers until cli-extended CLI-EXT-51 lands.
+
 ### Testing
 - CIU-223: the CIU-215 tests now disable git's automatic gc and maintenance per process, and an autouse test fixture reports any direct child left under pytest without signalling it. Tests only; no consumer action.
+- CIU-220/CIU-224: estate test policy is loaded from source in warn mode;
+  process-signalling oracles carry `requires_contained_cgroup`, and the new
+  behavioral tests cover bounded draining, group reaping, holder warnings,
+  replacement decoding, multi-line severity rendering and the full direct
+  subprocess exception inventory.
+
+### Adoption / Migration Notes
+- ciu now requires cli-extended 0.8.0 or newer. Install cli-extended before
+  ciu; `get.py` already hoists the matching wheel from a release bundle. No
+  configuration changes are required. When a descendant keeps the output pipe
+  open, a captured `run_cmd` now returns the child's code and writes one
+  PID-naming WARN to stderr; Compose-up returns the child's code and writes that
+  WARN to CIU's stdout. Compose-up also gains the 1800-second no-progress
+  boundary.
 
 <!-- cmru: release history -->
 

@@ -278,25 +278,14 @@ including it would inflate the next median forever; the per-candidate sum fields
 above count those candidates deliberately, at their bound, because they held a
 worker that long.
 
-## Why the merge check compares identity, not counts
+## Shard merging is assay's
 
-Two shards that judged different commits or different tester images produce a
-merged verdict that *looks* complete either way. The check therefore compares
-the lane, full commit, image digest, plan digest and shard count across every
-shard, and reports both values on a mismatch instead of picking one. Three
-shapes are kept distinct:
-
-- a **duplicated index** is a disagreement about which slice a store holds — a
-  refusal, never an "incomplete" report;
-- a **missing index** is a genuinely incomplete set: reported as `incomplete`
-  and refused (`--require-complete` is accepted and changes nothing), because a
-  merge over a missing shard reports its candidates as absent work;
-- a **differing field** is `mismatched` regardless of completeness.
-
-The image digest is optional in the plan executor and required by the merge
-check. That asymmetry is deliberate: refusing to run a campaign because nobody
-declared an image would be a default invented by the tool, while merging two
-unknown image identities is precisely the mixed-image merge to refuse.
+Fleetd no longer compares or merges shards; assay's strict shard merge
+(`--merge-shard-store`, B565's `strict-shard` policy) owns that, because a
+merge that only counts shards cannot tell two commits or two tester images
+apart. The plan's `execution.image_digest` stays optional: refusing to run a
+campaign because nobody declared an image would be a default invented by the
+tool. It names the tester image for measurement evidence.
 
 ## Facts are read from their owner
 
@@ -462,24 +451,24 @@ the host's deadlines. Identity-check and guard refusals (exit 97/98) remain
 transport errors and fail closed; they are not converted into `UNREACHABLE` or
 `LOST` status.
 
-The lightweight collector does not merge Assay state stores. Assay's strict
-`--merge-manifest` and Run-Gate forwarding are tracked under Assay B544 and
-Run-Gate RG-277; the exact-key Assay baseline cache is already tracked as
+The lightweight collector does not merge Assay state stores. Assay owns the
+manifest and strict store combination (B544/B565 `owner-manifest` and
+`strict-shard` policies); Run-Gate forwarding is RG-277. The exact-key Assay
+baseline cache is already tracked as
 [B542](../../assay/nyxloom-trove/4-backlog.md#b542-r2-restarts-repeat-a-passing-single-core-baseline-and-leave-a-serial-retry-tail).
 
 ## Deliberate limits
 
-The guard rules are parsed only; no process or cgroup is changed. There is no
-daemon, socket, Docker, retry service, or strict Assay store merge. Guard configuration accepts the design's
-`report` and `enforce` modes and the `least-progress-per-ram` victim policy, but
-this package does not act on them. The future daemon is fleetd FD-011; the
-campaign-aware cgprofile guard is CP-64 in cgprofile's backlog. The current Run-Gate selected-candidate
+Guard rules are owned by thrashguard (TG-1). Fleetd only reads the guard's
+`enabled` flag and owner-emitted runtime state for `host-facts/1`; it does not
+validate or apply rules. There is no daemon, socket, Docker, or retry service.
+Assay owns strict store merging. The future daemon is fleetd FD-011. The current Run-Gate selected-candidate
 interface also does not accept fleetd's host-specific RAM budget; the printed
 commands use the planned worker count while runtime limits remain host and lane
 policy. Track this integration under
 [FD-003](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-003-fleet-ram-budget-is-not-sent-to-the-current-runner).
-The restricted forced-command entry for campaign hosts remains CIU-218. The
-strict result merge remains fleetd FD-008, Assay B544, and Run-Gate RG-277.
+The restricted forced-command entry for campaign hosts remains CIU-218. Strict
+result merging is Assay B544/B565; Run-Gate forwards the owner contract.
 Released Run-Gate does not yet accept the
 `demand` lane key, so the lane demand lives in a separate TOML input until
 RG-275 lands; the missing client verb is tracked as RG-276. `efficient_upper_bound`
