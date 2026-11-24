@@ -48,6 +48,8 @@ curl -fsSLO "https://raw.githubusercontent.com/volkb79-2/vbpub/${TAG}/tls-edge/g
 sudo python3 get.py install --version "$TAG" --variant py313
 sudo /srv/tls-edge-instance/bin/tls-edge configure
 cd /srv/tls-edge-instance/stack
+# If Docker has no group entry, use: sudo env DOCKER_GID=<gid> ./ciu env generate
+sudo ./ciu env generate
 sudo ./ciu check
 sudo ./ciu up --dry-run
 sudo ./ciu up
@@ -59,10 +61,11 @@ HTTP/3, optional Calls media, network/volume adoption, and runtime placement. It
 inbound firewall ports before writing the instance override and `consumer.env`.
 
 On a root-run system install, bootstrap creates `shared/acme` as `root:root` with mode `0700`. When the override
-does not yet set `[tls_edge.acme] store`, `configure` selects `store = "hostdir"` and writes
-`[tls_edge.traefik.hostdir.acme] path = "../../shared/acme"`. That source is outside `stack/`: `ciu --reset`,
-`docker compose down -v`, and `ciu clean` do not remove it. A `--scope user` install cannot create a root-owned
-directory, so it keeps the volume behaviour.
+does not yet set `[tls_edge.acme] store`, `configure` selects `store = "hostdir"`, unless
+`[tls_edge.acme] volume_name` is set: an adopted volume keeps `store = "volume"`, and `ciu clean` can still remove
+it (see §6). For the hostdir, `configure` writes `[tls_edge.traefik.hostdir.acme] path = "../../shared/acme"`.
+That source is outside `stack/`: `ciu --reset`, `docker compose down -v`, and `ciu clean` do not remove it. A
+`--scope user` install cannot create a root-owned directory, so it keeps the volume behaviour.
 
 For unattended configuration, prepare a TOML file and pass it to the CLI:
 
@@ -223,8 +226,9 @@ To move an existing instance to the durable hostdir manually:
    ```
 
 4. Run `sudo ./ciu check && sudo ./ciu up`. Keep the old volume until the new edge has issued or reused its
-   certificates successfully. A rollback to a release older than 3.2 ignores `store`, mounts an empty
-   `acme-data` volume, and forces re-issuance; the hostdir remains on disk for a later roll-forward.
+   certificates successfully. A rollback to a release older than 3.2 ignores `store`, mounts the `acme-data`
+   volume (empty unless the old one was kept); an empty volume forces re-issuance, and the hostdir remains on
+   disk for a later roll-forward.
 
 ## 7. Roll back
 
@@ -284,9 +288,12 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
 6. **Verify.** `scripts/verify.sh --domain <host>`, `curl -I https://<each consumer host>`, one certificate check per
    consumer host (not the default certificate, not expired), an HTTP/3 request from a client with HTTP/3 support,
    a Calls test from outside on 8443 tcp and udp, and one real call.
-7. **Rollback (any failure in 6).** `cd /srv/tls-edge-instance/stack && sudo ./ciu down` (no `-v`), then
-   `cd /root/tls-edge-LIVE && docker compose up -d`. Volume and network were never touched and the ports are the same;
-   downtime is seconds.
+7. **Rollback (any failure in 6).** `cd /srv/tls-edge-instance/stack && sudo ./ciu down` (no `-v`). `ciu down`
+   only stops containers; if rollback also removes them, use `docker compose -p <project> down` (never `-v`),
+   where `<project>` comes from
+   `docker inspect <traefik-container> --format '{{index .Config.Labels "com.docker.compose.project"}}'`.
+   Then `cd /root/tls-edge-LIVE && docker compose up -d`. Volume and network were never touched and the ports
+   are the same; downtime is seconds.
 8. **Later cleanup** (after one soak and a renewal window): archive `/root/tls-edge-LIVE`; remove old compose-project
    leftovers by exact name. Keep `ingress_external = true` as long as the network predates the instance.
 

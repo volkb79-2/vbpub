@@ -19,12 +19,12 @@ acceptance check still belongs in the migration checklist.
 ### acme-data volume loss triggers certificate re-issuance (`store = "volume"`)
 
 This limitation applies only with `[tls_edge.acme] store = "volume"`. Running
-`docker compose down -v` or `ciu --reset` destroys the instance-owned
-`acme-data` named volume, which contains `acme.json` — Traefik's ACME account
-key and all issued certificates. On the next start, Traefik re-issues
-certificates from scratch. Let's Encrypt enforces a rate limit of approximately
-five duplicate certificates per registered domain per week; hitting this limit
-blocks new issuance for up to a week.
+`docker compose down -v`, `ciu --reset`, or `ciu clean` may destroy the
+instance-owned `acme-data` named volume, which contains `acme.json` — Traefik's
+ACME account key and all issued certificates. On the next start, Traefik
+re-issues certificates from scratch. Let's Encrypt enforces a rate limit of
+approximately five duplicate certificates per registered domain per week;
+hitting this limit blocks new issuance for up to a week.
 
 Workaround: use the hostdir storage created for new root-run instances, or
 avoid `-v` on the edge-proxy stack. Before any destructive operation on a
@@ -36,6 +36,7 @@ docker run --rm -v acme-data:/data -v "$(pwd)":/backup alpine \
 To move an existing instance to `<instance root>/shared/acme`, follow INSTALL
 section 6. The hostdir survives `ciu --reset`, `down -v`, and `ciu clean`, and
 can be backed up with the host filesystem.
+An adopted external volume is still removable by `ciu clean` (see INSTALL §6).
 
 ---
 
@@ -254,6 +255,15 @@ test-dependency list (the pyproject extra), `cmru release` only, and the
 override documented and enforced as plain TOML.
 
 Source: `.controller-state/design-review-2026-11-24/tls-edge.md` L4
+
+### TE-13 — rootless Docker ownership of vol-traefik-acme
+
+Question: Under rootless Docker, the S6.5 helper's `chown 0:0` of
+`vol-traefik-acme` maps to the user's uid; ciu's S6.3 check
+(`ciu/src/ciu/engine.py:899-914`) may then reject the existing dir on the next
+run. Unverified; check on a rootless host before 4.0.0.
+
+Source: P-edge-04b fix review (2026-11-24).
 
 ### FEAT-01 — bearer-token authentication middleware for routed services
 

@@ -205,16 +205,18 @@ pre_secrets = ["hooks/validate_edge.py"]
 # pre_secrets; check_override then refuses the missing required hook.
 pre_compose = ["hooks/validate_edge.py"]
 
+[tls_edge.traefik.hostdir]
+# New system-scope instances use ../../shared/acme (relative to this stack dir).
+# For that value, reset/down -v/clean cannot remove it: it is outside stack/,
+# owner 0:0, mode 0700. The shipped empty default instead resolves to
+# ciu-stack/vol-traefik-acme, which --reset removes.
+acme = { path = "", uid = 0, gid = 0, mode = "0700" }
+
 # ─── ciu configfile mounts (S5; ignored by the standalone renderer, which
 #     bind-mounts ./traefik.yml and ./conf.d instead) ──────────────────────────
 # CIU owns rendered files as the installer UID. Traefik drops DAC_OVERRIDE,
 # so its container root cannot read owner-only/group-only 0440 files. These
 # configfiles contain no credentials; DNS provider credentials stay in env.
-[tls_edge.traefik.hostdir]
-# New system-scope instances use ../../shared/acme (relative to this stack dir).
-# It is outside stack/, owner 0:0, mode 0700; reset/down -v/clean cannot remove it.
-acme = { path = "", uid = 0, gid = 0, mode = "0700" }
-
 [tls_edge.traefik.configfile.static]
 template = "traefik.yml.j2"
 target = "/etc/traefik/traefik.yml"
