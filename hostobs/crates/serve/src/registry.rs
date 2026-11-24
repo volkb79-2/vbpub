@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use hostobs_proto::hub::ConnId;
+use crate::hub::ConnId;
 
 use crate::backend::{Backend, BackendError, TickData};
 use crate::codes::{Code, Detail, Pool};
@@ -456,8 +456,8 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
 
+    use crate::hub::{ConnId, TickForms};
     use hostobs_proto::dict::Entry;
-    use hostobs_proto::hub::{ConnId, TickForms};
 
     use super::{
         Admit, Delivery, Refused, SelId, SelectionCaps, SelectionStreams, StreamLimits, SubKey,

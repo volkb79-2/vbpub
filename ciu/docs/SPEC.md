@@ -1040,6 +1040,21 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `CONTAINER_UID:DOCKER_GID`; UID/GID `0` is valid (S2.5). Pre-existing dirs
   with compatible ownership/permissions pass; incompatible = abort with the
   observed owner/group/mode.
+
+  **Ordering (CIU-227, normative).** Every precondition a hostdir's creation
+  depends on is evaluated BEFORE the directory exists, and the S6.5 helper's own
+  preconditions (S6.5) are among them. Each directory is checked on its own
+  (the check is per directory, not a two-pass walk): a directory is created only
+  once every precondition of ITS creation and ownership has been evaluated, so a
+  precondition refusal never leaves a directory whose ownership the next run
+  refuses. A failure after `mkdir` (a helper `docker run` or a seed copy that
+  fails; root without CAP_CHOWN or on a root-squash mount, where no helper is
+  predicted but the helper is then refused) can still leave one: see the CIU-227
+  known limits.
+  Directories created earlier in the same walk (their ownership already
+  applied) remain and pass the next run. A `--dry-run` creates no hostdir at all: it resolves,
+  validates and reports every declaration (including the S6.6 seed check and the
+  incompatible-ownership refusal above) and still performs the S6.2 rewrite.
 - **S6.4** `--reset` removes `vol-*` dirs **of the stack directory** (resolved
   against the stack dir, never the process cwd), rendered outputs, and
   stack containers; orphan cleanup uses the anchored label filter
@@ -1190,6 +1205,18 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   daemon has root even when the operator does not. This replaces the v1
   per-stack chown-init-container pattern; stacks SHOULD NOT carry init
   containers for ownership fixes.
+
+  **The helper's cgroup tier is a caller-supplied fact (CIU-230, normative).**
+  The one-shot helper runs under `--cgroup-parent $CGROUP_PARENT_DEV_INTERACTIVE`,
+  a LOADED `.slice` unit name. CIU MUST NOT derive, default or guess it: neither
+  the host nor a stack's `[<root>.governance].cgroup_parent` (the tier its
+  CONTAINERS are placed under, S15) identifies the interactive tier, and a wrong
+  slice places the helper silently outside the governed one. A missing, malformed
+  or not-verified-loaded value is refused, and each such refusal MUST name the
+  variable, the expected value shape (a loaded `.slice` unit name) and how to
+  find one (`systemctl list-units --type=slice`). The helper is required only
+  when the target ownership is one this process cannot apply itself; a run that
+  never escalates is not refused for a missing tier (S6.3 ordering).
 - **S6.6** `seed = "<dir>"` (relative to the stack dir): on **first
   creation only**, the directory tree is copied into the hostdir and given
   the hostdir's ownership (via S6.5 when needed). Pre-existing hostdirs are
@@ -1766,7 +1793,11 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   rendering so `apply_to_config` updates are visible to configfile
   templates. `--render-toml` stops after step 3. `--dry-run` completes the
   render and preparation steps, including the leak scan, skips the Compose up
-  at step 16, and applies S9.6 to `post_compose` at step 17.
+  at step 16, and applies S9.6 to `post_compose` at step 17. Step 8 is
+  plan-only under `--dry-run` (S6.3, CIU-227): it resolves, validates and
+  reports the hostdirs but creates none, so `pre_secrets` and `pre_compose`
+  hooks, which still run for real, see the rewritten S6.2 path and not a
+  directory.
 
   Step 17 runs **immediately** after `compose up` (step 16) — CIU does not
   implicitly block the whole step on a global health gate. A service-touching
@@ -2192,8 +2223,9 @@ v1 contract.
   when its source contains a literal module-level `DRY_RUN_SAFE = True`
   assignment. CIU inspects the source without importing it; an unmarked hook
   is skipped before import, with a notice naming the declaration that opts it
-  in. The flag does not make dry-run generally side-effect-free: hostdir and
-  pre-hook behavior remains as specified by S8.3.
+  in. The flag does not make dry-run generally side-effect-free: the pre-hooks
+  still run for real, and the hostdir behavior (plan-only, no directory
+  created) is as specified by S8.3 and S6.3.
 
 ## S10 — CLI surface (delta to v1)
 
@@ -3925,7 +3957,7 @@ It creates no hostdir, materializes no secret, writes no rendered
 compose/overlay/configfile, executes no hook `run()`, writes no `__pycache__`
 beside an imported hook, and never contacts Docker. This is what makes it a
 substitute for using `ciu up --dry-run` as a validation tool: `--dry-run`
-still creates hostdirs and runs `pre_secrets`/`pre_compose`; it skips an
+creates no hostdir (CIU-227) but runs `pre_secrets`/`pre_compose`; it skips an
 unmarked `post_compose` hook before import and runs one only under S9.6's
 literal `DRY_RUN_SAFE = True` opt-in. Compose up is skipped too.
 

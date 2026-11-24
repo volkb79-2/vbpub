@@ -36,7 +36,7 @@ class WorkspaceLintTests(unittest.TestCase):
     def test_current_workspace_passes_static_lints(self) -> None:
         result = self.run_guard()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("9 workspace packages", result.stdout)
+        self.assertIn("10 workspace packages", result.stdout)
 
     def test_workspace_must_forbid_unsafe_code(self) -> None:
         path = self.copy / "Cargo.toml"

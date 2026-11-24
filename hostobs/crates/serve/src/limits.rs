@@ -20,7 +20,7 @@
 //! `control_queue_bytes` is derived: 4 * 16 KiB + 256 KiB = 320 KiB. That caps what 128 observer
 //! connections can hold at 40 MiB instead of 256 MiB, with no hub change.
 
-use hostobs_proto::hub::QueueLimits;
+use crate::hub::QueueLimits;
 
 use crate::tick::BlockBounds;
 

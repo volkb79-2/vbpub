@@ -43,9 +43,9 @@ def test_missing_seed_directory_fails_closed_with_typed_error(tmp_path):
             chown_fn=lambda *_args: None,
         )
 
-    destination = tmp_path / "vol-api-data"
-    assert destination.is_dir()
-    assert list(destination.iterdir()) == []
+    # CIU-227: the seed is resolved before the directory is created, so the
+    # refusal leaves nothing behind.
+    assert not (tmp_path / "vol-api-data").exists()
 
 
 def test_regular_file_hostdir_fails_closed_without_replacement_or_copy(tmp_path):

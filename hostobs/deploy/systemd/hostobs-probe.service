@@ -1,0 +1,51 @@
+[Unit]
+Description=hostobs host and cgroup sampler
+After=hostobs-observe.socket hostobs-operator.socket
+
+[Service]
+ExecStart=/usr/local/bin/hostobs-probe --config /etc/hostobs/hostobsd.toml
+Sockets=hostobs-observe.socket hostobs-operator.socket
+User=hostobs
+Group=hostobs
+Restart=on-failure
+# A configuration or socket-activation refusal is permanent until an operator acts.
+RestartPreventExitStatus=2
+
+# Plan v4 §A.1: NoNewPrivileges=yes.
+NoNewPrivileges=yes
+# Plan v4 §A.1: ProtectControlGroups=yes.
+ProtectControlGroups=yes
+# Plan v4 §A.1: PrivateNetwork=yes.
+PrivateNetwork=yes
+# Plan v4 §A.1: RestrictAddressFamilies=AF_UNIX.
+RestrictAddressFamilies=AF_UNIX
+# Plan v4 §A.1: SystemCallFilter=@system-service.
+SystemCallFilter=@system-service
+# Plan v4 §A.1: AmbientCapabilities=CAP_DAC_READ_SEARCH.
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+# Plan v4 §A.1: CapabilityBoundingSet=CAP_DAC_READ_SEARCH.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+
+# Added hardening: ProtectSystem=strict.
+ProtectSystem=strict
+# Added hardening: ProtectHome=yes.
+ProtectHome=yes
+# Added hardening: PrivateTmp=yes.
+PrivateTmp=yes
+# Added hardening: PrivateDevices=yes.
+PrivateDevices=yes
+# Added hardening: ProtectKernelTunables=yes.
+ProtectKernelTunables=yes
+# Added hardening: ProtectKernelModules=yes.
+ProtectKernelModules=yes
+# Added hardening: LockPersonality=yes.
+LockPersonality=yes
+# Added hardening: MemoryDenyWriteExecute=yes.
+MemoryDenyWriteExecute=yes
+# Added hardening: RestrictNamespaces=yes.
+RestrictNamespaces=yes
+# Added hardening: SystemCallArchitectures=native.
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

@@ -769,9 +769,15 @@ class TestHostdirPhysicalRewrite:
     def test_logs_hostdir_is_absolute_physical_path(self, tmp_path, monkeypatch):
         """S6.2 — the merged/rendered compose hostdir is an absolute physical path.
 
-        The auto-named ``vol-app-config-logs`` dir is created under the stack
+        The auto-named ``vol-app-config-logs`` path is resolved under the stack
         copy, and the rendered compose emits its ABSOLUTE physical path as the
         bind source (the v1 relative ``./vol-*`` emission is withdrawn).
+
+        CIU-227 changed WHICH run creates the directory, not which path is
+        rendered: this run is ``--dry-run``, so it rewrites and reports the path
+        without creating anything. The assertion therefore checks the rendered
+        path and the absent directory, and the create-side contract lives in
+        ``test_ciu_227_230_hostdir_preconditions.py``.
         """
         repo = build_repo(tmp_path, monkeypatch)
         stack = add_stack(repo, SRC_APP, "applications/app-config")
@@ -779,7 +785,7 @@ class TestHostdirPhysicalRewrite:
         run_engine(stack, monkeypatch)
 
         vol = stack / "vol-app-config-logs"
-        assert vol.is_dir()
+        assert not vol.exists()   # CIU-227: a dry run creates no hostdir
 
         compose = read_compose(stack)
         # The bind line carries the absolute physical path (REPO==PHYSICAL here).

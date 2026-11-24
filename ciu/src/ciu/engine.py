@@ -432,6 +432,22 @@ def _build_secrets_subparser() -> argparse.ArgumentParser:
 # ===========================================================================
 
 
+def _hostdir_needs_privileged_ownership(uid: int, gid: int) -> bool:
+    """Would applying ``uid:gid`` to a hostdir THIS run creates need S6.5?
+
+    CIU-227 derives the answer from the process identity it actually has: a
+    non-root process can only chown a directory it created to its OWN uid and to
+    a group it belongs to, so any other target makes the direct
+    ``os.chown`` raise ``PermissionError`` and the helper container follow. Root
+    never needs the helper. This is a derivation, never a default: the point is
+    that the helper's own preconditions can be checked BEFORE the first hostdir
+    exists, instead of discovering them after one has been created.
+    """
+    if os.geteuid() == 0:
+        return False
+    return uid != os.geteuid() or gid not in {os.getegid(), *os.getgroups()}
+
+
 def privileged_fs_op(physical_path: Path, op: str, *args: str) -> None:
     """Run a chown/chmod inside a one-shot ``alpine`` helper container (S6.5).
 
@@ -453,16 +469,34 @@ def privileged_fs_op(physical_path: Path, op: str, *args: str) -> None:
     )
 
 
+_ROOT_HELPER_SLICE_REMEDY = (
+    "name a LOADED systemd slice unit, for example 'dev-interactive.slice'; "
+    "find one with `systemctl list-units --type=slice` and export "
+    "CGROUP_PARENT_DEV_INTERACTIVE=<that .slice unit name>"
+)
+
+
 def _root_helper_cgroup_parent() -> str:
-    """Require the configured interactive tier and prove its slice is loaded."""
+    """Require the configured interactive tier and prove its slice is loaded.
+
+    CIU-230: there is deliberately NO fallback slice name — a hard-coded (or
+    guessed) slice would place the one-shot root helper outside the tier the
+    host actually governs, which is exactly the implicit-default class the estate
+    forbids, and neither the host nor the stack config identifies the
+    *interactive* tier. The refusals therefore carry the remedy: the variable
+    name, the expected value shape (a LOADED ``.slice`` unit name) and the
+    command that lists candidates.
+    """
     parent = os.environ.get("CGROUP_PARENT_DEV_INTERACTIVE")
     if not parent:
         raise RuntimeError(
-            "CGROUP_PARENT_DEV_INTERACTIVE is required for the S6.5 root helper"
+            "CGROUP_PARENT_DEV_INTERACTIVE is required for the S6.5 root helper: "
+            + _ROOT_HELPER_SLICE_REMEDY
         )
     if not parent.endswith(".slice") or "/" in parent or any(c.isspace() for c in parent):
         raise RuntimeError(
-            f"CGROUP_PARENT_DEV_INTERACTIVE is not a slice unit name: {parent!r}"
+            f"CGROUP_PARENT_DEV_INTERACTIVE is not a slice unit name: {parent!r}; "
+            + _ROOT_HELPER_SLICE_REMEDY
         )
     loaded, note = governance.check_slice_unit(parent)
     if loaded is None and governance.slice_probe_unavailable():
@@ -476,7 +510,8 @@ def _root_helper_cgroup_parent() -> str:
         )
     elif loaded is not True:
         raise RuntimeError(
-            f"S6.5 root helper cgroup parent {parent!r} is not verified loaded: {note}"
+            f"S6.5 root helper cgroup parent {parent!r} is not verified loaded: "
+            f"{note}; " + _ROOT_HELPER_SLICE_REMEDY
         )
     return parent
 
@@ -823,6 +858,7 @@ def create_hostdirs(
     repo_root: Path,
     physical_root: Optional[Path] = None,
     chown_fn: Optional[Callable] = None,
+    plan_only: bool = False,
 ) -> dict:
     """Create & own hostdirs per S6; rewrite each value to its absolute physical path.
 
@@ -842,6 +878,14 @@ def create_hostdirs(
     *chown_fn* (test seam) replaces the direct+fallback ownership applier; when
     given it is called as ``chown_fn(path, uid, gid)`` and may raise to simulate
     failures.
+
+    *plan_only* (CIU-227) resolves and validates every declaration — the S6.1
+    shape rules, the S6.3 non-directory and incompatible-ownership refusals, the
+    S6.6 seed presence, the helper's own preconditions — and rewrites each value
+    to its absolute physical path (S6.2), creating, seeding and chowning NOTHING.
+    ``--dry-run`` uses it: a dry run reports what a real run would refuse without
+    leaving a hostdir the NEXT run would trip over. Both modes evaluate the S6.5
+    preconditions before the first directory exists (CIU-227/CIU-230).
     """
     stack_dir = Path(stack_dir).resolve()
     repo_root = Path(repo_root)
@@ -870,6 +914,11 @@ def create_hostdirs(
 
     print(f"[INFO] Scanning for volume directories (UID:{default_uid}, GID:{default_gid})...", flush=True)
     created_count = 0
+    # CIU-227: the S6.5 helper's own preconditions are collected while walking
+    # and resolved BEFORE the first directory exists, so a refusal leaves the
+    # filesystem untouched.
+    helper_parent: Optional[str] = None
+    helper_needed = False
 
     def _to_physical(p: Path) -> Path:
         return to_physical_path(p, repo_root=repo_root, physical_root=physical_root)
@@ -882,13 +931,38 @@ def create_hostdirs(
             _chown_with_fallback(path, uid, gid, physical_path=physical, chown_fn=None)
         _chmod_with_fallback(path, mode, physical_path=physical)
 
-    def _seed(path: Path, seed_rel: str, uid: int, gid: int, mode: int) -> None:
+    def _require_helper_preconditions(uid: int, gid: int) -> None:
+        """Resolve the S6.5 cgroup parent BEFORE any directory is created.
+
+        CIU-227: today's order created the directory, then let
+        ``privileged_fs_op`` discover that ``CGROUP_PARENT_DEV_INTERACTIVE`` was
+        missing and refuse — leaving behind the very hostdir the next run trips
+        ``[S6.3] Existing hostdir has incompatible ownership`` over. Only a target
+        ownership this process cannot apply itself needs the helper; a
+        ``chown_fn`` seam stands in for the ownership applier and cannot escalate
+        to the helper, so it needs no parent. ``plan_only`` evaluates the same
+        need, so a dry run reports the same refusal a real run would.
+        """
+        nonlocal helper_parent, helper_needed
+        if chown_fn is not None:
+            return
+        if not _hostdir_needs_privileged_ownership(uid, gid):
+            return
+        helper_needed = True
+        if helper_parent is None:
+            helper_parent = _root_helper_cgroup_parent()
+
+    def _seed_source(seed_rel: str) -> Path:
+        """The S6.6 seed source, or a refusal naming it (shared by both modes)."""
         src = (stack_dir / seed_rel).resolve()
         if not src.exists():
             raise ValueError(
                 f"[S6.6] hostdir seed directory not found: {src} "
                 f"(relative to stack dir {stack_dir})"
             )
+        return src
+
+    def _seed(path: Path, src: Path, uid: int, gid: int, mode: int) -> None:
         shutil.copytree(src, path, dirs_exist_ok=True)
         _apply_ownership(path, uid, gid, mode)
 
@@ -917,9 +991,17 @@ def create_hostdirs(
                 f"expected owner {uid}, group {gid}). Fix ownership or remove the directory."
             )
 
+        _require_helper_preconditions(uid, gid)
+        # S6.6: a missing seed is refused BEFORE the directory exists in both
+        # modes, so it never leaves an unchowned runner-owned directory (CIU-227).
+        seed_src = _seed_source(seed_rel) if seed_rel else None
+        if plan_only:
+            print(f"[INFO]   Would create: {path} ({uid}:{gid}, {oct(mode)})", flush=True)
+            created_count += 1
+            return
         path.mkdir(mode=mode, parents=True, exist_ok=True)
-        if seed_rel:
-            _seed(path, seed_rel, uid, gid, mode)
+        if seed_src is not None:
+            _seed(path, seed_src, uid, gid, mode)
         _apply_ownership(path, uid, gid, mode)
         print(f"[INFO]   Created: {path} ({uid}:{gid}, {oct(mode)})", flush=True)
         created_count += 1
@@ -983,6 +1065,14 @@ def create_hostdirs(
 
     _scan_section(config)
 
+    if plan_only:
+        print(
+            f"[INFO] Would create {created_count} volume directories (S6.5 root "
+            f"helper {'REQUIRED' if helper_needed else 'not needed'}); "
+            "--dry-run creates none",
+            flush=True,
+        )
+        return config
     if created_count:
         print(f"[INFO] Created {created_count} volume directories", flush=True)
     else:
@@ -2650,7 +2740,14 @@ def main_execution(
             print("[STEP 8/17] --skip-hostdir-check: skipping hostdir creation/validation", flush=True)
         else:
             print("[STEP 8/17] Creating volume directories...", flush=True)
-            create_hostdirs(merged, working_dir, repo_root=repo_root)
+            # CIU-227: `--dry-run` creates NO hostdir at all (it resolves, checks
+            # and reports only). `_prepare_only` (CIU-141) is not a dry run in
+            # that sense — it renders a stack for a real start and still creates
+            # its declared hostdirs.
+            create_hostdirs(
+                merged, working_dir, repo_root=repo_root,
+                plan_only=dry_run and not _prepare_only,
+            )
 
         # DooD preflight once before the first daemon bind use (S1.5).
         _dood_preflight(to_physical_path(working_dir, repo_root=repo_root))

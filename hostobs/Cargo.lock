@@ -71,6 +71,7 @@ dependencies = [
  "hostobs-kernel",
  "hostobs-model",
  "hostobs-proto",
+ "hostobs-serve",
  "rustix",
  "serde",
  "toml",
@@ -81,6 +82,13 @@ name = "hostobs-proto"
 version = "0.1.0"
 dependencies = [
  "hostobs-model",
+]
+
+[[package]]
+name = "hostobs-serve"
+version = "0.1.0"
+dependencies = [
+ "hostobs-proto",
 ]
 
 [[package]]

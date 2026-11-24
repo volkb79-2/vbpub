@@ -30,7 +30,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
-use crate::frame::{HEADER_BODY_LEN, SECTION_DIR_ENTRY_LEN};
+use hostobs_proto::frame::{HEADER_BODY_LEN, SECTION_DIR_ENTRY_LEN};
 
 /// Offset of `corr` in a frame header (WIRE.md §2.1).
 const CORR_OFFSET: usize = 8;

@@ -1,7 +1,7 @@
 # hostobs probe: process and thread model
 
 Status: implemented by P-hostobs-09 and P-hostobs-10, 2026-11-24. It decides how the
-`hostobs-probe` process runs the sans-IO serving core (`bins/probe/src/{server,conn}.rs`) and
+`hostobs-probe` process runs the sans-IO serving core (`crates/serve/src/{server,conn}.rs`) and
 the `kernel` readers: threads, the backend rule, wakeup, syscalls, socket activation, shutdown,
 config and the test harness. WIRE.md stays the protocol, this file is the process around it.
 Binding inputs: plan decisions D5 (no server-side waiting), D6, D7, D8; plan v4 §A.1, §A.3,
@@ -57,7 +57,7 @@ archive: `Arc` publish, the sampler's deadline schedule and the stall evidence (
 **The P-09/P-10 seam** (as merged from P-09 and P-10; this text is binding):
 
 ```rust
-// bins/probe/src/backend.rs (crates/serve after P-12)
+// crates/serve/src/backend.rs
 /// The driver's per-turn hook (docs/PROBE-PROCESS.md §(b)).
 pub trait Turn: Backend {
     /// Load the turn's published state; `true` when its tick is newer than the previous turn's.
@@ -290,14 +290,15 @@ Lost: it widens the spawn lint to a directory. Setting `LISTEN_PID` after the fo
 
 ## (i) The hub text
 
-`crates/proto/src/hub.rs` said "P5b wraps one `SendHub` in one mutex". That is wrong: the server
-loop thread owns the one `SendHub` inside `Server`, with no lock (§(a)). WIRE §5.3 already states
-that no mutex is needed (design R27); only the hub.rs module doc was stale, and this package fixes
-it.
+The hub module doc (then `crates/proto/src/hub.rs`, now `crates/serve/src/hub.rs`) said "P5b
+wraps one `SendHub` in one mutex". That is wrong: the server loop thread owns the one `SendHub`
+inside `Server`, with no lock (§(a)). WIRE §5.3 already states that no mutex is needed (design
+R27); only the hub.rs module doc was stale, and this package fixes it.
 
 ## Rules for P-09 (driver)
 
-1. Files: `bins/probe/src/{driver,config}.rs`, `main.rs`, the `Turn` hunk of `backend.rs` and
+1. Files: `bins/probe/src/{driver,config}.rs`, `main.rs`, the `Turn` hunk of
+   `crates/serve/src/backend.rs` and
    `crates/kernel/src/activation.rs`. `driver` and `config` are modules of the binary crate,
    declared by `main.rs`; `lib.rs` belongs to P-10. Their in-process tests are unit tests in
    those files. Before the wiring commit the two `mod` declarations carry

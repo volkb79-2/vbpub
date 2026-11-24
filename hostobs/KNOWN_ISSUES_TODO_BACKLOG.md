@@ -667,9 +667,9 @@ row); `ProtoError::Deadline` is the reader's completion-age error. The 12 reader
 `fixtures/stream/reader-*.json` (generator `python/reference/make_stream_fixtures.py`, replayed by
 `crates/proto/tests/stream_fixtures.rs`).
 
-**What exists (P2b).** `crates/proto/src/hub.rs` holds `SendHub` (one unit test per §5.3 row and
+**What exists (P2b).** `crates/serve/src/hub.rs` holds `SendHub` (one unit test per §5.3 row and
 consequence) and the 19 `fixtures/stream/hub-*.json` files (generator
-`python/reference/make_hub_fixtures.py`, replayed by `crates/proto/tests/hub_fixtures.rs`).
+`python/reference/make_hub_fixtures.py`, replayed by `crates/serve/tests/hub_fixtures.rs`).
 
 **What exists (P2c).** `crates/proto/src/stream_dicts.rs` holds `StreamDicts` (the §6.2 per-stream rules and
 `on_hello`; the 6 client cases are `fixtures/stream/client-*.json`, generator
@@ -797,7 +797,7 @@ Source: .controller-state/design-review-2026-11-24/hostobs.md F2 (Four disconnec
 
 ## HOB-65 — No server-side pending requests
 
-**Where:** `bins/probe/src/{conn,server}.rs`, WIRE.md §2.3/§5.1/§5.3, D-W30 and D-W47.
+**Where:** `crates/serve/src/{conn,server}.rs`, WIRE.md §2.3/§5.1/§5.3, D-W30 and D-W47.
 
 History ends early with `END page` + `next`. One-block replies are refused with
 `too-many-requests` or `budget`. Delete the retry pass, uid rotation and D-W30, and most of D-W47;
@@ -810,7 +810,7 @@ Source: .controller-state/design-review-2026-11-24/hostobs.md F3 (Server-side wa
 
 ## HOB-66 — Probe process/thread model undocumented
 
-**Where:** `bins/probe/src/server.rs` (`on_tick` and `Backend::current`), the missing
+**Where:** `crates/serve/src/server.rs` (`on_tick` and `Backend::current`), the missing
 `docs/PROBE-PROCESS.md`, and the P5b-4 driver design.
 
 `docs/PROBE-PROCESS.md`: sampler, writer and server-loop threads; backend calls never block;
@@ -823,8 +823,8 @@ Source: .controller-state/design-review-2026-11-24/hostobs.md F10 (The probe's p
 
 ## HOB-67 — Serving core in the wrong crates
 
-**Where:** `crates/proto/src/hub.rs`, `bins/probe/src/{conn,server,classify,args,lines,codes,encode,limits,verbs}.rs`,
-and the planned `crates/serve`.
+**Where:** `crates/serve/src/hub.rs`, `crates/serve/src/{conn,server,classify,args,lines,codes,encode,limits,verbs}.rs`,
+and the new `crates/serve`.
 
 Hub, conn, server and the `Backend` traits move to `crates/serve`, before act serves control and
 after HOB-65.
@@ -836,7 +836,7 @@ Source: .controller-state/design-review-2026-11-24/hostobs.md F8 (The serving co
 
 ## HOB-68 — Three hand-written JSON readers
 
-**Where:** `proto::envelope`, `bins/probe/src/args.rs`, and `crates/client/src/json.rs`.
+**Where:** `proto::envelope`, `crates/serve/src/args.rs`, and `crates/client/src/json.rs`.
 
 One reader in `proto::envelope` with `Surrogates::{Refuse,Replace}`. *Makes HOB-61 moot.*
 
@@ -847,7 +847,7 @@ Source: .controller-state/design-review-2026-11-24/hostobs.md F9 (Three hand-wri
 
 ## HOB-69 — FixedBackend call-tuple fakes
 
-**Where:** `bins/probe/src/backend.rs` (`FixedBackend`), the inline `server.rs`/`conn.rs` test
+**Where:** `crates/serve/src/backend.rs` (`FixedBackend`), the inline `server.rs`/`conn.rs` test
 modules, and the frame-size literals in those tests.
 
 Model fake `MemHistory`; sizes from the encoder helpers; split the `server.rs` tests.
@@ -873,7 +873,7 @@ Source: .controller-state/design-review-2026-11-24/hostobs.md F6 (Normative prot
 
 ## HOB-71 — Budget lattice above workload
 
-**Where:** `bins/probe/src/limits.rs`, WIRE.md §5.1, the per-level and per-uid Live/Query pools.
+**Where:** `crates/serve/src/limits.rs`, WIRE.md §5.1, the per-level and per-uid Live/Query pools.
 
 Probe-wide unified keys; workload-derived defaults; evaluate dropping per-uid pools.
 
@@ -884,7 +884,7 @@ Source: .controller-state/design-review-2026-11-24/hostobs.md F7 (The budget lat
 
 ## HOB-72 — JSON mode only at observer/control
 
-**Where:** WIRE.md §8, `bins/probe/src/lines.rs`, and the mode dimension of the classify grid.
+**Where:** WIRE.md §8, `crates/serve/src/lines.rs`, and the mode dimension of the classify grid.
 
 Serve JSON mode only at observer and control; observe and operator are binary-only.
 
@@ -897,7 +897,7 @@ Source: .controller-state/design-review-2026-11-24/hostobs.md F11 (JSON mode on 
 ## HOB-73 — Hub fixtures over-layered
 
 **Where:** `python/reference/make_hub_fixtures.py`, `fixtures/stream/hub-*.json`,
-`crates/proto/tests/hub_fixtures.rs`, and `python/tests/test_hub_fixtures.py`.
+`crates/serve/tests/hub_fixtures.rs`, and `python/tests/test_hub_fixtures.py`.
 
 Rust table tests; the Python reference becomes an encoder only.
 
@@ -1086,7 +1086,7 @@ Source: `runs/p09-driver.report.md` Backlog candidates 1; `reviews/p09-r1-26c204
 
 ## HOB-91 — `max_rows` up to 4,096 is accepted but the default `max_block_bytes` fits only about 1,200 rows
 
-**Where:** `bins/probe/src/config.rs` (`(1..=4_096).contains(&max_rows)`), `bins/probe/src/limits.rs`, `docs/WIRE.md`.
+**Where:** `bins/probe/src/config.rs` (`(1..=4_096).contains(&max_rows)`), `crates/serve/src/limits.rs`, `docs/WIRE.md`.
 
 `limits.rs::worst_case_query_ram_is_derived_from_the_encoder_helpers` pins 1,024 rows at 890,624 bytes. Scaled with the same row shape, the default 1 MiB `max_block_bytes` is reached at about 1,200 rows (the report says 1,170). A configuration with `max_rows = 4096` and the default block size is therefore accepted at start-up and refused later, at block build time.
 
@@ -1106,7 +1106,8 @@ Source: `runs/p09-driver.report.md` Backlog candidates 3; `docs/PROBE-PROCESS.md
 
 ## HOB-93 — P-hostobs-09 residual doc and test nits
 
-**Where:** `bins/probe/src/config.rs` (`parse_refusal`), `docs/PROBE-PROCESS.md` §(d), `hostobs/README.md` lines 133-135.
+**Where:** `bins/probe/src/config.rs` (`parse_refusal`), `docs/PROBE-PROCESS.md` §(d), `hostobs/README.md`
+section "Developing and debugging".
 
 - `parse_refusal` asserts `text.contains(key)` on the whole refusal text. Today the serde messages never contain field names, so the test still fails on the regression, but `contains(&format!("key {key}:"))` pins the key slot exactly.
 - §(d) is stricter than the kernel requires. A client in a descendant PID namespace is visible to the probe. The exact rule is that the probe's namespace must be the same as, or an ancestor of, every client's. "One shared namespace" stays as the simple form.

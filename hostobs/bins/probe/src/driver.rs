@@ -12,13 +12,13 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use hostobs_proto::hub::ConnId;
 use rustix::event::{poll, PollFd, PollFlags, Timespec};
 
-use hostobs_probe::backend::Turn;
-use hostobs_probe::conn::Peer;
-use hostobs_probe::limits::Level;
-use hostobs_probe::server::{Accept, Server};
+use hostobs_serve::backend::Turn;
+use hostobs_serve::conn::Peer;
+use hostobs_serve::hub::ConnId;
+use hostobs_serve::limits::Level;
+use hostobs_serve::server::{Accept, Server};
 
 /// The longest one poll call waits, in milliseconds.
 const TURN_MS: u64 = 100;
@@ -320,7 +320,7 @@ pub(crate) fn run<B: Turn>(
                 if open.read_open {
                     events |= PollFlags::IN;
                 }
-                let has_output = server.hub().queued(id) != hostobs_proto::hub::Pools::default();
+                let has_output = server.hub().queued(id) != hostobs_serve::hub::Pools::default();
                 if has_output {
                     events |= PollFlags::OUT;
                 }
@@ -428,14 +428,14 @@ mod tests {
     use rustix::event::{eventfd, EventfdFlags};
 
     use super::run;
-    use hostobs_probe::backend::{
+    use hostobs_serve::backend::{
         Backend, BackendError, FixedBackend, Identity, StatusInfo, TickData, Turn,
     };
-    use hostobs_probe::encode::{control_frame, server_prefix};
-    use hostobs_probe::limits::Level;
-    use hostobs_probe::selection::Selection;
-    use hostobs_probe::server::{Server, ServerLimits};
-    use hostobs_probe::tick::{query_block, BlockBounds};
+    use hostobs_serve::encode::{control_frame, server_prefix};
+    use hostobs_serve::limits::Level;
+    use hostobs_serve::selection::Selection;
+    use hostobs_serve::server::{Server, ServerLimits};
+    use hostobs_serve::tick::{query_block, BlockBounds};
 
     const CLIENT_WAIT: Duration = Duration::from_secs(30);
     const HELLO_ARGS: &str = r#"{"client":"driver-test","proto":{"major":1,"minor":1}}"#;
