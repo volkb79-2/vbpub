@@ -68,7 +68,6 @@ git -C "$ROOT/repo" update-ref refs/remotes/origin/main HEAD
 git -C "$ROOT/repo" worktree add -q --detach "$ROOT/repo-wt" HEAD || fail 'could not create a fixture worktree'
 
 tree_sum() { (cd "$ROOT" && find state repo -path repo/.git -prune -o -type f -print | sort | xargs md5sum | md5sum); }
-before=$(tree_sum)
 
 rr() { # rr <role> [caps as VAR=val ...]: output in $ROOT/out, stderr in $ROOT/err, status in $RC
   local role=$1
@@ -172,7 +171,7 @@ env RESUME_READ_STATE="$EMPTY" RESUME_READ_REPO="$ROOT/repo" bash "$SCRIPT" main
 contains "$O" "no '## RESUME HERE #N' heading)] MISSING ==" 'a HANDOFF.md without a RESUME block says so'
 
 # --- 4. caps and the truncation marker --------------------------------------------------------------
-{ printf 'HEADPART-'; printf 'x%.0s' $(seq 1 150); printf '-TAILPART\n'; } > "$PROG/PRIME-main-controller.md"
+{ printf 'HEADPART-'; printf 'x%.0s' $(seq 1 150); printf '_TAILPART\n'; } > "$PROG/PRIME-main-controller.md"
 size=$(wc -c < "$PROG/PRIME-main-controller.md" | tr -d ' ')
 rr main RESUME_READ_CAP_PRIME=50
 contains "$O" "[PRIME] ($size B, cap 50 B) ==" 'the header carries the real size and the cap'
@@ -192,6 +191,7 @@ rr main RESUME_READ_CAP_PRIME=100000
 # --- 5. programme directory override, exit 2, read-only ----------------------------------------------
 mkdir -p "$STATE/PROGRAM-OTHER"
 printf 'OTHER-PRIME\n' > "$STATE/PROGRAM-OTHER/PRIME-main-controller.md"
+before=$(tree_sum)   # no fixture changes from here on: everything below must leave the trees as they are
 rr main RESUME_READ_PROGRAM=PROGRAM-OTHER
 contains "$O" 'OTHER-PRIME' 'RESUME_READ_PROGRAM selects the programme directory'
 for role in '' bogus Main platform/../core ../x 'platform core' 'core assay'; do
