@@ -27,7 +27,7 @@
 | KI-190 | OPEN (filed 2026-11-24, Opus design review) | — |
 | KI-189 | OPEN (filed 2026-11-24, Opus design review) | — |
 | KI-188 | OPEN (filed 2026-11-24, Opus design review) | — |
-| KI-187 | FIXED 2026-11-24 (deterministic synthetic `/proc` observation replaces the load-sensitive pipe-holder permission-skip test; closure evidence = P6b `7d8418727` passed the registered cmru `r0-r1` lane, controller HANDOFF #38, 2026-11-18 16:31Z) | `afd992c6d` |
+| KI-187 | FIXED 2026-11-24 (deterministic synthetic `/proc` observation replaces the load-sensitive pipe-holder permission-skip test; closure evidence = P6b `7d8418727` passed the registered cmru `r0-r1` lane, controller HANDOFF #38, 2026-11-22 16:31Z) | `afd992c6d` |
 | KI-186 | OPEN (migrate the remaining `subprocess.run` sites to `run_process`; 40 occurrences in 12 non-template modules after P6b; candidate effect not measured; close condition is KI-189's, P6c/P6d retired) | — |
 | KI-185 | OPEN (adopt the [cli-extended line-stream renderer proposal](../libraries/cli-extended/docs/DESIGN-LINE-STREAM-RENDERER.md) through CLI-EXT-35/38/39; CLI-EXT-36/37 deferred, CLI-EXT-40 a rule) | — |
 | KI-184 | FIXED 2026-11-18 (every line in one multi-line write is processed at a severity boundary) | `54b9d3b75` |
@@ -3888,7 +3888,7 @@ incrementally with no independent CMRU severity parser or ANSI renderer left.
 
 **Status:** OPEN (filed 2026-11-18, residuals of KI-178 items 1 and 2); severity: low.
 
-**Amended 2026-11-24 (Opus design review):** Closed by KI-188: procio's _SignalScope.spawn defers a signal across fork/Popen and its finally closes the pipes (review L1). To close with KI-188 (status stays OPEN until P7 merges).
+**Amended 2026-11-24 (Opus design review):** Delivered by KI-188 (review L1): procio's `_SignalScope.spawn` defers a signal across fork/Popen and its `finally` closes the pipes; closes when P7 merges.
 
 **Observed.** (1) A SIGTERM or SIGHUP that arrives in the microseconds between the fork and the return of `Popen` can leave the child unreaped, because the handler that turns the signal into `SystemExit` runs before the child handle exists. (2) If the whole-group reap itself raises, the explicit close of the output pipe is skipped; garbage collection closes it later.
 
@@ -4015,7 +4015,7 @@ Closed implementation plan for items 3 and 4: [cmru/docs/DESIGN-RUNNER-PROCIO-AD
 
 ## KI-187 - pipe-holder permission-skip test depends on real process scheduling
 
-**Status:** FIXED 2026-11-24: closure evidence = P6b `7d8418727` passed the registered cmru `r0-r1` lane (controller HANDOFF #38, 2026-11-18 16:31Z). (Filed 2026-11-22; code fixed 2026-11-22; fix commit
+**Status:** FIXED 2026-11-24: closure evidence = P6b `7d8418727` passed the registered cmru `r0-r1` lane (controller HANDOFF #38, 2026-11-22 16:31Z). (Filed 2026-11-22; code fixed 2026-11-22; fix commit
 `afd992c6db63635fb88a05655bd5586db47dd69d`); severity: test strength. The P6a r0-r1 gate at `9cf2a0733` failed once on
 `tests/test_runner_pipe_holders.py::test_pipe_holder_scan_skips_processes_it_cannot_inspect` while another
 gate ran, then passed on an identical-head rerun. The P6b r0-r1 gate at `015bdb7bb` failed on the same test
@@ -4035,8 +4035,12 @@ historical/interim evidence from the pre-integration commit, not final evidence 
 
 **Final closure evidence.** Final P6b closure requires the integrated final head to pass the registered
 `cmru-r0-r1` lane. After that gate, the controller will record the final-head receipt in
-`artifacts/release-program-20261027/reports/p6b-cmru-finalization.json`. No final integrated head or passing
-gate result is claimed here.
+`artifacts/release-program-20261027/reports/p6b-cmru-finalization.json`.
+
+**Closed 2026-11-24.** The integrated final P6b head `7d8418727` passed the registered `cmru-r0-r1` lane
+(release-preconditions 449/449, R0/R1 PASS); receipt
+`artifacts/release-program-20261027/reports/p6b-cmru-finalization.json`; controller HANDOFF #38 UPDATE
+2026-11-22 16:31Z.
 
 **Close condition.** The focused oracle has no real child process, pipe, fixed wait, signal, or scheduler
 dependency; a scanner that reports the inaccessible PID, drops the visible holder, includes the current PID,
@@ -4161,9 +4165,9 @@ Source: .controller-state/design-review-2026-11-24/tls-edge.md H6
 
 cmru runs R2 two ways: lanes `mutation` and `r2` run `tools/mutation_campaign.py` (1,502 lines, own `--resume` and evidence format; `gate_snapshot.py` seeds its resume files), and the native lane `assay-first-release-r2`. R2 debt is recorded in four places (the `.assay/mutation-postponed-cmru.json` marker, the snapshot's `deferred_lanes`, KI-141's prose, the T3 ledger).
 **Wanted.** After assay B564 (and the B561 native whole-target R2 with `--carry-forward` in production), retire `tools/mutation_campaign.py`, the `mutation`/`r2` command lanes, their test and the snapshot seeding. The T3 ledger is the only record of what is owed; KI-141 becomes a pointer (not edited here).
-Owner: T3 (vbpub-assay); filed here, worked there. The surviving follow-up lane is the native assay lane cmru-first-release-r2 (assay-first-release-r2).
+Owner: T3 (vbpub-assay); filed here, worked there. The surviving follow-up lane is the native run-gate lane `assay-first-release-r2` (assay lane `cmru-first-release-r2`).
 
-Source: .controller-state/design-review-2026-11-24/assay.md H6, L2 (cmru-cli-extended.md L2)
+Source: .controller-state/design-review-2026-11-24/assay.md H6; cmru-cli-extended.md L2
 
 ## KI-200 - structure on touch
 
