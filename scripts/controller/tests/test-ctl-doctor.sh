@@ -135,6 +135,7 @@ line '^WARN keepalive: absent \(stale pid file\)$' 'stale watcher pid'
 grep -qxF "  fix: $keepalive_fix" "$ROOT/out" || fail 'stale watcher prints the exact start command'
 
 # --- hygiene findings follow the checks and never change the status or the counts (ctl-hygiene.sh has its own test)
+fixture base   # the keep-alive cases above intentionally ended with a stale pid file
 mkdir -p "$ROOT/hy/state" "$ROOT/hy/memory"
 printf '## RESUME HERE #1\n## RESUME HERE #2\n## RESUME HERE #3\n' > "$ROOT/hy/state/HANDOFF.md"
 HY=CTL_HYGIENE_SCRIPT=   # empty: the doctor falls back to its own ctl-hygiene.sh (the production path); the other runs use /dev/null, the mutation stage repeats them hundreds of times
