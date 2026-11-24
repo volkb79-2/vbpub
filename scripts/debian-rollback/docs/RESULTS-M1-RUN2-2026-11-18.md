@@ -14,8 +14,9 @@ installed but not used. systemd-boot and ZFS are not yet tried.
 
 ## Setup
 
-As in run 1 (v1001, `poc/dr-qemu.sh`, vm-lab not used, 2 vCPUs, 2 GiB, limits and
-by-hand admission logged), with these changes:
+As in run 1 (v1001, historical direct launcher now represented by
+`vm-lab start --plain-host`; vm-lab was not used at the time, 2 vCPUs, 2 GiB,
+limits and by-hand admission logged), with these changes:
 
 - Scripts as merged in `fe6e07bdd` plus `249c211cf` (ifupdown + isc-dhcp-client and
   `net.ifnames=0`, replacing systemd-networkd/resolved, see Findings).

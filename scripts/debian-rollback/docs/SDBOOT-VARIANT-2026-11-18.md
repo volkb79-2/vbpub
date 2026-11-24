@@ -371,7 +371,7 @@ snapshot, pre-change package/kernel report, and planned `hello` action. Historic
 [ROLLBACK-RECOVERY.md](ROLLBACK-RECOVERY.md); they do not certify the integrated current candidate.
 
 The pre-existing offline suites remain green: `test-dr-state-window.sh`, `test-dr-state-prune.sh`,
-`iso/test-dr-plan.sh`, `iso/test-dr-autoinstall-guard.sh`, `poc/test-dr-pick-disk.sh`, and `poc/test-dr-qemu.sh`.
+`iso/test-dr-plan.sh`, `iso/test-dr-autoinstall-guard.sh`, and `poc/test-dr-pick-disk.sh`.
 The `offline` lane runs those suites with the systemd-boot coverage in `tester-unified`, after `shellcheck`, `bash -n`,
 and `git diff --check` pass.
 
@@ -394,7 +394,8 @@ The seed's `/bootloader` file contains `systemd-boot`; the builder guest reads i
 `grub`, exactly matching the installer's default. The systemd-boot guest runs only the systemd-boot seed, not the
 GRUB seed.
 
-Start each scenario against the running guest's serial socket, using the same state directory as `dr-qemu.sh`
+Start each scenario against the running guest's serial socket, using the same state directory as
+`vm-lab start --plain-host`
 (`serial.sock` and `qmp.sock` live there):
 
 ```sh

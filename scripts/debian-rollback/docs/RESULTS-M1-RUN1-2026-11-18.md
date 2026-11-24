@@ -11,19 +11,20 @@ snapshots is verified.
 - Host: v1001 (rented VM, 4 cores, 7.9 GB, no `/dev/kvm`, so TCG), user `runner`,
   work dir `/home/runner/jobs/dr-poc`. Identity-guarded access only
   (`scripts/controller/hx.sh`).
-- **vm-lab was NOT used.** `vm_lab start` must run inside a cockpit container
+- **vm-lab was NOT used.** At that time `vm-lab start` required a cockpit container
   (`inspect_current_container()`, `vm-lab/src/vm_lab/core.py:682`, which inspects
   every running container) and needs a container with host cgroupfs and the
   D-Bus socket (`find_cgroup_inspector()`). Neither exists on a bare host.
-  `poc/dr-qemu.sh` mirrors vm-lab's `docker run` argv and QEMU command (main
-  5b107f4bd, core.py ~1740-1830 and ~1905-1950) without its admission checks.
+  The run therefore used a historical direct launcher that mirrored vm-lab's
+  `docker run` argv and QEMU command (main 5b107f4bd, core.py ~1740-1830 and
+  ~1905-1950) without admission checks. The supported command is now
+  `vm-lab/vm-lab start --plain-host`; the copied launcher and its flag test are retired.
   Differences from vm-lab: no `--label` pair (vm-lab's cleanup and admission
   never see these containers), no `--rm` (a restart under the same name needs the
   old container removed by exact name first), the disk is copied inside the
   container instead of reflinked on the host, and the data disk is created by the
-  guest script. `poc/test-dr-qemu.sh` pins the hardening flags. Admission was done by hand and
-  logged: one guest, `dev-gates.slice` memory below 3.5 GB, memory PSI full
-  avg10 below 3.
+  guest script. Admission was done by hand and logged: one guest,
+  `dev-gates.slice` memory below 3.5 GB, memory PSI full avg10 below 3.
 - Guest: 2 vCPUs, 2 GiB, container 2560 MiB with equal swap, `--cpus 2`,
   `--cpu-shares 64`, `--cgroup-parent dev-gates.slice` (no `dev-background.slice`
   on v1001), network `dr-poc-net` (normal bridge, no published ports).
@@ -72,7 +73,8 @@ network configuration); the wipe guard fails closed and checks swap, the running
 root and that the device is a whole disk; a failed install unmounts its target;
 `dr-state` takes a lock, requires the ESP to be mounted, and gives snapshots
 unique names (`DR_STATE=none` skips the snapshot in a recovery chroot).
-`test-dr-qemu.sh` now pins each flag together with its value. The cloud-init
+vm-lab's plain-host boundary tests now pin each launcher setting together with
+its value. The cloud-init
 seed that drove run 1 is committed as `poc/seed/`.
 
 ## What has and has not run in a guest
@@ -91,8 +93,8 @@ match with the seed of run 1 is not checked).
 `list`, `set-default`, `boot-once`; the apt hook
 `/etc/apt/apt.conf.d/80dr-state`; snapper; the ESP GRUB image
 (`grub-mkimage`, prefix `(,gpt1)/EFI/dr`) actually starting; every scenario S2
-to S10 of [EXPERIMENTS.md](EXPERIMENTS.md); `dr-qemu.sh --resume` and
-`--base-qcow2`.
+to S10 of [EXPERIMENTS.md](EXPERIMENTS.md); the launcher's `--resume` and
+qcow2-base path.
 
 ## Findings for vm-lab (owner: controller)
 
