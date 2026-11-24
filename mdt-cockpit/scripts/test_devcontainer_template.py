@@ -134,6 +134,24 @@ def test_template_keeps_codex_database_persistent_and_container_running() -> Non
     assert '"shutdownAction": "none"' in TEMPLATE_TEXT
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        TEMPLATE,
+        ROOT / "templates" / "host-folder" / "devcontainer.json",
+        ROOT.parent / ".devcontainer" / "devcontainer.json",
+    ],
+    ids=["template", "host-folder", "controller"],
+)
+def test_devcontainer_runs_the_image_command_under_an_init_and_stays_up(path: Path) -> None:
+    # MDT-107: the Dev Containers default command makes PID 1 a `while sleep 1 & wait` loop that ends,
+    # and takes the container down, when its sleep is killed.
+    document = bootstrap._parse_jsonc_object(path.read_text(encoding="utf-8"))
+    assert document["overrideCommand"] is False
+    assert document["init"] is True
+    assert document["shutdownAction"] == "none"
+
+
 def _children_of(pid: int) -> list[int]:
     found = []
     for entry in Path("/proc").iterdir():

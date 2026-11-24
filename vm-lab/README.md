@@ -1,10 +1,11 @@
 # vm-lab
 
 A general launcher for QEMU guests without KVM. Each guest runs in its own
-Docker container under the host background slice, with UEFI firmware (OVMF), a
-per-guest firmware variable store, a copy-on-write overlay over a read-only qcow2
-base disk or a reflink clone of a raw base disk, optional extra disks and an ISO, and a QMP socket for keys, screenshots
-and reset.
+Docker container under a selected systemd slice, with UEFI firmware (OVMF), a
+per-guest firmware variable store, a copy-on-write overlay over a read-only
+qcow2 base disk or a reflink clone of a raw base disk, optional extra disks and
+media, and a QMP socket for keys, screenshots and reset. The default mode runs
+from a cockpit container; `--plain-host` runs directly on a local Docker host.
 
 A *profile* carries every product-specific value (labels, names, sizing,
 ports). `scripts/truenas/tcg_vm.py` is one profile front. A project without its
@@ -57,7 +58,7 @@ vm-lab <verb> [options]
 | Verb | What it does |
 | --- | --- |
 | `image build` | Build the QEMU image with `docker build` on the packaged `qemu-image/` (Debian trixie-slim, `qemu-system-x86`, `qemu-utils`; no OVMF, no KVM, no privileges). `--tag TAG` (default `vm-lab-qemu:local`), `--context DIR` (override; default is the `vm_lab/qemu-image` directory next to the module, which a checkout and an installed wheel both carry). |
-| `start` | Admit and start a guest. Needs `--name`, `--base-disk`, `--ovmf-code`, `--ovmf-vars`, `--state-dir`, `--memory-mib`, `--cpus` and at least one `--forward`. |
+| `start` | Admit and start a guest. Needs `--name`, `--base-disk`, `--ovmf-code`, `--ovmf-vars`, `--state-dir`, `--memory-mib`, `--cpus` and at least one `--forward`. Add `--plain-host` when it runs directly on a local Docker host. |
 | `status` | Print container and QMP state as JSON, plus `disk_format` (`raw` or `qcow2`) and `disk_file` of the state directory. |
 | `disk promote` | Publish a stopped guest's raw disk as a read-only base image: `--state-dir`, `--dest-dir`, `--name` (and `--allow-full-copy`). Writes `<name>.raw` and `<name>.raw.sha256`, both mode 0444. Holds the start admission lock while it copies and hashes. SIGTERM and SIGHUP during a promote remove its partial files and exit 1; after SIGKILL, or a killed `start` (SIGTERM), remove the hidden `.<name>.partial` file by hand (see [docs/CONSUMERS.md](docs/CONSUMERS.md)). |
 | `stop` | Ask the guest to power down (ACPI) and wait. Never force-kills. |
@@ -76,6 +77,127 @@ vm-lab <verb> [options]
 | `console wait-for-text PATTERN` | Poll the screen text until `PATTERN` (a regular expression) shows up; also stops on a fail pattern or a detected boot loop. With `--engine serial` it sees only text written after the wait began; in `auto` only while the serial log has new text (see `--since-mark`). |
 
 `--state-dir` is required on every verb that takes it (all except `destroy`).
+
+### Start one guest on a test host
+
+Run this outside a cockpit container, with a local Docker daemon. The
+`--plain-host` flag is the explicit declaration that vm-lab is on the Docker
+host; vm-lab never guesses the mode from files such as `/.dockerenv`. Without
+the flag the default cockpit path is unchanged: `start` self-inspects the
+calling container to translate bind paths and chooses the host cgroup inspector.
+With the flag it skips both container lookups, uses the local paths directly,
+and reads the loaded systemd slice and cgroup from the host.
+
+Prerequisites:
+
+- run the command below from the repository checkout, whose `libraries/cowtree`
+  resolver and `vm-lab/vm-lab` wrapper the recipe uses (a git checkout: the
+  shared admission lock lives in its Git directory; from a plain source copy, add
+  `--lock-dir DIR` with one directory that every guest on the host shares);
+- Python 3.11 or newer, as required by vm-lab;
+- a reachable local Docker daemon;
+- run vm-lab as an unprivileged user in the `docker` group, never as root:
+  as root the guest's QEMU runs as container UID 0 (VML-BL-14);
+- the QEMU guest image, either built as the local `vm-lab-qemu:local` tag with
+  `vm-lab/vm-lab image build` or named by `VM_LAB_QEMU_IMAGE`;
+- the host OVMF code and variable template (Debian package `ovmf`; the guest
+  image does not ship them; without root, `apt-get download ovmf` and
+  `dpkg-deb -x` into a job directory work) at
+  `/usr/share/OVMF/OVMF_CODE_4M.fd` and `/usr/share/OVMF/OVMF_VARS_4M.fd`.
+
+Choose one exact guest token and reuse it unchanged in the container name, state
+directory basename, network name, and every teardown command. Use plain ASCII
+letters, digits and hyphens for the token, including at least one hyphen: plain-host
+mode requires it so an all-hex token cannot also match an unrelated Docker ID
+prefix. Do not use wildcards or discover a guest by a prefix.
+
+```sh
+GUEST='<guest-name>'                 # exact token for this one run
+# debian-rollback-specific; another topic replaces this line.
+PROJECT=scripts/debian-rollback
+STATE_DIR=$(libraries/cowtree/repo-path vm-lab --project "$PROJECT")/"$GUEST"
+NETWORK="$GUEST-net"
+SLICE="${CGROUP_PARENT_DEV_BACKGROUND:?host lease must set the loaded slice}" # selected by host policy
+# debian-rollback-specific; another topic replaces this line.
+BASE=$(libraries/cowtree/repo-path vm-images)/debian-13-generic-amd64.raw
+# debian-rollback-specific; another topic replaces this line.
+SEED=$(libraries/cowtree/repo-path iso)/debian-rollback-builder.iso
+mkdir -p "$STATE_DIR"
+
+docker network inspect "$NETWORK" >/dev/null 2>&1 ||
+  docker network create --driver bridge "$NETWORK"
+
+vm-lab/vm-lab start \
+  --plain-host \
+  --name "$GUEST" \
+  --state-dir "$STATE_DIR" \
+  --network "$NETWORK" \
+  --cgroup-parent "$SLICE" \
+  --max-concurrent-guests 1 \
+  --base-disk "$BASE" \
+  --base-format raw \
+  --allow-full-copy \
+  --ovmf-code /usr/share/OVMF/OVMF_CODE_4M.fd \
+  --ovmf-vars /usr/share/OVMF/OVMF_VARS_4M.fd \
+  --memory-mib 2048 \
+  --cpus 2 \
+  --cpu-shares 64 \
+  --display-device std \
+  --forward 2222:22 \
+  --seed-iso "$SEED" \
+  --boot-order dc \
+  --serial-console
+```
+
+The network must be a dedicated user-defined network whose Docker driver is
+`bridge`; vm-lab refuses `host`, `none`, `container:<name>`, and networks on
+`macvlan`, `ipvlan`, or `overlay`. For an installed disk that boots without
+builder media, omit both `--seed-iso` and `--boot-order dc`. For a CIDATA
+configuration image, add `--config-disk "$CONFIG_DISK"`; it is attached read-only
+as a virtio disk.
+
+The selected slice must be active and loaded. An inactive slice has an empty
+`ControlGroup`, so vm-lab refuses it; the host lease must select one that is active
+under host policy.
+
+The container caps are 2 vCPUs (quota), CPU shares 64, guest RAM 2 GiB plus
+512 MiB container overhead, zero swap, PID limit 128, all Linux capabilities
+dropped, `no-new-privileges`, a read-only root filesystem, a 64 MiB
+`noexec,nosuid` `/tmp`, and no host PID or IPC namespace. Ports are forwarded to
+the guest inside the container network and are not published on the host.
+
+Use one guest per host. `--max-concurrent-guests 1` makes the shared admission
+lock count vm-lab and other registered profiles together; do not start another
+managed guest on the same host while this one runs.
+
+Teardown uses the same exact names; state is kept unless removed explicitly:
+
+```sh
+vm-lab/vm-lab stop --name "$GUEST" --state-dir "$STATE_DIR"
+vm-lab/vm-lab destroy --name "$GUEST"
+docker network rm "$NETWORK"
+```
+
+`stop` requests a guest ACPI shutdown and never force-kills. `destroy` removes
+only the stopped, exact-name container. Remove the network only after no
+container uses it. To resume the same guest, rerun the original `start` command
+with `--resume` and the same base, firmware, media, network and slice.
+
+If QEMU reports the guest as paused, stop that paused QEMU process while keeping
+state:
+
+```sh
+vm-lab/vm-lab terminate-paused --name "$GUEST" --state-dir "$STATE_DIR"
+```
+
+If the guest is otherwise unresponsive, including after a panic, use the exact-name
+and ownership-label-guarded forced path (VML-BL-12), then remove the stopped
+container:
+
+```sh
+[ "$(docker inspect --format '{{.Name}} {{index .Config.Labels "org.vbpub.vm-lab.vm"}}' "$GUEST" 2>/dev/null)" = "/$GUEST true" ] && docker kill "$GUEST"
+vm-lab/vm-lab destroy --name "$GUEST"
+```
 
 ### Console options
 
@@ -182,10 +304,22 @@ needs `pwmcp` on PATH and pwmcp's OCR sidecar enabled. See
   start refuses and says to run `vm-lab image build`. A Docker that cannot be
   asked (no daemon, no client) is reported as such, never as "not built". The
   TrueNAS front has no tag fallback: it uses only `--image` or `TRUENAS_TCG_IMAGE`.
+- `--plain-host`: run directly on the local Docker host. This explicit flag
+  skips cockpit self-inspection and the inspector-container lookup, uses local
+  paths as Docker sees them, and verifies the loaded systemd slice and local
+  `/sys/fs/cgroup` and `/proc/<pid>/cgroup` directly. Without it, cockpit mode
+  and its mount/scope inspection are unchanged. A missing or empty slice always
+  refuses; a value must be a plain `*.slice` unit name, never a cgroup path.
 - `--network`, `--cgroup-parent`: default to `DOCKER_NETWORK_INTERNAL` and
   `CGROUP_PARENT_DEV_BACKGROUND`. Start refuses when neither the option nor the
-  variable is set; the network message says the value comes from the ciu stack
-  environment or the devcontainer (`ciu env print` shows it).
+  variable is set. An explicitly empty `--cgroup-parent` also refuses; it does
+  not fall back to the environment. The network message says the value comes
+  from the ciu stack environment or the devcontainer (`ciu env print` shows it).
+- `--cpu-shares N`: optional positive Docker relative CPU shares. Omitted means
+  Docker's default. The plain-host test command uses 64 to match the historical
+  rollback guest configuration.
+- `--boot-order {c,dc}`: `c` boots the disk (default); `dc` boots CD-ROM then
+  disk and refuses unless read-only media is attached.
 - `--lock-dir DIR` (also on `disk promote`): where the start admission lock file
   lives, used only when no Git repository is found next to the installed module
   (a wheel in site-packages); otherwise the variable `VM_LAB_ADMISSION_LOCK_DIR`
@@ -208,7 +342,9 @@ needs `pwmcp` on PATH and pwmcp's OCR sidecar enabled. See
 - `--allow-full-copy`: raw base only. Without it, a clone that cannot be a
   reflink (base and state directory not on one btrfs filesystem) fails `start`
   with one error line. With it, `start` copies the whole file instead and says so.
-- `--readonly-media ISO`, `--data-disk-size SIZE` (repeat, up to 8),
+- `--readonly-media ISO` (aliases `--iso` and `--seed-iso`; only one spelling
+  may be given), `--config-disk IMAGE` (read-only raw virtio disk at
+  `/media/config.img`), `--data-disk-size SIZE` (repeat, up to 8),
   `--vnc-console`, `--serial-console`, `--resume` (reuses the existing
   overlay or `disk.raw`; the recorded disk format must match; a raw guest
   resumes even when its base file was moved, replaced or deleted).
@@ -227,13 +363,16 @@ finite `memory.max`; memory pressure (PSI) at the slice and its ancestors is
 under policy; the slice CPU quota allows `--cpus`; the Docker network and image
 exist; and fewer than the allowed number of guests are running.
 
-The host cgroup inspector mounts the host cgroup v2 filesystem and system D-Bus
-socket read-only. It can keep private PID and cgroup namespaces: vm-lab resolves
-the Docker container's systemd scope and checks that it is loaded, active, and
-has tasks before reading the scope's resource limits. That path does not need a
-host PID namespace or writable access to host cgroups. The TrueNAS live gate
-still resolves guest placement with `host_pid_cgroup`, which reads
-`/hostproc/<pid>/cgroup` and so still needs `/hostproc` from the inspector.
+In cockpit mode the host cgroup inspector mounts the host cgroup v2 filesystem
+and system D-Bus socket read-only. It can keep private PID and cgroup namespaces:
+vm-lab resolves the Docker container's systemd scope and checks that it is
+loaded, active, and has tasks before reading the scope's resource limits. That
+path does not need a host PID namespace or writable access to host cgroups.
+`--plain-host` instead checks the loaded slice with the local systemd manager,
+reads `/sys/fs/cgroup` directly, and verifies the launched container through
+`/proc/<pid>/cgroup`. The TrueNAS live gate still resolves guest placement with
+`host_pid_cgroup` in cockpit mode, which reads `/hostproc/<pid>/cgroup` and so
+still needs `/hostproc` from the inspector.
 
 All profiles share one start lock (in the repository's common Git directory, or
 in `--lock-dir` / `VM_LAB_ADMISSION_LOCK_DIR` from an installed wheel)

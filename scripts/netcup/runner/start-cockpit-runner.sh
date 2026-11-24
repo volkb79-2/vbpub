@@ -16,6 +16,15 @@ tmpd=$COCKPIT_TMP_DIR
 oom_adj=${COCKPIT_OOM_SCORE_ADJ:--500}
 [[ $oom_adj =~ ^-?[0-9]{1,4}$ ]] || { echo "COCKPIT_OOM_SCORE_ADJ must be an integer between -1000 and 1000, got '$oom_adj'" >&2; exit 2; }
 (( oom_adj >= -1000 && oom_adj <= 1000 )) || { echo "COCKPIT_OOM_SCORE_ADJ must be an integer between -1000 and 1000, got '$oom_adj'" >&2; exit 2; }
+# PID 1 is tini (--init); the image CMD is the keepalive loop (MDT-107) that survives a killed `sleep`. An older image has no
+# such CMD, so it still needs a trailing `sleep infinity`. Read before the old cockpit is removed: a failed inspect must
+# not cost the running cockpit, and it is never a silent fallback to the old behaviour.
+image_cmd=$(docker image inspect -f '{{json .Config.Cmd}}' "$COCKPIT_IMAGE") || { echo "start-cockpit-runner: cannot inspect image $COCKPIT_IMAGE" >&2; exit 2; }
+cockpit_cmd=()
+if [[ $image_cmd != *'while :; do sleep'* ]]; then
+  echo "start-cockpit-runner: WARN image $COCKPIT_IMAGE has no keepalive CMD (MDT-107); using sleep infinity" >&2
+  cockpit_cmd=(sleep infinity)
+fi
 docker rm -f "$COCKPIT_NAME" >/dev/null 2>&1 || true
 docker run -d --init --restart unless-stopped --user 0:0 --name "$COCKPIT_NAME" --hostname "$COCKPIT_NAME" \
   --oom-score-adj="$oom_adj" \
@@ -56,7 +65,7 @@ docker run -d --init --restart unless-stopped --user 0:0 --name "$COCKPIT_NAME" 
   -e BUILDX_CONFIG=/home/vscode/.config/docker/buildx -e BUILDX_BUILDER=mdt-managed \
   -e "BUILDKIT_HOST=unix://$MDT_BUILDKIT_SOCKET" -e CODEX_SQLITE_HOME=/home/vscode/.codex/sqlite-shared \
   -e MDT_COW_ROOT="$COW_ROOT" \
-  "$COCKPIT_IMAGE" sleep infinity
+  "$COCKPIT_IMAGE" ${cockpit_cmd[@]+"${cockpit_cmd[@]}"}
 # Align the cockpit login user with the host runner uid/gid (the devcontainer "updateRemoteUserUID" step the docker-run
 # equivalent lacks): checkouts, the CoW root and the tester-unified lane user (uid 1003) must share one owner, or Git and
 # Assay refuse the tree as "dubious ownership" (Run-Gate RG-150, mdt-cockpit MDT-052).

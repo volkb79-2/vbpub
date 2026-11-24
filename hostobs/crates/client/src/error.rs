@@ -13,8 +13,9 @@ use hostobs_proto::error::ProtoError;
 
 /// The connection-fatal codes of WIRE.md §5.4: after one of them the server closes the
 /// connection, so the client closes its side too.
-pub const FATAL_CODES: [&str; 9] = [
+pub const FATAL_CODES: [&str; 10] = [
     "unknown-mode",
+    "binary-required",
     "unsupported-version",
     "hello-required",
     "bad-frame",
@@ -224,6 +225,8 @@ mod tests {
 
     #[test]
     fn fatal_codes_are_a_subset_of_the_closed_list() {
+        assert_eq!(FATAL_CODES.len(), 10);
+        assert!(FATAL_CODES.contains(&"binary-required"));
         for code in FATAL_CODES {
             assert!(ERROR_CODES.contains(&code));
             assert!(is_fatal_code(code));

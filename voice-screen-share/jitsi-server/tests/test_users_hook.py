@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import importlib.util
-import stat
 import subprocess
 import types
 from pathlib import Path
@@ -22,9 +21,12 @@ def _load():
 @pytest.fixture()
 def world(tmp_path, monkeypatch):
     hook = _load()
+    stale = tmp_path / ".ciu" / "credentials.txt"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("admin\tstale-password\n", encoding="utf-8")
     secrets = tmp_path / ".ciu" / "secrets" / "jitsi"
     secrets.mkdir(parents=True)
-    names = ["admin", "dummy1"]
+    names = ["admin", "alice", "bob"]
     for n in names:
         (secrets / f"user_{n}").write_text(f"pw-{n}-SECRETVALUE")
     calls: list[dict] = []
@@ -49,25 +51,25 @@ def world(tmp_path, monkeypatch):
 def test_password_goes_over_stdin_never_argv_or_stdout(world, capsys):
     hook, cfg, ctx, calls, _ = world
     hook.run(cfg, ctx)
-    assert len(calls) == 2
+    assert len(calls) == 3
+    passwords = {f"pw-{n}-SECRETVALUE" for n in ("admin", "alice", "bob")}
+    assert {call["input"].strip() for call in calls} == passwords
     for c in calls:
         assert c["argv"][:4] == ["docker", "exec", "-i", "jitsi-x-prosody"]
-        assert "SECRETVALUE" not in " ".join(c["argv"])
-        assert "SECRETVALUE" in c["input"]
+        assert not any(password in " ".join(c["argv"]) for password in passwords)
     out = capsys.readouterr().out
-    assert "SECRETVALUE" not in out
-    assert "credentials_file=" in out
+    assert not any(password in out for password in passwords)
+    assert "registered=['admin', 'alice', 'bob']" in out
 
 
-def test_credentials_file_is_0600_in_0700_dir_and_rebuilt_idempotently(world):
+def test_registration_repeats_same_three_users_idempotently_without_a_password_copy(world):
     hook, cfg, ctx, calls, root = world
     hook.run(cfg, ctx)
-    first = (root / ".ciu" / "credentials.txt").read_text()
+    first_run = [dict(call) for call in calls]
     hook.run(cfg, ctx)
-    f = root / ".ciu" / "credentials.txt"
-    assert f.read_text() == first
-    assert stat.S_IMODE(f.stat().st_mode) == 0o600
-    assert len(calls) == 4  # register is re-issued, same end state
+    assert len(calls) == 6
+    assert calls[3:] == first_run
+    assert not (root / ".ciu" / "credentials.txt").exists()
 
 
 def test_failure_does_not_leak_password(world, monkeypatch):
@@ -107,13 +109,3 @@ def test_validate_config_flags_bad_users(world):
     problems = hook.validate_config(cfg, ctx)
     assert any("invalid username" in p for p in problems)
     assert any("not declared" in p for p in problems)
-
-
-def test_dummy_users_skipped_by_default_and_registered_when_enabled(world):
-    hook, cfg, ctx, calls, _ = world
-    cfg["jitsi"]["users"][1]["dummy"] = True
-    hook.run(cfg, ctx)
-    assert len(calls) == 1 and calls[0]["argv"][-2] == "admin"
-    cfg["jitsi"]["auth"]["dummy_users"] = True
-    hook.run(cfg, ctx)
-    assert len(calls) == 3

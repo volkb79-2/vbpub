@@ -108,6 +108,18 @@ configuration and comments, and updates only `TLS_EDGE_DOMAIN` in `consumer.env`
 change without writing files. Advanced settings can still be edited in `stack/ciu-stack/ciu.toml.j2`; the full
 schema and shipped defaults are in `ciu.defaults.toml.j2`.
 
+The site override is plain TOML and is never templated. A `{{`, `{%`, or `{#` marker in it is refused with the
+override path. `tls-edge configure` records `[tls_edge] schema = 1`; an override without the key means schema 1,
+and a newer schema is refused. Unknown keys are refused by their full dotted path, for example
+`unknown override key tls_edge.http3.enable`. The open tables where provider or site-defined keys are expected
+are `[tls_edge.acme.dns.environment]`, `[tls_edge.secrets]`, and `[tls_edge.hooks]`. An override that sets
+`[tls_edge.hooks] pre_secrets` must keep `hooks/validate_edge.py` in that list, or it is refused.
+
+`ciu check`, the automatic `ciu up` static preflight, `scripts/render_standalone.py --check`, `tls-edge validate`,
+and `tls-edge configure --dry-run` all run this same validation. Limit: ciu runs the validator because the shipped
+defaults declare it under `[tls_edge.hooks]` `pre_secrets` and `pre_compose`. An override that empties both lists
+removes it from `ciu check` and `ciu up`, so keep the shipped entries.
+
 | `[tls_edge.tls] mode` | How | Port needed | Certificates |
 |---|---|---|---|
 | `acme-tls` (default) | TLS-ALPN-01 on :443 | 443 | one per host name |

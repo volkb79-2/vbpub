@@ -109,7 +109,7 @@ if (admin.token) {
 		result._setup = 'already_configured';
 	}
 
-	// 3. Registration mode: open it only while the dummy users are created,
+	// 3. Registration mode: open it only while the regular users are created,
 	// then enforce the configured mode (default "closed": a tryout reachable
 	// from the internet must not accept sign-ups from anyone; the admin panel
 	// can issue registration links when more accounts are wanted).
