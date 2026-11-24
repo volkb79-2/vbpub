@@ -29,6 +29,7 @@ no separate version number, so entries are grouped by the work that landed.
   session id as well. 12 new hand mutants.
 
 ### Added
+- `rules.md`: "House rules for every implementer brief" (CTL-50): remote dev container before each commit (interim `hostobs/tools/dev` for Rust), no direct `hx.sh`/`ssh`/`docker` and no tests in the devcontainer, contract plus target size with at most 2 review rounds, explicit launch effort, unique run names with resumed runs verified from git, DONE/PARTIAL/BLOCKED with a finalization. `BRIEF-TEMPLATE.md`, `finisher-generic.md` and the README point to it; the README records the bash freeze (CTL-40).
 - `remote-gate.sh`: `CONTROLLER_REMOTE_GATE_WORKROOT` sets where the per-run throwaway worktree lives (default unchanged: `$CONTROLLER_HOME/remote-gate-work`). A workroot under an IDE workspace folder makes the editor's Git extension adopt every scratch worktree as a repository ("too many active changes" popup) and lets language servers index it; point it outside every workspace folder.
 - `gate-run.sh`: `CONTROLLER_GATE_SLOTS` (integer 1 to 8, default 2) sets the number
   of local gate slots (CTL-33). Slot 1 is `CONTROLLER_GATE_LOCK`, slot 2 is

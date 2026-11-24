@@ -6,6 +6,16 @@ host-satellite Run-Gate queue. Runtime files and local machine facts live under
 `$CONTROLLER_HOME` (default `$HOME/controller`); see
 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 
+Every implementer brief carries the house rules in [`rules.md`](rules.md)
+(CTL-50): remote dev container before each commit, no direct `hx.sh`/`ssh`/
+`docker`, no tests in the devcontainer, contract plus size, at most 2 review
+rounds, explicit effort, unique run names, DONE/PARTIAL/BLOCKED.
+
+**Bash is frozen** (CTL-40): no new bash beyond ~50-line entry points; new
+logic goes into the `agctl` Python package. The one exception is the generic
+dev tool (`dev`, about 250 lines), whose Python port follows with the fleetd
+host agent.
+
 ## Set up once
 
 ```bash

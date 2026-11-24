@@ -29,15 +29,12 @@ for client-specific controls.
 
 Allow inbound TCP 443 for the web app and WebSocket signaling. Also allow
 inbound UDP 8443 for preferred media and TCP 8443 as a media fallback. TCP and
-UDP can use the same public port. This host forwards those media connections
-through the tls-edge container to Mattermost; the Mattermost app does not
-publish its own host ports. The alternate HTTPS endpoint remains on TCP 9443.
+UDP can use the same public port. Mattermost publishes both media protocols
+directly on the host; tls-edge carries only the web route.
 
 The host firewall or provider firewall must allow both protocols on 8443 for
 clients to reach Calls. If TCP/UDP 8443 is blocked on a client network, the
-call may signal successfully over HTTPS while media fails. The live host's
-source config is under `tls-edge/ciu-stack/`; it is rendered and then deployed
-from `/root/tls-edge-LIVE` with host-level Docker Compose, not CIU.
+call may signal successfully over HTTPS while media fails.
 
 ## Verify reachability
 
