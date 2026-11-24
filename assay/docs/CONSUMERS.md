@@ -18,13 +18,17 @@ file, so it also works outside a repository. `--json` is accepted for explicitne
 the same document is the default output. It requires the `assay_analysis` package
 shipped in the complete assay wheel and zipapp, and has no degraded mode. The fields are:
 
-- `schema`: the document schema, currently `"assay-capabilities/1"`.
+- `schema`: the document schema, currently `"assay-capabilities/2"`.
 - `assay_version`: the running assay version.
 - `verdict_schema_version`: the verdict schema version this build emits and verifies.
 - `commands`: long options for `run`, `plan`, `verify`, `lanes`, and `analyze campaign`,
   derived from the live argparse parsers and sorted (`--help` included).
-- `mutation_store_policies`: mutation-store flags supported by `run`, mapped to
-  `same-judge`, `strict-shard`, `import-unverified`, or `hint` semantics.
+- `mutation_store_policies`: mutation-store flags present on the live `run`
+  parser, mapped to `same-judge`, `strict-shard`, `owner-manifest`,
+  `import-unverified`, `carry-forward`, or `hint` semantics.
+- `combine_policies`: the five policy names in their fixed per-candidate
+  precedence order: `same-judge`, `strict-shard`, `owner-manifest`,
+  `import-unverified`, `carry-forward`.
 
 The document is closed. A new key, dropped key, or changed meaning requires a new
 `schema` value. Consumers must know every key they accept instead of silently ignoring
@@ -2166,9 +2170,59 @@ duplicated, foreign-judge, changed-plan, incomplete or polluted store refuses
 silently executed in the merge run. (A merged `crashed`/`hung`/
 `budget_exceeded` record still re-executes when the merge run's resources
 differ, as on any resume.) Finish an incomplete shard with its own
-`--shard K/N` run first. Run-Gate does all of this for you (`run-gate <lane>
---shard K/N`, `--merge-shards N`). Copy a remote host's shard store next to
-the others before the merge.
+`--shard K/N` run first. Run-Gate does all of this for you: its `--shard K/N`
+selects the shard, and its `--merge-shards N` expands to `N` assay
+`--merge-shard-store` arguments. Copy a remote host's shard store next to the
+others before the merge.
+
+### Merge owner stores with a manifest (B544)
+
+When an orchestrator already knows which worker owns each candidate,
+`--merge-manifest FILE` proves that ownership as one whole-lane statement:
+
+```json
+{"schema": "assay-merge-manifest/1",
+ "judge_sha256": "<64 hex>",
+ "stores": [
+   {"path": "relative/to/manifest or /absolute/store",
+    "candidates": ["<candidate_id>", "..."]}
+ ]}
+```
+
+The document is a closed object bounded to 16 MiB, and duplicate JSON keys
+are refused. Every current candidate must be owned exactly once across all
+listed stores. Store paths resolve relative to the manifest's directory or
+may be absolute. For each owner, Assay reads only that store's flat
+`<candidate_id>.json` record; `judges/*` generations are not consulted.
+The record must resume under the manifest and run judge and the run's
+campaign deadline, and is materialized into `--state-dir` before ordinary
+own-store resume. Consequently the designated owner wins over a differing
+same-judge record already in the target and increments `target_replaced`.
+A flat record in a listed store for a candidate that store does not own, and
+a record for an id outside the plan, is ignored and reported as
+`non_owner_duplicates` and `unplanned_records`, respectively.
+
+```sh
+assay run <lane> --resume --state-dir main \
+  --merge-manifest owner-manifest.json \
+  --verdict-json .assay/verdict-<lane>.json
+```
+
+The run emits one `merge_manifest` progress event carrying `owners`,
+`non_owner_duplicates`, `unplanned_records`, and `target_replaced`. The
+materialized record bytes are deterministic because nothing in them is
+time-stamped by the merge. It requires `--resume` and a native R2 lane, and
+it is the whole-lane statement: `--shard`, `--only-candidates`,
+`--exclude-candidates`, `--candidates-file`, and `--merge-shard-store` are
+refused with it.
+
+Parse-time refusals are `malformed-manifest`, `missing-store`,
+`duplicate-store`, and `duplicate-owner`; plan/judge-time refusals are
+`unknown-candidate`, `unowned-candidate`, `judge-mismatch`,
+`missing-owner-record`, and `invalid-owner-record`. All nine are
+`ERROR`/`BAD_LANE_CONFIG`, exit 2, rendered as
+`merge manifest refused: <token>: <detail>`, sorted and capped at 20
+problems.
 
 ### Run a targeted candidate set (B531)
 

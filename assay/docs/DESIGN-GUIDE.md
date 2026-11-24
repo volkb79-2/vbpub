@@ -1745,6 +1745,13 @@ Those limits are preserved and their refusal remains a structured error.
 Shards assign by keyed digest of the candidate ID. Their merge is
 a manifest-level set proof: exact index coverage, one schema/lane/commit/count,
 and duplicate-free IDs—not bucket-count arithmetic.
+Flexible campaigns now feed one `mutation_store.combine` pipeline: strict shard
+proofs first, then one bounded owner manifest whose designated flat record per
+candidate is validated and materialized before own-store resume, then the
+existing exact-id import chain and carry-forward. These are per-source policies
+with fixed per-candidate precedence, so old flag combinations retain their
+event and clock order while a manifest makes the owner, rather than local store
+age, the authority for every planned candidate.
 
 ### One provenance object and advisory locus (B561/WP2)
 
