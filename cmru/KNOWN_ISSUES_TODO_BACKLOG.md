@@ -14,6 +14,8 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-204 | OPEN (filed 2026-11-24, tester-unified/build-image.sh by hand: undeclared env and builder assumptions) | — |
+| KI-203 | OPEN (filed 2026-11-24, operator challenge: promotion refuses a clean merge when main touched the project) | — |
 | KI-202 | OPEN (filed 2026-11-24, repo-wide GitHub "Latest" follows the last cmru release) | — |
 | KI-201 | OPEN (filed 2026-11-24, test-policy-v0.1.0 push failure) | — |
 | KI-200 | OPEN (filed 2026-11-24, Opus design review) | — |
@@ -4226,3 +4228,47 @@ A second, related limit is in the generated installer `templates/get.py.tmpl` (r
 - Tests at the fake HTTP boundary: the create payload carries `make_latest: "false"`; an installer listing whose matching tag sits only on page 2 still resolves it.
 
 Source: vbpub-edge, via the main controller (get.py investigation), 2026-11-24.
+
+## KI-203 - promotion refuses a clean merge when origin/main changed the released project's paths
+
+**Status:** OPEN (filed 2026-11-24, operator challenge); severity: medium.
+
+`transaction._merge_origin_main_into_candidate` (`transaction.py:3609`, the refusal at about :3655-3662) refuses to promote a published release when origin/main advanced AND `git diff merge-base..origin/main -- <project paths>` is non-empty, even when the merge itself is clean. The stated reason is that "merging would land content that differs from what was gated and published". On 2026-11-24 the mdt-cockpit release published, then refused promotion because main had touched `mdt-cockpit/CHANGES.md`, its backlog and `host-setup/*`. The main controller landed it by hand with a clean merge, and the `[Unreleased]` entries from main stayed unreleased.
+
+The operator's point: the release is isolated by design. It is built and published from a snapshot commit, and the tag points at the candidate commit, not at main's tip. Promotion only records release metadata on main (the version record, the CHANGES section, release docs). A post-snapshot change to the project's paths on main does not change what was released, and main containing newer project commits than the tag is the normal state of a busy project. The refusal adds a manual step to every release of an active project and protects nothing that a clean merge breaks.
+
+The one real hazard is a CLEAN merge that is semantically wrong. CHANGES.md is the case: the candidate renames `## [Unreleased]` to `## [X.Y.Z] - date` and opens a new empty `## [Unreleased]`. A three-way merge of main's new bullets under the old heading can land them under the RELEASED version's heading without any conflict, which silently mis-attributes them.
+
+**Wanted.**
+- Promote automatically when the merge is clean. Refuse only on a real merge conflict, or when a post-merge check fails. Print the overlapping project paths as INFO.
+- Post-merge checks, by content, before pushing main; on failure, abort the merge and keep today's refusal and recovery text:
+  - the released version's CHANGES section on the merge result is byte-identical to the candidate's;
+  - every CHANGES bullet that main added since the snapshot is under `## [Unreleased]` on the merge result;
+  - the release-history and version records the release wrote are identical to the candidate's;
+  - the release tag still points at the candidate commit, an ancestor of the merge.
+- A main change to the release's own records (the released version's CHANGES section, release history, version files) is a refusal even when git merges it cleanly.
+- Tests with real git repositories in tmp_path:
+  - main edits an unrelated project file: promoted;
+  - main adds an `[Unreleased]` bullet next to the heading the candidate renamed: promoted, and the bullet stays unreleased (or the check refuses if the merge mis-attributes it);
+  - a real conflict: refused, the candidate unchanged.
+- SPEC: S-REL promotion text and RELEASE-TRANSACTIONS.md "Failure and retained candidate".
+
+Design home: P-core-14 (release-surface items) or the P7 package, whichever reaches transaction.py first.
+
+Source: the operator via the main controller, 2026-11-24 (mdt-cockpit release).
+
+## KI-204 - tester-unified/build-image.sh run by hand has undeclared env and builder assumptions
+
+**Status:** OPEN (filed 2026-11-24); severity: low.
+
+Building `tester-unified:wave-20261124b` by hand on the cockpit (P-core-05) failed twice before it worked:
+- `build-image.sh` calls `cmru tester-gate` as a host-slice preflight. That needs six values (`CMRU_TESTER_UNIFIED_IMAGE`, `CMRU_TESTER_MEMORY`, `CMRU_TESTER_MEMORY_SWAP`, `CMRU_TESTER_CPUS`, `CMRU_TESTER_PIDS_LIMIT`, `CMRU_TESTER_CGROUP_PROBE_IMAGE`), which normally come from `cmru.orchestration.toml` through `cmru release`. The script neither sets them nor names them in its usage text.
+- The cockpit environment sets `BUILDX_BUILDER=mdt-managed`, a remote BuildKit that cannot see local daemon images. The build then fails with "pull access denied ... tester-base:local". It works with `BUILDX_BUILDER=default`, which `tester-unified-rust/build-image.sh` already exposes as `--builder`.
+
+**Wanted.**
+- `build-image.sh` reads the six values from `cmru.orchestration.toml` [env], with the caller's environment winning, or refuses naming them.
+- It takes `--builder NAME` (default `default`, like the rust scripts) and refuses a builder whose driver cannot see the local base image, with a clear message.
+- The README documents a hand build.
+- Tests at a fake docker/cmru boundary.
+
+Source: vbpub-core, P-core-05 image build, 2026-11-24.
