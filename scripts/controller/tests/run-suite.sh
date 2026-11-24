@@ -27,6 +27,8 @@ files=(
   "$SCRIPT_DIR/../ctl-state-backup.sh"
   "$SCRIPT_DIR/../release-from-wt.sh"
   "$SCRIPT_DIR/../push-image.sh"
+  "$SCRIPT_DIR/../dev"
+  "$REPO_ROOT/hostobs/tools/dev"
   "$SCRIPT_DIR/../skills-sync.sh"
   "$REPO_ROOT/scripts/netcup/runner/host-sat-queue.sh"
   "$REPO_ROOT/scripts/netcup/runner/remote-gate-cache.sh"
@@ -48,11 +50,17 @@ files=(
   "$queue_test"
 )
 for file in "${files[@]}"; do bash -n "$file" || exit $?; done
+for file in "$SCRIPT_DIR/../dev_profile.py" "$SCRIPT_DIR/test_dev.py"; do
+  python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$file" || exit $?
+done
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck "${files[@]}" || exit $?
 else
   echo 'INFO: shellcheck is not installed in this tester image'
 fi
+# the generic remote dev tool: fakes only (no host, docker or ssh); first so a break shows in a minute, not after the long suites
+: "${TESTER_VENV:?run-suite.sh runs in the tester-unified gate container, which sets TESTER_VENV}"
+"$TESTER_VENV/bin/python" -m pytest -q -p no:cacheprovider "$SCRIPT_DIR/test_dev.py" || exit $?
 bash "$SCRIPT_DIR/test-ctl-status.sh" || exit $?
 bash "$SCRIPT_DIR/test-job-check.sh" || exit $?
 bash "$SCRIPT_DIR/test-wrappers.sh" || exit $?

@@ -11,10 +11,16 @@ Every implementer brief carries the house rules in [`rules.md`](rules.md)
 `docker`, no tests in the devcontainer, contract plus size, at most 2 review
 rounds, explicit effort, unique run names, DONE/PARTIAL/BLOCKED.
 
+**Remote dev tool.** `dev -p <project> <verb>` compiles, tests and lints a project in
+its run-gate environment's capped, network-less container on a gate host, before
+the commit (house rule 1). Never gate evidence. Guide: [`docs/DEV.md`](docs/DEV.md);
+profiles: `dev-profiles.toml`; contract: `docs/design/agent-dev/DESIGN.md`.
+
 **Bash is frozen** (CTL-40): no new bash beyond ~50-line entry points; new
 logic goes into the `agctl` Python package. The one exception is the generic
-dev tool (`dev`, about 250 lines), whose Python port follows with the fleetd
-host agent.
+dev tool (`dev`, about 530 lines including the moved host-side scripts; the
+profile resolution is already Python, `dev_profile.py`), whose full Python port
+follows with the fleetd host agent.
 
 ## Set up once
 
