@@ -10,8 +10,12 @@
       "reason": "TYPE_CHECKING imports CommandPlan only for annotations; importing runner here would create a runtime cycle."
     },
     "src/assay/mutation.py": {
-      "lines": [213, 220, 221],
+      "lines": [247, 254, 255],
       "reason": "TYPE_CHECKING imports four annotation names from adapters.base and runner; runtime imports would create the documented mutual dependencies."
+    },
+    "src/assay/mutation_store.py": {
+      "lines": [64, 65, 66],
+      "reason": "TYPE_CHECKING imports MutantJob and CommandResult only for annotations; importing mutation or runner here would create a runtime cycle."
     },
     "src/assay/mutation_witness.py": {
       "lines": [22, 23],

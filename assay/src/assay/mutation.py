@@ -78,6 +78,10 @@ path spelling two of these surfaces had never had to agree on before
 (A-145): a target's ``path`` is REPO-relative, while each mutant's scratch
 tree is a copy of the PROJECT root — see :func:`project_prefix`.
 
+**B566 boundary**: the persisted mutation state lives in
+``mutation_store.py``. The import direction is one way: this runner imports
+the store; the store's references back here are annotation-only.
+
 **A circular-import note, since it shapes this module's own imports below**:
 ``assay.runner`` imports ``assay.adapters.base``, which imports THIS module
 for :class:`MutationSite`. A module-level ``from .runner import execute_command``

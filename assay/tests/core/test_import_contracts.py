@@ -147,6 +147,39 @@ def test_real_tree_has_no_boundary_violation():
     assert not violations, "component boundary violations:\n" + "\n".join(violations)
 
 
+def test_mutation_store_imports_mutation_only_for_annotations():
+    tree = ast.parse((PACKAGE_DIR / "mutation_store.py").read_text(encoding="utf-8"))
+    annotation_nodes: set[ast.AST] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Name)
+            and node.test.id == "TYPE_CHECKING"
+        ):
+            for statement in node.body:
+                annotation_nodes.update(ast.walk(statement))
+
+    mutation_imports: list[str] = []
+    for node in ast.walk(tree):
+        if node in annotation_nodes:
+            continue
+        if isinstance(node, ast.Import):
+            mutation_imports.extend(
+                alias.name
+                for alias in node.names
+                if alias.name in {"mutation", "assay.mutation"}
+            )
+        elif isinstance(node, ast.ImportFrom):
+            if node.module in {"mutation", "assay.mutation"}:
+                mutation_imports.append(node.module)
+            elif node.level == 1 and node.module is None and any(
+                alias.name == "mutation" for alias in node.names
+            ):
+                mutation_imports.append("from . import mutation")
+
+    assert mutation_imports == []
+
+
 def test_allowed_refuses_and_accepts_the_documented_edges():
     refused = [
         ("assay.runner", "assay.adapters.python"),
