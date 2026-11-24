@@ -16,8 +16,8 @@ Part of the [`voice-screen-share`](../README.md) area; own ciu root, own names.
 | Domain | `public_host = "jitsi.{{ env.PUBLIC_FQDN }}"` in `ciu.defaults.toml.j2`; no domain in tracked files. Override with a sparse `ciu.toml.j2` (`[jitsi] public_host = "..."`). DNS: `jitsi.<domain>` must resolve to the host (a wildcard record does it). |
 | Media | JVB publishes **UDP 10000** directly on the host (`jvb.port`). The edge cannot carry it and is not changed. |
 | TCP media fallback | **None.** The stable-11031 jvb image template has no TCP harvester settings, and the edge has no raw-TCP entrypoint for one. Clients that cannot reach UDP 10000 get no media. |
-| Auth | Secure domain: `ENABLE_AUTH=1`, `AUTH_TYPE=internal`, `ENABLE_GUESTS=0` (everybody logs in). Users are registered by `hooks/post_compose_users.py` (`prosodyctl register`) on every `ciu up`. |
-| Secrets | `GEN_LOCAL` under `.ciu/secrets/jitsi/` (gitignored, 0600). Only paths are ever printed. |
+| Auth | Secure domain: `ENABLE_AUTH=1`, `AUTH_TYPE=internal`, `ENABLE_GUESTS=0` (everybody logs in). `admin`, `alice`, and `bob` are registered by `hooks/post_compose_users.py` (`prosodyctl register`) on every `ciu up`. |
+| Secrets | Three service secrets and the `admin`/`alice`/`bob` passwords are `GEN_LOCAL` under `.ciu/secrets/jitsi/` (gitignored, 0600). Only names are printed. |
 | Isolation | Own `internal` bridge; prosody/jicofo/jvb never join the edge network; only UDP 10000 is host-published. Per-service cpu/mem caps. |
 
 ## Firewall (required)
@@ -125,13 +125,14 @@ container, then `ciu up` accepts them (S6.3). Filed in the ciu backlog.
 
 ## Tests
 
-`tests/` (offline, stdlib + jinja2 + pytest; gate lane in `run-gate.toml`): render with a
-dummy domain, `docker compose config` validation, no credentials/operator domain in tracked
+`tests/` (offline, stdlib + jinja2 + pytest; gate lane in `run-gate.toml`): render with
+`example.test`, `docker compose config` validation, no credentials/operator domain in tracked
 files, secrets 0600 + gitignored, port plan equals `../README.md`, edge-consumer shape
 (only `jitsi-web` on the edge network, one published port), digest pins + 14-day rule, the
-user hook against a fake docker (password only on stdin, never argv/stdout), and
+user hook against a fake docker (exactly `admin`/`alice`/`bob`, password only on stdin, never argv/stdout,
+and no aggregate password copy), and
 `tests/test_theme_client.py`: theme + `custom-config.js` render with defaults and overrides, the enable flags
-render nothing, no unrendered placeholders, the JS passes `node --check` (and runs against a stub `config`), the
+render nothing, no unrendered placeholders, the JS passes `node --check` (required), the
 JVB REST stats are never published.
 
 Known limit: ciu `configfile` sections are declared statically, so `[jitsi.theme] enabled = false` cannot drop the

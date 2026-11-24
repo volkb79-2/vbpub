@@ -1,27 +1,36 @@
-# Fluxer accounts (administrator + dummy users)
+# Fluxer accounts (administrator + two regular users)
 
 ## Accounts
 
 | Username | Role | Created by |
 |---|---|---|
 | `fx_admin` | instance administrator (all admin permissions) | first registration with the setup token |
-| `fx_alice`, `fx_bob`, `fx_carol` | ordinary dummy users | public registration API, opened only for the moment of creation |
+| `fx_alice` | regular user | public registration API, opened only for the moment of creation |
+| `fx_bob` | regular user | public registration API, opened only for the moment of creation |
 
 Names are `[fluxer.accounts]` in `ciu.defaults.toml.j2`. Sign-in is **username + password** (no e-mail).
 
 ## Where the credentials live
 
-`<project>/.ciu/secrets/accounts.json`, a JSON object `{"<username>": "<password>"}`: mode 0600 in a 0700
-directory, git-ignored (`**/.ciu/`). The passwords are random (`secrets.token_urlsafe(18)`), generated once by
-`hooks/pre_compose_secrets.py` and never printed or logged: the hooks print only the file path and result codes
-(`admin_created`, `user_exists`, ...). Read one with, for example:
+Each password is one ciu `GEN_LOCAL` secret. The files are mode 0600 in a 0700 directory and are git-ignored
+(`**/.ciu/`). ciu generates each value on first materialization and reuses those bytes on later `ciu up` runs.
+The account hook reads each file through `ctx.secret_file()`; passwords are never printed or logged. The
+`pre_secrets` hook performs a one-time migration of `.ciu/secrets/accounts.json`: a missing ciu store file
+receives the account's exact legacy password, existing store files are never overwritten, and the legacy file
+is removed after migration.
+
+From the repository root, the exact commands are:
 
 ```bash
-python3 -c "import json;print(json.load(open('.ciu/secrets/accounts.json'))['fx_alice'])"
+cat voice-screen-share/fluxer-server/.ciu/secrets/fluxer/account_fx_admin
+cat voice-screen-share/fluxer-server/.ciu/secrets/fluxer/account_fx_alice
+cat voice-screen-share/fluxer-server/.ciu/secrets/fluxer/account_fx_bob
+ciu secrets list --dir voice-screen-share/fluxer-server
 ```
 
-The setup token is in `fluxer-secrets.json` (`setup_token`); it is single-purpose and cleared by Fluxer after
-the first administrator exists.
+`ciu secrets list` shows the three declared secrets and their paths without showing values. The setup token is
+a different, single-purpose Fluxer service secret in `fluxer-secrets.json`; Fluxer clears it after the first
+administrator exists.
 
 ## How they are created (nothing stays manual in the browser)
 
@@ -32,7 +41,7 @@ container (`docker exec -i ... node`, credentials on stdin only):
 
 1. sign in as the admin; if that fails, register it with the setup token (it becomes administrator);
 2. mark the instance setup as configured (what the wizard's last step does), which opens sign-ups;
-3. for each dummy user: sign in; if that fails, open registration, register, and afterwards enforce
+3. for `fx_alice` and `fx_bob`: sign in; if that fails, open registration, register, and afterwards enforce
    `registration_mode_after` (default `closed`, so nobody else can sign up on a public host).
 
 Every step probes first, so `ciu up` can run it any number of times. The wizard's remaining steps (branding,
@@ -42,15 +51,30 @@ error naming the step).
 
 ## Rotating a password
 
-The stored value must match the account, so change both:
+The account password and its ciu secret must match, so change both:
 
 1. Sign in as the user and change the password in the app (Settings > My Account), or as `fx_admin` use the
    admin panel (`/admin`) to reset it.
-2. Put the new value into `.ciu/secrets/accounts.json` (mode stays 0600).
+2. Write the same raw value, with no trailing newline, into that user's `GEN_LOCAL` file under
+   `.ciu/secrets/fluxer/`, preserving mode 0600.
 
 If only the file is changed, the next `ciu up` fails to sign in, tries to register the existing name and
-reports `user_failed:...`: it never overwrites an account. To start over completely: `ciu down` with volumes,
-delete the whole `.ciu/secrets/` directory and `ciu up` again (new secrets, new accounts).
+reports `user_failed:...`: it never overwrites an account. To start over with empty data volumes and new
+account passwords, run:
+
+```bash
+ciu secrets reset --dir voice-screen-share/fluxer-server --yes
+ciu up --dir voice-screen-share/fluxer-server --reset --yes
+```
+
+`ciu secrets reset` deletes only the declared secrets (the three account passwords). `fluxer-secrets.json` is
+kept and reused with the fresh data volume.
+
+## Remove a leftover account
+
+An instance created before this layout may still hold a former account such as `fx_carol`; the migration drops
+its password together with `accounts.json`. Sign in as `fx_admin` and disable or delete that account in the
+admin panel (`/admin`).
 
 ## Rotating infrastructure secrets
 
