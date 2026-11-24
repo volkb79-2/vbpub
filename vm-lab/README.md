@@ -22,7 +22,7 @@ and the project that owns the VM keeps that directory in its own
 `scripts/<project>/vm-lab/<vm>/`.
 
 vm-lab is a top-level project of the repository (`vm-lab/`): the Python package
-`vm_lab` in `src/` (`core`, `console`, `text`, `cli`), the console script
+`vm_lab` in `src/` (`core`, `console`, `text`, `guest`, `cli`), the console script
 `vm-lab`, and the QEMU container image context in `src/vm_lab/qemu-image/` (package data: the wheel carries it).
 
 Start with the [consumer guide](docs/CONSUMERS.md). The reasons behind the
@@ -43,8 +43,12 @@ must be on `PATH` (the estate venv's `/opt/mdt/venv/bin` is). The dependency
 `libraries/vmscreen` first (released as `vmscreen-v0.1.0` on GitHub Releases, not
 on a public index, so a plain `pip install vm-lab` cannot find it; install the
 vmscreen wheel first, or use `--no-deps` for the vm-lab wheel and install
-vmscreen from its checkout). The wrapper does not add vmscreen: it must be installed where
-`python3` runs, or on `PATH`.
+vmscreen from its checkout). The CLI still invokes vmscreen as a subprocess for
+screen text and falls back to OCR when it is unavailable. The driver module
+`vm_lab.guest` imports vmscreen's `qmp`, `keys`, `sources` and `serialtext`
+modules directly; those modules need no `cli-extended`, and `cli`, `core`,
+`console` and `text` never import `vm_lab.guest`. The wrapper does not add
+vmscreen: it must be installed where `python3` runs, or on `PATH`.
 
 The QEMU image is built once per Docker host with `vm-lab image build` (see
 below); `start` finds it by its tag.
@@ -198,6 +202,79 @@ container:
 [ "$(docker inspect --format '{{.Name}} {{index .Config.Labels "org.vbpub.vm-lab.vm"}}' "$GUEST" 2>/dev/null)" = "/$GUEST true" ] && docker kill "$GUEST"
 vm-lab/vm-lab destroy --name "$GUEST"
 ```
+
+### Drive a guest from Python
+
+`vm_lab.guest` is the driver API. It treats SSH as the command channel, the
+serial log as the boot/failure channel, and short-lived QMP connections as the
+machine channel. It is not imported by `vm_lab.cli`: the CLI's screen-text
+path can still degrade to OCR when vmscreen is unavailable.
+
+SSH credentials are a directory containing `id_ed25519` (the private test key)
+and `known_hosts` (the base image's recorded host keys). The latter may contain
+standard `known_hosts` lines or the installer's `DR-HOSTKEY <type> <base64>`
+markers. `ssh_endpoint` re-keys them under the guest name, copies both files
+into the driver's private directory, and enforces directory mode 0700 and file
+mode 0600. An empty host-key file is refused: there is no trust-on-first-use.
+
+```python
+import json
+import re
+from pathlib import Path
+
+from vm_lab.guest import Guest, attached_to_network, ssh_endpoint
+
+state_dir = Path("/path/to/vm-lab/guest-name")
+credentials = Path("/path/to/base/credentials")
+private_dir = Path("/path/to/driver-private")
+runner = json.loads((state_dir / "runner.json").read_text())
+
+with attached_to_network(runner["network"], plain_host=False):
+    ssh = ssh_endpoint(state_dir, credentials, private_dir=private_dir)
+    guest = Guest(state_dir, ssh)
+    try:
+        old_boot_id = guest.wait_ready(1200)
+        result = guest.run("printf '%s\\n' \"$BASHPID\"", timeout=60)
+        if result.rc:
+            raise RuntimeError((result.rc, result.out, result.err))
+
+        mark = guest.serial_mark()
+        guest.trigger("sleep 1; exec systemctl reboot")
+        new_boot_id = guest.wait_ready(
+            1200,
+            not_boot_id=old_boot_id,
+            fail_on=re.compile(r"Kernel panic - not syncing: (?:No working init found|Attempted to kill init!)"),
+            since=mark,
+        )
+        print("reboot proven", old_boot_id, new_boot_id)
+    finally:
+        guest.close()
+```
+
+`Guest.run` returns `Result(rc, out, err)`; stdout and stderr are separate and
+decoded as UTF-8 with replacement. Pass `input=bytes` for a payload read from
+the remote command's stdin. A started command is never retried. `Guest.reboot`
+is the shorthand for the explicit boot-id sequence above. `Guest.reset` and
+`Guest.send_keys` use QMP; keys are validated as one sequence before any key
+is sent. `serial_write`, `wait_serial`, `serial_mark` and `press_until` cover
+serial input and per-line waits. Call `close()` to drop the SSH master.
+
+Serial wait patterns are searched unchanged against each rendered line
+independently. Inline flags such as `(?i)` work, but a pattern cannot span a
+newline. Use `^` and `$` when a match must be a complete line rather than a
+fragment such as a prompt-looking suffix of a kernel banner. `$` also matches
+the unfinished final line, so a prompt is visible before its terminating
+newline; trailing spaces are stripped from rendered output, so
+anchor on the last visible prompt character.
+
+With `wait_ready(..., fail_on=PATTERN, since=None)`, the call marks the serial
+log on entry and watches only output written after that point. Pass `since`
+explicitly when the failure may already be present when the call starts.
+
+On a plain Docker host, use `attached_to_network(network, plain_host=True)` or
+call the API without the context manager. In a cockpit container it connects
+the calling container to the exact guest bridge for the block and disconnects
+only if this call made the connection.
 
 ### Console options
 
