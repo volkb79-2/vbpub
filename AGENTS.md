@@ -660,6 +660,47 @@ still until the operator compacted, and lost hours in which work was ready to ru
 Before it ends a turn it keeps one monitor armed over every running job, so a job cannot
 finish or fail unnoticed while the session sits idle.
 
+### Successor restart of an interactive session (`compact-resume.sh`, `clear-resume.sh`)
+
+An interactive Claude Code session in a tmux pane can be restarted without the operator's
+click. Both helpers wait until the pane is idle (no busy marker for 3 checks, max 30 min), act,
+then type the prompt file's text and Enter; exit codes are in each script header (2: bad
+arguments or no pane, nothing sent; 3: never idle; compact only, 4: compaction unfinished;
+5: the input line never emptied, or the pane stayed busy before the second send; 6: a `tmux send-keys` call failed). Before EVERY typed send both
+helpers wait until the pane is idle AND the input row (the last line starting with `❯`) is empty,
+so nothing is typed over text someone has in the input line.
+
+- **Default: `/compact` via `scripts/controller/compact-resume.sh <pane-id> <guidance-file>
+  <prompt-file> <log>`.** Sends `/compact <guidance>`, waits for the compaction to finish, then
+  types the resume prompt. The context is kept as a summary and background work (subagents,
+  Monitors, background shells, codex runs) survives. Measured 2026-11-24: 442k -> ~60k in ~46 s.
+- **Clean slate: `/clear` via `scripts/controller/clear-resume.sh <pane-id> <prompt-file> <log>`.**
+  Use it when the summary itself is untrustworthy or a different role takes the pane. Background
+  work dies with the session. Proven 5 times on 2026-11-24 (nonce/canary test, then the assay,
+  rollback, platform and edge successors).
+- **Both:** the session writes its handover file FIRST (`controller-handover` skill; the
+  PreCompact hook text is capped at 10,000 characters, so the file carries the content) and a
+  resume prompt that points at it and its read-first list.
+- **The agent's side of a compact (controller-driven):** (a) the agent chooses a clean
+  boundary (nothing half-edited); (b) it writes its handover/STATE first; (c) it replies
+  "ready for compact" and ends its turn; (d) the controller launches `compact-resume.sh` for its
+  pane DETACHED (`setsid nohup ... >log 2>&1 &`, never a foreground or `run_in_background` Bash
+  call: the tool timeout is 2-10 min, the helper may wait up to 90 min, possibly between
+  `/compact` and the resume prompt) with a guidance file (keep only the handover pointer and the in-flight list: subagents
+  and runs with their report paths, open hand-overs) and a resume prompt (read the handover's
+  newest block, check each in-flight run's report, continue, report back). A sub-controller
+  reporting "at boundary, ready for successor" for a `/clear` restart is handled the same way.
+- **Self-compaction:** the same, except the session launches the helper itself on its own pane,
+  DETACHED (`setsid nohup scripts/controller/compact-resume.sh "$TMUX_PANE" <guidance>
+  <prompt-file> <log> >/dev/null 2>&1 &`, never Bash `run_in_background`, which dies with the
+  session), then ends its turn; the helper acts once it has ended.
+- **Limits:** the footer markers (`esc to interrupt`, `Compacting`, `ctx ?`, the input-row `❯`; one copy in
+  `scripts/controller/resume-lib.sh`) are tied to Claude Code 2.1.331 and must be re-measured
+  after an upgrade. Whether a cross-session message arriving in the gap between the restart and
+  the prompt survives is untested, so a successor asks its peers to resend anything sent around
+  the restart. Future verb: `agctl successor <pane> <prompt-file> [--clear]`
+  (`docs/design/agctl/DESIGN.md` section 6a).
+
 ### Spawned or non-interactive session (subagent, Codex/opencode/pi job, worker)
 
 Nobody sits in it and nobody applies a recovery read order for it, so it **self-terminates**

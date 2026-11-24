@@ -93,6 +93,10 @@ Every row names the source of each field and its mtime. Inputs are aggregated in
 3. **Fresh session, started by the operator** (new session or `/clear`): a controller-only SessionStart[startup|clear] hook (only with `CONTROLLER_NAME`) checks `READY`'s hash and head, injects "read <handover> first (head <sha>, written <utc>)", and renames it `READY.consumed.<session>`; missing or mismatched, the note says so and gives HANDOFF's age.
 4. **Auto-compaction is only the backstop** (window above soft); SessionStart[compact] warns the handover predates it and asks for a new one.
 
+## 6a. Successor restart (the mechanism of the handover cycle)
+
+Step 3 of section 6 ("fresh session, started by the operator") has a mechanical form today (tmux; bash, grandfathered under the CTL-40 freeze as proven entry points sharing `resume-lib.sh`). **Default:** `scripts/controller/compact-resume.sh <pane> <guidance-file> <prompt-file> <log>` waits for an idle pane, sends `/compact <guidance>`, waits for the compaction to end and types the prompt file; the context stays as a summary and background work survives (measured 2026-11-24: 442k -> ~60k in ~46 s). **Clean slate:** `clear-resume.sh <pane> <prompt-file> <log>` sends `/clear` instead (proven 5 times). A session or its controller can thus restart it after `agctl handover ready` without a click; the prompt is the "read <handover> first" line the SessionStart hook would otherwise inject. Footer markers tied to Claude Code 2.1.331; the message gap is untested (AGENTS.md "Successor restart of an interactive session"). **Future verb:** `agctl successor <pane> <prompt-file> [--clear]` (Python port, compact by default, `--clear` for the clean slate, the same idle/type contract and exit codes, the markers in `agctl.toml`).
+
 ## 7. Agents: return contract, finalization, priming (slice 2)
 
 - **Implementers and reviewers are bounded and succeeded, never compacted.**
