@@ -202,3 +202,9 @@ Offer the QEMU image through a ciu service instead of a local `docker build`, so
 **State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/guest.py
 
 **Problem.** If the guest becomes ready near the wait deadline, `_open_master` gets about 0.1 seconds and raises `GuestTimeout` even though readiness was already proven. **Wanted.** Reserve a minimum master-connect budget or separate the readiness and master-establishment deadlines, with a near-deadline fake-clock test.
+
+## VML-BL-32 — P-31a live probes run in P-31c's live check
+
+**State:** blocked · **Severity:** medium · **Owner:** rollback · **Links:** blocked-by P-rollback-31b, P-rollback-31c, VML-BL-28, vm-lab/docs/DESIGN-GUEST-SESSION.md
+
+**Problem.** `vm_lab.guest` is merged with its live behaviour pinned only at fake boundaries. Two live checks are still owed: design section 6's container-address reachability through `attached_to_network`, including a Docker `--internal` guest network, and VML-BL-28's `ssh -M -N -f` startup under captured pipes. They were not run for P-31a: the probe as written runs from the cockpit container, which is cockpit-only, and a stock Debian cloud guest has no working sshd without a seed, so an SSH-capable guest exists only after P-31b (install key and `DR-HOSTKEY` lines). **Wanted.** P-31c's leased live check runs both on the rebuilt bases, from a capped container standing in for the cockpit, and records the results in section 6 of the design note.
