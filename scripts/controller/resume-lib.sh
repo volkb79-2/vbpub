@@ -6,6 +6,7 @@
 # Footer markers, tied to the status line measured on Claude Code 2.1.331; adjust if it changes.
 BUSY_MARKERS=('esc to interrupt')   # present while the session works (a caller may add more)
 CLEARED_MARKER='ctx ?'              # present after /clear, before the first turn
+COMPACTING_MARKER='Compacting'      # the spinner line of a running compaction (compact-resume.sh adds it to BUSY_MARKERS)
 FOOT_LINES=4                        # how many non-blank bottom lines count as the footer
 
 # Test seams: <RESUME_PREFIX>_POLL (seconds between polls), _IDLE_TRIES, _TYPE_PAUSE, _FINAL_WAIT.
@@ -30,8 +31,8 @@ wait_idle() { # $1 = max polls; returns 0 after 3 idle checks in a row
 }
 check_log() { { : >>"$log"; } 2>/dev/null || { echo "ERROR log file not writable: $log" >&2; exit 2; }; }
 check_pane() { tmux has-session -t "$pane" 2>/dev/null || { say "ERROR no pane $pane"; exit 2; }; }
-send_text() { # literal text, a pause, then Enter
-  tmux send-keys -t "$pane" -l "$1"
+send_text() { # literal text (`--` stops flag parsing: a text starting with `-`), a pause, then Enter; failure exits 5
+  tmux send-keys -t "$pane" -l -- "$1" || { say "ERROR send-keys failed (text)"; exit 5; }
   sleep "$type_pause"
-  tmux send-keys -t "$pane" Enter
+  tmux send-keys -t "$pane" Enter || { say "ERROR send-keys failed (Enter)"; exit 5; }
 }

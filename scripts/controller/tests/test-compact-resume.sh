@@ -29,10 +29,13 @@ case $1 in
     [[ -e $f ]] || f=$(printf '%s\n' "$s/frames/$phase".* | sort | tail -1)
     echo "capture $phase" >>"$s/calls.log"; cat -- "$f" ;;
   send-keys)
-    # send-keys -t <pane> -l <text> | -t <pane> Enter
+    # send-keys -t <pane> -l [--] <text> | -t <pane> Enter
+    # Like tmux, a text that starts with "-" is parsed as flags (exit 1) unless "--" precedes it.
     if [[ $4 == "-l" ]]; then
+      [[ -e $s/sendfail ]] && exit 1
+      if [[ $5 == -- ]]; then t=$6; else t=$5; [[ $t == -* ]] && exit 1; fi
       n=$(( $(cat "$s/nsent" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$s/nsent"
-      printf '%s' "$5" >"$s/sent.$n"; echo "send-keys $3 -l <text $n>" >>"$s/calls.log"
+      printf '%s' "$t" >"$s/sent.$n"; echo "send-keys $3 -l <text $n>" >>"$s/calls.log"
     else
       echo "send-keys $3 $4" >>"$s/calls.log"
       [[ $(cat "$s/nsent" 2>/dev/null || echo 0) -eq 1 ]] && echo compact >"$s/phase"
@@ -57,8 +60,8 @@ scenario() {
   read -ra a <<<"$3"; for k in "${a[@]}"; do frame "$D" compact $((++i)) "$k"; done
   printf 'Keep the handover path.\n"quoted" $HOME `tick` -dash\nlast line\n' >"$D/guidance.txt"
   printf '/compact Keep the handover path. "quoted" $HOME `tick` -dash last line' >"$D/expected-compact.txt"
-  printf 'Resume: read the handover.\n$HOME `tick`\nline three\n' >"$D/prompt.txt"
-  printf 'Resume: read the handover.\n$HOME `tick`\nline three' >"$D/expected-prompt.txt"
+  printf -- '- Resume: read the handover.\n$HOME `tick`\nline three\n' >"$D/prompt.txt"
+  printf -- '- Resume: read the handover.\n$HOME `tick`\nline three' >"$D/expected-prompt.txt"
 }
 # run <args...>: the script under the stub, short polls; sets RC
 run() {
@@ -118,6 +121,16 @@ COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "no spinner exit $RC"
 contains "$D/log" "WARN compaction never showed busy" "WARN logged"
 cmp -s "$D/sent.2" "$D/expected-prompt.txt" || fail "no spinner: resume prompt not sent"
+
+# 5b. A failing send-keys exits 5, is not logged as sent and nothing more is sent (the happy path types a
+#     resume prompt starting with "-", which the stub rejects without "--": the old code lost it silently).
+scenario sendfail "I" "I"
+touch "$D/sendfail"
+run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 5 ]] || fail "send-keys failure exit $RC (want 5)"
+contains "$D/log" "ERROR send-keys failed (text)" "send failure logged"
+[[ ! -e $D/sent.1 ]] || fail "send failure: something was recorded as sent"
+not_contains "$D/log" "compaction running" "send failure: went on waiting for a compaction"
 
 # 6. Argument and precondition errors exit 2 and send nothing.
 scenario args "I" "I"

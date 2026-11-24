@@ -671,7 +671,8 @@ finish or fail unnoticed while the session sits idle.
 An interactive Claude Code session in a tmux pane can be restarted without the operator's
 click. Both helpers wait until the pane is idle (no busy marker for 3 checks, max 30 min), act,
 then type the prompt file's text and Enter; exit codes are in each script header (2: bad
-arguments or no pane, nothing sent; 3: never idle; compact only, 4: compaction unfinished).
+arguments or no pane, nothing sent; 3: never idle; compact only, 4: compaction unfinished;
+5: a `tmux send-keys` call failed).
 
 - **Default: `/compact` via `scripts/controller/compact-resume.sh <pane-id> <guidance-file>
   <prompt-file> <log>`.** Sends `/compact <guidance>`, waits for the compaction to finish, then
@@ -686,8 +687,10 @@ arguments or no pane, nothing sent; 3: never idle; compact only, 4: compaction u
   resume prompt that points at it and its read-first list.
 - **The agent's side of a compact (controller-driven):** (a) the agent chooses a clean
   boundary (nothing half-edited); (b) it writes its handover/STATE first; (c) it replies
-  "ready for compact" and ends its turn; (d) the controller runs `compact-resume.sh` on its
-  pane with a guidance file (keep only the handover pointer and the in-flight list: subagents
+  "ready for compact" and ends its turn; (d) the controller launches `compact-resume.sh` for its
+  pane DETACHED (`setsid nohup ... >log 2>&1 &`, never a foreground or `run_in_background` Bash
+  call: the tool timeout is 2-10 min, the helper may wait up to 90 min, possibly between
+  `/compact` and the resume prompt) with a guidance file (keep only the handover pointer and the in-flight list: subagents
   and runs with their report paths, open hand-overs) and a resume prompt (read the handover's
   newest block, check each in-flight run's report, continue, report back). A sub-controller
   reporting "at boundary, ready for successor" for a `/clear` restart is handled the same way.

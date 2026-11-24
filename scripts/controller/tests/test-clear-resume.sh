@@ -26,8 +26,12 @@ case $1 in
     [[ -e $f ]] || f=$(printf '%s\n' "$s/frames/$phase".* | sort | tail -1)
     echo "capture $phase" >>"$s/calls.log"; cat -- "$f" ;;
   send-keys)
-    # send-keys -t <pane> /clear Enter | -t <pane> -l <text> | -t <pane> Enter
-    if [[ $4 == "-l" ]]; then printf '%s' "$5" >"$s/sent.txt"; echo "send-keys $3 -l <text>" >>"$s/calls.log"
+    # send-keys -t <pane> /clear Enter | -t <pane> -l [--] <text> | -t <pane> Enter
+    # Like tmux, a text that starts with "-" is parsed as flags (exit 1) unless "--" precedes it.
+    if [[ $4 == "-l" ]]; then
+      [[ -e $s/sendfail ]] && exit 1
+      if [[ $5 == -- ]]; then t=$6; else t=$5; [[ $t == -* ]] && exit 1; fi
+      printf '%s' "$t" >"$s/sent.txt"; echo "send-keys $3 -l <text>" >>"$s/calls.log"
     else echo "send-keys $3 $4${5:+ $5}" >>"$s/calls.log"; [[ $4 == /clear ]] && echo cleared >"$s/phase"; fi ;;
 esac
 SH
@@ -49,8 +53,8 @@ scenario() {
   D=$ROOT/$1; mkdir -p "$D/frames"; echo start >"$D/phase"; local i=0 k a
   read -ra a <<<"$2"; for k in "${a[@]}"; do frame "$D" start $((++i)) "$k"; done; i=0
   read -ra a <<<"$3"; for k in "${a[@]}"; do frame "$D" cleared $((++i)) "$k"; done
-  printf 'Resume as the successor.\n"quoted" $HOME `tick` -dash\nline two\n' >"$D/prompt.txt"
-  printf 'Resume as the successor.\n"quoted" $HOME `tick` -dash\nline two' >"$D/expected.txt"
+  printf -- '- Resume as the successor.\n"quoted" $HOME `tick` -dash\nline two\n' >"$D/prompt.txt"
+  printf -- '- Resume as the successor.\n"quoted" $HOME `tick` -dash\nline two' >"$D/expected.txt"
 }
 # run <args...>: the script under the stub, short polls; sets RC
 run() {
@@ -101,6 +105,15 @@ CLEAR_RESUME_CLEAR_TRIES=3 run '%9' "$D/prompt.txt" "$D/log"
 contains "$D/log" "WARN no 'ctx ?' after 60 s" "WARN logged"
 cmp -s "$D/sent.txt" "$D/expected.txt" || fail "no cleared marker: prompt not sent"
 [[ $(calls | grep -c '^capture cleared') -eq 5 ]] || fail "no cleared marker: 3 polls + WARN footer + final footer"
+
+# 5b. A failing send-keys of the prompt exits 5 and is not logged as sent (the happy path above types a
+#     prompt starting with "-", which the stub rejects without "--": the old code lost it silently).
+scenario sendfail "I" "C"
+touch "$D/sendfail"
+run '%9' "$D/prompt.txt" "$D/log"
+[[ $RC -eq 5 ]] || fail "send-keys failure exit $RC (want 5)"
+contains "$D/log" "ERROR send-keys failed (text)" "send failure logged"
+not_contains "$D/log" "prompt sent" "send failure: logged as sent"
 
 # 6. Argument and precondition errors exit 2 and send nothing.
 scenario args "I" "C"

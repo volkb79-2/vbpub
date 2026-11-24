@@ -11,7 +11,7 @@ set -u
 #
 # Exit codes: 0 prompt sent (a missing cleared marker only logs WARN); 2 bad arguments, unreadable
 # prompt file, unwritable log or no such pane (nothing sent); 3 pane never idle within 30 min
-# (nothing sent). Progress goes to <log-file>. Footer markers and the shared idle logic:
+# (nothing sent); 5 a send-keys call failed (nothing more is sent). Progress goes to <log-file>. Footer markers and the shared idle logic:
 # resume-lib.sh. Test seams (tests/test-clear-resume.sh): CLEAR_RESUME_{POLL,IDLE_TRIES,TYPE_PAUSE,
 # FINAL_WAIT,CLEAR_TRIES}.
 RESUME_PREFIX=CLEAR_RESUME
@@ -26,7 +26,7 @@ check_pane
 say "start pane=$pane prompt=$prompt_file"
 wait_idle "$idle_tries" || { say "ERROR pane never idle within 30 min"; exit 3; }
 say "pane idle; sending /clear"
-tmux send-keys -t "$pane" '/clear' Enter
+tmux send-keys -t "$pane" '/clear' Enter || { say "ERROR send-keys failed (/clear)"; exit 5; }
 ok=0
 for _ in $(seq "$clear_tries"); do sleep "$poll"; if foot | grep -qF -- "$CLEARED_MARKER"; then ok=1; break; fi; done
 if [[ $ok -eq 1 ]]; then say "clear confirmed ($CLEARED_MARKER)"; else say "WARN no '$CLEARED_MARKER' after 60 s; footer: $(foot | tr '\n' '|')"; fi

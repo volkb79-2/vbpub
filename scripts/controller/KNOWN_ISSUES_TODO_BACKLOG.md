@@ -1659,3 +1659,18 @@ Source: .controller-state/PROGRAM-2026-11-24/PROGRAM.md §6
 `tests/test-pi-impl.sh` `check_live_snapshot` polls 100 × `sleep 0.1` (about 10 s of wall clock) for `"tool_in_flight": "bash"` in the `.live` sidecar, which is written every `PI_LIVE_INTERVAL_SECONDS=1` by a process tree started under the same load. On 2026-11-24 the `suite` lane at 0314fdf1b (a docs-only change) failed with `the live sidecar never reported the tool call in flight` while another session's mutation lane loaded the host (load average ~6 on 8 cores). Against the estate rule that verdicts do not depend on host load. Fix: wait on a progress condition instead of a clock, for example until the fake pi's own "tool started" marker exists AND the sidecar has completed at least two write cycles (a sidecar sequence counter), with only a generous outer bound (minutes) that reports "inconclusive under load" separately from "never reported".
 
 Source: suite lane log of 2026-11-24 (run-gate lane `suite`, head 0314fdf1b).
+
+## CTL-56 — P-plat-21 r1 leftovers (resume helpers)
+
+**Status:** OPEN (filed 2026-11-24 from the Opus r1 review `.controller-state/platform/reviews/plat-21-r1-opus.md`; F1-F3 fixed in fix round 1).
+
+Not blocking, for `compact-resume.sh`, `clear-resume.sh`, `resume-lib.sh` and their tests:
+- **B2 prompt limits undocumented:** keep prompt and guidance short (the tmux client refuses a command line over about 16 KiB, "command too long"), no trailing `;` (tmux drops it as a command separator), no leading `/` or `!` (Claude Code treats them as commands) and no trailing `@mention` (Enter accepts the completion). Document in AGENTS.md; consider refusing such input with exit 2.
+- **B3 test gaps:** a compact scenario where the spinner appears only after 3 or more idle polls (pins `START_TRIES` and the start-wait loop), a frame with the `Compacting` line 5-6 lines up (pins `FOOT_LINES=6`), and the stub recording the `capture-pane` target (a wrong `-t` survives today).
+- **B4 defaults unpinned:** no test pins poll 2 s, idle 900, clear 30, start 60, done 1800 (surviving mutants `IDLE_TRIES 900->5`, `CLEAR_TRIES 30->1`, `poll 2->0.01`, `START_TRIES 60->2`, `$idle_tries` used in place of `$done_tries` in the done wait).
+- **B5 missing lib:** `source resume-lib.sh` failing under `set -u` ends as exit 3 "never idle" with nothing sent; use `|| exit 2`.
+- **B6 broad shellcheck disables:** the file-wide `disable=SC1091,SC2034,SC2154` in both helpers hides real unused/unassigned variables; run `shellcheck -x` in `tests/run-suite.sh` and narrow them.
+- **B7 DESIGN 6a:** a compaction is not a "fresh session" (step 3 framing); the SessionStart[compact] note of section 6.4 ("the handover predates it") will false-alarm on every deliberate compact; `agctl successor <pane> <prompt-file> [--clear]` needs a guidance argument for the default compact mode.
+- **B8 self-compaction example** uses the relative `scripts/controller/...`; the controller tools run from `.worktrees/controller-tools`, so give an absolute or tools-relative path.
+
+Source: Opus r1 review of P-plat-21 at head 4b9563cbd.

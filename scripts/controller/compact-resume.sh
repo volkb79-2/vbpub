@@ -13,13 +13,14 @@ set -u
 # Exit codes: 0 resume prompt sent (a compaction that never showed busy only logs WARN); 2 bad
 # arguments, unreadable guidance/prompt file, unwritable log or no such pane (nothing sent);
 # 3 pane never idle within 30 min (nothing sent); 4 compaction not finished within 60 min (the
-# /compact was sent, the resume prompt was not). Progress goes to <log-file>. Footer markers and
+# /compact was sent, the resume prompt was not); 5 a send-keys call failed (text may be partly typed,
+# nothing more is sent). Progress goes to <log-file>. Footer markers and
 # the shared idle logic: resume-lib.sh. Test seams (tests/test-compact-resume.sh):
 # COMPACT_RESUME_{POLL,IDLE_TRIES,TYPE_PAUSE,FINAL_WAIT,START_TRIES,DONE_TRIES,SETTLE}.
 RESUME_PREFIX=COMPACT_RESUME
 # shellcheck source=resume-lib.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/resume-lib.sh"
-BUSY_MARKERS+=('Compacting')   # the spinner line of a running compaction (Claude Code 2.1.331)
+BUSY_MARKERS+=("$COMPACTING_MARKER")
 FOOT_LINES=6                   # the compaction spinner sits higher than the working one
 start_tries=$(seam START_TRIES 60) done_tries=$(seam DONE_TRIES 1800) settle=$(seam SETTLE 3)
 [[ $# -eq 4 ]] || { echo "usage: ${0##*/} <tmux-pane-id> <compact-guidance-file> <resume-prompt-file> <log-file>" >&2; exit 2; }
