@@ -438,6 +438,11 @@ any of these IDs to verified-killed based only on source inspection.
   when no non-delegating exact-symbol patch remains and the registered
   R0/R1 lane passes on a clean final commit.
 - **AW-BL-51 document and automate the host install of the `augeaswrap` command.**
+  (closed 2026-11-24.
+  - The automation is `scripts/netcup/runner/install-augeaswrap.sh` (pinned, hash-checked, versioned venv).
+  - The steps are in `scripts/netcup/CONSUMERS.md#install-augeaswrap-for-host-setup`, linked from `docs/CONSUMERS.md` "Installing the command on a host" together with the uninstall step.
+  - v1001 reached `augeaswrap --version` from them in its window step 3b.
+  - Both mdt host-setup refusals, `mdt-host-endpoints.sh` and `check.sh`, now name the procedure, pinned in `test_cgprofile_install.py`.)
   Filed 2026-11-17 from the first real host cutover. `mdt host-setup/install.sh`
   refuses to run without `augeaswrap` on the host PATH, and `cgprofiled install`
   needs the wheel, but no document says how a host gets the command. The cutover
