@@ -39,6 +39,7 @@ DIALOG_CURSOR_RE='^[[:space:]]*❯[[:space:]]*[0-9]+\.[[:space:]]'   # cursor on
 DIALOG_FOOTER='Esc to cancel'                                     # footer of those menus
 DIALOG_LINES=15                                                   # how many bottom non-blank lines are searched for them
 BOX_RULE_BYTES='(?:\xe2\x94\x80){20,}'                            # a prompt-box rule: at least 20 x U+2500, nothing else (perl, bytes)
+BOX_LABEL_RULE_BYTES='(?:\xe2\x94\x80){20,}[A-Za-z0-9._-]+(?:\xe2\x94\x80)+'   # same rule with one tmux session label (spaces stripped)
 BOX_LINES=6                                                       # the input row must be within this many bottom non-blank lines
 BOX_FOOT_MARKER='⏵⏵ bypass permissions on'                        # footer rows below the mode line are not part of the prompt box
 
@@ -126,6 +127,7 @@ dialog_open() { # $1 = capture with escapes: a numbered permission/question menu
   grep -qE -- "$DIALOG_CURSOR_RE" <<<"$plain" || grep -qF -- "$DIALOG_FOOTER" <<<"$plain"
 }
 is_rule() { local r=${1//$'\xc2\xa0'/}; r=${r//[[:space:]]/}; perl -e 'exit($ARGV[0] =~ /^'"$BOX_RULE_BYTES"'$/ ? 0 : 1)' "$r"; }
+is_label_rule() { local r=${1//$'\xc2\xa0'/}; r=${r//[[:space:]]/}; perl -e 'exit($ARGV[0] =~ /^'"$BOX_LABEL_RULE_BYTES"'$/ ? 0 : 1)' "$r"; }
 box_ok() { # $1 = capture: the live input row is alone in its box (a box rule right above AND below), within the last BOX_LINES non-blank lines
   local ln=() i n idx=-1 re="^$INPUT_MARKER"
   mapfile -t ln < <(strip_sgr <<<"$1" | grep -av '^[[:space:]]*$')   # colour codes first: a codes-only line is blank, as in pane_state_of
@@ -133,7 +135,7 @@ box_ok() { # $1 = capture: the live input row is alone in its box (a box rule ri
   for ((i = 0; i < n; i++)); do [[ ${ln[i]} =~ $re ]] && idx=$i; done
   for ((i = idx + 1; i < n; i++)); do [[ ${ln[i]} == *"$BOX_FOOT_MARKER"* ]] && { n=$((i + 1)); break; }; done
   (( idx >= 1 && idx + 1 < n && idx >= n - BOX_LINES )) || return 1
-  is_rule "${ln[idx-1]}" && is_rule "${ln[idx+1]}"   # a multi-line draft has its continuation lines between row and rule
+  { is_rule "${ln[idx-1]}" || is_label_rule "${ln[idx-1]}"; } && is_rule "${ln[idx+1]}"   # label only above; a draft adds lines below
 }
 norm_row() { # the input row with NBSP as a space and the gap after the marker squeezed (R2-1), trailing blanks dropped
   local r=$1
