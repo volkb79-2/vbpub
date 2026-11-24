@@ -1963,3 +1963,19 @@ the first-party CLIs" section.
 2. Decide whether codex, claude and opencode should follow the same vetted-record and age-buffer rule as the other three tools (the estate rule is a 14-day buffer); if they stay on `latest`, say so in `docs/BUILD-ARCHITECTURE.md`, because a version published minutes before the build is then shipped unvetted.
 
 **Acceptance.** A fake `npm` that answers ETARGET twice and then succeeds lets the install pass and logs both retries; a fake that always answers ETARGET fails after the bound with the original error text.
+
+## MDT-106 - shell-start.d docs export every API key into every shell (2026-11-24)
+
+**Status:** OPEN; severity: medium.
+
+Do not register `~/.env.ai` on agent cockpits; launchers load per-route keys (CTL-47). Also: take over tls-edge's mkcert item.
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md M3 (SYNTHESIS.md §5)
+
+## MDT-107 - the devcontainer stops when its PID-1 `sleep` child is killed (2026-11-24)
+
+**Status:** OPEN; severity: high.
+
+The overrideCommand loop `while sleep 1 & wait $!; do :; done` ends on a killed sleep: a killed `sleep` makes `wait` return non-zero, the loop exits and PID 1 ends, which stops the whole cockpit. Measured twice on 2026-11-18 (exit 0, not OOM). The loop must survive a killed child (for example loop unconditionally and only exit on a TERM trap), so a pid-signalling test or a stray `pkill` can no longer take the cockpit down.
+
+Source: memory `devcontainer-pid1-dies-when-sleep-child-killed` (2026-11-18)
