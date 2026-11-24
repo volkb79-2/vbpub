@@ -219,6 +219,44 @@ for s in dev dev-interactive dev-background dev-gates; do
   fi
 done
 
+# systemd-oomd must never act on the dev tier (MDT-108, operator 2026-11-24: PSI is the only stop signal).
+# host-setup renders no ManagedOOM* line, but it never removes what it did not render: a stale drop-in, a
+# `systemctl set-property` override or a distro `-.slice.d` oomd default would still make oomd kill lanes, and
+# nothing else reports it. Check the live unit properties (must be `auto`) and oomd's own watch list.
+check_oomd_dev_tier() {
+  local s props mp sw bad=0 out rc hits
+  for s in dev dev-interactive dev-background dev-gates dev-buildkitd dev-cache dev-memory_min_guaranteed; do
+    props=$(systemctl show "$s.slice" -p ManagedOOMMemoryPressure,ManagedOOMSwap 2>/dev/null) || props=""
+    mp=$(printf '%s\n' "$props" | sed -n 's/^ManagedOOMMemoryPressure=//p')
+    sw=$(printf '%s\n' "$props" | sed -n 's/^ManagedOOMSwap=//p')
+    if [ -z "$mp" ] || [ -z "$sw" ]; then
+      warn "$s.slice: could not read ManagedOOMMemoryPressure/ManagedOOMSwap — whether systemd-oomd may kill in this tier is unknown"
+      bad=1
+    elif [ "$mp" != auto ] || [ "$sw" != auto ]; then
+      fail "$s.slice has ManagedOOMMemoryPressure=$mp ManagedOOMSwap=$sw (want auto/auto) — systemd-oomd can kill the dev tier. Look for /etc/systemd/system/$s.slice.d/*.conf, a systemctl set-property override (/etc/systemd/system.control, /run/systemd/system.control) or a distro ancestor default, remove it, then systemctl daemon-reload && systemctl restart systemd-oomd"
+      bad=1
+    fi
+  done
+  if ! command -v oomctl >/dev/null 2>&1; then
+    warn "oomctl not found — cannot verify that systemd-oomd monitors no dev*.slice or the root slice"
+    return 0
+  fi
+  out=$(oomctl dump 2>&1); rc=$?
+  if [ "$rc" -ne 0 ]; then
+    warn "oomctl dump failed (exit $rc; systemd-oomd not running?) — its watch list is unknown"
+    return 0
+  fi
+  hits=$(printf '%s\n' "$out" | grep -E '^[[:space:]]*Path:[[:space:]]+(/|/-\.slice|(/[^/ ]+)*/dev(-[^/ ]*)?\.slice(/[^ ]*)?)[[:space:]]*$')
+  if [ -n "$hits" ]; then
+    fail "systemd-oomd monitors the dev tier or the root slice (oomctl dump): $(printf '%s' "$hits" | tr -s '[:space:]' ' ') — oomd would kill dev lanes under pressure. Remove the ManagedOOM* source, then systemctl restart systemd-oomd"
+    bad=1
+  fi
+  [ "$bad" = 0 ] && ok "systemd-oomd manages no dev*.slice and not the root slice (ManagedOOM*=auto on every dev tier, oomctl dump clean)"
+  return 0
+}
+echo "== systemd-oomd stays off the dev tier =="
+check_oomd_dev_tier
+
 echo "== dev-interactive.slice effective values =="
 INTERACTIVE_PATH="$(_slice_path dev-interactive.slice)"
 if [ -d "$INTERACTIVE_PATH" ]; then

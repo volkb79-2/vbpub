@@ -275,6 +275,90 @@ class EndpointInstallPreflight(unittest.TestCase):
         self.assertNotIn('"CGPROFILE_ENABLE"', wizard)
 
 
+class OomdDevTierCheck(unittest.TestCase):
+    """check.sh check_oomd_dev_tier: oomd must not act on the dev tier (MDT-108), run with systemctl/oomctl shims."""
+
+    FUNCTION = shell_function(CHECK_SH, "check_oomd_dev_tier")
+    CLEAN_DUMP = (
+        "Dump of Context:\nSwap Monitored CGroups:\nMemory Pressure Monitored CGroups:\n"
+        "\tPath: /nyxloom.slice\n\t\tMemory Pressure Limit: 60.00%\n\tPath: /user.slice/user-1000.slice\n"
+        "\tPath: /device.slice\n"
+    )
+
+    def _run(self, *, props: dict[str, tuple[str, str]] | None = None, dump: str | None = CLEAN_DUMP,
+             oomctl_rc: int = 0) -> str:
+        """props maps a slice name to (ManagedOOMMemoryPressure, ManagedOOMSwap); the rest are auto.
+        dump=None means oomctl is not installed."""
+        import shutil
+
+        props = props or {}
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp) / "bin"
+            bindir.mkdir()
+            for tool in ("cat", "sed", "grep", "tr"):
+                (bindir / tool).symlink_to(shutil.which(tool))
+            cases = "".join(
+                f"{name}.slice) echo 'ManagedOOMMemoryPressure={mp}'; echo 'ManagedOOMSwap={sw}';;\n"
+                for name, (mp, sw) in props.items()
+            )
+            (bindir / "systemctl").write_text(
+                f"#!/bin/sh\ncase \"$2\" in\n{cases}*) echo 'ManagedOOMMemoryPressure=auto'; echo 'ManagedOOMSwap=auto';;\nesac\n",
+                encoding="utf-8",
+            )
+            if dump is not None:
+                (dump_file := Path(tmp) / "dump.txt").write_text(dump, encoding="utf-8")
+                (bindir / "oomctl").write_text(f"#!/bin/sh\ncat '{dump_file}'\nexit {oomctl_rc}\n", encoding="utf-8")
+            for shim in bindir.iterdir():
+                if not shim.is_symlink():
+                    shim.chmod(0o755)
+            harness = (
+                'ok(){ echo "OK $*"; }\nwarn(){ echo "WARN $*"; }\nfail(){ echo "FAIL $*"; }\n'
+                + self.FUNCTION + "\ncheck_oomd_dev_tier\n"
+            )
+            return subprocess.run(
+                ["bash", "-c", harness], capture_output=True, text=True, env={"PATH": str(bindir)}
+            ).stdout
+
+    def test_all_auto_and_an_unrelated_dump_is_ok(self) -> None:
+        out = self._run()
+        self.assertIn("OK systemd-oomd manages no dev*.slice", out)
+        self.assertNotIn("FAIL", out)
+        self.assertNotIn("WARN", out)
+
+    def test_a_non_auto_property_on_any_dev_slice_fails(self) -> None:
+        for name in ("dev", "dev-gates", "dev-background", "dev-interactive", "dev-buildkitd"):
+            for value in (("kill", "auto"), ("auto", "kill")):
+                out = self._run(props={name: value})
+                self.assertIn(f"FAIL {name}.slice has ManagedOOMMemoryPressure={value[0]} ManagedOOMSwap={value[1]}", out)
+                self.assertNotIn("OK ", out)
+
+    def test_oomd_watching_a_dev_slice_or_the_root_slice_fails(self) -> None:
+        for path in ("/dev.slice", "/dev.slice/dev-gates.slice/docker-abc.scope", "/dev-background.slice", "/", "/-.slice"):
+            out = self._run(dump=self.CLEAN_DUMP + f"\tPath: {path}\n")
+            self.assertIn("FAIL systemd-oomd monitors the dev tier or the root slice", out, path)
+            self.assertNotIn("OK ", out)
+
+    def test_unreadable_properties_warn_never_ok(self) -> None:
+        out = self._run(props={"dev-gates": ("", "")})
+        self.assertIn("WARN dev-gates.slice: could not read", out)
+        self.assertNotIn("OK ", out)
+
+    def test_missing_or_failing_oomctl_warns_and_never_fails(self) -> None:
+        out = self._run(dump=None)
+        self.assertIn("WARN oomctl not found", out)
+        self.assertNotIn("FAIL", out)
+        out = self._run(oomctl_rc=1)
+        self.assertIn("WARN oomctl dump failed", out)
+        self.assertNotIn("FAIL", out)
+
+    def test_a_bad_property_still_fails_when_oomctl_is_missing(self) -> None:
+        out = self._run(props={"dev-gates": ("kill", "auto")}, dump=None)
+        self.assertIn("FAIL dev-gates.slice", out)
+
+    def test_check_sh_actually_calls_it(self) -> None:
+        self.assertRegex(CHECK_SH, r"(?m)^check_oomd_dev_tier$")
+
+
 class ReconcileKeepsCapsOnTransientDeviceLoss(unittest.TestCase):
     """MDT-019: a valid baseline with no discovered device does not clear the per-container caps."""
 
