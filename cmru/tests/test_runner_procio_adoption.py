@@ -371,7 +371,6 @@ def test_holder_warning_is_once_on_stdout_and_once_in_the_quiet_step_log(
         env_command=None,
         quiet=True,
     )
-    monkeypatch.setattr(runner, "OUTPUT_DRAIN_SECONDS", 0.2)
     monkeypatch.setenv("CMRU_INTERNAL_RUN_LOG", str(aggregate))
     monkeypatch.delenv("CMRU_INTERNAL_SHOW_RUN_DETAILS", raising=False)
     holder = None
@@ -614,6 +613,7 @@ def test_captured_probe_timeout_reaps_its_lingering_grandchild(tmp_path, monkeyp
         assert not thread.is_alive()
         assert isinstance(outcome["error"], subprocess.TimeoutExpired)
         assert not _alive(shell) and not _alive(holder)
+        _kill_quietly(holder)
         with pytest.raises(ProcessLookupError):
             os.killpg(shell, 0)
     finally:
