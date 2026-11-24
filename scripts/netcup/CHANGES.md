@@ -5,6 +5,7 @@ All notable changes to scripts/netcup are recorded here.
 ## [Unreleased]
 
 ### Fixed
+- The `install-fleetd.sh` examples in `runner/README.md` and `CONSUMERS.md` name the published wheels (fleetd 0.1.0, cli-extended 0.8.0) instead of the `0.3.0`/`0.5.0` placeholders (P-fd-03). fleetd 0.1.0 was installed with it on v1001 and r1002 on 2026-11-24 (hash-verified from the published release assets; `fleet --version` = 0.1.0 as the runner user).
 - `runner/lib.sh` `load_host_endpoints` accepts `MDT_BUILDKIT_GID` equal to `MDT_HOST_DOCKER_GID` (NC-43): mdt-buildkitd
   hands its socket to group docker, so on a real host the two are the same GID and `start-cockpit-runner.sh` refused
   to start (r1002, 2026-11-12 and again 2026-11-24). cgprofile and topos GIDs must still differ from docker and from
